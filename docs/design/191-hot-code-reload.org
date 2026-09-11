@@ -627,3 +627,67 @@ identity and memory measurements remain attributable.
   referenced in the design brief once it is located (see §3's note) —
   it may contain evidence this doc did not have access to on this
   branch. Not revisited in the Phase 1/2 pass; Phase 3 has not started.
+
+* 7. Native allocator and collector reload (in development)
+
+The next development loop must replace executable allocator and collector
+code while retaining the running REPL and its heap. Updating an ordinary
+Lisp function cell does not satisfy this requirement: existing native
+callers must reach the replacement too.
+
+The initial scope is an opt-in Linux x86_64 development build, with the
+same raw calling convention, object layout, root protocol, and allocator
+metadata layout throughout the process. A change to any of these contracts
+requires a fresh process. A matching manifest establishes the declared
+contract and artifact identity; it cannot prove an arbitrary collector
+implementation correct.
+
+** Stable entry points and publication
+
+Keep permanent entry points for raw allocation and every externally called
+collector function. The development build routes these through a dispatch
+record and a table of 24 public GC entries. Private collector calls stay
+within the replacement unit, so changing private helpers does not require
+rebuilding their callers in the executable. Original implementations remain
+callable independently of the dispatch record.
+
+The shared contract in =lisp/nelisp-runtime-reload-abi.el= fixes public
+names, arities, shared-state layouts and the symbol resolver order. Its
+digest is embedded in the executable as eight queryable words. Validate
+that digest and the running executable's SHA before mapping a candidate.
+Existing BSS is imported by address; replacing a collector must not create
+a second arena or root registry.
+
+Stage and validate the complete allocator/GC unit before publishing the
+allocation entry and GC table as one generation. Reject publication while
+workers or either operation are active. A compare-and-swap commit lock
+protects the check-and-publish sequence; rejected contenders do not modify
+the lock owner's state. The publication path must not allocate or collect.
+
+A rejected candidate leaves the current generation and entry points intact.
+Previously published code stays mapped for the process lifetime. Returning
+to the original entry points changes future calls only: it does not undo
+heap changes made by a replacement or recover from a native crash.
+
+** Required evidence before calling this implemented
+
+- Build and start the development REPL once; record its binary identity.
+- Create a list, a vector, and a caller before publication. Preserve their
+  values and the same process across subsequent reloads.
+- Compile two distinct native implementations from source. Show that real
+  allocation and explicit GC enter the selected implementation, using native
+  entry addresses, generations, and execution counters rather than a Lisp
+  wrapper's return value alone.
+- Repeat allocation and collection after the second publication, checking
+  the pre-existing objects and the unchanged caller.
+- Reject incompatible target, binary identity, ABI/layout, unresolved
+  imports, malformed artifacts, and attempts to publish with active workers.
+  Check that rejected publication does not change the active generation.
+- Return to the original implementation and confirm subsequent allocations
+  and collections still work with the same heap.
+- Verify that the normal build retains its existing behavior. Keep the
+  user-facing commands and limitations in the common REPL development guide.
+
+Performance claims require a timed comparison of equivalent repair loops.
+The ability to retain a process is not, by itself, evidence of a particular
+speedup. Native runtime reload is not marked shipped by this design section.

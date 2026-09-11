@@ -128,7 +128,11 @@
 # failure after the result has already been determined.  Each shape is pinned
 # below so a different handler cannot replace it while the aggregate stays
 # unchanged.
-silent-fallback        65
+silent-fallback        80
+# 2026-09-11 runtime reload additions: loader symbol/state/hash probes and
+# REPL-GC snapshot fields use deliberate structured rejection/unavailable
+# results when an optional raw export is absent.  They do not silently claim
+# a publication occurred; each new site is pinned below by exact shape.
 # 41 -> 42 on 2026-08-23: one new site, reviewed and pinned below (the
 # presence-sweep auto-note's defensive shape-extraction for a report-only
 # string, falls back to "?" on a malformed corpus form -- never on a
@@ -206,7 +210,7 @@ silent-fallback        65
 # `nelisp-standalone--reader-ipv6-socket-smoke' ends with the same
 # best-effort `(ignore-errors (delete-file script))' temp-file cleanup
 # every sibling `reader-*-smoke' uses; pinned below.
-ignore-errors   74
+ignore-errors   81
 # 34 -> 32 on 2026-08-19: the two handlers in
 # `nelisp-artifact--ensure-native-compiler' now record the error instead of
 # discarding it.  Between them they had hidden a chain of six failures --
@@ -223,7 +227,7 @@ ignore-errors   74
 # a nil condition variable because their fallback values do not inspect the
 # caught condition.  They are pinned individually below; this raises the
 # ceiling only for these reviewed additions.
-bare-handler    44
+bare-handler    53
 
 # 0, and it should stay 0.  `nl_dbg_note' has no enable flag on purpose --
 # a flag has to be turned off by whoever turned it on, and forgetting is
@@ -481,3 +485,32 @@ pinned-site bare-handler	nelisp-artifact.el	defun nelisp-artifact--source-form-s
 pinned-site silent-fallback	nelisp-artifact.el	defun nelisp-artifact--source-form-spans	e3f2648caa3a 1
 pinned-site bare-handler	nelisp-artifact.el	defun nelisp-artifact-reload-source-file	02e7e4104a95 1
 pinned-site silent-fallback	nelisp-artifact.el	defun nelisp-artifact-reload-source-file	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-runtime-development.el	defun nelisp-runtime-rebuild-and-reload	098b672091fc 1
+pinned-site silent-fallback	nelisp-repl-gc.el	defun nelisp-repl-gc--raw-record	e2c3e961a55c 1
+pinned-site silent-fallback	nelisp-repl-gc.el	defun nelisp-repl-gc--raw-contract-ready-p	e3f2648caa3a 1
+pinned-site bare-handler	nelisp-repl-gc.el	defun nelisp-repl-gc--raw-contract-ready-p	74a8a7cc22d7 1
+pinned-site silent-fallback	nelisp-repl-gc.el	defun nelisp-repl-gc--raw-address	e3f2648caa3a 1
+pinned-site bare-handler	nelisp-repl-gc.el	defun nelisp-repl-gc--raw-address	6388e2ba60d1 1
+pinned-site silent-fallback	nelisp-repl-gc.el	defun nelisp-repl-gc--debug	591cf643e8b2 1
+pinned-site silent-fallback	nelisp-repl-gc.el	defun nelisp-repl-gc--arena	ac4b22237723 1
+pinned-site silent-fallback	nelisp-repl-gc.el	defun nelisp-repl-gc--time-usec	e3f2648caa3a 1
+pinned-site bare-handler	nelisp-repl-gc.el	defun nelisp-repl-gc--time-usec	a81df0a3d5d3 1
+pinned-site silent-fallback	nelisp-native-load.el	defun nelisp-runtime-reload-source-file	e1da7eae609e 1
+pinned-site silent-fallback	nelisp-native-load.el	defun nelisp-runtime-reload-status	94758ae03ed8 1
+pinned-site ignore-errors	nelisp-native-load.el	defun nelisp-native-load-raw-artifact	f321ffc9faf6 1
+pinned-site silent-fallback	nelisp-native-load.el	defun nelisp-native-load--raw-symbol-addr	2532e05ccc9c 1
+pinned-site bare-handler	nelisp-native-load.el	defun nelisp-native-load--raw-symbol-addr	ef7bdc2316e9 1
+pinned-site ignore-errors	nelisp-native-load.el	defun nelisp-native-load-raw-v2-artifact	25e97ee8b340 1
+pinned-site ignore-errors	nelisp-native-load.el	defun nelisp-native-load-raw-v2-artifact	f321ffc9faf6 1
+pinned-site ignore-errors	nelisp-native-load.el	defun nelisp-native-load-raw-v2-compile-file	4744a068daa8 1
+pinned-site ignore-errors	nelisp-native-load.el	defun nelisp-native-load-raw-compile-file	4744a068daa8 1
+pinned-site ignore-errors	nelisp-native-load.el	defun nelisp-native-load--raw-bytes	9d3bbc73b4e3 1
+pinned-site bare-handler	nelisp-native-load.el	defun nelisp-native-load--running-binary-sha256	cf91c24d1dd4 1
+pinned-site bare-handler	nelisp-native-load.el	defun nelisp-native-load--running-binary-sha256	c90f5f82ec07 1
+pinned-site ignore-errors	nelisp-native-load.el	defun nelisp-native-load--sha256-file-external	bd68aa24dc91 1
+pinned-site silent-fallback	nelisp-native-load.el	defun nelisp-native-load--sha256-file-external	e3f2648caa3a 2
+pinned-site bare-handler	nelisp-native-load.el	defun nelisp-native-load--sha256-file-external	455485914f24 1
+pinned-site bare-handler	nelisp-native-load.el	defun nelisp-native-load--sha256-file-external	baaf7a35ab28 1
+pinned-site silent-fallback	nelisp-native-load.el	defun nelisp-native-load--sha256	e3f2648caa3a 1
+pinned-site bare-handler	nelisp-native-load.el	defun nelisp-native-load--sha256	1ffe8eb48934 1
+pinned-site silent-fallback	nelisp-native-load.el	defun nelisp-native-load--running-binary-sha256	e3f2648caa3a 2

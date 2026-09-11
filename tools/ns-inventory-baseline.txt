@@ -654,7 +654,11 @@ ns-collision-divergent 127
 # binding; changing it to a private name would make build identity unavailable
 # to existing compile callers.  Both are deliberate public-surface findings
 # in the same family as the already-baselined artifact command/API names.
-ns-prefix-violation 949
+# 2026-09-11 +10: the runtime-reload loader, runtime-development facade,
+# REPL session/code/GC modules and their smoke/test entry points add public
+# `nelisp-*' definitions.  These are intentional new public APIs; the
+# namespace gate remains count-only for this established surface.
+ns-prefix-violation 959
 # 611 -> 613 on 2026-08-20: `nelisp--check-string'/`--check-symbol' and the
 # other argument-check helpers are referenced from the lisp/ mirrors that
 # carry copies of the functions using them.  This is the kind this file
@@ -783,7 +787,12 @@ ns-prefix-violation 949
 # The mirror synchronization removes the old cross-file escape for
 # `nelisp-cl-generic--argument-precedence-order' from the prelude, leaving
 # the measured net at 727; this remains count-only conceded debt.
-ns-private-escape 727
+# 2026-09-11 +15: the runtime source exporter reuses the standalone builder's
+# target, arena rewrite, reader and GC source internals; the raw compiler
+# checks AOT entry parameters.  The ABI/REPL adapters also reuse native-load
+# hashing and symbol resolution.  These explicit compiler/loader boundaries
+# remain part of the conceded private-escape inventory debt.
+ns-private-escape 742
 ns-unreadable 0
 
 # `pinned-collision KEY' pins every ns-collision and ns-collision-divergent

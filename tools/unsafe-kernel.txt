@@ -31,6 +31,12 @@ scripts/nelisp-gc-pause-growth.el
 # and hiding the calls behind a wrapper would move the same 28 of them one
 # file over while making them harder to audit.
 lisp/nelisp-native-load.el
+# Read-only REPL diagnostics: resolve documented BSS records only after
+# verifying the running development ABI, then read their bounded u64 fields.
+lisp/nelisp-repl-gc.el
+# Development-only GC source generator.  Emits copies of terminal collector
+# counters into the dispatch record's reserved telemetry tail before cleanup.
+scripts/nelisp-runtime-reload-telemetry.el
 lisp/nelisp-stdlib-os-int-helpers.el
 scripts/nelisp-standalone-build.el
 scripts/nelisp-flat-arena-probe.el
@@ -40,7 +46,7 @@ scripts/nelisp-macos-build.el
 # Files inside the kernel that actually contain an unsafe call.  Raise it in
 # the commit that adds one, and say there what the new file does with raw
 # memory.  Lower it whenever the ratchet notice says you can.
-kernel-files 96
+kernel-files 98
 
 # `pinned-kernel-touch NAME' pins the 96 kernel files that actually touch
 # raw memory today (`unsafe-call' or a quoted form) -- one line per file,
@@ -167,3 +173,5 @@ pinned-kernel-touch scripts/nelisp-gc-pause-growth.el
 pinned-kernel-touch scripts/nelisp-macho-acceptance.el
 pinned-kernel-touch scripts/nelisp-macos-build.el
 pinned-kernel-touch scripts/nelisp-standalone-build.el
+pinned-kernel-touch lisp/nelisp-repl-gc.el
+pinned-kernel-touch scripts/nelisp-runtime-reload-telemetry.el

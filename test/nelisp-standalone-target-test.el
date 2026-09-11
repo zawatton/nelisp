@@ -1321,7 +1321,11 @@ Windows uses the target-correct `.obj' unit name; linux/macOS keep `.o'."
                                 (cons "nl_freelist_small_mask"
                                       (+ 57616 4194304 96 176 64 56 40 1040
                                          (if (eq target 'windows-x86_64) 8 0)
-                                         64 192 64 40))))
+                                         64 192 64 40))
+                                (cons "nl_gc_conserv_state"
+                                      (+ 57616 4194304 96 176 64 56 40 1040
+                                         (if (eq target 'windows-x86_64) 8 0)
+                                         64 192 64 40 8))))
           (let ((sym (cdr (assoc (car expected) by-name))))
             (should sym)
             (should (equal (cdr expected) (plist-get sym :value)))
@@ -1341,10 +1345,11 @@ Windows uses the target-correct `.obj' unit name; linux/macOS keep `.o'."
         ;; appends the 1040-byte registry (16-byte header + 64*16 entries),
         ;; then the 64-byte large-free-list head array after the 192-byte
         ;; aref cache table, then 40 bytes for the collector-only start index
-        ;; and an 8-byte small-bucket occupancy mask.
+        ;; and an 8-byte small-bucket occupancy mask, followed by the external
+        ;; conservative collector's 64-byte work queue/cache record.
         (should (equal (+ 57616 4194304 96 176 64 56 40 1040
                           (if (eq target 'windows-x86_64) 8 0)
-                          64 192 64 40 8)
+                          64 192 64 40 8 64)
                        (cdr (assq 'bss (plist-get u :sections)))))))))
 
 (ert-deftest nelisp-standalone-target-stage8-build-appends-arena-base-slot-unit ()
@@ -1470,42 +1475,24 @@ scratch chunks have their cursor reset."
                dyn)))
     (should (= 3 (logior 1 nelisp-standalone--arena-chunk-flag-persistent)))))
 
-(ert-deftest nelisp-standalone-target-gc-root-tag-bound-covers-doc200-tags ()
-  "The conservative scan\'s plausible-tag bound is the whole Sexp tag universe.
-
-Doc 200 added tag 14 (UnibyteStr) and tag 15 (UnibyteMutStr).  `nl_gc_mark_slot\'
-was taught about both, but `nl_gc_conserv_word\''s bound stayed at 13, so a
-native-stack word pointing at a 32-byte Sexp slot holding a unibyte string was
-not treated as a root: the slot\'s block was never pinned and the sweep freed
-it, after which `nl_gc_free_block_link\''s next pointer overwrote the slot\'s
-tag word and the slot read back as tag 8 (Vector) -- SIGSEGV in
-`nelisp_nlvector_clone\' on the string\'s old capacity used as a box pointer.
-This test fails the moment the bound falls behind the tag universe again."
-  (cl-labels ((tree-member-p
-               (needle tree)
-               (cond
-                ((equal needle tree) t)
-                ((consp tree)
-                 (or (tree-member-p needle (car tree))
-                     (tree-member-p needle (cdr tree)))))))
-    ;; The live bound, and the stale one that must not come back.
-    (should (tree-member-p '(< (ptr-read-u8 w 0) 16)
-                           nelisp-standalone--gc-source))
-    (should-not (tree-member-p '(< (ptr-read-u8 w 0) 14)
-                               nelisp-standalone--gc-source))
-    ;; Both Doc 200 tags still have a marking arm to reach, which is what
-    ;; makes widening the bound safe rather than merely permissive.
-    (should (tree-member-p '(or (= tag 6) (= tag 15))
-                           nelisp-standalone--gc-source))
-    (should (tree-member-p '(or (= tag 5) (= tag 14))
-                           nelisp-standalone--gc-source))
-    ;; BLOCK_TOTAL is the low 32 bits, so one stray high bit in a header can
-    ;; no longer make `nl_gc_bt_ok\' reject a block and truncate the sweep.
-    (should (tree-member-p '(defun nl_hdr_bt (hdr)
-                              (logand (ptr-read-u64 hdr 0) 4294967288))
-                           nelisp-standalone--arena-source))
-    (should (tree-member-p '(ptr-write-u64 hdr 0 (+ (logand x 4294967288) m))
-                           nelisp-standalone--arena-source))))
+(ert-deftest nelisp-standalone-target-gc-conserv-scan-is-untyped ()
+  "Conservative graph traversal cannot interpret a candidate as a Sexp.
+Typed unibyte string handling remains part of the separate precise marker."
+  (let* ((forms (cdr nelisp-standalone--gc-source))
+         (conservative
+          (cl-remove-if-not
+           (lambda (form)
+             (string-prefix-p "nl_gc_conserv_" (symbol-name (cadr form))))
+           forms))
+         (flat (flatten-tree conservative))
+         (precise (cl-find 'nl_gc_mark_slot forms :key #'cadr)))
+    (should conservative)
+    (should-not (memq 'nl_gc_mark_slot flat))
+    (should-not (memq 'sexp-tag flat))
+    (should (memq 'nl_gc_conserv_resolve flat))
+    (should (memq 'nl_gc_conserv_drain flat))
+    (should (member 14 (flatten-tree precise)))
+    (should (member 15 (flatten-tree precise)))))
 
 (ert-deftest nelisp-standalone-target-gc-walks-chunk-descriptors ()
   "GC membership uses the current-chunk fast path and chunk-list fallback."
@@ -2291,8 +2278,9 @@ two-level next-header probe passed on another masked pointer, and
 `nl_hdr_set_mark\' rewrote the slot as (low32 & ~7) + 4 -- a lexframe
 hash-table\'s buckets word became 0x689aec / 0x21a764 / 0x72828c in three
 consumer boot cores and the next lookup faulted in `nl_vector_slot_ptr\'.  A
-real header never has a bit above 31 set, so both candidate words are
-required to have a zero high half before anything is written."
+real header never has a bit above 31 set.  The conservative owner now comes
+from the validated exact-start index, and its high half is checked before
+pinning; a payload neighbor is never used to establish header ownership."
   (cl-labels ((tree-member-p
                (needle tree)
                (cond
@@ -2300,12 +2288,12 @@ required to have a zero high half before anything is written."
                 ((consp tree)
                  (or (tree-member-p needle (car tree))
                      (tree-member-p needle (cdr tree)))))))
-    (should (tree-member-p '(= (sar (ptr-read-u64 hdr 0) 32) 0)
+    (should (tree-member-p '(= (nl_gc_object_start_p w) 0)
                            nelisp-standalone--gc-source))
-    (should (tree-member-p '(= (sar (ptr-read-u64 next 0) 32) 0)
+    (should (tree-member-p '(= (sar (ptr-read-u64 (- w 8) 0) 32) 0)
                            nelisp-standalone--gc-source))
     ;; The pin itself is still there: this guard narrows, it does not remove.
-    (should (tree-member-p '(nl_seq2 (nl_hdr_set_mark hdr 4) 1)
+    (should (tree-member-p '(nl_hdr_set_mark hdr 4)
                            nelisp-standalone--gc-source))))
 
 (defun nelisp-standalone-target-test--read-all-forms (text)

@@ -94,6 +94,7 @@ constant before the elisp `nelisp-cli-main' dispatch runs.")
        nelisp -l FILE                   # load FILE and print the last result
        nelisp exec FILE                 # load FILE silently (no final-value print)
        nelisp compile-elisp-artifact ...  # --kind nelc|neln private, or elc: genuine GNU Emacs .elc (Doc 142 §6.2)
+       nelisp compile-native-runtime-unit ... # stage Linux x86_64 raw runtime unit (.nelr)
        nelisp compile-elisp-artifacts ... # compile FILE.el/DIR trees to adjacent artifacts
        nelisp compile-runtime-image ...   # compile runtime image to .nelc/.neln
        nelisp audit-elisp-artifacts ...   # report native coverage for adjacent .neln artifacts
@@ -717,6 +718,9 @@ See file header for the CLI surface + exit-code contract."
      ;; compile-elisp-artifact ...
      ((and (>= n 1) (equal (nth 0 args) "compile-elisp-artifact"))
       (nelisp--cli-run-artifact-command #'compile-elisp-artifact args))
+     ;; compile-native-runtime-unit ...
+     ((and (>= n 1) (equal (nth 0 args) "compile-native-runtime-unit"))
+      (nelisp--cli-run-artifact-command #'compile-native-runtime-unit args))
      ;; compile-elisp-artifacts ...
      ((and (>= n 1) (equal (nth 0 args) "compile-elisp-artifacts"))
       (nelisp--cli-run-artifact-command #'compile-elisp-artifacts args))

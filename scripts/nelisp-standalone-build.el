@@ -45,6 +45,8 @@
 (require 'nelisp-elf-write)
 (require 'nelisp-mach-o-write)
 (require 'nelisp-cc-nlboolvector-alloc)
+(require 'nelisp-runtime-reload-abi)
+(require 'nelisp-runtime-reload-telemetry)
 
 (defconst nelisp-standalone--this-file
   (or load-file-name buffer-file-name)
@@ -250,6 +252,9 @@ environment-only mode switch cannot reuse units compiled under another mode."
          ;; cache (same split rationale as `-dyn' above) -- otherwise a
          ;; flag flip silently links stale objects from the other mode.
          (base (if (equal (getenv "NELISP_TCO") "1") (concat base "-tco") base)))
+    (setq base (if (nelisp-standalone--runtime-reload-enabled-p)
+                   (concat base "-reload")
+                 base))
     (expand-file-name base nelisp-standalone--cache-dir)))
 
 (defconst nelisp-standalone--out
@@ -632,7 +637,8 @@ storage — not an arena reservation."
    ;; and is zero-filled at process start.
    (list (cons 'bss (+ 57616 4194304 96 176 64 56 40 1040
                        (if (eq nelisp-standalone--target 'windows-x86_64) 8 0)
-                       64 192 64 40 8)))
+                       64 192 64 40 8 64
+                       (if (nelisp-standalone--runtime-reload-enabled-p) 96 0))))
    ;; The aref cache follows the 64-byte GC statistics record in this BSS.
    (append
     (list (nelisp-link-symbol "nl_arena_base" 0
@@ -681,6 +687,13 @@ storage — not an arena reservation."
          (nelisp-link-symbol "nl_thread_registry"
                              (+ 57616 4194304 96 176 64 56 40)
                              :section 'bss :bind 'global :type 'object))
+    (when (nelisp-standalone--runtime-reload-enabled-p)
+      (list (nelisp-link-symbol "nl_runtime_reload_state"
+                                (+ 57616 4194304 96 176 64 56 40 1040
+                                   (if (eq nelisp-standalone--target 'windows-x86_64)
+                                       8 0)
+                                   64 192 64 40 8 64)
+                                :section 'bss :bind 'global :type 'object)))
     (when (eq nelisp-standalone--target 'windows-x86_64)
       (list (nelisp-link-symbol "nl_tls_registry"
                                 (+ 57616 4194304 96 176 64 56 40 1040)
@@ -717,6 +730,13 @@ storage — not an arena reservation."
                                  (if (eq nelisp-standalone--target 'windows-x86_64)
                                      8 0)
                                  64 192 64 40)
+                              :section 'bss :bind 'global :type 'object)
+          ;; External conservative work queue and owning-block cache.
+          (nelisp-link-symbol "nl_gc_conserv_state"
+                              (+ 57616 4194304 96 176 64 56 40 1040
+                                 (if (eq nelisp-standalone--target 'windows-x86_64)
+                                     8 0)
+                                 64 192 64 40 8)
                               :section 'bss :bind 'global :type 'object)))
    nil))
 
@@ -2329,6 +2349,91 @@ arm64 Linux has no legacy x86 numbering)."
     (defun nl_os_alloc_fail ()
       (syscall-direct 1 88 0 0 0 0 0))))
 
+(defun nelisp-standalone--runtime-reload-enabled-p (&optional target)
+  "Return non-nil for the opt-in native runtime reload slice.
+The first implementation is deliberately bounded to Linux x86_64; every
+other target keeps the production source and binary unchanged."
+  (and (eq (or target nelisp-standalone--target) 'linux-x86_64)
+       (equal (getenv "NELISP_RUNTIME_RELOAD") "1")))
+
+(defun nelisp-standalone--runtime-reload-forms ()
+  "Return the native runtime reload wrappers and install helper.
+The first 64 bytes hold alloc ptr, GC table ptr, generation, active alloc/GC,
+replacement alloc/GC hits, and a compare-and-swap commit lock.  The single-threaded
+installer validates all state before publishing either pointer, so rejection
+leaves the previous dispatch intact.  The final 32 bytes retain GC telemetry."
+  `((defun nl_runtime_reload_alloc_return (result)
+      (nl_seq2 (atomic-fetch-add (+ (data-addr nl_runtime_reload_state) 24) -1)
+               result))
+    (defun nl_runtime_reload_gc_return (result)
+      (nl_seq2 (atomic-fetch-add (+ (data-addr nl_runtime_reload_state) 32) -1)
+               result))
+    (defun nl_runtime_reload_alloc (size align)
+      (seq
+       (atomic-fetch-add (+ (data-addr nl_runtime_reload_state) 24) 1)
+       (nl_runtime_reload_alloc_return
+        (if (= (ptr-read-u64 (data-addr nl_runtime_reload_state) 0) 0)
+            (nl_runtime_reload_alloc_original size align)
+          (nl_seq2
+           (atomic-fetch-add (+ (data-addr nl_runtime_reload_state) 40) 1)
+           (call-ptr (ptr-read-u64 (data-addr nl_runtime_reload_state) 0)
+                     size align))))))
+    (defun nl_runtime_reload_gc (mode)
+      (seq
+       (atomic-fetch-add (+ (data-addr nl_runtime_reload_state) 32) 1)
+       (nl_runtime_reload_gc_return
+        (if (= (ptr-read-u64 (data-addr nl_runtime_reload_state) 8) 0)
+            (nl_runtime_reload_gc_original mode)
+          (nl_seq2
+           (atomic-fetch-add (+ (data-addr nl_runtime_reload_state) 48) 1)
+           (call-ptr (ptr-read-u64
+                      (ptr-read-u64 (data-addr nl_runtime_reload_state) 8)
+                      ,(+ 16 (* 8 (cl-position
+                                   "nl_gc_collect_recorded_mark_sweep_body"
+                                   nelisp-runtime-reload-gc-contract
+                                   :key #'car :test #'equal))))
+                     mode))))))
+    ;; Return 0 on success.  Reasons are stable for the native probe:
+    ;; 1=unsupported pointer pair, 2=generation regression, 3=workers,
+    ;; 4=GC in progress, 5=active native call, 6=commit lock busy,
+    ;; 7=GC table contract mismatch.
+    (defun nl_runtime_reload_install_unlock (result)
+      (nl_seq2 (atomic-fetch-add (+ (data-addr nl_runtime_reload_state) 56) -1)
+               result))
+    (defun nl_runtime_reload_install_locked (alloc-ptr gc-ptr generation)
+      (let ((state (data-addr nl_runtime_reload_state)))
+        (if (or (< alloc-ptr 0) (< gc-ptr 0)
+                (and (= alloc-ptr 0) (/= gc-ptr 0))
+                (and (/= alloc-ptr 0) (= gc-ptr 0)))
+            1
+          (if (<= generation (ptr-read-u64 state 16)) 2
+            (if (/= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0) 3
+              (if (/= (ptr-read-u64 (data-addr nl_gc_loop_ctx) 24) 0) 4
+                (if (or (/= (ptr-read-u64 state 24) 0)
+                        (/= (ptr-read-u64 state 32) 0)) 5
+                  (if (and (/= gc-ptr 0)
+                           (or (/= (ptr-read-u64 gc-ptr 0)
+                                   ,(length nelisp-runtime-reload-gc-contract))
+                               (/= (ptr-read-u64 gc-ptr 8) ,#x4e4c474332)))
+                      7
+                  (seq (ptr-write-u64 state 0 alloc-ptr)
+                       (ptr-write-u64 state 8 gc-ptr)
+                       (ptr-write-u64 state 16 generation)
+                       0)))))))))
+    (defun nl_runtime_reload_install (alloc-ptr gc-ptr generation)
+      (if (= (atomic-compare-exchange
+              (+ (data-addr nl_runtime_reload_state) 56) 0 1) 1)
+          (nl_runtime_reload_install_unlock
+           (nl_runtime_reload_install_locked alloc-ptr gc-ptr generation))
+        6))
+    ;; Stable public entry points replace the old definitions only in this
+    ;; opt-in source variant.  Their original bodies remain callable through
+    ;; the explicitly named symbols above.
+    (defun nl_alloc_bytes_uncheck (size align)
+      (nl_runtime_reload_alloc size align))
+    (defun nl_gc_collect_recorded_mark_sweep_body (mode)
+      (nl_runtime_reload_gc mode))))
+
 (defun nelisp-standalone--target-arena-source ()
   "Return the arena source adjusted for the current standalone target."
   (pcase nelisp-standalone--target
@@ -2385,13 +2490,89 @@ arm64 Linux has no legacy x86 numbering)."
                                                   nl_os_empty_chunk_reclaim_p
                                                   nl_os_reclaim_empty_chunk
                                                   nl_os_alloc_fail)))
-                                     (cl-find-if (lambda (chunk-form)
+                                   (cl-find-if (lambda (chunk-form)
                                                    (eq (cadr chunk-form) (cadr form)))
                                                  chunk-forms)
                                    form)))))
                          (cdr nelisp-standalone--arena-source))))
-       (cons 'seq (if commit-form (append body (list commit-form)) body))))
+       (setq body
+             (if (nelisp-standalone--runtime-reload-enabled-p)
+                 (mapcar (lambda (form)
+                           (if (and (consp form)
+                                    (eq (car form) 'defun)
+                                    (eq (cadr form) 'nl_alloc_bytes_uncheck))
+                               (cons 'defun
+                                     (cons 'nl_runtime_reload_alloc_original
+                                           (cddr form)))
+                             form))
+                         body)
+               body))
+       (cons 'seq (append (if commit-form (append body (list commit-form)) body)
+                          (if (nelisp-standalone--runtime-reload-enabled-p)
+                              (nelisp-standalone--runtime-reload-forms)
+                            nil)))))
     (_ nelisp-standalone--arena-source)))
+
+(defun nelisp-standalone--runtime-reload-gc-original (name)
+  "Return the permanently linked original symbol for GC function NAME."
+  (if (eq name 'nl_gc_collect_recorded_mark_sweep_body)
+      'nl_runtime_reload_gc_original
+    (intern (concat "nl_runtime_reload_original_" (symbol-name name)))))
+
+(defun nelisp-standalone--runtime-reload-gc-wrapper (form index)
+  "Return a stable generation dispatch wrapper for GC FORM at INDEX."
+  (let ((name (cadr form)) (args (caddr form)))
+    `(defun ,name ,args
+       (seq
+        (atomic-fetch-add (+ (data-addr nl_runtime_reload_state) 32) 1)
+        (nl_runtime_reload_gc_return
+         (if (= (ptr-read-u64 (data-addr nl_runtime_reload_state) 8) 0)
+             (,(nelisp-standalone--runtime-reload-gc-original name) ,@args)
+           (nl_seq2
+            (atomic-fetch-add (+ (data-addr nl_runtime_reload_state) 48) 1)
+            (call-ptr
+             (ptr-read-u64
+              (ptr-read-u64 (data-addr nl_runtime_reload_state) 8)
+              ,(+ 16 (* index 8)))
+             ,@args))))))))
+
+(defun nelisp-standalone--target-gc-source ()
+  "Return GC source with stable wrappers for every development GC entry.
+Original internal calls stay within the original generation.  Candidate
+units similarly bind their internal calls locally; external direct callers
+reach the permanent wrappers and therefore the currently installed table."
+  (if (not (nelisp-standalone--runtime-reload-enabled-p))
+      nelisp-standalone--gc-source
+    (let* ((forms (cdr (nelisp-runtime-reload-instrument-gc
+                       nelisp-standalone--gc-source)))
+           (names (mapcar #'cadr forms))
+           (actual (mapcar (lambda (form)
+                             (cons (symbol-name (cadr form))
+                                   (length (caddr form)))) forms)))
+      (unless (cl-every (lambda (entry) (member entry actual))
+                        nelisp-runtime-reload-gc-contract)
+        (error "GC source/dispatch ABI differ; regenerate the reload contract"))
+      (cl-labels ((rename (form)
+                    (cond
+                     ((memq form names)
+                      (nelisp-standalone--runtime-reload-gc-original form))
+                     ((consp form) (cons (rename (car form)) (rename (cdr form))))
+                     (t form))))
+        (cons 'seq
+              (append
+               (mapcar #'rename forms)
+               (let ((index 0) (wrappers nil))
+                 (dolist (entry nelisp-runtime-reload-gc-contract)
+                   (let ((form (cl-find (car entry) forms
+                                        :key (lambda (f) (symbol-name (cadr f)))
+                                        :test #'equal)))
+                   ;; This entry's wrapper lives alongside the allocator's
+                   ;; dispatch and installer in arena.o.
+                   (unless (eq (cadr form) 'nl_gc_collect_recorded_mark_sweep_body)
+                     (push (nelisp-standalone--runtime-reload-gc-wrapper form index)
+                           wrappers))
+                   (setq index (1+ index))))
+                 (nreverse wrappers))))))))
 
 ;; ===================================================================
 ;; TRACING MARK-SWEEP GC (the correct reclaimer — reachability, not
@@ -3369,116 +3550,280 @@ arm64 Linux has no legacy x86 numbering)."
     ;; enumerate as precise roots; when a collection fires at a (nested-load)
     ;; form boundary those targets get freed (mark+sweep) or moved+munmap'd
     ;; (compaction) -> dangling -> SIGSEGV (Doc 152 §11.18-20).  Scan the live
-    ;; native stack [rsp, STACK_TOP) for words that look like valid arena obj
-    ;; pointers and mark+recurse them (keep-alive).  ADDITIVE: only ever marks
-    ;; MORE, never frees more, so it is SOUND for mark+sweep (false positives =
-    ;; bounded over-retention; nl_gc_mark_slot is in-arena-guarded + idempotent).
+    ;; native stack [rsp, STACK_TOP) for pointers into allocated blocks, pin
+    ;; each candidate's validated owning block
+    ;; with mark=4, and drain its payload as opaque words.  The later precise
+    ;; pass is the only pass that interprets Sexp tags.  False positives retain
+    ;; blocks, while malformed candidates are rejected before payload reads.
     ;; Gated by SCAN_FLAG @268436464; STACK_TOP @268436456 = driver-entry rsp
-    ;; (captured via (aot-current-sp)).  Moving GC would additionally need the
-    ;; conservatively-found blocks PINNED (not done) -> use with compaction OFF.
-    ;; Doc 152 §11.27: a conservatively-found Sexp-slot pointer W on the C-stack
-    ;; may itself BE the object-start (block+8) of its own arena SCRATCH block.
-    ;; The eval machinery holds in-flight Sexp values in `(alloc-bytes 32 8)'
-    ;; scratch slots (func_slot / out_slot / arg-construction / materialising-
-    ;; accessor scratch — the Doc 146 §2 "escape boxes").  The base scan marks
-    ;; W's CHILDREN (nl_gc_mark_slot reads the box @ W+8) but NOT the block that
-    ;; CONTAINS the slot, so that still-live scratch block is swept + freelisted
-    ;; and its reuse corrupts the freelist (crash in nl_freelist_take, §11.26).
-    ;; Mark the owning block too — but ONLY when W-8 is a real block header, so
-    ;; an INTERIOR / inline slot pointer (e.g. `(+ env 32)', or a stack word
-    ;; that merely LOOKS like a Sexp obj because its low byte is < 13) never
-    ;; gets a stray mark bit written into the middle of a live block — which
-    ;; would corrupt e.g. a small tagged int (a syscall NR), Doc 152 §11.27.
-    ;; Header validation (all cheap, no deref of foreign memory):
-    ;;   (a) W-8 is in-arena and NOT a boot block (boot blocks are never freed,
-    ;;       so they need no mark; writing into one would clobber interior boot
-    ;;       data such as the env mirror/frames);
-    ;;   (b) BT = nl_hdr_bt(W-8) is 8-aligned in [16, 16 MiB] and the block end
-    ;;       is in-arena (it fits);
-    ;;   (c) TWO-LEVEL: the NEXT block at W-8+BT is either past the live arena
-    ;;       data (chunk end) OR itself a plausible header (8-aligned BT2 in
-    ;;       range).  A random interior word whose value happens to mask to a
-    ;;       plausible BT almost never has a second plausible header exactly BT
-    ;;       bytes later, so this rejects the false positives that (b) alone
-    ;;       lets through.
-    ;; ADDITIVE keep-alive: sound for mark+sweep (only ever retains more).
-    ;;   (d) the RAW header word at W-8 (and at the next block) has no bit
-    ;;       above 31 set.  A real header is BLOCK_TOTAL | mark and BLOCK_TOTAL
-    ;;       is < 4 GiB by construction; `nl_hdr_bt' masks to the low 32 bits,
-    ;;       so without this check a 64-bit POINTER word sitting at W-8 -- e.g.
-    ;;       W = &record.slots[k+1] left on the native stack by a slot-address
-    ;;       computation while slots[k] holds a child pointer -- masks to a
-    ;;       plausible BT (any 0x00007fXX_00yyyyyy pointer masks to yyyyyy),
-    ;;       the two-level check passes, and `nl_hdr_set_mark' rewrites that
-    ;;       pointer as (low32 & ~7) + 4: it loses its high half.  Measured:
-    ;;       three consumer boot cores, each a lexframe hash-table whose
-    ;;       buckets word read 0x689aec / 0x21a764 / 0x72828c = the buckets
-    ;;       Sexp-slot address & 0xFFFFFFF8, + 4, with slots[2] = 5 (tag 5 <
-    ;;       16) 8 bytes after it; the next-hop word masked into [16, 16 MiB]
-    ;;       in all three.  Before `nl_hdr_bt' was masked (d145e3c02) the raw
-    ;;       pointer failed (b) by itself; this restores that rejection.
-    (defun nl_gc_conserv_owner (w)
-      (let ((hdr (- w 8)))
-        (if (= (nl_gc_object_start_p w) 0) 0
-          (if (= (nl_gc_is_boot hdr) 1) 0
-            (if (= (sar (ptr-read-u64 hdr 0) 32) 0)
+    ;; (captured via (aot-current-sp)).  A collection with conservative pins
+    ;; skips moving compaction because raw interior pointers cannot be fixed up.
+    ;; Doc 152 §11.27: scratch slots need their owning allocation retained
+    ;; as well as their children.  Never derive a writable header merely
+    ;; by subtracting eight from a candidate: an interior pointer can make
+    ;; a payload word look like a plausible header and corrupt live data.
+    ;; Resolve the owner using the index built from validated header chains,
+    ;; or a validated linear walk when that index is inactive.  The owner
+    ;; must contain the candidate in its payload and must not be free.
+    ;; Boot allocations can contain mutable references to nonboot objects,
+    ;; so their payloads participate even though boot storage is not swept.
+    ;; Large blocks are valid too; use the containing chunk's boundaries,
+    ;; not the allocator's current chunk or an arbitrary size cutoff.
+    ;; Raw headers must fit in 32 bits before any mark-bit write.  Masking
+    ;; a pointer-shaped payload to 32 bits would hide the invalid header.
+    ;; Conservative roots are deliberately untyped.  The old implementation
+    ;; treated the first byte of every candidate as a Sexp tag and immediately
+    ;; called `nl_gc_mark_slot'.  A raw NlConsBox whose car pointer ended in
+    ;; 08 therefore became a Vector, and a raw NlVector box whose capacity was
+    ;; 8 became another false Sexp.  The pass below resolves a validated
+    ;; owning block, pins it with mark=4, and scans its payload as opaque u64
+    ;; words.  The precise pass is the only code allowed to interpret tags.
+    ;; State layout at `nl_gc_conserv_state':
+    ;;   +0 queue base, +8 capacity (u64 entries), +16 head, +24 tail,
+    ;;   +32 flags (1 active, 2 OOM, 4 has pin),
+    ;;   +40 scanned bytes, +48 pinned blocks, +56 cached owning block.
+    (defun nl_gc_conserv_state_clear ()
+      (seq
+       (ptr-write-u64 (data-addr nl_gc_conserv_state) 0 0)
+       (ptr-write-u64 (data-addr nl_gc_conserv_state) 8 0)
+       (ptr-write-u64 (data-addr nl_gc_conserv_state) 16 0)
+       (ptr-write-u64 (data-addr nl_gc_conserv_state) 24 0)
+       (ptr-write-u64 (data-addr nl_gc_conserv_state) 32 0)
+       (ptr-write-u64 (data-addr nl_gc_conserv_state) 40 0)
+       (ptr-write-u64 (data-addr nl_gc_conserv_state) 48 0)
+       (ptr-write-u64 (data-addr nl_gc_conserv_state) 56 0)))
+    (defun nl_gc_conserv_failed_p ()
+      (if (= (logand (ptr-read-u64 (data-addr nl_gc_conserv_state) 32) 2) 2)
+          1 0))
+    (defun nl_gc_conserv_pinned_p ()
+      (if (= (logand (ptr-read-u64 (data-addr nl_gc_conserv_state) 32) 4) 4)
+          1 0))
+    (defun nl_gc_conserv_queue_grow ()
+      (let* ((state (data-addr nl_gc_conserv_state))
+             (old (ptr-read-u64 state 0))
+             (cap (ptr-read-u64 state 8))
+             (newcap (* cap 2)))
+        ;; Keep the byte-size multiplication bounded.  A corrupt queue
+        ;; capacity must become the same recoverable OOM state as a failed
+        ;; mapping, never an unbounded allocation request.
+        (if (if (= cap 0) 1 (if (> cap 16777216) 1 0))
+            (seq (ptr-write-u64 state 32
+                               (logior (ptr-read-u64 state 32) 2)) 0)
+          (let ((mapping (nl_os_alloc_chunk (* newcap 8))))
+            (if (< mapping 4096)
+                (seq (ptr-write-u64 state 32
+                                   (logior (ptr-read-u64 state 32) 2)) 0)
+              (if (= (nl_os_commit_range mapping 0 (* newcap 8)) 0)
+                  (seq (nl_os_free_chunk mapping (* newcap 8))
+                       (ptr-write-u64 state 32
+                                      (logior (ptr-read-u64 state 32) 2))
+                       0)
+                (let ((i (ptr-read-u64 state 16))
+                      (tail (ptr-read-u64 state 24)))
+                  (while (< i tail)
+                    (ptr-write-u64 mapping (* i 8)
+                                   (ptr-read-u64 old (* i 8)))
+                    (setq i (+ i 1)))
+                  (if (> old 0) (nl_os_free_chunk old (* cap 8)) 0)
+                  (ptr-write-u64 state 0 mapping)
+                  (ptr-write-u64 state 8 newcap)
+                  1)))))))
+    (defun nl_gc_conserv_queue_push (w)
+      (let* ((state (data-addr nl_gc_conserv_state))
+             (tail (ptr-read-u64 state 24)))
+        (if (= (ptr-read-u64 state 32) 0) 0
+          (if (>= tail (ptr-read-u64 state 8))
+              (if (= (nl_gc_conserv_queue_grow) 0) 0
+                (seq
+                 (ptr-write-u64 (ptr-read-u64 state 0)
+                                (* tail 8) w)
+                 (ptr-write-u64 state 24 (+ tail 1))
+                 1))
+            (seq
+             (ptr-write-u64 (ptr-read-u64 state 0) (* tail 8) w)
+             (ptr-write-u64 state 24 (+ tail 1))
+             1)))))
+    (defun nl_gc_conserv_begin ()
+      (let* ((state (data-addr nl_gc_conserv_state))
+             ;; A page-sized initial queue keeps the common path cheap while
+             ;; growth remains explicit and abortable.
+             (cap 4096)
+             (mapping (nl_os_alloc_chunk (* cap 8))))
+        (nl_gc_conserv_state_clear)
+        (if (< mapping 4096)
+            (seq (ptr-write-u64 state 32 2) 0)
+          (if (= (nl_os_commit_range mapping 0 (* cap 8)) 0)
+              (seq (nl_os_free_chunk mapping (* cap 8))
+                   (ptr-write-u64 state 32 2) 0)
+            (seq
+             (ptr-write-u64 state 0 mapping)
+             (ptr-write-u64 state 8 cap)
+             (ptr-write-u64 state 32 1)
+             1)))))
+    ;; The exact-start index already validates every header chain.  Never
+    ;; compare a candidate with the CURRENT allocation chunk's end: a live
+    ;; conservative root may belong to any older chunk, at a higher or lower
+    ;; address.  Boot allocations can contain mutable references, and large
+    ;; allocations are legitimate; neither is excluded from the graph.
+    (defun nl_gc_conserv_valid_p (w)
+      (if (= (nl_gc_object_start_p w) 0) 0
+        (if (= (sar (ptr-read-u64 (- w 8) 0) 32) 0)
+            (if (= (nl_hdr_mark (- w 8)) 2) 0 1)
+          0)))
+    (defun nl_gc_conserv_owner_slow (w)
+      (let* ((chunk (ptr-read-u64 268436160 0)) (owner 0))
+        (while (and (> chunk 0) (= owner 0))
+          (if (= (nl_gc_chunk_contains chunk w) 0)
+              (setq chunk (ptr-read-u64 chunk 48))
+            (let* ((hdr (ptr-read-u64 chunk 24))
+                   (end (nl_gc_chunk_end chunk)) (ok 1))
+              (while (and (= ok 1) (< hdr end) (= owner 0))
                 (let ((bt (nl_hdr_bt hdr)))
-                  (if (< bt 16) 0
-                    (if (< 16777216 bt) 0
-                      (if (= (nl_gc_in_arena (+ hdr (- bt 1))) 0) 0
-                        (let ((next (+ hdr bt)))
-                          (if (= (nl_gc_in_arena next) 0)
-                              (if (= (nl_hdr_mark hdr) 0) (nl_seq2 (nl_hdr_set_mark hdr 4) 1) 0)   ; Doc155 §8.12: PIN (mark 4) — keep alive; precise marker recurses it
-                            (if (= (sar (ptr-read-u64 next 0) 32) 0)
-                                (let ((bt2 (nl_hdr_bt next)))
-                                  (if (< bt2 16) 0
-                                    (if (< 16777216 bt2) 0
-                                      (if (= (nl_hdr_mark hdr) 0) (nl_seq2 (nl_hdr_set_mark hdr 4) 1) 0))))
-                              0)))))))
-              0)))))
+                  (if (= (nl_gc_bt_ok hdr bt end) 0)
+                      (setq ok 0)
+                    (if (and (>= w (+ hdr 8)) (< w (+ hdr bt)))
+                        (setq owner (+ hdr 8))
+                      (setq hdr (+ hdr bt))))))
+              (setq chunk 0))))
+        owner))
+    (defun nl_gc_conserv_owner_indexed (w)
+      (let* ((ctx (data-addr nl_gc_start_index))
+             (aligned (- w (logand w 7))))
+        ;; Also refresh the index's containing-chunk cache for interior words.
+        (nl_gc_object_start_p aligned)
+        (let* ((entry (ptr-read-u64 ctx 32))
+               (owner 0))
+          (if (= (nl_gc_index_contains entry aligned) 0) 0
+            (let* ((slot (/ (- aligned (ptr-read-u64 entry 0)) 8))
+                   (byte (/ slot 8))
+                   (bits (logand
+                          (ptr-read-u8 (ptr-read-u64 entry 16) byte)
+                          (- (shl 1 (+ (logand slot 7) 1)) 1)))
+                   (bit 7))
+              ;; One bitmap byte covers 64 payload bytes.  Search backwards
+              ;; for the preceding real start, never interpret payload as a
+              ;; header.  The bitmap includes free-block starts as barriers.
+              (while (and (= bits 0) (> byte 0))
+                (setq byte (- byte 1))
+                (setq bits (ptr-read-u8 (ptr-read-u64 entry 16) byte)))
+              (if (= bits 0) 0
+                (while (= (logand bits (shl 1 bit)) 0)
+                  (setq bit (- bit 1)))
+                (setq owner (+ (ptr-read-u64 entry 0)
+                               (* (+ (* byte 8) bit) 8)))
+                (if (< w (+ (- owner 8) (nl_hdr_bt (- owner 8))))
+                    owner 0)))))))
+    (defun nl_gc_conserv_resolve (w)
+      (let* ((state (data-addr nl_gc_conserv_state))
+             (cached (ptr-read-u64 state 56)))
+        (if (and (> cached 0) (>= w cached)
+                 (< w (+ (- cached 8) (nl_hdr_bt (- cached 8)))))
+            cached
+          (if (= (nl_gc_in_arena w) 0) 0
+            (let ((owner
+                   (if (= (ptr-read-u64 (data-addr nl_gc_start_index) 16) 1)
+                       (nl_gc_conserv_owner_indexed w)
+                     (nl_gc_conserv_owner_slow w))))
+              (if (> owner 0) (ptr-write-u64 state 56 owner) 0)
+              owner)))))
+    ;; Mark=4 is the queue-visited bit.  Every transition 0->4 is paired with
+    ;; one queue entry; mark=4 is never re-enqueued, so an already pinned but
+    ;; not-yet-scanned block cannot be confused with an unvisited block.
+    (defun nl_gc_conserv_pin (w)
+      (if (= (nl_gc_conserv_valid_p w) 0) 0
+        (let* ((state (data-addr nl_gc_conserv_state))
+               (hdr (- w 8))
+               (m (nl_hdr_mark hdr)))
+          (if (= m 0)
+              (if (= (nl_gc_conserv_queue_push w) 0) 0
+                (seq
+                 (nl_hdr_set_mark hdr 4)
+                 (ptr-write-u64 state 32
+                                (logior (ptr-read-u64 state 32) 4))
+                 (ptr-write-u64 state 48
+                                (+ (ptr-read-u64 state 48) 1))
+                 1))
+            0))))
+    ;; Kept as a private compatibility name for the recorded-root helper;
+    ;; callers in the precise path no longer use it.
+    (defun nl_gc_conserv_owner (w) (nl_gc_conserv_pin w))
     (defun nl_gc_conserv_word (w)
-      (if (= (logand w 7) 0)              ; obj ptrs are 8-aligned
-          (if (= (nl_gc_in_arena w) 1)    ; within live arena data (no deref of w)
-              ;; The plausibility bound is the SEXP TAG UNIVERSE, and Doc 200
-              ;; made that universe 0..15 by adding tag 14 (UnibyteStr) and tag
-              ;; 15 (UnibyteMutStr).  Every other consumer was taught about them
-              ;; -- `nl_gc_mark_slot' has had both arms since, `nl_sci_dispatch'
-              ;; and `nl_sci_bump' dispatch them -- but this bound stayed at 13,
-              ;; so a native-stack word pointing at a 32-byte Sexp slot that
-              ;; currently holds a unibyte string was not a root at all:
-              ;; `nl_gc_conserv_owner' was never called on it, its block was
-              ;; never pinned, and the sweep freed it.  `nl_gc_free_block_link'
-              ;; then writes the free-list next pointer at hdr+8, which IS that
-              ;; slot's tag word; the pointer is 8-aligned, so the slot reads
-              ;; back as tag 8 (Vector) and the next clone takes the slot's
-              ;; second word (the string's old capacity) as a box pointer and
-              ;; atomically increments box+0x18 -> SIGSEGV in
-              ;; `nelisp_nlvector_clone'.  Measured: five identical cores from a
-              ;; consumer whose loader converts each source file to a unibyte
-              ;; string, all with rdi=0x61 (box = 0x49 = the old cap 73), and
-              ;; 1-3 in-arena tag-14 slots live on the faulting stack in every
-              ;; core examined.  Widening to `< 16' is ADDITIVE (it can only
-              ;; retain more) and `nl_gc_mark_slot' already handles both tags,
-              ;; so no new dereference shape is introduced.
-              (if (< (ptr-read-u8 w 0) 16) ; plausible Sexp tag 0..15 (Doc 200: 14/15 = unibyte str)
-                  (nl_seq2
-                   (nl_gc_conserv_owner w) ; §11.27: keep the slot's OWN block alive
-                   (nl_gc_mark_slot w))    ; mark + recurse children (idempotent, guarded)
-                0)
-            0)
-        0))
+      (let ((owner (nl_gc_conserv_resolve w)))
+        (if (= owner 0) 0 (nl_gc_conserv_pin owner))))
     (defun nl_gc_conserv_scan (p0 top)
       (let ((p p0))
-        (while (< p top)
-          (nl_seq2 (nl_gc_conserv_word (ptr-read-u64 p 0))
-                   (setq p (+ p 8))))
+        (while (and (< p top) (= (nl_gc_conserv_failed_p) 0))
+          (nl_gc_conserv_word (ptr-read-u64 p 0))
+          (setq p (+ p 8)))
         0))
+    (defun nl_gc_conserv_drain ()
+      (let* ((state (data-addr nl_gc_conserv_state))
+             (head (ptr-read-u64 state 16)))
+        (while (and (< head (ptr-read-u64 state 24))
+                    (= (nl_gc_conserv_failed_p) 0))
+          ;; queue_grow may replace and unmap the old queue while a previous
+          ;; entry is being scanned.  Reload the published base for every
+          ;; dequeue; retaining it in the outer let would dereference the
+          ;; freed mapping on the next iteration.
+          (let* ((base (ptr-read-u64 state 0))
+                 (w (ptr-read-u64 base (* head 8)))
+                 (hdr (- w 8))
+                 (end (+ hdr (nl_hdr_bt hdr)))
+                 (p w))
+            (while (and (< p end) (= (nl_gc_conserv_failed_p) 0))
+              (nl_gc_conserv_word (ptr-read-u64 p 0))
+              (ptr-write-u64 state 40
+                             (+ (ptr-read-u64 state 40) 8))
+              (setq p (+ p 8)))
+            (setq head (+ head 1))
+            (ptr-write-u64 state 16 head)))
+        0))
+    (defun nl_gc_conserv_rollback_chunk (chunk)
+      (let* ((hdr (ptr-read-u64 (+ chunk 24) 0))
+             (end (nl_gc_chunk_end chunk))
+             (ok 1))
+        (while (and (= ok 1) (< hdr end))
+          (let ((bt (nl_hdr_bt hdr)))
+            (if (= (nl_gc_bt_ok hdr bt end) 0)
+                (setq ok 0)
+              (if (= (nl_hdr_mark hdr) 4) (nl_hdr_set_mark hdr 0) 0)
+              (setq hdr (+ hdr bt))))
+        ok)))
+    (defun nl_gc_conserv_rollback ()
+      (let ((chunk (ptr-read-u64 268436160 0)))
+        (while (> chunk 0)
+          (nl_gc_conserv_rollback_chunk chunk)
+          (setq chunk (ptr-read-u64 (+ chunk 48) 0)))
+        0))
+    (defun nl_gc_conserv_finish ()
+      (let* ((state (data-addr nl_gc_conserv_state))
+             (base (ptr-read-u64 state 0))
+             (cap (ptr-read-u64 state 8))
+             (flags (ptr-read-u64 state 32)))
+        (if (= (logand flags 2) 2)
+            (nl_gc_conserv_rollback)
+          0)
+        (if (> base 0) (nl_os_free_chunk base (* cap 8)) 0)
+        (ptr-write-u64 state 0 0)
+        (ptr-write-u64 state 8 0)
+        (ptr-write-u64 state 16 0)
+        (ptr-write-u64 state 24 0)
+        (ptr-write-u64 state 32 (logand flags 6))
+        1))
     (defun nl_gc_conserv_maybe ()
-      (if (= (ptr-read-u64 268436464 0) 1)        ; SCAN_FLAG (0 = off)
-          (let ((top (ptr-read-u64 268436456 0))) ; STACK_TOP = driver-entry rsp
-            (if (= top 0) 0
-              (nl_gc_conserv_scan (aot-current-sp) top)))
-        0))
+      ;; This phase runs before any precise mark.  If queue allocation or
+      ;; validation fails, finish rolls back every mark4 and the caller skips
+      ;; the precise/sweep phase, so no partial mark state can be collected.
+      (if (= (ptr-read-u64 268436464 0) 1)
+          (if (= (nl_gc_conserv_begin) 0) 0
+            (let ((top (ptr-read-u64 268436456 0)))
+              (if (> top 0) (nl_gc_conserv_scan (aot-current-sp) top) 0)
+              (nl_gc_conserv_drain)
+              (if (= (nl_gc_conserv_failed_p) 1)
+                  (seq (nl_gc_conserv_finish) 0)
+                (nl_gc_conserv_finish)
+                1)))
+        1))
     ;; Mark the ROOT BLOCKS themselves (the driver's fixed `alloc-bytes'
     ;; scratch: ctx/result/out/pool/src/cursor/bsym).  These ARE live arena
     ;; allocations holding the root Sexps; without marking the block, sweep
@@ -3865,7 +4210,8 @@ arm64 Linux has no legacy x86 numbering)."
     ;; Mark every root (split out so the DEBUG skip-mark gate is a single if).
     (defun nl_gc_mark_roots (ctx result out pool src cursor bsym)
       (nl_seq2 (nl_gc_conserv_maybe)             ; Doc 152 §11.21 conservative stack scan
-       (nl_seq2 (nl_gc_mark_root_blocks ctx result out pool src cursor bsym)
+       (if (= (nl_gc_conserv_failed_p) 1) 0
+         (nl_seq2 (nl_gc_mark_root_blocks ctx result out pool src cursor bsym)
        (nl_seq2 (nl_seq2 (nl_gc_mark_slot (+ ctx 0))
                          (nl_seq2 (nl_gc_mark_mirror_buckets (+ ctx 0))
                           (nl_seq2
@@ -3905,7 +4251,7 @@ arm64 Linux has no legacy x86 numbering)."
                                 ;; epoch cache entry's key+expansion alive (mirrors
                                 ;; the block+slot marking pair above).
                                 (nl_seq2 (nl_mxcache_mark_all)
-                                         (nl_fvcache_mark_all))))))))))))))) ; bsym + shared symentry + caches + conserv wrap
+                                         (nl_fvcache_mark_all)))))))))))))))) ; bsym + shared symentry + conserv pin
     ;; ===== Doc 146 §5 moving GC (compaction). Phase 2 = forwarding. =====
     ;; Behind flag 268435608 (1=ON by default, wired at boot init; 0 = mark+sweep
     ;; escape hatch).  Forwarding hash side-table base
@@ -4383,8 +4729,14 @@ arm64 Linux has no legacy x86 numbering)."
     ;; the executing form AST -- the root §11.34 missed.
     (defun nl_gc_mark_recorded_slot (sp)
       (if (= sp 0) 0
+        ;; Keep the owning block without declaring its payload typed/scanned.
+        ;; A recorded inline slot can start a larger aggregate, whose later
+        ;; precise traversal must still be allowed to upgrade mark4 to mark1.
         (nl_seq2
-         (nl_gc_conserv_owner sp) ; keep an owning scratch Sexp block if SP is one
+         (if (= (nl_gc_conserv_valid_p sp) 1)
+             (if (= (nl_hdr_mark (- sp 8)) 0)
+                 (nl_hdr_set_mark (- sp 8) 4) 0)
+           0)
          (nl_gc_mark_slot sp))))
     (defun nl_gc_mark_recorded_env (env)
       (if (= env 0) 0
@@ -4479,19 +4831,26 @@ arm64 Linux has no legacy x86 numbering)."
     ;; that are not yet expressible in the 7-slot frame.
     (defun nl_gc_collect_recorded_mark_sweep_body (mode)
       (nl_seq2 (nl_aref_cache_clear)
-       (nl_seq2 (nl_gc_mark_recorded_contexts)
+       (if (and (= mode 0) (= (nl_gc_conserv_maybe) 0))
+           ;; Recorded-root collection has no outer index-mark wrapper to
+           ;; perform the failure cleanup, so clear the terminal OOM state
+           ;; here after the conservative finish has rolled back mark4.
+           (seq (nl_gc_conserv_state_clear) 0)
+         (nl_seq2 (nl_gc_mark_recorded_contexts)
        (nl_seq2 (nl_gc_mark_rootstack)
         ;; The explicit `garbage-collect' builtin reaches this collector,
         ;; so it needs the same private-root coverage as full boundary GC.
         (nl_seq2 (nl_gc_mark_thread_roots)
          (nl_seq2 (nl_gc_mark_symentry)
-          (nl_seq2 (if (= mode 0) (nl_gc_conserv_maybe) 0)
+          (nl_seq2 1
            ;; perf/macroexpansion-cache: this collector is ALWAYS mark+sweep
            ;; (never compact).  Mark cache entries alive here too, or a live
            ;; cache value with no other root would be freed between iterations.
            (nl_seq2 (nl_mxcache_mark_all)
             (nl_seq2 (nl_fvcache_mark_all)
-                     (nl_seq2 (nl_gc_index_end) (nl_gc_sweep)))))))))))
+                     (nl_seq2 (nl_gc_index_end)
+                              (nl_seq2 (nl_gc_sweep)
+                                       (nl_gc_conserv_state_clear)))))))))))))
     (defun nl_gc_collect_recorded_mark_sweep (mode)
       ;; On allocation failure or a broken header chain, leave the heap
       ;; untouched: sweeping a partially indexed/marked heap is unsafe.
@@ -4560,8 +4919,10 @@ arm64 Linux has no legacy x86 numbering)."
         (seq
          (if (= (ptr-read-u64 268435592 0) 1) 0
            (nl_gc_mark_roots ctx result out pool src cursor bsym))
-         (nl_gc_index_end)
-         1)))
+         (if (= (nl_gc_conserv_failed_p) 1)
+             (seq (nl_gc_index_end) (nl_gc_conserv_state_clear) 0)
+           (nl_gc_index_end)
+           1))))
     (defun nl_gc_collect_parked_mark_sweep
         (ctx result out pool src cursor bsym)
       (seq
@@ -4597,12 +4958,15 @@ arm64 Linux has no legacy x86 numbering)."
              (nl_aref_cache_clear)
              (if (= (nl_gc_index_mark_roots ctx result out pool src cursor bsym) 0)
                  0
-               (if (= (ptr-read-u64 268435608 0) 1) ; Doc146 §5: compact
+               (if (and (= (ptr-read-u64 268435608 0) 1)
+                        (= (nl_gc_conserv_pinned_p) 0)) ; raw roots cannot move
                  ;; The debug compaction path does not sweep; re-arm the debt
                  ;; trigger here so it cannot fire at every later boundary.
                  (nl_seq2 (nl_gc_compact ctx result out pool src cursor bsym)
-                          (nl_gc_debt_rearm))
-                 (nl_gc_sweep))))))))
+                          (nl_seq2 (nl_gc_debt_rearm)
+                                   (nl_gc_conserv_state_clear)))
+                 (nl_seq2 (nl_gc_sweep)
+                          (nl_gc_conserv_state_clear)))))))))
     ;; Form-boundary collections run after a top-level form has finished
     ;; evaluating.  The RAW reader parse pool allocation itself must remain
     ;; pinned for the next parse, but stale/unused slots from prior forms are
@@ -14279,6 +14643,10 @@ here does not matter, only that it is always supplied."
   (mapcar (lambda (e) (cadr (car e)))
           nelisp-standalone--applyfn-extern-arms))
 
+(defconst nelisp-standalone--reader-runtime-reload-symbols
+  nelisp-runtime-reload-symbols
+  "Private numeric address contract for the development runtime loader.")
+
 (defun nelisp-standalone--reader-native-addr-arms ()
   "Return the dispatch arm exposing runtime symbol addresses to elisp.
 
@@ -14297,7 +14665,7 @@ list; a test asserts the two agree, since nothing links them.
 Out-of-range indices return 0, which is not an address, so a caller that
 ignores the check gets a null dereference at the stub rather than a jump
 into whatever the index happened to select."
-  (list
+  (append (list
    (cons '(:u8 "nelisp--native-symbol-addr")
          `(wf_write_int
            out
@@ -14323,7 +14691,33 @@ into whatever the index happened to select."
    ;; The `mirror' slot has no such source.  Both providers ignore it,
    ;; so a loader may pass this pointer there too rather than a wild
    ;; one; that stops being safe if a boundary callee ever reads mirror.
-   (cons '(:u8 "nelisp--native-env") '(wf_write_int out env))))
+   (cons '(:u8 "nelisp--native-env") '(wf_write_int out env)))
+   ;; Raw runtime symbols share the numeric resolver contract.
+   (when (nelisp-standalone--runtime-reload-enabled-p)
+    (list
+   (cons '(:u8 "nelisp--native-runtime-symbol-addr")
+         `(wf_write_int out
+           ,(let ((form 0)
+                  (idx (length nelisp-standalone--reader-runtime-reload-symbols)))
+              (dolist (name (reverse
+                             nelisp-standalone--reader-runtime-reload-symbols))
+                (setq idx (1- idx))
+                (setq form `(if (= (wf_argval args 0) ,idx)
+                                (data-addr ,(intern name))
+                              ,form)))
+              form)))
+     (cons '(:u8 "nelisp--native-runtime-contract-word")
+           `(wf_write_int out
+             ,(let ((digest (nelisp-runtime-reload-contract-hash))
+                    (form -1) (index 7))
+                (while (>= index 0)
+                  (setq form
+                        `(if (= (wf_argval args 0) ,index)
+                             ,(string-to-number
+                               (substring digest (* index 8) (* (1+ index) 8)) 16)
+                           ,form))
+                  (setq index (1- index)))
+                form)))))))
 
 (defun nelisp-standalone--applyfn-reader-table ()
   "Build the reader dispatch table: the base table with the buggy stock
@@ -18228,7 +18622,9 @@ manifests use.")
               (if (and (string= name "arena.o")
                        (eq src 'nelisp-standalone--arena-source))
                   (nelisp-standalone--target-arena-source)
-                (symbol-value src))
+                (if (eq src 'nelisp-standalone--gc-source)
+                    (nelisp-standalone--target-gc-source)
+                  (symbol-value src)))
               nelisp-standalone--this-file))
       ;; Already a built link unit (hand-assembled bytes); nothing to compile
       ;; or cache, unlike :glue/feature units above.
@@ -18722,7 +19118,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     (dolist (f forms r) (setq r (eval f t)))))
 
 (defconst nelisp-standalone--reader-builtins
-  '("+" "-" "*" "/" "mod" "%" "/=" "1+" "1-" "floor" "truncate" "ceiling" "=" "<" ">" "<=" ">=" "car" "cdr" "cons" "list" "eq" "null" "not"
+  (append '("+" "-" "*" "/" "mod" "%" "/=" "1+" "1-" "floor" "truncate" "ceiling" "=" "<" ">" "<=" ">=" "car" "cdr" "cons" "list" "eq" "null" "not"
     ;; Globals shim bridge for user-loaded .el files (`defvar' / `defconst'
     ;; in the standalone prelude lower through this entry).
     "nelisp--env-globals-op"
@@ -18813,6 +19209,9 @@ value (matches the binary's M8 read+eval-loop driver)."
     ;; Runtime symbol addresses and the environment pointer for the
     ;; in-process native loader (Doc 142 s6.4).
     "nelisp--native-symbol-addr" "nelisp--native-env")
+    (when (nelisp-standalone--runtime-reload-enabled-p)
+      '("nelisp--native-runtime-symbol-addr"
+        "nelisp--native-runtime-contract-word")))
   "Builtin names installed into the reader binary's mirror.
 Each is dispatched by the pure-elisp `nelisp_apply_function' (see
 `nelisp-standalone--applyfn-source').  Names > 8 bytes (for example
@@ -27342,7 +27741,7 @@ genuine general interpreter for the 11 special forms + installed builtins."
          ;; Tracing mark-sweep GC (form-boundary reclaimer).  Compiled from
          ;; the inline source above; the driver calls `nl_gc_collect'.
          (gc (nelisp-standalone--cached-unit
-              "reader-gc.o" nelisp-standalone--gc-source
+              "reader-gc.o" (nelisp-standalone--target-gc-source)
               nelisp-standalone--this-file))
          (arena (nelisp-standalone--unit-for
                  (assoc "arena.o" nelisp-standalone--manifest)))

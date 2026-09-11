@@ -38,6 +38,21 @@ without prior conversation or local memory. A new REPL process starts with
 fresh Lisp state; replay the setup instead of assuming the old state exists.
 Run focused tests and the normal gates after the interactive repair.
 
+For native allocator or GC changes, use the opt-in `runtime-reload-reader`
+build and the native runtime section of the same guide. Edit the canonical
+runtime source, then use `nelisp-runtime-rebuild-and-reload` in the existing
+REPL. Record the executable hash, candidate identity, generation, and
+preserved state. A host ERT pass does not demonstrate native publication:
+exercise replacement and restoration in the standalone process as well.
+
+Load `(require 'nelisp-repl-development)` for failure capture and explicit
+retry, `nelisp-repl-code-info`, GC snapshots, and explicit replay recipes.
+Consult `(nelisp-repl-help)` and the guide instead of assuming a command
+exists. Replay has side effects; never automatically retry a failed call.
+Clear retained diagnostic records when measuring memory after a repair.
+REPL errors do not necessarily produce a nonzero process exit: smoke tests
+must check their assertions, completion marker, and unexpected stderr.
+
 ## Inner loop
 
 ```sh

@@ -34,9 +34,23 @@ tools/ai/nelisp-ai.sh repl
 This development command preloads the full artifact runtime required by
 =nelisp-artifact-reload-source-file=. The guide describes the supported
 =defun=-only source files and the limits of native-code replacement.
+Load =(require 'nelisp-repl-development)= in that REPL for explicit failure
+recording/retry, function provenance, GC diagnostics, and session replay
+exports. =(nelisp-repl-help)= lists the commands; the guide gives examples.
 It works as the starting point for a new human or AI session; prior chat
 history and private workspace configuration are not required. AI agents
 should also read [[file:AI.md][AI.md]] for the repository workflow and verification rules.
+
+Allocator and GC development has a separate opt-in Linux x86_64 build:
+
+#+begin_src sh
+make runtime-reload-reader
+NELISP_BIN=target/nelisp-runtime-reload tools/ai/nelisp-ai.sh repl
+#+end_src
+
+The [[file:docs/repl-development.md][native runtime workflow]] explains how to edit the collector, compile a
+replacement, and publish it in the running REPL. Keep the public runtime
+ABI and heap layout compatible; layout changes require a new process.
 
 * TL;DR
 

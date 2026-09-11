@@ -503,7 +503,8 @@ can use a scratch page while still observing the real mask transitions."
 (defun nelisp-standalone-gc-test--exact-source ()
   "Exercise production indexing and marking against a mutable synthetic heap."
   (let* ((base #x32000000) (extra #x32040000)
-         (ctx (+ base 4096)) (descriptor #x10000300)
+         (ctx (+ base 4096))
+         (descriptor #x10000300)
          (forms
           (mapcar
            (lambda (name)
@@ -517,7 +518,7 @@ can use a scratch page while still observing the real mask transitions."
              nl_gc_chunk_contains nl_gc_in_arena nl_gc_is_boot nl_gc_index_end
              nl_gc_index_bytes nl_gc_index_fill nl_gc_index_prepare
              nl_gc_index_contains nl_gc_index_test nl_gc_object_start_p
-             nl_gc_mark_block nl_gc_conserv_owner))))
+             nl_gc_mark_block))))
     (cl-subst
      ctx '(data-addr nl_gc_start_index)
      `(seq
@@ -564,7 +565,7 @@ can use a scratch page while still observing the real mask transitions."
               (= (nl_gc_mark_block ,(+ base 16)) 0)
               (= (ptr-read-u64 ,base 8) 4)
               (= (nl_gc_mark_block ,(+ base 24)) 0)
-              (= (nl_gc_conserv_owner ,(+ base 24)) 0)
+              (= (nl_gc_object_start_p ,(+ base 24)) 0)
               (= (ptr-read-u64 ,base 16) 32)
               (= (nl_gc_mark_block ,(+ base 88)) 0)
               (= (ptr-read-u64 ,base 80) ,(ash #x5afec4ec 32))
@@ -574,8 +575,8 @@ can use a scratch page while still observing the real mask transitions."
               (= (nl_gc_mark_block ,(+ base 8)) 1)
               (= (ptr-read-u64 ,base 0) 41)
               (= (nl_gc_mark_block ,(+ base 8)) 0)
-              (= (nl_gc_conserv_owner ,(+ base 48)) 1)
-              (= (ptr-read-u64 ,base 40) 60)
+              (= (nl_gc_object_start_p ,(+ base 48)) 1)
+              (= (ptr-read-u64 ,base 40) 56)
               (= (nl_gc_mark_block ,(+ base 48)) 1)
               (= (ptr-read-u64 ,base 40) 57)) 1 0))
        (defun gc_probe_run ()
@@ -648,6 +649,369 @@ can use a scratch page while still observing the real mask transitions."
            (nelisp-standalone-gc-test--exact-source) path)
           (should (= (call-process path nil nil nil) 0)))
       (delete-file path))))
+
+(defun nelisp-standalone-gc-test--conserv-pin-source ()
+  "Return a production conservative-pin regression probe.
+
+The probe deliberately uses the real mark/index/conservative bodies.  The
+only doubles are the OS mapping boundary and the unrelated free/live hooks;
+the heap and all mark decisions remain native production code."
+  (let* ((base #x34000000)
+         (index-ctx #x35000000)
+         (index-map #x35010000)
+         (conserv-state #x35020000)
+         (queue-map #x35030000)
+         (queue-grow-map #x35040000)
+         (test-flag #x35050000)
+         (grow-base #x36000000)
+         (descriptor #x10000300)
+         (names '(nl_align_up nl_hdr_bt nl_hdr_mark nl_hdr_set_mark
+                  nl_alloc_zero_fill
+                  nl_gc_bt_ok nl_gc_chunk_cursor nl_gc_chunk_end
+                  nl_gc_chunk_contains nl_gc_in_arena nl_gc_is_boot
+                  nl_gc_index_end nl_gc_index_bytes nl_gc_index_fill
+                  nl_gc_index_prepare nl_gc_index_contains nl_gc_index_test
+                  nl_gc_object_start_p nl_gc_mark_block nl_gc_mark_buf
+                  nl_gc_block_elem_cap nl_gc_mark_vec_slots
+                  nl_gc_mark_cons nl_gc_mark_slot nl_gc_conserv_state_clear
+                  nl_gc_mark_char_table_slots nl_gc_mark_char_table_box
+                  nl_gc_mark_bool_vector_box
+                  nl_gc_conserv_failed_p nl_gc_conserv_pinned_p
+                  nl_gc_conserv_queue_grow nl_gc_conserv_queue_push
+                  nl_gc_conserv_begin nl_gc_conserv_valid_p nl_gc_conserv_pin
+                  nl_gc_conserv_owner_slow nl_gc_conserv_owner_indexed
+                  nl_gc_conserv_resolve nl_gc_mark_recorded_slot
+                  nl_gc_conserv_owner nl_gc_conserv_word nl_gc_conserv_scan
+                  nl_gc_conserv_drain nl_gc_conserv_rollback_chunk
+                  nl_gc_conserv_rollback nl_gc_conserv_finish
+                  nl_gc_conserv_maybe))
+         (forms
+          (mapcar
+           (lambda (name)
+             (let ((form (or (nelisp-standalone-gc-test--find-defun
+                             nelisp-standalone--gc-source name)
+                            (nelisp-standalone-gc-test--find-defun
+                             nelisp-standalone--arena-source name))))
+               (unless form (error "Missing production conservative helper %s" name))
+               (setq form
+                     (cl-subst index-ctx '(data-addr nl_gc_start_index) form
+                               :test #'equal))
+               (setq form
+                     (cl-subst conserv-state '(data-addr nl_gc_conserv_state) form
+                               :test #'equal))
+               form))
+           names)))
+    `(seq
+      (defun nl_seq2 (_a b) b)
+      ;; The index allocation is the large request; the conservative queue is
+      ;; the smaller request.  A test flag at state+56 forces queue allocation
+      ;; failure after the heap/index have been prepared.
+      (defun nl_os_alloc_chunk (size)
+        (if (and (= size 65536)
+                 (= (ptr-read-u64 ,test-flag 0) 2))
+            ,queue-grow-map
+          (if (and (< size 65536)
+                 (= (ptr-read-u64 ,conserv-state 56) 1))
+              0
+            (if (> size 65536)
+                (syscall-direct 9 0 size 3 34 -1 0)
+              (if (= size 65536) ,index-map ,queue-map)))))
+      (defun nl_os_commit_range (_base _old _new) 1)
+      (defun nl_os_free_chunk (base _size)
+        (if (and (= (ptr-read-u64 ,test-flag 0) 2)
+                 (= base ,queue-map))
+            (syscall-direct 11 ,queue-map 65536 0 0 0 0)
+          1))
+      ,@forms
+      ;; H0 root Cons Sexp; Hpad makes S's low byte 08; B is a raw ConsBox.
+      ;; D is a genuine Vector Sexp and E its NlVector box.  T is reachable
+      ;; through E's one vector data slot only when D is typed as a Vector.
+      (defun probe-seed ()
+        (seq
+         (ptr-write-u64 ,base 0 40)
+         (ptr-write-u64 (+ ,base 40) 0 216)
+         (ptr-write-u64 (+ ,base 256) 0 40)
+         (ptr-write-u64 (+ ,base 296) 0 16)
+         (ptr-write-u64 (+ ,base 312) 0 32)
+         (ptr-write-u64 (+ ,base 344) 0 40)
+         (ptr-write-u64 (+ ,base 384) 0 40)
+         (ptr-write-u64 (+ ,base 424) 0 16)
+         (ptr-write-u64 (+ ,base 440) 0 40)
+         (ptr-write-u64 (+ ,base 480) 0 16)
+         ;; R Cons Sexp -> B.
+         (ptr-write-u64 (+ ,base 8) 0 7)
+         (ptr-write-u64 (+ ,base 8) 8 (+ ,base 320))
+         ;; S Symbol -> byte buffer.
+         (ptr-write-u64 (+ ,base 264) 0 4)
+         (ptr-write-u64 (+ ,base 264) 8 1)
+         (ptr-write-u64 (+ ,base 264) 16 (+ ,base 304))
+         (ptr-write-u64 (+ ,base 264) 24 1)
+         ;; B car S (low byte 08), cdr D.
+         (ptr-write-u64 (+ ,base 320) 0 (+ ,base 264))
+         (ptr-write-u64 (+ ,base 320) 8 (+ ,base 352))
+         (ptr-write-u64 (+ ,base 320) 16 1)
+         ;; D Vector Sexp -> E; D+16 is zero, which triggers the old bug.
+         (ptr-write-u64 (+ ,base 352) 0 8)
+         (ptr-write-u64 (+ ,base 352) 8 (+ ,base 392))
+         (ptr-write-u64 (+ ,base 352) 16 0)
+         (ptr-write-u64 (+ ,base 352) 24 0)
+         ;; E NlVector -> vector data -> T.
+         (ptr-write-u64 (+ ,base 392) 0 1)
+         (ptr-write-u64 (+ ,base 392) 8 (+ ,base 432))
+         (ptr-write-u64 (+ ,base 392) 16 1)
+         (ptr-write-u64 (+ ,base 392) 24 1)
+         (ptr-write-u64 (+ ,base 432) 0 (+ ,base 448))
+         ;; T String -> byte buffer.
+         (ptr-write-u64 (+ ,base 448) 0 5)
+         (ptr-write-u64 (+ ,base 448) 8 1)
+         (ptr-write-u64 (+ ,base 448) 16 (+ ,base 488))
+         (ptr-write-u64 (+ ,base 448) 24 1)
+         ;; Descriptor/header chain and index context.
+         (ptr-write-u64 268436160 0 ,descriptor)
+         (ptr-write-u64 268436168 0 ,descriptor)
+         (ptr-write-u64 268435456 0 496)
+         (ptr-write-u64 ,descriptor 0 ,base)
+         (ptr-write-u64 ,descriptor 16 496)
+         (ptr-write-u64 ,descriptor 24 ,base)
+         (ptr-write-u64 ,descriptor 48 0)
+         (ptr-write-u64 268435664 0 0)
+         (ptr-write-u64 268436464 0 0)
+         (ptr-write-u64 ,index-ctx 0 0)
+         (ptr-write-u64 ,index-ctx 8 0)
+         (ptr-write-u64 ,index-ctx 16 0)
+         (ptr-write-u64 ,index-ctx 24 0)
+         (ptr-write-u64 ,index-ctx 32 0)
+         (ptr-write-u64 ,conserv-state 56 0)))
+      (defun probe-prepare ()
+        (if (and (= (nl_gc_index_prepare) 1)
+                 (= (ptr-read-u64 ,index-ctx 16) 1)
+                 (= (nl_gc_object_start_p (+ ,base 8)) 1)
+                 (= (nl_gc_object_start_p (+ ,base 320)) 1)
+                 (= (nl_gc_object_start_p (+ ,base 448)) 1))
+            1 0))
+      (defun probe-precise ()
+        (probe-seed)
+        (if (= (probe-prepare) 1)
+            (if (= (nl_gc_mark_slot (+ ,base 8)) 0)
+                (if (= (nl_hdr_mark (+ ,base 440)) 1) 0 11)
+              12)
+          13))
+      ;; This is the against-the-bug case.  The raw B candidate has car's
+      ;; low byte 08, but production conservative code must treat it as opaque
+      ;; and pin the transitive payload words rather than dispatching Vector.
+      (defun probe-raw-cons ()
+        (probe-seed)
+        (if (= (probe-prepare) 1)
+            (if (= (nl_gc_conserv_begin) 1)
+                (seq
+                 (nl_gc_conserv_word (+ ,base 320))
+                 (nl_gc_conserv_drain)
+                 (if (= (nl_gc_conserv_failed_p) 1) 14
+                   (nl_gc_conserv_finish)
+                   (if (/= (nl_hdr_mark (+ ,base 312)) 4) 31
+                     (if (/= (nl_hdr_mark (+ ,base 344)) 4) 32
+                       (if (/= (nl_hdr_mark (+ ,base 384)) 4) 33
+                         (if (/= (nl_hdr_mark (+ ,base 440)) 4) 34
+                           (if (= (nl_gc_mark_slot (+ ,base 8)) 0)
+                               (if (= (nl_hdr_mark (+ ,base 440)) 1) 0 35)
+                             36)))))))
+              16)
+          17))
+      ;; Capacity=8 is a raw VecBox false-tag case.  It must be pinned and
+      ;; scanned as opaque words without any Sexp interpretation or fault.
+      (defun probe-raw-vector-box ()
+        (probe-seed)
+        (ptr-write-u64 (+ ,base 392) 0 8)
+        (if (= (probe-prepare) 1)
+            (if (= (nl_gc_conserv_begin) 1)
+                (seq
+                 (nl_gc_conserv_word (+ ,base 392))
+                 (nl_gc_conserv_drain)
+                 (if (= (nl_gc_conserv_failed_p) 1) 18
+                   (nl_gc_conserv_finish)
+                   (if (= (nl_hdr_mark (+ ,base 384)) 4)
+                       (if (= (nl_hdr_mark (+ ,base 440)) 4) 0 19)
+                     19)))
+              20)
+          21))
+      ;; A self-cycle exercises mark4 as both queued and already scanned.
+      (defun probe-cycle ()
+        (probe-seed)
+        (ptr-write-u64 (+ ,base 392) 8 (+ ,base 392))
+        (if (= (probe-prepare) 1)
+            (if (= (nl_gc_conserv_begin) 1)
+                (seq
+                 (nl_gc_conserv_word (+ ,base 392))
+                 (nl_gc_conserv_drain)
+                 (nl_gc_conserv_finish)
+                 (if (= (nl_hdr_mark (+ ,base 384)) 4) 0 22))
+              23)
+          24))
+      ;; Initial queue allocation failure must leave all block marks clear.
+      (defun probe-oom ()
+        (probe-seed)
+        (if (= (probe-prepare) 1)
+            (seq
+             (ptr-write-u64 ,conserv-state 56 1)
+             (ptr-write-u64 268436464 0 1)
+             (if (= (nl_gc_conserv_maybe) 0)
+                 (if (and (= (nl_hdr_mark (+ ,base 312)) 0)
+                          (= (nl_hdr_mark (+ ,base 344)) 0)
+                          (= (nl_hdr_mark (+ ,base 384)) 0)
+                          (= (nl_hdr_mark (+ ,base 440)) 0))
+                     0 25)
+               26))
+          27))
+      ;; Fill a separate synthetic chunk with 4097 exact 16-byte blocks.  The
+      ;; conservative queue must grow while the root payload is being drained;
+      ;; the free stub unmaps the old queue so a stale drain base faults.
+      (defun probe-queue-grow ()
+        (let ((i 0))
+          (ptr-write-u64 268436160 0 #x10000400)
+          (ptr-write-u64 268436168 0 #x10000400)
+          ;; One large root payload fans out to 4097 leaves.  Growth therefore
+          ;; happens inside nl_gc_conserv_drain, after it has captured head=0.
+          (ptr-write-u64 268435456 0 98336)
+          (ptr-write-u64 #x10000400 0 ,grow-base)
+          (ptr-write-u64 #x10000400 24 ,grow-base)
+          (ptr-write-u64 #x10000400 48 0)
+          (ptr-write-u64 ,grow-base 0 32784)
+          (while (< i 4097)
+            (ptr-write-u64 (+ ,grow-base 8 (* i 8)) 0
+                           (+ ,grow-base 32792 (* i 16)))
+            (ptr-write-u64 (+ ,grow-base 32784 (* i 16)) 0 16)
+            (ptr-write-u64 (+ ,grow-base 32792 (* i 16)) 0 1)
+            (setq i (+ i 1)))
+          (ptr-write-u64 ,test-flag 0 0)
+          (if (= (nl_gc_index_prepare) 1)
+              (seq
+               (ptr-write-u64 ,test-flag 0 2)
+               (if (= (nl_gc_conserv_begin) 1)
+                   (seq
+                    (nl_gc_conserv_word (+ ,grow-base 8))
+                    (nl_gc_conserv_drain)
+                    (if (= (nl_gc_conserv_failed_p) 1) 38
+                      (nl_gc_conserv_finish)
+                    (if (and (= (nl_hdr_mark ,grow-base) 4)
+                             (= (nl_hdr_mark (+ ,grow-base 98320)) 4))
+                          0 39)))
+                 40))
+            41)))
+      (defun probe-interior-and-boot ()
+        (probe-seed)
+        ;; Boot B contains pointers into the mutable post-boot graph.
+        (ptr-write-u64 268435664 0 (+ ,base 344))
+        (if (= (probe-prepare) 0) 50
+          (if (= (nl_gc_conserv_begin) 0) 51
+            ;; This is an unaligned interior pointer, not a Sexp start.
+            (nl_gc_conserv_word (+ ,base 329))
+            (nl_gc_conserv_drain)
+            (nl_gc_conserv_finish)
+            (if (and (= (nl_hdr_mark (+ ,base 312)) 4)
+                     (= (nl_hdr_mark (+ ,base 440)) 4)
+                     (= (nl_hdr_mark (+ ,base 480)) 4)) 0 52))))
+      (defun probe-recorded-owner ()
+        (probe-seed)
+        (if (= (probe-prepare) 0) 53
+          (nl_gc_mark_recorded_slot (+ ,base 264))
+          ;; Keeping an owning allocation must not claim its payload has
+          ;; already received every possible precise traversal.
+          (if (and (= (nl_hdr_mark (+ ,base 256)) 4)
+                   (= (nl_hdr_mark (+ ,base 296)) 1)
+                   (= (nl_gc_mark_block (+ ,base 264)) 1)) 0 54)))
+      (defun probe-large-interior ()
+        (probe-seed)
+        (syscall-direct 9 #x37000000 16781312 3 50 -1 0)
+        (ptr-write-u64 #x37000000 0 16777232)
+        (ptr-write-u64 #x37000000 8 (+ ,base 448))
+        (ptr-write-u64 ,descriptor 48 #x10000400)
+        (ptr-write-u64 #x10000400 0 #x37000000)
+        (ptr-write-u64 #x10000400 16 16777232)
+        (ptr-write-u64 #x10000400 24 #x37000000)
+        (ptr-write-u64 #x10000400 48 0)
+        ;; Deliberately keep CURRENT pointing to the other chunk.
+        (if (= (nl_gc_index_prepare) 0) 55
+          (if (= (nl_gc_conserv_begin) 0) 56
+            (nl_gc_conserv_word (+ #x37000000 16777231))
+            (nl_gc_conserv_drain)
+            (nl_gc_conserv_finish)
+            (if (and (= (nl_hdr_mark #x37000000) 4)
+                     (= (nl_hdr_mark (+ ,base 440)) 4)
+                     (= (nl_hdr_mark (+ ,base 480)) 4)) 0 57))))
+      (defun probe-assert (code)
+        (if (/= code 0) (syscall-direct 60 code 0 0 0 0 0) 0))
+      (defun probe-run ()
+        (seq
+         (syscall-direct 9 #x10000000 4096 3 50 -1 0)
+         (syscall-direct 9 ,base 131072 3 50 -1 0)
+         (syscall-direct 9 ,index-ctx 4096 3 50 -1 0)
+         (syscall-direct 9 ,index-map 65536 3 50 -1 0)
+         (syscall-direct 9 ,conserv-state 4096 3 50 -1 0)
+         (syscall-direct 9 ,queue-map 65536 3 50 -1 0)
+         (syscall-direct 9 ,queue-grow-map 65536 3 50 -1 0)
+         (syscall-direct 9 ,test-flag 4096 3 50 -1 0)
+         (syscall-direct 9 ,grow-base 131072 3 50 -1 0)
+         (probe-assert (probe-interior-and-boot))
+         (probe-assert (probe-recorded-owner))
+         (probe-assert (probe-large-interior))
+         (let ((a (probe-precise))
+               (b (probe-raw-cons))
+               (c (probe-raw-vector-box))
+               (d (probe-cycle))
+               (e (probe-oom))
+               (f (probe-queue-grow)))
+           (if (= a 0) (if (= b 0) (if (= c 0) (if (= d 0) (if (= e 0) f 28) 29) 30) 31) 32))))
+      (exit (probe-run)))))
+
+(ert-deftest nelisp-standalone-gc-conservative-pin-is-untyped-and-abortable ()
+  "Raw boxes are pinned opaquely and queue allocation failure aborts safely."
+  (unless (and (eq system-type 'gnu/linux)
+               (string-match-p "x86_64\\|amd64" system-configuration))
+    (ert-skip "Requires x86_64 Linux for the freestanding AOT executable"))
+  (let ((path (make-temp-file "nelisp-gc-conserv-pin-")))
+    (unwind-protect
+        (progn
+          (nelisp-aot-compile-sexp
+           (nelisp-standalone-gc-test--conserv-pin-source) path)
+          (should (= (call-process path nil nil nil) 0)))
+      (when (file-exists-p path) (delete-file path)))))
+
+(ert-deftest nelisp-standalone-gc-conservative-root-regressions-are-red ()
+  "Execute omissions of interior, boot, large, and untyped-owner protection."
+  (unless (and (eq system-type 'gnu/linux)
+               (string-match-p "x86_64\\|amd64" system-configuration))
+    (ert-skip "Requires x86_64 Linux for the freestanding AOT executable"))
+  (dolist (case '((interior . 52) (boot . 52) (large . 57) (owner-type . 54)))
+    (let* ((source (nelisp-standalone-gc-test--conserv-pin-source))
+           (path (make-temp-file "nelisp-gc-conserv-mutant-"))
+           (mutation (car case)))
+      (setq source
+            (cons 'seq
+                  (mapcar
+                   (lambda (form)
+                     (cond
+                      ((and (eq mutation 'interior)
+                            (eq (cadr form) 'nl_gc_conserv_word))
+                       '(defun nl_gc_conserv_word (w) (nl_gc_conserv_pin w)))
+                      ((and (memq mutation '(boot large))
+                            (eq (cadr form) 'nl_gc_conserv_valid_p))
+                       `(defun nl_gc_conserv_valid_p (w)
+                          (if ,(if (eq mutation 'boot)
+                                   '(= (nl_gc_is_boot (- w 8)) 1)
+                                 '(>= (nl_hdr_bt (- w 8)) 16777216))
+                              0 ,(nth 3 form))))
+                      ((and (eq mutation 'owner-type)
+                            (eq (cadr form) 'nl_gc_mark_recorded_slot))
+                       (cl-subst '(nl_hdr_set_mark (- sp 8) 1)
+                                 '(nl_hdr_set_mark (- sp 8) 4)
+                                 form :test #'equal))
+                      (t form)))
+                   (cdr source))))
+      (unwind-protect
+          (progn
+            (nelisp-aot-compile-sexp source path)
+            (should (= (call-process path nil nil nil) (cdr case))))
+        (delete-file path)))))
 
 (provide 'nelisp-standalone-gc-test)
 

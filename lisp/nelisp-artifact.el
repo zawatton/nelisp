@@ -104,6 +104,7 @@
 (defconst nelisp-artifact--native-section-version 2)
 (defconst nelisp-artifact--usage
   "usage: nelisp compile-elisp-artifact --kind nelc|neln|elc|auto --input FILE.el --output FILE.nelc|FILE.neln|FILE.elc [--manifest FILE.manifest.el] [--load-path DIR]... [--preload FILE.el]... [--feature FEATURE] [--target TARGET] [--native-policy opportunistic|required] [--module-policy bytecode|eval-only] [--profile-stages] [--profile-forms] [--cache-key KEY]
+       nelisp compile-native-runtime-unit --input FILE.el --output FILE.nelr [--layout-id ID] [--build-id ID]
        nelisp compile-elisp-artifacts --kind nelc|neln|auto [--load-path DIR]... [--preload FILE.el]... [--target TARGET] [--native-policy opportunistic|required] [--module-policy bytecode|eval-only] [--profile-stages] [--profile-forms] FILE.el|DIR...
        nelisp compile-runtime-image --kind nelc|neln|auto --input FILE.nlri --output FILE.nelc|FILE.neln|FILE.wasm [--target TARGET] [--native-policy opportunistic|required] [--module-policy bytecode|eval-only] [--profile-stages] [--profile-forms]
        nelisp audit-elisp-artifacts [--required] FILE.el|FILE.neln|DIR...
@@ -5234,6 +5235,87 @@ helper is needed and the caller may fall back to the native standalone path."
     (error
      (nelisp-artifact--print-error
       (format "compile-elisp-artifact: %s" (error-message-string err)))
+     1)))
+
+(defun nelisp-artifact--parse-compile-native-runtime-args (args)
+  "Parse `compile-native-runtime-unit' ARGS into a plist.
+
+The raw runtime lane is intentionally separate from `compile-elisp-artifact':
+its entries use the ordinary SysV i64 ABI and cannot be loaded through the
+object-mode Sexp trampoline.  Keep the command's surface small while making
+the ABI and layout choices explicit in the generated manifest."
+  (let ((rest (cdr args))
+        (input nil)
+        (output nil)
+        (layout-id nil)
+        (build-id nil))
+    (while rest
+      (let ((flag (pop rest)))
+        (cond
+         ((member flag '("--input" "--output" "--layout-id" "--build-id"))
+          (unless rest
+            (error "missing value for %s" flag))
+          (let ((value (pop rest)))
+            (cond
+             ((equal flag "--input") (setq input value))
+             ((equal flag "--output") (setq output value))
+             ((equal flag "--layout-id") (setq layout-id value))
+             ((equal flag "--build-id") (setq build-id value)))))
+         (t (error "unknown flag %s" flag)))))
+    (unless (and (stringp input) (> (length input) 0)
+                 (stringp output) (> (length output) 0))
+      (error "compile-native-runtime-unit requires --input and --output"))
+    (unless (string-suffix-p ".nelr" output)
+      (error "compile-native-runtime-unit output must use the .nelr suffix"))
+    (list :input input :output output :layout-id layout-id :build-id build-id)))
+
+(defun compile-native-runtime-unit (args)
+  "CLI entry point for `nelisp compile-native-runtime-unit'.
+
+Compile a strict source file of raw runtime `defun' forms and print a compact
+manifest summary.  This command only stages an artifact; mapping and runtime
+publication remain explicit `nelisp-native-load-*' operations in the opt-in
+Linux x86_64 reader."
+  (condition-case err
+      (let* ((opts (nelisp-artifact--parse-compile-native-runtime-args args))
+             (loader (progn
+                       ;; A standalone command may have an older generated
+                       ;; `.elc' beside the source.  Prefer the source when it
+                       ;; is newer so this command cannot silently expose a
+                       ;; stale loader that lacks the raw-unit API.
+                       (let ((load-prefer-newer t))
+                         (require 'nelisp-native-load))
+                       (unless (fboundp 'nelisp-native-load-raw-compile-file)
+                         (error "raw runtime compiler is unavailable"))
+                       #'nelisp-native-load-raw-compile-file))
+             (manifest (funcall loader
+                                 (plist-get opts :input)
+                                 (plist-get opts :output)
+                                 (plist-get opts :layout-id)
+                                 (plist-get opts :build-id)))
+             (native (plist-get manifest :native)))
+        (nelisp-artifact--write-stdout
+         (concat
+          (prin1-to-string
+           (list :status 'staged
+                 :artifact (plist-get opts :output)
+                 :runtime-abi (plist-get manifest :runtime-abi)
+                 :layout-id (plist-get manifest :layout-id)
+                 :build-id (plist-get manifest :build-id)
+                 :binary-sha256 (plist-get manifest :binary-sha256)
+                 :source-sha256 (plist-get manifest :source-sha256)
+                 :artifact-sha256 (plist-get manifest :artifact-sha256)
+                 :object-sha256 (plist-get native :object-sha256)
+                 :exports (mapcar (lambda (entry)
+                                    (list :name (plist-get entry :name)
+                                          :arity (plist-get entry :arity)
+                                          :size (plist-get entry :size)))
+                                  (plist-get native :exports))))
+          "\n"))
+        0)
+    (error
+     (nelisp-artifact--print-error
+      (format "compile-native-runtime-unit: %s" (error-message-string err)))
      1)))
 
 (defun nelisp-artifact--el-file-p (path)

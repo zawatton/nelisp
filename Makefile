@@ -456,6 +456,28 @@ standalone-reader:
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-build-reader
 
+# Opt-in native allocator/collector development, Linux x86_64 only.
+.PHONY: runtime-reload-reader runtime-reload-test
+runtime-reload-reader:
+	$(EMACS) --batch -Q -L lisp -L src -L scripts \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l nelisp-runtime-reload-build -f nelisp-runtime-reload-build
+
+runtime-reload-test:
+	$(EMACS) --batch -Q -L lisp -L src -L scripts -L test \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l nelisp-native-runtime-reload-test \
+	  -l nelisp-native-runtime-dispatch-test \
+	  -l nelisp-native-runtime-safety-test \
+	  -l nelisp-runtime-reload-telemetry-test -f ert-run-tests-batch-and-exit
+
+.PHONY: repl-development-test
+repl-development-test:
+	$(EMACS) --batch -Q -L lisp -L src -L scripts -L test \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l nelisp-repl-session-test -l nelisp-repl-code-test \
+	  -l nelisp-repl-gc-test -f ert-run-tests-batch-and-exit
+
 # Doc 169/170 language-extension standalone reality.  `nl-condition' and
 # `nl-safe' both claim (README.org "Testing") to run unchanged on
 # target/nelisp; `make test'/`ert-full' only proves the host-Emacs half

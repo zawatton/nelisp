@@ -295,7 +295,7 @@
 # calls exposed by this inventory; the mask's runtime set/clear/sync writes
 # remain inside generated quoted units and are covered by the existing kernel
 # surface accounting.  The file was already a pinned raw-memory generator.
-unsafe-call 776
+unsafe-call 815
 
 # `pinned-kernel-call FILE COUNT' pins the per-file unquoted `unsafe-call'
 # count behind `total' above -- the kernel files that actually carry
@@ -308,10 +308,13 @@ unsafe-call 776
 # Regenerate from a clean tree; do not hand-edit into drift from the scan.
 pinned-kernel-call lisp/nelisp-stdlib-os-int-helpers.el 18
 # Doc 142 section 6.4's in-process `.neln' loader, pinned per-file the same
-# way the three kernel files above are.  28 unquoted calls: the mmap, the
+# way the three kernel files above are.  48 unquoted calls: the mmap, the
 # per-byte writes that place machine code and patch relocations, the
 # `ptr-call' that enters it, and the pointer reads that decode a result Sexp.
-pinned-kernel-call lisp/nelisp-native-load.el 28
+# The 2026-09-11 +20 are the runtime-reload raw symbol/state/install address
+# probes and SHA256 file/binary probes.  They are explicit ABI validation and
+# diagnostics around the opt-in loader, not a new unbounded raw-memory path.
+pinned-kernel-call lisp/nelisp-native-load.el 48
 # The AOT evalport's `calln' provider.  12 unquoted calls: reads and writes
 # of the boundary Sexp slots the compiled calling convention passes its
 # arguments and result through.
@@ -401,4 +404,10 @@ pinned-kernel-call scripts/nelisp-gc-pause-growth.el 2
 # and its dynamic counterpart clears the mask before allocation begins.  The
 # mask is a BSS-only allocation-free hint; existing bucket heads remain the
 # authority, and the file's established kernel boundary is unchanged.
-pinned-kernel-call scripts/nelisp-standalone-build.el 692
+# 692 -> 710 on 2026-09-11: runtime-reload build forms add the BSS state
+# record and generated resolver/publication probes.  These are allocation-free
+# layout writes required by the opt-in native dispatch contract.
+pinned-kernel-call scripts/nelisp-standalone-build.el 710
+# 2026-09-11: one GC snapshot raw-address probe, bounded by the named table
+# contract and used only for structured diagnostics.
+pinned-kernel-call lisp/nelisp-repl-gc.el 1

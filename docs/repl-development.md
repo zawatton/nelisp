@@ -95,7 +95,8 @@ This first workflow accepts top-level `defun` forms only. Keep variables
 and setup forms in separate session setup code; `defvar`, `provide`, and
 arbitrary top-level effects are rejected. It does not remove definitions
 deleted from a file or replace native direct-call sites. Macro dependency
-rebuilds and arbitrary runtime-unit replacement require additional work.
+rebuilds are separate work. Native allocator and GC replacement uses the
+development build described below.
 Reported source spans describe definitions, not the exact expression
 that later fails. Unknown positions and caller dependencies stay unknown.
 A native crash is different from a recoverable Lisp condition.
@@ -118,3 +119,161 @@ target-only replacement through an existing caller, preserved state, and
 invalid-source rejection. Then run the focused tests for your change and
 the normal checks in [AI.md](../AI.md). Interactive success alone is not
 a substitute for those checks.
+
+## Keep failures, inspect code, and replay a session
+
+After starting the development REPL, load the shared entry point:
+
+```elisp
+(require 'nelisp-repl-development)
+(nelisp-repl-help)
+```
+
+Use `nelisp-repl-session-call` around a call you want to investigate. It
+records a failure and re-signals the original condition; successful calls
+keep their normal return value. No call is retried automatically.
+
+```elisp
+(nelisp-repl-session-call 'nelisp-repl-demo-step 1)
+(nelisp-repl-session-failures)
+;; Edit and reload the source, then explicitly retry a recorded ID.
+(nelisp-repl-session-retry 1)
+(nelisp-repl-code-info 'nelisp-repl-demo-step)
+```
+
+Failure records retain argument references, not immutable snapshots. A
+later mutation can change what an explicit retry receives. Records with
+truncated arguments refuse retry. Clear the records when finished, especially
+when investigating memory retention:
+
+```elisp
+(nelisp-repl-session-clear)
+(nelisp-repl-code-forget 'nelisp-repl-demo-step)
+```
+
+Code information tracks definitions published through source reload after
+the module was loaded. It reports source spans, source/artifact hashes,
+generation, and whether the function and source file still match the
+record. Editing a file and replacing a function with `fset` are separate
+changes. Untracked definitions report `:unknown`; stale provenance does
+not claim to identify newly installed code. Source spans identify a
+definition, not the exact failing expression.
+
+Record only the settings, loads, and operations needed to recreate your
+case. Registration does not execute the operation:
+
+```elisp
+(nelisp-repl-session-record-setting 'example-options '(fast verbose))
+(nelisp-repl-session-record-load "target/repl-demo/module.el")
+(nelisp-repl-session-record '(nelisp-repl-demo-step 1))
+(nelisp-repl-session-export "target/reproduce-session.el")
+```
+
+In a new development REPL, load the exported file. It executes the selected
+forms and resolves recorded load paths relative to the export. Keep those
+files with the recipe when moving to another checkout. Recorded hashes
+document file identity; they do not restore older file contents. The export
+contains only explicitly registered values and operations, without scanning
+the process environment or dumping all variables. A replay executes code
+and can repeat side effects, so run it explicitly.
+The recipe limit rejects additional records instead of dropping earlier
+setup operations. Export and clear the recipe before registering more.
+
+Run the host checks with `make repl-development-test`. Standalone checks
+use the same launcher as interactive work:
+
+```sh
+NELISP_BIN=target/nelisp-runtime-reload sh test/nelisp-repl-session-smoke.sh
+NELISP_BIN=target/nelisp-runtime-reload sh test/nelisp-repl-code-smoke.sh
+NELISP_BIN=target/nelisp-runtime-reload sh test/nelisp-repl-gc-smoke.sh
+```
+
+## Compare GC and allocation diagnostics
+
+```elisp
+(setq gc-before (nelisp-repl-gc-snapshot))
+;; Run the operation being investigated.
+(setq gc-after (nelisp-repl-gc-snapshot))
+(nelisp-repl-gc-compare gc-before gc-after)
+(nelisp-repl-gc-collect)
+```
+
+Snapshots name the public arena and allocation counters. `collect` explicitly
+requests GC and returns before/after snapshots, differences, and elapsed
+call time. That duration includes the call overhead; it is not a separate
+measurement of a stop-the-world pause. Taking diagnostics can itself
+allocate, so these are observations rather than an atomic heap snapshot.
+Unavailable counters remain `:unavailable`, never an invented zero.
+
+The native development build also exposes the collector's retained
+diagnostics. Conservative pins explain one category of retained memory;
+individual object-to-root paths are not reconstructed by this API. Distinguish
+heap usage, live bytes after the last collection, and bytes returned to the
+OS when comparing results.
+
+## Native allocator and GC development
+
+This workflow requires Linux x86_64 and a host Emacs for compilation.
+Start from the repository root:
+
+```sh
+make runtime-reload-reader
+NELISP_BIN=target/nelisp-runtime-reload tools/ai/nelisp-ai.sh repl
+```
+
+Load the development commands and create state that should survive:
+
+```elisp
+(require 'nelisp-runtime-development)
+(setq runtime-example-state (list "retained" (vector 1 2 3)))
+(nelisp-runtime-reload-status)
+```
+
+Edit the allocator or collector definitions in
+`scripts/nelisp-standalone-build.el`. Keep the REPL process running, then
+compile and install the checkout's current definitions from that REPL:
+
+```elisp
+(nelisp-runtime-rebuild-and-reload)
+(nelisp-runtime-reload-status)
+runtime-example-state
+```
+
+Pass the repository directory explicitly if the REPL's current directory
+has changed. `EMACS` selects the host compiler executable. Compilation runs
+in a child process; installation happens in the original REPL. The result
+reports the source snapshot and artifact paths, executable identity, and
+publication result. Inspect the status and generation before repeating
+the failing operation. Keep the returned artifacts when diagnosing a
+candidate-specific failure.
+
+The replacement contains the allocator and the complete collector unit.
+Collector helpers can be added, removed, renamed, or rewritten within the
+supported native compiler language. The public names and arities in
+`lisp/nelisp-runtime-reload-abi.el`, shared state layout, heap object layout,
+and root protocol must remain compatible with the running executable.
+Changing that contract requires rebuilding and restarting; it does not
+migrate an existing heap. Candidate-private static data sections are not
+supported by this loader.
+
+`sh test/nelisp-native-runtime-repl-smoke.sh` exercises the complete native
+workflow. In one process it installs the checkout's GC, adds a private helper
+to an isolated second source generation, observes the changed post-GC debt
+threshold, and restores the original behavior while retaining Lisp data.
+
+Repeat the edit and rebuild command for another generation. To return
+future calls to the executable's original allocator and collector:
+
+```elisp
+(nelisp-runtime-reload-restore-originals)
+(nelisp-runtime-reload-status)
+runtime-example-state
+```
+
+Restoration changes code dispatch; it does not undo mutations to the heap
+or recover a process that has already crashed. Old code mappings remain
+alive until process exit. Publication refuses active worker threads or
+an active allocation/collection, and rejects incompatible artifacts.
+Use focused native tests, the normal gates, and the original memory-error
+reproducer after the interactive loop. A new session starts by rebuilding
+the development executable and replaying the setup forms above.
