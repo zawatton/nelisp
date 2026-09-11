@@ -17,9 +17,17 @@ EMACS=${EMACS:-emacs}
 GATE_DIR=${NELISP_GATE_DIR:-target/gates}
 export NELISP_GATE_DIR="$GATE_DIR"
 
-# Mirrors the load path the root Makefile builds for `test'.
+# Mirrors the load path the root Makefile builds for `test', plus
+# `-L scripts'.  The Makefile's own `test:'/`TEST_LOADS' omit `scripts'
+# too, which already leaves any `test/nelisp*-test.el' that
+# `(require 'nelisp-standalone-build)' (or any other scripts/ module)
+# unable to load under EITHER runner -- confirmed 2026-09-12 against
+# test/nelisp-native-runtime-dispatch-test.el, part of the plain TESTS
+# glob, not a scripts-dependent file this change added.  Adding a search
+# directory only ever adds resolution, so this is safe for every other
+# gate that goes through `load_path_args'.
 load_path_args() {
-    printf -- '-L lisp -L src -L test -L bench'
+    printf -- '-L lisp -L src -L test -L bench -L scripts'
     for d in packages/*/src packages/*/test; do
         [ -d "$d" ] && printf -- ' -L %s' "$d"
     done

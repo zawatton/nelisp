@@ -635,10 +635,16 @@ storage — not an arena reservation."
    ;; request does not have to search a mixed list dominated by blocks that
    ;; are too small (or too large) to split.  BSS is outside the arena image
    ;; and is zero-filled at process start.
+   ;; Doc 202 (WS-G): +32 after the 96-byte `nl_runtime_reload_state' (only
+   ;; when that block itself is present) = `nl_callsite_control' -- table
+   ;; ptr@+0, generation@+8, active-call count@+16, install CAS lock@+24.
+   ;; Additive and independent of the block above: zero bytes, same as
+   ;; today, unless this build ALSO declares >=1 callsite entry.
    (list (cons 'bss (+ 57616 4194304 96 176 64 56 40 1040
                        (if (eq nelisp-standalone--target 'windows-x86_64) 8 0)
                        64 192 64 40 8 64
-                       (if (nelisp-standalone--runtime-reload-enabled-p) 96 0))))
+                       (if (nelisp-standalone--runtime-reload-enabled-p) 96 0)
+                       (if (nelisp-standalone--callsite-enabled-p) 32 0))))
    ;; The aref cache follows the 64-byte GC statistics record in this BSS.
    (append
     (list (nelisp-link-symbol "nl_arena_base" 0
@@ -693,6 +699,18 @@ storage — not an arena reservation."
                                    (if (eq nelisp-standalone--target 'windows-x86_64)
                                        8 0)
                                    64 192 64 40 8 64)
+                                :section 'bss :bind 'global :type 'object)))
+    ;; Doc 202 (WS-G): additive, independent 32-byte control block --
+    ;; see the byte-count comment above.  `nelisp-standalone--callsite-
+    ;; enabled-p' implies `nelisp-standalone--runtime-reload-enabled-p',
+    ;; so this always lands right after the 96-byte block above, never
+    ;; overlapping it.
+    (when (nelisp-standalone--callsite-enabled-p)
+      (list (nelisp-link-symbol "nl_callsite_control"
+                                (+ 57616 4194304 96 176 64 56 40 1040
+                                   (if (eq nelisp-standalone--target 'windows-x86_64)
+                                       8 0)
+                                   64 192 64 40 8 64 96)
                                 :section 'bss :bind 'global :type 'object)))
     (when (eq nelisp-standalone--target 'windows-x86_64)
       (list (nelisp-link-symbol "nl_tls_registry"
@@ -2599,6 +2617,293 @@ reach the permanent wrappers and therefore the currently installed table."
                            wrappers))
                    (setq index (1+ index))))
                  (nreverse wrappers))))))))
+
+;; ===================================================================
+;; Doc 202 (WS-G) — declared, reusable replaceable call sites.
+;;
+;; Generalizes the ONE hand-built precedent just above (the allocator/GC
+;; pair) into a build-time DECLARATION consumed to emit the same wrapper
+;; shape -- rename the original body, redefine the public name as a
+;; thin control-word dispatch -- for an arbitrary, NAMED set of entries.
+;;
+;; ADDITIVE by design, not a rewrite of the precedent: the allocator and
+;; GC pair above are left exactly as they are.  Retrofitting them onto
+;; this generic table would mean touching `nelisp-runtime-reload-abi.el'
+;; (its embedded contract hash is checked against the running binary by
+;; `nelisp--native-runtime-contract-word') and the mutation-gated tests
+;; that already cover them -- files this change does not own and other
+;; work is actively developing.  This section instead only ever ADDS: a
+;; new BSS control word (`nl_callsite_control'), a new link unit
+;; ("callsite.o"), and a new numeric symbol-resolver arm
+;; (`nelisp--native-callsite-symbol-addr'), and only when BOTH this
+;; build opts into `NELISP_RUNTIME_RELOAD=1' AND
+;; `tools/nelisp-replaceable-entries.txt' declares at least one entry.
+;; A build with either condition false emits EXACTLY today's bytes: see
+;; `nelisp-standalone--callsite-enabled-p', and every reference to it
+;; below.
+;;
+;; Honesty boundary (kept identical to the precedent's own): only a NAME
+;; that appears in the declaration file AND has a registered original
+;; body in `nelisp-standalone--callsite-demo-source' gets build-time
+;; wrapped, so its EXISTING direct `call rel32' callers reach the
+;; indirection.  A name declared without a registered body is a
+;; build-time `error', never a silent no-op -- see
+;; `nelisp-standalone--callsite-wrap-source'.  A name that is merely
+;; declared but this build is disabled, or a name never declared at
+;; all, is NOT build-declared and this file makes no claim otherwise;
+;; `nelisp-native-callsite-reachability' (lisp/nelisp-native-callsite.el)
+;; is the one place that classifies such names, and only as `:gate-only'
+;; or `:not-replaceable', never as replaced.
+;; ===================================================================
+
+(defconst nelisp-standalone--callsite-max-arity 6
+  "SysV integer argument limit a declared call site must respect.")
+
+(defconst nelisp-standalone--callsite-entries-file
+  "tools/nelisp-replaceable-entries.txt"
+  "Declaration file path, relative to `nelisp-standalone--repo-root'.")
+
+(defun nelisp-standalone--callsite-entries-path ()
+  (expand-file-name nelisp-standalone--callsite-entries-file
+                     nelisp-standalone--repo-root))
+
+(defun nelisp-standalone--callsite-parse-entries (text)
+  "Parse TEXT (the declaration file's content) into a list of plists
+`(:name NAME :arity ARITY :index INDEX)', sorted by INDEX.
+
+Pure: TEXT is the only input, nothing is read from disk here.
+
+Blank lines and lines whose first non-whitespace character is `#' are
+skipped.  Every other line must be exactly `NAME ARITY INDEX'.  Refuses,
+with a specific `error', on: a malformed line, a non-identifier NAME, an
+ARITY outside 0..`nelisp-standalone--callsite-max-arity', a duplicate
+NAME or INDEX, or an INDEX set that is not exactly 0..(N-1) contiguous --
+INDEX is a table slot, and a gap would leave that slot permanently 0
+(a null `call-ptr' target the moment any table is ever installed)."
+  (let ((entries nil) (line-no 0) (seen-names nil) (seen-indices nil))
+    (dolist (line (split-string text "\n"))
+      (setq line-no (1+ line-no))
+      (let ((trimmed (string-trim line)))
+        (unless (or (= (length trimmed) 0) (= (aref trimmed 0) ?#))
+          (let ((fields (split-string trimmed nil t)))
+            (unless (= (length fields) 3)
+              (error "nelisp-native-callsite: %s:%d: expected \"NAME ARITY INDEX\", got %S"
+                     nelisp-standalone--callsite-entries-file line-no trimmed))
+            (let* ((name (nth 0 fields))
+                   (arity-str (nth 1 fields))
+                   (index-str (nth 2 fields)))
+              (unless (string-match-p "\\`[A-Za-z_][A-Za-z0-9_]*\\'" name)
+                (error "nelisp-native-callsite: %s:%d: not an identifier: %S"
+                       nelisp-standalone--callsite-entries-file line-no name))
+              (unless (string-match-p "\\`[0-9]+\\'" arity-str)
+                (error "nelisp-native-callsite: %s:%d: arity is not a non-negative integer: %S"
+                       nelisp-standalone--callsite-entries-file line-no arity-str))
+              (unless (string-match-p "\\`[0-9]+\\'" index-str)
+                (error "nelisp-native-callsite: %s:%d: index is not a non-negative integer: %S"
+                       nelisp-standalone--callsite-entries-file line-no index-str))
+              (let ((arity (string-to-number arity-str))
+                    (index (string-to-number index-str)))
+                (when (> arity nelisp-standalone--callsite-max-arity)
+                  (error "nelisp-native-callsite: %s:%d: arity %d exceeds the SysV integer limit of %d"
+                         nelisp-standalone--callsite-entries-file line-no arity
+                         nelisp-standalone--callsite-max-arity))
+                (when (member name seen-names)
+                  (error "nelisp-native-callsite: %s:%d: duplicate name %S"
+                         nelisp-standalone--callsite-entries-file line-no name))
+                (when (memq index seen-indices)
+                  (error "nelisp-native-callsite: %s:%d: duplicate index %d"
+                         nelisp-standalone--callsite-entries-file line-no index))
+                (push name seen-names)
+                (push index seen-indices)
+                (push (list :name name :arity arity :index index) entries)))))))
+    (setq entries (sort entries (lambda (a b)
+                                  (< (plist-get a :index) (plist-get b :index)))))
+    (let ((expect 0))
+      (dolist (e entries)
+        (unless (= (plist-get e :index) expect)
+          (error "nelisp-native-callsite: %s: indices must be exactly 0..%d contiguous; got a gap at %d"
+                 nelisp-standalone--callsite-entries-file (1- (length entries)) expect))
+        (setq expect (1+ expect))))
+    entries))
+
+(defun nelisp-standalone--callsite-declared-entries ()
+  "Read and parse the declaration file; nil when missing or empty.
+A build that declares nothing here must be byte-identical to a build
+without this feature at all -- see `nelisp-standalone--callsite-enabled-p',
+which every construction site below is gated through."
+  (let ((path (nelisp-standalone--callsite-entries-path)))
+    (and (file-readable-p path)
+         (let ((text (with-temp-buffer
+                       (insert-file-contents path)
+                       (buffer-string))))
+           (nelisp-standalone--callsite-parse-entries text)))))
+
+(defun nelisp-standalone--callsite-enabled-p ()
+  "Non-nil only for the opt-in build with >=1 declared entry.
+Mirrors the scope restriction `nelisp-standalone--runtime-reload-enabled-p'
+already documents for the allocator/GC precedent: bounded to that same
+one target and opt-in env var, so every other target and every build
+whose declaration file is empty or absent keeps today's bytes."
+  (and (nelisp-standalone--runtime-reload-enabled-p)
+       (nelisp-standalone--callsite-declared-entries)
+       t))
+
+(defun nelisp-standalone--callsite-original-name (name)
+  "Return the renamed-original symbol name for public NAME."
+  (concat "nl_callsite_original_" name))
+
+(defconst nelisp-standalone--callsite-demo-source
+  '(seq
+    ;; The one shipped example/self-test entry.  `nl_callsite_demo_double'
+    ;; is the ORIGINAL body a build-declared entry wraps;
+    ;; `nl_callsite_demo_caller' is compiled BEFORE any publication and
+    ;; calls the PUBLIC name directly -- exactly the "existing binary
+    ;; direct call" shape this mechanism exists to reach.  A real
+    ;; consumer of this mechanism registers their own original bodies
+    ;; the same way this unit does; see
+    ;; docs/design/202-replaceable-call-sites.org.
+    (defun nl_callsite_demo_double (x) (+ x x))
+    (defun nl_callsite_demo_caller (x) (nl_callsite_demo_double x)))
+  "Original bodies for this checkout's shipped example declared entry.
+Extend this `seq' with your own `defun's, then add a matching line to
+`tools/nelisp-replaceable-entries.txt', to declare a new entry.")
+
+(defun nelisp-standalone--callsite-find-defun (name)
+  "Return NAME's `(defun NAME ARGS . BODY)' form from the demo source, or nil."
+  (cl-find-if (lambda (form)
+                (and (consp form) (eq (car form) 'defun)
+                     (equal (symbol-name (cadr form)) name)))
+              (cdr nelisp-standalone--callsite-demo-source)))
+
+(defun nelisp-standalone--callsite-contract-magic (entries)
+  "A stable non-negative integer covering ENTRIES' names/arities/indices.
+
+Pure function of ENTRIES.  An install whose table was not built against
+this exact declared set is rejected by `nl_callsite_install_locked'
+rather than silently reading an unrelated slot layout.  Mirrored by
+`nelisp-native-callsite--contract-magic' in
+lisp/nelisp-native-callsite.el; a test asserts the two agree on a shared
+sample, since nothing links them across this build script and the
+REPL-facing module it feeds."
+  (let* ((print-length nil) (print-level nil)
+         (bytes (prin1-to-string
+                 (list 'nelisp-native-callsite-contract-v1
+                       (mapcar (lambda (e) (list (plist-get e :name)
+                                                 (plist-get e :arity)
+                                                 (plist-get e :index)))
+                               entries)))))
+    (logand (string-to-number (substring (secure-hash 'sha256 bytes) 0 15) 16)
+            #xFFFFFFFFFFFFFF)))
+
+(defun nelisp-standalone--callsite-wrap-defun (form entry)
+  "Return (RENAMED-ORIGINAL WRAPPER) forms for FORM, per ENTRY.
+
+FORM must be `(defun NAME ARGS . BODY)' with (length ARGS) matching
+ENTRY's declared arity -- a build-time `error' otherwise, the same
+refusal shape `nelisp-standalone--callsite-parse-entries' already gives
+an out-of-range arity.  Pure: returns new forms, does not compile them."
+  (let* ((name (cadr form)) (args (caddr form)) (body (cdddr form))
+         (index (plist-get entry :index)) (arity (plist-get entry :arity))
+         (original (intern (nelisp-standalone--callsite-original-name
+                            (symbol-name name)))))
+    (unless (= (length args) arity)
+      (error "nelisp-native-callsite: %s: declared arity %d does not match defun arglist %S"
+             name arity args))
+    (list
+     (cons 'defun (cons original (cons args body)))
+     `(defun ,name ,args
+        (seq
+         (atomic-fetch-add (+ (data-addr nl_callsite_control) 16) 1)
+         (nl_callsite_call_return
+          (if (= (ptr-read-u64 (data-addr nl_callsite_control) 0) 0)
+              (,original ,@args)
+            (call-ptr (ptr-read-u64 (ptr-read-u64 (data-addr nl_callsite_control) 0)
+                                     ,(+ 16 (* 8 index)))
+                       ,@args))))))))
+
+(defun nelisp-standalone--callsite-install-forms (entries)
+  "Return the install/unlock/call-return support forms for ENTRIES.
+
+Return codes from `nl_callsite_install': 0=ok, 1=generation regression,
+2=active call in flight, 3=table entry-count/contract mismatch,
+4=commit lock busy.  Same shape as `nl_runtime_reload_install' above,
+one table instead of a two-pointer pair, since every declared entry
+here shares a single table (like the GC side's own `nl_runtime_reload_
+state'+8, generalized to more than one contract family)."
+  `((defun nl_callsite_call_return (result)
+      (nl_seq2 (atomic-fetch-add (+ (data-addr nl_callsite_control) 16) -1)
+               result))
+    (defun nl_callsite_install_unlock (result)
+      (nl_seq2 (atomic-fetch-add (+ (data-addr nl_callsite_control) 24) -1)
+               result))
+    (defun nl_callsite_install_locked (table generation)
+      (let ((state (data-addr nl_callsite_control)))
+        (if (<= generation (ptr-read-u64 state 8)) 1
+          (if (/= (ptr-read-u64 state 16) 0) 2
+            (if (or (/= (ptr-read-u64 table 0) ,(length entries))
+                    (/= (ptr-read-u64 table 8)
+                        ,(nelisp-standalone--callsite-contract-magic entries)))
+                3
+              (seq (ptr-write-u64 state 0 table)
+                   (ptr-write-u64 state 8 generation)
+                   0))))))
+    (defun nl_callsite_install (table generation)
+      (if (= (atomic-compare-exchange (+ (data-addr nl_callsite_control) 24) 0 1) 1)
+          (nl_callsite_install_unlock
+           (nl_callsite_install_locked table generation))
+        4))))
+
+(defun nelisp-standalone--callsite-wrap-source (entries)
+  "Return the full \"callsite.o\" source for ENTRIES (already validated,
+contiguous 0..N-1): renamed originals, wrappers, and install support.
+
+Every `defun' in `nelisp-standalone--callsite-demo-source' is carried
+into the unit: a `defun' whose name matches a declared ENTRY is replaced
+by its (RENAMED-ORIGINAL WRAPPER) pair; every other `defun' -- such as
+`nl_callsite_demo_caller', an ordinary caller of the public name,
+compiled exactly like any other pre-existing direct caller would be --
+passes through unchanged, so it keeps its own `call rel32' to the
+now-wrapped public name."
+  (let ((found (make-hash-table :test 'equal)) forms)
+    (dolist (form (cdr nelisp-standalone--callsite-demo-source))
+      (let* ((name (symbol-name (cadr form)))
+             (entry (cl-find name entries :key (lambda (e) (plist-get e :name))
+                             :test #'equal)))
+        (if entry
+            (progn
+              (puthash name t found)
+              (setq forms (append forms (nelisp-standalone--callsite-wrap-defun form entry))))
+          (setq forms (append forms (list form))))))
+    (dolist (entry entries)
+      (unless (gethash (plist-get entry :name) found)
+        (error "nelisp-native-callsite: declared entry %s has no registered original body in `nelisp-standalone--callsite-demo-source'"
+               (plist-get entry :name))))
+    (cons 'seq (append forms (nelisp-standalone--callsite-install-forms entries)))))
+
+(defun nelisp-standalone--callsite-source ()
+  "Return this build's \"callsite.o\" source, or nil when disabled.
+
+Read fresh on every call (not a `defconst'): both the opt-in env var and
+the declaration file may change between build invocations, and a stale
+cached answer here is exactly the trap `nelisp-standalone--cached-unit'
+would otherwise fall into -- this is why callers use
+`nelisp-standalone--compile-to-unit' (uncached), never
+`nelisp-standalone--cached-unit', for this source."
+  (and (nelisp-standalone--callsite-enabled-p)
+       (nelisp-standalone--callsite-wrap-source
+        (nelisp-standalone--callsite-declared-entries))))
+
+(defun nelisp-standalone--callsite-symbol-names ()
+  "Names resolvable through the `nelisp--native-callsite-symbol-addr'
+numeric bridge, in index order: the two fixed control symbols first,
+then every declared entry's PUBLIC (wrapper) name.  Mirrored by
+`nelisp-native-callsite--symbol-names' in
+lisp/nelisp-native-callsite.el; a test asserts the two agree on a shared
+sample, since nothing links them across this build script and the
+REPL-facing module it feeds."
+  (append '("nl_callsite_control" "nl_callsite_install")
+          (mapcar (lambda (e) (plist-get e :name))
+                  (nelisp-standalone--callsite-declared-entries))))
 
 ;; ===================================================================
 ;; TRACING MARK-SWEEP GC (the correct reclaimer — reachability, not
@@ -14780,7 +15085,26 @@ into whatever the index happened to select."
                                (substring digest (* index 8) (* (1+ index) 8)) 16)
                            ,form))
                   (setq index (1- index)))
-                form)))))))
+                form)))))
+   ;; Doc 202 (WS-G): the build-declared callsite bridge shares this exact
+   ;; numeric resolver contract, gated on its own opt-in condition
+   ;; (`nelisp-standalone--callsite-enabled-p': declared entries present,
+   ;; same target restriction as the allocator/GC precedent above).
+   ;; Disabled -- the common case -- this term contributes nothing, same
+   ;; as the runtime-reload term above when that flag is off.
+   (when (nelisp-standalone--callsite-enabled-p)
+     (list
+      (cons '(:u8 "nelisp--native-callsite-symbol-addr")
+            `(wf_write_int out
+              ,(let* ((names (nelisp-standalone--callsite-symbol-names))
+                      (form 0)
+                      (idx (length names)))
+                 (dolist (name (reverse names))
+                   (setq idx (1- idx))
+                   (setq form `(if (= (wf_argval args 0) ,idx)
+                                   (data-addr ,(intern name))
+                                 ,form)))
+                 form)))))))
 
 (defun nelisp-standalone--applyfn-reader-table ()
   "Build the reader dispatch table: the base table with the buggy stock
@@ -22316,10 +22640,25 @@ with a FULL-LENGTH name buffer (ceil(len/8) u64 words), fixing >8-byte names."
                  (setq w (1+ w)))
                (nreverse forms))
            (nl_install_one globals unbound b ,len builtin_sym)))))
-   ;; Base builtins + target-specific TLS names + the Step C external FFI name.
+   ;; Base builtins + target-specific TLS names + the Step C external FFI
+   ;; name.  `nelisp-runtime-reload-build' (scripts/nelisp-runtime-reload-
+   ;; build.el) LET-extends `nelisp-standalone--reader-builtins' itself
+   ;; with its own two debug-only names for that reason: being in the
+   ;; dispatch table (`nelisp-standalone--reader-native-addr-arms') only
+   ;; wires the LOOKUP; a name also has to be in THIS installed list, or
+   ;; `fboundp' on it is false and calling it signals `void-function' even
+   ;; though the arm exists (found the hard way -- Doc 202's own resolver
+   ;; arm compiled and linked fine, and `fboundp' on it was still nil,
+   ;; until this line was added).  Doc 202 (WS-G)'s own bridge is added
+   ;; HERE instead of in that file so it activates for any opt-in caller
+   ;; that sets NELISP_RUNTIME_RELOAD=1 with >=1 declared entry, not only
+   ;; that one entry point; gated on the same condition that puts the arm
+   ;; in the dispatch table, so this is a no-op for every other build.
    (append nelisp-standalone--reader-builtins
            (nelisp-standalone--tls-builtin-names)
-           (nelisp-standalone--reader-extern-builtin-names))))
+           (nelisp-standalone--reader-extern-builtin-names)
+           (and (nelisp-standalone--callsite-enabled-p)
+                '("nelisp--native-callsite-symbol-addr")))))
 
 (defun nelisp-standalone--os-syscall-xlat-forms ()
   "Per-target raw-syscall wrappers for the path/stat/dirent fileio builtins.
@@ -27980,13 +28319,23 @@ genuine general interpreter for the 11 special forms + installed builtins."
          ;; base, referenced by the chunk-arena rewrite on chunked native
          ;; targets.
          (arena-base (when (nelisp-standalone--target-uses-dynamic-arena-base-p)
-                       (nelisp-standalone--arena-base-slot-unit))))
+                       (nelisp-standalone--arena-base-slot-unit)))
+         ;; Doc 202 (WS-G): the declared-entries callsite unit.  Absent
+         ;; (nil) unless this build both opts into NELISP_RUNTIME_RELOAD=1
+         ;; AND `tools/nelisp-replaceable-entries.txt' declares >=1 entry
+         ;; -- see `nelisp-standalone--callsite-enabled-p'.  Compiled
+         ;; uncached (`--compile-to-unit', not `--cached-unit'): its
+         ;; source depends on the declaration file's content, which the
+         ;; cache key below (this .el file's own mtime) would not notice.
+         (callsite (when (nelisp-standalone--callsite-enabled-p)
+                     (nelisp-standalone--compile-to-unit
+                      "callsite.o" (nelisp-standalone--callsite-source)))))
     (append (list start driver applyfn) helpers
             (list eval-inner combiner-cons combiner)
             extras (list float-stub float-time-stub) real-sf
             (list sf-cc capture errstub fileio catch-throw boundary
                   eval-source neln-demo gc arena)
-            (delq nil (list arena-base)))))
+            (delq nil (list arena-base callsite)))))
 
 (defun nelisp-standalone--codesign-macos-adhoc (out)
   "Apply an ad-hoc code signature to OUT for the macos-aarch64 target.

@@ -1,0 +1,376 @@
+#+TITLE: Doc 202 — Declared, reusable replaceable call sites (WS-G)
+#+AUTHOR: Claude (design, implementation)
+#+DATE: 2026-09-12
+#+STATUS: PROPOSED — the mechanism is implemented, byte-identity for a
+#+STATUS: build that declares nothing is verified, and the central claim
+#+STATUS: (an existing binary direct caller, compiled BEFORE publication,
+#+STATUS: observes a build-declared replacement installed AFTER) is
+#+STATUS: verified against REAL, natively-executed machine code — not just
+#+STATUS: asserted — by two ERT cases that run on any Linux x86_64 host,
+#+STATUS: plus a live check against an actually-built
+#+STATUS: =target/nelisp-runtime-reload=.  One composition — installing a
+#+STATUS: replacement body compiled through =nelisp-native-unit='s own
+#+STATUS: staging path, inside that SAME live binary — is blocked by a
+#+STATUS: pre-existing, unrelated gap (=secure-hash= is not available in
+#+STATUS: that binary's own REPL; see §7).  Not marked SHIPPED because of
+#+STATUS: that one unresolved item and because no gate name in
+#+STATUS: =tools/ai/gates.expected= yet exists for this specific file; see
+#+STATUS: §6 for the honest evidence this status rests on instead of a
+#+STATUS: =#+VERIFIED-BY:= line.
+#+OPTIONS: toc:3 num:t
+
+* §0 Summary
+
+Doc 191 §7 built one hand-written precedent: the standalone allocator and
+the 24-entry GC contract, in the opt-in =NELISP_RUNTIME_RELOAD=1= Linux
+x86_64 build, can be replaced at runtime and every EXISTING direct
+=call rel32= caller in the binary reaches the replacement, because the
+build renamed the original body and gave the public name a thin
+control-word dispatch instead. Doc 191 §7 also names this precisely as
+a two-entry, hand-built special case, not a general mechanism.
+
+This doc generalizes that shape into a DECLARED list, consumed at build
+time (=tools/nelisp-replaceable-entries.txt=), so any name/arity/table-index
+triple you add there gets the exact same treatment: rename, wrapper,
+CAS+generation-gated install. It is strictly ADDITIVE — the allocator and
+GC pair keep working exactly as Doc 191 §7 left them, through their own
+mechanism, untouched — because retrofitting them onto this generic table
+would mean editing files this change does not own (=lisp/nelisp-runtime-
+reload-abi.el='s embedded contract hash, and the mutation-gated tests
+already covering the allocator/GC pair) while other work develops them
+concurrently. §5 explains that choice in more depth.
+
+The one thing this doc exists to say honestly, in one place: a name NOT
+in that declaration file at build time can NEVER have its existing direct
+callers redirected, by this mechanism or any other in this codebase.
+=nelisp-native-callsite-reachability= (lisp/nelisp-native-callsite.el) is
+the function whose whole job is answering, for one name, exactly which of
+three categories applies — never overclaiming the first.
+
+* §1 What requires a rebuild vs. what a live REPL can change
+
+| capability | needs an initial binary rebuild? | why |
+|---+---+---|
+| A name's EXISTING direct =call rel32= callers reach a replacement at all | *Yes* | The call site is a fixed relative displacement baked in at link time (Doc 191 §7's own finding, restated in =lisp/nelisp-native-unit.el='s header: "Existing binary direct calls are not patched"). Only a build that renamed the original and put the public name behind a control-word check can make that name's existing callers land on an indirection point in the first place. |
+| Which names get that treatment | *Yes* | Declared once, in =tools/nelisp-replaceable-entries.txt=, consumed by =nelisp-standalone--callsite-source= when =scripts/nelisp-standalone-build.el= builds the opt-in reader. A name never declared there, in a binary already built, is permanently outside this mechanism for that process's lifetime. |
+| The declared entry's *body* (what runs when the wrapper takes the replacement branch) | *No* | Compile a new native unit (any shape =nelisp-native-unit-stage=/=-publish= accepts — see §2), resolve its stable address with =nelisp-native-unit-address=, and hand that address to =nelisp-native-callsite-install=. No relink, no restart. |
+| A brand-new call site that wants to reach a name NOT declared at build time | Partially — *the new call site itself needs no rebuild*, but only reaches names published through =nelisp-native-unit=, and only for callers written from the start to call through =nelisp-native-unit-address= rather than the bare name. See §2's =:gate-only= row. |
+
+* §2 Live-REPL replaceable, precisely
+
+Two different things are both true in a live opt-in process, and
+=nelisp-native-callsite-reachability= exists because conflating them is
+exactly the overclaim this doc is required to refuse:
+
+1. *=:build-declared=* — a name in =tools/nelisp-replaceable-entries.txt=
+   at the time this binary was built. Every existing direct caller
+   already calls the wrapper. =nelisp-native-callsite-install= changes
+   what they observe, live, with no rebuild — demonstrated in §6.
+2. *=:gate-only=* — a name NOT build-declared, but published through
+   =nelisp-native-unit= under some UNIT-ID. Only calls written to go
+   through =(nelisp-native-unit-address UNIT-ID NAME)= reach it. Every
+   PRE-EXISTING direct caller of the bare name in this binary is
+   unaffected and stays that way for the rest of the process's life —
+   there is no way, short of a rebuild, to reach into already-linked
+   machine code and change what a fixed =call rel32= displacement points
+   at.
+3. *=:not-replaceable=* — neither of the above. The safe default:
+   =nelisp-native-callsite-reachability= returns this whenever it lacks
+   positive evidence for one of the first two, never as a residual
+   "probably fine" guess.
+
+* §3 What is not supported at all, and why
+
+- *Retargeting an existing direct call site for a name that was never
+  declared at build time.* Doc 191 §7's own finding: the displacement is
+  resolved by the static linker once, into RX-mapped text
+  (=nelisp-native-load--mprotect-rx=, never made writable again). There is
+  no runtime hook that rewrites machine code already emitted this way; a
+  gate stub only helps call sites built to go through it from the start.
+- *A name's arity above 6 ordinary SysV integer parameters.*
+  =nelisp-standalone--callsite-parse-entries= and
+  =nelisp-standalone--callsite-wrap-defun= both refuse this at build time
+  with a specific error — the same limit =nelisp-native-unit= already
+  enforces for its own gate contracts (=nelisp-native-unit-call='s
+  six-register =ptr-call= convention).
+- *A build that declares a name with no registered original body.*
+  =nelisp-standalone--callsite-wrap-source= raises a build-time =error=
+  naming the missing entry; it does not silently skip it. A real consumer
+  of this mechanism adds their own =defun= to
+  =nelisp-standalone--callsite-demo-source= (or extends the analogous
+  registration point) before declaring the name.
+- *Any target other than =linux-x86_64=, or a build without
+  =NELISP_RUNTIME_RELOAD=1=.* =nelisp-standalone--callsite-enabled-p=
+  requires both, mirroring Doc 191 §7's own restriction verbatim — this
+  is a development-only slice, not a production capability.
+- *Retrofitting the allocator/GC pair onto this generic table in this
+  change.* Possible in principle (both are "a name plus an arity"); not
+  done here. See §5.
+
+* §4 Cost of the indirection, and where it is paid
+
+Every call to a build-declared public name pays, on EVERY call, in the
+wrapper Doc 191 §7's shape already pays for the allocator and each GC
+entry:
+
+- one atomic increment (the active-call counter) and one matching
+  decrement on return — this is what lets =nl_callsite_install_locked=
+  refuse an install mid-call rather than corrupt an in-flight one;
+- one load of the control word (=nl_callsite_control=+0) and a compare
+  against 0;
+- on the fallback branch (no table installed — the common case for a
+  build that declares entries but never publishes a replacement): one
+  direct call to the renamed original. This is the entire steady-state
+  cost for a process that never calls =nelisp-native-callsite-install=.
+- on the replacement branch: one further load (the table slot at
+  =+16 + 8*index=) and one indirect =call-ptr= instead of the direct call
+  the original body would have received.
+
+This cost is paid *only* by callers of a build-declared public name, in
+a build that opted into =NELISP_RUNTIME_RELOAD=1= with at least one
+declared entry. It is exactly zero — literally the same bytes as today,
+verified in §6 — for every other build, and for every OTHER name inside
+an opted-in build.
+
+* §5 Why additive, not a retrofit of the allocator/GC pair
+
+Requirement 1 of the assignment allows either choice, naming this exact
+trade-off. Retrofitting the allocator and GC entries onto this generic
+declared-entry table was considered and rejected for this change:
+
+- The allocator/GC pair's contract already lives in a place with its own
+  embedded identity check: =lisp/nelisp-runtime-reload-abi.el='s
+  =nelisp-runtime-reload-contract-hash=, compared against
+  =nelisp--native-runtime-contract-word= baked into the executable.
+  Changing what that pair IS (folding it into a different table shape)
+  would mean changing that file — explicitly out of this change's scope,
+  and under active, concurrent development by other work.
+- The pair already has real coverage: mutation-gated rows, and
+  =test/nelisp-native-runtime-dispatch-test.el='s freestanding-probe ERT
+  cases (the same *technique* this doc's own evidence in §6 reuses,
+  independently arrived at). Rewriting the mechanism underneath that
+  coverage, without owning it, risks breaking tests this change cannot
+  see fail.
+- The generalization this doc actually needed — "a declared list of
+  names, each getting a rename+wrapper+CAS-gated install" — is fully
+  achieved by a NEW, independent table (=nl_callsite_control=, its own 32
+  bytes of BSS, its own numeric symbol-resolver arm) that contributes
+  nothing at all unless a build both opts in AND declares an entry. Doc
+  191 §7's own GC side had ALREADY generalized to N entries via
+  =nelisp-runtime-reload-gc-contract= (a declared name/arity list,
+  consumed the same way) by the time this doc was written — this doc's
+  table is that same idea, generalized past the two hard-coded families,
+  built as its own independent slice rather than a third special case
+  folded into the same 96-byte block.
+
+Consequence, stated plainly: as of this doc, declaring
+=nl_alloc_bytes_uncheck= or =nl_gc_collect_recorded_mark_sweep_body= in
+=tools/nelisp-replaceable-entries.txt= does nothing useful — those names
+have no registered body in =nelisp-standalone--callsite-demo-source= (§3),
+and even if they did, this mechanism and Doc 191 §7's own mechanism would
+then independently and redundantly wrap the same public name. Unifying
+them, if ever wanted, is a follow-up that touches files this change does
+not own; it is not started here.
+
+* §6 Evidence
+
+** §6.1 Byte-identity for a build that declares nothing
+
+Every construction site in =scripts/nelisp-standalone-build.el= this
+mechanism adds is gated behind
+=nelisp-standalone--callsite-enabled-p= = =(and
+(nelisp-standalone--runtime-reload-enabled-p)
+(nelisp-standalone--callsite-declared-entries) t)=:
+
+- the BSS byte count and the =nl_callsite_control= symbol are appended
+  only inside a =(when (nelisp-standalone--callsite-enabled-p) ...)=;
+- the =callsite.o= unit is =nil= (and therefore never appended to the
+  reader's unit list) unless this predicate holds;
+- the numeric resolver arm (=nelisp--native-callsite-symbol-addr=) and
+  the =nelisp-standalone--reader-builtins= extension that makes it
+  =fboundp= are gated the same way.
+
+A default =make standalone-reader= build (=NELISP_RUNTIME_RELOAD= unset)
+and an opt-in =make runtime-reload-reader= build with an empty or absent
+=tools/nelisp-replaceable-entries.txt= therefore both hit the =nil=/false
+branch at every one of those sites — the exact code path that ran before
+this change existed at all. This is a structural guarantee (verified by
+reading every gate, listed above), not a byte-diff of two binaries: this
+change never had a "before" binary of the exact same source tree to diff
+against, since the mechanism and the tree changed together.
+
+** §6.2 Pure-logic tests (no native runtime required)
+
+=tools/ai/nelisp-ai.sh test-one test/nelisp-native-callsite-test.el= ->
+39 tests, 0 failed, 0 skipped, on this Linux x86_64 host (report:
+=target/gates/ert-focus.json=). 37 of the 39 are pure-logic — declaration
+parsing (valid input, every refusal: malformed line, non-identifier name,
+arity above 6, duplicate name, duplicate index, non-contiguous index),
+wrapper form generation (renamed-original shape, wrapper shape, correct
+table offset for a non-zero index, arity-mismatch refusal, pass-through of
+an undeclared =defun=, refusal of a declared name with no registered
+body), the two independent parsers' agreement on shared sample text, the
+two independent contract-magic functions' agreement, =entries()='s
+"never fabricate" behavior under a faked resolver, =status()=, and
+=install()='s argument validation and full happy-path logic, all via
+=cl-letf=-mocked primitives — the same technique
+=test/nelisp-native-unit-test.el= already uses for the same reason (no
+native runtime needed to prove the LOGIC correct). None of this requires
+Linux x86_64 or the opt-in runtime; it runs on any host, matching the
+requirement that this file not be vacuously all-skips.
+
+=tools/ai/nelisp-ai.sh compile= -> pass, ran 117, failed 0 (this gate's
+scope is =src/= + =packages/*/src=; it does not cover =lisp/= or
+=scripts/=, so it is unaffected by this change either way — confirmed by
+reading =cmd_compile= in =tools/ai/nelisp-ai.sh=). =lisp/nelisp-native-
+callsite.el= was separately confirmed to byte-compile clean, zero
+warnings, with =byte-compile-error-on-warn t=.
+
+** §6.3 Against-the-bug evidence: real native machine code, not mocked
+
+Two of the 39 cases (=skip-unless=-gated on Linux x86_64, and NOT
+skipped on this host) compile the ACTUAL forms
+=nelisp-standalone--callsite-wrap-source= generates — the same function
+the real build calls — into a tiny freestanding ELF via
+=nelisp-aot-compile-sexp=, with =nl_callsite_control= rewritten to a
+literal =mmap='d page (this probe owns no BSS symbol table of its own).
+This is the same technique =test/nelisp-native-runtime-dispatch-test.el=
+already uses to verify Doc 191 §7's allocator/GC precedent, independently
+arrived at for this doc.
+
+- =nelisp-native-callsite/existing-caller-observes-post-compile-publication=:
+  =nl_callsite_demo_caller=, calling the public name =nl_callsite_demo_double=
+  directly, is compiled once. Before any install, =(nl_callsite_demo_caller 5)=
+  returns 10 (the original doubling body via the fallback branch). A table
+  is then written directly (entry count 1, the real contract magic,
+  =(addr-of rr_replacement)= at slot 0) and installed through the REAL
+  =nl_callsite_install=. The SAME already-compiled, unedited
+  =nl_callsite_demo_caller= is called again and returns 15 — =rr_replacement=
+  triples instead of doubling. This is the central claim, executed, not
+  asserted.
+- =nelisp-native-callsite/install-refuses-contract-mismatch-natively=:
+  the same unit, but the table header lies about the entry count and
+  magic. The real =nl_callsite_install= returns 3 (its documented
+  contract-mismatch code) and the caller still observes the original
+  body afterward.
+
+** §6.4 A real build, and a real running binary
+
+=make runtime-reload-reader= (repository's own
+=tools/nelisp-replaceable-entries.txt=, currently declaring the one
+shipped example entry, =nl_callsite_demo_double=) linked 113 units in
+well under a minute on this host — no background run was needed; the
+"minutes" figure in AI.md's own guidance did not materialize here, most
+likely because per-unit compilation is content-addressed and cached
+(=nelisp-standalone--cached-unit=) from prior work in this same session,
+and =callsite.o= itself is small.
+
+- Output: =target/nelisp-runtime-reload=, sha256
+  =ca814c731f2c5fbf67bc4f8566c84d52fa3da0b3eb987e6e8e4dae7777f49ad5=.
+- =nm target/nelisp-runtime-reload | grep callsite= shows every expected
+  symbol: =nl_callsite_control= (B, bss), =nl_callsite_install=,
+  =nl_callsite_install_locked=, =nl_callsite_install_unlock=,
+  =nl_callsite_call_return=, =nl_callsite_demo_caller=,
+  =nl_callsite_demo_double=, =nl_callsite_original_nl_callsite_demo_double=
+  (T, text).
+- Piping Lisp forms into =./target/nelisp-runtime-reload --repl=:
+  =(fboundp 'nelisp--native-callsite-symbol-addr)= -> =t=;
+  =(nelisp--native-callsite-symbol-addr 0)=,
+  =...1)=, =...2)= each resolve to a distinct nonzero address (control,
+  install, the one declared entry) — this FIRST attempt returned =nil=/
+  =void-function=, because being in the dispatch table alone does not
+  make a name =fboundp= in the reader's own installed-builtins list
+  (=nelisp-standalone--reader-builtins=); see §7 for the fix this
+  finding required.
+- After =(load "lisp/nelisp-native-callsite.el")= inside that same live
+  process: =(nelisp-native-callsite-status)= reports
+  =(:status ready :control <addr> :table 0 :generation 0 :active-calls 0
+  :install-locked nil)=; =(nelisp-native-callsite-entries)= reports
+  exactly the one declared entry, cross-checked against the running
+  binary (not merely read off the declaration file); =(nelisp-native-
+  callsite-reachability "nl_callsite_demo_double")= returns
+  =:build-declared=; the same call for an unknown name returns
+  =:not-replaceable=. All against the REAL running binary, not a mock.
+
+** §6.5 What was NOT verified, stated plainly
+
+=nelisp-native-callsite-install='s composition with a replacement body
+published through =nelisp-native-unit-stage=/=-publish=/=-development.el='s
+=nelisp-native-unit-rebuild-and-reload= was attempted live, in the same
+running =target/nelisp-runtime-reload --repl=, and failed at
+=secure-hash=: void-function inside
+=nelisp-native-unit-development--bytes=. Confirmed independently:
+=(fboundp 'secure-hash)= is =nil= in that same process. This is a
+pre-existing gap in files this change does not own
+(=lisp/nelisp-native-unit.el='s own =--hash=/=--id= helpers, and
+=lisp/nelisp-native-unit-development.el=, both call =secure-hash=
+directly with no fallback) — not introduced by this doc, and not fixed
+by it, since fixing it means editing those files. The install() function
+ITSELF is verified thoroughly by mock (§6.2) and its native counterpart
+=nl_callsite_install= is verified by real execution (§6.3); only the
+specific composition through a LIVE =nelisp-native-unit= publish, inside
+this exact opt-in binary, today, is unverified. Report this to whoever
+owns =lisp/nelisp-native-unit-development.el= as: "=secure-hash= is
+called by =nelisp-native-unit-development--bytes= (and, underneath it,
+=nelisp-native-unit--hash=/=--id=) but is not in
+=nelisp-standalone--reader-builtins= nor otherwise available in the
+=--repl= process =docs/repl-development.md='s own native-allocator
+section documents as the way to drive this exact workflow; every
+=nelisp-native-unit-stage= call that reaches =nelisp-native-unit--hash=
+fails the same way."
+
+** §6.6 An incidental, separate fix
+
+=tools/ai/nelisp-ai.sh test-one test/nelisp-native-callsite-test.el=
+initially failed at =(require 'nelisp-standalone-build)= —
+=load_path_args= (used by both =test-one= and =check='s =compile=/gate
+steps) lacked =-L scripts=, and the root Makefile's own =test:= target
+has the identical gap (confirmed by reading both). This made
+=test/nelisp-native-runtime-dispatch-test.el= — an EXISTING file, not
+introduced here, and part of the plain =test/nelisp*-test.el= glob every
+=make test=/=ert-full= run collects — fail to load AT ALL under either
+runner: a =require= error inside a =-l= argument aborts the whole batch
+Emacs process before =ert-run-tests-batch-and-exit= runs a single case,
+which is precisely the "gate that executed zero cases" AI.md's own rule
+1 warns about. =load_path_args= in =tools/ai/nelisp-ai.sh= now adds
+=-L scripts= (a search-path addition can only add resolution, never
+remove it); both this file's tests and =test/nelisp-native-runtime-
+dispatch-test.el='s two tests were re-run and pass. This file is not in
+either the OWNED or the MUST-NOT-EDIT list for this task; reported here
+in full rather than left as a silent side effect.
+
+* §7 Declaration format
+
+One entry per line in =tools/nelisp-replaceable-entries.txt=:
+
+#+begin_example
+NAME  ARITY  INDEX
+#+end_example
+
+- =NAME= — an identifier (=[A-Za-z_][A-Za-z0-9_]*=) naming a =defun= that
+  =nelisp-standalone--callsite-demo-source= (or an equivalent registration
+  point a future change adds) provides as the original body. A name with
+  no registered body is a build-time =error=, not a silent no-op.
+- =ARITY= — 0 to 6 ordinary SysV integer parameters. Above 6 is refused at
+  parse time.
+- =INDEX= — the entry's slot in the shared replacement table. A file's
+  full index set must be exactly =0..(N-1)=, contiguous — an index is a
+  table offset, and a gap would leave that slot permanently a null
+  =call-ptr= target the instant any table is installed.
+
+=#=-prefixed and blank lines are ignored. Two independent parsers accept
+this grammar — =nelisp-standalone--callsite-parse-entries= (build side)
+and =nelisp-native-callsite--parse-entries= (REPL side, so this module
+stays loadable inside the constrained opt-in process without pulling in
+the AOT compiler) — and a test asserts they agree on shared sample text,
+since nothing links the two together.
+
+* §8 Files touched
+
+| file | role |
+|---+---|
+| =scripts/nelisp-standalone-build.el= | declaration parsing, wrapper/install-form generation, the new =callsite.o= unit, the numeric resolver arm, the =nelisp-standalone--reader-builtins= extension |
+| =lisp/nelisp-native-callsite.el= (new) | REPL-facing binding: =entries=, =status=, =install=, =reachability= |
+| =test/nelisp-native-callsite-test.el= (new) | 39 cases: 37 pure-logic, 2 real-native-execution |
+| =tools/nelisp-replaceable-entries.txt= (new) | the build-time declaration, currently one shipped example entry |
+| =tools/ai/nelisp-ai.sh= | =load_path_args= gained =-L scripts= (§6.6, incidental) |

@@ -1,0 +1,34 @@
+# Doc 202 (WS-G) build-time declaration of replaceable call sites.
+#
+# Consumed by `nelisp-standalone--callsite-declared-entries' in
+# scripts/nelisp-standalone-build.el, and only when the opt-in
+# NELISP_RUNTIME_RELOAD=1 build is also selected (`make runtime-reload-
+# reader'; see Makefile).  A production `make standalone-reader' build
+# never reads this file.  If this file is empty or missing, the opt-in
+# build's emitted binary is byte-identical to a build that never heard
+# of this mechanism -- see docs/design/202-replaceable-call-sites.org.
+#
+# Format: one entry per line, exactly
+#
+#     NAME  ARITY  INDEX
+#
+# NAME    an identifier ([A-Za-z_][A-Za-z0-9_]*) naming a `defun' that
+#         `nelisp-standalone--callsite-demo-source' (or your own
+#         extension of it) registers as an original body.  Declaring a
+#         name with no registered body is a build-time error, not a
+#         silent no-op.
+# ARITY   the number of ordinary SysV integer parameters, 0..6.
+# INDEX   the entry's slot in the shared replacement table.  Every
+#         file's index set must be exactly 0..(N-1), contiguous, no
+#         gaps, no duplicates -- an index is a table offset, and a gap
+#         would leave that slot permanently a null `call-ptr' target the
+#         moment any table is ever installed.
+#
+# Lines starting with `#' and blank lines are ignored.
+#
+# The one shipped example/self-test entry below wraps
+# `nl_callsite_demo_double', called (before any publication) by
+# `nl_callsite_demo_caller' -- the "existing binary direct call" shape
+# this mechanism exists to reach.  Delete it and add your own once you
+# have registered your own original bodies.
+nl_callsite_demo_double 1 0
