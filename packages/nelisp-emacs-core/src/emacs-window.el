@@ -569,11 +569,18 @@ each split's total dimension equally among its children."
 
 ;;; C. size / position
 
-(defun emacs-window-window-width (&optional window)
-  "Return the total width in columns of WINDOW (selected if nil)."
+(defun emacs-window-window-width (&optional window pixelwise)
+  "Return the width of WINDOW, in columns or pseudo-pixels.
+WINDOW defaults to the selected window.  A `remap' PIXELWISE request is
+accepted for compatibility and uses the same column width because this
+substrate has no face-remapping metrics; other non-nil values use the
+runtime's fixed pseudo-pixel column width."
   (let ((w (emacs-window-get-window window)))
     (emacs-window--check-live w)
-    (emacs-window-total-cols w)))
+    (let ((cols (emacs-window-total-cols w)))
+      (if (and pixelwise (not (eq pixelwise 'remap)))
+          (* cols emacs-window--pixel-col-px)
+        cols))))
 
 (defun emacs-window-window-height (&optional window)
   "Return the total height in lines of WINDOW (selected if nil)."

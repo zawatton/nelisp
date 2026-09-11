@@ -322,6 +322,15 @@ points, since the unprefixed names are host-guarded since T100."
 
 ;;;; C. window size / position (5 tests)
 
+(ert-deftest emacs-window-width-accepts-pixelwise-and-remap-arguments ()
+  "The compatibility shim accepts WINDOW-WIDTH's optional PIXELWISE arg."
+  (emacs-window-test--with-fresh-world
+    (let ((w (emacs-window-selected-window)))
+      (should (= 80 (emacs-window-window-width w)))
+      (should (= 80 (emacs-window-window-width w 'remap)))
+      (should (= (* 80 emacs-window--pixel-col-px)
+                 (emacs-window-window-width w t))))))
+
 (ert-deftest emacs-window-default-dimensions ()
   (emacs-window-test--with-fresh-world
     (let ((w (emacs-window-selected-window)))
