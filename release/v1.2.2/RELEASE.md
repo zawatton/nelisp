@@ -93,6 +93,14 @@ Release implementation and qualification notes, updated 2026-09-11.
   A running development REPL retained its data across installation and
   restoration of the allocator change. This is not a completed real-init
   performance or memory qualification.
+- Linux GC returns complete 64 KiB interiors of coalesced free blocks with
+  `MADV_DONTNEED` during the existing free-list rebuild. Live blocks and the
+  header/link words remain intact; checked-allocation and poison modes retain
+  their diagnostic bytes. A failed OS request leaves the free block usable.
+  Other platforms retain their existing behavior. Native boundary tests
+  exercise the production caller, including each diagnostic guard, and detect
+  deliberate guard and header-range regressions. Long-run qualification of
+  the new binary is still pending.
 
 ### REPL debugging and native replacement
 
@@ -131,13 +139,13 @@ Release implementation and qualification notes, updated 2026-09-11.
 | REPL development APIs | PASS: failure recording, explicit retry, export/replay, code provenance, GC snapshot/collect/compare, and integrated entry require |
 | Native runtime reload (Linux x86_64) | PASS: development binary SHA-256 prefix `86a0d4f947bc`; actual collection uses threshold percentage A 300 → new private helper B 301 → restored 300; changing B's expected result to 300 triggers the intended assertion |
 | Normal standalone binary | SHA-256 prefix `0c09c8af9fc4`; bounded memory probes below use this binary |
-| Full ERT suite | 5,593 PASS, 159 skipped, 5,752 total; the numeric oracle uses isolated artifacts while a production REPL remains running |
+| Full ERT suite | 5,594 PASS, 159 skipped, 5,753 total; the numeric oracle uses isolated artifacts while a production REPL remains running |
 | Check tier | 23/23 PASS |
 | Isolated mutation gate | 64/64 PASS on the isolated GC snapshot; all four CI mutation shards also pass on `ded6ebf13` |
 | Bounded memory probes | 6/6 PASS; 500,000 → 1,000,000 workload RSS 279,064 → 279,668 KiB; 1,006,632,960 bytes reclaimed |
-| Full real-init audit | `0c09c8af9fc4` reached form 260, then timed out after 9,001 seconds (exit 124, peak 741,376 KiB). A separate run with the library regex repair is in progress; all 930 forms and startup hooks remain unqualified |
+| Full real-init audit | `0c09c8af9fc4` with the library regex repair reached form 309, then timed out after 9,001 seconds (exit 124, peak 941,356 KiB). The run exposed additional compatibility errors; all 930 forms and startup hooks remain unqualified |
 | Linux x86_64/ARM64 semver tag CI | Required Linux qualification; macOS ARM64 is deferred and excluded from the v1.2.2 release target |
-| Linux 1-hour soak | CI binary `620980fbe756` passes: 2,053 batches, 3,600.621 seconds, RSS 95,312 KiB unchanged. Local binary `0c09c8af9fc4` fails the 5,120 KiB growth ceiling after about 56 minutes; an accelerated repeat grows from 82,388 to 91,240 KiB in 199 batches. Memory qualification remains incomplete |
+| Linux 1-hour soak | CI binary `620980fbe756` passes: 2,053 batches, 3,600.621 seconds, RSS 95,312 KiB unchanged. Local binary `0c09c8af9fc4` previously exceeded the 5,120 KiB growth ceiling; an accelerated repeat grew from 82,388 to 91,240 KiB in 199 batches. A later strict 1-hour repeat passes with 2,289 batches and RSS 82,388 KiB unchanged. The intermittent failure is not yet explained; the new free-page-return binary `35d16f0f6681` is undergoing separate qualification |
 
 The current results above are measured on the native-runtime-reload candidate
 and do not represent a completed public release. The branch is not integrated

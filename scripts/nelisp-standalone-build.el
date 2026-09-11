@@ -1459,6 +1459,7 @@ directory tracks the tree rather than accumulating every key ever built."
     (defun nl_arena_init () 0)
     (defun nl_os_alloc_chunk (_size) 0)
     (defun nl_os_free_chunk (_base _size) 0)  ; stub; platform source overrides w/ munmap
+    (defun nl_os_discard_free_pages (_base _size) 0)
     ;; Empty-chunk sweep reclamation is enabled only by a target override.
     ;; Unsupported targets retain the historical sweep behaviour exactly.
     (defun nl_os_empty_chunk_reclaim_p () 0)
@@ -2184,6 +2185,8 @@ addressing by a runtime base, never by a fixed reservation."
         (if (< p 4096) 0 p)))
     (defun nl_os_free_chunk (base size)
       (syscall-direct 11 base size 0 0 0 0))  ; munmap(base, size)
+    (defun nl_os_discard_free_pages (base size)
+      (syscall-direct 28 base size 4 0 0 0))
     ;; Doc 152 Stage 4c-1: ordinary mark/sweep may release proven-empty
     ;; growth chunks on Linux x86_64.  Return convention matches munmap:
     ;; zero is success, negative is failure.
@@ -2213,6 +2216,8 @@ arm64 Linux has no legacy x86 numbering)."
         (if (< p 4096) 0 p)))
     (defun nl_os_free_chunk (base size)
       (syscall-direct 215 base size 0 0 0 0))  ; munmap(base, size)
+    (defun nl_os_discard_free_pages (base size)
+      (syscall-direct 233 base size 4 0 0 0))
     (defun nl_os_empty_chunk_reclaim_p () 0)
     (defun nl_os_reclaim_empty_chunk (_base _size) 1)
     ;; mmap demand-pages on first touch, so explicit range commit is a no-op.
@@ -2266,6 +2271,7 @@ arm64 Linux has no legacy x86 numbering)."
             base))))
     (defun nl_os_free_chunk (base _size)
       (extern-call VirtualFree base 0 32768))  ; MEM_RELEASE=0x8000; size must be 0
+    (defun nl_os_discard_free_pages (_base _size) 0)
     ;; Doc 152 Stage 4c-1 was implemented for linux-x86_64 only, so on this
     ;; target the arena grew a chunk whenever the free list could not satisfy a
     ;; request and never gave one back.  Marking, sweeping and free-list reuse
@@ -2359,6 +2365,7 @@ arm64 Linux has no legacy x86 numbering)."
         (if (< p 4096) 0 p)))
     (defun nl_os_free_chunk (base size)
       (syscall-direct 73 base size 0 0 0 0))  ; Darwin munmap(base, size)
+    (defun nl_os_discard_free_pages (_base _size) 0)
     (defun nl_os_empty_chunk_reclaim_p () 0)
     (defun nl_os_reclaim_empty_chunk (_base _size) 1)
     ;; mmap demand-pages on first touch, so explicit range commit is a no-op.
@@ -2505,6 +2512,7 @@ leaves the previous dispatch intact.  The final 32 bytes retain GC telemetry."
                                           (eq (car form) 'defun)
                                           (memq (cadr form)
                                                 '(nl_os_alloc_chunk nl_os_free_chunk
+                                                  nl_os_discard_free_pages
                                                   nl_os_empty_chunk_reclaim_p
                                                   nl_os_reclaim_empty_chunk
                                                   nl_os_alloc_fail)))
@@ -3276,6 +3284,23 @@ reach the permanent wrappers and therefore the currently installed table."
              (nl_freelist_small_mask_set bt)
            0)
          0)))
+    ;; Discard only complete, page-aligned interiors of an already validated
+    ;; free block.  The header and free-list link (first 16 bytes) remain
+    ;; mapped.  Platform code supplies a safe no-op or madvise implementation.
+    (defun nl_gc_discard_free_block (hdr end)
+      (let* ((bt (nl_hdr_bt hdr))
+             (block-end (+ hdr bt))
+             (start (if (= (logand (+ hdr 16) 65535) 0)
+                        (+ hdr 16)
+                      (+ (+ hdr 16) (- 65536 (logand (+ hdr 16) 65535)))))
+             (finish (- block-end (logand block-end 65535))))
+        (if (= (nl_gc_bt_ok hdr bt end) 0)
+            0
+          (if (= (nl_hdr_mark hdr) 2)
+              (if (and (< start finish) (>= (- finish start) 65536))
+                  (nl_os_discard_free_pages start (- finish start))
+                0)
+            0))))
     (defun nl_gc_relink_free_chunk (chunk)
       (let* ((hdr (ptr-read-u64 (+ chunk 24) 0))
              (end (nl_gc_chunk_end chunk))
@@ -3287,7 +3312,16 @@ reach the permanent wrappers and therefore the currently installed table."
                (setq hdr end)
              (seq
               (if (= (nl_hdr_mark hdr) 2)
-                  (nl_gc_relink_free_one hdr)
+                  (seq
+                   (nl_gc_relink_free_one hdr)
+                   ;; Tiny blocks cannot contain a complete 64 KiB interior.
+                   ;; Avoid diagnostic loads and a helper call on that hot path.
+                   (if (and (>= bt 65552)
+                            (= (ptr-read-u64 (data-addr nl_alloc_check) 0) 0)
+                            (= (ptr-read-u64 (data-addr nl_alloc_check) 8) 0)
+                            (= (ptr-read-u64 (data-addr nl_gc_diag) 32) 0))
+                       (nl_gc_discard_free_block hdr end)
+                     0))
                 0)
               (setq hdr (+ hdr bt)))))
          0)))
