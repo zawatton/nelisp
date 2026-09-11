@@ -12713,7 +12713,13 @@ alignment."
       (nelisp-asm-arm64-add-imm buf dst 'sp offset)
     (progn
       (nelisp-asm-arm64-mov-imm64 buf dst offset)
-      (nelisp-asm-arm64-add-reg-reg buf dst 'sp dst))))
+      ;; ADD (extended register), UXTX #0: Rn=31 denotes SP. The shifted
+      ;; register form denotes XZR instead and turns large literal spills
+      ;; into writes to addresses such as 0x8000. Use DST for both offset
+      ;; and result so live literal-slot registers are not clobbered.
+      (let ((reg (nelisp-asm-arm64--reg-num dst)))
+        (nelisp-aot-compiler--arm64-emit-word
+         buf (logior #x8b2063e0 (ash reg 16) reg))))))
 
 (defun nelisp-aot-compiler--arm64-emit-str-sp (buf src offset)
   "Store SRC at `[sp + OFFSET]' on arm64, supporting large offsets."

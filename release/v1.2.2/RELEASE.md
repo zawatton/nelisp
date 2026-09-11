@@ -25,6 +25,10 @@ Release implementation and qualification notes, updated 2026-09-11.
   carry a source-defun fallback when native code is unavailable.
 - Bool-vectors are supported through reading, allocation, length, `aref`, and
   `aset`. Standalone `copy-sequence` preserves record type and payload slots.
+- ARM64 large-stack addressing preserves the stack pointer when literal
+  spills exceed the immediate addressing range. This fixes a source-loading
+  crash in `eval-elisp-source`; subprocess smoke failures now include the
+  child exit status and stderr.
 
 ### Function introspection and API surface
 

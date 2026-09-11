@@ -210,7 +210,14 @@ silent-fallback        80
 # `nelisp-standalone--reader-ipv6-socket-smoke' ends with the same
 # best-effort `(ignore-errors (delete-file script))' temp-file cleanup
 # every sibling `reader-*-smoke' uses; pinned below.
-ignore-errors   81
+# ignore-errors 81 -> 83 on 2026-09-11: the temp-name reader smoke now
+# records stderr separately for each child invocation and removes both
+# diagnostic files in its best-effort unwind cleanup.  These two new sites
+# only discard cleanup failures after the subprocess result has already been
+# checked; a failed delete cannot turn a failed or duplicate-name probe into
+# a pass.  They use the same reviewed cleanup idiom as the existing reader
+# smoke pins below.
+ignore-errors   83
 # 34 -> 32 on 2026-08-19: the two handlers in
 # `nelisp-artifact--ensure-native-compiler' now record the error instead of
 # discarding it.  Between them they had hidden a chain of six failures --
@@ -329,6 +336,8 @@ pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--re
 pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-repl-smoke	12ae73a754c4 1
 pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-repl-smoke	614d75952366 1
 pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-setcar-setcdr-type-smoke	7a85c44cdaf9 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-temp-name-uniqueness-smoke	06e76ec3c21c 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-temp-name-uniqueness-smoke	31d57bf9fe36 1
 pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-temp-name-uniqueness-smoke	7a85c44cdaf9 1
 pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-temp-outside-cwd-smoke	099e9b232f57 1
 pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-temp-outside-cwd-smoke	19517e7360e0 1

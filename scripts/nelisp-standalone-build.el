@@ -28700,25 +28700,49 @@ Two processes, not two calls.  The old implementation was already unique
 within a process, so a single-process check would have passed the whole time
 the defect was live -- which is why this spends a second binary invocation."
   (let ((tmp (make-temp-file "nelisp-reader-temp-name-" nil ".el"))
+        (err1 (make-temp-file "nelisp-reader-temp-name-err-"))
+        (err2 (make-temp-file "nelisp-reader-temp-name-err-"))
         (first nil)
-        (second nil))
+        (second nil)
+        (rc1 nil)
+        (rc2 nil))
     (unwind-protect
         (progn
           (with-temp-file tmp
             (insert "(defvar nelisp-reader-temp-name-smoke t)\n"))
           (with-temp-buffer
-            (call-process nelisp-standalone--reader-out nil t nil
-                          "eval-elisp-source" tmp "(make-temp-name \"pfx-\")")
+            (setq rc1
+                  (call-process nelisp-standalone--reader-out nil
+                                (list t err1) nil
+                                "eval-elisp-source" tmp "(make-temp-name \"pfx-\")"))
             (setq first (string-trim (buffer-string))))
           (with-temp-buffer
-            (call-process nelisp-standalone--reader-out nil t nil
-                          "eval-elisp-source" tmp "(make-temp-name \"pfx-\")")
+            (setq rc2
+                  (call-process nelisp-standalone--reader-out nil
+                                (list t err2) nil
+                                "eval-elisp-source" tmp "(make-temp-name \"pfx-\")"))
             (setq second (string-trim (buffer-string))))
-          (when (or (string= first "") (not (string-match-p "pfx-" first)))
-            (error "temp-name smoke saw no name, got %S" first))
+          (unless (and (integerp rc1) (= rc1 0))
+            (error "temp-name child 1 failed rc=%S stderr=%S"
+                   rc1 (with-temp-buffer
+                         (insert-file-contents-literally err1)
+                         (buffer-string))))
+          (unless (and (integerp rc2) (= rc2 0))
+            (error "temp-name child 2 failed rc=%S stderr=%S"
+                   rc2 (with-temp-buffer
+                         (insert-file-contents-literally err2)
+                         (buffer-string))))
+          (unless (and (stringp first)
+                       (string-match-p "pfx-" first))
+            (error "temp-name smoke child 1 saw no name, got %S" first))
+          (unless (and (stringp second)
+                       (string-match-p "pfx-" second))
+            (error "temp-name smoke child 2 saw no name, got %S" second))
           (when (string= first second)
             (error "temp-name smoke: two processes both answered %S" first)))
-      (ignore-errors (delete-file tmp)))))
+      (ignore-errors (delete-file tmp))
+      (ignore-errors (delete-file err1))
+      (ignore-errors (delete-file err2)))))
 
 (defun nelisp-standalone--reader-elc-smoke ()
   "Assert the Doc 142 section 6.2 `.elc' lane's full three-part contract.

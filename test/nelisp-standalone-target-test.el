@@ -2428,6 +2428,47 @@ without the async core and process adapter that define the standard names."
       (should send)
       (should (< async adapter)))))
 
+(ert-deftest nelisp-standalone-target-temp-name-smoke-reports-child-failure ()
+  "The temp-name smoke preserves a child exit code and stderr diagnostic."
+  (let ((nelisp-standalone--reader-out "portable-stub")
+        (calls 0))
+    (cl-letf (((symbol-function 'call-process)
+               (lambda (_program _infile destination _display &rest _args)
+                 (setq calls (1+ calls))
+                 (if (consp destination)
+                     (with-temp-file (cadr destination)
+                       (insert "stub diagnostic\n"))
+                   (insert "stub diagnostic\n"))
+                 23)))
+      (condition-case err
+          (progn
+            (nelisp-standalone--reader-temp-name-uniqueness-smoke)
+            (ert-fail "expected the failing child to be reported"))
+        (error
+         (let ((message (error-message-string err)))
+           (should (= calls 2))
+           (should (string-match-p "rc=23" message))
+           (should (string-match-p "stub diagnostic" message))))))))
+
+(ert-deftest nelisp-standalone-target-temp-name-smoke-validates-both-outputs ()
+  "The temp-name smoke rejects a successful child that prints no name."
+  (let ((nelisp-standalone--reader-out "portable-stub")
+        (calls 0))
+    (cl-letf (((symbol-function 'call-process)
+               (lambda (_program _infile _destination _display &rest _args)
+                 (setq calls (1+ calls))
+                 (when (= calls 1)
+                   (insert "pfx-first\n"))
+                 0)))
+      (condition-case err
+          (progn
+            (nelisp-standalone--reader-temp-name-uniqueness-smoke)
+            (ert-fail "expected the empty second output to be rejected"))
+        (error
+         (should (= calls 2))
+         (should (string-match-p "child 2 saw no name"
+                                 (error-message-string err))))))))
+
 (provide 'nelisp-standalone-target-test)
 
 ;;; nelisp-standalone-target-test.el ends here

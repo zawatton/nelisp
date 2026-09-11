@@ -2150,6 +2150,28 @@ arena base."
             (should (string-match-p "UND[ \t]+nl_arena_base" ss-out))))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-aot-compiler/aarch64-large-sp-address-keeps-sp-base ()
+  "Large offsets must use ADD-extended, where register 31 denotes SP.
+The shifted-register ADD instead uses XZR and faults at the bare offset."
+  (dolist (offset '(4096 32768 1048576))
+    (dolist (pair '((x0 . #x8b2063e0) (x11 . #x8b2b63eb)))
+      (let ((buf (nelisp-asm-arm64-make-buffer)))
+        (nelisp-aot-compiler--arm64-emit-sp-offset-address buf (car pair) offset)
+        (let* ((bytes (nelisp-asm-arm64-buffer-bytes buf))
+               (at (- (length bytes) 4))
+               (word (logior (aref bytes at)
+                             (ash (aref bytes (+ at 1)) 8)
+                             (ash (aref bytes (+ at 2)) 16)
+                             (ash (aref bytes (+ at 3)) 24))))
+          (should (= word (cdr pair))))))))
+
+(ert-deftest nelisp-aot-compiler/aarch64-small-sp-address-keeps-immediate-form ()
+  "The immediate addressing path still accepts SP without extra scratch regs."
+  (let ((buf (nelisp-asm-arm64-make-buffer)))
+    (nelisp-aot-compiler--arm64-emit-sp-offset-address buf 'x0 0)
+    (should (equal (nelisp-asm-arm64-buffer-bytes buf)
+                   (unibyte-string #xe0 #x03 #x00 #x91)))))
+
 (ert-deftest nelisp-aot-compiler/aarch64-data-addr-emits-adrp-add-relocs ()
   "Doc 140 Stage 8: arm64 `data-addr' lowers to ADRP+ADD reloc pair."
   (let ((nelisp-aot-compiler--arch 'aarch64)
