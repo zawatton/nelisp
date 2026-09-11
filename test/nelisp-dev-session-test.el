@@ -44,7 +44,7 @@
        (delete-directory directory t))))
 
 (ert-deftest nelisp-dev-session/export-uses-live-registry-and-json-schema ()
-  "Export takes records from the REPL registry and emits JSON v1." 
+  "Export takes records from the REPL registry and emits JSON v1."
   (nelisp-dev-session-test--with-files
    (let ((nelisp-repl-session--records nil)
          (nelisp-repl-session--next-id 1))
@@ -78,7 +78,7 @@
        (should (equal (nelisp-dev-session-test--status value) "ok"))))))
 
 (ert-deftest nelisp-dev-session/validate-tampering-reports-all-errors ()
-  "Source and recipe changes, unknown versions and bad paths are visible." 
+  "Source and recipe changes, unknown versions and bad paths are visible."
   (nelisp-dev-session-test--with-files
    (let ((nelisp-repl-session--records nil))
      (nelisp-repl-session-record-load source)
@@ -140,7 +140,7 @@
        (should (nelisp-dev-session-test--kind-p result :path-schema))))))
 
 (ert-deftest nelisp-dev-session/validate-does-not-load-or-eval ()
-  "Validation hashes bytes only, including a recipe containing side effects." 
+  "Validation hashes bytes only, including a recipe containing side effects."
   (nelisp-dev-session-test--with-files
    (let ((nelisp-repl-session--records nil)
          (nelisp-dev-session-test-side-effect 0))
@@ -158,7 +158,7 @@
      (should (= nelisp-dev-session-test-side-effect 0)))))
 
 (ert-deftest nelisp-dev-session/export-rejects-output-collisions ()
-  "Recipe and manifest outputs never overwrite registered source files." 
+  "Recipe and manifest outputs never overwrite registered source files."
   (nelisp-dev-session-test--with-files
    (let ((nelisp-repl-session--records nil))
      (nelisp-repl-session-record-load source)
@@ -172,7 +172,7 @@
          (should (nelisp-dev-session-test--kind-p result :path-collision)))))))
 
 (ert-deftest nelisp-dev-session/rejects-nil-session-and-missing-manifest ()
-  "A live export needs an identity; malformed and missing JSON is invalid." 
+  "A live export needs an identity; malformed and missing JSON is invalid."
   (nelisp-dev-session-test--with-files
    (let ((nelisp-repl-session--records nil))
      (let ((result (nelisp-dev-session-dispatch
@@ -193,7 +193,7 @@
               :manifest-missing)))))
 
 (ert-deftest nelisp-dev-session/replay-never-implicitly-executes ()
-  "Replay requires policy and validation, then remains explicitly unsupported." 
+  "Replay requires policy and validation, then remains explicitly unsupported."
   (nelisp-dev-session-test--with-files
    (let ((nelisp-repl-session--records nil))
      (nelisp-repl-session-record '(setq nelisp-dev-session-test-side-effect 13))

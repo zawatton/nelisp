@@ -49,7 +49,7 @@ Use this for bounded diagnostic records, never for arbitrary application heaps."
       (remhash key nelisp-dev-protocol--details))))
 
 (defun nelisp-dev-protocol-detail-put (id value)
-  "Store one bounded detail VALUE under ID; return ID or nil." 
+  "Store one bounded detail VALUE under ID; return ID or nil."
   (nelisp-dev-protocol--expire)
   (let* ((bytes (string-bytes (prin1-to-string value)))
          (old (gethash id nelisp-dev-protocol--details)))
@@ -63,12 +63,12 @@ Use this for bounded diagnostic records, never for arbitrary application heaps."
           (+ (- nelisp-dev-protocol--detail-bytes (or (cadr old) 0)) bytes)) id)))
 
 (defun nelisp-dev-protocol-detail-get (id)
-  "Return a non-expired detail, or nil." 
+  "Return a non-expired detail, or nil."
   (nelisp-dev-protocol--expire)
   (nth 2 (gethash id nelisp-dev-protocol--details)))
 
 (defun nelisp-dev-protocol-detail-clear ()
-  "Release all protocol detail references and return the count." 
+  "Release all protocol detail references and return the count."
   (let ((n (hash-table-count nelisp-dev-protocol--details)))
     (clrhash nelisp-dev-protocol--details)
     (setq nelisp-dev-protocol--detail-bytes 0
@@ -115,7 +115,7 @@ Use this for bounded diagnostic records, never for arbitrary application heaps."
         (cons "limitations" (or limitations [])) (cons "next_cursor" :null)))
 
 (defun nelisp-dev-protocol-string-keys (value)
-  "Normalize JSON alist keys from either symbols or strings." 
+  "Normalize JSON alist keys from either symbols or strings."
   (cond
    ((vectorp value) (apply #'vector (mapcar #'nelisp-dev-protocol-string-keys value)))
    ((and (consp value) (consp (car value)))

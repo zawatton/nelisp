@@ -136,7 +136,7 @@ This does not connect to or impersonate a standalone REPL session."
            "Zero cases, required skips and timeouts cannot establish a clean verdict."])))))
 
 (defun nelisp-dev--dispatch (request context)
-  "Dispatch a string-key alist REQUEST under CONTEXT." 
+  "Dispatch a string-key alist REQUEST under CONTEXT."
   (let ((op (and (nelisp-dev--object-p request) (cdr (assoc "operation" request))))
         (requested-session (and (nelisp-dev--object-p request) (cdr (assoc "session_id" request)))))
     (if (not (nelisp-dev--valid-request-p request))

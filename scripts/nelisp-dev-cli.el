@@ -20,7 +20,7 @@
           ((equal status "cancelled") 5) (t 2))))
 
 (defun nelisp-dev-cli-main ()
-  "Read one request file, write exactly one JSON response, and exit." 
+  "Read one request file, write exactly one JSON response, and exit."
   (let ((file (getenv "NELISP_DEV_REQUEST_FILE")) result)
     (let ((json-null :null) (json-false :false))
     (condition-case error-data
