@@ -1021,15 +1021,30 @@ backtracking semantics."
 (defun nelisp-rx--scan (pat str start)
   "Scan STR from START forward; return (ANCHOR END GROUPS) on first match, or nil.
 ANCHOR is the start position where the match was found."
-  (let ((slen (length str))
-        (i start)
-        (hit  nil))
+  (let* ((slen (length str))
+         (i start)
+         (hit nil)
+         ;; Only optimize anchors that are literally the first NFA state.
+         ;; Inferring anchors through epsilon edges would change the set of
+         ;; candidate positions for alternations and is deliberately avoided.
+         (start-label
+          (aref (aref (nelisp-rx-pattern-states pat)
+                      (nelisp-rx-pattern-start pat))
+                0)))
     (catch 'done
       (while (<= i slen)
-        (let ((m (nelisp-rx--match-from pat str i)))
-          (when m
-            (setq hit (list i (car m) (cdr m)))
-            (throw 'done nil)))
+        (let ((candidate-p
+               (cond
+                ((eq start-label :bos) (= i 0))
+                ((eq start-label :bol)
+                 (or (= i 0)
+                     (and (> i 0) (= (aref str (1- i)) ?\n))))
+                (t t))))
+          (when candidate-p
+            (let ((m (nelisp-rx--match-from pat str i)))
+              (when m
+                (setq hit (list i (car m) (cdr m)))
+                (throw 'done nil)))))
         (setq i (1+ i)))
       nil)
     hit))
