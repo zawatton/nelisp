@@ -1,5 +1,50 @@
 # NeLisp Release Notes
 
+## v1.3.0 — 2026-09-12
+
+Full notes: [`release/v1.3.0/RELEASE.md`](release/v1.3.0/RELEASE.md).
+
+A minor release: new public API and new required gates, no existing contract
+changed. v1.2.2 was prepared but never tagged; everything its notes describe is
+included here.
+
+- **Native unit replacement** is carried by the common `reload.plan` /
+  `reload.apply` under `unit: "native-unit"`. A plan binds the session, the
+  target's expected generation, source/artifact hashes, the compiler input set,
+  build options and the binary hash; applying revalidates all of it and
+  discards the staged candidate when anything moved.
+- **`nelisp-native-unit-code-info`** answers which source and artifact produced
+  the code a unit is running now, with `:source-current` recomputed against
+  disk and a bounded publication history.
+- **Resources are reclaimed** for candidates that were never CAS-installed. A
+  superseded published generation is deliberately kept mapped and reported as
+  refused with the reason, because this runtime cannot show that in-flight
+  calls through a stable gate have returned.
+- **Rebuilds are bounded** — timeout, cancellation, C-g, and an output budget,
+  with every rejection path deleting its temporaries.
+- **Doc 202 declared replaceable call sites**: names declared at build time get
+  their EXISTING direct callers redirected without recompiling those callers.
+  `nelisp-native-callsite-reachability` reports `:build-declared`,
+  `:gate-only` or `:not-replaceable` per name, which is what keeps this from
+  being over-claimed — a name not declared at build time can never have its
+  existing `call rel32` sites redirected in that process.
+- **The arena's boundary reclaim now zeroes what it rewinds.** It had handed a
+  rewound bump span back to the allocator without clearing it, unlike the
+  free-list reuse path, so a constructor expecting fresh memory inherited a
+  stale cons and crashed. Deterministic, reproducible from 152 bytes, and
+  present in every standalone binary of that day — it is what stopped the
+  real-user-init audit at form 4, which now completes all 930 forms.
+- **Three new required Linux gates**, each with a mutation row verified red:
+  `native-unit-repl-smoke` (88 checks), `nelisp-sexp-clone-bind-smoke`, and
+  `lisp-byte-compile` — which exists because `make compile` covered `src/` and
+  `packages/*/src/` only, leaving 253 files under `lisp/` never byte-compiled
+  by CI at all.
+
+Qualification: branch CI green on every lane; full ERT 5,921 tests with 0
+unexpected; check tier 23/23. Semver tag CI and macOS ARM64 on real hardware
+are **not yet run** — see the release notes and
+[`release/v1.3.0/MACOS-QUALIFICATION.md`](release/v1.3.0/MACOS-QUALIFICATION.md).
+
 ## v1.2.2 — 2026-09-10
 
 Full notes: [`release/v1.2.2/RELEASE.md`](release/v1.2.2/RELEASE.md).
