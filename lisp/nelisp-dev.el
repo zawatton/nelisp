@@ -3,6 +3,7 @@
 (require 'nelisp-dev-protocol)
 (declare-function nelisp-dev-source-dispatch "nelisp-dev-source" (request context))
 (declare-function nelisp-dev-session-dispatch "nelisp-dev-session" (request context))
+(declare-function nelisp-dev-replay-dispatch "nelisp-dev-replay" (request context))
 (declare-function nelisp-dev-failure-dispatch "nelisp-dev-failure" (request context))
 (declare-function nelisp-dev-failure-clear "nelisp-dev-failure" ())
 (declare-function nelisp-repl-session-clear "nelisp-repl-session" ())
@@ -28,7 +29,6 @@ The process-lifetime ID is local metadata, not a remote attachment credential."
     (plist-put context :adapters
                (append (plist-get context :adapters)
                        (list (cons "session.export" #'nelisp-dev-session-dispatch)
-                             (cons "session.replay" #'nelisp-dev-session-dispatch)
                              (cons "session.clear" #'nelisp-dev-session-clear))
                        (nelisp-dev--failure-adapters)))
     context))
@@ -97,15 +97,17 @@ This never invokes GC, replays records, or changes application state."
        ["Only retained development diagnostics were released."]))))
 
 (defun nelisp-dev-context (&optional root)
-  "Create a source-query context for this host Emacs process.
+  "Create a host query and explicit isolated-replay context.
 This does not connect to or impersonate a standalone REPL session."
   (require 'nelisp-dev-source)
   (require 'nelisp-dev-session)
+  (require 'nelisp-dev-replay)
   (list :root (or root default-directory) :target "host-emacs" :session-id nil
         :adapters (append
                    (mapcar (lambda (op) (cons op #'nelisp-dev-source-dispatch))
                            '("describe" "check" "impact"))
-                   (list (cons "session.validate" #'nelisp-dev-session-dispatch)))))
+                   (list (cons "session.validate" #'nelisp-dev-session-dispatch)
+                         (cons "session.replay" #'nelisp-dev-replay-dispatch)))))
 
 (defun nelisp-dev--object-p (value)
   (and (proper-list-p value)
@@ -232,6 +234,11 @@ This does not connect to or impersonate a standalone REPL session."
          ["NELISP-DEV-LIVE-SESSION-REQUIRED"])
     (let ((hook (cdr (assoc op (plist-get context :adapters)))))
       (cond
+       ((and (member op '("retry" "session.replay" "session.export" "session.clear"
+                           "reload.apply" "gc.collect"))
+             (let ((cursor (cdr (assoc "cursor" (cdr (assoc "limits" request))))))
+               (and cursor (not (eq cursor :null)))))
+        (error "NELISP-DEV-INVALID-REQUEST: effectful operations cannot use cursors"))
        ((let ((target (cdr (assoc "target" request))))
           (and (not (eq target :null))
                (not (equal target (or (plist-get context :target) "host-emacs")))))

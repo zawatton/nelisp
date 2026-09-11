@@ -128,7 +128,7 @@
 # failure after the result has already been determined.  Each shape is pinned
 # below so a different handler cannot replace it while the aggregate stays
 # unchanged.
-silent-fallback        86
+silent-fallback        89
 # 2026-09-11 runtime reload additions: loader symbol/state/hash probes and
 # REPL-GC snapshot fields use deliberate structured rejection/unavailable
 # results when an optional raw export is absent.  They do not silently claim
@@ -511,6 +511,11 @@ pinned-site bare-handler	nelisp-repl-gc.el	defun nelisp-repl-gc--time-usec	a81df
 # name if the application signals.  It neither retries again nor exports an
 # unbounded condition graph; a caught failure never becomes an ok verdict.
 pinned-site silent-fallback	nelisp-dev-failure.el	defun nelisp-dev-failure--retry	9e9709b96682 1
+# Host replay failures become non-pass envelopes/terminal records with a phase
+# and condition.  No handler resumes the recipe or emits an ok completion.
+pinned-site silent-fallback	nelisp-dev-replay-worker.el	defun nelisp-dev-replay-worker-main	084063cb3af3 1
+pinned-site silent-fallback	nelisp-dev-replay-worker.el	defun nelisp-dev-replay-worker--run	e8770daaa090 1
+pinned-site silent-fallback	nelisp-dev-replay.el	defun nelisp-dev-replay-dispatch	3b20027a1aef 1
 pinned-site silent-fallback	nelisp-dev-source.el	defun nelisp-dev-source-dispatch	9f6e82ade353 1
 pinned-site silent-fallback	nelisp-dev-source.el	defun nelisp-dev-source--parse	b5b528b5b981 1
 # Missing optional runtime status makes GC identity unavailable and comparisons

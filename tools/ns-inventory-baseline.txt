@@ -665,7 +665,8 @@ ns-collision-divergent 127
 # named public APIs/constants, no new collision.
 # 2026-09-11 +3: live session.clear and failure diagnose/retry expose
 # nelisp-dev-session-clear, nelisp-dev-failure-clear and its dispatcher.
-ns-prefix-violation 976
+# Explicit host replay adds its dispatcher and the subprocess main entry.
+ns-prefix-violation 978
 # 611 -> 613 on 2026-08-20: `nelisp--check-string'/`--check-symbol' and the
 # other argument-check helpers are referenced from the lisp/ mirrors that
 # carry copies of the functions using them.  This is the kind this file
@@ -804,7 +805,9 @@ ns-prefix-violation 976
 # 2026-09-11 +6: failure handles bind original session records, and explicit
 # clear counts/relinquishes session, provenance and GC diagnostic stores.
 # These adapters share existing ownership rather than duplicating registries.
-ns-private-escape 749
+# The replay parent/worker reuse the session validator, bounded hash/JSON
+# reader and result normalization; four additional shared helper boundaries.
+ns-private-escape 753
 ns-unreadable 0
 
 # `pinned-collision KEY' pins every ns-collision and ns-collision-divergent

@@ -2,6 +2,20 @@
 (require 'ert)
 (require 'nelisp-dev)
 
+(ert-deftest nelisp-dev-protocol-cursor-never-reexecutes-effects ()
+  (dolist (op '("retry" "session.replay" "session.export" "session.clear"
+                "reload.apply" "gc.collect"))
+    (let* ((calls 0)
+           (request (nelisp-dev-protocol-test--request op))
+           (context (list :target "host-emacs" :adapters
+                          (list (cons op (lambda (&rest _) (cl-incf calls)))))))
+      (setcdr (assoc "limits" request) '(("cursor" . "previous-page")))
+      (let ((result (nelisp-dev-dispatch request context)))
+        (should (equal "failed" (cdr (assoc "status" result))))
+        (should (equal "NELISP-DEV-INVALID-REQUEST"
+                       (cdr (assoc "code" (aref (cdr (assoc "diagnostics" result)) 0)))))
+        (should (= 0 calls))))))
+
 (defconst nelisp-dev-protocol-test--root
   (file-name-directory
    (directory-file-name

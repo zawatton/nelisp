@@ -156,9 +156,45 @@ loaded-file hashes. To validate later, request `session.validate` with
 Paths are relative to the manifest, and Unicode paths are supported. Validation
 checks required fields, file sizes and SHA-256 hashes without loading any code.
 It does not establish native runtime, build-option or dependency compatibility.
-`session.replay` remains unsupported in this adapter. Validation never starts
-replay automatically; the existing native REPL recipe workflow remains in the
-[REPL guide](repl-development.md).
+Validation never starts replay automatically. To execute the host recipe in a
+fresh worker, make a separate `session.replay` request through the common
+dispatcher or CLI:
+
+```json
+{
+  "schema_version": "1",
+  "operation": "session.replay",
+  "request_id": "replay-demo",
+  "arguments": {
+    "manifest": "target/dev-session/demo.json",
+    "effects-policy": "explicit-only"
+  },
+  "target": "host-emacs",
+  "session_id": null,
+  "limits": {}
+}
+```
+
+Save the request to a file and run `tools/ai/nelisp-ai.sh dev --request FILE --json`.
+The worker validates the manifest again and evaluates the recipe bytes it
+hash-checked. Registered loads resolve relative to the original recipe;
+ordinary relative file operations use a temporary working directory. The parent
+REPL's variables are not restored or modified by the worker. A separate process
+and temporary directory do not restrict network, process or absolute-path file
+effects. Source hashes are preflight checks, not a freeze of dependencies during
+execution. Read the returned status and execution counts; output markers alone
+do not establish success. The existing native REPL recipe workflow remains in
+the [REPL guide](repl-development.md).
+
+`arguments.timeout` defaults to 10 seconds and accepts 1–60 seconds. A timeout,
+more than 64 KiB of combined captured output, an error, or an early exit without
+a terminal record is a failed run. Empty recipes are inconclusive. Responses
+include the number of completed top-level recipe forms, the worker exit code,
+and up to 1 KiB of each output stream; `output_truncated` makes omitted output
+explicit. These are previews, not a complete application log. Record explicit
+assertions in the recipe to verify the reproduced behavior.
+Effectful operations reject continuation cursors before execution; fetching
+another diagnostic page must never rerun a recipe or retry a saved call.
 
 ### Remaining acceptance work
 

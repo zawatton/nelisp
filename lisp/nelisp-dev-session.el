@@ -75,10 +75,13 @@ request arguments supplied by a command line client."
   (when (file-regular-p path)
     (file-attribute-size (file-attributes path 'string))))
 
-(defun nelisp-dev-session--sha256 (path)
+(defun nelisp-dev-session--sha256 (path &optional limit)
+  "Hash PATH within LIMIT bytes, refusing a file that grows while read."
   (with-temp-buffer
     (set-buffer-multibyte nil)
-    (insert-file-contents-literally path)
+    (setq limit (or limit nelisp-dev-session-max-file-bytes))
+    (insert-file-contents-literally path nil 0 (1+ limit))
+    (when (> (buffer-size) limit) (error "Session hash input exceeds byte limit"))
     (secure-hash 'sha256 (current-buffer))))
 
 (defun nelisp-dev-session--sha256-p (value)
