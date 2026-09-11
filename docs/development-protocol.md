@@ -245,10 +245,71 @@ context. JSON reports are inspection data; importing one does not restore
 publication authority. Clearing does not unmap candidate code. To restore the
 executable's original GC, use `nelisp-runtime-reload-restore-originals`.
 
-This supports only the fixed allocator/GC unit and its existing safe-point
+`allocator-gc` covers the fixed allocator/GC unit and its existing safe-point
 contract. It does not establish a general native direct-caller closure, freeze
 host compiler libraries, or lock files against concurrent edits. Keep inputs
 unchanged while building or applying. It provides no heap migration or rollback.
+
+### Plan and apply a user-defined native unit replacement
+
+The same two operations also carry the general user native unit, under
+`unit: "native-unit"` with `atomicity: "native-unit"`. Its arguments are
+`source` (a repository-relative native source path), optional `unit_id`
+(omit it to create a new unit), optional `exports` (the public entry names to
+freeze at creation; omit for every entry), and the same required
+`effects_policy: "explicit-only"`. Any other argument key is rejected, and the
+two scope fields must agree: `native-unit` with `runtime-unit`, or the reverse,
+is `NELISP-DEV-UNSUPPORTED-SCOPE`.
+
+```elisp
+(require 'nelisp-dev-reload)
+(setq native-context (nelisp-dev-reload-context default-directory))
+(setq plan
+      (nelisp-dev-dispatch
+       '(("schema_version" . "1") ("operation" . "reload.plan")
+         ("request_id" . "unit-plan")
+         ("arguments" ("unit" . "native-unit")
+                      ("atomicity" . "native-unit")
+                      ("source" . "target/score.el")
+                      ("effects_policy" . "explicit-only"))
+         ("target" . "native-linux-x86_64") ("session_id" . :null) ("limits"))
+       native-context))
+```
+
+Planning compiles `source` in a host subprocess and stages an immutable
+candidate; it does not publish, and the unit's generation is unchanged when it
+returns. The plan binds the live session, the target unit's expected
+generation, the source and staged-artifact hashes, the same conservative
+compiler inventory and named build-option digest as `allocator-gc`, and the
+running binary hash. `unit_id` in the report is `null` exactly when the request
+did not name one.
+
+Applying revalidates every one of those before publishing. Anything that moved
+-- the source, the artifact, the compiler inventory, the build options, the
+runtime identity, or the unit's generation, which a competing publication can
+advance between plan and apply -- is `NELISP-DEV-STALE-PLAN`, and the refusal
+**discards the staged candidate** so a rejected plan leaves nothing publishable
+behind. Publication itself goes through the unit's CAS, which is the only store
+to its control word. `data.published` lists the export names that became live.
+
+Revoking plans revokes candidates with them: `nelisp-dev-reload-clear` and TTL
+expiry both discard any candidate a plan still holds, and its return value
+counts plans dropped plus candidates revoked. Discarding an unpublished
+candidate also unmaps its generation table and releases its mapped artifact.
+
+A superseded **published** generation is a different matter: it is moved to the
+unit's retire list and deliberately kept mapped, because nothing in this
+runtime reports whether a call is still in flight through a stable gate.
+`nelisp-native-unit-resources` accounts for what is retained and
+`nelisp-native-unit-reclaim` reports each retired generation as refused, with
+that reason, rather than guessing.
+
+The limitation that matters most is reported on every `native-unit` result and
+is repeated here because it is easy to over-read a successful publication:
+**already-compiled direct callers inside the running executable are not
+redirected.** Only calls made through the unit's stable entry gate observe the
+new generation. See [replaceable call sites](design/202-replaceable-call-sites.org)
+for which names can be reached at all and what requires a rebuilt binary.
 
 ### Remaining acceptance work
 
@@ -257,10 +318,12 @@ unknown dynamic calls and macro behavior rather than treating parsing as a
 proof that the program is correct. Source coordinates describe definitions or
 diagnostics, not a guaranteed native failing instruction.
 
-General Lisp/native caller reload plans, cross-process transport, hash-bound
+Native reload plans now cover the fixed allocator/GC unit and general user
+native units. General **Lisp** reload plans, cross-process transport, hash-bound
 editing and comparative development-efficiency study remain separate acceptance
-work. Existing failure capture, code identity, GC inspection and explicit replay
-are documented in the REPL guide. Do not infer their unified protocol support
+work, as does redirecting call sites that were compiled before the name was
+declared replaceable. Existing failure capture, code identity, GC inspection
+and explicit replay are documented in the REPL guide. Do not infer their unified protocol support
 from the availability of those legacy APIs.
 
 Focused checks for protocol changes:
