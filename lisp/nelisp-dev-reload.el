@@ -4,6 +4,7 @@
 (require 'cl-lib)
 (require 'nelisp-dev)
 (require 'nelisp-runtime-development)
+(require 'nelisp-native-unit-development)
 (require 'nelisp-native-unit)
 
 (defconst nelisp-dev-reload--ttl 900)
@@ -120,26 +121,46 @@ Return the number of native-unit candidates revoked this way."
   "Compile PATH under ROOT into a fresh raw-v1 artifact for BINARY.
 Return the new artifact's path.  This is a plain host-subprocess compiler
 invocation; it never touches candidate/unit state, which always goes
-through the `nelisp-native-unit-*' API."
+through the `nelisp-native-unit-*' API.
+
+Bounded through `nelisp-native-unit-development-run-bounded', which owns the
+deadline, the cancellation check and the combined stdout/stderr byte budget,
+and classifies the finished run from the clock rather than by re-sampling
+`process-live-p'.  Before that, this function called `call-process' with no
+deadline at all: a hung compiler blocked the REPL process for as long as it
+cared to, there was no way to cancel it, and the whole of its output was
+interpolated into the error string, so a compiler that emitted megabytes
+produced a megabyte-long condition.
+
+The helper deletes nothing, so the temp artifact is this function's to clean
+up -- and on every failing path it now is.  It used to be created and then
+abandoned whenever the compile failed."
   (let ((script (expand-file-name "scripts/nelisp-native-unit-compile.el" root))
-        (artifact (make-temp-file "nelisp-dev-reload-native-" nil ".nelr")))
-    (unless (file-readable-p script)
-      (error "NELISP-DEV-PLAN-BUILD-FAILED: no native-unit compiler in checkout"))
-    (let ((output (generate-new-buffer " *nelisp-dev-reload-native-compile*")))
-      (unwind-protect
-          (let ((code (call-process
-                       (or (getenv "EMACS") "emacs") nil output nil
-                       "-Q" "--batch" "--eval" "(setq load-prefer-newer t)"
-                       "-L" (expand-file-name "lisp" root)
-                       "-L" (expand-file-name "src" root)
-                       "-L" (expand-file-name "scripts" root)
-                       "-l" script "-f" "nelisp-native-unit-compile-command"
-                       path artifact binary)))
-            (unless (equal code 0)
-              (error "NELISP-DEV-PLAN-BUILD-FAILED: compiler failed (%S): %s" code
-                     (with-current-buffer output (buffer-string)))))
-        (when (buffer-live-p output) (kill-buffer output))))
-    artifact))
+        (artifact (make-temp-file "nelisp-dev-reload-native-" nil ".nelr"))
+        (published nil))
+    (unwind-protect
+        (progn
+          (unless (file-readable-p script)
+            (error "NELISP-DEV-PLAN-BUILD-FAILED: no native-unit compiler in checkout"))
+          (let* ((result (nelisp-native-unit-development-run-bounded
+                          (or (getenv "EMACS") "emacs")
+                          (list "-Q" "--batch" "--eval" "(setq load-prefer-newer t)"
+                                "-L" (expand-file-name "lisp" root)
+                                "-L" (expand-file-name "src" root)
+                                "-L" (expand-file-name "scripts" root)
+                                "-l" script "-f" "nelisp-native-unit-compile-command"
+                                path artifact binary)))
+                 (phase (plist-get result :phase)))
+            (unless (eq phase :complete)
+              (error "NELISP-DEV-PLAN-BUILD-FAILED: compiler %s (exit %S, %ss): %s"
+                     (substring (symbol-name phase) 1)
+                     (plist-get result :exit-code)
+                     (plist-get result :elapsed-seconds)
+                     (plist-get result :stderr)))
+            (setq published t)
+            artifact))
+      (unless published
+        (when (file-exists-p artifact) (delete-file artifact))))))
 
 (defun nelisp-dev-reload--guard (request context operation keys)
   (unless (and (equal (plist-get context :target) "native-linux-x86_64")
