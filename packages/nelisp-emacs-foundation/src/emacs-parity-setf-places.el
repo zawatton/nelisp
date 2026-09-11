@@ -18,8 +18,15 @@
 ;; have signalled `unsupported place'.  Guarded to the standalone substrate so
 ;; a host Emacs (which has the real gv-based `setf') is left untouched.
 
-(when (and (boundp 'nelisp-cl-macros--accessor-info)
-           (fboundp 'nelisp--record-set))
+(when (or (and (boundp 'nelisp-cl-macros--accessor-info)
+              (fboundp 'nelisp--record-set))
+          ;; The standalone bootstrap loads this compatibility source before
+          ;; the record mutator is installed.  Still install the macro there:
+          ;; its expansion-time accessor branch checks the table later, while
+          ;; delaying installation leaves the prelude `setf' in place forever.
+          (and (fboundp 'nelisp--eval-source-string)
+               (or (fboundp 'nl-write-file)
+                   (not (fboundp 'gv-ref)))))
   (defmacro setf (&rest pairs)
     "Generalised assignment (NeLisp; prelude places + cl-getf/if/gethash/...)."
     (when (null pairs) (signal 'error (list "setf: empty body")))
@@ -106,9 +113,25 @@
             ((and (consp place) (eq (car place) 'process-get))
              (list 'process-put (cadr place) (caddr place) val))
             ((and (consp place) (eq (car place) 'if))
-             (list 'if (cadr place)
-                   (list 'setf (caddr place) val)
-                   (list 'setf (cadddr place) val)))
+             ;; Expand the common selected places directly.  The standalone
+             ;; evaluator does not recursively macroexpand a `setf' emitted
+             ;; inside a newly generated `if'; leaving one there dispatches
+             ;; back to its old `if--setter'.
+             (let ((then-place (caddr place))
+                   (else-place (cadddr place)))
+               (list 'if (cadr place)
+                     (cond ((symbolp then-place)
+                            (list 'setq then-place val))
+                           ((and (consp then-place)
+                                 (eq (car then-place) 'default-value))
+                            (list 'set-default (cadr then-place) val))
+                           (t (list 'setf then-place val)))
+                     (cond ((symbolp else-place)
+                            (list 'setq else-place val))
+                           ((and (consp else-place)
+                                 (eq (car else-place) 'default-value))
+                            (list 'set-default (cadr else-place) val))
+                           (t (list 'setf else-place val))))))
             (t
              (signal 'error
                      (list "setf: unsupported place"
