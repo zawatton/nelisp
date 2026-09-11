@@ -16,6 +16,24 @@
             (setq lo mid) (setq hi (1- mid)))))
     (substring text 0 lo)))
 
+(defun nelisp-dev-replay--outcome (deadline-expired limited valid)
+  "Classify a finished worker run from observed facts, not process liveness.
+
+DEADLINE-EXPIRED says the wait loop reached its deadline, LIMITED that the
+output budget was exceeded, and VALID that the worker left a terminal record
+whose nonce, form count, status and exit code all agreed.
+
+Sampling `process-live-p\=' at the deadline is not a dependable signal for
+\"did this run time out\": on MS-Windows the child was already reaped by the
+time that sample was taken, so a run that had exhausted its full deadline
+without producing any terminal record was reported as phase \"worker\"
+instead of \"timeout\" (CI run 34608788600, windows-latest/30.1).  A deadline
+that expired with no valid terminal record is a timeout on every platform."
+  (cond (limited 'output-limit)
+        (valid 'terminal)
+        (deadline-expired 'timeout)
+        (t 'worker)))
+
 (defun nelisp-dev-replay--result (request status phase code data)
   (nelisp-dev-protocol-envelope
    "session.replay" (cdr (assoc "request_id" request)) status
@@ -39,7 +57,8 @@
          (worker (expand-file-name "../scripts/nelisp-dev-replay-worker.el"
                                    nelisp-dev-replay--directory))
          (nonce (secure-hash 'sha256 (format "%S:%S" (current-time) (random))))
-         (stdout "") (stderr "") (used 0) limited timed-out process error-pipe)
+         (stdout "") (stderr "") (used 0) (started (float-time))
+         limited deadline-expired elapsed process error-pipe)
     (unwind-protect
         (progn
           (setq error-pipe
@@ -72,18 +91,22 @@
                                (setq limited t)
                                (when (and process (process-live-p process))
                                  (delete-process process)))))))
-          (let ((deadline (+ (float-time) timeout)))
+          (let ((deadline (+ started timeout)))
             (while (and (process-live-p process) (not limited)
                         (< (float-time) deadline))
               (accept-process-output process 0.02))
-            (when (process-live-p process)
-              (setq timed-out (not limited))
-              (delete-process process)))
+            ;; Decide "the deadline expired" from the clock, before any
+            ;; process-state sample, then kill whatever is still running.
+            (setq elapsed (- (float-time) started)
+                  deadline-expired (>= (float-time) deadline))
+            (when (process-live-p process) (delete-process process)))
           ;; Bounded drain: a recipe can spawn a child retaining these pipes.
           (dotimes (_ 5)
             (accept-process-output process 0.01)
             (accept-process-output error-pipe 0.01))
-          (let* ((read-result (and (not limited) (not timed-out)
+          ;; A worker that finished just before the deadline still owns its
+          ;; terminal record; only a truncated run forfeits it.
+          (let* ((read-result (and (not limited)
                                    (file-readable-p result-file)
                                    (nelisp-dev-session--read-json result-file)))
                  (terminal (plist-get read-result :data))
@@ -95,17 +118,27 @@
                              (member status '("ok" "failed" "inconclusive"))
                              (= exit-code (cond ((equal status "ok") 0)
                                                  ((equal status "inconclusive") 3)
-                                                 (t 1))))))
+                                                 (t 1)))))
+                 (outcome (nelisp-dev-replay--outcome deadline-expired limited valid)))
             (nelisp-dev-replay--result
-             request (if valid status "failed")
-             (cond (timed-out "timeout") (limited "output-limit")
-                   (valid (cdr (assoc "phase" terminal))) (t "worker"))
-             (cond (timed-out "NELISP-DEV-REPLAY-TIMEOUT")
-                   (limited "NELISP-DEV-REPLAY-OUTPUT-LIMIT")
-                   ((not valid) "NELISP-DEV-REPLAY-INCOMPLETE")
-                   ((equal status "failed") "NELISP-DEV-REPLAY-FAILED"))
+             request (if (eq outcome 'terminal) status "failed")
+             (pcase outcome
+               ('output-limit "output-limit")
+               ('terminal (cdr (assoc "phase" terminal)))
+               ('timeout "timeout")
+               (_ "worker"))
+             (pcase outcome
+               ('output-limit "NELISP-DEV-REPLAY-OUTPUT-LIMIT")
+               ('timeout "NELISP-DEV-REPLAY-TIMEOUT")
+               ('worker "NELISP-DEV-REPLAY-INCOMPLETE")
+               (_ (and (equal status "failed") "NELISP-DEV-REPLAY-FAILED")))
              (append (list (cons "executed_forms" (if valid count :null))
                            (cons "worker_exit_code" exit-code)
+                           (cons "timeout_seconds" timeout)
+                           (cons "elapsed_seconds" (/ (round (* elapsed 1000)) 1000.0))
+                           (cons "deadline_expired" (if deadline-expired t :false))
+                           (cons "process_status"
+                                 (symbol-name (or (process-status process) 'unknown)))
                            (cons "stdout" (nelisp-dev-replay--prefix stdout 1024))
                            (cons "stderr" (nelisp-dev-replay--prefix stderr 1024))
                            (cons "stdout_bytes" (string-bytes stdout))

@@ -82,6 +82,37 @@
      (should (equal "failed" (nelisp-dev-replay-test--status result)))
      (should (null (bound-and-true-p nelisp-dev-replay-test-success-marker))))))
 
+(ert-deftest nelisp-dev-replay/expired-deadline-without-record-is-a-timeout ()
+  "An exhausted deadline with no terminal record is a timeout, not a worker fault.
+
+The classification used to be derived from a `process-live-p\=' sample taken
+after the wait loop.  On windows-latest/30.1 the child was already reaped at
+that moment, so `nelisp-dev-replay/timeout-kills-worker\=' observed phase
+\"worker\" after burning its full 1s deadline (CI run 34608788600).  These
+cases pin the decision to the clock and the terminal record instead."
+  (should (eq 'timeout (nelisp-dev-replay--outcome t nil nil)))
+  (should (eq 'worker (nelisp-dev-replay--outcome nil nil nil)))
+  (should (eq 'terminal (nelisp-dev-replay--outcome nil nil t)))
+  ;; A worker that finished just under the wire keeps its record even though
+  ;; the poll noticed only after the deadline had passed.
+  (should (eq 'terminal (nelisp-dev-replay--outcome t nil t)))
+  (should (eq 'output-limit (nelisp-dev-replay--outcome t t nil)))
+  (should (eq 'output-limit (nelisp-dev-replay--outcome nil t t))))
+
+(ert-deftest nelisp-dev-replay/timeout-reports-its-deadline-evidence ()
+  "A timed-out replay reports the clock evidence its verdict rests on."
+  (nelisp-dev-replay-test--session
+   "(while t)\n"
+   (let* ((result (nelisp-dev-replay-dispatch
+                   (nelisp-dev-replay-test--request manifest "explicit-only" 1)
+                   (list :target "host-emacs" :root directory)))
+          (data (cdr (assoc "data" result))))
+     (should (equal "failed" (nelisp-dev-replay-test--status result)))
+     (should (equal 1 (cdr (assoc "timeout_seconds" data))))
+     (should (eq t (cdr (assoc "deadline_expired" data))))
+     (should (>= (cdr (assoc "elapsed_seconds" data)) 1))
+     (should (stringp (cdr (assoc "process_status" data)))))))
+
 (ert-deftest nelisp-dev-replay/timeout-kills-worker ()
   (nelisp-dev-replay-test--session
    "(while t)\n"
