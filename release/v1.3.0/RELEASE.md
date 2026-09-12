@@ -103,8 +103,9 @@ cases** while appearing to pass.
 | Full real-init audit (930 forms) | PASS — 930/930 boundaries, `AUDIT_DONE 930`, exit 0, no signal, 36s, binary `b9cb89afd25c`. 322 `FORM_ERROR`s remain: 238 `void-function`, 54 `file-missing`, 29 `void-variable`, 1 `error` — unimplemented Emacs APIs and absent files, not memory faults |
 | Native unit replacement, live | PASS: publish, a caller compiled once observing a later generation, CAS rejection of a stale candidate, arity refusal, preserved Lisp state |
 | Version consistency | 9/9 sites say v1.3.0 |
-| Linux 1-hour soak | THP-dependent as described above; must still pass on the release runners |
-| Semver tag CI (`linux-x86_64`, `linux-aarch64`) | **Not yet run** — it needs this tag |
+| Linux 1-hour soak, release runner | PASS — 2,140 batches, 3,600.000s, RSS 74,744 → peak 76,252 KiB (+1,508 against a 5,120 ceiling). The THP behaviour described above is a property of hosts with `transparent_hugepage/enabled` at `[always]`; the release runner is not one |
+| Semver release pipeline, `linux-x86_64` | PASS (run 34662576736) |
+| Semver release pipeline, `linux-aarch64` | PASS (run 34662576736, 4m34s) |
 | macOS ARM64 on real hardware | **Deferred to v1.3.1** — not a v1.3.0 release target; see [`MACOS-QUALIFICATION.md`](MACOS-QUALIFICATION.md) |
 
 ## Release qualification

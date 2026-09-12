@@ -876,15 +876,104 @@ implementation before a cross-host binary is available."
                          10)))))))))
 
 (ert-deftest nelisp-standalone-target-macos-access-translates-portable-number ()
-  "macOS translates portable access(2) number 21 to Darwin syscall 33."
-  (let ((nelisp-standalone--target 'macos-aarch64))
-    (should
-     (member
-      '(defun nl_os_syscall_path_int (nr cpath iarg)
-         (if (= nr 21)
-             (syscall-direct 33 cpath iarg 0 0 0 0)
-           (- 0 38)))
-      (nelisp-standalone--os-syscall-xlat-forms)))))
+  "macOS maps every portable syscall number the layer above it passes.
+
+The layer addresses syscalls by the LINUX x86_64 vocabulary number, so each
+one has to be translated here or the call silently does nothing useful.
+This used to pin the whole `nl_os_syscall_path_int' form, which meant it
+asserted the SHAPE of a two-arm `if' rather than the mapping, and adding a
+second translation to that function broke it without anything being wrong.
+It now names each (portable . darwin) pair it requires, so a new arm
+extends the table instead of breaking the test, while a wrong or dropped
+number still fails.  Numbers are from the macOS SDK's `sys/syscall.h' and
+each was exercised from C against macOS 26.6.2 arm64 on 2026-09-12."
+  (cl-labels ((tree-member-p
+               (needle tree)
+               (cond
+                ((equal needle tree) t)
+                ((consp tree)
+                 (or (tree-member-p needle (car tree))
+                     (tree-member-p needle (cdr tree)))))))
+    (let* ((nelisp-standalone--target 'macos-aarch64)
+           (forms (nelisp-standalone--os-syscall-xlat-forms))
+           (named (lambda (name)
+                    (car (seq-filter
+                          (lambda (f)
+                            (and (consp f) (eq (car f) 'defun)
+                                 (eq (nth 1 f) name)))
+                          forms)))))
+      ;; access 21, mkdir 83, chmod 90 -> Darwin 33, 136, 15.
+      (let ((path-int (funcall named 'nl_os_syscall_path_int)))
+        (should path-int)
+        (dolist (pair '((21 . 33) (83 . 136) (90 . 15)))
+          (should (tree-member-p (list '= 'nr (car pair)) path-int))
+          (should (tree-member-p
+                   (list 'syscall-direct (cdr pair) 'cpath 'iarg 0 0 0 0)
+                   path-int))))
+      ;; unlink 87, rmdir 84 -> Darwin 10, 137.
+      (let ((path (funcall named 'nl_os_syscall_path)))
+        (should path)
+        (dolist (pair '((87 . 10) (84 . 137)))
+          (should (tree-member-p (list '= 'nr (car pair)) path))
+          (should (tree-member-p
+                   (list 'syscall-direct (cdr pair) 'cpath 0 0 0 0 0)
+                   path))))
+      ;; rename 82, symlink 88 -> Darwin 128, 57.
+      (let ((path2 (funcall named 'nl_os_syscall_path2)))
+        (should path2)
+        (dolist (pair '((82 . 128) (88 . 57)))
+          (should (tree-member-p (list '= 'nr (car pair)) path2))
+          (should (tree-member-p
+                   (list 'syscall-direct (cdr pair) 'c1 'c2 0 0 0 0)
+                   path2)))))))
+
+(ert-deftest nelisp-standalone-target-macos-stat-uses-darwin-offsets ()
+  "macOS rewrites Darwin `struct stat' into the layer's Linux layout.
+
+Both structs are 144 bytes, so nothing about a buffer size catches a
+layout mistake here, and Linux's st_size offset 48 is Darwin's
+st_mtimespec.tv_sec -- keeping the Linux offsets makes a 365-byte file
+report its size as a Unix timestamp.  Pin the reads at the Darwin offsets
+(`offsetof', macOS 26.6.2 arm64 SDK) and the writes at the Linux ones."
+  (cl-labels ((tree-member-p
+               (needle tree)
+               (cond
+                ((equal needle tree) t)
+                ((consp tree)
+                 (or (tree-member-p needle (car tree))
+                     (tree-member-p needle (cdr tree)))))))
+    (let* ((nelisp-standalone--target 'macos-aarch64)
+           (forms (nelisp-standalone--os-syscall-xlat-forms))
+           (xlat (car (seq-filter
+                       (lambda (f)
+                         (and (consp f) (eq (car f) 'defun)
+                              (eq (nth 1 f) 'nl_darwin_stat_to_linux)))
+                       forms))))
+      (should xlat)
+      ;; Darwin reads: size@96, mtime@48, mode@4 (u16), nlink@6 (u16).
+      (should (tree-member-p '(ptr-read-u64 buf 96) xlat))
+      (should (tree-member-p '(ptr-read-u64 buf 48) xlat))
+      (should (tree-member-p '(ptr-read-u16 buf 4) xlat))
+      (should (tree-member-p '(ptr-read-u16 buf 6) xlat))
+      ;; Linux writes: size@48, mtime@88, mode@24 (u32), nlink@16 (u64).
+      (should (tree-member-p '(ptr-write-u64 buf 48 size) xlat))
+      (should (tree-member-p '(ptr-write-u64 buf 88 mtime) xlat))
+      (should (tree-member-p '(ptr-write-u32 buf 24 mode) xlat))
+      (should (tree-member-p '(ptr-write-u64 buf 16 nlink) xlat))
+      ;; stat64 is 338 and lstat64 is 340, not the other way round.
+      (let ((stat-fn (car (seq-filter
+                           (lambda (f)
+                             (and (consp f) (eq (car f) 'defun)
+                                  (eq (nth 1 f) 'nl_os_stat_path)))
+                           forms)))
+            (lstat-fn (car (seq-filter
+                            (lambda (f)
+                              (and (consp f) (eq (car f) 'defun)
+                                   (eq (nth 1 f) 'nl_os_lstat_path)))
+                            forms))))
+        (should (tree-member-p '(syscall-direct 338 cpath buf 0 0 0 0) stat-fn))
+        (should (tree-member-p '(syscall-direct 340 cpath buf 0 0 0 0)
+                               lstat-fn))))))
 
 (ert-deftest nelisp-standalone-target-reader-installs-process-builtin ()
   "The reader exposes the synchronous process substrate primitive."

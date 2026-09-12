@@ -312,7 +312,10 @@
 # installs a table through the native `nl_callsite_install' stub, which owns
 # the CAS.  Same shape as nelisp-native-unit.el's own gate/table work.
 # 873 -> 879 on 2026-09-12: the same six calls, counted in the overall total.
-unsafe-call 879
+# 879 -> 946 on 2026-09-12 (v1.3.1): the same 67 calls, counted in the
+# overall total -- the Darwin path/stat/dirent translation described at the
+# scripts/nelisp-standalone-build.el pin below.
+unsafe-call 946
 
 # `pinned-kernel-call FILE COUNT' pins the per-file unquoted `unsafe-call'
 # count behind `total' above -- the kernel files that actually carry
@@ -462,7 +465,16 @@ pinned-kernel-call scripts/nelisp-gc-pause-growth.el 2
 # read and update the nl_alloc_check control block.  Raw-memory work by
 # construction -- it exists to inspect raw memory the allocator is handing
 # out again -- and it is inert unless NELISP_ALLOC_CHECK=1 armed it.
-pinned-kernel-call scripts/nelisp-standalone-build.el 757
+# 757 -> 824 on 2026-09-12 (v1.3.1): the Darwin path/stat layer.  `stat`,
+# `lstat`, `rename`, `symlink`, `unlink`, `mkdir`, `rmdir`, `chmod`,
+# `readlink`, `opendir`/`getdents` and `utimes` were deliberate -ENOSYS stubs
+# on macOS; implementing them means translating Darwin's `struct stat` and
+# dirent records into the Linux x86-64 layout the layer above addresses,
+# which is raw-memory work by construction -- the same shape
+# `nl_win_stat_from_data` already has for Win32 and `nl_os_stat_fixup` for
+# linux-aarch64.  It is emitted target code, contributed only to a
+# macos-aarch64 build.
+pinned-kernel-call scripts/nelisp-standalone-build.el 824
 # 2026-09-11: one GC snapshot raw-address probe, bounded by the named table
 # contract and used only for structured diagnostics.
 pinned-kernel-call lisp/nelisp-repl-gc.el 1

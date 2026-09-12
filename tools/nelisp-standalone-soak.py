@@ -1,18 +1,84 @@
 #!/usr/bin/env python3
 """Exercise the standalone NeLisp GC through one persistent REPL process."""
 import argparse
+import ctypes
+import ctypes.util
 import hashlib
 import json
 import math
 import os
 import selectors
+import struct
 import subprocess
 import sys
 import time
 from pathlib import Path
 
 
+# PROC_PIDTASKINFO; struct proc_taskinfo begins with two uint64 fields,
+# pti_virtual_size then pti_resident_size.  sys/proc_info.h.
+_PROC_PIDTASKINFO = 4
+_PROC_TASKINFO_BYTES = 256
+_LIBPROC = None
+
+
+def _libproc():
+    """Return the cached libproc handle, or False when it cannot be loaded."""
+    global _LIBPROC
+    if _LIBPROC is None:
+        try:
+            _LIBPROC = ctypes.CDLL(
+                ctypes.util.find_library("proc") or "/usr/lib/libproc.dylib")
+        except OSError:
+            _LIBPROC = False
+    return _LIBPROC
+
+
+def _rss_kib_darwin(pid):
+    """Resident set size in KiB on Darwin, or 0 when it cannot be read.
+
+    Darwin has no procfs, so there is no VmRSS to read.  libproc's
+    PROC_PIDTASKINFO carries the same number as pti_resident_size and needs
+    no subprocess -- which matters at one sample per second for an hour.
+    Cross-checked against `ps -o rss=' on macos 26.6.2 arm64: both reported
+    65184 KiB for the same pid at the same moment, so the `ps' fallback
+    below is an equivalent second source rather than a different metric.
+    """
+    lib = _libproc()
+    if lib:
+        buf = ctypes.create_string_buffer(_PROC_TASKINFO_BYTES)
+        try:
+            filled = lib.proc_pidinfo(pid, _PROC_PIDTASKINFO, 0, buf,
+                                      _PROC_TASKINFO_BYTES)
+        except (OSError, ctypes.ArgumentError):
+            filled = 0
+        if filled >= 16:
+            _virtual, resident = struct.unpack_from("=QQ", buf.raw, 0)
+            return resident // 1024
+    try:
+        probe = subprocess.run(["/bin/ps", "-o", "rss=", "-p", str(pid)],
+                               capture_output=True, text=True, timeout=10)
+        text = probe.stdout.strip()
+        return int(text) if text.isdigit() else 0
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return 0
+
+
 def rss_kib(pid):
+    """Resident set size in KiB, or 0 when it cannot be read.
+
+    0 is what `sample_rss' turns into `FAIL: RSS is unavailable', so an
+    unsupported host fails loudly rather than soaking against a metric it
+    never actually sampled.  That is exactly what happened on macOS before
+    this branch existed: the Linux-only /proc read returned 0, the very
+    first `sample_rss' -- the one taken BEFORE the timing loop starts --
+    raised, and the run reported batches=0 elapsed_seconds=0.000 for a
+    requested --duration 3600.  A soak that exercised nothing is neither a
+    pass nor a leak; it is no measurement at all.  Measured 2026-09-12 on
+    macos 26.6.2 arm64.
+    """
+    if sys.platform == "darwin":
+        return _rss_kib_darwin(pid)
     try:
         with open(f"/proc/{pid}/status", encoding="ascii") as stream:
             for line in stream:
@@ -24,7 +90,14 @@ def rss_kib(pid):
 
 
 def smaps_rollup_kib(pid):
-    """Return selected Linux smaps_rollup KiB fields, or None if unavailable."""
+    """Return selected Linux smaps_rollup KiB fields, or None if unavailable.
+
+    Darwin has no smaps_rollup and no transparent huge pages, so there is
+    nothing to map `AnonHugePages' onto; None is the honest answer there and
+    the caller already prints `smaps_rollup=unavailable' for it.  The
+    Darwin-side equivalent of the dirty/swapped breakdown is captured as
+    `vmmap -summary' text by `save_diagnostic' instead.
+    """
     wanted = ("Rss", "Anonymous", "AnonHugePages", "Private_Dirty")
     values = {}
     try:
@@ -92,10 +165,24 @@ def main():
             return
         try:
             args.diagnostic_dir.mkdir(parents=True, exist_ok=True)
-            with open(f"/proc/{child.pid}/smaps", encoding="ascii") as stream:
-                smaps_text = stream.read()
-            (args.diagnostic_dir / f"{label}.smaps").write_text(
-                smaps_text, encoding="ascii")
+            if sys.platform == "darwin":
+                # No smaps on Darwin.  `vmmap -summary' is the nearest thing
+                # and, unlike RSS, it does show the compressor: it reports
+                # "Physical footprint" plus DIRTY/SWAPPED columns, so a leak
+                # that macOS compresses instead of keeping resident is still
+                # visible here.  Diagnostic only -- the pass/fail metric
+                # stays resident-set growth, so the ceiling keeps the same
+                # meaning it has on Linux.
+                probe = subprocess.run(
+                    ["/usr/bin/vmmap", "-summary", str(child.pid)],
+                    capture_output=True, text=True, timeout=60)
+                (args.diagnostic_dir / f"{label}.vmmap").write_text(
+                    probe.stdout, encoding="utf-8", errors="replace")
+            else:
+                with open(f"/proc/{child.pid}/smaps", encoding="ascii") as stream:
+                    smaps_text = stream.read()
+                (args.diagnostic_dir / f"{label}.smaps").write_text(
+                    smaps_text, encoding="ascii")
             metrics = {
                 "label": label, "pid": child.pid, "start_rss_kib": start_rss,
                 "current_rss_kib": last_rss, "peak_rss_kib": peak_rss,
@@ -105,7 +192,7 @@ def main():
             }
             (args.diagnostic_dir / f"{label}.json").write_text(
                 json.dumps(metrics, sort_keys=True) + "\n", encoding="ascii")
-        except (OSError, ValueError, TypeError):
+        except (OSError, ValueError, TypeError, subprocess.SubprocessError):
             return
 
     def sample_rss():

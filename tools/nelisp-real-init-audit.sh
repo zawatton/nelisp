@@ -66,7 +66,14 @@
 #   (a) process-level RSS from /proc/<pid>/status and .../smaps_rollup --
 #       this is the WHOLE process (code, stack, every mapping), not
 #       allocator-specific, and cannot alone distinguish a leak from an
-#       allocator that retains reusable arena space.
+#       allocator that retains reusable arena space.  On Darwin, which has
+#       no procfs, the same columns are filled from `ps -o rss=,vsz=' plus
+#       a high-water mark this script tracks itself; the smaps_* columns
+#       stay NA because macOS exposes no smaps_rollup equivalent and no
+#       transparent huge pages to account for.  Before that branch existed
+#       every one of these columns read NA on macOS, so the run sheet's
+#       memory accounting was silently blind on the platform it was
+#       written for -- measured 2026-09-12 on macos 26.6.2 arm64.
 #   (b) NeLisp's own arena counters (`nelisp--arena-stats`, exposed at
 #       runtime, no dependency on any dev-only build) -- `used-bytes`
 #       and `bump-offset` are allocator-attributable totals ever handed
@@ -374,6 +381,26 @@ timeout --signal=TERM --kill-after=10 "$TIMEOUT_SECS" "$BINARY" --load "$DRIVER_
   > "$STDOUT_LOG" 2> "$STDERR_LOG" &
 CHILD_PID=$!
 
+HOST_UNAME_S="$(uname -s 2>/dev/null || true)"
+DARWIN_PEAK_RSS="NA"
+
+# Sample the BINARY UNDER TEST, not the `timeout' wrapper.  `$!' above is
+# `timeout''s pid, and every memory column here was therefore reporting
+# `timeout''s own footprint -- a constant ~1.5 MiB that has nothing to do
+# with the audited process.  It went unnoticed because on Linux it produced
+# a plausible small number and on macOS, before this script could read
+# memory at all, every column was NA.  Measured 2026-09-12 on macos 26.6.2
+# arm64: the wrapper reported 1472 KiB while its child, the binary actually
+# being audited, reported 206704 KiB at the same instant.
+MEM_PID="$CHILD_PID"
+MEM_PID_CHILD="$(pgrep -P "$CHILD_PID" 2>/dev/null | head -1 || true)"
+case "$MEM_PID_CHILD" in
+  ''|*[!0-9]*) : ;;
+  *) MEM_PID="$MEM_PID_CHILD" ;;
+esac
+echo "memory samples target pid: $MEM_PID (timeout wrapper pid: $CHILD_PID)" \
+  | tee -a "$SUMMARY_TXT"
+
 SAMPLE_N=0
 while kill -0 "$CHILD_PID" 2>/dev/null; do
   SAMPLE_N=$((SAMPLE_N + 1))
@@ -381,8 +408,8 @@ while kill -0 "$CHILD_PID" 2>/dev/null; do
   ELAPSED=$((NOW_EPOCH - START_EPOCH))
 
   VMRSS="NA"; VMHWM="NA"; VMSIZE="NA"; VMDATA="NA"
-  if [ -r "/proc/$CHILD_PID/status" ]; then
-    STATUS_TXT="$(cat "/proc/$CHILD_PID/status" 2>/dev/null || true)"
+  if [ -r "/proc/$MEM_PID/status" ]; then
+    STATUS_TXT="$(cat "/proc/$MEM_PID/status" 2>/dev/null || true)"
     VMRSS="$(printf '%s\n' "$STATUS_TXT" | awk '/^VmRSS:/{print $2; exit}')"
     VMHWM="$(printf '%s\n' "$STATUS_TXT" | awk '/^VmHWM:/{print $2; exit}')"
     VMSIZE="$(printf '%s\n' "$STATUS_TXT" | awk '/^VmSize:/{print $2; exit}')"
@@ -393,9 +420,31 @@ while kill -0 "$CHILD_PID" 2>/dev/null; do
     [ -z "$VMDATA" ] && VMDATA="NA"
   fi
 
+  # Darwin has no /proc.  `ps' reports rss and vsz in KiB, the same unit
+  # VmRSS/VmSize use, so these land in the existing columns unconverted.
+  # There is no VmHWM analogue, so the peak is accumulated here instead of
+  # read; VmData has no equivalent at all and stays NA rather than being
+  # filled with a number that would mean something else.
+  if [ "$VMRSS" = "NA" ] && [ "$HOST_UNAME_S" = "Darwin" ]; then
+    PS_LINE="$(/bin/ps -o rss=,vsz= -p "$MEM_PID" 2>/dev/null || true)"
+    VMRSS="$(printf '%s\n' "$PS_LINE" | awk 'NF>=2{print $1; exit}')"
+    VMSIZE="$(printf '%s\n' "$PS_LINE" | awk 'NF>=2{print $2; exit}')"
+    [ -z "$VMRSS" ] && VMRSS="NA"
+    [ -z "$VMSIZE" ] && VMSIZE="NA"
+    if [ "$VMRSS" != "NA" ]; then
+      case "$DARWIN_PEAK_RSS" in
+        NA) DARWIN_PEAK_RSS="$VMRSS" ;;
+        *)  if [ "$VMRSS" -gt "$DARWIN_PEAK_RSS" ] 2>/dev/null; then
+              DARWIN_PEAK_RSS="$VMRSS"
+            fi ;;
+      esac
+      VMHWM="$DARWIN_PEAK_RSS"
+    fi
+  fi
+
   SRSS="NA"; SPSS="NA"; SPDIRTY="NA"; SANON="NA"; SSWAP="NA"
-  if [ -r "/proc/$CHILD_PID/smaps_rollup" ]; then
-    ROLLUP_TXT="$(cat "/proc/$CHILD_PID/smaps_rollup" 2>/dev/null || true)"
+  if [ -r "/proc/$MEM_PID/smaps_rollup" ]; then
+    ROLLUP_TXT="$(cat "/proc/$MEM_PID/smaps_rollup" 2>/dev/null || true)"
     SRSS="$(printf '%s\n' "$ROLLUP_TXT" | awk '/^Rss:/{print $2; exit}')"
     SPSS="$(printf '%s\n' "$ROLLUP_TXT" | awk '/^Pss:/{print $2; exit}')"
     SPDIRTY="$(printf '%s\n' "$ROLLUP_TXT" | awk '/^Private_Dirty:/{print $2; exit}')"
