@@ -26,7 +26,25 @@
     (nelisp-repl-code-forget . "Release retained provenance records.")
     (nelisp-repl-gc-snapshot . "Inspect REPL GC development status.")
     (nelisp-repl-gc-collect . "Explicitly request a REPL GC collection.")
-    (nelisp-repl-gc-compare . "Compare two GC snapshots.")))
+    (nelisp-repl-gc-compare . "Compare two GC snapshots.")
+    ;; Native unit replacement, Linux x86_64 opt-in build only.  Listed here
+    ;; because `nelisp-repl-code-info' answers for Lisp definitions and says
+    ;; nothing about a published native unit; someone who found this help
+    ;; through the Lisp side would otherwise have no way to learn the native
+    ;; side exists.  These names are `fboundp' only when
+    ;; `nelisp-native-unit-development' has been required.
+    (nelisp-native-unit-code-info
+     . "Provenance of the native code a unit is running now.")
+    (nelisp-native-unit-status
+     . "A native unit's live generation, identity and export addresses.")
+    (nelisp-native-unit-resources
+     . "Account for retained native mappings and what was reclaimed.")
+    (nelisp-native-unit-reclaim
+     . "Release what is provably reclaimable; report refusals with reasons.")
+    (nelisp-native-unit-rebuild-and-reload
+     . "Recompile a native source and publish it, bounded and cancellable.")
+    (nelisp-native-callsite-reachability
+     . "Which callers a replacement of NAME would actually reach.")))
 
 (provide 'nelisp-repl-development)
 

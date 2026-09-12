@@ -340,6 +340,68 @@ Change the file to `(defun helper_new (x) (+ x 10))` and
 Native callers can use the returned integer address as the literal target
 of the raw compiler's `(call-ptr ADDRESS x)` operation. Addresses and unit IDs
 are process-local: rebuild these callers during setup in a new session.
+### Identify the code a unit is running now
+
+`nelisp-repl-code-info` answers for Lisp definitions and says nothing about a
+published native unit. The native side has its own:
+
+```elisp
+(nelisp-native-unit-code-info score-unit)
+;; :generation, :source, :source-sha256, :source-current,
+;; :current-source-sha256, :artifact-sha256, :binary-sha256, :published-at,
+;; :exports, :history
+(nelisp-native-unit-code-info score-unit "score") ; adds :export-arity/:export-address
+```
+
+`:source-current` is recomputed against the file on disk at call time, so it
+answers "is the source still what produced this code" rather than repeating a
+value cached at publication. It is nil -- never a silent t -- when the file has
+changed, or is missing or unreadable. The identity is recorded only after a
+successful CAS: staging records nothing, and a refused publication leaves the
+previous record untouched.
+
+**Reproducing this state in a new process.** `:history` holds the last 16
+publications as `(:generation :source-sha256 :artifact-sha256 :published-at)`,
+which is the recipe: in a new process, recompile each recorded source in order
+with `nelisp-native-unit-rebuild-and-reload`, against a binary whose
+`:binary-sha256` matches, checking `:artifact-sha256` at each step. Unit IDs
+and entry addresses are process-local and deliberately NOT part of that recipe
+-- rebuild native callers during setup rather than storing an address.
+
+### Account for what replacement retains
+
+```elisp
+(nelisp-native-unit-resources)
+;; (:candidates N :units N :retired N :retained-bytes N
+;;  :reclaimed-tables N :reclaimed-bytes N :retained-reason STR)
+(nelisp-native-unit-reclaim)
+;; (:released (...) :refused ((:generation N :reason STR) ...))
+```
+
+An unpublished candidate owns a generation table no executing code can reach,
+because it was never installed into the unit's control word; discarding one --
+explicitly, by TTL expiry, by a staging failure, or by a refused publication --
+unmaps it and releases the candidate's mapped artifact. A **published**
+generation that is later superseded is kept mapped on purpose: this runtime
+exposes no way to observe that calls entered through a stable gate have
+returned, so `nelisp-native-unit-reclaim` reports it refused with that reason
+rather than guessing.
+
+### Ask which callers a replacement would reach
+
+```elisp
+(nelisp-native-callsite-reachability "some_name")
+;; :build-declared | :gate-only | :not-replaceable
+```
+
+`:build-declared` means existing direct callers inside the running executable
+DO observe a replacement, because the name was declared in
+`tools/nelisp-replaceable-entries.txt` when this binary was built.
+`:gate-only` means only call sites written to go through
+`nelisp-native-unit-address` are redirected. `:not-replaceable` means neither.
+See [Doc 202](design/202-replaceable-call-sites.org) for what requires a
+rebuilt binary and what a live REPL can change.
+
 `sh test/nelisp-native-unit-repl-smoke.sh` demonstrates a caller compiled once,
 private helper renaming, preserved Lisp state, and stale-candidate rejection.
 Select the development executable with `NELISP_BIN`.
