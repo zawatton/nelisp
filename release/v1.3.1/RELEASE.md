@@ -7,11 +7,28 @@ v1.3.0 deferred, and the nine repairs that qualification found. No existing
 target's behaviour is intentionally changed; three of the repairs do reach
 Linux and Windows and are marked as such below.
 
-v1.3.0's own deferral stands and is not rewritten. macOS ARM64 was **not**
-qualified at v1.3.0 — the run sheet, followed literally on real hardware,
-fails at §3 on that commit. See `release/v1.3.0/RELEASE.md` and
-`release/v1.3.0/MACOS-QUALIFICATION.md`, which is the run sheet for this
-release too and has been corrected in place.
+v1.3.0's own deferral is left exactly as v1.3.0 states it. That release
+already records macOS ARM64 as **Deferred to v1.3.1 — not a v1.3.0 release
+target** (`release/v1.3.0/RELEASE.md`), and its run sheet already says
+**this run ships as v1.3.1** — both decided upstream in `2fb0fd8f`,
+independently of and concurrently with the hardware run below. Nothing here
+rewrites that; this release is where the run sheet's result lands, which is
+where it was always going to land.
+
+`release/v1.3.0/MACOS-QUALIFICATION.md` remains the run sheet and is edited
+here only to add what the hardware measured — observed ERT figures, the
+`file target/nelisp` check §3 now needs, the two repaired harnesses, and the
+host-toolchain trap below. Its framing is upstream's and is untouched.
+
+**What was measured, exactly.** The run sheet was worked through on
+`2e67ca4cb4f7e4ae27df651a69dc47b3e5cfa63e` (branch `native-runtime-reload`),
+the commit the task pinned. The `v1.3.0` tag is `71ce45b9`, five commits
+later. Two of those five touch code — `eaae749b` (GC reclaim-poisoning stubs
+for the isolated probe) and `e2451ac5` (REPL native-unit identity and
+reachability APIs) — so every number in this file names `2e67ca4c` plus the
+repairs below, and none of them is a measurement of the tag. Rebasing onto
+the tag means re-measuring, because a different base is a different binary
+and a figure that cannot name its artifact is not a figure.
 
 ## Changes since v1.3.0
 
@@ -176,7 +193,7 @@ them.
 | macOS real-init audit | PASS — 920/920 boundaries, `AUDIT_DONE 920`, exit 0, **no signal**, 53s, init hash unchanged before and after. Peak RSS 527,024 KiB, falling to ~145,000 KiB after collection. 322 `FORM_ERROR`s (236 `void-function`, 56 `file-missing`, 29 `void-variable`, 1 `error`) — unimplemented Emacs APIs and absent files, not memory faults |
 | macOS §7 boundaries | As documented: native unit replacement refuses with `NELISP-DEV-NATIVE-UNAVAILABLE`, catchable, no crash; `nelisp-socket-listen`/`-connect`/`-send` all signal the catchable `nelisp-unsupported-primitive` |
 | Version consistency | 9/9 sites say v1.3.1 |
-| Linux, any check | **Not yet run** — see blocker 1 |
+| Linux, any check, for the repairs below | **Not yet run** — see blocker 1. v1.3.0's own Linux blockers were qualified upstream by run 34662576736, but that run predates every change in this release |
 | Semver tag CI | **Not yet run** — it needs this tag |
 
 The v1.3.0 arena boundary-reclaim SIGSEGV has **no macOS variant**: the audit
@@ -201,8 +218,13 @@ numbers:
 ## Remaining release qualification
 
 1. **Linux and Windows regression — OPEN, and it is the blocker.** None of
-   this was run on Linux: the qualification host has no Linux. Three changes
-   reach beyond macOS and must be re-measured there before this tag ships —
+   this was run on Linux: the qualification host has no Linux. v1.3.0's
+   Linux blockers were closed upstream by run 34662576736, which drove the
+   semver release pipeline through `workflow_dispatch` — the same jobs a tag
+   push runs, without creating a tag — and that is the mechanism to reuse
+   here. It does not carry over on its own: that run predates every change
+   in this release. Three of them reach beyond macOS and must be re-measured
+   there before this tag ships —
    the `(:file PATH)` repair in `lisp/nelisp-native-load.el`, which makes a
    fast path run that had silently returned nil on every host; the audit's pid
    fix, which changes what the Linux audit's memory columns report; and the
