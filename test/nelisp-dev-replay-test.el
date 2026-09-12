@@ -99,6 +99,80 @@ cases pin the decision to the clock and the terminal record instead."
   (should (eq 'output-limit (nelisp-dev-replay--outcome t t nil)))
   (should (eq 'output-limit (nelisp-dev-replay--outcome nil t t))))
 
+(defun nelisp-dev-replay-test--worker-scratch-p (directory)
+  "Say whether DIRECTORY is a replay worker's scratch directory.
+The test harness's own temporary directory shares its prefix, and deleting
+that one has to keep working while a stub refuses the worker's."
+  (let ((base (file-name-nondirectory (directory-file-name directory))))
+    (and (string-prefix-p "nelisp-dev-replay-" base)
+         (not (string-prefix-p "nelisp-dev-replay-test-" base)))))
+
+(ert-deftest nelisp-dev-replay/verdict-survives-a-cleanup-the-platform-refuses ()
+  "A scratch directory the platform will not remove does not erase the verdict.
+
+MS-Windows refuses to remove a directory that is still a live process's
+working directory, and the killed worker exits asynchronously, so the
+removal in `nelisp-dev-replay--worker\='s cleanup raced the child.  The
+`file-error\=' it raised escaped the `unwind-protect\=', discarding an
+already-correct result: a run that had burned its whole 1s deadline
+reported phase \"worker\" instead of \"timeout\" (CI run 34682155790,
+windows-latest/30.1).  Signalling from the removal reproduces that here on
+any platform."
+  (nelisp-dev-replay-test--session
+   "(while t)\n"
+   (let* ((real (symbol-function 'delete-directory))
+          (refused 0) (held nil) result)
+     (unwind-protect
+         (setq result
+               (cl-letf (((symbol-function 'delete-directory)
+                          (lambda (directory &rest arguments)
+                            (if (nelisp-dev-replay-test--worker-scratch-p directory)
+                                (progn (setq refused (1+ refused) held directory)
+                                       (signal 'file-error
+                                               (list "Removing directory"
+                                                     "Permission denied" directory)))
+                              (apply real directory arguments)))))
+                 (nelisp-dev-replay-dispatch
+                  (nelisp-dev-replay-test--request manifest "explicit-only" 1)
+                  (list :target "host-emacs" :root directory))))
+       ;; The stub blocked the real removal; do not leave the scratch behind.
+       (when (and held (file-directory-p held)) (funcall real held t)))
+     (should (> refused 0))
+     (should (equal "failed" (nelisp-dev-replay-test--status result)))
+     (should (equal "timeout"
+                    (cdr (assoc "phase" (cdr (assoc "summary" result))))))
+     (should (eq t (cdr (assoc "deadline_expired" (cdr (assoc "data" result)))))))))
+
+(ert-deftest nelisp-dev-replay/discarding-a-held-directory-retries-then-reports ()
+  "The removal retries a directory the platform holds, and never raises."
+  (let* ((scratch (make-temp-file "nelisp-dev-replay-discard-" t))
+         (real (symbol-function 'delete-directory))
+         (calls 0)
+         (refuse (lambda (directory &rest _)
+                   (setq calls (1+ calls))
+                   (signal 'file-error (list "Removing directory"
+                                             "Permission denied" directory)))))
+    (unwind-protect
+        (progn
+          ;; A hold that lets go is waited out rather than reported.
+          (should (cl-letf (((symbol-function 'delete-directory)
+                             (lambda (directory &rest arguments)
+                               (setq calls (1+ calls))
+                               (if (< calls 3)
+                                   (signal 'file-error
+                                           (list "Removing directory"
+                                                 "Permission denied" directory))
+                                 (apply real directory arguments)))))
+                    (nelisp-dev-replay--discard-directory scratch)))
+          (should (= 3 calls))
+          (should-not (file-directory-p scratch))
+          ;; A hold that never lets go returns nil instead of raising.
+          (setq calls 0)
+          (should-not (cl-letf (((symbol-function 'delete-directory) refuse))
+                        (nelisp-dev-replay--discard-directory scratch)))
+          (should (= nelisp-dev-replay--discard-attempts calls)))
+      (when (file-directory-p scratch) (delete-directory scratch t)))))
+
 (ert-deftest nelisp-dev-replay/timeout-reports-its-deadline-evidence ()
   "A timed-out replay reports the clock evidence its verdict rests on."
   (nelisp-dev-replay-test--session

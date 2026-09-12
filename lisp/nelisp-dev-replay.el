@@ -16,6 +16,36 @@
             (setq lo mid) (setq hi (1- mid)))))
     (substring text 0 lo)))
 
+(defconst nelisp-dev-replay--discard-attempts 10)
+
+(defun nelisp-dev-replay--discard-directory (directory)
+  "Remove DIRECTORY without letting the platform's refusal escape.
+
+Return non-nil once it is gone.  MS-Windows will not remove a directory
+that is still a live process's working directory, and a killed worker
+exits asynchronously, so this removal races the child it just signalled.
+The raise escaped `nelisp-dev-replay--worker\='s cleanup and discarded the
+result that run had already computed correctly: a replay which burned its
+whole deadline reported phase \"worker\" instead of \"timeout\" (CI run
+34682155790, windows-latest/30.1 -- reproduced on GNU/Linux by signalling
+`file-error\=' from here).  A temporary directory that outlives one replay
+is a smaller defect than a verdict that does not survive its own cleanup."
+  (let ((remaining nelisp-dev-replay--discard-attempts) (gone nil))
+    (while (and (not gone) (> remaining 0))
+      (setq remaining (1- remaining))
+      (setq gone (condition-case failure
+                     (progn (delete-directory directory t) t)
+                   (file-error
+                    ;; Give the exiting child its chance, but say so -- with
+                    ;; the platform's own words -- once the last one is gone.
+                    (if (> remaining 0)
+                        (sleep-for 0.05)
+                      (message "nelisp-dev-replay: left %s behind after %d attempts: %s"
+                               directory nelisp-dev-replay--discard-attempts
+                               (error-message-string failure)))
+                    nil))))
+    gone))
+
 (defun nelisp-dev-replay--outcome (deadline-expired limited valid)
   "Classify a finished worker run from observed facts, not process liveness.
 
@@ -150,7 +180,7 @@ that expired with no valid terminal record is a timeout on every platform."
                      (list (cons "manifest_sha256" manifest-hash))))))
       (when (and process (process-live-p process)) (delete-process process))
       (when (and error-pipe (process-live-p error-pipe)) (delete-process error-pipe))
-      (delete-directory scratch t))))
+      (nelisp-dev-replay--discard-directory scratch))))
 
 (defun nelisp-dev-replay-dispatch (request context)
   "Replay a validated host manifest only after an explicit effects policy."
