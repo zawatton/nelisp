@@ -302,6 +302,18 @@ For unrecognised places, signals an error at expansion time."
                                (list 'setcar (list 'nthcdr (cadr args) seqsym) value)
                                (list 'aset seqsym (cadr args) value)))))
                 ((eq fn 'gethash) (list 'puthash (car args) value (cadr args)))
+                ;; Variable-cell places.  Without these the generic fallback
+                ;; below builds a call to `default-value--setter' /
+                ;; `symbol-value--setter', names nothing defines.  Measured
+                ;; 2026-09-12 against doom-modeline's
+                ;;   (setf (if default (default-value 'mode-line-format)
+                ;;           mode-line-format)
+                ;;         ...)
+                ;; which is the form behind the real-init audit's one
+                ;; remaining defect of this class.
+                ((eq fn 'default-value) (list 'set-default (car args) value))
+                ((eq fn 'symbol-value) (list 'set (car args) value))
+                ((eq fn 'symbol-function) (list 'fset (car args) value))
                 ((eq fn 'nth)
                  (list 'setcar
                        (list 'nthcdr (car args) (cadr args))
@@ -330,6 +342,36 @@ For unrecognised places, signals an error at expansion time."
                  (list 'nelisp--record-set (car args)
                        (cdr (assq fn nelisp-cl-macros--accessor-info))
                        value))
+                ((memq fn '(if progn cond))
+                 ;; Control-flow places.  `gv' expands these by recursing into
+                 ;; the branch that is actually reached; without the clause
+                 ;; they fall through to the synthesized-setter fallback below
+                 ;; and emit a call to `if--setter', a name nothing defines.
+                 ;; Measured 2026-09-12: the real-init audit reported
+                 ;; `void-function: if--setter' from doom-modeline's load, the
+                 ;; one remaining defect of its class in 306 init forms.
+                 ;; VALUE appears once per branch in the expansion but only the
+                 ;; reached branch evaluates it, which is stock `gv' behaviour.
+                 (cond
+                  ((eq fn 'if)
+                   (list 'if (car args)
+                         (list 'setf (cadr args) value)
+                         (list 'setf (caddr args) value)))
+                  ((eq fn 'progn)
+                   (append (list 'progn)
+                           (butlast args)
+                           (list (list 'setf (car (last args)) value))))
+                  (t
+                   (cons 'cond
+                         (mapcar (lambda (clause)
+                                   (if (cdr clause)
+                                       (append (list (car clause))
+                                               (butlast (cdr clause))
+                                               (list (list 'setf
+                                                           (car (last (cdr clause)))
+                                                           value)))
+                                     (list (list 'setf (car clause) value))))
+                                 args)))))
                 ((and (symbolp fn) (fboundp fn)
                       (eq (car-safe (symbol-function fn)) 'macro))
                  ;; A generalized place defined as a MACRO (e.g. cl-generic's
