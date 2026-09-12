@@ -521,6 +521,13 @@ repl-script-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-
 # The profiler's reason to exist is the standalone (no `advice.el', no
 # `mapatoms', a ~21 us call floor), so its behaviour is checked there and not
 # only under a host Emacs that has all three.
+# The other benches measure the HOST interpreter; consumers run the binary.
+# This one measures what one evaluator step costs THERE -- the floor the
+# consumer loader's 92% is made of (see the file's commentary).
+.PHONY: standalone-call-floor-bench
+standalone-call-floor-bench: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	./target/nelisp --load bench/nelisp-standalone-call-floor-bench.el
+
 .PHONY: repl-profile-smoke
 repl-profile-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
 	sh test/nelisp-repl-profile-smoke.sh
