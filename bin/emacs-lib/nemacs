@@ -230,13 +230,26 @@ cold_cache_disabled_p() {
 }
 
 # Using an existing cold image is free and large (1.2 s vs ~20 s to boot).
-# BUILDING one is neither: measured 2026-09-12 on this tree, a build takes
-# ~52 min and writes a 549 MB file, of which 16 s is loading the bundle and
-# the rest is `nelisp--arena-dump-image-stream'.  The image is keyed on the
-# bundle, so a single edit under src/ invalidates it -- during development
-# the automatic build was a ~52 min stall for a ~19 s/start saving that the
-# next edit threw away, and it ran on the critical path of an ordinary
-# start.  So: use an image when one is there, and build only when asked.
+# What BUILDING one costs depends on the NeLisp underneath, which is why this
+# is opt-in rather than a number baked into a message:
+#
+#   ~52 min, 549 MB   v1.3.0 and earlier.  `nelisp--arena-dump-image-stream'
+#                     asks `nl_gc_object_start_p' for every pointer field it
+#                     swizzles, and without a collection's object-start index
+#                     that walk is O(objects before this one) per field.
+#                     Measured 2026-09-12: 3130 s end to end, of which 16.2 s
+#                     was loading the bundle.
+#   ~20 s, 558 MB     with the indexed dump (nelisp `claude/devloop-repl',
+#                     same day: build 20.4 s, start from the image 2.6 s,
+#                     answers identical to a session that never used one).
+#
+# vendor/nelisp is v1.3.0 today, so a start that built a missing image would
+# take the first row.  The image is also keyed on the bundle, so one edit
+# under src/ throws it away.  Use an image when one is there; build only when
+# asked.  Once the vendored runtime carries the indexed dump this default is
+# worth revisiting -- at 20 s a build pays for itself after a single start,
+# and what is left to weigh is the 558 MB per bundle version (this machine's
+# cache was 6.1 GB across 19 entries, and nothing evicts them).
 #   NEMACS_COLD_BUILD=1 bin/nemacs ...     (or: make nemacs-cold-image)
 cold_build_allowed_p() {
   case "${NEMACS_COLD_BUILD:-0}" in
@@ -984,7 +997,7 @@ case "$NEMACS_DRIVER" in
               cold_skipped_by_policy=1
               echo "nemacs: no current cold image; starting without one (~20 s)" >&2
               echo "  Build one deliberately with: NEMACS_COLD_BUILD=1 $0 --version" >&2
-              echo "  or: make -C \"$NEMACS_HOME\" nemacs-cold-image   (~52 min, 549 MB)" >&2
+              echo "  or: make -C \"$NEMACS_HOME\" nemacs-cold-image   (~550 MB; ~20 s or ~52 min, see cold_build_allowed_p)" >&2
             elif ! invalidate_cold_source_cache; then
               echo "nemacs: cannot remove stale cold image; no cold image this start" >&2
             else
@@ -992,7 +1005,10 @@ case "$NEMACS_DRIVER" in
               # 2026-09-12 on this tree: 3130 s end to end.  Say the number that
               # is true now -- the point of announcing it before the wait is that
               # the wait does not read as a hang.
-              echo "nemacs: building cold image from source (~52 min, 549 MB)" >&2
+              # ~52 min on v1.3.0, ~20 s on a runtime with the indexed arena
+              # dump; this cannot tell which one it is about to run, so it
+              # names both rather than a number that may be 150x off.
+              echo "nemacs: building cold image from source (~20 s with an indexed arena dump, ~52 min without; ~550 MB)" >&2
               # NOT `$(build_cold_image_from_source)': a command substitution
               # runs in a subshell, so the builder PID it records would be
               # invisible to this shell's signal trap, and a TERM'd launcher
