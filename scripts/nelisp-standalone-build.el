@@ -8392,6 +8392,20 @@ leave symbols unresolved at link time."
              (seq
               ;; route nl_fa_emit's table to the dedicated scratch mmap
               (ptr-write-u64 (data-addr nl_fa_tbl_base) 0 tbl)
+              ;; Build the object-start index first.  Every pointer field the
+              ;; swizzle walk touches asks `nl_gc_object_start_p', and without
+              ;; the index that question is answered by walking block headers
+              ;; from the start of the containing chunk -- O(objects before
+              ;; this one) per field, so O(n^2) over the heap.  Measured
+              ;; 2026-09-12 on a 549 MB image: loading the bundle took 16.2 s
+              ;; and the dump had still written nothing 11 minutes later; a
+              ;; complete build was 3130 s.  The index is exactly what a
+              ;; collection builds for the same question, and this span is
+              ;; where it is safe to hold one: no alloc, no GC and no eval
+              ;; happen between here and the restore, and swizzling rewrites
+              ;; pointer FIELDS while object starts stay put.  A failed
+              ;; prepare returns 0 and leaves the slow path in place.
+              (nl_gc_index_prepare)
               ;; ---- from here to the restore: NO alloc / GC / eval (arena is swizzled) ----
               (ptr-write-u64 cin 0 0) (ptr-write-u64 cout 0 0)
               (ptr-write-u64 (data-addr nl_gc_loop_ctx) 24 1)
@@ -8408,6 +8422,7 @@ leave symbols unresolved at link time."
               (nl_fa_write_all fd ib isz 0)   ; live intern (un-swizzled, fixed on load)
               (nl_os_close_handle fd)
               (bf_arena_inplace_restore_mc tbl tlen ib total)   ; restore the live arena
+              (nl_gc_index_end)
               (nl_os_free_chunk tblbase tblcap)
               (wf_write_int out (+ 64 (+ (* tlen 8) (+ total isz))))))))))
     (defun bf_arena_load_image_from_file (args out)

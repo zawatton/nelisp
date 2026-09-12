@@ -111,7 +111,13 @@ fi
 # above).  $NELISP_BIN is an absolute path starting with "/".
 NELISP_BIN_PAT="[${NELISP_BIN:0:1}]${NELISP_BIN:1}"
 
-WORKDIR="$(mktemp -d /tmp/cold-image-org-e2e.XXXXXX)"
+# `${TMPDIR:-/tmp}', like every other temp path in this repository: this
+# harness writes a multi-hundred-MB image plus logs, and /tmp is a small
+# tmpfs on some machines.  Hardcoding it made the run fail as
+# "No space left on device" inside the cold boot, which then surfaced as a
+# SIGSEGV from the binary under test -- a disk problem wearing a runtime
+# defect's clothes (observed 2026-09-12 on a full 8 GB /tmp).
+WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/cold-image-org-e2e.XXXXXX")"
 cleanup() {
   pkill -9 -f "$NELISP_BIN_PAT --repl" 2>/dev/null
   pkill -9 -f "$NELISP_BIN_PAT --cold-load-from" 2>/dev/null
