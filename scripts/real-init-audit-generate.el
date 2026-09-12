@@ -40,10 +40,38 @@ handle those explicitly (including nesting) while retaining semicolon lines."
         (setq moved t again t)))
     moved)))
 
+(defun real-init-audit-generate--env-count (name)
+  "Return NAME's value as a positive integer, or nil."
+  (let ((text (getenv name)))
+    (and (stringp text)
+         (string-match-p "^[1-9][0-9]*$" text)
+         (string-to-number text))))
+
 (defun real-init-audit-generate--forms (path kind &optional limit)
   "Return independent wrapper forms for PATH, preserving source slices.
 When LIMIT is a positive integer, emit at most that many forms.  The limit is
-diagnostic-only and is useful for bounded memory measurements."
+diagnostic-only and is useful for bounded memory measurements.
+
+Two more environment settings shape the init pass, so an audit that cannot
+finish inside one timeout can still make progress across runs:
+
+  NEMACS_REAL_INIT_CHECKPOINT_AT     dump an arena image after form K and
+                                     STOP.  Stopping is not a convenience:
+                                     measured 2026-09-12, continuing to
+                                     evaluate on the file-load path after an
+                                     in-place dump corrupts the next form --
+                                     a local variable reads `void-variable'
+                                     and every definition after it reads
+                                     `void-function'.  The same script on the
+                                     interactive REPL path survives, so the
+                                     dump itself is sound and it is the
+                                     per-form boundary reclamation across it
+                                     that is not.  Dumping last avoids the
+                                     question entirely.
+  NEMACS_REAL_INIT_RESUME_AFTER      emit only forms after index K.  The
+                                     caller is expected to start the runtime
+                                     from the matching image, which already
+                                     holds everything those forms did."
   (when (file-readable-p path)
     (with-temp-buffer
       ;; Decode the source using its normal coding cookie/default coding.  A
@@ -52,6 +80,14 @@ diagnostic-only and is useful for bounded memory measurements."
       (insert-file-contents path)
       (goto-char (point-min))
       (let ((index 0)
+            (checkpoint-at
+             (and (eq kind 'init)
+                  (real-init-audit-generate--env-count
+                   "NEMACS_REAL_INIT_CHECKPOINT_AT")))
+            (resume-after
+             (and (eq kind 'init)
+                  (real-init-audit-generate--env-count
+                   "NEMACS_REAL_INIT_RESUME_AFTER")))
             wrappers)
         (catch 'real-init-audit-generate-done
           (while (progn
@@ -61,12 +97,24 @@ diagnostic-only and is useful for bounded memory measurements."
                   (start (point)))
               (read (current-buffer))
               (setq index (1+ index))
-              (push
-               (real-init-audit-generate--one-line
-                `(real-init-audit--eval-one ,path ',kind ,index ,line
-                                             ,(buffer-substring-no-properties
-                                               start (point))))
-               wrappers)
+              ;; Skipped forms are still READ: the index and the source slices
+              ;; that follow depend on having walked every earlier form.
+              (unless (and resume-after (<= index resume-after))
+                (push
+                 (real-init-audit-generate--one-line
+                  `(real-init-audit--eval-one ,path ',kind ,index ,line
+                                               ,(buffer-substring-no-properties
+                                                 start (point))))
+                 wrappers)
+                (when (and checkpoint-at (= index checkpoint-at))
+                  (push
+                   (real-init-audit-generate--one-line
+                    `(real-init-audit--checkpoint ,index))
+                   wrappers)
+                  (push
+                   (real-init-audit-generate--one-line '(exit 0))
+                   wrappers)
+                  (throw 'real-init-audit-generate-done nil)))
               (when (and (integerp limit) (>= index limit))
                 (throw 'real-init-audit-generate-done nil)))))
         (nreverse wrappers)))))
@@ -80,30 +128,37 @@ diagnostic-only and is useful for bounded memory measurements."
          (limit-text (getenv "NEMACS_REAL_INIT_STOP_AFTER"))
          (limit (and (stringp limit-text)
                      (string-match-p "^[1-9][0-9]*$" limit-text)
-                     (string-to-number limit-text))))
+                     (string-to-number limit-text)))
+         (resume-after (real-init-audit-generate--env-count
+                        "NEMACS_REAL_INIT_RESUME_AFTER")))
     (with-temp-file output
       (let ((coding-system-for-write 'utf-8-unix))
         ;; The audit invokes --no-init-file.  Loadup and main are therefore
-        ;; required here before the manual init sequence begins.
-        (dolist (form
-                 `((require 'nemacs-main)
-                   (setq nemacs-user-emacs-directory ,directory
-                         user-emacs-directory ,directory
-                         init-file-user ""
-                         package-enable-at-startup t)
-                   (when (fboundp 'emacs-standalone-init)
-                     (emacs-standalone-init))
-                   (when (fboundp 'run-hooks)
-                     (run-hooks 'before-init-hook))))
-          (insert (real-init-audit-generate--one-line form) "\n"))
-        (dolist (form (real-init-audit-generate--forms early 'early-init))
-          (insert form "\n"))
-        (dolist (form
-                 '((when (fboundp 'nemacs-activate-packages-at-startup)
-                     (nemacs-activate-packages-at-startup))
-                   (when (fboundp 'run-hooks)
-                     (run-hooks 'nemacs-package-activation-hook))))
-          (insert (real-init-audit-generate--one-line form) "\n"))
+        ;; required here before the manual init sequence begins.  A RESUMED
+        ;; run skips all of it, including the early-init pass and package
+        ;; activation: the image it starts from is the state those forms
+        ;; produced, and running them again would either redo their effects or
+        ;; fail on state that is already there.
+        (unless resume-after
+          (dolist (form
+                   `((require 'nemacs-main)
+                     (setq nemacs-user-emacs-directory ,directory
+                           user-emacs-directory ,directory
+                           init-file-user ""
+                           package-enable-at-startup t)
+                     (when (fboundp 'emacs-standalone-init)
+                       (emacs-standalone-init))
+                     (when (fboundp 'run-hooks)
+                       (run-hooks 'before-init-hook))))
+            (insert (real-init-audit-generate--one-line form) "\n"))
+          (dolist (form (real-init-audit-generate--forms early 'early-init))
+            (insert form "\n"))
+          (dolist (form
+                   '((when (fboundp 'nemacs-activate-packages-at-startup)
+                       (nemacs-activate-packages-at-startup))
+                     (when (fboundp 'run-hooks)
+                       (run-hooks 'nemacs-package-activation-hook))))
+            (insert (real-init-audit-generate--one-line form) "\n")))
         (dolist (form (real-init-audit-generate--forms init 'init limit))
           (insert form "\n"))
         (dolist (form
