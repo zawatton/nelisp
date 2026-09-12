@@ -107,6 +107,8 @@ usage: tools/ai/nelisp-ai.sh <command> [args]
   runtime-probe       report what the standalone binary can actually do
   gate NAME -- CMD    run CMD and report it, reading its GATE-COUNT line
   probe EXPR          evaluate EXPR in the standalone runtime, output to files
+  defun NAME          print one defun's source, balanced with the real reader
+                      (the generated modules are one 40 KB line; do not open them)
   build-probe [-- CMD] build, then probe -- and refuse to probe if the build failed
   dev --request FILE --json  dispatch a v0.2 development protocol request
   doctor              print the toolchain and binary identity of this checkout
@@ -580,6 +582,28 @@ cmd_ns() {
             -l "$here/nelisp-ns-check.el" -f nelisp-ns-check-run $files
 }
 
+# Print ONE defun's source, by name, from anywhere in the tree.
+#
+# The generated evalport/combiner modules under `lisp/' hold their whole
+# body as a single quoted form on ONE line -- `nelisp-cc-evalport-combiner-
+# apply.el' is five lines and 40 KB.  Opening one to read a single helper
+# costs the whole file, which on 2026-09-12 took a large part of a session's
+# context to read four defuns.  This cuts out exactly the defun asked for,
+# balanced with the real reader.  See `tools/ai/nelisp-defun-print.el'.
+cmd_defun() {
+    [ $# -gt 0 ] || { echo "usage: nelisp-ai.sh defun NAME [ROOT...]" >&2; exit 2; }
+    defun_name=$1
+    shift
+    if [ $# -gt 0 ]; then
+        defun_roots=$*
+    else
+        defun_roots="lisp scripts src bench test tools/ai"
+    fi
+    NELISP_DEFUN_NAME="$defun_name" NELISP_DEFUN_ROOTS="$defun_roots" \
+        "${EMACS:-emacs}" -Q --batch -L tools/ai \
+        -l nelisp-defun-print -f nelisp-defun-print-batch
+}
+
 cmd_probe() {
     [ $# -gt 0 ] || { echo "usage: nelisp-ai.sh probe '(+ 40 2)'" >&2; exit 2; }
     expr=$1
@@ -924,6 +948,7 @@ case "$command" in
     recipes)        cmd_recipes ;;
     runtime-probe)  cmd_runtime_probe ;;
     probe)          cmd_probe "$@" ;;
+    defun)          cmd_defun "$@" ;;
     repl)            cmd_repl "$@" ;;
     build-probe)    cmd_build_probe "$@" ;;
     dev)            cmd_dev "$@" ;;

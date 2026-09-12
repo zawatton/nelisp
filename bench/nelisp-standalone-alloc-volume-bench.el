@@ -240,6 +240,17 @@
 
 ;;; Code:
 
+;; One implementation of the harness, not two.  `bench/nelisp-measure.el'
+;; owns the arena controls and the validity check; this file owns the cases
+;; and what they are compared against.  They were the same code twice until
+;; 2026-09-12, and the copy that forgot the validity check reported "0.0
+;; bytes per iteration, nothing accumulates" -- an artifact, not a result.
+(load (expand-file-name "nelisp-measure.el"
+                        (file-name-directory (or load-file-name
+                                                 buffer-file-name
+                                                 "bench/x")))
+      nil t t)
+
 (defvar nelisp-standalone-alloc-volume-bench-volume-iterations 2000
   "Iterations per volume case.
 
@@ -271,11 +282,8 @@ settings, so a single sample would hide exactly what this file reports.")
 (defvar nelisp-standalone-alloc-volume-bench--held nil
   "Retained list that sets the live-heap size for a timing row.")
 
-(defun nelisp-standalone-alloc-volume-bench--bump ()
-  (nth 2 (nelisp--arena-stats)))
-
-(defun nelisp-standalone-alloc-volume-bench--live ()
-  (nth 4 (nelisp--arena-stats)))
+(defalias 'nelisp-standalone-alloc-volume-bench--bump #'nelisp-measure--bump)
+(defalias 'nelisp-standalone-alloc-volume-bench--live #'nelisp-measure--live)
 
 (defun nelisp-standalone-alloc-volume-bench--leaf0 () 1)
 (defun nelisp-standalone-alloc-volume-bench--leaf1 (x) x)
@@ -325,35 +333,11 @@ settings, so a single sample would hide exactly what this file reports.")
 
 (defun nelisp-standalone-alloc-volume-bench--volume (fn n)
   "Bytes FN allocates per iteration, or nil if the measurement was not valid.
-
-Valid means: recycling was off, so the bump moved; and no sweep ran
-underneath, so the bump delta is the whole allocation and not what survived
-a collection.  `live-bytes-after-last-gc' only changes when a sweep actually
-runs, which makes it the detector."
-  (funcall fn 50)                       ; warm: first pass pays one-time work
-  ;; Start every case from the same arena state.  Without this the cases run
-  ;; back to back with nothing ever freed -- recycling is off -- so a late
-  ;; case eventually crosses a growth trigger and its figure is scrapped by
-  ;; the validity check below.  That is what happened to `defun-1 var'.
-  ;; Re-enable recycling only long enough to sweep, which also zeroes the
-  ;; accumulated debt, then take the measurement in the same off state as
-  ;; every other case.
-  (nelisp--debug-switch 10)
-  (garbage-collect)
-  (nelisp--debug-switch 9)
-  (let* ((live0 (nelisp-standalone-alloc-volume-bench--live))
-         (b0 (nelisp-standalone-alloc-volume-bench--bump))
-         (_ (funcall fn n))
-         (b1 (nelisp-standalone-alloc-volume-bench--bump))
-         (live1 (nelisp-standalone-alloc-volume-bench--live)))
-    (cond ((/= live0 live1) nil)        ; a collection intervened
-          ((<= b1 b0) nil)              ; recycling was not actually off
-          (t (/ (float (- b1 b0)) n)))))
+See `nelisp-measure-alloc' for what valid means and why the check exists."
+  (nelisp-measure-alloc fn n))
 
 (defun nelisp-standalone-alloc-volume-bench--time (fn n)
-  (funcall fn 50)
-  (let* ((t0 (float-time)) (_ (funcall fn n)) (t1 (float-time)))
-    (/ (* 1000000.0 (- t1 t0)) n)))
+  (plist-get (nelisp-measure-time fn n 1) :mean))
 
 (defun nelisp-standalone-alloc-volume-bench--cases ()
   (list (cons "loop" #'nelisp-standalone-alloc-volume-bench--loop)
@@ -404,16 +388,8 @@ runs, which makes it the detector."
     (nreverse rows)))
 
 (defun nelisp-standalone-alloc-volume-bench--config (name)
-  "Install collector configuration NAME.  See the commentary."
-  (cond
-   ;; As shipped: FLOOR 16 MiB, PCT 300 (0 selects each documented default).
-   ((eq name 'default) (nelisp--debug-switch 30 0) (nelisp--debug-switch 31 0))
-   ;; Threshold out of reach, so the debt trigger does not fire.
-   ((eq name 'debt-off) (nelisp--debug-switch 30 1099511627776)
-    (nelisp--debug-switch 31 100000))
-   ;; Threshold tiny, so it fires constantly.
-   ((eq name 'debt-hot) (nelisp--debug-switch 30 1048576)
-    (nelisp--debug-switch 31 10))))
+  "Install collector configuration NAME.  See `nelisp-measure-collector'."
+  (nelisp-measure-collector name))
 
 (defun nelisp-standalone-alloc-volume-bench--row (tag config cases n repeats)
   (nelisp-standalone-alloc-volume-bench--config config)
