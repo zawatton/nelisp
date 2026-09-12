@@ -50,7 +50,19 @@
 (defconst nemacs-library-package-deps--external-feature-relations
   '((keymap . "host-feature")
     (pp . "host-feature")
-    (nelisp-process . "vendor-package"))
+    (nelisp-process . "vendor-package")
+    ;; `emacs-org-outline.el' requires `org-element' at runtime with
+    ;; `load-path' pointing at `vendor/emacs-lisp/org', which is in this
+    ;; repository -- both `org-element.el' and `org-element-ast.el' are
+    ;; there.  It is a vendored dependency, and a deliberate one: that
+    ;; module's own commentary says it must NOT replace
+    ;; `org-element-parse-buffer' with an independent parser, because a
+    ;; failure there is meant to identify missing substrate rather than be
+    ;; routed around.  Unclassified it reported as `external-or-host' and
+    ;; failed the gate, which said "this dependency has not been thought
+    ;; about" when it had been.
+    (org-element . "vendor-package")
+    (org-element-ast . "vendor-package"))
   "Known non-repository dependency relation by required feature.")
 
 (defun nemacs-library-package-deps--external-feature-relation (feature)
