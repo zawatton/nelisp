@@ -66,6 +66,20 @@
   (defvar word-wrap nil
     "Non-nil means display line wrapping should happen at word boundaries."))
 
+;; Read by `visual-fill-column' (and by anything else that asks which way a
+;; paragraph runs before laying it out).  The real-init audit reported
+;; `void-variable: bidi-paragraph-direction' from
+;; `(global-visual-fill-column-mode 1)' on 2026-09-12 -- one of the two
+;; standalone-only defects in its first 306 init forms.  nil is stock Emacs's
+;; default and means "decide per paragraph from its own content", which is
+;; also the honest answer from a substrate that does not reorder bidi text:
+;; callers branch on `left-to-right' / `right-to-left' and otherwise fall
+;; back to their own layout, which is what this substrate can support.
+(unless (boundp 'bidi-paragraph-direction)
+  (defvar bidi-paragraph-direction nil
+    "Direction of paragraphs: `left-to-right', `right-to-left', or nil.
+nil means infer each paragraph's direction from its own content."))
+
 (unless (boundp 'case-fold-search)
   (defvar case-fold-search t
     "Non-nil means searches and matches should ignore case by default."))
