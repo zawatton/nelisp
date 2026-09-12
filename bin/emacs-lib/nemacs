@@ -46,8 +46,11 @@
 #   NEMACS_COLD_CACHE_ROOT root for binary-keyed cold cache entries
 #                    (default: ${XDG_CACHE_HOME:-$HOME/.cache}/nemacs)
 #   NEMACS_DISABLE_COLD_CACHE set to 1/t/true/yes to use normal bootstrap
+#   NEMACS_COLD_BUILD set to 1/t/true/yes to BUILD a missing cold image
+#                    (default: off -- an existing image is still used; see
+#                    `cold_build_allowed_p' for why building is opt-in)
 #   NEMACS_COLD_LOCK_TIMEOUT seconds to wait for another cache builder
-#                    (default: 120)
+#                    (default: 5)
 
 set -euo pipefail
 
@@ -152,7 +155,12 @@ NEMACS_COLD_CACHE_PROBE="${NEMACS_COLD_CACHE_PROBE:-1}"
 # standalone shape.  Same probe on the source image: 22/22, ~1 s.
 NEMACS_COLD_SOURCE_ROUTE="${NEMACS_COLD_SOURCE_ROUTE:-1}"
 NEMACS_COLD_SIDECAR="${NEMACS_COLD_SIDECAR:-$NEMACS_COLD_IMAGE.srcinputs}"
-NEMACS_COLD_LOCK_TIMEOUT="${NEMACS_COLD_LOCK_TIMEOUT:-120}"
+# 120 s was the wait when a missing image was built automatically on the
+# critical path.  It is the wrong trade in both directions now: the build it
+# waits for takes ~52 min (so waiting never reaches it), and starting without
+# an image costs ~20 s (so waiting two minutes to maybe save 19 s is a loss).
+# Wait long enough to let a nearly-finished builder publish, then go.
+NEMACS_COLD_LOCK_TIMEOUT="${NEMACS_COLD_LOCK_TIMEOUT:-5}"
 NEMACS_BATCH_RUNTIME_IMAGE="${NEMACS_BATCH_RUNTIME_IMAGE:-$NEMACS_HOME/build/nemacs-runtime.nlri}"
 NEMACS_INTERACTIVE_RUNTIME_IMAGE="${NEMACS_INTERACTIVE_RUNTIME_IMAGE:-$NEMACS_HOME/build/nemacs-interactive-runtime.nlri}"
 NEMACS_VENDOR_CORE_RUNTIME_IMAGE="${NEMACS_VENDOR_CORE_RUNTIME_IMAGE:-$NEMACS_HOME/build/nemacs-vendor-core-runtime.nlri}"
@@ -190,6 +198,7 @@ nemacs paths:
   NEMACS_COLD_CACHE_PROBE = $NEMACS_COLD_CACHE_PROBE
   NEMACS_COLD_SOURCE_ROUTE = $NEMACS_COLD_SOURCE_ROUTE
   NEMACS_COLD_SIDECAR = $NEMACS_COLD_SIDECAR
+  NEMACS_COLD_BUILD = ${NEMACS_COLD_BUILD:-0} (1 = build a missing cold image)
   NEMACS_COLD_LOCK_TIMEOUT = $NEMACS_COLD_LOCK_TIMEOUT
   NEMACS_BATCH_RUNTIME_IMAGE = $NEMACS_BATCH_RUNTIME_IMAGE
   NEMACS_INTERACTIVE_RUNTIME_IMAGE = $NEMACS_INTERACTIVE_RUNTIME_IMAGE
@@ -220,10 +229,32 @@ cold_cache_disabled_p() {
   esac
 }
 
+# Using an existing cold image is free and large (1.2 s vs ~20 s to boot).
+# BUILDING one is neither: measured 2026-09-12 on this tree, a build takes
+# ~52 min and writes a 549 MB file, of which 16 s is loading the bundle and
+# the rest is `nelisp--arena-dump-image-stream'.  The image is keyed on the
+# bundle, so a single edit under src/ invalidates it -- during development
+# the automatic build was a ~52 min stall for a ~19 s/start saving that the
+# next edit threw away, and it ran on the critical path of an ordinary
+# start.  So: use an image when one is there, and build only when asked.
+#   NEMACS_COLD_BUILD=1 bin/nemacs ...     (or: make nemacs-cold-image)
+cold_build_allowed_p() {
+  case "${NEMACS_COLD_BUILD:-0}" in
+    1|t|T|true|TRUE|yes|YES) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 cold_cache_lock_owned=0
 cold_cache_lock_dir=""
+cold_build_child=""
 
 release_cold_cache_lock() {
+  if [[ -n "$cold_build_child" ]]; then
+    kill "$cold_build_child" 2>/dev/null || true
+    wait "$cold_build_child" 2>/dev/null || true
+    cold_build_child=""
+  fi
   if (( cold_cache_lock_owned )) && [[ -n "$cold_cache_lock_dir" ]]; then
     rm -f "$cold_cache_lock_dir/pid"
     rmdir "$cold_cache_lock_dir" 2>/dev/null || true
@@ -380,7 +411,15 @@ build_cold_image_from_source() {
       "$NEMACS_HOME" "$NEMACS_BOOTSTRAP_BUNDLE"
     printf '(nelisp--arena-dump-image-stream "%s"))\n' "$tmp"
   } > "$drv"
-  NELISP_HOME="$NELISP_HOME" "$NEMACS_NELISP" --load "$drv" >/dev/null || rc=$?
+  # Run it as a job and `wait': bash defers a trapped signal until a
+  # FOREGROUND child exits, so a `timeout'-killed launcher used to return
+  # while its image build kept running -- measured 2026-09-12, 55 minutes of
+  # 100% CPU under PID 1, still holding this lock.  `wait' is interruptible,
+  # and the trap below kills the child it was waiting on.
+  NELISP_HOME="$NELISP_HOME" "$NEMACS_NELISP" --load "$drv" >/dev/null &
+  cold_build_child=$!
+  wait "$cold_build_child" || rc=$?
+  cold_build_child=""
   rm -f "$drv"
   if (( rc != 0 )) || [[ ! -s "$tmp" ]]; then
     rm -f "$tmp"
@@ -924,6 +963,7 @@ case "$NEMACS_DRIVER" in
     ulimit -s "$NEMACS_NELISP_STACK" 2>/dev/null || true
     [[ "$NEMACS_NELISP_MEMORY" == "unlimited" ]] || ulimit -v "$NEMACS_NELISP_MEMORY" 2>/dev/null || true
     cold_image_ready=0
+    cold_skipped_by_policy=0
     if cold_cache_disabled_p; then
       :
     elif mkdir -p "$(dirname "$NEMACS_COLD_ARTIFACT")" \
@@ -940,19 +980,38 @@ case "$NEMACS_DRIVER" in
           else
             # Never leave a known-stale image available to a fallback or later
             # launch.  This also rejects legacy v1 sidecars on first use.
-            if ! invalidate_cold_source_cache; then
+            if ! cold_build_allowed_p; then
+              cold_skipped_by_policy=1
+              echo "nemacs: no current cold image; starting without one (~20 s)" >&2
+              echo "  Build one deliberately with: NEMACS_COLD_BUILD=1 $0 --version" >&2
+              echo "  or: make -C \"$NEMACS_HOME\" nemacs-cold-image   (~52 min, 549 MB)" >&2
+            elif ! invalidate_cold_source_cache; then
               echo "nemacs: cannot remove stale cold image; no cold image this start" >&2
             else
-              # 131 s measured.  Say so before the wait rather than after: the
-              # artifact route's equivalent silence lasted 85 minutes and read as
-              # a hang.
-              echo "nemacs: building cold image from source (~2 min)" >&2
-              if cold_prepare_status="$(build_cold_image_from_source)"; then
+              # Was announced as "~2 min" from a 131 s measurement.  Re-measured
+              # 2026-09-12 on this tree: 3130 s end to end.  Say the number that
+              # is true now -- the point of announcing it before the wait is that
+              # the wait does not read as a hang.
+              echo "nemacs: building cold image from source (~52 min, 549 MB)" >&2
+              # NOT `$(build_cold_image_from_source)': a command substitution
+              # runs in a subshell, so the builder PID it records would be
+              # invisible to this shell's signal trap, and a TERM'd launcher
+              # would exit leaving the ~52 min build orphaned -- which is
+              # exactly what was measured before this line changed.  Redirect
+              # to a file instead; a redirection keeps the function in THIS
+              # shell.
+              cold_status_file="$(mktemp "${TMPDIR:-/tmp}/nemacs-cold-status.XXXXXX")"
+              if build_cold_image_from_source > "$cold_status_file"; then
                 cold_image_ready=1
-              elif cold_artifact_route_available_p; then
-                echo "nemacs: source-route image build failed; trying the artifact route" >&2
-              else
-                echo "nemacs: source-route image build failed; no cold image this start" >&2
+              fi
+              cold_prepare_status="$(cat "$cold_status_file" 2>/dev/null || true)"
+              rm -f "$cold_status_file"
+              if (( ! cold_image_ready )); then
+                if cold_artifact_route_available_p; then
+                  echo "nemacs: source-route image build failed; trying the artifact route" >&2
+                else
+                  echo "nemacs: source-route image build failed; no cold image this start" >&2
+                fi
               fi
             fi
           fi
@@ -971,6 +1030,10 @@ case "$NEMACS_DRIVER" in
           fi
         else
           cold_needs_compile=1
+        fi
+        if (( cold_needs_compile )) && ! cold_build_allowed_p; then
+          cold_needs_compile=0
+          cold_skipped_by_policy=1
         fi
         if (( cold_needs_compile )); then
           if compile_bootstrap_artifact; then
@@ -996,7 +1059,7 @@ case "$NEMACS_DRIVER" in
       else
         echo "nemacs: cold cache lock timed out after ${NEMACS_COLD_LOCK_TIMEOUT}s" >&2
       fi
-      if (( ! cold_image_ready )); then
+      if (( ! cold_image_ready )) && (( ! cold_skipped_by_policy )); then
         echo "nemacs: cold cache unavailable; falling back to normal startup" >&2
       fi
     else
