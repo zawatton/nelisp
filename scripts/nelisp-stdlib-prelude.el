@@ -1372,6 +1372,54 @@ nothing."
          (n (length non)) (idx -1) (i 0))
     (while (< i n) (when (eq (aref non i) ?.) (setq idx i)) (setq i (1+ i)))
     (if (or (< idx 0) (= idx 0)) path (substring path 0 (+ dir-len idx)))))
+;; `file-name-base' and `file-name-with-extension' were the two names in this
+;; family a consumer reached for and did not find: naming a staging file after
+;; its module inside a development REPL failed with `void-function
+;; file-name-base' (2026-09-12).  Both are exactly the host definitions in
+;; terms of what this file already provides, checked against Emacs 31.1 over
+;; the corpus in `test/nelisp-prelude-file-name-test.el' -- including the
+;; cases that are easy to get wrong: a dotfile keeps its whole name
+;; (`.emacs' -> `.emacs'), a directory has an empty base (`/a/b/' -> ""),
+;; only the last extension is replaced (`foo.tar.gz' + `zip' ->
+;; `foo.tar.zip'), and a leading dot on the extension is not doubled.
+;;
+;; `file-name-split', `file-name-parent-directory', `file-relative-name' and
+;; `abbreviate-file-name' are still absent.  They are NOT approximated here:
+;; each depends on behaviour this prelude cannot currently reproduce exactly
+;; (`file-name-split' of "/" answers ("" "" "") on 31.1, the other three go
+;; through `expand-file-name' and `directory-abbrev-alist'), and a
+;; plausible-but-different path answer is worse than a `void-function'.
+(unless (fboundp 'file-name-base)
+  (defun file-name-base (&optional filename)
+    "Return the base name of FILENAME: no directory, no extension."
+    (file-name-sans-extension (file-name-nondirectory filename))))
+(unless (fboundp 'file-name-with-extension)
+  (defun file-name-with-extension (filename extension)
+    "Return FILENAME with its extension replaced by EXTENSION.
+
+A leading period on EXTENSION is accepted and not doubled.  An empty
+FILENAME, an empty EXTENSION, and a FILENAME that names a directory are
+each an error rather than a silently odd path."
+    (nelisp--check-string filename)
+    (nelisp--check-string extension)
+    (let* ((elen (length extension))
+           ;; Exactly ONE leading period, the way `string-trim-left' with
+           ;; Emacs's own "[.]" trims it: (file-name-with-extension "foo"
+           ;; "...el") is "foo...el" on 31.1, not "foo.el".  Stripping
+           ;; the whole run is the plausible-looking wrong answer this
+           ;; family exists to avoid.
+           (i (if (and (> elen 0) (eq (aref extension 0) ?.)) 1 0)))
+      (let ((extn (substring extension i))
+            (flen (length filename)))
+        (cond
+         ((= flen 0)
+          (error "Empty filename"))
+         ((= (length extn) 0)
+          (error "Malformed extension: %s" extension))
+         ((eq (aref filename (1- flen)) ?/)
+          (error "Filename is a directory: %s" filename))
+         (t
+          (concat (file-name-sans-extension filename) "." extn)))))))
 
 ;; Doc 143 common pure string/seq predicates + builders.
 ;; IGNORE-CASE was accepted and ignored here too, so a case-insensitive

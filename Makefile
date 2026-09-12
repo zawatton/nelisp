@@ -498,6 +498,16 @@ native-unit-repl-smoke:
 # requires that control path to fail -- without it the smoke would keep
 # passing if `--script' stopped doing anything. Needs a runnable
 # target/nelisp (or NELISP_BIN).
+# The prelude's file-name family is only reachable in the standalone (each
+# definition is behind `unless fboundp', so host Emacs's own wins), which is
+# why this is a differential smoke rather than an ERT case: it runs one case
+# list through both substrates and diffs them, so the expectations cannot
+# drift from the Emacs in use.  It caught `file-name-with-extension' stripping
+# a whole run of leading periods where Emacs strips exactly one.
+.PHONY: prelude-file-name-smoke
+prelude-file-name-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	sh test/nelisp-prelude-file-name-smoke.sh
+
 .PHONY: repl-script-smoke
 repl-script-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
 	sh test/nelisp-ai-repl-script-smoke.sh

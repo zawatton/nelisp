@@ -544,5 +544,20 @@
 # release cl-generic changes add their corresponding prelude implementation.
 # This is a deliberate feature-size increase, measured after the reader
 # 31/31 standalone checks passed, rather than linker or metadata noise.
-size 7634232
+# Raised 2026-09-12 for the prelude's `file-name-base' /
+# `file-name-with-extension' (a consumer hit `void-function file-name-base'
+# inside a development REPL).  Three builds on one Linux x86_64 machine,
+# same toolchain, measured rather than reasoned about:
+#   7768504  vendor build of 2fb0fd8f3 (this branch's merge base)
+#   7764408  this branch WITHOUT the prelude change -- so the branch's other
+#            commits (bytecode VM namespace fix, REPL tooling) do not enter
+#            the linked binary; the 4096-byte difference from the line above
+#            is alignment noise between two builds of equivalent source
+#   7780792  this branch WITH it: +16384 bytes for the two definitions
+# Note for the integrator: the previous pin (7634232) was already 130176
+# bytes below what 2fb0fd8f3 itself builds, so most of the gap re-pinned
+# here is main's own accumulated drift living inside the 2% slack, not this
+# change.  Re-measure against the CI cold number when landing, per this
+# file's own rule.
+size 7780792
 slack-pct 2
