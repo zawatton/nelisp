@@ -8248,6 +8248,15 @@ leave symbols unresolved at link time."
       (if (if (< off len) 0 1) off
         (let ((r (nl_os_read_file_handle fd (+ buf off) (- len off))))
           (if (< r 1) off (nl_fa_read_all fd buf len (+ off r))))))
+    ;; This variant still has the O(n^2) object-start lookup that the streaming
+    ;; dump below was fixed for (2026-09-12): its `nl_fa_roots' walk asks
+    ;; `nl_gc_object_start_p' per pointer field with no index to answer from.
+    ;; Left as it is on purpose -- it is the superseded full-copy dump (see the
+    ;; comment on the streaming version), no consumer calls it, and the fix is
+    ;; not free here: the walk runs after a ~heap-sized `alloc-bytes', so a
+    ;; `nl_gc_index_prepare' would have to be placed after that allocation and
+    ;; its interaction with the copy re-verified rather than assumed.  If this
+    ;; path is ever put back into service, that is the change to make.
     (defun bf_arena_dump_image_to_file (args out)
       (let* ((cpath (nl_bi_make_cpath (wf_arg_ptr args 0)))
              (head (ptr-read-u64 268436160 0))
