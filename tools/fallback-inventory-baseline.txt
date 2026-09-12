@@ -658,7 +658,17 @@ pinned-site bare-handler	nelisp-native-load.el	defun nelisp-native-load--running
 pinned-site bare-handler	nelisp-native-load.el	defun nelisp-native-load--running-binary-sha256	c90f5f82ec07 1
 pinned-site ignore-errors	nelisp-native-load.el	defun nelisp-native-load--sha256-file-external	bd68aa24dc91 1
 pinned-site silent-fallback	nelisp-native-load.el	defun nelisp-native-load--sha256-file-external	e3f2648caa3a 2
-pinned-site bare-handler	nelisp-native-load.el	defun nelisp-native-load--sha256-file-external	455485914f24 1
+# 2026-09-12, v1.3.1: this helper had NEVER worked under host Emacs -- it
+# passed a filename string as `call-process's DESTINATION, which the
+# standalone runtime reads as "write stdout here" and GNU Emacs does not
+# accept at all, so the fast path silently returned nil on every host while
+# leaving a zero-byte file.  Fixing it to detect the runtime and use
+# `(:file PATH)' on Emacs split the old single handler into two probe arms
+# (one per calling convention), each discarding its condition because "this
+# host cannot spell it that way" is the answer, not an error to report.
+# Digest moved 455485914f24 -> baaf7a35ab28 for the same reason.
+pinned-site bare-handler	nelisp-native-load.el	defun nelisp-native-load--sha256-file-external	baaf7a35ab28 1
+pinned-site bare-handler	nelisp-native-load.el	defun nelisp-native-load--sha256-file-external	ccef9e19816a 1
 pinned-site bare-handler	nelisp-native-load.el	defun nelisp-native-load--sha256-file-external	baaf7a35ab28 1
 pinned-site silent-fallback	nelisp-native-load.el	defun nelisp-native-load--sha256	e3f2648caa3a 1
 pinned-site bare-handler	nelisp-native-load.el	defun nelisp-native-load--sha256	1ffe8eb48934 1
