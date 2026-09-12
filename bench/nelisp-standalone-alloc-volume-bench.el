@@ -52,15 +52,17 @@
 ;;     cons      2501.6                   +928.6   (the cons itself is 32 B)
 ;;
 ;; A bare `while' iteration that only increments a counter allocates about
-;; 1.5 KB.  Each further argument to a call costs 896 bytes, where the
-;; evaluator's own commentary describes the per-argument work as "a 32-byte
-;; cons allocation".  Each further `let' binding costs 1112 bytes.
+;; 1.5 KB.  Each further argument to one of those `defun' calls costs 896
+;; bytes, where the evaluator's own commentary describes the per-argument
+;; work as "a 32-byte cons allocation".  Each further `let' binding costs
+;; 1112 bytes.  (896 is the DEFUN path: an argument to a builtin costs 112.
+;; The split below says why the two differ.)
 ;;
 ;; Decomposed by comparing neighbours, so each step is one unit:
 ;;
 ;;   setq of an evaluated value         201 bytes
-;;   builtin call, 1 argument           584
-;;   each further builtin argument      352
+;;   builtin call, 1 argument           584   (`1+'; see below, it varies)
+;;   each further builtin argument      112   (`list' at arity 1 vs 2)
 ;;   defun call, 1 argument            2312
 ;;   each further defun argument        856
 ;;   each further `let' binding        1112
@@ -90,6 +92,45 @@
 ;; The unit of work in this interpreter is a heap allocation where a stack
 ;; slot would do; `nl_root_reserve' already hands out slots from a bss root
 ;; stack without allocating, and there are 515 `(alloc-bytes 32 8)' sites.
+;;
+;; Which of them?  The `callparts' phase splits a call by taking forms that
+;; reach different depths of the evaluator.  Costs below are net of the
+;; enclosing `setq', which is itself 201 bytes:
+;;
+;;   (quote k) / (progn 1)      40 bytes  = ONE 32-byte slot + header
+;;   (if 1 1 1)                 80
+;;   (and 1)                   200
+;;   (list)                    312        builtin call, empty argument list
+;;   (list i)                  464        + one argument
+;;   (list i i)                576        + another  (so 112 per argument)
+;;   (car nil)                 504        another one-argument builtin
+;;   (1+ i)                    584        and another
+;;   defun, no parameters     1376
+;;   defun, one parameter     2312
+;;
+;; Read it from the top.  Dispatching a cons form that does no work is a
+;; single slot, so the evaluator's own floor is cheap.  A builtin call with
+;; NO arguments is already 312 bytes -- about 8 slots for looking the
+;; function up and dispatching to it -- and each argument after that is only
+;; 112.  So the argument walk is not where the bytes are, which is where the
+;; per-argument cons allocation in `nl_eval_arg_list_drive' had pointed.
+;;
+;; The lambda path is.  A `defun' with no parameters at all costs 1376 where
+;; the equivalent builtin costs 312: 1064 bytes, ~26 slots, spent before a
+;; single parameter is bound.  The first parameter then adds another ~936.
+;; That is the largest single item in the whole table and it is where to
+;; start.
+;;
+;; Ruled out while looking: the macroexpansion cache.  Forcing every lookup
+;; to miss (`nelisp--debug-switch' 13) changes the volume of `(1+ i)' by
+;; exactly zero bytes, so it does not allocate on ordinary non-macro forms.
+;;
+;; One caution the table itself shows: one-argument builtins range 464 to
+;; 584 depending on which builtin, because dispatch is a generated name-
+;; comparison chain and position in it costs something.  Comparing two
+;; DIFFERENT builtins to price an argument is therefore invalid -- doing
+;; exactly that ((+ i 1) against (1+ i)) produced a per-argument figure of
+;; 352, three times the real one.  Vary the arity of one function instead.
 ;;
 ;; None of it accumulates: measured after a collection, with recycling back
 ;; on, the net bump over the same loops is 0.0 bytes per iteration in every
@@ -157,6 +198,17 @@ growth-triggered collection -- either of which silently corrupts the figure.
 At 32000 iterations the `let1' case here measured 0.0 bytes per iteration,
 which is why `nelisp-standalone-alloc-volume-bench--volume' validates rather
 than trusts its own subtraction.")
+
+(defvar nelisp-standalone-alloc-volume-bench-difference-iterations 500
+  "Iterations per case in the phases that report DIFFERENCES between rows.
+
+Smaller than the volume table on purpose.  Every case runs with recycling
+off, so each one bumps real memory that nothing can hand back, and the
+phases run back to back: at 2000 iterations the later phases eventually
+cross a growth trigger and their rows come out INVALID, which is what
+happened to `callparts' when it was added.  A difference phase does not need
+the larger count -- every row shares this one, so the fixed per-invocation
+cost cancels in the subtraction instead of being amortised away.")
 
 (defvar nelisp-standalone-alloc-volume-bench-time-iterations 4000
   "Iterations per timing case.")
@@ -417,9 +469,9 @@ Comparing neighbours here separates costs the flat table cannot: what a
 `setq' of an already-evaluated value costs, what a builtin call costs, what
 a `defun' call costs over that, and what one more argument costs on each of
 the two call paths."
-  (let ((n nelisp-standalone-alloc-volume-bench-volume-iterations)
+  (let ((n nelisp-standalone-alloc-volume-bench-difference-iterations)
         (base nil))
-    (princ "ALLOC-VOLUME decomposition\n")
+    (princ (format "ALLOC-VOLUME decomposition (n=%d)\n" n))
     (nelisp--debug-switch 9)
     (dolist (case (list (cons "loop" #'nelisp-standalone-alloc-volume-bench--loop)
                         (cons "setq-lit" #'nelisp-standalone-alloc-volume-bench--setq-lit)
@@ -477,9 +529,72 @@ slots are."
                          (car case) (nth 0 d) (nth 3 d) (nth 4 d) (nth 5 d) (nth 6 d))))))
     (nelisp--debug-switch 10)))
 
+;; Splitting one call.  These bodies reach different depths of the
+;; evaluator, so the differences between neighbours price the parts: cons
+;; dispatch, function lookup and apply, the argument walk, and the lambda
+;; path -- without needing an instrumented build.
+
+(defun nelisp-standalone-alloc-volume-bench--quote (n)
+  (let ((i 0) (a 0)) (while (< i n) (setq a (quote k)) (setq i (1+ i)))))
+(defun nelisp-standalone-alloc-volume-bench--if (n)
+  (let ((i 0) (a 0)) (while (< i n) (setq a (if 1 1 1)) (setq i (1+ i)))))
+(defun nelisp-standalone-alloc-volume-bench--progn (n)
+  (let ((i 0) (a 0)) (while (< i n) (setq a (progn 1)) (setq i (1+ i)))))
+(defun nelisp-standalone-alloc-volume-bench--and (n)
+  (let ((i 0) (a 0)) (while (< i n) (setq a (and 1)) (setq i (1+ i)))))
+(defun nelisp-standalone-alloc-volume-bench--list0 (n)
+  (let ((i 0) (a 0)) (while (< i n) (setq a (list)) (setq i (1+ i)))))
+(defun nelisp-standalone-alloc-volume-bench--list1 (n)
+  (let ((i 0) (a 0)) (while (< i n) (setq a (list i)) (setq i (1+ i)))))
+(defun nelisp-standalone-alloc-volume-bench--list2 (n)
+  (let ((i 0) (a 0)) (while (< i n) (setq a (list i i)) (setq i (1+ i)))))
+(defun nelisp-standalone-alloc-volume-bench--carnil (n)
+  (let ((i 0) (a 0)) (while (< i n) (setq a (car nil)) (setq i (1+ i)))))
+
+(defun nelisp-standalone-alloc-volume-bench-callparts ()
+  "Price the parts of a call, each row net of the enclosing `setq'."
+  (let* ((n nelisp-standalone-alloc-volume-bench-difference-iterations)
+         (loopv (progn (nelisp--debug-switch 9)
+                       (nelisp-standalone-alloc-volume-bench--volume
+                        #'nelisp-standalone-alloc-volume-bench--loop n)))
+         (setqv (nelisp-standalone-alloc-volume-bench--volume
+                 #'nelisp-standalone-alloc-volume-bench--setq-lit n)))
+    (princ (format "ALLOC-VOLUME callparts (bytes/iter net of the setq wrapper, n=%d)\n" n))
+    (if (or (null loopv) (null setqv))
+        (princ "ALLOC-VOLUME callparts   INVALID (baseline could not be measured)\n")
+      (princ (format "ALLOC-VOLUME %-16s %9.1f  (the wrapper itself, over loop)\n"
+                     "setq" (- setqv loopv)))
+      (dolist (case (list (cons "(quote k)" #'nelisp-standalone-alloc-volume-bench--quote)
+                          (cons "(progn 1)" #'nelisp-standalone-alloc-volume-bench--progn)
+                          (cons "(if 1 1 1)" #'nelisp-standalone-alloc-volume-bench--if)
+                          (cons "(and 1)" #'nelisp-standalone-alloc-volume-bench--and)
+                          (cons "(list)" #'nelisp-standalone-alloc-volume-bench--list0)
+                          (cons "(list i)" #'nelisp-standalone-alloc-volume-bench--list1)
+                          (cons "(list i i)" #'nelisp-standalone-alloc-volume-bench--list2)
+                          (cons "(car nil)" #'nelisp-standalone-alloc-volume-bench--carnil)
+                          (cons "(1+ i)" #'nelisp-standalone-alloc-volume-bench--builtin1)
+                          (cons "defun 0 param" #'nelisp-standalone-alloc-volume-bench--call0)
+                          (cons "defun 1 param" #'nelisp-standalone-alloc-volume-bench--call1)))
+        (let ((v (nelisp-standalone-alloc-volume-bench--volume (cdr case) n)))
+          (princ (format "ALLOC-VOLUME %-16s %9s\n" (car case)
+                         (if v (format "%.1f" (- v setqv)) "INVALID"))))))
+    ;; Does the macroexpansion cache allocate on forms that are not macros?
+    (let ((on (nelisp-standalone-alloc-volume-bench--volume
+               #'nelisp-standalone-alloc-volume-bench--builtin1 n)))
+      (nelisp--debug-switch 13)
+      (let ((off (nelisp-standalone-alloc-volume-bench--volume
+                  #'nelisp-standalone-alloc-volume-bench--builtin1 n)))
+        (nelisp--debug-switch 14)
+        (princ (format "ALLOC-VOLUME %-16s %s / %s  (lookups on / forced to miss)\n"
+                       "mxcache"
+                       (if on (format "%.1f" on) "INVALID")
+                       (if off (format "%.1f" off) "INVALID")))))
+    (nelisp--debug-switch 10)))
+
 (defun nelisp-standalone-alloc-volume-bench-run ()
   (nelisp-standalone-alloc-volume-bench-volume)
   (nelisp-standalone-alloc-volume-bench-decompose)
+  (nelisp-standalone-alloc-volume-bench-callparts)
   (nelisp-standalone-alloc-volume-bench-census)
   (nelisp-standalone-alloc-volume-bench-collection)
   (princ "ALLOC-VOLUME done\n"))
