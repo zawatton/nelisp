@@ -17,6 +17,15 @@ to do when it is not that.
 - **Hardware.** A real Apple-silicon Mac. Not a VM, not a CI runner, not
   Rosetta. `uname -m` must say `arm64`.
 - **Emacs.** 30.1 or 29.4, on `PATH`. `emacs --version` — record which.
+  A newer build works but is a deviation worth recording: the 2026-09-12 run
+  used a Homebrew 30.2 development build (`636f166cfc86`). If that build was
+  configured `--with-native-compilation`, `nelisp-ai.sh compile` can fail on
+  ONE file with `ld: library 'emutls_w' not found` while native-compiling a
+  subr trampoline. That is the host toolchain, not this repository: libgccjit
+  invokes the gcc driver without Homebrew's gcc lib directory on the search
+  path. Export it and re-run —
+  `LIBRARY_PATH=/opt/homebrew/lib/gcc/current/gcc/$(uname -m)-apple-darwin*/*`
+  — and `compile` reports pass, 117 files, 0 failed.
 - **Toolchain.** `cc`, `codesign`, `shasum`. `xcode-select -p` must succeed.
 - **The checkout.** `git clone` this repository and `git checkout v1.3.0`
   (or the tag's commit). Do NOT reuse a working tree someone has been
@@ -45,6 +54,11 @@ this host does not have skip explicitly. That is fine. What is not fine is any
 `unexpected` result, or a lower TOTAL, which would mean a file failed to load
 and ran zero cases rather than skipping honestly.
 
+Observed on macOS 26.6.2 arm64 (M1, Emacs 30.2), 2026-09-12: **5,921 tests,
+5,372 expected, 0 unexpected, 549 skipped**, 202.8s. Same total as Linux, so
+nothing failed to load; the extra 388 skips are `nelisp-sys-*`,
+`nelisp-text-buffer-*` and `nelisp-worker-*` cases. Neither known flake fired.
+
 Two known macOS-only flakes, both timing races rather than defects, both
 recorded in project memory. If you see either, re-run that one file before
 reporting it:
@@ -72,6 +86,17 @@ make standalone-reader
 shasum -a 256 target/nelisp        # RECORD THIS
 make standalone-reader-test        # expect GATE-COUNT checked=32 findings=0
 ```
+
+`file target/nelisp` must say **`Mach-O 64-bit executable arm64`**. Check it,
+because this step used to produce the wrong thing here without saying so: the
+Makefile's native-host default fell through to `linux-x86_64` on every
+non-Windows host, so a bare `make standalone-reader` on a Mac cross-built an
+x86-64 ELF and exited 0, and the hash you recorded next belonged to a binary
+that cannot run on the machine under test. Fixed 2026-09-12 — Darwin on
+Apple silicon now resolves to the builder's canonical `macos-aarch64`. The
+spelling `macos-arm64` that §4 and `tools/build-release-artifact.sh` use is
+accepted as an alias; before the fix it aborted with
+`standalone: unsupported target macos-arm64` and exit 255.
 
 `standalone-reader-test` ends with `PASS: "(+ 40 2)" -> exit 42`. If the build
 itself fails, capture the full output: a macOS-only build failure in the
@@ -102,6 +127,16 @@ tools/nelisp-pin-binary.sh target/nelisp -- \
 
 Expect PASS: RSS growth under the 5,120 KiB ceiling for the full hour.
 
+The harness read RSS only from `/proc/<pid>/status`, so on macOS it used to
+fail before the timing loop even started — `batches=0 elapsed_seconds=0.000`
+for a requested `--duration 3600`, which is not a failing soak but no soak.
+Fixed 2026-09-12: Darwin reads `pti_resident_size` via libproc, and
+`--diagnostic-dir` captures `vmmap -summary` in place of `smaps`. The
+pass/fail metric is still resident-set growth against the same 5,120 KiB
+ceiling, so the number means what it means on Linux. Read the `vmmap`
+`Physical footprint` and `SWAPPED` figures too: macOS compresses memory, so a
+leak can grow the compressor while RSS stays flat.
+
 **Important context so you do not misread a failure.** On Linux this soak fails
 on hosts whose `transparent_hugepage/enabled` is `[always]`, and that was
 settled as huge-page granularity rather than a leak (same binary passes with
@@ -120,6 +155,12 @@ tools/nelisp-pin-binary.sh target/nelisp -- \
 The tool needs an Emacs init file to drive; without one of your own, point
 `--init` at any substantial `.el` file. It never modifies the file it reads and
 checks its hash before and after.
+
+Its per-second memory columns were also `/proc`-only, so every one of them
+read `NA` on macOS. Fixed 2026-09-12: `vmrss_kb` and `vmsize_kb` come from
+`ps -o rss=,vsz=` (already KiB) and `vmhwm_kb` is a high-water mark the script
+accumulates. The `smaps_*` columns stay `NA` — macOS has no `smaps_rollup`,
+and no transparent huge pages to account for.
 
 Expect `AUDIT_DONE`, exit 0, **no signal**. On Linux at this commit the
 equivalent run reaches all 930 form boundaries in 36s with 322 `FORM_ERROR`s

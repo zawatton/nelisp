@@ -342,29 +342,91 @@ one digest is sufficient for all units loaded by a REPL.  `:unset' is kept
 distinct from nil: a reader without a readable self image must report that
 fact instead of treating an absent identity as a wildcard.")
 
+(defun nelisp-native-load--call-process-file (path)
+  "Return the `call-process' DESTINATION that writes stdout to PATH.
+
+The two runtimes disagree about what a bare string means here, and the
+disagreement is silent.  The standalone runtime's `call-process' treats a
+string DESTINATION as the file to write stdout to -- which is what this
+file asked for, and got.  GNU Emacs does not: a string is not one of the
+DESTINATION forms it accepts, so it DISCARDS the output while still
+returning the child's exit status.  Measured 2026-09-12 under Emacs 30.2:
+the helper exited 0 and left a zero-byte file, so this entire fast path
+had been returning nil under the host Emacs and every caller was falling
+back to its slower in-process hashing without anything saying so.  Emacs
+spells the same request `(:file PATH)'.
+
+Detected by capability rather than by `system-type', because what differs
+is the runtime, not the operating system."
+  (if (and (fboundp 'nelisp--write-stdout-bytes)
+           (boundp 'nelisp-artifact-standalone-repo-root))
+      path
+    (list :file path)))
+
+(defconst nelisp-native-load--sha256-helpers
+  '(("sha256sum")
+    ("/usr/bin/sha256sum")
+    ("/bin/sha256sum")
+    ("/sbin/sha256sum")
+    ("/opt/homebrew/bin/sha256sum")
+    ("/usr/local/bin/sha256sum")
+    ("shasum" "-a" "256")
+    ("/usr/bin/shasum" "-a" "256")
+    ("/opt/homebrew/bin/shasum" "-a" "256"))
+  "Candidate (PROGRAM . FIXED-ARGS) invocations that print a SHA-256 line.
+Tried in order; the first one that exits 0 with a 64-hex-digit line wins.
+
+A single bare `sha256sum' is not enough, for two reasons that stack on
+macOS.  Under the host Emacs `call-process' searches `exec-path', but
+macOS has no `sha256sum' in /usr/bin or /bin at all -- 26.6.2 ships it in
+/sbin, Homebrew coreutils installs it in /opt/homebrew/bin, and a stock
+install has only `shasum'.  Inside the standalone reader, which is the
+caller this fast path exists for, `call-process' does NOT search PATH, so
+a bare name cannot resolve even when the binary is installed.  Absolute
+paths are therefore listed explicitly, and `shasum -a 256' -- which
+prints the same `<64 hex>  <path>' shape -- closes the stock-macOS case.
+Measured 2026-09-12 on macos 26.6.2 arm64.")
+
 (defun nelisp-native-load--sha256-file-external (path)
-  "Return PATH's SHA-256 using the standard `sha256sum' helper, or nil.
+  "Return PATH's SHA-256 using an external SHA-256 helper, or nil.
 
 This is the fast path for a standalone reader: copying a multi-megabyte ELF
 image one byte at a time through the interpreted pointer API is both slow and
 unnecessary.  The subprocess sees only the pathname and its output is
 validated as a 64-character digest; callers still compare that digest with
-the manifest before mapping code."
+the manifest before mapping code.
+
+Helper selection walks `nelisp-native-load--sha256-helpers'; returning nil
+when none works leaves the caller on its slower in-process path, which is
+why every failure here is swallowed rather than signalled."
   (when (fboundp 'call-process)
     (let ((output (condition-case nil
                       (make-temp-file "nelisp-runtime-reload-sha256-")
-                    (error nil))))
+                    (error nil)))
+          (digest nil))
       (when output
         (unwind-protect
-            (condition-case nil
-                (when (= 0 (call-process "sha256sum" nil output nil path))
-                  (let ((line (nelisp-native-load--read-file output)))
-                    (when (and (stringp line) (>= (length line) 64))
-                      (let ((digest (substring line 0 64)))
-                        (when (string-match-p
-                               "\\`[0-9a-fA-F]\\{64\\}\\'" digest)
-                          (downcase digest))))))
-              (error nil))
+            (let ((candidates nelisp-native-load--sha256-helpers))
+              (while (and candidates (null digest))
+                (let* ((spec (car candidates))
+                       (program (car spec))
+                       (fixed-args (cdr spec)))
+                  (setq candidates (cdr candidates))
+                  (setq digest
+                        (condition-case nil
+                            (when (= 0 (apply #'call-process program nil
+                                              (nelisp-native-load--call-process-file
+                                               output)
+                                              nil (append fixed-args
+                                                          (list path))))
+                              (let ((line (nelisp-native-load--read-file output)))
+                                (when (and (stringp line) (>= (length line) 64))
+                                  (let ((candidate (substring line 0 64)))
+                                    (when (string-match-p
+                                           "\\`[0-9a-fA-F]\\{64\\}\\'" candidate)
+                                      (downcase candidate))))))
+                          (error nil)))))
+              digest)
           (ignore-errors (delete-file output)))))))
 
 (defun nelisp-native-load--running-binary-sha256 ()

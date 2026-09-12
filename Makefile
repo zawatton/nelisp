@@ -385,7 +385,27 @@ clean:
 # Standalone gates run a binary for the native host by default.  Override this
 # with NELISP_STANDALONE_TARGET to build a different target; its run gate will
 # report SKIP when that target is not executable on the host.
-STANDALONE_GATE_TARGET ?= $(or $(NELISP_STANDALONE_TARGET),$(if $(filter Windows_NT,$(OS)),windows-x86_64,linux-x86_64))
+#
+# "For the native host" used to be a claim this variable did not implement.
+# Every non-Windows host fell through to `linux-x86_64', so a bare
+# `make standalone-reader' on an Apple-silicon Mac silently CROSS-BUILT an
+# x86-64 ELF into `target/nelisp' and reported success -- and the macOS
+# qualification sheet (release/v1.3.0/MACOS-QUALIFICATION.md §3), which says
+# to run exactly that and then hash `target/nelisp', walked into it: the
+# binary it told you to measure could not execute on the machine under test.
+# Measured 2026-09-12 on macos 26.6.2 arm64 (Darwin 25.6.0): ELF x86-64,
+# sha256 990a982f1a8a6692963e60090e4a42c75d98eb3387a8f392f15831a3e6e71e43.
+# Darwin/arm64 is redirected to the builder's own canonical spelling below;
+# every other host keeps its previous default untouched.
+NELISP_HOST_UNAME_S := $(shell uname -s 2>/dev/null)
+NELISP_HOST_UNAME_M := $(shell uname -m 2>/dev/null)
+ifeq ($(NELISP_HOST_UNAME_S),Darwin)
+ifneq ($(filter arm64 aarch64,$(NELISP_HOST_UNAME_M)),)
+NELISP_NATIVE_STANDALONE_TARGET := macos-aarch64
+endif
+endif
+NELISP_NATIVE_STANDALONE_TARGET ?= $(if $(filter Windows_NT,$(OS)),windows-x86_64,linux-x86_64)
+STANDALONE_GATE_TARGET ?= $(or $(NELISP_STANDALONE_TARGET),$(NELISP_NATIVE_STANDALONE_TARGET))
 
 # The standalone binary for the target the gates build and run.  ONE name,
 # because there used to be three ways of spelling it and they disagreed:
@@ -1172,8 +1192,19 @@ standalone-reader-smokes:
 	MAKE="$(MAKE)" tools/nelisp-reader-smokes.sh \
 	  --target "$(STANDALONE_GATE_TARGET)" $(STANDALONE_READER_SMOKES)
 
+# NB: this recipe MUST export NELISP_STANDALONE_TARGET like every other
+# standalone target does.  It did not, and the omission was invisible on
+# Linux because the builder's own default is `linux-x86_64' anyway -- the
+# host it was always run on.  On macOS the two disagreed: `standalone-
+# reader' built `macos-aarch64' while this gate asked for `linux-x86_64',
+# found it unrunnable, printed
+# `GATE-SKIP target linux-x86_64 cannot run on host "aarch64-apple-
+# darwin25.3.0"' and exited 0.  A gate that executed zero checks reported
+# success -- AI.md rule 1, in the one place a macOS qualification would
+# have trusted it.  Measured 2026-09-12 on macos 26.6.2 arm64.  Read the
+# GATE-COUNT line, not just the exit code.
 standalone-reader-test:
-	$(EMACS) --batch -Q -L lisp -L src -L scripts \
+	NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-reader-test
 
@@ -3939,7 +3970,7 @@ standalone-reader-func-arity-test:
 #   make standalone-tarball PLATFORM=linux-x86_64
 #   make standalone-tarball PLATFORM=macos-aarch64
 #   make standalone-tarball-verify PLATFORM=linux-x86_64
-STANDALONE_VERSION ?= $(shell tr -d " \t\n\r" < $(CURDIR)/VERSION 2>/dev/null || echo v1.3.0)
+STANDALONE_VERSION ?= $(shell tr -d " \t\n\r" < $(CURDIR)/VERSION 2>/dev/null || echo v1.3.1)
 standalone-tarball:
 	@./tools/build-standalone-tarball.sh $(STANDALONE_VERSION) $(PLATFORM) --emacs "$(EMACS)"
 

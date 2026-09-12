@@ -48,6 +48,35 @@
  ;; Directory existence must use the target's access operation.  Darwin's
  ;; former ENOSYS stub made both checks false and hid host helper executables.
  (list (file-exists-p ".") (file-directory-p "."))
+ ;; The rest of Darwin's path/stat layer was ENOSYS too until v1.3.1 -- stat,
+ ;; lstat, rename, readlink, opendir/getdents and utimes all answered -38, so
+ ;; `file-attribute-size' returned a negative errno as a SIZE and
+ ;; `rename-file' reported "No such file or directory" about a file that was
+ ;; on disk.  Every value here is DERIVED, never a path: a temp name differs
+ ;; between two runs and between two runtimes, while a byte count, a rename
+ ;; round-trip and a sorted basename list do not.  Answers (10 10 nil t
+ ;; ("beta")) in stock Emacs 30.2 and in the standalone alike, measured
+ ;; 2026-09-12 on macos 26.6.2 arm64.
+ ;;
+ ;; A size read at the wrong struct offset is the specific mistake this
+ ;; catches: Darwin's `struct stat' is 144 bytes like Linux's, and Linux's
+ ;; st_size offset 48 is Darwin's st_mtimespec.tv_sec, so a layout slip
+ ;; returns a Unix timestamp here instead of 10.
+ (let* ((dir (make-temp-file "nelisp-parity-fs-" t))
+        (a (concat dir "/alpha"))
+        (b (concat dir "/beta"))
+        (size-before nil) (size-after nil)
+        (gone nil) (present nil) (names nil))
+   (with-temp-file a (insert "0123456789"))
+   (setq size-before (file-attribute-size (file-attributes a)))
+   (rename-file a b t)
+   (setq size-after (file-attribute-size (file-attributes b)))
+   (setq gone (file-exists-p a))
+   (setq present (file-exists-p b))
+   (setq names (sort (delete "." (delete ".." (directory-files dir))) #'string<))
+   (delete-file b)
+   (delete-directory dir)
+   (list size-before size-after gone present names))
  ;; Exercise varied small allocations while preserving their payloads across
  ;; collection; allocator bucket-search changes must not alter live strings.
  (let ((items (make-vector 58 nil)) (i 0))

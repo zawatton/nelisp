@@ -61,12 +61,32 @@
   (expand-file-name "target/standalone-units" nelisp-standalone--repo-root)
   "Per-unit compiled-object cache directory.")
 
+(defconst nelisp-standalone--target-aliases
+  '(("macos-arm64"   . "macos-aarch64")
+    ("linux-arm64"   . "linux-aarch64")
+    ("windows-arm64" . "windows-aarch64"))
+  "Accepted target spellings that are not this file's canonical names.
+The repository spells the Apple-silicon target two ways and they did not
+meet: `tools/build-release-artifact.sh', `release/v1.3.0/MACOS-
+QUALIFICATION.md' §4 and `nelisp-integration-release-artifact-platforms'
+all say `macos-arm64', while every `pcase' arm in this file says
+`macos-aarch64'.  Passing the release script's spelling through
+NELISP_STANDALONE_TARGET therefore aborted the build with
+`standalone: unsupported target macos-arm64' and exit 255 -- which reads
+like an unported platform rather than a misspelling.  Measured 2026-09-12
+on macos 26.6.2 arm64 while working the v1.3.0 qualification sheet.
+Normalising here beats adding a fourth spelling: the canonical names stay
+the ones the `pcase' arms already use, and a caller may write either.")
+
 (defconst nelisp-standalone--target
-  (intern (or (getenv "NELISP_STANDALONE_TARGET") "linux-x86_64"))
+  (intern (let ((raw (or (getenv "NELISP_STANDALONE_TARGET") "linux-x86_64")))
+            (or (cdr (assoc raw nelisp-standalone--target-aliases)) raw)))
   "Standalone output target.
 Defaults to `linux-x86_64' for backwards compatibility.  Windows-native builds
 must opt in with NELISP_STANDALONE_TARGET=windows-x86_64 so Windows-hosted ELF
-cache builds do not accidentally mix Win64 units into the SysV cache.")
+cache builds do not accidentally mix Win64 units into the SysV cache.
+Spellings listed in `nelisp-standalone--target-aliases' are normalised to
+the canonical name before interning.")
 
 (defun nelisp-standalone--parse-int-env (name default)
   "Parse integer environment variable NAME, returning DEFAULT when unset.
@@ -21086,9 +21106,30 @@ runtime cache does not replay source file loads on every command invocation."
    "      (error \"secure-hash: standalone fallback supports sha256 only: %S\" algorithm))\n"
    "    (unless (stringp object)\n"
    "      (signal 'wrong-type-argument (list 'stringp object)))\n"
-   "    (let* ((program (cond ((file-exists-p \"/usr/bin/sha256sum\") \"/usr/bin/sha256sum\")\n"
-   "                          ((file-exists-p \"/bin/sha256sum\") \"/bin/sha256sum\")\n"
-   "                          (t \"sha256sum\")))\n"
+   ;; Absolute paths only, and NO bare-name fallback: this runtime's
+   ;; `nelisp-call-process' hands the program name straight to execve and
+   ;; does NOT search PATH, so the `(t \"sha256sum\")' arm this `cond' used
+   ;; to end with could never succeed -- it just turned "helper not found"
+   ;; into the misleading `sha256sum exited 127'.  On Linux the first arm
+   ;; always hit and hid both problems.  macOS has no sha256sum in
+   ;; /usr/bin or /bin (26.6.2 ships it in /sbin; Homebrew coreutils puts
+   ;; it in /opt/homebrew/bin; a stock install has only `shasum'), so every
+   ;; artifact command that hashes -- `compile-elisp-artifact' first --
+   ;; failed there, and `make standalone-reader-test' reported
+   ;; GATE-COUNT checked=16 findings=1.  Measured 2026-09-12 on macos
+   ;; 26.6.2 arm64 against target/nelisp sha256 5d3c5475d09f9a1acff79a08.
+   ;; `shasum -a 256' prints the same `<64 hex>  <path>' line shape the
+   ;; substring below already expects, so it needs no separate parser.
+   "    (let* ((spec (cond ((file-exists-p \"/usr/bin/sha256sum\") (list \"/usr/bin/sha256sum\"))\n"
+   "                       ((file-exists-p \"/bin/sha256sum\") (list \"/bin/sha256sum\"))\n"
+   "                       ((file-exists-p \"/sbin/sha256sum\") (list \"/sbin/sha256sum\"))\n"
+   "                       ((file-exists-p \"/opt/homebrew/bin/sha256sum\") (list \"/opt/homebrew/bin/sha256sum\"))\n"
+   "                       ((file-exists-p \"/usr/local/bin/sha256sum\") (list \"/usr/local/bin/sha256sum\"))\n"
+   "                       ((file-exists-p \"/usr/bin/shasum\") (list \"/usr/bin/shasum\" \"-a\" \"256\"))\n"
+   "                       ((file-exists-p \"/opt/homebrew/bin/shasum\") (list \"/opt/homebrew/bin/shasum\" \"-a\" \"256\"))\n"
+   "                       (t (error \"secure-hash: no sha256 helper: looked for sha256sum in /usr/bin /bin /sbin /opt/homebrew/bin /usr/local/bin and shasum in /usr/bin /opt/homebrew/bin; this runtime does not search PATH\"))))\n"
+   "           (program (car spec))\n"
+   "           (fixed-args (cdr spec))\n"
    "           (in (make-temp-file \"nelisp-secure-hash-in-\"))\n"
    "           (out (make-temp-file \"nelisp-secure-hash-out-\"))\n"
    "           (rc nil)\n"
@@ -21096,12 +21137,13 @@ runtime cache does not replay source file loads on every command invocation."
    "      (unwind-protect\n"
    "          (progn\n"
    "            (write-region object nil in)\n"
-   "            (setq rc (nelisp-call-process program nil out nil in))\n"
+   "            (setq rc (apply (function nelisp-call-process)\n"
+   "                            program nil out nil (append fixed-args (list in))))\n"
    "            (unless (= rc 0)\n"
-   "              (error \"secure-hash: sha256sum exited %S\" rc))\n"
+   "              (error \"secure-hash: %s exited %S\" program rc))\n"
    "            (setq line (nelisp-standalone-artifact--read-file-as-string out))\n"
    "            (unless (and (stringp line) (>= (length line) 64))\n"
-   "              (error \"secure-hash: malformed sha256sum output\"))\n"
+   "              (error \"secure-hash: malformed %s output\" program))\n"
    "            (substring line 0 64))\n"
    "        (ignore-errors (delete-file in))\n"
    "        (ignore-errors (delete-file out))))))\n"
@@ -23117,26 +23159,188 @@ boundary (Doc 151 Phase B):
        (defun nl_os_statx_path (_cpath _flags _buf) (- 0 38))
        (defun nl_os_nanosleep (_ts) (- 0 38))))
     ('macos-aarch64
-     ;; Darwin's `access' is syscall 33, while the portable fileio layer
-     ;; addresses it by the Linux vocabulary number 21.  Keep every other
-     ;; path/stat primitive at its deliberate ENOSYS boundary until its own
-     ;; Darwin implementation is available.
+     ;; Darwin path/stat/dir layer.  The portable fileio layer above this
+     ;; addresses syscalls by the LINUX x86_64 vocabulary number and reads
+     ;; `struct stat' at LINUX x86_64 offsets, so each OS branch translates
+     ;; into that shape rather than the layer growing a per-OS API: see
+     ;; `nl_win_stat_from_data', which synthesises the same 144-byte Linux
+     ;; layout out of `GetFileAttributesExW' data, and `nl_os_stat_fixup' on
+     ;; linux-aarch64, which rewrites arm64's two swapped fields into it.
+     ;; The errno space is Linux vocabulary for the same reason, which is why
+     ;; an unimplemented arm below still answers -38 (Linux ENOSYS) and not
+     ;; Darwin's 78.  Real Darwin syscall failures DO arrive as Darwin errno
+     ;; numbers; the file-op codes callers actually branch on (ENOENT 2,
+     ;; EACCES 13, EEXIST 17, ENOTDIR 20) are identical on both kernels, but
+     ;; the ranges above ~34 are not (EAGAIN is Linux 11, Darwin 35).
+     ;;
+     ;; Syscall numbers are from this SDK's `sys/syscall.h', and every one of
+     ;; them was exercised from C against macOS 26.6.2 arm64 on 2026-09-12
+     ;; before being written here -- stat64 338, lstat64 340, rename 128,
+     ;; getdirentries64 344, select 93 all returned 0 with the expected
+     ;; payload.  Darwin has NO `nanosleep' syscall (libc builds it on
+     ;; `__semwait_signal'), hence `select' below.
+     ;;
+     ;; `struct stat' is the trap in this branch and it is a silent one.
+     ;; Darwin's is ALSO 144 bytes, so no buffer-size check can catch a
+     ;; layout mistake, and Linux's st_size offset 48 is Darwin's
+     ;; st_mtimespec.tv_sec: keeping the Linux offsets makes a 365-byte file
+     ;; report its size as 1654566969.  Offsets below are `offsetof' output,
+     ;; not read off a header by eye:
+     ;;   Darwin: dev@0(4) mode@4(2) nlink@6(2) ino@8(8) uid@16(4) gid@20(4)
+     ;;           atime@32 mtime@48 ctime@64 size@96 blocks@104
+     ;;   Linux:  dev@0(8) ino@8(8) nlink@16(8) mode@24(4) uid@28(4)
+     ;;           gid@32(4) size@48(8) blocks@64 atime@72 mtime@88 ctime@104
      `((defun nl_os_exit_process (code) (syscall-direct 1 code 0 0 0 0 0))
-       (defun nl_os_syscall_path (_nr _cpath) (- 0 38))
+       ;; Linux vocabulary -> Darwin number.  These seven are the only ones
+       ;; the layer above ever passes: 21 access, 83 mkdir, 90 chmod,
+       ;; 84 rmdir, 87 unlink, 82 rename, 88 symlink.
+       (defun nl_os_syscall_path (nr cpath)
+         (if (= nr 87)
+             (syscall-direct 10 cpath 0 0 0 0 0)
+           (if (= nr 84)
+               (syscall-direct 137 cpath 0 0 0 0 0)
+             (- 0 38))))
        (defun nl_os_syscall_path_int (nr cpath iarg)
          (if (= nr 21)
              (syscall-direct 33 cpath iarg 0 0 0 0)
-           (- 0 38)))
-       (defun nl_os_syscall_path2 (_nr _c1 _c2) (- 0 38))
-       (defun nl_os_stat_path (_cpath _buf) (- 0 38))
-       (defun nl_os_lstat_path (_cpath _buf) (- 0 38))
-       (defun nl_os_readlink_path (_cpath _buf _cap) (- 0 38))
-       (defun nl_os_open_dir (_cpath) (- 0 38))
-       (defun nl_os_getdents64 (_fd _dbuf _cap) (- 0 38))
-       (defun nl_os_close_dir (fd) (nl_os_close_handle fd))
-       (defun nl_os_utimes_path (_cpath _buf) (- 0 38))
+           (if (= nr 83)
+               (syscall-direct 136 cpath iarg 0 0 0 0)
+             (if (= nr 90)
+                 (syscall-direct 15 cpath iarg 0 0 0 0)
+               (- 0 38)))))
+       (defun nl_os_syscall_path2 (nr c1 c2)
+         (if (= nr 82)
+             (syscall-direct 128 c1 c2 0 0 0 0)
+           (if (= nr 88)
+               (syscall-direct 57 c1 c2 0 0 0 0)
+             (- 0 38))))
+       (defun nl_darwin_stat_zero (buf)
+         (let* ((i 0))
+           (seq
+            (while (< i 144)
+              (seq (ptr-write-u64 buf i 0) (setq i (+ i 8))))
+            0)))
+       ;; Every Darwin field is read into a local BEFORE the buffer is
+       ;; zeroed, because the two layouts overlap in both directions
+       ;; (Darwin size@96 -> Linux 48, Darwin mtime@48 -> Linux 88): an
+       ;; in-place field-by-field move would clobber its own inputs.
+       (defun nl_darwin_stat_to_linux (rc buf)
+         (if (< rc 0)
+             rc
+           (let* ((dev (ptr-read-u32 buf 0))
+                  (mode (ptr-read-u16 buf 4))
+                  (nlink (ptr-read-u16 buf 6))
+                  (ino (ptr-read-u64 buf 8))
+                  (uid (ptr-read-u32 buf 16))
+                  (gid (ptr-read-u32 buf 20))
+                  (atime (ptr-read-u64 buf 32))
+                  (mtime (ptr-read-u64 buf 48))
+                  (ctime (ptr-read-u64 buf 64))
+                  (size (ptr-read-u64 buf 96))
+                  (blocks (ptr-read-u64 buf 104)))
+             (seq
+              (nl_darwin_stat_zero buf)
+              (ptr-write-u64 buf 0 dev)
+              (ptr-write-u64 buf 8 ino)
+              (ptr-write-u64 buf 16 nlink)
+              (ptr-write-u32 buf 24 mode)
+              (ptr-write-u32 buf 28 uid)
+              (ptr-write-u32 buf 32 gid)
+              (ptr-write-u64 buf 48 size)
+              (ptr-write-u64 buf 64 blocks)
+              (ptr-write-u64 buf 72 atime)
+              (ptr-write-u64 buf 88 mtime)
+              (ptr-write-u64 buf 104 ctime)
+              0))))
+       (defun nl_os_stat_path (cpath buf)
+         (nl_darwin_stat_to_linux
+          (syscall-direct 338 cpath buf 0 0 0 0) buf))          ; stat64
+       (defun nl_os_lstat_path (cpath buf)
+         (nl_darwin_stat_to_linux
+          (syscall-direct 340 cpath buf 0 0 0 0) buf))          ; lstat64
+       (defun nl_os_readlink_path (cpath buf cap)
+         (syscall-direct 58 cpath buf cap 0 0 0))               ; readlink
+       ;; `getdirentries64' needs a `off_t *position' the Linux
+       ;; `nl_os_getdents64 (fd dbuf cap)' contract has nowhere to put, so
+       ;; -- exactly as the Windows branch does for `FindFirstFileW' -- this
+       ;; owns a state block instead of a bare fd and returns its (always
+       ;; positive) address, which is what the caller's `(< fd 0)' failure
+       ;; test reads.  Layout: fd@0, position@8, Darwin record scratch@32
+       ;; (4096 bytes).  The scratch lives IN the block for the reason the
+       ;; Windows branch spells out: `nl_bi_syscall_readdir_names' loops
+       ;; while holding raw `alloc-bytes' buffers, so allocating per call
+       ;; would let a collection invalidate them mid-enumeration.
+       (defun nl_os_open_dir (cpath)
+         (let* ((fd (syscall-direct 5 cpath 0 0 0 0 0)))        ; open O_RDONLY
+           (if (< fd 0)
+               fd
+             (let* ((st (alloc-bytes 4128 8)))
+               (seq (ptr-write-u64 st 0 fd)
+                    (ptr-write-u64 st 8 0)
+                    st)))))
+       ;; Darwin record -> Linux dirent64 record.  A translated record is
+       ;; always SHORTER than its source (name moves from +21 to +19), so
+       ;; asking the kernel for at most CAP bytes guarantees the output
+       ;; fits CAP without a second bound to carry.
+       (defun nl_darwin_dir_translate (src n dbuf)
+         (let* ((si 0) (di 0) (reclen 0) (namlen 0) (dtype 0) (i 0))
+           (seq
+            (while (< si n)
+              (seq
+               (setq reclen (ptr-read-u16 src (+ si 16)))
+               (setq namlen (ptr-read-u16 src (+ si 18)))
+               (setq dtype (ptr-read-u8 src (+ si 20)))
+               (if (= reclen 0)
+                   ;; Malformed: stop rather than spin forever on a
+                   ;; zero-length record.
+                   (setq si n)
+                 (seq
+                  (ptr-write-u64 dbuf di (ptr-read-u64 src si))
+                  (ptr-write-u64 dbuf (+ di 8) (ptr-read-u64 src (+ si 8)))
+                  (ptr-write-u16 dbuf (+ di 16) (+ 20 namlen))
+                  (ptr-write-u8 dbuf (+ di 18) dtype)
+                  (setq i 0)
+                  (while (< i namlen)
+                    (seq (ptr-write-u8 dbuf (+ di (+ 19 i))
+                                       (ptr-read-u8 src (+ si (+ 21 i))))
+                         (setq i (+ i 1))))
+                  (ptr-write-u8 dbuf (+ di (+ 19 namlen)) 0)
+                  (setq di (+ di (+ 20 namlen)))
+                  (setq si (+ si reclen))))))
+            di)))
+       (defun nl_os_getdents64 (st dbuf cap)
+         (if (< st 0)
+             0
+           (let* ((want (if (< cap 4096) cap 4096))
+                  (n (syscall-direct 344 (ptr-read-u64 st 0) (+ st 32)
+                                     want (+ st 8) 0 0)))
+             (if (< n 1)
+                 0
+               (nl_darwin_dir_translate (+ st 32) n dbuf)))))
+       (defun nl_os_close_dir (st)
+         (if (< st 0) 0 (nl_os_close_handle (ptr-read-u64 st 0))))
+       ;; Linux passes `struct timespec[2]' (sec@0 nsec@8 sec@16 nsec@24)
+       ;; to `utimensat'.  Darwin has no `utimensat' syscall; `utimes' wants
+       ;; `struct timeval[2]', same 32 bytes and same sec offsets, so only
+       ;; the sub-second field changes unit.
+       (defun nl_os_utimes_path (cpath buf)
+         (let* ((tv (alloc-bytes 32 8)))
+           (seq
+            (ptr-write-u64 tv 0 (ptr-read-u64 buf 0))
+            (ptr-write-u64 tv 8 (/ (ptr-read-u64 buf 8) 1000))
+            (ptr-write-u64 tv 16 (ptr-read-u64 buf 16))
+            (ptr-write-u64 tv 24 (/ (ptr-read-u64 buf 24) 1000))
+            (syscall-direct 138 cpath tv 0 0 0 0))))
+       ;; No `statx' on Darwin.  Callers already fall back to `stat' when
+       ;; this answers ENOSYS, which is now the only honest answer left in
+       ;; this branch.
        (defun nl_os_statx_path (_cpath _flags _buf) (- 0 38))
-       (defun nl_os_nanosleep (_ts) (- 0 38))))
+       (defun nl_os_nanosleep (ts)
+         (let* ((tv (alloc-bytes 16 8)))
+           (seq
+            (ptr-write-u64 tv 0 (ptr-read-u64 ts 0))
+            (ptr-write-u64 tv 8 (/ (ptr-read-u64 ts 8) 1000))
+            (syscall-direct 93 0 0 0 0 tv 0))))))
     (_
      `(;; Any future target: BSD exit(2) is syscall 1,
        ;; which is also what this repo's darwin `nl_os_alloc_fail' uses.
@@ -30714,7 +30918,25 @@ The error, throw, unwind-protect and failing-apply probes then make every
 rooted continuation return status 1 as well as status 0.  Equal root depths
 before and after prove that all those existing non-local-exit paths restore
 the saved stack top instead of leaking a root entry."
-  (let* ((src
+  (let* ((iterations
+          ;; The Stage-4b mid-form collector fires on ALLOCATION DEBT, so how
+          ;; much work this loop must do before it fires at all scales with
+          ;; the target's arena.  macOS reserves 512 MiB
+          ;; (`nelisp-standalone--macos-arena-size', #x20000000) where the
+          ;; Linux bootstrap first chunk is 256 MiB (#x10000000), and at the
+          ;; historical 200k iterations the debt never crosses the threshold
+          ;; there.  Measured 2026-09-12 on macos 26.6.2 arm64 against
+          ;; target/nelisp a2c5d0e2f2256e2e: mid-form-fired-count was 0 at
+          ;; 200k, 76 at 2M and 347 at 8M, while the poison counter scaled
+          ;; linearly the whole time (6.8M / 122M / 489M objects) -- so the
+          ;; collector was working and simply never asked to run, and this
+          ;; smoke was asserting a heuristic's schedule rather than the
+          ;; invariant it exists to prove.  Lowering the allocation-debt
+          ;; floor (debug-switch 30, tried at 64 KiB / 1 MiB / 16 MiB) did
+          ;; not make it fire at 200k either, so the iteration count is what
+          ;; has to move.  Every other target keeps 200000 exactly.
+          (if (eq nelisp-standalone--target 'macos-aarch64) 2000000 200000))
+         (src
           (concat
            "(progn\n"
            "  (nelisp--debug-switch 19)\n"
@@ -30730,7 +30952,7 @@ the saved stack top instead of leaking a root entry."
            "          (nelisp-stage3-pair\n"
            "           (list 1 2 3)\n"
            "           (progn\n"
-           "             (while (< i 200000) (setq i (1+ i)))\n"
+           (format "             (while (< i %d) (setq i (1+ i)))\n" iterations)
            "             (list 4 5))))\n"
            "    (setq caught-error\n"
            "          (condition-case nil\n"
@@ -30781,7 +31003,7 @@ the saved stack top instead of leaking a root entry."
     ;; two measurements were repeated and held (equal before/after, and 2000
     ;; nested `let's leaving the depth exactly where they found it).
     (unless (equal (cl-subseq value 0 10)
-                   '(200000 3 2 11 22 33 44 55 12 12))
+                   (list iterations 3 2 11 22 33 44 55 12 12))
       (error "stage3 rootstack smoke result/depth mismatch: %S" value))
     (unless (= (nth 8 value) (nth 9 value))
       (error "stage3 rootstack smoke leaked a root entry: before=%S after=%S"
