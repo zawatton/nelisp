@@ -643,16 +643,58 @@ cmd_repl_signal() {
 cmd_repl() {
     if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
         cat <<'EOF'
-usage: tools/ai/nelisp-ai.sh repl [--no-prompt] [--no-print]
+usage: tools/ai/nelisp-ai.sh repl [--script FILE]... [--no-prompt] [--no-print]
 
 Start the standalone REPL after loading the full artifact-command runtime in
 the same live session.  This makes `nelisp-artifact-reload-source-file'
 available to an interactive development session.  The command uses an
 existing target binary; build it first with `make standalone-reader`, or set
 NELISP_BIN to a host-runnable binary.
+
+--script FILE evaluates FILE's top-level forms in that session before the
+caller's own input, one form at a time, with the REPL's normal per-form error
+containment and value printing.  FILE is ordinary Elisp: its forms may span
+as many lines as they like.  The REPL itself reads one line per form, so host
+Emacs splits FILE with the real reader and each form's exact source text is
+sent as a single line (tools/ai/nelisp-repl-script-lines.el).  Repeatable;
+the scripts run in the order given.  Input continues from stdin afterwards,
+so `--script setup.el </dev/null' runs a script and exits, while
+`--script setup.el' on a terminal leaves you in the prepared session.
 EOF
         return 0
     fi
+
+    # Collect `--script' and leave every other argument for the binary.  Each
+    # loop turn consumes one original argument from the front and pushes a
+    # kept one to the back, so `$@' ends up holding exactly the pass-through
+    # arguments, in order.  A script path containing a newline is not
+    # supported; the generator list below is newline separated.
+    repl_scripts=
+    repl_remaining=$#
+    while [ "$repl_remaining" -gt 0 ]; do
+        repl_arg=$1
+        shift
+        repl_remaining=$((repl_remaining - 1))
+        case "$repl_arg" in
+            --script)
+                if [ "$repl_remaining" -eq 0 ]; then
+                    echo 'nelisp-ai.sh repl: --script needs a file argument' >&2
+                    return 2
+                fi
+                repl_scripts="$repl_scripts$1
+"
+                shift
+                repl_remaining=$((repl_remaining - 1))
+                ;;
+            --script=*)
+                repl_scripts="$repl_scripts${repl_arg#--script=}
+"
+                ;;
+            *)
+                set -- "$@" "$repl_arg"
+                ;;
+        esac
+    done
 
     repl_bin=$(nelisp_binary 2>/dev/null || true)
     if [ -z "$repl_bin" ] || [ ! -f "$repl_bin" ]; then
@@ -704,6 +746,36 @@ EOF
     # Keeping its PID lets normal exit and signal paths reap it along with the
     # native child, including when stdin remains open after `(exit)'.
     printf '%s\n' '(condition-case err (progn (load (getenv "NELISP_AI_REPL_RUNTIME")) (unless (fboundp '\''nelisp-artifact-reload-source-file) (error "artifact runtime API was not loaded"))) (error (nelisp--write-stderr-line (format "nelisp-ai.sh repl: runtime bootstrap failed: %S" err)) (exit 1)))' > "$repl_bootstrap"
+
+    # `--script': append one REPL input line per top-level form, in the order
+    # the scripts were given.  Generation failures abort before the REPL
+    # starts -- a session that silently skipped half a setup script would
+    # look like a runtime defect later.
+    if [ -n "$repl_scripts" ]; then
+        repl_scripts_ifs=$IFS
+        IFS='
+'
+        for repl_script_file in $repl_scripts; do
+            IFS=$repl_scripts_ifs
+            set +e
+            NELISP_REPL_SCRIPT_IN="$repl_script_file" \
+                NELISP_REPL_SCRIPT_OUT="$repl_bootstrap" \
+                "$EMACS" --batch -Q -L tools/ai \
+                --eval '(setq load-prefer-newer t)' \
+                -l nelisp-repl-script-lines \
+                -f nelisp-repl-script-lines-batch
+            repl_script_status=$?
+            set -e
+            if [ "$repl_script_status" -ne 0 ]; then
+                echo "nelisp-ai.sh repl: cannot prepare --script $repl_script_file" >&2
+                return 1
+            fi
+            IFS='
+'
+        done
+        IFS=$repl_scripts_ifs
+    fi
+
     repl_input_fifo="$repl_tmp_dir/input.fifo"
     if ! mkfifo "$repl_input_fifo"; then
         echo "nelisp-ai.sh repl: cannot create $repl_input_fifo" >&2

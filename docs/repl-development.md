@@ -26,6 +26,31 @@ silently rebuild a missing binary. Set `EMACS` or `NELISP_BIN` when you need
 to select a different host executable or a compatible standalone binary.
 Use `tools/ai/nelisp-ai.sh repl --help` for the command options.
 
+## Drive a session from a file
+
+The REPL reads one line per form. A form typed or piped across two lines is
+cut in half and each half is evaluated on its own, which is why a scripted
+session used to hand-flatten every form onto one line. Put the forms in an
+ordinary `.el` file instead and pass it with `--script`:
+
+```sh
+tools/ai/nelisp-ai.sh repl --script setup.el          # then continue typing
+tools/ai/nelisp-ai.sh repl --script setup.el </dev/null   # run it and exit
+```
+
+Host Emacs splits the file with the real reader and sends each form's exact
+source text as one line, so the forms may span as many lines as they like.
+Each form keeps the REPL's own behavior: its value is printed, and an error
+is contained to the form that raised it, leaving the session and everything
+defined before it alive. `--script` is repeatable and the scripts run in the
+order given; the caller's own input follows them. A file whose last form is
+incomplete is reported with its line number instead of being truncated.
+
+This is the supported way to replay a saved setup (see
+`nelisp-repl-session-export` below) and the way a non-interactive session
+runs a prepared case. `sh test/nelisp-ai-repl-script-smoke.sh` (also
+`make repl-script-smoke`) exercises it against a real standalone binary.
+
 ## Reproduce an error and repair it without restarting
 
 Exit any previous REPL with `(exit)`. Prepare a disposable source file:

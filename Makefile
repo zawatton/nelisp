@@ -491,12 +491,24 @@ native-unit-repl-smoke:
 	esac
 	sh test/nelisp-native-unit-repl-smoke.sh
 
+# `nelisp-ai.sh repl --script FILE': the REPL reads one line per form, so a
+# scripted session had to hand-flatten every form onto one line. This smoke
+# runs a real standalone session over a file whose forms all span several
+# lines, and ALSO runs the same file through the plain line-by-line pipe and
+# requires that control path to fail -- without it the smoke would keep
+# passing if `--script' stopped doing anything. Needs a runnable
+# target/nelisp (or NELISP_BIN).
+.PHONY: repl-script-smoke
+repl-script-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	sh test/nelisp-ai-repl-script-smoke.sh
+
 .PHONY: repl-development-test
 repl-development-test:
-	$(EMACS) --batch -Q -L lisp -L src -L scripts -L test \
+	$(EMACS) --batch -Q -L lisp -L src -L scripts -L test -L tools/ai \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-repl-session-test -l nelisp-repl-code-test \
-	  -l nelisp-repl-gc-test -f ert-run-tests-batch-and-exit
+	  -l nelisp-repl-gc-test -l nelisp-repl-script-lines-test \
+	  -f ert-run-tests-batch-and-exit
 
 # Doc 169/170 language-extension standalone reality.  `nl-condition' and
 # `nl-safe' both claim (README.org "Testing") to run unchanged on
