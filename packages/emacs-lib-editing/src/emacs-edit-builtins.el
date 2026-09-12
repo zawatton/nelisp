@@ -3135,6 +3135,106 @@ With REGION non-nil, ignore BEG and END and save the current region."
   (when (eq arg '-) (setq arg -1))
   (kill-region (point) (- (point) arg)))
 
+;;;; --- buffer motion and transposition -------------------------------
+;;
+;; `make nemacs-feature-coverage' named these under `simple'.  Ported from
+;; `vendor/emacs-lisp/simple.el'; divergences are stated where they exist
+;; rather than left for a caller to discover.
+
+(defun exchange-point-and-mark (&optional arg)
+  "Put the mark where point is now, and point where the mark is now."
+  (let ((omark (mark t)))
+    (unless omark
+      (error "No mark set in this buffer"))
+    (set-mark (point))
+    (goto-char omark)
+    ;; GNU Emacs decides here whether to leave the region active, using
+    ;; `transient-mark-mode' and `xor'.  ARG is accepted for call
+    ;; compatibility and the region state is left as it was.
+    (ignore arg)
+    nil))
+
+(defun beginning-of-buffer (&optional arg)
+  "Move point to the beginning of the buffer.
+With numeric ARG N, put point N/10 of the way from the beginning.
+Pushes the mark at the previous position unless ARG is a raw prefix or the
+region is active."
+  (or (consp arg)
+      (and (fboundp 'region-active-p) (region-active-p))
+      (push-mark))
+  (let ((size (- (point-max) (point-min))))
+    (goto-char (if (and arg (not (consp arg)))
+                   (+ (point-min) 1
+                      (/ (* size (prefix-numeric-value arg)) 10))
+                 (point-min))))
+  (when (and arg (not (consp arg))) (forward-line 1))
+  nil)
+
+(defun end-of-buffer (&optional arg)
+  "Move point to the end of the buffer.
+With numeric ARG N, put point N/10 of the way from the end.
+Pushes the mark at the previous position unless ARG is a raw prefix or the
+region is active."
+  (or (consp arg)
+      (and (fboundp 'region-active-p) (region-active-p))
+      (push-mark))
+  (let ((size (- (point-max) (point-min))))
+    (goto-char (if (and arg (not (consp arg)))
+                   (- (point-max)
+                      (/ (* size (prefix-numeric-value arg)) 10))
+                 (point-max))))
+  ;; GNU Emacs also recenters when the end of the buffer is off screen.
+  ;; That is a window operation and this is the buffer-level command; the
+  ;; motion is identical either way.
+  (when (and arg (not (consp arg))) (forward-line 1))
+  nil)
+
+(defun goto-line (line &optional buffer relative)
+  "Go to LINE, counting from line 1 at the beginning of the buffer.
+With BUFFER, move point in that buffer instead.  With RELATIVE, count from
+the beginning of the accessible portion rather than widening first."
+  (when buffer
+    (set-buffer buffer))
+  (or (and (fboundp 'region-active-p) (region-active-p)) (push-mark))
+  (let ((pos (save-restriction
+               (unless relative (widen))
+               (goto-char (point-min))
+               (forward-line (1- line))
+               (point))))
+    (goto-char pos))
+  nil)
+
+(defun goto-line-relative (line &optional buffer)
+  "Go to LINE, counting from line 1 at the beginning of the accessible part."
+  (goto-line line buffer t))
+
+(defun forward-to-indentation (&optional arg)
+  "Move forward ARG lines and position at the first nonblank character."
+  (forward-line (or arg 1))
+  (skip-chars-forward " \t"))
+
+(defun backward-to-indentation (&optional arg)
+  "Move backward ARG lines and position at the first nonblank character."
+  (forward-line (- (or arg 1)))
+  (skip-chars-forward " \t"))
+
+;; NOT ported here: `transpose-subr', `transpose-subr-1', `transpose-words'
+;; and `transpose-lines'.  They were written, run against the host, and
+;; withdrawn -- twice over, this substrate cannot carry them yet:
+;;
+;;   Markers do not follow buffer edits.  Measured 2026-09-12 against the
+;;   host: `insert-before-markers' leaves a marker where it was (host moves
+;;   it), and deleting text BEFORE a marker leaves it where it was (host
+;;   moves it back).  `transpose-subr-1' is built on exactly that, re-reading
+;;   its boundary marker after an insert and a delete, so it deleted three
+;;   characters off target and turned "one two three" into "one thretwoee".
+;;
+;; A version that used integer positions instead would run, and would be
+;; worse than nothing: `fboundp' would answer t, the coverage count would
+;; improve, and the command would silently corrupt buffers whose markers the
+;; real one is written to preserve.  Withdrawn until markers track edits.
+;; See handoff/marker-and-mark-semantics_dev-nelisp-emacs-lib_2026-09-12.org.
+
 (provide 'emacs-edit-builtins)
 
 ;;; emacs-edit-builtins.el ends here
