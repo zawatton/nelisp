@@ -205,7 +205,13 @@ them.
 | macOS real-init audit | PASS — 920/920 boundaries, `AUDIT_DONE 920`, exit 0, **no signal**, 54s, init hash unchanged before and after. Peak RSS 542,144 KiB (527,024 on the earlier base; the spread is run-to-run variation in an out-of-process sampler against the same binary), falling to ~145,000 KiB after collection. 322 `FORM_ERROR`s (236 `void-function`, 56 `file-missing`, 29 `void-variable`, 1 `error`) — unimplemented Emacs APIs and absent files, not memory faults |
 | macOS §7 boundaries | As documented: native unit replacement refuses with `NELISP-DEV-NATIVE-UNAVAILABLE`, catchable, no crash; `nelisp-socket-listen`/`-connect`/`-send` all signal the catchable `nelisp-unsupported-primitive` |
 | Version consistency | 9/9 sites say v1.3.1 |
-| Linux, any check, for the repairs below | **Not yet run** — see blocker 1. v1.3.0's own Linux blockers were qualified upstream by run 34662576736, but that run predates every change in this release |
+| Linux `nelisp-ai.sh check` | PASS — VERDICT: PASS (23 gates), on this branch. Two ratcheted inventories moved and were raised with reasons: `unsafe-inventory` 879 → 946 (the Darwin `struct stat`/dirent translation is raw-memory work by construction) and `fallback-inventory` (the `sha256-file-external` probe splits into one arm per calling convention) |
+| Linux `compile` / `standalone-reader-test` | PASS — `pass, ran 117, failed 0`; `GATE-COUNT checked=32 findings=0`, `PASS: "(+ 40 2)" -> exit 42` |
+| Linux full ERT | PASS — 5,922 tests, 5,761 as expected, **0 unexpected**, 161 skipped, 241s. Same total as the macOS run, so the new parity case is running on both |
+| Linux `secure-hash`, after the prelude repair | PASS — correct SHA-256 for both a string and a file's contents, through the documented `nelisp-ai.sh repl` path. Checked explicitly because that repair reaches Linux |
+| Linux real-init audit | PASS — 930/930 boundaries, `AUDIT_DONE 930`, exit 0, **no signal**, init hash unchanged. The pid fix is visibly working: the run reports `memory samples target pid: 3880044 (timeout wrapper pid: 3880041)`. **Peak RSS 278,708 KiB, final 190,744 KiB** — against the 2,104 KiB the pre-fix harness reported for the same audit, which was the wrapper. A ~90x error, and the correction is this release's, not a re-measurement of the same thing |
+| Linux 1-hour soak | THP-dependent on this desktop, not a leak — FAIL with THP `[always]`, PASS with it disabled per-process and peak RSS **equal to** start. See "The Linux soak" below. The release-runner result is blocker 2 |
+| Linux binary identity | `target/nelisp` hashes to `c00d5ee5e7904645` here, versus `6c9ab049f1996446` at the v1.3.0 tag. Expected: the `secure-hash` prelude repair is compiled into the standalone binary |
 | Semver tag CI | **Not yet run** — it needs this tag |
 
 The v1.3.0 arena boundary-reclaim SIGSEGV has **no macOS variant**: the audit
@@ -227,10 +233,45 @@ numbers:
 - The two known macOS flakes the sheet names did not fire, so neither was
   re-run.
 
+### The Linux soak
+
+It fails on this desktop and that is not a v1.3.1 finding. Same host, same
+workload, one variable, measured the way v1.3.0 settled the identical
+question:
+
+  THP as the host has it (`/sys/.../enabled` = `[always]`):
+      FAIL at 1,554.2s, RSS 61,896 → 72,180 KiB (+10,284, ceiling 5,120),
+      AnonHugePages 53,248 KiB
+  THP disabled for the soak child only (`tools/nelisp-nothp.c`):
+      PASS, 1,800.0s, 1,163 batches, RSS 53,260 KiB with peak **equal to**
+      start — no growth at all
+
+A leak grows the heap either way; peak == start is not a smaller leak, it is
+none. The 5,120 KiB ceiling is also smaller than three 2 MiB huge pages, so a
+THP-backed process crosses it on allocation granularity alone.
+
+The v1.3.0 figures on this same desktop were FAIL at 1,135.7s, RSS
+61,844 → 70,688 KiB, AnonHugePages 51,200 — the same shape, from a starting
+RSS 52 KiB apart. On the release runner, which is not a `[always]` host, the
+v1.3.0 tag's own pipeline passed the hour at 2,572 batches with +1,508 KiB.
+The release-runner result for THIS release is blocker 2's job, not this
+desktop's.
+
 ## Remaining release qualification
 
-1. **Linux and Windows regression — OPEN, and it is the blocker.** None of
-   this was run on Linux: the qualification host has no Linux. v1.3.0's
+1. **Linux and Windows regression — CLOSED for Linux, open for Windows.**
+   Everything blocker 1 named has now been run on Linux and is in the table
+   above: `nelisp-ai.sh check` (23 gates), the full ERT suite (5,922 tests, 0
+   unexpected), the real-init audit (930/930, no signal), the 1-hour soak
+   (THP-dependent on the measuring desktop, and shown so by a one-variable
+   control), and `secure-hash` after the prelude repair. The two ratcheted
+   inventories the Darwin work moves were raised with reasons rather than
+   regenerated. **Windows remains unmeasured** and is covered by the tag CI in
+   blocker 2, which runs both Windows lanes. The original text of this blocker
+   follows, unedited, because it is what was true when the hardware run was
+   written and it named the work correctly:
+
+   > None of this was run on Linux: the qualification host has no Linux. v1.3.0's
    Linux blockers were closed upstream by run 34662576736, which drove the
    semver release pipeline through `workflow_dispatch` — the same jobs a tag
    push runs, without creating a tag — and that is the mechanism to reuse
