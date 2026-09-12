@@ -208,6 +208,20 @@ wrap them yet.
 7. **Record generated data recipes next to the generator.**  A dictionary
    was nearly shipped at 60% of its intended size because the real
    two-input recipe lived only in a session transcript.
+8. **Repeat an evaluator timing three times before believing it.**  Under
+   the shipped collector settings the same loop, same binary, same live
+   heap measured 18.8 and 120.5 us/iteration in consecutive repeats — a
+   6.4x spread, because the debt threshold grows with the live set while
+   a sweep also costs the live set, so what is left depends on where in
+   the debt cycle the run began.  Two earlier sessions drew opposite
+   conclusions about heap-scaling from single samples of that; both were
+   inside the noise.  `make standalone-alloc-volume-bench` prints the
+   spread and the two stable numbers underneath it (debt trigger pushed
+   out of reach, and made aggressive).  Prefer allocation VOLUME, which
+   is exact and repeatable to the byte.  And do not use
+   `(nelisp--debug-switch 7)` as a "collector off" control: it is
+   documented as making collect a no-op and does not — live-bytes moved
+   across a forced `garbage-collect` with it set.
 
 ## Definition of Done
 

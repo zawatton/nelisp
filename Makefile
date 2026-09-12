@@ -548,6 +548,16 @@ repl-script-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-
 standalone-call-floor-bench: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
 	./target/nelisp --load bench/nelisp-standalone-call-floor-bench.el
 
+# The same evaluator, measured where there is no timing noise: how many bytes
+# each construct allocates (exact and repeatable), and how much of the
+# wall-clock above it is collection rather than evaluation.  Run this before
+# concluding anything about how evaluator cost scales with the heap -- under
+# the shipped collector settings that number is not stable, and this target
+# shows the two stable ones underneath it.
+.PHONY: standalone-alloc-volume-bench
+standalone-alloc-volume-bench: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	./target/nelisp --load bench/nelisp-standalone-alloc-volume-bench.el
+
 .PHONY: repl-profile-smoke
 repl-profile-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
 	sh test/nelisp-repl-profile-smoke.sh
