@@ -703,7 +703,14 @@ ns-collision-divergent 127
 # particular is the API that stops this branch over-claiming which callers a
 # replacement reaches, so hiding it behind the private prefix is the wrong
 # trade.
-ns-prefix-violation 1006
+# 1006 -> 1008 on 2026-09-12: lisp/nelisp-repl-reload.el's two public
+# entries, `nelisp-repl-reload-defuns' and `nelisp-repl-reload-select'.
+# Counted the same way every other public entry in a `--'-namespaced module
+# is; measured by removing the file and re-running the gate, which returned
+# exactly 1006, so the pair is the whole delta.  Both are meant to be typed
+# in a REPL -- `-select' previews what `-defuns' would publish and leave --
+# so the private prefix would be the wrong trade here too.
+ns-prefix-violation 1008
 # 611 -> 613 on 2026-08-20: `nelisp--check-string'/`--check-symbol' and the
 # other argument-check helpers are referenced from the lisp/ mirrors that
 # carry copies of the functions using them.  This is the kind this file

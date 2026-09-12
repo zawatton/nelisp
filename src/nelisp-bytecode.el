@@ -69,6 +69,24 @@
 (defvar nelisp--macros)
 (defvar nelisp--unbound)
 
+(defsubst nelisp-bc--host-globals-p ()
+  "Return non-nil when `nelisp--globals' is this VM\'s global namespace.
+
+The module header states the rule: use the hash when the host bridge is
+present and plain `symbol-value' / `set' otherwise.  `(boundp
+\='nelisp--globals)' was standing in for that question, and inside the
+standalone it answers it wrongly -- the artifact runtime a development
+REPL loads binds the hash, while the session\'s own globals live in the
+standalone evaluator.  A function republished by
+`nelisp-artifact-reload-source-file' then read the hash, missed, and
+signalled `nelisp-unbound-variable' for a variable the session printed a
+value for one line earlier (measured 2026-09-12; the reload itself
+reported `:status ok\', so the breakage only appeared when the function
+was called).  `nelisp--write-stdout-bytes' is the standalone\'s own
+primitive, the same marker `nelisp-artifact--standalone-runtime-p' uses."
+  (and (boundp 'nelisp--globals)
+       (not (fboundp 'nelisp--write-stdout-bytes))))
+
 (define-error 'nelisp-bc-error "NeLisp bytecode error")
 (define-error 'nelisp-bc-unimplemented
   "NeLisp bytecode feature not implemented yet" 'nelisp-bc-error)
@@ -1472,7 +1490,7 @@ MCP Parameters:
             (sym (car entry))
             (old (cdr entry)))
        (cond
-        ((boundp 'nelisp--globals)
+        ((nelisp-bc--host-globals-p)
          (if (eq old nelisp--unbound)
              (remhash sym nelisp--globals)
            (puthash sym old nelisp--globals)))
@@ -1624,20 +1642,24 @@ recursing and reload from VM afterwards."
                 (signal 'nelisp-bc-error (list "NOT on empty stack" pc)))
               (aset stack (1- sp) (not (aref stack (1- sp)))))
              (16
-              ;; VARREF — Wave A21: in host Emacs (= `nelisp--globals'
-              ;; bound) preserve the strict semantics — hash miss
-              ;; raises `nelisp-unbound-variable' so existing ERT
-              ;; coverage still discriminates NeLisp's own dynamic
-              ;; namespace from the host's.  In standalone NeLisp
-              ;; (= the hash is absent), fall back to host
-              ;; `symbol-value' so `.elc' files emitted with
-              ;; pass-through `defvar' / `defconst' still resolve.
+              ;; VARREF — Wave A21: in host Emacs preserve the strict
+              ;; semantics — hash miss raises `nelisp-unbound-variable'
+              ;; so existing ERT coverage still discriminates NeLisp's
+              ;; own dynamic namespace from the host's.  In standalone
+              ;; NeLisp, fall back to `symbol-value' so `.elc' files
+              ;; emitted with pass-through `defvar' / `defconst' still
+              ;; resolve.  Which of the two applies is
+              ;; `nelisp-bc--host-globals-p', NOT `(boundp
+              ;; \='nelisp--globals)': a development REPL's artifact
+              ;; runtime binds the hash inside the standalone, and this
+              ;; branch then hid every session global from republished
+              ;; code.
               (when (>= sp stack-depth)
                 (signal 'nelisp-bc-error (list "stack overflow at VARREF" pc)))
               (let* ((idx (aref code pc))
                      (sym (aref consts idx))
                      (val (cond
-                           ((boundp 'nelisp--globals)
+                           ((nelisp-bc--host-globals-p)
                             (let ((g (gethash sym nelisp--globals
                                               nelisp--unbound)))
                               (if (eq g nelisp--unbound)
@@ -1658,7 +1680,7 @@ recursing and reload from VM afterwards."
                      (val (aref stack (1- sp))))
                 (setq pc (1+ pc))
                 (cond
-                 ((boundp 'nelisp--globals)
+                 ((nelisp-bc--host-globals-p)
                   (puthash sym val nelisp--globals))
                  (t
                   (set sym val)))
@@ -1671,7 +1693,7 @@ recursing and reload from VM afterwards."
                      (val (aref stack (1- sp))))
                 (setq pc (1+ pc))
                 (cond
-                 ((boundp 'nelisp--globals)
+                 ((nelisp-bc--host-globals-p)
                   (let ((old (gethash sym nelisp--globals nelisp--unbound)))
                     (push (cons sym old) specpdl)
                     (puthash sym val nelisp--globals)))
@@ -1697,7 +1719,7 @@ recursing and reload from VM afterwards."
                          (sym (car entry))
                          (old (cdr entry)))
                     (cond
-                     ((boundp 'nelisp--globals)
+                     ((nelisp-bc--host-globals-p)
                       (if (eq old nelisp--unbound)
                           (remhash sym nelisp--globals)
                         (puthash sym old nelisp--globals)))
@@ -2073,7 +2095,7 @@ MCP Parameters:
                    (sym (car entry))
                    (old (cdr entry)))
               (cond
-               ((boundp 'nelisp--globals)
+               ((nelisp-bc--host-globals-p)
                 (if (eq old nelisp--unbound)
                     (remhash sym nelisp--globals)
                   (puthash sym old nelisp--globals)))

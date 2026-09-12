@@ -10,6 +10,7 @@
 (require 'nelisp-repl-session)
 (require 'nelisp-repl-code)
 (require 'nelisp-repl-gc)
+(require 'nelisp-repl-reload)
 
 (defun nelisp-repl-help ()
   "Return the available REPL development commands and their purposes."
@@ -22,6 +23,10 @@
     (nelisp-repl-session-record-load . "Register a source file for replay.")
     (nelisp-repl-session-export . "Export registered replay forms.")
     (nelisp-artifact-reload-source-file . "Reload a source definition in the REPL.")
+    (nelisp-repl-reload-defuns
+     . "Publish a module's defuns; name, and do not run, its other forms.")
+    (nelisp-repl-reload-select
+     . "Preview what a defun publication would take and leave.")
     (nelisp-repl-code-info . "Inspect live code provenance.")
     (nelisp-repl-code-forget . "Release retained provenance records.")
     (nelisp-repl-gc-snapshot . "Inspect REPL GC development status.")

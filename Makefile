@@ -502,12 +502,23 @@ native-unit-repl-smoke:
 repl-script-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
 	sh test/nelisp-ai-repl-script-smoke.sh
 
+# `nelisp-repl-reload-defuns': hot-patch one module's functions in a live
+# standalone session.  The property the smoke holds is what does NOT happen --
+# the module's `require' is not re-run and its `defvar' does not overwrite the
+# value the session is holding -- which no host ERT can show, because the
+# namespace defect this exercises (`nelisp-bc--host-globals-p') only appears
+# inside the standalone.
+.PHONY: repl-reload-smoke
+repl-reload-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	sh test/nelisp-repl-reload-smoke.sh
+
 .PHONY: repl-development-test
 repl-development-test:
 	$(EMACS) --batch -Q -L lisp -L src -L scripts -L test -L tools/ai \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-repl-session-test -l nelisp-repl-code-test \
-	  -l nelisp-repl-gc-test -l nelisp-repl-script-lines-test \
+	  -l nelisp-repl-gc-test -l nelisp-repl-reload-test \
+	  -l nelisp-repl-script-lines-test \
 	  -f ert-run-tests-batch-and-exit
 
 # Doc 169/170 language-extension standalone reality.  `nl-condition' and

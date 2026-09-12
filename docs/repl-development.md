@@ -97,6 +97,34 @@ REPL was not rebuilt; it reaches the new target by name. Unrelated state
 remains 7. Ordinary same-path artifact loading can skip an already-loaded
 artifact, so use the explicit source-reload API for this repair loop.
 
+## Publish one module's functions
+
+`nelisp-artifact-reload-source-file` takes a file whose top-level forms are
+all `defun`. A real module opens with `require` and `defvar`, so pointing it
+at one is refused whole (`:reason (:unsupported-top-level require)`).
+`nelisp-repl-reload-defuns` points the same strict machinery at an ordinary
+module:
+
+```elisp
+(require 'nelisp-repl-reload)
+(nelisp-repl-reload-defuns "src/emacs-mode.el")            ; every defun
+(nelisp-repl-reload-defuns "src/emacs-mode.el" 'set-auto-mode) ; or named ones
+(nelisp-repl-reload-select "src/emacs-mode.el")            ; preview only
+```
+
+It copies the selected definitions' exact source bytes into a staging file
+and publishes that. The module's other top-level forms are named in the
+result, not run: a `require` is not re-executed and a `defvar` does not
+overwrite the value the session is holding. The result carries the strict
+API's own keys plus `:module`, `:staged-source`, `:selected`, `:declared`
+(the module variables whose initializers were skipped), `:skipped` and
+`:missing`. Provenance (`nelisp-repl-code-info`) reports the staging file,
+whose hash covers the published subset; `:module` says where it came from.
+
+A definition deleted from the file is not removed, and a name the file does
+not define is refused before anything is staged. `make repl-reload-smoke`
+exercises the loop against a real standalone binary.
+
 ## Read the reload result
 
 The result is a versioned plist (`:format nelisp-artifact-reload-v1`).

@@ -515,6 +515,33 @@ a label.  Returns the resolved int vector."
         (should (= (nelisp-bc-test--eval 'nelisp-bc-test--global) 123)))
     (remhash 'nelisp-bc-test--global nelisp--globals)))
 
+(ert-deftest nelisp-bc-a21-host-globals-gate-is-not-mere-boundness ()
+  "A bound hash is not proof that the hash is this VM\'s namespace.
+
+The standalone development REPL loads an artifact runtime that binds
+`nelisp--globals\' while the session\'s globals live in the standalone
+evaluator; a VM that gated on boundness alone hid every one of them from
+republished code."
+  (should (boundp 'nelisp--globals))
+  (should (nelisp-bc--host-globals-p))
+  (unwind-protect
+      (progn
+        ;; The standalone is recognised by its own stdout primitive, the
+        ;; same marker `nelisp-artifact--standalone-runtime-p' uses.
+        (defalias 'nelisp--write-stdout-bytes #'ignore)
+        (should-not (nelisp-bc--host-globals-p)))
+    (fmakunbound 'nelisp--write-stdout-bytes)))
+
+(ert-deftest nelisp-bc-a21-host-mode-keeps-namespace-isolation ()
+  "In host Emacs a host value is still not NeLisp\'s value."
+  (unwind-protect
+      (progn
+        (set 'nelisp-bc-test--host-only 5)
+        (remhash 'nelisp-bc-test--host-only nelisp--globals)
+        (should-error (nelisp-bc-test--eval 'nelisp-bc-test--host-only)
+                      :type 'nelisp-unbound-variable))
+    (makunbound 'nelisp-bc-test--host-only)))
+
 (ert-deftest nelisp-bc-3b4a-varref-unbound-signals ()
   (remhash 'nelisp-bc-test--nope nelisp--globals)
   (should-error
