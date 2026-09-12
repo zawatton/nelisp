@@ -53,6 +53,38 @@ Clear retained diagnostic records when measuring memory after a repair.
 REPL errors do not necessarily produce a nonzero process exit: smoke tests
 must check their assertions, completion marker, and unexpected stderr.
 
+## Where FFI is allowed
+
+Decided 2026-09-12.  This runtime can call out: `ptr-call` and
+`syscall-direct` exist, raw native units expose SysV-ABI entry addresses,
+and the JIT already resolves symbols through `dlsym(RTLD_DEFAULT, ...)`.
+The question was never capability.  It is scope, and the scope is:
+
+**Bind external libraries.  Do not try to bind Emacs's C core.**
+
+Allowed: the libraries Emacs itself treats as external and often loads
+dynamically -- image decoding, fonts and shaping, TLS, compression, XML,
+SQLite, crypto.  Reimplementing those in Elisp buys nothing; they have a
+stable C ABI and someone else maintains them.
+
+Not allowed, and not possible: `insdel.c`, `alloc.c`, `eval.c`, `xdisp.c`
+and their neighbours.  Emacs's core is not a library.  It owns its own
+Lisp object representation, its own GC and its own global state, and
+there is no ABI seam to call through -- taking `insdel.c` means taking
+`lisp.h`'s object layout and the collector with it, which is embedding
+all of Emacs rather than replacing any of it.  Those stay reimplemented,
+which is what this repository and nelisp-emacs-lib already are.
+
+Two things to keep in view when reaching for it:
+
+- It does not make anything faster.  The measured wall is this
+  evaluator's own speed (`make standalone-call-floor-bench`), and glue
+  written in interpreted Elisp around an FFI call makes that worse, not
+  better.
+- It sits against the "pure-elisp self-host" framing this tree adopted
+  when it deleted its Rust.  C bindings are not Rust, so the LOC rule is
+  untouched, but the claim in the README is.  Say what is bound.
+
 ## Carry a development-efficiency improvement with the work
 
 Every session here is also asked to look for what makes the next session
