@@ -105,14 +105,20 @@ cases** while appearing to pass.
 | Version consistency | 9/9 sites say v1.3.0 |
 | Linux 1-hour soak | THP-dependent as described above; must still pass on the release runners |
 | Semver tag CI (`linux-x86_64`, `linux-aarch64`) | **Not yet run** — it needs this tag |
-| macOS ARM64 on real hardware | **Not yet run** — see `release/v1.3.0/MACOS-QUALIFICATION.md` |
+| macOS ARM64 on real hardware | **Deferred to v1.3.1** — not a v1.3.0 release target; see [`MACOS-QUALIFICATION.md`](MACOS-QUALIFICATION.md) |
 
-## Remaining release qualification
+## Release qualification
 
-1. Semver tag CI must pass on `linux-x86_64` and `linux-aarch64`, including the
-   Linux 1-hour soak on the release runners.
-2. macOS ARM64 qualification on real hardware, per
-   [`MACOS-QUALIFICATION.md`](MACOS-QUALIFICATION.md). Until that run exists,
-   the macOS artifact is not a v1.3.0 release target and must not be reported
-   as PASS. CI's macOS smoke lanes (30.1 and 29.4) are green, which is not the
-   same claim.
+The Linux blockers are qualified. Run 34662576736 exercised the semver release
+pipeline against this tree by `workflow_dispatch` -- the same jobs a tag push
+runs, without creating a tag or publishing anything -- so the result was known
+before the tag existed rather than after.
+
+macOS ARM64 is **deferred to v1.3.1** and is deliberately not a v1.3.0 release
+target. It has never been qualified on real hardware; CI's macOS smoke lanes
+(30.1 and 29.4) are green, and that is a materially weaker claim, since CI does
+not build the macOS release artifact, does not verify its tarball, and does not
+exercise the native replacement work this release is mostly about. The run
+sheet for that qualification is [`MACOS-QUALIFICATION.md`](MACOS-QUALIFICATION.md);
+its result ships as v1.3.1. Until then the macOS artifact must not be reported
+as PASS.

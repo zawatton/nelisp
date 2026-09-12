@@ -1,4 +1,4 @@
-# macOS ARM64 qualification for v1.3.0 — run sheet
+# macOS ARM64 qualification — run sheet (ships as v1.3.1)
 
 macOS ARM64 has been deferred since v1.0 and has never been qualified on real
 hardware. CI's macOS smoke lanes are green, and that is a **different and much
@@ -158,7 +158,10 @@ Record, in the worklog (`anvil-worklog-add`), one entry containing:
 - Audit: whether `AUDIT_DONE` was reached, exit code, whether any signal.
 - Anything in §7 that did NOT behave as described there.
 
-If every step passes, `release/v1.3.0/RELEASE.md` can move macOS ARM64 from
-"not yet run" to a qualified target, citing this run. If any step fails,
-report it with its numbers and leave the deferral in place — a deferred
-platform is an honest release, a platform claimed on CI smoke alone is not.
+**This run ships as v1.3.1.** v1.3.0 was tagged with macOS ARM64 explicitly
+deferred rather than held back for it, so nothing here blocks a release that
+already went out — which also means there is no pressure to report a pass.
+If every step passes, macOS ARM64 becomes a qualified target in the v1.3.1
+notes, citing this run. If any step fails, report it with its numbers and
+leave the deferral standing: a deferred platform is an honest release, a
+platform claimed on CI smoke alone is not.

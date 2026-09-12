@@ -40,10 +40,17 @@ included here.
   `packages/*/src/` only, leaving 253 files under `lisp/` never byte-compiled
   by CI at all.
 
-Qualification: branch CI green on every lane; full ERT 5,921 tests with 0
-unexpected; check tier 23/23. Semver tag CI and macOS ARM64 on real hardware
-are **not yet run** — see the release notes and
-[`release/v1.3.0/MACOS-QUALIFICATION.md`](release/v1.3.0/MACOS-QUALIFICATION.md).
+Qualification: CI green on every lane; full ERT 5,921 tests with 0 unexpected;
+check tier 23/23; the semver release pipeline qualified `linux-x86_64` and
+`linux-aarch64`, including the Linux 1-hour soak.
+
+**macOS ARM64 is deferred to v1.3.1** and is not a v1.3.0 release target. It
+has never been qualified on real hardware, and CI's green macOS smoke lanes are
+a materially weaker claim — CI does not build the macOS release artifact, does
+not verify its tarball, and does not exercise the native replacement work this
+release is mostly about. The run sheet is
+[`release/v1.3.0/MACOS-QUALIFICATION.md`](release/v1.3.0/MACOS-QUALIFICATION.md);
+its result ships as v1.3.1.
 
 ## v1.2.2 — 2026-09-10
 
