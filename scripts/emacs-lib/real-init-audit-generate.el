@@ -68,6 +68,17 @@ finish inside one timeout can still make progress across runs:
                                      per-form boundary reclamation across it
                                      that is not.  Dumping last avoids the
                                      question entirely.
+  NEMACS_REAL_INIT_CHECKPOINT_SECONDS  dump and stop after the first form
+                                     that finishes past S seconds.  This is
+                                     the one to use for a campaign.  Picking
+                                     an INDEX in advance requires knowing
+                                     where the budget runs out, and on
+                                     2026-09-12 it did not fire at all: form
+                                     299 took the whole timeout by itself and
+                                     the checkpoint set for a later index was
+                                     never reached, so the run was a total
+                                     loss rather than a step.  A deadline
+                                     cannot be placed wrongly.
   NEMACS_REAL_INIT_RESUME_AFTER      emit only forms after index K.  The
                                      caller is expected to start the runtime
                                      from the matching image, which already
@@ -88,6 +99,14 @@ finish inside one timeout can still make progress across runs:
              (and (eq kind 'init)
                   (real-init-audit-generate--env-count
                    "NEMACS_REAL_INIT_RESUME_AFTER")))
+            ;; A deadline has to be checked after EVERY form, because which
+            ;; form crosses it is exactly what is not known in advance.  The
+            ;; check is a `float-time' compare, so ~930 of them cost nothing
+            ;; next to the forms they sit between.
+            (checkpoint-seconds
+             (and (eq kind 'init)
+                  (real-init-audit-generate--env-count
+                   "NEMACS_REAL_INIT_CHECKPOINT_SECONDS")))
             wrappers)
         (catch 'real-init-audit-generate-done
           (while (progn
@@ -106,6 +125,11 @@ finish inside one timeout can still make progress across runs:
                                                ,(buffer-substring-no-properties
                                                  start (point))))
                  wrappers)
+                (when checkpoint-seconds
+                  (push
+                   (real-init-audit-generate--one-line
+                    `(real-init-audit--checkpoint-if-due ,index))
+                   wrappers))
                 (when (and checkpoint-at (= index checkpoint-at))
                   (push
                    (real-init-audit-generate--one-line
