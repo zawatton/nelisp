@@ -2978,6 +2978,163 @@ Signal `scan-error' when the requested motion cannot be completed."
         (setq n (1- n))))
     nil))
 
+;;;; --- kill ring: the standard accessors and customization -----------
+;;
+;; The ring itself, `kill-new', `kill-region', `copy-region-as-kill',
+;; `yank' and `yank-pop' were already here.  What was not is the rest of
+;; the surface callers reach for: the accessor that rotates the yank
+;; pointer, the appending kill, `kill-ring-save', and the variables other
+;; modes read before deciding what to do.  `make nemacs-feature-coverage'
+;; named them on 2026-09-12.
+;;
+;; Defaults follow `vendor/emacs-lisp/simple.el' where this substrate can
+;; honour them.  Where it cannot, the value says so rather than naming a
+;; function that is not here -- a variable holding a void function is worse
+;; than an honest nil, because the caller finds out at the call.
+
+(unless (boundp 'kill-whole-line)
+  (defvar kill-whole-line nil
+    "If non-nil, `kill-line' with no arg at start of line kills the whole line."))
+
+(unless (boundp 'kill-do-not-save-duplicates)
+  (defvar kill-do-not-save-duplicates nil
+    "If non-nil, don't add a string to `kill-ring' if it duplicates the last one."))
+
+(unless (boundp 'kill-read-only-ok)
+  (defvar kill-read-only-ok nil
+    "Non-nil means don't signal an error for killing read-only text."))
+
+(unless (boundp 'kill-transform-function)
+  (defvar kill-transform-function nil
+    "Function to call to transform a string before it is put on the kill ring.
+Called with one argument (the string) and should return a string, or nil to
+skip the kill entirely."))
+
+(unless (boundp 'kill-append-merge-undo)
+  (defvar kill-append-merge-undo nil
+    "If non-nil, remove the last undo boundary after an appending kill."))
+
+(unless (boundp 'yank-excluded-properties)
+  (defvar yank-excluded-properties
+    '(category field follow-link fontified font-lock-face help-echo
+      intangible invisible keymap local-map mouse-face read-only
+      yank-handler)
+    "Text properties to discard when yanking, or t to discard all of them."))
+
+(unless (boundp 'yank-handled-properties)
+  ;; GNU Emacs ships three handlers here (`yank-handler', `font-lock-face'
+  ;; and `category').  None of them is ported, so an empty list is the
+  ;; accurate statement of what this substrate does with yanked properties.
+  ;; Naming the handlers anyway would put void functions in a list that
+  ;; `insert-for-yank' walks.
+  (defvar yank-handled-properties nil
+    "Alist of (PROPERTY . FUNCTION) run over yanked text.
+Empty here: the handlers GNU Emacs installs are not ported."))
+
+(unless (boundp 'yank-undo-function)
+  (defvar yank-undo-function nil
+    "If non-nil, function used by `yank-pop' to delete the last yank.
+Called with two arguments, the start and end of the region."))
+
+(unless (boundp 'yank-window-start)
+  (defvar yank-window-start nil
+    "Window start position recorded by `yank', for `yank-pop' to restore."))
+
+(unless (boundp 'yank-pop-change-selection)
+  (defvar yank-pop-change-selection nil
+    "Whether rotating the kill ring changes the window system selection."))
+
+(unless (boundp 'copy-region-blink-delay)
+  (defvar copy-region-blink-delay 1
+    "Time in seconds to delay after showing the other end of the region."))
+
+(unless (boundp 'copy-region-blink-predicate)
+  ;; GNU Emacs defaults this to `region-indistinguishable-p', which is not
+  ;; ported here (checked: not `fboundp' in the bundle).  nil means "never
+  ;; blink", which is what a substrate with no redisplay blink does anyway.
+  (defvar copy-region-blink-predicate nil
+    "Predicate deciding whether `kill-ring-save' blinks the other end.
+nil here: `region-indistinguishable-p' is not ported."))
+
+(defun current-kill (n &optional do-not-move)
+  "Rotate the yanking point by N places and return the kill there.
+With N zero and `interprogram-paste-function' returning a string or a list
+of strings, add those to the front of the kill ring and return the newest.
+If DO-NOT-MOVE is non-nil, return the Nth kill forward without moving the
+yanking point."
+  (let ((interprogram-paste (and (= n 0)
+                                 interprogram-paste-function
+                                 (functionp interprogram-paste-function)
+                                 (funcall interprogram-paste-function))))
+    (if interprogram-paste
+        (progn
+          ;; Disable both hooks while pushing: the cut function would make
+          ;; Emacs re-own a selection it just read, and the paste function
+          ;; would be called again by `kill-new'.
+          (let ((interprogram-cut-function nil)
+                (interprogram-paste-function nil))
+            (if (listp interprogram-paste)
+                (mapc #'kill-new (reverse interprogram-paste))
+              (kill-new interprogram-paste)))
+          (car kill-ring))
+      (or kill-ring (error "Kill ring is empty"))
+      (let ((nth-kill-element
+             (nthcdr (mod (- n (length kill-ring-yank-pointer))
+                          (length kill-ring))
+                     kill-ring)))
+        (unless do-not-move
+          (setq kill-ring-yank-pointer nth-kill-element)
+          (when (and yank-pop-change-selection
+                     (> n 0)
+                     interprogram-cut-function
+                     (functionp interprogram-cut-function))
+            (funcall interprogram-cut-function (car nth-kill-element))))
+        (car nth-kill-element)))))
+
+(defun kill-append (string before-p)
+  "Append STRING to the latest kill in the kill ring.
+If BEFORE-P is non-nil, prepend it instead."
+  (let ((cur (car kill-ring)))
+    (kill-new (if before-p (concat string cur) (concat cur string))
+              (or (null cur)
+                  (= (length cur) 0)
+                  (null (get-text-property 0 'yank-handler cur)))))
+  ;; The undo-boundary merge GNU Emacs does here needs `buffer-undo-list'
+  ;; surgery; it runs only when the user opts in, and the default is nil,
+  ;; so the default behaviour matches without inventing that surgery.
+  (when (and kill-append-merge-undo
+             (boundp 'buffer-undo-list)
+             (not (and (boundp 'buffer-read-only) buffer-read-only)))
+    (let ((prev buffer-undo-list))
+      (when (and (consp prev) (null (car prev)))
+        (setq buffer-undo-list (cdr prev)))))
+  nil)
+
+(defun kill-ring-save (beg end &optional region)
+  "Save BEG..END as if killed, without killing it.
+With REGION non-nil, ignore BEG and END and save the current region."
+  (if region
+      (copy-region-as-kill (region-beginning) (region-end))
+    (copy-region-as-kill beg end))
+  ;; GNU Emacs blinks the other end of the region here when called
+  ;; interactively.  That needs `sit-for' plus redisplay, and
+  ;; `copy-region-blink-predicate' is nil here, so there is nothing to do.
+  (when (fboundp 'deactivate-mark)
+    (deactivate-mark))
+  nil)
+
+(defun kill-forward-chars (arg)
+  "Kill ARG characters forward from point."
+  (when (listp arg) (setq arg (car arg)))
+  (when (eq arg '-) (setq arg -1))
+  (kill-region (point) (+ (point) arg)))
+
+(defun kill-backward-chars (arg)
+  "Kill ARG characters backward from point."
+  (when (listp arg) (setq arg (car arg)))
+  (when (eq arg '-) (setq arg -1))
+  (kill-region (point) (- (point) arg)))
+
 (provide 'emacs-edit-builtins)
 
 ;;; emacs-edit-builtins.el ends here
