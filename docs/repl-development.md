@@ -241,6 +241,41 @@ NELISP_BIN=target/nelisp-runtime-reload sh test/nelisp-repl-code-smoke.sh
 NELISP_BIN=target/nelisp-runtime-reload sh test/nelisp-repl-gc-smoke.sh
 ```
 
+## Time a slow call
+
+There is no profiler here, and neither substitute exists: `mapatoms` is
+unbound, so nothing can sweep the obarray, and `advice.el` is absent. Name
+the functions instead:
+
+```elisp
+(require 'nelisp-repl-profile)
+(nelisp-repl-profile-instrument '(emacs-load--native-read-one load))
+;; run the slow operation
+(nelisp-repl-profile-report 10)
+(nelisp-repl-profile-overhead-seconds)   ; what the shim itself costs per call
+(nelisp-repl-profile-restore)
+```
+
+`:calls` counts every entry, including recursive ones. `:seconds` is the
+wall time of OUTERMOST entries only, so a recursive nest is one span rather
+than N overlapping ones. The time is INCLUSIVE: a caller and a callee both
+count the time spent below, which is what localizes a cost to a chain --
+read the chain, not the column's sum.
+
+The shim is not free, and on this runtime it is not negligible either
+(measured 2026-09-12: ~21 us for a plain named call, and 175-310 us of shim
+per call depending on what else is loaded). So profile a named handful, not
+everything, and subtract `nelisp-repl-profile-overhead-seconds` times
+`:calls` before believing a row with a large call count. Restoring a name
+that something else has since redefined is refused and reported in
+`:skipped` rather than overwriting the newer definition.
+
+Worked example, the one this was built for: `(load "…/epa.el")` through the
+consumer loader takes 12.4 s, and instrumenting the loader's own phases
+showed 0.53 s in the reader, 0.23 s resolving files, 0.14 s slicing, and the
+source-rewrite and artifact-cache paths never entered at all -- about 8% of
+the wall time. The other 92% is evaluating the file's own forms.
+
 ## Compare GC and allocation diagnostics
 
 ```elisp

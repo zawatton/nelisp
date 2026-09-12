@@ -11,6 +11,7 @@
 (require 'nelisp-repl-code)
 (require 'nelisp-repl-gc)
 (require 'nelisp-repl-reload)
+(require 'nelisp-repl-profile)
 
 (defun nelisp-repl-help ()
   "Return the available REPL development commands and their purposes."
@@ -29,6 +30,12 @@
      . "Preview what a defun publication would take and leave.")
     (nelisp-repl-code-info . "Inspect live code provenance.")
     (nelisp-repl-code-forget . "Release retained provenance records.")
+    (nelisp-repl-profile-instrument
+     . "Time a named list of functions in this session.")
+    (nelisp-repl-profile-report . "Read the timing, slowest first.")
+    (nelisp-repl-profile-restore . "Put the original definitions back.")
+    (nelisp-repl-profile-overhead-seconds
+     . "Measure what the timing shim itself costs per call.")
     (nelisp-repl-gc-snapshot . "Inspect REPL GC development status.")
     (nelisp-repl-gc-collect . "Explicitly request a REPL GC collection.")
     (nelisp-repl-gc-compare . "Compare two GC snapshots.")

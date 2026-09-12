@@ -518,6 +518,13 @@ repl-script-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-
 # value the session is holding -- which no host ERT can show, because the
 # namespace defect this exercises (`nelisp-bc--host-globals-p') only appears
 # inside the standalone.
+# The profiler's reason to exist is the standalone (no `advice.el', no
+# `mapatoms', a ~21 us call floor), so its behaviour is checked there and not
+# only under a host Emacs that has all three.
+.PHONY: repl-profile-smoke
+repl-profile-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	sh test/nelisp-repl-profile-smoke.sh
+
 .PHONY: repl-reload-smoke
 repl-reload-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
 	sh test/nelisp-repl-reload-smoke.sh
@@ -528,6 +535,7 @@ repl-development-test:
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-repl-session-test -l nelisp-repl-code-test \
 	  -l nelisp-repl-gc-test -l nelisp-repl-reload-test \
+	  -l nelisp-repl-profile-test \
 	  -l nelisp-repl-script-lines-test \
 	  -f ert-run-tests-batch-and-exit
 
