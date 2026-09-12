@@ -392,8 +392,28 @@ DARWIN_PEAK_RSS="NA"
 # memory at all, every column was NA.  Measured 2026-09-12 on macos 26.6.2
 # arm64: the wrapper reported 1472 KiB while its child, the binary actually
 # being audited, reported 206704 KiB at the same instant.
+#
+# `pgrep' is not part of a stock MSYS2 install (it ships in the separate
+# `procps-ng' package), so on a default Windows toolchain `pgrep -P' fails
+# with "command not found" -- silently, because of the `2>/dev/null' and
+# `|| true' below, which exist to tolerate `pgrep' being merely absent on
+# a platform that HAS it and returns nothing for an already-reaped child.
+# MEM_PID then fell back to $CHILD_PID and reproduced the exact wrapper-pid
+# bug this fix exists for, with VERDICT still reading "ok".  `ps -ef',
+# unlike `pgrep', is present everywhere this script runs, including a
+# stock MSYS2 install, and correctly lists a native (non-MSYS) Windows
+# child by PPID; use it as a fallback rather than a replacement, so a
+# platform where `pgrep' works keeps its exact prior behavior.  Measured
+# 2026-09-12 on windows-x86_64 (MSYS2, no procps-ng installed): `pgrep -P'
+# resolved nothing while `ps -ef' correctly named the child.
 MEM_PID="$CHILD_PID"
 MEM_PID_CHILD="$(pgrep -P "$CHILD_PID" 2>/dev/null | head -1 || true)"
+case "$MEM_PID_CHILD" in
+  ''|*[!0-9]*)
+    MEM_PID_CHILD="$(ps -ef 2>/dev/null \
+      | awk -v p="$CHILD_PID" '$3==p {print $2; exit}' || true)"
+    ;;
+esac
 case "$MEM_PID_CHILD" in
   ''|*[!0-9]*) : ;;
   *) MEM_PID="$MEM_PID_CHILD" ;;

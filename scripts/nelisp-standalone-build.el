@@ -21106,6 +21106,59 @@ runtime cache does not replay source file loads on every command invocation."
    "      (error \"secure-hash: standalone fallback supports sha256 only: %S\" algorithm))\n"
    "    (unless (stringp object)\n"
    "      (signal 'wrong-type-argument (list 'stringp object)))\n"
+   ;; Windows has neither sha256sum nor shasum by default, and none of the
+   ;; absolute paths the generic branch below probes can ever exist there,
+   ;; so every artifact command that hashes failed on windows-x86_64 the
+   ;; same way it once failed on macOS.  `certutil -hashfile' has shipped
+   ;; at this exact path since Vista/Server 2008.  It cannot share the
+   ;; generic branch's spec shape or parser: its input path argument comes
+   ;; BEFORE the trailing \"SHA256\" argument (every generic candidate's
+   ;; input path is its LAST argument), and its header/footer lines are
+   ;; localized text -- \"first 64 bytes of stdout\" would read into the
+   ;; header on a non-English system.  Locate the digest by shape instead
+   ;; of position: split stdout into lines and take the one that is
+   ;; exactly 64 hex characters, which a header/footer line never is.
+   ;; Measured 2026-09-12 on ja-JP Windows 11 (Shift-JIS header/footer,
+   ;; bare lowercase-hex digest line, no surrounding whitespace) against
+   ;; target/nelisp.exe sha256 91f0ce3732969a1e.
+   ;; `make-temp-file' returns a `/tmp/...'-shaped path that only this
+   ;; runtime's OWN internal I/O understands; certutil.exe is a real Win32
+   ;; process and cannot open that path when it is handed as its `-hashfile'
+   ;; ARGUMENT -- measured 2026-09-12: certutil exited 1, \"the system cannot
+   ;; find the file specified\", against exactly such a path.  DESTINATION
+   ;; capture (`out' below) is unaffected because certutil never sees that
+   ;; path itself; only `in', which is read by the external process, needs a
+   ;; real Windows path.  Root it under `%TEMP%' (a genuine Win32 path in
+   ;; this runtime's `getenv') instead, reusing `out''s already
+   ;; atomically-allocated unique basename so no second collision-prone name
+   ;; needs inventing.
+   "    (if (file-exists-p \"C:/Windows/System32/certutil.exe\")\n"
+   "        (let* ((out (make-temp-file \"nelisp-secure-hash-out-\"))\n"
+   "               (in (expand-file-name (concat (file-name-nondirectory out) \"-in\")\n"
+   "                                      (or (getenv \"TEMP\") (getenv \"TMP\")\n"
+   "                                          (error \"secure-hash: no TEMP or TMP for certutil's input path\"))))\n"
+   "               (rc nil)\n"
+   "               (digest nil))\n"
+   "          (unwind-protect\n"
+   "              (progn\n"
+   "                (write-region object nil in)\n"
+   "                (setq rc (nelisp-call-process \"C:/Windows/System32/certutil.exe\" nil out nil\n"
+   "                                               \"-hashfile\" in \"SHA256\"))\n"
+   "                (unless (= rc 0)\n"
+   "                  (error \"secure-hash: certutil exited %S\" rc))\n"
+   "                (dolist (candidate (split-string\n"
+   "                                    (nelisp-standalone-artifact--read-file-as-string out)\n"
+   "                                    \"[\\r\\n]+\" t))\n"
+   "                  (setq candidate (string-trim candidate))\n"
+   "                  (when (and (null digest)\n"
+   "                             (= (length candidate) 64)\n"
+   "                             (not (string-match-p \"[^0-9a-fA-F]\" candidate)))\n"
+   "                    (setq digest (downcase candidate))))\n"
+   "                (unless digest\n"
+   "                  (error \"secure-hash: no 64-hex-char line in certutil output\"))\n"
+   "                digest)\n"
+   "            (ignore-errors (delete-file in))\n"
+   "            (ignore-errors (delete-file out))))\n"
    ;; Absolute paths only, and NO bare-name fallback: this runtime's
    ;; `nelisp-call-process' hands the program name straight to execve and
    ;; does NOT search PATH, so the `(t \"sha256sum\")' arm this `cond' used
@@ -21120,33 +21173,33 @@ runtime cache does not replay source file loads on every command invocation."
    ;; 26.6.2 arm64 against target/nelisp sha256 5d3c5475d09f9a1acff79a08.
    ;; `shasum -a 256' prints the same `<64 hex>  <path>' line shape the
    ;; substring below already expects, so it needs no separate parser.
-   "    (let* ((spec (cond ((file-exists-p \"/usr/bin/sha256sum\") (list \"/usr/bin/sha256sum\"))\n"
-   "                       ((file-exists-p \"/bin/sha256sum\") (list \"/bin/sha256sum\"))\n"
-   "                       ((file-exists-p \"/sbin/sha256sum\") (list \"/sbin/sha256sum\"))\n"
-   "                       ((file-exists-p \"/opt/homebrew/bin/sha256sum\") (list \"/opt/homebrew/bin/sha256sum\"))\n"
-   "                       ((file-exists-p \"/usr/local/bin/sha256sum\") (list \"/usr/local/bin/sha256sum\"))\n"
-   "                       ((file-exists-p \"/usr/bin/shasum\") (list \"/usr/bin/shasum\" \"-a\" \"256\"))\n"
-   "                       ((file-exists-p \"/opt/homebrew/bin/shasum\") (list \"/opt/homebrew/bin/shasum\" \"-a\" \"256\"))\n"
-   "                       (t (error \"secure-hash: no sha256 helper: looked for sha256sum in /usr/bin /bin /sbin /opt/homebrew/bin /usr/local/bin and shasum in /usr/bin /opt/homebrew/bin; this runtime does not search PATH\"))))\n"
-   "           (program (car spec))\n"
-   "           (fixed-args (cdr spec))\n"
-   "           (in (make-temp-file \"nelisp-secure-hash-in-\"))\n"
-   "           (out (make-temp-file \"nelisp-secure-hash-out-\"))\n"
-   "           (rc nil)\n"
-   "           (line nil))\n"
-   "      (unwind-protect\n"
-   "          (progn\n"
-   "            (write-region object nil in)\n"
-   "            (setq rc (apply (function nelisp-call-process)\n"
-   "                            program nil out nil (append fixed-args (list in))))\n"
-   "            (unless (= rc 0)\n"
-   "              (error \"secure-hash: %s exited %S\" program rc))\n"
-   "            (setq line (nelisp-standalone-artifact--read-file-as-string out))\n"
-   "            (unless (and (stringp line) (>= (length line) 64))\n"
-   "              (error \"secure-hash: malformed %s output\" program))\n"
-   "            (substring line 0 64))\n"
-   "        (ignore-errors (delete-file in))\n"
-   "        (ignore-errors (delete-file out))))))\n"
+   "      (let* ((spec (cond ((file-exists-p \"/usr/bin/sha256sum\") (list \"/usr/bin/sha256sum\"))\n"
+   "                         ((file-exists-p \"/bin/sha256sum\") (list \"/bin/sha256sum\"))\n"
+   "                         ((file-exists-p \"/sbin/sha256sum\") (list \"/sbin/sha256sum\"))\n"
+   "                         ((file-exists-p \"/opt/homebrew/bin/sha256sum\") (list \"/opt/homebrew/bin/sha256sum\"))\n"
+   "                         ((file-exists-p \"/usr/local/bin/sha256sum\") (list \"/usr/local/bin/sha256sum\"))\n"
+   "                         ((file-exists-p \"/usr/bin/shasum\") (list \"/usr/bin/shasum\" \"-a\" \"256\"))\n"
+   "                         ((file-exists-p \"/opt/homebrew/bin/shasum\") (list \"/opt/homebrew/bin/shasum\" \"-a\" \"256\"))\n"
+   "                         (t (error \"secure-hash: no sha256 helper: looked for sha256sum in /usr/bin /bin /sbin /opt/homebrew/bin /usr/local/bin and shasum in /usr/bin /opt/homebrew/bin; this runtime does not search PATH\"))))\n"
+   "             (program (car spec))\n"
+   "             (fixed-args (cdr spec))\n"
+   "             (in (make-temp-file \"nelisp-secure-hash-in-\"))\n"
+   "             (out (make-temp-file \"nelisp-secure-hash-out-\"))\n"
+   "             (rc nil)\n"
+   "             (line nil))\n"
+   "        (unwind-protect\n"
+   "            (progn\n"
+   "              (write-region object nil in)\n"
+   "              (setq rc (apply (function nelisp-call-process)\n"
+   "                              program nil out nil (append fixed-args (list in))))\n"
+   "              (unless (= rc 0)\n"
+   "                (error \"secure-hash: %s exited %S\" program rc))\n"
+   "              (setq line (nelisp-standalone-artifact--read-file-as-string out))\n"
+   "              (unless (and (stringp line) (>= (length line) 64))\n"
+   "                (error \"secure-hash: malformed %s output\" program))\n"
+   "              (substring line 0 64))\n"
+   "          (ignore-errors (delete-file in))\n"
+   "          (ignore-errors (delete-file out)))))))\n"
    (nelisp-standalone--artifact-runtime-file-src
     "lisp/nelisp-artifact.el" inline)
 	   (format "(setq nelisp-artifact-standalone-repo-root %S)\n"
