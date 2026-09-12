@@ -39,6 +39,10 @@ poll_seconds="${NEMACS_REAL_INIT_RSS_POLL_SECONDS:-2}"
 nelisp_root="${NELISP_HOME:-${NELISP_ROOT:-$repo_root/../nelisp}}"
 nelisp_bin="${NEMACS_NELISP:-$nelisp_root/target/nelisp}"
 phase_marker="NEMACS_REAL_INIT_PHASE_BEGIN"
+# One image, rewritten at each checkpoint, so the disk cost of checkpointing
+# is one image rather than one per checkpoint.
+checkpoint_image="${NEMACS_REAL_INIT_CHECKPOINT_IMAGE:-$build_dir/real-init-checkpoint.nlri}"
+resume_from="${NEMACS_REAL_INIT_RESUME_FROM:-}"
 
 case "$timeout_spec" in
   ''|*[!0-9.smhd]*)
@@ -101,7 +105,16 @@ parity_feature_list="${parity_features[*]}"
 # launcher untouched: append the phase boundary and normal-startup settings to
 # an exact copy of the generated bootstrap replay.  bin/nemacs evaluates this
 # before its first nemacs-init call.
-cp "$bootstrap_repl" "$audit_repl"
+if [[ -n "$resume_from" ]]; then
+  # The image being resumed from IS the bootstrapped state, bundle included.
+  # Copying the 2 MB bundle in front of the remaining forms would load a
+  # second copy of everything the image already holds.  The audit helpers
+  # appended below are redefinitions of functions the image also has, which
+  # is harmless and keeps this driver readable on its own.
+  : > "$audit_repl"
+else
+  cp "$bootstrap_repl" "$audit_repl"
+fi
 {
   printf '%s' '(progn '
   # The bootstrap REPL is line-oriented, so this helper is flattened to one
@@ -176,6 +189,29 @@ cp "$bootstrap_repl" "$audit_repl"
       (princ "=")
       (prin1 value-c))
     (princ "\n")))
+
+(defun real-init-audit--checkpoint (index)
+  "Dump the live arena to the audit checkpoint image after form INDEX.
+
+One image, rewritten each time, so an audit that runs out of timeout can be
+resumed from the last checkpoint instead of repaying every form before it.
+The dump is taken at a REPL boundary, which is the only place the arena is
+quiescent, and it is cheap enough to take repeatedly only because the dump
+walk is indexed (nelisp 49915397c: 3130 s -> 0.9 s for a 550 MB heap).
+Prints its own marker and never signals: a checkpoint that cannot be written
+must not end an audit that is otherwise making progress."
+  (let ((path (getenv "NEMACS_REAL_INIT_CHECKPOINT_IMAGE"))
+        (start (float-time)))
+    (if (not (and (stringp path) (> (length path) 0)
+                  (fboundp 'nelisp--arena-dump-image-stream)))
+        (princ (format "NEMACS_REAL_INIT_CHECKPOINT index=%d status=unavailable\n"
+                       index))
+      (let ((written (condition-case err
+                         (nelisp--arena-dump-image-stream path)
+                       (error (list 'error (car err))))))
+        (princ (format "NEMACS_REAL_INIT_CHECKPOINT index=%d bytes=%S secs=%.2f\n"
+                       index written (- (float-time) start))))))
+  nil)
 
 (defun real-init-audit--eval-one (path kind index form-line source)
   "Evaluate one exact init SOURCE slice at a standalone REPL boundary.
@@ -407,16 +443,36 @@ trap cleanup_child INT TERM HUP
 : > "$raw_output"
 SECONDS=0
 set +e
+if [[ -n "$resume_from" ]]; then
+  # Resuming: the image already holds the bootstrap, early-init and every
+  # init form up to NEMACS_REAL_INIT_RESUME_AFTER, so the launcher is skipped
+  # entirely -- running bin/nemacs would bootstrap a second copy of the state
+  # the image is.  The driver arrives on stdin, the way the cold-load path
+  # takes it, with the tail form appended as its last line.
+  if [[ ! -r "$resume_from" ]]; then
+    echo "real-init-audit: NEMACS_REAL_INIT_RESUME_FROM is not readable: $resume_from" >&2
+    exit 2
+  fi
+  printf '%s\n' "$audit_tail" >> "$audit_repl"
+  timeout --signal=TERM --kill-after=30s "$timeout_spec" \
+    env NELISP_HOME="$nelisp_root" \
+        NEMACS_REAL_INIT_CHECKPOINT_IMAGE="$checkpoint_image" \
+        "$nelisp_bin" --cold-load-from "$resume_from" --no-prompt \
+        < "$audit_repl" \
+        > "$raw_output" 2>&1 &
+else
 timeout --signal=TERM --kill-after=30s "$timeout_spec" \
   env NELISP_HOME="$nelisp_root" \
       NEMACS_NELISP="$nelisp_bin" \
       NEMACS_DISABLE_COLD_CACHE=1 \
       NEMACS_RUNTIME_IMAGE= \
       NEMACS_BOOTSTRAP_REPL="$audit_repl" \
+      NEMACS_REAL_INIT_CHECKPOINT_IMAGE="$checkpoint_image" \
       "$repo_root/bin/nemacs" --driver=nelisp --batch --no-banner \
       --no-init-file \
       --eval "$audit_tail" \
       > "$raw_output" 2>&1 &
+fi
 audit_controller_pid=$!
 
 # The child is asynchronous only so /proc can be sampled.  This script stays
@@ -973,5 +1029,16 @@ if [[ "$audit_rc" -ne 0 ]]; then
   exit "$audit_rc"
 fi
 if [[ "$audit_done" != yes ]]; then
+  # A checkpoint run stops on purpose: it evaluated up to
+  # NEMACS_REAL_INIT_CHECKPOINT_AT, wrote the image, and exited.  That is a
+  # completed step of a longer audit, not a failure, and reporting it as one
+  # would make every checkpoint in a campaign look like a red run.
+  if [[ -n "${NEMACS_REAL_INIT_CHECKPOINT_AT:-}" ]] \
+     && grep -q "^NEMACS_REAL_INIT_CHECKPOINT index=${NEMACS_REAL_INIT_CHECKPOINT_AT} " \
+             "$raw_output" 2>/dev/null; then
+    echo "real-init-audit: stopped at checkpoint ${NEMACS_REAL_INIT_CHECKPOINT_AT}; resume with"
+    echo "  NEMACS_REAL_INIT_RESUME_FROM=$checkpoint_image NEMACS_REAL_INIT_RESUME_AFTER=${NEMACS_REAL_INIT_CHECKPOINT_AT}"
+    exit 0
+  fi
   exit 1
 fi
