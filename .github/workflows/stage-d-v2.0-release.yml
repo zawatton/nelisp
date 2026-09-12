@@ -10,7 +10,7 @@ name: NeLisp semver release pipeline
 #   - manual workflow_dispatch (e.g. dry-run a release candidate).
 #
 # The standalone build is pure Elisp and requires no legacy native toolchain.
-# v1.2.2 release blockers are Linux x86_64 and Linux ARM64.  macOS ARM64 is
+# v1.3.0 release blockers are Linux x86_64 and Linux ARM64.  macOS ARM64 is
 # retained as a deferred job below so its unverified state remains visible.
 # SHA-256 and the ad-hoc signature placeholder keep each uploaded artifact
 # bundle self-contained.
@@ -22,16 +22,16 @@ on:
   workflow_dispatch:
     inputs:
       release_version:
-        description: 'Release version label (default: v1.2.2)'
+        description: 'Release version label (default: v1.3.0)'
         required: false
-        default: 'v1.2.2'
+        default: 'v1.3.0'
   push:
     tags:
       - 'v*.*.*'
 
 env:
   # Tag pushes use the semver tag; manual dispatch keeps its input/default.
-  RELEASE_VERSION: ${{ github.event_name == 'push' && github.ref_name || github.event.inputs.release_version || 'v1.2.2' }}
+  RELEASE_VERSION: ${{ github.event_name == 'push' && github.ref_name || github.event.inputs.release_version || 'v1.3.0' }}
 
 jobs:
   build-linux-x86_64:
@@ -212,7 +212,7 @@ jobs:
           # workflow artifacts; GitHub Release asset publication is separate.
           ls -R artifacts > release-out/artifact-listing.txt
           echo "RELEASE_VERSION=${{ env.RELEASE_VERSION }}" >> release-out/artifact-listing.txt
-          echo "macos-arm64=deferred (unverified; excluded from v1.2.2 release qualification)" >> release-out/artifact-listing.txt
+          echo "macos-arm64=deferred (unverified; excluded from v1.3.0 release qualification)" >> release-out/artifact-listing.txt
 
       - name: Upload manifest bundle
         uses: actions/upload-artifact@v4
