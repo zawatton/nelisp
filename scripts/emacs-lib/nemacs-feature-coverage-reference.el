@@ -14,11 +14,26 @@
 ;; therefore safe: entries are keyed by file, and each file names its own
 ;; feature.
 ;;
-;; Only `defun' and `defvar' entries are kept, which is the surface a caller
-;; can hit.  Names are reported as-is, private `--' ones included: a stub
-;; that omits a private helper its own public functions call is just as
-;; broken as one that omits the public name, and pretending otherwise would
-;; flatter the result.
+;; Functions and variables are kept, which is the surface a caller can hit.
+;; Names are reported as-is, private `--' ones included: a stub that omits a
+;; private helper its own public functions call is just as broken as one that
+;; omits the public name, and pretending otherwise would flatter the result.
+;;
+;; The entry shapes matter and are easy to get backwards.  In `load-history'
+;; a BARE SYMBOL is a VARIABLE, and a function is `(defun . NAME)'.  There is
+;; no `(defvar . NAME)' shape at all -- measured across simple, isearch,
+;; term, dired and comint on 2026-09-12: 5880 `defun', 2904 bare symbols,
+;; 252 `defface', 110 `cl-defmethod', and ZERO `defvar'.
+;;
+;; This file had it inverted until then: bare symbols were emitted as "fn",
+;; so every variable was probed with `fboundp' and counted missing even where
+;; the substrate defines it.  `kill-ring' is the clean example -- in host
+;; Emacs itself `(fboundp 'kill-ring)' is nil and `(boundp 'kill-ring)' is t.
+;; The inflated figure that produced was 4542 missing / 966 present.
+;;
+;; `defface' is skipped rather than guessed at: a face is neither `fboundp'
+;; nor `boundp', so calling it either kind manufactures a miss that says
+;; nothing about the port.
 
 ;;; Code:
 
@@ -66,13 +81,22 @@
           (when (and provided (memq provided available))
             (dolist (item (cdr entry))
               (cond
+               ;; A bare symbol in `load-history' is a VARIABLE.  See the
+               ;; commentary: this was emitted as "fn" until 2026-09-12,
+               ;; which probed every variable with `fboundp'.
                ((symbolp item)
-                ;; A bare symbol in load-history is a function definition.
-                (setq rows (cons (list provided "fn" item) rows)))
+                (setq rows (cons (list provided "var" item) rows)))
                ((and (consp item) (eq (car item) 'defun))
                 (setq rows (cons (list provided "fn" (cdr item)) rows)))
-               ((and (consp item) (eq (car item) 'defvar))
-                (setq rows (cons (list provided "var" (cdr item)) rows))))))))
+               ;; A generic's own name is `fboundp' once any method defines
+               ;; it, so callers can hit it exactly like a `defun'.
+               ((and (consp item) (eq (car item) 'cl-defmethod))
+                (setq rows (cons (list provided "fn" (cdr item)) rows)))
+               ;; `provide'/`require' are features, `defface' is a face, and
+               ;; `define-type'/`define-symbol-props' are neither a function
+               ;; nor a variable.  None of them is a name a caller binds or
+               ;; calls, so none is counted.
+               )))))
       (with-temp-buffer
         (dolist (row (nreverse rows))
           (insert (format "%s\t%s\t%s\n" (nth 0 row) (nth 1 row) (nth 2 row))))
