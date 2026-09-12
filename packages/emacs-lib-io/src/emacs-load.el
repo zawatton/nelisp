@@ -2245,6 +2245,25 @@ non-nil when DIRECTORY exists."
                             :temp temp
                             :command command))
                 (emacs-load--artifact-cache-invalidate artifact sidecar)
+                ;; Record the failure the same way a failed REPLAY is recorded
+                ;; just below.  Without this the two failure paths are
+                ;; asymmetric: a replay failure leaves a `negative' record and
+                ;; is skipped next time, while a compile failure left nothing,
+                ;; so every later load of the same unchanged source ran the
+                ;; same failing compile again.  Measured 2026-09-12 on
+                ;; vendor/emacs-lisp/epa.el: 188 s per load, every load,
+                ;; discarded, with the source route then doing the real work in
+                ;; 12 s.  `cache-state' already knows how to read this record
+                ;; (version 2, `:unreplayable'), so one write turns a permanent
+                ;; per-load cost into a one-off.
+                (condition-case nil
+                    (emacs-load--artifact-cache-write-record
+                     sidecar
+                     (emacs-load--artifact-cache-record
+                      source-hash compiler-identity t
+                      (format "compile-elisp-artifact exited with status %S"
+                              status)))
+                  (error nil))
                 (if cached-error
                     (error "cached artifact failed (%s); recompilation failed with status %S"
                            (error-message-string cached-error) status)
