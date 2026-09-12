@@ -74,6 +74,22 @@ standalone path by a NeLisp-only primitive instead, matching
   (defvar mark-active nil
     "Fallback active-mark flag for standalone NeLisp."))
 
+;; The mark belongs to a buffer, not to the process.  Until 2026-09-12
+;; these were plain globals, so a mark pushed in one buffer was visible
+;; from every other one -- measured against the host, which answers nil for
+;; `(mark t)' in a buffer where nothing set a mark and answered 3 here.
+;; Anything that pushes a mark and later reads it in a different buffer
+;; (`exchange-point-and-mark', region commands, `pop-mark') was reading
+;; someone else's.  `mark-active' is buffer-local in GNU Emacs too --
+;; `(local-variable-if-set-p 'mark-active)' is t there.
+;;
+;; Buffer-local variables already work in this substrate: checked with a
+;; five-case differential against the host (set in one buffer, read in a
+;; fresh one, `default-value', `make-local-variable', and the global after)
+;; before relying on them here.
+(make-variable-buffer-local 'lisp--mark)
+(make-variable-buffer-local 'mark-active)
+
 (defun lisp--char-at (pos)
   "Return character at POS, or nil when POS is outside the buffer."
   (when (and (>= pos (point-min)) (< pos (point-max)))

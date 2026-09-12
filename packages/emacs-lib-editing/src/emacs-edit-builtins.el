@@ -3218,22 +3218,86 @@ the beginning of the accessible portion rather than widening first."
   (forward-line (- (or arg 1)))
   (skip-chars-forward " \t"))
 
-;; NOT ported here: `transpose-subr', `transpose-subr-1', `transpose-words'
-;; and `transpose-lines'.  They were written, run against the host, and
-;; withdrawn -- twice over, this substrate cannot carry them yet:
-;;
-;;   Markers do not follow buffer edits.  Measured 2026-09-12 against the
-;;   host: `insert-before-markers' leaves a marker where it was (host moves
-;;   it), and deleting text BEFORE a marker leaves it where it was (host
-;;   moves it back).  `transpose-subr-1' is built on exactly that, re-reading
-;;   its boundary marker after an insert and a delete, so it deleted three
-;;   characters off target and turned "one two three" into "one thretwoee".
-;;
-;; A version that used integer positions instead would run, and would be
-;; worse than nothing: `fboundp' would answer t, the coverage count would
-;; improve, and the command would silently corrupt buffers whose markers the
-;; real one is written to preserve.  Withdrawn until markers track edits.
-;; See handoff/marker-and-mark-semantics_dev-nelisp-emacs-lib_2026-09-12.org.
+(defun transpose-subr-1 (pos1 pos2)
+  "Transpose the regions POS1 and POS2, each a cons of buffer positions."
+  (unless (and pos1 pos2)
+    (error "Don't have two things to transpose"))
+  (when (> (car pos1) (cdr pos1)) (setq pos1 (cons (cdr pos1) (car pos1))))
+  (when (> (car pos2) (cdr pos2)) (setq pos2 (cons (cdr pos2) (car pos2))))
+  (when (> (car pos1) (car pos2))
+    (let ((swap pos1)) (setq pos1 pos2 pos2 swap)))
+  (when (> (cdr pos1) (car pos2))
+    (error "Don't have two things to transpose"))
+  ;; GNU Emacs wraps the mutation below in `atomic-change-group', which is
+  ;; not ported here.  What that buys is a single undo unit and a rollback
+  ;; if the body signals.  Every check that can signal in this function runs
+  ;; ABOVE this point, before anything is mutated, so the rollback case is
+  ;; not reachable from here; the undo grouping is genuinely lost and this
+  ;; says so rather than implying otherwise.
+  (let* ((word (buffer-substring (car pos2) (cdr pos2)))
+         (len1 (- (cdr pos1) (car pos1)))
+         (len2 (length word))
+         (boundary (make-marker)))
+    (set-marker boundary (car pos2))
+    (goto-char (cdr pos1))
+    (insert-before-markers word)
+    (setq word (delete-and-extract-region (car pos1) (+ (car pos1) len1)))
+    (goto-char (marker-position boundary))
+    (insert word)
+    ;; GNU Emacs writes `(+ boundary len1)': there a marker satisfies
+    ;; `number-or-marker-p' and arithmetic reads its position.  Here a
+    ;; marker is a record and `+' rejects it, so the position is taken
+    ;; explicitly.  Same value either way -- `marker-position' is read at
+    ;; the same point in the sequence, after `insert' has moved the marker.
+    (goto-char (+ (marker-position boundary) len1))
+    (delete-region (point) (+ (point) len2))
+    (set-marker boundary nil))
+  nil)
+
+(defun transpose-subr (mover arg &optional special)
+  "Transpose the objects MOVER moves over, ARG of them.
+With ARG zero, exchange the object at point with the one at the mark."
+  (let ((aux (if special mover
+               (lambda (x)
+                 (cons (progn (funcall mover x) (point))
+                       (progn (funcall mover (- x)) (point))))))
+        pos1 pos2)
+    (cond
+     ((= arg 0)
+      (save-excursion
+        (setq pos1 (funcall aux 1))
+        (goto-char (or (mark) (error "No mark set in this buffer")))
+        (setq pos2 (funcall aux 1))
+        (transpose-subr-1 pos1 pos2))
+      (exchange-point-and-mark))
+     ((> arg 0)
+      (setq pos1 (funcall aux -1))
+      (setq pos2 (funcall aux arg))
+      (transpose-subr-1 pos1 pos2)
+      (goto-char (car pos2)))
+     (t
+      (setq pos1 (funcall aux -1))
+      (goto-char (car pos1))
+      (setq pos2 (funcall aux arg))
+      (transpose-subr-1 pos1 pos2)
+      (goto-char (+ (car pos2) (- (cdr pos1) (car pos1))))))
+    nil))
+
+(defun transpose-words (arg)
+  "Interchange the words around point, leaving point at the end of them."
+  (transpose-subr #'forward-word arg))
+
+(defun transpose-lines (arg)
+  "Exchange the current line and the previous one, leaving point after both."
+  (transpose-subr
+   (lambda (n)
+     (if (> n 0)
+         (progn
+           (setq n (forward-line n))
+           (when (/= (preceding-char) ?\n) (setq n (1+ n)))
+           (when (> n 0) (newline n)))
+       (forward-line n)))
+   arg))
 
 (provide 'emacs-edit-builtins)
 

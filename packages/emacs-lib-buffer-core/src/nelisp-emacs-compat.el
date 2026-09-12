@@ -105,7 +105,14 @@ Slots:
   (narrow-end   nil)
   (modified-p   nil)
   (text-tick    0   :type integer)
-  (killed-p     nil))
+  (killed-p     nil)
+  ;; MARKERS: the markers that live in this buffer, so insertion and
+  ;; deletion can move them.  Emacs keeps the same chain on the buffer.
+  ;; Before 2026-09-12 there was no chain and markers never moved: measured
+  ;; against the host, `insert-before-markers' left a marker where it was
+  ;; and deleting in front of one left it where it was, which quietly broke
+  ;; everything built on markers tracking edits.
+  (markers      nil))
 
 (when (fboundp 'nelisp--write-stdout-bytes)
   (defun nelisp-ec-buffer--slot (obj key)
@@ -165,6 +172,10 @@ Slots:
     (nelisp-ec-buffer--slot obj :killed-p))
   (defun nelisp-ec-buffer-killed-p--setter (obj value)
     (nelisp-ec-buffer--set-slot obj :killed-p value))
+  (defun nelisp-ec-buffer-markers (obj)
+    (nelisp-ec-buffer--slot obj :markers))
+  (defun nelisp-ec-buffer-markers--setter (obj value)
+    (nelisp-ec-buffer--set-slot obj :markers value))
 
   (put 'nelisp-ec-buffer-name 'cl-struct-setter
        'nelisp-ec-buffer-name--setter)
@@ -181,7 +192,9 @@ Slots:
   (put 'nelisp-ec-buffer-text-tick 'cl-struct-setter
        'nelisp-ec-buffer-text-tick--setter)
   (put 'nelisp-ec-buffer-killed-p 'cl-struct-setter
-       'nelisp-ec-buffer-killed-p--setter))
+       'nelisp-ec-buffer-killed-p--setter)
+  (put 'nelisp-ec-buffer-markers 'cl-struct-setter
+       'nelisp-ec-buffer-markers--setter))
 
 (unless (fboundp 'nelisp-ec-buffer-name--setter)
   (defun nelisp-ec-buffer-name--setter (obj value)
@@ -672,12 +685,10 @@ the general `&rest' / `dolist' string-insert path."
     new-point))
 
 ;;;###autoload
-(defun nelisp-ec-insert (&rest strings)
-  "Insert STRINGS at POINT in the current buffer.  Return nil.
-POINT advances past the inserted text.  Each element of STRINGS may be
-a string or character code; nil elements are ignored (Emacs forbids
-them, but our MVP is forgiving for callers that build arg lists
-dynamically)."
+(defun nelisp-ec--insert-1 (strings before-markers)
+  "Insert STRINGS at POINT.  BEFORE-MARKERS is the `insert-before-markers' flag.
+The body of `nelisp-ec-insert'; the two entry points differ only in what
+happens to a marker sitting exactly at the insertion point."
   (let ((buf (nelisp-ec--ensure-current)))
     (dolist (s strings)
       (when s
@@ -694,10 +705,27 @@ dynamically)."
               (nelisp-ec--set-buffer-point buf new-point)
               (nelisp-ec--set-buffer-modified-p buf t)
               (nelisp-ec--bump-buffer-text-tick buf)
+              (nelisp-ec--markers-after-insert buf insert-point n-chars
+                                               before-markers)
               ;; Push narrow-end out when insertion occurred at or before it.
               (when (and ne (<= insert-point ne))
                 (nelisp-ec--set-buffer-narrow-end buf (+ ne n-chars))))))))
     nil))
+
+;;;###autoload
+(defun nelisp-ec-insert-before-markers (&rest strings)
+  "Insert STRINGS at POINT, moving markers that sit exactly there.
+The only difference from `nelisp-ec-insert': a marker AT the insertion
+point ends up after the inserted text whatever its insertion type."
+  (nelisp-ec--insert-1 strings t))
+
+(defun nelisp-ec-insert (&rest strings)
+  "Insert STRINGS at POINT in the current buffer.  Return nil.
+POINT advances past the inserted text.  Each element of STRINGS may be
+a string or character code; nil elements are ignored (Emacs forbids
+them, but our MVP is forgiving for callers that build arg lists
+dynamically)."
+  (nelisp-ec--insert-1 strings nil))
 
 (defun nelisp-ec--position-arg (pos)
   "Coerce POS to an integer position, resolving `nelisp-ec' markers.
@@ -732,6 +760,7 @@ bounds are adjusted analogously."
       (let ((n (- e s))
             (point (nelisp-ec-buffer-point buf)))
         (text-buffer-delete (nelisp-ec--text buf) (1- s) (1- e))
+        (nelisp-ec--markers-after-delete buf s e)
         (cond
          ((<= point s)
           ;; point before deletion: unchanged
@@ -932,6 +961,56 @@ clamped to the new range.  Returns nil."
                                 :insertion-type nil)))
 
 ;;;###autoload
+(defun nelisp-ec--marker-register (marker buf)
+  "Add MARKER to BUF's marker chain, and drop it from any other buffer.
+A marker belongs to exactly one buffer at a time, so re-pointing it has to
+unlink it from the old chain or the old buffer would keep adjusting it."
+  (let ((old (nelisp-ec-marker--buffer marker)))
+    (when (and old (nelisp-ec-buffer-p old) (not (eq old buf)))
+      (setf (nelisp-ec-buffer-markers old)
+            (delq marker (nelisp-ec-buffer-markers old)))))
+  (when (and buf (nelisp-ec-buffer-p buf))
+    (let ((chain (nelisp-ec-buffer-markers buf)))
+      (unless (memq marker chain)
+        (setf (nelisp-ec-buffer-markers buf) (cons marker chain))))))
+
+(defun nelisp-ec--marker-unregister (marker)
+  "Drop MARKER from its buffer's chain, if it is in one."
+  (let ((old (nelisp-ec-marker--buffer marker)))
+    (when (and old (nelisp-ec-buffer-p old))
+      (setf (nelisp-ec-buffer-markers old)
+            (delq marker (nelisp-ec-buffer-markers old))))))
+
+(defun nelisp-ec--markers-after-insert (buf pos n before-markers)
+  "Move BUF's markers for N characters inserted at POS.
+
+A marker strictly after POS always shifts.  A marker exactly AT POS is the
+interesting case and Emacs decides it two ways: `insert-before-markers'
+moves it regardless, and a plain insert moves it only when the marker's
+insertion type says to advance.  Getting that distinction wrong is what
+made `insert-before-markers' behave like `insert' here."
+  (dolist (m (nelisp-ec-buffer-markers buf))
+    (let ((mp (nelisp-ec-marker--position m)))
+      (when (integerp mp)
+        (cond
+         ((> mp pos) (nelisp-ec--set-marker-position m (+ mp n)))
+         ((= mp pos)
+          (when (or before-markers (nelisp-ec-marker--insertion-type m))
+            (nelisp-ec--set-marker-position m (+ mp n)))))))))
+
+(defun nelisp-ec--markers-after-delete (buf s e)
+  "Move BUF's markers for the deletion of the range S..E.
+A marker after the range shifts back by its length; a marker inside the
+range collapses to S, which is where the text it pointed into used to
+begin.  A marker before the range does not move."
+  (let ((n (- e s)))
+    (dolist (m (nelisp-ec-buffer-markers buf))
+      (let ((mp (nelisp-ec-marker--position m)))
+        (when (integerp mp)
+          (cond
+           ((>= mp e) (nelisp-ec--set-marker-position m (- mp n)))
+           ((> mp s) (nelisp-ec--set-marker-position m s))))))))
+
 (defun nelisp-ec-set-marker (marker pos &optional buf)
   "Set MARKER to point to POS in BUF (default = current buffer).
 If POS is nil the marker is detached (= points nowhere).  Returns
@@ -941,6 +1020,7 @@ affects where you can move POINT, not where a marker may sit."
     (signal 'wrong-type-argument (list 'nelisp-ec-marker-p marker)))
   (cond
    ((null pos)
+    (nelisp-ec--marker-unregister marker)
     (nelisp-ec--set-marker-position marker nil)
     (nelisp-ec--set-marker-buffer marker nil))
    (t
@@ -954,6 +1034,7 @@ affects where you can move POINT, not where a marker may sit."
       (let ((max-end (1+ (text-buffer-length (nelisp-ec--text b)))))
         (when (or (< pos 1) (> pos max-end))
           (signal 'nelisp-ec-args-out-of-range (list pos 1 max-end))))
+      (nelisp-ec--marker-register marker b)
       (nelisp-ec--set-marker-position marker pos)
       (nelisp-ec--set-marker-buffer marker b))))
   marker)
