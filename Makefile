@@ -566,6 +566,15 @@ repl-profile-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone
 repl-reload-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
 	sh test/nelisp-repl-reload-smoke.sh
 
+# An in-place dump leaves the process running on the same arena, and on
+# 2026-09-12 the form after one came back `void-variable' with every helper
+# after that `void-function'.  That cause was fixed elsewhere; this pins the
+# symptom, and carries a negative control so a green here cannot mean "the
+# check is blind".  See the script's own header.
+.PHONY: standalone-reader-arena-dump-live-smoke
+standalone-reader-arena-dump-live-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	sh test/nelisp-arena-dump-live-session-smoke.sh
+
 .PHONY: repl-development-test
 repl-development-test:
 	$(EMACS) --batch -Q -L lisp -L src -L scripts -L test -L tools/ai \
@@ -1171,6 +1180,7 @@ reader-surface-audit:
 # keep current is a ledger nobody reads.  The count is the signal -- 29 checked
 # is the claim, and a target that stops existing shows up as a smaller number.
 STANDALONE_READER_SMOKES = \
+  standalone-reader-arena-dump-live-smoke \
   standalone-reader-async-core-smoke \
   standalone-reader-bignum-smoke \
   standalone-reader-catch-throw-tag-smoke \
