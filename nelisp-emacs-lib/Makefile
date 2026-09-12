@@ -1894,6 +1894,28 @@ doctor:
 		NEMACS_NELISP_STACK="$(NELISP_STACK_LIMIT)" \
 		./bin/nemacs --doctor
 
+# Build the flat-arena cold image deliberately.  `bin/nemacs' uses one when it
+# is there (1.2 s vs ~20 s to start) but no longer builds a missing one on the
+# critical path of an ordinary start: measured 2026-09-12, a build is ~52 min
+# and 549 MB, and the image is keyed on the bundle, so one edit under src/
+# throws it away.  Build it when the bundle is going to sit still.
+# The policy itself: an existing image is used, a missing one is NOT built on
+# the critical path of an ordinary start, and a build that IS asked for dies
+# with its launcher instead of outliving it holding the cache lock.
+.PHONY: nemacs-cold-image-policy-smoke
+nemacs-cold-image-policy-smoke:
+	NELISP_HOME="$(abspath $(NELISP_ROOT))" \
+		NEMACS_NELISP="$(abspath $(NELISP_BIN))" \
+		sh test/nemacs-cold-image-policy-smoke.sh
+
+.PHONY: nemacs-cold-image
+nemacs-cold-image: build-nelisp-bootstrap
+	NELISP_HOME="$(abspath $(NELISP_ROOT))" \
+		NEMACS_NELISP="$(abspath $(NELISP_BIN))" \
+		NEMACS_COLD_BUILD=1 \
+		./bin/nemacs --driver=nelisp --batch --no-banner \
+		--eval '(princ "cold-image=ready\n")'
+
 .PHONY: real-init-audit
 real-init-audit: build-nelisp-bootstrap
 	NELISP_HOME="$(abspath $(NELISP_ROOT))" \
