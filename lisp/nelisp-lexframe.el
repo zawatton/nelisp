@@ -68,7 +68,17 @@ Frames typically hold 1-5 entries (let bindings + lambda formals),
 so 16 buckets is plenty (= 1-2 entries per bucket avg, near-zero
 collision cost) while keeping the per-frame backing vector small
 (= 16 × Sexp::Nil ≈ 128 bytes, so 100+ live frames during deep
-recursion fit in ~13KB).  Doc 104 §2.2 rationale.")
+recursion fit in ~13KB).  Doc 104 §2.2 rationale.
+
+The STANDALONE uses 4, not 16: `nelisp_frame_push_direct' in
+`nelisp-cc-frame-push.el' was measured on 2026-09-12 with
+`make standalone-alloc-volume-bench', and pushing a frame that
+holds nothing cost 984 bytes there, of which these buckets were
+128.  The rationale above prices collisions, which are rare, and
+not the empty slots every call and every `let' pays for whether it
+binds anything or not.  This constant is left at 16 because it
+belongs to the host-side frame, which that bench does not measure
+-- changing it here would be an unmeasured change.")
 
 (defun nelisp-lexframe-make (&optional bucket-count)
   "Build a fresh empty lexframe record.

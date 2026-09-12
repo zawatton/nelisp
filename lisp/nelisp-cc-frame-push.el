@@ -194,14 +194,25 @@
         (record-make ht-sym-ptr
                      3
                      ht-slot)
-        ;; Step 2: allocate 16-bucket Sexp::Vector.
-        (vector-make 16 buckets-slot)
+        ;; Step 2: allocate the bucket Sexp::Vector.  FOUR, not sixteen:
+        ;; measured 2026-09-12 with `make standalone-alloc-volume-bench',
+        ;; pushing a frame that holds NOTHING cost 984 bytes, and this
+        ;; vector is the largest part of it.  The rationale for 16 was that
+        ;; frames hold 1-5 entries so 16 buckets collide rarely -- true, but
+        ;; it priced the collisions and not the 16 empty slots every call
+        ;; and every `let' pays for whether or not it ever binds anything.
+        ;; Buckets are chained, the count is read back from ht.slot 0 by
+        ;; every reader, and 4 is still a power of two, so this is a size
+        ;; change and not a semantic one.
+        (vector-make 4 buckets-slot)
         ;; Step 3: install buckets into ht.slot 1.
         (record-slot-set ht-slot
                          1
                          buckets-slot)
-        ;; Step 4: ht.slot 0 = Sexp::Int(16) — bucket-count.
-        (sexp-int-make int-slot 16)
+        ;; Step 4: ht.slot 0 = Sexp::Int(4) — bucket-count.  Must match the
+        ;; vector length above: `nelisp_frame_stack_find' rejects a count
+        ;; larger than the bucket vector.
+        (sexp-int-make int-slot 4)
         (record-slot-set ht-slot
                          0
                          int-slot)

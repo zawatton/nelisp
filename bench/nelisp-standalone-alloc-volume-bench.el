@@ -43,12 +43,12 @@
 ;;   bytes/iteration, recycling off      over bare loop
 ;;     loop      1573.1
 ;;     builtin   2709.6                  +1136.6
-;;     call0     3149.6                  +1576.6
-;;     call1     4085.6                  +2512.6
-;;     call2     4981.6                  +3408.6   (+896.0 per argument,
-;;     call3     5877.6                  +4304.6    exactly linear)
-;;     let1      3909.6                  +2336.6
-;;     let2      5021.6                  +3448.6   (+1112.0 per binding)
+;;     call0     3053.3                  +1480.6
+;;     call1     3989.3                  +2416.6
+;;     call2     4885.3                  +3312.6   (+896.0 per argument,
+;;     call3     5781.3                  +4208.6    exactly linear)
+;;     let1      3813.3                  +2240.6
+;;     let2      4925.3                  +3352.6   (+1112.0 per binding)
 ;;     cons      2501.6                   +928.6   (the cons itself is 32 B)
 ;;
 ;; A bare `while' iteration that only increments a counter allocates about
@@ -105,8 +105,8 @@
 ;;   (list i i)                576        + another  (so 112 per argument)
 ;;   (car nil)                 504        another one-argument builtin
 ;;   (1+ i)                    584        and another
-;;   defun, no parameters     1376
-;;   defun, one parameter     2312
+;;   defun, no parameters     1280
+;;   defun, one parameter     2216
 ;;
 ;; Read it from the top.  Dispatching a cons form that does no work is a
 ;; single slot, so the evaluator's own floor is cheap.  A builtin call with
@@ -115,32 +115,45 @@
 ;; 112.  So the argument walk is not where the bytes are, which is where the
 ;; per-argument cons allocation in `nl_eval_arg_list_drive' had pointed.
 ;;
-;; The lambda path is.  A `defun' with no parameters at all costs 1376 where
-;; the equivalent builtin costs 312: 1064 bytes, ~26 slots, spent before a
+;; The lambda path is.  A `defun' with no parameters at all costs 1280 where
+;; the equivalent builtin costs 312: 968 bytes, ~24 slots, spent before a
 ;; single parameter is bound.
 ;;
 ;; The `frames' phase isolates that, using a `let' that binds NOTHING --
 ;; which still pushes a frame -- against a `progn', which does not:
 ;;
 ;;   (progn 1)            242 bytes over the bare loop
-;;   (let () 1)          1226          so the FRAME PUSH is 984
-;;   (let* () 1)         1186
-;;   (let ((k i)) k)     2338          first binding  +1112
-;;   two bindings        3450          second binding +1112
-;;   three bindings      4562          third binding  +1112
+;;   (let () 1)          1130          so the FRAME PUSH is 888
+;;   (let* () 1)         1090
+;;   (let ((k i)) k)     2242          first binding  +1112
+;;   two bindings        3354          second binding +1112
+;;   three bindings      4466          third binding  +1112
 ;;
-;; 984 bytes to push a frame that holds nothing, and a flat 1112 for every
-;; binding put in it.  The source says why: `nelisp_frame_push_direct'
-;; allocates a 128-byte scratch, a 3-slot fast-hash-table record, a SIXTEEN
-;; bucket vector for that table, and a 1-slot lexframe record -- a fresh
-;; 16-bucket hash table per call and per `let', sized for 16 entries before
-;; a single entry exists.  Most frames here hold one or two.
+;; 888 bytes to push a frame that holds nothing, and a flat 1112 for every
+;; binding put in it -- identical to the byte for the first, second and
+;; third, so a binding is a fixed cost per entry and not a growth curve.
+;;
+;; The frame figure was 984 until 2026-09-12.  `nelisp_frame_push_direct'
+;; allocates a 128-byte scratch, a 3-slot fast-hash-table record, a bucket
+;; vector for that table, and a 1-slot lexframe record; the bucket vector
+;; was SIXTEEN entries, so every call and every `let' built a hash table
+;; sized for 16 before it held one.  It is now 4 (still a power of two,
+;; still chained, the count still read back from ht.slot 0), which took the
+;; push to 888 and a `defun' call from 2312 to 2216.  96 bytes, 12 buckets
+;; at 8 bytes each -- so the bucket vector was only 128 of the 984, and the
+;; remaining 888 is the scratch block and the two records.
 ;;
 ;; That accounts for the whole defun call: 312 (lookup and apply, as for any
-;; builtin) + 984 (frame) + 1112 (one parameter) is the measured 2312, and
-;; `defun0 - builtin0' comes out at 1064, the frame plus the lambda
-;; dispatch.  Two numbers to attack, in this order: the per-frame 984, and
-;; the per-binding 1112.
+;; builtin) + 888 (frame) + 1112 (one parameter) is the measured 2216, and
+;; `defun0 - builtin0' comes out at 968, the frame plus the lambda dispatch.
+;;
+;; A binding, censused by block class, is 18 32-byte slots (720 bytes), five
+;; blocks of 32 or less (152), and 240 in the 65-256 class -- which is
+;; exactly `nl_let_collect_with_slot' (96+8) plus `nl_bind_frame_fast'
+;; (128+8).  Both of those are scratch: `nl_root_reserve' hands out slots
+;; from a bss root stack without allocating at all, and moving them there is
+;; the next reduction.  It is a bigger change than a constant, because in
+;; AOT-generated code a slot's lifetime is what keeps a value rooted.
 ;;
 ;; Ruled out while looking: the macroexpansion cache.  Forcing every lookup
 ;; to miss (`nelisp--debug-switch' 13) changes the volume of `(1+ i)' by
