@@ -133,6 +133,16 @@
 ;; binding put in it -- identical to the byte for the first, second and
 ;; third, so a binding is a fixed cost per entry and not a growth curve.
 ;;
+;; By block class, which counts allocator CALLS rather than bytes:
+;;
+;;   frame push    <=32  +48.0 (2 blocks)   33-64 +560.0 (14 slots)   65-256 +280.0
+;;   per binding   <=32 +152.0 (5 blocks)   33-64 +720.0 (18 slots)   65-256 +240.0
+;;
+;; Eighteen separate allocations to push a frame, twenty-three to put one
+;; name in it.  That count is the thing a smaller frame representation would
+;; have to cut; the bucket vector, which was the obvious target and is now 4
+;; entries, is a single 40-byte block of it.
+;;
 ;; The frame figure was 984 until 2026-09-12.  `nelisp_frame_push_direct'
 ;; allocates a 128-byte scratch, a 3-slot fast-hash-table record, a bucket
 ;; vector for that table, and a 1-slot lexframe record; the bucket vector
@@ -654,7 +664,27 @@ slots are."
         (princ (format "ALLOC-VOLUME %-16s %9.1f  (a frame that holds nothing)\n"
                        "frame push" (- let0 prognv)))
         (princ (format "ALLOC-VOLUME %-16s %9.1f / %9.1f / %9.1f  (1st / 2nd / 3rd)\n"
-                       "per binding" (- let1 let0) (- let2 let1) (- let3 let2)))))))
+                       "per binding" (- let1 let0) (- let2 let1) (- let3 let2)))
+        ;; And the same two differences by block class, which is what says
+        ;; how many separate allocator calls each one is rather than only how
+        ;; many bytes.  A push is 18 of them and a binding 23; that count,
+        ;; not the byte total, is what a smaller frame representation would
+        ;; have to cut.
+        (let ((cp (nelisp-measure-census #'nelisp-standalone-alloc-volume-bench--progn n))
+              (c0 (nelisp-measure-census #'nelisp-standalone-alloc-volume-bench--let0 n))
+              (c1 (nelisp-measure-census #'nelisp-standalone-alloc-volume-bench--let1 n)))
+          (if (not (and cp c0 c1))
+              (princ "ALLOC-VOLUME frames census   INVALID\n")
+            (let ((row (lambda (label a b)
+                         (princ (format "ALLOC-VOLUME %-16s <=32 %+7.1f (%+5.2f blk)  33-64 %+8.1f (%+5.1f slots)  65-256 %+7.1f\n"
+                                        label
+                                        (- (plist-get b :small) (plist-get a :small))
+                                        (- (plist-get b :small-blocks) (plist-get a :small-blocks))
+                                        (- (plist-get b :slot) (plist-get a :slot))
+                                        (/ (- (plist-get b :slot) (plist-get a :slot)) 40.0)
+                                        (- (plist-get b :medium) (plist-get a :medium)))))))
+              (funcall row "frame push" cp c0)
+              (funcall row "per binding" c0 c1))))))))
 
 (defun nelisp-standalone-alloc-volume-bench-run ()
   (nelisp-standalone-alloc-volume-bench-volume)
