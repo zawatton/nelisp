@@ -21100,6 +21100,23 @@ runtime cache does not replay source file loads on every command invocation."
    "(unless (fboundp 'nelisp-core-read-file-as-string)\n"
    "  (defun nelisp-core-read-file-as-string (path)\n"
    "    (nelisp-standalone-artifact--read-file-as-string path)))\n"
+   ;; PATH first, then the absolute list.  `executable-find' (the prelude's,
+   ;; in this binary) splits PATH itself and, since 2026-09-12, tries the
+   ;; windows-nt executable suffixes -- which is what the absolute list could
+   ;; never do: a Windows host has no /usr/bin, so `secure-hash' failed there
+   ;; with `sha256sum.exe' sitting on PATH.  Measured on a Windows MSYS2 host
+   ;; at 771e17a29.  The list stays as the fallback for a run with no usable
+   ;; PATH, and `fboundp' keeps this working if the prelude is ever absent.
+   "(defun nelisp-standalone-artifact--find-program (name)\n"
+   "  (or (and (fboundp 'executable-find) (executable-find name))\n"
+   "      (let ((dirs (list \"/usr/bin\" \"/bin\" \"/sbin\"\n"
+   "                        \"/opt/homebrew/bin\" \"/usr/local/bin\"))\n"
+   "            (hit nil))\n"
+   "        (while (and dirs (not hit))\n"
+   "          (let ((candidate (concat (car dirs) \"/\" name)))\n"
+   "            (when (file-exists-p candidate) (setq hit candidate)))\n"
+   "          (setq dirs (cdr dirs)))\n"
+   "        hit)))\n"
    "(unless (fboundp 'secure-hash)\n"
    "  (defun secure-hash (algorithm object &optional _start _end _binary)\n"
    "    (unless (or (eq algorithm 'sha256) (equal algorithm \"sha256\"))\n"
@@ -21120,14 +21137,12 @@ runtime cache does not replay source file loads on every command invocation."
    ;; 26.6.2 arm64 against target/nelisp sha256 5d3c5475d09f9a1acff79a08.
    ;; `shasum -a 256' prints the same `<64 hex>  <path>' line shape the
    ;; substring below already expects, so it needs no separate parser.
-   "    (let* ((spec (cond ((file-exists-p \"/usr/bin/sha256sum\") (list \"/usr/bin/sha256sum\"))\n"
-   "                       ((file-exists-p \"/bin/sha256sum\") (list \"/bin/sha256sum\"))\n"
-   "                       ((file-exists-p \"/sbin/sha256sum\") (list \"/sbin/sha256sum\"))\n"
-   "                       ((file-exists-p \"/opt/homebrew/bin/sha256sum\") (list \"/opt/homebrew/bin/sha256sum\"))\n"
-   "                       ((file-exists-p \"/usr/local/bin/sha256sum\") (list \"/usr/local/bin/sha256sum\"))\n"
-   "                       ((file-exists-p \"/usr/bin/shasum\") (list \"/usr/bin/shasum\" \"-a\" \"256\"))\n"
-   "                       ((file-exists-p \"/opt/homebrew/bin/shasum\") (list \"/opt/homebrew/bin/shasum\" \"-a\" \"256\"))\n"
-   "                       (t (error \"secure-hash: no sha256 helper: looked for sha256sum in /usr/bin /bin /sbin /opt/homebrew/bin /usr/local/bin and shasum in /usr/bin /opt/homebrew/bin; this runtime does not search PATH\"))))\n"
+   "    (let* ((sha256sum (nelisp-standalone-artifact--find-program \"sha256sum\"))\n"
+   "           (shasum (and (not sha256sum)\n"
+   "                        (nelisp-standalone-artifact--find-program \"shasum\")))\n"
+   "           (spec (cond (sha256sum (list sha256sum))\n"
+   "                       (shasum (list shasum \"-a\" \"256\"))\n"
+   "                       (t (error \"secure-hash: no sha256 helper: no sha256sum or shasum on PATH or in /usr/bin /bin /sbin /opt/homebrew/bin /usr/local/bin\"))))\n"
    "           (program (car spec))\n"
    "           (fixed-args (cdr spec))\n"
    "           (in (make-temp-file \"nelisp-secure-hash-in-\"))\n"

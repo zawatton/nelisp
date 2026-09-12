@@ -404,6 +404,21 @@ ifneq ($(filter arm64 aarch64,$(NELISP_HOST_UNAME_M)),)
 NELISP_NATIVE_STANDALONE_TARGET := macos-aarch64
 endif
 endif
+# Windows detected the same way, and for the same reason.  `$(OS)' alone was
+# not enough: MSYS2's /usr/bin/make, started from git-bash, does not carry
+# `OS=Windows_NT' through, so `$(OS)' is empty and the fallback below chose
+# linux-x86_64 -- a bare `make standalone-reader' on Windows silently built
+# a Linux ELF that cannot run on the machine that built it.  Measured
+# 2026-09-12 on a Windows MSYS2 host at 771e17a29.  `uname -s' answers
+# MSYS_NT-*/MINGW64_NT-*/CYGWIN_NT-* there and is already computed above.
+# The CI Windows lane is unaffected: .github/workflows/ci.yml passes
+# NELISP_STANDALONE_TARGET=windows-x86_64 explicitly.  There is no
+# windows-aarch64 target, so an ARM64 Windows host still has to opt in.
+ifneq ($(filter MSYS% MINGW% CYGWIN%,$(NELISP_HOST_UNAME_S)),)
+ifneq ($(filter x86_64 amd64,$(NELISP_HOST_UNAME_M)),)
+NELISP_NATIVE_STANDALONE_TARGET := windows-x86_64
+endif
+endif
 NELISP_NATIVE_STANDALONE_TARGET ?= $(if $(filter Windows_NT,$(OS)),windows-x86_64,linux-x86_64)
 STANDALONE_GATE_TARGET ?= $(or $(NELISP_STANDALONE_TARGET),$(NELISP_NATIVE_STANDALONE_TARGET))
 

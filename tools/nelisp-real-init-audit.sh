@@ -392,8 +392,29 @@ DARWIN_PEAK_RSS="NA"
 # memory at all, every column was NA.  Measured 2026-09-12 on macos 26.6.2
 # arm64: the wrapper reported 1472 KiB while its child, the binary actually
 # being audited, reported 206704 KiB at the same instant.
+#
+# `pgrep' is not portable enough to be the only way of asking.  Stock MSYS2
+# ships no procps-ng, so `pgrep -P' is simply absent there: the substitution
+# failed silently and this script went straight back to reporting the
+# wrapper, on the one platform where nobody would notice from the numbers
+# alone.  Measured 2026-09-12 on a Windows MSYS2 host at 771e17a29 -- the
+# run completed and every memory column was the wrapper's again.  `ps -ef'
+# prints PID in column 2 and PPID in column 3 on GNU/Linux, macOS and MSYS2
+# alike, so it answers the same question wherever `timeout' itself exists.
+nelisp_first_child_of() {
+  nelisp_parent="$1"
+  nelisp_child="$(pgrep -P "$nelisp_parent" 2>/dev/null | head -1 || true)"
+  case "$nelisp_child" in
+    ''|*[!0-9]*)
+      nelisp_child="$(ps -ef 2>/dev/null \
+        | awk -v parent="$nelisp_parent" \
+            '$2 ~ /^[0-9]+$/ && $3 == parent { print $2; exit }' || true)" ;;
+  esac
+  printf '%s' "$nelisp_child"
+}
+
 MEM_PID="$CHILD_PID"
-MEM_PID_CHILD="$(pgrep -P "$CHILD_PID" 2>/dev/null | head -1 || true)"
+MEM_PID_CHILD="$(nelisp_first_child_of "$CHILD_PID")"
 case "$MEM_PID_CHILD" in
   ''|*[!0-9]*) : ;;
   *) MEM_PID="$MEM_PID_CHILD" ;;

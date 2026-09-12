@@ -8328,6 +8328,12 @@ write instead of ever touching a real buffer."
   ;; -- there is no staleness window to reason about, and no hook to forget.
   (defvar nelisp--path-entries-key nil)
   (defvar nelisp--path-entries-value nil)
+  ;; windows-nt installs `sha256sum.exe'; a suffix-less probe finds nothing.
+  (defun nelisp--exec-suffixes ()
+    "Executable suffixes for this host; `(\"\")' off windows-nt."
+    (if (and (boundp 'system-type) (eq system-type 'windows-nt))
+        (list ".exe" ".com" "")
+      (list "")))
   (defun nelisp--path-entries (path sep)
     "Return PATH split on SEP, reusing the previous answer for the same PATH."
     (if (equal path nelisp--path-entries-key)
@@ -8370,10 +8376,22 @@ write instead of ever touching a real buffer."
         ;; `\' and `/' exactly as it would after expansion.  So the sweep
         ;; probes cheaply and expands ONCE, on the entry that answered yes,
         ;; and the value returned is the same expanded name as before.
+        ;; Suffix sweep (2026-09-12, Windows MSYS2): off windows-nt the list
+        ;; is `("")' and the `equal' below keeps the probe at one
+        ;; `file-exists-p' per entry.  Rationale in
+        ;; test/nelisp-prelude-executable-find-test.el.
         (while (and dirs (not found))
-          (let* ((dir (if (equal (car dirs) "") "." (car dirs))))
-            (when (file-exists-p (concat (file-name-as-directory dir) command))
-              (setq found (expand-file-name command dir))))
+          (let* ((dir (if (equal (car dirs) "") "." (car dirs)))
+                 (stem (concat (file-name-as-directory dir) command))
+                 (suffixes (nelisp--exec-suffixes)))
+            (while (and suffixes (not found))
+              (let ((candidate (if (equal (car suffixes) "")
+                                   stem
+                                 (concat stem (car suffixes)))))
+                (when (file-exists-p candidate)
+                  (setq found (expand-file-name (concat command (car suffixes))
+                                                dir))))
+              (setq suffixes (cdr suffixes))))
           (setq dirs (cdr dirs)))
         found)))))
 (unless (fboundp 'make-process)

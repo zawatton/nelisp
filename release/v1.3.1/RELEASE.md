@@ -212,6 +212,11 @@ them.
 | Linux real-init audit | PASS — 930/930 boundaries, `AUDIT_DONE 930`, exit 0, **no signal**, init hash unchanged. The pid fix is visibly working: the run reports `memory samples target pid: 3880044 (timeout wrapper pid: 3880041)`. **Peak RSS 278,708 KiB, final 190,744 KiB** — against the 2,104 KiB the pre-fix harness reported for the same audit, which was the wrapper. A ~90x error, and the correction is this release's, not a re-measurement of the same thing |
 | Linux 1-hour soak | THP-dependent on this desktop, not a leak — FAIL with THP `[always]`, PASS with it disabled per-process and peak RSS **equal to** start. See "The Linux soak" below. The release-runner result is blocker 2 |
 | Linux binary identity | `target/nelisp` hashes to `c00d5ee5e7904645` here, versus `6c9ab049f1996446` at the v1.3.0 tag. Expected: the `secure-hash` prelude repair is compiled into the standalone binary |
+| Windows `(:file PATH)` repair | PASS on real MSYS2 hardware — the helper returns the correct SHA-256 and leaves no zero-byte file. This is the repair that had silently returned nil on every host |
+| Windows `secure-hash` after the prelude repair | **FAIL on real MSYS2 hardware, now repaired** — `no sha256 helper: looked for sha256sum in /usr/bin /bin /sbin /opt/homebrew/bin /usr/local/bin ...` while `sha256sum.exe` sat on PATH. The v1.3.1 repair had added macOS paths to an absolute-path list; Windows has none of those directories. The real defect was next to it: the prelude's `executable-find`, which does search PATH, never tried an executable suffix, so it was blind on windows-nt for every caller. See "The Windows repairs" below |
+| Windows real-init audit pid fix | **Ineffective on real MSYS2 hardware, now repaired** — the script ran to completion but reported the wrapper's footprint again, because stock MSYS2 ships no procps-ng and the `pgrep -P` the fix uses failed silently. Now falls back to `ps -ef`, whose PID/PPID columns are the same on GNU/Linux, macOS and MSYS2 |
+| Windows bare `make standalone-reader` | **Built a Linux ELF on a Windows host, now repaired** — MSYS2's make does not carry `OS=Windows_NT` through, so the `$(OS)` test chose `linux-x86_64`. Detected from `uname -s` now, the same way the Darwin case already was. CI never saw this: `.github/workflows/ci.yml` passes `NELISP_STANDALONE_TARGET=windows-x86_64` explicitly |
+| Windows full ERT | 5,922 tests, 1 unexpected — `nelisp-dev-replay/timeout-kills-worker`, since fixed on `main` (`d31978df8`) and green on both Windows CI lanes in run 34687396917. Not a v1.3.1 repair; a cleanup that could not survive a platform refusing to remove the worker's working directory |
 | Semver tag CI | **Not yet run** — it needs this tag |
 
 The v1.3.0 arena boundary-reclaim SIGSEGV has **no macOS variant**: the audit
@@ -232,6 +237,68 @@ numbers:
   this repository; no source change was involved.
 - The two known macOS flakes the sheet names did not fire, so neither was
   re-run.
+
+### The Windows repairs
+
+Windows was verified on real MSYS2 hardware after this release's macOS work
+landed, because three of the nine repairs reach beyond Darwin. Two of the
+three did not work there, and the run also found a build defect that predates
+this release. None of this was visible from CI, and two of the three could not
+have been: they are properties of a developer's own machine, not of a runner.
+
+**`secure-hash` could not find a hasher.** The v1.3.1 repair replaced a bare
+`"sha256sum"` -- which could never work, since the runtime's `call-process`
+hands the name straight to execve -- with a list of absolute paths. That list
+was drawn from the macOS host it was written on. Windows has no `/usr/bin`,
+so the repair moved the failure rather than fixing it.
+
+The fix is not more paths. The prelude already has an `executable-find` that
+splits PATH itself, and `secure-hash` simply was not using it. That function
+turned out to have its own windows-nt defect: it probed exactly
+`DIR/COMMAND`, never `DIR/COMMAND.exe`, so it answered nil for every program
+that was installed and on PATH. Every caller was affected; `secure-hash` is
+only where it surfaced. `executable-find` now sweeps
+`nelisp--exec-suffixes' -- `(".exe" ".com" "")` on windows-nt, `("")`
+everywhere else, so the POSIX probe stays one `file-exists-p` per PATH entry
+-- and `secure-hash` asks it first, keeping the absolute list as the fallback
+for a run with no usable PATH.
+
+Verified on GNU/Linux, where the same probe can be driven both ways:
+`test/nelisp-prelude-executable-find-test.el` plants a file that carries the
+suffix and nothing that does not, then runs the real prelude function with
+`system-type` bound each way. Red before the change, green after, with the
+POSIX case passing both ways -- which is the part that shows the sweep did
+not change behaviour where it already worked. In the rebuilt standalone
+binary, a hasher reachable only through PATH (a shim in a temporary directory
+that appears in no absolute-path entry) is the one `secure-hash` uses, which
+is the Windows situation exactly.
+
+**The audit's pid fix was inert.** It resolves the child of the `timeout`
+wrapper with `pgrep -P`, and stock MSYS2 ships no procps-ng. The substitution
+failed silently and every memory column went back to reporting the wrapper --
+on the one platform where nobody would catch it from the numbers alone. It
+now falls back to `ps -ef`, whose PID and PPID sit in columns 2 and 3 on
+GNU/Linux, macOS and MSYS2 alike. Both paths were measured against the same
+wrapper and agree; with `pgrep` forced to fail, the fallback still resolves
+the child.
+
+**A bare `make standalone-reader` built a Linux ELF on Windows.** The host
+target came from `$(OS)`, and MSYS2's make, started from git-bash, does not
+carry `OS=Windows_NT` through -- so `$(OS)` is empty and the fallback chose
+`linux-x86_64`. The Darwin case directly above it already used `uname -s`;
+Windows now does too. Four host shapes were checked with a stub `uname`:
+MSYS/MINGW answer `windows-x86_64`, Linux and Darwin/arm64 are unchanged.
+CI never saw this because `.github/workflows/ci.yml` passes
+`NELISP_STANDALONE_TARGET=windows-x86_64` explicitly -- the defect only
+existed for a person typing the command.
+
+Three findings the run made that are not defects in this tree, recorded so
+the next Windows run does not spend time on them: a clone under a deep path
+fails `nelisp-t91-independent-python-oracle-corpus` on Windows' 260-character
+path limit (it passes from a short path); `nelisp-ai.sh repl`'s mkfifo input
+relay does not reach a native PE binary, so a plain pipe has to stand in; and
+the THP explanation for a failing soak is a property of a Linux `[always]`
+host and does not transfer.
 
 ### The Linux soak
 
@@ -259,15 +326,23 @@ desktop's.
 
 ## Remaining release qualification
 
-1. **Linux and Windows regression — CLOSED for Linux, open for Windows.**
+1. **Linux and Windows regression — CLOSED for Linux; Windows measured,
+   three defects found and repaired, awaiting its own CI.** Windows is no
+   longer unmeasured: the run happened on real MSYS2 hardware and found that
+   two of this release's own three cross-platform repairs did not work there,
+   plus a pre-existing build-target misdetection. All three are repaired and
+   the repairs are in the table above; what is still missing is a Windows CI
+   result for the repairs themselves. The measurement was worth more than the
+   release note it corrects — "scoped by construction" was exactly the phrase
+   the original blocker text warned about, and it was wrong twice.
    Everything blocker 1 named has now been run on Linux and is in the table
    above: `nelisp-ai.sh check` (23 gates), the full ERT suite (5,922 tests, 0
    unexpected), the real-init audit (930/930, no signal), the 1-hour soak
    (THP-dependent on the measuring desktop, and shown so by a one-variable
    control), and `secure-hash` after the prelude repair. The two ratcheted
    inventories the Darwin work moves were raised with reasons rather than
-   regenerated. **Windows remains unmeasured** and is covered by the tag CI in
-   blocker 2, which runs both Windows lanes. The original text of this blocker
+   regenerated. **Windows has since been measured on hardware** — see the
+   Windows rows in the table above and "The Windows repairs" below. The original text of this blocker
    follows, unedited, because it is what was true when the hardware run was
    written and it named the work correctly:
 
