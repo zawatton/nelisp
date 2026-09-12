@@ -20,15 +20,27 @@ here only to add what the hardware measured — observed ERT figures, the
 `file target/nelisp` check §3 now needs, the two repaired harnesses, and the
 host-toolchain trap below. Its framing is upstream's and is untouched.
 
-**What was measured, exactly.** The run sheet was worked through on
-`2e67ca4cb4f7e4ae27df651a69dc47b3e5cfa63e` (branch `native-runtime-reload`),
-the commit the task pinned. The `v1.3.0` tag is `71ce45b9`, five commits
-later. Two of those five touch code — `eaae749b` (GC reclaim-poisoning stubs
-for the isolated probe) and `e2451ac5` (REPL native-unit identity and
-reachability APIs) — so every number in this file names `2e67ca4c` plus the
-repairs below, and none of them is a measurement of the tag. Rebasing onto
-the tag means re-measuring, because a different base is a different binary
-and a figure that cannot name its artifact is not a figure.
+**What was measured, exactly.** The run sheet was first worked through on
+`2e67ca4cb4f7e4ae27df651a69dc47b3e5cfa63e`, the commit the task pinned, which
+is five commits before the `v1.3.0` tag (`71ce45b9`). Everything below was
+then re-measured on the tag itself, because a figure that cannot name its
+artifact is not a figure and a different base is normally a different binary.
+
+Here it is not. Rebuilt on the tag, `target/nelisp` hashes to
+`a2c5d0e2f2256e2eb0ed1c7e4e7eea5473d89d3d78130691b14c61df0ecef8a4` — **byte
+for byte what the earlier base produced.** Of the five commits, only two touch
+code, and neither reaches the standalone binary: `eaae749b` changes
+`test/nelisp-standalone-gc-test.el`, which is never linked in, and `e2451ac5`
+changes `lisp/nelisp-repl-development.el`, a host-side library that is not one
+of the reader's units. So every binary-level measurement here names one
+artifact on both bases rather than two artifacts that happen to agree.
+
+Host-side results were re-run rather than reasoned about, since ERT does load
+the changed files: same 5,922 / 5,432 / **0 unexpected** / 490 skipped, and
+`standalone-reader-test` again `checked=32 findings=0`. The release tarball's
+own hash DID move (`81a57a08…` → `c24e1a0a…`), correctly — it packages `lisp/`
+and `test/`, which changed — while the `bin/nelisp` inside it still hashes to
+`a2c5d0e2…`.
 
 ## Changes since v1.3.0
 
@@ -188,9 +200,9 @@ them.
 | macOS `macho-acceptance-test` | PASS — `GATE-COUNT checked=8 findings=0`, exit 0 |
 | macOS `standalone-reader` | PASS — bare `make standalone-reader` produces `Mach-O 64-bit executable arm64`, exit 0 |
 | macOS `standalone-reader-test` | PASS — `GATE-COUNT checked=32 findings=0`, `PASS: "(+ 40 2)" -> exit 42`, exit 0 |
-| macOS release artifact | PASS — build, `verify-standalone-tarball.sh --release-artifact` (7/7 OK), `shasum --check` OK, tarball sha256 `81a57a081b31eed5`; extracted `bin/nelisp` hashes to the same `a2c5d0e2f2256e2e`, `codesign -v` clean, and answers `42` and `(365 76)` from a clean extraction |
-| macOS 1-hour soak | PASS — 1,948 batches over 3601.6s, start RSS 94,848 KiB, sampled peak RSS **equal to start** (0 KiB growth, ceiling 5,120), host at load average 2.6–5.0. `vmmap` confirms the compressor did not absorb growth either: `Physical footprint` 88.3M and peak 89.0M at both ends, while RESIDENT fell 116.6M → 78.7M and SWAPPED rose 16.4M → 44.5M |
-| macOS real-init audit | PASS — 920/920 boundaries, `AUDIT_DONE 920`, exit 0, **no signal**, 53s, init hash unchanged before and after. Peak RSS 527,024 KiB, falling to ~145,000 KiB after collection. 322 `FORM_ERROR`s (236 `void-function`, 56 `file-missing`, 29 `void-variable`, 1 `error`) — unimplemented Emacs APIs and absent files, not memory faults |
+| macOS release artifact | PASS — build, `verify-standalone-tarball.sh --release-artifact` (all OK), `shasum --check` OK, tarball sha256 `c24e1a0afbfce04f`; extracted `bin/nelisp` hashes to the same `a2c5d0e2f2256e2e`, `codesign -v` clean, and answers `(42 365 76)` from a clean extraction |
+| macOS 1-hour soak | PASS (measured on the pre-rebase base, and the binary is byte-identical on both — same artifact, not a carried-over claim) — 1,948 batches over 3601.6s, start RSS 94,848 KiB, sampled peak RSS **equal to start** (0 KiB growth, ceiling 5,120), host at load average 2.6–5.0. `vmmap` confirms the compressor did not absorb growth either: `Physical footprint` 88.3M and peak 89.0M at both ends, while RESIDENT fell 116.6M → 78.7M and SWAPPED rose 16.4M → 44.5M |
+| macOS real-init audit | PASS — 920/920 boundaries, `AUDIT_DONE 920`, exit 0, **no signal**, 54s, init hash unchanged before and after. Peak RSS 542,144 KiB (527,024 on the earlier base; the spread is run-to-run variation in an out-of-process sampler against the same binary), falling to ~145,000 KiB after collection. 322 `FORM_ERROR`s (236 `void-function`, 56 `file-missing`, 29 `void-variable`, 1 `error`) — unimplemented Emacs APIs and absent files, not memory faults |
 | macOS §7 boundaries | As documented: native unit replacement refuses with `NELISP-DEV-NATIVE-UNAVAILABLE`, catchable, no crash; `nelisp-socket-listen`/`-connect`/`-send` all signal the catchable `nelisp-unsupported-primitive` |
 | Version consistency | 9/9 sites say v1.3.1 |
 | Linux, any check, for the repairs below | **Not yet run** — see blocker 1. v1.3.0's own Linux blockers were qualified upstream by run 34662576736, but that run predates every change in this release |
