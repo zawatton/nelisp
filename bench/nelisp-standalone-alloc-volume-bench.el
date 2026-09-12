@@ -117,9 +117,30 @@
 ;;
 ;; The lambda path is.  A `defun' with no parameters at all costs 1376 where
 ;; the equivalent builtin costs 312: 1064 bytes, ~26 slots, spent before a
-;; single parameter is bound.  The first parameter then adds another ~936.
-;; That is the largest single item in the whole table and it is where to
-;; start.
+;; single parameter is bound.
+;;
+;; The `frames' phase isolates that, using a `let' that binds NOTHING --
+;; which still pushes a frame -- against a `progn', which does not:
+;;
+;;   (progn 1)            242 bytes over the bare loop
+;;   (let () 1)          1226          so the FRAME PUSH is 984
+;;   (let* () 1)         1186
+;;   (let ((k i)) k)     2338          first binding  +1112
+;;   two bindings        3450          second binding +1112
+;;   three bindings      4562          third binding  +1112
+;;
+;; 984 bytes to push a frame that holds nothing, and a flat 1112 for every
+;; binding put in it.  The source says why: `nelisp_frame_push_direct'
+;; allocates a 128-byte scratch, a 3-slot fast-hash-table record, a SIXTEEN
+;; bucket vector for that table, and a 1-slot lexframe record -- a fresh
+;; 16-bucket hash table per call and per `let', sized for 16 entries before
+;; a single entry exists.  Most frames here hold one or two.
+;;
+;; That accounts for the whole defun call: 312 (lookup and apply, as for any
+;; builtin) + 984 (frame) + 1112 (one parameter) is the measured 2312, and
+;; `defun0 - builtin0' comes out at 1064, the frame plus the lambda
+;; dispatch.  Two numbers to attack, in this order: the per-frame 984, and
+;; the per-binding 1112.
 ;;
 ;; Ruled out while looking: the macroexpansion cache.  Forcing every lookup
 ;; to miss (`nelisp--debug-switch' 13) changes the volume of `(1+ i)' by
@@ -591,8 +612,47 @@ slots are."
                        (if off (format "%.1f" off) "INVALID")))))
     (nelisp--debug-switch 10)))
 
+;; Pricing the frame.  A `let' that binds nothing still pushes one, so its
+;; cost over a `progn' is the push by itself; adding bindings one at a time
+;; prices a binding.  Both are what a lambda application pays too.
+
+(defun nelisp-standalone-alloc-volume-bench--let0 (n)
+  (let ((i 0) (a 0)) (while (< i n) (setq a (let () 1)) (setq i (1+ i)))))
+(defun nelisp-standalone-alloc-volume-bench--letstar0 (n)
+  (let ((i 0) (a 0)) (while (< i n) (setq a (let* () 1)) (setq i (1+ i)))))
+(defun nelisp-standalone-alloc-volume-bench--let3 (n)
+  (let ((i 0) (a 0))
+    (while (< i n) (setq a (let ((k i) (m 1) (o 2)) k)) (setq i (1+ i)))))
+
+(defun nelisp-standalone-alloc-volume-bench-frames ()
+  "Price the frame push and one binding, each on its own."
+  (let* ((n nelisp-standalone-alloc-volume-bench-difference-iterations)
+         (v (lambda (fn) (nelisp-standalone-alloc-volume-bench--volume fn n))))
+    (princ (format "ALLOC-VOLUME frames (bytes/iter, n=%d)\n" n))
+    (nelisp--debug-switch 9)
+    (let ((loopv (funcall v #'nelisp-standalone-alloc-volume-bench--loop))
+          (prognv (funcall v #'nelisp-standalone-alloc-volume-bench--progn))
+          (let0 (funcall v #'nelisp-standalone-alloc-volume-bench--let0))
+          (lets0 (funcall v #'nelisp-standalone-alloc-volume-bench--letstar0))
+          (let1 (funcall v #'nelisp-standalone-alloc-volume-bench--let1))
+          (let2 (funcall v #'nelisp-standalone-alloc-volume-bench--let2))
+          (let3 (funcall v #'nelisp-standalone-alloc-volume-bench--let3)))
+      (nelisp--debug-switch 10)
+      (if (not (and loopv prognv let0 lets0 let1 let2 let3))
+          (princ "ALLOC-VOLUME frames   INVALID (a collection ran under a row)\n")
+        (dolist (row (list (cons "(progn 1)" prognv) (cons "(let () 1)" let0)
+                           (cons "(let* () 1)" lets0) (cons "1 binding" let1)
+                           (cons "2 bindings" let2) (cons "3 bindings" let3)))
+          (princ (format "ALLOC-VOLUME %-16s %9.1f  (over loop %+8.1f)\n"
+                         (car row) (cdr row) (- (cdr row) loopv))))
+        (princ (format "ALLOC-VOLUME %-16s %9.1f  (a frame that holds nothing)\n"
+                       "frame push" (- let0 prognv)))
+        (princ (format "ALLOC-VOLUME %-16s %9.1f / %9.1f / %9.1f  (1st / 2nd / 3rd)\n"
+                       "per binding" (- let1 let0) (- let2 let1) (- let3 let2)))))))
+
 (defun nelisp-standalone-alloc-volume-bench-run ()
   (nelisp-standalone-alloc-volume-bench-volume)
+  (nelisp-standalone-alloc-volume-bench-frames)
   (nelisp-standalone-alloc-volume-bench-decompose)
   (nelisp-standalone-alloc-volume-bench-callparts)
   (nelisp-standalone-alloc-volume-bench-census)
