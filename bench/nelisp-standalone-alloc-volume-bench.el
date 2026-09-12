@@ -56,6 +56,41 @@
 ;; evaluator's own commentary describes the per-argument work as "a 32-byte
 ;; cons allocation".  Each further `let' binding costs 1112 bytes.
 ;;
+;; Decomposed by comparing neighbours, so each step is one unit:
+;;
+;;   setq of an evaluated value         201 bytes
+;;   builtin call, 1 argument           584
+;;   each further builtin argument      352
+;;   defun call, 1 argument            2312
+;;   each further defun argument        856
+;;   each further `let' binding        1112
+;;
+;; A `defun' call costs about 4x a builtin call at the same arity, and an
+;; argument costs 2.4x as much on the defun path as on the builtin path --
+;; the argument evaluation is the same work either way, so the difference is
+;; the parameter binding, which the 1112 bytes per `let' binding agrees with.
+;; A literal argument costs 40 bytes MORE than a variable reference (it takes
+;; the clone path), so symbol lookup is not what is expensive here.  Nesting
+;; is exactly additive: the inner call in `defun-1 nested' costs 2312, the
+;; same as the outer one.
+;;
+;; And by block-size class.  `nelisp--size-census' buckets by BLOCK_TOTAL,
+;; which includes an 8-byte header, so an ordinary 32-byte Sexp slot lands in
+;; the 33-64 class:
+;;
+;;                    <=32              33-64     65-256
+;;   loop       98.2 (3.1 blocks)       933.9        3.9
+;;   call1     266.3 (9.1)             2454.2      556.0
+;;   call2     386.3 (13.1)            3094.2      692.0
+;;   let1      298.3 (10.1)            2414.2      660.0
+;;
+;; Over 60% of every case is 40-byte blocks -- 32-byte Sexp slots with their
+;; header.  That is about 24 heap slots to run one `while' iteration that
+;; only increments a counter, and about 16 more for each defun argument.
+;; The unit of work in this interpreter is a heap allocation where a stack
+;; slot would do; `nl_root_reserve' already hands out slots from a bss root
+;; stack without allocating, and there are 515 `(alloc-bytes 32 8)' sites.
+;;
 ;; None of it accumulates: measured after a collection, with recycling back
 ;; on, the net bump over the same loops is 0.0 bytes per iteration in every
 ;; case.  It is not a leak.  It is traffic -- every one of those bytes is
@@ -193,6 +228,16 @@ underneath, so the bump delta is the whole allocation and not what survived
 a collection.  `live-bytes-after-last-gc' only changes when a sweep actually
 runs, which makes it the detector."
   (funcall fn 50)                       ; warm: first pass pays one-time work
+  ;; Start every case from the same arena state.  Without this the cases run
+  ;; back to back with nothing ever freed -- recycling is off -- so a late
+  ;; case eventually crosses a growth trigger and its figure is scrapped by
+  ;; the validity check below.  That is what happened to `defun-1 var'.
+  ;; Re-enable recycling only long enough to sweep, which also zeroes the
+  ;; accumulated debt, then take the measurement in the same off state as
+  ;; every other case.
+  (nelisp--debug-switch 10)
+  (garbage-collect)
+  (nelisp--debug-switch 9)
   (let* ((live0 (nelisp-standalone-alloc-volume-bench--live))
          (b0 (nelisp-standalone-alloc-volume-bench--bump))
          (_ (funcall fn n))
@@ -313,12 +358,18 @@ runs, which makes it the detector."
         ;; rather than asserted, and it is what makes the timing rows above
         ;; attributable -- if the same loop allocated more at a bigger heap,
         ;; the timing difference would not have to be collection at all.
+        ;; Fewer iterations than the table above, deliberately: with recycling
+        ;; off this bumps real memory, and at a 59 MB live heap the arena
+        ;; needs a new chunk sooner, whose growth trigger collects and voids
+        ;; the figure.  The three rows share one count, so they compare with
+        ;; each other; the absolute sits a little above the n=2000 table
+        ;; because the fixed per-invocation cost is spread over fewer
+        ;; iterations.
         (nelisp--debug-switch 9)
         (let ((v (nelisp-standalone-alloc-volume-bench--volume
-                  #'nelisp-standalone-alloc-volume-bench--call1
-                  nelisp-standalone-alloc-volume-bench-volume-iterations)))
+                  #'nelisp-standalone-alloc-volume-bench--call1 500)))
           (nelisp--debug-switch 10)
-          (princ (format "ALLOC-VOLUME live=%dMB %-14s %-8s %9s bytes/iter\n"
+          (princ (format "ALLOC-VOLUME live=%dMB %-14s %-8s %9s bytes/iter (n=500)\n"
                          (/ live 1048576) "volume-check" "call1"
                          (if v (format "%.1f" v) "INVALID"))))
         (garbage-collect)
@@ -327,8 +378,109 @@ runs, which makes it the detector."
            (format "live=%dMB %s" (/ live 1048576) config)
            config cases n repeats))))))
 
+;;; Attribution.
+;;
+;; The volume table says a construct costs N bytes.  These two phases say
+;; what the N is made of, which is what a fix has to aim at.
+
+(defvar nelisp-standalone-alloc-volume-bench--global 7)
+
+(defun nelisp-standalone-alloc-volume-bench--setq-lit (n)
+  (let ((i 0) (a 0)) (while (< i n) (setq a 1) (setq i (1+ i)))))
+(defun nelisp-standalone-alloc-volume-bench--setq-var (n)
+  (let ((i 0) (a 0)) (while (< i n) (setq a i) (setq i (1+ i)))))
+(defun nelisp-standalone-alloc-volume-bench--builtin1 (n)
+  (let ((i 0) (a 0)) (while (< i n) (setq a (1+ i)) (setq i (1+ i)))))
+(defun nelisp-standalone-alloc-volume-bench--defun1-lit (n)
+  (let ((i 0) (a 0))
+    (while (< i n) (setq a (nelisp-standalone-alloc-volume-bench--leaf1 1)) (setq i (1+ i)))))
+(defun nelisp-standalone-alloc-volume-bench--defun1-global (n)
+  (let ((i 0) (a 0))
+    (while (< i n)
+      (setq a (nelisp-standalone-alloc-volume-bench--leaf1
+               nelisp-standalone-alloc-volume-bench--global))
+      (setq i (1+ i)))))
+(defun nelisp-standalone-alloc-volume-bench--defun1-nested (n)
+  (let ((i 0) (a 0))
+    (while (< i n)
+      (setq a (nelisp-standalone-alloc-volume-bench--leaf1
+               (nelisp-standalone-alloc-volume-bench--leaf1 i)))
+      (setq i (1+ i)))))
+(defun nelisp-standalone-alloc-volume-bench--defun2-var (n)
+  (let ((i 0) (a 0))
+    (while (< i n) (setq a (nelisp-standalone-alloc-volume-bench--leaf2 i i)) (setq i (1+ i)))))
+
+(defun nelisp-standalone-alloc-volume-bench-decompose ()
+  "Print the volume of progressively richer bodies, so each step is one unit.
+
+Comparing neighbours here separates costs the flat table cannot: what a
+`setq' of an already-evaluated value costs, what a builtin call costs, what
+a `defun' call costs over that, and what one more argument costs on each of
+the two call paths."
+  (let ((n nelisp-standalone-alloc-volume-bench-volume-iterations)
+        (base nil))
+    (princ "ALLOC-VOLUME decomposition\n")
+    (nelisp--debug-switch 9)
+    (dolist (case (list (cons "loop" #'nelisp-standalone-alloc-volume-bench--loop)
+                        (cons "setq-lit" #'nelisp-standalone-alloc-volume-bench--setq-lit)
+                        (cons "setq-var" #'nelisp-standalone-alloc-volume-bench--setq-var)
+                        (cons "builtin-1arg" #'nelisp-standalone-alloc-volume-bench--builtin1)
+                        (cons "builtin-2arg" #'nelisp-standalone-alloc-volume-bench--builtin)
+                        (cons "defun-1 lit" #'nelisp-standalone-alloc-volume-bench--defun1-lit)
+                        (cons "defun-1 var" #'nelisp-standalone-alloc-volume-bench--call1)
+                        (cons "defun-1 global" #'nelisp-standalone-alloc-volume-bench--defun1-global)
+                        (cons "defun-1 nested" #'nelisp-standalone-alloc-volume-bench--defun1-nested)
+                        (cons "defun-2 lit" #'nelisp-standalone-alloc-volume-bench--call2)
+                        (cons "defun-2 var" #'nelisp-standalone-alloc-volume-bench--defun2-var)))
+      (let ((v (nelisp-standalone-alloc-volume-bench--volume (cdr case) n)))
+        (unless base (setq base v))
+        (princ (format "ALLOC-VOLUME %-16s %9s bytes/iter  (over loop %+9.1f)\n"
+                       (car case)
+                       (if v (format "%.1f" v) "INVALID")
+                       (if v (- v base) 0.0)))))
+    (nelisp--debug-switch 10)))
+
+(defun nelisp-standalone-alloc-volume-bench--census-diff (fn n)
+  "Per-iteration delta of `nelisp--size-census' over FN, or nil if invalid."
+  (funcall fn 50)
+  (let* ((c0 (nelisp--size-census))
+         (l0 (nelisp-standalone-alloc-volume-bench--live))
+         (_ (funcall fn n))
+         (l1 (nelisp-standalone-alloc-volume-bench--live))
+         (c1 (nelisp--size-census)))
+    (if (/= l0 l1) nil
+      (let ((i 0) (out nil))
+        (while (< i (length c0))
+          (setq out (cons (/ (float (- (nth i c1) (nth i c0))) n) out))
+          (setq i (1+ i)))
+        (nreverse out)))))
+
+(defun nelisp-standalone-alloc-volume-bench-census ()
+  "Print the per-iteration allocation split by block-size class.
+
+`nelisp--size-census' buckets by BLOCK_TOTAL, which includes an 8-byte
+header -- so an ordinary 32-byte Sexp slot lands in the 33-64 class, not in
+<=32.  That class is the one to watch: it is where the interpreter's scratch
+slots are."
+  (let ((n nelisp-standalone-alloc-volume-bench-volume-iterations))
+    (princ "ALLOC-VOLUME census (bytes/iter by block class; 33-64 = 32B slot + header)\n")
+    (nelisp--debug-switch 9)
+    (dolist (case (list (cons "loop" #'nelisp-standalone-alloc-volume-bench--loop)
+                        (cons "call1" #'nelisp-standalone-alloc-volume-bench--call1)
+                        (cons "call2" #'nelisp-standalone-alloc-volume-bench--call2)
+                        (cons "let1" #'nelisp-standalone-alloc-volume-bench--let1)))
+      (let ((d (nelisp-standalone-alloc-volume-bench--census-diff (cdr case) n)))
+        (if (null d)
+            (princ (format "ALLOC-VOLUME %-8s   INVALID (a collection ran under it)\n"
+                           (car case)))
+          (princ (format "ALLOC-VOLUME %-8s live %8.1f  <=32 %7.1f (%4.1f blocks)  33-64 %8.1f  65-256 %7.1f\n"
+                         (car case) (nth 0 d) (nth 3 d) (nth 4 d) (nth 5 d) (nth 6 d))))))
+    (nelisp--debug-switch 10)))
+
 (defun nelisp-standalone-alloc-volume-bench-run ()
   (nelisp-standalone-alloc-volume-bench-volume)
+  (nelisp-standalone-alloc-volume-bench-decompose)
+  (nelisp-standalone-alloc-volume-bench-census)
   (nelisp-standalone-alloc-volume-bench-collection)
   (princ "ALLOC-VOLUME done\n"))
 
