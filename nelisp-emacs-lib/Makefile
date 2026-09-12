@@ -1916,6 +1916,20 @@ nemacs-cold-image: build-nelisp-bootstrap
 		./bin/nemacs --driver=nelisp --batch --no-banner \
 		--eval '(princ "cold-image=ready\n")'
 
+# How much of each provided feature actually exists.  `load' stops on an error
+# here exactly like Emacs does (checked against the host, six observations,
+# all identical), so a file that reports "loaded" really did load -- what it
+# does not report is that `(require 'term)' answers t while none of term's 300
+# names are defined.  Host Emacs supplies the reference from its own
+# `load-history'; the standalone answers `fboundp'/`boundp' for each name.
+# "Present" means bound, not equivalent, so the missing column is the solid
+# one.  Writes build/nemacs-feature-coverage.{tsv,org} and -missing.tsv.
+.PHONY: nemacs-feature-coverage
+nemacs-feature-coverage: build-nelisp-bootstrap
+	NELISP_BIN="$(abspath $(NELISP_BIN))" \
+		BUILD_DIR="$(abspath $(BUILD_DIR))" \
+		bash scripts/nemacs-feature-coverage.sh
+
 .PHONY: real-init-audit
 real-init-audit: build-nelisp-bootstrap
 	NELISP_HOME="$(abspath $(NELISP_ROOT))" \
