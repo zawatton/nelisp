@@ -53,6 +53,37 @@ Clear retained diagnostic records when measuring memory after a repair.
 REPL errors do not necessarily produce a nonzero process exit: smoke tests
 must check their assertions, completion marker, and unexpected stderr.
 
+## Carry a development-efficiency improvement with the work
+
+Every session here is also asked to look for what makes the next session
+slower than it needs to be, and to fix it in the same branch rather than
+absorb it.  A loop that costs more than the question it answers is work in
+scope, not friction to live with: an API that cannot be pointed at real
+code, a probe that needs a whole bundle rebuilt to ask one thing, a gate
+that reports success while leaving a runaway child behind, a cache that
+takes longer to build than the starts it saves.
+
+The rules for doing it are the same ones the rest of this file states:
+
+- **Measure the friction before changing anything, and again after.**  Put
+  both numbers in the commit message.  "It felt slow" is not a finding;
+  "the REPL cut a two-line form in half and executed the readable half"
+  is.
+- **Fix the tool, do not weaken a contract to route around it.**  When a
+  strict API refuses real input, add the honest path beside it (stage what
+  is safe, name what was skipped) instead of relaxing the refusal.
+- **A smoke that would pass without the fix proves nothing.**  Give the new
+  path a control that fails on the old one.
+- **Say what is still slow.**  A measured cost you decided not to pay is a
+  finding worth writing down, not silence.
+
+Worked examples, all from 2026-09-12: `nelisp-ai.sh repl --script FILE`
+(the REPL reads one line per form, so scripted sessions had to flatten
+every form by hand), `nelisp-repl-reload-defuns` (the strict reload API
+refused every real module at its first `require`), and
+`nelisp-bc--host-globals-p` (republished code read a namespace the live
+session was not writing to, and said `:status ok` about it).
+
 ## Inner loop
 
 For machine-readable queries, see

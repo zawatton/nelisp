@@ -81,3 +81,11 @@ For this repository:
 
   Restoring the path means replacing the deleted backend, not fixing a
   loader.  Until someone does, this bullet says what actually works.
+
+## Development efficiency is part of the work
+
+Read AI.md's "Carry a development-efficiency improvement with the work".
+Whatever the task is, watch for what is making the loop slower than the
+question it answers, and land the improvement in the same branch --
+measured before and after, with a control that fails without the fix.
+Report a cost you decided not to pay instead of leaving it unsaid.
