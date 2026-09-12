@@ -213,6 +213,32 @@ must not end an audit that is otherwise making progress."
                        index written (- (float-time) start))))))
   nil)
 
+(defvar real-init-audit--checkpoint-deadline nil
+  "Absolute time after which the next finished form checkpoints and stops.")
+
+(defun real-init-audit--checkpoint-if-due (index)
+  "Dump an image after form INDEX and exit, once the deadline has passed.
+
+A campaign needs to stop SOMEWHERE it can resume from, and the useful place
+is \"when the budget is nearly spent\", which is not an index anybody can
+name in advance.  Naming one failed on 2026-09-12: the checkpoint was set
+past form 299, that single form took the whole timeout, and the run ended
+with nothing to resume from.  A deadline cannot be placed wrongly -- the
+form that happens to be running when it passes is the one that stops.
+
+The deadline starts at the first check, which is after the first init form,
+so the budget is the one for the forms and not for loading the bundle."
+  (let ((seconds (getenv "NEMACS_REAL_INIT_CHECKPOINT_SECONDS")))
+    (when (and (stringp seconds) (string-match-p "^[1-9][0-9]*$" seconds))
+      (unless real-init-audit--checkpoint-deadline
+        (setq real-init-audit--checkpoint-deadline
+              (+ (float-time) (string-to-number seconds))))
+      (when (>= (float-time) real-init-audit--checkpoint-deadline)
+        (real-init-audit--checkpoint index)
+        (princ (format "NEMACS_REAL_INIT_CHECKPOINT_STOP index=%d\n" index))
+        (exit 0))))
+  nil)
+
 (defun real-init-audit--eval-one (path kind index form-line source)
   "Evaluate one exact init SOURCE slice at a standalone REPL boundary.
 PATH, KIND, INDEX, and FORM-LINE are audit metadata supplied by the host-side
@@ -1039,6 +1065,17 @@ if [[ "$audit_done" != yes ]]; then
     echo "real-init-audit: stopped at checkpoint ${NEMACS_REAL_INIT_CHECKPOINT_AT}; resume with"
     echo "  NEMACS_REAL_INIT_RESUME_FROM=$checkpoint_image NEMACS_REAL_INIT_RESUME_AFTER=${NEMACS_REAL_INIT_CHECKPOINT_AT}"
     exit 0
+  fi
+  # The time-based stop does not know its own index in advance, which is the
+  # point of it, so read the index back out of the marker the run printed.
+  if [[ -n "${NEMACS_REAL_INIT_CHECKPOINT_SECONDS:-}" ]]; then
+    stopped_at=$(sed -n 's/^NEMACS_REAL_INIT_CHECKPOINT_STOP index=\([0-9]*\).*/\1/p' \
+                   "$raw_output" 2>/dev/null | tail -1)
+    if [[ -n "$stopped_at" ]]; then
+      echo "real-init-audit: stopped at checkpoint $stopped_at after ${NEMACS_REAL_INIT_CHECKPOINT_SECONDS}s; resume with"
+      echo "  NEMACS_REAL_INIT_RESUME_FROM=$checkpoint_image NEMACS_REAL_INIT_RESUME_AFTER=$stopped_at"
+      exit 0
+    fi
   fi
   exit 1
 fi
