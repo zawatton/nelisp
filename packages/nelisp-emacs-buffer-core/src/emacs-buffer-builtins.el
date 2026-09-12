@@ -154,7 +154,7 @@ replaces the whole buffer-op chain with `nelisp-ec-*' -- fires on nemacs."
          (marker-insertion-type      . nelisp-ec-marker-insertion-type)
          (set-marker-insertion-type  . nelisp-ec-set-marker-insertion-type)
          (point-marker               . nelisp-ec-point-marker)
-         (insert-before-markers      . nelisp-ec-insert))))
+         (insert-before-markers      . nelisp-ec-insert-before-markers))))
   (if (emacs-buffer-builtins--standalone-p)
       (dolist (--cell-- --aliases--)
         (fset (car --cell--) (cdr --cell--)))

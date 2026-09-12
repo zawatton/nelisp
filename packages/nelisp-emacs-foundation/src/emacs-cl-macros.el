@@ -2666,6 +2666,262 @@ vendor `cl-once-only' for the full contract."
                          (mapcar (lambda (p) (list (car (car p)) (cdr p))) pairs))
                    body))))))
 
+;;;; --- cl-seq: the remainder of the sequence surface -----------------
+;;
+;; `make nemacs-feature-coverage' listed 36 `cl-seq' functions missing while
+;; 33 were present.  These are pure list/sequence functions -- no buffer, no
+;; marker, no display -- so each one is checked by running the same call in
+;; host Emacs and comparing the value, not by `fboundp'.
+;;
+;; Keyword handling follows the shims already in this file: `:key', `:test'
+;; and `:test-not' are read out of a `&rest keys' plist.  The default test
+;; here is `eql' to match `cl-seq.el' itself; the `cl-position' shim above
+;; deliberately defaults to `eq' for cyclic-structure reasons and says so.
+
+(defun emacs-cl--key (keys)
+  "Return the `:key' function from KEYS, or `identity'."
+  (or (plist-get keys :key) #'identity))
+
+(defun emacs-cl--test (keys)
+  "Return a two-argument predicate from KEYS honouring `:test'/`:test-not'."
+  (let ((test (plist-get keys :test))
+        (test-not (plist-get keys :test-not)))
+    (cond
+     (test-not (lambda (a b) (not (funcall test-not a b))))
+     (test test)
+     (t #'eql))))
+
+(unless (fboundp 'cl-endp)
+  (defun cl-endp (x)
+    "Return t if X is nil, signalling if X is neither nil nor a cons."
+    (cond ((null x) t)
+          ((consp x) nil)
+          (t (signal 'wrong-type-argument (list 'listp x))))))
+
+(unless (fboundp 'cl-count-if-not)
+  (defun cl-count-if-not (predicate sequence &rest keys)
+    "Count the elements of SEQUENCE not satisfying PREDICATE."
+    (let ((key (emacs-cl--key keys)) (n 0))
+      (mapc (lambda (e) (unless (funcall predicate (funcall key e))
+                          (setq n (1+ n))))
+            (append sequence nil))
+      n)))
+
+(unless (fboundp 'cl-delete-if-not)
+  (defun cl-delete-if-not (predicate sequence &rest keys)
+    "Remove from SEQUENCE the elements not satisfying PREDICATE."
+    (apply #'cl-remove-if-not predicate sequence keys)))
+
+(unless (fboundp 'cl-assoc-if-not)
+  (defun cl-assoc-if-not (predicate alist &rest keys)
+    "Return the first cons in ALIST whose car does not satisfy PREDICATE."
+    (let ((key (emacs-cl--key keys)) (rest alist) (found nil))
+      (while (and rest (not found))
+        (let ((cell (car rest)))
+          (when (and (consp cell)
+                     (not (funcall predicate (funcall key (car cell)))))
+            (setq found cell)))
+        (setq rest (cdr rest)))
+      found)))
+
+(unless (fboundp 'cl-rassoc-if-not)
+  (defun cl-rassoc-if-not (predicate alist &rest keys)
+    "Return the first cons in ALIST whose cdr does not satisfy PREDICATE."
+    (let ((key (emacs-cl--key keys)) (rest alist) (found nil))
+      (while (and rest (not found))
+        (let ((cell (car rest)))
+          (when (and (consp cell)
+                     (not (funcall predicate (funcall key (cdr cell)))))
+            (setq found cell)))
+        (setq rest (cdr rest)))
+      found)))
+
+(unless (fboundp 'cl-mismatch)
+  (defun cl-mismatch (seq1 seq2 &rest keys)
+    "Return the index of the first mismatch between SEQ1 and SEQ2, or nil."
+    (let* ((key (emacs-cl--key keys))
+           (test (emacs-cl--test keys))
+           (l1 (append seq1 nil))
+           (l2 (append seq2 nil))
+           (i 0) (result nil) (done nil))
+      (while (not done)
+        (cond
+         ((and (null l1) (null l2)) (setq done t))
+         ((or (null l1) (null l2)) (setq result i done t))
+         ((funcall test (funcall key (car l1)) (funcall key (car l2)))
+          (setq l1 (cdr l1) l2 (cdr l2) i (1+ i)))
+         (t (setq result i done t))))
+      result)))
+
+(unless (fboundp 'cl-search)
+  (defun cl-search (seq1 seq2 &rest keys)
+    "Return the index in SEQ2 where SEQ1 first occurs, or nil."
+    (let* ((key (emacs-cl--key keys))
+           (test (emacs-cl--test keys))
+           (l1 (append seq1 nil))
+           (l2 (append seq2 nil))
+           (n1 (length l1))
+           (n2 (length l2))
+           (i 0) (found nil))
+      (if (null l1)
+          0
+        (while (and (<= (+ i n1) n2) (not found))
+          (let ((a l1) (b (nthcdr i l2)) (ok t))
+            (while (and a ok)
+              (unless (funcall test (funcall key (car a)) (funcall key (car b)))
+                (setq ok nil))
+              (setq a (cdr a) b (cdr b)))
+            (when ok (setq found i)))
+          (setq i (1+ i)))
+        found))))
+
+(unless (fboundp 'cl-replace)
+  (defun cl-replace (seq1 seq2 &rest keys)
+    "Replace the elements of SEQ1 with those of SEQ2, destructively.
+Honours `:start1'/`:end1'/`:start2'/`:end2'."
+    (let* ((start1 (or (plist-get keys :start1) 0))
+           (end1 (or (plist-get keys :end1) (length seq1)))
+           (start2 (or (plist-get keys :start2) 0))
+           (end2 (or (plist-get keys :end2) (length seq2)))
+           (n (min (- end1 start1) (- end2 start2)))
+           (i 0))
+      (while (< i n)
+        (let ((v (elt seq2 (+ start2 i))))
+          (if (listp seq1)
+              (setcar (nthcdr (+ start1 i) seq1) v)
+            (aset seq1 (+ start1 i) v)))
+        (setq i (1+ i)))
+      seq1)))
+
+(unless (fboundp 'cl-stable-sort)
+  (defun cl-stable-sort (seq predicate &rest keys)
+    "Sort SEQ by PREDICATE, stably.  Honours `:key'."
+    (apply #'cl-sort seq predicate keys)))
+
+(unless (fboundp 'cl-tree-equal)
+  (defun cl-tree-equal (x y &rest keys)
+    "Return t if the trees X and Y have the same shape and leaves."
+    (let ((test (emacs-cl--test keys)))
+      (cl-tree-equal--rec x y test))))
+
+(unless (fboundp 'cl-tree-equal--rec)
+  (defun cl-tree-equal--rec (x y test)
+    "Recursive worker for `cl-tree-equal' comparing X and Y under TEST."
+    (cond
+     ((and (consp x) (consp y))
+      (and (cl-tree-equal--rec (car x) (car y) test)
+           (cl-tree-equal--rec (cdr x) (cdr y) test)))
+     ((or (consp x) (consp y)) nil)
+     (t (and (funcall test x y) t)))))
+
+(unless (fboundp 'cl-substitute-if)
+  (defun cl-substitute-if (new predicate sequence &rest keys)
+    "Replace the elements of SEQUENCE satisfying PREDICATE with NEW."
+    (let ((key (emacs-cl--key keys)))
+      (mapcar (lambda (e) (if (funcall predicate (funcall key e)) new e))
+              (append sequence nil)))))
+
+(unless (fboundp 'cl-substitute-if-not)
+  (defun cl-substitute-if-not (new predicate sequence &rest keys)
+    "Replace the elements of SEQUENCE not satisfying PREDICATE with NEW."
+    (let ((key (emacs-cl--key keys)))
+      (mapcar (lambda (e) (if (funcall predicate (funcall key e)) e new))
+              (append sequence nil)))))
+
+(unless (fboundp 'cl-nsubstitute-if)
+  (defun cl-nsubstitute-if (new predicate sequence &rest keys)
+    "Destructive `cl-substitute-if'."
+    (apply #'cl-substitute-if new predicate sequence keys)))
+
+(unless (fboundp 'cl-nsubstitute-if-not)
+  (defun cl-nsubstitute-if-not (new predicate sequence &rest keys)
+    "Destructive `cl-substitute-if-not'."
+    (apply #'cl-substitute-if-not new predicate sequence keys)))
+
+(unless (fboundp 'cl-subst-if)
+  (defun cl-subst-if (new predicate tree &rest keys)
+    "Replace the subtrees of TREE satisfying PREDICATE with NEW."
+    (let ((key (emacs-cl--key keys)))
+      (cl-subst-if--rec new predicate tree key))))
+
+(unless (fboundp 'cl-subst-if--rec)
+  (defun cl-subst-if--rec (new predicate tree key)
+    "Recursive worker for `cl-subst-if'."
+    (cond
+     ((funcall predicate (funcall key tree)) new)
+     ((consp tree)
+      (cons (cl-subst-if--rec new predicate (car tree) key)
+            (cl-subst-if--rec new predicate (cdr tree) key)))
+     (t tree))))
+
+(unless (fboundp 'cl-subst-if-not)
+  (defun cl-subst-if-not (new predicate tree &rest keys)
+    "Replace the subtrees of TREE not satisfying PREDICATE with NEW."
+    (apply #'cl-subst-if new (lambda (x) (not (funcall predicate x)))
+           tree keys)))
+
+(unless (fboundp 'cl-nsubst)
+  (defun cl-nsubst (new old tree &rest keys)
+    "Destructive `cl-subst'."
+    (apply #'cl-subst new old tree keys)))
+
+(unless (fboundp 'cl-nsubst-if)
+  (defun cl-nsubst-if (new predicate tree &rest keys)
+    "Destructive `cl-subst-if'."
+    (apply #'cl-subst-if new predicate tree keys)))
+
+(unless (fboundp 'cl-nsubst-if-not)
+  (defun cl-nsubst-if-not (new predicate tree &rest keys)
+    "Destructive `cl-subst-if-not'."
+    (apply #'cl-subst-if-not new predicate tree keys)))
+
+(unless (fboundp 'cl-sublis)
+  (defun cl-sublis (alist tree &rest keys)
+    "Replace the subtrees of TREE that appear as keys in ALIST."
+    (let ((key (emacs-cl--key keys))
+          (test (emacs-cl--test keys)))
+      (cl-sublis--rec alist tree key test))))
+
+(unless (fboundp 'cl-sublis--rec)
+  (defun cl-sublis--rec (alist tree key test)
+    "Recursive worker for `cl-sublis'."
+    (let ((hit nil) (rest alist))
+      (while (and rest (not hit))
+        (when (funcall test (funcall key (car (car rest))) (funcall key tree))
+          (setq hit (car rest)))
+        (setq rest (cdr rest)))
+      (cond
+       (hit (cdr hit))
+       ((consp tree)
+        (cons (cl-sublis--rec alist (car tree) key test)
+              (cl-sublis--rec alist (cdr tree) key test)))
+       (t tree)))))
+
+(unless (fboundp 'cl-nsublis)
+  (defun cl-nsublis (alist tree &rest keys)
+    "Destructive `cl-sublis'."
+    (apply #'cl-sublis alist tree keys)))
+
+(unless (fboundp 'cl-nunion)
+  (defun cl-nunion (list1 list2 &rest keys)
+    "Destructive `cl-union'."
+    (apply #'cl-union list1 list2 keys)))
+
+(unless (fboundp 'cl-nintersection)
+  (defun cl-nintersection (list1 list2 &rest keys)
+    "Destructive `cl-intersection'."
+    (apply #'cl-intersection list1 list2 keys)))
+
+(unless (fboundp 'cl-nset-difference)
+  (defun cl-nset-difference (list1 list2 &rest keys)
+    "Destructive `cl-set-difference'."
+    (apply #'cl-set-difference list1 list2 keys)))
+
+(unless (fboundp 'cl-nset-exclusive-or)
+  (defun cl-nset-exclusive-or (list1 list2 &rest keys)
+    "Destructive `cl-set-exclusive-or'."
+    (apply #'cl-set-exclusive-or list1 list2 keys)))
+
 (provide 'emacs-cl-macros)
 
 ;;; emacs-cl-macros.el ends here
