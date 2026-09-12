@@ -150,10 +150,27 @@
 ;; A binding, censused by block class, is 18 32-byte slots (720 bytes), five
 ;; blocks of 32 or less (152), and 240 in the 65-256 class -- which is
 ;; exactly `nl_let_collect_with_slot' (96+8) plus `nl_bind_frame_fast'
-;; (128+8).  Both of those are scratch: `nl_root_reserve' hands out slots
-;; from a bss root stack without allocating at all, and moving them there is
-;; the next reduction.  It is a bigger change than a constant, because in
-;; AOT-generated code a slot's lifetime is what keeps a value rooted.
+;; (128+8).
+;;
+;; Those two look like scratch and are not.  Tried on 2026-09-12 and
+;; REVERTED: `nl_bind_frame_fast' allocates 128 bytes and hands out the four
+;; 32-byte slots inside it as CELL, and as the parameters `nelisp_frame_bind'
+;; itself calls `scratch-pair-slot', `scratch-outer-slot' and
+;; `scratch-count-slot'.  Moving all four to `nl_root_reserve' -- a bss root
+;; stack that allocates nothing and roots precisely -- built cleanly and
+;; broke every binding: a `let'-bound variable read back nil, so `(< i n)'
+;; signalled `(number-or-marker-p nil)'.  Keeping the cell on the heap and
+;; moving only the other three broke it identically.  The installed bucket
+;; chain retains those addresses; releasing the root slots leaves it
+;; pointing at storage the next reservation overwrites.
+;;
+;; So the names are wrong and the reduction is not a relocation.  Cutting
+;; the per-binding 1112 means changing WHAT is stored -- the chain holding
+;; its own copies rather than pointers into the caller's block -- not where
+;; the caller's block lives.  The 18 slots and the five small blocks (which
+;; look like symbol-name buffers built per call, where
+;; `nl_logic_build_scratch' caches the symbol it builds and the other
+;; binding paths do not) are the places to look first.
 ;;
 ;; Ruled out while looking: the macroexpansion cache.  Forcing every lookup
 ;; to miss (`nelisp--debug-switch' 13) changes the volume of `(1+ i)' by
