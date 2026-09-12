@@ -127,7 +127,19 @@ and `test/`, which changed — while the `bin/nelisp` inside it still hashes to
   install has only `shasum` — so every artifact command that hashes failed
   there, `compile-elisp-artifact` first. Absolute paths are now probed
   explicitly and `shasum -a 256`, which prints the same line shape, closes the
-  stock-macOS case.
+  stock-macOS case. **Windows has neither tool at any of those paths**, so
+  this repair alone left `secure-hash` unconditionally erroring there too —
+  found during the Windows regression check and closed by a further commit
+  (`6dad1d6f`, after this tag's base) that probes `certutil.exe` (shipped at
+  a fixed path since Vista/Server 2008) and parses its differently-shaped,
+  locale-dependent output by finding the 64-hex-character line rather than
+  by position. A second, independent bug surfaced getting there: this
+  runtime's own `make-temp-file` returns a path only its internal I/O
+  understands, which `certutil.exe` — a real Win32 process reading its input
+  path as a command-line argument — cannot open; the input path is now
+  rooted under `%TEMP%` instead. Verified on windows-x86_64: `secure-hash`
+  now returns the correct digest for both a string and a file's content,
+  matching `sha256sum` independently for each.
 - **`nelisp-native-load--sha256-file-external` had never worked under the host
   Emacs.** It passed a filename *string* as `call-process`'s DESTINATION. The
   standalone runtime treats that as the file to write stdout to; GNU Emacs
@@ -136,16 +148,30 @@ and `test/`, which changed — while the `bin/nelisp` inside it still hashes to
   zero-byte file, and this fast path silently returned nil on every host while
   callers fell back to slower in-process hashing. Emacs spells it
   `(:file PATH)`. Detected by runtime capability, not `system-type`. **This
-  changes behaviour on Linux and Windows**, in the direction of the path
-  finally running, and has not been observed there.
+  changes behaviour on Linux and Windows.** Verified on windows-x86_64 (host
+  GNU Emacs 31.1): the fast path now returns the correct SHA-256 digest for a
+  real file, matching `sha256sum` independently; no zero-byte file is left
+  behind.
 - **`tools/nelisp-real-init-audit.sh` was sampling the wrong process.** `$!`
   is the `timeout` wrapper's pid, not the binary under audit, so every memory
   column reported the wrapper's footprint — a constant ~1.5 MiB. Measured
   2026-09-12: wrapper 1472 KiB while its child, the audited binary, was
-  206704 KiB at the same instant. It now resolves the child and prints which
-  pid it sampled. **The Linux audit's memory figures change with this**, so
-  the numbers in `release/v1.3.0/RELEASE.md`'s audit row are not comparable
-  with anything measured after it.
+  206704 KiB at the same instant. It now resolves the child via
+  `pgrep -P "$CHILD_PID"` and prints which pid it sampled. **The Linux
+  audit's memory figures change with this**, so the numbers in
+  `release/v1.3.0/RELEASE.md`'s audit row are not comparable with anything
+  measured after it. **On Windows, `pgrep -P` alone was not enough**: a
+  stock MSYS2 install has no `pgrep` (it ships in the separate `procps-ng`
+  package), so the call failed silently (`2>/dev/null`, `|| true`) and
+  `MEM_PID` fell back to the wrapper's own pid — reproducing the exact bug
+  this fix targets, via a different missing-dependency path, with `VERDICT`
+  still reading `ok`. Closed by the same further commit (`6dad1d6f`), which
+  falls back to a `ps -ef`-based lookup only when `pgrep -P` returns nothing,
+  so a platform where `pgrep` already works keeps its exact prior behavior.
+  Verified on windows-x86_64: `memory samples target pid` and
+  `timeout wrapper pid` are now distinct, and the sampled `vmrss_kb` on a
+  4-form smoke init rose from 6,016 (the wrapper's own footprint) to 23,168
+  (the actual audited process).
 
 ### Memory measurement on Darwin
 
@@ -212,6 +238,12 @@ them.
 | Linux real-init audit | PASS — 930/930 boundaries, `AUDIT_DONE 930`, exit 0, **no signal**, init hash unchanged. The pid fix is visibly working: the run reports `memory samples target pid: 3880044 (timeout wrapper pid: 3880041)`. **Peak RSS 278,708 KiB, final 190,744 KiB** — against the 2,104 KiB the pre-fix harness reported for the same audit, which was the wrapper. A ~90x error, and the correction is this release's, not a re-measurement of the same thing |
 | Linux 1-hour soak | THP-dependent on this desktop, not a leak — FAIL with THP `[always]`, PASS with it disabled per-process and peak RSS **equal to** start. See "The Linux soak" below. The release-runner result is blocker 2 |
 | Linux binary identity | `target/nelisp` hashes to `c00d5ee5e7904645` here, versus `6c9ab049f1996446` at the v1.3.0 tag. Expected: the `secure-hash` prelude repair is compiled into the standalone binary |
+| Windows `compile` | PASS — `pass, ran 117, failed 0`, exit 0. Unchanged by this section's two further repairs |
+| Windows full ERT | PASS-with-a-known-exception — 5,922 tests, 5,477 as expected, **1 unexpected**, 444 skipped, 227s. The one unexpected result is `nelisp-dev-replay/timeout-kills-worker`, a pre-existing Windows-only process-reaping race already documented in that test file's neighbor (CI run 34608788600); reproduced on both a short and a long clone path, unrelated to either repair below, and present before this section's commit too |
+| Windows `secure-hash`, after the further certutil/`%TEMP%` repair (`6dad1d6f`) | PASS — correct SHA-256 for both a string and a file's contents, matching `sha256sum` independently for each. Reached through a manual replay of `nelisp-ai.sh repl`'s own runtime-generation steps over a plain pipe, not that script itself — see "Windows x86_64 environment notes" below |
+| Windows real-init audit, after the further `ps -ef` fallback (`6dad1d6f`) | PASS on a 4-form synthetic smoke (`--limit`-style; not a real ~900-form user init) — `AUDIT_DONE 4`, exit 0, 0 `FORM_ERROR`. The pid fix is visibly working: `memory samples target pid: 31948 (timeout wrapper pid: 31945)` — distinct pids, and `vmrss_kb` rose from 6,016 (the wrapper alone, the pre-fix reading) to 23,168 (the actual audited process) on the same smoke. **A full-scale run against a real, large init file — the shape that gave Linux 930/930 and macOS 920/920 — was not done and is still open** |
+| Windows `nelisp-ai.sh check`, 1-hour soak, `standalone-reader-test`, release artifact, §7 boundaries, version consistency | **Not run.** Out of scope for the regression check that found the two repairs above; still open |
+| Windows binary identity | First Windows measurement on record — no prior tag to diff against. `target/nelisp.exe` (windows-x86_64) hashes to `1ce281ec03a78d49` after both repairs in this section, `91f0ce3732969a1e` before them |
 | Semver tag CI | **Not yet run** — it needs this tag |
 
 The v1.3.0 arena boundary-reclaim SIGSEGV has **no macOS variant**: the audit
@@ -257,19 +289,85 @@ v1.3.0 tag's own pipeline passed the hour at 2,572 batches with +1,508 KiB.
 The release-runner result for THIS release is blocker 2's job, not this
 desktop's.
 
+### Windows x86_64 environment notes
+
+Real hardware, not CI: Windows 11 Pro (`10.0.26200`), MSYS2/git-bash, GNU
+Emacs 31.1, GNU Make 4.4.1. `target/nelisp.exe` built with
+`NELISP_STANDALONE_TARGET=windows-x86_64` explicitly set — see the first
+finding below for why that is not optional on this toolchain. Three
+environment-level findings, none of them regressions in this release, and
+none fixed by this section's commit (out of scope for the regression check
+that found them):
+
+- **Bare `make standalone-reader` silently links the wrong binary.** The
+  Makefile's target autodetection reads GNU Make's `$(OS)` variable
+  (`NELISP_NATIVE_STANDALONE_TARGET ?= $(if $(filter Windows_NT,$(OS)),
+  windows-x86_64,linux-x86_64)`), but MSYS2's `/usr/bin/make` — the `make`
+  first on `PATH` after a stock MSYS2 install, and what `nelisp-ai.sh
+  doctor` reports — does not import the `OS` environment variable at all:
+  confirmed with a one-line test makefile, `$(OS)` reads empty there even
+  though the same shell's `echo $OS` reads `Windows_NT`. `mingw32-make.exe`,
+  also part of this same MSYS2 install, does see it correctly. The result
+  is silent: no error, no warning, and a `target/nelisp` (not `.exe`) that
+  `file` identifies as `ELF 64-bit LSB executable, x86-64` — a Linux binary
+  that cannot run on Windows at all. AI.md documents the bare command as
+  the way to build; on this toolchain it needs
+  `NELISP_STANDALONE_TARGET=windows-x86_64` said explicitly, every time.
+- **`tools/ai/nelisp-ai.sh repl`'s `mkfifo`-based input relay does not
+  deliver input to a native (non-MSYS) Windows PE binary.** Piped input
+  through the documented `repl` command evaluates nothing: `target/nelisp
+  .exe --repl` prints its first prompt and exits, as if it had received
+  EOF immediately. A plain OS pipe directly into `--repl` (bypassing the
+  script's fifo relay) evaluates forms correctly, which is how both
+  `secure-hash` checks in this section were actually run — by replaying
+  `cmd_repl`'s own runtime-generation steps and piping the bootstrap plus
+  the check forms straight into `--repl`. AI.md already flags this
+  script's source-reload workflow as "verified on Linux; other launcher
+  platforms need their own verification."
+- **A clone path near Windows's ~260-character `MAX_PATH` breaks one T91
+  test, and it is not a code defect.** `nelisp-t91-independent-python-
+  oracle-corpus` failed with `Opening output file: No such file or
+  directory` against a `target/<tmp>/units/windows-x86_64-arena-.../*.unit`
+  path roughly 260 characters long, on a deeply-nested session-scratchpad
+  clone. Re-run from a short clone path (`C:\Users\<user>\nl131w`) with no
+  other change, the same test passes in 57s. Recorded so a future run
+  against a long path does not get mistaken for a regression.
+
 ## Remaining release qualification
 
-1. **Linux and Windows regression — CLOSED for Linux, open for Windows.**
+1. **Linux and Windows regression — CLOSED for Linux, partially closed for
+   Windows.**
    Everything blocker 1 named has now been run on Linux and is in the table
    above: `nelisp-ai.sh check` (23 gates), the full ERT suite (5,922 tests, 0
    unexpected), the real-init audit (930/930, no signal), the 1-hour soak
    (THP-dependent on the measuring desktop, and shown so by a one-variable
    control), and `secure-hash` after the prelude repair. The two ratcheted
    inventories the Darwin work moves were raised with reasons rather than
-   regenerated. **Windows remains unmeasured** and is covered by the tag CI in
-   blocker 2, which runs both Windows lanes. The original text of this blocker
-   follows, unedited, because it is what was true when the hardware run was
-   written and it named the work correctly:
+   regenerated.
+
+   **Windows is now measured, not unmeasured, but not yet closed.** A
+   regression check on real Windows hardware (see "Windows x86_64
+   environment notes" and the Windows rows in the table above) found that
+   two of the three repairs blocker 1 named as reaching Windows did not, in
+   fact, work there: `secure-hash` errored unconditionally (no Windows
+   probe path existed at all) and the real-init-audit pid fix silently
+   no-op'd (its `pgrep` dependency is absent from a stock MSYS2 install).
+   Both are now fixed (`6dad1d6f`) and verified — `secure-hash` against an
+   independent `sha256sum` digest, the pid fix against distinct
+   wrapper/target pids and a plausible `vmrss_kb`. The third repair,
+   `nelisp-native-load--sha256-file-external`'s `(:file PATH)` fix, was
+   confirmed correct on Windows as originally shipped, no further change
+   needed. What full Linux/macOS parity would still need on Windows and has
+   not been run: `nelisp-ai.sh check`, the 1-hour soak, and a full-scale
+   real-init audit against a real, large init file rather than the 4-form
+   smoke used to verify the pid fix. Also open: `make standalone-reader`
+   silently building the wrong target unless `NELISP_STANDALONE_TARGET` is
+   set explicitly (a toolchain gap, not fixed here), and
+   `nelisp-ai.sh repl`'s fifo relay not working against a native Windows
+   binary. Windows is also still covered by the tag CI in blocker 2, which
+   runs both Windows lanes. The original text of this blocker follows,
+   unedited, because it is what was true when the hardware run was written
+   and it named the work correctly:
 
    > None of this was run on Linux: the qualification host has no Linux. v1.3.0's
    Linux blockers were closed upstream by run 34662576736, which drove the
