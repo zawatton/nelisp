@@ -109,11 +109,35 @@ to either is visible here."
             t))
     (symbol-function 'nelisp-xfnd-test--find)))
 
+(defun nelisp-xfnd-test--make-directory ()
+  "Make a scratch directory whose absolute name contains a colon.
+A Windows path always does (`C:/...'), and that is what first broke this
+suite: it named the directory in PATH and bound the POSIX separator, so on
+windows-latest the entry split at its own drive letter and the POSIX case
+found nothing (CI run 34716300769, both Windows lanes).  The prelude's
+comment beside `path-separator' describes the same hazard.  POSIX hosts get
+the same shape here, so a Linux run exercises what only Windows did."
+  (if (eq system-type 'windows-nt)
+      (make-temp-file "nelisp-xfnd-" t)
+    (let ((temporary-file-directory
+           (file-name-as-directory (make-temp-file "nelisp-xfnd-c:" t))))
+      (make-temp-file "nelisp-xfnd-" t))))
+
+(defun nelisp-xfnd-test--discard-directory (directory)
+  "Remove DIRECTORY and the colon-named parent POSIX hosts wrap it in."
+  (let ((parent (file-name-directory (directory-file-name directory))))
+    (delete-directory directory t)
+    (when (string-match-p "nelisp-xfnd-c:" parent)
+      (delete-directory parent t))))
+
 (defmacro nelisp-xfnd-test--with-path (directory system separator &rest body)
-  "Run BODY with DIRECTORY as the whole PATH, under SYSTEM and SEPARATOR."
+  "Run BODY with DIRECTORY reachable through PATH, under SYSTEM and SEPARATOR.
+PATH holds `.' and `default-directory' is DIRECTORY, rather than PATH naming
+DIRECTORY outright: an absolute Windows name carries a drive-letter colon,
+and splitting it on the POSIX separator measures the split, not the probe."
   (declare (indent 3))
-  `(let ((process-environment (cons (concat "PATH=" ,directory)
-                                    process-environment))
+  `(let ((process-environment (cons "PATH=." process-environment))
+         (default-directory (file-name-as-directory ,directory))
          (system-type ,system)
          (path-separator ,separator)
          ;; The split is memoised on the PATH string; two cases in one test
@@ -125,7 +149,7 @@ to either is visible here."
 (ert-deftest nelisp-prelude-executable-find/windows-tries-the-exe-suffix ()
   "A program installed as `NAME.exe' is found on windows-nt and only there."
   (let ((find (nelisp-xfnd-test--install))
-        (directory (make-temp-file "nelisp-xfnd-" t)))
+        (directory (nelisp-xfnd-test--make-directory)))
     (unwind-protect
         (let ((suffixed (expand-file-name "hasher.exe" directory)))
           (with-temp-file suffixed (insert "not really a program"))
@@ -139,12 +163,12 @@ to either is visible here."
           ;; Naming the file outright still works on either host.
           (nelisp-xfnd-test--with-path directory 'windows-nt ";"
             (should (equal suffixed (funcall find "hasher.exe")))))
-      (delete-directory directory t))))
+      (nelisp-xfnd-test--discard-directory directory))))
 
 (ert-deftest nelisp-prelude-executable-find/posix-probe-is-unchanged ()
   "A suffix-less program is still found, and the POSIX sweep adds no suffix."
   (let ((find (nelisp-xfnd-test--install))
-        (directory (make-temp-file "nelisp-xfnd-" t)))
+        (directory (nelisp-xfnd-test--make-directory)))
     (unwind-protect
         (let ((plain (expand-file-name "hasher" directory)))
           (with-temp-file plain (insert "not really a program"))
@@ -155,7 +179,7 @@ to either is visible here."
           ;; is still reachable there.
           (nelisp-xfnd-test--with-path directory 'windows-nt ";"
             (should (equal plain (funcall find "hasher")))))
-      (delete-directory directory t))))
+      (nelisp-xfnd-test--discard-directory directory))))
 
 (ert-deftest nelisp-prelude-executable-find/suffix-list-is-host-shaped ()
   "The POSIX suffix list stays a single empty string.
