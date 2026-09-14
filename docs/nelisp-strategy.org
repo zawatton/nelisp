@@ -1,0 +1,1446 @@
+#+TITLE: NeLisp Strategy
+#+SUBTITLE: A Native, Interactive, Self-Hosted Lisp for the AI Era
+#+AUTHOR: NeLisp Project
+#+LANGUAGE: en
+#+OPTIONS: toc:3 num:t
+#+STARTUP: overview
+
+* Executive Summary
+
+NeLisp should not be positioned merely as a faster implementation of Emacs Lisp.
+Its long-term objective should be to become an independent programming platform
+that combines the strongest properties of Lisp with the deployment simplicity of
+Go, the native execution model of systems languages, and an execution environment
+designed for AI-assisted programming.
+
+The core positioning is:
+
+#+BEGIN_QUOTE
+NeLisp is a self-hosted native Lisp for building tools, agents, servers, and
+programmable systems.
+#+END_QUOTE
+
+The strategic differentiation should be built around four properties:
+
+- Native execution
+- Interactive development
+- Self-hosting
+- AI-native programmability
+
+The project should preserve Emacs Lisp compatibility as a major ecosystem and
+migration advantage, but it should not allow compatibility constraints to prevent
+the design of a modern language and toolchain.
+
+The target is not to outperform Rust at low-level systems programming, nor to
+replace Python across every domain. The target is to create a category in which
+NeLisp is the most natural choice:
+
+#+BEGIN_QUOTE
+A language for systems that must remain inspectable, modifiable, scriptable, and
+AI-programmable while running as native software.
+#+END_QUOTE
+
+
+* 1. Project Vision
+
+** 1.1 Mission
+
+Build a modern Lisp platform that is:
+
+- Simple to install
+- Simple to build and distribute
+- Fast enough for native applications
+- Interactive during development
+- Suitable for long-running services
+- Suitable for AI agents and automation
+- Compatible with a large part of the Emacs Lisp ecosystem
+- Capable of self-hosting its compiler and runtime
+- Usable without Emacs
+
+** 1.2 Long-Term Vision
+
+NeLisp should evolve from a language implementation into a complete software
+platform consisting of:
+
+- Language specification
+- Native compiler
+- Runtime
+- Garbage collector
+- Standard library
+- Package manager
+- Package registry
+- Formatter
+- Test runner
+- Documentation system
+- Debugger
+- LSP server
+- Build system
+- FFI layer
+- AI/agent runtime
+- Application ecosystem
+
+The desired developer experience should be comparable in coherence to Go or Rust.
+
+** 1.3 Strategic Identity
+
+NeLisp should be described as:
+
+#+BEGIN_QUOTE
+A native Lisp with live programming, self-hosting, Emacs Lisp compatibility, and
+first-class support for AI-driven software.
+#+END_QUOTE
+
+The project should avoid being described primarily as:
+
+- An Emacs extension language
+- An Emacs Lisp clone
+- A Lisp experiment
+- A compiler research project
+
+Those descriptions may be technically accurate in part, but they limit perceived
+scope and adoption potential.
+
+
+* 2. Strategic Positioning
+
+** 2.1 Core Value Proposition
+
+NeLisp should combine strengths usually found in separate language families.
+
+| Property | Reference Ecosystem | NeLisp Goal |
+|----------+---------------------+-------------|
+| Simple deployment | Go | Single native binary |
+| Native execution | Rust/C/C++ | Fast native code |
+| Interactive development | Common Lisp/Smalltalk | Live REPL-driven workflow |
+| Metaprogramming | Lisp | Macros and code-as-data |
+| Existing ecosystem | Emacs Lisp | High compatibility |
+| AI scripting | Python | Simple APIs and dynamic composition |
+| Self-modification | Lisp/Smalltalk | Runtime redefinition |
+| Self-hosting | Systems languages | Compiler/runtime written in NeLisp |
+
+** 2.2 Target Market
+
+Initial adoption should focus on developers building:
+
+- Developer tools
+- AI agents
+- Automation systems
+- CLI applications
+- Build tools
+- Infrastructure tools
+- Local-first applications
+- Long-running programmable services
+- Embedded scripting environments
+- Lisp-based DSLs
+
+Only after establishing strength in these areas should the project aggressively
+target broader application development.
+
+** 2.3 Killer Use Case
+
+The primary recommended killer use case is:
+
+#+BEGIN_QUOTE
+AI-native programmable agents whose behavior can be inspected and modified at
+runtime.
+#+END_QUOTE
+
+Example:
+
+#+BEGIN_SRC emacs-lisp
+(defagent research-agent
+  :tools '(web filesystem shell)
+  :memory 'persistent
+
+  (when (new-task-p)
+    (research task)
+    (write-report result)))
+#+END_SRC
+
+This should not merely be syntactic sugar around an API. NeLisp should make
+agents, tools, structured state, dynamic code loading, inspection, and runtime
+redefinition natural language-level concepts.
+
+
+* 3. Language Design Principles
+
+** 3.1 Compatibility Without Stagnation
+
+Emacs Lisp compatibility should be treated as an adoption asset, not as the final
+language boundary.
+
+Recommended architecture:
+
+#+BEGIN_EXAMPLE
+                 NeLisp
+                    |
+        +-----------+-----------+
+        |                       |
+ Modern NeLisp APIs     Emacs Lisp Compatibility
+#+END_EXAMPLE
+
+Compatibility should be divided into tiers:
+
+- Tier 1: Source-compatible standard forms
+- Tier 2: Common Emacs Lisp libraries
+- Tier 3: Compatibility shims
+- Tier 4: Unsupported Emacs-specific runtime functionality
+
+The compatibility level should be measurable and published.
+
+** 3.2 Modern Core Language
+
+NeLisp should introduce modern facilities where Emacs Lisp is weak or historically
+constrained.
+
+Candidates include:
+
+- Modules
+- Namespaces
+- Pattern matching
+- Structured data types
+- Better error objects
+- Async/await
+- Tasks
+- Channels
+- Futures/promises
+- Structured concurrency
+- Optional type annotations
+- Better foreign types
+- Standardized immutable data structures
+- Explicit package metadata
+
+Example:
+
+#+BEGIN_SRC emacs-lisp
+(module http-server
+  (export start-server))
+
+(struct response
+  status
+  headers
+  body)
+
+(match request
+  ((request :method "GET" :path "/health")
+   (response 200 nil "ok")))
+#+END_SRC
+
+** 3.3 Lisp Semantics Must Remain Central
+
+NeLisp should not become "Rust with parentheses."
+
+The language must preserve the reasons Lisp remains powerful:
+
+- Homoiconicity
+- Macros
+- Interactive evaluation
+- Symbolic manipulation
+- Runtime introspection
+- Dynamic redefinition
+- DSL construction
+- Minimal syntactic complexity
+
+Any feature that destroys these properties should require extremely strong
+justification.
+
+
+* 4. Runtime Architecture
+
+** 4.1 Native Execution
+
+The production path should generate native executables that do not require Emacs.
+
+Target workflow:
+
+#+BEGIN_SRC shell
+nelisp build --release
+./my-app
+#+END_SRC
+
+Expected properties:
+
+- No Emacs dependency
+- Predictable startup time
+- Reproducible builds
+- Debug and release build modes
+- Static or mostly self-contained distribution where practical
+- Cross-platform output
+
+** 4.2 Interactive Runtime
+
+A major differentiator should be live interaction with a running program.
+
+Desired workflow:
+
+#+BEGIN_EXAMPLE
+edit
+  |
+compile function
+  |
+load into running process
+  |
+inspect state
+  |
+continue execution
+#+END_EXAMPLE
+
+The runtime should support:
+
+- Function redefinition
+- Variable inspection
+- Stack inspection
+- Heap inspection
+- Dynamic module loading
+- Live patching
+- REPL attachment to running processes
+
+** 4.3 Self-Hosting
+
+NeLisp should progressively move compiler and runtime components into NeLisp.
+
+Long-term self-hosting targets:
+
+- Reader
+- Parser
+- Macro expander
+- Compiler
+- Optimizer
+- Object writer
+- Package manager
+- Build tool
+- Documentation generator
+- Test runner
+
+A minimal bootstrap layer in C/Rust/assembly is acceptable where required for
+platform integration.
+
+** 4.4 Garbage Collection
+
+GC design should prioritize:
+
+1. Correctness
+2. Predictable latency
+3. Developer ergonomics
+4. Throughput
+5. Memory efficiency
+
+The runtime should expose GC metrics and diagnostics.
+
+Example:
+
+#+BEGIN_SRC emacs-lisp
+(runtime:gc-stats)
+(runtime:heap-summary)
+#+END_SRC
+
+Future options may include:
+
+- Generational GC
+- Incremental GC
+- Concurrent marking
+- Region-based allocation for temporary workloads
+- Arena APIs for systems-oriented code
+
+
+* 5. Concurrency Model
+
+** 5.1 Objective
+
+Concurrency should become one of the language's visible strengths.
+
+The goal is not merely internal runtime parallelism. It should be easy for users
+to express concurrent programs.
+
+** 5.2 Proposed Model
+
+Recommended primitives:
+
+- task
+- spawn
+- await
+- channel
+- select
+- parallel-map
+- cancellation
+- structured concurrency scopes
+
+Example:
+
+#+BEGIN_SRC emacs-lisp
+(let ((a (async (download url-a)))
+      (b (async (download url-b))))
+  (await-all a b))
+#+END_SRC
+
+Server example:
+
+#+BEGIN_SRC emacs-lisp
+(spawn
+  (http:serve :port 8080))
+#+END_SRC
+
+Parallel collection processing:
+
+#+BEGIN_SRC emacs-lisp
+(parallel-map #'compile-source source-files)
+#+END_SRC
+
+** 5.3 Design Constraint
+
+Concurrency must remain simpler than Rust async programming.
+
+The desired mental model is closer to Go in usability while preserving Lisp's
+runtime dynamism.
+
+
+* 6. CLI and Toolchain
+
+** 6.1 Unified Command
+
+The =nelisp= command should be the center of the developer experience.
+
+Required commands:
+
+#+BEGIN_SRC shell
+nelisp new
+nelisp run
+nelisp build
+nelisp test
+nelisp fmt
+nelisp repl
+nelisp add
+nelisp remove
+nelisp update
+nelisp doc
+nelisp check
+nelisp clean
+nelisp bench
+#+END_SRC
+
+** 6.2 Project Creation
+
+Example:
+
+#+BEGIN_SRC shell
+nelisp new hello
+cd hello
+nelisp run
+#+END_SRC
+
+Generated structure:
+
+#+BEGIN_EXAMPLE
+hello/
+  nelisp.toml
+  src/
+    main.nl
+  test/
+#+END_EXAMPLE
+
+** 6.3 Build Modes
+
+Required profiles:
+
+- dev
+- release
+- debug
+- profile
+
+Example:
+
+#+BEGIN_SRC shell
+nelisp build
+nelisp build --release
+nelisp build --profile
+#+END_SRC
+
+** 6.4 Reproducible Builds
+
+The toolchain should create a lock file.
+
+Recommended files:
+
+#+BEGIN_EXAMPLE
+nelisp.toml
+nelisp.lock
+#+END_EXAMPLE
+
+The lock file should contain exact dependency versions and integrity information.
+
+
+* 7. Package Management
+
+** 7.1 Package Manager
+
+Package management must be part of the official toolchain.
+
+Example:
+
+#+BEGIN_SRC shell
+nelisp add http
+nelisp add json
+nelisp remove json
+nelisp update
+#+END_SRC
+
+** 7.2 Manifest Format
+
+Recommended format:
+
+#+BEGIN_SRC toml
+[package]
+name = "myapp"
+version = "0.1.0"
+edition = "2027"
+
+[dependencies]
+http = "1.3"
+json = "2.1"
+sqlite = "0.8"
+#+END_SRC
+
+** 7.3 Registry
+
+Create an official package registry.
+
+Possible domains:
+
+- packages.nelisp.org
+- registry.nelisp.org
+
+Required capabilities:
+
+- Versioning
+- Package ownership
+- Dependency metadata
+- Documentation hosting
+- Security advisories
+- Download metrics
+- Integrity hashes
+- Yanked releases
+- Package search
+- API access
+
+** 7.4 Initial Official Package Set
+
+Priority packages:
+
+- nelisp-http
+- nelisp-json
+- nelisp-yaml
+- nelisp-toml
+- nelisp-sqlite
+- nelisp-postgres
+- nelisp-redis
+- nelisp-websocket
+- nelisp-tls
+- nelisp-crypto
+- nelisp-regex
+- nelisp-cli
+- nelisp-log
+- nelisp-uuid
+- nelisp-datetime
+- nelisp-test
+- nelisp-openai
+- nelisp-anthropic
+- nelisp-mcp
+
+
+* 8. Foreign Function Interface
+
+** 8.1 Goal
+
+NeLisp must be able to consume existing ecosystems rather than rebuilding every
+library from scratch.
+
+The FFI should be extremely simple.
+
+Example:
+
+#+BEGIN_SRC emacs-lisp
+(ffi:library "sqlite3")
+
+(ffi:defun sqlite3-open
+  ((filename string)
+   (db pointer))
+  :returns int)
+#+END_SRC
+
+** 8.2 Bindgen
+
+Provide automatic header binding generation.
+
+#+BEGIN_SRC shell
+nelisp bindgen sqlite3.h
+#+END_SRC
+
+** 8.3 Interoperability Priorities
+
+Priority order:
+
+1. C ABI
+2. Rust libraries through C-compatible interfaces
+3. OS native APIs
+4. Python interoperability
+5. JavaScript/WASM interoperability
+
+Python interop may eventually support:
+
+#+BEGIN_SRC emacs-lisp
+(import-python "numpy")
+#+END_SRC
+
+This should be considered an ecosystem bridge, not a dependency of the core
+runtime.
+
+
+* 9. Standard Library
+
+** 9.1 Philosophy
+
+The standard library should be batteries-included enough to build useful programs
+without immediately searching for third-party packages.
+
+Core modules should include:
+
+- strings
+- collections
+- filesystem
+- process
+- shell
+- path
+- time
+- datetime
+- networking
+- HTTP client
+- HTTP server
+- JSON
+- regex
+- logging
+- testing
+- serialization
+- threading/tasks
+- channels
+- crypto primitives
+- environment
+- configuration
+- command-line parsing
+
+** 9.2 Stability
+
+The standard library must have explicit stability guarantees.
+
+Suggested labels:
+
+- stable
+- provisional
+- experimental
+- internal
+
+
+* 10. Developer Experience
+
+** 10.1 Formatter
+
+Official formatter:
+
+#+BEGIN_SRC shell
+nelisp fmt
+#+END_SRC
+
+The formatter should define the canonical NeLisp style.
+
+Formatting should be deterministic.
+
+** 10.2 Test Runner
+
+Example:
+
+#+BEGIN_SRC shell
+nelisp test
+#+END_SRC
+
+Features:
+
+- Unit tests
+- Integration tests
+- Property tests
+- Parallel test execution
+- Test filtering
+- Coverage
+- Machine-readable output
+
+** 10.3 Error Messages
+
+Diagnostics should be source-oriented and actionable.
+
+Example:
+
+#+BEGIN_EXAMPLE
+error[E0132]: expected integer, got string
+
+ --> src/main.nl:18:12
+  |
+18|   (+ count name)
+  |            ^^^^
+  |            string
+  |
+  = '+' expects numeric operands
+#+END_EXAMPLE
+
+Diagnostics should include:
+
+- Source location
+- Relevant expression
+- Error category
+- Explanation
+- Suggested correction when safe
+- Optional verbose compiler trace
+
+** 10.4 Debugger
+
+Debugger requirements:
+
+- Breakpoints
+- Step
+- Next
+- Continue
+- Backtrace
+- Inspect locals
+- Evaluate expressions
+- Attach to process
+- Inspect threads/tasks
+- Inspect actor/agent state
+
+
+* 11. Editor and IDE Strategy
+
+** 11.1 LSP
+
+An official language server is mandatory.
+
+Recommended binary:
+
+#+BEGIN_EXAMPLE
+nelisp-lsp
+#+END_EXAMPLE
+
+Capabilities:
+
+- Completion
+- Go to definition
+- Find references
+- Rename
+- Hover
+- Signature help
+- Diagnostics
+- Semantic tokens
+- Formatting
+- Code actions
+- Workspace symbols
+
+** 11.2 Editor Priority
+
+Recommended adoption priority:
+
+1. VS Code
+2. Neovim
+3. Emacs
+4. JetBrains
+
+Emacs integration should remain excellent, but NeLisp adoption must not require
+Emacs.
+
+** 11.3 VS Code Extension
+
+The official extension should provide:
+
+- Syntax highlighting
+- REPL integration
+- LSP support
+- Test UI
+- Debug adapter integration
+- Package commands
+- Inline diagnostics
+
+
+* 12. AI-Native Programming Model
+
+** 12.1 Objective
+
+NeLisp should be designed for programs that are partially written, modified, or
+orchestrated by AI systems.
+
+This should become a first-class strategic differentiator.
+
+** 12.2 Agent Abstraction
+
+Example:
+
+#+BEGIN_SRC emacs-lisp
+(defagent research-agent
+  :model "gpt-5"
+  :tools '(web filesystem shell)
+  :memory 'persistent
+  :policy 'research-policy
+
+  (on-task task
+    (let ((sources (research task)))
+      (write-report sources))))
+#+END_SRC
+
+** 12.3 Tool Calling
+
+Example:
+
+#+BEGIN_SRC emacs-lisp
+(deftool read-file (path)
+  :input ((path string))
+  :returns string
+  (fs:read-text path))
+#+END_SRC
+
+** 12.4 Structured Output
+
+Example:
+
+#+BEGIN_SRC emacs-lisp
+(defschema market-report
+  (summary string)
+  (risks (list string))
+  (opportunities (list string)))
+#+END_SRC
+
+** 12.5 Runtime Mutation
+
+AI agents should be able to modify selected code safely.
+
+Required concepts:
+
+- Capability boundaries
+- Module permissions
+- Sandboxed evaluation
+- Transactional code loading
+- Rollback
+- Audit log
+- Signed modules
+- Policy enforcement
+
+This is critical. "AI-native" must not mean arbitrary unrestricted self-modifying
+code.
+
+** 12.6 MCP Support
+
+NeLisp should provide first-class MCP support.
+
+Example:
+
+#+BEGIN_SRC emacs-lisp
+(require 'mcp)
+
+(mcp:server
+  :name "filesystem-tools"
+  :tools '(read-file write-file list-directory))
+#+END_SRC
+
+
+* 13. Web and Server Development
+
+** 13.1 Objective
+
+A useful web server should require very little code.
+
+Example:
+
+#+BEGIN_SRC emacs-lisp
+(require 'web)
+
+(get "/hello"
+  (lambda (request)
+    "Hello, world!"))
+
+(listen 8080)
+#+END_SRC
+
+** 13.2 Required Server Capabilities
+
+- HTTP/1.1
+- HTTP/2
+- TLS
+- WebSocket
+- Routing
+- Middleware
+- JSON
+- Streaming
+- Graceful shutdown
+- Structured logging
+- Metrics
+- Async I/O
+
+** 13.3 Deployment Goal
+
+The standard production path should be:
+
+#+BEGIN_SRC shell
+nelisp build --release
+./server
+#+END_SRC
+
+No Emacs process should be required.
+
+
+* 14. Documentation Strategy
+
+** 14.1 The NeLisp Book
+
+Create an official book.
+
+Suggested structure:
+
+1. Installation
+2. Hello World
+3. Expressions
+4. Functions
+5. Data
+6. Collections
+7. Modules
+8. Pattern Matching
+9. Macros
+10. Error Handling
+11. Packages
+12. Testing
+13. Concurrency
+14. Native Builds
+15. FFI
+16. Networking
+17. Web Development
+18. AI Agents
+19. Runtime Introspection
+20. Embedding NeLisp
+
+** 14.2 API Documentation
+
+Command:
+
+#+BEGIN_SRC shell
+nelisp doc
+#+END_SRC
+
+The system should generate searchable HTML documentation from source code.
+
+** 14.3 Design Documentation
+
+Maintain separate documents for:
+
+- Language reference
+- Compiler internals
+- Runtime architecture
+- FFI specification
+- Package specification
+- Compatibility specification
+- ABI stability policy
+
+
+* 15. Branding and Project Presentation
+
+** 15.1 Homepage Message
+
+The homepage should immediately explain what NeLisp is.
+
+Recommended structure:
+
+#+BEGIN_EXAMPLE
+NeLisp
+======
+
+A native, self-hosted Lisp for tools, agents, servers, and programmable systems.
+
+$ nelisp new hello
+$ cd hello
+$ nelisp run
+
+Hello, world!
+
+Why NeLisp?
+
+- Native binaries
+- Interactive development
+- Powerful macros
+- Parallel execution
+- Emacs Lisp compatibility
+- AI-native programming
+#+END_EXAMPLE
+
+** 15.2 Remove Internal Development Terminology From Marketing
+
+Terms such as:
+
+- Stage A
+- Stage B
+- Stage C
+- internal bootstrap names
+- historical project names
+
+should remain in engineering documentation only.
+
+Public versioning should be simple:
+
+#+BEGIN_EXAMPLE
+0.7
+0.8
+0.9
+1.0
+#+END_EXAMPLE
+
+** 15.3 Historical Naming Cleanup
+
+All user-visible installation paths and commands should use the NeLisp brand.
+
+Preferred examples:
+
+#+BEGIN_EXAMPLE
+~/.local/share/nelisp/
+~/.cache/nelisp/
+~/.config/nelisp/
+#+END_EXAMPLE
+
+
+* 16. Performance Strategy
+
+** 16.1 Goal
+
+NeLisp does not need to beat Rust in every benchmark.
+
+The strategic performance target is:
+
+#+BEGIN_QUOTE
+Much faster than typical dynamic scripting languages, while retaining an
+interactive Lisp development model.
+#+END_QUOTE
+
+** 16.2 Performance Priorities
+
+Priority order:
+
+1. Startup time
+2. Function call overhead
+3. Allocation performance
+4. GC latency
+5. String processing
+6. Hash tables
+7. File I/O
+8. HTTP workloads
+9. Concurrency
+10. Numerical workloads
+
+** 16.3 Benchmarks
+
+Create a public benchmark suite containing:
+
+- Startup
+- Fibonacci
+- JSON parse/serialize
+- Regex
+- HTTP server
+- File traversal
+- Hash map operations
+- Parallel map
+- Compiler throughput
+- Agent orchestration workloads
+
+Compare against:
+
+- Emacs Lisp
+- Common Lisp
+- Python
+- Go
+- Rust
+- Lua
+- JavaScript
+
+Benchmark methodology must be transparent and reproducible.
+
+
+* 17. Security Model
+
+** 17.1 Importance
+
+AI-native and dynamically programmable systems create additional risk.
+
+Security must therefore be a language/runtime design concern.
+
+** 17.2 Capabilities
+
+Introduce explicit capability objects for:
+
+- Filesystem
+- Network
+- Process execution
+- Environment variables
+- Native FFI
+- Package installation
+- Runtime code mutation
+
+Example:
+
+#+BEGIN_SRC emacs-lisp
+(with-capabilities '(filesystem:read network:https)
+  (run-agent task))
+#+END_SRC
+
+** 17.3 Sandboxing
+
+Future sandbox mechanisms may include:
+
+- Process isolation
+- seccomp on Linux
+- sandbox-exec alternatives on macOS
+- Windows job objects/restricted tokens
+- WASM execution mode
+- Restricted evaluator
+- Resource quotas
+
+
+* 18. Governance
+
+** 18.1 Project Governance
+
+As adoption grows, define:
+
+- Core team
+- Maintainers
+- RFC process
+- Release managers
+- Security team
+- Package registry administrators
+
+** 18.2 RFC Process
+
+Major language changes should be proposed through written RFCs.
+
+Each RFC should include:
+
+- Motivation
+- Proposed design
+- Alternatives
+- Compatibility impact
+- Implementation plan
+- Migration strategy
+- Security considerations
+
+** 18.3 Stability Policy
+
+Before 1.0:
+
+- Breaking changes permitted
+- Migration notes mandatory
+
+After 1.0:
+
+- Core syntax stable
+- Standard library follows semantic versioning
+- Toolchain deprecations require transition periods
+- ABI stability policy documented separately
+
+
+* 19. Adoption Strategy
+
+** 19.1 Do Not Market the Language First
+
+The fastest path to adoption is to build compelling software with NeLisp.
+
+The desired discovery path is:
+
+#+BEGIN_EXAMPLE
+Interesting tool
+   |
+"What is this written in?"
+   |
+NeLisp
+#+END_EXAMPLE
+
+** 19.2 Flagship Applications
+
+Recommended flagship projects:
+
+- AI coding agent
+- Research agent
+- Fast CLI framework
+- Local automation server
+- Native programmable shell
+- Build system
+- Static site generator
+- Developer assistant
+- MCP server framework
+
+** 19.3 Public Demonstrations
+
+High-impact demonstrations should include:
+
+- Build a native executable in seconds
+- Attach REPL to running server
+- Redefine a function without restart
+- Spawn multiple AI agents
+- Add a package with one command
+- Call a C library
+- Run the same project on Linux/macOS/Windows
+
+** 19.4 Community Channels
+
+Required community infrastructure:
+
+- GitHub Discussions
+- Discord or Matrix
+- RFC repository
+- Package registry
+- Documentation site
+- Blog
+- Release notes
+- Roadmap
+- Monthly progress report
+
+
+* 20. Roadmap
+
+** Phase 1: Usable Language
+
+Objective: Make NeLisp pleasant for early adopters.
+
+Deliverables:
+
+- Stable =nelisp= command
+- =nelisp new=
+- =nelisp run=
+- =nelisp build=
+- =nelisp test=
+- =nelisp fmt=
+- =nelisp repl=
+- Native binaries
+- Basic standard library
+- Linux/macOS/Windows support
+- Clear installation process
+
+Exit criteria:
+
+A developer unfamiliar with NeLisp can install it, create a project, build a
+binary, and run tests within 10 minutes.
+
+** Phase 2: Complete Developer Platform
+
+Objective: Make NeLisp practical for real projects.
+
+Deliverables:
+
+- Package manager
+- Registry
+- =nelisp.toml=
+- =nelisp.lock=
+- LSP
+- VS Code extension
+- Debugger
+- C FFI
+- HTTP client/server
+- JSON
+- SQLite
+- TLS
+- Documentation generator
+
+Exit criteria:
+
+A developer can build and maintain a production CLI or web service without
+depending on Emacs.
+
+** Phase 3: AI-Native Platform
+
+Objective: Create a unique reason to choose NeLisp.
+
+Deliverables:
+
+- Agent framework
+- Tool calling
+- Structured output
+- Model provider abstraction
+- Persistent agent state
+- MCP server/client
+- Safe runtime code loading
+- Capability system
+- Sandboxed evaluation
+- Agent observability
+
+Exit criteria:
+
+NeLisp becomes one of the easiest languages for building sophisticated native AI
+agents.
+
+** Phase 4: Flagship Ecosystem
+
+Objective: Demonstrate category leadership.
+
+Deliverables:
+
+- Flagship coding agent
+- Flagship research agent
+- 50-100 high-quality packages
+- Public benchmark suite
+- Stable language reference
+- The NeLisp Book
+- Mature editor tooling
+- Production deployment guides
+
+Exit criteria:
+
+External developers independently choose NeLisp for new projects.
+
+** Phase 5: 1.0
+
+Objective: Commit to long-term language stability.
+
+Requirements:
+
+- Language specification
+- Stable module system
+- Stable package format
+- Stable CLI
+- Stable core standard library
+- Documented compatibility policy
+- Security policy
+- RFC governance
+- Migration tooling
+- Production users
+
+
+* 21. Priority Matrix
+
+| Priority | Area | Reason |
+|----------+------+--------|
+| S | Killer use case | Defines why the language should exist |
+| S | CLI/toolchain | Determines first-user experience |
+| S | Package management | Required for ecosystem growth |
+| S | Standard library | Required for useful programs |
+| S | Error messages | Critical for adoption |
+| S | LSP/VS Code | Required to reach mainstream developers |
+| A | Native compiler | Core technical advantage |
+| A | FFI | Prevents ecosystem isolation |
+| A | Concurrency | Important product differentiator |
+| A | Documentation | Required for learning |
+| A | Compatibility | Leverages existing Elisp ecosystem |
+| B | Maximum compiler optimization | Important later |
+| B | Advanced GC | Important after adoption grows |
+| B | Exotic language features | Avoid premature complexity |
+
+
+* 22. Recommended Immediate Work
+
+The next development cycle should focus on five priorities.
+
+** Priority 1: Finalize the Positioning
+
+Adopt:
+
+#+BEGIN_QUOTE
+NeLisp is a native, interactive, self-hosted Lisp for tools, agents, servers, and
+programmable systems.
+#+END_QUOTE
+
+** Priority 2: Finish the Unified CLI
+
+Minimum commands:
+
+#+BEGIN_SRC shell
+nelisp new
+nelisp run
+nelisp build
+nelisp test
+nelisp fmt
+nelisp repl
+nelisp add
+#+END_SRC
+
+** Priority 3: Implement Package Management
+
+Create:
+
+- =nelisp.toml=
+- =nelisp.lock=
+- dependency resolver
+- package cache
+- package registry prototype
+
+** Priority 4: Build the LSP
+
+The first mainstream editor target should be VS Code.
+
+** Priority 5: Build One Exceptional Flagship Application
+
+Recommended project:
+
+#+BEGIN_QUOTE
+A native NeLisp coding/research agent with MCP, tool calling, persistent state,
+parallel sub-agents, live redefinition, and a single-binary deployment model.
+#+END_QUOTE
+
+This application should be treated as both:
+
+- A useful product
+- A language demonstration
+- A benchmark
+- A developer acquisition tool
+
+
+* 23. Success Metrics
+
+NeLisp should measure progress using product metrics, not only compiler milestones.
+
+Recommended metrics:
+
+- GitHub stars
+- Weekly active package downloads
+- Number of published packages
+- Number of external contributors
+- Number of external production projects
+- Time to first successful program
+- Time to first native binary
+- Build performance
+- Runtime performance
+- Package installation success rate
+- LSP latency
+- Documentation search success
+- Issue resolution time
+
+Long-term indicators:
+
+- Independent companies using NeLisp
+- Third-party books/tutorials
+- Third-party frameworks
+- Conference talks
+- Job postings
+- University/research usage
+- Commercial products written in NeLisp
+
+
+* 24. Final Design Principle
+
+The central strategic principle should be:
+
+#+BEGIN_QUOTE
+Do not build NeLisp as a better historical Lisp implementation.
+
+Build NeLisp as the Lisp that developers would design if Lisp were being created
+today for native applications, live systems, and AI-assisted software development.
+#+END_QUOTE
+
+NeLisp should preserve the fundamental Lisp advantage:
+
+#+BEGIN_QUOTE
+Programs are not static artifacts. They are inspectable, transformable, and
+programmable systems.
+#+END_QUOTE
+
+Go demonstrates the value of simple deployment.
+Rust demonstrates the value of strong systems-level engineering.
+Python demonstrates the value of ecosystem accessibility.
+Lisp demonstrates the value of programmable language semantics.
+
+NeLisp's opportunity is to combine these ideas into a coherent platform that is
+native, interactive, self-hosted, and AI-native.
