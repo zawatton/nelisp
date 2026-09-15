@@ -190,3 +190,12 @@ pinned-kernel-touch scripts/nelisp-macos-build.el
 pinned-kernel-touch scripts/nelisp-standalone-build.el
 pinned-kernel-touch lisp/nelisp-repl-gc.el
 pinned-kernel-touch scripts/nelisp-runtime-reload-telemetry.el
+# Tag-16 identity comparison reads the uninterned-symbol identity slot through
+# the raw Sexp pointer supplied to the generated frame/mirror helper.
+pinned-kernel-touch lisp/nelisp-cc-fnv1a.el
+# Each sequential let* binding roots a temporary singleton cons cell and uses
+# raw allocation/pointer writes to keep it alive across initializer evaluation.
+pinned-kernel-touch lisp/nelisp-cc-sf-let-star.el
+# 100 -> 101 on 2026-09-15: these two intentional kernel units joined the
+# raw-memory surface and are documented by the pins immediately above.
+kernel-files 101

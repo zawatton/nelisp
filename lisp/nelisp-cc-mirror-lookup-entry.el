@@ -78,7 +78,8 @@
           0
         (if (= (sexp-tag cell-ptr) 7)
             (let ((pair-view (extern-call nl_cons_car_ptr cell-ptr)))
-              (if (= (str-eq (extern-call nl_cons_car_ptr pair-view) sym-ptr) 1)
+              (if (= (extern-call nelisp_symbol_key_equal
+                                 (extern-call nl_cons_car_ptr pair-view) sym-ptr) 1)
                   (extern-call nl_cons_cdr_ptr pair-view)
                 (nelisp_mirror_walk_bucket
                  (extern-call nl_cons_cdr_ptr cell-ptr)
@@ -107,7 +108,7 @@
       ;; 7aa3ed8b): a miss is always safe, a crash is not.
       (if (= (extern-call nl_gc_in_arena sym-ptr) 0)
           0
-        (if (= (sexp-tag sym-ptr) 4)
+        (if (or (= (sexp-tag sym-ptr) 4) (= (sexp-tag sym-ptr) 16))
             1
           (if (or (= (sexp-tag sym-ptr) 5)
                   (= (sexp-tag sym-ptr) 14)) 1 0))))

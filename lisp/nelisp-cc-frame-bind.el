@@ -135,7 +135,8 @@
           0
         (if (= (sexp-tag bucket-view) 7)
             (let ((pair-view (extern-call nl_cons_car_ptr bucket-view)))
-              (if (= (str-eq (extern-call nl_cons_car_ptr pair-view) name-ptr) 1)
+              (if (= (extern-call nelisp_symbol_key_equal
+                                 (extern-call nl_cons_car_ptr pair-view) name-ptr) 1)
                   (and (cons-set-cdr pair-view cell-ptr) 1)
                 (nelisp_frame_bind_walk_update
                  (extern-call nl_cons_cdr_ptr bucket-view) name-ptr cell-ptr 0)))

@@ -45,6 +45,31 @@
 
 (require 'nl-ns)
 
+(defconst nl-ns-inventory--namespace-overrides
+  '(("lisp/nelisp-sexp-layout.el" . "nelisp-")
+    ("lisp/nelisp-lexframe.el" . "nelisp-lexframe-"))
+  "Explicit `nl-ns-declare' overrides for files whose majority-prefix
+inference (`nl-ns-file-namespace') picks a narrower namespace than the
+file's own names actually share.  nelisp-sexp-layout.el defines several
+struct-shaped groups (`nelisp-nlrecord-', `nelisp-nlconsbox-', ...) each
+under half the file's names, so the true shared namespace is the
+file-level `nelisp-' prefix; adding one more name in any single group is
+enough to tip that group's count past 50% and make the inference pick
+the narrower group prefix instead, flagging every other group's names as
+`ns-prefix-violation'.  Pin the wider namespace here rather than let one
+new definition change what the rest of the file is judged against.
+nelisp-lexframe.el is the same shape: its `nelisp-lexframe-stack-'
+sub-group alone crosses 50% (inference picks the longest
+majority-satisfying prefix, so the narrower sub-group wins over the
+file-level prefix once it has a bare majority), but every single name in
+the file -- verified by direct scan, 31/31 -- starts with the file-level
+`nelisp-lexframe-'.  Pin that instead.")
+
+(defun nl-ns-inventory--declare-overrides ()
+  "Apply `nl-ns-inventory--namespace-overrides' via `nl-ns-declare'."
+  (dolist (pair nl-ns-inventory--namespace-overrides)
+    (nl-ns-declare (car pair) (cdr pair))))
+
 (defconst nl-ns-inventory--baseline-file
   "tools/ns-inventory-baseline.txt")
 
@@ -98,6 +123,7 @@ Read from `pinned-collision KEY' lines, KEY in `nl-ns-finding-key' shape."
 
 (defun nl-ns-inventory-run ()
   "Scan the tree, print the inventory, enforce the baseline."
+  (nl-ns-inventory--declare-overrides)
   (let* ((files (nl-ns-inventory--files))
          (findings (nl-ns-check-files files))
          (baseline (nl-ns-inventory--baseline))

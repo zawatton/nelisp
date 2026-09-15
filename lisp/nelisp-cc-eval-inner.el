@@ -118,7 +118,7 @@
     ;; Tag dispatch on form.  Every extern-call is first arg ✓.
     (defun nl_eval_inner (form env out _pad)
       (cond
-       ((= (sexp-tag form) 4)
+       ((or (= (sexp-tag form) 4) (= (sexp-tag form) 16))
         (nl_ei_var_done (extern-call nl_env_lookup_val form env out) form env 0))
        ((= (sexp-tag form) 7)
         (nl_ei_cons_dispatch (extern-call nl_cons_car_ptr form) form env out))

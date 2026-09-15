@@ -234,20 +234,13 @@ declared, NOT bound — matching Emacs `defvar' so that a later
 zero-value form requires `&rest' (arity), not `&optional' (which cannot
 tell `(defvar X)' from `(defvar X nil)').  DOCSTRING ignored.  Returns NAME."
   (if args
-      ;; (defvar NAME VALUE [DOC]):
-      ;;   (progn (if (boundp 'NAME) nil (set 'NAME VALUE)) 'NAME)
-      (cons 'progn
-            (cons (cons 'if
-                        (cons (cons 'boundp
-                                    (cons (cons 'quote (cons name nil)) nil))
-                              (cons nil
-                                    (cons (cons 'set
-                                                (cons (cons 'quote (cons name nil))
-                                                      (cons (car args) nil)))
-                                          nil))))
-                  (cons (cons 'quote (cons name nil)) nil)))
-    ;; (defvar NAME): forward declaration — return 'NAME, leave it UNBOUND.
-    (cons 'quote (cons name nil))))
+      (list 'progn
+            (list 'puthash (list 'quote name) t 'nelisp--special-variables)
+            (list 'if (list 'boundp (list 'quote name)) nil
+                  (list 'set (list 'quote name) (car args)))
+            (list 'quote name))
+    (list 'funcall '(quote (builtin nelisp--declare-local-special))
+          (list 'quote name))))
 
 (defmacro defvar-local (name &optional value docstring)
   "Alias for `defvar' (NeLisp lacks buffer-local distinction)."
@@ -261,18 +254,18 @@ Doc 102 Phase 5 Step B (2026-05-17) — the constant flag is now
 set via the `nelisp--env-globals-set-constant' env_shim primitive
 (= Doc 86 §86.3.a surface; routes through the elisp env mirror's
 slot-3 `Sexp::T').  Stage 7.3.a TODO resolved."
-  ;; Expansion:
-  ;;   (progn (set 'NAME VALUE)
-  ;;          (nelisp--env-globals-set-constant 'NAME t)
-  ;;          'NAME)
-  (cons 'progn
-        (cons (cons 'set
-                    (cons (cons 'quote (cons name nil))
-                          (cons value nil)))
-              (cons (cons 'nelisp--env-globals-set-constant
-                          (cons (cons 'quote (cons name nil))
-                                (cons t nil)))
-                    (cons (cons 'quote (cons name nil)) nil)))))
+  (list 'progn
+        (list 'puthash (list 'quote name) t 'nelisp--special-variables)
+        (list 'set (list 'quote name) value)
+        (list 'nelisp--env-globals-set-constant (list 'quote name) t)
+        (list 'quote name)))
+
+;; Reloading this source replaces the bootstrap macro identities. Keep the
+;; standalone's native-declaration dispatch attached to these new definitions;
+;; otherwise macroexpand starts emitting the bootstrap fallback again.
+(when (boundp 'nelisp--native-declaration-macros)
+  (setq nelisp--native-declaration-macros
+        (list (symbol-function 'defvar) (symbol-function 'defconst))))
 
 (defmacro defcustom (name value docstring &rest _options)
   "Stub: ignore OPTIONS, behave like `defvar'."

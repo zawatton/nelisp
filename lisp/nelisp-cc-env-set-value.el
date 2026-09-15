@@ -175,7 +175,7 @@
     (defun nelisp_env_set_value_name_ok (name-ptr)
       (if (= (extern-call nl_gc_in_arena name-ptr) 0)
           0
-        (if (= (sexp-tag name-ptr) 4)
+        (if (or (= (sexp-tag name-ptr) 4) (= (sexp-tag name-ptr) 16))
             1
           (if (or (= (sexp-tag name-ptr) 5)
                   (= (sexp-tag name-ptr) 14)) 1 0))))

@@ -70,6 +70,14 @@
 
 (defconst nelisp-cc-fnv1a--source
   '(seq
+    (defun nelisp_symbol_key_equal (left right)
+      ;; Frame/mirror keys preserve uninterned identity. Ordinary symbols
+      ;; and string keys retain their historical name-based interoperability.
+      (if (= (sexp-tag left) 16)
+          (if (= (sexp-tag right) 16)
+              (if (= (ptr-read-u64 left 8) (ptr-read-u64 right 8)) 1 0)
+            0)
+        (if (= (sexp-tag right) 16) 0 (str-eq left right))))
     (defun nelisp_fnv1a_step (h bytes i n mask)
       ;; Tail-recursive 1-byte tail handler (= 0-3 leftover bytes after
       ;; the 4-byte unrolled main loop has consumed the bulk of the
@@ -163,8 +171,12 @@
       ;; threaded through both recursions as an explicit arg, avoiding
       ;; the repeated `(shl 1 32)' shift in every inner step.
       (nelisp_fnv1a_step4 (+ (shl 1 31) 18652613)
-                          (str-bytes-ptr str-ptr) 0
-                          (str-len str-ptr)
+                          (if (= (sexp-tag str-ptr) 16)
+                              (ptr-read-u64 str-ptr 16)
+                            (str-bytes-ptr str-ptr)) 0
+                          (if (= (sexp-tag str-ptr) 16)
+                              (ptr-read-u64 str-ptr 24)
+                            (str-len str-ptr))
                           (- (shl 1 32) 1))))
   "AOT source for Doc 115 §115.7 `mirror_fnv1a' pure-elisp
 replacement.

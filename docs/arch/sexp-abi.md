@@ -52,6 +52,36 @@ The standalone runtime uses a fixed 32-byte tagged slot:
 | `Bignum`      | 13            | `SEXP_TAG_BIGNUM`        |
 | `UnibyteStr`  | 14            | `SEXP_TAG_UNIBYTE_STR`   |
 | `UnibyteMutStr` | 15          | `SEXP_TAG_UNIBYTE_MUT_STR` |
+| `UninternedSymbol` (development) | 16 | `nelisp-sexp-layout-tag-uninterned-symbol` |
+
+The standalone reader's public `make-symbol` produces tag 16. Its 32-byte slot stores a
+positive, unique identity at +8, an immutable public-name byte-buffer
+pointer at +16, and byte length at +24. The identity is not string capacity or
+an address. Clones retain the identity and buffer. GC traces/relocates only the
+buffer edge; image roundtrips must preserve identity and aliasing. Public
+`symbolp`, `symbol-name`, public identity comparison, and ordinary printing
+are qualified through the private fixture. `intern-soft` rejects these values
+and `keywordp` requires membership in the global intern table. Native frame
+and mirror keys compare tag-16 identities, while ordinary symbol/string keys
+retain name-based interoperability. Hashing uses immutable name bytes only
+to select a bucket; equal names do not imply equal identities. Private tests
+cover update, lookup, capture filtering, GC, and mirror-key image restoration.
+The producer obtains identity from the monotonic mutation epoch, independently
+of the name, and rejects nonpositive overflow. Public acceptance covers
+evaluation/assignment, function/property cells, closures, eq/equal tables, and
+fresh issuance after image restoration. Captured bare
+local declarations preserve tag-16 identity when restoring a closure frame;
+they do not create a global special declaration or value. Source-side capture
+may use string names, so restoration also accepts inline and boxed multibyte
+and unibyte names. Public closure and private native restoration tests cover
+these paths and same-name identity isolation. Separate obarrays and all symbol
+printing/read-syntax modes remain outside this qualification. The shipped
+status above applies to tags 0–15; tag 16 is a development change. The separate
+`nl_jit_make_symbol` trampoline now shares the reader's identity issuer and
+tag-16 allocator. The private native fixture qualifies mixed-producer identity,
+all four string representations (5/6/14/15), and error returns that leave the
+output slot untouched. Boxed names use their NlStr byte length. This qualifies
+the native C-ABI function, not loading the complete legacy Lisp JIT strategy.
 
 Adding a variant **must append** at the end of this table and the
 enum.  Re-ordering invalidates every compiled `.o` and the layout

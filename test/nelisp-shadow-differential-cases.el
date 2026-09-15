@@ -514,7 +514,30 @@
  (list (car nil) (cdr nil)
        (condition-case e (car 5) (wrong-type-argument (cdr e)))
        (condition-case e (cdr 5) (wrong-type-argument (cdr e))))
+ ;; List accessors must reject arity before touching an absent value slot.
+ (list (condition-case e (car) (wrong-number-of-arguments e))
+       (condition-case e (cdr) (wrong-number-of-arguments e))
+       (condition-case e (car nil nil) (wrong-number-of-arguments e))
+       (condition-case e (funcall #'cdr nil nil) (wrong-number-of-arguments e))
+       ;; Emacs names the subr object for `apply'; this reader names its
+       ;; symbol. Compare condition/count without equating representations.
+       (condition-case e (apply #'car '(nil nil nil))
+         (wrong-number-of-arguments (list (car e) (car (cdr (cdr e)))))))
  (condition-case e (symbol-value 'nelisp-parity-unbound-zz) (error e))
+ ;; Special declarations survive a failing initializer independently of the
+ ;; global value cell. Dynamic frame visibility is qualified separately.
+ (progn
+   (condition-case nil (defvar par-special-declaration (error "init")) (error nil))
+   (list (special-variable-p 'par-special-declaration)
+         (boundp 'par-special-declaration)
+         (let ((par-special-declaration nil)) (special-variable-p 'par-special-declaration))
+         (boundp 'par-special-declaration)))
+ ;; Shared fixed-arity guards run before primitive type checks or reads.
+ (list (condition-case e (cons) (wrong-number-of-arguments e))
+       (condition-case e (eq nil) (wrong-number-of-arguments e))
+       (condition-case e (aset nil nil) (wrong-number-of-arguments e))
+       (condition-case e (make-vector nil nil nil) (wrong-number-of-arguments e))
+       (condition-case e (bignump) (wrong-number-of-arguments e)))
  (list (zerop 0.0) (zerop -0.0) (zerop 0) (zerop 1.5)
        (condition-case e (zerop "a") (wrong-type-argument (cdr e))))
  (list (round 0.5) (round 1.5) (round 2.5) (round -0.5) (round -1.5)
@@ -1637,6 +1660,168 @@
       (void-function (cadr e)))
     (condition-case e (apply 'par-variable-only-function-cell '(1))
       (void-function (cadr e)))))
+;; A function cell does not bind the same symbol's value cell.
+(progn
+  (defun par-function-only-value-cell () 1)
+  (list (condition-case e par-function-only-value-cell (void-variable e))
+        (condition-case e (symbol-value 'par-function-only-value-cell)
+          (void-variable e))
+        (boundp 'par-function-only-value-cell)
+        (par-function-only-value-cell)))
+;; Native filtered capture must retain lexical cell identity across an inner
+;; shadow, mutation, and GC.  Explicit lexical eval also fixes the host mode.
+(eval '(let* ((par-capture-cell (list 7))
+              (saved par-capture-cell)
+              (reader (lambda () par-capture-cell)))
+         (let ((par-capture-cell (list 9)))
+           (garbage-collect)
+           (setcar saved 8)
+           (list (funcall reader) par-capture-cell
+                 (eq saved (funcall reader))))) t)
+;; A declared special is looked up at call time, not captured by a closure.
+(eval '(progn
+         (defvar par-dynamic-value 0)
+         (let ((inside
+                (let ((par-dynamic-value 7))
+                  (setq par-dynamic-reader (lambda () par-dynamic-value))
+                  (list (boundp 'par-dynamic-value)
+                        (symbol-value 'par-dynamic-value)))))
+           (list inside (funcall par-dynamic-reader)
+                 (let ((par-dynamic-value 9)) (funcall par-dynamic-reader))
+                 par-dynamic-value))) t)
+;; Callees and closures created in them must not inherit caller lexical cells.
+(eval '(progn
+         (setq par-call-global 1)
+         (defvar par-call-special 2)
+         (defun par-call-factory () (lambda () (list par-call-global par-call-special)))
+         (let ((par-call-global 9) (par-call-special 7))
+           (setq par-call-reader (par-call-factory))
+           (list (funcall par-call-reader)
+                 (progn (garbage-collect) (funcall par-call-reader))))) t)
+;; Sequential rebinding preserves cells captured before the new binding.
+(eval '(let* ((par-star-cell (list 1))
+              (reader (lambda () par-star-cell))
+              (par-star-cell (progn (garbage-collect) (list 2))))
+         (list par-star-cell (funcall reader))) t)
+(eval '(let* ((par-star-mixed 1)
+              (declared (defvar par-star-mixed 0))
+              (par-star-mixed 2))
+         (list par-star-mixed (symbol-value 'par-star-mixed))) t)
+;; A local special declaration is captured without becoming a global flag.
+(eval '(progn
+         (setq par-local-reader
+               (let ((par-local-cell 'saved))
+                 (defvar par-local-special)
+                 (lambda ()
+                   (let ((par-local-special 7))
+                     (list par-local-cell (boundp 'par-local-special)
+                           (symbol-value 'par-local-special))))))
+         (garbage-collect)
+         (list (funcall par-local-reader)
+               (special-variable-p 'par-local-special)
+               (let ((par-local-special 9)) (boundp 'par-local-special)))) t)
+;; Voiding a dynamic value preserves its declaration and function cell.
+(eval '(progn
+         (defvar par-unbound-value 3)
+         (defun par-unbound-value () 5)
+         (list
+          (let ((par-unbound-value 7))
+            (makunbound 'par-unbound-value)
+            (list (boundp 'par-unbound-value)
+                  (condition-case nil par-unbound-value (void-variable 'void))
+                  (par-unbound-value)))
+          par-unbound-value (special-variable-p 'par-unbound-value))) t)
+;; A void dynamic local is initialized even when the global default is bound.
+(eval '(progn
+         (defvar par-void-init 3)
+         (list (let ((par-void-init 7))
+                 (makunbound 'par-void-init)
+                 (defvar par-void-init (progn (garbage-collect) 9))
+                 par-void-init)
+               par-void-init)) t)
+;; Public expansion preserves native declaration semantics.
+(eval '(progn
+         (condition-case nil (defvar par-expand-default (error "declare"))
+           (error nil))
+         (list (macroexpand '(defvar par-expand-shape 9))
+               (let ((par-expand-default 7))
+                 (eval (macroexpand '(defvar par-expand-default 9)))
+                 par-expand-default)
+               par-expand-default)) t)
+;; defconst initializes the current dynamic value and declares afterwards.
+(eval '(progn
+         (defvar par-const-local 3)
+         (defconst par-const-order (special-variable-p 'par-const-order))
+         (list (let ((par-const-local 7))
+                 (defconst par-const-local (progn (garbage-collect) 9))
+                 par-const-local)
+               par-const-local par-const-order
+               (special-variable-p 'par-const-order))) t)
+;; Source hash tables retain explicitly opted-in symbol keys across collection.
+(eval '(progn
+         (unless (fboundp 'nelisp--make-record)
+           (defun nelisp--make-record (tag &rest slots) (apply #'record tag slots)))
+         (unless (fboundp 'nelisp--record-ref)
+           (defun nelisp--record-ref (record index) (aref record (1+ index))))
+         (unless (fboundp 'nelisp--record-set)
+           (defun nelisp--record-set (record index value) (aset record (1+ index) value)))
+         (load (expand-file-name "lisp/nelisp-stdlib-fast-hash.el") nil t)
+         (let ((table (nelisp--fast-hash-make 1))
+               (a (make-symbol "same")) (b (make-symbol "same")))
+           (nelisp--fast-hash-put table "same" 0)
+           (nelisp--fast-hash-put table a 1 t)
+           (nelisp--fast-hash-put table b 2 t)
+           (garbage-collect)
+           (list (nelisp--fast-hash-get table "same")
+                 (nelisp--fast-hash-get table a nil t)
+                 (nelisp--fast-hash-get table b nil t)
+                 (nelisp--fast-hash-count table)))) t)
+;; Interned keyword edges stay compatible with uninterned identity values.
+(list (keywordp (intern ":")) (keywordp :probe) (keywordp 'plain)
+      (intern-soft t) (intern-soft nil))
+(let ((a (make-symbol ":same")) (b (make-symbol ":same"))
+      (table (make-hash-table :test 'equal)))
+  (puthash a 1 table)
+  (puthash b 2 table)
+  (garbage-collect)
+  (list (symbol-name a) (keywordp a) (intern-soft a) (eq a b)
+        (gethash a table) (gethash b table)))
+;; The standalone may reload its canonical bootstrap library; Emacs keeps
+;; its own native special forms. Compare declaration expansion afterward.
+(progn
+  (when (boundp 'nelisp--native-declaration-macros)
+    (load (expand-file-name "lisp/nelisp-stdlib-eval-special.el") nil t))
+  (list (equal (macroexpand '(defvar parity-reloaded-var 7))
+               '(defvar parity-reloaded-var 7))
+        (equal (macroexpand '(defconst parity-reloaded-const 9))
+               '(defconst parity-reloaded-const 9))))
+;; Source hash buckets match native UTF-8 byte hashing, including non-power
+;; of two bucket counts. Values and identity keys survive explicit rehashing.
+(let ((table (nelisp--fast-hash-make 64))
+      (a (make-symbol "試験")) (b (make-symbol "試験")))
+  (nelisp--fast-hash-put table a 1 t)
+  (nelisp--fast-hash-put table b 2 t)
+  (nelisp--fast-hash-rehash! table)
+  (list (nelisp--fast-hash--hash "試験" 64)
+        (nelisp--fast-hash--hash "🙂" 7)
+        (nelisp--fast-hash-get table a nil t)
+        (nelisp--fast-hash-get table b nil t)))
+;; Local declarations retain uninterned identity when a closure restores its
+;; captured environment, without becoming global declarations or value cells.
+(let* ((s (make-symbol "parity-captured-local"))
+       (f (eval `(let ((scope 1)) (defvar ,s)
+                   (lambda () (let ((,s 7)) (list ,s (boundp (quote ,s)))))) t)))
+  (garbage-collect)
+  (list (funcall f) (special-variable-p s) (boundp s)))
+;; The private native fixture exercises the C-ABI producer against the same
+;; contract as Emacs and the ordinary reader's public constructor.
+(let ((a (if (fboundp 'symbol-test-jit-make)
+             (symbol-test-jit-make ":shared")
+           (make-symbol ":shared")))
+      (b (make-symbol ":shared")))
+  (garbage-collect)
+  (list (symbol-name a) (symbolp a) (eq a b)
+        (keywordp a) (intern-soft a)))
 )
 
 ;;; nelisp-shadow-differential-cases.el ends here

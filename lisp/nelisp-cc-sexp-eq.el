@@ -48,7 +48,7 @@
      ;; Step 1: tag-byte equality fast-reject.
      (if (= (sexp-tag a) (sexp-tag b))
          ;; Tags match — dispatch on tag value.
-         (if (= (sexp-tag a) 2)
+         (if (or (= (sexp-tag a) 2) (= (sexp-tag a) 16))
              ;; Int: compare i64 payload at offset 8.
              (if (= (sexp-int-unwrap a) (sexp-int-unwrap b)) 1 0)
            (if (= (sexp-tag a) 4)

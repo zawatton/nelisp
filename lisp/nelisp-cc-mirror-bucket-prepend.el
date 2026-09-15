@@ -191,9 +191,11 @@
             (count-slot (alloc-bytes 32 8)))
         (and
          ;; Step 1: materialise fresh `Sexp::Str(NAME)' KEY into key-slot.
-         (sexp-write-str key-slot
-                         (str-bytes-ptr sym-ptr)
-                         (str-len sym-ptr))
+         (if (= (sexp-tag sym-ptr) 16)
+             (extern-call nl_sexp_clone_into sym-ptr key-slot)
+           (sexp-write-str key-slot
+                           (str-bytes-ptr sym-ptr)
+                           (str-len sym-ptr)))
          ;; Step 2: alloc inner pair `(Nil . Nil)' into pair-slot.
          (cons-make (vector-ref-ptr scratch-vec-ptr 0)
                     (vector-ref-ptr scratch-vec-ptr 0)

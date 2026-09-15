@@ -3304,7 +3304,7 @@ standalone-reader-process-adapter-smoke: standalone-reader
 	@printf '%s\n' \
 	  '$(NELISP_PROCESS_ADAPTER_LOAD_1)' \
 	  '$(NELISP_PROCESS_ADAPTER_LOAD_2)' \
-	  '(list (let (msgs (p (make-process :name "ok" :command $(PROCESS_ADAPTER_EXIT0_COMMAND) :sentinel (lambda (_p m) (push m msgs))))) (accept-process-output p 1) (accept-process-output p 1) (car msgs)) (let (msgs (p (make-process :name "bad" :command $(PROCESS_ADAPTER_EXIT7_COMMAND) :sentinel (lambda (_p m) (push m msgs))))) (accept-process-output p 1) (accept-process-output p 1) (car msgs)) (let (msgs (p (make-process :name "sl" :command $(PROCESS_ADAPTER_SLEEP_COMMAND) :sentinel (lambda (_p m) (push m msgs))))) (accept-process-output p 0.2) (delete-process p) (car msgs)))' \
+	  '(list (let* (msgs (p (make-process :name "ok" :command $(PROCESS_ADAPTER_EXIT0_COMMAND) :sentinel (lambda (_p m) (push m msgs))))) (accept-process-output p 1) (accept-process-output p 1) (car msgs)) (let* (msgs (p (make-process :name "bad" :command $(PROCESS_ADAPTER_EXIT7_COMMAND) :sentinel (lambda (_p m) (push m msgs))))) (accept-process-output p 1) (accept-process-output p 1) (car msgs)) (let* (msgs (p (make-process :name "sl" :command $(PROCESS_ADAPTER_SLEEP_COMMAND) :sentinel (lambda (_p m) (push m msgs))))) (accept-process-output p 0.2) (delete-process p) (car msgs)))' \
 	  > target/standalone-reader-process-adapter-smoke-sentinel.el
 	@printf '%s\n' \
 	  '$(NELISP_PROCESS_ADAPTER_LOAD_1)' \

@@ -672,6 +672,14 @@ times, so `(exp -1.0e6)' took ~1.44e6 iterations and `(exp -1.0e9)' ~1.44e9
   "NeLisp has no buffer-local distinction; alias to `setq'."
   (cons 'setq pairs))
 
+;; Declaration metadata is separate from the value cell: an initializer can
+;; fail, or a value can later become unbound, without removing the declaration.
+;; Preserve the registry when source is explicitly reloaded in a live reader.
+(defvar nelisp--special-variables
+  (let ((registry (make-hash-table :test 'eq)))
+    (puthash 'nelisp--special-variables t registry)
+    registry))
+
 (defmacro defvar (name &rest args)
   "Define NAME as a global variable, setting VALUE if unbound.
 With NO value form (`(defvar NAME)' forward declaration) NAME is only
@@ -680,20 +688,15 @@ declared, NOT bound — matching Emacs `defvar' so a later
 form needs `&rest' (arity); `&optional value' cannot tell `(defvar X)'
 from `(defvar X nil)'."
   (if args
-      ;; (defvar NAME VALUE [DOC]):
-      ;;   (progn (if (boundp 'NAME) nil (set 'NAME VALUE)) 'NAME)
-      (cons 'progn
-            (cons (cons 'if
-                        (cons (cons 'boundp
-                                    (cons (cons 'quote (cons name nil)) nil))
-                              (cons nil
-                                    (cons (cons 'set
-                                                (cons (cons 'quote (cons name nil))
-                                                      (cons (car args) nil)))
-                                          nil))))
-                  (cons (cons 'quote (cons name nil)) nil)))
-    ;; (defvar NAME): forward declaration — return 'NAME, leave it UNBOUND.
-    (cons 'quote (cons name nil))))
+      (list 'progn
+            (list 'puthash (list 'quote name) t 'nelisp--special-variables)
+            (list 'if (list 'boundp (list 'quote name)) nil
+                  (list 'set (list 'quote name) (car args)))
+            (list 'quote name))
+    ;; Evaluate in the caller's lexical environment, without a Lisp wrapper
+    ;; call that would introduce a different declaration scope.
+    (list 'funcall '(quote (builtin nelisp--declare-local-special))
+          (list 'quote name))))
 
 (defmacro defvar-local (name &optional value docstring)
   "Alias for `defvar' in the standalone."
@@ -701,17 +704,16 @@ from `(defvar X nil)'."
 
 (defvar lexical-binding t
   "Standalone default: evaluated source is treated as lexical.")
+(defvar default-directory ""
+  "Current directory; preserve the native bootstrap value when present.")
 
 (defmacro defconst (name value &optional _docstring)
   "Define NAME as a constant with VALUE in the standalone."
-  (cons 'progn
-        (cons (cons 'set
-                    (cons (cons 'quote (cons name nil))
-                          (cons value nil)))
-              (cons (cons 'nelisp--env-globals-set-constant
-                          (cons (cons 'quote (cons name nil))
-                                (cons t nil)))
-                    (cons (cons 'quote (cons name nil)) nil)))))
+  (list 'progn
+        (list 'puthash (list 'quote name) t 'nelisp--special-variables)
+        (list 'set (list 'quote name) value)
+        (list 'nelisp--env-globals-set-constant (list 'quote name) t)
+        (list 'quote name)))
 
 (defmacro defcustom (name value docstring &rest _options)
   "Standalone stub: behave like `defvar'."
@@ -1948,7 +1950,9 @@ answers nil, is what made a `(while (setq x (intern-soft ...)))\' probe loop
 run forever."
     (when (and obarray (not (obarrayp obarray)))
       (signal 'wrong-type-argument (list 'obarrayp obarray)))
-    (cond ((symbolp name) name)
+    (cond ((symbolp name)
+           (let ((found (nelisp--intern-lookup (symbol-name name))))
+             (and (eq found name) found)))
           ((stringp name) (nelisp--intern-lookup name))
           (t (signal 'wrong-type-argument (list 'stringp name))))))
 (unless (fboundp 'vconcat)
@@ -2682,15 +2686,16 @@ the only case this function exists for."
 (unless (fboundp 'interactive) (defmacro interactive (&rest _) nil))
 ;; `special-variable-p' is consulted by generator.el's CPS transform to decide
 ;; whether a `let*' binding inside an `iter-lambda' needs dynamic save/restore
-;; (t) or can be alpha-renamed lexically (nil).  The bare reader cannot query a
-;; symbol's special flag, but standalone code is lexical-binding, so the loop /
-;; local bindings a generator introduces are lexical: answer nil so the lexical
-;; rewrite path is taken.  (Free references to genuinely-special vars are NOT
-;; let-bindings, so they are untouched by this and still resolve dynamically.)
+;; (t) or can be alpha-renamed lexically (nil). The declaration registry is
+;; shared with the native declaration path. Generator locals are
+;; lexical unless declared special.
+;; Initialized defvar/defconst forms record that declaration independently of
+;; the current value. Forward declarations still do not set a global flag.
 (unless (fboundp 'special-variable-p)
   (defun special-variable-p (symbol)
     (nelisp--check-symbol symbol)
-    (if (or (null symbol) (eq symbol t) (keywordp symbol)) t nil)))
+    (if (or (null symbol) (eq symbol t) (keywordp symbol)
+            (gethash symbol nelisp--special-variables)) t nil)))
 ;; Headless host frame: the standalone has no Emacs frame, so report the
 ;; controlling terminal's size from $COLUMNS/$LINES, falling back to the
 ;; conventional 80x24.  (Export the vars, or refine with a TIOCGWINSZ ioctl,
@@ -3592,13 +3597,22 @@ Doc 22 A6: arrays are iterated by index."
 ;;   macroexpand    expands repeatedly until the head is no longer a macro.
 ;; The macro CLOSURE is applied to FORM's UNEVALUATED args (= (cdr FORM)); the
 ;; result is the expansion, which is NOT evaluated.
+;; These bootstrap definitions support early loading, but the reader evaluates
+;; declarations as native special forms. Expanding their fallback macros would
+;; lose local declaration scope and global-default initialization semantics.
+;; Track definition identities, not names, so user replacements still expand.
+(setq nelisp--native-declaration-macros
+      (list (symbol-function 'defvar) (symbol-function 'defconst)))
+
 (defun nelisp--macro-function (head)
   "If symbol HEAD names a macro, return its CLOSURE; else nil.
 Guards `symbol-function' behind `fboundp' (calling it on an unbound symbol
-traps), and only recognises the `(macro CLOSURE)' shape."
+traps), and only recognises the `(macro CLOSURE)' shape. Native declaration
+bootstrap definitions are excluded by identity."
   (if (and (symbolp head) (fboundp head))
       (let ((f (symbol-function head)))
-        (if (and (consp f) (eq (car f) 'macro))
+        (if (and (consp f) (eq (car f) 'macro)
+                 (not (memq f nelisp--native-declaration-macros)))
             (car (cdr f))
           nil))
     nil))
@@ -7223,7 +7237,11 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
 
 ;; nelisp-pcase.el ends here
 (unless (fboundp 'keywordp)
-  (defun keywordp (x) (and (symbolp x) (let ((n (symbol-name x))) (and (> (length n) 0) (= (aref n 0) 58))))))
+  (defun keywordp (x)
+    (and (symbolp x)
+         (let ((n (symbol-name x)))
+           (and (> (length n) 0) (eq (aref n 0) ?:)
+                (eq (intern-soft n) x))))))
 (unless (fboundp 'nelisp--env-globals-get-value)
   (defun nelisp--env-globals-get-value (sym)
     (nelisp--env-globals-op 'get-value sym)))
@@ -7239,13 +7257,10 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
 (unless (fboundp 'symbol-value)
   (defun symbol-value (sym)
     (nelisp--env-globals-get-value sym)))
-(defun boundp (sym)
-    (nelisp--check-symbol sym)
-    ;; The self-evaluating symbols are bound to themselves, so `boundp'
-    ;; answers t for them -- looking them up in the global table said nil.
-  (if (or (null sym) (eq sym t) (keywordp sym))
-      t
-    (nelisp--env-globals-is-bound sym)))
+;; Inspect dynamic cells and global values without exposing lexical cells.
+;; Classification is stored when a binding is created, so later declarations
+;; cannot reclassify an existing lexical binding.
+(fset 'boundp '(builtin boundp))
 (defun set (sym val)
     ;; t, nil and every keyword are self-evaluating in Emacs and cannot be
     ;; assigned; `symbolp' was the wrong complaint (they ARE symbols) and a
@@ -7253,7 +7268,7 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
     (when (or (eq sym t) (null sym) (keywordp sym))
       (signal 'setting-constant (list sym)))
     (nelisp--check-symbol sym)
-  (nelisp--env-globals-set-value sym val)
+  (funcall '(builtin set) sym val)
   val)
 (unless (fboundp 'defalias)
   (defun defalias (sym def &rest _)
@@ -11788,6 +11803,18 @@ any other -- to find the final function binding and return it."
 ;; Recover the exact range for lambdas/closures by walking their formal list;
 ;; native `(builtin NAME)' values use the small fixed-arity table below.  The
 ;; open range is deliberately represented by `many', matching Emacs.
+(defconst nelisp--builtin-fixed-arities
+  '((1 car cdr car-safe atom consp listp null not stringp
+       symbolp integerp bignump natnump numberp floatp vectorp functionp
+       length symbol-name symbol-value symbol-function fboundp boundp makunbound
+       make-symbol type-of identity abs 1+ 1- number-to-string string-bytes
+       char-to-string string-to-char lognot nelisp--declare-local-special)
+    (2 cons eq eql equal setcar setcdr nth nthcdr elt aref rassoc string=
+       string< make-vector fset)
+    (3 aset))
+  "Fixed argument counts shared by introspection and native reader dispatch.
+The build driver reads this literal as data without evaluating the prelude.")
+
 (unless (fboundp 'func-arity)
   (defun nelisp--func-arity-formals (formals)
     "Return the (MIN . MAX) arity range described by FORMALS."
@@ -11814,44 +11841,39 @@ any other -- to find the final function binding and return it."
 Unknown native helpers are intentionally treated as variadic: they remain
 callable, and this is the only metadata the reader can provide for an
 unlisted OS-specific entry point."
-    (cond
-     ((memq name '(car cdr car-safe atom consp listp null not stringp
-                       symbolp integerp bignump natnump numberp floatp
-                       vectorp functionp length symbol-name symbol-value
-                       symbol-function fboundp boundp make-symbol type-of identity abs 1+
-                       1- number-to-string string-bytes char-to-string
-                       string-to-char lognot))
-      '(1 . 1))
-     ((memq name '(cons eq eql equal setcar setcdr nth nthcdr elt aref
-                       rassoc string= string< make-vector fset))
-      '(2 . 2))
-     ((memq name '(aset)) '(3 . 3))
-     ((memq name '(featurep intern-soft)) '(1 . 2))
-     ((memq name '(floor truncate ceiling)) '(1 . 2))
-     ((memq name '(float-time)) '(0 . 1))
-     ((memq name '(prin1-to-string)) '(1 . 3))
-     ((memq name '(string-match-p string-search)) '(2 . 3))
-     ((memq name '(string-match)) '(2 . 4))
-     ((memq name '(substring)) '(2 . 4))
-     ((memq name '(make-string)) '(2 . 3))
-     ((memq name '(signal)) '(1 . 2))
-     ((memq name '(+ * append list concat vector ignore logand logior logxor))
-      '(0 . many))
-     ((memq name '(-)) '(0 . many))
-     ((memq name '(/ < <= > >= =)) '(1 . many))
-     ((memq name '(max min)) '(1 . many))
-     ((memq name '(format)) '(1 . many))
-     ((memq name '(message error)) '(1 . many))
-     ((memq name '(princ)) '(1 . 2))
-     ((memq name '(terpri)) '(0 . 2))
-     ((memq name '(require)) '(1 . 3))
-     ((memq name '(provide)) '(1 . 2))
-     ((memq name '(gethash)) '(2 . 3))
-     ((memq name '(puthash)) '(3 . 3))
-     ((memq name '(remhash)) '(2 . 2))
-     ((memq name '(mod % /=)) '(2 . 2))
-     ((memq name '(ash)) '(2 . 2))
-     (t '(0 . many))))
+    (let ((groups nelisp--builtin-fixed-arities) fixed)
+      (while groups
+        (when (memq name (cdr (car groups)))
+          (setq fixed (car (car groups))))
+        (setq groups (cdr groups)))
+      (if fixed (cons fixed fixed)
+        (cond
+         ((memq name '(featurep intern-soft)) '(1 . 2))
+         ((memq name '(floor truncate ceiling)) '(1 . 2))
+         ((memq name '(float-time)) '(0 . 1))
+         ((memq name '(prin1-to-string)) '(1 . 3))
+         ((memq name '(string-match-p string-search)) '(2 . 3))
+         ((memq name '(string-match)) '(2 . 4))
+         ((memq name '(substring)) '(2 . 4))
+         ((memq name '(make-string)) '(2 . 3))
+         ((memq name '(signal)) '(1 . 2))
+         ((memq name '(+ * append list concat vector ignore logand logior logxor))
+          '(0 . many))
+         ((memq name '(-)) '(0 . many))
+         ((memq name '(/ < <= > >= =)) '(1 . many))
+         ((memq name '(max min)) '(1 . many))
+         ((memq name '(format)) '(1 . many))
+         ((memq name '(message error)) '(1 . many))
+         ((memq name '(princ)) '(1 . 2))
+         ((memq name '(terpri)) '(0 . 2))
+         ((memq name '(require)) '(1 . 3))
+         ((memq name '(provide)) '(1 . 2))
+         ((memq name '(gethash)) '(2 . 3))
+         ((memq name '(puthash)) '(3 . 3))
+         ((memq name '(remhash)) '(2 . 2))
+         ((memq name '(mod % /=)) '(2 . 2))
+         ((memq name '(ash)) '(2 . 2))
+         (t '(0 . many))))))
 
   (defun func-arity (function)
     "Return (MIN . MAX), the number of arguments accepted by FUNCTION."

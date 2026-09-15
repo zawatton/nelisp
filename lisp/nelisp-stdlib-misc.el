@@ -67,7 +67,8 @@ trampoline is available."
 
 ;; Rust-min batch 6f (2026-05-06): leaf predicates / intern-soft
 ;; expressible without self-reference.  `booleanp' uses only `eq';
-;; `keywordp' is a `symbolp' + first-char check.  Each was a thin
+;; `keywordp' checks symbol type, a colon prefix, and intern-table identity.
+;; Each was a thin
 ;; wrapper in Rust (`bi_predicate' + `matches!') with no Sexp-internal
 ;; logic.
 (defun booleanp (x)
@@ -76,7 +77,8 @@ trampoline is available."
 (defun keywordp (x)
   (and (symbolp x)
        (let ((n (symbol-name x)))
-         (and (> (length n) 1) (eq (aref n 0) ?:)))))
+         (and (> (length n) 0) (eq (aref n 0) ?:)
+              (eq (intern-soft n) x)))))
 
 ;; Rust-min batch 6g (2026-05-06): `copy-sequence' partial migration.
 ;; cons / nil paths handled in elisp; other types (str / mutstr /
@@ -201,7 +203,9 @@ answers nil, is what made a `(while (setq x (intern-soft ...)))\' probe loop
 run forever."
   (when (and obarray (not (obarrayp obarray)))
     (signal 'wrong-type-argument (list 'obarrayp obarray)))
-  (cond ((symbolp name) name)
+  (cond ((symbolp name)
+         (let ((found (nelisp--intern-lookup (symbol-name name))))
+           (and (eq found name) found)))
         ((stringp name) (nelisp--intern-lookup name))
         (t (signal 'wrong-type-argument (list 'stringp name)))))
 

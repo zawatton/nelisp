@@ -240,6 +240,33 @@ lifetime of a Sexp value.  No `let' binding needed.")
        (ptr-write-u64 result-slot 24 n)
        result-slot))
 
+    (defun nl_next_symbol_identity ()
+      ;; Shared with the reader and C-ABI producer. The mutation epoch is
+      ;; monotonic and survives image restoration; callers reject overflow.
+      (+ (atomic-fetch-add 268435544 1) 1))
+
+    ;; Internal tag-16 symbols separate identity from the public name. The
+    ;; caller owns unique positive IDs; this constructor never interns names.
+    (defun nl_uninterned_symbol_write (bytes-ptr n identity result-slot char-buf)
+      (and
+       (nl_alloc_str_copy_loop bytes-ptr char-buf 0 n)
+       (ptr-write-u64 result-slot 0 16)
+       (ptr-write-u64 result-slot 8 identity)
+       (ptr-write-u64 result-slot 16 char-buf)
+       (ptr-write-u64 result-slot 24 n)
+       result-slot))
+    (defun nl_alloc_uninterned_symbol (bytes-ptr n identity result-slot)
+      (if (> identity 0)
+          (nl_uninterned_symbol_write bytes-ptr n identity result-slot
+                                      (alloc-bytes (if (= n 0) 1 n) 1))
+        0))
+    (defun nl_uninterned_symbol_equal (left right)
+      (if (= (sexp-tag left) 16)
+          (if (= (sexp-tag right) 16)
+              (if (= (ptr-read-u64 left 8) (ptr-read-u64 right 8)) 1 0)
+            0)
+        0))
+
     ;; ---- symbol-name interning (Doc 08 §8.16) ----
     ;; Dedup the immutable name buffer across all occurrences of a symbol.
     ;; eq-safe: `bf_eq2' compares Symbols by NAME (symbol-eq), so a shared

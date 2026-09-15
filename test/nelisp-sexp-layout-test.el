@@ -111,6 +111,9 @@
 
 ;; ---------------------------------------------------------------------------
 ;; Sexp slot layout offsets and size
+(ert-deftest nelisp-sexp-layout--tag-uninterned-symbol ()
+  (should (= nelisp-sexp-layout-tag-uninterned-symbol 16)))
+
 ;; Mirrors `assert!(SEXP_PAYLOAD_OFFSET == 8)' and `size_of::<Sexp>() == 32'.
 ;; ---------------------------------------------------------------------------
 

@@ -56,6 +56,86 @@ The whole strategy remains open while any requirement lacks sufficient evidence.
 
 ## Current implementation boundary
 
+Native variable references and `symbol-value` reject a function-only entry's
+internal unbound marker with `void-variable`. A nil value remains bound, and a
+local value can shadow an unbound global value cell. The standalone declaration
+suite and installed-toolchain probe cover these cases.
+The source-level frame library now accepts explicit binding kinds, searches
+lexical and dynamic cells independently, and excludes dynamic cells from
+closure capture while preserving older lexical-only frames. Emacs/native
+fixtures exercise explicit frames, unwinding, and GC. Native kind-specific
+search and both filtered and unfiltered capture now honor explicit metadata,
+with direct Cell-based acceptance tests in a private reader fixture. Native
+`let` now classifies global and local special declarations at binding time.
+Ordinary reads and `setq` prefer visible lexical cells; `boundp`, `symbol-value`,
+and `set` use dynamic cells followed by global values. Native `defvar`
+initializers fill an unbound global default when the current dynamic
+value is bound. If the current dynamic value is void, they initialize that
+binding instead, preserving outer values through unwinding. Initializer errors
+and collection during initialization are covered by reference tests.
+Native `defconst` declares the variable after successful initialization and
+updates the current dynamic value. A lexical local remains unchanged, and
+unwinding restores outer dynamic values. Ordinary declared constants remain
+assignable, while nil, t, and keyword value changes are rejected.
+The declaration suite covers closure capture, setters, GC, and unwinding;
+installed-toolchain probes also exercise dynamic setters and closure capture.
+
+Function calls now mark their outermost lexical frame as a scope boundary.
+Lexical lookup and both native capture walkers include that frame and stop
+before caller frames; dynamic lookup continues across the boundary. A captured
+environment remains visible, and popping the callee restores caller lookup.
+Source-frame and native fixtures cover the boundary, capture, GC, and unwinding;
+the declaration suite and installed-toolchain probe exercise actual calls.
+
+Sequential `let*` bindings now use separate frames, preserving earlier cells
+captured by closures and allowing lexical and dynamic bindings of the same
+name to coexist. Initializer and body failures unwind all frames introduced
+by the form. Empty bodies return nil. Declaration tests, the parity corpus,
+and the installed-toolchain probe cover sequential rebinding.
+
+No-initializer `defvar` declarations now affect their lexical environment
+without binding a value or setting the global `special-variable-p` flag.
+Empty and dynamic-only lets share the enclosing declaration scope. Captured
+environments carry a snapshot of declarations, including names bound inside
+the closure body; unrelated callees do not inherit them. Top-level evaluation
+has a root scope, and file/source-string loading keeps one scope across its
+forms while isolating nested loads. Native/source fixtures, lexical-file
+reference tests, and a runtime-image round trip qualify these paths.
+
+Variable semantics remain incomplete: dynamic `eval` mode, explicit lexical
+environment arguments, and file dialect selection still need implementation.
+Public macro expansion preserves native `defvar` and `defconst` forms instead
+of exposing their bootstrap fallback macros. Evaluating an expanded `defvar`
+therefore retains native initialization semantics under dynamic locals.
+Explicit macro environments and user replacement definitions still expand.
+`makunbound` now voids dynamic/global value cells while retaining function
+definitions, properties, and declaration metadata. Lexical cells remain
+unchanged; voiding a dynamic local masks the global value until unwinding.
+Nil, t, and interned keywords are rejected as constants. Colon-prefixed
+uninterned symbols now classify like Emacs: `keywordp`, `boundp`,
+`symbol-value`, and `makunbound` treat a `make-symbol`-created symbol as an
+ordinary, non-interned symbol rather than a keyword, even when its name
+starts with `:`.
+`make-symbol` now returns a symbol whose name carries no synthetic identity
+encoding: `symbol-name` and printing show the plain requested name, and
+`intern-soft` does not treat the generated symbol as interned. The focused
+`test/nelisp-symbol-identity-test.py` acceptance suite compares public names,
+intern status, value access, and separate lexical/hash-table identities with
+Emacs, and now passes on the native reader.
+A representation change must preserve public names and intern status through
+lookup, capture, GC and runtime images. The inline Symbol word at offset 8 is
+string capacity, not unused space for an identity flag.
+The source frame library now preserves symbols outside the default obarray as
+identity keys, including capture/restore and local declarations. Its hash API
+has an explicit symbol-key mode; the default string-key contract remains.
+Identity-bearing frames use source capture instead of the existing native
+name-comparison helper. The reader's own `make-symbol`/`intern-soft`
+representation is now repaired as well, so classification agrees at both the
+source-frame and reader levels.
+Formal arguments retain lexical classification; they are not part of the new
+declared-special `let` path. These limits prevent a claim of complete lexical
+and dynamic binding compatibility.
+
 The [package resolution contract](package-resolution.md) defines the initial
 offline version solver and deterministic lock encoding. CLI update/fetch and
 shared runtime dependency loading are now connected, with HTTPS artifact

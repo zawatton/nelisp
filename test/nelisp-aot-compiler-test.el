@@ -4625,6 +4625,7 @@ falling back to the generic slot/cons pointer helpers would materialise an
 immediate bucket-count or terminal Nil view on every lookup.  The test also
 compiles the complete object so the source contract covers the actual AOT
 grammar rather than comments alone."
+  (require 'nelisp-cc-fnv1a)
   (cl-labels
       ((contains-p (tree symbol)
          (cond
@@ -4632,21 +4633,23 @@ grammar rather than comments alone."
           ((consp tree)
            (or (contains-p (car tree) symbol)
                (contains-p (cdr tree) symbol)))))
-       (defun-form (name)
+       (defun-form (name &optional source)
          (cl-find-if
           (lambda (form)
             (and (consp form)
                  (eq (car form) 'defun)
                  (eq (cadr form) name)))
-          (cdr nelisp-cc-frame-stack-find--source))))
+          (cdr (or source nelisp-cc-frame-stack-find--source)))))
     (let ((walk (defun-form 'nelisp_frame_stack_find_walk_bucket))
           (in-frame (defun-form 'nelisp_frame_stack_find_in_frame))
+          (key-equal (defun-form 'nelisp_symbol_key_equal nelisp-cc-fnv1a--source))
           (object (make-temp-file "nelisp-frame-stack-find-" nil ".o")))
       (unwind-protect
           (progn
             (should walk)
             (should in-frame)
-            (dolist (form (list walk in-frame))
+            (should key-equal)
+            (dolist (form (list walk in-frame key-equal))
               (dolist (forbidden
                        '(record-slot-ref-ptr vector-ref-ptr
                          nl_cons_car_ptr nl_cons_cdr_ptr alloc-bytes
@@ -4655,7 +4658,9 @@ grammar rather than comments alone."
             (should (contains-p in-frame 'ptr-read-u64))
             (should (contains-p in-frame 'sar))
             (should (contains-p in-frame 'nelisp_frame_stack_find_word_tag_p))
-            (should (contains-p walk 'str-eq))
+            (should (contains-p walk 'nelisp_symbol_key_equal))
+            (should (contains-p key-equal 'str-eq))
+            (should (contains-p key-equal 'ptr-read-u64))
             (nelisp-aot-compile-to-object
              nelisp-cc-frame-stack-find--source object
              :arch 'x86_64 :format 'elf)

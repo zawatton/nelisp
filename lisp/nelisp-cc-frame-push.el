@@ -210,9 +210,9 @@
         (record-slot-set ht-slot
                          2
                          int-slot)
-        ;; Step 6: allocate fresh nelisp-lexframe record (1 slot).
+        ;; Step 6: cell table, dynamic names, scope boundary, local declarations.
         (record-make lex-sym-ptr
-                     1
+                     4
                      frame-slot)
         ;; Step 7: install fast-hash-table into frame.slot 0.
         (record-slot-set frame-slot

@@ -74,7 +74,7 @@
           0
         (if (= (logand word 1) 1)
           0
-          (if (= (sexp-tag word) 4)
+          (if (or (= (sexp-tag word) 4) (= (sexp-tag word) 16))
               1
             (if (= (sexp-tag word) 5)
                 1
@@ -98,7 +98,7 @@
                          (value-word (ptr-read-u64 pair-box 8)))
                     (if (= (nelisp_frame_stack_find_word_name_p key-word) 0)
                         0
-                      (if (= (str-eq key-word name-ptr) 1)
+                      (if (= (extern-call nelisp_symbol_key_equal key-word name-ptr) 1)
                           (if (= (nelisp_frame_stack_find_word_tag_p
                                   value-word 11)
                                  1)
@@ -213,7 +213,7 @@
       ;; binding to begin with.
       (if (= (extern-call nl_gc_in_arena name-ptr) 0)
           0
-        (if (= (sexp-tag name-ptr) 4)
+        (if (or (= (sexp-tag name-ptr) 4) (= (sexp-tag name-ptr) 16))
             1
           (if (or (= (sexp-tag name-ptr) 5)
                   (= (sexp-tag name-ptr) 14)) 1 0))))
@@ -326,12 +326,144 @@
     (defun nl_capture_filter_contains (filter-ptr name-ptr)
       (if (= (sexp-tag filter-ptr) 7)
           (let* ((sym-ptr (extern-call nl_cons_car_ptr filter-ptr)))
-            (if (= (str-eq sym-ptr name-ptr) 1)
+            (if (= (extern-call nelisp_symbol_key_equal sym-ptr name-ptr) 1)
                 1
               (nl_capture_filter_contains
                (extern-call nl_cons_cdr_ptr filter-ptr)
                name-ptr)))
         0))
+
+    (defun nelisp_frame_binding_dynamic_p (frame-ptr name-ptr)
+      ;; Slot 1 is binding-time metadata, independent of later declarations.
+      ;; Older native frames have only slot 0 and remain lexical-only.
+      (if (= (sexp-tag frame-ptr) 12)
+          (if (> (record-slot-count frame-ptr) 1)
+              (nl_capture_filter_contains
+               (record-slot-ref-ptr frame-ptr 1) name-ptr)
+            0)
+        0))
+
+    (defun nelisp_frame_scope_boundary_p (frame-ptr)
+      ;; Older frames have no boundary metadata.  A marked frame belongs
+      ;; to the callee, but lexical lookup must not descend below it.
+      (if (> (record-slot-count frame-ptr) 2)
+          (if (= (sexp-tag (record-slot-ref-ptr frame-ptr 2)) 0) 0 1)
+        0))
+
+    (defun nelisp_frame_local_names (frame)
+      (if (> (record-slot-count frame) 3) (record-slot-ref-ptr frame 3) 0))
+
+    (defun nelisp_frame_name_count (names)
+      (if (= (sexp-tag names) 7)
+          (+ 1 (nelisp_frame_name_count (nl_cons_cdr_ptr names))) 0))
+
+    (defun nelisp_frame_declaration_scope_p (frame)
+      ;; Empty and dynamic-only lets do not establish a lexical environment.
+      (if (= (nelisp_frame_scope_boundary_p frame) 1) 1
+        (> (sexp-int-unwrap (record-slot-ref-ptr (record-slot-ref-ptr frame 0) 2))
+           (if (> (record-slot-count frame) 1)
+               (nelisp_frame_name_count (record-slot-ref-ptr frame 1)) 0))))
+
+    (defun nelisp_frame_local_declare_one (frame name)
+      (if (> (record-slot-count frame) 3)
+          (let* ((names (record-slot-ref-ptr frame 3)))
+            (if (= (nl_capture_filter_contains names name) 1) 0
+              (let* ((new-names (alloc-bytes 32 8)))
+                (seq (cons-make-with-clone name names new-names)
+                     (record-slot-set frame 3 new-names) 0))))
+        1))
+
+    (defun nelisp_frame_local_declare_walk (backing i name)
+      (if (< i 0) 0
+        (let* ((frame (vector-ref-ptr backing i)))
+          ;; The outermost frame is the evaluator's root lexical context,
+          ;; even when no user lexical variable has been installed there.
+          (if (or (= i 0) (= (nelisp_frame_declaration_scope_p frame) 1))
+              (nelisp_frame_local_declare_one frame name)
+            (nelisp_frame_local_declare_walk backing (- i 1) name)))))
+
+    (defun nelisp_frame_local_declare (frames name)
+      (nelisp_frame_local_declare_walk (record-slot-ref-ptr frames 0)
+       (- (sexp-int-unwrap (record-slot-ref-ptr frames 1)) 1) name))
+
+    (defun nelisp_frame_local_special_walk (backing i name)
+      (if (< i 0) 0
+        (let* ((frame (vector-ref-ptr backing i))
+               (names (nelisp_frame_local_names frame)))
+          (if (if (= names 0) 0 (nl_capture_filter_contains names name)) 1
+            (if (= (nelisp_frame_scope_boundary_p frame) 1) 0
+              (nelisp_frame_local_special_walk backing (- i 1) name))))))
+
+    (defun nelisp_frame_local_special_p (frames name)
+      (nelisp_frame_local_special_walk (record-slot-ref-ptr frames 0)
+       (- (sexp-int-unwrap (record-slot-ref-ptr frames 1)) 1) name))
+
+    (defun nl_capture_local_names (names out)
+      ;; Bare names carry local declarations, distinct from (NAME . CELL).
+      ;; Preserve all declarations, including names bound inside lambda bodies
+      ;; that a free-variable filter would otherwise omit.
+      (if (= (sexp-tag names) 7)
+          (seq (cons-make-with-clone (nl_cons_car_ptr names) out out)
+               (nl_capture_local_names (nl_cons_cdr_ptr names) out))
+        1))
+
+    (defun nl_capture_local_declarations (frame out)
+      (let* ((names (nelisp_frame_local_names frame)))
+        (if (= names 0) 1 (nl_capture_local_names names out))))
+
+    (defun nelisp_frame_scope_mark (frames-ptr)
+      (let* ((depth (sexp-int-unwrap (record-slot-ref-ptr frames-ptr 1))))
+        (if (> depth 0)
+            (let* ((frame (vector-ref-ptr (record-slot-ref-ptr frames-ptr 0)
+                                         (- depth 1))))
+              (if (> (record-slot-count frame) 2)
+                  ;; Immediate slot reads can be materialized scratch views.
+                  ;; Publish through the record setter, not that borrowed view.
+                  (let* ((marker (alloc-bytes 32 8)))
+                    (seq (sexp-int-make marker 1)
+                         (record-slot-set frame 2 marker) 0))
+                1))
+          1)))
+
+    (defun nelisp_frame_scope_push (frames)
+      (let* ((scratch (alloc-bytes 32 8)))
+        (seq (nelisp_frame_push_direct frames (nl_frame_push_sym0_ptr)
+                                       (nl_frame_push_sym1_ptr) scratch)
+             (nelisp_frame_scope_mark frames))))
+
+    (defun nelisp_frame_stack_find_kind_descend (backing-ptr i name-ptr dynamic)
+      (if (< i 0)
+          0
+        (let* ((frame-ptr (vector-ref-ptr backing-ptr i)))
+          (let* ((found (if (= (nelisp_frame_binding_dynamic_p frame-ptr name-ptr)
+                               dynamic)
+                            (nelisp_frame_stack_find_in_frame frame-ptr name-ptr)
+                          0)))
+            (if (= found 0)
+                (if (and (= dynamic 0) (= (nelisp_frame_scope_boundary_p frame-ptr) 1))
+                    0
+                  (nelisp_frame_stack_find_kind_descend
+                   backing-ptr (- i 1) name-ptr dynamic))
+              found)))))
+
+    (defun nelisp_frame_stack_find_kind (frames-ptr name-ptr dynamic _pad)
+      ;; Return the borrowed Cell pointer, like frame_stack_find.  DYNAMIC
+      ;; is 0 for lexical and 1 for dynamic.  Leave the old mixed lookup's
+      ;; ABI and allocation-free inner walk intact during evaluator migration.
+      (if (= (nelisp_frame_stack_find_valid_key name-ptr) 0)
+          0
+        (nelisp_frame_stack_find_kind_descend
+         (record-slot-ref-ptr frames-ptr 0)
+         (- (sexp-int-unwrap (record-slot-ref-ptr frames-ptr 1)) 1)
+         name-ptr dynamic)))
+
+    (defun nelisp_frame_stack_find_value (frames-ptr name-ptr)
+      ;; A lexical binding remains authoritative even if a later declaration
+      ;; causes an inner binding of the same name to be dynamic.
+      (let* ((lexical (nelisp_frame_stack_find_kind frames-ptr name-ptr 0 0)))
+        (if (= lexical 0)
+            (nelisp_frame_stack_find_kind frames-ptr name-ptr 1 0)
+          lexical)))
 
     (defun nl_capture_name_allowed (filtered filter-ptr name-ptr)
       (if (= filtered 0)
@@ -342,7 +474,9 @@
       (if (= (sexp-tag filter-ptr) 7)
           (let* ((sym-ptr (extern-call nl_cons_car_ptr filter-ptr))
                  (rest-ptr (extern-call nl_cons_cdr_ptr filter-ptr))
-                 (cell-ptr (nelisp_frame_stack_find_in_frame frame-ptr sym-ptr)))
+                 (cell-ptr (if (= (nelisp_frame_binding_dynamic_p frame-ptr sym-ptr) 1)
+                               0
+                             (nelisp_frame_stack_find_in_frame frame-ptr sym-ptr))))
             (and (if (= cell-ptr 0)
                      1
                    (nl_capture_emit_one sym-ptr cell-ptr pair-slot out))
@@ -350,7 +484,7 @@
                   frame-ptr rest-ptr pair-slot out)))
         1))
 
-    (defun nl_capture_walk_bucket (cell-ptr pair-slot out filtered filter-ptr)
+    (defun nl_capture_walk_bucket (cell-ptr pair-slot out filtered filter-ptr frame-ptr)
       ;; Walk one bucket's cons chain emitting each entry.  Mirrors
       ;; `nelisp_frame_stack_find_walk_bucket' above but emits instead of
       ;; comparing.  When FILTERED is non-zero, emit only names present in
@@ -377,15 +511,17 @@
             (let* ((pair-view (extern-call nl_cons_car_ptr cell-ptr))
                    (name-ptr (extern-call nl_cons_car_ptr pair-view))
                    (cell-view (extern-call nl_cons_cdr_ptr pair-view)))
-              (and (if (= (nl_capture_name_allowed filtered filter-ptr name-ptr) 1)
+              (and (if (if (= (nelisp_frame_binding_dynamic_p frame-ptr name-ptr) 1)
+                           0
+                         (nl_capture_name_allowed filtered filter-ptr name-ptr))
                        (nl_capture_emit_one name-ptr cell-view pair-slot out)
                      1)
                    (nl_capture_walk_bucket
                     (extern-call nl_cons_cdr_ptr cell-ptr)
-                    pair-slot out filtered filter-ptr)))
+                    pair-slot out filtered filter-ptr frame-ptr)))
           1)))
 
-    (defun nl_capture_walk_buckets (buckets-ptr j bc pair-slot out filtered filter-ptr)
+    (defun nl_capture_walk_buckets (buckets-ptr j bc pair-slot out filtered filter-ptr frame-ptr)
       ;; Iterate the bucket array slots j = 0..bc-1.  buckets-ptr is a
       ;; `*const Sexp' to the buckets-vector slot inside the
       ;; `fast-hash-table' record (= obtained via
@@ -405,9 +541,9 @@
               ;; (`vector-ref-ptr'); empty buckets yield a Nil view that
               ;; the walker's non-Cons base case handles.
               (vector-ref-ptr buckets-ptr j)
-              pair-slot out filtered filter-ptr)
+              pair-slot out filtered filter-ptr frame-ptr)
              (nl_capture_walk_buckets buckets-ptr (+ j 1) bc
-                                      pair-slot out filtered filter-ptr))))
+                                      pair-slot out filtered filter-ptr frame-ptr))))
 
     (defun nl_capture_walk_frame (frame-ptr pair-slot out filtered filter-ptr)
       ;; Walk one `nelisp-lexframe' record by reading its inner
@@ -426,7 +562,7 @@
              (record-slot-ref-ptr ht-ptr 1)
              0
              (sexp-int-unwrap (record-slot-ref-ptr ht-ptr 0))
-             pair-slot out filtered filter-ptr))
+             pair-slot out filtered filter-ptr frame-ptr))
         (nl_capture_walk_filter_symbols frame-ptr filter-ptr pair-slot out)))
 
     (defun nl_capture_walk_frames (backing-ptr i pair-slot out filtered filter-ptr)
@@ -447,8 +583,11 @@
           1
         (and (nl_capture_walk_frame (vector-ref-ptr backing-ptr i)
                                     pair-slot out filtered filter-ptr)
-             (nl_capture_walk_frames backing-ptr (- i 1)
-                                     pair-slot out filtered filter-ptr))))
+             (nl_capture_local_declarations (vector-ref-ptr backing-ptr i) out)
+             (if (= (nelisp_frame_scope_boundary_p (vector-ref-ptr backing-ptr i)) 1)
+                 1
+               (nl_capture_walk_frames backing-ptr (- i 1)
+                                       pair-slot out filtered filter-ptr)))))
 
     (defun nl_capture_descend_native (in-vec out)
       ;; Public entry, dispatched from elisp via:

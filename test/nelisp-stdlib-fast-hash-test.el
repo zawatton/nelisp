@@ -294,6 +294,42 @@
   ;; marker)' as the absence check.
   (should (eq nelisp--unbound-marker nelisp--unbound-marker)))
 
+(ert-deftest nelisp-fast-hash/utf8-byte-contract ()
+  (dolist (case (list (cons "" 2166136261) (cons "ascii" 301489840)
+                      (cons "é" 513665217) (cons "試験" 1507732682)
+                      (cons "🙂" 1470331467)
+                      (cons (unibyte-string 255) 2047574606)))
+    (dolist (buckets '(7 64 4294967296))
+      (should (= (nelisp--fast-hash--hash (car case) buckets)
+                 (mod (cdr case) buckets))))))
+
+(ert-deftest nelisp-fast-hash/rehash-preserves-identity-values ()
+  (let ((ht (nelisp--fast-hash-make 64))
+        (a (make-symbol "試験")) (b (make-symbol "試験"))
+        (value (cons 7 nil)))
+    (cl-letf (((symbol-function 'nelisp--fast-hash--hash)
+               (lambda (_name _buckets) 0)))
+      (nelisp--fast-hash-put ht "試験" value)
+      (nelisp--fast-hash-put ht a 1 t)
+      (nelisp--fast-hash-put ht b 2 t))
+    (should-not (nelisp--fast-hash-get ht "試験"))
+    (should (eq (nelisp--fast-hash-rehash! ht) ht))
+    (should (eq (nelisp--fast-hash-get ht "試験") value))
+    (should (= (nelisp--fast-hash-get ht a nil t) 1))
+    (should (= (nelisp--fast-hash-get ht b nil t) 2))
+    (should (= (nelisp--fast-hash-count ht) 3))))
+
+(ert-deftest nelisp-fast-hash/rehash-failure-preserves-buckets ()
+  (dolist (fault '(duplicate count))
+    (let* ((ht (nelisp--fast-hash-make 64))
+           (buckets (nelisp--record-ref ht 1)))
+      (aset buckets 0 (list (cons "試験" 1)))
+      (when (eq fault 'duplicate) (aset buckets 1 (list (cons "試験" 2))))
+      (nelisp--record-set ht 2 2)
+      (should-error (nelisp--fast-hash-rehash! ht))
+      (should (eq (nelisp--record-ref ht 1) buckets))
+      (should (= (nelisp--fast-hash-count ht) 2)))))
+
 (provide 'nelisp-stdlib-fast-hash-test)
 
 ;;; nelisp-stdlib-fast-hash-test.el ends here

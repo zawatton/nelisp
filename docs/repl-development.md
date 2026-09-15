@@ -100,6 +100,9 @@ development build described below.
 Reported source spans describe definitions, not the exact expression
 that later fails. Unknown positions and caller dependencies stay unknown.
 A native crash is different from a recoverable Lisp condition.
+Some reader forms, including `defvar` and `defconst`, have native fast paths
+ahead of macro dispatch. Check normal evaluation as well as explicit macro
+expansions: reloading a macro does not replace those native paths.
 
 ## Start again and verify
 
@@ -299,6 +302,44 @@ Use focused native tests, the normal gates, and the original memory-error
 reproducer after the interactive loop. A new session starts by rebuilding
 the development executable and replaying the setup forms above.
 
+## Reload declaration definitions
+
+Reloading `lisp/nelisp-stdlib-eval-special.el` refreshes the identities used
+to retain native `defvar`/`defconst` dispatch. This preserves declaration
+scope and initialization rules during source development; a deliberate user
+macro replacement still expands normally. The special-variable test suite
+replays its declaration observations after loading that canonical source,
+then checks user replacement and restoration of the function cell.
+
+## Internal symbol GC qualification
+
+`test/nelisp-native-symbol-build.el` builds a private reader fixture for the
+tag-16 representation described in [the ABI](arch/sexp-abi.md). Select a separate
+`NELISP_STANDALONE_READER_OUTPUT`; the fixture refuses `target/nelisp`. Run
+`test/nelisp-native-symbol-test.py` with `NELISP_SYMBOL_TEST_BIN` pointing to
+that executable. It checks clone identity, precise name-buffer marking, and
+image restoration with an identity deliberately resembling a heap address.
+The public `make-symbol` producer uses the same tag; the private constructor
+additionally permits explicit identities for layout and relocation probes.
+
+An ordinary collect-and-read probe can pass even when the precise marker
+misses the name edge, because conservative stack roots retain it. The private
+`symbol-test-mark` probe temporarily clears that buffer's mark, invokes the
+actual precise slot marker, reads its result, and restores the saved mark.
+It performs no collection. In a reader built with `NELISP_RUNTIME_RELOAD=1`,
+this call uses the GC publication wrapper, so it can compare old and new
+collectors in the same process. Drop values using an unsupported new tag
+before restoring an older collector. These probes do not establish that a
+collection actually moved the buffer. The inspection test compares public
+symbol predicates, names, identity, ordinary printing, and soft lookup with
+Emacs observations on two fresh symbols. The separate public acceptance suite
+qualifies `make-symbol` and evaluation/assignment paths. Private frame/mirror
+adapters now cover native key insertion, update, lookup, capture filtering,
+and mirror-key image restoration. The frame checks force same-name keys into
+one bucket and repeat with a multibyte name and multiple buckets. They do not
+establish compatibility of source/native character-versus-byte hash functions
+or complete the public evaluator's symbol-type guards.
+
 ## Replace user-defined native functions
 
 On the same Linux x86_64 development executable, a **closed raw native unit**
@@ -424,3 +465,126 @@ remain mapped until process exit, including discarded staged code; repeated
 reloads therefore consume additional memory. At most 64 units and 64 pending
 candidates are registered; candidates expire after 15 minutes. Restart the
 REPL to reclaim mappings and repeat the setup above.
+
+## Qualify native frame primitives
+
+The source-level frame library can be reloaded in the ordinary development
+REPL. Its native kind-search and capture counterparts have direct compiled
+callers; source reload does not replace those callers. Build a separate reader
+fixture to exercise the native primitives with actual Cell values:
+
+```sh
+NELISP_STANDALONE_READER_OUTPUT=target/nelisp-native-frame-kinds \
+  emacs -Q --batch -L lisp -L src -L scripts \
+  -l test/nelisp-native-frame-kind-build.el \
+  -f nelisp-native-frame-kind-test-build
+NELISP_FRAME_TEST_BIN=target/nelisp-native-frame-kinds \
+  python3 test/nelisp-native-frame-kind-test.py
+```
+
+The builder installs test-only entry points in that executable. It refuses
+the ordinary `target/nelisp` output. The test checks its Cell adapter before
+checking capture, kind-specific lookup, old lexical-only frames, nil values,
+unwinding, local declaration metadata, and GC. The private `frame-test-declare`
+and `frame-test-local-special` entries call the actual native declaration
+writer and lookup; combine them with `frame-test-capture` to inspect metadata
+without rebuilding for each input. Bare names in a captured environment carry
+declarations, while pairs carry value cells. Repeat the Python command against the same fixture for test
+edits; rebuild when native source changes. Run compiler/build commands serially
+because unit and artifact caches are shared. The fixture is not a distributable
+runtime and does not prove automatic classification of `let` or formals.
+
+## Compare an isolated reader with Emacs
+
+After a native change, compare the candidate without replacing `target/nelisp`:
+
+```sh
+python3 tools/nelisp-reference-parity.py \
+  --binary target/nelisp-candidate --emacs emacs-gtk \
+  --prefix target/ai/candidate-parity
+```
+
+Use an executable for stock Emacs 30.x; the shared corpus is version-pinned.
+The command records the binary and corpus hashes, reference version, full
+stdout/stderr, exit codes, generated input, and a JSON result. Both processes
+must finish successfully with empty stderr and identical complete nonempty
+output. A matching prefix alone is insufficient. `--cases` selects another
+corpus and `--timeout` bounds each subprocess. This command does not build a
+reader or rerun the full CI matrix. Its process-failure and output controls run
+through `test/nelisp-reference-parity-test.py` in the Linux CI lane.
+
+For an individual host ERT failure, reuse the gate runner's selector instead
+of re-running every case in the same test file during the repair:
+
+```sh
+NELISP_GATE_SELECTOR=nelisp-aot-compiler/frame-stack-find-uses-borrowed-words \
+  tools/ai/nelisp-ai.sh test-one test/nelisp-aot-compiler-test.el
+```
+
+This writes an `ert-focus` report. Keep the selector scoped to this command;
+a focused pass is not a full-suite result. Clear it before running
+`tools/ai/nelisp-ai.sh test`. For borrowed frame lookups, the allocation-free
+contract includes the identity comparison helper as well as the bucket walk.
+
+Use the focused public symbol-identity acceptance suite when changing symbol
+representation:
+
+```sh
+NELISP_BIN=target/nelisp-candidate EMACS=emacs-gtk \
+  python3 test/nelisp-symbol-identity-test.py
+```
+
+It batches independent observations and reports each failing public contract.
+Keep the reference test green; do not suppress native failures or infer full
+identity compatibility from keyword classification alone. The Linux CI lane
+runs it alongside the variable-declaration suite. It covers names, keyword
+status, variable/function/property isolation, lexical capture, eq/equal tables,
+CLI display, and image restoration plus fresh identity issuance afterward.
+This does not qualify separate obarrays, all printing/read-syntax options,
+or destructive modification of symbol-name strings.
+The separate `nl_jit_make_symbol` trampoline shares the reader's tag-16
+allocator and identity issuer. Qualify its actual native implementation with
+the private fixture:
+
+```sh
+NELISP_STANDALONE_READER_OUTPUT=target/nelisp-symbol-fixture \
+  emacs -Q --batch -L lisp -L src -L scripts \
+  -l test/nelisp-native-symbol-build.el -f nelisp-native-symbol-test-build
+NELISP_SYMBOL_TEST_BIN=target/nelisp-symbol-fixture EMACS=emacs-gtk \
+  python3 test/nelisp-native-symbol-test.py
+```
+
+The fixture invokes the canonical C-ABI source through private native adapters.
+It checks inline and boxed multibyte/unibyte names, mixed reader/JIT identity
+issuance, and rejection without changing the output slot. Boxed-name tests
+expose the truncation caused by using inline `str-len` on tags 6/15. Reuse the
+fixture for input-only changes; rebuild after changing compiled native code.
+This is a separate executable build, not native hot publication. It does not
+qualify loading the entire legacy `nelisp-jit-strategy.el` Lisp bridge.
+
+Source fast-hash tables and native frame/mirror code use the same UTF-8 byte
+hash for multibyte names, and raw bytes for unibyte names. Older source tables
+hashed Unicode character codes instead. After reloading the corrected source,
+explicitly call `(nelisp--fast-hash-rehash! table)` on an affected table before
+sharing it with native lookups. A frame's table is `(nelisp--record-ref frame 0)`.
+This preserves the table and stored values; it does not migrate every live
+table automatically. Duplicate keys or inconsistent counts abort before
+publishing new buckets, so mixed legacy tables need inspection if repair fails.
+The native symbol fixture checks source-to-native and native-to-source frame
+access for ASCII, accented, Japanese, and supplementary Unicode names.
+
+For generated-symbol hash-table cost, keep distinct before/after readers and
+finish other builds/tests before running:
+
+```sh
+python3 tools/nelisp-symbol-index-bench.py \
+  --before target/nelisp-before --after target/nelisp-after \
+  --keys 1000 --repeat 3 --output target/ai/symbol-index-timing.json
+```
+
+The command inserts fresh symbols into an eq table, reads every value back,
+checks the table count and checksum, and alternates measurement order. Its
+JSON records input, expected output, executable hashes and paired wall times,
+including startup and setup. It rejects identical executables, unexpected
+output/stderr, and executables changed during measurement. A successful run
+means the measurements are valid, not necessarily that performance improved.

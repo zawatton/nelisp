@@ -1219,7 +1219,8 @@ report its size as a Unix timestamp.  Pin the reads at the Darwin offsets
                      ((= tag 0) (nl_cli_put_nil fbuf off))
                      ((= tag 1) (nl_cli_put_byte fbuf off 116))
                      ((= tag 2) (nl_cli_put_dec fbuf off (ptr-read-u64 out 8)))
-                     ((= tag 4) (nl_cli_put_string_value fbuf off out 0))
+                     ((or (= tag 4) (= tag 16))
+                      (nl_cli_put_string_value fbuf off out 0))
                      ((= tag 5) (nl_cli_put_string_value fbuf off out 1))
                      ((= tag 6) (nl_cli_put_string_value fbuf off out 1))
                      ((= tag 14) (nl_cli_put_unibyte_string_value fbuf off out))
@@ -2022,6 +2023,8 @@ standalone MCP fast handshake completed before this change, 20/20 after."
                        nelisp-standalone--gc-source))
           (eval-call (defun-form 'nelisp_eval_call
                                  nelisp-standalone--shim-source))
+          (eval-inner (defun-form 'nelisp_eval_call_inner
+                                  nelisp-standalone--shim-source))
           (eval-done (defun-form 'nelisp_eval_call_done
                                  nelisp-standalone--shim-source))
           (eval-recorded-done
@@ -2039,8 +2042,12 @@ standalone MCP fast handshake completed before this change, 20/20 after."
                full))
       (should (tree-member-p '(nl_thread_park_request_begin) full-parked))
       (should (tree-member-p '(nl_thread_park_request_end) full-parked))
-      (should (tree-member-p '(nl_thread_park_safepoint env) eval-call))
-      (should (tree-member-p '(nl_rootstack_init) eval-call))
+      ;; The lexical root-scope wrapper must still reach the evaluator's
+      ;; safepoint and root initialization in its inner implementation.
+      (should (tree-member-p '(nelisp_eval_call_inner form_ptr env out)
+                             eval-call))
+      (should (tree-member-p '(nl_thread_park_safepoint env) eval-inner))
+      (should (tree-member-p '(nl_rootstack_init) eval-inner))
       (should (tree-member-p '(nl_thread_park_safepoint env) eval-done))
       (should (tree-member-p '(nl_thread_park_safepoint env)
                              eval-recorded-done))
@@ -2714,6 +2721,87 @@ without the async core and process adapter that define the standard names."
          (should (= calls 2))
          (should (string-match-p "child 2 saw no name"
                                  (error-message-string err))))))))
+
+(ert-deftest nelisp-standalone-registration-preflight-current-targets ()
+  "Current registrations, including the private bridge, remain buildable."
+  (dolist (nelisp-standalone--target
+           '(linux-x86_64 linux-aarch64 macos-aarch64
+             windows-x86_64 windows-aarch64))
+    (should (nelisp-standalone--validate-reader-registrations))))
+
+(ert-deftest nelisp-standalone-registration-preflight-reader ()
+  "A missing public name must fail before any reader compilation."
+  (let ((nelisp-standalone--reader-builtins
+         (remove "makunbound" nelisp-standalone--reader-builtins))
+        compiled)
+    (cl-letf (((symbol-function 'nelisp-standalone--reader-units)
+               (lambda () (setq compiled t) (error "Compilation entered"))))
+      (let ((failure (should-error (nelisp-standalone-build-reader))))
+        (should (string-match-p "Unregistered reader builtin: makunbound"
+                                (error-message-string failure)))
+        (should-not compiled)))))
+
+(ert-deftest nelisp-standalone-registration-preflight-foundation ()
+  "The foundation registration table must also contain native contracts."
+  (let ((nelisp-standalone--applyfn-bf-builtins
+         (remove "makunbound" nelisp-standalone--applyfn-bf-builtins))
+        compiled)
+    (cl-letf (((symbol-function 'nelisp-standalone--reader-units)
+               (lambda () (setq compiled t) (error "Compilation entered"))))
+      (let ((failure (should-error (nelisp-standalone-build-reader))))
+        (should (string-match-p "Unregistered foundation builtin: makunbound"
+                                (error-message-string failure)))
+        (should-not compiled)))))
+
+(ert-deftest nelisp-standalone-fixed-arities-match-host-contracts ()
+  (dolist (contract (nelisp-standalone--builtin-fixed-arities))
+    (if (equal (car contract) "nelisp--declare-local-special")
+        ;; This private reader bridge has no Emacs subr counterpart.  Its
+        ;; accepted/rejected calls are exercised by the native arity suite.
+        (should (= (cdr contract) 1))
+      ;; Unknown names still fail instead of silently dropping host coverage.
+      (should (equal (func-arity (intern (car contract)))
+                     (cons (cdr contract) (cdr contract)))))))
+
+(defvar nelisp-standalone-test--arity-side-effect nil)
+
+(ert-deftest nelisp-standalone-fixed-arities-are-nonexecuting-literals ()
+  (let ((nelisp-standalone-test--arity-side-effect nil))
+    (should (equal (nelisp-standalone--parse-fixed-arities
+                    "(defconst nelisp--builtin-fixed-arities '((1 car) (2 cons)))")
+                   '(("car" . 1) ("cons" . 2))))
+    (dolist (text '("(defconst nelisp--builtin-fixed-arities (progn (setq nelisp-standalone-test--arity-side-effect t) '((1 car))))"
+                    "(defconst nelisp--builtin-fixed-arities '((1 car car)))"
+                    "(defconst nelisp--builtin-fixed-arities '((1 car) (2 car)))"
+                    "(defconst nelisp--builtin-fixed-arities '((-1 car)))"
+                    "(defconst nelisp--builtin-fixed-arities '((1 :car)))"
+                    "(defconst nelisp--builtin-fixed-arities nil)"
+                    "(defconst nelisp--builtin-fixed-arities '((1 car)))\n(defconst nelisp--builtin-fixed-arities '((2 cons)))"))
+      (should-error (nelisp-standalone--parse-fixed-arities text)))
+    (should-not nelisp-standalone-test--arity-side-effect)
+    (eval '(setq nelisp-standalone-test--arity-side-effect t))
+    (should nelisp-standalone-test--arity-side-effect)))
+
+(ert-deftest nelisp-standalone-target/native-frame-fixture-isolation ()
+  (load (expand-file-name "test/nelisp-native-frame-kind-build.el"
+                          nelisp-standalone--repo-root) nil t)
+  (let ((process-environment (copy-sequence process-environment))
+        (default-directory (expand-file-name ".." nelisp-standalone--repo-root))
+        (builtins nelisp-standalone--reader-builtins)
+        called)
+    (setenv "NELISP_FRAME_BASELINE_SOURCE" nil)
+    (cl-letf (((symbol-function 'nelisp-standalone-build-reader)
+               (lambda ()
+                 (setq called t)
+                 (should (member "frame-test-capture" nelisp-standalone--reader-builtins))
+                 'fixture)))
+      (dolist (output '(nil "" "target/nelisp" "target/../target/nelisp"))
+        (setenv "NELISP_STANDALONE_READER_OUTPUT" output)
+        (should-error (nelisp-native-frame-kind-test-build)))
+      (should-not called)
+      (setenv "NELISP_STANDALONE_READER_OUTPUT" "target/nelisp-native-frame-kinds")
+      (should (eq (nelisp-native-frame-kind-test-build) 'fixture))
+      (should (eq nelisp-standalone--reader-builtins builtins)))))
 
 (provide 'nelisp-standalone-target-test)
 

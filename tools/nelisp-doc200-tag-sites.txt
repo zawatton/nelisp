@@ -30,6 +30,8 @@ lisp/nelisp-cc-jit-downcase.el	nl_jit_downcase	tag-test-sexp-tag	1	walked	Read t
 lisp/nelisp-cc-jit-downcase.el	nl_jit_downcase_byte_len	tag-test-sexp-tag	0	walked	Read the case-conversion byte-length helper and made boxed tags 6/15 resolve NlStr.len before preserving their output representation.
 lisp/nelisp-cc-jit-length.el	nelisp_jit_length	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
 lisp/nelisp-cc-jit-make-symbol.el	nl_jit_make_symbol	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-jit-make-symbol.el	nl_jit_make_symbol	tag-test-sexp-tag	1	walked	The constructor accepts inline and boxed unibyte tags 14/15 alongside multibyte tags 5/6.
+lisp/nelisp-cc-jit-make-symbol.el	nl_jit_make_symbol_name_len	tag-test-sexp-tag	0	walked	Read boxed tags 6/15 through nl_mut_str_len; inline tags 5/14 use str-len. The native fixture checks all four representations.
 lisp/nelisp-cc-jit-mut-str-set-codepoint.el	nl_jit_mut_str_set_codepoint	tag-test-sexp-tag	0	walked	Read the JIT mutation dispatch: it accepts tag 6/15 and delegates to the fixed-width lower that preserves the exact tag and byte length.
 lisp/nelisp-cc-jit-regex.el	nl_smp_is_str_tag	unresolved-numeric	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
 lisp/nelisp-cc-jit-regex.el	nl_smp_is_str_tag	unresolved-numeric	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
@@ -174,6 +176,7 @@ scripts/nelisp-standalone-build.el	nl_ht_key_hash_stable_p	tag-test-bound-sym	0	
 scripts/nelisp-standalone-build.el	nl_ht_key_hash_stable_p	tag-test-bound-sym	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
 scripts/nelisp-standalone-build.el	nl_process_windows_map_errno	unresolved-numeric	0	n-a	This compares Win32 GetLastError codes against POSIX errno values inside the windows async-process arm's errno mapper (a1e3999c), not Sexp tags -- the same boundary translation nl_socket_windows_map_errno does for Winsock.
 scripts/nelisp-standalone-build.el	nl_process_windows_map_errno	unresolved-numeric	1	n-a	This compares Win32 GetLastError codes against POSIX errno values inside the windows async-process arm's errno mapper (a1e3999c), not Sexp tags -- the same boundary translation nl_socket_windows_map_errno does for Winsock.
+scripts/nelisp-standalone-build.el	nl_push_captured_walk	tag-test-sexp-tag	0	walked	Restore bare declarations using the frame name predicate (tags 4/5/14/16) plus boxed string tags 6/15. Public closure and private six-representation tests verify declaration retention and identity isolation.
 scripts/nelisp-standalone-build.el	nl_sf_decl_strip_body	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
 scripts/nelisp-standalone-build.el	nl_sf_defvaralias_apply	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
 scripts/nelisp-standalone-build.el	nl_sf_defvaralias_apply	tag-test-sexp-tag	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).

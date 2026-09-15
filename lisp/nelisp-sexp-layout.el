@@ -48,6 +48,11 @@ at +8, with capacity, byte pointer, byte length, and refcount at NlStr offsets
 identical to its byte count.")
 
 ;; Public spellings for cross-file emitters.  The historical 0..13 constants
+(defconst nelisp-sexp-layout-tag-uninterned-symbol 16
+  "Uninterned-symbol variant used by the public native producer.
+Identity is a positive integer at +8; immutable public-name buffer and byte
+length are at +16 and +24.")
+
 ;; predate the namespace boundary and use private names across files; new ABI
 ;; entries do not need to extend that conceded private-name escape surface.
 (defconst nelisp-sexp-layout-tag-unibyte-str nelisp-sexp--tag-unibyte-str

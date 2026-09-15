@@ -285,6 +285,10 @@ jobs:
         run: |
           python3 test/nelisp-project-cli-test.py
           python3 test/nelisp-project-test-runner-test.py
+          python3 test/nelisp-builtin-arity-test.py
+          python3 test/nelisp-special-variables-test.py
+          python3 test/nelisp-symbol-identity-test.py
+          python3 test/nelisp-reference-parity-test.py
           python3 test/nelisp-project-bench-test.py
       - name: Project source documentation generation
         if: runner.os == 'Linux'

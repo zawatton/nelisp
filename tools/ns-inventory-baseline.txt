@@ -255,7 +255,10 @@
 # plus the two helpers needed to synchronize argument-precedence dispatch and
 # the formerly divergent multi-applicable-methods pair.  The aggregate rises
 # by nine because the divergent pair was already counted in the prior total.
-ns-collision 266
+# 266 -> 267 on 2026-09-15: keywordp is intentionally present both in the
+# host-facing stdlib and the standalone prelude; the two bodies are identical
+# and the identity pin below records this non-divergent fallback pair.
+ns-collision 267
 # 97 -> 96 on 2026-08-19: `string-equal' no longer differs between the two
 # files -- the prelude's now signals for a non-string instead of falling
 # through to `equal', and the lisp copy was brought with it.  Ratcheted down
@@ -706,7 +709,17 @@ ns-collision-divergent 127
 # Private names stop namespace inference at the first `--'. This removes
 # false public-API violations in helper-heavy files; foreign prefixes and
 # cross-file private references remain checked. Measured on 404 files.
-ns-prefix-violation 322
+# 322 -> 314 on 2026-09-15: majority-prefix inference (`nl-ns-file-namespace')
+# picked a narrower namespace than two files are organized around.  Adding
+# `nelisp-sexp-layout-tag-uninterned-symbol' tipped lisp/nelisp-sexp-layout.el
+# from `nelisp-' to `nelisp-sexp-' (25 of 49 names) and flagged its 24 other
+# layout constants.  lisp/nelisp-lexframe.el was already inferred as
+# `nelisp-lexframe-stack-' (8 findings), and 6 new names joined them, though
+# all 31 of its names start with `nelisp-lexframe-'.  tools/nl-ns-inventory.el
+# now declares `nelisp-' and `nelisp-lexframe-' for these two files; a
+# foreign-prefix probe definition added to nelisp-lexframe.el still failed
+# the gate.
+ns-prefix-violation 314
 # 611 -> 613 on 2026-08-20: `nelisp--check-string'/`--check-symbol' and the
 # other argument-check helpers are referenced from the lisp/ mirrors that
 # carry copies of the functions using them.  This is the kind this file
@@ -851,7 +864,10 @@ ns-prefix-violation 322
 # 757 -> 764: the native unit kernel reuses the raw loader's validated
 # export, mapping, protection and executable-identity helpers.
 # 764 -> 765 on 2026-09-12: one reference from the same new module.
-ns-private-escape 765
+# 765 -> 766 on 2026-09-15: the `defvar' and `defconst' macros in
+# lisp/nelisp-stdlib-eval-special.el expand to code that writes the prelude's
+# `nelisp--special-variables' registry, so the expansion names it.
+ns-private-escape 766
 ns-unreadable 0
 
 # `pinned-collision KEY' pins every ns-collision and ns-collision-divergent
@@ -1081,7 +1097,7 @@ pinned-collision ns-collision-divergent	getenv	lisp/nelisp-build-host.el scripts
 pinned-collision ns-collision-divergent	hash-table-keys	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	b6f534bca763
 pinned-collision ns-collision-divergent	hash-table-p	lisp/nelisp-stdlib-hash.el scripts/nelisp-stdlib-prelude.el	8804ccf71408
 pinned-collision ns-collision-divergent	hash-table-values	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	3eddeb1e8483
-pinned-collision ns-collision-divergent	keywordp	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	0401bbf5db7b
+pinned-collision ns-collision	keywordp	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision-divergent	kill-process	packages/nelisp-process-adapter/src/nelisp-process-adapter.el scripts/nelisp-stdlib-prelude.el	28dbf19a8874
 pinned-collision ns-collision-divergent	last	lisp/nelisp-stdlib-list.el scripts/nelisp-stdlib-prelude.el	d3d8fa50dbfe
 pinned-collision ns-collision-divergent	lsh	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	da4995e603d0

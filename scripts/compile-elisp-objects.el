@@ -1145,14 +1145,10 @@
      :source-var nelisp-cc-jit-str-codepoint-at--source
      :output "nl_jit_str_codepoint_at.o"
      :requires-arch x86_64)
-    ;; Doc 122 §122.A + §122.E — `jit/strings.rs' `nl_jit_make_symbol'
-    ;; trampoline swap.  Per-process counter (surfaced by the Rust
-    ;; `nl_make_symbol_counter_ptr' getter) + name-copy loop + 20-byte
-    ;; literal suffix + 16-nibble hex formatter, all in AOT elisp.
-    ;; Seven-entry `(seq DEFUN ...)' manifest: prog2 + copy + hex + suffix
-    ;; + write + inner + public entry.  Rust body deleted;
-    ;; `MAKE_SYMBOL_COUNTER: AtomicI64' static + getter remain in Rust.
-    ;; `bridge.rs::_ELISP_ARCHIVE_ANCHOR' anchors `nl_jit_make_symbol'.
+    ;; Symbol trampoline: the same tag-16 allocator and identity namespace as
+    ;; the standalone reader. Dependencies include nl_alloc_str.o and the
+    ;; existing string pointer/boxed-length units;
+    ;; no deleted Rust counter getter or name-encoding helpers are required.
     (nelisp-cc-jit-make-symbol
      :source-var nelisp-cc-jit-make-symbol--source
      :output "nl_jit_make_symbol.o"

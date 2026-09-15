@@ -40,10 +40,14 @@
 ;; elisp surface so a future ABI swap can refactor freely.
 ;;
 ;; Keys: strings (= symbol names in the env table use case).  The
-;; hash function iterates characters via `aref'; multi-byte / wide
-;; codepoints fold into the FNV state via the same fold-32-bit
-;; loop and don't need separate encoding.  Equality uses `string='
-;; — same convention as the Rust env table's `HashMap<String, T>'.
+;; hash function consumes UTF-8 bytes for multibyte strings and raw bytes
+;; for unibyte strings, matching native frame/mirror bucket selection.
+;; Equality uses `string='
+;; — same convention as the original env table's `HashMap<String, T>'.
+;; Source frames can explicitly opt into symbol keys. Those retain identity
+;; via `eq', using the public name only to select a bucket; string and symbol
+;; keys never compare equal. Native string-only consumers must not assume
+;; that an opted-in table contains only strings.
 ;;
 ;; Doc 102 sentinel: `nelisp--unbound-marker' is a fresh symbol
 ;; that no user code interns; it serves as the `None' equivalent
@@ -79,12 +83,15 @@ symbol and can't collide with the sentinel.  See Doc 102 §2.1 +
 (defun nelisp--fast-hash--hash (str bucket-count)
   "Hash STR via FNV-1a 32-bit; modulo BUCKET-COUNT.
 BUCKET-COUNT should be a power of 2 so the modulo collapses to a
-fast `logand'.  Doc 102 §2.2 hash function spec."
-  (let ((h nelisp--fast-hash--fnv-offset-basis)
+fast `logand'. Multibyte names use UTF-8; unibyte names use raw bytes."
+  (let* ((bytes (if (multibyte-string-p str)
+                    (encode-coding-string str 'utf-8 t)
+                  str))
+        (h nelisp--fast-hash--fnv-offset-basis)
         (i 0)
-        (len (length str)))
+        (len (length bytes)))
     (while (< i len)
-      (setq h (logxor h (aref str i)))
+      (setq h (logxor h (aref bytes i)))
       (setq h (logand (* h nelisp--fast-hash--fnv-prime)
                       nelisp--fast-hash--32bit-mask))
       (setq i (1+ i)))
@@ -121,47 +128,50 @@ accepted but lose the hash-modulo fast path.  Returns the new
   "Return the bucket array size of fast-hash-table HT."
   (nelisp--record-ref ht 0))
 
-(defun nelisp--fast-hash-get (ht key &optional default)
+(defun nelisp--fast-hash-get (ht key &optional default symbol-key)
   "Return HT[KEY] or DEFAULT (default nil) when KEY is absent.
 O(1) avg via bucket-array + within-bucket linear scan.  Doc 102
-§2.2 lookup body."
+§2.2 lookup body. SYMBOL-KEY explicitly selects symbol identity instead of
+the default string-key contract; its name is used only for bucket selection."
   (let* ((bc (nelisp--record-ref ht 0))
          (buckets (nelisp--record-ref ht 1))
-         (idx (nelisp--fast-hash--hash key bc))
+         (idx (nelisp--fast-hash--hash (if symbol-key (symbol-name key) key) bc))
          (bucket (aref buckets idx))
          (cur bucket)
          (found-val default)
          (found nil))
     (while (and cur (not found))
-      (when (string= (car (car cur)) key)
+      (when (if symbol-key (eq (car (car cur)) key)
+              (and (stringp (car (car cur))) (string= (car (car cur)) key)))
         (setq found-val (cdr (car cur))
               found t))
       (setq cur (cdr cur)))
     found-val))
 
-(defun nelisp--fast-hash-contains-p (ht key)
+(defun nelisp--fast-hash-contains-p (ht key &optional symbol-key)
   "Return non-nil iff KEY has a value in HT."
   ;; Distinct sentinel so `get' returning nil for a present-but-nil
   ;; entry is disambiguated from absence.  Allocates one cons per
   ;; call; cheap enough for substrate use.
   (let ((probe (cons nil nil)))
-    (not (eq (nelisp--fast-hash-get ht key probe) probe))))
+    (not (eq (nelisp--fast-hash-get ht key probe symbol-key) probe))))
 
-(defun nelisp--fast-hash-put (ht key value)
+(defun nelisp--fast-hash-put (ht key value &optional symbol-key)
   "Set HT[KEY] = VALUE.  Returns VALUE.
 If KEY exists, mutates the existing cell via `setcdr' (= the
 inner cons cell identity is preserved, so consumers holding a
 reference see the new value).  Otherwise prepends a new
 (KEY . VALUE) cell to the bucket's list and bumps the entry
-count."
+count. SYMBOL-KEY explicitly selects symbol identity, retaining KEY itself."
   (let* ((bc (nelisp--record-ref ht 0))
          (buckets (nelisp--record-ref ht 1))
-         (idx (nelisp--fast-hash--hash key bc))
+         (idx (nelisp--fast-hash--hash (if symbol-key (symbol-name key) key) bc))
          (bucket (aref buckets idx))
          (cur bucket)
          (found nil))
     (while (and cur (not found))
-      (when (string= (car (car cur)) key)
+      (when (if symbol-key (eq (car (car cur)) key)
+              (and (stringp (car (car cur))) (string= (car (car cur)) key)))
         (setcdr (car cur) value)
         (setq found t))
       (setq cur (cdr cur)))
@@ -171,21 +181,22 @@ count."
        ht 2 (1+ (nelisp--record-ref ht 2))))
     value))
 
-(defun nelisp--fast-hash-remove (ht key)
+(defun nelisp--fast-hash-remove (ht key &optional symbol-key)
   "Remove the entry for KEY from HT.  Returns t if an entry was
 removed, nil if KEY was absent.  Iterates the bucket once and
 stores back a filtered copy on hit so unrelated entries keep
 their cons identity (= consumers holding a (KEY . VALUE) cell
-from before the remove see no aliasing)."
+from before the remove see no aliasing). SYMBOL-KEY selects symbol identity."
   (let* ((bc (nelisp--record-ref ht 0))
          (buckets (nelisp--record-ref ht 1))
-         (idx (nelisp--fast-hash--hash key bc))
+         (idx (nelisp--fast-hash--hash (if symbol-key (symbol-name key) key) bc))
          (bucket (aref buckets idx))
          (out nil)
          (changed nil)
          (cur bucket))
     (while cur
-      (if (string= (car (car cur)) key)
+      (if (if symbol-key (eq (car (car cur)) key)
+            (and (stringp (car (car cur))) (string= (car (car cur)) key)))
           (setq changed t)
         (setq out (cons (car cur) out)))
       (setq cur (cdr cur)))
@@ -218,6 +229,22 @@ entries first).  Returns nil; FN's return values are discarded."
           (setq cur (cdr cur))))
       (setq i (1+ i)))
     nil))
+
+(defun nelisp--fast-hash-rehash! (ht)
+  "Rebuild HT's buckets with the current hash function, preserving values.
+Use explicitly after reloading a changed hash algorithm. No global tables
+are migrated automatically. Duplicate keys or inconsistent counts signal
+an error before publication, preserving the original table."
+  (let ((rebuilt (nelisp--fast-hash-make (nelisp--fast-hash-bucket-count ht))))
+    (nelisp--fast-hash-iter
+     ht (lambda (key value)
+          (when (nelisp--fast-hash-contains-p rebuilt key (symbolp key))
+            (error "Duplicate key while rehashing fast-hash-table"))
+          (nelisp--fast-hash-put rebuilt key value (symbolp key))))
+    (unless (= (nelisp--fast-hash-count ht) (nelisp--fast-hash-count rebuilt))
+      (error "Inconsistent fast-hash-table entry count"))
+    (nelisp--record-set ht 1 (nelisp--record-ref rebuilt 1))
+    ht))
 
 (defun nelisp--fast-hash-keys (ht)
   "Return a list of every key in HT.  Order matches

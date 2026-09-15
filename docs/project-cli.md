@@ -436,6 +436,32 @@ python3 test/nelisp-project-cli-test.py
 python3 test/nelisp-project-build-test.py  # slower; builds Linux ELF applications
 ```
 
+For a focused native runtime check, run
+`python3 test/nelisp-builtin-arity-test.py`. It reads the shared fixed-arity
+table without executing the prelude and checks the covered native entry points
+in one reader process. A separate session checks `car`/`cdr` condition data,
+evaluation side effects, and continued execution after handled errors, followed
+by unhandled-error exit checks. Set `NELISP_BIN` to qualify an isolated reader
+build. This suite does not build or replace the runtime.
+The native accessors require exactly one argument; the same contract is checked
+through direct calls, `funcall`, `apply`, and explicit builtin values. Other
+builtin argument contracts require their own runtime coverage. The shared table
+also supplies `func-arity` metadata; 40 matching reader entries now enforce its
+fixed counts at dispatch. Entries implemented outside that table and optional/
+variadic contracts are not covered by this dispatch guard.
+Arity conditions currently name the builtin symbol even when called through
+`apply`; Emacs can place a subr object in that condition's function field.
+
+`python3 test/nelisp-special-variables-test.py` checks declaration metadata for
+initialized `defvar` and `defconst`, including failed initializers, preserved
+existing values, forward declarations, and `special-variable-p`. Both native
+declarations and explicit macro expansions register the declaration. The native
+`boundp` entry checks global value cells and self-evaluating symbols directly.
+Visibility of dynamically bound special variables still needs binding-time
+scope metadata; a declaration made later must not reclassify an existing lexical
+binding. `symbol-value` now signals `void-variable` for a plain lexical local
+instead of returning it, matching Emacs.
+
 For a complete review of this milestone, run the following from the repository
 root. The mutation checks temporarily edit source files, so finish `check`
 before running the other suites in the same checkout:

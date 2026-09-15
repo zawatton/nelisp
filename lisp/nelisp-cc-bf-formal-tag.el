@@ -75,7 +75,7 @@
            (if (= (symbol-name-eq name_ptr "&rest") 1)
                2
              0))
-       -1))
+       (if (= (sexp-tag name_ptr) 16) 0 -1)))
   "AOT source for `nl_bf_formal_tag' (special_forms.rs → elisp).
 
 Classifies a formal-parameter Sexp:

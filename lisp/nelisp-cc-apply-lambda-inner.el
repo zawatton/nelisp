@@ -552,7 +552,9 @@
     ;; Arity 6 (even).
     (defun nl_ali_bind_done (bind-rc body-list env out cap-flag _p6)
       (if (= bind-rc 0)
-          (nl_ali_body body-list env out cap-flag 0 0)
+          (seq
+           (if (= cap-flag 0) (nelisp_frame_scope_mark (+ env 32)) 0)
+           (nl_ali_body body-list env out cap-flag 0 0))
         ;; Frame already cleaned up by nl_push_and_bind on error.
         ;; Only pop captured frame if it was pushed.
         (if (= cap-flag 0)
@@ -575,7 +577,9 @@
     ;; Arity 6 (even).
     (defun nl_ali_after_cap (cap-rc formals body-list args-list env out)
       (if (= cap-rc 0)
-          (nl_ali_push_frame formals body-list args-list env out 1)
+          (seq
+           (nelisp_frame_scope_mark (+ env 32))
+           (nl_ali_push_frame formals body-list args-list env out 1))
         1))
 
     ;; Public entry.

@@ -133,8 +133,9 @@
     ;; a refcounted box that does not exist for this tag; this is an
     ;; explicit tag-13 arm instead, matching Str/Symbol's own explicitness.
     (defun nl_sci_dispatch (src dst tag)
-      (if (= tag 14)
-          ;; Immutable raw-byte strings always shallow-alias their buffer.
+      (if (or (= tag 14) (= tag 16))
+          ;; Immutable raw-byte strings and identity-bearing symbols retain
+          ;; their buffers; cloning must not create a new symbol identity.
           (nl_sci_copy src dst)
         (if (= tag 5)
           (if (= (ptr-read-u64 268435648 0) 1)

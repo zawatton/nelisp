@@ -28,8 +28,9 @@
 ;;   cdr(args) = BODY forms list.
 ;;
 ;; The key difference from `let': nl_let_setup is called with
-;; sequential=1 so it pushes the frame FIRST, then evaluates+binds
-;; each binding in order (later bindings may reference earlier ones).
+;; sequential=1 for one binding at a time.  Each binding gets its own
+;; frame, preserving earlier cells already captured by closures and allowing
+;; lexical and dynamic bindings of the same name to coexist.
 ;;
 ;; Body-loop GC invariant:
 ;;   nl_cons_cdr_ptr returns a real child box for a pointer cdr, but
@@ -49,7 +50,7 @@
 ;;   nl_env_pop_frame: (*mut c_void) → i64
 ;;     Pops the topmost lexical frame.  Returns 0.
 ;;
-;; Structure (8 defuns):
+;; Body and cleanup helpers:
 ;;   nl_sf_let_star_ret        (pop-rc body-rc _p2 _p3) — arity 4
 ;;   nl_sf_let_star_finish     (body-rc env out _pad) — arity 4
 ;;   nl_sf_let_star_body_step  (eval-rc body env out) — arity 4
@@ -59,9 +60,9 @@
 ;;   nl_sf_let_star_got_bindings (bindings args env out) — arity 4
 ;;   nl_sf_let_star            (args env out _pad) — arity 4
 ;;
-;; The structure is identical to nelisp-cc-sf-let.el except that
-;; nl_let_setup is called with sequential=1 and all function names
-;; use the `_star' suffix to avoid symbol conflicts.
+;; The setup helpers below root a singleton binding list and call
+;; nl_let_setup with sequential=1 for each binding.  Recursive cleanup
+;; preserves outer frames while later initializers and the body execute.
 
 ;;; Code:
 
@@ -127,13 +128,46 @@
            env out 0)
         1))
 
-    ;; bindings = car(args) already fetched as first arg.
-    ;; Call nl_let_setup(bindings, env, 1/*sequential*/) FIRST ✓.
-    ;; Arity 4 (even).
+    (defun nl_sf_let_star_one_done (rc env mark _pad)
+      (seq (nl_root_release env mark) rc))
+
+    (defun nl_sf_let_star_one_rooted (binding env mark one)
+      (let* ((nil-slot (alloc-bytes 32 8)))
+        (seq
+         (nl_cons_write_nil nil-slot)
+         (cons-make-with-clone binding nil-slot one)
+         (nl_sf_let_star_one_done
+          (nl_let_setup one env 1) env mark 0))))
+
+    (defun nl_sf_let_star_one_marked (binding env mark _pad)
+      (nl_sf_let_star_one_rooted binding env mark (nl_root_reserve env)))
+
+    (defun nl_sf_let_star_one (binding env)
+      (nl_sf_let_star_one_marked binding env (nl_root_mark env) 0))
+
+    ;; The innermost body pops its own frame.  Each recursive caller pops
+    ;; exactly its frame, including initializer errors and nonlocal exits.
+    ;; Take cdr only after setup: an immediate cdr view must not cross eval.
+    (defun nl_sf_let_star_next (rc bindings args env out _pad)
+      (if (= rc 0)
+          (if (= (sexp-tag (nl_cons_cdr_ptr bindings)) 0)
+              (nl_sf_let_star_body (nl_cons_cdr_ptr args) env out 0)
+            (nl_sf_let_star_finish
+             (nl_sf_let_star_got_bindings (nl_cons_cdr_ptr bindings) args env out)
+             env out 0))
+        1))
+
+    ;; Preserve the original empty/invalid-list handling.  A rooted singleton
+    ;; reuses the existing binding parser without keeping a temporary unrooted
+    ;; cons alive across initializer evaluation and possible collection.
     (defun nl_sf_let_star_got_bindings (bindings args env out)
-      (nl_sf_let_star_setup_done
-       (extern-call nl_let_setup bindings env 1)
-       args env out))
+      (if (= (sexp-tag bindings) 7)
+          (nl_sf_let_star_next
+           (nl_sf_let_star_one (nl_cons_car_ptr bindings) env)
+           bindings args env out 0)
+        (nl_sf_let_star_setup_done
+         (extern-call nl_let_setup bindings env 1)
+         args env out)))
 
     ;; Public entry: nl_sf_let_star(args, env, out, _pad) → i64
     ;; args: *const Sexp = (BINDINGS BODY...) arg list.
@@ -144,25 +178,23 @@
     ;; Empty args (Nil) → error (let* requires bindings list).
     ;; Else: get bindings = car(args) FIRST ✓.
     (defun nl_sf_let_star (args env out _pad)
-      (if (= (sexp-tag args) 0)
+      (seq (nl_cons_write_nil out)
+       (if (= (sexp-tag args) 0)
           1
         (nl_sf_let_star_got_bindings
          (extern-call nl_cons_car_ptr args)
-         args env out))))
+         args env out)))))
 
   "AOT source for `nl_sf_let_star' (eval/special_forms.rs sf_let_star → elisp).
 
-Eight defuns (seq form).  Identical setup structure to `nelisp-cc-sf-let.el'
-except nl_let_setup is called with sequential=1 and all function names
-use the `_star' suffix.
-
-With sequential=1, nl_let_setup pushes the lexical frame FIRST, then
-evaluates and binds each binding in order, so later bindings can
-reference earlier ones.
+Each binding uses nl_let_setup with sequential=1 and its own frame.
+Later initializers see earlier bindings without replacing their cells.
+Singleton lists are rooted across initializer evaluation.  The innermost
+body and each recursive caller pop their own frame on success or error.
 
 Entry chain:
   nl_sf_let_star → (car(args) FIRST) → nl_sf_let_star_got_bindings
-  → (nl_let_setup(…,1) FIRST) → nl_sf_let_star_setup_done
+  → nl_sf_let_star_one → nl_sf_let_star_next (recurse for later bindings)
   → (cdr(args) FIRST) → nl_sf_let_star_body
   → (car(body) FIRST) → nl_sf_let_star_body_eval
   → (nelisp_eval_call FIRST) → nl_sf_let_star_body_step
