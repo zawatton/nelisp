@@ -1560,3 +1560,31 @@ symbol-identity
 reference-parity
 lsp-server
 native-symbol-test
+#
+# Project-toolchain contract suites, wrapped through `nelisp-ai.sh gate NAME
+# -- make NAME' the same way.  None is in `check'; each has a row in
+# tools/gate-mutations.txt.  package-resolver, project-doc,
+# project-manifest, package-store and package-registry are pure host
+# Python: no runtime binary, no rebuild.  project-build,
+# project-profile-build and project-debug each build their own project
+# executable through host Emacs and also need no pre-built target/nelisp.
+# project-cli-integration, project-test-runner, project-bench,
+# project-packages, project-arguments and project-distribution run
+# `nelisp run'/`test'/`bench' or exercise target/nelisp directly, so they
+# build the standalone reader first and skip on a target this host cannot
+# run.  project-cli-integration is the full nelisp-project-cli-test.py
+# suite; project-cli-contract above stays scoped to ProjectResultContract.
+package-resolver
+project-doc
+project-manifest
+package-store
+package-registry
+project-build
+project-profile-build
+project-debug
+project-cli-integration
+project-test-runner
+project-bench
+project-packages
+project-arguments
+project-distribution

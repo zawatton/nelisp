@@ -275,17 +275,28 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Package resolver and lock contracts (no runtime build)
+      - name: "Package resolver and lock contracts (tools/ai/nelisp-ai.sh gate package-resolver); no runtime build"
         if: runner.os == 'Linux'
         shell: bash
-        run: python3 test/nelisp-package-resolver-test.py
-      - name: Project creation, run, and test integration (existing standalone binary)
+        run: bash tools/ai/nelisp-ai.sh gate package-resolver -- make package-resolver
+      # Each of the three steps below wraps its whole suite through
+      # `nelisp-ai.sh gate' (existing standalone binary; built by the
+      # `standalone-reader-test' step above). project-cli-integration is the
+      # full nelisp-project-cli-test.py suite; the ProjectResultContract
+      # class alone is the separate `project-cli-contract' gate further down,
+      # which needs no runtime build and so can run earlier in CI.
+      - name: "Project creation, run, and test integration (tools/ai/nelisp-ai.sh gate project-cli-integration); Linux x86_64"
         if: runner.os == 'Linux'
         shell: bash
-        run: |
-          python3 test/nelisp-project-cli-test.py
-          python3 test/nelisp-project-test-runner-test.py
-          python3 test/nelisp-project-bench-test.py
+        run: bash tools/ai/nelisp-ai.sh gate project-cli-integration -- make project-cli-integration
+      - name: "Native selected-test execution and machine-readable failure contracts (tools/ai/nelisp-ai.sh gate project-test-runner); Linux x86_64"
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate project-test-runner -- make project-test-runner
+      - name: "Benchmark completion, input identity, and bounded execution contracts (tools/ai/nelisp-ai.sh gate project-bench); Linux x86_64"
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate project-bench -- make project-bench
       # Contract suites, each wrapped through `nelisp-ai.sh gate' so it writes
       # target/gates/<name>.json from its GATE-COUNT line; the Makefile
       # targets and tools/gate-mutations.txt rows carry the details.
@@ -315,10 +326,10 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate native-symbol-test -- make native-symbol-test
-      - name: Project source documentation generation
+      - name: "Project source documentation generation (tools/ai/nelisp-ai.sh gate project-doc); no runtime build"
         if: runner.os == 'Linux'
         shell: bash
-        run: python3 test/nelisp-project-doc-test.py
+        run: bash tools/ai/nelisp-ai.sh gate project-doc -- make project-doc
       - name: Set up Node for VS Code extension validation
         if: runner.os == 'Linux'
         uses: actions/setup-node@v4
@@ -338,35 +349,49 @@ jobs:
           npm run test:process
           npm run package
           xvfb-run -a npm run test:package
-      - name: Package HTTPS acquisition and cache contracts
+      - name: "Package HTTPS acquisition and cache contracts (tools/ai/nelisp-ai.sh gate package-store); no runtime build"
         if: runner.os == 'Linux'
         shell: bash
-        run: python3 test/nelisp-package-store-test.py
-      - name: Project manifest edits and failed publication recovery
+        run: bash tools/ai/nelisp-ai.sh gate package-store -- make package-store
+      - name: "Project manifest edits and failed publication recovery (tools/ai/nelisp-ai.sh gate project-manifest); no runtime build"
         if: runner.os == 'Linux'
         shell: bash
-        run: python3 test/nelisp-project-manifest-test.py
-      - name: Registry HTTPS snapshots and CLI search integration
+        run: bash tools/ai/nelisp-ai.sh gate project-manifest -- make project-manifest
+      - name: "Registry HTTPS snapshots and CLI search integration (tools/ai/nelisp-ai.sh gate package-registry); no runtime build"
         if: runner.os == 'Linux'
         shell: bash
-        run: python3 test/nelisp-registry-test.py
-      - name: Locked project dependencies and isolated executable
+        run: bash tools/ai/nelisp-ai.sh gate package-registry -- make package-registry
+      - name: "Locked project dependencies and isolated executable (tools/ai/nelisp-ai.sh gate project-packages); Linux x86_64"
         if: runner.os == 'Linux'
         shell: bash
-        run: python3 test/nelisp-project-packages-test.py
+        run: bash tools/ai/nelisp-ai.sh gate project-packages -- make project-packages
       - name: Project CLI result contract (no runtime build)
         if: runner.os == 'Linux'
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate project-cli-contract -- make project-cli-contract
-      - name: Project executable build and isolated deployment (Linux x86_64)
+      # Each of the five steps below builds its own project executable
+      # through host Emacs, or exercises the existing standalone binary
+      # directly; none needs a fresh target/nelisp build of its own.
+      - name: "Native packaging acceptance (tools/ai/nelisp-ai.sh gate project-build); Linux x86_64"
         if: runner.os == 'Linux'
         shell: bash
-        run: |
-          python3 test/nelisp-project-build-test.py
-          python3 test/nelisp-project-profile-build-test.py
-          python3 test/nelisp-project-debug-test.py
-          python3 test/nelisp-project-arguments-test.py
-          python3 test/nelisp-project-distribution-test.py
+        run: bash tools/ai/nelisp-ai.sh gate project-build -- make project-build
+      - name: "Profiled standalone ELF: recursive counts and failure reports (tools/ai/nelisp-ai.sh gate project-profile-build); Linux x86_64"
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate project-profile-build -- make project-profile-build
+      - name: "Debug artifacts remain inspectable without source, host Emacs, or execution (tools/ai/nelisp-ai.sh gate project-debug); Linux x86_64"
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate project-debug -- make project-debug
+      - name: "Run and isolated ELF share lossless application arguments and environment (tools/ai/nelisp-ai.sh gate project-arguments); Linux x86_64"
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate project-arguments -- make project-arguments
+      - name: "Build, install, relocate, and use the Linux project toolchain bundle (tools/ai/nelisp-ai.sh gate project-distribution); Linux x86_64"
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate project-distribution -- make project-distribution
       # target/nelisp already exists from the step above (its own
       # Makefile prerequisite is conditional, same as `emacs-parity'
       # further up, so this does not rebuild it).
@@ -414,6 +439,10 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate lisp-byte-compile -- make lisp-byte-compile
+      # These two suites run private copies of
+      # tools/nelisp-lisp-byte-compile-gate.sh and tools/nelisp-gate-mutation.sh
+      # in temporary fixture repositories to check the gate tooling's own
+      # failure handling, so they stay plain steps; a nonzero exit fails the job.
       - name: Byte-compiler process failure controls
         if: runner.os == 'Linux'
         shell: bash

@@ -577,6 +577,114 @@ native-symbol-test:
 	    -l nelisp-native-symbol-build -f nelisp-native-symbol-test-build; \
 	NELISP_SYMBOL_TEST_BIN=$(NATIVE_SYMBOL_BIN) EMACS=$(EMACS) python3 test/nelisp-native-symbol-test.py
 
+# Project-toolchain contract suites, wrapped the same way as the block
+# above.  package-resolver, project-doc, project-manifest, package-store and
+# package-registry are pure host Python: no runtime binary, no rebuild.
+.PHONY: package-resolver project-doc project-manifest package-store package-registry
+package-resolver:
+	python3 test/nelisp-package-resolver-test.py
+
+project-doc:
+	python3 test/nelisp-project-doc-test.py
+
+project-manifest:
+	python3 test/nelisp-project-manifest-test.py
+
+package-store:
+	python3 test/nelisp-package-store-test.py
+
+package-registry:
+	python3 test/nelisp-registry-test.py
+
+# project-build, project-profile-build and project-debug each build their
+# own project executable through host Emacs (`nelisp-project-build.el'),
+# never through the shared `target/nelisp' reader, so none of them need it
+# built first.
+.PHONY: project-build project-profile-build project-debug
+project-build:
+	python3 test/nelisp-project-build-test.py
+
+project-profile-build:
+	python3 test/nelisp-project-profile-build-test.py
+
+project-debug:
+	python3 test/nelisp-project-debug-test.py
+
+# project-cli-integration, project-test-runner, project-bench,
+# project-packages, project-arguments and project-distribution run
+# `nelisp run'/`test'/`bench' or exercise `target/nelisp' directly, so they
+# need the shared standalone reader built first, and skip with a reason on a
+# target this host cannot run -- the same contract as `builtin-arity' above.
+# project-cli-integration is the full nelisp-project-cli-test.py suite;
+# `project-cli-contract' above stays scoped to ProjectResultContract, the one
+# class that needs no runtime build and so can run earlier in CI.
+.PHONY: project-cli-integration project-test-runner project-bench project-packages project-arguments project-distribution
+project-cli-integration: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+	  --eval '(kill-emacs (if (nelisp-standalone--target-runnable-on-host-p) 0 3))' \
+	  >/dev/null 2>&1; \
+	host_rc=$$?; \
+	if [ "$$host_rc" = 3 ]; then \
+	  echo "GATE-SKIP target $(STANDALONE_GATE_TARGET) cannot run on this host"; \
+	  exit 0; \
+	fi; \
+	python3 test/nelisp-project-cli-test.py
+
+project-test-runner: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+	  --eval '(kill-emacs (if (nelisp-standalone--target-runnable-on-host-p) 0 3))' \
+	  >/dev/null 2>&1; \
+	host_rc=$$?; \
+	if [ "$$host_rc" = 3 ]; then \
+	  echo "GATE-SKIP target $(STANDALONE_GATE_TARGET) cannot run on this host"; \
+	  exit 0; \
+	fi; \
+	python3 test/nelisp-project-test-runner-test.py
+
+project-bench: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+	  --eval '(kill-emacs (if (nelisp-standalone--target-runnable-on-host-p) 0 3))' \
+	  >/dev/null 2>&1; \
+	host_rc=$$?; \
+	if [ "$$host_rc" = 3 ]; then \
+	  echo "GATE-SKIP target $(STANDALONE_GATE_TARGET) cannot run on this host"; \
+	  exit 0; \
+	fi; \
+	python3 test/nelisp-project-bench-test.py
+
+project-packages: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+	  --eval '(kill-emacs (if (nelisp-standalone--target-runnable-on-host-p) 0 3))' \
+	  >/dev/null 2>&1; \
+	host_rc=$$?; \
+	if [ "$$host_rc" = 3 ]; then \
+	  echo "GATE-SKIP target $(STANDALONE_GATE_TARGET) cannot run on this host"; \
+	  exit 0; \
+	fi; \
+	python3 test/nelisp-project-packages-test.py
+
+project-arguments: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+	  --eval '(kill-emacs (if (nelisp-standalone--target-runnable-on-host-p) 0 3))' \
+	  >/dev/null 2>&1; \
+	host_rc=$$?; \
+	if [ "$$host_rc" = 3 ]; then \
+	  echo "GATE-SKIP target $(STANDALONE_GATE_TARGET) cannot run on this host"; \
+	  exit 0; \
+	fi; \
+	python3 test/nelisp-project-arguments-test.py
+
+project-distribution: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+	  --eval '(kill-emacs (if (nelisp-standalone--target-runnable-on-host-p) 0 3))' \
+	  >/dev/null 2>&1; \
+	host_rc=$$?; \
+	if [ "$$host_rc" = 3 ]; then \
+	  echo "GATE-SKIP target $(STANDALONE_GATE_TARGET) cannot run on this host"; \
+	  exit 0; \
+	fi; \
+	python3 test/nelisp-project-distribution-test.py
+
 # WS-F: the closed-raw-native-unit replace/publish REPL smoke, gated.
 # `ptr-call'/`syscall-direct' exist only in the standalone binary, so this
 # is the only place `nelisp-native-unit''s atomic-publish, stale-candidate,

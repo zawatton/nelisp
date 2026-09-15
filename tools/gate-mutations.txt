@@ -821,3 +821,90 @@ lsp-server|tools/nelisp_workspace.py|s/matches = \[item for item in plan\['symbo
 # round trip (`GATE-COUNT checked=11 findings=2'); restored + rebuilt,
 # `GATE-COUNT checked=11 findings=0'.
 native-symbol-test|scripts/nelisp-standalone-build.el|/(if (or (= tag 4) (= tag 16))/{N;s/(if (or (= tag 4) (= tag 16))\n\(.*Symbol name; +8 may be an ID.*\)/(if (or (= tag 4) (= tag 999))\n\1/}|the precise GC marker stops marking an uninterned (tag-16) symbol's name buffer, so a reachable uninterned symbol's storage can be swept as garbage
+#
+# Project-toolchain contract suites. None mutates code baked into
+# target/nelisp, so none needs an entry in gate_needs_rebuild.
+#
+# package-resolver: satisfies() decides whether a candidate release is
+# inside a caret/bare requirement's [lower, upper) window. Excluding the
+# lower bound makes a release exactly at that bound (the common case for a
+# freshly published dependency) fail its own requirement.
+package-resolver|tools/nelisp_packages.py|s/lower <= actual < upper/lower < actual < upper/|the inclusive lower bound of a caret or bare version requirement becomes exclusive, so a release exactly at that bound no longer satisfies its own requirement
+#
+# project-doc: render() escapes every field it interpolates into generated
+# HTML, including declaration documentation strings pulled verbatim from
+# source. Dropping the documentation field's escape call reopens the
+# injection this suite exists to close.
+project-doc|tools/nelisp_project_docs.py|s/escape(symbol\["documentation"\])/symbol["documentation"]/|declaration documentation text is no longer HTML-escaped before being embedded in the generated API page, so a docstring containing markup renders as live HTML instead of literal text
+#
+# project-manifest: publish_pair() gives the staged rollback copy of the
+# manifest (original.toml) the same file mode as the live file before
+# either replaces the other, so a failed lock publish can restore the
+# manifest without narrowing its permissions. Chmod'ing the wrong staged
+# file leaves the rollback copy at the stage directory's default mode.
+project-manifest|tools/nelisp_project_manifest.py|s/original\.chmod(mode)/candidate.chmod(mode)/|the staged rollback copy of the manifest is never chmod'ed to match the live file; a failed lock publish then restores a manifest with the wrong permissions
+#
+# package-store: source_bytes() hashes every artifact, cached or freshly
+# fetched, against its locked digest before returning it. Skipping that
+# call lets a corrupted cache entry or a hash-mismatched download through
+# unnoticed.
+package-store|tools/nelisp_package_store.py|s/verify_artifact(locked, content)/pass  # verify_artifact(locked, content)/|the SHA-256 integrity check against the locked digest is skipped, so corrupted or hash-mismatched artifact bytes are cached and returned undetected
+#
+# package-registry: search_index() matches a query against package names
+# case-insensitively. Comparing the raw query instead of its lowercased
+# form makes the search reject any query whose case does not match the
+# stored name.
+package-registry|tools/nelisp_registry.py|s/if query\.lower() in name and available:/if query in name and available:/|registry search becomes case-sensitive, so a query that does not match a package name's exact case returns no results even when the package exists
+#
+# project-build: a release build strips native symbols down to the entry
+# point; every other profile keeps them all. The build metadata's
+# native_symbols field is what a debugger or profiler downstream trusts to
+# tell which case it is looking at.
+project-build|tools/nelisp-project.py|s/"native_symbols": "entry-only" if release else "all",/"native_symbols": "all",/|the build metadata always reports native_symbols as "all", so a release build's own record no longer reflects that it stripped symbols down to the entry point
+#
+# project-cli-integration: the full nelisp-project-cli-test.py suite,
+# including ProjectCLI's real run/build/clean coverage that needs
+# target/nelisp already built; project-cli-contract above stays scoped to
+# ProjectResultContract, which needs no runtime build and can run earlier
+# in CI. clean_project() removes each build profile's own named debug
+# sidecar file; comparing against the wrong loop variable makes it check a
+# directory the sidecar is never written to.
+project-cli-integration|tools/nelisp-project.py|s/if directory == debug:/if directory == release:/|nelisp clean compares against the wrong build-profile directory, so a project's own target\/debug\/NAME.debug.json file survives cleaning instead of being removed
+#
+# project-test-runner: repeating the same --exact selector must not
+# double-count that test in the reported total. The deduplication call
+# around the selected-name list is what enforces that.
+project-test-runner|tools/nelisp-project.py|s/selected = list(dict\.fromkeys(test_filter if isinstance(test_filter, list) else \[test_filter\])) if exact else None/selected = list(test_filter if isinstance(test_filter, list) else [test_filter]) if exact else None/|duplicate --exact selections are no longer deduplicated, so selecting the same test twice inflates its reported total instead of running it once
+#
+# project-bench: the reported median must be the statistical median of the
+# recorded per-process samples, not an arbitrary one of them.
+project-bench|tools/nelisp_project_bench.py|s/"median_ns": statistics\.median(durations),/"median_ns": min(durations),/|the reported median is the fastest sample instead of the statistical median, so the benchmark summary misrepresents typical process latency
+#
+# project-packages: nelisp remove resolves the reduced dependency graph
+# from a synthetic catalog built out of the currently locked packages, with
+# every field but the package's own name kept. Dropping a different field
+# from that synthetic release produces one that fails the same release
+# schema check every other release in the system is held to.
+project-packages|tools/nelisp-project.py|s/if key != "name"/if key != "sha256"/|the synthetic catalog nelisp remove builds from the current lock strips each entry's sha256 field instead of its name field, so every remove operation fails release validation on a malformed synthetic entry
+#
+# project-profile-build: a profiled function's completed counter must
+# reflect calls that actually returned, not merely calls that started, so a
+# function that raised or the process exited mid-call is reported as
+# incomplete rather than done.
+project-profile-build|lisp/nelisp-project-profile.el|s/(when completed (aset row 2 (1+ (aref row 2))))/(aset row 2 (1+ (aref row 2)))/|the completed counter increments unconditionally on every call instead of only when the call actually returned, so a function that raised or the process exited mid-call still reports as completed
+#
+# project-debug: debug-info's symbol lookup returns exactly the declarations
+# matching the requested name, filtering out the rest. Inverting that
+# comparison returns everything except the requested symbol.
+project-debug|tools/nelisp_project_debug.py|s/if name is not None and symbol\["symbol"\] != name:/if name is not None and symbol["symbol"] == name:/|debug-info's symbol name filter is inverted, so looking up one declared symbol returns every other declared symbol instead of the one actually requested
+#
+# project-arguments: application arguments must reach the running project
+# as inert data, never as flags the runtime itself interprets. The `--`
+# separator before the forwarded argument list is what keeps an argument
+# like `--help` from being read as a flag to the runtime.
+project-arguments|tools/nelisp-project.py|s/args = \[str(binary), "--load", str(bundle), "--", \*arguments\]/args = [str(binary), "--load", str(bundle), *arguments]/|the argv separator before forwarded application arguments is dropped, so a data argument that looks like a flag (for example --help) is parsed by the runtime instead of being handed to the project unchanged
+#
+# project-distribution: the installed bundle's README documents the path
+# its own installed runtime actually lives at, so a relocated checkout's
+# documented REPL command works as written.
+project-distribution|tools/build-standalone-tarball.sh|s#STAGED_RUNTIME_PATH="libexec/nelisp-runtime"#STAGED_RUNTIME_PATH="bin/nelisp-runtime"#|the bundled README documents the runtime at the wrong relative path, so the documented NELISP_BIN=... command in a relocated installation points at a file that is not there
