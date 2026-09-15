@@ -186,3 +186,97 @@ platform qualification, LSP/debug/editor UI,
 and the later platform/product requirements above. Existing repository modules
 may cover parts of these requirements, but their presence is not completion
 evidence: inspect and run the relevant public paths before reusing their claims.
+
+The initial [stdio language server](language-server.md) connects client-owned
+unsaved text to the existing source parser/formatter. It provides syntax
+diagnostics, flat document symbols, and formatting, with version-scoped analysis
+caches. Protocol and relocated-installation tests do not establish real editor
+qualification. The other LSP capabilities and editor integrations in section 11
+remain open, as does replacement of the host Emacs/Python tooling dependency.
+Declaration completion now retains the reader's complete prefix for unfinished
+documents and returns literal documentation/escaped insertion text. Scope,
+builtin, dependency, and workspace candidates remain to be connected.
+Incremental document synchronization applies ordered UTF-16 ranges atomically
+per notification, retaining full-text updates. Unicode/line-ending and installed
+workflow tests cover this path; it does not add incremental parser reuse yet.
+Source definition/hover now resolves declaration names and known-context call
+heads within one open document, preserving namespace and duplicate ambiguity.
+Quoted/opaque/local-function contexts are excluded rather than guessed. Variable
+references and simple parameters/let/let* bindings now preserve nested scopes
+and initializer visibility. More complex binding forms and cross-file navigation
+remain open. Navigation caches reuse known token spans across nearby positions.
+Same-document `textDocument/references` now uses those source binding rules,
+returns token locations with optional declarations, and is exercised through
+the installed VS Code language client. One host request shares reader parsing
+across matching candidates; results are bounded and cached per document version.
+Local lexical rename now
+validates the entire enclosing source form, rejects opaque syntax and symbol
+collisions, and returns versioned edits through the installed VS Code client.
+Global/cross-file rename and external/generated binding analysis remain open;
+incomplete knowledge of opaque forms cannot justify rewriting every use.
+Signature help now covers plain source parameter lists and unfinished calls,
+with literal docs, active arguments, UTF-16 label ranges and version-local
+query reuse. Unique external source declarations now supply signatures for
+unresolved supported calls; workspace content hashes invalidate cached answers.
+Keyword/destructuring, builtin signatures and module visibility remain open.
+Workspace symbol search now indexes closed local `.nl`/`.el` files, overlays
+open snapshots, tracks folder changes and reuses unchanged content hashes.
+Changed files share one host request; declaration plans are also reused by
+workspace declaration completion, including closed files and unsaved overlays.
+Completion shares those plans without constructing navigation locations.
+Simple cursor-local parameter and let/let* candidates now reuse navigation's
+scope traversal and a version/context-local query cache. Unique external plain
+function declarations permit local completion and nested signature traversal;
+macros, duplicates and local callable shadowing remain conservative. General macro/builtin call
+contexts and complex binding lists remain open.
+This is bounded source discovery, not yet a
+cross-file binding graph or dependency index.
+Definition requests now use that index for otherwise unresolved tokens in
+supported source contexts, preserving namespaces and local declarations while
+returning all external source candidates. This does not establish module-load
+visibility or extend traversal through unknown macros. Hover now shares these
+external candidates and displays literal metadata only when one remains. Broad
+declaration results share source line maps instead of rescanning each location.
+Cross-file reference candidates now collect supported global occurrences after
+checking declaration uniqueness, keeping local bindings separate. Changed files
+are reparsed in one batch while unchanged per-file occurrences are reused.
+Navigation and reference queries now traverse unique external plain function
+arguments. Occurrence caches include callable classification identities;
+documentation-only edits retain other files, while macro/duplicate changes
+invalidate dependent contexts. Each navigation query uses one workspace snapshot.
+Changed-file batches transmit callable providers once, and source reference
+queries classify declarations once per file instead of once per matching token.
+Completion now reads the toolchain's unconditional base reader builtin catalog
+without evaluating the build driver, caches it per server session and lets
+source declarations override builtin candidates. Native registration presence
+is qualified separately from target functionality and argument contracts;
+builtin signatures remain open. Base builtin classifications now permit argument
+traversal in completion/navigation/references and nested source signatures, with
+authored callables overriding the fallback. Builtin metadata is shared per batch.
+Builtin-only names now support workspace reference searches through the same
+bounded source-context traversal, without synthesizing source definitions.
+Exact candidate queries filter name/namespace before constructing locations.
+Literal symbol function objects (`#'name` / `(function name)`) now preserve
+function-namespace navigation and references without reading ordinary quoted
+data as code. Computed function objects, macro-generated references, unknown call arguments and a
+complete binding graph remain open.
+
+The [VS Code extension](../editors/vscode/README.md) now supplies the initial
+real-editor path: `.nl` highlighting, the source server's current LSP features,
+inline diagnostics, CLI tasks, and a persistent project REPL terminal. A real
+Linux VS Code extension-host suite covers unsaved source and task/terminal
+execution; TextMate tokenization and a local VSIX build cover grammar and
+packaging. The Testing view now enumerates literal saved test declarations and
+supports exact individual runs, exclusions, results, and process cancellation.
+Selected tests in each project now share one runtime process in registration
+order; batch case records are reconciled before displaying individual results.
+Paired boundaries now attribute stdout and failure details to each test while
+retaining setup/summary output and the compatible full batch log.
+Dynamic test enumeration, coverage, and continuous/debug test profiles remain open.
+Section 11.3 remains partial: the debug adapter,
+package publication/authentication, Marketplace publication, and other platforms are not yet
+qualified. The CLI/server still depend on the separately installed toolchain.
+Package search/add/remove now have editor dialogs and real CLI task execution;
+fetch/update share explicit registry/local-index/offline settings. Local and
+URL-bound offline snapshots, cancellation and preserved manifest/lock failures
+are covered in the real extension host. Public registry operation remains open.

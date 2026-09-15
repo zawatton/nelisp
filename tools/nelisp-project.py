@@ -208,12 +208,53 @@ def runtime_binary():
     return binary.resolve()
 
 
-def execute(command, arguments=(), test_filter=None, as_json=False):
+def discover_tests(as_json):
+    """Inspect saved top-level test declarations without loading project code."""
+    root, _, _ = project_manifest()
+    snapshots = []
+    for path in sorted(set((root / "test").glob("*-test.el")) | set((root / "test").glob("*-test.nl"))):
+        if not path.resolve().is_relative_to(root) or not path.is_file():
+            raise ValueError(f"test source must be inside the project: {path.name}")
+        if path.stat().st_size > 2 * 1024 * 1024:
+            raise ValueError(f"test source exceeds 2 MiB: {path.name}")
+        snapshots.append({"path": path.relative_to(root).as_posix(), "text": path.read_text(encoding="utf-8")})
+    declarations = {}
+    try:
+        plan = lisp_plan(snapshots, test_symbols=True, timeout=10) if snapshots else []
+    except subprocess.TimeoutExpired as error:
+        raise ValueError("test discovery timed out") from error
+    for item in plan:
+        for test in item["symbols"]:
+            declarations[test["name"]] = dict(test, path=item["path"])
+    report = {"schema_version": 1, "scope": "source-test-declarations", "status": "ok",
+              "tests": list(declarations.values())}
+    if as_json:
+        print(json.dumps(report, ensure_ascii=False))
+    else:
+        for item in report["tests"]:
+            print(f'{item["path"]}:{item["line"]}: {item["name"]}')
+    return 0
+
+
+def execute(command, arguments=(), test_filter=None, as_json=False, exact=False):
     """Bundle sources without evaluating project code in the host frontend."""
     root, manifest, source = project_manifest()
     binary = runtime_binary()
     chunks = []
     marker = f"NELISP_PROJECT_TEST_{uuid.uuid4().hex}"
+    selected = list(dict.fromkeys(test_filter if isinstance(test_filter, list) else [test_filter])) if exact else None
+    selector = '(getenv "NELISP_PROJECT_TEST_FILTER")'
+    reporter = 'nil'
+    starter = 'nil'
+    if selected:
+        # Only generated integer indices enter source. Lisp names stay in env.
+        selector = '(list ' + ' '.join(f'(getenv "{marker}_NAME_{i}")' for i in range(len(selected))) + ')'
+        if as_json:
+            reporter = (f'(lambda (name success) (let ((tail {selector}) (index 0)) '
+                        '(while (and tail (not (equal name (car tail)))) '
+                        '(setq tail (cdr tail) index (1+ index))) '
+                        f'(princ (format "\\n{marker}_CASE %d %d\\n" index (if success 1 0)))))')
+            starter = reporter.replace('(name success)', '(name)').replace('(if success 1 0)', '2')
     if command == "test":
         tests = sorted(set((root / "test").glob("*-test.el"))
                        | set((root / "test").glob("*-test.nl")))
@@ -231,7 +272,8 @@ def execute(command, arguments=(), test_filter=None, as_json=False):
                 raise ValueError(f"test source must be inside the project: {test.name}")
             chunks.append(test.read_text(encoding="utf-8"))
         chunks.append(
-            '(let ((result (nelisp-ert-run-all "project" (getenv "NELISP_PROJECT_TEST_FILTER"))))\n'
+            f'(let ((result (nelisp-ert-run-all "project" {selector}\n'
+            f'                                   (getenv "NELISP_PROJECT_TEST_EXACT") {reporter} {starter})))\n'
             f'  (princ (format "{marker} %d %d\\n" (car result) (cadr result)))\n'
             '  (exit (if (and (> (car result) 0) (= (cadr result) 0)) 0 1)))\n'
         )
@@ -247,21 +289,61 @@ def execute(command, arguments=(), test_filter=None, as_json=False):
             return result.returncode if result.returncode >= 0 else 1
         env = dict(os.environ)
         env.pop("NELISP_PROJECT_TEST_FILTER", None)
-        if test_filter is not None:
+        env.pop("NELISP_PROJECT_TEST_EXACT", None)
+        if test_filter is not None and not exact:
             env["NELISP_PROJECT_TEST_FILTER"] = test_filter
+        if exact:
+            env["NELISP_PROJECT_TEST_EXACT"] = "1"
+            for i, name in enumerate(selected):
+                env[f"{marker}_NAME_{i}"] = name
         result = subprocess.run(args, cwd=root, env=env, capture_output=True, text=True)
     records = re.findall(rf"^{marker} ([0-9]+) ([0-9]+)$", result.stdout, re.MULTILINE)
+    case_records = re.finditer(rf"\n{marker}_CASE ([0-9]+) ([012])\n", result.stdout)
+    cases = []
+    case_indices = []
+    active_case = None
+    first_case_start = None
+    last_case_end = 0
+    ordered_cases = True
+    if selected and as_json:
+        for event in case_records:
+            index, flag = int(event[1]), event[2]
+            if flag == '2':
+                if first_case_start is None:
+                    first_case_start = event.start()
+                if active_case is not None or index >= len(selected):
+                    ordered_cases = False
+                active_case = (index, event.end(), result.stdout[last_case_end:event.start()] if last_case_end else "")
+            else:
+                case_indices.append(index)
+                if active_case is None or active_case[0] != index or index >= len(selected):
+                    ordered_cases = False
+                else:
+                    cases.append({"name": selected[index], "status": "passed" if flag == '1' else "failed",
+                                  "before_stdout": active_case[2],
+                                  "stdout": result.stdout[active_case[1]:event.start()]})
+                active_case = None
+                last_case_end = event.end()
+    complete_cases = not (selected and as_json) or (ordered_cases and active_case is None and sorted(case_indices) == list(range(len(selected))) and
+        len(records) == 1 and sum(item["status"] == "passed" for item in cases) == int(records[0][0]) and
+        sum(item["status"] == "failed" for item in cases) == int(records[0][1]))
     # The completion record alone is insufficient: an error after/before it,
     # a signal, premature exit, and zero cases all remain failures.
     output = re.sub(rf"^{marker} [0-9]+ [0-9]+\n?", "", result.stdout, flags=re.MULTILINE)
+    output = re.sub(rf"\n{marker}_CASE [0-9]+ [012]\n", "", output)
     valid = len(records) == 1 and int(records[0][0]) > 0 and int(records[0][1]) == 0
-    successful = not (result.returncode or result.stderr) and valid
+    if selected:
+        valid = valid and int(records[0][0]) == len(selected)
+    successful = not (result.returncode or result.stderr) and valid and complete_cases
     if as_json:
         passed, failed = map(int, records[0]) if len(records) == 1 else (None, None)
         total = passed + failed if passed is not None else None
-        status = "passed" if successful else "incomplete" if total is None else "no-tests" if total == 0 else "failed"
+        status = "passed" if successful else "incomplete" if total is None or not complete_cases else "no-tests" if total == 0 else "failed"
         print(json.dumps({"schema_version": 1, "scope": "standalone-ert", "status": status,
-                          "filter": test_filter, "passed": passed, "failed": failed, "total": total,
+                          "filter": selected[0] if selected and len(selected) == 1 else None if selected else test_filter,
+                          "selected": selected, "cases": cases, "passed": passed, "failed": failed, "total": total,
+                          "before_tests": result.stdout[:first_case_start] if first_case_start is not None else "",
+                          "after_tests": re.sub(rf"^{marker} [0-9]+ [0-9]+\n?", "", result.stdout[last_case_end:], flags=re.MULTILINE) if last_case_end else "",
                           "completion_records": len(records), "exit_code": result.returncode,
                           "stdout": output, "stderr": result.stderr}, ensure_ascii=False))
     else:
@@ -407,7 +489,7 @@ def debug_info(binary, symbol, as_json):
     return 0
 
 
-def lisp_plan(request, validate_only=False, diagnostics=False, symbols=False):
+def lisp_plan(request, validate_only=False, diagnostics=False, symbols=False, timeout=None, completions=False, lookup=False, test_symbols=False, references=False, rename=False, signature=False, occurrences=False):
     """Validate/indent snapshots as data in a clean host process."""
     emacs = shutil.which(os.environ.get("EMACS", "emacs"))
     if not emacs:
@@ -419,18 +501,39 @@ def lisp_plan(request, validate_only=False, diagnostics=False, symbols=False):
         env.pop("NELISP_FORMAT_VALIDATE_ONLY", None)
         env.pop("NELISP_FORMAT_DIAGNOSTICS", None)
         env.pop("NELISP_FORMAT_SYMBOLS", None)
+        env.pop("NELISP_FORMAT_COMPLETIONS", None)
+        env.pop("NELISP_FORMAT_LOOKUP", None)
+        env.pop("NELISP_FORMAT_REFERENCES", None)
+        env.pop("NELISP_FORMAT_RENAME", None)
+        env.pop("NELISP_FORMAT_SIGNATURE", None)
+        env.pop("NELISP_FORMAT_OCCURRENCES", None)
+        env.pop("NELISP_FORMAT_TESTS", None)
         if validate_only:
             env["NELISP_FORMAT_VALIDATE_ONLY"] = "1"
         if diagnostics:
             env["NELISP_FORMAT_DIAGNOSTICS"] = "1"
         if symbols:
             env["NELISP_FORMAT_SYMBOLS"] = "1"
+        if completions:
+            env["NELISP_FORMAT_COMPLETIONS"] = "1"
+        if lookup or references or rename or signature or occurrences:
+            env["NELISP_FORMAT_LOOKUP"] = "1"
+        if references:
+            env["NELISP_FORMAT_REFERENCES"] = "1"
+        if rename:
+            env["NELISP_FORMAT_RENAME"] = "1"
+        if signature:
+            env["NELISP_FORMAT_SIGNATURE"] = "1"
+        if occurrences:
+            env["NELISP_FORMAT_OCCURRENCES"] = "1"
+        if test_symbols:
+            env["NELISP_FORMAT_TESTS"] = "1"
         result = subprocess.run(
             [emacs, "-Q", "--batch", "-L", str(ROOT / "lisp"),
              "--eval", "(setq load-prefer-newer t)",
              "-l", str(ROOT / "scripts" / "nelisp-project-format.el"),
              "-f", "nelisp-project-format-main"], capture_output=True, text=True,
-            env=env,
+            env=env, timeout=timeout,
         )
     if result.returncode:
         raise ValueError(result.stderr.strip() or "format planning failed")
@@ -689,7 +792,10 @@ def main():
     runner.add_argument("arguments", nargs=argparse.REMAINDER,
                         help="application arguments; use -- before option-like values")
     tester = commands.add_parser("test", help="run project tests using the standalone ERT subset")
-    tester.add_argument("--filter", help="literal, case-sensitive substring of test names")
+    selection = tester.add_mutually_exclusive_group()
+    selection.add_argument("--filter", help="literal, case-sensitive substring of test names")
+    selection.add_argument("--exact", action="append", help="complete test name; repeat to select a batch in registration order")
+    selection.add_argument("--list", action="store_true", help="list saved top-level test declarations without execution (host Emacs)")
     tester.add_argument("--json", action="store_true", help="emit one result report, including captured output")
     builder = commands.add_parser("build", help="build a single embedded-reader ELF (Linux x86_64)")
     mode = builder.add_mutually_exclusive_group()
@@ -776,11 +882,17 @@ def main():
         arguments = getattr(args, "arguments", [])
         if arguments[:1] == ["--"]:
             arguments = arguments[1:]
-        return execute(args.command, arguments, getattr(args, "filter", None), getattr(args, "json", False))
+        if args.command == "test" and args.list:
+            return discover_tests(args.json)
+        exact = getattr(args, "exact", None)
+        return execute(args.command, arguments, exact if exact is not None else getattr(args, "filter", None),
+                       getattr(args, "json", False), exact=exact is not None)
     except (OSError, ValueError) as error:
         if args.command == "test" and args.json:
-            print(json.dumps({"schema_version": 1, "scope": "standalone-ert", "status": "error",
-                              "filter": args.filter, "passed": None, "failed": None, "total": None,
+            print(json.dumps({"schema_version": 1, "scope": "source-test-declarations" if args.list else "standalone-ert", "status": "error",
+                              "filter": args.exact[0] if args.exact and len(args.exact) == 1 else None if args.exact else args.filter,
+                              "selected": list(dict.fromkeys(args.exact)) if args.exact else None, "cases": [],
+                              "passed": None, "failed": None, "total": None,
                               "completion_records": 0, "exit_code": None,
                               "stdout": "", "stderr": str(error)}, ensure_ascii=False))
             return 2

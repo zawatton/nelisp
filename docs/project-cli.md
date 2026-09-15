@@ -11,6 +11,11 @@ not for `new`, `run`, or `test`. This is not yet a self-hosted CLI
 or completion of Strategy Phase 1. A Linux bundle can also
 install these commands outside the source checkout, as described below.
 
+For editor source tooling, the checkout and Linux project bundle also provide
+[`nelisp-lsp --stdio`](language-server.md). Its initial capabilities cover
+unsaved syntax diagnostics, declaration completion, source definition/hover, document symbols, and
+formatting using host Emacs.
+
 The reviewable milestone is the Linux project workflow from a checkout or bundle. The
 package, documentation, benchmark, and build-mode commands share that workflow
 but also cover early parts of later strategy phases. Phase 1's cross-platform
@@ -63,6 +68,11 @@ own location. `NELISP_BIN` still takes precedence when explicitly set.
 development toolchain, not self-hosted distribution or cross-platform qualification.
 
 `python3 test/nelisp-project-distribution-test.py` builds an actual archive,
+including a check that a live development runtime remains untouched. Release
+packaging rebuilds into a temporary executable path using
+`NELISP_STANDALONE_READER_OUTPUT`, instead of overwriting `target/nelisp`.
+Unit/artifact caches remain shared; serialize concurrent compiler invocations.
+The distribution suite
 runs the existing tarball verifier, installs and relocates it, makes the prefix
 read-only, exercises project commands and cold/warm builds, and deploys the
 generated executable alone. Run this permission test as a non-root user.
@@ -191,6 +201,23 @@ filename pattern; an empty substring selects all tests. All test files still
 load to register their definitions, so filtering does not suppress top-level
 setup or syntax/startup failures. Zero matching tests is a failure.
 
+Use `nelisp test --exact greeting-returns-message` for a complete name match.
+It is mutually exclusive with `--filter`; both accept `--json`. Exact selection
+still registers all tests and preserves the same startup/failure contracts.
+Repeat `--exact NAME` to select several tests in one process. Repeated names are
+deduplicated. Execution retains registration order, regardless of selector order,
+and selected tests share setup/state just as they do in the full project run.
+
+`nelisp test --list --json` returns saved top-level `ert-deftest` declarations
+with names, project-relative paths, and one-based declaration lines. It uses
+the host Emacs reader without loading project code or expanding macros; it does
+not require the standalone runtime. This distinct source-only report has
+`scope: "source-test-declarations"`, `status: "ok"`, and a `tests` array. Duplicate
+names retain their last declaration location. Quoted, nested, generated tests
+and tests registered from application dependencies are not enumerated. Invalid
+test syntax is an error. An empty source declaration list is valid discovery,
+not a successful test run. `--list` is mutually exclusive with either selector.
+
 `nelisp test --filter greeting --json` emits one JSON object. It includes
 `schema_version: 1`, `scope: "standalone-ert"`, the filter, pass/fail/total
 counts, the number of completion records, the child process exit code, and
@@ -201,6 +228,23 @@ failure). CLI exit codes remain 0 for success, 1 for failed/incomplete/empty
 runs, and 2 for input/tooling errors. Argument parsing errors and interrupts
 retain the ordinary CLI diagnostics/exit behavior. This summary is not yet
 per-test timing, coverage, property generation, or parallel execution.
+
+For exact selection, JSON also includes `selected` (the requested names) and
+`cases` (name/status/stdout entries in execution order). `filter` retains the single
+name for a one-name selection and is null for a batch. The frontend reconciles
+unique case records, requested names, aggregate counts, and process completion.
+A missing requested test or incomplete case stream fails with `incomplete`;
+partial `cases` are not proof that the batch completed successfully. Single
+process startup errors remain errors for the whole batch. Begin/end records
+delimit each test's stdout, including its failure diagnostic. `before_tests`
+and `after_tests` hold setup output and the final summary. Together with the
+case outputs and their `before_stdout` (unattributed text between tests), they
+reconstruct the complete batch `stdout`; it remains available
+for existing consumers. Missing, nested, or mismatched boundaries fail the batch.
+Individual timings are not yet measured, and `stderr` remains batch-owned.
+Unfiltered/substring runs retain their aggregate reports and an empty `cases`
+array. Names enter the runtime through environment values, not generated Lisp
+source text.
 
 Source is bundled into a temporary file and evaluated by the runtime's
 top-level `--load` command, not evaluated in Python. Diagnostics currently

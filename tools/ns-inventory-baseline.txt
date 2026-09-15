@@ -864,10 +864,13 @@ ns-prefix-violation 314
 # 757 -> 764: the native unit kernel reuses the raw loader's validated
 # export, mapping, protection and executable-identity helpers.
 # 764 -> 765 on 2026-09-12: one reference from the same new module.
-# 765 -> 766 on 2026-09-15: the `defvar' and `defconst' macros in
+# 765 -> 767 on 2026-09-15: the `defvar' and `defconst' macros in
 # lisp/nelisp-stdlib-eval-special.el expand to code that writes the prelude's
-# `nelisp--special-variables' registry, so the expansion names it.
-ns-private-escape 766
+# `nelisp--special-variables' registry, so the expansion names it; and
+# lisp/nelisp-dev-source.el finds the build script's
+# `nelisp-standalone--reader-builtins' table by that name without loading the
+# build driver.
+ns-private-escape 767
 ns-unreadable 0
 
 # `pinned-collision KEY' pins every ns-collision and ns-collision-divergent

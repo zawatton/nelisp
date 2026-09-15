@@ -289,11 +289,31 @@ jobs:
           python3 test/nelisp-special-variables-test.py
           python3 test/nelisp-symbol-identity-test.py
           python3 test/nelisp-reference-parity-test.py
+          python3 test/nelisp-lsp-test.py
           python3 test/nelisp-project-bench-test.py
       - name: Project source documentation generation
         if: runner.os == 'Linux'
         shell: bash
         run: python3 test/nelisp-project-doc-test.py
+      - name: Set up Node for VS Code extension validation
+        if: runner.os == 'Linux'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: editors/vscode/package-lock.json
+      - name: VS Code grammar, package, and real extension host
+        if: runner.os == 'Linux'
+        working-directory: editors/vscode
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+          npm ci --ignore-scripts
+          npm run test:grammar
+          npm run test:process
+          npm run package
+          xvfb-run -a npm run test:package
       - name: Package HTTPS acquisition and cache contracts
         if: runner.os == 'Linux'
         shell: bash

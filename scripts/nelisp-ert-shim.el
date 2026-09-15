@@ -49,19 +49,29 @@ is always `()' in the suites and is ignored."
        (unless nelisp-ert--ok
          (error "should-error: %S did not signal" ',form)))))
 
-(defun nelisp-ert-run-all (&optional label filter)
+(defun nelisp-ert-run-all (&optional label filter exact reporter starter)
   "Run registered tests in registration order; print a summary.
 Non-nil FILTER selects names containing that literal, case-sensitive string.
+Non-nil EXACT instead requires the whole name to equal FILTER.
+FILTER may also be a list of complete names.  Tests retain registration order.
+REPORTER, when non-nil, is called with each selected name and its success flag.
+STARTER, when non-nil, is called with its name immediately before each test.
 Return the list (PASS FAIL)."
   (let ((tests (reverse nelisp-ert--tests))
         (pass 0) (fail 0))
     (dolist (tc tests)
-      (when (or (null filter) (string-search filter (symbol-name (car tc))))
-        (condition-case e
-            (progn (funcall (cdr tc)) (setq pass (1+ pass)))
-          (error
-           (setq fail (1+ fail))
-           (princ (format "FAIL %s: %S\n" (car tc) e))))))
+      (when (or (null filter)
+                (cond ((listp filter) (member (symbol-name (car tc)) filter))
+                      (exact (equal filter (symbol-name (car tc))))
+                      (t (string-search filter (symbol-name (car tc))))))
+        (let ((success t))
+          (when starter (funcall starter (symbol-name (car tc))))
+          (condition-case e
+              (progn (funcall (cdr tc)) (setq pass (1+ pass)))
+            (error
+             (setq success nil fail (1+ fail))
+             (princ (format "FAIL %s: %S\n" (car tc) e))))
+          (when reporter (funcall reporter (symbol-name (car tc)) success)))))
     (princ (format "== %s: %d passed, %d failed (of %d) ==\n"
                    (or label "ert") pass fail (+ pass fail)))
     (list pass fail)))

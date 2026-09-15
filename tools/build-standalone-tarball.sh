@@ -105,11 +105,9 @@ log "  emacs   : $EMACS_BIN"
 # 1. Ensure the standalone reader binary is built for the requested platform.
 case "$PLATFORM" in
   windows-x86_64)
-    STANDALONE_BIN="target/nelisp.exe"
     STAGED_BIN_NAME="nelisp.exe"
     ;;
   linux-x86_64|macos-aarch64)
-    STANDALONE_BIN="target/nelisp"
     STAGED_BIN_NAME="nelisp"
     ;;
   *)
@@ -118,13 +116,20 @@ case "$PLATFORM" in
     ;;
 esac
 
+mkdir -p target
+BUILD_DIR="$(mktemp -d "$REPO_ROOT/target/nelisp-release.XXXXXX")"
+trap 'rm -rf "$BUILD_DIR"' EXIT
+STANDALONE_BIN="$BUILD_DIR/$STAGED_BIN_NAME"
+# Keep the running development executable untouched. Unit caches remain shared;
+# this isolates executable publication, not concurrent compiler invocations.
 log "building standalone reader for $PLATFORM"
 # Pass the target as a make VARIABLE, not as a shell environment prefix.
 # Command-line make variables are exported to recipe shells; an
 # environment prefix is not seen by make under MSYS on Windows, so the
 # prefix form silently built the host default (ELF) and the PE check
 # below then failed with "standalone binary missing: target/nelisp.exe".
-make standalone-reader EMACS="$EMACS_BIN" NELISP_STANDALONE_TARGET="$PLATFORM"
+make standalone-reader EMACS="$EMACS_BIN" NELISP_STANDALONE_TARGET="$PLATFORM" \
+  NELISP_STANDALONE_READER_OUTPUT="$STANDALONE_BIN"
 [[ -f "$STANDALONE_BIN" ]] || { err "standalone binary missing: $STANDALONE_BIN"; exit 1; }
 
 # 2. Stage the tarball directory.
@@ -170,9 +175,10 @@ if [ "$PROJECT_CLI" -eq 1 ]; then
   mv "$STAGE_DIR/bin/nelisp" "$STAGE_DIR/libexec/nelisp-runtime"
   STAGED_RUNTIME_PATH="libexec/nelisp-runtime"
   cp bin/nelisp "$STAGE_DIR/bin/nelisp"
+  cp bin/nelisp-lsp "$STAGE_DIR/bin/nelisp-lsp"
   cp tools/nelisp-project.py tools/nelisp_*.py "$STAGE_DIR/tools/"
   cp docs/project-cli.md docs/package-resolution.md docs/strategy-implementation.md \
-    docs/nelisp-strategy.org "$STAGE_DIR/docs/"
+    docs/nelisp-strategy.org docs/language-server.md "$STAGE_DIR/docs/"
 fi
 
 # Docs + version stamps.

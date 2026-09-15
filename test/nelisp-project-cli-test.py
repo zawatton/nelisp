@@ -100,6 +100,19 @@ class ProjectCLI(unittest.TestCase):
         self.assertNotEqual(self.cli("fmt", cwd=project).returncode, 0)
         self.assertEqual(source.read_text(), ugly, "invalid batch must not partly format files")
 
+    def test_crlf_source_diagnostics_and_format_preserve_string_data(self):
+        project = self.create()
+        source = project / "src/main.nl"
+        source.write_bytes(b'(defconst lines "first\r\nsecond")\r\n'
+                           b'(defun greeting () "Hello, world!")\r\n'
+                           b'(defun main () (princ (greeting)))\r\n; trailing comment\r\n\r\n')
+        checked = self.cli("check", "--json", cwd=project)
+        self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+        self.assertEqual(json.loads(checked.stdout)["status"], "ok")
+        formatted = self.cli("fmt", cwd=project)
+        self.assertEqual(formatted.returncode, 0, formatted.stderr)
+        self.assertIn(b'"first\r\nsecond"', source.read_bytes())
+
     def test_check_reports_all_syntax_locations_without_execution(self):
         project = self.create()
         source = project / "src" / "main.nl"

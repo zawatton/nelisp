@@ -1,0 +1,14 @@
+{
+  "name": "NeLisp",
+  "scopeName": "source.nelisp",
+  "patterns": [
+    {"name": "comment.line.semicolon.nelisp", "begin": ";", "end": "$"},
+    {"name": "string.quoted.double.nelisp", "begin": "\"", "end": "\"", "patterns": [{"name": "constant.character.escape.nelisp", "match": "\\\\."}]},
+    {"match": "(?<=\\()(defun|cl-defun|defmacro)\\s+([^\\s()]+)", "captures": {"1": {"name": "keyword.declaration.nelisp"}, "2": {"name": "entity.name.function.nelisp"}}},
+    {"match": "(?<=\\()(defvar|defconst|defcustom)\\s+([^\\s()]+)", "captures": {"1": {"name": "keyword.declaration.nelisp"}, "2": {"name": "variable.other.nelisp"}}},
+    {"name": "keyword.control.nelisp", "match": "(?<=\\()(?:if|when|unless|cond|progn|let\\*?|lambda|setq|quote|function|while|condition-case)(?=[\\s()])"},
+    {"name": "storage.modifier.nelisp", "match": "(?<![^\\s()])&(?:optional|rest|key|body|aux|allow-other-keys)(?=[\\s()])"},
+    {"name": "constant.language.nelisp", "match": "(?<![^\\s()])(?:nil|t)(?=[\\s()]|$)"},
+    {"name": "constant.numeric.nelisp", "match": "(?<![^\\s()])[-+]?[0-9]+(?:\\.[0-9]+)?(?:[eE][-+]?[0-9]+)?(?=[\\s()]|$)"}
+  ]
+}
