@@ -1,0 +1,11 @@
+#!/bin/sh
+# Project commands for a checkout or installed toolchain. NELISP_BIN overrides the runtime.
+set -eu
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+# Installation identity must remain available before Python or the runtime.
+if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then
+    version=$(cat "$root/VERSION")
+    printf 'nelisp %s (project frontend)\n' "$version"
+    exit 0
+fi
+exec "${PYTHON:-python3}" "$root/tools/nelisp-project.py" "$@"

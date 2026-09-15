@@ -269,6 +269,55 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate standalone-reader-test -- make standalone-reader-test
+      - name: Set up Python for project CLI integration tests
+        if: runner.os == 'Linux'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Package resolver and lock contracts (no runtime build)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: python3 test/nelisp-package-resolver-test.py
+      - name: Project creation, run, and test integration (existing standalone binary)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          python3 test/nelisp-project-cli-test.py
+          python3 test/nelisp-project-test-runner-test.py
+          python3 test/nelisp-project-bench-test.py
+      - name: Project source documentation generation
+        if: runner.os == 'Linux'
+        shell: bash
+        run: python3 test/nelisp-project-doc-test.py
+      - name: Package HTTPS acquisition and cache contracts
+        if: runner.os == 'Linux'
+        shell: bash
+        run: python3 test/nelisp-package-store-test.py
+      - name: Project manifest edits and failed publication recovery
+        if: runner.os == 'Linux'
+        shell: bash
+        run: python3 test/nelisp-project-manifest-test.py
+      - name: Registry HTTPS snapshots and CLI search integration
+        if: runner.os == 'Linux'
+        shell: bash
+        run: python3 test/nelisp-registry-test.py
+      - name: Locked project dependencies and isolated executable
+        if: runner.os == 'Linux'
+        shell: bash
+        run: python3 test/nelisp-project-packages-test.py
+      - name: Project CLI result contract (no runtime build)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate project-cli-contract -- make project-cli-contract
+      - name: Project executable build and isolated deployment (Linux x86_64)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          python3 test/nelisp-project-build-test.py
+          python3 test/nelisp-project-profile-build-test.py
+          python3 test/nelisp-project-debug-test.py
+          python3 test/nelisp-project-arguments-test.py
+          python3 test/nelisp-project-distribution-test.py
       # target/nelisp already exists from the step above (its own
       # Makefile prerequisite is conditional, same as `emacs-parity'
       # further up, so this does not rebuild it).
@@ -316,6 +365,14 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate lisp-byte-compile -- make lisp-byte-compile
+      - name: Byte-compiler process failure controls
+        if: runner.os == 'Linux'
+        shell: bash
+        run: python3 test/nelisp-lisp-compile-gate-test.py
+      - name: Mutation harness restoration failure controls
+        if: runner.os == 'Linux'
+        shell: bash
+        run: python3 test/nelisp-mutation-recovery-test.py
 
       # Arena boundary-reclaim zeroing.  Linux x86_64 only: it drives the
       # standalone reader binary, which is where the defect lived.

@@ -72,10 +72,35 @@
       (list (cons "symbol" (symbol-name (cadr form)))
             (cons "kind" (symbol-name (car form)))
             (cons "signature" (prin1-to-string (nth 2 form)))
+            (cons "documentation" (if (stringp (nth 3 form)) (nth 3 form) ""))
             (cons "start" (nelisp-dev-source--position text (plist-get record :start)))
             (cons "end" (nelisp-dev-source--position text (plist-get record :end)))
             (cons "provenance" "known: reader definition")
             (cons "effects" ["unknown"])))))
+
+;;;###autoload
+(defun nelisp-dev-source-symbols (text)
+  "Return top-level source declarations in TEXT without evaluation or expansion.
+Function and variable documentation is literal reader data.  Positions share
+the development protocol's Unicode coordinates and UTF-8 byte offsets."
+  (let* ((parsed (nelisp-dev-source--parse text))
+         (problem (plist-get parsed :problem)) symbols)
+    (when problem (error "Source syntax: %s" (plist-get problem :message)))
+    (dolist (record (plist-get parsed :forms))
+      (let* ((form (plist-get record :form))
+             (definition (nelisp-dev-source--definition record text)))
+        (when (and (not definition) (consp form)
+                   (memq (car form) '(defvar defconst defcustom))
+                   (symbolp (cadr form)))
+          (setq definition
+                (list (cons "symbol" (symbol-name (cadr form)))
+                      (cons "kind" (symbol-name (car form)))
+                      (cons "signature" "")
+                      (cons "documentation" (if (stringp (nth 3 form)) (nth 3 form) ""))
+                      (cons "start" (nelisp-dev-source--position text (plist-get record :start)))
+                      (cons "end" (nelisp-dev-source--position text (plist-get record :end))))))
+        (when definition (push definition symbols))))
+    (vconcat (nreverse symbols))))
 
 (defun nelisp-dev-source--plain-arity (lambda-list)
   "Return (MIN . MAX) for a simple plain defun LAMBDA-LIST.

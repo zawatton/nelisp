@@ -66,6 +66,8 @@
 
 (require 'nl-prelude)
 
+(declare-function nelisp-hash-sha1 "nelisp-secure-hash" (string))
+
 ;;;; Declarations -----------------------------------------------------
 
 (defvar nl-ns--declared (make-hash-table :test 'equal)
@@ -591,12 +593,15 @@ pairs).  METADATA comes from `nl-ns--read-file-entry'."
 
 (defun nl-ns--prefixes (name)
   "Return NAME's hyphen-boundary prefixes, longest first.
-\"nl-safe-foo\" yields (\"nl-safe-\" \"nl-\")."
+\"nl-safe-foo\" yields (\"nl-safe-\" \"nl-\").
+The double hyphen starts a private name, not a nested namespace."
   (let ((out nil) (i 0) (n (length name)))
     (while (< i n)
       (when (eq (aref name i) ?-)
         (setq out (cons (substring name 0 (1+ i)) out)))
-      (setq i (1+ i)))
+      (setq i (if (and (eq (aref name i) ?-)
+                       (< (1+ i) n) (eq (aref name (1+ i)) ?-))
+                  n (1+ i))))
     out))
 
 (defun nl-ns-file-namespace (file defines)
@@ -1269,9 +1274,15 @@ accepting a divergence should accept THAT divergence, not the name."
       (let* ((entry (nl-ns--analysis-file-entry analysis file))
              (form (nl-ns--entry-definition entry symbol)))
         (setq parts (cons (if form (format "%S" form) "-") parts))))
-    (secure-hash 'sha1
-                 (encode-coding-string
-                  (mapconcat #'identity (nreverse parts) "\0") 'utf-8))))
+    (let ((bytes (encode-coding-string
+                  (mapconcat #'identity (nreverse parts) "\0") 'utf-8)))
+      ;; The development runtime's `secure-hash' shim supports only SHA-256.
+      ;; Use the host SHA-1 primitive when available, otherwise the package's
+      ;; pure implementation; both fingerprint these exact UTF-8 bytes.
+      (if (fboundp 'sha1)
+          (sha1 bytes)
+        (require 'nelisp-secure-hash)
+        (nelisp-hash-sha1 bytes)))))
 
 (defun nl-ns-finding-key (finding)
   "Return a stable string key for FINDING.

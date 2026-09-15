@@ -124,6 +124,22 @@ assert nothing when the answer is no."
 
 ;;; Namespace inference -------------------------------------------------
 
+(ert-deftest nl-ns-shape-without-host-hash ()
+  (let ((host-sha1 (and (fboundp 'sha1) (symbol-function 'sha1)))
+        (host-secure (and (fboundp 'secure-hash) (symbol-function 'secure-hash))))
+    (unwind-protect
+        (progn
+          (fmakunbound 'sha1)
+          (fmakunbound 'secure-hash)
+          (should
+           (equal (nl-ns--definition-shape
+                   '("a.el")
+                   (nl-ns-analyse '(("a.el" . ((defun sample () "日本語")))))
+                   'sample)
+                  "68c0609ded0ac0db11ecbba81a21346a083f15a0")))
+      (when host-sha1 (fset 'sha1 host-sha1))
+      (when host-secure (fset 'secure-hash host-secure)))))
+
 (ert-deftest nl-ns-infers-dominant-prefix ()
   (nl-ns-clear-declarations)
   (should (equal (nl-ns-file-namespace
@@ -142,6 +158,18 @@ assert nothing when the answer is no."
   ;; A deliberately global file (a stdlib prelude) has no majority
   ;; prefix and must not be prefix-checked at all.
   (should-not (nl-ns-file-namespace "a.el" '(car cdr princ terpri))))
+
+(ert-deftest nl-ns-private-helpers-share-public-namespace ()
+  (nl-ns-clear-declarations)
+  (should (equal (nl-ns-file-namespace
+                  "a.el" '(nl-demo--parse-one nl-demo--parse-two nl-demo-run))
+                 "nl-demo-"))
+  ;; A real foreign prefix is still a violation.
+  (let ((findings (nl-ns-check (nl-ns-analyse
+                   '(("a.el" . ((defun nl-demo--one () nil)
+                                 (defun nl-demo--two () nil)
+                                 (defun foreign-run () nil))))))))
+    (should (= 1 (length (nl-ns-findings-of-kind findings 'ns-prefix-violation))))))
 
 (ert-deftest nl-ns-empty-file-has-no-namespace ()
   (nl-ns-clear-declarations)

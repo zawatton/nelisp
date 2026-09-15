@@ -126,4 +126,33 @@ newlines; a report that cannot be parsed is a gate that cannot be read."
           (should (= 0 (alist-get 'ran report))))
       (delete-file file))))
 
+(ert-deftest nelisp-ai-gate-doctor-selects-host-binary ()
+  "A stale Windows artifact must not shadow the Unix executable."
+  (skip-unless (memq system-type '(gnu/linux darwin)))
+  (let* ((root (make-temp-file "nelisp-binary-selection" t))
+         (script (expand-file-name "tools/ai/nelisp-ai.sh" root))
+         (source (expand-file-name "tools/ai/nelisp-ai.sh"))
+         (process-environment (copy-sequence process-environment)))
+    (unwind-protect
+        (progn
+          (setenv "NELISP_BIN" nil)
+          (make-directory (file-name-directory script) t)
+          (make-directory (expand-file-name "target/gates" root) t)
+          (copy-file source script)
+          (dolist (name '("nelisp" "nelisp.exe"))
+            (let ((file (expand-file-name (concat "target/" name) root)))
+              (write-region "#!/bin/sh\nexit 0\n" nil file nil 'silent)
+              (set-file-modes file #o755)))
+          (with-temp-buffer
+            (should (= 0 (call-process "sh" nil t nil script "doctor")))
+            (should (string-match-p "nelisp: +target/nelisp sha="
+                                    (buffer-string))))
+          ;; Explicit selection remains authoritative.
+          (setenv "NELISP_BIN" "target/nelisp.exe")
+          (with-temp-buffer
+            (should (= 0 (call-process "sh" nil t nil script "doctor")))
+            (should (string-match-p "nelisp: +target/nelisp.exe sha="
+                                    (buffer-string)))))
+      (delete-directory root t))))
+
 ;;; nelisp-ai-gate-test.el ends here

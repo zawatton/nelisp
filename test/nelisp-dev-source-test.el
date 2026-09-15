@@ -2,6 +2,15 @@
 (require 'ert)
 (require 'nelisp-dev-source)
 
+(ert-deftest nelisp-dev-source-symbol-docs-are-nonexecuting ()
+  (let* ((text "(error \"must not run\")\n(defun 文 (x) \"日本語 <script>\" x)\n(defvar setting 1 \"Setting docs\")\n")
+         (symbols (nelisp-dev-source-symbols text)))
+    (should (= (length symbols) 2))
+    (should (equal (cdr (assoc "documentation" (aref symbols 0))) "日本語 <script>"))
+    (should (equal (cdr (assoc "kind" (aref symbols 1))) "defvar"))
+    (should (= (cdr (assoc "line" (cdr (assoc "start" (aref symbols 0))))) 2))
+    (should-error (nelisp-dev-source-symbols "(defun broken ("))))
+
 (ert-deftest nelisp-dev-source-arity-scope-and-stable-occurrences ()
   (let* ((text "(defun f (x) x)\n(defun caller () (f) (f) 42)\n")
          (first (nelisp-dev-source-test--run text "check"))

@@ -703,7 +703,10 @@ ns-collision-divergent 127
 # particular is the API that stops this branch over-claiming which callers a
 # replacement reaches, so hiding it behind the private prefix is the wrong
 # trade.
-ns-prefix-violation 1006
+# Private names stop namespace inference at the first `--'. This removes
+# false public-API violations in helper-heavy files; foreign prefixes and
+# cross-file private references remain checked. Measured on 404 files.
+ns-prefix-violation 322
 # 611 -> 613 on 2026-08-20: `nelisp--check-string'/`--check-symbol' and the
 # other argument-check helpers are referenced from the lisp/ mirrors that
 # carry copies of the functions using them.  This is the kind this file

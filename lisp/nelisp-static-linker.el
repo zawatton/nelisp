@@ -690,7 +690,7 @@ deterministic order (= sorted by name)."
 
 (defun nelisp-link-units (file-path units
                                     &optional entry-sym section-layout
-                                    machine)
+                                    machine entry-symbol-only)
   "Link UNITS and emit an executable ELF binary to FILE-PATH.
 UNITS is a list of compile-unit plists (= `nelisp-link-unit-make').
 ENTRY-SYM is the entry-point symbol name; defaults to `\"_start\"'.
@@ -699,6 +699,8 @@ it is computed by `nelisp-link--compute-layout' from the combined
 sections so the linker's reloc patches match the ELF writer's
 internal placement.  MACHINE is the arch tag forwarded to the ELF
 writer (= `x86_64' / `aarch64' / integer); defaults to `x86_64'.
+When ENTRY-SYMBOL-ONLY is non-nil, retain only the entry in the emitted
+symbol table. All symbols still participate in relocation resolution.
 Pipeline: combine sections (§93.b), compute layout (§93.c), run
 2-pass symtab + reloc resolution (§93.b), export symtab to ELF
 writer shape (§93.c), then call `nelisp-elf-write-binary' with
@@ -729,6 +731,12 @@ must NOT emit a `.rela.text' section).  Returns FILE-PATH."
                       :machine mach)))
     (unless (nelisp-link-symtab-lookup symtab entry)
       (signal 'nelisp-link--unresolved-symbol (list entry :entry)))
+    (when entry-symbol-only
+      (setq plist
+            (plist-put plist :symbols
+                       (cl-remove-if-not
+                        (lambda (symbol) (equal (plist-get symbol :name) entry))
+                        symbols))))
     (declare-function nelisp-elf-write-binary "nelisp-elf-write" (path s))
     (nelisp-elf-write-binary file-path plist)
     file-path))

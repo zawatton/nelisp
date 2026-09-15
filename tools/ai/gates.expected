@@ -1543,3 +1543,6 @@ lisp-byte-compile
 # the reclaimed span gets reused, with both the `\='x' reader shorthand and
 # `(quote x)'.  Ten checks; against the pre-fix binary, four of them fail.
 nelisp-sexp-clone-bind-smoke
+# Host-only project result validation. Real-runtime integration runs separately
+# after standalone-reader-test in CI; mutation proof requires no binary build.
+project-cli-contract

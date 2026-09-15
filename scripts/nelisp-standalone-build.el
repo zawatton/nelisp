@@ -26209,6 +26209,7 @@ correctly."
                                        "--eval")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_load
                                        "--load")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_source_separator "--")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_neln_selftest
                                        "--neln-selftest")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_embedded
@@ -26311,7 +26312,7 @@ correctly."
 	      "))) (nelisp--write-stdout-bytes (nelisp--repr v)) (nelisp--write-stdout-bytes (unibyte-string 10)) 0)\n0\n")
     ,(nelisp-standalone--copy-lit-defun
       'nl_cli_help_text
-	      "Usage: nelisp [--help] [--repl [--no-prompt] [--no-print]] [--eval EXPR] [--load FILE] [--neln-selftest] [FILE]\nArguments:\n  --help                         Show this argument list\n  --eval EXPR                    Evaluate EXPR and print the value\n  --load FILE                    Load FILE and print the last value\n  --neln-selftest                Run the embedded native exec self-test\n  --repl [--no-prompt] [--no-print]\n                                 Start the REPL\n  FILE                           Load FILE as a source file\nCommands:\n  dump-runtime-image FILE [--load SRC]... FORM...\n  extend-runtime-image IMAGE OUT [--load SRC]... FORM...\n  eval-runtime-image IMAGE FORM...\n  exec-runtime-image IMAGE FORM...\n  compile-runtime-image --kind nelc|neln|auto --input FILE.nlri --output FILE\n  compile-elisp-artifact --kind nelc|neln|elc --input FILE.el --output FILE\n  compile-elisp-artifacts --kind nelc|neln|auto FILE.el|DIR...\n  audit-elisp-artifacts [--required] FILE.el|FILE.neln|DIR...\n  exec-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...\n  eval-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...\n  load-elisp-source [--auto-compile] [--kind nelc|neln] FILE.el\n  eval-elisp-source [--auto-compile] [--kind nelc|neln] FILE.el FORM...\n  native-exec-elisp-artifact FILE.neln SYMBOL ARG...\n  inspect-elisp-artifact FILE.nelc|FILE.neln|FILE.elc\n")
+	      "Usage: nelisp [--help] [--repl [--no-prompt] [--no-print]] [--eval EXPR [-- ARG...]] [--load FILE [-- ARG...]] [--neln-selftest] [FILE]\nArguments:\n  --help                         Show this argument list\n  --eval EXPR                    Evaluate EXPR and print the value; optional -- ARG...\n  --load FILE                    Load FILE and print the last value; optional -- ARG...\n  --neln-selftest                Run the embedded native exec self-test\n  --repl [--no-prompt] [--no-print]\n                                 Start the REPL\n  FILE                           Load FILE as a source file\nCommands:\n  dump-runtime-image FILE [--load SRC]... FORM...\n  extend-runtime-image IMAGE OUT [--load SRC]... FORM...\n  eval-runtime-image IMAGE FORM...\n  exec-runtime-image IMAGE FORM...\n  compile-runtime-image --kind nelc|neln|auto --input FILE.nlri --output FILE\n  compile-elisp-artifact --kind nelc|neln|elc --input FILE.el --output FILE\n  compile-elisp-artifacts --kind nelc|neln|auto FILE.el|DIR...\n  audit-elisp-artifacts [--required] FILE.el|FILE.neln|DIR...\n  exec-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...\n  eval-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...\n  load-elisp-source [--auto-compile] [--kind nelc|neln] FILE.el\n  eval-elisp-source [--auto-compile] [--kind nelc|neln] FILE.el FORM...\n  native-exec-elisp-artifact FILE.neln SYMBOL ARG...\n  inspect-elisp-artifact FILE.nelc|FILE.neln|FILE.elc\n")
     ,(nelisp-standalone--copy-lit-defun
       'nl_repl_eval_prefix
       "(let ((v (progn\n")
@@ -26426,6 +26427,10 @@ correctly."
     (defun nl_cli_one_arg_p (arg2 arg3)
       (if (= arg2 0) 0
         (if (= arg3 0) 1 0)))
+    (defun nl_cli_source_args_p (arg2 arg3)
+      (if (= (nl_cli_one_arg_p arg2 arg3) 1) 1
+        (if (= arg2 0) 0
+          (nl_cstr_eq_source_separator arg3))))
     (defun nl_cstr_copy_into (src dst off)
       (if (= src 0)
           off
@@ -27219,7 +27224,7 @@ correctly."
               (seq (nl_cli_write_help fbuf) 0)
             (seq (nl_cli_write_help fbuf) 2)))
          ((= (nl_cli_eval_command_p path) 1)
-          (if (= (nl_cli_one_arg_p arg2 arg3) 1)
+          (if (= (nl_cli_source_args_p arg2 arg3) 1)
               (let* ((expr-str (alloc-bytes 32 8)))
                 (seq
                  (nl_alloc_str arg2 (nl_cstr_len arg2) expr-str)
@@ -27297,7 +27302,7 @@ correctly."
                     (- (ptr-read-u64 268435464 0) 1))))))
             (seq (nl_cli_write_help fbuf) 2)))
          ((= (nl_cstr_eq_load path) 1)
-          (if (= (nl_cli_one_arg_p arg2 arg3) 1)
+          (if (= (nl_cli_source_args_p arg2 arg3) 1)
               (seq
                ;; Run the stdlib prelude before the user file so `--load file.el'
                ;; has the same library (defun / defmacro / when / dash / s / ht /
@@ -31810,6 +31815,133 @@ plist-get/backquote).  Exits 0/1."
                          code expected)
                 (kill-emacs 1))))
         (when (file-exists-p tmp) (delete-file tmp))))))
+
+(defconst nelisp-standalone--project-adapter
+  '(defun nelisp_project_driver (sp)
+     (let* ((argc (ptr-read-u64 sp 0))
+            (env (+ sp (* (+ argc 2) 8)))
+            (count 0))
+       (if (< argc 1) 2
+        (seq
+        (while (not (= (ptr-read-u64 env (* count 8)) 0))
+          (setq count (+ count 1)))
+        (let ((args (syscall-direct 9 0 (* (+ argc count 6) 8) 3 34 (- 0 1) 0)))
+          (if (< args 0) 1
+            (seq
+             (ptr-write-u64 args 0 (+ argc 3))
+             (ptr-write-u64 args 8 (ptr-read-u64 sp 8))
+             (ptr-write-u64 args 16 (data-addr nelisp_project_eval))
+             (ptr-write-u64 args 24 (data-addr nelisp_project_source))
+             (ptr-write-u64 args 32 (data-addr nelisp_project_separator))
+             (let ((i 1))
+               (while (< i argc)
+                 (seq
+                  (ptr-write-u64 args (* (+ i 4) 8)
+                                 (ptr-read-u64 sp (* (+ i 1) 8)))
+                  (setq i (+ i 1)))))
+             (ptr-write-u64 args (* (+ argc 4) 8) 0)
+             (let ((i 0))
+               (seq
+                (while (< i count)
+                  (seq
+                   (ptr-write-u64 args (* (+ argc i 5) 8) (ptr-read-u64 env (* i 8)))
+                   (setq i (+ i 1))))
+                (ptr-write-u64 args (* (+ argc count 5) 8) 0)))
+             (driver args))))))))
+  "Linux x86_64 entry adapter; preserves the inherited environment.
+The native mmap is needed before driver initializes the Lisp allocator.
+Original application arguments follow the driver arguments and -- separator.")
+
+(defun nelisp-standalone--project-source (file entry &optional profile)
+  "Validate FILE as Lisp without executing it; append a call to ENTRY."
+  (unless (string-match-p "\\`[a-zA-Z][a-zA-Z0-9_-]*\\'" entry)
+    (error "Invalid project entry name"))
+  (with-temp-buffer
+    (insert-file-contents file)
+    (emacs-lisp-mode)
+    (check-parens)
+    (goto-char (point-min))
+    (let ((names (list (intern entry))))
+      (while (progn (forward-comment (point-max)) (not (eobp)))
+        (let ((form (read (current-buffer))))
+          (when (and profile (memq (car-safe form) '(defun cl-defun)))
+            (when (string-prefix-p "nelisp-project-profile-" (symbol-name (cadr form)))
+              (error "Application defines a reserved profiling name"))
+            (push (cadr form) names))))
+      ;; Exit before --eval's value-printing wrapper: an application must not
+      ;; gain a trailing "0" line merely because it was packaged.
+      (concat
+       "(progn\n(setq command-line-args-left (nthcdr 3 nelisp-standalone-argv))\n"
+       (when profile
+         (with-temp-buffer
+           (insert-file-contents
+            (or (locate-file "nelisp-project-profile.el" load-path)
+                (error "Profiling support source is missing")))
+           (concat (buffer-string) "\n")))
+       (buffer-string) "\n"
+       (if profile
+           (format "(nelisp-project-profile-run '%S '%S)"
+                   (intern entry) (delete-dups (nreverse names)))
+         (concat "(" entry ")"))
+       "\n(nelisp--exit-process 0))"))))
+
+(defun nelisp-standalone--project-data (source &optional debug-digest)
+  "Return the read-only application SOURCE and command strings."
+  (when (and debug-digest (not (string-match-p "\\`[0-9a-f]\\{64\\}\\'" debug-digest)))
+    (error "Invalid debug source-map digest"))
+  (let ((command (encode-coding-string "--eval\0" 'utf-8-unix))
+        (text (encode-coding-string (concat source "\0") 'utf-8-unix)))
+    (when (string-search "\0" source)
+      (error "Application source cannot contain a literal NUL"))
+    (nelisp-link-unit-make
+     "project-data.o" (list (cons 'rodata
+                                  (concat command text (encode-coding-string "--\0" 'utf-8-unix)
+                                          (when debug-digest
+                                            (encode-coding-string
+                                             (concat "\0NELISP_DEBUG_MAP_V1:" debug-digest "\0")
+                                             'utf-8-unix)))))
+     (list (nelisp-link-symbol "nelisp_project_eval" 0 :section 'rodata :bind 'global)
+           (nelisp-link-symbol "nelisp_project_source" (length command)
+                              :section 'rodata :bind 'global)
+           (nelisp-link-symbol "nelisp_project_separator" (+ (length command) (length text))
+                              :section 'rodata :bind 'global)) nil)))
+
+(defun nelisp-standalone-build-application (file entry output &optional release profile debug-digest cache-directory)
+  "Build Linux x86_64 OUTPUT from application FILE and ENTRY.
+OUTPUT must be a staging path owned by the caller. Never writes target/nelisp.
+RELEASE omits non-entry native symbols; it does not AOT-compile application forms.
+PROFILE instruments top-level function cells for the entry invocation.
+DEBUG-DIGEST binds an external source map to the executable's read-only data.
+CACHE-DIRECTORY overrides the native unit cache for this build only; nil
+retains the checkout default. Application outputs still go to OUTPUT."
+  (unless (and (eq system-type 'gnu/linux)
+               (string-match-p "x86_64" system-configuration)
+               (eq nelisp-standalone--target 'linux-x86_64))
+    (error "Project executable builds currently require Linux x86_64"))
+  (let* ((nelisp-standalone--cache-dir
+          (if cache-directory (expand-file-name cache-directory)
+            nelisp-standalone--cache-dir))
+         (nelisp-standalone--recompiled nil)
+         (source (nelisp-standalone--project-source file entry profile))
+         (data (nelisp-standalone--project-data source debug-digest))
+         (adapter (nelisp-standalone--compile-to-unit
+                   "project-entry.o" nelisp-standalone--project-adapter))
+         (units (nelisp-standalone--reader-units))
+         (start (copy-tree (car units)))
+         (redirected 0))
+    (dolist (reloc (plist-get start :relocs))
+      (when (equal (plist-get reloc :symbol) "driver")
+        (setf (plist-get reloc :symbol) "nelisp_project_driver")
+        (setq redirected (1+ redirected))))
+    (unless (= redirected 1)
+      (error "Reader entry contract changed: expected one driver relocation"))
+    (nelisp-link-units output (append (list start adapter data) (cdr units))
+                       nil nil nil release)
+    (set-file-modes output #o755)
+    (message "project build: %d runtime units recompiled"
+             (length nelisp-standalone--recompiled))
+    output))
+
 
 (provide 'nelisp-standalone-build)
 

@@ -1140,6 +1140,18 @@ This is the chain validation for the entire AOT spike (= Doc
               (should (= (aref bytes #x13) 0)))))
       (when (file-exists-p path) (delete-file path)))))
 
+(ert-deftest nelisp-link-entry-symbol-only-preserves-relocations ()
+  (let ((path (make-temp-file "nelisp-link-release-")))
+    (unwind-protect
+        (progn
+          (nelisp-link-units path (nelisp-link-test--e2e-units) nil nil nil t)
+          (should (nelisp-elf-read-symbol path "_start"))
+          (should-error (nelisp-elf-read-symbol path "helper"))
+          (when (and (eq system-type 'gnu/linux)
+                     (string-match-p "x86_64" system-configuration))
+            (should (= (call-process path nil nil nil) 0))))
+      (delete-file path))))
+
 (ert-deftest nelisp-link-units-e2e-symtab-has-start-and-helper ()
   "Both `_start' and `helper' should be present as global symbols."
   (let* ((units (nelisp-link-test--e2e-units))

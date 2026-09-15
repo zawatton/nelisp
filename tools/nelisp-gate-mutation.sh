@@ -145,15 +145,22 @@ mutation_gate_dir="$(mktemp -d)"
 # cooperate -- they each `rm -f' the backup, which makes this a no-op.
 mutation_active_file=""
 mutation_active_backup=""
+mutation_restore() {
+  if cp "$mutation_active_backup" "$mutation_active_file" 2>/dev/null &&
+     cmp -s "$mutation_active_backup" "$mutation_active_file"; then
+    return 0
+  fi
+  printf 'gate-mutation: COULD NOT RESTORE %s -- original retained at %s; stopping before another mutation\n' \
+    "$mutation_active_file" "$mutation_active_backup" >&2
+  return 1
+}
+
 mutation_cleanup() {
   if [ -n "${mutation_active_backup:-}" ] && [ -f "$mutation_active_backup" ]; then
-    if cp "$mutation_active_backup" "$mutation_active_file" 2>/dev/null; then
+    if mutation_restore; then
       printf 'gate-mutation: restored %s (left mid-row)\n' "$mutation_active_file" >&2
-    else
-      printf 'gate-mutation: COULD NOT RESTORE %s -- the injection is still in the tree; %s holds the original\n' \
-        "$mutation_active_file" "$mutation_active_backup" >&2
+      rm -f "$mutation_active_backup"
     fi
-    rm -f "$mutation_active_backup"
   fi
   mutation_active_file=""; mutation_active_backup=""
   rm -rf "$mutation_gate_dir"
@@ -411,7 +418,8 @@ while IFS='|' read -r gate file expr what scope; do
   if cmp -s "$file" "$backup"; then
     echo "  $gate: SED MATCHED NOTHING -- the injection is stale ($what)"
     failed=$((failed+1))
-    cp "$backup" "$file"; rm -f "$backup"; continue
+    mutation_restore || exit 1
+    rm -f "$backup"; continue
   fi
   # A gate that needs the binary must see the mutated source, so rebuild --
   # and the rebuild MUST be checked.  The first run of this harness reported
@@ -460,7 +468,8 @@ while IFS='|' read -r gate file expr what scope; do
     if ! rebuild_checked; then
       echo "  $gate: HARNESS ERROR (rebuild with the injection failed; a stale binary would have read as PASS)"
       failed=$((failed+1))
-      cp "$backup" "$file"; rm -f "$backup"; continue
+      mutation_restore || exit 1
+      rm -f "$backup"; continue
     fi
   fi
   gate_log="$(mktemp)"
@@ -472,7 +481,7 @@ while IFS='|' read -r gate file expr what scope; do
     # require PASS, proving both that the source returned byte-for-byte and
     # that the timeout belongs to the injected defect rather than to a broken
     # baseline or a contaminated binary.
-    cp "$backup" "$file"
+    mutation_restore || exit 1
     if ! cmp -s "$file" "$backup"; then
       echo "  $gate: HARNESS ERROR (source was not restored after mutation)"
       failed=$((failed+1))
@@ -538,7 +547,7 @@ while IFS='|' read -r gate file expr what scope; do
     # and only a skip that repeats UNCHANGED on clean code is "said no" --
     # a skip that appears only once the defect lands is the defect itself,
     # dressed as "could not be asked".
-    cp "$backup" "$file"
+    mutation_restore || exit 1
     if gate_needs_rebuild "$gate" "$file"; then
       if ! rebuild_checked; then
         echo "  $gate: HARNESS ERROR (clean source was restored, but the binary could not be rebuilt before the clean skip check)"
@@ -569,7 +578,8 @@ while IFS='|' read -r gate file expr what scope; do
     echo "  $gate: went red as it should ($what)"
     passed=$((passed+1))
   fi
-  cp "$backup" "$file"; rm -f "$backup"
+  mutation_restore || exit 1
+  rm -f "$backup"
   if gate_needs_rebuild "$gate" "$file"; then
     if ! rebuild_checked; then
       echo "  $gate: HARNESS ERROR (clean source was restored, but the binary could not be rebuilt; later rows would otherwise test the injected artifact)"

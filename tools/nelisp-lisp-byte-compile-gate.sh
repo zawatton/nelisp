@@ -4,13 +4,10 @@
 # Why this gate exists.  `make compile' -- the only byte-compile step CI runs --
 # expands to $(SRCS) $(PACKAGE_SRCS), which are `src/nelisp*.el' and
 # `packages/*/src/nelisp*.el'.  It has never covered `lisp/'.  That is where the
-# AOT compiler, the artifact loader, the REPL development modules and the whole
-# DEV protocol live: 253 files that CI byte-compiled zero times, so a warning or
-# a malformed form in any of them shipped silently.  Measured 2026-09-12 on
-# Emacs 31.1: of those 253 files, 251 compile with `byte-compile-error-on-warn'
-# clean and exactly two do not.  Those two are recorded in
-# tools/nelisp-lisp-compile-baseline.txt with their current diagnostic counts;
-# every other file must stay at zero.
+# AOT compiler, artifact loader, REPL development modules and the whole DEV
+# protocol live. The original batch measurement hid sibling diagnostics;
+# tools/nelisp-lisp-compile-baseline.txt records the corrected per-file
+# measurement and its history. Unlisted files must stay at zero diagnostics.
 #
 # The baseline is a CEILING, not an equality.  It has to be: the counts are
 # Emacs-version sensitive, and CI runs 29.4 and 30.1 while this was measured on
@@ -27,7 +24,8 @@ cd "$(dirname "$0")/.." || exit 1
 
 baseline="tools/nelisp-lisp-compile-baseline.txt"
 log="${TMPDIR:-/tmp}/nelisp-lisp-byte-compile-$$.log"
-trap 'rm -f "$log"' EXIT
+file_log="${TMPDIR:-/tmp}/nelisp-lisp-byte-compile-file-$$.log"
+trap 'rm -f "$log" "$file_log"' EXIT
 
 if [ ! -r "$baseline" ]; then
   echo "lisp-byte-compile: FAIL (missing baseline $baseline)"
@@ -56,10 +54,26 @@ for d in packages/*/src; do [ -d "$d" ] && pkg_dirs+=(-L "$d"); done
 # `error-on-warn' is deliberately NOT set: it aborts a file at its first
 # finding, which would hide the rest and make the recorded counts meaningless.
 : > "$log"
+execution_failures=0
+failed_files=()
 for file in lisp/*.el; do
   [ -e "$file" ] || continue
+  compile_status=0
   "$emacs" --batch -Q -L lisp -L src -L scripts "${pkg_dirs[@]}" \
-    -f batch-byte-compile "$file" >> "$log" 2>&1
+    -f batch-byte-compile "$file" > "$file_log" 2>&1 || compile_status=$?
+  cat "$file_log" >> "$log"
+  # Exit 1 with an attributable compiler Error remains subject to the
+  # diagnostic ceiling below. Other process failures cannot borrow a sibling's
+  # warning (or an earlier file's exit status) to look like a successful run.
+  if [ "$compile_status" -ne 0 ] && { [ "$compile_status" -ne 1 ] ||
+      ! awk -v file="$file" 'index($0, file ":") == 1 &&
+          substr($0, length(file) + 2) ~ /^[0-9]+:[0-9]+: Error/ { found=1 }
+          END { exit !found }' "$file_log"; }; then
+    echo "  $file: FAIL (unsupported compiler process exit: $compile_status)"
+    sed -n '1,12p' "$file_log" | sed 's/^/    /'
+    execution_failures=$((execution_failures + 1))
+    failed_files+=("$file")
+  fi
   # Delete each .elc as soon as it has been read, not after the loop.  A
   # .elc left under lisp/ or scripts/ is not inert here: a later
   # `make standalone-reader' loads the stale byte-code in preference to the
@@ -68,7 +82,6 @@ for file in lisp/*.el; do
   # single survivor broke the build minutes later.
   rm -f "${file}c"
 done
-compile_status=0
 
 # Belt and braces: anything the compilations produced as a side effect of
 # `require', anywhere this gate can reach.
@@ -88,9 +101,9 @@ grep -oE '^lisp/[^:]+\.el:[0-9]+:[0-9]+: (Warning|Error)' "$log" 2>/dev/null \
 
 expected="${TMPDIR:-/tmp}/nelisp-lisp-expected-$$.txt"
 grep -vE '^[[:space:]]*(#|$)' "$baseline" | awk '{print $1" "$2}' | sort > "$expected"
-trap 'rm -f "$log" "$observed" "$expected"' EXIT
+trap 'rm -f "$log" "$file_log" "$observed" "$expected"' EXIT
 
-findings=0
+findings=$execution_failures
 checked="$total_files"
 
 while read -r file count; do
@@ -112,17 +125,11 @@ while read -r file want; do
     findings=$((findings + 1))
     continue
   fi
-  if ! awk -v f="$file" '$1==f {found=1} END {exit !found}' "$observed"; then
+  if ! printf '%s\n' "${failed_files[@]}" | grep -Fxq "$file" &&
+     ! awk -v f="$file" '$1==f {found=1} END {exit !found}' "$observed"; then
     echo "  $file: now compiles clean on this Emacs (baseline records $want)"
   fi
 done < "$expected"
-
-# A crash that produced no parseable diagnostics must not read as success.
-if [ "$compile_status" -ne 0 ] && [ ! -s "$observed" ]; then
-  echo "  batch-byte-compile exited $compile_status with no attributable diagnostic:"
-  sed -n '1,20p' "$log" | sed 's/^/    /'
-  findings=$((findings + 1))
-fi
 
 echo "GATE-COUNT checked=$checked findings=$findings"
 if [ "$findings" -ne 0 ]; then

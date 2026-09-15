@@ -48,6 +48,10 @@
 #
 # Record the evidence in the row's own comment: what you injected, what the
 # gate printed when RED, and what it prints when restored.
+# 2026-09-14: returning zero on failed result validation fails the host-only
+# ProjectResultContract; restoring it passes (1 case, 0 findings). No binary
+# build is needed for either side of this sensitivity check.
+project-cli-contract|tools/nelisp-project.py|s/^        return 1$/        return 0/|failed or incomplete test run is reported as success|linux-x86_64
 emacs-parity|scripts/nelisp-stdlib-prelude.el|s/^(defun regexp-quote (s)/(defun regexp-quote (s) (setq s (concat s "@"))/|regexp-quote appends a stray character
 ns-gate|scripts/nelisp-stdlib-prelude.el|s/^(defun round (x \&optional div)/(defun round (x \&optional div) (setq x x)/|round diverges from its lisp/ mirror
 # The replacement is GLOBAL on purpose.  The first version changed one

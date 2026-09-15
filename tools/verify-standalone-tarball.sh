@@ -91,6 +91,16 @@ trap 'rm -rf "$TEST_ROOT"' EXIT
 tar -xzf "$TAR_FILE" -C "$TEST_ROOT"
 INSTALL_DIR="$TEST_ROOT/$ARTIFACT_NAME"
 NELISP_EXE="$INSTALL_DIR/bin/$NELISP_BIN_NAME"
+RUNTIME_PATH="bin/$NELISP_BIN_NAME"
+PROJECT_CLI=0
+if grep -qx 'frontend bin/nelisp' "$INSTALL_DIR/MANIFEST.txt"; then
+  PROJECT_CLI=1
+  RUNTIME_PATH="libexec/nelisp-runtime"
+  NELISP_EXE="$INSTALL_DIR/$RUNTIME_PATH"
+  [[ -x "$INSTALL_DIR/bin/nelisp" ]] || { err "project launcher missing"; exit 2; }
+  [[ -f "$INSTALL_DIR/tools/nelisp-project.py" ]] || { err "project frontend missing"; exit 2; }
+  [[ -f "$INSTALL_DIR/docs/project-cli.md" ]] || { err "project guide missing"; exit 2; }
+fi
 
 [[ -d "$INSTALL_DIR/src" ]] || { err "src/ missing"; exit 2; }
 [[ -d "$INSTALL_DIR/scripts" ]] || { err "scripts/ missing"; exit 2; }
@@ -103,10 +113,10 @@ NELISP_EXE="$INSTALL_DIR/bin/$NELISP_BIN_NAME"
 [[ -f "$INSTALL_DIR/VERSION" ]] || { err "VERSION missing"; exit 2; }
 [[ -f "$INSTALL_DIR/PLATFORM" ]] || { err "PLATFORM missing"; exit 2; }
 [[ -f "$INSTALL_DIR/MANIFEST.txt" ]] || { err "MANIFEST.txt missing"; exit 2; }
-[[ -f "$NELISP_EXE" ]] || { err "bin/$NELISP_BIN_NAME missing"; exit 2; }
+[[ -f "$NELISP_EXE" ]] || { err "$RUNTIME_PATH missing"; exit 2; }
 grep -qx "$VERSION" "$INSTALL_DIR/VERSION" || { err "VERSION mismatch"; exit 2; }
 grep -qx "$PLATFORM" "$INSTALL_DIR/PLATFORM" || { err "PLATFORM mismatch"; exit 2; }
-grep -q "standalone bin/$NELISP_BIN_NAME" "$INSTALL_DIR/MANIFEST.txt" || {
+grep -qx "standalone $RUNTIME_PATH" "$INSTALL_DIR/MANIFEST.txt" || {
   err "MANIFEST missing standalone bin entry"
   exit 2
 }
@@ -174,6 +184,10 @@ run_expect_output() {
 }
 
 run_expect_output "bin/$NELISP_BIN_NAME --eval" "42" "$NELISP_EXE" --eval "(+ 40 2)"
+if [ "$PROJECT_CLI" -eq 1 ]; then
+  run_expect_output "project frontend --version" "nelisp $VERSION (project frontend)" \
+    "$INSTALL_DIR/bin/nelisp" --version
+fi
 
 REPL_DEV_INPUT="$TEST_ROOT/repl-dev-input.el"
 REPL_DEV_OUTPUT="$TEST_ROOT/repl-dev-output"

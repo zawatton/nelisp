@@ -88,6 +88,11 @@ KEYS supports `:type SYMBOL' for condition matching like ert."
 (load "packages/nl-prelude/src/nl-prelude-trampoline.el") ; wave8: nl-prelude requires it
 (load "packages/nl-prelude/src/nl-prelude.el")
 
+;; The standalone reader has no host SHA-1 primitive or package loader.
+;; Load the declared fingerprint dependency and its coding support explicitly.
+(load "src/nelisp-coding.el")
+(load "packages/nelisp-secure-hash/src/nelisp-secure-hash.el")
+
 (load "packages/nl-ns/src/nl-ns.el")
 ;; Doc 189 §4 Phase 1: `nl-ns-test.el' now evaluates real `nl-ns-define'/
 ;; `nl-ns-in' forms (its advisory/enforcement consistency test), so
@@ -118,8 +123,8 @@ KEYS supports `:type SYMBOL' for condition matching like ert."
         (setq all (cdr all))))
     (error "nl-ns-standalone-smoke: %d failure(s), %d passed"
            (length failures) ran))
-  (when (< ran 48)
-    (error "nl-ns-standalone-smoke: only %d tests ran (expected >= 48)"
+  (when (< ran 50)
+    (error "nl-ns-standalone-smoke: only %d tests ran (expected >= 50)"
            ran))
   (princ (format "nl-ns-standalone-smoke: PASS (%d tests)\n" ran)))
 

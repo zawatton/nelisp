@@ -506,6 +506,10 @@ runtime-reload-test:
 	  -l nelisp-native-runtime-safety-test \
 	  -l nelisp-runtime-reload-telemetry-test -f ert-run-tests-batch-and-exit
 
+.PHONY: project-cli-contract
+project-cli-contract:
+	python3 test/nelisp-project-cli-test.py ProjectResultContract
+
 # WS-F: the closed-raw-native-unit replace/publish REPL smoke, gated.
 # `ptr-call'/`syscall-direct' exist only in the standalone binary, so this
 # is the only place `nelisp-native-unit''s atomic-publish, stale-candidate,

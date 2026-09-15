@@ -1,2 +1,2 @@
 (:name "nl-ns"
- :requires ("nl-prelude"))
+ :requires ("nl-prelude" "nelisp-secure-hash"))

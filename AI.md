@@ -194,6 +194,22 @@ structural rather than remembered.
 
 ## Building something with NeLisp
 
+For the first project workflow (`new`, `run`, `test`, `build`, `fmt`, `repl`,
+`check`, `clean`, `update`, `fetch`, `add`, `remove`, `search`, `doc`, `bench`,
+`debug-info`), see
+[the project CLI guide](docs/project-cli.md). Its source-checkout frontend
+uses Python 3.11 and the existing standalone ERT subset; it does not rebuild
+the runtime on application edits. Run `python3 test/nelisp-project-cli-test.py`
+against an already built binary when changing that frontend.
+The separate `python3 test/nelisp-project-build-test.py` acceptance suite
+builds standalone Linux ELF applications with the existing compiler/linker.
+For dependency edits, start with the resolver and HTTPS store suites documented
+in [package resolution](docs/package-resolution.md); the project package suite
+then exercises transitive loading and isolated native deployment.
+The full strategy scope and acceptance requirements are preserved in
+[the implementation map](docs/strategy-implementation.md). Partial CLI success
+does not establish completion of the language/platform strategy.
+
 Start from `recipes/README.org`, which lists the application shapes that
 are known to work today and the ones that are not viable yet, with the
 measurement behind each verdict.  Copy a recipe's `skeleton/`, then run

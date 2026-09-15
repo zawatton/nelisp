@@ -63,9 +63,11 @@ test_files() {
 
 nelisp_binary() {
     if [ -n "${NELISP_BIN:-}" ]; then printf '%s' "$NELISP_BIN"; return 0; fi
-    for candidate in target/nelisp.exe target/nelisp; do
-        [ -x "$candidate" ] || [ -f "$candidate" ] && { printf '%s' "$candidate"; return 0; }
-    done
+    case "$(uname -s)" in
+        MINGW*|MSYS*|CYGWIN*) candidate=target/nelisp.exe ;;
+        *) candidate=target/nelisp ;;
+    esac
+    if [ -x "$candidate" ]; then printf '%s' "$candidate"; return 0; fi
     return 1
 }
 

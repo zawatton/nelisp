@@ -1,0 +1,108 @@
+# Strategy implementation and acceptance map
+
+This document preserves the scope of [NeLisp Strategy](nelisp-strategy.org).
+It is an implementation plan, not a worklog or a completion declaration.
+The strategy itself remains authoritative. A subsection's examples, named
+artifacts, required commands, and exit criteria must be checked separately
+before that subsection can be considered complete.
+
+## Dependency order
+
+1. Make the project workflow reliable: commands, diagnostics, project inputs,
+   reproducible artifacts, installation, compatibility tests, and short feedback
+   loops. Do not equate a checkout-only Python frontend with a self-hosted CLI,
+   or an embedded reader executable with AOT application compilation.
+2. Package manifests, resolution, lock/cache integrity, registry API, official
+   libraries. These establish inputs shared by builds, documentation, and editors.
+3. Source-aware development protocol, LSP/editor integration, debugger, and
+   documentation. Reuse proven runtime inspection/publication facilities.
+4. Concurrency, foreign-library integration, capability enforcement, and service
+   operation. Build the agent/MCP application on those explicit contracts.
+5. Flagship products, platform qualification, benchmark publication, ecosystem,
+   and stability/release commitments. External adoption is not provable merely
+   by adding code or declaring a milestone shipped.
+
+This order changes implementation scheduling, not the requested end state.
+The whole strategy remains open while any requirement lacks sufficient evidence.
+
+## Requirement families and acceptance evidence
+
+| Strategy sections | Required outcome | Evidence needed before completion |
+|---|---|---|
+| 1–2, 15, 22.1 | Native, interactive, self-hosted platform positioning; coherent branding and user-facing paths | Implemented workflow matches public claims; homepage/install/CLI review; no internal stage names in marketing |
+| 3.1 | Published compatibility tiers | Executed compatibility corpus, named supported libraries/shims and explicit unsupported editor APIs |
+| 3.2–3.3 | Modern modules/namespaces, matching/data/error facilities, concurrency/types/foreign/immutable/package facilities without losing Lisp semantics | Individual language designs, compatibility impact, executable examples, macro/reflection/live-redefinition tests; candidates need explicit disposition |
+| 4.1 | Native independent executable workflow, build modes, reproducibility, cross-platform distribution | Clean-install and isolated-executable tests on supported platforms; distinguish evaluated and compiled application code |
+| 4.2 | Function/variable/stack/heap inspection, dynamic loading/live patching, REPL attachment | Real running-process inspection and replacement with preserved state, failure containment, and limits |
+| 4.3 | Reader/parser/macros/compiler/optimizer/writer/package/build/docs/test self-hosting | Bootstrap chain and commands executing without host Emacs/Python; each component qualified independently |
+| 4.4 | Correct GC with diagnostics and latency/throughput/memory evidence | Allocator/collector correctness and long-running tests, live metrics, reproducible latency/memory measurements |
+| 5 | Tasks/spawn/await/channels/select/parallel-map/cancellation/structured scopes | User-facing examples with real concurrency, cleanup, error propagation, and deterministic contract tests |
+| 6 | `new run build test fmt repl add remove update doc check clean bench`; `nelisp.toml`, `nelisp.lock`; dev/release/debug/profile | Every command's successful and failing workflows, project layout, profile behavior, reproducibility and dependency integrity |
+| 7 | Resolver/cache/registry and official package set | Version/ownership/dependencies/docs/advisories/metrics/hashes/yanking/search/API; real install/update/remove/lock tests; all 19 named initial libraries qualified |
+| 8 | Simple C ABI FFI and header bindgen, then other bridges | Real external-library calls, generated bindings and ABI/error/resource tests; retain repository FFI boundary policy |
+| 9 | All listed standard modules with stability labels | Public API inventory linked to tests and documentation; actual standalone workflows rather than feature-name presence |
+| 10 | Deterministic formatter, full test-runner facilities, source-oriented diagnostics, debugger | Formatting and semantic preservation; unit/integration/property/filter/parallel/coverage/machine output; locations and debugger step/locals/attach/tasks |
+| 11 | LSP and editor integrations led by VS Code | Protocol tests and real client qualification for completion/definition/references/rename/hover/signatures/diagnostics/tokens/format/actions/symbols; test/debug/package UI |
+| 12 | Agents/tools/schemas/providers/state/MCP and controlled runtime mutation | Usable agent examples and provider contracts; transactional publication/rollback/audit/signature/policy/capability tests |
+| 13 | HTTP1/2, TLS, WebSocket, routing/middleware/JSON/streaming, shutdown/logging/metrics/async | Real service and deployment tests, adverse network/resource behavior, standalone release build |
+| 14 | NeLisp Book, searchable generated HTML API docs, language/compiler/runtime/FFI/package/compatibility/ABI references | All named chapters/references available and runnable; source-to-doc command and search verified |
+| 16 | Public reproducible benchmark suite and performance goals | Startup/calls/allocator/GC/strings/maps/I/O/HTTP/concurrency/numerical/compiler/agent results, valid baselines and named artifacts across listed comparisons |
+| 17 | Explicit capabilities and sandbox/resource isolation | Filesystem/network/process/env/FFI/package/mutation authority tests; selected sandbox design and adversarial isolation/resource tests |
+| 18 | Governance/RFC/security/release roles and stability policy | Adopted policies and operational ownership; migrations and core/package/ABI compatibility checks; do not invent maintainers or commitments |
+| 19 | Flagship apps, demonstrations, community infrastructure | Working products and all named demos; actual hosted discussions/docs/registry/blog/release/roadmap channels, with publication authorization when required |
+| 20 | All five roadmap phases and their exit criteria | New-user timed onboarding; production CLI/service without Emacs; useful native agents; external adoption; full 1.0 stability requirements |
+| 21–22 | Priorities and five immediate work streams | Positioning + unified CLI + package management + LSP + exceptional native agent; no one stream substitutes for all five |
+| 23–24 | Product/adoption metrics and inspectable/transformable live systems | Real measurements with dates and provenance; external usage evidence; runtime behavior supporting the stated principles |
+
+## Current implementation boundary
+
+The [package resolution contract](package-resolution.md) defines the initial
+offline version solver and deterministic lock encoding. CLI update/fetch and
+shared runtime dependency loading are now connected, with HTTPS artifact
+acquisition, verified cache publication, and isolated application tests.
+Add/remove now edit ordinary dependency tables and preserve existing pins.
+Explicit HTTPS registry selection, name search, and URL-bound offline index
+snapshots are connected and tested. Official registry operation, publisher
+authentication/signed indexes, general TOML editing, crash recovery, richer package formats,
+and self-hosting remain open; these contracts do not establish package-manager
+completion.
+
+The project frontend in `tools/nelisp-project.py` currently provides a partial
+Phase 1 workflow. Its integration suites and [project guide](project-cli.md)
+describe actual behavior. It still relies on Python for orchestration and host
+Emacs for builds/formatting/source validation. Linux executable builds embed a
+reader and source, with no claim of whole-application AOT. The project REPL is
+a live evaluator, not a full debugger or externally attachable process service.
+
+`test --filter` selects literal substrings of registered test names, and
+`test --json` reports counts, completion state, and captured output. Zero-match,
+startup-failure, duplicate-completion, and process-error contracts are tested,
+including the installed workflow. Parallel execution, property generation,
+coverage, and richer per-test reporting remain open.
+
+The standalone tarball builder's Linux `--project-cli` option now packages this
+frontend and compiler sources with a runtime under `libexec/nelisp-runtime`.
+The local-artifact installer, relocated installation, project workflow, and
+isolated generated executable are tested, including project builds from a
+read-only installation using a per-user native unit cache. Published project-CLI releases, system
+prerequisite installation, self-hosting, other platforms, and first-time user
+onboarding remain unqualified.
+
+`doc` now generates searchable standalone HTML and a deterministic API JSON
+index from top-level project source declarations, using the development
+protocol reader. Source extraction and generation are tested, and browser
+filtering is qualified. The NeLisp Book, full public API semantics, dependency
+documentation, and self-hosted generation remain open.
+
+The current development milestone includes application arguments for `run` and
+Linux executables, plus dev/release/profile/debug builds. Release strips native
+symbols; profile measures selected function cells; debug binds declaration maps
+to the executable. These are deliberately narrower than optimized application
+AOT compilation or a live debugger.
+
+Missing or unverified areas include self-hosted distribution, the complete CLI
+semantics, official registry service/publication, full formatter/test facilities,
+platform qualification, LSP/debug/editor UI,
+and the later platform/product requirements above. Existing repository modules
+may cover parts of these requirements, but their presence is not completion
+evidence: inspect and run the relevant public paths before reusing their claims.

@@ -15,7 +15,10 @@
 # before staging the tarball.
 #
 # Usage:
-#   tools/build-standalone-tarball.sh [VERSION] [PLATFORM] [--emacs EMACS]
+#   tools/build-standalone-tarball.sh [VERSION] [PLATFORM] [--emacs EMACS] [--project-cli]
+# --project-cli adds the Python project frontend on Linux x86_64 and moves
+# the standalone reader to libexec/nelisp-runtime. Host Emacs remains needed
+# for application builds and source tooling, but not run/test.
 
 set -euo pipefail
 
@@ -32,10 +35,12 @@ default_platform() {
 VERSION="$(nelisp_version)"
 PLATFORM="${NELISP_STANDALONE_TARGET:-$(default_platform)}"
 EMACS_BIN="${EMACS:-emacs}"
+PROJECT_CLI=0
 POSITIONAL=()
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --project-cli) PROJECT_CLI=1; shift ;;
     --emacs)
       if [ "$#" -lt 2 ]; then
         echo "usage: $0 [VERSION] [PLATFORM] [--emacs EMACS]" >&2
@@ -45,7 +50,7 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     -h|--help)
-      echo "usage: $0 [VERSION] [PLATFORM] [--emacs EMACS]"
+      echo "usage: $0 [VERSION] [PLATFORM] [--emacs EMACS] [--project-cli]"
       exit 0
       ;;
     --)
@@ -75,6 +80,10 @@ if [ "${#POSITIONAL[@]}" -ge 1 ]; then
 fi
 if [ "${#POSITIONAL[@]}" -ge 2 ]; then
   PLATFORM="${POSITIONAL[1]}"
+fi
+if [ "$PROJECT_CLI" -eq 1 ] && [ "$PLATFORM" != "linux-x86_64" ]; then
+  echo "project CLI bundles currently require linux-x86_64" >&2
+  exit 2
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -155,6 +164,17 @@ cp docs/repl-development.md "$STAGE_DIR/docs/repl-development.md"
 cp packages/nelisp-eventloop/src/*.el "$STAGE_DIR/packages/nelisp-eventloop/src/"
 cp packages/nelisp-process-adapter/src/*.el "$STAGE_DIR/packages/nelisp-process-adapter/src/"
 
+STAGED_RUNTIME_PATH="bin/$STAGED_BIN_NAME"
+if [ "$PROJECT_CLI" -eq 1 ]; then
+  mkdir -p "$STAGE_DIR/libexec"
+  mv "$STAGE_DIR/bin/nelisp" "$STAGE_DIR/libexec/nelisp-runtime"
+  STAGED_RUNTIME_PATH="libexec/nelisp-runtime"
+  cp bin/nelisp "$STAGE_DIR/bin/nelisp"
+  cp tools/nelisp-project.py tools/nelisp_*.py "$STAGE_DIR/tools/"
+  cp docs/project-cli.md docs/package-resolution.md docs/strategy-implementation.md \
+    docs/nelisp-strategy.org "$STAGE_DIR/docs/"
+fi
+
 # Docs + version stamps.
 [[ -f LICENSE ]] && cp LICENSE "$STAGE_DIR/"
 if [[ -f README-stage-d-v3.0.org ]]; then
@@ -164,14 +184,14 @@ elif [[ -f README-stage-d.org ]]; then
 elif [[ -f README.org ]]; then
   cp README.org "$STAGE_DIR/README.org"
 fi
-cat >> "$STAGE_DIR/README.org" <<'EOF'
+cat >> "$STAGE_DIR/README.org" <<EOF
 
 * Using the bundled REPL development entry point
 
 From the extracted bundle directory, run:
 
 #+begin_src sh
-NELISP_BIN=bin/nelisp tools/ai/nelisp-ai.sh repl
+NELISP_BIN=$STAGED_RUNTIME_PATH tools/ai/nelisp-ai.sh repl
 #+end_src
 
 This launcher requires a host Emacs to generate the REPL support runtime.
@@ -180,7 +200,21 @@ Native runtime rebuild, native artifact checks, and repository-wide checks
 require a source checkout; the bundled reader remains usable for normal REPL
 development commands.
 EOF
-[[ -f install.sh ]] && cp install.sh "$STAGE_DIR/install.sh" && chmod +x "$STAGE_DIR/install.sh" || true
+if [ "$PROJECT_CLI" -eq 1 ]; then
+  cat >> "$STAGE_DIR/README.org" <<'EOF'
+
+* Project commands
+
+Add this installation's =bin/= directory to PATH and run =nelisp new hello=.
+Then =cd hello=, =nelisp run=, =nelisp test=, and =nelisp build=.
+See =docs/project-cli.md= for prerequisites and the installation contract.
+Python 3.11+ is required; builds and source tooling also require host Emacs.
+Project builds keep native units in the user's cache, so the installation
+can be read-only. See =NELISP_BUILD_CACHE= in the project guide.
+EOF
+fi
+cp release/stage-d-v3.0/install-v3.sh "$STAGE_DIR/install.sh"
+chmod +x "$STAGE_DIR/install.sh"
 printf "%s\n" "$VERSION" > "$STAGE_DIR/VERSION"
 printf "%s\n" "$PLATFORM" > "$STAGE_DIR/PLATFORM"
 
@@ -188,7 +222,10 @@ printf "%s\n" "$PLATFORM" > "$STAGE_DIR/PLATFORM"
   printf "zero-Rust standalone manifest\n"
   printf "version    %s\n" "$VERSION"
   printf "platform   %s\n" "$PLATFORM"
-  printf "standalone bin/%s\n" "$STAGED_BIN_NAME"
+  printf "standalone %s\n" "$STAGED_RUNTIME_PATH"
+  if [ "$PROJECT_CLI" -eq 1 ]; then
+    printf "frontend bin/nelisp\n"
+  fi
   printf "built      %s\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } > "$STAGE_DIR/MANIFEST.txt"
 
