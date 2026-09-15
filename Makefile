@@ -2075,13 +2075,15 @@ standalone-reader-shadow-smoke: $(if $(wildcard target/nelisp target/nelisp.exe)
 #             end of a block is caught at the free rather than wherever the
 #             corruption later surfaced.
 #
-#   leak      live-blocks must not grow across rounds.  Each round runs the
-#             same workload and ends with `garbage-collect', so what is
-#             still reachable afterwards is retention, not garbage.  A
-#             round-over-round rise means the runtime is holding something
-#             the previous round already finished with.
+#   leak      live-blocks must not accumulate across rounds.  Each round
+#             runs the same workload and ends with `garbage-collect', so
+#             what is still reachable afterwards is retention, not
+#             garbage.  A rise that persists across rounds means the
+#             runtime is holding something an earlier round already
+#             finished with; a rise confined to one round is not, see
+#             below.
 #
-# ROUNDS defaults to 3 for a CI-shaped run; the release lane passes more.
+# ROUNDS defaults to 5, the minimum the comparison below needs.
 # Deliberately NOT the 1h wall-clock of `soak-1h': an hour of the same loop
 # adds confidence about time, and rounds add confidence about repetition,
 # which is what a leak test actually needs.
@@ -2099,13 +2101,34 @@ standalone-reader-shadow-smoke: $(if $(wildcard target/nelisp target/nelisp.exe)
 # 144839, then 145065 held flat for six more rounds, so the runtime settles
 # and stays settled.
 #
+# One round can also hold a finished round's data without anything
+# accumulating.  The conservative native-stack scan pins whatever a
+# pointer-shaped stack word reaches, and an unused slot of a live evaluator
+# frame can still hold a word that an earlier, deeper call wrote there.
+# Measured 2026-09-16 with the declaration-aware frame work, 8 rounds,
+# NELISP_GATE_DIR=target/gates: 310121 324578 310126 310128 324573 310127
+# 324578 310126.  A gdb trace of a spike round's `garbage-collect' found one
+# extra conservative root: a 56-byte block with a 14452-block pinned
+# subtree, referenced from three stack slots 8288-8672 bytes below the
+# driver-entry top, in frames above the collector.  The next round
+# overwrote them.  Clearing dead stack below the collector left the spikes
+# in place, because those slots belong to live frames.
+#
+# With ROUNDS >= 5 the blocker therefore compares the lower of rounds 2 and
+# 3 with the lower of the last two rounds.  A spike confined to one round
+# cannot raise both values of a pair; retention that accumulates raises
+# every later round.  With fewer rounds it compares round 2 with the last
+# round, as before, and says so.
+#
 # The slack sits between the two measured magnitudes.  Observed noise is 1
-# block; the known-answer leak -- 2000 conses held past the collect -- moves
-# it by 4000 per round (149866 154092 158092, measured 2026-08-19).  8 is
-# comfortably above the first and 500x below the second, so the blocker
-# still fires on anything that accumulates and ignores what does not.
+# block; the known-answer leak -- 2000 more conses kept reachable from a
+# global each round -- moved live-blocks 382369 386374 390374 394374 398374
+# over 5 rounds (2026-09-16, Phase 1 reader) and failed at 386374 -> 394374;
+# with ROUNDS=3 it failed at 386374 -> 390374.  8 is comfortably above the
+# first and 500x below the per-round growth, so the blocker still fires on
+# anything that accumulates and ignores what does not.
 .PHONY: standalone-reader-checked-soak
-STANDALONE_CHECKED_SOAK_ROUNDS ?= 3
+STANDALONE_CHECKED_SOAK_ROUNDS ?= 5
 STANDALONE_CHECKED_SOAK_SLACK ?= 8
 standalone-reader-checked-soak: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
 	@mkdir -p target
@@ -2134,7 +2157,7 @@ standalone-reader-checked-soak: $(if $(wildcard target/nelisp target/nelisp.exe)
 	  echo "[checked-soak] FAIL: $$n of $(STANDALONE_CHECKED_SOAK_ROUNDS) round(s) reported -- the run died partway"; \
 	  exit 1; \
 	fi; \
-	i=0; settled=""; last=""; lives=""; \
+	i=0; r2=""; r3=""; prevlast=""; last=""; lives=""; \
 	while read -r _tag rest; do \
 	  i=$$(( i + 1 )); \
 	  set -- $$(echo "$$rest" | tr -d "()"); \
@@ -2152,20 +2175,33 @@ standalone-reader-checked-soak: $(if $(wildcard target/nelisp target/nelisp.exe)
 	    exit 1; \
 	  fi; \
 	  lives="$$lives $$9"; \
-	  if [ "$$i" -eq 2 ]; then settled=$$9; fi; \
+	  if [ "$$i" -eq 2 ]; then r2=$$9; fi; \
+	  if [ "$$i" -eq 3 ]; then r3=$$9; fi; \
+	  prevlast=$$last; \
 	  last=$$9; \
 	done < $$rounds_file; \
 	rm -f $$rounds_file; \
 	echo "[checked-soak] live-blocks per round:$$lives"; \
-	if [ -z "$$settled" ]; then \
+	if [ -z "$$r2" ]; then \
 	  echo "[checked-soak] PASS (fewer than 2 rounds: no leak comparison possible)"; \
 	  exit 0; \
 	fi; \
-	if [ "$$(( last - settled ))" -gt $(STANDALONE_CHECKED_SOAK_SLACK) ]; then \
-	  echo "[checked-soak] FAIL: live blocks grew $$settled -> $$last after the first round, past the $(STANDALONE_CHECKED_SOAK_SLACK)-block slack (each round ends with garbage-collect, so this is retention rather than garbage)"; \
+	if [ "$$n" -ge 5 ]; then \
+	  baseline=$$r2; blabel="round 2"; \
+	  if [ -n "$$r3" ] && [ "$$r3" -lt "$$baseline" ]; then baseline=$$r3; blabel="round 3"; fi; \
+	  final=$$prevlast; flabel="round $$(( n - 1 ))"; \
+	  if [ -n "$$last" ] && [ "$$last" -lt "$$final" ]; then final=$$last; flabel="round $$n"; fi; \
+	  pass_msg="[checked-soak] PASS"; \
+	else \
+	  baseline=$$r2; blabel="round 2"; \
+	  final=$$last; flabel="round $$n"; \
+	  pass_msg="[checked-soak] PASS (fewer than 5 rounds: legacy round-2-vs-last comparison)"; \
+	fi; \
+	if [ "$$(( final - baseline ))" -gt $(STANDALONE_CHECKED_SOAK_SLACK) ]; then \
+	  echo "[checked-soak] FAIL: live blocks grew $$baseline ($$blabel) -> $$final ($$flabel), past the $(STANDALONE_CHECKED_SOAK_SLACK)-block slack (each round ends with garbage-collect, so this is retention rather than garbage)"; \
 	  exit 1; \
 	fi; \
-	echo "[checked-soak] PASS"
+	echo "$$pass_msg"
 
 # Doc 168 Phase 6 gate data collection (Doc 170 sections 3.3 / 5).  Runs
 # the checked-allocator workloads with NELISP_ALLOC_CHECK=1 and appends

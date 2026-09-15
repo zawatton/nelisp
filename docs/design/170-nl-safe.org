@@ -234,6 +234,11 @@ macOS は no-op のまま。=nl_os_argv_init= が sysctl KERN_PROCARGS2 で argv
   live-blocks 増加 (leak)。各ラウンドは =garbage-collect= で終わるので、
   残っているものは garbage ではなく retention
 - round 1 を比較対象にしないのは prelude 読み込みの一回限りの確保があるため
+- 2026-09-16: the leak comparison is now the lower of rounds 2 and 3 against
+  the lower of the last two rounds (5 rounds by default), because the
+  conservative stack scan was measured holding one round's data for a single
+  round.  The known-answer and 3-round figures below predate that change; the
+  Makefile target's comment has the current measurements.
 - 追加で「enable/armed が 1 でない」「verified-frees が 0」も FAIL にする。
   どちらも「下の検査が実は何も見ていなかった」状態を素通りさせないため
 - known-answer で leak blocker の発火を確認: 2000 cons を GC 越しに保持すると

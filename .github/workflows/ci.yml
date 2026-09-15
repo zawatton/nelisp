@@ -137,11 +137,12 @@ jobs:
         shell: bash
         run: make standalone-reader-checked
       # Doc 170 sec 5.3.  Rounds share one process, so live-blocks after each
-      # round's garbage-collect is retention: a rise between rounds is the
-      # leak blocker, and a non-zero violation count is the redzone one.
-      # Both were checked by known-answer -- holding 2000 conses past the
-      # collect takes live-blocks 153479 -> 157705 -> 161705 and the target
-      # fails, which is the point of having it.
+      # round's garbage-collect is retention: growth that persists across
+      # rounds is the leak blocker (the Makefile target explains the round
+      # comparison), and a non-zero violation count is the redzone one.
+      # Both were checked by known-answer -- keeping 2000 more conses each
+      # round moves live-blocks 382369 386374 390374 394374 398374 over the
+      # default 5 rounds and the target fails, which is the point of having it.
       - name: "Standalone NeLisp checked-allocator soak (Doc 170 sec 5.3: redzone + leak blockers; Linux x86_64)"
         if: runner.os == 'Linux'
         shell: bash

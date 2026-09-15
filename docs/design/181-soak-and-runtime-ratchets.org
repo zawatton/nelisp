@@ -185,7 +185,12 @@ start/peak/end bookkeeping) but redirect it:
   proven shape (Makefile L967-1041, comment at L964-980): round 1 is
   warm-up (first-touch page faults, allocator/arena growth to its working
   set — exactly what §1.3 measured), round 2 is the declared settled
-  baseline, rounds 3..N are compared against round 2 with a slack. That
+  baseline, rounds 3..N are compared against round 2 with a slack.
+  (2026-09-16: that gate now compares the lower of rounds 2 and 3 with the
+  lower of the last two rounds, after the conservative stack scan was
+  measured holding one round's data for a single round.  Check whether this
+  ratchet's workload shows the same effect before reusing the older shape.)
+  That
   gate's own slack (8 blocks) was set "between the two measured
   magnitudes" — 1 block of observed run-to-run noise vs. a 4,000-block-
   per-round known-answer leak. This ratchet's own re-measurement (§1.3)
