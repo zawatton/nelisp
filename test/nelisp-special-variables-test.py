@@ -222,7 +222,7 @@ class SpecialVariables(unittest.TestCase):
                               "(list (funcall '(builtin boundp) nil) (funcall '(builtin boundp) t) (funcall '(builtin boundp) :key))"],
                              capture_output=True, text=True, timeout=15)
         self.assertEqual((raw.returncode, raw.stderr, raw.stdout), (0, '', '(t t t)\n'))
-        print(f'GATE-COUNT checked={len(CASES) + 3} findings=0')
+        print(f'DECL-ORDER checked={len(CASES) + 3} findings=0')
 
     def test_declarations_after_canonical_source_reload(self):
         binary = Path(os.environ.get('NELISP_BIN', str(ROOT/'target/nelisp'))).resolve()
@@ -250,4 +250,7 @@ class SpecialVariables(unittest.TestCase):
 
 
 if __name__ == '__main__':
-    unittest.main()
+    result = unittest.main(exit=False).result
+    findings = len(result.failures) + len(result.errors)
+    print(f'GATE-COUNT checked={result.testsRun} findings={findings}')
+    raise SystemExit(not result.wasSuccessful())

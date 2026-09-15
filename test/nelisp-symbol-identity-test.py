@@ -143,4 +143,7 @@ class SymbolIdentity(unittest.TestCase):
 
 
 if __name__ == '__main__':
-    unittest.main()
+    result = unittest.main(exit=False).result
+    findings = len(result.failures) + len(result.errors)
+    print(f'GATE-COUNT checked={result.testsRun} findings={findings}')
+    raise SystemExit(not result.wasSuccessful())

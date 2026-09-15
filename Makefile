@@ -432,6 +432,10 @@ STANDALONE_GATE_TARGET ?= $(or $(NELISP_STANDALONE_TARGET),$(NELISP_NATIVE_STAND
 # windows-native build, and said nothing about that.  Doc 201 §6.7.
 STANDALONE_BIN = ./target/nelisp$(if $(filter windows%,$(STANDALONE_GATE_TARGET)),.exe,)
 
+# Private fixture binary for `native-symbol-test'
+# (test/nelisp-native-symbol-build.el); the other gates read `target/nelisp'.
+NATIVE_SYMBOL_BIN = ./target/nelisp-native-symbol-test$(if $(filter windows%,$(STANDALONE_GATE_TARGET)),.exe,)
+
 # `ulimit -v' bounds the ADDRESS SPACE so a runaway allocation fails loudly
 # instead of taking the machine with it -- see the intern-soft-loop comment
 # below for the regression that put it there.  It cannot be applied to the
@@ -509,6 +513,69 @@ runtime-reload-test:
 .PHONY: project-cli-contract
 project-cli-contract:
 	python3 test/nelisp-project-cli-test.py ProjectResultContract
+
+# Contract suites wrapped by `tools/ai/nelisp-ai.sh gate NAME -- make NAME'.
+# Each test file prints a `GATE-COUNT' line.  The three that run the
+# standalone reader skip with a reason when this host cannot run the target,
+# as `nl-condition-standalone-smoke' does; `reference-parity' and
+# `lsp-server' are host Python and need no build.
+.PHONY: builtin-arity special-variables symbol-identity reference-parity lsp-server
+builtin-arity: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+	  --eval '(kill-emacs (if (nelisp-standalone--target-runnable-on-host-p) 0 3))' \
+	  >/dev/null 2>&1; \
+	host_rc=$$?; \
+	if [ "$$host_rc" = 3 ]; then \
+	  echo "GATE-SKIP target $(STANDALONE_GATE_TARGET) cannot run on this host"; \
+	  exit 0; \
+	fi; \
+	NELISP_BIN=$(STANDALONE_BIN) EMACS=$(EMACS) python3 test/nelisp-builtin-arity-test.py
+
+special-variables: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+	  --eval '(kill-emacs (if (nelisp-standalone--target-runnable-on-host-p) 0 3))' \
+	  >/dev/null 2>&1; \
+	host_rc=$$?; \
+	if [ "$$host_rc" = 3 ]; then \
+	  echo "GATE-SKIP target $(STANDALONE_GATE_TARGET) cannot run on this host"; \
+	  exit 0; \
+	fi; \
+	NELISP_BIN=$(STANDALONE_BIN) EMACS=$(EMACS) python3 test/nelisp-special-variables-test.py
+
+symbol-identity: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+	  --eval '(kill-emacs (if (nelisp-standalone--target-runnable-on-host-p) 0 3))' \
+	  >/dev/null 2>&1; \
+	host_rc=$$?; \
+	if [ "$$host_rc" = 3 ]; then \
+	  echo "GATE-SKIP target $(STANDALONE_GATE_TARGET) cannot run on this host"; \
+	  exit 0; \
+	fi; \
+	NELISP_BIN=$(STANDALONE_BIN) EMACS=$(EMACS) python3 test/nelisp-symbol-identity-test.py
+
+reference-parity:
+	EMACS=$(EMACS) python3 test/nelisp-reference-parity-test.py
+
+lsp-server:
+	python3 test/nelisp-lsp-test.py
+
+# Builds a private fixture with tag-16 probes (the build refuses to overwrite
+# `target/nelisp') and runs the internal-representation suite against it.
+.PHONY: native-symbol-test
+native-symbol-test:
+	@NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+	  --eval '(kill-emacs (if (nelisp-standalone--target-runnable-on-host-p) 0 3))' \
+	  >/dev/null 2>&1; \
+	host_rc=$$?; \
+	if [ "$$host_rc" = 3 ]; then \
+	  echo "GATE-SKIP target $(STANDALONE_GATE_TARGET) cannot run on this host"; \
+	  exit 0; \
+	fi; \
+	NELISP_STANDALONE_READER_OUTPUT=$(NATIVE_SYMBOL_BIN) NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) \
+	  $(EMACS) --batch -Q -L lisp -L src -L scripts -L test \
+	    --eval '(setq load-prefer-newer t)' \
+	    -l nelisp-native-symbol-build -f nelisp-native-symbol-test-build; \
+	NELISP_SYMBOL_TEST_BIN=$(NATIVE_SYMBOL_BIN) EMACS=$(EMACS) python3 test/nelisp-native-symbol-test.py
 
 # WS-F: the closed-raw-native-unit replace/publish REPL smoke, gated.
 # `ptr-call'/`syscall-direct' exist only in the standalone binary, so this

@@ -742,3 +742,82 @@ standalone-reader-print-large-sexp-smoke|scripts/nelisp-stdlib-prelude.el|s/(unl
 native-unit-repl-smoke|lisp/nelisp-native-load.el|s/^(defconst nelisp-native-load-raw-max-arity 6)$/(defconst nelisp-native-load-raw-max-arity 7)/|the declared six-argument ceiling widens to seven, so the refused-seven-argument-export assertion silently stops being true
 lisp-byte-compile|lisp/nelisp-native-unit.el|s/^(require 'nelisp-native-load)$/(require 'nelisp-native-load)\n(defun nelisp-native-unit--mutation-probe () (let ((unused 1)) nil))/|a defun with an unused lexical binding in a lisp\/ file the baseline records as clean
 nelisp-sexp-clone-bind-smoke|scripts/nelisp-standalone-build.el|s/(if (> head-reclaimed 0)/(if (> head-reclaimed 999999999)/|the reclaimed head span stops being zeroed, so a rewound bump cursor hands out memory the reader had already written to -- the original defect
+#
+# Contract suites (2026-09-16).  Each row below was run RED through this
+# harness, and the gate was GREEN on the restored tree.
+#
+# builtin-arity: the fixed-arity contract table
+# (`nelisp--builtin-fixed-arities' in scripts/nelisp-stdlib-prelude.el) is
+# read TWICE -- once by the build driver, baked into the binary's native
+# arity guards, and once by the test itself (fresh host-Emacs read) to
+# compute the expected wrong-number-of-arguments boundary.  Moving `car'
+# from the arity-1 group to the arity-2 group needs no rebuild: the test
+# now expects a 1-argument `(apply '(builtin car) '(nil))' to be a wrong-
+# arity call, but the untouched binary still accepts exactly one argument
+# and returns `nil'.  Verified: mutated, `AssertionError: Lists differ...
+# First differing element 59: 'nil' != '(wrong-number-of-arguments car 1)''
+# (`GATE-COUNT checked=2 findings=1'); restored, `GATE-COUNT checked=2
+# findings=0'.
+builtin-arity|scripts/nelisp-stdlib-prelude.el|s/^  '((1 car cdr car-safe/  '((1 cdr car-safe/;s/^    (2 cons eq eql equal setcar setcdr nth nthcdr elt aref rassoc string=$/    (2 car cons eq eql equal setcar setcdr nth nthcdr elt aref rassoc string=/|car's declared fixed arity drifts from 1 to 2 in the build-time contract table while the already-built binary still enforces arity 1, so the test's independently recomputed expectation disagrees with the binary's real behavior
+#
+# special-variables: `bf_defvar_init_mode' (scripts/nelisp-standalone-
+# build.el) decides whether `defvar' may skip re-initializing an
+# already-bound global (mode 0) or must evaluate VALUE (mode 1) -- the
+# override-protection Emacs `defvar' is defined by.  Forcing mode 0's
+# branch to also answer 1 makes every `(defvar NAME VALUE)' re-evaluate
+# VALUE even when NAME is already bound.  Baked into target/nelisp, so the
+# gate is listed in `gate_needs_rebuild'.  Verified: mutated + rebuilt,
+# `nelisp: uncaught error: ... error: ("must not run")' from the case that
+# defvars an already-bound name with
+# an error-signalling VALUE form (`GATE-COUNT checked=6 findings=2');
+# restored + rebuilt, `GATE-COUNT checked=6 findings=0'.
+special-variables|scripts/nelisp-standalone-build.el|s/(if (= (nelisp_mirror_is_bound (+ env 0) sym (+ env 64)) 1) 0 1)/(if (= (nelisp_mirror_is_bound (+ env 0) sym (+ env 64)) 1) 1 1)/|defvar's override-protection is defeated: an already-bound global is reinitialized, and its VALUE form re-evaluated, on every later (defvar NAME VALUE)
+#
+# symbol-identity: `nl_next_symbol_identity' (lisp/nelisp-cc-nlstr-direct-
+# ops.el) is the atomic counter that gives every `make-symbol' call a
+# distinct identity, which `nl_uninterned_symbol_equal' reads to tell two
+# uninterned symbols apart under `equal'.  Pinning it to a constant makes
+# every uninterned symbol answer the same identity.  Baked into
+# target/nelisp, so the gate is listed in `gate_needs_rebuild'.  Verified:
+# mutated + rebuilt, the 5 tests reported 9 subtest failures,
+# including `equal-table-identities' overwriting the first key's slot
+# (`GATE-COUNT checked=5 findings=9'); restored + rebuilt, `GATE-COUNT
+# checked=5 findings=0'.
+symbol-identity|lisp/nelisp-cc-nlstr-direct-ops.el|s/(+ (atomic-fetch-add 268435544 1) 1)/1/|every make-symbol call receives the same identity number, so two uninterned symbols sharing a name collide under an equal-test hash table instead of remaining distinct
+#
+# reference-parity: `tools/nelisp-reference-parity.py' is itself the
+# checker `substrate-parity-smoke' and the CI "Emacs parity" step build
+# their evidence on, so this gate's own suite (test/nelisp-reference-
+# parity-test.py) is the only thing that can prove the checker refuses a
+# false-positive comparison.  Disabling its reference-Emacs-major-version
+# guard needs no rebuild (pure host Python).  Verified: mutated, the
+# `{'version': 'GNU Emacs 31.1'}' false-positive case returned 0 instead
+# of the required 1 (`GATE-COUNT checked=2 findings=1'); restored,
+# `GATE-COUNT checked=2 findings=0'.
+reference-parity|tools/nelisp-reference-parity.py|s/if not re.match(r'GNU Emacs 30\\.', report\['emacs_version'\]):/if False:/|the reference-Emacs major-version guard never fires, so a differential recorded against the wrong Emacs major version is accepted as a valid parity pass
+#
+# lsp-server: `WorkspaceIndex.search' (tools/nelisp_workspace.py) is what
+# `candidates'/`references'/definition-navigation all route through for
+# an exact, same-namespace lookup.  Dropping the name-equality half of its
+# filter (keeping only the namespace half) needs no rebuild (pure host
+# Python, loaded in-process via `runpy'). Verified: mutated, a 2-symbol
+# `car'/1000-`carN' fixture returned 1001 candidates for the exact query
+# `car' instead of 1, and a cross-file definition lookup returned 2
+# locations instead of 1 (`GATE-COUNT checked=37 findings=2'); restored,
+# `GATE-COUNT checked=37 findings=0'.
+lsp-server|tools/nelisp_workspace.py|s/matches = \[item for item in plan\['symbols'\] if item\['symbol'\] == query/matches = [item for item in plan['symbols'] if True/|exact-name filtering is dropped from workspace candidate search, so every symbol in a namespace is returned as a candidate instead of only the ones actually named by the query
+#
+# native-symbol-test: `nl_gc_mark_slot' (scripts/nelisp-standalone-
+# build.el) marks a Symbol's name-buffer block for both tag 4 (interned)
+# and tag 16 (uninterned, `make-symbol'); this is the ONE gate that can
+# observe a tag-16-specific marking regression, since the public API
+# (symbol-identity above) has no way to read a GC mark bit directly.
+# Dropping tag 16 from that check needs no separate rebuild entry: this
+# gate's own Makefile recipe always builds its private fixture fresh (see
+# the recipe's comment), so the mutated source is picked up on the very
+# next invocation. Verified: mutated + the fixture's own fresh build,
+# `symbol-test-mark' read back 0 instead of 1 both immediately after
+# construction and after a `dump-runtime-image'/`eval-runtime-image'
+# round trip (`GATE-COUNT checked=11 findings=2'); restored + rebuilt,
+# `GATE-COUNT checked=11 findings=0'.
+native-symbol-test|scripts/nelisp-standalone-build.el|/(if (or (= tag 4) (= tag 16))/{N;s/(if (or (= tag 4) (= tag 16))\n\(.*Symbol name; +8 may be an ID.*\)/(if (or (= tag 4) (= tag 999))\n\1/}|the precise GC marker stops marking an uninterned (tag-16) symbol's name buffer, so a reachable uninterned symbol's storage can be swept as garbage

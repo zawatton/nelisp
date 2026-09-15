@@ -285,12 +285,36 @@ jobs:
         run: |
           python3 test/nelisp-project-cli-test.py
           python3 test/nelisp-project-test-runner-test.py
-          python3 test/nelisp-builtin-arity-test.py
-          python3 test/nelisp-special-variables-test.py
-          python3 test/nelisp-symbol-identity-test.py
-          python3 test/nelisp-reference-parity-test.py
-          python3 test/nelisp-lsp-test.py
           python3 test/nelisp-project-bench-test.py
+      # Contract suites, each wrapped through `nelisp-ai.sh gate' so it writes
+      # target/gates/<name>.json from its GATE-COUNT line; the Makefile
+      # targets and tools/gate-mutations.txt rows carry the details.
+      - name: "Native builtin fixed-arity contract (tools/ai/nelisp-ai.sh gate builtin-arity); Linux x86_64"
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate builtin-arity -- make builtin-arity
+      - name: "defvar/defconst/let dynamic-binding contract (tools/ai/nelisp-ai.sh gate special-variables); Linux x86_64"
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate special-variables -- make special-variables
+      - name: "Public make-symbol identity contract (tools/ai/nelisp-ai.sh gate symbol-identity); Linux x86_64"
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate symbol-identity -- make symbol-identity
+      - name: "tools/nelisp-reference-parity.py false-positive controls (tools/ai/nelisp-ai.sh gate reference-parity); host-only"
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate reference-parity -- make reference-parity
+      - name: "Language server contract (tools/ai/nelisp-ai.sh gate lsp-server); host-only"
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate lsp-server -- make lsp-server
+      # Internal tag-16 symbol representation, checked on a private fixture
+      # binary built by test/nelisp-native-symbol-build.el.
+      - name: "Internal tag-16 symbol representation (tools/ai/nelisp-ai.sh gate native-symbol-test); Linux x86_64"
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate native-symbol-test -- make native-symbol-test
       - name: Project source documentation generation
         if: runner.os == 'Linux'
         shell: bash

@@ -116,6 +116,11 @@ gate_needs_rebuild() {
     standalone-midform-gc-bounded) return 0 ;;
     standalone-reader-nonblocking-socket-smoke) return 0 ;;
     standalone-reader-tls-smoke) return 0 ;;
+    # These two run the shared target/nelisp, which their Makefile targets
+    # build only when it is absent.  native-symbol-test rebuilds its own
+    # fixture on every run.
+    special-variables) return 0 ;;
+    symbol-identity) return 0 ;;
   esac
   # Doc 200: an `ert-full' row is only binary-sensitive when it mutates the
   # standalone build script itself.

@@ -1546,3 +1546,17 @@ nelisp-sexp-clone-bind-smoke
 # Host-only project result validation. Real-runtime integration runs separately
 # after standalone-reader-test in CI; mutation proof requires no binary build.
 project-cli-contract
+#
+# Contract suites run through `nelisp-ai.sh gate NAME -- make NAME' (CI does
+# the same); each test file's `__main__' prints `GATE-COUNT checked=<tests>
+# findings=<failures+errors>'.  None is in `check'.  builtin-arity,
+# special-variables, symbol-identity and native-symbol-test run the
+# standalone reader and skip on a target this host cannot run;
+# reference-parity and lsp-server are host Python.  native-symbol-test
+# builds its own fixture binary.  Each has a row in tools/gate-mutations.txt.
+builtin-arity
+special-variables
+symbol-identity
+reference-parity
+lsp-server
+native-symbol-test
