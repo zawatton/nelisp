@@ -876,6 +876,14 @@ project-cli-integration|tools/nelisp-project.py|s/if directory == debug:/if dire
 # around the selected-name list is what enforces that.
 project-test-runner|tools/nelisp-project.py|s/selected = list(dict\.fromkeys(test_filter if isinstance(test_filter, list) else \[test_filter\])) if exact else None/selected = list(test_filter if isinstance(test_filter, list) else [test_filter]) if exact else None/|duplicate --exact selections are no longer deduplicated, so selecting the same test twice inflates its reported total instead of running it once
 #
+# project-test-runner: `--jobs N` shards the statically discovered test list
+# across N processes and relies on comparing each shard's actual
+# `nelisp-ert--tests` registrations back to that static list to catch a test
+# static discovery could not see (declared through a macro or `eval`).
+# Disabling that comparison lets such a shard run silently under-covered
+# instead of failing the whole run with status "error".
+project-test-runner|tools/nelisp-project.py|s/if any(r\["registered_ok"\] and set(r\["registered"\]) != static_name_set for r in results):/if any(False for r in results):/|--jobs no longer detects a shard that registered a test static discovery did not list, so a macro\/eval-defined test can be silently dropped from a sharded run instead of failing it
+#
 # project-bench: the reported median must be the statistical median of the
 # recorded per-process samples, not an arbitrary one of them.
 project-bench|tools/nelisp_project_bench.py|s/"median_ns": statistics\.median(durations),/"median_ns": min(durations),/|the reported median is the fastest sample instead of the statistical median, so the benchmark summary misrepresents typical process latency

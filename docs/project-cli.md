@@ -227,7 +227,7 @@ Status is `passed`, `failed`, `no-tests`, `incomplete`, or `error` (input/toolin
 failure). CLI exit codes remain 0 for success, 1 for failed/incomplete/empty
 runs, and 2 for input/tooling errors. Argument parsing errors and interrupts
 retain the ordinary CLI diagnostics/exit behavior. This summary is not yet
-per-test timing, coverage, property generation, or parallel execution.
+per-test timing, coverage, or property generation.
 
 For exact selection, JSON also includes `selected` (the requested names) and
 `cases` (name/status/stdout entries in execution order). `filter` retains the single
@@ -245,6 +245,65 @@ Individual timings are not yet measured, and `stderr` remains batch-owned.
 Unfiltered/substring runs retain their aggregate reports and an empty `cases`
 array. Names enter the runtime through environment values, not generated Lisp
 source text.
+
+Use `nelisp test --jobs N` (an integer, default 1) for opt-in process
+isolation. `--jobs 1` is the default single-process contract above, unchanged
+in every byte of text and JSON output. `N > 1` first determines the ordered
+test names using the same source-only static discovery as `--list`, without
+running project code, then applies `--filter` or `--exact` to that list; it
+never falls back to the runtime's own substring matching the way `--jobs 1`
+does. If nothing survives that static resolution -- an unmatched `--filter`,
+an entirely unresolved `--exact` request, or no filter over a project with no
+statically declared tests -- `--jobs` delegates the run to the same
+single-process path `--jobs 1` uses, with the same selector: the real bundle
+still loads and runs, so a project startup or syntax failure, and an
+`--exact` request resolved entirely at runtime, are reported exactly as
+`--jobs 1` would report them. Otherwise the selected names are split
+round-robin into `min(N, count)` shards, preserving registration order inside
+each shard, and each shard runs as its own runtime process, concurrently,
+through the same exact-batch machinery as `--exact`. Shards do not share
+process state: each one independently loads the project and every
+`test/*-test.el`/`test/*-test.nl` file, so top-level setup side effects run
+once per shard rather than once overall.
+
+Every requested `--exact` name must exist in static discovery: a name absent
+from it (a typo, or a test defined only through a macro or `eval`) never
+gets assigned to any shard, so the report is `status: "incomplete"`, exit 1,
+with a `missing` array naming every such requested name -- text mode also
+prints them to stderr. This mirrors `--jobs 1`, where a requested `--exact`
+name that never appears as a case is likewise `incomplete`.
+Because sharding otherwise relies on the static name list, every test
+`--jobs` actually shards must be declared as a top-level `ert-deftest` form.
+Each shard also reports every name its own `nelisp-ert--tests` registered; if
+a shard that ran to completion registered a name outside the full static
+list -- a test defined through a macro or `eval` that was never requested,
+so it ran anyway because the shard reloads every test file regardless of
+selection -- the whole run fails with `status: "error"`, exit 2, rather than
+silently under- or over-running tests. A shard that instead dies before it
+can report its registrations at all (a startup or syntax failure) is never
+compared this way; it is `status: "incomplete"`, exit 1, like any other
+shard that did not complete, and its stderr still appears in the merged
+report. `--jobs` is mutually exclusive with `--list` (an input error, exit
+2), and `--jobs 0` or a negative/non-integer value is also an input error.
+
+`--jobs` JSON output keeps `schema_version: 1` and every field from the
+single-process report with the same meaning: `cases` in registration order
+across all shards, `passed`/`failed`/`total` summed over shards, and
+`before_tests`/`after_tests`/`stdout` reconstructed the same way, with each
+shard's own natural summary line replaced by one aggregate line. It adds
+`jobs` (the requested N), `missing` (requested `--exact` names absent from
+static discovery, `[]` when none), and a `shards` array, one entry per
+shard, each with `names`, `exit_code`, `stdout`, `stderr`, and
+`completion_records` for that process alone. Overall `status` is `passed`
+only if every shard completed (one completion record, reconciled cases, an
+exit code consistent with its own pass/fail count, empty stderr) and no case
+failed anywhere and nothing is `missing`; `failed` if every shard completed
+but some case failed; `incomplete` if any shard did not complete or anything
+is `missing`; `error` for the registration mismatch above. A selection that
+resolves to zero names is reported by the delegated single-process path
+above instead, before any of this shard-specific shape applies. Text output
+prints each case's captured output in registration order across shards, then
+one aggregate summary line.
 
 Source is bundled into a temporary file and evaluated by the runtime's
 top-level `--load` command, not evaluated in Python. Diagnostics currently
