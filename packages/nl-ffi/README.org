@@ -25,9 +25,18 @@ of a silent nil.
   "sqlite3_libversion(3) -- SQLite version string (const char*).")
 (nl-ffi-get-string (nl-ffi-example-sqlite-version))
 ;; => "3.45.1" (exact string is whatever libsqlite3 the binary linked)
+
+;; A symbol the build-time table does NOT carry: as of step 2, this
+;; really `dlopen's the SONAME and resolves the symbol with `dlsym',
+;; rather than requiring a new table row and a reader rebuild.
+(ffi:library "libz.so.1")
+(ffi:defun nl-ffi-example-zlib-version "zlibVersion" [:pointer]
+  "zlibVersion(3) -- not in the build-time table; resolved via dlsym.")
+(nl-ffi-get-string (nl-ffi-example-zlib-version))
+;; => "1.3.1" (exact string is whatever libz the binary finds at runtime)
 #+end_src
 
-This package is step 1 of a 3-step rollout; see "Roadmap" below before
+This package is step 2 of a 3-step rollout; see "Roadmap" below before
 assuming more is possible than this.
 
 * Scope: external-library layer only
@@ -42,42 +51,69 @@ interpreter, not the glue (=make standalone-call-floor-bench=).
 
 * Symbol resolution: read this before writing =ffi:library=
 
-=nl-ffi-call= is *not* a =dlopen=/=dlsym= loader. It dispatches through one
-fixed, build-time table
+There are now two resolution paths, tried in this order for every
+=ffi:defun=-generated call. Both end up signalling the same named
+conditions instead of a silent nil; which path a given C-SYMBOL uses is
+never visible in =ffi:defun='s call shape, only in which SONAME was
+declared for it via a preceding =ffi:library=.
+
+** Path 1 (step 1, unchanged): the build-time table
+
+=nl-ffi-call= dispatches through one fixed, build-time table
 (=nelisp-standalone--reader-extern-table= in
 =scripts/nelisp-standalone-build.el=): rows of ~(SYMBOL SONAME ARITY SIG)~
 that drive both the binary's own ELF/PE import list -- resolved *eagerly by
 the OS loader when the process starts*, not by anything Lisp calls at
 runtime -- and a nested ~if~ chain matching the ~NAME~ argument at the
-reader-builtin level.
+reader-builtin level. This is *global and flat*: a C symbol is either
+already linked into the currently running binary, or this path does not
+reach it at all, regardless of which "library" a caller thinks it belongs
+to. A name that is not in the table falls through to a default dispatch
+arm that writes Lisp ~nil~ -- silently, at the =nl-ffi-call= level. Every
+*matched* row, by contrast, always boxes its result as a real Lisp integer
+or float, never ~nil~.
 
-Resolution is therefore *global and flat*: a C symbol is either already
-linked into the currently running binary, or it is not reachable at all,
-regardless of which "library" a caller thinks it belongs to. There is no
-per-library handle. Consequently:
+** Path 2 (step 2, new): =dlopen=/=dlsym= against a declared library's handle
 
-- =ffi:library= cannot open a new library. It takes a SONAME spelled
-  exactly as the table spells it (=libm.so.6=, not =libm= or =math=),
-  validates it against =nl-ffi-known-sonames= -- a hand-maintained mirror
-  of the table's own SONAME set, checked immediately, unlike per-symbol
-  resolution -- and confirms =nl-ffi-call= exists at all; it does not,
-  and cannot, make any new C symbol callable. Its registry entry already
-  has a =:handle= slot (always nil today, read through
-  =nl-ffi-library-handle=) so step 2 below can fill one in without
-  changing what =ffi:library= returns or how callers use it. See its
-  docstring for the full reasoning.
+A raw ~nil~ from path 1 no longer means "unresolved" outright. =ffi:defun=
+does not take a library argument and its signature vector never encodes
+where C-SYMBOL resolves from -- =nl-ffi--invoke= is the one place that
+tries every =dlopen='ed library's handle, in declaration order, via
+=dlsym= (=nl-ffi--resolve-via-dlsym=), caching a resolved address keyed by
+=(SONAME . C-SYMBOL)=. A resolved address is called through =ptr-call=
+(=nl-ffi--ptr-call-invoke=), NOT through =nl-ffi-call= -- =ptr-call= is a
+generic "call this address with up to six integer/pointer arguments"
+reader primitive, unrelated to the fixed table. This is why the dlsym
+path is integer/pointer-only (see "Type vocabulary" below) and capped at
+six arguments: those are =ptr-call='s own limits, not this package's
+choice.
+
+=dlopen=/=dlsym=/=dlerror=/=dlclose= are themselves ordinary rows in the
+same build-time table (SONAME =libc.so.6=; glibc >= 2.34 keeps them
+there, already a =DT_NEEDED= entry via the =toupper=/=tolower= rows -- an
+older glibc would need SONAME =libdl.so.2= instead), so path 2 needed no
+new build-time mechanism, only four more rows and a Lisp-level resolver
+on top of =ptr-call=, which already existed.
+
+** What this means for =ffi:library= and =ffi:defun=
+
+- =ffi:library= takes a SONAME spelled exactly as the table spells it
+  (=libm.so.6=, not =libm= or =math=) for a *known* library --
+  =nl-ffi-known-sonames= is a hand-maintained mirror of the table's own
+  SONAME set. For a known SONAME, nothing changes: no =dlopen= call, a
+  =nil= =:handle=, path 1 only. For any OTHER SONAME, =ffi:library= now
+  really =dlopen=s it (=RTLD_NOW|RTLD_LOCAL=) and stores a real, non-zero
+  handle (read through =nl-ffi-library-handle=) -- path 2's whole reason
+  to exist. =nl-ffi-library-open-failed=, carrying =dlerror='s text, is
+  signalled when that real =dlopen= attempt fails (for example a SONAME
+  naming no real, reachable shared object); the OLD table-membership
+  rejection (=nl-ffi-unknown-library=, signalled immediately for anything
+  outside the mirror) is no longer signalled by =ffi:library= at all --
+  see that condition's docstring in =nl-ffi.el=.
 - =ffi:defun= does not take a library argument, and its signature vector
-  never encodes where C-SYMBOL resolves from. A symbol resolves, or does
-  not, purely by whether the running binary's build already imported it
-  -- adding rows to the extern table (and rebuilding the reader) is the
-  only way to add a new symbol today; see "Roadmap" below for what steps
-  2 and 3 change (not this call shape).
-- A name that is not in the table falls through to a default dispatch arm
-  that writes Lisp ~nil~ -- silently, at the =nl-ffi-call= level. Every
-  *matched* row, by contrast, always boxes its result as a real Lisp
-  integer or float, never ~nil~. =ffi:defun=/=ffi-call= turn that ~nil~
-  into the named condition =nl-ffi-unresolved-symbol= instead of passing it
-  through.
+  never encodes where C-SYMBOL resolves from -- unchanged from step 1.
+  What changed is what =nl-ffi--invoke= does with a raw table-miss ~nil~:
+  it used to mean "unresolved" outright; it now means "try path 2".
 - Calling =nl-ffi-call= with the *wrong arity* is unsafe, not merely wrong:
   a matched row reads its Nth argument by walking N ~cdr~s of the actual
   argument list, with no bounds check against what the Lisp call site
@@ -87,7 +123,12 @@ per-library handle. Consequently:
   without a real, correctly typed call (only available once an =ffi:defun=
   wrapper is actually invoked), a probe call is either unsafe or
   meaningless. "Do not invent a loader" (the brief for this package) also
-  means: do not invent an unsafe one.
+  means: do not invent an unsafe one. =ptr-call= itself is exactly as
+  unsafe in the same way (it reads six argument slots unconditionally,
+  padding is the caller's job) -- =nl-ffi--ptr-call-invoke= checks
+  =(length ARG-TYPES)= against that six-argument ceiling before ever
+  calling it, signalling =nl-ffi-too-many-arguments= rather than reading
+  past the end of the real argument list.
 
 * Dynamic-reader requirement
 
@@ -134,6 +175,16 @@ Conversions ( =ffi:defun='s job, done once per call, in
   raw result and always yields ~nil~. (=:void= as an argument type is a
   declaration error: =nl-ffi-unknown-type=.)
 
+=:float=/=:double= are valid signature keywords for *any* C-SYMBOL, but
+only actually callable via resolution path 1 (a build-time table row with
+an =f64= SIG class, see =scripts/nelisp-standalone-build.el=). A symbol
+that resolves via path 2 (=dlsym= + =ptr-call=) cannot carry a float
+argument or return at all -- =ptr-call= has no f64-classed dispatch, only
+plain integer registers -- so =:float=/=:double= there signals
+=nl-ffi-dlsym-float-unsupported= instead of a silently wrong answer. See
+"Symbol resolution" above and =nl-ffi--ptr-call-invoke='s Commentary for
+what an f64-capable =ptr-call= would need.
+
 =nl-ffi-get-string= reads a NUL-terminated C string at an address into a
 unibyte Lisp string (nil for a NULL address); =ptr-read-u8=/=alloc-bytes=/
 =ptr-write-u8= are the reader's own minimal raw memory primitives this
@@ -141,22 +192,30 @@ package builds string marshalling from -- no new ones were needed.
 
 * Errors
 
-=ffi:defun= signals one of four named conditions instead of ever returning
+=ffi:defun= signals one of six named conditions instead of ever returning
 a silent nil (all children of =nl-ffi-error=):
 
 | condition | when |
 |---|---|
 | =nl-ffi-wrong-arity= | called with the wrong number of arguments |
 | =nl-ffi-unknown-type= | the signature vector used a keyword outside the type vocabulary (fires at =ffi:defun= expansion time -- NAME is never defined) |
-| =nl-ffi-unresolved-symbol= | the C symbol is not linked into this binary |
+| =nl-ffi-unresolved-symbol= | the C symbol is not linked into this binary, and no declared library's =dlsym= finds it either |
 | =nl-ffi-unavailable= | this build/host has no working =nl-ffi-call= at all |
+| =nl-ffi-dlsym-float-unsupported= | (step 2) the signature names =:float=/=:double= for a symbol resolved via =dlsym= + =ptr-call=, which cannot carry one |
+| =nl-ffi-too-many-arguments= | (step 2) more than six arguments for a symbol resolved via =dlsym= + =ptr-call=, which cannot carry more |
 
-=ffi:library= signals =nl-ffi-unknown-library= for a SONAME outside
-=nl-ffi-known-sonames= (checked immediately, unlike per-symbol
-resolution -- see "Symbol resolution" above) and =nl-ffi-unavailable=
-for the same reason =ffi:defun= does. =wrong-type-argument= (the
-standard Emacs condition, not a new one) covers an argument that does
-not fit its declared type.
+=ffi:library= signals =wrong-type-argument= (the standard Emacs
+condition, not a new one) when SONAME is not a string, =nl-ffi-unavailable=
+for the same reason =ffi:defun= does, and (step 2) =nl-ffi-library-open-failed=
+-- carrying SONAME and =dlerror='s text -- when SONAME is outside
+=nl-ffi-known-sonames= and the real =dlopen= attempt for it fails. The old
+=nl-ffi-unknown-library= (immediate rejection of any SONAME outside the
+table mirror, before ever trying to open it) is *no longer signalled* by
+=ffi:library= as of step 2 -- such a SONAME is now a real =dlopen=
+candidate instead of an outright rejection; the condition is left defined
+for any existing caller that still catches it by name. =wrong-type-
+argument= also covers an =ffi:defun=-generated call's argument not
+fitting its declared type.
 
 * Public API
 
@@ -166,9 +225,9 @@ not fit its declared type.
 | =ffi:defun= | macro | ~(ffi:defun NAME "c_symbol" [RET ARG...] &optional DOC)~ |
 | =nl-ffi-get-string= | function | ~(nl-ffi-get-string PTR)~ |
 | =nl-ffi-types= | constant | the type keyword vocabulary |
-| =nl-ffi-known-sonames= | constant | SONAMEs =ffi:library= accepts today |
+| =nl-ffi-known-sonames= | constant | SONAMEs already in the build-time table -- =ffi:library= skips =dlopen= for these |
 | =nl-ffi-known-soname-p= | function | ~(nl-ffi-known-soname-p SONAME)~ |
-| =nl-ffi-library-handle= | function | ~(nl-ffi-library-handle SONAME)~, always nil today |
+| =nl-ffi-library-handle= | function | ~(nl-ffi-library-handle SONAME)~ -- nil for a known-table SONAME or one not yet declared; a real, non-zero =dlopen= handle otherwise |
 | =ffi-call= | function (alias) | ~(ffi-call LIBRARY SYMBOL SIGNATURE &rest ARGS)~, elisp-ffi/nelisp-ffi compatible |
 | =ffi-get-string= | function (alias) | elisp-ffi/nelisp-ffi compatible alias of =nl-ffi-get-string= |
 
@@ -186,71 +245,77 @@ site the in-process path instead.
   struct's fields yourself with =ptr-read-*=/=ptr-write-*= at known
   offsets, as the existing SQLite/FreeType smokes already do).
 - Variadic C functions.
+- =:float=/=:double= for a symbol resolved via =dlsym= (path 2 above) --
+  =ptr-call= has no f64-classed dispatch. A build-time table row (path 1)
+  is the only way to call a double-taking function like =sqrt= today; see
+  "Roadmap" below for what an f64-capable =ptr-call= would need.
 - Anything on the default static reader -- =ffi:defun= wrappers still
   build there, and calling one signals =nl-ffi-unavailable= rather than
-  crashing or returning a wrong answer, but no C symbol is callable.
-- Making a new C symbol callable: *today, a symbol is callable through
-  this package only if it is already a row in
-  =nelisp-standalone--reader-extern-table=; adding one means a table row
-  and a reader rebuild, not anything this package's Lisp-level forms can
-  do* (see "Symbol resolution" above and "Roadmap" below for what
-  changes that).
+  crashing or returning a wrong answer, but no C symbol is callable, on
+  either resolution path (the static reader has no =dlopen=/=dlsym=/
+  =ptr-call= dispatch wired at all -- see "Dynamic-reader requirement"
+  above).
+
+Making a new *integer/pointer* C symbol callable no longer needs a table
+row and a reader rebuild -- =ffi:library= + =ffi:defun= reach it directly
+via =dlopen=/=dlsym= (see "Symbol resolution" above). A reader rebuild is
+still needed for: a double argument/return, a callback, a struct, or a
+variadic call -- none of which either resolution path covers yet.
 
 * Roadmap
 
-This package is step 1 of 3. It does not, by itself, grow which C
-symbols are callable -- that is what steps 2 and 3 are for. Neither
-changes this package's call shapes (=ffi:library='s SONAME argument,
-=ffi:defun='s signature vector); both add a resolution path underneath
-=nl-ffi--invoke= for =ffi:defun= to reach transparently.
+This package is step 2 of 3.
 
-** Step 2 (later): dlopen/dlsym rows on the dynamic reader
+** Step 1 (done): the declarative surface over the build-time table
 
-Add =dlopen=, =dlsym=, =dlerror= (and =dlclose=) as ordinary rows in
-=nelisp-standalone--reader-extern-table=, then call the address
-=dlsym= returns through =ptr-call= instead of going back through
-=nl-ffi-call='s name-matching dispatch. Concretely:
+=ffi:library=/=ffi:defun= over the symbols the reader's build-time extern
+table already carries. No loader, no new table rows for a new library --
+calling a symbol not already in the table signalled
+=nl-ffi-unresolved-symbol= outright; the only way to add one was a new
+table row and a reader rebuild.
 
-- *Table rows.* =dlopen(path, flags)= and =dlsym(handle, symbol)= are
-  both arity 2, plain i64 (pointers and a flags int); =dlerror()= is
-  arity 0, returning a pointer read with =nl-ffi-get-string=; =dlclose
-  (handle)= is arity 1. All four are ordinary rows, no new SIG shape
-  needed, unlike the f64 point below.
-- *Is libdl already linked?* No. Nothing in
-  =nelisp-standalone--reader-extern-table= imports =dlopen=/=dlsym= or
-  any =libdl= SONAME today (grep confirms zero hits). On glibc >= 2.34
-  these symbols live in =libc.so.6= itself, already a DT_NEEDED entry
-  (the =toupper=/=tolower= rows use it) -- so on such a target, adding
-  the four rows above with SONAME =libc.so.6= needs no new DT_NEEDED at
-  all. An older glibc keeps them in =libdl.so.2=, a genuinely new
-  import. Either way this is a small, mechanical addition to the same
-  table, not a new mechanism.
-- *Can =ptr-call= pass or return doubles?* Not today -- only integers.
-  Its one dispatch arm (=scripts/nelisp-standalone-build.el=, the
-  =(:lit "ptr-call")= entry) reads all six arguments with =wf_argval=
-  and boxes the result with =wf_write_int=, unconditionally; there is
-  no f64-classed sibling the way =nl-ffi-call='s per-row =SIG= plist
-  gives direct table rows (=:args=/=:ret= =f64=). That per-row
-  distinction works because the table is closed and known at BUILD
-  time, so the compiler picks the marshalling per symbol; a
-  =dlsym='d address is only known at RUN time, so =ptr-call= itself
-  would need either a new f64-aware variant or a way to tell it, per
-  call, which of its argument/return slots are =f64= -- calling a
-  double-taking function like =sqrt= through a =dlopen='d handle needs
-  this fixed first. Integer/pointer-only foreign functions (most of
-  libc) do not.
-- *How would errors surface?* Differently from today's nil-sentinel,
-  and this is the part most likely to be gotten wrong by extending
-  =nl-ffi--invoke= without noticing. Today a *matched* table row always
-  boxes a real number, and only an unmatched NAME ever produces nil --
-  so nil unambiguously means "not in the table". =dlopen=/=dlsym= are
-  matched rows too: a real call to either always returns a real
-  integer, including *0* for "failed" (a C NULL pointer). Nil can no
-  longer mean failure here; a genuine dlopen/dlsym failure has to be
-  read as "result is 0", with the message fetched by a follow-up call
-  to =dlerror()= -- a different check from, and not a replacement for,
-  the =null result= sentinel =nl-ffi--invoke= already uses for the
-  fixed-table path.
+** Step 2 (done): dlopen/dlsym rows on the dynamic reader
+
+=dlopen=, =dlsym=, =dlerror= and =dlclose= are now ordinary rows in
+=nelisp-standalone--reader-extern-table= (SONAME =libc.so.6=; confirmed
+on this repository's Debian dev host, glibc 2.41, via =nm -D libc.so.6=
+listing all four as =T ...@@GLIBC_2.34=, and already a =DT_NEEDED= entry
+via the =toupper=/=tolower= rows, so no new shared-library dependency was
+added -- an older glibc keeps them in a separate =libdl.so.2= instead,
+which this repository's CI/dev hosts do not need). =ffi:library= really
+=dlopen=s a SONAME outside =nl-ffi-known-sonames= (=RTLD_NOW|RTLD_LOCAL=)
+and stores the handle; =nl-ffi--invoke= falls back to =dlsym= against a
+declared library's handle, in declaration order, caching a resolved
+address keyed by =(SONAME . C-SYMBOL)=, and calls it through =ptr-call=
+instead of going back through =nl-ffi-call='s name-matching dispatch --
+see "Symbol resolution" above for the full design, and =nl-ffi.el='s
+Commentary/=nl-ffi--ptr-call-invoke='s docstring for the exact checks.
+
+=ptr-call= still only passes/returns integers (its one dispatch arm,
+=(:lit "ptr-call")= in =scripts/nelisp-standalone-build.el=, reads all
+six arguments with =wf_argval= and boxes the result with =wf_write_int=,
+unconditionally -- there is no f64-classed sibling the way a direct
+table row's =SIG= plist gives =nl-ffi-call= itself, =:args=/=:ret= =f64=).
+That per-row distinction works because the table is closed and known at
+BUILD time, so the compiler picks the marshalling per symbol; a
+=dlsym='d address is only known at RUN time, so calling a double-taking
+function like =sqrt= through a =dlopen='d handle would need either a new
+f64-aware =ptr-call= variant, or a way to tell it, per call, which of its
+argument/return slots are =f64=. Neither exists yet -- a signature naming
+=:float=/=:double= for a symbol resolved via =dlsym= signals
+=nl-ffi-dlsym-float-unsupported= instead of a silently wrong answer, and
+integer/pointer-only foreign functions (most of libc) are unaffected.
+
+Errors surface differently from the fixed-table path, since =dlopen=/
+=dlsym= are matched rows themselves: a real call to either always returns
+a real integer, including *0* for "failed" (a C NULL pointer) -- nil
+cannot mean failure here the way it does for an unmatched table NAME.
+=nl-ffi--resolve-via-dlsym= reads a genuine dlopen/dlsym failure as
+"result is 0" (its own returned sentinel when nothing resolves), and
+=nl-ffi--dlopen=/=nl-ffi--dlerror-text= fetch the message with a
+follow-up call to =dlerror()= -- a different check from, and not a
+replacement for, the =null result= sentinel =nl-ffi--invoke= still uses
+for the fixed-table path.
 
 ** Step 3 (later still): grow the pure-elisp ELF loader
 

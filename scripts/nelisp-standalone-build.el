@@ -14923,6 +14923,26 @@ ash/logand/logior/logxor/lognot + string<.")
     ;; restore the language-level signed value before boxing it.
     ("toupper"              "libc.so.6"        1 (:windows-ret s32))
     ("tolower"              "libc.so.6"        1 (:windows-ret s32))
+    ;; --- Step 2 FFI resolver (packages/nl-ffi): dlopen/dlsym/dlerror/
+    ;; dlclose, so `nl-ffi--invoke' can resolve a symbol this table does not
+    ;; carry at RUN time instead of needing a new row + reader rebuild. On
+    ;; glibc >= 2.34 these four live in libc.so.6 itself (measured on this
+    ;; repository's dev host, Debian glibc 2.41: `nm -D libc.so.6' lists all
+    ;; four as `T ...@@GLIBC_2.34', and `libc.so.6' is already a DT_NEEDED
+    ;; entry via the toupper/tolower rows above, so this adds no new shared-
+    ;; library dependency) -- an older glibc (< 2.34) keeps them in a
+    ;; separate `libdl.so.2' instead (SONAME would need to change for such a
+    ;; target; not needed here). All four are plain i64 in and out (a
+    ;; pointer is just an address), so no SIG plist beyond `:posix-only' is
+    ;; needed, unlike the f64 rows below. `:posix-only' excludes them from
+    ;; `nelisp-standalone--windows-reader-extern-table': Windows has no
+    ;; same-named equivalents (LoadLibraryA/GetProcAddress/FreeLibrary/
+    ;; GetLastError are a different ABI entirely), even though libc.so.6
+    ;; itself has a Windows DLL mapping for the toupper/tolower rows above.
+    ("dlopen"               "libc.so.6"        2 (:posix-only t))
+    ("dlsym"                "libc.so.6"        2 (:posix-only t))
+    ("dlerror"              "libc.so.6"        0 (:posix-only t))
+    ("dlclose"              "libc.so.6"        1 (:posix-only t))
     ;; --- D1 TLS (libgnutls): full client handshake surface. ---------------
     ;; Unversioned undefined refs bind to each symbol's default version
     ;; (@@GNUTLS_3_4) via ld.so.  Pointer-out-params (credentials/session
@@ -15023,7 +15043,12 @@ ash/logand/logior/logxor/lognot + string<.")
 here).  Without SIG every argument and the return are i64 (ints + pointers);
 SIG = (:args (CLASS ...) :ret CLASS :windows-ret CLASS), with argument CLASS in
 {i64,f64}, return CLASS in {i64,f64,s32}, and :windows-ret overriding :ret only
-for Win64.  The s32 return class repairs EAX zero-extension before Lisp boxing.")
+for Win64.  The s32 return class repairs EAX zero-extension before Lisp boxing.
+SIG may also carry :posix-only t, which excludes the row from
+`nelisp-standalone--windows-reader-extern-table' regardless of its SONAME's
+Windows DLL mapping -- for a row whose SONAME has Windows-compatible
+siblings (toupper/tolower on libc.so.6) but is not itself one, such as the
+dlopen/dlsym/dlerror/dlclose rows below.")
 
 (defconst nelisp-standalone--windows-reader-extern-dll-map
   '(("libc.so.6" . "ucrtbase.dll")
@@ -15043,10 +15068,17 @@ the inbox Universal CRT.  GnuTLS and FreeType remain external-dependency policy
 decisions, not accidental loader requirements of every Windows reader.")
 
 (defun nelisp-standalone--windows-reader-extern-table ()
-  "Return TABLE rows whose SONAME has a Windows DLL mapping."
+  "Return TABLE rows whose SONAME has a Windows DLL mapping.
+Also excludes any row whose SIG plist carries `:posix-only' -- a row can
+share a Windows-mapped SONAME (for example the dlopen/dlsym/dlerror/
+dlclose rows share `libc.so.6' with toupper/tolower) while having no
+same-named Windows equivalent at all; `:posix-only' is how such a row
+opts out of the Windows subset without having to invent an unmapped
+SONAME just to hide from this filter."
   (seq-filter
    (lambda (row)
-     (assoc (nth 1 row) nelisp-standalone--windows-reader-extern-dll-map))
+     (and (assoc (nth 1 row) nelisp-standalone--windows-reader-extern-dll-map)
+          (not (plist-get (nth 3 row) :posix-only))))
    nelisp-standalone--reader-extern-table))
 
 (defun nelisp-standalone--build-ffi-dispatch (table &optional target)

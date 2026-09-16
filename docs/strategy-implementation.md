@@ -151,40 +151,59 @@ Family 8 (foreign function interface) now has a declarative surface,
 `packages/nl-ffi`: `ffi:library` and `ffi:defun` sit on top of the reader's
 existing `nl-ffi-call` builtin (already exercised directly by
 `standalone-reader-ffi-smoke` against libc, libm, SQLite, GnuTLS, and
-FreeType). `nl-ffi-call` is not a `dlopen`/`dlsym` loader: it dispatches
-through one fixed, build-time table of `(symbol, soname, arity, signature)`
-rows already compiled into `scripts/nelisp-standalone-build.el`, resolved by
-the OS loader when the process starts, not by anything Lisp calls at
-runtime. `ffi:defun` can therefore give a typed, converting front end to a
-symbol the running binary already imports, and cannot make a new C symbol
-callable; `ffi:library` takes a SONAME spelled as the table spells it,
-validates it against the table's own known SONAME set, and confirms
-`nl-ffi-call` exists at all, and does not open anything, since resolution
-is global and fixed rather than per-library. `ffi:defun` converts `:pointer` arguments (an
-address, nil, or a Lisp string copied into a scratch buffer for the call)
-and detects an unresolved symbol from the interpreter's own
-nil-versus-boxed-number convention, signalling one of four named
-conditions (`nl-ffi-wrong-arity`, `nl-ffi-unknown-type`,
-`nl-ffi-unresolved-symbol`, `nl-ffi-unavailable`) instead of returning a
-silent nil. `nl-ffi-call`, and therefore this whole surface, exists only in
-the dynamic reader (`NELISP_READER_DYNAMIC=1`); calling an `ffi:defun`
-wrapper on the default static reader signals `nl-ffi-unavailable` rather
-than crashing, but no C symbol is callable there. This does not cover
-closures/callbacks, struct layout, variadic C calls, or section 8.2's
-header bindgen. The type vocabulary and vector call shape (`[RET ARG...]`,
-return type first) follow the existing `dev/nelisp-ffi` fork of elisp-ffi
-rather than section 8.1's illustrative labeled-argument sketch, since that
-shape is what an already-fixed, per-symbol ABI table can actually be
-checked against; see `packages/nl-ffi/README.org` for the full contract
-and its "Symbol resolution" section for why `ffi:library` cannot do more
-than this. This is step 1 of a staged rollout: a later step can add
-`dlopen`/`dlsym` rows to the same table and call the resolved address
-through `ptr-call` so a new binding stops needing a reader rebuild, and a
-further step can grow `dev/nelisp-ffi/nelisp-ffi-pure.el` (a pure-elisp
-ELF symbol reader, leaf functions only today) toward giving the default
-statically linked reader the same reach; neither changes `ffi:library`'s
-SONAME argument or `ffi:defun`'s signature vector, and the default binary
-stays statically linked either way.
+FreeType). `nl-ffi-call` dispatches through one fixed, build-time table of
+`(symbol, soname, arity, signature)` rows already compiled into
+`scripts/nelisp-standalone-build.el`, resolved by the OS loader when the
+process starts, not by anything Lisp calls at runtime; a symbol still in
+that table resolves this way regardless of which library a caller thinks
+it belongs to. As of step 2, a symbol the table does NOT carry no longer
+signals `nl-ffi-unresolved-symbol` outright: `dlopen`/`dlsym`/`dlerror`/
+`dlclose` are now ordinary rows in the same table (soname `libc.so.6`;
+glibc >= 2.34 keeps them there, already a `DT_NEEDED` entry, so no new
+shared-library dependency), `ffi:library` really `dlopen`s a soname
+outside its known-table mirror (`RTLD_NOW|RTLD_LOCAL`) and stores the
+handle, and `ffi:defun`'s generated call falls back to resolving the
+symbol with `dlsym` against a declared library's handle and calling it
+through `ptr-call` -- a generic indirect-call primitive, not the fixed
+table -- caching the resolved address. A new integer/pointer C binding
+therefore no longer needs a reader rebuild; `ptr-call` only passes/returns
+integers (six argument slots, no f64 classing), so a signature naming
+`:float`/`:double` for a symbol resolved this way signals
+`nl-ffi-dlsym-float-unsupported` rather than a silently wrong answer, and
+more than six arguments signals `nl-ffi-too-many-arguments` -- a symbol
+still in the build-time table is unaffected by either limit, since a
+direct table row's own signature plist can mark f64 argument/return
+classes for the compiler to marshal at build time. `ffi:defun` converts
+`:pointer` arguments (an address, nil, or a Lisp string copied into a
+scratch buffer for the call) and signals one of six named conditions
+(`nl-ffi-wrong-arity`, `nl-ffi-unknown-type`, `nl-ffi-unresolved-symbol`,
+`nl-ffi-unavailable`, `nl-ffi-dlsym-float-unsupported`,
+`nl-ffi-too-many-arguments`) instead of ever returning a silent nil;
+`ffi:library` signals `nl-ffi-library-open-failed`, carrying `dlerror`'s
+text, when a real `dlopen` attempt fails, replacing the old
+table-membership `nl-ffi-unknown-library` rejection (no longer signalled
+at all: an unknown soname is now a real `dlopen` candidate rather than an
+outright rejection). `nl-ffi-call`, and therefore this whole surface,
+exists only in the dynamic reader (`NELISP_READER_DYNAMIC=1`); calling an
+`ffi:defun` wrapper on the default static reader signals
+`nl-ffi-unavailable` rather than crashing, but no C symbol is callable
+there on either resolution path. This does not cover closures/callbacks,
+struct layout, variadic C calls, or section 8.2's header bindgen. The type
+vocabulary and vector call shape (`[RET ARG...]`, return type first)
+follow the existing `dev/nelisp-ffi` fork of elisp-ffi rather than section
+8.1's illustrative labeled-argument sketch, since that shape is what an
+already-fixed, per-symbol ABI table can actually be checked against; see
+`packages/nl-ffi/README.org` for the full contract and its "Symbol
+resolution" section for the two resolution paths and their limits. This is
+step 2 of a staged rollout: a further step can grow
+`dev/nelisp-ffi/nelisp-ffi-pure.el` (a pure-elisp ELF symbol reader, leaf
+functions only today) toward giving the default statically linked reader
+the same reach; it changes neither `ffi:library`'s SONAME argument nor
+`ffi:defun`'s signature vector, and the default binary stays statically
+linked either way. An f64-capable `ptr-call` (needed for either step 2's
+`dlsym` path or step 3's pure-elisp loader to call a double-taking
+function) remains open; see `packages/nl-ffi/README.org`'s "Roadmap" for
+what that would take.
 
 The project frontend in `tools/nelisp-project.py` currently provides a partial
 Phase 1 workflow. Its integration suites and [project guide](project-cli.md)

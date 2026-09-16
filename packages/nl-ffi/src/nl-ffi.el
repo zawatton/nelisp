@@ -76,30 +76,44 @@
 ;; section 8.1's illustrative labeled-argument sketch, so existing
 ;; elisp-ffi/nelisp-ffi callers keep working -- see the package README.
 ;;
-;; Roadmap (this package is step 1 of 3; see the package README's
+;; Roadmap (this package is step 2 of 3; see the package README's
 ;; "Roadmap" section for the full reasoning):
 ;;
-;;   1. THIS PACKAGE.  `ffi:library'/`ffi:defun' over the symbols the
-;;      reader's build-time extern table already carries.  No loader, no
-;;      new table rows for a new library -- calling a symbol not already
-;;      in the table signals `nl-ffi-unresolved-symbol'; the only way to
-;;      add one is a new table row and a reader rebuild.
-;;   2. (Later.)  Add `dlopen'/`dlsym'/`dlerror' rows to that table and
-;;      call the resolved address through `ptr-call', so a new binding no
-;;      longer needs a reader rebuild.
+;;   1. DONE.  `ffi:library'/`ffi:defun' over the symbols the reader's
+;;      build-time extern table already carries -- a table row and a
+;;      reader rebuild was the only way to add a new symbol.
+;;   2. THIS STEP.  `dlopen'/`dlsym'/`dlerror'/`dlclose' are now ordinary
+;;      rows in `nelisp-standalone--reader-extern-table' (SONAME
+;;      "libc.so.6": glibc >= 2.34 keeps them there; see
+;;      `nl-ffi--dlopen''s Commentary below for what an older glibc would
+;;      need).  A C symbol the build-time table does not carry no longer
+;;      signals `nl-ffi-unresolved-symbol' outright: `ffi:library' now
+;;      really `dlopen's a SONAME outside `nl-ffi-known-sonames', and
+;;      `nl-ffi--invoke' falls back to resolving the symbol with `dlsym'
+;;      against a declared library's handle and calling it through
+;;      `ptr-call' -- see `nl-ffi--ptr-call-invoke'.  `ptr-call' only
+;;      passes/returns integers (six argument slots, no f64 classing), so
+;;      this path is integer/pointer-only: a signature naming `:float' or
+;;      `:double' for a symbol resolved this way signals
+;;      `nl-ffi-dlsym-float-unsupported' instead of a silently wrong
+;;      answer, and more than six arguments signals
+;;      `nl-ffi-too-many-arguments'.  A symbol still in the build-time
+;;      table keeps resolving through `nl-ffi-call' exactly as step 1
+;;      left it, with no `dlopen'/`dlsym' call at all.
 ;;   3. (Later still.)  Grow the pure-elisp ELF loader
 ;;      (dev/nelisp-ffi/nelisp-ffi-pure.el, leaf functions only today) so
 ;;      the default STATICALLY linked reader gains the same capability.
 ;;      The default binary stays statically linked either way; switching
-;;      it to dynamic linking is not the plan.
+;;      it to dynamic linking is not the plan.  Reaching an f64-capable
+;;      `ptr-call' remains open for either step 2 or step 3 to pick up;
+;;      see `nl-ffi--ptr-call-invoke''s Commentary for what that needs.
 ;;
-;; `ffi:library' already takes a SONAME spelled exactly as the table
-;; spells it (for example "libm.so.6", not "libm") and validates it
-;; against `nl-ffi-known-sonames' NOW, so step 2 has a place to attach a
-;; real handle (`nl-ffi-library-handle', nil until then) without changing
-;; this call shape.  `ffi:defun''s signature vector never encodes where
-;; C-SYMBOL resolves from -- only `nl-ffi--invoke' knows that, and it is
-;; the one place step 2 needs to change.
+;; `ffi:defun' keeps its call shape from step 1 -- it still takes no
+;; library argument, and its signature vector never encodes where
+;; C-SYMBOL resolves from.  `nl-ffi--invoke' is the one place that
+;; decides per symbol, at call time: the build-time table first (global
+;; and flat, as before), then every `dlopen'ed library's handle, in
+;; declaration order, via `dlsym' (see `nl-ffi--resolve-via-dlsym').
 ;;
 ;; Public API:
 ;;   `ffi:library'      -- (ffi:library SONAME) declare + validate a library
@@ -114,6 +128,7 @@
 (declare-function alloc-bytes "ext:nelisp-runtime" (nbytes align))
 (declare-function ptr-read-u8 "ext:nelisp-runtime" (ptr offset))
 (declare-function ptr-write-u8 "ext:nelisp-runtime" (ptr offset value))
+(declare-function ptr-call "ext:nelisp-runtime" (address a b c d e f))
 
 ;;;; --- error conditions ---------------------------------------------------
 
@@ -137,6 +152,24 @@
 
 (define-error 'nl-ffi-unknown-library
   "FFI library soname is not in the reader's extern table"
+  'nl-ffi-error)
+;; No longer signalled by `ffi:library' as of step 2: a SONAME outside
+;; `nl-ffi-known-sonames' is now attempted via `dlopen' instead of being
+;; rejected outright -- see `nl-ffi-library-open-failed' for what a real
+;; open failure signals now.  Left defined (never removed) for any
+;; existing caller that still catches it by name.
+
+(define-error 'nl-ffi-library-open-failed
+  "dlopen failed to open an FFI library"
+  'nl-ffi-error)
+
+(define-error 'nl-ffi-dlsym-float-unsupported
+  "a dlsym-resolved FFI call cannot use :float/:double -- only a symbol \
+still in the build-time table can; add a table row for it"
+  'nl-ffi-error)
+
+(define-error 'nl-ffi-too-many-arguments
+  "more arguments than ptr-call can carry (six) for a dlsym-resolved call"
   'nl-ffi-error)
 
 ;;;; --- type vocabulary ------------------------------------------------------
@@ -301,9 +334,13 @@ returning a silent nil (see the package README's error contract):
      `nelisp-unsupported-primitive' (raised by a static-reader build
      where `nl-ffi-call' is `fboundp' but not really wired) is caught
      and re-signalled as `nl-ffi-unavailable'.
-  5. `nl-ffi-unresolved-symbol' when the raw result is Lisp `nil' -- the
-     table's own unmatched-name fallback, since every matched row boxes
-     a real number.
+  5. A raw `nil' result -- the build-time table's own unmatched-name
+     fallback, since every matched row boxes a real number -- no longer
+     means \"unresolved\" outright as of step 2: `nl-ffi--ptr-call-invoke'
+     gets one more chance to resolve C-SYMBOL via `dlsym' against a
+     `dlopen'ed library and call it through `ptr-call', and only THAT
+     signals `nl-ffi-unresolved-symbol' when no declared library carries
+     it either.
   6. A `:void' RET-TYPE discards the (already known non-nil) raw result
      and returns nil; any other RET-TYPE returns it as-is."
   (let ((declared (length arg-types))
@@ -326,8 +363,188 @@ returning a silent nil (see the package README's error contract):
              (nelisp-unsupported-primitive
               (signal 'nl-ffi-unavailable (list fn-name c-symbol))))))
       (when (null result)
-        (signal 'nl-ffi-unresolved-symbol (list fn-name c-symbol)))
+        (setq result
+              (nl-ffi--ptr-call-invoke fn-name c-symbol arg-types ret-type raw-args)))
       (if (eq ret-type :void) nil result))))
+
+;;;; --- step 2: resolving a symbol the build-time table does not carry ------
+;;
+;; `nl-ffi--invoke' above reaches this only once `nl-ffi-call' has already
+;; said "not in the table" (a raw nil).  Everything here is therefore the
+;; SLOW, rare path: a real `dlsym' the first time a given (library .
+;; symbol) pair is asked for, cached after that.
+
+(defconst nl-ffi--ptr-call-max-args 6
+  "Maximum real arguments `ptr-call' can carry beyond the address.
+The reader's own dispatch arm for it (`(:lit \"ptr-call\")' in
+scripts/nelisp-standalone-build.el) always reads exactly six `wf_argval'
+slots after the address and pads any the Lisp call site did not supply
+with garbage from beyond the actual argument list -- see
+`nelisp-native-load-raw-call''s and `nelisp-native-load''s own callers
+for the same contract (\"ptr-call reads six arguments after the address
+unconditionally, so hand it six\").  A `ffi:defun' signature resolved via
+`dlsym' with more than this many arguments cannot be called this way;
+see `nl-ffi-too-many-arguments'.")
+
+(defconst nl-ffi--rtld-now 2
+  "RTLD_NOW, as glibc's <dlfcn.h> defines it.")
+
+(defconst nl-ffi--rtld-local 0
+  "RTLD_LOCAL, as glibc's <dlfcn.h> defines it -- the default binding
+scope (0, i.e. no bit at all).  Named and ORed into `ffi:library''s
+`dlopen' flags anyway, purely so the intent reads at the call site
+instead of a bare 2.")
+
+(defun nl-ffi--call-checked (fn-name c-symbol &rest args)
+  "Call C-SYMBOL through `nl-ffi-call', attributing an unavailable build
+to FN-NAME.  Converts the reader's catchable `nelisp-unsupported-
+primitive' (a static-reader build where `nl-ffi-call' is `fboundp' but
+not really wired) into `nl-ffi-unavailable', exactly as `nl-ffi--invoke'
+does for an `ffi:defun'-generated call.  Used only for this file's own
+`dlopen'/`dlsym'/`dlerror' calls, whose C-SYMBOL is always a matched
+table row (see the table rows added for step 2), so the raw result here
+is never Lisp `nil' the way an arbitrary caller-supplied C-SYMBOL can be
+in `nl-ffi--invoke'."
+  (condition-case _err
+      (apply #'nl-ffi-call c-symbol args)
+    (nelisp-unsupported-primitive
+     (signal 'nl-ffi-unavailable (list fn-name c-symbol)))))
+
+(defun nl-ffi--dlerror-text ()
+  "Return `dlerror()''s text, or a fallback string when it has none.
+`dlerror()' returns a `const char *' (NULL when there is no pending
+error) that `nl-ffi-get-string' turns into a Lisp string; NULL is a
+real, boxed 0 here (`dlerror' is a matched table row), never the `nil'
+`nl-ffi--invoke' would otherwise read as \"unresolved\" (see this file's
+Commentary on why a matched row's result is a real number, not nil)."
+  (let ((ptr (nl-ffi--call-checked 'nl-ffi--dlerror-text "dlerror")))
+    (if (and (integerp ptr) (> ptr 0))
+        (or (nl-ffi-get-string ptr) "dlerror(): empty message")
+      "dlerror(): no error text available")))
+
+(defun nl-ffi--dlopen (soname)
+  "`dlopen' SONAME with RTLD_NOW|RTLD_LOCAL; return the non-zero handle.
+Signals `nl-ffi-library-open-failed' with `dlerror'\='s text (SONAME and
+the message, as the condition data) when the open fails -- for example
+a SONAME that names no real, reachable shared object.  Callers check
+whether `nl-ffi-call' is `fboundp' first (see `ffi:library'); this
+function does not, since without that check `nl-ffi--call-checked'
+would already signal `nl-ffi-unavailable' for the same reason, just
+less directly attributed."
+  (let* ((path (nl-ffi--string-to-cstring soname))
+         (flags (logior nl-ffi--rtld-now nl-ffi--rtld-local))
+         (handle (nl-ffi--call-checked 'ffi:library "dlopen" path flags)))
+    (when (or (not (integerp handle)) (zerop handle))
+      (signal 'nl-ffi-library-open-failed (list soname (nl-ffi--dlerror-text))))
+    handle))
+
+(defun nl-ffi--dlsym (handle symbol)
+  "Return the address `dlsym' resolves SYMBOL to against HANDLE, or 0.
+0 is `dlsym'\='s own real \"not found\" answer (a C NULL pointer), not a
+signal that something here is unavailable -- see
+`nl-ffi--resolve-via-dlsym', the only caller, for how a whole search
+across every declared library turns a final 0 into
+`nl-ffi-unresolved-symbol'."
+  (nl-ffi--call-checked 'nl-ffi--dlsym "dlsym" handle
+                         (nl-ffi--string-to-cstring symbol)))
+
+(defvar nl-ffi--library-order nil
+  "SONAMEs successfully `dlopen'ed via `ffi:library', most-recently-declared
+first.  Only libraries actually opened at run time (a SONAME outside
+`nl-ffi-known-sonames') ever appear here -- a known-table SONAME never
+calls `dlopen' and so is never a `dlsym' candidate.
+`nl-ffi--resolve-via-dlsym' walks this list, in order, as the one place
+an unmatched `ffi:defun' symbol gets a chance to resolve.")
+
+(defvar nl-ffi--dlsym-cache (make-hash-table :test 'equal)
+  "Resolved `dlsym' addresses, keyed by (SONAME . C-SYMBOL).
+Populated by `nl-ffi--resolve-via-dlsym' the first time a given
+symbol+library pair resolves; a failed pair is never cached, so an
+unresolvable symbol pays a fresh (cheap) `dlsym' call every time it is
+asked for again, rather than caching a negative answer that a later
+`dlopen' of some other, exporting library could no longer overturn.")
+
+(defun nl-ffi--resolve-via-dlsym (c-symbol)
+  "Return the address of C-SYMBOL in some `dlopen'ed library, or 0.
+Walks `nl-ffi--library-order', returning the first non-zero `dlsym'
+result and caching it in `nl-ffi--dlsym-cache' keyed by
+\(SONAME . C-SYMBOL\).  Returns 0 -- `dlsym'\='s own \"not found\" value --
+when no declared library exports C-SYMBOL, including when zero
+libraries have been `dlopen'ed at all."
+  (let ((sonames nl-ffi--library-order)
+        (found 0))
+    (while (and sonames (zerop found))
+      (let* ((soname (car sonames))
+             (key (cons soname c-symbol))
+             (cached (gethash key nl-ffi--dlsym-cache)))
+        (if cached
+            (setq found cached)
+          (let* ((handle (nl-ffi-library-handle soname))
+                 (addr (and handle (nl-ffi--dlsym handle c-symbol))))
+            (when (and addr (not (zerop addr)))
+              (puthash key addr nl-ffi--dlsym-cache)
+              (setq found addr)))))
+      (setq sonames (cdr sonames)))
+    found))
+
+(defun nl-ffi--ptr-call-invoke (fn-name c-symbol arg-types ret-type raw-args)
+  "Resolve C-SYMBOL via `dlsym' and call it through `ptr-call'.
+The last resort `nl-ffi--invoke' reaches once the build-time table has
+already said C-SYMBOL is not one of its rows.  RAW-ARGS are the same
+already-converted values `nl-ffi--invoke' would otherwise have handed
+straight to `nl-ffi-call' (see `nl-ffi--convert-arg') -- fine as they
+are for this path too, since every `nl-ffi-types' member other than
+`:float'/`:double' is already a plain integer/address by the time it
+gets here.
+
+Checks, each signalling a distinct named condition, before any real
+`dlsym'/`ptr-call' work:
+
+  1. `nl-ffi-dlsym-float-unsupported' when RET-TYPE or any of ARG-TYPES
+     is `:float'/`:double'.  `ptr-call' has one dispatch arm
+     (`(:lit \"ptr-call\")' in scripts/nelisp-standalone-build.el):
+     every argument is read with `wf_argval' and the result boxed with
+     `wf_write_int', unconditionally -- there is no f64-classed sibling
+     the way a direct table row's SIG plist gives `nl-ffi-call' itself
+     (`:args'/`:ret' `f64'). That per-row distinction works because the
+     table is closed and known at BUILD time, so the compiler can pick
+     the marshalling per symbol; a `dlsym'ed address is only known at
+     RUN time, so calling a double-taking function this way would need
+     either a new f64-aware `ptr-call' variant or a way to tell it, per
+     call, which argument/return slots are `f64' -- neither exists yet
+     (see this file's Roadmap section above and the package README).
+  2. `nl-ffi-too-many-arguments' when (length ARG-TYPES) exceeds
+     `nl-ffi--ptr-call-max-args' (six) -- `ptr-call' always reads exactly
+     six argument slots after the address; there is nowhere to put a
+     seventh.
+
+Then C-SYMBOL is resolved with `nl-ffi--resolve-via-dlsym'; a 0 result
+(`dlsym'\='s own \"not found\", the same sentinel it would have been at
+the raw C level) signals `nl-ffi-unresolved-symbol', exactly the
+condition a build-time-table miss already signalled before this path
+existed -- calling `ptr-call' with a 0 address is not a fallback, it is
+undefined behaviour (a call through a null function pointer), so that
+check runs before, never after, the call it guards.  Once resolved,
+RAW-ARGS are padded with trailing zeros to `nl-ffi--ptr-call-max-args'
+(exactly what every other `ptr-call' caller in this runtime already
+does -- see `nelisp-native-load-raw-call') and the raw `ptr-call' result
+is returned as-is; `nl-ffi--invoke' still owns turning a `:void'
+RET-TYPE into nil."
+  (when (memq ret-type '(:float :double))
+    (signal 'nl-ffi-dlsym-float-unsupported (list fn-name c-symbol ret-type)))
+  (dolist (ty arg-types)
+    (when (memq ty '(:float :double))
+      (signal 'nl-ffi-dlsym-float-unsupported (list fn-name c-symbol ty))))
+  (when (> (length arg-types) nl-ffi--ptr-call-max-args)
+    (signal 'nl-ffi-too-many-arguments
+            (list fn-name c-symbol (length arg-types) nl-ffi--ptr-call-max-args)))
+  (let ((addr (nl-ffi--resolve-via-dlsym c-symbol)))
+    (when (zerop addr)
+      (signal 'nl-ffi-unresolved-symbol (list fn-name c-symbol)))
+    (let ((padded (copy-sequence raw-args)))
+      (while (< (length padded) nl-ffi--ptr-call-max-args)
+        (setq padded (append padded '(0))))
+      (apply #'ptr-call addr padded))))
 
 ;;;; --- ffi:library -----------------------------------------------------------
 
@@ -341,10 +558,16 @@ scripts/nelisp-standalone-build.el as of this package's own version --
 this file cannot introspect that table, which lives only in the build
 script that produces the reader binary, not in anything the running
 reader loads.  Update this list by hand whenever that table's SONAME
-set changes; `ffi:library' validates against exactly this list, so a
-stale copy here reads as a false `nl-ffi-unknown-library' (a real
-SONAME this list has not caught up to yet) rather than a false
-negative.")
+set changes.  `ffi:library' branches on membership in exactly this
+list (see its docstring): a SONAME here skips `dlopen' entirely and
+resolves purely through the build-time table, as before step 2; a
+SONAME missing from a stale copy of this list is not rejected any
+more -- it now takes the `dlopen' branch too, which typically still
+succeeds (`dlopen' on an already-linked SONAME returns a valid handle
+to the same in-process library, just with one more reference count),
+so a stale mirror now costs one redundant `dlopen' call rather than a
+false `nl-ffi-unknown-library' rejection.  `nl-ffi-test-known-sonames-
+match-build-table' still keeps this list honest.")
 
 (defun nl-ffi-known-soname-p (soname)
   "Return non-nil when SONAME is one of `nl-ffi-known-sonames'."
@@ -352,52 +575,67 @@ negative.")
 
 (defvar nl-ffi--libraries (make-hash-table :test 'equal)
   "Registry of libraries declared via `ffi:library', keyed by SONAME.
-Each value is a plist `(:soname SONAME :handle HANDLE)'.  HANDLE is
-always nil today (see `ffi:library''s docstring) -- this shape exists
-so a later `dlopen'-backed step can fill it in without changing what
-`ffi:library' returns or how this table is keyed.")
+Each value is a plist `(:soname SONAME :handle HANDLE)'.  HANDLE is nil
+for a SONAME `nl-ffi-known-sonames' already carries (no `dlopen' call is
+needed or made -- see `ffi:library'), and the real, non-zero `dlopen'
+handle for any other SONAME, since `ffi:library' can now open one.")
 
 (defun nl-ffi-library-handle (soname)
   "Return the `dlopen' handle registered for SONAME, or nil.
-Always nil today: nothing in this package ever calls `dlopen'.  This
-accessor exists so callers, and a later loader step, have one place to
-ask -- not a working handle yet."
+Nil for a SONAME `ffi:library' has not (successfully) declared yet, and
+for one of `nl-ffi-known-sonames' -- those never call `dlopen' (see
+`ffi:library'). A real, non-zero integer for any other SONAME
+`ffi:library' has opened."
   (plist-get (gethash soname nl-ffi--libraries) :handle))
 
 (defun ffi:library (soname)
   "Declare SONAME as an FFI library for `ffi:defun' to draw symbols from.
 
-SONAME is spelled exactly as the reader's build-time extern table
-spells it (for example \"libm.so.6\", not \"libm\" or \"math\") -- see
-`nl-ffi-known-sonames'.  There is no `dlopen' here: `nl-ffi-call'
-resolves every C symbol through one fixed table shared by the whole
-process (see this file's Commentary), so no `ffi:defun' form needs, or
-takes, a library argument, and declaring SONAME here does not make any
-new symbol callable -- `ffi:defun' forms naming its symbols still
-resolve, or do not, purely by whether the running binary's build
-already linked them in.
+SONAME spelled exactly as the reader's build-time extern table spells
+it (for example \"libm.so.6\", not \"libm\" or \"math\") is one of
+`nl-ffi-known-sonames' -- already linked into the running binary at
+build time -- and resolves every C symbol through `nl-ffi-call''s one
+fixed table shared by the whole process (see this file's Commentary),
+exactly as before: no `dlopen' call, no library argument on any
+`ffi:defun' form, and a symbol still resolves, or does not, purely by
+whether the running binary's build already linked it in.
+
+Any OTHER SONAME is a real `dlopen' call (RTLD_NOW|RTLD_LOCAL) as of
+step 2 -- see `nl-ffi--dlopen'.  A symbol an `ffi:defun' form names that
+`nl-ffi-call' does not resolve then gets one more chance: `dlsym' against
+this library's handle, called through `ptr-call' (see
+`nl-ffi--resolve-via-dlsym'/`nl-ffi--ptr-call-invoke').  This is the
+whole reason `ffi:library' takes a real handle at all now.
 
 Checks, in order:
   1. `wrong-type-argument' when SONAME is not a string.
-  2. `nl-ffi-unknown-library' when SONAME is not one of
-     `nl-ffi-known-sonames' -- this IS a real, immediate check against
-     the table's own SONAME set, unlike per-symbol resolution (which
-     needs an actual, correctly typed call and so cannot happen until
-     an `ffi:defun'-generated function is invoked; see
-     `nl-ffi--invoke').
-  3. `nl-ffi-unavailable' when `nl-ffi-call' is not `fboundp' at all --
+  2. `nl-ffi-unavailable' when `nl-ffi-call' is not `fboundp' at all --
      host Emacs, or a NeLisp build without the dynamic reader's opt-in
-     extern table.
+     extern table.  Checked before any SONAME-specific work: neither the
+     table-membership branch below nor a real `dlopen' attempt means
+     anything without a live `nl-ffi-call', and this is the ONLY check
+     that still applies uniformly to a known and an unknown SONAME alike
+     (`nl-ffi-unknown-library' -- the check that used to run here for
+     an unmapped SONAME -- is no longer signalled by this function; see
+     its own docstring).
+  3. `nl-ffi-library-open-failed', carrying SONAME and `dlerror'\='s text,
+     when SONAME is outside `nl-ffi-known-sonames' and the real `dlopen'
+     attempt fails -- for example a SONAME that names no real, reachable
+     shared object.
 
-Re-declaring the same SONAME is harmless.  Returns SONAME."
+Re-declaring the same SONAME is harmless: an already-registered entry
+(the known-table branch, or an earlier successful `dlopen') is returned
+as-is, with no second `dlopen' call.  Returns SONAME."
   (unless (stringp soname)
     (signal 'wrong-type-argument (list 'stringp soname)))
-  (unless (nl-ffi-known-soname-p soname)
-    (signal 'nl-ffi-unknown-library (list soname nl-ffi-known-sonames)))
   (unless (fboundp 'nl-ffi-call)
     (signal 'nl-ffi-unavailable (list soname)))
   (unless (gethash soname nl-ffi--libraries)
-    (puthash soname (list :soname soname :handle nil) nl-ffi--libraries))
+    (if (nl-ffi-known-soname-p soname)
+        (puthash soname (list :soname soname :handle nil) nl-ffi--libraries)
+      (let ((handle (nl-ffi--dlopen soname)))
+        (puthash soname (list :soname soname :handle handle) nl-ffi--libraries)
+        (push soname nl-ffi--library-order))))
   soname)
 
 ;;;; --- ffi:defun ---------------------------------------------------------

@@ -926,3 +926,22 @@ project-distribution|tools/build-standalone-tarball.sh|s#STAGED_RUNTIME_PATH="li
 # ffi-dsl-unresolved-symbol: no error signaled) with the mutation in
 # place; checked=8 findings=0 (GREEN) restored.
 ffi-dsl|packages/nl-ffi/src/nl-ffi.el|s/(when (null result)/(when nil/|nl-ffi--invoke stops turning an unresolved FFI symbol's raw nil into nl-ffi-unresolved-symbol, so a typo'd or unlinked C symbol name silently returns nil from the generated wrapper instead of signalling
+#
+# ffi-dsl (step 2, dlopen/dlsym): `nl-ffi--ptr-call-invoke' resolves a
+# symbol the build-time table does not carry via `dlsym', then calls it
+# through `ptr-call' -- but only after checking the resolved address is
+# not zero (`dlsym'\='s own "not found" answer).  Dropping that check
+# means an unresolved dlsym-path symbol is called through `ptr-call' at
+# address 0 -- a call through a null function pointer, undefined
+# behaviour that crashes the reader process rather than signalling
+# `nl-ffi-unresolved-symbol'.  Proven 2026-09-16: with the mutation in
+# place, `make ffi-dsl' dies with "Segmentation fault" on
+# `ffi-dsl-dlsym-unresolved-symbol' before ever printing its GATE-COUNT
+# line, so `tools/ai/nelisp-ai.sh gate ffi-dsl -- make ffi-dsl' reports
+# status fail, ran=0, reason "no GATE-COUNT line; the command did not
+# report what it checked (exit 2)" -- RED by a crash, not a clean
+# finding count, which is itself the point: this check is what stands
+# between an unresolved symbol and undefined behaviour.  Restored:
+# GATE-COUNT checked=16 findings=0 skipped=0, status pass, ran=16
+# (GREEN).
+ffi-dsl|packages/nl-ffi/src/nl-ffi.el|s/(when (zerop addr)/(when nil/|nl-ffi--ptr-call-invoke stops checking a dlsym-resolved address for zero before calling it through ptr-call, so a symbol no declared library exports is called at address 0 (a null function pointer, undefined behaviour) instead of signalling nl-ffi-unresolved-symbol

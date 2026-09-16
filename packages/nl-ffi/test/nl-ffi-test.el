@@ -114,12 +114,20 @@
   (should-not (nl-ffi-known-soname-p "sqlite3"))
   (should-not (nl-ffi-known-soname-p "libtotally-not-real.so.1")))
 
-(ert-deftest nl-ffi-test-library-rejects-unknown-soname ()
-  ;; Checked before the availability check, so a typo'd/unmapped SONAME is
-  ;; reported precisely rather than folded into nl-ffi-unavailable.
-  (should-error (ffi:library "sqlite3") :type 'nl-ffi-unknown-library)
+(ert-deftest nl-ffi-test-library-unknown-soname-also-hits-unavailable-on-host ()
+  "Since step 2, a SONAME outside `nl-ffi-known-sonames' is no longer
+rejected outright: `ffi:library' now attempts a real `dlopen' for it
+\(see `nl-ffi-library-open-failed', proven on the dynamic reader by
+packages/nl-ffi/test/nl-ffi-dsl-standalone-smoke.el, since a real dlopen
+attempt needs the real runtime\).  Host Emacs cannot get that far at
+all -- `nl-ffi-call' is not `fboundp' here -- so a real SONAME and a
+typo'd one now hit the exact same `nl-ffi-unavailable' check, before any
+SONAME-specific work; see `nl-ffi-test-library-unavailable-on-host' for
+the known-SONAME half of the same check."
+  (skip-unless (not (fboundp 'nl-ffi-call)))
+  (should-error (ffi:library "sqlite3") :type 'nl-ffi-unavailable)
   (should-error (ffi:library "libtotally-not-real.so.1")
-                :type 'nl-ffi-unknown-library))
+                :type 'nl-ffi-unavailable))
 
 (ert-deftest nl-ffi-test-library-unavailable-on-host ()
   (skip-unless (not (fboundp 'nl-ffi-call)))
@@ -133,8 +141,13 @@
   (should-error (ffi:library 'not-a-string) :type 'wrong-type-argument))
 
 (ert-deftest nl-ffi-test-library-handle-is-nil-today ()
-  ;; No dlopen exists yet -- the handle slot is always nil.  This proves
-  ;; the accessor exists and its answer, not a live handle.
+  ;; Still nil on host Emacs -- not because `dlopen' does not exist any
+  ;; more (it does, as of step 2; see `nl-ffi--dlopen'), but because
+  ;; `ffi:library' never gets past its own `nl-ffi-unavailable' check
+  ;; here (`nl-ffi-call' is not `fboundp' on host Emacs at all), so
+  ;; nothing is ever registered for either SONAME below.  This proves the
+  ;; accessor exists and its answer here, not a live handle -- the
+  ;; standalone smoke proves a real, non-zero handle instead.
   (should (null (nl-ffi-library-handle "libm.so.6")))
   (should (null (nl-ffi-library-handle "libtotally-not-real.so.1"))))
 
@@ -172,6 +185,60 @@
   ;; Correct arity, so this reaches the availability check -- and host
   ;; Emacs genuinely has no `nl-ffi-call'.
   (should-error (nl-ffi-test--toupper 97) :type 'nl-ffi-unavailable))
+
+;;;; --- step 2: nl-ffi--ptr-call-invoke's own checks need no runtime ---------
+;;
+;; `nl-ffi--invoke' only reaches `nl-ffi--ptr-call-invoke' once `nl-ffi-call'
+;; has already answered "not in the table" (a raw nil) -- unreachable from
+;; host Emacs via the public `ffi:defun'/`ffi-call' surface, since
+;; `nl-ffi--invoke' signals `nl-ffi-unavailable' before ever calling
+;; `nl-ffi-call' at all here (see `nl-ffi-test-defun-unavailable-on-host'
+;; above).  `nl-ffi--ptr-call-invoke' itself, though, checks the
+;; :float/:double refusal and the argument-count limit BEFORE touching
+;; `dlsym'/`ptr-call' or `nl-ffi-call' in any way (see its own
+;; Commentary) -- calling it directly with a bad signature exercises
+;; exactly those two checks with no runtime involved at all. Only the
+;; success path (a real, resolved call) needs the standalone reader; see
+;; packages/nl-ffi/test/nl-ffi-dsl-standalone-smoke.el for that.
+
+(ert-deftest nl-ffi-test-ptr-call-invoke-rejects-float-return ()
+  (should-error
+   (nl-ffi--ptr-call-invoke 'test "not_in_any_table" '(:sint32) :double '(1))
+   :type 'nl-ffi-dlsym-float-unsupported))
+
+(ert-deftest nl-ffi-test-ptr-call-invoke-rejects-float-argument ()
+  (should-error
+   (nl-ffi--ptr-call-invoke 'test "not_in_any_table" '(:sint32 :float) :sint32
+                             '(1 2.0))
+   :type 'nl-ffi-dlsym-float-unsupported))
+
+(ert-deftest nl-ffi-test-ptr-call-invoke-allows-integer-and-pointer-types ()
+  "The float refusal is specific to :float/:double -- every other
+`nl-ffi-types' member (fixed-width integers and `:pointer') is fine on
+this path, so a 6-argument all-integer/pointer signature must clear
+both checks.  With no library ever `ffi:library'-declared in this test
+process, `nl-ffi--resolve-via-dlsym' has nothing to search and returns 0
+without needing `nl-ffi-call' at all (see its own Commentary), so this
+needs no runtime either -- it signals the same `nl-ffi-unresolved-
+symbol' a build-time-table miss with zero declared libraries would."
+  (should-error
+   (nl-ffi--ptr-call-invoke
+    'test "not_in_any_table_at_all"
+    '(:sint32 :uint64 :pointer :sint8 :uint16 :pointer) :pointer
+    '(1 2 3 4 5 6))
+   :type 'nl-ffi-unresolved-symbol))
+
+(ert-deftest nl-ffi-test-ptr-call-invoke-rejects-too-many-arguments ()
+  "`ptr-call' carries at most six real arguments (see
+`nl-ffi--ptr-call-max-args') -- a 7-argument, all-integer signature must
+be refused before ever attempting to resolve or call anything, so this
+needs no runtime either."
+  (should-error
+   (nl-ffi--ptr-call-invoke
+    'test "not_in_any_table"
+    '(:sint32 :sint32 :sint32 :sint32 :sint32 :sint32 :sint32) :sint32
+    '(1 2 3 4 5 6 7))
+   :type 'nl-ffi-too-many-arguments))
 
 ;;;; --- nl-ffi-compat-call: same engine, elisp-ffi/nelisp-ffi call shape ------
 

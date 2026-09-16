@@ -23,6 +23,22 @@
 ;; for (the fourth, `nl-ffi-unavailable', needs a build WITHOUT a working
 ;; `nl-ffi-call' -- see `packages/nl-ffi/test/nl-ffi-test.el', which
 ;; proves it on host Emacs instead, where that is naturally the case).
+;;
+;; Step 2 additions: a symbol genuinely NOT in the build-time table,
+;; resolved through `ffi:library' (a real `dlopen') + `ffi:defun' (a real
+;; `dlsym' + `ptr-call') -- `libz.so.1''s `zlibVersion' (no arguments,
+;; `const char *' return) and `crc32' (integer arguments); raw
+;; `nl-ffi-call' calls to the new `dlopen'/`dlsym'/`dlclose' table rows
+;; directly, independent of the DSL; `ffi:library' really failing to
+;; `dlopen' a bogus SONAME (`nl-ffi-library-open-failed', replacing the
+;; old table-membership `nl-ffi-unknown-library' rejection -- see
+;; `nl-ffi-unknown-library''s docstring in nl-ffi.el); the dlsym path's
+;; own two guards, end to end through a real `ffi:defun' call
+;; (`nl-ffi-dlsym-float-unsupported', `nl-ffi-too-many-arguments'); and
+;; `nl-ffi-unresolved-symbol' via a real, live `dlsym' search that finds
+;; nothing, not just a build-time-table miss.  `libz.so.1' is skipped
+;; (not failed) if this host does not have it -- see
+;; `nl-ffi-smoke-skip' below.
 
 ;;; Code:
 
@@ -56,6 +72,16 @@
       ((not (memq ,condition (get (car nl-ffi-smoke--result) 'error-conditions)))
        (error "should-error: expected %S, got %S" ,condition nl-ffi-smoke--result))
       (t nl-ffi-smoke--result))))
+
+(defmacro nl-ffi-smoke-skip (fmt &rest args)
+  "Abandon the current test as SKIPPED (neither a pass nor a failure).
+Prints an explanatory \"SKIP ...\" line and unwinds to the test runner
+loop at the bottom of this file via `throw' -- a `condition-case' around
+the test body (that loop uses one to catch a real failure) does not
+catch this, by design: a skip is not an error."
+  `(progn
+     (princ (format ,(concat "SKIP " fmt "\n") ,@args))
+     (throw 'nl-ffi-smoke-skip t)))
 
 (load "packages/nl-ffi/src/nl-ffi.el")
 
@@ -148,43 +174,158 @@
                               [:sint32 :not-a-real-type]))
    'nl-ffi-unknown-type))
 
-;;;; --- error contract: unknown library soname --------------------------
+;;;; --- error contract: library soname a real dlopen cannot open ------------
+;;
+;; "sqlite3" is not one of `nl-ffi-known-sonames', so as of step 2 this no
+;; longer signals the old table-membership `nl-ffi-unknown-library'
+;; rejection: `ffi:library' now really attempts `dlopen ("sqlite3", ...)',
+;; which fails for a real OS reason ("sqlite3" is not a file `dlopen' can
+;; find on the loader search path -- it needs "libsqlite3.so.0" or a real
+;; path), so this now proves `nl-ffi-library-open-failed' instead.
 
-(nl-ffi-smoke-deftest ffi-dsl-unknown-library
-  (nl-ffi-smoke-should-error (ffi:library "sqlite3") 'nl-ffi-unknown-library)
-  ;; No dlopen exists yet: a known, successfully declared library's
-  ;; handle is still nil.
+(nl-ffi-smoke-deftest ffi-dsl-library-open-failed
+  (let ((sig (nl-ffi-smoke-should-error (ffi:library "sqlite3")
+                                         'nl-ffi-library-open-failed)))
+    ;; The condition data is (SONAME DLERROR-TEXT); DLERROR-TEXT must be a
+    ;; real, non-empty string, not the fallback placeholder -- a real
+    ;; `dlopen' failure always leaves a `dlerror()' message behind.
+    (nl-ffi-smoke-should (equal (nth 0 (cdr sig)) "sqlite3"))
+    (nl-ffi-smoke-should (stringp (nth 1 (cdr sig))))
+    (nl-ffi-smoke-should (> (length (nth 1 (cdr sig))) 0)))
+  ;; A known, successfully declared library's handle is still nil: it
+  ;; never calls `dlopen' at all (see `ffi:library').
   (nl-ffi-smoke-should (null (nl-ffi-library-handle "libc.so.6"))))
+
+;;;; --- step 2: raw dlopen/dlsym/dlclose table rows, no DSL involved --------
+
+(nl-ffi-smoke-deftest ffi-dsl-raw-dlopen-dlsym-dlclose
+  (let ((handle (nl-ffi-call "dlopen" (nl-ffi--string-to-cstring "libz.so.1") 2)))
+    (if (or (null handle) (zerop handle))
+        (nl-ffi-smoke-skip "libz.so.1 not dlopen-able via raw nl-ffi-call on this host")
+      (let ((addr (nl-ffi-call "dlsym" handle
+                                (nl-ffi--string-to-cstring "zlibVersion"))))
+        (nl-ffi-smoke-should (integerp addr))
+        (nl-ffi-smoke-should (> addr 0))
+        (nl-ffi-smoke-should (= (nl-ffi-call "dlclose" handle) 0))
+        ;; dlerror() itself is a matched row too: NULL (no pending error)
+        ;; comes back as a real, boxed 0, never Lisp nil.
+        (nl-ffi-smoke-should (integerp (nl-ffi-call "dlerror")))))))
+
+;;;; --- step 2: a symbol NOT in the build-time table, via the real DSL ------
+;;
+;; libz.so.1 is a safe CI dependency: zlib is linked by dpkg/apt/systemd/
+;; the kernel module loader themselves on any Debian-family image
+;; (ubuntu-latest, this CI's Linux lane, included), so it is present
+;; without this gate ever asking for it as a dependency of its own.  Skip
+;; (not fail) if some other Linux image genuinely lacks it.
+
+(nl-ffi-smoke-deftest ffi-dsl-dlsym-resolved-symbol
+  (let ((opened (condition-case nil
+                    (progn (ffi:library "libz.so.1") t)
+                  (nl-ffi-library-open-failed nil))))
+    (unless opened
+      (nl-ffi-smoke-skip "libz.so.1 could not be dlopen'ed on this host"))
+    (nl-ffi-smoke-should (integerp (nl-ffi-library-handle "libz.so.1")))
+    (nl-ffi-smoke-should (> (nl-ffi-library-handle "libz.so.1") 0))
+    ;; zlibVersion(): no arguments, `const char *' return -- not in the
+    ;; build-time table at all, resolved purely via `dlsym'.
+    (ffi:defun nl-ffi-smoke-zlib-version "zlibVersion" [:pointer]
+      "zlibVersion() -- resolved via dlsym, not the build-time table.")
+    (let* ((ptr (nl-ffi-smoke-zlib-version))
+           (str (nl-ffi-get-string ptr)))
+      (nl-ffi-smoke-should (integerp ptr))
+      (nl-ffi-smoke-should (> ptr 0))
+      (nl-ffi-smoke-should (stringp str))
+      (nl-ffi-smoke-should (> (length str) 0)))
+    ;; crc32(uLong crc, const Bytef *buf, uInt len): integer/pointer
+    ;; arguments, also dlsym-resolved.  zlib's own documented identity:
+    ;; crc32(0, NULL, 0) == 0.
+    (ffi:defun nl-ffi-smoke-crc32 "crc32" [:uint32 :uint32 :pointer :uint32]
+      "crc32(uLong crc, const Bytef *buf, uInt len) -- resolved via dlsym.")
+    (nl-ffi-smoke-should (= (nl-ffi-smoke-crc32 0 0 0) 0))
+    ;; Calling it again exercises the address cache in
+    ;; `nl-ffi--resolve-via-dlsym' (a second `dlsym' is not observable
+    ;; from here, but a wrong cached value would break this).
+    (nl-ffi-smoke-should (= (nl-ffi-smoke-crc32 0 0 0) 0))
+    (nl-ffi-smoke-should (= (nl-ffi-smoke-crc32 0 (nl-ffi--string-to-cstring "abc") 3)
+                             891568578))))
+
+;;;; --- step 2: unresolved symbol via a real, live dlsym search -------------
+
+(nl-ffi-smoke-deftest ffi-dsl-dlsym-unresolved-symbol
+  (let ((opened (condition-case nil
+                    (progn (ffi:library "libz.so.1") t)
+                  (nl-ffi-library-open-failed nil))))
+    (unless opened
+      (nl-ffi-smoke-skip "libz.so.1 could not be dlopen'ed on this host"))
+    (ffi:defun nl-ffi-smoke-dlsym-miss
+      "nl_ffi_dsl_smoke_no_such_symbol_in_any_declared_library" [:sint32 :sint32])
+    (nl-ffi-smoke-should-error (nl-ffi-smoke-dlsym-miss 1)
+                                'nl-ffi-unresolved-symbol)))
+
+;;;; --- step 2: the dlsym path is integer/pointer-only -----------------------
+
+(nl-ffi-smoke-deftest ffi-dsl-dlsym-float-return-refused
+  (ffi:defun nl-ffi-smoke-dlsym-float-ret
+    "nl_ffi_dsl_smoke_no_such_symbol_float_ret" [:double :sint32])
+  (nl-ffi-smoke-should-error (nl-ffi-smoke-dlsym-float-ret 1)
+                              'nl-ffi-dlsym-float-unsupported))
+
+(nl-ffi-smoke-deftest ffi-dsl-dlsym-float-argument-refused
+  (ffi:defun nl-ffi-smoke-dlsym-float-arg
+    "nl_ffi_dsl_smoke_no_such_symbol_float_arg" [:sint32 :double])
+  (nl-ffi-smoke-should-error (nl-ffi-smoke-dlsym-float-arg 1.5)
+                              'nl-ffi-dlsym-float-unsupported))
+
+(nl-ffi-smoke-deftest ffi-dsl-dlsym-too-many-arguments-refused
+  (ffi:defun nl-ffi-smoke-dlsym-7-args
+    "nl_ffi_dsl_smoke_no_such_symbol_7_args"
+    [:sint32 :sint32 :sint32 :sint32 :sint32 :sint32 :sint32 :sint32])
+  (nl-ffi-smoke-should-error (nl-ffi-smoke-dlsym-7-args 1 2 3 4 5 6 7)
+                              'nl-ffi-too-many-arguments))
 
 ;;;; --- run ------------------------------------------------------------------
 
 (let ((tests (reverse nl-ffi-smoke--tests))
       (ran 0)
+      (skipped 0)
       (failures nil))
   (while tests
-    (let ((test (car tests)))
-      (condition-case err
-          (progn
-            (funcall (cdr test))
-            (setq ran (1+ ran)))
-        (error
-         (setq failures
-               (cons (format "%s: %S" (car test) err) failures)))))
+    (let* ((test (car tests))
+           (skip
+            (catch 'nl-ffi-smoke-skip
+              (condition-case err
+                  (progn
+                    (funcall (cdr test))
+                    (setq ran (1+ ran)))
+                (error
+                 (setq failures
+                       (cons (format "%s: %S" (car test) err) failures))))
+              nil)))
+      (when skip
+        (setq skipped (1+ skipped))))
     (setq tests (cdr tests)))
   ;; `tools/ai/nelisp-ai.sh gate NAME -- ...' requires this exact line to
   ;; report what the gate checked; its absence is itself a hard failure
-  ;; there (see tools/ai/nelisp-ai.sh's `cmd_gate').
-  (princ (format "GATE-COUNT checked=%d findings=%d\n" ran (length failures)))
+  ;; there (see tools/ai/nelisp-ai.sh's `cmd_gate').  `skipped=' is extra
+  ;; trailing text its `checked='/`findings=' extraction (a `sed' pattern
+  ;; ending in `.*') tolerates without change.
+  (princ (format "GATE-COUNT checked=%d findings=%d skipped=%d\n"
+                  ran (length failures) skipped))
   (when failures
     (let ((all failures))
       (while all
         (princ (format "FAIL %s\n" (car all)))
         (setq all (cdr all))))
-    (error "nl-ffi-dsl-standalone-smoke: %d failure(s), %d passed"
-           (length failures) ran))
-  (when (< ran 10)
-    (error "nl-ffi-dsl-standalone-smoke: only %d tests ran (expected >= 10)"
-           ran))
-  (princ (format "nl-ffi-dsl-standalone-smoke: PASS (%d tests)\n" ran)))
+    (error "nl-ffi-dsl-standalone-smoke: %d failure(s), %d passed, %d skipped"
+           (length failures) ran skipped))
+  ;; Checked against RAN+SKIPPED, not RAN alone: a legitimate skip (libz.so.1
+  ;; absent -- see `ffi-dsl-dlsym-resolved-symbol'/`ffi-dsl-dlsym-unresolved-
+  ;; symbol') must not read as "fewer tests ran than expected".
+  (when (< (+ ran skipped) 16)
+    (error "nl-ffi-dsl-standalone-smoke: only %d test(s) ran + %d skipped (expected >= 16 total)"
+           ran skipped))
+  (princ (format "nl-ffi-dsl-standalone-smoke: PASS (%d tests, %d skipped)\n"
+                  ran skipped)))
 
 ;;; nl-ffi-dsl-standalone-smoke.el ends here
