@@ -3330,19 +3330,29 @@ ffi-dsl:
 	@chmod +x target/nelisp
 	@$(STANDALONE_BIN) --load packages/nl-ffi/test/nl-ffi-dsl-standalone-smoke.el
 
-# FFI step 3 increment 1 (packages/nl-ffi/src/nl-ffi-loader.el): a pure-elisp
+# FFI step 3 increment 2 (packages/nl-ffi/src/nl-ffi-loader.el): a pure-elisp
 # ELF loader, so the whole point is that this gate runs on the DEFAULT
 # STATIC reader -- no `NELISP_READER_DYNAMIC' here, unlike `ffi-dsl' above.
-# Needs a real `.so' to load: builds one at gate time with `cc' (see
-# packages/nl-ffi/test/fixtures/*.c and the report for why each fixture's
-# exact compile flags are safe for CI -- no libc dependency in the main
-# fixture, a real DT_NEEDED/PT_TLS/DT_INIT in the three refusal-only
-# fixtures).  `cc' is already relied on elsewhere in this Linux CI lane
-# (see `bench-aot-tco'/the native-exec toolchain), but this target still
-# skips (GATE-SKIP), rather than fails, when `cc' is absent or the gate
-# target is not linux-x86_64 -- there is no ELF to load on any other
-# target this Makefile builds.
+# Needs several real `.so's to load: builds them all at gate time with `cc'
+# (see packages/nl-ffi/test/fixtures/*.c and the report for why each
+# fixture's exact compile flags are safe for CI).  `cc' is already relied on
+# elsewhere in this Linux CI lane (see `bench-aot-tco'/the native-exec
+# toolchain), but this target still skips (GATE-SKIP), rather than fails,
+# when `cc' is absent or the gate target is not linux-x86_64 -- there is no
+# ELF to load on any other target this Makefile builds.
+#
+# The dependency-carrying fixtures (`-dep-root.so', `-ctor-root.so') are
+# linked against their own leaf/dependency `.so's with an ABSOLUTE `-rpath'
+# baked in at link time (this Makefile's own `target/' directory, via
+# `$(abspath target)') -- see nl-ffi-loader.el's Commentary, "SONAME
+# resolution": this loader does no `$ORIGIN' token expansion, so the rpath
+# is made absolute here rather than relying on it.  `--no-as-needed' keeps
+# BOTH `-dep-leaf.so' and `-dep-leaf2.so' as real `DT_NEEDED' entries on
+# `-dep-root.so' even though the static linker only needs one of them to
+# satisfy the link -- both must actually be present at RUNTIME for the
+# search-order smoke cases to mean anything.
 NL_FFI_LOADER_CC := $(shell command -v cc 2>/dev/null)
+NL_FFI_LOADER_TARGET_ABS := $(abspath target)
 .PHONY: ffi-loader
 ffi-loader:
 	@mkdir -p target
@@ -3361,6 +3371,26 @@ ifneq ($(NL_FFI_LOADER_CC),)
 	  packages/nl-ffi/test/fixtures/nl-ffi-loader-fixture-tls.c
 	@cc -shared -fPIC -o target/nl-ffi-loader-fixture-init.so \
 	  packages/nl-ffi/test/fixtures/nl-ffi-loader-fixture-init.c
+	@cc -shared -fPIC -nostdlib -Wl,-soname,nl-ffi-loader-fixture-dep-leaf.so \
+	  -o target/nl-ffi-loader-fixture-dep-leaf.so \
+	  packages/nl-ffi/test/fixtures/nl-ffi-loader-fixture-dep-leaf.c
+	@cc -shared -fPIC -nostdlib -Wl,-soname,nl-ffi-loader-fixture-dep-leaf2.so \
+	  -o target/nl-ffi-loader-fixture-dep-leaf2.so \
+	  packages/nl-ffi/test/fixtures/nl-ffi-loader-fixture-dep-leaf2.c
+	@cc -shared -fPIC -nostdlib -o target/nl-ffi-loader-fixture-dep-root.so \
+	  packages/nl-ffi/test/fixtures/nl-ffi-loader-fixture-dep-root.c \
+	  -L target -Wl,--no-as-needed \
+	  -l:nl-ffi-loader-fixture-dep-leaf.so -l:nl-ffi-loader-fixture-dep-leaf2.so \
+	  -Wl,-rpath,$(NL_FFI_LOADER_TARGET_ABS)
+	@cc -shared -fPIC -nostdlib -Wl,-soname,nl-ffi-loader-fixture-ctor-dep.so \
+	  -o target/nl-ffi-loader-fixture-ctor-dep.so \
+	  packages/nl-ffi/test/fixtures/nl-ffi-loader-fixture-ctor-dep.c
+	@cc -shared -fPIC -nostdlib -o target/nl-ffi-loader-fixture-ctor-root.so \
+	  packages/nl-ffi/test/fixtures/nl-ffi-loader-fixture-ctor-root.c \
+	  -L target -Wl,--no-as-needed -l:nl-ffi-loader-fixture-ctor-dep.so \
+	  -Wl,-rpath,$(NL_FFI_LOADER_TARGET_ABS)
+	@cc -shared -fPIC -nostdlib -o target/nl-ffi-loader-fixture-ifunc.so \
+	  packages/nl-ffi/test/fixtures/nl-ffi-loader-fixture-ifunc.c
 	@NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-build-reader

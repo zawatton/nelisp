@@ -737,32 +737,42 @@ nelisp-toml-standalone-smoke
 # process with a null-function-pointer call instead of a clean finding
 # count) -- see that file for each row's own measured RED/GREEN evidence.
 ffi-dsl
-# ffi-loader: added 2026-09-16, FFI step 3 increment 1 -- a pure-elisp
-# ELF loader (packages/nl-ffi/src/nl-ffi-loader.el) so `ffi:library'/
-# `ffi:defun' also work on the DEFAULT STATIC reader, which has no
-# `nl-ffi-call' dispatcher at all (unlike `ffi-dsl' above, which needs
-# `NELISP_READER_DYNAMIC').  Builds a small `.so' at gate time with `cc'
-# (packages/nl-ffi/test/fixtures/*.c) and runs
-# packages/nl-ffi/test/nl-ffi-loader-standalone-smoke.el (18 cases): the
+# ffi-loader: added 2026-09-16 (increment 1), extended 2026-09-16
+# (increment 2) -- a pure-elisp ELF loader (packages/nl-ffi/src/nl-ffi-
+# loader.el) so `ffi:library'/`ffi:defun' also work on the DEFAULT STATIC
+# reader, which has no `nl-ffi-call' dispatcher at all (unlike `ffi-dsl'
+# above, which needs `NELISP_READER_DYNAMIC').  Builds several `.so's at
+# gate time with `cc' (packages/nl-ffi/test/fixtures/*.c, some linked
+# against each other with an absolute `-rpath' baked in) and runs
+# packages/nl-ffi/test/nl-ffi-loader-standalone-smoke.el (24 cases): the
 # loader's own low-level `nl-ffi-loader-open'/`nl-ffi-loader-symbol' API
 # resolving and calling an R_X86_64_JUMP_SLOT function, an
 # R_X86_64_GLOB_DAT function, and reading back + calling through an
-# R_X86_64_RELATIVE-relocated data pointer; the same three through the
-# full `ffi:library'/`ffi:defun' surface, proving `ffi:library' really
-# falls back to this loader on the static reader instead of signalling
-# `nl-ffi-unavailable'; three real fixtures each built to trip exactly
-# one whole-object refusal (`nl-ffi-loader-fixture-needs-dep.so' has a
-# real DT_NEEDED, `-tls.so' a real PT_TLS, `-init.so' real DT_INIT/
-# DT_INIT_ARRAY); and, via hand-built in-memory Elf64_Rela entries (no
-# compiler needed), R_X86_64_RELATIVE/R_X86_64_GLOB_DAT applying
-# correctly, R_X86_64_GLOB_DAT refusing an undefined symbol,
-# R_X86_64_IRELATIVE refusing, a TLS-classed relocation type refusing,
-# and R_X86_64_64 (a real type, just not a supported one) refusing.
+# R_X86_64_RELATIVE-relocated data pointer, both directly and through the
+# full `ffi:library'/`ffi:defun' surface; a real `DT_NEEDED' dependency
+# actually resolved (via `DT_RUNPATH', not a literal path) and called,
+# with the documented cross-object search order proven by two
+# dependencies exporting the same name; a `DT_NEEDED' name this loader's
+# search cannot resolve; a real system dependency chain
+# (`-needs-dep.so' -> `libm.so.6' -> `libc.so.6') refused several hops
+# down at `libc.so.6''s own `PT_TLS' rather than by increment 1's old
+# blanket rule; an object with ordinary CRT-supplied initializers (real
+# weak-undefined `GLOB_DAT' relocations included) now opening and its
+# function callable; a dependency's initializer observably running
+# before its dependent's; a real `R_X86_64_IRELATIVE' call returning the
+# resolver's actual choice; the unchanged `PT_TLS' whole-object refusal;
+# and, via hand-built in-memory Elf64_Rela entries (no compiler needed),
+# R_X86_64_RELATIVE/R_X86_64_GLOB_DAT applying correctly, R_X86_64_GLOB_DAT
+# refusing an undefined STB_GLOBAL symbol, resolving an undefined
+# STB_WEAK one to 0, a GLOB_DAT/JUMP_SLOT relocation whose symbol is
+# STT_GNU_IFUNC-typed refusing rather than using the resolver's address
+# as if it were the target, a TLS-classed relocation type refusing, and
+# R_X86_64_64 (a real type, just not a supported one) refusing.
 # Red-proven by the tools/gate-mutations.txt row that names this gate
-# (dropping the RELATIVE relocation's write, which corrupts the
-# `nl_ffi_loader_fixture_local_ptr' call rather than merely miscounting).
-# Skips (GATE-SKIP), rather than fails, when `cc' is absent or the gate
-# target is not linux-x86_64.
+# (widening the STB_WEAK-only "resolve to 0" carve-out to every
+# unresolved symbol, which silently drops the `:undefined-symbol' refusal
+# instead of merely miscounting).  Skips (GATE-SKIP), rather than fails,
+# when `cc' is absent or the gate target is not linux-x86_64.
 ffi-loader
 # nelisp-thread-standalone-smoke: Doc 199 Tier 2 Shape B.  The smoke is
 # loaded by target/nelisp itself (not self-host compiled), spawns three fixed

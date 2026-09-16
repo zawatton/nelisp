@@ -375,8 +375,10 @@ What increment 1 actually does:
   reader); =nl-ffi--resolve-via-dlsym= dispatches a loader handle to
   =nl-ffi-loader-symbol= instead of =dlsym=.
 
-Out of scope for increment 1, each refusing with a named
-=nl-ffi-loader-unsupported= condition rather than half-working:
+Out of scope for increment 1 (dependency loading, IFUNC, and
+initializers were lifted in increment 2, below; TLS and the rest stayed
+out -- see increment 2's own "Out of scope" list), each refusing with a
+named =nl-ffi-loader-unsupported= condition rather than half-working:
 dependency loading (=DT_NEEDED=), symbol interposition across multiple
 loaded objects, TLS, IFUNC, initializers, unloading (a loaded object's
 mappings live for the rest of the process), the compact =DT_RELR=
@@ -384,28 +386,104 @@ relative-relocation encoding some newer linker defaults can emit, and
 =PT_GNU_RELRO= re-protection. Everything =ptr-call= itself cannot
 express (a float argument/return, more than six arguments) is unchanged
 from step 2 -- still =nl-ffi-dlsym-float-unsupported=/=nl-ffi-too-many-
-arguments=, not duplicated in the loader. See
-=target/ai/ffi-loader-report.md= (generated per run, not committed) for
-the exact empirical findings this increment's design rests on --
-notably that =ptr-read-u64=/=ptr-write-u64= do not round-trip a raw
-64-bit value above =most-positive-fixnum= (2^61-1), which is why bulk segment/string
-copying and the GNU hash bloom-word test use the 32-bit primitives
-instead.
+arguments=, not duplicated in the loader.
 
-** Step 3 increment 2 (open): dependencies, IFUNC, TLS, initializers
+** Step 3 increment 2 (done): dependencies (DT_NEEDED), initializers, IFUNC
 
-Each of increment 1's refusals is a real, separate piece of a small
-dynamic linker: =DT_NEEDED= dependency loading (recursively opening and
-relocating another object, then searching it too); IFUNC support
-(calling the resolver function chosen by =R_X86_64_IRELATIVE= at load
-time, which needs any CPU-feature-detection code the resolver itself
-depends on to already be safe to run); a real TLS block (allocating and
-initializing =PT_TLS='s image, then either implementing
-=__tls_get_addr= or restricting to the initial-exec model); and running
-=DT_INIT=/=DT_INIT_ARRAY= entries in order at load time. None of these
-change =ffi:library='s or =ffi:defun='s call shape; each is additional
-work inside =nl-ffi-loader-open= and, for IFUNC/TLS, additional
-relocation-type arms in =nl-ffi-loader--apply-one-relocation=. An
-f64-capable =ptr-call= (needed for either step 2's =dlsym= path or this
-loader to call a double-taking function) remains open for either to pick
-up; see =nl-ffi--ptr-call-invoke='s Commentary for what that needs.
+=nl-ffi-loader-open= now discovers and maps a shared object's WHOLE
+dependency graph (breadth-first over =DT_NEEDED=, deduplicated by
+resolved path), runs every object's relocations (see "Symbol search
+order" below) then final segment protection then =R_X86_64_IRELATIVE=
+(IFUNC) resolution, then runs =DT_INIT=/=DT_INIT_ARRAY= initializers in
+dependency-first order across the whole graph -- a dependency's own
+initializers always run before its dependent's. None of this changes
+=ffi:library='s or =ffi:defun='s call shape.
+
+*The libc / second-copy question.* Before writing any of this, the real
+question was whether mapping a dependency graph this way is safe at
+all, given a normal process already has its own libc loaded by the real
+dynamic linker.  It does not for THIS loader: `make standalone-reader`'s
+own output (confirmed with `file`/`readelf -d`/`readelf -l`/`ldd` on
+this repository's dev host) is a genuinely freestanding static ELF --
+no `PT_DYNAMIC`, no `PT_INTERP`, no libc of any kind, produced entirely
+by this repository's own pure-elisp AOT compiler and static linker, and
+this loader only ever runs as `ffi:library`'s fallback on exactly that
+reader.  There is no first copy of libc in this process, so there is no
+second copy either.  That does not make initializing an arbitrary
+runtime from cold safe in general, and the increment 1 PT_TLS refusal
+(kept, unchanged, and checked on every node in the graph, not just the
+one a caller names) is what bounds it in practice: verified against this
+host's real system libraries, a dependency chain that reaches libc.so.6
+is refused several hops down at its own PT_TLS, having never mapped a
+byte of it read-write or run any of its code.  See
+=nl-ffi-loader.el='s Commentary ("THE LIBC / SECOND-COPY QUESTION") for
+the full reasoning and =target/ai/ffi-loader-inc2-report.md= (generated
+per run, not committed) for the measurements it rests on.
+
+*SONAME resolution.* A =DT_NEEDED= name containing "/" is used
+literally; otherwise the requesting object's own =DT_RUNPATH= (preferred)
+or =DT_RPATH=, then =LD_LIBRARY_PATH=, then a fixed standard-directory
+list (=/usr/lib/x86_64-linux-gnu/=, =/lib/x86_64-linux-gnu/=,
+=/usr/lib/=, =/lib/=) are searched, in that order, for the first
+openable file named SONAME. No =$ORIGIN=/=$LIB=/=$PLATFORM= token
+expansion, and no =/etc/ld.so.cache= parsing (deliberately -- see the
+Commentary for why). An unresolvable =DT_NEEDED= name refuses
+(=:dependency-not-found=), never silently skipped.
+
+*Symbol search order.* A relocation's own local =.dynsym= entry, when
+DEFINED, is always used directly (unchanged from increment 1 -- no name
+search at all). When UNDEFINED, the name is searched across the WHOLE
+graph in breadth-first discovery order (the object =nl-ffi-loader-open=
+was called with, then each dependency the first time it is discovered);
+the first object that defines it wins. =nl-ffi-loader-symbol-object=
+reports which object in a handle's graph actually answers a given name,
+so a caller (or a test) can confirm this directly rather than only
+inferring it from a call's result. An undefined, unresolved-anywhere
+symbol still refuses (=:undefined-symbol=) -- UNLESS it is =STB_WEAK=,
+in which case it resolves to address 0 exactly as a real =ld.so= would
+(a real defect found while implementing this: an ordinary =cc -shared
+-fPIC= object's CRT-supplied =__cxa_finalize=/=_ITM_*=/=__gmon_start__=
+references are exactly this shape, and increment 1's unconditional
+refusal would have wrongly rejected them the moment =:has-initializers=
+stopped pre-empting it).
+
+*IFUNC.* =R_X86_64_IRELATIVE='s addend is the resolver FUNCTION's
+address; this loader calls it (via =ptr-call=, six zero argument slots)
+and writes the result. Confirmed empirically that only a HIDDEN-
+visibility ifunc compiles to a real =R_X86_64_IRELATIVE= in a =-shared
+-fPIC= build -- a DEFAULT-visibility one instead compiles to an ordinary
+=R_X86_64_JUMP_SLOT=/=R_X86_64_GLOB_DAT= whose =.dynsym= entry merely has
+=st_info= TYPE =STT_GNU_IFUNC=, a related but DIFFERENT mechanism this
+increment does not implement; such a relocation refuses
+(=:ifunc-symbol-via-relocation=) rather than silently using the
+resolver's own address as if it were the target. Ordering: every
+object's ordinary relocations run first, THEN every object's segments
+are protected to their final permissions (a resolver's own code must be
+executable before it can be called), THEN every object's
+=R_X86_64_IRELATIVE= entries run, in dependency-first order.
+
+*Initializers.* =DT_INIT= (if present) then =DT_INIT_ARRAY= (in array
+order), run strictly after every relocation in the WHOLE graph, in
+dependency-first order across the graph -- a dependency's initializers
+always run before its dependent's.
+
+Out of scope for increment 2, unchanged from increment 1, each still
+refusing with a named condition: TLS (=:tls-segment=/=:tls-relocation=),
+symbol interposition/versioning beyond the one search order above
+(two separate =nl-ffi-loader-open= calls never search each other's
+graphs), unloading, the compact =DT_RELR= encoding, and =PT_GNU_RELRO=
+re-protection. An f64-capable =ptr-call= (needed for either step 2's
+=dlsym= path or this loader to call a double-taking function) remains
+open either way; see =nl-ffi--ptr-call-invoke='s Commentary for what
+that needs.
+
+** Step 3 increment 3 (open): TLS, DT_RELR, PT_GNU_RELRO, unloading
+
+A real TLS block (allocating and initializing =PT_TLS='s image, then
+either implementing =__tls_get_addr= or restricting to the initial-exec
+model) is the load-bearing piece left: per increment 2's own safety
+argument, it is also what currently keeps every real system library this
+host has out of reach, so lifting it changes what "safe subset" means
+and needs its own risk analysis, not an incremental extension of
+increment 2's. =DT_RELR= decoding, =PT_GNU_RELRO= re-protection, and
+=nl-ffi-loader-close= (unloading) are each independent, smaller pieces.

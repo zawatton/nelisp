@@ -946,16 +946,22 @@ ffi-dsl|packages/nl-ffi/src/nl-ffi.el|s/(when (null result)/(when nil/|nl-ffi--i
 # (GREEN).
 ffi-dsl|packages/nl-ffi/src/nl-ffi.el|s/(when (zerop addr)/(when nil/|nl-ffi--ptr-call-invoke stops checking a dlsym-resolved address for zero before calling it through ptr-call, so a symbol no declared library exports is called at address 0 (a null function pointer, undefined behaviour) instead of signalling nl-ffi-unresolved-symbol
 #
-# ffi-loader (FFI step 3 increment 1, pure-elisp ELF loader): dropping the
-# SHN_UNDEF check before applying an R_X86_64_GLOB_DAT/R_X86_64_JUMP_SLOT
-# relocation means a symbol this object does not define (needs another,
-# un-loaded object -- dependency loading is out of scope) is silently
-# treated as resolving to address 0 instead of refusing the load with
-# `nl-ffi-loader-unsupported'. Proven 2026-09-16: GATE-COUNT checked=17
-# findings=1 (RED, ffi-loader-glob-dat-refuses-undefined-symbol: "no error
-# signaled by (nl-ffi-loader--apply-one-relocation ...)") with the
-# mutation in place; checked=18 findings=0 (GREEN) restored.
-ffi-loader|packages/nl-ffi/src/nl-ffi-loader.el|s/(when (= st-shndx 0)/(when nil/|nl-ffi-loader--apply-one-relocation stops refusing an R_X86_64_GLOB_DAT/R_X86_64_JUMP_SLOT relocation whose symbol is undefined (SHN_UNDEF) in this object, so a dependency this loader cannot load is silently ignored instead of signalling nl-ffi-loader-unsupported|linux-x86_64
+# ffi-loader (FFI step 3 increment 2, pure-elisp ELF loader): the row moved
+# from increment 1's line (`(when (= st-shndx 0)' in
+# `nl-ffi-loader--apply-one-relocation') to increment 2's own equivalent
+# guard, since increment 2 restructured undefined-symbol handling into
+# `nl-ffi-loader--resolve-relocation-symbol' (a graph-wide search plus an
+# STB_WEAK-only "resolve to 0" carve-out -- see that file's Commentary, "A
+# real defect found while implementing").  Widening the `STB_WEAK'-only
+# branch to match EVERY undefined symbol reproduces the exact same defect
+# shape as increment 1's own row: a symbol this loader cannot resolve
+# anywhere in the dependency graph (not just a legitimately-absent weak
+# one) is silently treated as resolving to address 0 instead of refusing
+# with `nl-ffi-loader-unsupported'. Proven 2026-09-16: GATE-COUNT
+# checked=23 findings=1 (RED, ffi-loader-glob-dat-refuses-undefined-symbol:
+# "no error signaled by (nl-ffi-loader--apply-one-relocation ...)") with
+# the mutation in place; checked=24 findings=0 (GREEN) restored.
+ffi-loader|packages/nl-ffi/src/nl-ffi-loader.el|s/((= l-bind nl-ffi-loader--stb-weak) 0)/(t 0)/|nl-ffi-loader--resolve-relocation-symbol stops refusing an R_X86_64_GLOB_DAT/R_X86_64_JUMP_SLOT relocation whose symbol is undefined and unresolved anywhere in the dependency graph, so a dependency this loader cannot load is silently treated as resolving to a null pointer instead of signalling nl-ffi-loader-unsupported|linux-x86_64
 # nelisp-toml-standalone-smoke: added 2026-09-16 for packages/nelisp-toml.
 # nelisp-toml--parse-bare-value's integer branch always returns 0 instead of
 # the parsed token, so every TOML integer value silently becomes 0. A first
