@@ -18,7 +18,7 @@
         nl-actor-standalone-smoke nelisp-actor-cps-baseline nelisp-actor-cps-parity \
         nl-clj-standalone-smoke nl-clj-async-standalone-smoke nl-clj-async-cps-baseline \
         nl-clj-future-standalone-smoke \
-        nl-num-standalone-smoke nelisp-thread-standalone-smoke \
+        nl-num-standalone-smoke nelisp-toml-standalone-smoke nelisp-thread-standalone-smoke \
         nelisp-thread-allocating-standalone-smoke \
         nelisp-thread-mirror-guard-standalone-smoke \
         nelisp-thread-percpu-roots-smoke
@@ -934,6 +934,29 @@ nl-num-standalone-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,stand
 	  exit 0; \
 	fi; \
 	"$$bin" --load packages/nl-num/test/nl-num-standalone-smoke.el
+
+# nelisp-toml: string and integer *parsing* is exactly where host Emacs and
+# the standalone reader are known to disagree in this tree, so this is the
+# one of the three new packages/nelisp-{toml,uuid,log} that gets a dedicated
+# standalone gate (uuid and log were checked by hand against target/nelisp
+# during development and found to have no substrate difference worth
+# gating). Same runnable-target guard and explicit-load shim pattern as
+# nl-num-standalone-smoke above.
+nelisp-toml-standalone-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+	  --eval '(kill-emacs (if (nelisp-standalone--target-runnable-on-host-p) 0 3))' \
+	  >/dev/null 2>&1; \
+	host_rc=$$?; \
+	if [ "$$host_rc" = 3 ]; then \
+	  echo "GATE-SKIP target $(STANDALONE_GATE_TARGET) cannot run on this host"; \
+	  exit 0; \
+	fi; \
+	bin=$(STANDALONE_BIN); \
+	if [ ! -f "$$bin" ]; then \
+	  echo "GATE-SKIP no nelisp binary in target/ after build attempt"; \
+	  exit 0; \
+	fi; \
+	"$$bin" --load packages/nelisp-toml/test/nelisp-toml-standalone-smoke.el
 
 # Doc 199 Tier 2: interpreter-callable clone(2) with fixed GC-free native
 # workers.  Mirrors nl-num-standalone-smoke's runnable-target guard, then loads

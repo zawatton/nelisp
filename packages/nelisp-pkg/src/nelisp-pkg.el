@@ -120,6 +120,14 @@ compatibility rule -- so requiring one would mean stamping 34 invented
 numbers into the tree and calling it metadata.  Require what is
 checked; add `:version' to a package when it starts to mean something.")
 
+(defconst nelisp-pkg-stability-values '("stable" "provisional" "experimental" "internal")
+  "Valid `:stability' values (packages/README.org \"Stability\").
+
+Optional, like `:version': most packages predate this key and carry
+none, which is not itself a problem.  A `:stability' that IS present
+must be one of these four, so a typo does not silently read as an
+unrecognised extra key nobody checks.")
+
 (defun nelisp-pkg-validate-manifest (manifest)
   "Return a list of problem strings for MANIFEST, empty when it is valid."
   (let ((problems nil))
@@ -130,10 +138,17 @@ checked; add `:version' to a package when it starts to mean something.")
           (push (format "missing %s" key) problems)))
       (let ((name (plist-get manifest :name))
             (version (plist-get manifest :version))
+            (stability (plist-get manifest :stability))
             (requires (plist-get manifest :requires)))
         (unless (stringp name) (push ":name must be a string" problems))
         (when (and (plist-member manifest :version) (not (stringp version)))
           (push ":version must be a string when present" problems))
+        (when (and (plist-member manifest :stability)
+                   (not (member stability nelisp-pkg-stability-values)))
+          (push (format ":stability must be one of %s when present, not %S"
+                        (mapconcat #'identity nelisp-pkg-stability-values ", ")
+                        stability)
+                problems))
         (unless (listp requires) (push ":requires must be a list" problems))
         (dolist (r (and (listp requires) requires))
           (unless (stringp r)

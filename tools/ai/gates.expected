@@ -693,6 +693,16 @@ nl-clj-future-standalone-smoke?
 # the Phase 2 mutation in tools/gate-mutations.txt reproduces the native
 # sign-word wrong-value path and proves this gate turns red on it.
 nl-num-standalone-smoke
+
+# nelisp-toml-standalone-smoke: added 2026-09-16 for packages/nelisp-toml.
+# Replays all 40 ERT bodies in packages/nelisp-toml/test/nelisp-toml-test.el
+# on the standalone reader via the nl-num-standalone-smoke shim pattern.
+# String and integer parsing is a known host-Emacs/standalone-reader
+# divergence point in this tree, which is what a reader package's own
+# gate needs to stand on rather than a host-only ERT pass; the
+# tools/gate-mutations.txt row proves it actually catches a substrate
+# regression, not merely a logic bug ert-full would already catch.
+nelisp-toml-standalone-smoke
 # ffi-dsl: added 2026-09-16, strategy section 8.1's declarative FFI surface
 # (packages/nl-ffi: `ffi:library'/`ffi:defun' over the existing `nl-ffi-call'
 # reader builtin), now covering steps 1 and 2 of the 3-step rollout

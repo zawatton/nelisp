@@ -263,6 +263,18 @@ Comparing against a derived global order instead would invent findings."
   (should (null (nelisp-pkg-validate-manifest '(:name "a" :requires ()))))
   (should (nelisp-pkg-validate-manifest '(:name "a" :version 1 :requires ()))))
 
+(ert-deftest nelisp-pkg-stability-is-optional-but-one-of-four ()
+  "Most manifests predate `:stability' and have none -- that is fine.
+One that IS present must be a §9.2 label, not an arbitrary string."
+  (should (null (nelisp-pkg-validate-manifest '(:name "a" :requires ()))))
+  (should (null (nelisp-pkg-validate-manifest
+                 '(:name "a" :stability "provisional" :requires ()))))
+  (dolist (label '("stable" "provisional" "experimental" "internal"))
+    (should (null (nelisp-pkg-validate-manifest
+                   (list :name "a" :stability label :requires nil)))))
+  (should (nelisp-pkg-validate-manifest
+           '(:name "a" :stability "beta" :requires ()))))
+
 (ert-deftest nelisp-pkg-render-preserves-other-keys ()
   "Regenerating dependencies must not drop what an author put there."
   (let ((text (nelisp-pkg-manifest-render

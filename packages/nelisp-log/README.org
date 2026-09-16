@@ -1,0 +1,100 @@
+#+TITLE: nelisp-log Package
+
+* Summary
+
+=nelisp-log= is a small leveled logger for NeLisp: five severities, a
+default formatter, and pluggable sinks, usable on host Emacs and the
+standalone reader.
+
+* Stability
+
+=:stability "provisional"= (packages/README.org "Stability").  New
+package, API not yet exercised by another package or by real callers.
+
+* Layout
+
+#+begin_src text
+packages/nelisp-log/
+├── README.org
+├── manifest.el
+├── src/
+│   └── nelisp-log.el
+└── test/
+    └── nelisp-log-test.el
+#+end_src
+
+* Public API
+
+- =nelisp-log-levels= :: ~(trace debug info warn error)~, lowest first
+- =nelisp-log-make-logger &key level sink formatter= :: construct a logger
+- =nelisp-log-logger-p=, =nelisp-log-logger-level=, =-sink=, =-formatter= ::
+  accessors on a logger (a =cl-defstruct=; =setf=-able)
+- =nelisp-log-log logger level format-string &rest args= :: emit through
+  a specific logger; returns the formatted string, or nil when LEVEL
+  was below that logger's threshold
+- =nelisp-log-trace/debug/info/warn/error format-string &rest args= ::
+  emit through =nelisp-log-default-logger=
+- =nelisp-log-default-logger= :: the one piece of global mutable state
+  (see below)
+- =nelisp-log-set-default-logger logger= :: replace it wholesale
+- =nelisp-log-set-level level &optional logger= :: mutate a logger's
+  (default: the default logger's) threshold in place
+- =nelisp-log-default-formatter level format-string args= :: the default
+  formatter, ~"[LEVEL] message"~
+- =nelisp-log-sink-stderr level formatted= :: the built-in sink, writes
+  to standard error via ~message~
+
+* Sinks are just functions
+
+A sink is any function of two arguments, ~(LEVEL FORMATTED-STRING)~.
+=nelisp-log-sink-stderr= is the one built-in sink.  There is no second
+built-in sink type or wrapper to construct a "function sink" -- passing
+any other function of that signature *is* a function sink.  This is how
+=test/nelisp-log-test.el= verifies behavior without touching real
+standard error: it hands loggers a plain lambda that appends to a list.
+
+* Global mutable state
+
+Exactly one variable, =nelisp-log-default-logger=, which every
+=nelisp-log-LEVEL= convenience function reads at call time.  Replace it
+wholesale with =nelisp-log-set-default-logger=, or mutate one field in
+place with =nelisp-log-set-level= or =setf= on any accessor.  Every other
+logger a caller constructs with =nelisp-log-make-logger= is an ordinary
+value with no special status; nothing about this package tracks it.
+
+* Standalone-reader notes
+
+This package's own hot path (level check, format, call one sink
+function) uses nothing host-Emacs-specific: =cl-defstruct=/records,
+=format=, and =message= are all exercised by other packages and by
+=src/= itself on the standalone reader already.  The one deliberate
+choice made *for* standalone-safety is that
+=nelisp-log-default-formatter= does not stamp a timestamp -- not
+because ~current-time~/~format-time-string~ are unsafe here (they are
+used in =src/nelisp-eval.el= and other core standalone files), but
+because the default hot path has no need to depend on them at all.  A
+timestamped formatter is one =:formatter= away for a caller who wants
+one.
+
+No standalone smoke is included for this package.  Nothing in it
+touches parsing, numeric literals, or another area this tree has found
+to differ between host Emacs and the standalone reader (see
+=nelisp-toml='s README for the one construct-level difference that
+class of gate is for); a plain host ERT pass is the appropriate bar
+here, matching =nelisp-secure-hash= and =nelisp-json=, neither of which
+carries one either.
+
+* Dependencies
+
+- Runtime dependency: NeLisp core =nelisp= v1.0 load-path environment
+- Elisp dependency declared by the library: =cl-lib= (for =cl-defstruct=
+  and =cl-defun=)
+- Internal NeLisp package dependencies: none
+
+* Errors
+
+- =nelisp-log-invalid-level= :: an unrecognised level symbol was passed
+  to =nelisp-log-make-logger=, =nelisp-log-log=, or =nelisp-log-set-level=.
+  Named apart from the usual =nelisp-log-error= convention because this
+  package's own =nelisp-log-error= function (log at level =error=)
+  already claims that name for something unrelated.

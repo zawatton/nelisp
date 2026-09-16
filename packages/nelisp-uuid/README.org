@@ -1,0 +1,85 @@
+#+TITLE: nelisp-uuid Package
+
+* Summary
+
+=nelisp-uuid= is a pure Lisp UUID (RFC 4122) library for NeLisp: random
+(version 4) and name-based (version 5) generation, canonical text
+parsing, and a non-signaling predicate.
+
+* Stability
+
+=:stability "provisional"= (packages/README.org "Stability").  New
+package, API not yet exercised by another package or by real callers;
+the shapes below are expected to hold but have not been load-bearing
+long enough to call =stable=.
+
+* Layout
+
+#+begin_src text
+packages/nelisp-uuid/
+├── README.org
+├── manifest.el
+├── src/
+│   └── nelisp-uuid.el
+└── test/
+    └── nelisp-uuid-test.el
+#+end_src
+
+* Public API
+
+- =nelisp-uuid-v4= :: random UUID
+- =nelisp-uuid-v5 NAMESPACE NAME= :: deterministic, name-based UUID (SHA-1)
+- =nelisp-uuid-parse STRING= :: validate and lower-case a canonical UUID,
+  signaling =nelisp-uuid-parse-error= on malformed input
+- =nelisp-uuid-p VALUE= :: non-signaling canonical-shape predicate
+- =nelisp-uuid-nil-p VALUE= :: is VALUE the all-zero nil UUID
+- =nelisp-uuid-namespace-dns=, =-url=, =-oid=, =-x500= :: the four
+  RFC 4122 Appendix C standard namespace UUIDs, for =nelisp-uuid-v5=
+
+Every UUID this package produces or accepts is the canonical lowercase
+8-4-4-4-12 text form (e.g. ~886313e1-3b8a-5372-9b90-0c9aee199e5d~); there
+is no binary/byte-vector representation in the public API.
+
+* Randomness quality (read before using v4 for anything sensitive)
+
+=nelisp-uuid-v4= draws its 128 bits from Emacs' built-in =random=, which
+on the host build is glibc's =random(3)= -- a fast, well-distributed,
+but **not cryptographically secure** pseudo-random generator.  It is
+fine for identifiers where the only requirement is a very low collision
+rate (row IDs, trace IDs, temp filenames).  It is **not** fine for
+anything an attacker could gain from predicting: session tokens,
+password-reset links, capability URLs, API keys.  Use a real CSPRNG
+source for those; this package does not provide one.
+
+* Errors
+
+- =nelisp-uuid-error= :: parent condition
+- =nelisp-uuid-parse-error= :: malformed UUID text passed to
+  =nelisp-uuid-parse= or as the =NAMESPACE= argument to =nelisp-uuid-v5=
+
+* Dependencies
+
+- Runtime dependency: NeLisp core =nelisp= v1.0 load-path environment
+- Elisp dependency declared by the library: none beyond NeLisp core
+  (=nelisp-coding= for UTF-8 encoding of =nelisp-uuid-v5='s NAME argument)
+- Internal NeLisp package dependency: =nelisp-secure-hash=, for the
+  SHA-1 digest =nelisp-uuid-v5= needs.  No new SHA-1 implementation was
+  added for this package; it reuses =nelisp-hash-sha1=, which already
+  existed in the tree.
+
+* Verification
+
+=nelisp-uuid-v5= is checked against three reference vectors produced
+independently by Python's standard-library =uuid= module
+(=uuid.uuid5(uuid.NAMESPACE_DNS, "python.org")= and two more; see
+=test/nelisp-uuid-test.el=), not merely against its own output, so an
+internally-consistent but RFC-non-compliant implementation would be
+caught.
+
+Host ERT only; this package has no standalone smoke.  Its inputs are
+short Lisp strings/plain integers and its output is plain string
+manipulation over `random', `unibyte-string`, and `nelisp-hash-sha1` --
+all already standalone-exercised by their own packages -- so no
+substrate-specific behavior was found while implementing it worth a
+dedicated gate.  If one turns up later, add
+=test/nelisp-uuid-standalone-smoke.el= following =nl-num='s shape.

@@ -956,3 +956,22 @@ ffi-dsl|packages/nl-ffi/src/nl-ffi.el|s/(when (zerop addr)/(when nil/|nl-ffi--pt
 # signaled by (nl-ffi-loader--apply-one-relocation ...)") with the
 # mutation in place; checked=18 findings=0 (GREEN) restored.
 ffi-loader|packages/nl-ffi/src/nl-ffi-loader.el|s/(when (= st-shndx 0)/(when nil/|nl-ffi-loader--apply-one-relocation stops refusing an R_X86_64_GLOB_DAT/R_X86_64_JUMP_SLOT relocation whose symbol is undefined (SHN_UNDEF) in this object, so a dependency this loader cannot load is silently ignored instead of signalling nl-ffi-loader-unsupported|linux-x86_64
+# nelisp-toml-standalone-smoke: added 2026-09-16 for packages/nelisp-toml.
+# nelisp-toml--parse-bare-value's integer branch always returns 0 instead of
+# the parsed token, so every TOML integer value silently becomes 0. A first
+# attempt widening the leading-zero guard instead (`(> (length digits) 1)' ->
+# `(>= (length digits) 0)') shipped UNREACHABLE per this file's own
+# acceptance criteria: it only changes behavior for a bare "0", which no
+# fixture or test in this package's corpus ever parses, and was caught by
+# `make gate-mutation-verify' itself staying green -- replaced with this row
+# rather than committed. Proven 2026-09-16 via
+# `make gate-mutation-verify GATE=nelisp-toml-standalone-smoke': RED with the
+# mutation in place -- "GATE-COUNT checked=37 findings=3" and
+# "nelisp-toml-standalone-smoke: 3 failure(s), 37 passed" (a nonzero exit,
+# since the standalone smoke `error's on any failure), naming
+# nelisp-toml-parses-a-lock-with-packages and
+# nelisp-toml-parses-empty-packages-array (both asserting `schema_version'
+# reads back as 1, not 0) and nelisp-toml-parses-integer-array-across-lines-
+# with-comment (expecting `(1 2 3)', getting `(0 0 0)'); restored to
+# "GATE-COUNT checked=40 findings=0" / "PASS (40 tests)" (GREEN).
+nelisp-toml-standalone-smoke|packages/nelisp-toml/src/nelisp-toml.el|s/(cons (string-to-number token) next)/(cons 0 next)/|nelisp-toml's integer branch returns a constant 0 instead of the parsed value, so every TOML integer (schema_version, array elements, etc.) silently becomes 0

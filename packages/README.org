@@ -43,6 +43,9 @@ Rules:
 
   =:version= is optional; nothing consumes one yet.  See
   =packages/nelisp-pkg/README.org=.
+  =:stability= is also optional; when present it must be one of the
+  four labels below (checked by =nelisp-pkg-validate-manifest=, the same
+  place that types =:version=) -- see "Stability".
 - Claim a namespace prefix and stay inside it.  Elisp has one obarray,
   so a second definition of a name silently wins; =packages/nl-ns/=
   reports definitions outside their file's prefix, references to another
@@ -89,6 +92,44 @@ rules.
 
 =packages/nelisp-json/= is the pilot extraction.  Doc 45 can reference
 it as the canonical example for future library moves.
+
+* Stability (§9.2)
+
+A manifest's optional =:stability= key states one promise about future
+API changes, so a caller does not have to read source or ask someone to
+find out how much a package's shape might still move.  State it
+honestly: a brand-new package is not =stable= merely because its tests
+pass today.
+
+- =stable= :: the public API (function signatures, error conditions,
+  return shapes) is settled.  A breaking change would go through a
+  deprecation period, not land in the next commit that happens to touch
+  the file.
+- =provisional= :: heading toward =stable=.  The shape is believed
+  right, but has not yet been exercised by another package or by real
+  callers long enough to promise it will not move; a breaking change is
+  possible but would be a deliberate, called-out decision, not routine
+  churn.
+- =experimental= :: actively being explored.  Scope, coverage, or the
+  API itself may change significantly as understanding improves; no
+  promise of stability is made at all. A reader whose supported subset
+  is expected to grow, or a package still finding its own shape,
+  belongs here.
+- =internal= :: not meant for use outside this repository, or not meant
+  for use by other packages even inside it (a checking pass like
+  =nl-check=/=nl-ns=, or a package that only exists to support one
+  caller).  May change or be removed without the notice a public
+  package would get.
+
+A manifest with no =:stability= key makes no promise either way -- most
+packages predate this convention and have not been individually
+reviewed against it.  Absence is not a fifth label meaning "stable" or
+"experimental"; it means "not yet labeled."
+
+First used by =packages/nelisp-uuid/= and =packages/nelisp-log/=
+(=provisional=) and =packages/nelisp-toml/= (=experimental=: its
+supported TOML subset is deliberately narrow today and expected to
+grow -- see that package's README.org).
 
 * The nl-* extension family (Doc 168)
 

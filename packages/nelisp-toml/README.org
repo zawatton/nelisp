@@ -1,0 +1,187 @@
+#+TITLE: nelisp-toml Package
+
+* Summary
+
+=nelisp-toml= is a pure Lisp *reader* for the subset of TOML v1.0 that
+this repository's own project files -- =nelisp.toml= and =nelisp.lock=,
+as generated and consumed by =tools/nelisp-project.py=,
+=tools/nelisp_packages.py=, and =tools/nelisp_project_manifest.py= --
+actually use.  It is deliberately not a general TOML implementation.
+
+* Stability
+
+=:stability "experimental"= (packages/README.org "Stability").  The
+supported subset below was derived empirically from what this
+repository's own files use *today*; as the project-package toolchain
+grows, real =nelisp.toml=/=nelisp.lock= files are likely to need
+constructs this package does not parse yet (see "Not supported"), and
+closing those gaps is very plausibly a shape-changing exercise, not
+just additive coverage. Treat this package's exact refusal set as
+unstable even though its supported-construct behavior is well tested.
+
+* How the subset was derived
+
+Read, not guessed, from the source that generates and consumes these
+files:
+
+- =tools/nelisp-project.py=:
+  - ~new_project~ writes the manifest template (~[package]~,
+    ~[application]~, both required, in that shape only).
+  - ~project_manifest~ requires a document whose top-level key set is
+    exactly ~{"package", "application"}~ plus an optional
+    ~"dependencies"~, each a table of plain string-to-string pairs
+    (name to version/requirement, both non-empty strings).
+- =tools/nelisp_packages.py=:
+  - ~lock_bytes~ is the canonical writer for =nelisp.lock=: a top-level
+    ~schema_version = 1~ (integer), a ~[requirements]~ table
+    (string-to-string), and zero or more ~[[packages]]~ array-of-table
+    entries, each with ~name~/~version~/~sha256~/~url~ (all strings) and
+    a nested ~[packages.dependencies]~ table (string-to-string).  An
+    empty package list is written as a literal top-level
+    ~packages = []~, the only array literal either file ever contains.
+- =tools/nelisp_project_manifest.py='s ~edit_dependencies~ is what
+  proved that manifests actually seen by this toolchain also contain:
+  a leading file comment before the first table header
+  (~test/nelisp-project-manifest-test.py='s ~BASE~ constant starts with
+  ~# project\n~), a trailing comment on a table header
+  (~[dependencies] # libraries~), a full-line comment inside a table,
+  a per-entry trailing comment, and both double- and single-quoted
+  string values (~"json" = '1'~) -- =edit_dependencies= reads all of
+  these with ~tomllib= even though it only ever *writes*
+  double-quoted values back. It also proves CRLF-saved manifests are a
+  real shape (its own CRLF round-trip test), and that an inline-table
+  ~dependencies = {json = "1"}~ is explicitly *rejected* by that editor
+  rather than supported -- so this package refuses it too, rather than
+  silently accepting a shape the toolchain itself does not.
+- Every construct above was additionally verified by generating real
+  files with the actual Python functions (not hand-typed fixtures) and
+  parsing them with this package during development; see
+  =test/nelisp-toml-test.el= for the fixtures mirrored from that
+  exercise.
+
+* Supported subset
+
+- Top-level bare key/value pairs (e.g. ~schema_version = 1~), before
+  any table header.
+- Standard table headers ~[name]~ and dotted headers ~[name.sub]~.
+- Array-of-tables headers ~[[name]]~ and their dotted continuation
+  ~[name.sub]~ (used by =nelisp.lock='s ~[packages.dependencies]~
+  following ~[[packages]]~) -- descending into the *last* element of an
+  already-open array, per TOML semantics.
+- Bare keys (~[A-Za-z0-9_-]+~) and quoted keys (both string forms
+  below), including as table-header path segments.
+- Basic strings (~"..."~) with ~\" \\ \b \f \n \r \t~ and ~\uXXXX~ /
+  ~\UXXXXXXXX~ Unicode escapes.
+- Literal strings (~'...'~), no escape processing.
+- Decimal integers, optionally signed, no leading zero (~01~ is
+  rejected, matching the TOML spec, not merely unsupported).
+- Arrays (~[ ... ]~) of any of the above (including nested arrays),
+  spanning multiple lines, with interior comments and an optional
+  trailing comma. The empty array literal (~[]~) is what =nelisp.lock=
+  actually emits for a package-less lock.
+- Comments (~#~ to end of line) anywhere a comment is legal: their own
+  line, after a table header, after a value.
+- Both LF and CRLF line endings.
+- Duplicate keys within one table are rejected, as is redefining a
+  table header that already exists (TOML disallows both; this reader
+  refuses rather than silently taking the last writer).
+
+* Not supported (named refusal, not silent nil)
+
+Refused with =nelisp-toml-unsupported-error= (a real TOML construct
+this package does not parse) or =nelisp-toml-parse-error= (malformed
+input, e.g. a leading-zero integer, which TOML itself disallows):
+floating-point numbers (plain or exponent form), booleans, dates and
+times, hexadecimal/octal/binary integers, underscore digit separators
+in numbers, inline tables (~{ ... }~), multi-line strings
+(triple-quoted, either kind), and dotted keys outside a table header
+(~a.b = 1~).  None of these appear in this repository's own
+=nelisp.toml=/=nelisp.lock= files or in the toolchain that reads or
+writes them (=edit_dependencies= explicitly rejects the inline-table
+case itself, for its own unrelated reason -- see above).  Every
+refusal carries the offending line number and a one-sentence reason; no
+parse ever returns a partially built table.
+
+* Writer/serializer: out of scope
+
+This package is a reader only.  Two things already do TOML writing in
+this tree, for reasons that do not disappear if this package also
+wrote TOML:
+
+- =tools/nelisp_packages.py='s ~lock_bytes~ serializes a validated Lock
+  data structure canonically (no host paths, timestamps, or registry
+  ordering) -- a from-scratch full-document writer.
+- =tools/nelisp_project_manifest.py='s ~edit_dependencies~ makes a
+  *surgical* text edit that provably changes only the one dependency
+  entry requested and re-parses the result to confirm every other
+  value survived byte-for-byte, including comments a from-scratch
+  writer would have to go out of its way to preserve.
+
+Reimplementing either in Lisp is a real, separate piece of work --
+especially the surgical editor, whose entire point is minimal textual
+diffing, not round-tripping a parsed structure -- and the brief for
+this package does not require replacing
+=tools/nelisp_project_manifest.py= (109 lines, and it is not merely a
+parser).  Adding a writer here without a round-trip test would violate
+this package's own "never silently wrong" standard, so: no writer, no
+round-trip claim, and =tools/nelisp_project_manifest.py= keeps owning
+manifest edits.  If a future task adds one, it must round-trip
+`parse(serialize(x)) == x` for at least everything in "Supported
+subset" above and needs its own test coverage for that, not an
+extension of this file's.
+
+* Layout
+
+#+begin_src text
+packages/nelisp-toml/
+├── README.org
+├── manifest.el
+├── src/
+│   └── nelisp-toml.el
+└── test/
+    ├── nelisp-toml-test.el
+    └── nelisp-toml-standalone-smoke.el
+#+end_src
+
+* Public API
+
+- =nelisp-toml-parse-string STRING= :: parse TOML text, return a nested
+  hash-table/list document (hash tables for TOML tables, matching
+  =nelisp-json='s "object default = hash-table" convention; Lisp lists
+  for TOML arrays and array-of-tables values)
+- =nelisp-toml-parse-file FILE= :: read FILE and parse it
+- =nelisp-toml-get TABLE &rest KEYS= :: nested lookup that returns nil
+  (never signals) when any path component is missing or not a table to
+  descend into
+
+* Errors
+
+- =nelisp-toml-error= :: parent condition
+- =nelisp-toml-parse-error= :: malformed input (not valid TOML at all,
+  or a value TOML itself disallows such as a leading-zero integer)
+- =nelisp-toml-unsupported-error= :: valid TOML outside this package's
+  supported subset (see "Not supported")
+
+Both leaf conditions carry ~(MESSAGE LINE POSITION)~, MESSAGE already
+formatted as ~"line N: reason"~.
+
+* Standalone reader
+
+=test/nelisp-toml-standalone-smoke.el= replays this package's ERT
+bodies on =target/nelisp= via the =nl-num-standalone-smoke= shim
+pattern (=Makefile= target =nelisp-toml-standalone-smoke=,
+=tools/ai/gates.expected= entry, wired into
+=tools/ai/nelisp-ai.sh='s ~extras~ tier).  Unlike =nelisp-uuid= and
+=nelisp-log=, this package gets a dedicated standalone gate because
+string and integer *parsing* is exactly where host Emacs and the
+standalone reader are known to disagree in this tree (numeric-token
+and match-data substrate differences are gated elsewhere for the same
+reason) -- a TOML reader that only worked through the host Emacs reader
+path would be an unproven claim about the substrate it is meant to
+run on.
+
+* Dependencies
+
+- Runtime dependency: NeLisp core =nelisp= v1.0 load-path environment
+- Elisp dependency declared by the library: =cl-lib=
+- Internal NeLisp package dependencies: none

@@ -341,6 +341,7 @@ cmd_extras() {
              nl-safe-standalone-smoke \
              nl-resource-standalone-smoke \
              nl-num-standalone-smoke \
+             nelisp-toml-standalone-smoke \
              nelisp-thread-standalone-smoke \
              nelisp-thread-allocating-standalone-smoke \
              nelisp-thread-mirror-guard-standalone-smoke \
