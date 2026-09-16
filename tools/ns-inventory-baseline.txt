@@ -719,7 +719,18 @@ ns-collision-divergent 127
 # now declares `nelisp-' and `nelisp-lexframe-' for these two files; a
 # foreign-prefix probe definition added to nelisp-lexframe.el still failed
 # the gate.
-ns-prefix-violation 314
+# 314 -> 318 on 2026-09-16: packages/nl-ffi/src/nl-ffi.el's majority-prefix
+# namespace is inferred as `nl-ffi' (most of its defined names share that
+# prefix), so the four names outside it are flagged: the two-symbol
+# declarative surface strategy
+# section 8.1 names explicitly (`ffi:library', `ffi:defun') and the two
+# `elisp-ffi'/`nelisp-ffi' compatibility aliases (`ffi-call',
+# `ffi-get-string') that let existing call sites for either keep working.
+# All four are intentional public API under a name outside the file's own
+# namespace, the same shape this file's own commentary already describes
+# as most of what this count tracks tree-wide -- not pinned individually
+# for the same reason the rest of that surface is not.
+ns-prefix-violation 318
 # 611 -> 613 on 2026-08-20: `nelisp--check-string'/`--check-symbol' and the
 # other argument-check helpers are referenced from the lisp/ mirrors that
 # carry copies of the functions using them.  This is the kind this file

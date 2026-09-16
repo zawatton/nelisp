@@ -431,6 +431,15 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate native-unit-repl-smoke -- make native-unit-repl-smoke
+      # Strategy section 8.1's declarative FFI surface (packages/nl-ffi:
+      # `ffi:library'/`ffi:defun' over the existing `nl-ffi-call' reader
+      # builtin exercised above by standalone-reader-ffi-smoke).  Rebuilds
+      # the dynamic reader itself (NELISP_READER_DYNAMIC=1), the same way
+      # that gate does, so it does not depend on run order with it.
+      - name: "AI toolchain binary-tier gate: declarative FFI surface (tools/ai/nelisp-ai.sh gate ffi-dsl); Linux x86_64"
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate ffi-dsl -- make ffi-dsl
 
       # `make compile' above covers src/ and packages/*/src/ only; lisp/ has
       # never been byte-compiled by CI.  Linux-only because one lane asserting

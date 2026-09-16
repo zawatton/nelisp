@@ -6,7 +6,7 @@
         standalone-tarball standalone-tarball-verify \
         verify-elisp-fixtures \
         standalone-eval standalone-eval-clean standalone-eval-test standalone-eval-j \
-        standalone-reader standalone-reader-test standalone-reader-load-smoke standalone-reader-checked standalone-reader-fmt-smoke standalone-reader-prelude-equal-reload-smoke standalone-reader-declare-strip-smoke standalone-reader-nested-backquote-macro-smoke standalone-reader-derived-mode-shape-smoke standalone-reader-pcase-quote-literal-smoke standalone-reader-catch-throw-tag-smoke standalone-reader-cond-let-shape-smoke standalone-reader-ffi-smoke standalone-reader-tls-smoke standalone-reader-tls-smoke-linux standalone-reader-tls-smoke-windows standalone-reader-process-smoke standalone-reader-realrt-smoke standalone-reader-repl-smoke standalone-reader-prelude-test standalone-reader-intern-soft-smoke standalone-reader-intern-soft-loop-smoke standalone-reader-number-token-smoke standalone-reader-getenv-smoke standalone-selfhost-test standalone-selfhost-mt-test standalone-parallel-compile-test standalone-chunk-growth-test \
+        standalone-reader standalone-reader-test standalone-reader-load-smoke standalone-reader-checked standalone-reader-fmt-smoke standalone-reader-prelude-equal-reload-smoke standalone-reader-declare-strip-smoke standalone-reader-nested-backquote-macro-smoke standalone-reader-derived-mode-shape-smoke standalone-reader-pcase-quote-literal-smoke standalone-reader-catch-throw-tag-smoke standalone-reader-cond-let-shape-smoke standalone-reader-ffi-smoke ffi-dsl standalone-reader-tls-smoke standalone-reader-tls-smoke-linux standalone-reader-tls-smoke-windows standalone-reader-process-smoke standalone-reader-realrt-smoke standalone-reader-repl-smoke standalone-reader-prelude-test standalone-reader-intern-soft-smoke standalone-reader-intern-soft-loop-smoke standalone-reader-number-token-smoke standalone-reader-getenv-smoke standalone-selfhost-test standalone-selfhost-mt-test standalone-parallel-compile-test standalone-chunk-growth-test \
         standalone-reader-mod-float-smoke standalone-reader-match-data-smoke standalone-reader-current-time-smoke standalone-reader-require-provide-smoke \
         alloc-check-collect standalone-reader-checked-soak standalone-reader-shadow-smoke standalone-reader-elt-smoke \
         nelisp-performance-gate nelisp-nelix-command-gate nelisp-native-artifact-gate nelisp-nelix-native-hot-gate \
@@ -3284,6 +3284,24 @@ else
 	fi
 	@echo "[standalone-reader-ffi-unsupported-smoke] PASS: nl-ffi-call is fboundp and raises nelisp-unsupported-primitive (never void) on the static default build, across bare FILE / --load / --eval / eval-elisp-source / REPL / compiled artifact"
 endif
+
+# Declarative FFI surface (packages/nl-ffi): `ffi:library'/`ffi:defun' over
+# `nl-ffi-call'.  Needs the dynamic reader for the same reason
+# `standalone-reader-ffi-smoke' above does, so this rebuilds it the same
+# way -- unconditionally, with NELISP_READER_DYNAMIC=1, never relying on
+# whatever flavor of target/nelisp a previous target left behind.  See
+# packages/nl-ffi/README.org for the surface and packages/nl-ffi/test/
+# nl-ffi-dsl-standalone-smoke.el for what this gate actually checks
+# (toupper/sqrt/sqlite3_libversion through ffi:defun, the ffi-call
+# compatibility alias, and three of the four named error conditions).
+.PHONY: ffi-dsl
+ffi-dsl:
+	@mkdir -p target
+	@NELISP_READER_DYNAMIC=1 $(EMACS) --batch -Q -L lisp -L src -L scripts \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l nelisp-standalone-build -f nelisp-standalone-build-reader
+	@chmod +x target/nelisp
+	@$(STANDALONE_BIN) --load packages/nl-ffi/test/nl-ffi-dsl-standalone-smoke.el
 
 # Phase 47.D D2: REAL TLS 1.3 handshake from the pure-elisp reader.  The Linux
 # recipe below remains the original GnuTLS dynamic-build probe: it opens a raw

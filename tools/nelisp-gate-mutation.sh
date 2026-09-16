@@ -103,6 +103,11 @@ gate_needs_rebuild() {
     precise-root-coverage) return 0 ;;
     standalone-reader-ipv6-socket-smoke) return 0 ;;
     standalone-reader-ffi-smoke) return 0 ;;
+    # ffi-dsl's own recipe rebuilds the dynamic reader unconditionally,
+    # the same way standalone-reader-ffi-smoke above does -- listed here
+    # for the same reason: a stale binary from a DIFFERENT gate earlier in
+    # the same sweep must not stand in for the "before" baseline.
+    ffi-dsl) return 0 ;;
     standalone-reader-host-parity-smoke) return 0 ;;
     standalone-reader-winpath-smoke) return 0 ;;
     standalone-reader-defvar-alloc-smoke) return 0 ;;

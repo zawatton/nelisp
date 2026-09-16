@@ -916,3 +916,13 @@ project-arguments|tools/nelisp-project.py|s/args = \[str(binary), "--load", str(
 # its own installed runtime actually lives at, so a relocated checkout's
 # documented REPL command works as written.
 project-distribution|tools/build-standalone-tarball.sh|s#STAGED_RUNTIME_PATH="libexec/nelisp-runtime"#STAGED_RUNTIME_PATH="bin/nelisp-runtime"#|the bundled README documents the runtime at the wrong relative path, so the documented NELISP_BIN=... command in a relocated installation points at a file that is not there
+#
+# ffi-dsl: turning nl-ffi-call's own "name not in the fixed extern table"
+# fallback (a raw Lisp nil) into the named nl-ffi-unresolved-symbol
+# condition is this package's whole reason to exist. Deleting the check
+# reintroduces exactly the silent-nil bug ffi:defun/ffi-call are supposed
+# to remove: an unresolved C symbol call quietly returns nil instead of
+# signalling. Proven 2026-09-16: GATE-COUNT checked=7 findings=1 (RED,
+# ffi-dsl-unresolved-symbol: no error signaled) with the mutation in
+# place; checked=8 findings=0 (GREEN) restored.
+ffi-dsl|packages/nl-ffi/src/nl-ffi.el|s/(when (null result)/(when nil/|nl-ffi--invoke stops turning an unresolved FFI symbol's raw nil into nl-ffi-unresolved-symbol, so a typo'd or unlinked C symbol name silently returns nil from the generated wrapper instead of signalling

@@ -693,6 +693,26 @@ nl-clj-future-standalone-smoke?
 # the Phase 2 mutation in tools/gate-mutations.txt reproduces the native
 # sign-word wrong-value path and proves this gate turns red on it.
 nl-num-standalone-smoke
+# ffi-dsl: added 2026-09-16, strategy section 8.1's declarative FFI surface
+# (packages/nl-ffi: `ffi:library'/`ffi:defun' over the existing `nl-ffi-call'
+# reader builtin) -- step 1 of a 3-step rollout (packages/nl-ffi/README.org
+# "Roadmap"): symbols the reader's build-time extern table already carries,
+# no loader, no new table rows.  Rebuilds the dynamic reader unconditionally,
+# the same way standalone-reader-ffi-smoke does, then runs
+# packages/nl-ffi/test/nl-ffi-dsl-standalone-smoke.el: toupper (integer),
+# sqrt (double, plus int->float argument promotion), sqlite3_libversion
+# (string-returning, via `nl-ffi-get-string'), the `ffi-call' compatibility
+# alias, `ffi:library''s SONAME-against-table validation
+# (`nl-ffi-unknown-library'), and three of the four named error conditions
+# `ffi:defun' itself contracts for (`nl-ffi-wrong-arity',
+# `nl-ffi-unresolved-symbol', `nl-ffi-unknown-type' at `ffi:defun' expansion
+# time).  `nl-ffi-unavailable' is proven separately on host Emacs by
+# packages/nl-ffi/test/nl-ffi-test.el, since it needs a build where
+# `nl-ffi-call' is genuinely absent, not this gate's own dynamic reader.
+# Red-proven by the tools/gate-mutations.txt row that names this gate:
+# checked=7 findings=1 with the mutation in place, checked=8 findings=0
+# restored.
+ffi-dsl
 # nelisp-thread-standalone-smoke: Doc 199 Tier 2 Shape B.  The smoke is
 # loaded by target/nelisp itself (not self-host compiled), spawns three fixed
 # registry worker-ID 1 clone(2) tasks, publishes three distinct result slots
