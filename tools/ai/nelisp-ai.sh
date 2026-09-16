@@ -106,6 +106,9 @@ usage: tools/ai/nelisp-ai.sh <command> [args]
   ns [FILE...]        namespace check (defaults to the recipe skeletons)
   recipes             run every recipe smoke against the standalone binary
   repl [OPTIONS]      start a live REPL with the full artifact runtime loaded
+  alloc-sites [--depth N] [--top N] [--report FILE] SCRIPT
+                      count allocations per call site in SCRIPT's marked
+                      windows, under gdb
   runtime-probe       report what the standalone binary can actually do
   gate NAME -- CMD    run CMD and report it, reading its GATE-COUNT line
   probe EXPR          evaluate EXPR in the standalone runtime, output to files
@@ -642,6 +645,71 @@ cmd_repl_signal() {
     exit "$repl_signal_status"
 }
 
+cmd_alloc_sites() {
+    if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ] || [ $# -eq 0 ]; then
+        cat <<'EOF'
+usage: tools/ai/nelisp-ai.sh alloc-sites [--depth N] [--top N] [--report FILE] SCRIPT
+
+Run SCRIPT with `target/nelisp --load' under gdb and count its allocations by
+call site.  SCRIPT marks each window to measure with (nelisp--debug-switch 24)
+before it and (nelisp--debug-switch 25) after it, the switches that turn the
+allocator's own counters on and off.  For each window this prints the
+allocations grouped by the caller above the allocator and by caller chain
+(--depth frames, default 6; --top rows per table, default 15), and checks
+their number against the allocator's success counters, so an allocation the
+breakpoint missed makes the window INCOMPLETE rather than short.  The full
+report is written as JSON to --report (default
+target/ai/alloc-sites/SCRIPT-NAME.json).
+
+Every allocation inside a window stops the reader once: keep windows to a few
+thousand allocations.  Exit status 0 when every window was complete, 1 when a
+window was incomplete or left open or the reader failed, 2 when SCRIPT marked
+no window or the arguments were wrong.  NELISP_BIN selects the binary;
+NELISP_ALLOC_SITES_SCRIPT runs another copy of the gdb script.
+EOF
+        [ $# -eq 0 ] && return 2
+        return 0
+    fi
+    alloc_depth=6
+    alloc_top=15
+    alloc_report=
+    while [ $# -gt 1 ]; do
+        case "$1" in
+            --depth)  alloc_depth=$2; shift 2 ;;
+            --top)    alloc_top=$2; shift 2 ;;
+            --report) alloc_report=$2; shift 2 ;;
+            *)        break ;;
+        esac
+    done
+    if [ $# -ne 1 ]; then
+        printf 'alloc-sites: expected one SCRIPT after the options, got: %s\n' "$*" >&2
+        return 2
+    fi
+    alloc_script=$1
+    if [ ! -f "$alloc_script" ]; then
+        printf 'alloc-sites: no such script: %s\n' "$alloc_script" >&2
+        return 2
+    fi
+    if ! command -v gdb >/dev/null 2>&1; then
+        printf 'alloc-sites: gdb is required\n' >&2
+        return 2
+    fi
+    alloc_bin=${NELISP_BIN:-target/nelisp}
+    if [ ! -x "$alloc_bin" ]; then
+        printf 'alloc-sites: no binary at %s; build it with make standalone-reader\n' "$alloc_bin" >&2
+        return 2
+    fi
+    if [ -z "$alloc_report" ]; then
+        alloc_name=$(basename "$alloc_script" .el)
+        alloc_report=target/ai/alloc-sites/$alloc_name.json
+    fi
+    mkdir -p "$(dirname "$alloc_report")"
+    NELISP_ALLOC_SITES_DEPTH=$alloc_depth NELISP_ALLOC_SITES_TOP=$alloc_top \
+    NELISP_ALLOC_SITES_REPORT=$alloc_report \
+        gdb -batch -nx -x "${NELISP_ALLOC_SITES_SCRIPT:-$here/nelisp-alloc-sites.py}" \
+            --args "$alloc_bin" --load "$alloc_script"
+}
+
 cmd_repl() {
     if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
         cat <<'EOF'
@@ -855,6 +923,7 @@ case "$command" in
     runtime-probe)  cmd_runtime_probe ;;
     probe)          cmd_probe "$@" ;;
     repl)            cmd_repl "$@" ;;
+    alloc-sites)    cmd_alloc_sites "$@" ;;
     build-probe)    cmd_build_probe "$@" ;;
     dev)            cmd_dev "$@" ;;
     doctor)         cmd_doctor ;;

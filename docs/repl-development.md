@@ -214,6 +214,59 @@ individual object-to-root paths are not reconstructed by this API. Distinguish
 heap usage, live bytes after the last collection, and bytes returned to the
 OS when comparing results.
 
+## Attribute allocations to call sites
+
+`nelisp-measure-alloc` and `nelisp-measure-count` say how much a loop
+allocates; `tools/ai/nelisp-ai.sh alloc-sites SCRIPT` says where. It runs
+SCRIPT with `target/nelisp --load` under gdb. SCRIPT marks each window with
+`(nelisp--debug-switch 24)` and `(nelisp--debug-switch 25)`, the switches that
+turn the allocator's counters on and off. Keep a window inside one top-level
+form; between separate forms the reader parses the next one, and that parsing
+would be counted too:
+
+```elisp
+(progn (nelisp--debug-switch 24) (my-loop 10) (nelisp--debug-switch 25))
+```
+
+Compiled code allocates through `nl_alloc_bytes`, which calls
+`nl_alloc_bytes_uncheck`; nothing else calls that function. Inside a window a
+breakpoint there stops the reader once per allocation, and the tool records
+the requested size and the callers above the allocator. Each window prints
+its allocations grouped by caller and by caller chain (`--depth`, default 6
+frames; `--top`, default 15 rows), and the whole report is written as JSON to
+`target/ai/alloc-sites/` (`--report` picks the path). When a window closes, its
+count is compared with the allocator's bucket, linear and bump success
+counters. If they differ, some allocation escaped the breakpoint: the window
+is marked INCOMPLETE and the command exits 1. The switch call that closes the
+window is counted in it.
+
+Every allocation stops the process, so keep a window to a few thousand
+allocations. Windows are found by a hardware watchpoint on the counters'
+enable word, not by a breakpoint on the switch's builtin: the builtin
+dispatch calls a specialized copy, `nl_argspan_bf_debug_switch_0`, so a
+breakpoint on `bf_debug_switch` never stops.
+`test/nelisp-alloc-sites-smoke.sh` (`ALLOC-SITES-SMOKE-PASS`) checks four
+things: every window is complete, windows do not bleed into each other, sizes
+are recorded, and every allocation has a caller.
+
+Worked example, the one this was built for: `nelisp-measure-alloc` showed a
+global variable read allocating 80 bytes per read, where a lexical read
+allocates nothing. `(setq sink X)` in four loops of ten iterations, with X a
+constant, a lexical, a special and a plain global, gave windows of 745, 745,
+765 and 765 allocations, all complete. Diffing the chains of the lexical and
+the special window leaves two chains of ten each:
+
+```
+nl_record_slot_ptr <- nelisp_mirror_lookup_entry <- nelisp_env_lkv_mirror <- ...
+nl_record_slot_ptr <- nelisp_env_lkv_mirror <- nelisp_env_lookup_value <- ...
+```
+
+`nl_record_slot_ptr` (`lisp/nelisp-cc-nlrecord-slot-ptr.el`) returns a 32-byte
+view of a record slot, and for an immediate word (a fixnum, nil or t) it
+builds that view in a fresh `(alloc-bytes 32 8)` block on every call. A global
+read reaches it twice, once inside `nelisp_mirror_lookup_entry` and once for
+the entry's value slot, and pays two blocks.
+
 ## Native allocator and GC development
 
 This workflow requires Linux x86_64 and a host Emacs for compilation.

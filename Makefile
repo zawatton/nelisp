@@ -705,6 +705,10 @@ native-unit-repl-smoke:
 	esac
 	sh test/nelisp-native-unit-repl-smoke.sh
 
+.PHONY: alloc-sites-smoke
+alloc-sites-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	sh test/nelisp-alloc-sites-smoke.sh
+
 .PHONY: repl-development-test
 repl-development-test:
 	$(EMACS) --batch -Q -L lisp -L src -L scripts -L test \

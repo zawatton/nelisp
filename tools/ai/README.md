@@ -194,6 +194,7 @@ believed.
 |---|---|
 | `nelisp-ai.sh` | the entry point; `help` lists commands |
 | `bench-compare.sh` | two-arm measurement with slope, drift and identity guards |
+| `nelisp-alloc-sites.py` | gdb script behind `alloc-sites`: allocations per call site in marked windows |
 | `nelisp-gate-lib.el` | report writer for Elisp gates |
 | `nelisp-ert-gate.el` | ERT batch runner that reports executed counts |
 | `gate-report.sh` | report writer for shell gates |
