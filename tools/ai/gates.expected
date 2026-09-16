@@ -727,6 +727,33 @@ nl-num-standalone-smoke
 # process with a null-function-pointer call instead of a clean finding
 # count) -- see that file for each row's own measured RED/GREEN evidence.
 ffi-dsl
+# ffi-loader: added 2026-09-16, FFI step 3 increment 1 -- a pure-elisp
+# ELF loader (packages/nl-ffi/src/nl-ffi-loader.el) so `ffi:library'/
+# `ffi:defun' also work on the DEFAULT STATIC reader, which has no
+# `nl-ffi-call' dispatcher at all (unlike `ffi-dsl' above, which needs
+# `NELISP_READER_DYNAMIC').  Builds a small `.so' at gate time with `cc'
+# (packages/nl-ffi/test/fixtures/*.c) and runs
+# packages/nl-ffi/test/nl-ffi-loader-standalone-smoke.el (18 cases): the
+# loader's own low-level `nl-ffi-loader-open'/`nl-ffi-loader-symbol' API
+# resolving and calling an R_X86_64_JUMP_SLOT function, an
+# R_X86_64_GLOB_DAT function, and reading back + calling through an
+# R_X86_64_RELATIVE-relocated data pointer; the same three through the
+# full `ffi:library'/`ffi:defun' surface, proving `ffi:library' really
+# falls back to this loader on the static reader instead of signalling
+# `nl-ffi-unavailable'; three real fixtures each built to trip exactly
+# one whole-object refusal (`nl-ffi-loader-fixture-needs-dep.so' has a
+# real DT_NEEDED, `-tls.so' a real PT_TLS, `-init.so' real DT_INIT/
+# DT_INIT_ARRAY); and, via hand-built in-memory Elf64_Rela entries (no
+# compiler needed), R_X86_64_RELATIVE/R_X86_64_GLOB_DAT applying
+# correctly, R_X86_64_GLOB_DAT refusing an undefined symbol,
+# R_X86_64_IRELATIVE refusing, a TLS-classed relocation type refusing,
+# and R_X86_64_64 (a real type, just not a supported one) refusing.
+# Red-proven by the tools/gate-mutations.txt row that names this gate
+# (dropping the RELATIVE relocation's write, which corrupts the
+# `nl_ffi_loader_fixture_local_ptr' call rather than merely miscounting).
+# Skips (GATE-SKIP), rather than fails, when `cc' is absent or the gate
+# target is not linux-x86_64.
+ffi-loader
 # nelisp-thread-standalone-smoke: Doc 199 Tier 2 Shape B.  The smoke is
 # loaded by target/nelisp itself (not self-host compiled), spawns three fixed
 # registry worker-ID 1 clone(2) tasks, publishes three distinct result slots

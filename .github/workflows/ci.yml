@@ -440,6 +440,18 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate ffi-dsl -- make ffi-dsl
+      # FFI step 3 increment 1 (packages/nl-ffi/src/nl-ffi-loader.el): a
+      # pure-elisp ELF loader, so unlike `ffi-dsl' above this runs on the
+      # DEFAULT STATIC reader (no NELISP_READER_DYNAMIC) -- that is the
+      # whole point of this gate.  Builds its own small test `.so' with
+      # `cc' at gate time (already relied on by this Linux lane's own
+      # native-exec toolchain, see `bench-aot-tco' above); the Makefile
+      # target itself turns any absence of `cc', or a non-linux-x86_64
+      # gate target, into a GATE-SKIP rather than a failure.
+      - name: "AI toolchain binary-tier gate: pure-elisp ELF loader (tools/ai/nelisp-ai.sh gate ffi-loader); Linux x86_64"
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate ffi-loader -- make ffi-loader
 
       # `make compile' above covers src/ and packages/*/src/ only; lisp/ has
       # never been byte-compiled by CI.  Linux-only because one lane asserting

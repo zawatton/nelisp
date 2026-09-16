@@ -6,7 +6,7 @@
         standalone-tarball standalone-tarball-verify \
         verify-elisp-fixtures \
         standalone-eval standalone-eval-clean standalone-eval-test standalone-eval-j \
-        standalone-reader standalone-reader-test standalone-reader-load-smoke standalone-reader-checked standalone-reader-fmt-smoke standalone-reader-prelude-equal-reload-smoke standalone-reader-declare-strip-smoke standalone-reader-nested-backquote-macro-smoke standalone-reader-derived-mode-shape-smoke standalone-reader-pcase-quote-literal-smoke standalone-reader-catch-throw-tag-smoke standalone-reader-cond-let-shape-smoke standalone-reader-ffi-smoke ffi-dsl standalone-reader-tls-smoke standalone-reader-tls-smoke-linux standalone-reader-tls-smoke-windows standalone-reader-process-smoke standalone-reader-realrt-smoke standalone-reader-repl-smoke standalone-reader-prelude-test standalone-reader-intern-soft-smoke standalone-reader-intern-soft-loop-smoke standalone-reader-number-token-smoke standalone-reader-getenv-smoke standalone-selfhost-test standalone-selfhost-mt-test standalone-parallel-compile-test standalone-chunk-growth-test \
+        standalone-reader standalone-reader-test standalone-reader-load-smoke standalone-reader-checked standalone-reader-fmt-smoke standalone-reader-prelude-equal-reload-smoke standalone-reader-declare-strip-smoke standalone-reader-nested-backquote-macro-smoke standalone-reader-derived-mode-shape-smoke standalone-reader-pcase-quote-literal-smoke standalone-reader-catch-throw-tag-smoke standalone-reader-cond-let-shape-smoke standalone-reader-ffi-smoke ffi-dsl ffi-loader standalone-reader-tls-smoke standalone-reader-tls-smoke-linux standalone-reader-tls-smoke-windows standalone-reader-process-smoke standalone-reader-realrt-smoke standalone-reader-repl-smoke standalone-reader-prelude-test standalone-reader-intern-soft-smoke standalone-reader-intern-soft-loop-smoke standalone-reader-number-token-smoke standalone-reader-getenv-smoke standalone-selfhost-test standalone-selfhost-mt-test standalone-parallel-compile-test standalone-chunk-growth-test \
         standalone-reader-mod-float-smoke standalone-reader-match-data-smoke standalone-reader-current-time-smoke standalone-reader-require-provide-smoke \
         alloc-check-collect standalone-reader-checked-soak standalone-reader-shadow-smoke standalone-reader-elt-smoke \
         nelisp-performance-gate nelisp-nelix-command-gate nelisp-native-artifact-gate nelisp-nelix-native-hot-gate \
@@ -3306,6 +3306,52 @@ ffi-dsl:
 	  -l nelisp-standalone-build -f nelisp-standalone-build-reader
 	@chmod +x target/nelisp
 	@$(STANDALONE_BIN) --load packages/nl-ffi/test/nl-ffi-dsl-standalone-smoke.el
+
+# FFI step 3 increment 1 (packages/nl-ffi/src/nl-ffi-loader.el): a pure-elisp
+# ELF loader, so the whole point is that this gate runs on the DEFAULT
+# STATIC reader -- no `NELISP_READER_DYNAMIC' here, unlike `ffi-dsl' above.
+# Needs a real `.so' to load: builds one at gate time with `cc' (see
+# packages/nl-ffi/test/fixtures/*.c and the report for why each fixture's
+# exact compile flags are safe for CI -- no libc dependency in the main
+# fixture, a real DT_NEEDED/PT_TLS/DT_INIT in the three refusal-only
+# fixtures).  `cc' is already relied on elsewhere in this Linux CI lane
+# (see `bench-aot-tco'/the native-exec toolchain), but this target still
+# skips (GATE-SKIP), rather than fails, when `cc' is absent or the gate
+# target is not linux-x86_64 -- there is no ELF to load on any other
+# target this Makefile builds.
+NL_FFI_LOADER_CC := $(shell command -v cc 2>/dev/null)
+.PHONY: ffi-loader
+ffi-loader:
+	@mkdir -p target
+ifeq ($(STANDALONE_GATE_TARGET),linux-x86_64)
+ifneq ($(NL_FFI_LOADER_CC),)
+	@cc -c -fPIC -O2 -o target/nl-ffi-loader-fixture-a.o \
+	  packages/nl-ffi/test/fixtures/nl-ffi-loader-fixture-a.c
+	@cc -c -fPIC -O2 -fno-plt -o target/nl-ffi-loader-fixture-b.o \
+	  packages/nl-ffi/test/fixtures/nl-ffi-loader-fixture-b.c
+	@cc -shared -fPIC -nostdlib -Wl,-z,nopack-relative-relocs \
+	  -o target/nl-ffi-loader-fixture.so \
+	  target/nl-ffi-loader-fixture-a.o target/nl-ffi-loader-fixture-b.o
+	@cc -shared -fPIC -o target/nl-ffi-loader-fixture-needs-dep.so \
+	  packages/nl-ffi/test/fixtures/nl-ffi-loader-fixture-needs-dep.c -lm
+	@cc -shared -fPIC -nostdlib -o target/nl-ffi-loader-fixture-tls.so \
+	  packages/nl-ffi/test/fixtures/nl-ffi-loader-fixture-tls.c
+	@cc -shared -fPIC -o target/nl-ffi-loader-fixture-init.so \
+	  packages/nl-ffi/test/fixtures/nl-ffi-loader-fixture-init.c
+	@NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l nelisp-standalone-build -f nelisp-standalone-build-reader
+	@chmod +x $(STANDALONE_BIN)
+	@case "$$(file -b $(STANDALONE_BIN) 2>/dev/null)" in \
+	  *"dynamically linked"*) echo "[ffi-loader] FAIL: target/nelisp is dynamically linked -- not the static default this gate must test"; exit 1;; \
+	esac
+	@$(STANDALONE_BIN) --load packages/nl-ffi/test/nl-ffi-loader-standalone-smoke.el
+else
+	@echo "GATE-SKIP cc not found on PATH -- ffi-loader needs a C compiler to build its test fixture shared objects"
+endif
+else
+	@echo "GATE-SKIP ffi-loader targets ELF/Linux x86_64 only (STANDALONE_GATE_TARGET=$(STANDALONE_GATE_TARGET))"
+endif
 
 # Phase 47.D D2: REAL TLS 1.3 handshake from the pure-elisp reader.  The Linux
 # recipe below remains the original GnuTLS dynamic-build probe: it opens a raw

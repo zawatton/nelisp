@@ -183,27 +183,36 @@ scratch buffer for the call) and signals one of six named conditions
 text, when a real `dlopen` attempt fails, replacing the old
 table-membership `nl-ffi-unknown-library` rejection (no longer signalled
 at all: an unknown soname is now a real `dlopen` candidate rather than an
-outright rejection). `nl-ffi-call`, and therefore this whole surface,
-exists only in the dynamic reader (`NELISP_READER_DYNAMIC=1`); calling an
-`ffi:defun` wrapper on the default static reader signals
-`nl-ffi-unavailable` rather than crashing, but no C symbol is callable
-there on either resolution path. This does not cover closures/callbacks,
-struct layout, variadic C calls, or section 8.2's header bindgen. The type
-vocabulary and vector call shape (`[RET ARG...]`, return type first)
-follow the existing `dev/nelisp-ffi` fork of elisp-ffi rather than section
-8.1's illustrative labeled-argument sketch, since that shape is what an
-already-fixed, per-symbol ABI table can actually be checked against; see
-`packages/nl-ffi/README.org` for the full contract and its "Symbol
-resolution" section for the two resolution paths and their limits. This is
-step 2 of a staged rollout: a further step can grow
-`dev/nelisp-ffi/nelisp-ffi-pure.el` (a pure-elisp ELF symbol reader, leaf
-functions only today) toward giving the default statically linked reader
-the same reach; it changes neither `ffi:library`'s SONAME argument nor
-`ffi:defun`'s signature vector, and the default binary stays statically
-linked either way. An f64-capable `ptr-call` (needed for either step 2's
-`dlsym` path or step 3's pure-elisp loader to call a double-taking
-function) remains open; see `packages/nl-ffi/README.org`'s "Roadmap" for
-what that would take.
+outright rejection). Both `nl-ffi-call` (step 1's fixed table) and real
+`dlopen`/`dlsym` (step 2) exist only in the dynamic reader
+(`NELISP_READER_DYNAMIC=1`); as of step 3 increment 1
+(`packages/nl-ffi/src/nl-ffi-loader.el`), `ffi:library` on the default
+STATIC reader -- where those two are unavailable -- instead maps and
+relocates the shared object itself with a pure-elisp ELF loader built on
+primitives the static reader already has unconditionally
+(`syscall-direct`/`ptr-read-*`/`ptr-write-*`/`alloc-bytes`/`ptr-call`, no
+reader rebuild): one `mmap` per `PT_LOAD` at its own address with its own
+final protection (applied only after relocations), `R_X86_64_RELATIVE`
+relocations plus `R_X86_64_GLOB_DAT`/`R_X86_64_JUMP_SLOT` when the symbol
+resolves inside the same object, and symbol lookup through `.dynsym` via
+`.gnu.hash` (falling back to the classic `.hash`, then a linear scan). An
+object needing a dependency (`DT_NEEDED`), TLS, an IFUNC
+(`R_X86_64_IRELATIVE`), an initializer (`DT_INIT`/`DT_INIT_ARRAY`), or any
+other relocation type is refused with a named `nl-ffi-loader-unsupported'
+condition rather than half-loaded; `ffi:defun`'s call shape, and its
+error contract, are unchanged either way. This does not cover closures/
+callbacks, struct layout, variadic C calls, or section 8.2's header
+bindgen. The type vocabulary and vector call shape (`[RET ARG...]`, return
+type first) follow the existing `dev/nelisp-ffi` fork of elisp-ffi rather
+than section 8.1's illustrative labeled-argument sketch, since that shape
+is what an already-fixed, per-symbol ABI table can actually be checked
+against; see `packages/nl-ffi/README.org` for the full contract, its
+"Symbol resolution" section for the two dynamic-reader resolution paths
+and their limits, and its "Roadmap" section for increment 1's exact scope
+and what increment 2 (dependency loading, IFUNC, TLS, initializers) would
+still need. An f64-capable `ptr-call` (needed for either step 2's `dlsym`
+path or step 3's loader to call a double-taking function) remains open
+either way.
 
 The project frontend in `tools/nelisp-project.py` currently provides a partial
 Phase 1 workflow. Its integration suites and [project guide](project-cli.md)

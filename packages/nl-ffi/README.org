@@ -249,12 +249,15 @@ site the in-process path instead.
   =ptr-call= has no f64-classed dispatch. A build-time table row (path 1)
   is the only way to call a double-taking function like =sqrt= today; see
   "Roadmap" below for what an f64-capable =ptr-call= would need.
-- Anything on the default static reader -- =ffi:defun= wrappers still
-  build there, and calling one signals =nl-ffi-unavailable= rather than
-  crashing or returning a wrong answer, but no C symbol is callable, on
-  either resolution path (the static reader has no =dlopen=/=dlsym=/
-  =ptr-call= dispatch wired at all -- see "Dynamic-reader requirement"
-  above).
+- Path 1's fixed table and path 2's =dlopen=/=dlsym= (steps 1-2) on the
+  default static reader -- neither exists there at all (see
+  "Dynamic-reader requirement" above). As of step 3 increment 1, this is
+  no longer "nothing is callable there": =ffi:library= falls back to a
+  pure-elisp ELF loader instead -- see "Roadmap" below for exactly what
+  it does and does not cover (a real, integer/pointer-only,
+  no-dependencies shared object works; one needing a dependency, TLS, an
+  IFUNC, or an initializer is refused with a named condition, not
+  crashed or silently wrong).
 
 Making a new *integer/pointer* C symbol callable no longer needs a table
 row and a reader rebuild -- =ffi:library= + =ffi:defun= reach it directly
@@ -317,24 +320,92 @@ follow-up call to =dlerror()= -- a different check from, and not a
 replacement for, the =null result= sentinel =nl-ffi--invoke= still uses
 for the fixed-table path.
 
-** Step 3 (later still): grow the pure-elisp ELF loader
+** Step 3 increment 1 (done): a pure-elisp ELF loader, static reader only
 
-=dev/nelisp-ffi/nelisp-ffi-pure.el= is a real pure-elisp proof of
-concept for a path that needs neither =nl-ffi-call= nor =dlopen=: it
-maps a =.so= with primitives already in the default STATIC reader
-(=syscall-direct=/=ptr-read-u64=/=ptr-call=), walks its =.dynamic=
-section to find =.dynsym=/=.dynstr=, and resolves a symbol's address by
-a linear string scan. Its own STATUS note says it works only for *leaf*
-functions (its self-test calls =add2=/=mul3= in a tiny demo =.so=); a
-real library needs relocations (=.rela.dyn=/=.rela.plt=, so a
-non-leaf function's internal GOT/PLT references resolve instead of
-jumping through an unfilled slot), transitive =DT_NEEDED= dependency
-loading, and -- for the doubles most external libraries actually use --
-the same f64 gap step 2 has. In short: mapping one segment and reading
-=.dynsym= is the easy 10%; making an arbitrary already-compiled shared
-object run correctly is a small dynamic linker, not a one-file addition.
-Doc 100 (=docs/design/100-phase-47-dynamic-link-elisp.org=) describes
-the alternative actually shipped instead of either: eager =GLOB_DAT=
-imports resolved by the real OS loader at process start, which is what
-=nl-ffi-call='s fixed table (and therefore this whole package) rides on
-today.
+=packages/nl-ffi/src/nl-ffi-loader.el= closes the gap step 1/2 left open:
+the default, STATICALLY linked reader has neither =nl-ffi-call= nor
+=dlopen=/=dlsym= (both dynamic-reader-only, see "Dynamic-reader
+requirement" above), so =ffi:library= there used to signal
+=nl-ffi-unavailable= for any SONAME outside the build-time table's own
+mirror, no matter what. It now instead maps and relocates the shared
+object itself, entirely with primitives the STATIC reader already has
+unconditionally -- =syscall-direct= (openat/fstat/mmap/mprotect/munmap/
+close), =ptr-read-u8=/=ptr-write-u8=/=ptr-read-u32=/=ptr-write-u32=/
+=ptr-read-u64=/=ptr-write-u64=, =alloc-bytes=, and =ptr-call= -- so no
+reader rebuild and no opt-in build flag; =ffi:defun='s call shape and
+error contract are unchanged. =dev/nelisp-ffi/nelisp-ffi-pure.el= and
+=dev/nelisp-ffi/spike-loader-full.el= (a separate repository) were this
+increment's starting design, not its code: the pure spike flat-mapped a
+whole =.so= at one protection with no relocations at all (leaf functions
+only), and the segment-loader spike mapped each =PT_LOAD= at its own
+vaddr but into one shared RWX region, also with no relocations.
+
+What increment 1 actually does:
+- Maps each =PT_LOAD= with its own =mmap=, at its own address, with its
+  own FINAL protection (via =mprotect=, applied only after every
+  relocation runs -- never leaving a read-execute segment writable at
+  relocation time) -- not one flat region. Reserves the object's whole
+  span with one =PROT_NONE= anonymous =mmap= first so every segment lands
+  at a consistent bias; an anonymous =mmap='s own zero-fill is =.bss=
+  zeroing, so no separate zeroing pass is needed. Refuses (rather than
+  mis-protects) an object whose =PT_LOAD= ranges share a page --
+  measured empirically absent from this repository's own toolchain
+  output (binutils 2.45, =-z separate-code= default).
+- Applies =R_X86_64_RELATIVE= relocations unconditionally, and
+  =R_X86_64_GLOB_DAT=/=R_X86_64_JUMP_SLOT= when the referenced =.dynsym=
+  entry is DEFINED in the same object (=st_shndx <> SHN_UNDEF=) --
+  eagerly, at load time (there is no lazy-PLT trampoline here). Refuses,
+  naming the relocation type and (when the relocation carries one) the
+  symbol: an undefined symbol (needs a dependency this loader does not
+  load), =R_X86_64_IRELATIVE= (IFUNC), any TLS-classed relocation type,
+  and every other numeric type (=R_X86_64_64=, =R_X86_64_PC32=,
+  =R_X86_64_COPY=, ...). A =PT_TLS= program header, =DT_NEEDED=, and
+  =DT_INIT=/=DT_INIT_ARRAY= are each checked directly and refused before
+  a single relocation is even inspected.
+- Resolves a symbol by name through =.dynsym=, preferring =.gnu.hash=
+  (the only style this repository's own toolchain emits), falling back
+  to the classic SysV =.hash=, then to a linear =.dynsym= scan (a
+  fragile last resort, since nothing guarantees =.dynstr= immediately
+  follows =.dynsym= -- documented as such, never the primary path).
+  Returns 0 -- the same "not found" sentinel a real =dlsym= would give,
+  not =nil= -- when nothing matches.
+- Wires behind the existing surface with no change to =ffi:defun='s
+  shape: =ffi:library= tries the real =dlopen= path first and falls back
+  to this loader only when that signals =nl-ffi-unavailable= (the static
+  reader); =nl-ffi--resolve-via-dlsym= dispatches a loader handle to
+  =nl-ffi-loader-symbol= instead of =dlsym=.
+
+Out of scope for increment 1, each refusing with a named
+=nl-ffi-loader-unsupported= condition rather than half-working:
+dependency loading (=DT_NEEDED=), symbol interposition across multiple
+loaded objects, TLS, IFUNC, initializers, unloading (a loaded object's
+mappings live for the rest of the process), the compact =DT_RELR=
+relative-relocation encoding some newer linker defaults can emit, and
+=PT_GNU_RELRO= re-protection. Everything =ptr-call= itself cannot
+express (a float argument/return, more than six arguments) is unchanged
+from step 2 -- still =nl-ffi-dlsym-float-unsupported=/=nl-ffi-too-many-
+arguments=, not duplicated in the loader. See
+=target/ai/ffi-loader-report.md= (generated per run, not committed) for
+the exact empirical findings this increment's design rests on --
+notably that =ptr-read-u64=/=ptr-write-u64= do not round-trip a raw
+64-bit value above =most-positive-fixnum= (2^61-1), which is why bulk segment/string
+copying and the GNU hash bloom-word test use the 32-bit primitives
+instead.
+
+** Step 3 increment 2 (open): dependencies, IFUNC, TLS, initializers
+
+Each of increment 1's refusals is a real, separate piece of a small
+dynamic linker: =DT_NEEDED= dependency loading (recursively opening and
+relocating another object, then searching it too); IFUNC support
+(calling the resolver function chosen by =R_X86_64_IRELATIVE= at load
+time, which needs any CPU-feature-detection code the resolver itself
+depends on to already be safe to run); a real TLS block (allocating and
+initializing =PT_TLS='s image, then either implementing
+=__tls_get_addr= or restricting to the initial-exec model); and running
+=DT_INIT=/=DT_INIT_ARRAY= entries in order at load time. None of these
+change =ffi:library='s or =ffi:defun='s call shape; each is additional
+work inside =nl-ffi-loader-open= and, for IFUNC/TLS, additional
+relocation-type arms in =nl-ffi-loader--apply-one-relocation=. An
+f64-capable =ptr-call= (needed for either step 2's =dlsym= path or this
+loader to call a double-taking function) remains open for either to pick
+up; see =nl-ffi--ptr-call-invoke='s Commentary for what that needs.

@@ -945,3 +945,14 @@ ffi-dsl|packages/nl-ffi/src/nl-ffi.el|s/(when (null result)/(when nil/|nl-ffi--i
 # GATE-COUNT checked=16 findings=0 skipped=0, status pass, ran=16
 # (GREEN).
 ffi-dsl|packages/nl-ffi/src/nl-ffi.el|s/(when (zerop addr)/(when nil/|nl-ffi--ptr-call-invoke stops checking a dlsym-resolved address for zero before calling it through ptr-call, so a symbol no declared library exports is called at address 0 (a null function pointer, undefined behaviour) instead of signalling nl-ffi-unresolved-symbol
+#
+# ffi-loader (FFI step 3 increment 1, pure-elisp ELF loader): dropping the
+# SHN_UNDEF check before applying an R_X86_64_GLOB_DAT/R_X86_64_JUMP_SLOT
+# relocation means a symbol this object does not define (needs another,
+# un-loaded object -- dependency loading is out of scope) is silently
+# treated as resolving to address 0 instead of refusing the load with
+# `nl-ffi-loader-unsupported'. Proven 2026-09-16: GATE-COUNT checked=17
+# findings=1 (RED, ffi-loader-glob-dat-refuses-undefined-symbol: "no error
+# signaled by (nl-ffi-loader--apply-one-relocation ...)") with the
+# mutation in place; checked=18 findings=0 (GREEN) restored.
+ffi-loader|packages/nl-ffi/src/nl-ffi-loader.el|s/(when (= st-shndx 0)/(when nil/|nl-ffi-loader--apply-one-relocation stops refusing an R_X86_64_GLOB_DAT/R_X86_64_JUMP_SLOT relocation whose symbol is undefined (SHN_UNDEF) in this object, so a dependency this loader cannot load is silently ignored instead of signalling nl-ffi-loader-unsupported|linux-x86_64

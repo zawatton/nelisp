@@ -129,6 +129,14 @@
 (declare-function ptr-read-u8 "ext:nelisp-runtime" (ptr offset))
 (declare-function ptr-write-u8 "ext:nelisp-runtime" (ptr offset value))
 (declare-function ptr-call "ext:nelisp-runtime" (address a b c d e f))
+;; packages/nl-ffi/src/nl-ffi-loader.el (step 3 increment 1), loaded further
+;; down this file, after the error conditions and helpers it reuses --
+;; see the `(unless (featurep 'nl-ffi-loader) ...)' form below.  Declared
+;; here so byte-compiling this file alone (before that `load' has ever
+;; run) does not warn that these are undefined.
+(declare-function nl-ffi-loader-open "nl-ffi-loader" (path))
+(declare-function nl-ffi-loader-handle-p "nl-ffi-loader" (handle))
+(declare-function nl-ffi-loader-symbol "nl-ffi-loader" (handle name))
 
 ;;;; --- error conditions ---------------------------------------------------
 
@@ -310,6 +318,35 @@ converting it in a single call."
         (push (apply #'unibyte-string (nreverse chunk)) chunks))
       (apply #'concat (nreverse chunks)))))
 
+;;;; --- step 3 increment 1: pure-elisp ELF loader for the static reader ------
+;;
+;; Loaded here (after `nl-ffi--string-to-cstring'/`nl-ffi-get-string' above,
+;; which it reuses, and before the step 2 `dlopen'/`dlsym' machinery below,
+;; which now falls back to it), resolved relative to THIS file's own
+;; directory rather than a bare "packages/nl-ffi/src/nl-ffi-loader.el"
+;; relative to the process's CWD -- the same `load-file-name' idiom
+;; packages/nl-ffi/test/nl-ffi-test.el already uses (see its own `here'
+;; binding).  A bare CWD-relative path broke exactly this way under
+;; `tools/ai/nelisp-ai.sh test': `nl-ffi-test.el' reaches this file via
+;; `(require 'nl-ffi)' against `load-path' (not the smoke tests' own
+;; `(load "packages/nl-ffi/src/nl-ffi.el")' from the repository root), and
+;; that harness's `default-directory' when it runs Emacs is not the
+;; repository root, so the bare relative path did not exist from there --
+;; "Cannot open load file ... packages/nl-ffi/src/nl-ffi-loader.el",
+;; 2026-09-16.  `load-file-name' is correctly bound to THIS file's own
+;; resolved path by both `require' (host Emacs) and a nested `load' (the
+;; standalone reader; confirmed empirically: the top-level `--load' target
+;; itself sees `load-file-name' nil there, but a `load' nested inside it
+;; -- exactly what a smoke test's `(load "packages/nl-ffi/src/nl-ffi.el")'
+;; is, from this file's point of view -- does not), so this is robust
+;; either way; `default-directory' is the same fallback `nl-ffi-test.el'
+;; already uses for the one case where it is not.
+(unless (featurep 'nl-ffi-loader)
+  (load (expand-file-name
+         "nl-ffi-loader.el"
+         (or (and load-file-name (file-name-directory load-file-name))
+             default-directory))))
+
 ;;;; --- shared call engine ---------------------------------------------------
 
 (defun nl-ffi--invoke (fn-name c-symbol arg-types ret-type args)
@@ -331,16 +368,26 @@ returning a silent nil (see the package README's error contract):
   3. Each argument is converted by `nl-ffi--convert-arg' (may signal
      `wrong-type-argument' or `nl-ffi-unknown-type').
   4. The call is dispatched through `nl-ffi-call'.  The reader's own
-     `nelisp-unsupported-primitive' (raised by a static-reader build
-     where `nl-ffi-call' is `fboundp' but not really wired) is caught
-     and re-signalled as `nl-ffi-unavailable'.
+     `nelisp-unsupported-primitive' -- raised on the default STATIC
+     reader, where `nl-ffi-call' is `fboundp' but the whole fixed-table
+     dispatch arm is compiled out regardless of C-SYMBOL (see
+     packages/nl-ffi/src/nl-ffi-loader.el's Commentary) -- is caught and
+     treated exactly like step 5's raw `nil' below, as of step 3
+     increment 1: it no longer signals `nl-ffi-unavailable' directly,
+     because C-SYMBOL may still resolve through a loader-backed
+     `ffi:library' (step 3) even though the fixed table cannot reach it
+     at all on this build.
   5. A raw `nil' result -- the build-time table's own unmatched-name
-     fallback, since every matched row boxes a real number -- no longer
-     means \"unresolved\" outright as of step 2: `nl-ffi--ptr-call-invoke'
-     gets one more chance to resolve C-SYMBOL via `dlsym' against a
-     `dlopen'ed library and call it through `ptr-call', and only THAT
-     signals `nl-ffi-unresolved-symbol' when no declared library carries
-     it either.
+     fallback on a build where it exists at all, since every matched row
+     boxes a real number, OR step 4's caught `nelisp-unsupported-
+     primitive' on a build where it does not -- no longer means
+     \"unresolved\" outright as of step 2/3: `nl-ffi--ptr-call-invoke'
+     gets one more chance to resolve C-SYMBOL via `dlsym' or
+     `nl-ffi-loader-symbol' (whichever kind of handle a preceding
+     `ffi:library' registered -- see
+     `nl-ffi--symbol-address-in-library') and call it through `ptr-call',
+     and only THAT signals `nl-ffi-unresolved-symbol' when no declared
+     library carries it either.
   6. A `:void' RET-TYPE discards the (already known non-nil) raw result
      and returns nil; any other RET-TYPE returns it as-is."
   (let ((declared (length arg-types))
@@ -360,8 +407,11 @@ returning a silent nil (see the package README's error contract):
     (let ((result
            (condition-case _err
                (apply #'nl-ffi-call c-symbol raw-args)
-             (nelisp-unsupported-primitive
-              (signal 'nl-ffi-unavailable (list fn-name c-symbol))))))
+             ;; Treated the same as a raw table-miss `nil' (see item 4/5
+             ;; above), NOT re-signalled here -- a loader-backed
+             ;; `ffi:library' (step 3) may still resolve C-SYMBOL even
+             ;; though the fixed table cannot on this build.
+             (nelisp-unsupported-primitive nil))))
       (when (null result)
         (setq result
               (nl-ffi--ptr-call-invoke fn-name c-symbol arg-types ret-type raw-args)))
@@ -464,13 +514,25 @@ unresolvable symbol pays a fresh (cheap) `dlsym' call every time it is
 asked for again, rather than caching a negative answer that a later
 `dlopen' of some other, exporting library could no longer overturn.")
 
+(defun nl-ffi--symbol-address-in-library (handle c-symbol)
+  "Resolve C-SYMBOL against HANDLE, whichever kind of handle it is.
+HANDLE is either a real, positive-integer `dlopen' handle (resolved via
+`nl-ffi--dlsym') or an `nl-ffi-loader-open' result (resolved via
+`nl-ffi-loader-symbol' -- see packages/nl-ffi/src/nl-ffi-loader.el,
+step 3 increment 1); `nl-ffi-loader-handle-p' tells them apart.  Both
+return 0, never nil, when C-SYMBOL is not found."
+  (if (nl-ffi-loader-handle-p handle)
+      (nl-ffi-loader-symbol handle c-symbol)
+    (nl-ffi--dlsym handle c-symbol)))
+
 (defun nl-ffi--resolve-via-dlsym (c-symbol)
-  "Return the address of C-SYMBOL in some `dlopen'ed library, or 0.
-Walks `nl-ffi--library-order', returning the first non-zero `dlsym'
-result and caching it in `nl-ffi--dlsym-cache' keyed by
-\(SONAME . C-SYMBOL\).  Returns 0 -- `dlsym'\='s own \"not found\" value --
-when no declared library exports C-SYMBOL, including when zero
-libraries have been `dlopen'ed at all."
+  "Return the address of C-SYMBOL in some declared library, or 0.
+Walks `nl-ffi--library-order', returning the first non-zero resolved
+result (via `nl-ffi--symbol-address-in-library') and caching it in
+`nl-ffi--dlsym-cache' keyed by \(SONAME . C-SYMBOL\).  Returns 0 -- the
+same \"not found\" sentinel `dlsym' itself would return -- when no
+declared library exports C-SYMBOL, including when zero libraries have
+been declared at all."
   (let ((sonames nl-ffi--library-order)
         (found 0))
     (while (and sonames (zerop found))
@@ -480,7 +542,7 @@ libraries have been `dlopen'ed at all."
         (if cached
             (setq found cached)
           (let* ((handle (nl-ffi-library-handle soname))
-                 (addr (and handle (nl-ffi--dlsym handle c-symbol))))
+                 (addr (and handle (nl-ffi--symbol-address-in-library handle c-symbol))))
             (when (and addr (not (zerop addr)))
               (puthash key addr nl-ffi--dlsym-cache)
               (setq found addr)))))
@@ -601,10 +663,19 @@ exactly as before: no `dlopen' call, no library argument on any
 whether the running binary's build already linked it in.
 
 Any OTHER SONAME is a real `dlopen' call (RTLD_NOW|RTLD_LOCAL) as of
-step 2 -- see `nl-ffi--dlopen'.  A symbol an `ffi:defun' form names that
-`nl-ffi-call' does not resolve then gets one more chance: `dlsym' against
-this library's handle, called through `ptr-call' (see
-`nl-ffi--resolve-via-dlsym'/`nl-ffi--ptr-call-invoke').  This is the
+step 2 -- see `nl-ffi--dlopen' -- on a build where `nl-ffi-call' actually
+works (the dynamic reader).  On the default STATIC reader, where
+`nl-ffi-call' is `fboundp' but every call signals the reader's own
+`nelisp-unsupported-primitive' (re-signalled here as `nl-ffi-unavailable'
+-- see `nl-ffi--dlopen'/`nl-ffi--call-checked'), this now falls back to
+`nl-ffi-loader-open' (step 3 increment 1; see packages/nl-ffi/src/nl-ffi-
+loader.el) instead of propagating that failure -- SONAME must then be a
+real, openable path (that loader does no SONAME search-path resolution;
+see its own docstring).  Either way, a symbol an `ffi:defun' form names
+that `nl-ffi-call' does not resolve then gets one more chance: `dlsym' or
+`nl-ffi-loader-symbol' against this library's handle, whichever kind it
+is (see `nl-ffi--symbol-address-in-library'), called through `ptr-call'
+(see `nl-ffi--resolve-via-dlsym'/`nl-ffi--ptr-call-invoke').  This is the
 whole reason `ffi:library' takes a real handle at all now.
 
 Checks, in order:
@@ -612,20 +683,24 @@ Checks, in order:
   2. `nl-ffi-unavailable' when `nl-ffi-call' is not `fboundp' at all --
      host Emacs, or a NeLisp build without the dynamic reader's opt-in
      extern table.  Checked before any SONAME-specific work: neither the
-     table-membership branch below nor a real `dlopen' attempt means
+     table-membership branch below nor a real open attempt means
      anything without a live `nl-ffi-call', and this is the ONLY check
      that still applies uniformly to a known and an unknown SONAME alike
      (`nl-ffi-unknown-library' -- the check that used to run here for
      an unmapped SONAME -- is no longer signalled by this function; see
      its own docstring).
-  3. `nl-ffi-library-open-failed', carrying SONAME and `dlerror'\='s text,
-     when SONAME is outside `nl-ffi-known-sonames' and the real `dlopen'
-     attempt fails -- for example a SONAME that names no real, reachable
-     shared object.
+  3. For a SONAME outside `nl-ffi-known-sonames': on the dynamic reader,
+     `nl-ffi-library-open-failed', carrying SONAME and `dlerror'\='s text,
+     when the real `dlopen' attempt fails -- for example a SONAME that
+     names no real, reachable shared object; on the static reader,
+     whatever `nl-ffi-loader-open' itself signals
+     (`nl-ffi-loader-open-failed'/`nl-ffi-loader-unsupported' -- both,
+     like every condition here, `nl-ffi-error' children) when the
+     pure-elisp loader cannot map or fully relocate SONAME.
 
 Re-declaring the same SONAME is harmless: an already-registered entry
-(the known-table branch, or an earlier successful `dlopen') is returned
-as-is, with no second `dlopen' call.  Returns SONAME."
+(the known-table branch, or an earlier successful open) is returned
+as-is, with no second open attempt.  Returns SONAME."
   (unless (stringp soname)
     (signal 'wrong-type-argument (list 'stringp soname)))
   (unless (fboundp 'nl-ffi-call)
@@ -633,7 +708,10 @@ as-is, with no second `dlopen' call.  Returns SONAME."
   (unless (gethash soname nl-ffi--libraries)
     (if (nl-ffi-known-soname-p soname)
         (puthash soname (list :soname soname :handle nil) nl-ffi--libraries)
-      (let ((handle (nl-ffi--dlopen soname)))
+      (let ((handle
+             (condition-case _err
+                 (nl-ffi--dlopen soname)
+               (nl-ffi-unavailable (nl-ffi-loader-open soname)))))
         (puthash soname (list :soname soname :handle handle) nl-ffi--libraries)
         (push soname nl-ffi--library-order))))
   soname)
