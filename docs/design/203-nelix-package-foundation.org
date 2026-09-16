@@ -1,0 +1,238 @@
+#+TITLE: Doc 203 — Nelix as the shared package-management foundation
+#+DATE: 2026-09-15
+#+STATUS: PROPOSED
+#+OPTIONS: toc:2 num:t
+
+* 1. Decision and scope
+
+Use Nelix as the shared acquisition, integrity and storage foundation for
+NeLisp packages. Keep the repositories independent and pin the Nelix version
+shipped with the NeLisp toolchain. Preserve the public =nelisp= commands,
+=nelisp.toml= and =nelisp.lock= while replacing their internal implementation
+in qualified steps.
+
+This is a proposed implementation contract, not an implementation or completion
+claim. It develops [[file:../nelisp-strategy.org::*7. Package Management][Strategy section 7]] and the package work in
+[[file:../strategy-implementation.md][the strategy implementation map]]. All original registry, package-set,
+cross-platform and self-hosting requirements remain in scope.
+
+The first integration handles the current hash-pinned UTF-8 source artifacts.
+Archives, source builds and binary substitutes follow separate qualification;
+this initial format is not the final package ecosystem.
+
+* 2. Responsibilities
+
+| Layer | Responsibility |
+|-------+----------------|
+| NeLisp project frontend | CLI/editor commands, project manifest edits, diagnostics and user-facing results |
+| NeLisp dependency policy | Version constraints, selected graph, load order, language/module compatibility and lock schema |
+| Nelix artifact service | Acquire exact objects, verify bytes, immutable publication, leases/roots and garbage collection |
+| Nelix realization service | Later: unpack/build exact inputs for a target under an explicit execution policy |
+| Nelix environment manager | Explicit profile activation, generations, rollback and system tool environments |
+
+Initially retain the current Python resolver as an executable reference.
+Later move its behavior into a reusable Elisp resolver with an explicit NeLisp
+policy. Sharing implementation must not substitute Nix profile selection or
+name-only recipe lookup for NeLisp version constraints.
+
+=nelisp fetch/run/test/build= must not implicitly activate a Nelix profile,
+change PATH or global load-path, or install system packages. The package adapter
+selects the native artifact service explicitly; installed Nix/OS tools must not
+silently change the dependency backend.
+
+* 3. Existing assets and integration gaps
+
+These are source-review findings, not new runtime qualification results.
+Recheck the referenced functions when implementation begins.
+
+| Existing code | Reuse or required change |
+|---------------+--------------------------|
+| [[file:../../../nelix/nelix-fetch.el][nelix-fetch]] | Reuse source acquisition and hash verification; add explicit transport limits and offline behavior |
+| [[file:../../../nelix/nelix-store.el][nelix-store]] | Reuse storage primitives, but add immutable blob publication and actual-content verification |
+| [[file:../../../nelix/nelix-builder.el][nelix-builder]] | Reuse later realizations; existing install APIs also create profile generations and are not the initial adapter |
+| [[file:../../../nelix/nelix-registry.el][nelix-registry]] | Reuse data-only recipe parsing and registry facilities; a name-keyed recipe table is not a multi-version solver |
+| [[file:../../../nelix/nelix-manifest.el][nelix-manifest]] | Reuse planning ideas and locked replay; retain separate project/environment lock responsibilities |
+| [[file:../../tools/nelisp_packages.py][nelisp_packages.py]] | Preserve constraints, closure validation, deterministic ordering and lock contracts during migration |
+| [[file:../../tools/nelisp_package_store.py][nelisp_package_store.py]] | Reference for every-use byte verification, offline behavior, size limits and atomic source publication |
+
+Required corrections at the integration boundary:
+
+1. =nelix-builder--install-lock-dependencies= can skip a dependency when its
+   name exists in a profile. The adapter must compare exact artifact identity,
+   not presence by name, and must not consult mutable registry recipes during
+   locked acquisition.
+2. =nelix-store-verify= currently checks readable entry metadata rather than
+   hashing every payload. Its success is not proof of locked source integrity.
+3. Store paths currently combine hash/name/version; ordinary installs use a
+   source hash, while =nelix-store--commit-entry-dir= can replace an existing
+   directory. Different realization inputs must not overwrite one identity.
+4. Store/profile metadata readers use =load= in existing paths. The integration
+   protocol must read data without evaluating metadata or package code.
+5. The curl fetch path follows redirects and does not apply the same limits as
+   the current NeLisp frontend. Transport policy must be explicit and enforced
+   by every selected transport, including fallbacks.
+
+* 4. Lock authority and identities
+
+=nelisp.lock= is the sole authoritative project dependency selection. It records
+requirements and the exact selected closure. =fetch= replays it without solving;
+=update= is the explicit fresh-resolution operation. Existing =add= pin preference
+and =remove= pruning behavior remain unchanged.
+
+The adapter derives a versioned execution plan from the validated lock.
+Any Nelix receipt or project root is derived state, tied to the plan/lock digest;
+it cannot independently upgrade dependencies. Environment manifests and their
+Nelix locks remain valid for separately managed tool environments. Do not keep
+two independently editable locks for the same project graph.
+
+Use two distinct identities:
+
+- Blob identity: algorithm plus digest of the exact downloaded bytes. Identical
+  bytes can be shared across names, versions and platforms.
+- Realization identity: a cryptographic digest of canonical input describing
+  source blobs, target system/ABI, builder protocol, install/build instructions,
+  exact dependency realizations, toolchain and relevant build options. Record
+  the output-tree digest separately. Do not use a source hash or a session-local
+  phase hash as proof of a reproducible build.
+
+Immutable objects are never replaced in place. Existing objects must verify
+before reuse. A mismatching existing object fails visibly; repair/quarantine is
+an explicit operation. Runtime loading must consume the verified byte snapshot,
+or a handle whose immutability is guaranteed, rather than verify a path and later
+reopen potentially different bytes.
+
+* 5. Proposed artifact protocol
+
+The following operations are NEW interfaces to implement, not existing commands:
+
+- =ensure-artifacts(plan, policy)=: materialize a batch of exact blobs and return
+  versioned data receipts. No resolution, profile activation or build execution.
+- =read-artifact(identity)=: return verified bytes, enforcing the consumer's
+  content rules. Missing/corrupt objects are explicit errors.
+- =commit-project-root(project-id, lock-digest, identities)=: retain the exact
+  closure for a project after successful acquisition and lock publication.
+- =release-project-root(project-id, expected-lock-digest)=: explicitly retire a
+  root without removing blobs still referenced by another root or lease.
+
+The initial CLI bridge uses one subprocess and a bounded JSON request/response
+for the whole closure, with stdin/stdout data and stderr diagnostics. A shared
+Elisp API may implement the same schema; the process boundary must not expose
+private Nelix helpers. Specify protocol version, capability negotiation, stable
+error codes and a machine-readable completion result before enabling the bridge.
+
+An initial request carries the project lock digest, package identities, exact
+HTTPS URLs, SHA-256 digests, expected source format and the acquisition policy.
+Responses identify each verified object by digest and size; local paths in
+receipts are machine-local derived data and must not enter portable locks.
+Duplicate fields, unsupported versions and malformed identities are rejected.
+
+For the current NeLisp source format, preserve the
+[[file:../package-resolution.md][existing package contract]]:
+
+- Offline means no network attempt and no automatic online fallback.
+- HTTPS URLs have no embedded credentials or fragments; redirects are rejected.
+- Apply the current 16 MiB artifact limit and a defined timeout/cancellation
+  policy to every transport. A size check only after unbounded buffering fails
+  this contract.
+- Verify SHA-256, UTF-8 and absence of NUL before publishing usable source.
+- Do not load metadata, expand package macros, run hooks, extract archives or
+  execute build recipes in this first acquisition path.
+- Registry signatures, signer policy and artifact byte hashes remain distinct
+  checks. A local digest is not publisher authentication.
+
+* 6. Publication, isolation and recovery
+
+Acquire into private staging on the destination filesystem; verify before atomic
+publication. Synchronize competing publications of the same identity and verify
+the winner. A failed batch may leave verified unreferenced blobs, but must not
+publish a partially usable project closure.
+
+Keep the previous lock/root usable until the new closure is complete. Project
+manifest/lock replacement and root publication require a recoverable transaction
+record and explicit restart reconciliation. Nelix delegation does not repair the
+current two-file manifest/lock crash-atomicity gap by itself.
+
+Temporary leases protect acquisition and active readers from GC. Durable project
+roots protect locked closures between commands; profile generations protect
+environment rollback separately. GC must account for both and fail closed when
+root metadata cannot be read. Merely sharing the existing profile-based GC is
+insufficient for projects that never activate a profile.
+
+Different projects may retain different versions concurrently. Explicit profile
+activation is a separate operation and must not collapse those project roots to
+a shared name-only selection. Cancellation removes owned staging/leases without
+deleting another operation's published data.
+
+* 7. Bootstrap and distribution
+
+Pin and bundle the minimum qualified Nelix modules/artifact protocol with the
+NeLisp toolchain. Users must not need to install Nelix through Nelix before the
+first NeLisp dependency can be fetched. Avoid development sibling-path discovery
+as the installed interface; test relocation and read-only prefixes.
+
+An initial host bridge may explicitly depend on Emacs. That milestone is not
+self-hosting. Standalone qualification must exercise cold startup, acquisition,
+verification, offline reuse and failures without Emacs/Python/Nix on PATH.
+Separate toolchain construction requirements from installed execution needs;
+an Emacs-built warm AOT cache alone does not prove cold standalone operation.
+
+* 8. Implementation sequence and migration
+
+1. Freeze current contracts with the existing resolver/store/project tests.
+   Define the versioned batch protocol, data reader and error cases.
+2. Implement verified immutable blob operations in Nelix, independent of
+   profiles, with transport policy, leases and concurrent-publication tests.
+3. Add an explicitly selected NeLisp adapter. Compare current/native-Nelix
+   results using the same locks; connect fetch and run/test/REPL/build. Retain
+   the current implementation until equivalence is demonstrated.
+4. Add durable project roots, recovery and GC integration. Import legacy cache
+   bytes only after re-verification; preserve the originals until migration is
+   confirmed. Do not silently import the user's default environment profile.
+5. Make the qualified adapter the default and retire duplicate acquisition code.
+   Port resolver policy to Elisp against the existing result/error corpus.
+6. Extend archives/build realizations, multi-version registry integration,
+   publication/authentication and official package coverage. Qualify standalone
+   and each supported OS before claiming those strategy requirements complete.
+
+Each step is independently reviewable. Reuse existing CLI and editor entry
+points; avoid parallel user workflows for two competing package managers.
+
+* 9. Acceptance evidence
+
+Required integration cases, all exercised through public commands:
+
+- Same lock produces identical dependency bytes/load order with both backends.
+- Two projects use different versions concurrently without profile/PATH changes.
+- A same-name wrong-version object/profile does not satisfy a locked dependency.
+- Mutated payload, metadata, digest, or response cannot reach runtime execution.
+- Locked replay succeeds after registry recipes change, without re-resolution.
+- Offline hit succeeds and offline miss performs no network access.
+- Redirect, oversized response, timeout, cancellation and invalid UTF-8/NUL fail
+  without exposing partial artifacts or changing the previous project lock.
+- Concurrent fetch, GC during acquisition, and crash at publication boundaries
+  retain live objects and recover deterministically.
+- Existing add/remove pin retention and failure-preservation cases still pass.
+- Relocated/read-only installations and isolated generated executables work;
+  standalone and OS claims have separate actual-runtime evidence.
+
+Extend the existing [[file:../../test/nelisp-package-store-test.py][store]], [[file:../../test/nelisp-package-resolver-test.py][resolver]] and
+[[file:../../test/nelisp-project-packages-test.py][project dependency]] suites plus Nelix's [[file:../../../nelix/test/nelix-store-test.el][store tests]].
+New required gates need real case counts and an against-defect mutation row
+before being added to the repository gate manifest. No new gate is claimed here.
+
+Measure cold/warm fetch, many-package startup, offline run/test overhead,
+duplicate storage and peak memory against the current implementation. Use the
+same bytes, locks and machine conditions; record process counts as well as time.
+Batching should avoid one runtime startup per package. Do not reduce verification
+to produce a faster number. No performance improvement is claimed until measured.
+
+* 10. Decisions still required during implementation
+
+- Canonical serialization and versioning of plans, roots and realization inputs.
+- Cross-platform file locking, immutable publication and lease recovery rules.
+- Project identity across move/copy operations and explicit stale-root retirement.
+- Trusted signer configuration, credential handling and registry freshness policy.
+- Standalone crypto/transport availability and supported external helper policy.
+
+These decisions must be resolved and tested before their corresponding stage is
+enabled by default. They do not prevent defining the initial blob protocol.
