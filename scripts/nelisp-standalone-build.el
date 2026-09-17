@@ -14602,15 +14602,73 @@ own `dlsym' result before calling it."
             (pcsig (wf_argval args 1)))
        ,chain)))
 
-(defconst nelisp-standalone--applyfn-ptr-call-typed-arms
+(defun nelisp-standalone--ptr-call-typed-live-p ()
+  "Non-nil where `ptr-call-typed''s generated arms can actually be emitted.
+
+The arms lower to `extern-call-ptr-f64', whose f64 return is read from
+`xmm0' -- an x86-64 register.  On an aarch64 target the arm64 assembler is
+handed that register name and signals `nelisp-asm-arm64-error
+(:unknown-fp-register xmm0)', which killed `make standalone-reader' outright
+rather than refusing anything (measured 2026-09-17: a `macos-aarch64' build
+at b7f2c103b produced 52 `xmm' mentions and exit 255, while the same build
+at 0ad122d69 linked 112 units cleanly).  Same failure class the extern arms
+already solved with `nelisp-standalone--reader-ffi-live-p', whose own
+comment records the earlier version of this mistake: a predicate that was
+too broad emitted extern-call units on targets that cannot link them."
+  (memq nelisp-standalone--target '(linux-x86_64 macos-x86_64 windows-x86_64)))
+
+(defun nelisp-standalone--applyfn-ptr-call-typed-unsupported-form ()
+  "Codegen IR for the `ptr-call-typed' arm on a target that cannot emit xmm0.
+Raises the catchable `nelisp-unsupported-primitive' with data
+`(ptr-call-typed)', exactly as `nelisp-standalone--applyfn-ffi-unsupported-
+form' does for `nl-ffi-call', so the builtin NAME stays registered on every
+target and `fboundp' answers `t' uniformly -- a caller gets a named refusal
+instead of a `void-function', and `packages/nl-ffi/src/nl-ffi.el' only
+reaches this arm for a signature that names `:double'."
+  (let* ((tag-name "nelisp-unsupported-primitive")
+         (tag-words (nelisp-standalone--name-words tag-name))
+         (tag-len (length (encode-coding-string tag-name 'utf-8 t)))
+         (fn-name "ptr-call-typed")
+         (fn-words (nelisp-standalone--name-words fn-name))
+         (fn-len (length (encode-coding-string fn-name 'utf-8 t))))
+    `(let* ((tbuf (alloc-bytes ,(* 8 (length tag-words)) 1))
+            (nbuf (alloc-bytes ,(* 8 (length fn-words)) 1))
+            (namesym (alloc-bytes 32 8))
+            (nilslot (alloc-bytes 32 8)))
+       (seq
+        ,@(let ((w 0) (forms nil))
+            (dolist (word tag-words)
+              (push `(ptr-write-u64 tbuf ,(* w 8) ,word) forms)
+              (setq w (1+ w)))
+            (nreverse forms))
+        (nl_alloc_symbol tbuf ,tag-len 268435480)
+        ,@(let ((w 0) (forms nil))
+            (dolist (word fn-words)
+              (push `(ptr-write-u64 nbuf ,(* w 8) ,word) forms)
+              (setq w (1+ w)))
+            (nreverse forms))
+        (nl_alloc_symbol nbuf ,fn-len namesym)
+        (wf_write_nil nilslot)
+        (nelisp_cons_construct namesym nilslot 268435512)
+        (ptr-write-u64 268435472 0 1)
+        (atomic-fetch-add 268435544 1)
+        1))))
+
+(defun nelisp-standalone--applyfn-ptr-call-typed-arms ()
+  "The `ptr-call-typed' dispatch arm: the real 32-arm dispatch where the
+target can emit xmm0, the catchable refusal everywhere else -- always one or
+the other, never neither, the same shape the `nl-ffi-call' pair uses.
+
+A FUNCTION, not a `defconst', for two reasons: the refusing form calls
+`nelisp-standalone--name-words', which is defined LATER in this file, and
+the choice depends on `nelisp-standalone--target', so it belongs at the
+assembly point in `nelisp-standalone--applyfn-reader-table' rather than
+baked into `nelisp-standalone--applyfn-bf-arms' at load time.  Splicing it
+into that constant unconditionally is what broke every aarch64 build."
   (list (cons '(:lit "ptr-call-typed")
-              (nelisp-standalone--build-ptr-call-typed-dispatch)))
-  "The `ptr-call-typed' dispatch arm (see the Commentary above
-`nelisp-standalone--build-ptr-call-typed-dispatch'), kept as its own
-defconst -- like `nelisp-standalone--process-posix-dispatch-arms' below it
-in `nelisp-standalone--applyfn-bf-arms''s own `append' -- so the
-programmatically-built 32-arm IR is computed once at load time rather than
-re-generated on every reference.")
+              (if (nelisp-standalone--ptr-call-typed-live-p)
+                  (nelisp-standalone--build-ptr-call-typed-dispatch)
+                (nelisp-standalone--applyfn-ptr-call-typed-unsupported-form)))))
 
 (defconst nelisp-standalone--applyfn-bf-arms
   (append
@@ -14967,15 +15025,14 @@ re-generated on every reference.")
     ;; to hardcode `gnu/linux'/"x86_64-pc-linux-gnu" for every target
     ;; including Windows.
     ((:lit "nelisp--target-os-code") . (wf_write_int out (nl_target_os_code)))
-    ((:lit "nelisp--target-arch-code") . (wf_write_int out (nl_target_arch_code))))
-   nelisp-standalone--applyfn-ptr-call-typed-arms)
+    ((:lit "nelisp--target-arch-code") . (wf_write_int out (nl_target_arch_code)))))
   "B-foundation breadth dispatch arms (Wave-1 (B)): predicates, symbol / vector
 ops, signal/error stubs, structural equal, setcar/setcdr.  Wave-2 (C) appends
-ash/logand/logior/logxor/lognot + string<.  `ptr-call-typed' (the f64-capable
-sibling of `ptr-call' right above it) is appended last, via its own defconst
-`nelisp-standalone--applyfn-ptr-call-typed-arms', for the same reason
-`nelisp-standalone--process-posix-dispatch-arms' is spliced in rather than
-written inline: its IR is generated, not literal.")
+ash/logand/logior/logxor/lognot + string<.  `ptr-call-typed' is NOT here: its
+arms are target-dependent (they emit xmm0), so they are spliced by
+`nelisp-standalone--applyfn-ptr-call-typed-arms' at the assembly point in
+`nelisp-standalone--applyfn-reader-table', beside the other target-aware
+families.")
 
 (defconst nelisp-standalone--applyfn-bf-builtins
   '("consp" "atom" "stringp" "symbolp" "integerp" "bignump" "natnump" "numberp" "floatp" "sxhash-eq"
@@ -15552,7 +15609,12 @@ signalling arm -- never simply absent, so `fboundp' cannot go void again."
        (if (eq nelisp-standalone--target 'windows-x86_64)
            (nelisp-standalone--applyfn-windows-extern-arms)
          nelisp-standalone--applyfn-extern-arms)
-     (nelisp-standalone--applyfn-extern-arms-unsupported))))
+     (nelisp-standalone--applyfn-extern-arms-unsupported))
+   ;; `ptr-call-typed' (the f64-capable sibling of `ptr-call'): the real
+   ;; 32-arm dispatch only where xmm0 can be emitted, the catchable
+   ;; `nelisp-unsupported-primitive' refusal on aarch64 -- same pairing as
+   ;; the extern arms above, and for the same reason.
+   (nelisp-standalone--applyfn-ptr-call-typed-arms)))
 
 (defun nelisp-standalone--applyfn-assemble (helper-groups table &optional default-form)
   "Assemble an applyfn `(seq ...)' unit from HELPER-GROUPS (lists of defun forms,
