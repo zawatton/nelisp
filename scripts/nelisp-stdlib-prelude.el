@@ -8507,6 +8507,264 @@ and a set-initial `]'."
 \(same SPEC syntax as `skip-chars-forward', probed against Emacs 30.1\)."
     (nelisp--motion-skip-backward spec lim)))
 
+;; ---- Doc 204 P3: syntax tables and char-syntax -------------------------
+;;
+;; `make-syntax-table', `standard-syntax-table', `modify-syntax-entry',
+;; `char-syntax', `syntax-table', `set-syntax-table', and the
+;; `emacs-lisp-mode-syntax-table' value.  Per Doc 204 §3 P3 / §6.2 this
+;; implements exactly the ten classes this phase's consumers need --
+;; whitespace, word, symbol, open paren, close paren, string quote,
+;; escape, comment-start, comment-end, prefix -- and no more: Emacs's
+;; full class set (punctuation, char-quote, generic string/comment
+;; delimiters, two-char comment flags, `b'/`n' comment styles) is out of
+;; scope per §6.2 and is not built here.  `modify-syntax-entry' likewise
+;; parses only a descriptor's leading class character; any matching-char
+;; or flag characters after it are accepted (so real Emacs Lisp mode
+;; descriptors like "()" or "_ " do not error) but not stored, because
+;; nothing through P3 reads them back -- P4's scanner is the first
+;; consumer that would need matching-char data, and does not exist yet.
+;;
+;; Doc 204 §2 places syntax classes in `src/nelisp-syntax.el' as a
+;; language-core file, not a prelude bridge.  This phase stays in the
+;; prelude anyway: per Doc 204's own P3 instructions, the prelude is
+;; what the standalone image actually loads today, and the same
+;; `(unless (fboundp 'NAME) ...)' idiom as the P1/P2 blocks above is
+;; what keeps this file's own `char-syntax' et al. inert when this file
+;; is `load'ed under host Emacs (several gates do this, e.g. the
+;; `(load "scripts/nelisp-stdlib-prelude.el")' lines this Makefile
+;; already has) -- host's real `char-syntax' must keep answering there.
+;; A future phase may split this block out to `src/nelisp-syntax.el' per
+;; §2; noted here rather than done silently.
+;;
+;; Representation: `nelisp--syntax-table' is this file's own struct, not
+;; a real char-table.  `make-char-table'/`aref'/`aset' all work on this
+;; standalone (probed), but `copy-sequence' on a char-table signals
+;; `(wrong-type-argument sequencep ...)' there (probed) -- exactly what
+;; `make-syntax-table's "copy of TABLE" semantics would need -- so a
+;; char-table was dropped in favour of a hash-table keyed by character
+;; code plus an explicit PARENT link this file chases by hand, which
+;; gives the same "unset entries fall through to an inherited table"
+;; behaviour `make-syntax-table' needs without `copy-sequence' at all.
+;;
+;; Buffer association: `src/nelisp-buffer.el's `cl-defstruct
+;; nelisp-buffer' has no syntax-table slot, and this phase does not add
+;; one (Doc 204's instruction to keep P3 inside the prelude, and a
+;; struct-shape change is a bigger edit than this phase's scope) -- so
+;; the buffer -> table association is a side hash-table here, keyed
+;; `eq' on the buffer object, consulted by `syntax-table'/
+;; `set-syntax-table' the same way the P1 bridges above thread
+;; `nelisp--current-buffer' rather than the ported file's own ambient
+;; variable.
+;;
+;; Ambient default: probed against Emacs 30.1, a fresh `with-temp-buffer'
+;; starts `eq' to `(standard-syntax-table)', and real Emacs's `;'/`\''/
+;; `,'/'`'/`#' are ordinary symbol constituents there -- `emacs-lisp-mode'
+;; is what installs the comment/prefix classes P3's own acceptance
+;; values need.  This standalone's P3 acceptance script calls
+;; `char-syntax' with no `with-temp-buffer' and no mode call at all, on
+;; whatever buffer this image starts current in (measured: a real
+;; `*scratch*' buffer object, already current at top level) -- and per
+;; §3 P3's own "Ships" line ("under the Emacs Lisp table"), any buffer
+;; without its own `set-syntax-table' call resolves to
+;; `emacs-lisp-mode-syntax-table', not `standard-syntax-table'.  This
+;; runtime only ever reads/evaluates Emacs Lisp (Doc 204 §0/§1.1's
+;; `build()'/`lisp_plan()' call sites are the whole motivation for this
+;; document), so "the Emacs Lisp table" is this image's whole-program
+;; default rather than something a mode installs later.
+;; `standard-syntax-table' is still a distinct, non-Lisp-flavoured
+;; object for API completeness (real Emacs's own class assignments for
+;; the six chars it sets explicitly below), even though nothing in this
+;; tree resolves to it as a buffer's default.
+
+(cl-defstruct nelisp--syntax-table
+  "P3's own syntax-table representation (not a char-table -- see the
+block comment above).  ENTRIES is a character-code -> class-char
+hash-table private to this instance; PARENT is another
+`nelisp--syntax-table' consulted when ENTRIES has no entry for a given
+character, or nil at the top of the chain."
+  entries
+  parent)
+
+(defun nelisp--syntax-make-table (&optional parent)
+  "Fresh, empty `nelisp--syntax-table' with its own ENTRIES hash --
+never shared with any other table instance, so mutating one table via
+`modify-syntax-entry' cannot leak into another -- chained to PARENT."
+  (make-nelisp--syntax-table :entries (make-hash-table :test 'eq) :parent parent))
+
+(defconst nelisp--syntax-miss (make-symbol "nelisp--syntax-miss")
+  "Sentinel `gethash' default so a stored `nil' class (never produced by
+this file, but not disallowed) cannot be confused with a lookup miss.")
+
+(defun nelisp--syntax-default-class (ch)
+  "Bottom-of-chain class for character CH when no table entry (own or
+inherited) covers it: the five whitespace codepoints (space/tab/
+newline/formfeed/CR) are whitespace, ASCII letters/digits and any
+character above the ASCII range are word constituents, everything else
+falls to symbol-constituent.  An approximation of Emacs's own
+Unicode-category-driven default, not a port of it (Doc 204 §6.2 scopes
+the full class set out) -- no consumer through P4 exercises a character
+this rule disagrees with Emacs 30.1 on; a future phase that needs exact
+parity here will have to extend this."
+  (cond
+   ((memq ch '(?\s ?\t ?\n ?\f ?\r)) ?\s)
+   ((or (and (>= ch ?0) (<= ch ?9))
+        (and (>= ch ?A) (<= ch ?Z))
+        (and (>= ch ?a) (<= ch ?z))
+        (>= ch 128))
+    ?w)
+   (t ?_)))
+
+(defun nelisp--syntax-lookup (table ch)
+  "Class char for character CH in TABLE, walking TABLE's PARENT chain
+on a miss and falling back to `nelisp--syntax-default-class' past the
+top of it."
+  (let ((tbl table))
+    (catch 'nelisp--syntax-found
+      (while tbl
+        (let ((hit (gethash ch (nelisp--syntax-table-entries tbl) nelisp--syntax-miss)))
+          (unless (eq hit nelisp--syntax-miss) (throw 'nelisp--syntax-found hit)))
+        (setq tbl (nelisp--syntax-table-parent tbl)))
+      (nelisp--syntax-default-class ch))))
+
+(defun nelisp--syntax-put (table ch class)
+  "Set character CH's class in TABLE directly to CLASS (already a
+class-char, e.g. `?w'/`?_'/`?\\('/`?\\)'/`?\\\"'/`?\\\\'/`?<'/`?>'/`?\\''/
+`?\\s' -- not a raw `modify-syntax-entry' descriptor string; see
+`nelisp--syntax-parse-class' for that)."
+  (puthash ch class (nelisp--syntax-table-entries table)))
+
+(defun nelisp--syntax-parse-class (descriptor)
+  "Leading class char of DESCRIPTOR, normalised the way `char-syntax'
+reports it back: probed against Emacs 30.1, both `-' and a literal
+space denote whitespace and both read back as `?\\s' (32); the other
+nine classes P3 supports report back exactly their own descriptor
+character (`w'/`_'/`('/`)'/`\"'/`\\'/`<'/`>'/`\\''), unchanged."
+  (nelisp--check-string descriptor)
+  (let ((c (aref descriptor 0)))
+    (if (memq c '(?\s ?-)) ?\s c)))
+
+(defun nelisp--syntax-build-standard-table ()
+  "Build the table Doc 204 P3 calls `standard-syntax-table': explicit
+entries only for the four class/char pairs true regardless of mode --
+both paren shapes and the two quote-like classes (probed against real
+Emacs's own standard table).  Word/whitespace/symbol are not set here;
+they resolve through `nelisp--syntax-default-class' at the bottom of
+the lookup chain, which already answers them correctly."
+  (let ((tbl (nelisp--syntax-make-table)))
+    (nelisp--syntax-put tbl ?\( ?\()
+    (nelisp--syntax-put tbl ?\) ?\))
+    (nelisp--syntax-put tbl ?\[ ?\()
+    (nelisp--syntax-put tbl ?\] ?\))
+    (nelisp--syntax-put tbl ?\" ?\")
+    (nelisp--syntax-put tbl ?\\ ?\\)
+    tbl))
+
+;; Built directly off the internal struct API, never the public
+;; `make-syntax-table'/`standard-syntax-table' bridges below: those are
+;; `unless (fboundp ...)'-guarded and therefore ARE host Emacs's real
+;; functions when this file loads under host Emacs, and calling host's
+;; real `make-syntax-table' on one of this file's own
+;; `nelisp--syntax-table' structs would be a type mismatch, not a no-op.
+;;
+;; Seeded to nil here, not to `(nelisp--syntax-build-standard-table)'
+;; directly: that call allocates a `cl-defstruct' record via
+;; `nelisp--make-record', which is defined much further down this file
+;; (same ordering constraint the `nelisp--current-buffer' `defvar'
+;; documents for the `*scratch*' seed) -- a first attempt built this
+;; eagerly right here and got a live `void-function: (nelisp--make-
+;; record)' on every invocation.  The real value is seeded below,
+;; search for \"Doc 204 P3 table seed\".
+(defvar nelisp--syntax-standard-table nil
+  "The table `standard-syntax-table' (below) returns -- a single shared
+instance, matching real Emacs where repeated calls are `eq'.")
+
+(defun nelisp--syntax-build-emacs-lisp-table ()
+  "Doc 204 P3's Emacs Lisp table: `nelisp--syntax-standard-table' as
+PARENT (so parens/string/escape/word/whitespace/symbol inherit
+unchanged) plus the overrides `emacs-lisp-mode' installs that this
+phase's consumers need -- probed against Emacs 30.1
+\(`with-temp-buffer' + `emacs-lisp-mode', `char-syntax' on each\):
+`;' comment-start, newline comment-end, and the four reader-prefix
+characters `\\'' / `\\`' / `,' / `#' all read back as prefix."
+  (let ((tbl (nelisp--syntax-make-table nelisp--syntax-standard-table)))
+    (nelisp--syntax-put tbl ?\; ?<)
+    (nelisp--syntax-put tbl ?\n ?>)
+    (nelisp--syntax-put tbl ?\' ?\')
+    (nelisp--syntax-put tbl ?\` ?\')
+    (nelisp--syntax-put tbl ?\, ?\')
+    (nelisp--syntax-put tbl ?# ?\')
+    tbl))
+
+(defvar nelisp--syntax-buffer-tables (make-hash-table :test 'eq)
+  "Buffer object (`eq') -> `nelisp--syntax-table' installed on it via
+`set-syntax-table'.  A buffer absent from this table has not had
+`set-syntax-table' called on it and resolves to the ambient default
+(see `nelisp--syntax-current-table').")
+
+(defun nelisp--syntax-current-table ()
+  "The active syntax table for `nelisp--current-buffer': its own table
+if `set-syntax-table' has been called on it, else
+`emacs-lisp-mode-syntax-table' -- this image's ambient default; see the
+\"Ambient default\" paragraph in the block comment above this section."
+  (or (gethash nelisp--current-buffer nelisp--syntax-buffer-tables)
+      emacs-lisp-mode-syntax-table))
+
+;; Same ordering constraint as `nelisp--syntax-standard-table' just
+;; above: seeded to nil here (guarded so host Emacs's own real, already-
+;; bound value is never touched) and given its real value below, after
+;; `nelisp--make-record' is defined -- search for "Doc 204 P3 table
+;; seed".
+(unless (boundp 'emacs-lisp-mode-syntax-table)
+  (defvar emacs-lisp-mode-syntax-table nil
+    "Doc 204 P3's Emacs Lisp syntax table (see the block comment above);
+this image's ambient default active table, not merely a value
+`emacs-lisp-mode' would install (P5, not built yet)."))
+
+(unless (fboundp 'standard-syntax-table)
+  (defun standard-syntax-table ()
+    nelisp--syntax-standard-table))
+
+(unless (fboundp 'make-syntax-table)
+  (defun make-syntax-table (&optional table)
+    "New, initially empty syntax table chained to TABLE (or
+`standard-syntax-table' if omitted) as its PARENT, matching Emacs's own
+`make-syntax-table' signature."
+    (nelisp--syntax-make-table (or table nelisp--syntax-standard-table))))
+
+(unless (fboundp 'syntax-table)
+  (defun syntax-table ()
+    (nelisp--syntax-current-table)))
+
+(unless (fboundp 'set-syntax-table)
+  (defun set-syntax-table (table)
+    "Install TABLE as `nelisp--current-buffer's syntax table.  Returns
+TABLE, matching Emacs."
+    (puthash nelisp--current-buffer table nelisp--syntax-buffer-tables)
+    table))
+
+(unless (fboundp 'modify-syntax-entry)
+  (defun modify-syntax-entry (char-or-range descriptor &optional table)
+    "Set CHAR-OR-RANGE's class in TABLE (default: the current buffer's
+active table) from DESCRIPTOR's leading class character.  CHAR-OR-RANGE
+is a single character or a (FROM . TO) inclusive range, matching
+Emacs.  Matching-char and flag characters after DESCRIPTOR's first are
+accepted (not rejected) but not stored -- see the block comment above
+this section.  Returns nil, matching Emacs (probed)."
+    (let ((tbl (or table (nelisp--syntax-current-table)))
+          (class (nelisp--syntax-parse-class descriptor)))
+      (if (consp char-or-range)
+          (let ((c (car char-or-range)) (hi (cdr char-or-range)))
+            (while (<= c hi)
+              (nelisp--syntax-put tbl c class)
+              (setq c (1+ c))))
+        (nelisp--syntax-put tbl char-or-range class))
+      nil)))
+
+(unless (fboundp 'char-syntax)
+  (defun char-syntax (character)
+    (nelisp--check-integer character)
+    (nelisp--syntax-lookup (nelisp--syntax-current-table) character)))
+
 ;; No standard-name marker constructors wired here (binary-size-ratchet:
 ;; each extra top-level `defun' costs far more than its source size).
 ;; `nelisp--emit-to-stream' and the `read' dispatch below drive a marker
@@ -9070,6 +9328,23 @@ level call to `nelisp-generate-new-buffer' so this stays a top-level
 DEFINITION for `make prelude-toplevel-check' -- see that tool's own
 Commentary for why a bare call at the prelude's top level is treated
 as a likely mistake.")
+
+;; Doc 204 P3 table seed.  Must run after `nelisp--make-record' (just
+;; above) is defined, for the same reason as the `*scratch*'/
+;; `*Messages*' seed immediately above it: `nelisp--syntax-build-
+;; standard-table'/`-emacs-lisp-table' allocate `cl-defstruct' records.
+;; `setq', not `defvar', for `nelisp--syntax-standard-table' -- it was
+;; already `defvar'd (to nil) at its declaration point, further up this
+;; file, where `standard-syntax-table' et al. need it to already be a
+;; bound (if not yet populated) symbol.  `emacs-lisp-mode-syntax-table'
+;; keeps its host-Emacs value untouched: the guard is `null', not
+;; `boundp', because under host Emacs it is already bound to a real,
+;; non-nil char-table by this point, and re-running the `unless
+;; (boundp ...)' check here would not suffice to protect it since this
+;; setq is unconditional otherwise.
+(setq nelisp--syntax-standard-table (nelisp--syntax-build-standard-table))
+(when (null emacs-lisp-mode-syntax-table)
+  (setq emacs-lisp-mode-syntax-table (nelisp--syntax-build-emacs-lisp-table)))
 
 ;; Hash-table predicate + iteration for the reader's builtin hash table.
 ;; The builtin `make-hash-table' returns the cons pair (MARKER . DATA) where
