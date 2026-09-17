@@ -537,7 +537,19 @@
        (condition-case e (eq nil) (wrong-number-of-arguments e))
        (condition-case e (aset nil nil) (wrong-number-of-arguments e))
        (condition-case e (make-vector nil nil nil) (wrong-number-of-arguments e))
-       (condition-case e (bignump) (wrong-number-of-arguments e)))
+       ;; `bignump' is the one row here whose error PAYLOAD is build-variant.
+       ;; Two stock Emacs 30.1 builds disagree: this host answers
+       ;; `(wrong-number-of-arguments bignump 0)' and CI's purcell-built Emacs
+       ;; answers `(wrong-number-of-arguments (1 . 1) 0)'.  Since this gate
+       ;; recomputes its reference from whatever Emacs is on the machine, a
+       ;; row that captures the whole error object cannot be green on both --
+       ;; it failed CI runs 35213336782 through 35277047470 for exactly that.
+       ;; The four rows above were measured to agree on every build available
+       ;; here, so only this one changes: capture the condition, and keep the
+       ;; arity claim through `func-arity', which is a public API and does not
+       ;; vary by build (both sides measured `(1 . 1)').
+       (condition-case e (bignump) (wrong-number-of-arguments (car e)))
+       (func-arity 'bignump))
  (list (zerop 0.0) (zerop -0.0) (zerop 0) (zerop 1.5)
        (condition-case e (zerop "a") (wrong-type-argument (cdr e))))
  (list (round 0.5) (round 1.5) (round 2.5) (round -0.5) (round -1.5)
