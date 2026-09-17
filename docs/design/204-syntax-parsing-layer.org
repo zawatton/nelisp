@@ -1,0 +1,376 @@
+#+TITLE: Doc 204 — Syntax parsing layer
+#+AUTHOR: NeLisp
+#+STATUS: DRAFT (2026-09-17) — nothing has landed from this document yet. P1-P5 below are planned; each carries its own exit criterion measured against =target/nelisp=, not against host Emacs.
+#+STATUS2: Blocks both host-Emacs call sites in =tools/nelisp-project.py=. P5's exit criterion is `nelisp build' completing with no host Emacs on PATH.
+
+* §0 TL;DR
+
+The standalone reader has no syntax-parsing layer at all.  Measured
+2026-09-17 on =target/nelisp= at =382f8d1cc= by =fboundp= census, not
+inferred:
+
+| name | standalone |
+|---|---|
+| =emacs-lisp-mode=, =emacs-lisp-mode-syntax-table= | absent / unbound |
+| =set-syntax-table=, =syntax-table=, =standard-syntax-table= | absent |
+| =make-syntax-table=, =modify-syntax-entry=, =char-syntax= | absent |
+| =scan-lists=, =scan-sexps=, =forward-sexp=, =forward-comment= | absent |
+| =parse-partial-sexp=, =syntax-ppss= | absent |
+| =read=, =read-from-string= | present |
+
+Both host-Emacs dependencies in =tools/nelisp-project.py= fail for this one
+reason, so this is a subsystem gap, not a shim.  Below it sits a second,
+smaller gap this document also closes first: buffer *navigation* is
+incomplete, which is exactly what Doc 188 §1.7 predicted would block first.
+
+* §1 Problem — measured evidence
+
+** §1.1 The two blocked call sites are the same blocker
+
+=tools/nelisp-project.py= shells out to host Emacs twice.
+
+=build()= (line 676) runs =nelisp-project-build-main=, which reaches
+=nelisp-standalone--project-source= (=scripts/nelisp-standalone-build.el:32398=):
+
+#+begin_src elisp
+(with-temp-buffer
+  (insert-file-contents file)
+  (emacs-lisp-mode)        ; 32398
+  (check-parens)           ; 32399
+  (goto-char (point-min))
+  ... (read (current-buffer)) ...)
+#+end_src
+
+Its only use of =emacs-lisp-mode= is to give =check-parens= a syntax table
+before packaging the application source.  Measured on the standalone with
+=message= redirected to =princ= (the entry point catches its own error and
+reports it through =message=, which this runtime does not put on stderr):
+
+#+begin_example
+MESSAGE: nelisp build: Symbol's function definition is void: emacs-lisp-mode
+#+end_example
+
+The entry points themselves load fine — =nelisp-standalone-build-reader=,
+=nelisp-project-build-main= and =nelisp-standalone-build-application= are all
+=fboundp= after loading =scripts/nelisp-standalone-build.el= (~30k lines) on
+=target/nelisp=.  "Loads" and "runs" are different questions here, and only
+the second one fails.
+
+=lisp_plan()= (line 733) runs =scripts/nelisp-project-format.el=, which needs
+=emacs-lisp-mode= (lines 61, 146), =check-parens= (64, 148) and
+=indent-region= (152).  Of those, =indent-region=, =forward-sexp= and
+=scan-sexps= have *no definition anywhere in the repository*.
+
+** §1.2 =packages/nl-parens= is not the =emacs-lisp-mode=-free substitute
+
+Its API names and header comment suggest it is one.  It is not:
+=nl-parens--scan-buffer= opens with =(emacs-lisp-mode)= and its algorithm is
+built on =parse-partial-sexp= (6 call sites: lines 74, 77, 110, 158, 161,
+219).  Measured on the standalone, =nl-parens-check-file= returns
+=(void-function emacs-lisp-mode)= for *both* balanced and unbalanced input,
+where host Emacs returns =nil= and a structured finding respectively.
+
+This is recorded because the opposite conclusion was reached twice in one
+session by reading names and comments instead of running the census.
+
+** §1.3 What actually blocks first: navigation (Doc 188 §1.7, still true)
+
+=parse-partial-sexp= advances one character at a time and asks each
+character's syntax class.  It cannot be written without character access and
+motion.  Measured on =target/nelisp=:
+
+| present | absent |
+|---|---|
+| =point=, =goto-char=, =point-min=, =point-max= | =char-after=, =char-before= |
+| =buffer-substring=, =insert=, =looking-at= | =delete-region=, =forward-char=, =forward-line= |
+| | =bolp=, =eolp=, =line-beginning-position= |
+| | =current-column=, =following-char=, =preceding-char= |
+| | =skip-chars-forward=, =skip-syntax-forward= |
+
+Doc 188 §1.7 named this state in advance: "Buffers exist, but buffer
+*navigation* does not."
+
+** §1.4 Why the missing names are missing: two current-buffer variables
+
+=nelisp-char-after= and =nelisp-delete-region= are *not* stubs.  Both are
+real implementations, in both =scripts/nelisp-stdlib-prelude.el= and
+=src/nelisp-buffer.el= (recorded as =pinned-collision ns-collision= at
+=tools/ns-inventory-baseline.txt:1230,1234=).  They fail for a different
+reason.
+
+#+begin_src elisp
+;; prelude:7507 and src/nelisp-buffer.el:71
+(defvar nelisp-buffer--current nil)      ; what nelisp-buffer--ambient reads
+;; prelude:7954
+(defvar nelisp--current-buffer nil)      ; what the public bridges pass
+#+end_src
+
+The public bridge block (=prelude:8023= onward, Doc 188 §2.2's
+"standard-name wiring layer") is uniformly
+=(unless (fboundp 'NAME) (defun NAME (...) (nelisp-NAME ... nelisp--current-buffer)))=.
+=nelisp-buffer--ambient= resolves
+=(or buf-or-nil nelisp-buffer--current (error "No NeLisp current buffer"))=.
+The two names differ by one character and are different variables.
+
+The split is deliberate, not an oversight.  The prelude's own =defvar= says
+so:
+
+#+begin_quote
+The ported file's OWN ambient current buffer.  Unused by the standard-name
+wrappers below (they thread =nelisp--current-buffer= explicitly instead);
+kept so =nelisp-with-buffer=/=nelisp-current-buffer=/=nelisp-set-buffer= --
+the =nelisp-=-prefixed API -- still work self-consistently on their own.
+#+end_quote
+
+So P1 is not "fix a missed wire".  It overturns a documented intent, and the
+reason it must be overturned is that the =nelisp-=-prefixed bodies are the
+only implementations of =char-after=/=delete-region= in the tree: keeping
+them self-consistent on a variable nothing binds makes them unreachable
+from any public name.  The =nelisp-= API's self-consistency has to be
+preserved by the change, not discarded by it.
+
+Measured inside one =with-temp-buffer= on the standalone:
+
+#+begin_example
+(with-temp-buffer (insert "abcdef") (goto-char 3) ...)
+  buffer-string              -> "abcdef"      ; bridge path works
+  nelisp--current-buffer     -> SET
+  (current-buffer)           -> SET
+  (nelisp-current-buffer)    -> nil           ; ambient path sees nothing
+  (nelisp-char-after)        -> (error "No NeLisp current buffer")
+  (nelisp-delete-region 2 4) -> same error; buffer text unchanged
+#+end_example
+
+P1 is therefore a binding change, not the representation merge Doc 188 §2.1
+contemplated.  This matters for the estimate: the bodies already exist and
+are correct.  Proven by measurement rather than argued — binding the ambient
+variable by hand inside an otherwise untouched =with-temp-buffer= makes the
+existing body answer correctly:
+
+#+begin_example
+(with-temp-buffer
+  (insert "abcdef")
+  (let ((nelisp-buffer--current nelisp--current-buffer))
+    (nelisp-char-after 1)))        ; -> 97  (?a), where it errors without the let
+#+end_example
+
+** §1.5 What the syntax layer can reuse
+
+Present on the standalone and usable by the new code: =looking-at=,
+=string-match=, =string-match-p=, =re-search-forward=, =match-beginning=,
+=match-end=, =match-string=, =replace-regexp-in-string=.  Absent:
+=looking-at-p=, =re-search-backward=, =search-forward=,
+=skip-chars-forward=, =skip-syntax-forward=.  =skip-chars-forward= has no
+definition anywhere in the tree and is new code.
+
+** §1.6 Existing gate coverage, and what it does not cover
+
+=standalone-reader-buffer-smoke= (=gates.expected=, promoted 2026-08-23 for
+Doc 188 Phase 1) already runs =test/nelisp-buffer-unification-standalone-
+smoke.el= (217 lines) *directly against =target/nelisp=* through
+=scripts/nelisp-ert-shim.el=, with a runnable-host guard and a =GATE-SKIP=
+path.  It was red-proven by a row in =tools/gate-mutations.txt=.
+
+What it exercises, counted: =current-buffer= 13, =insert= 11,
+=generate-new-buffer= 11, =with-temp-buffer= 8, =set-buffer= 7,
+=buffer-substring= 5, =point-min= 3, =point-max= 3, =kill-buffer= 3,
+=buffer-string= 3, =point= 2, =goto-char= 1, =erase-buffer= 1.
+
+=char-after=, =char-before=, =delete-region= and =forward-char=: **zero**.
+P1 and P2 extend this gate and this file rather than adding a new gate;
+P3 and P4 add one.
+
+* §2 Decided direction
+
+1. *Core, not a package.*  Syntax classes are a language rule, not an I/O
+   primitive, so they live in =src/= alongside the reader and buffer model,
+   per this codebase's own core/Layer-2 boundary.  New file:
+   =src/nelisp-syntax.el=.
+2. *Fix the wiring before adding names.*  Adding a public =char-after=
+   bridge on top of the current split would surface
+   ="No NeLisp current buffer"= under a public name instead of a void
+   function.  P1 makes =with-temp-buffer= / =set-buffer= bind
+   =nelisp-buffer--current= as well, and only then adds bridges.
+3. *Reuse the regexp layer* (§1.5) rather than writing a second scanner.
+4. *Stop at =check-parens=.*  =indent-region= is an indentation-rules
+   subsystem, not a syntax-parsing one, and only the =fmt= path needs it.
+   It is explicitly out of scope here and is deferred to a later document.
+5. *Every exit criterion is measured against =target/nelisp=.*  Doc 188 §1.8
+   is the reason: 258 buffer-related ERT tests ran 0% against the shipped
+   binary, and =(unless (fboundp 'X) ...)= stubs are inert under host Emacs
+   precisely because host Emacs already has a real =X=.  A host-ERT green
+   says nothing about this work.
+
+* §3 What each phase ships (measured, per phase)
+
+** P1 — one current buffer, then the three existing bodies (0.5-1 d)
+
+=with-temp-buffer= / =set-buffer= / =current-buffer= bind
+=nelisp-buffer--current= in step with =nelisp--current-buffer=; bridges added
+for =char-after=, =char-before= (new body needed — absent from both files)
+and =delete-region=.  Signatures to match:
+=nelisp-char-after (&optional pos buf)=,
+=nelisp-delete-region (start end &optional buf)=.
+
+Note for the implementer: =nelisp-buffer--current= is =defvar='d in both
+=prelude:7507= and =src/nelisp-buffer.el:71=; confirm which copy the
+standalone image actually carries before editing, by measurement.
+
+*Ships:* =(with-temp-buffer (insert "abcdef") (char-after 1))= = =?a=,
+standalone.
+
+** P2 — motion (1-2 d)
+
+=forward-char=, =forward-line=, =bolp=, =eolp=,
+=line-beginning-position=/=line-end-position=, =current-column=,
+=following-char=, =preceding-char=, =skip-chars-forward=/=-backward=.  None
+of these exists in =src/nelisp-buffer.el=; all are new bodies over the
+existing point/insert/substring model.
+
+*Ships:* a character-at-a-time walk of a buffer, standalone.
+
+** P3 — syntax tables and =char-syntax= (1-2 d)
+
+=make-syntax-table=, =standard-syntax-table=, =modify-syntax-entry=,
+=char-syntax=, =syntax-table=, =set-syntax-table=, and the
+=emacs-lisp-mode-syntax-table= value.  Classes needed by the consumers in
+§1.1/§1.2: whitespace, word, symbol, open/close parenthesis, string quote,
+escape, comment start/end, and prefix — Emacs's full class set is not
+required for =check-parens=, and anything beyond it is deferred until a
+consumer needs it.
+
+*Ships:* =(char-syntax ?\()= = =?(= and =(char-syntax ?a)= = =?w=,
+standalone, under the Emacs Lisp table.
+
+** P4 — the scanner (2-4 d, the core)
+
+=parse-partial-sexp=, =scan-lists=, =scan-sexps=, =forward-sexp=,
+=forward-comment=.  =parse-partial-sexp= is the one the consumers actually
+use; the others are expressible on top of it.  The returned state must carry
+at least depth (element 0), string/comment flags (3, 4) and the start of the
+innermost list (9), because =nl-parens= reads element 0 and
+=nelisp-dev-source= reads element 4.
+
+*Ships:* =nl-parens-check-file= returning =nil= for balanced input and a
+structured finding for unbalanced input, standalone — the exact call that
+returns =(void-function emacs-lisp-mode)= today.
+
+** P5 — =emacs-lisp-mode= and =check-parens= (0.5 d)
+
+A mode function that installs the table from P3, and =check-parens= over the
+P4 scanner, signalling =scan-error= where Emacs does.
+
+*Ships:* =nelisp build= completing with no host Emacs on =PATH= — the
+=build()= path of §1.1 end to end.
+
+* §4 Verification design
+
+** §4.1 Against-the-bug
+
+Every phase's check must fail before its change and pass after, run rather
+than asserted, and said in the commit that lands it.  The red side already
+exists and is measured, which is why these are quoted rather than invented:
+
+| phase | red today (measured 2026-09-17) |
+|---|---|
+| P1 | =(nelisp-char-after)= inside =with-temp-buffer= -> =(error "No NeLisp current buffer")= |
+| P2 | =(fboundp 'forward-char)= -> =nil= |
+| P3 | =(fboundp 'char-syntax)= -> =nil= |
+| P4 | =nl-parens-check-file= -> =(void-function emacs-lisp-mode)=, balanced and unbalanced alike |
+| P5 | =nelisp build= -> =nelisp build: Symbol's function definition is void: emacs-lisp-mode= |
+
+All five run against =target/nelisp=.  Per Doc 188 §1.8 a host-Emacs ERT run
+of the same forms cannot distinguish this tree's behaviour from host
+Emacs's, because host Emacs supplies real implementations of every name
+involved.
+
+** §4.2 Parity forms
+
+Added to =test/nelisp-shadow-differential-cases.el=, which feeds
+=emacs-parity= and =parity-coverage=:
+
+| form | Emacs 30.1 |
+|---|---|
+| =(with-temp-buffer (insert "abc") (char-after 2))= | =?b= |
+| =(with-temp-buffer (insert "a b") (goto-char 1) (forward-char 2) (point))= | =3= |
+| =(char-syntax ?\()= / =(char-syntax ?a)= | =?(= / =?w= |
+| =(with-temp-buffer (insert "(a (b))") (car (parse-partial-sexp 1 4)))= | =2= |
+| =(with-temp-buffer (insert "(a") (condition-case e (check-parens) (error (car e))))= | =scan-error= |
+
+Note for the implementer: this corpus is compared byte-for-byte against
+whatever Emacs is on the machine, and two stock 30.1 builds were measured
+this session disagreeing on an unrelated payload.  Keep new forms to values
+that do not embed build-variant error payloads.
+
+** §4.3 Mutation rows
+
+P1 and P2 extend =standalone-reader-buffer-smoke=, which already has rows
+(=tools/gate-mutations.txt:195,209=) and is already red-proven; extending a
+gate does not require a new row, but each new assertion still needs its own
+red side per §4.1.
+
+P3 and P4 add a new required gate, =syntax-parse=, and therefore require
+rows *written first and shown to fail*, in the established shape
+=GATE|FILE|SED|WHAT IT BREAKS[|TARGET]=, following the existing template:
+
+#+begin_example
+standalone-reader-buffer-smoke|scripts/nelisp-stdlib-prelude.el|s/(nelisp-insert s nelisp--current-buffer)/(ignore s nelisp--current-buffer)/|insert becomes a silent no-op again (Doc 188 §1.3's original bug shape)
+#+end_example
+
+Planned rows restore the original bug shape the same way: the syntax table
+losing its paren entries, and =parse-partial-sexp= returning depth 0
+unconditionally.  Exact single-line matches land with the implementing
+commit, per =tools/gate-mutations.txt='s own note that a stale injection
+teaches nothing except to delete the row.
+
+** §4.4 VERIFIED-BY at SHIPPED
+
+Each phase's status line records =VERIFIED-BY: <commit-sha> (<gate-name>
+report, <date>)= pointing at a real =target/gates/<name>.json=, per
+=make doc-claims=.
+
+* §5 Phase gates recap
+
+| phase | ships, measured on =target/nelisp= |
+|---|---|
+| P1 | one current buffer; =char-after=/=char-before=/=delete-region= work |
+| P2 | character-at-a-time motion |
+| P3 | syntax classes under the Emacs Lisp table |
+| P4 | =parse-partial-sexp=; =nl-parens= works standalone |
+| P5 | =nelisp build= with no host Emacs |
+
+* §6 Open questions
+
+** §6.1 Which copy of the duplicated bodies is live
+
+=nelisp-char-after=, =nelisp-delete-region= and =nelisp-buffer--current=
+each exist in both =scripts/nelisp-stdlib-prelude.el= and
+=src/nelisp-buffer.el=, pinned as =ns-collision= at
+=tools/ns-inventory-baseline.txt:1230,1234=.  Measured 2026-09-17 rather
+than left open:
+
+- =src/nelisp-buffer.el= *is* in the image (=(featurep 'nelisp-buffer)= = =t=,
+  =nelisp-buffer--ambient= =fboundp=).
+- =nelisp-char-after=: the two copies are byte-identical.
+- =nelisp-delete-region= and the =nelisp-buffer--current= =defvar=: the two
+  copies differ only in their docstrings; the bodies match.
+
+So either copy behaves the same and P1 is not at risk of editing the
+inert one.  What P1 must still not do is edit one copy and leave the other:
+they are pinned as a collision precisely so a future reader is told there are
+two.  The check is recorded because the same shape bit twice this session in
+a different name — =buffer-substring-no-properties=, whose prelude copy is a
+deliberate stub returning =""= while its sibling is real.
+
+** §6.2 How far the syntax table must go
+
+P3 deliberately implements only the classes =check-parens= and
+=parse-partial-sexp= need.  Syntax flags (two-character comment delimiters,
+=b=/=n= styles) are not needed by Emacs Lisp and are omitted; a consumer
+that needs them will have to extend this.
+
+** §6.3 =indent-region= is out of scope
+
+The =fmt= path (=lisp_plan=, §1.1) needs indentation rules on top of this
+layer.  It is a separate subsystem and a separate document; P5 unblocks
+=build=, not =fmt=.
