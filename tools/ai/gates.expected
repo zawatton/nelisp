@@ -306,6 +306,44 @@ standalone-selfhost-test
 # "6432608 bytes, 5432608 over baseline 1000000 -- exceeds ceiling
 # 1020000", restoring the real baseline turned it green again at the
 # same `GATE-COUNT checked=1 findings=0' it reports now.
+#
+# Freshness + mutation coverage (2026-09-17): the one-time hand check
+# above proved the SIZE comparison once; nothing proved it again, and
+# nothing had ever checked that `$$bin' was built from the source on
+# disk at all.  Both closed in the same pass -- full account in
+# target/ai/ratchet-freshness-report.md and the row now in
+# tools/gate-mutations.txt:
+#
+#  * the recipe now refuses a `target/nelisp' older than the newest
+#    `.el' file under `lisp/', `src/', `scripts/' (the exact `-L' load
+#    path every standalone-reader build uses) with a reasoned GATE-SKIP,
+#    rather than silently measuring a leftover artifact -- the defect
+#    that motivated this pass: a stale binary read as a confident PASS
+#    while a fresh build of the identical commit was over the ceiling;
+#  * a mutation row (Makefile-logic, not the baseline file, which is
+#    out of scope for a row to touch) proves the size comparison itself
+#    still catches an oversized binary.  Its lethality is a window, not
+#    unconditional: the injection deflates the ceiling to 7,481,548, so
+#    any binary in [7,481,549, 7,786,916] flips PASS to FAIL -- 305,368
+#    bytes wide, covering the whole range in which the gate legitimately
+#    passes.  Demonstrated arithmetically, because it could NOT be
+#    demonstrated by running the harness on the authoring host: a fresh
+#    local build there measured 7,832,544, above BOTH ceilings, so the
+#    clean and mutated runs both failed and the harness's red carried no
+#    information about this row.  Re-prove it on a host whose clean run
+#    passes, with
+#    `NELISP_GATE_MUTATION_ONLY=binary-size-ratchet
+#    tools/nelisp-gate-mutation.sh';
+#  * found while proving that row: the target probe's own
+#    `$(NELISP_STANDALONE_TARGET)$$NELISP_STANDALONE_TARGET' concatenation
+#    doubled to "linux-x86_64linux-x86_64" whenever the variable was set
+#    at all (GNU Make puts a command-line override in both halves), so
+#    this gate reported the "not the pinned target" GATE-SKIP even ON
+#    the pinned target for any caller -- `tools/nelisp-gate-mutation.sh'
+#    always is one -- that sets the variable explicitly.  Fixed by
+#    reading `$(NELISP_STANDALONE_TARGET)' alone; `emacs-parity' and the
+#    `alloc-check' target use the same concatenation but a glob `case'
+#    against it, which is tolerant of the double and was left alone.
 binary-size-ratchet
 
 # emacs-parity (LEDGER STRAGGLER, closed 2026-08-22): differential vs the

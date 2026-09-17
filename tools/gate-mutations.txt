@@ -1117,3 +1117,56 @@ parity-fuzz|tools/nelisp-parity-fuzz.el|s/"\^shared-/"\^xshared-/|the shared-nam
 # "GATE-COUNT checked=8733 findings=277" / FAIL, one worse than the
 # pre-existing 276/268 FAIL already there.
 emacs-compat|lisp/nelisp-cc-alloc-dealloc.el|/^(provide 'nelisp-cc-alloc-dealloc)$/i\(defun xor (nl-gm-a nl-gm-b) (if nl-gm-a (not nl-gm-b) nl-gm-b))|a new unconditional definition shadows a stock Emacs name, pushing shared-shadowing over its baseline
+
+# binary-size-ratchet (mutation coverage, 2026-09-17): `grep -c
+# '^binary-size-ratchet|' tools/gate-mutations.txt' was 0 before this row --
+# tools/ai/gates.expected records only a one-time hand check (a temporarily
+# deflated `size' in the baseline file), nothing durable re-checked that the
+# comparison still catches an oversized binary.  A row cannot mutate
+# `tools/nelisp-binary-size-baseline.txt' (pinned to CI's toolchain; the
+# brief that added this row forbids touching it) and, unlike unsafe-
+# inventory/ns-inventory, cannot cheaply mutate the linked SOURCE either --
+# a small source edit does not reliably move a linked binary's size across
+# the 2% slack window, and would need a full rebuild besides.  The
+# injection instead corrupts the CEILING ARITHMETIC in the Makefile recipe
+# itself (`baseline + baseline * slack / 100' -> `baseline - baseline *
+# slack / 100'), deflating the ceiling to roughly 98% of baseline.  This is
+# lethal independent of the real binary's size: any binary at or above the
+# pinned baseline -- the normal case, since the baseline IS the last real
+# measurement -- now reads as over budget.  No rebuild needed: `Makefile'
+# is not baked into `target/nelisp' (`gate_needs_rebuild' correctly says no
+# for this row).
+#
+# CAVEAT, recorded rather than hidden, same shape as `emacs-compat' above:
+# a genuinely FRESH local build in the worktree that authored this row
+# already exceeded the pinned ceiling by itself (7,832,544 bytes against
+# ceiling 7,786,916 -- the local/CI toolchain skew `tools/ai/preflight.sh'
+# documents at length, not a regression; see
+# target/ai/ratchet-freshness-report.md).  Both the clean and the mutated
+# recipe therefore reported FAIL on that machine -- the mutation could not
+# be told apart from the pre-existing skew by exit code alone there.  It
+# WAS visible in the reported ceiling number (see below).
+# `tools/nelisp-gate-mutation.sh' does not require a clean PASS before
+# mutating a row (only `nl-num-standalone-smoke' gets that treatment) --
+# it only requires the MUTATED run to exit nonzero -- which on THIS host
+# it would have done with or without the injection, since the clean run
+# already failed.  The harness's red is therefore not itself evidence
+# for this row here.  The row is still lethal, but over a window rather
+# than unconditionally: the injection deflates the ceiling from 7,786,916
+# to 7,481,548, so a binary anywhere in [7,481,549, 7,786,916] flips
+# PASS to FAIL -- 305,368 bytes, the whole range in which this gate
+# legitimately passes.  Below 7,481,549 the mutated recipe passes too.
+# Re-prove by running the harness on a host whose clean run passes.
+#
+# Proven 2026-09-17: `NELISP_GATE_MUTATION_ONLY=binary-size-ratchet
+# tools/nelisp-gate-mutation.sh' reported the row going red, then its own
+# "GATE-COUNT checked=1 findings=0 passed=1 failed=0 skipped=0" /
+# "gate-mutation: PASS (1 passed, 0 skipped)".  By hand around the same
+# command, on the fresh 7,832,544-byte binary above: clean -- "GATE-COUNT
+# checked=1 findings=1" / "[binary-size-ratchet] FAIL: ./target/nelisp is
+# 7832544 bytes, 198312 over baseline 7634232 -- exceeds ceiling 7786916
+# (2% slack)."; mutated -- "GATE-COUNT checked=1 findings=1" / "... exceeds
+# ceiling 7481548 (2% slack)." (the deflated ceiling, the row's visible
+# effect); restored -- byte-identical to the pre-mutation Makefile (`git
+# status` clean, `diff' empty).
+binary-size-ratchet|Makefile|s#ceiling=\$\$(( baseline + baseline \* slack / 100 ))#ceiling=\$\$(( baseline - baseline \* slack / 100 ))#|the ceiling arithmetic subtracts the slack instead of adding it, deflating the ceiling below the pinned baseline

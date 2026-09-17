@@ -126,6 +126,33 @@ gate_needs_rebuild() {
     # fixture on every run.
     special-variables) return 0 ;;
     symbol-identity) return 0 ;;
+    # Different reason from every entry above: this row's own mutated file
+    # is `Makefile', never baked into `target/nelisp'.  What needs the
+    # rebuild is `binary-size-ratchet''s OWN freshness check (2026-09-17),
+    # which refuses to judge a `target/nelisp' older than any `.el' under
+    # lisp/src/scripts.  `mutation_restore' uses `cp' with no `-p' (line
+    # ~159) and every OTHER row's `sed -i' (line ~427) both stamp the
+    # current time on the file they touch, so after the first `.el'-
+    # mutating row anywhere earlier in a sweep, every source file under
+    # those three directories is newer than whatever `target/nelisp' was
+    # sitting in `target/' when the sweep started.  Without this arm this
+    # row's own gate then reports its own GATE-SKIP for the rest of the
+    # sweep, `run_gate' sees no findings, and the skip-vs-fail branch below
+    # (same skip reason on the restored clean tree) files it as "SKIP (gate
+    # not runnable on this host)" -- a full sweep goes green having tested
+    # this row exactly once, by accident, and only if it happens to sit
+    # before every `.el'-touching row in the table.  Confirmed by hand
+    # 2026-09-17: with an unrelated `.el' deliberately left newer than
+    # `target/nelisp' (the state every later row in a real sweep leaves
+    # behind), `NELISP_GATE_MUTATION_ONLY=binary-size-ratchet
+    # tools/nelisp-gate-mutation.sh' reported `skipped=1' for this row
+    # without this arm, `passed=1 skipped=0' with it -- see
+    # target/ai/ratchet-freshness-report.md for the full transcript.  Two
+    # rebuilds per sweep (before the mutated run, again after restoring so
+    # the NEXT row does not inherit a Makefile-mutated binary) at ~25s each
+    # with a warm unit cache -- ~50s added to a sweep that already runs
+    # ~2547s, for a row this gate cannot otherwise be trusted to reach.
+    binary-size-ratchet) return 0 ;;
   esac
   # Doc 200: an `ert-full' row is only binary-sensitive when it mutates the
   # standalone build script itself.

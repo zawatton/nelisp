@@ -2207,8 +2207,50 @@ emacs-parity: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reade
 # gates); a differently-targeted build reports a reasoned GATE-SKIP
 # instead of comparing an ELF from a different linker against a number
 # that was never measured for it.
+#
+# "Consumes whichever binary is already in target/" above was, until this
+# paragraph, an unattributed guess: this recipe never checked that the
+# binary it weighed was built from the source now on disk.  On 2026-09-17
+# that guess was a confident PASS (7,764,504 bytes, ceiling 7,786,916)
+# reported about a leftover artifact while a FRESH build of the identical
+# commit measured 7,832,544 -- 45,628 bytes over the same ceiling.  The
+# freshness check below closes that: `$$bin' is compared against the
+# newest `.el' file under `lisp/', `src/', `scripts/' -- exactly the three
+# `-L' directories every standalone-reader invocation in this Makefile
+# loads from, not a hand-picked file -- and a binary older than any of
+# them is unattributable, so this reports a reasoned GATE-SKIP instead of
+# guessing.  Cheap (one `find -newer' over ~330 files) and correct for the
+# common case this bug actually hit: a leftover binary from an EARLIER
+# commit, whose checked-out source files (this worktree's or a sibling's)
+# share one checkout mtime strictly older than the stale binary's link
+# time.  It is blind to the same-second case (edit source and relink
+# within one mtime tick) and to a build whose true inputs reach outside
+# these three directories (a changed `Makefile' recipe or environment
+# variable with no `.el' edit) -- see target/ai/ratchet-freshness-report.md
+# for why those were judged acceptable gaps for this signal's cost.
+#
+# The target probe used to read `$(NELISP_STANDALONE_TARGET)$$NELISP_STANDALONE_TARGET'
+# (Make variable concatenated with the shell's own copy of the same name),
+# copying the `case ... in windows*)' idiom `emacs-parity' and `alloc-
+# check' above use.  That idiom is glob-tolerant, so the concatenation is
+# harmless there; the equality test here is not.  GNU Make imports a
+# command-line override into BOTH the Make variable and the recipe's shell
+# environment (confirmed: `make binary-size-ratchet NELISP_STANDALONE_TARGET=
+# linux-x86_64' put "linux-x86_64" in both halves), so the two-source
+# concatenation always doubled to "linux-x86_64linux-x86_64" whenever the
+# variable was set at all -- which never equals the single pinned string,
+# so this recipe reported the "not the pinned target" GATE-SKIP even ON
+# the pinned target, for any caller that sets the variable explicitly.
+# Found 2026-09-17 verifying the freshness fix above through
+# `tools/nelisp-gate-mutation.sh', which always passes
+# `NELISP_STANDALONE_TARGET=<target>' as a command-line variable (Makefile
+# comment in `tools/nelisp-gate-mutation.sh' explains why) -- so this gate
+# could not be reached through that harness at all, for any row, until
+# now.  `$(NELISP_STANDALONE_TARGET)' alone already carries both an
+# environment-variable invocation and a command-line override (same
+# probe), so the redundant shell-side half is simply dropped here.
 binary-size-ratchet: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
-	@target="$(NELISP_STANDALONE_TARGET)$$NELISP_STANDALONE_TARGET"; \
+	@target="$(NELISP_STANDALONE_TARGET)"; \
 	if [ -n "$$target" ] && [ "$$target" != "linux-x86_64" ]; then \
 	  echo "GATE-SKIP baseline pinned to linux-x86_64 only, target=$$target"; \
 	  echo "[binary-size-ratchet] SKIP: not the pinned target"; \
@@ -2219,6 +2261,12 @@ binary-size-ratchet: $(if $(wildcard target/nelisp target/nelisp.exe),,standalon
 	  echo "GATE-COUNT checked=0 findings=1"; \
 	  echo "[binary-size-ratchet] FAIL: $$bin not found"; \
 	  exit 1; \
+	fi; \
+	stale=$$(find lisp src scripts -name '*.el' -newer "$$bin" 2>/dev/null | head -1); \
+	if [ -n "$$stale" ]; then \
+	  echo "GATE-SKIP $$bin predates $$stale -- it cannot be attributed to the current source; rebuild with 'make standalone-reader' (or remove $$bin) before judging"; \
+	  echo "[binary-size-ratchet] SKIP: $$bin is stale ($$stale changed after it was linked)"; \
+	  exit 0; \
 	fi; \
 	baseline=$$(awk '$$1=="size"{print $$2}' tools/nelisp-binary-size-baseline.txt); \
 	slack=$$(awk '$$1=="slack-pct"{print $$2}' tools/nelisp-binary-size-baseline.txt); \
