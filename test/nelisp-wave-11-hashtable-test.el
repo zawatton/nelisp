@@ -1,4 +1,4 @@
-;;; wave-11-hashtable-test.el --- Doc 49 Wave 11.2 hash-table primitives  -*- lexical-binding: t; -*-
+;;; nelisp-wave-11-hashtable-test.el --- Doc 49 Wave 11.2 hash-table primitives  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -323,6 +323,6 @@ the same program twice and checks the output file sizes match."
       (should (= (length (wave-11-hashtable-test--ir-get walk :params))
                  3)))))
 
-(provide 'wave-11-hashtable-test)
+(provide 'nelisp-wave-11-hashtable-test)
 
-;;; wave-11-hashtable-test.el ends here
+;;; nelisp-wave-11-hashtable-test.el ends here

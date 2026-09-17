@@ -220,12 +220,44 @@ jobs:
           # the split, or the split has bought speed with coverage.
           NELISP_CHECK_SKIP=gate-mutation bash tools/ai/nelisp-ai.sh check
 
+      # parity-fuzz and emacs-compat (gate-wiring audit, 2026-09-17): two
+      # real gates -- each prints its own GATE-COUNT line -- that had no
+      # gates.expected entry, no mutation row, and no CI step; see
+      # tools/ai/gates.expected for the registration and
+      # target/ai/gate-wiring-report.md for the full audit.  Both read
+      # `fboundp'/`boundp' (emacs-compat) or spawn `$(EMACS)' as a live
+      # oracle (parity-fuzz) in the SAME process/subprocess doing the
+      # check, so both are version-dependent the same way `emacs-parity'
+      # above is documented to be -- pinned to the 30.1 lane rather than
+      # duplicated on 29.4 for the same reason the check-tier step above
+      # is.  parity-fuzz additionally needs the standalone binary, built
+      # here by its own Makefile prerequisite (conditional on the binary's
+      # absence, so it costs nothing extra if an earlier step in this lane
+      # already built one).
+      - name: "Compat-table shadowing ratchet (tools/ai/nelisp-ai.sh gate emacs-compat); Emacs 30.1"
+        if: runner.os == 'Linux' && matrix.emacs-version == '30.1'
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate emacs-compat -- make emacs-compat
+      - name: "Differential fuzz vs host Emacs (tools/ai/nelisp-ai.sh gate parity-fuzz); Linux x86_64, Emacs 30.1"
+        if: runner.os == 'Linux' && matrix.emacs-version == '30.1'
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate parity-fuzz -- make parity-fuzz
+
       # Placed before the ERT suite so a pre-existing test failure does
       # not skip the Mach-O toolchain-acceptance signal.
+      #
+      # Routed through `nelisp-ai.sh gate' (gate-wiring audit, 2026-09-17):
+      # the bare `make macho-acceptance-test' below used to write no
+      # `target/gates/*.json' report at all, so even though this step has
+      # run the gate's real success path on every macOS build for a long
+      # time, `verify' had no way to see that -- see
+      # tools/ai/gates.expected's `macho-acceptance-test' entry.  The
+      # macOS "Upload gate reports" step further down carries the report
+      # this now produces to the `verify' job.
       - name: Mach-O acceptance (NeLisp-emitted arm64 exec + MH_OBJECT vs codesign/clang/ld64; macOS)
         if: runner.os == 'macOS'
         shell: bash
-        run: make macho-acceptance-test
+        run: bash tools/ai/nelisp-ai.sh gate macho-acceptance-test -- make macho-acceptance-test
 
       # `make test' alone (as this ran before) never writes a gate report;
       # only `nelisp-ai.sh test' does, as gate "ert-full" -- a required
@@ -493,6 +525,22 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: gate-reports-smoke
+          path: target/gates/*.json
+          if-no-files-found: error
+
+      # macho-acceptance-test's report (gate-wiring audit, 2026-09-17): the
+      # only report this job's macOS lanes produce -- every other step here
+      # is `if: runner.os == 'Linux''.  Both Emacs-version lanes run it
+      # (see the step above, unconditional on `matrix.emacs-version'), so
+      # the artifact name carries the version to avoid two macOS lanes
+      # colliding on one artifact name in the same workflow run; `verify''s
+      # download step already matches on the `gate-reports-*' prefix, so
+      # this needs no change there.
+      - name: Upload gate reports (macOS lane)
+        if: always() && runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-reports-macho-${{ matrix.emacs-version }}
           path: target/gates/*.json
           if-no-files-found: error
   # ------------------------------------------------------------------

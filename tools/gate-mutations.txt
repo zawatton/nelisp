@@ -644,7 +644,49 @@ standalone-reader-winpath-smoke|scripts/nelisp-stdlib-prelude.el|s#(concat (or d
 # GREEN restored:
 #   [defvar-alloc-smoke] PASS: per-form=65 budget=200 keep-ok=t
 #     const-ok=t pass=t
-standalone-reader-defvar-alloc-smoke|scripts/nelisp-standalone-build.el|s/(if (= (nelisp_mirror_is_bound (+ env 0) name_ptr (+ env 64)) 1)/(if (= 0 1)/|defvar loses its boundp gate and overwrites an already-bound value
+#
+# RETARGETED 2026-09-17 (gate-wiring audit).  The row above stopped matching:
+# `bf_defvar_init_mode' (scripts/nelisp-standalone-build.el) renamed its
+# parameter from `name_ptr' to `sym' and `name_ptr' now occurs zero times in
+# the file, so `sed' matched nothing and the row proved nothing since the
+# rename.  Its literal boundp-gate defect is not available to re-point at
+# either: the `special-variables' row (below) already mutates that exact
+# call site (`(if (= (nelisp_mirror_is_bound (+ env 0) sym (+ env 64)) 1) 0
+# 1)') for the identical defect (`defvar' clobbers an already-bound value) --
+# re-pointing here would make the two rows duplicates of the same defect at
+# the same line, not two distinct ones, which is exactly what the brief that
+# ordered this retarget said to avoid.
+#
+# Retargeted instead at this smoke's OTHER semantic assertion: `defconst'
+# MUST overwrite an already-bound value (`const-ok'), the opposite polarity
+# of defvar's guard.  First attempt (changing `bf_defconst_install''s
+# `(bf_set_defvar_value env sym val out 2)' mode literal from 2 to 0) was
+# tried and measured NON-LETHAL: `bf_set_defvar_value' only special-cases
+# `(= mode 1)' (the declared-default path); every other mode, 0 or 2 alike,
+# falls through to the same unconditional `bf_set_dynamic_value' call, so
+# the mode argument there is decorative and const-ok stayed t.  Recorded
+# here rather than silently discarded, per this file's own header.
+#
+# The real boundp gate defvar gets lives one level up, in `nl_sf_defvar'
+# (the caller): `(let* ((mode (bf_defvar_init_mode env name_ptr out))) (if
+# (= mode 0) (seq (nl_sexp_clone_into name_ptr out) 0) ...))' -- an early
+# return BEFORE `bf_set_defvar_value' is ever reached.  `nl_sf_defconst'
+# has no such check; it calls `(bf_defconst_install env name_ptr val_slot
+# out)' unconditionally.  The lethal injection copies defvar's guard onto
+# that call site: if NAME is already bound, yield it unchanged instead of
+# installing.  Same defect shape as the original row (defvar's boundp gate
+# migrating somewhere it does not belong), different call site and
+# different assertion than `special-variables'.
+#
+# Evidence, linux-x86_64, 2026-09-17 (gate-wiring audit).  RED with the
+# injection:
+#   [defvar-alloc-smoke] FAIL: per-form=108 budget=200 keep-ok=t
+#     const-ok=nil pass=nil (expected pass=t -- defvar/defconst regressed
+#     to AST synthesis, or lost their boundp gate)
+# GREEN restored:
+#   [defvar-alloc-smoke] PASS: per-form=108 budget=200 keep-ok=t
+#     const-ok=t pass=t
+standalone-reader-defvar-alloc-smoke|scripts/nelisp-standalone-build.el|s/(bf_defconst_install env name_ptr val_slot out)/(if (= (nelisp_mirror_is_bound (+ env 0) name_ptr (+ env 64)) 1) (seq (nl_sexp_clone_into name_ptr out) 0) (bf_defconst_install env name_ptr val_slot out))/|defconst adopts defvar's boundp gate and stops overwriting an already-bound value
 # Doc 201 §4 item 2.  `standalone-reader-fileattrs-smoke' polices the
 # windows-native `stat'/`readdir' shims and the `nelisp--syscall-stat'
 # classification that moved onto st_mode with them.  The injection changes
@@ -1017,3 +1059,61 @@ nelisp-toml-standalone-smoke|packages/nelisp-toml/src/nelisp-toml.el|s/(cons (st
 # (+ 1 2)); restored to "GATE-COUNT checked=1 findings=0" / "[standalone]
 # PASS: ... -> exit 3 (expected 3)" (GREEN).
 standalone-eval-test|scripts/nelisp-standalone-build.el|s/(ptr-write-u64 int2 8 ,b)/(ptr-write-u64 int2 8 ,a)/|the driver writes operand A into int2 instead of B, so the embedded (OP A B) form silently evaluates as (OP A A) and the exit code no longer matches NELISP_FORM_A/_B
+
+# parity-fuzz and emacs-compat: added 2026-09-17 (gate-wiring audit).  Both
+# were real gates -- each prints a genuine `GATE-COUNT checked=N findings=M'
+# line -- with no `gates.expected' entry, no mutation row, and no CI step;
+# see tools/ai/gates.expected for the corresponding registration and
+# target/ai/gate-wiring-report.md for the full audit.
+#
+# parity-fuzz's own generator draws from `docs/emacs-compat-table.txt' via a
+# regex in `nelisp-parity-fuzz--names' that recognises lines starting
+# "shared-shadowing " / "shared-deferring ".  If that regex stops matching
+# (a table reformat, a typo in a refactor), `names' comes back empty and the
+# fuzzer would otherwise report "0 names" as if that were a clean run --
+# exactly the "checked=0 read as clean" failure this repository's other
+# gates were built to rule out.  The tool already guards this itself
+# (`(when (null names) ... (kill-emacs 1))'), so the injection proves that
+# guard is still wired to the real parser rather than adding a new one.
+# Proven 2026-09-17: clean, `make parity-fuzz' prints
+# "parity-fuzz: seed=1 budget=1500 names=285" and "GATE-COUNT checked=1500
+# findings=6" (exit 0 -- divergence findings are a reading job, not a
+# failure; see the Makefile's own comment above this target). RED with the
+# mutation (`shared-' -> `xshared-' in the regex, so it matches nothing):
+# "parity-fuzz: FAIL (no shared names selected -- is
+# docs/emacs-compat-table.txt present?)", exit 1. GREEN restored: identical
+# to the clean run above, findings=6, exit 0.
+parity-fuzz|tools/nelisp-parity-fuzz.el|s/"\^shared-/"\^xshared-/|the shared-name parser's regex stops matching the compat table, so the fuzzer silently draws from zero names instead of refusing to run
+
+# emacs-compat: the tree-wide ratchet on how many stock Emacs names this
+# repository shadows unconditionally (`tools/emacs-compat-baseline.txt').
+# The injection adds one new unconditional top-level definition of a real
+# stock Emacs name -- `xor' (`fboundp' t on host Emacs 30.1; confirmed
+# absent as a top-level `defun'/`defalias' anywhere under the tool's own
+# scan scope, `lisp/*.el src/*.el scripts/*.el packages/*/src/*.el', before
+# this row existed) -- into an existing scanned file, right before its
+# `provide' form.  A genuinely new unconditional shadow is exactly the
+# defect class `shared-shadowing' exists to catch.
+#
+# CAVEAT, recorded rather than hidden: this worktree's tree, UNCHANGED, is
+# already `shared-shadowing 276' against baseline 268 (8 over,
+# undocumented -- see target/ai/gate-wiring-report.md; not investigated or
+# fixed here, out of this audit's scope) -- so `make emacs-compat' already
+# exits nonzero on a clean checkout, for a reason unrelated to this row.
+# The mechanical harness's plain before/after exit-code check cannot
+# distinguish this row's own contribution from that pre-existing one on
+# the real baseline file, so the row was proven in ISOLATION instead:
+# with `tools/emacs-compat-baseline.txt''s `shared-shadowing' line
+# temporarily raised from 268 to 276 (matching the tree's real current
+# count) for the duration of the proof only, restored to 268 immediately
+# after and unchanged in the committed row below.
+#
+# Proven 2026-09-17, baseline temporarily 276: clean tree --
+# "GATE-COUNT checked=8732 findings=276" / "emacs-compat: PASS" (GREEN,
+# exit 0). RED with the injection -- "GATE-COUNT checked=8733
+# findings=277" / "emacs-compat: FAIL (shared-shadowing 277 over baseline
+# 276 -- ...)" (exit 1). Restored -- back to findings=276 / PASS (GREEN).
+# Against the real, permanent baseline of 268 the same injected tree reads
+# "GATE-COUNT checked=8733 findings=277" / FAIL, one worse than the
+# pre-existing 276/268 FAIL already there.
+emacs-compat|lisp/nelisp-cc-alloc-dealloc.el|/^(provide 'nelisp-cc-alloc-dealloc)$/i\(defun xor (nl-gm-a nl-gm-b) (if nl-gm-a (not nl-gm-b) nl-gm-b))|a new unconditional definition shadows a stock Emacs name, pushing shared-shadowing over its baseline

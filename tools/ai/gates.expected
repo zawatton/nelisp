@@ -109,6 +109,35 @@ substrate-presence-corpus-check
 ert-focus?
 ns?
 
+# native-frame-kind (gate-wiring audit, 2026-09-17): the manual two-step
+# recipe docs/repl-development.md documents under "Qualify native frame
+# primitives" -- build a private, isolated reader fixture with test-only
+# native entry points spliced in (`NELISP_STANDALONE_READER_OUTPUT=target/
+# nelisp-native-frame-kinds emacs -Q --batch ... -l test/nelisp-native-
+# frame-kind-build.el -f nelisp-native-frame-kind-test-build', which
+# refuses to overwrite the real `target/nelisp'), then
+# `NELISP_FRAME_TEST_BIN=target/nelisp-native-frame-kinds python3
+# test/nelisp-native-frame-kind-test.py' against it.  Prints its own
+# `NATIVE-FRAME checked=N findings=0' line per case group, not
+# `GATE-COUNT' -- wrapping it with `nelisp-ai.sh gate' as-is would read
+# every run as "no GATE-COUNT line", a failure by omission, not a skip.
+# Recorded here as deliberately manual rather than reshaping its output
+# and adding a Makefile target + mutation row to match: nothing in any
+# tier calls it today (`nelisp-ai.sh check'/`test'/`extras'/`smokes' all
+# skip it, same as `ert-focus'/`ns' above), and it exists to let a
+# developer iterate on the native frame-stack primitives directly against
+# real Cell values, not to stand as tree-wide evidence.
+#
+# Its fixture-building step verified working 2026-09-17: the build
+# produced `target/nelisp-native-frame-kinds' (112 units linked, same
+# warm unit cache as every other standalone build this session) and
+# `python3 test/nelisp-native-frame-kind-test.py -v' against it passed all
+# 4 unittest cases -- `test_capture', `test_call_scope_boundary',
+# `test_kind_search_and_unwind', `test_local_declaration_metadata' --
+# printing `NATIVE-FRAME checked=5/4/8/7 findings=0' (24 assertions, 0
+# findings) across the four.
+native-frame-kind?
+
 # Namespace boundaries for the recipe skeletons.  Whole-tree namespace
 # checking is `make ns-inventory', which ratchets against a baseline;
 # this one requires the skeletons to be simply clean, since they are
@@ -326,6 +355,99 @@ binary-size-ratchet
 # to move back into band once this fix lands on Windows. Not Windows-
 # verified -- the owner's next runbook run is the actual proof.
 emacs-parity
+
+# emacs-compat (gate-wiring audit, 2026-09-17): a real gate with a real
+# GATE-COUNT line and no registration anywhere -- no entry here, no
+# tools/gate-mutations.txt row, no CI step -- discovered the same way
+# parity-fuzz below was, by grepping this file for the name and getting
+# zero hits.  Classifies every name this tree defines against stock Emacs
+# 30.1 (nelisp-only / shared-deferring / shared-shadowing) and fails when
+# `shared-shadowing' -- an UNCONDITIONAL redefinition of a name Emacs
+# already has, the class three real 2026-08-19 defects were -- exceeds
+# `tools/emacs-compat-baseline.txt'.  Mutation-proven 2026-09-17
+# (tools/gate-mutations.txt): see that row's own comment for the full
+# account, including a caveat worth repeating here rather than only there.
+#
+# CAVEAT, found by actually running this gate to register it rather than
+# trusting it worked: on this worktree, UNCHANGED, `make emacs-compat'
+# already reports `GATE-COUNT checked=8732 findings=276' and FAILS --
+# `shared-shadowing' is 276 against a baseline of 268, 8 over, with no
+# comment anywhere explaining the 8.  That is a real, currently-invisible
+# regression of exactly the shape this gate exists to catch, made
+# invisible by the very fact this brief is fixing: nothing has run this
+# gate since whatever commit(s) pushed the count from 268 to 276.  Not
+# investigated or fixed here -- identifying which 8 names and whether each
+# should be wrapped in `(unless (fboundp ...))' or the baseline honestly
+# raised is a separate, substantive decision for whoever owns that ratchet,
+# not a mechanical gate-wiring fix.  Registering this gate as required
+# below is therefore expected to turn `verify' and the CI step added for
+# it red on the next run, for this pre-existing reason, until that
+# decision is made -- see target/ai/gate-wiring-report.md.
+#
+# Like `emacs-parity' above, the answer is this-Emacs's-own answer
+# (`fboundp'/`boundp' read live in the scanning process), so it is
+# version-dependent the same way; unlike `emacs-parity' it has no
+# `GATE-SKIP' guard for a host outside the pinned major, so its CI step is
+# restricted to the Emacs 30.1 lane rather than added to the version guard
+# itself.
+#
+# REGISTERED OPTIONAL, not required (2026-09-17, same audit): this gate is
+# red on the clean tree, and `tools/ai/nelisp-verify.el' exits non-zero when
+# any REQUIRED gate is not "pass"/"skip" -- registering it required would
+# knowingly turn `verify' and the CI step above red until the breach below
+# is resolved, which is a separate decision from wiring the gate up.  The
+# breach, named rather than left as a bare count: 276 vs baseline 268 is
+# 11 names added and 3 removed (`eql', `sxhash-eq', `sxhash-eql') since
+# a08796ab5 set 268 on 2026-08-26.  All 11 live in
+# scripts/nelisp-stdlib-prelude.el, a file that already guards 402 other
+# definitions with `(unless (fboundp ...))':
+#   bool-vector-count-consecutive/-count-population/-exclusive-or/
+#   -intersection/-not/-set-difference/-subsetp/-union   c34aa55e0
+#   fboundp                                              5f9138e51
+#   default-directory                                    f25ec9af1
+#   standard-input                                       b01d85b51
+# Each crossed this ratchet without raising the baseline in its own commit,
+# which is exactly what tools/emacs-compat-baseline.txt asks for -- possible
+# only because nothing ran this gate.  Deciding per name between an
+# `(unless (fboundp ...))' guard and an honest baseline raise is its own
+# change; promote this entry back to required in that commit.
+emacs-compat?
+
+# parity-fuzz (gate-wiring audit, 2026-09-17): the other half of the same
+# discovery -- a real gate, a real `GATE-COUNT checked=1500 findings=6'
+# line on every run, and zero hits grepping this file for its name.
+# Generative differential testing against live host Emacs (see the
+# Makefile's own block comment above the `parity-fuzz:' target for the
+# full design rationale): draws random calls to every name
+# `docs/emacs-compat-table.txt' lists as shared, runs each on both
+# runtimes, and shrinks any disagreement.  Deliberately NOT a gate that
+# fails on a nonzero finding count -- it is a search tool for gaps
+# `emacs-parity''s hand-written corpus does not cover, not a ratchet, and
+# stays exit-0 regardless of how many divergences it prints (see the
+# Makefile comment: "which one is right is still a reading job").  What
+# CAN make it fail, and what its mutation row proves, is its own
+# precondition guard going unreached -- the parser that pulls candidate
+# names from the compat table silently returning zero names, which used
+# to look identical to "nothing diverges" before the guard existed.
+#
+# Run for real before registering, per this file's own header: seed=1
+# (default), `GATE-COUNT checked=1500 findings=6' -- 6 divergences, 2
+# names (`with-no-warnings', `kill-buffer'), neither investigated further
+# here (out of scope; this audit is about wiring, not chasing the
+# fuzzer's own findings into fixes -- see the Makefile comment for why
+# that is deliberately a separate, later step: "read it, and turn what it
+# finds into `emacs-parity' cases").  Needs the binary `standalone-reader'
+# builds (same conditional prerequisite the other binary-tier gates use),
+# so out of `check' for the same reason as `emacs-parity'/`binary-size-
+# ratchet' above.  Not folded into `nelisp-ai.sh standalone' by this pass
+# -- registered here and in CI via a direct `nelisp-ai.sh gate parity-fuzz
+# -- make parity-fuzz' step instead, the same shape `package-store' and
+# its neighbours use; joining `cmd_standalone' (it would cost nothing
+# extra there, same binary already built) is left as a follow-up rather
+# than folded into this mechanical pass.  Same live-host-Emacs dependency
+# as `emacs-compat' and `emacs-parity' above, so its CI step is likewise
+# pinned to the Emacs 30.1 lane.
+parity-fuzz
 
 # ===================================================================
 # The 2026-08-21 sweep: every gate-like make target, measured
@@ -876,16 +998,13 @@ nl-clj-async-standalone-smoke?
 # the ledger) and that report is read here rather than assumed.
 substrate-presence-sweep?
 #
-# CANNOT RUN HERE, AND NOW SAY SO: three of these exit 0 with a GATE-SKIP line
+# CANNOT RUN HERE, AND NOW SAY SO: two of these exit 0 with a GATE-SKIP line
 # and a reason, which `verify' accepts for a required gate.  They are not
 # listed as required yet only because nothing has run their success path --
 # adding a wrapper whose green has never been seen is the unverified-gate
 # problem in a new place -- but the skip is no longer indistinguishable from a
 # failure:
 #
-#   macho-acceptance-test   GATE-SKIP macho acceptance requires macOS.  Also
-#                           counts its 8 checks now, so a macOS runner gets a
-#                           number rather than silence.
 #   wasm-dtw-smoke          GATE-SKIP newDTW-nelisp checkout absent.  The
 #   wasm-dtw-site-smoke     transpile step decides it, so the whole chain skips
 #                           together; DTW_GAME_ROOT points it at a checkout.
@@ -893,6 +1012,29 @@ substrate-presence-sweep?
 #                           a `.wasm' output, the same mismatch fixed in
 #                           wasm-runtime-image-smoke -- corrected here too, so
 #                           a machine that HAS the checkout gets past it.)
+#
+# macho-acceptance-test used to be filed in this same paragraph, on the same
+# reasoning: GATE-SKIP macho acceptance requires macOS, not listed as
+# required because nothing had run its success path.  That justification
+# went stale (gate-wiring audit, 2026-09-17) -- `.github/workflows/ci.yml'
+# already runs `make macho-acceptance-test' unconditionally on every macOS
+# build (`if: runner.os == 'macOS'', both Emacs-version lanes), and that
+# step's own `scripts/macho-acceptance-check.sh' has printed a real
+# `GATE-COUNT checked=8 findings=0' there since the GATE-SKIP three-way
+# split was added -- CI has run the success path, repeatedly, since before
+# this line said it had not.  Registered as required below and wired so
+# `verify' can actually see that macOS report: the CI step now goes through
+# `nelisp-ai.sh gate macho-acceptance-test' (was a bare `make
+# macho-acceptance-test', which produced no `target/gates/*.json' at all)
+# and the macOS lane uploads its gate reports the same way the Linux 30.1
+# lane already does (see `ci.yml''s "smoke" job).  On this host (Linux) it
+# legitimately GATE-SKIPs, verified 2026-09-17: `bash tools/ai/nelisp-ai.sh
+# gate macho-acceptance-test -- make macho-acceptance-test' reports status
+# "skip", reason "macho acceptance requires macOS (got Linux/x86_64)" --
+# not a claim this pass could make the success path run on Linux, only
+# that the existing, real macOS CI run is now visible to `verify' instead
+# of invisible.
+macho-acceptance-test
 #
 # THE nelix GATES, PART 2 (2026-08-21): both recorded defects below were run
 # down to file:line and one of the two is fixed.  `../nelix' is a separate
