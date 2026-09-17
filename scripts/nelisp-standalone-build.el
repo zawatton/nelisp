@@ -14505,6 +14505,90 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
              (cons (car posix-arm) unsupported)))
        nelisp-standalone--process-posix-dispatch-arms))))
 
+;; `ptr-call-typed': an f64-capable sibling of `ptr-call' (packages/nl-ffi/src/
+;; nl-ffi.el's `nl-ffi--ptr-call-invoke', for a `dlsym'-resolved `ffi:defun'
+;; naming `:double').  `ptr-call' itself stays integer/pointer-only (its own
+;; arm, right below, is UNCHANGED) because its argument classes are fixed at
+;; BUILD time by this file's own IR, while a `dlsym'ed symbol's signature is
+;; only known at RUN time -- there is no way to tell a single static call
+;; site "this argument goes in xmm" per call.  `ptr-call-typed' resolves this
+;; the same way `nelisp-standalone--build-ffi-dispatch' resolves a run-time
+;; NAME: branch at run time over an enumerated code, with each branch a
+;; statically-classed `extern-call-ptr'/`extern-call-ptr-f64' call (Doc 122
+;; §122.D; `call-ptr', which `ptr-call' itself lowers to, has no f64-classed
+;; counterpart and cannot be reused here -- see the Commentary above
+;; `extern-call-ptr'/`extern-call-ptr-f64' in lisp/nelisp-aot-compiler.el).
+;;
+;;   (ptr-call-typed ADDR SIG a1 a2 a3 a4 a5 a6)
+;;
+;; SIG is a small integer: bit N (0<=N<=3) marks a(N+1) as f64, bit 4 marks
+;; an f64 return -- 16 argument masks x 2 return classes = 32 generated arms.
+;; a5/a6 are always gp/i64; this is a size budget on the generated arm count,
+;; not an ABI limit (see `nl-ffi--ptr-call-typed-max-f64-position' in
+;; nl-ffi.el).  An out-of-range SIG (not 0..31) writes nil and returns 0, the
+;; same shape `nelisp-standalone--build-ffi-dispatch' uses for an unmatched
+;; NAME; `nl-ffi.el' never constructs one.
+(defun nelisp-standalone--build-ptr-call-typed-dispatch ()
+  "Build the `ptr-call-typed' dispatch IR (a nested `if' over the SIG arg).
+
+Resolves ADDR (arg 0) and SIG (arg 1) once into locals, then branches over
+SIG's 32 possible values, `dotimes'-generated rather than hand-written, the
+same way `nelisp-standalone--build-ffi-dispatch' generates its NAME chain.
+
+Each of the 6 argument slots (a1..a6, args 2..7) is either passed as a plain
+`(wf_argval args N)' i64, or -- for a1..a4 when SIG marks it f64 -- read with
+`sexp-float-unwrap', let-bound to a local, and passed as `(:f64 (bits-to-f64
+LOCAL))': the `extern-call-ptr'/`extern-call-ptr-f64' f64-arg classifier
+only accepts `bits-to-f64' wrapping a `ref', never a call, hence the
+let-binding (the same idiom `nelisp-standalone--build-ffi-dispatch' uses for
+an `:args' f64 position).  An f64 return (`extern-call-ptr-f64') is captured
+as raw bits with `f64-bits', then reboxed into a fresh Lisp float with
+`sexp-write-float' (via `bits-to-f64' again) -- the same two-step
+`--build-ffi-dispatch' uses for an `:ret' `f64' row.  ADDR is let-bound to a
+local (not inlined as `(wf_argval args 0)' at each call site) because
+`extern-call-ptr'/`extern-call-ptr-f64' require FN-EXPR to be a trivial
+value (a gp `ref') -- the same reason the e2e dlsym test
+(`nelisp-aot-compiler/e2e-extern-call-ptr-f64-dynamic-sqrt') let-binds its
+own `dlsym' result before calling it."
+  (let ((chain '(seq (wf_write_nil out) 0)))
+    (dotimes (sig 32)
+      (let* ((ret-f64-p (/= 0 (logand sig 16)))
+             (f64-binds nil)
+             (argforms
+              (let (acc)
+                (dotimes (k 6)
+                  (let* ((argpos (+ k 2))
+                         (f64-p (and (< k 4) (/= 0 (logand sig (ash 1 k))))))
+                    (if f64-p
+                        (let ((var (intern (format "pca%d" (1+ k)))))
+                          (push `(,var (sexp-float-unwrap (wf_arg_ptr args ,argpos)))
+                                f64-binds)
+                          (push `(:f64 (bits-to-f64 ,var)) acc))
+                      (push `(wf_argval args ,argpos) acc))))
+                (nreverse acc)))
+             (body
+              (if ret-f64-p
+                  `(let* ((pcret (f64-bits (extern-call-ptr-f64 pcfn ,@argforms))))
+                     (seq (sexp-write-float out (bits-to-f64 pcret)) 0))
+                `(wf_write_int out (extern-call-ptr pcfn ,@argforms))))
+             (arm (if f64-binds
+                      `(let* ,(nreverse f64-binds) ,body)
+                    body)))
+        (setq chain `(if (= pcsig ,sig) ,arm ,chain))))
+    `(let* ((pcfn (wf_argval args 0))
+            (pcsig (wf_argval args 1)))
+       ,chain)))
+
+(defconst nelisp-standalone--applyfn-ptr-call-typed-arms
+  (list (cons '(:lit "ptr-call-typed")
+              (nelisp-standalone--build-ptr-call-typed-dispatch)))
+  "The `ptr-call-typed' dispatch arm (see the Commentary above
+`nelisp-standalone--build-ptr-call-typed-dispatch'), kept as its own
+defconst -- like `nelisp-standalone--process-posix-dispatch-arms' below it
+in `nelisp-standalone--applyfn-bf-arms''s own `append' -- so the
+programmatically-built 32-arm IR is computed once at load time rather than
+re-generated on every reference.")
+
 (defconst nelisp-standalone--applyfn-bf-arms
   (append
    '(;; --- predicates ---
@@ -14860,10 +14944,15 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
     ;; to hardcode `gnu/linux'/"x86_64-pc-linux-gnu" for every target
     ;; including Windows.
     ((:lit "nelisp--target-os-code") . (wf_write_int out (nl_target_os_code)))
-    ((:lit "nelisp--target-arch-code") . (wf_write_int out (nl_target_arch_code)))))
+    ((:lit "nelisp--target-arch-code") . (wf_write_int out (nl_target_arch_code))))
+   nelisp-standalone--applyfn-ptr-call-typed-arms)
   "B-foundation breadth dispatch arms (Wave-1 (B)): predicates, symbol / vector
 ops, signal/error stubs, structural equal, setcar/setcdr.  Wave-2 (C) appends
-ash/logand/logior/logxor/lognot + string<.")
+ash/logand/logior/logxor/lognot + string<.  `ptr-call-typed' (the f64-capable
+sibling of `ptr-call' right above it) is appended last, via its own defconst
+`nelisp-standalone--applyfn-ptr-call-typed-arms', for the same reason
+`nelisp-standalone--process-posix-dispatch-arms' is spliced in rather than
+written inline: its IR is generated, not literal.")
 
 (defconst nelisp-standalone--applyfn-bf-builtins
   '("consp" "atom" "stringp" "symbolp" "integerp" "bignump" "natnump" "numberp" "floatp" "sxhash-eq"
@@ -14894,7 +14983,7 @@ ash/logand/logior/logxor/lognot + string<.")
     "nelisp-process-read-output" "nelisp-process-write"
     "nelisp-process-close-stdin" "nelisp-process-poll"
     "nelisp-process-wait" "nelisp-process-delete" "nelisp-portable-syscall"
-    "ptr-call" "thread-spawn" "thread-join" "fork-spawn")
+    "ptr-call" "ptr-call-typed" "thread-spawn" "thread-join" "fork-spawn")
   "Builtin names added by Wave-1 (B) breadth glue; appended to
 `nelisp-standalone--reader-builtins'.")
 
@@ -19923,7 +20012,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "nelisp-process-read-output" "nelisp-process-write"
     "nelisp-process-close-stdin" "nelisp-process-poll"
     "nelisp-process-wait" "nelisp-process-delete" "nelisp-portable-syscall"
-    "ptr-call" "thread-spawn" "thread-join" "fork-spawn"
+    "ptr-call" "ptr-call-typed" "thread-spawn" "thread-join" "fork-spawn"
     ;; Per-target compile-time OS/arch tags (Doc 184 follow-on): back
     ;; `system-type'/`system-configuration' in
     ;; scripts/nelisp-stdlib-prelude.el.

@@ -194,16 +194,19 @@ the known-SONAME half of the same check."
 ;; `nl-ffi--invoke' signals `nl-ffi-unavailable' before ever calling
 ;; `nl-ffi-call' at all here (see `nl-ffi-test-defun-unavailable-on-host'
 ;; above).  `nl-ffi--ptr-call-invoke' itself, though, checks the
-;; :float/:double refusal and the argument-count limit BEFORE touching
-;; `dlsym'/`ptr-call' or `nl-ffi-call' in any way (see its own
-;; Commentary) -- calling it directly with a bad signature exercises
-;; exactly those two checks with no runtime involved at all. Only the
-;; success path (a real, resolved call) needs the standalone reader; see
-;; packages/nl-ffi/test/nl-ffi-dsl-standalone-smoke.el for that.
+;; :float/:double-position-5-6 refusal and the argument-count limit
+;; BEFORE touching `dlsym'/`ptr-call'/`ptr-call-typed' or `nl-ffi-call'
+;; in any way (see its own Commentary) -- calling it directly with a bad
+;; signature exercises exactly those two checks with no runtime involved
+;; at all. Only the success path (a real, resolved call) needs the
+;; standalone reader; see packages/nl-ffi/test/nl-ffi-dsl-standalone-
+;; smoke.el for that.
 
 (ert-deftest nl-ffi-test-ptr-call-invoke-rejects-float-return ()
+  "`:float' (single precision) is refused regardless of position -- this
+path only marshals a C `double'."
   (should-error
-   (nl-ffi--ptr-call-invoke 'test "not_in_any_table" '(:sint32) :double '(1))
+   (nl-ffi--ptr-call-invoke 'test "not_in_any_table" '(:sint32) :float '(1))
    :type 'nl-ffi-dlsym-float-unsupported))
 
 (ert-deftest nl-ffi-test-ptr-call-invoke-rejects-float-argument ()
@@ -211,6 +214,32 @@ the known-SONAME half of the same check."
    (nl-ffi--ptr-call-invoke 'test "not_in_any_table" '(:sint32 :float) :sint32
                              '(1 2.0))
    :type 'nl-ffi-dlsym-float-unsupported))
+
+(ert-deftest nl-ffi-test-ptr-call-invoke-rejects-double-position-5-6 ()
+  "A `:double' in argument position 5 or 6 is refused --
+`ptr-call-typed''s generated SIG mask only classes positions 1-4 (see
+`nl-ffi--ptr-call-typed-max-f64-position'); position 6 here."
+  (should-error
+   (nl-ffi--ptr-call-invoke
+    'test "not_in_any_table"
+    '(:sint32 :sint32 :sint32 :sint32 :sint32 :double) :sint32
+    '(1 2 3 4 5 6.0))
+   :type 'nl-ffi-dlsym-float-unsupported))
+
+(ert-deftest nl-ffi-test-ptr-call-invoke-allows-double-return-and-argument-1-4 ()
+  "A `:double' return, and a `:double' argument in position 1-4, both
+clear the float check and reach `nl-ffi--resolve-via-dlsym' -- with no
+library ever `ffi:library'-declared in this test process, that has
+nothing to search and returns 0 without needing `nl-ffi-call' or the
+standalone reader (same trick as `nl-ffi-test-ptr-call-invoke-allows-
+integer-and-pointer-types' above), so this signals `nl-ffi-unresolved-
+symbol', not `nl-ffi-dlsym-float-unsupported'."
+  (should-error
+   (nl-ffi--ptr-call-invoke
+    'test "not_in_any_table_at_all"
+    '(:double :sint32 :sint32 :double) :double
+    '(1.5 2 3 4.5))
+   :type 'nl-ffi-unresolved-symbol))
 
 (ert-deftest nl-ffi-test-ptr-call-invoke-allows-integer-and-pointer-types ()
   "The float refusal is specific to :float/:double -- every other

@@ -708,7 +708,7 @@ nelisp-toml-standalone-smoke
 # reader builtin), now covering steps 1 and 2 of the 3-step rollout
 # (packages/nl-ffi/README.org "Roadmap"). Rebuilds the dynamic reader
 # unconditionally, the same way standalone-reader-ffi-smoke does, then runs
-# packages/nl-ffi/test/nl-ffi-dsl-standalone-smoke.el (16 cases): step 1 --
+# packages/nl-ffi/test/nl-ffi-dsl-standalone-smoke.el (20 cases): step 1 --
 # toupper (integer), sqrt (double, plus int->float argument promotion),
 # sqlite3_libversion (string-returning, via `nl-ffi-get-string'), the
 # `ffi-call' compatibility alias, and three of the four named error
@@ -726,16 +726,26 @@ nelisp-toml-standalone-smoke
 # membership `nl-ffi-unknown-library' rejection this replaces is no longer
 # signalled at all, see its docstring in nl-ffi.el); `nl-ffi-unresolved-
 # symbol' via a live `dlsym' search that finds nothing, not just a
-# build-time-table miss; and the dlsym path's own two guards end to end
-# through a real `ffi:defun' call (`nl-ffi-dlsym-float-unsupported',
+# build-time-table miss; and the dlsym path's remaining two guards end to
+# end through a real `ffi:defun' call -- `nl-ffi-dlsym-float-unsupported'
+# for `:float' anywhere or `:double' in argument position 5/6, and
 # `nl-ffi-too-many-arguments' -- also proven with no runtime at all,
 # directly against `nl-ffi--ptr-call-invoke', by
-# packages/nl-ffi/test/nl-ffi-test.el). Red-proven by the two
-# tools/gate-mutations.txt rows that name this gate: the step 1 row
-# (dropping the raw-nil-to-`nl-ffi-unresolved-symbol' check) and the step 2
-# row (dropping the dlsym-address zero check, which crashes the reader
-# process with a null-function-pointer call instead of a clean finding
-# count) -- see that file for each row's own measured RED/GREEN evidence.
+# packages/nl-ffi/test/nl-ffi-test.el. Step 2 addendum (2026-09-17) --
+# `ptr-call-typed', the f64-capable sibling of `ptr-call' that lifts the
+# dlsym path's :double refusal for the common shapes (README.org "Step 2
+# addendum"): `cbrt' (f64 arg, f64 return), `scalbn' (mixed f64+integer
+# args), `difftime' (integer args, f64 return), `lround' (f64 arg, integer
+# return) -- none of them in `nelisp-standalone--reader-extern-table', so
+# each actually exercises the dlsym + `ptr-call-typed' path rather than the
+# fixed table. Red-proven by the three tools/gate-mutations.txt rows that
+# name this gate: the step 1 row (dropping the raw-nil-to-`nl-ffi-
+# unresolved-symbol' check), the step 2 row (dropping the dlsym-address
+# zero check, which crashes the reader process with a null-function-
+# pointer call instead of a clean finding count), and the `ptr-call-typed'
+# row (its f64-return arm boxing raw bits as an integer instead of a real
+# Lisp float) -- see that file for each row's own measured RED/GREEN
+# evidence.
 ffi-dsl
 # ffi-loader: added 2026-09-16 (increment 1), extended 2026-09-16
 # (increment 2) -- a pure-elisp ELF loader (packages/nl-ffi/src/nl-ffi-

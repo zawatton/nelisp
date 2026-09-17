@@ -39,6 +39,17 @@
 ;; nothing, not just a build-time-table miss.  `libz.so.1' is skipped
 ;; (not failed) if this host does not have it -- see
 ;; `nl-ffi-smoke-skip' below.
+;;
+;; `ptr-call-typed' additions: a dlsym-resolved `ffi:defun' naming
+;; `:double' now succeeds instead of always refusing -- `cbrt' (f64 arg,
+;; f64 return), `scalbn' (mixed f64+integer args), `difftime' (integer
+;; args, f64 return), and `lround' (f64 arg, integer return), none of
+;; them in `nelisp-standalone--reader-extern-table' (see
+;; `nl-ffi-smoke--force-dlsym-library' below for why `libm.so.6'/
+;; `libc.so.6' -- both `nl-ffi-known-sonames' entries -- need a
+;; different route onto the dlsym search path than `ffi:library'
+;; itself gives them).  `:float' anywhere, and `:double' in argument
+;; position 5 or 6, remain refused (`nl-ffi-dlsym-float-unsupported').
 
 ;;; Code:
 
@@ -84,6 +95,36 @@ catch this, by design: a skip is not an error."
      (throw 'nl-ffi-smoke-skip t)))
 
 (load "packages/nl-ffi/src/nl-ffi.el")
+
+(defun nl-ffi-smoke--force-dlsym-library (soname)
+  "Register SONAME as a real `dlopen' handle on the dlsym search path.
+`ffi:library' skips `dlopen' entirely, and never pushes onto
+`nl-ffi--library-order', for a SONAME in `nl-ffi-known-sonames' -- by
+design, since such a SONAME's symbols resolve through the fixed
+build-time table instead (see `ffi:library''s docstring).  `libm.so.6'
+and `libc.so.6' are both known SONAMEs, so exercising the new f64
+`ptr-call-typed' path with a real double-taking libm/libc function not
+in the build-time table needs the exact same real `dlopen' handle
+`ffi:library' would produce for an unknown SONAME, registered the same
+way -- this is that, done directly.
+
+Checks `nl-ffi-library-handle', NOT `gethash' on `nl-ffi--libraries'
+directly: an earlier `ffi:library' call for a known SONAME (for example
+`ffi-dsl-sqrt-double''s own `(ffi:library \"libm.so.6\")' above) already
+put a `(:soname SONAME :handle nil)' entry in `nl-ffi--libraries', which
+is a non-nil, but handle-less, hash value -- gating on `gethash' alone
+would see that entry, wrongly conclude SONAME is already forced, and
+silently skip the real `dlopen', leaving `nl-ffi--library-order' without
+it (caught by hand: `scalbn'/`difftime' happened to still resolve
+because `libz.so.1' -- opened by an earlier test -- transitively depends
+on `libc.so.6', which glibc >= 2.34 folds both of those into, while
+`cbrt'/`lround' stayed libm-only and failed with `nl-ffi-unresolved-
+symbol').  A no-op once SONAME has a real handle, whether from an
+earlier call here or a genuine `ffi:library' open of an unknown SONAME."
+  (unless (nl-ffi-library-handle soname)
+    (let ((handle (nl-ffi--dlopen soname)))
+      (puthash soname (list :soname soname :handle handle) nl-ffi--libraries)
+      (push soname nl-ffi--library-order))))
 
 ;;;; --- toupper: integer argument and return -----------------------------
 
@@ -263,18 +304,66 @@ catch this, by design: a skip is not an error."
     (nl-ffi-smoke-should-error (nl-ffi-smoke-dlsym-miss 1)
                                 'nl-ffi-unresolved-symbol)))
 
-;;;; --- step 2: the dlsym path is integer/pointer-only -----------------------
+;;;; --- step 2: ptr-call-typed -- :double now works in position 1-4 ---------
+;;
+;; None of `cbrt'/`scalbn'/`difftime'/`lround' are in
+;; `nelisp-standalone--reader-extern-table' (verified by grepping the table
+;; in scripts/nelisp-standalone-build.el for each name -- unlike `sqrt',
+;; which the fixed-table `ffi-dsl-sqrt-double' test above already covers and
+;; which would not exercise this dlsym path at all).  `libm.so.6'/
+;; `libc.so.6' are always present (the reader already dynamically links
+;; against both for the fixed table's own `sqrt'/`toupper' rows), so these
+;; do not skip the way the `libz.so.1' cases above can.
 
-(nl-ffi-smoke-deftest ffi-dsl-dlsym-float-return-refused
-  (ffi:defun nl-ffi-smoke-dlsym-float-ret
-    "nl_ffi_dsl_smoke_no_such_symbol_float_ret" [:double :sint32])
-  (nl-ffi-smoke-should-error (nl-ffi-smoke-dlsym-float-ret 1)
+(nl-ffi-smoke-deftest ffi-dsl-ptr-call-typed-f64-arg-f64-return
+  ;; cbrt(double x) -- an f64 argument with an f64 return, arity 1.
+  (nl-ffi-smoke--force-dlsym-library "libm.so.6")
+  (ffi:defun nl-ffi-smoke-cbrt "cbrt" [:double :double]
+    "cbrt(3) -- resolved via dlsym, not the build-time table.")
+  (nl-ffi-smoke-should (= (nl-ffi-smoke-cbrt 8.0) 2.0)))
+
+(nl-ffi-smoke-deftest ffi-dsl-ptr-call-typed-mixed-f64-int-args
+  ;; scalbn(double x, int n) = x * 2^n -- a mixed f64 + integer argument
+  ;; signature, f64 return.
+  (nl-ffi-smoke--force-dlsym-library "libm.so.6")
+  (ffi:defun nl-ffi-smoke-scalbn "scalbn" [:double :double :sint32]
+    "scalbn(3) -- resolved via dlsym, not the build-time table.")
+  (nl-ffi-smoke-should (= (nl-ffi-smoke-scalbn 1.5 4) 24.0)))
+
+(nl-ffi-smoke-deftest ffi-dsl-ptr-call-typed-int-args-f64-return
+  ;; difftime(time_t t1, time_t t0) -- integer (time_t) arguments only,
+  ;; f64 return.
+  (nl-ffi-smoke--force-dlsym-library "libc.so.6")
+  (ffi:defun nl-ffi-smoke-difftime "difftime" [:double :sint64 :sint64]
+    "difftime(3) -- resolved via dlsym, not the build-time table.")
+  (nl-ffi-smoke-should (= (nl-ffi-smoke-difftime 100 40) 60.0)))
+
+(nl-ffi-smoke-deftest ffi-dsl-ptr-call-typed-f64-arg-int-return
+  ;; lround(double x) -- an f64 argument with an integer (long) return.
+  (nl-ffi-smoke--force-dlsym-library "libm.so.6")
+  (ffi:defun nl-ffi-smoke-lround "lround" [:sint64 :double]
+    "lround(3) -- resolved via dlsym, not the build-time table.")
+  (nl-ffi-smoke-should (= (nl-ffi-smoke-lround 7.6) 8)))
+
+;;;; --- step 2: the dlsym path still refuses :float, and :double past 1-4 ---
+
+(nl-ffi-smoke-deftest ffi-dsl-dlsym-float-single-precision-refused
+  ;; `:float' (single precision) is refused wherever it appears -- this
+  ;; path only marshals a C `double'.
+  (ffi:defun nl-ffi-smoke-dlsym-float-arg
+    "nl_ffi_dsl_smoke_no_such_symbol_float_arg" [:sint32 :float])
+  (nl-ffi-smoke-should-error (nl-ffi-smoke-dlsym-float-arg 1.5)
                               'nl-ffi-dlsym-float-unsupported))
 
-(nl-ffi-smoke-deftest ffi-dsl-dlsym-float-argument-refused
-  (ffi:defun nl-ffi-smoke-dlsym-float-arg
-    "nl_ffi_dsl_smoke_no_such_symbol_float_arg" [:sint32 :double])
-  (nl-ffi-smoke-should-error (nl-ffi-smoke-dlsym-float-arg 1.5)
+(nl-ffi-smoke-deftest ffi-dsl-dlsym-double-position-5-6-refused
+  ;; A `:double' in argument position 5 or 6 is still refused --
+  ;; `ptr-call-typed''s generated SIG mask only classes positions 1-4 (a
+  ;; size budget, not an ABI limit; see
+  ;; `nl-ffi--ptr-call-typed-max-f64-position').
+  (ffi:defun nl-ffi-smoke-dlsym-float-pos6
+    "nl_ffi_dsl_smoke_no_such_symbol_float_pos6"
+    [:sint32 :sint32 :sint32 :sint32 :sint32 :sint32 :double])
+  (nl-ffi-smoke-should-error (nl-ffi-smoke-dlsym-float-pos6 1 2 3 4 5 6.0)
                               'nl-ffi-dlsym-float-unsupported))
 
 (nl-ffi-smoke-deftest ffi-dsl-dlsym-too-many-arguments-refused
@@ -322,8 +411,8 @@ catch this, by design: a skip is not an error."
   ;; Checked against RAN+SKIPPED, not RAN alone: a legitimate skip (libz.so.1
   ;; absent -- see `ffi-dsl-dlsym-resolved-symbol'/`ffi-dsl-dlsym-unresolved-
   ;; symbol') must not read as "fewer tests ran than expected".
-  (when (< (+ ran skipped) 16)
-    (error "nl-ffi-dsl-standalone-smoke: only %d test(s) ran + %d skipped (expected >= 16 total)"
+  (when (< (+ ran skipped) 20)
+    (error "nl-ffi-dsl-standalone-smoke: only %d test(s) ran + %d skipped (expected >= 20 total)"
            ran skipped))
   (princ (format "nl-ffi-dsl-standalone-smoke: PASS (%d tests, %d skipped)\n"
                   ran skipped)))

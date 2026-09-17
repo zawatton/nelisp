@@ -952,6 +952,21 @@ ffi-dsl|packages/nl-ffi/src/nl-ffi.el|s/(when (null result)/(when nil/|nl-ffi--i
 # (GREEN).
 ffi-dsl|packages/nl-ffi/src/nl-ffi.el|s/(when (zerop addr)/(when nil/|nl-ffi--ptr-call-invoke stops checking a dlsym-resolved address for zero before calling it through ptr-call, so a symbol no declared library exports is called at address 0 (a null function pointer, undefined behaviour) instead of signalling nl-ffi-unresolved-symbol
 #
+# ffi-dsl (ptr-call-typed, the f64-capable sibling of ptr-call): the
+# generated dispatch's f64-return arm reboxes the raw i64 bit pattern
+# `extern-call-ptr-f64'/`f64-bits' produced back into a real Lisp float
+# with `sexp-write-float'/`bits-to-f64' -- this row makes it box the raw
+# bits as a plain integer instead, so every dlsym-resolved double-
+# returning ffi:defun call (all 16 of the 32 generated SIG arms with an
+# f64 return, not just one) returns a huge raw-bits integer instead of
+# the real floating-point result.  Proven 2026-09-17: GATE-COUNT
+# checked=17 findings=3 (RED -- ffi-dsl-ptr-call-typed-f64-arg-f64-
+# return, -mixed-f64-int-args, and -int-args-f64-return, its three
+# f64-return-using cases, all fail their `should' assertion; the
+# f64-arg-int-return case, whose return is plain integer, is unaffected)
+# with the mutation in place; checked=20 findings=0 (GREEN) restored.
+ffi-dsl|scripts/nelisp-standalone-build.el|s/(seq (sexp-write-float out (bits-to-f64 pcret)) 0))/(wf_write_int out pcret))/|nelisp-standalone--build-ptr-call-typed-dispatch's f64-return arm boxes the raw i64 bit pattern as an integer instead of a real Lisp float, so a dlsym-resolved double-returning ffi:defun call returns nonsense instead of the actual floating-point result
+#
 # ffi-loader (FFI step 3 increment 2, pure-elisp ELF loader): the row moved
 # from increment 1's line (`(when (= st-shndx 0)' in
 # `nl-ffi-loader--apply-one-relocation') to increment 2's own equivalent

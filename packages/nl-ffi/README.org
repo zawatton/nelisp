@@ -80,13 +80,16 @@ does not take a library argument and its signature vector never encodes
 where C-SYMBOL resolves from -- =nl-ffi--invoke= is the one place that
 tries every =dlopen='ed library's handle, in declaration order, via
 =dlsym= (=nl-ffi--resolve-via-dlsym=), caching a resolved address keyed by
-=(SONAME . C-SYMBOL)=. A resolved address is called through =ptr-call=
-(=nl-ffi--ptr-call-invoke=), NOT through =nl-ffi-call= -- =ptr-call= is a
-generic "call this address with up to six integer/pointer arguments"
-reader primitive, unrelated to the fixed table. This is why the dlsym
-path is integer/pointer-only (see "Type vocabulary" below) and capped at
-six arguments: those are =ptr-call='s own limits, not this package's
-choice.
+=(SONAME . C-SYMBOL)=. A resolved address is called through =ptr-call= or =ptr-call-typed=
+(=nl-ffi--ptr-call-invoke=), NOT through =nl-ffi-call= -- both are
+generic "call this address with up to six arguments" reader primitives,
+unrelated to the fixed table; =ptr-call-typed= additionally takes a
+run-time signature mask so a =double= argument in position 1-4, or the
+return, lands in an XMM register instead of a GP one (see "Type
+vocabulary" below for what remains refused: =:float= anywhere, and
+=:double= in argument position 5 or 6). Six arguments is a hard cap
+either way -- that is =ptr-call='s/=ptr-call-typed='s own limit, not
+this package's choice.
 
 =dlopen=/=dlsym=/=dlerror=/=dlclose= are themselves ordinary rows in the
 same build-time table (SONAME =libc.so.6=; glibc >= 2.34 keeps them
@@ -175,15 +178,21 @@ Conversions ( =ffi:defun='s job, done once per call, in
   raw result and always yields ~nil~. (=:void= as an argument type is a
   declaration error: =nl-ffi-unknown-type=.)
 
-=:float=/=:double= are valid signature keywords for *any* C-SYMBOL, but
-only actually callable via resolution path 1 (a build-time table row with
-an =f64= SIG class, see =scripts/nelisp-standalone-build.el=). A symbol
-that resolves via path 2 (=dlsym= + =ptr-call=) cannot carry a float
-argument or return at all -- =ptr-call= has no f64-classed dispatch, only
-plain integer registers -- so =:float=/=:double= there signals
-=nl-ffi-dlsym-float-unsupported= instead of a silently wrong answer. See
-"Symbol resolution" above and =nl-ffi--ptr-call-invoke='s Commentary for
-what an f64-capable =ptr-call= would need.
+=:float=/=:double= are valid signature keywords for *any* C-SYMBOL.
+Path 1 (a build-time table row with an =f64= SIG class, see
+=scripts/nelisp-standalone-build.el=) carries either freely, in any
+position. A symbol that resolves via path 2 (=dlsym= + =ptr-call=/
+=ptr-call-typed=) can carry a =:double= return, or a =:double= argument
+in position 1-4, through =ptr-call-typed= -- a generated sibling of
+=ptr-call= that dispatches at run time over an argument/return f64 mask
+(=nl-ffi--ptr-call-typed-sig=; see =nelisp-standalone--build-ptr-call-
+typed-dispatch= in =scripts/nelisp-standalone-build.el= for how the 32
+generated arms work). =:float= anywhere (single precision -- this path
+only marshals a C =double=), or =:double= in argument position 5 or 6,
+still signals =nl-ffi-dlsym-float-unsupported= instead of a silently
+wrong answer -- a size budget on the generated arm count, not an ABI
+limit. See "Symbol resolution" above and =nl-ffi--ptr-call-invoke='s
+Commentary for what a later increment widening either limit would need.
 
 =nl-ffi-get-string= reads a NUL-terminated C string at an address into a
 unibyte Lisp string (nil for a NULL address); =ptr-read-u8=/=alloc-bytes=/
@@ -201,7 +210,7 @@ a silent nil (all children of =nl-ffi-error=):
 | =nl-ffi-unknown-type= | the signature vector used a keyword outside the type vocabulary (fires at =ffi:defun= expansion time -- NAME is never defined) |
 | =nl-ffi-unresolved-symbol= | the C symbol is not linked into this binary, and no declared library's =dlsym= finds it either |
 | =nl-ffi-unavailable= | this build/host has no working =nl-ffi-call= at all |
-| =nl-ffi-dlsym-float-unsupported= | (step 2) the signature names =:float=/=:double= for a symbol resolved via =dlsym= + =ptr-call=, which cannot carry one |
+| =nl-ffi-dlsym-float-unsupported= | (step 2) the signature names =:float= anywhere, or =:double= in argument position 5/6, for a symbol resolved via =dlsym= |
 | =nl-ffi-too-many-arguments= | (step 2) more than six arguments for a symbol resolved via =dlsym= + =ptr-call=, which cannot carry more |
 
 =ffi:library= signals =wrong-type-argument= (the standard Emacs
@@ -245,10 +254,14 @@ site the in-process path instead.
   struct's fields yourself with =ptr-read-*=/=ptr-write-*= at known
   offsets, as the existing SQLite/FreeType smokes already do).
 - Variadic C functions.
-- =:float=/=:double= for a symbol resolved via =dlsym= (path 2 above) --
-  =ptr-call= has no f64-classed dispatch. A build-time table row (path 1)
-  is the only way to call a double-taking function like =sqrt= today; see
-  "Roadmap" below for what an f64-capable =ptr-call= would need.
+- =:float= (single precision) for a symbol resolved via =dlsym= (path 2
+  above), anywhere in its signature -- this path only marshals a C
+  =double=. A build-time table row (path 1) is the only way to call a
+  =float=-taking function today.
+- A =:double= argument in position 5 or 6 for a symbol resolved via
+  =dlsym= -- =ptr-call-typed='s generated arm count only covers positions
+  1-4 (a size budget, not an ABI limit); see "Roadmap" below for what
+  widening either of these two limits would need.
 - Path 1's fixed table and path 2's =dlopen=/=dlsym= (steps 1-2) on the
   default static reader -- neither exists there at all (see
   "Dynamic-reader requirement" above). As of step 3 increment 1, this is
@@ -259,11 +272,12 @@ site the in-process path instead.
   IFUNC, or an initializer is refused with a named condition, not
   crashed or silently wrong).
 
-Making a new *integer/pointer* C symbol callable no longer needs a table
-row and a reader rebuild -- =ffi:library= + =ffi:defun= reach it directly
-via =dlopen=/=dlsym= (see "Symbol resolution" above). A reader rebuild is
-still needed for: a double argument/return, a callback, a struct, or a
-variadic call -- none of which either resolution path covers yet.
+Making a new integer/pointer, or =double=-in-position-1-4/return, C
+symbol callable no longer needs a table row and a reader rebuild --
+=ffi:library= + =ffi:defun= reach it directly via =dlopen=/=dlsym= (see
+"Symbol resolution" above). A reader rebuild is still needed for: a
+=float=, a =double= in argument position 5 or 6, a callback, a struct, or
+a variadic call -- none of which either resolution path covers yet.
 
 * Roadmap
 
@@ -294,19 +308,22 @@ instead of going back through =nl-ffi-call='s name-matching dispatch --
 see "Symbol resolution" above for the full design, and =nl-ffi.el='s
 Commentary/=nl-ffi--ptr-call-invoke='s docstring for the exact checks.
 
-=ptr-call= still only passes/returns integers (its one dispatch arm,
-=(:lit "ptr-call")= in =scripts/nelisp-standalone-build.el=, reads all
-six arguments with =wf_argval= and boxes the result with =wf_write_int=,
-unconditionally -- there is no f64-classed sibling the way a direct
-table row's =SIG= plist gives =nl-ffi-call= itself, =:args=/=:ret= =f64=).
-That per-row distinction works because the table is closed and known at
-BUILD time, so the compiler picks the marshalling per symbol; a
-=dlsym='d address is only known at RUN time, so calling a double-taking
-function like =sqrt= through a =dlopen='d handle would need either a new
-f64-aware =ptr-call= variant, or a way to tell it, per call, which of its
-argument/return slots are =f64=. Neither exists yet -- a signature naming
-=:float=/=:double= for a symbol resolved via =dlsym= signals
-=nl-ffi-dlsym-float-unsupported= instead of a silently wrong answer, and
+=ptr-call= itself only ever passed/returns integers (its one dispatch
+arm, =(:lit "ptr-call")= in =scripts/nelisp-standalone-build.el=, reads
+all six arguments with =wf_argval= and boxes the result with
+=wf_write_int=, unconditionally -- there is no f64-classed sibling the
+way a direct table row's =SIG= plist gives =nl-ffi-call= itself,
+=:args=/=:ret= =f64=), and stays that way: its argument classes are
+fixed at BUILD time, while a =dlsym='d address's signature is only known
+at RUN time. =ptr-call-typed= is the sibling that closes most of this
+gap -- a generated dispatch (=nelisp-standalone--build-ptr-call-typed-
+dispatch=) branching at run time over an argument/return f64 mask, one
+statically-classed =extern-call-ptr=/=extern-call-ptr-f64= call per mask
+value (see "Symbol resolution" and "Type vocabulary" above). A signature
+naming =:float= anywhere, or =:double= in argument position 5 or 6,
+still signals =nl-ffi-dlsym-float-unsupported= instead of a silently
+wrong answer -- a size budget on the generated arm count (32 arms: 4
+f64-capable positions x 2 return classes), not an ABI limit -- and
 integer/pointer-only foreign functions (most of libc) are unaffected.
 
 Errors surface differently from the fixed-table path, since =dlopen=/
@@ -319,6 +336,49 @@ cannot mean failure here the way it does for an unmatched table NAME.
 follow-up call to =dlerror()= -- a different check from, and not a
 replacement for, the =null result= sentinel =nl-ffi--invoke= still uses
 for the fixed-table path.
+
+** Step 2 addendum (done): an f64-capable =ptr-call-typed=
+
+Lifts step 2's integer/pointer-only limit for the common shapes.
+=ptr-call= itself is unchanged (its argument classes are fixed at BUILD
+time; a =dlsym='d signature is only known at RUN time, so there is no way
+to tell a single static call site "this argument goes in XMM"). The new
+builtin, =ptr-call-typed=, resolves this the way =nelisp-standalone--
+build-ffi-dispatch= resolves a run-time NAME: branch at run time over an
+enumerated code, with each branch a statically-classed =extern-call-ptr=/
+=extern-call-ptr-f64= call (Doc 122 §122.D) --
+
+: (ptr-call-typed ADDR SIG a1 a2 a3 a4 a5 a6)
+
+SIG is a small integer: bit N (0<=N<=3) marks argument a(N+1) as f64, bit
+4 marks an f64 return -- 16 argument masks x 2 return classes, generated
+as 32 dispatch arms by =nelisp-standalone--build-ptr-call-typed-dispatch=
+(scripts/nelisp-standalone-build.el), the same =dotimes=-generated
+pattern as =--build-ffi-dispatch= rather than 32 hand-written arms.
+=nl-ffi--ptr-call-typed-sig= computes SIG from an =ffi:defun= signature's
+=ARG-TYPES=/=RET-TYPE=; an out-of-range SIG (not 0..31) is never
+constructed and, in the generated dispatch itself, writes nil and
+returns 0 -- the same shape an unmatched =nl-ffi-call= name takes.
+
+Two shapes stay refused, both signalling =nl-ffi-dlsym-float-unsupported=
+with the offending type and position in the condition data: =:float=
+(single precision) anywhere -- this path only marshals a C =double= --
+and =:double= in argument position 5 or 6, past the four positions
+=ptr-call-typed= classes. Both are a size budget on the generated arm
+count (widening past 4 positions doubles the arm count per extra
+position), not an ABI limit; a real ABI places a =double= in position 5/6
+exactly as it would in position 1-4.
+
+An alternative considered and rejected for this increment: a single
+run-time trampoline (mmap an RWX page, write a stub that loads XMM0-7 and
+the integer argument registers from a buffer, =call=, store both the
+integer and XMM0 results back -- =nl_neln_demo_exec= in
+scripts/nelisp-standalone-build.el already writes and calls code pages
+this way) would handle every signature at O(1) binary cost. Rejected here
+because it is hand-written x86_64 machine code needing a separate path
+for Windows and aarch64, where the generated arms simply work; it remains
+the option that buys the remaining signature shapes (position 5/6,
+=:float=) if the enumeration ever needs to grow.
 
 ** Step 3 increment 1 (done): a pure-elisp ELF loader, static reader only
 
@@ -472,10 +532,17 @@ refusing with a named condition: TLS (=:tls-segment=/=:tls-relocation=),
 symbol interposition/versioning beyond the one search order above
 (two separate =nl-ffi-loader-open= calls never search each other's
 graphs), unloading, the compact =DT_RELR= encoding, and =PT_GNU_RELRO=
-re-protection. An f64-capable =ptr-call= (needed for either step 2's
-=dlsym= path or this loader to call a double-taking function) remains
-open either way; see =nl-ffi--ptr-call-invoke='s Commentary for what
-that needs.
+re-protection. This loader itself never needed an f64-capable =ptr-call=
+variant: every call it makes through =ptr-call= (an IFUNC resolver, or a
+=DT_INIT=/=DT_INIT_ARRAY= entry) passes all six argument slots as zero,
+and every =float=/=double= match in this file's own source is a
+substring of =Elf64_= (the ELF64 struct family), not a C =float=/=double=
+argument or return anywhere in its own code. =ptr-call-typed= (see
+"Symbol resolution" and "Type vocabulary" above) closes the gap that
+existed on step 2's =dlsym= path alone, for a =double= return or a
+=double= argument in position 1-4; =:float= and argument position 5/6
+remain open -- see =nl-ffi--ptr-call-invoke='s Commentary for what
+either needs.
 
 ** Step 3 increment 3 (open): TLS, DT_RELR, PT_GNU_RELRO, unloading
 

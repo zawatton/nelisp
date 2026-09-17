@@ -91,12 +91,17 @@
 ;;      really `dlopen's a SONAME outside `nl-ffi-known-sonames', and
 ;;      `nl-ffi--invoke' falls back to resolving the symbol with `dlsym'
 ;;      against a declared library's handle and calling it through
-;;      `ptr-call' -- see `nl-ffi--ptr-call-invoke'.  `ptr-call' only
-;;      passes/returns integers (six argument slots, no f64 classing), so
-;;      this path is integer/pointer-only: a signature naming `:float' or
-;;      `:double' for a symbol resolved this way signals
+;;      `ptr-call' -- see `nl-ffi--ptr-call-invoke'.  A `:double' return,
+;;      or a `:double' argument in position 1-4, is marshalled through
+;;      `ptr-call-typed' (a generated sibling of `ptr-call' dispatching
+;;      over a run-time argument/return f64 mask -- see
+;;      `nelisp-standalone--build-ptr-call-typed-dispatch' in
+;;      scripts/nelisp-standalone-build.el).  A signature naming `:float'
+;;      anywhere (single precision; this path only marshals C `double'),
+;;      or `:double' in argument position 5 or 6, still signals
 ;;      `nl-ffi-dlsym-float-unsupported' instead of a silently wrong
-;;      answer, and more than six arguments signals
+;;      answer -- a size budget on the generated arm count, not an ABI
+;;      limit -- and more than six arguments still signals
 ;;      `nl-ffi-too-many-arguments'.  A symbol still in the build-time
 ;;      table keeps resolving through `nl-ffi-call' exactly as step 1
 ;;      left it, with no `dlopen'/`dlsym' call at all.
@@ -104,9 +109,9 @@
 ;;      (dev/nelisp-ffi/nelisp-ffi-pure.el, leaf functions only today) so
 ;;      the default STATICALLY linked reader gains the same capability.
 ;;      The default binary stays statically linked either way; switching
-;;      it to dynamic linking is not the plan.  Reaching an f64-capable
-;;      `ptr-call' remains open for either step 2 or step 3 to pick up;
-;;      see `nl-ffi--ptr-call-invoke''s Commentary for what that needs.
+;;      it to dynamic linking is not the plan.  `:float' and argument
+;;      position 5/6 remain open for a later increment; see
+;;      `nl-ffi--ptr-call-invoke''s Commentary for what that needs.
 ;;
 ;; `ffi:defun' keeps its call shape from step 1 -- it still takes no
 ;; library argument, and its signature vector never encodes where
@@ -129,6 +134,7 @@
 (declare-function ptr-read-u8 "ext:nelisp-runtime" (ptr offset))
 (declare-function ptr-write-u8 "ext:nelisp-runtime" (ptr offset value))
 (declare-function ptr-call "ext:nelisp-runtime" (address a b c d e f))
+(declare-function ptr-call-typed "ext:nelisp-runtime" (address sig a b c d e f))
 ;; packages/nl-ffi/src/nl-ffi-loader.el (step 3 increment 1), loaded further
 ;; down this file, after the error conditions and helpers it reuses --
 ;; see the `(unless (featurep 'nl-ffi-loader) ...)' form below.  Declared
@@ -172,8 +178,9 @@
   'nl-ffi-error)
 
 (define-error 'nl-ffi-dlsym-float-unsupported
-  "a dlsym-resolved FFI call cannot use :float/:double -- only a symbol \
-still in the build-time table can; add a table row for it"
+  "a dlsym-resolved FFI call cannot use :float anywhere, nor :double in \
+argument position 5 or 6 -- a generated-arm size budget, not an ABI \
+limit; a symbol still in the build-time table can use either freely"
   'nl-ffi-error)
 
 (define-error 'nl-ffi-too-many-arguments
@@ -549,64 +556,100 @@ been declared at all."
       (setq sonames (cdr sonames)))
     found))
 
+(defconst nl-ffi--ptr-call-typed-max-f64-position 4
+  "Highest 1-based argument position `ptr-call-typed' can class as f64.
+`ptr-call-typed' branches at run time over a SIG mask whose low 4 bits
+each mark one of the first four of `ptr-call''s six argument slots as
+f64 and whose 5th bit marks an f64 return -- 16 argument masks x 2
+return classes, generated as 32 dispatch arms by
+`nelisp-standalone--build-ptr-call-typed-dispatch' in
+scripts/nelisp-standalone-build.el.  This is a size budget for that
+generated-arm count, not an ABI limit: a real C ABI places a `double' in
+argument position 5 or 6 exactly as it would in position 1-4.  See
+`nl-ffi--ptr-call-invoke'.")
+
+(defun nl-ffi--ptr-call-typed-sig (fn-name c-symbol arg-types ret-type)
+  "Return the `ptr-call-typed' SIG mask for ARG-TYPES/RET-TYPE.
+Bit N (0<=N<=3) of the result is set when the (N+1)th of ARG-TYPES is
+`:double'; bit 4 is set when RET-TYPE is `:double'.  Signals
+`nl-ffi-dlsym-float-unsupported' -- naming FN-NAME, C-SYMBOL, the
+offending type, and its position (an argument's 1-based index, or the
+symbol `return') -- rather than ever returning a mask for a shape
+`ptr-call-typed' cannot carry: `:float' anywhere (single precision --
+this path only marshals a C `double'), or `:double' past
+`nl-ffi--ptr-call-typed-max-f64-position'."
+  (when (eq ret-type :float)
+    (signal 'nl-ffi-dlsym-float-unsupported (list fn-name c-symbol :float 'return)))
+  (let ((sig (if (eq ret-type :double) 16 0))
+        (index 0))
+    (dolist (ty arg-types)
+      (setq index (1+ index))
+      (cond
+       ((eq ty :float)
+        (signal 'nl-ffi-dlsym-float-unsupported (list fn-name c-symbol :float index)))
+       ((eq ty :double)
+        (if (> index nl-ffi--ptr-call-typed-max-f64-position)
+            (signal 'nl-ffi-dlsym-float-unsupported (list fn-name c-symbol :double index))
+          (setq sig (logior sig (ash 1 (1- index))))))))
+    sig))
+
 (defun nl-ffi--ptr-call-invoke (fn-name c-symbol arg-types ret-type raw-args)
-  "Resolve C-SYMBOL via `dlsym' and call it through `ptr-call'.
+  "Resolve C-SYMBOL via `dlsym' and call it through `ptr-call'/`ptr-call-typed'.
 The last resort `nl-ffi--invoke' reaches once the build-time table has
 already said C-SYMBOL is not one of its rows.  RAW-ARGS are the same
 already-converted values `nl-ffi--invoke' would otherwise have handed
-straight to `nl-ffi-call' (see `nl-ffi--convert-arg') -- fine as they
-are for this path too, since every `nl-ffi-types' member other than
-`:float'/`:double' is already a plain integer/address by the time it
-gets here.
+straight to `nl-ffi-call' (see `nl-ffi--convert-arg'): a `:float'/
+`:double' position is already a Lisp float by the time it gets here,
+promoted from an integer if the caller passed one.
 
 Checks, each signalling a distinct named condition, before any real
-`dlsym'/`ptr-call' work:
+`dlsym'/`ptr-call'-family work:
 
-  1. `nl-ffi-dlsym-float-unsupported' when RET-TYPE or any of ARG-TYPES
-     is `:float'/`:double'.  `ptr-call' has one dispatch arm
-     (`(:lit \"ptr-call\")' in scripts/nelisp-standalone-build.el):
-     every argument is read with `wf_argval' and the result boxed with
-     `wf_write_int', unconditionally -- there is no f64-classed sibling
-     the way a direct table row's SIG plist gives `nl-ffi-call' itself
-     (`:args'/`:ret' `f64'). That per-row distinction works because the
-     table is closed and known at BUILD time, so the compiler can pick
-     the marshalling per symbol; a `dlsym'ed address is only known at
-     RUN time, so calling a double-taking function this way would need
-     either a new f64-aware `ptr-call' variant or a way to tell it, per
-     call, which argument/return slots are `f64' -- neither exists yet
-     (see this file's Roadmap section above and the package README).
+  1. `nl-ffi-dlsym-float-unsupported' (via `nl-ffi--ptr-call-typed-sig')
+     when ARG-TYPES/RET-TYPE name `:float' anywhere, or `:double' past
+     `nl-ffi--ptr-call-typed-max-f64-position' -- both a size budget on
+     `ptr-call-typed''s generated arm count, not an ABI limit; see that
+     constant and the package README's Roadmap.  A `:double' RET-TYPE,
+     or a `:double' in argument position 1-4, is fine: it is marshalled
+     through `ptr-call-typed' below instead of `ptr-call'.
   2. `nl-ffi-too-many-arguments' when (length ARG-TYPES) exceeds
-     `nl-ffi--ptr-call-max-args' (six) -- `ptr-call' always reads exactly
-     six argument slots after the address; there is nowhere to put a
-     seventh.
+     `nl-ffi--ptr-call-max-args' (six) -- `ptr-call' and `ptr-call-typed'
+     both always read exactly six argument slots after their leading
+     address (and, for the latter, SIG) argument; there is nowhere to
+     put a seventh.
 
 Then C-SYMBOL is resolved with `nl-ffi--resolve-via-dlsym'; a 0 result
 (`dlsym'\='s own \"not found\", the same sentinel it would have been at
 the raw C level) signals `nl-ffi-unresolved-symbol', exactly the
 condition a build-time-table miss already signalled before this path
-existed -- calling `ptr-call' with a 0 address is not a fallback, it is
-undefined behaviour (a call through a null function pointer), so that
-check runs before, never after, the call it guards.  Once resolved,
+existed -- calling either primitive with a 0 address is not a fallback,
+it is undefined behaviour (a call through a null function pointer), so
+that check runs before, never after, the call it guards.  Once resolved,
 RAW-ARGS are padded with trailing zeros to `nl-ffi--ptr-call-max-args'
 (exactly what every other `ptr-call' caller in this runtime already
-does -- see `nelisp-native-load-raw-call') and the raw `ptr-call' result
-is returned as-is; `nl-ffi--invoke' still owns turning a `:void'
-RET-TYPE into nil."
-  (when (memq ret-type '(:float :double))
-    (signal 'nl-ffi-dlsym-float-unsupported (list fn-name c-symbol ret-type)))
-  (dolist (ty arg-types)
-    (when (memq ty '(:float :double))
-      (signal 'nl-ffi-dlsym-float-unsupported (list fn-name c-symbol ty))))
-  (when (> (length arg-types) nl-ffi--ptr-call-max-args)
-    (signal 'nl-ffi-too-many-arguments
-            (list fn-name c-symbol (length arg-types) nl-ffi--ptr-call-max-args)))
-  (let ((addr (nl-ffi--resolve-via-dlsym c-symbol)))
-    (when (zerop addr)
-      (signal 'nl-ffi-unresolved-symbol (list fn-name c-symbol)))
-    (let ((padded (copy-sequence raw-args)))
-      (while (< (length padded) nl-ffi--ptr-call-max-args)
-        (setq padded (append padded '(0))))
-      (apply #'ptr-call addr padded))))
+does -- see `nelisp-native-load-raw-call').  A call naming no `:float'/
+`:double' anywhere goes through plain `ptr-call', UNCHANGED from before
+`ptr-call-typed' existed (`nelisp-native-load-raw-call' and
+`nl-ffi-loader.el' also call `ptr-call' directly and must keep working
+byte for byte); a call naming `:double' calls `ptr-call-typed' instead,
+with the SIG mask `nl-ffi--ptr-call-typed-sig' computed and ADDR/SIG
+prepended ahead of the same six padded argument slots.  `nl-ffi--invoke'
+still owns turning a `:void' RET-TYPE into nil."
+  (let ((sig (and (or (eq ret-type :float) (eq ret-type :double)
+                       (memq :float arg-types) (memq :double arg-types))
+                  (nl-ffi--ptr-call-typed-sig fn-name c-symbol arg-types ret-type))))
+    (when (> (length arg-types) nl-ffi--ptr-call-max-args)
+      (signal 'nl-ffi-too-many-arguments
+              (list fn-name c-symbol (length arg-types) nl-ffi--ptr-call-max-args)))
+    (let ((addr (nl-ffi--resolve-via-dlsym c-symbol)))
+      (when (zerop addr)
+        (signal 'nl-ffi-unresolved-symbol (list fn-name c-symbol)))
+      (let ((padded (copy-sequence raw-args)))
+        (while (< (length padded) nl-ffi--ptr-call-max-args)
+          (setq padded (append padded '(0))))
+        (if sig
+            (apply #'ptr-call-typed addr sig padded)
+          (apply #'ptr-call addr padded))))))
 
 ;;;; --- ffi:library -----------------------------------------------------------
 
