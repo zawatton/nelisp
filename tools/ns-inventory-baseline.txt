@@ -1061,6 +1061,7 @@ pinned-collision ns-collision	prog1	lisp/nelisp-stdlib-eval-special.el scripts/n
 pinned-collision ns-collision	prog2	lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	push	lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	reverse	lisp/nelisp-stdlib-list.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision-divergent	save-excursion	lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el	c6b515d43a7b
 pinned-collision ns-collision-divergent	sequencep	lisp/nelisp-stdlib.el scripts/nelisp-stdlib-prelude.el	cbe42a12e245
 pinned-collision ns-collision	set-buffer-multibyte	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	setq-default	lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el

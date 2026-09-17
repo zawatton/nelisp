@@ -285,8 +285,45 @@ mode function — true only because =nl-parens= died on =emacs-lisp-mode=
 before ever reaching =save-excursion=.  A phase's acceptance criteria and its
 real consumer are not the same test.
 
-*Ships:* =nelisp build= completing with no host Emacs on =PATH= — the
-=build()= path of §1.1 end to end.
+*Ships:* the syntax layer itself, standalone: =emacs-lisp-mode=,
+=check-parens=, =save-excursion=, =line-number-at-pos=, and
+=nl-parens-check-file= answering correctly on balanced and unbalanced input.
+
+CORRECTED AGAIN 2026-09-18, after P5 landed.  This line previously read
+"=nelisp build= completing with no host Emacs on =PATH=".  That was wrong,
+and measurement is what showed it: with every Emacs binary removed from
+=PATH=, =nelisp new=, =nelisp run= and =nelisp test= all succeed, but
+=nelisp build= stops at
+
+#+begin_example
+nelisp: build requires host Emacs; set EMACS or install the build prerequisites
+#+end_example
+
+That is =tools/nelisp-project.py:651-653=, an unconditional
+=shutil.which(os.environ.get("EMACS", "emacs"))= guard, because =build()=
+drives the AOT compiler and linker *as a host Emacs process*
+(=:676-678=).  No amount of syntax-layer work reaches it; the gate fires
+before any Lisp runs.
+
+Driving §1.1's own blocked function directly on =target/nelisp=, bypassing
+that Python gate, confirms both halves:
+
+#+begin_example
+emacs-lisp-mode=t  check-parens=t  save-excursion=t  line-number-at-pos=t
+nelisp-standalone--project-source -> ERROR: (void-function eobp)
+#+end_example
+
+So the syntax layer *is* working — the names §1.1 named are live — and the
+next blocker is =eobp= (plus =bobp=, =buffer-name=, all measured absent),
+followed by the Python gate itself.  Self-hosting =build= is a separate
+piece of work from Doc 204 and needs its own document: repointing
+=nelisp-project.py='s builder invocation at =target/nelisp= instead of host
+Emacs, and filling whatever the builder then turns out to need.
+
+This is the second time this document's P5 section overstated its reach.
+The first was scope (§3 P5's original two names were really four); this is
+the exit criterion itself.  Both were caught by running the real consumer
+rather than the phase's own acceptance script.
 
 * §4 Verification design
 
@@ -362,7 +399,13 @@ report, <date>)= pointing at a real =target/gates/<name>.json=, per
 | P2 | character-at-a-time motion |
 | P3 | syntax classes under the Emacs Lisp table |
 | P4 | =parse-partial-sexp= and the sexp scanner (=nl-parens= still needs P5) |
-| P5 | =save-excursion=/=line-number-at-pos=/=emacs-lisp-mode=/=check-parens=; =nelisp build= with no host Emacs |
+| P5 | =emacs-lisp-mode=/=check-parens=/=save-excursion=/=line-number-at-pos= (+ =back-to-indentation=/=search-forward=/=user-error=, found by running the real consumer); =nl-parens-check-file= correct standalone |
+
+=nelisp build= with no host Emacs is NOT one of these rows.  It was claimed
+as P5's exit criterion and measured not to hold — see §3 P5's second
+correction.  It needs =tools/nelisp-project.py='s builder invocation
+repointed away from host Emacs, and =eobp=/=bobp=/=buffer-name= filled in;
+that is a separate document.
 
 * §6 Open questions
 

@@ -9025,8 +9025,34 @@ prefix characters first."
               (setq p (1+ p)))
             p))))))
 
+;; Doc 204 P5 correction: real Emacs's own `scan-sexps'/`scan-lists'
+;; return nil -- not an error -- when the buffer boundary is reached
+;; BETWEEN groupings before COUNT is used up (probed against Emacs
+;; 30.1: `(scan-sexps (point-min) (point-max))' on a balanced "(a)"
+;; buffer is `nil', and `check-parens' (this file's own, further down)
+;; is silent on it); an error is still correct when the boundary is
+;; reached MID a grouping.  `nelisp--scan-sexps-forward-one' above
+;; already signals a distinct message, "Scan error: reached end of
+;; buffer", for exactly the clean, between-groupings case (an
+;; unbalanced list instead signals "Unbalanced parentheses" or
+;; "Containing expression ends prematurely" from the deeper
+;; `nelisp--scan-lists-forward'/`nelisp--scan-string-forward', never
+;; this message) -- so this loop catches that one message and stops
+;; cleanly instead of propagating it, re-signalling anything else
+;; unchanged.  `(scan-sexps 1 1)' and `forward-sexp' on the P4
+;; acceptance script's own non-boundary input are unaffected: this arm
+;; never triggers for them.
 (defun nelisp--scan-sexps-forward (from count)
-  (let ((pos from)) (dotimes (_ count) (setq pos (nelisp--scan-sexps-forward-one pos))) pos))
+  (let ((pos from) (stopped nil))
+    (dotimes (_ count)
+      (unless stopped
+        (condition-case data
+            (setq pos (nelisp--scan-sexps-forward-one pos))
+          (scan-error
+           (if (equal (nth 1 data) "Scan error: reached end of buffer")
+               (setq stopped t)
+             (signal (car data) (cdr data)))))))
+    (if stopped nil pos)))
 
 (defun nelisp--scan-sexps-backward-one (pos)
   "Best-effort mirror of `nelisp--scan-sexps-forward-one' -- see the
@@ -9119,6 +9145,179 @@ and leaves point unmoved, answering nil."
               (if (cdr r) (setq remaining (1- remaining)) (setq done t))))
           (nelisp-goto-char pos buf)
           (= remaining 0))))))
+
+;; ---- Doc 204 P5: emacs-lisp-mode / check-parens / save-excursion /
+;; line-number-at-pos --------------------------------------------------
+;;
+;; CORRECTED 2026-09-18 (Doc 204 §3 P5): the phase originally read as two
+;; names (`emacs-lisp-mode' + `check-parens'); measured against the real
+;; consumers (`packages/nl-parens/src/nl-parens.el',
+;; `lisp/nelisp-dev-source.el', `scripts/nelisp-project-format.el') it is
+;; four, plus `user-error' (needed by `check-parens' itself, and not
+;; previously bound to a function -- only its `error-conditions'/
+;; `error-message' properties existed already, set by the Doc 152
+;; gate-G block further down this file).  Same `(unless (fboundp 'NAME)
+;; ...)' idiom as the P1-P4 blocks above; placed here (right after P4's
+;; own scanner) rather than split into a separate file, per Doc 204's
+;; own instruction that the prelude is what the standalone image
+;; actually loads today.
+;;
+;; `save-excursion' is a SPECIAL FORM in real Emacs (`special-form-p' t,
+;; `macrop' nil) so it cannot be `defun''d; it is a macro here instead,
+;; expanding to a `let'+`unwind-protect' that threads the SAME two
+;; buffer-current trackers (`nelisp--current-buffer' /
+;; `nelisp-buffer--current') the P1 `with-current-buffer'/`with-temp-
+;; buffer' macros and `set-buffer' already keep in step (Doc 204 §1.4) --
+;; restored explicitly in the cleanup form via `setq', not merely by
+;; scoping them in an outer `let' (whose own automatic dynamic-binding
+;; unwind only runs after this cleanup form has already executed, i.e.
+;; too late to matter here, and would in any case leave the wrong
+;; buffer current for the `goto-char' immediately preceding it).  Probed
+;; against Emacs 30.1: only point and the current buffer are saved/
+;; restored (the mark has not been, since Emacs 25.1); a killed original
+;; buffer is left uncurrent rather than erroring, matching real Emacs's
+;; own `set_buffer_if_live' skip.
+;;
+;; `save-excursion' KNOWN NAMESPACE COLLISION: `lisp/nelisp-stdlib-eval-
+;; special.el' already has an unconditional `(defmacro save-excursion
+;; (&rest body) (cons 'progn body))' -- a Phase 7/Stage 7.3.a stub from
+;; when "NeLisp has no buffer concept" was still true and the Rust
+;; `apply_special' path this file's own header describes still existed
+;; (both long since gone).  `ns-inventory' will report this as a NEW,
+;; unbaselined `ns-collision-divergent' (the two bodies genuinely
+;; differ) between that file and this one; per this phase's own
+;; instructions that is reported rather than silently pinned into
+;; `tools/ns-inventory-baseline.txt'.
+(unless (boundp 'major-mode)
+  (defvar major-mode 'fundamental-mode
+    "Doc 204 P5: bookkeeping only -- this substrate has exactly one real
+mode function (`emacs-lisp-mode', below) and no mode-dispatch machinery
+of any kind (no keymaps, no hooks, no `define-derived-mode')."))
+(unless (boundp 'mode-name)
+  (defvar mode-name "Fundamental"))
+
+(unless (fboundp 'emacs-lisp-mode)
+  (defun emacs-lisp-mode ()
+    "Install Doc 204 P3's `emacs-lisp-mode-syntax-table' on the current
+buffer and record MAJOR-MODE/MODE-NAME.  Minimal per Doc 204 §3 P5: no
+keymap, no font-lock, no `emacs-lisp-mode-hook' run -- nothing through
+P5's own real consumers (`nl-parens', `nelisp-dev-source',
+`nelisp-project-format') reads any of those in this tree.  `setq-local'
+is a plain `setq' alias here (this substrate has no buffer-local
+distinction; see that macro's own docstring), so MAJOR-MODE/MODE-NAME
+end up as ordinary globals rather than truly per-buffer -- cheap and
+honestly documented rather than silently claimed."
+    (set-syntax-table emacs-lisp-mode-syntax-table)
+    (setq-local major-mode 'emacs-lisp-mode)
+    (setq-local mode-name "Emacs-Lisp")))
+
+(unless (fboundp 'save-excursion)
+  (defmacro save-excursion (&rest body)
+    "Save point and the current buffer; run BODY; restore both, even on
+non-local exit; return BODY's value.  See the block comment above this
+section for why this is a macro, not a `defun', and for the known
+`ns-inventory' collision this introduces."
+    (let ((buf (make-symbol "buf")) (pt (make-symbol "pt")))
+      `(let ((,buf nelisp--current-buffer) (,pt (point)))
+         (unwind-protect
+             (progn ,@body)
+           (when (buffer-live-p ,buf)
+             (setq nelisp--current-buffer ,buf)
+             (setq nelisp-buffer--current ,buf)
+             (goto-char ,pt)))))))
+
+(defun nelisp--line-number-at (pos buf)
+  "1-based line number of POS in BUF, counting newlines from
+`point-min' (this substrate has no buffer narrowing, so that is also
+the absolute count Emacs's own ABSOLUTE argument would give -- probed
+against Emacs 30.1: on buffer text \"a\\nb\\nc\", position 3 (the `b')
+is line 2)."
+  (let* ((lo (nelisp-point-min buf))
+         (hi (nelisp-point-max buf))
+         (target (max lo (min pos hi)))
+         (text (nelisp-buffer-substring lo target buf))
+         (n 1) (i 0) (len (length text)))
+    (while (< i len)
+      (when (eq (aref text i) ?\n) (setq n (1+ n)))
+      (setq i (1+ i)))
+    n))
+
+(unless (fboundp 'line-number-at-pos)
+  (defun line-number-at-pos (&optional pos absolute)
+    "Emacs's own signature (POS default point).  ABSOLUTE is accepted
+but a no-op: with no narrowing concept in this substrate, the
+accessible portion already starts at the true beginning of the buffer,
+so the relative and absolute counts always agree."
+    (ignore absolute)
+    (nelisp--line-number-at (or pos (nelisp-point nelisp--current-buffer))
+                             nelisp--current-buffer)))
+
+;; A FIFTH name, not in Doc 204 §3 P5's own table: found the same way
+;; that table's own four were found -- running `nl-parens-check-file'
+;; on genuinely unbalanced input (this phase's own acceptance script,
+;; the "nl-parens unbalanced" case) rather than trusting the phase's own
+;; list, per that section's warning that a phase's acceptance criteria
+;; and its real consumer are not the same test.  `nl-parens--line-rows'
+;; calls `back-to-indentation' only on the positive-depth (missing-
+;; paren) repair path, so a balanced-input run never reaches it and
+;; "nl-parens balanced" alone would not have caught the gap either.
+(unless (fboundp 'back-to-indentation)
+  (defun back-to-indentation ()
+    "Move point to the first non-whitespace character on this line.
+Ported from Emacs's own `simple.el', with a char-set skip
+\(`skip-chars-forward' on literal space/tab\) standing in for real
+Emacs's syntax-class `skip-syntax-forward'/`backward-prefix-chars'
+pair: probed against Emacs 30.1 (plain spaces and a literal tab, the
+only two indentation characters `nl-parens' or any other consumer
+through P5 ever produces) the two approaches land at the same column.
+A line whose indentation itself begins with a reader-prefix character
+\(`\\''/`\\`'/`,'/`#'\) would tell the two apart -- out of scope, per
+Doc 204 §6.2's own class-set boundary."
+    (goto-char (line-beginning-position))
+    (skip-chars-forward " \t")
+    nil))
+
+;; A SIXTH name, found the same way: `nl-parens--line-code-end' (reached
+;; from the same unbalanced-input repair path as `back-to-indentation'
+;; above, one line further in) calls plain `search-forward' looking for
+;; a `;' that might start a trailing comment.  `fboundp' shows this
+;; substrate's regexp engine already provides `re-search-forward' and
+;; `regexp-quote' natively (`looking-at' likewise, which is why THAT
+;; call in the same function -- `nl-parens--comment-only-line-p' --
+;; never surfaced as a gap); only the literal-string search wrapper
+;; itself was missing.
+(unless (fboundp 'search-forward)
+  (defun search-forward (string &optional bound noerror count)
+    "Literal forward search for STRING, layered on the native
+`re-search-forward' via `regexp-quote' (matching real Emacs's own
+signature: BOUND/NOERROR/COUNT all pass straight through)."
+    (re-search-forward (regexp-quote string) bound noerror count)))
+
+(unless (fboundp 'user-error)
+  (defun user-error (format-string &rest args)
+    "Signal `user-error' with a `format-message'-formatted message
+\(Emacs subr.el's own definition, ported verbatim\); `error-conditions'/
+`error-message' for the symbol are already registered by the Doc 152
+gate-G block further down this file, which runs at load time before any
+caller could actually signal one -- i.e. before any real caller's own
+runtime `signal' of it."
+    (signal 'user-error (list (apply #'format-message format-string args)))))
+
+(unless (fboundp 'check-parens)
+  (defun check-parens ()
+    "Verify parentheses in the current buffer are balanced, over Doc 204
+P4's `scan-sexps' (corrected just above this section for exactly this
+caller's boundary case).  Ported from Emacs 30.1's `emacs-lisp/lisp.el'
+\(the `push-mark' call is dropped -- this substrate has no mark support
+through P5, and no consumer here reads one\): on an unbalanced buffer,
+moves point to the scan failure position and signals `user-error'
+\"Unmatched bracket or quote\"; on a balanced buffer, returns silently
+\(probed both ways against Emacs 30.1\)."
+    (condition-case data
+        (scan-sexps (point-min) (point-max))
+      (scan-error
+       (goto-char (nth 2 data))
+       (user-error "Unmatched bracket or quote")))))
 
 ;; No standard-name marker constructors wired here (binary-size-ratchet:
 ;; each extra top-level `defun' costs far more than its source size).
