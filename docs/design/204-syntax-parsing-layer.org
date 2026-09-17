@@ -255,10 +255,35 @@ innermost list (9), because =nl-parens= reads element 0 and
 structured finding for unbalanced input, standalone — the exact call that
 returns =(void-function emacs-lisp-mode)= today.
 
-** P5 — =emacs-lisp-mode= and =check-parens= (0.5 d)
+** P5 — =emacs-lisp-mode=, =check-parens=, and two more the consumers need (1-2 d)
 
-A mode function that installs the table from P3, and =check-parens= over the
-P4 scanner, signalling =scan-error= where Emacs does.
+CORRECTED 2026-09-18, after P4 landed.  This section previously said "a mode
+function that installs the table from P3, and =check-parens= ... signalling
+=scan-error=", estimated at 0.5 d.  Two things in that sentence were wrong,
+both caught by measurement rather than review:
+
+- =check-parens= signals =user-error=, not =scan-error=.  Probed on host
+  Emacs 30.1 against a buffer containing =(a=.
+- The scope is not two names.  Stubbing =emacs-lisp-mode= as nothing but a
+  table install and running the real consumer against the P4 binary gives
+  =nl-parens-check-file= = =nil= on balanced input (agreeing with host Emacs)
+  but =(void-function save-excursion)= on unbalanced input.  Measured, the
+  consumers also need:
+
+  | name | uses |
+  |---|---|
+  | =save-excursion= | 7 in =nl-parens=, 2 in =nelisp-dev-source= |
+  | =line-number-at-pos= | 4 in =nl-parens=, 1 in =nelisp-project-format= |
+
+  =save-excursion= is a *special form* in Emacs (=special-form-p= t,
+  =macrop= nil), so it cannot simply be =defun='d; it needs a macro that
+  saves and restores point around its body, or equivalent.
+
+This gap was invisible from P4's own acceptance script, and from the
+implementing agent's report, which concluded the only missing piece was the
+mode function — true only because =nl-parens= died on =emacs-lisp-mode=
+before ever reaching =save-excursion=.  A phase's acceptance criteria and its
+real consumer are not the same test.
 
 *Ships:* =nelisp build= completing with no host Emacs on =PATH= — the
 =build()= path of §1.1 end to end.
@@ -336,8 +361,8 @@ report, <date>)= pointing at a real =target/gates/<name>.json=, per
 | P1 | one current buffer; =char-after=/=char-before=/=delete-region= work |
 | P2 | character-at-a-time motion |
 | P3 | syntax classes under the Emacs Lisp table |
-| P4 | =parse-partial-sexp=; =nl-parens= works standalone |
-| P5 | =nelisp build= with no host Emacs |
+| P4 | =parse-partial-sexp= and the sexp scanner (=nl-parens= still needs P5) |
+| P5 | =save-excursion=/=line-number-at-pos=/=emacs-lisp-mode=/=check-parens=; =nelisp build= with no host Emacs |
 
 * §6 Open questions
 

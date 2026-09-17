@@ -8765,6 +8765,361 @@ this section.  Returns nil, matching Emacs (probed)."
     (nelisp--check-integer character)
     (nelisp--syntax-lookup (nelisp--syntax-current-table) character)))
 
+;; ---- Doc 204 P4: parse-partial-sexp and the sexp scanner ---------------
+;;
+;; `parse-partial-sexp', `scan-lists', `scan-sexps', `forward-sexp',
+;; `forward-comment'.  Per Doc 204 §3 P4 the returned parser state must
+;; carry, AT THEIR REAL EMACS INDICES: depth (0), non-nil-when-in-a-string
+;; with the terminator char (3), non-nil-when-in-a-comment (4), and the
+;; list of currently-open paren/bracket positions outermost-first (9) --
+;; probed against Emacs 30.1 (`emacs-gtk --batch -Q`) rather than assumed;
+;; e.g. on "(a (b (c d)) e)" up through the second `(b' close is still
+;; open, `(parse-partial-sexp 1 8)' answers
+;; `(3 7 nil nil nil nil 0 nil nil (1 4 7) nil)' -- element 1 (the
+;; INNERMOST list's own start) is the LAST entry of element 9's list, not
+;; a separate concept; both are threaded through here for the two real
+;; consumers that read them: `packages/nl-parens/src/nl-parens.el' reads
+;; element 0 (car) and elements 3/4 (nth), and `lisp/nelisp-dev-source.el'
+;; additionally reads element 1 (`(nth 1 state)') and element 9
+;; (`(reverse (nth 9 state))', to close open brackets in nesting order --
+;; which is why 9 has to be the real per-position list, not a placeholder
+;; scalar).  Elements 2 (last complete sexp start), 5 (just-following-a-
+;; quote), 6 (min depth), 7 (comment style) and 10 (continuation data) are
+;; NOT required by either consumer and are cheap where free (1, 5, 6, 8)
+;; but otherwise left as faithful-shaped placeholders (2 and 10 always
+;; nil) -- per Doc 204's own instruction, "a short list that omits later
+;; elements is acceptable only if the elements above are at their correct
+;; indices", and 2/10 are never read by anything in this tree.
+;;
+;; OLDSTATE (the 5th argument) is `nl-parens--form-starts'/`nl-parens--
+;; line-rows''s whole scanning strategy: both walk one character at a time
+;; via `(parse-partial-sexp scan (1+ scan) nil nil state)', threading the
+;; previous call's return value back in as STATE so a string or comment
+;; that spans the boundary between two single-character calls is still
+;; tracked correctly.  This is why the internal scan step
+;; (`nelisp--pps-advance') is written to consume exactly one character and
+;; be resumable from any previously-returned state, rather than a scan
+;; loop private to a single top-level call.
+;;
+;; Escape handling needs one bit of state (`pending-escape') that survives
+;; between single-character OLDSTATE-resumed calls -- a backslash at the
+;; end of one call's range must still swallow the very next character in
+;; the following call.  Real Emacs's opaque internal state (its element
+;; 10) presumably carries this same fact; this file threads it explicitly
+;; as element 11, a NeLisp-only extension past Emacs's own state shape.
+;; Nothing outside this block ever reads index 11, and no other producer
+;; of a parse state exists in this tree, so round-tripping it through
+;; OLDSTATE is self-consistent.
+;;
+;; Scope, matching P3's own §6.2 boundary: no two-character comment
+;; delimiters, no `b'/`n' comment styles, no generic string delimiter
+;; (element 3 is always a concrete terminator character, never `t'), and
+;; TARGETDEPTH/STOPBEFORE/COMMENTSTOP are implemented but not exercised by
+;; either real consumer above (neither passes them) or by the acceptance
+;; script, so they are best-effort rather than probed line-by-line.
+;; Backward scanning (negative COUNT to `scan-lists'/`scan-sexps') is
+;; ALSO best-effort: it does not skip parens found inside strings or
+;; comments the way the forward direction does (building that would need
+;; a full forward pre-pass this phase does not add), because no required
+;; check and no known consumer in this tree calls it with a negative
+;; COUNT.  Documented here rather than left a silent gap.
+
+(defun nelisp--pps-decode (oldstate)
+  "Internal 8-slot scan vector for OLDSTATE, a previous `parse-partial-
+sexp' return value (see the block comment above), or nil to start fresh
+at depth 0 with nothing open.  Slots: 0 depth, 1 min-depth, 2 open-paren-
+position stack (innermost first -- the reverse of element 9's own
+outermost-first order), 3 in-string terminator char or nil, 4 start
+position of the current string/comment or nil, 5 in-comment flag, 6
+pending-escape flag, 7 just-after-a-quote-char flag."
+  (if (null oldstate)
+      (vector 0 0 nil nil nil nil nil nil)
+    (vector (or (nth 0 oldstate) 0)
+            (or (nth 6 oldstate) (or (nth 0 oldstate) 0))
+            (reverse (nth 9 oldstate))
+            (nth 3 oldstate)
+            (nth 8 oldstate)
+            (nth 4 oldstate)
+            (nth 11 oldstate)
+            (nth 5 oldstate))))
+
+(defun nelisp--pps-encode (v)
+  "Public `parse-partial-sexp' state list for internal vector V (see
+`nelisp--pps-decode')."
+  (let ((stack (aref v 2)) (instr (aref v 3)) (incom (aref v 5)))
+    (list (aref v 0) (car stack) nil instr incom (aref v 7) (aref v 1) nil
+          (if (or instr incom) (aref v 4) nil)
+          (reverse stack) nil (aref v 6))))
+
+(defun nelisp--pps-advance (v pos)
+  "Advance scan state V (an `nelisp--pps-decode' vector, mutated in
+place) by exactly one character: the one at buffer position POS in
+`nelisp--current-buffer', under its active syntax table.  Returns V."
+  (let* ((buf nelisp--current-buffer)
+         (ch (nelisp--motion-char-at pos buf))
+         (class (nelisp--syntax-lookup (nelisp--syntax-current-table) ch))
+         (depth (aref v 0)) (mindepth (aref v 1)) (stack (aref v 2))
+         (instr (aref v 3)) (incom (aref v 5)))
+    (cond
+     ((aref v 6) (aset v 6 nil) (aset v 7 nil))
+     (incom (when (eq class ?>) (aset v 5 nil) (aset v 4 nil)))
+     (instr
+      (cond ((eq class ?\\) (aset v 6 t))
+            ((eq ch instr) (aset v 3 nil) (aset v 4 nil))))
+     (t
+      (aset v 7 nil)
+      (cond
+       ((eq class ?\\) (aset v 6 t))
+       ((eq class ?\") (aset v 3 ch) (aset v 4 pos))
+       ((eq class ?<) (aset v 5 t) (aset v 4 pos))
+       ((eq class ?\() (aset v 0 (1+ depth)) (aset v 2 (cons pos stack)))
+       ((eq class ?\))
+        (let ((nd (1- depth)))
+          (aset v 0 nd)
+          (when stack (aset v 2 (cdr stack)))
+          (when (< nd mindepth) (aset v 1 nd))))
+       ((eq class ?\') (aset v 7 t)))))
+    v))
+
+(defun nelisp--pps-scan (from to targetdepth stopbefore oldstate commentstop)
+  "Body of `parse-partial-sexp': scan `nelisp--current-buffer' from FROM
+to TO (clamped to `point-max'), moving point to where the scan stops.
+See the block comment above this section for TARGETDEPTH/STOPBEFORE/
+COMMENTSTOP's best-effort status."
+  (let* ((v (nelisp--pps-decode oldstate))
+         (buf nelisp--current-buffer)
+         (hi (min to (nelisp-point-max buf)))
+         (pos from))
+    (catch 'nelisp--pps-done
+      (while (< pos hi)
+        (let ((was-instr (aref v 3)) (was-incom (aref v 5)))
+          (when (and stopbefore (not was-instr) (not was-incom) (not (aref v 6)))
+            (let ((class (nelisp--syntax-lookup (nelisp--syntax-current-table)
+                                                 (nelisp--motion-char-at pos buf))))
+              (when (memq class '(?w ?_ ?\" ?<))
+                (nelisp-goto-char pos buf)
+                (throw 'nelisp--pps-done (nelisp--pps-encode v)))))
+          (nelisp--pps-advance v pos)
+          (setq pos (1+ pos))
+          (when (and targetdepth (= (aref v 0) targetdepth))
+            (nelisp-goto-char pos buf)
+            (throw 'nelisp--pps-done (nelisp--pps-encode v)))
+          (when commentstop
+            (let ((now-instr (aref v 3)) (now-incom (aref v 5)))
+              (when (or (and (not was-instr) now-instr) (and was-instr (not now-instr))
+                        (and (not was-incom) now-incom) (and was-incom (not now-incom)))
+                (nelisp-goto-char pos buf)
+                (throw 'nelisp--pps-done (nelisp--pps-encode v)))))))
+      (nelisp-goto-char pos buf)
+      (nelisp--pps-encode v))))
+
+(unless (fboundp 'parse-partial-sexp)
+  (defun parse-partial-sexp (from to &optional targetdepth stopbefore oldstate commentstop)
+    (nelisp--check-integer from)
+    (nelisp--check-integer to)
+    (nelisp--pps-scan from to targetdepth stopbefore oldstate commentstop)))
+
+;; `scan-error' is signalled by `scan-lists'/`scan-sexps' below (real Emacs
+;; parity: unmatched or missing brackets), and needs `error-conditions' the
+;; same way the Doc 152 gate-G block further down this file gives the
+;; standard names theirs -- otherwise a `(condition-case ... (error ...))'
+;; handler (this file's own `nl-parens--scan-buffer' has one) could never
+;; catch it, only an exact `scan-error' clause could.  NOT registered here
+;; with a plain `put': `put' itself is not yet a function at this point in
+;; the file (defined much further down, at the standard-name bridge for
+;; it) -- a THIRD instance of the same load-order hazard the block comment
+;; before `nelisp--syntax-standard-table' documents for `nelisp--make-
+;; record'.  The real registration sits next to the Doc 152 gate-G block's
+;; own `(put 'user-error ...)' etc., which is already past that point.
+(defun nelisp--scan-lists-forward (from count depth)
+  "Forward body of `scan-lists': like the acceptance script's
+`(scan-lists 1 1 0)' => 20 on \"(a (b) \\\"s;\\\" ; c\\n d)\", strings and
+comments are skipped as opaque (their parens do not count), by driving
+the same `nelisp--pps-advance' step `parse-partial-sexp' uses."
+  (let* ((v (nelisp--pps-decode nil))
+         (buf nelisp--current-buffer)
+         (hi (nelisp-point-max buf))
+         (pos from))
+    (aset v 0 depth)
+    (while (> count 0)
+      (let ((found nil))
+        (while (and (not found) (< pos hi))
+          (let* ((blocked (or (aref v 3) (aref v 5) (aref v 6)))
+                 (class (unless blocked
+                          (nelisp--syntax-lookup (nelisp--syntax-current-table)
+                                                  (nelisp--motion-char-at pos buf)))))
+            (nelisp--pps-advance v pos)
+            (setq pos (1+ pos))
+            (cond
+             ((and (eq class ?\)) (< (aref v 0) depth))
+              (signal 'scan-error (list "Containing expression ends prematurely" (1- pos) pos)))
+             ((and (eq class ?\)) (= (aref v 0) depth)) (setq found t)))))
+        (unless found (signal 'scan-error (list "Unbalanced parentheses" pos pos)))
+        (setq count (1- count))))
+    pos))
+
+(defun nelisp--scan-lists-backward (from count depth)
+  "Backward body of `scan-lists' -- best-effort, see the block comment
+above this section: does not skip parens inside strings/comments."
+  (let* ((buf nelisp--current-buffer)
+         (lo (nelisp-point-min buf))
+         (pos from) (lvl depth))
+    (while (> count 0)
+      (let ((found nil))
+        (while (and (not found) (> pos lo))
+          (setq pos (1- pos))
+          (let ((class (nelisp--syntax-lookup (nelisp--syntax-current-table)
+                                               (nelisp--motion-char-at pos buf))))
+            (cond
+             ((eq class ?\)) (setq lvl (1+ lvl)))
+             ((eq class ?\()
+              (setq lvl (1- lvl))
+              (cond ((< lvl depth)
+                     (signal 'scan-error (list "Containing expression ends prematurely" pos pos)))
+                    ((= lvl depth) (setq found t)))))))
+        (unless found (signal 'scan-error (list "Unbalanced parentheses" pos pos)))
+        (setq count (1- count))))
+    pos))
+
+(unless (fboundp 'scan-lists)
+  (defun scan-lists (from count depth)
+    (nelisp--check-integer from) (nelisp--check-integer count) (nelisp--check-integer depth)
+    (cond ((> count 0) (nelisp--scan-lists-forward from count depth))
+          ((< count 0) (nelisp--scan-lists-backward from (- count) depth))
+          (t from))))
+
+(defun nelisp--scan-string-forward (pos)
+  "Position just after the string starting at POS (its opening quote),
+honouring backslash escapes; signals `scan-error' if it never closes."
+  (let* ((buf nelisp--current-buffer) (hi (nelisp-point-max buf))
+         (term (nelisp--motion-char-at pos buf)) (p (1+ pos)))
+    (while (and (< p hi) (/= (nelisp--motion-char-at p buf) term))
+      (if (eq (nelisp--syntax-lookup (nelisp--syntax-current-table)
+                                      (nelisp--motion-char-at p buf)) ?\\)
+          (setq p (+ p 2))
+        (setq p (1+ p))))
+    (if (< p hi) (1+ p) (signal 'scan-error (list "Unterminated string literal" pos hi)))))
+
+(defun nelisp--scan-sexps-forward-one (pos)
+  "Position just after the single sexp (list, string, or symbol/number
+run) starting at or after POS, skipping any leading whitespace or reader-
+prefix characters first."
+  (let* ((buf nelisp--current-buffer) (hi (nelisp-point-max buf)))
+    (while (and (< pos hi)
+                (memq (nelisp--syntax-lookup (nelisp--syntax-current-table)
+                                              (nelisp--motion-char-at pos buf))
+                      '(?\s ?\')))
+      (setq pos (1+ pos)))
+    (when (>= pos hi) (signal 'scan-error (list "Scan error: reached end of buffer" pos pos)))
+    (let ((class (nelisp--syntax-lookup (nelisp--syntax-current-table)
+                                         (nelisp--motion-char-at pos buf))))
+      (cond
+       ((eq class ?\() (nelisp--scan-lists-forward pos 1 0))
+       ((eq class ?\)) (signal 'scan-error (list "Containing expression ends prematurely" pos pos)))
+       ((eq class ?\") (nelisp--scan-string-forward pos))
+       (t (let ((p (1+ pos)))
+            (while (and (< p hi)
+                        (memq (nelisp--syntax-lookup (nelisp--syntax-current-table)
+                                                      (nelisp--motion-char-at p buf))
+                              '(?w ?_)))
+              (setq p (1+ p)))
+            p))))))
+
+(defun nelisp--scan-sexps-forward (from count)
+  (let ((pos from)) (dotimes (_ count) (setq pos (nelisp--scan-sexps-forward-one pos))) pos))
+
+(defun nelisp--scan-sexps-backward-one (pos)
+  "Best-effort mirror of `nelisp--scan-sexps-forward-one' -- see the
+block comment above this section on backward scanning's limitation."
+  (let* ((buf nelisp--current-buffer) (lo (nelisp-point-min buf)))
+    (while (and (> pos lo)
+                (memq (nelisp--syntax-lookup (nelisp--syntax-current-table)
+                                              (nelisp--motion-char-at (1- pos) buf))
+                      '(?\s ?\')))
+      (setq pos (1- pos)))
+    (when (<= pos lo) (signal 'scan-error (list "Scan error: reached beginning of buffer" pos pos)))
+    (let ((class (nelisp--syntax-lookup (nelisp--syntax-current-table)
+                                         (nelisp--motion-char-at (1- pos) buf))))
+      (cond
+       ((eq class ?\)) (nelisp--scan-lists-backward pos 1 0))
+       ((eq class ?\() (signal 'scan-error (list "Containing expression ends prematurely" pos pos)))
+       ((eq class ?\")
+        ;; (1- pos) is the closing quote itself; find its matching opener,
+        ;; scanning back from the character before it.  No escape
+        ;; awareness in reverse -- see this section's backward-scanning
+        ;; limitation note.
+        (let ((term (nelisp--motion-char-at (1- pos) buf)) (p (- pos 2)))
+          (while (and (>= p lo) (/= (nelisp--motion-char-at p buf) term))
+            (setq p (1- p)))
+          (if (>= p lo) p
+            (signal 'scan-error (list "Unterminated string literal" pos pos)))))
+       (t (let ((p (1- pos)))
+            (while (and (> p lo)
+                        (memq (nelisp--syntax-lookup (nelisp--syntax-current-table)
+                                                      (nelisp--motion-char-at (1- p) buf))
+                              '(?w ?_)))
+              (setq p (1- p)))
+            p))))))
+
+(defun nelisp--scan-sexps-backward (from count)
+  (let ((pos from)) (dotimes (_ count) (setq pos (nelisp--scan-sexps-backward-one pos))) pos))
+
+(unless (fboundp 'scan-sexps)
+  (defun scan-sexps (from count)
+    (nelisp--check-integer from) (nelisp--check-integer count)
+    (cond ((> count 0) (nelisp--scan-sexps-forward from count))
+          ((< count 0) (nelisp--scan-sexps-backward from (- count)))
+          (t from))))
+
+(unless (fboundp 'forward-sexp)
+  (defun forward-sexp (&optional n)
+    "Move point across N sexps (default 1; backward if negative), via
+`scan-sexps'.  Probed against Emacs 30.1: on the acceptance buffer,
+moving from point 1 lands at 20, the position just after the outermost
+list's close paren."
+    (when n (nelisp--check-integer n))
+    (let ((buf nelisp--current-buffer))
+      (nelisp-goto-char (scan-sexps (nelisp-point buf) (or n 1)) buf))
+    nil))
+
+(defun nelisp--forward-comment-1 (buf hi pos)
+  "From POS, skip whitespace, then -- if a comment follows -- skip that
+comment too, through its terminating newline.  Return (NEWPOS . SAW-P)."
+  (let ((p pos) (saw nil))
+    (while (and (< p hi) (eq (nelisp--syntax-lookup (nelisp--syntax-current-table)
+                                                      (nelisp--motion-char-at p buf)) ?\s))
+      (setq p (1+ p)))
+    (when (and (< p hi) (eq (nelisp--syntax-lookup (nelisp--syntax-current-table)
+                                                     (nelisp--motion-char-at p buf)) ?<))
+      (setq saw t)
+      (while (and (< p hi) (not (eq (nelisp--syntax-lookup (nelisp--syntax-current-table)
+                                                             (nelisp--motion-char-at p buf)) ?>)))
+        (setq p (1+ p)))
+      (when (< p hi) (setq p (1+ p))))
+    (cons p saw)))
+
+(unless (fboundp 'forward-comment)
+  (defun forward-comment (count)
+    "Move point forward across up to COUNT comments (and the whitespace
+around/between them); return t iff all COUNT were found.  Probed against
+Emacs 30.1: on \"  ; lead\\n  (x)\" from point 1, `(forward-comment 10)'
+lands at 12 (right before the `(', having skipped the one available
+comment plus the whitespace before and after it) and answers nil.
+Negative COUNT (backward) is not supported -- no consumer here uses it --
+and leaves point unmoved, answering nil."
+    (nelisp--check-integer count)
+    (let* ((buf nelisp--current-buffer) (hi (nelisp-point-max buf))
+           (pos (nelisp-point buf)))
+      (if (< count 0)
+          (progn (nelisp-goto-char pos buf) nil)
+        (let ((remaining count) (done nil))
+          (while (and (> remaining 0) (not done))
+            (let ((r (nelisp--forward-comment-1 buf hi pos)))
+              (setq pos (car r))
+              (if (cdr r) (setq remaining (1- remaining)) (setq done t))))
+          (nelisp-goto-char pos buf)
+          (= remaining 0))))))
+
 ;; No standard-name marker constructors wired here (binary-size-ratchet:
 ;; each extra top-level `defun' costs far more than its source size).
 ;; `nelisp--emit-to-stream' and the `read' dispatch below drive a marker
@@ -10704,6 +11059,13 @@ line-continuation escapes, which generate nothing)."
 (put 'file-missing 'error-conditions '(file-missing file-error error))
 (put 'setting-constant 'error-conditions '(setting-constant error))
 (put 'user-error 'error-conditions '(user-error error))
+;; Doc 204 P4: `scan-lists'/`scan-sexps' (scripts/nelisp-stdlib-prelude.el,
+;; the "Doc 204 P4" section) signal this on unmatched/missing brackets;
+;; registered here rather than there because `put' itself is not yet a
+;; function at that earlier point in the file (see that section's own
+;; comment).
+(put 'scan-error 'error-conditions '(scan-error error))
+(put 'scan-error 'error-message "Scan error")
 (define-error 'nelisp-raw-byte-unrepresentable
   "Raw byte cannot appear in a multibyte string (Doc 200 §4)")
 
