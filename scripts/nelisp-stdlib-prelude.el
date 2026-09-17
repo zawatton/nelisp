@@ -8212,6 +8212,300 @@ over."
 (unless (fboundp 'delete-region)
   (defun delete-region (start end)
     (nelisp-delete-region start end nelisp--current-buffer)))
+;; ---- Doc 204 P2: motion primitives -----------------------------------
+;;
+;; `forward-char', `forward-line', `bolp', `eolp', `line-beginning-
+;; position'/`line-end-position', `current-column', `following-char',
+;; `preceding-char', `skip-chars-forward'/`-backward'.  None of these has
+;; a body anywhere in the tree (Doc 204 §1.3 fboundp census); all are new
+;; here.  Independent of Doc 204 P1 on purpose: every helper below takes
+;; BUF explicitly and threads `nelisp--current-buffer' the same way
+;; `point'/`goto-char' do above, never touching the ported file's own
+;; ambient `nelisp-buffer--current' (Doc 204 §1.4), so this block does
+;; not depend on which of the two current-buffer variables P1 ends up
+;; binding.
+;;
+;; Semantics below were probed against Emacs 30.1 (`emacs-gtk --batch -Q`)
+;; rather than assumed; each helper's comment says what was checked.
+
+(defun nelisp--motion-char-at (pos buf)
+  "Return the character at 1-based POS in BUF, or nil outside
+[`nelisp-point-min' BUF, `nelisp-point-max' BUF)."
+  (let ((lo (nelisp-point-min buf))
+        (hi (nelisp-point-max buf)))
+    (and (>= pos lo) (< pos hi)
+         (elt (nelisp-buffer-substring pos (1+ pos) buf) 0))))
+
+(defun nelisp--motion-bol (pos buf)
+  "Return the 1-based position of the start of the line containing POS
+in BUF: the char after the nearest preceding newline, or `point-min'
+when there is none.  A POS that is itself a line start answers itself."
+  (let ((lo (nelisp-point-min buf)))
+    (if (<= pos lo)
+        lo
+      (let* ((text (nelisp-buffer-substring lo pos buf))
+             (i (1- (length text)))
+             (found nil))
+        (while (and (>= i 0) (not found))
+          (if (eq (elt text i) ?\n)
+              (setq found i)
+            (setq i (1- i))))
+        (if found (+ lo found 1) lo)))))
+
+(defun nelisp--motion-eol (pos buf)
+  "Return the 1-based position of the end of the line containing POS in
+BUF: the position of the next newline at/after POS, or `point-max' when
+the line runs to the end of the (accessible) buffer with none."
+  (let ((hi (nelisp-point-max buf)))
+    (if (>= pos hi)
+        hi
+      (let* ((text (nelisp-buffer-substring pos hi buf))
+             (i (string-match "\n" text)))
+        (if i (+ pos i) hi)))))
+
+(defun nelisp--motion-prev-bol (pos buf)
+  "Return the start of the line immediately before the line that starts
+at POS in BUF (POS is assumed to already be a line start); `point-min'
+when POS is already at/before it."
+  (let ((lo (nelisp-point-min buf)))
+    (if (<= pos lo) lo (nelisp--motion-bol (1- pos) buf))))
+
+(defun nelisp--motion-forward-line (buf pos n)
+  "Return (RESULT . SHORTFALL) for moving N logical lines from POS in
+BUF, matching `forward-line' (probed): \"if point is on line I, move to
+the start of line I + N\", clamped at the buffer bounds with no error,
+and a non-empty final line at the end counts as one line moved for a
+positive N that runs out of newlines.  Never touches real point -- both
+`forward-line' and `line-beginning-position'/`line-end-position' below
+share this so the latter two can compute without moving anything."
+  (let ((lo (nelisp-point-min buf))
+        (hi (nelisp-point-max buf)))
+    (cond
+     ((= n 0)
+      (cons (nelisp--motion-bol pos buf) 0))
+     ((> n 0)
+      (let ((cur pos) (remaining n) (ran-out nil))
+        (while (and (> remaining 0) (not ran-out))
+          (if (>= cur hi)
+              (setq ran-out t)
+            (let* ((text (nelisp-buffer-substring cur hi buf))
+                   (i (string-match "\n" text)))
+              (if i
+                  (progn (setq cur (+ cur i 1))
+                         (setq remaining (1- remaining)))
+                (setq cur hi)
+                (setq ran-out t)))))
+        ;; Reaching the end on an unterminated last line still counts as
+        ;; one line successfully moved (probed: `forward-line' docstring's
+        ;; own "Exception" paragraph, confirmed against a no-trailing-
+        ;; newline buffer).
+        (when (and (> remaining 0)
+                   (= cur hi)
+                   (or (= cur lo)
+                       (/= (nelisp--motion-char-at (1- cur) buf) ?\n)))
+          (setq remaining (1- remaining)))
+        (cons cur remaining)))
+     (t
+      (let* ((m (- n))
+             (cur (nelisp--motion-bol pos buf))
+             (remaining m) (stalled nil))
+        (while (and (> remaining 0) (not stalled))
+          (let ((prev (nelisp--motion-prev-bol cur buf)))
+            (if (= prev cur)
+                (setq stalled t)
+              (setq cur prev)
+              (setq remaining (1- remaining)))))
+        (cons cur (- remaining)))))))
+
+(unless (fboundp 'forward-char)
+  (defun forward-char (&optional n)
+    "Move point N characters forward (backward if N negative; default 1).
+Probed against Emacs 30.1: point is clamped to the buffer bound even
+when the full move does not fit, and `end-of-buffer'/`beginning-of-
+buffer' is still signaled in that case (data nil, matching Emacs); a
+move that fits fully returns nil and signals nothing."
+    (when n (nelisp--check-integer n))
+    (let* ((b nelisp--current-buffer)
+           (count (or n 1))
+           (lo (nelisp-point-min b))
+           (hi (nelisp-point-max b))
+           (target (+ (nelisp-point b) count))
+           (clamped (max lo (min hi target))))
+      (nelisp-goto-char clamped b)
+      (cond
+       ((> target hi) (signal 'end-of-buffer nil))
+       ((< target lo) (signal 'beginning-of-buffer nil))))))
+
+(unless (fboundp 'forward-line)
+  (defun forward-line (&optional n)
+    "Move point to the start of the (N-relative-to-current) line; default
+N=1.  Returns the shortfall (probed against Emacs 30.1): 0 when the
+move completed, otherwise how many lines were left uncompleted (N minus
+lines moved forward; N plus lines moved backward).  Never signals."
+    (when n (nelisp--check-integer n))
+    (let* ((b nelisp--current-buffer)
+           (result (nelisp--motion-forward-line b (nelisp-point b) (or n 1))))
+      (nelisp-goto-char (car result) b)
+      (cdr result))))
+
+(unless (fboundp 'bolp)
+  (defun bolp ()
+    "T when point is at the beginning of a line (or `point-min')."
+    (let ((b nelisp--current-buffer))
+      (= (nelisp-point b) (nelisp--motion-bol (nelisp-point b) b)))))
+
+(unless (fboundp 'eolp)
+  (defun eolp ()
+    "T when point is at the end of a line (or `point-max')."
+    (let ((b nelisp--current-buffer))
+      (= (nelisp-point b) (nelisp--motion-eol (nelisp-point b) b)))))
+
+(unless (fboundp 'line-beginning-position)
+  (defun line-beginning-position (&optional n)
+    "Return the position of the start of the Nth line from point's line
+\(default N=1, meaning point's own line\); does not move point.  Probed
+against Emacs 30.1 -- same line arithmetic as `forward-line' on N-1,
+clamped at the buffer bounds, applied to a copy of point rather than
+point itself."
+    (when n (nelisp--check-integer n))
+    (let ((b nelisp--current-buffer))
+      (car (nelisp--motion-forward-line b (nelisp-point b) (1- (or n 1)))))))
+
+(unless (fboundp 'line-end-position)
+  (defun line-end-position (&optional n)
+    "Return the position of the end of the Nth line from point's line
+\(default N=1\); does not move point.  Same line as
+`line-beginning-position' N, then that line's end (probed 30.1)."
+    (when n (nelisp--check-integer n))
+    (let* ((b nelisp--current-buffer)
+           (bol (car (nelisp--motion-forward-line b (nelisp-point b) (1- (or n 1))))))
+      (nelisp--motion-eol bol b))))
+
+(unless (boundp 'tab-width)
+  (defvar tab-width 8
+    "Columns a tab advances to the next multiple of, for `current-column'.
+Emacs's own default; nothing in this runtime overrides it per-buffer."))
+
+(unless (fboundp 'current-column)
+  (defun current-column ()
+    "Return point's 0-based column on its line, expanding tabs by
+`tab-width' (probed against Emacs 30.1, including the tab-expansion
+case)."
+    (let* ((b nelisp--current-buffer)
+           (pos (nelisp-point b))
+           (bol (nelisp--motion-bol pos b))
+           (text (nelisp-buffer-substring bol pos b))
+           (width (if (and (integerp tab-width) (> tab-width 0)) tab-width 8))
+           (col 0))
+      (dotimes (i (length text))
+        (if (eq (elt text i) ?\t)
+            (setq col (* width (1+ (/ col width))))
+          (setq col (1+ col))))
+      col)))
+
+(unless (fboundp 'following-char)
+  (defun following-char ()
+    "Return the character after point, or 0 at `point-max' (probed 30.1)."
+    (let ((b nelisp--current-buffer))
+      (or (nelisp--motion-char-at (nelisp-point b) b) 0))))
+
+(unless (fboundp 'preceding-char)
+  (defun preceding-char ()
+    "Return the character before point, or 0 at `point-min' (probed 30.1)."
+    (let ((b nelisp--current-buffer))
+      (or (nelisp--motion-char-at (1- (nelisp-point b)) b) 0))))
+
+(defun nelisp--motion-parse-skip-spec (spec)
+  "Parse SPEC in `skip-chars-forward' syntax into (NEGATE . SET).
+SET is a list whose elements are either a literal character code or a
+\(LO . HI) inclusive range cons.  Supports a leading `^' negation, `X-Y'
+ranges, a literal `]' anywhere (never special, probed), and backslash-
+escaped `^'/`-'/`\\\\'.  POSIX class names such as `[:alpha:]' are NOT
+supported -- out of Doc 204 P2 scope, no consumer here needs them."
+  (nelisp--check-string spec)
+  (let* ((len (length spec))
+         (i 0)
+         (negate nil)
+         (set nil))
+    (when (and (< i len) (eq (elt spec i) ?^))
+      (setq negate t)
+      (setq i (1+ i)))
+    (while (< i len)
+      (let ((c (elt spec i)))
+        (cond
+         ((and (eq c ?\\) (< (1+ i) len)
+               (memq (elt spec (1+ i)) '(?^ ?- ?\\)))
+          (push (elt spec (1+ i)) set)
+          (setq i (+ i 2)))
+         ((and (< (+ i 2) len)
+               (eq (elt spec (1+ i)) ?-))
+          (push (cons c (elt spec (+ i 2))) set)
+          (setq i (+ i 3)))
+         (t
+          (push c set)
+          (setq i (1+ i))))))
+    (cons negate set)))
+
+(defun nelisp--motion-charset-member-p (ch set)
+  "T when character CH is covered by SET, the cdr of a
+`nelisp--motion-parse-skip-spec' result."
+  (let ((hit nil))
+    (dolist (item set)
+      (unless hit
+        (if (consp item)
+            (when (and (>= ch (car item)) (<= ch (cdr item))) (setq hit t))
+          (when (= ch item) (setq hit t)))))
+    hit))
+
+(defun nelisp--motion-skip-forward (spec lim)
+  "Move point forward while it matches SPEC; return the distance moved
+\(0 or positive\).  LIM caps the position point may reach."
+  (let* ((b nelisp--current-buffer)
+         (parsed (nelisp--motion-parse-skip-spec spec))
+         (negate (car parsed))
+         (set (cdr parsed))
+         (start (nelisp-point b))
+         (hi (if lim (min lim (nelisp-point-max b)) (nelisp-point-max b)))
+         (cur start))
+    (while (and (< cur hi)
+                (let ((matches (nelisp--motion-charset-member-p
+                                 (nelisp--motion-char-at cur b) set)))
+                  (if negate (not matches) matches)))
+      (setq cur (1+ cur)))
+    (nelisp-goto-char cur b)
+    (- cur start)))
+
+(defun nelisp--motion-skip-backward (spec lim)
+  "Move point backward while the character before it matches SPEC;
+return the distance moved (0 or negative).  LIM floors the position
+point may reach."
+  (let* ((b nelisp--current-buffer)
+         (parsed (nelisp--motion-parse-skip-spec spec))
+         (negate (car parsed))
+         (set (cdr parsed))
+         (start (nelisp-point b))
+         (lo (if lim (max lim (nelisp-point-min b)) (nelisp-point-min b)))
+         (cur start))
+    (while (and (> cur lo)
+                (let ((matches (nelisp--motion-charset-member-p
+                                 (nelisp--motion-char-at (1- cur) b) set)))
+                  (if negate (not matches) matches)))
+      (setq cur (1- cur)))
+    (nelisp-goto-char cur b)
+    (- cur start)))
+
+(unless (fboundp 'skip-chars-forward)
+  (defun skip-chars-forward (spec &optional lim)
+    "Move point forward over characters in SPEC; return distance moved.
+Probed against Emacs 30.1 for literal sets, `^' negation, `X-Y' ranges
+and a set-initial `]'."
+    (nelisp--motion-skip-forward spec lim)))
+
+(unless (fboundp 'skip-chars-backward)
+  (defun skip-chars-backward (spec &optional lim)
+    "Move point backward over characters in SPEC; return distance moved
+\(same SPEC syntax as `skip-chars-forward', probed against Emacs 30.1\)."
+    (nelisp--motion-skip-backward spec lim)))
 
 ;; No standard-name marker constructors wired here (binary-size-ratchet:
 ;; each extra top-level `defun' costs far more than its source size).
