@@ -1645,8 +1645,8 @@ native-symbol-test
 # Project-toolchain contract suites, wrapped through `nelisp-ai.sh gate NAME
 # -- make NAME' the same way.  None is in `check'; each has a row in
 # tools/gate-mutations.txt.  package-resolver, project-doc,
-# project-manifest, package-store and package-registry are pure host
-# Python: no runtime binary, no rebuild.  project-build,
+# project-manifest, package-store, package-registry and artifact-service
+# are pure host Python: no runtime binary, no rebuild.  project-build,
 # project-profile-build and project-debug each build their own project
 # executable through host Emacs and also need no pre-built target/nelisp.
 # project-cli-integration, project-test-runner, project-bench,
@@ -1660,6 +1660,7 @@ project-doc
 project-manifest
 package-store
 package-registry
+artifact-service
 project-build
 project-profile-build
 project-debug

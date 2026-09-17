@@ -578,9 +578,10 @@ native-symbol-test:
 	NELISP_SYMBOL_TEST_BIN=$(NATIVE_SYMBOL_BIN) EMACS=$(EMACS) python3 test/nelisp-native-symbol-test.py
 
 # Project-toolchain contract suites, wrapped the same way as the block
-# above.  package-resolver, project-doc, project-manifest, package-store and
-# package-registry are pure host Python: no runtime binary, no rebuild.
-.PHONY: package-resolver project-doc project-manifest package-store package-registry
+# above.  package-resolver, project-doc, project-manifest, package-store,
+# package-registry and artifact-service are pure host Python: no runtime
+# binary, no rebuild.
+.PHONY: package-resolver project-doc project-manifest package-store package-registry artifact-service
 package-resolver:
 	python3 test/nelisp-package-resolver-test.py
 
@@ -595,6 +596,9 @@ package-store:
 
 package-registry:
 	python3 test/nelisp-registry-test.py
+
+artifact-service:
+	python3 test/nelisp-artifact-service-test.py
 
 # project-build, project-profile-build and project-debug each build their
 # own project executable through host Emacs (`nelisp-project-build.el'),

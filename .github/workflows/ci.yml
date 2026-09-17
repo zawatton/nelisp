@@ -353,6 +353,10 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate package-store -- make package-store
+      - name: "Artifact-service receipts, reads and error identities (tools/ai/nelisp-ai.sh gate artifact-service); no runtime build"
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate artifact-service -- make artifact-service
       - name: "Project manifest edits and failed publication recovery (tools/ai/nelisp-ai.sh gate project-manifest); no runtime build"
         if: runner.os == 'Linux'
         shell: bash

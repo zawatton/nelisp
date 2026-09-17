@@ -116,8 +116,8 @@ def application_inputs(root, manifest, source):
     locked = locked_dependencies(root, manifest)
     inputs = []
     if locked:
-        from nelisp_package_store import source_bytes
-        inputs = [(f"package:{item['name']}@{item['version']}/source.nl", source_bytes(item))
+        from nelisp_artifact_service import read_artifact
+        inputs = [(f"package:{item['name']}@{item['version']}/source.nl", read_artifact(item))
                   for item in locked]
     inputs.append((source.relative_to(root).as_posix(), source.read_bytes()))
     return inputs, locked
@@ -166,9 +166,9 @@ def package_command(command, index, offline, name=None, requirement=None, regist
     else:
         locked = locked_dependencies(root, manifest)
     if command != "remove":
-        from nelisp_package_store import source_bytes
+        from nelisp_artifact_service import read_artifact
         request = [{"path": item["name"] + "@" + item["version"],
-                    "text": source_bytes(item, offline=offline).decode("utf-8")} for item in locked]
+                    "text": read_artifact(item, offline=offline).decode("utf-8")} for item in locked]
         if request:
             lisp_plan(request, validate_only=True)
     if command in ("add", "remove"):

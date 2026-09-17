@@ -850,6 +850,12 @@ project-manifest|tools/nelisp_project_manifest.py|s/original\.chmod(mode)/candid
 # unnoticed.
 package-store|tools/nelisp_package_store.py|s/verify_artifact(locked, content)/pass  # verify_artifact(locked, content)/|the SHA-256 integrity check against the locked digest is skipped, so corrupted or hash-mismatched artifact bytes are cached and returned undetected
 #
+# artifact-service: _classify() maps nelisp_package_store's "missing cached
+# package" message to the "missing" identity, so a caller can tell an
+# offline cache miss apart from a corrupted or tampered artifact. Pointing
+# that same message at "digest-mismatch" instead collapses the two cases.
+artifact-service|tools/nelisp_artifact_service.py|s/("missing", re.compile(r"^missing cached package ")),/("digest-mismatch", re.compile(r"^missing cached package ")),/|an offline cache miss is classified as "digest-mismatch" instead of "missing", so a caller can no longer tell a missing artifact from a corrupted one or match it to the "run nelisp fetch" guidance
+#
 # package-registry: search_index() matches a query against package names
 # case-insensitively. Comparing the raw query instead of its lowercased
 # form makes the search reject any query whose case does not match the
