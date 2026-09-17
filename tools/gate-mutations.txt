@@ -1002,3 +1002,18 @@ ffi-loader|packages/nl-ffi/src/nl-ffi-loader.el|s/((= l-bind nl-ffi-loader--stb-
 # with-comment (expecting `(1 2 3)', getting `(0 0 0)'); restored to
 # "GATE-COUNT checked=40 findings=0" / "PASS (40 tests)" (GREEN).
 nelisp-toml-standalone-smoke|packages/nelisp-toml/src/nelisp-toml.el|s/(cons (string-to-number token) next)/(cons 0 next)/|nelisp-toml's integer branch returns a constant 0 instead of the parsed value, so every TOML integer (schema_version, array elements, etc.) silently becomes 0
+# standalone-eval-test: had no row at all until 2026-09-17 (the
+# standalone-eval-test link fix session). The generated driver writes the
+# embedded form's two integer operands (NELISP_FORM_A/_B, default 1/2) into
+# int1/int2 before building `(OP A B)'; feeding int2 the SAME value as int1
+# instead of B makes the embedded form silently evaluate as `(OP A A)'
+# instead of `(OP A B)' -- lethal whenever A != B, which the gate's own
+# defaults (1 and 2) always are. Reachable every run (this line always
+# executes to build the test form) and structural (a literal `,a' in place
+# of `,b', not a timing-dependent effect). Proven 2026-09-17 via
+# `make gate-mutation-verify GATE=standalone-eval-test': RED with the
+# mutation in place -- "GATE-COUNT checked=1 findings=1" and
+# "[standalone] FAIL: ... -> exit 2 (expected 3)" ((+ 1 1) instead of
+# (+ 1 2)); restored to "GATE-COUNT checked=1 findings=0" / "[standalone]
+# PASS: ... -> exit 3 (expected 3)" (GREEN).
+standalone-eval-test|scripts/nelisp-standalone-build.el|s/(ptr-write-u64 int2 8 ,b)/(ptr-write-u64 int2 8 ,a)/|the driver writes operand A into int2 instead of B, so the embedded (OP A B) form silently evaluates as (OP A A) and the exit code no longer matches NELISP_FORM_A/_B

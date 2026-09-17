@@ -5696,6 +5696,29 @@ argument (reachability + in-arena bounds checks).")
              (ptr-write-u64 268435472 0 1)
              (atomic-fetch-add 268435544 1)
              1)))
+        ;; `nl_env_pop_frame' moved in from `nelisp-cc-evalport-env-leaves-
+        ;; simple' (Doc 135 Stage 135.C): `nelisp_eval_call_root_done' below
+        ;; is its only caller anywhere in the tree (grep-verified), and that
+        ;; caller lives in this shim source, which the eval-test manifest
+        ;; links but the unit backing `nelisp-cc-evalport-env-leaves-simple'
+        ;; ("env-leaves-simple.o" in the reader's own real-sf manifest) does
+        ;; not reach.  Same failure class, same fix shape, as the
+        ;; `nl_gc_ctx_*'/`nl_gc_eval_ctx_*' move recorded a few thousand
+        ;; lines up in this file: shim.o is shared with the reader build (see
+        ;; `nelisp-standalone--reader-units''s `helpers' filter, which does
+        ;; NOT exclude "shim.o"), so relocating rather than copying this
+        ;; defun keeps the reader link's symbol table exactly as populated as
+        ;; before -- `nl_env_lookup_val' (env-leaves-simple.o's only
+        ;; remaining export) is unaffected, and `nl_env_pop_frame' now
+        ;; resolves via shim.o for BOTH builds instead of via env-leaves-
+        ;; simple.o for the reader alone.  The `_pad' second parameter in the
+        ;; original is dropped here because it was already unread and this
+        ;; shim's own call site (`nelisp_eval_call_root_done', directly
+        ;; below) has only ever passed the one argument.
+        (defun nl_env_pop_frame (env)
+          (let* ((frames_ptr (+ env 32))
+                 (scratch_slot (alloc-bytes 32 8)))
+            (nelisp_frame_pop frames_ptr scratch_slot)))
         (defun nelisp_eval_call_root_done (rc env)
           (seq (nl_env_pop_frame env) rc))
         (defun nelisp_eval_call (form_ptr env out)
@@ -18800,6 +18823,30 @@ and `nl_eval_inner_cons' swapped for the cache-aware/rooted versions above."
 ;; (special-form bodies, eval-inner var/cell branches, lambda/closure, frame/bind
 ;; shims, nelisp_aot_builtin_call1).  Each returns a sentinel; probes confirmed
 ;; none run for a plain (builtin . (+ . nil)) application.
+;;
+;; `nelisp_frame_scope_push' (added below, 2026-09-17 standalone-eval-test
+;; link fix) is a partial exception to "never executed": commit f25ec9af1
+;; made `nelisp_eval_call' (shim.o, shared with the reader) call it
+;; unconditionally at every top-level form's root boundary, including the
+;; plain (OP A B) form this build evaluates -- so the CALL does run.  Its
+;; EFFECT does not: the real `nelisp_frame_scope_push' (`lisp/nelisp-cc-
+;; frame-stack-find.el') pushes a frame by calling `nelisp_frame_push_direct'
+;; -- already trap-stubbed to a no-op two lines below, so no frame is ever
+;; actually installed in this build regardless -- then calls
+;; `nelisp_frame_scope_mark' to write a boundary marker into the slot the
+;; (never-incremented) depth counter points at.  Linking the real function
+;; here would need `nelisp_frame_scope_mark'/`nl_frame_push_sym0_ptr'/
+;; `nl_frame_push_sym1_ptr' too, and would have it mark a frame that was
+;; never pushed -- indexing the backing vector at a stale depth is a
+;; correctness regression relative to today's clean no-op, not an
+;; improvement, since this build's own test never inspects frame/scope state
+;; (`nelisp-standalone--form-params' only ever asserts the arithmetic exit
+;; code).  A stub keeps both halves of the push/pop pair -- this and
+;; `nelisp_frame_push_direct' below -- at the same "no real frame stack in
+;; this build" no-op the eval manifest already committed to; its sibling
+;; `nl_env_pop_frame' (moved into `nelisp-standalone--shim-source' above)
+;; pops through `nelisp_frame_pop', which resolves to the no-op stub two
+;; lines below here too, so the pair is symmetric.
 (defconst nelisp-standalone--trap-source
   '(seq
     (defun nl_sf_if (_a _e _o _p) 1) (defun nl_sf_let (_a _e _o _p) 1)
@@ -18812,6 +18859,7 @@ and `nl_eval_inner_cons' swapped for the cache-aware/rooted versions above."
     (defun nl_apply_lambda_inner (_cap _f _b _a _e _o) 1)
     (defun nelisp_frame_push (_f _s) 1) (defun nelisp_frame_pop (_f _s) 1)
     (defun nelisp_frame_push_direct (_f _a _b _c) 1)
+    (defun nelisp_frame_scope_push (_f) 1)
     (defun nelisp_env_bind_local (_m _f _n _v _vec _flag) 1)
     (defun nelisp_env_shim_op (_op _m _s _u _o _p) 0)
     (defun nelisp_env_shim_set_op (_op _m _s _sc _o _z) 0)
