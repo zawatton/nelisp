@@ -315,7 +315,10 @@
 # 879 -> 946 on 2026-09-12 (v1.3.1): the same 67 calls, counted in the
 # overall total -- the Darwin path/stat/dirent translation described at the
 # scripts/nelisp-standalone-build.el pin below.
-unsafe-call 946
+# 946 -> 953 on 2026-09-17: the same seven calls, counted in the overall
+# total -- the `ptr-call-typed' aarch64 refusal arm described at the
+# scripts/nelisp-standalone-build.el pin below.
+unsafe-call 953
 
 # `pinned-kernel-call FILE COUNT' pins the per-file unquoted `unsafe-call'
 # count behind `total' above -- the kernel files that actually carry
@@ -474,7 +477,23 @@ pinned-kernel-call scripts/nelisp-gc-pause-growth.el 2
 # `nl_win_stat_from_data` already has for Win32 and `nl_os_stat_fixup` for
 # linux-aarch64.  It is emitted target code, contributed only to a
 # macos-aarch64 build.
-pinned-kernel-call scripts/nelisp-standalone-build.el 824
+# 824 -> 831 on 2026-09-17 (f494ef8e7): `ptr-call-typed' gained a refusing
+# arm for the targets that cannot emit `xmm0'.  Building the catchable
+# `nelisp-unsupported-primitive' payload in generated code is raw-memory
+# work by construction, and it is the same construction
+# `nelisp-standalone--applyfn-ffi-unsupported-form' already uses for
+# `nl-ffi-call' in this same file.  The seven counted calls are four
+# `alloc-bytes' (tag buffer, name buffer, symbol slot, nil slot) and three
+# `ptr-write-u64' (the two name-word stores and the signal flag).  The arm's
+# other generated operations -- `nl_alloc_symbol' x2, `wf_write_nil',
+# `nelisp_cons_construct', `atomic-fetch-add' -- are not on
+# `nl-safe-unsafe-primitives' and are not counted; the seven above were
+# counted per name rather than read off the diff, because the textual
+# occurrences (12) and the counted ones (7) are not the same number.
+# Measured with a control that predates the change: a clean b7f2c103b tree
+# extracted to its own directory reports total=946 and PASSES, while this
+# tree reports 831 for this file and total=953.
+pinned-kernel-call scripts/nelisp-standalone-build.el 831
 # 2026-09-11: one GC snapshot raw-address probe, bounded by the named table
 # contract and used only for structured diagnostics.
 pinned-kernel-call lisp/nelisp-repl-gc.el 1
