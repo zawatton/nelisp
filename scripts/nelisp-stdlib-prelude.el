@@ -7618,6 +7618,18 @@ explicitly instead, see the section header comment above); kept so
     (and (>= idx 0) (< idx (length total))
          (elt total idx))))
 
+(defun nelisp-char-before (&optional pos buf)
+  "Return the character before POS (default point) in BUF, or nil.
+Doc 204 P1 -- no body for this existed in either copy before; written
+in the same shape as `nelisp-char-after' just above, one index earlier
+(the character before POS sits at POS - 2 in the 0-based string)."
+  (let* ((b (nelisp-buffer--ambient buf))
+         (p (or pos (nelisp-point b)))
+         (total (nelisp-buffer-string b))
+         (idx (- p 2)))
+    (and (>= idx 0) (< idx (length total))
+         (elt total idx))))
+
 (defun nelisp-buffer--shift-markers-on-insert (buf at inserted-len)
   "Advance markers at or past AT by INSERTED-LEN."
   (dolist (m (nelisp-buffer-markers buf))
@@ -8058,18 +8070,31 @@ anything (Doc 188 §2.2)."
       (unless b (signal 'error (list "No buffer to kill")))
       (when (eq b nelisp--current-buffer) (setq nelisp--current-buffer nil))
       (or (nelisp-kill-buffer b) t))))
+;; Doc 204 §1.4/P1: both macros below now let-bind `nelisp-buffer--
+;; current' alongside `nelisp--current-buffer', to the SAME buffer, in
+;; the SAME `let'/`let*' -- so the two trackers can never observe each
+;; other's buffer and always unwind together.  This does not merge the
+;; two variables or touch `nelisp-with-buffer'/`nelisp-set-buffer'/
+;; `nelisp-current-buffer' (the `nelisp-'-prefixed API's own dynamic
+;; extent is untouched); it only makes the standard-name forms below
+;; ALSO keep the ambient tracker in step, so `nelisp-buffer--ambient'
+;; (and therefore `nelisp-char-after'/`nelisp-char-before'/`nelisp-
+;; delete-region', ported verbatim from src/nelisp-buffer.el) resolves
+;; correctly inside them without being passed an explicit BUF.
 (unless (fboundp 'with-current-buffer)
   (defmacro with-current-buffer (buffer-or-name &rest body)
     (let ((b (make-symbol "buf")))
       `(let ((,b (get-buffer ,buffer-or-name)))
          (unless ,b (signal 'error (list (format "No such buffer: %S" ,buffer-or-name))))
-         (let ((nelisp--current-buffer ,b))
+         (let ((nelisp--current-buffer ,b)
+               (nelisp-buffer--current ,b))
            ,@body)))))
 (unless (fboundp 'with-temp-buffer)
   (defmacro with-temp-buffer (&rest body)
     (let ((b (make-symbol "buf")))
       `(let* ((,b (nelisp-generate-new-buffer " *temp*"))
-              (nelisp--current-buffer ,b))
+              (nelisp--current-buffer ,b)
+              (nelisp-buffer--current ,b))
          (unwind-protect
              (progn ,@body)
            (nelisp-kill-buffer ,b))))))
@@ -8120,6 +8145,12 @@ there, `(wrong-type-argument stringp 42)', already matches what
         (signal 'error (list "Selecting deleted buffer")))
        (t
         (setq nelisp--current-buffer b)
+        ;; Doc 204 §1.4/P1: keep the ambient tracker in step too, same
+        ;; reasoning as the `with-current-buffer'/`with-temp-buffer' fix
+        ;; above -- `set-buffer' is the third of the three P1 binding
+        ;; sites, and unlike the macros it SETs rather than lexically
+        ;; unwinding, so there is no `let' to attach a second binding to.
+        (setq nelisp-buffer--current b)
         b)))))
 
 (unless (fboundp 'buffer-substring)
@@ -8157,6 +8188,30 @@ wired to standard names by any phase through P2), so that gap is
 unreachable from the surface this phase builds, not silently papered
 over."
     (nelisp-erase-buffer nelisp--current-buffer)))
+
+;; ---- Doc 204 P1: char-after / char-before / delete-region -------------
+;; Same style as the `point'/`point-min'/`point-max'/`goto-char' bridges
+;; above: `(unless (fboundp 'NAME) (defun NAME (...) (nelisp-NAME ...
+;; nelisp--current-buffer)))', threading `nelisp--current-buffer' (never
+;; the ported file's own `nelisp-buffer--current') explicitly as the BUF
+;; argument.  These were unreachable under their public names before this
+;; phase, not because the bodies were missing (they were not, `nelisp-
+;; char-after'/`nelisp-delete-region' both predate this change) but
+;; because `nelisp-buffer--ambient' read `nelisp-buffer--current', which
+;; nothing bound -- see the `with-current-buffer'/`with-temp-buffer'/
+;; `set-buffer' fix above, which this now builds on.  Public Emacs
+;; `char-after'/`char-before'/`delete-region' take no BUF argument (they
+;; always act on the current buffer), so only POS/START/END are exposed
+;; here; `nelisp--current-buffer' is threaded in as BUF explicitly.
+(unless (fboundp 'char-after)
+  (defun char-after (&optional pos)
+    (nelisp-char-after pos nelisp--current-buffer)))
+(unless (fboundp 'char-before)
+  (defun char-before (&optional pos)
+    (nelisp-char-before pos nelisp--current-buffer)))
+(unless (fboundp 'delete-region)
+  (defun delete-region (start end)
+    (nelisp-delete-region start end nelisp--current-buffer)))
 
 ;; No standard-name marker constructors wired here (binary-size-ratchet:
 ;; each extra top-level `defun' costs far more than its source size).

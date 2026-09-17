@@ -189,6 +189,18 @@ Signals `error' when neither argument nor current is set."
     (and (>= idx 0) (< idx (length total))
          (elt total idx))))
 
+(defun nelisp-char-before (&optional pos buf)
+  "Return the character before POS (default point) in BUF, or nil.
+Doc 204 P1 -- no body for this existed in either copy before; written
+in the same shape as `nelisp-char-after' just above, one index earlier
+(the character before POS sits at POS - 2 in the 0-based string)."
+  (let* ((b (nelisp-buffer--ambient buf))
+         (p (or pos (nelisp-point b)))
+         (total (nelisp-buffer-string b))
+         (idx (- p 2)))
+    (and (>= idx 0) (< idx (length total))
+         (elt total idx))))
+
 ;;; Marker / overlay / text-property shift helpers -------------------
 ;;
 ;; Phase 5-B.2 replaces the Phase 5-B.1 cons-cell placeholder with
