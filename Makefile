@@ -3382,9 +3382,16 @@ ffi-dsl:
 	@chmod +x target/nelisp
 	@$(STANDALONE_BIN) --load packages/nl-ffi/test/nl-ffi-dsl-standalone-smoke.el
 
-# FFI step 3 increment 2 (packages/nl-ffi/src/nl-ffi-loader.el): a pure-elisp
-# ELF loader, so the whole point is that this gate runs on the DEFAULT
-# STATIC reader -- no `NELISP_READER_DYNAMIC' here, unlike `ffi-dsl' above.
+# FFI step 3 increments 2-3 (packages/nl-ffi/src/nl-ffi-loader.el): a
+# pure-elisp ELF loader, so the whole point is that this gate runs on the
+# DEFAULT STATIC reader -- no `NELISP_READER_DYNAMIC' here, unlike `ffi-dsl'
+# above.  Increment 3 adds TLS (Initial-Exec, `R_X86_64_TPOFF64' only --
+# `-tls-ie.so' below is compiled with `-ftls-model=initial-exec' specifically
+# to get that relocation type instead of GCC's default General-Dynamic
+# `__tls_get_addr' sequence for `-fPIC -shared' code -- see nl-ffi-loader.el's
+# Commentary, "TLS"); the unchanged `-tls.so' (no `-ftls-model' flag) now
+# proves General-Dynamic TLS still refuses, rather than proving `PT_TLS'
+# itself refuses (it no longer does).
 # Needs several real `.so's to load: builds them all at gate time with `cc'
 # (see packages/nl-ffi/test/fixtures/*.c and the report for why each
 # fixture's exact compile flags are safe for CI).  `cc' is already relied on
@@ -3421,6 +3428,9 @@ ifneq ($(NL_FFI_LOADER_CC),)
 	  packages/nl-ffi/test/fixtures/nl-ffi-loader-fixture-needs-dep.c -lm
 	@cc -shared -fPIC -nostdlib -o target/nl-ffi-loader-fixture-tls.so \
 	  packages/nl-ffi/test/fixtures/nl-ffi-loader-fixture-tls.c
+	@cc -shared -fPIC -nostdlib -ftls-model=initial-exec \
+	  -o target/nl-ffi-loader-fixture-tls-ie.so \
+	  packages/nl-ffi/test/fixtures/nl-ffi-loader-fixture-tls-ie.c
 	@cc -shared -fPIC -o target/nl-ffi-loader-fixture-init.so \
 	  packages/nl-ffi/test/fixtures/nl-ffi-loader-fixture-init.c
 	@cc -shared -fPIC -nostdlib -Wl,-soname,nl-ffi-loader-fixture-dep-leaf.so \

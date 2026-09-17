@@ -1023,7 +1023,15 @@ ffi-dsl|scripts/nelisp-standalone-build.el|s/(seq (sexp-write-float out (bits-to
 # with `nl-ffi-loader-unsupported'. Proven 2026-09-16: GATE-COUNT
 # checked=23 findings=1 (RED, ffi-loader-glob-dat-refuses-undefined-symbol:
 # "no error signaled by (nl-ffi-loader--apply-one-relocation ...)") with
-# the mutation in place; checked=24 findings=0 (GREEN) restored.
+# the mutation in place; checked=24 findings=0 (GREEN) restored.  Row
+# UNCHANGED through increment 3 (TLS): the targeted line is still exactly
+# `((= l-bind nl-ffi-loader--stb-weak) 0)' in the same function, untouched
+# by increment 3's new, separate `nl-ffi-loader--resolve-tpoff64'.  The
+# test COUNT moved only because increment 3 added tests elsewhere.
+# Re-proven 2026-09-17: GATE-COUNT checked=31 findings=1 (RED,
+# ffi-loader-glob-dat-refuses-undefined-symbol: "no error signaled by
+# (nl-ffi-loader--apply-one-relocation ...)") with the mutation in place;
+# checked=32 findings=0 (GREEN) restored.
 ffi-loader|packages/nl-ffi/src/nl-ffi-loader.el|s/((= l-bind nl-ffi-loader--stb-weak) 0)/(t 0)/|nl-ffi-loader--resolve-relocation-symbol stops refusing an R_X86_64_GLOB_DAT/R_X86_64_JUMP_SLOT relocation whose symbol is undefined and unresolved anywhere in the dependency graph, so a dependency this loader cannot load is silently treated as resolving to a null pointer instead of signalling nl-ffi-loader-unsupported|linux-x86_64
 # nelisp-toml-standalone-smoke: added 2026-09-16 for packages/nelisp-toml.
 # nelisp-toml--parse-bare-value's integer branch always returns 0 instead of

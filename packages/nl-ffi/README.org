@@ -528,8 +528,10 @@ dependency-first order across the graph -- a dependency's initializers
 always run before its dependent's.
 
 Out of scope for increment 2, unchanged from increment 1, each still
-refusing with a named condition: TLS (=:tls-segment=/=:tls-relocation=),
-symbol interposition/versioning beyond the one search order above
+refusing with a named condition: TLS (=:tls-segment=/=:tls-relocation=;
+increment 3, below, lifts the =PT_TLS=-segment part of this for ONE TLS
+model -- =:tls-segment= no longer exists as a condition after increment
+3), symbol interposition/versioning beyond the one search order above
 (two separate =nl-ffi-loader-open= calls never search each other's
 graphs), unloading, the compact =DT_RELR= encoding, and =PT_GNU_RELRO=
 re-protection. This loader itself never needed an f64-capable =ptr-call=
@@ -544,13 +546,68 @@ existed on step 2's =dlsym= path alone, for a =double= return or a
 remain open -- see =nl-ffi--ptr-call-invoke='s Commentary for what
 either needs.
 
-** Step 3 increment 3 (open): TLS, DT_RELR, PT_GNU_RELRO, unloading
+** Step 3 increment 3 (done): TLS (Initial-Exec only)
 
-A real TLS block (allocating and initializing =PT_TLS='s image, then
-either implementing =__tls_get_addr= or restricting to the initial-exec
-model) is the load-bearing piece left: per increment 2's own safety
-argument, it is also what currently keeps every real system library this
-host has out of reach, so lifting it changes what "safe subset" means
-and needs its own risk analysis, not an incremental extension of
-increment 2's. =DT_RELR= decoding, =PT_GNU_RELRO= re-protection, and
-=nl-ffi-loader-close= (unloading) are each independent, smaller pieces.
+*The thread-pointer question.* Before writing any of this: does the
+reader establish =%fs= (x86-64 TLS is =%fs=-relative) today? Measured,
+not assumed -- raw =arch_prctl(ARCH_GET_FS)= against a freshly built
+=target/nelisp= returns success with the base at 0, and
+=arch_prctl(ARCH_GET_GS)= likewise, confirming this freestanding,
+libc-less, pthread-less reader never calls =arch_prctl= at all (a fresh
+Linux process starts with =FS_BASE= at 0; nothing here changes that). So
+a TLS access is meaningless, not merely risky, until this loader builds
+its own thread control block (TCB) and establishes =%fs= itself -- there
+is no real =ld.so= or libc startup sequence in this process to have done
+it already. See =nl-ffi-loader.el='s Commentary, "TLS", for the full
+evidence and reasoning.
+
+*The model.* GCC's DEFAULT TLS model for =-fPIC -shared= code is
+General-Dynamic (a =__thread= variable compiles to =R_X86_64_DTPMOD64=
+plus a call to =__tls_get_addr=, needing a dynamic thread vector this
+loader does not implement) -- confirmed with =readelf -r= before writing
+any loader code. Compiling with =-ftls-model=initial-exec= instead
+produces exactly ONE relocation, =R_X86_64_TPOFF64=: an offset, fixed
+once at load time, relative to a thread pointer this loader already
+controls completely. That is the ONLY TLS relocation type this increment
+implements. General-Dynamic/Local-Dynamic and TPOFF64's GOT-indirect/
+32-bit-immediate cousins (=R_X86_64_{GOTTPOFF,TPOFF32,TLSGD,TLSLD,
+DTPMOD64,DTPOFF32,DTPOFF64,GOTPC32_TLSDESC,TLSDESC_CALL,TLSDESC}=) stay
+refused by name (=:tls-relocation=), unchanged.
+
+*What this actually reaches.* A =PT_TLS= segment is allocated real
+storage: a single, process-wide, 1 MiB static arena, reserved lazily on
+first need, with =%fs= pointed at its high end and each object's block
+packed downward from there (standard Variant-II layout) -- a FIXED
+ceiling, never grown, since growing would mean moving =%fs= after code
+already compiled against the old offsets exists (=:tls-arena-exhausted=
+instead). =:tls-offset= is recorded on the object's own handle data so a
+caller can see it. Every OTHER TLS relocation type stays refused by
+name, and a =STT_TLS=-typed symbol is refused rather than silently
+treated as an ordinary address both via an ordinary GLOB_DAT/JUMP_SLOT
+relocation (=:tls-symbol-via-relocation=, mirroring the existing IFUNC-
+type check) and via =nl-ffi-loader-symbol= (treated as "not found",
+mirroring the existing IFUNC handling there).
+
+*Real system libraries still cannot load.* Re-measured against this
+host's real =libc.so.6=/=libm.so.6= (not assumed to still match
+increment 2's finding): =libc.so.6= itself uses ONLY =R_X86_64_TPOFF64=
+internally (16 occurrences, zero General-Dynamic) -- so TLS by itself no
+longer stops it. But widening what this loader reaches exposed a real
+gap in the EXISTING =DT_RELR= refusal: it matched only the pre-
+standardization experimental tag range, not the standardized tag values
+(binutils >= 2.38 / glibc >= 2.36) this host's real toolchain actually
+emits, so it was silently not firing against modern system libraries.
+Fixed (still a pure tag-presence refusal -- no =.relr.dyn= bytes are ever
+read or applied). With the fix, =nl-ffi-loader-fixture-needs-dep.so='s
+real =DT_NEEDED= on =libm.so.6= now refuses ONE hop down, at =libm.so.6=
+itself (=DT_RELR= present there), never reaching =libc.so.6= or its TLS
+at all. Real system libraries remain unreachable through this loader,
+exactly as after increment 2, but the specific reason changed and had to
+be re-verified rather than assumed to still hold -- see
+=nl-ffi-loader.el='s Commentary, "TLS", "THE REAL-SYSTEM-LIBRARY
+REACHABILITY QUESTION", for the full evidence.
+
+=DT_RELR= decoding (beyond the tag-presence refusal above),
+=PT_GNU_RELRO= re-protection, symbol versioning/interposition beyond the
+one search order above, and =nl-ffi-loader-close= (unloading) remain out
+of scope, each independent, smaller pieces than TLS was.

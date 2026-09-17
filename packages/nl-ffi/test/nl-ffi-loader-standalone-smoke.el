@@ -24,6 +24,9 @@
 ;;   cc -shared -fPIC -nostdlib \
 ;;     -o target/nl-ffi-loader-fixture-tls.so \
 ;;     packages/nl-ffi/test/fixtures/nl-ffi-loader-fixture-tls.c
+;;   cc -shared -fPIC -nostdlib -ftls-model=initial-exec \
+;;     -o target/nl-ffi-loader-fixture-tls-ie.so \
+;;     packages/nl-ffi/test/fixtures/nl-ffi-loader-fixture-tls-ie.c
 ;;   cc -shared -fPIC -o target/nl-ffi-loader-fixture-init.so \
 ;;     packages/nl-ffi/test/fixtures/nl-ffi-loader-fixture-init.c
 ;;   make standalone-reader   # the DEFAULT static build, no dynamic flag
@@ -52,10 +55,12 @@
 ;; Covers, against `nl-ffi-loader-fixture-needs-dep.so' (a real
 ;; `DT_NEEDED' on the SYSTEM `libm.so.6'):
 ;;   - Increment 2 genuinely ATTEMPTS this dependency (no more blanket
-;;     `:needs-dependency' refusal) and it is refused several hops down,
-;;     at `libc.so.6''s own `PT_TLS' -- a specific, deep, and (per
-;;     nl-ffi-loader.el's Commentary) EXPECTED reason, not the old
-;;     blanket one.
+;;     `:needs-dependency' refusal); increment 2 itself refused two hops
+;;     down, at `libc.so.6''s own `PT_TLS'.  RE-VERIFIED for increment 3
+;;     (`PT_TLS' is no longer a blanket refusal): this now refuses ONE hop
+;;     down, at `libm.so.6' ITSELF, via `DT_RELR' -- a specific, and (per
+;;     nl-ffi-loader.el's Commentary, "TLS") EXPECTED reason, not the old
+;;     blanket one, and not the reason increment 2 found either.
 ;; Covers, against `nl-ffi-loader-fixture-init.so' (ordinary CRT-supplied
 ;; `DT_INIT_ARRAY', including real weak-undefined `GLOB_DAT' relocations
 ;; -- see nl-ffi-loader.el's Commentary, "A real defect found while
@@ -70,9 +75,23 @@
 ;; `R_X86_64_IRELATIVE'):
 ;;   - An IFUNC-resolved call returns the resolver's actual choice (not
 ;;     the resolver's own address treated as if it were the target).
-;; Covers, against `nl-ffi-loader-fixture-tls.so' (a real PT_TLS
-;; segment, UNCHANGED from increment 1):
-;;   - `nl-ffi-loader-unsupported' reason `:tls-segment'.
+;; Covers, against `nl-ffi-loader-fixture-tls-ie.so' (increment 3, a real
+;; `PT_TLS' compiled with `-ftls-model=initial-exec' for a single
+;; `R_X86_64_TPOFF64' relocation -- see nl-ffi-loader.el's Commentary,
+;; "TLS"):
+;;   - A thread-local read returns the compiled-in initial value.
+;;   - A thread-local WRITE (through a setter, `%fs'-relative) is visible
+;;     to a subsequent read -- proving this is real, addressable storage,
+;;     not a lucky read of the read-only file image.
+;;   - Two INDEPENDENT `nl-ffi-loader-open' calls against the SAME `.so'
+;;     get two DISTINCT arena slots that do not collide.
+;; Covers, against `nl-ffi-loader-fixture-tls.so' (a real PT_TLS segment,
+;; UNCHANGED since increment 1, but no longer refused for having `PT_TLS'
+;; at all -- its default TLS model, General-Dynamic, is what is now
+;; refused):
+;;   - `nl-ffi-loader-unsupported' reason `:tls-relocation' at
+;;     `R_X86_64_DTPMOD64', the first relocation this loader actually
+;;     applies for this object.
 ;; Covers, via hand-built in-memory Elf64_Rela entries and a fabricated
 ;; one-symbol `.dynsym'/`.dynstr' (no compiler needed for these -- they
 ;; exercise `nl-ffi-loader--apply-one-relocation' directly):
@@ -90,8 +109,15 @@
 ;;     own address as if it were the target -- see nl-ffi-loader.el's
 ;;     Commentary, "IFUNC", for why this is a DIFFERENT mechanism from
 ;;     R_X86_64_IRELATIVE and out of this increment's scope either way.
-;;   - A TLS-classed relocation type refuses (reason `:tls-relocation')
-;;     even outside a PT_TLS object.
+;;   - A GLOB_DAT/JUMP_SLOT relocation whose resolved symbol is
+;;     STT_TLS-typed refuses (reason `:tls-symbol-via-relocation') rather
+;;     than treating an in-module TLS byte offset as a `bias'-relative
+;;     runtime address -- see nl-ffi-loader.el's Commentary, "TLS".
+;;   - R_X86_64_TPOFF64 (increment 3) applies correctly for a same-module
+;;     (r_sym=0) reference, computing the fake object's own `:tls-offset'
+;;     plus the addend.
+;;   - A still-refused TLS-classed relocation type (R_X86_64_GOTTPOFF)
+;;     refuses (reason `:tls-relocation') even outside a PT_TLS object.
 ;;   - R_X86_64_64 (a real type, just not one of the supported ones)
 ;;     refuses (reason `:relocation-type').
 
@@ -132,6 +158,7 @@
 (defconst nl-ffi-loader-smoke--fixture-needs-dep
   "target/nl-ffi-loader-fixture-needs-dep.so")
 (defconst nl-ffi-loader-smoke--fixture-tls "target/nl-ffi-loader-fixture-tls.so")
+(defconst nl-ffi-loader-smoke--fixture-tls-ie "target/nl-ffi-loader-fixture-tls-ie.so")
 (defconst nl-ffi-loader-smoke--fixture-init "target/nl-ffi-loader-fixture-init.so")
 (defconst nl-ffi-loader-smoke--fixture-dep-root "target/nl-ffi-loader-fixture-dep-root.so")
 (defconst nl-ffi-loader-smoke--fixture-ctor-root "target/nl-ffi-loader-fixture-ctor-root.so")
@@ -263,16 +290,20 @@
    (not (nl-ffi-loader--resolve-soname
          "libtotally-bogus-nl-ffi-fixture-xyz.so.1" nil))))
 
-(nl-ffi-loader-smoke-deftest ffi-loader-needs-dependency-reaches-tls
-  ;; nl-ffi-loader-fixture-needs-dep.so has a real DT_NEEDED on the
-  ;; SYSTEM libm.so.6.  Increment 2 genuinely attempts this (no more
-  ;; blanket :needs-dependency refusal): libm.so.6 itself has no PT_TLS
-  ;; and maps fine, but ITS OWN DT_NEEDED on libc.so.6 does -- so this
-  ;; refuses two hops down, at libc.so.6's PT_TLS, wrapped as
-  ;; :dependency-unsupported naming the whole chain.  See
-  ;; nl-ffi-loader.el's Commentary, "THE LIBC / SECOND-COPY QUESTION",
-  ;; for why this is the expected, safe outcome, verified here against
-  ;; this host's real system libraries rather than merely asserted.
+(nl-ffi-loader-smoke-deftest ffi-loader-needs-dependency-reaches-relr
+  ;; nl-ffi-loader-fixture-needs-dep.so has a real DT_NEEDED on the SYSTEM
+  ;; libm.so.6.  RE-VERIFIED for increment 3 (this used to refuse two hops
+  ;; down, at libc.so.6's PT_TLS -- see nl-ffi-loader.el's Commentary,
+  ;; "TLS", "THE REAL-SYSTEM-LIBRARY REACHABILITY QUESTION" for the full
+  ;; story): `PT_TLS' is no longer a blanket refusal, and real libc.so.6
+  ;; turns out to use ONLY the Initial-Exec model internally -- but
+  ;; widening what this loader reaches also exposed a gap in the EXISTING
+  ;; `DT_RELR' check (it matched only the old, pre-standardization tag
+  ;; range, not the standardized one this host's real toolchain emits --
+  ;; see the same Commentary section), now fixed.  With the fix in place,
+  ;; this refuses ONE hop down, at libm.so.6 ITSELF (`DT_RELR' present,
+  ;; confirmed with `readelf -d'), never reaching libc.so.6 or its TLS at
+  ;; all.
   (let ((sig (nl-ffi-loader-smoke-should-error
               (nl-ffi-loader-open nl-ffi-loader-smoke--fixture-needs-dep)
               'nl-ffi-loader-unsupported)))
@@ -280,10 +311,10 @@
     ;;        INNER-CONDITION-SYMBOL INNER-DATA) -- see
     ;;        `nl-ffi-loader--map-node-as-dependency'.
     (nl-ffi-loader-smoke-should (eq (nth 0 (cdr sig)) :dependency-unsupported))
-    (nl-ffi-loader-smoke-should (equal (nth 2 (cdr sig)) "libc.so.6"))
+    (nl-ffi-loader-smoke-should (equal (nth 2 (cdr sig)) "libm.so.6"))
     (nl-ffi-loader-smoke-should (eq (nth 4 (cdr sig)) 'nl-ffi-loader-unsupported))
     (let ((inner-data (nth 5 (cdr sig))))
-      (nl-ffi-loader-smoke-should (eq (nth 0 inner-data) :tls-segment)))))
+      (nl-ffi-loader-smoke-should (eq (nth 0 inner-data) :relr-relocations)))))
 
 ;;;; --- increment 2: initializers (DT_INIT/DT_INIT_ARRAY) ----------------------
 
@@ -331,13 +362,64 @@
     (nl-ffi-loader-smoke-should (> addr 0))
     (nl-ffi-loader-smoke-should (= (ptr-call addr 20 0 0 0 0 0) 32))))
 
-;;;; --- whole-object refusal, unchanged from increment 1: PT_TLS ---------------
+;;;; --- increment 3: TLS (R_X86_64_TPOFF64, Initial-Exec) ----------------------
 
-(nl-ffi-loader-smoke-deftest ffi-loader-refuses-tls-segment
+(nl-ffi-loader-smoke-deftest ffi-loader-tls-initial-exec-read
+  (let* ((h (nl-ffi-loader-open nl-ffi-loader-smoke--fixture-tls-ie))
+         (get (nl-ffi-loader-symbol h "nl_ffi_loader_fixture_tls_ie_get")))
+    (nl-ffi-loader-smoke-should (> get 0))
+    ;; The compiled-in initial value, read through a real R_X86_64_TPOFF64
+    ;; relocation and `%fs' this loader itself established -- see
+    ;; nl-ffi-loader.el's Commentary, "TLS".
+    (nl-ffi-loader-smoke-should (= (ptr-call get 0 0 0 0 0 0) 7))))
+
+(nl-ffi-loader-smoke-deftest ffi-loader-tls-initial-exec-write-then-read
+  (let* ((h (nl-ffi-loader-open nl-ffi-loader-smoke--fixture-tls-ie))
+         (get (nl-ffi-loader-symbol h "nl_ffi_loader_fixture_tls_ie_get"))
+         (set (nl-ffi-loader-symbol h "nl_ffi_loader_fixture_tls_ie_set")))
+    ;; A WRITE through the setter must be visible to a subsequent read --
+    ;; proving this is real, addressable per-object storage this loader
+    ;; carved out of its own arena, not a lucky read of the read-only file
+    ;; mapping (which would never change).
+    (ptr-call set 99 0 0 0 0 0)
+    (nl-ffi-loader-smoke-should (= (ptr-call get 0 0 0 0 0 0) 99))))
+
+(nl-ffi-loader-smoke-deftest ffi-loader-tls-two-opens-do-not-collide
+  ;; A SECOND, independent `nl-ffi-loader-open' of the SAME .so -- see
+  ;; nl-ffi-loader.el's Commentary, "Known simplification": this loader
+  ;; deduplicates only WITHIN one open() call's own graph, so two separate
+  ;; calls really do map (and TLS-assign) two distinct nodes.  Writing
+  ;; through one must not be visible through the other -- proving the
+  ;; persistent, process-wide arena hands out DISTINCT, non-overlapping
+  ;; offsets across independent `nl-ffi-loader-open' calls, not just
+  ;; within a single one.
+  (let* ((h1 (nl-ffi-loader-open nl-ffi-loader-smoke--fixture-tls-ie))
+         (h2 (nl-ffi-loader-open nl-ffi-loader-smoke--fixture-tls-ie))
+         (get1 (nl-ffi-loader-symbol h1 "nl_ffi_loader_fixture_tls_ie_get"))
+         (set1 (nl-ffi-loader-symbol h1 "nl_ffi_loader_fixture_tls_ie_set"))
+         (get2 (nl-ffi-loader-symbol h2 "nl_ffi_loader_fixture_tls_ie_get")))
+    (nl-ffi-loader-smoke-should (= (ptr-call get2 0 0 0 0 0 0) 7))
+    (ptr-call set1 123 0 0 0 0 0)
+    (nl-ffi-loader-smoke-should (= (ptr-call get1 0 0 0 0 0 0) 123))
+    (nl-ffi-loader-smoke-should (= (ptr-call get2 0 0 0 0 0 0) 7))))
+
+(nl-ffi-loader-smoke-deftest ffi-loader-refuses-general-dynamic-tls
+  ;; nl-ffi-loader-fixture-tls.so, UNCHANGED since increment 1/2: compiled
+  ;; with NO `-ftls-model' flag, GCC's default for `-fPIC -shared' code,
+  ;; it lowers to the General-Dynamic model (a `R_X86_64_DTPMOD64'
+  ;; relocation plus a JUMP_SLOT call to `__tls_get_addr' -- confirmed
+  ;; with `readelf -r').  `PT_TLS' itself is NO LONGER a blanket refusal
+  ;; (see the Initial-Exec fixture's own tests above), so this now refuses
+  ;; at the FIRST relocation this loader actually applies for the object:
+  ;; `.rela.dyn' runs before `.rela.plt' (`nl-ffi-loader--apply-
+  ;; relocations-for-node'), and DTPMOD64 is this object's only
+  ;; `.rela.dyn' entry -- so the refusal fires there, never reaching the
+  ;; JUMP_SLOT/`__tls_get_addr' entry at all.
   (let ((sig (nl-ffi-loader-smoke-should-error
               (nl-ffi-loader-open nl-ffi-loader-smoke--fixture-tls)
               'nl-ffi-loader-unsupported)))
-    (nl-ffi-loader-smoke-should (eq (nth 0 (cdr sig)) :tls-segment))))
+    (nl-ffi-loader-smoke-should (eq (nth 0 (cdr sig)) :tls-relocation))
+    (nl-ffi-loader-smoke-should (= (nth 2 (cdr sig)) 16)))) ; R_X86_64_DTPMOD64
 
 ;;;; --- relocation-type dispatch: synthetic, no compiler needed ----------------
 ;;
@@ -374,6 +456,31 @@ implementing\") and ST_TYPE (for STT_GNU_IFUNC, see \"IFUNC\")."
     (ptr-write-u64 rela 8 (logior (ash r-sym 32) r-type))
     (ptr-write-u64 rela 16 r-addend)
     rela))
+
+(defun nl-ffi-loader-smoke--fake-dyn-tls (name shndx value &optional bind type)
+  "Like `nl-ffi-loader-smoke--fake-dyn', but places the one real symbol at
+dynsym INDEX 1 of a two-entry table (index 0 explicitly zeroed, matching
+the real, always-undefined STN_UNDEF convention) instead of index 0.
+Needed for an `R_X86_64_TPOFF64' test that must use a NONZERO r_sym: 0
+means \"local, same-module, use the addend directly\" for TPOFF64 -- see
+`nl-ffi-loader--resolve-tpoff64' -- so it cannot double as \"look up
+dynsym index 0\" the way the ordinary GLOB_DAT/JUMP_SLOT tests above use
+it via `nl-ffi-loader-smoke--fake-dyn'."
+  (let* ((strtab (alloc-bytes (+ 2 (length name)) 1))
+         (symtab (alloc-bytes 48 8)) ; two 24-byte Elf64_Sym entries
+         (sym (+ symtab 24))
+         (i 0)
+         (st-info (logior (ash (or bind 0) 4) (or type 0))))
+    (ptr-write-u8 strtab 0 0)
+    (while (< i (length name))
+      (ptr-write-u8 strtab (+ 1 i) (aref name i))
+      (setq i (1+ i)))
+    (ptr-write-u8 strtab (+ 1 (length name)) 0)
+    (ptr-write-u64 symtab 0 0) (ptr-write-u64 symtab 8 0) (ptr-write-u64 symtab 16 0)
+    (ptr-write-u64 sym 0 (logior 1 (ash st-info 32) (ash shndx 48)))
+    (ptr-write-u64 sym 8 value)
+    (ptr-write-u64 sym 16 0)
+    (list :symtab symtab :strtab strtab :syment 24 :gnu-hash nil :sysv-hash nil)))
 
 (nl-ffi-loader-smoke-deftest ffi-loader-relative-relocation-applies
   (let* ((target (alloc-bytes 8 8))
@@ -423,9 +530,83 @@ implementing\") and ST_TYPE (for STT_GNU_IFUNC, see \"IFUNC\")."
     (nl-ffi-loader-smoke-should (eq (nth 0 (cdr sig)) :ifunc-symbol-via-relocation))
     (nl-ffi-loader-smoke-should (equal (nth 2 (cdr sig)) "ifunc_sym"))))
 
+(nl-ffi-loader-smoke-deftest ffi-loader-refuses-tls-symbol-via-relocation
+  ;; A GLOB_DAT/JUMP_SLOT relocation whose resolved (here: local) symbol
+  ;; is STT_TLS-typed -- mirrors the IFUNC test above for a different
+  ;; symbol type: must refuse, not silently treat an in-module TLS byte
+  ;; offset as a `bias'-relative runtime address -- see nl-ffi-loader.el's
+  ;; Commentary, "TLS".
+  (let* ((dyn (nl-ffi-loader-smoke--fake-dyn "tls_sym" 8 4 0 6)) ; STT_TLS = 6
+         (target (alloc-bytes 8 8))
+         (rela (nl-ffi-loader-smoke--fake-rela target 0 7 0)) ; JUMP_SLOT
+         (sig (nl-ffi-loader-smoke-should-error
+               (nl-ffi-loader--apply-one-relocation "synthetic" 0 dyn rela)
+               'nl-ffi-loader-unsupported)))
+    (nl-ffi-loader-smoke-should (eq (nth 0 (cdr sig)) :tls-symbol-via-relocation))
+    (nl-ffi-loader-smoke-should (equal (nth 2 (cdr sig)) "tls_sym"))))
+
+(nl-ffi-loader-smoke-deftest ffi-loader-tpoff64-applies-for-local-reference
+  ;; r_sym=0 -- the shape this package's own Initial-Exec fixture compiles
+  ;; to for a same-module reference (confirmed by parsing the raw
+  ;; Elf64_Rela bytes -- see the report).  The addend directly carries the
+  ;; in-module byte offset; the result must be the object's OWN
+  ;; :tls-offset plus that addend.
+  (let* ((dyn (plist-put (nl-ffi-loader-smoke--fake-dyn "irrelevant" 0 0) :tls-offset -64))
+         (target (alloc-bytes 8 8))
+         (rela (nl-ffi-loader-smoke--fake-rela target 0 18 12))) ; TPOFF64, r_sym=0, addend=12
+    (nl-ffi-loader--apply-one-relocation "synthetic" 0 dyn rela)
+    (nl-ffi-loader-smoke-should (= (ptr-read-u64 target 0) -52)))) ; -64 + 12
+
+(nl-ffi-loader-smoke-deftest ffi-loader-tpoff64-applies-for-named-local-symbol
+  ;; r_sym<>0, defined in the SAME object -- the shape real `libc.so.6'
+  ;; ITSELF uses for one of its own 16 TPOFF64 relocations (r_sym=1527,
+  ;; confirmed by parsing the raw Elf64_Rela bytes -- see the report),
+  ;; even though no FIXTURE this package ships needs it.
+  (let* ((dyn (plist-put (nl-ffi-loader-smoke--fake-dyn-tls "named_tls" 8 20 0 6) ; STT_TLS
+                          :tls-offset -100))
+         (target (alloc-bytes 8 8))
+         (rela (nl-ffi-loader-smoke--fake-rela target 1 18 0))) ; TPOFF64, r_sym=1
+    (nl-ffi-loader--apply-one-relocation "synthetic" 0 dyn rela)
+    (nl-ffi-loader-smoke-should (= (ptr-read-u64 target 0) -80)))) ; -100 + 20 + 0
+
+(nl-ffi-loader-smoke-deftest ffi-loader-refuses-tls-symbol-type-mismatch
+  ;; r_sym<>0, defined in the SAME object, but NOT STT_TLS-typed -- must
+  ;; refuse rather than silently treat an ordinary symbol's `st_value' as
+  ;; a TLS byte offset.
+  (let* ((dyn (plist-put (nl-ffi-loader-smoke--fake-dyn-tls "not_tls" 8 20) ; type 0
+                          :tls-offset -100))
+         (target (alloc-bytes 8 8))
+         (rela (nl-ffi-loader-smoke--fake-rela target 1 18 0))
+         (sig (nl-ffi-loader-smoke-should-error
+               (nl-ffi-loader--apply-one-relocation "synthetic" 0 dyn rela)
+               'nl-ffi-loader-unsupported)))
+    (nl-ffi-loader-smoke-should (eq (nth 0 (cdr sig)) :tls-symbol-type-mismatch))
+    (nl-ffi-loader-smoke-should (equal (nth 2 (cdr sig)) "not_tls"))))
+
+(nl-ffi-loader-smoke-deftest ffi-loader-refuses-undefined-tls-symbol
+  ;; r_sym<>0, UNDEFINED locally, and no graph to search -- must refuse
+  ;; rather than silently resolve to 0 the way the ordinary GLOB_DAT/
+  ;; JUMP_SLOT resolver does for a WEAK reference (this file's Commentary,
+  ;; "TLS", explains why that carve-out is not extended here).
+  (let* ((dyn (plist-put (nl-ffi-loader-smoke--fake-dyn-tls "missing_tls" 0 0)
+                          :tls-offset -8))
+         (target (alloc-bytes 8 8))
+         (rela (nl-ffi-loader-smoke--fake-rela target 1 18 0))
+         (sig (nl-ffi-loader-smoke-should-error
+               (nl-ffi-loader--apply-one-relocation "synthetic" 0 dyn rela)
+               'nl-ffi-loader-unsupported)))
+    (nl-ffi-loader-smoke-should (eq (nth 0 (cdr sig)) :undefined-tls-symbol))
+    (nl-ffi-loader-smoke-should (equal (nth 2 (cdr sig)) "missing_tls"))))
+
 (nl-ffi-loader-smoke-deftest ffi-loader-refuses-tls-relocation-type
+  ;; R_X86_64_GOTTPOFF -- the GOT-indirect Initial-Exec cousin of TPOFF64
+  ;; a real `-fPIC' PIC-style reference would actually use (this file's
+  ;; own fixture needed `-ftls-model=initial-exec' to get TPOFF64 instead
+  ;; -- see nl-ffi-loader.el's Commentary, "TLS") -- still refused by
+  ;; name, unlike TPOFF64 itself (moved out of this refused-types list in
+  ;; increment 3; see the positive TPOFF64 tests above).
   (let* ((target (alloc-bytes 8 8))
-         (rela (nl-ffi-loader-smoke--fake-rela target 0 18 0)) ; R_X86_64_TPOFF64
+         (rela (nl-ffi-loader-smoke--fake-rela target 0 22 0)) ; R_X86_64_GOTTPOFF
          (sig (nl-ffi-loader-smoke-should-error
                (nl-ffi-loader--apply-one-relocation "synthetic" 0 nil rela)
                'nl-ffi-loader-unsupported)))
@@ -471,8 +652,8 @@ implementing\") and ST_TYPE (for STT_GNU_IFUNC, see \"IFUNC\")."
         (setq all (cdr all))))
     (error "nl-ffi-loader-standalone-smoke: %d failure(s), %d passed, %d skipped"
            (length failures) ran skipped))
-  (when (< (+ ran skipped) 20)
-    (error "nl-ffi-loader-standalone-smoke: only %d test(s) ran + %d skipped (expected >= 20 total)"
+  (when (< (+ ran skipped) 30)
+    (error "nl-ffi-loader-standalone-smoke: only %d test(s) ran + %d skipped (expected >= 30 total)"
            ran skipped))
   (princ (format "nl-ffi-loader-standalone-smoke: PASS (%d tests, %d skipped)\n"
                   ran skipped)))

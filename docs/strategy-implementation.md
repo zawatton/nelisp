@@ -203,27 +203,50 @@ searches an unresolved GLOB_DAT/JUMP_SLOT symbol across the whole
 resulting graph in one documented, breadth-first order, calls an
 `R_X86_64_IRELATIVE` resolver and uses its result, and runs
 `DT_INIT`/`DT_INIT_ARRAY` initializers in dependency-first order once
-every relocation in the graph has been applied -- all bounded by the
-same `PT_TLS` refusal increment 1 already had on every object in the
-graph, which is what keeps a dependency chain that reaches a real libc
-refused several hops down rather than run (this reader's own static
-build has no libc of its own at all -- confirmed freestanding, so there
-is no "second copy" of one either; see `nl-ffi-loader.el`'s Commentary
-for the full reasoning). TLS itself (`PT_TLS`/TLS-classed relocations),
-symbol interposition/versioning beyond that one search order, unloading,
-the compact `DT_RELR` encoding, and `PT_GNU_RELRO` re-protection remain
-refused, each by a named `nl-ffi-loader-unsupported` condition rather
-than half-loaded; `ffi:defun`'s call shape, and its error contract, are
-unchanged either way. This does not cover closures/callbacks, struct
-layout, variadic C calls, or section 8.2's header bindgen. The type
+every relocation in the graph has been applied -- as of increment 2 this
+was bounded by a blanket `PT_TLS` refusal on every object in the graph,
+which kept a dependency chain that reaches a real libc refused several
+hops down rather than run (this reader's own static build has no libc of
+its own at all -- confirmed freestanding, so there is no "second copy" of
+one either).
+
+As of increment 3, a `PT_TLS` segment using the Initial-Exec model
+(`R_X86_64_TPOFF64` only) is mapped and relocated correctly instead of
+refused: the reader establishes no thread pointer of its own (measured --
+raw `arch_prctl(ARCH_GET_FS)` returns base 0 on a freshly built reader,
+confirmed nothing else sets it either), so the loader builds a minimal
+TCB itself (a single, process-wide, fixed-size static arena with `%fs`
+set to its high end via `arch_prctl(ARCH_SET_FS)`, verified by reading it
+back) before any TLS relocation can mean anything. General-
+Dynamic/Local-Dynamic (`__tls_get_addr` plus a DTV) and TPOFF64's GOT-
+indirect/32-bit-immediate cousins stay refused by name, unchanged.
+Real system libraries remain unreachable regardless: re-measured against
+this host's real `libc.so.6`/`libm.so.6`, `libc.so.6` itself uses only
+the now-supported TPOFF64 model internally, but widening the reachable
+graph exposed a gap in the existing `DT_RELR` refusal (it matched only a
+pre-standardization experimental tag range, not the standardized tags
+this host's real toolchain emits, so it was silently not firing against
+modern system libraries) -- fixed as a tag-detection correction, not new
+`DT_RELR` support, so `nl-ffi-loader-fixture-needs-dep.so`'s real
+`DT_NEEDED` on `libm.so.6` now refuses one hop down, at `libm.so.6`
+itself, rather than reaching `libc.so.6`'s TLS as it did after increment
+2 (see `nl-ffi-loader.el`'s Commentary, "TLS", for the full reasoning and
+evidence). Symbol interposition/versioning beyond the one search order
+above, unloading, `DT_RELR` decoding proper, and `PT_GNU_RELRO`
+re-protection remain refused, each by a named `nl-ffi-loader-unsupported`
+condition rather than half-loaded; `ffi:defun`'s call shape, and its
+error contract, are unchanged either way. This does not cover
+closures/callbacks, struct layout, variadic C calls, or section 8.2's
+header bindgen. The type
 vocabulary and vector call shape (`[RET ARG...]`, return type first)
 follow the existing `dev/nelisp-ffi` fork of elisp-ffi rather than
 section 8.1's illustrative labeled-argument sketch, since that shape is
 what an already-fixed, per-symbol ABI table can actually be checked
 against; see `packages/nl-ffi/README.org` for the full contract, its
 "Symbol resolution" section for the two dynamic-reader resolution paths
-and their limits, and its "Roadmap" section for increment 2's exact
-scope and what increment 3 (TLS and the rest) would still need. An
+and their limits, and its "Roadmap" section for increment 3's exact
+scope (Initial-Exec TLS only) and what remains (`DT_RELR` decoding,
+`PT_GNU_RELRO` re-protection, unloading, symbol versioning). An
 f64-capable `ptr-call` (needed for either step 2's `dlsym` path or step
 3's loader to call a double-taking function) remains open
 either way.

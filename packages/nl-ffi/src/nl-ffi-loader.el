@@ -17,6 +17,16 @@
 ;; interposition beyond the one search order this file documents stay
 ;; refused -- see "Out of scope" below.
 ;;
+;; FFI step 3, increment 3 (this commit) lifts ONE more refusal: a `PT_TLS'
+;; segment using the Initial-Exec model (`R_X86_64_TPOFF64') is now mapped,
+;; assigned real storage, and relocated correctly instead of refused outright
+;; -- see "TLS" below.  General-Dynamic/Local-Dynamic (need `__tls_get_addr'
+;; and a DTV), the GOT-indirect/32-bit-immediate cousins of TPOFF64
+;; (`R_X86_64_{GOTTPOFF,TPOFF32,TLSDESC,...}'), `DT_RELR', `PT_GNU_RELRO'
+;; re-protection, unloading, and symbol interposition beyond the one search
+;; order this file documents all stay refused -- see "TLS" and "Out of
+;; scope" below.
+;;
 ;; ---------------------------------------------------------------------
 ;; THE LIBC / SECOND-COPY QUESTION -- read this before touching dependency
 ;; loading.
@@ -71,38 +81,46 @@
 ;; failure mode the brief names: something that "appears to work in a
 ;; smoke test and corrupts state later".
 ;;
-;; This is why dependency loading, IFUNC, and initializers all still stay
-;; bounded by the SAME check increment 1 already had for an entirely
-;; different reason: a `PT_TLS' program header refuses the object
-;; outright (`:tls-segment'), checked before a single relocation is even
-;; inspected -- see `nl-ffi-loader--map-node'.  That check turns out to
-;; be exactly the fence this increment's safety argument needs, verified
-;; empirically against this host's real system libraries rather than
-;; merely asserted: `/usr/lib/x86_64-linux-gnu/libc.so.6' carries a real
-;; `PT_TLS' (`readelf -l', a `TLS' program header at file offset
-;; 0x1e0ba0); `libm.so.6' does not, but its own `DT_NEEDED' list (`readelf
-;; -d') names `libc.so.6' first -- so a caller that opens this
-;; repository's own `nl-ffi-loader-fixture-needs-dep.so' (a real
-;; `DT_NEEDED' on `libm.so.6') is refused two hops down, at `libc.so.6''s
-;; TLS, never having mapped a byte of `libc.so.6' read-write or executed
-;; any of its code (the read-only file mapping used to check its program
-;; headers is harmless and is unmapped along with everything else on
-;; refusal -- see "No half-loaded object left mapped" below).  This is
-;; not a special case for "libc" by name anywhere in this file; it falls
-;; out of the ordinary, per-object TLS check already running on every
-;; node this loader discovers, including a dependency's dependency.  The
-;; safe, useful subset this increment actually reaches is exactly what
-;; the brief predicted: self-contained, TLS-free objects -- a project's
-;; own leaf libraries, and this package's own new fixtures
-;; (`nl-ffi-loader-fixture-dep-leaf(2).so'/`-dep-root.so', `-ctor-dep.so'/
-;; `-ctor-root.so', `-ifunc.so') -- while a dependency graph that reaches
-;; real glibc bottoms out cleanly at a named, specific reason instead of
-;; running.
+;; This is why dependency loading, IFUNC, and initializers all still stayed
+;; bounded, AS OF INCREMENT 2, by ONE check: a `PT_TLS' program header
+;; refused the object outright (`:tls-segment'), checked before a single
+;; relocation was even inspected.  That check turned out to be exactly the
+;; fence increment 2's safety argument needed, verified empirically against
+;; this host's real system libraries rather than merely asserted:
+;; `/usr/lib/x86_64-linux-gnu/libc.so.6' carries a real `PT_TLS' (`readelf
+;; -l', a `TLS' program header at file offset 0x1e0ba0); `libm.so.6' does
+;; not, but its own `DT_NEEDED' list (`readelf -d') names `libc.so.6' first
+;; -- so a caller that opens this repository's own `nl-ffi-loader-fixture-
+;; needs-dep.so' (a real `DT_NEEDED' on `libm.so.6') was refused two hops
+;; down, at `libc.so.6''s TLS, never having mapped a byte of `libc.so.6'
+;; read-write or executed any of its code.
+;;
+;; Increment 3 (this commit) replaces the blanket per-segment refusal with
+;; real support for ONE TLS access model (`R_X86_64_TPOFF64', Initial-Exec)
+;; -- see "TLS" below for the full design and for what happens, RE-VERIFIED
+;; rather than assumed to still hold, when this loader is pointed at the
+;; SAME real system libraries above now that `PT_TLS' alone no longer stops
+;; it: the practical conclusion is unchanged (neither `libc.so.6' nor
+;; `libm.so.6' can be loaded), but the SPECIFIC reason moves to a different,
+;; already-existing refusal -- see "TLS", "The real-system-library
+;; reachability question" for the evidence.  This is not a special case for
+;; "libc" by name anywhere in this file; it falls out of the ordinary,
+;; per-object checks already running on every node this loader discovers,
+;; including a dependency's dependency.  The safe, useful subset this
+;; increment newly reaches is exactly what its own brief predicted: a
+;; self-contained, Initial-Exec-only `PT_TLS' object -- a project's own leaf
+;; library, and this package's own new fixture
+;; (`nl-ffi-loader-fixture-tls-ie.so') -- while a dependency graph that
+;; reaches real glibc, or an object using General-Dynamic TLS, bottoms out
+;; cleanly at a named, specific reason instead of running.
 ;;
 ;; The same reasoning bounds IFUNC and initializers: a resolver or
-;; constructor this loader actually reaches, by construction, belongs to
-;; an object (and everything in ITS graph) that has already proven it
-;; does not need `PT_TLS'.  This is not a complete safety argument for
+;; constructor this loader actually reaches, by construction, belongs to an
+;; object (and everything in ITS graph) that has already either been given a
+;; real, correctly-initialized TLS arena slot (see "TLS" below -- this
+;; happens during graph discovery, strictly before any relocation or
+;; initializer runs) or proven it needs an access model this file refuses by
+;; name.  This is not a complete safety argument for
 ;; every conceivable freestanding-unsafe thing a constructor could do
 ;; (one could still read `argc'/`argv'/`envp' the way `__libc_start_main'
 ;; would have supplied them, which this loader never does, or call a raw
@@ -311,6 +329,288 @@
 ;; writes 0 for an unresolved WEAK reference instead of refusing;
 ;; anything else (the default, `STB_GLOBAL') unresolved anywhere in the
 ;; graph still refuses `:undefined-symbol', unchanged.
+;;
+;; ---------------------------------------------------------------------
+;; TLS (FFI step 3, increment 3): the thread-pointer question, answered
+;; before writing any of the code below.
+;;
+;; THE QUESTION.  x86-64 TLS access is `%fs'-relative.  `%fs' is normally
+;; established by `ld.so' (the initial thread) or `pthread_create' (every
+;; other thread) writing the segment's base address with
+;; `arch_prctl(ARCH_SET_FS, addr)'.  This reader has neither: it is
+;; produced entirely by NeLisp's own pure-elisp AOT compiler and static
+;; linker into a freestanding ELF with no libc and no pthread (see "THE
+;; LIBC / SECOND-COPY QUESTION" above -- the same fact that answered
+;; increment 2's question answers the first half of this one too).  So
+;; does ANYTHING set `%fs' in this process today?
+;;
+;; MEASURED, not assumed (2026-09-17, this host, `make standalone-reader'
+;; output): `syscall-direct' with raw `arch_prctl(ARCH_GET_FS, &out)'
+;; (syscall number 158, request 0x1003) against a freshly built, freshly
+;; started `target/nelisp' returns success (0) with `out' left at 0 --
+;; poisoned with a nonzero sentinel beforehand so a return of 0 means "the
+;; kernel wrote zero", not "the buffer was never touched".
+;; `arch_prctl(ARCH_GET_GS, ...)' (request 0x1004) also reads back 0, so
+;; this is not "some other mechanism already occupies the segment slot"
+;; either.  `grep'ing `scripts/nelisp-standalone-build.el' (the file whose
+;; own Commentary this file's "THE LIBC" section already quotes for "no
+;; libc, no pthread") for `arch_prctl'/`ARCH_SET_FS'/`%fs'/`fsbase' finds
+;; nothing.  So: no, nothing sets `%fs' today.  A fresh Linux process
+;; starts with `FS_BASE' at 0 (`execve' clears it), and this reader never
+;; calls `arch_prctl' to change that -- confirmed, not inferred from "no
+;; call site found", which this project has been burned by trusting before
+;; (see the report and this repository's own rules on grepping for call
+;; sites that could be templated or built from variables -- this one
+;; genuinely has none, checked by running the actual syscall, not by
+;; grepping for its absence).
+;;
+;; WHAT THIS MEANS.  Every TLS-relative memory access a loaded object's
+;; compiled code performs is `%fs:OFFSET' -- with `%fs' at 0 today, that is
+;; simply address `OFFSET' (sign-extended, so a typical small NEGATIVE
+;; Initial-Exec offset like -4 becomes address 0xFFFFFFFFFFFFFFFC, deep in
+;; the non-canonical-for-userspace region -- almost certainly a fault, not
+;; silent corruption, for THIS particular case, but that is a property of
+;; where these particular offsets happen to land, not a safety argument;
+;; a positive offset lands near address 0, similarly likely to fault on a
+;; normal Linux `mmap_min_addr' configuration but, again, not something
+;; this file relies on).  Either way, `%fs' being unestablished makes a
+;; TLS access MEANINGLESS, not merely risky, exactly the "appears to work
+;; in a smoke test and corrupts state later" shape this file's brief warns
+;; about when the access happens to land somewhere mapped and writable
+;; instead of faulting.  So this loader must build its own minimal thread
+;; control block (TCB) and establish `%fs' itself before a single TLS
+;; relocation can mean anything -- there is no real dynamic linker or
+;; libc startup sequence anywhere in this process to have done it already.
+;;
+;; THE MINIMAL TCB THIS READER NEEDS.  Real glibc's `tcbhead_t' is a large,
+;; ABI-mandated structure (self pointer, dtv, stack guard at a fixed
+;; offset for `-fstack-protector', pthread bookkeeping, and more) because
+;; real compiled code -- CRT startup, `errno', `pthread_self()', the
+;; stack-protector prologue every hardened build emits -- reads specific
+;; fields of it at fixed offsets from `%fs'.  NONE of that applies to what
+;; this loader can actually reach: every fixture this increment's own
+;; gate builds (see the Makefile) omits `-fstack-protector'/hardening
+;; flags, confirmed empirically by disassembling the compiled fixture
+;; (`objdump -d') and finding no `%fs:0x28' access and no
+;; `__stack_chk_fail' relocation anywhere in it -- and this loader
+;; implements only `R_X86_64_TPOFF64' (see below), which needs nothing
+;; from `%fs' itself beyond it being a valid, stable base address that
+;; every assigned TLS offset stays within bounds of.  So the minimal TCB
+;; this loader actually needs is: a single anonymous, read-write memory
+;; region (`nl-ffi-loader--tls-arena-size' bytes, `nl-ffi-loader--ensure-
+;; tls-arena'), with `%fs' pointed at its HIGH end -- no self-pointer, no
+;; DTV, no stack-guard slot.  A caller that opens a hardened build (stack
+;; canary, `errno' via a real libc's own TLS block, `pthread_self()') is
+;; not served by this -- a named, real limitation, not a silent gap: such
+;; an object would either fail an unrelated already-existing check first
+;; (a hardened, dynamically-linked build pulls in real libc, refused
+;; several hops down exactly as "THE LIBC" section documents) or, in the
+;; narrow hypothetical of a `-nostdlib' hardened build reaching this loader
+;; directly, read garbage from wherever this arena's high end happens to
+;; be rather than a real stack guard -- this file does not detect that
+;; case and does not claim to.
+;;
+;; WHICH MODEL: INITIAL-EXEC, NOT GENERAL-DYNAMIC.  Confirmed empirically,
+;; the same way as everything else in this file (compiled and compared
+;; with `readelf -r'/`-l'/`objdump -d' before writing any loader code):
+;; GCC's DEFAULT TLS model for `-fPIC -shared' code (no `-ftls-model'
+;; flag -- what every OTHER fixture in this package uses, and what a real
+;; build system produces without deliberately opting out) is General-
+;; Dynamic: a `__thread' variable compiles to a `R_X86_64_DTPMOD64'
+;; relocation plus a call through the PLT to `__tls_get_addr', which needs
+;; a dynamic thread vector (DTV) indexed by a per-module ID and grown
+;; lazily as modules are loaded -- substantially more machinery than a
+;; loader that owns nothing but its own TCB layout can supply safely (no
+;; real second copy of `__tls_get_addr' exists to call into, and writing
+;; one from scratch is a second loader-shaped project, not this
+;; increment).  Compiling the SAME source with `-ftls-model=initial-exec'
+;; instead produces exactly ONE relocation, `R_X86_64_TPOFF64', writing an
+;; 8-byte GOT-style slot that compiled code loads and then indexes off
+;; `%fs' directly (`mov SLOT(%rip), %rax; mov %fs:(%rax), %eax') -- no
+;; runtime call, no DTV, just an offset fixed once at load time relative
+;; to a thread pointer this loader already controls completely.  This is
+;; the "tractable" model the design brief names, and the ONLY one this
+;; increment implements; General-Dynamic/Local-Dynamic
+;; (`R_X86_64_{DTPMOD64,DTPOFF64,TLSGD,TLSLD,DTPOFF32}') and the GOT-
+;; indirect/32-bit-immediate Initial-Exec/Local-Exec cousins of TPOFF64
+;; itself (`R_X86_64_{GOTTPOFF,TPOFF32,GOTPC32_TLSDESC,TLSDESC_CALL,
+;; TLSDESC}' -- mechanically similar to implement, since they write the
+;; same computed tp-relative value, just via a different code shape, but
+;; NOT what the design brief asked this increment to implement, and
+;; extending to them unasked/unverified against a real compiled fixture is
+;; exactly the kind of scope creep this file's own history (see "IFUNC",
+;; "SONAME resolution") repeatedly declines) all stay refused by name,
+;; unchanged, via `nl-ffi-loader--tls-relocation-types'.
+;;
+;; THE ARENA AND OFFSET ASSIGNMENT.  Reserved lazily, ONCE per process, the
+;; first time any object's `PT_TLS' is discovered
+;; (`nl-ffi-loader--ensure-tls-arena'): one anonymous
+;; `nl-ffi-loader--tls-arena-size' (1 MiB -- trivial by `mmap' standards
+;; since anonymous pages cost nothing until touched, and generous next to
+;; any realistic self-contained library's thread-local data; even real
+;; `libc.so.6''s own internal TLS block, measured on this host, is 136
+;; bytes -- see the report) byte region, with `%fs' set (via
+;; `arch_prctl(ARCH_SET_FS, ...)', verified by reading it straight back
+;; with `ARCH_GET_FS' rather than trusting a zero return code alone -- see
+;; `nl-ffi-loader--ensure-tls-arena') to point at its HIGH end.  This is
+;; PROCESS-WIDE, permanent state (`nl-ffi-loader--tls-tp'/`-tls-used',
+;; `defvar's, never let-bound or reset the way `nl-ffi-loader--file-
+;; mappings'/`-reservations' are per `nl-ffi-loader-open' call -- see
+;; those variables' own docstrings): `arch_prctl(ARCH_SET_FS)' is itself
+;; process-wide, so moving `%fs' after ANY object's TPOFF64 offsets were
+;; already computed relative to the old one would silently invalidate
+;; them.  Each `PT_TLS'-bearing object discovered (in `nl-ffi-loader--map-
+;; node', i.e. breadth-first graph-discovery order, root first -- the
+;; SAME documented order `nl-ffi-loader--build-graph' already uses for
+;; symbol search, reused here rather than inventing a second one) is
+;; assigned a NEW span, growing DOWNWARD from `%fs' by the standard
+;; Variant-II/TLS_TCB_AT_TP packing rule
+;; (`new_used = align_up(used + memsz, align)'; the object's own tp-
+;; relative base is `-new_used'), its `PT_TLS' initialization image copied
+;; in from the read-only file mapping (`p_filesz' bytes; the remaining
+;; `p_memsz - p_filesz' is already zero -- fresh anonymous pages, and this
+;; span is never reused, exactly the same "implicit zero" argument
+;; `nl-ffi-loader--map-and-copy-segments' already relies on for a
+;; segment's own BSS tail), and the resulting offset recorded as
+;; `:tls-offset' in the object's OWN `dyn' plist (so `nl-ffi-loader--apply-
+;; one-relocation''s existing `(path bias dyn rela-addr ...)' call shape
+;; needed no change at all -- see `nl-ffi-loader--assign-tls-offset').
+;; Exceeding the fixed arena refuses `:tls-arena-exhausted' rather than
+;; growing it (growing would mean moving `%fs', which this file has
+;; already ruled out above) -- a real, bounded, and honestly-named failure
+;; mode instead of silent overflow into whatever memory happens to follow.
+;;
+;; KNOWN SIMPLIFICATION.  A `PT_TLS' object's arena span is claimed the
+;; moment it is discovered (`nl-ffi-loader--map-node', during graph
+;; discovery), before this loader knows whether the WHOLE graph will end
+;; up succeeding.  If a LATER node in the same graph fails and the whole
+;; `nl-ffi-loader-open' call rolls back (`nl-ffi-loader--unmap-
+;; reservations'), the arena space already claimed for EARLIER,
+;; successfully-mapped `PT_TLS' nodes in that same failed graph is NOT
+;; reclaimed -- the arena has no free-list, only a high-water mark.  This
+;; wastes a small, bounded amount of the fixed budget per failed attempt
+;; (a real `PT_TLS' object's own block is typically tens to a few hundred
+;; bytes -- see `libc.so.6''s 136 bytes above) rather than corrupting
+;; anything; documented rather than silently assumed away, matching this
+;; file's existing "Known simplification" for dependency deduplication.
+;;
+;; APPLYING `R_X86_64_TPOFF64' (`nl-ffi-loader--resolve-tpoff64').  Two
+;; shapes, both confirmed against a real compiled fixture with `readelf
+;; -r'/`-x' before writing this code, not assumed from the ABI spec alone:
+;;   - `r_sym = 0' (a SAME-module reference -- what THIS package's own
+;;     `nl-ffi-loader-fixture-tls-ie.so' compiles to for its one `__thread'
+;;     variable, confirmed by dumping the raw `Elf64_Rela' bytes): `r_addend'
+;;     directly carries the variable's byte offset within ITS OWN module's
+;;     `PT_TLS' image (0, for this fixture's single variable at the very
+;;     start of its block) -- no symbol table lookup at all, so the result
+;;     is simply this object's OWN `:tls-offset' plus `r_addend'.
+;;   - `r_sym <> 0' (a named `.dynsym' entry -- not exercised by any real
+;;     fixture this package ships, since neither `nl-ffi-loader-fixture-
+;;     tls-ie.c''s own `static' variable nor real `libc.so.6''s internal
+;;     TLS references need it, but reachable in principle for an `extern
+;;     __thread' variable defined in a DEPENDENCY): resolved locally first
+;;     (defined in the SAME object -- refuses `:tls-symbol-type-mismatch'
+;;     if what is found is not `STT_TLS'-typed, mirroring the existing
+;;     IFUNC-type check below rather than silently using a non-TLS
+;;     `st_value' as a TLS offset), then across the graph via
+;;     `nl-ffi-loader--lookup-tls-across-graph' (the SAME breadth-first,
+;;     first-DEFINED-match-wins order as `nl-ffi-loader--lookup-across-
+;;     graph', restricted to `STT_TLS' definitions and computing the
+;;     DEFINING object's OWN `:tls-offset' plus its `st_value' -- NEVER
+;;     that object's `:bias', which is meaningless for a TLS symbol's
+;;     `st_value', an in-module byte offset rather than a runtime address).
+;;     An unresolved reference refuses `:undefined-tls-symbol' -- this
+;;     file does NOT extend the GLOB_DAT/JUMP_SLOT resolver's `STB_WEAK'-
+;;     resolves-to-0 carve-out here, since no fixture or real object this
+;;     loader can reach needs a weak TLS reference, and inventing that
+;;     behavior unverified would be exactly the kind of silent half-work
+;;     this file elsewhere refuses to do.
+;;
+;; A TLS SYMBOL IS NOT AN ORDINARY SYMBOL: two places already had to learn
+;; this, once increment 3 makes an `STT_TLS'-typed match reachable at all
+;; (impossible before, since every `PT_TLS' object was refused outright):
+;;   - `nl-ffi-loader--resolve-relocation-symbol' (the ordinary GLOB_DAT/
+;;     JUMP_SLOT resolver) now also refuses `:tls-symbol-via-relocation'
+;;     when a name it is resolving turns out to be `STT_TLS'-typed --
+;;     mirroring the EXISTING `STT_GNU_IFUNC' check in the exact same
+;;     function line-for-line, added as two more `when' clauses rather
+;;     than touching the `STB_WEAK' line the gate-mutation row targets.
+;;     Without this, a naming COLLISION between an ordinary symbol this
+;;     resolver is searching for and an unrelated `__thread' variable of
+;;     the same name in another object in the graph would silently treat
+;;     that variable's in-module byte offset as if it were a real,
+;;     `bias'-relative runtime address -- the same class of silent
+;;     mistake the IFUNC check already exists to prevent for a different
+;;     symbol type.
+;;   - `nl-ffi-loader-symbol' (the public by-name lookup `ffi:library'/
+;;     `ffi:defun' and a direct caller both use) now also treats an
+;;     `STT_TLS' match as "not found" (the same 0 sentinel it already uses
+;;     for `STT_GNU_IFUNC'), for the same reason that function's own
+;;     docstring already gives for IFUNC: a bare name lookup never calls
+;;     anything, so there is no safe point at which to reinterpret a raw
+;;     `st_value' as a usable address.  `nl-ffi-loader-symbol-object'
+;;     (which reports WHICH object answers a lookup, not an address) is
+;;     left unfiltered, matching its EXISTING behavior for IFUNC.
+;;
+;; ---------------------------------------------------------------------
+;; THE REAL-SYSTEM-LIBRARY REACHABILITY QUESTION, RE-VERIFIED.
+;;
+;; With `PT_TLS' no longer a blanket refusal, does `nl-ffi-loader-fixture-
+;; needs-dep.so' (`DT_NEEDED' on the SYSTEM `libm.so.6') now reach further
+;; into real glibc than increment 2 did?  Measured, not assumed, against
+;; this host's real libraries (2026-09-17): `libc.so.6' itself uses ONLY
+;; `R_X86_64_TPOFF64' for its own internal TLS (16 occurrences, `readelf
+;; -rW'; zero `DTPMOD64'/`TLSGD'/`TLSLD'/`GOTTPOFF' entries) -- the exact
+;; model this increment implements. So TLS, by itself, is no longer why
+;; `libc.so.6' would be refused.
+;;
+;; But `readelf -d' on both `libc.so.6' and `libm.so.6' shows a `DT_RELR'
+;; entry (tag `0x24' = 36 decimal -- the STANDARDIZED tag, per the generic-
+;; ABI addition adopted by binutils >= 2.38 and glibc >= 2.36; this host
+;; runs binutils 2.45 / glibc 2.41) -- a compact encoding of the (many)
+;; plain `R_X86_64_RELATIVE' fixups a modern `ld'/`ld.so' factor OUT of
+;; `.rela.dyn' into a separate `.relr.dyn' bitmap this file never reads.
+;; `nl-ffi-loader--parse-dynamic' ALREADY had a `:relr-p' detection meant
+;; to refuse exactly this (`nl-ffi-loader--dt-relr-lo'/`-hi') -- but it
+;; only matched the OLD, pre-standardization EXPERIMENTAL tag range
+;; (`0x6fffe035'..`0x6fffe037'), not the standardized `36'/`35'/`37' this
+;; host's real toolchain actually emits.  Confirmed by running the
+;; unmodified check against real `libc.so.6'/`libm.so.6': `:relr-p' came
+;; back nil for both, meaning the EXISTING "refuse `DT_RELR'" safety check
+;; was silently not firing against any modern system library on this host.
+;;
+;; That gap matters MUCH more once TLS stops being a blanket fence: without
+;; it, opening `libm.so.6' (no `PT_TLS' of its own, so nothing about THIS
+;; increment would refuse it) would silently skip whatever `.relr.dyn'
+;; encodes for it, then proceed to `libc.so.6' as ITS dependency and
+;; likewise skip libc's OWN compacted relative fixups (`libc.so.6''s
+;; `.rela.dyn' carries GLOB_DAT/IRELATIVE/JUMP_SLOT/TPOFF64 entries but,
+;; per `readelf -r', NOT ONE plain `R_X86_64_RELATIVE' -- confirming they
+;; really are all in the `.relr.dyn' this loader would silently ignore) --
+;; then run 46 real `R_X86_64_IRELATIVE' resolvers against a partially-
+;; un-relocated glibc image.  That is not a hypothetical: it is exactly
+;; the "appears to work in a smoke test and corrupts state later" failure
+;; shape this file's brief names, and it would have been a DIRECT, newly-
+;; exposed consequence of this increment's own TLS work loosening the one
+;; check that used to stop the traversal earlier.  Fixed by widening
+;; `:relr-p' detection to ALSO match the standardized tag values (`nl-ffi-
+;; loader--dt-relr'/`-relrsz'/`-relrent', 36/35/37) alongside the existing
+;; experimental range -- still a pure "is this tag present" refusal, same
+;; as before; no `.relr.dyn' bytes are read or relative relocations
+;; applied anywhere in this file.  That is a bug fix to an EXISTING,
+;; already-in-scope safety check discovered while widening what this
+;; loader reaches, not the start of `DT_RELR' support, which stays out of
+;; scope exactly as the design brief says.
+;;
+;; RE-VERIFIED CONCLUSION, with the fix in place: `nl-ffi-loader-fixture-
+;; needs-dep.so' now refuses ONE hop down, at `libm.so.6' itself
+;; (`:dependency-unsupported' naming `libm.so.6', inner reason
+;; `:relr-relocations') -- never reaching `libc.so.6' or its TLS at all,
+;; since `libm.so.6''s OWN `DT_RELR' now stops the graph first.  Real
+;; system libraries remain unreachable through this loader after this
+;; increment, exactly as after increment 2, but the evidence for WHY
+;; changed, and re-deriving it here (rather than trusting increment 2's
+;; version to still hold) is what caught the gap above.
 
 ;;; Code:
 
@@ -405,16 +705,38 @@ rather than half-does -- see the DATA reason and this file's Commentary \
 (defconst nl-ffi-loader--dt-runpath 29)
 (defconst nl-ffi-loader--dt-relr-lo #x6fffe035)
 (defconst nl-ffi-loader--dt-relr-hi #x6fffe037)
+(defconst nl-ffi-loader--dt-relrsz 35
+  "The STANDARDIZED DT_RELRSZ tag (generic-ABI, binutils >= 2.38 / glibc
+>= 2.36) -- see this file's Commentary, \"TLS\", \"THE REAL-SYSTEM-
+LIBRARY REACHABILITY QUESTION\": `nl-ffi-loader--dt-relr-lo'/`-hi' alone
+matched only the OLD, pre-standardization EXPERIMENTAL tag range and
+silently did not fire against this host's real, modern `libc.so.6'/
+`libm.so.6' (binutils 2.45, glibc 2.41) -- confirmed by running the
+unmodified check against them. Both ranges are matched now; still a pure
+tag-presence refusal, no `.relr.dyn' bytes are ever read.")
+(defconst nl-ffi-loader--dt-relr 36 "See `nl-ffi-loader--dt-relrsz'.")
+(defconst nl-ffi-loader--dt-relrent 37 "See `nl-ffi-loader--dt-relrsz'.")
 (defconst nl-ffi-loader--dt-gnu-hash #x6ffffef5)
 
 (defconst nl-ffi-loader--reloc-relative 8)
 (defconst nl-ffi-loader--reloc-glob-dat 6)
 (defconst nl-ffi-loader--reloc-jump-slot 7)
 (defconst nl-ffi-loader--reloc-irelative 37)
+(defconst nl-ffi-loader--reloc-tpoff64 18
+  "R_X86_64_TPOFF64 -- the one TLS relocation type this file implements
+(Initial-Exec) -- see this file's Commentary, \"TLS\", and
+`nl-ffi-loader--resolve-tpoff64'.")
 
 (defconst nl-ffi-loader--stb-weak 2
   "ELF64_ST_BIND value for STB_WEAK -- see this file's Commentary, \"A real
 defect found while implementing\".")
+
+(defconst nl-ffi-loader--stt-tls 6
+  "ELF64_ST_TYPE value for STT_TLS -- see this file's Commentary, \"TLS\",
+for why a symbol of this type is refused rather than silently mishandled
+both as an ordinary GLOB_DAT/JUMP_SLOT resolution target
+(`:tls-symbol-via-relocation') and as a `nl-ffi-loader-symbol' by-name
+lookup result (treated as \"not found\", mirroring `STT_GNU_IFUNC').")
 
 (defconst nl-ffi-loader--stt-gnu-ifunc 10
   "ELF64_ST_TYPE value for STT_GNU_IFUNC -- see this file's Commentary,
@@ -422,12 +744,31 @@ defect found while implementing\".")
 of this type is refused rather than silently mishandled.")
 
 (defconst nl-ffi-loader--tls-relocation-types
-  '(16 17 18 19 20 21 22 23 34 35 36)
-  "R_X86_64_{DTPMOD64,DTPOFF64,TPOFF64,TLSGD,TLSLD,DTPOFF32,GOTTPOFF,
-TPOFF32,GOTPC32_TLSDESC,TLSDESC_CALL,TLSDESC} -- refused even though this
-file's PT_TLS check (`nl-ffi-loader--map-node') already rejects any
-object that needs one of these before a single relocation is inspected;
-kept as a second, independent check on the relocation type itself.")
+  '(16 17 19 20 21 22 23 34 35 36)
+  "R_X86_64_{DTPMOD64,DTPOFF64,TLSGD,TLSLD,DTPOFF32,GOTTPOFF,TPOFF32,
+GOTPC32_TLSDESC,TLSDESC_CALL,TLSDESC} -- General-Dynamic/Local-Dynamic
+(need `__tls_get_addr' and a DTV) and the GOT-indirect/32-bit-immediate
+cousins of `R_X86_64_TPOFF64' (`nl-ffi-loader--reloc-tpoff64', the ONE TLS
+relocation type this file implements -- see this file's Commentary,
+\"TLS\") -- refused even though every object reaching a relocation at all
+has already been given a real, valid TLS arena slot if it declared a
+`PT_TLS' (`nl-ffi-loader--assign-tls-offset'); kept as a second,
+independent check on the relocation type itself.")
+
+(defconst nl-ffi-loader--tls-arena-size (* 1024 1024)
+  "Fixed size, in bytes, of the single static TLS arena this loader
+reserves the first time any object needs a `PT_TLS' block -- see this
+file's Commentary, \"TLS\".  Trivial by `mmap' standards (anonymous pages
+cost nothing until touched) and generous next to any realistic self-
+contained library's thread-local data -- even real `libc.so.6''s own
+internal TLS block, measured on this host, is 136 bytes.  A FIXED
+ceiling, not a growing one: growing it would mean moving `%fs' after
+code compiled against the OLD offsets already exists, which this file
+refuses to attempt -- exceeding it signals `:tls-arena-exhausted' instead.")
+
+(defconst nl-ffi-loader--sys-arch-prctl 158)
+(defconst nl-ffi-loader--arch-set-fs #x1002)
+(defconst nl-ffi-loader--arch-get-fs #x1003)
 
 (defconst nl-ffi-loader--standard-dirs
   '("/usr/lib/x86_64-linux-gnu/" "/lib/x86_64-linux-gnu/"
@@ -562,6 +903,21 @@ uses rather than an ad hoc `unwind-protect' each."
 (defvar nl-ffi-loader--file-mappings nil)
 (defvar nl-ffi-loader--reservations nil)
 
+;; TLS state, UNLIKE the two above, is process-wide and PERMANENT --
+;; `arch_prctl(ARCH_SET_FS)' is itself process-wide, so it is never
+;; let-bound or reset per `nl-ffi-loader-open' call.  See this file's
+;; Commentary, \"TLS\".
+
+(defvar nl-ffi-loader--tls-tp nil
+  "The thread pointer (`%fs' base) this loader has established via
+`arch_prctl(ARCH_SET_FS)', or nil if no `PT_TLS'-bearing object has been
+opened yet in this process.  See `nl-ffi-loader--ensure-tls-arena'.")
+
+(defvar nl-ffi-loader--tls-used 0
+  "Bytes of `nl-ffi-loader--tls-tp''s arena already handed out, growing
+DOWNWARD from the thread pointer.  Never decreases -- see this file's
+Commentary, \"TLS\", \"Known simplification\".")
+
 (defun nl-ffi-loader--map-file-readonly-tracked (path)
   (let ((fm (nl-ffi-loader--map-file-readonly path)))
     (push fm nl-ffi-loader--file-mappings)
@@ -604,11 +960,15 @@ same architecture/ABI it is itself running on."
   "Parse FILE-BASE's program headers.
 Returns a plist: `:loads' (a list of (P_VADDR P_OFFSET P_FILESZ P_MEMSZ
 P_FLAGS), sorted by P_VADDR ascending), `:dyn-vaddr' (PT_DYNAMIC's
-P_VADDR, or nil), `:tls-p' (non-nil when a PT_TLS header is present)."
+P_VADDR, or nil), `:tls-p' (non-nil when a PT_TLS header is present), and,
+only when `:tls-p' is non-nil, PT_TLS's own `:tls-file-offset'/`:tls-
+filesz'/`:tls-memsz'/`:tls-align' -- see this file's Commentary, \"TLS\",
+and `nl-ffi-loader--assign-tls-offset', the only caller that reads these."
   (let* ((phoff (ptr-read-u64 file-base 32))
          (phentsize (nl-ffi-loader--u16 file-base 54))
          (phnum (nl-ffi-loader--u16 file-base 56))
          (loads nil) (dyn-vaddr nil) (tls-p nil)
+         (tls-file-offset nil) (tls-filesz nil) (tls-memsz nil) (tls-align nil)
          (i 0))
     (while (< i phnum)
       (let* ((ph (+ file-base phoff (* i phentsize)))
@@ -617,18 +977,25 @@ P_VADDR, or nil), `:tls-p' (non-nil when a PT_TLS header is present)."
              (p-offset (ptr-read-u64 ph 8))
              (p-vaddr (ptr-read-u64 ph 16))
              (p-filesz (ptr-read-u64 ph 32))
-             (p-memsz (ptr-read-u64 ph 40)))
+             (p-memsz (ptr-read-u64 ph 40))
+             (p-align (ptr-read-u64 ph 48)))
         (cond
          ((= p-type nl-ffi-loader--pt-load)
           (push (list p-vaddr p-offset p-filesz p-memsz p-flags) loads))
          ((= p-type nl-ffi-loader--pt-dynamic)
           (setq dyn-vaddr p-vaddr))
          ((= p-type nl-ffi-loader--pt-tls)
-          (setq tls-p t))))
+          (setq tls-p t
+                tls-file-offset p-offset
+                tls-filesz p-filesz
+                tls-memsz p-memsz
+                tls-align p-align))))
       (setq i (1+ i)))
     (list :loads (sort (nreverse loads) (lambda (a b) (< (car a) (car b))))
           :dyn-vaddr dyn-vaddr
-          :tls-p tls-p)))
+          :tls-p tls-p
+          :tls-file-offset tls-file-offset :tls-filesz tls-filesz
+          :tls-memsz tls-memsz :tls-align tls-align)))
 
 ;;;; --- mapping the image: reserve, carve, copy, (later) protect --------------
 
@@ -727,6 +1094,78 @@ docstring."
       (when (nl-ffi-loader--syscall-error-p rc)
         (signal 'nl-ffi-loader-open-failed (list :mprotect-failed lo rc))))))
 
+;;;; --- TLS: the static arena and per-object offset assignment -----------------
+;;
+;; See this file's Commentary, \"TLS\", for the thread-pointer finding, the
+;; model decision (Initial-Exec / R_X86_64_TPOFF64 only), and the packing
+;; algorithm this implements.
+
+(defun nl-ffi-loader--ensure-tls-arena ()
+  "Lazily reserve this process's ONE static TLS arena and establish `%fs'
+to point at its high end, the first time any `PT_TLS' object is opened.
+A no-op, returning the existing thread pointer, on every call after the
+first -- see `nl-ffi-loader--tls-tp''s docstring for why this is
+permanent, process-wide state rather than something reset per
+`nl-ffi-loader-open' call.  Signals `nl-ffi-loader-open-failed'
+(`:mmap-tls-arena-failed') if the arena itself cannot be mapped, or
+`nl-ffi-loader-unsupported' (`:arch-prctl-failed', `:arch-prctl-verify-
+failed') if `arch_prctl(ARCH_SET_FS, ...)' fails or -- checked by reading
+`%fs' straight back with `ARCH_GET_FS' rather than trusting a zero return
+code alone -- does not actually take effect."
+  (unless nl-ffi-loader--tls-tp
+    (let ((base (syscall-direct nl-ffi-loader--sys-mmap 0 nl-ffi-loader--tls-arena-size
+                                 (logior nl-ffi-loader--prot-read nl-ffi-loader--prot-write)
+                                 (logior nl-ffi-loader--map-private nl-ffi-loader--map-anonymous)
+                                 -1 0)))
+      (when (nl-ffi-loader--syscall-error-p base)
+        (signal 'nl-ffi-loader-open-failed (list :mmap-tls-arena-failed base)))
+      (let* ((tp (+ base nl-ffi-loader--tls-arena-size))
+             (src (syscall-direct nl-ffi-loader--sys-arch-prctl
+                                   nl-ffi-loader--arch-set-fs tp 0 0 0 0)))
+        (when (nl-ffi-loader--syscall-error-p src)
+          (signal 'nl-ffi-loader-unsupported (list :arch-prctl-failed src)))
+        (let* ((check (alloc-bytes 8 8))
+               (grc (syscall-direct nl-ffi-loader--sys-arch-prctl
+                                     nl-ffi-loader--arch-get-fs check 0 0 0 0)))
+          (when (or (nl-ffi-loader--syscall-error-p grc)
+                    (/= (ptr-read-u64 check 0) tp))
+            (signal 'nl-ffi-loader-unsupported (list :arch-prctl-verify-failed tp))))
+        (setq nl-ffi-loader--tls-tp tp
+              nl-ffi-loader--tls-used 0))))
+  nl-ffi-loader--tls-tp)
+
+(defun nl-ffi-loader--assign-tls-offset (file-base path file-offset filesz memsz align)
+  "Copy PATH's `PT_TLS' initialization image (FILESZ bytes read from
+FILE-BASE + FILE-OFFSET, zero-padded to MEMSZ, honouring ALIGN) into this
+process's static TLS arena, and return this object's own thread-pointer-
+relative base offset (always <= 0 -- see this file's Commentary, \"TLS\").
+Ensures the arena/`%fs' exist first (`nl-ffi-loader--ensure-tls-arena').
+The MEMSZ - FILESZ tail needs no explicit zeroing: this span of the arena
+is freshly `mmap'ed anonymous memory and is never reused, the same
+\"implicit zero\" argument `nl-ffi-loader--map-and-copy-segments' already
+relies on for an ordinary segment's own BSS tail.  Signals
+`nl-ffi-loader-unsupported' for `:tls-arena-exhausted' (this object would
+need more than `nl-ffi-loader--tls-arena-size' total, across every
+`PT_TLS' object this process has EVER opened -- see this file's
+Commentary, \"TLS\", \"Known simplification\") or `:tls-alignment-
+unsupported' (ALIGN does not evenly divide the arena's own page
+alignment, so this loader's \"the thread pointer is always aligned
+enough\" assumption would not hold -- not reachable by any object this
+package's own fixtures produce)."
+  (let* ((tp (nl-ffi-loader--ensure-tls-arena))
+         (align (if (> align 0) align 1))
+         (new-used (nl-ffi-loader--align-up (+ nl-ffi-loader--tls-used memsz) align)))
+    (when (> new-used nl-ffi-loader--tls-arena-size)
+      (signal 'nl-ffi-loader-unsupported
+              (list :tls-arena-exhausted path new-used nl-ffi-loader--tls-arena-size)))
+    (let ((dest (- tp new-used)))
+      (unless (zerop (mod dest align))
+        (signal 'nl-ffi-loader-unsupported (list :tls-alignment-unsupported path align)))
+      (when (> filesz 0)
+        (nl-ffi-loader--copy-bytes (+ file-base file-offset) dest filesz))
+      (setq nl-ffi-loader--tls-used new-used)
+      (- new-used))))
+
 ;;;; --- .dynamic parsing -------------------------------------------------------
 
 (defun nl-ffi-loader--parse-dynamic (bias dyn-vaddr)
@@ -742,10 +1181,11 @@ known.  `:rpath-off'/`:runpath-off' are the single (last-seen, matching
 ordinary dynamic-tag semantics) raw .dynstr offset for DT_RPATH/
 DT_RUNPATH, or nil.  `:init' is DT_INIT already biased, or nil;
 `:init-array'/`:init-arraysz' are DT_INIT_ARRAY (biased) and its byte
-size.  Also detects DT_RELR/DT_RELRSZ/DT_RELRENT (the
-0x6fffe035..0x6fffe037 tag range) so an object using the compact
-relative-relocation encoding is refused rather than silently
-under-relocated -- see this file's Commentary."
+size.  Also detects DT_RELR/DT_RELRSZ/DT_RELRENT (both the old
+experimental 0x6fffe035..0x6fffe037 tag range and the standardized
+35/36/37 tag values real modern toolchains emit -- see this file's
+Commentary, \"TLS\") so an object using the compact relative-relocation
+encoding is refused rather than silently under-relocated."
   (let ((strtab nil) (symtab nil) (syment nil)
         (gnu-hash nil) (sysv-hash nil)
         (rela nil) (relasz 0) (relaent 0)
@@ -777,7 +1217,10 @@ under-relocated -- see this file's Commentary."
          ((= tag nl-ffi-loader--dt-gnu-hash) (setq gnu-hash (+ bias val)))
          ((= tag nl-ffi-loader--dt-rpath) (setq rpath-off val))
          ((= tag nl-ffi-loader--dt-runpath) (setq runpath-off val))
-         ((and (>= tag nl-ffi-loader--dt-relr-lo) (<= tag nl-ffi-loader--dt-relr-hi))
+         ((or (and (>= tag nl-ffi-loader--dt-relr-lo) (<= tag nl-ffi-loader--dt-relr-hi))
+              (= tag nl-ffi-loader--dt-relr)
+              (= tag nl-ffi-loader--dt-relrsz)
+              (= tag nl-ffi-loader--dt-relrent))
           (setq relr-p t))))
       (setq i (1+ i)))
     (list :strtab strtab :symtab symtab :syment (or syment 24)
@@ -939,6 +1382,43 @@ order\"."
       (setq paths (cdr paths)))
     found))
 
+(defun nl-ffi-loader--lookup-tls-in-node (node name)
+  "Like `nl-ffi-loader--lookup-in-node', but for an `STT_TLS' symbol:
+returns (TP-RELATIVE-OFFSET BIND) computed from NODE's own `:tls-offset'
+-- NEVER NODE's `:bias', which is meaningless for a TLS symbol's
+`st_value' (an in-module byte offset, not a runtime address) -- see this
+file's Commentary, \"TLS\".  Returns nil for a DEFINED non-`STT_TLS'
+match, an UNDEFINED match, no match at all, or when NODE never opened a
+`PT_TLS' of its own (`:tls-offset' nil)."
+  (let ((tls-offset (plist-get (plist-get node :dyn) :tls-offset)))
+    (when tls-offset
+      (let* ((dyn (plist-get node :dyn))
+             (index
+              (cond
+               ((plist-get dyn :gnu-hash) (nl-ffi-loader--lookup-gnu-hash dyn name))
+               ((plist-get dyn :sysv-hash) (nl-ffi-loader--lookup-sysv-hash dyn name))
+               (t (nl-ffi-loader--lookup-linear-scan dyn name)))))
+        (when index
+          (let ((entry (nl-ffi-loader--dynsym-entry dyn index)))
+            (when (and (/= (nth 1 entry) 0) ; SHN_UNDEF
+                       (= (nth 3 entry) nl-ffi-loader--stt-tls))
+              (list (+ tls-offset (nth 0 entry)) (nth 2 entry)))))))))
+
+(defun nl-ffi-loader--lookup-tls-across-graph (graph search-order name)
+  "Like `nl-ffi-loader--lookup-across-graph', but via
+`nl-ffi-loader--lookup-tls-in-node' -- the SAME breadth-first, first-
+DEFINED-match-wins order (see this file's Commentary, \"Symbol search
+order\"), restricted to `STT_TLS' definitions.  Returns (TP-RELATIVE-
+OFFSET BIND), or nil."
+  (let ((paths search-order) (found nil))
+    (while (and paths (not found))
+      (let* ((path (car paths))
+             (node (gethash path graph))
+             (hit (and node (nl-ffi-loader--lookup-tls-in-node node name))))
+        (when hit (setq found hit)))
+      (setq paths (cdr paths)))
+    found))
+
 ;;;; --- .dynstr string helpers -------------------------------------------------
 
 (defun nl-ffi-loader--dynstr-string (dyn off)
@@ -1005,13 +1485,16 @@ means (see `nl-ffi-loader--dependency-not-found-check')."
 
 (defun nl-ffi-loader--map-node (path)
   "Map PATH (a real path, already resolved) and return a node plist:
-`:path', `:bias', `:loads', `:dyn' -- everything through parsing
-`.dynamic', but with NO relocation applied yet.  Signals
-`nl-ffi-loader-open-failed' for an I/O/mapping failure, or
-`nl-ffi-loader-unsupported' for `:not-elf64-shared-object',
-`:no-load-segments', `:tls-segment' (checked here, before any segment is
-even reserved), `:no-dynamic-section', `:relr-relocations', or
-`:no-dynamic-symbols'."
+`:path', `:bias', `:loads', `:dyn' (which itself carries `:tls-offset',
+possibly nil -- see this file's Commentary, \"TLS\") -- everything through
+parsing `.dynamic' and assigning a TLS arena slot if needed, but with NO
+relocation applied yet.  Signals `nl-ffi-loader-open-failed' for an
+I/O/mapping failure, or `nl-ffi-loader-unsupported' for `:not-elf64-
+shared-object', `:no-load-segments', `:tls-arena-exhausted'/`:tls-
+alignment-unsupported' (a `PT_TLS' segment is present -- checked here,
+before any ordinary segment is even reserved -- and this loader could not
+give it a real arena slot; see `nl-ffi-loader--assign-tls-offset'),
+`:no-dynamic-section', `:relr-relocations', or `:no-dynamic-symbols'."
   (let* ((fm (nl-ffi-loader--map-file-readonly-tracked path))
          (file-base (car fm)))
     (nl-ffi-loader--check-elf-header file-base path)
@@ -1019,19 +1502,24 @@ even reserved), `:no-dynamic-section', `:relr-relocations', or
            (loads (plist-get ph :loads)))
       (unless loads
         (signal 'nl-ffi-loader-unsupported (list :no-load-segments path)))
-      (when (plist-get ph :tls-p)
-        (signal 'nl-ffi-loader-unsupported (list :tls-segment path)))
-      (unless (plist-get ph :dyn-vaddr)
-        (signal 'nl-ffi-loader-unsupported (list :no-dynamic-section path)))
-      (let* ((reservation (nl-ffi-loader--reserve loads))
-             (bias (car reservation)))
-        (nl-ffi-loader--map-and-copy-segments bias file-base loads)
-        (let ((dyn (nl-ffi-loader--parse-dynamic bias (plist-get ph :dyn-vaddr))))
-          (when (plist-get dyn :relr-p)
-            (signal 'nl-ffi-loader-unsupported (list :relr-relocations path)))
-          (unless (or (plist-get dyn :symtab) (plist-get dyn :strtab))
-            (signal 'nl-ffi-loader-unsupported (list :no-dynamic-symbols path)))
-          (list :path path :bias bias :loads loads :dyn dyn))))))
+      (let ((tls-offset
+             (when (plist-get ph :tls-p)
+               (nl-ffi-loader--assign-tls-offset
+                file-base path (plist-get ph :tls-file-offset)
+                (plist-get ph :tls-filesz) (plist-get ph :tls-memsz)
+                (plist-get ph :tls-align)))))
+        (unless (plist-get ph :dyn-vaddr)
+          (signal 'nl-ffi-loader-unsupported (list :no-dynamic-section path)))
+        (let* ((reservation (nl-ffi-loader--reserve loads))
+               (bias (car reservation)))
+          (nl-ffi-loader--map-and-copy-segments bias file-base loads)
+          (let ((dyn (nl-ffi-loader--parse-dynamic bias (plist-get ph :dyn-vaddr))))
+            (when (plist-get dyn :relr-p)
+              (signal 'nl-ffi-loader-unsupported (list :relr-relocations path)))
+            (unless (or (plist-get dyn :symtab) (plist-get dyn :strtab))
+              (signal 'nl-ffi-loader-unsupported (list :no-dynamic-symbols path)))
+            (list :path path :bias bias :loads loads
+                  :dyn (plist-put dyn :tls-offset tls-offset))))))))
 
 (defun nl-ffi-loader--map-node-as-dependency (soname resolved-path requester-path)
   "Like `nl-ffi-loader--map-node', but any failure is wrapped as
@@ -1150,15 +1638,20 @@ resolved, already-biased runtime address (0 for a legitimately
 unresolved `STB_WEAK' reference -- see this file's Commentary, \"A real
 defect found while implementing\"), or signals
 `nl-ffi-loader-unsupported' (`:undefined-symbol' when nothing anywhere
-defines it and it is not weak, or `:ifunc-symbol-via-relocation' when
-what WOULD answer it is `STT_GNU_IFUNC'-typed -- see \"IFUNC\").
-GRAPH/SEARCH-ORDER may be nil (every increment-1-style single-object call
-site, including this file's own smoke test's direct calls to
-`nl-ffi-loader--apply-one-relocation', omits them): a local definition
-still resolves; an undefined local symbol with no graph to search either
-refuses outright (weak or not) or, if weak, resolves to 0 -- exactly
-increment 1's own single-object behavior, now expressed as the graph=nil
-case of this same function rather than a separate code path."
+defines it and it is not weak, `:ifunc-symbol-via-relocation' when what
+WOULD answer it is `STT_GNU_IFUNC'-typed -- see \"IFUNC\" -- or
+`:tls-symbol-via-relocation' when what WOULD answer it is `STT_TLS'-typed
+-- see this file's Commentary, \"TLS\": an in-module TLS byte offset is
+not a `bias'-relative runtime address, and treating it as one would be
+the same class of silent mistake the IFUNC check exists to prevent, just
+for a different symbol type).  GRAPH/SEARCH-ORDER may be nil (every
+increment-1-style single-object call site, including this file's own
+smoke test's direct calls to `nl-ffi-loader--apply-one-relocation', omits
+them): a local definition still resolves; an undefined local symbol with
+no graph to search either refuses outright (weak or not) or, if weak,
+resolves to 0 -- exactly increment 1's own single-object behavior, now
+expressed as the graph=nil case of this same function rather than a
+separate code path."
   (let* ((local (nl-ffi-loader--dynsym-entry dyn r-sym))
          (l-value (nth 0 local)) (l-shndx (nth 1 local))
          (l-bind (nth 2 local)) (l-type (nth 3 local)))
@@ -1167,6 +1660,10 @@ case of this same function rather than a separate code path."
           (when (= l-type nl-ffi-loader--stt-gnu-ifunc)
             (signal 'nl-ffi-loader-unsupported
                     (list :ifunc-symbol-via-relocation path
+                          (nl-ffi-loader--dynsym-name dyn r-sym) path)))
+          (when (= l-type nl-ffi-loader--stt-tls)
+            (signal 'nl-ffi-loader-unsupported
+                    (list :tls-symbol-via-relocation path
                           (nl-ffi-loader--dynsym-name dyn r-sym) path)))
           (+ bias l-value))
       (let* ((name (nl-ffi-loader--dynsym-name dyn r-sym))
@@ -1177,11 +1674,54 @@ case of this same function rather than a separate code path."
           (when (= (nth 2 hit) nl-ffi-loader--stt-gnu-ifunc)
             (signal 'nl-ffi-loader-unsupported
                     (list :ifunc-symbol-via-relocation path name (nth 3 hit))))
+          (when (= (nth 2 hit) nl-ffi-loader--stt-tls)
+            (signal 'nl-ffi-loader-unsupported
+                    (list :tls-symbol-via-relocation path name (nth 3 hit))))
           (nth 0 hit))
          ((= l-bind nl-ffi-loader--stb-weak) 0)
          (t
           (signal 'nl-ffi-loader-unsupported
                   (list :undefined-symbol path name))))))))
+
+(defun nl-ffi-loader--resolve-tpoff64 (path dyn graph search-order r-sym r-addend)
+  "Resolve an `R_X86_64_TPOFF64' relocation's write value: the target
+symbol's byte offset from the thread pointer -- see this file's
+Commentary, \"TLS\".  When R-SYM is 0 (the shape this package's own
+`nl-ffi-loader-fixture-tls-ie.so' compiles to for a same-module reference
+-- confirmed with `readelf -r'/`-x' before writing this function),
+R-ADDEND directly carries the variable's byte offset within THIS
+object's own `PT_TLS' image, so the result is simply this object's
+`:tls-offset' (DYN's, already assigned by
+`nl-ffi-loader--assign-tls-offset') plus R-ADDEND.  Otherwise, R-SYM names
+a real `.dynsym' entry: resolved locally first (refuses
+`:tls-symbol-type-mismatch' if what is found is not `STT_TLS'-typed --
+this loader must not silently treat a differently-typed symbol's
+`st_value' as a TLS offset), then across GRAPH/SEARCH-ORDER via
+`nl-ffi-loader--lookup-tls-across-graph'.  Refuses `:undefined-tls-symbol'
+if nothing anywhere defines it -- this file does NOT extend the ordinary
+GLOB_DAT/JUMP_SLOT resolver's `STB_WEAK'-resolves-to-0 carve-out here (see
+this file's Commentary, \"TLS\"): no fixture or real object this loader
+can reach needs a weak TLS reference, and inventing that behavior
+unverified would be exactly the kind of silent half-work this file
+elsewhere refuses to do."
+  (if (= r-sym 0)
+      (+ (plist-get dyn :tls-offset) r-addend)
+    (let* ((local (nl-ffi-loader--dynsym-entry dyn r-sym))
+           (l-shndx (nth 1 local)) (l-type (nth 3 local)) (l-value (nth 0 local)))
+      (if (/= l-shndx 0)
+          (progn
+            (unless (= l-type nl-ffi-loader--stt-tls)
+              (signal 'nl-ffi-loader-unsupported
+                      (list :tls-symbol-type-mismatch path
+                            (nl-ffi-loader--dynsym-name dyn r-sym))))
+            (+ (plist-get dyn :tls-offset) l-value r-addend))
+        (let* ((name (nl-ffi-loader--dynsym-name dyn r-sym))
+               (hit (and graph search-order
+                         (nl-ffi-loader--lookup-tls-across-graph graph search-order name))))
+          (if hit
+              (+ (nth 0 hit) r-addend)
+            (signal 'nl-ffi-loader-unsupported
+                    (list :undefined-tls-symbol path name))))))))
 
 (defun nl-ffi-loader--apply-one-relocation (path bias dyn rela-addr &optional graph search-order)
   "Apply the single Elf64_Rela relocation at RELA-ADDR, belonging to the
@@ -1194,8 +1734,11 @@ argument slots zero) and writes its result -- ALWAYS, unconditionally;
 deferring this relocation until after final segment protection is the
 ORCHESTRATION's job (`nl-ffi-loader--apply-relocation-table'/
 `nl-ffi-loader--apply-relocations-for-node'), not this function's -- see
-this file's Commentary, \"IFUNC\".  Signals `nl-ffi-loader-unsupported'
-for anything else -- see this file's Commentary."
+this file's Commentary, \"IFUNC\".  For `R_X86_64_TPOFF64' this writes the
+target symbol's thread-pointer-relative offset -- see
+`nl-ffi-loader--resolve-tpoff64' and this file's Commentary, \"TLS\".
+Signals `nl-ffi-loader-unsupported' for anything else -- see this file's
+Commentary."
   (let* ((r-offset (ptr-read-u64 rela-addr 0))
          (r-info (ptr-read-u64 rela-addr 8))
          (r-addend (ptr-read-u64 rela-addr 16))
@@ -1214,6 +1757,10 @@ for anything else -- see this file's Commentary."
       (let* ((resolver-addr (+ bias r-addend))
              (result (ptr-call resolver-addr 0 0 0 0 0 0)))
         (ptr-write-u64 target 0 result)))
+     ((= r-type nl-ffi-loader--reloc-tpoff64)
+      (ptr-write-u64 target 0
+                     (nl-ffi-loader--resolve-tpoff64
+                      path dyn graph search-order r-sym r-addend)))
      ((memq r-type nl-ffi-loader--tls-relocation-types)
       (signal 'nl-ffi-loader-unsupported (list :tls-relocation path r-type)))
      (t
@@ -1342,10 +1889,16 @@ dependency graph -- see this file's Commentary, \"Symbol search order\".
 Signals `nl-ffi-loader-open-failed' for an I/O/mapping failure in PATH
 itself, and `nl-ffi-loader-unsupported' for anything out of this
 increment's scope, whether in PATH itself (`:not-elf64-shared-object',
-`:tls-segment', `:no-dynamic-section', `:no-load-segments',
-`:relr-relocations', `:no-dynamic-symbols', `:overlapping-segments',
-`:rel-style-plt-not-rela', `:undefined-symbol',
-`:ifunc-symbol-via-relocation', `:tls-relocation', `:relocation-type')
+`:no-load-segments', `:tls-arena-exhausted', `:tls-alignment-unsupported'
+-- a `PT_TLS' segment this loader could not give real storage; see this
+file's Commentary, \"TLS\" -- `:no-dynamic-section', `:relr-relocations',
+`:no-dynamic-symbols', `:overlapping-segments', `:rel-style-plt-not-rela',
+`:undefined-symbol', `:ifunc-symbol-via-relocation',
+`:tls-symbol-via-relocation', `:tls-relocation' (a TLS relocation type
+this file still refuses -- General-Dynamic/Local-Dynamic and TPOFF64's
+GOT-indirect/32-bit-immediate cousins; `R_X86_64_TPOFF64' itself is now
+applied, not refused -- see \"TLS\"), `:tls-symbol-type-mismatch',
+`:undefined-tls-symbol', or `:relocation-type')
 or anywhere in its dependency graph (the same set, wrapped as
 `:dependency-unsupported'/`:dependency-open-failed' naming the whole
 requester/soname/resolved-path/inner-condition chain -- see
@@ -1374,10 +1927,15 @@ rather than returning the resolver's own `st_value' as if it were the
 resolved implementation's address -- see this file's Commentary,
 \"IFUNC\": unlike a relocation, a bare name lookup never calls anything,
 so there is no safe point at which to run the resolver and use ITS
-result instead."
+result instead.  An `STT_TLS'-typed match is treated as \"not found\" for
+the same reason -- see this file's Commentary, \"TLS\": its `st_value' is
+an in-module byte offset, not a usable runtime address, and there is no
+relocation context here to combine it with the defining object's own
+`:tls-offset' the way `nl-ffi-loader--resolve-tpoff64' does."
   (let ((hit (nl-ffi-loader--lookup-across-graph
               (plist-get handle :graph) (plist-get handle :search-order) name)))
-    (if (and hit (/= (nth 2 hit) nl-ffi-loader--stt-gnu-ifunc))
+    (if (and hit (/= (nth 2 hit) nl-ffi-loader--stt-gnu-ifunc)
+             (/= (nth 2 hit) nl-ffi-loader--stt-tls))
         (nth 0 hit)
       0)))
 
