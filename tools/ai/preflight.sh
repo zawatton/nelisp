@@ -46,6 +46,7 @@ SLOW_GATES=(
   "shadow-smoke|make standalone-reader-shadow-smoke"
   "check-tier|bash tools/ai/nelisp-ai.sh check"
   "extras|bash tools/ai/nelisp-ai.sh extras"
+  "smokes|bash tools/ai/nelisp-ai.sh smokes"
   "perf|bash tools/ai/nelisp-ai.sh perf"
   "ert-full|bash tools/ai/nelisp-ai.sh test"
 )
