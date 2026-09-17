@@ -96,6 +96,21 @@ run_gate() {
   # A gate that reports checked=0 crashed rather than ran; that distinction has
   # been mistaken for a slowdown before, so call it out here.
   case "$gc" in *"checked=0 "*) printf '  !! checked=0 -- this gate DIED, it did not merely regress\n';; esac
+  # A failing gate's own words are what a reader needs, and until now they
+  # stayed in "$log" -- which a CI runner discards when the job ends.  On run
+  # 35213336782 the `gates' job therefore reported `emacs-parity FAIL rc=2
+  # GATE-COUNT checked=22399 findings=1' and nothing else: the whole job log
+  # was 63 lines, the artifact upload belongs to a different job, and that
+  # one finding was unrecoverable from anywhere.  Echoing a bounded tail
+  # costs nothing on a green run and is the difference between a diagnosable
+  # failure and a re-run.  LC_ALL=C and the NUL strip are because some gate
+  # logs are binary (target/emacs-parity-*.txt is `data'), which is also why
+  # the GATE-COUNT grep above already carries -a.
+  if [ $rc -ne 0 ]; then
+    printf -- '--- last %s line(s) of %s ---\n' "${PREFLIGHT_FAIL_TAIL:-40}" "$log"
+    LC_ALL=C tail -n "${PREFLIGHT_FAIL_TAIL:-40}" "$log" | tr -d '\000' | sed 's/^/  | /'
+    printf -- '--- end %s ---\n' "$log"
+  fi
 }
 
 for g in "${FAST_GATES[@]}"; do run_gate "$g"; done
