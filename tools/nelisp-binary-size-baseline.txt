@@ -544,5 +544,29 @@
 # release cl-generic changes add their corresponding prelude implementation.
 # This is a deliberate feature-size increase, measured after the reader
 # 31/31 standalone checks passed, rather than linker or metadata noise.
-size 7634232
+# Raised 2026-09-17 to CI's own cold measurement, 7803816 bytes, after the
+# gate failed on run 35198841831 at b7f2c103b: "./target/nelisp is 7803816
+# bytes, 169584 over baseline 7634232 -- exceeds ceiling 7786916 (2% slack)".
+# Pinned from CI rather than a local build, per this file's own rule above:
+# local worktrees here measured the same commit at 7824296 and 7828392, and a
+# pre-push control (0ad122d69) at 7772600, so the local absolute is not the
+# number to pin.
+#
+# Attribution, measured in ONE worktree by building each commit in turn so the
+# deltas are comparable (the control built twice at exactly 7772600, so there
+# is no intra-tree variance; across worktrees the same commit varies by one
+# 4096-byte page, which is why only same-tree deltas are quoted):
+#   f25ec9af1  +35312   uninterned symbols, declaration-aware bindings, UTF-8
+#                       frame hashes -- the dominant contributor by far
+#   19a6eabca  +12288   relinking standalone-eval-test (nl_env_pop_frame moved
+#                       into the shim, nelisp_frame_scope_push stubbed)
+#   909a5d34d   +4096   FFI increment 2 (dependency graphs, IFUNC, initializers)
+#   91c8dd711      +0   ptr-call-typed's 32 generated arms cost nothing
+#                       measurable; an earlier +8192 figure for this commit was
+#                       measured across worktrees and was noise
+#   b7f2c103b      +0   Initial-Exec TLS is Elisp in the loader, not linked in
+# Total +51696 in that tree. This is accumulated growth from several commits
+# that were never pushed, so CI had not measured any of it until now; the pin
+# it is being compared against predates all of them (a08796ab5, 2026-08-26).
+size 7803816
 slack-pct 2
