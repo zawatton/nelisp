@@ -783,7 +783,37 @@ standalone-reader-print-large-sexp-smoke|scripts/nelisp-stdlib-prelude.el|s/(unl
 # PASS' and `GATE-COUNT checked=88 findings=0' (exit 0).
 native-unit-repl-smoke|lisp/nelisp-native-load.el|s/^(defconst nelisp-native-load-raw-max-arity 6)$/(defconst nelisp-native-load-raw-max-arity 7)/|the declared six-argument ceiling widens to seven, so the refused-seven-argument-export assertion silently stops being true
 lisp-byte-compile|lisp/nelisp-native-unit.el|s/^(require 'nelisp-native-load)$/(require 'nelisp-native-load)\n(defun nelisp-native-unit--mutation-probe () (let ((unused 1)) nil))/|a defun with an unused lexical binding in a lisp\/ file the baseline records as clean
-nelisp-sexp-clone-bind-smoke|scripts/nelisp-standalone-build.el|s/(if (> head-reclaimed 0)/(if (> head-reclaimed 999999999)/|the reclaimed head span stops being zeroed, so a rewound bump cursor hands out memory the reader had already written to -- the original defect
+# RETIRED 2026-09-18 -- failure mode #2 above, NON-LETHAL AFTER AN IMPROVEMENT.
+# The injection below was lethal when written (2026-09-12) and is not any more,
+# and that is `f25ec9af1' working, not a regression.  Measured with the gate's
+# own reproducer plus a denser sweep of the same knobs, same instrument on both
+# sides:
+#
+#   ffc862a66 (= f25ec9af1^) + injection : 41 crashes of 160 configurations
+#   382f8d1cc (tip)          + injection :  0 crashes of 160
+#
+# The hit bands at the control are regular, not sparse -- varname 8 crashes at
+# feature-name lengths 17-24 and 73-80, varname 9 at 10-16 and 65-72, and every
+# leading-form count 0-8 -- so the dense sweep crosses them repeatedly and
+# cannot have missed them by sampling.  216 configurations in total were silent
+# at the tip across all three knobs the reproducer can turn (variable-name
+# length, feature-symbol length, leading top-level form count).
+#
+# Cause, read from the diff rather than guessed: f25ec9af1 rewrites every
+# `nl_bind_frame_fast' call into `bf_bind_frame_declared', which runs an extra
+# `bf_mark_declared_special' per binding.  The reclaim side is untouched --
+# `nl_boundary_reclaim', `nl_alloc_zero_fill' and `head-reclaimed' have zero
+# changed lines in that commit, and `alloc-bytes 128' appears nowhere in it --
+# so the hazard still exists; the 128-byte bind scratch simply no longer lands
+# in the un-zeroed rewound span.  It is placement, not size.
+#
+# The gate itself STAYS REQUIRED (tools/ai/gates.expected): it still guards the
+# regression it was written for.  What is retired is only the claim that this
+# injection can prove it, which the measurements above refute.  A future row for
+# this gate needs a program whose binding sequence lands back in the rewound
+# span under the post-f25ec9af1 allocation, and `make gate-mutation-verify
+# GATE=nelisp-sexp-clone-bind-smoke' is how to prove it before committing.
+# nelisp-sexp-clone-bind-smoke|scripts/nelisp-standalone-build.el|s/(if (> head-reclaimed 0)/(if (> head-reclaimed 999999999)/|the reclaimed head span stops being zeroed, so a rewound bump cursor hands out memory the reader had already written to -- the original defect
 #
 # Contract suites (2026-09-16).  Each row below was run RED through this
 # harness, and the gate was GREEN on the restored tree.
