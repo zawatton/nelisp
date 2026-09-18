@@ -568,5 +568,45 @@
 # Total +51696 in that tree. This is accumulated growth from several commits
 # that were never pushed, so CI had not measured any of it until now; the pin
 # it is being compared against predates all of them (a08796ab5, 2026-08-26).
-size 7803816
+# 7803816 -> 8226496 on 2026-09-18: Doc 204's syntax-parsing layer (P1-P5).
+# Raised from CI's OWN measurement, never a local one -- tools/ai/preflight.sh
+# records why that distinction matters (a local build of the same commit
+# measured ~57KB larger than CI's on efa22af65, so raising the pin from a
+# local number eats the real CI headroom this ratchet exists to guard).  The
+# number here is the one CI printed on run 35337969001, commit 13b6bf39d:
+#
+#   [binary-size-ratchet] FAIL: ./target/nelisp is 8226496 bytes, 422680 over
+#   baseline 7803816 -- exceeds ceiling 7959892 (2% slack)
+#
+# The growth is attributed, not assumed.  Built 527b28ca6 (the commit
+# immediately before P1) in its own worktree on this machine and compared
+# only the DELTA, which is the other method preflight.sh sanctions:
+#
+#   527b28ca6  (before Doc 204)                     7,898,136 B  -- inside the old ceiling
+#   HEAD       (P1-P5 landed)                       8,230,592 B
+#   delta                                            +332,456 B  (+4.2%)
+#
+# So the ceiling was not crossed by accumulated drift: the control still fits
+# under it with 61,756 B to spare, and one feature crossed it.  That feature
+# is the syntax-parsing layer the standalone had none of -- `parse-partial-sexp',
+# `scan-sexps'/`scan-lists', syntax tables and `modify-syntax-entry',
+# `emacs-lisp-mode', `check-parens', `save-excursion', `forward-sexp' and the
+# handful of names running the real consumer turned up (docs/design/
+# 204-syntax-parsing-layer.org).  It is real code doing real work, so the
+# honest move is to raise the pin and say what bought the bytes rather than
+# widen the slack.
+#
+# `slack-pct' stays at 2 deliberately.  The slack is for linker/alignment
+# noise between two builds of the same source, not a budget to grow into --
+# the block above says so, and widening it here would silently re-arm the
+# same blind spot for the next 400KB.
+#
+# What this pin did NOT do: it did not fail during P1-P5.  Each of those
+# commits should have raised `size' in the same commit that added the bytes,
+# exactly as this file asks.  None did, and the gate could not say so because
+# both Linux lanes were aborting at an earlier failing step before reaching
+# it (run 35328696106: 30.1 stopped at emacs-compat, 29.4 at the VS Code
+# step, and the binary-size step is recorded `skipped' in both).  The ratchet
+# was working; nothing was letting it speak.
+size 8226496
 slack-pct 2
