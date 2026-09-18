@@ -779,20 +779,76 @@ That is why =nelisp-standalone-build-application= sat at 99.9% CPU for 30
 minutes and produced no ELF.  It is slow, not stuck, and the slowness is
 not in anything Doc 205 set out to fix.
 
-Two directions, neither measured yet; the choice needs numbers rather
-than taste:
+*** Where the time goes, measured
 
-1. *Make the printer faster.*  The general fix, and it helps every
-   consumer — but it is a runtime performance project.  Nothing here says
-   where the time goes inside =prin1-to-string=; that profiling has not
-   been done.
-2. *Stop printing whole unit sources to key them.*  The key exists to be
-   content-addressed (§1.7).  A cheaper content function over the same
-   form would serve, subject to the constraint the current scheme's own
-   docstring spells out: it must not truncate, because two different
-   sources sharing a key hands back an object compiled from code that was
-   never compiled.
+Profiled 2026-09-19 on =shim-source= (1,512 ms baseline, reproducible to
+±2 ms across processes).  Symbol printing is the bulk of it:
+
+| what was disabled | total | share of baseline |
+|---+---+---|
+| nothing (baseline) | 1,512.6 ms | — |
+| =nelisp--prn-symbol-needs-leading-escape-p= | 1,324.4 ms | 12% |
+| =nelisp--prn-symbol-char-needs-escape-p= | 1,096.1 ms | 28% |
+| =nelisp--prn-symbol-escaped= entirely | *369.8 ms* | *76%* |
+
+Confirmed a second way, without touching any function cell — replacing
+every symbol in the input with the integer 0 gives 291.7 ms against
+1,524.1 ms — so the 76% is not an artefact of the substitution.
+
+Numbers are free: swapping every number for nil leaves 1,508.6 ms against
+1,524.1 ms.
+
+Inside the escaper's 1,143 ms, no single piece dominates: the
+leading-escape scan is 188 ms, the per-character predicate 416 ms, and the
+remaining ~539 ms is =char-to-string= plus the chunk append, one of each
+per character.  That is 601 calls for this source, ~1.9 ms apiece, on
+symbols averaging a handful of characters.
+
+*** Why the obvious fix does not work
+
+Most symbols need no escaping at all, so a fast path that decides once and
+returns =symbol-name= untouched looks free.  Measured, it is not:
+
+- On a synthetic bench (9 names x 2000) it was 32% faster: 58.6 s to 39.6 s.
+- On the real source it was *slower*: 1,512 ms to 1,752 ms, with
+  byte-identical output.
+
+The synthetic input had long names and was not representative.  Real
+symbols here are short, so the extra look-ahead scan is pure addition
+while the per-character predicate still runs.  The table above says why
+there is no easy win: removing any one piece buys at most ~28%, and the
+gap to host Emacs is ~3,600x.  *Making this printer fast is not a
+tuning exercise.*
+
+*** So the two directions, now with numbers
+
+1. *Make the printer faster.*  The ceiling on incremental work is about
+   40% (the escaper's three parts, best case).  Closing a 3,600x gap needs
+   something structural — not this function's inner loop.
+2. *Stop printing whole unit sources to key them.*  Unchanged in
+   attractiveness and still unmeasured.  The constraint stands: the key
+   must not truncate, because two sources sharing a key hands back an
+   object compiled from code that was never compiled.  Worth noting that
+   a unit source is a constant read out of the builder's own file, whose
+   digest is already computed in 1.541 s — a key derived from
+   (defvar name + that digest) would print nothing at all.  That is a
+   candidate, not a plan; it has not been checked for correctness.
 
 Until one of them lands, a self-hosted =nelisp build= is *possible but not
 practical*, and this document should not go SHIPPED on the strength of
 P1-P3 alone.
+
+*** A measurement hazard found along the way
+
+Consecutive measurements in one process are not comparable here.  Running
+the same =prin1-to-string= twice gives 1,511 ms then 2,932 ms, and
+=garbage-collect= only brings it to 2,112 ms — it does not come back.  The
+arena has grown to 5 chunks, =used-bytes= 408 MB against
+=live-after-last-gc= 43.8 MB, and stays slow in that state.
+
+This was first misread as =fset= poisoning the function cell, because the
+A/B happened to use =fset=.  An identity wrapper disproved that: wrapping
+the escaper in =(lambda (s) (funcall orig s))= measures 1,527 ms against
+1,514 ms, i.e. free.  Every figure in this section is therefore *one
+measurement per process*.  The arena behaviour is a separate runtime
+question and is not chased here.
