@@ -20244,7 +20244,17 @@ indistinguishable from one that is simply empty once the search runs, and
 listing it would make the load-path lie about what is reachable."
   (let ((dirs (append
                (list (expand-file-name "lisp" nelisp-standalone--repo-root)
-                     (expand-file-name "src" nelisp-standalone--repo-root))
+                     (expand-file-name "src" nelisp-standalone--repo-root)
+                     ;; Doc 205 P1.  Seven of this file's own eight `require'
+                     ;; forms resolve under lisp/; the eighth,
+                     ;; `nelisp-runtime-reload-telemetry', lives in scripts/.
+                     ;; Host Emacs passes -L scripts explicitly (see the
+                     ;; `standalone-reader' recipe), so the gap only appeared
+                     ;; when the builder was loaded ON target/nelisp, where it
+                     ;; stopped at `(file-missing . nelisp-runtime-reload-telemetry)'
+                     ;; with the other seven already resolved.  Measured
+                     ;; 2026-09-18: with this entry all eight answer `ok'.
+                     (expand-file-name "scripts" nelisp-standalone--repo-root))
                (sort (file-expand-wildcards
                       (expand-file-name "packages/*/src"
                                         nelisp-standalone--repo-root))

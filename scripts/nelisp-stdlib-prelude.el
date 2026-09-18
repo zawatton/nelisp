@@ -8078,6 +8078,59 @@ anything (Doc 188 §2.2)."
       (unless b (signal 'error (list "No buffer to kill")))
       (when (eq b nelisp--current-buffer) (setq nelisp--current-buffer nil))
       (or (nelisp-kill-buffer b) t))))
+;; Doc 205 P1: eight more standard names onto the same model.  Every one of
+;; them already had its implementation here under a `nelisp-' name -- these
+;; are bridges, not new buffer code.  They are what
+;; `nelisp-standalone--project-source' needs: it stopped at
+;; `(void-function eobp)' on target/nelisp with the syntax layer complete.
+(unless (fboundp 'eobp)
+  (defun eobp ()
+    "Non-nil when point is at the end of the accessible portion.
+Narrowing-aware because `nelisp-point-max' is (probed against Emacs 30.1:
+under `narrow-to-region' both answer the narrowed bound)."
+    (= (nelisp-point nelisp--current-buffer)
+       (nelisp-point-max nelisp--current-buffer))))
+(unless (fboundp 'bobp)
+  (defun bobp ()
+    "Non-nil when point is at the beginning of the accessible portion."
+    (= (nelisp-point nelisp--current-buffer)
+       (nelisp-point-min nelisp--current-buffer))))
+(unless (fboundp 'buffer-name)
+  (defun buffer-name (&optional buffer)
+    "Return the name of BUFFER, defaulting to the current one.
+Emacs answers nil for a killed buffer; `nelisp-kill-buffer' only drops the
+registry entry and the struct keeps its name, so ask the registry rather
+than the struct -- the same reasoning `buffer-live-p' above carries."
+    (let ((b (or buffer nelisp--current-buffer)))
+      (and b (buffer-live-p b) (nelisp-buffer-name b)))))
+(unless (fboundp 'get-buffer-create)
+  (defun get-buffer-create (buffer-or-name &optional _inhibit-buffer-hooks)
+    (cond
+     ((nelisp-buffer-p buffer-or-name) buffer-or-name)
+     ((stringp buffer-or-name)
+      (when (= (length buffer-or-name) 0)
+        (signal 'error (list "Empty string for buffer name is not allowed")))
+      (nelisp-get-buffer-create buffer-or-name))
+     (t (signal 'wrong-type-argument (list 'stringp buffer-or-name))))))
+(unless (fboundp 'narrow-to-region)
+  (defun narrow-to-region (start end)
+    (nelisp-narrow-to-region start end nelisp--current-buffer)))
+(unless (fboundp 'widen)
+  (defun widen ()
+    (nelisp-widen nelisp--current-buffer)))
+(unless (fboundp 'beginning-of-line)
+  (defun beginning-of-line (&optional n)
+    "Move point to the beginning of the Nth line from point's line.
+Unlike `line-beginning-position', which computes without moving, Emacs's
+`beginning-of-line' MOVES point and returns nil."
+    (nelisp-goto-char (line-beginning-position n) nelisp--current-buffer)
+    nil))
+(unless (fboundp 'end-of-line)
+  (defun end-of-line (&optional n)
+    "Move point to the end of the Nth line from point's line.
+Moves and returns nil, the counterpart of `line-end-position'."
+    (nelisp-goto-char (line-end-position n) nelisp--current-buffer)
+    nil))
 ;; Doc 204 §1.4/P1: both macros below now let-bind `nelisp-buffer--
 ;; current' alongside `nelisp--current-buffer', to the SAME buffer, in
 ;; the SAME `let'/`let*' -- so the two trackers can never observe each

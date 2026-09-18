@@ -367,11 +367,26 @@ arrived.
    only pattern it is ever passed.  A general implementation is a larger
    promise than the tree needs and than this measurement supports.
 
-5. *The hash route is left open, deliberately.*  §1.7 gives B, C and D
-   with numbers; choosing among them trades self-containment against
-   runtime work against cache strength, and that is a project decision
-   rather than a build-fixing one.  P3 is written so that P1 and P2 land
-   and are useful regardless of which is chosen.
+5. *The hash route is Option B, the external helper* (decided 2026-09-18).
+   §1.7 measured it at 0.014 s over 1.8 MB from =target/nelisp=, answering
+   byte-identically to the shell's own =sha1sum=; 112 unit keys plus one
+   digest is under two seconds against host Emacs's 7.
+
+   What this buys and what it costs, stated plainly so the trade is not
+   forgotten: a self-hosted =build= that shells out to coreutils is *not*
+   self-contained, which is the property Option C would have preserved and
+   this one does not.  It keeps content addressing, which Option D would
+   have traded away, and it lands now rather than after new runtime work.
+   If the runtime later grows a native digest, this is the call site to
+   repoint, and P3's bridge is deliberately written as one function so
+   that is a one-place change.
+
+   Two constraints follow from the measurement and must survive into P3:
+   the helper must be located through =executable-find= (a bare name works
+   because =call-process= searches PATH here, unlike =nelisp-call-process=),
+   and it must cover =sha1= as well as =sha256= -- the builder asks for
+   =sha1= twice and =sha256= once, so the generated fallback at =:21575=,
+   which is =sha256=-only, cannot serve as-is.
 
 6. *Every exit criterion is measured against =target/nelisp=.*  Same
    reason as Doc 204 §2.5: =(unless (fboundp 'X) ...)= bridges are inert
@@ -390,6 +405,43 @@ loads without =file-missing=, and =nelisp-standalone--project-source=
 advances past =(void-function eobp)=.  It will *not* complete yet — it
 reaches =(end-of-file ...)=, which is P2's subject, and the phase is done
 when it fails *there* rather than earlier.
+
+*LANDED 2026-09-18.*  Measured on a reader rebuilt with both changes
+(=NELISP_STANDALONE_READER_OUTPUT=, 8,263,416 bytes; =target/nelisp=
+untouched at 8,230,592), with =scripts/= NOT added by hand — it is baked
+in now:
+
+#+begin_example
+1. builder require -> ok
+2. build-application fboundp -> t
+   bridge eobp / bobp / buffer-name / get-buffer-create
+        / narrow-to-region / widen / beginning-of-line / end-of-line   all t
+3. project-source -> (end-of-file #<buffer  *temp*>)
+#+end_example
+
+The =load-path= entry went into
+=nelisp-standalone--reader-tree-load-path=, which is the single producer
+every bootstrap reads — its own docstring records what happened the last
+time a path was added to one entry point only ("Same feature, different
+answer per entry point").  =scripts/= was never deliberately excluded:
+the function lists =lisp/=, =src/= and =packages/*/src= and filters for
+existence, and =scripts/= simply was not in the list.
+
+Ratchets, measured rather than assumed, because the same eight names moved
+two of them the last time the prelude grew (Doc 204 P1-P5):
+
+| gate | result |
+|------+--------|
+| =emacs-compat= | PASS — 8,819 → 8,827 names, deferring 264 → 272, *shadowing 268 unchanged* |
+| =ns-inventory= / =ns-gate= / =fallback-inventory= | PASS, unchanged |
+| =substrate-presence-corpus-check= | went stale at 932 names; regenerated with the gate's own =NELISP_SUBSTRATE_PRESENCE_GEN_WRITE=1= |
+| =make compile= | rc=0 under =byte-compile-error-on-warn= |
+
+The =emacs-compat= row is the one worth noting: that ratchet was brought
+to exactly 268/268 earlier the same day, with zero margin, so eight new
+standard names would have turned CI red had any of them landed unguarded.
+All eight are =(unless (fboundp ...))= and all eight are prelude-only,
+checked before the edit rather than after.
 
 ** P2 — the three real defects (1-2 d)
 
@@ -484,11 +536,22 @@ throughout.
 
 * §6 Open questions
 
-** §6.1 Which hash route
+** §6.1 Which hash route — DECIDED 2026-09-18: Option B
 
-The decision §2.5 defers.  B is fastest to land and weakest in principle;
-C is the only one that is both fast and self-contained; D is cheapest and
-trades away content addressing.  A is measured out.
+Settled: the external helper.  §2.5 records the trade and the two
+constraints the implementation must honour.
+
+What stays open under that decision is narrower.  A self-hosted build now
+depends on =sha1sum= or =shasum= being present, so P3 must decide what
+happens on a host where neither is -- error out, or fall back to the
+pure-Elisp implementation and accept the runtime.  §1.7's numbers say the
+fallback is only tolerable for the per-unit keys (209,413 bytes floor,
+~22 minutes) and not for the digest (3,187,974 bytes, ~5.6 hours), which
+argues for erroring rather than silently taking hours.  Measure before
+choosing.
+
+And Option C is not dead, only deferred: if the runtime ever grows a
+native digest, P3's bridge is the single call site to repoint.
 
 ** §6.2 The real per-unit hashing total
 
