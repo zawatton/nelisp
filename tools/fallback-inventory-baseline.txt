@@ -165,7 +165,16 @@
 # Merged 2026-09-12: 95 + 1 (code-info, counted twice by the classifier)
 # + 1 (the bounded-rebuild work) = 97, taken from the scanner, not summed on paper.
 # 2026-09-12 +3: two Doc 202 resolve handlers and the shared quit-as-cancel macro; taken from the scanner.
-silent-fallback 100
+# 2026-09-18 +1: Doc 204 P5's `check-parens', ported from Emacs 30.1's
+# lisp.el, whose `scan-error' handler moves point to the offending
+# position and raises `user-error "Unmatched bracket or quote"'.  It is
+# not silent in the ordinary sense -- the user does get an error -- but it
+# neither records the fall nor re-raises the original `scan-error', which
+# is what this kind counts, so it is classified here and pinned by shape
+# above (fb46ca4a9bea).  Changing the handler to match the upstream one
+# less closely would be the wrong fix; taken from the scanner, not summed
+# on paper.
+silent-fallback 101
 pinned-site silent-fallback	nelisp-native-unit.el	defun nelisp-native-unit-publish	342dd783996d 1
 pinned-site silent-fallback	nelisp-native-unit.el	defun nelisp-native-unit-stage	3cc661a0aa0d 1
 pinned-site bare-handler	nelisp-native-unit.el	defun nelisp-native-unit-code-info	5f806c245674 1
@@ -499,6 +508,7 @@ pinned-site silent-fallback	nelisp-stdlib-os.el	defun nelisp-os--windows-install
 pinned-site silent-fallback	nelisp-stdlib-os.el	defun nelisp-os--windows-optional-std-handle	3ab105d9b80f 1
 pinned-site silent-fallback	nelisp-stdlib-prelude.el	unless	e3f2648caa3a 1
 pinned-site silent-fallback	nelisp-stdlib-prelude.el	unless	f67d7d766899 1
+pinned-site silent-fallback	nelisp-stdlib-prelude.el	unless	fb46ca4a9bea 1
 pinned-site silent-fallback	nelisp-substrate-parity-corpus.el	defconst nelisp-substrate-parity-corpus	ca691fe7a98a 1
 pinned-site silent-fallback	nl-check-gate.el	defun nl-check-gate--accepted	e3f2648caa3a 1
 pinned-site silent-fallback	nl-check-gate.el	defun nl-check-gate--findings	e3f2648caa3a 1
