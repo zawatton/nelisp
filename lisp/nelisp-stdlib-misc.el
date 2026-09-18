@@ -702,8 +702,12 @@ or signals otherwise.  Replaces the deleted Rust `bi_require'."
     ;; `utf-8' and `latin-1' both answer the string unchanged (every string
     ;; is already UTF-8 bytes here); an UNKNOWN coding system is a
     ;; `coding-system-error', the condition Emacs signals.
-    (when (and coding (not (memq coding '(utf-8 latin-1 binary no-conversion
-						us-ascii undecided prefer-utf-8))))
+    ;; Doc 205 P2: `utf-8-unix' only -- it is the one true alias of `utf-8'
+    ;; (`coding-system-base' on host Emacs 30.1).  All four copies of this
+    ;; list move together; see the note this file already carries below.
+    (when (and coding (not (memq coding '(utf-8 utf-8-unix latin-1 binary
+						no-conversion us-ascii undecided
+						prefer-utf-8))))
       (signal 'coding-system-error (list coding)))
     (when nil
       (signal 'error
@@ -723,8 +727,11 @@ or signals otherwise.  Replaces the deleted Rust `bi_require'."
     ;; `utf-8' and `latin-1' both answer the string unchanged (every string
     ;; is already UTF-8 bytes here); an UNKNOWN coding system is a
     ;; `coding-system-error', the condition Emacs signals.
-    (when (and coding (not (memq coding '(utf-8 latin-1 binary no-conversion
-                                          us-ascii undecided prefer-utf-8))))
+    ;; Doc 205 P2: `utf-8-unix' only, same reasoning as the
+    ;; `encode-coding-string' copy above.
+    (when (and coding (not (memq coding '(utf-8 utf-8-unix latin-1 binary
+                                          no-conversion us-ascii undecided
+                                          prefer-utf-8))))
       (signal 'coding-system-error (list coding)))
     (when nil
       (signal 'error

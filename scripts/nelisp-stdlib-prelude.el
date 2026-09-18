@@ -7329,8 +7329,15 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
     ;; `utf-8' and `latin-1' both answer the string unchanged (every string
     ;; is already UTF-8 bytes here); an UNKNOWN coding system is a
     ;; `coding-system-error', the condition Emacs signals.
-    (when (and coding (not (memq coding '(utf-8 latin-1 binary no-conversion
-                                          us-ascii undecided prefer-utf-8))))
+    ;; Doc 205 P2: `utf-8-unix' is here because it is a true ALIAS of
+    ;; `utf-8' -- host Emacs 30.1 answers `utf-8' for
+    ;; `(coding-system-base 'utf-8-unix)'.  `raw-text' and `utf-8-emacs'
+    ;; are deliberately NOT here: they encode one ASCII+U+65E5 sample to the
+    ;; same five bytes, which is what made a first patch add all three, but
+    ;; their bases are `raw-text' and `utf-8-emacs', not `utf-8'.
+    (when (and coding (not (memq coding '(utf-8 utf-8-unix latin-1 binary
+                                          no-conversion us-ascii undecided
+                                          prefer-utf-8))))
       (signal 'coding-system-error (list coding)))
     (when nil
       (signal 'error
@@ -7353,8 +7360,14 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
     ;; `utf-8' and `latin-1' both answer the string unchanged (every string
     ;; is already UTF-8 bytes here); an UNKNOWN coding system is a
     ;; `coding-system-error', the condition Emacs signals.
-    (when (and coding (not (memq coding '(utf-8 latin-1 binary no-conversion
-                                          us-ascii undecided prefer-utf-8))))
+    ;; Doc 205 P2: see the `encode-coding-string' copy above for why
+    ;; `utf-8-unix' is accepted and `raw-text'/`utf-8-emacs' are not.  These
+    ;; four accept-lists (two here, two in lisp/nelisp-stdlib-misc.el) move
+    ;; together -- that file's own comment records the v1.2.1 parity gap
+    ;; where only one copy was fixed.
+    (when (and coding (not (memq coding '(utf-8 utf-8-unix latin-1 binary
+                                          no-conversion us-ascii undecided
+                                          prefer-utf-8))))
       (signal 'coding-system-error (list coding)))
     (when nil
       (signal 'error
@@ -7990,6 +8003,29 @@ this file was committed).")
 (defvar nelisp--process-props nil)
 (defvar coding-system-for-write nil)
 (defvar coding-system-for-read nil)
+(unless (boundp 'max-lisp-eval-depth)
+  (defvar max-lisp-eval-depth 16000
+    "Emacs's recursion-depth knob, present so that code which BINDS it runs.
+
+Doc 205 P2.  This runtime does have a recursion ceiling -- deep enough
+recursion signals `excessive-lisp-nesting' -- but the ceiling is
+`rec_max', written into the evaluator context at BUILD time as a fixed
+16000 (see `nelisp-standalone-build.el', the two `ptr-write-u64 ctx 104
+16000' sites).  Nothing reads this variable to find it.
+
+So setting or `let'-binding this does NOT move the real limit: measured
+2026-09-18, a self-recursive function still signals at depth 20000 inside
+`(let ((max-lisp-eval-depth 40000)) ...)'.  The value here matches
+`rec_max' so that code reading it is not misled about where the ceiling
+sits.
+
+It exists because `scripts/nelisp-standalone-build.el' binds it four
+times as `(max max-lisp-eval-depth N)' -- which READS it -- and with the
+variable unbound that `let' raised `void-variable' long before any
+recursion got deep.  Doc 205 §1.8 originally filed this as \"not a gap\"
+on the strength of a real build never reaching the ceiling; that was
+measured correctly and answered the wrong question.  Reaching the ceiling
+and binding the name are independent."))
 ;; `system-type'/`system-configuration' used to be hardcoded Linux-x86_64
 ;; literals here regardless of what the binary was actually built for (a
 ;; Windows PE build's `system-type' answered `gnu/linux'; real-machine
@@ -9171,10 +9207,36 @@ list's close paren."
 
 (defun nelisp--forward-comment-1 (buf hi pos)
   "From POS, skip whitespace, then -- if a comment follows -- skip that
-comment too, through its terminating newline.  Return (NEWPOS . SAW-P)."
+comment too, through its terminating newline.  Return (NEWPOS . SAW-P).
+
+Doc 205 P2: the leading loop accepts class `?>' as well as `?\\s'.  In the
+Emacs-Lisp syntax table a newline is class `?>' (comment-ender), NOT
+whitespace -- measured on both runtimes, which agree: space 32, tab 32,
+newline 62, `;' 60.  Testing only `?\\s' meant a buffer ending in a
+newline left point one short of `point-max', so `eobp' stayed nil, the
+caller's `while' ran once more and `read' hit `end-of-file'.  That is
+exactly how `nelisp-standalone--project-source' failed once Doc 205 P1's
+bridges let it get that far.
+
+Deciding by class rather than by comparing the character to `?\\n' is a
+judgement, not a measurement: both spellings match host Emacs 30.1 on all
+eight cases in the table (spaces-only, newline-only, trailing-newline,
+comment-only, comment+space, space-then-comment, at-end, two-comments).
+A syntax table that re-classes the newline should carry this predicate
+with it, which a literal `?\\n' would not.
+
+Accepting `?>' here does not disturb the comment-terminator loop below:
+that loop is only entered after a `?<' has been found, so a leading
+comment-ender is consumed as whitespace and a terminating one still ends
+its comment.
+
+`(< p hi)' is a contract, not a nicety -- `nelisp--motion-char-at'
+answers nil past the end and `nelisp--syntax-lookup' signals on nil."
   (let ((p pos) (saw nil))
-    (while (and (< p hi) (eq (nelisp--syntax-lookup (nelisp--syntax-current-table)
-                                                      (nelisp--motion-char-at p buf)) ?\s))
+    (while (and (< p hi)
+                (let ((cl (nelisp--syntax-lookup (nelisp--syntax-current-table)
+                                                 (nelisp--motion-char-at p buf))))
+                  (or (eq cl ?\s) (eq cl ?>))))
       (setq p (1+ p)))
     (when (and (< p hi) (eq (nelisp--syntax-lookup (nelisp--syntax-current-table)
                                                      (nelisp--motion-char-at p buf)) ?<))

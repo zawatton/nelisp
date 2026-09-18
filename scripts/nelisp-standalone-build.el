@@ -20255,9 +20255,28 @@ listing it would make the load-path lie about what is reachable."
                      ;; with the other seven already resolved.  Measured
                      ;; 2026-09-18: with this entry all eight answer `ok'.
                      (expand-file-name "scripts" nelisp-standalone--repo-root))
-               (sort (file-expand-wildcards
-                      (expand-file-name "packages/*/src"
-                                        nelisp-standalone--repo-root))
+               ;; Doc 205 P2: expanded with `directory-files' rather than
+               ;; `file-expand-wildcards', which this runtime does not have
+               ;; -- it was the sixth barrier a self-hosted build hit, and
+               ;; it has exactly one call site, this one.  Replacing the
+               ;; call rather than implementing the general function is
+               ;; deliberate: the measurement only covers the one pattern
+               ;; ever passed here, and a general implementation would
+               ;; promise more than that.
+               ;;
+               ;; Measured 2026-09-18 against host Emacs's own
+               ;; `file-expand-wildcards' on "packages/*/src": same count
+               ;; (43), same first (packages/nelisp-actor/src) and same
+               ;; last (packages/nl-static/src).  The `file-directory-p'
+               ;; filter below still applies, so a `packages/X' with no
+               ;; `src' is dropped exactly as before.
+               (sort (let ((pkgs (expand-file-name "packages"
+                                                   nelisp-standalone--repo-root))
+                           (out nil))
+                       (dolist (entry (directory-files pkgs nil "\\`[^.]" t))
+                         (let ((src (expand-file-name (concat entry "/src") pkgs)))
+                           (when (file-directory-p src) (push src out))))
+                       out)
                      #'string<))))
     (seq-filter #'file-directory-p dirs)))
 

@@ -314,15 +314,29 @@ Recorded because each of these was believed at some point in this
 investigation, and three of them shaped a wrong plan before the control
 arrived.
 
-- =max-lisp-eval-depth= :: the builder binds it four times (three asking
-  10000, one asking 40000) and it is unbound here, so it looked like a
-  required gap.  It is not.  =rec_max= is written at build time as a fixed
-  16000 (=:19286=, =:27542=); a bare =defvar= plus =let= binding does *not*
-  move the real ceiling (measured: depth 20000 still signals
-  =excessive-lisp-nesting= under =(let ((max-lisp-eval-depth 40000)) ...)=).
-  But a real build run with the ceiling untouched never signalled it at
-  all — it reached =file-expand-wildcards= instead.  The requested 40000
-  is headroom, not use.
+- =max-lisp-eval-depth= :: *this entry was wrong, and P2 corrected it.*
+
+  What is true: =rec_max= is written at build time as a fixed 16000
+  (=:19286=, =:27542=), a bare =defvar= plus =let= binding does *not* move
+  the real ceiling (measured: depth 20000 still signals
+  =excessive-lisp-nesting= under =(let ((max-lisp-eval-depth 40000))
+  ...)=), and a real build never reaches the ceiling — the requested 40000
+  is headroom, not use.  All of that was measured and all of it holds.
+
+  What was wrong: concluding from it that the name needs nothing.  The
+  builder's four sites bind it as =(max max-lisp-eval-depth N)=, which
+  *reads* it, so an unbound variable raises =void-variable= long before
+  any recursion gets deep.  P2's acceptance run found exactly that, where
+  §3 P2 had predicted =(void-function secure-hash)=.
+
+  The fix is a =defvar= in the prelude, seeded to 16000 so a reader is not
+  misled about where the ceiling sits, with a docstring saying plainly
+  that binding it moves nothing.  No ceiling work; the original
+  measurement stands.
+
+  The lesson is narrower than "measure more": *reaching a limit and
+  binding its name are independent questions*, and the first was measured
+  carefully while the second was never asked.
 - =print-circle= :: bound on by =--unit-cache-key= to dodge Emacs's
   200-level "apparently circular" heuristic on deep-but-acyclic data.  It
   is inert here (measured: identical output with it t and nil).  That does
@@ -461,6 +475,57 @@ Exit criteria, each measured:
 - =nelisp-standalone-build-application= reaches =(void-function
   secure-hash)= — i.e. P2 is complete when the *only* thing left is §1.7.
 
+*LANDED 2026-09-18, and it took four changes rather than three.*  Measured
+on a reader rebuilt from them (8,283,960 bytes; =target/nelisp= untouched
+at 8,230,592):
+
+#+begin_example
+depth var: boundp=t value=16000 special=t
+forward-comment newline: point=4 max=4 eobp=t   (host 4 4 t)
+utf-8-unix="ab"  raw-text=coding-system-error
+project-source -> (STRING 147)
+build-application -> (void-function secure-hash)
+#+end_example
+
+The fourth change is =max-lisp-eval-depth=, which §1.8 had filed as "not a
+gap".  The acceptance run found it immediately: =build-application=
+stopped at =(void-variable max-lisp-eval-depth)=, not at =secure-hash=.
+§1.8 now carries the correction and the reason it was wrong.
+
+=raw-text= still signalling is not incidental — it is the check that the
+accept-list grew by the one alias §1.5 justified and not by the three that
+merely encoded one sample identically.
+
+Two things about the =defvar= are worth keeping:
+
+- *Bare, it turned =emacs-compat= red.*  An unguarded =defvar= of a stock
+  Emacs variable counts as =shared-shadowing=: 269 against a baseline of
+  268 that had been brought to exactly zero margin earlier the same day.
+  Wrapping it in =(unless (boundp ...))= moved it to =shared-deferring=
+  (272 → 273) and left the ratchet at 268.
+- *The guard does not cost the special declaration.*  Measured on both
+  runtimes: =special-variable-p= answers t and a =let= is still dynamic
+  (the callee sees the bound value).  Four prelude variables already use
+  this shape — =case-fold-search=, =tab-width=,
+  =emacs-lisp-mode-syntax-table=, =major-mode= — so this follows the file
+  rather than inventing for it.
+
+*A defect this phase introduced, and the check that failed to catch it.*
+Wrapping the =defvar= without adding the closing paren left the prelude
+ending inside a form.  The verification used at the time — reading the
+file form by form and treating =end-of-file= as success — cannot detect
+that, because a form that runs out signals =end-of-file= too; it reported
+"560 top-level forms, balanced" on a broken file.  =check-parens= (Doc 204
+P5's own deliverable) distinguishes the two and was used instead.
+
+What actually caught the break was =emacs-compat=, a gate for *counting
+names*.  =make compile= returned rc=0 throughout: its target list is
+=src/= and =packages/=, and the prelude is not in it.  Nothing byte-compiles
+or parse-checks =scripts/nelisp-stdlib-prelude.el= — it is only ever
+=load='ed (the shadow/parity smokes).  That gap is recorded in §6.5 rather
+than fixed here, because a new gate needs a mutation row written and
+proven red first.
+
 ** P3 — the hash route (size depends on §2.5)
 
 Ships: whichever of B / C / D is chosen, plus a =secure-hash= bridge that
@@ -584,3 +649,19 @@ implementation* before retrying — a nil-returning stub poisons the run
 (one such stub put nil into a numeric global and produced a
 =wrong-type-argument= that looked like a new barrier; another nil-stubbed
 =secure-hash= and turned a cache-key path into a 30-minute recompile).
+
+** §6.5 Nothing parse-checks the prelude
+
+Found by breaking it: P2 left =scripts/nelisp-stdlib-prelude.el= ending
+inside a form, and the only gate that noticed was =emacs-compat=, whose
+job is counting names.  =make compile= stayed rc=0 because its target list
+is =src/= and =packages/= — the prelude is not byte-compiled by anything.
+Every other consumer =load='s it (the shadow and parity smokes), which
+means a syntax break surfaces as whatever that smoke happens to do next.
+
+The cheap fix is a gate running =check-parens= over the prelude, which is
+Doc 204 P5's own deliverable and would have failed in a second.  It is not
+done here because a new gate needs its =tools/gate-mutations.txt= row
+written and proven red *first*
+(=feedback_nelisp_new_gate_mutation_row_first=), and that is a separate
+change from P2.
