@@ -78,6 +78,25 @@
 # was (its header reads 7114 names; the scan now sees 7817), so the list
 # above is what a 30.2 regeneration adds over that stale table, minus the
 # `boundp' / `assoc' pair the 251 note already accounts for.
+#
+# 268 HELD on 2026-09-18 -- a resolution, not a raise, recorded here because
+# this file is where the ratchet's reasons live.  `emacs-compat' was wired
+# into the gate lanes on 2026-09-17 and immediately answered 276 against
+# this 268: 11 names added and 3 removed since a08796ab5, none of them
+# documented here, which was possible only because nothing had run the gate
+# since those commits landed.  Resolved by guarding the eight
+# `bool-vector-*' operations in scripts/nelisp-stdlib-prelude.el with
+# `(unless (fboundp ...))' rather than by moving this number.  They are not
+# runtime builtins -- the reader's table carries only `make-bool-vector',
+# `bool-vector' and `bool-vector-p' -- so the guard fires at build time and
+# the standalone is unchanged (measured on a separately-built reader), while
+# a host keeps its own C implementations: all eight are `subrp' t on Emacs
+# 30.1, so the unconditional defuns had been replacing working C with
+# interpreted elisp.  `fboundp', `default-directory' and `standard-input'
+# stay unconditional for the reasons tools/ai/gates.expected records per
+# name, and are offset by the three that left (`eql', `sxhash-eq',
+# `sxhash-eql').  Measured emacs-gtk 30.1, 8819 names: shared-shadowing
+# 276 -> 268, shared-deferring 256 -> 264, PASS.
 shared-shadowing 268
 
 # 2026-08-19, reviewing the 245 rather than counting them.  The table now

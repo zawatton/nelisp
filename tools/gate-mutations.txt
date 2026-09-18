@@ -1133,27 +1133,37 @@ parity-fuzz|tools/nelisp-parity-fuzz.el|s/"\^shared-/"\^xshared-/|the shared-nam
 # `provide' form.  A genuinely new unconditional shadow is exactly the
 # defect class `shared-shadowing' exists to catch.
 #
-# CAVEAT, recorded rather than hidden: this worktree's tree, UNCHANGED, is
-# already `shared-shadowing 276' against baseline 268 (8 over,
-# undocumented -- see target/ai/gate-wiring-report.md; not investigated or
-# fixed here, out of this audit's scope) -- so `make emacs-compat' already
-# exits nonzero on a clean checkout, for a reason unrelated to this row.
-# The mechanical harness's plain before/after exit-code check cannot
-# distinguish this row's own contribution from that pre-existing one on
-# the real baseline file, so the row was proven in ISOLATION instead:
+# CAVEAT of 2026-09-17, RESOLVED 2026-09-18.  Kept rather than deleted
+# because the workaround it describes is no longer needed, and a reader who
+# finds the isolation machinery referenced elsewhere should be able to see
+# why it existed and why it is gone.
+#
+# When this row was written the tree was ALREADY `shared-shadowing 276'
+# against baseline 268 (8 over, undocumented -- see
+# target/ai/gate-wiring-report.md, which lives under the generated target/
+# and will not survive), so `make emacs-compat' exited nonzero on a clean
+# checkout for a reason unrelated to this row.  The harness's plain
+# before/after exit-code check cannot separate this row's own contribution
+# from a pre-existing failure, so the row was proven in ISOLATION instead:
 # with `tools/emacs-compat-baseline.txt''s `shared-shadowing' line
-# temporarily raised from 268 to 276 (matching the tree's real current
-# count) for the duration of the proof only, restored to 268 immediately
-# after and unchanged in the committed row below.
+# temporarily raised from 268 to 276 for the duration of the proof only,
+# restored to 268 immediately after.
 #
 # Proven 2026-09-17, baseline temporarily 276: clean tree --
 # "GATE-COUNT checked=8732 findings=276" / "emacs-compat: PASS" (GREEN,
 # exit 0). RED with the injection -- "GATE-COUNT checked=8733
 # findings=277" / "emacs-compat: FAIL (shared-shadowing 277 over baseline
 # 276 -- ...)" (exit 1). Restored -- back to findings=276 / PASS (GREEN).
-# Against the real, permanent baseline of 268 the same injected tree reads
-# "GATE-COUNT checked=8733 findings=277" / FAIL, one worse than the
-# pre-existing 276/268 FAIL already there.
+#
+# The 8 are now gone: the eight `bool-vector-*' operations they were are
+# wrapped in `(unless (fboundp ...))' in scripts/nelisp-stdlib-prelude.el,
+# so a clean tree measures `shared-shadowing 268' against baseline 268 and
+# `make emacs-compat' PASSES.  The isolation workaround is therefore
+# obsolete and this row proves the ordinary way, against the real permanent
+# baseline with nothing temporarily edited: `make gate-mutation-verify
+# GATE=emacs-compat' on 2026-09-18 reported "emacs-compat: went red as it
+# should", `passed=1 skipped=0', with `tools/emacs-compat-baseline.txt'
+# byte-identical to HEAD afterwards and no injection left in the tree.
 emacs-compat|lisp/nelisp-cc-alloc-dealloc.el|/^(provide 'nelisp-cc-alloc-dealloc)$/i\(defun xor (nl-gm-a nl-gm-b) (if nl-gm-a (not nl-gm-b) nl-gm-b))|a new unconditional definition shadows a stock Emacs name, pushing shared-shadowing over its baseline
 
 # binary-size-ratchet (mutation coverage, 2026-09-17): `grep -c

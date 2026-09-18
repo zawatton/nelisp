@@ -406,21 +406,16 @@ emacs-parity
 # (tools/gate-mutations.txt): see that row's own comment for the full
 # account, including a caveat worth repeating here rather than only there.
 #
-# CAVEAT, found by actually running this gate to register it rather than
-# trusting it worked: on this worktree, UNCHANGED, `make emacs-compat'
-# already reports `GATE-COUNT checked=8732 findings=276' and FAILS --
-# `shared-shadowing' is 276 against a baseline of 268, 8 over, with no
-# comment anywhere explaining the 8.  That is a real, currently-invisible
-# regression of exactly the shape this gate exists to catch, made
-# invisible by the very fact this brief is fixing: nothing has run this
-# gate since whatever commit(s) pushed the count from 268 to 276.  Not
-# investigated or fixed here -- identifying which 8 names and whether each
-# should be wrapped in `(unless (fboundp ...))' or the baseline honestly
-# raised is a separate, substantive decision for whoever owns that ratchet,
-# not a mechanical gate-wiring fix.  Registering this gate as required
-# below is therefore expected to turn `verify' and the CI step added for
-# it red on the next run, for this pre-existing reason, until that
-# decision is made -- see target/ai/gate-wiring-report.md.
+# CAVEAT of 2026-09-17, RESOLVED 2026-09-18.  Registering this gate --
+# found by actually running it rather than trusting it worked -- immediately
+# exposed a real breach it had been unable to report: the tree, UNCHANGED,
+# answered `GATE-COUNT checked=8732 findings=276' and FAILED, 276 against a
+# baseline of 268, 8 over, with no comment anywhere explaining the 8.  That
+# was exactly the shape this gate exists to catch, made invisible by the
+# very fact that audit was fixing -- nothing had run this gate since the
+# commits that pushed the count from 268 to 276.  The eight are decided by
+# name below; the gate now passes on a clean tree and this entry is required
+# again.
 #
 # Like `emacs-parity' above, the answer is this-Emacs's-own answer
 # (`fboundp'/`boundp' read live in the scanning process), so it is
@@ -429,27 +424,55 @@ emacs-parity
 # restricted to the Emacs 30.1 lane rather than added to the version guard
 # itself.
 #
-# REGISTERED OPTIONAL, not required (2026-09-17, same audit): this gate is
-# red on the clean tree, and `tools/ai/nelisp-verify.el' exits non-zero when
-# any REQUIRED gate is not "pass"/"skip" -- registering it required would
-# knowingly turn `verify' and the CI step above red until the breach below
-# is resolved, which is a separate decision from wiring the gate up.  The
-# breach, named rather than left as a bare count: 276 vs baseline 268 is
-# 11 names added and 3 removed (`eql', `sxhash-eq', `sxhash-eql') since
-# a08796ab5 set 268 on 2026-08-26.  All 11 live in
-# scripts/nelisp-stdlib-prelude.el, a file that already guards 402 other
-# definitions with `(unless (fboundp ...))':
+# REQUIRED again (2026-09-18).  It was REGISTERED OPTIONAL on 2026-09-17
+# because the gate was red on the clean tree and `tools/ai/nelisp-verify.el'
+# exits non-zero when any REQUIRED gate is not "pass"/"skip"; that audit
+# named the breach instead of leaving it a bare count, and left the per-name
+# decision to the commit that resolved it.  The breach was 276 vs baseline
+# 268: 11 names added and 3 removed (`eql', `sxhash-eq', `sxhash-eql') since
+# a08796ab5 set 268 on 2026-08-26, all 11 in
+# scripts/nelisp-stdlib-prelude.el:
 #   bool-vector-count-consecutive/-count-population/-exclusive-or/
 #   -intersection/-not/-set-difference/-subsetp/-union   c34aa55e0
 #   fboundp                                              5f9138e51
 #   default-directory                                    f25ec9af1
 #   standard-input                                       b01d85b51
-# Each crossed this ratchet without raising the baseline in its own commit,
-# which is exactly what tools/emacs-compat-baseline.txt asks for -- possible
-# only because nothing ran this gate.  Deciding per name between an
-# `(unless (fboundp ...))' guard and an honest baseline raise is its own
-# change; promote this entry back to required in that commit.
-emacs-compat?
+#
+# Decided per name, as that audit asked:
+#
+#   The eight `bool-vector-*' operations are GUARDED.  Nothing else in the
+#   tree defines them and they are not runtime builtins -- the reader's
+#   table carries only `make-bool-vector', `bool-vector' and `bool-vector-p'
+#   (scripts/nelisp-standalone-build.el), which is why those two ARE already
+#   guarded here and these eight were not -- so the guard fires at build
+#   time and the standalone is unchanged.  Measured on a reader rebuilt with
+#   the guards (NELISP_STANDALONE_READER_OUTPUT, target/nelisp untouched):
+#   `(bool-vector-count-population (bool-vector t nil))' = 1 and
+#   `(bool-vector-union (bool-vector t nil) (bool-vector nil t))' = #&2"",
+#   byte-identical to host Emacs.  On a host the guard now defers, which is
+#   the whole point: all eight are `subrp' t on Emacs 30.1, so the
+#   unconditional defuns had been replacing working C with interpreted
+#   elisp, invisibly, at every call site.
+#
+#   `fboundp' stays UNCONDITIONAL.  It captures the native implementation as
+#   `nelisp--native-fboundp' and wraps it to filter `nelisp--unbound-marker'
+#   -- `(unless (fboundp 'fboundp) ...)' can never fire, so the guard would
+#   silently delete the fix.  That is the shape tools/emacs-compat-baseline.txt
+#   already sanctions for `make-hash-table' / `boundp' / `assoc'.  A
+#   `(when (boundp 'nelisp--unbound-marker) ...)' guard does not work either:
+#   the marker is only ever a quoted symbol, never a bound variable.
+#
+#   `default-directory' and `standard-input' stay UNCONDITIONAL.  They are
+#   `defvar's, which already defer by construction -- a `defvar' with a value
+#   does not overwrite a variable that is already bound -- while a `boundp'
+#   guard would skip the special declaration itself and leave later bindings
+#   lexical.
+#
+# The count returns to 268 without raising the baseline.  That is arithmetic
+# and not absolution: the three that stay are offset by the three that left,
+# so they are recorded here rather than hidden inside a number nobody can
+# decompose.
+emacs-compat
 
 # parity-fuzz (gate-wiring audit, 2026-09-17): the other half of the same
 # discovery -- a real gate, a real `GATE-COUNT checked=1500 findings=6'
