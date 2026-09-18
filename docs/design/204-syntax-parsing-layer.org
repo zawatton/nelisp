@@ -320,6 +320,15 @@ piece of work from Doc 204 and needs its own document: repointing
 =nelisp-project.py='s builder invocation at =target/nelisp= instead of host
 Emacs, and filling whatever the builder then turns out to need.
 
+That document is now =docs/design/205-self-hosting-build.org=, written
+2026-09-18.  It measured what "whatever the builder then turns out to
+need" actually is: seven gaps, not a port.  =eobp= and its seven siblings
+all have existing internals and need only bridges; the builder's 32,485
+lines load on =target/nelisp= once =scripts/= is on =load-path=; and the
+one item that is not mechanical is =secure-hash=, which the runtime lacks
+entirely and whose pure-Elisp implementation runs at ~6.3 ms/byte against
+a 3,187,974-byte digest.
+
 This is the second time this document's P5 section overstated its reach.
 The first was scope (§3 P5's original two names were really four); this is
 the exit criterion itself.  Both were caught by running the real consumer

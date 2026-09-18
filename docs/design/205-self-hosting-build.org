@@ -1,0 +1,523 @@
+#+TITLE: Doc 205 — Self-hosting `nelisp build'
+#+AUTHOR: NeLisp
+#+STATUS: DRAFT (2026-09-18) — nothing has landed from this document yet. P1-P3 below are planned; each carries its own exit criterion measured against =target/nelisp=, not against host Emacs.
+#+STATUS2: Continues where Doc 204 §3 P5 stopped. That section corrected itself twice about its own reach; this document starts from what P5 measured rather than from what it hoped.
+
+* §0 TL;DR
+
+=nelisp build= runs the AOT compiler and linker *as a host Emacs process*
+(=tools/nelisp-project.py:676-678=), behind an unconditional
+=shutil.which= guard at =:651-653=.  Doc 204 P5 established that the
+syntax layer is not what blocks it.  This document establishes what does.
+
+The headline is that the 32,485-line builder is *not* the problem.  Loaded
+on =target/nelisp= it reads completely and both entry points become
+=fboundp= — the only thing in its way was =load-path=.  What blocks the
+build is seven specific gaps, measured one at a time by running the real
+builder and reading the error:
+
+| # | gap | kind | size |
+|---+-----+------+------|
+| 1 | =scripts/= missing from =load-path= | configuration | one entry |
+| 2 | eight standard names unbridged | bridge | 8 forms, every internal already exists |
+| 3 | =forward-comment= does not skip newlines | one predicate | one clause |
+| 4 | =utf-8-unix= rejected by the coding accept-list | name list | 4 files, must move together |
+| 5 | =max-lisp-eval-depth= unbound | *NOT A GAP* | measured: real builds never reach the ceiling |
+| 6 | =file-expand-wildcards= absent | rewrite | 1 call site |
+| 7 | =secure-hash= absent | *design decision* | see §1.7 — the pure-elisp answer costs ~5.6 hours |
+
+Six of the seven are small and mechanical.  The seventh is not, and it is
+the reason this document exists rather than a patch: the runtime has no
+message-digest primitive at all, the pure-Elisp implementation in
+=packages/nelisp-secure-hash= is byte-correct but runs at ~6.3 ms/byte,
+and the builder hashes 3,187,974 bytes before it compiles anything.
+
+The control that makes all of this legible: *host Emacs 30.1 performs the
+same build in 7 seconds*, reporting =0 runtime units recompiled=, and
+produces an 8,239,040-byte ELF.
+
+* §1 Problem — measured evidence
+
+Every number below came from running something, on =target/nelisp= at
+=18367284e=, with =EMACS=emacs-gtk= (30.1) wherever a host oracle was
+needed.  Where a hypothesis was ruled out, §1.8 records the control that
+ruled it out, because four of this investigation's hypotheses were wrong
+and the next reader should not re-form them.
+
+** §1.1 Where Doc 204 P5 stopped, reproduced
+
+P5 recorded =nelisp-standalone--project-source= raising =(void-function
+eobp)= when driven directly on =target/nelisp=, past the Python gate.
+That reproduces exactly:
+
+#+begin_example
+run 1 (tree as it stands) -> (void-function eobp)
+#+end_example
+
+The function it stops inside is =scripts/nelisp-standalone-build.el:32392=,
+and its body is the whole of P1's requirement in eight lines:
+
+#+begin_src elisp
+(with-temp-buffer
+  (insert-file-contents file)
+  (emacs-lisp-mode)        ; Doc 204 P5 shipped this
+  (check-parens)           ; Doc 204 P5 shipped this
+  (goto-char (point-min))
+  (while (progn (forward-comment (point-max)) (not (eobp)))
+    (let ((form (read (current-buffer))))
+      ...
+#+end_src
+
+=read= taking a buffer as a stream was checked separately and works:
+=(read (current-buffer))= on ="(alpha 1) (beta 2)"= answers =(alpha 1)=
+and leaves point at 10.
+
+** §1.2 The builder is not the barrier; =load-path= was
+
+Loaded on the standalone, =scripts/nelisp-standalone-build.el= stopped at
+=(file-missing . nelisp-runtime-reload-telemetry)=.  That is not a language
+gap: seven of the builder's eight =require= forms resolve to =lisp/=, and
+the eighth lives in =scripts/= — which the standalone's =load-path= does
+not carry (it has =lisp/=, =src/=, =packages/*/src=).  Host Emacs passes
+=-L scripts= explicitly, which is why this never showed up there.
+
+With =scripts/= prepended, measured:
+
+#+begin_example
+telemetry now: ok
+builder load:  ok
+build-application fboundp=t
+project-source    fboundp=t
+#+end_example
+
+All 32,485 lines read.  Whatever else is true, the builder is not too big
+to load.
+
+** §1.3 Eight standard names, every internal already present
+
+Measured absent on the standalone, with =nelisp-no-such-name-zzz= as the
+negative control in every census:
+
+| standard name | internal that already implements it |
+|---------------+-------------------------------------|
+| =eobp= / =bobp= | =nelisp-point= / =-min= / =-max= (narrowing-aware) |
+| =buffer-name= | =nelisp-buffer-name= (struct accessor) |
+| =get-buffer-create= | =nelisp-get-buffer-create= (prelude:7539) |
+| =narrow-to-region= | =nelisp-narrow-to-region= (prelude:7951) |
+| =widen= | =nelisp-widen= (prelude:7963) |
+| =beginning-of-line= / =end-of-line= | =line-beginning-position= / =-end-position= |
+
+None of these needs a new implementation.  The prelude's bridge block
+(=scripts/nelisp-stdlib-prelude.el:8042-8072+=) already carries =bufferp=,
+=point-min=, =point-max=, =point=, =goto-char=, =generate-new-buffer=,
+=get-buffer=, =buffer-live-p= and =kill-buffer= in exactly the shape these
+eight want.
+
+A provisional =eobp= written against those internals was checked at the
+boundary against host Emacs and agrees on all three probes (=bof= 1/1/nil,
+=eof= 4/4/t, =-1= 3/nil).
+
+** §1.4 =forward-comment= skips comments but not newlines
+
+This is the one genuine defect in code Doc 204 shipped.  With the eight
+bridges in place the builder gets further and then fails differently:
+
+#+begin_example
+run 2 (with bridges) -> (end-of-file #<buffer  *temp*>)
+#+end_example
+
+Traced by comparing against host Emacs 30.1 at the exact call:
+
+| step | standalone | host 30.1 |
+|------+------------+-----------|
+| after =read= | point=38 | point=38 |
+| =(forward-comment (point-max))= | nil | nil |
+| point after | *38* | *39* |
+| =(eobp)= | *nil* | *t* |
+
+Host skips the trailing newline and leaves the =while= loop; the
+standalone does not, so the loop runs once more and =read= hits the end.
+
+The cause is =nelisp--forward-comment-1= (prelude:9119), whose
+whitespace loop tests only for syntax class =?\s=:
+
+#+begin_src elisp
+(while (and (< p hi) (eq (nelisp--syntax-lookup ... ) ?\s))
+  (setq p (1+ p)))
+#+end_src
+
+In the Emacs-Lisp syntax table a newline is class =?>= (comment-ender),
+not =?\s=.  Measured on both runtimes, which agree exactly: space 32, tab
+32, *newline 62*, =;= 60, =a= 119, =(= 40, =)= 41.
+
+Two candidate fixes were written and both were run against an eight-case
+table (spaces-only, newline-only, trailing-newline, comment-only,
+comment+space, space-then-comment, at-end, two-comments).  *Both match
+host Emacs on all eight*, and neither disturbs the comment-terminator
+loop below, because that loop is only entered after a =?<= is found:
+
+- A: compare the character to =?\n= directly.
+- B: accept syntax class =?>= alongside =?\s=.
+
+§2 chooses B.
+
+Note for whoever edits this function: =nelisp--motion-char-at= answers nil
+past the end and =nelisp--syntax-lookup= *signals* on nil
+(=(wrong-type-argument number-or-marker-p nil)=), so the =(< p hi)= guard
+is a contract, not a nicety.
+
+** §1.5 =utf-8-unix= is rejected, and only it should be added
+
+Past =forward-comment=, the public entry point fails with
+=(coding-system-error utf-8-unix)=.
+
+=encode-coding-string= / =decode-coding-string= carry an explicit
+accept-list, =(utf-8 latin-1 binary no-conversion us-ascii undecided
+prefer-utf-8)=, and =utf-8-unix= is not in it.  The builder names
+=utf-8-unix= nine times; five are =let= bindings of
+=coding-system-for-write= / =-for-read=, which are *inert* here —
+=write-region= and =insert-file-contents= never read those variables —
+and four are direct =encode-coding-string= calls at =:32429-32439=.
+
+Which aliases belong in the list was settled against host Emacs rather
+than by eye.  All six of =utf-8=, =utf-8-unix=, =utf-8-emacs=,
+=raw-text=, =raw-text-unix=, =binary= encode ="a<U+65E5>b"= to the same
+five bytes — but =coding-system-base= separates them:
+
+| name | base |
+|------+------|
+| =utf-8-unix= | *=utf-8=* |
+| =utf-8-emacs= | =utf-8-emacs= |
+| =raw-text= / =raw-text-unix= | =raw-text= |
+| =binary= | =no-conversion= |
+
+Only =utf-8-unix= is a true alias of =utf-8=.  The first provisional patch
+written here mapped all four to =utf-8= and was wrong for three of them;
+the byte-identity of one test input hid it.
+
+*The accept-list exists in four places* —
+=lisp/nelisp-stdlib-misc.el:705,726= and
+=scripts/nelisp-stdlib-prelude.el:7332,7356= — currently identical.  The
+misc copy's own comment records what happens otherwise: "Same change as
+the prelude's own copy of this function; they are read by different
+consumers and both were wrong (v1.2.1 parity gap 6)."
+
+** §1.6 =file-expand-wildcards=: one call site, one replacement
+
+Absent everywhere in the tree; one call site, =scripts/nelisp-standalone-build.el:20248=,
+expanding =packages/*/src=.  Instrumented at runtime, the argument is
+exactly that pattern and nothing else.
+
+=directory-files= + =file-directory-p= (both present) reproduce host
+Emacs's answer exactly: *count 43*, same first
+(=packages/nelisp-actor/src=) and same last (=packages/nl-static/src=).
+
+** §1.7 =secure-hash=: the one that is a decision, not a patch
+
+=secure-hash=, =sha1=, =md5=, =secure-hash-algorithms= and =buffer-hash=
+are *all absent*.  The reader's builtin table carries no message digest —
+its only hash-named entry is =sxhash-eq=, which is identity hashing.
+
+The builder needs it in three places, and nowhere else:
+
+| line | call | note |
+|------+------+------|
+| 1376 | =(secure-hash 'sha1 (current-buffer))= | *buffer argument* |
+| 1399 | =(secure-hash 'sha1 (concat ...))= | string |
+| 2863 | =(secure-hash 'sha256 bytes)= | string |
+
+*** Option A — the pure-Elisp package: correct, and unusable
+
+=packages/nelisp-secure-hash= exists and =(require 'nelisp-secure-hash)=
+succeeds, but it publishes =nelisp-hash-sha1= / =-sha256= / =-md5= /
+=nelisp-hash-secure-hash= and does *not* define the standard name, which
+is why requiring it leaves =(fboundp 'secure-hash)= nil.
+
+Its answers are right.  Against host =secure-hash= on ="abc"=: sha1 40
+chars =a9993e364706816a...=, sha256 64 chars =ba7816bf8f01cfea...=, md5 32
+chars =900150983cd24fb0...= — identical on both runtimes.  (=sha512= is
+unsupported; the builder never asks for it.)
+
+Its cost is the problem:
+
+| input | pure Elisp | host =secure-hash= |
+|-------+------------+--------------------|
+| 1,000 B | 5.17 s | ~0.0000 s |
+| 10,000 B | 68.82 s | ~0.0000 s |
+| 100,000 B | *632.08 s* | 0.0001 s |
+
+Roughly linear at ~6.3 ms/byte.  =nelisp-standalone--toolchain-digest=
+hashes =nelisp-standalone--dep-files=, which is five files totalling
+*3,187,974 bytes*:
+
+| file | bytes |
+|------+-------|
+| =scripts/nelisp-standalone-build.el= | 1,800,642 |
+| =lisp/nelisp-aot-compiler.el= | 1,009,230 |
+| =src/nelisp-cc-runtime.el= | 194,026 |
+| =lisp/nelisp-elf-write.el= | 134,066 |
+| =lisp/nelisp-static-linker.el= | 50,010 |
+
+At 6.3 ms/byte that digest alone is *≈5.6 hours*, and it is computed
+before any unit is compiled.  This is the whole explanation for an
+instrumented build that ran 30 minutes at 100% CPU and wrote *nothing* to
+the unit cache: it was not looping and it was not compiling — it was
+hashing.  Three wrong hypotheses died here (§1.8).
+
+It does not end at the digest.  =nelisp-standalone--unit-cache-key= runs
+once *per unit*, and the last real build linked *112 units*.  Only 13 of
+the unit sources are reachable as =--source= defvars, and those alone
+=prin1= to 209,413 bytes (largest: =applyfn-baked-source=, 115,212).  That
+209,413 is a floor, not a total — but even the floor is ~22 minutes of
+pure-Elisp hashing.
+
+*** Option B — the external helper: fast, correct, and not self-contained
+
+=call-process= and =executable-find= both exist on the standalone, and
+=/usr/bin/sha1sum= and =/usr/bin/sha256sum= are found.  Measured from
+=target/nelisp= over the 1.8 MB builder source:
+
+#+begin_example
+bare name 'sha1sum'   rc=0  0.052s   a00cd062cbe0d3ecf6ea16f40affe4fd07da2387
+absolute path         rc=0  0.014s   a00cd062cbe0d3ecf6ea16f40affe4fd07da2387
+#+end_example
+
+Byte-identical to the shell's own =sha1sum=.  A bare name works, so
+=call-process= does search PATH here — unlike =nelisp-call-process=, whose
+absence of PATH search the builder's own generated fallback documents.
+
+At ~0.014 s per invocation, 112 unit keys plus one digest is under two
+seconds.  The cost is conceptual, not temporal: a self-hosted build that
+shells out to coreutils is not self-contained, and the builder's own
+generated fallback (=:21575=) takes this route only for =sha256= and
+errors on anything else — so it cannot serve the two =sha1= call sites as
+written.
+
+*** Option C — a native primitive
+
+None exists.  Adding one is real work in the runtime, not a bridge, and it
+is the only option that leaves the result both fast and self-contained.
+
+*** Option D — change what the digest hashes
+
+The digest's job is cache invalidation: "any toolchain source newer than a
+cache entry forces recompile" (its own docstring).  A cheaper key —
+mtime + size per dep file — would serve that job at ~zero cost, at the
+price of the property the current scheme has: content addressing survives
+a touch, a checkout, and a clock skew, and mtime does not.
+
+*This document does not choose between B, C and D.*  See §2.
+
+** §1.8 Ruled out, with the control that ruled it out
+
+Recorded because each of these was believed at some point in this
+investigation, and three of them shaped a wrong plan before the control
+arrived.
+
+- =max-lisp-eval-depth= :: the builder binds it four times (three asking
+  10000, one asking 40000) and it is unbound here, so it looked like a
+  required gap.  It is not.  =rec_max= is written at build time as a fixed
+  16000 (=:19286=, =:27542=); a bare =defvar= plus =let= binding does *not*
+  move the real ceiling (measured: depth 20000 still signals
+  =excessive-lisp-nesting= under =(let ((max-lisp-eval-depth 40000)) ...)=).
+  But a real build run with the ceiling untouched never signalled it at
+  all — it reached =file-expand-wildcards= instead.  The requested 40000
+  is headroom, not use.
+- =print-circle= :: bound on by =--unit-cache-key= to dodge Emacs's
+  200-level "apparently circular" heuristic on deep-but-acyclic data.  It
+  is inert here (measured: identical output with it t and nil).  That does
+  not matter, because the deepest top-level form in the builder is *28*
+  levels.
+- printer depth :: the standalone printer does have a ceiling —
+  =excessive-lisp-nesting= somewhere between 1,000 and 2,000 levels,
+  unchanged by =print-circle=.  Irrelevant at depth 28.
+- =locate-library= :: suspected of returning nil and silently changing the
+  digest's input.  It resolves all four libraries to correct absolute
+  paths; the negative control answers nil.
+- =buffer-size= :: appeared as a =void-function= during this work.  The
+  builder uses it *zero* times; it was a probe's own bug.  (=nelisp-buffer-size=
+  exists, so bridging it later is one line.)
+- circular printing :: =prin1-to-string= on a genuinely circular list does
+  not signal here — it *hangs* (killed at 20 s; host Emacs signals).  A
+  real defect, but not on the builder's path, which hashes acyclic
+  structure.  Filed here rather than folded in.
+
+* §2 Decided direction
+
+1. *Bridges go to the existing internals, in the existing block.*  All
+   eight names in §1.3 are added to =scripts/nelisp-stdlib-prelude.el='s
+   bridge block in the shape already used there,
+   =(unless (fboundp 'NAME) (defun NAME ... (nelisp-NAME ... nelisp--current-buffer)))=.
+   No new buffer code.
+
+2. *=forward-comment= is fixed by syntax class, not by character.*  Fix B
+   from §1.4.  Both fixes measure identically on the eight-case table, so
+   this is a judgement, not a measurement: a table that redefines the
+   newline's class should carry the predicate with it, and a literal
+   =?\n= comparison would be left behind.  Recorded as a judgement so the
+   next reader can overturn it without re-running the table.
+
+3. *Only =utf-8-unix= joins the accept-list, and all four copies move in
+   the same commit.*  §1.5 measured =raw-text= and =utf-8-emacs= to have
+   different bases; they stay out.  The four-file rule is not hygiene, it
+   is the exact failure the misc copy's comment already records.
+
+4. *=file-expand-wildcards= is replaced at its one call site* rather than
+   implemented generally.  §1.6 measured the replacement exact for the
+   only pattern it is ever passed.  A general implementation is a larger
+   promise than the tree needs and than this measurement supports.
+
+5. *The hash route is left open, deliberately.*  §1.7 gives B, C and D
+   with numbers; choosing among them trades self-containment against
+   runtime work against cache strength, and that is a project decision
+   rather than a build-fixing one.  P3 is written so that P1 and P2 land
+   and are useful regardless of which is chosen.
+
+6. *Every exit criterion is measured against =target/nelisp=.*  Same
+   reason as Doc 204 §2.5: =(unless (fboundp 'X) ...)= bridges are inert
+   under host Emacs, so a host-side green says nothing about this work.
+   The host is used only as an oracle for what an answer *should* be.
+
+* §3 What each phase ships
+
+** P1 — load-path and the eight bridges (0.5-1 d)
+
+Ships: =scripts/= added to the standalone's =load-path=; the eight
+bridges of §1.3.
+
+Exit criterion, measured on =target/nelisp=: =nelisp-standalone-build.el=
+loads without =file-missing=, and =nelisp-standalone--project-source=
+advances past =(void-function eobp)=.  It will *not* complete yet — it
+reaches =(end-of-file ...)=, which is P2's subject, and the phase is done
+when it fails *there* rather than earlier.
+
+** P2 — the three real defects (1-2 d)
+
+Ships: the =forward-comment= predicate; =utf-8-unix= in all four
+accept-lists; the =file-expand-wildcards= call site.
+
+Exit criteria, each measured:
+
+- =nelisp-standalone--project-source= returns the generated program text
+  rather than signalling.  (Already demonstrated with provisional
+  versions of all three: it returns a =(progn (setq command-line-args-left
+  ...) ... (demo-main) (nelisp--exit-process 0))= string.)
+- The eight-case =forward-comment= table matches host Emacs 30.1.
+- =make emacs-parity=, =make compile=, =make ns-gate=, =make
+  fallback-inventory= stay green — the coding accept-list and the printer
+  are both parity surface.
+- =nelisp-standalone-build-application= reaches =(void-function
+  secure-hash)= — i.e. P2 is complete when the *only* thing left is §1.7.
+
+** P3 — the hash route (size depends on §2.5)
+
+Ships: whichever of B / C / D is chosen, plus a =secure-hash= bridge that
+accepts *both* a string and a buffer (§1.7's three call sites need
+=sha1= over a buffer, =sha1= over a string, and =sha256= over a string).
+
+Exit criterion: =nelisp-standalone-build-application= produces a
+Linux x86_64 ELF from a staging path, and =nelisp build= completes with no
+Emacs on =PATH=.
+
+*Budget note, because it decides the shape.*  Host does this build in 7 s
+with 0 units recompiled.  Option B costs ~2 s of subprocesses; option D
+costs ~0; option C costs runtime work now and ~0 later.  Option A costs
+≈5.6 hours for the digest alone and is not viable at any phase.
+
+** P4 — the Python side (separate, small)
+
+=tools/nelisp-project.py:651-653='s =shutil.which= guard, and the
+=subprocess.run= at =:676-678= that spawns =emacs -Q --batch= with seven
+environment variables.  Repointing that at =target/nelisp= is mechanical
+*once P3 lands* and meaningless before it.  It is listed here so the
+document's scope is honest, not because it is difficult.
+
+* §4 Verification design
+
+** §4.1 Against-the-bug
+
+Each fix gets a case that *fails on the pre-change binary*, because a
+smoke that passes before the fix proves nothing (Doc 204 §4.1, and
+=feedback_host_ert_blind_to_generated_binary=).
+
+- =forward-comment=: the eight-case table, with the newline rows failing
+  before.
+- coding: =(encode-coding-string "ab" 'utf-8-unix)= signalling before.
+- =file-expand-wildcards=: the =packages/*/src= count, =void-function=
+  before.
+- bridges: =(eobp)= at =point-max= in a =with-temp-buffer=.
+
+** §4.2 Parity forms
+
+The eight-case =forward-comment= table and the coding accept-list belong
+in =test/nelisp-shadow-differential-cases.el=, which is already the file
+that compares the standalone against stock Emacs printer-to-printer.
+
+** §4.3 Mutation rows
+
+=tools/gate-mutations.txt= gets a row per new gate, *written before the
+gate is registered and proven to go red* — the discipline
+=feedback_nelisp_new_gate_mutation_row_first= exists for.  The coding
+accept-list is the natural one: delete =utf-8-unix= from one of the four
+copies and require the parity target to go red, which also pins the
+four-file rule mechanically instead of by comment.
+
+** §4.4 VERIFIED-BY at SHIPPED
+
+Same contract as Doc 204: the document does not go SHIPPED until each
+phase's exit criterion names the command that produced it and the number
+it produced.
+
+* §5 Phase gates recap
+
+| phase | gate |
+|-------+------|
+| P1 | builder loads; =project-source= fails at =end-of-file=, not earlier |
+| P2 | =project-source= returns program text; parity + compile + ns-gate green; =build-application= fails only at =secure-hash= |
+| P3 | ELF produced to a staging path; =nelisp build= completes with no Emacs on PATH |
+| P4 | =tools/nelisp-project.py= drives =target/nelisp=; the =shutil.which= guard is gone |
+
+=target/nelisp= is never overwritten by any of this work: every build
+during investigation used =NELISP_STANDALONE_READER_OUTPUT= or an explicit
+staging path, and =target/nelisp= is byte-identical at 8,230,592
+throughout.
+
+* §6 Open questions
+
+** §6.1 Which hash route
+
+The decision §2.5 defers.  B is fastest to land and weakest in principle;
+C is the only one that is both fast and self-contained; D is cheapest and
+trades away content addressing.  A is measured out.
+
+** §6.2 The real per-unit hashing total
+
+§1.7 measures 13 unit sources totalling 209,413 =prin1= bytes, against a
+build that links 112 units.  The rest come from manifest entries whose
+=KIND= is a feature symbol or =:glue= / =:raw=, and were not enumerated.
+The floor is enough to rule out option A, but choosing between B and C on
+cost needs the real total.
+
+** §6.3 Circular printing hangs
+
+=prin1-to-string= on a circular list does not return (§1.8).  Out of scope
+here — the builder never hands it one — but it is a live defect and the
+measurement is recorded so it is not rediscovered from scratch.
+
+** §6.4 Two static censuses failed; do not repeat them
+
+Two attempts to enumerate the builder's undefined callees by walking its
+source returned 3,103 and then 519 names, both dominated by noise — the
+first collected every symbol it met, the second still collected =let=
+binding names.  The structural reason is that most of this file is
+*quoted* native-codegen templates, so a car-symbol walk cannot separate
+code from data.
+
+What worked instead was running the real builder and reading the error,
+repeatedly.  Six of the seven gaps in §0 were found that way, one per
+run.  If a census is wanted, the honest form is a driver that catches
+=void-function= / =void-variable=, records it, and *injects a correct
+implementation* before retrying — a nil-returning stub poisons the run
+(one such stub put nil into a numeric global and produced a
+=wrong-type-argument= that looked like a new barrier; another nil-stubbed
+=secure-hash= and turned a cache-key path into a 30-minute recompile).
