@@ -13752,3 +13752,99 @@ splicing, is the honest match for Emacs's own documented contract.
         (while cur (funcall function (car cur) (cadr cur)) (setq cur (cddr cur)))))
      (t (dolist (pair map) (funcall function (car pair) (cdr pair)))))
     nil))
+
+;; ---- Doc 205 P3: `secure-hash' via an external helper ----------------
+;;
+;; The runtime has no message digest of its own -- the reader's builtin
+;; table carries only `sxhash-eq', which is identity hashing -- and the
+;; pure-Elisp implementation in packages/nelisp-secure-hash, though
+;; byte-correct against host Emacs, runs at ~6.3 ms/byte.  The builder's
+;; `nelisp-standalone--toolchain-digest' hashes 3,187,974 bytes before it
+;; compiles anything, which is about 5.6 hours.  Measured 2026-09-18;
+;; that is the whole reason an instrumented self-hosted build sat at 100%
+;; CPU for 30 minutes writing nothing to the unit cache.
+;;
+;; So this shells out.  Measured from target/nelisp: sha1sum over the
+;; 1.8 MB builder source answers in 0.014 s, byte-identical to the shell.
+;; The trade is stated in Doc 205 §2.5 rather than hidden: a self-hosted
+;; build that depends on coreutils is not self-contained.  If the runtime
+;; ever grows a native digest, THIS is the one function to repoint.
+;;
+;; Three things here were measured rather than assumed:
+;;
+;;   * `call-process-region' does not exist here, so in-memory data has to
+;;     reach the helper through a file.  `make-temp-file' works even with
+;;     `temporary-file-directory' unbound (it resolves its own root).
+;;   * Of the three `call-process' shapes, only `(call-process PROGRAM
+;;     INFILE t nil)' captures the output.  Passing `(current-buffer)' as
+;;     DESTINATION silently captured nothing and let the digest escape to
+;;     stdout.
+;;   * The builder needs all three of: `sha1' over a BUFFER (with
+;;     `set-buffer-multibyte' nil and literal file contents), `sha1' over
+;;     a string, and `sha256' over a string -- see its three call sites.
+;;
+;; Guarded, like every other bridge in this file: an unguarded definition
+;; of a stock Emacs name counts as `shared-shadowing' and `emacs-compat'
+;; runs at zero margin.
+(unless (fboundp 'nelisp--secure-hash-helper)
+  (defun nelisp--secure-hash-helper (algorithm)
+    "Return (PROGRAM ARGS...) that prints ALGORITHM's hex digest, or nil.
+Prefers the algorithm-specific coreutils tool and falls back to `shasum
+-a N', which macOS ships where it has no `sha256sum'.  Located through
+`executable-find' because `call-process' searches PATH here."
+    (let* ((bits (cond ((memq algorithm '(sha1 sha-1)) "1")
+                       ((memq algorithm '(sha256 sha-256)) "256")
+                       (t nil))))
+      (when bits
+        (let ((direct (executable-find (concat "sha" bits "sum"))))
+          (if direct
+              (list direct)
+            (let ((shasum (executable-find "shasum")))
+              (and shasum (list shasum "-a" bits)))))))))
+
+(unless (fboundp 'secure-hash)
+  (defun secure-hash (algorithm object &optional start end _binary)
+    "Return ALGORITHM's hex digest of OBJECT, computed by an external helper.
+OBJECT is a string or a buffer.  Only `sha1' and `sha256' are supported --
+those are the algorithms this tree asks for; anything else signals rather
+than answering something plausible.  START/END narrow a string or buffer
+the way Emacs does.  BINARY is accepted and ignored: this always returns
+the hex form, which is what every caller here consumes."
+    (let ((spec (nelisp--secure-hash-helper algorithm)))
+      (unless spec
+        (signal 'error (list "secure-hash: unsupported algorithm" algorithm)))
+      (let* ((text (cond
+                    ((stringp object)
+                     (if (or start end)
+                         (substring object (or start 0) end)
+                       object))
+                    ((bufferp object)
+                     (with-current-buffer object
+                       (if (or start end)
+                           (buffer-substring (or start (point-min))
+                                             (or end (point-max)))
+                         (buffer-string))))
+                    (t (signal 'wrong-type-argument
+                               (list 'stringp object)))))
+             (width (if (equal (car (last spec)) "256") 64
+                      (if (string-match-p "256" (car spec)) 64 40)))
+             (tmp (make-temp-file "nelisp-secure-hash-"))
+             (digest nil))
+        (unwind-protect
+            (progn
+              (write-region text nil tmp nil 0)
+              (with-temp-buffer
+                (let ((rc (apply #'call-process (car spec) tmp t nil (cdr spec))))
+                  (unless (eq rc 0)
+                    (signal 'error
+                            (list "secure-hash: helper failed"
+                                  (car spec) rc)))
+                  ;; Output is "<hex>  -"; take the digest, not the line.
+                  (let ((out (buffer-string)))
+                    (when (< (length out) width)
+                      (signal 'error
+                              (list "secure-hash: helper output too short"
+                                    (car spec) out)))
+                    (setq digest (substring out 0 width))))))
+          (when (file-exists-p tmp) (delete-file tmp)))
+        digest))))

@@ -536,6 +536,43 @@ Exit criterion: =nelisp-standalone-build-application= produces a
 Linux x86_64 ELF from a staging path, and =nelisp build= completes with no
 Emacs on =PATH=.
 
+*PARTIALLY LANDED 2026-09-19.  The bridge is done and measured; the exit
+criterion is not met, for a reason outside this phase.*
+
+What shipped: =secure-hash= in the prelude, guarded, routed through
+=executable-find= + =call-process= to =sha1sum= / =sha256sum= (falling
+back to =shasum -a N=), staging its input through =make-temp-file=
+because =call-process-region= does not exist here.  Measured on the
+rebuilt reader, against the values host Emacs gives:
+
+#+begin_example
+helper sha1   = ("/usr/bin/sha1sum")
+helper sha256 = ("/usr/bin/sha256sum")
+sha1   "abc" = a9993e364706816aba3e25717850c26c9cd0d89d   0.049 s
+sha256 "abc" = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad   0.029 s
+sha1 over a raw-byte BUFFER = a9993e364706816aba3e25717850c26c9cd0d89d
+#+end_example
+
+All three call shapes the builder needs, all byte-correct.
+=nelisp-standalone--toolchain-digest= — the 3,187,974-byte hash that was
+going to take 5.6 hours in pure Elisp — now answers in *1.541 s*, and
+0.000 s on the memoised second call.
+
+What did not happen: =nelisp-standalone-build-application= still does not
+finish.  Run to a 30-minute timeout it stayed at 99.9% CPU with a 716 MB
+RSS — computing, not stuck — and produced no ELF.
+
+Split apart (§6.2), the cost is *not* the hash.  One
+=nelisp-standalone--unit-cache-key= takes 2.761 s, of which =secure-hash=
+is 0.053 s and =prin1-to-string= is the rest.  Times 112 units that is
+minutes before compilation starts, and the largest unit source is 17x the
+one measured.  The barrier moved from digesting to *printing*, which is a
+runtime performance question and not a gap in this document's list.
+
+P3's own deliverable is complete.  The phase does not close until either
+the printer gets faster or the key scheme stops printing whole unit
+sources, and that needs its own measurement pass — see §6.2 and §6.6.
+
 *Budget note, because it decides the shape.*  Host does this build in 7 s
 with 0 units recompiled.  Option B costs ~2 s of subprocesses; option D
 costs ~0; option C costs runtime work now and ~0 later.  Option A costs
@@ -618,13 +655,38 @@ choosing.
 And Option C is not dead, only deferred: if the runtime ever grows a
 native digest, P3's bridge is the single call site to repoint.
 
-** §6.2 The real per-unit hashing total
+** §6.2 ANSWERED — and the answer is that hashing was never the cost
 
-§1.7 measures 13 unit sources totalling 209,413 =prin1= bytes, against a
-build that links 112 units.  The rest come from manifest entries whose
-=KIND= is a feature symbol or =:glue= / =:raw=, and were not enumerated.
-The floor is enough to rule out option A, but choosing between B and C on
-cost needs the real total.
+The question was what 112 per-unit cache keys really cost.  Measured
+2026-09-19 on a reader built with P3's bridge, and the answer moves the
+problem somewhere else entirely:
+
+| operation (=shim-source=, 6,746 chars) | standalone | host 30.1 |
+|---+---+---|
+| =prin1-to-string= | 2.143 s | 0.0001 s |
+| same under the key's =print-circle= etc. bindings | 2.726 s | — |
+| =secure-hash= over the resulting text | *0.053 s* | — |
+| whole =nelisp-standalone--unit-cache-key= | 2.761 s | 0.0001 s |
+
+*Hashing is 2% of the key.*  The external helper does its job; Option B
+was the right call and the 5.6-hour pure-Elisp figure is gone.  What is
+left is the printer: =prin1-to-string= runs roughly *twenty thousand times
+slower* than host Emacs on the same 6.7 KB form, and the builder calls it
+once per unit.
+
+For scale on the other end, host Emacs prints the largest unit source
+(=applyfn-baked-source=, 115,133 chars) in 0.0009 s and computes its whole
+key in 0.0135 s — it does the entire build in 7 s with 0 units
+recompiled.
+
+So §1.7's floor of 209,413 =prin1= bytes across 13 sources was the right
+quantity to have measured and the wrong thing to attribute it to.  It was
+never about which digest; it is about how long this runtime takes to
+print.
+
+That is not P3's problem to fix, and it is not a =secure-hash= problem at
+all.  It is recorded here so the next reader does not re-derive the digest
+question a second time.
 
 ** §6.3 Circular printing hangs
 
@@ -650,18 +712,87 @@ implementation* before retrying — a nil-returning stub poisons the run
 =wrong-type-argument= that looked like a new barrier; another nil-stubbed
 =secure-hash= and turned a cache-key path into a 30-minute recompile).
 
-** §6.5 Nothing parse-checks the prelude
+** §6.5 The prelude IS parse-checked — the gate was not run
 
-Found by breaking it: P2 left =scripts/nelisp-stdlib-prelude.el= ending
-inside a form, and the only gate that noticed was =emacs-compat=, whose
-job is counting names.  =make compile= stayed rc=0 because its target list
-is =src/= and =packages/= — the prelude is not byte-compiled by anything.
-Every other consumer =load='s it (the shadow and parity smokes), which
-means a syntax break surfaces as whatever that smoke happens to do next.
+*This section said the opposite when P2 landed, and was wrong.*  Corrected
+2026-09-19 by running the gate it claimed did not exist.
 
-The cheap fix is a gate running =check-parens= over the prelude, which is
-Doc 204 P5's own deliverable and would have failed in a second.  It is not
-done here because a new gate needs its =tools/gate-mutations.txt= row
-written and proven red *first*
-(=feedback_nelisp_new_gate_mutation_row_first=), and that is a separate
-change from P2.
+=make parens-check= — already in =FAST_GATES=, already in
+=tools/ai/preflight.sh= — walks =lisp/=, =src/= and =scripts/=
+recursively via =tools/nl-parens-check.el=, so
+=scripts/nelisp-stdlib-prelude.el= has always been in scope.  Proven
+red-then-green on the exact defect P2 introduced (one closing paren
+removed from the guarded =defvar=):
+
+#+begin_example
+clean    : GATE-COUNT checked=510 findings=0
+broken   : GATE-COUNT checked=510 findings=1
+           scripts/nelisp-stdlib-prelude.el:8006:77: error: <unnamed form> is
+           missing 1 closing paren; it has absorbed the 127 top-level forms
+           that follow it (system-type, system-configuration, ...)
+restored : GATE-COUNT checked=510 findings=0
+#+end_example
+
+That diagnostic — file, line, column, cause, and the blast radius by name
+— is far better than what actually caught the break at the time
+(=emacs-compat= reporting "ends inside a form at 377887").
+
+So the gap was never in the gates.  It was in *how the gates were chosen
+to re-run*: after the P2 edits I assembled a list by hand —
+=compile=, =emacs-compat=, =emacs-parity=, =ns-gate=,
+=fallback-inventory=, =substrate-presence-corpus-check= — from memory,
+and =parens-check= was not on it.  =preflight.sh= has the authoritative
+list and answers =--list=.
+
+What =make compile= does *not* cover still stands, and is worth keeping
+here: its target list is =src/= and =packages/=, so the prelude is never
+byte-compiled.  =parens-check= is what covers it, and it covers it fully.
+
+No new gate, no new mutation row.  The correction is to stop
+hand-assembling gate lists.
+
+** §6.6 The printer, not the digest, is what blocks a self-hosted build
+
+P3 removed the hashing barrier and uncovered the one underneath it.
+
+=nelisp-standalone--unit-cache-key= prints the unit source with
+=prin1-to-string= and hashes the text.  Measured 2026-09-19 on a reader
+built with P3's bridge, the split is lopsided: for =shim-source= (6,746
+chars) the whole key is 2.761 s, of which =secure-hash= is *0.053 s*.
+The printer is the other 98%.
+
+It scales with the source, near-linearly, and the sources get much
+bigger:
+
+| unit source | prin1 chars | key |
+|---+---+---|
+| =shim-source= | 6,746 | 2.178 s |
+| =arena-source= | 13,853 | 5.670 s |
+| =gc-source= | 50,039 | 20.119 s |
+| =applyfn-baked-source= | 115,212 | *48.593 s* |
+
+Those four alone are 76.6 s.  Host Emacs 30.1 keys the largest of them in
+*0.0135 s* — roughly 3,600x — and finishes the entire build in 7 s with 0
+units recompiled.  A build links 112 units.
+
+That is why =nelisp-standalone-build-application= sat at 99.9% CPU for 30
+minutes and produced no ELF.  It is slow, not stuck, and the slowness is
+not in anything Doc 205 set out to fix.
+
+Two directions, neither measured yet; the choice needs numbers rather
+than taste:
+
+1. *Make the printer faster.*  The general fix, and it helps every
+   consumer — but it is a runtime performance project.  Nothing here says
+   where the time goes inside =prin1-to-string=; that profiling has not
+   been done.
+2. *Stop printing whole unit sources to key them.*  The key exists to be
+   content-addressed (§1.7).  A cheaper content function over the same
+   form would serve, subject to the constraint the current scheme's own
+   docstring spells out: it must not truncate, because two different
+   sources sharing a key hands back an object compiled from code that was
+   never compiled.
+
+Until one of them lands, a self-hosted =nelisp build= is *possible but not
+practical*, and this document should not go SHIPPED on the strength of
+P1-P3 alone.
