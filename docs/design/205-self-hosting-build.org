@@ -1128,7 +1128,9 @@ reader body and the collector.
 A second defect in the same family showed up while building the
 reviewer's host-differential for the fix, and it is worse than a signal:
 =ash= on plain fixnums *wraps silently* at the fixnum boundary.  Against
-Emacs 30.2 as the oracle:
+the local host Emacs (31.1 -- the only Emacs on the reviewer's machine;
+an earlier draft of this section said 30.2, which is CI's lane, not the
+oracle these rows were collected on) as the oracle:
 
 : (ash 1 61)                   host  2305843009213693952   standalone -2305843009213693952
 : (ash 1 62)                   host  4611686018427387904   standalone  0
@@ -1202,7 +1204,7 @@ in the compiler, and it is a loop shape, not a floor.
 
 *** What this segment changes, and what it does not
 
-The reviewer's own host-differential (Emacs 30.2 as the oracle, 44
+The reviewer's own host-differential (host Emacs 31.1 as the oracle, 44
 expressions over =logand logior logxor lognot ash mod % /= at and around
 2^61, 2^62, 2^63 and 2^64, both signs, mixed fixnum/bignum operands, a
 deliberately wrong oracle as the positive control) reads, against the
@@ -1281,7 +1283,7 @@ Reproduced by the reviewer, not taken from the implementer's report:
 | check | before | after |
 |---+---+---|
 | the 13 =defconst ...-source= constants, =compile-to-unit= on the standalone | 10 ok / 3 fail | *13 ok / 0 fail* |
-| reviewer's host-differential, 44 expressions, Emacs 30.2 oracle | match=4 mismatch=40 | *match=44 mismatch=0*, positive control detected |
+| reviewer's host-differential, 44 expressions, host Emacs 31.1 oracle | match=4 mismatch=40 | *match=44 mismatch=0*, positive control detected |
 | =emacs-compat= shared-shadowing | 268 | 268 |
 | bignum smoke | 54 cases | 120 cases, 0 mismatches |
 | gate-mutation rows for that smoke | 2 | 9, each red with its injection and green without (re-run by the reviewer, nothing left behind) |
