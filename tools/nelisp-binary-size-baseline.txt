@@ -637,5 +637,18 @@
 # ubuntu 30.2 lane, `./target/nelisp is 8384208 bytes' -- replacing the local
 # 8,392,400 the entry above measured (local vs CI differ by ~8 KB here, as the
 # note above anticipated).
-size 8384208
+#
+# 2026-09-20: re-pinned from CI's own build of main 59353fcc7 -- run 35476807566,
+# ubuntu 30.2 lane, `./target/nelisp is 8614864 bytes'.  The growth since the
+# segment-2 pin (8,384,208, run 35451087186) is segment 3 of running the agent
+# host on the standalone, four merges, each measured on CI's own build:
+#   47d34204a define-derived-mode, run-mode-hooks, keymap helpers   8,499,128  +114,920
+#   00c7d349c process-send-string/-eof/-region on subprocesses      8,531,952   +32,824
+#   9fb86eef3 insert-file-contents point, file-modes, file-equal-p  8,577,064   +45,112
+#   59353fcc7 Emacs-style CLI flags, -l/-f, argv-order actions      8,614,864   +37,800
+# All four are code the consumer needed to load; none is a regression in the
+# existing units.  The 115 KB for define-derived-mode is more than its 265
+# prelude lines suggest and is the first thing to look at if the size is
+# ever chased; it is recorded, not hidden.  Ceiling is now 8,787,161 (2%).
+size 8614864
 slack-pct 2
