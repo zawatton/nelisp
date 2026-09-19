@@ -3,8 +3,8 @@ name: NeLisp semver release pipeline
 # Zero-Rust semver release pipeline for the standalone NeLisp artifacts.
 #
 # This workflow is self-contained: it builds, executes the standalone reader
-# test, runs the release soak on linux-x86_64, checksums each artifact, and
-# uploads the cross-architecture bundles on either:
+# test, runs the release leak checks on linux-x86_64, checksums each
+# artifact, and uploads the cross-architecture bundles on either:
 #
 #   - a semver-style release tag push (`vX.Y.Z'), or
 #   - manual workflow_dispatch (e.g. dry-run a release candidate).
@@ -14,6 +14,31 @@ name: NeLisp semver release pipeline
 # retained as a deferred job below so its unverified state remains visible.
 # SHA-256 and the ad-hoc signature placeholder keep each uploaded artifact
 # bundle self-contained.
+#
+# Leak coverage on linux-x86_64, since 2026-09-19 (ci/fast-release-blocker):
+# the blocker used to spend 60 of its ~65 minutes on one `--duration 3600`
+# RSS soak.  That single hour-long OS-level measurement is now two much
+# cheaper, complementary checks instead of one slow one:
+#
+#   - `make standalone-reader-checked-soak' (~6s): the DETERMINISTIC leak
+#     detector.  It runs the checked allocator for 5 rounds and asserts
+#     `live-blocks per round' does not accumulate past a small slack -- see
+#     the Makefile target's own comment for the historical regression this
+#     caught.  Proven lethal by a mutation row (`standalone-reader-checked-
+#     soak' in tools/gate-mutations.txt, `make gate-mutation-verify
+#     GATE=standalone-reader-checked-soak'): a one-round-of-retention
+#     injection turns its PASS into a `live blocks grew ... past the
+#     8-block slack' FAIL, restored byte-for-byte afterwards.
+#   - a 180s RSS sanity soak (`tools/nelisp-standalone-soak.py --duration
+#     180'), run under `tools/nelisp-nothp.c' so a transparent-huge-pages
+#     host does not fail it on allocation granularity alone (see
+#     release/v1.3.0/RELEASE.md and release/v1.3.1/RELEASE.md) -- a coarse,
+#     OS-level second opinion, not the primary leak proof.
+#
+# The original 1-hour soak survives as a scheduled weekly post-ship audit
+# (.github/workflows/weekly-soak.yml) rather than as a release blocker: it
+# is still useful for catching a slow leak the 180s window is too short to
+# see, just not on the critical path of every release candidate.
 #
 # Outputs are uploaded as workflow artifacts only.  GitHub Release
 # upload + asset attach remains a separate publication step.
@@ -62,8 +87,32 @@ jobs:
       - name: Verify standalone soak failure detection
         run: python3 test/nelisp-standalone-soak-test.py
 
-      - name: Standalone NeLisp GC soak (blocker tier、1h)
-        run: python3 tools/nelisp-standalone-soak.py --binary target/nelisp --duration 3600
+      - name: Standalone NeLisp checked-allocator soak (blocker tier、deterministic)
+        # Reuses target/nelisp from "Build and test standalone reader" /
+        # "Build release artifact" above -- its own prerequisite only
+        # builds when target/nelisp is ABSENT, never rebuilds a second,
+        # different binary.  See the header comment above for what this
+        # catches and how it was proven lethal.
+        run: make standalone-reader-checked-soak
+
+      - name: Build THP-disable wrapper for the RSS sanity soak
+        run: cc -O2 -o target/nelisp-nothp tools/nelisp-nothp.c
+
+      - name: Standalone NeLisp GC RSS sanity soak (blocker tier、180s)
+        # --rss-growth-ceiling-kib 4: measured, not the 1h ceiling (5120)
+        # divided by 20.  Three local 180s/nothp runs on this binary all
+        # showed 0 KiB growth (114 batches each, start == peak).  One
+        # 64-byte block leaked per batch at that same batch rate would
+        # grow 114 * 64 = 7296 bytes =~ 7.125 KiB over the 180s window --
+        # so 4 KiB sits strictly above the observed noise (a full 4 KiB
+        # page of margin over an exact-zero baseline) and strictly below
+        # what even a one-block-per-batch leak would produce, which is the
+        # smallest leak shape this coarse RSS check could plausibly still
+        # catch on its own.  Run under nothp (see the header comment above)
+        # so a transparent-huge-pages host cannot fail this on allocation
+        # granularity alone; prctl(PR_SET_THP_DISABLE) is inherited across
+        # the fork+exec this script uses to launch target/nelisp.
+        run: ./target/nelisp-nothp python3 tools/nelisp-standalone-soak.py --binary target/nelisp --duration 180 --rss-growth-ceiling-kib 4
 
       - name: Verify ad-hoc signature payload (Doc 32 v2 §2.5)
         run: |

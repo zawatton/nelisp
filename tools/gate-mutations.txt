@@ -1232,3 +1232,32 @@ standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(bf_lognot_g
 standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(logxor (if (< i dec_count) (ptr-read-u32 dec_ptr (\* i 4)) 0) 4294967295)/(logxor (if (< i dec_count) (ptr-read-u32 dec_ptr (* i 4)) 0) 4294967294)/|`nl_bignum_twos_fill_neg`'s bit-complement mask is off by one bit, so every AND/OR/XOR with a NEGATIVE Bignum operand computes a wrong two's-complement window and returns the wrong value instead of signalling anything
 standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(if (<= mag 2147483648) 1 0)/(if (<= mag 0) 1 0)/|`nl_bignum_small_divisor_p` stops accepting any nonzero divisor, so every Bignum-dividend `/`/`%`/`mod` case (even a tiny divisor like 256) signals `nelisp-bignum-division-unsupported` instead of computing the exact answer
 standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(nl_alloc_symbol sbuf 34 268435480)/(nl_alloc_symbol sbuf 0 268435480)/|`bf_signal_bignum_division_unsupported` writes a zero-length condition symbol, so `condition-case` handlers keyed on `nelisp-bignum-division-unsupported` (a genuine Bignum divisor to `/`/`%`/`mod`) no longer catch it
+
+# standalone-reader-checked-soak: added this session (ci/fast-release-blocker)
+# when the release blocker's soak coverage moved from a 1-hour RSS soak to
+# `make standalone-reader-checked-soak' (~6s) plus a 180s RSS sanity soak.
+# Until this row, `checked-soak' had never been proven to catch what it
+# claims to catch -- it makes no ERT assertion of its own; the whole claim
+# lives in the shell arithmetic at the end of its Makefile recipe.  The
+# injection retains the THIRD workload loop's cons cells (the `(cons i i)'
+# accumulator, 8000 iterations/round) in a global that is never reset
+# between rounds, instead of letting them go out of scope with their `let*'
+# and be swept by the round's own `(garbage-collect)'.  `acc' itself is left
+# untouched -- this is not a redzone/free-count defect, it is exactly the
+# "retention past its own GC" class of leak `checked-soak' exists to catch.
+# The mutated file is `Makefile', not `scripts/nelisp-standalone-build.el':
+# `checked-soak-round' is generated fresh into `target/checked-soak.el' by
+# this recipe's own `printf' on every invocation and then `--load'ed into
+# the ALREADY-BUILT `target/nelisp', so no rebuild is needed or requested
+# (`gate_needs_rebuild' is unchanged) -- the checked allocator and
+# `nelisp--alloc-check-report' are unaffected; only the *workload* run
+# against them differs. Verified 2026-09-19 with `make gate-mutation-verify
+# GATE=standalone-reader-checked-soak': clean baseline
+# "live-blocks per round: 348523 352901 330627 330627 330626" / PASS;
+# mutated "live-blocks per round: 365219 397227 429226 461227 493226" /
+# "FAIL: live blocks grew 397227 (round 2) -> 461227 (round 4), past the
+# 8-block slack" -- growth of 64000 blocks against an 8-block slack, four
+# orders of magnitude over the threshold, so this is not a marginal proof;
+# restored -- byte-identical to the pre-mutation Makefile (`git diff`
+# empty).
+standalone-reader-checked-soak|Makefile|s#(while (< i 8000) (setq acc (cons (cons i i) acc)) (setq i (+ i 1))))#(while (< i 8000) (setq acc (cons (cons i i) acc)) (setq nelisp-checked-soak-retain (cons (cons i i) (if (boundp (quote nelisp-checked-soak-retain)) nelisp-checked-soak-retain nil))) (setq i (+ i 1))))#|checked-soak-round's third loop retains its whole batch of cons cells in a global that is never cleared between rounds instead of releasing them when the local `acc` binding goes out of scope, so live-blocks grows by a full batch every round instead of returning to baseline after each round's garbage-collect

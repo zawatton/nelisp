@@ -1,0 +1,72 @@
+name: post-ship soak audit
+
+# The 1-hour RSS soak that used to run on every release candidate (see the
+# header comment in stage-d-v2.0-release.yml, ci/fast-release-blocker) --
+# kept alive here as a scheduled, post-ship audit instead of a release
+# blocker.  It still catches a slow leak the release blocker's 180s sanity
+# soak is too short to see; it just does so off the critical path.
+#
+# This workflow is deliberately standalone:
+#   - nothing `needs:` it, and it must never become a prerequisite for
+#     shipping -- a slow scheduled job on the release path would recreate
+#     the exact problem ci/fast-release-blocker fixed.
+#   - it does not invoke tools/ai/nelisp-ai.sh and writes no gate report
+#     under tools/ai/ or target/gates/; its only output is the soak log
+#     uploaded as a workflow artifact below.
+#
+# Cron is UTC.  17 4 * * 1 (04:17 UTC / 13:17 JST on Mondays) is a quiet
+# hour for this project: outside the JST 21:00-3:00 (UTC 12:00-18:00)
+# peak-usage window CLAUDE.md already asks heavy work to avoid, and off
+# the top of the hour so it does not pile onto every other repo's
+# `0 * * * *` / `0 0 * * *` cron for shared GitHub-hosted runner capacity.
+on:
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Soak duration in seconds'
+        required: false
+        default: '3600'
+
+jobs:
+  soak:
+    name: post-ship soak audit — linux-x86_64
+    runs-on: ubuntu-latest
+    env:
+      NELISP_STANDALONE_TARGET: linux-x86_64
+      # workflow_dispatch supplies github.event.inputs.duration; a
+      # schedule-triggered run has no `inputs` on its event at all, so this
+      # falls back to the same 3600s default the input itself declares --
+      # same safe-access idiom RELEASE_VERSION already uses in
+      # stage-d-v2.0-release.yml for its own push/dispatch split.
+      SOAK_DURATION: ${{ github.event.inputs.duration || '3600' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Emacs
+        uses: purcell/setup-emacs@v8.0
+        with:
+          version: '30.1'
+
+      - name: Build and test standalone reader
+        run: make standalone-reader-test
+
+      - name: Build THP-disable wrapper
+        # Same tools/nelisp-nothp.c the release blocker's 180s soak uses --
+        # see release/v1.3.0/RELEASE.md and release/v1.3.1/RELEASE.md for
+        # why an hour-long soak needs it: without it, a transparent-huge-
+        # pages host fails on allocation granularity alone, not a leak.
+        run: cc -O2 -o target/nelisp-nothp tools/nelisp-nothp.c
+
+      - name: Standalone NeLisp GC soak
+        run: |
+          ./target/nelisp-nothp python3 tools/nelisp-standalone-soak.py \
+            --binary target/nelisp --duration "$SOAK_DURATION" 2>&1 | tee soak.log
+
+      - name: Upload soak log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: post-ship-soak-log-${{ github.run_id }}
+          path: soak.log
