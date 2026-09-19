@@ -18,6 +18,6 @@ nelisp_version() {
   if [ -r "$root/VERSION" ]; then
     tr -d ' \t\n\r' < "$root/VERSION"
   else
-    printf 'v1.3.1'
+    printf 'v1.4.0'
   fi
 }
