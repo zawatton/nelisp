@@ -740,7 +740,17 @@ ns-collision-divergent 127
 # namespace, the same shape this file's own commentary already describes
 # as most of what this count tracks tree-wide -- not pinned individually
 # for the same reason the rest of that surface is not.
-ns-prefix-violation 318
+ns-prefix-violation 320
+# 318 -> 320 on 2026-09-20: `process-send-eof'/`process-send-region', new
+# standard-name public entries in `packages/nelisp-process-adapter/src/
+# nelisp-process-adapter.el' closing the subprocess gap documented at that
+# file's own `process-send-string' (Doc 184's native-subprocess analog was
+# previously restricted to `network-process' objects only).  Same shape as
+# every other unprefixed Emacs standard name that file already defines
+# unconditionally (`make-process', `delete-process', `accept-process-
+# output', `process-send-string' itself, ...) -- intentional public API
+# under a name outside the file's own namespace, not pinned individually
+# for the same reason that existing surface is not.
 # 611 -> 613 on 2026-08-20: `nelisp--check-string'/`--check-symbol' and the
 # other argument-check helpers are referenced from the lisp/ mirrors that
 # carry copies of the functions using them.  This is the kind this file

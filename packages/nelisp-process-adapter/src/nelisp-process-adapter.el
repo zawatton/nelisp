@@ -110,10 +110,20 @@
 (declare-function nelisp-process-read-output "ext:nelisp-runtime" (proc limit))
 (declare-function nelisp-process-delete "ext:nelisp-runtime" (proc))
 (declare-function nelisp-process-exit-status "ext:nelisp-runtime" (proc))
+;; Doc 184 S1.1's stdin-write pair (`nl_bi_process_write'/`nl_bi_process_
+;; close_stdin', `scripts/nelisp-standalone-build.el', dispatch-table
+;; entries `(:lit "nelisp-process-write")'/`(:lit "nelisp-process-close-
+;; stdin")') -- already exercised directly, unwrapped, by `make
+;; standalone-reader-process-adapter-smoke''s own filter fixture
+;; (Makefile).  §3.5 below is the first STANDARD-NAME (`process-send-
+;; string'/`process-send-eof'/`process-send-region') caller of either.
+(declare-function nelisp-process-write "ext:nelisp-runtime" (proc string))
+(declare-function nelisp-process-close-stdin "ext:nelisp-runtime" (proc))
 (declare-function executable-find "ext:nelisp-stdlib-prelude" (command &optional remote))
 (declare-function process-get "ext:nelisp-stdlib-prelude" (process key))
 (declare-function process-put "ext:nelisp-stdlib-prelude" (process key value))
 (declare-function process-status "ext:nelisp-stdlib-prelude" (process))
+(declare-function process-live-p "ext:nelisp-stdlib-prelude" (process))
 
 ;;; Poll-set registry ---------------------------------------------------
 
@@ -1426,17 +1436,125 @@ UNCHANGED from before this phase."
         (setq nelisp-process-adapter--live (cons proc nelisp-process-adapter--live))
         proc)))))
 
+(defun nelisp-process-adapter--subprocess-not-running-error (process)
+  "Signal the `error' real Emacs signals from `process-send-string'/
+`process-send-eof' on a subprocess PROCESS that is not running:
+\"Process NAME not running: STATUS\", STATUS the exact sentinel-shaped
+status string (trailing newline embedded, not stripped) -- measured
+directly against host Emacs 31.1 for both a `delete-process'-killed
+child (\"Process cat2 not running: killed\\n\") and one that had
+already exited on its own (\"Process cat2c not running: finished\\n\").
+Reuses `nelisp-process-adapter--sentinel-message' (above) for STATUS,
+so this runtime's own pre-existing, documented divergence there (Doc
+184: `delete-process' hardcodes SIGTERM, so a locally killed PROCESS
+honestly reads \"terminated\\n\" rather than Emacs's SIGKILL-derived
+\"killed\\n\") surfaces here unchanged rather than being duplicated."
+  (signal 'error
+          (list (format "Process %s not running: %s"
+                        (process-get process :name)
+                        (nelisp-process-adapter--sentinel-message process)))))
+
 (defun process-send-string (process string)
-  "Doc 194 P0: send STRING's raw bytes to PROCESS, a `network-process'
-object, via `nelisp-socket-send' (Doc 194 S1.1: byte-clean, UTF-8
-multibyte content included, no decode/re-encode pass).  Subprocesses
-have no analog under THIS name in this runtime yet -- Doc 184's own
-`nelisp-process-write' is that shape's separate entry point -- so
-anything that is not a `network-process' signals `wrong-type-argument'
-rather than silently doing nothing."
-  (if (nelisp--network-process-p process)
-      (nelisp-socket-send (aref process 3) string)
-    (signal 'wrong-type-argument (list 'nelisp--network-process-p process))))
+  "Doc 194 P0 (`network-process') + this phase's subprocess extension:
+send STRING's raw bytes to PROCESS.
+
+`network-process' (Doc 194 P0, UNCHANGED by this phase): via
+`nelisp-socket-send' -- byte-clean, UTF-8 multibyte content included,
+no decode/re-encode pass.
+
+A native subprocess (`nelisp-process-object-p', Doc 184 shape -- THIS
+phase's addition): via the native `nelisp-process-write' builtin (Doc
+184 S1.1, dispatch-table entry `(:lit \"nelisp-process-write\")'),
+which writes to the child's stdin pipe -- already exercised directly,
+unwrapped, by `make standalone-reader-process-adapter-smoke''s own
+filter fixture (Makefile).  That pipe is opened BLOCKING on this
+runtime (`nl_bi_process_start_process' only ever calls `nl_os_process_
+set_nonblock' on the READ side, never the stdin write side backing
+this call), so one `nelisp-process-write' call is a synchronous,
+whole-string write for any string that fits in a single write(2) --
+matching real Emacs's own synchronous `process-send-string' contract
+for a pipe-connected subprocess with no explicit output flow control
+(measured against host Emacs 31.1: \"hello\\n\" is observed by the
+peer's filter before the following `accept-process-output' call even
+returns).  A truly oversized write that the kernel itself splits across
+multiple `write(2)' calls is NOT chunked/retried here -- no caller in
+this codebase depends on that, and this is the one place such a retry
+loop would need to be added later.  Signals the `error' shape
+`nelisp-process-adapter--subprocess-not-running-error' documents for a
+PROCESS that is not live, or whose write failed for any other reason
+(`nelisp-process-write' returning nil -- EPIPE et al.).
+
+Anything that is neither shape signals `wrong-type-argument' against
+`processp' -- Doc 194's original scoping signalled against the
+internal `nelisp--network-process-p' predicate instead; this phase
+widens the check to also accept the native shape, so the generic \"not
+a process at all\" case now matches real Emacs's own vocabulary
+(measured directly: `(wrong-type-argument processp 42)')."
+  (cond
+   ((nelisp--network-process-p process)
+    (nelisp-socket-send (aref process 3) string))
+   ((and (fboundp 'nelisp-process-object-p) (nelisp-process-object-p process))
+    (unless (process-live-p process)
+      (nelisp-process-adapter--subprocess-not-running-error process))
+    (let ((n (nelisp-process-write process string)))
+      (unless n
+        (nelisp-process-adapter--subprocess-not-running-error process))))
+   (t (signal 'wrong-type-argument (list 'processp process)))))
+
+(defun process-send-eof (&optional process)
+  "Doc 184 subprocess extension: close PROCESS's stdin write-end via the
+native `nelisp-process-close-stdin' builtin (Doc 184 S1.1, dispatch-
+table entry `(:lit \"nelisp-process-close-stdin\")'), so the child
+observes EOF on its own standard input -- matching real Emacs's own
+`process-send-eof' contract for a pipe-connected subprocess (measured
+against host Emacs 31.1: returns the PROCESS object itself on success;
+a SECOND call, made after the child has since exited, signals the exact
+same \"Process NAME not running: STATUS\\n\" shape `process-send-string'
+above signals, measured directly -- reused here via
+`nelisp-process-adapter--subprocess-not-running-error').
+
+PROCESS defaults to nil; unlike real Emacs (whose nil default is \"the
+current buffer's process\"), this runtime does not model buffer/process
+association at all (`process-contact' above documents the same gap),
+so nil is a no-op here, matching `delete-process' just above's own
+established convention for this file rather than inventing a new one.
+
+A `network-process' EOF is a TCP half-close (`shutdown(2)' with
+`SHUT_WR'); this runtime has no native half-close primitive yet --
+`nelisp-socket-close' is a full close and using it here would also
+silently drop this side's ability to keep reading, unlike Emacs's own
+contract -- so a `network-process' argument signals `wrong-type-
+argument' against `nelisp-process-object-p', the mirror image of
+`process-send-string''s own original (pre-this-phase) subprocess
+restriction."
+  (cond
+   ((null process) nil)
+   ((and (fboundp 'nelisp-process-object-p) (nelisp-process-object-p process))
+    (unless (process-live-p process)
+      (nelisp-process-adapter--subprocess-not-running-error process))
+    (nelisp-process-close-stdin process)
+    process)
+   ((nelisp--network-process-p process)
+    (signal 'wrong-type-argument (list 'nelisp-process-object-p process)))
+   (t (signal 'wrong-type-argument (list 'processp process)))))
+
+(defun process-send-region (process start end)
+  "Doc 184 subprocess extension (+ `network-process', via the same
+`process-send-string' call below): send the current buffer's text
+between START and END to PROCESS.  Built on `buffer-substring' (Doc 188
+P2 -- already matches real Emacs's own START/END-either-order and
+`args-out-of-range'/`wrong-type-argument' contract, measured there) and
+`process-send-string' above, so both inherit their existing, separately
+measured contracts for free rather than duplicating them.
+
+Real Emacs documents sending a large region in several bunches,
+interleaved with the process's own output; this runtime sends the
+whole substring through one `process-send-string' call instead -- a
+real narrowing versus that documented behavior, not hidden here. No
+caller in this codebase depends on chunked delivery, and any future fix
+for a truly large write belongs in `process-send-string' itself, the
+one place both callers of it would then inherit it from."
+  (process-send-string process (buffer-substring start end)))
 
 (defun open-network-stream (name buffer host service &rest parameters)
   "Doc 194 P0: `open-network-stream', a thin wrapper over

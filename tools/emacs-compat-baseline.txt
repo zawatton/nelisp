@@ -97,7 +97,20 @@
 # name, and are offset by the three that left (`eql', `sxhash-eq',
 # `sxhash-eql').  Measured emacs-gtk 30.1, 8819 names: shared-shadowing
 # 276 -> 268, shared-deferring 256 -> 264, PASS.
-shared-shadowing 268
+shared-shadowing 270
+
+# 268 -> 270 on 2026-09-20: `process-send-eof'/`process-send-region', new
+# entries in `packages/nelisp-process-adapter/src/nelisp-process-adapter.el'
+# alongside the process/network adapter surface the 268 note above already
+# lists (`make-process', `process-send-string', ...).  Both close the
+# subprocess gap documented at that file's own `process-send-string' (a
+# native subprocess previously had no analog under either name at all --
+# `process-send-eof' was `void-function', `process-send-region' likewise).
+# Unconditional for the same reason the rest of that surface is: this file
+# is an upgrade-on-load layer over the prelude's own partial adapter (its
+# own header: "no `unless (fboundp ...)' guards below, these definitions
+# are meant to replace the prelude's"), and there is no host Emacs running
+# inside the standalone for either name to defer to.
 
 # 2026-08-19, reviewing the 245 rather than counting them.  The table now
 # carries the defining file, which is half of what makes a class actionable:
