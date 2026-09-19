@@ -27215,6 +27215,26 @@ correctly."
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_dash_L "-L")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_dash_dash_directory
                                        "--directory")
+    ;; feat/cli-emacs-flags: `-l FILE' (synonym of `--load FILE') and
+    ;; `-f FUNCTION' (Emacs `--funcall'), plus the six Emacs batch/init
+    ;; switches this runtime recognizes-and-ignores anywhere in the same
+    ;; leading run as `-L'/`--directory' (see `nl_cli_ignorable_flag_p'
+    ;; and the extended `nl_cli_ldir_index' below) because a consumer
+    ;; that spawns this runtime the way it spawns Emacs (`-Q --batch -l
+    ;; FIXTURE') passes them: this runtime is always batch and has no
+    ;; init files, so there is nothing for them to do.  `--no-splash' is
+    ;; the one exception measured to survive into `command-line-args'
+    ;; (see `nl_cli_cla_omit_p') even though it stays a no-op here --
+    ;; host Emacs 31.1 only strips `-Q'/`-q'/`--batch'/`--no-site-file'/
+    ;; `--no-init-file' at the C level before Lisp ever sees it.
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_dash_l "-l")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_dash_f "-f")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_dash_Q "-Q")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_dash_q "-q")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_batch "--batch")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_no_site_file "--no-site-file")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_no_init_file "--no-init-file")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_no_splash "--no-splash")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_source_separator "--")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_neln_selftest
                                        "--neln-selftest")
@@ -27318,7 +27338,7 @@ correctly."
 	      "))) (nelisp--write-stdout-bytes (nelisp--repr v)) (nelisp--write-stdout-bytes (unibyte-string 10)) 0)\n0\n")
     ,(nelisp-standalone--copy-lit-defun
       'nl_cli_help_text
-	      "Usage: nelisp [-L DIR]... [--help] [--repl [--no-prompt] [--no-print]] [--eval EXPR [-- ARG...]] [--load FILE [-- ARG...]] [--neln-selftest] [FILE]\nArguments:\n  -L DIR, --directory DIR        Prepend DIR to load-path (repeatable); must precede --eval/--load/FILE/--repl\n  --help                         Show this argument list\n  --eval EXPR                    Evaluate EXPR and print the value; optional -- ARG...\n  --load FILE                    Load FILE and print the last value; optional -- ARG...\n  --neln-selftest                Run the embedded native exec self-test\n  --repl [--no-prompt] [--no-print]\n                                 Start the REPL\n  FILE                           Load FILE as a source file\nCommands:\n  dump-runtime-image FILE [--load SRC]... FORM...\n  extend-runtime-image IMAGE OUT [--load SRC]... FORM...\n  eval-runtime-image IMAGE FORM...\n  exec-runtime-image IMAGE FORM...\n  compile-runtime-image --kind nelc|neln|auto --input FILE.nlri --output FILE\n  compile-elisp-artifact --kind nelc|neln|elc --input FILE.el --output FILE\n  compile-elisp-artifacts --kind nelc|neln|auto FILE.el|DIR...\n  audit-elisp-artifacts [--required] FILE.el|FILE.neln|DIR...\n  exec-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...\n  eval-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...\n  load-elisp-source [--auto-compile] [--kind nelc|neln] FILE.el\n  eval-elisp-source [--auto-compile] [--kind nelc|neln] FILE.el FORM...\n  native-exec-elisp-artifact FILE.neln SYMBOL ARG...\n  inspect-elisp-artifact FILE.nelc|FILE.neln|FILE.elc\n")
+	      "Usage: nelisp [-L DIR]... [-Q|-q|--batch|--no-site-file|--no-init-file|--no-splash]... [--help] [--repl [--no-prompt] [--no-print]] [(--eval EXPR|--load FILE|-l FILE|-f FUNCTION)... [-- ARG...]] [--neln-selftest] [FILE]\nArguments:\n  -L DIR, --directory DIR        Prepend DIR to load-path (repeatable); must precede any action\n  -Q -q --batch --no-site-file --no-init-file --no-splash\n                                 Accepted and ignored (always batch, no init files)\n  --help                         Show this argument list\n  --eval EXPR                    Evaluate EXPR; prints the value only when it is the sole action\n  --load FILE, -l FILE           Load FILE; prints the last value only when it is the sole action\n  -f FUNCTION                    Call (funcall (intern FUNCTION)); no value printed\n                                 --eval/--load/-l/-f may repeat and run in argv order (no auto-print once more than one action is given); -- ends actions, rest is command-line-args-left\n  --neln-selftest                Run the embedded native exec self-test\n  --repl [--no-prompt] [--no-print]\n                                 Start the REPL\n  FILE                           Load FILE as a source file\nCommands:\n  dump-runtime-image FILE [--load SRC]... FORM...\n  extend-runtime-image IMAGE OUT [--load SRC]... FORM...\n  eval-runtime-image IMAGE FORM...\n  exec-runtime-image IMAGE FORM...\n  compile-runtime-image --kind nelc|neln|auto --input FILE.nlri --output FILE\n  compile-elisp-artifact --kind nelc|neln|elc --input FILE.el --output FILE\n  compile-elisp-artifacts --kind nelc|neln|auto FILE.el|DIR...\n  audit-elisp-artifacts [--required] FILE.el|FILE.neln|DIR...\n  exec-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...\n  eval-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...\n  load-elisp-source [--auto-compile] [--kind nelc|neln] FILE.el\n  eval-elisp-source [--auto-compile] [--kind nelc|neln] FILE.el FORM...\n  native-exec-elisp-artifact FILE.neln SYMBOL ARG...\n  inspect-elisp-artifact FILE.nelc|FILE.neln|FILE.elc\n")
     ,(nelisp-standalone--copy-lit-defun
       'nl_repl_eval_prefix
       "(let ((v (progn\n")
@@ -27441,6 +27461,20 @@ correctly."
     ;; with nothing after it (IDX+1 == ARGC) is left in place: it becomes
     ;; the (unrecognized-command) `path', which the outer `cond' already
     ;; turns into the ordinary usage error -- no special-casing needed here.
+    (defun nl_cli_ignorable_flag_p (ptr)
+      ;; feat/cli-emacs-flags: the six Emacs batch/init switches this
+      ;; runtime accepts and ignores anywhere in the same leading run as
+      ;; `-L'/`--directory' -- see `nl_cli_ldir_index' just below, which
+      ;; now scans both families together so `-Q --batch -l FIXTURE' (the
+      ;; exact spelling a consumer that spawns Emacs also uses to spawn
+      ;; this runtime) reaches the first real action instead of falling
+      ;; through to the unrecognized-flag usage error.
+      (if (= (nl_cstr_eq_dash_Q ptr) 1) 1
+        (if (= (nl_cstr_eq_dash_q ptr) 1) 1
+          (if (= (nl_cstr_eq_batch ptr) 1) 1
+            (if (= (nl_cstr_eq_no_site_file ptr) 1) 1
+              (if (= (nl_cstr_eq_no_init_file ptr) 1) 1
+                (nl_cstr_eq_no_splash ptr)))))))
     (defun nl_cli_ldir_index (sp0 argc idx)
       (if (>= idx argc)
           idx
@@ -27448,23 +27482,32 @@ correctly."
             (if (< (+ idx 1) argc)
                 (nl_cli_ldir_index sp0 argc (+ idx 2))
               idx)
-          idx)))
+          (if (= (nl_cli_ignorable_flag_p (nl_argv_word sp0 idx)) 1)
+              (nl_cli_ldir_index sp0 argc (+ idx 1))
+            idx))))
     ;; Build ` "DIR1" "DIR2" ...' (each DIR expanded against `default-
     ;; directory' exactly as `--load' binds `load-file-name', via the
     ;; existing `nl_cli_expand_load_path') into TBUF starting at TOFF,
     ;; walking the SAME `-L DIR' pairs `nl_cli_ldir_index' already counted
     ;; (IDX from BASE_IDX to LIMIT, exclusive).  Returns the new TOFF.
     (defun nl_cli_ldir_write_dirs (sp0 idx limit dd_value tbuf toff)
+      ;; feat/cli-emacs-flags: IDX..LIMIT may now interleave ignorable
+      ;; batch/init flags (width 1) with `-L DIR'/`--directory DIR' pairs
+      ;; (width 2) -- re-check each token's own identity instead of
+      ;; assuming a fixed stride of 2, and skip an ignorable flag without
+      ;; writing anything.
       (if (>= idx limit)
           toff
-        (let* ((dir_ptr (nl_argv_word sp0 (+ idx 1)))
-               (expanded (alloc-bytes 32 8))
-               (toff2 (nl_cli_put_byte tbuf toff 32)))
-          (seq
-           (nl_cli_expand_load_path dir_ptr dd_value expanded)
-           (nl_cli_ldir_write_dirs
-            sp0 (+ idx 2) limit dd_value tbuf
-            (nl_cli_put_string_value tbuf toff2 expanded 1))))))
+        (if (= (nl_cli_ldir_flag_p (nl_argv_word sp0 idx)) 1)
+            (let* ((dir_ptr (nl_argv_word sp0 (+ idx 1)))
+                   (expanded (alloc-bytes 32 8))
+                   (toff2 (nl_cli_put_byte tbuf toff 32)))
+              (seq
+               (nl_cli_expand_load_path dir_ptr dd_value expanded)
+               (nl_cli_ldir_write_dirs
+                sp0 (+ idx 2) limit dd_value tbuf
+                (nl_cli_put_string_value tbuf toff2 expanded 1))))
+          (nl_cli_ldir_write_dirs sp0 (+ idx 1) limit dd_value tbuf toff))))
     (defun nl_cli_bare_legacy_command_p (ptr)
       (if (= (nl_cstr_eq_bare_eval ptr) 1)
           1
@@ -28076,6 +28119,220 @@ correctly."
                                 name-buf
                                 ,(length (encode-coding-string "<load-path>"
                                                                 'utf-8 t)))))))
+    ;; feat/cli-emacs-flags: `-l FILE' / `--load FILE' / `-f FUNCTION' /
+    ;; `--eval EXPR' running IN ARGV ORDER as a sequence, matching Emacs's
+    ;; own `command-line-1' loop (measured against host Emacs 31.1: `-Q
+    ;; --batch -l a.el -l b.el -f zz-f --eval EXPR' loads a.el, loads
+    ;; b.el, calls zz-f, then evaluates EXPR, in that order, printing
+    ;; nothing but each action's own side effects -- no automatic
+    ;; value-printing, unlike this runtime's pre-existing single-shot
+    ;; `--eval EXPR'/`--load FILE' commands below, which keep their
+    ;; existing print-the-last-value behaviour unchanged for exactly the
+    ;; single-action `EXPR [-- ARG...]'/`FILE [-- ARG...]' shape they
+    ;; always accepted; a second action flag after the first one now
+    ;; routes here instead of the old "usage error" fallthrough).
+    (defun nl_cli_load_flag_p (ptr)
+      (if (= (nl_cstr_eq_dash_l ptr) 1) 1 (nl_cstr_eq_load ptr)))
+    (defun nl_cli_action_flag_p (ptr)
+      (if (= (nl_cli_load_flag_p ptr) 1) 1
+        (if (= (nl_cstr_eq_dash_f ptr) 1) 1
+          (nl_cli_eval_command_p ptr))))
+    ,(nelisp-standalone--copy-lit-defun 'nl_cli_funcall_prefix
+                                        "(funcall (intern ")
+    ,(nelisp-standalone--copy-lit-defun 'nl_cli_funcall_suffix "))")
+    ;; `command-line-args': measured against host Emacs 31.1, the C
+    ;; startup layer strips `-Q'/`-q'/`--batch'/`--no-site-file'/
+    ;; `--no-init-file' before Lisp ever sees `command-line-args' (they
+    ;; are consumed before `command-line-args' is even built), but
+    ;; `--no-splash' -- a plain `command-line-1' switch, handled entirely
+    ;; in Lisp -- survives into it even though it is still a no-op here.
+    ;; Only those five are omitted; `-L'/`--directory' and every action
+    ;; flag/argument are left untouched, verbatim, in argv order.
+    (defun nl_cli_cla_omit_p (ptr)
+      (if (= (nl_cstr_eq_dash_Q ptr) 1) 1
+        (if (= (nl_cstr_eq_dash_q ptr) 1) 1
+          (if (= (nl_cstr_eq_batch ptr) 1) 1
+            (if (= (nl_cstr_eq_no_site_file ptr) 1) 1
+              (nl_cstr_eq_no_init_file ptr))))))
+    (defun nl_cla_list_from (argc sp i out)
+      (if (= i argc)
+          (wf_write_nil out)
+        (let* ((argptr (nl_argv_word sp i)))
+          (if (= (nl_cli_cla_omit_p argptr) 1)
+              (nl_cla_list_from argc sp (+ i 1) out)
+            (let* ((str (alloc-bytes 32 8))
+                   (rest (alloc-bytes 32 8)))
+              (seq
+               (nl_argv_cstr_to_str argptr str)
+               (nl_cla_list_from argc sp (+ i 1) rest)
+               (nelisp_cons_construct str rest out)))))))
+    ;; One action per call: `-l FILE'/`--load FILE' loads+evaluates FILE
+    ;; (same `load-file-name' binding and file-missing/too-large
+    ;; diagnostics as the pre-existing single-shot `--load', just without
+    ;; the final value-print), `-f FUNCTION' evaluates `(funcall (intern
+    ;; "FUNCTION"))' (an undefined FUNCTION signals `void-function' via
+    ;; the ordinary `funcall' path, matching Emacs), `--eval EXPR'
+    ;; evaluates EXPR as-is (no value-print).  STOP_IDX is an 8-byte
+    ;; out-param the caller reads after this returns: the index one past
+    ;; a consumed `--' (so the caller can build `command-line-args-left'
+    ;; from everything after it), or the index of the token that ended
+    ;; the sequence (argc on clean exhaustion, or the offending/erroring
+    ;; token's own index) -- written here rather than through
+    ;; `nl_env_set_value' directly because that primitive is known (Doc
+    ;; 152 artifact-cli-silent-noop) to silently drop a binding when
+    ;; called from deep inside a long nested-`if' chain; a plain
+    ;; heap out-param has no such failure mode, so `command-line-args-left'
+    ;; is published exactly once, from the shallow, non-recursive caller
+    ;; (`nl_cli_action_sequence' below).
+    ;; `command-line-args-left' is maintained INCREMENTALLY, matching
+    ;; Emacs's own `pop'-as-you-go semantics (measured against host Emacs
+    ;; 31.1): by the time an action's OWN body runs (a loaded FILE, a
+    ;; `-f' FUNCTION, an `--eval' EXPR), Emacs has already popped that
+    ;; action's own flag and argument, so `command-line-args-left'
+    ;; already starts at the NEXT token -- code inside a.el's `-l a.el -l
+    ;; b.el' sees `("-l" "b.el" ...)', not the pre-pop list including
+    ;; itself.  So this is updated once per step, BEFORE the step's own
+    ;; side effect runs, to argv[i+2..] for a consumed action or, for a
+    ;; bare `--', to argv[i..] (Emacs leaves the `--' token itself in
+    ;; `command-line-args-left', unconsumed: measured `-- x y' =>
+    ;; `("--" "x" "y")', not `("x" "y")').  `nl_env_set_value' is called
+    ;; from this shallow, non-recursive helper rather than from deep
+    ;; inside a long nested-`if' chain, which is the specific shape Doc
+    ;; 152 (artifact-cli-silent-noop) found silently drops a binding.
+    (defun nl_cli_set_clal (ctx clal_sym argc sp0 from_idx)
+      (let* ((v (alloc-bytes 32 8)))
+        (seq
+         (nl_argv_list_from argc sp0 from_idx v)
+         (nl_env_set_value ctx clal_sym v))))
+    (defun nl_cli_action_loop (sp0 argc i dd_value fbuf src cursor result
+                                    pool out ctx builtin_sym clal_sym)
+      (if (>= i argc)
+          (seq (nl_cli_set_clal ctx clal_sym argc sp0 argc) 0)
+        (let* ((tok (nl_argv_word sp0 i)))
+          (cond
+           ((= (nl_cstr_eq_source_separator tok) 1)
+            (seq (nl_cli_set_clal ctx clal_sym argc sp0 i) 0))
+           ((and (= (nl_cli_load_flag_p tok) 1) (< (+ i 1) argc))
+            (seq
+             (nl_cli_set_clal ctx clal_sym argc sp0 (+ i 2))
+             (nl_cli_action_run_load sp0 argc i dd_value fbuf src cursor
+                                      result pool out ctx builtin_sym clal_sym)))
+           ((and (= (nl_cstr_eq_dash_f tok) 1) (< (+ i 1) argc))
+            (seq
+             (nl_cli_set_clal ctx clal_sym argc sp0 (+ i 2))
+             (nl_cli_action_run_funcall sp0 argc i dd_value fbuf src cursor
+                                         result pool out ctx builtin_sym clal_sym)))
+           ((and (= (nl_cli_eval_command_p tok) 1) (< (+ i 1) argc))
+            (seq
+             (nl_cli_set_clal ctx clal_sym argc sp0 (+ i 2))
+             (nl_cli_action_run_eval sp0 argc i dd_value fbuf src cursor
+                                      result pool out ctx builtin_sym clal_sym)))
+           (t 2)))))
+    (defun nl_cli_action_run_load (sp0 argc i dd_value fbuf src cursor result
+                                        pool out ctx builtin_sym clal_sym)
+      (let* ((file_ptr (nl_argv_word sp0 (+ i 1)))
+             (n (nl_os_read_file_cpath
+                 file_ptr fbuf ,nelisp-standalone--reader-read-cap)))
+        (if (< n 0)
+            (let* ((path-str (alloc-bytes 32 8)))
+              (seq
+               (nl_alloc_str file_ptr (nl_cstr_len file_ptr) path-str)
+               (bf_require_file_missing path-str)
+               (nl_eval_source_report_error 0 0 0 0 0)
+               (- (ptr-read-u64 268435464 0) 1)))
+          (if (= (nl_cli_read_cap_hit_p n) 1)
+              (let* ((path-str (alloc-bytes 32 8)))
+                (seq
+                 (nl_alloc_str file_ptr (nl_cstr_len file_ptr) path-str)
+                 (nl_cli_stash_source_too_large path-str)
+                 (nl_eval_source_report_error 0 0 0 0 0)
+                 (- (ptr-read-u64 268435464 0) 1)))
+            (seq
+             (nl_alloc_str fbuf n src)
+             (let* ((lfn_scratch (alloc-bytes 96 8))
+                    (lfn_path (+ lfn_scratch 0))
+                    (lfn_sym (+ lfn_scratch 32))
+                    (lfn_old (+ lfn_scratch 64)))
+               (seq
+                (nl_cli_expand_load_path file_ptr dd_value lfn_path)
+                (bf_load_file_name_symbol lfn_sym)
+                (if (= (nelisp_env_lookup_value (+ ctx 0) (+ ctx 32) lfn_sym lfn_old) 0)
+                    0
+                  (wf_write_nil lfn_old))
+                (nl_env_set_value ctx lfn_sym lfn_path)
+                (nl_eval_source_all src cursor result pool out ctx builtin_sym 1
+                                     file_ptr (nl_cstr_len file_ptr))
+                (nl_env_set_value ctx lfn_sym lfn_old)))
+             (if (= (ptr-read-u64 268435464 0) 0)
+                 (nl_cli_action_loop sp0 argc (+ i 2) dd_value fbuf src cursor
+                                      result pool out ctx builtin_sym clal_sym)
+               (- (ptr-read-u64 268435464 0) 1)))))))
+    (defun nl_cli_action_run_funcall (sp0 argc i dd_value fbuf src cursor result
+                                           pool out ctx builtin_sym clal_sym)
+      (let* ((fn_ptr (nl_argv_word sp0 (+ i 1)))
+             (fn_len (nl_cstr_len fn_ptr))
+             (fn_str (alloc-bytes 32 8))
+             (off1 (nl_cli_funcall_prefix fbuf 0)))
+        (seq
+         (nl_alloc_str fn_ptr fn_len fn_str)
+         (let* ((off2 (nl_cli_put_string_value fbuf off1 fn_str 1))
+                (off3 (nl_cli_funcall_suffix fbuf off2)))
+           (nl_alloc_str fbuf off3 src))
+         (nl_eval_source_all src cursor result pool out ctx builtin_sym 1
+                              fn_ptr fn_len)
+         (if (= (ptr-read-u64 268435464 0) 0)
+             (nl_cli_action_loop sp0 argc (+ i 2) dd_value fbuf src cursor
+                                  result pool out ctx builtin_sym clal_sym)
+           (- (ptr-read-u64 268435464 0) 1)))))
+    (defun nl_cli_action_run_eval (sp0 argc i dd_value fbuf src cursor result
+                                        pool out ctx builtin_sym clal_sym)
+      (let* ((expr_ptr (nl_argv_word sp0 (+ i 1)))
+             (expr_len (nl_cstr_len expr_ptr)))
+        (if (>= (+ expr_len 8) ,nelisp-standalone--reader-read-cap)
+            (let* ((expr-str (alloc-bytes 32 8)))
+              (seq
+               (nl_alloc_str expr_ptr expr_len expr-str)
+               (nl_cli_stash_source_too_large expr-str)
+               (nl_eval_source_report_error 0 0 0 0 0)
+               (- (ptr-read-u64 268435464 0) 1)))
+          (seq
+           (nl_alloc_str expr_ptr expr_len src)
+           (nl_eval_source_all src cursor result pool out ctx builtin_sym 1
+                                expr_ptr expr_len)
+           (if (= (ptr-read-u64 268435464 0) 0)
+               (nl_cli_action_loop sp0 argc (+ i 2) dd_value fbuf src cursor
+                                    result pool out ctx builtin_sym clal_sym)
+             (- (ptr-read-u64 268435464 0) 1))))))
+    (defun nl_cli_action_sequence (sp0 argc base_idx eff_idx dd_value fbuf src
+                                        cursor result pool out ctx builtin_sym _cl)
+      (let* ((cla_sym_buf (alloc-bytes ,(* 8 (length (nelisp-standalone--name-words "command-line-args"))) 1))
+             (cla_sym (alloc-bytes 32 8))
+             (clal_sym_buf (alloc-bytes ,(* 8 (length (nelisp-standalone--name-words "command-line-args-left"))) 1))
+             (clal_sym (alloc-bytes 32 8))
+             (argv0_str (alloc-bytes 32 8))
+             (cla_rest (alloc-bytes 32 8))
+             (cla_value (alloc-bytes 32 8)))
+        (seq
+         (if (< _cl 0)
+             (seq ,@(nelisp-standalone--reader-repl-prelude-forms
+                     'fbuf 'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym))
+           0)
+         (nl_cli_ldir_apply sp0 base_idx eff_idx dd_value fbuf src cursor
+                             result pool out ctx builtin_sym)
+         ,@(nelisp-standalone--byte-write-forms 'cla_sym_buf "command-line-args")
+         (nl_alloc_symbol cla_sym_buf
+                           ,(length (encode-coding-string "command-line-args" 'utf-8 t))
+                           cla_sym)
+         ,@(nelisp-standalone--byte-write-forms 'clal_sym_buf "command-line-args-left")
+         (nl_alloc_symbol clal_sym_buf
+                           ,(length (encode-coding-string "command-line-args-left" 'utf-8 t))
+                           clal_sym)
+         (nl_argv_cstr_to_str (nl_argv_word sp0 0) argv0_str)
+         (nl_cla_list_from argc sp0 1 cla_rest)
+         (nelisp_cons_construct argv0_str cla_rest cla_value)
+         (nl_env_set_value ctx cla_sym cla_value)
+         (nl_cli_action_loop sp0 argc eff_idx dd_value fbuf src cursor result
+                              pool out ctx builtin_sym clal_sym))))
     (defun driver (sp)
      (let* ((arena (nl_arena_init))
             ;; Increment 2 (`--cold-load-from PATH'): argv parsing moved UP,
@@ -28455,6 +28712,12 @@ correctly."
           (if (= arg2 0)
               (seq (nl_cli_write_help fbuf) 0)
             (seq (nl_cli_write_help fbuf) 2)))
+         ((= (nl_cstr_eq_dash_l path) 1)
+          (nl_cli_action_sequence sp0 argc base_idx eff_idx dd_value fbuf src
+                                   cursor result pool out ctx builtin_sym _cl))
+         ((= (nl_cstr_eq_dash_f path) 1)
+          (nl_cli_action_sequence sp0 argc base_idx eff_idx dd_value fbuf src
+                                   cursor result pool out ctx builtin_sym _cl))
          ((= (nl_cli_eval_command_p path) 1)
           (if (= (nl_cli_source_args_p arg2 arg3) 1)
               (let* ((expr-str (alloc-bytes 32 8)))
@@ -28535,7 +28798,17 @@ correctly."
                    (seq
                     (nl_eval_source_report_error 0 0 0 0 0)
                     (- (ptr-read-u64 268435464 0) 1))))))
-            (seq (nl_cli_write_help fbuf) 2)))
+            ;; feat/cli-emacs-flags: more than one action (ARG3 is itself a
+            ;; recognized `-l'/`--load'/`-f'/`--eval') routes to the
+            ;; sequence loop instead of the old usage error; a single
+            ;; `--eval EXPR [-- ARG...]' (ARG3 absent or `--') is
+            ;; unaffected -- `nl_cli_source_args_p' above still matches it
+            ;; first and its print-the-value behaviour is unchanged.
+            (if (= (nl_cli_action_flag_p arg3) 1)
+                (nl_cli_action_sequence sp0 argc base_idx eff_idx dd_value
+                                         fbuf src cursor result pool out ctx
+                                         builtin_sym _cl)
+              (seq (nl_cli_write_help fbuf) 2))))
          ((= (nl_cstr_eq_load path) 1)
           (if (= (nl_cli_source_args_p arg2 arg3) 1)
               (seq
@@ -28630,7 +28903,11 @@ correctly."
                       (if (= (ptr-read-u64 268435464 0) 0)
                           (nl_cli_write_value fbuf out)
                         (- (ptr-read-u64 268435464 0) 1)))))))
-            (seq (nl_cli_write_help fbuf) 2)))
+            (if (= (nl_cli_action_flag_p arg3) 1)
+                (nl_cli_action_sequence sp0 argc base_idx eff_idx dd_value
+                                         fbuf src cursor result pool out ctx
+                                         builtin_sym _cl)
+              (seq (nl_cli_write_help fbuf) 2))))
          ((= (nl_cstr_eq_neln_selftest path) 1)
           (nl_neln_demo_exec ctx 41))
          ((= (nl_cstr_eq_embedded path) 1)

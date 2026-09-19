@@ -327,7 +327,11 @@
 # pin, 834 -> 851, below for the itemized 17).  Counted from `git diff'
 # added lines, cross-checked against the gate's own before/after totals
 # (956/973) and the per-file delta (834/851) -- all three agree.
-unsafe-call 973
+# 2026-09-20 973 -> 997 (feat/cli-emacs-flags): the same +24 pinned for
+# scripts/nelisp-standalone-build.el above (851 -> 875), all in the new
+# `nl_cli_action_*'/`nl_cla_list_from'/`nl_cli_set_clal' helpers, none
+# elsewhere -- gate's own before/after totals agree exactly.
+unsafe-call 997
 
 # `pinned-kernel-call FILE COUNT' pins the per-file unquoted `unsafe-call'
 # count behind `total' above -- the kernel files that actually carry
@@ -540,7 +544,52 @@ pinned-kernel-call scripts/nelisp-gc-pause-growth.el 2
 #       of NUL-terminated.
 # Taken from the scanner (851) and cross-checked against `git diff', not
 # summed on paper.
-pinned-kernel-call scripts/nelisp-standalone-build.el 851
+# 2026-09-20 851 -> 875 (feat/cli-emacs-flags, "extend the CLI so a
+# consumer that spawns this runtime the way it spawns Emacs (`-Q --batch
+# -l FIXTURE') works" -- ../nelisp-agent's supervisor-test.el/mcp-stdio-
+# test.el spawn exactly that spelling): 24 new calls (15 alloc-bytes, 9
+# ptr-read-u64), none in an `nl-unsafe' block, matching the gate's own
+# before/after (851/875 this file, 973/997 total) exactly -- counted per
+# function, not summed on paper:
+#   nl_cla_list_from (`command-line-args', full argv[0..] with `-Q'/
+#     `-q'/`--batch'/`--no-site-file'/`--no-init-file' omitted, matching
+#     host Emacs 31.1's own C-level stripping): 2 alloc-bytes (STR/REST
+#     per cons cell built while walking argv).
+#   nl_cli_set_clal (`command-line-args-left', updated once per action
+#     step -- BEFORE that step's own side effect runs -- to match
+#     Emacs's incremental `pop'-as-you-go value, not computed once at
+#     the end): 1 alloc-bytes (the list-value box passed to the
+#     pre-existing `nl_argv_list_from').
+#   nl_cli_action_run_load (`-l FILE'/`--load FILE' inside the new
+#     sequence loop, same shape as the pre-existing single-shot
+#     `--load' clause minus its final value-print): 3 alloc-bytes
+#     (file-missing PATH-STR, too-large PATH-STR, the LFN_SCRATCH
+#     three-slot block for `load-file-name' save/restore -- the same
+#     three call sites the 2026-09-19 entry above itemized for the
+#     original `--load' clause, now duplicated for this second call
+#     site) + 2 ptr-read-u64 (the post-eval QUIT_FLAG check at
+#     268435464, read once on the success path and once more inside
+#     the two pre-read failure branches -- same fixed-address idiom as
+#     every other error check in this file).
+#   nl_cli_action_run_funcall (`-f FUNCTION', new: synthesizes `(funcall
+#     (intern "FUNCTION"))' and evaluates it): 1 alloc-bytes (FN_STR,
+#     the function-name argv pointer as a Sexp string, embedded via the
+#     pre-existing `nl_cli_put_string_value') + 1 ptr-read-u64 (the
+#     post-eval QUIT_FLAG check).
+#   nl_cli_action_run_eval (`--eval EXPR' inside the sequence loop, no
+#     value-print): 1 alloc-bytes (EXPR-STR, the too-large diagnostic
+#     path only) + 2 ptr-read-u64 (QUIT_FLAG, success and too-large
+#     paths).
+#   nl_cli_action_sequence (per-invocation setup: interns the
+#     `command-line-args'/`command-line-args-left' symbols once and
+#     builds the former): 7 alloc-bytes -- two symbol-name buffers
+#     (CLA_SYM_BUF/CLAL_SYM_BUF) + two interned-symbol boxes (CLA_SYM/
+#     CLAL_SYM) + ARGV0_STR + CLA_REST + CLA_VALUE, mirroring the
+#     existing `driver' `let*' three-buffer-per-binding shape used for
+#     `default-directory'/`noninteractive' above.
+# Taken from the scanner (875) and cross-checked against `git diff', not
+# summed on paper.
+pinned-kernel-call scripts/nelisp-standalone-build.el 875
 # 2026-09-11: one GC snapshot raw-address probe, bounded by the named table
 # contract and used only for structured diagnostics.
 pinned-kernel-call lisp/nelisp-repl-gc.el 1
