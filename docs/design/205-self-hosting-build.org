@@ -1055,3 +1055,248 @@ printed =9,00s= under a comma-decimal locale, and the arithmetic that
 followed truncated at the comma — whole-second resolution wearing
 hundredths.  Timing scripts here set =LC_ALL=C= and run the formatter
 against a known value first.
+
+# DRAFT for Doc 205 §6.7 -- the "before" half.  Every number below was
+# measured this session and has been cross-checked (one process per
+# measurement; collections separated; LC_ALL=C).  The "after" half is
+# filled in only from the reviewer's own reproduction of the implementers'
+# branches, never from their reports.
+
+** §6.7 Why a build without Emacs is slow, and where it cannot finish
+
+§6.6 priced the cache key.  This section prices what the key protects --
+compiling a unit on a miss -- and names the two reasons the standalone
+runtime is not yet a viable host for its own compiler.  Neither is the
+printer.
+
+*** The compile itself, unit by unit
+
+Host Emacs 31.1 compiles all thirteen =defconst ...-source= constants in
+1.1 s and the generated reader driver in 18.0 s (19.1 s in all).  The
+standalone, same code, one process per unit:
+
+| unit | host | standalone | ratio | standalone result |
+|---+---+---+---+---|
+| =applyfn-baked= | 673.7 ms | — | — | *fails* (188 s in) |
+| =gc= | 256.9 ms | — | — | *fails* (73 s in) |
+| =arena= | 62.7 ms | 28,020 ms | 447x | ok |
+| =reader-eval-source= | 28.5 ms | 16,558 ms | 581x | ok |
+| =shim= | 21.6 ms | — | — | *fails* (20 s in) |
+| =catch-throw= | 15.3 ms | 8,669 ms | 567x | ok |
+| =reader-capture= | 14.7 ms | 7,608 ms | 518x | ok |
+| =arglist= | 9.8 ms | 4,710 ms | 481x | ok |
+| =reader-boundary= | 8.3 ms | 4,457 ms | 537x | ok |
+| =reader-errstub= | 3.0 ms | 1,606 ms | 535x | ok |
+| =trap= | 2.8 ms | 1,525 ms | 545x | ok |
+| =callsite-demo= | 0.5 ms | 223 ms | 446x | ok |
+| =reader-mut-str-len= | 0.3 ms | 190 ms | 633x | ok |
+
+Ten of thirteen compile, at a steady 450-630x.  The driver was not
+attempted: at that ratio its 18 s become hours, and it is the unit that
+matters most.
+
+*** Where it cannot finish: three units, one site
+
+The three failures are the same failure.  Innermost frames first:
+
+: wrong-type-argument (integerp 7161130726839247202)      shim
+: wrong-type-argument (integerp 8751669898145395319)      applyfn-baked
+: wrong-type-argument (integerp 16045481047390945280)     gc
+:   ash <- logand <- aset <- while <- let
+:   <- nelisp-asm-x86_64--imm64-bytes <- nelisp-asm-x86_64-mov-imm64
+:   <- nelisp-aot-compiler--emit-value <- nelisp-aot-compiler--emit-ptr-write
+
+=imm64-bytes= splits a 64-bit immediate into bytes with =ash= and
+=logand=.  These immediates are above 2^61 (the third is above 2^63, an
+unsigned 64-bit pattern).  The standalone reads them exactly -- Doc 190's
+Bignum, tag 13, shipped Phase A (read/print/compare) and Phase B (=+ - *=
+with promotion), and on these values =+ - * = < eq eql number-to-string=
+all answer correctly -- but Doc 190 left the bitwise family out of scope,
+and its dispatch rows still accept only tag 2:
+
+: logand  -> wrong-type-argument integer-or-marker-p
+: logior  -> same
+: ash     -> wrong-type-argument integerp
+: mod     -> wrong-type-argument number-or-marker-p
+
+The builder carries 136 literals above 2^61 and thirteen
+=lisp/nelisp-cc-*.el= files carry more, so this is not three special
+cases; it is every unit whose code writes a 64-bit constant.  This is a
+correctness wall, not a performance one, and it sits in front of the
+reader body and the collector.
+
+A second defect in the same family showed up while building the
+reviewer's host-differential for the fix, and it is worse than a signal:
+=ash= on plain fixnums *wraps silently* at the fixnum boundary.  Against
+Emacs 30.2 as the oracle:
+
+: (ash 1 61)                   host  2305843009213693952   standalone -2305843009213693952
+: (ash 1 62)                   host  4611686018427387904   standalone  0
+: (ash 1 64)                   host 18446744073709551616   standalone  1
+: (ash 2305843009213693951 1)  host  4611686018427387902   standalone -2
+
+Doc 187 gave =+ - *= overflow detection and Doc 190 Phase B made them
+promote; =ash= got neither, so a left shift that leaves the fixnum range
+returns a wrong number and nothing signals.  That is a silent
+miscompile waiting to happen wherever the compiler shifts a constant
+into place, and it is in the same fix's scope.
+
+*** Where the time goes: the evaluator's floor
+
+The 450-630x is not one slow primitive.  Two measurements bound it.
+
+The floor: one iteration of =(while (< i n) (setq i (1+ i)))= costs 11.4
+us on the standalone against 0.06 us on host -- about 5 us per evaluated
+form, 200x.  It is the same whether the loop's numbers are literals or
+variables, whether the loop sits at top level or inside a =defun=, and
+whether it is loaded from text or handed to =eval= as an already-built
+sexp (11.35 / 13.01 / 11.35 / 11.47 us).  The last of those rules out the
+obvious explanation, that source is re-read per evaluation.  It is not.
+
+Where the floor is: =callgrind= on that loop, self cost by native symbol,
+isolated across three loop bodies (increment only, compare only, assign
+only, 5,000 iterations each).  The functions whose cost scales with the
+iteration count are all the allocator:
+
+| native function | share of instructions |
+|---+---|
+| =nl_freelist_scan_head= | 10.8% |
+| =nl_freelist_scan_large_from= | 10.5% |
+| =nl_gc_in_arena= | 6.0% |
+| =nl_alloc_bytes_uncheck= | 4.5% |
+| =nl_freelist_large_head= | 3.7% |
+| =nl_chunk_try_alloc= | 3.0% |
+
+Thirty-eight per cent of every instruction, in six functions, walking
+free lists.  One =(< i 99999)= evaluation is about 68,000 instructions.
+The bignum routines (=nlf_big_trim=, =nlf_big_shl1=) that a naive reading
+of the inclusive profile puts on top are startup: their self cost is
+identical to the instruction across all three loop bodies, so they are
+paid once when the process starts (0.34 s for a do-nothing invocation),
+not per form.
+
+What the compiler does with that floor: it is a recursive tree walker
+with very high call counts -- on host, twenty compiles of =shim.o= make
+132,500 calls to =ir-node-p=, 47,780 to =ir-get=, 37,100 to =ir-kind= --
+and every one of those calls is 47 us here (a user-function call, 430x
+host).  Nothing about the compiler's shape is wrong on host, where those
+accessors are =defsubst= and the byte-compiler inlines them.  The
+standalone has no inliner, and measured, neither a =defmacro= nor
+hand-inlining the body helps (68.4 / 71.9 / 50.4 us): the cost is the
+forms, not the call.  So the lever is not in the compiler.
+
+One step is disproportionate: =nelisp-asm-x86_64-resolve-fixups= is 800.7
+of trap.o's 1,525 ms (host: 0.4 ms, 2,000x, four times the average),
+because it copies every emitted byte into a vector and back, one
+interpreted =aset= per byte, to patch a handful of slots.  That one is
+in the compiler, and it is a loop shape, not a floor.
+
+*** Two more costs a build pays, named for completeness
+
+- =(require 'nelisp-standalone-build)= -- loading the 32,000-line builder
+  through this evaluator -- is about 10 s per process.  Every invocation
+  of a self-hosted build pays it before compiling anything.
+- =plist-get= is a prelude defun wrapping the native
+  =nelisp--plist-get-eq=: 146 us against 34 us direct.  IR nodes are
+  plists, so =ir-get= pays it, but at ~2% of a unit it is not a lever.
+
+*** What this segment changes, and what it does not
+
+The reviewer's own host-differential (Emacs 30.2 as the oracle, 44
+expressions over =logand logior logxor lognot ash mod % /= at and around
+2^61, 2^62, 2^63 and 2^64, both signs, mixed fixnum/bignum operands, a
+deliberately wrong oracle as the positive control) reads, against the
+tree before the fix:
+
+: cases=44 match=4 mismatch=40    control ok (mismatch detected)
+
+The four matches are the fixnum-only cases.  Every bignum operand
+signals; every fixnum left shift past the boundary wraps.
+
+**** A criterion that had to be withdrawn
+
+The segment's second target was first stated as "trap.o compiles at
+least 40% faster on the standalone after =resolve-fixups= stops copying
+every byte".  It was wrong twice over, and the first implementation
+exposed both errors rather than the reviewer.  trap.o has no fixups at
+all (1,120 bytes, 318 chunks, zero pending), so it cannot measure a
+fixup resolver; and the 800 ms attributed to =resolve-fixups= on trap.o
+was mostly a collection that the function's own =make-vector= tipped
+into its timing window -- the same hazard §6.6 documents, made once more
+while writing the number down.  Scoping the byte round trip to chunks
+that carry fixups took the function from 836 ms to 64 ms on trap.o and
+the whole compile from 1,585 to 1,450 ms (8%), and on catch-throw.o,
+which does carry fixups, only from 1,600 to 1,375 ms, because most of
+its chunks carry one.
+
+The criterion was replaced, with the decision recorded, by one on a unit
+that has fixups: catch-throw.o's =resolve-fixups= at or below 20% of its
+1,600 ms, with byte identity checked by building base and branch in the
+same directory (a pristine build elsewhere differed by 78 KB -- the
+binary carries build-location content).  The design that can meet it
+does no per-byte work at all: materialise once, assert unibyte, patch
+four bytes per fixup with =aset=.  Its premise was measured on the
+standalone before it was asked for: =aset= into a unibyte string keeps it
+unibyte and exact for bytes above 127, and =concat= of unibyte chunks
+stays unibyte, both identically to host.
+
+**** The fixup resolver, after
+
+The second iteration does exactly that (=a4530396c=: materialise once,
+signal on a multibyte buffer, four =aset= per fixup).  Reproduced by the
+reviewer, one process per measurement, collection detected around each
+timed region; the base figures are from a separate merge-base worktree
+because the compiler is loaded from =lisp/= at run time, not baked into
+the binary, so a base *binary* with branch *source* measures the branch:
+
+| unit | =resolve-fixups= before | after | whole compile before | after |
+|---+---+---+---+---|
+| =catch-throw.o= | 1,604 / 1,596 ms (collects) | *134.3 / 131.5 / 129.7 ms* (no collection) | 8,904 / 8,908 ms | 7,722 / 7,779 / 8,123 ms |
+| =trap.o= | 836 / 826 / 837 ms (collects) | 20.3 / 21.1 / 20.2 ms (no collection) | 1,585 / 1,574 / 1,590 ms | 795 / 805 / 788 ms (no collection) |
+
+catch-throw's resolver is at 8% of its former cost, under the 20% bar.
+The whole-compile numbers move less than the resolver because the
+collection the resolver used to trip is still provoked, later, by
+=parse= and =emit-defun='s own allocation -- except on trap.o, small
+enough that with the resolver's =make-vector= gone the entire compile
+now stays under the collection threshold (that is why its total halves;
+it is not a claim about the resolver).  Emitted bytes are unchanged:
+base and branch built in one directory, 8,329,072 bytes, identical.
+
+**** The bitwise wall, after
+
+Doc 190 Phase C (=db530d622= plus a one-line count-pin fix): =ash=,
+=logand=, =logior=, =logxor= and =lognot= accept a Bignum operand,
+computed in infinite-precision two's complement from the sign+magnitude
+box; =ash= on a fixnum now promotes on left-shift overflow instead of
+wrapping, and a runtime shift count is no longer masked to six bits by
+the ISA (=(ash 5 -100)= computed =sar 5,36=); =/=, =%= and =mod= take
+a Bignum dividend with a fixnum divisor of magnitude at most 2^31, and
+signal =nelisp-bignum-division-unsupported= -- a named condition, not a
+wrong number -- for a larger fixnum divisor or a Bignum divisor.  The
+shift count itself must still be a fixnum.
+
+Reproduced by the reviewer, not taken from the implementer's report:
+
+| check | before | after |
+|---+---+---|
+| the 13 =defconst ...-source= constants, =compile-to-unit= on the standalone | 10 ok / 3 fail | *13 ok / 0 fail* |
+| reviewer's host-differential, 44 expressions, Emacs 30.2 oracle | match=4 mismatch=40 | *match=44 mismatch=0*, positive control detected |
+| =emacs-compat= shared-shadowing | 268 | 268 |
+| bignum smoke | 54 cases | 120 cases, 0 mismatches |
+| gate-mutation rows for that smoke | 2 | 9, each red with its injection and green without (re-run by the reviewer, nothing left behind) |
+| =target/nelisp=, same directory | 8,329,072 bytes | 8,350,768 bytes (+21,696; +124,272 against the CI pin, ceiling 8,391,025) |
+
+One defect the reproduction found that the report did not carry: the
+Makefile pinned the smoke's expected line at =cases=119= while the
+smoke prints =cases=120=, so the gate was red on the branch on every
+run.  A count pin that cannot match is a gate that is always red -- and
+a gate that is always red cannot show the "green without the injection"
+half of a mutation row, which is why the reviewer re-runs those rows
+rather than reading a passed count.
+
+So every unit source in the tree now compiles on the standalone.  What
+that buys is the ability to run the AOT compiler without host Emacs; it
+does not make doing so fast -- applyfn-baked still takes minutes where
+host takes 0.67 s, and the reasons are the evaluator's per-form floor
+and the allocator above, which this segment did not touch.
