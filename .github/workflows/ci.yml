@@ -369,18 +369,43 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: editors/vscode/package-lock.json
-      - name: VS Code grammar, package, and real extension host
+      # Split from one seven-command step on 2026-09-19.  All seven pass
+      # locally, so the intermittent failure here is CI-specific -- but
+      # `gh run view --log-failed` returns 0 bytes for this workflow, so a
+      # failure named nothing.  Same commands, same order, one per step, so
+      # the next failure identifies itself.  The three network commands are
+      # marked as such because they are the standing suspects.
+      - name: "VS Code: install xvfb (network)"
         if: runner.os == 'Linux'
-        working-directory: editors/vscode
         shell: bash
         run: |
           sudo apt-get update
           sudo apt-get install -y xvfb
-          npm ci --ignore-scripts
-          npm run test:grammar
-          npm run test:process
-          npm run package
-          xvfb-run -a npm run test:package
+      - name: "VS Code: npm ci (network)"
+        if: runner.os == 'Linux'
+        working-directory: editors/vscode
+        shell: bash
+        run: npm ci --ignore-scripts
+      - name: "VS Code: grammar tests"
+        if: runner.os == 'Linux'
+        working-directory: editors/vscode
+        shell: bash
+        run: npm run test:grammar
+      - name: "VS Code: process tests"
+        if: runner.os == 'Linux'
+        working-directory: editors/vscode
+        shell: bash
+        run: npm run test:process
+      - name: "VS Code: package the extension"
+        if: runner.os == 'Linux'
+        working-directory: editors/vscode
+        shell: bash
+        run: npm run package
+      - name: "VS Code: real extension host (xvfb)"
+        if: runner.os == 'Linux'
+        working-directory: editors/vscode
+        shell: bash
+        run: xvfb-run -a npm run test:package
       - name: "Package HTTPS acquisition and cache contracts (tools/ai/nelisp-ai.sh gate package-store); no runtime build"
         if: runner.os == 'Linux'
         shell: bash
