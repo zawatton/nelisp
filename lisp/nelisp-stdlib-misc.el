@@ -671,10 +671,15 @@ or signals otherwise.  Replaces the deleted Rust `bi_require'."
         ;; bits the shift copied in.  The remaining places are an ordinary
         ;; `ash' on a value that is now positive.
         ;;
-        ;; The mask is written `(1- (ash 1 61))' because integers here are
-        ;; 62-bit and `(ash 1 61)' wraps negative -- `most-positive-fixnum'
-        ;; and `integer-length' do not exist in this runtime to ask with.
-        (ash (logand (ash value -1) (1- (ash 1 61))) (+ count 1))))))
+        ;; The mask is `most-positive-fixnum' (2^61-1) -- this is Emacs 30's
+        ;; own subr.el `lsh' formulation.  It used to be written as
+        ;; `(1- (ash 1 61))' on the theory that `(ash 1 61)' wraps negative
+        ;; in this runtime; commit 00be3b502 made `ash' promote to a Bignum
+        ;; instead of wrapping, so that form now signals
+        ;; `(wrong-type-argument number-or-marker-p 2305843009213693952)'
+        ;; because `1-' does not accept a Bignum yet.  `most-positive-fixnum'
+        ;; names the same bit pattern without going through `ash' at all.
+        (ash (logand (ash value -1) most-positive-fixnum) (+ count 1))))))
 (defalias 'sxhash-equal 'sxhash)
 ;; Identity hashes: keep a runtime's own (the standalone's `sxhash-eq' is a
 ;; native arm, Doc 201 §6.17) and only fill the gap on one that has none.
