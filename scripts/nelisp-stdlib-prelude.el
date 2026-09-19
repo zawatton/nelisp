@@ -8159,6 +8159,29 @@ than the struct -- the same reasoning `buffer-live-p' above carries."
         (signal 'error (list "Empty string for buffer name is not allowed")))
       (nelisp-get-buffer-create buffer-or-name))
      (t (signal 'wrong-type-argument (list 'stringp buffer-or-name))))))
+;; feat/standalone-agent-compat: `generate-new-buffer-name' is a real Emacs
+;; primitive (buffer.c), not a `subr-x'/library function, so the agent host
+;; tests call it at top level with no `require' at all -- it has to live in
+;; the always-on prelude, same as `generate-new-buffer' just above, not in
+;; `standalone-compat/'.  Numbering starts at "<2>" (measured against Emacs
+;; 31.1: the FIRST colliding name is NAME<2>, not NAME<1>) -- deliberately
+;; NOT reusing `nelisp-generate-new-buffer''s own count-from-0 loop above,
+;; which produces NAME<1> first (an existing, unrelated divergence from
+;; Emacs left as-is; out of scope here).  IGNORE, Emacs's second argument,
+;; lets a name that collides with an existing buffer still be picked when it
+;; is the specific name the caller already knows it is free to reuse.
+(unless (fboundp 'generate-new-buffer-name)
+  (defun generate-new-buffer-name (name &optional ignore)
+    (nelisp--check-string name)
+    (if (and (get-buffer name) (not (and ignore (string= name ignore))))
+        (let ((n 2) candidate)
+          (while (progn
+                   (setq candidate (format "%s<%d>" name n))
+                   (and (get-buffer candidate)
+                        (not (and ignore (string= candidate ignore)))))
+            (setq n (1+ n)))
+          candidate)
+      name)))
 (unless (fboundp 'narrow-to-region)
   (defun narrow-to-region (start end)
     (nelisp-narrow-to-region start end nelisp--current-buffer)))

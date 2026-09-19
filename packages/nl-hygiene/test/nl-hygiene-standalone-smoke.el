@@ -16,27 +16,7 @@
 
 ;;; Code:
 
-(defvar nl-smoke--tests nil
-  "Alist of (NAME . BODY-FN) registered by the `ert-deftest' shim.")
-
-(unless (featurep 'ert)
-  (defmacro ert-deftest (name _args &rest body)
-    "Register BODY as test NAME in `nl-smoke--tests'."
-    (when (and (stringp (car body)) (cdr body))
-      (setq body (cdr body)))
-    `(setq nl-smoke--tests
-           (cons (cons ',name (lambda () ,@body)) nl-smoke--tests)))
-  (defmacro should (form)
-    `(let ((nl-smoke--value ,form))
-       (unless nl-smoke--value
-         (error "should failed: %S" ',form))
-       nl-smoke--value))
-  (defmacro should-not (form)
-    `(let ((nl-smoke--value ,form))
-       (when nl-smoke--value
-         (error "should-not failed: %S" ',form))
-       t))
-  (provide 'ert))
+(require 'ert)
 
 (load "packages/nl-prelude/src/nl-prelude-trampoline.el")
 (load "packages/nl-prelude/src/nl-prelude.el")

@@ -22,43 +22,7 @@
 
 ;;; Code:
 
-(unless (featurep 'ert)
-  (defmacro ert-deftest (name _args &rest body)
-    "Register BODY as test NAME in `nl-smoke--tests'."
-    (when (and (stringp (car body)) (cdr body))
-      (setq body (cdr body)))
-    `(setq nl-smoke--tests
-           (cons (cons ',name (lambda () ,@body)) nl-smoke--tests)))
-  (defmacro should (form)
-    `(let ((nl-smoke--value ,form))
-       (unless nl-smoke--value
-         (error "should failed: %S" ',form))
-       nl-smoke--value))
-  (defmacro should-not (form)
-    `(let ((nl-smoke--value ,form))
-       (when nl-smoke--value
-         (error "should-not failed: %S" ',form))
-       t))
-  (defmacro should-error (form &rest keys)
-    "Evaluate FORM and require an error, optionally matching :type."
-    `(let* ((nl-smoke--expected (plist-get (list ,@keys) :type))
-            (nl-smoke--result
-             (condition-case nl-smoke--error
-                 (progn ,form 'nl-smoke--no-error)
-               (error nl-smoke--error))))
-       (cond
-        ((eq nl-smoke--result 'nl-smoke--no-error)
-         (error "should-error: no error signaled by %S" ',form))
-        ((and nl-smoke--expected
-              (not (memq nl-smoke--expected
-                         (get (car nl-smoke--result) 'error-conditions))))
-         (error "should-error: expected %S, got %S"
-                nl-smoke--expected nl-smoke--result))
-        (t nl-smoke--result))))
-  (provide 'ert))
-
-(defvar nl-smoke--tests nil
-  "Alist of (NAME . BODY-FN) registered by the ERT shim.")
+(require 'ert)
 
 ;; Explicit paths are intentional: standalone `require' cannot be trusted
 ;; to locate an absent library, while each source file's own require

@@ -318,7 +318,10 @@
 # 946 -> 953 on 2026-09-17: the same seven calls, counted in the overall
 # total -- the `ptr-call-typed' aarch64 refusal arm described at the
 # scripts/nelisp-standalone-build.el pin below.
-unsafe-call 953
+# 2026-09-19 953 -> 956: the three alloc-bytes calls of the CLI `--load'
+# load-file-name binding (see the scripts/nelisp-standalone-build.el pin,
+# 831 -> 834, below).  Raised consciously in the commit that adds them.
+unsafe-call 956
 
 # `pinned-kernel-call FILE COUNT' pins the per-file unquoted `unsafe-call'
 # count behind `total' above -- the kernel files that actually carry
@@ -493,7 +496,12 @@ pinned-kernel-call scripts/nelisp-gc-pause-growth.el 2
 # Measured with a control that predates the change: a clean b7f2c103b tree
 # extracted to its own directory reports total=946 and PASSES, while this
 # tree reports 831 for this file and total=953.
-pinned-kernel-call scripts/nelisp-standalone-build.el 831
+# 2026-09-19 831 -> 834: the CLI `--load' now binds `load-file-name' to the
+# absolute path (nl_cli_expand_load_path and the bind/restore around
+# nl_eval_source_all): one alloc-bytes for the argv string as a Sexp, one
+# for the cwd-joined path, one 96-byte block for the three scratch slots.
+# Taken from the scanner, not summed on paper.
+pinned-kernel-call scripts/nelisp-standalone-build.el 834
 # 2026-09-11: one GC snapshot raw-address probe, bounded by the named table
 # contract and used only for structured diagnostics.
 pinned-kernel-call lisp/nelisp-repl-gc.el 1

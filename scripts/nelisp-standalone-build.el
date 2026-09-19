@@ -20779,7 +20779,20 @@ listing it would make the load-path lie about what is reachable."
                          (let ((src (expand-file-name (concat entry "/src") pkgs)))
                            (when (file-directory-p src) (push src out))))
                        out)
-                     #'string<))))
+                     #'string<)
+               ;; feat/standalone-agent-compat: LAST on purpose.  Real
+               ;; `subr-x'/`ert'/`json' would never actually collide with
+               ;; anything above (no other `lisp/ert.el' etc. exists in
+               ;; this tree today), but if a native/prelude implementation
+               ;; of one of these names is ever added directly under
+               ;; lisp/src/scripts/packages/*/src, `require' must resolve
+               ;; to THAT file, not to standalone-compat/'s fallback --
+               ;; being last in `load-path' is what guarantees that.  Not
+               ;; on any host `-L' path `make test' uses (verified: `make
+               ;; -n test | grep -c standalone-compat' is 0), so it never
+               ;; shadows real Emacs's own libraries for the host suite.
+               (list (expand-file-name "standalone-compat"
+                                       nelisp-standalone--repo-root)))))
     (seq-filter #'file-directory-p dirs)))
 
 (defun nelisp-standalone--load-path-src ()
@@ -27882,6 +27895,39 @@ correctly."
            (nl_argv_cstr_to_str argptr str)
            (nl_argv_list_from argc sp (+ i 1) rest)
            (nelisp_cons_construct str rest out)))))
+    ;; feat/standalone-agent-compat: `--load PATH' read PATH straight off
+    ;; argv and handed it to `nl_eval_source_all' with no notion of
+    ;; `load-file-name' (v1.2.0 parity gap: the `load' primitive itself binds
+    ;; it via `bf_load_with_lfn', but this CLI entry point bypasses `load'
+    ;; entirely and never did).  Emacs binds `load-file-name' to the
+    ;; ABSOLUTE file name -- `emacs -Q --batch --load foo.el' reports
+    ;; `load-file-name' as `/cwd/foo.el', not the relative argv string --
+    ;; so a relative CPATH must be resolved against the process's cwd
+    ;; before binding.  DD_VALUE is `driver''s own `default-directory'
+    ;; Sexp string (already `nl_os_getcwd'-populated with a trailing `/'
+    ;; by the time the CLI dispatch below runs), so no extra separator is
+    ;; inserted between it and CPATH.
+    ;;
+    ;; unsafe-inventory (tools/unsafe-inventory-baseline.txt): reuses the
+    ;; existing `bf_load_abs_p' absolute-path check (over a Sexp string)
+    ;; instead of a new raw-pointer byte scan, so CPATH is converted to a
+    ;; Sexp string unconditionally, first -- one `alloc-bytes' call
+    ;; instead of the `ptr-read-u8'-based check this replaced.
+    (defun nl_cli_expand_load_path (cpath dd_value out)
+      (let* ((cpath_str (alloc-bytes 32 8)))
+        (seq
+         (nl_alloc_str cpath (nl_cstr_len cpath) cpath_str)
+         (if (= (bf_load_abs_p cpath_str) 1)
+             (wf_copy32 out cpath_str)
+           (let* ((dptr (nl_bi_strptr dd_value))
+                  (dlen (nl_bi_strlen dd_value))
+                  (clen (nl_cstr_len cpath))
+                  (total (+ dlen clen))
+                  (buf (alloc-bytes total 1)))
+             (seq
+              (bf_rq_copy dptr buf 0 0 dlen)
+              (nl_cstr_copy_into cpath buf dlen)
+              (nl_alloc_str buf total out)))))))
     (defun driver (sp)
      (let* ((arena (nl_arena_init))
             ;; Increment 2 (`--cold-load-from PATH'): argv parsing moved UP,
@@ -28346,8 +28392,35 @@ correctly."
                       ;; its length are the real, dynamic FILE_PTR/FILE_LEN
                       ;; -- no literal buffer needed, unlike --eval/--repl/
                       ;; --embedded/prelude-priming's static names.
-                      (nl_eval_source_all src cursor result pool out ctx builtin_sym 1
-                                           arg2 (nl_cstr_len arg2))
+                      ;;
+                      ;; feat/standalone-agent-compat: bind `load-file-name'
+                      ;; (to the ABSOLUTE path, see `nl_cli_expand_load_path')
+                      ;; around the eval, save/restore style, exactly as
+                      ;; `bf_load_with_lfn' does for the `load' primitive --
+                      ;; this CLI entry point never goes through `load' so it
+                      ;; never got that binding otherwise (v1.2.0 parity gap).
+                      ;; Not an `unwind-protect': same reasoning as
+                      ;; `bf_load_with_lfn' -- a signal here is a flag+stash,
+                      ;; not a stack unwind, so the restore below always runs.
+                      ;; unsafe-inventory: one `alloc-bytes' call for all
+                      ;; three 32-byte Sexp scratch slots (offsets 0/32/64
+                      ;; into the same 96-byte block) instead of three,
+                      ;; same idiom `ctx' itself uses just above (a single
+                      ;; allocation sliced by `(+ ptr OFFSET)').
+                      (let* ((lfn_scratch (alloc-bytes 96 8))
+                             (lfn_path (+ lfn_scratch 0))
+                             (lfn_sym (+ lfn_scratch 32))
+                             (lfn_old (+ lfn_scratch 64)))
+                        (seq
+                         (nl_cli_expand_load_path arg2 dd_value lfn_path)
+                         (bf_load_file_name_symbol lfn_sym)
+                         (if (= (nelisp_env_lookup_value (+ ctx 0) (+ ctx 32) lfn_sym lfn_old) 0)
+                             0
+                           (wf_write_nil lfn_old))
+                         (nl_env_set_value ctx lfn_sym lfn_path)
+                         (nl_eval_source_all src cursor result pool out ctx builtin_sym 1
+                                              arg2 (nl_cstr_len arg2))
+                         (nl_env_set_value ctx lfn_sym lfn_old)))
                       (if (= (ptr-read-u64 268435464 0) 0)
                           (nl_cli_write_value fbuf out)
                         (- (ptr-read-u64 268435464 0) 1)))))))

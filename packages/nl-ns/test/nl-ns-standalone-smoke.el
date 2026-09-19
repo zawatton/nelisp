@@ -28,45 +28,7 @@
 
 ;;; Code:
 
-(defvar nl-smoke--tests nil
-  "Alist of (NAME . BODY-FN) registered by the `ert-deftest' shim.")
-
-(unless (featurep 'ert)
-  (defmacro ert-deftest (name _args &rest body)
-    "Register BODY as test NAME in `nl-smoke--tests'."
-    ;; Drop a leading docstring so it is not the (useless) body value.
-    (when (and (stringp (car body)) (cdr body))
-      (setq body (cdr body)))
-    `(setq nl-smoke--tests
-           (cons (cons ',name (lambda () ,@body)) nl-smoke--tests)))
-  (defmacro should (form)
-    `(let ((nl-smoke--v ,form))
-       (unless nl-smoke--v
-         (error "should failed: %S" ',form))
-       nl-smoke--v))
-  (defmacro should-not (form)
-    `(let ((nl-smoke--v ,form))
-       (when nl-smoke--v
-         (error "should-not failed: %S" ',form))
-       t))
-  (defmacro should-error (form &rest keys)
-    "Evaluate FORM, expect an error; return (SYMBOL . DATA).
-KEYS supports `:type SYMBOL' for condition matching like ert."
-    `(let* ((nl-smoke--expected (plist-get (list ,@keys) :type))
-            (nl-smoke--r
-             (condition-case nl-smoke--e
-                 (progn ,form 'nl-smoke--no-error)
-               (error nl-smoke--e))))
-       (cond
-        ((eq nl-smoke--r 'nl-smoke--no-error)
-         (error "should-error: no error signaled by %S" ',form))
-        ((and nl-smoke--expected
-              (not (memq nl-smoke--expected
-                         (get (car nl-smoke--r) 'error-conditions))))
-         (error "should-error: expected %S, got %S"
-                nl-smoke--expected nl-smoke--r))
-        (t nl-smoke--r))))
-  (provide 'ert))
+(require 'ert)
 
 ;; Precondition.  Namespace inference counts prefixes in a hash table,
 ;; so it needs `puthash' to overwrite an existing key.  Runtimes built
