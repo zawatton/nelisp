@@ -373,8 +373,16 @@ jobs:
       # locally, so the intermittent failure here is CI-specific -- but
       # `gh run view --log-failed` returns 0 bytes for this workflow, so a
       # failure named nothing.  Same commands, same order, one per step, so
-      # the next failure identifies itself.  The three network commands are
-      # marked as such because they are the standing suspects.
+      # the next failure identifies itself.
+      #
+      # It did, the same day: the failing step is the real extension host,
+      # not any of the network commands this comment first suspected.
+      # test/suite.js ran each project task under a 90 s timeout, and on
+      # the 29.4 lane `build` sits at 80-95 s (the whole task loop is 87.2 s
+      # there against 46.9 s on 30.1), so the ceiling was inside the slow
+      # lane's normal range.  The timeout is now 300 s; see the comment
+      # there.  The "(network)" labels stay because they say what those
+      # steps touch, not because they are suspected of anything.
       - name: "VS Code: install xvfb (network)"
         if: runner.os == 'Linux'
         shell: bash

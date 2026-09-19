@@ -205,7 +205,13 @@ exports.run = async function () {
         let listener;
         let timer;
         const ended = new Promise((resolve, reject) => {
-            timer = setTimeout(() => reject(new Error('Task timeout: ' + name)), 90000);
+            // 300 s, not 90.  The 90 s came with the extension (7236081ab) and was
+            // never measured.  On CI this whole loop takes 46.9 s on ubuntu/30.1 and
+            // 87.2 s on ubuntu/29.4 when it passes, and on 29.4 `build` alone has run
+            // past 90 s twice (runs 35353958572, 35411513332): the ceiling sat inside
+            // the slow lane's normal range.  This asserts that a task completes and
+            // exits 0, not that it does so within a fixed number of seconds.
+            timer = setTimeout(() => reject(new Error('Task timeout: ' + name)), 300000);
             listener = vscode.tasks.onDidEndTaskProcess(event => {
                 if (event.execution.task.definition.type === 'nelisp' && event.execution.task.definition.command === name) resolve(event);
             });
