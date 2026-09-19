@@ -35,6 +35,11 @@ name: NeLisp semver release pipeline
 #     release/v1.3.0/RELEASE.md and release/v1.3.1/RELEASE.md) -- a coarse,
 #     OS-level second opinion, not the primary leak proof.
 #
+# Measured on run 35438851189 (branch ci/fast-release-blocker, 2026-09-19):
+# blocker linux-x86_64 5.0 min wall clock (was 65.0 min on run 35434247222),
+# checked-soak `live-blocks per round: 362298 337384 337384 337383 337384', 180 s soak
+# `batches=117 start_rss_kib=65332 sampled_peak_rss_kib=65332 elapsed_seconds=180.000' -- PASS with the 4 KiB ceiling on a GitHub runner.
+#
 # The original 1-hour soak survives as a scheduled weekly post-ship audit
 # (.github/workflows/weekly-soak.yml) rather than as a release blocker: it
 # is still useful for catching a slow leak the 180s window is too short to
