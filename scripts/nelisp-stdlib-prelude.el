@@ -9799,8 +9799,25 @@ write instead of ever touching a real buffer."
     `(condition-case nil (progn ,@body) (error nil))))
 (unless (fboundp 'insert-file-contents)
   (defun insert-file-contents (filename &rest _args)
-    (let ((contents (or (nelisp--syscall-read-file filename) "")))
+    ;; Real Emacs's `insert-file-contents' does NOT move point past the
+    ;; inserted text the way plain `insert' does -- point is left where it
+    ;; was before the call (i.e. immediately before the newly-inserted
+    ;; text), verified against host Emacs 31.1: a fresh `with-temp-buffer'
+    ;; (point = point-min = 1 before the call) still has point = 1
+    ;; afterwards, and a buffer with point mid-text keeps that same
+    ;; numeric position.  `nelisp-insert' always advances point like
+    ;; `insert' (it appends onto `before-gap', and point is defined as
+    ;; `1+ (length before-gap)'), so this must explicitly save/restore
+    ;; point around the low-level insert to match.  Callers such as
+    ;; `(with-temp-buffer (insert-file-contents f) (json-parse-buffer))'
+    ;; rely on this: `json-parse-buffer' parses from `(point)', and if
+    ;; point had been left at `point-max' (end of the freshly-inserted
+    ;; text, as an `insert'-like implementation would leave it), the
+    ;; buffer segment passed to the parser would be empty.
+    (let* ((contents (or (nelisp--syscall-read-file filename) ""))
+           (pos (nelisp-point nelisp--current-buffer)))
       (nelisp-insert contents nelisp--current-buffer)
+      (nelisp-goto-char pos nelisp--current-buffer)
       (list filename (length contents)))))
 (unless (fboundp 'insert-file-contents-literally)
   (defun insert-file-contents-literally (filename &rest args)
@@ -10150,6 +10167,34 @@ filter it already wrote."
 ;; wait.
 (unless (fboundp 'nelisp--repl-idle-pump)
   (defun nelisp--repl-idle-pump () nil))
+;; feat/agent-json-cluster: `void-function' on the last of the 4
+;; nelisp-agent host-only tests in this cluster (after the
+;; `insert-file-contents' and `file-in-directory-p'/`file-equal-p' fixes
+;; just above unblock the JSON config load and the catalog-directory
+;; escape check) -- `test/improvement-config-test.el' itself asserts
+;; `(file-modes catalog)'/`(file-modes state)' == #o600 on files this
+;; corpus creates via the already-present `set-file-modes' (right below)
+;; and `nl-agent-improvement-config.el' expects `set-file-modes' to have
+;; actually taken effect.  `file-modes' -- the read counterpart of
+;; `set-file-modes' -- was entirely absent.  Real Emacs's `file-modes' is
+;; a native `fileio.c' primitive (no elisp source to port), so this reads
+;; the same raw `st_mode' field `set-file-modes' already writes and
+;; `nelisp--syscall-stat' (just below) already reads for the file/
+;; directory type bits, masking to the low 12 bits (setuid/setgid/sticky
+;; + rwxrwxrwx, `#o7777') the same way real Emacs's `file-modes' does
+;; (verified against host Emacs 31.1: `(file-modes f)' after
+;; `(set-file-modes f #o4755)' answers `4755', not just `755' -- the
+;; setuid bit survives the round trip on both).  Returns nil for a
+;; nonexistent file, matching real Emacs (verified: no error, nil).
+(unless (fboundp 'file-modes)
+  (defun file-modes (filename &optional _flag)
+    "Return mode bits of FILENAME as an integer, or nil if it does not exist."
+    (when (file-exists-p filename)
+      (let ((mode (if (fboundp 'nelisp--syscall-stat-field)
+                       (nelisp--syscall-stat-field (expand-file-name filename) 24)
+                     -1)))
+        (when (>= mode 0)
+          (logand mode #o7777))))))
 (unless (fboundp 'set-file-modes)
   (defun set-file-modes (filename mode &optional _flag)
     "Apply MODE to FILENAME via chmod(2) when a syscall primitive exists.
@@ -12169,6 +12214,84 @@ absent; it is documented as \"unknown\", not as a process id."
       (let ((size (nelisp--syscall-stat-field filename 48))
             (mtime (nelisp--syscall-stat-field filename 88)))
         (list nil 1 0 0 0 mtime 0 size "" nil nil nil)))))
+;; feat/agent-json-cluster: `void-function' on 3 of the 4 nelisp-agent
+;; host-only tests fixed by the `insert-file-contents' point-preservation
+;; fix just above this segment's `json'/config cluster (see that fix's
+;; own commit for the json-parse-error half) -- once the JSON config
+;; loads, `nl-llm-agent-artifact.el' (required by
+;; `nl-agent-improvement-config.el') calls `file-in-directory-p' to keep
+;; a resolved checkpoint path inside its catalog directory, and that
+;; primitive was entirely absent (not even a stub).  Ported verbatim
+;; from host Emacs 31.1's `files.el' (`file-in-directory-p' at line 6874
+;; there), minus the `find-file-name-handler' dispatch at its top: the
+;; standalone has no file-name-handler-alist / Tramp-style remote-file
+;; mechanism, so that dispatch would always find no handler and fall
+;; through -- skipping it changes no observable behavior for any path
+;; the standalone can ever see (all local).  `file-equal-p' (also
+;; entirely absent) is `file-in-directory-p''s own final-comparison
+;; dependency in the same file.el.
+;;
+;; Real Emacs's own `file-equal-p' compares `(file-attributes
+;; (file-truename FILE))' of the two names for `equal', relying on the
+;; device/inode numbers `file-attributes' reports to tell two
+;; different files apart even when their sizes and mtimes coincide.
+;; This runtime's own `file-attributes' fallback (just above) does NOT
+;; have real device/inode numbers to report -- it fabricates them as
+;; constants -- so porting that comparison verbatim would make
+;; `file-equal-p' answer `t' for two DIFFERENT files whenever their
+;; size and mtime happen to match (measured: two freshly-created,
+;; same-second, empty sibling directories, or two 1-byte files written
+;; back-to-back in the same test run, both false-positive `t' on this
+;; runtime with the verbatim port -- see this segment's differential
+;; row 9).  Comparing `file-truename' strings directly avoids that: it
+;; still recognizes two different spellings of the SAME path (e.g. a
+;; `..' round-trip) as equal, which is the only "is this the same
+;; file" question any caller in this codebase's corpus asks -- none
+;; rely on hard-link detection, which the verbatim/device-inode
+;; approach would buy on real Emacs but cannot actually buy here
+;; either way, since this runtime's `file-attributes' has no real
+;; inode to compare.
+(unless (fboundp 'file-equal-p)
+  (defun file-equal-p (file1 file2)
+    "Return non-nil if FILE1 and FILE2 name the same file.
+See the Doc-comment above for the dropped file-name-handler dispatch
+and the file-truename-string-equality divergence from real Emacs's
+device/inode comparison."
+    ;; `file-truename' keeps a trailing slash ("DIR/" stays "DIR/", on Emacs
+    ;; too), and Emacs compares attributes so it never notices; a string
+    ;; comparison must strip it, or `file-in-directory-p' -- whose ROOT ends
+    ;; in "/" -- answers nil for a directory against itself (measured
+    ;; 2026-09-20: host t, this runtime nil, before this line).
+    (and (file-exists-p file1)
+         (file-exists-p file2)
+         (string-equal (directory-file-name (file-truename file1))
+                       (directory-file-name (file-truename file2))))))
+(unless (fboundp 'file-in-directory-p)
+  (defun file-in-directory-p (file dir)
+    "Return non-nil if DIR is a parent directory of FILE.
+Value is non-nil if FILE is inside DIR or inside a subdirectory of DIR.
+A directory is considered to be a \"parent\" of itself.
+DIR must be an existing directory, otherwise the function returns nil.
+See the Doc-comment above for the dropped file-name-handler dispatch."
+    (when (file-directory-p dir) ; DIR must exist.
+      (setq file (file-truename file)
+            dir (file-truename dir))
+      (let ((ls1 (split-string file "/" t))
+            (ls2 (split-string dir "/" t))
+            (root
+             (cond
+              ((string-match "\\`//" file) "//")
+              ((string-match "\\`/" file) "/")
+              (t "")))
+            (mismatch nil))
+        (while (and ls1 ls2 (not mismatch))
+          (if (string-equal (car ls1) (car ls2))
+              (setq root (concat root (car ls1) "/"))
+            (setq mismatch t))
+          (setq ls1 (cdr ls1)
+                ls2 (cdr ls2)))
+        (unless mismatch
+          (file-equal-p root dir))))))
 ;; Emacs 28 added COUNT to `directory-files-and-attributes'.  Tramp probes
 ;; its arity while loading `tramp-compat.el', so the name must be callable
 ;; before that package's compatibility aliases are installed.  The reader
