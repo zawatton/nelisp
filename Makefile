@@ -2602,16 +2602,21 @@ standalone-reader-host-parity-smoke: standalone-reader
 	@printf '%s\n' '(setq plain-hit t)' > target/host-parity/lp/hp-plain
 	@printf '%s\n' \
 	  '(setq load-path (cons "target/host-parity/lp" load-path))' \
-	  '(setq probe (quote unset) plain-hit nil)' \
+	  '(setq probe (quote unset) plain-hit nil outer-lfn load-file-name)' \
 	  '(setq r-load (load "hp-lfn" nil t))' \
 	  '(setq r-lfn (equal probe "target/host-parity/lp/hp-lfn.el"))' \
-	  '(setq r-restored (null load-file-name))' \
+	  '(setq r-restored (equal load-file-name outer-lfn))' \
 	  '(setq r-plain (progn (load "hp-plain" nil t) plain-hit))' \
 	  '(setq r-missing (condition-case e (progn (load "hp-no-such-4f1c" nil nil) (quote NO-SIGNAL)) (error (car e))))' \
 	  '(setq r-noerror (load "hp-no-such-4f1c" t nil))' \
 	  '(setq r-rdf-missing (rdf "target/host-parity/no-such-4f1c"))' \
 	  '(setq r-rdf-real (stringp (rdf "target/host-parity/lp/hp-lfn.el")))' \
 	  '(setq src (string 97 26085))' \
+# r-restored compares `load-file-name' after the inner `load' with its value
+# before it, not with nil: since 2026-09-19 the CLI `--load' binds
+# `load-file-name' to the loaded file (as Emacs `-l' does), so at the top
+# level of this smoke it is the smoke's own path on both sides, and `load'
+# must restore exactly that.  Emacs 31.1 and the standalone both answer t.
 	  '(setq enc (encode-coding-string src (quote utf-8) t))' \
 	  '(setq r-enc (list (length enc) (multibyte-string-p enc)))' \
 	  '(setq dec (decode-coding-string enc (quote utf-8) t))' \
