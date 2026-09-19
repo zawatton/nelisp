@@ -22,16 +22,16 @@ on:
   workflow_dispatch:
     inputs:
       release_version:
-        description: 'Release version label (default: v1.3.0)'
+        description: 'Release version label (default: v1.4.0)'
         required: false
-        default: 'v1.3.0'
+        default: 'v1.4.0'
   push:
     tags:
       - 'v*.*.*'
 
 env:
   # Tag pushes use the semver tag; manual dispatch keeps its input/default.
-  RELEASE_VERSION: ${{ github.event_name == 'push' && github.ref_name || github.event.inputs.release_version || 'v1.3.0' }}
+  RELEASE_VERSION: ${{ github.event_name == 'push' && github.ref_name || github.event.inputs.release_version || 'v1.4.0' }}
 
 jobs:
   build-linux-x86_64:

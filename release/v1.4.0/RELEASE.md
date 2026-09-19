@@ -12,7 +12,7 @@ found, plus the three Windows repairs measured on real MSYS2 hardware -- is
 included here, and [`release/v1.3.1/RELEASE.md`](../v1.3.1/RELEASE.md) remains
 the record of how those were measured.
 
-Sixty-seven commits since `v1.3.0` (`71ce45b9a`, 2026-09-12).  Every number
+Sixty-nine commits since `v1.3.0` (`71ce45b9a`, 2026-09-12).  Every number
 below names the run or commit it was taken from; a row without one is a
 claim about code, not a measurement.
 
@@ -102,6 +102,12 @@ added them:
   `number-or-marker-p`; `format "%d"`, `float` and `truncate` answer 0 for a
   bignum; `expt` signals `overflow-error` where the answer is a bignum;
   `(1+ most-positive-fixnum)` still wraps.  This is the next Doc 190 phase.
+- `buffer-substring-no-properties` returned "" on the standalone -- a placeholder
+  from before the runtime had buffers, present in every standalone binary to
+  date; it now returns the text, and `substring-no-properties` (previously
+  void) exists (`6d77d0752`; 12-row differential against host Emacs 31.1
+  byte-identical).  Found while running `../nelisp-agent`'s host tests on the
+  standalone, where three of them read JSON through it.
 - The eight higher-level `bool-vector-*` operations in the prelude no longer
   shadow the natives (`13b6bf39d`; `emacs-compat` 276 -> 268 without moving
   the baseline).
@@ -169,22 +175,30 @@ measurements are the deliverable.
 
 | Check | Result |
 |---|---|
-| Branch CI, every lane, code tree `373adde65` | PENDING — run 35431470405 in progress; 13 of 15 jobs green at 24 minutes (gates, tier perf/smokes/extras, four gate-mutation shards, windows 29.4/30.2, macOS 29.4/30.2, ubuntu 30.2) |
-| Full ERT (`gates` job, run 35431470405) | 6,105 tests, 5,873 as expected, **0 unexpected**, 232 skipped; preflight 10/10 |
-| Check tier (ubuntu 30.2 lane, run 35431470405) | `VERDICT: PASS (23 gate(s))`. Run 35429395922 on `ce88e33da` was red on two source-level ratchets, `ns-gate` and `doc200-census`, settled in `373adde65`; run 35427127362 before it was red on `fallback-inventory` and `substrate-presence-corpus-check`, settled in `ce88e33da` |
-| `emacs-compat` shared-shadowing (run 35431470405, Emacs 30.2) | 268 against a baseline of 268; 410 files, 8,830 defined names; PASS |
-| Binary-size ratchet (run 35431470405) | 8,334,384 bytes against a ceiling of 8,391,025 (baseline 8,226,496, 2% slack); PASS |
-| Standalone shadow differential and Emacs 30.2 parity (run 35431470405) | shadow-smoke PASS (native and prelude agree); emacs-parity PASS, 22,395 bytes identical to stock Emacs 30.2 |
+| Branch CI, every lane, code tree `6d77d0752` | PASS — run 35434246973, 15/15: gates, tier perf/smokes/extras, four gate-mutation shards, smoke ubuntu 29.4/30.2, windows 29.4/30.2, macOS 29.4/30.2, final unscoped `verify` (run 35431470405 on `373adde65`, the tree before the `buffer-substring-no-properties` fix, was also 15/15) |
+| Full ERT (`gates` job, run 35434246973) | 6,105 tests, 5,873 as expected, **0 unexpected**, 232 skipped; preflight 10/10 |
+| Check tier (ubuntu 30.2 lane, run 35434246973) | `VERDICT: PASS (23 gate(s))`; checked-soak live blocks per round 362,297 / 337,383 / 337,383 / 337,383 / 337,384. Run 35429395922 on `ce88e33da` was red on two source-level ratchets, `ns-gate` and `doc200-census`, settled in `373adde65`; run 35427127362 before it was red on `fallback-inventory` and `substrate-presence-corpus-check`, settled in `ce88e33da` |
+| `emacs-compat` shared-shadowing (run 35434246973, Emacs 30.2) | 268 against a baseline of 268; 410 files, 8,830 defined names; PASS |
+| Binary-size ratchet (run 35434246973) | 8,334,384 bytes against a ceiling of 8,391,025 (baseline 8,226,496, 2% slack); PASS |
+| Standalone shadow differential and Emacs 30.2 parity (run 35434246973) | shadow-smoke PASS (native and prelude agree); emacs-parity PASS, 22,395 bytes identical to stock Emacs 30.2 |
 | Version consistency | 9/9 sites say v1.4.0 (`tools/nelisp-version-consistency.sh`, this tree) |
-| stage-d-v3.0 standalone parity: linux-x86_64, macos-x86_64, macos-aarch64, windows-x86_64 | PASS — run 35429395865 on `ce88e33da`, all four lanes, tarballs built and verified |
-| Semver release pipeline (`workflow_dispatch`, linux-x86_64 blocker with the 1-hour soak; macOS / linux-aarch64 non-blockers) | PENDING |
-| Standalone agent-worker consumer (`../nelisp-agent`, 9 shared test files + 2 stdio smokes) | PASS on the `dc6bacbd3` binary, 2026-09-19, 18 s |
+| stage-d-v3.0 standalone parity: linux-x86_64, macos-x86_64, macos-aarch64, windows-x86_64 | PASS — run 35434246928 on `6d77d0752`, all four lanes, tarballs built and verified (also PASS on `373adde65`, `ce88e33da`, `8d6165ba8`) |
+| Semver release pipeline (`stage-d-v2.0-release.yml`, `workflow_dispatch` with `release_version=v1.4.0` on `6d77d0752`, run 35434247222) | PASS — blocker linux-x86_64 65.0 min: reader built and tested, `v1.4.0-linux-x86_64.tar.gz` verified and checksummed, ad-hoc signature, 1-hour standalone GC soak `batches=2049 start_rss_kib=82940 sampled_peak_rss_kib=84444 elapsed_seconds=3600.000` (+1,504 KiB against a 5,120 ceiling; binary sha256 `9386318f…c90c`); blocker linux-arm64 5.6 min PASS; macos-arm64 deferred by the workflow's own `if: false`, as in v1.3.0; release manifest collected |
+| Standalone agent-worker consumer (`../nelisp-agent`, 9 shared test files + 2 stdio smokes) | PASS on the `6d77d0752` binary, 2026-09-19 (and on `dc6bacbd3` before the fix) |
 
 ## Release qualification
 
-The tag is cut only after the rows above are filled from real runs.  As in
-v1.3.0, the semver release pipeline is driven by `workflow_dispatch` against
-this tree before any tag exists, so the result is known first.
+Every row above is filled from a named run on the code tree `6d77d0752`.
+As in v1.3.0, the semver release pipeline was driven by `workflow_dispatch`
+against that tree before any tag existed (run 35434247222), so the result
+was known first; the tag push runs the same pipeline once more.  The
+commits after `6d77d0752` change documentation and the workflow's dispatch
+default only, no code.
+
+An earlier dispatch of `release-qualification.yml` (run 35433173018) is not
+part of this qualification: that workflow is the Phase 7.5.3 anvil-daemon
+soak, which no longer finds `anvil.el` in this tree and is not the pipeline
+v1.3.0 shipped through.
 
 Windows is a release target of this version: the `stage-d-v3.0 standalone
 parity` workflow builds and verifies the `windows-x86_64` tarball on every

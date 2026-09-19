@@ -22,6 +22,9 @@ macOS ARM64 and Windows hardware qualification and repairs are included here.
   bitwise arithmetic and small-divisor division (Doc 190 Phase C), with the
   remaining bignum gaps listed in the full notes; `resolve-fixups` 1,535 ms
   -> 127 ms on the standalone.
+- **Fix**: `buffer-substring-no-properties` returned "" on the standalone (a
+  pre-buffer placeholder); it now returns the text, and `substring-no-properties`
+  exists.
 - **Packages**: `nelisp-toml`, `nelisp-uuid`, `nelisp-log`; the artifact
   service seam (Doc 203 steps 1 and 3).
 - **Platforms**: macOS ARM64 qualified on real hardware; Windows repairs
@@ -29,9 +32,11 @@ macOS ARM64 and Windows hardware qualification and repairs are included here.
 - **CI**: Emacs 30 lanes on 30.2; the ERT suite runs first so a red arrives
   in ~4 minutes; ratchets raised with reasons, never regenerated.
 
-Qualification: filled in the full notes from the named CI runs before the tag
-is cut; `stage-d-v3.0 standalone parity` (linux-x86_64, macos-x86_64,
-macos-aarch64, windows-x86_64) is PASS on run 35429395865.
+Qualification: CI 15/15 on every lane (run 35434246973); full ERT 6,105 tests,
+0 unexpected; check tier 23/23; `stage-d-v3.0 standalone parity` PASS on all
+four lanes including windows-x86_64 (run 35434246928); the semver release
+pipeline qualified `linux-x86_64` (1-hour soak, +1,504 KiB against a 5,120 KiB
+ceiling) and `linux-aarch64` (run 35434247222).
 
 ## v1.3.0 — 2026-09-12
 
