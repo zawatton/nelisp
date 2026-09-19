@@ -2596,6 +2596,11 @@ standalone-reader-print-large-sexp-smoke: standalone-reader
 # Each assertion is a VALUE, not an exit status: every one of these answered
 # something plausible-looking before, which is exactly why they survived a
 # release.
+# r-restored compares `load-file-name' after the inner `load' with its value
+# before it, not with nil: since 2026-09-19 the CLI `--load' binds
+# `load-file-name' to the loaded file (as Emacs `-l' does), so at the top
+# level of this smoke it is the smoke's own path on both sides, and `load'
+# must restore exactly that.  Emacs 31.1 and the standalone both answer t.
 standalone-reader-host-parity-smoke: standalone-reader
 	@mkdir -p target/host-parity/lp
 	@printf '%s\n' '(setq probe load-file-name)' > target/host-parity/lp/hp-lfn.el
@@ -2612,11 +2617,6 @@ standalone-reader-host-parity-smoke: standalone-reader
 	  '(setq r-rdf-missing (rdf "target/host-parity/no-such-4f1c"))' \
 	  '(setq r-rdf-real (stringp (rdf "target/host-parity/lp/hp-lfn.el")))' \
 	  '(setq src (string 97 26085))' \
-# r-restored compares `load-file-name' after the inner `load' with its value
-# before it, not with nil: since 2026-09-19 the CLI `--load' binds
-# `load-file-name' to the loaded file (as Emacs `-l' does), so at the top
-# level of this smoke it is the smoke's own path on both sides, and `load'
-# must restore exactly that.  Emacs 31.1 and the standalone both answer t.
 	  '(setq enc (encode-coding-string src (quote utf-8) t))' \
 	  '(setq r-enc (list (length enc) (multibyte-string-p enc)))' \
 	  '(setq dec (decode-coding-string enc (quote utf-8) t))' \
