@@ -9401,6 +9401,271 @@ honestly documented rather than silently claimed."
     (setq-local major-mode 'emacs-lisp-mode)
     (setq-local mode-name "Emacs-Lisp")))
 
+;; ---------------------------------------------------------------------
+;; `define-derived-mode' (feat/define-derived-mode): a real mode-
+;; dispatch layer, added because a real consumer
+;; (`../nelisp-agent/lisp/nl-agent-ui.el', line 309) calls it at its own
+;; top level -- `void-function' there previously killed
+;; `test/ui-test.el''s whole `--load' before ERT ever ran a single case.
+;; Supersedes the Doc 204 P5 `major-mode' docstring just above ("...no
+;; keymaps, no hooks, no `define-derived-mode'"): that comment is now
+;; stale for this file, though `emacs-lisp-mode' itself is untouched.
+;;
+;; Scope, deliberately narrower than real Emacs's `derived.el':
+;;   - No buffer-local variables exist in this substrate (`setq-local' /
+;;     `setq-default' are `setq' aliases, per their own definitions
+;;     above) -- MAJOR-MODE and MODE-NAME stay ordinary globals here too,
+;;     shared across every buffer, exactly like `emacs-lisp-mode' already
+;;     is.  Syntax tables are the one exception: `set-syntax-table' is
+;;     already genuinely per-buffer (`nelisp--syntax-buffer-tables',
+;;     above), so mode syntax tables get real per-buffer behavior for
+;;     free, and `make-syntax-table' already takes an optional PARENT.
+;;   - Keymaps use this substrate's existing flattened `(keymap . BINDINGS)'
+;;     shape (`make-sparse-keymap'/`keymapp'/`define-key', above): one
+;;     cons per binding, no multi-event key sequences, no char-tables, no
+;;     prefix keymaps.  A mode's keymap is generated fresh, or, when the
+;;     consumer already `defvar'd it -- as `nl-agent-ui-mode-map' does,
+;;     before its own `define-derived-mode' call -- left alone entirely,
+;;     per `defvar' semantics (the value form below is simply never
+;;     evaluated).  Its parent is linked with the new `set-keymap-parent'
+;;     below, matching Emacs's own `(keymap ITEM... . PARENT)' shape,
+;;     when the parent mode's own `-map' variable exists and is a keymap.
+;;   - `:group' is parsed and discarded (no customize-group system here,
+;;     matching the existing `defgroup' stub above).  `:abbrev-table' is
+;;     likewise parsed and discarded: this substrate has no abbrev-table
+;;     machinery at all (no `make-abbrev-table'/`abbrev-table-p'), so
+;;     NAME-abbrev-table is always bound to nil, honestly documented
+;;     rather than silently claimed.
+;;   - There is no keymap-dispatch loop anywhere in this substrate (the
+;;     `make-sparse-keymap' block comment above says so directly), so the
+;;     generated mode function does not call `use-local-map' -- nothing
+;;     here, and no real consumer, ever reads `current-local-map'.
+;;   - `derived-mode-p' walks only the explicit `derived-mode-parent'
+;;     property chain `define-derived-mode' itself sets -- no implicit
+;;     universal `fundamental-mode' ancestor, and no zero-argument "any
+;;     known mode" case.
+;;
+;; Verified against Emacs 31.1 (`emacs -Q --batch`, 2026-09-20): a parent
+;; mode (nil PARENT) and a child mode, each with a mode hook pushing onto
+;; a shared list, the child's map inheriting a parent binding, and a
+;; child syntax-table entry inherited from the parent's, all match on
+;; MAJOR-MODE, MODE-NAME, `derived-mode-p', hook run ORDER (the parent's
+;; hook runs once, before the child's own -- via `delay-mode-hooks' /
+;; `run-mode-hooks' below), `keymapp', a `lookup-key' hit through the
+;; parent link, and `char-syntax' after inheriting a non-default class.
+;; Both sides printed the identical
+;; `(child-mode "Child" parent-mode (parent child) t parent-command 95)'
+;; -- see the change that introduced this block for the probe's exact
+;; forms and both runs' output.
+
+(unless (fboundp 'set-keymap-parent)
+  (defun set-keymap-parent (keymap parent)
+    "Set KEYMAP's parent keymap to PARENT and return PARENT.
+Matches real Emacs's own representation for this substrate's flattened
+keymaps: a keymap with a parent is `(keymap ITEM... . PARENT)', i.e.
+PARENT (itself starting with the symbol `keymap') becomes the final cdr
+of KEYMAP's own item list.  Any previously-set parent is dropped first."
+    (let ((tail (cdr keymap)) (prev nil))
+      (while (and tail (consp tail) (not (eq (car tail) 'keymap)))
+        (setq prev tail)
+        (setq tail (cdr tail)))
+      (if prev (setcdr prev parent) (setcdr keymap parent)))
+    parent))
+
+(unless (fboundp 'lookup-key)
+  (defun lookup-key (keymap key &optional _accept-default)
+    "Look up KEY in KEYMAP and its parent chain (`set-keymap-parent',
+above), returning the binding or nil.  DIVERGES from Emacs: this
+substrate's `define-key' stores KEY exactly as given -- one cons per
+call, no event decomposition, no multi-event sequences (see its own
+block comment above) -- so KEY is compared with `equal' against each
+stored key exactly as `define-key' left it, never split into individual
+events.  Never returns the \"N leading events matched\" integer real
+Emacs returns for an unbound prefix, since there is no prefix concept
+here.
+
+(fn KEYMAP KEY &optional ACCEPT-DEFAULT)"
+    (let ((tail (cdr keymap)) (result nil) (done nil))
+      (while (and tail (consp tail) (not done))
+        (let ((item (car tail)))
+          (if (and (consp item) (equal (car item) key))
+              (progn (setq result (cdr item)) (setq done t))
+            (setq tail (cdr tail)))))
+      result)))
+
+(unless (fboundp 'kill-all-local-variables)
+  (defun kill-all-local-variables (&optional _kill-permanent)
+    "No-op in this substrate: there is no buffer-local variable
+distinction (`setq-local'/`setq-default' above are plain `setq'), so
+there is nothing to reset to a buffer's default value.  Exists so
+`define-derived-mode's nil-PARENT expansion -- which calls this instead
+of a parent mode function -- and code written against the real Emacs API
+load without a `void-function' error.
+
+(fn &optional KILL-PERMANENT)"
+    nil))
+
+(unless (boundp 'delay-mode-hooks)
+  (defvar delay-mode-hooks nil
+    "Non-nil inside `delay-mode-hooks' (the macro, below): `run-mode-hooks'
+then accumulates onto `delayed-mode-hooks' instead of running hooks
+immediately.  An ordinary global here (see the block comment above this
+section) rather than Emacs's real buffer-local variable, which is what
+lets a parent mode's `run-mode-hooks' call, made while a child mode's
+own `delay-mode-hooks' dynamic extent is still active, see this as
+non-nil without any buffer bookkeeping at all."))
+(unless (boundp 'delayed-mode-hooks)
+  (defvar delayed-mode-hooks nil
+    "Hooks queued by `run-mode-hooks' while `delay-mode-hooks' is non-nil,
+most-recently-queued first; see `run-mode-hooks'."))
+(unless (boundp 'change-major-mode-after-body-hook)
+  (defvar change-major-mode-after-body-hook nil
+    "Normal hook run by `run-mode-hooks', before the queued mode hooks."))
+(unless (boundp 'after-change-major-mode-hook)
+  (defvar after-change-major-mode-hook nil
+    "Normal hook run by `run-mode-hooks', after every other hook it runs."))
+
+(unless (fboundp 'delay-mode-hooks)
+  (defmacro delay-mode-hooks (&rest body)
+    "Run BODY with `run-mode-hooks' calls delayed onto `delayed-mode-hooks'
+instead of run immediately; the first `run-mode-hooks' call after this
+form's dynamic extent ends runs them.  DIVERGES from Emacs: no
+`(make-local-variable 'delay-mode-hooks)' call, because this substrate
+has no buffer-local variables at all (see the block comment above this
+section) -- the `let' below, which real Emacs also relies on once the
+variable is already buffer-local, is the entire mechanism here.
+
+(fn &rest BODY)"
+    `(let ((delay-mode-hooks t)) ,@body)))
+
+(unless (fboundp 'run-mode-hooks)
+  (defun run-mode-hooks (&rest hooks)
+    "Run mode hooks HOOKS the way a `define-derived-mode' mode function
+should: if `delay-mode-hooks' is non-nil, queue HOOKS onto
+`delayed-mode-hooks' instead of running them now (a parent mode function
+called from inside a child's own `delay-mode-hooks' form takes this
+branch).  Otherwise run, in order: `change-major-mode-after-body-hook',
+every queued `delayed-mode-hooks' entry (oldest-queued first -- a
+parent's hook, queued while the child's constructor ran the parent
+first, therefore runs before the child's own), then HOOKS themselves,
+then `after-change-major-mode-hook'.  Matches Emacs's own documented
+order; omits the file-local-variables step (`hack-local-variables'),
+which no consumer in this tree reaches.
+
+(fn &rest HOOKS)"
+    (if delay-mode-hooks
+        (dolist (hook hooks) (push hook delayed-mode-hooks))
+      (run-hooks 'change-major-mode-after-body-hook)
+      (dolist (hook (nreverse delayed-mode-hooks)) (run-hooks hook))
+      (setq delayed-mode-hooks nil)
+      (apply #'run-hooks hooks)
+      (run-hooks 'after-change-major-mode-hook))
+    nil))
+
+(unless (fboundp 'derived-mode-p)
+  (defun derived-mode-p (&rest modes)
+    "Non-nil if MAJOR-MODE (this substrate's ordinary global, not a
+per-buffer value) is, or is derived from -- via the `derived-mode-parent'
+symbol property `define-derived-mode' sets -- one of MODES.  Returns the
+matching mode symbol, not merely t, matching Emacs.  DIVERGES from
+Emacs: no zero-argument \"is this any known mode's descendant\" case (no
+consumer in this tree needs it), and no implicit `fundamental-mode'
+ancestor -- only the explicit property chain is walked.
+
+(fn &rest MODES)"
+    (let ((m major-mode))
+      (while (and m (not (memq m modes)))
+        (setq m (get m 'derived-mode-parent)))
+      m)))
+
+(unless (fboundp 'define-derived-mode)
+  (defmacro define-derived-mode (child parent name &optional docstring &rest body)
+    "Create a new major mode CHILD, derived from PARENT (a mode function
+symbol, or nil), with mode-line string NAME.  See the block comment
+above this section for this substrate's scope: no buffer-local
+variables, no abbrev tables, no keymap dispatch, `:group' and
+`:abbrev-table' parsed and discarded.  Recognizes the `:syntax-table'
+keyword: a FORM (used as NAME-syntax-table's value, as given), `t'
+(share the parent's table; no NAME-syntax-table variable is created and
+the mode function does not call `set-syntax-table' at all), or omitted
+(a fresh table via `make-syntax-table', chained to PARENT's own
+NAME-syntax-table when PARENT has one and it is bound, else Emacs's own
+default of `standard-syntax-table').  Generates NAME-hook, NAME-map,
+NAME-syntax-table (unless `:syntax-table t'), NAME-abbrev-table (always
+nil), and the CHILD mode function itself, which takes no arguments, sets
+MAJOR-MODE and MODE-NAME, installs the syntax table, runs PARENT (or
+`kill-all-local-variables' when PARENT is nil) and then BODY inside
+`delay-mode-hooks', and finally calls `run-mode-hooks' on NAME-hook.
+
+(fn CHILD PARENT NAME [DOCSTRING] [KEYWORD VALUE]... BODY...)"
+    (unless (stringp docstring)
+      (when docstring (push docstring body))
+      (setq docstring nil))
+    (let* ((child-name (symbol-name child))
+           (map (intern (concat child-name "-map")))
+           (syntax (intern (concat child-name "-syntax-table")))
+           (abbrev (intern (concat child-name "-abbrev-table")))
+           (hook (intern (concat child-name "-hook")))
+           (parent-map (and parent (intern (concat (symbol-name parent) "-map"))))
+           (parent-syntax (and parent (intern (concat (symbol-name parent) "-syntax-table"))))
+           (syntax-table-spec :nelisp-default)
+           (group nil))
+      (while (keywordp (car body))
+        (let ((key (pop body)) (val (pop body)))
+          (cond
+           ((eq key :group) (setq group val))
+           ((eq key :syntax-table) (setq syntax-table-spec val))
+           (t nil))))
+      (let* ((hook-form
+              `(defvar ,hook nil ,(format "Normal hook run when entering `%s'." child)))
+             (map-form
+              `(defvar ,map
+                 (let ((m (make-sparse-keymap)))
+                   ,(and parent-map
+                         `(when (and (boundp ',parent-map) (keymapp ,parent-map))
+                            (set-keymap-parent m ,parent-map)))
+                   m)
+                 ,(format "Keymap for `%s'." child)))
+             (syntax-share-p (eq syntax-table-spec t))
+             (syntax-value
+              (if (eq syntax-table-spec :nelisp-default)
+                  `(make-syntax-table
+                    ,(and parent-syntax `(and (boundp ',parent-syntax) ,parent-syntax)))
+                syntax-table-spec))
+             (syntax-form
+              (unless syntax-share-p
+                `(defvar ,syntax ,syntax-value ,(format "Syntax table for `%s'." child))))
+             (abbrev-form
+              `(defvar ,abbrev nil
+                 ,(format "Abbrev table for `%s' (not implemented in this substrate)." child)))
+             (derived-put-form `(put ',child 'derived-mode-parent ',parent))
+             (group-form (and group `(put ',child 'custom-mode-group ',group)))
+             (fn-doc (or docstring
+                         (format "%s\n\nThis mode is derived from `%s' by `define-derived-mode'."
+                                 name parent)))
+             (parent-call (if parent (list parent) '(kill-all-local-variables t)))
+             (set-syntax-call (unless syntax-share-p `((set-syntax-table ,syntax))))
+             (defun-form
+              `(defun ,child ()
+                 ,fn-doc
+                 (interactive)
+                 (delay-mode-hooks
+                   ,parent-call
+                   (setq major-mode ',child)
+                   (setq mode-name ,name)
+                   ,@set-syntax-call
+                   ,@body)
+                 (run-mode-hooks ',hook))))
+        `(progn
+           ,hook-form
+           ,map-form
+           ,@(and syntax-form (list syntax-form))
+           ,abbrev-form
+           ,derived-put-form
+           ,@(and group-form (list group-form))
+           ,defun-form)))))
+
+
 (unless (fboundp 'save-excursion)
   (defmacro save-excursion (&rest body)
     "Save point and the current buffer; run BODY; restore both, even on
