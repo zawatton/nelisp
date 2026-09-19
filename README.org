@@ -161,7 +161,7 @@ Every figure below was measured on the 1.0 tree; see =Test status= for how.
 | Networking | Doc 184 processes and event loop, Doc 194 =make-network-process=/=open-network-stream=, =/etc/hosts= lookup, a DNS-over-TCP resolver, nonblocking sockets with =:nowait=/=:server=, and IPv6 — all in the default binary with no =--load=. |
 | Extension libraries | 39 opt-in packages including =nl-clj= (Clojure compat), =nl-num= (numeric tower), =nl-static= (build-first totality/borrow/typed checks), =nl-hygiene= (hygienic macros), =nl-ns= (namespaces), and =nl-safe=.  Unannotated Elisp is unaffected by all of them. |
 | Zero Rust | 0 =.rs= files remain in the repository.  The evaluator, reader, compiler, allocator, GC, object writers, native emitters and the syscall surface are Elisp. |
-| CI | Six lanes (Linux/macOS/Windows x Emacs 29.4/30.1) plus a fast Linux-only =gates= job that runs the ratchet and inventory battery in ~2 minutes before the matrix starts, collecting every failure instead of stopping at the first. |
+| CI | Three =smoke= lanes (Linux/macOS/Windows x Emacs 30.2) plus a parallel =ert= matrix (same three OSes x the ERT suite's plain/JIT-enabled/JIT-disabled variants) and a fast Linux-only =gates= job that runs the ratchet and inventory battery in ~2 minutes before the matrix starts, collecting every failure instead of stopping at the first. |
 
 * What NeLisp is
 
@@ -597,9 +597,10 @@ The standalone-reader build is driven by host Emacs and the pure-Elisp
 AOT toolchain.  Install a normal native build environment for your
 platform, then run =make standalone-reader=.
 
-*Host Emacs 29.4 or newer is required to BUILD from source.*  CI builds
-and tests on 29.4 and 30.1, so those two are the versions actually
-verified; older Emacsen are not supported and have been reported to fail
+*Host Emacs 30.2 or newer is required to BUILD from source.*  CI builds
+and tests on 30.2, so that is the version actually verified (29.4
+was dropped from the per-push matrix 2026-09-19); older Emacsen are
+not supported and have been reported to fail
 part-way through the build (issue #5, on Emacs 28.2).  This requirement
 applies only to building — the resulting =target/nelisp= is a standalone
 binary and needs no Emacs at run time.

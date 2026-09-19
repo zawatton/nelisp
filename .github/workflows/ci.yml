@@ -1,5 +1,24 @@
 name: CI
 
+# Shape (2026-09-19; Emacs 29.4 dropped from the supported floor this
+# same pass, user decision -- README.org "Prerequisites by platform"
+# carries the requirement statement):
+#   - gates:      fast Linux-only ratchet/inventory pass (~2 min), run
+#                 before the matrix so a moved inventory count fails in
+#                 minutes instead of at the end of the longest lane.
+#   - smoke:      byte-compile + the Linux-only gate battery, 3 OSes x
+#                 Emacs 30.2.
+#   - ert:        the ERT suite's three variants (plain, JIT-enabled,
+#                 JIT-disabled) as a parallel 3 OSes x 3 variants
+#                 matrix.  These used to be three sequential steps
+#                 inside `smoke'; splitting them into their own job is
+#                 what keeps per-push wall clock inside the 25-minute
+#                 budget (they were ~6 min each, serial, per lane).
+#   - mutation:   gate-mutation, sharded 4 ways.
+#   - subsystems: the extras/smokes/perf AI-toolchain tiers.
+#   - verify:     downloads every job's `gate-reports-*' artifact and
+#                 checks the union against tools/ai/gates.expected.
+
 on:
   push:
     branches: ['**']
@@ -45,14 +64,17 @@ jobs:
         run: bash tools/ai/preflight.sh
 
   smoke:
-    # Phase 1 Week 1-2 smoke: byte-compile nelisp.el and run the ERT
-    # smoke suite on 3 OSes x 2 Emacs versions.  Expands as reader /
-    # evaluator modules land in Week 3+.
+    # Phase 1 Week 1-2 smoke: byte-compile nelisp.el and the Linux-only
+    # gate battery on 3 OSes x Emacs 30.2 (29.4 dropped from the
+    # per-push matrix 2026-09-19; see the top-of-file comment).  The
+    # ERT smoke suite itself now runs in the `ert' job below, as three
+    # parallel variants per OS, rather than as three sequential steps
+    # here.  Expands as reader / evaluator modules land in Week 3+.
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        emacs-version: ['29.4', '30.2']
+        emacs-version: ['30.2']
       fail-fast: false
 
     steps:
@@ -150,6 +172,23 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: make standalone-reader-checked
+      # Informational only, never gates (native-comp probe, 2026-09-19):
+      # records whether this runner's Emacs supports native compilation
+      # at all, and whether loading one of the reader's own hot
+      # functions this plainly (no explicit native-compile step) picked
+      # up a natively-compiled subr, so a later pass has real data
+      # instead of a guess.  `|| true' plus `continue-on-error' so an
+      # absent function or a non-native-comp Emacs cannot fail this job.
+      - name: "Native compilation probe (informational; Linux x86_64)"
+        if: runner.os == 'Linux'
+        shell: bash
+        continue-on-error: true
+        run: |
+          emacs --batch -Q -L lisp -L src \
+            --eval '(setq load-prefer-newer t)' \
+            --eval '(ignore-errors (require (quote nelisp-asm-x86_64)))' \
+            --eval '(princ (format "native-comp: native-comp-available-p=%S subr-native-elisp-p=%S\n" (and (fboundp (quote native-comp-available-p)) (native-comp-available-p)) (and (fboundp (quote nelisp-asm-x86_64-resolve-fixups)) (fboundp (quote subr-native-elisp-p)) (subr-native-elisp-p (symbol-function (quote nelisp-asm-x86_64-resolve-fixups))))))' \
+          || true
       # Doc 170 sec 5.3.  Rounds share one process, so live-blocks after each
       # round's garbage-collect is retention: growth that persists across
       # rounds is the leak blocker (the Makefile target explains the round
@@ -273,40 +312,12 @@ jobs:
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate macho-acceptance-test -- make macho-acceptance-test
 
-      # `make test' alone (as this ran before) never writes a gate report;
-      # only `nelisp-ai.sh test' does, as gate "ert-full" -- a required
-      # gate with no other producer anywhere in this workflow.  `make
-      # clean' first reproduces `test: clean''s own prerequisite (the
-      # `nelisp-ai.sh test' path skips it, to stay usable as a fast TDD
-      # loop): the root Makefile's own `compile' target (run bare, by the
-      # "Byte-compile" step above) leaves .elc files behind rather than
-      # deleting them the way `nelisp-ai.sh compile' does, and stale
-      # byte-compiled `nelisp-eval.el' trips `max-lisp-eval-depth' inside
-      # the self-host probes -- see `test: clean' and the comment above
-      # `all: test' in the Makefile.
-      - name: Run smoke tests
-        shell: bash
-        run: make clean && bash tools/ai/nelisp-ai.sh test
-      # `nelisp-jit-enabled' is nil by default and the only bindings of
-      # it were two of the JIT's own tests, so the translation path was
-      # exercised by the tests written for it and by nothing that uses
-      # it.  Turning it on for a full run found three semantic
-      # differences from the interpreter -- untranslated special forms
-      # routed to the user-call arm and mistranslated rather than
-      # declined, and arity violations surfacing as the host's error
-      # instead of nelisp-eval-error.  This keeps that honest.
-      - name: Run smoke tests with the JIT enabled
-        shell: bash
-        run: make test-jit
-      # `nelisp-jit-enabled' defaults to t, so the step above and the
-      # ordinary suite both take the JIT path.  This one keeps bcl and
-      # the interpreter covered.  Whichever way the default points, the
-      # other path needs a run of its own -- the JIT sat default-off with
-      # three semantic differences from the interpreter in it precisely
-      # because nothing ran it.
-      - name: Run smoke tests with the JIT disabled
-        shell: bash
-        run: make test-nojit
+      # The three ERT-suite variants (plain, JIT-enabled, JIT-disabled)
+      # used to run here as three sequential steps (~6 min each on the
+      # ubuntu/30.2 lane, run 35442102588).  They now run in their own
+      # `ert' job below, as a parallel 3 OSes x 3 variants matrix, so
+      # this lane's wall clock drops by roughly the sum of the two
+      # variants that used to run serially after the first.
       # Wrapped through `nelisp-ai.sh gate' (rather than bare `make
       # standalone-reader-test') so this step writes
       # target/gates/standalone-reader-test.json -- a required gate that,
@@ -564,9 +575,9 @@ jobs:
         run: bash tools/ai/nelisp-ai.sh gate nelisp-sexp-clone-bind-smoke -- make nelisp-sexp-clone-bind-smoke
 
       # Every Linux gate report this lane produced.  The `verify' job
-      # collects these together with the mutation and subsystem jobs' and
-      # checks the union against gates.expected; on its own, no single job
-      # can any longer answer "did every required gate run".
+      # collects these together with the ert, mutation, and subsystem
+      # jobs' and checks the union against gates.expected; on its own,
+      # no single job can any longer answer "did every required gate run".
       - name: Upload gate reports (Linux 30.2 lane)
         if: always() && runner.os == 'Linux' && matrix.emacs-version == '30.2'
         uses: actions/upload-artifact@v4
@@ -576,11 +587,10 @@ jobs:
           if-no-files-found: error
 
       # macho-acceptance-test's report (gate-wiring audit, 2026-09-17): the
-      # only report this job's macOS lanes produce -- every other step here
-      # is `if: runner.os == 'Linux''.  Both Emacs-version lanes run it
-      # (see the step above, unconditional on `matrix.emacs-version'), so
-      # the artifact name carries the version to avoid two macOS lanes
-      # colliding on one artifact name in the same workflow run; `verify''s
+      # only report this job's macOS lane produces -- every other step
+      # here is `if: runner.os == 'Linux''.  The artifact name still
+      # carries the Emacs version (now always 30.2) so a second version
+      # added back later cannot collide with this one; `verify''s
       # download step already matches on the `gate-reports-*' prefix, so
       # this needs no change there.
       - name: Upload gate reports (macOS lane)
@@ -590,6 +600,108 @@ jobs:
           name: gate-reports-macho-${{ matrix.emacs-version }}
           path: target/gates/*.json
           if-no-files-found: error
+
+  ert:
+    # The ERT suite's three variants, split out of `smoke' into their
+    # own parallel matrix (2026-09-19): they used to be three sequential
+    # steps sharing one runner per OS lane (measured on run 35442102588,
+    # the ubuntu/30.2 lane: 6.2 + 6.1 + 6.2 min, one after another),
+    # which is exactly the shape a matrix turns from a sum into a max.
+    # `variant' maps onto the three commands the old steps ran; each
+    # matrix cell runs exactly one of them.
+    name: "ert ${{ matrix.os }} / ${{ matrix.variant }}"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        emacs-version: ['30.2']
+        variant: [plain, jit, nojit]
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Emacs (Linux / macOS)
+        if: runner.os != 'Windows'
+        uses: purcell/setup-emacs@v8.0
+        with:
+          version: ${{ matrix.emacs-version }}
+
+      - name: Set up Emacs (Windows)
+        if: runner.os == 'Windows'
+        uses: jcs090218/setup-emacs-windows@master
+        with:
+          version: ${{ matrix.emacs-version }}
+
+      # Same build, and the same `if:', `smoke' used to run before its
+      # own ERT steps: the suite's standalone-dependent cases `ert-skip'
+      # when `target/nelisp' is absent (e.g.
+      # test/nelisp-intern-obarray-test.el), so building it here on
+      # Linux and Windows gives those cases a real run instead of a
+      # skip, exactly as `smoke' did.  macOS built no standalone binary
+      # ahead of its ERT steps there either, so those cases keep
+      # skipping on macOS here too -- unchanged from today.
+      - name: "Standalone NeLisp CHECKED allocator smoke (Doc 170 Stage 2; Linux x86_64)"
+        if: runner.os == 'Linux'
+        shell: bash
+        run: make standalone-reader-checked
+      - name: "Standalone NeLisp CHECKED allocator smoke (Doc 170 Stage 2 redzone/generation/leak report; Windows x86_64)"
+        if: runner.os == 'Windows'
+        shell: bash
+        run: make standalone-reader-checked NELISP_STANDALONE_TARGET=windows-x86_64
+
+      # `make test' alone (as this ran before) never writes a gate report;
+      # only `nelisp-ai.sh test' does, as gate "ert-full" -- a required
+      # gate with no other producer anywhere in this workflow.  `make
+      # clean' first reproduces `test: clean''s own prerequisite: the
+      # root Makefile's own `compile' target (run bare, in `smoke') leaves
+      # .elc files behind rather than deleting them the way `nelisp-ai.sh
+      # compile' does, and stale byte-compiled `nelisp-eval.el' trips
+      # `max-lisp-eval-depth' inside the self-host probes -- see `test:
+      # clean' and the comment above `all: test' in the Makefile.  Only
+      # this variant writes a gate report -- `jit'/`nojit' below run
+      # through `test-fast' (see the Makefile), which never does -- so
+      # the upload step further down is scoped to this variant.
+      - name: Run smoke tests
+        if: matrix.variant == 'plain'
+        shell: bash
+        run: make clean && bash tools/ai/nelisp-ai.sh test
+      # `nelisp-jit-enabled' is nil by default and the only bindings of
+      # it were two of the JIT's own tests, so the translation path was
+      # exercised by the tests written for it and by nothing that uses
+      # it.  Turning it on for a full run found three semantic
+      # differences from the interpreter -- untranslated special forms
+      # routed to the user-call arm and mistranslated rather than
+      # declined, and arity violations surfacing as the host's error
+      # instead of nelisp-eval-error.  This keeps that honest.
+      - name: Run smoke tests with the JIT enabled
+        if: matrix.variant == 'jit'
+        shell: bash
+        run: make test-jit
+      # `nelisp-jit-enabled' defaults to t, so the step above and the
+      # ordinary suite both take the JIT path.  This one keeps bcl and
+      # the interpreter covered.  Whichever way the default points, the
+      # other path needs a run of its own -- the JIT sat default-off with
+      # three semantic differences from the interpreter in it precisely
+      # because nothing ran it.
+      - name: Run smoke tests with the JIT disabled
+        if: matrix.variant == 'nojit'
+        shell: bash
+        run: make test-nojit
+
+      # Only the `plain' variant writes a gate report (see above), so
+      # this is scoped to it; `if-no-files-found: error' would otherwise
+      # fail the `jit'/`nojit' cells, which produce no target/gates/*.json
+      # at all.  `always()' still matters for `plain': a failed run must
+      # still surface its report so `verify' can show why, not just that
+      # no report arrived.
+      - name: Upload gate reports (ert-full; plain variant only)
+        if: always() && matrix.variant == 'plain'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-reports-ert-${{ matrix.os }}-${{ matrix.emacs-version }}-${{ matrix.variant }}
+          path: target/gates/*.json
+          if-no-files-found: error
+
   # ------------------------------------------------------------------
   # Everything below used to be steps inside the Linux lane of `smoke'.
   #
@@ -600,11 +712,13 @@ jobs:
   # macOS 311 s and Windows 484 s); it simply carries the whole gate
   # suite alone.
   #
-  # These jobs are Linux/30.2 only for the same reason those steps were:
-  # they exercise the standalone BINARY, and the host Emacs only builds
-  # it.  What actually varies by Emacs version -- compile, emacs-parity,
-  # the ERT suites, test-jit/test-nojit -- stays on all six lanes of
-  # `smoke'.
+  # These jobs are Linux-only for the same reason those steps were: they
+  # exercise the standalone BINARY, and the host Emacs only builds it.
+  # What actually varies by OS -- compile, emacs-parity -- stays on all
+  # three `smoke' lanes.  The ERT suite's three variants (plain,
+  # JIT-enabled, JIT-disabled) no longer live inside `smoke' at all:
+  # they are the `ert' job just above, one parallel matrix cell per
+  # OS x variant instead of three serial steps per lane.
   # ------------------------------------------------------------------
 
   mutation:
@@ -692,7 +806,7 @@ jobs:
   verify:
     name: "verify (every required gate produced a report)"
     runs-on: ubuntu-latest
-    needs: [smoke, mutation, subsystems]
+    needs: [smoke, ert, mutation, subsystems]
     # `always()' so a red tier still reaches this job: the point of verify
     # is to say WHICH gates are missing or failing, and a skipped verify
     # after a failure tells nobody that.

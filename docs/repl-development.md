@@ -8,7 +8,7 @@ directory are needed.
 ## First setup
 
 Start in the repository root. Install the build prerequisites described in
-[README.org](../README.org): host Emacs 29.4 or newer and the tools for your
+[README.org](../README.org): host Emacs 30.2 or newer and the tools for your
 platform. This development launcher also uses a POSIX shell and `mkfifo`.
 Its source-reload workflow is verified on Linux; other launcher platforms
 need their own verification.
