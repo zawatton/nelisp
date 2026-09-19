@@ -1119,7 +1119,11 @@ pinned-collision ns-collision-divergent	hash-table-values	lisp/nelisp-stdlib-mis
 pinned-collision ns-collision	keywordp	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision-divergent	kill-process	packages/nelisp-process-adapter/src/nelisp-process-adapter.el scripts/nelisp-stdlib-prelude.el	28dbf19a8874
 pinned-collision ns-collision-divergent	last	lisp/nelisp-stdlib-list.el scripts/nelisp-stdlib-prelude.el	d3d8fa50dbfe
-pinned-collision ns-collision-divergent	lsh	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	da4995e603d0
+# 2026-09-19: `lsh' re-pinned.  Its mask was rewritten from `(1- (ash 1 61))'
+# to `most-positive-fixnum' in both copies after 00be3b502 made `ash' promote
+# to a Bignum (the wrap the old mask relied on is gone); the bodies still
+# diverge in their error-predicate checks, so the divergence itself stays pinned.
+pinned-collision ns-collision-divergent	lsh	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	f4049fd187c6
 pinned-collision ns-collision-divergent	macroexp-parse-body	lisp/nelisp-stdlib.el scripts/nelisp-stdlib-prelude.el	92dc977d56a1
 pinned-collision ns-collision-divergent	macroexpand-1	lisp/nelisp-stdlib.el scripts/nelisp-stdlib-prelude.el	35290347dca5
 pinned-collision ns-collision-divergent	make-directory	lisp/nelisp-build-host.el scripts/nelisp-stdlib-prelude.el	0a017756f0b7
