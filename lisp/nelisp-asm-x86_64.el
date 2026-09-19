@@ -854,75 +854,59 @@ would not surface until execution.  Returns the patched
 unibyte-string; BUF is mutated in place.
 
 §92.d chunk-build: finalize chunks once into a single materialized
-unibyte-string, patch via a mutable vector, then store back as a
-single chunk (= the cached chunk list collapses to length 1 so
-subsequent `buffer-bytes' calls remain O(total-bytes)).
+unibyte-string, patch in place with plain `aset', then store back
+as a single chunk (= the cached chunk list collapses to length 1
+so subsequent `buffer-bytes' calls remain O(total-bytes)).
 
-Perf: every fixup placeholder is written by exactly one
-`nelisp-asm-x86_64--append-bytes' call (`call-rel32' / `jmp-rel32' /
-`jz-rel32' / `jnz-rel32' / `lea-reg-rip-label' each emit the opcode
-and the 4 placeholder bytes together, then record the fixup against
-that same span), so a fixup's 4-byte slot always lies entirely
-inside a single :chunks entry.  This walks the CHUNK list once,
-tracking the running byte offset, and only pays the byte-level
-`--byte-at' / `--byte-vec->string' round trip (needed for standalone
-correctness — see those functions' docstrings) for the handful of
-chunks that actually carry a fixup; every other chunk is passed
-through unchanged.  An earlier version copied the ENTIRE buffer
-through that round trip regardless of how many fixups existed (often
-zero to a handful against thousands of bytes); on the standalone
-runtime's interpreted-form-costed evaluator that whole-buffer copy
-dominated AOT compile time."
-  (let* ((chunks (nreverse (copy-sequence (aref buf 0))))
+Every :chunks entry is produced by `unibyte-string' — directly, or
+via `nelisp-asm-x86_64--byte-vec->string's small-arity `concat' of
+`unibyte-string' pieces — and `--append-bytes' only ever `concat's
+those unibyte strings together, so the materialized buffer is a
+unibyte string end to end, on host Emacs AND the standalone
+runtime: `multibyte-string-p' is nil, `length' already answers the
+byte length, and `aset'/`aref' read and write raw bytes with no
+UTF-8 decode/encode in the way.  Verified directly against a built
+`target/nelisp': `(let ((s (copy-sequence (unibyte-string 1 2 3 4 5
+6 7 8)))) (aset s 2 200) (aset s 3 255) (aset s 4 128) s)' keeps
+`multibyte-string-p' nil and reads back the exact bytes (including
+values that would form a multi-byte UTF-8 sequence if decoded),
+identical to host; likewise `concat' of two `unibyte-string's.  So
+this asserts unibyte-ness up front instead of assuming it, then
+patches the materialized string directly — no `--byte-at' /
+`--byte-vec->string' round trip, no `make-vector', no per-byte loop
+of any kind, scoped by chunk or otherwise.  An earlier version of
+this function still ran that round trip per chunk that carried a
+fixup; on a real unit with many fixups (most chunks) that was
+barely better than copying the whole buffer, since it still touched
+every fixup-bearing byte through the interpreted accessor rather
+than the native `aset'."
+  (let* ((bytes (apply #'concat (nreverse (copy-sequence (aref buf 0)))))
          (labels (aref buf 2))
-         ;; Ascending by slot so the single forward walk over CHUNKS below
-         ;; can consume fixups in step with the running byte offset.
-         (fixups (sort (copy-sequence (aref buf 3))
-                       (lambda (a b) (< (car a) (car b)))))
-         (offset 0)
-         (out nil))
-    (dolist (chunk chunks)
-      (let* ((clen (nelisp-asm-x86_64--byte-length chunk))
-             (chunk-end (+ offset clen)))
-        (while (and fixups (< (car (car fixups)) chunk-end))
-          (let* ((fix (pop fixups))
-                 (slot (car fix))
-                 (label (cdr fix))
-                 (cell (assq label labels)))
-            (unless cell
-              (signal 'nelisp-asm-x86_64-error
-                      (list :unresolved-label label :at-slot slot)))
-            (let* ((local (- slot offset))
-                   (rel32 (- (cdr cell) (+ slot 4)))
-                   (u (logand rel32 #xFFFFFFFF))
-                   ;; Build a mutable vector scoped to THIS chunk only
-                   ;; (a handful of bytes — one instruction's worth), not
-                   ;; the whole buffer.  Counted/indexed in BYTES, not
-                   ;; characters: see `nelisp-asm-x86_64--byte-length'.
-                   (n (nelisp-asm-x86_64--byte-length chunk))
-                   (vec (make-vector n 0))
-                   (i 0))
-              (while (< i n)
-                (aset vec i (nelisp-asm-x86_64--byte-at chunk i))
-                (setq i (1+ i)))
-              (aset vec local           (logand u #xFF))
-              (aset vec (+ local 1)     (logand (ash u  -8) #xFF))
-              (aset vec (+ local 2)     (logand (ash u -16) #xFF))
-              (aset vec (+ local 3)     (logand (ash u -24) #xFF))
-              (setq chunk (nelisp-asm-x86_64--byte-vec->string vec)))))
-        (push chunk out)
-        (setq offset chunk-end)))
-    (when fixups
-      ;; A fixup whose slot never matched any chunk means the buffer state
-      ;; is corrupt (the one-append-per-fixup invariant above broke) --
-      ;; fail loudly instead of silently dropping a machine-code patch.
+         (fixups (aref buf 3)))
+    (when (multibyte-string-p bytes)
+      ;; Every chunk is built from `unibyte-string' (see above), so this
+      ;; would mean some caller fed a multibyte piece into the buffer —
+      ;; fail loudly rather than silently corrupt the patch below, which
+      ;; indexes BYTES not characters.
       (signal 'nelisp-asm-x86_64-error
-              (list :fixup-out-of-range (car (car fixups)))))
-    (let ((patched (apply #'concat (nreverse out))))
-      ;; Collapse chunk list to a single materialized chunk so
-      ;; subsequent `buffer-bytes' calls return the patched form.
-      (aset buf 0 (list patched))
-      patched)))
+              (list :unexpected-multibyte-buffer (length bytes))))
+    (dolist (fix fixups)
+      (let* ((slot (car fix))
+             (label (cdr fix))
+             (cell (assq label labels)))
+        (unless cell
+          (signal 'nelisp-asm-x86_64-error
+                  (list :unresolved-label label :at-slot slot)))
+        (let* ((rel32 (- (cdr cell) (+ slot 4)))
+               (u (logand rel32 #xFFFFFFFF)))
+          (aset bytes    slot      (logand u #xFF))
+          (aset bytes (+ slot 1)   (logand (ash u  -8) #xFF))
+          (aset bytes (+ slot 2)   (logand (ash u -16) #xFF))
+          (aset bytes (+ slot 3)   (logand (ash u -24) #xFF)))))
+    ;; Collapse chunk list to a single materialized chunk so
+    ;; subsequent `buffer-bytes' calls return the patched form.
+    (aset buf 0 (list bytes))
+    bytes))
 
 ;; ---- instruction emitters (= §92.a (5)) ----
 ;;
