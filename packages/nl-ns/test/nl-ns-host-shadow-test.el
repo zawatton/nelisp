@@ -94,8 +94,8 @@ so proved nothing about the real path."
 
 (ert-deftest nl-ns-load-baseline-reads-metadata ()
   (let ((baseline (nl-ns-load-baseline (nl-ns-test--baseline-file))))
-    (should (equal (plist-get baseline :emacs-version) "30.1"))
-    (should (equal (plist-get baseline :generated-at) "2026-08-15"))
+    (should (equal (plist-get baseline :emacs-version) "30.2"))
+    (should (equal (plist-get baseline :generated-at) "2026-09-19"))
     (should (gethash 'cl-loop (plist-get baseline :functions)))
     (should (gethash 'emacs-version (plist-get baseline :variables)))
     (should (gethash "cl-lib" (plist-get baseline :libraries)))))
@@ -108,7 +108,7 @@ so proved nothing about the real path."
            nil baseline))
          (report (nl-ns-report findings baseline)))
     (should (string-match "severity 1=1 2=1 3=1 6=1" report))
-    (should (string-match "baseline 30.1 generated 2026-08-15" report))
+    (should (string-match "baseline 30.2 generated 2026-09-19" report))
     (should (string-match "ns-partial-override" report))
     (should (string-match "minimal" report))))
 
