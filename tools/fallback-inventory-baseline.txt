@@ -174,7 +174,11 @@
 # above (fb46ca4a9bea).  Changing the handler to match the upstream one
 # less closely would be the wrong fix; taken from the scanner, not summed
 # on paper.
-silent-fallback 101
+# 2026-09-19 +4: doc 190 Phase C (00be3b502) added four division probes to the
+# bignum smoke whose shared handler `(nelisp-bignum-division-unsupported 'ok)'
+# is counted once per probe; pinned by shape below (49b27986e32e 4).  Taken from
+# the scanner, not summed on paper.
+silent-fallback 105
 pinned-site silent-fallback	nelisp-native-unit.el	defun nelisp-native-unit-publish	342dd783996d 1
 pinned-site silent-fallback	nelisp-native-unit.el	defun nelisp-native-unit-stage	3cc661a0aa0d 1
 pinned-site bare-handler	nelisp-native-unit.el	defun nelisp-native-unit-code-info	5f806c245674 1
@@ -337,7 +341,9 @@ pinned-site ignore-errors	nelisp-native-unit-development.el	defun nelisp-native-
 # Merged 2026-09-12: 54 + 1 (code-info) + 1 (the bounded-rebuild work) = 56,
 # taken from the scanner.
 # 2026-09-12 +2: the same two Doc 202 handlers, counted in this kind as well; taken from the scanner.
-bare-handler 58
+# 2026-09-19 +4: the same four bignum-smoke division probes, one condition-case
+# each, pinned by shape below.  Taken from the scanner, not summed on paper.
+bare-handler 62
 pinned-site bare-handler	nelisp-native-unit-development.el	defun nelisp-native-unit-development--wait	4bcd97633357 1
 
 # 0, and it should stay 0.  `nl_dbg_note' has no enable flag on purpose --
@@ -367,6 +373,18 @@ pinned-site bare-handler	standalone-bignum-smoke.el	bignum-smoke--check	6db2a096
 pinned-site bare-handler	standalone-bignum-smoke.el	bignum-smoke--check	d03686d58780 1
 pinned-site bare-handler	standalone-bignum-smoke.el	bignum-smoke--check	cc33bff2a68e 1
 pinned-site silent-fallback	standalone-bignum-smoke.el	bignum-smoke--check	6c140c43eafd 5
+# 2026-09-19 doc 190 Phase C (00be3b502): the smoke gained four division probes
+# that expect `nelisp-bignum-division-unsupported' (bignum / bignum, %, mod, and
+# a divisor above 2^31), each a condition-case whose handler answers 'ok -- the
+# same deliberate test-harness shape as the overflow probes above.  Four
+# distinct probe forms (bare-handler) and one shared handler form seen four
+# times (silent-fallback).  Keys computed with the gate's own
+# `nelisp-fallback-inventory--pin-key'.
+pinned-site bare-handler	standalone-bignum-smoke.el	bignum-smoke--check	fff5188599dc 1
+pinned-site bare-handler	standalone-bignum-smoke.el	bignum-smoke--check	c8d7427ea2e4 1
+pinned-site bare-handler	standalone-bignum-smoke.el	bignum-smoke--check	82afa222d23b 1
+pinned-site bare-handler	standalone-bignum-smoke.el	bignum-smoke--check	d2e030a0693b 1
+pinned-site silent-fallback	standalone-bignum-smoke.el	bignum-smoke--check	49b27986e32e 4
 pinned-site bare-handler	nelisp-artifact.el	defun nelisp-artifact--artifact-kind	48f11c96651f 1
 pinned-site bare-handler	nelisp-artifact.el	defun nelisp-artifact--collect-el-files-with-find	606ea325a642 1
 pinned-site bare-handler	nelisp-artifact.el	defun nelisp-artifact--collect-neln-artifacts-with-find	e8bfdb4c0bee 1
