@@ -6055,6 +6055,39 @@ which is what a caller asking for a range check wants."
 (unless (fboundp 'key-description)
   (defun key-description (keys &optional _prefix)
     (mapconcat #'single-key-description (append keys nil) " ")))
+;; feat/standalone-agent-loadpath: `void-function' on 1 of the ~80
+;; nelisp-agent host-only test files' load closures
+;; (../nelisp-agent/lisp/nl-agent-ui.el's `nl-agent-ui-mode-map' defvar,
+;; a `(let ((map (make-sparse-keymap))) (define-key map (kbd "r") ...)
+;; ... map)' run at the file's own top level, so unlike `yes-or-no-p'
+;; beside it this DOES block `--load' from reaching `Ran N tests').  A
+;; real Emacs keymap is `(keymap . BINDINGS)' with a rich internal
+;; encoding (char-tables, vectors, prefix-key sub-keymaps) this substrate
+;; has no display/dispatch loop to ever exercise; what's needed here is
+;; only that the `defvar' finish building SOME keymap-shaped object
+;; without erroring, not that key lookup work.  This keeps the real
+;; Emacs list-of-cons shape (`keymapp'/`(car map)' both answer correctly)
+;; but flattens `define-key' to one cons per call, no multi-event key
+;; sequences, no prefix auto-vivification, no parent keymaps
+;; (`set-keymap-parent' is not defined for the same reason) -- adequate
+;; for `nl-agent-ui.el' to finish loading, not for real key dispatch.
+(unless (fboundp 'make-sparse-keymap)
+  (defun make-sparse-keymap (&optional _prompt) (list 'keymap)))
+(unless (fboundp 'keymapp)
+  (defun keymapp (object) (and (consp object) (eq (car object) 'keymap))))
+(unless (fboundp 'define-key)
+  (defun define-key (keymap key def &optional _remove)
+    (setcdr keymap (cons (cons key def) (cdr keymap)))
+    def))
+;; `void-function' on 1 of the ~80 files
+;; (../nelisp-agent/lisp/nl-agent-improvement-config.el, called at its
+;; own top level inside a `(when (file-locked-p ...) ...)' guard).  This
+;; runtime has no `lock-buffer'/`.#lockfile' machinery at all (no file is
+;; ever locked), so "never locked" is not a stub standing in for missing
+;; behavior -- it is the only correct answer this runtime can give,
+;; exactly like `file-truename' just being `expand-file-name' above.
+(unless (fboundp 'file-locked-p)
+  (defun file-locked-p (_filename) nil))
 (unless (fboundp 'help-add-fundoc-usage)
   (defun help-add-fundoc-usage (docstring arglist)
     "Append the usage line Emacs appends, rather than dropping ARGLIST."
@@ -9640,6 +9673,32 @@ write instead of ever touching a real buffer."
              (and (vectorp process) (> (length process) 0)
                   (eq (aref process 0) 'process)))
          (and (memq (process-status process) '(run open listen connect)) t))))
+;; feat/standalone-agent-loadpath: `set-process-query-on-exit-flag' was
+;; `void-function' on 4 of the ~80 nelisp-agent host-only test files' load
+;; closures (../nelisp-agent/lisp/nl-agent-client.el,
+;; nl-agent-mcp-stdio.el, nl-agent-supervisor.el,
+;; nl-agent-training-runner.el all call it at their own top level via a
+;; `set-process-filter'-adjacent setup form).  Real Emacs's flag has no
+;; observable batch-mode effect (it only matters to the interactive
+;; kill-emacs/kill-buffer confirmation prompt, which this standalone
+;; never shows), but the task calls for a REAL stored attribute rather
+;; than a no-op getter -- so this stores it with `process-put'/
+;; `process-get' on the process object itself, the same plist mechanism
+;; `process-get'/`process-put' just above already use for every other
+;; process property, verified with a roundtrip
+;; (`(process-put p 'x 42)' / `(process-get p 'x)' => 42) before writing
+;; this.  Emacs's own default is `t' for a process `process-get' never
+;; saw a `nelisp--query-on-exit' key for; storing `'no'/leaving-unset
+;; (never `nil' itself) is what lets the getter tell "explicitly turned
+;; off" apart from "never touched" without needing `process-plist'
+;; (checked: not implemented on this runtime, `fboundp' nil).
+(unless (fboundp 'set-process-query-on-exit-flag)
+  (defun set-process-query-on-exit-flag (process flag)
+    (process-put process 'nelisp--query-on-exit (if flag 'yes 'no))
+    flag))
+(unless (fboundp 'process-query-on-exit-flag)
+  (defun process-query-on-exit-flag (process)
+    (not (eq (process-get process 'nelisp--query-on-exit) 'no))))
 (unless (fboundp 'delete-process)
   (defun delete-process (process)
     (when (and (fboundp 'nelisp-process-object-p)
@@ -11817,6 +11876,27 @@ absent; it is documented as \"unknown\", not as a process id."
 (unless (fboundp 'file-regular-p)
   (defun file-regular-p (filename)
     (eq (nelisp--syscall-stat filename) 'file)))
+;; feat/standalone-agent-loadpath: `void-function' on 1 of the ~80
+;; nelisp-agent host-only test files' load closures
+;; (../nelisp-agent/lisp/nl-agent-improvement-config.el, called at its own
+;; top level).  `nelisp--syscall-readlink' (just above, in the syscall
+;; dispatch table) already does exactly Emacs's `file-symlink-p' job --
+;; "the symbolic-link target as a string, or nil when PATH is not a
+;; symlink (or on any error)" is its own doc comment -- so this is a
+;; rename, not new functionality.  Differential against host Emacs 31.1
+;; on a fixture directory with a regular file, a symlink to it, a
+;; dangling symlink and a missing name (2026-09-19):
+;;   host:       regular=nil link="regular.txt" dangling="/no/such/target" missing=nil
+;;   standalone: regular=nil link="regular.txt" dangling="/no/such/target" missing=nil
+;; Matches exactly, including the dangling-link case (this function does
+;; not check whether the link target exists, per Emacs's own docstring).
+;; Like the sibling `file-exists-p'/`file-directory-p'/`file-regular-p'
+;; just above, FILENAME is passed through unresolved (no
+;; `expand-file-name') -- consistent with them, not a new limitation this
+;; adds.
+(unless (fboundp 'file-symlink-p)
+  (defun file-symlink-p (filename)
+    (nelisp--syscall-readlink filename)))
 (unless (fboundp 'file-attributes)
   (defun file-attributes (filename &optional _id-format)
     (if (not (file-exists-p filename))

@@ -27207,6 +27207,14 @@ correctly."
                                        "--eval")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_load
                                        "--load")
+    ;; feat/standalone-agent-loadpath: repeatable `-L DIR' / `--directory DIR',
+    ;; matching Emacs's own two spellings of the same switch (see
+    ;; `command-line-1''s `-L'/`--directory' handling).  Recognized anywhere
+    ;; before the FIRST real command token (`--load'/`--eval'/bare FILE/
+    ;; `--repl'); see `nl_cli_ldir_index' below for the scan.
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_dash_L "-L")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_dash_dash_directory
+                                       "--directory")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_source_separator "--")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_neln_selftest
                                        "--neln-selftest")
@@ -27310,7 +27318,7 @@ correctly."
 	      "))) (nelisp--write-stdout-bytes (nelisp--repr v)) (nelisp--write-stdout-bytes (unibyte-string 10)) 0)\n0\n")
     ,(nelisp-standalone--copy-lit-defun
       'nl_cli_help_text
-	      "Usage: nelisp [--help] [--repl [--no-prompt] [--no-print]] [--eval EXPR [-- ARG...]] [--load FILE [-- ARG...]] [--neln-selftest] [FILE]\nArguments:\n  --help                         Show this argument list\n  --eval EXPR                    Evaluate EXPR and print the value; optional -- ARG...\n  --load FILE                    Load FILE and print the last value; optional -- ARG...\n  --neln-selftest                Run the embedded native exec self-test\n  --repl [--no-prompt] [--no-print]\n                                 Start the REPL\n  FILE                           Load FILE as a source file\nCommands:\n  dump-runtime-image FILE [--load SRC]... FORM...\n  extend-runtime-image IMAGE OUT [--load SRC]... FORM...\n  eval-runtime-image IMAGE FORM...\n  exec-runtime-image IMAGE FORM...\n  compile-runtime-image --kind nelc|neln|auto --input FILE.nlri --output FILE\n  compile-elisp-artifact --kind nelc|neln|elc --input FILE.el --output FILE\n  compile-elisp-artifacts --kind nelc|neln|auto FILE.el|DIR...\n  audit-elisp-artifacts [--required] FILE.el|FILE.neln|DIR...\n  exec-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...\n  eval-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...\n  load-elisp-source [--auto-compile] [--kind nelc|neln] FILE.el\n  eval-elisp-source [--auto-compile] [--kind nelc|neln] FILE.el FORM...\n  native-exec-elisp-artifact FILE.neln SYMBOL ARG...\n  inspect-elisp-artifact FILE.nelc|FILE.neln|FILE.elc\n")
+	      "Usage: nelisp [-L DIR]... [--help] [--repl [--no-prompt] [--no-print]] [--eval EXPR [-- ARG...]] [--load FILE [-- ARG...]] [--neln-selftest] [FILE]\nArguments:\n  -L DIR, --directory DIR        Prepend DIR to load-path (repeatable); must precede --eval/--load/FILE/--repl\n  --help                         Show this argument list\n  --eval EXPR                    Evaluate EXPR and print the value; optional -- ARG...\n  --load FILE                    Load FILE and print the last value; optional -- ARG...\n  --neln-selftest                Run the embedded native exec self-test\n  --repl [--no-prompt] [--no-print]\n                                 Start the REPL\n  FILE                           Load FILE as a source file\nCommands:\n  dump-runtime-image FILE [--load SRC]... FORM...\n  extend-runtime-image IMAGE OUT [--load SRC]... FORM...\n  eval-runtime-image IMAGE FORM...\n  exec-runtime-image IMAGE FORM...\n  compile-runtime-image --kind nelc|neln|auto --input FILE.nlri --output FILE\n  compile-elisp-artifact --kind nelc|neln|elc --input FILE.el --output FILE\n  compile-elisp-artifacts --kind nelc|neln|auto FILE.el|DIR...\n  audit-elisp-artifacts [--required] FILE.el|FILE.neln|DIR...\n  exec-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...\n  eval-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...\n  load-elisp-source [--auto-compile] [--kind nelc|neln] FILE.el\n  eval-elisp-source [--auto-compile] [--kind nelc|neln] FILE.el FORM...\n  native-exec-elisp-artifact FILE.neln SYMBOL ARG...\n  inspect-elisp-artifact FILE.nelc|FILE.neln|FILE.elc\n")
     ,(nelisp-standalone--copy-lit-defun
       'nl_repl_eval_prefix
       "(let ((v (progn\n")
@@ -27404,7 +27412,59 @@ correctly."
                       1
                     (if (= (nl_runtime_image_command_p ptr) 1)
                         1
-                      (nl_artifact_command_p ptr))))))))))
+                      (if (= (nl_artifact_command_p ptr) 1)
+                          1
+                        (if (= (nl_cstr_eq_dash_L ptr) 1)
+                            1
+                          (nl_cstr_eq_dash_dash_directory ptr))))))))))))
+    ;; feat/standalone-agent-loadpath -- generic argv[idx] accessor (idx=0 is
+    ;; argv[0], matching `slot0''s offset convention: sp0+8 = argv[0],
+    ;; sp0+16 = argv[1], ...).  Reads straight off the kernel-provided entry
+    ;; stack `nl_os_argv_init' returned in `sp0' -- unlike `slot0'..`slot3'
+    ;; (four fixed convenience bindings captured once in `driver''s `let*'),
+    ;; this covers ANY index, which a repeatable flag needs.  Always guarded
+    ;; by an `idx < argc' check at the call site (`nl_cli_ldir_index' and the
+    ;; `path'/`arg2'/`arg3' bindings below); reading at/after argc still lands
+    ;; on the kernel-guaranteed `argv[argc] == NULL' slot or further zeroed
+    ;; entry-stack bytes, never unmapped memory, so an unchecked read here is
+    ;; not itself unsafe -- the bounds checks exist for CORRECTNESS (matching
+    ;; Emacs's `path'/`arg2'/`arg3' semantics when a flag runs off the end),
+    ;; not memory safety.
+    (defun nl_argv_word (sp0 idx)
+      (if (= sp0 0) 0 (ptr-read-u64 sp0 (* (+ idx 1) 8))))
+    (defun nl_cli_ldir_flag_p (ptr)
+      (if (= (nl_cstr_eq_dash_L ptr) 1) 1 (nl_cstr_eq_dash_dash_directory ptr)))
+    ;; Scan forward from IDX over zero or more `-L DIR' / `--directory DIR'
+    ;; pairs, returning the index of the first token that is not a
+    ;; recognized flag (or the first unpaired trailing `-L') -- this is the
+    ;; new `path' index once repeated `-L' flags are skipped.  A lone `-L'
+    ;; with nothing after it (IDX+1 == ARGC) is left in place: it becomes
+    ;; the (unrecognized-command) `path', which the outer `cond' already
+    ;; turns into the ordinary usage error -- no special-casing needed here.
+    (defun nl_cli_ldir_index (sp0 argc idx)
+      (if (>= idx argc)
+          idx
+        (if (= (nl_cli_ldir_flag_p (nl_argv_word sp0 idx)) 1)
+            (if (< (+ idx 1) argc)
+                (nl_cli_ldir_index sp0 argc (+ idx 2))
+              idx)
+          idx)))
+    ;; Build ` "DIR1" "DIR2" ...' (each DIR expanded against `default-
+    ;; directory' exactly as `--load' binds `load-file-name', via the
+    ;; existing `nl_cli_expand_load_path') into TBUF starting at TOFF,
+    ;; walking the SAME `-L DIR' pairs `nl_cli_ldir_index' already counted
+    ;; (IDX from BASE_IDX to LIMIT, exclusive).  Returns the new TOFF.
+    (defun nl_cli_ldir_write_dirs (sp0 idx limit dd_value tbuf toff)
+      (if (>= idx limit)
+          toff
+        (let* ((dir_ptr (nl_argv_word sp0 (+ idx 1)))
+               (expanded (alloc-bytes 32 8))
+               (toff2 (nl_cli_put_byte tbuf toff 32)))
+          (seq
+           (nl_cli_expand_load_path dir_ptr dd_value expanded)
+           (nl_cli_ldir_write_dirs
+            sp0 (+ idx 2) limit dd_value tbuf
+            (nl_cli_put_string_value tbuf toff2 expanded 1))))))
     (defun nl_cli_bare_legacy_command_p (ptr)
       (if (= (nl_cstr_eq_bare_eval ptr) 1)
           1
@@ -27928,6 +27988,94 @@ correctly."
               (bf_rq_copy dptr buf 0 0 dlen)
               (nl_cstr_copy_into cpath buf dlen)
               (nl_alloc_str buf total out)))))))
+    ;; feat/standalone-agent-loadpath: `invocation-name' / `invocation-
+    ;; directory', matching Emacs's own split of argv[0] (measured against
+    ;; host Emacs 31.1): `invocation-name' is the substring after the LAST
+    ;; `/' (the whole string when there is none -- the no-slash PATH-search
+    ;; fallback Emacs performs in that case is NOT implemented; every
+    ;; caller this segment targets invokes the binary by an explicit path,
+    ;; so that branch falls back to `default-directory' instead), and
+    ;; `invocation-directory' is the substring UP TO AND INCLUDING that
+    ;; `/', expanded against the cwd the same way `-L'/`--load' expand a
+    ;; relative path (`nl_cli_expand_load_path') -- reused here as
+    ;; `nl_cli_expand_dirpart', a length-bounded sibling (the dirpart is a
+    ;; PREFIX of argv[0], not a NUL-terminated C string on its own, so it
+    ;; cannot reuse `nl_cstr_len'/`nl_cstr_copy_into' directly).  Neither
+    ;; function canonicalizes an embedded `.'/`..' the way Emacs's
+    ;; `expand-file-name' would (same disclosed limitation as `-L' above);
+    ;; irrelevant here too since every real invocation passes an absolute
+    ;; argv[0].
+    (defun nl_cli_last_slash (ptr i)
+      (if (< i 0) -1
+        (if (= (ptr-read-u8 ptr i) 47) i (nl_cli_last_slash ptr (- i 1)))))
+    (defun nl_cli_copy_bytes (src si dst di n)
+      (if (= n 0) 0
+        (seq (ptr-write-u8 dst di (ptr-read-u8 src si))
+             (nl_cli_copy_bytes src (+ si 1) dst (+ di 1) (- n 1)))))
+    (defun nl_cli_expand_dirpart (ptr plen dd_value out)
+      (let* ((pstr (alloc-bytes 32 8)))
+        (seq
+         (nl_alloc_str ptr plen pstr)
+         (if (= (bf_load_abs_p pstr) 1)
+             (wf_copy32 out pstr)
+           (let* ((dptr (nl_bi_strptr dd_value))
+                  (dlen (nl_bi_strlen dd_value))
+                  (total (+ dlen plen))
+                  (buf (alloc-bytes total 1)))
+             (seq
+              (bf_rq_copy dptr buf 0 0 dlen)
+              (nl_cli_copy_bytes ptr 0 buf dlen plen)
+              (nl_alloc_str buf total out)))))))
+    (defun nl_cli_compute_invocation (argv0 dd_value invname_out invdir_out)
+      (let* ((n (nl_cstr_len argv0))
+             (k (nl_cli_last_slash argv0 (- n 1))))
+        (if (< k 0)
+            (seq
+             (nl_alloc_str argv0 n invname_out)
+             (wf_copy32 invdir_out dd_value))
+          (seq
+           (nl_alloc_str (+ argv0 (+ k 1)) (- n (+ k 1)) invname_out)
+           (nl_cli_expand_dirpart argv0 (+ k 1) dd_value invdir_out)))))
+    ;; feat/standalone-agent-loadpath: `-L DIR' support.  Emacs's own
+    ;; semantics (measured against host Emacs 31.1, `emacs -Q --batch -L a
+    ;; -L b --eval ...'): each `-L DIR' PREPENDS DIR to `load-path', in
+    ;; command-line order (`-L a -L b' => load-path starts (a b ...)), and
+    ;; DIR is expanded against the cwd exactly like any other relative file
+    ;; name.  `nl_cli_ldir_apply' reuses `nl_cli_expand_load_path' (the
+    ;; same cwd-relative expansion `--load' already uses for
+    ;; `load-file-name') for that, then synthesizes and evaluates
+    ;; `(setq load-path (append (list "DIR1" "DIR2" ...) load-path))'
+    ;; through the ordinary top-level reader/eval loop -- run AFTER the
+    ;; stdlib prelude (which is what sets the baseline `load-path' in the
+    ;; first place; running before it would just be clobbered) and BEFORE
+    ;; the user's `--load' FILE / `--eval' EXPR / `--repl' session.
+    ;; A no-op (BASE_IDX == EFF_IDX, no `-L' given) costs one integer
+    ;; compare and nothing else -- existing invocations are unaffected.
+    ,(nelisp-standalone--copy-lit-defun 'nl_ldir_prefix
+                                        "(setq load-path (append (list")
+    ,(nelisp-standalone--copy-lit-defun 'nl_ldir_suffix
+                                        ") load-path))\n")
+    (defun nl_cli_ldir_apply (sp0 base_idx eff_idx dd_value fbuf src cursor
+                                   result pool out ctx builtin_sym)
+      (if (= base_idx eff_idx)
+          0
+        (let* ((off (nl_ldir_prefix fbuf 0))
+               (off2 (nl_cli_ldir_write_dirs sp0 base_idx eff_idx dd_value
+                                             fbuf off))
+               (off3 (nl_ldir_suffix fbuf off2))
+               (name-buf (alloc-bytes 16 1)))
+          (seq
+           (nl_alloc_str fbuf off3 src)
+           ,@(nelisp-standalone--byte-write-forms 'name-buf "<load-path>")
+           ;; report_errors=0: this source is build-generated (only the
+           ;; already-escaped DIR string literals come from argv), the
+           ;; same trust level as prelude-priming just above it -- a
+           ;; hypothetical failure here should not mask the user's own
+           ;; `--load'/`--eval' with a confusing internal diagnostic.
+           (nl_eval_source_all src cursor result pool out ctx builtin_sym 0
+                                name-buf
+                                ,(length (encode-coding-string "<load-path>"
+                                                                'utf-8 t)))))))
     (defun driver (sp)
      (let* ((arena (nl_arena_init))
             ;; Increment 2 (`--cold-load-from PATH'): argv parsing moved UP,
@@ -27947,13 +28095,33 @@ correctly."
             ;; Normal layout: [argc argv0 argv1 argv2 argv3].
             ;; Some macOS LC_MAIN entries expose argv+1 in the start shim:
             ;; [argc argv1 argv2 argv3 ...].  Select the shared logical view.
-            (path (if (= argv_shifted_p 1) slot0 slot1))
-            (arg2 (if (= argv_shifted_p 1)
-                      slot1
-                    (if (> argc 2) slot2 0)))
-            (arg3 (if (= argv_shifted_p 1)
-                      slot2
-                    (if (> argc 3) slot3 0)))
+            ;; feat/standalone-agent-loadpath: BASE_IDX is where `path' used
+            ;; to be read from unconditionally (slot0 shifted / slot1
+            ;; normal, in `nl_argv_word' index terms); EFF_IDX skips zero or
+            ;; more leading `-L DIR' pairs from there.  `path'/`arg2'/`arg3'
+            ;; below are now read at EFF_IDX (+0/+1/+2) instead of the fixed
+            ;; slot0..slot3 -- when no `-L' is given EFF_IDX == BASE_IDX and
+            ;; every one of these three reads is byte-for-byte the same
+            ;; value the old slot0..slot3 expressions produced (verified: on
+            ;; the normal/unshifted layout slot1/slot2/slot3 ARE
+            ;; `nl_argv_word' at index 1/2/3, which is BASE_IDX+0/+1/+2 when
+            ;; BASE_IDX=1; on the shifted layout slot0/slot1/slot2 are
+            ;; `nl_argv_word' at index 0/1/2 = BASE_IDX+0/+1/+2 when
+            ;; BASE_IDX=0 -- the two `if (> argc N) ... 0' bounds checks the
+            ;; unshifted arm already had are now applied uniformly to both
+            ;; layouts, which only matters when argc is too small to hold
+            ;; arg2/arg3 -- there `nl_argv_word' would otherwise read the
+            ;; kernel's `argv[argc] == NULL' slot anyway, so the value was
+            ;; already 0).  `slot0'..`slot3' stay as-is: `argv_shifted_p'
+            ;; above and the sp0 shift-back writeback further down (used by
+            ;; the runtime-image/artifact FORM scanners, which start at a
+            ;; fixed physical offset and are out of scope for `-L') still
+            ;; need them.
+            (base_idx (if (= argv_shifted_p 1) 0 1))
+            (eff_idx (nl_cli_ldir_index sp0 argc base_idx))
+            (path (nl_argv_word sp0 eff_idx))
+            (arg2 (if (< (+ eff_idx 1) argc) (nl_argv_word sp0 (+ eff_idx 1)) 0))
+            (arg3 (if (< (+ eff_idx 2) argc) (nl_argv_word sp0 (+ eff_idx 2)) 0))
             ;; flat-arena cold loader: BEFORE any boot alloc, if the marker image
             ;; exists (or `--cold-load-from PATH' named an image), load it into
             ;; the arena + bump the cursor past it so every following alloc
@@ -28014,6 +28182,21 @@ correctly."
             (dd_sym_buf (alloc-bytes ,(* 8 (length (nelisp-standalone--name-words "default-directory"))) 1))
             (dd_sym (alloc-bytes 32 8))
             (dd_value (alloc-bytes 32 8))
+            ;; feat/standalone-agent-loadpath: `noninteractive' / `invocation-
+            ;; name' / `invocation-directory', same shallow-`let*'-then-
+            ;; `nl_env_set_value'-in-the-`seq'-body idiom as `default-
+            ;; directory' just above (see the Doc 152 artifact-cli-silent-
+            ;; noop comment further down for why these must NOT be set from
+            ;; deep inside the `path' dispatch `cond').
+            (noninteractive_sym_buf (alloc-bytes ,(* 8 (length (nelisp-standalone--name-words "noninteractive"))) 1))
+            (noninteractive_sym (alloc-bytes 32 8))
+            (noninteractive_value (alloc-bytes 32 8))
+            (invname_sym_buf (alloc-bytes ,(* 8 (length (nelisp-standalone--name-words "invocation-name"))) 1))
+            (invname_sym (alloc-bytes 32 8))
+            (invname_value (alloc-bytes 32 8))
+            (invdir_sym_buf (alloc-bytes ,(* 8 (length (nelisp-standalone--name-words "invocation-directory"))) 1))
+            (invdir_sym (alloc-bytes 32 8))
+            (invdir_value (alloc-bytes 32 8))
             (prompt_p (if (= (nl_cstr_eq_no_prompt arg2) 1)
                           0
                         (if (= (nl_cstr_eq_no_prompt arg3) 1) 0 1)))
@@ -28061,6 +28244,12 @@ correctly."
         (nl_alloc_symbol environ_sym_buf ,(length (encode-coding-string "nelisp--environment" 'utf-8 t)) environ_sym)
         ,@(nelisp-standalone--byte-write-forms 'dd_sym_buf "default-directory")
         (nl_alloc_symbol dd_sym_buf ,(length (encode-coding-string "default-directory" 'utf-8 t)) dd_sym)
+        ,@(nelisp-standalone--byte-write-forms 'noninteractive_sym_buf "noninteractive")
+        (nl_alloc_symbol noninteractive_sym_buf ,(length (encode-coding-string "noninteractive" 'utf-8 t)) noninteractive_sym)
+        ,@(nelisp-standalone--byte-write-forms 'invname_sym_buf "invocation-name")
+        (nl_alloc_symbol invname_sym_buf ,(length (encode-coding-string "invocation-name" 'utf-8 t)) invname_sym)
+        ,@(nelisp-standalone--byte-write-forms 'invdir_sym_buf "invocation-directory")
+        (nl_alloc_symbol invdir_sym_buf ,(length (encode-coding-string "invocation-directory" 'utf-8 t)) invdir_sym)
         (nl_sexp_clone_into globals (+ ctx 0))
         (nl_sexp_clone_into frames (+ ctx 32))
         (nl_sexp_clone_into unbound (+ ctx 64))
@@ -28100,6 +28289,16 @@ correctly."
         ;; getcwd(2) answers it here, with the trailing slash Emacs keeps.
         (nl_os_getcwd dd_value)
         (nl_env_set_value ctx dd_sym dd_value)
+        ;; feat/standalone-agent-loadpath: this standalone CLI is always
+        ;; batch (no TTY interaction loop other than `--repl''s own line
+        ;; reader, which does not consult `noninteractive'), so `t'
+        ;; unconditionally -- matching `emacs --batch''s value, which is
+        ;; what every one of this segment's callers runs against.
+        (wf_write_t noninteractive_value)
+        (nl_env_set_value ctx noninteractive_sym noninteractive_value)
+        (nl_cli_compute_invocation slot0 dd_value invname_value invdir_value)
+        (nl_env_set_value ctx invname_sym invname_value)
+        (nl_env_set_value ctx invdir_sym invdir_value)
         ;; rec_max 16000: Doc 152 Stage 3 rooting adds root-depth 3N+6 per
         ;; non-tail recursion.  The 4 MiB region has 131072 entries, so the
         ;; guard fires near N=8000/root-depth=24006 with 107066 entries free.
@@ -28244,6 +28443,8 @@ correctly."
                   ,@(nelisp-standalone--reader-repl-prelude-forms
                      'fbuf 'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym))
                0)
+             (nl_cli_ldir_apply sp0 base_idx eff_idx dd_value fbuf src cursor
+                                 result pool out ctx builtin_sym)
              (ptr-write-u64 268436216 0 0)
              (nl_repl_loop prompt_p print_p linebuf fbuf src cursor result pool out ctx builtin_sym)
              (ptr-write-u64 268436216 0 1)
@@ -28300,6 +28501,9 @@ correctly."
                            ,@(nelisp-standalone--reader-repl-prelude-forms
                               'fbuf 'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym))
                         0)
+                      (nl_cli_ldir_apply sp0 base_idx eff_idx dd_value fbuf
+                                         src cursor result pool out ctx
+                                         builtin_sym)
                       (nl_cli_eval_source arg2 fbuf src)
                       ;; Doc 180 Phase 1: allocate+write "<eval>" HERE, not
                       ;; earlier -- the `if (< _cl 0) ...' prelude-priming
@@ -28348,6 +28552,8 @@ correctly."
                     ,@(nelisp-standalone--reader-repl-prelude-forms
                        'fbuf 'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym))
                  0)
+               (nl_cli_ldir_apply sp0 base_idx eff_idx dd_value fbuf src
+                                   cursor result pool out ctx builtin_sym)
                (let* ((n (nl_os_read_file_cpath
                           arg2 fbuf
                           ,nelisp-standalone--reader-read-cap)))

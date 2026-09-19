@@ -608,5 +608,30 @@
 # it (run 35328696106: 30.1 stopped at emacs-compat, 29.4 at the VS Code
 # step, and the binary-size step is recorded `skipped' in both).  The ratchet
 # was working; nothing was letting it speak.
-size 8226496
+#
+# 2026-09-19 (feat/standalone-agent-loadpath, segment 2 of "run the NeLisp
+# agent host on the standalone NeLisp binary"): measured, in this same
+# worktree, the same way the 527b28ca6/HEAD delta above was --
+#
+#   main 24e7a17ba (segment 1 HEAD, this segment's own starting point)   8,363,160 B
+#   HEAD (this segment's `-L'/`--directory'/`noninteractive'/
+#         `invocation-name'/`invocation-directory' CLI additions +
+#         `file-symlink-p'/`set-process-query-on-exit-flag'/
+#         `process-query-on-exit-flag' prelude additions)               8,392,400 B
+#   delta                                                                  +29,240 B  (+0.35%)
+#
+# Real new linked code (17 new unsafe-inventory-counted primitive calls
+# alone, tools/unsafe-inventory-baseline.txt 834 -> 851, plus the three
+# new prelude `defun's), not linker/alignment noise -- the old `size'
+# (8,226,496) already undershot the 24e7a17ba control by 136,664 B before
+# this segment touched anything (pre-existing drift from some earlier,
+# unrelated commit that grew the binary without raising this pin and
+# happened to stay inside the 2% ceiling; out of this segment's scope to
+# retroactively explain, so left alone rather than folded into this
+# entry).  No CI run was available to cross-check against a local build
+# the way the note above this one does (local-vs-CI can differ, per that
+# note's own ~57KB example) -- flagged here rather than silently assumed
+# away; if CI's number for this exact tree differs materially once a run
+# exists, re-pin from that instead of this local measurement.
+size 8392400
 slack-pct 2

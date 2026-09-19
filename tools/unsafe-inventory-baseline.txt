@@ -321,7 +321,13 @@
 # 2026-09-19 953 -> 956: the three alloc-bytes calls of the CLI `--load'
 # load-file-name binding (see the scripts/nelisp-standalone-build.el pin,
 # 831 -> 834, below).  Raised consciously in the commit that adds them.
-unsafe-call 956
+# 2026-09-19 956 -> 973 (feat/standalone-agent-loadpath): 17 new calls in
+# scripts/nelisp-standalone-build.el, all in `driver' or its new helpers,
+# none in an `nl-unsafe' block (see the scripts/nelisp-standalone-build.el
+# pin, 834 -> 851, below for the itemized 17).  Counted from `git diff'
+# added lines, cross-checked against the gate's own before/after totals
+# (956/973) and the per-file delta (834/851) -- all three agree.
+unsafe-call 973
 
 # `pinned-kernel-call FILE COUNT' pins the per-file unquoted `unsafe-call'
 # count behind `total' above -- the kernel files that actually carry
@@ -501,7 +507,40 @@ pinned-kernel-call scripts/nelisp-gc-pause-growth.el 2
 # nl_eval_source_all): one alloc-bytes for the argv string as a Sexp, one
 # for the cwd-joined path, one 96-byte block for the three scratch slots.
 # Taken from the scanner, not summed on paper.
-pinned-kernel-call scripts/nelisp-standalone-build.el 834
+# 2026-09-19 834 -> 851 (feat/standalone-agent-loadpath, segment 2 of "run
+# the NeLisp agent host on the standalone NeLisp binary"): 17 new calls,
+# none in an `nl-unsafe' block, cross-checked call-by-call against `git
+# diff scripts/nelisp-standalone-build.el' (13 alloc-bytes, 2
+# ptr-read-u8, 1 ptr-write-u8, 1 ptr-read-u64 -- matches the gate's own
+# +17 exactly):
+#   -L DIR / --directory DIR (repeatable, prepended to `load-path'):
+#     nl_argv_word: 1 ptr-read-u64 (generic argv[idx] read off the entry
+#       stack, replacing the fixed slot0..slot3 reads for `path'/`arg2'/
+#       `arg3' once `-L' pairs are skipped).
+#     nl_cli_ldir_write_dirs: 1 alloc-bytes (EXPANDED, the cwd-joined
+#       Sexp string for one -L DIR, reusing `nl_cli_expand_load_path').
+#     nl_cli_ldir_apply: 1 alloc-bytes (NAME-BUF, the `"<load-path>"'
+#       diagnostic-name literal buffer, same idiom as `"<prelude>"'/
+#       `"<eval>"' above).
+#   noninteractive / invocation-name / invocation-directory: 9
+#     alloc-bytes -- three symbol-name buffers (`noninteractive_sym_buf'/
+#     `invname_sym_buf'/`invdir_sym_buf') + three interned-symbol boxes
+#     (`noninteractive_sym'/`invname_sym'/`invdir_sym') + three value
+#     boxes (`noninteractive_value'/`invname_value'/`invdir_value'), all
+#     `driver' `let*' bindings mirroring `default-directory''s existing
+#     three-buffer shape immediately above them.
+#   invocation-name/-directory argv[0] splitting: 4 calls --
+#     nl_cli_last_slash: 1 ptr-read-u8 (scans argv[0] for the last `/').
+#     nl_cli_copy_bytes: 1 ptr-read-u8 + 1 ptr-write-u8 (length-bounded
+#       byte copy for a SUBSTRING of argv[0], which cannot reuse the
+#       NUL-terminated `nl_cstr_copy_into').
+#     nl_cli_expand_dirpart: 2 alloc-bytes (PSTR, the dirpart-as-Sexp-
+#       string; BUF, the cwd-joined result when the dirpart is relative)
+#       -- the `nl_cli_expand_load_path' pattern, length-bounded instead
+#       of NUL-terminated.
+# Taken from the scanner (851) and cross-checked against `git diff', not
+# summed on paper.
+pinned-kernel-call scripts/nelisp-standalone-build.el 851
 # 2026-09-11: one GC snapshot raw-address probe, bounded by the named table
 # contract and used only for structured diagnostics.
 pinned-kernel-call lisp/nelisp-repl-gc.el 1
