@@ -566,7 +566,11 @@ Split apart (§6.2), the cost is *not* the hash.  One
 =nelisp-standalone--unit-cache-key= takes 2.761 s, of which =secure-hash=
 is 0.053 s and =prin1-to-string= is the rest.  Times 112 units that is
 minutes before compilation starts, and the largest unit source is 17x the
-one measured.  The barrier moved from digesting to *printing*, which is a
+one measured.  (The hash half of that split has since been confirmed
+independently — a whole =secure-hash= call is 56.0 ms, timed step by step
+in §6.6.  The whole-key figure has not: it was taken before the collection
+hazard in §6.6 was understood, and §6.6's collection-controlled numbers
+supersede it.  The ratio, and the conclusion drawn from it, are unchanged.)  The barrier moved from digesting to *printing*, which is a
 runtime performance question and not a gap in this document's list.
 
 P3's own deliverable is complete.  The phase does not close until either
@@ -668,6 +672,15 @@ problem somewhere else entirely:
 | =secure-hash= over the resulting text | *0.053 s* | — |
 | whole =nelisp-standalone--unit-cache-key= | 2.761 s | 0.0001 s |
 
+Read that table with §6.6's second hazard in mind: these timings did not
+control for the garbage collection the printer provokes, so the standalone
+column carries an unattributed collection of roughly half a second.  The
+=secure-hash= row is the one that has since been confirmed by a different
+route — 56.0 ms for a whole call, timed step by step in §6.6 — and the
+whole-key row is the one superseded there.  The conclusion below does not
+move: half a second either way leaves hashing a small percentage of a key
+that costs seconds.
+
 *Hashing is 2% of the key.*  The external helper does its job; Option B
 was the right call and the 5.6-hour pure-Elisp figure is gone.  What is
 left is the printer: =prin1-to-string= runs roughly *twenty thousand times
@@ -756,24 +769,26 @@ hand-assembling gate lists.
 P3 removed the hashing barrier and uncovered the one underneath it.
 
 =nelisp-standalone--unit-cache-key= prints the unit source with
-=prin1-to-string= and hashes the text.  Measured 2026-09-19 on a reader
-built with P3's bridge, the split is lopsided: for =shim-source= (6,746
-chars) the whole key is 2.761 s, of which =secure-hash= is *0.053 s*.
-The printer is the other 98%.
+=prin1-to-string= and hashes the text.  The hash is not the cost.  Timed
+step by step on a reader built with P3's bridge, a whole =secure-hash=
+call on 11,537 characters is *56.0 ms*, and it divides as:
 
-It scales with the source, near-linearly, and the sources get much
-bigger:
+| step | cost |
+|---+---|
+| =executable-find= | 10.6 ms |
+| =make-temp-file= | 7.8 ms |
+| =write-region= | 0.5 ms |
+| =call-process= (=sha1sum=) | 34.1 ms |
+| =buffer-string= + =substring= + =delete-file= | 0.7 ms |
 
-| unit source | prin1 chars | key |
-|---+---+---|
-| =shim-source= | 6,746 | 2.178 s |
-| =arena-source= | 13,853 | 5.670 s |
-| =gc-source= | 50,039 | 20.119 s |
-| =applyfn-baked-source= | 115,212 | *48.593 s* |
+The printer is everything else.  For =shim-source= (6,746 printed chars)
+the whole key costs *3.065 s* measured as whole-process wall clock; the
+hash inside it is under 2%.
 
-Those four alone are 76.6 s.  Host Emacs 30.1 keys the largest of them in
-*0.0135 s* — roughly 3,600x — and finishes the entire build in 7 s with 0
-units recompiled.  A build links 112 units.
+It scales with the source, and the sources get much bigger.  Host Emacs
+30.1 keys the largest of them in *0.0135 s* — roughly 3,600x — and
+finishes the entire build in 7 s with 0 units recompiled.  A build links
+112 units.
 
 That is why =nelisp-standalone-build-application= sat at 99.9% CPU for 30
 minutes and produced no ELF.  It is slow, not stuck, and the slowness is
@@ -781,28 +796,26 @@ not in anything Doc 205 set out to fix.
 
 *** Where the time goes, measured
 
-Profiled 2026-09-19 on =shim-source= (1,512 ms baseline, reproducible to
-±2 ms across processes).  Symbol printing is the bulk of it:
+Measured 2026-09-19 as whole-process wall clock: a process prints
+=shim-source= K=5 times and nothing else, against a K=0 process (9.002 s)
+that subtracts startup, =require= and the digest warm.  Wall clock is used
+deliberately rather than an in-process timer, for the reason in the second
+hazard below — it charges each variant for every collection it provokes,
+whatever runs when the collection lands.
 
-| what was disabled | total | share of baseline |
+| what was disabled | per print | share of baseline |
 |---+---+---|
-| nothing (baseline) | 1,512.6 ms | — |
-| =nelisp--prn-symbol-needs-leading-escape-p= | 1,324.4 ms | 12% |
-| =nelisp--prn-symbol-char-needs-escape-p= | 1,096.1 ms | 28% |
-| =nelisp--prn-symbol-escaped= entirely | *369.8 ms* | *76%* |
+| nothing (baseline) | 2.733 / 2.936 s | — |
+| =nelisp--prn-symbol-needs-leading-escape-p= | 2.420 s | 15% |
+| =nelisp--prn-symbol-char-needs-escape-p= | 2.154 s | 24% |
+| =nelisp--prn-symbol-escaped= entirely | *0.666 / 0.721 s* | *76%* |
 
-Confirmed a second way, without touching any function cell — replacing
-every symbol in the input with the integer 0 gives 291.7 ms against
-1,524.1 ms — so the 76% is not an artefact of the substitution.
-
-Numbers are free: swapping every number for nil leaves 1,508.6 ms against
-1,524.1 ms.
-
-Inside the escaper's 1,143 ms, no single piece dominates: the
-leading-escape scan is 188 ms, the per-character predicate 416 ms, and the
-remaining ~539 ms is =char-to-string= plus the chunk append, one of each
-per character.  That is 601 calls for this source, ~1.9 ms apiece, on
-symbols averaging a handful of characters.
+Symbol escaping is three quarters of the printer.  That 76% was also the
+figure an in-process measurement gave before the collection hazard was
+understood; the two methods agreeing, by different routes, is why it is
+quoted.  Replacing the escaper's function cell costs nothing by itself —
+an identity wrapper measures 2,130.9 ms against a 2,128.2 / 2,105.7 ms
+baseline.
 
 *** Why the obvious fix does not work
 
@@ -815,40 +828,230 @@ returns =symbol-name= untouched looks free.  Measured, it is not:
 
 The synthetic input had long names and was not representative.  Real
 symbols here are short, so the extra look-ahead scan is pure addition
-while the per-character predicate still runs.  The table above says why
-there is no easy win: removing any one piece buys at most ~28%, and the
-gap to host Emacs is ~3,600x.  *Making this printer fast is not a
-tuning exercise.*
+while the per-character predicate still runs.
+
+Both of those figures predate the collection hazard below and have *not*
+been retaken; they are kept because the conclusion (a look-ahead fast path
+does not pay here) does not turn on a few per cent, but they should not be
+quoted as precise.
 
 *** So the two directions, now with numbers
 
 1. *Make the printer faster.*  The ceiling on incremental work is about
    40% (the escaper's three parts, best case).  Closing a 3,600x gap needs
    something structural — not this function's inner loop.
-2. *Stop printing whole unit sources to key them.*  Unchanged in
-   attractiveness and still unmeasured.  The constraint stands: the key
-   must not truncate, because two sources sharing a key hands back an
-   object compiled from code that was never compiled.  Worth noting that
-   a unit source is a constant read out of the builder's own file, whose
-   digest is already computed in 1.541 s — a key derived from
-   (defvar name + that digest) would print nothing at all.  That is a
-   candidate, not a plan; it has not been checked for correctness.
+2. *Stop printing whole unit sources to key them.*  Still the only
+   direction with room in it — but the specific candidate this section
+   first suggested is *dead*, and checking it is what killed it.
 
-Until one of them lands, a self-hosted =nelisp build= is *possible but not
-practical*, and this document should not go SHIPPED on the strength of
-P1-P3 alone.
+   The candidate was: a unit source is a constant in the builder's own
+   file, whose digest is already computed in 1.541 s, so a key of
+   (defvar name + that digest) would print nothing.  Two things make that
+   unsound, both found by reading =nelisp-standalone--cached-unit= and its
+   four call sites rather than by measuring:
 
-*** A measurement hazard found along the way
+   - *The source is not the defvar's value.*  Only the feature arm
+     (=:19567=) passes =(symbol-value src)= untouched.  The =:glue= arm
+     (=:19553=) picks =--target-arena-source= or =--target-gc-source=
+     depending on name and target; =:28427= passes the value through
+     =--patch-binding-kinds=; =:19577= passes generated driver source that
+     depends on =NELISP_SRC=.  The same name yields different sources
+     across targets and modes, so a name-keyed cache collides.
+   - *The digest covers five files; the sources come from far more.*
+     =--dep-files= lists =nelisp-standalone-build.el= plus four libraries.
+     There are 190 =lisp/nelisp-cc-*.el= files, and call sites from
+     =:29070= onward =locate-library= them individually.  A key built from
+     name + those five digests would not move when the other 185 change.
 
-Consecutive measurements in one process are not comparable here.  Running
-the same =prin1-to-string= twice gives 1,511 ms then 2,932 ms, and
+   That second point is not hypothetical.  It is exactly the defect
+   =--cached-unit='s own docstring records from 2026-08-19: the cache was
+   keyed on NAME with freshness from a hand-written dependency list, the
+   list was wrong at two of twenty call sites, and editing the
+   =lisp/nelisp-cc-*.el= a source came from left the cache fresh and
+   relinked the *old* object.  The build succeeded, the binary was
+   unchanged, and the only symptom was that the edit had no effect.
+   Content-addressing exists to make that impossible.
+
+*** The replacement that survives: a type-tagged walk
+
+Any replacement must still be a function of the full source content, so
+what is left is to compute that content digest *without going through the
+printer* — walk the sexp and append pieces directly.
+
+**** It has to be tagged, and the untagged version is unsound
+
+The first version simply appended each atom's text.  It was fast and
+wrong:
+
+| written | untagged text | collides with |
+|---+---+---|
+| =(nil n)= | ="(nn)"= | =(n n)= — nil against the symbol =n= |
+| =(12 n)= | ="(12n)"= | the symbol =\12= |
+| =("ab" n)= | ="(abn)"= | the symbol =ab= |
+
+Tagging each atom by type and prefixing every variable-length payload with
+its length (=#n=, =#T=, =#s<len>:<name>=, =#i<val>;=, =#t<len>:<text>=)
+makes all nine hand-built cases distinct.
+
+**** The fallback arm is the one hole, and it is closed by signalling
+
+A =t= arm that emitted a constant would put every unhandled type into a
+single collision class.  Censused over all thirteen =defconst ...-source=
+constants — 86,349 objects — that arm is never reached:
+
+| kind | count |
+|---+---|
+| cons | 43,168 |
+| symbol | 22,561 |
+| nil | 13,751 |
+| integer | 6,846 |
+| string | 19 |
+| t | 4 |
+
+No vector, float, record, hash-table, bool-vector or char-table occurs.
+That is a fact about today's sources, not a guarantee about tomorrow's, so
+the arm must *signal*.  Written that way and run against the tree, with a
+positive control first — the arm has to fire on something it cannot
+handle, or the run proves nothing:
+
+: positive control (a vector) fired: t   hits=1
+: walked ok=13  failed=0  fallback hits=0 (want 0)
+
+The census counts what I thought to count; this is the stronger form,
+because the check can fail and did not.
+
+**** The key is deterministic
+
+The same 26 cells (13 sources x 2 schemes) were computed in two
+independent batches of fresh processes.  *All 26 digests matched.*
+Elapsed times moved by +0.6% to +9.3%, all in the same direction, which is
+the cost of the second batch sharing the machine — a reason to take ratios
+within one batch, never across two.
+
+**** What it costs, across every source in the tree
+
+| source | current | tagged | x | method |
+|---+---+---+---+---|
+| =applyfn-baked= | 49,241.1 ms | 13,160.6 ms | 3.74x | in-process, both collected |
+| =gc= | 21,061.5 ms | 5,594.5 ms | 3.76x | in-process, both collected |
+| =arena= | 5,822.7 ms | 1,929.8 ms | 3.02x | in-process, both collected |
+| =reader-eval-source= | 3,328.0 ms | 1,149.0 ms | 2.90x | wall clock |
+| =shim= | 3,065.0 ms | 925.0 ms | 3.31x | wall clock |
+| =reader-capture= | 2,065.0 ms | 617.0 ms | 3.35x | wall clock |
+| =catch-throw= | 2,059.0 ms | 830.0 ms | 2.48x | wall clock |
+| =arglist= | 702.3 ms | 242.5 ms | 2.90x | in-process, neither collected |
+| =reader-boundary= | 583.4 ms | 217.0 ms | 2.69x | in-process, neither collected |
+| =trap= | 321.6 ms | 151.5 ms | 2.12x | in-process, neither collected |
+| =reader-errstub= | 198.9 ms | 108.9 ms | 1.83x | in-process, neither collected |
+| =callsite-demo= | 84.0 ms | 68.8 ms | 1.22x | in-process, neither collected |
+| =reader-mut-str-len= | 75.0 ms | 67.2 ms | 1.12x | in-process, neither collected |
+|---+---+---+---+---|
+| *total* | *88,607.5 ms* | *25,061.8 ms* | *3.54x* | 13 sources, none excluded |
+
+*88.6 s to 25.1 s.*  The method column is not decoration.  An in-process
+row is quoted only where a collection fell inside both timed regions or
+neither; the four sources where it fell inside the current scheme's region
+and not the tagged one cannot be compared that way at all, and are
+measured by whole-process wall clock instead, which charges each scheme
+for every collection it causes.  Mixing the two methods in one total is a
+compromise, and it is stated rather than hidden.
+
+Two things in that table matter more than the total.
+
+*The gain tracks size.*  The ratio runs from 3.76x down to 1.12x.  Every
+key pays a floor — ~55 ms for the external hash process, plus the
+collection the walk provokes — and for =reader-mut-str-len= that floor is
+the whole cost.  Only the sources measured in seconds benefit.
+
+*These are the thirteen =defconst ...-source= constants, not the 112 units
+a build links.*  Do not multiply this total out to 112.  The =:glue= arm
+picks between two of them by target, =--patch-binding-kinds= transforms
+one, and one call site generates its source from =NELISP_SRC=, so the
+whole-build figure has to be measured on a build.
+
+**** So it is real, and it is not enough
+
+The walk is about 3.5x cheaper across the sources the tree has, sound on
+all of them, deterministic, and needs no new primitive.  It is also not
+the thing that makes a self-hosted =nelisp build= practical: the largest
+single unit still costs 13.2 s against host Emacs's 0.0135 s, and these
+thirteen sources alone come to 25.1 s where host Emacs does the entire
+build, 112 units, in 7 s.  Direction 1's ~40% ceiling and direction 2's
+~3.5x do not multiply out to a 3,600x gap.
+
+Read this section as removing a wrong turn and pricing the right one.  It
+does not finish the job, and Doc 205 should not go SHIPPED on the strength
+of P1-P3 plus this.
+
+*** Two measurement hazards found along the way
+
+**** Consecutive measurements in one process are not comparable
+
+Running the same =prin1-to-string= twice gives 1,511 ms then 2,932 ms, and
 =garbage-collect= only brings it to 2,112 ms — it does not come back.  The
 arena has grown to 5 chunks, =used-bytes= 408 MB against
 =live-after-last-gc= 43.8 MB, and stays slow in that state.
 
 This was first misread as =fset= poisoning the function cell, because the
-A/B happened to use =fset=.  An identity wrapper disproved that: wrapping
-the escaper in =(lambda (s) (funcall orig s))= measures 1,527 ms against
-1,514 ms, i.e. free.  Every figure in this section is therefore *one
-measurement per process*.  The arena behaviour is a separate runtime
-question and is not chased here.
+A/B happened to use =fset=.  An identity wrapper disproved that.  Every
+in-process figure in this section is therefore one measurement per
+process.
+
+**** A collection is billed to whichever call runs next
+
+The second hazard is worse, because the call it lands on looks guilty.  A
+heavy allocation leaves the cost of the collection it provokes on the next
+thing that runs:
+
+| what was measured | cost |
+|---+---|
+| =(secure-hash 'sha1 "abc")=, nothing built first | 55.1 ms |
+| the same, after a sexp walk that builds strings | *613.9 ms* |
+| =(garbage-collect)= in that state, on its own | 547.9 ms |
+| =(secure-hash 'sha1 "abc")= immediately after that collect | 55.2 ms |
+| second and third calls | 54.1 / 56.3 ms |
+| after walking the largest source instead | *3,416.4 ms* |
+
+Three characters.  Neither length nor content can explain 613.9 ms, and
+the cost tracks how much was allocated, not what was hashed.
+
+This was diagnosed wrong four times before that — as slow hashing, as a
+multibyte input, as the way the string was built, and as content
+dependence — each with its own control, each control agreeing with the
+wrong conclusion because it reproduced the same allocation.  Two things
+settled it: hashing three characters, and replicating the hash bridge's
+body with per-step timers, which produced *the same digest in 56.0 ms*
+where the real call took 605.3 ms, proving no step inside it was slow.
+
+It also hides.  Inserting a =princ= between the walk and the hash makes
+the hash read 54.2 ms, because the collection lands on the =princ=.  An
+earlier probe reported "write-region 0.4 ms, call-process 54.5 ms, sum
+54.9" while leaving =make-temp-file= and =delete-file= untimed — the
+collection had landed outside the timers, and the "sum" was not the
+function's cost.
+
+Where an in-process figure is quoted above, the collection was detected
+rather than assumed, by sampling =:live-after-last-gc= around the timed
+region.  That detector was itself controlled before anything was concluded
+from it: it does not move across 100, 1,000 or 10,000 allocations and only
+moves once the count is large enough to trigger a collection, and a second
+collection that reclaims almost nothing still moves it.  So an unchanged
+field means no collection ran, and a changed one means it did.
+
+This hazard is *not* the arena growth above.  That one does not recover;
+this one is fully restored by a single collection.  They present almost
+identically, so both have to be tried.
+
+**** What to do instead
+
+Prefer whole-process wall clock for any comparison that will be quoted: K
+operations per process against a K=0 floor.  It does not care where a
+collection lands, and it is what a build actually experiences.  Descend to
+in-process timers only for a breakdown, and then report whether a
+collection fell inside.
+
+One more trap, not about this runtime at all: the first wall-clock script
+printed =9,00s= under a comma-decimal locale, and the arithmetic that
+followed truncated at the comma — whole-second resolution wearing
+hundredths.  Timing scripts here set =LC_ALL=C= and run the formatter
+against a known value first.
