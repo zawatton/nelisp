@@ -262,7 +262,13 @@
 # byte-identically to both scripts/nelisp-stdlib-prelude.el and
 # src/nelisp-buffer.el, same as its neighbor nelisp-char-after already
 # pinned just below.
-ns-collision 268
+# 268 -> 269 on 2026-09-19: substring-no-properties is new, added
+# byte-identically to both lisp/nelisp-stdlib-misc.el and
+# scripts/nelisp-stdlib-prelude.el alongside the buffer-substring-no-
+# properties fix (Doc 204 gave the runtime real buffers; that pin's own
+# key is unchanged, since its shape is not part of a plain ns-collision
+# key).
+ns-collision 269
 # 97 -> 96 on 2026-08-19: `string-equal' no longer differs between the two
 # files -- the prelude's now signals for a non-string instead of falling
 # through to `equal', and the lisp copy was brought with it.  Ratcheted down
@@ -1069,6 +1075,11 @@ pinned-collision ns-collision	setq-local	lisp/nelisp-stdlib-eval-special.el scri
 pinned-collision ns-collision	standard-output	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	string-empty-p	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	string-equal	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el
+# 2026-09-19: `substring-no-properties' added alongside the
+# `buffer-substring-no-properties' fix (Doc 204) -- no text properties in
+# this runtime, so it is `substring' verbatim; identical bodies in both
+# mirrors, same as `buffer-substring-no-properties' above.
+pinned-collision ns-collision	substring-no-properties	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	with-no-warnings	lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	with-suppressed-warnings	lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	zerop	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el

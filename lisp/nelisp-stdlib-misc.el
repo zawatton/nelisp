@@ -889,7 +889,11 @@ No-ops on substrates without `nelisp--syscall-path-int' (the historic stub)."
       (signal 'wrong-type-argument (list 'integer-or-marker-p start)))
     (unless (integerp end)
       (signal 'wrong-type-argument (list 'integer-or-marker-p end)))
-    ""))
+    (buffer-substring start end)))
+
+(unless (fboundp 'substring-no-properties)
+  (defun substring-no-properties (string &optional from to)
+    (substring string from to)))
 
 
 ;; ---------------------------------------------------------------------

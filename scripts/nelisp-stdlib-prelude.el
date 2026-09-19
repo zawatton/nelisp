@@ -448,15 +448,21 @@ times, so `(exp -1.0e6)' took ~1.44e6 iterations and `(exp -1.0e9)' ~1.44e9
             (setq sum (nelisp--dd-add sum term))
             (setq n (1+ n)))
           (nelisp--scale-pow2 (+ (car sum) (cdr sum)) k)))))))
-;; There are no buffers here, so this can only report the type error --
-;; which is the half Emacs reaches first anyway for a bad position.
+;; This stopped being a no-buffers stub on 2026-09-19 (Doc 204 gave the
+;; runtime real buffers).  There are no text properties in this runtime,
+;; so `buffer-substring-no-properties' and `buffer-substring' coincide --
+;; the two type checks below still run first, same as Emacs.
 (unless (fboundp 'buffer-substring-no-properties)
   (defun buffer-substring-no-properties (start end)
     (unless (integerp start)
       (signal 'wrong-type-argument (list 'integer-or-marker-p start)))
     (unless (integerp end)
       (signal 'wrong-type-argument (list 'integer-or-marker-p end)))
-    ""))
+    (buffer-substring start end)))
+;; Same reasoning: no text properties, so this is `substring'.
+(unless (fboundp 'substring-no-properties)
+  (defun substring-no-properties (string &optional from to)
+    (substring string from to)))
 ;; No text properties in this runtime, so this is `equal' -- and the same
 ;; `defalias' the lisp/ mirror uses, so `make ns-gate' sees one definition.
 (unless (fboundp 'equal-including-properties)
