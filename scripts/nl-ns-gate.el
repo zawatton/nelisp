@@ -45,7 +45,7 @@ thousands of lines and nobody would read a diff of it.")
 (defvar nl-ns-gate-accepted-file "scripts/nl-ns-accepted.el"
   "Where the accepted set lives.")
 
-(defvar nl-ns-gate-baseline-file "packages/nl-ns/baseline/emacs-30.1.el"
+(defvar nl-ns-gate-baseline-file "packages/nl-ns/baseline/emacs-30.2.el"
   "Host baseline used for the host-shadow findings.")
 
 (defun nl-ns-gate--files ()

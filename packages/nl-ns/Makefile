@@ -1,6 +1,6 @@
 EMACS ?= emacs
 PACKAGE_ROOT := $(dir $(lastword $(MAKEFILE_LIST)))
-BASELINE := $(PACKAGE_ROOT)baseline/emacs-30.1.el
+BASELINE := $(PACKAGE_ROOT)baseline/emacs-30.2.el
 
 .PHONY: baseline ns-report
 

@@ -44,7 +44,7 @@ assert nothing when the answer is no."
 
 (defun nl-ns-test--baseline-file ()
   "Return the checked-in baseline path."
-  (expand-file-name "baseline/emacs-30.1.el" (nl-ns-test--package-root)))
+  (expand-file-name "baseline/emacs-30.2.el" (nl-ns-test--package-root)))
 
 (defun nl-ns-test--mini-baseline ()
   "Return a tiny in-memory baseline for host-shadow tests."

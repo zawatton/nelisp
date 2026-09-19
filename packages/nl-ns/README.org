@@ -103,8 +103,21 @@ must keep running on =target/nelisp=, so it cannot ask the host runtime
 questions while analysing.  Instead a host-only generator dumps a
 readable baseline and the analyser reads that data back.
 
-- The checked-in baseline is =baseline/emacs-30.1.el=.
-- Regenerate it with =make baseline=.
+- The checked-in baseline is =baseline/emacs-30.2.el=.  It is a curated
+  subset, not the generator's full output: the generator dumps every
+  =fboundp= symbol of the host (9,153 functions on Emacs 30.2), while the
+  checked-in file lists the seven functions, two variables and eight
+  libraries the host-shadow findings are gated on.  Every entry was
+  verified present on a real Emacs 30.2 (nix-emacs-ci's =emacs-30-2=, the
+  same build CI installs) on 2026-09-19; =map= and =seq=, listed under
+  =:functions= since 2026-08-16, were removed then because they are
+  features, not functions, on any Emacs.
+- =make baseline= writes the generator's FULL dump over that file.  Do not
+  run it expecting the curated file back.  Widening the checked-in set to
+  the full dump is a ratchet change -- measured 2026-09-19 against the
+  30.2 dump, the gate reports 457 new gated findings (412
+  =ns-unsafe-shim-guard=, 45 =ns-partial-override=) across 35 files -- and
+  needs its own decision and its own acceptance work.
 - The generator is =scripts/nl-ns-dump-baseline.el= and is meant to run
   under =emacs -Q --batch=.
 - The baseline records the Emacs version, generation date, host
@@ -144,7 +157,7 @@ analysed as it stands.
 #+begin_src elisp
 (require 'nl-ns)
 
-(let ((baseline "packages/nl-ns/baseline/emacs-30.1.el")
+(let ((baseline "packages/nl-ns/baseline/emacs-30.2.el")
       (paths (file-expand-wildcards "lisp/*.el")))
   (let ((findings (nl-ns-check-files paths nil baseline)))
     (princ (nl-ns-report findings))

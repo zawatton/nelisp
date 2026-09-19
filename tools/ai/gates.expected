@@ -362,7 +362,7 @@ binary-size-ratchet
 # "host Emacs already on this machine" above is the reference side of the
 # diff, computed live, but the corpus and the standalone's own answers were
 # both built against Emacs 30.1 (docs/emacs-compat-table.txt's header;
-# packages/nl-ns/baseline/emacs-30.1.el for the separate nl-ns pin).  CI's
+# packages/nl-ns/baseline/emacs-30.2.el for the separate nl-ns pin).  CI's
 # 29.4 lane (GitHub Actions run 32606582250) failed this gate with a
 # 1,844-line diff that was real Emacs 29.4-vs-30.x behavior, not a NeLisp
 # defect -- the 30.1 lane, same commit, passed.  The Makefile target now

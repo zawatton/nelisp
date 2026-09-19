@@ -8,7 +8,7 @@
 ;;
 ;;   emacs -Q --batch -L packages/nl-prelude/src -L packages/nl-ns/src \
 ;;     -l packages/nl-ns/src/nl-ns-cmd.el -- \
-;;     --baseline packages/nl-ns/baseline/emacs-30.1.el \
+;;     --baseline packages/nl-ns/baseline/emacs-30.2.el \
 ;;     --fail-severity 3 path/to/file.el
 
 ;;; Code:

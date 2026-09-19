@@ -55,7 +55,7 @@ report success.")
   "Return the host baseline path, or nil when it is not available.
 Without a baseline the host-shadow findings are suppressed rather than
 guessed at, which is the right default but worth knowing about."
-  (let ((path "packages/nl-ns/baseline/emacs-30.1.el"))
+  (let ((path "packages/nl-ns/baseline/emacs-30.2.el"))
     (and (file-readable-p path) path)))
 
 (defun nelisp-ns-check-run ()

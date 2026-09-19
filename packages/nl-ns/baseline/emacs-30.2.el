@@ -1,7 +1,7 @@
-(:emacs-version "30.1"
- :generated-at "2026-08-15"
+(:emacs-version "30.2"
+ :generated-at "2026-09-19"
  :functions
- (autoloadp boundp cl-loop fboundp map pcase require seq symbol-function)
+ (autoloadp boundp cl-loop fboundp pcase require symbol-function)
  :variables
  (emacs-version load-path)
  :libraries

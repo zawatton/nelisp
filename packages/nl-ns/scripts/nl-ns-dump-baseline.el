@@ -7,7 +7,12 @@
 ;; Run under a real Emacs:
 ;;
 ;;   emacs -Q --batch -l scripts/nl-ns-dump-baseline.el \
-;;     --eval "(nl-ns-dump-baseline-write \"baseline/emacs-30.1.el\")"
+;;     --eval "(nl-ns-dump-baseline-write \"baseline/emacs-30.2.el\")"
+;;
+;; This writes the FULL dump (every `fboundp' symbol, every `boundp'
+;; symbol, every library basename on `load-path').  The checked-in
+;; baseline is a curated subset of that output, not the output itself;
+;; see README.org, "Host baseline", before overwriting it.
 
 ;;; Code:
 
