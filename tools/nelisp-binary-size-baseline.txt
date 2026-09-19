@@ -633,5 +633,9 @@
 # note's own ~57KB example) -- flagged here rather than silently assumed
 # away; if CI's number for this exact tree differs materially once a run
 # exists, re-pin from that instead of this local measurement.
-size 8392400
+# 2026-09-20: re-pinned from CI's own build of this tree -- run 35451087186,
+# ubuntu 30.2 lane, `./target/nelisp is 8384208 bytes' -- replacing the local
+# 8,392,400 the entry above measured (local vs CI differ by ~8 KB here, as the
+# note above anticipated).
+size 8384208
 slack-pct 2
