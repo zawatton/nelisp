@@ -2795,7 +2795,7 @@ standalone-reader-number-token-smoke: standalone-reader
 standalone-reader-bignum-smoke: standalone-reader
 	@out="$$($(STANDALONE_ULIMIT); timeout $(STANDALONE_SMOKE_TIMEOUT) $(STANDALONE_BIN) --load scripts/standalone-bignum-smoke.el)"; \
 	echo "$$out"; \
-	if echo "$$out" | grep -q 'BIGNUM-SMOKE cases=54 mismatches=0'; then \
+	if echo "$$out" | grep -q 'BIGNUM-SMOKE cases=120 mismatches=0'; then \
 	  echo "[standalone-reader-bignum-smoke] PASS"; \
 	else \
 	  echo "[standalone-reader-bignum-smoke] FAIL"; \

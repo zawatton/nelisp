@@ -247,6 +247,222 @@
   (bignum-smoke--check "GC stress (arithmetic-produced): count preserved"
     (= (length kept) 300)))
 
+;; -- Doc 190 Phase C (this session): `ash'/`logand'/`logior'/`logxor'/
+;; `lognot' accept a Bignum operand; `/'/`%'/`mod' accept a Bignum
+;; DIVIDEND paired with a small fixnum divisor.  Every expected value
+;; below is host-verified (GNU Emacs 31.1, this session's own
+;; `emacs -Q --batch' run, not from memory) -- including the three
+;; concrete motivating values from this task's own measured defect.
+
+;; -- ash: motivating values (the AOT compiler's own imm64-splitting
+;; shape, `nelisp-asm-x86_64--imm64-bytes').
+(bignum-smoke--check "ash motivating value1 >> 8"
+  (= (ash 8751669898145395319 -8) 34186210539630450))
+(bignum-smoke--check "ash motivating value1 << 8, bignump"
+  (let ((r (ash 8751669898145395319 8)))
+    (and (= r 2240427493925221201664) (bignump r))))
+(bignum-smoke--check "ash motivating value3 (>2^63) >> 8"
+  (= (ash 16045481047390945280 -8) 62677660341370880))
+
+;; -- ash: fixnum-operand left-shift overflow now PROMOTES instead of
+;; wrapping (the concrete against-the-bug case this task names: "check
+;; what shl does today with (ash 1 62) and (ash 1 63)").  The reviewer's
+;; own pre-fix measurement on this tree, added here verbatim as the
+;; against-the-bug corpus for this exact class: `(ash 1 61)' gave
+;; -2305843009213693952, `(ash 1 62)' gave 0, `(ash 1 64)' gave 1, and
+;; `(ash most-positive-fixnum 1)' gave -2 -- all four raw native-`shl'
+;; wraparounds on a 64-bit register, not bignum promotions, and all four
+;; WRONG NUMBERS WITH NO SIGNAL, worse than a signalled error.
+(bignum-smoke--check "ash 1 61 exact and bignum (fixnum boundary itself)"
+  (and (= (ash 1 61) 2305843009213693952) (bignump (ash 1 61))))
+(bignum-smoke--check "ash 1 62 exact and bignum"
+  (and (= (ash 1 62) 4611686018427387904) (bignump (ash 1 62))))
+(bignum-smoke--check "ash 1 63 exact and bignum (was raw 64-bit wraparound)"
+  (and (= (ash 1 63) 9223372036854775808) (bignump (ash 1 63))))
+(bignum-smoke--check "ash 1 64 exact"
+  (= (ash 1 64) 18446744073709551616))
+(bignum-smoke--check "ash -1 62 exact and bignum"
+  (and (= (ash -1 62) -4611686018427387904) (bignump (ash -1 62))))
+(bignum-smoke--check "ash -1 63 exact and bignum"
+  (and (= (ash -1 63) -9223372036854775808) (bignump (ash -1 63))))
+(bignum-smoke--check "ash most-positive-fixnum 3 exact"
+  (= (ash most-positive-fixnum 3) 18446744073709551608))
+(bignum-smoke--check "ash most-negative-fixnum 3 exact"
+  (= (ash most-negative-fixnum 3) -18446744073709551616))
+(bignum-smoke--check "ash most-positive-fixnum 1, exact and bignum (reviewer's own pre-fix -2)"
+  (and (= (ash most-positive-fixnum 1) 4611686018427387902)
+       (bignump (ash most-positive-fixnum 1))))
+
+;; -- ash: right shift by a count that reaches or exceeds the operand's
+;; own bit length (also fixes a latent native-sar-masked-to-6-bits
+;; fixnum bug this session found: a huge shift count must not be reduced
+;; mod 64 by the hardware shift instruction).
+(bignum-smoke--check "ash 1 -1000 is 0"
+  (= (ash 1 -1000) 0))
+(bignum-smoke--check "ash -1 -1000 is -1"
+  (= (ash -1 -1000) -1))
+(bignum-smoke--check "ash big -1000 is 0"
+  (= (ash 100000000000000000000000000000 -1000) 0))
+(bignum-smoke--check "ash neg big -1000 is -1"
+  (= (ash -100000000000000000000000000000 -1000) -1))
+
+;; -- ash: fixnum/bignum boundary, both shift directions, demotion
+;; verified by tag (Doc 190 §4's own discipline), not just value.
+(bignum-smoke--check "ash bignum boundary >> 1 demotes to fixnum"
+  (let ((r (ash 2305843009213693952 -1)))
+    (and (= r 1152921504606846976) (not (bignump r)))))
+(bignum-smoke--check "ash neg bignum boundary >> 1, exact"
+  (= (ash -2305843009213693953 -1) -1152921504606846977))
+(bignum-smoke--check "ash bignum boundary << 1, exact"
+  (= (ash 2305843009213693952 1) 4611686018427387904))
+(bignum-smoke--check "ash neg bignum boundary << 1, exact"
+  (= (ash -2305843009213693953 1) -4611686018427387906))
+
+;; -- ash: negative-operand floor-shift semantics (rounds toward
+;; -infinity, not toward zero): `(ash -5 -1)' is -3 = -(ceil(5/2)), not
+;; -2 = -(floor(5/2)).
+(bignum-smoke--check "ash -5 -1 is -3 (floor, not truncate)"
+  (= (ash -5 -1) -3))
+(bignum-smoke--check "ash neg bignum >> 37, exact (floor)"
+  (= (ash -123456789012345678901234567890 -37) -898266364037013256))
+(bignum-smoke--check "ash pos bignum >> 37, exact"
+  (= (ash 123456789012345678901234567890 -37) 898266364037013255))
+(bignum-smoke--check "ash neg bignum << 37, exact"
+  (= (ash -123456789012345678901234567890 37)
+     -16967771880870298596087029859591735214080))
+
+;; -- logand/logior/logxor: bignum-bignum, all four sign combinations.
+(bignum-smoke--check "logand big+ big+, exact"
+  (= (logand 123456789012345678901234567890 987654321098765432109876543210)
+     1943960184490269435062782658))
+(bignum-smoke--check "logior big+ big+, exact"
+  (= (logior 123456789012345678901234567890 987654321098765432109876543210)
+     1109167149926620841576048328442))
+(bignum-smoke--check "logxor big+ big+, exact"
+  (= (logxor 123456789012345678901234567890 987654321098765432109876543210)
+     1107223189742130572140985545784))
+(bignum-smoke--check "logand big- big+, exact"
+  (= (logand -123456789012345678901234567890 987654321098765432109876543210)
+     985710360914275162674813760554))
+(bignum-smoke--check "logior big- big+, exact"
+  (= (logior -123456789012345678901234567890 987654321098765432109876543210)
+     -121512828827855409466171785234))
+(bignum-smoke--check "logxor big- big+, exact"
+  (= (logxor -123456789012345678901234567890 987654321098765432109876543210)
+     -1107223189742130572140985545788))
+(bignum-smoke--check "logand big- big-, exact"
+  (= (logand -123456789012345678901234567890 -987654321098765432109876543210)
+     -1109167149926620841576048328442))
+(bignum-smoke--check "logior big- big-, exact"
+  (= (logior -123456789012345678901234567890 -987654321098765432109876543210)
+     -1943960184490269435062782658))
+(bignum-smoke--check "logxor big- big-, exact"
+  (= (logxor -123456789012345678901234567890 -987654321098765432109876543210)
+     1107223189742130572140985545784))
+
+;; -- logand/logior/logxor: mixed bignum/fixnum operands, including the
+;; motivating values, and demotion.
+(bignum-smoke--check "logand big+ small fixnum mask, exact"
+  (= (logand 123456789012345678901234567890 255) 210))
+(bignum-smoke--check "logand big- small fixnum mask, exact"
+  (= (logand -123456789012345678901234567890 255) 46))
+(bignum-smoke--check "logior big+ -1 is -1"
+  (= (logior 123456789012345678901234567890 -1) -1))
+(bignum-smoke--check "logand big+ 0 is 0, demotes to fixnum"
+  (let ((r (logand 123456789012345678901234567890 0)))
+    (and (= r 0) (not (bignump r)))))
+(bignum-smoke--check "logand motivating value1 255, exact"
+  (= (logand 8751669898145395319 255) 119))
+(bignum-smoke--check "logand motivating value2 255, exact"
+  (= (logand 7161130726839247202 255) 98))
+(bignum-smoke--check "logand motivating value3 (>2^63) 255, exact"
+  (= (logand 16045481047390945280 255) 0))
+
+;; -- lognot: bignum operand, both signs, and the fixnum/bignum boundary.
+(bignum-smoke--check "lognot big+, exact and bignum"
+  (let ((r (lognot 123456789012345678901234567890)))
+    (and (= r -123456789012345678901234567891) (bignump r))))
+(bignum-smoke--check "lognot big-, exact"
+  (= (lognot -123456789012345678901234567890) 123456789012345678901234567889))
+(bignum-smoke--check "lognot bignum boundary, exact"
+  (= (lognot 2305843009213693952) -2305843009213693953))
+(bignum-smoke--check "lognot neg bignum boundary, exact"
+  (= (lognot -2305843009213693953) 2305843009213693952))
+
+;; -- mod/%//: Bignum DIVIDEND with a small FIXNUM divisor, all four
+;; dividend/divisor sign combinations, plus the motivating values.  Per
+;; this task's own scope, `mod' itself needed NO native dispatch change
+;; (it is pure Elisp over `/'/`*'/`-'/`<', scripts/nelisp-stdlib-
+;; prelude.el) -- these checks also therefore prove that composition,
+;; not just `/''s own new dispatch arm.
+(bignum-smoke--check "mod motivating value1, exact"
+  (= (mod 8751669898145395319 256) 119))
+(bignum-smoke--check "mod motivating value2, exact"
+  (= (mod 7161130726839247202 1000) 202))
+(bignum-smoke--check "mod motivating value3 (>2^63), exact"
+  (= (mod 16045481047390945280 1000) 280))
+(bignum-smoke--check "mod big+ 6, exact"
+  (= (mod 123456789012345678901234567891 6) 1))
+(bignum-smoke--check "mod big- 6, exact"
+  (= (mod -123456789012345678901234567891 6) 5))
+(bignum-smoke--check "mod big+ -6, exact"
+  (= (mod 123456789012345678901234567891 -6) -5))
+(bignum-smoke--check "mod big- -6, exact"
+  (= (mod -123456789012345678901234567891 -6) -1))
+(bignum-smoke--check "% big+ 6, exact"
+  (= (% 123456789012345678901234567891 6) 1))
+(bignum-smoke--check "% big- 6, exact"
+  (= (% -123456789012345678901234567891 6) -1))
+(bignum-smoke--check "% big+ -6, exact"
+  (= (% 123456789012345678901234567891 -6) 1))
+(bignum-smoke--check "% big- -6, exact"
+  (= (% -123456789012345678901234567891 -6) -1))
+(bignum-smoke--check "/ big+ 6, exact and bignum"
+  (let ((r (/ 123456789012345678901234567891 6)))
+    (and (= r 20576131502057613150205761315) (bignump r))))
+(bignum-smoke--check "/ big- 6, exact"
+  (= (/ -123456789012345678901234567891 6) -20576131502057613150205761315))
+(bignum-smoke--check "/ big+ -6, exact"
+  (= (/ 123456789012345678901234567891 -6) -20576131502057613150205761315))
+(bignum-smoke--check "/ big- -6, exact"
+  (= (/ -123456789012345678901234567891 -6) 20576131502057613150205761315))
+(bignum-smoke--check "/ bignum boundary by 2 demotes to fixnum"
+  (let ((r (/ 2305843009213693952 2)))
+    (and (= r 1152921504606846976) (not (bignump r)))))
+
+;; -- mod//: divisor at the scoped bound (2^31 = 2147483648) and just
+;; past it (2147483649, still a plain fixnum, but this build's
+;; single-limb division loop cannot safely divide by it -- see the bound
+;; derivation next to `nl_bignum_divmod_small_loop').
+(bignum-smoke--check "/ big+ divisor at the 2^31 bound, exact"
+  (= (/ 123456789012345678901234567890 2147483648) 57489047298368848348))
+(bignum-smoke--check "mod big+ divisor at the 2^31 bound, exact"
+  (= (mod 123456789012345678901234567890 2147483648) 1312754386))
+(bignum-smoke--check "/ divisor just past the 2^31 bound signals the unsupported condition"
+  (eq (condition-case nil
+          (/ 123456789012345678901234567890 2147483649)
+        (nelisp-bignum-division-unsupported 'ok))
+      'ok))
+
+;; -- /,%,mod: a genuine Bignum DIVISOR is explicitly out of scope and
+;; must signal the new named condition -- not a silent wrong answer, not
+;; the misleading `wrong-type-argument' (the divisor IS a number).
+(bignum-smoke--check "/ bignum divisor signals nelisp-bignum-division-unsupported"
+  (eq (condition-case nil
+          (/ 123456789012345678901234567890 987654321098765432109876543210)
+        (nelisp-bignum-division-unsupported 'ok))
+      'ok))
+(bignum-smoke--check "% bignum divisor signals nelisp-bignum-division-unsupported"
+  (eq (condition-case nil
+          (% 123456789012345678901234567890 987654321098765432109876543210)
+        (nelisp-bignum-division-unsupported 'ok))
+      'ok))
+(bignum-smoke--check "mod bignum divisor signals nelisp-bignum-division-unsupported"
+  (eq (condition-case nil
+          (mod 123456789012345678901234567890 987654321098765432109876543210)
+        (nelisp-bignum-division-unsupported 'ok))
+      'ok))
+
 (princ (format "BIGNUM-SMOKE cases=%d mismatches=%d\n"
                bignum-smoke--n bignum-smoke--bad))
 nil

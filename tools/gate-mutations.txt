@@ -1218,3 +1218,17 @@ emacs-compat|lisp/nelisp-cc-alloc-dealloc.el|/^(provide 'nelisp-cc-alloc-dealloc
 # effect); restored -- byte-identical to the pre-mutation Makefile (`git
 # status` clean, `diff' empty).
 binary-size-ratchet|Makefile|s#ceiling=\$\$(( baseline + baseline \* slack / 100 ))#ceiling=\$\$(( baseline - baseline \* slack / 100 ))#|the ceiling arithmetic subtracts the slack instead of adding it, deflating the ceiling below the pinned baseline
+
+# standalone-reader-bignum-smoke: added this session (Doc 190 Phase C,
+# feat/bignum-bitwise): `ash`/`logand`/`logior`/`logxor`/`lognot` accept a
+# Bignum (tag 13) operand, and `/`/`%`/`mod` accept a Bignum DIVIDEND
+# paired with a small fixnum divisor.  Seven rows, one per new code path,
+# each proven RED-then-GREEN with `make gate-mutation-verify
+# GATE=standalone-reader-bignum-smoke` before being committed here.
+standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(if (= n0 2) 1 (if (= n0 13) 1 0))/(if (= n0 2) 1 0)/|`ash`'s dispatch entry stops accepting a Bignum N, so every Bignum-operand `ash` case reports `wrong-type-argument integerp` again instead of shifting
+standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(nextcarry (if (= bitshift 0) 0 (shr v (- 32 bitshift))))/(nextcarry 0)/|`nl_bignum_shl_bits_loop` stops propagating the intra-limb carry on a left shift, so any `ash` left shift whose result crosses a 32-bit limb boundary silently drops the carried-out bits instead of promoting an exact wider value
+standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(if (= tg 2) 1 (if (= tg 13) 1 0))/(if (= tg 2) 1 0)/|`bf_first_non_integer_or_bignum` stops treating a Bignum as an integer, so `logand`/`logior`/`logxor` with a Bignum operand report `wrong-type-argument integer-or-marker-p` again instead of computing the bitwise result
+standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(bf_lognot_general (wf_arg_ptr args 0) out)/(bf_wrong_type_integerp (wf_arg_ptr args 0))/|`lognot`'s Bignum-operand arm is replaced with the fixnum-only type error, so `(lognot BIGNUM)` signals `wrong-type-argument integerp` again instead of computing -X-1
+standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(logxor (if (< i dec_count) (ptr-read-u32 dec_ptr (\* i 4)) 0) 4294967295)/(logxor (if (< i dec_count) (ptr-read-u32 dec_ptr (* i 4)) 0) 4294967294)/|`nl_bignum_twos_fill_neg`'s bit-complement mask is off by one bit, so every AND/OR/XOR with a NEGATIVE Bignum operand computes a wrong two's-complement window and returns the wrong value instead of signalling anything
+standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(if (<= mag 2147483648) 1 0)/(if (<= mag 0) 1 0)/|`nl_bignum_small_divisor_p` stops accepting any nonzero divisor, so every Bignum-dividend `/`/`%`/`mod` case (even a tiny divisor like 256) signals `nelisp-bignum-division-unsupported` instead of computing the exact answer
+standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(nl_alloc_symbol sbuf 34 268435480)/(nl_alloc_symbol sbuf 0 268435480)/|`bf_signal_bignum_division_unsupported` writes a zero-length condition symbol, so `condition-case` handlers keyed on `nelisp-bignum-division-unsupported` (a genuine Bignum divisor to `/`/`%`/`mod`) no longer catch it

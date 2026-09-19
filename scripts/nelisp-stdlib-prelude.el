@@ -11411,6 +11411,26 @@ line-continuation escapes, which generate nothing)."
 (put 'nelisp-unsupported-primitive 'error-message
      "Primitive not supported by this NeLisp build")
 
+;; `nelisp-bignum-division-unsupported': a NeLisp-specific condition (same
+;; "-unsupported" family as `nelisp-unsupported-primitive' just above,
+;; named for the domain rather than the primitive since three different
+;; primitives -- `/', `%', `mod' -- raise it for the same underlying
+;; reason) for `/'/`%'/`mod' with a Bignum DIVIDEND paired with a
+;; DIVISOR this build's schoolbook single-limb division cannot handle:
+;; a genuine Bignum (tag 13) divisor, or a fixnum divisor whose
+;; magnitude exceeds 2^31 (see the bound derivation next to
+;; `nl_bignum_divmod_small_loop' in scripts/nelisp-standalone-build.el).
+;; Signalling this instead of either (a) computing a silently wrong
+;; answer by misreading the divisor's raw Sexp bytes, or (b) the
+;; misleading `wrong-type-argument' (the divisor IS a number; this
+;; build just cannot divide by one this large yet) is the explicit
+;; task brief for this condition.  `define-error' (not the bare `put'
+;; pair above) matching this file's own `nelisp-raw-byte-unrepresentable'
+;; precedent a few lines up -- both are added well after `define-error'
+;; itself is already a function at this point in the file.
+(define-error 'nelisp-bignum-division-unsupported
+  "Division by this divisor is not supported for a Bignum dividend")
+
 ;; Doc 152 gate-G: polyfill standard Emacs builtins missing from standalone
 ;; NeLisp so the anvil-pkg ERT suite's helpers (with-mock, registry-clear, ...)
 ;; run for real instead of signalling void-function.  All guarded so a real

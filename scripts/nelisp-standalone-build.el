@@ -5832,7 +5832,27 @@ argument (reachability + in-arena bounds checks).")
     ;; (/ 2.0) is 0.5.  Reading a second argument that was not there walked
     ;; off the end of the argument list and segfaulted -- an abort no
     ;; `condition-case' could catch, from a one-argument call Emacs answers.
-    ((:u8 "/") . (let* ((f (wf_any_float args))
+    ;; Doc 190 Phase C: a Bignum DIVIDEND (tag 13) is checked FIRST, ahead
+    ;; of `wf_any_float' (which -- like `wf_first_non_number' underneath
+    ;; it -- does not know tag 13 and would otherwise report the
+    ;; misleading `wrong-type-argument number-or-marker-p', Doc 190's own
+    ;; measured pre-fix behavior).  Scope is exactly two arguments (the
+    ;; dividend and ONE divisor); `(/ bignum)' (reciprocal) and n-ary
+    ;; `(/ bignum d1 d2)' are out of scope and also route to the new
+    ;; unsupported signal rather than being mishandled silently.
+    ((:u8 "/") . (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 13)
+                     (let* ((rest (nl_cons_cdr_ptr args)))
+                       (if (if (= (ptr-read-u64 rest 0) 7)
+                               (= (ptr-read-u64 (nl_cons_cdr_ptr rest) 0) 0)
+                             0)
+                           (let* ((dptr (nl_cons_car_ptr rest)))
+                             (if (= (nl_bignum_small_divisor_p dptr) 1)
+                                 (if (= (ptr-read-u64 dptr 8) 0)
+                                     (bf_arith_error)
+                                   (nl_bignum_quot_small (wf_arg_ptr args 0) (ptr-read-u64 dptr 8) out))
+                               (bf_signal_bignum_division_unsupported)))
+                         (bf_signal_bignum_division_unsupported)))
+                   (let* ((f (wf_any_float args))
                         (rest (nl_cons_cdr_ptr args)))
                     (if (= f 2)
                         (bf_wrong_type_number_or_marker (wf_first_non_number args))
@@ -5850,7 +5870,7 @@ argument (reachability + in-arena bounds checks).")
                                    (wf_copy32 out sc)))
                           (if (= (wf_argval args 0) 0)
                               (bf_arith_error)
-                            (wf_write_int out (/ 1 (wf_argval args 0)))))))))
+                            (wf_write_int out (/ 1 (wf_argval args 0))))))))))
     ((:u8 "mod") . (let* ((bad (wf_first_non_number args)))
                     (if (= bad 0)
                         (if (= (wf_argval args 1) 0)
@@ -5862,13 +5882,23 @@ argument (reachability + in-arena bounds checks).")
     ;; `%' is INTEGER remainder, so Emacs names `integer-or-marker-p' -- not
     ;; the `number-or-marker-p' the general arithmetic ops name.  A float is
     ;; rejected here and accepted by `mod'.
-    ((:u8 "%") . (let* ((bad (bf_first_non_integer args)))
+    ;;
+    ;; Doc 190 Phase C: a Bignum DIVIDEND is checked first, same reasoning
+    ;; as `/' just above -- `bf_first_non_integer' does not know tag 13.
+    ((:u8 "%") . (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 13)
+                     (let* ((dptr (wf_arg_ptr args 1)))
+                       (if (= (nl_bignum_small_divisor_p dptr) 1)
+                           (if (= (ptr-read-u64 dptr 8) 0)
+                               (bf_arith_error)
+                             (wf_write_int out (nl_bignum_rem_small (wf_arg_ptr args 0) (ptr-read-u64 dptr 8))))
+                         (bf_signal_bignum_division_unsupported)))
+                   (let* ((bad (bf_first_non_integer args)))
                     (if (= bad 0)
                         (let* ((a (wf_argval args 0)) (b (wf_argval args 1)))
                           (if (= b 0)
                               (bf_arith_error)
                             (wf_write_int out (- a (* b (/ a b))))))
-                      (bf_wrong_type_int_or_marker bad))))
+                      (bf_wrong_type_int_or_marker bad)))))
     ;; `/=' = 2-arg numeric not-equal (int/float via wf_num_eq).
     ((:u8 "/=") . (let* ((r (wf_chain_eq args)))
                     (if (= r 2)
@@ -7983,6 +8013,114 @@ leave symbols unresolved at link time."
                              (nl_bignum_write 0 rbuf 2 out) 0))
                     (seq (wf_write_int out (- 0 first)) 0))))))
         (seq (wf_write_int out 0) 0)))
+    ;; --- Doc 190 Phase C: `/'/`%'/`mod' accept a Bignum DIVIDEND paired
+    ;; with a small FIXNUM divisor -----------------------------------------
+    ;; `mod' itself (scripts/nelisp-stdlib-prelude.el) needs no change: it
+    ;; is pure Elisp computing `a - b*(a/b)' via the native `/'/`*'/`-'/
+    ;; `<' this file already dispatches, and `*'/`-'/`<' already accept a
+    ;; Bignum operand (Doc 190 Phase B).  Fixing native `/' here (plus a
+    ;; direct fix to native `%', which is NOT prelude Elisp) is therefore
+    ;; sufficient for all three.
+    ;;
+    ;; A Bignum -- or too-large-for-the-bound-below -- DIVISOR is
+    ;; explicitly out of scope (this phase's own task brief) and signals
+    ;; `nelisp-bignum-division-unsupported' (registered in
+    ;; scripts/nelisp-stdlib-prelude.el) instead of silently computing a
+    ;; wrong answer (misreading the divisor's raw Sexp bytes) or
+    ;; reporting the misleading `wrong-type-argument' (the divisor IS a
+    ;; number; this build just cannot divide by one this large yet).
+    ;;
+    ;; Bound rationale for `nl_bignum_divmod_small_loop' below: it
+    ;; generalizes Doc 190 Phase A's own `nl_bignum_divmod10_loop' (fixed
+    ;; divisor 10) to an arbitrary divisor D, combining the running
+    ;; remainder REM (always < D) with the next 32-bit limb via
+    ;; `(logior LIMB (shl REM 32))'.  This DSL's `/'/`mod' compile to
+    ;; SIGNED 64-bit ops (`nelisp-aot-compiler--emit-cmp': "signed"), so
+    ;; the combined value must stay < 2^63.  Worst case REM=D-1,
+    ;; LIMB=2^32-1: `(D-1)*2^32 + (2^32-1) < 2^63' holds exactly through
+    ;; D = 2^31 (at D=2^31 the combined value is 2^63-1, the largest
+    ;; representable positive i64) and fails for any larger D.  A fixnum
+    ;; divisor outside this bound therefore signals the same condition as
+    ;; a genuine Bignum divisor rather than risking a signed-overflow
+    ;; misread -- this is a narrower scope than "any fixnum divisor"
+    ;; (fixnums range to 2^61-1); see this session's report for the
+    ;; honest accounting of what that leaves unsupported.
+    ;;
+    ;; Divide the MAG_COUNT-limb magnitude at MAG_PTR by the small
+    ;; positive divisor D (1 <= D <= 2147483648) IN PLACE, most-
+    ;; significant limb first -- same shape as `nl_bignum_divmod10_loop',
+    ;; D substituted for the literal 10.  Returns the final remainder,
+    ;; 0 <= r < D.
+    (defun nl_bignum_divmod_small_loop (mag_ptr i d rem)
+      (if (< i 0) rem
+        (let* ((cur (logior (ptr-read-u32 mag_ptr (* i 4)) (shl rem 32))))
+          (seq (ptr-write-u32 mag_ptr (* i 4) (/ cur d))
+               (nl_bignum_divmod_small_loop mag_ptr (- i 1) d (mod cur d))))))
+    ;; Copy N limbs SRC -> DST.  A dedicated copy (distinct name from the
+    ;; reader-only `nl_bignum_copy_limbs' in `nelisp-standalone--applyfn-
+    ;; bignum-helpers') so `/'/`%' -- part of the baked build's own
+    ;; first-19-entry dispatch subset (`nelisp-standalone--applyfn-
+    ;; dispatch-table-baked') -- do not pull a reader-only helper into
+    ;; the baked link set.
+    (defun nl_bignum_divsmall_copy (src dst n)
+      (if (= n 0) 0
+        (seq (ptr-write-u32 dst 0 (ptr-read-u32 src 0))
+             (nl_bignum_divsmall_copy (+ src 4) (+ dst 4) (- n 1)))))
+    ;; Signal `nelisp-bignum-division-unsupported' (data nil, matching
+    ;; `bf_signal_overflow_error''s own shape) for a Bignum -- or too-
+    ;; large-for-the-bound-above -- divisor.  Packed bytes independently
+    ;; re-verified against the symbol name by a Python re-encoding before
+    ;; use (this file's existing `bf_signal_overflow_error'/`bf_wrong_
+    ;; type_named' precedent for hand-packed literal symbol bytes).
+    (defun bf_signal_bignum_division_unsupported ()
+      (let* ((sbuf (alloc-bytes 40 1)))
+        (seq
+         (ptr-write-u64 sbuf 0 7074434230661178734)
+         (ptr-write-u64 (+ sbuf 8) 0 7594244819798353769)
+         (ptr-write-u64 (+ sbuf 16) 0 8443526301179144566)
+         (ptr-write-u64 (+ sbuf 24) 0 8390891584458421102)
+         (ptr-write-u64 (+ sbuf 32) 0 25701)
+         (nl_alloc_symbol sbuf 34 268435480)
+         (wf_write_nil 268435512)
+         (ptr-write-u64 268435472 0 1)
+         (atomic-fetch-add 268435544 1)
+         1)))
+    ;; TRUE (1) iff D_PTR is a supported small-fixnum divisor for the two
+    ;; functions below: its Sexp tag is Int (2, never Bignum/Float) AND
+    ;; its magnitude is within the 2^31 bound derived above.
+    (defun nl_bignum_small_divisor_p (d_ptr)
+      (if (= (ptr-read-u64 d_ptr 0) 2)
+          (let* ((v (ptr-read-u64 d_ptr 8)) (mag (if (< v 0) (- 0 v) v)))
+            (if (<= mag 2147483648) 1 0))
+        0))
+    ;; `/' with a Bignum DIVIDEND (A_PTR, tag 13) and a supported small
+    ;; fixnum divisor D (already proven nonzero and within bound by the
+    ;; caller): the truncating (round-toward-zero) quotient, itself
+    ;; possibly still a Bignum -- `nl_bignum_finish' demotes it when it
+    ;; fits.  Works on a COPY of A's limbs (`nl_bignum_divsmall_copy'):
+    ;; `nl_bignum_divmod_small_loop' divides in place, and a Bignum's
+    ;; limb buffer, once constructed, is treated as immutable everywhere
+    ;; else in this runtime (Doc 190 §6.1's own "sound because a bignum
+    ;; is immutable from construction" argument for `nl_sexp_clone_into').
+    (defun nl_bignum_quot_small (a_ptr d out)
+      (let* ((asign (ptr-read-u64 a_ptr 8)) (amag (ptr-read-u64 a_ptr 16)) (acount (ptr-read-u64 a_ptr 24))
+             (dsign (if (< d 0) 1 0)) (dmag (if (< d 0) (- 0 d) d))
+             (qbuf (alloc-bytes (* acount 4) 4)))
+        (seq (nl_bignum_divsmall_copy amag qbuf acount)
+             (nl_bignum_divmod_small_loop qbuf (- acount 1) dmag 0)
+             (nl_bignum_finish (if (= asign dsign) 0 1) qbuf (nl_bignum_canon_count qbuf acount) out))))
+    ;; `%' with a Bignum DIVIDEND and a supported small fixnum divisor D:
+    ;; the TRUNCATING remainder, sign of the DIVIDEND (`%''s own C-style
+    ;; contract).  Always fits a plain fixnum (magnitude < |D| <= 2^31),
+    ;; so this returns a raw i64, not a Sexp -- callers `wf_write_int' it
+    ;; directly.
+    (defun nl_bignum_rem_small (a_ptr d)
+      (let* ((asign (ptr-read-u64 a_ptr 8)) (amag (ptr-read-u64 a_ptr 16)) (acount (ptr-read-u64 a_ptr 24))
+             (dmag (if (< d 0) (- 0 d) d))
+             (scratch (alloc-bytes (* acount 4) 4)))
+        (seq (nl_bignum_divsmall_copy amag scratch acount)
+             (let* ((r (nl_bignum_divmod_small_loop scratch (- acount 1) dmag 0)))
+               (if (= asign 1) (- 0 r) r)))))
     ;; --- FLOAT-AWARE arithmetic.  The integer wf_sum/wf_prod/wf_subtail/wf_diff
     ;; above read slot+8 as a raw i64 with NO tag check, so a Float operand
     ;; (tag 3, IEEE-754 bits inline at +8) is folded as garbage and written via
@@ -12934,6 +13072,35 @@ baked build's own `<'/`>'/`=' arms need it too.")
                 (bf_wrong_type_int_or_marker bad)
               (bf_wrong_type_number_or_marker nn)))
         (bf_wrong_type_int_or_marker (nl_cons_car_ptr args))))
+    ;; Doc 190 Phase C: bignum-aware sibling of `bf_first_non_integer',
+    ;; used ONLY by `logand'/`logior'/`logxor''s dispatch entries once
+    ;; their all-fixnum fast-path gate (still plain `bf_first_non_
+    ;; integer', unchanged) has already failed -- a Bignum (tag 13)
+    ;; operand also counts as "an integer" here, so it reaches `wf_bitop_
+    ;; fold'/`nl_bignum_bitop' instead of being reported as the offender.
+    (defun bf_first_non_integer_or_bignum (args)
+      (if (= (sexp-tag args) 7)
+          (let* ((a (nl_cons_car_ptr args)) (tg (ptr-read-u64 a 0)))
+            (if (if (= tg 2) 1 (if (= tg 13) 1 0))
+                (bf_first_non_integer_or_bignum (nl_cons_cdr_ptr args))
+              a))
+        0))
+    ;; Bignum-aware sibling of `bf_int_arg_error', same position-dependent
+    ;; predicate-naming logic (see that function's own comment above),
+    ;; with the FIRST-argument gate and the "any non-integer" scan both
+    ;; swapped for their bignum-aware siblings so a Bignum operand is
+    ;; never itself reported as the offender.  `wf_first_non_number_or_
+    ;; bignum' (already used by `+'/`-'/`*', Doc 190 Phase B) is reused
+    ;; as is for the "any non-NUMBER" half -- a Bignum is a number.
+    (defun bf_int_arg_error_or_bignum (args)
+      (let* ((tg0 (ptr-read-u64 (nl_cons_car_ptr args) 0)))
+        (if (if (= tg0 2) 1 (if (= tg0 13) 1 0))
+            (let* ((bad (bf_first_non_integer_or_bignum args))
+                   (nn (wf_first_non_number_or_bignum args)))
+              (if (= nn 0)
+                  (bf_wrong_type_int_or_marker bad)
+                (bf_wrong_type_number_or_marker nn)))
+          (bf_wrong_type_int_or_marker (nl_cons_car_ptr args)))))
     (defun bf_wrong_type_symbolp (offender)
       (let* ((wbuf (alloc-bytes 24 1))
              (cbuf (alloc-bytes 8 1))
@@ -14406,6 +14573,318 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun wf_logxor_fold (lp acc)
       (if (= (ptr-read-u64 lp 0) 7)
           (wf_logxor_fold (nl_cons_cdr_ptr lp) (logxor acc (ptr-read-u64 (nl_cons_car_ptr lp) 8))) acc))
+    ;; --- Doc 190 Phase C: bitwise (`logand'/`logior'/`logxor'/`lognot')
+    ;; and `ash' accept a Bignum (tag 13) operand -----------------------
+    ;; Emacs bitwise ops treat every integer as an INFINITE-PRECISION
+    ;; two's-complement bit string: a negative value's bits extend with
+    ;; 1s forever above its sign, a non-negative value's with 0s.  A
+    ;; Bignum here is sign+magnitude (Doc 190 §6.1), not two's
+    ;; complement, so AND/OR/XOR/NOT first convert each operand to an
+    ;; explicit, finite window of that infinite two's-complement string
+    ;; (`nl_bignum_twos_fill_pos'/`_neg' below), combine limbwise, then
+    ;; convert the combined window (plus its own inferred extension bit)
+    ;; back to sign+magnitude.  The identity used for the negative
+    ;; conversion, both directions, is the standard one (also how GMP's
+    ;; mpz bitwise ops avoid a carry-propagating NOT): for magnitude M > 0,
+    ;; two's-complement(-M) = ~(M-1) (subtract 1 first -- a borrow-only,
+    ;; not carry, operation -- then complement every limb with no
+    ;; cross-limb dependency at all); conversely, given a combined window
+    ;; R known to represent a negative value, magnitude(R) = ~R + 1.
+    ;; Both directions are implemented by reusing this file's own Phase B
+    ;; `nl_bignum_add_raw'/`nl_bignum_sub_loop' (a subtract-by-the-1-limb-
+    ;; constant-1 array, or an add-by-the-1-limb-constant-1 array) rather
+    ;; than a new carry-propagating primitive.
+    ;;
+    ;; `ash' needs no two's-complement conversion at all: an arithmetic
+    ;; left shift is exactly "multiply the magnitude by 2^C, sign
+    ;; unchanged" regardless of sign, and an arithmetic right shift by K
+    ;; is exactly "floor-divide by 2^K" -- for a non-negative operand that
+    ;; is a plain truncating magnitude shift; for a negative operand,
+    ;; floor(-M / 2^K) = -(ceil(M / 2^K)), computed as a truncating
+    ;; magnitude shift plus 1 whenever any shifted-out bit was 1 (the
+    ;; "sticky" bit below) -- verified against host Emacs, e.g.
+    ;; `(ash -5 -1)' => -3 = -(ceil(5/2)) = -(3), not -(floor(5/2)) = -2.
+    ;; Unifying the fixnum and Bignum operand through the SAME magnitude-
+    ;; limb machinery (`nl_bignum_prep_operand' normalizes either into
+    ;; sign+magnitude first) also fixes two latent fixnum-only bugs this
+    ;; session measured on this build, not just adds Bignum support:
+    ;; (a) `(ash 1 62)'/`(ash 1 63)' previously computed via a raw native
+    ;; `shl' on the i64 payload and either exceeded the fixnum bound
+    ;; while still tagged Int (wrong tag, Doc 190 §2's contraction rule
+    ;; broken) or genuinely wrapped past the 64-bit register's own sign
+    ;; bit (wrong VALUE) -- both now promote through the same
+    ;; `nl_bignum_finish' choke point every Phase B arithmetic result
+    ;; uses; (b) a native `sar'/`shl' by a runtime (not compile-time
+    ;; immediate) count is masked to 6 bits by the x86_64/arm64 ISA
+    ;; itself, so `(ash 5 -100)' previously computed `sar 5, (100 mod 64)
+    ;; = 36', not the host-correct 0 -- fixed here by short-circuiting to
+    ;; 0/-1 once the shift count reaches or exceeds the magnitude's own
+    ;; limb count, without ever looping or shifting by the raw count.
+    ;;
+    ;; Normalize SEXP_PTR (tag 2 Int or tag 13 Bignum) into (sign,
+    ;; limb-ptr, limb-count) via three out-parameters (this DSL has no
+    ;; multi-value return; same "answer via ptr-write" idiom Phase B's
+    ;; own `nl_bignum_add_raw' already uses for its sign).  SCRATCH2 is a
+    ;; caller-provided 8-byte (2-limb) buffer used only for the Int case
+    ;; (via the existing `nl_bignum_int_limbs'); a Bignum operand's OWN
+    ;; limb pointer is aliased directly, not copied (matches this
+    ;; runtime's existing "a bignum's limb buffer is immutable once
+    ;; built" invariant, Doc 190 §6.1) -- callers here never mutate
+    ;; through the returned pointer for a Bignum operand.
+    (defun nl_bignum_prep_operand (sexp_ptr scratch2 sign_slot magptr_slot count_slot)
+      (if (= (ptr-read-u64 sexp_ptr 0) 13)
+          (seq (ptr-write-u64 sign_slot 0 (ptr-read-u64 sexp_ptr 8))
+               (ptr-write-u64 magptr_slot 0 (ptr-read-u64 sexp_ptr 16))
+               (ptr-write-u64 count_slot 0 (ptr-read-u64 sexp_ptr 24))
+               0)
+        (seq (ptr-write-u64 sign_slot 0 (nl_bignum_int_limbs (ptr-read-u64 sexp_ptr 8) scratch2))
+             (ptr-write-u64 magptr_slot 0 scratch2)
+             (ptr-write-u64 count_slot 0 2)
+             0)))
+    ;; MAG_PTR's MAG_COUNT-limb magnitude, minus the constant 1, into
+    ;; OUT_PTR (caller-sized >= mag_count limbs) -- only ever called when
+    ;; MAG_PTR's value is known nonzero (a negative operand's magnitude
+    ;; is always >= 1), so this never borrows past the array.  Reuses
+    ;; Phase B's own `nl_bignum_sub_loop' with a 1-limb constant-1 array
+    ;; as the subtrahend, rather than a new dedicated decrement loop.
+    (defun nl_bignum_dec_mag (mag_ptr mag_count out_ptr)
+      (let* ((one (alloc-bytes 4 4)))
+        (seq (ptr-write-u32 one 0 1)
+             (nl_bignum_sub_loop mag_ptr mag_count one 1 out_ptr 0 mag_count 0))))
+    ;; Two's-complement digit I (0-indexed, LSB-first) of a NON-NEGATIVE
+    ;; operand's infinite extension, materialized for I in [0,N): the
+    ;; magnitude's own limbs, zero beyond MAG_COUNT.
+    (defun nl_bignum_twos_fill_pos (mag_ptr mag_count out_ptr i n)
+      (if (>= i n) 0
+        (seq (ptr-write-u32 out_ptr (* i 4) (if (< i mag_count) (ptr-read-u32 mag_ptr (* i 4)) 0))
+             (nl_bignum_twos_fill_pos mag_ptr mag_count out_ptr (+ i 1) n))))
+    ;; Two's-complement digit I of a NEGATIVE operand's infinite
+    ;; extension, materialized for I in [0,N): `~(M-1)[i]', DEC_PTR
+    ;; already holding (M-1)'s limbs (`nl_bignum_dec_mag' above); beyond
+    ;; DEC_COUNT, `~0 = all-ones', matching "a negative value's bits
+    ;; extend with 1s forever" -- verified against the identity's own
+    ;; small-case derivation (M=1: dec=[0], digit0 = ~0 = all-ones =
+    ;; -1's own infinite bit pattern, correct).
+    (defun nl_bignum_twos_fill_neg (dec_ptr dec_count out_ptr i n)
+      (if (>= i n) 0
+        (seq (ptr-write-u32 out_ptr (* i 4)
+               (logxor (if (< i dec_count) (ptr-read-u32 dec_ptr (* i 4)) 0) 4294967295))
+             (nl_bignum_twos_fill_neg dec_ptr dec_count out_ptr (+ i 1) n))))
+    ;; Elementwise combine of two N-limb two's-complement windows TA/TB
+    ;; into R, by OPCODE (0 and, 1 or, 2 xor) -- shared by all three
+    ;; bitwise ops rather than three near-duplicate loops, since this DSL
+    ;; has no function-value parameter to pass the native op itself.
+    (defun nl_bignum_combine_loop (ta tb r i n opcode)
+      (if (>= i n) 0
+        (let* ((va (ptr-read-u32 ta (* i 4))) (vb (ptr-read-u32 tb (* i 4)))
+               (vr (if (= opcode 0) (logand va vb) (if (= opcode 1) (logior va vb) (logxor va vb)))))
+          (seq (ptr-write-u32 r (* i 4) vr)
+               (nl_bignum_combine_loop ta tb r (+ i 1) n opcode)))))
+    ;; Bitwise NOT of N limbs SRC -> DST (used only to reconstruct a
+    ;; negative RESULT's magnitude below, via ~R + 1 -- NOT bit-inversion
+    ;; itself, unlike a carry-propagating negate, has no cross-limb
+    ;; dependency, so a plain elementwise loop is correct).
+    (defun nl_bignum_not_loop (src dst i n)
+      (if (>= i n) 0
+        (seq (ptr-write-u32 dst (* i 4) (logxor (ptr-read-u32 src (* i 4)) 4294967295))
+             (nl_bignum_not_loop src dst (+ i 1) n))))
+    ;; Convert a combined N-limb two's-complement window R, with inferred
+    ;; extension bit EXTR (0 = the window represents a non-negative
+    ;; value, 4294967295 = negative), back to sign+magnitude and write
+    ;; the canonical (demoted-if-it-fits) result via `nl_bignum_finish'.
+    ;; EXTR=0: R IS already the magnitude.  EXTR=0xFFFFFFFF: magnitude =
+    ;; ~R + 1 (the ordinary two's-complement negate, here spelled as a
+    ;; NOT loop followed by `nl_bignum_add_raw' with a 1-limb constant-1
+    ;; addend -- reusing Phase B's own add primitive instead of writing a
+    ;; new carry-propagating increment) -- the `+1' can carry OUT of the
+    ;; top of the N-limb NOT'd buffer (e.g. R all-zero, i.e. the operands
+    ;; combined to exactly `-2^(32N)'), which is exactly what `nl_bignum_
+    ;; add_raw''s own N+1-limb bound already provides for.
+    ;; AGAINST-THE-BUG (found by this session's own 849-case host-
+    ;; differential, not predicted by design): the EXTR=0 branch used to
+    ;; call `nl_bignum_finish' with N itself (the caller's max-operand-
+    ;; count upper bound) as the limb count, un-canonicalized -- e.g.
+    ;; `(logand 123456789012345678901234567890 255)' combines against a
+    ;; 4-limb operand, so N=4, even though the true combined result
+    ;; (210) needs exactly 1 limb, limbs 1-3 all zero.  `nl_bignum_mag_
+    ;; le_bound' REFUSES outright whenever limb_count > 2 (its own
+    ;; contract assumes an already-canonical count, it does not scan for
+    ;; leading zero limbs itself), so this boxed the result as a 4-limb
+    ;; Bignum instead of demoting it -- a NON-CANONICAL Bignum (leading
+    ;; zero limbs), which then compared UNEQUAL to the canonical 1-limb
+    ;; fixnum/Bignum `mod'/`equal'/`=' expect, via `nl_bignum_mag_cmp''s
+    ;; own limb-COUNT-first comparison.  `prin1'/`number-to-string' still
+    ;; printed the right digits (decimal printing walks down to the
+    ;; actual nonzero digits regardless of leading zero limbs), which is
+    ;; why this was invisible to a print-only check and only surfaced as
+    ;; an `equal'/`='-shaped mismatch.  Fixed by canonicalizing via
+    ;; `nl_bignum_canon_count' before `nl_bignum_finish', the same
+    ;; discipline the EXTR=1 branch below already had for free (`nl_
+    ;; bignum_add_raw' already returns a canonical count).
+    (defun nl_bignum_finalize_bitop (r n extr out)
+      (if (= extr 0)
+          (nl_bignum_finish 0 r (nl_bignum_canon_count r n) out)
+        (let* ((notbuf (alloc-bytes (* n 4) 4)) (one (alloc-bytes 4 4))
+               (magbuf (alloc-bytes (* (+ n 1) 4) 4)) (sign_slot (alloc-bytes 8 8)))
+          (seq (nl_bignum_not_loop r notbuf 0 n)
+               (ptr-write-u32 one 0 1)
+               (let* ((mc (nl_bignum_add_raw 0 notbuf n 0 one 1 magbuf sign_slot)))
+                 (nl_bignum_finish 1 magbuf mc out))))))
+    ;; Top-level driver for `logand'/`logior'/`logxor' (OPCODE 0/1/2) on
+    ;; two operands, either a fixnum or a Bignum: normalize both, widen to
+    ;; N = max(their limb counts) two's-complement digits, combine
+    ;; limbwise, and finalize.  N = max(count_a, count_b) suffices (no
+    ;; +1 headroom needed here, unlike add/sub/mul): for i >= N, both
+    ;; operands' digit functions have already reached their own constant
+    ;; tail, so the combined result's own tail is fully determined by
+    ;; N-1's value and needs no further limb to express.
+    (defun nl_bignum_bitop (opcode a_sexp b_sexp out)
+      (let* ((scratch2a (alloc-bytes 8 4)) (scratch2b (alloc-bytes 8 4))
+             (sign_a (alloc-bytes 8 8)) (magptr_a (alloc-bytes 8 8)) (count_a (alloc-bytes 8 8))
+             (sign_b (alloc-bytes 8 8)) (magptr_b (alloc-bytes 8 8)) (count_b (alloc-bytes 8 8)))
+        (seq
+         (nl_bignum_prep_operand a_sexp scratch2a sign_a magptr_a count_a)
+         (nl_bignum_prep_operand b_sexp scratch2b sign_b magptr_b count_b)
+         (let* ((sa (ptr-read-u64 sign_a 0)) (pa (ptr-read-u64 magptr_a 0)) (ca (ptr-read-u64 count_a 0))
+                (sb (ptr-read-u64 sign_b 0)) (pb (ptr-read-u64 magptr_b 0)) (cb (ptr-read-u64 count_b 0))
+                (n (if (> ca cb) ca cb))
+                (ta (alloc-bytes (* n 4) 4)) (tb (alloc-bytes (* n 4) 4)))
+           (seq
+            (if (= sa 1)
+                (let* ((deca (alloc-bytes (* ca 4) 4)))
+                  (seq (nl_bignum_dec_mag pa ca deca) (nl_bignum_twos_fill_neg deca ca ta 0 n)))
+              (nl_bignum_twos_fill_pos pa ca ta 0 n))
+            (if (= sb 1)
+                (let* ((decb (alloc-bytes (* cb 4) 4)))
+                  (seq (nl_bignum_dec_mag pb cb decb) (nl_bignum_twos_fill_neg decb cb tb 0 n)))
+              (nl_bignum_twos_fill_pos pb cb tb 0 n))
+            (let* ((r (alloc-bytes (* n 4) 4)))
+              (seq (nl_bignum_combine_loop ta tb r 0 n opcode)
+                   (let* ((exta (if (= sa 1) 4294967295 0)) (extb (if (= sb 1) 4294967295 0))
+                          (extr (if (= opcode 0) (logand exta extb) (if (= opcode 1) (logior exta extb) (logxor exta extb)))))
+                     (nl_bignum_finalize_bitop r n extr out)))))))))
+    ;; N-ary fold for `logand'/`logior'/`logxor' once a Bignum operand has
+    ;; been detected (the all-fixnum fast path -- `wf_logand_fold' et al.
+    ;; above -- is unchanged and stays on the native-i64 fold for that
+    ;; common case, unaffected by any of the above).  ACC_PTR starts as
+    ;; the elisp identity value's Sexp (-1 for `logand', 0 for `logior'/
+    ;; `logxor') and is combined against each remaining list element in
+    ;; turn via `nl_bignum_bitop'.
+    (defun wf_bitop_fold (opcode lp acc_ptr out)
+      (if (= (ptr-read-u64 lp 0) 7)
+          (let* ((tmp (alloc-bytes 32 8)))
+            (seq (nl_bignum_bitop opcode acc_ptr (nl_cons_car_ptr lp) tmp)
+                 (wf_bitop_fold opcode (nl_cons_cdr_ptr lp) tmp out)))
+        (wf_copy32 out acc_ptr)))
+    ;; `lognot' on a Bignum operand: X -> -(X+1), computed by adding the
+    ;; constant 1 (via `nl_bignum_add_raw', which already threads a
+    ;; result sign through) and then FLIPPING that sign -- the identity
+    ;; `~X = -X-1 = -(X+1)' avoids a separate two's-complement conversion
+    ;; entirely.  A zero result's reported sign is irrelevant either way
+    ;; (`nl_bignum_finish' demotes any zero magnitude to plain Int 0
+    ;; regardless of the sign passed to it, Phase B's own established
+    ;; behavior).
+    (defun bf_lognot_general (x_sexp out)
+      (let* ((scratch2 (alloc-bytes 8 4))
+             (sign_slot (alloc-bytes 8 8)) (magptr_slot (alloc-bytes 8 8)) (count_slot (alloc-bytes 8 8)))
+        (seq
+         (nl_bignum_prep_operand x_sexp scratch2 sign_slot magptr_slot count_slot)
+         (let* ((sx (ptr-read-u64 sign_slot 0)) (px (ptr-read-u64 magptr_slot 0)) (cx (ptr-read-u64 count_slot 0))
+                (one (alloc-bytes 4 4)) (sumbuf (alloc-bytes (* (+ cx 1) 4) 4)) (sum_sign_slot (alloc-bytes 8 8)))
+           (seq (ptr-write-u32 one 0 1)
+                (let* ((rc (nl_bignum_add_raw sx px cx 0 one 1 sumbuf sum_sign_slot)))
+                  (nl_bignum_finish (- 1 (ptr-read-u64 sum_sign_slot 0)) sumbuf rc out)))))))
+    ;; --- `ash', unified over fixnum and Bignum operands (see this
+    ;; block's own header comment for why the fixnum path is routed
+    ;; through the same magnitude-limb machinery rather than kept as a
+    ;; separate native-`shl'/`sar' fast path).
+    ;;
+    ;; Left shift (C>=0): magnitude *= 2^C, sign unchanged.  LIMBSHIFT
+    ;; whole limbs of zero padding, then an intra-limb bit shift with a
+    ;; carry rippled up one limb at a time, plus one extra headroom limb
+    ;; past the source for the final carry-out.
+    (defun nl_bignum_shl_zero_pad (out_ptr i limbshift)
+      (if (>= i limbshift) 0
+        (seq (ptr-write-u32 out_ptr (* i 4) 0)
+             (nl_bignum_shl_zero_pad out_ptr (+ i 1) limbshift))))
+    (defun nl_bignum_shl_bits_loop (mag_ptr mag_count out_ptr i limbshift bitshift carry)
+      (if (> i mag_count) 0
+        (let* ((v (if (< i mag_count) (ptr-read-u32 mag_ptr (* i 4)) 0))
+               (lo (logand (logior (shl v bitshift) carry) 4294967295))
+               (nextcarry (if (= bitshift 0) 0 (shr v (- 32 bitshift)))))
+          (seq (ptr-write-u32 out_ptr (* (+ i limbshift) 4) lo)
+               (nl_bignum_shl_bits_loop mag_ptr mag_count out_ptr (+ i 1) limbshift bitshift nextcarry)))))
+    (defun nl_bignum_ash_left (sign mag_ptr mag_count c out)
+      (let* ((limbshift (/ c 32)) (bitshift (mod c 32))
+             (outcount (+ (+ mag_count limbshift) 1))
+             (outbuf (alloc-bytes (* outcount 4) 4)))
+        (seq (nl_bignum_shl_zero_pad outbuf 0 limbshift)
+             (nl_bignum_shl_bits_loop mag_ptr mag_count outbuf 0 limbshift bitshift 0)
+             (nl_bignum_finish sign outbuf (nl_bignum_canon_count outbuf outcount) out))))
+    ;; Right shift (K = -C > 0), floor semantics.  Non-negative operand:
+    ;; a plain truncating (== floor, since magnitude is non-negative)
+    ;; logical shift of the magnitude.  Negative operand: floor(-M/2^K) =
+    ;; -(ceil(M/2^K)) = -((M >> K) + STICKY), STICKY = 1 iff any bit
+    ;; shifted out of M was 1 (host-verified: `(ash -5 -1)' => -3, not
+    ;; -2).  LIMBSHIFT >= MAG_COUNT (shifting away the whole magnitude)
+    ;; short-circuits to a direct 0 (non-negative) or -1 (negative,
+    ;; STICKY necessarily 1 since a negative operand's magnitude is never
+    ;; zero) WITHOUT looping by the raw shift count -- this is also what
+    ;; fixes the native-`sar'-masked-to-6-bits latent bug this block's
+    ;; header comment describes for `(ash 5 -100)'.
+    (defun nl_bignum_shr_sticky_low (mag_ptr i bound)
+      (if (>= i bound) 0
+        (if (= (ptr-read-u32 mag_ptr (* i 4)) 0)
+            (nl_bignum_shr_sticky_low mag_ptr (+ i 1) bound)
+          1)))
+    (defun nl_bignum_shr_sticky (mag_ptr mag_count limbshift bitshift)
+      (let* ((bound (if (< limbshift mag_count) limbshift mag_count))
+             (low_nonzero (nl_bignum_shr_sticky_low mag_ptr 0 bound)))
+        (if (= low_nonzero 1) 1
+          (if (>= limbshift mag_count) 0
+            (if (= bitshift 0) 0
+              (if (> (logand (ptr-read-u32 mag_ptr (* limbshift 4)) (- (shl 1 bitshift) 1)) 0) 1 0))))))
+    (defun nl_bignum_shr_bits_loop (mag_ptr mag_count out_ptr i limbshift bitshift n)
+      (if (>= i n) 0
+        (let* ((lo (ptr-read-u32 mag_ptr (* (+ i limbshift) 4)))
+               (hiidx (+ (+ i limbshift) 1))
+               (hi (if (< hiidx mag_count) (ptr-read-u32 mag_ptr (* hiidx 4)) 0))
+               (v (if (= bitshift 0) lo
+                    (logand (logior (shr lo bitshift) (shl hi (- 32 bitshift))) 4294967295))))
+          (seq (ptr-write-u32 out_ptr (* i 4) v)
+               (nl_bignum_shr_bits_loop mag_ptr mag_count out_ptr (+ i 1) limbshift bitshift n)))))
+    (defun nl_bignum_ash_right (sign mag_ptr mag_count k out)
+      (let* ((limbshift (/ k 32)) (bitshift (mod k 32))
+             (n (if (> mag_count limbshift) (- mag_count limbshift) 0)))
+        (if (= sign 0)
+            (if (= n 0)
+                (wf_write_int out 0)
+              (let* ((outbuf (alloc-bytes (* n 4) 4)))
+                (seq (nl_bignum_shr_bits_loop mag_ptr mag_count outbuf 0 limbshift bitshift n)
+                     (nl_bignum_finish 0 outbuf (nl_bignum_canon_count outbuf n) out))))
+          (let* ((sticky (nl_bignum_shr_sticky mag_ptr mag_count limbshift bitshift)))
+            (if (= n 0)
+                (wf_write_int out (if (= sticky 1) (- 0 1) 0))
+              (let* ((qbuf (alloc-bytes (* (+ n 1) 4) 4)))
+                (seq (nl_bignum_shr_bits_loop mag_ptr mag_count qbuf 0 limbshift bitshift n)
+                     (if (= sticky 0)
+                         (nl_bignum_finish 1 qbuf (nl_bignum_canon_count qbuf n) out)
+                       (let* ((one (alloc-bytes 4 4)) (sign_slot (alloc-bytes 8 8)))
+                         (seq (ptr-write-u32 one 0 1)
+                              (let* ((rc (nl_bignum_add_raw 0 qbuf n 0 one 1 qbuf sign_slot)))
+                                (nl_bignum_finish 1 qbuf rc out))))))))))))
+    ;; `ash' top-level: normalize X (fixnum or Bignum), branch on shift
+    ;; direction.  C (the shift count) stays fixnum-only -- the dispatch
+    ;; entry below still gates on tag 2 for it, unchanged.
+    (defun nl_bignum_ash_general (x_ptr c out)
+      (let* ((scratch2 (alloc-bytes 8 4))
+             (sign_slot (alloc-bytes 8 8)) (magptr_slot (alloc-bytes 8 8)) (count_slot (alloc-bytes 8 8)))
+        (seq
+         (nl_bignum_prep_operand x_ptr scratch2 sign_slot magptr_slot count_slot)
+         (let* ((sx (ptr-read-u64 sign_slot 0)) (px (ptr-read-u64 magptr_slot 0)) (cx (ptr-read-u64 count_slot 0)))
+           (if (>= c 0)
+               (nl_bignum_ash_left sx px cx c out)
+             (nl_bignum_ash_right sx px cx (- 0 c) out))))))
     (defun nl_copy_words (dst src n)
       (if (= n 0) 0
         (seq (ptr-write-u64 dst 0 (ptr-read-u64 src 0))
@@ -14942,24 +15421,47 @@ into that constant unconditionally is what broke every aarch64 build."
                                            (+ (* (ptr-read-u64 buf 0) 1000000)
                                               (ptr-read-u64 buf 8))))))
     ;; --- Wave-2 (C) bitwise / shift (2-arg forms; n-ary folds in prelude) ---
-    ((:lit "ash")     . (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 2)
-                            (if (= (ptr-read-u64 (wf_arg_ptr args 1) 0) 2)
-                                (wf_write_int out (bf_ash (wf_argval args 0) (wf_argval args 1)))
-                              (bf_wrong_type_integerp (wf_arg_ptr args 1)))
-                          (bf_wrong_type_integerp (wf_arg_ptr args 0))))
+    ;; Doc 190 Phase C: `ash' accepts a Bignum (tag 13) N -- always via
+    ;; `nl_bignum_ash_general' (fixnum N included: this also fixes two
+    ;; latent fixnum-only bugs, see that function's own header comment).
+    ;; C (the shift count) stays fixnum-only, unchanged.
+    ((:lit "ash")     . (let* ((n0 (ptr-read-u64 (wf_arg_ptr args 0) 0)))
+                          (if (if (= n0 2) 1 (if (= n0 13) 1 0))
+                              (if (= (ptr-read-u64 (wf_arg_ptr args 1) 0) 2)
+                                  (nl_bignum_ash_general (wf_arg_ptr args 0) (wf_argval args 1) out)
+                                (bf_wrong_type_integerp (wf_arg_ptr args 1)))
+                            (bf_wrong_type_integerp (wf_arg_ptr args 0)))))
+    ;; Doc 190 Phase C: the all-fixnum fast path (`bf_first_non_integer'/
+    ;; `wf_log*_fold', native i64 fold) is UNCHANGED and tried first; only
+    ;; once it reports a non-fixnum operand does the bignum-aware gate
+    ;; (`bf_first_non_integer_or_bignum') run, routing to `wf_bitop_fold'
+    ;; when the "non-fixnum" operand is actually a Bignum.
     ((:lit "logand")  . (if (= (bf_first_non_integer args) 0)
                             (wf_write_int out (wf_logand_fold args (- 0 1)))
-                          (bf_int_arg_error args)))
+                          (if (= (bf_first_non_integer_or_bignum args) 0)
+                              (let* ((seed (alloc-bytes 32 8)))
+                                (seq (wf_write_int seed (- 0 1)) (wf_bitop_fold 0 args seed out)))
+                            (bf_int_arg_error_or_bignum args))))
     ((:lit "logior")  . (if (= (bf_first_non_integer args) 0)
                             (wf_write_int out (wf_logior_fold args 0))
-                          (bf_int_arg_error args)))
+                          (if (= (bf_first_non_integer_or_bignum args) 0)
+                              (let* ((seed (alloc-bytes 32 8)))
+                                (seq (wf_write_int seed 0) (wf_bitop_fold 1 args seed out)))
+                            (bf_int_arg_error_or_bignum args))))
     ((:lit "logxor")  . (if (= (bf_first_non_integer args) 0)
                             (wf_write_int out (wf_logxor_fold args 0))
-                          (bf_int_arg_error args)))
-    ;; lognot X = -X-1 (two's complement bitwise NOT).
+                          (if (= (bf_first_non_integer_or_bignum args) 0)
+                              (let* ((seed (alloc-bytes 32 8)))
+                                (seq (wf_write_int seed 0) (wf_bitop_fold 2 args seed out)))
+                            (bf_int_arg_error_or_bignum args))))
+    ;; lognot X = -X-1 (two's complement bitwise NOT).  Doc 190 Phase C:
+    ;; the fixnum fast path is unchanged; a Bignum operand routes to
+    ;; `bf_lognot_general' (same -X-1 identity, computed exactly).
     ((:lit "lognot")  . (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 2)
                             (wf_write_int out (- (- 0 (wf_argval args 0)) 1))
-                          (bf_wrong_type_integerp (wf_arg_ptr args 0))))
+                          (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 13)
+                              (bf_lognot_general (wf_arg_ptr args 0) out)
+                            (bf_wrong_type_integerp (wf_arg_ptr args 0)))))
     ;; --- Wave-2 (C) string<: byte-lexicographic less-than ---
     ((:lit "string<") . (if (= (bf_strsym_raw (wf_arg_ptr args 0)) 0)
                             (bf_wrong_type_stringp (wf_arg_ptr args 0))
