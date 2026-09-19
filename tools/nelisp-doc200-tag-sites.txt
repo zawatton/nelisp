@@ -181,6 +181,7 @@ scripts/nelisp-standalone-build.el	nl_sf_decl_strip_body	tag-test-sexp-tag	0	wal
 scripts/nelisp-standalone-build.el	nl_sf_defvaralias_apply	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
 scripts/nelisp-standalone-build.el	nl_sf_defvaralias_apply	tag-test-sexp-tag	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
 scripts/nelisp-standalone-build.el	wf_raw_eq	tag-test-read-u64	0	walked	Doc 201 §6.17: the stock `eq' arm's raw compare reads tags 5/14 by inline buffer pointer and length (every empty string alike) instead of the capacity word at 8; tags 6/15 keep the box pointer at 8.
+scripts/standalone-bignum-smoke.el	-	unresolved-numeric	0	n-a	This compares bignum probe results with the small integers 5 and 6 ((> 2^61 5), (mod N 6) = 1/5/-5): arithmetic operands in a smoke test, not Sexp tags.
 tools/nelisp-doc200-tag-census.el	nelisp-doc200-tag-census--ledger-rows	unresolved-numeric	0	n-a	This validates the ledger row has six tab-separated fields, not a Sexp tag.
 tools/nelisp-doc200-tag-census.el	nelisp-doc200-tag-census--target-number-p	unresolved-numeric	0	n-a	These literals define the census scanner input tags 5/6; adding 14/15 would change the stable Phase-0 site key set.
 tools/nelisp-doc200-tag-census.el	nelisp-doc200-tag-census--target-number-p	unresolved-numeric	1	n-a	These literals define the census scanner input tags 5/6; adding 14/15 would change the stable Phase-0 site key set.
