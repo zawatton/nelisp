@@ -46,21 +46,107 @@
 ;;      fboundp=nil -- genuinely absent, not merely un-`provide'd like
 ;;      `seq'/`simple' turned out to be.
 ;;
-;; Net: nothing here needs a body for THIS segment's criterion (reaching
-;; `Ran N tests').  `url-parse' was missing as a loadable FEATURE, and
-;; also genuinely missing its real functionality -- but nothing in this
-;; corpus's LOAD path (as opposed to individual tests' bodies) calls any
-;; of it, so `(provide 'url-parse)' is deliberately the whole file.  A
-;; real `url-generic-parse-url' (Emacs's is a `cl-defstruct url' with
-;; type/user/password/host/port/filename/target/attributes/fullness
-;; slots plus an RFC-3986-ish parser) is a substantially bigger task than
-;; `seq'/`subr-x''s missing-`provide'-only fixes and belongs with
-;; whichever later segment makes these tests' bodies (not just their
-;; load) pass -- add it here the same way `standalone-compat/json.el'
-;; adds JSON names when that becomes the task, each with a differential
-;; against host Emacs 31.1's `url-parse.el'.
+;; segment E (feat/standalone-behaviour-diffs) is that later segment: the
+;; agent-host census showed `nl-agent-semantic-render-example--loopback-url-p'
+;; (examples/semantic-render-example.el) actually CALLING
+;; `url-generic-parse-url' / `url-type' / `url-host' / `url-user' /
+;; `url-password', so a body is now required.  What follows is a minimal
+;; RFC-3986-ish parser -- `scheme://[user[:password]@]host[:port][/path]'
+;; only, no query/fragment splitting, no relative-URL merging, no percent
+;; encoding -- differentially verified against Emacs 31.1's real
+;; `url-parse.el' on the exact 8 URLs this corpus's test actually exercises
+;; (test/semantic-render-test.el's
+;; `nl-agent-semantic-render-example-validates-loopback-authority', covering
+;; a bare host, a default port lookup, a bracketed IPv6 host with an
+;; explicit port, two host-confusable domains, and two userinfo-confusable
+;; attack URLs): identical `:type'/`:host'/`:user'/`:password'/`:port' on
+;; every one, including that `url-host' keeps the IPv6 host's brackets (the
+;; caller strips them itself) and that a userinfo component before an `@'
+;; is bound to `url-user'/`url-password', never folded into the host.  See
+;; test/nelisp-standalone-compat-url-parse-test.el for the fixture-by-
+;; fixture comparison.
+;;
+;; Deliberately NOT covered (signals a wrong answer rather than pretending
+;; one): query strings and fragments (kept inside `url-filename' rather
+;; than split into `url-target'/parsed query params), relative URLs
+;; (`url-expand-file-name'), percent-decoding of the parsed components,
+;; `url-recreate-url', and any scheme beyond http/https/ftp for the
+;; default-port table in `url-port'.
 
 ;;; Code:
+
+(require 'cl-lib)
+
+(cl-defstruct (url (:constructor url--make) (:copier nil))
+  type user password host portspec filename target attributes fullness)
+
+(defun url-port (url)
+  "Return URL's explicit port, or the scheme's default (http 80, https 443,
+ftp 21), or nil."
+  (or (url-portspec url)
+      (let ((type (url-type url)))
+        (cond ((equal type "http") 80)
+              ((equal type "https") 443)
+              ((equal type "ftp") 21)
+              (t nil)))))
+
+(defun nelisp--url-last-index (str char)
+  "Return the index of the last occurrence of CHAR in STR, or nil.
+Used to split `user:password@host' authorities on the LAST `@' the way
+real Emacs's URL parser does, so a `@' inside a percent-undecoded
+userinfo component cannot be mistaken for the host separator."
+  (let ((i (1- (length str))) (found nil))
+    (while (and (>= i 0) (not found))
+      (if (eq (aref str i) char) (setq found i) (setq i (1- i))))
+    found))
+
+(defun url-generic-parse-url (url)
+  "Minimal RFC-3986-ish parse of URL: `scheme://[user[:pass]@]host[:port][/path]'.
+Returns a `url' struct with the fields Emacs's real `url-parse.el' returns
+for that same shape; see this file's header comment for what is not
+covered."
+  (let* ((fullness nil)
+         (rest url)
+         type user password host portspec filename)
+    (when (string-match "\\`\\([a-zA-Z][a-zA-Z0-9+.-]*\\):" rest)
+      (setq type (match-string 1 rest))
+      (setq rest (substring rest (match-end 0))))
+    (when (string-prefix-p "//" rest)
+      (setq fullness t)
+      (setq rest (substring rest 2))
+      (let* ((auth-end (or (string-match "[/?#]" rest) (length rest)))
+             (authority (substring rest 0 auth-end)))
+        (setq rest (substring rest auth-end))
+        (let ((at (nelisp--url-last-index authority ?@)))
+          (when at
+            (let ((userinfo (substring authority 0 at)))
+              (setq authority (substring authority (1+ at)))
+              (let ((colon (string-match ":" userinfo)))
+                (if colon
+                    (setq user (substring userinfo 0 colon)
+                          password (substring userinfo (1+ colon)))
+                  (setq user userinfo))))))
+        ;; A bracketed IPv6 host keeps its brackets in `url-host' (matching
+        ;; real Emacs); only the port after `]:' is stripped out of it.
+        (if (string-prefix-p "[" authority)
+            (let ((close (string-match "\\]" authority)))
+              (if close
+                  (progn
+                    (setq host (substring authority 0 (1+ close)))
+                    (let ((after (substring authority (1+ close))))
+                      (when (string-prefix-p ":" after)
+                        (setq portspec (string-to-number (substring after 1))))))
+                (setq host authority)))
+          (let ((colon (string-match ":" authority)))
+            (if colon
+                (progn
+                  (setq host (substring authority 0 colon))
+                  (setq portspec (string-to-number (substring authority (1+ colon)))))
+              (setq host authority))))))
+    (setq filename (if (> (length rest) 0) rest "/"))
+    (url--make :type type :user user :password password :host host
+               :portspec portspec :filename filename :target nil
+               :attributes nil :fullness fullness)))
 
 (provide 'url-parse)
 
