@@ -94,6 +94,26 @@
 
 (defconst nelisp-cc-frame-push--source
   '(seq
+    ;; perf/frame-push-depth-raw (segment G2): frames-ptr slot 1 (stack
+    ;; DEPTH) is `Sexp::Int' by construction (only ever written by
+    ;; `sexp-int-make' below and in `nelisp-cc-frame-pop.el') -- never a
+    ;; pointer -- so every one of the THREE re-reads below (each already
+    ;; deliberately independent, see the miscompile note on
+    ;; `nelisp_frame_push_ensure_now') paid `record-slot-ref-ptr''s
+    ;; `(alloc-bytes 32 8)' + `nl_val_load' (lisp/nelisp-cc-nlrecord-slot-
+    ;; ptr.el) on EVERY function call's frame push, just to `sexp-int-
+    ;; unwrap' the same integer back out.  Same pattern as A1/A2
+    ;; (ab4a72484 / 441aa152c) and this segment's `nelisp-cc-frame-bind.el'
+    ;; fix.  This reads the raw WORD directly instead -- it does NOT
+    ;; introduce any new value that survives across an extern-call/`and'-
+    ;; chain step, so it does not touch the call-crossing-local miscompile
+    ;; this file already works around by re-reading at each site instead
+    ;; of caching once: each site below still re-reads FRESH, only the
+    ;; read itself no longer allocates.
+    (defun nelisp_frame_push_depth_word (frames-ptr)
+      (ptr-read-u64
+       (+ (ptr-read-u64 (ptr-read-u64 frames-ptr 8) 32) 8)
+       0))
     (defun nelisp_frame_push_ensure_now (frames-ptr scratch-slot)
       ;; Do not accept a caller-computed `needed' value here.  The AOT
       ;; allocator has miscompiled call-crossing locals in
@@ -101,7 +121,7 @@
       ;; required depth is re-read immediately before the capacity call.
       (extern-call nelisp_frame_stack_ensure_capacity
                    frames-ptr
-                   (+ (sexp-int-unwrap (record-slot-ref-ptr frames-ptr 1))
+                   (+ (sar (nelisp_frame_push_depth_word frames-ptr) 2)
                       1)
                    scratch-slot))
     (defun nelisp_frame_push_install_now (frames-ptr frame-slot)
@@ -110,14 +130,14 @@
       ;; crossed allocator / record calls.
       (vector-slot-set
        (record-slot-ref-ptr frames-ptr 0)
-       (sexp-int-unwrap (record-slot-ref-ptr frames-ptr 1))
+       (sar (nelisp_frame_push_depth_word frames-ptr) 2)
        frame-slot))
     (defun nelisp_frame_push_bump_now (frames-ptr int-slot)
       ;; Recompute depth+1 again after install; the depth bump must match the
       ;; current frame record, not an old local that survived several calls.
       (and (sexp-int-make
             int-slot
-            (+ (sexp-int-unwrap (record-slot-ref-ptr frames-ptr 1)) 1))
+            (+ (sar (nelisp_frame_push_depth_word frames-ptr) 2) 1))
            (record-slot-set frames-ptr 1 int-slot)))
     (defun nelisp_frame_push (frames-ptr scratch-vec-ptr)
      ;; frames-ptr:      *const Sexp pointing at Env::frames_record (=

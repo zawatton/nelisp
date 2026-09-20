@@ -226,3 +226,25 @@ pinned-kernel-touch lisp/nelisp-cc-sf-setq.el
 # 103 -> 104 on 2026-09-21: the kernel unit documented immediately above
 # joined the raw-memory surface.
 kernel-files 104
+
+# perf/frame-bind-int-slot-raw, perf/frame-push-depth-raw and perf/frame-
+# pop-depth-raw (segment G2, 2026-09-21): same pattern, three more sites,
+# all reading an Int-only Record slot (stack DEPTH / hash-table BUCKET-
+# COUNT / entry COUNT -- each written only by `sexp-int-make', never a
+# pointer) via a new local `ptr-read-u64'-based raw-word helper instead of
+# the materialising `record-slot-ref-ptr', on every `let' binding and
+# every interpreted function call's frame push/bind/pop.
+# `nelisp-cc-frame-push.el' was already pinned (via `alloc-bytes' in
+# `nelisp_frame_push_direct'); `nelisp-cc-frame-bind.el' and `nelisp-cc-
+# frame-pop.el' are new kernel-touch sites.  `nelisp-cc-frame-push.el'
+# and `nelisp-cc-frame-pop.el' deliberately keep re-reading the slot
+# fresh at each call site rather than caching it in a local across a
+# call -- `nelisp_frame_push_ensure_now''s own comment documents an AOT-
+# allocator miscompile on call-crossing locals in this exact function,
+# so only the read itself was made non-allocating, not the "read once,
+# reuse" shape.  No pointer is retained past any of these calls.
+pinned-kernel-touch lisp/nelisp-cc-frame-bind.el
+pinned-kernel-touch lisp/nelisp-cc-frame-pop.el
+# 104 -> 106 on 2026-09-21: the two kernel units documented immediately
+# above joined the raw-memory surface.
+kernel-files 106

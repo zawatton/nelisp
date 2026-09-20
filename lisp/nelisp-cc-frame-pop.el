@@ -65,6 +65,21 @@
 
 (defconst nelisp-cc-frame-pop--source
   '(seq
+    ;; perf/frame-pop-depth-raw (segment G2): frames-ptr slot 1 (stack
+    ;; DEPTH) is `Sexp::Int' by construction -- never a pointer -- so
+    ;; both re-reads in `nelisp_frame_pop' below (the `> 0' guard and the
+    ;; `new-depth' computation, deliberately independent reads, not a
+    ;; single cached local -- mirroring the safe, non-caching structure
+    ;; `nelisp-cc-frame-push.el''s `nelisp_frame_push_ensure_now' already
+    ;; established for the sibling call-crossing-local miscompile) paid
+    ;; `record-slot-ref-ptr''s `(alloc-bytes 32 8)' + `nl_val_load' on
+    ;; EVERY function-call return, just to `sexp-int-unwrap' the same
+    ;; integer back out.  Same pattern as A1/A2 (ab4a72484 / 441aa152c)
+    ;; and this segment's frame-bind / frame-push fixes.
+    (defun nelisp_frame_pop_depth_word (frames-ptr)
+      (ptr-read-u64
+       (+ (ptr-read-u64 (ptr-read-u64 frames-ptr 8) 32) 8)
+       0))
     (defun nelisp_frame_pop_inner (frames-ptr scratch-slot new-depth _pad)
       ;; frames-ptr:   *const Sexp pointing at Env::frames_record.
       ;; scratch-slot: *mut Sexp — currently holds `Sexp::Nil'.
@@ -109,11 +124,11 @@
       ;; bootstrap-installed Sexp::Vector(BACKING) / Sexp::Int(DEPTH)
       ;; shape.  No tag-check here because the only legal frames-
       ;; record shape meets the precondition.
-      (if (< 0 (sexp-int-unwrap (record-slot-ref-ptr frames-ptr 1)))
+      (if (< 0 (sar (nelisp_frame_pop_depth_word frames-ptr) 2))
           (nelisp_frame_pop_inner
            frames-ptr
            scratch-slot
-           (- (sexp-int-unwrap (record-slot-ref-ptr frames-ptr 1)) 1)
+           (- (sar (nelisp_frame_pop_depth_word frames-ptr) 2) 1)
            0) ; _pad — Doc 124.F-blocker even-arity fix
         0)))
   "AOT source for Doc 111 §111.E #22 / Doc 115 §115.2
