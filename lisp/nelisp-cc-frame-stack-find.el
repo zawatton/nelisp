@@ -333,21 +333,61 @@
                name-ptr)))
         0))
 
+    ;; perf/frame-declaration-check: a record's per-slot storage is one
+    ;; 8-byte tagged WORD (Doc 147 Phase 2): low bit 0 = pointer to a
+    ;; 32-byte Sexp box, low bit 1 = immediate (Nil = 3, T = 7,
+    ;; Int(n) = (n<<2)|1 -- `nl_val_load''s own encoding,
+    ;; lisp/nelisp-cc-val-load.el).  This mirrors `nl_record_slot_ptr'
+    ;; (lisp/nelisp-cc-nlrecord-slot-ptr.el) up to the point where THAT
+    ;; helper would materialise an immediate WORD into a fresh 32-byte
+    ;; box for the general `*const Sexp' contract; the two callers below
+    ;; only need to classify the WORD, never read a Sexp through it, so
+    ;; no allocation is needed at all.  REC-PTR must already be a
+    ;; validated `*const Sexp' view of a Record (same precondition its
+    ;; callers already establish for `record-slot-count').
+    (defun nelisp_frame_slot_raw_word (rec-ptr idx)
+      (ptr-read-u64
+       (+ (ptr-read-u64 (ptr-read-u64 rec-ptr 8) 32) (* idx 8))
+       0))
+
     (defun nelisp_frame_binding_dynamic_p (frame-ptr name-ptr)
       ;; Slot 1 is binding-time metadata, independent of later declarations.
       ;; Older native frames have only slot 0 and remain lexical-only.
+      ;; f25ec9af1 (2026-09-16) made every frame visited during a lexical
+      ;; descent pay this check -- one call per variable reference per
+      ;; frame walked -- and slot 1 is Nil (no declared-dynamic names) in
+      ;; the overwhelming majority of frames.  `record-slot-ref-ptr' would
+      ;; materialise a fresh 32-byte box for that Nil on every single
+      ;; call even though an immediate WORD can never be the tag-7 Cons
+      ;; this predicate looks for.  Rejecting any immediate WORD directly
+      ;; is exactly equivalent: `nl_capture_filter_contains' given a
+      ;; materialised non-Cons immediate would also return 0, just after
+      ;; paying for the allocation first.
       (if (= (sexp-tag frame-ptr) 12)
           (if (> (record-slot-count frame-ptr) 1)
-              (nl_capture_filter_contains
-               (record-slot-ref-ptr frame-ptr 1) name-ptr)
+              (if (= (logand (nelisp_frame_slot_raw_word frame-ptr 1) 1) 1)
+                  0
+                (nl_capture_filter_contains
+                 (record-slot-ref-ptr frame-ptr 1) name-ptr))
             0)
         0))
 
     (defun nelisp_frame_scope_boundary_p (frame-ptr)
       ;; Older frames have no boundary metadata.  A marked frame belongs
       ;; to the callee, but lexical lookup must not descend below it.
+      ;; Same fix as `nelisp_frame_binding_dynamic_p' above: slot 2 is
+      ;; always an immediate here (Nil when unset, Int(1) once
+      ;; `nelisp_frame_scope_mark' has set it), so a materialising
+      ;; `record-slot-ref-ptr' call is pure overhead on every frame a
+      ;; lexical descent visits, whether or not it finds a match.  Nil's
+      ;; raw WORD is the literal 3 (lisp/nelisp-cc-val-load.el); any
+      ;; other WORD's materialised Sexp would not have tag 0 (Nil) either
+      ;; -- immediate Int(1) has tag 2, a pointer has its own tag -- so
+      ;; comparing the raw WORD to 3 matches the original
+      ;; `(sexp-tag ...) == 0' test exactly, for every value this slot
+      ;; can actually hold.
       (if (> (record-slot-count frame-ptr) 2)
-          (if (= (sexp-tag (record-slot-ref-ptr frame-ptr 2)) 0) 0 1)
+          (if (= (nelisp_frame_slot_raw_word frame-ptr 2) 3) 0 1)
         0))
 
     (defun nelisp_frame_local_names (frame)
@@ -450,11 +490,19 @@
       ;; Return the borrowed Cell pointer, like frame_stack_find.  DYNAMIC
       ;; is 0 for lexical and 1 for dynamic.  Leave the old mixed lookup's
       ;; ABI and allocation-free inner walk intact during evaluator migration.
+      ;; Slot 0 (the backing Vector) is always a pointer WORD, so reading
+      ;; it via `record-slot-ref-ptr' was already allocation-free.  Slot 1
+      ;; (the depth) is always an Int, i.e. always an immediate WORD
+      ;; ((n<<2)|1, `nl_val_load''s encoding); decode it straight from the
+      ;; raw WORD instead of materialising a fresh 32-byte box through
+      ;; `record-slot-ref-ptr' on every call just to unwrap it right back
+      ;; out with `sexp-int-unwrap' -- this call happens once per lexical
+      ;; variable reference.
       (if (= (nelisp_frame_stack_find_valid_key name-ptr) 0)
           0
         (nelisp_frame_stack_find_kind_descend
          (record-slot-ref-ptr frames-ptr 0)
-         (- (sexp-int-unwrap (record-slot-ref-ptr frames-ptr 1)) 1)
+         (- (sar (nelisp_frame_slot_raw_word frames-ptr 1) 2) 1)
          name-ptr dynamic)))
 
     (defun nelisp_frame_stack_find_value (frames-ptr name-ptr)
