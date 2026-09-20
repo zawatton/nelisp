@@ -28305,13 +28305,14 @@ correctly."
              (- (ptr-read-u64 268435464 0) 1))))))
     (defun nl_cli_action_sequence (sp0 argc base_idx eff_idx dd_value fbuf src
                                         cursor result pool out ctx builtin_sym _cl)
-      (let* ((cla_sym_buf (alloc-bytes ,(* 8 (length (nelisp-standalone--name-words "command-line-args"))) 1))
-             (cla_sym (alloc-bytes 32 8))
-             (clal_sym_buf (alloc-bytes ,(* 8 (length (nelisp-standalone--name-words "command-line-args-left"))) 1))
-             (clal_sym (alloc-bytes 32 8))
-             (argv0_str (alloc-bytes 32 8))
-             (cla_rest (alloc-bytes 32 8))
-             (cla_value (alloc-bytes 32 8)))
+      ;; fix/standalone-agent-cla-every-invocation: `command-line-args'
+      ;; itself is now bound unconditionally in `driver', before this
+      ;; function is ever reached (every invocation shape needs it, not
+      ;; only the `-l'/`-f'/multi-action path this function handles) --
+      ;; only `command-line-args-left' (updated incrementally as actions
+      ;; are consumed, `nl_cli_set_clal') is this function's own job.
+      (let* ((clal_sym_buf (alloc-bytes ,(* 8 (length (nelisp-standalone--name-words "command-line-args-left"))) 1))
+             (clal_sym (alloc-bytes 32 8)))
         (seq
          (if (< _cl 0)
              (seq ,@(nelisp-standalone--reader-repl-prelude-forms
@@ -28319,18 +28320,10 @@ correctly."
            0)
          (nl_cli_ldir_apply sp0 base_idx eff_idx dd_value fbuf src cursor
                              result pool out ctx builtin_sym)
-         ,@(nelisp-standalone--byte-write-forms 'cla_sym_buf "command-line-args")
-         (nl_alloc_symbol cla_sym_buf
-                           ,(length (encode-coding-string "command-line-args" 'utf-8 t))
-                           cla_sym)
          ,@(nelisp-standalone--byte-write-forms 'clal_sym_buf "command-line-args-left")
          (nl_alloc_symbol clal_sym_buf
                            ,(length (encode-coding-string "command-line-args-left" 'utf-8 t))
                            clal_sym)
-         (nl_argv_cstr_to_str (nl_argv_word sp0 0) argv0_str)
-         (nl_cla_list_from argc sp0 1 cla_rest)
-         (nelisp_cons_construct argv0_str cla_rest cla_value)
-         (nl_env_set_value ctx cla_sym cla_value)
          (nl_cli_action_loop sp0 argc eff_idx dd_value fbuf src cursor result
                               pool out ctx builtin_sym clal_sym))))
     (defun driver (sp)
@@ -28454,6 +28447,26 @@ correctly."
             (invdir_sym_buf (alloc-bytes ,(* 8 (length (nelisp-standalone--name-words "invocation-directory"))) 1))
             (invdir_sym (alloc-bytes 32 8))
             (invdir_value (alloc-bytes 32 8))
+            ;; fix/standalone-agent-cla-every-invocation: `command-line-args'
+            ;; used to be bound only inside `nl_cli_action_sequence' (the
+            ;; `-l'/`-f'/multi-action path), so a lone `--eval EXPR'/`--load
+            ;; FILE', a bare positional FILE, or `--repl'/no-args left it
+            ;; `void-variable' -- measured against host Emacs 31.1, where it
+            ;; is bound before ANY user code runs, in every invocation shape.
+            ;; Same shallow-`let*'-then-`nl_env_set_value'-in-the-`seq'-body
+            ;; idiom as `noninteractive'/`invocation-name' above, for the
+            ;; same Doc 152 artifact-cli-silent-noop reason: computed here,
+            ;; once, unconditionally, instead of from inside the `path'
+            ;; dispatch `cond' below.  `nl_cli_action_sequence' used to
+            ;; compute this itself (redundant now, removed there) -- moving
+            ;; it here instead of duplicating it keeps the unsafe-inventory
+            ;; total unchanged (same alloc-bytes/ptr-write-u64 call sites,
+            ;; relocated, not added).
+            (cla_sym_buf (alloc-bytes ,(* 8 (length (nelisp-standalone--name-words "command-line-args"))) 1))
+            (cla_sym (alloc-bytes 32 8))
+            (argv0_str (alloc-bytes 32 8))
+            (cla_rest (alloc-bytes 32 8))
+            (cla_value (alloc-bytes 32 8))
             (prompt_p (if (= (nl_cstr_eq_no_prompt arg2) 1)
                           0
                         (if (= (nl_cstr_eq_no_prompt arg3) 1) 0 1)))
@@ -28556,6 +28569,23 @@ correctly."
         (nl_cli_compute_invocation slot0 dd_value invname_value invdir_value)
         (nl_env_set_value ctx invname_sym invname_value)
         (nl_env_set_value ctx invdir_sym invdir_value)
+        ;; fix/standalone-agent-cla-every-invocation: `command-line-args' =
+        ;; (PROGRAM-NAME . ARGS), matching Emacs's own C startup layer, which
+        ;; builds it before any Lisp runs and strips exactly `-Q'/`-q'/
+        ;; `--batch'/`--no-site-file'/`--no-init-file' (`nl_cli_cla_omit_p')
+        ;; -- `-L'/`--directory' and every action flag/argument survive
+        ;; verbatim, in argv order (`nl_cla_list_from', already used by
+        ;; `nl_cli_action_sequence' before this fix; unchanged here).  SP0/
+        ;; ARGC are read pre-`argv_shifted_p'-writeback, exactly like
+        ;; `nelisp-standalone-argv' (ARGV_LIST) just above.
+        ,@(nelisp-standalone--byte-write-forms 'cla_sym_buf "command-line-args")
+        (nl_alloc_symbol cla_sym_buf
+                          ,(length (encode-coding-string "command-line-args" 'utf-8 t))
+                          cla_sym)
+        (nl_argv_cstr_to_str (nl_argv_word sp0 0) argv0_str)
+        (nl_cla_list_from argc sp0 1 cla_rest)
+        (nelisp_cons_construct argv0_str cla_rest cla_value)
+        (nl_env_set_value ctx cla_sym cla_value)
         ;; rec_max 16000: Doc 152 Stage 3 rooting adds root-depth 3N+6 per
         ;; non-tail recursion.  The 4 MiB region has 131072 entries, so the
         ;; guard fires near N=8000/root-depth=24006 with 107066 entries free.
