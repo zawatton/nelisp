@@ -177,7 +177,8 @@ Return (VALUE . NEXT-POS) where NEXT-POS is after the closing quote."
                           (/= (aref json-string idx) ?\\)
                           (/= (aref json-string (1+ idx)) ?u))
                   (nelisp-json--parse-error json-string idx
-                                            "missing low surrogate after high surrogate"))
+                                            "missing low surrogate after high
+surrogate"))
                 (setq low-info (nelisp-json--parse-hex4 json-string (+ idx 2)))
                 (setq idx (cdr low-info))
                 (setq low (car low-info))
@@ -539,7 +540,8 @@ change."
     (concat out "]")))
 
 (defun nelisp-json--encode-vector (items options)
-  "Return JSON array string for vector ITEMS using OPTIONS, without list conversion."
+  "Return the JSON array string for vector ITEMS using OPTIONS.
+Unlike the list encoder this never converts ITEMS to a list."
   (let ((out "[")
         (i 0)
         (n (length items)))
@@ -573,7 +575,8 @@ change."
     (concat out "}")))
 
 (defun nelisp-json--encode-plist-object (plist options)
-  "Return JSON object string for PLIST using OPTIONS, without allocating pair cells."
+  "Return JSON object string for PLIST using OPTIONS, without allocating pair
+cells."
   (let ((out "{")
         (first t)
         (cur plist))
@@ -588,7 +591,8 @@ change."
     (concat out "}")))
 
 (defun nelisp-json--encode-hash-object (table options)
-  "Return JSON object string for hash TABLE using OPTIONS, without materializing entries."
+  "Return JSON object string for hash TABLE using OPTIONS, without
+materializing entries."
   (let ((out "{")
         (first t))
     (maphash
