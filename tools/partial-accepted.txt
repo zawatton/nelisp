@@ -57,3 +57,5 @@ bool-vector-p|lisp/nelisp-stdlib-plist-str.el|_x|always nil; byte-identical to t
 generate-new-buffer|scripts/nelisp-stdlib-prelude.el|_inhibit-buffer-hooks|there are no buffer hooks here, so nothing can be inhibited
 file-truename|lisp/nelisp-stdlib-misc.el|_prev-dirs|the same; byte-identical to the prelude copy
 run-at-time|scripts/nelisp-stdlib-prelude.el|_repeat|REPEAT ignored: the function runs once, immediately, so a repeating timer never repeats
+insert-file-contents-literally|scripts/nelisp-stdlib-prelude.el|_replace _visit|VISIT/REPLACE ignored: the same as the `insert-file-contents' site below it -- this runtime never visits a file into a buffer (no buffer-file-name, no modtime) and never replaces a region in place; the bytes are inserted at point either way
+insert-file-contents-literally|lisp/nelisp-stdlib-misc.el|_replace _visit|the same; byte-identical to the prelude copy
