@@ -1398,6 +1398,22 @@ See the prelude's copy for the full rationale (nil PARENT, ported
 from Emacs 31.1's `simple.el')."
     (setq buffer-read-only t)))
 
+;; feat/standalone-agent-segC-prelude item 4: same as the prelude's
+;; copy -- see that file for the full rationale (real Emacs's own is a
+;; native subr; this is exactly what `special-mode''s nil-PARENT
+;; `define-derived-mode' expansion just above already generates).
+(unless (fboundp 'fundamental-mode)
+  (defun fundamental-mode ()
+    "Major mode not specialized for anything in particular.
+Other major modes are defined by comparison with this one.
+
+(fn)"
+    (interactive)
+    (kill-all-local-variables)
+    (setq major-mode 'fundamental-mode)
+    (setq mode-name "Fundamental")
+    (run-mode-hooks)))
+
 (unless (fboundp 'propertize)
   (defun propertize (string &rest _properties)
     "Return a copy of STRING; PROPERTIES are dropped.  See the

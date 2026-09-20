@@ -9760,6 +9760,32 @@ ancestor -- only the explicit property chain is walked.
         (setq m (get m 'derived-mode-parent)))
       m)))
 
+;; feat/standalone-agent-segC-prelude item 4: `fundamental-mode' was
+;; `void-function' (also reported on Windows).  Real Emacs's own is a
+;; native subr with no Elisp source to port; body below is exactly what
+;; a nil-PARENT `define-derived-mode' expansion already generates just
+;; above (compare `special-mode', further down this file: `(define-
+;; derived-mode special-mode nil ...)' expands its PARENT-nil case to
+;; `(kill-all-local-variables t)' then sets MAJOR-MODE/MODE-NAME then
+;; `run-mode-hooks'), written directly rather than through that macro
+;; because `fundamental-mode' is not itself "derived from" anything --
+;; it has no `-hook'/`-map'/`-syntax-table' of its own in real Emacs.
+;; Verified against Emacs 31.1: `fundamental-mode-hook' is not a bound
+;; variable there (unlike every mode `define-derived-mode' generates),
+;; so `run-mode-hooks' is called with NO hook argument -- it still runs
+;; `change-major-mode-after-body-hook'/`after-change-major-mode-hook'.
+(unless (fboundp 'fundamental-mode)
+  (defun fundamental-mode ()
+    "Major mode not specialized for anything in particular.
+Other major modes are defined by comparison with this one.
+
+(fn)"
+    (interactive)
+    (kill-all-local-variables)
+    (setq major-mode 'fundamental-mode)
+    (setq mode-name "Fundamental")
+    (run-mode-hooks)))
+
 (unless (fboundp 'define-derived-mode)
   (defmacro define-derived-mode (child parent name &optional docstring &rest body)
     "Create a new major mode CHILD, derived from PARENT (a mode function
@@ -10224,6 +10250,24 @@ write instead of ever touching a real buffer."
 (unless (fboundp 'process-query-on-exit-flag)
   (defun process-query-on-exit-flag (process)
     (not (eq (process-get process 'nelisp--query-on-exit) 'no))))
+;; feat/standalone-agent-segC-prelude item 4: `process-buffer'/`set-
+;; process-buffer' were `void-function' (also reported on Windows).
+;; `make-process' (below) accepted a `:buffer' keyword in its PLIST but
+;; never stored it anywhere -- verified by reading that function before
+;; this change -- so there was nothing for a getter to return in the
+;; first place; `make-process' now `process-put's it under the same
+;; plist mechanism `process-get'/`process-put' (above) already use for
+;; every other process property, exactly as `process-query-on-exit-
+;; flag' just above does for its own attribute.  Verified against Emacs
+;; 31.1: `process-buffer' on a process started with no `:buffer' answers
+;; nil; `set-process-buffer' returns BUFFER (not the process).
+(unless (fboundp 'process-buffer)
+  (defun process-buffer (process)
+    (process-get process :buffer)))
+(unless (fboundp 'set-process-buffer)
+  (defun set-process-buffer (process buffer)
+    (process-put process :buffer buffer)
+    buffer))
 ;; `void-function' on the ~80-file census (1 hit,
 ;; ../nelisp-agent/lisp/nl-agent-client.el:362: `(set-process-coding-
 ;; system process 'utf-8-unix 'utf-8-unix)').  This runtime's processes
@@ -10325,6 +10369,12 @@ write instead of ever touching a real buffer."
 (unless (fboundp 'make-process)
   (defun make-process (&rest plist)
     (let* ((name (or (plist-get plist :name) "process"))
+           ;; item 4: PLIST's `:buffer' used to be dropped on the floor
+           ;; here -- read by nothing, stored nowhere -- which is why
+           ;; `process-buffer' (above) had nothing to return.  Stored the
+           ;; same way `:sentinel'/`:stderr' already are, on both the
+           ;; native and the tagged-vector process shapes below.
+           (buffer (plist-get plist :buffer))
            (command (plist-get plist :command))
            (stderr-buffer (plist-get plist :stderr))
            (sentinel (plist-get plist :sentinel))
@@ -10339,10 +10389,12 @@ write instead of ever touching a real buffer."
             (process-put proc :name name)
             (process-put proc :sentinel sentinel)
             (process-put proc :stderr stderr-buffer)
+            (process-put proc :buffer buffer)
             (setq nelisp--pending-processes
                   (cons proc nelisp--pending-processes))
             proc)
         (let ((proc (vector 'process name 'run -1 nil sentinel "")))
+          (process-put proc :buffer buffer)
           (setq nelisp--pending-processes
                 (cons proc nelisp--pending-processes))
           proc)))))
