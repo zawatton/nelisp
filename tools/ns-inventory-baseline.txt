@@ -314,7 +314,12 @@
 # table'/`nelisp--buffer-multibyte-p'/`nelisp--char-arg-to-string'
 # plumbing behind them -- 8 new names, all mirrored byte-identically
 # into both files, same pattern as every prior entry in this run.
-ns-collision 314
+ns-collision 344
+# 314 -> 344 on 2026-09-21 (segment F): +30 same-definition collisions,
+# all mirrored byte-identically between files per this segment's
+# default file-pairing rule -- see the `pinned-collision' block near
+# the end of this file for the full list (format-time-string family,
+# cl-letf, copy-tree, byte-compile, buffer-local-value, the rx shim).
 # 97 -> 96 on 2026-08-19: `string-equal' no longer differs between the two
 # files -- the prelude's now signals for a non-string instead of falling
 # through to `equal', and the lisp copy was brought with it.  Ratcheted down
@@ -432,7 +437,17 @@ ns-collision 314
 # unguarded `(defvar process-environment nil ...)' in
 # lisp/nelisp-build-host.el (a host-side build-tool file with its own
 # getenv/setenv sandbox, predates this segment and is out of its scope).
-ns-collision-divergent 128
+ns-collision-divergent 133
+# 128 -> 133 on 2026-09-21 (segment F): +7 divergent collisions --
+# cl-count/cl-remove/cl-delete/cl-assoc/cl-sort/cl-remove-duplicates,
+# new in lisp/nelisp-cl-macros.el, diverge from an older, now-dead-code
+# (no longer bound at runtime, superseded by a later unconditional
+# definition -- see the commit) `&rest _' bridge stub still textually
+# present in scripts/nelisp-stdlib-prelude.el; and `setf', which
+# lisp/nelisp-cl-macros.el has always defined more simply than
+# nelisp--setf-1's plist-get/alist-get/get/gethash/cXXXr-aware version,
+# a pre-existing divergence this segment's addition of `setf' to
+# lisp/nelisp-stdlib-misc.el newly exposes as a 3-file collision.
 # 850 -> 851 on 2026-08-19: `nl-check-file-quoted-unsafe', the entry point
 # that reports the unsafe calls inside quoted forms.  Same situation as the
 # nl-ns pair above -- it is public because tools/nl-check-inventory.el calls
@@ -800,7 +815,13 @@ ns-collision-divergent 128
 # used for the identical pair in scripts/nelisp-stdlib-prelude.el (see the
 # `ns-collision' pin for these two names) rather than diverging the name
 # to fit each file's local convention.
-ns-prefix-violation 322
+ns-prefix-violation 328
+# 322 -> 328 on 2026-09-21 (segment F): +6, from the `rx'/`rx-to-string'/
+# `rx--tr-*' family added to scripts/nelisp-stdlib-prelude.el and
+# lisp/nelisp-stdlib-misc.el -- an `rx-'-prefixed name in a file whose
+# inferred majority namespace is `nelisp-'. Kept the real Emacs names
+# (`rx', `rx-to-string') rather than a `nelisp-'-prefixed alias, since
+# these are public compatibility entry points callers use unqualified.
 # 318 -> 320 on 2026-09-20: `process-send-eof'/`process-send-region', new
 # standard-name public entries in `packages/nelisp-process-adapter/src/
 # nelisp-process-adapter.el' closing the subprocess gap documented at that
@@ -970,7 +991,13 @@ ns-prefix-violation 322
 # the four new lines individually and in combination; this kind stays
 # count-only in the gate's own design (see nl-ns-inventory.el's header),
 # so it is not itemized further here.
-ns-private-escape 768
+ns-private-escape 770
+# 768 -> 770 on 2026-09-21 (segment F): +2. This kind stays count-only
+# in the gate's own design (see nl-ns-inventory.el's header); the rx
+# shim's `declare-function' lines for its own private `rx--tr-*'
+# helpers, needed to keep byte-compile clean (see the commit), are the
+# likely source, isolated the same way the entry just above this one
+# was.
 ns-unreadable 0
 
 # `pinned-collision KEY' pins every ns-collision and ns-collision-divergent
@@ -1487,3 +1514,54 @@ pinned-collision ns-collision	nelisp-buffer--shift-markers-on-insert-before-mark
 pinned-collision ns-collision	nelisp--buffer-multibyte-table	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	nelisp--buffer-multibyte-p	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	nelisp--char-arg-to-string	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+# Segment F (2026-09-21): 30 new same-definition collisions from
+# mirroring prelude.el additions into lisp/nelisp-stdlib-misc.el (the
+# format-time-string family, cl-letf, byte-compile, buffer-local-value,
+# the rx shim) and lisp/nelisp-stdlib-plist-str.el (copy-tree), per the
+# segment's default file-pairing rule; plus 7 divergent collisions
+# (cl-count/cl-remove/cl-delete/cl-assoc/cl-sort/cl-remove-duplicates
+# newly added to lisp/nelisp-cl-macros.el vs. an older, now-superseded
+# `&rest _' bridge stub still textually present -- but no longer
+# bound at runtime -- earlier in scripts/nelisp-stdlib-prelude.el; and
+# setf, which lisp/nelisp-cl-macros.el has always defined more simply
+# than nelisp--setf-1's plist-get/alist-get/get/gethash/cXXXr-aware
+# version in the prelude, a pre-existing divergence this segment's
+# addition of setf to lisp/nelisp-stdlib-misc.el newly exposes as a
+# 3-file collision).
+pinned-collision ns-collision	buffer-local-value	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	byte-compile	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	cl-letf	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	copy-tree	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	current-time-string	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	decode-time	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	encode-time	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	format-time-string	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp--setf-1	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp--tm-civil-from-days	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp--tm-dayname	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp--tm-days-from-civil	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp--tm-fdiv	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp--tm-monthname	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp--tm-pad	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp--tm-pad-space	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp--tm-tz-env-offset	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp--tm-unpack	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp--tm-zone-offset	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	rx	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	rx--atomic-p	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	rx--charset-item	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	rx--tr-atom	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	rx--tr-charset	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	rx--tr-form	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	rx--tr-or	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	rx--tr-repeat	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	rx--tr-seq	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	rx--tr-symbol	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	rx-to-string	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision-divergent	cl-assoc	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	53dced88f9e8
+pinned-collision ns-collision-divergent	cl-count	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	4f8122570dba
+pinned-collision ns-collision-divergent	cl-delete	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	04158eeaced9
+pinned-collision ns-collision-divergent	cl-remove	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	c20721233fb0
+pinned-collision ns-collision-divergent	cl-remove-duplicates	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	4f9de92cb550
+pinned-collision ns-collision-divergent	cl-sort	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	cedfc8e8e24c
+pinned-collision ns-collision-divergent	setf	lisp/nelisp-cl-macros.el lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	8a67c1c8af82

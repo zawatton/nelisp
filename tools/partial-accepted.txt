@@ -16,7 +16,6 @@ base64-encode-string|scripts/nelisp-stdlib-prelude.el|_no-line-break|not yet rev
 byte-code-function-p|scripts/nelisp-stdlib-prelude.el|_object|not yet reviewed
 byte-compile-file|scripts/nelisp-stdlib-prelude.el|_load|LOAD ignored: there is no byte compiler in the standalone, so nothing is produced to load.  The entry point exists to check FILENAME and report a missing input file the way Emacs does, instead of answering void-function and hiding the argument error too.
 characterp|scripts/nelisp-stdlib-prelude.el|_ignore|not yet reviewed
-copy-tree|scripts/nelisp-stdlib-prelude.el|_vecp|not yet reviewed
 decode-coding-string|lisp/nelisp-stdlib-misc.el|_nocopy|not yet reviewed
 decode-coding-string|scripts/nelisp-stdlib-prelude.el|_nocopy|not yet reviewed
 delete-directory|scripts/nelisp-stdlib-prelude.el|_trash|not yet reviewed
@@ -26,7 +25,6 @@ encode-coding-string|lisp/nelisp-stdlib-misc.el|_nocopy|not yet reviewed
 encode-coding-string|scripts/nelisp-stdlib-prelude.el|_nocopy|not yet reviewed
 executable-find|scripts/nelisp-stdlib-prelude.el|_remote|not yet reviewed
 file-attributes|scripts/nelisp-stdlib-prelude.el|_id-format|not yet reviewed
-format-time-string|scripts/nelisp-stdlib-prelude.el|_args|not yet reviewed
 help-split-fundoc|scripts/nelisp-stdlib-prelude.el|_def|not yet reviewed
 ignore|scripts/nelisp-stdlib-prelude.el|_arguments|not yet reviewed
 insert-file-contents|scripts/nelisp-stdlib-prelude.el|_args|not yet reviewed
