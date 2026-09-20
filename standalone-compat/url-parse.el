@@ -51,34 +51,56 @@
 ;; (examples/semantic-render-example.el) actually CALLING
 ;; `url-generic-parse-url' / `url-type' / `url-host' / `url-user' /
 ;; `url-password', so a body is now required.  What follows is a minimal
-;; RFC-3986-ish parser -- `scheme://[user[:password]@]host[:port][/path]'
-;; only, no query/fragment splitting, no relative-URL merging, no percent
-;; encoding -- differentially verified against Emacs 31.1's real
-;; `url-parse.el' on the exact 8 URLs this corpus's test actually exercises
-;; (test/semantic-render-test.el's
-;; `nl-agent-semantic-render-example-validates-loopback-authority', covering
-;; a bare host, a default port lookup, a bracketed IPv6 host with an
-;; explicit port, two host-confusable domains, and two userinfo-confusable
-;; attack URLs): identical `:type'/`:host'/`:user'/`:password'/`:port' on
-;; every one, including that `url-host' keeps the IPv6 host's brackets (the
-;; caller strips them itself) and that a userinfo component before an `@'
-;; is bound to `url-user'/`url-password', never folded into the host.  See
-;; test/nelisp-standalone-compat-url-parse-test.el for the fixture-by-
-;; fixture comparison.
+;; RFC-3986-ish parser -- `scheme://[user[:password]@]host[:port][/path]
+;; [?query][#fragment]' -- differentially verified against Emacs 31.1's
+;; real `url-parse.el', first on the 8 URLs
+;; test/semantic-render-test.el's
+;; `nl-agent-semantic-render-example-validates-loopback-authority' actually
+;; exercises (a bare host, a default port lookup, a bracketed IPv6 host
+;; with an explicit port, two host-confusable domains, and two
+;; userinfo-confusable attack URLs: identical `:type'/`:host'/`:user'/
+;; `:password'/`:port' on every one, including that `url-host' keeps the
+;; IPv6 host's brackets and that userinfo before `@' binds to `url-user'/
+;; `url-password', never folding into the host), then again once the
+;; coordinator's own check found the first pass had no URL with a
+;; fragment and had gotten `url-filename' wrong for a bare host with no
+;; path at all (`https://example.com' filename is `""' in real Emacs, not
+;; `"/"' -- fixed here alongside the fragment split).  The fragment rule,
+;; checked directly against Emacs 31.1 rather than assumed: split at the
+;; FIRST unescaped `#' in whatever follows the scheme (authority-stripped
+;; if there was one) -- everything before it is `url-filename' (so a `?'
+;; query string, if any, stays inside `url-filename' with it, unsplit),
+;; everything after it, VERBATIM INCLUDING any further `#' characters, is
+;; `url-target'; no `#' at all leaves `url-target' nil, but a bare
+;; trailing `#' leaves it `""' (not nil); a `#' that was itself
+;; percent-encoded as `%23' is not unescaped first, so it never triggers
+;; a split.  See test/nelisp-standalone-compat-url-parse-test.el for the
+;; fixture-by-fixture comparisons, including a plain fragment, a fragment
+;; after a query, a bare `#', two `#'s in one URL, and a `%23' that must
+;; NOT split.
+;;
+;; Struct slots: matches real Emacs's `url' struct exactly (12 slots, see
+;; lisp/url/url-parse.el's `cl-defstruct'), including the three
+;; `url-generic-parse-url' never actually sets and that only ever carry
+;; their struct default here exactly as they do in real Emacs: `silent'
+;; (default nil), `use-cookies' (default t), `asynchronous' (default t).
 ;;
 ;; Deliberately NOT covered (signals a wrong answer rather than pretending
-;; one): query strings and fragments (kept inside `url-filename' rather
-;; than split into `url-target'/parsed query params), relative URLs
-;; (`url-expand-file-name'), percent-decoding of the parsed components,
+;; one): parsing the query string into `url-attributes' (always nil here,
+;; matching what `url-generic-parse-url' itself -- as opposed to
+;; `url-path-and-query' -- actually returns), relative URLs
+;; (`url-expand-file-name'), percent-decoding of any parsed component,
 ;; `url-recreate-url', and any scheme beyond http/https/ftp for the
-;; default-port table in `url-port'.
+;; default-port table in `url-port' (real Emacs looks these up in a
+;; registered per-scheme property, `url-scheme-get-property').
 
 ;;; Code:
 
 (require 'cl-lib)
 
 (cl-defstruct (url (:constructor url--make) (:copier nil))
-  type user password host portspec filename target attributes fullness)
+  type user password host portspec filename target attributes fullness
+  silent (use-cookies t) (asynchronous t))
 
 (defun url-port (url)
   "Return URL's explicit port, or the scheme's default (http 80, https 443,
@@ -101,13 +123,14 @@ userinfo component cannot be mistaken for the host separator."
     found))
 
 (defun url-generic-parse-url (url)
-  "Minimal RFC-3986-ish parse of URL: `scheme://[user[:pass]@]host[:port][/path]'.
+  "Minimal RFC-3986-ish parse of URL:
+`scheme://[user[:pass]@]host[:port][/path][?query][#fragment]'.
 Returns a `url' struct with the fields Emacs's real `url-parse.el' returns
 for that same shape; see this file's header comment for what is not
 covered."
   (let* ((fullness nil)
          (rest url)
-         type user password host portspec filename)
+         type user password host portspec filename target)
     (when (string-match "\\`\\([a-zA-Z][a-zA-Z0-9+.-]*\\):" rest)
       (setq type (match-string 1 rest))
       (setq rest (substring rest (match-end 0))))
@@ -143,9 +166,19 @@ covered."
                   (setq host (substring authority 0 colon))
                   (setq portspec (string-to-number (substring authority (1+ colon)))))
               (setq host authority))))))
-    (setq filename (if (> (length rest) 0) rest "/"))
+    ;; Split REST (path, optionally `?query', optionally `#fragment') on
+    ;; the first raw `#'.  A `#' that was percent-encoded as `%23' is
+    ;; still literally the three characters `%', `2', `3' at this point
+    ;; (this parser never percent-decodes), so it can never match here --
+    ;; exactly the "must NOT split" case checked against Emacs 31.1.
+    (let ((hash (string-match "#" rest)))
+      (if hash
+          (setq filename (substring rest 0 hash)
+                target (substring rest (1+ hash)))
+        (setq filename rest
+              target nil)))
     (url--make :type type :user user :password password :host host
-               :portspec portspec :filename filename :target nil
+               :portspec portspec :filename filename :target target
                :attributes nil :fullness fullness)))
 
 (provide 'url-parse)
