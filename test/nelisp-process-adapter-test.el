@@ -82,6 +82,43 @@ never streamed)."
       (delete-process p)
       (should (equal (nreverse chunks) '("first-" "second"))))))
 
+;; agent-host census fix: a `:buffer' with no `:filter' used to have its
+;; output silently dropped -- measured against host Emacs 31.1, the
+;; default filter (`internal-default-process-filter') inserts it into the
+;; buffer instead.  Reproducer is the one reported on Windows and
+;; reproduced on Linux at 2e3361b13.
+(ert-deftest nelisp-make-process-no-filter-inserts-into-buffer ()
+  (skip-unless (fboundp 'nelisp-process-start))
+  (nelisp-process-adapter-test--fresh
+    (let* ((buf (generate-new-buffer "nelisp-process-adapter-test--buf"))
+           (p (make-process :name "e" :command '("/bin/echo" "hi") :buffer buf))
+           (n 0))
+      (unwind-protect
+          (progn
+            (while (and (process-live-p p) (< n 50))
+              (setq n (1+ n))
+              (accept-process-output p 0.1))
+            (accept-process-output p 0.2)
+            (should (equal (with-current-buffer buf (buffer-string)) "hi\n")))
+        (kill-buffer buf)))))
+
+(ert-deftest nelisp-make-process-with-filter-does-not-also-insert-into-buffer ()
+  "A process with a real `:filter' still gets ONLY the filter call --
+installing a filter takes over the buffer-insertion job too, exactly as
+on a host."
+  (skip-unless (fboundp 'nelisp-process-start))
+  (nelisp-process-adapter-test--fresh
+    (let* ((buf (generate-new-buffer "nelisp-process-adapter-test--buf2"))
+           got
+           (p (make-process :name "e2" :command '("/bin/echo" "hi2") :buffer buf
+                             :filter (lambda (_p c) (setq got c)))))
+      (unwind-protect
+          (progn
+            (accept-process-output p 0.3)
+            (should (equal got "hi2\n"))
+            (should (equal (with-current-buffer buf (buffer-string)) "")))
+        (kill-buffer buf)))))
+
 (ert-deftest nelisp-accept-process-output-does-not-drain-unrelated-processes ()
   "proc2's sentinel must not fire as a side effect of waiting on proc1
 (Doc 184 S5.1's own illustrative case, and S1.3's measured defect: the

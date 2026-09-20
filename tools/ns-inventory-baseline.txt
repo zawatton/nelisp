@@ -1207,7 +1207,7 @@ pinned-collision ns-collision-divergent	macroexp-parse-body	lisp/nelisp-stdlib.e
 pinned-collision ns-collision-divergent	macroexpand-1	lisp/nelisp-stdlib.el scripts/nelisp-stdlib-prelude.el	35290347dca5
 pinned-collision ns-collision-divergent	make-directory	lisp/nelisp-build-host.el scripts/nelisp-stdlib-prelude.el	0a017756f0b7
 pinned-collision ns-collision-divergent	make-hash-table	lisp/nelisp-stdlib-hash.el scripts/nelisp-stdlib-prelude.el	d5c3bea86c37
-pinned-collision ns-collision-divergent	make-process	packages/nelisp-process-adapter/src/nelisp-process-adapter.el scripts/nelisp-stdlib-prelude.el	263817b13682
+pinned-collision ns-collision-divergent	make-process	packages/nelisp-process-adapter/src/nelisp-process-adapter.el scripts/nelisp-stdlib-prelude.el	4faf54de71da
 pinned-collision ns-collision-divergent	mapc	lisp/nelisp-stdlib-hof.el scripts/nelisp-stdlib-prelude.el	4e87f4a62eba
 pinned-collision ns-collision-divergent	mapcar	lisp/nelisp-stdlib-hof.el scripts/nelisp-stdlib-prelude.el	219ed3e7df2f
 pinned-collision ns-collision-divergent	mapconcat	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	08041b57a105
