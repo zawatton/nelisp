@@ -988,6 +988,135 @@ We do not create a live socket here; only verify the symbol resolves."
     (should (string-match-p "\\`[0-9]\\{2\\}:[0-9]\\{2\\}:[0-9]\\{2\\}\\'"
                             s))))
 
+;; Segment F item 1: `format-time-string' was a stub that always answered
+;; "1970-01-01"; `decode-time'/`encode-time' were void.  `nelisp-eval'
+;; (the host-side interpreter above) forwards `format-time-string' to
+;; real host Emacs directly (see `src/nelisp-eval.el''s passthrough
+;; list) and does not know `decode-time'/`encode-time'/
+;; `current-time-string' at all, so it cannot exercise the prelude fix
+;; either way -- these tests instead run the built standalone binary
+;; the same way `test/doc22-prelude-backport-tests.el' does, which is
+;; the only path that actually loads
+;; `scripts/nelisp-stdlib-prelude.el''s new definitions.  Fixed points
+;; are chosen to force the Hinnant civil-calendar routine through a
+;; leap day, the 1999/2000 year boundary and a pre-2000 date; every one
+;; is verified byte for byte against Emacs 31.1 (see this segment's
+;; commit message and final report for the host-side comparison).
+(defun nelisp-stdlib-segf--standalone-eval (expression)
+  "Evaluate EXPRESSION with the built standalone reader; return its
+printed output (`prin1'-style, as `--eval' emits it), trimmed."
+  (let ((binary (expand-file-name "target/nelisp" default-directory)))
+    (unless (file-executable-p binary)
+      (ert-skip "target/nelisp is not built; standalone-reader gate owns it"))
+    (with-temp-buffer
+      (let ((rc (call-process binary nil t nil "--eval" expression)))
+        (unless (= rc 0)
+          (ert-fail (format "standalone expression failed: rc=%S output=%S"
+                            rc (buffer-string))))
+        (string-trim-right (buffer-string))))))
+
+(defconst nelisp-stdlib-segf-time-fixtures
+  '((0 . "1970-01-01 00:00:00 Thu +0000")
+    (1234567890 . "2009-02-13 23:31:30 Fri +0000")
+    (951782400 . "2000-02-29 00:00:00 Tue +0000")   ; leap day
+    (946684799 . "1999-12-31 23:59:59 Fri +0000")   ; year boundary -1s
+    (946684800 . "2000-01-01 00:00:00 Sat +0000")   ; year boundary
+    (-86400 . "1969-12-31 00:00:00 Wed +0000")      ; pre-epoch, pre-2000
+    (2147483648 . "2038-01-19 03:14:08 Tue +0000")) ; past 32-bit rollover
+  "(EPOCH . EXPECTED) pairs for `%Y-%m-%d %H:%M:%S %a %z' at ZONE=t.")
+
+(ert-deftest nelisp-stdlib-segf-format-time-string-utc-fixtures ()
+  "`format-time-string' matches Emacs 31.1 byte for byte at ZONE=t
+across a leap day, a year boundary (both sides) and pre-2000/pre-epoch
+dates -- the fixture table doubles as the against-the-bug reproducer:
+every value here answered the literal string \"1970-01-01\" before this
+segment's fix, regardless of TIME or FORMAT-STRING."
+  (dolist (pair nelisp-stdlib-segf-time-fixtures)
+    (let* ((epoch (car pair))
+           (want (concat "\"" (cdr pair) "\""))
+           (got (nelisp-stdlib-segf--standalone-eval
+                 (format "(format-time-string \"%%Y-%%m-%%d %%H:%%M:%%S %%a %%z\" %d t)"
+                         epoch))))
+      (should (equal got want)))))
+
+(ert-deftest nelisp-stdlib-segf-format-time-string-directives ()
+  "Every directive in the supported set, plus `%%', at one fixed time."
+  (let ((se #'nelisp-stdlib-segf--standalone-eval))
+    (should (equal (funcall se "(format-time-string \"%Y\" 1234567890 t)")
+                    "\"2009\""))
+    (should (equal (funcall se "(format-time-string \"%y\" 1234567890 t)")
+                    "\"09\""))
+    (should (equal (funcall se "(format-time-string \"%m\" 1234567890 t)")
+                    "\"02\""))
+    (should (equal (funcall se "(format-time-string \"%d\" 1234567890 t)")
+                    "\"13\""))
+    (should (equal (funcall se "(format-time-string \"%e\" 1234567890 t)")
+                    "\"13\""))
+    (should (equal (funcall se "(format-time-string \"%e\" 0 t)") "\" 1\""))
+    (should (equal (funcall se "(format-time-string \"%H\" 1234567890 t)")
+                    "\"23\""))
+    (should (equal (funcall se "(format-time-string \"%M\" 1234567890 t)")
+                    "\"31\""))
+    (should (equal (funcall se "(format-time-string \"%S\" 1234567890 t)")
+                    "\"30\""))
+    (should (equal (funcall se "(format-time-string \"%b\" 1234567890 t)")
+                    "\"Feb\""))
+    (should (equal (funcall se "(format-time-string \"%a\" 1234567890 t)")
+                    "\"Fri\""))
+    (should (equal (funcall se "(format-time-string \"%T\" 1234567890 t)")
+                    "\"23:31:30\""))
+    (should (equal (funcall se "(format-time-string \"%F\" 1234567890 t)")
+                    "\"2009-02-13\""))
+    (should (equal (funcall se "(format-time-string \"%s\" 1234567890 t)")
+                    "\"1234567890\""))
+    (should (equal (funcall se "(format-time-string \"%z\" 1234567890 t)")
+                    "\"+0000\""))
+    (should (equal (funcall se "(format-time-string \"%z\" 0 32400)")
+                    "\"+0900\""))
+    (should (equal (funcall se "(format-time-string \"%N\" 1234567890 t)")
+                    "\"000000000\""))
+    (should (equal (funcall se "(format-time-string \"100%%\" 0 t)")
+                    "\"100%\""))))
+
+(ert-deftest nelisp-stdlib-segf-format-time-string-unsupported-directive ()
+  "An unsupported directive signals rather than passing text through."
+  (let ((binary (expand-file-name "target/nelisp" default-directory)))
+    (unless (file-executable-p binary)
+      (ert-skip "target/nelisp is not built; standalone-reader gate owns it"))
+    (with-temp-buffer
+      (let ((rc (call-process binary nil t nil "--eval"
+                              "(format-time-string \"%Q\" 0 t)")))
+        (should-not (= rc 0))))))
+
+(ert-deftest nelisp-stdlib-segf-decode-time-utc ()
+  "`decode-time' at ZONE=t matches Emacs 31.1's (SEC MIN HOUR DAY MONTH
+YEAR DOW DST UTCOFF) shape, DST always nil, UTCOFF always 0."
+  (should (equal (nelisp-stdlib-segf--standalone-eval "(decode-time 0 t)")
+                  "(0 0 0 1 1 1970 4 nil 0)"))
+  (should (equal (nelisp-stdlib-segf--standalone-eval
+                  "(decode-time 951782400 t)")
+                  "(0 0 0 29 2 2000 2 nil 0)")))
+
+(ert-deftest nelisp-stdlib-segf-decode-time-integer-zone ()
+  "An explicit integer ZONE shifts the fields and is echoed as UTCOFF."
+  (should (equal (nelisp-stdlib-segf--standalone-eval "(decode-time 0 32400)")
+                  "(0 0 9 1 1 1970 4 nil 32400)")))
+
+(ert-deftest nelisp-stdlib-segf-encode-decode-roundtrip ()
+  "`(encode-time (decode-time TIME t))' round-trips TIME, across the
+same fixture dates used for the `format-time-string' UTC check."
+  (dolist (pair nelisp-stdlib-segf-time-fixtures)
+    (let ((epoch (car pair)))
+      (should (equal (nelisp-stdlib-segf--standalone-eval
+                       (format "(encode-time (decode-time %d t))" epoch))
+                      (number-to-string epoch))))))
+
+(ert-deftest nelisp-stdlib-segf-current-time-string-shape ()
+  "`current-time-string' has the classic asctime-ish shape."
+  (should (equal (nelisp-stdlib-segf--standalone-eval
+                  "(current-time-string 0 t)")
+                  "\"Thu Jan  1 00:00:00 1970\"")))
+
 ;;; Phase 5-E.0 primitives (MCP server I/O + file tool dispatchers) ---
 
 (ert-deftest nelisp-stdlib-phase5e-princ-terpri-routable ()

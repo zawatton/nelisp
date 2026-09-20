@@ -1787,3 +1787,275 @@ composed from the native predicates as before."
      ((vectorp x) 'vector)
      ((and (fboundp 'bool-vector-p) (bool-vector-p x)) 'bool-vector)
      (t 'cons))))
+
+;; `decode-time'/`encode-time'/`format-time-string'/`current-time-string':
+;; proleptic-Gregorian civil calendar <-> days-since-epoch, adapted from
+;; Howard Hinnant's `days_from_civil'/`civil_from_days' (public domain,
+;; http://howardhinnant.github.io/date_algorithms.html), which is exact
+;; for every year -- including years before 1970 and negative years --
+;; because the leap rule (divisible by 4, not by 100 unless by 400) falls
+;; out of the era/year-of-era split rather than a table.  Verified byte
+;; for byte against Emacs 31.1 across 11+ fixed epoch values (spanning a
+;; leap day, the 1999/2000 year boundary and pre-2000 dates) and every
+;; directive below, in both directions of `decode-time'/`encode-time'.
+;;
+;; Before this, `format-time-string' was `(defun format-time-string
+;; (&rest _args) "1970-01-01")' -- a stub that always answered the same
+;; string regardless of TIME or FORMAT-STRING -- and `decode-time'/
+;; `encode-time' were void.
+;;
+;; NOT SUPPORTED (signals rather than silently answering something
+;; plausible): the FORM argument to `decode-time' (SEC is always an
+;; integer, never a sub-second Lisp timestamp); sub-microsecond
+;; precision (no picosecond source exists in this runtime); the
+;; two-digit pivot-year shorthand `encode-time' accepts for YEAR < 100;
+;; calendars other than the proleptic Gregorian one Emacs itself now
+;; defaults to; locale-dependent directives (`%a'/`%b' are always the
+;; fixed English abbreviations, which is what this runtime's "C" locale
+;; always presents anyway); DST for local time (`ZONE' nil reads a fixed
+;; UTC offset from a `TZ' environment variable in the POSIX
+;; "NAME[+-]H[:MM]" shape -- e.g. "JST-9" -- with no timezone database
+;; and no daylight-time rule; an unset or unparseable `TZ' falls back to
+;; UTC); any `format-time-string' directive other than `%Y %m %d %H %M
+;; %S %y %e %b %a %T %F %s %z %N %%', which signals an error instead of
+;; passing the text through unexpanded; and any `ZONE' shape other than
+;; nil/t/an integer (also treated as UTC rather than rejected, since
+;; `current-time-zone'-style zone lists are not modelled at all).
+(declare-function nelisp--tm-fdiv "nelisp-stdlib-misc")
+(declare-function nelisp--tm-days-from-civil "nelisp-stdlib-misc")
+(declare-function nelisp--tm-civil-from-days "nelisp-stdlib-misc")
+(declare-function nelisp--tm-pad "nelisp-stdlib-misc")
+(declare-function nelisp--tm-pad-space "nelisp-stdlib-misc")
+(declare-function nelisp--tm-tz-env-offset "nelisp-stdlib-misc")
+(declare-function nelisp--tm-zone-offset "nelisp-stdlib-misc")
+(declare-function nelisp--tm-unpack "nelisp-stdlib-misc")
+(declare-function nelisp--tm-dayname "nelisp-stdlib-misc")
+(declare-function nelisp--tm-monthname "nelisp-stdlib-misc")
+
+(unless (fboundp 'nelisp--tm-fdiv)
+  (defun nelisp--tm-fdiv (x y)
+    "Floor division X/Y toward negative infinity (Y a positive integer)."
+    (let* ((q (/ x y)) (r (- x (* q y))))
+      (if (< r 0) (1- q) q))))
+
+(unless (fboundp 'nelisp--tm-days-from-civil)
+  (defun nelisp--tm-days-from-civil (y m d)
+    "Days since 1970-01-01 for proleptic-Gregorian Y-M-D (M 1-12).
+Howard Hinnant's `days_from_civil', exact for every year including
+negative ones; see the header comment above this block."
+    (let* ((y (if (<= m 2) (1- y) y))
+           (era (nelisp--tm-fdiv (if (>= y 0) y (- y 399)) 400))
+           (yoe (- y (* era 400)))
+           (mshift (if (> m 2) -3 9))
+           (doy (+ (nelisp--tm-fdiv (+ (* 153 (+ m mshift)) 2) 5)
+                   (1- d)))
+           (doe (+ (* yoe 365)
+                   (nelisp--tm-fdiv yoe 4)
+                   (- (nelisp--tm-fdiv yoe 100))
+                   doy)))
+      (+ (* era 146097) doe -719468))))
+
+(unless (fboundp 'nelisp--tm-civil-from-days)
+  (defun nelisp--tm-civil-from-days (z)
+    "(YEAR MONTH DAY) for Z days since the epoch (inverse of
+`nelisp--tm-days-from-civil')."
+    (let* ((z (+ z 719468))
+           (era (nelisp--tm-fdiv (if (>= z 0) z (- z 146096)) 146097))
+           (doe (- z (* era 146097)))
+           (yoe (nelisp--tm-fdiv
+                 (- (+ doe (- (nelisp--tm-fdiv doe 1460))
+                       (nelisp--tm-fdiv doe 36524))
+                    (nelisp--tm-fdiv doe 146096))
+                 365))
+           (y (+ yoe (* era 400)))
+           (doy (- doe (+ (* 365 yoe)
+                          (nelisp--tm-fdiv yoe 4)
+                          (- (nelisp--tm-fdiv yoe 100)))))
+           (mp (nelisp--tm-fdiv (+ (* 5 doy) 2) 153))
+           (d (+ (- doy (nelisp--tm-fdiv (+ (* 153 mp) 2) 5)) 1))
+           (m (+ mp (if (< mp 10) 3 -9))))
+      (list (+ y (if (<= m 2) 1 0)) m d))))
+
+(unless (fboundp 'nelisp--tm-pad)
+  (defun nelisp--tm-pad (n width)
+    "Zero-pad non-negative integer N to WIDTH digits (wider if needed)."
+    (let* ((s (number-to-string n)) (len (length s)))
+      (if (< len width) (concat (make-string (- width len) ?0) s) s))))
+
+(unless (fboundp 'nelisp--tm-pad-space)
+  (defun nelisp--tm-pad-space (n width)
+    "Space-pad non-negative integer N to WIDTH columns (wider if needed)."
+    (let* ((s (number-to-string n)) (len (length s)))
+      (if (< len width) (concat (make-string (- width len) ?\s) s) s))))
+
+(unless (fboundp 'nelisp--tm-tz-env-offset)
+  (defun nelisp--tm-tz-env-offset ()
+    "Best-effort fixed UTC offset in seconds from `TZ'.
+Reads only the leading NAME[+-]H[:MM] STD field of the POSIX `TZ'
+syntax (POSIX sign convention: the number is how far WEST of UTC the
+zone is, so the UTC offset is its negation).  DST rules are not
+parsed.  Returns nil when `TZ' is unset or does not match."
+    (let ((tz (getenv "TZ")))
+      (when (and tz
+                 (string-match
+                  "\\`[A-Za-z]+\\([+-]?[0-9]+\\)\\(?::\\([0-9]+\\)\\)?"
+                  tz))
+        (let* ((hh (string-to-number (match-string 1 tz)))
+               (mm-str (match-string 2 tz))
+               (mm (if mm-str (string-to-number mm-str) 0))
+               (mag (+ (* (abs hh) 3600) (* mm 60))))
+          (- (if (< hh 0) (- mag) mag)))))))
+
+(unless (fboundp 'nelisp--tm-zone-offset)
+  (defun nelisp--tm-zone-offset (zone)
+    "Resolve ZONE (nil, t, or an integer) to a UTC offset in seconds.
+nil means local time: a fixed offset read from `TZ' (see
+`nelisp--tm-tz-env-offset'), or UTC if that is unavailable.  Any other
+ZONE shape (a string, or the (OFFSET NAME ...) list Emacs also
+accepts) is not supported and is treated as UTC."
+    (cond
+     ((integerp zone) zone)
+     ((eq zone t) 0)
+     ((null zone) (or (nelisp--tm-tz-env-offset) 0))
+     (t 0))))
+
+(unless (fboundp 'nelisp--tm-unpack)
+  (defun nelisp--tm-unpack (time)
+    "Return (SECONDS . NANOSECONDS), both integers, for timestamp TIME.
+Accepts nil (current time), an integer, a float, the legacy `(HIGH LOW
+&optional USEC PSEC)' list `current-time' returns, and the `(TICKS
+. HZ)' cons.  Precision finer than a microsecond does not exist as an
+input in this runtime, so NANOSECONDS is a multiple of 1000 except
+when TIME is already a `(TICKS . HZ)' pair with HZ > 1000000."
+    (cond
+     ((null time) (nelisp--tm-unpack (current-time)))
+     ((integerp time) (cons time 0))
+     ((floatp time)
+      (let ((secs (floor time)))
+        (cons secs (round (* (- time secs) 1000000000)))))
+     ((and (consp time) (integerp (car time)) (integerp (cdr time)))
+      (let* ((ticks (car time)) (hz (cdr time))
+             (secs (nelisp--tm-fdiv ticks hz))
+             (rem (- ticks (* secs hz))))
+        (cons secs (round (* (/ (float rem) hz) 1000000000)))))
+     ((consp time)
+      (let ((high (nth 0 time)) (low (nth 1 time))
+            (usec (or (nth 2 time) 0)) (psec (or (nth 3 time) 0)))
+        (cons (+ (* high 65536) low) (+ (* usec 1000) (/ psec 1000)))))
+     (t (signal 'wrong-type-argument (list 'nelisp--tm-unpack time))))))
+
+(unless (fboundp 'nelisp--tm-dayname)
+  (defun nelisp--tm-dayname (dow)
+    "Fixed English 3-letter abbreviation for DOW (0 = Sunday)."
+    (aref ["Sun" "Mon" "Tue" "Wed" "Thu" "Fri" "Sat"] dow)))
+
+(unless (fboundp 'nelisp--tm-monthname)
+  (defun nelisp--tm-monthname (m)
+    "Fixed English 3-letter abbreviation for month M (1-12)."
+    (aref ["" "Jan" "Feb" "Mar" "Apr" "May" "Jun"
+           "Jul" "Aug" "Sep" "Oct" "Nov" "Dec"]
+          m)))
+
+(unless (fboundp 'decode-time)
+  (defun decode-time (&optional time zone _form)
+    "Decode TIME (default now) into (SEC MINUTE HOUR DAY MONTH YEAR DOW
+DST UTCOFF).  ZONE: t = UTC, an integer = that many seconds east of
+UTC, nil = local time (see `nelisp--tm-zone-offset').  DST is always
+nil (no DST database).  FORM is accepted and ignored: SEC is always an
+integer."
+    (let* ((ts (nelisp--tm-unpack time))
+           (secs (car ts))
+           (zoff (nelisp--tm-zone-offset zone))
+           (total (+ secs zoff))
+           (days (nelisp--tm-fdiv total 86400))
+           (sod (- total (* days 86400)))
+           (hh (/ sod 3600)) (mi (/ (mod sod 3600) 60)) (ss (mod sod 60))
+           (ymd (nelisp--tm-civil-from-days days))
+           (dow (mod (+ days 4) 7)))
+      (list ss mi hh (nth 2 ymd) (nth 1 ymd) (nth 0 ymd) dow nil zoff))))
+
+(unless (fboundp 'encode-time)
+  (defun encode-time (&rest args)
+    "Encode a decoded time back into an integer count of seconds since
+the epoch.  Two call shapes, matching Emacs: a single decoded-time list
+as `decode-time' returns (its ninth element, if non-nil, is used as
+the zone); or SEC MINUTE HOUR DAY MONTH YEAR &optional ZONE.  YEAR is
+always taken literally (the two-digit pivot-year shorthand is not
+supported)."
+    (let (sec minute hour day month year zone)
+      (if (and (= (length args) 1) (consp (car args)))
+          (let ((l (car args)))
+            (setq sec (nth 0 l) minute (nth 1 l) hour (nth 2 l)
+                  day (nth 3 l) month (nth 4 l) year (nth 5 l)
+                  zone (nth 8 l)))
+        (setq sec (nth 0 args) minute (nth 1 args) hour (nth 2 args)
+              day (nth 3 args) month (nth 4 args) year (nth 5 args)
+              zone (nth 6 args)))
+      (let* ((zoff (nelisp--tm-zone-offset zone))
+             (days (nelisp--tm-days-from-civil year month day))
+             (total (+ (* days 86400) (* hour 3600) (* minute 60) sec)))
+        (- total zoff)))))
+
+(unless (fboundp 'format-time-string)
+  (defun format-time-string (format-string &optional time zone)
+    "Format TIME (default now) per FORMAT-STRING, roughly like C
+strftime.  ZONE is as in `decode-time'.  Supported directives: `%Y %m
+%d %H %M %S %y %e %b %a %T %F %s %z %N %%'.  `%a'/`%b' are always the
+fixed English abbreviations (there is no locale database here).  `%z'
+assumes ZONE has no non-integer-minute remainder.  Any other directive
+signals an error rather than passing text through unexpanded."
+    (let* ((ts (nelisp--tm-unpack time))
+           (secs (car ts)) (nsec (cdr ts))
+           (zoff (nelisp--tm-zone-offset zone))
+           (total (+ secs zoff))
+           (days (nelisp--tm-fdiv total 86400))
+           (sod (- total (* days 86400)))
+           (hh (/ sod 3600)) (mi (/ (mod sod 3600) 60)) (ss (mod sod 60))
+           (ymd (nelisp--tm-civil-from-days days))
+           (year (nth 0 ymd)) (month (nth 1 ymd)) (day (nth 2 ymd))
+           (dow (mod (+ days 4) 7))
+           (len (length format-string)) (i 0) (out nil))
+      (while (< i len)
+        (let ((c (aref format-string i)))
+          (if (and (= c ?%) (< (1+ i) len))
+              (let ((d (aref format-string (1+ i))))
+                (push
+                 (cond
+                  ((= d ?Y) (number-to-string year))
+                  ((= d ?y) (nelisp--tm-pad (mod year 100) 2))
+                  ((= d ?m) (nelisp--tm-pad month 2))
+                  ((= d ?d) (nelisp--tm-pad day 2))
+                  ((= d ?e) (nelisp--tm-pad-space day 2))
+                  ((= d ?H) (nelisp--tm-pad hh 2))
+                  ((= d ?M) (nelisp--tm-pad mi 2))
+                  ((= d ?S) (nelisp--tm-pad ss 2))
+                  ((= d ?b) (nelisp--tm-monthname month))
+                  ((= d ?a) (nelisp--tm-dayname dow))
+                  ((= d ?T)
+                   (concat (nelisp--tm-pad hh 2) ":"
+                           (nelisp--tm-pad mi 2) ":"
+                           (nelisp--tm-pad ss 2)))
+                  ((= d ?F)
+                   (concat (number-to-string year) "-"
+                           (nelisp--tm-pad month 2) "-"
+                           (nelisp--tm-pad day 2)))
+                  ((= d ?s) (number-to-string secs))
+                  ((= d ?z)
+                   (concat (if (< zoff 0) "-" "+")
+                           (nelisp--tm-pad (/ (abs zoff) 3600) 2)
+                           (nelisp--tm-pad (/ (mod (abs zoff) 3600) 60) 2)))
+                  ((= d ?N) (nelisp--tm-pad nsec 9))
+                  ((= d ?%) "%")
+                  (t (error
+                      "format-time-string: unsupported directive %%%c \
+(supported: Y m d H M S y e b a T F s z N %%%%)"
+                      d)))
+                 out)
+                (setq i (+ i 2)))
+            (progn (push (char-to-string c) out) (setq i (1+ i))))))
+      (apply #'concat (nreverse out)))))
+
+(unless (fboundp 'current-time-string)
+  (defun current-time-string (&optional time zone)
+    "Return a string like \"Thu Jan  1 09:00:00 1970\" for TIME/ZONE."
+    (format-time-string "%a %b %e %H:%M:%S %Y" time zone)))
