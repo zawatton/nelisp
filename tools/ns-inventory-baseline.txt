@@ -294,7 +294,13 @@
 # (and, in scripts/nelisp-stdlib-prelude.el, the rest of the cl-lib
 # set-operation family's) :test/:test-not/:key support; both files' copies
 # are byte-identical.
-ns-collision 298
+# 298 -> 304, segment C1 items 3/4: `decode-coding-region'/`encode-coding-
+# region' (item 3, plus the private helpers `nelisp--coding-region-alias'/
+# `nelisp--coding-region-emit'/`nelisp--coding-region-systems' backing
+# them) and `fundamental-mode' (item 4) are new, mirrored byte-identically
+# into both lisp/nelisp-stdlib-misc.el and scripts/nelisp-stdlib-prelude.el,
+# same pattern as every prior entry in this run.
+ns-collision 304
 # 97 -> 96 on 2026-08-19: `string-equal' no longer differs between the two
 # files -- the prelude's now signals for a non-string instead of falling
 # through to `equal', and the lisp copy was brought with it.  Ratcheted down
@@ -1207,7 +1213,13 @@ pinned-collision ns-collision-divergent	macroexp-parse-body	lisp/nelisp-stdlib.e
 pinned-collision ns-collision-divergent	macroexpand-1	lisp/nelisp-stdlib.el scripts/nelisp-stdlib-prelude.el	35290347dca5
 pinned-collision ns-collision-divergent	make-directory	lisp/nelisp-build-host.el scripts/nelisp-stdlib-prelude.el	0a017756f0b7
 pinned-collision ns-collision-divergent	make-hash-table	lisp/nelisp-stdlib-hash.el scripts/nelisp-stdlib-prelude.el	d5c3bea86c37
-pinned-collision ns-collision-divergent	make-process	packages/nelisp-process-adapter/src/nelisp-process-adapter.el scripts/nelisp-stdlib-prelude.el	263817b13682
+# Hash moved 263817b13682 -> 9a3c259569c7, segment C1 item 4: the
+# prelude's `make-process' now also `process-put's the PLIST's `:buffer'
+# (backing the new `process-buffer'/`set-process-buffer'), which
+# packages/nelisp-process-adapter/src/nelisp-process-adapter.el's own
+# `make-process' still does not do -- the two bodies keep diverging,
+# only the prelude side's text changed.
+pinned-collision ns-collision-divergent	make-process	packages/nelisp-process-adapter/src/nelisp-process-adapter.el scripts/nelisp-stdlib-prelude.el	9a3c259569c7
 pinned-collision ns-collision-divergent	mapc	lisp/nelisp-stdlib-hof.el scripts/nelisp-stdlib-prelude.el	4e87f4a62eba
 pinned-collision ns-collision-divergent	mapcar	lisp/nelisp-stdlib-hof.el scripts/nelisp-stdlib-prelude.el	219ed3e7df2f
 pinned-collision ns-collision-divergent	mapconcat	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	08041b57a105
@@ -1440,3 +1452,11 @@ pinned-collision ns-collision	directory-files-no-dot-files-regexp	lisp/nelisp-st
 pinned-collision ns-collision	pop-to-buffer	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	replace-match	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	shell-command-switch	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+# segment C1 items 3/4 (see the `ns-collision 304' comment above): both
+# files' copies of each name below are byte-identical.
+pinned-collision ns-collision	decode-coding-region	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	encode-coding-region	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	fundamental-mode	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp--coding-region-alias	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp--coding-region-emit	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp--coding-region-systems	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el

@@ -7570,6 +7570,133 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
     ;; the result is a MULTIBYTE string, so `length' counts characters and
     ;; `aref' answers a codepoint.
     (if (fboundp 'string-as-multibyte) (string-as-multibyte str) str)))
+
+;; feat/standalone-agent-segC-prelude item 3: `decode-coding-region'/
+;; `encode-coding-region' were `void-function' (4 census failures for
+;; the decode side).  Built directly on the two STRING functions just
+;; above -- callable here even though `buffer-substring'/`delete-
+;; region'/`insert'/`goto-char'/`with-current-buffer' are all defined
+;; later in this same file: none of those names are called until this
+;; `defun''s body actually runs, well after the whole file has finished
+;; loading, so the forward reference is not a problem (same as every
+;; other case in this file where a helper is used before its own
+;; `defun' further down).  `raw-text' is accepted here (aliased to
+;; `utf-8' before delegating) even though `decode-coding-string'/
+;; `encode-coding-string' deliberately do NOT accept it (see that
+;; function's own comment: its `coding-system-base' differs from
+;; `utf-8', so widening THEIR accept list would misrepresent what THEY
+;; do) -- every coding either function already accepts decodes/encodes
+;; identically regardless (this runtime's strings are always already
+;; UTF-8 bytes), so aliasing it here rather than there keeps that
+;; function's own contract undisturbed while still answering the batch-
+;; honest, `raw-text'-shaped question `decode-coding-region'/`encode-
+;; coding-region' are actually asked (Doc 205's running theme, applied
+;; consistently with the literal byte semantics item 1 gives buffers).
+;; DESTINATION handling matches Emacs exactly (verified against 31.1):
+;; nil replaces START..END in the current buffer and returns the
+;; length; a buffer argument inserts AFTER POINT in that buffer WITHOUT
+;; moving its point, leaves the current buffer's START..END untouched,
+;; and returns the length; `t' returns the converted text as a string
+;; and touches no buffer at all.
+;;
+;; NOT Emacs-faithful, on purpose, in two ways -- both already true of
+;; `decode-coding-string'/`encode-coding-string' before this change,
+;; so this is inherited scope, not new scope:
+;;   (1) `no-conversion'/`raw-text' genuinely mean "do not decode" in
+;;       real Emacs -- verified against 31.1, `(decode-coding-region
+;;       START END 'raw-text)' leaves the buffer's bytes untouched and
+;;       still answers the WOULD-BE decoded length.  This runtime
+;;       decodes them exactly like `utf-8' instead (same simplification
+;;       `decode-coding-string' already made for `no-conversion'/
+;;       `binary'/`us-ascii', predating this change), because
+;;       distinguishing "keep as bytes" from "decode" is not useful to
+;;       the one real caller shape here (an agent reading a file it
+;;       already knows is text) and duplicating a genuine pass-through
+;;       path was judged not worth it for this segment.
+;;   (2) Real Emacs additionally has a "raw 8-bit" pseudo-character
+;;       representation (codes >= #x3FFF80) for a byte >= #x80 living
+;;       inside an otherwise-multibyte string/buffer -- verified against
+;;       31.1: decoding/encoding against a DEFAULT (multibyte) buffer
+;;       answers those pseudo-codepoints, not the plain byte value, and
+;;       `decode-coding-region' on a genuinely UNIBYTE buffer with
+;;       DESTINATION nil is a bytes-on-the-page NO-OP (the buffer's own
+;;       insert-time unibyte coercion re-encodes the just-decoded
+;;       character straight back to its original bytes, even though the
+;;       return value still reports the decoded length) -- this runtime
+;;       has no such scheme at all (see item 1's own report) and always
+;;       uses plain integers 0-255, and a decode genuinely replaces a
+;;       unibyte buffer's content with the decoded characters instead of
+;;       silently reverting.  This is the "batch-honest" byte run this
+;;       item and item 1 both give buffers: real bytes in, real
+;;       characters out, no representation their callers need to know a
+;;       pseudo-codepoint offset to undo.
+(defconst nelisp--coding-region-systems
+  '(utf-8 utf-8-unix latin-1 binary no-conversion us-ascii undecided
+    prefer-utf-8 raw-text)
+  "Coding systems `decode-coding-region'/`encode-coding-region' accept.
+Same list `decode-coding-string'/`encode-coding-string' accept, plus
+`raw-text' -- see the block comment above for why it is not added to
+those two functions' own lists instead.")
+
+;; Guarded like `nelisp--check-symbol'/`nelisp--check-string' above
+;; ("byte-identical to the prelude copy so `make ns-gate' polices the
+;; two"): these three names are also mirrored, byte-identical, in
+;; `lisp/nelisp-stdlib-misc.el', and the guard is what lets either copy
+;; load first without a spurious redefinition.
+(unless (fboundp 'nelisp--coding-region-alias)
+  (defun nelisp--coding-region-alias (coding-system)
+    "Real CODING-SYSTEM to hand to `decode-coding-string'/`encode-coding-
+string', which do not accept `raw-text' themselves; see the block
+comment above `nelisp--coding-region-systems'."
+    (if (eq coding-system 'raw-text) 'utf-8 coding-system)))
+
+(unless (fboundp 'nelisp--coding-region-emit)
+  (defun nelisp--coding-region-emit (converted start end destination)
+    "Common DESTINATION handling for `decode-coding-region'/`encode-
+coding-region', once CONVERTED (the decoded or encoded text) is known.
+See the block comment above `nelisp--coding-region-systems' for the
+exact, Emacs-31.1-verified DESTINATION contract."
+    (cond
+     ((eq destination t) converted)
+     ((bufferp destination)
+      (with-current-buffer destination
+        (let ((pos (point)))
+          (insert converted)
+          (goto-char pos)))
+      (length converted))
+     (t
+      (delete-region start end)
+      (goto-char start)
+      (insert converted)
+      (length converted)))))
+
+(unless (fboundp 'decode-coding-region)
+  (defun decode-coding-region (start end coding-system &optional destination)
+    "Decode START..END, a byte run, as CODING-SYSTEM into characters.
+
+(fn START END CODING-SYSTEM &optional DESTINATION)"
+    (nelisp--check-symbol coding-system)
+    (unless (memq coding-system nelisp--coding-region-systems)
+      (signal 'coding-system-error (list coding-system)))
+    (let* ((raw (buffer-substring start end))
+           (bytes (if (fboundp 'string-as-unibyte) (string-as-unibyte raw) raw))
+           (decoded (decode-coding-string
+                     bytes (nelisp--coding-region-alias coding-system))))
+      (nelisp--coding-region-emit decoded start end destination))))
+
+(unless (fboundp 'encode-coding-region)
+  (defun encode-coding-region (start end coding-system &optional destination)
+    "Encode START..END, a run of characters, as CODING-SYSTEM into bytes.
+
+(fn START END CODING-SYSTEM &optional DESTINATION)"
+    (nelisp--check-symbol coding-system)
+    (unless (memq coding-system nelisp--coding-region-systems)
+      (signal 'coding-system-error (list coding-system)))
+    (let* ((text (buffer-substring start end))
+           (encoded (encode-coding-string
+                     text (nelisp--coding-region-alias coding-system))))
+      (nelisp--coding-region-emit encoded start end destination))))
+
 ;; `bufferp' used to be a permanent, unconditional `nil' here (Doc 188
 ;; §1.4 -- "no Sexp is a buffer" was true before this file had a buffer
 ;; object).  The real definition lives in the Doc 188 P1 buffer section

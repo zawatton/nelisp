@@ -746,6 +746,77 @@ or signals otherwise.  Replaces the deleted Rust `bi_require'."
     ;; the result is multibyte, so `length' counts characters.
     (if (fboundp 'string-as-multibyte) (string-as-multibyte str) str)))
 
+;; feat/standalone-agent-segC-prelude item 3: same as the prelude's
+;; copy -- see that file for the full rationale, including the two
+;; documented (and pre-existing, for `no-conversion'/`raw-text')
+;; divergences from real Emacs.  `buffer-substring'/`delete-region'/
+;; `insert'/`goto-char'/`with-current-buffer'/`point'/`bufferp' are all
+;; real Emacs subrs (a host running this file for real already has
+;; them; a standalone image that already loaded the prelude does too),
+;; so none of them need a `declare-function' the way this file's
+;; earlier `nelisp-point-max'/`nelisp-point-min' forward declarations
+;; did for prelude-only internal names.  `nelisp--coding-region-alias'/
+;; `nelisp--coding-region-emit' below ARE defined inside `unless'
+;; guards, which the byte-compiler cannot see through (same reason
+;; e32dc661e declared the two stdin helpers); declared here so
+;; `decode-coding-region'/`encode-coding-region' below do not add
+;; "not known to be defined" diagnostics to this file's ceiling.
+(declare-function nelisp--coding-region-alias "nelisp-stdlib-misc")
+(declare-function nelisp--coding-region-emit "nelisp-stdlib-misc")
+(unless (fboundp 'nelisp--coding-region-alias)
+  (defun nelisp--coding-region-alias (coding-system)
+    "Same as the prelude's copy."
+    (if (eq coding-system 'raw-text) 'utf-8 coding-system)))
+
+(unless (fboundp 'nelisp--coding-region-emit)
+  (defun nelisp--coding-region-emit (converted start end destination)
+    "Same as the prelude's copy."
+    (cond
+     ((eq destination t) converted)
+     ((bufferp destination)
+      (with-current-buffer destination
+        (let ((pos (point)))
+          (insert converted)
+          (goto-char pos)))
+      (length converted))
+     (t
+      (delete-region start end)
+      (goto-char start)
+      (insert converted)
+      (length converted)))))
+
+(defconst nelisp--coding-region-systems
+  '(utf-8 utf-8-unix latin-1 binary no-conversion us-ascii undecided
+    prefer-utf-8 raw-text)
+  "Same as the prelude's copy.")
+
+(unless (fboundp 'decode-coding-region)
+  (defun decode-coding-region (start end coding-system &optional destination)
+    "Same as the prelude's copy.
+
+(fn START END CODING-SYSTEM &optional DESTINATION)"
+    (nelisp--check-symbol coding-system)
+    (unless (memq coding-system nelisp--coding-region-systems)
+      (signal 'coding-system-error (list coding-system)))
+    (let* ((raw (buffer-substring start end))
+           (bytes (if (fboundp 'string-as-unibyte) (string-as-unibyte raw) raw))
+           (decoded (decode-coding-string
+                     bytes (nelisp--coding-region-alias coding-system))))
+      (nelisp--coding-region-emit decoded start end destination))))
+
+(unless (fboundp 'encode-coding-region)
+  (defun encode-coding-region (start end coding-system &optional destination)
+    "Same as the prelude's copy.
+
+(fn START END CODING-SYSTEM &optional DESTINATION)"
+    (nelisp--check-symbol coding-system)
+    (unless (memq coding-system nelisp--coding-region-systems)
+      (signal 'coding-system-error (list coding-system)))
+    (let* ((text (buffer-substring start end))
+           (encoded (encode-coding-string
+                     text (nelisp--coding-region-alias coding-system))))
+      (nelisp--coding-region-emit encoded start end destination))))
+
 ;; Doc 188 P1 (2026-08-23) removed this file's `bufferp' stub.  It was
 ;; permanently, unconditionally `nil' ("no Sexp is a buffer") and dead in
 ;; its only real load context: this file is never `require'd (a repo-
