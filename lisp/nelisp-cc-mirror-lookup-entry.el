@@ -112,6 +112,33 @@
             1
           (if (or (= (sexp-tag sym-ptr) 5)
                   (= (sexp-tag sym-ptr) 14)) 1 0))))
+    ;; perf/mirror-bucket-count-raw: `ht_rec.slots[0]' (the bucket count)
+    ;; is `Sexp::Int' by this function's own precondition list below --
+    ;; it is NEVER a pointer WORD -- so every call to
+    ;; `nelisp_mirror_lookup_entry' (every `mirror_is_constant' /
+    ;; `mirror_is_bound' / `mirror_is_fbound' / `mirror_lookup_value' /
+    ;; `mirror_lookup_function' / `mirror_set_*_or_insert' -- i.e. every
+    ;; `set'/`setq', constant or not, hit or miss) paid
+    ;; `nl_record_slot_ptr''s `(alloc-bytes 32 8)' + `nl_val_load' to
+    ;; materialise a fresh 32-byte box for that Int just to unwrap the
+    ;; same integer back out with `sexp-int-unwrap' and discard the box.
+    ;; This mirrors A1's `nelisp_frame_slot_raw_word' fix
+    ;; (lisp/nelisp-cc-frame-stack-find.el, commit ab4a72484): read the
+    ;; slot's raw 8-byte tagged WORD directly (identical box_ptr ->
+    ;; slots.data_ptr -> word addressing to `nl_record_slot_ptr',
+    ;; lisp/nelisp-cc-nlrecord-slot-ptr.el) and decode the Int in place
+    ;; with `(sar word 2)' -- `nl_val_load' encodes `Int(n)' as
+    ;; `(n<<2)|1' (lisp/nelisp-cc-val-load.el), so an arithmetic
+    ;; right-shift by 2 recovers the exact same `n' `sexp-int-unwrap'
+    ;; would have, discarding the tag bit the shift drops regardless of
+    ;; its value.  REC-PTR here is always the fast-hash-table Record
+    ;; (`ht_rec' below), whose slot 0 is provably never a pointer WORD,
+    ;; so no behavior changes for any value this slot can hold.
+    (defun nelisp_mirror_slot_raw_word (rec-ptr idx)
+      (ptr-read-u64
+       (+ (ptr-read-u64 (ptr-read-u64 rec-ptr 8) 32) (* idx 8))
+       0))
+
     (defun nelisp_mirror_lookup_entry (mirror-ptr sym-ptr)
       ;; mirror-ptr: *const Sexp pointing at the env-mirror Record
       ;;             (= `globals_record', tag `nelisp-env').
@@ -133,17 +160,23 @@
       ;; Cons for a non-empty bucket, Nil for an empty one), NOT the raw
       ;; `sexp-payload-ptr' box (the walker now reads car/cdr WORDS via
       ;; the materialising accessors, so it needs the Sexp VIEW).
+      ;;
+      ;; perf/mirror-bucket-count-raw: `ht-rec-ptr' is bound once (was
+      ;; re-derived via a second `record-slot-ref-ptr mirror-ptr 0' call
+      ;; below) and its slot 0 (bucket count) is read via
+      ;; `nelisp_mirror_slot_raw_word' instead of the materialising
+      ;; `record-slot-ref-ptr' + `sexp-int-unwrap' -- see that helper's
+      ;; commentary above for the invariant.
       (if (= (nelisp_mirror_lookup_entry_valid_key sym-ptr) 0)
           0
-        (nelisp_mirror_walk_bucket
-         (vector-ref-ptr
-          (record-slot-ref-ptr (record-slot-ref-ptr mirror-ptr 0) 1)
-          (logand
-           (extern-call nelisp_fnv1a sym-ptr)
-           (- (sexp-int-unwrap
-               (record-slot-ref-ptr (record-slot-ref-ptr mirror-ptr 0) 0))
-              1)))
-         sym-ptr))))
+        (let ((ht-rec-ptr (record-slot-ref-ptr mirror-ptr 0)))
+          (nelisp_mirror_walk_bucket
+           (vector-ref-ptr
+            (record-slot-ref-ptr ht-rec-ptr 1)
+            (logand
+             (extern-call nelisp_fnv1a sym-ptr)
+             (- (sar (nelisp_mirror_slot_raw_word ht-rec-ptr 0) 2) 1)))
+           sym-ptr)))))
   "AOT source for Doc 111 §111.E #1 `mirror_lookup_entry'.
 
 Composes record-slot-ref-ptr (§111.B) + vector-ref-ptr (§111.C) +

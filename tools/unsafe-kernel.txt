@@ -199,3 +199,19 @@ pinned-kernel-touch lisp/nelisp-cc-sf-let-star.el
 # 100 -> 101 on 2026-09-15: these two intentional kernel units joined the
 # raw-memory surface and are documented by the pins immediately above.
 kernel-files 101
+
+# perf/mirror-bucket-count-raw and perf/mirror-is-constant-raw (segment A2,
+# 2026-09-20): both read an always-immediate Record slot's raw 8-byte tagged
+# WORD directly (`ptr-read-u64', mirroring `nl_record_slot_ptr''s own
+# box_ptr -> slots.data_ptr -> word addressing) instead of materialising it
+# through `record-slot-ref-ptr', so `setq'/`set' stop paying an
+# `alloc-bytes'-backed allocation on every mirror lookup just to read an
+# Int bucket count or a Nil/T constant flag and discard the box.  Same
+# pattern as A1's `nelisp_frame_slot_raw_word' (commit ab4a72484,
+# lisp/nelisp-cc-frame-stack-find.el, already pinned above); no pointer is
+# retained past either call.
+pinned-kernel-touch lisp/nelisp-cc-mirror-lookup-entry.el
+pinned-kernel-touch lisp/nelisp-cc-mirror-is-constant.el
+# 101 -> 103 on 2026-09-20: the two kernel units documented immediately
+# above joined the raw-memory surface.
+kernel-files 103
