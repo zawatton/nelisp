@@ -14904,17 +14904,32 @@ the hex form, which is what every caller here consumes."
             (progn
               (write-region text nil tmp nil 0)
               (with-temp-buffer
-                (let ((rc (apply #'call-process (car spec) tmp t nil (cdr spec))))
+                ;; Doc 205 P3 follow-up (segment C1 item 6): TMP used to be
+                ;; passed as `call-process''s INFILE (stdin redirect).  The
+                ;; process backend on Windows ignores INFILE entirely
+                ;; (reported 2026-09-20; not reproducible on Linux, where
+                ;; INFILE already worked), so the helper read an empty
+                ;; stdin and answered the empty-input digest with rc 0 --
+                ;; wrong, but not an ERROR, so nothing here caught it.
+                ;; Passing TMP as a trailing ARGUMENT instead (`sha256sum
+                ;; FILE' / `shasum -a 256 FILE', exactly as run from a
+                ;; shell) does not depend on the backend wiring stdin at
+                ;; all, and still works on Linux (verified below).
+                (let ((rc (apply #'call-process (car spec) nil t nil
+                                 (append (cdr spec) (list tmp)))))
                   (unless (eq rc 0)
                     (signal 'error
                             (list "secure-hash: helper failed"
                                   (car spec) rc)))
-                  ;; Output is "<hex>  -"; take the digest, not the line.
-                  (let ((out (buffer-string)))
-                    (when (< (length out) width)
+                  ;; Output is "<hex>  FILENAME"; take the first
+                  ;; whitespace-delimited field, not a fixed-width slice --
+                  ;; robust to either a "-" (stdin) or a real path there.
+                  (let* ((out (buffer-string))
+                         (field (car (split-string out))))
+                    (unless (and field (>= (length field) width))
                       (signal 'error
                               (list "secure-hash: helper output too short"
                                     (car spec) out)))
-                    (setq digest (substring out 0 width))))))
+                    (setq digest (substring field 0 width))))))
           (when (file-exists-p tmp) (delete-file tmp)))
         digest))))
