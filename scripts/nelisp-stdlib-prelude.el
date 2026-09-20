@@ -14367,9 +14367,26 @@ field-width layer."
   (defun type-of (x)
     "Return a symbol naming the primitive type of X (Doc 22 A13).
 Callable conses report `function'/`subr'; otherwise composed from the
-native predicates."
+native predicates.
+
+A hash table and a record both fell through to the final catchall
+below and misreported `cons' -- measured directly, not assumed: this
+substrate's hash tables are internally a tagged cons (`consp'/`listp'
+both answer t for one, `car' exposes the internal `[hash-table ...]'
+vector), so the plain `(consp x) 'cons)' branch below already caught
+them before this fix and had to be pre-empted, not merely supplemented
+-- and a record's `consp' is nil, so it fell all the way to the final
+`(t 'cons)' default with nothing catching it earlier either.  The
+record branch returns `(aref x 0)' unconditionally, matching Emacs
+31.1's own `Ftype_of' exactly (verified: `(type-of (record 'foo 1))'
+-> `foo', and `(type-of (record 42 1))' -> `42' -- Emacs does not
+special-case a non-symbol first slot, it always returns it verbatim).
+`cl-type-of' does not exist in this runtime (verified: `fboundp' is
+nil), so there is nothing else to update for that name."
     (cond
      ((null x) 'symbol)
+     ((and (fboundp 'hash-table-p) (hash-table-p x)) 'hash-table)
+     ((and (fboundp 'recordp) (recordp x)) (aref x 0))
      ((and (consp x) (memq (car x) '(lambda closure))) 'function)
      ((and (consp x) (eq (car x) 'builtin)) 'subr)
      ((consp x) 'cons)

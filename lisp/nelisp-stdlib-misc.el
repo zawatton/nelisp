@@ -1603,3 +1603,30 @@ in place and returns nil."
   (defun pop-to-buffer (buffer-or-name &optional _action _norecord)
     "Same as the prelude's copy: `set-buffer', no display."
     (set-buffer buffer-or-name)))
+
+;; Doc D1 follow-up: same fix as the prelude's copy -- a hash table and
+;; a record both fell through this `cond' to the final `(t 'cons)'.
+;; `hash-table-p'/`recordp'/`aref' are real Emacs names the byte-
+;; compiler already knows, same category as the `hash-table-p' calls
+;; already used elsewhere in this file (search for `alist-get'-style
+;; map helpers above); no `declare-function' needed.
+(unless (fboundp 'type-of)
+  (defun type-of (x)
+    "Same as the prelude's copy: a hash table reports `hash-table', a
+record reports `(aref x 0)' verbatim (matching Emacs 31.1's own
+`Ftype_of', including a non-symbol first slot), everything else is
+composed from the native predicates as before."
+    (cond
+     ((null x) 'symbol)
+     ((and (fboundp 'hash-table-p) (hash-table-p x)) 'hash-table)
+     ((and (fboundp 'recordp) (recordp x)) (aref x 0))
+     ((and (consp x) (memq (car x) '(lambda closure))) 'function)
+     ((and (consp x) (eq (car x) 'builtin)) 'subr)
+     ((consp x) 'cons)
+     ((symbolp x) 'symbol)
+     ((stringp x) 'string)
+     ((integerp x) 'integer)
+     ((floatp x) 'float)
+     ((vectorp x) 'vector)
+     ((and (fboundp 'bool-vector-p) (bool-vector-p x)) 'bool-vector)
+     (t 'cons))))

@@ -303,7 +303,11 @@
 # 304 -> 305, segment C1 item 1: `insert-file-contents-literally' was
 # rewritten for byte-correct literal reads (see that item's own report)
 # and mirrored byte-identically into both files, same pattern.
-ns-collision 305
+# 305 -> 306: `type-of' gained a matching `hash-table'/record fallback
+# branch in both lisp/nelisp-stdlib-misc.el and scripts/nelisp-stdlib-
+# prelude.el (byte-identical), a coordinator-reported gap fixed
+# alongside the buffer/process fidelity work in this same branch.
+ns-collision 306
 # 97 -> 96 on 2026-08-19: `string-equal' no longer differs between the two
 # files -- the prelude's now signals for a non-string instead of falling
 # through to `equal', and the lisp copy was brought with it.  Ratcheted down
@@ -1464,3 +1468,5 @@ pinned-collision ns-collision	nelisp--coding-region-alias	lisp/nelisp-stdlib-mis
 pinned-collision ns-collision	nelisp--coding-region-emit	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	nelisp--coding-region-systems	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	insert-file-contents-literally	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+# type-of's hash-table/record fallback branch: byte-identical in both files.
+pinned-collision ns-collision	type-of	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
