@@ -2105,3 +2105,136 @@ plain variable (it goes through `setq')."
       `(let ,(nreverse saves)
          (unwind-protect (progn ,@(nreverse sets) ,@body)
            ,@(nreverse restores))))))
+
+;; `nelisp--setf-1' recurses into itself from inside its own `unless'
+;; guard, which the byte-compiler does not treat as a forward
+;; definition of itself; `nelisp--setf-place-macro-p' and
+;; `nelisp-cl-macros--accessor-info' are real names this file does
+;; not define (`nelisp-stdlib-prelude'/`nelisp-cl-macros' do) --
+;; declared for the same reason `nelisp--check-string' and friends
+;; above are not, i.e. to avoid adding new diagnostics to this
+;; file's baseline.
+(declare-function nelisp--setf-1 "nelisp-stdlib-misc")
+(declare-function nelisp--setf-place-macro-p "nelisp-stdlib-prelude")
+(defvar nelisp-cl-macros--accessor-info)
+(unless (fboundp 'nelisp--setf-1)
+  (defun nelisp--setf-1 (place val)
+    "Return the assignment form realising `(setf PLACE VAL)'.  See `setf'.
+  Doc 156: adds `(get S P)' → `put', `(gethash K H)' → `puthash',
+  `(alist-get K A)' → assq update/prepend, and macro-place expansion (so a
+  generalized place defined as a macro, e.g. cl-generic's `(cl--generic NAME)'
+  = `(get NAME ...)', is recursively re-dispatched).  These let cl-generic and
+  other gv-using libraries load/run on the bare reader."
+    (cond
+     ((symbolp place) (list 'setq place val))
+     ((and (consp place) (eq (car place) 'car))
+      (list 'setcar (cadr place) val))
+     ((and (consp place) (eq (car place) 'cdr))
+      (list 'setcdr (cadr place) val))
+     ((and (consp place) (eq (car place) 'aref))
+      (list 'aset (cadr place) (caddr place) val))
+     ((and (consp place) (eq (car place) 'nth))
+      (list 'setcar (list 'nthcdr (cadr place) (caddr place)) val))
+     ((and (consp place) (eq (car place) 'get))
+      (cons 'put (append (cdr place) (list val))))
+     ((and (consp place) (eq (car place) 'gethash))
+      (list 'puthash (cadr place) val (caddr place)))
+     ((and (consp place) (eq (car place) 'alist-get))
+      (let ((k (cadr place)) (a (caddr place)) (cell (make-symbol "setf-cell")))
+        (list 'let (list (list cell (list 'assq k a)))
+              (list 'if cell (list 'setcdr cell val)
+                    (nelisp--setf-1 a (list 'cons (list 'cons k val) a))))))
+     ;; `void-function'/"setf: unsupported place" pair on the ~80-file
+     ;; census (16 hits: `plist-get' places; 2 more for `symbol-function',
+     ;; counted separately below): `(setf (plist-get PLIST PROP) VAL)' is
+     ;; Emacs's `(setq PLIST (plist-put PLIST PROP VAL))' -- it assigns
+     ;; back into the PLIST place itself, not into some cell already
+     ;; inside it, because `plist-put' may need to CONS a brand-new
+     ;; leading pair when PROP is not yet present (unlike `alist-get'
+     ;; just above, which can often `setcdr' an existing cell in place).
+     ;; PLIST is therefore re-dispatched through `nelisp--setf-1', the
+     ;; same recursion `alist-get' already uses on its own A argument, so
+     ;; this also works when PLIST is itself a settable place and not
+     ;; only a bare variable -- though every call in this census's corpus
+     ;; (../nelisp-agent/lisp/nl-agent-training-runner.el and others) is
+     ;; the plain-variable case.
+     ((and (consp place) (eq (car place) 'plist-get))
+      (let ((plist-place (cadr place)) (prop (caddr place)))
+        (nelisp--setf-1 plist-place (list 'plist-put plist-place prop val))))
+     ;; `(setf (symbol-function SYM) VAL)' = `(fset SYM VAL)', Emacs's own
+     ;; documented equivalence.  `cl-letf' (above, in this same file) already
+     ;; treats a `(symbol-function SYM)' place as save/restore-able via
+     ;; `fset'/`symbol-function' for exactly this reason; this is the same
+     ;; equivalence for `setf'.
+     ((and (consp place) (eq (car place) 'symbol-function))
+      (list 'fset (cadr place) val))
+     ((and (consp place) (symbolp (car place))
+           (get (car place) 'cl-simple-setter))
+      (cons 'funcall
+            (cons (list 'quote (get (car place) 'cl-simple-setter))
+                  (append (cdr place) (list val)))))
+     ((and (consp place) (symbolp (car place))
+           (get (car place) 'cl-struct-setter))
+      (list 'funcall
+            (list 'quote (get (car place) 'cl-struct-setter))
+            (cadr place)
+            val))
+     ((and (consp place) (symbolp (car place))
+           (assq (car place) nelisp-cl-macros--accessor-info))
+      (list 'nelisp--record-set (cadr place)
+            (cdr (assq (car place) nelisp-cl-macros--accessor-info))
+            val))
+     ((and (consp place) (nelisp--setf-place-macro-p (car place)))
+      (nelisp--setf-1 (macroexpand-1 place) val))
+     ;; fix/setf-cxxxr-places: `(setf (plist-get (cadr (plist-get x
+     ;; :trajectory)) :step) 1)' signalled "setf: unsupported place cadr"
+     ;; -- `cadr'/`caddr'/... (the `c[ad]{2,4}r' family, 2-4 `a'/`d'
+     ;; letters) fell through to the catch-all below, even though each
+     ;; one is just a composition of the `car'/`cdr' places already
+     ;; handled above.  `(cadr X)' is `(car (cdr X))'; peeling the FIRST
+     ;; letter off gives the outermost car/cdr assignment, and the
+     ;; remaining letters, re-wrapped as a (shorter) `cXXXr' GETTER call
+     ;; on X, become that assignment's target argument -- e.g. `(setf
+     ;; (caddr x) v)' decomposes to `(setcar (cddr x) v)', bottoming out
+     ;; in the plain `car'/`cdr' base cases above once only one letter is
+     ;; left. This is a read (getter), not a further setf place, so one
+     ;; decomposition step is all that is needed per call.
+     ((and (consp place) (symbolp (car place))
+           (string-match "\\`c\\([ad]\\{2,4\\}\\)r\\'"
+                         (symbol-name (car place))))
+      (let* ((letters (match-string 1 (symbol-name (car place))))
+             (first (aref letters 0))
+             (rest (substring letters 1))
+             (inner-accessor (intern (concat "c" rest "r")))
+             (arg (cadr place)))
+        (nelisp--setf-1 (list (if (eq first ?a) 'car 'cdr)
+                              (list inner-accessor arg))
+                        val)))
+     (t
+      (signal 'error
+              (list "setf: unsupported place"
+                    (and (consp place) (car place))))))))
+
+(unless (fboundp 'setf)
+  (defmacro setf (&rest pairs)
+    "Generalised assignment macro (NeLisp minimal).
+  Each pair PLACE VAL assigns VAL to PLACE.  Supported PLACE shapes:
+    - SYMBOL                 → `(setq SYMBOL VAL)'
+    - (car X)  / (cdr X)     → `(setcar X VAL)' / `(setcdr X VAL)'
+    - (aref V I) / (nth I L) → `(aset V I VAL)' / `(setcar (nthcdr I L) VAL)'
+    - (get S P)              → `(put S P VAL)'
+    - (gethash K H)          → `(puthash K VAL H)'
+    - (alist-get K A)        → assq-update or prepend `(K . VAL)'
+    - (ACCESSOR REC)         where ACCESSOR is a registered cl-defstruct
+                              slot accessor → `(nelisp--record-set REC I VAL)'
+    - registered simple / struct setter → calls the setter
+    - a MACRO place          → macroexpand and re-dispatch
+  Other shapes signal a host `error' at expand time (see `nelisp--setf-1')."
+    (when (null pairs) (signal 'error (list "setf: empty body")))
+    (let ((forms nil))
+      (while pairs
+        (push (nelisp--setf-1 (car pairs) (cadr pairs)) forms)
+        (setq pairs (cdr (cdr pairs))))
+      (if (cdr forms)
+          (cons 'progn (nreverse forms))
+        (car forms)))))

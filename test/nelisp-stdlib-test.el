@@ -1294,6 +1294,63 @@ called `assoc'."
            "(cl-remove-duplicates (list 1 2 1 3 2) :from-end t)")
           "(1 2 3)")))
 
+;; Segment F item 6: `setf' signalled "setf: unsupported place cadr"
+;; for any place headed by a `c[ad]{2,4}r' accessor (cadr/caddr/caar/
+;; ...), even though each is just a composition of the `car'/`cdr'
+;; places `setf' already handles. All values verified against Emacs
+;; 31.1 before writing the fix.
+(ert-deftest nelisp-stdlib-segf-setf-caddr ()
+  (should
+   (equal (nelisp-stdlib-segf--standalone-eval
+           "(let ((x (list 1 2 3 4))) (setf (caddr x) 99) x)")
+          "(1 2 99 4)")))
+
+(ert-deftest nelisp-stdlib-segf-setf-cadddr ()
+  (should
+   (equal (nelisp-stdlib-segf--standalone-eval
+           "(let ((x (list 1 2 3 4 5))) (setf (cadddr x) 100) x)")
+          "(1 2 3 100 5)")))
+
+(ert-deftest nelisp-stdlib-segf-setf-caar-cdar ()
+  (should
+   (equal (nelisp-stdlib-segf--standalone-eval
+           "(let ((x (list (list 1 2) 3))) (setf (caar x) 100) x)")
+          "((100 2) 3)"))
+  (should
+   (equal (nelisp-stdlib-segf--standalone-eval
+           "(let ((x (cons (cons 1 2) 3))) (setf (cdar x) 100) x)")
+          "((1 . 100) . 3)")))
+
+(ert-deftest nelisp-stdlib-segf-setf-cddddr-four-letters ()
+  (should
+   (equal (nelisp-stdlib-segf--standalone-eval
+           "(let ((x (list 1 2 3 4 5 6))) (setf (cddddr x) (list 99)) x)")
+          "(1 2 3 4 99)")))
+
+(ert-deftest nelisp-stdlib-segf-setf-nested-plist-get-cadr-plist-get ()
+  "The task's own reproducer: a plist-get place whose PLIST argument is
+itself a cadr of another plist-get."
+  (should
+   (equal
+    (nelisp-stdlib-segf--standalone-eval
+     "(let* ((inner (list :step 0 :extra 1))
+             (v (list 'ignored inner))
+             (x (list :trajectory v)))
+        (setf (plist-get (cadr (plist-get x :trajectory)) :step) 1)
+        x)")
+    "(:trajectory (ignored (:step 1 :extra 1)))")))
+
+(ert-deftest nelisp-stdlib-segf-setf-car-cdr-still-work ()
+  "Pre-existing base cases (car/cdr) are unaffected by the new branch."
+  (should
+   (equal (nelisp-stdlib-segf--standalone-eval
+           "(let ((x (cons 1 2))) (setf (car x) 9) x)")
+          "(9 . 2)"))
+  (should
+   (equal (nelisp-stdlib-segf--standalone-eval
+           "(let ((x (cons 1 2))) (setf (cdr x) 9) x)")
+          "(1 . 9)")))
+
 ;;; Phase 5-E.0 primitives (MCP server I/O + file tool dispatchers) ---
 
 (ert-deftest nelisp-stdlib-phase5e-princ-terpri-routable ()

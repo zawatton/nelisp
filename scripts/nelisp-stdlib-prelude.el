@@ -7149,6 +7149,30 @@ other gv-using libraries load/run on the bare reader."
           val))
    ((and (consp place) (nelisp--setf-place-macro-p (car place)))
     (nelisp--setf-1 (macroexpand-1 place) val))
+   ;; fix/setf-cxxxr-places: `(setf (plist-get (cadr (plist-get x
+   ;; :trajectory)) :step) 1)' signalled "setf: unsupported place cadr"
+   ;; -- `cadr'/`caddr'/... (the `c[ad]{2,4}r' family, 2-4 `a'/`d'
+   ;; letters) fell through to the catch-all below, even though each
+   ;; one is just a composition of the `car'/`cdr' places already
+   ;; handled above.  `(cadr X)' is `(car (cdr X))'; peeling the FIRST
+   ;; letter off gives the outermost car/cdr assignment, and the
+   ;; remaining letters, re-wrapped as a (shorter) `cXXXr' GETTER call
+   ;; on X, become that assignment's target argument -- e.g. `(setf
+   ;; (caddr x) v)' decomposes to `(setcar (cddr x) v)', bottoming out
+   ;; in the plain `car'/`cdr' base cases above once only one letter is
+   ;; left. This is a read (getter), not a further setf place, so one
+   ;; decomposition step is all that is needed per call.
+   ((and (consp place) (symbolp (car place))
+         (string-match "\\`c\\([ad]\\{2,4\\}\\)r\\'"
+                       (symbol-name (car place))))
+    (let* ((letters (match-string 1 (symbol-name (car place))))
+           (first (aref letters 0))
+           (rest (substring letters 1))
+           (inner-accessor (intern (concat "c" rest "r")))
+           (arg (cadr place)))
+      (nelisp--setf-1 (list (if (eq first ?a) 'car 'cdr)
+                            (list inner-accessor arg))
+                      val)))
    (t
     (signal 'error
             (list "setf: unsupported place"
