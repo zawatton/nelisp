@@ -790,9 +790,21 @@ or signals otherwise.  Replaces the deleted Rust `bi_require'."
     prefer-utf-8 raw-text)
   "Same as the prelude's copy.")
 
+;; Doc D1 item 3: `nelisp--buffer-multibyte-p' is defined inside an
+;; `unless' guard later in THIS SAME file (near `insert', below; Doc D1
+;; item 2 already declares it there for that block's own callers), same
+;; forward-reference shape as `nelisp--coding-region-alias'/`nelisp--
+;; coding-region-emit' just above.  `nelisp--current-buffer' is the
+;; same prelude-only dynamic variable this file's `insert'-adjacent
+;; block (below) declares again later -- declared here too, earlier, so
+;; THIS use does not byte-compile as a reference to a free variable.
+(defvar nelisp--current-buffer)
 (unless (fboundp 'decode-coding-region)
   (defun decode-coding-region (start end coding-system &optional destination)
-    "Same as the prelude's copy.
+    "Same as the prelude's copy: when DESTINATION is nil and the current
+buffer is declared unibyte, this is a no-op on the buffer's bytes
+(matching Emacs 31.1) and only the return value reports the would-be
+decoded length.
 
 (fn START END CODING-SYSTEM &optional DESTINATION)"
     (nelisp--check-symbol coding-system)
@@ -802,7 +814,10 @@ or signals otherwise.  Replaces the deleted Rust `bi_require'."
            (bytes (if (fboundp 'string-as-unibyte) (string-as-unibyte raw) raw))
            (decoded (decode-coding-string
                      bytes (nelisp--coding-region-alias coding-system))))
-      (nelisp--coding-region-emit decoded start end destination))))
+      (if (and (null destination)
+               (not (nelisp--buffer-multibyte-p nelisp--current-buffer)))
+          (length decoded)
+        (nelisp--coding-region-emit decoded start end destination)))))
 
 (unless (fboundp 'encode-coding-region)
   (defun encode-coding-region (start end coding-system &optional destination)

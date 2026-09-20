@@ -7614,22 +7614,48 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
 ;;       already knows is text) and duplicating a genuine pass-through
 ;;       path was judged not worth it for this segment.
 ;;   (2) Real Emacs additionally has a "raw 8-bit" pseudo-character
-;;       representation (codes >= #x3FFF80) for a byte >= #x80 living
-;;       inside an otherwise-multibyte string/buffer -- verified against
-;;       31.1: decoding/encoding against a DEFAULT (multibyte) buffer
-;;       answers those pseudo-codepoints, not the plain byte value, and
-;;       `decode-coding-region' on a genuinely UNIBYTE buffer with
-;;       DESTINATION nil is a bytes-on-the-page NO-OP (the buffer's own
+;;       representation (code = `#x3FFF00' + the byte, so byte #xC3
+;;       reads back as 4194243 -- corrected here from an earlier,
+;;       wrong #x3FFF80 guess in this same comment, verified against
+;;       31.1 by direct arithmetic on a measured reproducer) for a byte
+;;       >= #x80 living inside an otherwise-multibyte string/buffer --
+;;       verified against 31.1: encoding a decoded MULTIBYTE buffer's
+;;       text answers those pseudo-codepoints as its OWN characters
+;;       first (`(with-temp-buffer (insert "é") (encode-coding-region
+;;       (point-min) (point-max) 'utf-8) (append (buffer-string) nil))'
+;;       -> `(4194243 4194217)'), not the plain UTF-8 byte pair this
+;;       runtime answers (195 169) -- this runtime has no such scheme
+;;       at all (see item 1's own report: buffer content is always a
+;;       plain sequence of integers, decoded or raw, never tagged) and
+;;       reproducing it would mean changing what a buffer position CAN
+;;       hold, not adding a check next to `decode-coding-region' --
+;;       judged out of reach for this segment and left as this
+;;       documented, measured gap rather than a half-built pseudo-
+;;       scheme that would mislead a caller into thinking raw bytes and
+;;       decoded characters are distinguishable here when they are not.
+;;
+;;       Doc D1 item 3 DOES close the other half of this same
+;;       observation: `decode-coding-region' on a genuinely UNIBYTE
+;;       buffer (`(set-buffer-multibyte nil)') with DESTINATION nil is,
+;;       in real Emacs, a bytes-on-the-page NO-OP -- a unibyte buffer
+;;       cannot hold a multibyte character at all, so Emacs's own
 ;;       insert-time unibyte coercion re-encodes the just-decoded
-;;       character straight back to its original bytes, even though the
-;;       return value still reports the decoded length) -- this runtime
-;;       has no such scheme at all (see item 1's own report) and always
-;;       uses plain integers 0-255, and a decode genuinely replaces a
-;;       unibyte buffer's content with the decoded characters instead of
-;;       silently reverting.  This is the "batch-honest" byte run this
-;;       item and item 1 both give buffers: real bytes in, real
-;;       characters out, no representation their callers need to know a
-;;       pseudo-codepoint offset to undo.
+;;       character straight back to its original byte, even though the
+;;       return value still reports the would-be-decoded length
+;;       (verified against 31.1: 6 UTF-8 bytes decode to a reported
+;;       length of 3, buffer content unchanged).  `decode-coding-region'
+;;       below now checks the buffer's declared multibyte flag (Doc D1
+;;       item 2's `nelisp--buffer-multibyte-p') and skips the
+;;       buffer-mutating half of `nelisp--coding-region-emit' when the
+;;       buffer is unibyte and DESTINATION is nil, returning the
+;;       decoded length without touching the buffer -- exactly the case
+;;       the agent's own code (`insert-file-contents-literally' into an
+;;       explicitly-unibyte buffer, then `decode-coding-region') uses.
+;;       A DESTINATION of `t' or a buffer is untouched by this fix (see
+;;       the DESTINATION contract above); `encode-coding-region' is
+;;       likewise untouched, since it already answers plain bytes
+;;       regardless of the buffer's flag and this fix does not change
+;;       that fact.
 (defconst nelisp--coding-region-systems
   '(utf-8 utf-8-unix latin-1 binary no-conversion us-ascii undecided
     prefer-utf-8 raw-text)
@@ -7674,6 +7700,16 @@ exact, Emacs-31.1-verified DESTINATION contract."
   (defun decode-coding-region (start end coding-system &optional destination)
     "Decode START..END, a byte run, as CODING-SYSTEM into characters.
 
+Doc D1 item 3: when DESTINATION is nil and the current buffer is
+declared unibyte (`nelisp--buffer-multibyte-p', Doc D1 item 2), this is
+a NO-OP on the buffer's bytes, matching Emacs 31.1 exactly (a unibyte
+buffer cannot hold a multibyte character, so Emacs's own insert-time
+coercion converts each decoded character straight back to its original
+byte) -- only the return value reports the would-be decoded length.
+See the block comment above `nelisp--coding-region-systems' for the
+full, measured account of what this substrate does and does not
+reproduce of Emacs's coding-region/buffer-multibyte interaction.
+
 (fn START END CODING-SYSTEM &optional DESTINATION)"
     (nelisp--check-symbol coding-system)
     (unless (memq coding-system nelisp--coding-region-systems)
@@ -7682,7 +7718,10 @@ exact, Emacs-31.1-verified DESTINATION contract."
            (bytes (if (fboundp 'string-as-unibyte) (string-as-unibyte raw) raw))
            (decoded (decode-coding-string
                      bytes (nelisp--coding-region-alias coding-system))))
-      (nelisp--coding-region-emit decoded start end destination))))
+      (if (and (null destination)
+               (not (nelisp--buffer-multibyte-p nelisp--current-buffer)))
+          (length decoded)
+        (nelisp--coding-region-emit decoded start end destination)))))
 
 (unless (fboundp 'encode-coding-region)
   (defun encode-coding-region (start end coding-system &optional destination)
