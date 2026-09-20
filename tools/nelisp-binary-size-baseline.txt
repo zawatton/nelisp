@@ -664,5 +664,21 @@
 # backquote vectors, json null) lands, because 8 KB of the old ceiling was
 # left and its growth would otherwise arrive as a red that says nothing.
 # Ceiling is now 8,954,506 (2%).
-size 8778928
+#
+# 2026-09-21: re-pinned from CI's own build of main f0e688c4f -- run
+# 35518797218, ubuntu 30.2 lane, `./target/nelisp is 9021352 bytes', which
+# was 66,846 over the ceiling the segment-4 pin left.  The growth since
+# that pin (8,778,928, run 35497823190) is four merges, each measured on
+# CI's own build:
+#   636e26a37 json-serialize honours :null-object/:false-object
+#   2e3361b13 match-string, cl-* keywords, backquote vectors, COUNT
+#   ab428eae1 literal reads, symbol keys, coding-region, secure-hash
+#   f0e688c4f insert takes characters, a per-buffer multibyte flag, the
+#             default process sentinel, type-of for hash tables/records
+# The per-buffer multibyte flag and the character-argument conversion are
+# the bulk of it: they add a table and a conversion path that every
+# inserter now goes through.  Segment F (the time functions, cl-letf, rx)
+# is already larger again and will need its own pin from ITS CI run --
+# this one is not a budget for it.
+size 9021352
 slack-pct 2
