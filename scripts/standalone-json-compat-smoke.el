@@ -64,6 +64,26 @@
  (gethash "a" (json-parse-string "{\"a\":1}" :object-type 'hash-table))
  1)
 
+;; Regression coverage: with NO `:object-type' argument at all,
+;; `json-parse-string' must default to `hash-table', matching real
+;; Emacs's own default (verified against Emacs 31.1: `(hash-table-p
+;; (json-parse-string "{\"a\":1}"))' is t there too).  `type-of' is NOT
+;; used here as the probe: the standalone's fallback `type-of'
+;; (`scripts/nelisp-stdlib-prelude.el', "A13") pre-dates hash tables and
+;; reports `cons' for every hash table on this substrate, including one
+;; made directly with `(make-hash-table)' -- `hash-table-p'/`gethash'
+;; are the correct structural/behavioral probes and both agree with
+;; Emacs.
+(nelisp--json-compat-smoke-check
+ "parse-string default object-type is hash-table (no keyword arg)"
+ (hash-table-p (json-parse-string "{\"a\":1}"))
+ t)
+
+(nelisp--json-compat-smoke-check
+ "parse-string default object-type hash-table value"
+ (gethash "a" (json-parse-string "{\"a\":1}"))
+ 1)
+
 (with-temp-buffer
   (insert "{\"a\":1,\"b\":{\"c\":2}}")
   (goto-char (point-min))

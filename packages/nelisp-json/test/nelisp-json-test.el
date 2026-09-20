@@ -255,6 +255,23 @@ pre-existing unconditional null meaning away."
     (should (hash-table-p h))
     (should (= (gethash "k" h) 42))))
 
+(ert-deftest nelisp-json-parse-default-object-type-is-hash-table ()
+  "With no `:object-type' argument at all, the default is `hash-table'
+with STRING keys, matching real Emacs's `json-parse-string' default
+\(verified against Emacs 31.1: `(json-parse-string \"{\\\"a\\\":1}\")'
+is a hash-table there too\).  Regression coverage: `type-of' is not a
+reliable probe for this on the standalone substrate -- its
+`scripts/nelisp-stdlib-prelude.el' fallback `type-of' (marked \"A13\",
+predicate-composed, pre-dating hash tables) has no hash-table branch
+and falls through to `cons' for EVERY hash table there, including one
+made directly with `(make-hash-table)'; `hash-table-p'/`gethash' are
+the correct structural/behavioral probes and both agree with Emacs."
+  (let ((h (nelisp-json-parse-string "{\"a\":1,\"b\":2}")))
+    (should (hash-table-p h))
+    (should (= (hash-table-count h) 2))
+    (should (= (gethash "a" h) 1))
+    (should (= (gethash "b" h) 2))))
+
 (ert-deftest nelisp-json-parse-object-as-alist ()
   "`:object-type \\='alist' interns keys as symbols, matching real Emacs
 `json-parse-string' (verified against Emacs 31.1): `{\"k\":42}' becomes
