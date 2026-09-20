@@ -191,6 +191,36 @@ stays the authoritative signal, per the decode convention above)."
      ((= code 0) "finished\n")
      (t (format "exited abnormally with code %d\n" code)))))
 
+(defun nelisp-process-adapter--fire-sentinel (proc status)
+  "Deliver STATUS (already Emacs-shaped, see
+`nelisp-process-adapter--sentinel-message') for PROC's termination.
+
+A PROC with an explicit `:sentinel' gets exactly that: the sentinel is
+called with STATUS and nothing else happens -- measured against host
+Emacs 31.1, an explicit sentinel suppresses the buffer-insertion side
+effect entirely (`(make-process :sentinel FN :buffer B ...)' leaves B
+holding only the process's own output, never a status line).
+
+A PROC with no `:sentinel' reproduces Emacs's own default subprocess
+sentinel (`internal-default-process-sentinel'): when `:buffer' is
+still live, append \"\\nProcess NAME STATUS\" at its end.  Measured
+against host Emacs 31.1 (2026-09-20), byte for byte:
+  exit 0                 -> \"\\nProcess e finished\\n\"
+  exit 3 (nonzero)        -> \"\\nProcess e exited abnormally with code 3\\n\"
+  killed by SIGTERM(15)   -> \"\\nProcess e terminated\\n\"
+  killed by SIGKILL(9)    -> \"\\nProcess e killed\\n\"
+A dead or absent `:buffer' means there is nothing to insert into, same
+as a live process whose buffer was killed out from under it on a
+host -- the default sentinel silently does nothing there too."
+  (let ((sentinel (process-get proc :sentinel)))
+    (if sentinel
+        (funcall sentinel proc status)
+      (let ((buffer (process-get proc :buffer)))
+        (when (and buffer (buffer-live-p buffer))
+          (with-current-buffer buffer
+            (goto-char (point-max))
+            (insert (format "\nProcess %s %s" (process-get proc :name) status))))))))
+
 ;;; make-process: real :filter -------------------------------------------
 
 (defun make-process (&rest plist)
@@ -280,9 +310,8 @@ simply a no-op, not an error)."
       (setq nelisp-process-adapter--live (delq process nelisp-process-adapter--live))
       (when (and was-running (not already-fired))
         (process-put process :adapter-sentinel-fired t)
-        (let ((sentinel (process-get process :sentinel)))
-          (when sentinel
-            (funcall sentinel process (nelisp-process-adapter--sentinel-message process))))))))
+        (nelisp-process-adapter--fire-sentinel
+         process (nelisp-process-adapter--sentinel-message process))))))
   nil)
 
 (defun kill-process (&optional process _current-group)
@@ -360,9 +389,8 @@ native process object) and does not know this one."
             (nelisp-process-adapter--dispatch-output proc chunk filter)))
         (process-put proc :adapter-sentinel-fired t)
         (setq nelisp-process-adapter--live (delq proc nelisp-process-adapter--live))
-        (let ((sentinel (process-get proc :sentinel)))
-          (when sentinel
-            (funcall sentinel proc (nelisp-process-adapter--sentinel-message proc)))))
+        (nelisp-process-adapter--fire-sentinel
+         proc (nelisp-process-adapter--sentinel-message proc)))
       got-bytes)))
 
 ;;; network-process nonblocking I/O (Doc 194 P4/P5, S3.3) -----------------

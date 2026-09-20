@@ -1180,7 +1180,7 @@ pinned-collision ns-collision-divergent	copy-tree	lisp/nelisp-stdlib-plist-str.e
 pinned-collision ns-collision-divergent	define-error	lisp/nelisp-stdlib-error.el scripts/nelisp-stdlib-prelude.el	23dfe8f3d73f
 pinned-collision ns-collision-divergent	defun	lisp/nelisp-jit-substrate.el lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el	91d01aa6ff27
 pinned-collision ns-collision-divergent	delete-dups	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	03fd6070a2df
-pinned-collision ns-collision-divergent	delete-process	packages/nelisp-process-adapter/src/nelisp-process-adapter.el scripts/nelisp-stdlib-prelude.el	a6061f78437b
+pinned-collision ns-collision-divergent	delete-process	packages/nelisp-process-adapter/src/nelisp-process-adapter.el scripts/nelisp-stdlib-prelude.el	fac5e463df78
 # segment B1 fix/directory-files-count: `directory-files' re-pinned.  Its
 # scripts/nelisp-stdlib-prelude.el copy (both the fast-path `fset' closure
 # and the `unless (fboundp ...)' fallback) gained the missing COUNT (5th,

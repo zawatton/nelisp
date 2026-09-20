@@ -159,6 +159,64 @@ against host Emacs 30.1's own `signal-process'+`process-sentinel') ->
       (should (equal (nreverse msgs)
                       '("finished\n" "exited abnormally with code 7\n" "terminated\n"))))))
 
+;; Doc D1 item 1: a process with NO explicit `:sentinel' used to leave
+;; its `:buffer' holding only its own output -- Emacs's own default
+;; sentinel (`internal-default-process-sentinel') additionally appends
+;; a status line, measured against host Emacs 31.1 byte for byte:
+;; exit 0 -> \"\\nProcess NAME finished\\n\"; a nonzero exit ->
+;; \"\\nProcess NAME exited abnormally with code N\\n\"; SIGTERM
+;; (this substrate's `delete-process' always sends SIGTERM, see
+;; `nelisp-process-adapter--sentinel-message''s own commentary) ->
+;; \"\\nProcess NAME terminated\\n\".  A process WITH an explicit
+;; `:sentinel' gets exactly the prior behavior: the sentinel is called,
+;; nothing is inserted into the buffer.
+(ert-deftest nelisp-process-adapter-default-sentinel-appends-status-line ()
+  (skip-unless (fboundp 'nelisp-process-start))
+  (nelisp-process-adapter-test--fresh
+    (let* ((buf (generate-new-buffer "nelisp-process-adapter-test--default-sentinel-0"))
+           (p (make-process :name "e" :command '("/bin/sh" "-c" "printf out; exit 0")
+                             :buffer buf)))
+      (unwind-protect
+          (progn
+            (while (process-live-p p) (accept-process-output p 0.1))
+            (accept-process-output nil 0.2)
+            (should (equal (with-current-buffer buf (buffer-string))
+                            "out\nProcess e finished\n")))
+        (kill-buffer buf)))
+    (let* ((buf (generate-new-buffer "nelisp-process-adapter-test--default-sentinel-3"))
+           (p (make-process :name "e" :command '("/bin/sh" "-c" "printf out; exit 3")
+                             :buffer buf)))
+      (unwind-protect
+          (progn
+            (while (process-live-p p) (accept-process-output p 0.1))
+            (accept-process-output nil 0.2)
+            (should (equal (with-current-buffer buf (buffer-string))
+                            "out\nProcess e exited abnormally with code 3\n")))
+        (kill-buffer buf)))
+    (let* ((buf (generate-new-buffer "nelisp-process-adapter-test--default-sentinel-killed"))
+           (p (make-process :name "e" :command '("/bin/sh" "-c" "printf out; sleep 5")
+                             :buffer buf)))
+      (unwind-protect
+          (progn
+            (accept-process-output p 0.2)
+            (delete-process p)
+            (accept-process-output nil 0.2)
+            (should (equal (with-current-buffer buf (buffer-string))
+                            "out\nProcess e terminated\n")))
+        (kill-buffer buf)))
+    (let* ((buf (generate-new-buffer "nelisp-process-adapter-test--explicit-sentinel-still-quiet"))
+           got
+           (p (make-process :name "e" :command '("/bin/sh" "-c" "printf out; exit 3")
+                             :buffer buf
+                             :sentinel (lambda (_p m) (setq got m)))))
+      (unwind-protect
+          (progn
+            (while (process-live-p p) (accept-process-output p 0.1))
+            (accept-process-output nil 0.2)
+            (should (equal got "exited abnormally with code 3\n"))
+            (should (equal (with-current-buffer buf (buffer-string)) "out")))
+        (kill-buffer buf)))))
+
 (ert-deftest nelisp-accept-process-output-return-value ()
   "Non-nil iff real output was received before the timeout -- measured
 against host Emacs 30.1: a timeout with nothing ready, or a process that
