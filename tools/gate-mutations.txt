@@ -192,7 +192,7 @@ nelisp-thread-mirror-guard-standalone-smoke|lisp/nelisp-cc-rootstack.el|s/(nl_th
 # time), then `./target/nelisp --load test/nelisp-buffer-unification-
 # standalone-smoke.el' went from `6 passed, 0 failed' to `2 passed, 4
 # failed' (exit 1); reverted and rebuilt clean before committing.
-standalone-reader-buffer-smoke|scripts/nelisp-stdlib-prelude.el|s/(nelisp-insert s nelisp--current-buffer)/(ignore s nelisp--current-buffer)/|insert becomes a silent no-op again (Doc 188 §1.3's original bug shape); buffer-string never reflects it
+standalone-reader-buffer-smoke|scripts/nelisp-stdlib-prelude.el|s/((stringp a) a)/((stringp a) "")/|insert drops every string argument (silent no-op for text; 2026-09-21: re-aimed at `insert''s rewritten body, which no longer has the old one-line `nelisp-insert' call -- the row went SED MATCHED NOTHING on CI run 35518797218) (Doc 188 §1.3's original bug shape); buffer-string never reflects it
 #
 # 2026-08-23 (Doc 188 P2, buffer unification): the smoke grew from 6 to
 # 15 cases (`current-buffer'/`set-buffer'/`buffer-substring'/
