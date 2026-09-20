@@ -247,6 +247,27 @@
     ;;   else                       -> 20 (Int)
     ;; ===========================================================
 
+    ;; agent-host census (2026-09, "void-variable 0.0e+NaN"): Emacs's float
+    ;; reader also accepts exactly `e+INF' and `e+NaN' as an exponent body
+    ;; (case-sensitive INF/NaN, `+' only -- never `-' -- and nothing may
+    ;; follow), producing +/-Infinity and a NaN respectively.  Measured
+    ;; against host Emacs 31.1: `1.0e+INF'/`1.0E+INF'/`-1.0e+INF'/
+    ;; `0.0e+NaN' all float; `1.0e+inf' (lowercase), `1.0e-INF' (minus),
+    ;; `1.0e+INFx' (trailing byte) and `1e2e+INF' (a second exponent marker
+    ;; already forces Sym) are all symbols.  START..END is the byte range
+    ;; immediately after a just-consumed `e+'/`E+'; true iff it is exactly
+    ;; the 3 bytes "INF" or "NaN".
+    (defun nelisp_reader_exp_special_suffix_p (str-ptr start end)
+      (if (= (- end start) 3)
+          (let* ((b0 (str-byte-at str-ptr start))
+                 (b1 (str-byte-at str-ptr (+ start 1)))
+                 (b2 (str-byte-at str-ptr (+ start 2))))
+            (cond
+             ((and (= b0 73) (= b1 78) (= b2 70)) 1)   ; "INF"
+             ((and (= b0 78) (= b1 97) (= b2 78)) 1)   ; "NaN"
+             (t 0)))
+        0))
+
     (defun nelisp_reader_classify_step (str-ptr i end class)
       (if (>= i end)
           (cond
@@ -301,13 +322,27 @@
          ;; (bit 4 clear) forces sym (`1+' / `1-' lex as symbols, not
          ;; `Int(1)' + dropped sign).  Otherwise (start, after e/E)
          ;; tolerated.  Clear bit 4 in both branches.
+         ;;
+         ;; `+' right after `e'/`E' (bit 4 set) is also the ONE place an
+         ;; `INF'/`NaN' exponent body can start (`e-INF' is a symbol on a
+         ;; host -- only `+' is ever valid there) -- peek the rest of the
+         ;; token and, when it is exactly "INF" or "NaN" with nothing
+         ;; trailing, classify Float immediately.  Guarded on bit 2 (sym
+         ;; not already forced): a second exponent marker earlier in the
+         ;; token (`1e2e+INF') already set it, and that token stays Sym,
+         ;; matching a host, exactly like the pre-existing dot/e checks
+         ;; above this one.
          ((= (str-byte-at str-ptr i) 43)
           (if (= (logand class 8) 8)
               (if (= (logand class 16) 0)
                   (nelisp_reader_classify_step str-ptr (+ i 1) end
                                                (logior (logand class 15) 4))
-                (nelisp_reader_classify_step str-ptr (+ i 1) end
-                                             (logand class 15)))
+                (if (and (= (logand class 4) 0)
+                         (= (nelisp_reader_exp_special_suffix_p
+                             str-ptr (+ i 1) end) 1))
+                    21
+                  (nelisp_reader_classify_step str-ptr (+ i 1) end
+                                               (logand class 15))))
             (nelisp_reader_classify_step str-ptr (+ i 1) end
                                          (logand class 15))))
          ((= (str-byte-at str-ptr i) 45)
