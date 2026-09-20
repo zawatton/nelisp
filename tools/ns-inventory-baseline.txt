@@ -1558,10 +1558,10 @@ pinned-collision ns-collision	rx--tr-repeat	lisp/nelisp-stdlib-misc.el scripts/n
 pinned-collision ns-collision	rx--tr-seq	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	rx--tr-symbol	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	rx-to-string	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
-pinned-collision ns-collision-divergent	cl-assoc	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	53dced88f9e8
-pinned-collision ns-collision-divergent	cl-count	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	4f8122570dba
+pinned-collision ns-collision-divergent	cl-assoc	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	2b698266abcf
+pinned-collision ns-collision-divergent	cl-count	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	02eda017bd1b
 pinned-collision ns-collision-divergent	cl-delete	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	04158eeaced9
-pinned-collision ns-collision-divergent	cl-remove	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	c20721233fb0
-pinned-collision ns-collision-divergent	cl-remove-duplicates	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	4f9de92cb550
-pinned-collision ns-collision-divergent	cl-sort	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	cedfc8e8e24c
+pinned-collision ns-collision-divergent	cl-remove	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	6dde074698a2
+pinned-collision ns-collision-divergent	cl-remove-duplicates	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	a32a71561e27
+pinned-collision ns-collision-divergent	cl-sort	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	83235bf08176
 pinned-collision ns-collision-divergent	setf	lisp/nelisp-cl-macros.el lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	8a67c1c8af82
