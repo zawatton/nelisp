@@ -1387,6 +1387,91 @@ itself a cadr of another plist-get."
                (buffer-local-value 'nelisp-segf-blv-var2 b)))")
     "99")))
 
+;; Segment F item 4: `rx' was void (the only call site in the agent
+;; tree has no `(require 'rx)', matching real Emacs where `rx' is
+;; preloaded). Verified behaviorally against Emacs 31.1 -- MATCHING
+;; results, not byte-identical regex text, which the task does not
+;; require and this shim's own commentary explains it does not
+;; attempt (no regexp-opt trie, no single-char `or' -> char-class
+;; optimization, etc).
+(ert-deftest nelisp-stdlib-segf-rx-task-callsite ()
+  "The exact call site from ../nelisp-agent this item exists for."
+  (should
+   (equal
+    (nelisp-stdlib-segf--standalone-eval
+     "(list (string-match
+             (rx string-start (= 64 (in \"a-f0-9\")) string-end)
+             (make-string 64 ?a))
+            (string-match
+             (rx string-start (= 64 (in \"a-f0-9\")) string-end)
+             (make-string 63 ?a))
+            (string-match
+             (rx string-start (= 64 (in \"a-f0-9\")) string-end)
+             (concat (make-string 32 ?a) (make-string 32 ?f))))")
+    "(0 nil 0)")))
+
+(ert-deftest nelisp-stdlib-segf-rx-available-without-require ()
+  "`rx' works with no `(require 'rx)', matching real Emacs."
+  (should
+   (equal (nelisp-stdlib-segf--standalone-eval "(stringp (rx \"a\"))")
+          "t")))
+
+(ert-deftest nelisp-stdlib-segf-rx-or-seq-group ()
+  (should
+   (equal
+    (nelisp-stdlib-segf--standalone-eval
+     "(list (string-match (rx (or \"cat\" \"dog\")) \"dog\")
+            (string-match (rx (seq \"a\" (or \"b\" \"c\") \"d\")) \"acd\")
+            (string-match (rx (seq \"a\" (or \"b\" \"c\") \"d\")) \"aed\")
+            (let ((s \"12-3\"))
+              (string-match (rx (group (+ digit)) \"-\" (group-n 3 (+ digit))) s)
+              (match-string 3 s)))")
+    "(0 0 nil \"3\")")))
+
+;; `backref' is NOT in this item's required coverage list (the task's
+;; "Cover at least" enumeration omits it; only the shim's own header
+;; commentary claims it), and is deliberately not exercised end to end
+;; here: `rx' correctly emits `\1' for `(backref 1)', but the
+;; standalone runtime's OWN regexp engine does not implement
+;; backreferences at all -- `(string-match "\\(a\\)\\1" "aa")` is nil
+;; on the standalone binary where Emacs answers 0, for a plain
+;; hand-written regexp with no `rx' involved. That is a separate,
+;; pre-existing gap in the regexp engine, well outside this segment's
+;; files (scripts/nelisp-stdlib-prelude.el, lisp/nelisp-stdlib-misc.el,
+;; lisp/nelisp-stdlib-plist-str.el, lisp/nelisp-cl-macros.el), and is
+;; reported rather than silently worked around.
+(ert-deftest nelisp-stdlib-segf-rx-backref-emits-correct-text ()
+  "`rx' emits the right regexp text for `backref' even though the
+standalone regexp engine cannot execute it (see the commentary above)."
+  (should
+   (equal (nelisp-stdlib-segf--standalone-eval
+           "(rx (group \"x\") (backref 1))")
+          "\"\\\\(x\\\\)\\\\1\"")))
+
+(ert-deftest nelisp-stdlib-segf-rx-repeat-family ()
+  (should
+   (equal
+    (nelisp-stdlib-segf--standalone-eval
+     "(list (string-match (rx (= 3 \"a\")) \"aaa\")
+            (string-match (rx (= 3 \"a\")) \"aa\")
+            (string-match (rx (>= 2 \"b\")) \"bbbb\")
+            (string-match (rx (** 1 3 \"c\")) \"cccc\")
+            (string-match (rx (* \"d\") \"e\") \"e\")
+            (string-match (rx (+ \"e\")) \"\")
+            (string-match (rx (\\? \"f\") \"g\") \"g\"))")
+    "(0 nil 0 0 0 nil 0)")))
+
+(ert-deftest nelisp-stdlib-segf-rx-any-negation-and-anchors ()
+  (should
+   (equal
+    (nelisp-stdlib-segf--standalone-eval
+     "(list (string-match (rx (not (any \"abc\"))) \"d\")
+            (string-match (rx (not (any \"abc\"))) \"a\")
+            (string-match (rx bos \"hi\" eos) \"hi\")
+            (string-match (rx bos \"hi\" eos) \"xhi\")
+            (string-match (rx word-start \"a\" word-end) \"cat a dog\"))")
+    "(0 nil 0 nil 4)")))
+
 ;;; Phase 5-E.0 primitives (MCP server I/O + file tool dispatchers) ---
 
 (ert-deftest nelisp-stdlib-phase5e-princ-terpri-routable ()
