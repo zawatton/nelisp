@@ -859,20 +859,18 @@ or signals otherwise.  Replaces the deleted Rust `bi_require'."
     "NeLisp stub: identity, but STRINGP is still checked."
     (nelisp--check-string s)))
 
-;; Buffer ops: `set-buffer-multibyte' is an encoding-flag no-op,
-;; unrelated to which buffer is current, and stays.  The rest of this
-;; block used to be no-op/nil "NeLisp standalone has no buffer Sexp"
-;; stubs for `buffer-string'/`current-buffer'/`with-temp-buffer'/
-;; `insert'/`insert-file-contents'/`point-min'/`point-max'/`goto-char'.
-;; Doc 188 P1 (2026-08-23) removed them: dead in this file's only real
-;; load context for the same reason as `bufferp' above, and the premise
-;; ("no buffer Sexp") that justified them is no longer true -- the real
-;; definitions now live in scripts/nelisp-stdlib-prelude.el's Doc 188 P1
-;; section.
-(unless (fboundp 'set-buffer-multibyte)
-  (defun set-buffer-multibyte (flag)
-    "Answer FLAG, as Emacs does; there is no buffer to change here."
-    flag))
+;; Buffer ops: the rest of this block used to be no-op/nil "NeLisp
+;; standalone has no buffer Sexp" stubs for `buffer-string'/`current-
+;; buffer'/`with-temp-buffer'/`insert'/`insert-file-contents'/`point-
+;; min'/`point-max'/`goto-char'.  Doc 188 P1 (2026-08-23) removed them:
+;; dead in this file's only real load context for the same reason as
+;; `bufferp' above, and the premise ("no buffer Sexp") that justified
+;; them is no longer true -- the real definitions now live in
+;; scripts/nelisp-stdlib-prelude.el's Doc 188 P1 section.
+;; `set-buffer-multibyte' USED to be listed here too, as a permanent
+;; encoding-flag no-op -- Doc D1 item 2/3 gave it a real body (see
+;; below, near `insert', where `nelisp--buffer-multibyte-table' and
+;; `nelisp--current-buffer' are already in scope).
 
 ;; Wave 13 self-host follow-up (2026-05-23): write-region stub.
 ;; NeLisp standalone has no buffer object, so the
@@ -1577,6 +1575,150 @@ process from `void-variable'ing on a host that has not bound it yet."))
       (nelisp-insert slice nelisp--current-buffer)
       (nelisp-goto-char pos nelisp--current-buffer)
       (list (expand-file-name filename) (length slice)))))
+
+;; Doc D1 item 2/3: same as the prelude's copy -- see that file for the
+;; full rationale.  `nelisp-buffer-before-gap'/`nelisp-buffer-after-
+;; gap'/`nelisp-buffer-modified'/`nelisp-buffer-markers'/`nelisp-
+;; marker-p'/`nelisp-marker-position'/`nelisp-buffer--ambient'/`nelisp-
+;; buffer--shift-overlays-on-insert'/`nelisp-buffer--shift-text-
+;; properties-on-insert' are prelude-only internal names (the ported
+;; Doc 13 buffer struct and its accessors), same category as `nelisp-
+;; insert' above; declared for the same reason.  `make-hash-table'/
+;; `gethash'/`puthash'/`char-to-string'/`unibyte-string'/`logand' are
+;; real Emacs/native names already available in either load context.
+(declare-function nelisp-buffer-before-gap "nelisp-stdlib-prelude")
+(declare-function nelisp-buffer-after-gap "nelisp-stdlib-prelude")
+(declare-function nelisp-buffer-modified "nelisp-stdlib-prelude")
+(declare-function nelisp-buffer-markers "nelisp-stdlib-prelude")
+(declare-function nelisp-marker-p "nelisp-stdlib-prelude")
+(declare-function nelisp-marker-position "nelisp-stdlib-prelude")
+(declare-function nelisp-buffer--ambient "nelisp-stdlib-prelude")
+(declare-function nelisp-buffer--shift-overlays-on-insert "nelisp-stdlib-prelude")
+(declare-function nelisp-buffer--shift-text-properties-on-insert "nelisp-stdlib-prelude")
+;; NOTE: `declare-function' takes a plain symbol, not a `(setf NAME)'
+;; spec (confirmed by direct test: it silently accepts the form but
+;; does not suppress the warning) -- so the three `cl-defstruct'-
+;; generated `setf' expanders this file's new code uses (`(setf
+;; (nelisp-buffer-before-gap ...) ...)', `(setf (nelisp-buffer-modified
+;; ...) ...)', `(setf (nelisp-marker-position ...) ...)') still warn
+;; "not known to be defined" below and are absorbed into this file's
+;; raised baseline count instead (see the commit message).
+;; Forward references to names this same file defines further down,
+;; inside `unless' guards the byte-compiler cannot see through -- same
+;; reason `nelisp--coding-region-alias'/`nelisp--coding-region-emit'
+;; needed this above, for the same-file case.
+(declare-function nelisp--buffer-multibyte-p "nelisp-stdlib-misc")
+(declare-function nelisp--char-arg-to-string "nelisp-stdlib-misc")
+(declare-function nelisp-buffer--shift-markers-on-insert-before-markers "nelisp-stdlib-misc")
+(declare-function nelisp-insert-before-markers "nelisp-stdlib-misc")
+
+;; A plain top-level `defvar' (not wrapped in `unless (boundp ...)'):
+;; `defvar' with a value already leaves an existing binding untouched,
+;; so the wrapper is redundant for the one thing it would do here, and
+;; leaving it off is what lets the byte-compiler recognize this as a
+;; special-variable declaration for the reference inside `nelisp--
+;; buffer-multibyte-p' below (wrapping it in `unless' hid it from that
+;; recognition and produced a "reference to free variable" warning).
+(defvar nelisp--buffer-multibyte-table (make-hash-table :test 'eq)
+  "Same as the prelude's copy: BUFFER -> multibyte flag (t/nil);
+absent means multibyte (t).")
+
+(unless (fboundp 'nelisp--buffer-multibyte-p)
+  (defun nelisp--buffer-multibyte-p (buffer)
+    "Same as the prelude's copy."
+    (gethash buffer nelisp--buffer-multibyte-table t)))
+
+(unless (fboundp 'nelisp--char-arg-to-string)
+  (defun nelisp--char-arg-to-string (char multibyte)
+    "Same as the prelude's copy: MULTIBYTE non-nil converts CHAR via
+`char-to-string'; MULTIBYTE nil truncates CHAR to its low 8 bits via
+`unibyte-string' (Emacs's own real unibyte-buffer behavior, not a
+range check -- see the prelude's copy for the Emacs-31.1 evidence)."
+    (if multibyte
+        (char-to-string char)
+      (unibyte-string (logand char 255)))))
+
+(unless (fboundp 'set-buffer-multibyte)
+  (defun set-buffer-multibyte (flag)
+    "Same as the prelude's copy: records FLAG for `insert'/`insert-
+char'/`insert-before-markers'/`decode-coding-region' to consult; there
+is no raw-8-bit pseudo-character scheme here to re-encode, so nothing
+else changes."
+    (puthash nelisp--current-buffer (and flag t) nelisp--buffer-multibyte-table)
+    flag))
+
+(unless (fboundp 'insert)
+  (defun insert (&rest args)
+    "Same as the prelude's copy: ARGS may mix strings and characters
+(integers); an integer converts per `nelisp--char-arg-to-string';
+anything else signals `wrong-type-argument char-or-string-p'."
+    (let ((multibyte (nelisp--buffer-multibyte-p nelisp--current-buffer)))
+      (dolist (a args)
+        (nelisp-insert
+         (cond
+          ((stringp a) a)
+          ((integerp a) (nelisp--char-arg-to-string a multibyte))
+          (t (signal 'wrong-type-argument (list 'char-or-string-p a))))
+         nelisp--current-buffer)))
+    nil))
+
+(unless (fboundp 'insert-char)
+  (defun insert-char (character &optional count _inherit)
+    "Same as the prelude's copy: insert COUNT (default 1) copies of
+CHARACTER, converted like an integer argument to `insert' above.
+INHERIT is accepted for signature compatibility only.
+
+(fn CHARACTER &optional COUNT INHERIT)"
+    (unless (integerp character)
+      (signal 'wrong-type-argument (list 'characterp character)))
+    (let ((n (or count 1)))
+      (when (> n 0)
+        (let* ((multibyte (nelisp--buffer-multibyte-p nelisp--current-buffer))
+               (piece (nelisp--char-arg-to-string character multibyte)))
+          (nelisp-insert (apply #'concat (make-list n piece))
+                         nelisp--current-buffer))))
+    nil))
+
+(unless (fboundp 'nelisp-buffer--shift-markers-on-insert-before-markers)
+  (defun nelisp-buffer--shift-markers-on-insert-before-markers (buf at inserted-len)
+    "Same as the prelude's copy: a marker exactly AT the insertion
+point always advances, regardless of its own `insertion-type'."
+    (dolist (m (nelisp-buffer-markers buf))
+      (when (nelisp-marker-p m)
+        (let ((pos (nelisp-marker-position m)))
+          (when (>= pos at)
+            (setf (nelisp-marker-position m) (+ pos inserted-len))))))))
+
+(unless (fboundp 'nelisp-insert-before-markers)
+  (defun nelisp-insert-before-markers (text &optional buf)
+    "Same as the prelude's copy: like `nelisp-insert', but every marker
+exactly at the insertion point advances past TEXT."
+    (unless (stringp text)
+      (signal 'wrong-type-argument (list 'stringp text)))
+    (let* ((b (nelisp-buffer--ambient buf))
+           (before (nelisp-buffer-before-gap b))
+           (at (1+ (length before)))
+           (n (length text)))
+      (setf (nelisp-buffer-before-gap b) (concat before text))
+      (setf (nelisp-buffer-modified b) t)
+      (nelisp-buffer--shift-markers-on-insert-before-markers b at n)
+      (nelisp-buffer--shift-overlays-on-insert b at n)
+      (nelisp-buffer--shift-text-properties-on-insert b at n))
+    nil))
+
+(unless (fboundp 'insert-before-markers)
+  (defun insert-before-markers (&rest args)
+    "Same as the prelude's copy: like `insert', but every marker at the
+insertion point ends up pointing after the inserted text."
+    (let ((multibyte (nelisp--buffer-multibyte-p nelisp--current-buffer)))
+      (dolist (a args)
+        (nelisp-insert-before-markers
+         (cond
+          ((stringp a) a)
+          ((integerp a) (nelisp--char-arg-to-string a multibyte))
+          (t (signal 'wrong-type-argument (list 'char-or-string-p a))))
+         nelisp--current-buffer)))
+    nil))
 
 (unless (boundp 'directory-files-no-dot-files-regexp)
   (defvar directory-files-no-dot-files-regexp "[^.]\\|\\.\\.\\."))

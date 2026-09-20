@@ -307,7 +307,14 @@
 # branch in both lisp/nelisp-stdlib-misc.el and scripts/nelisp-stdlib-
 # prelude.el (byte-identical), a coordinator-reported gap fixed
 # alongside the buffer/process fidelity work in this same branch.
-ns-collision 306
+# 306 -> 314, Doc D1 item 2: `insert'/`insert-char'/`insert-before-
+# markers' now accept integer character arguments, plus their
+# `nelisp-insert-before-markers'/`nelisp-buffer--shift-markers-on-
+# insert-before-markers' helpers and the `nelisp--buffer-multibyte-
+# table'/`nelisp--buffer-multibyte-p'/`nelisp--char-arg-to-string'
+# plumbing behind them -- 8 new names, all mirrored byte-identically
+# into both files, same pattern as every prior entry in this run.
+ns-collision 314
 # 97 -> 96 on 2026-08-19: `string-equal' no longer differs between the two
 # files -- the prelude's now signals for a non-string instead of falling
 # through to `equal', and the lisp copy was brought with it.  Ratcheted down
@@ -1470,3 +1477,13 @@ pinned-collision ns-collision	nelisp--coding-region-systems	lisp/nelisp-stdlib-m
 pinned-collision ns-collision	insert-file-contents-literally	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 # type-of's hash-table/record fallback branch: byte-identical in both files.
 pinned-collision ns-collision	type-of	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+# Doc D1 item 2: both files' copies of each name below are byte-identical
+# (mirrored the same way as the segment C1 block above).
+pinned-collision ns-collision	insert	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	insert-char	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	insert-before-markers	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp-insert-before-markers	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp-buffer--shift-markers-on-insert-before-markers	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp--buffer-multibyte-table	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp--buffer-multibyte-p	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp--char-arg-to-string	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el

@@ -7704,9 +7704,70 @@ exact, Emacs-31.1-verified DESTINATION contract."
 ;; `point-max' moved: `unless (fboundp ...)' has to guard the ONE
 ;; definition that actually runs, not an earlier stub that already
 ;; claimed the name.
+;; Doc D1 item 2/3: a real per-buffer multibyte flag, consulted by
+;; `insert'/`insert-char'/`insert-before-markers' below (item 2) and by
+;; `decode-coding-region' above (item 3).  This buffer struct (see the
+;; Doc 13 port above) has no `multibyte' slot of its own -- adding one
+;; would be a struct-shape change to a file this segment does not own
+;; the struct definition for elsewhere (`src/nelisp-buffer.el' has an
+;; independent copy) -- so the flag lives in a side table keyed `eq' on
+;; the buffer object instead.  A buffer absent from the table defaults
+;; to multibyte (Emacs's own default for a freshly created buffer).
+;; This does NOT reproduce Emacs's "raw 8-bit" pseudo-character scheme
+;; (codes >= `#x3FFF00' for a byte >= `#x80' living in an otherwise-
+;; multibyte buffer/string, verified against Emacs 31.1) -- doing that
+;; would require the buffer's own text representation to distinguish a
+;; decoded character from a passed-through byte, which is a change to
+;; how text is stored, not a flag next to it; see item 3's own
+;; commentary at `decode-coding-region' for the evidence this was
+;; measured, not assumed, to be out of reach at this layer.
+(unless (boundp 'nelisp--buffer-multibyte-table)
+  (defvar nelisp--buffer-multibyte-table (make-hash-table :test 'eq)
+    "BUFFER -> multibyte flag (t/nil).  Absent means multibyte (t)."))
+
+(unless (fboundp 'nelisp--buffer-multibyte-p)
+  (defun nelisp--buffer-multibyte-p (buffer)
+    "Return BUFFER's declared multibyte flag; t when never set (Emacs's
+own default for a buffer `set-buffer-multibyte' was never called on)."
+    (gethash buffer nelisp--buffer-multibyte-table t)))
+
+(unless (fboundp 'nelisp--char-arg-to-string)
+  (defun nelisp--char-arg-to-string (char multibyte)
+    "Convert CHAR (an Emacs character code) to the string `insert'/
+`insert-char'/`insert-before-markers' actually splice into a buffer.
+
+MULTIBYTE non-nil: CHAR becomes one multibyte character via
+`char-to-string' -- verified against Emacs 31.1, `(insert 195)' ->
+\"Ã\".
+
+MULTIBYTE nil (`(set-buffer-multibyte nil)'): CHAR is truncated to its
+low 8 bits and stored as one raw byte via `unibyte-string'.  This is
+Emacs's OWN real behavior for an out-of-range character inserted into
+a unibyte buffer, not a range check this runtime invented: verified
+against Emacs 31.1, `(with-temp-buffer (set-buffer-multibyte nil)
+(insert 12354) (buffer-string))' holds byte 66 (12354 logand 255), and
+`(insert 256)' holds byte 0 (256 logand 255) -- plain 8-bit truncation,
+never an error, for any integer argument."
+    (if multibyte
+        (char-to-string char)
+      (unibyte-string (logand char 255)))))
+
 (unless (fboundp 'set-buffer-multibyte)
   (defun set-buffer-multibyte (flag)
-    "Answer FLAG, as Emacs does; there is no buffer to change here."
+    "Declare the current buffer unibyte (FLAG nil) or multibyte (any
+other value) -- Emacs's own default for a fresh buffer is multibyte.
+
+Real Emacs additionally RE-ENCODES the buffer's existing text when the
+flag actually changes (each raw-8-bit pseudo-character becomes its one
+raw byte going multibyte->unibyte, and vice versa) and adjusts every
+marker/overlay position for the resulting byte-vs-character length
+change.  This runtime has no raw-8-bit pseudo-character scheme at all
+(see the table comment above), so its buffer content is already a
+plain sequence of integers whichever way this flag points, and no
+positions ever need adjusting; the only thing this function actually
+does is record the flag for `insert'/`insert-char'/`insert-before-
+markers'/`decode-coding-region' to consult."
+    (puthash nelisp--current-buffer (and flag t) nelisp--buffer-multibyte-table)
     flag))
 ;; Doc 200 string representation primitives are native standalone builtins.
 ;; Do not install Elisp fallbacks for them here: a fallback binding shadows
@@ -8543,9 +8604,104 @@ Moves and returns nil, the counterpart of `line-end-position'."
   ;; value-returning read path used by the short builtin.
   (fset 'nelisp--syscall-read-file (symbol-function 'rdf)))
 (unless (fboundp 'insert)
-  (defun insert (&rest strings)
-    (dolist (s strings)
-      (nelisp-insert s nelisp--current-buffer))
+  (defun insert (&rest args)
+    "Insert ARGS, each a string or a character (integer), at point.
+
+Doc D1 item 2: Emacs's real `insert' accepts any mix of characters and
+strings -- verified against Emacs 31.1, `(insert \"a\" 98 \"c\")' ->
+\"abc\".  An integer argument is converted per
+`nelisp--char-arg-to-string' (multibyte character or truncated raw
+byte, depending on the current buffer's declared multibyte flag).  Any
+other type signals `wrong-type-argument char-or-string-p', matching
+Emacs exactly (verified: a float, a negative integer, a symbol, and
+nil all signal this in real Emacs, not `wrong-type-argument stringp'
+as this runtime's own `nelisp-insert' primitive would signal
+unconverted)."
+    (let ((multibyte (nelisp--buffer-multibyte-p nelisp--current-buffer)))
+      (dolist (a args)
+        (nelisp-insert
+         (cond
+          ((stringp a) a)
+          ((integerp a) (nelisp--char-arg-to-string a multibyte))
+          (t (signal 'wrong-type-argument (list 'char-or-string-p a))))
+         nelisp--current-buffer)))
+    nil))
+(unless (fboundp 'insert-char)
+  (defun insert-char (character &optional count _inherit)
+    "Insert COUNT (default 1) copies of CHARACTER at point.
+
+CHARACTER is converted exactly like an integer argument to `insert'
+above (Doc D1 item 2).  A non-integer CHARACTER signals
+`wrong-type-argument characterp', matching Emacs 31.1 (verified: a
+float or a string both signal this, not `characterp' via a different
+mechanism and not silently coerced).  COUNT <= 0 inserts nothing,
+matching Emacs (verified: `(insert-char ?a 0)' and a negative COUNT
+both leave the buffer empty, no error).  INHERIT (text-property
+inheritance for adjacent sticky properties) is accepted for signature
+compatibility only and otherwise ignored: this runtime has no
+sticky/rear-sticky text-property machinery to inherit into.
+
+(fn CHARACTER &optional COUNT INHERIT)"
+    (unless (integerp character)
+      (signal 'wrong-type-argument (list 'characterp character)))
+    (let ((n (or count 1)))
+      (when (> n 0)
+        (let* ((multibyte (nelisp--buffer-multibyte-p nelisp--current-buffer))
+               (piece (nelisp--char-arg-to-string character multibyte)))
+          (nelisp-insert (apply #'concat (make-list n piece))
+                         nelisp--current-buffer))))
+    nil))
+;; Doc D1 item 2: `insert-before-markers' was `void-function' entirely
+;; (not merely missing integer-argument support).  Its ONLY documented
+;; difference from plain `insert' is which markers advance past the
+;; inserted text: `insert' advances a marker sitting exactly at the
+;; insertion point only when that marker's OWN `insertion-type' is
+;; non-nil (`nelisp-buffer--shift-markers-on-insert' above already
+;; implements exactly this); `insert-before-markers' advances EVERY
+;; marker at that point, regardless of its `insertion-type' -- verified
+;; against Emacs 31.1's own documented contract.  This small variant
+;; reuses `nelisp-insert''s body with that one different shift rule
+;; rather than duplicating buffer-mutation logic wholesale.
+(unless (fboundp 'nelisp-buffer--shift-markers-on-insert-before-markers)
+  (defun nelisp-buffer--shift-markers-on-insert-before-markers (buf at inserted-len)
+    "Like `nelisp-buffer--shift-markers-on-insert', but a marker exactly
+AT the insertion point always advances, regardless of its own
+`insertion-type' -- `insert-before-markers''s contract."
+    (dolist (m (nelisp-buffer-markers buf))
+      (when (nelisp-marker-p m)
+        (let ((pos (nelisp-marker-position m)))
+          (when (>= pos at)
+            (setf (nelisp-marker-position m) (+ pos inserted-len))))))))
+(unless (fboundp 'nelisp-insert-before-markers)
+  (defun nelisp-insert-before-markers (text &optional buf)
+    "Like `nelisp-insert', but every marker exactly at the insertion
+point advances past TEXT instead of consulting its own
+`insertion-type' (see the block comment above)."
+    (unless (stringp text)
+      (signal 'wrong-type-argument (list 'stringp text)))
+    (let* ((b (nelisp-buffer--ambient buf))
+           (before (nelisp-buffer-before-gap b))
+           (at (1+ (length before)))
+           (n (length text)))
+      (setf (nelisp-buffer-before-gap b) (concat before text))
+      (setf (nelisp-buffer-modified b) t)
+      (nelisp-buffer--shift-markers-on-insert-before-markers b at n)
+      (nelisp-buffer--shift-overlays-on-insert b at n)
+      (nelisp-buffer--shift-text-properties-on-insert b at n))
+    nil))
+(unless (fboundp 'insert-before-markers)
+  (defun insert-before-markers (&rest args)
+    "Like `insert' (Doc D1 item 2, same character/string/error handling),
+but every marker at the insertion point ends up pointing AFTER the
+inserted text -- see `nelisp-insert-before-markers'."
+    (let ((multibyte (nelisp--buffer-multibyte-p nelisp--current-buffer)))
+      (dolist (a args)
+        (nelisp-insert-before-markers
+         (cond
+          ((stringp a) a)
+          ((integerp a) (nelisp--char-arg-to-string a multibyte))
+          (t (signal 'wrong-type-argument (list 'char-or-string-p a))))
+         nelisp--current-buffer)))
     nil))
 (unless (fboundp 'buffer-string)
   (defun buffer-string ()

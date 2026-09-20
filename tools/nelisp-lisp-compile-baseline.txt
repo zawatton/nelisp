@@ -57,7 +57,7 @@ lisp/nelisp-stdlib-fast-hash.el 4
 lisp/nelisp-stdlib-format.el 2
 lisp/nelisp-stdlib-hash.el 7
 lisp/nelisp-stdlib-math.el 1
-lisp/nelisp-stdlib-misc.el 24
+lisp/nelisp-stdlib-misc.el 26
 lisp/nelisp-stdlib-plist-str.el 10
 lisp/nelisp-stdlib-prn.el 7
 lisp/nelisp-stdlib-regex.el 2
