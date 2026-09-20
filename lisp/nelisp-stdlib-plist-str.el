@@ -961,6 +961,11 @@ loop for the exponent (= no `expt' / `float' primitive needed)."
          (t 0))))))
 
 ;; Rust-min (2026-05-06 batch 4): copy-tree + sort.
+;;
+;; This definition is the canonical one: `scripts/nelisp-stdlib-prelude.el'
+;; carries the same text (guarded by `unless (fboundp 'copy-tree)') rather
+;; than a separate implementation -- a bridge stub there once ignored VECP
+;; (fix/copy-tree-vecp), so keep the two in sync if this changes again.
 
 (defun copy-tree (tree &optional vecp)
   "Return a deep copy of TREE.  Conses are recursively copied; non-

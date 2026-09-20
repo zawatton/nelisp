@@ -1172,6 +1172,52 @@ same fixture dates used for the `format-time-string' UTC check."
                (cl-letf (((symbol-value c) 99)) nelisp-stdlib-segf-zz)))")
     "99")))
 
+;; Segment F item 3: `copy-tree''s bridge stub in
+;; scripts/nelisp-stdlib-prelude.el took `_vecp' (underscore-prefixed:
+;; deliberately ignored), so a vector reached through TREE was always
+;; shared with the original even when VECP was non-nil. Reproducer and
+;; extra edge cases (vector-in-vector, cons-in-vector, no-vecp sharing)
+;; all verified against Emacs 31.1 before writing the fix.
+(ert-deftest nelisp-stdlib-segf-copy-tree-vecp-deep-copies-vector ()
+  "VECP non-nil deep-copies a vector reached through the tree."
+  (should
+   (equal
+    (nelisp-stdlib-segf--standalone-eval
+     "(let* ((v (vector 1 2 3)) (c (copy-tree (list :a v) t)))
+        (aset (plist-get c :a) 0 99)
+        v)")
+    "[1 2 3]")))
+
+(ert-deftest nelisp-stdlib-segf-copy-tree-no-vecp-still-shares ()
+  "Without VECP, a vector inside the tree is shared, not copied."
+  (should
+   (equal
+    (nelisp-stdlib-segf--standalone-eval
+     "(let* ((v (vector 1 2 3)) (c (copy-tree (list :a v))))
+        (eq (plist-get c :a) v))")
+    "t")))
+
+(ert-deftest nelisp-stdlib-segf-copy-tree-vecp-nested-vector-in-vector ()
+  "VECP recurses into a vector nested inside another vector."
+  (should
+   (equal
+    (nelisp-stdlib-segf--standalone-eval
+     "(let* ((inner (vector 1 2)) (outer (vector inner 9))
+             (c (copy-tree outer t)))
+        (aset (aref c 0) 0 77)
+        inner)")
+    "[1 2]")))
+
+(ert-deftest nelisp-stdlib-segf-copy-tree-vecp-cons-in-vector ()
+  "VECP still deep-copies a cons found inside a vector."
+  (should
+   (equal
+    (nelisp-stdlib-segf--standalone-eval
+     "(let* ((cn (cons 1 2)) (v (vector cn 9)) (c (copy-tree v t)))
+        (setcar (aref c 0) 55)
+        cn)")
+    "(1 . 2)")))
+
 ;;; Phase 5-E.0 primitives (MCP server I/O + file tool dispatchers) ---
 
 (ert-deftest nelisp-stdlib-phase5e-princ-terpri-routable ()

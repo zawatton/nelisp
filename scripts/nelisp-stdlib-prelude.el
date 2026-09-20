@@ -3177,11 +3177,34 @@ path, which asks for a NUMBER first and only then for an integer."
         (setq list (cdr list))
         (setq i (1+ i)))
       (nreverse acc)))))
+;; fix/copy-tree-vecp: this bridge stub's `_vecp' (underscore-prefixed:
+;; deliberately ignored) meant a vector reached through TREE was always
+;; shared with the original rather than copied, so `(let* ((v (vector 1
+;; 2 3)) (c (copy-tree (list :a v) t))) (aset (plist-get c :a) 0 99) v)'
+;; mutated the CALLER's `v' to `[99 2 3]' even though VECP was non-nil.
+;; A correct, unconditional implementation already existed unused (never
+;; assembled into this file) at `lisp/nelisp-stdlib-plist-str.el'; this
+;; is that same text, reconciled here rather than duplicated a third
+;; way, still guarded to match this section's convention.
 (unless (fboundp 'copy-tree)
-  (defun copy-tree (tree &optional _vecp)
-    (if (consp tree)
-        (cons (copy-tree (car tree)) (copy-tree (cdr tree)))
-      tree)))
+  (defun copy-tree (tree &optional vecp)
+    "Return a deep copy of TREE.  Conses are recursively copied; non-
+cons leaves are returned unchanged.  When VECP is non-nil, vectors
+inside TREE are also copied recursively (matches the host Emacs
+contract)."
+    (cond
+     ((consp tree)
+      (cons (copy-tree (car tree) vecp)
+            (copy-tree (cdr tree) vecp)))
+     ((and vecp (vectorp tree))
+      (let* ((n (length tree))
+             (out (make-vector n nil))
+             (i 0))
+        (while (< i n)
+          (aset out i (copy-tree (aref tree i) vecp))
+          (setq i (1+ i)))
+        out))
+     (t tree))))
 
 ;; A negative N is not an error in Emacs -- `nthcdr' treats it as zero, so
 ;; `(nth -1 '(1 2 3))' is 1.  This answered nil, quietly, for any negative
