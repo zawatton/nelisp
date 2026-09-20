@@ -1322,6 +1322,12 @@ An empty line paired with a non-nil DEFAULT-VALUE answers DEFAULT-VALUE
           (if (consp default-value) (car default-value) default-value)
         line))))
 
+;; The two stdin helpers above are defined inside `unless' guards, which the
+;; byte-compiler cannot see through; declare them so the callers below do
+;; not add "not known to be defined" diagnostics to this file's ceiling
+;; (tools/nelisp-lisp-compile-baseline.txt records 24; 5d4b6caef made 26).
+(declare-function nelisp--stdin-read-line "nelisp-stdlib-misc")
+(declare-function nelisp--stdin-read-line-with-default "nelisp-stdlib-misc")
 (unless (fboundp 'read-string)
   (defun read-string (prompt &optional _initial-input _history default-value
                               _inherit-input-method)
