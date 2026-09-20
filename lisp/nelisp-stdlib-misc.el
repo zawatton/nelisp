@@ -2238,3 +2238,16 @@ plain variable (it goes through `setq')."
       (if (cdr forms)
           (cons 'progn (nreverse forms))
         (car forms)))))
+
+;; This compiles nothing: the one caller in the corpus only needs a
+;; `functionp' result back (it byte-compiles a callback purely to make
+;; a later `funcall' faster, and never inspects what came back), so
+;; answering the input unchanged -- resolved to its function cell when
+;; it is a symbol, matching what `byte-compile' itself returns for a
+;; symbol argument -- is enough. `void-function' otherwise reached
+;; ordinary code that never even asked for optimisation.
+(unless (fboundp 'byte-compile)
+  (defun byte-compile (function)
+    "Compile nothing; return FUNCTION (or its function cell, if FUNCTION
+is a symbol), unchanged."
+    (if (symbolp function) (indirect-function function) function)))
