@@ -220,5 +220,50 @@ via the backtracking slow path (Doc T48d)."
     (should (= (point) 9))
     (should (= (nlre-match-beginning 0) 3))))
 
+(ert-deftest nelisp-regexp-single-atom-fast-plan-matches-host ()
+  "A bare, quantifier-free, group-free single atom takes the `:atom' fast
+plan and still agrees with host `string-match' on start and end."
+  (dolist (case '(("[0-9]" "abc1" nil) ("[0-9]" "abc" nil) ("[^0-9]" "1a" nil)
+                  ("." "x" nil) ("." "" nil) ("[a-z]" "9z" nil)
+                  ("\\w" "  a1" nil) ("\\W" "ab!c" nil)
+                  ("\\s-" "x y" nil) ("\\S-" "  x" nil)
+                  ("[0-9]" "ABC1" t) ("[a-z]" "XYZ" t)))
+    (let* ((regexp (nth 0 case)) (string (nth 1 case))
+           (case-fold-search (nth 2 case))
+           (reference (string-match regexp string))
+           (reference-end (and reference (match-end 0)))
+           (compiled (nlre--compiled-pattern regexp))
+           (plan (aref compiled 2))
+           (actual (nlre-string-match regexp string)))
+      (should (and plan (eq (aref plan 0) :atom)))
+      (should (equal actual reference))
+      (should (equal (and actual (nlre-match-end 0)) reference-end)))))
+
+(ert-deftest nelisp-regexp-single-atom-fast-plan-does-not-overreach ()
+  "Groups, quantifiers, anchors and multi-atom patterns must NOT take the
+single-atom fast plan -- it only ever applies to exactly one fixed-width,
+capture-free, quantifier-free atom."
+  (dolist (regexp '("\\(a\\)" "a*" "a+" "a?" "^" "$" "ab" "a\\|b" "[0-9]+"))
+    (let ((plan (aref (nlre--compiled-pattern regexp) 2)))
+      (should (not (and plan (eq (aref plan 0) :atom)))))))
+
+(ert-deftest nelisp-regexp-single-char-literal-fold-matches-host ()
+  "A one-character literal needle under `case-fold-search' must find the
+same leftmost position as host Emacs, whether it needs no case flip (same
+char), only the flipped case, or no match exists at all."
+  (dolist (case '(("b" "abc" t) ("B" "abc" t) ("b" "ABC" t) ("Z" "xyz" t)
+                  ("q" "xyz" t) ("b" "abc" nil) ("B" "abc" nil)
+                  ("5" "abc123" t) ("5" "abc123" nil)))
+    (let* ((regexp (nth 0 case)) (string (nth 1 case))
+           (case-fold-search (nth 2 case))
+           (reference (string-match regexp string))
+           (reference-end (and reference (match-end 0)))
+           (compiled (nlre--compiled-pattern regexp))
+           (plan (aref compiled 2))
+           (actual (nlre-string-match regexp string)))
+      (should (and plan (eq (aref plan 0) :literal)))
+      (should (equal actual reference))
+      (should (equal (and actual (nlre-match-end 0)) reference-end)))))
+
 (provide 'nelisp-regexp-diff-test)
 ;;; nelisp-regexp-diff-test.el ends here

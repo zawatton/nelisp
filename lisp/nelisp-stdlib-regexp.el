@@ -525,13 +525,34 @@ Return (REVERSED-EXPANSION-NODES . newpos)."
               (and (not nlre--plan-failed)
                    (vector :suffix ends fold empty)))))))))
 
+;; A single fixed-width atom with no group/anchor/quantifier (one bare
+;; `.', `[...]', `\w'/`\W', `\s-'/`\S-', or literal char) matches the same
+;; way `nlre--match-atom1' already does for one candidate position, so
+;; scanning positions directly is cheap and needs no new matching logic;
+;; the tags listed here are exactly the ones `nlre--match-atom1' returns
+;; `(1+ pos)' for on a hit -- always exactly one character wide -- so the
+;; caller can compute the match end as START+1 without re-deriving it.
+;; `:group' is deliberately excluded: it is how this parser tracks capture
+;; groups, so keeping it out of this whitelist keeps `ng' at 1 whenever the
+;; fast plan applies (no capture bookkeeping needed).
+(defun nlre--single-atom-node (ast)
+  "If AST is exactly one fixed-width, capture-free, quantifier-free atom,
+return that atom node; else nil."
+  (and (eq (car ast) :seq)
+       (let ((nodes (nth 1 ast)))
+         (and nodes (null (cdr nodes))
+              (memq (car (car nodes)) '(:lit :any :set :word :space :syntax))
+              (car nodes)))))
+
 (defun nlre--compile-pattern (pat fold)
   (let* ((ast (nlre--parse pat)) (ng (1+ nlre--gcount))
-         (literal (nlre--literal-text ast)))
+         (literal (nlre--literal-text ast))
+         (atom (and (not literal) (nlre--single-atom-node ast))))
     (vector ast ng
-            (if literal
-              (vector :literal (nlre--fold-text literal fold) fold)
-              (nlre--suffix-plan ast ng fold)))))
+            (cond
+             (literal (vector :literal (nlre--fold-text literal fold) fold))
+             (atom (vector :atom atom))
+             (t (nlre--suffix-plan ast ng fold))))))
 
 ;; ---- matcher (no closures; rest threaded explicitly) ----
 
@@ -603,7 +624,21 @@ Return (REVERSED-EXPANSION-NODES . newpos)."
   (let ((needle (aref plan 1)) (fold (aref plan 2)))
     (if (not fold) (nlre--literal-search needle string start)
       (let ((m (length needle)))
-        (if (= m 0) start
+        (cond
+         ((= m 0) start)
+         ;; A one-character needle needs no post-hoc substring/fold-text
+         ;; verification: fold(string[P]) = fold(c) iff string[P] is C or
+         ;; its flipped case, so the leftmost of two single-char native
+         ;; searches from START IS the leftmost match, full stop.  This
+         ;; also skips the multi-char loop's own upfront exact-needle
+         ;; search, which for M=1 is redundant with the C search below.
+         ((= m 1)
+          (let* ((c (aref needle 0)) (other (nlre--flip-case c)))
+            (if (eq c other) (nlre--literal-search needle string start)
+              (let ((p (nlre--literal-search (char-to-string c) string start))
+                    (q (nlre--literal-search (char-to-string other) string start)))
+                (cond ((null p) q) ((null q) p) ((< p q) p) (t q))))))
+         (t
           (let* ((c (aref needle 0)) (other (nlre--flip-case c))
                  (pos start) (exact (nlre--literal-search needle string start))
                  hit)
@@ -623,7 +658,7 @@ Return (REVERSED-EXPANSION-NODES . newpos)."
                             (string= (nlre--fold-text piece t) needle))
                         (setq hit at)
                       (setq pos (1+ at)))))))
-            hit))))))
+            hit)))))))
 
 (defun nlre--suffix-plan-match (plan string start n)
   (let ((fold (aref plan 2)) (empty (aref plan 3)) xs short hit)
@@ -652,6 +687,16 @@ Return (REVERSED-EXPANSION-NODES . newpos)."
       (let* ((variant (cdr (car empty))) (bos (aref variant 2)))
         (when (or (null bos) (= (+ n bos) 0))
           (setq hit (cons n variant)))))
+    hit))
+
+;; PLAN is [:atom NODE] (see `nlre--single-atom-node').  `nlre--fold' is
+;; already dynamically bound by `nlre-string-match' for the whole call, so
+;; `nlre--match-atom1' (via `nlre--fold-char'/`nlre--set-match') sees the
+;; right case-fold state without this function re-binding anything.
+(defun nlre--atom-plan-match (plan string start n)
+  (let ((node (aref plan 1)) (i start) hit)
+    (while (and (not hit) (< i n))
+      (if (nlre--match-atom1 node string i n) (setq hit i) (setq i (1+ i))))
     hit))
 
 (defun nlre--plan-set-caps (caps variant start end)
@@ -829,6 +874,10 @@ Sets `nlre--match-data' (and host match-data when available via set-match-data).
         (when result
           (setq hit (car result))
           (nlre--plan-set-caps caps (cdr result) hit n))))
+     ((and plan (eq (aref plan 0) :atom))
+      (setq nlre--fast-plan-hits (1+ nlre--fast-plan-hits)
+            hit (nlre--atom-plan-match plan string i n))
+      (when hit (aset caps 0 (cons hit (1+ hit)))))
      (t
       (let* ((top (nlre--seq-nodes (aref compiled 0)))
              (lead (nlre--leading-lit-char top))
