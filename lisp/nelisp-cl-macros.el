@@ -2118,72 +2118,85 @@ default test `eql')."
 ;; `nelisp--record-type'/`cl-typep' undefined-at-this-scope warnings
 ;; rather than add a fourth to the baseline.
 (declare-function nelisp-seq--to-list "nelisp-stdlib-prelude")
-(defun cl-count (item seq &rest kw)
-  "Count elements of SEQ matching ITEM under `:test'/`:test-not'
-\(default `eql') and `:key' (applied to each element before the test)."
-  (let ((pred (nelisp--cl-seq-test kw)) (key (plist-get kw :key)) (n 0))
-    (dolist (x (nelisp-seq--to-list seq) n)
-      (when (funcall pred item (if key (funcall key x) x))
-        (setq n (1+ n))))))
+;; Guarded, unlike this file's other definitions: real cl-lib defines these
+;; six and the host's own test suite runs against ITS semantics, not this
+;; subset's.  Defining them unconditionally replaced cl-lib's versions for
+;; every test file loaded after this one and turned 664 of 6,175 host tests
+;; red on 2026-09-21 (CI run 35523798765; bisected to the commit that added
+;; them).  On the standalone, where cl-lib is absent, the guard is false and
+;; these still define.
+(unless (fboundp 'cl-count)
+  (defun cl-count (item seq &rest kw)
+    "Count elements of SEQ matching ITEM under `:test'/`:test-not'
+  \(default `eql') and `:key' (applied to each element before the test)."
+    (let ((pred (nelisp--cl-seq-test kw)) (key (plist-get kw :key)) (n 0))
+      (dolist (x (nelisp-seq--to-list seq) n)
+        (when (funcall pred item (if key (funcall key x) x))
+          (setq n (1+ n)))))))
 
-(defun cl-remove (item seq &rest kw)
-  "Elements of SEQ NOT matching ITEM under `:test'/`:test-not'/`:key'
-\(see `cl-count'). Always returns a list, matching the version this
-replaces."
-  (let ((pred (nelisp--cl-seq-test kw)) (key (plist-get kw :key)))
-    (cl-remove-if (lambda (x) (funcall pred item (if key (funcall key x) x)))
-                  (nelisp-seq--to-list seq))))
+(unless (fboundp 'cl-remove)
+  (defun cl-remove (item seq &rest kw)
+    "Elements of SEQ NOT matching ITEM under `:test'/`:test-not'/`:key'
+  \(see `cl-count'). Always returns a list, matching the version this
+  replaces."
+    (let ((pred (nelisp--cl-seq-test kw)) (key (plist-get kw :key)))
+      (cl-remove-if (lambda (x) (funcall pred item (if key (funcall key x) x)))
+                    (nelisp-seq--to-list seq)))))
 
-(defun cl-delete (item seq &rest kw)
-  "Same as `cl-remove' (this runtime has no destructive fast path)."
-  (apply #'cl-remove item seq kw))
+(unless (fboundp 'cl-delete)
+  (defun cl-delete (item seq &rest kw)
+    "Same as `cl-remove' (this runtime has no destructive fast path)."
+    (apply #'cl-remove item seq kw)))
 
-(defun cl-assoc (key alist &rest kw)
-  "Like `assoc', but the default test is `eql' and `:test'/`:test-not'/
-`:key' are honoured (`:key' is applied to each entry's car before the
-test)."
-  (let ((pred (nelisp--cl-seq-test kw)) (keyfn (plist-get kw :key))
-        (cur alist) (found nil))
-    (while (and cur (not found))
-      (let ((e (car cur)))
-        (when (and (consp e)
-                   (funcall pred key
-                            (if keyfn (funcall keyfn (car e)) (car e))))
-          (setq found e)))
-      (setq cur (cdr cur)))
-    found))
+(unless (fboundp 'cl-assoc)
+  (defun cl-assoc (key alist &rest kw)
+    "Like `assoc', but the default test is `eql' and `:test'/`:test-not'/
+  `:key' are honoured (`:key' is applied to each entry's car before the
+  test)."
+    (let ((pred (nelisp--cl-seq-test kw)) (keyfn (plist-get kw :key))
+          (cur alist) (found nil))
+      (while (and cur (not found))
+        (let ((e (car cur)))
+          (when (and (consp e)
+                     (funcall pred key
+                              (if keyfn (funcall keyfn (car e)) (car e))))
+            (setq found e)))
+        (setq cur (cdr cur)))
+      found)))
 
-(defun cl-sort (seq pred &rest kw)
-  "Sort SEQ (returned as a list) by PRED, comparing `:key' of each
-element rather than the elements themselves when `:key' is given."
-  (let ((key (plist-get kw :key)))
-    (sort (nelisp-seq--to-list seq)
-          (if key
-              (lambda (a b) (funcall pred (funcall key a) (funcall key b)))
-            pred))))
+(unless (fboundp 'cl-sort)
+  (defun cl-sort (seq pred &rest kw)
+    "Sort SEQ (returned as a list) by PRED, comparing `:key' of each
+  element rather than the elements themselves when `:key' is given."
+    (let ((key (plist-get kw :key)))
+      (sort (nelisp-seq--to-list seq)
+            (if key
+                (lambda (a b) (funcall pred (funcall key a) (funcall key b)))
+              pred)))))
 
-(defun cl-remove-duplicates (seq &rest kw)
-  "Remove duplicate elements of SEQ under `:test'/`:test-not'/`:key'
-\(see `cl-count'). Keeps the LAST occurrence of each duplicate group
-unless `:from-end' is non-nil, in which case it keeps the FIRST --
-matching Emacs cl-seq.el."
-  (let* ((pred (nelisp--cl-seq-test kw))
-         (key (plist-get kw :key))
-         (from-end (plist-get kw :from-end))
-         (lst (nelisp-seq--to-list seq))
-         (scan (if from-end lst (reverse lst)))
-         (seen nil) (acc nil))
-    (dolist (x scan)
-      (let* ((kx (if key (funcall key x) x))
-             (dup (catch 'nelisp--cl-rmdup-found
-                    (dolist (s seen)
-                      (when (funcall pred kx s)
-                        (throw 'nelisp--cl-rmdup-found t)))
-                    nil)))
-        (unless dup
-          (push kx seen)
-          (push x acc))))
-    (if from-end (nreverse acc) acc)))
+(unless (fboundp 'cl-remove-duplicates)
+  (defun cl-remove-duplicates (seq &rest kw)
+    "Remove duplicate elements of SEQ under `:test'/`:test-not'/`:key'
+  \(see `cl-count'). Keeps the LAST occurrence of each duplicate group
+  unless `:from-end' is non-nil, in which case it keeps the FIRST --
+  matching Emacs cl-seq.el."
+    (let* ((pred (nelisp--cl-seq-test kw))
+           (key (plist-get kw :key))
+           (from-end (plist-get kw :from-end))
+           (lst (nelisp-seq--to-list seq))
+           (scan (if from-end lst (reverse lst)))
+           (seen nil) (acc nil))
+      (dolist (x scan)
+        (let* ((kx (if key (funcall key x) x))
+               (dup (catch 'nelisp--cl-rmdup-found
+                      (dolist (s seen)
+                        (when (funcall pred kx s)
+                          (throw 'nelisp--cl-rmdup-found t)))
+                      nil)))
+          (unless dup
+            (push kx seen)
+            (push x acc))))
+      (if from-end (nreverse acc) acc))))
 
 (defvar nelisp-cl-macros--gensym-counter 0
   "Monotone counter used by `cl-gensym' for unique symbol names.")
