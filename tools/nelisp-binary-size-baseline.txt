@@ -650,5 +650,19 @@
 # existing units.  The 115 KB for define-derived-mode is more than its 265
 # prelude lines suggest and is the first thing to look at if the size is
 # ever chased; it is recorded, not hidden.  Ceiling is now 8,787,161 (2%).
-size 8614864
+#
+# 2026-09-20: re-pinned from CI's own build of main 90fd2ee0f -- run 35497823190,
+# ubuntu 30.2 lane, `./target/nelisp is 8778928 bytes'.  The growth since the
+# segment-3 pin (8,614,864, run 35476807566) is two merges, each measured on
+# CI's own build:
+#   5d4b6caef read-string/read-from-minibuffer from stdin, json.el vars   8,643,592   +28,728
+#   90fd2ee0f segment 4: lock-file, markerp, file-attribute-file-identifier,
+#             file-remote-p, special-mode, buffer-size, replace-match,
+#             pop-to-buffer, setf places, batch variables (14 names + 5 vars) 8,778,928  +135,336
+# Both are consumer-needed definitions in the prelude, no regression in the
+# existing units.  Pinned before segment B (match-string, cl-* keywords,
+# backquote vectors, json null) lands, because 8 KB of the old ceiling was
+# left and its growth would otherwise arrive as a red that says nothing.
+# Ceiling is now 8,954,506 (2%).
+size 8778928
 slack-pct 2
