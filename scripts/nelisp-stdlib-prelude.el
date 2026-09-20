@@ -10083,11 +10083,18 @@ write instead of ever touching a real buffer."
     ;; point had been left at `point-max' (end of the freshly-inserted
     ;; text, as an `insert'-like implementation would leave it), the
     ;; buffer segment passed to the parser would be empty.
+    ;; item 5: Emacs's own first return value is the ABSOLUTE file name,
+    ;; not whatever (relative or absolute) name the caller passed --
+    ;; verified against Emacs 31.1: run from /tmp, `(with-temp-buffer
+    ;; (insert-file-contents "f"))' on a file that exists there answers
+    ;; `("/tmp/f" 1)', never `("f" 1)'.  `expand-file-name' with no
+    ;; DEFAULT-DIRECTORY argument already resolves against the current
+    ;; one, same as Emacs's own `default-directory'-relative behavior.
     (let* ((contents (or (nelisp--syscall-read-file filename) ""))
            (pos (nelisp-point nelisp--current-buffer)))
       (nelisp-insert contents nelisp--current-buffer)
       (nelisp-goto-char pos nelisp--current-buffer)
-      (list filename (length contents)))))
+      (list (expand-file-name filename) (length contents)))))
 (unless (fboundp 'insert-file-contents-literally)
   (defun insert-file-contents-literally (filename &rest args)
     (nelisp--check-string filename)
