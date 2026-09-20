@@ -10222,15 +10222,87 @@ write instead of ever touching a real buffer."
       (nelisp-insert contents nelisp--current-buffer)
       (nelisp-goto-char pos nelisp--current-buffer)
       (list (expand-file-name filename) (length contents)))))
+;; feat/standalone-agent-segC-prelude item 1: this used to delegate to
+;; `insert-file-contents' above, which DECODES -- so a caller doing
+;; exactly what real Emacs's own docstring tells it to
+;; (`(set-buffer-multibyte nil)' then `insert-file-contents-literally')
+;; got decoded CHARACTERS back from `(append (buffer-string) nil)'
+;; instead of raw BYTES 0-255, e.g. a tokenizer expecting `(elt ... N)'
+;; in [0,256) instead saw a multibyte codepoint like 12354 and errored
+;; "Tokenizer id must be an integer in [0,256)" (14 census failures;
+;; also `(args-out-of-range "..." 1)' inside `append' itself in
+;; test/local-tools-test.el, which does exactly this).
+;;
+;; What actually fixes it, found by probing rather than assumed: this
+;; runtime's strings carry a REAL unibyte/multibyte flag as a native
+;; object property (`multibyte-string-p'/`string-as-unibyte' are
+;; genuine, not the "all strings multibyte" collapse
+;; `lisp/nelisp-stdlib-misc.el''s OLD stub comments describe for a
+;; different, non-native context -- see that file's own copies below),
+;; and `nelisp--syscall-read-file' already decodes a file's bytes as
+;; UTF-8 into character codepoints (probed: reading a file containing
+;; the UTF-8 bytes of "aéあ" answers a 3-character multibyte
+;; string, codepoints 97 233 12354).  `string-as-unibyte' on that
+;; result re-derives the ORIGINAL UTF-8 bytes exactly (probed: 6 bytes,
+;; 97 195 169 227 129 130 -- the UTF-8 encoding of the same 3
+;; characters) -- it is not a truncating reinterpretation, it is a real
+;; encode.  Concatenating that unibyte string into an otherwise-EMPTY
+;; buffer's gap (`nelisp-buffer-string' is simply `(concat before-gap
+;; after-gap)') produces a unibyte `buffer-string' whose bytes read
+;; back as plain integers 0-255 (probed end to end: a fresh
+;; `with-temp-buffer' plus this insert already answers exactly `(97 195
+;; 169 227 129 130)' for that file) -- so a fresh buffer never needs
+;; the `set-buffer-multibyte nil' call at all for THIS path to be
+;; byte-correct; every real caller here (see the reproducer above, and
+;; `../nelisp-agent/lisp/nl-agent-local-tools.el',
+;; `nl-agent-training-protocol.el') calls it on a fresh `with-temp-
+;; buffer' regardless, matching real Emacs's own idiom.  BEG/END are
+;; honored as byte offsets into this same byte string (real Emacs's own
+;; contract for this function), clamped to its length like real Emacs
+;; clamps an END past the actual file size (verified against Emacs
+;; 31.1) rather than erroring.
+;;
+;; NOT Emacs-faithful, on purpose, documented rather than silently
+;; claimed: real Emacs additionally has a "raw 8-bit" pseudo-character
+;; scheme (codes >= #x3FFF80) for holding a byte >= #x80 inside an
+;; otherwise-multibyte buffer, so a literal insert into a buffer that
+;; is NOT already empty/unibyte -- one holding other multibyte content,
+;; or one `set-buffer-multibyte nil'-ed AWAY FROM existing content --
+;; would see Emacs promote/coerce bytes through that scheme in ways
+;; this substrate does not reproduce at all (see item 3's own report
+;; for the same gap in `decode-coding-region').  This function only
+;; guarantees the byte-correct answer for the pattern every real caller
+;; here actually uses: a fresh buffer, nothing else inserted first.
 (unless (fboundp 'insert-file-contents-literally)
-  (defun insert-file-contents-literally (filename &rest args)
+  (defun insert-file-contents-literally (filename &optional _visit beg end
+                                                   _replace)
+    "Insert the literal (undecoded) bytes of FILENAME into the current
+buffer as a unibyte string -- see the block comment above for exactly
+what this does and does not reproduce of real Emacs's own buffer-
+multibyte-coercion behavior.  VISIT/REPLACE are accepted, for signature
+compatibility, and ignored, same as they always were here (the old
+delegating body handed them to `insert-file-contents', which itself
+never read them either).
+
+(fn FILENAME &optional VISIT BEG END REPLACE)"
     (nelisp--check-string filename)
     (unless (file-exists-p filename)
       ;; Emacs reports the ABSOLUTE name -- a relative one leaves the
       ;; reader guessing which directory the call was made from.
       (signal 'file-missing (list "Opening input file" "No such file or directory"
                                   (expand-file-name filename))))
-    (apply #'insert-file-contents filename args)))
+    (let* ((decoded (or (nelisp--syscall-read-file filename) ""))
+           (bytes (if (fboundp 'string-as-unibyte)
+                      (string-as-unibyte decoded)
+                    decoded))
+           (total (length bytes))
+           (b (if beg (max 0 (min beg total)) 0))
+           (e (if end (max b (min end total)) total))
+           (slice (substring bytes b e))
+           (pos (nelisp-point nelisp--current-buffer)))
+      (nelisp-insert slice nelisp--current-buffer)
+      (nelisp-goto-char pos nelisp--current-buffer)
+      (list (expand-file-name filename) (length slice)))))
 (unless (fboundp 'processp)
   (defun processp (process)
     (or (and (vectorp process) (> (length process) 0) (eq (aref process 0) 'process))
