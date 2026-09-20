@@ -138,6 +138,77 @@
   (should-error (nelisp-json-encode #'identity)
                 :type 'nelisp-json-encode-error))
 
+;;; Encode :null-object / :false-object -------------------------------
+;;
+;; Regression coverage for the standalone `json-serialize' reproducer:
+;; `(json-serialize :json-null :null-object :json-null :false-object
+;; :json-false)' used to signal `(wrong-type-argument json-value-p
+;; :json-null)' because `nelisp-json-encode'/`nelisp-json-serialize'
+;; never accepted these keyword arguments at all (parse already did).
+
+(ert-deftest nelisp-json-encode-default-null-object-keyword ()
+  "With no ARGS, the default null-object `:null' itself encodes to null."
+  (should (equal (nelisp-json-encode :null) "null")))
+
+(ert-deftest nelisp-json-encode-default-false-object-keyword ()
+  "With no ARGS, the default false-object `:false' encodes to false,
+and the always-recognised `:json-false' sentinel keeps working too."
+  (should (equal (nelisp-json-encode :false) "false"))
+  (should (equal (nelisp-json-encode :json-false) "false")))
+
+(ert-deftest nelisp-json-encode-custom-null-object-top-level ()
+  (should (equal (nelisp-json-encode :json-null :null-object :json-null)
+                 "null"))
+  ;; The configured sentinel is recognised by identity: an unrelated
+  ;; keyword is still an encode error, not silently swallowed.
+  (should-error (nelisp-json-encode :other :null-object :json-null)
+                :type 'nelisp-json-encode-error))
+
+(ert-deftest nelisp-json-encode-custom-false-object-top-level ()
+  (should (equal (nelisp-json-encode :json-false :false-object :json-false)
+                 "false"))
+  (should (equal (nelisp-json-encode 'nope :false-object 'nope)
+                 "false")))
+
+(ert-deftest nelisp-json-encode-custom-sentinels-nested-in-alist ()
+  (should (equal (nelisp-json-encode '((a . :json-null) (b . :json-false))
+                                     :null-object :json-null
+                                     :false-object :json-false)
+                 "{\"a\":null,\"b\":false}")))
+
+(ert-deftest nelisp-json-encode-custom-sentinels-nested-in-vector ()
+  (should (equal (nelisp-json-encode (vector :json-null 1 :json-false)
+                                     :null-object :json-null
+                                     :false-object :json-false)
+                 "[null,1,false]")))
+
+(ert-deftest nelisp-json-encode-custom-sentinels-nested-in-hash-table ()
+  (let* ((table (nelisp-json-test--hash "n" :json-null "f" :json-false))
+         ;; Hash-table iteration order is unspecified, so round-trip
+         ;; through the parser (with the standalone's default sentinels)
+         ;; instead of comparing the encoded string byte-for-byte.
+         (round (nelisp-json-parse-string
+                 (nelisp-json-encode table
+                                     :null-object :json-null
+                                     :false-object :json-false))))
+    (should (eq (gethash "n" round) :null))
+    (should (eq (gethash "f" round) :false))))
+
+(ert-deftest nelisp-json-encode-custom-null-object-does-not-disturb-nil ()
+  "Custom `:null-object' adds a sentinel, it does not take `nil''s
+pre-existing unconditional null meaning away."
+  (should (equal (nelisp-json-encode nil :null-object :json-null) "null")))
+
+(ert-deftest nelisp-json-serialize-forwards-null-false-object-args ()
+  (should (equal (nelisp-json-serialize :json-null
+                                        :null-object :json-null
+                                        :false-object :json-false)
+                 "null"))
+  (should (equal (nelisp-json-serialize '((a . :json-null) (b . :json-false))
+                                        :null-object :json-null
+                                        :false-object :json-false)
+                 "{\"a\":null,\"b\":false}")))
+
 ;;; Parse ------------------------------------------------------------
 
 (ert-deftest nelisp-json-parse-primitives ()

@@ -6,17 +6,43 @@
 
 ;; feat/standalone-agent-compat: `(require 'json)' dies `file-missing:
 ;; json' on the standalone binary -- there is no `json' anywhere on its
-;; default `load-path'.  `json-serialize' is already a native standalone
-;; primitive (measured 2026-09-19), but `json-parse-string',
-;; `json-parse-buffer', `json-encode', `json-read-from-string',
-;; `json-read' and `json-available-p' are not, which is what the
-;; nelisp-agent host-only test corpus's 6 `json-parse-string' / 3
-;; `json-encode' / 2 `json-parse-buffer' / 2 `json-serialize' call sites
-;; hit.  This directory is appended LAST to the standalone's default
-;; `load-path' (any native/prelude definition always wins) and is NOT on
-;; any host `-L' path `make test' uses (`make -n test | grep -c
-;; standalone-compat' is 0), so this never shadows real Emacs's own
+;; default `load-path'.  `json-parse-string', `json-parse-buffer',
+;; `json-encode', `json-read-from-string', `json-read' and
+;; `json-available-p' were not defined at all before this file, which is
+;; what the nelisp-agent host-only test corpus's 6 `json-parse-string' /
+;; 3 `json-encode' / 2 `json-parse-buffer' / 2 `json-serialize' call
+;; sites hit.  This directory is appended LAST to the standalone's
+;; default `load-path' (any native/prelude definition always wins) and
+;; is NOT on any host `-L' path `make test' uses (`make -n test | grep
+;; -c standalone-compat' is 0), so this never shadows real Emacs's own
 ;; `json' for the host suite.
+;;
+;; `json-serialize' is the one exception to "native/prelude always
+;; wins": `scripts/nelisp-stdlib-prelude.el' already defines it
+;; unconditionally at boot (a hand-rolled encoder written for
+;; anvil-pkg-state's JSON shape, predating this file), so it is already
+;; `fboundp' by the time anything here loads.  That prelude definition
+;; never learned `:null-object'/`:false-object' -- it hardcodes exactly
+;; `:null'/`:json-false' as null/false and ignores its own `_keys' rest
+;; argument entirely (never threading it into its recursive
+;; self-calls), so any other sentinel it is asked to serialize, at any
+;; depth, signals `(wrong-type-argument json-value-p SENTINEL)'.
+;; Measured 2026-09-20: `(json-serialize :json-null :null-object
+;; :json-null :false-object :json-false)' on the standalone signals
+;; exactly that, where real Emacs 31.1 returns "null".  Below,
+;; `json-serialize' is therefore defined UNCONDITIONALLY (no `unless
+;; (fboundp ...)' guard, unlike every other function in this file),
+;; overriding the prelude's definition once `(require 'json)' has run,
+;; and delegates to `nelisp-json-serialize' (`packages/nelisp-json/src/
+;; nelisp-json.el'), which now threads `:null-object'/`:false-object'
+;; through every encoder (array/vector/hash-table/alist/plist) at any
+;; depth, matching real Emacs's `json-serialize' keyword semantics.
+;; This also incidentally fixes the nil-valued-hash-entry abort the
+;; prelude comment describes: `nelisp-json-encode' already encodes a
+;; nil hash value as JSON null instead of erroring.  Callers that never
+;; require `json' still get the prelude's original, narrower
+;; definition -- unchanged and out of this segment's scope (edits to
+;; `scripts/nelisp-stdlib-prelude.el' are forbidden here).
 ;;
 ;; Built on `packages/nelisp-json/src/nelisp-json.el', which already
 ;; implements a pure-Lisp JSON parser/encoder with the SAME keyword names
@@ -68,6 +94,20 @@
 (unless (get 'json-parse-error 'error-conditions)
   (define-error 'json-parse-error "JSON parse error" 'json-error))
 
+;; json.el's classic configuration variables, with Emacs 31.1's defaults
+;; (measured: json-false :json-false, json-null nil, json-object-type alist,
+;; json-array-type vector, json-key-type nil).  Old-style callers read them
+;; as free variables -- ../nelisp-agent/test/mcp-modern-server-fixture.el:83
+;; builds `("isError" . ,json-false)' -- so they must be bound, not only
+;; accepted as keywords by the parse/serialize wrappers above.  Defined
+;; here, before any function below reads them, so `json-encode' (further
+;; down) does not reference them as free variables at byte-compile time.
+(defvar json-false :json-false)
+(defvar json-null nil)
+(defvar json-object-type 'alist)
+(defvar json-array-type 'vector)
+(defvar json-key-type nil)
+
 (defun standalone-compat-json--translate-error (err)
   "Re-signal ERR (a caught `nelisp-json-parse-error' condition object,
 i.e. `(nelisp-json-parse-error MESSAGE JSON-STRING POS)') as the
@@ -118,6 +158,16 @@ See the Commentary above for the one known keyed-object divergence."
 caveat."
     (standalone-compat-json--read-one args)))
 
+;; Deliberately unconditional -- see the Commentary above.  This is the
+;; only definition in this file that overrides an already-`fboundp'
+;; standalone symbol rather than deferring to it.
+(defun json-serialize (object &rest args)
+  "Serialize OBJECT to a JSON string.  ARGS: `:null-object'/
+`:false-object', same names/defaults as real Emacs.  Overrides the
+prelude's own limited `json-serialize' (see Commentary above) once
+`json' has been required."
+  (apply #'nelisp-json-serialize object args))
+
 (defconst standalone-compat-json--old-api-args
   (list :object-type 'alist :array-type 'array
         :null-object nil :false-object :json-false)
@@ -165,11 +215,22 @@ buffer with the historical alist/vector/nil/`:json-false' defaults."
 
 (unless (fboundp 'json-encode)
   (defun json-encode (object)
-    "Encode OBJECT as a JSON string.  No caller in the corpus this backs
-passes keyword arguments to `json-encode' (old `json.el' never accepted
-any -- it read package-global variables instead), so this is a plain
-single-argument delegate to `nelisp-json-encode'."
-    (nelisp-json-encode object)))
+    "Encode OBJECT as a JSON string.  Old `json.el' never accepted
+keyword arguments to `json-encode' -- it read the package-global
+`json-null'/`json-false' variables instead, and real Emacs's `json.el'
+honors whatever they are currently bound to at encode time (verified
+against Emacs 31.1: rebinding `json-null'/`json-false' changes what
+`json-encode' treats as null/false).  Pass their current values through
+to `nelisp-json-encode' as `:null-object'/`:false-object' so a caller
+that lets-binds them sees the same behavior.  One caveat, out of this
+segment's scope: `nelisp-json-encode' always treats bare `nil' as JSON
+null (the documented divergence in `nelisp-json.el''s own commentary),
+where real Emacs only does that while `json-null' is nil (its default);
+rebinding `json-null' away from nil makes real Emacs encode `nil' as
+`{}' instead, which this delegate does not reproduce."
+    (nelisp-json-encode object
+                        :null-object json-null
+                        :false-object json-false)))
 
 (unless (fboundp 'json-insert)
   (defun json-insert (object &rest _args)
@@ -180,18 +241,6 @@ single-argument delegate to `nelisp-json-encode'."
   (defun json-available-p ()
     "Always t here: this file only loads when JSON support is present."
     t))
-
-;; json.el's classic configuration variables, with Emacs 31.1's defaults
-;; (measured: json-false :json-false, json-null nil, json-object-type alist,
-;; json-array-type vector, json-key-type nil).  Old-style callers read them
-;; as free variables -- ../nelisp-agent/test/mcp-modern-server-fixture.el:83
-;; builds `("isError" . ,json-false)' -- so they must be bound, not only
-;; accepted as keywords by the parse/serialize wrappers above.
-(defvar json-false :json-false)
-(defvar json-null nil)
-(defvar json-object-type 'alist)
-(defvar json-array-type 'vector)
-(defvar json-key-type nil)
 
 (provide 'json)
 

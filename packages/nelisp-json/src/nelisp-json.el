@@ -35,6 +35,14 @@
 ;; A plist containing a nil-valued key is still an object because the
 ;; plist structure itself is non-empty; only the empty list is ambiguous
 ;; and is encoded as null.
+;;
+;; `nelisp-json-encode'/`nelisp-json-serialize' accept the same
+;; `:null-object'/`:false-object' keyword arguments `nelisp-json-parse-string'
+;; already accepted on the decode side (default `:null'/`:false'), applied
+;; recursively at any depth (inside alists, plists, hash tables, vectors).
+;; `nil' and `:false'/`:json-false' keep their unconditional meaning
+;; regardless of these arguments -- ARGS only add another recognised
+;; sentinel on top.
 
 ;;; Code:
 
@@ -499,40 +507,58 @@ Return (VALUE . NEXT-POS)."
   "Join STRINGS with commas."
   (mapconcat #'identity strings ","))
 
-(defun nelisp-json--encode-array (items)
-  "Return JSON array string for list ITEMS."
+(defun nelisp-json--normalize-encode-options (args)
+  "Normalize encoder keyword ARGS to an internal plist.
+Mirrors `nelisp-json--normalize-parse-options': `:null-object' defaults
+to `:null' and `:false-object' defaults to `:false', matching real
+Emacs `json-serialize' defaults.  `nil' (the pre-existing \"nil is
+always JSON null\" divergence, see the file commentary above) and
+`:false'/`:json-false' (via `nelisp-json--json-false-p') keep being
+recognised unconditionally regardless of ARGS -- ARGS only add another
+recognised sentinel, they never take either of those two away, so
+existing callers that never pass these keywords see no behavior
+change."
+  (list :null-object (if (memq :null-object args)
+                          (plist-get args :null-object)
+                        :null)
+        :false-object (if (memq :false-object args)
+                           (plist-get args :false-object)
+                         :false)))
+
+(defun nelisp-json--encode-array (items options)
+  "Return JSON array string for list ITEMS using OPTIONS."
   (let ((out "[")
         (first t)
         (cur items))
     (while cur
       (unless first
         (setq out (concat out ",")))
-      (setq out (concat out (nelisp-json-encode (car cur))))
+      (setq out (concat out (nelisp-json--encode-value (car cur) options)))
       (setq first nil)
       (setq cur (cdr cur)))
     (concat out "]")))
 
-(defun nelisp-json--encode-vector (items)
-  "Return JSON array string for vector ITEMS without list conversion."
+(defun nelisp-json--encode-vector (items options)
+  "Return JSON array string for vector ITEMS using OPTIONS, without list conversion."
   (let ((out "[")
         (i 0)
         (n (length items)))
     (while (< i n)
       (when (> i 0)
         (setq out (concat out ",")))
-      (setq out (concat out (nelisp-json-encode (aref items i))))
+      (setq out (concat out (nelisp-json--encode-value (aref items i) options)))
       (setq i (1+ i)))
     (concat out "]")))
 
-(defun nelisp-json--encode-object-entry (key value)
-  "Return one JSON object member for KEY and VALUE."
+(defun nelisp-json--encode-object-entry (key value options)
+  "Return one JSON object member for KEY and VALUE using OPTIONS."
   (concat (nelisp-json-encode-string
            (nelisp-json--normalize-object-key key))
           ":"
-          (nelisp-json-encode value)))
+          (nelisp-json--encode-value value options)))
 
-(defun nelisp-json--encode-object-pairs (pairs)
-  "Return JSON object string for PAIRS."
+(defun nelisp-json--encode-object-pairs (pairs options)
+  "Return JSON object string for PAIRS using OPTIONS."
   (let ((out "{")
         (first t)
         (cur pairs))
@@ -541,13 +567,13 @@ Return (VALUE . NEXT-POS)."
         (setq out (concat out ",")))
       (setq out (concat out
                         (nelisp-json--encode-object-entry
-                         (car (car cur)) (cdr (car cur)))))
+                         (car (car cur)) (cdr (car cur)) options)))
       (setq first nil)
       (setq cur (cdr cur)))
     (concat out "}")))
 
-(defun nelisp-json--encode-plist-object (plist)
-  "Return JSON object string for PLIST without allocating pair cells."
+(defun nelisp-json--encode-plist-object (plist options)
+  "Return JSON object string for PLIST using OPTIONS, without allocating pair cells."
   (let ((out "{")
         (first t)
         (cur plist))
@@ -556,13 +582,13 @@ Return (VALUE . NEXT-POS)."
         (setq out (concat out ",")))
       (setq out (concat out
                         (nelisp-json--encode-object-entry
-                         (car cur) (cadr cur))))
+                         (car cur) (cadr cur) options)))
       (setq first nil)
       (setq cur (cddr cur)))
     (concat out "}")))
 
-(defun nelisp-json--encode-hash-object (table)
-  "Return JSON object string for hash TABLE without materializing entries."
+(defun nelisp-json--encode-hash-object (table options)
+  "Return JSON object string for hash TABLE using OPTIONS, without materializing entries."
   (let ((out "{")
         (first t))
     (maphash
@@ -570,7 +596,7 @@ Return (VALUE . NEXT-POS)."
        (unless first
          (setq out (concat out ",")))
        (setq out (concat out
-                         (nelisp-json--encode-object-entry key value)))
+                         (nelisp-json--encode-object-entry key value options)))
        (setq first nil))
      table)
     (concat out "}")))
@@ -646,8 +672,35 @@ Signal if VALUE is not representable as a JSON object."
    (t
     (nelisp-json--encode-error "unsupported JSON value: %S" value))))
 
+(defun nelisp-json--encode-value (value options)
+  "Encode VALUE as a compact JSON string using OPTIONS.
+OPTIONS is the plist `nelisp-json--normalize-encode-options' returns.
+Internal recursive worker behind `nelisp-json-encode'; see its
+docstring for the supported inputs."
+  (cond
+   ((null value) "null")
+   ((eq value t) "true")
+   ((eq value (plist-get options :null-object)) "null")
+   ((or (nelisp-json--json-false-p value)
+        (eq value (plist-get options :false-object)))
+    "false")
+   ((numberp value) (nelisp-json--encode-number value))
+   ((stringp value) (nelisp-json-encode-string value))
+   ((vectorp value) (nelisp-json--encode-vector value options))
+   ((hash-table-p value) (nelisp-json--encode-hash-object value options))
+   ((nelisp-json--alist-p value) (nelisp-json--encode-object-pairs value options))
+   ((nelisp-json--plist-p value) (nelisp-json--encode-plist-object value options))
+   ((and (listp value)
+         value
+         (cl-every #'consp value))
+    (nelisp-json--encode-error "invalid JSON object key in alist: %S" value))
+   ((listp value)
+    (nelisp-json--encode-array value options))
+   (t
+    (nelisp-json--encode-error "unsupported JSON value: %S" value))))
+
 ;;;###autoload
-(defun nelisp-json-encode (value)
+(defun nelisp-json-encode (value &rest args)
   "Encode VALUE as a compact JSON string.
 
 Supported inputs:
@@ -659,26 +712,19 @@ Supported inputs:
 - hash tables              -> JSON objects
 - alists / plists          -> JSON objects
 
-Important empty-object note: `nil' encodes to JSON null, not {}.  Use
-an explicit empty hash table to encode an empty object."
-  (cond
-   ((null value) "null")
-   ((eq value t) "true")
-   ((nelisp-json--json-false-p value) "false")
-   ((numberp value) (nelisp-json--encode-number value))
-   ((stringp value) (nelisp-json-encode-string value))
-   ((vectorp value) (nelisp-json--encode-vector value))
-   ((hash-table-p value) (nelisp-json--encode-hash-object value))
-   ((nelisp-json--alist-p value) (nelisp-json--encode-object-pairs value))
-   ((nelisp-json--plist-p value) (nelisp-json--encode-plist-object value))
-   ((and (listp value)
-         value
-         (cl-every #'consp value))
-    (nelisp-json--encode-error "invalid JSON object key in alist: %S" value))
-   ((listp value)
-    (nelisp-json--encode-array value))
-   (t
-    (nelisp-json--encode-error "unsupported JSON value: %S" value))))
+Recognised keyword ARGS, applied at any depth (same names/defaults as
+real Emacs's `json-serialize'):
+- `:null-object'  -> Lisp object that also serializes to `null'
+                     (default `:null')
+- `:false-object' -> Lisp object that also serializes to `false'
+                     (default `:false')
+
+Important empty-object note: `nil' always encodes to JSON null, not
+{}, regardless of ARGS.  Use an explicit empty hash table to encode an
+empty object.  Likewise `:false'/`:json-false' always encode to JSON
+false regardless of ARGS -- `:null-object'/`:false-object' only add
+another recognised sentinel, they never take these two away."
+  (nelisp-json--encode-value value (nelisp-json--normalize-encode-options args)))
 
 (defun nelisp-json--normalize-parse-options (args)
   "Normalize parser keyword ARGS to an internal plist."
@@ -720,9 +766,10 @@ Recognised keyword arguments:
     (car parsed)))
 
 ;;;###autoload
-(defun nelisp-json-serialize (value &rest _args)
-  "Alias for `nelisp-json-encode'."
-  (nelisp-json-encode value))
+(defun nelisp-json-serialize (value &rest args)
+  "Alias for `nelisp-json-encode', forwarding keyword ARGS
+\(`:null-object'/`:false-object'\)."
+  (apply #'nelisp-json-encode value args))
 
 ;;;###autoload
 (defun nelisp-json-read-from-string (json-string &rest args)
