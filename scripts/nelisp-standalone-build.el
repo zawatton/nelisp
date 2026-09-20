@@ -20869,7 +20869,7 @@ and the `string-match' family aliases over it."
             "(defun match-end (n) (nlre-match-end n))\n"
             "(defun match-string (n &optional str)\n"
             "  (let ((b (nlre-match-beginning n)) (e (nlre-match-end n)))\n"
-            "    (if (and str b e) (substring str b e) nil)))\n"
+            "    (if (and b e) (if str (substring str b e) (buffer-substring b e)) nil)))\n"
             ;; fix/small-primitives-parity: `match-data' reads the same
             ;; `nlre--last-caps' vector `match-beginning'/`match-end' use,
             ;; flattening it to the host-Emacs (BEG0 END0 BEG1 END1 ...)
@@ -21975,7 +21975,7 @@ runtime cache does not replay source file loads on every command invocation."
    "(unless (fboundp 'match-string)\n"
    "  (defun match-string (n &optional str)\n"
    "    (let ((b (nlre-match-beginning n)) (e (nlre-match-end n)))\n"
-   "      (if (and str b e) (substring str b e) nil))))\n"
+   "      (if (and b e) (if str (substring str b e) (buffer-substring b e)) nil))))\n"
    "(unless (fboundp 'match-data)\n"
    "  (defun match-data (&optional _integers _reuse _reseat)\n"
    "    (if (null nlre--last-caps)\n"
@@ -22639,7 +22639,7 @@ artifact before wiring that artifact into the marker command path."
      "(unless (fboundp 'match-string)\n"
      "  (defun match-string (n &optional str)\n"
      "    (let ((b (nlre-match-beginning n)) (e (nlre-match-end n)))\n"
-     "      (if (and str b e) (substring str b e) nil))))\n"
+     "      (if (and b e) (if str (substring str b e) (buffer-substring b e)) nil))))\n"
      ;; fix/small-primitives-parity: mirror the `match-data'/
      ;; `save-match-data'/`current-time' additions made to
      ;; `nelisp-standalone--reader-repl-prelude-source' above, guarded the
