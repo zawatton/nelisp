@@ -3983,7 +3983,7 @@ desugared into a body prelude (unless VAR (setq VAR DEFAULT))."
   "Return the expansion of FORM under `backquote'."
   (cond
    ((vectorp form)
-    (signal 'error (list "nelisp-bq: vector quasi not supported")))
+    (list 'vconcat (nelisp--bq-expand-list (append form nil))))
    ((not (consp form)) (list 'quote form))
    ((eq (car form) 'comma) (cadr form))
    ((eq (car form) 'comma-at)
@@ -6595,7 +6595,7 @@ commentary above `nelisp--bq-tag-p')."
   (let ((level (or level 1)))
     (cond
      ((vectorp form)
-      (signal 'error (list "nelisp-bq: vector quasi not supported")))
+      (list 'vconcat (nelisp--bq-expand-list (append form nil) level)))
      ((not (consp form))
       (list 'quote form))
      ((nelisp--bq-tag-p form 'comma ",")

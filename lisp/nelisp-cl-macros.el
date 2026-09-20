@@ -1885,7 +1885,12 @@ byte-compiler so defsubst is a strict synonym for `defun'."
 ;; (its own content still recursively expanded at the adjusted level, so
 ;; a `,,X' double-unquote still cancels back down to 0 and evaluates X).
 ;; This matches host Emacs's own `backquote.el' depth semantics.
-;; Still unsupported (signal):  vector quasi `[A ,X B].
+;; fix/backquote-vector-quasi: vector quasi `[A ,X B] is expanded the same
+;; way as a list template -- its elements are walked by
+;; `nelisp--bq-expand-list' (treating the vector as a proper list of its
+;; elements, so there is no dotted-tail case to worry about) and the
+;; resulting list-building form is wrapped in `vconcat' to produce a
+;; vector again.
 ;; ---------------------------------------------------------------------------
 
 (defun nelisp--bq-expand (form &optional level)
@@ -1897,7 +1902,7 @@ shallower, so a matching further `,' can still cancel it down to 0."
   (let ((level (or level 1)))
     (cond
      ((vectorp form)
-      (signal 'error (list "nelisp-bq: vector quasi not supported")))
+      (list 'vconcat (nelisp--bq-expand-list (append form nil) level)))
      ((not (consp form))
       (list 'quote form))
      ((eq (car form) 'comma)
