@@ -12624,8 +12624,14 @@ absent; it is documented as \"unknown\", not as a process id."
   ;; nelisp--syscall-readdir-names directly.  The common no-FULL/no-MATCH
   ;; case returns the native decoder's list as-is, avoiding a second
   ;; interpreted traversal and reversal.
+  ;; fix/directory-files-count: COUNT (Emacs's 5th, optional argument) was
+  ;; missing entirely -- any caller passing it (the standard idiom
+  ;; `(directory-files DIR t MATCH t COUNT)') hit `wrong-number-of-
+  ;; arguments' on this fset closure.  Clip to the first COUNT entries via
+  ;; `seq-take' (a no-op when COUNT >= the entry count), post-filter, same
+  ;; as lisp/nelisp-stdlib-misc.el's own 5-parameter `directory-files'.
   (fset 'directory-files
-        (lambda (directory &optional full match _nosort)
+        (lambda (directory &optional full match _nosort count)
           (let ((raw (nelisp--syscall-readdir-names directory t)))
             (if raw
                 (let ((names (nelisp--readdir-scan-raw raw t t))
@@ -12645,8 +12651,9 @@ absent; it is documented as \"unknown\", not as a process id."
                                                 name)
                                               out))))
                           (setq names (cdr names)))
-                        (nreverse out))
-                    names))
+                        (setq out (nreverse out))
+                        (if count (seq-take out count) out))
+                    (if count (seq-take names count) names)))
               nil)))))
 (unless (fboundp 'file-exists-p)
   (defun file-exists-p (filename)
@@ -12937,7 +12944,11 @@ and only running both says which."
                         match)))
           (and (>= (length name) (length prefix))
                (equal (substring name 0 (length prefix)) prefix)))))
-    (defun directory-files (directory &optional full match _nosort)
+    ;; fix/directory-files-count: COUNT (Emacs's 5th, optional argument) was
+    ;; missing here too; clip to the first COUNT entries via `seq-take' (a
+    ;; no-op when COUNT >= the entry count), post-filter, same as
+    ;; lisp/nelisp-stdlib-misc.el's own 5-parameter `directory-files'.
+    (defun directory-files (directory &optional full match _nosort count)
       (let ((names (nelisp--split-on-char
                     (or (nelisp--syscall-readdir-names directory) "") 10 t))
             (out nil))
@@ -12948,7 +12959,8 @@ and only running both says which."
                                   (expand-file-name name directory)
                                 name)
                               out)))))
-        (nreverse out)))))
+        (setq out (nreverse out))
+        (if count (seq-take out count) out)))))
 (unless (fboundp 'make-directory)
   ;; Three defects fixed together (v1.2.0 parity gap 4), because the first
   ;; two hid the third:

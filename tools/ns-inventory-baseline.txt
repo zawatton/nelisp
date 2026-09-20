@@ -1168,7 +1168,14 @@ pinned-collision ns-collision-divergent	define-error	lisp/nelisp-stdlib-error.el
 pinned-collision ns-collision-divergent	defun	lisp/nelisp-jit-substrate.el lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el	91d01aa6ff27
 pinned-collision ns-collision-divergent	delete-dups	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	03fd6070a2df
 pinned-collision ns-collision-divergent	delete-process	packages/nelisp-process-adapter/src/nelisp-process-adapter.el scripts/nelisp-stdlib-prelude.el	a6061f78437b
-pinned-collision ns-collision-divergent	directory-files	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	5772735e4f7a
+# segment B1 fix/directory-files-count: `directory-files' re-pinned.  Its
+# scripts/nelisp-stdlib-prelude.el copy (both the fast-path `fset' closure
+# and the `unless (fboundp ...)' fallback) gained the missing COUNT (5th,
+# optional) argument, mirroring lisp/nelisp-stdlib-misc.el's own COUNT
+# semantics; the two bodies still diverge in every other way already
+# pinned here (different substrate services), so the divergence itself
+# stays pinned.
+pinned-collision ns-collision-divergent	directory-files	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	9478ae3decfe
 pinned-collision ns-collision-divergent	dotimes	lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el	f4ac7387792a
 pinned-collision ns-collision-divergent	downcase	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	dfe335f7e113
 pinned-collision ns-collision	eql	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
