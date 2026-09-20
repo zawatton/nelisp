@@ -256,9 +256,42 @@ pre-existing unconditional null meaning away."
     (should (= (gethash "k" h) 42))))
 
 (ert-deftest nelisp-json-parse-object-as-alist ()
+  "`:object-type \\='alist' interns keys as symbols, matching real Emacs
+`json-parse-string' (verified against Emacs 31.1): `{\"k\":42}' becomes
+`((k . 42))', not the string-keyed `((\"k\" . 42))'."
   (should (equal (nelisp-json-parse-string "{\"k\":42,\"ok\":true}"
                                            :object-type 'alist)
-                 '(("k" . 42) ("ok" . t)))))
+                 '((k . 42) (ok . t)))))
+
+(ert-deftest nelisp-json-parse-object-as-alist-nested-object ()
+  "Symbol-key interning applies recursively to an object nested inside
+another object."
+  (should (equal (nelisp-json-parse-string "{\"a\":{\"b\":2}}"
+                                           :object-type 'alist)
+                 '((a . ((b . 2)))))))
+
+(ert-deftest nelisp-json-parse-object-as-alist-nested-in-array ()
+  "Symbol-key interning applies recursively to an object nested inside
+a JSON array."
+  (should (equal (nelisp-json-parse-string "{\"a\":1,\"b\":[{\"c\":[{\"d\":2}]}]}"
+                                           :object-type 'alist)
+                 '((a . 1) (b . [((c . [((d . 2))]))])))))
+
+(ert-deftest nelisp-json-parse-object-as-alist-empty ()
+  "An empty alist object parses to nil, same as before this segment."
+  (should (equal (nelisp-json-parse-string "{}" :object-type 'alist) nil)))
+
+(ert-deftest nelisp-json-parse-object-as-hash-table-keeps-string-keys ()
+  "`:object-type \\='hash-table' (the default) keeps STRING keys, matching
+real Emacs -- only `alist' changed in this segment."
+  (let ((h (nelisp-json-parse-string "{\"a\":1}" :object-type 'hash-table)))
+    (should (= (gethash "a" h) 1))))
+
+(ert-deftest nelisp-json-parse-object-as-plist-keeps-keyword-keys ()
+  "`:object-type \\='plist' keeps KEYWORD keys, matching real Emacs --
+only `alist' changed in this segment."
+  (should (equal (nelisp-json-parse-string "{\"a\":1}" :object-type 'plist)
+                 '(:a 1))))
 
 (ert-deftest nelisp-json-parse-object-as-plist ()
   (should (equal (nelisp-json-parse-string "{\"k\":42,\"ok\":true}"

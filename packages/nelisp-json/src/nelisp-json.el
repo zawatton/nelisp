@@ -43,6 +43,17 @@
 ;; `nil' and `:false'/`:json-false' keep their unconditional meaning
 ;; regardless of these arguments -- ARGS only add another recognised
 ;; sentinel on top.
+;;
+;; Object key representation matches real Emacs's `json-parse-string'
+;; exactly, for every `:object-type', at any nesting depth: `hash-table'
+;; (the default) keys are strings, `alist' keys are ordinary interned
+;; symbols (`(json-parse-string "{\"a\":1}" :object-type \='alist)' =>
+;; `((a . 1))', not `((\"a\" . 1))'), `plist' keys are keywords.  This
+;; was a documented divergence from segment C1 through segment D2
+;; (`:object-type \='alist' used to return string keys here; the
+;; standalone compat layer in `standalone-compat/json.el' papered over
+;; it by interning the keys itself); segment D2 fixed it in the parser
+;; so the compat layer no longer has to.
 
 ;;; Code:
 
@@ -294,8 +305,16 @@ Return (VALUE . NEXT-POS)."
       (puthash (car pair) (cdr pair) table))))
 
 (defun nelisp-json--parse-object-as-alist (pairs)
-  "Return alist object built from PAIRS."
-  pairs)
+  "Return alist object built from PAIRS, interning each key as a symbol.
+Matches real Emacs's `json-parse-string'/`json-parse-buffer': with
+`:object-type \\='alist' an object member's key string is interned via
+`intern' into an ordinary (non-keyword) symbol, e.g. JSON `{\"a\":1}'
+becomes `((a . 1))', not `((\"a\" . 1))'.  This is applied to PAIRS at
+whatever depth `nelisp-json--apply-object-type' is called from, so
+objects nested inside arrays or other objects get symbol keys too --
+each nested object is a separate call to this function via the
+ordinary recursive descent in `nelisp-json--parse-value'."
+  (mapcar (lambda (pair) (cons (intern (car pair)) (cdr pair))) pairs))
 
 (defun nelisp-json--parse-object-as-plist (pairs)
   "Return plist object built from PAIRS."
@@ -759,7 +778,12 @@ Recognised keyword arguments:
 - `:object-type' => `hash-table' / `alist' / `plist'
 - `:array-type'  => `vector' / `list'
 - `:null-object'
-- `:false-object'"
+- `:false-object'
+
+Object key representation matches real Emacs's `json-parse-string' for
+each `:object-type' (recursively, at any nesting depth): `hash-table'
+keys are strings, `alist' keys are ordinary (non-keyword) interned
+symbols, `plist' keys are keywords."
   (unless (stringp json-string)
     (signal 'wrong-type-argument (list 'stringp json-string)))
   (let* ((options (nelisp-json--normalize-parse-options args))
