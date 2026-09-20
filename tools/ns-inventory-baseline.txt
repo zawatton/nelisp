@@ -289,7 +289,12 @@
 # the census reach further): buffer-size, directory-files-no-dot-files-
 # regexp, pop-to-buffer, replace-match, shell-command-switch -- same
 # pattern, both files byte-identical.
-ns-collision 296
+# 296 -> 298, segment B1 fix/cl-set-ops-keywords: `nelisp--cl-seq-test' /
+# `nelisp--cl-seq-member' are new private helpers backing cl-set-difference's
+# (and, in scripts/nelisp-stdlib-prelude.el, the rest of the cl-lib
+# set-operation family's) :test/:test-not/:key support; both files' copies
+# are byte-identical.
+ns-collision 298
 # 97 -> 96 on 2026-08-19: `string-equal' no longer differs between the two
 # files -- the prelude's now signals for a non-string instead of falling
 # through to `equal', and the lisp copy was brought with it.  Ratcheted down
@@ -767,7 +772,15 @@ ns-collision-divergent 128
 # namespace, the same shape this file's own commentary already describes
 # as most of what this count tracks tree-wide -- not pinned individually
 # for the same reason the rest of that surface is not.
-ns-prefix-violation 320
+# 320 -> 322, segment B1 fix/cl-set-ops-keywords: lisp/nelisp-cl-macros.el's
+# new `nelisp--cl-seq-test'/`nelisp--cl-seq-member' private helpers (backing
+# cl-set-difference's new :test/:test-not/:key support) use this tree's
+# generic `nelisp--' private prefix rather than the file's own inferred
+# `nelisp-cl-macros--'/`nelisp-cl-generic--' namespace, matching the name
+# used for the identical pair in scripts/nelisp-stdlib-prelude.el (see the
+# `ns-collision' pin for these two names) rather than diverging the name
+# to fit each file's local convention.
+ns-prefix-violation 322
 # 318 -> 320 on 2026-09-20: `process-send-eof'/`process-send-region', new
 # standard-name public entries in `packages/nelisp-process-adapter/src/
 # nelisp-process-adapter.el' closing the subprocess gap documented at that
@@ -1048,6 +1061,8 @@ pinned-collision ns-collision	nelisp--check-number	lisp/nelisp-stdlib.el scripts
 pinned-collision ns-collision	nelisp--check-plist	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	nelisp--check-string	lisp/nelisp-stdlib-misc.el lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	nelisp--check-symbol	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp--cl-seq-member	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp--cl-seq-test	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	nelisp--env-globals-get-value	lisp/nelisp-stdlib-env-shim.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	nelisp--env-globals-is-bound	lisp/nelisp-stdlib-env-shim.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	nelisp--env-globals-set-constant	lisp/nelisp-stdlib-env-shim.el scripts/nelisp-stdlib-prelude.el

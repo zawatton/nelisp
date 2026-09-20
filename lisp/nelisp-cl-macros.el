@@ -2071,15 +2071,34 @@ Unknown keys are silently ignored."
         (setq cur (cdr cur))))
     found))
 
-(defun cl-set-difference (list1 list2)
+;; fix/cl-set-ops-keywords: `:test'/`:test-not'/`:key' support, matching
+;; Emacs cl-seq.el semantics (default test `eql', `:key' applied to
+;; elements from BOTH lists).  Mirrors the copy in
+;; scripts/nelisp-stdlib-prelude.el -- see that file for the fuller
+;; cl-union/cl-intersection/cl-subsetp/cl-adjoin/cl-set-exclusive-or family;
+;; this file only ever needed cl-set-difference itself.
+(defun nelisp--cl-seq-test (kw)
+  (let ((test (plist-get kw :test)) (test-not (plist-get kw :test-not)))
+    (cond (test-not (lambda (a b) (not (funcall test-not a b))))
+          (test test)
+          (t #'eql))))
+(defun nelisp--cl-seq-member (item list kw)
+  (let ((pred (nelisp--cl-seq-test kw)) (key (plist-get kw :key)))
+    (catch 'nelisp--cl-seq-found
+      (dolist (x list)
+        (when (funcall pred item (if key (funcall key x) x))
+          (throw 'nelisp--cl-seq-found t)))
+      nil)))
+(defun cl-set-difference (list1 list2 &rest kw)
   "Return elements of LIST1 not present in LIST2, preserving order.
-NeLisp minimal: no `:test' / `:key' keywords; uses `equal'."
-  (let ((acc nil) (cur list1))
-    (while cur
-      (unless (member (car cur) list2)
-        (setq acc (cons (car cur) acc)))
-      (setq cur (cdr cur)))
-    (nreverse acc)))
+Keywords supported: `:test' `:test-not' `:key' (Emacs cl-seq.el semantics;
+default test `eql')."
+  (if (or (null list1) (null list2))
+      list1
+    (let ((key (plist-get kw :key)) (acc nil))
+      (dolist (x list1 (nreverse acc))
+        (unless (nelisp--cl-seq-member (if key (funcall key x) x) list2 kw)
+          (push x acc))))))
 
 (defvar nelisp-cl-macros--gensym-counter 0
   "Monotone counter used by `cl-gensym' for unique symbol names.")

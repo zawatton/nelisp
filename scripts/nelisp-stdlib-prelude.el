@@ -2493,12 +2493,70 @@ TYPE flowing into whatever the caller does next."
 (unless (fboundp 'cl-mod) (defun cl-mod (x y) (mod x y)))
 (unless (fboundp 'cl-rem) (defun cl-rem (x y) (- x (* (truncate x y) y))))
 (unless (fboundp 'cl-signum) (defun cl-signum (x) (cond ((> x 0) 1) ((< x 0) -1) (t 0))))
+;; fix/cl-set-ops-keywords: `:test'/`:test-not'/`:key' support for the
+;; cl-lib set-operation family, matching Emacs cl-seq.el semantics --
+;; default test `eql', `:key' applied to elements from BOTH lists before
+;; comparison, `:test-not' negates the given predicate.
+;; `nelisp--cl-seq-member' mirrors `cl-member' for exactly this family:
+;; ITEM is already keyed by the caller, LIST elements are keyed here.
+(unless (fboundp 'nelisp--cl-seq-test)
+  (defun nelisp--cl-seq-test (kw)
+    (let ((test (plist-get kw :test)) (test-not (plist-get kw :test-not)))
+      (cond (test-not (lambda (a b) (not (funcall test-not a b))))
+            (test test)
+            (t #'eql)))))
+(unless (fboundp 'nelisp--cl-seq-member)
+  (defun nelisp--cl-seq-member (item list kw)
+    (let ((pred (nelisp--cl-seq-test kw)) (key (plist-get kw :key)))
+      (catch 'nelisp--cl-seq-found
+        (dolist (x list)
+          (when (funcall pred item (if key (funcall key x) x))
+            (throw 'nelisp--cl-seq-found t)))
+        nil))))
+(unless (fboundp 'cl-adjoin)
+  (defun cl-adjoin (item list &rest kw)
+    (let ((key (plist-get kw :key)))
+      (if (nelisp--cl-seq-member (if key (funcall key item) item) list kw)
+          list
+        (cons item list)))))
 (unless (fboundp 'cl-union)
-  (defun cl-union (a b &rest _) (let ((r (reverse a))) (dolist (x b) (unless (member x a) (push x r))) (nreverse r))))
+  (defun cl-union (list1 list2 &rest kw)
+    (cond ((null list1) list2)
+          ((null list2) list1)
+          ((and (not kw) (equal list1 list2)) list1)
+          (t
+           (unless (>= (length list1) (length list2))
+             (let ((tmp list1)) (setq list1 list2 list2 tmp)))
+           (dolist (x list2 list1)
+             (setq list1 (apply #'cl-adjoin x list1 kw)))))))
 (unless (fboundp 'cl-intersection)
-  (defun cl-intersection (a b &rest _) (let (r) (dolist (x a (nreverse r)) (when (member x b) (push x r))))))
+  (defun cl-intersection (list1 list2 &rest kw)
+    (and list1 list2
+         (if (equal list1 list2)
+             list1
+           (let ((key (plist-get kw :key)) res)
+             (unless (>= (length list1) (length list2))
+               (let ((tmp list1)) (setq list1 list2 list2 tmp)))
+             (dolist (x list2 res)
+               (when (nelisp--cl-seq-member (if key (funcall key x) x) list1 kw)
+                 (push x res))))))))
+(unless (fboundp 'cl-set-exclusive-or)
+  (defun cl-set-exclusive-or (list1 list2 &rest kw)
+    (cond ((null list1) list2)
+          ((null list2) list1)
+          ((equal list1 list2) nil)
+          (t (append (apply #'cl-set-difference list1 list2 kw)
+                     (apply #'cl-set-difference list2 list1 kw))))))
 (unless (fboundp 'cl-subsetp)
-  (defun cl-subsetp (a b &rest _) (let ((ok t)) (dolist (x a ok) (unless (member x b) (setq ok nil))))))
+  (defun cl-subsetp (list1 list2 &rest kw)
+    (cond ((null list1) t)
+          ((null list2) nil)
+          ((equal list1 list2) t)
+          (t (let ((key (plist-get kw :key)))
+               (catch 'nelisp--cl-subsetp-fail
+                 (dolist (x list1 t)
+                   (unless (nelisp--cl-seq-member (if key (funcall key x) x) list2 kw)
+                     (throw 'nelisp--cl-subsetp-fail nil)))))))))
 (unless (fboundp 'cl-position-if)
   (defun cl-position-if (pred seq)
     (let ((i 0) (res nil) (l (nelisp-seq--to-list seq)))
@@ -6721,15 +6779,16 @@ Unknown keys are silently ignored."
         (setq cur (cdr cur))))
     found))
 
-(defun cl-set-difference (list1 list2)
+(defun cl-set-difference (list1 list2 &rest kw)
   "Return elements of LIST1 not present in LIST2, preserving order.
-NeLisp minimal: no `:test' / `:key' keywords; uses `equal'."
-  (let ((acc nil) (cur list1))
-    (while cur
-      (unless (member (car cur) list2)
-        (setq acc (cons (car cur) acc)))
-      (setq cur (cdr cur)))
-    (nreverse acc)))
+Keywords supported: `:test' `:test-not' `:key' (Emacs cl-seq.el semantics;
+default test `eql')."
+  (if (or (null list1) (null list2))
+      list1
+    (let ((key (plist-get kw :key)) (acc nil))
+      (dolist (x list1 (nreverse acc))
+        (unless (nelisp--cl-seq-member (if key (funcall key x) x) list2 kw)
+          (push x acc))))))
 
 (defvar nelisp-cl-macros--gensym-counter 0
   "Monotone counter used by `cl-gensym' for unique symbol names.")
