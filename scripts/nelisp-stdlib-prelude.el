@@ -8789,6 +8789,18 @@ Moves and returns nil, the counterpart of `line-end-position'."
          (let ((nelisp--current-buffer ,b)
                (nelisp-buffer--current ,b))
            ,@body)))))
+;; This only reads VARIABLE's value while BUFFER is current -- it does
+;; not give VARIABLE a value that is local TO buffer-local-value's own
+;; buffer if there isn't one already, unlike `make-local-variable'/
+;; `setq-local' making the binding itself per-buffer.  Those are a
+;; separate, unimplemented subsystem this one function does not
+;; attempt (`setq-local' here is presently only an alias for `setq').
+(unless (fboundp 'buffer-local-value)
+  (defun buffer-local-value (variable buffer)
+    "Return VARIABLE's value in BUFFER, as if BUFFER were current.
+Does not itself make VARIABLE buffer-local (see the commentary above
+this definition)."
+    (with-current-buffer buffer (symbol-value variable))))
 (unless (fboundp 'with-temp-buffer)
   (defmacro with-temp-buffer (&rest body)
     (let ((b (make-symbol "buf")))

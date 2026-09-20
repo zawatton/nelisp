@@ -1370,6 +1370,23 @@ itself a cadr of another plist-get."
                  (symbol-function 'nelisp-segf-bc-probe)))")
     "t")))
 
+;; Segment F item 8: `buffer-local-value' was void (1 of 3 ui-test
+;; failures). Reads VARIABLE's value with BUFFER current; does NOT
+;; itself make VARIABLE buffer-local. The other 2 ui-test failures need
+;; real per-buffer bindings (make-local-variable, setq-local as more
+;; than an alias) -- a separate, unimplemented subsystem, not attempted
+;; here (see this segment's final report).
+(ert-deftest nelisp-stdlib-segf-buffer-local-value-reads-in-buffer ()
+  (should
+   (equal
+    (nelisp-stdlib-segf--standalone-eval
+     "(progn (defvar nelisp-segf-blv-var 7)
+             (let ((b (generate-new-buffer \"nelisp-segf-blv-probe\")))
+               (with-current-buffer b
+                 (defvar nelisp-segf-blv-var2 99))
+               (buffer-local-value 'nelisp-segf-blv-var2 b)))")
+    "99")))
+
 ;;; Phase 5-E.0 primitives (MCP server I/O + file tool dispatchers) ---
 
 (ert-deftest nelisp-stdlib-phase5e-princ-terpri-routable ()
