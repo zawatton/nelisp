@@ -347,6 +347,77 @@
                        (ptr-write-u32 slot 12
                                        (if (= neg 1) 4293918720 2146435072))
                        1))
+                ;; agent-host census ("void-variable 0.0e+NaN"): the reader
+                ;; lexer (lisp/nelisp-cc-reader-lexer.el,
+                ;; `nelisp_reader_exp_special_suffix_p') now classifies an
+                ;; `e+INF'/`e+NaN' token as Float instead of Sym, so this
+                ;; entry point must actually be able to parse one -- same
+                ;; canonical bit pattern shape as `nlf_t91_write_inf' just
+                ;; above (mantissa/exponent DIGITS before `e+INF'/`e+NaN' are
+                ;; not otherwise significant to Emacs's OWN NaN spelling
+                ;; either: only the leading sign and the INF/NaN choice are
+                ;; read back -- a host's own payload-carrying NaN print
+                ;; shape, e.g. the `-0.0e+NaN' `(/ 0.0 0.0)' already prints
+                ;; as, is not reproduced bit-for-bit here, which is not
+                ;; observable through `=' since no NaN ever compares equal
+                ;; to another, bit-identical or not).  High word 0x7FF80000/
+                ;; 0xFFF80000 = a quiet NaN, sign per NEG.
+                (defun nlf_t91_write_nan (slot neg)
+                  (seq (ptr-write-u64 slot 0 3)
+                       (ptr-write-u64 (+ slot 16) 0 0)
+                       (ptr-write-u64 (+ slot 24) 0 0)
+                       (ptr-write-u32 slot 8 0)
+                       (ptr-write-u32 slot 12
+                                       (if (= neg 1) 4294443008 2146959360))
+                       1))
+                ;; Validate BP[START..END) is a bare Emacs float MANTISSA:
+                ;; digits, with at most one `.', and at least one digit
+                ;; overall -- the same shape the reader lexer's own
+                ;; `nelisp_reader_classify_step' (lisp/nelisp-cc-reader-
+                ;; lexer.el) requires before its `e'/`E' transition.  Kept
+                ;; self-contained here (no cross-unit call into that other
+                ;; compiled object) because `nl_str_to_float' is also
+                ;; reached directly through `sys:str-to-float'
+                ;; (packages/nelisp-sys), not only through the reader, so
+                ;; this must not assume its input was already validated by
+                ;; the lexer.
+                (defun nlf_stf_mantissa_ok_p (bp i end saw_digit saw_dot)
+                  (if (= i end)
+                      saw_digit
+                    (let* ((b (nelisp_ptr_read_u8 bp i)))
+                      (cond
+                       ((= (nl_stf_is_digit b) 1)
+                        (nlf_stf_mantissa_ok_p bp (+ i 1) end 1 saw_dot))
+                       ((and (= b 46) (= saw_dot 0))
+                        (nlf_stf_mantissa_ok_p bp (+ i 1) end saw_digit 1))
+                       (t 0)))))
+                ;; Returns 1 for a valid Emacs `...e+INF' spelling, 2 for
+                ;; `...e+NaN', 0 otherwise.  BP[START..LEN) is the FULL
+                ;; input (START = 0 or 1, past any leading sign already
+                ;; consumed by the caller).  Case-sensitive INF/NaN, `e'/
+                ;; `E' only, `+' only (never `-'), exactly 3 trailing
+                ;; bytes -- matches `nelisp_reader_exp_special_suffix_p'
+                ;; (same grammar, independently re-checked here rather than
+                ;; called cross-unit).  Bounds-guarded: never reads before
+                ;; START or at/past LEN.
+                (defun nlf_stf_exp_special_kind (bp start len)
+                  (if (or (< len 5) (< (- len 5) start))
+                      0
+                    (let* ((ep (- len 5))
+                           (marker (nelisp_ptr_read_u8 bp ep)))
+                      (if (or (= marker 101) (= marker 69))
+                          (if (= (nelisp_ptr_read_u8 bp (+ ep 1)) 43)
+                              (if (= (nlf_stf_mantissa_ok_p bp start ep 0 0) 1)
+                                  (let* ((s0 (nelisp_ptr_read_u8 bp (+ ep 2)))
+                                         (s1 (nelisp_ptr_read_u8 bp (+ ep 3)))
+                                         (s2 (nelisp_ptr_read_u8 bp (+ ep 4))))
+                                    (cond
+                                     ((and (= s0 73) (= s1 78) (= s2 70)) 1)
+                                     ((and (= s0 78) (= s1 97) (= s2 78)) 2)
+                                     (t 0)))
+                                0)
+                            0)
+                        0))))
                 (defun nlf_t91_convert (m cap slot neg net frac sig mem)
                   (if (> net 308)
                       (nlf_t91_write_inf slot neg)
@@ -416,18 +487,23 @@
                     (let* ((b0 (nelisp_ptr_read_u8 bytes_ptr 0))
                            (neg (if (= b0 45) 1 0))
                            (start (if (or (= b0 45) (= b0 43)) 1 0))
-                           (mem (alloc-bytes 32768 8))
-                           (meta (+ mem 24576)))
-                      (seq (nlf_big_zero mem 0 1024)
-                           (if (= (nlf_t91_parse bytes_ptr len mem 1024 meta start) 1)
-                               (let ((net (+ (ptr-read-u64 meta 24)
-                                             (- 0 (ptr-read-u64 meta 8)))))
-                                 (if (> net 308)
-                                     (nlf_t91_write_inf slot neg)
-                                   (nlf_t91_convert
-                                    mem 1024 slot neg net
-                                    (ptr-read-u64 meta 8)
-                                    (ptr-read-u64 meta 16) mem)))
-                             (nl_stf_write_nil slot)))))))))
+                           (special (nlf_stf_exp_special_kind bytes_ptr start len)))
+                      (cond
+                       ((= special 1) (nlf_t91_write_inf slot neg))
+                       ((= special 2) (nlf_t91_write_nan slot neg))
+                       (t
+                        (let* ((mem (alloc-bytes 32768 8))
+                               (meta (+ mem 24576)))
+                          (seq (nlf_big_zero mem 0 1024)
+                               (if (= (nlf_t91_parse bytes_ptr len mem 1024 meta start) 1)
+                                   (let ((net (+ (ptr-read-u64 meta 24)
+                                                 (- 0 (ptr-read-u64 meta 8)))))
+                                     (if (> net 308)
+                                         (nlf_t91_write_inf slot neg)
+                                       (nlf_t91_convert
+                                        mem 1024 slot neg net
+                                        (ptr-read-u64 meta 8)
+                                        (ptr-read-u64 meta 16) mem)))
+                                 (nl_stf_write_nil slot))))))))))))
 
 (provide (quote nelisp-cc-evalport-str-to-float))

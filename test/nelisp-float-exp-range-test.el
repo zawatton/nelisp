@@ -302,4 +302,66 @@ given, had it been able to finish."
           (should (string-match-p "\\`-?0\\.0e\\+NaN\\'" (car result)))
         (should (equal (cdr case) (car result)))))))
 
+;; agent-host census fix ("void-variable 0.0e+NaN"): the reader used to
+;; lex `0.0e+NaN'/`1.0e+INF' as SYMBOLS, not floats -- so a source file or
+;; `read-from-string' call containing one of these (this file's own
+;; printer already emits `1.0e+INF'/`-0.0e+NaN' above) either signalled
+;; `void-variable' when evaluated as a bare reference or round-tripped to
+;; a different value than it printed.  `nelisp_reader_classify_step'
+;; (lisp/nelisp-cc-reader-lexer.el) now recognizes the exact case-
+;; sensitive `e+INF'/`e+NaN' exponent spellings; `nl_str_to_float'
+;; (lisp/nelisp-cc-evalport-str-to-float.el) now parses them into the
+;; matching IEEE-754 special value.  Every row here was checked against
+;; host Emacs 31.1 first.
+(defconst nelisp-float-exp-range-test--reader-inf-nan-cases
+  '(("(floatp (car (read-from-string \"1.0e+INF\")))" . "t")
+    ("(floatp (car (read-from-string \"-1.0e+INF\")))" . "t")
+    ("(floatp (car (read-from-string \"1.0E+INF\")))" . "t")
+    ("(= (car (read-from-string \"1.0e+INF\")) (/ 1.0 0.0))" . "t")
+    ("(= (car (read-from-string \"-1.0e+INF\")) (/ -1.0 0.0))" . "t")
+    ("(list (floatp (car (read-from-string \"0.0e+NaN\"))) (symbolp (car (read-from-string \"0.0e+NaN\"))))" . "(t nil)")
+    ("(list (floatp (car (read-from-string \"-0.0e+NaN\"))) (symbolp (car (read-from-string \"-0.0e+NaN\"))))" . "(t nil)")
+    ;; Still symbols: only the exact case-sensitive `e+INF'/`e+NaN' spelling
+    ;; is special -- everything host Emacs also rejects stays a Sym here.
+    ("(symbolp (car (read-from-string \"1.0e-INF\")))" . "t")
+    ("(symbolp (car (read-from-string \"1.0e+inf\")))" . "t")
+    ("(symbolp (car (read-from-string \"1.0e+INFxyz\")))" . "t")
+    ("(symbolp (car (read-from-string \"1e2e+INF\")))" . "t"))
+  "Expressions and NeLisp's expected stdout, relying on the same sole-
+action auto-print `--eval' already uses for every other row in this file
+\(no explicit `prin1' -- that would double-print the value, once as the
+explicit call's own output and once as the CLI's auto-print of that
+call's return value\).  Each row independently checked against host
+Emacs 31.1 (`emacs -Q --batch --eval EXPR' answers the same stdout).")
+
+(ert-deftest nelisp-float-exp-range/reads-inf-and-nan-exponent-literals ()
+  "`read'/`read-from-string' (via `--eval', the same top-level entry point
+every standalone invocation uses) parses `e+INF'/`e+NaN' as the IEEE-754
+special float, not a symbol -- matching host Emacs 31.1 exactly, including
+which near-miss spellings stay symbols."
+  (dolist (case nelisp-float-exp-range-test--reader-inf-nan-cases)
+    (should (equal (cdr case) (nelisp-float-exp-range-test--eval (car case))))))
+
+(ert-deftest nelisp-float-exp-range/loaded-source-reads-nan-exponent-literal ()
+  "The same fix must apply to loading a source FILE, not only
+`read-from-string' via `--eval' -- the two used to share a lexer/parser
+that only this file's `--eval' path exercises above.  The file's last
+top-level form is a bare expression (not an explicit `prin1'/`princ'
+call) so `--load''s own sole-action auto-print supplies the one and only
+printed value, matching every other case in this file."
+  (let* ((binary (nelisp-float-exp-range-test--binary))
+         (file (make-temp-file "nelisp-float-exp-range-nan-load-" nil ".el")))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert "(defvar nelisp-float-exp-range--nan-load-probe 0.0e+NaN)\n"
+                    "(floatp nelisp-float-exp-range--nan-load-probe)\n"))
+          (with-temp-buffer
+            (let ((rc (call-process binary nil t nil "--load" file)))
+              (unless (= rc 0)
+                (ert-fail (format "standalone --load failed: rc=%S out=%S"
+                                  rc (buffer-string))))
+              (should (equal "t" (string-trim (buffer-string)))))))
+      (delete-file file))))
+
 ;;; nelisp-float-exp-range-test.el ends here
