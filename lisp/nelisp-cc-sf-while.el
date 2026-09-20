@@ -98,14 +98,57 @@
     ;; CPS over the (FORM...) list; recursion depth = number of body forms
     ;; (small, fixed), so this never grows with the iteration count.
 
-    ;; After eval of one body form: check rc, then fetch the body tail
-    ;; (extern-call FIRST) and advance.  Taking the cdr only after eval avoids
-    ;; carrying an unrooted materialised immediate-cdr view across eval's GC;
-    ;; body is the real CONS box and is already kept alive by the form.
+    ;; perf/while-body-cdr-raw-word (segment G2): `nl_sf_while_body_done'
+    ;; re-derives the body tail on EVERY loop iteration (this walk is
+    ;; the guest body-list walk, run once per `while' iteration, not
+    ;; once per form).  For the common single-form body, that tail is
+    ;; the Nil list terminator -- an immediate WORD -- so the
+    ;; materialising `nl_cons_cdr_ptr' (lisp/nelisp-cc-jit-cons-cdr-
+    ;; ptr.el) paid `(alloc-bytes 32 8)' + `nl_val_load' every single
+    ;; iteration just so `nl_sf_while_body' could reduce it to one
+    ;; `sexp-tag == 0' test and discard it.  `nl_sf_while_body_word'
+    ;; reads the raw 8-byte tagged WORD directly instead (identical
+    ;; box_ptr -> NlConsBox -> cdr-word addressing `nl_cons_cdr_ptr'
+    ;; itself uses); `nl_sf_while_body' / `nl_sf_while_body_done' /
+    ;; `nl_sf_while_body_start' now thread that WORD -- classified via
+    ;; `nl_val_tag' (scripts/nelisp-standalone-build.el, Doc 146 §3.0)
+    ;; instead of `sexp-tag' -- rather than a materialised pointer.
+    ;; This is behavior-preserving for the same reason A1/A2
+    ;; (ab4a72484 / 441aa152c) and segment G2's setq fix are: a
+    ;; non-immediate (low bit 0) tagged WORD IS ALREADY the exact
+    ;; `*const Sexp' pointer `nl_cons_cdr_ptr''s own pointer branch
+    ;; would return unchanged, so BODY is used identically by
+    ;; `nl_cons_car_ptr' below whether it arrived via a materialising
+    ;; call or as this raw WORD; `nl_val_tag' classifies a raw WORD
+    ;; the same way `sexp-tag' classified the old materialised view for
+    ;; every value this slot can hold.  BODY must already be a
+    ;; validated Cons view (tag 7) whenever the WORD is read: both call
+    ;; sites below sit behind a `(nl_val_tag ...) != 0' (not-Nil) guard
+    ;; first, matching the precondition `nl_cons_car_ptr'/`nl_cons_
+    ;; cdr_ptr' themselves already assume via their own `sexp-tag == 7'
+    ;; check.
+    ;; Guard mirrors `nl_cons_cdr_ptr' exactly (returns the same 0
+    ;; sentinel for a non-Cons argument, rather than blindly
+    ;; dereferencing).  `nl_sf_while_body_start' calls this on the raw
+    ;; while-form ARGS with no prior accessor call establishing its
+    ;; Cons-ness in this function alone, so the guard is load-bearing
+    ;; there (not just belt-and-suspenders, unlike the setq sibling).
+    (defun nl_sf_while_body_word (body)
+      (if (= (sexp-tag body) 7)
+          (ptr-read-u64 (ptr-read-u64 body 8) 8)
+        0))
+
+    ;; After eval of one body form: check rc, then fetch the body tail as
+    ;; a raw WORD (perf/while-body-cdr-raw-word above -- no allocation on
+    ;; the common Nil-terminated path) and advance.  Taking the cdr only
+    ;; after eval avoids carrying a not-yet-rooted immediate view across
+    ;; eval's GC (moot for a raw immediate WORD, which is self-contained,
+    ;; but still correct for the pointer case); body is the real CONS box
+    ;; and is already kept alive by the form.
     (defun nl_sf_while_body_done (eval-rc body env out)
       (if (= eval-rc 0)
           (nl_sf_while_body
-           (extern-call nl_cons_cdr_ptr body)
+           (nl_sf_while_body_word body)
            env out 0)
         1))
 
@@ -118,9 +161,12 @@
        body env out))
 
     ;; Walk the body-form list, eval each (discard).  Returns 0 (all ok) or
-    ;; 1 (a form errored).  Body Nil -> 0.
+    ;; 1 (a form errored).  Body Nil -> 0.  BODY is a raw tagged WORD
+    ;; (perf/while-body-cdr-raw-word above); `nl_val_tag' classifies it.
+    ;; The non-Nil branch's BODY is already the exact pointer
+    ;; `nl_cons_car_ptr' needs -- a pointer WORD IS that `*const Sexp'.
     (defun nl_sf_while_body (body env out _pad)
-      (if (= (sexp-tag body) 0)
+      (if (= (nl_val_tag body) 0)
           0
         (nl_sf_while_body_eval
          (extern-call nl_cons_car_ptr body)
@@ -128,10 +174,12 @@
 
     ;;--- One iteration (eval test; if truthy eval body); returns status ---
 
-    ;; body-start: body = cdr(args) (extern-call FIRST), then walk it.
+    ;; body-start: body = cdr-word(args) (perf/while-body-cdr-raw-word
+    ;; above), then walk it.  Covers the (rarer) empty-body `while' too:
+    ;; an empty body's cdr(args) is immediately the Nil terminator.
     (defun nl_sf_while_body_start (args env out _pad)
       (nl_sf_while_body
-       (extern-call nl_cons_cdr_ptr args)
+       (nl_sf_while_body_word args)
        env out 0))
 
     ;; Dispatch on truthy.  1 -> eval body (0 continue / 1 err); 0 -> 2 (done);

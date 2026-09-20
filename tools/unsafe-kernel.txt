@@ -215,3 +215,14 @@ pinned-kernel-touch lisp/nelisp-cc-mirror-is-constant.el
 # 101 -> 103 on 2026-09-20: the two kernel units documented immediately
 # above joined the raw-memory surface.
 kernel-files 103
+
+# perf/setq-pair-cdr-raw-word (segment G2, 2026-09-21): same pattern as
+# A1/A2 above.  `nelisp-cc-sf-setq.el' reads the next-(SYM VAL)-pair-or-
+# Nil cdr via a new local `ptr-read-u64'-based raw-word helper instead of
+# the materialising `record-slot-ref-ptr' / `nl_cons_cdr_ptr', avoiding a
+# materialised Nil box on every `setq'.  No pointer is retained past the
+# call.
+pinned-kernel-touch lisp/nelisp-cc-sf-setq.el
+# 103 -> 104 on 2026-09-21: the kernel unit documented immediately above
+# joined the raw-memory surface.
+kernel-files 104
