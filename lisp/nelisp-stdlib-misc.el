@@ -1276,3 +1276,74 @@ splicing, is the honest match for Emacs's own documented contract.
         (while cur (funcall function (car cur) (cadr cur)) (setq cur (cddr cur)))))
      (t (dolist (pair map) (funcall function (car pair) (cdr pair)))))
     nil))
+
+;; ---- `read-string' / `read-from-minibuffer' batch semantics ----------
+;; Mirror of the `scripts/nelisp-stdlib-prelude.el' definitions of the
+;; same name (see that file for the Emacs 31.1 batch-mode measurements
+;; this implements) -- same pattern as `buffer-substring-no-properties'
+;; above: `(unless (fboundp ...))'-guarded so a host running this file
+;; keeps its own real functions, and a standalone image that already
+;; loaded the prelude keeps that copy.
+(declare-function read-stdin-bytes "ext:nelisp-runtime" (nbytes))
+
+(defvar nelisp--stdin-read-pending ""
+  "Bytes drawn from stdin but not yet consumed by `read'/`read-string'.")
+
+(unless (fboundp 'nelisp--stdin-read-line)
+  (defun nelisp--stdin-read-line ()
+    "Read one line from stdin, terminated by \\r, \\n, or EOF.
+Return the line's text, never including the terminator.  Signal
+`end-of-file' only when nothing at all -- no characters and no queued
+terminator -- is available."
+    (catch 'nelisp--stdin-line-done
+      (while t
+        (let* ((pending nelisp--stdin-read-pending)
+               (term (string-match "[\r\n]" pending)))
+          (if term
+              (progn
+                (setq nelisp--stdin-read-pending (substring pending (1+ term)))
+                (throw 'nelisp--stdin-line-done (substring pending 0 term)))
+            (let ((chunk (read-stdin-bytes 65536)))
+              (if (null chunk)
+                  (if (> (length pending) 0)
+                      (progn
+                        (setq nelisp--stdin-read-pending "")
+                        (throw 'nelisp--stdin-line-done pending))
+                    (signal 'end-of-file (list "Error reading from stdin")))
+                (setq nelisp--stdin-read-pending (concat pending chunk))))))))))
+
+(unless (fboundp 'nelisp--stdin-read-line-with-default)
+  (defun nelisp--stdin-read-line-with-default (default-value)
+    "Read one line via `nelisp--stdin-read-line', substituting DEFAULT-VALUE.
+An empty line paired with a non-nil DEFAULT-VALUE answers DEFAULT-VALUE
+\(its `car' when it is a list); anything else answers the line as read."
+    (let ((line (nelisp--stdin-read-line)))
+      (if (and (string= line "") default-value)
+          (if (consp default-value) (car default-value) default-value)
+        line))))
+
+(unless (fboundp 'read-string)
+  (defun read-string (prompt &optional _initial-input _history default-value
+                              _inherit-input-method)
+    "Read a line of text from stdin, per Emacs's batch-mode semantics.
+PROMPT is written to stdout first.  INITIAL-INPUT, HISTORY and
+INHERIT-INPUT-METHOD are accepted for signature compatibility and have
+no effect outside a real minibuffer."
+    (princ prompt)
+    (nelisp--stdin-read-line-with-default default-value)))
+
+(unless (fboundp 'read-from-minibuffer)
+  (defun read-from-minibuffer (prompt &optional _initial-contents _keymap read
+                                       _history default-value
+                                       _inherit-input-method)
+    "Read from stdin, per Emacs's batch-mode semantics; see `read-string'.
+INITIAL-CONTENTS, KEYMAP, HISTORY and INHERIT-INPUT-METHOD are accepted
+for signature compatibility and have no effect outside a real
+minibuffer.  When READ is non-nil, the resolved string is passed
+through `read' and the Lisp object it produces is returned instead of
+the string itself."
+    (princ prompt)
+    (let ((resolved (nelisp--stdin-read-line-with-default default-value)))
+      (if read
+          (car (read-from-string resolved))
+        resolved))))

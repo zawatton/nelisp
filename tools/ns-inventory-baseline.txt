@@ -268,7 +268,15 @@
 # properties fix (Doc 204 gave the runtime real buffers; that pin's own
 # key is unchanged, since its shape is not part of a plain ns-collision
 # key).
-ns-collision 269
+# 269 -> 274 on 2026-09-20: read-string / read-from-minibuffer batch
+# semantics for the `-Q --batch -l FIXTURE' consumer (../nelisp-agent's
+# supervisor and MCP stdio tests).  Five names added byte-identically to
+# both lisp/nelisp-stdlib-misc.el and scripts/nelisp-stdlib-prelude.el,
+# same pattern as buffer-substring-no-properties above: the two public
+# entry points (read-string, read-from-minibuffer) and the three private
+# helpers they share (nelisp--stdin-read-line,
+# nelisp--stdin-read-line-with-default, nelisp--stdin-read-pending).
+ns-collision 274
 # 97 -> 96 on 2026-08-19: `string-equal' no longer differs between the two
 # files -- the prelude's now signals for a non-string instead of falling
 # through to `equal', and the lisp copy was brought with it.  Ratcheted down
@@ -1348,3 +1356,8 @@ pinned-collision ns-collision	nelisp-cl-generic--subclass-parents	lisp/nelisp-cl
 pinned-collision ns-collision	nelisp-cl-generic--argument-precedence-order	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	nelisp-cl-generic--method-specializer-rank-at	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	nelisp-cl-generic--multi-applicable-methods	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp--stdin-read-line	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp--stdin-read-line-with-default	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp--stdin-read-pending	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	read-from-minibuffer	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	read-string	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el

@@ -11761,6 +11761,92 @@ line-continuation escapes, which generate nothing)."
                 (car (read-from-string s))
               (nelisp--read-dispatch s))))))
 
+;; ---- `read-string' / `read-from-minibuffer' batch semantics ----------
+;;
+;; Measured against Emacs 31.1 in batch mode, stdin piped rather than a
+;; tty (there is no minibuffer to display, so there is nothing else this
+;; can mean here):
+;;
+;;   - The PROMPT is written verbatim to stdout: no space or newline is
+;;     appended, and nothing is echoed back for what was typed.
+;;   - The answer is one "line" of stdin, where a line ends at the first
+;;     ?\r, ?\n, or EOF -- ?\r and ?\n are each their own terminator and
+;;     are never collapsed as a CRLF pair, so "a\r\nb" reads as "a", then
+;;     "" (the empty segment between \r and \n), then "b".
+;;   - EOF ends a line the same as a terminator when at least one
+;;     character (or a zero-length queued segment) is already there to
+;;     return; only a read that finds nothing at all signals
+;;     `(end-of-file "Error reading from stdin")', the exact data Emacs
+;;     31.1 signals from this path (`read-from-minibuffer' with READ
+;;     non-nil instead routes the resolved string through `read', whose
+;;     own end-of-file on an empty string carries no data -- so that
+;;     shape comes for free below by reusing `read-from-string').
+;;   - An empty line combined with a non-nil DEFAULT-VALUE answers that
+;;     default (its `car' when it is a list) instead of "".
+;;   - INITIAL-INPUT/INITIAL-CONTENTS, KEYMAP, HISTORY and
+;;     INHERIT-INPUT-METHOD are accepted for arity but have no effect:
+;;     there is no minibuffer to pre-fill and no history ring to update,
+;;     and Emacs's own answer does not depend on them either.
+;;
+;; Shares `nelisp--stdin-read-pending' with `read''s stdin dispatch above
+;; so the two APIs never race for the same underlying bytes.
+(defun nelisp--stdin-read-line ()
+  "Read one line from stdin, terminated by \\r, \\n, or EOF.
+Return the line's text, never including the terminator.  Signal
+`end-of-file' only when nothing at all -- no characters and no queued
+terminator -- is available."
+  (catch 'nelisp--stdin-line-done
+    (while t
+      (let* ((pending nelisp--stdin-read-pending)
+             (term (string-match "[\r\n]" pending)))
+        (if term
+            (progn
+              (setq nelisp--stdin-read-pending (substring pending (1+ term)))
+              (throw 'nelisp--stdin-line-done (substring pending 0 term)))
+          (let ((chunk (read-stdin-bytes 65536)))
+            (if (null chunk)
+                (if (> (length pending) 0)
+                    (progn
+                      (setq nelisp--stdin-read-pending "")
+                      (throw 'nelisp--stdin-line-done pending))
+                  (signal 'end-of-file (list "Error reading from stdin")))
+              (setq nelisp--stdin-read-pending (concat pending chunk)))))))))
+
+(defun nelisp--stdin-read-line-with-default (default-value)
+  "Read one line via `nelisp--stdin-read-line', substituting DEFAULT-VALUE.
+An empty line paired with a non-nil DEFAULT-VALUE answers DEFAULT-VALUE
+\(its `car' when it is a list); anything else answers the line as read."
+  (let ((line (nelisp--stdin-read-line)))
+    (if (and (string= line "") default-value)
+        (if (consp default-value) (car default-value) default-value)
+      line)))
+
+(unless (fboundp 'read-string)
+  (defun read-string (prompt &optional _initial-input _history default-value
+                              _inherit-input-method)
+    "Read a line of text from stdin, per Emacs's batch-mode semantics.
+PROMPT is written to stdout first.  INITIAL-INPUT, HISTORY and
+INHERIT-INPUT-METHOD are accepted for signature compatibility and have
+no effect outside a real minibuffer."
+    (princ prompt)
+    (nelisp--stdin-read-line-with-default default-value)))
+
+(unless (fboundp 'read-from-minibuffer)
+  (defun read-from-minibuffer (prompt &optional _initial-contents _keymap read
+                                       _history default-value
+                                       _inherit-input-method)
+    "Read from stdin, per Emacs's batch-mode semantics; see `read-string'.
+INITIAL-CONTENTS, KEYMAP, HISTORY and INHERIT-INPUT-METHOD are accepted
+for signature compatibility and have no effect outside a real
+minibuffer.  When READ is non-nil, the resolved string is passed
+through `read' and the Lisp object it produces is returned instead of
+the string itself."
+    (princ prompt)
+    (let ((resolved (nelisp--stdin-read-line-with-default default-value)))
+      (if read
+          (car (read-from-string resolved))
+        resolved))))
+
 ;; Doc 152 gate-G: give the standard built-in error symbols their
 ;; `error-conditions' so a `(condition-case ... (error H))' handler matches
 ;; them.  The standalone reader's condition-case matcher checks membership of

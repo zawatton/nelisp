@@ -181,6 +181,18 @@ single-argument delegate to `nelisp-json-encode'."
     "Always t here: this file only loads when JSON support is present."
     t))
 
+;; json.el's classic configuration variables, with Emacs 31.1's defaults
+;; (measured: json-false :json-false, json-null nil, json-object-type alist,
+;; json-array-type vector, json-key-type nil).  Old-style callers read them
+;; as free variables -- ../nelisp-agent/test/mcp-modern-server-fixture.el:83
+;; builds `("isError" . ,json-false)' -- so they must be bound, not only
+;; accepted as keywords by the parse/serialize wrappers above.
+(defvar json-false :json-false)
+(defvar json-null nil)
+(defvar json-object-type 'alist)
+(defvar json-array-type 'vector)
+(defvar json-key-type nil)
+
 (provide 'json)
 
 ;;; json.el ends here
