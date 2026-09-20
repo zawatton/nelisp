@@ -179,6 +179,9 @@ matches how the corpus this backs always calls this with no argument
           (princ (format "  skipped  %d/%d  %s\n" i n name)))
          (t
           (setq unexpected (1+ unexpected))
+          ;; Emacs's batch runner prints the condition before the FAILED line;
+          ;; the census histogram keys on this line.
+          (princ (format "Test %s condition:\n    %S\n" name (cdr outcome)))
           (princ (format "   FAILED  %d/%d  %s\n" i n name))))))
     (princ "\n")
     (princ (format "Ran %d tests, %d results as expected, %d unexpected%s\n"
