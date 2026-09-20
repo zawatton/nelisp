@@ -1212,7 +1212,13 @@ pinned-collision ns-collision-divergent	mod	lisp/nelisp-stdlib.el scripts/nelisp
 pinned-collision ns-collision-divergent	nelisp--apply-closure	lisp/nelisp-stdlib-eval-core.el src/nelisp-eval.el	9be45664bd35
 pinned-collision ns-collision-divergent	nelisp--builtin-provide	src/nelisp-eval.el src/nelisp-load.el	d4a789e533a1
 pinned-collision ns-collision-divergent	nelisp--builtin-require	src/nelisp-eval.el src/nelisp-load.el	319625570d48
-pinned-collision ns-collision-divergent	nelisp--bq-expand	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	f9a31e2c4e1c
+# segment B1 fix/backquote-vector-quasi: `nelisp--bq-expand' re-pinned.  Its
+# vector-quasi branch was rewritten from `(signal 'error (list "nelisp-bq:
+# vector quasi not supported"))' to expand the vector as a list template and
+# rebuild the result with `vconcat', in both copies; the bodies still
+# diverge in every other way already pinned here, so the divergence itself
+# stays pinned.
+pinned-collision ns-collision-divergent	nelisp--bq-expand	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	73bba5f7fe9b
 pinned-collision ns-collision-divergent	nelisp--bq-expand-list	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	d95ffd6e58f2
 pinned-collision ns-collision-divergent	nelisp--emit-to-stream	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	6259062234bd
 pinned-collision ns-collision-divergent	nelisp--make-record	lisp/nelisp-heap-image.el scripts/nelisp-stdlib-prelude.el	8dafd3358494
