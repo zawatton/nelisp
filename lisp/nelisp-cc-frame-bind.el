@@ -37,8 +37,9 @@
 ;;   1. Read DEPTH from frames-record slot 1.  If 0 → return 0 (no-op).
 ;;   2. Read FRAME-PTR = vector-ref-ptr BACKING (depth-1).
 ;;   3. Read HT-PTR    = record-slot-ref-ptr FRAME 0.
-;;   4. Read BUCKET-COUNT = sexp-int-unwrap (record-slot-ref-ptr HT 0)
-;;      and BUCKETS-PTR  = record-slot-ref-ptr HT 1.
+;;   4. Read BUCKET-COUNT = raw-word Int-decode of HT slot 0 (perf/frame-
+;;      bind-int-slot-raw below -- was sexp-int-unwrap (record-slot-ref-ptr
+;;      HT 0)) and BUCKETS-PTR = record-slot-ref-ptr HT 1.
 ;;   5. Hash NAME via extern-call nelisp_fnv1a (Doc 115 §115.7
 ;;      pure-elisp FNV-1a).
 ;;      idx = hash & (bucket-count - 1).  (Doc 115 §115.7 will rewire
@@ -81,6 +82,32 @@
 
 (defconst nelisp-cc-frame-bind--source
   '(seq
+    ;; perf/frame-bind-int-slot-raw (segment G2): every Int slot this file
+    ;; reads (frames-ptr slot 1 = stack DEPTH, ht-ptr slot 0 = BUCKET-COUNT,
+    ;; ht-ptr slot 2 = entry COUNT) is `Sexp::Int' by construction (`nl_frame_
+    ;; push'/`nelisp_frame_bind_prepend' are the only writers, and both always
+    ;; store an Int) -- never a pointer.  `record-slot-ref-ptr' materialises
+    ;; a fresh 32-byte box for any immediate slot (Doc 147 Phase 2,
+    ;; lisp/nelisp-cc-nlrecord-slot-ptr.el), so every one of the five call
+    ;; sites below paid `(alloc-bytes 32 8)' + `nl_val_load' on EVERY `let'
+    ;; binding and EVERY function-call frame's formal bind (this file backs
+    ;; `nl_bind_frame_fast' -> `nelisp_frame_bind') just to `sexp-int-unwrap'
+    ;; the same integer back out and discard the box -- exactly the pattern
+    ;; A1 (ab4a72484, lisp/nelisp-cc-frame-stack-find.el) and A2 (441aa152c,
+    ;; lisp/nelisp-cc-mirror-lookup-entry.el) already fixed for the lookup
+    ;; and setq paths.  Fix: read the slot's raw 8-byte tagged WORD directly
+    ;; (identical box_ptr -> NlRecord box -> slots.data_ptr -> word
+    ;; addressing to `nl_record_slot_ptr') and decode the Int in place with
+    ;; `(sar word 2)' (`nl_val_load' encodes `Int(n)' as `(n<<2)|1', so an
+    ;; arithmetic right-shift by 2 recovers the exact same `n' `sexp-int-
+    ;; unwrap' would have) instead of materialising.  REC-PTR must already
+    ;; be a validated Record view whose slot IDX is provably always Int, the
+    ;; same precondition `nelisp_mirror_slot_raw_word' (441aa152c) relies on
+    ;; for `ht_rec.slots[0]'.
+    (defun nelisp_frame_bind_slot_raw_word (rec-ptr idx)
+      (ptr-read-u64
+       (+ (ptr-read-u64 (ptr-read-u64 rec-ptr 8) 32) (* idx 8))
+       0))
     (defun nelisp_frame_bind_walk_update (bucket-view name-ptr cell-ptr _pad)
       ;; Tail-recursive walk over a bucket's cons chain looking for an
       ;; existing (KEY . CELL) pair whose KEY matches NAME-PTR.
@@ -215,11 +242,10 @@
             (record-slot-ref-ptr ht-ptr 1)
             (logand
              (extern-call nelisp_fnv1a name-ptr)
-             (- (sexp-int-unwrap (record-slot-ref-ptr ht-ptr 0)) 1))
+             (- (sar (nelisp_frame_bind_slot_raw_word ht-ptr 0) 2) 1))
             scratch-pair-slot scratch-outer-slot)
            (sexp-int-make scratch-count-slot
-                          (+ (sexp-int-unwrap
-                              (record-slot-ref-ptr ht-ptr 2))
+                          (+ (sar (nelisp_frame_bind_slot_raw_word ht-ptr 2) 2)
                              1))
            (record-slot-set ht-ptr 2 scratch-count-slot)))
     (defun nelisp_frame_bind_in_ht
@@ -242,7 +268,7 @@
                (record-slot-ref-ptr ht-ptr 1)
                (logand
                 (extern-call nelisp_fnv1a name-ptr)
-                (- (sexp-int-unwrap (record-slot-ref-ptr ht-ptr 0))
+                (- (sar (nelisp_frame_bind_slot_raw_word ht-ptr 0) 2)
                    1)))
               name-ptr cell-ptr 0) ; _pad — Doc 124.F-blocker even-arity fix
              1)
@@ -274,16 +300,17 @@
       ;; (rdi/rsi/rdx/rcx/r8/r9), so the helper avoids any stack-arg
       ;; complexity.  The safe Rust wrapper allocates the 3 scratch
       ;; Sexp::Nil slots on the call stack and passes their pointers.
-      (if (= (sexp-int-unwrap (record-slot-ref-ptr frames-ptr 1)) 0)
-          0
-        (nelisp_frame_bind_in_ht
-         (record-slot-ref-ptr
-          (vector-ref-ptr
-           (record-slot-ref-ptr frames-ptr 0)
-           (- (sexp-int-unwrap (record-slot-ref-ptr frames-ptr 1)) 1))
-          0)
-         name-ptr cell-ptr
-         scratch-pair-slot scratch-outer-slot scratch-count-slot))))
+      (let* ((depth (sar (nelisp_frame_bind_slot_raw_word frames-ptr 1) 2)))
+        (if (= depth 0)
+            0
+          (nelisp_frame_bind_in_ht
+           (record-slot-ref-ptr
+            (vector-ref-ptr
+             (record-slot-ref-ptr frames-ptr 0)
+             (- depth 1))
+            0)
+           name-ptr cell-ptr
+           scratch-pair-slot scratch-outer-slot scratch-count-slot)))))
   "AOT source for Doc 111 §111.E #23 / Doc 115 §115.5
 `frame_bind_rust_direct'.
 
