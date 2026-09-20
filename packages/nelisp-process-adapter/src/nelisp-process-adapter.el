@@ -196,9 +196,23 @@ stays the authoritative signal, per the decode convention above)."
 (defun make-process (&rest plist)
   "Doc 184 P1: standard-name `make-process', built directly on the native
 `nelisp-process-*' primitives, with a real `:filter' slot the prelude's
-own version (S1.2) silently dropped."
+own version (S1.2) silently dropped.
+
+`:buffer' is stored on the same process plist as `:filter' (via
+`process-put', not a separate table) -- both so a caller's `process-buffer'/
+`set-process-buffer' (defined over `process-get'/`process-put' on this same
+`:buffer' key, per the prelude's own `process-get'/`process-put' -- see
+`nelisp-process-adapter--drain-and-fire' for the read side) sees the exact
+object this function stored, and so a process with a `:buffer' but no
+`:filter' gets Emacs's own default behaviour (`internal-default-process-
+filter': output is appended to the buffer) instead of the output being
+silently dropped -- the gap this file's own commentary above already
+diagnosed for `:filter' itself, measured against host Emacs 31.1 on Linux
+at 2e3361b13: `(make-process :name \"e\" :command (list \"echo\" \"hi\")
+:buffer BUF)' left BUF empty here vs `\"hi\\n\"' on a host."
   (let* ((name (or (plist-get plist :name) "process"))
          (command (plist-get plist :command))
+         (buffer (plist-get plist :buffer))
          (stderr-buffer (plist-get plist :stderr))
          (sentinel (plist-get plist :sentinel))
          (filter (plist-get plist :filter))
@@ -213,6 +227,7 @@ own version (S1.2) silently dropped."
       (process-put proc :sentinel sentinel)
       (process-put proc :stderr stderr-buffer)
       (process-put proc :filter filter)
+      (process-put proc :buffer buffer)
       (process-put proc :adapter-sentinel-fired nil)
       (setq nelisp-process-adapter--live (cons proc nelisp-process-adapter--live))
       proc)))
@@ -275,6 +290,39 @@ simply a no-op, not an error)."
 
 ;;; The ONE poll loop (Doc 184 S2/S3.3) -----------------------------------
 
+(defun nelisp-process-adapter--insert-output (proc chunk)
+  "Insert CHUNK into PROC's `:buffer', mirroring host Emacs's default
+process filter (`internal-default-process-filter') for a process that
+has a `:buffer' but no `:filter': the reproducer this closes is
+`(make-process :buffer BUF ...)' with no `:filter' at all, whose
+output this file used to drop on the floor entirely (measured against
+host Emacs 31.1 on Linux at 2e3361b13: BUF stayed empty here, held
+\"hi\\n\" on a host).
+
+This runtime has no per-process output marker (`process-mark') yet, so
+this always appends at `(point-max)' of the buffer rather than tracking
+a persistent marker position the way a host does -- code that also
+moves point or inserts into the SAME buffer while the process is live
+will not see host Emacs's exact marker-vs-point interleaving, but
+plain output collection (what the reproducer and every ordinary
+`:buffer'-only caller actually want) matches."
+  (let ((buffer (process-get proc :buffer)))
+    (when (and buffer (buffer-live-p buffer))
+      (with-current-buffer buffer
+        (goto-char (point-max))
+        (insert chunk)))))
+
+(defun nelisp-process-adapter--dispatch-output (proc chunk filter)
+  "Deliver CHUNK read from PROC: call FILTER when non-nil -- exactly as
+before this fix, a process with a real `:filter' installed still gets
+ONLY the filter call, nothing is inserted into `:buffer' (matching
+Emacs: installing a filter takes over the buffer-insertion job too).
+With no FILTER, fall back to `nelisp-process-adapter--insert-output'
+instead of silently discarding CHUNK."
+  (if filter
+      (funcall filter proc chunk)
+    (nelisp-process-adapter--insert-output proc chunk)))
+
 (defun nelisp-process-adapter--drain-and-fire (proc)
   "One zero-timeout poll pass over PROC: dispatch any new output to its
 filter, and -- on first-observed exit -- fire its sentinel with the
@@ -302,14 +350,14 @@ native process object) and does not know this one."
         (let ((chunk (nelisp-process-read-output proc 65536)))
           (when (and chunk (> (length chunk) 0))
             (setq got-bytes t)
-            (when filter (funcall filter proc chunk)))))
+            (nelisp-process-adapter--dispatch-output proc chunk filter))))
       (when (and (= exited 1) (not (process-get proc :adapter-sentinel-fired)))
         ;; A process can exit with a final chunk still sitting in the pipe;
         ;; drain once more before declaring it done.
         (let ((chunk (nelisp-process-read-output proc 65536)))
           (when (and chunk (> (length chunk) 0))
             (setq got-bytes t)
-            (when filter (funcall filter proc chunk))))
+            (nelisp-process-adapter--dispatch-output proc chunk filter)))
         (process-put proc :adapter-sentinel-fired t)
         (setq nelisp-process-adapter--live (delq proc nelisp-process-adapter--live))
         (let ((sentinel (process-get proc :sentinel)))
