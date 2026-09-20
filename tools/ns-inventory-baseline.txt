@@ -1222,7 +1222,7 @@ pinned-collision ns-collision-divergent	make-hash-table	lisp/nelisp-stdlib-hash.
 # packages/nelisp-process-adapter/src/nelisp-process-adapter.el's own
 # `make-process' still does not do -- the two bodies keep diverging,
 # only the prelude side's text changed.
-pinned-collision ns-collision-divergent	make-process	packages/nelisp-process-adapter/src/nelisp-process-adapter.el scripts/nelisp-stdlib-prelude.el	9a3c259569c7
+pinned-collision ns-collision-divergent	make-process	packages/nelisp-process-adapter/src/nelisp-process-adapter.el scripts/nelisp-stdlib-prelude.el	aefed2e54fdd
 pinned-collision ns-collision-divergent	mapc	lisp/nelisp-stdlib-hof.el scripts/nelisp-stdlib-prelude.el	4e87f4a62eba
 pinned-collision ns-collision-divergent	mapcar	lisp/nelisp-stdlib-hof.el scripts/nelisp-stdlib-prelude.el	219ed3e7df2f
 pinned-collision ns-collision-divergent	mapconcat	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	08041b57a105
