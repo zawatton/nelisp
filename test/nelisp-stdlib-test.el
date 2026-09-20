@@ -1218,6 +1218,82 @@ same fixture dates used for the `format-time-string' UTC check."
         cn)")
     "(1 . 2)")))
 
+;; Segment F item 5: `cl-count'/`cl-remove'/`cl-delete'/`cl-assoc'/
+;; `cl-sort'/`cl-remove-duplicates' each took `&rest _' and discarded
+;; every keyword, so `:key'/`:test' were silently ignored. Reproducer
+;; and expected values (including cl-assoc's `eql'-not-`equal' default,
+;; a real behavior change from the old always-`assoc' stub) all
+;; verified against Emacs 31.1 before writing the fix.
+(ert-deftest nelisp-stdlib-segf-cl-count-key-test ()
+  "The task's own reproducer: :key #'car :test #'equal."
+  (should
+   (equal
+    (nelisp-stdlib-segf--standalone-eval
+     "(cl-count \"a\" (list (cons \"a\" 1) (cons \"b\" 2))
+                 :key #'car :test #'equal)")
+    "1")))
+
+(ert-deftest nelisp-stdlib-segf-cl-count-default-eql ()
+  "No keywords: default test is `eql', matching the old behavior."
+  (should
+   (equal (nelisp-stdlib-segf--standalone-eval
+           "(cl-count 2 (list 1 2 3 2))")
+          "2")))
+
+(ert-deftest nelisp-stdlib-segf-cl-remove-key-test ()
+  (should
+   (equal
+    (nelisp-stdlib-segf--standalone-eval
+     "(cl-remove \"a\" (list (cons \"a\" 1) (cons \"b\" 2))
+                  :key #'car :test #'equal)")
+    "((\"b\" . 2))")))
+
+(ert-deftest nelisp-stdlib-segf-cl-delete-test-keyword ()
+  (should
+   (equal (nelisp-stdlib-segf--standalone-eval
+           "(cl-delete 2 (list 1 2 3 2 4) :test #'=)")
+          "(1 3 4)")))
+
+(ert-deftest nelisp-stdlib-segf-cl-assoc-default-is-eql-not-equal ()
+  "cl-assoc's default test is `eql', unlike plain `assoc' (`equal') --
+a real behavior change from the stub this replaces, which always
+called `assoc'."
+  (should
+   (equal (nelisp-stdlib-segf--standalone-eval
+           "(cl-assoc \"a\" (list (cons \"a\" 1)))")
+          "nil"))
+  (should
+   (equal (nelisp-stdlib-segf--standalone-eval
+           "(cl-assoc \"a\" (list (cons \"a\" 1)) :test #'equal)")
+          "(\"a\" . 1)")))
+
+(ert-deftest nelisp-stdlib-segf-cl-assoc-key ()
+  (should
+   (equal
+    (nelisp-stdlib-segf--standalone-eval
+     "(cl-assoc 1 (list (cons (cons 1 :x) :a) (cons (cons 2 :y) :b))
+                 :key #'car)")
+    "((1 . :x) . :a)")))
+
+(ert-deftest nelisp-stdlib-segf-cl-sort-key ()
+  (should
+   (equal
+    (nelisp-stdlib-segf--standalone-eval
+     "(cl-sort (list (cons 3 :c) (cons 1 :a) (cons 2 :b)) #'< :key #'car)")
+    "((1 . :a) (2 . :b) (3 . :c))")))
+
+(ert-deftest nelisp-stdlib-segf-cl-remove-duplicates-default-keeps-last ()
+  (should
+   (equal (nelisp-stdlib-segf--standalone-eval
+           "(cl-remove-duplicates (list 1 2 1 3 2))")
+          "(1 3 2)")))
+
+(ert-deftest nelisp-stdlib-segf-cl-remove-duplicates-from-end-keeps-first ()
+  (should
+   (equal (nelisp-stdlib-segf--standalone-eval
+           "(cl-remove-duplicates (list 1 2 1 3 2) :from-end t)")
+          "(1 2 3)")))
+
 ;;; Phase 5-E.0 primitives (MCP server I/O + file tool dispatchers) ---
 
 (ert-deftest nelisp-stdlib-phase5e-princ-terpri-routable ()
