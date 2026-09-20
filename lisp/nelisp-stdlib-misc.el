@@ -2059,3 +2059,49 @@ signals an error rather than passing text through unexpanded."
   (defun current-time-string (&optional time zone)
     "Return a string like \"Thu Jan  1 09:00:00 1970\" for TIME/ZONE."
     (format-time-string "%a %b %e %H:%M:%S %Y" time zone)))
+
+;; fix/cl-letf-non-literal-place: the previous body read the symbol out
+;; of PLACE's own source text via `(cadr (cadr place))', i.e. it assumed
+;; `(symbol-function 'sym)'/`(symbol-value 'sym)' with a literally quoted
+;; symbol.  `(let ((c 'foo)) (cl-letf (((symbol-function c) ...)) ...))'
+;; -- PLACE-EXPR a variable rather than a quoted symbol -- made `(cadr
+;; place)' the symbol `c' itself, and `(cadr c)' then signalled
+;; `wrong-type-argument listp c' instead of reading through to `foo'.
+;; The fix evaluates PLACE-EXPR once into a save slot at run time (`s' in
+;; the `let' below) instead of reading it at macroexpansion time, which
+;; also covers the literal-quoted-symbol case unchanged (evaluating
+;; `'foo' still yields `foo').
+(unless (fboundp 'cl-letf)
+  (defmacro cl-letf (bindings &rest body)
+    "Temporarily bind each generalized PLACE in BINDINGS to VAL, restore
+on exit. `(symbol-function PLACE-EXPR)' and `(symbol-value
+PLACE-EXPR)' evaluate PLACE-EXPR once to find which symbol to rebind --
+it need not be a literal quoted symbol.  Any other PLACE must be a
+plain variable (it goes through `setq')."
+    (let ((saves nil) (sets nil) (restores nil))
+      (dolist (b bindings)
+        (let ((place (car b)) (val (cadr b)) (sv (gensym)))
+          (cond
+           ((and (consp place) (eq (car place) 'symbol-value))
+            (let ((sym-expr (cadr place)))
+              (push `(,sv (let ((s ,sym-expr)) (cons s (symbol-value s))))
+                    saves)
+              (push `(set (car ,sv) ,val) sets)
+              (push `(set (car ,sv) (cdr ,sv)) restores)))
+           ((and (consp place) (eq (car place) 'symbol-function))
+            (let ((sym-expr (cadr place)))
+              (push `(,sv (let ((s ,sym-expr))
+                            (cons s (and (fboundp s) (symbol-function s)))))
+                    saves)
+              (push `(fset (car ,sv) ,val) sets)
+              (push `(if (cdr ,sv)
+                         (fset (car ,sv) (cdr ,sv))
+                       (fmakunbound (car ,sv)))
+                    restores)))
+           (t
+            (push `(,sv ,place) saves)
+            (push `(setq ,place ,val) sets)
+            (push `(setq ,place ,sv) restores)))))
+      `(let ,(nreverse saves)
+         (unwind-protect (progn ,@(nreverse sets) ,@body)
+           ,@(nreverse restores))))))

@@ -1117,6 +1117,61 @@ same fixture dates used for the `format-time-string' UTC check."
                   "(current-time-string 0 t)")
                   "\"Thu Jan  1 00:00:00 1970\"")))
 
+;; Segment F item 2: `cl-letf' read the symbol to rebind out of PLACE's
+;; own source text (`(cadr (cadr place))'), so `(symbol-function EXPR)'
+;; only worked when EXPR was a literally quoted symbol; a variable
+;; holding a symbol signalled `wrong-type-argument listp EXPR' instead
+;; of being evaluated.  Reproducer and fix both from the task brief.
+(ert-deftest nelisp-stdlib-segf-cl-letf-non-literal-symbol-function ()
+  "A non-literal `(symbol-function EXPR)' place is evaluated, not read."
+  (should
+   (equal
+    (nelisp-stdlib-segf--standalone-eval
+     "(progn (fset 'foo (lambda () 1))
+             (let ((c 'foo))
+               (cl-letf (((symbol-function c) (lambda () 2)))
+                 (funcall 'foo))))")
+    "2"))
+  (should
+   (equal
+    (nelisp-stdlib-segf--standalone-eval
+     "(progn (fset 'foo (lambda () 1))
+             (let ((c 'foo))
+               (cl-letf (((symbol-function c) (lambda () 2)))
+                 (funcall 'foo)))
+             (funcall 'foo))")
+    "1")))
+
+(ert-deftest nelisp-stdlib-segf-cl-letf-literal-symbol-function-still-works ()
+  "The pre-existing literal-quoted-symbol place is unaffected."
+  (should
+   (equal
+    (nelisp-stdlib-segf--standalone-eval
+     "(progn (fset 'foo2 (lambda () 10))
+             (cl-letf (((symbol-function 'foo2) (lambda () 20)))
+               (funcall 'foo2)))")
+    "20")))
+
+(ert-deftest nelisp-stdlib-segf-cl-letf-unbound-function-restored ()
+  "A place whose function was unbound before is unbound again after."
+  (should
+   (equal
+    (nelisp-stdlib-segf--standalone-eval
+     "(let ((c 'nelisp-stdlib-segf-cl-letf-unbound-probe))
+        (cl-letf (((symbol-function c) (lambda () 1))) (funcall c))
+        (fboundp c))")
+    "nil")))
+
+(ert-deftest nelisp-stdlib-segf-cl-letf-non-literal-symbol-value ()
+  "A non-literal `(symbol-value EXPR)' place is evaluated, not read."
+  (should
+   (equal
+    (nelisp-stdlib-segf--standalone-eval
+     "(progn (defvar nelisp-stdlib-segf-zz 1)
+             (let ((c 'nelisp-stdlib-segf-zz))
+               (cl-letf (((symbol-value c) 99)) nelisp-stdlib-segf-zz)))")
+    "99")))
+
 ;;; Phase 5-E.0 primitives (MCP server I/O + file tool dispatchers) ---
 
 (ert-deftest nelisp-stdlib-phase5e-princ-terpri-routable ()
