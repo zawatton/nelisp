@@ -1,5 +1,40 @@
 # NeLisp Release Notes
 
+## v1.5.0 — 2026-09-20
+
+Full notes: [`release/v1.5.0/RELEASE.md`](release/v1.5.0/RELEASE.md).
+
+A minor release for the `nelisp-agent` host: all 80 of its host-only ERT
+test files now load and run to their summary line on the standalone (30 of
+80 on v1.4.0).  No existing contract intentionally changed.
+
+- **Compat layer** `standalone-compat/` (`ert`, `json`, `subr-x`, `seq`,
+  `simple`, `url-parse`), appended last to the standalone's `load-path`.
+- **Command line**: `-L`/`--directory`, `-l`, `-f`, `-Q`/`-q`/`--batch`
+  accepted, actions in argument order, `command-line-args(-left)`;
+  `--load` binds `load-file-name`.
+- **Runtime**: `noninteractive`, `invocation-name`/`-directory`;
+  `define-derived-mode` and mode hooks; a minimal keymap surface;
+  `process-send-string`/`-eof`/`-region` on subprocesses;
+  `insert-file-contents` leaves point before the text; `file-modes`,
+  `file-in-directory-p`, `file-equal-p`, `file-symlink-p`, `file-locked-p`;
+  `read-string`/`read-from-minibuffer` from stdin in batch;
+  `generate-new-buffer-name`, `set-process-query-on-exit-flag`.
+- **Release pipeline**: the linux-x86_64 blocker is the deterministic
+  checked-soak plus a 180 s RSS sanity run (5.0 min, was 65.0); the
+  one-hour soak runs weekly.
+- **CI**: Emacs 29.4 dropped (about 500× slower on the runtime's pure-Elisp
+  paths); ERT variants as parallel jobs; 26 min per push, was 46.  Supported
+  host Emacs: 30.2.
+
+Qualification: CI 21/21 (run 35479401233); full ERT 6,105 tests, 0
+unexpected; check tier 23/23; `stage-d-v3.0 standalone parity` PASS on all
+four lanes including windows-x86_64 (run 35479401265); agent host-only
+census 80/80 reached (222 tests pass, 265 fail inside reached files — the
+next segment); the semver release pipeline qualified `linux-x86_64` (5 min
+blocker: checked-soak plus a 180 s RSS sanity run with zero growth) and
+`linux-aarch64` (run 35486093104).
+
 ## v1.4.0 — 2026-09-19
 
 Full notes: [`release/v1.4.0/RELEASE.md`](release/v1.4.0/RELEASE.md).
