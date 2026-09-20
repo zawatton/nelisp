@@ -37,6 +37,11 @@
     ;; `defun'/`defvar' forms, same shape as `defun'/`defvar' themselves
     ;; -- it is a definition, not a call with a stray trailing form.
     cl-defstruct
+    ;; Segment 4 (2026-09-20): `define-derived-mode' (defined earlier in
+    ;; this same file) expands to a `defvar' per generated NAME-hook/-map/
+    ;; -syntax-table/-abbrev-table plus the mode's own `defun' -- same
+    ;; shape as `cl-defstruct' above, a definition rather than a call.
+    define-derived-mode
     ;; the prelude installs some names by calling its own registrars
     nelisp--error-register)
   "Heads that make sense as a top-level form here.")

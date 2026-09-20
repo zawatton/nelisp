@@ -6082,12 +6082,46 @@ which is what a caller asking for a range check wants."
 ;; `void-function' on 1 of the ~80 files
 ;; (../nelisp-agent/lisp/nl-agent-improvement-config.el, called at its
 ;; own top level inside a `(when (file-locked-p ...) ...)' guard).  This
-;; runtime has no `lock-buffer'/`.#lockfile' machinery at all (no file is
-;; ever locked), so "never locked" is not a stub standing in for missing
-;; behavior -- it is the only correct answer this runtime can give,
-;; exactly like `file-truename' just being `expand-file-name' above.
+;; runtime had no `lock-buffer'/`.#lockfile' machinery at all (no file was
+;; ever locked), so "never locked" was the only correct answer available
+;; -- until segment 4, where a second consumer
+;; (../nelisp-agent/lisp/nl-agent-training-runner.el:159-175,
+;; `nl-agent-training-runner--lock'/`--unlock') needs `lock-file'/
+;; `unlock-file' to be real enough that `file-locked-p' on the SAME file,
+;; in the SAME process, reports what they just did:
+;;   (when (file-locked-p file) (error ...))     ; must be nil before locking
+;;   (lock-file file)
+;;   (unless (file-locked-p file) (error ...))   ; must be non-nil right after
+;; Real Emacs's `lock-file' creates a `.#FILE' symlink recording
+;; "user@host.pid[:boot]"; `file-locked-p' answers nil (unlocked), t
+;; (locked by this process) or a descriptive string (locked by another).
+;; This runtime has no cross-process concept to report (one standalone
+;; process, no symlinks written) -- to say so honestly it keeps an
+;; in-process registry (`nelisp--file-locks', a `file-truename'-keyed
+;; hash table) instead of writing anything to disk.  `file-locked-p'
+;; can therefore only ever answer nil or t, never a "locked by USER@HOST"
+;; string; every consumer in this tree only branches on nil-vs-non-nil,
+;; so this is the batch-mode-honest subset, not a stub.
+(defvar nelisp--file-locks (make-hash-table :test 'equal)
+  "In-process registry of `lock-file'-held names, keyed by `file-truename'.
+See the `file-locked-p' block comment above for why this is in-memory
+rather than a real `.#FILE' symlink.")
+(unless (fboundp 'lock-file)
+  (defun lock-file (filename)
+    "Record FILENAME as locked by this process.  See `file-locked-p'."
+    (puthash (file-truename filename) t nelisp--file-locks)
+    nil))
+(unless (fboundp 'unlock-file)
+  (defun unlock-file (filename)
+    "Release FILENAME, previously recorded by `lock-file'."
+    (remhash (file-truename filename) nelisp--file-locks)
+    nil))
 (unless (fboundp 'file-locked-p)
-  (defun file-locked-p (_filename) nil))
+  (defun file-locked-p (filename)
+    "Non-nil (always `t', never a \"locked by USER@HOST\" string -- see
+the block comment above `nelisp--file-locks') if FILENAME was `lock-file'd
+and not yet `unlock-file'd, in THIS process; nil otherwise."
+    (and (gethash (file-truename filename) nelisp--file-locks) t)))
 (unless (fboundp 'help-add-fundoc-usage)
   (defun help-add-fundoc-usage (docstring arglist)
     "Append the usage line Emacs appends, rather than dropping ARGLIST."
@@ -6207,6 +6241,38 @@ Minimal: PLACE is evaluated twice (cl-generic's places are side-effect free)."
 ;; reports which of the two answers this binary gives.
 (defvar load-file-name nil)
 (defvar buffer-file-name nil)
+;; `void-variable' would follow the same shape as `buffer-file-name'
+;; above if anything read `buffer-file-coding-system' before this
+;; segment's `set-buffer-file-coding-system' (below) ever ran; declaring
+;; it here, alongside the other file/buffer bookkeeping globals this
+;; runtime already keeps un-buffer-local (see `major-mode''s own block
+;; comment further down for why: `setq-local'/`setq-default' are plain
+;; `setq' here), closes that gap up front rather than leaving it to
+;; whichever caller happens to `setq' it first.  Guarded (unlike the
+;; unconditional `buffer-file-name'/`load-file-name' just above) so
+;; `emacs-compat' counts this as `shared-deferring', not a new
+;; `shared-shadowing' entry -- there is no reason to shadow a host
+;; value this runtime never runs alongside.
+(unless (boundp 'buffer-file-coding-system)
+  (defvar buffer-file-coding-system nil
+    "This runtime's global stand-in for Emacs's per-buffer variable of the
+same name.  Set by `set-buffer-file-coding-system' (below); never
+consulted by `insert-file-contents'/`write-region' to actually convert
+anything -- see that function's own docstring."))
+;; `void-function' on the ~80-file census (1 hit,
+;; ../nelisp-agent/test/recurrent-config-test.el:29: `(set-buffer-file-
+;; coding-system 'utf-8-unix)').  Real Emacs's version is buffer-local
+;; and can trigger a re-decode of already-visited content; this runtime
+;; has no buffer-local variables and no encoding/decoding pipeline to
+;; re-run (every string here is already whatever bytes were read), so
+;; recording the value for `buffer-file-coding-system' to read back is
+;; the whole, honest effect.  NOMODIFY and FORCE are accepted for
+;; signature compatibility and have no effect.
+(unless (fboundp 'set-buffer-file-coding-system)
+  (defun set-buffer-file-coding-system (coding-system &optional _nomodify _force)
+    "Record CODING-SYSTEM into `buffer-file-coding-system'; no conversion.
+See that variable's own docstring."
+    (setq buffer-file-coding-system coding-system)))
 ;; The generated application bootstrap installs its feature registry before
 ;; the later `emacs-fns.el' / `emacs-load.el' members define the full
 ;; `load-file'.  Keep the early `require' path live by adapting the native
@@ -6858,6 +6924,30 @@ other gv-using libraries load/run on the bare reader."
       (list 'let (list (list cell (list 'assq k a)))
             (list 'if cell (list 'setcdr cell val)
                   (nelisp--setf-1 a (list 'cons (list 'cons k val) a))))))
+   ;; `void-function'/"setf: unsupported place" pair on the ~80-file
+   ;; census (16 hits: `plist-get' places; 2 more for `symbol-function',
+   ;; counted separately below): `(setf (plist-get PLIST PROP) VAL)' is
+   ;; Emacs's `(setq PLIST (plist-put PLIST PROP VAL))' -- it assigns
+   ;; back into the PLIST place itself, not into some cell already
+   ;; inside it, because `plist-put' may need to CONS a brand-new
+   ;; leading pair when PROP is not yet present (unlike `alist-get'
+   ;; just above, which can often `setcdr' an existing cell in place).
+   ;; PLIST is therefore re-dispatched through `nelisp--setf-1', the
+   ;; same recursion `alist-get' already uses on its own A argument, so
+   ;; this also works when PLIST is itself a settable place and not
+   ;; only a bare variable -- though every call in this census's corpus
+   ;; (../nelisp-agent/lisp/nl-agent-training-runner.el and others) is
+   ;; the plain-variable case.
+   ((and (consp place) (eq (car place) 'plist-get))
+    (let ((plist-place (cadr place)) (prop (caddr place)))
+      (nelisp--setf-1 plist-place (list 'plist-put plist-place prop val))))
+   ;; `(setf (symbol-function SYM) VAL)' = `(fset SYM VAL)', Emacs's own
+   ;; documented equivalence.  `cl-letf' (above, in this same file) already
+   ;; treats a `(symbol-function SYM)' place as save/restore-able via
+   ;; `fset'/`symbol-function' for exactly this reason; this is the same
+   ;; equivalence for `setf'.
+   ((and (consp place) (eq (car place) 'symbol-function))
+    (list 'fset (cadr place) val))
    ((and (consp place) (symbolp (car place))
          (get (car place) 'cl-simple-setter))
     (cons 'funcall
@@ -8274,6 +8364,21 @@ Moves and returns nil, the counterpart of `line-end-position'."
 (unless (fboundp 'buffer-string)
   (defun buffer-string ()
     (nelisp-buffer-string nelisp--current-buffer)))
+;; `void-function' on the ~80-file census (many hits across
+;; ../nelisp-agent/lisp/nl-agent-local-tools.el, nl-agent-task-eval.el,
+;; nl-agent-trajectory.el, nl-agent-recurrent-config.el, always as
+;; `(> (buffer-size) SOME-MAX-BYTES)' right after visiting a file into a
+;; temp buffer, to bound how much of it gets processed).  Real Emacs's
+;; own docstring: "the number of characters in the current buffer... does
+;; not take narrowing into account; ... use (- (point-max) (point-min))"
+;; -- this runtime has no narrowing primitive at all (no `narrow-to-
+;; region'/`widen'), so `point-min' is always 1 and this is simply
+;; `(1- (point-max))', generalized to an optional BUFFER the same way
+;; `point-min'/`point-max' above already take one.
+(unless (fboundp 'buffer-size)
+  (defun buffer-size (&optional buffer)
+    (let ((buf (or buffer nelisp--current-buffer)))
+      (- (nelisp-point-max buf) (nelisp-point-min buf)))))
 
 ;; ---- Doc 188 P2: current-buffer / set-buffer / buffer-substring /
 ;; erase-buffer -- the four names §3's P2 bullet lists as still void
@@ -8316,6 +8421,24 @@ there, `(wrong-type-argument stringp 42)', already matches what
         ;; unwinding, so there is no `let' to attach a second binding to.
         (setq nelisp-buffer--current b)
         b)))))
+;; `void-function' on the ~80-file census
+;; (../nelisp-agent/lisp/nl-agent-ui.el:349: `(pop-to-buffer buffer)',
+;; the last statement of a connection-setup function whose return value
+;; matters -- `buffer', not what `pop-to-buffer' returns -- more than
+;; any display side effect).  This runtime has no window system to
+;; display a buffer IN, batch or otherwise (no consumer here reads
+;; `selected-window' or similar), so the only real content of `pop-to-
+;; buffer' left to honor is what real Emacs's own docstring calls "make
+;; buffer current" as a side effect independent of display -- exactly
+;; `set-buffer''s job (above).  ACTION and NORECORD are accepted for
+;; signature compatibility and have no effect (nothing here records a
+;; buffer list to reorder).
+(unless (fboundp 'pop-to-buffer)
+  (defun pop-to-buffer (buffer-or-name &optional _action _norecord)
+    "Make BUFFER-OR-NAME current; return the buffer.  See `set-buffer'.
+No window system here, so nothing is actually displayed -- see the
+block comment above for why `set-buffer''s effect is what is left."
+    (set-buffer buffer-or-name)))
 
 (unless (fboundp 'buffer-substring)
   (defun buffer-substring (start end)
@@ -9665,6 +9788,18 @@ MAJOR-MODE and MODE-NAME, installs the syntax table, runs PARENT (or
            ,@(and group-form (list group-form))
            ,defun-form)))))
 
+;; `special-mode' (a `define-derived-mode' call) is defined much further
+;; down this file, after `nelisp--make-record' -- search for "Doc 204 P3
+;; table seed" -- for the same ordering reason `emacs-lisp-mode-syntax-
+;; table''s own real value is built there rather than here: its
+;; `:syntax-table' clause (defaulted, since none is given) expands to a
+;; TOP-LEVEL `(defvar special-mode-syntax-table (make-syntax-table ...))'
+;; whose value form runs at LOAD time, not lazily like a `defun' body,
+;; and `make-syntax-table' allocates a `cl-defstruct' record via
+;; `nelisp--make-record' -- void this early.  Measured directly: placing
+;; this block here crashed boot with `void-function: (nelisp--make-
+;; record)' via `make-syntax-table' -> `nelisp--syntax-make-table' ->
+;; `make-nelisp--syntax-table'.
 
 (unless (fboundp 'save-excursion)
   (defmacro save-excursion (&rest body)
@@ -9747,6 +9882,36 @@ Doc 204 §6.2's own class-set boundary."
 `re-search-forward' via `regexp-quote' (matching real Emacs's own
 signature: BOUND/NOERROR/COUNT all pass straight through)."
     (re-search-forward (regexp-quote string) bound noerror count)))
+;; `void-function' on the ~80-file census
+;; (../nelisp-agent/test/background-config-test.el:86: `(search-forward
+;; "...") (replace-match "..." t t)', replacing the just-matched text in
+;; the CURRENT BUFFER).  Real Emacs's NEWTEXT can also be given a STRING
+;; to edit instead of the buffer, and, when LITERAL is nil, expands `\N'/
+;; `\&' backreferences and applies FIXEDCASE-sensitive case conversion --
+;; every consumer in this census's corpus passes LITERAL=t (as the one
+;; call site above does), so backreference expansion and case-fixing are
+;; simply not implemented (a call with LITERAL nil gets NEWTEXT
+;; unexpanded, honestly the wrong answer rather than a silent one).
+;; SUBEXP defaults to the whole match (group 0), same as Emacs.
+(unless (fboundp 'replace-match)
+  (defun replace-match (newtext &optional _fixedcase _literal string subexp)
+    "Replace the last match (`match-beginning'/`match-end') with NEWTEXT.
+See the block comment above for FIXEDCASE/LITERAL (accepted, not
+honored: no backreference expansion, no case-fixing).  With STRING,
+return the edited copy; without it, edit the current buffer in place
+and return nil, matching Emacs's own two-mode contract."
+    (let* ((n (or subexp 0))
+           (b (match-beginning n))
+           (e (match-end n)))
+      (unless (and b e) (signal 'error (list "No match data, or match data corrupted")))
+      (if string
+          (concat (substring string 0 b) newtext (substring string e))
+        (progn
+          (goto-char b)
+          (delete-region b e)
+          (goto-char b)
+          (insert newtext)
+          nil)))))
 
 (unless (fboundp 'user-error)
   (defun user-error (format-string &rest args)
@@ -9779,6 +9944,25 @@ moves point to the scan failure position and signals `user-error'
 ;; `nelisp--emit-to-stream' and the `read' dispatch below drive a marker
 ;; PRINTCHARFUN/STREAM via the already-ported `nelisp-marker-p' et al.
 ;; directly; construct one the same way, e.g. `(nelisp-copy-marker BUF POS)'.
+;;
+;; `markerp' is the one exception, added for a type-dispatch consumer
+;; (../nelisp-agent/lisp/nl-agent-trajectory.el:127: `(or (bufferp value)
+;; (markerp value) (hash-table-p value) (recordp value))', rejecting
+;; runtime objects that should not be serialized into a trajectory
+;; record).  `nelisp-marker-p' (above) is this runtime's REAL marker
+;; predicate, but it is never reachable from ordinary Elisp: nothing
+;; here exposes `point-marker'/`copy-marker'/`set-marker' etc. under
+;; their standard names (see the block comment just above), so no value
+;; an ordinary caller can construct is ever a `nelisp-marker'.  Answering
+;; nil unconditionally is therefore not a stub standing in for a real
+;; predicate -- for every object reachable from Elisp on this runtime,
+;; nil is the correct answer, and the docstring says so.
+(unless (fboundp 'markerp)
+  (defun markerp (_object)
+    "Always nil: this runtime exposes no marker type under a standard
+name (no `point-marker', `copy-marker', `set-marker', ...), so no
+value constructible from ordinary Elisp code is ever a marker."
+    nil))
 
 (unless (fboundp 'with-temp-file)
   (defmacro with-temp-file (file &rest body)
@@ -9981,6 +10165,17 @@ write instead of ever touching a real buffer."
 (unless (fboundp 'process-query-on-exit-flag)
   (defun process-query-on-exit-flag (process)
     (not (eq (process-get process 'nelisp--query-on-exit) 'no))))
+;; `void-function' on the ~80-file census (1 hit,
+;; ../nelisp-agent/lisp/nl-agent-client.el:362: `(set-process-coding-
+;; system process 'utf-8-unix 'utf-8-unix)').  This runtime's processes
+;; already move raw byte strings with no encode/decode step of their own
+;; (there is no separate "process coding system" pipeline the way real
+;; Emacs's `set-process-coding-system' configures one) -- a no-op is
+;; therefore not a stand-in for missing conversion, it is the accurate
+;; description of what this runtime does either way.  Returns nil, like
+;; the sibling `set-process-query-on-exit-flag'-adjacent stubs above.
+(unless (fboundp 'set-process-coding-system)
+  (defun set-process-coding-system (_process &optional _decoding _encoding) nil))
 (unless (fboundp 'delete-process)
   (defun delete-process (process)
     (when (and (fboundp 'nelisp-process-object-p)
@@ -10425,6 +10620,35 @@ as a likely mistake.")
 (setq nelisp--syntax-standard-table (nelisp--syntax-build-standard-table))
 (when (null emacs-lisp-mode-syntax-table)
   (setq emacs-lisp-mode-syntax-table (nelisp--syntax-build-emacs-lisp-table)))
+
+;; `void-function' on 1 of the ~80 census files
+;; (../nelisp-agent/lisp/nl-agent-ui.el:309: `(define-derived-mode
+;; nl-agent-ui-mode special-mode "NeLisp-Agent" ...)' -- `special-mode'
+;; itself, PARENT for that mode, has to exist first).  Ported verbatim
+;; from host Emacs 31.1's `simple.el' (`(define-derived-mode special-mode
+;; nil "Special" ...)', including the nil PARENT -- real Emacs does not
+;; derive `special-mode' from `fundamental-mode' either, it is its own
+;; root, same as this substrate's other modes are via `kill-all-local-
+;; variables' above).  `special-mode-map' needs no separate definition:
+;; `define-derived-mode' already generates NAME-map for every mode,
+;; including this one, from the same `map-form' in that macro.  Defined
+;; HERE, not next to `define-derived-mode' itself further up this file
+;; -- see that macro's own trailing comment for why (`nelisp--make-
+;; record' must already be defined for this call's default,
+;; freshly-allocated `special-mode-syntax-table' to succeed).
+(unless (fboundp 'special-mode)
+  (define-derived-mode special-mode nil "Special"
+    "Parent major mode from which special major modes should inherit.
+
+A special major mode is intended to view specially formatted data
+rather than files.  These modes usually use read-only buffers.
+
+DIVERGES from Emacs: `buffer-read-only' is set (matching Emacs) but,
+per this substrate's `major-mode'/`mode-name' block comment further up
+this file, is an ordinary global here, not a real per-buffer flag, and
+nothing in this runtime's buffer/editing primitives reads it back to
+actually refuse a write."
+    (setq buffer-read-only t)))
 
 ;; Hash-table predicate + iteration for the reader's builtin hash table.
 ;; The builtin `make-hash-table' returns the cons pair (MARKER . DATA) where
@@ -10888,6 +11112,42 @@ claimed to match, only the shape."
   (defun get-text-property (_pos _prop &optional _object) nil))
 (unless (fboundp 'text-properties-at)
   (defun text-properties-at (_pos &optional _object) nil))
+;; `void-function' on the ~80-file census: `propertize' (1 hit) and
+;; `put-text-property' (1 hit).  Same reasoning as `get-text-property'
+;; just above -- there is no per-string property side table on this
+;; runtime -- carried through to the two mutators/constructors real
+;; Emacs code reaches for most: `propertize' answers a COPY of STRING
+;; (real Emacs also always returns a distinct string object, never the
+;; original) with every PROPERTIES pair silently dropped, and
+;; `put-text-property' is a no-op returning nil (real Emacs's own return
+;; value is unspecified/nil-ish and no caller in this tree looks at it).
+(unless (fboundp 'propertize)
+  (defun propertize (string &rest _properties)
+    "Return a copy of STRING; PROPERTIES are accepted and dropped (see
+the block comment above `get-text-property' for why this runtime has
+no text-property side table to store them in)."
+    (copy-sequence string)))
+(unless (fboundp 'put-text-property)
+  (defun put-text-property (_start _end _prop _value &optional _object)
+    "No-op: see the block comment above `get-text-property'." nil))
+;; `void-function' on the ~80-file census (1 hit,
+;; ../nelisp-agent/lisp/nl-agent-semantic-render.el:210, called with an
+;; explicit STRING argument).  Real Emacs's `match-string-no-properties'
+;; differs from `match-string' only in stripping text properties from
+;; the returned substring; per the block comment above `get-text-
+;; property', strings here never carry any, so the two coincide exactly
+;; -- same reasoning as `substring-no-properties'/`buffer-substring-no-
+;; properties' above in this file.  `match-string' itself is not defined
+;; in this file (it is baked in later, from `lisp/nelisp-stdlib-regexp.el'
+;; plus the `nlre-*' wiring in scripts/nelisp-standalone-build.el's
+;; reader-prelude assembly); calling it by name here is safe regardless
+;; of definition order because a `defun' body resolves callees when
+;; CALLED, not when defined, and by the time any Elisp code can call
+;; `match-string-no-properties' the whole prelude has already loaded.
+(unless (fboundp 'match-string-no-properties)
+  (defun match-string-no-properties (n &optional str)
+    "Same as `match-string': no text properties exist to strip here."
+    (match-string n str)))
 
 ;; --- Doc 143: minimal read-from-string for the reader runtime -------------
 ;; Recursive-descent parser for the core sexp grammar (int/float/symbol/string/
@@ -12007,6 +12267,73 @@ first `getenv' is not overwritten by the value the process started with."
             (setq tail (cdr tail)))
           (setq nelisp--environment (nreverse out)))))
     value))
+;; `void-variable' on the ~80-file census (5 hits: cli-jsonl-service-test,
+;; cli-trajectory-test, jsonl-approval-service-test, native-only-service-
+;; test, trajectory-service-test -- all `(let ((process-environment ...))
+;; ...)' dynamic overrides around a `make-process'/`start-process' call).
+;; Real Emacs's `process-environment' is a list of "VAR=VALUE" strings
+;; that both backs `getenv'/`setenv' and is read by `make-process' to
+;; build a child's environment.  This runtime instead keeps
+;; `nelisp--environment' (an alist) as `getenv'/`setenv''s own backing
+;; store, and -- checked directly against `make-process' above -- spawns
+;; children through `nelisp-process-start' without ever reading
+;; `process-environment' at all, so a child always inherits this
+;; process's real OS environment regardless of any `let' override here.
+;; Declaring the variable (so the `let' above does not `void-variable')
+;; and seeding it from the same real environment `nelisp--environment-
+;; load' already knows how to read is the honest partial fix: reading
+;; `process-environment' back gives correct, real values, and a `let'
+;; override no longer errors, but it still has no effect on a spawned
+;; child (documented here rather than silently claimed).
+;; `nelisp--environment-load' has to run BEFORE the `defvar' value form
+;; below reads `nelisp--environment', so it cannot be the `unless' body's
+;; only form -- but `make prelude-toplevel-check' flags any OTHER bare
+;; call sitting beside a definition in an `unless' body (its own
+;; docstring: "a check appended to a one-line defun ... runs while the
+;; prelude loads").  Wrapped in `progn' (an allowed top-level head the
+;; checker does not recurse into) for exactly that reason.
+(unless (boundp 'process-environment)
+  (progn
+    (nelisp--environment-load)
+    (defvar process-environment
+      (mapcar (lambda (cell) (concat (car cell) "=" (cdr cell)))
+              nelisp--environment)
+      "A list of \"VAR=VALUE\" strings, seeded once from the real OS
+environment (see `nelisp--environment-load').  DIVERGES from Emacs:
+`make-process'/`start-process' (above, in this file) do not read this
+variable at all, so overriding it before spawning a child has no
+effect on that child's environment -- see the block comment above this
+defvar for why.")))
+;; `void-variable' on the ~80-file census (1 hit: `-- ARG...' trailing
+;; arguments).  Real Emacs's `command-line-args-left' is always bound
+;; (nil when there is nothing left to consume); this runtime's CLI
+;; builds it incrementally as flags are parsed (scripts/nelisp-
+;; standalone-build.el, `nl_cli_set_clal'), which -- for at least one
+;; argv shape this census exercises -- leaves it never written at all
+;; before user code, loaded via `--load'/`-l', can reference it.  A
+;; `defvar' here in the prelude, which always loads before any CLI
+;; dispatch reaches a loaded file, guarantees "always bound" the same
+;; way `load-file-name'/`buffer-file-name' above do; the CLI's own
+;; incremental `nl_env_set_value' writes, when they do run, simply
+;; overwrite this default, exactly like any other `setq' would.
+(unless (boundp 'command-line-args-left)
+  (defvar command-line-args-left nil))
+;; `void-variable' on the ~80-file census (1 hit).  Real Emacs derives
+;; this from `$ESHELL'/`$SHELL' at C startup, falling back to "/bin/sh"
+;; on POSIX.  This runtime does not read either variable for it (the
+;; one census call site needs only a plausible, present value, not a
+;; user's actual login shell), so this is the POSIX fallback constant,
+;; not a full port of Emacs's own resolution -- the batch-mode-honest
+;; subset named in this segment's own brief.
+(unless (boundp 'shell-file-name)
+  (defvar shell-file-name "/bin/sh"))
+;; `void-variable' on the ~80-file census (many hits, e.g.
+;; ../nelisp-agent/test/training-cancel-test.el:53: `(list shell-file-
+;; name shell-command-switch "sleep 30")', the standard `(SHELL -c
+;; COMMAND)' invocation shape).  "-c" is Emacs's own POSIX default, same
+;; as `shell-file-name' just above.
+(unless (boundp 'shell-command-switch)
+  (defvar shell-command-switch "-c"))
 (defun nelisp--temp-name-process-token ()
   "Return a token that no other live process shares, for temp names.
 Prefers the real process id; falls back to the clock, marked with a leading
@@ -12293,13 +12620,26 @@ absent; it is documented as \"unknown\", not as a process id."
 (unless (fboundp 'file-symlink-p)
   (defun file-symlink-p (filename)
     (nelisp--syscall-readlink filename)))
+;; Elements 10/11 (inode number, device number) used to be constant nil,
+;; nil -- correct only in the sense that nothing read them.  Segment 4's
+;; `file-attribute-file-identifier' (below) needs the real pair: Linux
+;; x86_64 `struct stat' has `st_dev' at byte offset 0 and `st_ino' at
+;; offset 8 (see `nl_bi_syscall_stat_field''s own offset comment in
+;; scripts/nelisp-standalone-build.el, which this function already reads
+;; offset 48/88 of for size/mtime), so this is the same stat buffer, two
+;; more fields, not a new syscall.  Measured against host Emacs 31.1
+;; (`(file-attributes "/etc/hostname" 'string)'): a real 12-element list
+;; whose element 10 is the inode number and element 11 the device
+;; number, matching this shape field-for-field.
 (unless (fboundp 'file-attributes)
   (defun file-attributes (filename &optional _id-format)
     (if (not (file-exists-p filename))
         nil
       (let ((size (nelisp--syscall-stat-field filename 48))
-            (mtime (nelisp--syscall-stat-field filename 88)))
-        (list nil 1 0 0 0 mtime 0 size "" nil nil nil)))))
+            (mtime (nelisp--syscall-stat-field filename 88))
+            (inode (nelisp--syscall-stat-field filename 8))
+            (device (nelisp--syscall-stat-field filename 0)))
+        (list nil 1 0 0 0 mtime 0 size "" nil inode device)))))
 ;; feat/agent-json-cluster: `void-function' on 3 of the 4 nelisp-agent
 ;; host-only tests fixed by the `insert-file-contents' point-preservation
 ;; fix just above this segment's `json'/config cluster (see that fix's
@@ -12415,6 +12755,36 @@ and only running both says which."
 (unless (fboundp 'file-attribute-modification-time)
   (defun file-attribute-modification-time (attrs)
     (nelisp--file-attribute-nth attrs 5)))
+;; `void-function' on the ~80-file census (10 hits, all three sites in
+;; ../nelisp-agent/lisp/nl-agent-task-eval.el:288,388,417): a workspace
+;; directory's identity is captured once (`root-id') and compared again
+;; later to detect a TOCTOU swap (the directory replaced by a symlink or
+;; a different directory between setup and use).  Real Emacs's own
+;; `file-attribute-file-identifier' is exactly `(nthcdr 10 attributes)'
+;; (verified against host Emacs 31.1's `subr.el' source and its
+;; docstring: "(INODENUM DEVICE) ... uniquely identifies the file");
+;; `file-attributes' above now reports the real inode/device pair at
+;; those two elements, so this is a plain accessor, not a fabrication.
+(unless (fboundp 'file-attribute-file-identifier)
+  (defun file-attribute-file-identifier (attrs)
+    "The (INODENUM DEVICE) pair in ATTRS.  See `file-attributes'."
+    (nthcdr 10 attrs)))
+;; `void-function' on the ~80-file census (5 hits: bulk-reader-test,
+;; bulk-policy-eval-test, bulk-eval-test), each checking a path is not a
+;; Tramp remote name before doing local file I/O on it.  This runtime has
+;; no Tramp / file-name-handler-alist machinery at all (see
+;; `file-in-directory-p''s own comment on the same dispatch, above) --
+;; every path it can ever open is local, so nil for every FILENAME is not
+;; a stub, it is the only reachable answer.  IDENTIFICATION and CONNECTED
+;; are accepted for signature compatibility (real Emacs's
+;; `file-remote-p' takes them to select which piece of the remote
+;; identification to return, and whether to require an already-open
+;; connection) and have no effect, matching Emacs's own contract that
+;; both are meaningless once the answer is nil.
+(unless (fboundp 'file-remote-p)
+  (defun file-remote-p (_filename &optional _identification _connected)
+    "Always nil: this runtime has no remote-file (Tramp) support."
+    nil))
 (defun nelisp--split-on-char (string char omit-empty)
   (let ((start 0)
         (idx 0)
@@ -12484,6 +12854,19 @@ and only running both says which."
         (nelisp--delete-directory-recursive directory)
       (nelisp--syscall-path 84 directory))
     nil))
+;; `void-variable' on the ~80-file census (many hits,
+;; ../nelisp-agent/lisp/nl-agent-task-eval.el:301/373: `(directory-files
+;; directory t directory-files-no-dot-files-regexp t)', the standard
+;; Emacs idiom for "list a directory's real entries, skip `.'/`..'").
+;; Value copied verbatim from host Emacs 31.1: `"[^.]\\|\\.\\.\\."' --
+;; matches any name containing a non-dot character anywhere (so ordinary
+;; names AND dotfiles both pass) or the literal three-dot name `"..."',
+;; and therefore rejects only the two names made ENTIRELY of one or two
+;; dots, `"."' and `".."'.  This runtime's `directory-files' MATCH
+;; parameter is a plain `string-match-p' filter (see `nelisp--directory-
+;; files-match-p' below), the same contract this regexp assumes.
+(unless (boundp 'directory-files-no-dot-files-regexp)
+  (defvar directory-files-no-dot-files-regexp "[^.]\\|\\.\\.\\."))
 (unless (fboundp 'directory-files)
   (progn
     (defun nelisp--directory-files-match-p (name match)
@@ -12649,6 +13032,14 @@ Windows drive path keeps `C:', and a relative path stays relative."
 ;; hand-rolled `concat', gets both cases right together: this is the same
 ;; `(expand-file-name prefix temporary-file-directory)' shape Emacs's own
 ;; `make-temp-file' uses before calling `make-temp-name'.
+;;
+;; Segment 4: `temporary-file-directory' is now bound (`void-variable' on
+;; the ~80-file census, 1 hit) -- to exactly the value the `(boundp ...)'
+;; branch just above used to fall through to when it was unbound, `(or
+;; (getenv "TMPDIR") "/tmp")', so both this variable and `make-temp-file'
+;; agree on the same directory, per this segment's own brief.
+(unless (boundp 'temporary-file-directory)
+  (defvar temporary-file-directory (or (getenv "TMPDIR") "/tmp")))
 (unless (fboundp 'make-temp-file)
   (defun make-temp-file (prefix &optional dir-flag suffix text)
     (unless (sequencep prefix) (signal 'wrong-type-argument (list 'sequencep prefix)))

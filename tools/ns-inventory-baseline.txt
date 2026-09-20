@@ -276,7 +276,20 @@
 # entry points (read-string, read-from-minibuffer) and the three private
 # helpers they share (nelisp--stdin-read-line,
 # nelisp--stdin-read-line-with-default, nelisp--stdin-read-pending).
-ns-collision 274
+# 274 -> 291 on segment 4 (agent-host compat batch): 17 names added
+# byte-identically to both lisp/nelisp-stdlib-misc.el and
+# scripts/nelisp-stdlib-prelude.el, same pattern as read-string above --
+# lock-file, unlock-file, file-locked-p, markerp,
+# file-attribute-file-identifier, file-remote-p, special-mode, propertize,
+# put-text-property, match-string-no-properties, buffer-file-coding-system,
+# set-buffer-file-coding-system, command-line-args-left, shell-file-name,
+# temporary-file-directory, set-process-coding-system, and the private
+# helper nelisp--file-locks.
+# 291 -> 296 on segment 4, second batch (found once the first batch let
+# the census reach further): buffer-size, directory-files-no-dot-files-
+# regexp, pop-to-buffer, replace-match, shell-command-switch -- same
+# pattern, both files byte-identical.
+ns-collision 296
 # 97 -> 96 on 2026-08-19: `string-equal' no longer differs between the two
 # files -- the prelude's now signals for a non-string instead of falling
 # through to `equal', and the lisp copy was brought with it.  Ratcheted down
@@ -388,7 +401,13 @@ ns-collision 274
 # 125 -> 127 on r11 integration: the bool-vector substrate adds distinct
 # standalone arrayp/equal/printer bodies; their identity-pinned digests are
 # recorded below and remain intentionally substrate-specific.
-ns-collision-divergent 127
+# 127 -> 128 on segment 4: `process-environment', newly defined in
+# lisp/nelisp-stdlib-misc.el (nil) and scripts/nelisp-stdlib-prelude.el
+# (seeded from the real environment), collides with the pre-existing,
+# unguarded `(defvar process-environment nil ...)' in
+# lisp/nelisp-build-host.el (a host-side build-tool file with its own
+# getenv/setenv sandbox, predates this segment and is out of its scope).
+ns-collision-divergent 128
 # 850 -> 851 on 2026-08-19: `nl-check-file-quoted-unsafe', the entry point
 # that reports the unsafe calls inside quoted forms.  Same situation as the
 # nl-ns pair above -- it is public because tools/nl-check-inventory.el calls
@@ -909,7 +928,16 @@ ns-prefix-violation 320
 # lisp/nelisp-dev-source.el finds the build script's
 # `nelisp-standalone--reader-builtins' table by that name without loading the
 # build driver.
-ns-private-escape 767
+# 767 -> 768 on segment 4: lisp/nelisp-stdlib-misc.el's new `buffer-size'
+# mirror (see the `ns-collision' entries above) references
+# `nelisp--current-buffer' plus `nelisp-point-max'/`nelisp-point-min',
+# all three actually defined in scripts/nelisp-stdlib-prelude.el, the
+# same cross-file dependency shape the 765->767 bump just above already
+# concedes for a different pair of names.  Isolated by removing each of
+# the four new lines individually and in combination; this kind stays
+# count-only in the gate's own design (see nl-ns-inventory.el's header),
+# so it is not itemized further here.
+ns-private-escape 768
 ns-unreadable 0
 
 # `pinned-collision KEY' pins every ns-collision and ns-collision-divergent
@@ -1361,3 +1389,26 @@ pinned-collision ns-collision	nelisp--stdin-read-line-with-default	lisp/nelisp-s
 pinned-collision ns-collision	nelisp--stdin-read-pending	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	read-from-minibuffer	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	read-string	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	buffer-file-coding-system	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	command-line-args-left	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	file-attribute-file-identifier	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	file-locked-p	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	file-remote-p	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	lock-file	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	markerp	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	match-string-no-properties	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp--file-locks	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	propertize	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	put-text-property	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	set-buffer-file-coding-system	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	set-process-coding-system	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	shell-file-name	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	special-mode	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	temporary-file-directory	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	unlock-file	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision-divergent	process-environment	lisp/nelisp-build-host.el lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	6f881845a30b
+pinned-collision ns-collision	buffer-size	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	directory-files-no-dot-files-regexp	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	pop-to-buffer	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	replace-match	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	shell-command-switch	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el

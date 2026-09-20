@@ -1353,3 +1353,128 @@ the string itself."
       (if read
           (car (read-from-string resolved))
         resolved))))
+
+;; ---- segment 4: agent-host compat batch ------------------------------
+;; Mirror of the `scripts/nelisp-stdlib-prelude.el' definitions of the
+;; same names -- see that file for the fuller Emacs-31.1-measured
+;; rationale each one carries.  Guarded the same way as every other
+;; entry in this file: a host running this file for real keeps its own
+;; builtins, and a standalone image that already loaded the prelude
+;; keeps that copy.  `nelisp--file-locks' needs no guard: it is an
+;; internal name with no host counterpart to collide with.
+(defvar nelisp--file-locks (make-hash-table :test 'equal)
+  "In-process registry of `lock-file'-held names; see the prelude's copy.")
+(unless (fboundp 'lock-file)
+  (defun lock-file (filename)
+    (puthash (file-truename filename) t nelisp--file-locks)
+    nil))
+(unless (fboundp 'unlock-file)
+  (defun unlock-file (filename)
+    (remhash (file-truename filename) nelisp--file-locks)
+    nil))
+(unless (fboundp 'file-locked-p)
+  (defun file-locked-p (filename)
+    (and (gethash (file-truename filename) nelisp--file-locks) t)))
+
+(unless (fboundp 'markerp)
+  (defun markerp (_object)
+    "Always nil on the standalone target; see the prelude's copy."
+    nil))
+
+(unless (fboundp 'file-attribute-file-identifier)
+  (defun file-attribute-file-identifier (attrs)
+    "The (INODENUM DEVICE) pair in ATTRS.  See `file-attributes'."
+    (nthcdr 10 attrs)))
+
+(unless (fboundp 'file-remote-p)
+  (defun file-remote-p (_filename &optional _identification _connected)
+    "Always nil: this runtime has no remote-file (Tramp) support."
+    nil))
+
+(unless (fboundp 'special-mode)
+  (define-derived-mode special-mode nil "Special"
+    "Parent major mode from which special major modes should inherit.
+See the prelude's copy for the full rationale (nil PARENT, ported
+from Emacs 31.1's `simple.el')."
+    (setq buffer-read-only t)))
+
+(unless (fboundp 'propertize)
+  (defun propertize (string &rest _properties)
+    "Return a copy of STRING; PROPERTIES are dropped.  See the
+prelude's copy for why this runtime has no property side table."
+    (copy-sequence string)))
+(unless (fboundp 'put-text-property)
+  (defun put-text-property (_start _end _prop _value &optional _object)
+    "No-op; see the prelude's copy." nil))
+(unless (fboundp 'match-string-no-properties)
+  (defun match-string-no-properties (n &optional str)
+    "Same as `match-string' on this runtime; see the prelude's copy."
+    (match-string n str)))
+
+(unless (boundp 'buffer-file-coding-system)
+  (defvar buffer-file-coding-system nil
+    "See the prelude's copy for the full rationale."))
+(unless (fboundp 'set-buffer-file-coding-system)
+  (defun set-buffer-file-coding-system (coding-system &optional _nomodify
+                                                        _force)
+    "Record CODING-SYSTEM into `buffer-file-coding-system'; no conversion."
+    (setq buffer-file-coding-system coding-system)))
+
+(unless (boundp 'process-environment)
+  (defvar process-environment nil
+    "A list of \"VAR=VALUE\" strings.  On the standalone target (see the
+prelude's copy) this is seeded from the real OS environment; nil here
+is enough to keep code that only `let'-overrides it before spawning a
+process from `void-variable'ing on a host that has not bound it yet."))
+(unless (boundp 'command-line-args-left)
+  (defvar command-line-args-left nil))
+(unless (boundp 'shell-file-name)
+  (defvar shell-file-name "/bin/sh"))
+(unless (boundp 'temporary-file-directory)
+  (defvar temporary-file-directory (or (getenv "TMPDIR") "/tmp")))
+
+(unless (fboundp 'set-process-coding-system)
+  (defun set-process-coding-system (_process &optional _decoding _encoding)
+    "No-op; see the prelude's copy." nil))
+
+;; Second batch, found only after the first rebuilt binary's census ran
+;; further into the corpus and hit these -- see the prelude's copy for
+;; each site.
+;; `nelisp-point-max'/`nelisp-point-min' are defined much earlier in the
+;; prelude (this file's counterpart); declared here purely for the
+;; byte-compiler's benefit, same reason 5d4b6caef's two stdin helpers
+;; needed `declare-function' (e32dc661e).  `nelisp--current-buffer' is
+;; likewise a prelude-only dynamic variable.
+(declare-function nelisp-point-max "nelisp-stdlib-prelude")
+(declare-function nelisp-point-min "nelisp-stdlib-prelude")
+(defvar nelisp--current-buffer)
+(unless (fboundp 'buffer-size)
+  (defun buffer-size (&optional buffer)
+    "Same as the prelude's copy: `(- (point-max) (point-min))'."
+    (let ((buf (or buffer nelisp--current-buffer)))
+      (- (nelisp-point-max buf) (nelisp-point-min buf)))))
+(unless (boundp 'directory-files-no-dot-files-regexp)
+  (defvar directory-files-no-dot-files-regexp "[^.]\\|\\.\\.\\."))
+(unless (boundp 'shell-command-switch)
+  (defvar shell-command-switch "-c"))
+(unless (fboundp 'replace-match)
+  (defun replace-match (newtext &optional _fixedcase _literal string subexp)
+    "Same as the prelude's copy: no backreference expansion, no
+case-fixing; STRING mode returns the edited copy, buffer mode edits
+in place and returns nil."
+    (let* ((n (or subexp 0))
+           (b (match-beginning n))
+           (e (match-end n)))
+      (unless (and b e) (signal 'error (list "No match data, or match data corrupted")))
+      (if string
+          (concat (substring string 0 b) newtext (substring string e))
+        (progn
+          (goto-char b)
+          (delete-region b e)
+          (goto-char b)
+          (insert newtext)
+          nil)))))
+(unless (fboundp 'pop-to-buffer)
+  (defun pop-to-buffer (buffer-or-name &optional _action _norecord)
+    "Same as the prelude's copy: `set-buffer', no display."
+    (set-buffer buffer-or-name)))
