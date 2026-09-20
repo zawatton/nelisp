@@ -1540,6 +1540,44 @@ process from `void-variable'ing on a host that has not bound it yet."))
     "Same as the prelude's copy: `(- (point-max) (point-min))'."
     (let ((buf (or buffer nelisp--current-buffer)))
       (- (nelisp-point-max buf) (nelisp-point-min buf)))))
+
+;; feat/standalone-agent-segC-prelude item 1: same as the prelude's
+;; copy -- see that file for the full rationale and the two documented
+;; divergences from real Emacs's buffer-multibyte-coercion behavior.
+;; `nelisp--syscall-read-file'/`nelisp-point'/`nelisp-insert'/`nelisp-
+;; goto-char' are prelude-only internal names, same category as
+;; `nelisp-point-max'/`nelisp-point-min' above; declared for the same
+;; reason.  `file-exists-p'/`expand-file-name'/`string-as-unibyte' are
+;; real Emacs names (a host running this file for real, or a standalone
+;; image that already loaded the prelude, already has them).
+(declare-function nelisp--syscall-read-file "nelisp-stdlib-prelude")
+(declare-function nelisp-point "nelisp-stdlib-prelude")
+(declare-function nelisp-insert "nelisp-stdlib-prelude")
+(declare-function nelisp-goto-char "nelisp-stdlib-prelude")
+(unless (fboundp 'insert-file-contents-literally)
+  (defun insert-file-contents-literally (filename &optional _visit beg end
+                                                   _replace)
+    "Same as the prelude's copy.
+
+(fn FILENAME &optional VISIT BEG END REPLACE)"
+    (nelisp--check-string filename)
+    (unless (file-exists-p filename)
+      (signal 'file-missing
+              (list "Opening input file" "No such file or directory"
+                    (expand-file-name filename))))
+    (let* ((decoded (or (nelisp--syscall-read-file filename) ""))
+           (bytes (if (fboundp 'string-as-unibyte)
+                      (string-as-unibyte decoded)
+                    decoded))
+           (total (length bytes))
+           (b (if beg (max 0 (min beg total)) 0))
+           (e (if end (max b (min end total)) total))
+           (slice (substring bytes b e))
+           (pos (nelisp-point nelisp--current-buffer)))
+      (nelisp-insert slice nelisp--current-buffer)
+      (nelisp-goto-char pos nelisp--current-buffer)
+      (list (expand-file-name filename) (length slice)))))
+
 (unless (boundp 'directory-files-no-dot-files-regexp)
   (defvar directory-files-no-dot-files-regexp "[^.]\\|\\.\\.\\."))
 (unless (boundp 'shell-command-switch)
