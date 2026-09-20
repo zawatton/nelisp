@@ -51,22 +51,38 @@
 ;; (hash-table with STRING keys, vector, `:null', `:false') -- see its
 ;; own header.  This file is therefore almost entirely thin wrappers.
 ;;
-;; FIXED (segment C1, this file only -- `packages/nelisp-json/src/
-;; nelisp-json.el' is out of scope and untouched): `nelisp-json-parse-
-;; string' itself still returns STRING keys for `:object-type 'alist'
-;; (`(("a" . 1))'), a pre-existing, documented divergence from real
-;; Emacs's native `json-parse-string', which interns SYMBOL keys
-;; (`((a . 1))') -- see memory `feedback_nelisp_json_parse_string_keys_
-;; are_strings'.  `json-parse-string'/`json-parse-buffer' below now
-;; intern those keys to symbols, recursively (including through nested
-;; objects and JSON arrays, which are vectors), in a thin wrapper
-;; (`standalone-compat-json--parse') around the un-fixed
-;; `nelisp-json-parse-string' call -- matching real Emacs, which gives no
-;; way to ask `json-parse-string' for anything OTHER than symbol keys
-;; when `:object-type' is `alist'.  The default `hash-table' object type
-;; is untouched (already string-keyed, matching Emacs) and `plist' is
-;; untouched (already keyword-keyed, matching Emacs); verified against
+;; FIXED (segment C1, then segment D2): `nelisp-json-parse-string' used
+;; to return STRING keys for `:object-type 'alist' (`(("a" . 1))'), a
+;; documented divergence from real Emacs's native `json-parse-string',
+;; which interns SYMBOL keys (`((a . 1))') -- see memory
+;; `feedback_nelisp_json_parse_string_keys_are_strings'.  Segment C1
+;; papered over this here, in a thin wrapper
+;; (`standalone-compat-json--parse') around the then-unfixed
+;; `nelisp-json-parse-string' call, by interning the alist keys itself
+;; after the fact.  Segment D2 fixed `nelisp-json-parse-string' itself
+;; (`packages/nelisp-json/src/nelisp-json.el') to return interned symbol
+;; keys for `:object-type 'alist' directly, recursively, including
+;; through nested objects and JSON arrays -- matching real Emacs, which
+;; gives no way to ask `json-parse-string' for anything OTHER than
+;; symbol keys when `:object-type' is `alist'.  The C1 workaround wrapper
+;; is therefore gone from this file: `json-parse-string'/`json-parse-
+;; buffer' below now call `nelisp-json-parse-string' directly with no
+;; rekeying step for the modern API.  The default `hash-table' object
+;; type is untouched (already string-keyed, matching Emacs) and `plist'
+;; is untouched (already keyword-keyed, matching Emacs); verified against
 ;; Emacs 31.1.
+;;
+;; The `standalone-compat-json--rekey'/`--key-as'/`--resolve-key-type'
+;; machinery below is NOT a workaround and stays: it implements the old
+;; `json-read'/`json-read-from-string' API's own `json-key-type' feature
+;; (a real Emacs behavior, not a nelisp-json gap -- `json-key-type' lets
+;; a caller override the object-type-implied key representation, e.g.
+;; ask for string keys while `json-object-type' is `alist') and its
+;; `json-object-type' dynamic-variable dispatch (`alist'/`plist'/
+;; `hash-table', chosen at call time, unlike the new API's `:object-type'
+;; keyword argument).  That is this compat file's own responsibility to
+;; provide, independent of whatever `nelisp-json-parse-string' returns
+;; for a fixed `:object-type'.
 ;;
 ;; `json-read'/`json-read-from-string' (old API) go through the same
 ;; `standalone-compat-json--rekey' machinery, but via the dynamic
@@ -213,30 +229,15 @@ otherwise `hash-table' -> `string', `alist' -> `symbol', `plist' ->
         ('plist 'keyword)
         (_ 'string))))
 
-(defun standalone-compat-json--parse (string args)
-  "Parse STRING with `nelisp-json-parse-string' and ARGS (its keyword
-arguments), then apply real Emacs's `json-parse-string' key rule for
-`:object-type (quote alist)': intern its (documented, pre-existing --
-see the Commentary above) string keys to symbols, recursively.  Real
-`json-parse-string' gives no way to ask for anything other than symbol
-keys there, so this always applies when ARGS asks for `alist' -- unlike
-the old API below, there is no `:key-type' argument to consult.  A
-`plist'/`hash-table' (or omitted, defaulting to `hash-table')
-`:object-type' in ARGS passes through unchanged: both already match
-real Emacs's key representation (see the Commentary)."
-  (let ((value (apply #'nelisp-json-parse-string string args)))
-    (if (eq (plist-get args :object-type) 'alist)
-        (standalone-compat-json--rekey value 'alist 'symbol)
-      value)))
-
 (defun standalone-compat-json--read-one (args)
   "Parse one JSON value starting at point in the current buffer and
 advance point past it, leaving any further buffer content unread --
 `json-parse-buffer'/`json-read' semantics.  ARGS are
-`nelisp-json-parse-string' keyword arguments, passed through
-`standalone-compat-json--parse' (see its docstring for the `alist' key
-rule this applies for both callers below).  See the trailing-
-whitespace caveat in the Commentary above."
+`nelisp-json-parse-string' keyword arguments -- passed straight through,
+with no rekeying step, since `nelisp-json-parse-string' now returns the
+correct key representation for every `:object-type' itself (see the
+Commentary above).  See the trailing-whitespace caveat in the
+Commentary above."
   ;; `buffer-substring' (not `-no-properties'): measured 2026-09-19,
   ;; `buffer-substring-no-properties' on the standalone binary always
   ;; returns "" regardless of BEG/END (a pre-existing runtime gap,
@@ -247,14 +248,14 @@ whitespace caveat in the Commentary above."
   (let ((text (buffer-substring (point) (point-max)))
         (start (point)))
     (condition-case outer-err
-        (prog1 (standalone-compat-json--parse text args)
+        (prog1 (apply #'nelisp-json-parse-string text args)
           (goto-char (point-max)))
       (nelisp-json-parse-error
        (let ((pos (nth 3 outer-err)))
          (unless (integerp pos)
            (standalone-compat-json--translate-error outer-err))
          (condition-case nil
-             (prog1 (standalone-compat-json--parse (substring text 0 pos) args)
+             (prog1 (apply #'nelisp-json-parse-string (substring text 0 pos) args)
                (goto-char (+ start pos)))
            (error (standalone-compat-json--translate-error outer-err))))))))
 
@@ -262,17 +263,20 @@ whitespace caveat in the Commentary above."
   (defun json-parse-string (string &rest args)
     "Parse STRING as JSON.  ARGS: `:object-type'/`:array-type'/
 `:null-object'/`:false-object', same names/defaults as real Emacs.
-`:object-type (quote alist)' now returns SYMBOL keys, matching real
-Emacs -- see the Commentary above and `standalone-compat-json--parse'."
+`:object-type (quote alist)' returns SYMBOL keys, matching real Emacs --
+see the Commentary above.  A thin wrapper around
+`nelisp-json-parse-string', which already returns the correct key
+representation for every `:object-type'; this only translates the
+error condition."
     (condition-case err
-        (standalone-compat-json--parse string args)
+        (apply #'nelisp-json-parse-string string args)
       (nelisp-json-parse-error (standalone-compat-json--translate-error err)))))
 
 (unless (fboundp 'json-parse-buffer)
   (defun json-parse-buffer (&rest args)
     "Parse one JSON value at point in the current buffer.  ARGS as
 `json-parse-string'.  See the Commentary above for the buffer-position
-caveat and the `:object-type (quote alist)' key fix."
+caveat."
     (standalone-compat-json--read-one args)))
 
 ;; Deliberately unconditional -- see the Commentary above.  This is the
@@ -308,10 +312,10 @@ applied afterwards, as a separate rekey pass (see
   "Apply the current `json-key-type' (or its per-`json-object-type'
 default, via `standalone-compat-json--resolve-key-type') to
 PARSED-VALUE, which was parsed with the current `json-object-type'.
-Safe to run after `standalone-compat-json--parse' has already interned
-an `alist' result's keys to symbols (the common case, `json-object-type'
-defaulting to `alist'): `standalone-compat-json--key-as' accepts a
-key already in symbol form and converts it again, a no-op unless
+Safe to run on an `alist' result even though `nelisp-json-parse-string'
+already returns symbol keys for it (the common case, `json-object-type'
+defaulting to `alist'): `standalone-compat-json--key-as' accepts a key
+already in symbol form and converts it again, a no-op unless
 `json-key-type' asks for something else."
   (standalone-compat-json--rekey
    parsed-value json-object-type
