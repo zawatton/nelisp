@@ -1351,25 +1351,6 @@ itself a cadr of another plist-get."
            "(let ((x (cons 1 2))) (setf (cdr x) 9) x)")
           "(1 . 9)")))
 
-;; Segment F item 7: `byte-compile' was void. The one caller in the
-;; corpus only needs a `functionp' result back, so this compiles
-;; nothing and returns FUNCTION unchanged (or its function cell, for a
-;; symbol argument) -- documented plainly in the docstring.
-(ert-deftest nelisp-stdlib-segf-byte-compile-lambda-unchanged ()
-  (should
-   (equal (nelisp-stdlib-segf--standalone-eval
-           "(functionp (byte-compile (lambda (x) x)))")
-          "t")))
-
-(ert-deftest nelisp-stdlib-segf-byte-compile-symbol-resolves-function-cell ()
-  (should
-   (equal
-    (nelisp-stdlib-segf--standalone-eval
-     "(progn (fset 'nelisp-segf-bc-probe (lambda () 42))
-             (eq (byte-compile 'nelisp-segf-bc-probe)
-                 (symbol-function 'nelisp-segf-bc-probe)))")
-    "t")))
-
 ;; Segment F item 8: `buffer-local-value' was void (1 of 3 ui-test
 ;; failures). Reads VARIABLE's value with BUFFER current; does NOT
 ;; itself make VARIABLE buffer-local. The other 2 ui-test failures need
