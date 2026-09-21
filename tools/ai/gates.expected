@@ -105,6 +105,27 @@ parity-coverage
 # restoring it turned the gate green again at `findings=0'.
 substrate-presence-corpus-check
 
+# vendor-shadow-gate (Doc segI, vendor-emacs-lisp): catches a NEW
+# unconditional defun/defmacro/defsubst/defalias/fset in this tree's own
+# sources (the same lisp/src/scripts/packages/*/src set `emacs-compat'
+# reads) for a name a file under vendor/emacs-lisp/ also defines -- the
+# exact shape of the incident that motivated the segment (a hand-written
+# rx/cl-seq subset, written the day before, of files this tree now
+# vendors verbatim).  Guarded by `(unless (fboundp ...))' is exempt, same
+# recognizer `emacs-compat' uses, for the same reason: it defers to
+# whatever already won, which on the standalone is the vendored function
+# itself once `require'd.  Small accepted-list ratchet, not a ratcheted
+# count: `tools/vendor-shadow-accepted.txt' names each pre-existing
+# UNGUARDED overlap with a reason; measured at commit time,
+# `GATE-COUNT checked=187 findings=0' (187 = the four vendored files'
+# combined defun/defmacro/defsubst/fset surface; the 5 accepted names are
+# pre-existing NeLisp cl-seq/hash-table helpers, not the incident this
+# gate answers to).  Mutation-proven (tools/gate-mutations.txt): an
+# unconditional redefinition of a vendored name, injected unaccepted,
+# turns it red naming that one name; removing the injection (or adding an
+# accepted-file line) turns it green again.
+vendor-shadow-gate
+
 # Developer-loop gates: useful, but not evidence about the whole tree.
 ert-focus?
 ns?

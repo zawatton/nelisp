@@ -1261,3 +1261,13 @@ standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(nl_alloc_sy
 # restored -- byte-identical to the pre-mutation Makefile (`git diff`
 # empty).
 standalone-reader-checked-soak|Makefile|s#(while (< i 8000) (setq acc (cons (cons i i) acc)) (setq i (+ i 1))))#(while (< i 8000) (setq acc (cons (cons i i) acc)) (setq nelisp-checked-soak-retain (cons (cons i i) (if (boundp (quote nelisp-checked-soak-retain)) nelisp-checked-soak-retain nil))) (setq i (+ i 1))))#|checked-soak-round's third loop retains its whole batch of cons cells in a global that is never cleared between rounds instead of releasing them when the local `acc` binding goes out of scope, so live-blocks grows by a full batch every round instead of returning to baseline after each round's garbage-collect
+
+# vendor-shadow-gate (Doc segI, vendor-emacs-lisp): an unconditional
+# redefinition of `days-between' (a vendor/emacs-lisp/calendar/time-date.el
+# name, not in tools/vendor-shadow-accepted.txt) injected into
+# lisp/nelisp-stdlib-misc.el.  Verified with `make gate-mutation-verify
+# GATE=vendor-shadow-gate': clean baseline `GATE-COUNT checked=187
+# findings=0' / PASS; mutated `GATE-COUNT checked=187 findings=1' naming
+# `days-between lisp/nelisp-stdlib-misc.el' / FAIL; restored -- byte-
+# identical to the pre-mutation file (`git diff` empty).
+vendor-shadow-gate|lisp/nelisp-stdlib-misc.el|1a\(defun days-between (a b) 0)|an unconditional defun for a name vendor/emacs-lisp/calendar/time-date.el also defines, unaccepted, must fail the gate

@@ -1487,6 +1487,16 @@ substrate-presence-corpus-check:
 	  -l tools/nelisp-substrate-presence-gen.el \
 	  --eval '(kill-emacs (nelisp-substrate-presence-gen-check))'
 
+# Doc segI (vendor-emacs-lisp): catches a NEW unconditional defun/defmacro
+# in this tree's own sources for a name a file under vendor/emacs-lisp/
+# also defines -- the exact shape of the incident this segment answers to
+# (a hand-written rx/cl-seq subset, written the day before, of files this
+# tree already vendors verbatim).  See tools/nelisp-vendor-shadow-gate.el
+# and tools/vendor-shadow-accepted.txt.
+.PHONY: vendor-shadow-gate
+vendor-shadow-gate:
+	$(EMACS) --batch -Q -l tools/nelisp-vendor-shadow-gate.el
+
 .PHONY: substrate-presence-corpus-regen
 substrate-presence-corpus-regen:
 	NELISP_SUBSTRATE_PRESENCE_GEN_WRITE=1 $(EMACS) --batch -Q -L packages/nl-prelude/src -L packages/nl-ns/src \

@@ -146,6 +146,7 @@ wasm-dtw-skeleton-smoke \
 unsafe-inventory ns-inventory \
 reader-surface-audit pkg-graph pkg-load-lists \
 parity-coverage substrate-presence-corpus-check \
+vendor-shadow-gate \
 doc-claims ns"
     # NELISP_CHECK_SKIP lets CI hand a step to a job of its own rather than
     # drop it.  `gate-mutation' is the only user today: it is 1257 of the

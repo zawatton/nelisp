@@ -1,0 +1,23 @@
+# Names this tree defines unconditionally that a file under
+# vendor/emacs-lisp/ also defines (tools/nelisp-vendor-shadow-gate.el).
+# Format:
+#
+#   NAME|FILE|reason
+#
+# The reason is the point.  All five rows below predate this gate: each is
+# an existing NeLisp-native implementation of a name one of the four files
+# vendored by Doc segI (subr-x.el, cl-seq.el) also happens to define, kept
+# unconditional because it loads ahead of vendor/emacs-lisp in `load-path'
+# (see vendor/README.md's load-path ordering) and this tree's own name
+# always has to win over a vendored library's, the same way a native
+# builtin does.  None of these five caused, or was caused by, the incident
+# this gate exists to catch (a hand-written subset of a file this tree
+# ALREADY vendors) -- rewriting them to `require' the vendored file
+# instead is separate work this gate does not force.  A NEW row here needs
+# a reason as specific as these, not a copy of one.
+
+cl-position|lisp/nelisp-cl-macros.el|pre-existing NeLisp cl-seq-shaped helper (list-only, not this tree's hand-written rx/cl-seq incident); vendor/emacs-lisp/emacs-lisp/cl-seq.el's cl-position is reachable via (require 'cl-seq) for any caller that needs the full generalized-sequence semantics
+cl-remove-if-not|lisp/nelisp-cl-macros.el|pre-existing NeLisp cl-seq-shaped helper used by nelisp-aot-compiler.el; same rationale as cl-position
+cl-set-difference|lisp/nelisp-cl-macros.el|pre-existing NeLisp cl-seq-shaped helper (its own docstring already cites "Emacs cl-seq.el semantics" as the contract it follows); same rationale as cl-position
+hash-table-keys|lisp/nelisp-stdlib-misc.el|pre-existing NeLisp hash-table helper, part of this tree's own stdlib surface (Doc 22), not touched by the rx/cl-seq incident this gate answers to
+hash-table-values|lisp/nelisp-stdlib-misc.el|pre-existing NeLisp hash-table helper; same rationale as hash-table-keys
