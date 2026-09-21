@@ -2705,11 +2705,16 @@ argument error entirely."
 ;; it is a symbol, matching what `byte-compile' itself returns for a
 ;; symbol argument -- is enough. `void-function' otherwise reached
 ;; ordinary code that never even asked for optimisation.
-(unless (fboundp 'byte-compile)
-  (defun byte-compile (function)
-    "Compile nothing; return FUNCTION (or its function cell, if FUNCTION
-is a symbol), unchanged."
-    (if (symbolp function) (indirect-function function) function)))
+;; No `byte-compile' here, deliberately.  Segment F added a stub that
+;; returned its argument, and that made every `(fboundp 'byte-compile)'
+;; capability probe answer yes: packages/nl-prelude/test's
+;; `nl-prelude-match-warning-fails-compile-gate' branches on exactly that
+;; probe -- "skipped on standalone, which has no byte compiler" -- so it
+;; took the host branch and failed, turning the extras tier red on CI run
+;; 35545199914.  A stub that answers a capability question with a lie is
+;; worse than the `void-function' it replaces; the one consumer that wanted
+;; a functionp back (nelisp-agent's trajectory test) fails honestly instead.
+
 (unless (fboundp 'string-greaterp)
   (defun string-greaterp (a b) (string-lessp b a)))
 ;; `string>' is an ALIAS in Emacs, and its absence here was not a missing
