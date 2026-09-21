@@ -782,6 +782,90 @@ native here and always nil) -- every integer is what real Emacs would
 call a fixnum -- so this is exactly `integerp'."
     (integerp object)))
 
+;; Doc segI (vendor-emacs-lisp) follow-up: `decoded-time-SLOT' accessors
+;; for the `decoded-time' value vendored `calendar/time-date.el' reads
+;; AND writes through, e.g. `decoded-time-add' (time-date.el line ~473):
+;; `(cl-incf (decoded-time-year time) (decoded-time-year delta))'.  GNU
+;; Emacs defines these nine accessors in `simple.el' (Emacs 31.1, around
+;; line 11449), not in `time-date.el' -- only the file that USES them is
+;; vendored here.  The struct is:
+;;
+;;   (cl-defstruct (decoded-time (:constructor nil) (:copier nil) (:type list))
+;;     second minute hour day month year weekday (dst -1) zone)
+;;
+;; `:type list' makes every `decoded-time' value a plain 9-element list,
+;; not a NeLisp record, so this tree's own `cl-defstruct' macro (above --
+;; its docstring already says "no `:type', no `setf' integration") cannot
+;; generate this: its accessors always call `nelisp--record-ref', which
+;; needs an actual record and signals `(wrong-type-argument arrayp ...)'
+;; on a plain list -- tried against this exact shape
+;; (`(cl-defstruct (... (:type list)) ...)' then calling an accessor on a
+;; literal 9-element list) and confirmed before writing the accessors
+;; below by hand instead.  `(:constructor nil)' with no other
+;; `:constructor' cell also means real Emacs never defines
+;; `make-decoded-time' at all; nothing here defines it either.
+;;
+;; Guarded so host Emacs re-loading this file (`simple.el' always
+;; preloaded there) keeps its real accessors.  Slot order/indices are
+;; Emacs's own, verified against `(decode-time 0 t)' on host Emacs 31.1.
+(unless (fboundp 'decoded-time-second)
+  (defun decoded-time-second (time)
+    "Return the seconds slot (index 0) of decoded time value TIME."
+    (nth 0 time)))
+(unless (fboundp 'decoded-time-minute)
+  (defun decoded-time-minute (time)
+    "Return the minutes slot (index 1) of decoded time value TIME."
+    (nth 1 time)))
+(unless (fboundp 'decoded-time-hour)
+  (defun decoded-time-hour (time)
+    "Return the hours slot (index 2) of decoded time value TIME."
+    (nth 2 time)))
+(unless (fboundp 'decoded-time-day)
+  (defun decoded-time-day (time)
+    "Return the day-of-month slot (index 3) of decoded time value TIME."
+    (nth 3 time)))
+(unless (fboundp 'decoded-time-month)
+  (defun decoded-time-month (time)
+    "Return the month slot (index 4) of decoded time value TIME."
+    (nth 4 time)))
+(unless (fboundp 'decoded-time-year)
+  (defun decoded-time-year (time)
+    "Return the year slot (index 5) of decoded time value TIME."
+    (nth 5 time)))
+(unless (fboundp 'decoded-time-weekday)
+  (defun decoded-time-weekday (time)
+    "Return the day-of-week slot (index 6) of decoded time value TIME."
+    (nth 6 time)))
+(unless (fboundp 'decoded-time-dst)
+  (defun decoded-time-dst (time)
+    "Return the daylight-saving-time slot (index 7) of decoded time value TIME."
+    (nth 7 time)))
+(unless (fboundp 'decoded-time-zone)
+  (defun decoded-time-zone (time)
+    "Return the UTC-offset/zone slot (index 8) of decoded time value TIME."
+    (nth 8 time)))
+
+;; Index table for the `setf' place clause added to `nelisp--setf-1'
+;; below (search for this variable's name there).  A plain `defvar', not
+;; a `cl-simple-setter' property: Doc 156/157 record that a top-level
+;; `put' placed in this AOT-baked prelude does not persist into the
+;; standalone boot image -- only definitions do (that is why `cl--find-
+;; class''s own `cl-simple-setter' registration had to move into a
+;; *loaded* file instead of living here).  A `defvar' with a literal
+;; value is a definition and does persist -- the same premise
+;; `nelisp-cl-macros--accessor-info' (cl-defstruct's own accessor/setf
+;; table, above) already relies on -- so this table is the setf-safe
+;; route for a hand-written, non-cl-defstruct accessor set.
+(defvar nelisp--decoded-time-accessor-index
+  '((decoded-time-second . 0) (decoded-time-minute . 1)
+    (decoded-time-hour . 2) (decoded-time-day . 3)
+    (decoded-time-month . 4) (decoded-time-year . 5)
+    (decoded-time-weekday . 6) (decoded-time-dst . 7)
+    (decoded-time-zone . 8))
+  "Accessor-symbol -> 0-based list index for the `decoded-time' slots.
+Read by the `nelisp--setf-1' clause that gives these accessors a working
+`setf' place; see the accessors themselves, defined just above.")
+
 (defmacro setq-default (&rest pairs)
   "NeLisp has no buffer-local distinction; alias to `setq'."
   (cons 'setq pairs))
@@ -7185,6 +7269,21 @@ other gv-using libraries load/run on the bare reader."
             (list 'if (list 'listp seq-sym)
                   (list 'setcar (list 'nthcdr n-sym seq-sym) val)
                   (list 'aset seq-sym n-sym val)))))
+   ;; Doc segI: `(setf (decoded-time-SLOT TIME) VAL)' places for the nine
+   ;; hand-written `decoded-time-*' accessors defined above.  Each is
+   ;; positional `(setcar (nthcdr N time) val)' against the same
+   ;; `:type list' layout the readers use -- needed because vendored
+   ;; `time-date.el's `decoded-time-add' assigns through these places,
+   ;; not just reads them (e.g. `(cl-incf (decoded-time-year time)
+   ;; (decoded-time-year delta))').  `nelisp--decoded-time-accessor-index'
+   ;; is the index table defined next to the accessors.
+   ((and (consp place) (symbolp (car place))
+         (assq (car place) nelisp--decoded-time-accessor-index))
+    (list 'setcar
+          (list 'nthcdr
+                (cdr (assq (car place) nelisp--decoded-time-accessor-index))
+                (cadr place))
+          val))
    ((and (consp place) (eq (car place) 'get))
     (cons 'put (append (cdr place) (list val))))
    ((and (consp place) (eq (car place) 'gethash))

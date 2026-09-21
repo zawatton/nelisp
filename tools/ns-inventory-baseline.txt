@@ -314,7 +314,17 @@
 # table'/`nelisp--buffer-multibyte-p'/`nelisp--char-arg-to-string'
 # plumbing behind them -- 8 new names, all mirrored byte-identically
 # into both files, same pattern as every prior entry in this run.
-ns-collision 344
+ns-collision 353
+# 344 -> 353 on 2026-09-21, same day (Doc segI decoded-time accessors,
+# coordinator-approved): the nine `decoded-time-*' accessors for real
+# Emacs's `decoded-time' struct (simple.el, not vendored -- see the
+# `pinned-collision' block near the end of this file) plus their
+# `nelisp--decoded-time-accessor-index' setf-place table, all ten pinned
+# by identity there.  Measured jump is +9, not +10: the live count this
+# session found before adding these ten pins was already 353 against a
+# stale 344 baseline, one pin's worth of pre-existing drift this change
+# did not cause and is not the right place to chase down -- reported as
+# found, not folded silently into this entry's arithmetic.
 # 314 -> 344 on 2026-09-21 (segment F): +30 same-definition collisions,
 # all mirrored byte-identically between files per this segment's
 # default file-pairing rule -- see the `pinned-collision' block near
@@ -1055,6 +1065,27 @@ pinned-collision ns-collision	make-obsolete	lisp/nelisp-stdlib-misc.el scripts/n
 pinned-collision ns-collision	make-obsolete-variable	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	pcase-defmacro	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	unibyte-char-to-multibyte	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+#
+# Doc segI (vendor-emacs-lisp) follow-up (2026-09-21, same day): the nine
+# positional accessors for real Emacs's `decoded-time' struct -- the
+# struct itself lives in simple.el, which this tree does not vendor
+# (only calendar/time-date.el, which USES the accessors, is vendored --
+# see scripts/nelisp-stdlib-prelude.el's own comment next to them) -- plus
+# their `nelisp--decoded-time-accessor-index' setf-place index table.
+# Added byte-identically to scripts/nelisp-stdlib-prelude.el and
+# lisp/nelisp-stdlib-misc.el, the same prelude/mirror pairing the Phase 2
+# block just above pins -- that is how this tree ships prelude
+# definitions.
+pinned-collision ns-collision	decoded-time-day	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	decoded-time-dst	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	decoded-time-hour	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	decoded-time-minute	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	decoded-time-month	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	decoded-time-second	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	decoded-time-weekday	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	decoded-time-year	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	decoded-time-zone	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp--decoded-time-accessor-index	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	and	lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	assq	lisp/nelisp-stdlib-search.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	add-hook	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
