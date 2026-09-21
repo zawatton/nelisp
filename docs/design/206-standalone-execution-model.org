@@ -1,0 +1,269 @@
+#+TITLE: Doc 206 — How the standalone gets fast: a byte-code VM, and DSL primitives only where they are unavoidable
+#+AUTHOR: NeLisp
+#+STATUS: DRAFT (2026-09-21) — nothing has landed from this document.  The
+#+STATUS2: measurements in §1 are real and reproducible; the plan in §3-§5 is not yet built.
+
+* §0 TL;DR
+
+The standalone interprets everything that is not a compiled DSL primitive, and
+one interpreted step costs 5-15 µs.  Three candidate ways out were measured on
+2026-09-21, not argued:
+
+| path | measured | verdict |
+|---|---|---|
+| keep interpreting, make the evaluator cheaper (segment H) | empty loop -41%, standard loop -31%, ~130 lines | real, but a constant factor |
+| run the shipped bytecode VM (=src/nelisp-bytecode.el=, Doc 08, SHIPPED 2026-04-24) on the standalone | same loop: interpreter 0.325 s, **VM 349.7 s** — 1077x *slower*, same answer | unusable as-is |
+| the shipped JIT (=packages/nelisp-jit=) | translates NeLisp to *host* Elisp and calls the *host* =byte-compile= | host-bound by design, cannot run here |
+
+The VM result is the important one, and it is not a defect in the VM: bcl is
+itself written in interpreted Lisp, so every bytecode instruction costs several
+interpreted steps.  On the host it rides Emacs's byte-compiled runtime, which
+is why Doc 08 measured ~1.2x there and pivoted to a JIT.
+
+So the conclusion is structural: **the execution layer itself has to be
+compiled**.  Either the VM's dispatch loop becomes native code, or the
+standalone gets a JIT that emits machine code.  No arrangement of interpreted
+Lisp fixes this.
+
+What this document proposes:
+
+1. **Make the byte-code execution layer native** (§3.1).  Keep GNU Emacs's own
+   byte compiler — ordinary Lisp, already vendored — as the compiler, and write
+   only the dispatch loop and its opcodes in the build DSL, where each opcode
+   delegates to a primitive that already exists.  Bounded work, and it is the
+   same shape as the DSL work we already do.
+2. **Then a standalone JIT** (§3.2), reusing the AOT chain that builds the
+   runtime (=nelisp-asm-x86_64-*=, =nelisp-elf-write-binary=).  That chain
+   today accepts only the low-level DSL, so this step is where the real
+   compiler work lives: tagged values, GC roots, closures, dynamic binding,
+   non-local exit.
+3. **DSL primitives only where the DSL is unavoidable** (§2): the 144 that
+   touch representation ordinary Lisp cannot reach.  The other 126 are ordinary
+   Lisp and must not be hand-written in the DSL — they get fast for free once
+   (1) lands.
+
+* §1 Problem — measured evidence
+
+** §1.1 The census
+
+=tools/nelisp-c-primitive-census.sh= regenerates this; =tools/nelisp-c-primitive-inventory.txt=
+is its output.  Against Emacs 31.1 and =target/nelisp= at =20a49c68d=:
+
+| set | count |
+|---|---|
+| functions GNU Emacs implements in C (=subrp= and not =subr-native-elisp-p=) | 1481 |
+| of those, defined in the standalone | 382 |
+| of those, compiled DSL primitives | 112 |
+| of those, *interpreted prelude Lisp* | 270 |
+| not defined at all (X11, fonts, terminals, …) | 1099 |
+
+The 270 is the number this document is about.  15 of them have no call site in
+either the =nelisp-agent= corpus or vendored Emacs Lisp; they are not worth a
+line of work, which is why the plan is ordered by measured cost × call sites
+and not by the list's length.
+
+** §1.2 Why interpreting is the whole cost
+
+Segment G3 established this the hard way.  =string-match= was assumed to
+recompile its pattern on every call; it does not — the 1024-entry LRU cache
+has been there since =3b3215678= and hits 499/500.  With the cache warm a
+single cached literal match still performs **~7,800 allocations**, and a
+character class **~18,900**, none of which scale with the subject's length.
+They scale with the number of interpreted forms evaluated.  The regexp engine
+was never the problem; the evaluator is.
+
+Segment G1 confirmed the other side of it: making eight list functions DSL
+primitives moved them 5-35x, and left everything that calls them untouched.
+
+** §1.3 What the existing AOT compiler does and does not give us
+
+=lisp/nelisp-aot-compiler.el= (21,189 lines) compiles a Lisp form to a
+static-linked ELF64 executable, and the runtime itself is built through that
+chain.  It is *not* a compiler for ordinary Elisp: its input is the same
+restricted DSL the runtime is written in.  Its own test feeds it
+
+: (seq (defun f () (let ((found 0) (pass 0)) (while (< pass 2) (setq pass (+ pass 1))) …)) (exit (f)))
+
+— machine integers, =exit= as the program's end, and a free symbol is a
+=nelisp-aot-compiler-error=.  No cons cells, no symbols as values, no strings
+as Lisp objects, no GC, no closures, no dynamic binding, no signals.  "Point
+the compiler we already have at user Lisp" is therefore not available.
+
+* §2 The split: what must be a DSL primitive
+
+A function must be written in the build DSL if and only if it **creates or
+observes representation that ordinary Lisp cannot reach** — buffer text, OS
+handles, raw bytes, hash-table internals, machine arithmetic, the reader and
+printer.  Everything else is ordinary Lisp that happens to be slow because we
+interpret it, and belongs in §3, not in the DSL.  Writing it in the DSL means
+writing manual =alloc-bytes= / =ptr-read-u64= / =nl_gc_free_block= code: two
+memory defects surfaced in segment G1 alone, one of them a SIGSEGV on
+=(append '(1 2 . 3) nil)=.
+
+Applying that criterion to the 270 (=tools/nelisp-c-primitive-classification.txt=):
+
+| group | count | examples |
+|---|---|---|
+| buffer and text | 47 | =insert=, =goto-char=, =buffer-substring=, =forward-line=, =point-min= |
+| file system | 22 | =insert-file-contents=, =file-attributes=, =directory-files= |
+| process and OS | 18 | =call-process=, =make-process=, =accept-process-output= |
+| bytes, codecs, time | 13 | =base64-encode-string=, =encode-coding-string=, =format-time-string= |
+| machine arithmetic | 12 | =expt=, =log=, =exp=, =ash=, =logand= |
+| reader and printer | 11 | =read=, =prin1-to-string=, =format= |
+| vector and marker | 10 | =aref=, =aset=, =vconcat=, =copy-marker= |
+| hash table | 6 | =gethash=, =puthash=, =maphash= |
+| keymap | 5 | =define-key=, =lookup-key= |
+| **DSL total** | **144** | |
+| **ordinary Lisp — do NOT hand-write** | **126** | =nth='s neighbours: =memql=, =delq=, =nconc=, =mapconcat=, =equal-including-properties=, =length<=, =proper-list-p=, … |
+
+The 126 are the proof that the DSL is the wrong tool for most of the list: each
+is expressible in ordinary Elisp over values the runtime already has, and each
+would be fast for free once ordinary Lisp stops being interpreted.
+
+* §3 The execution model
+
+** §3.1 Step one: a native byte-code execution layer
+
+The compiler half is already written and maintained by somebody else.  GNU
+Emacs's byte compiler is ordinary Lisp — =bytecomp.el= (256 KB), =byte-opt.el=
+(136 KB), =cconv.el= (43 KB), =macroexp.el= (38 KB) — all four already vendored
+in =nelisp-emacs-lib/vendor/emacs-lisp/=, and segment I showed the standalone
+loads vendored Emacs Lisp once eight load-time names exist.
+
+The execution half is what the standalone lacks: =make-byte-code=, =byte-code=
+and =fetch-bytecode= are void today (=byte-code-function-p= exists and answers
+nil).  Writing it in the DSL is tractable because the instruction set is fixed
+and most opcodes are one call to a primitive we already have:
+
+- stack: =stack-ref=, =dup=, =discard=, =constant=
+- calls: =call0=…=call6=, =callN=
+- control: =goto=, =goto-if-nil=, =goto-if-not-nil=, =goto-if-nil-else-pop=, =return=
+- binding: =varref=, =varset=, =varbind=, =unbind=
+- list and sequence: =car=, =cdr=, =cons=, =list1=…=list4=, =length=, =aref=, =aset=, =nth=, =memq=
+- arithmetic and predicates: =plus=, =diff=, =mult=, =quo=, =max=, =min=, =eq=, =equal=, =gtr=, =lss=
+- non-local exit: =pushcatch=, =pushconditioncase=, =unwind-protect=
+
+The existing bcl (=src/nelisp-bytecode.el=, 2,293 lines, 135 tests) stays as
+the semantic reference it was kept for: the native loop must agree with it, and
+bcl is how we test that cheaply on the host.
+
+Placement, in the order the phases take it: compile the prelude at build time
+(the stdlib stops being interpreted without any runtime compiler), then compile
+vendored and user =.el= at load time.
+
+** §3.2 Step two: a JIT for the standalone
+
+A byte-code VM, even a native one, is roughly Emacs's byte-code performance —
+50-100x its own interpreter, not native speed.  Closing the rest needs machine
+code per function, and the chain that emits machine code already exists here:
+=nelisp-asm-x86_64-*= encodes instructions, =nelisp-elf-write-binary= writes the
+image, and =lisp/nelisp-aot-compiler.el= (21,189 lines) drives both.  The
+runtime itself is built through it.
+
+What that chain does *not* accept is ordinary Elisp.  Its own test feeds it
+
+: (seq (defun f () (let ((found 0) (pass 0)) (while (< pass 2) (setq pass (+ pass 1))) …)) (exit (f)))
+
+— machine integers, =exit= as the program's end, a free symbol is an error.  No
+cons cells, no symbols as values, no GC, no closures, no dynamic binding, no
+signals.  A standalone JIT is therefore the same work as extending that chain
+to tagged values and the runtime's object model, and it is the larger,
+open-ended half of this document.  It is sequenced second for that reason, not
+because it is optional: §0's table is what an interpreted execution layer costs,
+and a VM only moves that to Emacs's level.
+
+* §4 Phases and exit criteria
+
+Each phase states what must be true to call it done, and no phase starts before
+its predecessor's exit criterion is measured.
+
+** P0 — make the inventory exact (half a day)
+
+Today's classification intersects name lists, so special forms (=and=, =or=,
+=cond=) are miscounted as interpreted.  Add =subrp= to the standalone so
+=tools/nelisp-c-primitive-census.sh= asks the runtime instead of grepping the
+build script.
+*Exit:* the inventory's =native= / =interpreted= columns come from the runtime,
+and the special forms appear in neither.
+
+** P1 — the native byte-code execution layer
+
+Write the dispatch loop and opcodes in the build DSL: =make-byte-code=,
+=byte-code=, =fetch-bytecode=, and a decoder that knows each opcode's operand
+width.  Order the work by an opcode histogram over the vendored corpus rather
+than by opcode number.  bcl (=src/nelisp-bytecode.el=) is the semantic
+reference: every opcode's behaviour is checked against it on the host.
+*Exit:* a byte-code object produced by *host* Emacs and embedded in a test runs
+on the standalone and returns what Emacs returns, for at least 200 functions
+drawn from the vendored files; the same loop that costs 0.325 s interpreted and
+349.7 s under bcl runs at or below 0.05 s; every opcode the suite exercises is
+implemented or signals explicitly.
+
+** P2 — compile the prelude at build time
+
+The prelude is baked in as source and interpreted from startup.  Byte-compile
+its =defun=s during =make standalone-reader= and ship byte-code, keeping the
+source path behind a flag for debugging.
+*Exit:* the ~126 ordinary-Lisp primitives of §2 are byte-code, not source; the
+=nth=-class functions are within 3x of their DSL-native counterparts; the
+agent-host census does not regress; =make test= is at its one known flake.
+
+** P3 — load-time compilation
+
+=(require 'rx)= and friends compile on load and cache the result.  Needs
+segment I's vendored tree and =bytecomp.el= loading on the standalone.
+*Exit:* loading the vendored corpus costs no more than today plus one
+amortised compile, and the loaded functions execute as byte-code.
+
+** P4 — DSL primitives, by measured need only
+
+Work the §2 DSL list in cost × call-site order, starting with buffer and text
+(47 functions: =insert= 5.2 ms, =goto-char= 7.7 ms, =buffer-substring= 6.2 ms,
+=forward-line= 11.1 ms per call today).
+*Exit:* each matches Emacs 31.1 on a probe table including edge cases, and its
+per-call cost is within 5x of Emacs's.
+
+** P5 — the standalone JIT
+
+Extend the AOT chain (§3.2) from the low-level DSL to the runtime's object
+model: tagged values, GC roots, closures, dynamic binding, =unwind-protect= and
+=condition-case=.  Compile hot byte-code functions to machine code at runtime.
+*Exit:* to be set when P1-P4's numbers are in — the point of sequencing it last
+is that its target is whatever P1 leaves on the table, and that is not knowable
+before P1 is measured.
+
+* §5 Risks, and what this document does not claim
+
+- **A VM is not native speed.**  Emacs's byte-code is roughly 50-100x its own
+  interpreter, not 1000x.  P1-P3 close most of the gap *to Emacs*; P5 is what
+  goes past it.
+- **The VM's semantics are the dangerous part.**  Dynamic binding,
+  =unwind-protect= and =condition-case= unwind through the VM's stack.  Getting
+  those wrong is silent breakage, not a crash, which is why P1's exit criterion
+  is a 200-function differential against host Emacs and bcl.
+- **bcl stays.**  It is the semantic reference and 135 tests already pin it.  It
+  is not the performance path on the standalone and this document does not try
+  to make it one.
+- **Vendoring is not a speed measure.**  Segment I replaced hand-written subsets
+  with GNU Emacs's own files; those files are still interpreted.  Both efforts
+  are needed and they are independent.
+- **The 1099 absent C primitives are out of scope.**  Most are X11, fonts and
+  terminal handling that a headless runtime has no use for.
+- **This document was nearly wrong.**  Its first draft proposed writing a
+  byte-code VM from scratch, without checking that Doc 08 had shipped one in
+  April.  The check that found it — grep the tree before designing — is the same
+  one segment F skipped when it hand-wrote an =rx= that was already vendored.
+
+* §6 Reproducing the evidence
+
+: tools/nelisp-c-primitive-census.sh --bin target/nelisp
+: # writes tools/nelisp-c-primitive-inventory.txt (1481 rows: name, state, score)
+
+Per-call costs in §0 and §1 were taken with the same form on both runtimes,
+minimum of interleaved rounds, on an otherwise idle machine:
+
+: BIN --eval '(let ((i 0) (t0 (float-time))) (while (< i N) (setq i (1+ i)) FORM) (prin1 (/ (* 1000000.0 (- (float-time) t0)) N)))'
+
+Allocation counts come from =tools/ai/nelisp-ai.sh alloc-sites SCRIPT=, whose
+measurement windows are opened with =(nelisp--debug-switch 24)= and closed with
+=(nelisp--debug-switch 25)= as separate top-level forms.

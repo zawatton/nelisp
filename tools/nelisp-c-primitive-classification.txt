@@ -1,0 +1,21 @@
+[buffer/text] 47
+  beginning-of-line bobp bolp buffer-file-name buffer-live-p buffer-local-value buffer-name buffer-size buffer-string buffer-substring buffer-substring-no-properties char-after char-before current-buffer current-column delete-region end-of-line eobp eolp erase-buffer following-char forward-char forward-line generate-new-buffer-name get-buffer get-buffer-create get-text-property goto-char insert insert-before-markers insert-char insert-file-contents kill-buffer line-beginning-position line-end-position line-number-at-pos narrow-to-region point point-max point-min preceding-char put-text-property save-excursion set-buffer set-buffer-multibyte text-properties-at widen
+[bytes/codec/time] 13
+  base64-decode-string base64-encode-string char-syntax current-time current-time-string decode-coding-region decode-coding-string decode-time encode-coding-region encode-coding-string encode-time format-time-string secure-hash
+[file system] 22
+  directory-files directory-files-and-attributes expand-file-name file-attributes file-directory-p file-executable-p file-exists-p file-locked-p file-modes file-name-absolute-p file-name-as-directory file-name-concat file-name-directory file-name-nondirectory file-readable-p file-regular-p file-symlink-p file-writable-p lock-file rename-file set-file-modes unlock-file
+[hash table] 6
+  clrhash copy-hash-table hash-table-p hash-table-test sxhash-eql sxhash-equal
+[keymap] 5
+  define-key key-description keymapp lookup-key make-sparse-keymap
+[machine arithmetic] 12
+  abs exp expt fceiling ffloor float fround ftruncate isnan log single-key-description sqrt
+[process/OS] 18
+  accept-process-output call-process delete-process emacs-pid kill-emacs kill-process make-pipe-process make-process process-buffer process-contact process-exit-status process-filter process-query-on-exit-flag process-send-eof process-send-region process-send-string process-sentinel process-status
+[reader/printer] 11
+  error-message-string format-message message prin1 prin1-to-string princ print read read-from-minibuffer read-from-string read-string
+[vector/marker] 10
+  bool-vector-count-consecutive bool-vector-count-population bool-vector-exclusive-or bool-vector-intersection bool-vector-not bool-vector-set-difference bool-vector-subsetp bool-vector-union make-list vconcat
+[B: ordinary Lisp] 126
+  % and apply arrayp assoc-string bufferp byte-code-function-p capitalize car-less-than-car car-safe cdr-safe char-equal characterp closurep commandp compare-strings cond copy-sequence decode-char defalias defconst defvar delete delq directory-file-name downcase eql equal-including-properties eval fmakunbound forward-comment fset func-arity funcall functionp get identity indirect-function interactive interpreted-function-p json-serialize keywordp kill-all-local-variables length< length= length> looking-at macroexpand make-network-process make-symbolic-link make-temp-name mapc mapcan mapconcat markerp match-beginning match-data match-end max max-char memql min modify-syntax-entry nconc nlistp nreverse ntake obarrayp or parse-partial-sexp plist-member plist-put prefix-numeric-value processp prog1 proper-list-p propertize put random rassq re-search-forward regexp-quote replace-match reverse round run-hook-with-args run-hook-with-args-until-failure run-hook-with-args-until-success run-hooks safe-length scan-lists scan-sexps search-forward sequencep set-keymap-parent set-process-buffer set-process-coding-system set-process-filter set-process-query-on-exit-flag set-process-sentinel set-syntax-table setplist skip-chars-backward skip-chars-forward sort special-variable-p standard-syntax-table string string-distance string-equal string-lessp string-match string-search string-version-lessp substring-no-properties symbol-function symbol-plist syntax-table take terpri type-of upcase upcase-initials value< write-char write-region
+TOTAL 270
