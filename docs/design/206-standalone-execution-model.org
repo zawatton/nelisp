@@ -51,11 +51,16 @@ is its output.  Against Emacs 31.1 and =target/nelisp= at =20a49c68d=:
 
 | set | count |
 |---|---|
-| functions GNU Emacs implements in C (=subrp= and not =subr-native-elisp-p=) | 1481 |
-| of those, defined in the standalone | 382 |
-| of those, compiled DSL primitives | 112 |
-| of those, *interpreted prelude Lisp* | 270 |
-| not defined at all (X11, fonts, terminals, …) | 1099 |
+| functions GNU Emacs implements in C, special forms excluded | 1460 |
+| of those, defined in the standalone | 374 |
+| of those, compiled primitives (the runtime answers =subr=) | 106 |
+| of those, *interpreted prelude Lisp* (the runtime answers =function=) | 268 |
+| not defined at all (X11, fonts, terminals, …) | 1086 |
+
+The classification is the runtime's own: =(type-of (symbol-function 'car))= is
+=subr= for a compiled primitive and =function= for an interpreted =defun=, so
+the census asks the binary instead of grepping the build script.  P0 of §4 is
+done; this table is its output.
 
 The 270 is the number this document is about.  15 of them have no call site in
 either the =nelisp-agent= corpus or vendored Emacs Lisp; they are not worth a
@@ -177,14 +182,17 @@ and a VM only moves that to Emacs's level.
 Each phase states what must be true to call it done, and no phase starts before
 its predecessor's exit criterion is measured.
 
-** P0 — make the inventory exact (half a day)
+** P0 — make the inventory exact — DONE 2026-09-21
 
-Today's classification intersects name lists, so special forms (=and=, =or=,
-=cond=) are miscounted as interpreted.  Add =subrp= to the standalone so
-=tools/nelisp-c-primitive-census.sh= asks the runtime instead of grepping the
-build script.
-*Exit:* the inventory's =native= / =interpreted= columns come from the runtime,
-and the special forms appear in neither.
+The first census intersected name lists out of the build script, which counted
+special forms as interpreted and missed primitives registered outside the one
+table it knew about.  No new runtime predicate was needed: the runtime already
+distinguishes them, =(type-of (symbol-function 'car))= = =subr= against
+=(type-of (symbol-function 'forward-line))= = =function=.  The census asks it
+directly now, and excludes Emacs's 22 special forms, which are the evaluator's
+business rather than callable functions.
+*Exit (met):* the =native= / =interpreted= columns come from the runtime, and
+the numbers moved 112/270 → 106/268 as a result.
 
 ** P1 — the native byte-code execution layer
 
