@@ -5989,14 +5989,12 @@ argument (reachability + in-arena bounds checks).")
                                        0)
                                    0))
                           (bf_wrong_type_listp (wf_arg_ptr args 1))))
-    ((:lit "assoc")  . (if (if (= (ptr-read-u64 (wf_arg_ptr args 1) 0) 0) 1 (if (= (ptr-read-u64 (wf_arg_ptr args 1) 0) 7) 1 0))
-                            (seq (wf_assoc args out)
-                                 (if (= (ptr-read-u64 out 0) 0)
-                                     (if (= (bf_proper_list_raw (wf_arg_ptr args 1)) 0)
-                                         (bf_wrong_type_listp (wf_arg_ptr args 1))
-                                       0)
-                                   0))
-                          (bf_wrong_type_listp (wf_arg_ptr args 1))))
+    ;; Segment G1: unlike the sibling arm above, `assoc' has an OPTIONAL
+    ;; third TESTFN argument this equal-only walk cannot honour, so the
+    ;; name itself dispatches on arg count/TESTFN-nil-ness first (see
+    ;; `wf_assoc_dispatch', fast-list-helpers) rather than being wired
+    ;; straight to `wf_assoc' the way `rassoc' below is.
+    ((:lit "assoc")  . (wf_assoc_dispatch args env out))
     ((:lit "rassoc") . (if (if (= (ptr-read-u64 (wf_arg_ptr args 1) 0) 0) 1 (if (= (ptr-read-u64 (wf_arg_ptr args 1) 0) 7) 1 0))
                             (seq (wf_rassoc args out)
                                  (if (= (ptr-read-u64 out 0) 0)
@@ -6005,6 +6003,19 @@ argument (reachability + in-arena bounds checks).")
                                        0)
                                    0))
                           (bf_wrong_type_listp (wf_arg_ptr args 1))))
+    ;; Segment G1: `nth'/`nthcdr'/`last'/`butlast'/`append'/`plist-get'/
+    ;; `mapcar' -- see `nelisp-standalone--applyfn-fast-list-helpers'
+    ;; just above `nelisp-standalone--applyfn-dispatch-table-baked' for
+    ;; the shadow-vs-delegate rationale and the edge-case handling each
+    ;; of these needs (a Bignum count, an improper tail, a non-fixnum
+    ;; N, a genuine TESTFN/PREDICATE, a non-cons SEQ).
+    ((:lit "nth")        . (wf_nth args out))
+    ((:lit "nthcdr")     . (wf_nthcdr args out))
+    ((:lit "last")       . (wf_last args out))
+    ((:lit "butlast")    . (wf_butlast args out))
+    ((:lit "append")     . (wf_append args env out))
+    ((:lit "plist-get")  . (wf_plist_get_dispatch args env out))
+    ((:lit "mapcar")     . (wf_mapcar args env out))
     ;; --- M4 hash tables (cons-alist v1) ---
     ;; The raw constructor, under a private name so the prelude can wrap it
     ;; with Emacs's argument-list validation and still reach the native
@@ -9534,8 +9545,40 @@ eval applyfn.")
                                   (if (= ta 1) 0 (setq ok 0)))))))
                       (setq ok 0)))))))))
          ok)))
+    ;; Segment G1, two independent fixes, both measured:
+    ;;
+    ;; 1) `eq' always implies `equal', and `bf_eq2' (already the
+    ;;    comparator `memq'/`assq' use, allocation-free) answers that for
+    ;;    free.  A same-object, same-fixnum-value, or same-interned-
+    ;;    symbol/keyword comparison -- the overwhelming majority of a
+    ;;    SUCCESSFUL match on a realistic key -- now short-circuits
+    ;;    before ever touching `wf_key_eq_depth'.
+    ;;
+    ;; 2) That still leaves every NON-matching step of a linear search
+    ;;    (the majority of the work walking up to a match, or the whole
+    ;;    walk on a miss) falling through to `wf_key_eq_depth', which
+    ;;    allocates a `limit'*16-byte scratch stack on EVERY call
+    ;;    regardless of how quickly the comparison actually resolves.
+    ;;    At the original `limit'=1024 (16KB/call) this measured
+    ;;    ~40-45us PER COMPARISON -- independent of the compared
+    ;;    values' own shape -- which is why `member'/`assoc'/`rassoc'
+    ;;    (all `equal'-by-default) cost ~10x what `memq'/`assq' (`eq'-
+    ;;    by-default) do for a same-shaped search, even once bare `eq'
+    ;;    hits and the interpreter-dispatch shadow are both gone.
+    ;;    `limit'=100 (1.6KB/call) measured indistinguishable from
+    ;;    `memq'/`assq' for atom keys (the realistic case for this
+    ;;    workload), while still covering any REALISTIC alist/plist/
+    ;;    list depth `equal' would need to walk -- a value nested more
+    ;;    than 100 cons/vector levels deep, compared for `equal' inside
+    ;;    a `member'/`assoc'/`rassoc'/equal-mode-hash-table lookup, was
+    ;;    already an extreme case this SAME bounded-and-sound design
+    ;;    accepted losing at the original 1024 (see `wf_key_eq_depth''s
+    ;;    own header: "exceeding the cap answers not-equal... a lookup
+    ;;    miss is sound, while a false hit would corrupt table
+    ;;    semantics") -- this segment narrows that pre-existing,
+    ;;    already-bounded tradeoff, not introduces a new one.
     (defun wf_key_eq (ka kb)
-      (wf_key_eq_depth ka kb 1024))
+      (if (= (bf_eq2 ka kb) 1) 1 (wf_key_eq_depth ka kb 100)))
     ;; Doc 201 §6.17: `eql' = `eq', plus same-type numbers by value.  Fixnum
     ;; and Float payloads are inline and already compared by value/bits in
     ;; `bf_eq2', so only Bignum(13) needs the value compare here.
@@ -9975,6 +10018,398 @@ eval applyfn.")
     (defun wf_rassoc (args out)
       (wf_rassoc_walk (wf_arg_ptr args 0) (wf_arg_ptr args 1) out)))
   "Reader-only list search helpers for SMIE and Org hot paths.")
+
+;; Segment G1: native `nth'/`nthcdr'/`last'/`butlast'/`append'/`assoc'/
+;; `plist-get'/`mapcar'.  Each of these was a Lisp `defun' in the prelude
+;; before this segment (some, like `assoc' and `plist-get', ALREADY
+;; delegated their default-case walk to a private native raw entry --
+;; `nelisp--assoc-raw' / `nelisp--plist-get-eq' -- but the wrapping
+;; `defun' itself still paid full interpreter dispatch on every call,
+;; which is most of what these cost: ~40-270us against a native ~0.1us
+;; peer in host Emacs).  Binding the NAME itself to a builtin removes
+;; that wrapper for the common case; where Emacs's own signature needs
+;; an arbitrary callback (`assoc' TESTFN, `plist-get' PREDICATE, a
+;; non-cons `mapcar'/`append' sequence), the rare/expensive path
+;; delegates to a named, `unless (fboundp ...)'-guarded Lisp fallback
+;; via `nl_apply_function' -- the same resolve-and-call primitive
+;; `nl_apply_do_funcall' (combiner-apply) already uses for a plain
+;; `(funcall SYM ...)', so a SYMBOL argument does not need its own
+;; lookup here; `nl_apply_function' resolves it.
+(defconst nelisp-standalone--applyfn-fast-list-helpers
+  '(;; --- nth / nthcdr -----------------------------------------------
+    ;; Both reuse the existing `bf_elt_list_walk' / `bf_nthcdr_walk'
+    ;; pointer walks (M5 / M7 groups, already linked into every build
+    ;; that carries this group).  A Bignum N can never be reached by
+    ;; walking cdr through any list that fits in memory: a non-negative
+    ;; Bignum behaves exactly like a fixnum count larger than the whole
+    ;; list (walk to the end), and a negative Bignum behaves like any
+    ;; negative fixnum (identity for `nthcdr', clamp-to-0 for `nth' --
+    ;; both walks already implement that for a plain negative fixnum).
+    (defun wf_nth (args out)
+      (let* ((np (wf_arg_ptr args 0)) (tag (ptr-read-u64 np 0)))
+        (if (= tag 2)
+            (bf_elt_list_walk (wf_arg_ptr args 1) (ptr-read-u64 np 8) out)
+          (if (= tag 13)
+              (bf_elt_list_walk (wf_arg_ptr args 1)
+                                 (if (= (ptr-read-u64 np 8) 0)
+                                     4611686018427387903
+                                   -1)
+                                 out)
+            (bf_wrong_type_integerp np)))))
+    (defun wf_nthcdr (args out)
+      (let* ((np (wf_arg_ptr args 0)) (tag (ptr-read-u64 np 0)))
+        (if (= tag 2)
+            (bf_nthcdr_walk (ptr-read-u64 np 8) (wf_arg_ptr args 1) out)
+          (if (= tag 13)
+              (if (= (ptr-read-u64 np 8) 0)
+                  (bf_nthcdr_walk 4611686018427387903 (wf_arg_ptr args 1) out)
+                (seq (wf_copy32 out (wf_arg_ptr args 1)) 0))
+            (bf_wrong_type_integerp np)))))
+    ;; --- last / butlast -----------------------------------------------
+    ;; `safe-length' (tolerant: stops at the first non-cons, never
+    ;; signals) is what `last' uses; `length' (strict: signals on an
+    ;; improper tail) is what `butlast' uses -- the SAME asymmetry the
+    ;; prelude's own two implementations already have, kept exactly.
+    (defun wf_safe_length (p acc)
+      (if (= (ptr-read-u64 p 0) 7)
+          (wf_safe_length (nl_cons_cdr_ptr p) (+ acc 1))
+        acc))
+    (defun wf_last (args out)
+      (let* ((argc (m5_list_len args 0))
+             (list_ptr (wf_arg_ptr args 0))
+             (n_given (> argc 1))
+             (n_ptr (if n_given (wf_arg_ptr args 1) list_ptr)))
+        (if (not (= (ptr-read-u64 list_ptr 0) 7))
+            ;; Not a cons at all (includes nil): Emacs answers the
+            ;; object itself unless N was given and is negative.
+            (if (and n_given (= (ptr-read-u64 n_ptr 0) 2)
+                     (< (ptr-read-u64 n_ptr 8) 0))
+                (seq (wf_write_nil out) 0)
+              (seq (wf_copy32 out list_ptr) 0))
+          (let* ((m (if (and n_given (= (ptr-read-u64 n_ptr 0) 2))
+                        (ptr-read-u64 n_ptr 8)
+                      1))
+                 (len (wf_safe_length list_ptr 0)))
+            (if (< m 0)
+                (seq (wf_write_nil out) 0)
+              (if (> len m)
+                  (bf_nthcdr_walk (- len m) list_ptr out)
+                (seq (wf_copy32 out list_ptr) 0)))))))
+    ;; Builds the first KEEP elements of the (already length-checked,
+    ;; guaranteed-proper) list P as a fresh list, via ordinary recursive
+    ;; `cons' construction -- the same "recurse then splice" shape
+    ;; `nl_apply_list_init' already uses for `apply''s own prefix copy.
+    (defun wf_butlast_collect (p i keep nilslot)
+      (if (>= i keep)
+          nilslot
+        (let* ((rest_slot (wf_butlast_collect (nl_cons_cdr_ptr p) (+ i 1) keep nilslot))
+               (out_slot (alloc-bytes 32 8)))
+          (seq (nelisp_cons_construct (nl_cons_car_ptr p) rest_slot out_slot) out_slot))))
+    ;; N_STATE folds "was N given, and what is it" into one native int,
+    ;; every arm built from only `if'/`=' (no stored `not' result, to
+    ;; stay inside patterns already proven elsewhere in this table):
+    ;;   0 = N omitted (defaults to 1)     1 = N explicitly nil
+    ;;   2 = N a fixnum <= 0               3 = N a fixnum > 0
+    ;;   4 = N a Float or Bignum (> 0 or <= 0 both reach the same walk
+    ;;       below; only the <=0 SHORT-CIRCUIT is fixnum-only, matching
+    ;;       the prelude's own `(and n (<= n 0))' which is a generic
+    ;;       numeric compare there -- a float/bignum N is vanishingly
+    ;;       rare for this argument, so this arm's `m' just reads as 1
+    ;;       and the length-based walk runs, a documented, small gap)
+    ;;   5 = N given and not a number at all -> wrong-type-argument
+    (defun wf_butlast_n_state (n_given n_ptr)
+      (if (= n_given 0)
+          0
+        (let* ((tg (ptr-read-u64 n_ptr 0)))
+          (if (= tg 0)
+              1
+            (if (= tg 2)
+                (if (<= (ptr-read-u64 n_ptr 8) 0) 2 3)
+              (if (if (= tg 3) 1 (if (= tg 13) 1 0))
+                  4
+                5))))))
+    (defun wf_butlast (args out)
+      (let* ((argc (m5_list_len args 0))
+             (list_ptr (wf_arg_ptr args 0))
+             (n_given (if (> argc 1) 1 0))
+             (n_ptr (if (= n_given 1) (wf_arg_ptr args 1) list_ptr))
+             (state (wf_butlast_n_state n_given n_ptr)))
+        (if (= state 2)
+            ;; N given, non-nil, a non-positive fixnum: Emacs answers
+            ;; LIST unchanged WITHOUT looking at it at all -- no type
+            ;; check on LIST, no `length' call.
+            (seq (wf_copy32 out list_ptr) 0)
+          (if (= state 5)
+              ;; N given, non-nil, and not a recognised number: Emacs
+              ;; signals `(wrong-type-argument number-or-marker-p N)'.
+              (bf_wrong_type_number_or_marker n_ptr)
+            (let* ((len_slot (alloc-bytes 32 8)))
+              (let* ((rc (bf_length_checked list_ptr len_slot)))
+                (if (= rc 1)
+                    1
+                  (if (if (= (ptr-read-u64 list_ptr 0) 7) 1 (= (ptr-read-u64 list_ptr 0) 0))
+                      (let* ((len (ptr-read-u64 len_slot 8))
+                             (m (if (= state 3) (ptr-read-u64 n_ptr 8) 1))
+                             (keep (- len m)))
+                        (if (<= keep 0)
+                            (seq (wf_write_nil out) 0)
+                          (let* ((nilslot (alloc-bytes 32 8)))
+                            (seq (wf_write_nil nilslot)
+                                 (wf_copy32 out (wf_butlast_collect list_ptr 0 keep nilslot))
+                                 0))))
+                    ;; LIST itself is a vector/string/etc: `length'
+                    ;; succeeded (they have a length), but the real
+                    ;; `defun''s own walk immediately signals via `car'
+                    ;; the moment it tries to step through one --
+                    ;; unless KEEP was already <= 0 there too, a case
+                    ;; excluded above (M is only < len here).
+                    (bf_wrong_type_listp list_ptr)))))))))
+    ;; --- append ---------------------------------------------------
+    ;; Fast path (every NON-FINAL arg nil-or-cons -- "almost every hot
+    ;; caller" per the prelude's own comment on this exact split) is
+    ;; fully native; a vector/string/bool-vector non-final arg falls
+    ;; back to the interpreted `nelisp--append-slow', unchanged Doc 200
+    ;; mixed-type logic, the same way `bf_nemacs_char_table_call'
+    ;; already delegates to a resolved symbol.
+    (defun wf_append_fast_p (cur)
+      (if (= (ptr-read-u64 (nl_cons_cdr_ptr cur) 0) 7)
+          (let* ((a (nl_cons_car_ptr cur)) (tg (ptr-read-u64 a 0)))
+            (if (if (= tg 0) 1 (if (= tg 7) 1 0))
+                (wf_append_fast_p (nl_cons_cdr_ptr cur))
+              0))
+        1))
+    ;; `bf_wrong_type_listp' (like every `bf_wrong_type_*' helper) returns
+    ;; the fixed sentinel 1 to mean "a signal is already stashed; unwind"
+    ;; -- it is not a slot address.  `wf_append_prepend' builds a cons
+    ;; spine bottom-up and feeds each level's result into
+    ;; `nelisp_cons_construct' as the next level's cdr, so a caller that
+    ;; treated that 1 as if it were a real 32-byte slot pointer (reading
+    ;; from address 1) would silently splice garbage into the result
+    ;; instead of raising -- measured: `(append '(1 2 . 3) nil)' answered
+    ;; `(1 2 . 0)' instead of signalling `wrong-type-argument listp 3'.
+    ;; Every level that might receive the sentinel (both the recursive
+    ;; result here and, at the top, `wf_append_walk''s own eventual
+    ;; TAIL_SLOT) now checks for it before treating it as a pointer.
+    (defun wf_append_prepend (s tail_slot)
+      (if (= tail_slot 1)
+          1
+        (if (= (ptr-read-u64 s 0) 7)
+            (let* ((rest_slot (wf_append_prepend (nl_cons_cdr_ptr s) tail_slot)))
+              (if (= rest_slot 1)
+                  1
+                (let* ((out_slot (alloc-bytes 32 8)))
+                  (seq (nelisp_cons_construct (nl_cons_car_ptr s) rest_slot out_slot) out_slot))))
+          (if (= (ptr-read-u64 s 0) 0)
+              tail_slot
+            (bf_wrong_type_listp s)))))
+    (defun wf_append_walk (cur)
+      (if (= (ptr-read-u64 (nl_cons_cdr_ptr cur) 0) 7)
+          (wf_append_prepend (nl_cons_car_ptr cur) (wf_append_walk (nl_cons_cdr_ptr cur)))
+        (nl_cons_car_ptr cur)))
+    ;; The delegate call resolves the target symbol itself, via
+    ;; `nelisp_env_lookup_function', THEN calls `nl_apply_function' with
+    ;; the resolved value -- the same two-step `bf_nemacs_char_table_
+    ;; call' already uses, rather than handing `nl_apply_function' the
+    ;; unresolved symbol and trusting its own tag-4/16 branch, which
+    ;; every other caller in this codebase (`nl_apply_do_funcall',
+    ;; `nl_apply_do_apply') ALSO resolves itself before ever reaching --
+    ;; that branch is unexercised anywhere else and, measured here,
+    ;; does not actually resolve a plain fbound symbol.
+    (defun wf_append_slow (args env out)
+      (let* ((buf (alloc-bytes 24 1)) (sym_slot (alloc-bytes 32 8)) (fn_slot (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 buf 0 3255381746650998126)
+         (ptr-write-u64 (+ buf 8) 0 8299400113624739937)
+         (ptr-write-u64 (+ buf 16) 0 7827308)
+         (nl_alloc_symbol buf 19 sym_slot)
+         (if (= (nelisp_env_lookup_function (+ env 0) (+ env 64) sym_slot fn_slot) 0)
+             (nl_apply_function fn_slot args env out)
+           (nl_cons_stash_void_function env sym_slot)))))
+    (defun wf_append (args env out)
+      (if (= (ptr-read-u64 args 0) 0)
+          (seq (wf_write_nil out) 0)
+        (if (= (ptr-read-u64 (nl_cons_cdr_ptr args) 0) 0)
+            (seq (wf_copy32 out (nl_cons_car_ptr args)) 0)
+          (if (= (wf_append_fast_p args) 1)
+              ;; `wf_append_walk' can itself return the `bf_wrong_type_
+              ;; listp' sentinel (1), propagated up from `wf_append_
+              ;; prepend' -- the top level must check for it too, or
+              ;; `wf_copy32' dereferences address 1 (SIGSEGV, measured).
+              (let* ((result (wf_append_walk args)))
+                (if (= result 1)
+                    1
+                  (seq (wf_copy32 out result) 0)))
+            (wf_append_slow args env out)))))
+    ;; --- assoc: fast path (TESTFN omitted or nil) native; a genuine
+    ;; callable TESTFN delegates to `nelisp--assoc-slow' (Doc 143's own
+    ;; funcall-based walk, unchanged). --------------------------------
+    (defun wf_assoc_fast (args out)
+      (if (if (= (ptr-read-u64 (wf_arg_ptr args 1) 0) 0) 1 (if (= (ptr-read-u64 (wf_arg_ptr args 1) 0) 7) 1 0))
+          (seq (wf_assoc args out)
+               (if (= (ptr-read-u64 out 0) 0)
+                   (if (= (bf_proper_list_raw (wf_arg_ptr args 1)) 0)
+                       (bf_wrong_type_listp (wf_arg_ptr args 1))
+                     0)
+                 0))
+        (bf_wrong_type_listp (wf_arg_ptr args 1))))
+    (defun wf_assoc_slow (args env out)
+      (let* ((buf (alloc-bytes 24 1)) (sym_slot (alloc-bytes 32 8)) (fn_slot (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 buf 0 3255381746650998126)
+         (ptr-write-u64 (+ buf 8) 0 7814639683512791905)
+         (ptr-write-u64 (+ buf 16) 0 30575)
+         (nl_alloc_symbol buf 18 sym_slot)
+         (if (= (nelisp_env_lookup_function (+ env 0) (+ env 64) sym_slot fn_slot) 0)
+             (nl_apply_function fn_slot args env out)
+           (nl_cons_stash_void_function env sym_slot)))))
+    (defun wf_assoc_dispatch (args env out)
+      (let* ((argc (m5_list_len args 0)))
+        (if (<= argc 2)
+            (wf_assoc_fast args out)
+          (if (= (ptr-read-u64 (wf_arg_ptr args 2) 0) 0)
+              (wf_assoc_fast args out)
+            (wf_assoc_slow args env out)))))
+    ;; --- plist-get: fast path (PREDICATE omitted, nil, or the symbol
+    ;; `eq') reuses the existing `nelisp--plist-get-eq' native raw walk;
+    ;; a genuine callable PREDICATE delegates to `nelisp--plist-get-slow'
+    ;; (Doc 143's own funcall-based walk, unchanged). -------------------
+    (defun wf_symbol_is_eq (p)
+      (if (= (ptr-read-u64 p 0) 4)
+          (if (= (ptr-read-u64 p 24) 2)
+              (wf_name_is p 29029 2)
+            0)
+        0))
+    (defun wf_plist_get_slow (args env out)
+      (let* ((buf (alloc-bytes 24 1)) (sym_slot (alloc-bytes 32 8)) (fn_slot (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 buf 0 3255381746650998126)
+         (ptr-write-u64 (+ buf 8) 0 7306858898607664240)
+         (ptr-write-u64 (+ buf 16) 0 131320444562804)
+         (nl_alloc_symbol buf 22 sym_slot)
+         (if (= (nelisp_env_lookup_function (+ env 0) (+ env 64) sym_slot fn_slot) 0)
+             (nl_apply_function fn_slot args env out)
+           (nl_cons_stash_void_function env sym_slot)))))
+    (defun wf_plist_get_dispatch (args env out)
+      (let* ((argc (m5_list_len args 0)))
+        (if (<= argc 2)
+            (bf_plist_get_eq args out)
+          (let* ((pred (wf_arg_ptr args 2)))
+            (if (if (= (ptr-read-u64 pred 0) 0) 1 (= (wf_symbol_is_eq pred) 1))
+                (bf_plist_get_eq args out)
+              (wf_plist_get_slow args env out))))))
+    ;; --- mapcar: native walk-and-collect over a proper OR improper
+    ;; cons chain (the dominant real-world shape), calling FN through
+    ;; the same `nl_apply_function' the interpreter itself uses for
+    ;; `(funcall FN ELT)' -- so a symbol, closure, lambda or builtin FN
+    ;; all work exactly as `funcall' already makes them work.  A
+    ;; vector/string/bool-vector SEQ delegates to `nelisp--mapcar-slow'
+    ;; (Doc 22 A6's own by-index walk, unchanged).
+    ;;
+    ;; GC safety: FN can run arbitrary Lisp, which can allocate and
+    ;; therefore collect.  Every value that must survive across that
+    ;; call is kept in a `nl_root_reserve'd slot for exactly as long as
+    ;; it needs to (the running tail / accumulator persist for the
+    ;; whole loop; the per-iteration element / one-argument call-list /
+    ;; call result are reserved-and-released each iteration so root-
+    ;; stack usage stays O(1), not O(list length)) -- the same
+    ;; reserve/mark/release discipline `nl_apply_do_apply' (combiner-
+    ;; apply) already uses around its own call to `nl_apply_function'.
+    ;; The accumulator is built in reverse (cheap: one native `cons'
+    ;; per element) and flipped by `wf_mapcar_reverse_copy', a plain
+    ;; accumulator-reverse over FRESH cons cells -- no in-place
+    ;; `setcdr', so no interaction with cons-box refcounting.
+    (defun wf_mapcar_reverse_copy (p acc)
+      (if (= (ptr-read-u64 p 0) 7)
+          (let* ((c (alloc-bytes 32 8)))
+            (seq (nelisp_cons_construct (nl_cons_car_ptr p) acc c)
+                 (wf_mapcar_reverse_copy (nl_cons_cdr_ptr p) c)))
+        acc))
+    (defun wf_mapcar_step (rest_slot acc_slot fn_slot env)
+      (if (= (ptr-read-u64 rest_slot 0) 7)
+          (let* ((elt (nl_cons_car_ptr rest_slot))
+                 (nxt (nl_cons_cdr_ptr rest_slot))
+                 (mark (nl_root_mark env))
+                 (elt_slot (nl_root_reserve env))
+                 (nil_slot (nl_root_reserve env))
+                 (arglist_slot (nl_root_reserve env))
+                 (result_slot (nl_root_reserve env)))
+            (seq
+             (wf_copy32 elt_slot elt)
+             (wf_write_nil nil_slot)
+             (nelisp_cons_construct elt_slot nil_slot arglist_slot)
+             (let* ((rc (nl_apply_function fn_slot arglist_slot env result_slot)))
+               (if (= rc 0)
+                   (let* ((new_acc (alloc-bytes 32 8)))
+                     (seq
+                      (nelisp_cons_construct result_slot acc_slot new_acc)
+                      (wf_copy32 acc_slot new_acc)
+                      (wf_copy32 rest_slot nxt)
+                      (nl_root_release env mark)
+                      (wf_mapcar_step rest_slot acc_slot fn_slot env)))
+                 (seq (nl_root_release env mark) rc)))))
+        (if (= (ptr-read-u64 rest_slot 0) 0)
+            0
+          (bf_wrong_type_listp rest_slot))))
+    (defun wf_mapcar_slow (args env out)
+      (let* ((buf (alloc-bytes 24 1)) (sym_slot (alloc-bytes 32 8)) (fn_slot (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 buf 0 3255381746650998126)
+         (ptr-write-u64 (+ buf 8) 0 8299415450919395693)
+         (ptr-write-u64 (+ buf 16) 0 7827308)
+         (nl_alloc_symbol buf 19 sym_slot)
+         (if (= (nelisp_env_lookup_function (+ env 0) (+ env 64) sym_slot fn_slot) 0)
+             (nl_apply_function fn_slot args env out)
+           (nl_cons_stash_void_function env sym_slot)))))
+    ;; FN itself needs the SAME explicit resolve as the delegate helpers
+    ;; above -- it can arrive as a bare symbol (`(mapcar 'foo LIST)') or
+    ;; already a callable value (a closure; `#\\='foo' evaluates to the
+    ;; symbol too, so this covers both).  Returns 1 (success, FN_SLOT now
+    ;; holds the callable) or 0 (FN is an unbound symbol).
+    ;;
+    ;; `nelisp_env_lookup_function' returning 0 means FOUND, and a
+    ;; declared-but-unbound function cell then reads back Nil in
+    ;; FN_SLOT -- that is the only real failure case here.  `nl_sexp_
+    ;; clone_into' (used for an already-callable, non-symbol FN, the
+    ;; same way `nl_apply_do_apply_resolve' resolves a non-symbol
+    ;; `apply' target) is a clone of a value already known good, so
+    ;; there is nothing for it to fail at; measured here, its own
+    ;; return is NOT a 0-means-ok rc the way `nelisp_env_lookup_
+    ;; function''s is (`nl_sci_copy'/`nl_sci_rc' hand back DST's
+    ;; address), so this checks FN_SLOT's own tag after the call
+    ;; instead of comparing a raw return value between two functions
+    ;; whose conventions do not actually match despite the shared
+    ;; call shape.
+    (defun wf_mapcar_resolve_fn (fn env fn_slot)
+      (if (if (= (ptr-read-u64 fn 0) 4) 1 (if (= (ptr-read-u64 fn 0) 16) 1 0))
+          (if (= (nelisp_env_lookup_function (+ env 0) (+ env 64) fn fn_slot) 0)
+              (if (= (ptr-read-u64 fn_slot 0) 0) 0 1)
+            0)
+        (seq (nl_sexp_clone_into fn fn_slot) 1)))
+    (defun wf_mapcar (args env out)
+      (let* ((fn (wf_arg_ptr args 0)) (sq (wf_arg_ptr args 1)) (sqtag (ptr-read-u64 sq 0)))
+        (if (if (= sqtag 0) 1 (if (= sqtag 7) 1 0))
+            (let* ((mark (nl_root_mark env))
+                   (fn_slot (nl_root_reserve env))
+                   (rest_slot (nl_root_reserve env))
+                   (acc_slot (nl_root_reserve env))
+                   (ok (wf_mapcar_resolve_fn fn env fn_slot)))
+              (if (= ok 1)
+                  (seq
+                   (wf_copy32 rest_slot sq)
+                   (wf_write_nil acc_slot)
+                   (let* ((rc (wf_mapcar_step rest_slot acc_slot fn_slot env)))
+                     (if (= rc 0)
+                         (let* ((nilbuf (alloc-bytes 32 8)))
+                           (seq (wf_write_nil nilbuf)
+                                (wf_copy32 out (wf_mapcar_reverse_copy acc_slot nilbuf))
+                                (nl_root_release env mark)
+                                0))
+                       (seq (nl_root_release env mark) rc))))
+                (seq (nl_cons_stash_void_function env fn) (nl_root_release env mark) 1)))
+          (wf_mapcar_slow args env out)))))
+  "Segment G1 native fast paths for `nth'/`nthcdr'/`last'/`butlast'/
+`append'/`assoc'/`plist-get'/`mapcar'.  See the file-level comment just
+above this defconst for the shadow-vs-delegate rationale.")
 
 ;; Doc 190 Phase A: Bignum (Sexp tag 13) construction from a decimal
 ;; token.  Reader-only (uses `str-byte-at'/`str-len'/`alloc-bytes', the
@@ -16261,7 +16696,8 @@ extern arms in dynamic builds."
         nelisp-standalone--applyfn-search-helpers
         nelisp-standalone--applyfn-bignum-helpers
         nelisp-standalone--applyfn-m5-helpers
-         nelisp-standalone--applyfn-bf-helpers)
+         nelisp-standalone--applyfn-bf-helpers
+         nelisp-standalone--applyfn-fast-list-helpers)
    (nelisp-standalone--guard-fixed-arities
     (nelisp-standalone--applyfn-reader-table)
     (nelisp-standalone--builtin-fixed-arities))))
@@ -20563,6 +20999,11 @@ value (matches the binary's M8 read+eval-loop driver)."
     "nelisp--plist-get-eq" "nelisp--plist-member-eq"
     ;; List search hot paths
     "memq" "member" "assq" "assoc" "rassoc"
+    ;; Segment G1: native `nth'/`nthcdr'/`last'/`butlast'/`append'/
+    ;; `plist-get'/`mapcar' fast paths (fast-list-helpers).  The rare-
+    ;; path delegate targets (`nelisp--assoc-slow' etc.) are ordinary
+    ;; prelude `defun's, not builtins, so they do not belong here.
+    "nth" "nthcdr" "last" "butlast" "append" "plist-get" "mapcar"
     ;; M5 strings + format
     "length" "string-byte" "string-bytes" "concat" "substring" "make-string" "string="
     "unibyte-string-p" "multibyte-string-p"

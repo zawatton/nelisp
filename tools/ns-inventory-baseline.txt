@@ -1195,10 +1195,10 @@ pinned-collision ns-collision-divergent	abs	lisp/nelisp-stdlib.el scripts/nelisp
 pinned-collision ns-collision-divergent	accept-process-output	packages/nelisp-process-adapter/src/nelisp-process-adapter.el scripts/nelisp-stdlib-prelude.el	d1b3b715b5b0
 pinned-collision ns-collision-divergent	add-to-list	lisp/nelisp-build-host.el scripts/nelisp-stdlib-prelude.el	2e959e15e953
 pinned-collision ns-collision-divergent	alist-get	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	7f1faf26747a
-pinned-collision ns-collision-divergent	append	lisp/nelisp-stdlib-list.el scripts/nelisp-stdlib-prelude.el	2277910d2ecd
+pinned-collision ns-collision-divergent	append	lisp/nelisp-stdlib-list.el scripts/nelisp-stdlib-prelude.el	59792917d61d
 pinned-collision ns-collision-divergent	nelisp--append-collect	lisp/nelisp-stdlib-list.el scripts/nelisp-stdlib-prelude.el	6c2a38cade77
 pinned-collision ns-collision-divergent	arrayp	lisp/nelisp-stdlib.el scripts/nelisp-stdlib-prelude.el	de9241743eea
-pinned-collision ns-collision-divergent	assoc	lisp/nelisp-stdlib-search.el scripts/nelisp-stdlib-prelude.el	1c6f31b6324b
+pinned-collision ns-collision-divergent	assoc	lisp/nelisp-stdlib-search.el scripts/nelisp-stdlib-prelude.el	6d83ff02a454
 pinned-collision ns-collision-divergent	butlast	lisp/nelisp-stdlib-list.el scripts/nelisp-stdlib-prelude.el	7d0524ad6c34
 pinned-collision ns-collision-divergent	byte-compile-file	scripts/nelisp-stdlib-prelude.el src/nelisp-bytecode.el	fd60f8468dac
 pinned-collision ns-collision-divergent	cancel-timer	packages/nelisp-eventloop/src/nelisp-async-core.el scripts/nelisp-stdlib-prelude.el	918e01ccc320
@@ -1262,7 +1262,7 @@ pinned-collision ns-collision-divergent	make-hash-table	lisp/nelisp-stdlib-hash.
 # only the prelude side's text changed.
 pinned-collision ns-collision-divergent	make-process	packages/nelisp-process-adapter/src/nelisp-process-adapter.el scripts/nelisp-stdlib-prelude.el	aefed2e54fdd
 pinned-collision ns-collision-divergent	mapc	lisp/nelisp-stdlib-hof.el scripts/nelisp-stdlib-prelude.el	4e87f4a62eba
-pinned-collision ns-collision-divergent	mapcar	lisp/nelisp-stdlib-hof.el scripts/nelisp-stdlib-prelude.el	219ed3e7df2f
+pinned-collision ns-collision-divergent	mapcar	lisp/nelisp-stdlib-hof.el scripts/nelisp-stdlib-prelude.el	71f4269515b7
 pinned-collision ns-collision-divergent	mapconcat	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	08041b57a105
 pinned-collision ns-collision-divergent	maphash	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	6aa30acce320
 pinned-collision ns-collision-divergent	max	lisp/nelisp-stdlib.el scripts/nelisp-stdlib-prelude.el	7fb414c7a03c
@@ -1297,7 +1297,7 @@ pinned-collision ns-collision-divergent	nelisp-sys-access	packages/nelisp-proces
 pinned-collision ns-collision-divergent	nelisp-sys-executable-find	packages/nelisp-process/src/nelisp-process.el packages/nelisp-sys/src/nelisp-sys.el	f8695bea7be4
 pinned-collision ns-collision-divergent	nelisp-sys-getenv	packages/nelisp-process/src/nelisp-process.el packages/nelisp-sys/src/nelisp-sys.el	5de1d302df1f
 pinned-collision ns-collision-divergent	nthcdr	lisp/nelisp-stdlib-list.el scripts/nelisp-stdlib-prelude.el	581a79f04c02
-pinned-collision ns-collision-divergent	plist-get	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	0b4e2b7db284
+pinned-collision ns-collision-divergent	plist-get	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	cc0d65467b60
 pinned-collision ns-collision-divergent	plist-member	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	a429d339540f
 pinned-collision ns-collision-divergent	plist-put	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	ec24000d8b85
 pinned-collision ns-collision-divergent	prin1	lisp/nelisp-stdlib-prn.el scripts/nelisp-stdlib-prelude.el	a915300b8c4f

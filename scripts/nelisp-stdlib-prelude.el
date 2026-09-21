@@ -746,21 +746,27 @@ from `(defvar X nil)'."
 ;; and naming 3 sent the caller looking at a value it never passed in.
 ;; Stopping exactly ON the non-list tail is not an error at all --
 ;; (nthcdr 1 '(1 . 2)) is 2 -- so the check belongs after the walk.
-(defun nthcdr (n list)
-  ;; The walk itself is `nl--nthcdr', a reader builtin, because doing it here
-  ;; costs an interpreted iteration per element and this is the hottest such
-  ;; loop in the runtime: 330-520us for five elements against 1-31us for a
-  ;; basic operation.  A bignum count keeps the loop below -- the builtin
-  ;; takes fixnums, and no list in memory has a bignum's worth of elements
-  ;; anyway.
-  (if (and (fboundp 'nl--nthcdr) (not (bignump n)))
-      (nl--nthcdr n list)
-    (unless (integerp n) (signal 'wrong-type-argument (list 'integerp n)))
-    (let ((i n) (l list))
-      (while (and (> i 0) (consp l)) (setq l (cdr l)) (setq i (1- i)))
-      (cond ((<= i 0) l)
-            ((null l) nil)
-            (t (signal 'wrong-type-argument (list 'listp list)))))))
+;; Segment G1: `nthcdr' is now a reader builtin in its own right (the
+;; `wf_nthcdr' dispatch arm), so this whole `defun' -- including its
+;; own `nl--nthcdr' fast path below -- is the fallback for a target
+;; without that native, kept behind `unless (fboundp ...)' like every
+;; other native/prelude pair in this file.
+(unless (fboundp 'nthcdr)
+  (defun nthcdr (n list)
+    ;; The walk itself is `nl--nthcdr', a reader builtin, because doing it here
+    ;; costs an interpreted iteration per element and this is the hottest such
+    ;; loop in the runtime: 330-520us for five elements against 1-31us for a
+    ;; basic operation.  A bignum count keeps the loop below -- the builtin
+    ;; takes fixnums, and no list in memory has a bignum's worth of elements
+    ;; anyway.
+    (if (and (fboundp 'nl--nthcdr) (not (bignump n)))
+        (nl--nthcdr n list)
+      (unless (integerp n) (signal 'wrong-type-argument (list 'integerp n)))
+      (let ((i n) (l list))
+        (while (and (> i 0) (consp l)) (setq l (cdr l)) (setq i (1- i)))
+        (cond ((<= i 0) l)
+              ((null l) nil)
+              (t (signal 'wrong-type-argument (list 'listp list))))))))
 
 ;;; nelisp-stdlib-list.el --- Sweep 9 G1 list operations  -*- lexical-binding: t; -*-
 
@@ -3129,7 +3135,17 @@ path, which asks for a NUMBER first and only then for an integer."
     found))
 
 ;; Doc 143 pure list utilities.
-(defun assoc (key alist &optional testfn)
+;;
+;; Segment G1: `assoc' is now a reader builtin (`wf_assoc_dispatch') for
+;; the common TESTFN-omitted-or-nil case; it delegates to this function,
+;; under its Doc-143 name, ONLY when a caller passes a genuine callable
+;; TESTFN.  Renamed rather than left as the shadow it used to be (this
+;; whole `defun' ran on EVERY call, including the TESTFN-less fast path,
+;; paying full interpreter dispatch for what the native raw walk below
+;; already did in one call) -- kept unconditional (no `unless fboundp'
+;; guard) as the delegate TARGET so a target without the native still
+;; gets a working `assoc' from the small wrapper just below.
+(defun nelisp--assoc-slow (key alist testfn)
   (if (null testfn)
       (nelisp--assoc-raw key alist)
     (unless (listp alist) (signal 'wrong-type-argument (list 'listp alist)))
@@ -3146,6 +3162,9 @@ path, which asks for a NUMBER first and only then for an integer."
       (when (and (not found) (not (null cur)))
         (signal 'wrong-type-argument (list 'listp alist)))
       found)))
+(unless (fboundp 'assoc)
+  (defun assoc (key alist &optional testfn)
+    (nelisp--assoc-slow key alist testfn)))
 (unless (fboundp 'rassq)
   (defun rassq (value alist)
     (let ((probe alist))
@@ -3226,7 +3245,10 @@ contract)."
 ;; A negative N is not an error in Emacs -- `nthcdr' treats it as zero, so
 ;; `(nth -1 '(1 2 3))' is 1.  This answered nil, quietly, for any negative
 ;; index.
-(defun nth (n list) (car (nthcdr n list)))
+;; Segment G1: `nth' is now a reader builtin (`wf_nth'); this is the
+;; fallback for a target without it.
+(unless (fboundp 'nth)
+  (defun nth (n list) (car (nthcdr n list))))
 
 ;; A negative LENGTH answered nil, silently.  Emacs signals: asking for a
 ;; list of minus one thing is a caller bug, not an empty list.
@@ -3399,7 +3421,14 @@ contract)."
     (when (and raw-high multibyte)
       (signal 'nelisp-raw-byte-unrepresentable nil))))
 
-(defun append (&rest args)
+;; Segment G1: `append' is now a reader builtin (`wf_append') for the
+;; all-non-final-args-nil-or-cons fast path, matching the "Fast path"
+;; comment just below -- the SAME split this function already made,
+;; now made natively so the common case pays no interpreter dispatch
+;; at all.  A non-final vector/string/bool-vector arg delegates here,
+;; under this Doc-200 name, unchanged; kept unconditional (no `unless
+;; fboundp' guard) as the delegate TARGET, same as `nelisp--assoc-slow'.
+(defun nelisp--append-slow (&rest args)
   "Concatenate sequences ARGS into a fresh proper-list spine.\nNon-final args may be list / vector / string / nil.  The FINAL arg\nis used as the tail (= unchanged, can be any value).  Single-arg\ncall returns the arg unchanged (= no copy)."
   (cond
    ((null args) nil)
@@ -3447,6 +3476,8 @@ contract)."
               (setq result (cons (car acc) result))
               (setq acc (cdr acc)))
             result)))))))
+(unless (fboundp 'append)
+  (defun append (&rest args) (apply #'nelisp--append-slow args)))
 
 (defun caar (x) (car (car x)))
 
@@ -3613,7 +3644,16 @@ FRESH buffer (the old `(t seq)' arm returned the same object, so a following
               (setq alist (cdr alist)))))))
       found)))
 
-(defun mapcar (fn seq)
+;; Segment G1: `mapcar' is now a reader builtin (`wf_mapcar') for a
+;; nil/cons SEQ -- the dominant shape -- calling FN through the same
+;; `nl_apply_function' the interpreter itself uses for `funcall', with
+;; a `nl_root_reserve'd running tail/accumulator so a FN that itself
+;; allocates (and can therefore trigger a collection) cannot see this
+;; walk's own in-flight state freed out from under it.  A vector/
+;; string/bool-vector SEQ delegates here unchanged; kept unconditional
+;; (no `unless fboundp' guard) as the delegate TARGET, same as
+;; `nelisp--assoc-slow' / `nelisp--append-slow'.
+(defun nelisp--mapcar-slow (fn seq)
   "Apply FN to each element of SEQ (list, vector, or string); collect results.
 Doc 22 A6: arrays are iterated by index via `aref'/`length' (cons-cell
 walking only works for lists)."
@@ -3629,6 +3669,8 @@ walking only works for lists)."
         (setq acc (cons (funcall fn (car seq)) acc))
         (setq seq (cdr seq)))
       (nreverse acc))))
+(unless (fboundp 'mapcar)
+  (defun mapcar (fn seq) (nelisp--mapcar-slow fn seq)))
 
 (defun mapc (fn seq)
   "Apply FN to each element of SEQ for side effect; return SEQ.
@@ -3666,7 +3708,14 @@ Doc 22 A6: arrays are iterated by index."
        (t (setq cur (cdr (cdr cur))))))
       found)))
 
-(defun plist-get (plist key &optional predicate)
+;; Segment G1: `plist-get' is now a reader builtin (`wf_plist_get_
+;; dispatch') for PREDICATE omitted/nil/the symbol `eq' -- reusing this
+;; same `nelisp--plist-get-eq' native raw walk directly, natively,
+;; instead of through this interpreted wrapper.  A genuine callable
+;; PREDICATE delegates here, under this Doc-143 name, unchanged; kept
+;; unconditional (no `unless fboundp' guard) as the delegate TARGET,
+;; same as `nelisp--assoc-slow'.
+(defun nelisp--plist-get-slow (plist key &optional predicate)
   ;; Emacs's `plist-get' ANSWERS NIL for a malformed plist, while
   ;; `plist-member' and `plist-put' signal `plistp'.  Checking all three "for
   ;; consistency" would be consistent with each other and wrong against
@@ -3689,6 +3738,9 @@ Doc 22 A6: arrays are iterated by index."
             (progn (setq found t) (setq value (car (cdr cur))))
           (setq cur (cdr (cdr cur))))))
         value))))
+(unless (fboundp 'plist-get)
+  (defun plist-get (plist key &optional predicate)
+    (nelisp--plist-get-slow plist key predicate)))
 
 (defun plist-put (plist key value &optional predicate)
   ;; `plist-put' signals `plistp' for a non-list -- EXCEPT that Emacs
