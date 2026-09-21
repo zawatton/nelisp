@@ -7008,84 +7008,20 @@ default test `eql')."
         (unless (nelisp--cl-seq-member (if key (funcall key x) x) list2 kw)
           (push x acc))))))
 
-;; fix/cl-count-family-keywords: `cl-count'/`cl-remove'/`cl-delete'/
-;; `cl-assoc'/`cl-sort'/`cl-remove-duplicates' each took `&rest _' and
-;; discarded it, so `(cl-count "a" (list (cons "a" 1) (cons "b" 2))
-;; :key #'car :test #'equal)' answered 0 instead of 1.  Reuses
-;; `nelisp--cl-seq-test' (above) for the same `:test'/`:test-not'/
-;; default-`eql' contract the set-operation family already has.
-;; Mirrors the copy in lisp/nelisp-cl-macros.el.  Supersedes the two
-;; separate WAVE-2-era bridge stubs earlier in this file (their
-;; `&rest _' silently discarded every keyword); this later, correct,
-;; unconditional definition is the one that ends up bound, so those
-;; are left as harmless dead code rather than hunted down and pulled,
-;; matching how this file already carries some superseded stubs.
-(defun cl-count (item seq &rest kw)
-  "Count elements of SEQ matching ITEM under `:test'/`:test-not'
-\(default `eql') and `:key' (applied to each element before the test)."
-  (let ((pred (nelisp--cl-seq-test kw)) (key (plist-get kw :key)) (n 0))
-    (dolist (x (nelisp-seq--to-list seq) n)
-      (when (funcall pred item (if key (funcall key x) x))
-        (setq n (1+ n))))))
-
-(defun cl-remove (item seq &rest kw)
-  "Elements of SEQ NOT matching ITEM under `:test'/`:test-not'/`:key'
-\(see `cl-count'). Always returns a list, matching the version this
-replaces."
-  (let ((pred (nelisp--cl-seq-test kw)) (key (plist-get kw :key)))
-    (cl-remove-if (lambda (x) (funcall pred item (if key (funcall key x) x)))
-                  (nelisp-seq--to-list seq))))
-
-(defun cl-delete (item seq &rest kw)
-  "Same as `cl-remove' (this runtime has no destructive fast path)."
-  (apply #'cl-remove item seq kw))
-
-(defun cl-assoc (key alist &rest kw)
-  "Like `assoc', but the default test is `eql' and `:test'/`:test-not'/
-`:key' are honoured (`:key' is applied to each entry's car before the
-test)."
-  (let ((pred (nelisp--cl-seq-test kw)) (keyfn (plist-get kw :key))
-        (cur alist) (found nil))
-    (while (and cur (not found))
-      (let ((e (car cur)))
-        (when (and (consp e)
-                   (funcall pred key
-                            (if keyfn (funcall keyfn (car e)) (car e))))
-          (setq found e)))
-      (setq cur (cdr cur)))
-    found))
-
-(defun cl-sort (seq pred &rest kw)
-  "Sort SEQ (returned as a list) by PRED, comparing `:key' of each
-element rather than the elements themselves when `:key' is given."
-  (let ((key (plist-get kw :key)))
-    (sort (nelisp-seq--to-list seq)
-          (if key
-              (lambda (a b) (funcall pred (funcall key a) (funcall key b)))
-            pred))))
-
-(defun cl-remove-duplicates (seq &rest kw)
-  "Remove duplicate elements of SEQ under `:test'/`:test-not'/`:key'
-\(see `cl-count'). Keeps the LAST occurrence of each duplicate group
-unless `:from-end' is non-nil, in which case it keeps the FIRST --
-matching Emacs cl-seq.el."
-  (let* ((pred (nelisp--cl-seq-test kw))
-         (key (plist-get kw :key))
-         (from-end (plist-get kw :from-end))
-         (lst (nelisp-seq--to-list seq))
-         (scan (if from-end lst (reverse lst)))
-         (seen nil) (acc nil))
-    (dolist (x scan)
-      (let* ((kx (if key (funcall key x) x))
-             (dup (catch 'nelisp--cl-rmdup-found
-                    (dolist (s seen)
-                      (when (funcall pred kx s)
-                        (throw 'nelisp--cl-rmdup-found t)))
-                    nil)))
-        (unless dup
-          (push kx seen)
-          (push x acc))))
-    (if from-end (nreverse acc) acc)))
+;; Doc segI (vendor-emacs-lisp), Phase 3: the six unconditional
+;; `cl-count'/`cl-remove'/`cl-delete'/`cl-assoc'/`cl-sort'/
+;; `cl-remove-duplicates' definitions that used to live here (the
+;; `fix/cl-count-family-keywords' fix) are deleted.  They were still a
+;; hand-written subset of cl-seq.el's real semantics, and a hand-written
+;; subset of exactly this shape is what replaced real cl-lib inside the
+;; host test suite and turned 664 of 6,175 tests red the day before this
+;; segment. `cl-count'/`cl-remove'/`cl-delete'/`cl-assoc'/`cl-sort'/
+;; `cl-remove-duplicates' are now the real, vendored
+;; vendor/emacs-lisp/emacs-lisp/cl-seq.el, `require'd once at the end of
+;; `nelisp-standalone--reader-repl-prelude-source' (after `load-path'
+;; gains `vendor/emacs-lisp'), so every existing unconditional call site
+;; (28+ files call `cl-remove' alone) keeps working without a
+;; `(require 'cl-seq)' of its own.  See vendor/README.md.
 
 (defvar nelisp-cl-macros--gensym-counter 0
   "Monotone counter used by `cl-gensym' for unique symbol names.")
@@ -7476,201 +7412,14 @@ bindings provide.  &rest is honoured."
 
 ;; nelisp-cl-macros.el ends here
 
-;; `rx' was void: the only call site in the agent tree ((rx string-start
-;; (= 64 (in "a-f0-9")) string-end)) has no `(require 'rx)', which
-;; matches Emacs, where `rx' is preloaded. This shim covers the subset
-;; of rx.el actually reachable from source: literals, sequencing,
-;; alternation, the common repeat operators (including the `=N'/`>=N'/
-;; `**N M' family), character classes (`any'/`in'/`not'), anchors,
-;; named classes (digit/alpha/...), word/symbol boundaries, and
-;; `group'/`group-n'/`backref'.  Does NOT support: `eval', `regexp'/
-;; `regex' verbatim-embedding of a dynamic (non-literal) regexp string
-;; joined with further rx structure inside the SAME alternation branch
-;; requiring precedence care beyond simple wrapping, `syntax',
-;; `category', dynamic unquote via backquote/comma inside rx forms, or
-;; exact string-form parity with real rx.el's output (real rx.el uses
-;; `regexp-opt' to build a trie for `or' of literal strings and
-;; optimises an `or' of single characters into a character class; this
-;; shim always alternates with `\\|', which is behaviorally equivalent
-;; -- verified by matching the same strings, not by matching text --
-;; but not byte-identical).  Available without a `require', matching
-;; real Emacs.
-;;
-;; These helpers all call each other, forward and backward, inside this
-;; one `unless' block; the byte-compiler does not treat a `defun' nested
-;; inside `unless' as a forward declaration of itself, so every one of
-;; them needs a `declare-function' here or the compiler reports each
-;; sibling call as a reference to an undefined function.
-(declare-function rx--tr-atom "nelisp-stdlib-prelude")
-(declare-function rx--tr-symbol "nelisp-stdlib-prelude")
-(declare-function rx--charset-item "nelisp-stdlib-prelude")
-(declare-function rx--tr-charset "nelisp-stdlib-prelude")
-(declare-function rx--atomic-p "nelisp-stdlib-prelude")
-(declare-function rx--tr-repeat "nelisp-stdlib-prelude")
-(declare-function rx--tr-seq "nelisp-stdlib-prelude")
-(declare-function rx--tr-or "nelisp-stdlib-prelude")
-(declare-function rx--tr-form "nelisp-stdlib-prelude")
-(unless (fboundp 'rx-to-string)
-  (defun rx--tr-atom (form)
-    "Translate one rx FORM to a regexp string (a full sexp, not a
-repeat suffix)."
-    (cond
-     ((stringp form) (regexp-quote form))
-     ((characterp form) (regexp-quote (char-to-string form)))
-     ((symbolp form) (rx--tr-symbol form))
-     ((consp form) (rx--tr-form form))
-     (t (error "rx: unsupported item %S" form))))
-
-  (defun rx--tr-symbol (sym)
-    (cond
-     ((memq sym '(line-start bol)) "^")
-     ((memq sym '(line-end eol)) "$")
-     ((memq sym '(string-start bos bot buffer-start)) "\\`")
-     ((memq sym '(string-end eos eot buffer-end)) "\\'")
-     ((memq sym '(point)) "\\=")
-     ((memq sym '(word-start bow)) "\\<")
-     ((memq sym '(word-end eow)) "\\>")
-     ((eq sym 'word-boundary) "\\b")
-     ((eq sym 'not-word-boundary) "\\B")
-     ((memq sym '(symbol-start)) "\\_<")
-     ((memq sym '(symbol-end)) "\\_>")
-     ((memq sym '(not-newline nonl any anychar anything)) ".")
-     ((memq sym '(digit numeric num)) "[[:digit:]]")
-     ((memq sym '(alpha alphabetic letter)) "[[:alpha:]]")
-     ((memq sym '(alnum alphanumeric)) "[[:alnum:]]")
-     ((memq sym '(space whitespace white)) "[[:space:]]")
-     ((memq sym '(upper upper-case)) "[[:upper:]]")
-     ((memq sym '(lower lower-case)) "[[:lower:]]")
-     ((memq sym '(punct punctuation)) "[[:punct:]]")
-     ((memq sym '(cntrl control)) "[[:cntrl:]]")
-     ((memq sym '(hex hex-digit xdigit)) "[[:xdigit:]]")
-     ((memq sym '(graph graphic)) "[[:graph:]]")
-     ((memq sym '(print printing)) "[[:print:]]")
-     ((memq sym '(blank)) "[[:blank:]]")
-     ((eq sym 'word) "\\w")
-     ((eq sym 'wordchar) "\\w")
-     ((eq sym 'not-wordchar) "\\W")
-     (t (error "rx: unsupported symbol %S" sym))))
-
-  (defun rx--charset-item (item)
-    "Return the `[...]' fragment (without brackets) for one IN/ANY item."
-    (cond
-     ((stringp item) item)
-     ((characterp item) (char-to-string item))
-     ((and (consp item) (characterp (car item)) (characterp (cdr item)))
-      (format "%c-%c" (car item) (cdr item)))
-     ((symbolp item)
-      (cond
-       ((memq item '(digit numeric num)) "[:digit:]")
-       ((memq item '(alpha alphabetic letter)) "[:alpha:]")
-       ((memq item '(alnum alphanumeric)) "[:alnum:]")
-       ((memq item '(space whitespace white)) "[:space:]")
-       ((memq item '(upper upper-case)) "[:upper:]")
-       ((memq item '(lower lower-case)) "[:lower:]")
-       ((memq item '(punct punctuation)) "[:punct:]")
-       ((memq item '(cntrl control)) "[:cntrl:]")
-       ((memq item '(hex hex-digit xdigit)) "[:xdigit:]")
-       ((memq item '(blank)) "[:blank:]")
-       (t (error "rx: unsupported char-class item %S" item))))
-     (t (error "rx: unsupported char-class item %S" item))))
-
-  (defun rx--tr-charset (negate items)
-    (let ((body (mapconcat #'rx--charset-item items "")))
-      ;; A literal `]' or `^' or leading `-' needs escaping-by-position inside
-      ;; a bracket expression; real rx.el reorders these to safe positions.
-      ;; Good enough for the corpus this shim targets: none of it puts `]'
-      ;; inside `in'/`any'.
-      (format "[%s%s]" (if negate "^" "") body)))
-
-  (defun rx--atomic-p (s)
-    "Non-nil if regexp string S already matches as one repeatable unit.
-A single character, an already-bracketed character class `[...]', or an
-already-grouped `\\(...\\)'/`\\(?:...\\)' construct needs no further shy-group
-wrap before a repeat suffix is appended; anything else does."
-    (or (= (length s) 1)
-        (and (>= (length s) 2) (eq (aref s 0) ?\[) (eq (aref s (1- (length s))) ?\]))
-        (and (>= (length s) 4) (string-prefix-p "\\(" s)
-             (string-suffix-p "\\)" s)
-             ;; only when this \(...\) is the WHOLE string, not a prefix of
-             ;; a longer concatenation -- a cheap paren-balance check.
-             (let ((depth 0) (ok t) (i 0) (n (- (length s) 2)))
-               (while (and ok (< i n))
-                 (cond
-                  ((and (eq (aref s i) ?\\) (< (1+ i) n) (eq (aref s (1+ i)) ?\())
-                   (setq depth (1+ depth)) (setq i (+ i 2)))
-                  ((and (eq (aref s i) ?\\) (< (1+ i) n) (eq (aref s (1+ i)) ?\)))
-                   (setq depth (1- depth))
-                   (when (< depth 0) (setq ok nil))
-                   (setq i (+ i 2)))
-                  (t (setq i (1+ i)))))
-               (and ok (= depth 0))))))
-
-  (defun rx--tr-repeat (op body-str)
-    "Wrap BODY-STR (already a translated atom/group) with repeat operator OP."
-    (let ((wrapped (if (rx--atomic-p body-str)
-                       body-str
-                     (concat "\\(?:" body-str "\\)"))))
-      (concat wrapped op)))
-
-  (defun rx--tr-seq (forms)
-    (mapconcat #'rx--tr-atom forms ""))
-
-  (defun rx--tr-or (forms)
-    (concat "\\(?:" (mapconcat #'rx--tr-atom forms "\\|") "\\)"))
-
-  (defun rx--tr-form (form)
-    (let ((head (car form)) (rest (cdr form)))
-      (cond
-       ((memq head '(seq sequence : and)) (rx--tr-seq rest))
-       ((memq head '(or |)) (rx--tr-or rest))
-       ((memq head '(zero-or-more 0+ *)) (rx--tr-repeat "*" (rx--tr-seq rest)))
-       ((memq head '(one-or-more 1+ +)) (rx--tr-repeat "+" (rx--tr-seq rest)))
-       ((memq head '(zero-or-one optional opt \?))
-        (rx--tr-repeat "?" (rx--tr-seq rest)))
-       ((eq head '*?) (rx--tr-repeat "*?" (rx--tr-seq rest)))
-       ((eq head '+?) (rx--tr-repeat "+?" (rx--tr-seq rest)))
-       ((eq head '\??) (rx--tr-repeat "??" (rx--tr-seq rest)))
-       ((eq head '=)
-        (rx--tr-repeat (format "\\{%d\\}" (car rest)) (rx--tr-seq (cdr rest))))
-       ((eq head '>=)
-        (rx--tr-repeat (format "\\{%d,\\}" (car rest)) (rx--tr-seq (cdr rest))))
-       ((eq head '**)
-        (rx--tr-repeat (format "\\{%d,%d\\}" (car rest) (cadr rest))
-                       (rx--tr-seq (cddr rest))))
-       ((eq head 'repeat)
-        (if (integerp (cadr rest))
-            (rx--tr-repeat (format "\\{%d,%d\\}" (car rest) (cadr rest))
-                           (rx--tr-seq (cddr rest)))
-          (rx--tr-repeat (format "\\{%d,\\}" (car rest))
-                         (rx--tr-seq (cdr rest)))))
-       ((memq head '(any in char)) (rx--tr-charset nil rest))
-       ((eq head 'not)
-        (let ((inner (car rest)))
-          (cond
-           ((and (consp inner) (memq (car inner) '(any in char)))
-            (rx--tr-charset t (cdr inner)))
-           ((eq inner 'word-boundary) "\\B")
-           ((memq inner '(wordchar word)) "\\W")
-           (t (error "rx: unsupported `not' argument %S" inner)))))
-       ((memq head '(group submatch))
-        (concat "\\(" (rx--tr-seq rest) "\\)"))
-       ((memq head '(group-n submatch-n))
-        (concat (format "\\(?%d:" (car rest)) (rx--tr-seq (cdr rest)) "\\)"))
-       ((eq head 'backref) (format "\\%d" (car rest)))
-       ((memq head '(literal)) (regexp-quote (car rest)))
-       ((memq head '(regexp regex)) (car rest))
-       (t (error "rx: unsupported form %S" form)))))
-
-  (defun rx-to-string (form &optional no-group)
-    "Translate the single rx FORM to a regexp string.
-NO-GROUP suppresses the top-level shy-group wrap `rx-to-string' normally adds."
-    (let ((s (rx--tr-atom form)))
-      (if no-group s (concat "\\(?:" s "\\)")))))
-
-(unless (fboundp 'rx)
-  (defmacro rx (&rest forms)
-    "Minimal `rx' -- see the commentary above for coverage."
-    (rx--tr-seq forms)))
+;; Doc segI (vendor-emacs-lisp), Phase 3: the hand-written `rx'/
+;; `rx-to-string' subset that used to live here (and its `rx--tr-*'
+;; helpers) is deleted.  `rx' is now the real, vendored
+;; vendor/emacs-lisp/emacs-lisp/rx.el, `require'd once at the end of
+;; `nelisp-standalone--reader-repl-prelude-source' (after `load-path'
+;; gains `vendor/emacs-lisp') so every existing unconditional call site
+;; keeps working without a `(require 'rx)' of its own -- matching real
+;; Emacs, where `rx' is preloaded.  See vendor/README.md.
 
 ;;; nelisp-pcase.el --- pcase macro elisp implementation  -*- lexical-binding: t; -*-
 

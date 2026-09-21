@@ -21242,6 +21242,19 @@ listing it would make the load-path lie about what is reachable."
                ;; on any host `-L' path `make test' uses (verified: `make
                ;; -n test | grep -c standalone-compat' is 0), so it never
                ;; shadows real Emacs's own libraries for the host suite.
+               ;; Doc segI: unmodified copies of Emacs's own Lisp files
+               ;; (rx.el, cl-seq.el, ...; see vendor/README.md), BEFORE
+               ;; `standalone-compat/' so a vendored file wins over our own
+               ;; hand-written subset of the same library, but AFTER
+               ;; lisp/src/scripts/packages/*/src so it never wins over a
+               ;; name this tree defines itself (its native substrate, not
+               ;; a subset standing in for a library).
+               (list (expand-file-name "vendor/emacs-lisp"
+                                       nelisp-standalone--repo-root)
+                     (expand-file-name "vendor/emacs-lisp/emacs-lisp"
+                                       nelisp-standalone--repo-root)
+                     (expand-file-name "vendor/emacs-lisp/calendar"
+                                       nelisp-standalone--repo-root))
                (list (expand-file-name "standalone-compat"
                                        nelisp-standalone--repo-root)))))
     (seq-filter #'file-directory-p dirs)))
@@ -21282,6 +21295,19 @@ and the `string-match' family aliases over it."
                        nelisp-standalone--repo-root))
     (goto-char (point-max))
     (insert (nelisp-standalone--load-path-src))
+    ;; Doc segI: `rx'/`cl-seq' are ordinary Emacs libraries that must be
+    ;; `require'd, but this tree's own callers (28+ files for `cl-remove'
+    ;; alone) call their functions unconditionally, the way `car'/`cdr'
+    ;; are called, with no `(require 'cl-seq)' of their own -- that was
+    ;; true of the hand-written subset this segment deletes, and staying
+    ;; source-compatible with every existing caller means it has to stay
+    ;; true of the real, vendored replacement too.  Loading both once here,
+    ;; after load-path already includes `vendor/emacs-lisp' (just inserted
+    ;; above), makes the real functions available exactly as unconditionally
+    ;; as the subset they replace, while `(require 'rx)'/`(require 'cl-seq)'
+    ;; called explicitly by user code still resolves normally (`require'
+    ;; checks `featurep' first and no-ops).
+    (insert "\n(require 'rx)\n(require 'cl-seq)\n")
     (insert "\n;; --- Doc 143: regexp matcher + string-match family ---\n")
     (insert-file-contents
      (expand-file-name "lisp/nelisp-stdlib-regexp.el"

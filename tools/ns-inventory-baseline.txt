@@ -1028,6 +1028,21 @@ ns-unreadable 0
 # fails and names it.  `ns-prefix-violation' and `ns-private-escape' stay
 # count-only -- see the header comment in tools/nl-ns-inventory.el for why.
 # Generated from a clean tree; do not hand-edit into drift.
+#
+# Doc segI (vendor-emacs-lisp), Phase 2: 9 names below are the load-time
+# plumbing four newly-vendored Emacs files need, added byte-identically to
+# scripts/nelisp-stdlib-prelude.el (the reader's actual boot prelude) and
+# lisp/nelisp-stdlib-misc.el (that prelude's mirror source), the same
+# add-hook/map-*/... pairing this baseline already pins just below.
+pinned-collision ns-collision	autoload	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	cl-ldiff	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	define-obsolete-function-alias	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	define-obsolete-variable-alias	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	fixnump	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	make-obsolete	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	make-obsolete-variable	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	pcase-defmacro	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	unibyte-char-to-multibyte	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	and	lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	assq	lisp/nelisp-stdlib-search.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	add-hook	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
