@@ -1893,6 +1893,28 @@ byte-compiler so defsubst is a strict synonym for `defun'."
 ;; vector again.
 ;; ---------------------------------------------------------------------------
 
+(defun nelisp--bq-comma-p (sym)
+  "Return non-nil when SYM is the reader's unquote marker.
+
+The reader spells `,' as the symbol `\\,', the same object GNU Emacs
+produces, since a4f8c7570 aligned the reader and printer with Emacs.
+This expander was written against the older in-house spelling `comma'
+and was not updated then, so every `,' walked past it unexpanded: the
+macro returned the marker itself and callers saw errors like
+\"(wrong-type-argument symbolp ,name)\".  Both spellings are accepted
+here so the fix cannot break a caller still holding old data."
+  (or (eq sym '\,) (eq sym 'comma)))
+
+(defun nelisp--bq-comma-at-p (sym)
+  "Return non-nil when SYM is the reader's splice marker.
+See `nelisp--bq-comma-p' for why two spellings are recognised."
+  (or (eq sym '\,@) (eq sym 'comma-at)))
+
+(defun nelisp--bq-backquote-p (sym)
+  "Return non-nil when SYM is the reader's quasiquote marker.
+See `nelisp--bq-comma-p' for why two spellings are recognised."
+  (or (eq sym '\`) (eq sym 'backquote)))
+
 (defun nelisp--bq-expand (form &optional level)
   "Return the expansion of FORM under `backquote' at nesting LEVEL.
 LEVEL defaults to 1 (directly inside one backquote).  A `,'/`,@' at
@@ -1905,22 +1927,22 @@ shallower, so a matching further `,' can still cancel it down to 0."
       (list 'vconcat (nelisp--bq-expand-list (append form nil) level)))
      ((not (consp form))
       (list 'quote form))
-     ((eq (car form) 'comma)
+     ((nelisp--bq-comma-p (car form))
       (if (= level 1)
           (cadr form)
-        (list 'list (list 'quote 'comma)
+        (list 'list (list 'quote '\,)
               (nelisp--bq-expand (cadr form) (1- level)))))
-     ((eq (car form) 'comma-at)
+     ((nelisp--bq-comma-at-p (car form))
       (if (= level 1)
           (signal 'error (list "nelisp-bq: top-level ,@ not allowed"))
-        (list 'list (list 'quote 'comma-at)
+        (list 'list (list 'quote '\,@)
               (nelisp--bq-expand (cadr form) (1- level)))))
-     ((eq (car form) 'backquote)
+     ((nelisp--bq-backquote-p (car form))
       ;; A nested backquote increments the level for its own content and
       ;; is itself rebuilt as inert `(backquote ...)' data -- it is only
       ;; ever "consumed" by a comma at the matching depth, never by
       ;; simply appearing inside an outer backquote.
-      (list 'list (list 'quote 'backquote)
+      (list 'list (list 'quote '\`)
             (nelisp--bq-expand (cadr form) (1+ level))))
      (t (nelisp--bq-expand-list form level)))))
 
@@ -1938,36 +1960,36 @@ unquote / (... . ,@X) dotted splice patterns, at any LEVEL (see
       (let ((head (car cur)))
         (cond
          ;; cdr-position bare `comma' → source had `. ,X'.
-         ((eq head 'comma)
+         ((nelisp--bq-comma-p head)
           (if (= level 1)
               (setq tail-expr (cadr cur))
-            (setq tail-expr (list 'list (list 'quote 'comma)
+            (setq tail-expr (list 'list (list 'quote '\,)
                                    (nelisp--bq-expand (cadr cur) (1- level)))))
           (setq done t))
          ;; cdr-position bare `comma-at' → source had `. ,@X'.
-         ((eq head 'comma-at)
+         ((nelisp--bq-comma-at-p head)
           (if (= level 1)
               (progn (setq tail-expr (cadr cur)) (setq has-splice t))
-            (setq tail-expr (list 'list (list 'quote 'comma-at)
+            (setq tail-expr (list 'list (list 'quote '\,@)
                                    (nelisp--bq-expand (cadr cur) (1- level)))))
           (setq done t))
          (t
           (let ((elem head))
             (cond
-             ((and (consp elem) (eq (car elem) 'comma-at))
+             ((and (consp elem) (nelisp--bq-comma-at-p (car elem)))
               (if (= level 1)
                   (progn
                     (setq has-splice t)
                     (push (cons 'splice (cadr elem)) parts))
                 (push (cons 'list
-                             (list 'list (list 'quote 'comma-at)
+                             (list 'list (list 'quote '\,@)
                                    (nelisp--bq-expand (cadr elem) (1- level))))
                       parts)))
-             ((and (consp elem) (eq (car elem) 'comma))
+             ((and (consp elem) (nelisp--bq-comma-p (car elem)))
               (if (= level 1)
                   (push (cons 'list (cadr elem)) parts)
                 (push (cons 'list
-                             (list 'list (list 'quote 'comma)
+                             (list 'list (list 'quote '\,)
                                    (nelisp--bq-expand (cadr elem) (1- level))))
                       parts)))
              (t

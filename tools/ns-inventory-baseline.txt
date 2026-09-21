@@ -1352,8 +1352,13 @@ pinned-collision ns-collision-divergent	nelisp--builtin-require	src/nelisp-eval.
 # rebuild the result with `vconcat', in both copies; the bodies still
 # diverge in every other way already pinned here, so the divergence itself
 # stays pinned.
-pinned-collision ns-collision-divergent	nelisp--bq-expand	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	73bba5f7fe9b
-pinned-collision ns-collision-divergent	nelisp--bq-expand-list	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	d95ffd6e58f2
+# 2026-09-21: both re-pinned again.  The lisp/ copy now recognises the
+# reader's own spelling of the unquote markers (`\,' rather than
+# `comma'), which the prelude copy already accepted through its own
+# `nelisp--bq-tag-p'.  Only the lisp/ body changed, so the divergence
+# these two lines pin is the same divergence with a new shape hash.
+pinned-collision ns-collision-divergent	nelisp--bq-expand	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	5c811e919cef
+pinned-collision ns-collision-divergent	nelisp--bq-expand-list	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	19be9c4e4f95
 pinned-collision ns-collision-divergent	nelisp--emit-to-stream	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	6259062234bd
 pinned-collision ns-collision-divergent	nelisp--make-record	lisp/nelisp-heap-image.el scripts/nelisp-stdlib-prelude.el	8dafd3358494
 pinned-collision ns-collision-divergent	nelisp--prn-record	lisp/nelisp-stdlib-prn.el scripts/nelisp-stdlib-prelude.el	4cf6166f2172
