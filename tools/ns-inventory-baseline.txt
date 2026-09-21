@@ -991,13 +991,29 @@ ns-prefix-violation 328
 # the four new lines individually and in combination; this kind stays
 # count-only in the gate's own design (see nl-ns-inventory.el's header),
 # so it is not itemized further here.
-ns-private-escape 770
+ns-private-escape 771
 # 768 -> 770 on 2026-09-21 (segment F): +2. This kind stays count-only
 # in the gate's own design (see nl-ns-inventory.el's header); the rx
 # shim's `declare-function' lines for its own private `rx--tr-*'
 # helpers, needed to keep byte-compile clean (see the commit), are the
 # likely source, isolated the same way the entry just above this one
 # was.
+# 770 -> 771 on 2026-09-21 (segment H, perf/eval-core-alloc): +1. The
+# "arglist.o" manifest entry in scripts/nelisp-standalone-build.el used
+# to be `(:glue nelisp-standalone--arglist-source)', a private local
+# copy the manifest built without ever loading
+# lisp/nelisp-cc-evalport-combiner-arglist.el.  This segment switched it
+# to the same `(FEATURE FEATURE--source)' shape every other cc unit in
+# the manifest already uses (e.g. "combiner-cons.o"), so the build
+# actually links from the lisp/ file (its edits used to be inert).  That
+# makes `nelisp-cc-evalport-combiner-arglist--source' -- a `--'-named
+# symbol private to that lisp/ file -- referenced from
+# scripts/nelisp-standalone-build.el for the first time (a compat
+# `defconst' alias so `test/nelisp-standalone-target-test.el' need not
+# change, on the same line the manifest reference also names it), one
+# new escape for one already-conceded name shape, matching the
+# already-conceded pattern the entries above this one describe for the
+# other cc units.
 ns-unreadable 0
 
 # `pinned-collision KEY' pins every ns-collision and ns-collision-divergent

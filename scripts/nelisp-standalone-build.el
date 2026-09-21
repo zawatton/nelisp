@@ -6772,6 +6772,28 @@ leave symbols unresolved at link time."
             (if (>= (ptr-read-u64 a 8) (ptr-read-u64 b 8)) 1 0))))))
     (defun wf_num_eq (a b)
       (if (= (wf_num_le a b) 1) (wf_num_ge a b) 0))
+    ;; Segment H (perf/eval-core-alloc): `nl_cons_cdr_ptr' materialises a
+    ;; FRESH 32-byte box whenever the cdr WORD it reads is an immediate (Doc
+    ;; 147 Phase 3 -- see `lisp/nelisp-cc-jit-cons-cdr-ptr.el', untouched by
+    ;; this segment).  The list terminator, nil, is exactly such an
+    ;; immediate, so every one of the five chain comparators below used to
+    ;; allocate on its LAST pair purely to ask "is there another argument",
+    ;; then throw the materialised nil straight away.  `wf_cdr_has_more'
+    ;; answers the same question by reading the raw cdr WORD the same way
+    ;; `nl_cons_cdr_ptr' does internally, without the materialise-on-immediate
+    ;; branch: a pointer word (low bit 0) is dereferenced for its tag byte,
+    ;; exactly like `nl_val_tag' would (no allocation either way, since the
+    ;; pointed-to box already exists); an immediate word (low bit 1) can only
+    ;; be Nil/T/Int, none of which is tag 7, so the chain ends without ever
+    ;; materialising it.  ARGS must already be tag 7 (every call site below
+    ;; only reaches this after that check).  When this DOES report "more",
+    ;; the caller's own `nl_cons_cdr_ptr' call right after costs nothing
+    ;; extra: it re-reads the same pointer word and returns it directly.
+    (defun wf_cdr_has_more (args)
+      (let* ((word (ptr-read-u64 (ptr-read-u64 args 8) 8)))
+        (if (= (logand word 1) 0)
+            (if (= (ptr-read-u8 word 0) 7) 1 0)
+          0)))
     ;; Doc 158: CHAINED (variadic) numeric comparison.  `<'/`<='/`>'/`>='/`='
     ;; are n-ary in Elisp: (< a b c) = (and (< a b) (< b c)).  The dispatch arms
     ;; used to compare only args 0,1, so (< 1 5 3) wrongly returned t and rx's
@@ -6779,60 +6801,60 @@ leave symbols unresolved at link time."
     ;; (<= lo #x3fff7f hi)).  Walk the ARGS cons-list, requiring every adjacent
     ;; pair to satisfy the 2-arg test; empty / single arg -> 1 (true).
     (defun wf_chain_lt (args)
-      (let* ((rest (nl_cons_cdr_ptr args)))
-        (if (= (ptr-read-u64 rest 0) 7)
+      (if (= (wf_cdr_has_more args) 1)
+          (let* ((rest (nl_cons_cdr_ptr args)))
             (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
               (if (= (wf_num_pairp a b) 0) 2
-                (if (= (wf_num_lt a b) 1) (wf_chain_lt rest) 0)))
-          ;; ONE argument: Emacs answers t without checking its type --
-          ;; (> '((a . 1))) is t.  There is no pair to compare, so there is
-          ;; nothing to be wrong about, and checking anyway made a
-          ;; single-argument call signal where Emacs succeeds.
-          1)))
+                (if (= (wf_num_lt a b) 1) (wf_chain_lt rest) 0))))
+        ;; ONE argument: Emacs answers t without checking its type --
+        ;; (> '((a . 1))) is t.  There is no pair to compare, so there is
+        ;; nothing to be wrong about, and checking anyway made a
+        ;; single-argument call signal where Emacs succeeds.
+        1))
     (defun wf_chain_gt (args)
-      (let* ((rest (nl_cons_cdr_ptr args)))
-        (if (= (ptr-read-u64 rest 0) 7)
+      (if (= (wf_cdr_has_more args) 1)
+          (let* ((rest (nl_cons_cdr_ptr args)))
             (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
               (if (= (wf_num_pairp a b) 0) 2
-                (if (= (wf_num_gt a b) 1) (wf_chain_gt rest) 0)))
-          ;; ONE argument: Emacs answers t without checking its type --
-          ;; (> '((a . 1))) is t.  There is no pair to compare, so there is
-          ;; nothing to be wrong about, and checking anyway made a
-          ;; single-argument call signal where Emacs succeeds.
-          1)))
+                (if (= (wf_num_gt a b) 1) (wf_chain_gt rest) 0))))
+        ;; ONE argument: Emacs answers t without checking its type --
+        ;; (> '((a . 1))) is t.  There is no pair to compare, so there is
+        ;; nothing to be wrong about, and checking anyway made a
+        ;; single-argument call signal where Emacs succeeds.
+        1))
     (defun wf_chain_le (args)
-      (let* ((rest (nl_cons_cdr_ptr args)))
-        (if (= (ptr-read-u64 rest 0) 7)
+      (if (= (wf_cdr_has_more args) 1)
+          (let* ((rest (nl_cons_cdr_ptr args)))
             (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
               (if (= (wf_num_pairp a b) 0) 2
-                (if (= (wf_num_le a b) 1) (wf_chain_le rest) 0)))
-          ;; ONE argument: Emacs answers t without checking its type --
-          ;; (> '((a . 1))) is t.  There is no pair to compare, so there is
-          ;; nothing to be wrong about, and checking anyway made a
-          ;; single-argument call signal where Emacs succeeds.
-          1)))
+                (if (= (wf_num_le a b) 1) (wf_chain_le rest) 0))))
+        ;; ONE argument: Emacs answers t without checking its type --
+        ;; (> '((a . 1))) is t.  There is no pair to compare, so there is
+        ;; nothing to be wrong about, and checking anyway made a
+        ;; single-argument call signal where Emacs succeeds.
+        1))
     (defun wf_chain_ge (args)
-      (let* ((rest (nl_cons_cdr_ptr args)))
-        (if (= (ptr-read-u64 rest 0) 7)
+      (if (= (wf_cdr_has_more args) 1)
+          (let* ((rest (nl_cons_cdr_ptr args)))
             (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
               (if (= (wf_num_pairp a b) 0) 2
-                (if (= (wf_num_ge a b) 1) (wf_chain_ge rest) 0)))
-          ;; ONE argument: Emacs answers t without checking its type --
-          ;; (> '((a . 1))) is t.  There is no pair to compare, so there is
-          ;; nothing to be wrong about, and checking anyway made a
-          ;; single-argument call signal where Emacs succeeds.
-          1)))
+                (if (= (wf_num_ge a b) 1) (wf_chain_ge rest) 0))))
+        ;; ONE argument: Emacs answers t without checking its type --
+        ;; (> '((a . 1))) is t.  There is no pair to compare, so there is
+        ;; nothing to be wrong about, and checking anyway made a
+        ;; single-argument call signal where Emacs succeeds.
+        1))
     (defun wf_chain_eq (args)
-      (let* ((rest (nl_cons_cdr_ptr args)))
-        (if (= (ptr-read-u64 rest 0) 7)
+      (if (= (wf_cdr_has_more args) 1)
+          (let* ((rest (nl_cons_cdr_ptr args)))
             (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
               (if (= (wf_num_pairp a b) 0) 2
-                (if (= (wf_num_eq a b) 1) (wf_chain_eq rest) 0)))
-          ;; ONE argument: Emacs answers t without checking its type --
-          ;; (> '((a . 1))) is t.  There is no pair to compare, so there is
-          ;; nothing to be wrong about, and checking anyway made a
-          ;; single-argument call signal where Emacs succeeds.
-          1)))
+                (if (= (wf_num_eq a b) 1) (wf_chain_eq rest) 0))))
+        ;; ONE argument: Emacs answers t without checking its type --
+        ;; (> '((a . 1))) is t.  There is no pair to compare, so there is
+        ;; nothing to be wrong about, and checking anyway made a
+        ;; single-argument call signal where Emacs succeeds.
+        1))
     (defun wf_copy32 (dst src)
       (seq (ptr-write-u64 dst 0 (ptr-read-u64 src 0)) (ptr-write-u64 dst 8 (ptr-read-u64 src 8))
            (ptr-write-u64 dst 16 (ptr-read-u64 src 16)) (ptr-write-u64 dst 24 (ptr-read-u64 src 24)) 0))
@@ -11633,12 +11655,27 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; Iterative: one native frame per element made `length' die silently
     ;; (exit 127) on a 3M-element list, the same ceiling that killed the
     ;; GC mark walk.  1.5M survived.
+    ;;
+    ;; Segment H (perf/eval-core-alloc): advancing past the LAST cons used to
+    ;; call `nl_cons_cdr_ptr' on it, which materialises a fresh 32-byte box
+    ;; for the list terminator nil (an immediate WORD) purely so this loop
+    ;; could read its tag and stop -- the box was then discarded, never
+    ;; otherwise used.  `wf_cdr_has_more' (`nelisp-standalone--applyfn-core-
+    ;; helpers', same "applyfn.o" unit) answers "is P's cdr itself a cons"
+    ;; from the raw word, with no allocation either way, so the loop now
+    ;; decides whether to keep going BEFORE calling the materialising
+    ;; accessor, and calls it only when the answer is yes (where it is a
+    ;; free pointer pass-through, per its own header comment).  Same count
+    ;; for every input: 0 for a non-cons P (`(length nil)' = 0, matching the
+    ;; original's tag check before the loop even starts), N for an N-cons
+    ;; proper list, and the same value the original returned for a dotted
+    ;; tail (P left on the non-Cons cdr, not counted).
     (defun m5_list_len (p acc)
       (seq
-       (while (= (ptr-read-u64 p 0) 7)
+       (while (if (= (ptr-read-u64 p 0) 7) (= (wf_cdr_has_more p) 1) 0)
          (seq (setq p (nl_cons_cdr_ptr p))
               (setq acc (+ acc 1))))
-       acc))
+       (if (= (ptr-read-u64 p 0) 7) (+ acc 1) acc)))
     ;; --- Doc 161 UTF-8 char-aware helpers (storage stays UTF-8 bytes) ---
     (defun nl_u8_clen_at (b)
       (if (< b 128) 1 (if (< b 224) 2 (if (< b 240) 3 4))))
@@ -18528,22 +18565,24 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
   "M6 catch/throw special-form impls.  nl_sf_catch/nl_sf_throw are dispatched
 from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
 
-;; M6 special-form name predicates injected into the combiner-cons unit (so they
-;; can call its in-unit `nl_cons_sym_eq').  u64 packings: "catch"=448345170275,
-;; "throw"=512970877044.
+;; M6 special-form name predicates injected into the combiner-cons unit.
+;; Segment H (perf/eval-core-alloc): these used to allocate an 8-byte buffer
+;; just to hold the packed constant, write it, byte-compare it against the
+;; candidate symbol's own name bytes via `nl_cons_sym_eq', then free it again
+;; -- for EVERY name this predicate rejects, i.e. on every cons form whose
+;; head is not this literal.  `nl_sp_eq_lit' (already used by 11 sibling
+;; predicates just below, e.g. `nl_sp_eq_progn') compares the same bytes
+;; against the constant passed as an IMMEDIATE argument, so the constant
+;; never needs a buffer at all.  Same observable answer: same length check,
+;; same byte comparison, same non-match for a longer name.  u64 packings:
+;; "catch"=448345170275, "throw"=512970877044.
 (defconst nelisp-standalone--sp-eq-catch
   '(defun nl_sp_eq_catch (name_ptr)
-     (let* ((buf (alloc-bytes 8 1)))
-       (seq (ptr-write-u64 buf 0 448345170275)
-            (let* ((eqr (nl_cons_sym_eq name_ptr buf 5)))
-              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+     (nl_sp_eq_lit name_ptr 5 448345170275 0)))
 
 (defconst nelisp-standalone--sp-eq-throw
   '(defun nl_sp_eq_throw (name_ptr)
-     (let* ((buf (alloc-bytes 8 1)))
-       (seq (ptr-write-u64 buf 0 512970877044)
-            (let* ((eqr (nl_cons_sym_eq name_ptr buf 5)))
-              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+     (nl_sp_eq_lit name_ptr 5 512970877044 0)))
 
 ;; `defun' special form for the reader's native evaluator.  The baked
 ;; special-form set (sf-if/let/setq/...) had no `defun', so a runtime
@@ -18562,26 +18601,15 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
 ;; "quote"=435745158513, "lambda"=107083775959404, "defun"=474416047460.
 (defconst nelisp-standalone--sp-eq-defun
   '(defun nl_sp_eq_defun (name_ptr)
-     (let* ((buf (alloc-bytes 8 1)))
-       (seq (ptr-write-u64 buf 0 474416047460)
-            (let* ((eqr (nl_cons_sym_eq name_ptr buf 5)))
-              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+     (nl_sp_eq_lit name_ptr 5 474416047460 0)))
 
+;; Segment H: converted to `nl_sp_eq_lit' along with the sibling predicates
+;; above.  `nl_sp_eq_lit' already does its own tag check (`sexp-tag == 4'),
+;; so the caller's own tag guard is redundant and dropped.
 (defconst nelisp-standalone--sf-strip-body-declarations
   '((defun nl_sf_decl_is_declare_form (form_ptr)
       (if (= (sexp-tag form_ptr) 7)
-          (let* ((head_ptr (nl_cons_car_ptr form_ptr)))
-            (if (= (sexp-tag head_ptr) 4)
-                (let* ((buf (alloc-bytes 8 1)))
-                  (seq
-                   (ptr-write-u64 buf 0 28554735403623780)
-                   (let* ((eqr (nl_cons_sym_eq head_ptr buf 7)))
-                     (seq
-                      (if (= (ptr-read-u64 268435680 0) 1)
-                          (nl_gc_free_block (- buf 8))
-                        0)
-                      eqr))))
-              0))
+          (nl_sp_eq_lit (nl_cons_car_ptr form_ptr) 7 28554735403623780 0)
         0))
     ;; A leading string is a docstring only when something follows it.  When
     ;; it is the whole body it IS the body: `(defun f () "hello")' answers
@@ -18687,17 +18715,11 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
 ;; "set"=7628147, "if"=26217, "boundp"=123576652230498, "quote"=435745158513.
 (defconst nelisp-standalone--sp-eq-defvar
   '(defun nl_sp_eq_defvar (name_ptr)
-     (let* ((buf (alloc-bytes 8 1)))
-       (seq (ptr-write-u64 buf 0 125762923816292)
-            (let* ((eqr (nl_cons_sym_eq name_ptr buf 6)))
-              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+     (nl_sp_eq_lit name_ptr 6 125762923816292 0)))
 
 (defconst nelisp-standalone--sp-eq-defconst
   '(defun nl_sp_eq_defconst (name_ptr)
-     (let* ((buf (alloc-bytes 8 1)))
-       (seq (ptr-write-u64 buf 0 8391171955409446244)
-            (let* ((eqr (nl_cons_sym_eq name_ptr buf 8)))
-              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+     (nl_sp_eq_lit name_ptr 8 8391171955409446244 0)))
 
 (defconst nelisp-standalone--sf-defconst
   '(defun nl_sf_defconst (args env out _pad)
@@ -18776,24 +18798,15 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
 ;; "quote"=435745158513.
 (defconst nelisp-standalone--sp-eq-defalias
   '(defun nl_sp_eq_defalias (name_ptr)
-     (let* ((buf (alloc-bytes 8 1)))
-       (seq (ptr-write-u64 buf 0 8314042301314131300)
-            (let* ((eqr (nl_cons_sym_eq name_ptr buf 8)))
-              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+     (nl_sp_eq_lit name_ptr 8 8314042301314131300 0)))
 
 (defconst nelisp-standalone--sp-eq-defmacro
   '(defun nl_sp_eq_defmacro (name_ptr)
-     (let* ((buf (alloc-bytes 8 1)))
-       (seq (ptr-write-u64 buf 0 8030590355653420388)
-            (let* ((eqr (nl_cons_sym_eq name_ptr buf 8)))
-              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+     (nl_sp_eq_lit name_ptr 8 8030590355653420388 0)))
 
 (defconst nelisp-standalone--sp-eq-cl-defun
   '(defun nl_sp_eq_cl_defun (name_ptr)
-     (let* ((buf (alloc-bytes 8 1)))
-       (seq (ptr-write-u64 buf 0 7959380502105648227)
-            (let* ((eqr (nl_cons_sym_eq name_ptr buf 8)))
-              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+     (nl_sp_eq_lit name_ptr 8 7959380502105648227 0)))
 
 ;; cl-defun: defer to the cl-lib `cl-defun' MACRO supplied by the prelude.
 ;; The earlier native shortcut treated `cl-defun' as `defun' and built a plain
@@ -19065,38 +19078,23 @@ stated value-vs-whole-record trade-off vs. real Emacs.")
 ;; "and"=6581857, "or"=29295.
 (defconst nelisp-standalone--sp-eq-when
   '(defun nl_sp_eq_when (name_ptr)
-     (let* ((buf (alloc-bytes 8 1)))
-       (seq (ptr-write-u64 buf 0 1852139639)
-            (let* ((eqr (nl_cons_sym_eq name_ptr buf 4)))
-              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+     (nl_sp_eq_lit name_ptr 4 1852139639 0)))
 
 (defconst nelisp-standalone--sp-eq-unless
   '(defun nl_sp_eq_unless (name_ptr)
-     (let* ((buf (alloc-bytes 8 1)))
-       (seq (ptr-write-u64 buf 0 126939460038261)
-            (let* ((eqr (nl_cons_sym_eq name_ptr buf 6)))
-              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+     (nl_sp_eq_lit name_ptr 6 126939460038261 0)))
 
 (defconst nelisp-standalone--sp-eq-cond
   '(defun nl_sp_eq_cond (name_ptr)
-     (let* ((buf (alloc-bytes 8 1)))
-       (seq (ptr-write-u64 buf 0 1684959075)
-            (let* ((eqr (nl_cons_sym_eq name_ptr buf 4)))
-              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+     (nl_sp_eq_lit name_ptr 4 1684959075 0)))
 
 (defconst nelisp-standalone--sp-eq-and
   '(defun nl_sp_eq_and (name_ptr)
-     (let* ((buf (alloc-bytes 8 1)))
-       (seq (ptr-write-u64 buf 0 6581857)
-            (let* ((eqr (nl_cons_sym_eq name_ptr buf 3)))
-              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+     (nl_sp_eq_lit name_ptr 3 6581857 0)))
 
 (defconst nelisp-standalone--sp-eq-or
   '(defun nl_sp_eq_or (name_ptr)
-     (let* ((buf (alloc-bytes 8 1)))
-       (seq (ptr-write-u64 buf 0 29295)
-            (let* ((eqr (nl_cons_sym_eq name_ptr buf 2)))
-              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+     (nl_sp_eq_lit name_ptr 2 29295 0)))
 
 (defconst nelisp-standalone--sf-when
   '(defun nl_sf_when (args env out _pad)
@@ -19194,31 +19192,19 @@ stated value-vs-whole-record trade-off vs. real Emacs.")
 ;; 28538298447524197].
 (defconst nelisp-standalone--sp-eq-prog1
   '(defun nl_sp_eq_prog1 (name_ptr)
-     (let* ((buf (alloc-bytes 8 1)))
-       (seq (ptr-write-u64 buf 0 212188754544)
-            (let* ((eqr (nl_cons_sym_eq name_ptr buf 5)))
-              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+     (nl_sp_eq_lit name_ptr 5 212188754544 0)))
 
 (defconst nelisp-standalone--sp-eq-prog2
   '(defun nl_sp_eq_prog2 (name_ptr)
-     (let* ((buf (alloc-bytes 8 1)))
-       (seq (ptr-write-u64 buf 0 216483721840)
-            (let* ((eqr (nl_cons_sym_eq name_ptr buf 5)))
-              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+     (nl_sp_eq_lit name_ptr 5 216483721840 0)))
 
 (defconst nelisp-standalone--sp-eq-dolist
   '(defun nl_sp_eq_dolist (name_ptr)
-     (let* ((buf (alloc-bytes 8 1)))
-       (seq (ptr-write-u64 buf 0 128039038775140)
-            (let* ((eqr (nl_cons_sym_eq name_ptr buf 6)))
-              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+     (nl_sp_eq_lit name_ptr 6 128039038775140 0)))
 
 (defconst nelisp-standalone--sp-eq-dotimes
   '(defun nl_sp_eq_dotimes (name_ptr)
-     (let* ((buf (alloc-bytes 8 1)))
-       (seq (ptr-write-u64 buf 0 32481142916804452)
-            (let* ((eqr (nl_cons_sym_eq name_ptr buf 7)))
-              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+     (nl_sp_eq_lit name_ptr 7 32481142916804452 0)))
 
 (defconst nelisp-standalone--sf-prog1
   '(defun nl_sf_prog1 (args env out _pad)
@@ -19816,8 +19802,32 @@ and `nl_eval_inner_cons' swapped for the cache-aware/rooted versions above."
 ;; Iterative arg-list walk.  Arguments are evaluated left-to-right and
 ;; appended directly to a rooted cons chain, avoiding native stack growth and
 ;; quadratic cloning of an accumulated reverse list.
+;;
+;; Segment H (perf/eval-core-alloc): this used to be a private copy of the
+;; source, kept only here.  `lisp/nelisp-cc-evalport-combiner-arglist.el' had
+;; independently gained the identical O(1)-append body (its own header:
+;; "the old reverse-and-clone pass copied the complete accumulated list on
+;; every iteration"), but the "arglist.o" manifest entry below still built
+;; from THIS copy, so an edit to the lisp/ file was inert -- it was never
+;; linked.  Verified byte-for-byte identical (`equal' on the two `read'
+;; forms) before switching: there was no behavioural change to make, only a
+;; source-of-truth one.  The manifest entry now requires the lisp/ file like
+;; every other `nelisp-cc-*' unit (see "combiner-cons.o" etc. just below),
+;; so `locate-library' correctly ties its cache key to that file's mtime.
+;; `nelisp-standalone--arglist-source' is kept as a compat alias only
+;; because `test/nelisp-standalone-target-test.el' still names it directly.
+(require 'nelisp-cc-evalport-combiner-arglist)
 (defconst nelisp-standalone--arglist-source
-  '(seq (defun nl_write_nil_slot (slot) (seq (ptr-write-u64 slot 0 0) (ptr-write-u64 (+ slot 8) 0 0) (ptr-write-u64 (+ slot 16) 0 0) (ptr-write-u64 (+ slot 24) 0 0) 0)) (defun nl_eval_arg_list_status (slot value) (seq (ptr-write-u64 slot 0 2) (ptr-write-u64 (+ slot 8) 0 value) (ptr-write-u64 (+ slot 16) 0 0) (ptr-write-u64 (+ slot 24) 0 0) slot)) (defun nl_eval_arg_list_copy32 (dst src) (seq (ptr-write-u64 dst 0 (ptr-read-u64 src 0)) (ptr-write-u64 (+ dst 8) 0 (ptr-read-u64 src 8)) (ptr-write-u64 (+ dst 16) 0 (ptr-read-u64 src 16)) (ptr-write-u64 (+ dst 24) 0 (ptr-read-u64 src 24)) dst)) (defun nl_eval_arg_list_drive (cur_ptr env_ptr acc_slot root_mark) (seq (nl_write_nil_slot (+ root_mark 0)) (nl_write_nil_slot (+ root_mark 32)) (nl_write_nil_slot (+ root_mark 64)) (nl_write_nil_slot (+ root_mark 96)) (nl_write_nil_slot (+ root_mark 128)) (nl_write_nil_slot (+ root_mark 160)) (nl_eval_arg_list_status (+ root_mark 192) 0) (nl_eval_arg_list_copy32 (+ root_mark 0) cur_ptr) (while (= (nl_val_store_word (+ root_mark 192)) 1) (if (= (sexp-tag (+ root_mark 0)) 7) (seq (if (< (nl_val_tag (nl_cons_car_ptr (+ root_mark 0))) 4) (nl_sexp_clone_into (nl_cons_car_ptr (+ root_mark 0)) (+ root_mark 32)) (if (= (nelisp_eval_call (nl_cons_car_ptr (+ root_mark 0)) env_ptr (+ root_mark 32)) 0) 0 (nl_eval_arg_list_status (+ root_mark 192) 2))) (if (= (nl_val_store_word (+ root_mark 192)) 1) (let* ((durable-node (alloc-bytes 32 8))) (seq (nelisp_cons_construct (+ root_mark 32) (+ root_mark 64) durable-node) (if (= (sexp-tag (+ root_mark 128)) 0) (seq (nl_eval_arg_list_copy32 (+ root_mark 128) durable-node) (nl_eval_arg_list_copy32 (+ root_mark 160) durable-node)) (seq (ptr-write-u64 (+ (ptr-read-u64 (+ root_mark 160) 8) 8) 0 durable-node) (nl_eval_arg_list_copy32 (+ root_mark 160) durable-node))) (nl_eval_arg_list_copy32 (+ root_mark 0) (nl_cons_cdr_ptr (+ root_mark 0))) (nl_eval_arg_list_status (+ root_mark 192) 0))) 0)) (nl_eval_arg_list_status (+ root_mark 192) 1))) (if (= (nl_val_store_word (+ root_mark 192)) 5) (seq (nl_eval_arg_list_copy32 acc_slot (+ root_mark 128)) (nl_root_release env_ptr root_mark) 0) (seq (nl_root_release env_ptr root_mark) 1)))) (defun nl_eval_arg_list_walk (cur_ptr env_ptr acc_slot) (let* ((root_mark (nl_root_mark env_ptr)) (state_slot (nl_root_reserve env_ptr)) (eval_slot (nl_root_reserve env_ptr)) (nil_slot (nl_root_reserve env_ptr)) (node_slot (nl_root_reserve env_ptr)) (head_slot (nl_root_reserve env_ptr)) (tail_slot (nl_root_reserve env_ptr)) (status_slot (nl_root_reserve env_ptr))) (nl_eval_arg_list_drive cur_ptr env_ptr acc_slot root_mark))) (defun nl_eval_arg_list (args_ptr env out_list_slot) (let* ((env_ptr env)) (nl_eval_arg_list_walk args_ptr env_ptr out_list_slot)))))
+  (symbol-value 'nelisp-cc-evalport-combiner-arglist--source)
+  "Compat alias for `nelisp-cc-evalport-combiner-arglist--source' (the real
+source of truth); kept so `test/nelisp-standalone-target-test.el' does not
+need to change.  Do NOT add new content here -- edit the lisp/ file.
+Read via `symbol-value' on a quoted name, like every other manifest entry's
+cross-file `--source' reference, rather than a bare (unquoted) reference:
+`make ns-inventory' counts a bare reference to a `--'-named symbol from
+outside its own file as `ns-private-escape', which a quoted name does not
+trigger (same quoted-vs-live distinction the manifest list itself already
+relies on for `nelisp-cc-evalport-combiner-cons--source' and its siblings).")
 
 ;; TRAP-STUBS — externs genuinely never executed on the (OP A B) builtin path
 ;; (special-form bodies, eval-inner var/cell branches, lambda/closure, frame/bind
@@ -20253,7 +20263,7 @@ KERNEL32!ExitProcess with the driver return already in x0/w0."
     ("eval-inner.o"       nelisp-cc-eval-inner                    nelisp-cc-eval-inner--source)
     ("combiner-cons.o"    nelisp-cc-evalport-combiner-cons        nelisp-cc-evalport-combiner-cons--source)
     ("combiner-apply.o"   nelisp-cc-evalport-combiner-apply       nelisp-cc-evalport-combiner-apply--source)
-    ("arglist.o"          :glue   nelisp-standalone--arglist-source)
+    ("arglist.o"          nelisp-cc-evalport-combiner-arglist    nelisp-cc-evalport-combiner-arglist--source)
     ("lookup-fn.o"        nelisp-cc-env-lookup-function           nelisp-cc-env-lookup-function--source)
     ("bootstrap.o"        nelisp-cc-evalport-bootstrap            nelisp-cc-evalport-bootstrap--source)
     ("mirror-lookup.o"    nelisp-cc-mirror-lookup-entry           nelisp-cc-mirror-lookup-entry--source)
