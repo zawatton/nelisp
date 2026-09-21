@@ -1271,3 +1271,18 @@ standalone-reader-checked-soak|Makefile|s#(while (< i 8000) (setq acc (cons (con
 # `days-between lisp/nelisp-stdlib-misc.el' / FAIL; restored -- byte-
 # identical to the pre-mutation file (`git diff` empty).
 vendor-shadow-gate|lisp/nelisp-stdlib-misc.el|1a\(defun days-between (a b) 0)|an unconditional defun for a name vendor/emacs-lisp/calendar/time-date.el also defines, unaccepted, must fail the gate
+
+# vendor-shadow-gate (Doc segI widening, 2026-09-21, same day): proves the
+# GUARDED half of the gate specifically -- an `(unless (fboundp ...))'
+# stub of a vendored name is a finding too, not just an unconditional
+# one (this is what the `cl-count'/`cl-assoc' incident that prompted the
+# widening actually looked like).  Injects `(unless (fboundp
+# 'date-leap-year-p) (defun date-leap-year-p (y) t))' -- a
+# vendor/emacs-lisp/calendar/time-date.el name, not in
+# tools/vendor-shadow-accepted.txt -- into lisp/nelisp-stdlib-misc.el.
+# Verified with `make gate-mutation-verify GATE=vendor-shadow-gate':
+# clean baseline `GATE-COUNT checked=187 findings=0' / PASS; mutated
+# `GATE-COUNT checked=187 findings=1' naming `date-leap-year-p
+# lisp/nelisp-stdlib-misc.el' guarded / FAIL; restored -- byte-identical
+# to the pre-mutation file (`git diff' empty).
+vendor-shadow-gate|lisp/nelisp-stdlib-misc.el|1a\(unless (fboundp (quote date-leap-year-p)) (defun date-leap-year-p (y) t))|a GUARDED defun for a name vendor/emacs-lisp/calendar/time-date.el also defines, unaccepted, must still fail the gate (guarded is not exempt)

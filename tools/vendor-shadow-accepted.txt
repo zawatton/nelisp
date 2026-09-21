@@ -1,23 +1,62 @@
-# Names this tree defines unconditionally that a file under
-# vendor/emacs-lisp/ also defines (tools/nelisp-vendor-shadow-gate.el).
-# Format:
+# Names this tree defines (unconditionally OR behind an `(unless
+# (fboundp ...))' guard -- both count, see tools/nelisp-vendor-shadow-
+# gate.el's commentary for why a guard is not a free pass here) that a
+# file under vendor/emacs-lisp/ also defines.  Format:
 #
 #   NAME|FILE|reason
 #
-# The reason is the point.  All five rows below predate this gate: each is
-# an existing NeLisp-native implementation of a name one of the four files
-# vendored by Doc segI (subr-x.el, cl-seq.el) also happens to define, kept
-# unconditional because it loads ahead of vendor/emacs-lisp in `load-path'
-# (see vendor/README.md's load-path ordering) and this tree's own name
-# always has to win over a vendored library's, the same way a native
-# builtin does.  None of these five caused, or was caused by, the incident
-# this gate exists to catch (a hand-written subset of a file this tree
-# ALREADY vendors) -- rewriting them to `require' the vendored file
-# instead is separate work this gate does not force.  A NEW row here needs
-# a reason as specific as these, not a copy of one.
+# The reason is the point.  A row here is not "this overlap happens to
+# exist"; it is "this tree's own answer for NAME was checked against
+# real Emacs's, for every argument shape a caller might pass it, and
+# they match" -- exactly the check that was skipped for the `cl-count'/
+# `cl-assoc' pair this gate's own widening (2026-09-21, same day as the
+# gate itself) found and removed: both were guarded, `cl-count' silently
+# discarded `:key'/`:test', `cl-assoc' used `equal' where cl-seq.el's
+# default is `eql', and the guard did not save either of them, because a
+# vendored file only wins after something has `require'd it -- unlike a
+# host Emacs primitive, which a guard defers to unconditionally on any
+# host at all.  A NEW row here needs the same measurement, not a copy of
+# an old reason.
 
 cl-position|lisp/nelisp-cl-macros.el|pre-existing NeLisp cl-seq-shaped helper (list-only, not this tree's hand-written rx/cl-seq incident); vendor/emacs-lisp/emacs-lisp/cl-seq.el's cl-position is reachable via (require 'cl-seq) for any caller that needs the full generalized-sequence semantics
 cl-remove-if-not|lisp/nelisp-cl-macros.el|pre-existing NeLisp cl-seq-shaped helper used by nelisp-aot-compiler.el; same rationale as cl-position
 cl-set-difference|lisp/nelisp-cl-macros.el|pre-existing NeLisp cl-seq-shaped helper (its own docstring already cites "Emacs cl-seq.el semantics" as the contract it follows); same rationale as cl-position
 hash-table-keys|lisp/nelisp-stdlib-misc.el|pre-existing NeLisp hash-table helper, part of this tree's own stdlib surface (Doc 22), not touched by the rx/cl-seq incident this gate answers to
 hash-table-values|lisp/nelisp-stdlib-misc.el|pre-existing NeLisp hash-table helper; same rationale as hash-table-keys
+
+# 2026-09-21 (gate widening, same day as the gate): the 14 rows below are
+# ALL guarded (`unless (fboundp ...)`) and were found only once the gate
+# stopped exempting guards.  Each is verified, on this build, byte-for-
+# byte against GNU Emacs 31.1, for a call shape that would expose the
+# exact `cl-count'/`cl-assoc' failure mode (a keyword the stub could
+# plausibly ignore, or an equality/ordering edge real Emacs is specific
+# about) -- not merely "it loaded":
+#   (cl-union '(1 2 3) '(3 4 5))                              -> (5 4 1 2 3)
+#   (cl-intersection '(1 2 3) '(2 3 4))                       -> (3 2)
+#   (cl-set-exclusive-or '(1 2 3) '(2 3 4))                   -> (1 4)
+#   (cl-subsetp '(1 2) '(1 2 3))                              -> t
+#   (cl-position-if #'cl-evenp '(1 3 4 5))                    -> 2
+#   (named-let loop ((n 3) (a 1)) (if (= n 0) a (loop (1- n) (* a n)))) -> 6
+#   (string-blank-p "   ")                                    -> 0
+#   (string-chop-newline "abc\n")                             -> "abc"
+#   (string-pad "ab" 5)                                       -> "ab   "
+#   (string-remove-prefix "foo" "foobar")                     -> "bar"
+#   (string-remove-suffix "bar" "foobar")                     -> "foo"
+#   (thread-first 5 (+ 3) (* 2))                              -> 16
+#   (thread-last 5 (+ 3) (* 2))                               -> 16
+#   (string-join '("a" "b" "c") "-")                          -> "a-b-c"
+# All fourteen: identical on this build and on host Emacs 31.1.
+cl-union|scripts/nelisp-stdlib-prelude.el|verified byte-for-byte vs Emacs 31.1 (adjoin-order case above); threads :key/:test through nelisp--cl-seq-member/cl-adjoin the same way the already-accepted cl-set-difference does
+cl-intersection|scripts/nelisp-stdlib-prelude.el|verified byte-for-byte vs Emacs 31.1; same nelisp--cl-seq-member-based keyword threading as cl-set-difference
+cl-set-exclusive-or|scripts/nelisp-stdlib-prelude.el|verified byte-for-byte vs Emacs 31.1; implemented in terms of the already-accepted cl-set-difference, inherits its keyword handling
+cl-subsetp|scripts/nelisp-stdlib-prelude.el|verified byte-for-byte vs Emacs 31.1; same nelisp--cl-seq-member-based keyword threading as cl-set-difference
+cl-position-if|scripts/nelisp-stdlib-prelude.el|verified byte-for-byte vs Emacs 31.1; 2-arg only (no &rest to silently swallow a keyword -- an extra argument is a loud wrong-number-of-arguments, not a silent wrong answer)
+named-let|scripts/nelisp-stdlib-prelude.el|pre-existing NeLisp subr-x-shaped helper, verified byte-for-byte vs Emacs 31.1 (measured before vendor/emacs-lisp/emacs-lisp/subr-x.el existed, per vendor/README.md's load-path-ordering note)
+string-blank-p|scripts/nelisp-stdlib-prelude.el|pre-existing NeLisp subr-x-shaped helper, verified byte-for-byte vs Emacs 31.1; same rationale as named-let
+string-chop-newline|scripts/nelisp-stdlib-prelude.el|pre-existing NeLisp subr-x-shaped helper, verified byte-for-byte vs Emacs 31.1; same rationale as named-let
+string-join|scripts/nelisp-stdlib-prelude.el|pre-existing NeLisp subr-x-shaped helper, verified byte-for-byte vs Emacs 31.1; same rationale as named-let
+string-pad|scripts/nelisp-stdlib-prelude.el|pre-existing NeLisp subr-x-shaped helper, verified byte-for-byte vs Emacs 31.1; same rationale as named-let
+string-remove-prefix|scripts/nelisp-stdlib-prelude.el|pre-existing NeLisp subr-x-shaped helper, verified byte-for-byte vs Emacs 31.1; same rationale as named-let
+string-remove-suffix|scripts/nelisp-stdlib-prelude.el|pre-existing NeLisp subr-x-shaped helper, verified byte-for-byte vs Emacs 31.1; same rationale as named-let
+thread-first|scripts/nelisp-stdlib-prelude.el|pre-existing NeLisp subr-x-shaped helper, verified byte-for-byte vs Emacs 31.1; same rationale as named-let
+thread-last|scripts/nelisp-stdlib-prelude.el|pre-existing NeLisp subr-x-shaped helper, verified byte-for-byte vs Emacs 31.1; same rationale as named-let

@@ -1029,6 +1029,18 @@ ns-unreadable 0
 # count-only -- see the header comment in tools/nl-ns-inventory.el for why.
 # Generated from a clean tree; do not hand-edit into drift.
 #
+# Doc segI (vendor-emacs-lisp) gate-widening fix (2026-09-21, same day):
+# deleting the WAVE-2-era guarded `cl-remove-if-not' in scripts/nelisp-
+# stdlib-prelude.el (a hand-written, keyword-ignoring subset of
+# vendor/emacs-lisp/emacs-lisp/cl-seq.el's real `cl-remove-if-not', the
+# same defect class as the `cl-count'/`cl-assoc' pair this fix also
+# removes) leaves only that file's UNCONDITIONAL `cl-remove-if-not' (a
+# separate, already-`vendor-shadow-accepted.txt'-accepted 2-arg helper
+# used by nelisp-aot-compiler.el), which no longer differs in body shape
+# from lisp/nelisp-cl-macros.el's own copy -- so `ns-collision-divergent'
+# downgrades to a plain `ns-collision', needing its own pin here instead.
+pinned-collision ns-collision	cl-remove-if-not	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el
+#
 # Doc segI (vendor-emacs-lisp), Phase 2: 9 names below are the load-time
 # plumbing four newly-vendored Emacs files need, added byte-identically to
 # scripts/nelisp-stdlib-prelude.el (the reader's actual boot prelude) and

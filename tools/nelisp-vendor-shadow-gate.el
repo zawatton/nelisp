@@ -16,29 +16,44 @@
 ;; This is not a general "did you duplicate any Emacs function" check --
 ;; that is `emacs-compat', already wired in, and it is deliberately silent
 ;; about names Emacs has that this tree does not vendor.  This gate is
-;; narrower and louder: an UNCONDITIONAL `defun'/`defmacro' in this tree's
-;; OWN sources (lisp/, src/, scripts/, packages/*/src/ -- the same file
-;; set `emacs-compat' reads) for a name one of the files under
+;; narrower and louder: a `defun'/`defmacro' in this tree's OWN sources
+;; (lisp/, src/, scripts/, packages/*/src/ -- the same file set
+;; `emacs-compat' reads) for a name one of the files under
 ;; vendor/emacs-lisp/ ALSO defines is a name this tree could simply
 ;; `require' instead of writing again.
 ;;
-;; GUARDED is exempt, same rule and same recognizer as `emacs-compat':
-;; `(unless (fboundp 'NAME) (defun NAME ...))' defers to whatever already
-;; won -- on the standalone, once the vendored file has been `require'd,
-;; that is the vendored function itself, so a guarded definition can
-;; never actually shadow it.  An UNGUARDED one always would, which is
-;; exactly the shape the incident this gate answers to was.
+;; GUARDED IS NOT EXEMPT, unlike `emacs-compat'.  `emacs-compat' exempts
+;; `(unless (fboundp 'NAME) (defun NAME ...))' because on a HOST Emacs the
+;; guard is false and the host's own C primitive wins outright -- nothing
+;; this tree writes ever runs there.  That reasoning does not carry over
+;; here.  A vendored file is not preloaded the way a host primitive is:
+;; it only wins once something has `require'd it, and measured on this
+;; segment's own two names (`cl-count'/`cl-assoc', guarded, silently
+;; ignoring keywords cl-seq.el honours -- `cl-assoc' used `equal' where
+;; cl-seq.el's default is `eql') the guard was false and the WRONG
+;; definition ran for any caller of the bare prelude that had not already
+;; `require'd `cl-seq' -- exactly the silent-wrong-answer shape the
+;; incident this gate exists to catch was.  A `(require 'FEATURE)' baked
+;; into one specific build's boot sequence is not a substitute for
+;; deleting the subset: it is one caller's fix, not a guarantee for
+;; every caller of this prelude, and `tools/nelisp-vendor-shadow-gate.el'
+;; itself proved this by finding two guarded definitions the exemption
+;; had been hiding.  So a guarded definition here is treated exactly like
+;; an unguarded one: a name that appears in NAMES-TABLE at all, guarded or
+;; not, is a finding.
 ;;
-;; A small number of UNGUARDED overlaps predate this gate and are
-;; intentional: this tree's own subr-x-shaped helpers (`string-trim',
-;; `if-let*', ...) were measured, before vendor/emacs-lisp/emacs-lisp/
-;; subr-x.el existed, to already match real Emacs's behavior, and load
-;; ahead of the vendored file in `load-path' by design (a name this tree
-;; defines itself must win over a vendored library, the same ordering
-;; rule vendor/README.md documents) -- rewriting them to `require' the
-;; vendored file instead is a separate piece of work this gate does not
-;; force.  Each is listed in `tools/vendor-shadow-accepted.txt' with a
-;; reason; a NEW one is not, and fails here until it is.
+;; A small number of overlaps predate this gate (or predate this
+;; correction to it) and are intentional: this tree's own subr-x-shaped
+;; helpers (`string-trim', `if-let*', ...) were measured, before
+;; vendor/emacs-lisp/emacs-lisp/subr-x.el existed, to already match real
+;; Emacs's behavior for every argument they accept (no partial keyword
+;; support to go silently wrong), and load ahead of the vendored file in
+;; `load-path' by design (a name this tree defines itself must win over a
+;; vendored library, the same ordering rule vendor/README.md documents)
+;; -- rewriting them to `require' the vendored file instead is a separate
+;; piece of work this gate does not force.  Each is listed in
+;; `tools/vendor-shadow-accepted.txt' with a reason; a NEW one is not,
+;; and fails here until it is.
 ;;
 ;; HOW THE ANSWER IS OBTAINED.  Like `emacs-compat', this reads sources as
 ;; data (`read' in a `with-temp-buffer', never `load'), so it costs
@@ -236,7 +251,7 @@ that would actually shadow at runtime), else the first guarded one."
     table))
 
 (defun nelisp-vendor-shadow-run ()
-  "Report and enforce: no NEW unguarded shadow of a vendored name."
+  "Report and enforce: no NEW stub (guarded or not) of a vendored name."
   (let* ((vendor-files (nelisp-vendor-shadow--vendor-files))
          (vendor-names (nelisp-vendor-shadow--vendor-names))
          (tree-names (nelisp-vendor-shadow--tree-names))
@@ -244,19 +259,24 @@ that would actually shadow at runtime), else the first guarded one."
          (shadows nil))
     (maphash
      (lambda (name entry)
-       (when (and (eq (car entry) 'plain) (gethash name vendor-names))
-         (push (list name (cdr entry)) shadows)))
+       ;; No `(eq (car entry) 'plain)' filter: a GUARDED definition of a
+       ;; vendored name is still a finding here (see the commentary above
+       ;; -- `cl-count'/`cl-assoc' were both guarded and both wrong for
+       ;; any caller that had not already `require'd `cl-seq').
+       (when (gethash name vendor-names)
+         (push (list name (cdr entry) (eq (car entry) 'plain)) shadows)))
      tree-names)
     (setq shadows (sort shadows (lambda (a b) (string< (symbol-name (car a))
                                                         (symbol-name (car b))))))
-    (princ (format "vendor-shadow-gate: %d vendored file(s), %d vendored name(s), %d name(s) this tree defines unconditionally on top of one\n"
+    (princ (format "vendor-shadow-gate: %d vendored file(s), %d vendored name(s), %d name(s) this tree also defines (guarded or not)\n"
                    (length vendor-files) (hash-table-count vendor-names)
                    (length shadows)))
     (let ((new nil))
       (dolist (s shadows)
-        (let ((name (symbol-name (car s))) (file (cadr s)))
+        (let ((name (symbol-name (car s))) (file (cadr s)) (plain (caddr s)))
           (if (gethash name accepted)
-              (princ (format "  accepted  %-40s %s\n" name file))
+              (princ (format "  accepted  %-40s %-9s %s\n" name
+                             (if plain "unguarded" "guarded") file))
             (push s new))))
       (setq new (nreverse new))
       (princ (format "GATE-COUNT checked=%d findings=%d\n"
@@ -266,8 +286,9 @@ that would actually shadow at runtime), else the first guarded one."
             (princ (format "\n%d name(s) not in %s:\n" (length new)
                            nelisp-vendor-shadow--accepted-file))
             (dolist (s new)
-              (princ (format "  %-40s %s\n" (symbol-name (car s)) (cadr s))))
-            (princ "\nvendor-shadow-gate: FAIL (wrap each in (unless (fboundp ...)) to defer to the vendored file, `require' the vendored feature at the call site instead of redefining it, or add a reasoned line to the accepted file)\n")
+              (princ (format "  %-40s %-9s %s\n" (symbol-name (car s))
+                             (if (caddr s) "unguarded" "guarded") (cadr s))))
+            (princ "\nvendor-shadow-gate: FAIL (delete the stub and let `require' of the vendored feature provide it, or add a reasoned line to the accepted file -- wrapping it in (unless (fboundp ...)) is NOT a fix: a vendored file only wins after something has required it, unlike a host Emacs primitive)\n")
             (kill-emacs 1))
         (princ "vendor-shadow-gate: PASS\n")))))
 

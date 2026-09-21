@@ -17,6 +17,34 @@ Sub-paths mirror their location in Emacs's own `lisp/` tree, so `rx.el`
 sits under `emacs-lisp/` and `time-date.el` under `calendar/`, matching
 `(locate-library "rx")` on a real Emacs.
 
+## Known gap: `time-date.el` is vendored without the `decoded-time-*` accessors
+
+`time-date.el`'s `decode-time` returns a `decoded-time` struct, but the
+`cl-defstruct` that defines that struct -- and therefore every
+`decoded-time-*` accessor -- lives in `simple.el`, not `time-date.el`.
+Measured on real Emacs 31.1 with `(symbol-file 'decoded-time-year 'defun)`
+(not guessed): it answers `simple.el`. `simple.el` is one of the five
+files this segment tried and did NOT vendor (see below: it fails to load
+immediately, `defface`, then `overlay-arrow-variable-list`, needing the
+buffer/display/editing-command substrate), so these names are still
+missing on this runtime:
+
+```
+decoded-time-second   decoded-time-minute   decoded-time-hour
+decoded-time-day      decoded-time-month    decoded-time-year
+decoded-time-weekday  decoded-time-dst      decoded-time-zone
+```
+
+`(decoded-time-year (decode-time ...))` is `void-function` here. Code
+that needs a field out of a `decoded-time' struct on this runtime has to
+index the list directly (`decode-time` itself works and returns the same
+shape Emacs does; only the named accessors are missing) until `simple.el`
+-- or just its `decoded-time` struct definition, split out -- is
+vendored. `make-decoded-time` and `decoded-time-p` are ALSO not vendored
+by this segment for the same reason, and are not fboundp on real Emacs
+31.1 either (measured: both `nil`), so their absence is not a new gap
+this segment introduces.
+
 ## Provenance
 
 - **Upstream**: GNU Emacs (GPLv3-or-later). File headers read

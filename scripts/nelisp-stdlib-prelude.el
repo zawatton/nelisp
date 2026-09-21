@@ -1734,51 +1734,16 @@ nothing."
       ;; Emacs answers the SEQUENCE, not nil -- `seq-do' is the one in the
       ;; family whose return value is its argument, and callers chain on it.
       seq)))
-(unless (fboundp 'cl-remove-if)
-  (defun cl-remove-if (pred seq) (seq-remove pred seq)))
-(unless (fboundp 'cl-remove-if-not)
-  (defun cl-remove-if-not (pred seq) (seq-filter pred seq)))
-(unless (fboundp 'cl-find-if)
-  (defun cl-find-if (pred seq)
-    (let ((cur (nelisp-seq--to-list seq))
-          (found nil)
-          (value nil))
-      (while (and cur (not found))
-        (when (funcall pred (car cur))
-          (setq found t)
-          (setq value (car cur)))
-        (setq cur (cdr cur)))
-      value)))
-(unless (fboundp 'cl-find-if-not)
-  (defun cl-find-if-not (pred seq)
-    (cl-find-if (lambda (x) (not (funcall pred x))) seq)))
-(unless (fboundp 'cl-count-if)
-  (defun cl-count-if (pred seq)
-    "Return the number of elements of SEQ that satisfy PRED."
-    (let ((cur (nelisp-seq--to-list seq)) (n 0))
-      (while cur
-        (when (funcall pred (car cur)) (setq n (1+ n)))
-        (setq cur (cdr cur)))
-      n)))
-;; Doc 160 breadth: cl-lib / seq / string library gaps.
-(unless (fboundp 'cl-find)
-  (defun cl-find (item seq &rest kw)
-    (let ((test (or (plist-get kw :test) #'eql))
-          (key (or (plist-get kw :key) #'identity))
-          (cur (nelisp-seq--to-list seq)) (found nil) (value nil))
-      (while (and cur (not found))
-        (when (funcall test item (funcall key (car cur)))
-          (setq found t value (car cur)))
-        (setq cur (cdr cur)))
-      value)))
-(unless (fboundp 'cl-reduce)
-  (defun cl-reduce (fn seq &rest kw)
-    (let* ((cur (nelisp-seq--to-list seq))
-           (m (plist-member kw :initial-value))
-           (acc (if m (cadr m) (if cur (car cur) (funcall fn)))))
-      (unless m (setq cur (cdr cur)))
-      (while cur (setq acc (funcall fn acc (car cur))) (setq cur (cdr cur)))
-      acc)))
+;; Doc segI (vendor-emacs-lisp): this block used to also guard-define
+;; `cl-remove-if'/`cl-remove-if-not'/`cl-find-if'/`cl-find-if-not'/
+;; `cl-count-if'/`cl-find'/`cl-reduce' here.  All seven are real Emacs
+;; cl-seq.el names; `cl-find'/`cl-reduce' partially honoured their
+;; keywords (missing `:from-end', `cl-reduce' missing `:key') and the
+;; rest took no keywords at all, the same silently-incomplete-subset
+;; shape as the `cl-count'/`cl-assoc' pair deleted above.  Deleted for
+;; the same reason: vendor/emacs-lisp/emacs-lisp/cl-seq.el defines all
+;; seven correctly, and `nelisp-standalone--reader-repl-prelude-source'
+;; already `require's it once for every process built from this prelude.
 (unless (fboundp 'assoc-default)
   (defun assoc-default (key alist &optional test default)
     (let ((res default) (l alist) (tf (or test #'equal)) (done nil))
@@ -1912,20 +1877,20 @@ nothing."
         (let* ((rev (reverse args)) (lst (car rev)) (rest (reverse (cdr rev))))
           (append rest lst))
       (car args))))
-(unless (fboundp 'cl-remove)
-  (defun cl-remove (item seq &rest _)
-    (cl-remove-if (lambda (x) (eql x item)) (nelisp-seq--to-list seq))))
-(unless (fboundp 'cl-delete) (defun cl-delete (item seq &rest _) (cl-remove item seq)))
-(unless (fboundp 'cl-remove-if-not)
-  (defun cl-remove-if-not (pred seq) (cl-remove-if (lambda (x) (not (funcall pred x))) seq)))
-(unless (fboundp 'cl-count)
-  (defun cl-count (item seq &rest _)
-    (let ((n 0)) (dolist (x (nelisp-seq--to-list seq) n) (when (eql x item) (setq n (1+ n)))))))
-(unless (fboundp 'cl-assoc) (defun cl-assoc (key alist &rest _) (assoc key alist)))
-(unless (fboundp 'cl-sort) (defun cl-sort (seq pred &rest _) (sort (nelisp-seq--to-list seq) pred)))
-(unless (fboundp 'cl-remove-duplicates)
-  (defun cl-remove-duplicates (seq &rest _)
-    (let ((acc nil)) (dolist (x (nelisp-seq--to-list seq) (nreverse acc)) (unless (member x acc) (push x acc))))))
+;; Doc segI (vendor-emacs-lisp): this WAVE-2 block used to also define
+;; `cl-remove'/`cl-delete'/`cl-remove-if-not'/`cl-count'/`cl-assoc'/
+;; `cl-sort'/`cl-remove-duplicates' here, each `(unless (fboundp ...))'
+;; guarded and each ignoring every keyword (`:test'/`:test-not'/`:key'/
+;; `:from-end') real Emacs's cl-seq.el honours -- `cl-assoc' used `equal'
+;; instead of cl-seq's default `eql', so `(cl-assoc 1.0 '((1 . a)))'
+;; wrongly matched.  Deleted: this is the exact class of defect this
+;; segment exists to end, a guarded stub is not an exception to it (a
+;; caller of the bare prelude that never `require's `cl-seq' would still
+;; get the wrong, silent answer from these, same as an unconditional one
+;; would), and vendor/emacs-lisp/emacs-lisp/cl-seq.el defines all seven
+;; correctly.  `nelisp-standalone--reader-repl-prelude-source' already
+;; `require's `cl-seq' once, after `load-path' gains `vendor/emacs-lisp',
+;; for every process built from this prelude, so no fallback belongs here.
 ;; An EMPTY sequence reaches `min' through `apply', and Emacs reports the
 ;; subr object there rather than the symbol: (seq-min []) is
 ;; (wrong-number-of-arguments #<subr min> 0).  Signalling here rather than
