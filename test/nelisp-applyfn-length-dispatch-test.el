@@ -76,5 +76,24 @@
                                       (non-ascii) 99)
                                 99))))))))))
 
+(ert-deftest nelisp-applyfn-bytecode-finalizes-after-the-instruction-loop ()
+  "The byte-code VM finalizes once, after its instruction loop exits.
+Keeping the finalizer in the `while' body makes the general VM report an
+error immediately after its first otherwise-successful instruction."
+  (let* ((definition
+          (cl-find-if
+           (lambda (form)
+             (and (eq (car-safe form) 'defun)
+                  (eq (cadr form) 'wf_bytecode)))
+           nelisp-standalone--applyfn-bytecode-helpers))
+         (outer-let (nth 3 definition))
+         (body-seq (nth 2 outer-let))
+         (forms (cdr body-seq))
+         (instruction-loop (nth 1 forms)))
+    (should (equal (mapcar #'car-safe forms) '(if while if)))
+    (should (eq (car instruction-loop) 'while))
+    (should (= (length instruction-loop) 3))
+    (should (eq (car-safe (nth 2 instruction-loop)) 'let*))))
+
 (provide 'nelisp-applyfn-length-dispatch-test)
 ;;; nelisp-applyfn-length-dispatch-test.el ends here

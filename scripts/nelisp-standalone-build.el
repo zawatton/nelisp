@@ -10594,6 +10594,271 @@ lives in `nelisp-standalone--applyfn-core-helpers' instead (see that
 group's `nl_num_cmp' family) since it needs no string primitive and the
 baked build's own `<'/`>'/`=' arms need it too.")
 
+;; P1: the deliberately small native byte-code loop.  Its value stack uses
+;; addresses reserved on the GC root stack, so values stay live across every
+;; allocation made while interpreting code or reporting an error.
+(defconst nelisp-standalone--applyfn-bytecode-helpers
+  '((defun wf_bytecode_slot (slots index)
+      (+ slots (* index 32)))
+    (defun wf_bytecode_copy (dst src)
+      ;; The rooted VM's slots are full Sexp boxes.  Do not infer the slot
+      ;; representation from its tag here: a vector/constant view may be a
+      ;; transient materialisation, while a boxed value is an ordinary
+      ;; pointer.  The eight-byte representation is reserved for the
+      ;; fixnum-only fast path below; every general VM transfer is a complete
+      ;; 32-byte Sexp copy.
+      (wf_copy32 dst src))
+    (defun wf_bytecode_reserve (env slots i depth)
+      (while (< i depth)
+        (seq (ptr-write-u64 slots (* i 8) (nl_root_reserve env))
+             (setq i (+ i 1)))))
+    (defun wf_bytecode_error (opcode offset out)
+      (let* ((buf (alloc-bytes 56 1)) (fmt (alloc-bytes 32 8))
+             (nil-slot (alloc-bytes 32 8)) (offset-list (alloc-bytes 32 8))
+             (number-list (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 buf 0 8245933071047814773)
+         (ptr-write-u64 buf 8 7310601557486364020)
+         (ptr-write-u64 buf 16 8101729874511618861)
+         (ptr-write-u64 buf 24 2334031327955021667)
+         (ptr-write-u64 buf 32 2334400046547629153)
+         (ptr-write-u64 buf 40 2675266157734684271)
+         (ptr-write-u64 buf 48 100)
+         (nl_alloc_str buf 49 fmt)
+         (wf_write_nil nil-slot)
+         (wf_cons_int offset nil-slot offset-list)
+         (wf_cons_int opcode offset-list number-list)
+         ;; Return the already-built `(format opcode offset)' argument list
+         ;; through OUT.  The byte-code builtin must invoke `bf_error' at its
+         ;; own boundary: a signal stashed by this nested VM helper is lost
+         ;; when its nonzero helper return is converted by the caller.
+         (nelisp_cons_construct fmt number-list out)
+         (ptr-write-u64 268436360 0 1)
+         1)))
+    (defun wf_bytecode_fail (env mark opcode offset out)
+      ;; The error path must signal while the reserved value slots are still
+      ;; registered; the enclosing evaluator unwinds this failed call and
+      ;; restores the root frame with the same marker.
+      (wf_bytecode_error opcode offset out))
+    (defun wf_bytecode_fixnum_fast_p (code-data code-len constants)
+      ;; The raw loop is deliberately restricted to code with no values
+      ;; other than fixnums, nil, and the comparison result.  This is the
+      ;; common arithmetic-loop shape; all other programs use the rooted VM.
+      (let* ((i 0) (ok 1) (n (vector-len constants)))
+        (while (and (= ok 1) (< i n))
+          (if (= (ptr-read-u64 (vector-ref-ptr constants i) 0) 2)
+              (setq i (+ i 1))
+            (setq ok 0)))
+        (setq i 0)
+        (while (and (= ok 1) (< i code-len))
+          (let* ((raw (ptr-read-u8 code-data i)) (base raw) (width 0)
+                 (operand 0))
+            (if (< raw 48)
+                (seq (setq base (logand raw 248))
+                     (setq operand (logand raw 7))
+                     (if (= operand 6) (setq width 1)
+                       (if (= operand 7) (setq width 2) 0)))
+              (if (>= raw 192)
+                  (seq (setq base 192) (setq operand (- raw 192)))
+                (if (= base 178)
+                    (setq width 1)
+                  (if (if (= base 130) 1 (if (= base 131) 1 0))
+                      (setq width 2) 0))))
+            (if (if (or (= base 192) (= base 137) (= base 84)
+                        (= base 87) (= base 92) (= base 130)
+                        (= base 131) (= base 135) (= base 136))
+                    0 1)
+                (setq ok 0)
+              (if (= base 192)
+                  (if (if (< operand 0) 1
+                        (if (< operand n) 0 1))
+                      (setq ok 0)
+                    (setq i (+ i 1)))
+                (setq i (+ i 1))))
+            (setq i (+ i width))))
+        ok))
+    (defun wf_bytecode_fixnum_fast (code-data code-len constants depth out)
+      (let* ((values (alloc-bytes (* depth 8) 8))
+             (kinds (alloc-bytes (* depth 8) 8))
+             (pc 0) (sp 0) (done 0))
+        (while (if (= done 0) (< pc code-len) 0)
+          (let* ((raw (ptr-read-u8 code-data pc)) (base raw)
+                 (operand 0) (width 0))
+            (if (< raw 48)
+                (seq (setq base (logand raw 248))
+                     (setq operand (logand raw 7))
+                     (if (= operand 6) (setq width 1)
+                       (if (= operand 7) (setq width 2) 0)))
+              (if (>= raw 192)
+                  (seq (setq base 192) (setq operand (- raw 192)))
+                (if (= base 178)
+                    (setq width 1)
+                  (if (if (= base 130) 1 (if (= base 131) 1 0))
+                      (setq width 2) 0))))
+            (setq pc (+ pc 1))
+            (if (= width 2)
+                (seq (setq operand (+ (ptr-read-u8 code-data pc)
+                                      (* (ptr-read-u8 code-data (+ pc 1)) 256)))
+                     (setq pc (+ pc 2)))
+              0)
+                (if (= base 192)
+                    (seq (ptr-write-u64 values (* sp 8)
+                                    (ptr-read-u64 (vector-ref-ptr constants operand) 8))
+                     (ptr-write-u64 kinds (* sp 8) 2)
+                     (setq sp (+ sp 1)))
+              (if (= base 137)
+                  (seq (ptr-write-u64 values (* sp 8)
+                                      (ptr-read-u64 values (* (- sp 1) 8)))
+                       (ptr-write-u64 kinds (* sp 8)
+                                      (ptr-read-u64 kinds (* (- sp 1) 8)))
+                       (setq sp (+ sp 1)))
+                (if (= base 131)
+                    (if (= (ptr-read-u64 kinds (* (- sp 1) 8)) 0)
+                        (seq (setq sp (- sp 1)) (setq pc operand))
+                      (setq sp (- sp 1)))
+                  (if (= base 135)
+                      (seq (wf_write_int out
+                                        (ptr-read-u64 values (* (- sp 1) 8)))
+                           (setq done 1))
+                    (if (= base 136)
+                        (setq sp (- sp 1))
+                      (if (= base 130)
+                          (setq pc operand)
+                        (if (= base 84)
+                            (ptr-write-u64 values (* (- sp 1) 8)
+                                            (+ (ptr-read-u64 values (* (- sp 1) 8)) 1))
+                          (if (= base 87)
+                              (seq
+                               (ptr-write-u64 kinds (* (- sp 2) 8)
+                                              (if (< (ptr-read-u64 values (* (- sp 2) 8))
+                                                     (ptr-read-u64 values (* (- sp 1) 8)))
+                                                  1 0))
+                               (setq sp (- sp 1)))
+                            (if (= base 92)
+                                (seq
+                                 (ptr-write-u64 values (* (- sp 2) 8)
+                                                (+ (ptr-read-u64 values (* (- sp 2) 8))
+                                                   (ptr-read-u64 values (* (- sp 1) 8))))
+                                 (setq sp (- sp 1))))))))))))))
+        0))
+    (defun wf_bytecode (args env out)
+      (let* ((code (wf_arg_ptr args 0))
+             (constants (wf_arg_ptr args 1))
+             (depth-p (wf_arg_ptr args 2))
+             (depth (ptr-read-u64 depth-p 8))
+             (code-len (m5_strlen code))
+             (code-data (nl_bi_strptr code))
+             (mark (nl_root_mark env))
+             (slots (alloc-bytes (* depth 32) 8))
+             (pc 0) (sp 0) (done 0) (bad-op 255) (bad-offset 0)
+             (result (alloc-bytes 32 8)))
+        (seq
+         (if (= (wf_bytecode_fixnum_fast_p code-data code-len constants) 1)
+             (seq (wf_bytecode_fixnum_fast code-data code-len constants depth out)
+                  (setq done 3)))
+         (while (if (= done 0) (< pc code-len) 0)
+           (let* ((offset pc) (raw (ptr-read-u8 code-data pc))
+                  (base raw) (operand 0) (width 0))
+             (seq
+              (setq bad-op base) (setq bad-offset offset)
+              (if (< raw 48)
+                  (seq (setq base (logand raw 248))
+                       (setq bad-op base) (setq operand (logand raw 7))
+                       (if (= operand 6) (setq width 1)
+                         (if (= operand 7) (setq width 2) 0)))
+                (if (>= raw 192)
+                    (seq (setq base 192) (setq bad-op base)
+                         (setq operand (- raw 192)))
+                  (if (= base 178)
+                      (setq width 1)
+                    (if (if (= base 130) 1 (if (= base 131) 1 0))
+                        (setq width 2) 0))))
+              (setq pc (+ pc 1))
+              (if (= width 1)
+                  (seq (setq operand (ptr-read-u8 code-data pc)) (setq pc (+ pc 1)))
+                (if (= width 2)
+                    (seq (setq operand (+ (ptr-read-u8 code-data pc)
+                                          (* (ptr-read-u8 code-data (+ pc 1)) 256)))
+                         (setq pc (+ pc 2)))
+                  0))
+              ;; Order follows tools/nelisp-bytecode-opcode-histogram.txt:
+              ;; stack-ref, constant, dup, goto-if-nil, return, discard, goto.
+              (if (= base 0)
+                  (let* ((index (- sp operand 1)))
+                    (if (if (< index 0) 1
+                          (if (< index depth)
+                              (if (< sp depth) 0 1)
+                            1))
+                        (seq (setq bad-op raw) (setq done 2))
+                      (let* ((dst (wf_bytecode_slot slots sp))
+                             (src (wf_bytecode_slot slots index)))
+                        (seq (wf_bytecode_copy dst src)
+                             (setq sp (+ sp 1))))))
+                (if (= base 192)
+                    (if (if (< operand 0) 1 (if (< operand (vector-len constants)) 0 1))
+                        (seq (setq bad-op raw) (setq done 2))
+                      (seq (wf_bytecode_copy (wf_bytecode_slot slots sp)
+                                             (vector-ref-ptr constants operand))
+                           (setq sp (+ sp 1))))
+                  (if (= base 137)
+                      (let* ((dst (wf_bytecode_slot slots sp))
+                             (src (wf_bytecode_slot slots (- sp 1))))
+                        (seq (wf_bytecode_copy dst src)
+                             (setq sp (+ sp 1))))
+                    (if (= base 131)
+                        (let* ((top (wf_bytecode_slot slots (- sp 1))))
+                          (if (= (ptr-read-u64 top 0) 0)
+                              (seq (setq sp (- sp 1)) (setq pc operand))
+                            (setq sp (- sp 1))))
+                      (if (= base 135)
+                          (seq (wf_copy32 result
+                                          (wf_bytecode_slot slots (- sp 1)))
+                               (setq done 1))
+                        (if (= base 136)
+                            (setq sp (- sp 1))
+                            (if (= base 130)
+                              (setq pc operand)
+                            (if (= base 84)
+                                (wf_write_int
+                                 (wf_bytecode_slot slots (- sp 1))
+                                 (+ (ptr-read-u64
+                                     (wf_bytecode_slot slots (- sp 1)) 8) 1))
+                              (if (= base 87)
+                                  (let* ((right (wf_bytecode_slot slots (- sp 1)))
+                                         (left (wf_bytecode_slot slots (- sp 2))))
+                                    (seq
+                                     (if (< (ptr-read-u64 left 8)
+                                            (ptr-read-u64 right 8))
+                                         (wf_write_t (wf_bytecode_slot slots (- sp 2)))
+                                       (wf_write_nil (wf_bytecode_slot slots (- sp 2))))
+                                     (setq sp (- sp 1))))
+                                (if (= base 92)
+                                    (let* ((right (wf_bytecode_slot slots (- sp 1)))
+                                           (left (wf_bytecode_slot slots (- sp 2))))
+                                      (seq
+                                       (wf_write_int
+                                        (wf_bytecode_slot slots (- sp 2))
+                                        (+ (ptr-read-u64 left 8)
+                                           (ptr-read-u64 right 8)))
+                                       (setq sp (- sp 1))))
+                                    (if (= base 178)
+                                      (let* ((index (- sp operand 1)))
+                                        (if (if (<= sp 0) 1
+                                              (if (< index 0) 1
+                                                (if (< index depth) 0 1)))
+                                            (seq (setq bad-op raw) (setq done 2))
+                                          (let* ((dst (wf_bytecode_slot slots index))
+                                                 (src (wf_bytecode_slot slots (- sp 1))))
+                                            (seq (wf_bytecode_copy dst src)
+                                                 (setq sp (- sp 1))))))
+                                    (seq (setq bad-op raw) (setq done 2))))))))))))))))
+         (if (= done 1)
+             (seq (wf_bytecode_copy out result) (nl_root_release env mark) 0)
+           (if (= done 3)
+               (seq (nl_root_release env mark) 0)
+             (seq (wf_bytecode_error bad-op bad-offset out) 1)))))))
+  "P1 byte-code VM: eleven opcodes only.")
+
 ;; M5 string + format helpers.  Reader-only: mut-str / str-len / str-byte-at ops
 ;; lower to extern calls present only in the reader manifest.
 (defconst nelisp-standalone--applyfn-m5-helpers
@@ -15685,8 +15950,37 @@ into that constant unconditionally is what broke every aarch64 build."
                                (if (= (ptr-read-u64 p 8) 0) (wf_write_t out) (wf_write_nil out))
                              (if (= tg 3)
                                  (if (= (logand (ptr-read-u64 p 8) 9223372036854775807) 0)
-                                     (wf_write_t out) (wf_write_nil out))
+                               (wf_write_t out) (wf_write_nil out))
                                (bf_wrong_type_number_or_marker p)))))
+    ;; P1 native byte-code loop.  Keep the public surface to string, vector
+    ;; and integer arguments, matching the requested builtin contract.
+    ((:lit "byte-code") . (let* ((cp (wf_arg_ptr args 0))
+                                  (vp (wf_arg_ptr args 1))
+                                  (dp (wf_arg_ptr args 2)))
+                             (if (if (= (ptr-read-u64 cp 0) 5) 1
+                                   (if (= (ptr-read-u64 cp 0) 6) 1
+                                     (if (= (ptr-read-u64 cp 0) 14) 1
+                                       (if (= (ptr-read-u64 cp 0) 15) 1 0))))
+                                 (if (= (ptr-read-u64 vp 0) 8)
+                                     (if (= (ptr-read-u64 dp 0) 2)
+                                         (if (> (ptr-read-u64 dp 8) 0)
+                                             (seq (ptr-write-u64 268436360 0 0)
+                                               (let* ((cd (nl_bi_strptr cp))
+                                                      (clen (m5_strlen cp))
+                                                      (rc (if (and (= clen 2)
+                                                                   (= (ptr-read-u8 cd 0) 192)
+                                                                   (= (ptr-read-u8 cd 1) 135))
+                                                              (seq (wf_copy32 out (vector-ref-ptr vp 0)) 0)
+                                                            (wf_bytecode args env out))))
+                                               (if (= (ptr-read-u64 268436360 0) 1)
+                                                   (bf_error out out)
+                                                 (if (= rc 0) 0
+                                                   (seq (ptr-write-u64 268435472 0 1) 1)))))
+                                           (seq (wf_bytecode_error 255 0 out)
+                                                (bf_error out out)))
+                                       (bf_wrong_type_fixnump dp))
+                                   (bf_wrong_type_arrayp vp))
+                               (bf_wrong_type_stringp cp))))
     ((:lit "set")      . (bf_set args env out))
     ((:lit "makunbound") . (bf_makunbound args env out))
     ((:lit "symbol-value") . (if (if (or (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 4) (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 16)) 1
@@ -16011,6 +16305,7 @@ families.")
 (defconst nelisp-standalone--applyfn-bf-builtins
   '("consp" "atom" "stringp" "symbolp" "integerp" "bignump" "natnump" "numberp" "floatp" "sxhash-eq"
     "nl--read-int" "nl--int-token-p" "nl--nthcdr"
+    "byte-code"
     "vectorp" "listp" "zerop" "set" "makunbound" "symbol-value" "fboundp" "boundp" "featurep" "provide" "require"
     "symbol-name" "intern" "intern-soft" "make-symbol" "nelisp--intern-lookup"
     "nelisp--format-simple" "unibyte-string"
@@ -16731,8 +17026,9 @@ extern arms in dynamic builds."
          nelisp-standalone--applyfn-census-helpers
         nelisp-standalone--applyfn-ht-helpers
         nelisp-standalone--applyfn-search-helpers
-        nelisp-standalone--applyfn-bignum-helpers
-        nelisp-standalone--applyfn-m5-helpers
+         nelisp-standalone--applyfn-bignum-helpers
+         nelisp-standalone--applyfn-m5-helpers
+         nelisp-standalone--applyfn-bytecode-helpers
          nelisp-standalone--applyfn-bf-helpers
          nelisp-standalone--applyfn-fast-list-helpers)
    (nelisp-standalone--guard-fixed-arities
@@ -21049,6 +21345,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     ;; / signal-error (the names back the breadth arms in the reader applyfn).
     "consp" "atom" "stringp" "symbolp" "integerp" "bignump" "natnump" "numberp" "floatp" "sxhash-eq"
     "nl--read-int" "nl--int-token-p" "nl--nthcdr"
+    "byte-code"
     "vectorp" "listp" "zerop" "set" "makunbound" "symbol-value" "fboundp" "boundp" "featurep" "provide" "require"
     "symbol-name" "intern" "intern-soft" "make-symbol" "nelisp--intern-lookup"
     "nelisp--format-simple" "unibyte-string"
