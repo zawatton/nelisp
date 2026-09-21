@@ -630,6 +630,110 @@ or signals otherwise.  Replaces the deleted Rust `bi_require'."
           (signal 'error (list (format "Required feature `%s' was not provided"
                                        feature))))))))
 
+;; Doc segI (vendor-emacs-lisp), Phase 2: mirror of the same block in
+;; scripts/nelisp-stdlib-prelude.el.  This is the load-time plumbing the
+;; four vendored Emacs files (vendor/emacs-lisp/{emacs-lisp/subr-x.el,
+;; emacs-lisp/rx.el,emacs-lisp/cl-seq.el,calendar/time-date.el}) need to
+;; `load' at all, measured by trying to load each real file and adding
+;; exactly the name its first failure named, one at a time, until it
+;; loaded -- not a general byte-run.el/lread.c reimplementation.  Each is
+;; guarded so a runtime that already has the real thing keeps it.
+(unless (fboundp 'make-obsolete)
+  (defun make-obsolete (obsolete-name current-name &optional when)
+    "NeLisp standalone stub for Emacs's `make-obsolete'.
+Records CURRENT-NAME/WHEN on OBSOLETE-NAME's `byte-obsolete-info'
+property, matching real Emacs bookkeeping, but installs no compile-time
+or runtime obsolescence warning -- this runtime does not warn."
+    (put obsolete-name 'byte-obsolete-info (list current-name nil when))
+    obsolete-name))
+
+(unless (fboundp 'make-obsolete-variable)
+  (defun make-obsolete-variable (obsolete-name current-name &optional when access-type)
+    "NeLisp standalone stub for Emacs's `make-obsolete-variable'.
+Records bookkeeping on OBSOLETE-NAME's `byte-obsolete-variable'
+property; installs no warning."
+    (put obsolete-name 'byte-obsolete-variable (list current-name when access-type))
+    obsolete-name))
+
+(unless (fboundp 'define-obsolete-function-alias)
+  (defmacro define-obsolete-function-alias (obsolete-name current-name &optional when docstring)
+    "NeLisp standalone stub for Emacs's `define-obsolete-function-alias'.
+Defines OBSOLETE-NAME as a real `defalias' for CURRENT-NAME so callers
+of the old name keep working, and records obsolescence via
+`make-obsolete'; installs no compile-time warning."
+    `(prog1 (defalias ,obsolete-name ,current-name ,docstring)
+       (make-obsolete ,obsolete-name ,current-name ,when))))
+
+(unless (fboundp 'define-obsolete-variable-alias)
+  (defmacro define-obsolete-variable-alias (obsolete-name current-name &optional when docstring)
+    "NeLisp standalone stub for Emacs's `define-obsolete-variable-alias'.
+Defines OBSOLETE-NAME as a real `defvaralias' for CURRENT-NAME and
+records obsolescence via `make-obsolete-variable'; installs no warning."
+    `(prog1 (defvaralias ,obsolete-name ,current-name ,docstring)
+       (make-obsolete-variable ,obsolete-name ,current-name ,when))))
+
+(unless (fboundp 'autoload)
+  (defun autoload (function file &optional docstring interactive type)
+    "NeLisp standalone stub for Emacs's `autoload'.
+Real Emacs defers FUNCTION's definition until first call, then loads
+FILE.  This runtime does not implement on-demand loading: if FUNCTION
+is not already bound, this binds it to a closure that signals a clear
+error naming FILE if it is ever actually called, so a forward
+reference some other, unloaded file was going to satisfy fails loudly
+instead of silently doing nothing.  Vendored top-level `autoload'
+calls are almost always forward references to sibling files this
+segment does not load, so this is safe as a load-time no-op."
+    (ignore docstring interactive type)
+    (unless (fboundp function)
+      (fset function
+            (lambda (&rest _args)
+              (error "`%s' is autoloaded from %S, which the standalone runtime does not load on demand"
+                     function file))))
+    function))
+
+(unless (fboundp 'pcase-defmacro)
+  (defmacro pcase-defmacro (name args &rest body)
+    "NeLisp standalone stub for Emacs's `pcase-defmacro'.
+This is Emacs's own implementation verbatim: it registers NAME as a
+new pcase pattern by putting a macroexpander function on its
+`pcase-macroexpander' property, which this runtime's own `pcase'
+dispatch already reads -- not an approximation."
+    (declare (indent 2) (doc-string 3))
+    `(eval-and-compile
+       (put ',name 'pcase-macroexpander (lambda ,args ,@body)))))
+
+(unless (fboundp 'cl-ldiff)
+  (defun cl-ldiff (list sublist)
+    "NeLisp standalone stub for cl-lib's `cl-ldiff'.
+This is Emacs's own implementation: a copy of LIST with the tail
+SUBLIST (compared by `eq') removed, not an approximation."
+    (let ((res nil))
+      (while (and (consp list) (not (eq list sublist)))
+        (push (pop list) res))
+      (nreverse res))))
+
+(unless (fboundp 'unibyte-char-to-multibyte)
+  (defun unibyte-char-to-multibyte (ch)
+    "NeLisp standalone stub for Emacs's C primitive `unibyte-char-to-multibyte'.
+Real Emacs maps a raw byte 0-255 to its multibyte counterpart: ASCII
+(< 128) unchanged, and 128-255 to the \"raw byte\" character range
+(#x3FFF80 and up) so it round-trips through `multibyte-char-to-unibyte'.
+This runtime does not maintain a separate unibyte/multibyte string
+representation, so CH already behaves as a plain character for ASCII;
+the >= 128 branch reproduces Emacs's raw-byte numbering for
+round-tripping, but nothing in this runtime currently decodes it back
+out to a byte, unlike real Emacs."
+    (if (< ch 128) ch (+ ch #x3FFF00))))
+
+(unless (fboundp 'fixnump)
+  (defun fixnump (object)
+    "NeLisp standalone stub for Emacs's C primitive `fixnump'.
+Real Emacs answers t for an immediate (non-bignum) integer.  This
+runtime has no bignum representation at all (see `bignump', already
+native here and always nil) -- every integer is what real Emacs would
+call a fixnum -- so this is exactly `integerp'."
+    (integerp object)))
+
 ;; Rust-min batch 6e (2026-05-06): alias-only dispatch arms reduced
 ;; to `defalias'.  Each pair below previously routed through a
 ;; single Rust impl via `"foo" | "bar" => bi_<...>(args)' — the
@@ -2135,6 +2239,19 @@ plain variable (it goes through `setq')."
       (list 'aset (cadr place) (caddr place) val))
      ((and (consp place) (eq (car place) 'nth))
       (list 'setcar (list 'nthcdr (cadr place) (caddr place)) val))
+     ;; Doc segI: `(setf (elt SEQ N) VAL)' is Emacs's `elt' generalized
+     ;; place (gv.el: `(if (listp seq) (setcar (nthcdr n seq) val) (aset
+     ;; seq n val))'), needed once vendored `cl-seq.el' loads for real --
+     ;; `cl-substitute'/`cl-nsubstitute' assign through it.  SEQ/N are
+     ;; evaluated once each into temporaries so a place with side effects
+     ;; (an accessor call, not just a variable) is not evaluated twice.
+     ((and (consp place) (eq (car place) 'elt))
+      (let ((seq-sym (make-symbol "setf-elt-seq"))
+            (n-sym (make-symbol "setf-elt-n")))
+        (list 'let (list (list seq-sym (cadr place)) (list n-sym (caddr place)))
+              (list 'if (list 'listp seq-sym)
+                    (list 'setcar (list 'nthcdr n-sym seq-sym) val)
+                    (list 'aset seq-sym n-sym val)))))
      ((and (consp place) (eq (car place) 'get))
       (cons 'put (append (cdr place) (list val))))
      ((and (consp place) (eq (car place) 'gethash))
