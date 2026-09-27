@@ -20,13 +20,15 @@
 
 ;;; Code:
 
+(require 'emacs-process)
+
 (defvar emacs-man-program "man"
   "Program used to fetch manual pages.")
 
 (defvar emacs-man-width 80
   "Column width requested from man (via MANWIDTH).")
 
-(defvar emacs-man-shell "/bin/sh"
+(defvar emacs-man-shell (emacs-process-resolve-shell-file-name)
   "Shell used to run the man pipeline.")
 
 (defun emacs-man--sh-quote (string)

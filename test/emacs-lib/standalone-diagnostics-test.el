@@ -88,6 +88,37 @@
     (goto-char (match-beginning 0))
     (read (current-buffer))))
 
+(defun standalone-diagnostics-test--symbolic-link-capable-p ()
+  "Return non-nil when symbolic links can be created in a temp directory."
+  (let* ((real-dir (make-temp-file "standalone-diagnostics-real-" t))
+         (link-dir (make-temp-file "standalone-diagnostics-link-")))
+    (delete-file link-dir)
+    (unwind-protect
+        (condition-case nil
+            (progn
+              (make-symbolic-link real-dir link-dir)
+              t)
+          (file-error nil))
+      (when (file-exists-p link-dir)
+        (delete-file link-dir))
+      (when (file-directory-p real-dir)
+        (delete-directory real-dir t)))))
+
+(defun standalone-diagnostics-test--direct-script-exec-capable-p ()
+  "Return non-nil when a generated shell script is directly executable."
+  (let ((reader (make-temp-file "standalone-diagnostics-reader-" nil ".sh")))
+    (unwind-protect
+        (condition-case nil
+            (progn
+              (with-temp-file reader
+                (insert "#!/bin/sh\nexit 0\n"))
+              (set-file-modes reader #o755)
+              (call-process reader nil nil nil)
+              t)
+          (file-error nil))
+      (when (file-exists-p reader)
+        (delete-file reader)))))
+
 (ert-deftest standalone-diagnostics-test/profile-splits-bootstrap-sections ()
   (let ((sections
          (standalone-bootstrap-profile--sections
@@ -150,9 +181,14 @@
           (let ((program (with-temp-buffer
                            (insert-file-contents output)
                            (buffer-string))))
+            ;; The generated program carries expanded paths, so the
+            ;; expectation has to expand too: on Windows a rootless
+            ;; absolute path picks up the current drive.
             (should (string-match-p
                      (regexp-quote
-                      "(setq load-path '(\"/repo/src\" \"/repo/scripts\"")
+                      (format "(setq load-path '(%S %S"
+                              (expand-file-name "/repo/src")
+                              (expand-file-name "/repo/scripts")))
                      program))
             (should (string-match-p
                      (regexp-quote "(nelisp--eval-source-string")
@@ -627,8 +663,13 @@
 
 (ert-deftest standalone-diagnostics-test/vendor-load-files-splits-string ()
   (let ((vendor-load-standalone-files "/repo/a.el /repo/b.el"))
+    ;; The splitter promises absolute names, so the expectation has to go
+    ;; through the same expansion: on Windows a rootless absolute path
+    ;; picks up the current drive, and comparing against the literal
+    ;; would be asserting POSIX rather than the property under test.
     (should (equal (vendor-load-standalone--files)
-                   '("/repo/a.el" "/repo/b.el")))))
+                   (list (expand-file-name "/repo/a.el")
+                         (expand-file-name "/repo/b.el"))))))
 
 (ert-deftest standalone-diagnostics-test/vendor-load-shortens-selected-runtime-file-name ()
   (should (equal (vendor-load-standalone--runtime-file-name
@@ -874,6 +915,7 @@
         (delete-directory root t)))))
 
 (ert-deftest standalone-diagnostics-test/vendor-load-debug-program-is-kept ()
+  (skip-unless (standalone-diagnostics-test--direct-script-exec-capable-p))
   (let ((bootstrap (make-temp-file "vendor-load-bootstrap-" nil ".el"))
         (prelude (make-temp-file "vendor-load-prelude-" nil ".el"))
         (source (make-temp-file "vendor-load-source-" nil ".el"))
@@ -916,8 +958,10 @@
 
 (ert-deftest standalone-diagnostics-test/vendor-repl-files-splits-string ()
   (let ((vendor-repl-standalone-files "/repo/a.el /repo/b.el"))
+    ;; Absolute names come back expanded; see the load-side twin.
     (should (equal (vendor-repl-standalone--files)
-                   '("/repo/a.el" "/repo/b.el")))))
+                   (list (expand-file-name "/repo/a.el")
+                         (expand-file-name "/repo/b.el"))))))
 
 (ert-deftest standalone-diagnostics-test/vendor-repl-form-line-escapes-control-characters ()
   "Replay serialization keeps key control bytes on one physical line."
@@ -930,6 +974,7 @@
     (should (equal (standalone-source-normalize-read-source-form line) form))))
 
 (ert-deftest standalone-diagnostics-test/vendor-repl-files-canonicalize-symlinks ()
+  (skip-unless (standalone-diagnostics-test--symbolic-link-capable-p))
   (let* ((real-dir (make-temp-file "vendor-repl-real-" t))
          (link-dir (make-temp-file "vendor-repl-link-"))
          (real-file (expand-file-name "a.el" real-dir))
@@ -1448,6 +1493,7 @@
         (delete-directory root t)))))
 
 (ert-deftest standalone-diagnostics-test/vendor-repl-input-canonicalizes-repo-root ()
+  (skip-unless (standalone-diagnostics-test--symbolic-link-capable-p))
   (let* ((real-root (make-temp-file "vendor-repl-root-real-" t))
          (link-root (make-temp-file "vendor-repl-root-link-"))
          (bootstrap-repl (make-temp-file "vendor-repl-bootstrap-" nil ".repl"))

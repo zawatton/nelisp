@@ -23,13 +23,19 @@
 (defvar emacs-compile-buffer-name "*compilation*"
   "Buffer name used by `emacs-compile-run'.")
 
-(defvar emacs-compile-shell-program "/bin/sh"
+(defvar emacs-compile-shell-program (emacs-process-resolve-shell-file-name)
   "Shell used to run compile / grep command lines.")
 
 (defvar emacs-compile-error-regexp
-  "^\\([^ \t\n:]+\\):\\([0-9]+\\)\\(:\\([0-9]+\\)\\)?:"
+  "^\\([A-Za-z]:[^ \t\n:]+\\|[^ \t\n:]+\\):\\([0-9]+\\)\\(:\\([0-9]+\\)\\)?:"
   "Regexp matching a `FILE:LINE[:COL]:' diagnostic at the start of a line.
-Group 1 = file, 2 = line, 4 = optional column.  A plain capturing group
+Group 1 = file, 2 = line, 4 = optional column.  The first alternative
+admits a Windows drive letter, which is otherwise indistinguishable
+from the `FILE:' separator: without it `c:/dir/src.txt:3:' parses as
+file `c' followed by a line number of `/dir/src.txt', matches nothing,
+and every diagnostic on such a host is silently dropped.  The
+alternation carries no group of its own so the numbering below is
+unaffected.  A plain capturing group
 \(not a shy `\\(?:...\\)' group) wraps the column so the group numbering
 stays deterministic on the standalone reader, whose regexp engine
 miscounts shy groups as capturing.")

@@ -856,18 +856,19 @@ PROP are overwritten on this range; other properties are preserved."
         end (emacs-buffer--pos-number end))
   (unless (and (integerp start) (integerp end))
     (signal 'wrong-type-argument (list 'integerp start end)))
-  ;; Shared substrate policy: reject empty and reversed ranges so
-  ;; text-property bugs surface at the owner layer.  Callers that
-  ;; intentionally tolerate empty spans must guard before dispatch.
-  (when (>= start end)
+  ;; Doc 33 item 244: real Emacs treats an empty [START, END) range as
+  ;; a no-op for text-property mutation (Magit's washers routinely make
+  ;; START == END calls); only a reversed range signals.
+  (when (> start end)
     (signal 'nelisp-ec-args-out-of-range (list start end)))
-  (let* ((b (or buf (emacs-buffer--current)))
-         (ext (emacs-buffer--ensure-ext b)))
-    (setf (emacs-buffer--ext-text-props ext)
-          (emacs-buffer--tp-add (emacs-buffer--ext-text-props ext)
-                                start end (list prop value)))
-    (cl-incf (emacs-buffer--ext-modified-tick ext))
-    nil))
+  (unless (= start end)
+    (let* ((b (or buf (emacs-buffer--current)))
+           (ext (emacs-buffer--ensure-ext b)))
+      (setf (emacs-buffer--ext-text-props ext)
+            (emacs-buffer--tp-add (emacs-buffer--ext-text-props ext)
+                                  start end (list prop value)))
+      (cl-incf (emacs-buffer--ext-modified-tick ext))
+      nil)))
 
 ;;;###autoload
 (defun emacs-buffer-get-text-property (pos prop &optional buf)

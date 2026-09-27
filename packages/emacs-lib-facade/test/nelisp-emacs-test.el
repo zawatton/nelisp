@@ -3,6 +3,17 @@
 ;;; Code:
 
 (require 'ert)
+
+(defconst nelisp-emacs-test--preload-clean-p
+  (not (or (featurep 'emacs-init)
+           (featurep 'image-baker)
+           (featurep 'nemacs-main)
+           (featurep 'nemacs-gtk-frontend)
+           (featurep 'nemacs-editor-transport)
+           (featurep 'nemacs-gtk-view-menu)
+           (featurep 'nemacs-gui-file-bridge-runtime)))
+  "Non-nil when facade manifest smoke tests started in a fresh process.")
+
 (require 'nelisp-emacs)
 
 (defconst nelisp-emacs-test--forbidden-library-features
@@ -1077,6 +1088,7 @@
     (should (featurep feature))))
 
 (ert-deftest nelisp-emacs-test/library-package-manifest-is-coherent ()
+  (skip-unless nelisp-emacs-test--preload-clean-p)
   (let ((manifest (nelisp-emacs-library-package-manifest)))
     (should (equal (mapcar #'car manifest)
                    '(foundation
@@ -1329,6 +1341,7 @@
       (should (featurep feature)))))
 
 (ert-deftest nelisp-emacs-test/group-loader-manifests-stay-expected ()
+  (skip-unless nelisp-emacs-test--preload-clean-p)
   (should (equal emacs-foundation-features
                  '(emacs-fns
                    emacs-eval
@@ -1398,6 +1411,7 @@
                    emacs-help))))
 
 (ert-deftest nelisp-emacs-test/facade-manifest-stays-library-only ()
+  (skip-unless nelisp-emacs-test--preload-clean-p)
   (should (equal nelisp-emacs-library-features
                  '(emacs-foundation
                    emacs-text-core

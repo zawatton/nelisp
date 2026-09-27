@@ -13,6 +13,12 @@ unit_for_path() {
     packages/nelisp-emacs-*|scripts/nemacs-library-app-scaffold.el|test/nelisp-emacs-test.el|docs/design/18-library-package-ownership-inventory.org)
       printf '%s' "package-scaffold"
       ;;
+    bin/nemacs|src/nemacs-main.el|src/emacs-fns.el|scripts/verify-nemacs-tui.sh|src/nemacs-loadup.el)
+      printf '%s' "production-launcher-tui"
+      ;;
+    src/emacs-fileio-gui.el|src/emacs-dired-min-gui.el|src/emacs-help-gui.el|src/emacs-info.el|src/emacs-special-buffers.el|src/emacs-toolbar.el|src/nemacs-gtk-view-menu.el|src/nemacs-gui-file-bridge-runtime.el|src/nemacs-init-transport.el)
+      printf '%s' "shared-gui-runtime-adapters"
+      ;;
     src/cl-lib.el|src/emacs-backquote.el|src/emacs-buffer-builtins.el|src/emacs-buffer-ui.el|src/emacs-buffer.el|src/emacs-button-builtins.el|src/emacs-cl-macros.el|src/emacs-easy-mmode.el|src/emacs-edit-builtins.el|src/emacs-eval.el|src/emacs-fns.el|src/emacs-foundation.el|src/emacs-keymap-builtins.el|src/emacs-keymap.el|src/emacs-minibuffer-builtins.el|src/emacs-mode-builtins.el|src/emacs-pcase.el|src/emacs-redisplay.el|src/emacs-stub.el|src/emacs-vars.el|src/emacs-window-builtins.el|src/emacs-window.el|src/nelisp-emacs-compat.el|src/nelisp-regex.el|src/nelisp-text-buffer.el|src/nemacs-gui-file-bridge-runtime.el|src/nemacs-ime-romaji.tsv|src/pp.el|src/subr-x.el|test/emacs-buffer-builtins-test.el|test/emacs-buffer-test.el|test/emacs-button-builtins-test.el|test/emacs-cl-macros-test.el|test/emacs-edit-builtins-test.el|test/emacs-minibuffer-builtins-test.el|test/emacs-mode-builtins-test.el|test/emacs-pcase-test.el|test/emacs-stub-residuals-test.el|test/emacs-window-builtins-test.el|test/nelisp-regex-test.el|test/nemacs-gui-file-bridge-runtime-test.el|docs/design/38-emacs-replacement-execution-plan.org|docs/design/39-emacs-replacement-verification-checklist.org)
       printf '%s' "runtime-editor-substrate"
       ;;
@@ -36,6 +42,12 @@ unit_for_path() {
       ;;
     scripts/__pycache__/probe-vendor-class-a-standalone.cpython-313.pyc)
       printf '%s' "generated-local-artifact"
+      ;;
+    apps/nemacs-next/scripts/*|apps/nemacs-next/fixtures/*)
+      printf '%s' "tests"
+      ;;
+    target/*|tmp-diag/*|src/*.elc.disabled-*|docs/worklog/*~)
+      printf '%s' "generated-or-local-artifact"
       ;;
     *)
       printf '%s' "UNCLASSIFIED"

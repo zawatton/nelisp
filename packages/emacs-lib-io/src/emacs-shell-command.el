@@ -30,6 +30,10 @@
 (defconst emacs-shell-command-async-buffer-name "*Async Shell Command*"
   "Default output buffer for asynchronous shell commands.")
 
+(defvar emacs-shell-command-shell-file-name
+  (emacs-process-resolve-shell-file-name)
+  "Shell program used by the GUI bridge shell-command helpers.")
+
 (defvar emacs-shell-command-last-async-process nil
   "Most recent process started by `async-shell-command'.")
 
@@ -350,7 +354,7 @@ UNAVAILABLE-TEXT is used when no process substrate is available."
              (not (equal command "")))
         (setq status
               (emacs-shell-command-gui--call-process
-               "/bin/sh" nil nil nil "-c"
+               emacs-shell-command-shell-file-name nil nil nil "-c"
                (concat "exec > " output-file " 2>&1\n"
                        command)))
       (setq status 127))
@@ -415,7 +419,7 @@ UNAVAILABLE-TEXT is used when no process substrate is available."
                  (not (equal command "")))
             (setq status
                   (emacs-shell-command-gui--call-process
-                   "/bin/sh" nil output-file nil "-c"
+                   emacs-shell-command-shell-file-name nil output-file nil "-c"
                    command))
           (setq status 127))
         (if (emacs-shell-command-gui--call-process-available-p)
@@ -462,7 +466,7 @@ UNAVAILABLE-TEXT is used when no process substrate is available."
              (not (equal command "")))
         (setq status
               (emacs-shell-command-gui--call-process
-               "/bin/sh" nil nil nil "-c"
+               emacs-shell-command-shell-file-name nil nil nil "-c"
                (concat "cd "
                        (emacs-shell-command-gui-shell-quote-argument
                         directory)
@@ -565,12 +569,19 @@ When ERASE-P is non-nil, erase first.  Return BUFFER."
 ERROR-BUFFER is currently accepted for interface parity but is not
 split from stdout in this MVP."
   (ignore error-buffer)
-  (call-process shell-file-name nil destination nil
+  ;; Use this module's resolved shell rather than the ambient
+  ;; `shell-file-name', as the three other call sites here already do.
+  ;; The ambient one is whatever the process was started with: under
+  ;; make on Windows the environment does not reach the recipe, SHELL is
+  ;; unset, and it lands on cmdproxy.exe, which returns 255 for a
+  ;; command whose real status is 7.
+  (call-process emacs-shell-command-shell-file-name nil destination nil
                 shell-command-switch command))
 
 (defun emacs-shell-command--call-shell-region (start end command destination)
   "Run COMMAND synchronously on region START..END into DESTINATION."
-  (call-process-region start end shell-file-name nil destination nil
+  (call-process-region start end emacs-shell-command-shell-file-name
+                       nil destination nil
                        shell-command-switch command))
 
 (defun emacs-shell-command--replace-region (start end text)

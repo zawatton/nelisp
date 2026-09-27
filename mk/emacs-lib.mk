@@ -723,7 +723,20 @@ NEMACS_LIBRARY_PACKAGE_GUI_BRIDGE_STANDALONE_SMOKE_SELECTOR ?= (or \
 	nemacs-gui-file-bridge-runtime-test/standalone-bridge-find-file-writeback-helper \
 	nemacs-gui-file-bridge-runtime-test/standalone-bridge-buffer-switch-writeback-helper \
 	nemacs-gui-file-bridge-runtime-test/standalone-bridge-bookmark-writeback-helper)
-TEST_FILES = $(wildcard test/*.el)
+# Only *-test.el are ERT files.  test/ also holds driver scripts
+# (nemacs-process-bidi-smoke.el, elprop-forms-auto.el) that define no
+# tests and are meant to be run on their own; loading them here aborted
+# the whole suite before a single test ran.
+# Windows Emacs derives `temporary-file-directory' from TEMP/TMP/TMPDIR.
+# This make does not pass the ambient environment into recipes, so with
+# all three unset Emacs falls back to the drive root and every test that
+# calls `make-temp-file' dies with permission-denied.  Export them here,
+# as the nelisp repo already does.
+export TMPDIR ?= /tmp
+export TEMP   ?= /tmp
+export TMP    ?= /tmp
+
+TEST_FILES = $(wildcard test/*-test.el)
 # Heavy integration ERTs spawn subprocesses and need NEMACS_NELISP_ROOT + a
 # built reader; they have dedicated targets (gate5/gate6/vendor-nelc-cache[-set])
 # and must stay out of the umbrella `make test'.
@@ -795,7 +808,8 @@ TEST_FAST_FILES = \
 	test/emacs-vc-test.el \
 	test/emacs-tier3-facades-test.el \
 	test/emacs-stub-nil-callable-predicates-test.el \
-	test/emacs-compile-test.el
+	test/emacs-compile-test.el \
+	test/nemacs-wrap-init-test.el
 
 .PHONY: compile test test-fast soak gate-nemacs-complete gate5 gate6 elprop vendor-nelc-cache vendor-nelc-cache-set test-redisplay-core-smoke proc-smoke test-nemacs-gui-bridge test-nemacs-gui-bridge-gate test-nemacs-gui-bridge-slow test-nemacs-gui-bridge-slow-profile nemacs-gui-bridge-profile-summary nemacs-gui-bridge-run-shape test-nemacs-gui-bridge-select test-nemacs-server-client nemacs-library-gate nemacs-library-contract nemacs-library-consumer-smoke nemacs-library-package-smoke nemacs-library-package-path-smoke nemacs-library-package-consumer-smoke nemacs-library-package-lazy-smoke nemacs-library-package-load-path nemacs-library-package-frontend-smoke nemacs-library-package-gui-bridge-smoke nemacs-library-package-gui-bridge-standalone-smoke nemacs-library-package-manifest nemacs-library-package-deps nemacs-library-package-descriptors nemacs-library-package-guide nemacs-library-package-api nemacs-library-package-catalog nemacs-library-compat-api-policy nemacs-library-api-promotion-queue nemacs-library-package-layout nemacs-library-package-scaffold nemacs-library-app-scaffold nemacs-library-app-boundary nemacs-library-package-app-require-guard nemacs-library-package-metadata nemacs-library-package-install-smoke nemacs-library-package-archive nemacs-library-package-archive-smoke nemacs-library-package-archive-checksum nemacs-library-package-archive-index nemacs-library-package-index-smoke nemacs-library-package-publication-policy nemacs-library-package-release-key-policy nemacs-library-package-signature-policy nemacs-library-package-signature-release-sign nemacs-library-package-signature-release-verify nemacs-library-package-signature-release nemacs-library-package-release-bundle-manifest nemacs-library-package-release-bundle-smoke nemacs-library-package-release-publication-policy nemacs-library-package-release-publication-policy-run nemacs-library-package-release-bundle nemacs-library-package-release-rehearsal-key nemacs-library-package-release-rehearsal nemacs-library-package-release-config-check nemacs-library-package-release-ready nemacs-library-package-release-from-config nemacs-library-package-dependency-publication-policy nemacs-library-package-lazy-metadata nemacs-library-package-vendor-lock nemacs-library-package-vendor-release-verify nemacs-library-package-verify nemacs-runtime-image-input-inventory nemacs-gui-keymap-coverage gui-bridge-runtime-inventory nemacs-stub-fallback-skip-inventory nemacs-dirty-review-units nemacs-library-boundary-report nemacs-public-api-inventory nemacs-ownership-coverage verify-production-runtime-path doctor build-nelisp-bootstrap bake-image bake-runtime-image bake-interactive-runtime-image bake-vendor-core-runtime-image bake-magit-runtime-image magit-load-smoke magit-bundle-diagnose magit-status-smoke magit-stage-workflow-smoke magit-transient-workflow-smoke magit-status-diagnose magit-status-live-diagnose org-mode-smoke org-workflow-smoke org-bundle-diagnose test-nelisp test-nelisp-runtime-image test-nelisp-interactive-runtime-image test-nelisp-vendor-core-runtime-image test-nelisp-ert test-nelisp-project-smoke test-nelisp-xref-imenu-smoke test-nelisp-help-smoke test-nelisp-dired-workflow-smoke test-nelisp-minibuffer-smoke test-nelisp-vc-workflow-smoke test-nelisp-shell-smoke test-nelisp-eshell-smoke test-nelisp-compile-smoke profile-nelisp-bootstrap diagnose-vendor-form-walk diagnose-vendor-load-replay diagnose-vendor-repl-replay diagnose-vendor-form-walk-fast diagnose-vendor-load-replay-fast diagnose-vendor-class-a diagnose-vendor-class-b diagnose-vendor-class-c diagnose-vendor-class-d diagnose-vendor-class-e verify-nemacs-daily-driver verify-nelisp-standalone verify-vendor verify-vendor-inventory verify-vendor-class-a verify-vendor-class-a-load verify-vendor-core bench demo demo-phase2 clean nelisp nelisp-rebuild nelisp-clean help
 
@@ -991,8 +1005,14 @@ help:
 	@echo "  VENDOR_FAST_PROOF_FORM_FILE=$(VENDOR_FAST_PROOF_FORM_FILE)  file containing fast REPL proof form"
 	@echo "  VENDOR_FAST_DETAIL_FORM=$(VENDOR_FAST_DETAIL_FORM)  fast REPL failure detail"
 
+# load-prefer-newer matters here: compiling a file loads its requires,
+# and without it a .elc left over from an earlier build wins over the
+# .el that has just been edited.  A function added to a module in this
+# run then reads as void to every module that requires it, and the
+# build fails on source that is perfectly correct.
 compile:
 	$(EMACS) -L src $(NELISP_LOAD_PATH) \
+		--eval '(setq load-prefer-newer t)' \
 		--eval '(setq native-comp-enable-subr-trampolines nil)' \
 		-f batch-byte-compile $(SRC_BYTE_COMPILE_FILES)
 	$(EMACS) -Q -L src -l src/generator.el \

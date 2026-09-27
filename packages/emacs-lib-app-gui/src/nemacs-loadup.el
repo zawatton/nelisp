@@ -40,6 +40,7 @@
 
 (require 'emacs-init)
 (require 'emacs-dump)
+(require 'nemacs-init-transport)
 
 ;;;; --- version + hook surface ----------------------------------------
 
@@ -99,6 +100,15 @@ then from real Emacs ~/.emacs.d versus XDG precedence.")
   (defvar initial-scratch-message
     ";; This buffer is for text that is not saved, and for Lisp evaluation.\n;; To create a file, visit it with C-x C-f and enter text in its buffer.\n\n"
     "Initial contents inserted into a newly-created *scratch* buffer."))
+
+(unless (boundp 'inhibit-startup-screen)
+  (defvar inhibit-startup-screen nil
+    "Compatibility gate for the startup splash screen.
+Non-nil suppresses it (Emacs's `-Q' implies this).  `nemacs-loadup' only
+declares the variable so the CLI/options-plist wiring in `bin/nemacs' and
+`nemacs-main' has a stable place to set it; the splash-screen owner that
+consults this variable is `emacs-startup-screen'
+(`emacs-startup-screen-use-p')."))
 
 (unless (boundp 'initial-major-mode)
   (defvar initial-major-mode 'lisp-interaction-mode
@@ -175,18 +185,34 @@ standalone evaluator aborts on flagless)."
 
 (defun nemacs-resolve-user-emacs-directory ()
   "Resolve the nemacs user init directory.
-`NEMACS_USER_EMACS_DIRECTORY' is a test/frontend-safe override.  Without it,
-follow real Emacs precedence: prefer ~/.emacs.d when it exists, otherwise XDG
-when it exists, otherwise default to ~/.emacs.d."
+`NEMACS_USER_EMACS_DIRECTORY' is a test/frontend-safe override.  Without
+it, and without a cached `nemacs-user-emacs-directory', prefer a
+~/.nemacs.d directory when one exists on disk: that is the historical M15
+GUI-bridge wrapped-init lane's directory (scripts/nemacs-wrap-init.el),
+previously hardcoded independently by the GUI launcher instead of going
+through this resolver.  Loader reconcile Phase 3 makes this resolver the
+single source every driver/launcher defers to instead: the GUI launcher,
+`bin/nemacs' (nelisp driver), and `bin/nemacs-server' now all either read
+~/.nemacs.d through this same precedence or explicitly set
+`NEMACS_USER_EMACS_DIRECTORY' when they need a different directory,
+instead of hardcoding their own directory constant.  Without a
+~/.nemacs.d directory, fall back to real Emacs precedence: ~/.emacs.d
+when it exists, otherwise XDG when it exists, otherwise default to
+~/.emacs.d."
   (or (nemacs--directory-with-slash
        (and (fboundp 'getenv) (getenv "NEMACS_USER_EMACS_DIRECTORY")))
       nemacs-user-emacs-directory
       (let* ((home (nemacs--home-directory))
+             (legacy-nemacs-dir (nemacs--directory-with-slash
+                                 (concat home "/.nemacs.d")))
              (dot-emacs-dir (nemacs--directory-with-slash
                              (concat home "/.emacs.d")))
              (legacy-dotfile (concat home "/.emacs"))
              (xdg-dir (nemacs--xdg-config-emacs-directory home)))
         (cond
+         ((and (fboundp 'file-directory-p)
+               (file-directory-p legacy-nemacs-dir))
+          legacy-nemacs-dir)
          ((and (fboundp 'file-directory-p)
                (file-directory-p dot-emacs-dir))
           dot-emacs-dir)
@@ -263,28 +289,88 @@ init.el is considered, so tests never fall through to the user's real home."
               (concat home "/.emacs.el")
               (concat home "/.emacs"))))))
 
+(defun nemacs--macro-less-runtime-p ()
+  "Return non-nil when the running driver may need pre-lowered init forms.
+Same standalone-vs-host guard used across `src/' (e.g. `emacs-fns.el'
+require polyfill, and this file's own `push' compat macro above): a
+real host Emacs macro-expands every user construct normally, so a raw
+`load' of early-init.el/init.el is always sufficient there.  The
+standalone NeLisp reader may not reliably macro-expand every construct
+a real third-party package uses (Doc reconcile plan §1), which is what
+`nemacs-wrap-init' host-side pre-lowering exists for (loader reconcile
+Phase 2)."
+  (or (fboundp 'nl-write-file)
+      (not (boundp 'emacs-version))
+      (not (stringp emacs-version))))
+
+(defun nemacs--init-wrapped-transport-path ()
+  "Return the wrapped-init transport path under `nemacs-user-emacs-directory'.
+`nemacs-wrap-init' (scripts/nemacs-wrap-init.el, run ahead of time under
+a full host Emacs) writes its OUT file here, plus the `-packages' /
+`-pkgs-lowered' companions `nemacs-init-transport-consume' also reads.
+`bin/nemacs' (nelisp driver) and `gui/bin/nemacs' now run the generator
+themselves ahead of dispatch (loader reconcile Phase 3); a standalone
+session with no such transport (host Emacs unavailable, or nothing to
+wrap) keeps consuming whatever is already present on disk, same as
+Phase 2."
+  (concat nemacs-user-emacs-directory "nemacs-init-wrapped"))
+
+(defun nemacs--load-user-init-via-transport ()
+  "Consume a pre-lowered wrapped-init transport when one is present.
+Returns non-nil when the transport was found and applied (whether
+freshly loaded this call or already applied for the same mtime by an
+earlier call in this process), so the caller should skip the raw
+`load' fallback; returns nil when there is no transport to consume
+\(no wrapper file, or the runtime lacks the primitives
+`nemacs-init-transport-consume' needs), so the caller should fall back
+to the Phase 1 raw-load lane unchanged."
+  (and (nemacs--macro-less-runtime-p)
+       (fboundp 'nemacs-init-transport-consume)
+       (let ((wrapper (nemacs--init-wrapped-transport-path)))
+         (nemacs-init-transport-consume wrapper (concat wrapper "-report")))))
+
 (defun nemacs-load-user-init-files ()
   "Load early-init.el, run the package slot, then load init.el.
 The loader is session-owned; frontend wrappers should delegate here instead
-of reimplementing init discovery."
+of reimplementing init discovery.
+
+Under the standalone macro-less runtime, a pre-lowered wrapped-init
+transport (written by `nemacs-wrap-init', scripts/nemacs-wrap-init.el)
+takes priority over the raw early-init.el/init.el `load' when one is
+present at `nemacs--init-wrapped-transport-path' -- this is the loader
+reconcile Phase 2 lane (`nemacs-init-transport-consume',
+src/nemacs-init-transport.el).  A real host Emacs, and a standalone
+session with no such transport, keep the Phase 1 raw-load path
+unchanged."
   (setq nemacs-user-emacs-directory (nemacs-resolve-user-emacs-directory))
   (when (boundp 'user-emacs-directory)
     (setq user-emacs-directory nemacs-user-emacs-directory))
   (unless (null init-file-user)
-    (let ((early (concat nemacs-user-emacs-directory "early-init.el"))
-          found-init)
-      (when (nemacs--init-file-readable-p early)
-        (nemacs--load-init-file early 'early-init))
-      (nemacs-activate-packages-at-startup)
-      (when (fboundp 'run-hooks)
-        (run-hooks 'nemacs-package-activation-hook))
+    (let* ((early (concat nemacs-user-emacs-directory "early-init.el"))
+           (early-readable (nemacs--init-file-readable-p early))
+           found-init)
       (catch 'done
         (dolist (path (nemacs-candidate-init-files))
           (when (nemacs--init-file-readable-p path)
             (setq found-init path)
             (throw 'done t))))
-      (when found-init
-        (nemacs--load-init-file found-init 'init))))
+      (if (nemacs--load-user-init-via-transport)
+          (progn
+            (when early-readable
+              (setq early-init-file early))
+            (when found-init
+              (setq user-init-file found-init))
+            (nemacs-activate-packages-at-startup)
+            (when (fboundp 'run-hooks)
+              (run-hooks 'nemacs-package-activation-hook)))
+        (progn
+          (when early-readable
+            (nemacs--load-init-file early 'early-init))
+          (nemacs-activate-packages-at-startup)
+          (when (fboundp 'run-hooks)
+            (run-hooks 'nemacs-package-activation-hook))
+          (when found-init
+            (nemacs--load-init-file found-init 'init))))))
   (setq nemacs-init-file-loaded t))
 
 (defun nemacs--apply-initial-major-mode ()
@@ -304,6 +390,18 @@ of reimplementing init discovery."
      ((fboundp 'emacs-mode-fundamental-mode)
       (emacs-mode-fundamental-mode)))))
 
+(defun nemacs--maybe-startup-screen ()
+  "Create and select the startup splash screen when its gate allows it.
+The splash owner is `emacs-startup-screen' (an editor-semantics module
+loaded by app entry points such as `nemacs-main'); when it is absent
+this step is a no-op.  `emacs-startup-screen-use-p' suppresses the
+splash for `inhibit-startup-screen' non-nil, a loaded user init file,
+or CLI file arguments.  Returns the splash buffer when selected."
+  (when (and (fboundp 'emacs-startup-screen-use-p)
+             (fboundp 'emacs-startup-screen-select)
+             (emacs-startup-screen-use-p))
+    (emacs-startup-screen-select)))
+
 (defun nemacs--report-banner (batch-p)
   "Emit the readiness banner.  No-op under BATCH-P."
   (unless batch-p
@@ -322,8 +420,11 @@ Steps:
   1. Load early-init.el when present.
   2. Run the package activation hook point.
   3. Load init.el when present.
-  4. Run `after-init-hook', create *scratch*, then run `nemacs-startup-hook'.
-  5. Mark `nemacs-initialized' = t.
+  4. Run `after-init-hook', create *scratch*.
+  5. Interactive only: show the startup splash screen when the
+     `emacs-startup-screen' gate allows it, then run
+     `nemacs-startup-hook'.
+  6. Mark `nemacs-initialized' = t.
 
 Returns the symbol `ready' on success."
   (when nemacs-initialized
@@ -342,6 +443,11 @@ Returns the symbol `ready' on success."
     (when (and buf (fboundp 'nelisp-ec-set-buffer))
       (nelisp-ec-set-buffer buf)))
   (nemacs--apply-initial-major-mode)
+  ;; Batch bootstraps never show the splash (Emacs `noninteractive'
+  ;; semantics); this also keeps every existing `(nemacs-init t)' caller
+  ;; on today's *scratch* initial buffer.
+  (unless batch-p
+    (nemacs--maybe-startup-screen))
   (when (fboundp 'run-hooks)
     (run-hooks 'nemacs-startup-hook))
   (setq nemacs-initialized t)

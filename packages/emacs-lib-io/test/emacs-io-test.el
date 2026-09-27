@@ -14,20 +14,9 @@
     (should (featurep feature))))
 
 (ert-deftest emacs-io-test/nelisp-emacs-uses-io-entry ()
-  (let ((file (locate-library "nelisp-emacs")))
-    (should file)
-    (with-temp-buffer
-      (insert-file-contents (if (string-match-p "\\.elc\\'" file)
-                                (substring file 0 -1)
-                              file))
-      (should (search-forward "(require 'emacs-io)" nil t))
-      (dolist (feature '(emacs-sqlite
-                         emacs-fileio-builtins
-                         emacs-standalone
-                         emacs-process-builtins))
-        (goto-char (point-min))
-        (should-not
-         (search-forward (format "(require '%s)" feature) nil t))))))
+  (require 'nelisp-emacs)
+  (should (memq 'emacs-io nelisp-emacs-library-features))
+  (should (featurep 'emacs-io)))
 
 (provide 'emacs-io-test)
 

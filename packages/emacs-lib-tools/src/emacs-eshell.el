@@ -23,6 +23,7 @@
 
 ;;; Code:
 
+(require 'emacs-process)
 (require 'emacs-comint)
 
 (defvar eshell-buffer-name "*eshell*"
@@ -31,7 +32,7 @@
 (defvar eshell-prompt-string "$ "
   "Prompt inserted before each input line.")
 
-(defvar eshell-file-name "/bin/sh"
+(defvar eshell-file-name (emacs-process-resolve-shell-file-name)
   "Shell used to run external (non-built-in) command lines.")
 
 (defvar eshell--cwd (make-hash-table :test 'equal)

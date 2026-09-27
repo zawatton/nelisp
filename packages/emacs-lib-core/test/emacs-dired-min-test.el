@@ -61,6 +61,17 @@
   "Return the current nelisp buffer as a list of lines."
   (split-string (emacs-dired-min-test--buffer-string) "\n" t))
 
+(defun emacs-dired-min-test--entry-line (marker name path)
+  "Return the line dired is expected to render for PATH.
+The mode string is read from the file rather than written out: it is
+not the same on every platform -- this host reports -rw-rw-rw- where a
+POSIX one reports -rw-rw-r-- -- and hardcoding either makes the suite
+pass on one platform and fail on the other."
+  (let ((attrs (file-attributes path)))
+    (format "%s%s\t%d\t%s" marker name
+            (file-attribute-size attrs)
+            (file-attribute-modes attrs))))
+
 (ert-deftest dired-mode-map-is-built-lazily-and-stable ()
   (let ((dired-mode-map nil))
     (should-not dired-mode-map)
@@ -201,8 +212,12 @@ dired-mode-map 'normal)'-shaped call inside it would not signal
               (should (cl-find-if (lambda (line)
                                     (string-prefix-p "  ..\t" line))
                                   lines))
-              (should (member "  alpha.txt\t5\t-rw-rw-r--" lines))
-              (should (member "  beta.txt\t4\t-rw-rw-r--" lines))
+              (should (member (emacs-dired-min-test--entry-line
+                               "  " "alpha.txt" (plist-get tree :file-a))
+                              lines))
+              (should (member (emacs-dired-min-test--entry-line
+                               "  " "beta.txt" (plist-get tree :file-b))
+                              lines))
               (should (cl-find-if (lambda (line)
                                     (string-prefix-p "  subdir\t" line))
                                   lines))))
@@ -300,7 +315,8 @@ dired-mode-map 'normal)'-shaped call inside it would not signal
                               (plist-get tree :subdir))
                              (plist-get (gethash buffer emacs-dired-min--state)
                                         :directory)))
-              (should (member "  nested.txt\t6\t-rw-rw-r--"
+              (should (member (emacs-dired-min-test--entry-line
+                               "  " "nested.txt" (plist-get tree :nested))
                               (emacs-dired-min-test--buffer-lines)))))
         (emacs-dired-min-test--cleanup-tree tree)))))
 
@@ -326,11 +342,16 @@ dired-mode-map 'normal)'-shaped call inside it would not signal
           (progn
             (setq new-file (expand-file-name "gamma.txt" (plist-get tree :root)))
             (dired (plist-get tree :root))
-            (should-not (member "  gamma.txt\t6\t-rw-rw-r--"
-                                (emacs-dired-min-test--buffer-lines)))
+            ;; The file does not exist yet, so there are no attributes to
+            ;; build an expected line from -- and the property under test
+            ;; is just that nothing names it before the rescan.
+            (should-not (cl-find-if
+                         (lambda (line) (string-match "gamma\\.txt" line))
+                         (emacs-dired-min-test--buffer-lines)))
             (emacs-dired-min-test--write-file new-file "gamma!")
             (emacs-dired-min-revert-buffer)
-            (should (member "  gamma.txt\t6\t-rw-rw-r--"
+            (should (member (emacs-dired-min-test--entry-line
+                             "  " "gamma.txt" new-file)
                             (emacs-dired-min-test--buffer-lines))))
         (emacs-dired-min-test--cleanup-tree tree)))))
 
@@ -387,7 +408,8 @@ dired-mode-map 'normal)'-shaped call inside it would not signal
             (emacs-dired-min-test--goto-entry "alpha.txt")
             (let ((start (nelisp-ec-point)))
               (dired-mark)
-              (should (member "* alpha.txt\t5\t-rw-rw-r--"
+              (should (member (emacs-dired-min-test--entry-line
+                               "* " "alpha.txt" (plist-get tree :file-a))
                               (emacs-dired-min-test--buffer-lines)))
               (should (> (nelisp-ec-point) start))
               (emacs-dired-min-test--goto-entry "alpha.txt")
@@ -407,11 +429,13 @@ dired-mode-map 'normal)'-shaped call inside it would not signal
             (dired (plist-get tree :root))
             (emacs-dired-min-test--goto-entry "alpha.txt")
             (dired-mark)
-            (should (member "* alpha.txt\t5\t-rw-rw-r--"
+            (should (member (emacs-dired-min-test--entry-line
+                             "* " "alpha.txt" (plist-get tree :file-a))
                             (emacs-dired-min-test--buffer-lines)))
             (emacs-dired-min-test--goto-entry "alpha.txt")
             (dired-unmark)
-            (should (member "  alpha.txt\t5\t-rw-rw-r--"
+            (should (member (emacs-dired-min-test--entry-line
+                             "  " "alpha.txt" (plist-get tree :file-a))
                             (emacs-dired-min-test--buffer-lines))))
         (emacs-dired-min-test--cleanup-tree tree)))))
 
@@ -423,7 +447,8 @@ dired-mode-map 'normal)'-shaped call inside it would not signal
             (dired (plist-get tree :root))
             (emacs-dired-min-test--goto-entry "beta.txt")
             (dired-flag-file-deletion)
-            (should (member "D beta.txt\t4\t-rw-rw-r--"
+            (should (member (emacs-dired-min-test--entry-line
+                             "D " "beta.txt" (plist-get tree :file-b))
                             (emacs-dired-min-test--buffer-lines)))
             (should (= 1 (dired-do-flagged-delete)))
             (should-not (cl-find-if
@@ -980,14 +1005,15 @@ dired-mode-map 'normal)'-shaped call inside it would not signal
             (dired (plist-get tree :root))
             (emacs-dired-min-test--goto-entry "alpha.txt")
             (dired-do-rename)
-            (should (member "  renamed.txt\t5\t-rw-rw-r--"
+            (let ((renamed (nelisp-ec-expand-file-name
+                            "renamed.txt" (plist-get tree :root))))
+              (should (member (emacs-dired-min-test--entry-line
+                               "  " "renamed.txt" renamed)
                             (emacs-dired-min-test--buffer-lines)))
-            (should-not (cl-find-if
-                         (lambda (line) (string-match-p "alpha\\.txt" line))
-                         (emacs-dired-min-test--buffer-lines)))
-            (should (nelisp-ec-file-attributes
-                     (nelisp-ec-expand-file-name
-                      "renamed.txt" (plist-get tree :root))))
+              (should-not (cl-find-if
+                           (lambda (line) (string-match-p "alpha\\.txt" line))
+                           (emacs-dired-min-test--buffer-lines)))
+              (should (nelisp-ec-file-attributes renamed)))
             (should-not (nelisp-ec-file-attributes (plist-get tree :file-a))))
         (emacs-dired-min-test--cleanup-tree tree)))))
 
@@ -1001,9 +1027,13 @@ dired-mode-map 'normal)'-shaped call inside it would not signal
             (emacs-dired-min-test--goto-entry "alpha.txt")
             (dired-do-copy)
             ;; both the original and the copy are present
-            (should (member "  alpha.txt\t5\t-rw-rw-r--"
+            (should (member (emacs-dired-min-test--entry-line
+                             "  " "alpha.txt" (plist-get tree :file-a))
                             (emacs-dired-min-test--buffer-lines)))
-            (should (member "  alpha-copy.txt\t5\t-rw-rw-r--"
+            (should (member (emacs-dired-min-test--entry-line
+                             "  " "alpha-copy.txt"
+                             (nelisp-ec-expand-file-name
+                              "alpha-copy.txt" (plist-get tree :root)))
                             (emacs-dired-min-test--buffer-lines)))
             (should (nelisp-ec-file-attributes (plist-get tree :file-a))))
         (emacs-dired-min-test--cleanup-tree tree)))))

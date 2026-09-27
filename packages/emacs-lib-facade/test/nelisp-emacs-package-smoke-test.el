@@ -56,9 +56,9 @@
 (defun nelisp-emacs-package-smoke-test--feature ()
   "Return the package group feature requested by the batch target."
   (let ((name (getenv "NEMACS_LIBRARY_PACKAGE_SMOKE_FEATURE")))
-    (unless (and name (not (string= name "")))
-      (error "NEMACS_LIBRARY_PACKAGE_SMOKE_FEATURE is required"))
-    (intern name)))
+    (and name
+         (not (string= name ""))
+         (intern name))))
 
 (defun nelisp-emacs-package-smoke-test--loaded-file-p (basename)
   "Return the loaded path whose nondirectory name is BASENAME, or nil."
@@ -82,16 +82,19 @@
 
 (ert-deftest nelisp-emacs-package-smoke-test/require-package-group-from-src-only ()
   (let ((feature (nelisp-emacs-package-smoke-test--feature)))
+    (skip-unless feature)
     (require feature)
     (should (featurep feature))
     (dolist (member (nelisp-emacs-package-smoke-test--feature-manifest feature))
       (should (featurep member)))))
 
 (ert-deftest nelisp-emacs-package-smoke-test/package-group-does-not-load-app-or-frontends ()
-  (require (nelisp-emacs-package-smoke-test--feature))
-  (dolist (feature nelisp-emacs-package-smoke-test--forbidden-features)
-    (should-not (featurep feature)))
-  (dolist (file nelisp-emacs-package-smoke-test--forbidden-files)
-    (should-not (nelisp-emacs-package-smoke-test--loaded-file-p file))))
+  (let ((feature (nelisp-emacs-package-smoke-test--feature)))
+    (skip-unless feature)
+    (require feature)
+    (dolist (feature nelisp-emacs-package-smoke-test--forbidden-features)
+      (should-not (featurep feature)))
+    (dolist (file nelisp-emacs-package-smoke-test--forbidden-files)
+      (should-not (nelisp-emacs-package-smoke-test--loaded-file-p file)))))
 
 ;;; nelisp-emacs-package-smoke-test.el ends here

@@ -816,7 +816,18 @@ fired yet."
     (cons (or width emacs-tui-event-default-window-width)
           (or height emacs-tui-event-default-window-height))))
 
-(unless (fboundp 'install-winsize-handler)
+(defun emacs-tui-event--install-function-p (symbol)
+  "Return non-nil when SYMBOL should be installed as an unprefixed bridge.
+Same contract as `emacs-command-loop-builtins--install-function-p': a
+plain `fboundp' test is not enough, because these names are not host
+Emacs functions and the binding that already exists can be a bootstrap
+placeholder from another in-tree module.  A placeholder says so with
+the `emacs-stub-bulk' property, and this module overwrites it."
+  (or (not (boundp 'emacs-version))
+      (get symbol 'emacs-stub-bulk)
+      (not (fboundp symbol))))
+
+(when (emacs-tui-event--install-function-p 'install-winsize-handler)
   (defun install-winsize-handler ()
     "Install the pure-Elisp terminal resize compatibility handler.
 
@@ -829,27 +840,27 @@ size so `nemacs-main' can query it through `terminal-current-winsize'."
             (emacs-tui-event--host-window-size)))
     t))
 
-(unless (fboundp 'install-jobctrl-handlers)
+(when (emacs-tui-event--install-function-p 'install-jobctrl-handlers)
   (defun install-jobctrl-handlers ()
     "Install pure-Elisp terminal job-control compatibility handlers."
     (setq emacs-tui-event--terminal-jobctrl-handlers-installed-p t)
     t))
 
-(unless (fboundp 'terminal-current-winsize)
+(when (emacs-tui-event--install-function-p 'terminal-current-winsize)
   (defun terminal-current-winsize ()
     "Return the current terminal size as `(WIDTH . HEIGHT)'."
     (or emacs-tui-event--terminal-current-winsize
         (setq emacs-tui-event--terminal-current-winsize
               (emacs-tui-event--host-window-size)))))
 
-(unless (fboundp 'terminal-take-winsize-changed)
+(when (emacs-tui-event--install-function-p 'terminal-take-winsize-changed)
   (defun terminal-take-winsize-changed ()
     "Return and clear the pending terminal resize flag."
     (let ((pending emacs-tui-event--terminal-winsize-changed-p))
       (setq emacs-tui-event--terminal-winsize-changed-p nil)
       pending)))
 
-(unless (fboundp 'terminal-take-sigcont)
+(when (emacs-tui-event--install-function-p 'terminal-take-sigcont)
   (defun terminal-take-sigcont ()
     "Return and clear the pending terminal SIGCONT flag."
     (let ((pending emacs-tui-event--terminal-sigcont-p))

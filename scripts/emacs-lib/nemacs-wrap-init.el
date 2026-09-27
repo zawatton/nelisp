@@ -51,6 +51,23 @@ that lambda out as the package function."
           (setq xs (cdr xs)))
         res))))
 
+(defun nemacs-wrap-init--fset-from-defalias (da)
+  "Given a (defalias \\='NAME FN) node DA, return an equivalent `fset' form
+lowered to the bridge dialect, or nil when DA's FN is not a lambda.
+Strips a `declare'/`interactive' form and a leading docstring from the
+lambda body -- the image evaluator runs the body verbatim and has no use
+for either (a stray multiline docstring is pure bloat and can trip the
+source-v1 replay reader)."
+  (let* ((fn (nth 2 da))
+         (lam (if (eq (car-safe fn) 'function) (nth 1 fn) fn)))
+    (when (eq (car-safe lam) 'lambda)
+      (let ((lbody (seq-remove
+                    (lambda (f) (memq (car-safe f) '(declare interactive)))
+                    (nthcdr 2 lam))))
+        (when (and (stringp (car lbody)) (cdr lbody))
+          (setq lbody (cdr lbody)))
+        `(fset ,(nth 1 da) (lambda ,(nth 1 lam) ,@lbody))))))
+
 (defun nemacs-wrap-init--forms (file)
   "Read all top-level forms of FILE; return a list of forms."
   (when (file-readable-p file)
@@ -130,7 +147,12 @@ The image replay evaluator does not wire `defun' / `defvar' /
 `defconst' / `defcustom' (the substrate's own convention is
 setq + fset), so the generator rewrites them; everything else
 passes through verbatim and either applies or lands in the
-report's failed list."
+report's failed list.  Macro-defining forms that themselves expand to
+that dialect at a deeper nesting level -- `define-inline',
+`define-minor-mode', `define-globalized-minor-mode', and any `progn'
+a macroexpansion produces -- are macroexpanded and/or recursed into so
+their nested defun/defvar/defalias/defcustom nodes get the same
+treatment as a top-level occurrence."
   (cond
    ((not (consp form)) form)
    ((and (eq (car form) 'defun) (>= (length form) 3))
@@ -144,6 +166,21 @@ report's failed list."
     `(if (boundp ',(nth 1 form)) nil (setq ,(nth 1 form) ,(nth 2 form))))
    ((and (eq (car form) 'defconst) (>= (length form) 3))
     `(setq ,(nth 1 form) ,(nth 2 form)))
+   ;; `custom-declare-variable' is the function-call shape `defcustom'
+   ;; macroexpands to (this is what a macroexpanded `define-minor-mode'
+   ;; leaves for its `:global' mode variable, since a global minor mode's
+   ;; variable is always a defcustom, not a plain defvar -- see
+   ;; `easy-mmode.el').  Its VALUE argument is itself a quoted
+   ;; funcall/lambda form (custom.el's usual "unevaluated default"
+   ;; trick), so lowering re-evaluates it once with a plain `eval' rather
+   ;; than trying to pattern-match the exact nested shape; the runtime
+   ;; already has to support `eval'/`funcall'/`lambda' for other lowered
+   ;; forms, so this adds no new primitive dependency.  `:set'/`:initialize'/
+   ;; `:type' and the rest of the customize metadata are dropped -- the
+   ;; bridge runtime has no customize UI to serve them.
+   ((and (eq (car form) 'custom-declare-variable) (>= (length form) 3))
+    `(if (boundp ,(nth 1 form)) nil
+       (setq ,(cadr (nth 1 form)) (eval ,(nth 2 form) t))))
    ;; load-path bookkeeping happens at wrap time (the reader's load
    ;; wants absolute paths); the lowered form is a benign applied
    ;; marker that also aids debugging
@@ -184,23 +221,46 @@ report's failed list."
     (condition-case nil
         (let* ((exp (macroexpand-all form))
                (da (nemacs-wrap-init--find-defalias exp)))
-          (if da
-              (let* ((fn (nth 2 da))
-                     (lam (if (eq (car-safe fn) 'function) (nth 1 fn) fn)))
-                (if (eq (car-safe lam) 'lambda)
-                    (let ((lbody (seq-remove
-                                  (lambda (f)
-                                    (memq (car-safe f) '(declare interactive)))
-                                  (nthcdr 2 lam))))
-                      ;; drop a leading docstring: the image evaluator runs
-                      ;; the body verbatim and a stray multiline string is
-                      ;; pure bloat (and trips the source-v1 replay reader)
-                      (when (and (stringp (car lbody)) (cdr lbody))
-                        (setq lbody (cdr lbody)))
-                      `(fset ,(nth 1 da) (lambda ,(nth 1 lam) ,@lbody)))
-                  form))
-            form))
+          (or (and da (nemacs-wrap-init--fset-from-defalias da)) form))
       (error form)))
+   ;; A bare top-level `defalias' -- either from a user/package form
+   ;; written directly, or (more commonly here) a nested progn element a
+   ;; macroexpansion (define-minor-mode below) left behind -- lowers the
+   ;; same way `define-inline' does above, straight to `fset'.  This
+   ;; means the bridge runtime never has to define `defalias' itself.
+   ((and (eq (car form) 'defalias) (>= (length form) 3)
+         (eq (car-safe (nth 1 form)) 'quote))
+    (or (nemacs-wrap-init--fset-from-defalias form) form))
+   ;; define-minor-mode / define-globalized-minor-mode (marginalia-mode,
+   ;; which-key-mode, and most other minor-mode-defining packages) expand
+   ;; through easy-mmode.el into a `progn' of defvar/defvar-local/defcustom
+   ;; (mode variable), a `defalias' (the mode command), hook plumbing, and
+   ;; keymap/lighter registration -- the same "runtime has no macro layer"
+   ;; problem `define-inline' solves above, just with more moving parts.
+   ;; Macroexpand it here (full Emacs has easy-mmode.el loaded), then feed
+   ;; the result straight back into `nemacs-wrap-init--lower': the `progn'
+   ;; clause below recurses into every nested defvar/defvar-local-expansion/
+   ;; custom-declare-variable/defalias node so each gets the same lowering
+   ;; a top-level occurrence would.  Anything left over (add-minor-mode,
+   ;; put, make-variable-buffer-local, run-hooks, ...) passes through as
+   ;; plain function calls, same as any other form the bridge runtime
+   ;; already has to support.  Falls back to the raw form on any
+   ;; expansion error (no worse than before; it then lands in the report).
+   ((memq (car form) '(define-minor-mode define-globalized-minor-mode))
+    (condition-case nil
+        (nemacs-wrap-init--lower (macroexpand-all form))
+      (error form)))
+   ;; Generic recursion: a macroexpansion (define-minor-mode above, but
+   ;; potentially any other macro a user/package form uses) commonly
+   ;; produces a top-level `progn' whose own elements are themselves
+   ;; defvar/defalias/defconst/further-nested-progn nodes that still need
+   ;; lowering.  Lower every element instead of passing the whole `progn'
+   ;; through verbatim; atoms and forms with no matching clause above
+   ;; fall through to the `t' catch-all unchanged, so this is additive
+   ;; and does not change any existing top-level defun/defvar/require/
+   ;; define-inline lowering.
+   ((eq (car form) 'progn)
+    (cons 'progn (mapcar #'nemacs-wrap-init--lower (cdr form))))
    (t form)))
 
 (defun nemacs-wrap-init (out &rest files)

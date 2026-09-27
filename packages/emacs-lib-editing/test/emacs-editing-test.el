@@ -13,17 +13,11 @@
     (should (featurep feature))))
 
 (ert-deftest emacs-editing-test/loader-groups-editing-builtins ()
-  (let ((file (locate-library "emacs-editing")))
-    (should file)
-    (with-temp-buffer
-      (insert-file-contents (if (string-match-p "\\.elc\\'" file)
-                                (substring file 0 -1)
-                              file))
-      (dolist (feature '(emacs-undo-builtins
-                         emacs-edit-builtins))
-        (goto-char (point-min))
-        (should
-         (search-forward (format "(require '%s)" feature) nil t))))))
+  (require 'emacs-editing)
+  (dolist (feature '(emacs-undo-builtins
+                     emacs-edit-builtins))
+    (should (memq feature emacs-editing-features))
+    (should (featurep feature))))
 
 (provide 'emacs-editing-test)
 

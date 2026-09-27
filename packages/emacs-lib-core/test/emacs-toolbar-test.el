@@ -66,6 +66,61 @@
       (emacs-toolbar-gui-write-state)
       (should (equal emacs-toolbar-gui-default-spec written)))))
 
+;;;; Icon registry (glyph resolution / ASCII fallback / GUI image path)
+
+(ert-deftest emacs-toolbar-icon-glyph-resolves-unicode-when-forced ()
+  (let ((emacs-toolbar-icon-force-mode 'unicode))
+    (should (equal "✚" (emacs-toolbar-icon-glyph "new")))
+    (should (equal "▣" (emacs-toolbar-icon-glyph "save")))
+    (should (= 1 (string-width (emacs-toolbar-icon-glyph "search"))))))
+
+(ert-deftest emacs-toolbar-icon-glyph-resolves-ascii-when-forced ()
+  (let ((emacs-toolbar-icon-force-mode 'ascii))
+    (should (equal "[N]" (emacs-toolbar-icon-glyph "new")))
+    (should (equal "[S]" (emacs-toolbar-icon-glyph "save")))
+    (should (equal "[/]" (emacs-toolbar-icon-glyph "search")))))
+
+(ert-deftest emacs-toolbar-icon-glyph-unknown-name-falls-back-silently ()
+  (let ((emacs-toolbar-icon-force-mode 'unicode))
+    (should (equal "" (emacs-toolbar-icon-glyph "not-a-real-icon"))))
+  (let ((emacs-toolbar-icon-force-mode 'ascii))
+    (should (equal "" (emacs-toolbar-icon-glyph "not-a-real-icon"))))
+  (should (equal "" (emacs-toolbar-icon-glyph nil))))
+
+(ert-deftest emacs-toolbar-icon-registry-glyphs-are-single-column ()
+  (let ((emacs-toolbar-icon-force-mode 'unicode))
+    (dolist (name '("new" "open" "diropen" "close" "save" "undo"
+                     "cut" "copy" "paste" "search"))
+      (should (= 1 (string-width (emacs-toolbar-icon-glyph name)))))))
+
+(ert-deftest emacs-toolbar-icon-environment-unicode-detection ()
+  (let ((process-environment (cons "LC_ALL=C" process-environment)))
+    (should-not (emacs-toolbar-icon-environment-unicode-p)))
+  (let ((process-environment (cons "LC_ALL=C.UTF-8" process-environment)))
+    (should (emacs-toolbar-icon-environment-unicode-p)))
+  (let ((process-environment (cons "LC_ALL=en_US.utf8" process-environment)))
+    (should (emacs-toolbar-icon-environment-unicode-p))))
+
+(ert-deftest emacs-toolbar-icon-file-resolves-vendored-asset ()
+  (let* ((root (locate-dominating-file
+                (or (locate-library "emacs-toolbar") default-directory)
+                "vendor"))
+         (dir (and root (expand-file-name "vendor/emacs-etc/images/" root))))
+    (skip-unless (and dir (file-directory-p dir)))
+    (dolist (name '("new" "open" "diropen" "close" "save" "undo"
+                     "cut" "copy" "paste" "search"))
+      (let ((path (emacs-toolbar-icon-file name dir)))
+        (should (stringp path))
+        (should (file-exists-p path))
+        (should (string-match-p (concat (regexp-quote name) "\\.\\(xpm\\|pbm\\)\\'")
+                                 path))))))
+
+(ert-deftest emacs-toolbar-icon-file-nil-for-unknown-name ()
+  (should-not (emacs-toolbar-icon-file "not-a-real-icon" "/nonexistent-dir-for-test/")))
+
+(ert-deftest emacs-toolbar-icon-file-nil-when-directory-absent ()
+  (should-not (emacs-toolbar-icon-file "save" "/nonexistent-dir-for-test/")))
+
 (provide 'emacs-toolbar-test)
 
 ;;; emacs-toolbar-test.el ends here

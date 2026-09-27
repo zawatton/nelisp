@@ -31,9 +31,13 @@ out=${TMPDIR:-/tmp}/nemacs-next-session-smoke.$$.out
 marker=${TMPDIR:-/tmp}/nemacs-next-session-smoke.$$.sentinel
 m3_file=${TMPDIR:-/tmp}/nemacs-next-session-smoke.$$.txt
 org_file=${TMPDIR:-/tmp}/nemacs-next-session-smoke.$$.org
-rm -f "$tmp" "$out" "$marker" "$m3_file" "$org_file"
-trap 'rm -f "$tmp" "$out" "$marker" "$m3_file" "$org_file"' EXIT
+mx_file=${TMPDIR:-/tmp}/nemacs-next-session-smoke.$$.mx.txt
+mx_ff_file=${TMPDIR:-/tmp}/nemacs-next-session-smoke.$$.mx-ff.txt
+rm -f "$tmp" "$out" "$marker" "$m3_file" "$org_file" "$mx_file" "$mx_ff_file"
+trap 'rm -f "$tmp" "$out" "$marker" "$m3_file" "$org_file" "$mx_file" "$mx_ff_file"' EXIT
 printf 'seed' > "$m3_file"
+printf '' > "$mx_file"
+printf '' > "$mx_ff_file"
 printf '* TODO Project\nBody\n** NEXT Child\n' > "$org_file"
 
 cat "$BOOTSTRAP_REPL" > "$tmp"
@@ -41,6 +45,9 @@ cat >> "$tmp" <<EOF
 (setq load-path (list "$ROOT/src" "$ROOT/apps/nemacs-next/lisp"))
 (setq nemacs-next-session-smoke-count 0)
 (load "$ROOT/apps/nemacs-next/lisp/nemacs-next-protocol.el")
+(load "$ROOT/src/emacs-startup-screen.el")
+(setq nemacs-next-session-smoke-splash-buffer (nemacs-next-session-apply-startup-screen))
+(setq nemacs-next-session-smoke-splash-snapshot (nemacs-next-session-buffer-snapshot))
 (setq nemacs-next-session-smoke-count (+ nemacs-next-session-smoke-count 1))
 (setq nemacs-next-session-smoke-plan (nemacs-next-session-plan))
 (setq nemacs-next-session-smoke-count (+ nemacs-next-session-smoke-count 1))
@@ -158,6 +165,81 @@ cat >> "$tmp" <<EOF
 (setq nemacs-next-session-smoke-org-open
       (nemacs-next-session-handle-message
        (quote (:type command :name find-file :path "$org_file"))))
+(setq nemacs-next-session-smoke-toolbar-unicode
+      (let ((emacs-toolbar-icon-force-mode (quote unicode)))
+        (nemacs-next-session-toolbar-render-line 0 t 140)))
+(setq nemacs-next-session-smoke-toolbar-ascii
+      (let ((emacs-toolbar-icon-force-mode (quote ascii)))
+        (nemacs-next-session-toolbar-render-line 0 t 140)))
+(setq nemacs-next-session-smoke-mx-visit
+      (nemacs-next-session-handle-message
+       (quote (:type command :name find-file :path "$mx_file"))))
+(setq nemacs-next-session-smoke-mx-seed
+      (nemacs-next-session-handle-message
+       (quote (:type command :name insert-text :text "hello"))))
+(setq nemacs-next-session-smoke-mx-enter
+      (nemacs-next-session-handle-message
+       (quote (:type command :name execute-extended-command))))
+(setq nemacs-next-session-smoke-mx-state-0
+      (nemacs-next-session-handle-message
+       (quote (:type command :name minibuffer-state))))
+(setq nemacs-next-session-smoke-mx-input
+      (nemacs-next-session-handle-message
+       (quote (:type input :event (:text "sav")))))
+(setq nemacs-next-session-smoke-mx-state-1
+      (nemacs-next-session-handle-message
+       (quote (:type command :name minibuffer-state))))
+(setq nemacs-next-session-smoke-mx-tab
+      (nemacs-next-session-handle-message
+       (quote (:type input :event (:key tab)))))
+(setq nemacs-next-session-smoke-mx-state-2
+      (nemacs-next-session-handle-message
+       (quote (:type command :name minibuffer-state))))
+(setq nemacs-next-session-smoke-mx-commit
+      (nemacs-next-session-handle-message
+       (quote (:type input :event (:key return)))))
+(setq nemacs-next-session-smoke-mx-state-3
+      (nemacs-next-session-handle-message
+       (quote (:type command :name minibuffer-state))))
+(setq nemacs-next-session-smoke-mx-enter-2
+      (nemacs-next-session-handle-message
+       (quote (:type command :name execute-extended-command))))
+(setq nemacs-next-session-smoke-mx-abort-input
+      (nemacs-next-session-handle-message
+       (quote (:type input :event (:text "x")))))
+(setq nemacs-next-session-smoke-mx-abort
+      (nemacs-next-session-handle-message
+       (quote (:type input :event (:key C-g)))))
+(setq nemacs-next-session-smoke-mx-state-abort
+      (nemacs-next-session-handle-message
+       (quote (:type command :name minibuffer-state))))
+(setq nemacs-next-session-smoke-mx-enter-3
+      (nemacs-next-session-handle-message
+       (quote (:type command :name execute-extended-command))))
+(setq nemacs-next-session-smoke-mx-unknown-input
+      (nemacs-next-session-handle-message
+       (quote (:type input :event (:text "totally-bogus-cmd")))))
+(setq nemacs-next-session-smoke-mx-unknown
+      (nemacs-next-session-handle-message
+       (quote (:type input :event (:key return)))))
+(setq nemacs-next-session-smoke-mx-enter-4
+      (nemacs-next-session-handle-message
+       (quote (:type command :name execute-extended-command))))
+(setq nemacs-next-session-smoke-mx-ff-input
+      (nemacs-next-session-handle-message
+       (quote (:type input :event (:text "find-file")))))
+(setq nemacs-next-session-smoke-mx-ff-commit
+      (nemacs-next-session-handle-message
+       (quote (:type input :event (:key return)))))
+(setq nemacs-next-session-smoke-mx-ff-state
+      (nemacs-next-session-handle-message
+       (quote (:type command :name minibuffer-state))))
+(setq nemacs-next-session-smoke-mx-ff-path
+      (nemacs-next-session-handle-message
+       (list :type (quote input) :event (list :text "$mx_ff_file"))))
+(setq nemacs-next-session-smoke-mx-ff-final
+      (nemacs-next-session-handle-message
+       (quote (:type input :event (:key return)))))
 (setq nemacs-next-session-smoke-org-parse-ok nil)
 (require (quote org))
 (when (and (fboundp (quote org-mode))
@@ -260,6 +342,58 @@ cat >> "$tmp" <<EOF
          (eq (plist-get nemacs-next-session-smoke-org-open :type)
              (quote snapshot))
          nemacs-next-session-smoke-org-parse-ok
+         nemacs-next-session-smoke-splash-buffer
+         (equal (plist-get nemacs-next-session-smoke-splash-snapshot
+                           :buffer-name)
+                "*GNU Emacs*")
+         (string-match-p "Welcome to nemacs"
+                         (plist-get nemacs-next-session-smoke-splash-snapshot
+                                    :text))
+         (string-match-p "ABSOLUTELY NO WARRANTY"
+                         (plist-get nemacs-next-session-smoke-splash-snapshot
+                                    :text))
+         (string-match-p ">{✚ New File}<" nemacs-next-session-smoke-toolbar-unicode)
+         (string-match-p "▶\\|▤\\|✕\\|▣\\|↺\\|✂\\|❐\\|❏\\|⌕"
+                         nemacs-next-session-smoke-toolbar-unicode)
+         (= 1 (string-width (emacs-toolbar-icon-glyph "new")))
+         (string-match-p ">{\\[N\\] New File}<" nemacs-next-session-smoke-toolbar-ascii)
+         (string-match-p "\\[O\\]\\|\\[D\\]\\|\\[X\\]\\|\\[S\\]\\|\\[U\\]"
+                         nemacs-next-session-smoke-toolbar-ascii)
+         (eq (plist-get nemacs-next-session-smoke-mx-enter :type)
+             (quote delta))
+         (plist-get nemacs-next-session-smoke-mx-state-0 :active)
+         (eq (plist-get nemacs-next-session-smoke-mx-state-0 :purpose)
+             (quote exec))
+         (equal (plist-get nemacs-next-session-smoke-mx-state-0 :prompt)
+                "M-x ")
+         (equal (plist-get nemacs-next-session-smoke-mx-state-0 :contents)
+                "")
+         (member "save-buffer"
+                 (plist-get nemacs-next-session-smoke-mx-state-0 :candidates))
+         (equal (plist-get nemacs-next-session-smoke-mx-state-1 :contents)
+                "sav")
+         (member "save-buffer"
+                 (plist-get nemacs-next-session-smoke-mx-state-1 :candidates))
+         (equal (plist-get nemacs-next-session-smoke-mx-state-2 :contents)
+                "save-buffer")
+         (eq (plist-get nemacs-next-session-smoke-mx-commit :type)
+             (quote snapshot))
+         (equal (plist-get nemacs-next-session-smoke-mx-commit :saved-file)
+                "$mx_file")
+         (equal (rdf "$mx_file") "hello")
+         (not (plist-get nemacs-next-session-smoke-mx-state-3 :active))
+         (not (plist-get nemacs-next-session-smoke-mx-state-abort :active))
+         (eq (plist-get nemacs-next-session-smoke-mx-unknown :type)
+             (quote error))
+         (eq (plist-get nemacs-next-session-smoke-mx-unknown :code)
+             (quote unknown-command))
+         (eq (plist-get nemacs-next-session-smoke-mx-ff-state :type)
+             (quote minibuffer))
+         (plist-get nemacs-next-session-smoke-mx-ff-state :active)
+         (eq (plist-get nemacs-next-session-smoke-mx-ff-state :purpose)
+             (quote file))
+         (equal (plist-get nemacs-next-session-smoke-mx-ff-final :file-name)
+                "$mx_ff_file")
          (not (featurep (quote emacs-init)))
          (not (featurep (quote nemacs-main)))
          (not (featurep (quote nemacs-gtk-frontend)))
@@ -267,7 +401,7 @@ cat >> "$tmp" <<EOF
     (nl-write-file "$marker" "ok")
   (nl-write-file
    "$marker"
-   (format "fail count=%s missing=%s fbound=%s facade=%s init=%s main=%s gtk=%s bridge=%s goto=%S fwd=%S back=%S del=%S oor=%S yank-empty=%S nl=%S undo-nl=%S kill-region=%S yank-1=%S kill-line=%S yank-2=%S bad-kill=%S undo-empty=%S alive=%S find-file=%S file-append=%S save=%S buffer-complete=%S generic-complete=%S switch=%S kill-file=%S missing-kill=%S org-open=%S org-parse-ok=%S"
+   (format "fail count=%s missing=%s fbound=%s facade=%s init=%s main=%s gtk=%s bridge=%s splash=%S splash-snapshot=%S goto=%S fwd=%S back=%S del=%S oor=%S yank-empty=%S nl=%S undo-nl=%S kill-region=%S yank-1=%S kill-line=%S yank-2=%S bad-kill=%S undo-empty=%S alive=%S find-file=%S file-append=%S save=%S buffer-complete=%S generic-complete=%S switch=%S kill-file=%S missing-kill=%S org-open=%S org-parse-ok=%S toolbar-unicode=%S toolbar-ascii=%S mx-enter=%S mx-state-0=%S mx-state-1=%S mx-state-2=%S mx-commit=%S mx-state-3=%S mx-state-abort=%S mx-unknown=%S mx-ff-state=%S mx-ff-final=%S mx-file=%S"
            nemacs-next-session-smoke-count
            nemacs-next-session-smoke-missing
            (fboundp (quote nemacs-next-session-plan))
@@ -276,6 +410,8 @@ cat >> "$tmp" <<EOF
            (featurep (quote nemacs-main))
            (featurep (quote nemacs-gtk-frontend))
            (featurep (quote nemacs-gui-file-bridge-runtime))
+           nemacs-next-session-smoke-splash-buffer
+           nemacs-next-session-smoke-splash-snapshot
            nemacs-next-session-smoke-goto
            nemacs-next-session-smoke-fwd
            nemacs-next-session-smoke-back
@@ -307,7 +443,20 @@ cat >> "$tmp" <<EOF
            nemacs-next-session-smoke-ime
            nemacs-next-session-smoke-clipboard
            nemacs-next-session-smoke-org-open
-           nemacs-next-session-smoke-org-parse-ok)))
+           nemacs-next-session-smoke-org-parse-ok
+           nemacs-next-session-smoke-toolbar-unicode
+           nemacs-next-session-smoke-toolbar-ascii
+           nemacs-next-session-smoke-mx-enter
+           nemacs-next-session-smoke-mx-state-0
+           nemacs-next-session-smoke-mx-state-1
+           nemacs-next-session-smoke-mx-state-2
+           nemacs-next-session-smoke-mx-commit
+           nemacs-next-session-smoke-mx-state-3
+           nemacs-next-session-smoke-mx-state-abort
+           nemacs-next-session-smoke-mx-unknown
+           nemacs-next-session-smoke-mx-ff-state
+           nemacs-next-session-smoke-mx-ff-final
+           (rdf "$mx_file"))))
 ,quit
 EOF
 
