@@ -117,6 +117,38 @@ re-load after a wrapper leak keeps the original subr capture.")
 (defvar emacs-process--native-process-metadata nil
   "Metadata alist for native NeLisp process objects.")
 
+(defvar emacs-process--resolved-shell-file-name nil
+  "Cached shell path returned by `emacs-process-resolve-shell-file-name'.")
+
+(defun emacs-process--shell-executable-p (path)
+  "Return non-nil when PATH names an executable shell."
+  (and (stringp path)
+       (> (length path) 0)
+       (file-executable-p path)))
+
+(defun emacs-process--compute-shell-file-name ()
+  "Resolve the preferred POSIX shell path for this host."
+  (or (and (emacs-process--shell-executable-p "/bin/sh")
+           "/bin/sh")
+      (and (fboundp 'executable-find)
+           (let ((found (executable-find "sh")))
+             (and (emacs-process--shell-executable-p found)
+                  found)))
+      (and (boundp 'shell-file-name)
+           (emacs-process--shell-executable-p shell-file-name)
+           shell-file-name)
+      "/bin/sh"))
+
+(defun emacs-process-clear-shell-file-name-cache ()
+  "Clear the cached shell path so the next resolve re-probes the host."
+  (setq emacs-process--resolved-shell-file-name nil))
+
+(defun emacs-process-resolve-shell-file-name ()
+  "Return the cached preferred POSIX shell path for this host."
+  (or emacs-process--resolved-shell-file-name
+      (setq emacs-process--resolved-shell-file-name
+            (emacs-process--compute-shell-file-name))))
+
 (defun emacs-process--fallback-process-p (object)
   "Return non-nil when OBJECT is a fallback process vector."
   (and (vectorp object)
@@ -128,10 +160,31 @@ re-load after a wrapper leak keeps the original subr capture.")
   (and (fboundp 'nelisp-process-object-p)
        (ignore-errors (nelisp-process-object-p object))))
 
+(defconst emacs-process--network-tag 'network-process
+  "Head symbol of a `nelisp-process-adapter' network-process vector.")
+
+(defun emacs-process--network-process-p (object)
+  "Return non-nil when OBJECT is a network-process vector.
+`packages/nelisp-process-adapter' (nelisp Doc 194) represents a network
+process as `[network-process NAME STATUS FD PROPS]', a third shape
+beside the fallback and native ones.  In Emacs a network process IS a
+process, and the reader's own prelude `processp' says so -- but this
+file's commentary defers network processes, and
+`emacs-process-builtins' force-installs `emacs-process-processp' over
+the prelude's on the standalone reader.  Without this arm that swap
+made `processp' answer nil for a listener, so the prelude's
+`process-put' / `process-get' signalled `wrong-type-argument processp'
+and anvil's socket daemon died the moment it bound one (measured
+2026-09-04, Linux and Windows)."
+  (and (vectorp object)
+       (> (length object) 0)
+       (eq (aref object 0) emacs-process--network-tag)))
+
 (defun emacs-process--process-object-p (object)
   "Return non-nil when OBJECT is a process object owned here."
   (or (emacs-process--fallback-process-p object)
-      (emacs-process--native-process-p object)))
+      (emacs-process--native-process-p object)
+      (emacs-process--network-process-p object)))
 
 (defun emacs-process--native-start-available-p ()
   "Return non-nil when native NeLisp async process start exists."
@@ -762,6 +815,7 @@ matches the `files.el' convention of dispatching `start-file-process' on
   (cond
    ((emacs-process--fallback-process-p object) t)
    ((emacs-process--native-process-p object) t)
+   ((emacs-process--network-process-p object) t)
    ((and (not (emacs-standalone-mode-p))
          (emacs-process--delegate-p 'processp))
     (funcall (indirect-function 'processp) object))
@@ -974,7 +1028,8 @@ top-level alias for parity with the Emacs API."
 
 ;;;; --- shell-command / shell-command-to-string ----------------------
 
-(defvar emacs-process-shell-file-name "/bin/sh"
+(defvar emacs-process-shell-file-name
+  (emacs-process-resolve-shell-file-name)
   "Substrate-internal mirror of `shell-file-name'.")
 
 (defvar emacs-process-shell-command-switch "-c"

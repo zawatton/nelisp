@@ -13,13 +13,18 @@
   "Directory for cached normalized top-level source forms.
 When nil, source normalization always reads the source file directly.")
 
-(defconst standalone-source-normalize-cache-version 144
+(defconst standalone-source-normalize-cache-version 145
   "Cache format version for normalized standalone source forms.
 Bump this whenever normalization semantics change so stale cache entries
 self-invalidate; the cache key otherwise only covers the source file's
 truename/mtime/size, not the normalizer's own behavior (Doc 33 item 234:
 version 130 retains core regex builder bodies even when they exceed the
-generic large-defun replay threshold).")
+generic large-defun replay threshold; 133 is the merge of that line with
+the branch that added a content digest to the cached file state, so
+entries written by either side are discarded rather than trusted; 145 is
+the origin/main merge of that line 133 with the feature branch's own
+independent bumps up to 144, so entries written under either pre-merge
+lineage are discarded rather than trusted).")
 
 (defvar standalone-source-normalize-enable-bundled-ignore-defuns t
   "When non-nil, rewrite selected bundled defun groups to `ignore'.
@@ -2021,7 +2026,18 @@ normalizes exactly as before."
   (let ((attrs (file-attributes file)))
     (list :truename (file-truename file)
           :mtime (nth 5 attrs)
-          :size (nth 7 attrs))))
+          :size (nth 7 attrs)
+          ;; Timestamp and size alone let an edit through: two writes in
+          ;; the same clock tick that happen to produce the same length
+          ;; -- `(defvar a 1)' becoming `(defvar b 2)' -- leave both
+          ;; unchanged, and the cache then serves the old forms with no
+          ;; sign anything is wrong.  A digest costs one read of a file
+          ;; the miss path was about to read anyway.
+          :digest (condition-case nil
+                      (with-temp-buffer
+                        (insert-file-contents-literally file)
+                        (secure-hash 'sha1 (current-buffer)))
+                    (error nil)))))
 
 (defun standalone-source-normalize--cache-file (file)
   "Return the normalized-source cache path for FILE, or nil."

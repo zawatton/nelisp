@@ -30,6 +30,17 @@
 (defvar emacs-callproc--sys-getenv-active nil
   "Non-nil while `emacs-callproc--sys-getenv' is inside a backend call.")
 
+(defvar emacs-callproc--runtime-getenv
+  (and (fboundp 'getenv) (symbol-function 'getenv))
+  "The runtime's own `getenv', captured before this file overrides it.
+The NeLisp v1.2.0 reader binds a native `getenv' under the Emacs name
+and has neither `nelisp-sys-getenv' nor `nl-syscall-getenv', so without
+this capture the override below answered nil for every real variable
+once Layer 2 was up: anvil's ANVIL_TOOL_MODULES / ANVIL_WORKLOG_DB
+never reached the modules that read them (measured 2026-09-04,
+windows-x86_64).  `defvar' keeps the first capture across reloads, so
+the value is never this file's own override.")
+
 (defun emacs-callproc--lookup-process-environment (variable)
   "Return VARIABLE from `process-environment', or nil when absent."
   (let ((cur process-environment)
@@ -73,15 +84,27 @@ Non-alist members and non-string keys/values are ignored."
   "Return VARIABLE from a NeLisp getenv primitive, or nil if unavailable."
   (unless emacs-callproc--sys-getenv-active
     (let ((emacs-callproc--sys-getenv-active t))
-      (catch 'done
-        (dolist (fn emacs-callproc--sys-getenv-functions)
-          (when (fboundp fn)
-            (let ((value (condition-case nil
-                             (funcall fn variable)
-                           (error nil))))
-              (when (stringp value)
-                (throw 'done value)))))
-        nil))))
+      (or (catch 'done
+            (dolist (fn emacs-callproc--sys-getenv-functions)
+              (when (fboundp fn)
+                (let ((value (condition-case nil
+                                 (funcall fn variable)
+                               (error nil))))
+                  (when (stringp value)
+                    (throw 'done value)))))
+            nil)
+          ;; Last: the runtime's own `getenv' (see the defvar above).
+          ;; Deliberately throw-free: inside a network-process filter
+          ;; driven by nelisp's process adapter, a `throw' out of this
+          ;; function surfaced as an unrelated stale `wrong-type-argument
+          ;; processp' error and took the daemon down (measured 2026-09-04
+          ;; on the v1.2.0 reader, Linux and Windows; see anvil's
+          ;; server-loop).
+          (and (functionp emacs-callproc--runtime-getenv)
+               (let ((value (condition-case nil
+                                (funcall emacs-callproc--runtime-getenv variable)
+                              (error nil))))
+                 (and (stringp value) value)))))))
 
 (defun emacs-callproc-getenv (variable &optional frame)
   "Look VARIABLE up in the elisp overlay, core env, then the runtime env."

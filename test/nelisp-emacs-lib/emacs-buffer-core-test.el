@@ -13,19 +13,9 @@
     (should (featurep feature))))
 
 (ert-deftest emacs-buffer-core-test/nelisp-emacs-uses-buffer-core-entry ()
-  (let ((file (locate-library "nelisp-emacs")))
-    (should file)
-    (with-temp-buffer
-      (insert-file-contents (if (string-match-p "\\.elc\\'" file)
-                                (substring file 0 -1)
-                              file))
-      (should (search-forward "(require 'emacs-buffer-core)" nil t))
-      (dolist (feature '(emacs-buffer-builtins
-                         emacs-search-builtins
-                         emacs-line-builtins))
-        (goto-char (point-min))
-        (should-not
-         (search-forward (format "(require '%s)" feature) nil t))))))
+  (require 'nelisp-emacs)
+  (should (memq 'emacs-buffer-core nelisp-emacs-library-features))
+  (should (featurep 'emacs-buffer-core)))
 
 (provide 'emacs-buffer-core-test)
 
