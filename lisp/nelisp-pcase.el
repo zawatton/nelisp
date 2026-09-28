@@ -96,9 +96,11 @@
         (nelisp-pcase--backquote (car rest) value-form))
        ((eq head 'app)
         ;; (app FUN PAT): apply FUN to the value, match PAT on the result.
+        ;; FUN is a plain function name / lambda (called with VALUE-FORM as
+        ;; its one argument), or GNU Emacs 31.1's "extended" (F ARG1 ..
+        ;; ARGn) form, handled by `nelisp-pcase--app-call'.
         (nelisp-pcase--test (car (cdr rest))
-                            (list 'funcall (list 'function (car rest))
-                                  value-form)))
+                            (nelisp-pcase--app-call (car rest) value-form)))
        ;; An unrecognised pattern head used to build the test `t', so it
        ;; matched EVERYTHING: `(pcase 5 ((app 1+ 7) (quote seven))
        ;; (_ (quote other)))' answered seven where Emacs answers other, and
@@ -128,8 +130,44 @@
                            (list 'cl-typep 'v
                                  (list 'quote (car rest)))))
          value-form))
-       (t (error "Unknown %s pattern: %S" head pattern)))))
+       ;; `pcase-defmacro' (nelisp-stdlib-misc.el) registers a new pattern
+       ;; head by putting a macroexpander function on its
+       ;; `pcase-macroexpander' symbol property; this is where real Emacs's
+       ;; `pcase--macroexpand' consults that same property before giving
+       ;; up.  Doing the same here is what lets vendor `map.el'/`seq.el'
+       ;; patterns -- `(map :a)', `(seq a b)' -- work: neither `map' nor
+       ;; `seq' is a head this engine knows natively.  Calling `get' here
+       ;; is safe regardless of prelude splice order (unlike a top-level
+       ;; registration form): it only runs when some CASE actually uses
+       ;; the head, by which point the full prelude -- `get'/`put' included
+       ;; -- has already loaded.  The macroexpander's result is itself a
+       ;; pattern, possibly another macro pattern, so it goes back through
+       ;; this same tester recursively.
+       (t (let ((expander (get head 'pcase-macroexpander)))
+            (if expander
+                (nelisp-pcase--test (apply expander rest) value-form)
+              (error "Unknown %s pattern: %S" head pattern)))))))
    (t (cons (list 'equal value-form (list 'quote pattern)) nil))))
+
+(defun nelisp-pcase--app-call (fun value-form)
+  "Build a call form applying `app' pattern FUN to VALUE-FORM.
+Mirrors GNU Emacs 31.1's `pcase--funcall'.  A symbol or a `lambda'/
+`closure' form is called with VALUE-FORM as its one argument.  A compound
+\"extended\" `(F ARG1 .. ARGn)' form has a literal `_' among ARG1..ARGn
+replaced by VALUE-FORM; when `_' is absent, VALUE-FORM is appended as the
+final argument -- the shape `pcase--flip' produces."
+  (cond
+   ((or (not (consp fun)) (memq (car fun) '(lambda closure)))
+    (list 'funcall (list 'function fun) value-form))
+   ((memq '_ fun)
+    (mapcar (lambda (elt) (if (eq elt '_) value-form elt)) fun))
+   (t (append fun (list value-form)))))
+
+(defmacro pcase--flip (fun arg1 arg2)
+  "Call FUN with ARG1 and ARG2 swapped: (FUN ARG2 ARG1).
+Kept for vendor `app' patterns that predate the `_' placeholder form,
+e.g. map.el's `(app (pcase--flip map-elt KEY) PAT)'."
+  (list fun arg2 arg1))
 
 (defun nelisp-pcase--and (patterns value-form)
   "Build (TEST . BINDINGS) for an `and' pattern."

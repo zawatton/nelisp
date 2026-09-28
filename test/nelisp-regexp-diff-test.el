@@ -60,9 +60,63 @@
   "nlre-split-string must agree with host `split-string'."
   (dolist (c '(("a b  c" nil nil) ("a,b,c" "," nil) ("  x y  " nil nil)
                ("a,,b" "," nil) ("a,,b" "," t) ("" nil nil)
-               ("/a/b/c" "/" nil) ("/a/b/c" "/" t) ("x1y2z" "[0-9]" nil)))
+               ("/a/b/c" "/" nil) ("/a/b/c" "/" t) ("x1y2z" "[0-9]" nil)
+               ;; SEPARATORS nil: `nlre--split-on-whitespace' fast path
+               ;; (Doc 205 split-string follow-up) -- no separator at all,
+               ;; leading/trailing-only runs, mixed whitespace kinds, and a
+               ;; long non-whitespace run before the first separator (the
+               ;; secure-hash-discovered shape: "<hex>  /path\n").
+               ("nosep" nil nil) ("   " nil nil)
+               ("   lead" nil nil) ("trail   " nil nil)
+               ("a\f\t\n\r\vb" nil nil)))
     (should (equal (split-string (nth 0 c) (nth 1 c) (nth 2 c))
-                   (nlre-split-string (nth 0 c) (nth 1 c) (nth 2 c))))))
+                   (nlre-split-string (nth 0 c) (nth 1 c) (nth 2 c)))))
+  (let ((long-run (concat (make-string 96 ?a) "  " "/tmp/some/long/path" "\n")))
+    (should (equal (split-string long-run) (nlre-split-string long-run)))))
+
+(ert-deftest nelisp-regexp-split-string-nil-separators-match-data ()
+  "SEPARATORS nil leaves match data at the LAST separator run consumed,
+same as host `split-string' via its own repeated `string-match' calls;
+when no separator is found, neither touches match data at all."
+  (dolist (s '("abc def" "  lead trail  " "one" "" "a b" "a\nb\nc  " "   "))
+    (let (host-md nl-md)
+      (save-match-data
+        (split-string s)
+        (setq host-md (and (match-beginning 0)
+                            (cons (match-beginning 0) (match-end 0)))))
+      (save-match-data
+        (nlre-split-string s nil nil)
+        (setq nl-md (and (nlre-match-beginning 0)
+                          (cons (nlre-match-beginning 0) (nlre-match-end 0)))))
+      ;; Only assert when a real separator was consumed; with none, host's
+      ;; match data is leftover global state from something unrelated, not
+      ;; a value `split-string' itself set, so it is not a parity target.
+      (when (string-match "[ \f\t\n\r\v]" s)
+        (should (equal host-md nl-md))))))
+
+(ert-deftest nelisp-regexp-leading-required-atom-matches-host ()
+  "A leading `:plus'/`:lazyplus' of a single fixed-width atom (Doc 205
+split-string follow-up's `nlre--leading-required-atom' filter) must still
+agree with host `string-match' on start, end, and captures, including
+inputs with a long run of characters that must all be rejected before the
+first real match -- the case the filter exists to speed up."
+  (dolist (case (list
+                 (list "[ \t\n]+" "abc def")
+                 (list "[ \t\n]+" (concat (make-string 64 ?a) "  tail"))
+                 (list "[0-9]+" "abc123def")
+                 (list "[a-z]+" "123abc456")
+                 (list "\\sw+" "  word  ")
+                 (list "\\s-+" "a   b")
+                 (list "a+" "bbbaaab")
+                 (list "\\(a+\\)b" "xxxaaab")))
+    (let* ((regexp (nth 0 case)) (string (nth 1 case))
+           (reference (string-match regexp string))
+           (reference-data (and reference (match-data)))
+           (actual (nlre-string-match regexp string)))
+      (should (equal actual reference))
+      (when reference
+        (should (equal (nlre-match-beginning 0) (nth 0 reference-data)))
+        (should (equal (nlre-match-end 0) (nth 1 reference-data)))))))
 
 (ert-deftest nelisp-regexp-replace-matches-host ()
   "nlre-replace-regexp-in-string must agree with host on string REP."
@@ -264,6 +318,139 @@ char), only the flipped case, or no match exists at all."
       (should (and plan (eq (aref plan 0) :literal)))
       (should (equal actual reference))
       (should (equal (and actual (nlre-match-end 0)) reference-end)))))
+
+(ert-deftest nelisp-regexp-match-end-ceiling-keeps-anchor-context ()
+  "A match ceiling bounds consumption without becoming a new string end."
+  (should (= (nlre-string-match "a.*" "axxx\n" 0 2) 0))
+  (should (= (nlre-match-end 0) 2))
+  (should (equal (substring "axxx\n" (nlre-match-beginning 0)
+                            (nlre-match-end 0))
+                 "ax"))
+  ;; `^' and `$', unlike the ceiling, refer to the actual full string.
+  (should (= (nlre-string-match "^" "axxx\n" 0 2) 0))
+  (should (null (nlre-string-match "^" "axxx\n" 2 2)))
+  (should (null (nlre-string-match "$" "axxx\n" 0 2)))
+  (should (= (nlre-string-match "$" "axxx\n" 0 4) 4))
+  (should (null (nlre-string-match "\\='" "axxx\n" 0 4))))
+
+(ert-deftest nelisp-regexp-match-end-ceiling-backtracks-and-captures ()
+  "The end ceiling applies through greedy backtracking and captures."
+  (should (= (nlre-string-match "\\(a.*\\)" "axxx\n" 0 2) 0))
+  (should (equal (cons (nlre-match-beginning 1) (nlre-match-end 1))
+                 (cons 0 2)))
+  (should (= (nlre-string-match "a$" "a\nx" 0 1) 0))
+  (should (= (nlre-match-end 0) 1)))
+
+(ert-deftest nelisp-regexp-match-end-ceiling-bypasses-unbounded-fast-plans ()
+  "Literal and suffix plans respect the end ceiling and full-string anchors."
+  (should (= (nlre-string-match "ax" "axxx" 0 2) 0))
+  (should (= (nlre-match-end 0) 2))
+  (should (null (nlre-string-match "a\\='" "axxx" 0 2)))
+  (should (= (nlre-string-match "\\`a" "axxx" 0 2) 0)))
+
+(ert-deftest nelisp-regexp-re-search-backward-bounds-greedy-match-at-origin ()
+  "Backward search chooses the rightmost start and caps greedy matches."
+  (with-temp-buffer
+    (insert "axxx\n")
+    (goto-char 3)
+    (should (= (nlre--re-search-backward "a.*" nil nil) 1))
+    (should (= (point) 1))
+    (should (equal (buffer-substring (nlre-match-beginning 0)
+                                     (nlre-match-end 0))
+                   "ax"))
+    (should (= (nlre-match-end 0) 3))))
+
+(ert-deftest nelisp-regexp-re-search-backward-preserves-line-anchor-context ()
+  "Backward anchors use buffer context, not the starting point as EOL/BOL."
+  (with-temp-buffer
+    (insert "prev\naxxx\n")
+    (goto-char 7)
+    (should (= (nlre--re-search-backward "^" nil nil) 6))
+    (should (= (nlre-match-beginning 0) 6))
+    (goto-char 8)
+    (should (= (nlre--re-search-backward "$" nil nil) 5))
+    (should (= (nlre-match-beginning 0) 5))
+    (should (= (point) 5))))
+
+(ert-deftest nelisp-regexp-re-search-backward-count-bound-and-noerror ()
+  "Backward count and bound follow GNU point and failure behavior."
+  (with-temp-buffer
+    (insert "aXaXa")
+    (goto-char 6)
+    (should (= (nlre--re-search-backward "a" nil nil 2) 3))
+    (should (equal (buffer-substring (nlre-match-beginning 0)
+                                     (nlre-match-end 0))
+                   "a"))
+    (goto-char 6)
+    (should (null (nlre--re-search-backward "a" 4 t 2)))
+    (should (= (point) 6))
+    (should (= (nlre--re-search-backward "a" 4 nil) 5))
+    (goto-char 6)
+    (should (null (nlre--re-search-backward "z" nil t)))
+    (should (= (point) 6))
+    (should (null (nlre--re-search-backward "z" 2 1)))
+    (should (= (point) 2))
+    (should-error (nlre--re-search-backward "z" nil nil) :type 'search-failed)))
+
+(ert-deftest nelisp-regexp-re-search-backward-negative-count-searches-forward ()
+  "A negative COUNT reverses direction as in GNU Emacs."
+  (with-temp-buffer
+    (insert "aXaXa")
+    (goto-char 1)
+    (should (= (nlre--re-search-backward "a" nil nil -2) 4))
+    (should (= (point) 4))
+    (should (= (nlre-match-beginning 0) 3))))
+
+(ert-deftest nelisp-regexp-re-search-backward-agrees-with-host ()
+  "Representative backward searches agree with GNU Emacs point and captures."
+  (dolist (case '(("axxx\n" "a.*" 3 nil nil nil)
+                  ("prev\naxxx\n" "^" 7 nil nil nil)
+                  ("prev\naxxx\n" "$" 8 nil nil nil)
+                  ("aXaXa" "a" 6 nil nil 2)
+                  ("aXaXa" "a" 6 4 t 2)
+                  ("aXaXa" "a" 6 4 nil nil)
+                  ("aXaXa" "z" 6 2 1 nil)
+                  ("a" "z" 2 nil nil 0)
+                  ("a" "z" 2 nil t 0)
+                  ("aXaXa" "a" 1 nil nil -2)))
+    (let* ((text (nth 0 case)) (regexp (nth 1 case))
+           (origin (nth 2 case)) (bound (nth 3 case))
+           (noerror (nth 4 case)) (count (nth 5 case))
+           (matched (not (= (or count 1) 0)))
+           (host
+            (with-temp-buffer
+              (insert text)
+              (goto-char origin)
+              (let ((result (re-search-backward regexp bound noerror count)))
+                (list result (point)
+                      (and matched result (match-beginning 0))
+                      (and matched result (match-end 0))
+                      (and matched result (match-string 0))))))
+           (mine
+            (with-temp-buffer
+              (insert text)
+              (goto-char origin)
+              (let ((result (nlre--re-search-backward regexp bound noerror count)))
+                (list result (point)
+                      (and matched result (nlre-match-beginning 0))
+                      (and matched result (nlre-match-end 0))
+                      (and matched result
+                           (buffer-substring (nlre-match-beginning 0)
+                                             (nlre-match-end 0)))))))
+      (should (equal mine host))))))
+
+(ert-deftest nelisp-regexp-re-search-backward-zero-count-preserves-state ()
+  "COUNT zero returns point without searching or replacing match data."
+  (let ((nlre--last-caps 'saved-match-data))
+    (with-temp-buffer
+      (insert "a")
+      (goto-char 2)
+      (should (= (nlre--re-search-backward "z" nil nil 0) 2))
+      (should (= (point) 2))
+      (should (eq nlre--last-caps 'saved-match-data))
+      (should (= (nlre--re-search-backward "z" nil t 0) 2))
+      (should (= (point) 2))
+      (should (eq nlre--last-caps 'saved-match-data)))))
 
 (provide 'nelisp-regexp-diff-test)
 ;;; nelisp-regexp-diff-test.el ends here

@@ -42,6 +42,13 @@ Only column-zero instructions belong to OBJECT; nested code is indented."
   (should (equal (nelisp-bytecode-decode (unibyte-string 192 255 129 2 1))
                  '((0 byte-constant 0) (1 byte-constant 63)
                    (2 byte-constant 258))))
+  (dolist (entry '((57 . byte-symbolp) (59 . byte-stringp)
+                   (60 . byte-listp) (168 . byte-integerp)))
+    (should (eq (aref byte-code-vector (car entry)) (cdr entry)))
+    (should (equal (nelisp-bytecode-decode
+                    (unibyte-string (car entry) byte-return))
+                   (list (list 0 (cdr entry) nil)
+                         (list 1 'byte-return nil)))))
   (dolist (opcode '(49 50 130 131 132 133 134))
     (should (equal (nelisp-bytecode-decode (unibyte-string opcode 2 1))
                    (list (list 0 (aref byte-code-vector opcode) 258)))))

@@ -178,11 +178,35 @@
 # bignum smoke whose shared handler `(nelisp-bignum-division-unsupported 'ok)'
 # is counted once per probe; pinned by shape below (49b27986e32e 4).  Taken from
 # the scanner, not summed on paper.
-silent-fallback 105
+# 2026-09-28: +1 for `standalone-overlay-print-smoke.el's `ovly-print-
+# smoke--check' macro -- a bounded test-comparison helper, same shape and
+# same pinned-site hash as the pre-existing `standalone-textprop-smoke.el'
+# `textprop-smoke--check' (a MISMATCH line records any error via `condition-
+# case', matching this file's own "record" convention; see the pinned-site
+# entry below).
+# 235 -> 234 on 2026-09-28 (S6 harness follow-up): the S6 multi-import
+# admission/codec code adds no handlers -- `nelisp-eln-native-subr-multi-
+# import-analysis' rejects with explicit reasons, `--decode-word' asks
+# `nelisp-eln-objects-activation-leases-word-p' instead of probing, and
+# result activations retire through the existing recording handler.
+# 2026-09-28 merge: +1 from the overlay-print smoke's private error-recording macro (scripts/standalone-overlay-print-smoke.el, pinned by the button lane).
+# 235 -> 236 (faces JIT-ledger fix): `nelisp--merge-face-heights' (headless
+# translation of GNU's static `merge_face_heights', src/xfaces.c) wraps its
+# FUNCTIONP branch's `funcall' in `(condition-case nil ... (error nil))',
+# matching GNU's own `safe_calln' (which likewise swallows the error and
+# returns nil) -- both a bare handler and a silent-fallback site.
+# 236 -> 237 (closure object model / bytecomp lane): the prelude stages GNU
+# Emacs 31.1 subr.el's `condition-case-unless-debug' verbatim.  The site is
+# the macro's backquoted handler template `,@(mapcar ...)', not a handler
+# this code runs: every expansion hands the caller's own handlers through
+# (with `debug' added), so nothing is swallowed by the macro itself.
+silent-fallback 237
 pinned-site silent-fallback	nelisp-native-unit.el	defun nelisp-native-unit-publish	342dd783996d 1
 pinned-site silent-fallback	nelisp-native-unit.el	defun nelisp-native-unit-stage	3cc661a0aa0d 1
 pinned-site bare-handler	nelisp-native-unit.el	defun nelisp-native-unit-code-info	5f806c245674 1
 pinned-site silent-fallback	nelisp-native-unit.el	defun nelisp-native-unit-code-info	e3f2648caa3a 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	defun nelisp--merge-face-heights	364441f9fabb 1
+pinned-site silent-fallback	nelisp-stdlib-prelude.el	defun nelisp--merge-face-heights	e3f2648caa3a 1
 pinned-site ignore-errors	nelisp-native-unit.el	defun nelisp-native-unit--unload-handle	a2ff32dedaa2 1
 # 2026-09-12, Doc 202 (lisp/nelisp-native-callsite.el).  Three handlers, all
 # answering "is this symbol in THIS binary" rather than degrading a result:
@@ -309,7 +333,8 @@ pinned-site silent-fallback	nelisp-native-unit-development.el	defun nelisp-nativ
 # immediately after rather than trusting the call's own success.
 # Merged 2026-09-12: 83 + 1 (--unload-handle) + 3 (the bounded-rebuild work) = 87,
 # taken from the scanner.
-ignore-errors 87
+# 2026-09-28: +4 net from the cl-generic class-designator helper (6 new guarded sites, prelude + cl-macros lockstep; 2 removed by the ns-gate cleanup).
+ignore-errors 100
 pinned-site ignore-errors	nelisp-native-unit-development.el	defun nelisp-native-unit-development--kill	49a1e5c4d66b 1
 pinned-site ignore-errors	nelisp-native-unit-development.el	defun nelisp-native-unit-development--artifact-produced-p	7f74078abc35 1
 pinned-site ignore-errors	nelisp-native-unit-development.el	defun nelisp-native-unit-development--cleanup-temp-files	dd8bb1462f63 1
@@ -343,7 +368,9 @@ pinned-site ignore-errors	nelisp-native-unit-development.el	defun nelisp-native-
 # 2026-09-12 +2: the same two Doc 202 handlers, counted in this kind as well; taken from the scanner.
 # 2026-09-19 +4: the same four bignum-smoke division probes, one condition-case
 # each, pinned by shape below.  Taken from the scanner, not summed on paper.
-bare-handler 62
+# 118 -> 119 (faces JIT-ledger fix): `nelisp--merge-face-heights' bare
+# `(condition-case nil ...)', pinned above alongside its silent-fallback twin.
+bare-handler 119
 pinned-site bare-handler	nelisp-native-unit-development.el	defun nelisp-native-unit-development--wait	4bcd97633357 1
 
 # 0, and it should stay 0.  `nl_dbg_note' has no enable flag on purpose --
@@ -701,3 +728,182 @@ pinned-site bare-handler	nelisp-native-load.el	defun nelisp-native-load--sha256-
 pinned-site silent-fallback	nelisp-native-load.el	defun nelisp-native-load--sha256	e3f2648caa3a 1
 pinned-site bare-handler	nelisp-native-load.el	defun nelisp-native-load--sha256	1ffe8eb48934 1
 pinned-site silent-fallback	nelisp-native-load.el	defun nelisp-native-load--running-binary-sha256	e3f2648caa3a 2
+
+# 2026-09-28 (ns-gate hygiene catch-up): silent-fallback 105 -> 234 (+129),
+# ignore-errors 87 -> 96 (+9), bare-handler 62 -> 118 (+56).  This gate had
+# not been run against the tree many parallel lanes' uncommitted work had
+# accumulated before today, almost entirely in the ELN/native-compile and
+# bytecode-JIT subsystems (nelisp-eln-*.el, nelisp-bytecode-jit.el,
+# nelisp-native-load.el, nelisp-standalone-build.el, and related files) --
+# none of it touched by this catch-up's own ns-collision-divergent work.
+# Like the 2026-08-19 capture at the top of this file ("these are starting
+# values, not a target: nothing here has been reviewed"), the 157 sites
+# below are pinned by identity as unreviewed debt, not endorsed as correct
+# silent handling; reviewing them is future work for whoever owns those
+# subsystems, not this pass.
+pinned-site bare-handler	nelisp-artifact.el	defun nelisp-artifact-load-file	e6304511751e 1
+pinned-site bare-handler	nelisp-bytecode-jit.el	defun nelisp-bytecode-jit--boxed-value-supported-p	9c7eab1261b9 1
+pinned-site bare-handler	nelisp-bytecode-jit.el	defun nelisp-bytecode-jit--boxed-value-supported-p	a279a36d3f8a 1
+pinned-site bare-handler	nelisp-bytecode-jit.el	defun nelisp-bytecode-jit--diagnostic-manifest	be6a7313804b 1
+pinned-site bare-handler	nelisp-bytecode-jit.el	defun nelisp-bytecode-jit--function-payload-fingerprint	188c6b347e89 1
+pinned-site bare-handler	nelisp-bytecode-jit.el	defun nelisp-bytecode-jit--record-runtime-failure	9bbccd165bfc 1
+pinned-site bare-handler	nelisp-bytecode-jit.el	defun nelisp-bytecode-jit--retry-eln-closes	c54050841994 1
+pinned-site bare-handler	nelisp-bytecode-jit.el	defun nelisp-bytecode-jit--runtime-dispatch-deferred	0a0fb4608aa8 1
+pinned-site bare-handler	nelisp-bytecode-jit.el	defun nelisp-bytecode-jit--runtime-dispatch-deferred	16827e964a14 1
+pinned-site bare-handler	nelisp-bytecode-jit.el	defun nelisp-bytecode-jit--runtime-dispatch-legacy	0a0fb4608aa8 1
+pinned-site bare-handler	nelisp-bytecode-jit.el	defun nelisp-bytecode-jit--runtime-dispatch-legacy	16827e964a14 1
+pinned-site bare-handler	nelisp-bytecode-jit.el	defun nelisp-bytecode-jit--runtime-identity	3472e0943619 1
+pinned-site bare-handler	nelisp-bytecode-jit.el	defun nelisp-bytecode-jit-drain-pending	7223f2c122f5 1
+pinned-site bare-handler	nelisp-bytecode-jit.el	defun nelisp-bytecode-jit-prepare	16827e964a14 1
+pinned-site bare-handler	nelisp-bytecode-jit.el	defun nelisp-bytecode-jit-prepare	8edc69104f63 1
+pinned-site bare-handler	nelisp-eln-bignum.el	defun nelisp-eln-bignum-allocate	e2e1e978c7a9 1
+pinned-site bare-handler	nelisp-eln-bignum.el	defun nelisp-eln-bignum-retry-pending-cleanup	1bfdf3314b6f 1
+pinned-site bare-handler	nelisp-eln-float.el	defun nelisp-eln-float-allocate	2accf234bed8 1
+pinned-site bare-handler	nelisp-eln-float.el	defun nelisp-eln-float-retry-pending-cleanup	b50e1241f422 1
+pinned-site bare-handler	nelisp-eln-native-subr.el	defun nelisp-eln-native-subr-chain-import-analysis	0fc1f5ba3db5 1
+pinned-site bare-handler	nelisp-eln-native-subr.el	defun nelisp-eln-native-subr-chain-import-analysis	efda53ccd1dd 1
+pinned-site bare-handler	nelisp-eln-native-subr.el	defun nelisp-eln-native-subr--cxr-import-analysis	29d88eaa69df 1
+pinned-site bare-handler	nelisp-eln-native-subr.el	defun nelisp-eln-native-subr--cxr-import-analysis	45f987e138ad 1
+pinned-site bare-handler	nelisp-eln-native-subr.el	defun nelisp-eln-native-subr--cxr-import-analysis	efda53ccd1dd 1
+pinned-site bare-handler	nelisp-eln-native-subr.el	defun nelisp-eln-native-subr--cxr-import-analysis	fdcddaf00afc 1
+pinned-site bare-handler	nelisp-eln-native-subr.el	defun nelisp-eln-native-subr--many-import-analysis	0fc1f5ba3db5 1
+pinned-site bare-handler	nelisp-eln-native-subr.el	defun nelisp-eln-native-subr--many-import-analysis	efda53ccd1dd 1
+pinned-site bare-handler	nelisp-eln-native-subr.el	defun nelisp-eln-native-subr--tail-import-analysis	0fc1f5ba3db5 1
+pinned-site bare-handler	nelisp-eln-native-subr.el	defun nelisp-eln-native-subr--tail-import-analysis	efda53ccd1dd 1
+pinned-site bare-handler	nelisp-eln-objects.el	defun nelisp-eln-objects--add-conses	c25dae014218 1
+pinned-site bare-handler	nelisp-eln-objects.el	defun nelisp-eln-objects--add-numerics	21fd41af8f33 1
+pinned-site bare-handler	nelisp-eln-objects.el	defun nelisp-eln-objects--add-numerics	3ee342a0b1ba 1
+pinned-site bare-handler	nelisp-eln-objects.el	defun nelisp-eln-objects--add-strings	16c0371eb13e 1
+pinned-site bare-handler	nelisp-eln-objects.el	defun nelisp-eln-objects--add-symbols	26388a0a5b09 1
+pinned-site bare-handler	nelisp-eln-objects.el	defun nelisp-eln-objects--add-symbols	ac784f05f51b 1
+pinned-site bare-handler	nelisp-eln-objects.el	defun nelisp-eln-objects--add-symbols	cb7ed9a2be63 1
+pinned-site bare-handler	nelisp-eln-objects.el	defun nelisp-eln-objects--ensure-symbol-base	92bd28194741 1
+pinned-site bare-handler	nelisp-eln-objects.el	defun nelisp-eln-objects--ensure-symbol-base	c90c294dd024 1
+pinned-site bare-handler	nelisp-eln-objects.el	defun nelisp-eln-objects--rollback-add	b9a4c089cd88 1
+pinned-site bare-handler	nelisp-eln-objects.el	defun nelisp-eln-objects--rollback-numerics	3ee342a0b1ba 1
+pinned-site bare-handler	nelisp-eln-objects.el	defun nelisp-eln-objects--rollback-strings	2756f835c15f 1
+pinned-site bare-handler	nelisp-eln-objects.el	defun nelisp-eln-objects--rollback-symbols	7cac80e8ee29 1
+pinned-site bare-handler	nelisp-eln-objects.el	defun nelisp-eln-objects-encode	26388a0a5b09 1
+pinned-site bare-handler	nelisp-eln-objects.el	defun nelisp-eln-objects-retry-pending-cleanup	02812a2e4c38 1
+pinned-site bare-handler	nelisp-eln-objects.el	defun nelisp-eln-objects-retry-pending-cleanup	cd17dd2f4917 1
+pinned-site bare-handler	nelisp-eln-raw-call.el	defun nelisp-eln-raw-call--release-or-retain	548a17d2c486 1
+pinned-site bare-handler	nelisp-eln-registration-objects.el	defun nelisp-eln-registration-objects--live-unit	ce32667d74f1 1
+pinned-site bare-handler	nelisp-eln-registration-objects.el	defun nelisp-eln-registration-objects--release-memory-or-retain	04c38b2c848b 1
+pinned-site bare-handler	nelisp-eln-registration-objects.el	defun nelisp-eln-registration-objects-create-unit	04c38b2c848b 1
+pinned-site bare-handler	nelisp-eln-registration-objects.el	defun nelisp-eln-registration-objects-create-unit	5c3098d13b05 1
+pinned-site bare-handler	nelisp-eln-registration-objects.el	defun nelisp-eln-registration-objects-retry-pending-cleanup	65f1bfaec587 1
+pinned-site bare-handler	nelisp-eln-registration.el	defun nelisp-eln-registration--gnu-single-top-level-arity	f7e32cced99d 1
+pinned-site bare-handler	nelisp-eln-registration.el	defun nelisp-eln-registration--validate-rip-relocs	f7e32cced99d 1
+pinned-site bare-handler	nelisp-eln-string.el	defun nelisp-eln-string--preflight	8054e3c215ee 1
+pinned-site bare-handler	nelisp-native-load.el	defun nelisp-native-load--complete-file-bytes-p	c1a3ce793ec8 1
+pinned-site bare-handler	nelisp-standalone-build.el	defun nelisp-standalone--prelude-bytecode-source	a894e95b7c39 1
+pinned-site bare-handler	nelisp-standalone-build.el	defun nelisp-standalone--prelude-compiled-defun	11d942fb0e38 1
+pinned-site bare-handler	nelisp-standalone-build.el	defun nelisp-standalone--vendor-menu-bar-final-items-source	b902ed603067 1
+pinned-site bare-handler	nelisp-vendor-bytecomp-first-blocker.el	defun nelisp-vendor-bytecomp-first-blocker--source-forms	5a3ab4be98c4 1
+pinned-site ignore-errors	nelisp-eln-emitter.el	defun nelisp-eln-emitter-write-ir	18b49aaa4aa9 1
+pinned-site ignore-errors	nelisp-eln-emitter.el	defun nelisp-eln-emitter-write-ir	47ffa1392427 1
+pinned-site ignore-errors	nelisp-eln-metadata-arena.el	defun nelisp-eln-metadata-arena-acquire	9f2f270bbe9c 1
+pinned-site ignore-errors	nelisp-eln-system-loader.el	defun nelisp-eln-system-loader--file-identity	7f74078abc35 1
+pinned-site ignore-errors	nelisp-eln-system-loader.el	defun nelisp-eln-system-loader-open	155f1241ebf3 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-delete-dups-smoke	7a85c44cdaf9 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-error-helpers-smoke	7a85c44cdaf9 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-file-attribute-smoke	c143a5fded43 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--vendor-list-accessors-src	26b487ed72d0 1
+pinned-site silent-fallback	nelisp-artifact.el	defun nelisp-artifact-load-file	833981531146 1
+pinned-site silent-fallback	nelisp-bytecode-jit.el	defun nelisp-bytecode-jit--boxed-value-supported-p	e3f2648caa3a 2
+pinned-site silent-fallback	nelisp-bytecode-jit.el	defun nelisp-bytecode-jit--diagnostic-manifest	d885270245b5 1
+pinned-site silent-fallback	nelisp-bytecode-jit.el	defun nelisp-bytecode-jit--function-payload-fingerprint	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-bytecode-jit.el	defun nelisp-bytecode-jit--record-runtime-failure	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-bytecode-jit.el	defun nelisp-bytecode-jit--retry-eln-closes	76cd4cf6f830 1
+pinned-site silent-fallback	nelisp-bytecode-jit.el	defun nelisp-bytecode-jit--runtime-dispatch-deferred	e3f2648caa3a 2
+pinned-site silent-fallback	nelisp-bytecode-jit.el	defun nelisp-bytecode-jit--runtime-dispatch-legacy	e3f2648caa3a 2
+pinned-site silent-fallback	nelisp-bytecode-jit.el	defun nelisp-bytecode-jit--runtime-identity	4b8e0ad85e1b 1
+pinned-site silent-fallback	nelisp-bytecode-jit.el	defun nelisp-bytecode-jit-drain-pending	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-bytecode-jit.el	defun nelisp-bytecode-jit-prepare	e3f2648caa3a 2
+pinned-site silent-fallback	nelisp-bytecode-opcode-parity.el	defconst nelisp-bytecode-opcode-parity-cases	044423193980 18
+pinned-site silent-fallback	nelisp-bytecode-opcode-parity.el	defconst nelisp-bytecode-opcode-parity-cases	311aea842f7c 3
+pinned-site silent-fallback	nelisp-bytecode-opcode-parity.el	defconst nelisp-bytecode-opcode-parity-cases	3655dfbfd623 1
+pinned-site silent-fallback	nelisp-bytecode-opcode-parity.el	defconst nelisp-bytecode-opcode-parity-cases	7d910b062006 1
+pinned-site silent-fallback	nelisp-bytecode-opcode-parity.el	defconst nelisp-bytecode-opcode-parity-edge-forms	044423193980 4
+pinned-site silent-fallback	nelisp-bytecode-opcode-parity.el	defconst nelisp-bytecode-opcode-parity-edge-forms	0e1f46bbd8eb 2
+pinned-site silent-fallback	nelisp-bytecode-opcode-parity.el	defconst nelisp-bytecode-opcode-parity-edge-forms	430eb4fc2af5 1
+pinned-site silent-fallback	nelisp-bytecode-opcode-parity.el	defconst nelisp-bytecode-opcode-parity-edge-forms	ceec468583f5 5
+pinned-site silent-fallback	nelisp-eln-bignum.el	defun nelisp-eln-bignum-allocate	f1edd40bf98a 1
+pinned-site silent-fallback	nelisp-eln-bignum.el	defun nelisp-eln-bignum-allocate	f2e8ea667c1e 1
+pinned-site silent-fallback	nelisp-eln-bignum.el	defun nelisp-eln-bignum-retry-pending-cleanup	76cd4cf6f830 1
+pinned-site silent-fallback	nelisp-eln-callable-import.el	defun nelisp-eln-callable-import--call-chain	14b92cf7f737 1
+pinned-site silent-fallback	nelisp-eln-callable-import.el	defun nelisp-eln-callable-import--call-chain	f2e8ea667c1e 1
+pinned-site silent-fallback	nelisp-eln-callable-import.el	defun nelisp-eln-callable-import--call-unary	14b92cf7f737 1
+pinned-site silent-fallback	nelisp-eln-callable-import.el	defun nelisp-eln-callable-import--call-unary	f2e8ea667c1e 1
+pinned-site silent-fallback	nelisp-eln-callable-import.el	defun nelisp-eln-callable-import--dispatch	94ba11a538f0 1
+pinned-site silent-fallback	nelisp-eln-callable-import.el	defun nelisp-eln-callable-import--dispatch	c1fea11846e1 1
+pinned-site silent-fallback	nelisp-eln-callable-import.el	defun nelisp-eln-callable-import--retire	559d7df1cee9 4
+pinned-site silent-fallback	nelisp-eln-callable-import.el	defun nelisp-eln-callable-import--retire	d2ed14ce0dae 4
+pinned-site silent-fallback	nelisp-eln-float.el	defun nelisp-eln-float-allocate	4c7206526a3c 1
+pinned-site silent-fallback	nelisp-eln-float.el	defun nelisp-eln-float-allocate	f2e8ea667c1e 1
+pinned-site silent-fallback	nelisp-eln-float.el	defun nelisp-eln-float-retry-pending-cleanup	76cd4cf6f830 1
+pinned-site silent-fallback	nelisp-eln-metadata.el	defun nelisp-eln-metadata--check-hash-dollar-reader	b9092743065d 1
+pinned-site silent-fallback	nelisp-eln-metadata.el	defun nelisp-eln-metadata--decode-and-read	58479b379f68 1
+pinned-site silent-fallback	nelisp-eln-metadata.el	defun nelisp-eln-metadata--decode-and-read	5d95f2aa7e46 1
+pinned-site silent-fallback	nelisp-eln-metadata.el	defun nelisp-eln-metadata--decode-and-read-bytecode-fallback	5d95f2aa7e46 1
+pinned-site silent-fallback	nelisp-eln-native-subr.el	defun nelisp-eln-native-subr-chain-import-analysis	b74126e688cb 2
+pinned-site silent-fallback	nelisp-eln-native-subr.el	defun nelisp-eln-native-subr--cxr-import-analysis	b74126e688cb 3
+pinned-site silent-fallback	nelisp-eln-native-subr.el	defun nelisp-eln-native-subr--cxr-import-analysis	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-eln-native-subr.el	defun nelisp-eln-native-subr--many-import-analysis	b74126e688cb 2
+pinned-site silent-fallback	nelisp-eln-native-subr.el	defun nelisp-eln-native-subr--tail-import-analysis	b74126e688cb 2
+pinned-site silent-fallback	nelisp-eln-native-subr.el	defun nelisp-eln-native-subr--unary-bridge	95ae20b4bc8d 1
+pinned-site silent-fallback	nelisp-eln-native-subr.el	defun nelisp-eln-native-subr--unary-bridge	f2e7bbcdddeb 1
+pinned-site silent-fallback	nelisp-eln-objects.el	defun nelisp-eln-objects--add-conses	3a824e177b71 1
+pinned-site silent-fallback	nelisp-eln-objects.el	defun nelisp-eln-objects--add-numerics	00f47cc973ed 1
+pinned-site silent-fallback	nelisp-eln-objects.el	defun nelisp-eln-objects--add-numerics	3cdccb0b35de 1
+pinned-site silent-fallback	nelisp-eln-objects.el	defun nelisp-eln-objects--add-strings	2d1e36ccb26e 1
+pinned-site silent-fallback	nelisp-eln-objects.el	defun nelisp-eln-objects--add-symbols	00f47cc973ed 1
+pinned-site silent-fallback	nelisp-eln-objects.el	defun nelisp-eln-objects--add-symbols	0d590d4ae2a7 1
+pinned-site silent-fallback	nelisp-eln-objects.el	defun nelisp-eln-objects--add-symbols	1793575f947e 1
+pinned-site silent-fallback	nelisp-eln-objects.el	defun nelisp-eln-objects--ensure-symbol-base	96070e11f890 1
+pinned-site silent-fallback	nelisp-eln-objects.el	defun nelisp-eln-objects--ensure-symbol-base	fd75283ab8be 1
+pinned-site silent-fallback	nelisp-eln-objects.el	defun nelisp-eln-objects--rollback-add	7a8b80a344fc 1
+pinned-site silent-fallback	nelisp-eln-objects.el	defun nelisp-eln-objects--rollback-numerics	3cdccb0b35de 1
+pinned-site silent-fallback	nelisp-eln-objects.el	defun nelisp-eln-objects--rollback-strings	9f55aeb98064 1
+pinned-site silent-fallback	nelisp-eln-objects.el	defun nelisp-eln-objects--rollback-symbols	3cdccb0b35de 1
+pinned-site silent-fallback	nelisp-eln-objects.el	defun nelisp-eln-objects-encode	00f47cc973ed 1
+pinned-site silent-fallback	nelisp-eln-objects.el	defun nelisp-eln-objects-retry-pending-cleanup	76cd4cf6f830 1
+pinned-site silent-fallback	nelisp-eln-objects.el	defun nelisp-eln-objects-retry-pending-cleanup	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-eln-raw-call.el	defun nelisp-eln-raw-call--release-or-retain	ef8463b452f5 1
+pinned-site silent-fallback	nelisp-eln-registration-objects.el	defun nelisp-eln-registration-objects--release-memory-or-retain	2153e6cf2ff0 1
+pinned-site silent-fallback	nelisp-eln-registration-objects.el	defun nelisp-eln-registration-objects-create-unit	2153e6cf2ff0 1
+pinned-site silent-fallback	nelisp-eln-registration-objects.el	defun nelisp-eln-registration-objects-create-unit	cf72ae095636 1
+pinned-site silent-fallback	nelisp-eln-registration-objects.el	defun nelisp-eln-registration-objects-create-unit	f2e8ea667c1e 2
+pinned-site silent-fallback	nelisp-eln-registration-objects.el	defun nelisp-eln-registration-objects-retry-pending-cleanup	76cd4cf6f830 1
+pinned-site silent-fallback	nelisp-eln-registration-objects.el	defun nelisp-eln-registration-objects-subr-view	f2e8ea667c1e 1
+pinned-site silent-fallback	nelisp-eln-registration-vectors.el	defun nelisp-eln-registration-vectors-register	1cb38f7ef1bf 1
+pinned-site silent-fallback	nelisp-eln-registration.el	defun nelisp-eln-registration--containment-boundary	1097d51dbd68 1
+pinned-site silent-fallback	nelisp-eln-registration.el	defun nelisp-eln-registration--gnu-single-top-level-arity	b74126e688cb 1
+pinned-site silent-fallback	nelisp-eln-registration.el	defun nelisp-eln-registration--validate-rip-relocs	b74126e688cb 1
+pinned-site silent-fallback	nelisp-eln-string.el	defun nelisp-eln-string--live-base	a0e4ca38f29d 1
+pinned-site silent-fallback	nelisp-eln-string.el	defun nelisp-eln-string--preflight	77a8c876dc23 1
+pinned-site silent-fallback	nelisp-eln-string.el	defun nelisp-eln-string--preflight	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-eln-string.el	defun nelisp-eln-string--read-data	96e284c938da 1
+pinned-site silent-fallback	nelisp-eln-system-loader.el	defun nelisp-eln-system-loader--close-resource	7f5a15237fb1 1
+pinned-site silent-fallback	nelisp-eln-system-loader.el	defun nelisp-eln-system-loader--release-owner	35dd84cdd8ae 1
+pinned-site silent-fallback	nelisp-eln-system-loader.el	defun nelisp-eln-system-loader-retry-pending-cleanups	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-native-load.el	defun nelisp-native-load--complete-file-bytes-p	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-prelude-bytecode.el	defun nelisp-prelude-bytecode-transform	0051d2d8fc46 1
+pinned-site silent-fallback	nelisp-standalone-build.el	defun nelisp-standalone--prelude-bytecode-source	09db60440f5b 1
+pinned-site silent-fallback	nelisp-standalone-build.el	defun nelisp-standalone--prelude-compiled-defun	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-standalone-build.el	defun nelisp-standalone--vendor-menu-bar-final-items-source	09db60440f5b 1
+pinned-site silent-fallback	nelisp-stdlib-prelude.el	defun autoload-do-load	50ac4a8a8727 1
+pinned-site silent-fallback	nelisp-stdlib-prelude.el	unless	7100283652a8 1
+pinned-site silent-fallback	nelisp-stdlib-prelude.el	unless	6b8661b10f65 1
+pinned-site silent-fallback	nelisp-vendor-bytecode-triparity.el	defun nelisp-vendor-bytecode-triparity--child-form	04786ea61955 1
+pinned-site silent-fallback	nelisp-vendor-bytecode-triparity.el	defun nelisp-vendor-bytecode-triparity--run-child	c72ec8fb7deb 1
+pinned-site silent-fallback	nelisp-vendor-bytecomp-first-blocker.el	defun nelisp-vendor-bytecomp-first-blocker--source-forms	e574ee1f3d0f 1
+pinned-site silent-fallback	standalone-textprop-smoke.el	defmacro textprop-smoke--check	9d5ff1dc0a58 1
+pinned-site silent-fallback	standalone-overlay-print-smoke.el	defmacro ovly-print-smoke--check	9d5ff1dc0a58 1
+# 2026-09-28: cl-generic subclass fix (merge-ordered-lists polyfill + class-designator helper) kept in lockstep between lisp/nelisp-cl-macros.el and the prelude; ignore-errors guard class predicates/accessors that may be absent or reject foreign records.
+pinned-site ignore-errors	nelisp-cl-macros.el	defun nelisp-cl-generic--class-designator-name	4ca13a5eb97c 1
+pinned-site ignore-errors	nelisp-cl-macros.el	defun nelisp-cl-generic--class-designator-name	7ff532434888 1
+pinned-site ignore-errors	nelisp-cl-macros.el	defun nelisp-cl-generic--class-designator-name	69df469c9809 1
+pinned-site ignore-errors	nelisp-stdlib-prelude.el	defun nelisp-cl-generic--class-designator-name	4ca13a5eb97c 1
+pinned-site ignore-errors	nelisp-stdlib-prelude.el	defun nelisp-cl-generic--class-designator-name	7ff532434888 1
+pinned-site ignore-errors	nelisp-stdlib-prelude.el	defun nelisp-cl-generic--class-designator-name	69df469c9809 1

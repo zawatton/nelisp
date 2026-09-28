@@ -403,6 +403,12 @@ Nothing in the source distinguishes the two lanes.  Both reach
 1541 defuns look like object mode and that flag cannot answer this.
 The caller knows and the compiler does not, so the caller says.")
 
+(defvar nelisp-aot-compiler--raw-bool-returning-names nil
+  "Defun names proven to return only source-level T or NIL tail values.")
+
+(defvar nelisp-aot-compiler--jit-checked-car-returning-names nil
+  "Defun names whose every source return leaf is the checked-car intrinsic.")
+
 (defvar nelisp-aot-compiler--internally-called-names nil
   "Names this unit's own defun bodies call.
 
@@ -5569,6 +5575,32 @@ caller-owned boundary params in the current defun:
            ,out))
        env fenv defuns))))
 
+(defun nelisp-aot-compiler--parse-jit-checked-car
+    (sexp env fenv defuns)
+  "Lower the explicit JIT intrinsic `nelisp-jit-checked-car'.
+
+The JIT caller must reject fixnums before native entry.  This intrinsic's
+native precondition is that ARG is Nil or Cons; `cons-car' assumes Cons
+after the Nil branch.  Both paths return through the rooted object-mode
+OUT slot, preserving the boxed result."
+  (unless (= (length sexp) 2)
+    (signal 'nelisp-aot-compiler-error
+            (list :jit-checked-car-arity sexp)))
+  (let* ((arg-slot (nelisp-aot-compiler--gensym "jit-checked-car-arg"))
+         (out-info (cdr (assq 'out fenv))))
+    (unless (and nelisp-aot-compiler--runtime-entry-params
+                 out-info
+                 (eq (plist-get out-info :repr) 'sexp-ptr)
+                 (plist-get out-info :root-p))
+      (signal 'nelisp-aot-compiler-error
+              (list :jit-checked-car-rooted-out-missing sexp)))
+    (nelisp-aot-compiler--parse-value
+     `(let (((,arg-slot :type sexp) ,(nth 1 sexp)))
+        (if (cons-null-p ,arg-slot)
+            (seq (sexp-write-nil out) out)
+          (seq (cons-car ,arg-slot out) out)))
+     env fenv defuns)))
+
 (defun nelisp-aot-compiler--aot-dispatcher-arg-form (form fenv)
   "Return FORM in the Sexp-pointer representation required by calln.
 
@@ -5662,6 +5694,72 @@ older lowering, where nothing unwraps a call result.")
                        (list clause)))
                    (cdr form))))
    (t (list form))))
+
+(defun nelisp-aot-compiler--raw-bool-ir-tail-p (node)
+  "Return non-nil when NODE's complete result tree is only immediate 0/1."
+  (and (nelisp-aot-compiler--ir-node-p node)
+       (pcase (nelisp-aot-compiler--ir-kind node)
+         ('imm (memq (nelisp-aot-compiler--ir-get node :value) '(0 1)))
+         ('if (and (nelisp-aot-compiler--raw-bool-ir-tail-p
+                    (nelisp-aot-compiler--ir-get node :then))
+                   (nelisp-aot-compiler--raw-bool-ir-tail-p
+                    (nelisp-aot-compiler--ir-get node :else))))
+         (_ nil))))
+
+(defun nelisp-aot-compiler--jit-checked-car-returning-defun-names (source)
+  "Return defun names whose every return leaf is the checked-car intrinsic."
+  (let ((seen nil)
+        (candidates nil)
+        (rejected nil))
+    (nelisp-aot-compiler--walk-source
+     source
+     (lambda (form)
+       (when (and (consp form) (eq (car form) 'defun)
+                  (symbolp (nth 1 form)))
+         (let* ((name (symbol-name (nth 1 form)))
+                (leaves (nelisp-aot-compiler--tail-leaves
+                         (car (last form)))))
+           (when (member name seen)
+             (push name rejected))
+           (push name seen)
+           (if (and leaves
+                    (cl-every
+                     (lambda (leaf)
+                       (and (consp leaf)
+                            (eq (car leaf) 'nelisp-jit-checked-car)))
+                     leaves))
+               (push name candidates)
+             (push name rejected))))))
+    (cl-remove-if (lambda (name) (member name rejected))
+                  (delete-dups candidates))))
+
+(defun nelisp-aot-compiler--raw-bool-returning-defun-names (source)
+  "Return unambiguous defun names in SOURCE whose tails are all T or NIL.
+
+Integer 0/1 and boolean T/NIL lower to the same native immediate, so the
+source proof distinguishes them and the parsed-IR proof confirms the
+result tree. A duplicate name, mixed/unknown tail, or unsupported value
+shape prevents raw-bool classification."
+  (let ((seen nil)
+        (candidates nil)
+        (rejected nil))
+    (nelisp-aot-compiler--walk-source
+     source
+     (lambda (form)
+       (when (and (consp form) (eq (car form) 'defun)
+                  (symbolp (nth 1 form)))
+         (let* ((name (symbol-name (nth 1 form)))
+                (leaves (nelisp-aot-compiler--tail-leaves
+                         (car (last form)))))
+           (when (member name seen)
+             (push name rejected))
+           (push name seen)
+           (if (and leaves
+                    (cl-every (lambda (leaf) (memq leaf '(nil t))) leaves))
+               (push name candidates)
+             (push name rejected))))))
+    (cl-remove-if (lambda (name) (member name rejected))
+                  (delete-dups candidates))))
 
 (defun nelisp-aot-compiler--sexp-ptr-returning-names (source called)
   "Return the subset of CALLED whose body answers with a Sexp pointer.
@@ -10088,6 +10186,12 @@ functions `((NAME . ARITY) ...)'."
    ;; slots used by the 129.6B helper, so ordinary `(symbol-name arg)'
    ;; can lower to the same dispatcher sequence without a custom surface
    ;; form.
+   ;; This named intrinsic is opt-in.  Ordinary `car' remains on the
+   ;; builtin dispatcher path above/below and keeps its Lisp semantics.
+   ((and (consp sexp)
+         (eq (car sexp) 'nelisp-jit-checked-car))
+    (nelisp-aot-compiler--parse-jit-checked-car
+     sexp env fenv defuns))
    ((and (consp sexp)
          (memq (car sexp)
                nelisp-aot-compiler--aot-builtin1-delegation-symbols)
@@ -12172,6 +12276,17 @@ Returns one of:
                              rt-slot-cell))
                         (nelisp-aot-compiler--parse-value
                          return-body env parse-fenv defuns)))
+             ;; The parser maps both Lisp booleans and integer 0/1 to
+             ;; immediate words.  Retain a source-proven boolean result
+             ;; only when the parsed result tree is still the corresponding
+             ;; 0/1 tree, and never for an internal pointer-returning callee.
+             (raw-bool-return-p
+              (and param-repr
+                   (member (symbol-name name)
+                           nelisp-aot-compiler--raw-bool-returning-names)
+                   (not (memq name nelisp-aot-compiler--internally-called-names))
+                   (not (memq name nelisp-aot-compiler--sexp-ptr-returning-names))
+                   (nelisp-aot-compiler--raw-bool-ir-tail-p body-ir)))
              (_ (when nelisp-aot-compiler--repr-audit
                   (nelisp-aot-compiler--repr-audit-walk body-ir)))
              (rt-slot-count (- (car rt-slot-cell) arity))
@@ -12195,6 +12310,13 @@ Returns one of:
               :fixed-param-count (plist-get param-info :fixed-count)
               :rt-slot-count rt-slot-count
               :gc-root-slots gc-root-slots
+              :return-repr
+              (cond
+               ((and param-repr
+                     (member (symbol-name name)
+                             nelisp-aot-compiler--jit-checked-car-returning-names))
+                'sexp-ptr)
+               (raw-bool-return-p 'raw-bool))
               :body root-managed-body-ir))))
    ;; Bare call in statement position (= side-effect; value discarded).
    ((and (consp sexp) (symbolp (car sexp))
@@ -20751,6 +20873,13 @@ register budgeting while ELF/Mach-O keep SysV."
                    sexp))
          (extracted
           (nelisp-aot-compiler--extract-defmacros source))
+         (nelisp-aot-compiler--raw-bool-returning-names
+          (and nelisp-aot-compiler--runtime-entry-params
+               (nelisp-aot-compiler--raw-bool-returning-defun-names source)))
+         (nelisp-aot-compiler--jit-checked-car-returning-names
+          (and nelisp-aot-compiler--runtime-entry-params
+               (nelisp-aot-compiler--jit-checked-car-returning-defun-names
+                source)))
          (empty-source-p
           (equal (plist-get extracted :source)
                  '(seq)))
@@ -21033,10 +21162,14 @@ register budgeting while ELF/Mach-O keep SysV."
                                                  (nelisp-aot-compiler--ir-get
                                                   ir-node :rt-slot-count))
                                             0)
-                         :return-repr (and ir-node
-                                           (nelisp-aot-compiler--ir-repr
-                                            (nelisp-aot-compiler--ir-get
-                                             ir-node :body)))
+                         :return-repr
+                         (or (and ir-node
+                                  (nelisp-aot-compiler--ir-get
+                                   ir-node :return-repr))
+                             (and ir-node
+                                  (nelisp-aot-compiler--ir-repr
+                                   (nelisp-aot-compiler--ir-get
+                                    ir-node :body))))
                          :body-offset (and ir-node
                                            (nelisp-aot-compiler--object-defun-body-offset
                                             ir-node)))))

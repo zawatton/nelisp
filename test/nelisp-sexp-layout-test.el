@@ -114,6 +114,9 @@
 (ert-deftest nelisp-sexp-layout--tag-uninterned-symbol ()
   (should (= nelisp-sexp-layout-tag-uninterned-symbol 16)))
 
+(ert-deftest nelisp-sexp-layout--tag-byte-code-function ()
+  (should (= nelisp-sexp-layout-tag-byte-code-function 17)))
+
 ;; Mirrors `assert!(SEXP_PAYLOAD_OFFSET == 8)' and `size_of::<Sexp>() == 32'.
 ;; ---------------------------------------------------------------------------
 

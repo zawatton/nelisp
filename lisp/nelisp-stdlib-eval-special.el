@@ -58,21 +58,19 @@
 
 (fset 'defmacro
       (cons 'macro
-            (cons (lambda (name args &rest body)
+            (lambda (name args &rest body)
                     (let* ((real-body
                             (nelisp--strip-body-declarations body))
                            (lambda-form
                             (cons 'lambda (cons args real-body)))
                            (qname (cons 'quote (cons name nil)))
-                           (inner-cons (cons 'cons
-                                             (cons lambda-form (cons nil nil))))
                            (outer-cons (cons 'cons
                                              (cons (cons 'quote (cons 'macro nil))
-                                                   (cons inner-cons nil)))))
+                                                   (cons lambda-form nil)))))
                       (cons 'progn
                             (cons (cons 'fset (cons qname (cons outer-cons nil)))
                                   (cons qname nil)))))
-                  nil)))
+                  ))
 
 ;;;; --- 単純 conditional / sequencing ----------------------------------
 
@@ -396,14 +394,10 @@ dispatches via the `closure' arm."
   (let* ((real-body (nelisp--strip-body-declarations body))
          (lambda-form (cons 'lambda (cons args real-body)))
          (qname (cons 'quote (cons name nil)))
-         ;; Inner cons cell: builds (LAMBDA-FORM nil) at evaluation time.
-         (inner-cons (cons 'cons
-                           (cons lambda-form (cons nil nil))))
-         ;; Outer cons: builds (cons 'macro (LAMBDA-FORM nil)) at
-         ;; evaluation time = (macro LAMBDA-FORM).
+         ;; GNU Emacs stores macro function cells as (macro . FUNCTION).
          (outer-cons (cons 'cons
                            (cons (cons 'quote (cons 'macro nil))
-                                 (cons inner-cons nil)))))
+                                 (cons lambda-form nil)))))
     (cons 'progn
           (cons (cons 'fset (cons qname (cons outer-cons nil)))
                 (cons qname nil)))))

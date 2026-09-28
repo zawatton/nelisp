@@ -103,6 +103,23 @@ See `nelisp-artifact-default-native-policy'.")
 (defvar nelisp-load--artifact-probe-active nil
   "Non-nil while `nelisp-load-file' is probing artifact fallbacks.")
 
+;; These references are deliberately captured from GNU Emacs itself.
+;; NeLisp's `eval-after-load' adapter below delegates all registration
+;; and ordering to these functions rather than maintaining a parallel queue.
+(defvar nelisp-load--host-eval-after-load
+  (and (fboundp 'eval-after-load) (symbol-function 'eval-after-load)))
+(defvar nelisp-load--host-provide
+  (and (fboundp 'provide) (symbol-function 'provide)))
+(defvar nelisp-load--host-after-load-evaluation
+  (and (fboundp 'do-after-load-evaluation)
+       (symbol-function 'do-after-load-evaluation)))
+
+(defvar nelisp-load--current-file nil
+  "Canonical source path currently evaluated by `nelisp-load-string'.")
+
+(defvar nelisp-load--current-features nil
+  "Features provided by the current source file.")
+
 (declare-function nelisp-artifact-load-source-file "nelisp-artifact"
                   (source-path &optional kinds))
 (declare-function nelisp-artifact-load-or-compile-source-file "nelisp-artifact"
@@ -190,22 +207,8 @@ load, PHASE is `read' or `eval'."
                   :cause cause))))
 
 ;;;###autoload
-(defun nelisp-load-string (str &optional source-file)
-  "Read every sexp in STR and evaluate them in order.
-Return the value of the last form, or nil if STR contained none.
-Defuns / defvars / defmacros installed during loading persist in
-the global NeLisp tables exactly as if the user had typed each
-form interactively.
-
-Errors during read or eval are re-signaled as `nelisp-load-error'
-carrying a plist with keys :source, :form-index, :line, :column,
-:phase (either `read' or `eval'), and :cause (the original signal
-data).  Forms successfully evaluated before the failure keep their
-side-effects — load is not transactional.  Optional SOURCE-FILE is
-attached to the signal so callers like `nelisp-load-file' can tell
-users where the failure lives."
-  (unless (stringp str)
-    (signal 'wrong-type-argument (list 'stringp str)))
+(defun nelisp-load--eval-string (str source-file)
+  "Read and evaluate STR, attaching SOURCE-FILE to read/eval errors."
   (let ((pos 0)
         (len (length str))
         (last nil)
@@ -229,6 +232,34 @@ users where the failure lives."
                                 form-index 'eval err)))
         (setq form-index (1+ form-index))))
     last))
+
+(defun nelisp-load-string (str &optional source-file)
+  "Read every sexp in STR and evaluate them in order.
+Return the value of the last form, or nil if STR contained none.
+Defuns / defvars / defmacros installed during loading persist in
+the global NeLisp tables exactly as if the user had typed each
+form interactively.
+
+Errors during read or eval are re-signaled as `nelisp-load-error'
+carrying a plist with keys :source, :form-index, :line, :column,
+:phase (either `read' or `eval'), and :cause (the original signal
+data).  Forms successfully evaluated before the failure keep their
+side-effects — load is not transactional.  Optional SOURCE-FILE is
+attached to the signal.  For a successful source load it also drives
+GNU Emacs's `do-after-load-evaluation' and `after-load-functions'."
+  (unless (stringp str)
+    (signal 'wrong-type-argument (list 'stringp str)))
+  (if (null source-file)
+      (nelisp-load--eval-string str nil)
+    (let* ((true-file (file-truename source-file))
+           (load-file-name true-file)
+           (nelisp-load--current-file true-file)
+           (nelisp-load--current-features nil)
+           (value (nelisp-load--eval-string str source-file)))
+      ;; Callback errors propagate after source evaluation, as they do in
+      ;; GNU Emacs's load path after the file has entered load-history.
+      (nelisp-load--source-complete true-file nelisp-load--current-features)
+      value)))
 
 ;;;###autoload
 (defun nelisp-load (str &optional source-file)
@@ -264,6 +295,46 @@ editor-style file APIs.  UTF-8 decoding is handled by
       (nelisp-load-string (nelisp-core-read-file-as-string path) path))))
 
 ;;; Feature registry (Doc 12 §3.3) -----------------------------------
+
+(defun nelisp-load--run-after-load-form (form)
+  "Evaluate FORM as the callback accepted by GNU `eval-after-load'."
+  (cond
+   ((or (nelisp--closure-p form)
+        (nelisp--native-function-p form)
+        (and (symbolp form)
+             (or (gethash form nelisp--functions)
+                 (fboundp form)))
+        (and (functionp form)
+             (not (and (consp form) (eq (car form) 'lambda)))))
+    (nelisp--apply form nil))
+   ((and (consp form) (eq (car form) 'lambda))
+    (nelisp--apply (nelisp-eval form) nil))
+   (t
+    (nelisp-eval form))))
+
+(defun nelisp--builtin-eval-after-load (selector form)
+  "Delegate NeLisp callback registration to GNU Emacs `eval-after-load'."
+  (unless (functionp nelisp-load--host-eval-after-load)
+    (signal 'nelisp-load-error
+            (list :phase 'eval-after-load :cause 'host-function-unavailable)))
+  (funcall nelisp-load--host-eval-after-load selector
+           (lambda () (nelisp-load--run-after-load-form form))))
+
+(defun nelisp-load--source-complete (true-file features)
+  "Record successful TRUE-FILE in `load-history' and notify GNU Emacs."
+  (unless (functionp nelisp-load--host-after-load-evaluation)
+    (signal 'nelisp-load-error
+            (list :phase 'load :source true-file
+                  :cause 'host-after-load-unavailable)))
+  (let ((entry (assoc true-file load-history)))
+    (unless entry
+      (setq entry (list true-file))
+      (push entry load-history))
+    (dolist (feature features)
+      (let ((provided (cons 'provide feature)))
+        (unless (member provided (cdr entry))
+          (setcdr entry (append (cdr entry) (list provided)))))))
+  (funcall nelisp-load--host-after-load-evaluation true-file))
 
 (defvar nelisp--features nil
   "List of symbols `nelisp-provide' has registered this session.")
@@ -304,7 +375,10 @@ per Doc 12 §2.3 A.")
 Invoked from `nelisp--reset' via `fboundp' guard; callable directly
 in tests that want to isolate require state."
   (setq nelisp--features nil
-        nelisp--loading nil))
+        nelisp--loading nil)
+  (when (hash-table-p nelisp--functions)
+    (puthash 'eval-after-load #'nelisp--builtin-eval-after-load
+             nelisp--functions)))
 
 (defun nelisp--builtin-require (feature &optional filename noerror)
   "Phase 5-A.3 NeLisp `require'.
@@ -353,13 +427,23 @@ names."
                         :cause 'did-not-provide)))
         (nelisp-load--register-feature feature)))))))
 
-(defun nelisp--builtin-provide (feature &optional _subfeatures)
+(defun nelisp--builtin-provide (feature &optional subfeatures)
   "Phase 5-A.3 NeLisp `provide'.
 Register FEATURE as available for `nelisp-require'.  SUBFEATURES
-is accepted for host-parity but not yet honoured."
+is forwarded to GNU `provide' when the host bridge is available."
   (unless (symbolp feature)
     (signal 'wrong-type-argument (list 'symbolp feature)))
-  (nelisp-load--register-feature feature))
+  (nelisp-load--register-feature feature)
+  (when (and nelisp-load--current-file
+             (not (memq feature nelisp-load--current-features)))
+    (setq nelisp-load--current-features
+          (append nelisp-load--current-features (list feature))))
+  ;; GNU's C `provide' is the authority for its after-load-alist feature
+  ;; entries.  Keep the host feature registry in step while source is loaded.
+  (when (functionp nelisp-load--host-provide)
+    (if subfeatures
+        (funcall nelisp-load--host-provide feature subfeatures)
+      (funcall nelisp-load--host-provide feature))))
 
 ;;;###autoload
 (defun nelisp-require (feature &optional filename noerror)
@@ -394,6 +478,8 @@ arguments for shape parity but are ignored at this layer."
 (when (hash-table-p nelisp--functions)
   (puthash 'require   #'nelisp--builtin-require   nelisp--functions)
   (puthash 'provide   #'nelisp--builtin-provide   nelisp--functions)
+  (puthash 'eval-after-load #'nelisp--builtin-eval-after-load
+           nelisp--functions)
   (puthash 'load-file #'nelisp--builtin-load-file nelisp--functions)
   (puthash 'load      #'nelisp--builtin-load      nelisp--functions))
 

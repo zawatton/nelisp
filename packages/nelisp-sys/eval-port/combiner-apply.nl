@@ -152,6 +152,19 @@
   i64
   (:alloc may :ffi may :unsafe may))
 
+(sys:extern nl_cons_stash_void_function
+  (:symbol "nl_cons_stash_void_function" :abi c :unsafe t)
+  ((env (ptr eval_ctx)) (name_ptr usize))
+  i64
+  (:alloc may :ffi may :unsafe may))
+
+;; wf_bytecode(args, env, out) -> i64; defined in the standalone bytecode helpers.
+(sys:extern wf_bytecode
+  (:symbol "wf_bytecode" :abi c :unsafe t)
+  ((args usize) (env usize) (out usize))
+  i64
+  (:alloc may :ffi may :unsafe may))
+
 ;; nl_apply_lambda_inner(captured, formals, body_list, args_list, env, out) -> i64
 ;; 0=ok, 1=err. env = opaque *mut c_void = eval_ctx* post-cutover.
 (sys:extern nl_apply_lambda_inner
@@ -751,6 +764,70 @@
     (sys:unsafe
      (sys:poke-u64 buf 119225648511347)
      (nl_alloc_symbol buf 6 sym_slot))))
+
+;; Symbolp's predicate name is distinct from the `symbol' type used by
+;; ordinary wrong-type calls. Keep the fset guard's signal data precise.
+(sys:defun nl_apply_write_symbolp_sym
+    ((sym_slot usize))
+  usize
+  (:alloc may :ffi may :unsafe may)
+  (let ((buf usize (sys:alloc 8 1)))
+    (sys:unsafe
+     (sys:poke-u64 buf 31644423040104819)
+     (nl_alloc_symbol buf 7 sym_slot))))
+
+(sys:defun nl_apply_stash_wrong_symbolp
+    ((env (ptr eval_ctx)) (offender_ptr usize))
+  i64
+  (:alloc may :ffi may :unsafe may)
+  (let ((tag_slot usize (sys:alloc 32 8))
+        (pred_slot usize (sys:alloc 32 8))
+        (clone_slot usize (sys:alloc 32 8))
+        (nil_slot usize (sys:alloc 32 8))
+        (inner usize (sys:alloc 32 8))
+        (pair_slot usize (sys:alloc 32 8)))
+    (nl_apply_write_wta_sym tag_slot)
+    (nl_apply_write_symbolp_sym pred_slot)
+    (sys:unsafe (nl_sexp_clone_into offender_ptr clone_slot))
+    (nl_apply_write_nil nil_slot)
+    (sys:unsafe
+     (nelisp_cons_construct clone_slot nil_slot inner)
+     (nelisp_cons_construct pred_slot inner pair_slot)
+     (sys:poke-u64 268435472 0 1)
+     (nl_sexp_clone_into tag_slot 268435480)
+     (nl_sexp_clone_into pair_slot 268435512)
+     (sys:atomic-add! 268435544 1))
+    1))
+
+(sys:defun nl_apply_write_invalid_fn_sym
+    ((sym_slot usize))
+  usize
+  (:alloc may :ffi may :unsafe may)
+  (let ((buf usize (sys:alloc 16 1)))
+    (sys:unsafe
+     (sys:poke-u64 buf 3270855143590358633)
+     (sys:poke-u64 (+ buf 8) 7957695015192261990)
+     (nl_alloc_symbol buf 16 sym_slot))))
+
+(sys:defun nl_apply_stash_invalid_function
+    ((env (ptr eval_ctx)) (offender_ptr usize))
+  i64
+  (:alloc may :ffi may :unsafe may)
+  (let ((tag_slot usize (sys:alloc 32 8))
+        (clone_slot usize (sys:alloc 32 8))
+        (nil_slot usize (sys:alloc 32 8))
+        (pair_slot usize (sys:alloc 32 8)))
+    (nl_apply_write_invalid_fn_sym tag_slot)
+    (sys:unsafe (nl_sexp_clone_into offender_ptr clone_slot))
+    (nl_apply_write_nil nil_slot)
+    (sys:unsafe
+     (nelisp_cons_construct clone_slot nil_slot pair_slot)
+     (nelisp_cons_construct tag_slot pair_slot clone_slot)
+     (sys:poke-u64 268435472 0 1)
+     (nl_sexp_clone_into tag_slot 268435480)
+     (nl_sexp_clone_into pair_slot 268435512)
+     (sys:atomic-add! 268435544 1))
+    1))
 
 ;; nl_apply_stash_wta(env, offender_ptr) -> i64
 ;; Stash wrong-type-argument signal and return 1.
@@ -1606,24 +1683,42 @@
     ((func_ptr usize) (args_list_ptr usize) (env (ptr eval_ctx)) (out usize))
   i64
   (:alloc may :ffi may :unsafe may)
-  ;; func must be Cons (tag==7)
-  (if (= (sys:peek-u64 func_ptr) 7)
-      ;; car of func must be Symbol (tag==4)
-      (let ((head_ptr usize (sys:unsafe (nl_cons_car_ptr func_ptr))))
-        (if (= (sys:cast usize (sys:peek-u64 head_ptr)) 4)
-            ;; Check which head we have
-            (if (= (nl_apply_name_eq_closure head_ptr) 1)
-                (nl_apply_closure_or_lambda func_ptr 1 args_list_ptr env out)
-              (if (= (nl_apply_name_eq_lambda head_ptr) 1)
-                  (nl_apply_closure_or_lambda func_ptr 0 args_list_ptr env out)
-                ;; Check for "builtin" [7]: 31078196194145634
-                (let ((builtin_buf usize (sys:alloc 8 1)))
-                  (sys:unsafe (sys:poke-u64 builtin_buf 31078196194145634))
-                  (if (= (nl_apply_sym_eq_bytes head_ptr builtin_buf 7) 1)
-                      (nl_apply_builtin func_ptr args_list_ptr env out)
-                    ;; "macro" or unknown head: wrong-type
-                    (nl_apply_stash_wta env func_ptr)))))
-          ;; head is not Symbol: wrong-type
-          (nl_apply_stash_wta env func_ptr)))
-    ;; func is not Cons: wrong-type
-    (nl_apply_stash_wta env func_ptr)))
+  ;; Public byte-code objects carry their VM fields in record slots.
+  (if (= (sys:peek-u64 func_ptr) 17)
+      (sys:unsafe
+       (wf_bytecode_function func_ptr args_list_ptr (sys:cast usize env) out))
+    (if (or (= (sys:peek-u64 func_ptr) 0)
+            (= (sys:peek-u64 func_ptr) 1))
+        (sys:unsafe (nl_cons_stash_void_function env func_ptr))
+      ;; Lisp functions and macros are represented as Cons objects.
+      (if (= (sys:peek-u64 func_ptr) 7)
+          (let ((head_ptr usize (sys:unsafe (nl_cons_car_ptr func_ptr))))
+            (if (= (sys:peek-u64 head_ptr) 4)
+                (if (= (nl_apply_name_eq_closure head_ptr) 1)
+                    (nl_apply_closure_or_lambda func_ptr 1 args_list_ptr env out)
+                  (if (= (nl_apply_name_eq_lambda head_ptr) 1)
+                      (nl_apply_closure_or_lambda func_ptr 0 args_list_ptr env out)
+                    (let ((builtin_buf usize (sys:alloc 8 1)))
+                      (sys:unsafe (sys:poke-u64 builtin_buf 31078196194145634))
+                      (if (= (nl_apply_sym_eq_bytes head_ptr builtin_buf 7) 1)
+                          (nl_apply_builtin func_ptr args_list_ptr env out)
+                        (nl_apply_stash_invalid_function env func_ptr)))))
+              (nl_apply_stash_invalid_function env func_ptr)))
+        ;; Symbols resolve through their function cell before recursion; the
+        ;; byte-code VM uses this for symbol constants such as `list'.
+        (if (or (= (sys:peek-u64 func_ptr) 4)
+                (= (sys:peek-u64 func_ptr) 16))
+            (let ((mirror_ptr usize (+ (sys:cast usize env)
+                                       (sys:offsetof eval_ctx mirror)))
+                  (unbound_ptr usize (+ (sys:cast usize env)
+                                        (sys:offsetof eval_ctx unbound)))
+                  (fslot usize (sys:alloc 32 8)))
+              (if (= (sys:unsafe
+                      (nelisp_env_lookup_function mirror_ptr unbound_ptr
+                                                  func_ptr fslot))
+                     0)
+                  (if (= (sys:peek-u64 fslot) 0)
+                      (sys:unsafe (nl_cons_stash_void_function env func_ptr))
+                    (nl_apply_function fslot args_list_ptr env out))
+                (sys:unsafe (nl_cons_stash_void_function env func_ptr))))
+          (nl_apply_stash_invalid_function env func_ptr))))))

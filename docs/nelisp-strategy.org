@@ -475,6 +475,11 @@ The lock file should contain exact dependency versions and integrity information
 
 Package management must be part of the official toolchain.
 
+The proposed shared-foundation design is
+[[file:design/203-nelix-package-foundation.org][Doc 203: Nelix package-management integration]]. It defines the Nelix/NeLisp
+boundary, lock authority, integrity requirements, migration sequence, and
+acceptance evidence. This proposal does not mark the requirements below complete.
+
 Example:
 
 #+BEGIN_SRC shell

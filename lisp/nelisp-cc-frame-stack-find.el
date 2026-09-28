@@ -211,7 +211,9 @@
       ;; `nelisp_fnv1a_step4' the same way.  A sound "not found" here is
       ;; safe: a genuinely malformed key was never a valid lexical
       ;; binding to begin with.
-      (if (= (extern-call nl_gc_in_arena name-ptr) 0)
+      (if (and (= (extern-call nl_gc_in_arena name-ptr) 0)
+               (= (extern-call nl_root_pin_slot_active name-ptr) 0)
+               (= (extern-call nl_rootstack_slot_active name-ptr) 0))
           0
         (if (or (= (sexp-tag name-ptr) 4) (= (sexp-tag name-ptr) 16))
             1

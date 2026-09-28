@@ -56,7 +56,32 @@
     "nl_alloc_vector"
     "nl_vector_slot_ptr"
     "nl_vector_set_slot"
-    "nelisp_env_lookup_value")
+    "nelisp_env_lookup_value"
+    "nl_root_pin_begin"
+    "nl_root_pin_reserve"
+    "nl_root_pin_end"
+    "nelisp_cons_construct"
+    "wf_bytecode_call_gateway"
+    "nl_arena_base"
+    "nelisp_eln_callback_context_push"
+    "nelisp_eln_callback_context_status"
+    "nelisp_eln_callback_context_pop"
+    "nelisp_eln_fixnum1_callback"
+    "nl_eln_callback_context"
+    "nelisp_eln_callback7_entry"
+    "nelisp_eln_callback7_status"
+    "nelisp_eln_callback7_root_mark"
+    "nl_eln_callback7_context"
+    "nelisp_eln_callback7_entry_word"
+    "nelisp_eln_callback1_entry_word"
+    "nelisp_eln_callback_port0_entry_word"
+    "nelisp_eln_callback_port1_entry_word"
+    "nelisp_eln_callback_port2_entry_word"
+    "nelisp_eln_callback_port3_entry_word"
+    "nelisp_eln_callback_port4_entry_word"
+    "nelisp_eln_callback_port5_entry_word"
+    "nelisp_eln_callback_port6_entry_word"
+    "nelisp_eln_callback_port7_entry_word")
   "Runtime symbols a stub can be pointed at, in `nelisp--native-symbol-addr' order.
 
 The index is the contract: the builtin selects from a chain of
@@ -199,6 +224,8 @@ the old mapping is the only safe first-slice reclamation policy.")
 (defconst nelisp-native-load-tag-float 3)
 (defconst nelisp-native-load-tag-symbol 4)
 (defconst nelisp-native-load-tag-string 5)
+(defconst nelisp-native-load-tag-cons 7)
+(defconst nelisp-native-load-tag-unibyte-string 14)
 
 (defconst nelisp-native-load-tag-vector 8)
 
@@ -358,10 +385,27 @@ spells the same request `(:file PATH)'.
 
 Detected by capability rather than by `system-type', because what differs
 is the runtime, not the operating system."
-  (if (and (fboundp 'nelisp--write-stdout-bytes)
-           (boundp 'nelisp-artifact-standalone-repo-root))
+  (if (fboundp 'nelisp--write-stdout-bytes)
       path
     (list :file path)))
+
+(defun nelisp-native-load--complete-file-bytes-p (path bytes)
+  "Return non-nil when BYTES contains all of PATH.
+
+The reader's low-level file primitive has a fixed 8 MiB buffer.  Hashing a
+prefix as if it were a complete executable would produce a stable but false
+runtime identity, so the in-process fallback must verify the stat size."
+  (when (and (stringp bytes) (fboundp 'file-attributes))
+    (let* ((attributes (condition-case nil
+                           (file-attributes path)
+                         (error nil)))
+           (size (and attributes
+                      (if (fboundp 'file-attribute-size)
+                          (file-attribute-size attributes)
+                        (nth 7 attributes)))))
+      (and (integerp size)
+           (>= size 0)
+           (= (string-bytes bytes) size)))))
 
 (defconst nelisp-native-load--sha256-helpers
   '(("sha256sum")
@@ -469,7 +513,9 @@ check."
                                  (buffer-string))))
                          (error nil))))
            (digest (or external
-                       (and (stringp bytes)
+                       (and path
+                            (nelisp-native-load--complete-file-bytes-p
+                             path bytes)
                             (> (string-bytes bytes) 0)
                             (nelisp-native-load--sha256 bytes)))))
       (setq nelisp-native-load--running-binary-sha256-cache digest)
@@ -744,16 +790,47 @@ for.  Refusing is the honest option until this encodes."
       (setq i (1+ i)))
     (nreverse bytes)))
 
-(defun nelisp-native-load-box (addr value)
-  "Write VALUE into the Sexp slot at ADDR and return ADDR.
+(defconst nelisp-native-load-max-list-elements 16384
+  "Maximum list length accepted by the native object bridge.
 
-Integers, nil, t and single-byte strings.  A string is materialized by
-the runtime's own `nl_alloc_str', reached through the same stub
-mechanism the loaded code uses, so the result is a string the runtime
-owns rather than a slot this pretends is one.
+This finite limit bounds rooting and prevents cyclic or hostile lists from
+turning conversion into an unbounded walk.")
 
-Anything else is refused rather than written as a raw word: the runtime
-takes a slot as a pointer and would dereference it."
+(defun nelisp-native-load--proper-list-elements (value)
+  "Return VALUE's elements in order, refusing dotted, cyclic or huge lists."
+  (let ((cursor value)
+        (slow value)
+        (fast value)
+        (count 0)
+        (reverse-elements nil))
+    (while (consp cursor)
+      (setq count (1+ count))
+      (when (> count nelisp-native-load-max-list-elements)
+        (error "nelisp-native-load: list exceeds the %d element limit"
+               nelisp-native-load-max-list-elements))
+      (setq reverse-elements (cons (car cursor) reverse-elements))
+      (setq cursor (cdr cursor))
+      (setq slow (if (consp slow) (cdr slow) slow))
+      (setq fast (if (consp fast) (cdr fast) fast))
+      (setq fast (if (consp fast) (cdr fast) fast))
+      (when (and (consp fast) (eq fast slow))
+        (error "nelisp-native-load: cannot box a circular list")))
+    (unless (null cursor)
+      (error "nelisp-native-load: cannot box an improper list"))
+    (nreverse reverse-elements)))
+
+(defun nelisp-native-load-box (addr value &optional env pin-frame)
+  "Write VALUE into the GC-root slot ADDR and return ADDR.
+
+Supports integers, nil, t, single-byte strings, interned symbols and proper
+finite lists.  Symbol inputs are verified only for predicate calls such as
+`symbolp'; symbol identity and general symbol-value roundtrips are unverified.
+Uninterned symbols are refused.  Cons cells are allocated by the runtime and
+every temporary Sexp stays in the active pinned-root frame.
+
+ADDR must already be a GC-visible root.  ENV and PIN-FRAME are required for
+list conversion.  PIN-FRAME remains valid across interpreted calls; ordinary
+evaluator root markers do not."
   (cond
    ((integerp value)
     (nelisp-native-load--zero-slot addr)
@@ -775,25 +852,63 @@ takes a slot as a pointer and would dereference it."
       (nelisp-native-load--zero-slot addr)
       (ptr-call (nelisp-native-load--symbol-addr "nl_alloc_str")
                 buf len addr 0 0 0)))
+   ((symbolp value)
+    (let* ((name (symbol-name value))
+           (interned (intern-soft name)))
+      (unless (eq value interned)
+        (error "nelisp-native-load: cannot box uninterned symbol %S" value))
+      (let* ((bytes (nelisp-native-load--string-bytes name))
+             (len (length bytes))
+             (buf (alloc-bytes (if (> len 0) len 1) 1)))
+        (nelisp-native-load--poke-bytes buf 0 bytes)
+        (nelisp-native-load--zero-slot addr)
+        (ptr-call (nelisp-native-load--symbol-addr "nl_alloc_symbol")
+                  buf len addr 0 0 0))))
+   ((consp value)
+    (unless (and (integerp env) (> env 0))
+      (error "nelisp-native-load: list boxing requires the active runtime env"))
+    (unless (and (integerp pin-frame) (> pin-frame 0))
+      (error "nelisp-native-load: list boxing requires a pinned-root frame"))
+    (let ((rest (nreverse (nelisp-native-load--proper-list-elements value)))
+          (item-slot (nelisp-native-load--pin-reserve env pin-frame)))
+      (nelisp-native-load--zero-slot addr)
+      (while rest
+        (nelisp-native-load-box item-slot (car rest) env pin-frame)
+        ;; ADDR is the rooted tail and also the destination.  The constructor
+        ;; consumes the cdr before replacing its slot.
+        (ptr-call (nelisp-native-load--symbol-addr "nelisp_cons_construct")
+                  item-slot addr addr 0 0 0)
+        (setq rest (cdr rest)))
+      addr))
    (t (error "nelisp-native-load: cannot box %S" value)))
   addr)
 
-(defun nelisp-native-load-unbox (addr)
+(defun nelisp-native-load-unbox (addr &optional env pin-frame)
   "Return the value in the Sexp slot at ADDR.
 
-Symbols come back interned and strings as their bytes.  A float is
-refused: its payload is raw f64 bits and turning those back into a
-number needs arithmetic this does not do, so returning the bit pattern
-as an integer would be a wrong answer rather than a missing one."
+Symbols come back interned.  With ENV and PIN-FRAME, conses and strings are
+shallow-cloned into the evaluator result slot so their object identity is
+preserved.  Without that rooted-frame context, strings retain the legacy byte
+conversion and conses are refused.  A float is refused because its payload is
+raw f64 bits and returning those bits as an integer would be wrong."
   (let ((tag (ptr-read-u64 addr 0)))
     (cond
      ((= tag nelisp-native-load-tag-nil) nil)
      ((= tag nelisp-native-load-tag-t) t)
      ((= tag nelisp-native-load-tag-int) (ptr-read-u64 addr 8))
-     ((= tag nelisp-native-load-tag-string)
-      (nelisp-native-load--payload-string addr))
+     ((or (= tag nelisp-native-load-tag-string)
+          (= tag nelisp-native-load-tag-unibyte-string))
+      (if (and (integerp env) (> env 0)
+               (integerp pin-frame) (> pin-frame 0))
+          (nelisp--native-unbox-reference addr env pin-frame)
+        (nelisp-native-load--payload-string addr)))
      ((= tag nelisp-native-load-tag-symbol)
       (intern (nelisp-native-load--payload-string addr)))
+     ((= tag nelisp-native-load-tag-cons)
+      (if (and (integerp env) (> env 0)
+               (integerp pin-frame) (> pin-frame 0))
+          (nelisp--native-unbox-reference addr env pin-frame)
+        (error "nelisp-native-load: cons results require a pinned-root frame")))
      ((= tag nelisp-native-load-tag-float)
       (error "nelisp-native-load: float results are not decoded"))
      (t (error "nelisp-native-load: result tag %d is not one this unboxes" tag)))))
@@ -827,41 +942,24 @@ string a loaded defun returns and far short of a runaway.")
 ;;;; Loading ----------------------------------------------------------
 
 (defun nelisp-native-load--make-scratch-vector (addr)
-  "Write a fresh scratch vector Sexp into the slot at ADDR.
+  "Write a fresh scratch vector Sexp into root slot ADDR.
 
 `nl_alloc_vector' returns the NlVector box; the Sexp that names it is
 tag 8 with the box at payload+8, which is the shape the reader's own
 `nl_logic_build_scratch' builds and the shape `nl_vector_slot_ptr'
 expects -- it derefs payload+8 to reach the box."
   (let ((box (ptr-call (nelisp-native-load--symbol-addr "nl_alloc_vector")
-                       nelisp-native-load-scratch-slots 0 0 0 0 0))
-        (set-slot (nelisp-native-load--symbol-addr "nl_vector_set_slot"))
-        (i 0))
-    (when (or (not (integerp box)) (= box 0))
-      (error "nelisp-native-load: scratch vector allocation returned %S" box))
-    ;; Every element has to hold a POINTER, not an immediate.
-    ;;
-    ;; `nl_vector_slot_ptr' returns the stored word when it is a pointer
-    ;; and a FRESH temporary box when it is an immediate.  Compiled code
-    ;; fills an element by calling it once to get somewhere to write the
-    ;; value, then again to hand that same storage to
-    ;; `nl_vector_set_slot' -- which only works if the two calls return
-    ;; the same address.  Over an immediate they return two throwaways,
-    ;; the value is written into the first and the second is copied out,
-    ;; and `(vector 7 8 9)' comes back as three Nils.
-    ;;
-    ;; So the element cannot be nil, t or an integer: `nl_val_clone_into'
-    ;; folds exactly those three back into an immediate word.  A string
-    ;; takes the rebox path instead and leaves a pointer behind.
-    (while (< i nelisp-native-load-scratch-slots)
-      (let ((cell (alloc-bytes 32 8)))
-        (nelisp-native-load-box cell "s")
-        (ptr-call set-slot box i cell 0 0 0))
-      (setq i (1+ i)))
+                       nelisp-native-load-scratch-slots 0 0 0 0 0)))
+    (ptr-write-u64 addr 0 0)
+    (ptr-write-u64 addr 8 0)
+    (ptr-write-u64 addr 16 0)
+    (ptr-write-u64 addr 24 0)
     (ptr-write-u64 addr 0 nelisp-native-load-tag-vector)
     (ptr-write-u64 addr 8 box)
     (ptr-write-u64 addr 16 0)
     (ptr-write-u64 addr 24 0)
+    (when (or (not (integerp box)) (= box 0))
+      (error "nelisp-native-load: scratch vector allocation returned %S" box))
     addr))
 
 (defun nelisp-native-load-abi (native)
@@ -908,7 +1006,9 @@ rather than trust this."
     (while (and rest (not found))
       (if (equal (car rest) name)
           (setq found idx)
-        (setq idx (1+ idx)))
+        ;; Callable imports may run after the public `1+' cell changes.
+        ;; Keep this capability lookup independent of that cell.
+        (setq idx (+ idx 1)))
       (setq rest (cdr rest)))
     (unless found
       (error "nelisp-native-load: no bridge for %s" name))
@@ -916,6 +1016,26 @@ rather than trust this."
       (when (= addr 0)
         (error "nelisp-native-load: %s resolved to 0" name))
       addr)))
+
+(defun nelisp-native-load--pin-begin (env)
+  "Begin an exclusive GC-visible native-loader root frame for ENV."
+  (ptr-call (nelisp-native-load--symbol-addr "nl_root_pin_begin")
+            env 0 0 0 0 0))
+
+(defun nelisp-native-load--pin-reserve (env marker)
+  "Reserve a GC-visible Sexp slot in ENV's active pinned frame."
+  (let ((slot (ptr-call
+               (nelisp-native-load--symbol-addr "nl_root_pin_reserve")
+               env marker 0 0 0 0)))
+    (unless (and (integerp slot) (> slot 0))
+      (error "nelisp-native-load: pinned root frame is busy or full"))
+    slot))
+
+(defun nelisp-native-load--pin-end (env marker)
+  "Release ENV's pinned frame, refusing stale or foreign markers."
+  (unless (= (ptr-call (nelisp-native-load--symbol-addr "nl_root_pin_end")
+                       env marker 0 0 0 0) 1)
+    (error "nelisp-native-load: pinned root frame ownership lost")))
 
 ;;;; Raw runtime units ------------------------------------------------
 
@@ -2681,21 +2801,14 @@ what a cache wants and what the demo did."
       (while (< i (+ 5 nelisp-native-load-callback-slots))
         (nelisp-native-load--zero-slot (+ slots (* 32 i)))
         (setq i (1+ i)))
-      ;; ...except scratch, which has to be a vector.  See
-      ;; `nelisp-native-load-scratch-slots'.
-      (nelisp-native-load--make-scratch-vector (+ slots 32))
       ;; Trampoline: bytes, then the boundary immediates and the entry.
       (nelisp-native-load--poke-bytes trampage 0 tramp-bytes)
       (let ((values (append
-                     ;; out, mirror, frames, scratch, name_slot.  Both
-                     ;; providers ignore mirror, so it carries the env
-                     ;; pointer rather than a wild one.
-                     (list slots env env (+ slots 32) (+ slots 64))
-                     (let ((cb nil) (k 0))
-                       (while (< k nelisp-native-load-callback-slots)
-                         (setq cb (cons (+ slots 96 (* 32 k)) cb))
-                         (setq k (1+ k)))
-                       (nreverse cb))
+                     ;; These Sexp pointers are filled from checked roots for
+                     ;; each call.  Mirror and frames both carry the active
+                     ;; evaluator env; it is a stable non-Sexp context.
+                     (list 0 env env 0 0)
+                     (make-list nelisp-native-load-callback-slots 0)
                      (list (+ codepage body-entry))))
             (offsets (plist-get trampoline :imm64-offsets)))
         (while offsets
@@ -2712,6 +2825,11 @@ what a cache wants and what the demo did."
             :datapage datapage
             :slots-size slots-size
             :entry-size (nelisp-native-load--page-round (length tramp-bytes))
+            :trampoline-bytes tramp-bytes
+            :boundary-imm64-offsets
+            (butlast (plist-get trampoline :imm64-offsets))
+            :trampoline-entry-imm64-offset
+            (car (last (plist-get trampoline :imm64-offsets)))
             :slots slots
             :out slots
             :arity arity
@@ -2726,6 +2844,36 @@ what a cache wants and what the demo did."
             :name name
             :path path))))
 
+(defun nelisp-native-load--decode-raw-bool (raw)
+  "Decode a proven raw boolean result RAW as canonical nil or t."
+  (cond
+   ((eql raw 0) nil)
+   ((eql raw 1) t)
+   (t (error "nelisp-native-load: invalid raw-bool return %S" raw))))
+
+(defun nelisp-native-load--call-raw (handle args boxed)
+  "Call HANDLE with raw integer ARGS, without requiring a runtime env."
+  (let ((passed args)
+        (raw nil))
+    (while passed
+      (unless (integerp (car passed))
+        (error "nelisp-native-load: %s takes integers, got %S"
+               (plist-get handle :name) (car passed)))
+      (setq passed (cdr passed)))
+    (setq passed args)
+    (while (< (length passed) (length nelisp-native-load--arg-regs))
+      (setq passed (append passed (list 0))))
+    (setq raw (apply (function ptr-call) (plist-get handle :entry) passed))
+    (when (and boxed (integerp raw) (< raw nelisp-native-load-page-bytes))
+      (setq boxed nil))
+    (cond
+     ((eq (plist-get handle :return-repr) 'raw-bool)
+      (nelisp-native-load--decode-raw-bool raw))
+     ((or (eq (plist-get handle :return-repr) 'sexp-ptr)
+          (and boxed (eq (plist-get handle :return-repr) 'unknown)))
+      (nelisp-native-load-unbox raw))
+     (t raw))))
+
 (defun nelisp-native-load-call (handle args)
   "Call the function in HANDLE with ARGS and return its value.
 
@@ -2734,9 +2882,11 @@ not interchangeable -- calling a boxed defun with raw integers makes it
 do arithmetic on the values, and calling an integer defun with slot
 addresses makes it do arithmetic on the pointers.  Measured on `add3',
 an extern-less `(+ a (+ b c))': raw arguments answer 6, boxed arguments
-answer 406962619651776 and leave `out' untouched."
+answer 406962619651776 and leave `out' untouched.  Boxed calls reserve every
+ Sexp boundary and argument slot in an exclusive GC-scanned pinned frame.
+The fixed-capacity region refuses overlapping calls while worker threads are
+registered."
   (let* ((arity (plist-get handle :arity))
-         (arg-slots (plist-get handle :arg-slots))
          (boxed (eq (plist-get handle :abi) 'boxed))
          ;; Arguments and the result are separate questions.  Prefer what
          ;; the artifact records; the inference stays for artifacts written
@@ -2748,46 +2898,111 @@ answer 406962619651776 and leave `out' untouched."
     (unless (= (length args) arity)
       (error "nelisp-native-load: %s takes %d argument(s), got %d"
              (plist-get handle :name) arity (length args)))
-    (let ((i 0)
-          (rest args)
-          (passed nil)
-          (raw nil))
-      (while rest
-        (if param-boxed
-            (setq passed (cons (nelisp-native-load-box
-                                (+ arg-slots (* 32 i)) (car rest))
-                               passed))
-          (unless (integerp (car rest))
-            (error "nelisp-native-load: %s takes integers, got %S"
-                   (plist-get handle :name) (car rest)))
-          (setq passed (cons (car rest) passed)))
-        (setq i (1+ i))
-        (setq rest (cdr rest)))
-      (setq passed (nreverse passed))
-      ;; `ptr-call' reads six arguments after the address unconditionally,
-      ;; so hand it six.  Passing fewer leaves it walking off the end of
-      ;; the argument list rather than seeing a short call.
-      (while (< (length passed) (length nelisp-native-load--arg-regs))
-        (setq passed (append passed (list 0))))
-      (setq raw (apply (function ptr-call) (plist-get handle :entry) passed))
-      ;; A defun can carry a dispatcher extern and still answer in a raw
-      ;; register -- `(let ((m 3) (i 0)) (integerp n) (if (< i m) 111 222))'
-      ;; delegates once and returns 111.  Its `:return-repr' is `unknown',
-      ;; so neither the externs nor the metadata settle it, and unboxing
-      ;; 111 dereferences address 111.  Nothing below the first page is a
-      ;; Sexp, so treat such a result as the raw value it is.
-      (when (and boxed (integerp raw) (< raw nelisp-native-load-page-bytes))
-        (setq boxed nil))
-      ;; The result is what rax holds, not what `out' holds.  For a body
-      ;; that ends in a delegated call the two are the same pointer --
-      ;; the dispatcher returns `out' -- which is why reading `out'
-      ;; looked right until a body ended in something else.  `(let ((v
-      ;; (vector 7 8 9))) n)' leaves the vector in `out' and returns the
-      ;; boxed `n' in rax, so reading `out' answered with the vector.
-      (if (or (eq (plist-get handle :return-repr) 'sexp-ptr)
-              (and boxed (eq (plist-get handle :return-repr) 'unknown)))
-          (nelisp-native-load-unbox raw)
-        raw))))
+    (if (not param-boxed)
+        (nelisp-native-load--call-raw handle args boxed)
+      (let* ((env (nelisp--native-env)))
+      (unless (and (integerp env) (> env 0))
+        (error "nelisp-native-load: no active runtime environment"))
+      (let ((pin-frame (nelisp-native-load--pin-begin env)))
+        (unless (and (integerp pin-frame) (> pin-frame 0))
+          (error "nelisp-native-load: pinned root frame is busy"))
+        (unwind-protect
+            (let* ((out (nelisp-native-load--pin-reserve env pin-frame))
+                   (mirror env)
+                   (frames (+ env 32))
+                   (scratch (nelisp-native-load--pin-reserve env pin-frame))
+                   (name-slot (nelisp-native-load--pin-reserve env pin-frame))
+                   (callbacks
+                    (let ((i 0) (slots nil))
+                      (while (< i nelisp-native-load-callback-slots)
+                        (setq slots
+                              (cons (nelisp-native-load--pin-reserve env pin-frame)
+                                    slots))
+                        (setq i (1+ i)))
+                      (nreverse slots)))
+                   (scratch-cell (nelisp-native-load--pin-reserve env pin-frame))
+                   (scratch-set-slot
+                    (nelisp-native-load--symbol-addr "nl_vector_set_slot"))
+                   (scratch-i 0)
+                   (passed nil)
+                   (rest args)
+                   (raw nil)
+                   (call-size
+                    (nelisp-native-load--page-round
+                     (length (plist-get handle :trampoline-bytes))))
+                   (call-entry nil)
+                   (patch-offsets (plist-get handle :boundary-imm64-offsets))
+                   (patch-values (append (list out mirror frames scratch name-slot)
+                                         callbacks)))
+              (nelisp-native-load--make-scratch-vector scratch)
+              ;; Keep each vector element pointer-backed for compiled code
+              ;; that retains slot addresses across nested native calls.
+              (while (< scratch-i nelisp-native-load-scratch-slots)
+                (nelisp-native-load-box scratch-cell "s")
+                (ptr-call scratch-set-slot (ptr-read-u64 scratch 8)
+                          scratch-i scratch-cell 0 0 0)
+                (setq scratch-i (1+ scratch-i)))
+              (while rest
+                (let ((slot
+                       (if (fboundp 'nelisp--native-pin-copy)
+                           (nelisp--native-pin-copy env pin-frame (car rest))
+                         (let ((legacy-slot
+                                (nelisp-native-load--pin-reserve env pin-frame)))
+                           (nelisp-native-load-box
+                            legacy-slot (car rest) env pin-frame)
+                           legacy-slot))))
+                  (unless (and (integerp slot) (> slot 0))
+                    (error "nelisp-native-load: cannot pin argument value"))
+                  (setq passed (cons slot passed)))
+                (setq rest (cdr rest)))
+              (setq passed (nreverse passed))
+              ;; `ptr-call' reads six arguments after the address unconditionally.
+              (while (< (length passed) (length nelisp-native-load--arg-regs))
+                (setq passed (append passed (list 0))))
+              ;; A private trampoline embeds only this invocation's pinned
+              ;; root addresses.
+              (setq call-entry (nelisp-native-load--mmap call-size t))
+              (unwind-protect
+                  (progn
+                    (nelisp-native-load--poke-bytes
+                     call-entry 0 (plist-get handle :trampoline-bytes))
+                    (while patch-offsets
+                      (ptr-write-u64 call-entry (car patch-offsets) (car patch-values))
+                      (setq patch-offsets (cdr patch-offsets))
+                      (setq patch-values (cdr patch-values)))
+                    (ptr-write-u64 call-entry
+                                   (plist-get handle :trampoline-entry-imm64-offset)
+                                   (+ (plist-get handle :codepage)
+                                      (plist-get handle :body-entry)))
+                    (setq raw (apply (function ptr-call) call-entry passed)))
+                (let ((rc (syscall-direct 11 call-entry call-size 0 0 0 0)))
+                  (unless (= rc 0)
+                    (error "nelisp-native-load: temporary trampoline munmap failed (%d)"
+                           rc))))
+              ;; Some bodies carry dispatcher externs while returning a raw
+              ;; register value.  Their metadata settles raw-bool exactly;
+              ;; otherwise retain the existing low-address guard.
+              (when (and boxed (integerp raw)
+                         (< raw nelisp-native-load-page-bytes))
+                (setq boxed nil))
+              (cond
+               ((eq (plist-get handle :return-repr) 'raw-bool)
+                (let ((value (nelisp-native-load--decode-raw-bool raw)))
+                  (nelisp-native-load-box out value env pin-frame)
+                  value))
+               ((or (eq (plist-get handle :return-repr) 'sexp-ptr)
+                    (and boxed (eq (plist-get handle :return-repr) 'unknown)))
+                (progn
+                  ;; The native body may return a temporary slot.  Copy it
+                  ;; into the pinned output root before Lisp decoding can
+                  ;; allocate and move the referenced object.
+                  (let ((i 0))
+                    (while (< i 4)
+                      (ptr-write-u64 out (* i 8) (ptr-read-u64 raw (* i 8)))
+                      (setq i (1+ i))))
+                  (nelisp-native-load-unbox out env pin-frame)))
+               (t raw)))
+          (nelisp-native-load--pin-end env pin-frame)))))))
 
 (defun nelisp-native-load-unload (handle)
   "Unmap HANDLE's pages and return the number of regions released.

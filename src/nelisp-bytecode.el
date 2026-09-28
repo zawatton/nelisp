@@ -27,7 +27,7 @@
 ;;
 ;;   (nelisp-bcl ENV PARAMS CONSTS CODE STACK-DEPTH SPECIAL-MASK)
 ;;
-;; ENV          lexical env alist captured at closure creation
+;; ENV          list of shared lexical cells captured by this closure
 ;; PARAMS       lambda-list (same shape as the interpreter's closures)
 ;; CONSTS       constant vector referenced by CONST / VARREF / etc.
 ;; CODE         opcode vector (ints).  3b.1 keeps this a plain vector;
@@ -72,6 +72,41 @@
 (define-error 'nelisp-bc-error "NeLisp bytecode error")
 (define-error 'nelisp-bc-unimplemented
   "NeLisp bytecode feature not implemented yet" 'nelisp-bc-error)
+
+;; Capture the property-access functions before user code can change their
+;; function cells.  Host Emacs exposes `get' as a subr, which is exactly the
+;; operation BYTE-GET models.  NeLisp's current `get' is Lisp code, so its
+;; helper objects are captured and called directly instead.
+(defconst nelisp-bc--byte-get-function
+  (and (fboundp 'get) (symbol-function 'get)))
+(defconst nelisp-bc--byte-get-is-subr
+  (and (fboundp 'subrp)
+       nelisp-bc--byte-get-function
+       (subrp nelisp-bc--byte-get-function)))
+(defconst nelisp-bc--byte-symbol-plist-function
+  (and (fboundp 'symbol-plist) (symbol-function 'symbol-plist)))
+(defconst nelisp-bc--byte-plist-get-function
+  (and (fboundp 'plist-get) (symbol-function 'plist-get)))
+
+(defun nelisp-bc--byte-get (symbol property)
+  "Read SYMBOL's PROPERTY through function objects captured at load time."
+  (cond
+   (nelisp-bc--byte-get-is-subr
+    (funcall nelisp-bc--byte-get-function symbol property))
+   ((and nelisp-bc--byte-symbol-plist-function
+         nelisp-bc--byte-plist-get-function)
+    (funcall nelisp-bc--byte-plist-get-function
+             (funcall nelisp-bc--byte-symbol-plist-function symbol)
+             property))
+   (nelisp-bc--byte-get-function
+    (funcall nelisp-bc--byte-get-function symbol property))
+   (t
+    (signal 'nelisp-bc-error '("BYTE-GET property accessor unavailable")))))
+
+(defconst nelisp-bc--lexical-cell-tag (make-symbol "nelisp-bc--lexical-cell"))
+
+(defsubst nelisp-bc--lexical-cell-p (x)
+  (and (consp x) (eq (car x) nelisp-bc--lexical-cell-tag)))
 
 ;;; Bytecode closure object ------------------------------------------
 
@@ -144,10 +179,16 @@
 ;; PUSH-CC          35        2     nested dispatch wrapped in host
 ;;                                   `condition-case'; on error, push err
 ;;                                   and jump to uint16 target
-;; MAKE-CLOSURE     36        1     pop uint8 captured values + 1 bcl
+;; MAKE-CLOSURE     36        1     pop uint8 lexical cells + 1 bcl
 ;;                                   template; push new closure with
 ;;                                   ENV = (cap0 cap1 ... capN-1)
-;; CAPTURED-REF     37        1     push (nth uint8 closure-env)
+;; CAPTURED-REF     37        1     push cdr of (nth uint8 closure-env)
+;; CAPTURED-SET     38        1     pop value; update closure-env cell
+;; CAPTURED-CELL-REF 39        1     push (nth uint8 closure-env) cell
+;; BOX-SLOT         40        1     box stack[sp - uint8 - 1] in-place
+;; BOX-TOP          41        0     replace top value with a mutable cell
+;; CELL-REF         42        0     replace top cell with its value
+;; CELL-SET         43        1     pop val; update cell at stack offset
 
 (defconst nelisp-bc--opcode-table
   '((RETURN           0 0)
@@ -187,7 +228,14 @@
     (PUSH-UNWIND     34 2)
     (PUSH-CC         35 2)
     (MAKE-CLOSURE    36 1)
-    (CAPTURED-REF    37 1))
+    (CAPTURED-REF    37 1)
+    (CAPTURED-SET    38 1)
+    (CAPTURED-CELL-REF 39 1)
+    (BOX-SLOT        40 1)
+    (BOX-TOP         41 0)
+    (CELL-REF        42 0)
+    (CELL-SET        43 1)
+    (BYTE-GET        78 0))
   "Ordered list of (NAME BYTE ARG-BYTES) triples.
 Source of truth; the plist, reverse-name, and arg-bytes caches are
 derived from this by `nelisp-bc--build-opcode-indexes'.")
@@ -269,6 +317,12 @@ Called at load time from this module's tail."
 (defconst nelisp-bc--op-PUSH-CC        35)
 (defconst nelisp-bc--op-MAKE-CLOSURE   36)
 (defconst nelisp-bc--op-CAPTURED-REF   37)
+(defconst nelisp-bc--op-CAPTURED-SET   38)
+(defconst nelisp-bc--op-CAPTURED-CELL-REF 39)
+(defconst nelisp-bc--op-BOX-SLOT       40)
+(defconst nelisp-bc--op-BOX-TOP        41)
+(defconst nelisp-bc--op-CELL-REF       42)
+(defconst nelisp-bc--op-CELL-SET       43)
 
 ;;; Compiler ---------------------------------------------------------
 ;;
@@ -558,7 +612,8 @@ table via VARREF."
             (signal 'nelisp-bc-unimplemented
                     (list "lexical slot out of 1-byte range" sym offset)))
           (nelisp-bc--emit ctx 'STACK-REF offset)
-          (nelisp-bc--adjust-sp ctx 1)))
+          (nelisp-bc--adjust-sp ctx 1)
+          (nelisp-bc--emit ctx 'CELL-REF)))
        (t
         (let ((cap-cell (assq sym (nelisp-bc--ctx-captures ctx))))
           (cond
@@ -586,6 +641,38 @@ table via VARREF."
             (let ((idx (nelisp-bc--add-const ctx sym)))
               (nelisp-bc--emit ctx 'VARREF idx)
               (nelisp-bc--adjust-sp ctx 1)))))))))))
+
+(defun nelisp-bc--compile-capture-cell (ctx sym)
+  "Push SYM's lexical cell from CTX for a newly created closure."
+  (let ((slot (nelisp-bc--lex-slot ctx sym))
+        (cell (assq sym (nelisp-bc--ctx-captures ctx))))
+    (cond
+     ((and slot (not (nelisp-bc--special-p sym)))
+      (let ((offset (- (nelisp-bc--ctx-sp ctx) 1 slot)))
+        (when (or (< offset 0) (> offset 255))
+          (signal 'nelisp-bc-unimplemented
+                  (list "lexical capture slot out of range" sym offset)))
+        (nelisp-bc--emit ctx 'STACK-REF offset)
+        (nelisp-bc--adjust-sp ctx 1)))
+     (cell
+      (let ((idx (cdr cell)))
+        (nelisp-bc--emit ctx 'CAPTURED-CELL-REF idx)
+        (nelisp-bc--adjust-sp ctx 1)))
+     ((memq sym (nelisp-bc--ctx-parent-lex-shadow ctx))
+      ;; Pass-through capture: make this closure retain the same cell
+      ;; that its own enclosing closure received.
+      (let ((idx (length (nelisp-bc--ctx-captures ctx))))
+        (when (> idx 255)
+          (signal 'nelisp-bc-unimplemented
+                  (list "captures > 256 entries pending later phase")))
+        (setf (nelisp-bc--ctx-captures ctx)
+              (append (nelisp-bc--ctx-captures ctx)
+                      (list (cons sym idx))))
+        (nelisp-bc--emit ctx 'CAPTURED-CELL-REF idx)
+        (nelisp-bc--adjust-sp ctx 1)))
+     (t
+      (signal 'nelisp-bc-error
+              (list "capture source is not lexical" sym))))))
 
 (defun nelisp-bc--compile-setq (ctx args)
   "Compile (setq SYM VAL [SYM VAL ...]).
@@ -619,20 +706,31 @@ Result is the last VAL's value."
                 (signal 'nelisp-bc-unimplemented
                         (list "lexical slot out of 1-byte range"
                               sym offset)))
-              (nelisp-bc--emit ctx 'STACK-SET offset)
+              (nelisp-bc--emit ctx 'CELL-SET offset)
+              (nelisp-bc--adjust-sp ctx -1)))
+           ((and (not (nelisp-bc--special-p sym))
+                 (or (assq sym (nelisp-bc--ctx-captures ctx))
+                     (memq sym (nelisp-bc--ctx-parent-lex-shadow ctx))))
+            ;; Record even a write-first capture so the enclosing
+            ;; MAKE-CLOSURE supplies this variable's initial value.
+            (let* ((cell (assq sym (nelisp-bc--ctx-captures ctx)))
+                   (idx (if cell
+                            (cdr cell)
+                          (length (nelisp-bc--ctx-captures ctx)))))
+              (when (> idx 255)
+                (signal 'nelisp-bc-unimplemented
+                        (list "captures > 256 entries pending later phase")))
+              (unless cell
+                (setf (nelisp-bc--ctx-captures ctx)
+                      (append (nelisp-bc--ctx-captures ctx)
+                              (list (cons sym idx)))))
+              ;; Keep the result on the stack while the opcode consumes
+              ;; its duplicate, matching VARSET below.
+              (nelisp-bc--emit ctx 'DUP)
+              (nelisp-bc--adjust-sp ctx 1)
+              (nelisp-bc--emit ctx 'CAPTURED-SET idx)
               (nelisp-bc--adjust-sp ctx -1)))
            (t
-            ;; Captured-var setq is semantically write-through to the
-            ;; closure env, but we don't have a CAPTURED-SET op yet.
-            ;; Bail early so the auto-compile hook falls back to the
-            ;; interpreter, which handles closure-captured mutation
-            ;; correctly via shared cons cells.
-            (when (and (not (nelisp-bc--special-p sym))
-                       (or (assq sym (nelisp-bc--ctx-captures ctx))
-                           (memq sym (nelisp-bc--ctx-parent-lex-shadow ctx))))
-              (signal 'nelisp-bc-unimplemented
-                      (list "setq on captured lex pending later phase"
-                            sym)))
             ;; Global / special: VARSET pops the value, so DUP first.
             (nelisp-bc--emit ctx 'DUP)
             (nelisp-bc--adjust-sp ctx 1)
@@ -694,6 +792,11 @@ stack slots."
                 (nelisp-bc--adjust-sp ctx -1)))
             (cl-incf dyn-count))
            (t
+            (let ((offset (- (nelisp-bc--ctx-sp ctx) 1 slot)))
+              (when (or (< offset 0) (> offset 255))
+                (signal 'nelisp-bc-unimplemented
+                        (list "let lexical slot out of range" sym offset)))
+              (nelisp-bc--emit ctx 'BOX-SLOT offset))
             (setq new-lex (cons (cons sym slot) new-lex))))
           (cl-incf pos))))
     ;; 3. Compile body with extended lex-env.
@@ -733,6 +836,7 @@ Each init sees all previously introduced lex/dyn bindings."
                   (nelisp-bc--adjust-sp ctx -1))
                 (cl-incf dyn-count))
                (t
+                (nelisp-bc--emit ctx 'BOX-TOP)
                 (let ((slot (- (nelisp-bc--ctx-sp ctx) 1)))
                   (setf (nelisp-bc--ctx-lex-env ctx)
                         (cons (cons sym slot)
@@ -1140,6 +1244,7 @@ re-signal via a compiled `signal' call."
           ;; Lexical: VAR's slot is the current err slot.
           (let* ((slot (- (nelisp-bc--ctx-sp ctx) 1))
                  (saved-lex (nelisp-bc--ctx-lex-env ctx)))
+            (nelisp-bc--emit ctx 'BOX-TOP)
             (setf (nelisp-bc--ctx-lex-env ctx)
                   (cons (cons var slot) saved-lex))
             (unwind-protect
@@ -1250,9 +1355,9 @@ Signals nelisp-bc-error for arg-count violations."
 (defun nelisp-bc--compile-lambda (ctx params body)
   "Compile (lambda PARAMS BODY...) into a sub-bcl pushed onto the stack.
 
-3b.5a does not yet capture free lex vars; if BODY references an
-outer lex symbol, signal `nelisp-bc-unimplemented' so callers
-fall back to the interpreter."
+Lexical parameter and `let' slots are boxed as shared cells.  A nested
+closure retains the same cell object, so writes in the defining frame
+and sibling closures remain visible."
   (let* ((info (nelisp-bc--parse-params params))
          (positionals (plist-get info :positionals))
          (n-positionals (length positionals))
@@ -1285,6 +1390,17 @@ fall back to the interpreter."
           (push (cons sym slot) lex-env)))
         (cl-incf slot)))
     (setf (nelisp-bc--ctx-lex-env sub-ctx) (nreverse lex-env))
+    ;; Lexical parameters occupy stack slots by reference so closures
+    ;; created in this call share writes with the defining frame.
+    (let ((slot 0))
+      (dolist (sym positionals)
+        (unless (nelisp-bc--special-p sym)
+          (let ((offset (- (nelisp-bc--ctx-sp sub-ctx) 1 slot)))
+            (when (or (< offset 0) (> offset 255))
+              (signal 'nelisp-bc-unimplemented
+                      (list "lambda lexical slot out of range" sym offset)))
+            (nelisp-bc--emit sub-ctx 'BOX-SLOT offset)))
+        (cl-incf slot)))
     ;; Preamble: VARBIND each special.  STACK-REF the slot to TOS,
     ;; then VARBIND pops it; the original slot stays on the stack as
     ;; dead weight that the postamble's DISCARDN will collapse.
@@ -1334,11 +1450,9 @@ fall back to the interpreter."
         (let ((sorted (sort (copy-sequence captures)
                             (lambda (a b) (< (cdr a) (cdr b))))))
           (dolist (cap sorted)
-            ;; `compile-var-ref' on the parent ctx resolves the sym
-            ;; — STACK-REF for parent lex, CAPTURED-REF for parent
-            ;; capture, or auto-captures it from grandparent (which
-            ;; chains the capture out one more level).
-            (nelisp-bc--compile-var-ref ctx (car cap)))
+            ;; Pass the identity of the lexical cell to the new closure.
+            ;; This preserves sharing across sibling and nested captures.
+            (nelisp-bc--compile-capture-cell ctx (car cap)))
           (let ((idx (nelisp-bc--add-const ctx template)))
             (nelisp-bc--emit ctx 'CONST idx)
             (nelisp-bc--adjust-sp ctx 1))
@@ -1972,8 +2086,95 @@ recursing and reload from VM afterwards."
                   (signal 'nelisp-bc-error
                           (list "CAPTURED-REF out of range"
                                 idx (length closure-env))))
-                (aset stack sp (nth idx closure-env))
+                (let ((cell (nth idx closure-env)))
+                  (unless (nelisp-bc--lexical-cell-p cell)
+                    (signal 'nelisp-bc-error
+                            (list "CAPTURED-REF non-cell" idx cell)))
+                  (aset stack sp (cdr cell)))
                 (setq sp (1+ sp))))
+             (38
+              (when (<= sp 0)
+                (signal 'nelisp-bc-error
+                        (list "CAPTURED-SET on empty stack" pc)))
+              (let ((idx (aref code pc)))
+                (setq pc (1+ pc))
+                (when (or (< idx 0) (>= idx (length closure-env)))
+                  (signal 'nelisp-bc-error
+                          (list "CAPTURED-SET out of range"
+                                idx (length closure-env))))
+                (let ((cell (nth idx closure-env)))
+                  (unless (nelisp-bc--lexical-cell-p cell)
+                    (signal 'nelisp-bc-error
+                            (list "CAPTURED-SET non-cell" idx cell)))
+                  (setcdr cell (aref stack (1- sp))))
+                (setq sp (1- sp))))
+             (39
+              (when (>= sp stack-depth)
+                (signal 'nelisp-bc-error
+                        (list "stack overflow at CAPTURED-CELL-REF" pc)))
+              (let ((idx (aref code pc)))
+                (setq pc (1+ pc))
+                (when (or (< idx 0) (>= idx (length closure-env)))
+                  (signal 'nelisp-bc-error
+                          (list "CAPTURED-CELL-REF out of range"
+                                idx (length closure-env))))
+                (let ((cell (nth idx closure-env)))
+                  (unless (nelisp-bc--lexical-cell-p cell)
+                    (signal 'nelisp-bc-error
+                            (list "CAPTURED-CELL-REF non-cell" idx cell)))
+                  (aset stack sp cell))
+                (setq sp (1+ sp))))
+             (40
+              (let* ((offset (aref code pc))
+                     (dest (- sp offset 1)))
+                (setq pc (1+ pc))
+                (when (or (< dest 0) (>= dest sp))
+                  (signal 'nelisp-bc-error
+                          (list "BOX-SLOT out of bounds" offset sp)))
+                (when (nelisp-bc--lexical-cell-p (aref stack dest))
+                  (signal 'nelisp-bc-error
+                          (list "BOX-SLOT already boxed" offset)))
+                (aset stack dest
+                      (cons nelisp-bc--lexical-cell-tag (aref stack dest)))))
+             (41
+              (when (<= sp 0)
+                (signal 'nelisp-bc-error (list "BOX-TOP on empty stack" pc)))
+              (aset stack (1- sp)
+                    (cons nelisp-bc--lexical-cell-tag
+                          (aref stack (1- sp)))))
+             (42
+              (when (<= sp 0)
+                (signal 'nelisp-bc-error (list "CELL-REF on empty stack" pc)))
+              (let ((cell (aref stack (1- sp))))
+                (unless (nelisp-bc--lexical-cell-p cell)
+                  (signal 'nelisp-bc-error (list "CELL-REF non-cell" cell)))
+                (aset stack (1- sp) (cdr cell))))
+             (43
+              (when (<= sp 0)
+                (signal 'nelisp-bc-error (list "CELL-SET on empty stack" pc)))
+              (let* ((offset (aref code pc))
+                     (dest (- sp offset 1))
+                     (value (aref stack (1- sp))))
+                (setq pc (1+ pc))
+                (when (or (< dest 0) (>= dest (1- sp)))
+                  (signal 'nelisp-bc-error
+                          (list "CELL-SET out of bounds" offset sp)))
+                (let ((cell (aref stack dest)))
+                  (unless (nelisp-bc--lexical-cell-p cell)
+                    (signal 'nelisp-bc-error
+                            (list "CELL-SET non-cell" cell)))
+                  (setcdr cell value))
+                (setq sp (1- sp))))
+             (78
+              ;; GNU Emacs 31.1 BYTE-GET pops the property and symbol,
+              ;; then pushes `get''s result.  Route through `get' so the
+              ;; VM observes the same symbol-property store as get/put.
+              (when (< sp 2)
+                (signal 'nelisp-bc-error (list "BYTE-GET stack underflow" sp)))
+              (let ((prop (aref stack (- sp 1)))
+                    (sym (aref stack (- sp 2))))
+                (aset stack (- sp 2) (nelisp-bc--byte-get sym prop))
+                (setq sp (1- sp))))
                  (_ (signal 'nelisp-bc-error (list "unknown opcode"
                                 (aref nelisp-bc--opcode-names op)
                                 op (1- pc)))))))
@@ -2087,8 +2288,9 @@ MCP Parameters:
 ;; Wave A21 enables on-disk byte-compiled output for NeLisp's bytecode
 ;; VM.  Goals:
 ;;
-;;   1. `byte-compile-file' takes a `.el' file and writes a `.elc' that
-;;      pre-compiles each `defun' body into a `nelisp-bcl' object,
+;;   1. `nelisp-bc-byte-compile-file' takes a source file and writes a
+;;      readable `.elc' that pre-compiles each `defun' body into a
+;;      `nelisp-bcl' object,
 ;;      installed via `nelisp-bc--defun-from-elc' at load time.
 ;;   2. `.elc' files are plain readable elisp text — the bcl object
 ;;      `(nelisp-bcl ENV PARAMS CONSTS CODE STACK-DEPTH SPECIAL-MASK)'
@@ -2216,7 +2418,7 @@ source (= host Emacs, or eventually a fully-loaded NeLisp)."
         (end-of-file nil)))
     (nreverse forms)))
 
-(defun byte-compile-file (file &optional load)
+(defun nelisp-bc-byte-compile-file (file &optional load)
   "Compile FILE (an elisp source file) into a NeLisp `.elc'.
 Each top-level `defun' whose body the bytecode compiler can handle
 is replaced with a `nelisp-bc--defun-from-elc' call that installs
@@ -2269,6 +2471,13 @@ MCP Parameters:
     (when load
       (load out-path nil t))
     t))
+
+;; Keep the traditional NeLisp entry point when GNU bytecomp has not
+;; loaded.  Preserve Host Emacs's implementation if it is already present;
+;; if bytecomp loads later, it can rebind this compatibility name while
+;; the namespaced private writer remains stable.
+(unless (featurep 'bytecomp)
+  (defalias 'byte-compile-file #'nelisp-bc-byte-compile-file))
 
 ;; `.elc' reader entry — used by `load' to detect a NeLisp-compiled
 ;; output file (vs. an Emacs `.elc' binary which we cannot read).

@@ -1,0 +1,75 @@
+name	case	host-result	source-result	compiled-result	host-cell	source-cell	compiled-cell	decision	reason
+obarrayp	(obarrayp (make-vector 3 nil))	nil	nil	nil	subr	function	bytecode	pass	host-source-compiled-parity
+bool-vector-p	(bool-vector-p (make-bool-vector 3 t))	t	t	t	subr	subr	subr	reject	guard-retains-existing-cell
+decoded-time-second	(decoded-time-second '(11 12 13 14 15 16 17 18 19))	11	11	11	subr	function	bytecode	pass	host-source-compiled-parity
+decoded-time-minute	(decoded-time-minute '(11 12 13 14 15 16 17 18 19))	12	12	12	subr	function	bytecode	pass	host-source-compiled-parity
+car-safe	(car-safe '(a b))	a	a	a	subr	function	bytecode	pass	host-source-compiled-parity
+cdr-safe	(cdr-safe '(a b))	(b)	(b)	(b)	subr	function	bytecode	pass	host-source-compiled-parity
+cl-first	(cl-first '(a b))	a	a	a	function	function	bytecode	pass	host-source-compiled-parity
+cl-second	(cl-second '(a b))	b	b	b	function	function	bytecode	pass	host-source-compiled-parity
+cl-rest	(cl-rest '(a b))	(b)	(b)	(b)	function	function	bytecode	pass	host-source-compiled-parity
+cl-values	(cl-values 1 'x nil)	(1 x nil)	(1 x nil)	(1 x nil)	function	function	bytecode	pass	host-source-compiled-parity
+timerp	(timerp nil)	nil	nil	nil	subr	function	function	reject	guard-retains-existing-cell
+sit-for	(sit-for 0)	t	t	t	subr	function	function	reject	guard-retains-existing-cell
+purecopy	(purecopy '(a (b)))	(a (b))	(a (b))	(a (b))	function	function	bytecode	pass	host-source-compiled-parity
+nelisp-cl-macros--struct-arg	(nelisp-cl-macros--struct-arg :x '(:x 9) nil)	9	9	9	function	function	bytecode	pass	host-source-compiled-parity
+nelisp-cl-macros--struct-slot-name	(nelisp-cl-macros--struct-slot-name '(x 9))	x	x	x	function	function	bytecode	pass	host-source-compiled-parity
+nelisp-cl-macros--struct-slot-default	(nelisp-cl-macros--struct-slot-default '(x 9))	9	9	9	function	function	bytecode	pass	host-source-compiled-parity
+nelisp-cl-macros--struct-name-or-options	(nelisp-cl-macros--struct-name-or-options 'widget)	widget	widget	widget	function	function	bytecode	pass	host-source-compiled-parity
+nelisp-cl-macros--struct-options	(nelisp-cl-macros--struct-options '(widget (:constructor make-widget)))	((:constructor make-widget))	((:constructor make-widget))	((:constructor make-widget))	function	function	bytecode	pass	host-source-compiled-parity
+nelisp-cl-macros--struct-opt	(nelisp-cl-macros--struct-opt :constructor '((:constructor make-widget)))	make-widget	make-widget	make-widget	function	function	bytecode	pass	host-source-compiled-parity
+nelisp-cl-macros--struct-lookup-slots	(nelisp-cl-macros--struct-lookup-slots 'nelisp-bytecode-unknown-struct)	nil	nil	nil	function	function	bytecode	pass	host-source-compiled-parity
+nelisp-cl-generic--builtin-type-p	(nelisp-cl-generic--builtin-type-p 'function)	nil	nil	nil	function	function	bytecode	pass	host-source-compiled-parity
+nelisp-cl-generic--struct-parent	(nelisp-cl-generic--struct-parent 'nelisp-bytecode-unknown-struct)	nil	nil	nil	function	function	bytecode	pass	host-source-compiled-parity
+cl-next-method-p	(let ((nelisp-cl-generic--next-methods '(probe))) (cl-next-method-p))	(:error error ("cl-next-method-p only allowed inside primary and around methods"))	t	t	subr	function	function	reject	semantic-mismatch-or-signal
+max-char	(max-char t)	1114111	1114111	1114111	subr	function	bytecode	pass	host-source-compiled-parity
+make-sparse-keymap	(keymapp (make-sparse-keymap))	t	t	t	subr	function	bytecode	pass	host-source-compiled-parity
+byte-code-function-p	(byte-code-function-p 17)	nil	nil	nil	subr	subr	subr	reject	guard-retains-existing-cell
+recordp	(recordp (record 'nelisp-bytecode-probe 1))	t	t	t	subr	subr	subr	reject	guard-retains-existing-cell
+nelisp-current-buffer	(let ((nelisp-buffer--current (current-buffer))) (buffer-name (nelisp-current-buffer)))	"*scratch*"	"*scratch*"	"*scratch*"	function	function	bytecode	pass	host-source-compiled-parity
+path-separator	path-separator	":"	":"	":"	function	function	bytecode	pass	host-source-compiled-parity
+current-buffer	(buffer-name (current-buffer))	"*scratch*"	"*scratch*"	"*scratch*"	subr	function	bytecode	pass	host-source-compiled-parity
+standard-syntax-table	(if (standard-syntax-table) 'present nil)	present	present	present	subr	function	bytecode	pass	host-source-compiled-parity
+kill-all-local-variables	(kill-all-local-variables)	nil	nil	nil	subr	function	bytecode	pass	host-source-compiled-parity
+markerp	(markerp nil)	nil	nil	nil	subr	function	bytecode	pass	host-source-compiled-parity
+set-process-coding-system	(set-process-coding-system nil)	(:error wrong-type-argument (processp nil))	nil	nil	subr	function	function	reject	semantic-mismatch-or-signal
+nelisp--repl-idle-pump	(nelisp--repl-idle-pump)	nil	nil	nil	function	function	function	reject	guard-retains-existing-cell
+nelisp--record-type	(nelisp--record-type (record 'nelisp-bytecode-probe 1))	nelisp-bytecode-probe	nelisp-bytecode-probe	nelisp-bytecode-probe	function	function	bytecode	pass	host-source-compiled-parity
+nelisp--record-ref	(nelisp--record-ref (record 'nelisp-bytecode-probe 1) 0)	1	1	1	function	function	bytecode	pass	host-source-compiled-parity
+nelisp--prn-chunks-add	(let ((state (cons nil nil))) (nelisp--prn-chunks-add state "x") (car state))	("x")	("x")	("x")	function	function	bytecode	pass	host-source-compiled-parity
+get-text-property	(with-temp-buffer (insert (propertize "x" 'face 'bold)) (get-text-property 1 'face))	bold	nil	nil	subr	function	function	reject	semantic-mismatch-or-signal
+text-properties-at	(with-temp-buffer (insert (propertize "x" 'face 'bold)) (text-properties-at 1))	(face bold)	nil	nil	subr	function	function	reject	semantic-mismatch-or-signal
+put-text-property	(let ((s (copy-sequence "xy"))) (put-text-property 0 1 'face 'bold s) (get-text-property 0 'face s))	bold	nil	nil	subr	function	function	reject	semantic-mismatch-or-signal
+file-remote-p	(file-remote-p "/tmp")	nil	nil	nil	subr	function	bytecode	pass	host-source-compiled-parity
+identity	(identity 17)	17	17	17	subr	function	bytecode	pass	host-source-compiled-parity
+nelisp--tm-dayname	(nelisp--tm-dayname 1)	"Mon"	"Mon"	"Mon"	function	function	bytecode	pass	host-source-compiled-parity
+nelisp--tm-monthname	(nelisp--tm-monthname 1)	"Jan"	"Jan"	"Jan"	function	function	bytecode	pass	host-source-compiled-parity
+nelisp--format-simple	(nelisp--format-simple "%s" '(1))	nil	"1"	"1"	function	subr	subr	reject	semantic-mismatch-or-signal
+caar	(caar '(((((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b) (((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b))	(((a . b) a . b) (a . b) a . b)	(((a . b) a . b) (a . b) a . b)	(((a . b) a . b) (a . b) a . b)	subr	function	bytecode	pass	host-source-compiled-parity
+cadr	(cadr '(((((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b) (((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b))	(((a . b) a . b) (a . b) a . b)	(((a . b) a . b) (a . b) a . b)	(((a . b) a . b) (a . b) a . b)	subr	function	bytecode	pass	host-source-compiled-parity
+cdar	(cdar '(((((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b) (((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b))	(((a . b) a . b) (a . b) a . b)	(((a . b) a . b) (a . b) a . b)	(((a . b) a . b) (a . b) a . b)	subr	function	bytecode	pass	host-source-compiled-parity
+cddr	(cddr '(((((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b) (((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b))	(((a . b) a . b) (a . b) a . b)	(((a . b) a . b) (a . b) a . b)	(((a . b) a . b) (a . b) a . b)	subr	function	bytecode	pass	host-source-compiled-parity
+caaar	(caaar '(((((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b) (((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b))	((a . b) a . b)	((a . b) a . b)	((a . b) a . b)	subr	function	bytecode	pass	host-source-compiled-parity
+caadr	(caadr '(((((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b) (((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b))	((a . b) a . b)	((a . b) a . b)	((a . b) a . b)	subr	function	bytecode	pass	host-source-compiled-parity
+cadar	(cadar '(((((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b) (((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b))	((a . b) a . b)	((a . b) a . b)	((a . b) a . b)	subr	function	bytecode	pass	host-source-compiled-parity
+caddr	(caddr '(((((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b) (((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b))	((a . b) a . b)	((a . b) a . b)	((a . b) a . b)	subr	function	function	reject	existing-non-bytecode-cxxr
+cdaar	(cdaar '(((((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b) (((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b))	((a . b) a . b)	((a . b) a . b)	((a . b) a . b)	subr	function	bytecode	pass	host-source-compiled-parity
+cdadr	(cdadr '(((((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b) (((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b))	((a . b) a . b)	((a . b) a . b)	((a . b) a . b)	subr	function	bytecode	pass	host-source-compiled-parity
+cddar	(cddar '(((((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b) (((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b))	((a . b) a . b)	((a . b) a . b)	((a . b) a . b)	subr	function	bytecode	pass	host-source-compiled-parity
+cdddr	(cdddr '(((((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b) (((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b))	((a . b) a . b)	((a . b) a . b)	((a . b) a . b)	subr	function	function	reject	existing-non-bytecode-cxxr
+caaaar	(caaaar '(((((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b) (((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b))	(a . b)	(a . b)	(a . b)	subr	function	bytecode	pass	host-source-compiled-parity
+caaadr	(caaadr '(((((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b) (((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b))	(a . b)	(a . b)	(a . b)	subr	function	bytecode	pass	host-source-compiled-parity
+caadar	(caadar '(((((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b) (((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b))	(a . b)	(a . b)	(a . b)	subr	function	bytecode	pass	host-source-compiled-parity
+caaddr	(caaddr '(((((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b) (((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b))	(a . b)	(a . b)	(a . b)	subr	function	bytecode	pass	host-source-compiled-parity
+cadaar	(cadaar '(((((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b) (((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b))	(a . b)	(a . b)	(a . b)	subr	function	bytecode	pass	host-source-compiled-parity
+cadadr	(cadadr '(((((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b) (((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b))	(a . b)	(a . b)	(a . b)	subr	function	bytecode	pass	host-source-compiled-parity
+caddar	(caddar '(((((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b) (((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b))	(a . b)	(a . b)	(a . b)	subr	function	bytecode	pass	host-source-compiled-parity
+cadddr	(cadddr '(((((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b) (((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b))	(a . b)	(a . b)	(a . b)	subr	function	bytecode	pass	host-source-compiled-parity
+cdaaar	(cdaaar '(((((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b) (((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b))	(a . b)	(a . b)	(a . b)	subr	function	bytecode	pass	host-source-compiled-parity
+cdaadr	(cdaadr '(((((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b) (((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b))	(a . b)	(a . b)	(a . b)	subr	function	bytecode	pass	host-source-compiled-parity
+cdadar	(cdadar '(((((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b) (((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b))	(a . b)	(a . b)	(a . b)	subr	function	bytecode	pass	host-source-compiled-parity
+cdaddr	(cdaddr '(((((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b) (((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b))	(a . b)	(a . b)	(a . b)	subr	function	bytecode	pass	host-source-compiled-parity
+cddaar	(cddaar '(((((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b) (((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b))	(a . b)	(a . b)	(a . b)	subr	function	bytecode	pass	host-source-compiled-parity
+cddadr	(cddadr '(((((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b) (((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b))	(a . b)	(a . b)	(a . b)	subr	function	bytecode	pass	host-source-compiled-parity
+cdddar	(cdddar '(((((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b) (((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b))	(a . b)	(a . b)	(a . b)	subr	function	bytecode	pass	host-source-compiled-parity
+cddddr	(cddddr '(((((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b) (((a . b) a . b) (a . b) a . b) ((a . b) a . b) (a . b) a . b))	(a . b)	(a . b)	(a . b)	subr	function	bytecode	pass	host-source-compiled-parity

@@ -270,10 +270,21 @@
     ;; ===========================================================
 
     (defun nelisp_reader_p_copy_symbol (dest-slot src-str-slot)
-      (sexp-write-symbol
-       dest-slot
+      ;; The direct allocator also installs a stable name-Sexp edge for the
+      ;; interned symbol; the reader token slot itself is scratch storage.
+      (nl_alloc_symbol_named
        (ptr-read-u64 src-str-slot 16)
-       (ptr-read-u64 src-str-slot 24)))
+       (ptr-read-u64 src-str-slot 24)
+       src-str-slot
+       dest-slot))
+
+    (defun nelisp_reader_p_make_uninterned_symbol (dest-slot src-str-slot)
+      (let* ((identity (nl_next_symbol_identity)))
+        (if (= (nl_alloc_uninterned_symbol_named
+                (ptr-read-u64 src-str-slot 16)
+                (ptr-read-u64 src-str-slot 24)
+                identity src-str-slot dest-slot) 0)
+            -1 1)))
 
     (defun nelisp_reader_p_copy_str (dest-slot src-str-slot)
       (let* ((written
@@ -960,6 +971,9 @@
            ((= (sexp-tag object) 12)
             (nelisp_reader_p_label_resolve_record
              object pool 0 (record-slot-count object)))
+           ((= (sexp-tag object) 17)
+            (nelisp_reader_p_label_resolve_record
+             object pool 0 (record-slot-count object)))
            (t object)))))
 
     ;; ===========================================================
@@ -1040,6 +1054,12 @@
        ((= kind 14)
         (nelisp_reader_p_parse_bool_vector
          str-ptr cursor-slot result-slot slot-pool depth))
+       ;; `#[...]' is a tag-17 callable byte-code function. Parse the
+       ;; bracket body as a temporary vector, validate the same core
+       ;; fields as `make-byte-code', then construct the real runtime object.
+       ((= kind 15)
+        (nelisp_reader_p_parse_byte_code
+         str-ptr cursor-slot result-slot slot-pool depth))
        ;; Read labels are handled before the generic >=20 leaf arm.
        ((= kind 26)
         (nelisp_reader_p_parse_label_def
@@ -1047,6 +1067,19 @@
        ((= kind 27)
         (nelisp_reader_p_parse_label_ref
          result-slot slot-pool depth))
+       ;; `#$' token.  The context-aware entry reserves the pool's final
+       ;; slot for the caller's dynamic `load-file-name' value.
+       ((= kind 28)
+        (seq
+         (nl_sexp_clone_into
+          (nelisp_reader_p_slot slot-pool (nelisp_reader_p_pool_cap))
+          result-slot)
+         1))
+       ;; `#:' token creates a fresh identity each time, even when names
+       ;; match an interned symbol or another uninterned occurrence.
+       ((= kind 29)
+        (nelisp_reader_p_make_uninterned_symbol
+         result-slot (nelisp_reader_p_slot slot-pool 1)))
        ;; Leaf payloads.
        ((>= kind 20)
         (nelisp_reader_p_leaf kind result-slot
@@ -1635,27 +1668,113 @@
               1)))
 
     ;; ===========================================================
+    ;; Compiled-function literal (`#[ARGDESC CODE CONSTANTS DEPTH ...]').
+    ;; A generic record is allocated and filled while still tag 12, then
+    ;; retagged 17 exactly as `bf_make_byte_code' does. This keeps the true
+    ;; callable representation instead of returning an ordinary vector.
+    ;; ===========================================================
+
+    (defun nelisp_reader_p_byte_code_valid_p (vec)
+      (let ((count (vector-len vec)))
+        (if (or (< count 4) (> count 6))
+            0
+          (let* ((arglist (vector-ref-ptr vec 0))
+                 (arg-tag (sexp-tag arglist))
+                 (code-tag (sexp-tag (vector-ref-ptr vec 1)))
+                 (constants-tag (sexp-tag (vector-ref-ptr vec 2)))
+                 (depth (vector-ref-ptr vec 3))
+                 (depth-value (if (= (sexp-tag depth) 2)
+                                  (sexp-int-unwrap depth) -1))
+                 (min-fixnum -2305843009213693952)
+                 (max-fixnum 2305843009213693951))
+            ;; GNU lread.c accepts at most six closure slots. Its ARGLIST may
+            ;; be nil, a fixnum, or any cons; a boolean or other object is
+            ;; invalid.
+            (if (and (or (= arg-tag 0) (= arg-tag 7)
+                         (and (= arg-tag 2)
+                              (>= (sexp-int-unwrap arglist) min-fixnum)
+                              (<= (sexp-int-unwrap arglist) max-fixnum)))
+                   ;; This runtime has no distinct interpreted-function
+                   ;; representation. GNU accepts cons CODE as a lazy or
+                   ;; interpreted closure, but it must not be mislabeled 17.
+                   (or (= code-tag 5) (= code-tag 6)
+                       (= code-tag 14) (= code-tag 15))
+                   (= constants-tag 8)
+                   (= (sexp-tag depth) 2)
+                   (>= depth-value 0)
+                   (<= depth-value max-fixnum))
+                1
+              0)))))
+
+    (defun nelisp_reader_p_fill_byte_code (vec record i n)
+      (if (>= i n)
+          1
+        (and (record-slot-set record i (vector-ref-ptr vec i))
+             (nelisp_reader_p_fill_byte_code vec record (+ i 1) n))))
+
+    (defun nelisp_reader_p_parse_byte_code
+        (str-ptr cursor-slot result-slot slot-pool depth)
+      (let* ((vec (nelisp_reader_p_slot slot-pool
+                                        (nelisp_reader_p_spare_idx depth))))
+        (and (= (nelisp_reader_p_parse_vector
+                 str-ptr cursor-slot vec slot-pool depth 0)
+                1)
+             (= (nelisp_reader_p_byte_code_valid_p vec) 1)
+             (record-make (vector-ref-ptr vec 0) (vector-len vec) result-slot)
+             (nelisp_reader_p_fill_byte_code
+              vec result-slot 0 (vector-len vec))
+             (ptr-write-u64 result-slot 0 17)
+             1)))
+
+    ;; ===========================================================
     ;; Top-level entry — start at depth 0.
     ;; ===========================================================
 
     (defun nelisp_reader_parse_one
         (str-ptr cursor-slot result-slot slot-pool depth)
-      (seq
-       ;; Labels never escape one public reader call, even when a caller
-       ;; reuses the same raw pool for every top-level form in a file.
-       (ptr-write-u64 (nelisp_reader_p_slot slot-pool 3) 0 0)
-       (ptr-write-u64 (nelisp_reader_p_slot slot-pool 3) 8 0)
-       (let* ((rc (nelisp_reader_p_parse_at
-                   str-ptr cursor-slot result-slot slot-pool depth)))
-         (if (= rc 1)
-             ;; A bare self-reference (`#1=#1#') has no container whose
-             ;; identity can close the cycle and is invalid in GNU too.
-             (if (>= (nelisp_reader_p_label_proxy_number
-                       result-slot slot-pool 0) 0)
-                 -1
-               (nelisp_reader_p_prog2
-                (nelisp_reader_p_label_resolve result-slot slot-pool)
-                1))
+      (nelisp_reader_parse_one_with_context
+       str-ptr cursor-slot result-slot slot-pool depth 0))
+
+    (defun nelisp_reader_parse_one_with_load_file_name
+        (str-ptr cursor-slot result-slot slot-pool depth load-file-name-slot)
+      (nelisp_reader_parse_one_with_context
+       str-ptr cursor-slot result-slot slot-pool depth load-file-name-slot))
+
+    (defun nelisp_reader_parse_one_with_context
+        (str-ptr cursor-slot result-slot slot-pool depth context-slot)
+      (let* ((pool-cap (nelisp_reader_p_pool_cap))
+             (context-index (- pool-cap 1))
+             (context-pool-slot (nelisp_reader_p_slot slot-pool context-index))
+             (parse-cap context-index)
+             (rc 0))
+        (if (< pool-cap 16)
+            -1
+          (seq
+           ;; Reserve one slot at the pool tail for context.  Label records
+           ;; grow down from PARSE-CAP, so they cannot overlap this Sexp root.
+           (if (= context-slot 0)
+               (seq
+                (ptr-write-u64 context-pool-slot 0 0)
+                (ptr-write-u64 (+ context-pool-slot 8) 0 0)
+                (ptr-write-u64 (+ context-pool-slot 16) 0 0)
+                (ptr-write-u64 (+ context-pool-slot 24) 0 0))
+             (nl_sexp_clone_into context-slot context-pool-slot))
+           (ptr-write-u64 268436448 0 parse-cap)
+           ;; Labels never escape one public reader call, even when a caller
+           ;; reuses the same raw pool for every top-level form in a file.
+           (ptr-write-u64 (nelisp_reader_p_slot slot-pool 3) 0 0)
+           (ptr-write-u64 (nelisp_reader_p_slot slot-pool 3) 8 0)
+           (setq rc (nelisp_reader_p_parse_at
+                     str-ptr cursor-slot result-slot slot-pool depth))
+           (if (= rc 1)
+               ;; A bare self-reference (`#1=#1#') has no container whose
+               ;; identity can close the cycle and is invalid in GNU too.
+               (if (>= (nelisp_reader_p_label_proxy_number
+                         result-slot slot-pool 0) 0)
+                   (setq rc -1)
+                 (nelisp_reader_p_label_resolve result-slot slot-pool))
+             0)
+           (ptr-write-u64 268436448 0 pool-cap)
            rc)))))
 
   "AOT source for Doc 116 §116.B pure-elisp Reader parser.
@@ -1669,8 +1788,9 @@ Sexp values via the §101 / §111 / §122 grammar primitives.
 Kinds dispatched: 0 EOF, 1 LParen, 2 RParen, 3 LBracket, 5 Quote,
 6 Backquote, 7 Comma, 8 CommaAt, 9 FunctionQuote, 10 Dot, 11
 SharpsParen, 12 CharTableBracket, 13 PropertizedString, 20 Int,
-21 Float, 22 Str, 23 Sym, 24 Char, 25 RadixInt, 26 LabelDef and
-27 LabelRef.
+21 Float, 22 Str, 23 Sym, 24 Char, 25 RadixInt, 26 LabelDef,
+27 LabelRef and 28 `#$' (dynamic `load-file-name' supplied by the
+context-aware entry point).
 Kind 3 LBracket drives the vector parser (Doc 116 §116.B+ —
 `parse_vector_step' + `parse_vector' + `fill_vec' +
 `cons_list_len_walk').  Kind 11 materialises Emacs hash-table reader

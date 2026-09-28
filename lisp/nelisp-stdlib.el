@@ -130,12 +130,71 @@
 ;; behaviour change is invisible there.  Empty args case signals
 ;; `wrong-number-of-arguments' as before.
 
+;; `<' / `>' use the float bridge when either argument is a float.  That
+;; bridge converts its integer argument to binary64, which loses low bits for
+;; bignums.  MIN/MAX need the exact mixed comparison so that the winning
+;; argument (including its type) matches Emacs.
+(defun nelisp--maxmin-nan-p (number)
+  "Return non-nil when NUMBER is a NaN float."
+  (and (floatp number)
+       (let ((printed (format "%.0f" number)))
+         (or (string= printed "nan") (string= printed "-nan")))))
+
+(defun nelisp--maxmin-int-float-order (integer float)
+  "Compare INTEGER and FLOAT exactly; return -1, 0, 1, or `unordered'."
+  (let ((printed (format "%.0f" float)))
+    (cond
+     ((or (string= printed "nan") (string= printed "-nan")) 'unordered)
+     ((string= printed "inf") -1)
+     ((string= printed "-inf") 1)
+     ((or (>= float 9007199254740992.0)
+          (<= float -9007199254740992.0))
+      ;; At and beyond 2^53 every finite binary64 value is integral.
+      ;; Formatting with zero fractional digits recovers that exact integer;
+      ;; unlike `truncate', this also works beyond the runtime's i64 range.
+      (let ((float-integer (string-to-number printed)))
+        (cond ((< integer float-integer) -1)
+              ((> integer float-integer) 1)
+              (t 0))))
+     ((> integer 9007199254740992) 1)
+     ((< integer -9007199254740992) -1)
+     ((< (float integer) float) -1)
+     ((> (float integer) float) 1)
+     (t 0))))
+
+(defun nelisp--maxmin-order (left right)
+  "Compare numeric LEFT and RIGHT without rounding bignums to floats."
+  (cond
+   ((and (integerp left) (floatp right))
+    (nelisp--maxmin-int-float-order left right))
+   ((and (floatp left) (integerp right))
+    (let ((order (nelisp--maxmin-int-float-order right left)))
+      (if (eq order 'unordered) order (- order))))
+   ((< left right) -1)
+   ((> left right) 1)
+   (t 0)))
+
+;; Both signal `wrong-type-argument' on a non-number, matching the
+;; standalone prelude's copy (scripts/nelisp-stdlib-prelude.el) and real
+;; Emacs -- `(max 1 "a")' => (wrong-type-argument number-or-marker-p "a"),
+;; not whatever `nelisp--maxmin-nan-p'/`nelisp--maxmin-order' would do
+;; with a non-number left unchecked.
 (defun min (&rest args)
   (cond
    ((null args) (signal 'wrong-number-of-arguments (list 'min 0)))
    (t (let ((acc (car args)) (cur (cdr args)))
+        (unless (numberp acc)
+          (signal 'wrong-type-argument (list 'number-or-marker-p acc)))
+        (dolist (a cur)
+          (unless (numberp a)
+            (signal 'wrong-type-argument (list 'number-or-marker-p a))))
         (while cur
-          (when (nelisp--num-lt2 (car cur) acc) (setq acc (car cur)))
+          (let ((candidate (car cur)))
+            (cond
+             ((nelisp--maxmin-nan-p acc) nil)
+             ((nelisp--maxmin-nan-p candidate) (setq acc candidate))
+             ((eq (nelisp--maxmin-order candidate acc) -1)
+              (setq acc candidate))))
           (setq cur (cdr cur)))
         acc))))
 
@@ -143,8 +202,18 @@
   (cond
    ((null args) (signal 'wrong-number-of-arguments (list 'max 0)))
    (t (let ((acc (car args)) (cur (cdr args)))
+        (unless (numberp acc)
+          (signal 'wrong-type-argument (list 'number-or-marker-p acc)))
+        (dolist (a cur)
+          (unless (numberp a)
+            (signal 'wrong-type-argument (list 'number-or-marker-p a))))
         (while cur
-          (when (nelisp--num-gt2 (car cur) acc) (setq acc (car cur)))
+          (let ((candidate (car cur)))
+            (cond
+             ((nelisp--maxmin-nan-p acc) nil)
+             ((nelisp--maxmin-nan-p candidate) (setq acc candidate))
+             ((eq (nelisp--maxmin-order candidate acc) 1)
+              (setq acc candidate))))
           (setq cur (cdr cur)))
         acc))))
 
@@ -247,13 +316,15 @@ A half is rounded to the even neighbour, as in Emacs."
 ;; + `car' + `memq' = same semantics, no new primitive needed (= Tier 1
 ;; "elisp で直接実装可能" per Doc 86 §2.2.1).
 (defun functionp (x)
-  "Return t if X is callable (= a `lambda' / `closure' / `builtin' form)."
-  (and (consp x) (memq (car x) '(lambda closure builtin)) t))
+  "Return t if X is a callable function object."
+  (or (and (consp x) (memq (car x) '(lambda closure builtin)) t)
+      (and (fboundp 'byte-code-function-p) (byte-code-function-p x))
+      (and (fboundp 'subrp) (subrp x))))
 
 ;; Doc 126.C (2026-05-18): `macroexpand-1' now lives in elisp.  The
 ;; body keeps the retired Rust contract exactly: non-cons / non-symbol
 ;; head / unbound head / non-macro head all return FORM unchanged;
-;; macro cells apply their wrapped lambda to raw arg forms.  `ENV' is
+;; macro cells apply their callable cdr to raw arg forms.  `ENV' is
 ;; now honored (Doc 22 A12): its entries shadow the global mirror.
 (defun macroexpand-1 (form &optional env)
   "Expand FORM by one macro layer or return FORM unchanged.
@@ -268,7 +339,7 @@ forms, a nil EXPANDER marks the head as locally not-a-macro."
               (let ((fn (nelisp--env-globals-get-function (car form))))
                 (if (and (consp fn) (eq (car fn) 'macro))
                     (let ((inner (cdr fn)))
-                      (apply (if (consp inner) (car inner) inner) (cdr form)))
+                      (apply inner (cdr form)))
                   form))
             form)))
     form))

@@ -1,0 +1,260 @@
+#+TITLE: Doc 208 — .neln to GNU .eln switchover within proven coverage
+#+AUTHOR: NeLisp
+#+STATUS: IMPLEMENTED (2026-09-28, ledger tools/ai/eln-progress.org S7.7)
+#+STATUS2: This closes S7.7 only within the coverage defined in §1. It does not claim P5 (Doc 206) is complete: S2.5, S4.3, S4.4, S4.6, S6.1, S6.3-S6.16 and S6.22 remain open.
+
+* §0 Summary
+
+The old private =.neln= native path is replaced, per symbol, by the genuine
+GNU =.eln= registration path wherever that path is proven, and only there.
+A new routing layer (=lisp/nelisp-eln-switchover.el=) sits between the two:
+
+- it decides per symbol whether the =.eln= path may be tried at all;
+- it registers through the unchanged authenticated path
+  (=nelisp-eln-registration-load=), always into an isolated namespace, and
+  is the single writer of the global function cell;
+- it records every decision (=nelisp-eln-switchover-log=); a fallback is
+  never silent;
+- it can unload a route: restore the previous definition, drop every
+  reference, and release the owner's native resources including the
+  =dlclose= of the private copy, but only when the runtime's weak
+  native-subr lease count for the module is zero;
+- it migrates an existing =.neln= cache to genuine GNU-format =.eln=
+  artifacts for the defuns the self-emitter supports in a proven kind.
+
+The =.neln= loader reaches it through one thin hook,
+=nelisp-artifact-neln-eln-router= (=lisp/nelisp-artifact.el=), which is
+nil by default: the pre-S7.7 legacy behavior and the existing
+direct-registration switch are unchanged unless a caller opts in.
+
+End-to-end evidence: =test/nelisp-eln-switchover-smoke.sh= (the S7.7
+ledger =cmd:=). Host decision tests: =test/nelisp-eln-switchover-test.el=.
+
+* §1 What "within proven coverage" means
+
+Coverage is decided *before* anything is opened, from the artifact's
+exact bytes, and has two parts. Anything outside it is never
+=dlopen='d by the router.
+
+** Artifact coverage
+
+An artifact is inside coverage when exactly one of these holds:
+
+1. *Pinned genuine GNU artifact.* Its file sha256 is listed in
+   =nelisp-eln-switchover-proven-genuine-artifacts=, together with the
+   symbol it registers, where it may be published, and the ledger criteria
+   that prove it:
+
+   | artifact | sha256 (prefix) | publish | native execution proven by | corruption rejection |
+   |---+---+---+---+---|
+   | =nelisp-gnu-identity= | =6a363298= | global | S1.3, S5.8 (identity + GC eq) | S7.7.4 |
+   | =caar= | =4a799ba0= | isolated | S6.17 | S7.7.4 |
+   | =cadr= | =7a4f2fad= | isolated | S6.18 | S7.7.4 |
+   | =fixnump= | =ab5d63ed= | isolated | S6.19 | S7.7.4 |
+   | =bignump= | =d350b1fe= | isolated | S6.20 | S7.7.4 |
+   | =frame-configuration-p= | =1536813e= | isolated | S6.21 | S7.7.4 |
+
+   A pinned artifact is admitted only for its own symbol
+   (=genuine-name-mismatch= otherwise). =isolated= entries are names the
+   runtime itself calls (the loader, the object codec, nl-ffi); S6 proves
+   them only through an isolated namespace, so the router never publishes
+   them globally. Deliberately absent: the increment artifact (S2.5 is
+   red: the public =1+= rebinding lane) and =zerop= (S6.16 is red). The
+   decrement artifact (S3.5) is not listed yet; adding it is data-only
+   once its global-publish lane is shown.
+
+2. *Self-emitted migrated artifact.* It was produced by
+   =nelisp-eln-switchover-migrate-neln= (§3); its migration record's
+   sha256 equals the file's current bytes; and its self-emitter kind
+   (=nelisp-eln-emitter--validate-ir=) is in
+   =nelisp-eln-switchover-proven-emitter-kinds=:
+   - =constant= (zero-argument integer): the S7.6 lane and the S7.7.4
+     self-emitted fixture;
+   - =identity= (one argument returned unchanged) and =expression=
+     (bounded =if= / immediate / argument reference): proven by the S7.7
+     smoke, where the native result equals the =.neln= module-init result
+     on every in-coverage input, and admitted only by the registration
+     preflight's exact-shape leaf grammar.
+
+Every refusal is a recorded fallback with its reason:
+=outside-proven-coverage=, =artifact-hash-mismatch=,
+=emitter-kind-not-proven=, =genuine-name-mismatch=, =missing-artifact=,
+=already-routed=, =registry-quarantined=.
+
+** Argument coverage
+
+Every globally published route is a pure leaf: the preflight admits only
+the scalar0 and bounded unary-leaf grammar (no calls, no stores). The
+object codec (=nelisp-eln-objects=) cannot represent every runtime value;
+for example an interned symbol with global state is refused with
+=nelisp-eln-objects-unsupported= while the argument is being encoded,
+before native entry. That value is outside proven argument coverage.
+
+The router therefore publishes a per-call guard, not the bare subr. The
+guard calls the native subr, counts native calls, and answers a codec
+refusal with the previous (non-native) definition. That fallback is
+counted and recorded once per symbol and error kind (=:op call-fallback=).
+Any other error propagates unchanged. Since the leaf is pure, answering
+such a call from the previous definition has no observable double effect.
+=nelisp-eln-switchover-counters= returns (NATIVE-CALLS . PER-CALL-FALLBACKS).
+
+Isolated routes are returned unguarded by =nelisp-eln-switchover-function=,
+exactly as the S6 harness calls them.
+
+* §2 Switchover mechanism
+
+=nelisp-eln-switchover-load= (SYMBOL PATH &optional COVERAGE FALLBACK):
+
+1. Refuse without attempting anything when the registration layer is
+   quarantined or busy, SYMBOL already has a route, or PATH is missing.
+2. Classify the bytes (§1). Outside coverage: run FALLBACK and record.
+3. Register with =nelisp-eln-registration-isolated-namespace= bound to a
+   fresh namespace. A registration error, whether pre-dlopen validation,
+   ELF parse, ABI or metadata mismatch, or preflight refusal, is caught.
+   The registration layer's own containment boundary has already rolled
+   the attempt back or quarantined it (§5). The router records
+   =registration-rejected=, or =registration-rejected-quarantined= when a
+   pending cleanup now exists, and runs FALLBACK. A =quit= is recorded and
+   re-signalled.
+4. Accept only the single registration of SYMBOL that was asked for.
+   Anything else is retracted again and recorded as
+   =registered-name-mismatch=.
+5. For =global= routes, save the previous function cell (bound or not)
+   and every plist property the registration set, copy those properties,
+   and =fset= the guard. For =isolated= routes, the global state is not
+   touched.
+
+=nelisp-eln-switchover-load-batch= routes a list of specs in order. One
+item's rejection, fallback, or even an internal router error (recorded as
+=router-error=) never stops the batch.
+
+In the =.neln= loader, with =nelisp-artifact-neln-legacy-native= nil,
+=nelisp-artifact-neln-eln-table= populated (for example from
+=nelisp-eln-switchover-neln-eln-table=) and
+=nelisp-artifact-neln-eln-router= set to
+=nelisp-eln-switchover-neln-router=, every table hit is routed. The
+module-init replay has already installed the byte-code definition, which
+becomes the previous definition and the fallback. The direct call used
+before this doc failed with =registration-name-already-bound= for exactly
+that reason.
+
+* §3 Migration of existing .neln caches
+
+=nelisp-eln-switchover-migrate-neln= (NELN-PATH ELN-DIR):
+
+- The cache must be self-consistent: its sibling manifest's
+  =:artifact-sha256= must equal the file. Otherwise nothing is migrated
+  (=neln-cache-not-self-consistent=).
+- Each =:module-init= =(:fn NAME BYTECODE (defun ...))= item is parsed to
+  AOT IR (=nelisp-aot-compiler--parse-stmt=). When the self-emitter accepts
+  it in a proven kind, a genuine GNU-format =.eln= is emitted
+  (=nelisp-eln-emitter-write-ir=, no Host compiler) and recorded with its
+  sha256. Other items are recorded as fallback with the reason
+  (=emitter-unsupported-shape=, =emitter-kind-not-proven=,
+  =emission-failed=).
+- The record =<neln>.switchover.el= (format
+  =nelisp-eln-switchover-migration-v1=) stores the =.neln= sha256, the
+  source sha256 and the entries.
+  =nelisp-eln-switchover-load-migrated= trusts it only while the =.neln=
+  still has that sha256; otherwise every symbol falls back with
+  =stale-migration=. An emitted artifact whose bytes no longer match its
+  entry is refused before =dlopen= (=artifact-hash-mismatch=).
+
+The =.neln= file itself is not deleted or rewritten. Within coverage it is
+no longer the native path. Outside coverage it remains the byte-code
+fallback, which is what "replaced within proven coverage" requires.
+
+* §4 Unload
+
+=nelisp-eln-switchover-unload= (SYMBOL) *retracts*:
+
+- if the global cell still holds this route's guard, restore the previous
+  definition (or =fmakunbound= when there was none) and the saved plist
+  properties; a cell redefined since then is left alone and marked
+  =:superseded=;
+- clear the isolated namespace and the owner's callable slots (9, 19);
+- queue the route for release.
+
+=nelisp-eln-switchover-finalize-unloads= *releases*, and must run from a
+frame that no longer holds the callable. It runs =garbage-collect= so
+unreachable subrs drop their weak leases, then for each queued route:
+
+- if =nelisp--native-subr-live-count= for the module is still positive,
+  *defer*: the module stays mapped and every held reference stays valid,
+  and it is retried on the next call. This is the fail-closed answer to
+  unloading code that something can still call, and it is shown by the
+  smoke's DEFERRED_WHILE_REFERENCED check;
+- otherwise release in the order =nelisp-eln-registration--cleanup= uses
+  for the state =--finish-success= leaves: vector unit, then object unit.
+  =nelisp-eln-registration-objects-release-unit= itself re-checks the live
+  count, then =dlclose='s the private copy and frees the unit views. Then
+  the metadata token, the link table, and the symbols-with-pos cell, and
+  finally the owner leaves =nelisp-eln-registration--owners=. A signal
+  here is recorded as =release-failed= and the owner stays rooted, so the
+  crash report stays consistent.
+
+The private copy file was already unlinked right after =dlopen=
+(=nelisp-eln-system-loader-open=); release is observable as the loader's
+handle table entry disappearing and the =(deleted)= private-copy mapping
+leaving =/proc/self/maps=. The smoke checks both.
+
+* §5 General crash handling
+
+Contained, by class:
+
+| fault class | where it is stopped | result |
+|---+---+---|
+| bytes changed after migration | router sha256 check, before open | =artifact-hash-mismatch= fallback |
+| not a pinned/migrated artifact | router coverage check, before open | =outside-proven-coverage= fallback |
+| truncated / malformed ELF | loader ELF parse, before =dlopen= | =registration-rejected= (=invalid-elf-profile=), rolled back |
+| tampered =.init=/INIT_ARRAY/CRT/dynamic section | S7.8 pre-dlopen validator | =registration-rejected=, rolled back |
+| wrong ABI hash / metadata | metadata validation after open, before any native call | =registration-rejected= (=abi-hash-mismatch=), rolled back, handle closed |
+| unadmitted machine code / imports | registration preflight (exact-shape, forward CFG, slot auth) | =registration-rejected= |
+| error / =throw= / =quit= during registration | =nelisp-eln-registration--containment-boundary= | rolled back, or quarantined when cleanup itself fails |
+| quarantined registry | router refuses every later item | =registry-quarantined= fallback, not attempted |
+| argument outside codec coverage | per-call guard | recorded per-call fallback to the previous definition |
+| unload while referenced | live-count check | deferred, never unmapped |
+| failed release | =finalize= handler | =release-failed=, owner stays rooted |
+
+This is general rather than per-fixture in two ways. First, S7.7.4 runs
+the three corruption classes against every genuine artifact on hand plus
+the self-emitted fixture, one process each, and requires no crash and no
+registry inconsistency (101/101 on =nelisp-integrated14=,
+2026-09-28). Second, the S7.7 smoke puts corrupted artifacts in the
+middle of one batch in one process: the rejections are recorded, the
+batch continues, the later good artifacts route, and
+=nelisp-eln-registration-crash-boundary-report= stays consistent.
+
+Not contained: a fault *inside admitted native code* at run time, such as
+a SIGSEGV from a verifier gap. The design keeps this class out by
+admission (exact-shape leaf grammar plus whole-executable-region
+authentication) rather than by recovery. In-process recovery from a
+native fault is not implemented and is not claimed.
+
+* §6 Evidence (2026-09-28, binary target/nelisp-integrated14)
+
+- =sh test/nelisp-eln-switchover-smoke.sh=: exit 0 in about 31-36 s on a
+  loaded 32-core host. Two concurrent binary processes run 18 checks,
+  among them MIGRATE, BATCH_ROUTES, BATCH_CONTINUED, BATCH_RESULTS,
+  BATCH_NATIVE, CALL_FALLBACK_RECORDED, BATCH_REGISTRY, UNLOAD_RESTORED,
+  UNLOAD_RELEASED, RELOAD, DEFERRED_WHILE_REFERENCED, DEFERRED_RELEASED
+  and QUARANTINE.
+- Negative controls, run once by hand on mutated copies of the router:
+  - without the previous-definition restore, UNLOAD_RESTORED and
+    DEFERRED_WHILE_REFERENCED fail;
+  - without the owner release, UNLOAD_RELEASED and DEFERRED_RELEASED fail
+    (4 owners, units and handles remain).
+  The driver also runs its restoration checker against still-routed
+  symbols (NEG_RESTORED_CHECKER).
+- Host: =test/nelisp-eln-switchover-test.el= 9/9 and
+  =test/nelisp-artifact-eln-switch-test.el= 6/6.
+
+* §7 Open items (not claimed here)
+
+- Decrement and further S6 artifacts in the pinned table once their
+  global-publish lanes are green; increment after S2.5.
+- Argument coverage is bounded by the object codec; widening the codec
+  widens it without router changes.
+- Unload of =gnu-eval-subr= / pair profiles releases the owner the same
+  way, but the smoke exercises only single-registration leaves.
+- Native run-time fault recovery (§5, last paragraph).

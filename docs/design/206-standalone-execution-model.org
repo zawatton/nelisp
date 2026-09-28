@@ -1,13 +1,13 @@
-#+TITLE: Doc 206 — How the standalone gets fast: a byte-code VM, and DSL primitives only where they are unavoidable
+#+TITLE: Doc 206 — Standalone execution strategy: byte-code VM and native JIT
 #+AUTHOR: NeLisp
-#+STATUS: DRAFT (2026-09-21) — nothing has landed from this document.  The
-#+STATUS2: measurements in §1 are real and reproducible; the plan in §3-§5 is not yet built.
+#+STATUS: DRAFT (strategy revised 2026-09-25; original measurements 2026-09-21)
+#+STATUS2: Historical measurements in §1 are evidence from 2026-09-21. The revised P5 strategy is proposed; partial proofs do not mean P5 is complete.
 
 * §0 TL;DR
 
-The standalone interprets everything that is not a compiled DSL primitive, and
-one interpreted step costs 5-15 µs.  Three candidate ways out were measured on
-2026-09-21, not argued:
+As of 2026-09-21, the standalone interpreted Lisp functions outside compiled
+DSL primitives; one interpreted step cost 5-15 µs. Three candidate ways out
+were measured then. These are historical measurements, not current benchmarks:
 
 | path | measured | verdict |
 |---|---|---|
@@ -171,16 +171,20 @@ What that chain does *not* accept is ordinary Elisp.  Its own test feeds it
 
 — machine integers, =exit= as the program's end, a free symbol is an error.  No
 cons cells, no symbols as values, no GC, no closures, no dynamic binding, no
-signals.  A standalone JIT is therefore the same work as extending that chain
-to tagged values and the runtime's object model, and it is the larger,
-open-ended half of this document.  It is sequenced second for that reason, not
-because it is optional: §0's table is what an interpreted execution layer costs,
-and a VM only moves that to Emacs's level.
+signals.  A standalone JIT is therefore the work of connecting that chain to
+tagged values and the runtime's object model. The original sequencing and
+limitations above describe the 2026-09-21 proposal; the revised staged P5
+design below defines the current proposed path. §0's measurements remain its
+historical motivation, not a claim that a VM or JIT has since been built or
+benchmarked.
 
 * §4 Phases and exit criteria
 
-Each phase states what must be true to call it done, and no phase starts before
-its predecessor's exit criterion is measured.
+Each phase states what must be true to call it done. P1-P4 retain their listed
+exit criteria. Bounded P5 infrastructure and vendor investigation may proceed
+in parallel with unfinished P1-P4 when dependencies are explicit; this does
+not mark a predecessor complete. P1-P4 measurements remain required to set
+P5's quantitative performance target and final performance acceptance.
 
 ** P0 — make the inventory exact — DONE 2026-09-21
 
@@ -233,18 +237,748 @@ per-call cost is within 5x of Emacs's.
 
 ** P5 — the standalone JIT
 
-Extend the AOT chain (§3.2) from the low-level DSL to the runtime's object
-model: tagged values, GC roots, closures, dynamic binding, =unwind-protect= and
-=condition-case=.  Compile hot byte-code functions to machine code at runtime.
-*Exit:* to be set when P1-P4's numbers are in — the point of sequencing it last
-is that its target is whatever P1 leaves on the table, and that is not knowable
-before P1 is measured.
+P5 changes direction from reconstructing a Lisp expression for each function
+and temporarily compiling source with AOT. Its proposed baseline is a native
+JIT over verified byte-code, using a shared value/ownership contract and an
+execution frame. The frame carries arguments, value stack, GC roots, binding
+depth, and handler/unwind state. Preserve closures, dynamic binding,
+=unwind-protect=, =condition-case=, and non-local exits. Reuse the existing
+native generator, loader, and VM runtime helpers; do not port GNU Emacs's C
+implementation wholesale.
+
+Stage the work in this order:
+
+1. Define the shared frame and native entry ABI, with precise ownership and
+   root visibility rules.
+2. Add one common call gateway for C primitives, Lisp functions, and byte-code
+   functions/closures. Inspect the actual =nl_apply_function= contracts before
+   fixing the gateway ABI.
+3. Build a verified control-flow-graph IR with basic blocks and stack slots.
+4. Generate native code directly from that IR through the existing native
+   generator.
+5. Add optimizations only after the baseline is measured.
+
+*P5 compilation/execution separation — opt-in staged path and boundary hook implemented*
+
+The Lisp module now has an opt-in deferred-preparation path. With
+=nelisp-bytecode-jit--deferred-preparation-enabled= non-nil, dispatch queues
+requests and continues in the VM; preparation is bounded and deduplicated,
+failed attempts are memoized by byte-code/runtime/ABI identity, and a candidate
+is validated before its ready handle is published. The flag defaults to nil,
+so the normal runtime still uses its existing synchronous preparation behavior.
+This staged path does not yet change the default dispatch policy.
+
+The automatic service point is after a successful outermost top-level
+evaluation returns, while its recorded GC context remains live. Requests
+raised during nested evaluation or =load= must stay queued until that outermost
+boundary. The drain's dynamic busy guards prevent compilation-triggered
+evaluation from re-entering preparation. The integrated driver hook remains
+opt-in and preserves the user result through callback GC. Five standalone
+smoke cases pass, with a no-callback candidate failing the same test; these
+cases use a stub service to verify boundary, GC, and error contracts. A
+separate two-action standalone probe uses ordinary =funcall=: the first call
+queues one request and executes in the VM, the boundary compiles it, and the
+second call returns nil with one native call, one compiled function, and an
+empty queue. This verifies the opt-in scheduler with the transitional backend,
+not the complete P5 JIT or GNU artifact registration.
+Later background preparation is optional and is not part of this initial
+design.
+
+*Artifact compatibility target.* Migrate the specification toward genuine GNU
+Emacs =.eln= artifacts; acceptance requires the same GNU Emacs 31.1-produced
+file to load and execute in both Emacs and standalone, without recompiling or
+converting its on-disk contents. This binary-compatibility scope was explicitly
+confirmed by the user. The current =.neln= emitter and loader are
+transitional private-format evidence and do not meet this target. A generated
+constant function returned 17 as GNU's tagged immediate =0x46=; its leaf
+needs no object relocation. The 99-byte =top_level_run= takes a compilation
+unit and calls =comp--register-subr= through GNU runtime relocation state to
+register the callable native subr. Loading therefore requires the GNU
+ABI/version and relocation contract, correct entry registration, and matching
+=Lisp_Object= tags. General results also need compatible heap identity, GC
+roots, and object relocations; matching ELF format or architecture alone is
+insufficient. This target is not yet implemented; never stub the registration
+path to claim compatibility.
+
+Keep the verified IR independent of either physical value representation.
+GNU-compatible artifact entries and GNU runtime calls use the producer's
+64-bit =Lisp_Object= ABI; NeLisp's existing 32-byte Sexp slots are an internal
+runtime representation, not an interchangeable native ABI. The NeLisp side
+must adapt these representations while preserving identity, mutations, roots,
+and non-local exits. Sharing the VM frame contract means sharing those
+semantics and ownership rules, not passing Sexp-slot addresses where GNU
+expects Lisp words. Emitted artifacts must not require NeLisp-only external
+symbols that GNU Emacs cannot resolve. The production JIT emitter must also
+produce the agreed =.eln= format; consuming GNU-produced artifacts while
+continuing to publish private =.neln= JIT output is not the requested migration.
+
+The integrated =nelisp-eln-emitter= now emits a genuine GNU-compatible
+=ET_DYN= unit from a zero-argument constant-integer AOT IR function, using
+the existing Lisp ELF object writer and =ld -shared=. The production emission
+path does not invoke the Host compiler. Its initial profile is explicitly
+pinned to GNU 31.1, x86-64 Linux, ABI hash =ba35c031= and registration slot
+1030. Mutable relocation cells have disjoint storage; =top_level_run= calls
+the real registration entry through the runtime table. Root reproduced the
+standalone-to-GNU smoke on candidate =6d05ca62...=: artifact =75b88728...=
+loads as a native subr, has arity =(0 . 0)=, returns 17, rejects excess
+arguments, and keeps the same hash after execution. A corrupted ABI hash is
+rejected. General IR lowering and NeLisp-side registration of the same unit
+remain required.
+
+Deferred JIT preparation now selects the GNU emitter for admitted zero-argument
+nonnegative integer literal IR, publishes a managed NativeSubr handle, and
+dispatches through that callable. Other IR still uses the transitional private
+backend or VM. Root validation on immutable =0f5c83d8...= with the integrated
+JIT source returns 17 cold and warm; the cold call queues preparation and the
+warm call increments =native-calls= to 1 with a retained =.eln= artifact.
+The existing JIT tests plus focused adapter tests pass 58/58. Failed emission
+preserves the primary error and retains cleanup work for retry; invalidation
+defers module close and artifact deletion until callable leases permit it.
+This connects the real JIT dispatch for the admitted subset, not full GNU
+registration or complete removal of the private emitter.
+
+The integrated =test/nelisp-eln-same-artifact-smoke.sh= closes the separate
+fixture gap: standalone emits one unit, GNU registers and executes it, and
+NeLisp calls that exact file through its managed NativeSubr API three times.
+Root reproduced this on =22dcae1a...= with the corrected Lisp FFI source;
+artifact =7f327f2e...= retains its SHA-256 after each runtime. Failed runs
+retain their diagnostics. The NeLisp result proves direct managed leaf
+execution, not =top_level_run= registration or general GNU ABI compatibility.
+
+The emitter also lowers a one-argument AOT =ref= body to a GNU ABI identity
+leaf (=mov rax,rdi; ret=), with truthful =(1 . 1)= registration metadata.
+Host ERT passes 6/6, including fixnum boundaries, cons/string =eq= identity,
+wrong arity, unsupported IR, and the existing constant/profile checks.
+Standalone emission followed by GNU registration passes on =0f5c83d8...=
+with artifact =c007655a...=. NeLisp's managed entry admission still accepts
+only scalar-zero-argument leaves; this emitter extension does not establish
+NeLisp argument bridging.
+
+The existing =nl-ffi= pure-Elisp ELF loader already works in the static
+standalone executable. =test/nelisp-eln-leaf-smoke.sh= uses public
+=ffi:library= and =ffi:defun= to load a genuine GNU artifact and call its
+four constant leaves, checking raw words and decoded values nil, 0, -1,
+and 17 against actual Host native execution. The shared
+=nelisp-eln-abi= codec normalizes signed/unsigned 64-bit words and rejects
+heap-object decoding. Its producer profile records that all bare symbol
+words, including dynamically allocated symbols, are signed byte offsets
+from =lispsym= rather than absolute pointers.
+The artifact ABI hash is checked against its producer, not asserted compatible
+with NeLisp. The smoke does not invoke =top_level_run= or register GNU native
+subrs; those runtime contracts remain to implement.
+
+=nl-ffi-loader-open= now accepts an optional per-load runtime function
+provider. Local definitions take precedence; provider entries resolve only
+undefined function imports in the root object, never dependency imports.
+The standalone smoke verifies FUNC/JUMP_SLOT and NOTYPE/JUMP_SLOT calls,
+rejects ambiguous NOTYPE/GLOB_DAT imports, and checks provider isolation and
+recovery after a failed load. This does not bypass =DT_NEEDED= resolution or
+the =DT_RELR= refusal. Provider code mappings remain caller-owned for the
+handle lifetime. This is relocation infrastructure, not an implementation
+of GNU handlers, =setjmp=, or native subroutine registration.
+
+=test/nelisp-eln-callback-smoke.sh= additionally compiles and runs the same
+GNU =random(1)= wrapper in both runtimes. It checks the emitted tail-call's
+relocation slot against the producer's subroutine index, then routes that
+slot through a test-only C adapter to the shared NeLisp gateway. The actual
+Lisp wrapper forces GC and enters the native function recursively; both
+calls return zero, and context restoration is checked. A separate arity
+failure preserves the output sentinel and the runtime signal. The smoke
+requires clean stderr, an exact marker, and unchanged artifact/binary hashes.
+The C fixture remains an independent control, not a production core bridge.
+Its error status is
+out of band and is not GNU non-local exception propagation. It does not run
+=top_level_run= or establish general native subroutine registration.
+
+The native DSL implementation in =lisp/nelisp-cc-eln-callback.el= now passes
+the separate =test/nelisp-eln-dsl-callback-smoke.sh= on the same GNU artifact.
+It uses caller-pinned slots and the shared gateway, with eight bounded LIFO
+contexts owned by one thread. The smoke covers nested entry with GC,
+overflow, invalid pop order, foreign-owner rejection, non-fixnum input, and
+the gateway's wrong-arity signal without overwriting the result slot.
+Bridge-list equality is checked before building; a deliberately reordered
+list fails the test. This scalar callback adapter still reports errors out
+of band. It does not implement GNU non-local exits or a general heap-object
+ABI, and its passing test does not establish those contracts.
+
+Registration also requires a wider incoming signature: GNU 31.1
+=comp--register-subr= receives seven Lisp words (name, C name, minimum and
+maximum arity, type, rest metadata, compilation unit). SysV passes the seventh
+word on the stack. The integrated =nelisp-cc-eln-callback7= adapter now
+preserves all seven raw words and uses independent GC root slots for each
+activation. Root validation on immutable candidate =9494692a...= passes
+distinct arguments, signed fixnum boundary results, nested entry, GC with
+live outer objects, inactive-context refusal, and error status without replay.
+A C caller measures equal root marks immediately around each callback.
+Intermediate Lisp-side samples differ by 32 bytes at different evaluator
+boundaries; that separate observation remains unattributed. This proves the
+incoming ABI slice, not GNU registration or non-local exception propagation.
+The adapter still reports errors out of band.
+
+The integrated =nelisp_eln_callback7_entry_word= sibling accepts a checked
+dotted pair of unsigned 32-bit halves and returns the exact 64-bit word.
+The original fixnum-return entry is unchanged. Candidate =c43801e0...=
+passes nested distinct raw returns, GC, malformed-half rejection, handler
+errors, and inactive-context refusal with empty stderr; the focused Host
+tests pass 3/3. One failed source-loading build preceded the corrected build.
+This supplies the return transport for a GNU subr view, not object decoding
+or the complete registration implementation.
+
+For the admitted emitter entry, =top_level_run= passes the compilation-unit
+word unchanged to slot 1030; it does not dereference private unit fields.
+The NeLisp registration callback must authenticate that word and perform the
+required operations through its real loader owner. GNU's own =make_subr=
+dereferences its own unit handle; reproducing that operation does not require
+identical private runtime storage. Keep actual =eq=/=equal= registration
+tables in traced NeLisp owner state, and reject entries that expose or access
+unmaterialized GNU fields before execution. GNU hash-table memory mirrors are
+therefore not a prerequisite for this single-registration path. This is a
+restricted representation adapter, not permission to replace observable
+metadata with fabricated values or to claim arbitrary =.eln= support.
+
+The integrated =nelisp-eln-registration-objects= owns persistent unit views
+and temporary subr views, authenticates reverse decoding, caches subr identity
+within an activation, and closes the loader before freeing persistent unit
+storage. Constructor cleanup retains failed releases without masking the
+primary error; publication allocates its lists before exposing an entry.
+Root reproduced its smoke on =c43801e0...= using the GNU-produced
+=nelisp-eln-symbol-info-byte-fixture.eln=, with empty stderr. This tests the
+object/ownership layer, not =top_level_run= registration.
+
+The integrated =nelisp-eln-registration-vectors= supplies flat docs/data
+vectors with real GNU headers and slot words. Its focused standalone checks
+cover layout, mutation rejection, child activation leases, and retryable
+cleanup. Nested unsupported objects and cross-unit reuse of the same source
+vector are rejected before allocation; general shared vector support is not
+claimed. These components must now be connected through the existing
+same-artifact runner rather than a new validation framework.
+
+The incoming-call bridge must follow GNU's native exception protocol as well
+as its calling convention. In GNU 31.1 =src/comp.c=,
+=emit_limple_push_handler= calls =push_handler= through the runtime table,
+takes the address of the returned handler's jump buffer, and calls the
+imported =setjmp= variant directly. A nonzero return selects the handler
+block. Returning an error sentinel or nil from a NeLisp callback would let
+the GNU caller continue and is not compatible error propagation. Before
+admitting general native functions, implement the matching handler layout,
+non-local transfer, binding/root cleanup, and reentry ownership. A successful
+scalar callback fixture is evidence for the calling convention only.
+Object conversion must also preserve identity and visible mutations across
+native entry, callbacks, and return; per-call copies without a traced lifetime
+and identity contract do not satisfy the shared-artifact target.
+
+Raw native buffers need an explicit lifetime separate from Lisp roots.
+The loader regression exposed a managed C-string allocation whose integer
+address did not retain its block: the packed header reported FREE before
+=openat=, and the kernel received a free-list pointer instead of the path.
+=packages/nl-ffi/src/nl-ffi-memory.el= provides caller-owned anonymous mappings,
+address access, and explicit release. Its standalone tests cover GC retention,
+normal and exceptional cleanup, mapping failures, and unsupported platforms.
+Loader call sites must bracket temporary owners with =unwind-protect=.
+External memory is not scanned for Lisp references; future relocation tables
+still require separate traced owners for every referenced Lisp object.
+
+=lisp/nelisp-eln-metadata.el= now validates root-owned serialized blobs,
+producer hash, lengths, relocation storage capacities, and reader identity
+semantics before exposing metadata. Host tests cover Unicode, circular data,
+uninterned symbols, and the unique =#$= placeholder used by GNU's loader.
+The native lexer/parser now carries a distinct =#$= token and caller-supplied
+reader context; the interpreted fallback follows the same dynamic binding.
+The isolated =c5161310...= candidate passes the genuine GNU metadata fixture
+that the earlier candidate rejected. Mixed circular, shared, and uninterned
+objects preserve their identities alongside =#$=. This proves the tested
+metadata path, not native function registration. Property preservation for
+serialized strings is still a runtime requirement.
+
+Canonical symbol-name identity now has a collector-visible sidecar. The
+isolated =15389bac...= candidate preserves the input name of =make-symbol=
+and a fresh =intern=, keeps an existing interned name on subsequent hits,
+and retains names through GC and table growth. The same focused smoke passes
+on Host Emacs; the previous =6d8f5e1b...= candidate fails its first input-name
+identity assertion. Mutation and printing of live names are covered. This
+does not establish interner lookup parity after mutating an interned name,
+global =unintern=, or the private membership predicate's negative branch.
+
+Persistent compilation-unit ownership cannot use the existing exclusive,
+temporary native pin frame. A module registry must retain canonical Lisp
+values and identity mappings for its external GNU-layout views, with mutation
+synchronization at native/callback boundaries and explicit mapping lifetime.
+Even the constant-17 artifact's =top_level_run= requires real symbol, string,
+cons, compilation-unit, and subroutine objects for =comp--register-subr=;
+the leaf's immediate return does not validate this registration contract.
+
+The constant-17 registration audit identifies runtime-table index 1030
+(byte offset =0x2030=) as =comp--register-subr=. Its seven arguments include
+the canonical name symbol, C-name string, arity bounds, type/rest metadata,
+and compilation-unit object. Existing function-cell lookup/mutation is
+reused by the integrated tag-18 NativeSubr implementation, including
+=subrp=, =functionp=, =type-of= and apply dispatch. Its payload has traced Lisp
+metadata and module ownership, real callable identity, and arity checks
+before native entry. ELF root-function ownership does not establish a
+function's calling convention, arity, result representation, or permitted
+runtime effects. The initial scalar0 factory must validate its admitted leaf
+contract separately and reject =top_level_run= or other incompatible entries
+before invocation; a name or =STT_FUNC= capability alone is insufficient.
+A lambda wrapper, forged builtin cons, or no-op
+registration callback is not a substitute. Keep the module mapped while a
+callable or active call can reach it. Coordinate core/GC/build wiring with
+the incoming-call bridge to avoid concurrent changes to the same functions.
+
+The isolated =b9be56f4...= candidate passes scalar-leaf invocation, callable
+identity, wrong arity, rejection of =top_level_run=, and a two-phase GC/close
+lifecycle. Object-code relocations and a masked comparison of 1,551 linked
+instruction bytes establish that its constructor includes checked root
+reservation and release. The shared integration additionally constructs the
+result in a reserved root slot and places its weak sidecar after callback7
+BSS. Combined candidate =22dcae1a...= passes the NativeSubr lifecycle, reader,
+and callback7 focused smokes with clean stderr. Invocation remains restricted
+to authenticated =mov imm32,%eax; ret= fixnum leaves with no callbacks or
+allocation, so live callable ownership suffices during that admitted call.
+An explicit active-call lease is still required before widening that ABI.
+
+Fresh uninterned GNU symbol views are integrated with constructor provenance,
+retryable external owners, and a conservative mirror-entry admission query.
+Symbols with existing global cells are refused, including unbound aliases;
+=special-variable-p= alone does not detect those aliases. A missing query
+fails closed. Combined testing exposed a tag mismatch: the original query
+accepted tag 4, but the constructor produces tag-16 uninterned symbols.
+The integrated correction accepts both tags using the existing mirror lookup;
+tag 16 uses identity, so a same-named fresh symbol does not inherit an
+interned alias's cells. Rebuilt candidate =0f5c83d8...= passes the full codec
+smoke with empty stderr, including alias lookup, fresh-symbol admission,
+wrong-type/arity rejection, and retryable cleanup; its source manifest stayed
+unchanged through the build. In particular,
+general cell synchronization and nil-view dereferencing are not established
+by this slice.
+
+An explicit registration-only API now admits canonical default-obarray
+symbols with empty global cells. It writes the initial-obarray flag and
+retains canonical identity across unit and activation leases. Ordinary
+encoding and synchronization reject these snapshots; activation retirement
+drops their unit leases. Root validation on =0f5c83d8...= with the integrated
+codec passes the full smoke with empty stderr, including cross-unit identity,
+survival after unit close, final release, and whole-request rejection before
+publication. This supports registration names only under a restricted entry
+contract; it does not synchronize cells after =defalias= or permit arbitrary
+GNU code to inspect the nil anchor.
+
+Repeated native-function creation exposed a separate FFI ownership defect:
+the old =alloc-bytes= C-string buffer could be reclaimed during GC, causing
+=dlsym= to receive an empty name even though the Lisp string was unchanged.
+=nl-ffi--dlopen= and =nl-ffi--dlsym= now retain external C-string owners across
+the call. Failed releases remain retryable without replacing a successful
+result or the primary error. Root validation on =22dcae1a...= with the fixed
+Lisp FFI source passes forced GC at real loader calls, cleanup fault controls,
+and native-function create/GC/create, with empty stderr. A collection need
+not overwrite reclaimed bytes immediately; the old-path overwrite observation
+is diagnostic evidence, not a deterministic test assertion.
+
+The initial owner components now support mixed cons/string graphs.
+=nelisp-eln-objects= retains canonical nil/fixnum/cons/string graphs in a live
+registry and assigns stable GNU addresses, including shared and circular
+structures. Boundary sync prevalidates all owned objects, including detached
+records; a failed native write quarantines the shared registry while retaining all mappings
+until release. =nelisp-eln-string= provides checked GNU string
+views for unibyte data and Unicode scalar text without properties. Its sync
+preserves canonical identity for permitted byte changes; GNU 31.1 itself
+restricts multibyte =aset= to ASCII-to-ASCII replacement. Focused standalone
+tests cover GC retention, mixed identity, bidirectional mutation, stale plans,
+and retryable error cleanup. The integrated string ERT suite passes 13/13;
+the mixed standalone smoke also passes on the immutable =6d8f5e1b...= candidate
+with clean stderr. Cross-unit ownership now uses canonical identity records,
+unit leases, and independent activation leases. The extended smoke passes on
+the older =c5161310...= and integrated symbol-name =15389bac...= candidates.
+It verifies equal GNU words for shared objects, distinct equal strings,
+detached cycles, active-call lifetime after unit close, snapshot whitelists,
+global quarantine after partial writes, and retry after partial activation
+release or orphan-arena cleanup failure. Root validation reports exit zero
+and empty stderr; the integrated module and test hashes match the tested
+overlay. Symbol views, compilation-unit/subroutine objects, and real
+registration remain unfinished; these components alone do not execute
+=top_level_run=.
+
+The private =nelisp-native-jump-x86_64= emitter now saves/restores the SysV
+callee-saved general registers, post-call stack pointer, and return address.
+Its standalone fixture verifies zero/nonzero C-int returns, nested buffers,
+register canaries, and stack restoration. It compares every emitted word in
+the same executable mapping before entry; a corrupted-code negative control
+is rejected without entry. This is an owned jump pair, not GNU handler
+integration: its buffers must never be used with glibc jump functions.
+
+Prefer the existing opt-in dynamic reader profile for the GNU provider:
+=NELISP_READER_DYNAMIC=1= uses the system ELF loader and initialized libc.
+The isolated =31d5d620...= candidate successfully opens the unchanged GNU
+=anvil-fs= artifact (=4fad1189...=) and resolves =top_level_run=,
+=late_top_level_run=, and libc =_setjmp=. Root replay passes with clean stderr
+when its working directory is pinned to the source snapshot. This avoids
+reimplementing libc RELR, TLS, and initialization in the static custom loader.
+The artifact's relocation cells are defined objects inside the ELF, not
+missing executable exports. Load success includes ELF relocation/initializers
+only; metadata initialization, registration, and compiled Lisp execution are
+not established. Use the matching libc jump pair for this provider; do not
+interchange buffers with the private pair. A system-loader metadata backend
+is now implemented in =lisp/nelisp-eln-system-loader.el=; runtime-cell
+initialization remains required. It checks root dynsym/PT_LOAD ownership,
+load bias and file bytes, bounds metadata reads, and retains failed cleanup
+owners for retry. The default custom-loader metadata API remains intact;
+the alternate backend uses explicit callbacks. Root validation passes the
+nine metadata ERT tests and the real dynamic-reader smoke, including close,
+failed-open, and temporary-memory cleanup fault controls, with clean stderr.
+The backend also issues revalidated root-function capabilities for ordinary
+=STT_FUNC= definitions inside file-backed executable =PT_LOAD= ranges.
+Address/digest checks and a per-module token reject altered addresses,
+transplanted handles, dependency functions, IFUNCs, non-code symbols, and
+stale handles. Root smoke passes on the pinned dynamic reader and the
+constant-17 GNU artifact. These descriptors do not pin executable lifetime:
+explicit close revokes them. Managed native-subr and active-call leases must
+prevent unload before this API can back persistent callable objects.
+Serialized strings may contain interior NUL bytes; the reader still requires
+the final terminator, valid encoding, and exactly one printed object.
+
+The integrated native and fallback readers now construct callable tag-17
+objects for =#[...]= bytecode literals. On immutable candidate =6d05ca62...=,
+the pinned =anvil-fs= artifact passes the system metadata smoke with clean
+stderr: its 121 relocation entries fit the unchanged 968-byte =d_reloc=
+capacity check. Root validation also executes a zero-argument function
+returning 42 through all four public/baked reader routes and checks exact
+conditions for malformed literals. Valid interpreted-function literals
+explicitly signal =unsupported-feature=; they are not mislabeled bytecode.
+This establishes the reader/metadata slice, not native registration or
+execution of the artifact's compiled Lisp functions.
+
+The object codec now transfers words through two 32-bit FFI operations and
+uses an exact decimal unsigned mask. Focused standalone probes exposed
+corruption of GNU fixnum minimum/maximum words through =ptr-write-u64= and
+=ptr-read-u64=; the hexadecimal all-ones literal also wraps to =-1= in the
+current reader. The codec fix passes literal GNU bit-pattern checks and real
+cons synchronization for minimum/maximum values on =6d8f5e1b...=; the same
+probe rejects the old codec with the expected raw-word mismatch. Host ABI
+ERT passes 5/5. The underlying general FFI and reader defects are not fixed
+by this adapter. =nelisp-eln-raw-call= now uses a reusable owned context and
+an RX trampoline to load six GP argument words from external memory and store
+the full RAX result before Lisp conversion. Independent register capture
+verifies all six arguments. Host and standalone execute the same GNU
+=100f0c53...= fixture for fixnum boundaries and identity; the repository
+fixture reproduces that artifact hash. Combined ABI/raw-call ERT passes
+13/13, and both raw-call and mixed-owner standalone tests pass on
+=6d8f5e1b...= with clean stderr. Construction and release failures retain
+retryable mappings, and busy/stale contexts reject calls. Generic =ptr-call=
+still narrows wide values; registration, object leases, callbacks, and handler
+semantics must use and extend the explicit raw-word path before the complete
+GNU call ABI can be claimed.
+
+The reader now creates fresh identities for each =#:= occurrence in both
+native and interpreted paths, while repeated read labels share their object.
+The =6d8f5e1b...= candidate fixes the earlier collapse of distinct same-name
+uninterned symbols. Registration must preserve this distinction too.
+
+Cross-unit identity is a separate requirement from the initial per-unit
+owner tests. Two compilation units referring to the same canonical Lisp
+object must receive the same live GNU view, including during reentrant calls.
+Use runtime-wide canonical view management with explicit unit/activation
+ownership; do not let a permanent strong map retain every transient argument.
+Unloading one unit must not invalidate a view still owned by another unit or
+active call. The initial independent unit-owner API does not yet prove this
+cross-unit lifetime contract.
+
+The shared native call-gateway and frame changes are integrated. The earlier
+fixture SIGSEGV came from a stale fixed-address write; separately, the
+symbol-call failure came from a root-key guard rejecting ordinary active VM
+roots. The gateway driver now exits 0 with zero failures and clean stderr,
+and the combined native-loader, frame/IR, and JIT ERT run passes 83/83. This
+verifies those focused paths only; it does not complete P5. Native emitter
+integration and the agreed =.eln= artifact
+contract remain pending. Independently, the baseline still requires
+whole-function preflight: unsupported byte-code must go to the VM before any
+effects occur, and execution must never restart in the VM after partial native
+execution.
+
+The baseline native path handles branches itself where verified; complex
+semantics may call shared VM/runtime helpers. Entering native code alone does
+not establish a speedup. Initially, preflight the whole function and reject
+unsupported byte-code to the VM before any effects occur. Never restart in the
+VM after partial execution. Any later deoptimization must resume with an exact
+program counter, value stack, binding depth, and handler/unwind continuation.
+
+The zero-argument SIGSEGV seen in historical probes remains unresolved. Keep
+fixed source and binary probes for it, reentry, error cleanup, and negative
+controls. Attribute the fix to specific evidence; successful repetitions
+alone do not establish resolution. Resolving this issue and the reentry safety
+issue is required before claiming full P5 completion.
+
+The 2026-09-26 artifact audit did not recover a replayable historical crash
+with a matching executable/source identity. The retained zero-argument
+=b2981454= candidate records an artifact-compilation arity failure, not a
+reproduced SIGSEGV; the retained =signal-control= cores deliberately crash
+Bash and are verifier controls. Neither those controls nor successful stress
+runs resolve the historical runtime defect. Preserve this evidence gap when
+reporting P5 status, and do not spend repeated stress runs treating these
+artifacts as the missing original failure.
+
+Keep the existing 19-function vendor corpus fixed (the 2026-09-25 static
+decode covers 5/19; this is not a native-call count or completion claim; see
+=tools/nelisp-vendor-bytecode-jit-coverage.el=). Compare identical byte-code
+hashes across Host Emacs, VM, and JIT, including values, errors, effects, GC
+object identity, and native-to-VM error propagation. Record actual native
+calls, VM-delegation share, compile time, and warm execution time. Add edge
+cases without replacing the corpus with easier examples.
+
+Three non-overlapping work areas can proceed in parallel: (1) shared
+runtime/frame/call/GC/exception contracts; (2) IR and native emitter against
+the agreed API; (3) GNU Emacs 31 vendor loading blockers, C primitives, and
+parity. One integrator freezes contracts and assembles small patches. Reuse
+the existing capsule, ABI, and corpus checks instead of building another test
+framework. Keep vendor Lisp unchanged; implement only missing C-boundary core
+support, without reduced shims.
+
+*Immediate milestone:* connect the object views, metadata, and callback into
+the normal load, actual =top_level_run= registration, and function call of
+one unchanged =.eln= file on GNU Emacs and NeLisp. Prioritize only dependencies
+that block this vertical path. Keep it working while expanding common IR
+support from constants to arguments, arithmetic, branches, and calls; do not
+add function-name recognizers. Reuse existing runners, report the first
+mismatch, batch necessary builds, and review/integrate small deltas while
+implementation continues. Measure the fixed 19-function corpus by actual
+native calls, parity, and timing; speculative completion percentages are not
+planning evidence. The shared gateway must subsequently serve distinct
+byte-code functions, including error and fallback paths.
+
+The first bounded normal-load slice is now integrated. The existing
+=test/nelisp-eln-same-artifact-smoke.sh= emits one scalar, zero-argument
+=.eln=, loads it with GNU Emacs 31.1, and routes standalone =load= through
+=nelisp-eln-registration-load=. The actual =top_level_run= callback registers
+a NativeSubr. A separate evaluation after load and GC checks its native type
+and returns 17. Root validation used the existing =c43801e0= candidate with
+current source modules and the generated load wrapper; it did not rebuild or
+replace the shared executable. The unchanged artifact SHA-256 is
+=7f327f2e441306b66a97771c7110fe78012f1f632342c9927440bb4ce5ede3b6=.
+
+The same runner injects a pin-release failure and checks retained owner state,
+one context push/pop pair, one release attempt, and rejection of another load
+without replay. The focused load-routing ERT passes 1/1. Registration uses
+full-width GNU word writes: raw 64-bit writes previously truncated a symbol
+offset to nil. The owner vector also needed its missing fifteenth slot.
+
+The latest root-integrated candidate connects the unary factory to a strict
+verifier for complete leaf-function bytes. Admitted unary calls reuse the
+managed object codec, leased activation, and raw-word bridge. Root validation
+observed five native raw calls, two GCs during argument encoding, two arity
+rejections with no raw entry, rejection of an interned-symbol input with no
+raw entry, and one cleanup. The observed =make-symbol= input probe also
+failed: symbol arguments remain unsupported by the current codec. This
+validates the bounded argument bridge. Evidence is in
+=~/.cache/tmp/eln-unary-root-integrated.log= (artifact =E5OEOV=; binary
+SHA-256 prefix =6596347946d2d496=).
+
+The same runner's =NELISP_ELN_BRANCH_ONLY=1= lane now verifies an independent
+nested conditional through normal load on both runtimes: nil returns 23,
+while zero and -1 return 17. NeLisp records three actual raw native calls.
+Root validation used the same dynamic binary and current source modules;
+the artifact SHA-256 remained
+=450114106e6f18faa2bdf0c5be335990ae6d799e3484b81150688860147a6e4c=.
+Evidence is in =~/.cache/tmp/eln-branch-root-integrated.log= (artifact
+=v72KOk=). The independent lane avoids the accumulated registration cost of
+adding a third artifact to the default smoke. Arithmetic/comparison IR and
+native function calls remain unsupported; truthiness branches do not prove
+those paths.
+
+The unary bridge now uses =unwind-protect= to release per-call owners for
+ordinary errors, throw, and quit. The standalone
+=test/nelisp-eln-native-subr-unwind-smoke.el= injects these exits before the
+raw native call, uses real object/FFI owners, and checks exact primary
+conditions, release order, closed state, and registry restoration. Root
+validation passed with empty stderr; the pre-fix bridge failed the throw
+case. This proves bridge cleanup, not exception unwinding through a native
+machine-code frame. Evidence is in =~/.cache/tmp/eln-unwind-root.stdout= and
+=~/.cache/tmp/eln-unwind-root.stderr=.
+
+The artifact path supports the exact self-emitter registration profile and a
+checked single-registration GNU producer profile, not general GNU-produced
+artifact support. The unary verifier admits only the bounded
+register-move, nil, tagged-immediate, test, forward-branch, and final-return
+grammar. Successful owners remain rooted until process exit; unload is not
+implemented. Failed cleanup retains state and blocks subsequent registration;
+there is no cleanup retry API, so recovery requires a new process. Ephemeral
+relocations are cleared before their temporary object views are retired.
+General imports and the fixed 19-function native coverage remain subsequent
+work; this slice does not establish P5 completion.
+
+*GNU producer boundary.* A genuine GNU 31.1 single identity function has the
+admitted four-byte leaf body. The loader now authenticates the three GOT
+indirections of its 68-byte registration thunk, including BSS targets, and
+checks the complete thunk, stack discipline, fixed arity, and register-subr
+import slot. Root standalone validation returns =(1 gnu-single-leaf)= for
+artifact =6a363298478b1f3b5e3f860a7f353e110e161b8a77d66d945c13c9ea7e62253a=;
+the nine focused mutation/range tests and existing self-emitter branch smoke
+pass. Logs are =~/.cache/tmp/eln-gnu-top-root.stdout=,
+=~/.cache/tmp/eln-gnu-top-root-ert.log=, and
+=~/.cache/tmp/eln-gnu-top-self-regression.log=. That earlier validation checked
+the thunk without executing it. The subsequent normal-load result below
+adds actual registration and post-load calls.
+
+*Metadata capability.* The GNU artifact also
+contains non-nil type data.
+Its data vector is =[(function (t) t) nil t consp listp symbol-with-pos-p]=;
+the first slot becomes =subr-type=. Do not strip the type, zero unused
+metadata, or admit stateful symbols through the ordinary object codec.
+
+A separate metadata-only ownership capability now preserves the complete
+source graph and exact reverse identity for the registration callback and
+NeLisp introspection. This requires a verified profile in which native code
+cannot inspect symbol fields: the registration thunk transfers whole words,
+and admitted leaves have no memory operations or helper calls. Projected
+words must not escape into ordinary encode, sync, or raw-call arguments;
+the data-vector slot and =subr-type= must use the same live capability.
+Retain the original objects and their lifetimes, including after registration.
+Any future admission of native symbol-field access requires actual symbol
+cell semantics first; this capability is not general GNU symbol ABI support.
+The codec's layout tests and standalone smoke verify shared/cyclic graphs,
+reverse identity, vector slots, symbol displacements, unibyte and UTF-8 string
+descriptors, source mutation rejection, and released capabilities. Ordinary
+raw-call argument validation rejects projected words before native entry;
+the ordinary symbol codec remains restricted. Symbol value/function cells
+are still opaque under this profile; this is not full symbol ABI support.
+
+The shared symbol-base lease prerequisite is implemented. Explicit leases
+keep the existing nil/Qunbound base alive independently of ordinary object
+units; final lease release permits reclamation and duplicate release fails.
+Root validation passed three focused Host ERT cases and the standalone
+=test/nelisp-eln-symbol-base-lease-smoke.el= with empty stderr, using the
+dynamic binary identified above. The smoke creates a real symbol record,
+releases its unit while two leases remain, and checks final reclamation.
+Evidence is in =~/.cache/tmp/eln-base-lease-root-ert.log= and
+=~/.cache/tmp/eln-base-lease-root.stdout=. This establishes base lifetime,
+not metadata graph materialization or genuine GNU artifact registration.
+
+The metadata arena dependency is also implemented in
+=lisp/nelisp-eln-metadata-arena.el=. It reserves checked, aligned regions
+within reusable 64 KiB mappings and pins the shared symbol base. Releasing
+a capability removes its source roots and invalidates its token; mappings
+remain in a metadata-only pool sized by peak simultaneous demand. The range
+predicate recognizes direct pointers and symbol displacements even after
+release and reuse, while excluding nil and fixnums. It is connected to the
+raw-call argument boundary. Root validation passed 5/5 focused ERT cases and
+the real standalone allocator smoke with empty stderr. Replacing the range
+predicate with an always-false function made the range test fail (exit 1).
+Evidence: =~/.cache/tmp/eln-metadata-arena-root-ert.log=,
+=eln-metadata-arena-root.stdout=, and =eln-metadata-arena-root-negative.log=
+in the same directory. The arena alone does not admit additional GNU artifacts.
+
+*Genuine GNU normal-load result.* The opt-in
+=NELISP_ELN_GNU_IDENTITY_ONLY=1= lane of
+=test/nelisp-eln-same-artifact-smoke.sh= accepts an existing GNU-produced
+artifact through =NELISP_ELN_GNU_INPUT=. Root validation used the unchanged
+GNU identity artifact with SHA-256
+=6a363298478b1f3b5e3f860a7f353e110e161b8a77d66d945c13c9ea7e62253a=
+and the existing dynamic binary =6596347946d2d496...=, loading current source
+modules without rebuilding. Both runtimes used ordinary =load=. Integer,
+string, and cons arguments preserved =eq= after GC; NeLisp recorded three
+successful raw native calls. Wrong arity reached no raw call. The lane also
+checks the complete six-slot metadata vector, type reverse identity, both
+unit vector fields, and all six actual data-relocation words. Both stderr
+files were empty. Evidence: =~/.cache/tmp/eln-gnu-identity-root.log= and
+artifact directory =~/.cache/tmp/nelisp-eln-same-artifact.LjkhYW/=.
+
+This exposed an existing malformed =unwind-protect= in
+=nelisp-eln-objects--add-symbols=: the commit forms were inside =dolist= and
+cleanup was inside the protected body. Empty-symbol processing attempted to
+release the pinned base and poisoned the registry. The corrected structure
+commits once after the loop and uses lease-aware cleanup only on failure.
+The focused regression distinguishes successful rollback from a real release
+failure, which must still quarantine the registry. Root validation passed
+11 object/view/lease tests; see =~/.cache/tmp/eln-object-pinned-root-ert.log=.
+After that fix, both the default scalar/unary lane and the independent
+branch lane passed again with unchanged artifact hashes. Logs:
+=~/.cache/tmp/eln-gnu-final-default.log= and
+=~/.cache/tmp/eln-gnu-final-branch.log=. These are focused regressions, not
+a full build or repository-wide gate run.
+This successful GNU identity path does not complete native calls between
+functions, general imports, fixed-19 coverage, or the migration/unload work.
+
+*Next callable-import contract (proposed; incomplete).*
+
+*Evidence.* The existing genuine GNU identity path remains as reported above.
+The GNU =increment= native function is 64 bytes, with entry virtual address
+=#x1100=. Its machine path has a fixnum fast path and otherwise tail-jumps
+through =freloc= slot 1301. Its symbol-to-target mapping is structurally
+proven for the pinned GNU Emacs 31.1 Host executable with ABI =ba35c031=.
+Runtime Lisp reports =comp-subr-list= length
+1479; =(nth 1286 comp-subr-list)= is =eq= to =(symbol-function '1+)=, whose
+arity is =(1 . 1)=. Static GDB places =f_Vcomp_subr_list= at =globals+0x1e8=,
+matching the fill routine's load; it copies 15 helper words, then reads
+function addresses sequentially from that list. This proves slot 1301's
+target for that Host build, not helper execution on NeLisp. The existing
+raw-i64 AOT arithmetic is a separate lowering and must not be reinterpreted
+as GNU boxed arithmetic.
+
+*Contract to prove.* Execute the =increment= artifact's fixnum fast path and
+tail import only after authenticating the relocation target. The unary
+wrapper transports raw words and a descriptor; it does not provide complete
+boxed-value decoding or Lisp arithmetic semantics. Preserve the callback's
+exact success, error, throw, or quit status and keep argument and result roots
+live through result decoding and cleanup. A returned foreign word is not a
+NeLisp value until it is projected and decoded under that live capability.
+
+Float and bignum inputs and results use owned GNU-layout views with canonical
+NeLisp source roots. The numeric graph codec now supports nested cons graphs,
+cross-unit identity, activation snapshots, and failed-unmap quarantine/retry.
+Root validation passed 14 focused numeric/symbol-lease ERT cases, the standalone
+numeric graph smoke, and the existing cons and symbol-base lease smokes, with
+empty stderr. These are immutable external views, not GNU heap allocations or
+permission to invoke arbitrary GNU mutating helpers. Evidence is under
+=~/.cache/tmp/eln-aggregate-root-*=; the dedicated dynamic binary has SHA-256
+=8b2225435c442a3b6564c079e518d850eae4cc37e7f1f8bd15989cea776440a3=.
+
+The bounded tail-import verifier independently decodes instructions and checks
+forward control flow. Six focused ERT cases pass, including a calibrated
+SAR-by-zero regression. It returns import slots and GOT locations; the loader
+must still authenticate those locations before publishing a function. Neither
+codec nor verifier tests alone establish actual GNU increment helper execution.
+
+*Increment execution checkpoint.* The opt-in
+=NELISP_ELN_GNU_INCREMENT=1= lane now exercises the unchanged GNU artifact
+=d6d4fd243f9317be052e745ad1eae46afc2c629c2e671da2bd3a944867102bdd=
+through ordinary =load=. Root execution confirms 17 to 18, overflow to
+2305843009213693952, 0.5 to 1.5, and the original =wrong-type-argument= data.
+Admission retains and validates the installed import table, its relocation
+cell, and the function capability. Focused admission regressions pass 19/19;
+callable-import regressions pass 8/8. Evidence:
+=~/.cache/tmp/eln-increment-root-current.log= and
+=~/.cache/tmp/nelisp-eln-same-artifact.DdQdwT/=.
+The full lane remains red: the later public =1+= rebinding case fails during
+callback export resolution. This is not complete rebinding compatibility or
+fixed-corpus coverage. Separate =error= and =quit= clauses preserve callback
+errors on the current binary. Native grouped-condition matching now delegates
+each selector to the scalar hierarchy matcher, retaining exact membership for
+the parent-condition walk. The dedicated dynamic build
+=12c8ff5185b6bf39558a0585365de053653500abc81159436ae33b595fe287fd=
+passes all eight cases in =test/standalone-condition-case-list-smoke.el= with
+empty stderr, including parent conditions, =quit=, =t=, and nested rethrow.
+The preceding binary failed the first case. This runtime repair does not
+establish completion of the public-rebinding lane or general native unwinding.
+
+Do not fabricate pointer words or report
+raw integer arithmetic as a native result. Non-tail exceptions were
+unsupported until a gateway demonstrated their status and frame-unwind
+behavior; Doc 207 now defines that contract and demonstrates it, against
+GNU Emacs 31.1, for the admitted chain and increment leaves (ledger S4.6).
+Native-to-native calls also require retained roots and identity across the
+call chain; Doc 207 covers them only for those admitted leaves.
+
+*Exit:* qualitative acceptance requires the shared gateway and frame contract
+to be exercised, verified IR to lower through the existing native path,
+unsupported functions to fall back before effects, and parity evidence over
+the fixed corpus plus added edge cases, including GC identity and error
+propagation. The historical SIGSEGV and reentry safety issues must be resolved
+with attributable evidence. Pin quantitative performance criteria from P1-P4
+measured baselines before final acceptance; do not claim P5 done from partial
+proofs or native entry alone.
 
 * §5 Risks, and what this document does not claim
 
-- **A VM is not native speed.**  Emacs's byte-code is roughly 50-100x its own
-  interpreter, not 1000x.  P1-P3 close most of the gap *to Emacs*; P5 is what
-  goes past it.
+- **A VM is not native speed.**  The 2026-09-21 rationale estimated Emacs's
+  byte-code at roughly 50-100x its own interpreter. This is historical context,
+  not a current P5 speed target; quantitative acceptance awaits P1-P4 data.
 - **The VM's semantics are the dangerous part.**  Dynamic binding,
   =unwind-protect= and =condition-case= unwind through the VM's stack.  Getting
   those wrong is silent breakage, not a crash, which is why P1's exit criterion

@@ -53,6 +53,14 @@ The standalone runtime uses a fixed 32-byte tagged slot:
 | `UnibyteStr`  | 14            | `SEXP_TAG_UNIBYTE_STR`   |
 | `UnibyteMutStr` | 15          | `SEXP_TAG_UNIBYTE_MUT_STR` |
 | `UninternedSymbol` (development) | 16 | `nelisp-sexp-layout-tag-uninterned-symbol` |
+| `ByteCodeFunction` (internal development) | 17 | `nelisp-sexp-layout-tag-byte-code-function` |
+
+Tag 17 is an opaque non-record value privately backed by an `NlRecord`-layout
+box (`type_tag` Sexp at +0, slots vector header at +32, refcount at +56).
+Shared storage lets GC, compaction, image walking, and cloning reuse record-box
+traversal. Elisp record predicates and accessors must continue to recognize tag
+12 only. No public constructor or callable predicate is provided until
+invocation is wired into `nl_apply_function`.
 
 The standalone reader's public `make-symbol` produces tag 16. Its 32-byte slot stores a
 positive, unique identity at +8, an immutable public-name byte-buffer

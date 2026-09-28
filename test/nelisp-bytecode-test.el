@@ -76,6 +76,63 @@ Each symbolic op is replaced with its opcode byte via
   (should (= (nelisp-bc-opcode 'DUP)       4))
   (should-error (nelisp-bc-opcode 'NOPE) :type 'nelisp-bc-error))
 
+(ert-deftest nelisp-bc-byte-get-emacs-parity ()
+  "BYTE-GET reads the same property written through the symbol API."
+  (should (= (nelisp-bc-opcode 'BYTE-GET) 78))
+  (should (= (aref nelisp-bc--opcode-arg-bytes 78) 0))
+  (let* ((sym (make-symbol "nelisp-bc-byte-get"))
+         (prop (make-symbol "nelisp-bc-byte-get-property"))
+         (vm (nelisp-bc-make nil nil (vector sym prop)
+                             [1 0 1 1 78 0] 2 0))
+         (host (byte-compile '(lambda (symbol property)
+                                (get symbol property)))))
+    ;; A present property whose value is nil distinguishes storage lookup
+    ;; from a missing-property shortcut, and exercises get/put's backing
+    ;; store through both the VM and GNU Emacs's compiled BYTE-GET.
+    (put sym prop nil)
+    (should (equal (list (nelisp-bc-run vm) (funcall host sym prop)
+                         (get sym prop) (symbol-plist sym))
+                   (list nil nil nil (list prop nil))))
+    (put sym prop 31)
+    (should (= (nelisp-bc-run vm) (funcall host sym prop)))
+    (should (= (nelisp-bc-run vm) 31))))
+
+(ert-deftest nelisp-bc-byte-get-ignores-shadowed-accessors ()
+  "BYTE-GET ignores rebinding of `get', `symbol-plist', and `plist-get'."
+  (let* ((sym (make-symbol "nelisp-bc-byte-get-shadow"))
+         (vm (nelisp-bc-make nil nil (vector sym 'p)
+                             [1 0 1 1 78 0] 2 0))
+         (host (byte-compile `(lambda () (get ',sym 'p))))
+         (old-get (symbol-function 'get))
+         (old-symbol-plist (symbol-function 'symbol-plist))
+         (old-plist-get (symbol-function 'plist-get)))
+    (unwind-protect
+        (let ((get-results
+               (unwind-protect
+                   (progn
+                     (put sym 'p nil)
+                     (fset 'get (lambda (&rest _) 99))
+                     (list (funcall host) (nelisp-bc-run vm) (get sym 'p)))
+                 (fset 'get old-get)))
+              (plist-get-results
+               (unwind-protect
+                   (progn
+                     (put sym 'p nil)
+                     (fset 'plist-get (lambda (&rest _) 98))
+                     (list (funcall host) (nelisp-bc-run vm) (get sym 'p)))
+                 (fset 'plist-get old-plist-get)))
+              (symbol-plist-results
+               (unwind-protect
+                   (progn
+                     (put sym 'p nil)
+                     (fset 'symbol-plist (lambda (&rest _) '(p 97)))
+                     (list (funcall host) (nelisp-bc-run vm) (get sym 'p)))
+                 (fset 'symbol-plist old-symbol-plist))))
+          (should (equal get-results '(nil nil 99)))
+          (should (equal plist-get-results '(nil nil nil)))
+          (should (equal symbol-plist-results '(nil nil nil))))
+      (setplist sym nil))))
+
 (ert-deftest nelisp-bc-3b2-opcode-arg-bytes ()
   (should (= (aref nelisp-bc--opcode-arg-bytes 0) 0)) ; RETURN
   (should (= (aref nelisp-bc--opcode-arg-bytes 1) 1)) ; CONST
@@ -1087,7 +1144,8 @@ a label.  Returns the resolved int vector."
 
 (ert-deftest nelisp-bc-3b5b-opcode-table ()
   (should (= (nelisp-bc-opcode 'MAKE-CLOSURE) 36))
-  (should (= (nelisp-bc-opcode 'CAPTURED-REF) 37)))
+  (should (= (nelisp-bc-opcode 'CAPTURED-REF) 37))
+  (should (= (nelisp-bc-opcode 'CAPTURED-SET) 38)))
 
 (ert-deftest nelisp-bc-3b5b-single-capture ()
   (should (= (nelisp-bc-test--eval
@@ -1101,8 +1159,8 @@ a label.  Returns the resolved int vector."
                  ((lambda (x) (+ x a b c)) 10)))
              16)))
 
-(ert-deftest nelisp-bc-3b5b-capture-snapshot-not-ref ()
-  ;; Captured value is the value at MAKE-CLOSURE time (snapshot).
+(ert-deftest nelisp-bc-3b5b-capture-cell-retained-after-frame-exits ()
+  ;; The captured cell remains reachable after its defining frame exits.
   (let ((closure (nelisp-bc-test--eval
                   '(let ((y 100))
                      (lambda (x) (+ x y))))))
@@ -1167,17 +1225,12 @@ a label.  Returns the resolved int vector."
                (lambda (x) (+ x a b))))))
     (should (= (nelisp--apply c '(0)) 12))))
 
-(ert-deftest nelisp-bc-3b5b-capture-keeps-outer-stable ()
-  ;; Mutating the outer lex AFTER closure creation does not affect
-  ;; the captured snapshot.
-  (let ((outer-result
-         (nelisp-bc-test--eval
-          '(let ((y 1))
-             (let ((c (lambda () y)))
-               (setq y 999)
-               (list y (funcall c)))))))
-    ;; y was set to 999 after closure creation; closure still sees 1.
-    (should (equal outer-result '(999 1)))))
+(ert-deftest nelisp-bc-3b5b-capture-shares-defining-frame-cell ()
+  (let ((form '(let ((y 1))
+                 (let ((c (lambda () y)))
+                   (setq y 999)
+                   (list y (funcall c))))))
+    (should (equal (nelisp-bc-test--eval form) (eval form t)))))
 
 (ert-deftest nelisp-bc-3b5b-no-capture-still-works ()
   ;; Lambda with no free-lex still compiles via the simple CONST
@@ -1198,6 +1251,31 @@ a label.  Returns the resolved int vector."
           (should (= (nelisp--apply c '(2)) 1009))))
     (remhash 'nelisp-bc-test--cap-spec nelisp--globals)
     (remhash 'nelisp-bc-test--cap-spec nelisp--specials)))
+
+(ert-deftest nelisp-bc-3b5b-captured-mutation-host-differential ()
+  ;; Captured values are mutable closure state, not a per-call snapshot.
+  (let ((form '(let ((counter 0))
+                 (let ((increment (lambda ()
+                                    (setq counter (1+ counter)))))
+                   (list (funcall increment) (funcall increment))))))
+    (should (equal (nelisp-bc-test--eval form) (eval form t)))))
+
+(ert-deftest nelisp-bc-3b5b-sibling-closures-share-cell-host-differential ()
+  (let ((form '(let ((counter 0))
+                 (let ((increment (lambda () (setq counter (1+ counter))))
+                       (read-counter (lambda () counter)))
+                   (list (funcall increment)
+                         (funcall read-counter)
+                         (funcall increment)
+                         (funcall read-counter))))))
+    (should (equal (nelisp-bc-test--eval form) (eval form t)))))
+
+(ert-deftest nelisp-bc-3b5b-user-cons-is-not-lexical-cell-host-differential ()
+  ;; A user value may have the same printed shape as the internal cell.
+  (let ((form '(let ((value (cons 'nelisp-bc--lexical-cell 5)))
+                 (let ((read-value (lambda () value)))
+                   (funcall read-value)))))
+    (should (equal (nelisp-bc-test--eval form) (eval form t)))))
 
 ;;; Phase 3b.5c — defun / closure auto-compile hook -----------------
 
@@ -1283,14 +1361,9 @@ a label.  Returns the resolved int vector."
       (should (nelisp--closure-p fn))
       (should (eq (nelisp-eval '(nelisp-bc-test--mix t)) t)))))
 
-(ert-deftest nelisp-bc-3b5c-setq-on-captured-lex-falls-back ()
-  ;; Outer defun's body holds a closure that mutates a captured var.
-  ;; A `nelisp-bc-unimplemented' from the inner-lambda compile sinks
-  ;; the outer compile too (no partial-compile fallback yet), so the
-  ;; whole defun lands as an interpreter closure — and crucially the
-  ;; runtime semantics are still correct.
-  ;; Also about a BCL fallback specifically; see the note on
-  ;; `nelisp-bc-3b5c-try-compile-rejects-non-nil-env'.
+(ert-deftest nelisp-bc-3b5c-setq-on-captured-lex-compiles-and-mutates ()
+  ;; The outer defun and returned counter both use the bytecode VM;
+  ;; repeated calls update the captured value retained by that closure.
   (let ((nelisp-jit-enabled nil)
         (nelisp-bc-auto-compile t))
     (nelisp--reset)
@@ -1299,8 +1372,8 @@ a label.  Returns the resolved int vector."
                       (lambda () (setq n (+ n 1)) n))))
     (let* ((make (gethash 'nelisp-bc-test--counter nelisp--functions))
            (counter (nelisp-eval '(nelisp-bc-test--counter 10))))
-      (should (nelisp--closure-p make))
-      (should (nelisp--closure-p counter))
+      (should (nelisp-bcl-p make))
+      (should (nelisp-bcl-p counter))
       (should (= (nelisp--apply counter nil) 11))
       (should (= (nelisp--apply counter nil) 12)))))
 
@@ -1346,7 +1419,7 @@ a label.  Returns the resolved int vector."
             (insert ";;; src.el\n")
             (insert "(defun nelisp-bc-a21-test-add (a b) (+ a b))\n")
             (insert "(provide 'nelisp-bc-a21-src)\n"))
-          (byte-compile-file src)
+          (nelisp-bc-byte-compile-file src)
           (should (file-exists-p out))
           (with-temp-buffer
             (insert-file-contents out)
@@ -1354,6 +1427,28 @@ a label.  Returns the resolved int vector."
             (should (looking-at (regexp-quote nelisp-bc--elc-magic)))))
       (when (file-exists-p src) (delete-file src))
       (when (file-exists-p out) (delete-file out)))))
+
+(ert-deftest nelisp-bc-a21-private-writer-survives-host-bytecomp-load ()
+  "The private writer remains callable after GNU bytecomp owns its API."
+  (let* ((host-src (make-temp-file "nelisp-bc-a21-host-" nil ".el"))
+         (host-out (concat (file-name-sans-extension host-src) ".elc"))
+         (private-src (make-temp-file "nelisp-bc-a21-private-" nil ".el"))
+         (private-out (concat (file-name-sans-extension private-src) ".elc")))
+    (unwind-protect
+        (progn
+          (require 'bytecomp)
+          (with-temp-file host-src
+            (insert "(defun nelisp-bc-a21-host-add (a b) (+ a b))\n"))
+          (with-temp-file private-src
+            (insert "(defun nelisp-bc-a21-private-add (a b) (+ a b))\n"))
+          ;; GNU Emacs writes its native .elc format through the standard
+          ;; name; NeLisp's writer keeps its distinct readable text format.
+          (should (byte-compile-file host-src))
+          (should-not (nelisp-bc--elc-file-p host-out))
+          (should (nelisp-bc-byte-compile-file private-src))
+          (should (nelisp-bc--elc-file-p private-out)))
+      (dolist (path (list host-src host-out private-src private-out))
+        (when (file-exists-p path) (delete-file path))))))
 
 (ert-deftest nelisp-bc-a21-elc-roundtrip-defun ()
   ;; Write a defun source, compile to .elc, load .elc, verify the
@@ -1365,7 +1460,7 @@ a label.  Returns the resolved int vector."
           (with-temp-file src
             (insert "(defun nelisp-bc-a21-roundtrip (n)\n")
             (insert "  (if (< n 2) 1 (* n (nelisp-bc-a21-roundtrip (1- n)))))\n"))
-          (byte-compile-file src)
+          (nelisp-bc-byte-compile-file src)
           ;; Load the .elc by hand (host Emacs's `load' rejects our
           ;; magic header).  In NeLisp the elisp `load' just reads +
           ;; evals each form, identical to what we do here.
@@ -1395,7 +1490,7 @@ a label.  Returns the resolved int vector."
           (with-temp-file src
             (insert "(defvar nelisp-bc-a21-pass-var 42)\n")
             (insert "(defun nelisp-bc-a21-pass-fn () nelisp-bc-a21-pass-var)\n"))
-          (byte-compile-file src)
+          (nelisp-bc-byte-compile-file src)
           (with-temp-buffer
             (insert-file-contents out)
             (goto-char (point-min))
@@ -1424,7 +1519,7 @@ a label.  Returns the resolved int vector."
         (progn
           (with-temp-file src
             (insert "(defun nelisp-bc-a21-fallback (x) (((1 2) 3) x))\n"))
-          (byte-compile-file src)
+          (nelisp-bc-byte-compile-file src)
           (with-temp-buffer
             (insert-file-contents out)
             (goto-char (point-min))

@@ -43,6 +43,7 @@
 ;; Now that `defmacro' dispatch is wired (nelisp-macro.el) install the
 ;; NeLisp-native macros that depend on it — `dolist' / `push' / etc.
 (nelisp--install-core-macros)
+(nelisp--install-vendor-conditional-macros)
 
 (defun nelisp-bootstrap-shared-tables ()
   "Seed NeLisp globals with the host evaluator's own hash tables.

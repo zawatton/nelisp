@@ -128,6 +128,53 @@
 (defvar nelisp-artifact-native-dispatch-enabled t
   "Non-nil means loaded `.neln' functions try native dispatch first.")
 
+(defvar nelisp-artifact-neln-legacy-native t
+  "Non-nil (the default) keeps the pre-S7.7 `.neln' native-install behavior:
+every symbol in a loaded `.neln' artifact's `:native' section that has
+matching defun metadata is installed as a private native wrapper by
+`nelisp-artifact--install-native-functions', unconditionally.  See that
+function and `nelisp-artifact--maybe-install-native', the single call point
+all three `.neln' load paths now share.
+
+Nil opts into the S7.7 migration switch instead, per symbol:
+
+- a symbol with a genuine GNU `.eln' entry in
+  `nelisp-artifact-neln-eln-table' is routed through
+  `nelisp-eln-registration-load' and the private wrapper is NOT installed
+  for it;
+- otherwise, a symbol whose metadata matches
+  `nelisp-artifact--neln-proven-native-shapes' still gets the private
+  wrapper, exactly as legacy behavior would have installed it alone;
+- any other symbol gets neither: plain VM byte-code replay only (the
+  module's `:module-init' items are always replayed first, independently of
+  this flag -- this only gates the ADDITIONAL native-wrapper install step).
+
+This is the ledger S7.7 \"replace the old `.neln' path within proven
+coverage\" cut, not a removal: unproven shapes stop getting an unvalidated
+private native wrapper, proven shapes keep working exactly as before until
+a genuine `.eln' substitute is supplied for them.  This flag does not
+retroactively uninstall a wrapper already installed under legacy behavior
+earlier in the same process, and it is independent of
+`nelisp-artifact-native-dispatch-enabled', which gates whether an ALREADY
+installed wrapper's `nelisp-native-function-call' consults native code at
+all.")
+
+(defvar nelisp-artifact-neln-eln-table nil
+  "Optional caller-supplied map from a `.neln' defun symbol to a genuine GNU
+`.eln' artifact path already produced for that same symbol.
+
+This is a data hook only -- this module never discovers, compiles, or emits
+`.eln' files itself; Doc 206 (docs/design/206-standalone-execution-model.org)
+is explicit that consuming genuine GNU-produced artifacts while continuing
+to publish private `.neln' output is not, by itself, the requested
+migration, but integrating an already-produced `.eln' for an admitted symbol
+is the narrower step S7.7 asks this switch to take.  Some other lane (or a
+future caller) populates this table -- either a hash table keyed `eq' on the
+symbol, or an alist of (SYMBOL . PATH) -- before a `.neln' load that should
+prefer the genuine article for that symbol.  Consulted only when
+`nelisp-artifact-neln-legacy-native' is nil; see
+`nelisp-artifact--neln-eln-lookup' and `nelisp-artifact--maybe-install-native'.")
+
 (defvar nelisp-artifact-native-dispatch-report nil
   "Most recent native dispatch install/call report entries.")
 
@@ -1324,6 +1371,178 @@ coverage when a native executor rejects the call."
            :installed installed
            :skipped skipped))
     installed))
+
+;; --- S7.7 migration switch: `nelisp-artifact-neln-legacy-native' -----------
+;;
+;; The pieces below decide, per symbol, whether a `.neln' native section's
+;; entry gets the private wrapper above, a genuine GNU `.eln' registration,
+;; or neither (plain VM byte-code replay, already done before any of these
+;; run).  They never touch `nelisp-artifact--install-native-functions'
+;; itself, so legacy behavior (`nelisp-artifact-neln-legacy-native' non-nil)
+;; stays byte-for-byte the same call, under the same guard, as before S7.7.
+
+(defvar nelisp-artifact--neln-proven-native-shapes
+  (list
+   (list :id 'identity-constant-leaf
+         :evidence
+         "docs/design/206-standalone-execution-model.org L292-293: a
+generated zero-argument constant-integer AOT IR function returned 17 as
+GNU's tagged immediate 0x46; its leaf needs no object relocation."
+         :predicate
+         (lambda (meta)
+           (and (eql (plist-get meta :arity) 0)
+                (eql (or (plist-get meta :rt-slot-count) 0) 0))))
+   (list :id 'bounded-unary-identity-leaf
+         :evidence
+         "docs/design/206-standalone-execution-model.org L348-349: the
+emitter lowers a one-argument AOT `ref' body to a GNU ABI identity leaf
+(mov rax,rdi; ret), with truthful (1 . 1) registration metadata."
+         :predicate
+         (lambda (meta)
+           (and (eql (plist-get meta :arity) 1)
+                (memq (plist-get meta :param-class) '(gp nil))
+                (eql (or (plist-get meta :rt-slot-count) 0) 0))))
+   (list :id 'unary-tail-import-fast-path
+         :evidence
+         "docs/design/206-standalone-execution-model.org L900-904 (the GNU
+`increment' used by 1+/1-, ABI ba35c031): a fixnum fast path that otherwise
+tail-jumps through the freloc-resolved GNU subr; the bounded tail-import
+verifier (L932-935) requires the jump target stay inside a small, decoded
+instruction window."
+         :predicate
+         (lambda (meta)
+           (and (eql (plist-get meta :arity) 1)
+                (memq (plist-get meta :param-class) '(gp nil))
+                (let ((n (or (plist-get meta :rt-slot-count) 0)))
+                  (and (> n 0) (<= n 4)))))))
+  "Data table of `.neln' native defun metadata shapes proven end-to-end.
+
+Each entry is a plist `(:id ID :evidence STRING :predicate FN)'.  FN takes
+one argument: the per-defun metadata plist
+`nelisp-artifact--native-defun-metadata' returns for a symbol (the
+`:name'/`:size'/`:arity'/`:param-class'/`:param-repr'/`:rt-slot-count'/
+`:return-repr'/`:body-offset' plist recorded under a `.neln' artifact's
+`:native' `:defuns' entry).  FN returns non-nil when META matches that
+proven shape.
+
+This deliberately never inspects `:name': matching by symbol name would
+silently stop matching the day a differently-named function gets the same
+proven native lowering, and would silently start matching an unrelated
+function that happens to reuse a name.  The three entries above are S7.7's
+seed, one per shape independently proven end-to-end per the cited evidence,
+not per symbol name; other lanes extend this list as more `.neln'/`.eln'
+shapes earn the same proof, without touching the switch logic in
+`nelisp-artifact--neln-partition-symbols' / `nelisp-artifact--maybe-install-
+native' that consumes it.
+
+`unary-tail-import-fast-path' is this table's one approximate entry: the
+`.neln' per-defun metadata plist has no explicit tail-import/ABI-hash tag
+today, so a small positive `:rt-slot-count' (bookkeeping beyond a pure
+identity leaf, but still inside the bounded verifier's small window) proxies
+for it.  A lane that adds an explicit tag (for example a `:tail-import' or
+`:abi-hash' key alongside `:body-offset') should replace this predicate with
+an exact check instead of widening the count heuristic.")
+
+(defun nelisp-artifact--neln-shape-proven-p (meta)
+  "Return non-nil when META (a `.neln' per-defun metadata plist, or nil)
+matches some entry of `nelisp-artifact--neln-proven-native-shapes'."
+  (and meta
+       (catch 'nelisp-artifact--neln-shape-proven
+         (dolist (shape nelisp-artifact--neln-proven-native-shapes)
+           (when (funcall (plist-get shape :predicate) meta)
+             (throw 'nelisp-artifact--neln-shape-proven t)))
+         nil)))
+
+(defvar nelisp-artifact-neln-eln-router nil
+  "When non-nil, the function each `nelisp-artifact-neln-eln-table' hit is
+routed through, called as (ROUTER SYMBOL ELN), instead of calling
+`nelisp-eln-registration-load' directly.  ELN is the table value (a path,
+or a migration entry plist).  `nelisp-eln-switchover-neln-router' (Doc 208,
+ledger S7.7) is the intended value: it admits only artifacts inside proven
+coverage, keeps the definition the module-init replay already installed as
+the recorded fallback, and can later unload the route and restore that
+definition.  Nil keeps the direct call.")
+
+(defun nelisp-artifact--neln-eln-lookup (symbol)
+  "Return a genuine GNU `.eln' path for SYMBOL from
+`nelisp-artifact-neln-eln-table', or nil when none is configured for it."
+  (let ((table nelisp-artifact-neln-eln-table))
+    (cond
+     ((null table) nil)
+     ((hash-table-p table) (gethash symbol table))
+     ((listp table) (cdr (assq symbol table))))))
+
+(defun nelisp-artifact--neln-ensure-eln-registration ()
+  "Ensure `nelisp-eln-registration-load' is loaded, without adding it to this
+file's own unconditional `require' list.  Mirrors `nelisp-native--ensure-
+condition''s lazy, call-time `require' idiom above: the genuine-`.eln'
+branch only runs when a caller both sets `nelisp-artifact-neln-legacy-native'
+to nil AND populates `nelisp-artifact-neln-eln-table', so every other caller
+keeps this module's existing load-time dependency set untouched.  Returns
+non-nil once `nelisp-eln-registration-load' is available."
+  (unless (fboundp 'nelisp-eln-registration-load)
+    (require 'nelisp-eln-registration nil t))
+  (fboundp 'nelisp-eln-registration-load))
+
+(defun nelisp-artifact--neln-partition-symbols (native)
+  "Partition NATIVE's `:symbols' per the S7.7 migration switch.
+Return (ELN-SYMS . INSTALL-NAMES): ELN-SYMS is an alist of
+\(SYMBOL . ELN-PATH) for symbols with a `nelisp-artifact-neln-eln-table' hit;
+INSTALL-NAMES is the subset of NATIVE's original `:symbols' names (same
+symbol-or-string form `nelisp-artifact--install-native-functions' accepts)
+whose metadata is proven-shape and that had no `.eln' hit -- these still get
+the private wrapper, exactly as legacy behavior would have for that symbol
+alone.  A name in neither list is left to plain VM byte-code replay.  An
+`.eln' hit always wins over shape admission for the same symbol, so a
+symbol never lands in both lists (see `nelisp-artifact--maybe-install-
+native')."
+  (let ((eln-syms nil)
+        (install-names nil))
+    (dolist (name (plist-get native :symbols))
+      (let* ((sym (if (symbolp name) name (intern name)))
+             (eln-path (nelisp-artifact--neln-eln-lookup sym)))
+        (cond
+         (eln-path (push (cons sym eln-path) eln-syms))
+         ((nelisp-artifact--neln-shape-proven-p
+           (nelisp-artifact--native-defun-metadata native sym))
+          (push name install-names)))))
+    (cons (nreverse eln-syms) (nreverse install-names))))
+
+(defun nelisp-artifact--maybe-install-native (artifact-path native)
+  "Install ARTIFACT-PATH's NATIVE defuns per the current S7.7 switch state.
+Callers already know a `.neln' native install applies here -- their own
+existing NATIVE-presence / `nelisp-artifact-native-dispatch-enabled' /
+`:kind' guard is unchanged at all three call sites; this only centralizes
+the legacy-vs-migration branch so every call site decides it identically.
+See `nelisp-artifact-neln-legacy-native'."
+  (if nelisp-artifact-neln-legacy-native
+      ;; Byte-identical to pre-S7.7: the same single call, same arguments.
+      (nelisp-artifact--install-native-functions artifact-path native)
+    (let* ((partition (nelisp-artifact--neln-partition-symbols native))
+           (eln-syms (car partition))
+           (install-names (cdr partition)))
+      (when eln-syms
+        (unless (or nelisp-artifact-neln-eln-router
+                    (nelisp-artifact--neln-ensure-eln-registration))
+          (error "nelisp-artifact-neln-eln-table names %s but nelisp-eln-registration-load is unavailable"
+                 (mapconcat (lambda (cell) (symbol-name (car cell)))
+                            eln-syms ", ")))
+        ;; Genuine GNU `.eln' first: it registers the real native subr and
+        ;; binds the symbol's function cell itself, and refuses a symbol
+        ;; that is already `fboundp' (`registration-name-already-bound').
+        ;; Running the private installer's `fset' on the same symbol first
+        ;; would trip that refusal, so this order is required, not cosmetic.
+        ;; The Doc 208 router instead registers into an isolated namespace
+        ;; and publishes itself, so a module-init definition is kept as the
+        ;; previous definition (and the fallback) rather than refused.
+        (dolist (cell eln-syms)
+          (if nelisp-artifact-neln-eln-router
+              (funcall nelisp-artifact-neln-eln-router (car cell) (cdr cell))
+            (nelisp-eln-registration-load (cdr cell)))))
+      (when install-names
+        (nelisp-artifact--install-native-functions
+         artifact-path
+         (list :symbols install-names :defuns (plist-get native :defuns)))))))
 
 (defun nelisp-artifact-reloadable-p (symbol)
   "Return non-nil when redefining SYMBOL is expected to be visible to every
@@ -2675,7 +2894,7 @@ Return (t VALUE . END) when handled, otherwise nil."
       (nelisp-artifact--load-profile-log "fast-replay" replay-start))
     (when (and (eq kind 'neln) native nelisp-artifact-native-dispatch-enabled)
       (let ((native-start (nelisp-artifact--profile-time)))
-        (nelisp-artifact--install-native-functions full-path native)
+        (nelisp-artifact--maybe-install-native full-path native)
         (nelisp-artifact--load-profile-log "native-install" native-start)))
     (unless (eq features nelisp-artifact--missing-key)
       (let ((feature-start (nelisp-artifact--profile-time)))
@@ -2932,7 +3151,7 @@ replay their bytecode module onto the NeLisp runtime."
                    (dolist (item module)
                      (setq last (nelisp-artifact--replay-module-item item)))
                    (when (and native nelisp-artifact-native-dispatch-enabled)
-                     (nelisp-artifact--install-native-functions full-path native))
+                     (nelisp-artifact--maybe-install-native full-path native))
                    (dolist (feature features)
                      (when (fboundp 'nelisp-provide)
                        (nelisp-provide feature))
@@ -2955,7 +3174,7 @@ replay their bytecode module onto the NeLisp runtime."
               (dolist (item module)
                 (setq last (nelisp-artifact--replay-module-item item)))
               (when (and native nelisp-artifact-native-dispatch-enabled)
-                (nelisp-artifact--install-native-functions full-path native))
+                (nelisp-artifact--maybe-install-native full-path native))
               (dolist (feature features)
                 (when (fboundp 'nelisp-provide)
                   (nelisp-provide feature))

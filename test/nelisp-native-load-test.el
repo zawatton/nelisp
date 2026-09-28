@@ -36,6 +36,85 @@ directories away from the reason."
        (stringp system-configuration)
        (string-match-p "x86_64\\|amd64" system-configuration)))
 
+(ert-deftest nelisp-native-load/raw-bool-decoder-preserves-identity-and-rejects-invalid-words ()
+  "Decode only canonical raw boolean words, preserving integer controls."
+  (should (eq (nelisp-native-load--decode-raw-bool 0) nil))
+  (should (eq (nelisp-native-load--decode-raw-bool 1) t))
+  (should-error (nelisp-native-load--decode-raw-bool 2)))
+
+(ert-deftest nelisp-native-load/unibyte-string-reference-needs-pinned-frame ()
+  "Decode both immutable string tags through the rooted reference bridge."
+  (dolist (tag (list nelisp-native-load-tag-string
+                     nelisp-native-load-tag-unibyte-string))
+    (let (reference-call)
+      (cl-letf (((symbol-function 'ptr-read-u64)
+                 (lambda (_address offset) (if (= offset 0) tag 0)))
+                ((symbol-function 'nelisp--native-unbox-reference)
+                 (lambda (address env pin-frame)
+                   (setq reference-call (list address env pin-frame))
+                   'reference)))
+        (should (eq (nelisp-native-load-unbox 123 456 789) 'reference))
+        (should (equal reference-call '(123 456 789))))))
+  (cl-letf (((symbol-function 'ptr-read-u64) (lambda (_address _offset) 99)))
+    (should-error (nelisp-native-load-unbox 123 456 789))))
+
+(ert-deftest nelisp-native-load/pin-end-refuses-lost-ownership ()
+  "A failed native frame release must not look like successful cleanup."
+  (cl-letf (((symbol-function 'nelisp-native-load--symbol-addr)
+             (lambda (_name) 123))
+            ((symbol-function 'ptr-call)
+             (lambda (&rest _args) 0)))
+    (should-error (nelisp-native-load--pin-end 1 32)))
+  (cl-letf (((symbol-function 'nelisp-native-load--symbol-addr)
+             (lambda (_name) 123))
+            ((symbol-function 'ptr-call)
+             (lambda (&rest _args) 1)))
+    (should-not (nelisp-native-load--pin-end 1 32))))
+
+(ert-deftest nelisp-native-load/standalone-output-destination-needs-only-runtime-writer ()
+  "Select the standalone destination before artifact compatibility loads."
+  (let ((path (make-temp-file "nelisp-native-load-test-output-"))
+        (was-bound (boundp 'nelisp-artifact-standalone-repo-root))
+        (old-value (and (boundp 'nelisp-artifact-standalone-repo-root)
+                        nelisp-artifact-standalone-repo-root)))
+    (unwind-protect
+        (progn
+          (when was-bound (makunbound 'nelisp-artifact-standalone-repo-root))
+          (cl-letf (((symbol-function 'nelisp--write-stdout-bytes)
+                     (lambda (&rest _) nil)))
+            (should (equal (nelisp-native-load--call-process-file path)
+                           path))))
+      (if was-bound
+          (set 'nelisp-artifact-standalone-repo-root old-value)
+        (when (boundp 'nelisp-artifact-standalone-repo-root)
+          (makunbound 'nelisp-artifact-standalone-repo-root)))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-native-load/running-binary-hash-rejects-truncated-fallback-read ()
+  "Never cache a digest when the self-image read is shorter than stat size."
+  (let ((nelisp-native-load--running-binary-sha256-cache :unset)
+        (system-type 'gnu/linux)
+        (path (make-temp-file "nelisp-native-load-test-image-"))
+        (stat-size 7))
+    (unwind-protect
+        (cl-letf (((symbol-function 'nelisp--syscall-readlink)
+                   (lambda (_path) path))
+              ((symbol-function 'nelisp-native-load--sha256-file-external)
+               (lambda (_path) nil))
+              ((symbol-function 'nelisp--syscall-read-file)
+               (lambda (_path) "prefix"))
+              ((symbol-function 'file-attributes)
+               (lambda (_path) (list nil 1 0 0 0 0 0 stat-size))))
+          (should-not (nelisp-native-load--running-binary-sha256))
+          (should-not nelisp-native-load--running-binary-sha256-cache)
+          (setq stat-size 6
+                nelisp-native-load--running-binary-sha256-cache :unset)
+          (should (equal (nelisp-native-load--running-binary-sha256)
+                         (nelisp-native-load--sha256 "prefix")))
+          (should (equal nelisp-native-load--running-binary-sha256-cache
+                         (nelisp-native-load--sha256 "prefix"))))
+      (ignore-errors (delete-file path)))))
+
 (defmacro nelisp-native-load-test--with-artifact (var source &rest body)
   "Compile SOURCE to a .neln, bind VAR to its path, and run BODY."
   (declare (indent 2))
@@ -269,6 +348,33 @@ rather than anywhere near the cause.  `(c1 0)' now answers 222."
     (should (eq (nelisp-native-load-abi
                  (plist-get (nelisp-native-load-manifest path) :native))
                 'boxed))))
+
+(ert-deftest nelisp-native-load/raw-i64-call-needs-no-runtime-env ()
+  "Raw integer handles keep the loader's env-free call path."
+  (let ((handle '(:abi integer :param-repr raw-i64 :return-repr raw-i64
+                        :arity 2 :entry 123 :name "raw-add")))
+    (cl-letf (((symbol-function 'ptr-call)
+               (lambda (entry a b c d e f)
+                 (should (= entry 123))
+                 (should (= c 0))
+                 (should (= d 0))
+                 (should (= e 0))
+                 (should (= f 0))
+                 (+ a b))))
+      (should (= (nelisp-native-load-call handle '(20 22)) 42)))))
+
+(ert-deftest nelisp-native-load/object-boxing-refuses-uninterned-symbols ()
+  "Never turn a make-symbol value into a different interned identity."
+  (should-error (nelisp-native-load-box 1 (make-symbol "p5-uninterned") 0)))
+
+(ert-deftest nelisp-native-load/list-boxing-validates-finite-proper-lists ()
+  "The bridge accepts only bounded proper lists before allocating runtime conses."
+  (should (equal (nelisp-native-load--proper-list-elements '(a b c))
+                 '(a b c)))
+  (should-error (nelisp-native-load--proper-list-elements '(a . b)))
+  (let ((cycle (list 'a)))
+    (setcdr cycle cycle)
+    (should-error (nelisp-native-load--proper-list-elements cycle))))
 
 (ert-deftest nelisp-native-load/a-result-below-a-page-is-not-a-pointer ()
   "A raw result is not dereferenced just because the defun could delegate.

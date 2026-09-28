@@ -40,6 +40,8 @@
 
 ;;; Code:
 
+(require 'backquote)
+
 ;;;; --- block / return ----------------------------------------------------
 
 (defun nelisp-cl-macros--block-tag (name)
@@ -638,6 +640,10 @@ descendant record satisfies the parent predicate."
   (let ((info (cdr (assq name nelisp-cl-macros--struct-info))))
     (and info (car (cdr (memq :slot-names info))))))
 
+(defun nelisp-cl-macros--struct-slots (slots)
+  "Return SLOTS without a leading cl-defstruct documentation string."
+  (if (stringp (car slots)) (cdr slots) slots))
+
 (defmacro cl-defstruct (name-or-options &rest slots)
   "Define a record type and its predicate / constructor / accessors.
 
@@ -651,9 +657,10 @@ Each SLOT is `SLOT-NAME' or `(SLOT-NAME DEFAULT)'.  Generated:
 Supported options:
   - `(:constructor nil)'    → suppress make-NAME generation
   - `(:constructor NAME)'   → rename make-NAME
-  - `(:copier nil)'         → suppress copy-NAME generation
-  - `(:copier NAME)'        → rename copy-NAME
-  - `(:include PARENT)'     → inherit PARENT's slots (parent-first)
+- `(:copier nil)'         → suppress copy-NAME generation
+- `(:copier NAME)'        → rename copy-NAME
+- `(:include PARENT)'     → inherit PARENT's slots (parent-first)
+- A leading docstring is accepted and discarded.
 
 Slot index assignment: positional, in declaration order.  The
 record's `type_tag' is NAME (a symbol); accessors call
@@ -665,8 +672,7 @@ parent's accessor indices remain valid for the child record.  The
 parent's predicate continues to satisfy child records via the
 runtime chain walk in `nelisp-cl-macros--struct-isa'.
 
-Limitations: no `:type', no `setf' integration, no docstring slot
-form.
+Limitations: no `:type' or `setf' integration.
 
 Note: `(declare ...)' metadata is intentionally omitted because the
 NeLisp Rust evaluator does not yet strip declare forms from macro
@@ -674,12 +680,14 @@ bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
 `defmacro' grows declare-handling parity with host Emacs."
   (let* ((name (nelisp-cl-macros--struct-name-or-options name-or-options))
          (options (nelisp-cl-macros--struct-options name-or-options))
+         (slot-forms (nelisp-cl-macros--struct-slots slots))
          (parent-form (nelisp-cl-macros--struct-opt :include options))
          (parent (if (eq parent-form nelisp-cl-macros--struct-absent)
                      nil parent-form))
-         (own-slot-names (mapcar #'nelisp-cl-macros--struct-slot-name slots))
+         (own-slot-names
+          (mapcar #'nelisp-cl-macros--struct-slot-name slot-forms))
          (own-slot-defaults
-          (mapcar #'nelisp-cl-macros--struct-slot-default slots))
+          (mapcar #'nelisp-cl-macros--struct-slot-default slot-forms))
          (parent-slot-names
           (and parent (nelisp-cl-macros--struct-lookup-slots parent)))
          (slot-names (append parent-slot-names own-slot-names))
@@ -952,9 +960,15 @@ SPEC-PLIST contains `:specializers', an alist of required argument
 positions and the parsed specializer at each position.  The old position-0
 keys remain in the returned plist for compatibility with callers that only
 need the first dispatch argument.  A non-bare-symbol specializer is allowed
-on every required argument, matching real `cl-defmethod'; an unrecognised
-`&FOO' lambda-list keyword (e.g. `&context') is still a loud `error' naming
-NAME and the position."
+on every required argument, matching real `cl-defmethod'.  `&context (EXPR
+SPEC)...' (real Emacs `cl-generic.el' grammar) is supported too: each
+`(EXPR SPEC)' pair becomes a `:specializers' entry keyed by
+`(:nelisp-context . EXPR)' instead of an integer position, consumed by
+`nelisp-cl-generic--multi-applicable-methods', and does NOT consume a
+plain lambda-list slot.  See the byte-identical mirror copy of this
+function in `scripts/nelisp-stdlib-prelude.el' for the full rationale.
+Any other unrecognised `&FOO' lambda-list keyword is still a loud `error'
+naming NAME and the position."
   (let ((plain nil) (spec nil) (specializers nil) (i 0)
         (in-required t) (cur arglist))
     (while cur
@@ -963,10 +977,23 @@ NAME and the position."
          ((memq item '(&optional &rest &key &aux))
          (setq in-required nil)
           (push item plain))
+         ((eq item '&context)
+          (let ((rest (cdr cur)))
+            (while (and rest (consp (car rest)))
+              (let* ((pair (car rest))
+                     (expr (car pair))
+                     (spec-form (car (cdr pair)))
+                     (parsed (nelisp-cl-generic--parse-specializer
+                              (list '_nelisp-context-var spec-form))))
+                (setq specializers
+                      (cons (cons (cons :nelisp-context expr) parsed)
+                            specializers)))
+              (setq rest (cdr rest)))
+            (setq cur (cons nil rest))))
          ((and (symbolp item) (> (length (symbol-name item)) 0)
                (eq (aref (symbol-name item) 0) ?&))
           (error "cl-defmethod %s: unsupported lambda-list keyword %S \
-(Doc 185 subset: &optional/&rest/&key/&aux only)"
+(Doc 185 subset: &optional/&rest/&key/&aux/&context only)"
                  name item))
          ((not in-required)
           (push item plain))
@@ -1090,33 +1117,185 @@ the next call rebuilds it."
            (cons entry methods)))
     (put name 'nelisp-cl-generic--dispatch-cache nil)))
 
+;; T-clgen-subclass fix: real Emacs's own `cl--class-allparents' (the
+;; helper `nelisp-cl-generic--subclass-parents' below prefers, when it is
+;; available -- a consumer that vendors real eieio.el/cl-generic.el/
+;; cl-preloaded.el, such as the nelisp-emacs-lib magit lane, makes it
+;; fboundp as ordinary loaded elisp) unconditionally calls real Emacs's
+;; `merge-ordered-lists' (subr.el) to C3-merge each parent's own ancestor
+;; list, EVEN for a plain single-inheritance chain with exactly one parent
+;; at every level -- confirmed this session by tracing a real 4-level
+;; `cl-defstruct' `:include' chain under host Emacs.  `merge-ordered-
+;; lists' does not exist anywhere in dev/nelisp's own tree (`grep -rn
+;; merge-ordered-lists scripts/ lisp/ src/' => zero hits before this
+;; fix), so on the standalone -- where a consumer's vendored eieio/cl-
+;; generic/cl-preloaded loads for real but nothing vendors plain
+;; subr.el -- every call to the real `cl--class-allparents' signals
+;; `void-function merge-ordered-lists', which `nelisp-cl-generic--
+;; subclass-parents' below swallows via `ignore-errors' and returns nil:
+;; the entire subclass-specializer ancestry walk silently goes empty,
+;; making `(subclass PARENT)' match nothing but PARENT itself, no matter
+;; how many `defclass' levels separate the actual value from PARENT.
+;; This is the exact, reproduced root cause of the `cl-no-applicable-
+;; method' the magit lane hit on `(make-instance
+;; 'transient-describe-target ...)': `transient-describe-target'
+;; genuinely descends from `eieio-default-superclass' (`cl--find-class'
+;; on it succeeds, confirming registration, exactly as the bug report
+;; says), but `cl--class-allparents' can never SAY so once
+;; `merge-ordered-lists' is missing.  Real Emacs's own algorithm
+;; (verbatim from `vendor/staged-emacs-lisp/subr.el', a plain C3-style
+;; merge with no cl-generic/eieio dependency of its own), guarded so it
+;; is a no-op wherever real Emacs already provides it (host Emacs, and
+;; any consumer that also happens to vendor+load plain subr.el).
+(unless (fboundp 'merge-ordered-lists)
+  (defun merge-ordered-lists (lists &optional error-function)
+    "Merge LISTS in a consistent order.
+LISTS is a list of lists of elements.
+Merge them into a single list containing the same elements (removing
+duplicates), obeying their relative positions in each list.
+The order of the (sub)lists determines the final order in those cases where
+the order within the sublists does not impose a unique choice.
+Equality of elements is tested with `eql'.
+
+If a consistent order does not exist, call ERROR-FUNCTION with
+a remaining list of lists that we do not know how to merge.
+It should return the candidate to use to continue the merge, which
+has to be the head of one of the lists.
+By default we choose the head of the first list."
+    ;; Algorithm inspired from
+    ;; [C3](https://en.wikipedia.org/wiki/C3_linearization)
+    (let ((result '()))
+      (setq lists (remq nil lists)) ;Don't mutate the original `lists' argument.
+      (while (cdr (setq lists (delq nil lists)))
+        ;; Try to find the next element of the result. This
+        ;; is achieved by considering the first element of each
+        ;; (non-empty) input list and accepting a candidate if it is
+        ;; consistent with the rests of the input lists.
+        (let* ((next nil)
+               (tail lists))
+          (while tail
+            (let ((candidate (caar tail))
+                  (other-lists lists))
+              ;; Ensure CANDIDATE is not in any position but the first
+              ;; in any of the element lists of LISTS.
+              (while other-lists
+                (if (not (memql candidate (cdr (car other-lists))))
+                    (setq other-lists (cdr other-lists))
+                  (setq candidate nil)
+                  (setq other-lists nil)))
+              (if (not candidate)
+                  (setq tail (cdr tail))
+                (setq next candidate)
+                (setq tail nil))))
+          (unless next ;; The graph is inconsistent.
+            (setq next (funcall (or error-function #'caar) lists))
+            (unless (assoc next lists #'eql)
+              (error "Invalid candidate returned by error-function: %S" next)))
+          ;; The graph is consistent so far, add NEXT to result and
+          ;; merge input lists, dropping NEXT from their heads where
+          ;; applicable.
+          (push next result)
+          (setq lists
+                (mapcar (lambda (l) (if (eql (car l) next) (cdr l) l))
+                        lists))))
+      (if (null result) (car lists) ;; Common case.
+        (append (nreverse result) (car lists))))))
+
+(defun nelisp-cl-generic--class-designator-name (x)
+  "Return a bare NAME (symbol) for class designator X.
+X may already be a plain symbol (its own name, no resolution needed --
+this is what real `cl--class-allparents' returns for every ancestor:
+NAMES, not objects), or a resolved class OBJECT (what the plain
+`cl--class-parents' struct accessor returns instead -- confirmed this
+session against host Emacs: the two real functions disagree on this
+shape).  For an object, resolve its name via `cl--class-name' (the
+generic `cl--class'-family struct accessor -- covers plain
+`cl-defstruct' types, not only EIEIO ones, matching
+`nelisp-cl-generic--subclass-parents''s own \"without requiring EIEIO
+helpers\" contract) or, failing that, `eieio-class-name'.  Returns nil
+(never X itself) when neither resolver is available -- deliberately: a
+caller that fell back to comparing two UNRESOLVED objects with `equal'
+segfaulted the NeLisp standalone outright (confirmed this session,
+`nelisp-cl-generic--subclass-name-equal-p' below never calls `equal' on
+a nil result, so this never reaches that path again), and even setting
+crash risk aside, two different objects that both fail to resolve are
+not thereby the same class.
+
+Guards `cl--class-name' with `cl--class-p' first -- `cl--class-name' is
+fboundp on the bare NeLisp standalone even with no consumer-vendored
+eieio/cl-generic/cl-preloaded at all (the standalone's own bootstrap
+bakes in a `cl--class' struct definition, extracted from real
+`cl-preloaded.el', purely to support `cl-deftype'; see
+`scripts/nelisp-standalone-build.el'), but NeLisp's own `cl-defstruct'-
+generated accessors do no type-checking at all (a plain positional
+`nelisp--record-ref', unlike real Emacs's `cl-defsubst'-generated ones,
+which check the struct predicate first) -- calling it on a record of
+any OTHER type is an out-of-bounds read, and this session confirmed it
+truly segfaults the standalone process outright, not merely signals a
+catchable Lisp error `ignore-errors' could have caught.  `cl--class-p'
+(any `cl-defstruct' predicate, on NeLisp or real Emacs alike) only ever
+consults `recordp'/the type tag, so it is always safe to call on
+anything and must gate every `cl--class-name' call here."
+  (cond
+   ((symbolp x) x)
+   ((and (fboundp 'cl--class-p) (fboundp 'cl--class-name)
+         (ignore-errors (cl--class-p x))
+         (ignore-errors (cl--class-name x))))
+   ((and (fboundp 'eieio-class-name) (ignore-errors (eieio-class-name x))))))
+
 (defun nelisp-cl-generic--subclass-name-equal-p (a b)
-  "Return non-nil when class designators A and B denote the same class."
+  "Return non-nil when class designators A and B denote the same class.
+A and B may be a plain NAME symbol or a resolved class OBJECT, in any
+combination (see `nelisp-cl-generic--class-designator-name') -- this
+used to compare via `eieio-class-name' alone, which requires an actual
+`eieio--class'-typed object and is void-function whenever nothing has
+loaded real `eieio.el' yet, so a caller matching a plain `cl-defstruct'
+ancestor chain (a real Emacs NAME symbol from `cl--class-allparents'
+against a resolved `cl--find-class' OBJECT) always fell through to
+`eq' alone and never matched -- confirmed this session with a 4-level
+real `cl-defstruct' `:include' chain and no EIEIO loaded at all.  Only
+calls `equal' when BOTH sides resolved to an actual name (never nil):
+comparing two raw, unresolved objects via `equal' is neither safe (see
+`nelisp-cl-generic--class-designator-name''s own commentary -- it
+segfaulted the standalone) nor meaningful (two objects that both fail
+to resolve are not thereby the same class -- `eq', already checked
+above, is the only fallback that still makes sense for them)."
   (or (eq a b)
-      (and (fboundp 'eieio-class-name)
-           (ignore-errors
-             (equal (eieio-class-name a) (eieio-class-name b))))))
+      (let ((na (nelisp-cl-generic--class-designator-name a))
+            (nb (nelisp-cl-generic--class-designator-name b)))
+        (and na nb (equal na nb)))))
 
 (defun nelisp-cl-generic--subclass-parents (class)
-  "Return CLASS and its known parents, without requiring EIEIO helpers."
-  (cond
-   ((fboundp 'cl--class-allparents)
-    (ignore-errors (cl--class-allparents class)))
-   ((fboundp 'cl--class-parents)
-    (let ((todo (list class)) (seen nil) (out nil))
-      (while todo
-        (let ((cur (car todo)))
-          (setq todo (cdr todo))
-          (unless (memq cur seen)
-            (push cur seen)
-            (push cur out)
-            (let ((obj (if (and (symbolp cur) (fboundp 'cl--find-class))
-                           (ignore-errors (cl--find-class cur))
-                         cur)))
-              (setq todo
-                    (append (ignore-errors (cl--class-parents obj)) todo))))))
-      (nreverse out)))
-   (t (list class))))
+  "Return CLASS and its known parents, without requiring EIEIO helpers.
+Tries the tiers in preference order (real `cl--class-allparents', then
+the manual `cl--class-parents'-only walk, then CLASS alone), but FALLS
+THROUGH to the next tier when a preferred one is merely fboundp yet its
+actual call comes back empty -- `cl--class-allparents' always conses at
+least CLASS's own name onto its result (see its own real-Emacs
+definition in cl-preloaded.el), so a genuinely empty result here can
+only mean the call itself failed and `ignore-errors' swallowed it (a
+missing transitive dependency such as `merge-ordered-lists' above, or
+any other error), never a legitimate empty ancestry -- accepting that
+nil at face value, as this function used to, silently disables every
+`(subclass PARENT)' specializer's ancestry match instead of degrading
+to the next, still-correct tier."
+  (or (and (fboundp 'cl--class-allparents)
+           (ignore-errors (cl--class-allparents class)))
+      (and (fboundp 'cl--class-parents)
+           (let ((todo (list class)) (seen nil) (out nil))
+             (while todo
+               (let ((cur (car todo)))
+                 (setq todo (cdr todo))
+                 (unless (memq cur seen)
+                   (push cur seen)
+                   (push cur out)
+                   (let ((obj (if (and (symbolp cur) (fboundp 'cl--find-class))
+                                  (ignore-errors (cl--find-class cur))
+                                cur)))
+                     (setq todo
+                           (append (ignore-errors (cl--class-parents obj)) todo))))))
+             (nreverse out)))
+      (list class)))
 
 (defun nelisp-cl-generic--subclass-match-p (value target)
   "Return non-nil when VALUE denotes TARGET or one of its subclasses.
@@ -1283,6 +1462,13 @@ The fallback keeps method entries created by older expansions readable."
             value (plist-get specializer :type-name)))
     (_ t)))
 
+(defun nelisp-cl-generic--context-position-p (position)
+  "Return non-nil when POSITION is an `&context' specializer key, i.e. a
+`(:nelisp-context . EXPR)' cons built by
+`nelisp-cl-generic--parse-arglist', rather than a plain integer argument
+index."
+  (and (consp position) (eq (car position) :nelisp-context)))
+
 (defun nelisp-cl-generic--dispatch-specializer-rank (specializer)
   "Return the generalizer priority represented by SPECIALIZER."
   (pcase (plist-get specializer :kind)
@@ -1293,11 +1479,13 @@ The fallback keeps method entries created by older expansions readable."
     (_ 0)))
 
 (defun nelisp-cl-generic--multi-dispatch-p (name)
-  "Return non-nil when NAME has a dispatch position other than zero."
+  "Return non-nil when NAME has a dispatch position other than zero, OR
+any `&context' specializer."
   (let ((found nil))
     (dolist (method (get name 'nelisp-cl-generic--methods) found)
       (dolist (entry (nelisp-cl-generic--method-specializers method))
-        (when (> (car entry) 0)
+        (when (or (nelisp-cl-generic--context-position-p (car entry))
+                  (> (car entry) 0))
           (setq found t))))))
 
 (defun nelisp-cl-generic--argument-precedence-order (name args)
@@ -1328,13 +1516,20 @@ total priority and method-table order breaking exact ties."
         (dolist (entry (nelisp-cl-generic--method-specializers method))
           (let ((position (car entry))
                 (specializer (cdr entry)))
-            (if (and (< position (length args))
-                     (nelisp-cl-generic--dispatch-specializer-match-p
-                      specializer (nth position args)))
-                (setq score (+ score
-                               (nelisp-cl-generic--dispatch-specializer-rank
-                                specializer)))
-              (setq matches nil))))
+            (if (nelisp-cl-generic--context-position-p position)
+                (if (nelisp-cl-generic--dispatch-specializer-match-p
+                     specializer (eval (cdr position) t))
+                    (setq score (+ score
+                                   (nelisp-cl-generic--dispatch-specializer-rank
+                                    specializer)))
+                  (setq matches nil))
+              (if (and (< position (length args))
+                       (nelisp-cl-generic--dispatch-specializer-match-p
+                        specializer (nth position args)))
+                  (setq score (+ score
+                                 (nelisp-cl-generic--dispatch-specializer-rank
+                                  specializer)))
+                (setq matches nil)))))
         (when matches
           (let ((ranks nil) (order precedence))
             (while order
@@ -1705,7 +1900,10 @@ is unspecialized (§2.1/§3.1).  The method body can call
                       (let* ((pos (car entry))
                              (sp (cdr entry))
                              (skind (plist-get sp :kind)))
-                        `(cons ,pos
+                        ;; POS must be quoted -- see the byte-identical
+                        ;; mirror copy of this block in
+                        ;; `scripts/nelisp-stdlib-prelude.el' for why.
+                        `(cons ',pos
                                (list :kind ',skind
                                      :type-name ',(plist-get sp :type-name)
                                      :value ,(let ((v (plist-get sp :value-form)))
@@ -1788,49 +1986,83 @@ Supports proper lists only (= what `nelisp-aot-compiler.el' uses)."
           (setq i (1+ i)))
         (nreverse acc)))))
 
-(defun cl-remove-if-not (pred seq)
-  "Return a list of SEQ elements where (PRED ELT) is non-nil.
-Linear, allocates a fresh list; preserves order."
-  (let ((acc nil) (cur seq))
-    (while cur
-      (when (funcall pred (car cur))
-        (setq acc (cons (car cur) acc)))
-      (setq cur (cdr cur)))
-    (nreverse acc)))
+(defun nelisp--cl-labels-subst (form alist)
+  "Replace every `(function NAME)' in macroexpanded FORM by NAME's variable.
+ALIST maps each `cl-labels' NAME to the lexical variable holding its
+function.  `quote' data is left untouched; every other cons is walked,
+including improper tails."
+  (cond
+   ((not (consp form)) form)
+   ((eq (car form) 'quote) form)
+   ((and (eq (car form) 'function)
+         (consp (cdr form))
+         (symbolp (car (cdr form)))
+         (assq (car (cdr form)) alist))
+    (cdr (assq (car (cdr form)) alist)))
+   (t
+    (let ((out nil) (rest form))
+      (while (consp rest)
+        (setq out (cons (nelisp--cl-labels-subst (car rest) alist) out)
+              rest (cdr rest)))
+      (let ((res (nreverse out)))
+        (if rest (nconc res rest) res))))))
 
 (defmacro cl-labels (bindings &rest body)
   "Bind locally-recursive functions BINDINGS and run BODY.
-BINDINGS = ((NAME (ARGS...) BODY...) ...).  Expands to a `let'-bound
-funarg + `flet'-style cl-flet substitution so each binding can call
-itself by NAME.  This is the minimal shape used by
-`nelisp-aot-compiler.el' (single-binding walk-helper recursion);
-sibling cross-calls within a single `cl-labels' block are NOT
-supported (= would need a forward-declared placeholder set, deferred)."
-  (let ((let-bindings nil)
-        (defalias-forms nil)
-        (unalias-forms nil))
+BINDINGS = ((NAME (ARGS...) BODY...) ...).  Like GNU `cl-labels', each
+NAME is a *lexical* function binding: it is held in a local variable,
+calls `(NAME ...)' inside BINDINGS and BODY become `funcall's of that
+variable, and `#'NAME' evaluates to the function object itself.  The
+function therefore stays callable after BODY returns (GNU `named-let'
+expands to `(funcall (cl-labels ((NAME ...)) #'NAME) ...)'), siblings
+may call each other, and no global function cell is ever touched.
+Calls are rewritten by a full macro-expansion walk with a local macro
+per NAME (merged over `macroexpand-all-environment' so enclosing local
+macros still apply); `#'NAME' references are then substituted in the
+fully expanded code by `nelisp--cl-labels-subst'.  The walk is the
+prelude's own `nelisp--macroexpand-all-walk' when present: a library
+that replaces the global `macroexpand-all' with a walker that does not
+descend into `(function (lambda ...))' would otherwise leave every call
+inside a local function body unrewritten (`void-function NAME')."
+  (let ((env (and (boundp 'macroexpand-all-environment)
+                  macroexpand-all-environment))
+        (expand (if (fboundp 'nelisp--macroexpand-all-walk)
+                    'nelisp--macroexpand-all-walk
+                  'macroexpand-all))
+        (alist nil)
+        (setqs nil)
+        (vars nil))
     (dolist (b bindings)
-      (let* ((name (car b))
-             (fn-formals (car (cdr b)))
-             (fn-body (cdr (cdr b)))
-             (saved (intern (format "--cl-labels-saved-%s" name))))
-        (setq let-bindings
-              (cons (list saved (list 'and (list 'fboundp (list 'quote name))
-                                      (list 'symbol-function (list 'quote name))))
-                    let-bindings))
-        (setq defalias-forms
-              (cons (list 'defalias (list 'quote name)
-                          (cons 'lambda (cons fn-formals fn-body)))
-                    defalias-forms))
-        (setq unalias-forms
-              (cons (list 'if saved
-                          (list 'defalias (list 'quote name) saved)
-                          (list 'fmakunbound (list 'quote name)))
-                    unalias-forms))))
-    (list 'let (nreverse let-bindings)
-          (cons 'unwind-protect
-                (cons (cons 'progn (append (nreverse defalias-forms) body))
-                      (nreverse unalias-forms))))))
+      ;; Interned (not `make-symbol') so an expansion that is printed and
+      ;; read back (AOT / artifact caches) still names one variable.
+      (let ((var (intern (format "--cl-labels-%s--" (car b)))))
+        (setq alist (cons (cons (car b) var) alist))
+        (setq vars (cons var vars))
+        ;; A raw lambda list, not a closure: the prelude is dynamically
+        ;; scoped, so VAR is spliced in as a constant.
+        (setq env (cons (cons (car b)
+                              (list 'lambda '(&rest args)
+                                    (list 'cons ''funcall
+                                          (list 'cons (list 'quote var)
+                                                'args))))
+                        env))))
+    (dolist (b bindings)
+      (setq setqs
+            (cons (list 'setq (cdr (assq (car b) alist))
+                        (nelisp--cl-labels-subst
+                         (funcall expand
+                          (list 'function
+                                (cons 'lambda (cons (car (cdr b))
+                                                    (cdr (cdr b)))))
+                          env)
+                         alist))
+                  setqs)))
+    (cons 'let
+          (cons (nreverse vars)
+                (append (nreverse setqs)
+                        (list (nelisp--cl-labels-subst
+                               (funcall expand (cons 'progn body) env)
+                               alist)))))))
 
 (defmacro cl-incf (place &optional delta)
   "Increment PLACE by DELTA (default 1).
@@ -1857,180 +2089,6 @@ byte-compiler so defsubst is a strict synonym for `defun'."
       (unless (funcall pred (car cur)) (setq all nil))
       (setq cur (cdr cur)))
     all))
-
-;; ---------------------------------------------------------------------------
-;; Doc 49 Wave 7 R6c (2026-05-22) — minimal `backquote' macro.
-;;
-;; The reader (`nelisp-stdlib-reader.el') desugars source-level `\`'
-;; and `,' / `,@' into `(backquote FORM)' / `(comma X)' / `(comma-at X)'
-;; cons forms.  Without a `backquote' macro, evaluating these dies with
-;; `(void-function backquote)' — observed when loading
-;; `nelisp-sexp-layout.el' whose final `defconst' uses `((NAME . ,V) ...)'.
-;;
-;; Scope (Minimal):
-;;   `atom              =>  'atom
-;;   `,X                =>  X
-;;   `(A B C)           =>  (list 'A 'B 'C)
-;;   `(A ,X B)          =>  (list 'A X 'B)
-;;   `(A ,@X B)         =>  (append (list 'A) X (list 'B))
-;;   `(A . ,X)          =>  (cons 'A X)
-;;   `(A . X)           =>  (cons 'A 'X)
-;;
-;; Nested backquote (Doc <handoff> 2026-08-22 fix): a nested `` `X''
-;; increments the quasiquote LEVEL for its own content; a `,'/`,@'
-;; decrements it.  A comma only fires (evaluates its argument now) when
-;; the level reaches 0 -- i.e. it is balanced by exactly as many commas
-;; as enclosing backquotes.  While the level stays above 0 the marker is
-;; rebuilt as inert `(comma ...)'/`(comma-at ...)'/`(backquote ...)' data
-;; (its own content still recursively expanded at the adjusted level, so
-;; a `,,X' double-unquote still cancels back down to 0 and evaluates X).
-;; This matches host Emacs's own `backquote.el' depth semantics.
-;; fix/backquote-vector-quasi: vector quasi `[A ,X B] is expanded the same
-;; way as a list template -- its elements are walked by
-;; `nelisp--bq-expand-list' (treating the vector as a proper list of its
-;; elements, so there is no dotted-tail case to worry about) and the
-;; resulting list-building form is wrapped in `vconcat' to produce a
-;; vector again.
-;; ---------------------------------------------------------------------------
-
-(defun nelisp--bq-comma-p (sym)
-  "Return non-nil when SYM is the reader's unquote marker.
-
-The reader spells `,' as the symbol `\\,', the same object GNU Emacs
-produces, since a4f8c7570 aligned the reader and printer with Emacs.
-This expander was written against the older in-house spelling `comma'
-and was not updated then, so every `,' walked past it unexpanded: the
-macro returned the marker itself and callers saw errors like
-\"(wrong-type-argument symbolp ,name)\".  Both spellings are accepted
-here so the fix cannot break a caller still holding old data."
-  (or (eq sym '\,) (eq sym 'comma)))
-
-(defun nelisp--bq-comma-at-p (sym)
-  "Return non-nil when SYM is the reader's splice marker.
-See `nelisp--bq-comma-p' for why two spellings are recognised."
-  (or (eq sym '\,@) (eq sym 'comma-at)))
-
-(defun nelisp--bq-backquote-p (sym)
-  "Return non-nil when SYM is the reader's quasiquote marker.
-See `nelisp--bq-comma-p' for why two spellings are recognised."
-  (or (eq sym '\`) (eq sym 'backquote)))
-
-(defun nelisp--bq-expand (form &optional level)
-  "Return the expansion of FORM under `backquote' at nesting LEVEL.
-LEVEL defaults to 1 (directly inside one backquote).  A `,'/`,@' at
-LEVEL 1 fires immediately (its argument is evaluated at macro-expanded
-runtime); above LEVEL 1 it is preserved as inert marker data one level
-shallower, so a matching further `,' can still cancel it down to 0."
-  (let ((level (or level 1)))
-    (cond
-     ((vectorp form)
-      (list 'vconcat (nelisp--bq-expand-list (append form nil) level)))
-     ((not (consp form))
-      (list 'quote form))
-     ((nelisp--bq-comma-p (car form))
-      (if (= level 1)
-          (cadr form)
-        (list 'list (list 'quote '\,)
-              (nelisp--bq-expand (cadr form) (1- level)))))
-     ((nelisp--bq-comma-at-p (car form))
-      (if (= level 1)
-          (signal 'error (list "nelisp-bq: top-level ,@ not allowed"))
-        (list 'list (list 'quote '\,@)
-              (nelisp--bq-expand (cadr form) (1- level)))))
-     ((nelisp--bq-backquote-p (car form))
-      ;; A nested backquote increments the level for its own content and
-      ;; is itself rebuilt as inert `(backquote ...)' data -- it is only
-      ;; ever "consumed" by a comma at the matching depth, never by
-      ;; simply appearing inside an outer backquote.
-      (list 'list (list 'quote '\`)
-            (nelisp--bq-expand (cadr form) (1+ level))))
-     (t (nelisp--bq-expand-list form level)))))
-
-(defun nelisp--bq-expand-list (form level)
-  "Walk list FORM at nesting LEVEL, producing the expansion.
-Recognises both (... ,X ...) interior unquote and (... . ,X) dotted
-unquote / (... . ,@X) dotted splice patterns, at any LEVEL (see
-`nelisp--bq-expand')."
-  (let ((parts nil)        ; alist entries (KIND . EXPR) where KIND = list|splice
-        (cur form)
-        (tail-expr nil)
-        (done nil)
-        (has-splice nil))
-    (while (and (not done) (consp cur))
-      (let ((head (car cur)))
-        (cond
-         ;; cdr-position bare `comma' → source had `. ,X'.
-         ((nelisp--bq-comma-p head)
-          (if (= level 1)
-              (setq tail-expr (cadr cur))
-            (setq tail-expr (list 'list (list 'quote '\,)
-                                   (nelisp--bq-expand (cadr cur) (1- level)))))
-          (setq done t))
-         ;; cdr-position bare `comma-at' → source had `. ,@X'.
-         ((nelisp--bq-comma-at-p head)
-          (if (= level 1)
-              (progn (setq tail-expr (cadr cur)) (setq has-splice t))
-            (setq tail-expr (list 'list (list 'quote '\,@)
-                                   (nelisp--bq-expand (cadr cur) (1- level)))))
-          (setq done t))
-         (t
-          (let ((elem head))
-            (cond
-             ((and (consp elem) (nelisp--bq-comma-at-p (car elem)))
-              (if (= level 1)
-                  (progn
-                    (setq has-splice t)
-                    (push (cons 'splice (cadr elem)) parts))
-                (push (cons 'list
-                             (list 'list (list 'quote '\,@)
-                                   (nelisp--bq-expand (cadr elem) (1- level))))
-                      parts)))
-             ((and (consp elem) (nelisp--bq-comma-p (car elem)))
-              (if (= level 1)
-                  (push (cons 'list (cadr elem)) parts)
-                (push (cons 'list
-                             (list 'list (list 'quote '\,)
-                                   (nelisp--bq-expand (cadr elem) (1- level))))
-                      parts)))
-             (t
-              (push (cons 'list (nelisp--bq-expand elem level)) parts))))
-          (setq cur (cdr cur))))))
-    (when (and (not done) (not (null cur)) (not (consp cur)))
-      (setq tail-expr (list 'quote cur)))
-    (nelisp--bq-build (nreverse parts) tail-expr has-splice)))
-
-(defun nelisp--bq-build (parts tail has-splice)
-  "Build the final form from PARTS list, TAIL expression, HAS-SPLICE flag."
-  (cond
-   ((and (null parts) (null tail))
-    (list 'quote nil))
-   ((null parts) tail)
-   ((and (not has-splice) (null tail))
-    (cons 'list (mapcar 'cdr parts)))
-   ((not has-splice)
-    (let ((acc tail) (rp (reverse parts)))
-      (while rp
-        (setq acc (list 'cons (cdr (car rp)) acc))
-        (setq rp (cdr rp)))
-      acc))
-   (t
-    (let ((args nil) (p parts))
-      (while p
-        (let ((kind (car (car p))) (val (cdr (car p))))
-          (cond
-           ((eq kind 'list) (push (list 'list val) args))
-           ((eq kind 'splice) (push val args))))
-        (setq p (cdr p)))
-      (setq args (nreverse args))
-      (when tail (setq args (append args (list tail))))
-      (cons 'append args)))))
-
-(defmacro backquote (form)
-  "Expand FORM as a quasiquoted template (NeLisp minimal subset).
-See `nelisp--bq-expand' for the supported shapes."
-  (nelisp--bq-expand form))
-
-(unless (fboundp 'zerop) (defun zerop (n) "Return t if N is zero." (= n 0)))
 
 ;; ---------------------------------------------------------------------------
 ;; Wave A21-fix (2026-05-24) — cl-case / cl-position / cl-set-difference /
@@ -2077,55 +2135,6 @@ Expands to a `let' + `cond'."
                   clauses)))
     (list 'let (list (list sym expr))
           (cons 'cond cond-clauses))))
-
-(defun cl-position (item seq &rest keys)
-  "Return the 0-based index of ITEM in SEQ (list), or nil if absent.
-NeLisp minimal: list-only.  Recognised KEYS:
-  :test FN   — predicate to use (default `equal').
-Unknown keys are silently ignored."
-  (let* ((test (or (let ((p keys) (v nil))
-                     (while p
-                       (when (eq (car p) :test)
-                         (setq v (car (cdr p))))
-                       (setq p (cdr (cdr p))))
-                     v)
-                   #'equal))
-         (i 0) (cur seq) (found nil))
-    (while (and cur (not found))
-      (if (funcall test (car cur) item)
-          (setq found i)
-        (setq i (1+ i))
-        (setq cur (cdr cur))))
-    found))
-
-;; fix/cl-set-ops-keywords: `:test'/`:test-not'/`:key' support, matching
-;; Emacs cl-seq.el semantics (default test `eql', `:key' applied to
-;; elements from BOTH lists).  Mirrors the copy in
-;; scripts/nelisp-stdlib-prelude.el -- see that file for the fuller
-;; cl-union/cl-intersection/cl-subsetp/cl-adjoin/cl-set-exclusive-or family;
-;; this file only ever needed cl-set-difference itself.
-(defun nelisp--cl-seq-test (kw)
-  (let ((test (plist-get kw :test)) (test-not (plist-get kw :test-not)))
-    (cond (test-not (lambda (a b) (not (funcall test-not a b))))
-          (test test)
-          (t #'eql))))
-(defun nelisp--cl-seq-member (item list kw)
-  (let ((pred (nelisp--cl-seq-test kw)) (key (plist-get kw :key)))
-    (catch 'nelisp--cl-seq-found
-      (dolist (x list)
-        (when (funcall pred item (if key (funcall key x) x))
-          (throw 'nelisp--cl-seq-found t)))
-      nil)))
-(defun cl-set-difference (list1 list2 &rest kw)
-  "Return elements of LIST1 not present in LIST2, preserving order.
-Keywords supported: `:test' `:test-not' `:key' (Emacs cl-seq.el semantics;
-default test `eql')."
-  (if (or (null list1) (null list2))
-      list1
-    (let ((key (plist-get kw :key)) (acc nil))
-      (dolist (x list1 (nreverse acc))
-        (unless (nelisp--cl-seq-member (if key (funcall key x) x) list2 kw)
-          (push x acc))))))
 
 ;; Doc segI (vendor-emacs-lisp), Phase 3: the guarded
 ;; `cl-count'/`cl-remove'/`cl-delete'/`cl-assoc'/`cl-sort'/

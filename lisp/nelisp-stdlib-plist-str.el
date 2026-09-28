@@ -53,10 +53,6 @@
 	  (while (cdr (cdr end)) (setq end (cdr (cdr end))))
 	  (setcdr (cdr end) (cons key (cons value nil))) plist)))))
 
-;; Kept in step with scripts/nelisp-stdlib-prelude.el, the copy the
-;; standalone runs; `make ns-gate' reports any drift.
-(defun string-empty-p (s) (string-equal s ""))
-
 ;; ---- macroexpand (Doc 47 self-host / compiler frontend) ----
 ;;
 ;; `defmacro' stores a macro as the function value `(macro CLOSURE)' (= a
@@ -426,32 +422,68 @@ Width, left-justify (-), zero-pad (0), sign (+/space) and string precision
 ;;   positive integer (1+pos) — STR1 > STR2 at that 1-based offset
 ;;   negative integer        — STR1 < STR2 at that offset
 ;; nil starts default to 0; nil ends default to (length STR).
-;; IGNORE-CASE non-nil downcases each char before comparing.
+;; IGNORE-CASE non-nil upcases each char before comparing (matching
+;; Emacs 31.1 src/fns.c Fcompare_strings, which upcases rather than
+;; downcases).  Bounds/type checks mirror Fcompare_strings too: STR1
+;; then STR2 (CHECK_STRING), STR1's START1/END1 pair validated in full
+;; (`nelisp--compare-strings-subarray', below) before START2/END2 is
+;; even looked at.  Kept in step with the standalone prelude's copy
+;; (scripts/nelisp-stdlib-prelude.el), fixed there 2026-09-28 after
+;; test/nelisp-string-equal-ignore-case-parity-test.el found the
+;; downcase/no-bounds-check divergence from host Emacs.
+(unless (fboundp 'nelisp--compare-strings-subarray)
+  (defun nelisp--compare-strings-subarray (str start end size)
+    "Validate START/END against SIZE the way Emacs's `validate_subarray' does.
+Return (FROM . TO).  STR, START, and END are used only for the
+`args-out-of-range' error data (Emacs 31.1 src/fns.c)."
+    (let (from to)
+      (cond
+       ((integerp start) (setq from (if (< start 0) (+ start size) start)))
+       ((null start) (setq from 0))
+       (t (signal 'wrong-type-argument (list 'integerp start))))
+      (cond
+       ((integerp end) (setq to (if (< end 0) (+ end size) end)))
+       ((null end) (setq to size))
+       (t (signal 'wrong-type-argument (list 'integerp end))))
+      (unless (and (<= 0 from) (<= from to) (<= to size))
+        (signal 'args-out-of-range (list str start end)))
+      (cons from to))))
+
 (defun compare-strings (str1 start1 end1 str2 start2 end2 &optional ignore-case)
-  (let* ((s1 str1) (s2 str2)
-         (a (or start1 0))
-         (b (or end1 (length s1)))
-         (c (or start2 0))
-         (d (or end2 (length s2)))
-         (len1 (- b a))
-         (len2 (- d c))
-         (n (if (< len1 len2) len1 len2))
-         (i 0)
-         (result t))
-    (while (and (< i n) (eq result t))
-      (let* ((ch1 (aref s1 (+ a i)))
-             (ch2 (aref s2 (+ c i)))
-             (k1 (if ignore-case (downcase ch1) ch1))
-             (k2 (if ignore-case (downcase ch2) ch2)))
-        (cond
-         ((< k1 k2) (setq result (- (1+ i))))
-         ((> k1 k2) (setq result (1+ i)))
-         (t (setq i (1+ i))))))
-    (cond
-     ((not (eq result t)) result)
-     ((= len1 len2) t)
-     ((< len1 len2) (- (1+ n)))
-     (t (1+ n)))))
+  (nelisp--check-string str1)
+  (nelisp--check-string str2)
+  (let ((len1 (length str1))
+        (len2 (length str2)))
+    ;; Backward compatibility: silently bring a too-large positive END
+    ;; into range (mirrors the check in Fcompare_strings before it
+    ;; calls validate_subarray).
+    (when (and (integerp end1) (< len1 end1)) (setq end1 len1))
+    (when (and (integerp end2) (< len2 end2)) (setq end2 len2))
+    (let* ((range1 (nelisp--compare-strings-subarray str1 start1 end1 len1))
+           (a (car range1))
+           (b (cdr range1))
+           (range2 (nelisp--compare-strings-subarray str2 start2 end2 len2))
+           (c (car range2))
+           (d (cdr range2))
+           (n1 (- b a))
+           (n2 (- d c))
+           (n (if (< n1 n2) n1 n2))
+           (i 0)
+           (result t))
+      (while (and (< i n) (eq result t))
+        (let* ((ch1 (aref str1 (+ a i)))
+               (ch2 (aref str2 (+ c i)))
+               (k1 (if ignore-case (upcase ch1) ch1))
+               (k2 (if ignore-case (upcase ch2) ch2)))
+          (cond
+           ((< k1 k2) (setq result (- (1+ i))))
+           ((> k1 k2) (setq result (1+ i)))
+           (t (setq i (1+ i))))))
+      (cond
+       ((not (eq result t)) result)
+       ((= n1 n2) t)
+       ((< n1 n2) (- (1+ n)))
+       (t (1+ n))))))
 
 ;; Rust-min (2026-05-06): regexp-quote — pure char-by-char escape of
 ;; the GNU Emacs regex meta-charset.  Migrated from build-tool/src/
@@ -570,79 +602,14 @@ is no extension."
      ((= idx 0) (if period "" nil))
      (t (substring non (if period idx (1+ idx)))))))
 
-;; Rust-min (2026-05-06): string-trim family + string-prefix-p /
-;; string-suffix-p — pure string slicing.  Migrated from
-;; build-tool/src/eval/builtins.rs.
+;; Rust-min (2026-05-06): shared whitespace predicate for string splitting
+;; and numeric parsing; the trim and prefix/suffix helpers come from GNU.
 
 (defun nelisp-stdlib--whitespace-p (ch)
   "Return non-nil when CH (= integer codepoint) is ASCII whitespace.
-Matches the Emacs default whitespace class for `string-trim'."
+Shared by string splitting and numeric parsing."
   (or (eq ch ?\s) (eq ch ?\t) (eq ch ?\n) (eq ch ?\r)
       (eq ch ?\f) (eq ch 11)))                ; 11 = ?\v
-
-(defun string-trim-left (s &optional _regexp)
-  "Strip leading whitespace from S.  REGEXP arg accepted for API
-parity but ignored — use the polyfill in `replace-regexp-in-string'
-when a custom pattern is needed."
-  (let ((i 0)
-        (n (length s)))
-    (while (and (< i n) (nelisp-stdlib--whitespace-p (aref s i)))
-      (setq i (1+ i)))
-    (if (= i 0) s (substring s i))))
-
-(defun string-trim-right (s &optional _regexp)
-  "Strip trailing whitespace from S."
-  (let ((n (length s))
-        (i (length s)))
-    (while (and (> i 0) (nelisp-stdlib--whitespace-p (aref s (1- i))))
-      (setq i (1- i)))
-    (if (= i n) s (substring s 0 i))))
-
-(defun string-trim (s &optional _trim-left _trim-right)
-  "Strip leading and trailing whitespace from S."
-  (string-trim-left (string-trim-right s)))
-
-(defun string-prefix-p (prefix s &optional ignore-case)
-  "Return non-nil when S starts with PREFIX.
-IGNORE-CASE non-nil → case-insensitive comparison."
-  (let ((plen (length prefix))
-        (slen (length s)))
-    (if (> plen slen)
-        nil
-      (eq t (compare-strings prefix 0 plen s 0 plen ignore-case)))))
-
-(defun string-suffix-p (suffix s &optional ignore-case)
-  "Return non-nil when S ends with SUFFIX.
-IGNORE-CASE non-nil → case-insensitive comparison."
-  (let* ((suflen (length suffix))
-         (slen (length s))
-         (start (- slen suflen)))
-    (if (< start 0)
-        nil
-      (eq t (compare-strings suffix 0 suflen s start slen ignore-case)))))
-
-;; Rust-min (2026-05-06 batch 3): delete-dups / string-search /
-;; mapconcat — pure-elisp implementations.  Migrated from
-;; build-tool/src/eval/builtins.rs `bi_delete_dups' / `bi_string_search'
-;; / `bi_mapconcat'.
-
-(defun delete-dups (list)
-  "Return LIST with duplicate elements removed (`equal' test).
-First occurrence is kept; subsequent duplicates are dropped.  Pure
-(= does NOT mutate LIST destructively, unlike host Emacs)."
-  (let ((acc nil)
-        (cur list))
-    (while cur
-      (let ((elt (car cur))
-            (found nil)
-            (a acc))
-        (while (and a (not found))
-          (when (equal (car a) elt) (setq found t))
-          (setq a (cdr a)))
-        (unless found
-          (setq acc (cons elt acc))))
-      (setq cur (cdr cur)))
-    (nreverse acc)))
 
 (defun string-search (needle haystack &optional from)
   "Return the index of the first occurrence of NEEDLE in HAYSTACK at
@@ -959,32 +926,6 @@ loop for the exponent (= no `expt' / `float' primitive needed)."
          ;; Pure integer.
          ((> int-digits 0) (* sign int-part))
          (t 0))))))
-
-;; Rust-min (2026-05-06 batch 4): copy-tree + sort.
-;;
-;; This definition is the canonical one: `scripts/nelisp-stdlib-prelude.el'
-;; carries the same text (guarded by `unless (fboundp 'copy-tree)') rather
-;; than a separate implementation -- a bridge stub there once ignored VECP
-;; (fix/copy-tree-vecp), so keep the two in sync if this changes again.
-
-(defun copy-tree (tree &optional vecp)
-  "Return a deep copy of TREE.  Conses are recursively copied; non-
-cons leaves are returned unchanged.  When VECP is non-nil, vectors
-inside TREE are also copied recursively (= matches the host Emacs
-contract)."
-  (cond
-   ((consp tree)
-    (cons (copy-tree (car tree) vecp)
-          (copy-tree (cdr tree) vecp)))
-   ((and vecp (vectorp tree))
-    (let* ((n (length tree))
-           (out (make-vector n nil))
-           (i 0))
-      (while (< i n)
-        (aset out i (copy-tree (aref tree i) vecp))
-        (setq i (1+ i)))
-      out))
-   (t tree)))
 
 (defun nelisp-stdlib--sort-merge (a b pred)
   "Stable merge of two sorted lists A and B under PRED."

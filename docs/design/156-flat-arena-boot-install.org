@@ -25,6 +25,22 @@
 #+STATUS:   fboundp org-mode / commandp org-mode are now t in BOTH replay and cold-boot columns
 #+STATUS:   under the DEFAULT (fast) prelude — no gate-prelude fallback needed. See §7 "v2
 #+STATUS:   re-attempt".
+#+STATUS: SECURITY FIX (2026-09-28) — the fixed, world-writable default marker path
+#+STATUS:   (=/tmp/nelisp-cold-image.bin=, =nl_cold_marker_cpath=) is REMOVED.  Every
+#+STATUS:   standalone process used to probe that path unconditionally at startup with no
+#+STATUS:   validation of anything it read; any local process able to write it could change
+#+STATUS:   what an unrelated =nelisp= process loaded, and the unchecked relocation table gave
+#+STATUS:   such a file an arbitrary-offset pointer WRITE relative to a real mmap'd address.
+#+STATUS:   Cold-load is now EXPLICIT-ONLY: it runs only via the pre-existing
+#+STATUS:   =--cold-load-from PATH= flag (Increment 2, §"Increment 2" below), which
+#+STATUS:   =scripts/cold-image-org-e2e.sh= already used exclusively — the verified E2E
+#+STATUS:   workflow above is unaffected.  =nl_cold_load_arena=/=nl_cold_overwrite_globals=
+#+STATUS:   now also validate the header (magic + SLEN/ISZ/TLEN bounds,
+#+STATUS:   =nl_cold_header_invalid_p=) and every relocation-table entry
+#+STATUS:   (=nl_cold_reloc_table_valid_p=) before trusting them, printing a stderr
+#+STATUS:   diagnostic and falling back to normal boot on rejection instead of trusting an
+#+STATUS:   unvalidated header.  See §3.2 below and
+#+STATUS:   test/standalone-cold-image-security-smoke.sh.
 #+BRANCH: spike/flat-arena-boot-install
 
 * 0. Purpose
@@ -129,20 +145,30 @@ Key invariant: the baked prelude must NOT be re-installed on top of the image
    strings ("hello"), conses ((1 . 2)), symbol lists ((a b c)) all survive; an
    unbound symbol misses → nil.  *Relocation correctness for arbitrary reachable
    state is now proven*; only the real-arena INSTALL (§3) remains.
-2. *Real-arena install* — *DONE 2026-06-23, via the boot-wiring MARKER path (not the
-   planned =exec-arena-image= driver mode)*.  The spike owner's boot-wiring already
-   ships the real-arena install as a BOOT step gated by marker-file existence:
-   - =nl_cold_load_arena= (build script ~10461): if =(nl_cold_marker_cpath)=
-     (=/tmp/nelisp-cold-image.bin=) opens, loads the chunk-0 region into the REAL
-     arena data area (=base+1024=) + interned region (=base+832=), applies
+2. *Real-arena install* — *DONE 2026-06-23, via the boot-wiring path (not the
+   planned =exec-arena-image= driver mode)*.  The spike owner's boot-wiring ships
+   the real-arena install as a BOOT step, gated EXPLICITLY by
+   =--cold-load-from PATH= since the 2026-09-28 security fix (no default marker
+   file any more — see the SECURITY FIX status entry above):
+   - =nl_cold_load_arena=: OVERRIDE==0 (no =--cold-load-from= flag) is a no-op,
+     returning -1 with no filesystem access at all.  A non-zero OVERRIDE (the
+     flag's C-string path) is opened, its header validated
+     (=nl_cold_header_invalid_p=: magic + SLEN/ISZ/TLEN bounds) and, once the
+     table is read, every relocation-table entry bounds-checked
+     (=nl_cold_reloc_table_valid_p=) before any of it is trusted; a rejection
+     prints a stderr diagnostic and returns -1 (falls through to normal boot)
+     instead of proceeding.  On success it loads the chunk-0 region into the
+     REAL arena data area (=base+1024=) + interned region (=base+832=), applies
      =nl_cold_reloc= (table) + =nl_cold_reloc_intern= (interned base-delta), zeroes
      tail, clears marks, seeds the cursor (=base+0 = 1024+slen=, =base+840 = ib+isz=),
      pushes the next GC far, returns 1.  Runs BEFORE the boot alloc.
-   - =nl_cold_overwrite_globals= (~10502): installs the globals Record into the
+   - =nl_cold_overwrite_globals=: mirrors the OVERRIDE==0 no-op and re-validates
+     magic + GOFF bounds independently (defense against the file changing
+     between the two opens) before installing the globals Record into the
      EvalCtx (env+8 = tag-12 box at =ds+goff=).
-   - Driver boot (~10456): =(_cl (nl_cold_load_arena))= then
-     =(if (< _cl 0) <normal-boot> (nl_cold_overwrite_globals globals))=; the cold
-     path SKIPS the baked prelude (the image already carries user state).
+   - Driver boot: =(_cl (nl_cold_load_arena cold_override))= then
+     =(if (< _cl 0) <normal-boot> (nl_cold_overwrite_globals globals cold_override))=;
+     the cold path SKIPS the baked prelude (the image already carries user state).
    *VERIFIED end-to-end* on =target/nelisp= (2026-06-23): process-1
    =(defun cf (x) (* x x)) (set 'k 5) (set 'lst '(10 20 30))
    (nelisp--arena-dump-image-to-file MARKER)= (image 47.9 MB) → process-2 boots
@@ -410,12 +436,14 @@ code.
 
 Also adds a =--cold-load-from PATH= CLI flag so callers/tests can cold-load
 an explicit image without clobbering the fixed
-=/tmp/nelisp-cold-image.bin= marker file.  This required moving argv parsing
-earlier in =driver='s =let*=, ahead of the cold-load gate, so the gate can
-recognize the flag before deciding whether/what to cold-load.  =PATH=
-consumes the arg2 slot, so only arg3 remains free for
-=--no-prompt=/=--no-print= (one fewer slot than plain =--repl=); the branch
-otherwise runs the identical REPL-loop body.
+=/tmp/nelisp-cold-image.bin= marker file that existed at the time (2026-09-28:
+that default marker file is REMOVED — see the SECURITY FIX status entry near
+the top of this doc; =--cold-load-from PATH= is now the ONLY way to
+cold-load).  This required moving argv parsing earlier in =driver='s =let*=,
+ahead of the cold-load gate, so the gate can recognize the flag before
+deciding whether/what to cold-load.  =PATH= consumes the arg2 slot, so only
+arg3 remains free for =--no-prompt=/=--no-print= (one fewer slot than plain
+=--repl=); the branch otherwise runs the identical REPL-loop body.
 
 ** Increment 3 (2026-07-04): reproducible E2E harness + verification
 

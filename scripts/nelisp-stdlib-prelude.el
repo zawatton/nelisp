@@ -1,10 +1,46 @@
 ;;; nelisp-stdlib-prelude.el --- stdlib prelude for the standalone NeLisp reader  -*- lexical-binding: nil; -*-
+(defvar features nil "List of provided features.")
+;; These raw-fset helpers precede every `defun' in the prelude.  The standalone
+;; special-form handlers call them so explicit autoload loads can log history;
+;; direct calls to raw `fset' remain untracked.
+(defvar nelisp--autoload-queue nil
+  "Dynamic transaction log used only by explicit `autoload-do-load'.")
+(fset 'nl-afset
+      (lambda (symbol definition)
+        (when (and nelisp--autoload-queue (fboundp symbol))
+          (setq nelisp--autoload-queue
+                (cons (list 'function symbol (symbol-function symbol))
+                      nelisp--autoload-queue)))
+        (fset symbol definition)
+        symbol))
+(fset 'provide
+      (lambda (feature)
+        (unless (memq feature features)
+          (when nelisp--autoload-queue
+            (setq nelisp--autoload-queue
+                  (cons (list 'features features)
+                        nelisp--autoload-queue)))
+          (setq features (cons feature features)))
+        feature))
+;; Mirrors GNU Emacs 31.1 src/doc.c:Fdocumentation_stringp at commit
+;; a360712c9d272d950d8d8255ef74570f7e90b7d9 (SHA-256
+;; 687aaa28c154570e8ac2a85ce4ecccbac48c60a2c32102f1d89c3f295dd11861).
+;; Standalone has no linked copy of this subr, so preserve its exact shapes.
+(defun documentation-stringp (object)
+  "Return non-nil if OBJECT is a well-formed docstring object.
+OBJECT can be a string or an external documentation reference."
+  (or (stringp object)
+      (fixnump object)
+      (and (consp object)
+           (stringp (car object))
+           (fixnump (cdr object)))))
 ;;
 ;; A loadable .el that bootstraps `defmacro' + the core macros (when/unless/cond/
 ;; and/or/prog1/prog2/push/pop/dolist/defun), the list library (nth/reverse/
 ;; append/cXXr/...), search (memq/member/assq/assoc), HOF (mapcar/mapc), plist
-;; (plist-get/-put/-member), copy-sequence and the backquote machinery
-;; (nelisp--bq-* + the `backquote' macro).  Every form here LOADS AS-IS on the
+;; (plist-get/-put/-member), copy-sequence, and GNU Emacs's vendored backquote
+;; provider (loaded once symbol plists are available).  Every form here LOADS
+;; AS-IS on the
 ;; standalone NeLisp reader binary once the Wave-1 (B) breadth primitives exist
 ;; (consp/eq/car/cdr/setcar/setcdr/symbol-name/vector ops/equal/...).
 ;;
@@ -33,6 +69,7 @@
 ;; `defun', `defmacro' and `defsubst' all reach this, so every function
 ;; whose body was a bare string literal -- the accessor-returning-a-constant
 ;; shape -- silently returned nil.
+
 (fset 'nelisp--strip-body-declarations
       (lambda (body)
         (let ((cur body))
@@ -45,24 +82,43 @@
 
 (fset 'defmacro
       (cons 'macro
-	    (cons
-	     (lambda (name args &rest body)
+	    (lambda (name args &rest body)
 	       (let*
 		   ((real-body
                      (nelisp--strip-body-declarations body))
                     (lambda-form (cons 'lambda (cons args real-body)))
 		    (qname (cons 'quote (cons name nil)))
-		    (inner-cons
-		     (cons 'cons (cons lambda-form (cons nil nil))))
 		    (outer-cons
 		     (cons 'cons
 			   (cons (cons 'quote (cons 'macro nil))
-				 (cons inner-cons nil)))))
-		 (cons 'progn
-		       (cons
-			(cons 'fset (cons qname (cons outer-cons nil)))
-			(cons qname nil)))))
-	     nil)))
+				 (cons lambda-form nil))))
+                    (def
+                     (cons 'progn
+                           (cons
+                            (cons 'fset (cons qname (cons outer-cons nil)))
+                            (cons qname nil))))
+                    ;; A `declare' clause is processed, not dropped: see
+                    ;; `nelisp--declaration-forms' below.  The native
+                    ;; `defmacro' fast path hands every form that carries a
+                    ;; `declare' to this macro.
+                    (decls (if (fboundp 'nelisp--declaration-forms)
+                               (nelisp--declaration-forms
+                                name args body 'macro))))
+                 (if decls (cons 'prog1 (cons def decls)) def)))
+		))
+
+;; The native evaluator dispatches `defun' and `defmacro' before it looks
+;; at their function cells.  It keeps that fast path only while the cell is
+;; `eq' to the definition recorded in the function cell of a marker symbol
+;; (`nelisp--fd-macro' here, `nelisp--fd-defun' for `defun'): a later
+;; `defalias' of either definer (genuine byte-run.el, an advice, anything)
+;; leaves the marker holding the old object, the native check fails, and
+;; the form is expanded by the macro that is really installed, as in GNU
+;; Emacs.  A body with a `declare' clause always goes to the installed
+;; macro.  A marker cell rather than a property because `put' is defined
+;; much further down this file, and `symbol-function' of an unbound marker
+;; is plain nil, so the check can never signal.
+(fset 'nelisp--fd-macro (symbol-function 'defmacro))
 
 ;; The expansions carried a trailing nil arm (`when') and wrapped the body
 ;; in `progn' (`unless') where Emacs does neither.  The value is the same
@@ -125,12 +181,15 @@
 ;; Byte-identical to the lisp/nelisp-stdlib.el copy, so `make ns-gate'
 ;; polices the two rather than letting them drift.  It was void in the
 ;; standalone, so (sequencep 0) was `void-function' where Emacs answers nil.
-;; This runtime has one global intern table and no first-class obarray
-;; object, so nothing here can BE an obarray -- but Emacs still type-checks
-;; the argument, and answering for a vector hid the fact that OBARRAY is
-;; ignored (recorded in tools/partial-accepted.txt).
-(unless (fboundp 'obarrayp)
-  (defun obarrayp (_x) nil))
+;; Obarrays are records with a private marker and a validated native table.
+(defvar nelisp--obarray-marker (make-symbol "nelisp-obarray-marker"))
+(defun obarrayp (object)
+  (and (recordp object)
+       (= (nelisp--record-length object) 3)
+       (eq (nelisp--record-type object) 'obarray)
+       (eq (nelisp--record-ref object 0) nelisp--obarray-marker)
+       (hash-table-p (nelisp--record-ref object 1))
+       (eq (hash-table-test (nelisp--record-ref object 1)) 'equal)))
 ;; `intern' takes an OBARRAY it cannot honour -- one global table here --
 ;; but Emacs type-checks the argument, and accepting anything hid the fact
 ;; that it is ignored (recorded in tools/partial-accepted.txt).
@@ -142,6 +201,34 @@
 ;; corpus and consumers name it.
 (unless (fboundp 'nelisp--native-intern)
   (defalias 'nelisp--native-intern (symbol-function 'intern)))
+(defun obarray-make (&rest args)
+  (when (> (length args) 1)
+    (signal 'wrong-number-of-arguments (list 'obarray-make (length args))))
+  (when (and args (car args)
+             (or (not (integerp (car args))) (< (car args) 0)))
+    (signal 'wrong-type-argument (list 'wholenump (car args))))
+  (nelisp--make-record 'obarray nelisp--obarray-marker
+                       (make-hash-table :test 'equal)))
+(defun nelisp--obarray-table (obarray)
+  (unless (obarrayp obarray)
+    (signal 'wrong-type-argument (list 'obarrayp obarray)))
+  (nelisp--record-ref obarray 1))
+(defun nelisp--obarray-name (name)
+  (cond ((stringp name) name)
+        ((symbolp name) (symbol-name name))
+        (t (signal 'wrong-type-argument (list 'stringp name)))))
+(defun nelisp--obarray-intern (name obarray)
+  (unless (stringp name)
+    (signal 'wrong-type-argument (list 'stringp name)))
+  (let* ((table (nelisp--obarray-table obarray))
+         (symbol (gethash name table)))
+    (or symbol
+        (let ((fresh (make-symbol name)))
+          (puthash name fresh table)
+          fresh))))
+(defun intern (name &optional obarray)
+  (if obarray (nelisp--obarray-intern name obarray)
+    (nelisp--native-intern name)))
 ;; Absent, so a caller got `void-function' -- which reads as "the runtime
 ;; cannot do this" rather than "nobody wrote it yet".  There are no buffers
 ;; or byte-compiler here, so these answer nil and signal on a wrong type,
@@ -449,24 +536,51 @@ times, so `(exp -1.0e6)' took ~1.44e6 iterations and `(exp -1.0e9)' ~1.44e9
             (setq n (1+ n)))
           (nelisp--scale-pow2 (+ (car sum) (cdr sum)) k)))))))
 ;; This stopped being a no-buffers stub on 2026-09-19 (Doc 204 gave the
-;; runtime real buffers).  There are no text properties in this runtime,
-;; so `buffer-substring-no-properties' and `buffer-substring' coincide --
-;; the two type checks below still run first, same as Emacs.
+;; runtime real buffers).  Doc 210 gave buffers and strings real text
+;; properties, so this can no longer coincide with `buffer-substring' --
+;; it calls the low-level, property-oblivious `nelisp-buffer-substring'
+;; directly instead, the same way `buffer-substring' itself did before
+;; Doc 210 taught that wrapper to also attach properties to its result.
 (unless (fboundp 'buffer-substring-no-properties)
   (defun buffer-substring-no-properties (start end)
     (unless (integerp start)
       (signal 'wrong-type-argument (list 'integer-or-marker-p start)))
     (unless (integerp end)
       (signal 'wrong-type-argument (list 'integer-or-marker-p end)))
-    (buffer-substring start end)))
-;; Same reasoning: no text properties, so this is `substring'.
+    (let* ((b nelisp--current-buffer)
+           (lo (nelisp-point-min b))
+           (hi (nelisp-point-max b))
+           (s (min start end))
+           (e (max start end)))
+      (when (or (< s lo) (> e hi))
+        (signal 'args-out-of-range (list b start end)))
+      (nelisp-buffer-substring s e b))))
+;; `substring' always allocates a fresh string (native arm, like real
+;; Emacs), never `eq' to its input, so the result here is never a key
+;; already sitting in `nelisp--tp-string-properties' -- no properties to
+;; strip, even though strings can carry them since Doc 210.
 (unless (fboundp 'substring-no-properties)
   (defun substring-no-properties (string &optional from to)
     (substring string from to)))
-;; No text properties in this runtime, so this is `equal' -- and the same
-;; `defalias' the lisp/ mirror uses, so `make ns-gate' sees one definition.
+;; Doc 210: strings can carry properties now, so this can no longer be
+;; plain `equal' -- it additionally requires the same property plist
+;; (compared with `equal', not `eq': this is the user-facing predicate,
+;; not the interval-merge internals) at every position.
 (unless (fboundp 'equal-including-properties)
-  (defalias 'equal-including-properties 'equal))
+  (defun equal-including-properties (a b)
+    (and (equal a b)
+         (if (and (stringp a) (stringp b))
+             (let ((la (nelisp--tp-get-intervals a))
+                   (lb (nelisp--tp-get-intervals b)))
+               (or (and (null la) (null lb))
+                   (let ((n (length a)) (i 0) (ok t))
+                     (while (and ok (< i n))
+                       (unless (equal (nelisp--tp-plist-at i la)
+                                       (nelisp--tp-plist-at i lb))
+                         (setq ok nil))
+                       (setq i (1+ i)))
+                     ok)))
+           t))))
 (unless (fboundp 'locate-file)
   (defun locate-file (filename path &optional suffixes _predicate)
     "Find FILENAME in PATH, trying each of SUFFIXES; nil when not found."
@@ -648,15 +762,168 @@ times, so `(exp -1.0e6)' took ~1.44e6 iterations and `(exp -1.0e9)' ~1.44e9
             (cons result-form nil))))))
 
 (defmacro defun (name args &rest body)
-  "(defun NAME ARGS BODY...) → (progn (fset 'NAME (lambda ARGS BODY...)) 'NAME).\nUnlike Rust `sf_defun' which stores the raw `(lambda ...)' form\nunmodified, the elisp expansion goes through evaluation of\n`(lambda ARGS BODY...)' = produces a closure with the current lexical\nenv captured.  For top-level defun the captured env is empty so\nsemantics match Rust; defuns nested inside `let' would receive a\nnon-empty captured env in elisp but the bare form in Rust — this is\nan intentional improvement, not a regression."
+  "(defun NAME ARGS BODY...) installs a closure and returns NAME.\nThe standalone reader routes this expansion through `defalias' so\nexplicit autoload loads can preserve prior function definitions."
   (let*
       ((real-body
         (nelisp--strip-body-declarations body))
        (lambda-form (cons 'lambda (cons args real-body)))
-       (qname (cons 'quote (cons name nil))))
-    (cons 'progn
-	  (cons (cons 'fset (cons qname (cons lambda-form nil)))
-		(cons qname nil)))))
+       (qname (cons 'quote (cons name nil)))
+       (def (cons 'defalias
+                  (cons qname (cons lambda-form nil))))
+       (decls (if (fboundp 'nelisp--declaration-forms)
+                  (nelisp--declaration-forms name args body 'defun))))
+    (if decls (cons 'prog1 (cons def decls)) def)))
+(fset 'nelisp--fd-defun (symbol-function 'defun))
+
+;; `declare' semantics for the bootstrap definers above, following GNU
+;; byte-run.el's `byte-run--parse-declarations': each (PROP . VALUES)
+;; clause of the first `declare' among BODY's leading docstring/declare
+;; forms is looked up in `defun-declarations-alist' (or
+;; `macro-declarations-alist' for a macro) and its handler, called with
+;; NAME, ARGLIST and VALUES, returns the form that records the property.
+;; Unknown properties are ignored (Emacs only warns about them).
+;;
+;; Until genuine byte-run.el has loaded those two variables are unbound, so
+;; the bootstrap tables below stand in for them.  Their handlers produce the
+;; same properties as byte-run.el's, writing them with `put' (what
+;; `function-put' does for a symbol) because `function-put' itself is not
+;; defined yet this early.  `put' in turn only exists once the symbol-plist
+;; section further down has loaded, so the forms of a `declare' evaluated
+;; before that point are queued on `nelisp--pending-declarations' and run
+;; right after `put' is defined.
+;; `gv-expander' / `gv-setter' are not here: GNU gv.el pushes those
+;; handlers onto `defun-declarations-alist' when it loads.
+(defun nelisp--declaration-put (prop)
+  "Return a declaration handler recording its single value under PROP."
+  (list 'lambda '(f _args val)
+        (list 'list ''put '(list 'quote f) (list 'quote (list 'quote prop))
+              '(list 'quote val))))
+
+(defvar nelisp--bootstrap-defun-declarations
+  (list
+   (list 'advertised-calling-convention
+         (lambda (f _args arglist when)
+           (if (fboundp 'set-advertised-calling-convention)
+               (list 'set-advertised-calling-convention
+                     (list 'quote f) (list 'quote arglist) (list 'quote when)))))
+   (list 'obsolete
+         (lambda (f _args new-name when)
+           (list 'make-obsolete (list 'quote f) (list 'quote new-name) when)))
+   (list 'interactive-only (nelisp--declaration-put 'interactive-only))
+   (list 'pure (nelisp--declaration-put 'pure))
+   (list 'side-effect-free (nelisp--declaration-put 'side-effect-free))
+   (list 'important-return-value
+         (nelisp--declaration-put 'important-return-value))
+   (list 'compiler-macro
+         (lambda (f args compiler-function)
+           (if (not (and (consp compiler-function)
+                         (eq (car compiler-function) 'lambda)))
+               (list 'eval-and-compile
+                     (list 'put (list 'quote f) ''compiler-macro
+                           (list 'function compiler-function)))
+             (let ((cfname (intern (concat (symbol-name f) "--anon-cmacro")))
+                   (data (cdr compiler-function)))
+               (list 'progn
+                     (list 'eval-and-compile
+                           (list 'put (list 'quote f) ''compiler-macro
+                                 (list 'function cfname)))
+                     :autoload-end
+                     (list 'eval-and-compile
+                           (cons 'defun
+                                 (cons cfname
+                                       (cons (append (car data) args)
+                                             (cons (cons 'ignore
+                                                         (delq '&rest
+                                                               (delq '&optional
+                                                                     (copy-sequence args))))
+                                                   (cdr data)))))))))))
+   (list 'doc-string
+         (lambda (f _args pos)
+           (list 'put (list 'quote f) ''doc-string-elt
+                 (if (numberp pos) pos (list 'quote pos)))))
+   (list 'indent
+         (lambda (f _args val)
+           (list 'put (list 'quote f) ''lisp-indent-function
+                 (if (numberp val) val (list 'quote val)))))
+   (list 'speed (nelisp--declaration-put 'speed))
+   (list 'safety (nelisp--declaration-put 'safety))
+   (list 'completion
+         (lambda (f _args val)
+           (list 'put (list 'quote f) ''completion-predicate
+                 (list 'function val))))
+   (list 'modes
+         (lambda (f _args &rest val)
+           (list 'put (list 'quote f) ''command-modes (list 'quote val)))))
+  "Bootstrap stand-in for `defun-declarations-alist' (see above).")
+
+(defvar nelisp--bootstrap-macro-declarations
+  (append
+   (list
+    (list 'debug
+          (lambda (name _args spec)
+            (list 'progn :autoload-end
+                  (list 'put (list 'quote name)
+                        ''edebug-form-spec (list 'quote spec)))))
+    (list 'autoload-macro (nelisp--declaration-put 'autoload-macro))
+    (list 'indent
+          (lambda (f _args val)
+            (list 'progn :autoload-end
+                  (list 'put (list 'quote f) ''lisp-indent-function
+                        (if (numberp val) val (list 'quote val))))))
+    (list 'no-font-lock-keyword
+          (nelisp--declaration-put 'no-font-lock-keyword)))
+   nelisp--bootstrap-defun-declarations)
+  "Bootstrap stand-in for `macro-declarations-alist' (see above).")
+
+(defun nelisp--declaration-forms (name arglist body kind)
+  "Return the property-setting forms of BODY's `declare' clause, or nil.
+KIND is `defun' or `macro' and selects the declarations table.  The
+result is non-nil whenever BODY has a `declare' form, as in GNU
+`defun', whose expansion is then (prog1 DEFINITION FORMS...)."
+  (let ((cur body) (decl nil))
+    ;; Same leading-run scan as `nelisp--strip-body-declarations'.
+    (while (and cur (not decl)
+                (or (and (stringp (car cur)) (cdr cur))
+                    (and (consp (car cur))
+                         (eq (car (car cur)) 'declare))))
+      (if (consp (car cur)) (setq decl (car cur)))
+      (setq cur (cdr cur)))
+    (if decl
+        (let ((alist (if (eq kind 'macro)
+                         (if (boundp 'macro-declarations-alist)
+                             macro-declarations-alist
+                           nelisp--bootstrap-macro-declarations)
+                       (if (boundp 'defun-declarations-alist)
+                           defun-declarations-alist
+                         nelisp--bootstrap-defun-declarations)))
+              (clauses (cdr decl))
+              (forms nil))
+          (while clauses
+            (let* ((x (car clauses))
+                   (f (if (consp x) (cdr (assq (car x) alist)))))
+              (if f
+                  (setq forms (cons (apply (car f) name arglist (cdr x))
+                                    forms))))
+            (setq clauses (cdr clauses)))
+          ;; Reverse by hand: `nreverse' is defined further down.
+          (let ((rev forms))
+            (setq forms nil)
+            (while rev
+              (setq forms (cons (car rev) forms)
+                    rev (cdr rev))))
+          (if (fboundp 'put)
+              ;; GNU returns the (possibly empty) action list; keep a
+              ;; non-nil marker so `(declare)' alone still yields a
+              ;; `prog1' shape.
+              (or forms (list nil))
+            (list (list 'setq 'nelisp--pending-declarations
+                        (list 'cons
+                              (list 'quote (cons 'progn forms))
+                              'nelisp--pending-declarations))))))))
+
+(defvar nelisp--pending-declarations nil
+  "`declare' forms evaluated before `put' existed, newest first.
+Run and cleared right after the symbol-plist section defines `put'.")
 
 (defmacro declare-function (_fn _file &rest _args)
   "No-op byte-compiler hint stub for standalone loads."
@@ -722,22 +989,42 @@ records obsolescence via `make-obsolete-variable'; installs no warning."
 
 (unless (fboundp 'autoload)
   (defun autoload (function file &optional docstring interactive type)
-    "NeLisp standalone stub for Emacs's `autoload'.
-Real Emacs defers FUNCTION's definition until first call, then loads
-FILE.  This runtime does not implement on-demand loading: if FUNCTION
-is not already bound, this binds it to a closure that signals a clear
-error naming FILE if it is ever actually called, so a forward
-reference some other, unloaded file was going to satisfy fails loudly
-instead of silently doing nothing.  Vendored top-level `autoload'
-calls are almost always forward references to sibling files this
-segment does not load, so this is safe as a load-time no-op."
-    (ignore docstring interactive type)
+    "Register FUNCTION as an Emacs-compatible deferred autoload object."
     (unless (fboundp function)
-      (fset function
-            (lambda (&rest _args)
-              (error "`%s' is autoloaded from %S, which the standalone runtime does not load on demand"
-                     function file))))
+      (fset function (list 'autoload file docstring interactive type)))
     function))
+
+(defun autoload-do-load (autoload &optional name macro-only)
+  "Load AUTOLOAD transactionally and return NAME's replacement function.
+Only explicit calls use this transaction path; ordinary `load' remains
+incremental and non-transactional."
+  (if (not (autoloadp autoload))
+      autoload
+    (let ((kind (nth 4 autoload)))
+      (if (and (eq macro-only 'macro)
+               (not (memq kind '(t macro))))
+          autoload
+        (let ((nelisp--autoload-queue t)
+              (load-error nil))
+          (condition-case err
+              (load (nth 1 autoload))
+            (error (setq load-error err)))
+          (if load-error
+              (progn
+                (while (consp nelisp--autoload-queue)
+                  (let ((event (car nelisp--autoload-queue)))
+                    (if (eq (car event) 'function)
+                        (fset (nth 1 event) (nth 2 event))
+                      (setq features (nth 1 event))))
+                  (setq nelisp--autoload-queue
+                        (cdr nelisp--autoload-queue)))
+                (signal (car load-error) (cdr load-error)))
+            (if (null name)
+                nil
+              (if (equal autoload (symbol-function name))
+                  (error "Autoloading file %s failed to define function %s"
+                         (nth 1 autoload) name)
+                (symbol-function name)))))))))
 
 (unless (fboundp 'pcase-defmacro)
   (defmacro pcase-defmacro (name args &rest body)
@@ -772,15 +1059,6 @@ the >= 128 branch reproduces Emacs's raw-byte numbering for
 round-tripping, but nothing in this runtime currently decodes it back
 out to a byte, unlike real Emacs."
     (if (< ch 128) ch (+ ch #x3FFF00))))
-
-(unless (fboundp 'fixnump)
-  (defun fixnump (object)
-    "NeLisp standalone stub for Emacs's C primitive `fixnump'.
-Real Emacs answers t for an immediate (non-bignum) integer.  This
-runtime has no bignum representation at all (see `bignump', already
-native here and always nil) -- every integer is what real Emacs would
-call a fixnum -- so this is exactly `integerp'."
-    (integerp object)))
 
 ;; Doc segI (vendor-emacs-lisp) follow-up: `decoded-time-SLOT' accessors
 ;; for the `decoded-time' value vendored `calendar/time-date.el' reads
@@ -882,23 +1160,34 @@ Read by the `nelisp--setf-1' clause that gives these accessors a working
     (puthash 'nelisp--special-variables t registry)
     registry))
 
-(defmacro defvar (name &rest args)
-  "Define NAME as a global variable, setting VALUE if unbound.
+;; `defvar' and `defconst' are GNU special forms, and the reader evaluates
+;; them natively (`nl_sf_defvar'/`nl_sf_defconst', dispatched by
+;; `nl_apply_special' before any function cell is consulted).  Their
+;; bootstrap fallback macros are therefore installed only where the
+;; evaluator does not already treat the name as a special form: a macro
+;; cell here was dead for evaluation but visible to GNU macroexp.el's
+;; `macroexpand-1', which then expanded every `(defvar X)' into the
+;; fallback's `nelisp--declare-local-special' call -- so bytecomp.el never
+;; saw the declaration (`byte-compile-defvar'), and the functions it
+;; compiled bound file-local specials lexically.
+(unless (special-form-p 'defvar)
+  (defmacro defvar (name &rest args)
+    "Define NAME as a global variable, setting VALUE if unbound.
 With NO value form (`(defvar NAME)' forward declaration) NAME is only
 declared, NOT bound — matching Emacs `defvar' so a later
 `(defvar NAME VALUE)' still initializes it.  Detecting the zero-value
 form needs `&rest' (arity); `&optional value' cannot tell `(defvar X)'
 from `(defvar X nil)'."
-  (if args
-      (list 'progn
-            (list 'puthash (list 'quote name) t 'nelisp--special-variables)
-            (list 'if (list 'boundp (list 'quote name)) nil
-                  (list 'set (list 'quote name) (car args)))
-            (list 'quote name))
-    ;; Evaluate in the caller's lexical environment, without a Lisp wrapper
-    ;; call that would introduce a different declaration scope.
-    (list 'funcall '(quote (builtin nelisp--declare-local-special))
-          (list 'quote name))))
+    (if args
+        (list 'progn
+              (list 'puthash (list 'quote name) t 'nelisp--special-variables)
+              (list 'if (list 'boundp (list 'quote name)) nil
+                    (list 'set (list 'quote name) (car args)))
+              (list 'quote name))
+      ;; Evaluate in the caller's lexical environment, without a Lisp wrapper
+      ;; call that would introduce a different declaration scope.
+      (list 'funcall '(quote (builtin nelisp--declare-local-special))
+            (list 'quote name)))))
 
 (defmacro defvar-local (name &optional value docstring)
   "Alias for `defvar' in the standalone."
@@ -909,13 +1198,14 @@ from `(defvar X nil)'."
 (defvar default-directory ""
   "Current directory; preserve the native bootstrap value when present.")
 
-(defmacro defconst (name value &optional _docstring)
-  "Define NAME as a constant with VALUE in the standalone."
-  (list 'progn
-        (list 'puthash (list 'quote name) t 'nelisp--special-variables)
-        (list 'set (list 'quote name) value)
-        (list 'nelisp--env-globals-set-constant (list 'quote name) t)
-        (list 'quote name)))
+(unless (special-form-p 'defconst)
+  (defmacro defconst (name value &optional _docstring)
+    "Define NAME as a constant with VALUE in the standalone."
+    (list 'progn
+          (list 'puthash (list 'quote name) t 'nelisp--special-variables)
+          (list 'set (list 'quote name) value)
+          (list 'nelisp--env-globals-set-constant (list 'quote name) t)
+          (list 'quote name))))
 
 (defmacro defcustom (name value docstring &rest _options)
   "Standalone stub: behave like `defvar'."
@@ -1015,21 +1305,6 @@ from `(defvar X nil)'."
         (apply 'vector keep))))
    (t (signal 'wrong-type-argument (list 'sequencep seq)))))
 
-(defun delete-dups (list)
-  "Destructively remove duplicate elements from LIST using `equal'."
-  (let ((seen nil)
-        (tail list)
-        (prev nil))
-    (while tail
-      (if (member (car tail) seen)
-          (if prev
-              (setcdr prev (cdr tail))
-            (setq list (cdr tail)))
-        (setq seen (cons (car tail) seen))
-        (setq prev tail))
-      (setq tail (cdr tail)))
-    list))
-
 ;; Doc 143 (WIRE from lisp/nelisp-stdlib-plist-str.el): high-frequency string
 ;; primitives that were void in the reader runtime.  Low-dependency forms only.
 ;; The `t' arms fell through to `equal', so `(string-equal 5 5)' answered t
@@ -1043,8 +1318,6 @@ from `(defvar X nil)'."
                   ((symbolp b) (symbol-name b))
                   (t (signal 'wrong-type-argument (list 'stringp b))))))
     (equal sa sb)))
-
-(defun string= (a b) (string-equal a b))
 
 ;; `lsh' was missing entirely (void-function).  It is NOT `ash': a right
 ;; shift of a negative number fills with zeros rather than the sign bit, so
@@ -1126,7 +1399,47 @@ from `(defvar X nil)'."
         ;; handing the argument back made a string flow on as a "count".
         (t 1)))
 
-;; Doc 143 arithmetic (helper-free, via >/</- which are reader primitives).
+;; MIN/MAX need exact mixed integer/float comparison: the generic float bridge
+;; rounds bignums to binary64 before comparing them.
+(defun nelisp--maxmin-nan-p (number)
+  "Return non-nil when NUMBER is a NaN float."
+  (and (floatp number)
+       (let ((printed (format "%.0f" number)))
+         (or (string= printed "nan") (string= printed "-nan")))))
+
+(defun nelisp--maxmin-int-float-order (integer float)
+  "Compare INTEGER and FLOAT exactly; return -1, 0, 1, or `unordered'."
+  (let ((printed (format "%.0f" float)))
+    (cond
+     ((or (string= printed "nan") (string= printed "-nan")) 'unordered)
+     ((string= printed "inf") -1)
+     ((string= printed "-inf") 1)
+     ((or (>= float 9007199254740992.0)
+          (<= float -9007199254740992.0))
+      ;; At and beyond 2^53 every finite binary64 value is integral.
+      (let ((float-integer (string-to-number printed)))
+        (cond ((< integer float-integer) -1)
+              ((> integer float-integer) 1)
+              (t 0))))
+     ((> integer 9007199254740992) 1)
+     ((< integer -9007199254740992) -1)
+     ((< (float integer) float) -1)
+     ((> (float integer) float) 1)
+     (t 0))))
+
+(defun nelisp--maxmin-order (left right)
+  "Compare numeric LEFT and RIGHT without rounding bignums to floats."
+  (cond
+   ((and (integerp left) (floatp right))
+    (nelisp--maxmin-int-float-order left right))
+   ((and (floatp left) (integerp right))
+    (let ((order (nelisp--maxmin-int-float-order right left)))
+      (if (eq order 'unordered) order (- order))))
+   ((< left right) -1)
+   ((> left right) 1)
+   (t 0)))
+
+;; Doc 143 arithmetic.
 (defun max (&rest args)
   ;; Name the FIRST bad argument.  The fold reported whichever one it was
   ;; holding when the comparison failed, which for (min '(1 2) '(1)) is the
@@ -1143,7 +1456,16 @@ from `(defvar X nil)'."
     (unless (numberp x) (signal 'wrong-type-argument (list 'number-or-marker-p x)))
     (dolist (a rest) (unless (numberp a)
                        (signal 'wrong-type-argument (list 'number-or-marker-p a))))
-    (let ((acc x)) (while rest (if (> (car rest) acc) (setq acc (car rest))) (setq rest (cdr rest))) acc)))
+    (let ((acc x))
+      (while rest
+        (let ((candidate (car rest)))
+          (cond
+           ((nelisp--maxmin-nan-p acc) nil)
+           ((nelisp--maxmin-nan-p candidate) (setq acc candidate))
+           ((eq (nelisp--maxmin-order candidate acc) 1)
+            (setq acc candidate))))
+        (setq rest (cdr rest)))
+      acc)))
 (defun min (&rest args)
   ;; Name the FIRST bad argument.  The fold reported whichever one it was
   ;; holding when the comparison failed, which for (min '(1 2) '(1)) is the
@@ -1160,7 +1482,16 @@ from `(defvar X nil)'."
     (unless (numberp x) (signal 'wrong-type-argument (list 'number-or-marker-p x)))
     (dolist (a rest) (unless (numberp a)
                        (signal 'wrong-type-argument (list 'number-or-marker-p a))))
-    (let ((acc x)) (while rest (if (< (car rest) acc) (setq acc (car rest))) (setq rest (cdr rest))) acc)))
+    (let ((acc x))
+      (while rest
+        (let ((candidate (car rest)))
+          (cond
+           ((nelisp--maxmin-nan-p acc) nil)
+           ((nelisp--maxmin-nan-p candidate) (setq acc candidate))
+           ((eq (nelisp--maxmin-order candidate acc) -1)
+            (setq acc candidate))))
+        (setq rest (cdr rest)))
+      acc)))
 (defun abs (x)
   (nelisp--check-number x)
   (if (< x 0) (- 0 x) x))
@@ -1588,68 +1919,77 @@ nothing."
     (while (< i n) (when (eq (aref non i) ?.) (setq idx i)) (setq i (1+ i)))
     (if (or (< idx 0) (= idx 0)) path (substring path 0 (+ dir-len idx)))))
 
-;; Doc 143 common pure string/seq predicates + builders.
-;; IGNORE-CASE was accepted and ignored here too, so a case-insensitive
-;; prefix or suffix test answered nil for anything that differed only in
-;; case.  Same fold as `assoc-string', and the same reach.
-(unless (fboundp 'string-prefix-p)
-  (defun string-prefix-p (prefix string &optional ignore-case)
-    ;; PREFIX is checked before STRING, and the predicate is `stringp' once
-    ;; the lengths have been taken.
-    (nelisp--check-seq-list prefix)
-    (nelisp--check-seq-list string)
-    (let ((pl (length prefix)))
-      (when (<= pl (length string))
-        (unless (stringp prefix) (signal 'wrong-type-argument (list 'stringp prefix)))
-        (unless (stringp string) (signal 'wrong-type-argument (list 'stringp string))))
-      (and (<= pl (length string))
-           (let ((a (substring string 0 pl)))
-             (if ignore-case
-                 (string= (downcase prefix) (downcase a))
-               (string= prefix a)))))))
-(unless (fboundp 'string-suffix-p)
-  (defun string-suffix-p (suffix string &optional ignore-case)
-    ;; STRING first: (string-suffix-p 1.5 0.0) names 0.0, not 1.5.
-    (nelisp--check-seq-list string)
-    (nelisp--check-seq-list suffix)
-    (let ((sl (length suffix)) (stl (length string)))
-      (when (<= sl stl)
-        (unless (stringp suffix) (signal 'wrong-type-argument (list 'stringp suffix)))
-        (unless (stringp string) (signal 'wrong-type-argument (list 'stringp string))))
-      (and (<= sl stl)
-           (let ((a (substring string (- stl sl))))
-             (if ignore-case
-                 (string= (downcase suffix) (downcase a))
-               (string= suffix a)))))))
 ;; `compare-strings' existed only in lisp/nelisp-stdlib-plist-str.el, which
 ;; the standalone does not load, so it was `void-function' here.  Same body,
 ;; moved to where it runs.
+;;
+;; Fix 2026-09-28 (emacs-parity divergence): the body signalled nothing of
+;; its own -- it went straight to `length'/`aref' on STR1/STR2 -- so a
+;; non-string STR2 (e.g. an improper list) surfaced whatever `length'
+;; happens to signal for it, (wrong-type-argument listp 3) for
+;; `(1 2 . 3)', instead of Emacs's own (wrong-type-argument stringp
+;; (1 2 . 3)).  Emacs 31.1 src/fns.c Fcompare_strings checks STR1 then
+;; STR2 (CHECK_STRING) before touching START/END at all, then validates
+;; STR1's START1/END1 pair in full -- type errors as
+;; (wrong-type-argument integerp START-OR-END), and a bad range as
+;; (args-out-of-range STR1 START1 END1) -- before even looking at
+;; START2/END2 (src/fns.c's `validate_subarray', same file, ~line 1543).
+;; Replicated below via `nelisp--compare-strings-subarray'.  IGNORE-CASE
+;; also switched from `downcase' to `upcase' to match Fcompare_strings,
+;; which upcases both characters before comparing.
+(unless (fboundp 'nelisp--compare-strings-subarray)
+  (defun nelisp--compare-strings-subarray (str start end size)
+    "Validate START/END against SIZE the way Emacs's `validate_subarray' does.
+Return (FROM . TO).  STR, START, and END are used only for the
+`args-out-of-range' error data (Emacs 31.1 src/fns.c)."
+    (let (from to)
+      (cond
+       ((integerp start) (setq from (if (< start 0) (+ start size) start)))
+       ((null start) (setq from 0))
+       (t (signal 'wrong-type-argument (list 'integerp start))))
+      (cond
+       ((integerp end) (setq to (if (< end 0) (+ end size) end)))
+       ((null end) (setq to size))
+       (t (signal 'wrong-type-argument (list 'integerp end))))
+      (unless (and (<= 0 from) (<= from to) (<= to size))
+        (signal 'args-out-of-range (list str start end)))
+      (cons from to))))
 (unless (fboundp 'compare-strings)
   (defun compare-strings (str1 start1 end1 str2 start2 end2 &optional ignore-case)
-    (let* ((s1 str1) (s2 str2)
-           (a (or start1 0))
-           (b (or end1 (length s1)))
-           (c (or start2 0))
-           (d (or end2 (length s2)))
-           (len1 (- b a))
-           (len2 (- d c))
-           (n (if (< len1 len2) len1 len2))
-           (i 0)
-           (result t))
-      (while (and (< i n) (eq result t))
-        (let* ((ch1 (aref s1 (+ a i)))
-               (ch2 (aref s2 (+ c i)))
-               (k1 (if ignore-case (downcase ch1) ch1))
-               (k2 (if ignore-case (downcase ch2) ch2)))
-          (cond
-           ((< k1 k2) (setq result (- (1+ i))))
-           ((> k1 k2) (setq result (1+ i)))
-           (t (setq i (1+ i))))))
-      (cond
-       ((not (eq result t)) result)
-       ((= len1 len2) t)
-       ((< len1 len2) (- (1+ n)))
-       (t (1+ n))))))
+    (nelisp--check-string str1)
+    (nelisp--check-string str2)
+    (let ((len1 (length str1))
+          (len2 (length str2)))
+      ;; Backward compatibility: silently bring a too-large positive END
+      ;; into range (mirrors the check in Fcompare_strings before it
+      ;; calls validate_subarray).
+      (when (and (integerp end1) (< len1 end1)) (setq end1 len1))
+      (when (and (integerp end2) (< len2 end2)) (setq end2 len2))
+      (let* ((range1 (nelisp--compare-strings-subarray str1 start1 end1 len1))
+             (a (car range1))
+             (b (cdr range1))
+             (range2 (nelisp--compare-strings-subarray str2 start2 end2 len2))
+             (c (car range2))
+             (d (cdr range2))
+             (n1 (- b a))
+             (n2 (- d c))
+             (n (if (< n1 n2) n1 n2))
+             (i 0)
+             (result t))
+        (while (and (< i n) (eq result t))
+          (let* ((ch1 (aref str1 (+ a i)))
+                 (ch2 (aref str2 (+ c i)))
+                 (k1 (if ignore-case (upcase ch1) ch1))
+                 (k2 (if ignore-case (upcase ch2) ch2)))
+            (cond
+             ((< k1 k2) (setq result (- (1+ i))))
+             ((> k1 k2) (setq result (1+ i)))
+             (t (setq i (1+ i))))))
+        (cond
+         ((not (eq result t)) result)
+         ((= n1 n2) t)
+         ((< n1 n2) (- (1+ n)))
+         (t (1+ n)))))))
 (unless (fboundp 'char-equal)
   (defun char-equal (a b)
     (nelisp--check-character a)
@@ -1669,32 +2009,6 @@ nothing."
       (let ((l nil) (i (1- (length s))))
         (while (>= i 0) (setq l (cons (aref s i) l)) (setq i (1- i)))
         l))))
-(unless (fboundp 'number-sequence)
-  (defun number-sequence (from &optional to inc)
-    (if (null to)
-        (list from)
-      (unless (numberp from)
-        (signal 'wrong-type-argument (list 'number-or-marker-p from)))
-      (unless (numberp to)
-        (signal 'wrong-type-argument (list 'number-or-marker-p to)))
-      (when inc
-        (unless (numberp inc)
-          (signal 'wrong-type-argument (list 'number-or-marker-p inc)))
-        (when (= inc 0) (signal 'error (list "The increment can not be zero"))))
-      (let ((step (or inc 1)) (acc nil) (x from))
-        (if (> step 0)
-            (while (<= x to) (setq acc (cons x acc)) (setq x (+ x step)))
-          (while (>= x to) (setq acc (cons x acc)) (setq x (+ x step))))
-        (nreverse acc)))))
-(unless (fboundp 'string-trim)
-  ;; TRIM-LEFT and TRIM-RIGHT were accepted and ignored, so
-  ;; (string-trim "xxaxx" "x+" "x+") answered "xxaxx" -- the caller asked for
-  ;; a specific trim and got the whitespace default with no indication.
-  ;; Delegating keeps the three functions consistent by construction: a fix
-  ;; to `string-trim-left' cannot now leave `string-trim' behind.
-  (defun string-trim (s &optional trim-left trim-right)
-    ;; RIGHT runs first, so its regexp is the one `concat' complains about.
-    (string-trim-left (string-trim-right s trim-right) trim-left)))
 (unless (fboundp 'alist-get)
   (defun alist-get (key alist &optional default _remove testfn)
     (unless (proper-list-p alist)
@@ -1707,6 +2021,29 @@ nothing."
               (setq found e)
             (setq cur (cdr cur)))))
       (if found (cdr found) default))))
+;; GNU Emacs 31.1 src/fns.c, DEFUN "copy-alist": copies the alist's own
+;; spine (a fresh list) and, for each element that is itself a cons, a
+;; fresh top-level cons cell for that pair -- but shares the car/cdr
+;; contents of each pair, and shares any non-cons element outright.
+;; Verified on host: `(eq (car alist) (car copy))' is nil (the pair got
+;; its own cons) while `(eq (car (car alist)) (car (car copy)))' is t
+;; (the key itself is shared).  Reached from `bytecomp.el''s
+;; `byte-compile-close-variables' macro, itself reached via the load-time
+;; self-compile step documented above `handler-bind' (which needs
+;; `byte-compile-close-variables' to establish compilation state before
+;; compiling its own hot recursive functions).
+(unless (fboundp 'copy-alist)
+  (defun copy-alist (alist)
+    "Return a copy of ALIST.
+This is an alist which represents the same mapping from objects to objects,
+but does not share the alist structure with ALIST.
+The objects mapped (cars and cdrs of elements of the alist)
+are shared, however.
+Elements of ALIST that are not conses are also shared.
+
+\(fn ALIST)"
+    (mapcar (lambda (elt) (if (consp elt) (cons (car elt) (cdr elt)) elt))
+            alist)))
 (unless (fboundp 'take)
   (defun take (n list)
     (unless (integerp n) (signal 'wrong-type-argument (list 'integerp n)))
@@ -1714,17 +2051,6 @@ nothing."
       (while (and (< i n) list)
         (setq acc (cons (car list) acc)) (setq list (cdr list)) (setq i (1+ i)))
       (nreverse acc))))
-(unless (fboundp 'ensure-list)
-  (defun ensure-list (x) (if (listp x) x (list x))))
-(unless (fboundp 'flatten-tree)
-  (defun flatten-tree (tree)
-    (cond ((null tree) nil)
-          ((consp tree) (append (flatten-tree (car tree)) (flatten-tree (cdr tree))))
-          (t (list tree)))))
-(unless (fboundp 'string-join)
-  (defun string-join (strings &optional separator)
-    (mapconcat (lambda (x) x) strings (or separator ""))))
-
 ;; Doc 143 seq.el core (list/vector/string via a to-list coercion; funcall-based,
 ;; no closures -- safe under the dynamic-binding prelude).
 (defun nelisp-seq--to-list (seq)
@@ -1828,27 +2154,10 @@ nothing."
 ;; the same reason: vendor/emacs-lisp/emacs-lisp/cl-seq.el defines all
 ;; seven correctly, and `nelisp-standalone--reader-repl-prelude-source'
 ;; already `require's it once for every process built from this prelude.
-(unless (fboundp 'assoc-default)
-  (defun assoc-default (key alist &optional test default)
-    (let ((res default) (l alist) (tf (or test #'equal)) (done nil))
-      (while (and l (not done))
-        (let ((e (car l)))
-          (if (consp e)
-              (when (funcall tf key (car e)) (setq res (cdr e) done t))
-            (when (funcall tf key e) (setq res default done t))))
-        (setq l (cdr l)))
-      res)))
+;; `assoc-default' is supplied from pinned GNU subr.el source.
 (unless (fboundp 'cl-getf)
   (defun cl-getf (plist key &optional default)
     (let ((m (plist-member plist key))) (if m (cadr m) default))))
-(unless (fboundp 'apply-partially)
-  ;; The captured FN and ARGS were re-resolved on every call through the
-  ;; closure's own names, which recursed until the nesting limit -- so a
-  ;; partial application was not merely wrong, it never returned.
-  (defun apply-partially (fn &rest args)
-    (let ((nelisp--ap-fn fn) (nelisp--ap-args args))
-      (lambda (&rest more)
-        (apply nelisp--ap-fn (append nelisp--ap-args more))))))
 ;; `value<' is Emacs's default ordering, and `sort' falls back to it when no
 ;; predicate is given -- calling nil as a function is what it did before.
 (unless (fboundp 'value<)
@@ -1870,52 +2179,10 @@ nothing."
             (t l)))))
 (unless (fboundp 'ntake)
   (defun ntake (n list) (take n list)))
-(unless (fboundp 'string-pad)
-  (defun string-pad (s len &optional padding start)
-    ;; Emacs checks LENGTH before STRING, so a call with both wrong names
-    ;; the length.
-    (nelisp--check-natnum len)
-    (let ((pad (or padding 32)) (n (length s)))
-      (if (>= n len) s
-        (if start (concat (make-string (- len n) pad) s)
-          (concat s (make-string (- len n) pad)))))))
-(unless (fboundp 'string-chop-newline)
-  (defun string-chop-newline (s)
-    ;; `length' runs first and names `sequencep'; the comparison that follows
-    ;; names `stringp'.  A vector reaches the second and a number the first.
-    (unless (sequencep s) (signal 'wrong-type-argument (list 'sequencep s)))
-    (when (= (length s) 0) (setq s s))
-    (unless (or (= (length s) 0) (stringp s))
-      (signal 'wrong-type-argument (list 'stringp s)))
-    (if (and (> (length s) 0) (= (aref s (1- (length s))) 10))
-        (substring s 0 (1- (length s))) s)))
-(unless (fboundp 'gensym)
-  (defun gensym (&optional prefix) (cl-gensym prefix)))
-;; Doc 160 breadth: binding macros (when-let / if-let / pcase-let /
+
+;; GNU 31.1 conditional-binding macros are staged from pinned subr.el.
+;; Doc 160 breadth: binding macros (pcase-let /
 ;; cl-destructuring-bind / cl-pushnew).
-(unless (fboundp 'when-let*)
-  (defmacro when-let* (bindings &rest body)
-    (let ((form `(progn ,@body))
-          (bs (if (and (consp bindings) (symbolp (car bindings))) (list bindings) bindings)))
-      (dolist (b (reverse bs))
-        (let* ((var (cond ((symbolp b) b) ((cdr b) (car b)) (t (gensym))))
-               (val (cond ((symbolp b) b) ((cdr b) (cadr b)) (t (car b)))))
-          (setq form `(let ((,var ,val)) (if ,var ,form nil)))))
-      form)))
-(unless (fboundp 'when-let)
-  (defmacro when-let (bindings &rest body) `(when-let* ,bindings ,@body)))
-(unless (fboundp 'if-let*)
-  (defmacro if-let* (bindings then &rest else)
-    (let ((form then)
-          (elseform `(progn ,@else))
-          (bs (if (and (consp bindings) (symbolp (car bindings))) (list bindings) bindings)))
-      (dolist (b (reverse bs))
-        (let* ((var (cond ((symbolp b) b) ((cdr b) (car b)) (t (gensym))))
-               (val (cond ((symbolp b) b) ((cdr b) (cadr b)) (t (car b)))))
-          (setq form `(let ((,var ,val)) (if ,var ,form ,elseform)))))
-      form)))
-(unless (fboundp 'if-let)
-  (defmacro if-let (bindings then &rest else) `(if-let* ,bindings ,then ,@else)))
 (unless (fboundp 'pcase-let)
   (defmacro pcase-let (bindings &rest body)
     (if (null bindings) `(progn ,@body)
@@ -1923,18 +2190,116 @@ nothing."
          (,(car (car bindings)) (pcase-let ,(cdr bindings) ,@body))))))
 (unless (fboundp 'pcase-let*)
   (defmacro pcase-let* (bindings &rest body) `(pcase-let ,bindings ,@body)))
+;; Real Emacs's `pcase-dolist' is autoloaded (its `;;;###autoload' cookie
+;; is dumped into every real Emacs's loaddefs.el, so `(fboundp
+;; 'pcase-dolist)' is t on a bare `emacs -Q --batch' even though
+;; `(featurep 'pcase)' is nil -- confirmed directly against host Emacs
+;; 31.1).  This substrate has no autoload-cookie/loaddefs machinery, so
+;; real GNU `cl-macs.el' (which uses `pcase-dolist' without ever
+;; `require'ing `pcase' itself, exactly like real Emacs does not need to)
+;; hit void-function here.  Not staged byte-identical from `pcase.el':
+;; the real macro dispatches on its own private `pcase--trivial-upat-p'
+;; (a same-file optimization deciding whether PATTERN is a bare symbol,
+;; so plain `dolist' suffices) and otherwise expands through `pcase.el'
+;; itself, neither of which this substrate loads.  Same documented
+;; contract, built instead on the `pcase-let' immediately above (already
+;; present here either way): binds PATTERN against each LIST element via
+;; `pcase-let' semantics and evaluates BODY, skipping only the
+;; bare-symbol fast path (a perf optimization, not an observable
+;; behavior difference -- `pcase-let' with a bare-symbol pattern binds
+;; it to the whole value, same as `dolist' would).
+(unless (fboundp 'pcase-dolist)
+  (defmacro pcase-dolist (spec &rest body)
+    "Eval BODY once for each set of bindings defined by PATTERN and LIST elements.
+PATTERN should be a `pcase' pattern describing the structure of
+LIST elements, and LIST is a list of objects that match PATTERN,
+i.e. have a structure that is compatible with PATTERN.
+For each element of LIST, this macro binds the variables in
+PATTERN to the corresponding subfields of the LIST element, and
+then evaluates BODY with these bindings in effect.  The
+destructuring bindings of variables in PATTERN to the subfields
+of the elements of LIST is performed as if by `pcase-let'.
+\n(fn (PATTERN LIST) BODY...)"
+    (declare (indent 1) (debug ((pcase-PAT form) body)))
+    (let ((nelisp--pcase-dolist-elt (make-symbol "pcase-dolist-elt")))
+      `(dolist (,nelisp--pcase-dolist-elt ,(nth 1 spec))
+         (pcase-let ((,(nth 0 spec) ,nelisp--pcase-dolist-elt))
+           ,@body)))))
+;; `nelisp--cl-destructure' is the shared engine behind both
+;; `cl-destructuring-bind' and, further below, `cl-defmacro' (real
+;; Emacs's own `cl-defmacro' is built the same way: on top of the same
+;; destructuring machinery `cl-destructuring-bind' itself uses, via
+;; `cl--do-arglist').  Recurses one level per NESTED pattern (a cons in
+;; ARGLIST's own position, in place of a plain symbol) so a caller can
+;; write `((var iterator) &rest body)' -- exactly real GNU
+;; `emacs-lisp/generator.el''s own top-level `(cl-defmacro iter-do ((var
+;; iterator) &rest body) ...)', which needs this to define at all.
+;; DIVERGES from Emacs: no `&key'/`&aux'/`&whole'/`&environment', and no
+;; `&optional' default-value expressions -- this substrate's own
+;; pre-existing `cl-destructuring-bind' already omitted every one of
+;; those (flat symbols, `&optional' as a no-op marker, `&rest' only);
+;; only nested-pattern support is new here.
+(defun nelisp--cl-destructure (arglist valform body)
+  (let* ((val (gensym "cl-destructure"))
+         (binds nil) (i 0) (rest nil) (args arglist))
+    (while args
+      (let ((a (car args)))
+        (cond
+         ((eq a '&rest) (setq rest (cadr args)) (setq args nil))
+         ((eq a '&optional) (setq args (cdr args)))
+         (t (push (cons a (list 'nth i val)) binds)
+            (setq i (1+ i))
+            (setq args (cdr args))))))
+    (setq binds (nreverse binds))
+    (when rest (setq binds (nconc binds (list (cons rest (list 'nthcdr i val))))))
+    (let ((form (cons 'progn body)))
+      (dolist (b (reverse binds))
+        (setq form
+              (if (consp (car b))
+                  (nelisp--cl-destructure (car b) (cdr b) (list form))
+                (list 'let* (list (list (car b) (cdr b))) form))))
+      (list 'let* (list (list val valform)) form))))
+
 (unless (fboundp 'cl-destructuring-bind)
   (defmacro cl-destructuring-bind (arglist expr &rest body)
-    (let ((val (gensym)) (binds nil) (i 0) (rest nil) (args arglist))
-      (while args
-        (let ((a (car args)))
-          (cond ((eq a '&rest) (setq rest (cadr args) args nil))
-                ((eq a '&optional) nil)
-                (t (push `(,a (nth ,i ,val)) binds) (setq i (1+ i)))))
-        (setq args (cdr args)))
-      `(let* ((,val ,expr) ,@(reverse binds)
-              ,@(when rest `((,rest (nthcdr ,i ,val)))))
-         ,@body))))
+    (nelisp--cl-destructure arglist expr body)))
+
+;; `cl-defmacro' (real GNU `cl-macs.el') is not staged: this substrate
+;; marks `cl-lib' already `provide'd (see the block comment further down
+;; this file, "cl-generic subset (Doc 185)"), so any GNU library's own
+;; `(require 'cl-lib)' silently no-ops and real `cl-macs.el' -- the only
+;; place `cl-defmacro' would otherwise come from -- never actually
+;; loads.  Needed for real: `progmodes/project.el''s own `(require
+;; 'cl-generic)' is ALSO a no-op the same way (`cl-generic' is marked
+;; provided too, right below this), but its OTHER real dependency,
+;; `(eval-when-compile (require 'generator))', pulls in real
+;; `emacs-lisp/generator.el' for real, and THAT file has its own
+;; top-level `(cl-defmacro iter-do ((var iterator) &rest body) ...)'.
+;; Built the same way real Emacs's own is (on the same destructuring
+;; engine `cl-destructuring-bind' above uses, via
+;; `nelisp--cl-destructure'), not staged verbatim from `cl-macs.el'
+;; (whose own `cl--transform-lambda' additionally handles `&key'/`&aux'/
+;; `&whole'/`&environment' and wraps BODY in an implicit `cl-block' --
+;; none of which `iter-do' -- the one real consumer in this substrate's
+;; scope -- needs).  A leading docstring or `declare' form is recognized
+;; and dropped harmlessly (kept out of BODY, not specially compiled),
+;; matching this substrate's other reduced `cl-' macros.
+(unless (fboundp 'cl-defmacro)
+  (defmacro cl-defmacro (name args &rest body)
+    "Define NAME as a macro, parsing its arguments via a full Common
+Lisp argument list ARGS (see `cl-destructuring-bind').
+
+(fn NAME ARGS [DOCSTRING] &rest BODY)"
+    (declare (indent 2) (doc-string 3))
+    (let (docstring)
+      (when (and (stringp (car body)) (cdr body))
+        (setq docstring (pop body)))
+      (while (and (consp (car body)) (eq (car-safe (car body)) 'declare))
+        (pop body))
+      (let ((whole (make-symbol "cl-defmacro--args")))
+        `(defmacro ,name (&rest ,whole)
+           ,@(and docstring (list docstring))
+           (cl-destructuring-bind ,args ,whole ,@body))))))
 (unless (fboundp 'cl-pushnew)
   (defmacro cl-pushnew (item place &rest _keys)
     `(let ((cl--x ,item))
@@ -2060,16 +2425,7 @@ nothing."
         (let* ((k (funcall fn x)) (cell (assoc k res)))
           (if cell (setcdr cell (cons x (cdr cell))) (push (cons k (list x)) res))))
       (mapcar (lambda (c) (cons (car c) (nreverse (cdr c)))) (nreverse res)))))
-(unless (fboundp 'string-remove-prefix)
-  (defun string-remove-prefix (prefix s) (if (string-prefix-p prefix s) (substring s (length prefix)) s)))
-(unless (fboundp 'string-remove-suffix)
-  (defun string-remove-suffix (suffix s) (if (string-suffix-p suffix s) (substring s 0 (- (length s) (length suffix))) s)))
-(unless (fboundp 'string-blank-p)
-  (defun string-blank-p (s)
-    ;; Emacs answers the MATCH POSITION (0 for a blank string), not t --
-    ;; it is `string-match-p' underneath, and callers use the index.
-    (nelisp--check-string s)
-    (string-match-p "\\`[ \t\n\r]*\\'" s)))
+
 (unless (fboundp 'string-split)
   (defun string-split (s &optional sep omit trim)
     ;; Emacs checks SEPARATORS before STRING, so a call with both wrong
@@ -2077,62 +2433,51 @@ nothing."
     (when sep (nelisp--check-string sep))
     (nelisp--check-string s)
     (split-string s sep omit trim)))
-;; REGEXP was accepted and ignored -- the parameter was even named `_re' to
-;; say so -- so (string-trim-left "xxab" "x+") answered "xxab".  A caller
-;; that asked to strip a specific prefix got the default whitespace strip
-;; and no indication.  The whitespace path stays a character loop: it is the
-;; common call, it needs no regexp engine, and keeping it means this fix
-;; cannot regress the callers that pass no REGEXP.
-(unless (fboundp 'string-trim-left)
-  (defun string-trim-left (s &optional re)
-    ;; No hand-written REGEXP check: Emacs builds a regexp with `concat' and
-    ;; whatever `concat' says IS the contract -- `sequencep' for a symbol,
-    ;; `listp' for the tail of an improper list.  Two hand-written rules here
-    ;; each got one of those cases right and the other wrong.
-    (if (null re)
-        (progn
-          (nelisp--check-string s)
-        (let ((i 0) (n (length s))) (while (and (< i n) (memq (aref s i) '(32 9 10 13))) (setq i (1+ i))) (substring s i)))
-      (if (string-match (concat "\\`\\(?:" re "\\)") s) (substring s (match-end 0)) s))))
-(unless (fboundp 'string-trim-right)
-  (defun string-trim-right (s &optional re)
-    (if (null re)
-        (progn
-          (nelisp--check-string s)
-          (let ((n (length s))) (while (and (> n 0) (memq (aref s (1- n)) '(32 9 10 13))) (setq n (1- n))) (substring s 0 n)))
-      (let ((i (string-match (concat "\\(?:" re "\\)\\'") s)))
-        (if i (substring s 0 i) s)))))
-;; `isnan' and `nbutlast' were absent, so a caller got `void-function' --
+;; `isnan' was absent, so a caller got `void-function' --
 ;; which reads as "NeLisp cannot do this" rather than "nobody wrote it yet".
 (unless (fboundp 'isnan)
   (defun isnan (x)
     (if (floatp x) (/= x x) (signal 'wrong-type-argument (list 'floatp x)))))
-(unless (fboundp 'nbutlast)
-  (defun nbutlast (list &optional n)
-    (let ((m (length list)) (k (or n 1)))
-      (if (>= k m) nil (setcdr (nthcdr (- m k 1) list) nil) list))))
 ;; NAME identity is symbol identity in this runtime, so the probe is the
 ;; native `nelisp--intern-lookup' (Doc 163 Phase C), which reports a miss
 ;; instead of interning.  Falling back to `intern' -- which never answers
 ;; nil -- is what made a `(while (setq x (intern-soft ...)))' probe loop
-;; run forever.  Since 2026-09-06 the standalone has a native `intern-soft'
-;; arm with exactly this contract (scripts/nelisp-standalone-build.el), so
-;; this definition is reached only by a binary older than the arm.
-(unless (fboundp 'intern-soft)
-  (defun intern-soft (name &optional obarray)
-    "Return the symbol named NAME if it is interned, else nil.
-NeLisp has one global intern table and no first-class obarray object, so a
-non-nil OBARRAY is not honoured.  The probe is `nelisp--intern-lookup\', which
-reports a miss instead of interning -- falling back to `intern\', which never
-answers nil, is what made a `(while (setq x (intern-soft ...)))\' probe loop
-run forever."
-    (when (and obarray (not (obarrayp obarray)))
-      (signal 'wrong-type-argument (list 'obarrayp obarray)))
+;; run forever.
+;;
+;; This used to be two definitions: an `(unless (fboundp 'intern-soft) ...)'
+;; fallback that signalled `wrong-type-argument' on any non-nil OBARRAY
+;; (dead weight since a binary with the native arm never reaches it, and
+;; a stale trap for one that doesn't), followed unconditionally by this
+;; one, which actually honours OBARRAY via `nelisp--obarray-table' --
+;; matching `intern' just above and the hosted `lisp/nelisp-stdlib-misc.el'
+;; copy.  Since the second `defun' always wins (unconditional, later in
+;; the file), the first was pure dead code; removed rather than kept as
+;; a fallback nothing can reach.
+(defun intern-soft (name &optional obarray)
+  (if obarray
+      (let* ((table (nelisp--obarray-table obarray))
+             (found (gethash (nelisp--obarray-name name) table)))
+        (if (and (symbolp name) (not (eq found name))) nil found))
     (cond ((symbolp name)
            (let ((found (nelisp--intern-lookup (symbol-name name))))
              (and (eq found name) found)))
           ((stringp name) (nelisp--intern-lookup name))
           (t (signal 'wrong-type-argument (list 'stringp name))))))
+(defun unintern (name &optional obarray)
+  (unless obarray
+    (signal 'unsupported-feature '(global-unintern)))
+  (let* ((table (nelisp--obarray-table obarray))
+         (key (nelisp--obarray-name name))
+         (found (gethash key table)))
+    (if (and found (or (not (symbolp name)) (eq found name)))
+        (progn (remhash key table) t)
+      nil)))
+(defun mapatoms (function &optional obarray)
+  (unless obarray
+    (signal 'unsupported-feature '(global-mapatoms)))
+  (maphash (lambda (_name symbol) (funcall function symbol))
+           (nelisp--obarray-table obarray))
+  nil)
 (unless (fboundp 'vconcat)
   (defun vconcat (&rest seqs)
     (dolist (x seqs) (nelisp--check-seq-list x))
@@ -2146,7 +2491,7 @@ run forever."
 ;; file's text, unchanged, so `make ns-gate' polices the two copies.
 (defun nelisp-stdlib--whitespace-p (ch)
   "Return non-nil when CH (= integer codepoint) is ASCII whitespace.
-Matches the Emacs default whitespace class for `string-trim'."
+Shared by string splitting and numeric parsing."
   (or (eq ch ?\s) (eq ch ?\t) (eq ch ?\n) (eq ch ?\r)
       (eq ch ?\f) (eq ch 11)))                ; 11 = ?\v
 
@@ -2452,21 +2797,74 @@ loop for the exponent (= no `expt' / `float' primitive needed)."
   (defmacro named-let (name bindings &rest body)
     `(cl-labels ((,name ,(mapcar #'car bindings) ,@body))
        (,name ,@(mapcar #'cadr bindings)))))
-(unless (fboundp 'and-let*)
-  (defmacro and-let* (bindings &rest body)
-    (if body `(when-let* ,bindings ,@body)
-      (let ((lastb (car (last bindings))))
-        `(when-let* ,bindings ,(if (consp lastb) (car lastb) lastb))))))
-(unless (fboundp 'thread-first)
-  (defmacro thread-first (x &rest forms)
-    (let ((result x))
-      (dolist (form forms result)
-        (setq result (if (listp form) `(,(car form) ,result ,@(cdr form)) (list form result)))))))
-(unless (fboundp 'thread-last)
-  (defmacro thread-last (x &rest forms)
-    (let ((result x))
-      (dolist (form forms result)
-        (setq result (if (listp form) `(,@form ,result) (list form result)))))))
+;; GNU Emacs 31.1 src/eval.c, DEFUN "handler-bind-1": the primitive behind
+;; lisp/subr.el's `handler-bind' macro (staged verbatim just below, from
+;; vendor/staged-emacs-lisp/subr.el).  Real GNU calls each matching
+;; HANDLER *before* unwinding the stack, so a handler can inspect dynamic
+;; state (specbindings, buffer-local values, ...) still live at the exact
+;; point the error was signaled; if every matching handler returns
+;; normally (no throw/signal of its own), the original error still
+;; propagates outward afterward, exactly as if no handler-bind were there.
+;; This runtime has no C-level signal-time hook to give a true pre-unwind
+;; callback, so this is a *documented approximation* built on
+;; `condition-case': HANDLER still gets called with the exact error
+;; object and, if it returns normally, the error is still faithfully
+;; re-signaled to continue outward -- but by the time HANDLER runs, the
+;; stack has already unwound to this frame, so it only sees dynamic state
+;; that survives that unwind (global/special variables read via
+;; `symbol-value'/`setq', not state lexically local to BODY-THUNK's own
+;; now-exited dynamic extent).  `bytecomp.el''s own use (reading the
+;; dynamically-scoped, `defvar'-only special `byte-compile-form-stack'
+;; from its handler) reads a global binding that survives this gap.
+(unless (fboundp 'handler-bind-1)
+  (defun handler-bind-1 (body-thunk &rest cond-handler-plist)
+    (condition-case err
+        (funcall body-thunk)
+      (error
+       (let ((conditions (get (car err) 'error-conditions))
+             (plist cond-handler-plist))
+         (while plist
+           (let ((conds (car plist)) (handler (cadr plist)))
+             (when (if (eq conds t)
+                       t
+                     (catch 'nelisp--handler-bind-1-match
+                       (dolist (c conds)
+                         (when (memq c conditions)
+                           (throw 'nelisp--handler-bind-1-match t)))
+                       nil))
+               (funcall handler err)))
+           (setq plist (cddr plist)))
+         (signal (car err) (cdr err)))))))
+;; GNU Emacs 31.1 lisp/subr.el:7521 (preloaded, not autoloaded): staged
+;; verbatim.  Reached, like `force-mode-line-update' above, via the
+;; `bytecomp.el' -> `progmodes/compile.el' chain -- no: actually reached
+;; directly from `bytecomp.el' itself, whose own load-time self-compile
+;; step (`(eval-when-compile (or (compiled-function-p ...) (mapc
+;; #'byte-compile ...)))') calls `displaying-byte-compile-warnings', which
+;; wraps its body in `handler-bind' to capture `byte-compile-form-stack'
+;; for error reporting without losing the original error's control flow.
+(unless (fboundp 'handler-bind)
+  (defmacro handler-bind (handlers &rest body)
+    "Setup error HANDLERS around execution of BODY.
+HANDLERS is a list of (CONDITIONS HANDLER) where
+CONDITIONS should be a list of condition names (symbols) or
+a single condition name, and HANDLER is a form whose evaluation
+returns a function.
+When an error is signaled during execution of BODY, if that
+error matches CONDITIONS, then the associated HANDLER
+function is called with the error object as argument.
+HANDLERs can either transfer the control via a non-local exit,
+or return normally.  If a handler returns normally, the search for an
+error handler continues from where it left off."
+    (declare (indent 1) (debug ((&rest (sexp form)) body)))
+    (let ((args '()))
+      (dolist (cond+handler handlers)
+        (let ((handler (car (cdr cond+handler)))
+              (conds (car cond+handler)))
+          (push `',(ensure-list conds) args)
+          (push handler args)))
+      `(handler-bind-1 (lambda () ,@body) ,@(nreverse args)))))
+
 (unless (fboundp 'cl-decf)
   (defmacro cl-decf (place &optional n) `(cl-incf ,place ,(if n `(- ,n) -1))))
 (unless (fboundp 'cl-flet)
@@ -2652,12 +3050,8 @@ TYPE flowing into whatever the caller does next."
 (unless (fboundp 'cl-mod) (defun cl-mod (x y) (mod x y)))
 (unless (fboundp 'cl-rem) (defun cl-rem (x y) (- x (* (truncate x y) y))))
 (unless (fboundp 'cl-signum) (defun cl-signum (x) (cond ((> x 0) 1) ((< x 0) -1) (t 0))))
-;; fix/cl-set-ops-keywords: `:test'/`:test-not'/`:key' support for the
-;; cl-lib set-operation family, matching Emacs cl-seq.el semantics --
-;; default test `eql', `:key' applied to elements from BOTH lists before
-;; comparison, `:test-not' negates the given predicate.
-;; `nelisp--cl-seq-member' mirrors `cl-member' for exactly this family:
-;; ITEM is already keyed by the caller, LIST elements are keyed here.
+;; cl-seq operations are loaded from the unmodified GNU Emacs 31.1 source
+;; by the standalone bootstrap; keep only NeLisp-specific cl-adjoin below.
 (unless (fboundp 'nelisp--cl-seq-test)
   (defun nelisp--cl-seq-test (kw)
     (let ((test (plist-get kw :test)) (test-not (plist-get kw :test-not)))
@@ -2678,53 +3072,8 @@ TYPE flowing into whatever the caller does next."
       (if (nelisp--cl-seq-member (if key (funcall key item) item) list kw)
           list
         (cons item list)))))
-(unless (fboundp 'cl-union)
-  (defun cl-union (list1 list2 &rest kw)
-    (cond ((null list1) list2)
-          ((null list2) list1)
-          ((and (not kw) (equal list1 list2)) list1)
-          (t
-           (unless (>= (length list1) (length list2))
-             (let ((tmp list1)) (setq list1 list2 list2 tmp)))
-           (dolist (x list2 list1)
-             (setq list1 (apply #'cl-adjoin x list1 kw)))))))
-(unless (fboundp 'cl-intersection)
-  (defun cl-intersection (list1 list2 &rest kw)
-    (and list1 list2
-         (if (equal list1 list2)
-             list1
-           (let ((key (plist-get kw :key)) res)
-             (unless (>= (length list1) (length list2))
-               (let ((tmp list1)) (setq list1 list2 list2 tmp)))
-             (dolist (x list2 res)
-               (when (nelisp--cl-seq-member (if key (funcall key x) x) list1 kw)
-                 (push x res))))))))
-(unless (fboundp 'cl-set-exclusive-or)
-  (defun cl-set-exclusive-or (list1 list2 &rest kw)
-    (cond ((null list1) list2)
-          ((null list2) list1)
-          ((equal list1 list2) nil)
-          (t (append (apply #'cl-set-difference list1 list2 kw)
-                     (apply #'cl-set-difference list2 list1 kw))))))
-(unless (fboundp 'cl-subsetp)
-  (defun cl-subsetp (list1 list2 &rest kw)
-    (cond ((null list1) t)
-          ((null list2) nil)
-          ((equal list1 list2) t)
-          (t (let ((key (plist-get kw :key)))
-               (catch 'nelisp--cl-subsetp-fail
-                 (dolist (x list1 t)
-                   (unless (nelisp--cl-seq-member (if key (funcall key x) x) list2 kw)
-                     (throw 'nelisp--cl-subsetp-fail nil)))))))))
-(unless (fboundp 'cl-position-if)
-  (defun cl-position-if (pred seq)
-    (let ((i 0) (res nil) (l (nelisp-seq--to-list seq)))
-      (while (and l (not res)) (when (funcall pred (car l)) (setq res i)) (setq i (1+ i) l (cdr l))) res)))
 (unless (fboundp 'cl-mapcan) (defun cl-mapcan (fn &rest lists) (apply #'append (apply #'cl-mapcar fn lists))))
-(unless (fboundp 'assq-delete-all)
-  (defun assq-delete-all (key alist)
-    (unless (listp alist) (signal 'wrong-type-argument (list 'listp alist)))
-    (let (acc) (dolist (e alist (nreverse acc)) (unless (and (consp e) (eq (car e) key)) (push e acc))))))
+;; `assq-delete-all' is supplied from pinned GNU subr.el source.
 (unless (fboundp 'capitalize)
   (defun capitalize (obj)
     "Title-case OBJ: upcase each word-initial letter, downcase the rest.
@@ -2772,22 +3121,46 @@ wider than the one it replaces once the mapping leaves ASCII."
           (cond ((< ca cb) (setq res t done t)) ((> ca cb) (setq res nil done t))))
         (setq i (1+ i)))
       (if done res (< la lb)))))
-(unless (fboundp 'string<)
-  (defun string< (a b)
-    ;; `string-lessp' accepts a symbol, and so does this -- but a VECTOR is
-    ;; neither, and answering t for it made an ordering silently wrong.
-    (unless (or (stringp a) (symbolp a)) (signal 'wrong-type-argument (list 'stringp a)))
-    (unless (or (stringp b) (symbolp b)) (signal 'wrong-type-argument (list 'stringp b)))
-    (string-lessp a b)))
-(unless (fboundp 'message) (defun message (fmt &rest args) (if (null fmt) nil (apply #'format fmt args))))
-(unless (fboundp 'string-equal-ignore-case)
-  (defun string-equal-ignore-case (a b)
-    ;; Check STRINGP first: routing through `downcase' named
-    ;; `char-or-string-p', which is a different claim from what Emacs makes
-    ;; about this function's arguments.
-    (nelisp--check-string a)
-    (nelisp--check-string b)
-    (string-equal (downcase a) (downcase b))))
+;; `message' -- the standalone is always batch/`noninteractive' (see
+;; `nelisp--cli-batch-dispatch': every flag combination sets it, and the
+;; CLI usage banner says "always batch, no init files"), so this mirrors
+;; `editfns.c' `Fmessage' + `xdisp.c' `message3'/`message3_nolog' for the
+;; noninteractive branch only -- there is no other branch to reach here.
+;;
+;; `(message nil)' takes `Fmessage''s other branch (`message1 (0)') and
+;; always returns nil, but that branch is NOT a silent no-op in batch:
+;; verified against host `emacs --batch' (Emacs 31.1) --
+;; `(message nil)' still writes a bare trailing newline to stderr, same
+;; as `(message "")'.  `message3_nolog''s noninteractive arm writes the
+;; text bytes only when there is a string to write, then ALWAYS writes
+;; the trailing newline -- nil skips the (absent) text, not the newline.
+;; Confirmed empirically that `inhibit-message' suppresses this bare
+;; newline exactly like it suppresses a real message's text+newline, so
+;; one `unless inhibit-message' guard covers both branches below.
+;;
+;; For a non-nil FORMAT: only the format string (never ARGS) goes
+;; through `format-message' so a `like this' quote gets curved the way
+;; `text-quoting-style' curves it for a real terminal; the result is
+;; written to stderr followed by a newline (added by the
+;; `nelisp--write-stderr-line' builtin itself) and returned.
+;; `message-log-max' / the `*Messages*' buffer have no meaning in batch
+;; and are intentionally not implemented.
+(defvar inhibit-message nil
+  "Non-nil means `message' computes and returns its value but does not
+write anything to stderr.  Batch/noninteractive only: there is no echo
+area to suppress here, so this affects only the stderr write (text and/or
+trailing newline) that `message' would otherwise do.")
+(unless (fboundp 'message)
+  (defun message (fmt &rest args)
+    (if (null fmt)
+        (progn
+          (unless inhibit-message
+            (nelisp--write-stderr-line ""))
+          nil)
+      (let ((str (apply #'format-message fmt args)))
+        (unless inhibit-message
+          (nelisp--write-stderr-line str))
+        str))))
 ;; `make-hash-table' took ANY argument list: (make-hash-table nil \='(1 2 . 3))
 ;; answered a table, and a caller who misspelled a keyword got a table with
 ;; none of the properties it asked for -- silently.  Emacs signals, and the
@@ -2874,12 +3247,6 @@ argument error entirely."
 ;; worse than the `void-function' it replaces; the one consumer that wanted
 ;; a functionp back (nelisp-agent's trajectory test) fails honestly instead.
 
-(unless (fboundp 'string-greaterp)
-  (defun string-greaterp (a b) (string-lessp b a)))
-;; `string>' is an ALIAS in Emacs, and its absence here was not a missing
-;; feature but a `void-function' from ordinary code.
-(unless (fboundp 'string>)
-  (defun string> (a b) (string-lessp b a)))
 (unless (fboundp 'string-version-lessp)
   (defun nelisp--version-rank (c)
     "Collation weight for C in `string-version-lessp'.
@@ -2964,6 +3331,99 @@ the only case this function exists for."
     (when frame (signal 'wrong-type-argument (list 'framep frame)))
     (let ((l (getenv "LINES")))
       (if (and l (> (length l) 0)) (string-to-number l) 25))))
+
+;; GNU Emacs 31.1 always has at least one frame, even under `--batch': the
+;; dumped/initial terminal frame (confirmed on host `emacs-gtk --batch -Q':
+;; `(frame-list)' there is a one-element list).  `frame-list' returning `()'
+;; on this headless runtime (above) diverges from that, and genuine `faces.el'
+;; and `tool-bar.el' both rely on the invariant "there is always >= 1 frame
+;; to loop over" -- `make-face' (`faces.el') registers a defface'd face's
+;; *global* entry only as a side effect of its `(dolist (frame (frame-list))
+;; (internal-make-lisp-face face frame)) ' loop, so with `frame-list' truly
+;; empty no defface'd face (including `tool-bar', which `tool-bar.el' reads
+;; via `face-attribute') is ever registered at all.  `nil' is this runtime's
+;; existing stand-in for "the (only) frame" everywhere else (`internal-lisp-
+;; face-p' et al. above already treat a nil FRAME as valid), so `frame-list'
+;; below returns a one-element list holding that same stand-in, which is
+;; exactly enough to make GNU's frame-loop idiom run once against the global
+;; store instead of zero times -- not a new frame model, just enough of one
+;; to satisfy code that assumes a frame count of 1.
+(unless (fboundp 'frame-list)
+  (defun frame-list () (list nil)))
+
+;; `frame-parameter'/`set-frame-parameter' (src/frame.c) back a single,
+;; global parameter alist for this runtime's one implicit frame (see
+;; `frame-list' just above); FRAME must be nil for the same reason
+;; `internal-lisp-face-p' et al. require it.  Genuine GNU keeps a frame's
+;; parameters on the frame struct itself, entirely separate from
+;; `default-frame-alist' (which only seeds a *new* frame's initial
+;; parameters); this mirrors that separation with its own store rather than
+;; reading/writing `default-frame-alist'.
+(unless (boundp 'default-frame-alist)
+  (defvar default-frame-alist nil))
+(unless (boundp 'nelisp--frame-parameters)
+  (defvar nelisp--frame-parameters nil))
+(unless (fboundp 'frame-parameter)
+  (defun frame-parameter (frame parameter)
+    (when frame (nelisp--check-live-frame frame))
+    (cdr (assq parameter nelisp--frame-parameters))))
+(unless (fboundp 'set-frame-parameter)
+  (defun set-frame-parameter (frame parameter value)
+    (when frame (nelisp--check-live-frame frame))
+    (let ((cell (assq parameter nelisp--frame-parameters)))
+      (if cell (setcdr cell value)
+        (push (cons parameter value) nelisp--frame-parameters)))
+    value))
+
+;; `selected-frame' (src/frame.c) and `window-system' (src/frame.c) close a
+;; gap `faces.el''s own `face-spec-choose'/`face-spec-set-match-display'
+;; exposed once `frame-list' (above) started returning `(nil)': recalculating
+;; a defface's attributes for that one frame calls `(selected-frame)' when no
+;; FRAME was passed, then matches each spec entry's `(type ...)' display
+;; condition against `(window-system frame)'.  This runtime never has a
+;; window system (there is no GUI, ever, on any build), so `window-system'
+;; always returns nil -- exactly what a genuine tty/batch frame also
+;; reports, which is why e.g. `tool-bar' face's `:foreground "black"' (the
+;; `(type ...)' entries all fail to match a nil window-system, leaving only
+;; its `default' entry) matches host GNU Emacs's own `--batch' value.
+(unless (fboundp 'selected-frame)
+  (defun selected-frame () nil))
+(unless (fboundp 'window-system)
+  (defun window-system (&optional frame)
+    (when frame (nelisp--check-live-frame frame))
+    nil))
+
+;; `framep' (src/frame.c) returns a frame's window-system type symbol, or
+;; `t' specifically for a termcap/tty frame -- not merely non-nil the way
+;; `facep' etc. treat FRAME elsewhere in this runtime.  `face-spec-recalc'
+;; reads it as `(not (eq (framep frame) t))' to skip GUI-only bookkeeping on
+;; a tty frame; since this runtime's one implicit frame (`nil', see
+;; `frame-list' above) is exactly the "batch frame is the initial terminal
+;; frame" case the whole headless face model is built around, `framep' on
+;; that stand-in answers `t', matching how genuine GNU `framep' answers `t'
+;; for its own initial terminal frame in `--batch'.  Anything else can
+;; never be a frame here, so it answers nil.
+(unless (fboundp 'framep)
+  (defun framep (object) (if (null object) t nil)))
+
+;; `display-supports-face-attributes-p' (Fdisplay_supports_face_attributes_p,
+;; src/xfaces.c) starts with `if (noninteractive || !initialized) return
+;; Qnil;' -- this runtime is always `noninteractive', so it always takes
+;; that branch too, exactly as genuine GNU Emacs does in `--batch'.
+(unless (fboundp 'display-supports-face-attributes-p)
+  (defun display-supports-face-attributes-p (attributes &optional display)
+    (ignore attributes) (ignore display)
+    nil))
+
+;; GNU Emacs 31.1's `src/minibuf.c' DEFVAR_LISPs this to `(read-only t)';
+;; `faces.el' appends `(face minibuffer-prompt)' to it unconditionally at
+;; load time (`(setq minibuffer-prompt-properties (append (list 'face
+;; 'minibuffer-prompt) minibuffer-prompt-properties))'), so it must already
+;; be bound before genuine `faces.el' loads (see the whole-file load further
+;; down this bootstrap, in `nelisp-standalone--load-path-src').
+(unless (boundp 'minibuffer-prompt-properties)
+  (defvar minibuffer-prompt-properties (list 'read-only t)))
+
 ;; `random' via a 31-bit LCG (glibc constants).  Deterministic -- adequate for
 ;; tests / sampling, NOT for cryptography (use a getrandom syscall for that).
 (unless (boundp 'nelisp--random-state) (defvar nelisp--random-state 305419896))
@@ -3023,8 +3483,6 @@ reseeds from its characters; nil -> a full LCG value."
   (defmacro cl-assert (form &rest _) `(unless ,form (error "Assertion failed: %S" ',form))))
 (unless (fboundp 'cl-check-type)
   (defmacro cl-check-type (x type &rest _) `(unless (cl-typep ,x ',type) (error "Wrong type: %S is not %S" ,x ',type))))
-(unless (fboundp 'ignore-error)
-  (defmacro ignore-error (cond &rest body) `(condition-case nil (progn ,@body) (,cond nil))))
 (unless (fboundp 'with-demoted-errors)
   (defmacro with-demoted-errors (fmt &rest body)
     (let ((f (if (stringp fmt) fmt "Error: %S")) (b (if (stringp fmt) body (cons fmt body))))
@@ -3035,15 +3493,6 @@ reseeds from its characters; nil -> a full LCG value."
   (defmacro dlet (bindings &rest body)
     `(progn ,@(mapcar (lambda (b) `(defvar ,(if (consp b) (car b) b))) bindings)
             (let ,bindings ,@body))))
-(unless (fboundp 'while-let)
-  (defmacro while-let (spec &rest body)
-    (let ((bs (if (and (consp spec) (symbolp (car spec))) (list spec) spec)))
-      `(catch 'while-let--done
-         (while t
-           (let* ,(mapcar (lambda (b) (if (consp b) b (list b b))) bs)
-             (unless (and ,@(mapcar (lambda (b) (if (consp b) (car b) b)) bs))
-               (throw 'while-let--done nil))
-             ,@body))))))
 ;; fix/cl-letf-non-literal-place: the previous body read the symbol out
 ;; of PLACE's own source text via `(cadr (cadr place))', i.e. it assumed
 ;; `(symbol-function 'sym)'/`(symbol-value 'sym)' with a literally quoted
@@ -3338,62 +3787,6 @@ path, which asks for a NUMBER first and only then for an integer."
             (setq found (car alist))
           (setq alist (cdr alist))))
       found)))
-(unless (fboundp 'last)
-  (defun last (list &optional n)
-    ;; Emacs answers the object itself for a non-list -- (last t) is t --
-    ;; because it walks with `cdr' rather than measuring first.  Measuring
-    ;; with `length' made it signal `sequencep' instead.
-    (if (not (consp list)) (if (and n (< n 0)) nil list)
-      (let ((len (safe-length list)) (m (or n 1)))
-        ;; A NEGATIVE N asks for zero elements and answers nil; only a
-        ;; too-large positive N answers the whole list.  Running `nthcdr'
-        ;; for the negative case walked into an improper tail and signalled
-        ;; where Emacs answers nil.
-        (cond
-         ((< m 0) nil)
-         ((> len m) (nthcdr (- len m) list))
-         (t list))))))
-(unless (fboundp 'butlast)
-  (defun butlast (list &optional n)
-    (when n (unless (numberp n) (signal 'wrong-type-argument (list 'number-or-marker-p n))))
-    ;; A non-positive N answers LIST without looking at it, so
-    ;; (butlast -7 -7) is -7 rather than a type error about -7.
-    (if (and n (<= n 0))
-        list
-    (let* ((len (length list)) (m (or n 1)) (keep (- len m)) (acc nil) (i 0))
-      (while (and (< i keep) list)
-        (setq acc (cons (car list) acc))
-        (setq list (cdr list))
-        (setq i (1+ i)))
-      (nreverse acc)))))
-;; fix/copy-tree-vecp: this bridge stub's `_vecp' (underscore-prefixed:
-;; deliberately ignored) meant a vector reached through TREE was always
-;; shared with the original rather than copied, so `(let* ((v (vector 1
-;; 2 3)) (c (copy-tree (list :a v) t))) (aset (plist-get c :a) 0 99) v)'
-;; mutated the CALLER's `v' to `[99 2 3]' even though VECP was non-nil.
-;; A correct, unconditional implementation already existed unused (never
-;; assembled into this file) at `lisp/nelisp-stdlib-plist-str.el'; this
-;; is that same text, reconciled here rather than duplicated a third
-;; way, still guarded to match this section's convention.
-(unless (fboundp 'copy-tree)
-  (defun copy-tree (tree &optional vecp)
-    "Return a deep copy of TREE.  Conses are recursively copied; non-
-cons leaves are returned unchanged.  When VECP is non-nil, vectors
-inside TREE are also copied recursively (matches the host Emacs
-contract)."
-    (cond
-     ((consp tree)
-      (cons (copy-tree (car tree) vecp)
-            (copy-tree (cdr tree) vecp)))
-     ((and vecp (vectorp tree))
-      (let* ((n (length tree))
-             (out (make-vector n nil))
-             (i 0))
-        (while (< i n)
-          (aset out i (copy-tree (aref tree i) vecp))
-          (setq i (1+ i)))
-        out))
-     (t tree))))
 
 ;; A negative N is not an error in Emacs -- `nthcdr' treats it as zero, so
 ;; `(nth -1 '(1 2 3))' is 1.  This answered nil, quietly, for any negative
@@ -3476,32 +3869,6 @@ contract)."
    ((stringp seq) (reverse seq))
    (t (signal 'wrong-type-argument (list 'sequencep seq)))))
 
-(unless (fboundp 'last)
-  (defun last (list &optional n)
-    "Return the last link of LIST.  Its `car' is the last element.\nIf LIST is nil, return nil.  If N is non-nil, return the Nth-to-last\nlink of LIST."
-    (let* ((m (or n 1)) (cur list) (lead list))
-      (if (<= m 0)
-          nil
-        (let ((i 0))
-          (while (and (consp lead) (< i m))
-            (setq lead (cdr lead)) (setq i (1+ i))))
-        (while (consp lead) (setq cur (cdr cur)) (setq lead (cdr lead)))
-        cur))))
-
-(unless (fboundp 'butlast)
-  (defun butlast (list &optional n)
-    "Return a copy of LIST with the last N elements removed.\nIf N is omitted or nil, the last element is removed.  If N is zero\nor negative, return a full copy of LIST."
-    (let ((m (or n 1)))
-      (if (<= m 0) list
-	(let* ((len 0) (cur list))
-	  (while (consp cur) (setq len (1+ len)) (setq cur (cdr cur)))
-	  (let ((keep (- len m)))
-	    (if (<= keep 0) nil
-	      (let ((acc nil) (i 0) (src list))
-		(while (and (< i keep) (consp src))
-		  (setq acc (cons (car src) acc)) (setq src (cdr src))
-		  (setq i (1+ i)))
-		(reverse acc)))))))))
 
 (defun nelisp--append-collect (acc seq)
   "Walk SEQ and `cons' each element onto ACC (= reverse-order\naccumulator).  SEQ may be nil / cons / vector / string.  Returns\nthe new ACC.  Signals `wrong-type-argument' for improper-list cons\nor non-sequence atom."
@@ -3631,32 +3998,6 @@ contract)."
             result)))))))
 (unless (fboundp 'append)
   (defun append (&rest args) (apply #'nelisp--append-slow args)))
-
-(defun caar (x) (car (car x)))
-
-(defun cadr (x) (car (cdr x)))
-
-(defun cdar (x) (cdr (car x)))
-
-(defun cddr (x) (cdr (cdr x)))
-
-(defun caaar (x) (car (car (car x))))
-
-(defun caadr (x) (car (car (cdr x))))
-
-(defun cadar (x) (car (cdr (car x))))
-
-(defun caddr (x) (car (cdr (cdr x))))
-
-(defun cdaar (x) (cdr (car (car x))))
-
-(defun cdadr (x) (cdr (car (cdr x))))
-
-(defun cddar (x) (cdr (cdr (car x))))
-
-(defun cdddr (x) (cdr (cdr (cdr x))))
-
-(defun cadddr (x) (car (cdr (cdr (cdr x)))))
 
 ;; Rust-min batch 6g (2026-05-06): `copy-sequence' partial migration.
 ;; cons / nil paths handled in elisp; other types (str / mutstr /
@@ -3921,14 +4262,572 @@ Doc 22 A6: arrays are iterated by index."
           (setcdr (cdr end) (cons key (cons value nil)))
           plist)))))
 
-;; `(string-empty-p nil)' answered t, because `(length nil)' is 0 -- so the
-;; commonest "no string here" value reported itself as an empty string.
-;; Emacs compares with `string=', which is nil for a non-string.
-;; Emacs's is (string= STRING ""), and `string=' accepts a SYMBOL as well
-;; as a string -- so (string-empty-p nil) is nil, not an error, while
-;; (string-empty-p 12354) signals `stringp'.  Checking for a string outright
-;; got the number right and the symbol wrong.
-(defun string-empty-p (s) (string-equal s ""))
+;; --- Wave-2 (C): symbol plists (put/get) -------------------------------
+(unless (boundp 'nelisp-stdlib--symbol-plists)
+  (setq nelisp-stdlib--symbol-plists (make-hash-table)))
+(unless (fboundp 'symbol-plist)
+  (defun symbol-plist (sym)
+    (nelisp--check-symbol sym)
+    (gethash sym nelisp-stdlib--symbol-plists)))
+(unless (fboundp 'setplist)
+  (defun setplist (sym plist)
+    (nelisp--check-symbol sym)
+    (puthash sym plist nelisp-stdlib--symbol-plists)
+    plist))
+(unless (fboundp 'get)
+  (defun get (sym prop)
+    (nelisp--check-symbol sym)
+    (plist-get (gethash sym nelisp-stdlib--symbol-plists) prop)))
+(unless (fboundp 'put)
+  (defun put (sym prop val)
+    (nelisp--check-symbol sym)
+    (puthash sym
+             (plist-put (gethash sym nelisp-stdlib--symbol-plists) prop val)
+             nelisp-stdlib--symbol-plists)
+    val))
+
+;; Replay the `declare' forms queued before `put' existed (see
+;; `nelisp--declaration-forms'), oldest first.
+(let ((pending (nreverse nelisp--pending-declarations)))
+  (setq nelisp--pending-declarations nil)
+  (while pending
+    (eval (car pending))
+    (setq pending (cdr pending))))
+
+;; GNU Emacs 31.1's `src/emacs.c' DEFVAR_BOOLs this to 0/nil, but every
+;; interactive `-Q'/`-quick' and `--no-x-resources' run (`lisp/startup.el')
+;; sets it to t, and this headless runtime has no X resource database in
+;; any mode -- it is always, in effect, a `-Q --batch' run.  `faces.el''s
+;; `make-face-x-resource-internal' reads this unconditionally from the very
+;; first `defface' (GNU's `default' face) onward, so it must exist before
+;; genuine `faces.el' loads (see the whole-file load further down this
+;; bootstrap, in `nelisp-standalone--load-path-src').
+(unless (boundp 'inhibit-x-resources)
+  (defvar inhibit-x-resources t))
+
+;; Headless face registry: GNU Emacs 31.1 keeps global Lisp face definitions
+;; in `Vface_new_frame_defaults' (src/xfaces.c) and per-frame overrides in
+;; each frame's `face_hash_table' struct slot.  This runtime never creates a
+;; *real* live frame (`frame-list' above always returns the one-element
+;; `(nil)', never an actual frame object), so only the global store is
+;; modeled.  FRAME nil ("the selected frame") and FRAME t ("the defaults for
+;; new frames") therefore both resolve to that single store in every
+;; primitive below -- there is no separate "selected frame" to diverge from
+;; the defaults.  The variable is named `face--new-frame-defaults' (not an ad
+;; hoc name) because genuine `faces.el', loaded whole further down the
+;; bootstrap (see `nelisp-standalone--load-path-src'), reads it directly
+;; (`face-list', `make-obsolete-variable' for the old `face-new-frame-defaults'
+;; name).  Each entry is (FACE-ID . ATTRS) where ATTRS is a 20-slot vector:
+;; slot 0 is always the tag symbol `face' and slots 1-19 mirror GNU's
+;; `LFACE_FAMILY_INDEX' .. `LFACE_EXTEND_INDEX' (src/dispextern.h).
+(unless (boundp 'face--new-frame-defaults)
+  (defvar face--new-frame-defaults (make-hash-table :test 'eq)))
+(unless (boundp 'nelisp--face-next-id)
+  (defvar nelisp--face-next-id 0))
+(unless (gethash 'default face--new-frame-defaults)
+  (let ((attributes (make-vector 20 'unspecified)))
+    (aset attributes 0 'face)
+    (puthash 'default (cons nelisp--face-next-id attributes)
+             face--new-frame-defaults)
+    (put 'default 'face nelisp--face-next-id)
+    (setq nelisp--face-next-id (1+ nelisp--face-next-id))))
+
+;; LFACE_*_INDEX (src/dispextern.h), used by `internal-get-lisp-face-attribute'
+;; and by the GET half of every other primitive below.  `internal-set-lisp-
+;; face-attribute' does not consult this table: each of its attributes has
+;; its own validation, so it ASETs its own literal index (matching GNU's
+;; explicit `LFACE_FOO_INDEX' constants) after validating.
+(defconst nelisp--lface-attr-index-alist
+  '((:family . 1) (:foundry . 2) (:width . 3) (:height . 4) (:weight . 5)
+    (:slant . 6) (:underline . 7) (:inverse-video . 8) (:foreground . 9)
+    (:background . 10) (:stipple . 11) (:overline . 12) (:strike-through . 13)
+    (:box . 14) (:font . 15) (:inherit . 16) (:fontset . 17)
+    (:distant-foreground . 18) (:extend . 19)))
+
+;; GNU font.c's `weight_table' / `slant_table' / `width_table' (the name
+;; lists only; this runtime never resolves a name to its numeric strength,
+;; since nothing here selects real fonts).  Used by `internal-set-lisp-
+;; face-attribute' to validate `:weight' / `:slant' / `:width'.
+(defconst nelisp--font-weight-names
+  '("thin" "ultra-light" "ultralight" "extra-light" "extralight" "light"
+    "semi-light" "semilight" "demilight" "regular" "normal" "unspecified"
+    "book" "medium" "semi-bold" "semibold" "demibold" "demi-bold" "demi"
+    "bold" "extra-bold" "extrabold" "ultra-bold" "ultrabold" "black" "heavy"
+    "ultra-heavy" "ultraheavy"))
+(defconst nelisp--font-slant-names
+  '("reverse-oblique" "ro" "reverse-italic" "ri" "normal" "r" "unspecified"
+    "italic" "i" "ot" "oblique" "o"))
+(defconst nelisp--font-width-names
+  '("ultra-condensed" "ultracondensed" "extra-condensed" "extracondensed"
+    "condensed" "compressed" "narrow" "semi-condensed" "semicondensed"
+    "demicondensed" "normal" "medium" "regular" "unspecified"
+    "semi-expanded" "semiexpanded" "demiexpanded" "expanded"
+    "extra-expanded" "extraexpanded" "ultra-expanded" "ultraexpanded" "wide"))
+(defun nelisp--font-style-name-valid-p (names value)
+  (and (symbolp value) value (member (symbol-name value) names) t))
+
+(defun nelisp--check-live-frame (frame)
+  "Signal like GNU's `CHECK_LIVE_FRAME' (src/frame.h), whose `CHECK_TYPE'
+predicate symbol is `frame-live-p' (not `framep' -- that is `CHECK_FRAME''s
+predicate, for a FRAME that need not be live).  This runtime never creates
+a frame (`frame-list' is always empty), so no FRAME argument -- not even a
+value that would be a live frame elsewhere -- can ever satisfy this check."
+  (signal 'wrong-type-argument (list 'frame-live-p frame)))
+
+(defun nelisp--resolve-face-name (face signal-p)
+  "Elisp translation of GNU's static `resolve_face_name' (src/xfaces.c).
+Follow FACE's `face-alias' property chain (tortoise/hare cycle detection,
+exactly as the C version walks it) and return the final face symbol.  A
+string FACE is interned first; nil or any other non-symbol is returned
+unchanged (mirrors the C function's own NILP/SYMBOLP special case)."
+  (when (stringp face) (setq face (intern face)))
+  (if (not (and face (symbolp face)))
+      face
+    (let ((orig face) (tortoise face) (hare face) (result face))
+      (catch 'nelisp--resolve-face-name-done
+        (while t
+          (setq result hare)
+          (setq hare (get hare 'face-alias))
+          (unless (and hare (symbolp hare))
+            (throw 'nelisp--resolve-face-name-done result))
+          (setq result hare)
+          (setq hare (get hare 'face-alias))
+          (unless (and hare (symbolp hare))
+            (throw 'nelisp--resolve-face-name-done result))
+          (setq tortoise (get tortoise 'face-alias))
+          (when (eq hare tortoise)
+            (if signal-p
+                (signal 'circular-list (list orig))
+              (throw 'nelisp--resolve-face-name-done 'default))))))))
+
+(defun nelisp--lface-from-face-name-no-resolve (face-name signal-p)
+  "Elisp translation of GNU's static `lface_from_face_name_no_resolve'.
+Global store only (F is always NULL in this runtime's terms)."
+  (let ((entry (gethash face-name face--new-frame-defaults)))
+    (if entry (cdr entry)
+      (when signal-p (signal 'error (list "Invalid face" face-name)))
+      nil)))
+
+(defun nelisp--lface-from-face-name (face-name signal-p)
+  "Elisp translation of GNU's static `lface_from_face_name': resolve
+FACE-NAME's aliases, then look it up in the global store."
+  (nelisp--lface-from-face-name-no-resolve
+   (nelisp--resolve-face-name face-name signal-p) signal-p))
+
+(defun internal-lisp-face-p (face &optional frame)
+  "Elisp translation of GNU Emacs 31.1's `internal-lisp-face-p'
+\(Finternal_lisp_face_p, src/xfaces.c).  Unlike most other face primitives,
+GNU's own C function has no FRAME=t convention here -- ANY non-nil FRAME
+must be a live frame, and this runtime never has one."
+  (setq face (nelisp--resolve-face-name face t))
+  (when frame (nelisp--check-live-frame frame))
+  (nelisp--lface-from-face-name-no-resolve face nil))
+
+(defun internal-make-lisp-face (face &optional frame)
+  "Elisp translation of GNU Emacs 31.1's `internal-make-lisp-face'
+\(Finternal_make_lisp_face, src/xfaces.c).  FRAME must be nil: a frame-local
+face requires a live frame, which this runtime never has."
+  (unless (symbolp face) (signal 'wrong-type-argument (list 'symbolp face)))
+  (when frame (nelisp--check-live-frame frame))
+  ;; GNU looks the existing entry up under the alias-resolved name, but (when
+  ;; it must create a new one) registers it under the ORIGINAL, unresolved
+  ;; FACE symbol -- reproduced here even though no shipped defface ever
+  ;; exercises a `face-alias' this early.
+  (let ((existing (nelisp--lface-from-face-name-no-resolve
+                    (nelisp--resolve-face-name face nil) nil)))
+    (if existing
+        (let ((i 1))
+          (while (< i (length existing))
+            (aset existing i 'unspecified)
+            (setq i (1+ i)))
+          existing)
+      (let ((attributes (make-vector 20 'unspecified))
+            (id nelisp--face-next-id))
+        (aset attributes 0 'face)
+        (setq nelisp--face-next-id (1+ id))
+        (puthash face (cons id attributes) face--new-frame-defaults)
+        (put face 'face id)
+        attributes))))
+
+(unless (fboundp 'internal-copy-lisp-face)
+  (defun internal-copy-lisp-face (from to frame new-frame)
+    "Elisp translation of GNU Emacs 31.1's `internal-copy-lisp-face'
+  \(Finternal_copy_lisp_face, src/xfaces.c).  Only FRAME t (copy the global
+  definition) can succeed here; a frame-local copy needs a live FRAME and
+  NEW-FRAME, which this runtime never has."
+    (unless (symbolp from) (signal 'wrong-type-argument (list 'symbolp from)))
+    (unless (symbolp to) (signal 'wrong-type-argument (list 'symbolp to)))
+    (if (eq frame t)
+        (let ((lface (nelisp--lface-from-face-name from t))
+              (copy (internal-make-lisp-face to nil))
+              (i 0))
+          (while (< i (length copy))
+            (aset copy i (aref lface i))
+            (setq i (1+ i)))
+          to)
+      (nelisp--check-live-frame frame))))
+
+(unless (fboundp 'internal-get-lisp-face-attribute)
+  (defun internal-get-lisp-face-attribute (symbol keyword &optional frame)
+    "Elisp translation of GNU Emacs 31.1's `internal-get-lisp-face-attribute'
+  \(Finternal_get_lisp_face_attribute, src/xfaces.c)."
+    (unless (symbolp symbol) (signal 'wrong-type-argument (list 'symbolp symbol)))
+    (unless (symbolp keyword) (signal 'wrong-type-argument (list 'symbolp keyword)))
+    (unless (memq frame '(nil t)) (nelisp--check-live-frame frame))
+    (let* ((lface (nelisp--lface-from-face-name symbol t))
+           (index (cdr (assq keyword nelisp--lface-attr-index-alist))))
+      (unless index (signal 'error (list "Invalid face attribute name" keyword)))
+      (let ((value (aref lface index)))
+        (if (eq value :ignore-defface) 'unspecified value)))))
+
+(unless (fboundp 'internal-lisp-face-attribute-values)
+  (defun internal-lisp-face-attribute-values (attr)
+    "Elisp translation of GNU Emacs 31.1's `internal-lisp-face-attribute-values'."
+    (unless (symbolp attr) (signal 'wrong-type-argument (list 'symbolp attr)))
+    (if (memq attr '(:underline :overline :strike-through :inverse-video :extend))
+        (list t nil)
+      nil)))
+
+(defun nelisp--face-inheritance-cycle-p (value child)
+  "Elisp translation of GNU's static `face_inheritance_cycle' (src/xfaces.c),
+for the global-only store (F is always NULL in this runtime's terms)."
+  (cond
+   ((consp value)
+    (let ((tail value) (cycle nil))
+      (while (and (consp tail) (not cycle))
+        (let* ((member-face (car tail))
+               (attrs (nelisp--lface-from-face-name-no-resolve
+                       (nelisp--resolve-face-name member-face nil) nil)))
+          (if (null attrs)
+              (setq tail nil)
+            (let ((parent (aref attrs 16)))
+              (cond
+               ((or (eq parent member-face) (eq parent child)) (setq cycle t))
+               ((not (memq parent '(nil unspecified :ignore-defface reset)))
+                (setq cycle (nelisp--face-inheritance-cycle-p parent child)))))
+            (setq tail (cdr tail)))))
+      cycle))
+   ((symbolp value)
+    (let ((attrs (nelisp--lface-from-face-name-no-resolve
+                  (nelisp--resolve-face-name value nil) nil)))
+      (when attrs
+        (let ((parent (aref attrs 16)))
+          (cond
+           ((or (eq parent value) (eq parent child)) t)
+           ((not (memq parent '(nil unspecified :ignore-defface reset)))
+            (nelisp--face-inheritance-cycle-p parent child)))))))))
+
+(defun nelisp--valid-inherit-shape-p (value)
+  "Non-nil if VALUE is a symbol or a proper list of symbols, mirroring the
+`tail' walk in GNU's `internal-set-lisp-face-attribute' (src/xfaces.c)."
+  (if (symbolp value) t
+    (let ((tail value))
+      (while (and (consp tail) (symbolp (car tail)))
+        (setq tail (cdr tail)))
+      (null tail))))
+
+(defun nelisp--valid-underline-p (value)
+  "Elisp translation of the `:underline' validity check inside GNU's
+`internal-set-lisp-face-attribute' (src/xfaces.c)."
+  (cond
+   ((memq value '(unspecified :ignore-defface reset)) t)
+   ((or (null value) (eq value t)) t)
+   ((and (stringp value) (> (length value) 0)) t)
+   ((consp value)
+    (let ((list value) (valid t))
+      (while (and valid (car-safe list))
+        (let (key val)
+          (setq key (car-safe list) list (cdr-safe list))
+          (setq val (car-safe list) list (cdr-safe list))
+          (cond
+           ((or (null key) (and (null val) (not (eq key :position))))
+            (setq valid nil))
+           ((and (eq key :color)
+                 (not (or (eq val 'foreground-color)
+                          (and (stringp val) (> (length val) 0)))))
+            (setq valid nil))
+           ((and (eq key :style) (not (memq val '(line double-line wave dots dashes))))
+            (setq valid nil)))))
+      valid))
+   (t nil)))
+
+(defun nelisp--valid-box-plist-p (value)
+  "The plist-shaped `:box' case of GNU's `internal-set-lisp-face-attribute'."
+  (let ((tem value))
+    (catch 'nelisp--valid-box-plist-done
+      (while (consp tem)
+        (let ((k (car tem)) v)
+          (setq tem (cdr tem))
+          (unless (consp tem) (throw 'nelisp--valid-box-plist-done nil))
+          (setq v (car tem))
+          (cond
+           ((eq k :line-width)
+            (unless (or (and (consp v) (integerp (car v)) (/= (car v) 0)
+                              (integerp (cdr v)) (/= (cdr v) 0))
+                        (and (integerp v) (/= v 0)))
+              (throw 'nelisp--valid-box-plist-done nil)))
+           ((eq k :color)
+            (unless (or (null v) (and (stringp v) (> (length v) 0)))
+              (throw 'nelisp--valid-box-plist-done nil)))
+           ((eq k :style)
+            (unless (or (null v) (memq v '(pressed-button released-button flat-button)))
+              (throw 'nelisp--valid-box-plist-done nil)))
+           (t (throw 'nelisp--valid-box-plist-done nil)))
+          (setq tem (cdr tem))))
+      (null tem))))
+
+(defun nelisp--valid-box-p (value)
+  "Elisp translation of the `:box' validity check inside GNU's
+`internal-set-lisp-face-attribute' (src/xfaces.c).  Caller has already
+turned a literal t into 1, matching the C function's own order."
+  (cond
+   ((memq value '(unspecified :ignore-defface reset)) t)
+   ((null value) t)
+   ((integerp value) (/= value 0))
+   ((stringp value) (> (length value) 0))
+   ((and (consp value) (integerp (car value)) (integerp (cdr value))) t)
+   ((consp value) (nelisp--valid-box-plist-p value))
+   (t nil)))
+
+(unless (fboundp 'bitmap-spec-p)
+  (defun bitmap-spec-p (object)
+    "Elisp translation of GNU Emacs 31.1's `bitmap-spec-p' (Fbitmap_spec_p,
+  src/xfaces.c).  Its `#ifdef HAVE_WINDOW_SYSTEM' guard is compile-time (any
+  build with window-system support keeps it, batch or not), so it is genuinely
+  reachable from `:stipple' validation even though nothing here can display a
+  bitmap."
+    (cond
+     ((stringp object) t)
+     ((consp object)
+      (let* ((width (nth 0 object)) (height (nth 1 object)) (data (nth 2 object)))
+        (and (stringp data) (integerp width) (>= width 1)
+             (integerp height) (>= height 1)
+             (<= height (/ (length data) (/ (+ width 7) 8))))))
+     (t nil))))
+
+(defun nelisp--merge-face-heights (from to invalid)
+  "Elisp translation of GNU's static `merge_face_heights' (src/xfaces.c)."
+  (cond
+   ((integerp from) from)
+   ((floatp from)
+    (cond ((integerp to) (truncate (* from to)))
+          ((floatp to) (* from to))
+          ((eq to 'unspecified) from)
+          (t invalid)))
+   ((functionp from)
+    (let* ((result (condition-case nil (funcall from to) (error nil))))
+      (if (and (integerp to) (not (integerp result))) invalid result)))
+   (t invalid)))
+
+(unless (fboundp 'internal-set-lisp-face-attribute)
+  (defun internal-set-lisp-face-attribute (face attr value &optional frame)
+    "Elisp translation of GNU Emacs 31.1's `internal-set-lisp-face-attribute'
+  \(Finternal_set_lisp_face_attribute, src/xfaces.c) for this headless runtime.
+  
+  FRAME nil auto-creates the (global, since there is no other kind here) face
+  if missing, matching GNU's \"selected frame\" branch; FRAME t requires the
+  face to already exist, matching GNU's \"defaults for new frames\" branch;
+  FRAME 0 sets FRAME t and then broadcasts to every element of `frame-list'
+  \(a single `nil', see `frame-list' above), matching GNU's `FOR_EACH_FRAME'
+  broadcast now that this runtime models one frame instead of zero; any other
+  FRAME signals, matching `CHECK_LIVE_FRAME' with no live frame ever existing.
+  The display/redisplay/frame-parameter side effects the C function performs
+  after a successful set (`face_change' flags, `default-frame-alist' or a live
+  frame's parameters, menu-bar-changed bookkeeping) are omitted: none of them
+  is observable without a display or a redisplay loop."
+    (unless (symbolp face) (signal 'wrong-type-argument (list 'symbolp face)))
+    (unless (symbolp attr) (signal 'wrong-type-argument (list 'symbolp attr)))
+    (setq face (nelisp--resolve-face-name face t))
+    (if (and (integerp frame) (= frame 0))
+        (progn
+          (internal-set-lisp-face-attribute face attr value t)
+          (dolist (fr (frame-list))
+            (internal-set-lisp-face-attribute face attr value fr))
+          face)
+      (let (lface)
+        (if (eq frame t)
+            (setq lface (nelisp--lface-from-face-name face t))
+          (when frame (nelisp--check-live-frame frame))
+          (setq lface (nelisp--lface-from-face-name-no-resolve face nil))
+          (unless lface (setq lface (internal-make-lisp-face face nil))))
+        (cond
+         ((eq attr :family)
+          (unless (memq value '(unspecified :ignore-defface reset))
+            (unless (stringp value) (signal 'wrong-type-argument (list 'stringp value)))
+            (when (= (length value) 0) (signal 'error (list "Invalid face family" value))))
+          (aset lface 1 value))
+         ((eq attr :foundry)
+          (unless (memq value '(unspecified :ignore-defface reset))
+            (unless (stringp value) (signal 'wrong-type-argument (list 'stringp value)))
+            (when (= (length value) 0) (signal 'error (list "Invalid face foundry" value))))
+          (aset lface 2 value))
+         ((eq attr :width)
+          (unless (memq value '(unspecified :ignore-defface reset))
+            (unless (symbolp value) (signal 'wrong-type-argument (list 'symbolp value)))
+            (unless (nelisp--font-style-name-valid-p nelisp--font-width-names value)
+              (signal 'error (list "Invalid face width" value))))
+          (aset lface 3 value))
+         ((eq attr :height)
+          (unless (memq value '(unspecified :ignore-defface reset))
+            (if (eq face 'default)
+                (unless (and (integerp value) (> value 0))
+                  (signal 'error (list "Default face height not absolute and positive" value)))
+              (let ((test (nelisp--merge-face-heights value 10 nil)))
+                (unless (and (integerp test) (> test 0))
+                  (signal 'error (list "Face height does not produce a positive integer" value))))))
+          (aset lface 4 value))
+         ((eq attr :weight)
+          (unless (memq value '(unspecified :ignore-defface reset))
+            (unless (symbolp value) (signal 'wrong-type-argument (list 'symbolp value)))
+            (unless (nelisp--font-style-name-valid-p nelisp--font-weight-names value)
+              (signal 'error (list "Invalid face weight" value))))
+          (aset lface 5 value))
+         ((eq attr :slant)
+          (unless (memq value '(unspecified :ignore-defface reset))
+            (unless (symbolp value) (signal 'wrong-type-argument (list 'symbolp value)))
+            (unless (nelisp--font-style-name-valid-p nelisp--font-slant-names value)
+              (signal 'error (list "Invalid face slant" value))))
+          (aset lface 6 value))
+         ((eq attr :underline)
+          (unless (nelisp--valid-underline-p value)
+            (signal 'error (list "Invalid face underline" value)))
+          (aset lface 7 value))
+         ((eq attr :inverse-video)
+          (unless (memq value '(unspecified :ignore-defface reset))
+            (unless (symbolp value) (signal 'wrong-type-argument (list 'symbolp value)))
+            (unless (or (eq value t) (null value))
+              (signal 'error (list "Invalid inverse-video face attribute value" value))))
+          (aset lface 8 value))
+         ((eq attr :foreground)
+          (when (null value) (setq value 'unspecified))
+          (unless (memq value '(unspecified :ignore-defface reset))
+            (unless (stringp value) (signal 'wrong-type-argument (list 'stringp value)))
+            (when (= (length value) 0) (signal 'error (list "Empty foreground color value" value))))
+          (aset lface 9 value))
+         ((eq attr :background)
+          (when (null value) (setq value 'unspecified))
+          (unless (memq value '(unspecified :ignore-defface reset))
+            (unless (stringp value) (signal 'wrong-type-argument (list 'stringp value)))
+            (when (= (length value) 0) (signal 'error (list "Empty background color value" value))))
+          (aset lface 10 value))
+         ((eq attr :stipple)
+          (unless (memq value '(unspecified :ignore-defface reset))
+            (unless (or (null value) (bitmap-spec-p value))
+              (signal 'error (list "Invalid stipple attribute" value))))
+          (aset lface 11 value))
+         ((eq attr :overline)
+          (unless (memq value '(unspecified :ignore-defface reset))
+            (when (or (and (symbolp value) (not (eq value t)) value)
+                      (and (stringp value) (= (length value) 0)))
+              (signal 'error (list "Invalid face overline" value))))
+          (aset lface 12 value))
+         ((eq attr :strike-through)
+          (unless (memq value '(unspecified :ignore-defface reset))
+            (when (or (and (symbolp value) (not (eq value t)) value)
+                      (and (stringp value) (= (length value) 0)))
+              (signal 'error (list "Invalid face strike-through" value))))
+          (aset lface 13 value))
+         ((eq attr :box)
+          (when (eq value t) (setq value 1))
+          (unless (nelisp--valid-box-p value)
+            (signal 'error (list "Invalid face box" value)))
+          (aset lface 14 value))
+         ((eq attr :font)
+          ;; GNU only validates/loads a real font when FRAME is t or a
+          ;; window-system frame; otherwise it falls through to a plain ASET
+          ;; (see the `#ifdef HAVE_WINDOW_SYSTEM' block in
+          ;; `internal-set-lisp-face-attribute').  This runtime is never a
+          ;; window-system frame, so it always takes that plain-ASET path.
+          (aset lface 15 value))
+         ((eq attr :inherit)
+          (cond
+           ((or (eq value face) (nelisp--face-inheritance-cycle-p value face))
+            (signal 'error (list "Face inheritance results in inheritance cycle" value)))
+           ((nelisp--valid-inherit-shape-p value) (aset lface 16 value))
+           (t (signal 'error (list "Invalid face inheritance" value)))))
+         ((eq attr :fontset)
+          ;; Same `HAVE_WINDOW_SYSTEM'-but-not-a-window-frame case as `:font',
+          ;; except GNU's fontset branch has no plain-ASET fallback at all: on
+          ;; a non-window frame, setting `:fontset' is a genuine no-op.
+          nil)
+         ((eq attr :extend)
+          (unless (memq value '(unspecified :ignore-defface reset))
+            (unless (symbolp value) (signal 'wrong-type-argument (list 'symbolp value)))
+            (unless (or (eq value t) (null value))
+              (signal 'error (list "Invalid extend face attribute value" value))))
+          (aset lface 19 value))
+         ((eq attr :distant-foreground)
+          (when (null value) (setq value 'unspecified))
+          (unless (memq value '(unspecified :ignore-defface reset))
+            (unless (stringp value) (signal 'wrong-type-argument (list 'stringp value)))
+            (when (= (length value) 0)
+              (signal 'error (list "Empty distant-foreground color value" value))))
+          (aset lface 18 value))
+         ((eq attr :bold)
+          (aset lface 5 (if (eq value 'reset) value (if (null value) 'normal 'bold))))
+         ((eq attr :italic)
+          (aset lface 6 (if (eq value 'reset) value (if (null value) 'normal 'italic))))
+         (t (signal 'error (list "Invalid face attribute name" attr))))
+        face))))
+
+(unless (fboundp 'internal-lisp-face-equal-p)
+  (defun internal-lisp-face-equal-p (face1 face2 &optional frame)
+    "Elisp translation of GNU Emacs 31.1's `internal-lisp-face-equal-p'."
+    (unless (memq frame '(nil t)) (nelisp--check-live-frame frame))
+    (let ((lface1 (nelisp--lface-from-face-name face1 t))
+          (lface2 (nelisp--lface-from-face-name face2 t))
+          (i 1) (equal-p t))
+      (while (and equal-p (< i (length lface1)))
+        (setq equal-p (and (equal (aref lface1 i) (aref lface2 i)) t))
+        (setq i (1+ i)))
+      equal-p)))
+
+(unless (fboundp 'internal-lisp-face-empty-p)
+  (defun internal-lisp-face-empty-p (face &optional frame)
+    "Elisp translation of GNU Emacs 31.1's `internal-lisp-face-empty-p'."
+    (unless (memq frame '(nil t)) (nelisp--check-live-frame frame))
+    (let ((lface (nelisp--lface-from-face-name face t)) (i 1) (empty t))
+      (while (and empty (< i (length lface)))
+        (when (not (eq (aref lface i) 'unspecified)) (setq empty nil))
+        (setq i (1+ i)))
+      empty)))
+
+(unless (fboundp 'internal-merge-in-global-face)
+  (defun internal-merge-in-global-face (face frame)
+    "Elisp translation of GNU Emacs 31.1's `internal-merge-in-global-face'.
+  It copies the global face definition into a newly-created frame's local
+  face table; this runtime never creates a frame, so FRAME can never be
+  live and this always signals, matching `CHECK_LIVE_FRAME'."
+    (ignore face)
+    (nelisp--check-live-frame frame)))
+
+(unless (fboundp 'face-attribute-relative-p)
+  (defun face-attribute-relative-p (attribute value)
+    "Elisp translation of GNU Emacs 31.1's `face-attribute-relative-p'."
+    (cond
+     ((memq value '(unspecified :ignore-defface)) t)
+     ((eq attribute :height) (not (integerp value)))
+     (t nil))))
+
+(unless (fboundp 'merge-face-attribute)
+  (defun merge-face-attribute (attribute value1 value2)
+    "Elisp translation of GNU Emacs 31.1's `merge-face-attribute'."
+    (cond
+     ((memq value1 '(unspecified :ignore-defface)) value2)
+     ((eq attribute :height) (nelisp--merge-face-heights value1 value2 value1))
+     (t value1))))
+
+(unless (fboundp 'internal-face-x-get-resource)
+  (defun internal-face-x-get-resource (resource class &optional frame)
+    "No X resource database exists in this headless runtime, so this always
+  returns nil -- matching genuine GNU Emacs 31.1 batch semantics (there is no
+  X display connection to query even on a window-system-capable build)."
+    (ignore resource) (ignore class) (ignore frame)
+    nil))
+
+(if (boundp 'nelisp-standalone--backquote-file)
+    (load nelisp-standalone--backquote-file)
+  (require 'backquote))
 
 ;; ---- macroexpand (Doc 47 self-host / compiler frontend) ----
 ;;
@@ -3951,13 +4850,13 @@ Doc 22 A6: arrays are iterated by index."
 (defun nelisp--macro-function (head)
   "If symbol HEAD names a macro, return its CLOSURE; else nil.
 Guards `symbol-function' behind `fboundp' (calling it on an unbound symbol
-traps), and only recognises the `(macro CLOSURE)' shape. Native declaration
+traps), and only recognises GNU's `(macro . CLOSURE)' shape. Native declaration
 bootstrap definitions are excluded by identity."
   (if (and (symbolp head) (fboundp head))
       (let ((f (symbol-function head)))
         (if (and (consp f) (eq (car f) 'macro)
                  (not (memq f nelisp--native-declaration-macros)))
-            (car (cdr f))
+            (cdr f)
           nil))
     nil))
 
@@ -3994,15 +4893,19 @@ ENVIRONMENT is the macro environment alist threaded to `macroexpand-1'
       cur)))
 
 (defun nelisp--macroexpand-all-map (forms environment)
-  "Apply `macroexpand-all' (threading ENVIRONMENT) to each of FORMS."
+  "Apply `nelisp--macroexpand-all-walk' (threading ENVIRONMENT) to FORMS."
   (let ((out nil))
     (while forms
-      (setq out (cons (macroexpand-all (car forms) environment) out)
+      (setq out (cons (nelisp--macroexpand-all-walk (car forms) environment) out)
             forms (cdr forms)))
     (nreverse out)))
 
-(defun macroexpand-all (form &optional environment)
+(defun nelisp--macroexpand-all-walk (form &optional environment)
   "Expand every macro call reachable from FORM, honoring ENVIRONMENT.
+The walker behind `macroexpand-all'.  It recurses only through its own
+name, so a library that later replaces `macroexpand-all' (for example
+with a shallower walker that leaves `function' forms opaque) cannot
+change what the prelude's own code walkers such as `cl-labels' see.
 Doc 22 A12: ENVIRONMENT is threaded to `macroexpand' at every node, so
 env-driven local macros (e.g. the macro-environment generator.el passes
 to intercept `iter-yield') expand.  Non-evaluated positions are kept
@@ -4050,7 +4953,7 @@ pass through), so the default recursion into the cdr is correct for them."
                   (cons (mapcar (lambda (b)
                                   (if (and (consp b) (consp (cdr b)))
                                       (list (car b)
-                                            (macroexpand-all (cadr b) environment))
+                                            (nelisp--macroexpand-all-walk (cadr b) environment))
                                     b))
                                 (cadr expanded))
                         (nelisp--macroexpand-all-map (cddr expanded)
@@ -4066,7 +4969,7 @@ pass through), so the default recursion into the cdr is correct for them."
               (while rest
                 (setq out (cons (car rest) out) rest (cdr rest))
                 (when rest
-                  (setq out (cons (macroexpand-all (car rest) environment) out)
+                  (setq out (cons (nelisp--macroexpand-all-walk (car rest) environment) out)
                         rest (cdr rest))))
               (cons 'setq (nreverse out))))
            ((eq head 'cond)
@@ -4079,7 +4982,7 @@ pass through), so the default recursion into the cdr is correct for them."
            ((eq head 'condition-case)
             (cons 'condition-case
                   (cons (cadr expanded)
-                        (cons (macroexpand-all (caddr expanded) environment)
+                        (cons (nelisp--macroexpand-all-walk (caddr expanded) environment)
                               (mapcar (lambda (h)
                                         (if (consp h)
                                             (cons (car h)
@@ -4090,6 +4993,11 @@ pass through), so the default recursion into the cdr is correct for them."
            (t
             (cons head (nelisp--macroexpand-all-map (cdr expanded)
                                                     environment))))))))))
+
+(defun macroexpand-all (form &optional environment)
+  "Expand every macro call reachable from FORM, honoring ENVIRONMENT.
+See `nelisp--macroexpand-all-walk', which does the work."
+  (nelisp--macroexpand-all-walk form environment))
 
 (unless (fboundp 'macroexp-parse-body)
   (defun macroexp-parse-body (body)
@@ -4245,74 +5153,6 @@ desugared into a body prelude (unless VAR (setq VAR DEFAULT))."
             (mapcar (lambda (d) (cons (plist-get d :helper) d)) custom)
             :root-descriptors roots
             :closure-descriptors closures))))
-
-(defun nelisp--bq-expand (form)
-  "Return the expansion of FORM under `backquote'."
-  (cond
-   ((vectorp form)
-    (list 'vconcat (nelisp--bq-expand-list (append form nil))))
-   ((not (consp form)) (list 'quote form))
-   ((eq (car form) 'comma) (cadr form))
-   ((eq (car form) 'comma-at)
-    (signal 'error (list "nelisp-bq: top-level ,@ not allowed")))
-   ((eq (car form) 'backquote)
-    ;; Preserve nested backquote forms for the inner macro expansion
-    ;; pass.  This is enough for local macros such as generator.el's
-    ;; `(cl-macrolet ... `(cps-internal-yield ,value))' body.
-    (list 'quote form))
-   (t (nelisp--bq-expand-list form))))
-
-(defun nelisp--bq-expand-list (form)
-  "Walk list FORM, producing the expansion.\nRecognises both (... ,X ...) interior unquote and (... . ,X) dotted\nunquote / (... . ,@X) dotted splice patterns."
-  (let
-      ((parts nil) (cur form) (tail-expr nil) (done nil)
-       (has-splice nil))
-    (while (and (not done) (consp cur))
-      (let ((head (car cur)))
-	(cond
-	 ((eq head 'comma) (setq tail-expr (cadr cur)) (setq done t))
-	 ((eq head 'comma-at) (setq tail-expr (cadr cur))
-	  (setq has-splice t) (setq done t))
-	 (t
-	  (let ((elem head))
-	    (cond
-	     ((and (consp elem) (eq (car elem) 'comma-at))
-	      (setq has-splice t)
-	      (push (cons 'splice (cadr elem)) parts))
-	     ((and (consp elem) (eq (car elem) 'comma))
-	      (push (cons 'list (cadr elem)) parts))
-	     (t (push (cons 'list (nelisp--bq-expand elem)) parts))))
-	  (setq cur (cdr cur))))))
-    (when (and (not done) (not (null cur)) (not (consp cur)))
-      (setq tail-expr (list 'quote cur)))
-    (nelisp--bq-build (nreverse parts) tail-expr has-splice)))
-
-(defun nelisp--bq-build (parts tail has-splice)
-  "Build the final form from PARTS list, TAIL expression, HAS-SPLICE flag."
-  (cond ((and (null parts) (null tail)) (list 'quote nil))
-	((null parts) tail)
-	((and (not has-splice) (null tail))
-	 (cons 'list (mapcar 'cdr parts)))
-	((not has-splice)
-	 (let ((acc tail) (rp (reverse parts)))
-	   (while rp
-	     (setq acc (list 'cons (cdr (car rp)) acc))
-	     (setq rp (cdr rp)))
-	   acc))
-	(t
-	 (let ((args nil) (p parts))
-	   (while p
-	     (let ((kind (car (car p))) (val (cdr (car p))))
-	       (cond ((eq kind 'list) (push (list 'list val) args))
-		     ((eq kind 'splice) (push val args))))
-	     (setq p (cdr p)))
-	   (setq args (nreverse args))
-	   (when tail (setq args (append args (list tail))))
-	   (cons 'append args)))))
-
-(defmacro backquote (form)
-  "Expand FORM as a quasiquoted template (NeLisp minimal subset).\nSee `nelisp--bq-expand' for the supported shapes."
-  (nelisp--bq-expand form))
 
 ;;; nelisp-cl-macros.el --- cl-loop / cl-block / cl-return elisp impl  -*- lexical-binding: t; -*-
 
@@ -4829,7 +5669,6 @@ this subset does not model expands to nil, as it always has."
   (nelisp-cl-macros--loop-unsupported-form-p
    (nelisp-cl-macros--loop-build clauses)))
 
-
 (defmacro cl-loop (&rest clauses)
   "Loop CLAUSES — minimal CL-style iteration macro.
 
@@ -5008,6 +5847,8 @@ descendant record satisfies the parent predicate."
   (let ((info (cdr (assq name nelisp-cl-macros--struct-info))))
     (and info (car (cdr (memq :slot-names info))))))
 
+(defun nelisp-cl-macros--struct-slots (slots)
+  (if (stringp (car slots)) (cdr slots) slots))
 (defmacro cl-defstruct (name-or-options &rest slots)
   "Define a record type and its predicate / constructor / accessors.
 
@@ -5045,8 +5886,7 @@ Note: `(declare ...)' metadata is intentionally omitted because the
 NeLisp Rust evaluator does not yet strip declare forms from macro
 bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
 `defmacro' grows declare-handling parity with host Emacs."
-  (when (and (stringp (car slots)) (cdr slots))
-    (setq slots (cdr slots)))
+  (setq slots (nelisp-cl-macros--struct-slots slots))
   (let* ((name (nelisp-cl-macros--struct-name-or-options name-or-options))
          (options (nelisp-cl-macros--struct-options name-or-options))
          (parent-form (nelisp-cl-macros--struct-opt :include options))
@@ -5225,7 +6065,6 @@ bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
             (append (nreverse forms)
                     (list (list 'quote name)))))))
 
-
 ;;;; --- cl-generic subset (Doc 185) ----------------------------------------
 ;;
 ;; `cl-defgeneric'/`cl-defmethod' subset: type + eql specializers plus
@@ -5362,9 +6201,19 @@ SPEC-PLIST contains `:specializers', an alist of required argument
 positions and the parsed specializer at each position.  The old position-0
 keys remain in the returned plist for compatibility with callers that only
 need the first dispatch argument.  A non-bare-symbol specializer is allowed
-on every required argument, matching real `cl-defmethod'; an unrecognised
-`&FOO' lambda-list keyword (e.g. `&context') is still a loud `error' naming
-NAME and the position."
+on every required argument, matching real `cl-defmethod'.  `&context (EXPR
+SPEC)...' (real Emacs `cl-generic.el' grammar: any number of `(EXPR SPEC)'
+pairs right after `&context', each SPEC parsed exactly like a positional
+specializer -- a type name, `(eql VALUE)', `(head VALUE)', or `(subclass
+CLASS)') is supported too: each pair becomes a `:specializers' entry keyed
+by `(:nelisp-context . EXPR)' instead of an integer position, consumed by
+`nelisp-cl-generic--multi-applicable-methods' (see
+`nelisp-cl-generic--context-position-p'), and does NOT consume a plain
+lambda-list slot (real Emacs strips `&context (...)...' out of the
+resulting `defun' arglist the same way).  Confirmed this session against
+real project.el's own `&context (project--within-roots-fallback (eql
+nil))' usage.  Any other unrecognised `&FOO' lambda-list keyword is still
+a loud `error' naming NAME and the position."
   (let ((plain nil) (spec nil) (specializers nil) (i 0)
         (in-required t) (cur arglist))
     (while cur
@@ -5373,10 +6222,26 @@ NAME and the position."
          ((memq item '(&optional &rest &key &aux))
           (setq in-required nil)
           (push item plain))
+         ((eq item '&context)
+          (let ((rest (cdr cur)))
+            (while (and rest (consp (car rest)))
+              (let* ((pair (car rest))
+                     (expr (car pair))
+                     (spec-form (car (cdr pair)))
+                     (parsed (nelisp-cl-generic--parse-specializer
+                              (list '_nelisp-context-var spec-form))))
+                (setq specializers
+                      (cons (cons (cons :nelisp-context expr) parsed)
+                            specializers)))
+              (setq rest (cdr rest)))
+            ;; The outer loop's own `(setq cur (cdr cur))' below still
+            ;; needs to run once more; hand it a cell whose `cdr' is the
+            ;; first unconsumed item so it lands there, not one further.
+            (setq cur (cons nil rest))))
          ((and (symbolp item) (> (length (symbol-name item)) 0)
                (eq (aref (symbol-name item) 0) ?&))
           (error "cl-defmethod %s: unsupported lambda-list keyword %S \
-(Doc 185 subset: &optional/&rest/&key/&aux only)"
+(Doc 185 subset: &optional/&rest/&key/&aux/&context only)"
                  name item))
          ((not in-required)
           (push item plain))
@@ -5493,33 +6358,185 @@ the next call rebuilds it."
            (cons entry methods)))
     (put name 'nelisp-cl-generic--dispatch-cache nil)))
 
+;; T-clgen-subclass fix: real Emacs's own `cl--class-allparents' (the
+;; helper `nelisp-cl-generic--subclass-parents' below prefers, when it is
+;; available -- a consumer that vendors real eieio.el/cl-generic.el/
+;; cl-preloaded.el, such as the nelisp-emacs-lib magit lane, makes it
+;; fboundp as ordinary loaded elisp) unconditionally calls real Emacs's
+;; `merge-ordered-lists' (subr.el) to C3-merge each parent's own ancestor
+;; list, EVEN for a plain single-inheritance chain with exactly one parent
+;; at every level -- confirmed this session by tracing a real 4-level
+;; `cl-defstruct' `:include' chain under host Emacs.  `merge-ordered-
+;; lists' does not exist anywhere in dev/nelisp's own tree (`grep -rn
+;; merge-ordered-lists scripts/ lisp/ src/' => zero hits before this
+;; fix), so on the standalone -- where a consumer's vendored eieio/cl-
+;; generic/cl-preloaded loads for real but nothing vendors plain
+;; subr.el -- every call to the real `cl--class-allparents' signals
+;; `void-function merge-ordered-lists', which `nelisp-cl-generic--
+;; subclass-parents' below swallows via `ignore-errors' and returns nil:
+;; the entire subclass-specializer ancestry walk silently goes empty,
+;; making `(subclass PARENT)' match nothing but PARENT itself, no matter
+;; how many `defclass' levels separate the actual value from PARENT.
+;; This is the exact, reproduced root cause of the `cl-no-applicable-
+;; method' the magit lane hit on `(make-instance
+;; 'transient-describe-target ...)': `transient-describe-target'
+;; genuinely descends from `eieio-default-superclass' (`cl--find-class'
+;; on it succeeds, confirming registration, exactly as the bug report
+;; says), but `cl--class-allparents' can never SAY so once
+;; `merge-ordered-lists' is missing.  Real Emacs's own algorithm
+;; (verbatim from `vendor/staged-emacs-lisp/subr.el', a plain C3-style
+;; merge with no cl-generic/eieio dependency of its own), guarded so it
+;; is a no-op wherever real Emacs already provides it (host Emacs, and
+;; any consumer that also happens to vendor+load plain subr.el).
+(unless (fboundp 'merge-ordered-lists)
+  (defun merge-ordered-lists (lists &optional error-function)
+    "Merge LISTS in a consistent order.
+LISTS is a list of lists of elements.
+Merge them into a single list containing the same elements (removing
+duplicates), obeying their relative positions in each list.
+The order of the (sub)lists determines the final order in those cases where
+the order within the sublists does not impose a unique choice.
+Equality of elements is tested with `eql'.
+
+If a consistent order does not exist, call ERROR-FUNCTION with
+a remaining list of lists that we do not know how to merge.
+It should return the candidate to use to continue the merge, which
+has to be the head of one of the lists.
+By default we choose the head of the first list."
+    ;; Algorithm inspired from
+    ;; [C3](https://en.wikipedia.org/wiki/C3_linearization)
+    (let ((result '()))
+      (setq lists (remq nil lists)) ;Don't mutate the original `lists' argument.
+      (while (cdr (setq lists (delq nil lists)))
+        ;; Try to find the next element of the result. This
+        ;; is achieved by considering the first element of each
+        ;; (non-empty) input list and accepting a candidate if it is
+        ;; consistent with the rests of the input lists.
+        (let* ((next nil)
+               (tail lists))
+          (while tail
+            (let ((candidate (caar tail))
+                  (other-lists lists))
+              ;; Ensure CANDIDATE is not in any position but the first
+              ;; in any of the element lists of LISTS.
+              (while other-lists
+                (if (not (memql candidate (cdr (car other-lists))))
+                    (setq other-lists (cdr other-lists))
+                  (setq candidate nil)
+                  (setq other-lists nil)))
+              (if (not candidate)
+                  (setq tail (cdr tail))
+                (setq next candidate)
+                (setq tail nil))))
+          (unless next ;; The graph is inconsistent.
+            (setq next (funcall (or error-function #'caar) lists))
+            (unless (assoc next lists #'eql)
+              (error "Invalid candidate returned by error-function: %S" next)))
+          ;; The graph is consistent so far, add NEXT to result and
+          ;; merge input lists, dropping NEXT from their heads where
+          ;; applicable.
+          (push next result)
+          (setq lists
+                (mapcar (lambda (l) (if (eql (car l) next) (cdr l) l))
+                        lists))))
+      (if (null result) (car lists) ;; Common case.
+        (append (nreverse result) (car lists))))))
+
+(defun nelisp-cl-generic--class-designator-name (x)
+  "Return a bare NAME (symbol) for class designator X.
+X may already be a plain symbol (its own name, no resolution needed --
+this is what real `cl--class-allparents' returns for every ancestor:
+NAMES, not objects), or a resolved class OBJECT (what the plain
+`cl--class-parents' struct accessor returns instead -- confirmed this
+session against host Emacs: the two real functions disagree on this
+shape).  For an object, resolve its name via `cl--class-name' (the
+generic `cl--class'-family struct accessor -- covers plain
+`cl-defstruct' types, not only EIEIO ones, matching
+`nelisp-cl-generic--subclass-parents''s own \"without requiring EIEIO
+helpers\" contract) or, failing that, `eieio-class-name'.  Returns nil
+(never X itself) when neither resolver is available -- deliberately: a
+caller that fell back to comparing two UNRESOLVED objects with `equal'
+segfaulted the NeLisp standalone outright (confirmed this session,
+`nelisp-cl-generic--subclass-name-equal-p' below never calls `equal' on
+a nil result, so this never reaches that path again), and even setting
+crash risk aside, two different objects that both fail to resolve are
+not thereby the same class.
+
+Guards `cl--class-name' with `cl--class-p' first -- `cl--class-name' is
+fboundp on the bare NeLisp standalone even with no consumer-vendored
+eieio/cl-generic/cl-preloaded at all (the standalone's own bootstrap
+bakes in a `cl--class' struct definition, extracted from real
+`cl-preloaded.el', purely to support `cl-deftype'; see
+`scripts/nelisp-standalone-build.el'), but NeLisp's own `cl-defstruct'-
+generated accessors do no type-checking at all (a plain positional
+`nelisp--record-ref', unlike real Emacs's `cl-defsubst'-generated ones,
+which check the struct predicate first) -- calling it on a record of
+any OTHER type is an out-of-bounds read, and this session confirmed it
+truly segfaults the standalone process outright, not merely signals a
+catchable Lisp error `ignore-errors' could have caught.  `cl--class-p'
+(any `cl-defstruct' predicate, on NeLisp or real Emacs alike) only ever
+consults `recordp'/the type tag, so it is always safe to call on
+anything and must gate every `cl--class-name' call here."
+  (cond
+   ((symbolp x) x)
+   ((and (fboundp 'cl--class-p) (fboundp 'cl--class-name)
+         (ignore-errors (cl--class-p x))
+         (ignore-errors (cl--class-name x))))
+   ((and (fboundp 'eieio-class-name) (ignore-errors (eieio-class-name x))))))
+
 (defun nelisp-cl-generic--subclass-name-equal-p (a b)
-  "Return non-nil when class designators A and B denote the same class."
+  "Return non-nil when class designators A and B denote the same class.
+A and B may be a plain NAME symbol or a resolved class OBJECT, in any
+combination (see `nelisp-cl-generic--class-designator-name') -- this
+used to compare via `eieio-class-name' alone, which requires an actual
+`eieio--class'-typed object and is void-function whenever nothing has
+loaded real `eieio.el' yet, so a caller matching a plain `cl-defstruct'
+ancestor chain (a real Emacs NAME symbol from `cl--class-allparents'
+against a resolved `cl--find-class' OBJECT) always fell through to
+`eq' alone and never matched -- confirmed this session with a 4-level
+real `cl-defstruct' `:include' chain and no EIEIO loaded at all.  Only
+calls `equal' when BOTH sides resolved to an actual name (never nil):
+comparing two raw, unresolved objects via `equal' is neither safe (see
+`nelisp-cl-generic--class-designator-name''s own commentary -- it
+segfaulted the standalone) nor meaningful (two objects that both fail
+to resolve are not thereby the same class -- `eq', already checked
+above, is the only fallback that still makes sense for them)."
   (or (eq a b)
-      (and (fboundp 'eieio-class-name)
-           (ignore-errors
-             (equal (eieio-class-name a) (eieio-class-name b))))))
+      (let ((na (nelisp-cl-generic--class-designator-name a))
+            (nb (nelisp-cl-generic--class-designator-name b)))
+        (and na nb (equal na nb)))))
 
 (defun nelisp-cl-generic--subclass-parents (class)
-  "Return CLASS and its known parents, without requiring EIEIO helpers."
-  (cond
-   ((fboundp 'cl--class-allparents)
-    (ignore-errors (cl--class-allparents class)))
-   ((fboundp 'cl--class-parents)
-    (let ((todo (list class)) (seen nil) (out nil))
-      (while todo
-        (let ((cur (car todo)))
-          (setq todo (cdr todo))
-          (unless (memq cur seen)
-            (push cur seen)
-            (push cur out)
-            (let ((obj (if (and (symbolp cur) (fboundp 'cl--find-class))
-                           (ignore-errors (cl--find-class cur))
-                         cur)))
-              (setq todo
-                    (append (ignore-errors (cl--class-parents obj)) todo))))))
-      (nreverse out)))
-   (t (list class))))
+  "Return CLASS and its known parents, without requiring EIEIO helpers.
+Tries the tiers in preference order (real `cl--class-allparents', then
+the manual `cl--class-parents'-only walk, then CLASS alone), but FALLS
+THROUGH to the next tier when a preferred one is merely fboundp yet its
+actual call comes back empty -- `cl--class-allparents' always conses at
+least CLASS's own name onto its result (see its own real-Emacs
+definition in cl-preloaded.el), so a genuinely empty result here can
+only mean the call itself failed and `ignore-errors' swallowed it (a
+missing transitive dependency such as `merge-ordered-lists' above, or
+any other error), never a legitimate empty ancestry -- accepting that
+nil at face value, as this function used to, silently disables every
+`(subclass PARENT)' specializer's ancestry match instead of degrading
+to the next, still-correct tier."
+  (or (and (fboundp 'cl--class-allparents)
+           (ignore-errors (cl--class-allparents class)))
+      (and (fboundp 'cl--class-parents)
+           (let ((todo (list class)) (seen nil) (out nil))
+             (while todo
+               (let ((cur (car todo)))
+                 (setq todo (cdr todo))
+                 (unless (memq cur seen)
+                   (push cur seen)
+                   (push cur out)
+                   (let ((obj (if (and (symbolp cur) (fboundp 'cl--find-class))
+                                  (ignore-errors (cl--find-class cur))
+                                cur)))
+                     (setq todo
+                           (append (ignore-errors (cl--class-parents obj)) todo))))))
+             (nreverse out)))
+      (list class)))
 
 (defun nelisp-cl-generic--subclass-match-p (value target)
   "Return non-nil when VALUE denotes TARGET or one of its subclasses.
@@ -5686,6 +6703,13 @@ The fallback keeps method entries created by older expansions readable."
             value (plist-get specializer :type-name)))
     (_ t)))
 
+(defun nelisp-cl-generic--context-position-p (position)
+  "Return non-nil when POSITION is an `&context' specializer key, i.e. a
+`(:nelisp-context . EXPR)' cons built by
+`nelisp-cl-generic--parse-arglist', rather than a plain integer argument
+index."
+  (and (consp position) (eq (car position) :nelisp-context)))
+
 (defun nelisp-cl-generic--dispatch-specializer-rank (specializer)
   "Return the generalizer priority represented by SPECIALIZER."
   (pcase (plist-get specializer :kind)
@@ -5696,11 +6720,14 @@ The fallback keeps method entries created by older expansions readable."
     (_ 0)))
 
 (defun nelisp-cl-generic--multi-dispatch-p (name)
-  "Return non-nil when NAME has a dispatch position other than zero."
+  "Return non-nil when NAME has a dispatch position other than zero, OR
+any `&context' specializer (which always needs the multi-dispatch path
+below: the single-dispatch fast path only ever consults `(car args)')."
   (let ((found nil))
     (dolist (method (get name 'nelisp-cl-generic--methods) found)
       (dolist (entry (nelisp-cl-generic--method-specializers method))
-        (when (> (car entry) 0)
+        (when (or (nelisp-cl-generic--context-position-p (car entry))
+                  (> (car entry) 0))
           (setq found t))))))
 
 (defun nelisp-cl-generic--argument-precedence-order (name args)
@@ -5731,13 +6758,24 @@ total priority and method-table order breaking exact ties."
         (dolist (entry (nelisp-cl-generic--method-specializers method))
           (let ((position (car entry))
                 (specializer (cdr entry)))
-            (if (and (< position (length args))
-                     (nelisp-cl-generic--dispatch-specializer-match-p
-                      specializer (nth position args)))
-                (setq score (+ score
-                               (nelisp-cl-generic--dispatch-specializer-rank
-                                specializer)))
-              (setq matches nil))))
+            (if (nelisp-cl-generic--context-position-p position)
+                ;; `&context (EXPR SPEC)': EXPR is evaluated in the
+                ;; caller's current dynamic environment (real Emacs's own
+                ;; semantics -- typically a special variable reference,
+                ;; but any form is allowed), same as real `cl-generic.el'.
+                (if (nelisp-cl-generic--dispatch-specializer-match-p
+                     specializer (eval (cdr position) t))
+                    (setq score (+ score
+                                   (nelisp-cl-generic--dispatch-specializer-rank
+                                    specializer)))
+                  (setq matches nil))
+              (if (and (< position (length args))
+                       (nelisp-cl-generic--dispatch-specializer-match-p
+                        specializer (nth position args)))
+                  (setq score (+ score
+                                 (nelisp-cl-generic--dispatch-specializer-rank
+                                  specializer)))
+                (setq matches nil)))))
         (when matches
           (let ((ranks nil) (order precedence))
             (while order
@@ -6108,7 +7146,18 @@ is unspecialized (§2.1/§3.1).  The method body can call
                       (let* ((pos (car entry))
                              (sp (cdr entry))
                              (skind (plist-get sp :kind)))
-                        `(cons ,pos
+                        ;; POS must be quoted: a plain integer is
+                        ;; self-evaluating either way, but an `&context'
+                        ;; POS is `(:nelisp-context . EXPR)' -- an
+                        ;; unquoted cons spliced here would make the
+                        ;; generated code try to CALL `:nelisp-context'
+                        ;; as a function at method-registration time
+                        ;; instead of keeping EXPR as data to `eval' at
+                        ;; each dispatch (confirmed this session: without
+                        ;; the quote, `cl-defmethod' on an `&context'
+                        ;; method signals `void-function :nelisp-context'
+                        ;; the moment it registers, before any dispatch).
+                        `(cons ',pos
                                (list :kind ',skind
                                      :type-name ',(plist-get sp :type-name)
                                      :value ,(let ((v (plist-get sp :value-form)))
@@ -6177,6 +7226,12 @@ which is what a caller asking for a range check wants."
   ;; Sort predicate over (KEY . _) cells; rx's `(any "abc")' sorts char
   ;; intervals with it (a void sort predicate is an uncatchable abort).
   (defun car-less-than-car (a b) (< (car a) (car b))))
+;; These GNU completion controls are special variables whose dynamic bindings
+;; are read by the completion primitive below.
+(defvar completion-ignore-case nil
+  "Non-nil means completion prefixes compare without regard to case.")
+(defvar completion-regexp-list nil
+  "Regular expressions every completion candidate must match.")
 (unless (fboundp 'regexp-opt)
   ;; This was a plain alternation: (regexp-opt '("ab" "ac")) produced
   ;; "\\(?:ab\\|ac\\)" where Emacs produces "\\(?:a[bc]\\)".  Both match the same
@@ -6193,7 +7248,189 @@ which is what a caller asking for a range check wants."
   ;; `map-char-table', which this runtime does not have.
   (defvar regexp-unmatchable "\\`a\\`"
     "A regexp that never matches anything.")
+  )
 
+;; Completion is core runtime behavior used by GNU's regexp-opt and
+;; bytecomp libraries.  It is registered independently of the regexp-opt
+;; fallback because the primitive remains available when regexp-opt exists.
+  (defun nelisp--try-completion-name (item)
+    "Return the candidate name represented by ITEM, or nil if it is invalid."
+    (let ((name (if (consp item) (car item) item)))
+      (cond ((stringp name) name)
+            ((symbolp name) (symbol-name name))
+            (t nil))))
+
+  (defun nelisp--try-completion-eligible-p (candidate)
+    "Return non-nil when CANDIDATE passes `completion-regexp-list'."
+    (let ((patterns (and (boundp 'completion-regexp-list)
+                         completion-regexp-list))
+          (case-fold-search (and (boundp 'completion-ignore-case)
+                                 completion-ignore-case))
+          (ok t))
+      (while (and patterns ok)
+        (unless (string-match-p (car patterns) candidate)
+          (setq ok nil))
+        (setq patterns (cdr patterns)))
+      ok))
+
+  (defun nelisp--try-completion-record (seed item predicate matches)
+    "Add ITEM to MATCHES when it completes SEED and passes PREDICATE."
+    (let* ((candidate (nelisp--try-completion-name item))
+           (ignore-case (and (boundp 'completion-ignore-case)
+                             completion-ignore-case)))
+      (when (and candidate
+                 (>= (length candidate) (length seed))
+                 (eq (compare-strings seed 0 (length seed)
+                                      candidate 0 (length seed)
+                                      ignore-case)
+                     t)
+                 (nelisp--try-completion-eligible-p candidate)
+                 (or (null predicate) (funcall predicate item)))
+        (unless (member candidate matches)
+          (cons candidate matches)))))
+
+  (defun try-completion (string collection &optional predicate)
+    "Return the longest completion of STRING from COLLECTION.
+
+COLLECTION may be a list/alist of strings or symbols, a NeLisp hash
+table, an obarray, or a function completion table.  PREDICATE receives
+the original list element, an obarray symbol, or (KEY VALUE) for hash
+table entries.  The default global obarray remains unsupported by
+`mapatoms' and signals `unsupported-feature'."
+    (unless (stringp string)
+      (signal 'wrong-type-argument (list 'stringp string)))
+    (if (functionp collection)
+        (funcall collection string predicate nil)
+      (let ((matches nil))
+        (cond
+         ((hash-table-p collection)
+          (maphash (lambda (key value)
+                     (let ((name (nelisp--try-completion-name key)))
+                       (when name
+                         (let ((ignore-case (and (boundp 'completion-ignore-case)
+                                                 completion-ignore-case)))
+                           (when (and (>= (length name) (length string))
+                                      (eq (compare-strings string 0 (length string)
+                                                           name 0 (length string)
+                                                           ignore-case)
+                                          t)
+                                      (nelisp--try-completion-eligible-p name)
+                                      (or (null predicate)
+                                          (funcall predicate key value)))
+                             (unless (member name matches)
+                               (setq matches (cons name matches))))))))
+                   collection))
+         ((obarrayp collection)
+          (mapatoms (lambda (symbol)
+                      (let ((next (nelisp--try-completion-record
+                                   string symbol predicate matches)))
+                        (when next (setq matches next))))
+                    collection))
+         ((or (null collection) (consp collection))
+          (let ((items collection))
+            (while (consp items)
+              (let ((next (nelisp--try-completion-record
+                           string (car items) predicate matches)))
+                (when next (setq matches next)))
+              (setq items (cdr items)))))
+         ((vectorp collection)
+          (signal 'wrong-type-argument (list 'obarrayp collection)))
+         (t
+          (signal 'wrong-type-argument (list 'listp collection))))
+        (setq matches (nreverse matches))
+        (cond
+         ((null matches) nil)
+         ((and (= (length (car matches)) (length string))
+               (= (length matches) 1)
+               (string= (car matches) string))
+          t)
+         ((and (= (length matches) 1)
+               (= (length (car matches)) (length string)))
+          (car matches))
+         (t
+          (let* ((ignore-case (and (boundp 'completion-ignore-case)
+                                   completion-ignore-case))
+                 (best (car matches))
+                 (rest matches)
+                 (common (length best)))
+            ;; Prefer a spelling that exactly matches the input's case.
+            (while rest
+              (when (string= (car rest) string)
+                (setq best (car rest)))
+              (setq rest (cdr rest)))
+            (setq rest (cdr matches))
+            (while rest
+              (let ((i 0)
+                    (limit (min common (length (car rest)))))
+                (while (and (< i limit)
+                            (eq (compare-strings best i (1+ i)
+                                                (car rest) i (1+ i)
+                                                ignore-case)
+                                t))
+                  (setq i (1+ i)))
+                (setq common i))
+              (setq rest (cdr rest)))
+            (substring best 0 common)))))))
+
+  (defun nelisp--all-completions-record (prefix item predicate results)
+    "Add ITEM's completion name to RESULTS without deduplicating it."
+    (let* ((candidate (nelisp--try-completion-name item))
+           (ignore-case (and (boundp 'completion-ignore-case)
+                             completion-ignore-case)))
+      (when (and candidate
+                 (>= (length candidate) (length prefix))
+                 (eq (compare-strings prefix 0 (length prefix)
+                                      candidate 0 (length prefix)
+                                      ignore-case)
+                     t)
+                 (nelisp--try-completion-eligible-p candidate)
+                 (or (null predicate) (funcall predicate item)))
+        (cons candidate results))))
+
+  (defun all-completions (string collection &optional predicate)
+    "Return all names in COLLECTION that complete STRING."
+    (unless (stringp string)
+      (signal 'wrong-type-argument (list 'stringp string)))
+    (if (functionp collection)
+        (funcall collection string predicate t)
+      (let ((results nil))
+        (cond
+         ((hash-table-p collection)
+          (maphash (lambda (key value)
+                     (let ((name (nelisp--try-completion-name key))
+                           (ignore-case (and (boundp 'completion-ignore-case)
+                                             completion-ignore-case)))
+                       (when (and (or (stringp key) (symbolp key))
+                                  (>= (length name) (length string))
+                                  (eq (compare-strings string 0 (length string)
+                                                       name 0 (length string)
+                                                       ignore-case)
+                                      t)
+                                  (nelisp--try-completion-eligible-p name)
+                                  (or (null predicate)
+                                      (funcall predicate key value)))
+                         (setq results (cons name results)))))
+                   collection))
+         ((obarrayp collection)
+          (mapatoms (lambda (symbol)
+                      (let ((next (nelisp--all-completions-record
+                                   string symbol predicate results)))
+                        (when next (setq results next))))
+                    collection))
+         ((or (null collection) (consp collection))
+          (let ((items collection))
+            (while (consp items)
+              (let ((next (nelisp--all-completions-record
+                           string (car items) predicate results)))
+                (when next (setq results next)))
+              (setq items (cdr items)))))
+         ((vectorp collection)
+          (signal 'wrong-type-argument (list 'obarrayp collection)))
+         (t
+          (signal 'wrong-type-argument (list 'listp collection))))
+        (nreverse results))))
+
+(unless (fboundp 'regexp-opt)
   (defun nelisp--common-prefix (strings)
     "Longest common prefix of STRINGS -- `try-completion\' with an empty seed."
     (if (null strings) ""
@@ -6396,14 +7633,330 @@ which is what a caller asking for a range check wants."
 ;; sequences, no prefix auto-vivification, no parent keymaps
 ;; (`set-keymap-parent' is not defined for the same reason) -- adequate
 ;; for `nl-agent-ui.el' to finish loading, not for real key dispatch.
+;; Mirrors GNU Emacs 31.1 src/keymap.c:Fmake_sparse_keymap exactly: with a
+;; non-nil STRING, the keymap is `(keymap STRING)' -- the prompt sits
+;; directly after the `keymap' symbol, for use as a menu title with
+;; `x-popup-menu' (`keymap-prompt', below, and `define-key''s own push-
+;; onto-`(cdr keymap)' below both still find it there afterward: a new
+;; binding cons goes IN FRONT of STRING, but `keymap-prompt' scans the
+;; whole spine for the first `stringp' element rather than assuming a
+;; fixed position, so it is unaffected).  Previously this substrate's own
+;; reduced version accepted but silently discarded STRING -- confirmed a
+;; real, already-loaded consumer of the discarded prompt this session:
+;; the mode-line block above builds `mode-line-mode-menu' via
+;; `(make-sparse-keymap "Minor Modes")'.
 (unless (fboundp 'make-sparse-keymap)
-  (defun make-sparse-keymap (&optional _prompt) (list 'keymap)))
+  (defun make-sparse-keymap (&optional string)
+    "Construct and return a new sparse keymap.
+Its car is `keymap' and its cdr is an alist of (CHAR . DEFINITION),
+which binds the character CHAR to DEFINITION, or (SYMBOL . DEFINITION),
+which binds the function key or mouse event SYMBOL to DEFINITION.
+Initially the alist is nil.
+
+The optional arg STRING supplies a menu name for the keymap
+in case you use it as a menu with `x-popup-menu'."
+    (if string (list 'keymap string) (list 'keymap))))
 (unless (fboundp 'keymapp)
   (defun keymapp (object) (and (consp object) (eq (car object) 'keymap))))
+;; Mirrors GNU Emacs 31.1 src/keymap.c:Fmake_keymap: a "full" keymap,
+;; `(keymap CHAR-TABLE . TAIL)', where CHAR-TABLE is a genuine char-table
+;; (this substrate's own native `make-char-table'/`char-table-p'/`aref'/
+;; `aset'/`set-char-table-range' primitives, confirmed already present
+;; and working -- see Doc 186) and TAIL is `(STRING)' when a prompt was
+;; given, else nil.  Needed verbatim: `isearch.el''s own top-level
+;; `isearch-mode-map' construction asserts `(char-table-p (nth 1 map))'
+;; right after calling `make-keymap' and errors loudly
+;; ("...must be updated") if that ever stops holding, so a flattened
+;; stand-in (as this substrate's `make-sparse-keymap' is, deliberately,
+;; for the no-dispatch-loop reasons documented above) is not an option
+;; here -- this one case genuinely needs the real char-table shape, and
+;; the primitives to build it were already there.
+(unless (fboundp 'make-keymap)
+  (defun make-keymap (&optional string)
+    "Construct and return a new keymap, of the form (keymap CHARTABLE . ALIST).
+CHARTABLE is a char-table that holds the bindings for all characters
+without modifiers.  All entries in it are initially nil, meaning
+\"command undefined\".  ALIST is an assoc-list which holds bindings for
+function keys, mouse events, and any other things that appear in the
+input stream.  Initially, ALIST is nil.
+
+The optional arg STRING supplies a menu name for the keymap
+in case you use it as a menu with `x-popup-menu'."
+    (cons 'keymap (cons (make-char-table 'keymap nil) (and string (list string))))))
+;; Mirrors GNU Emacs 31.1 src/keymap.c:get_keymap, restricted to the two
+;; cases `copy-keymap' actually needs (ERROR-IF-NOT-KEYMAP = t, AUTOLOAD =
+;; nil): a real keymap list is returned as-is; a symbol is resolved one
+;; step through `indirect-function' (the "prefix key bound to a symbol
+;; whose function cell is a keymap" case); anything else signals
+;; `wrong-type-argument' the way the C code's own fallback does.  The
+;; autoload-keymap branch is not modelled: it exists only for
+;; `autoload'-stub function cells, which this substrate's `keymapp' (an
+;; explicit reduced flattened model, see above) never produces.
+(defun nelisp--get-keymap (object)
+  (cond
+   ((keymapp object) object)
+   ((and (symbolp object) (fboundp 'indirect-function)
+         (keymapp (indirect-function object)))
+    (indirect-function object))
+   (t (signal 'wrong-type-argument (list 'keymapp object)))))
+;; Mirrors GNU Emacs 31.1 src/keymap.c:copy_keymap_item.  Copies just the
+;; spine cells of a single binding cell so mutating the copy never touches
+;; KEYMAP's original alist cons, matching the C code's cell-by-cell
+;; `Fcons' rebuilding: a `menu-item' cell, an old-style (STRING . DEF) or
+;; (STRING HELP . DEF) cell, and a bare sub-keymap all get exactly the
+;; cells the C code allocates; a keymap reached as a binding's value is
+;; recursively copied via `nelisp--copy-keymap-1'.  DEPTH is the same
+;; recursion counter `copy_keymap_1' already incremented before calling
+;; this, so it is threaded through unchanged, matching the C code passing
+;; plain `depth' (not `depth + 1') to its own nested `copy_keymap_1' calls.
+(defun nelisp--copy-keymap-item (elt depth)
+  (if (not (consp elt))
+      elt
+    (let ((res elt) (tem elt))
+      (cond
+       ((eq (car tem) 'menu-item)
+        (setq res (cons (car tem) (cdr tem)))
+        (setq elt res tem (cdr elt))
+        (when (consp tem)
+          (setcdr elt (cons (car tem) (cdr tem)))
+          (setq elt (cdr elt) tem (cdr elt)))
+        (when (consp tem)
+          (setcdr elt (cons (car tem) (cdr tem)))
+          (setq elt (cdr elt) tem (car elt))
+          (when (and (consp tem) (eq (car tem) 'keymap))
+            (setcar elt (nelisp--copy-keymap-1 tem depth)))))
+       ((stringp (car tem))
+        (setq res (cons (car tem) (cdr tem)))
+        (setq elt res tem (cdr elt))
+        (when (and (consp tem) (stringp (car tem)))
+          (setcdr elt (cons (car tem) (cdr tem)))
+          (setq elt (cdr elt) tem (cdr elt)))
+        (when (and (consp tem) (eq (car tem) 'keymap))
+          (setcdr elt (nelisp--copy-keymap-1 tem depth))))
+       ((eq (car tem) 'keymap)
+        (setq res (nelisp--copy-keymap-1 elt depth))))
+      res)))
+;; Mirrors GNU Emacs 31.1 src/keymap.c:copy_keymap_1.  Walks KEYMAP's own
+;; spine only (stops at a nested `keymap' symbol, which marks a parent
+;; map splice, exactly as the C loop's `!EQ (XCAR (keymap), Qkeymap)'
+;; guard does) rebuilding one fresh cons per entry, and hands every entry
+;; to the matching per-shape copier: `map-char-table' + `set-char-table-range'
+;; for a char-table (a full keymap's dense range), `aset' over a fresh
+;; `copy-sequence' for a vector (the same range's sparse ASCII table), and
+;; `nelisp--copy-keymap-item' for everything else.  The tail (parent
+;; keymap or nil) is shared, not copied, matching the C code's final
+;; `XSETCDR (tail, keymap)'.
+(defun nelisp--copy-keymap-1 (keymap depth)
+  (when (> depth 100)
+    (error "Possible infinite recursion when copying keymap"))
+  (setq keymap (nelisp--get-keymap keymap))
+  (let* ((copy (list 'keymap)) (tail copy))
+    (setq keymap (cdr keymap))
+    (while (and (consp keymap) (not (eq (car keymap) 'keymap)))
+      (let ((elt (car keymap)))
+        (cond
+         ((and (fboundp 'char-table-p) (char-table-p elt))
+          (setq elt (copy-sequence elt))
+          (map-char-table
+           (lambda (idx v)
+             (set-char-table-range elt idx
+                                    (nelisp--copy-keymap-item v (1+ depth))))
+           elt))
+         ((vectorp elt)
+          (setq elt (copy-sequence elt))
+          (let ((i 0) (n (length elt)))
+            (while (< i n)
+              (aset elt i (nelisp--copy-keymap-item (aref elt i) (1+ depth)))
+              (setq i (1+ i)))))
+         ((consp elt)
+          (setq elt (if (eq (car elt) 'keymap)
+                        (nelisp--copy-keymap-1 elt (1+ depth))
+                      (cons (car elt)
+                            (nelisp--copy-keymap-item (cdr elt) (1+ depth)))))))
+        (setcdr tail (list elt))
+        (setq tail (cdr tail)))
+      (setq keymap (cdr keymap)))
+    (setcdr tail keymap)
+    copy))
+(unless (fboundp 'copy-keymap)
+  (defun copy-keymap (keymap)
+    "Return a copy of the keymap KEYMAP.
+Any key definitions that are subkeymaps are recursively copied.
+However, a key definition which is a symbol whose definition is a keymap
+is not copied."
+    (nelisp--copy-keymap-1 keymap 0)))
+(defun nelisp--keymap-normalize-sequence (key)
+  "Return KEY in the event-vector representation used by keymap bindings.
+GNU `kbd' returns a string for ASCII/control sequences, while `keymap-set'
+stores the vector returned by `key-parse'.  Normalize strings at both the
+binding and lookup boundaries so those public forms address the same entry."
+  (if (and (stringp key) (fboundp 'key-parse))
+      (key-parse key)
+    key))
 (unless (fboundp 'define-key)
   (defun define-key (keymap key def &optional _remove)
+    (setq key (nelisp--keymap-normalize-sequence key))
     (setcdr keymap (cons (cons key def) (cdr keymap)))
     def))
+;; GNU Emacs 31.1 lisp/subr.el:1348 (preloaded, not autoloaded), staged
+;; verbatim: this substrate's own `define-key' above already flattens a
+;; whole key sequence into one binding cons instead of one nested keymap
+;; per event (see the block comment above `make-sparse-keymap'), so this
+;; function's own multi-event branch (`lookup-key' walking a prefix
+;; sub-keymap) is exercised only if some future caller passes a KEY
+;; longer than one event; every current caller (compile.el's
+;; `[separator-compile]', a length-1 vector) takes the length<=1 branch
+;; and never reaches it.
+(unless (fboundp 'define-key-after)
+  (defun define-key-after (keymap key definition &optional after)
+    "Add binding in KEYMAP for KEY => DEFINITION, right after AFTER's binding.
+This is like `define-key' except that the binding for KEY is placed
+just after the binding for the event AFTER, instead of at the beginning
+of the map.  Note that AFTER must be an event type (like KEY), NOT a command
+\(like DEFINITION).
+
+If AFTER is t or omitted, the new binding goes at the end of the keymap.
+AFTER should be a single event type--a symbol or a character, not a sequence.
+
+Bindings are always added before any inherited map.
+
+The order of bindings in a keymap matters only when it is used as
+a menu, so this function is not useful for non-menu keymaps."
+    (declare (indent defun))
+    (unless after (setq after t))
+    (or (keymapp keymap)
+        (signal 'wrong-type-argument (list 'keymapp keymap)))
+    (setq key
+          (if (<= (length key) 1) (aref key 0)
+            (setq keymap (lookup-key keymap
+                                      (apply #'vector
+                                             (butlast (mapcar #'identity key)))))
+            (aref key (1- (length key)))))
+    (let ((tail keymap) done inserted)
+      (while (and (not done) tail)
+        ;; Delete any earlier bindings for the same key.
+        (if (eq (car-safe (car (cdr tail))) key)
+            (setcdr tail (cdr (cdr tail))))
+        ;; If we hit an included map, go down that one.
+        (if (keymapp (car tail)) (setq tail (car tail)))
+        ;; When we reach AFTER's binding, insert the new binding after.
+        ;; If we reach an inherited keymap, insert just before that.
+        ;; If we reach the end of this keymap, insert at the end.
+        (if (or (and (eq (car-safe (car tail)) after)
+                     (not (eq after t)))
+                (eq (car (cdr tail)) 'keymap)
+                (null (cdr tail)))
+            (progn
+              ;; Stop the scan only if we find a parent keymap.
+              ;; Keep going past the inserted element
+              ;; so we can delete any duplications that come later.
+              (if (eq (car (cdr tail)) 'keymap)
+                  (setq done t))
+              ;; Don't insert more than once.
+              (or inserted
+                  (setcdr tail (cons (cons key definition) (cdr tail))))
+              (setq inserted t)))
+        (setq tail (cdr tail))))))
+;; GNU Emacs 31.1 lisp/subr.el:7687 (preloaded, not autoloaded): the
+;; placeholder menu callers pass to `define-key'/`define-key-after' to draw
+;; a menu separator line.  Its shape (a 1-element list holding the string
+;; "--") is Emacs's own menu-item convention, not a display primitive this
+;; runtime needs to render.
+(unless (boundp 'menu-bar-separator)
+  (defconst menu-bar-separator '("--")
+    "Separator for menus."))
+;; Elisp translation of GNU Emacs 31.1's `force-mode-line-update'
+;; (src/xdisp.c, DEFUN "force-mode-line-update").  The real primitive
+;; schedules a mode-line/header-line/tab-line redisplay -- and, when ALL is
+;; non-nil, a full menu-bar/frame-title recomputation too -- purely by
+;; setting internal C-side display flags (`update_mode_lines',
+;; `prevent_redisplay_optimizations_p') that only ever get consulted by the
+;; incremental redisplay engine.  Measured on host GNU Emacs 31.1 in
+;; `--batch' (no window system, no live windows): `(force-mode-line-update)'
+;; returns nil, `(force-mode-line-update t)' returns t, and any other value
+;; of ALL (a symbol, an integer, ...) comes back unchanged -- the C code's
+;; final `return all;' is the whole of its observable contract once no
+;; redisplay ever actually runs.  This runtime has no incremental redisplay
+;; engine to flag, so there is nothing to schedule; echoing ALL back
+;; verbatim, with no other side effect, is the faithful batch/terminal-less
+;; behaviour, not a stub cutting corners GNU Emacs itself takes in the same
+;; mode.  Called at load time by `tool-bar.el''s `tool-bar-local-item' (via
+;; `progmodes/compile.el''s top-level `compilation-mode-tool-bar-map'
+;; `defvar', reached through `bytecomp.el''s `(eval-when-compile (require
+;; 'compile))').
+(unless (fboundp 'force-mode-line-update)
+  (defun force-mode-line-update (&optional all)
+    "Force redisplay of the current buffer's mode line and header line.
+With optional non-nil ALL, force redisplay of all mode lines, tab lines and
+header lines.  This function also forces recomputation of the
+menu bar menus and the frame title.
+
+\(fn &optional ALL)"
+    all))
+;; GNU Emacs 31.1 lisp/bindings.el:955 (preloaded, not autoloaded): staged
+;; verbatim, including the immediately following `setq' that gives it its
+;; real steady-state default.  Unlike `menu-bar-separator' above, this
+;; variable's bare-defvar nil (before that `setq' runs) is not a state any
+;; real Emacs session is ever observed in, so nil alone would be a
+;; substrate artifact rather than a faithful snapshot; the four entries
+;; below are inert data in this batch/terminal-less runtime (nothing here
+;; ever renders a mode line), matching real batch Emacs equally not
+;; rendering them.  Reached at load time via the same `bytecomp.el' ->
+;; `progmodes/compile.el' chain as `force-mode-line-update' above:
+;; `compilation-minor-mode''s `define-minor-mode' expansion calls
+;; `add-minor-mode', which reads this list via `assq'.
+(unless (boundp 'minor-mode-alist)
+  (defvar minor-mode-alist
+    '((abbrev-mode " Abbrev")
+      (overwrite-mode overwrite-mode)
+      (auto-fill-function " Fill")
+      ;; not really a minor mode...
+      (defining-kbd-macro mode-line-defining-kbd-macro))
+    "Alist saying how to show minor modes in the mode line.
+Each element looks like (VARIABLE STRING);
+STRING is included in the mode line if VARIABLE's value is non-nil.
+
+Actually, STRING need not be a string; any mode-line construct is
+okay.  See `mode-line-format'."))
+;; GNU Emacs 31.1 src/keymap.c, `DEFVAR_LISP ("minor-mode-map-alist", ...)':
+;; a pure C-side preloaded variable (`symbol-file' on host answers nil --
+;; confirmed empirically, no Lisp file ever gives it a value form) whose
+;; only initializer is the C default `nil'; it only ever grows through
+;; `add-minor-mode' (see `minor-mode-alist' above)/`easy-mmode-define-
+;; keymap'-style `push'/`add-to-list' calls as each minor mode registers
+;; itself.  Unlike `minor-mode-alist', there is no bindings.el `setq' to
+;; miss: nil here is not a transient pre-bindings.el snapshot, it is the
+;; genuine value before any minor mode has loaded, which is exactly this
+;; runtime's own state the first time `compilation-minor-mode' (reached via
+;; the same `bytecomp.el' -> `progmodes/compile.el' chain as
+;; `force-mode-line-update' above) registers itself.
+(unless (boundp 'minor-mode-map-alist)
+  (defvar minor-mode-map-alist nil
+    "Alist of keymaps to use for minor modes.
+Each element looks like (VARIABLE . KEYMAP); KEYMAP is used to read
+key sequences and look up bindings if VARIABLE's value is non-nil.
+If two active keymaps bind the same key, the keymap appearing earlier
+in the list takes precedence."))
+;; GNU Emacs 31.1 lisp/emacs-lisp/warnings.el (preloaded, not vendored in
+;; this tree -- no `vendor/.../warnings.el' exists, and bytecomp.el itself
+;; never gives this a value form, only reads/lets/setqs it, confirming it
+;; is genuinely someone else's preloaded default, not file-local state).
+;; Verified on host: default value nil, docstring below transcribed
+;; verbatim.  Reached when bytecomp.el's own load-time self-compile step
+;; (`(eval-when-compile (or (compiled-function-p ...) (mapc #'byte-compile
+;; ...)))', a few lines above `byte-compile-constant' in the vendor file)
+;; runs `byte-compile' on its own hot recursive functions and that in turn
+;; calls `displaying-byte-compile-warnings' -> `bytecomp--displaying-
+;; warnings', which reads this before ever binding it.
+(unless (boundp 'warning-series)
+  (defvar warning-series nil
+    "Non-nil means treat multiple `display-warning' calls as a series.
+A marker indicates a position in the warnings buffer
+which is the start of the current series; it means that
+additional warnings in the same buffer should not move point.
+If t, the next warning begins a series (and stores a marker here).
+A symbol with a function definition is like t, except
+also call that function before the next warning."))
 ;; `void-function' on 1 of the ~80 files
 ;; (../nelisp-agent/lisp/nl-agent-improvement-config.el, called at its
 ;; own top level inside a `(when (file-locked-p ...) ...)' guard).  This
@@ -6541,12 +8094,8 @@ cl-generic method-arg liveness heuristic."
     "Return PLACE if non-nil, else evaluate CODE, cache it in PLACE, return it.
 Minimal: PLACE is evaluated twice (cl-generic's places are side-effect free)."
     (list 'or place (list 'setf place (cons 'progn code)))))
-;; General builtins (defuns persist into the AOT boot image; these are missing
-;; from the bare reader and needed by oclosure / cl-generic and many packages).
-(unless (fboundp 'ignore)
-  (defun ignore (&rest _arguments) "Do nothing and return nil." nil))
-(unless (fboundp 'always)
-  (defun always (&rest _arguments) "Do nothing and return t." t))
+;; General builtins (defuns persist into the AOT boot image and are needed by
+;; oclosure, cl-generic, and many packages).
 ;; `current-load-list' is an Emacs global tracking the current file's load
 ;; history; cl-generic and other libs `push' onto it.  Reading it unbound is an
 ;; uncatchable abort in the reader — declare it special with a nil default.
@@ -6610,11 +8159,92 @@ See that variable's own docstring."
   (defun load-file (file)
     (load file nil nil t t)))
 (unless (fboundp 'closurep)
-  ;; The reader represents a closure as a `(closure ENV ARGS BODY)' list.
-  (defun closurep (object) (eq (car-safe object) 'closure)))
+  ;; The reader represents an interpreted closure as a
+  ;; `(closure ENV ARGS . BODY)' list.  GNU Emacs 31.1 (data.c
+  ;; `Fclosurep') answers t for both kinds of PVEC_CLOSURE: interpreted
+  ;; closures and byte-code functions (verified on host:
+  ;; `(closurep (byte-compile (lambda (x) x)))' => t).
+  (defun closurep (object)
+    (if (or (eq (car-safe object) 'closure)
+            (and (fboundp 'byte-code-function-p)
+                 (byte-code-function-p object)))
+        t
+      nil)))
 (unless (fboundp 'byte-code-function-p)
   ;; The reader has no byte-code objects (everything is interpreted).
   (defun byte-code-function-p (_object) nil))
+(unless (fboundp 'native-comp-function-p)
+  ;; GNU Emacs 31.1's `native-comp-function-p' is t only for a function
+  ;; produced by the native (.eln) AOT compiler -- verified on host: nil
+  ;; even for an ordinary C subr like `car', not just for a plain lambda.
+  ;; This runtime's VM-phase source evaluation never produces a native
+  ;; artifact, so nil unconditionally is the faithful answer here, exactly
+  ;; as `byte-code-function-p' above is unconditionally nil in this mode.
+  (defun native-comp-function-p (_object) nil))
+(unless (fboundp 'compiled-function-p)
+  ;; GNU Emacs 31.1's `compiled-function-p' (subr.el-documented, C
+  ;; primitive): t for a subr (built-in or native-compiled) or a
+  ;; byte-code-function object, nil for a plain lambda/closure or any
+  ;; non-function -- verified on host across all five cases.  A faithful
+  ;; composition of the two predicates already established above.
+  (defun compiled-function-p (object)
+    "Return non-nil if OBJECT is a function that has been compiled.
+Does not distinguish between functions implemented in machine code
+or byte-code.
+
+\(fn OBJECT)"
+    (or (subrp object) (byte-code-function-p object))))
+;; GNU 31.1 alloc.c Fmake_closure: return a COPY of PROTOTYPE (a byte-code
+;; object whose constants vector -- slot 2 -- starts with as many
+;; placeholder values as the compiler left room for) with CLOSURE-VARS
+;; overwriting the BEGINNING of a freshly allocated constants vector of
+;; the SAME size; the remaining tail is copied from PROTOTYPE's own
+;; constants unchanged. Every other slot (arglist, byte-code string,
+;; max-stack-depth, and doc/interactive-spec if present) is carried over
+;; verbatim -- only the constants vector differs. GNU's C signals
+;; `wrong-type-argument byte-code-function-p' for a non-byte-code
+;; PROTOTYPE and a plain `error' ("Closure vars do not fit in constvec")
+;; when there are more CLOSURE-VARS than constants-vector slots to hold
+;; them; both are reproduced here exactly, including GNU's own message
+;; text for the second so `(error-message-string ...)' matches too.
+;; Boxing a captured variable that a closure mutates (so sibling closures
+;; over the same lexical binding observe the write) is the BYTE-COMPILER's
+;; job, not `make-closure''s: by the time compiled code calls this, a
+;; "closure var" that needs sharing is already whatever boxed value
+;; (typically a one-element vector or cons the compiled body knows to
+;; deref) the compiler decided on, and this function only ever copies
+;; that value verbatim into the new constants vector, never inspecting or
+;; unwrapping it.
+(unless (fboundp 'make-closure)
+  (defun make-closure (prototype &rest closure-vars)
+    "Create a byte-code closure from PROTOTYPE and CLOSURE-VARS.
+Return a copy of PROTOTYPE, a byte-code object, with CLOSURE-VARS
+replacing the elements in the beginning of the constant-vector."
+    (unless (byte-code-function-p prototype)
+      (signal 'wrong-type-argument (list 'byte-code-function-p prototype)))
+    (let* ((proto-constvec (aref prototype 2))
+           (constsize (length proto-constvec))
+           (nvars (length closure-vars)))
+      (when (> nvars constsize)
+        (error "Closure vars do not fit in constvec"))
+      (let ((constvec (make-vector constsize nil))
+            (i 0)
+            (rest closure-vars))
+        (while rest
+          (aset constvec i (car rest))
+          (setq rest (cdr rest) i (1+ i)))
+        (while (< i constsize)
+          (aset constvec i (aref proto-constvec i))
+          (setq i (1+ i)))
+        (apply #'make-byte-code
+               (aref prototype 0)
+               (aref prototype 1)
+               constvec
+               (aref prototype 3)
+               (let ((tail nil) (protosize (length prototype)))
+                 (when (> protosize 5) (push (aref prototype 5) tail))
+                 (when (> protosize 4) (push (aref prototype 4) tail))
+                 tail))))))
 ;; NOTE (Doc 157 §5): `compiled-function-p' is intentionally NOT defined here.
 ;; Defining it (correctly returning nil) lets cl-generic's `cl--generic-compiler'
 ;; defvar init succeed and bind the EVAL-based dispatcher compiler — at which
@@ -6627,6 +8257,101 @@ See that variable's own docstring."
 ;; (byte-compilation) so the dispatchers compile fast — a reader-core perf item.
 (unless (fboundp 'interpreted-function-p)
   (defun interpreted-function-p (object) (eq (car-safe object) 'closure)))
+;; GNU Emacs 31.1 eval.c `Fmake_interpreted_closure', over this runtime's
+;; `(closure ENV ARGS . BODY)' representation: DOCSTRING and IFORM go back
+;; in front of BODY exactly where `function' found them, so `aref'/`length'
+;; (which recover GNU's slot view natively) read them back as slots 4/5.
+;; ENV keeps only its (SYMBOL . VALUE) bindings: GNU's `t' marker (lexical
+;; binding) and bare locally-special symbols have no counterpart in this
+;; runtime, whose closures are all lexical.  A non-string DOCSTRING (an
+;; OClosure type) cannot be represented and is dropped.
+(unless (fboundp 'make-interpreted-closure)
+  (defun make-interpreted-closure (args body env &optional docstring iform)
+    "Make an interpreted closure.
+ARGS should be the list of formal arguments.
+BODY should be a non-empty list of forms.
+ENV should be a lexical environment, like the second argument of `eval'.
+IFORM if non-nil should be of the form (interactive ...)."
+    (unless (consp body) (signal 'wrong-type-argument (list 'consp body)))
+    (unless (listp args) (signal 'wrong-type-argument (list 'listp args)))
+    (unless (listp iform) (signal 'wrong-type-argument (list 'listp iform)))
+    (let ((lexenv nil))
+      (dolist (binding env)
+        (when (consp binding) (setq lexenv (cons binding lexenv))))
+      (cons 'closure
+            (cons (nreverse lexenv)
+                  (cons args
+                        (append (and (stringp docstring) (list docstring))
+                                (and iform (list iform))
+                                body)))))))
+;; GNU Emacs 31.1 data.c `Finteractive_form', translated: the
+;; `interactive-form' property along a symbol chain first, then the
+;; function object itself.  An interpreted closure's slot 5 (see
+;; `make-interpreted-closure' above) holds the spec, or [SPEC MODES].
+;; Builtins here carry no interactive specs.
+(unless (fboundp 'interactive-form)
+  (defun interactive-form (cmd)
+    "Return the interactive form of CMD or nil if none.
+If CMD is not a command, the return value is nil.
+Value, if non-nil, is a list (interactive SPEC)."
+    (if (null (indirect-function cmd))
+        nil
+      (let ((fun cmd) (prop nil))
+        (while (and fun (symbolp fun) (null prop))
+          (setq prop (get fun 'interactive-form))
+          (unless prop (setq fun (symbol-function fun))))
+        (cond
+         (prop prop)
+         ((or (interpreted-function-p fun)
+              (and (fboundp 'byte-code-function-p)
+                   (byte-code-function-p fun)))
+          (when (> (length fun) 5)
+            (let ((form (aref fun 5)))
+              (list 'interactive (if (vectorp form) (aref form 0) form)))))
+         ((eq (car-safe fun) 'autoload)
+          (interactive-form (autoload-do-load fun cmd nil)))
+         ((eq (car-safe fun) 'lambda)
+          (let ((spec (assq 'interactive (cdr (cdr fun)))))
+            (if (null (cdr (cdr spec)))
+                spec
+              (list 'interactive (car (cdr spec))))))
+         (t nil))))))
+;; GNU Emacs 31.1 simple.el `function-documentation' is a `cl-defgeneric'
+;; whose only built-in methods are for OClosure accessors and
+;; `cconv--interactive-helper', neither of which exists here; this is its
+;; default body, with its `pcase' written as the equivalent `cond'.  A
+;; builtin `(builtin NAME)' carries no docstring here, which is what
+;; `internal-subr-documentation' answers for an undocumented subr.
+(unless (fboundp 'function-documentation)
+  (defun function-documentation (function)
+    "Extract the raw docstring info from FUNCTION.
+FUNCTION is expected to be a function value rather than, say, a mere symbol.
+This is intended to be specialized via `cl-defmethod' but not called directly:
+if you need a function's documentation use `documentation' which will call this
+function as needed."
+    (let ((docstring-p (lambda (doc)
+                         (or (stringp doc)
+                             (fixnump doc) (fixnump (cdr-safe doc))))))
+      (cond
+       ((closurep function)
+        (when (> (length function) 4)
+          (let ((doc (aref function 4)))
+            (when (funcall docstring-p doc) doc))))
+       ((or (stringp function) (vectorp function)) "Keyboard macro.")
+       ((eq (car-safe function) 'keymap)
+        "Prefix command (definition is a keymap associating keystrokes with commands).")
+       ((and (memq (car-safe function) '(lambda autoload))
+             (consp (cdr function)))
+        (let ((doc (car (cdr (cdr function)))))
+          (when (funcall docstring-p doc)
+            doc)))
+       ((symbolp function)
+        (let ((f (indirect-function function)))
+          (if f (function-documentation f)
+            (signal 'void-function (list function)))))
+       ((eq (car-safe function) 'macro) (function-documentation (cdr function)))
+       ((eq (car-safe function) 'builtin) nil)
+       (t (signal 'invalid-function (list function)))))))
 (unless (fboundp 'cl--find-class)
   (defun cl--find-class (type) (get type 'cl--class)))
 ;; `(setf (cl--find-class NAME) CLASS)' is how cl-preloaded / oclosure /
@@ -6711,49 +8436,83 @@ Supports proper lists only (= what `nelisp-aot-compiler.el' uses)."
           (setq i (1+ i)))
         (nreverse acc)))))
 
-(defun cl-remove-if-not (pred seq)
-  "Return a list of SEQ elements where (PRED ELT) is non-nil.
-Linear, allocates a fresh list; preserves order."
-  (let ((acc nil) (cur seq))
-    (while cur
-      (when (funcall pred (car cur))
-        (setq acc (cons (car cur) acc)))
-      (setq cur (cdr cur)))
-    (nreverse acc)))
+(defun nelisp--cl-labels-subst (form alist)
+  "Replace every `(function NAME)' in macroexpanded FORM by NAME's variable.
+ALIST maps each `cl-labels' NAME to the lexical variable holding its
+function.  `quote' data is left untouched; every other cons is walked,
+including improper tails."
+  (cond
+   ((not (consp form)) form)
+   ((eq (car form) 'quote) form)
+   ((and (eq (car form) 'function)
+         (consp (cdr form))
+         (symbolp (car (cdr form)))
+         (assq (car (cdr form)) alist))
+    (cdr (assq (car (cdr form)) alist)))
+   (t
+    (let ((out nil) (rest form))
+      (while (consp rest)
+        (setq out (cons (nelisp--cl-labels-subst (car rest) alist) out)
+              rest (cdr rest)))
+      (let ((res (nreverse out)))
+        (if rest (nconc res rest) res))))))
 
 (defmacro cl-labels (bindings &rest body)
   "Bind locally-recursive functions BINDINGS and run BODY.
-BINDINGS = ((NAME (ARGS...) BODY...) ...).  Expands to a `let'-bound
-funarg + `flet'-style cl-flet substitution so each binding can call
-itself by NAME.  This is the minimal shape used by
-`nelisp-aot-compiler.el' (single-binding walk-helper recursion);
-sibling cross-calls within a single `cl-labels' block are NOT
-supported (= would need a forward-declared placeholder set, deferred)."
-  (let ((let-bindings nil)
-        (defalias-forms nil)
-        (unalias-forms nil))
+BINDINGS = ((NAME (ARGS...) BODY...) ...).  Like GNU `cl-labels', each
+NAME is a *lexical* function binding: it is held in a local variable,
+calls `(NAME ...)' inside BINDINGS and BODY become `funcall's of that
+variable, and `#'NAME' evaluates to the function object itself.  The
+function therefore stays callable after BODY returns (GNU `named-let'
+expands to `(funcall (cl-labels ((NAME ...)) #'NAME) ...)'), siblings
+may call each other, and no global function cell is ever touched.
+Calls are rewritten by a full macro-expansion walk with a local macro
+per NAME (merged over `macroexpand-all-environment' so enclosing local
+macros still apply); `#'NAME' references are then substituted in the
+fully expanded code by `nelisp--cl-labels-subst'.  The walk is the
+prelude's own `nelisp--macroexpand-all-walk' when present: a library
+that replaces the global `macroexpand-all' with a walker that does not
+descend into `(function (lambda ...))' would otherwise leave every call
+inside a local function body unrewritten (`void-function NAME')."
+  (let ((env (and (boundp 'macroexpand-all-environment)
+                  macroexpand-all-environment))
+        (expand (if (fboundp 'nelisp--macroexpand-all-walk)
+                    'nelisp--macroexpand-all-walk
+                  'macroexpand-all))
+        (alist nil)
+        (setqs nil)
+        (vars nil))
     (dolist (b bindings)
-      (let* ((name (car b))
-             (fn-formals (car (cdr b)))
-             (fn-body (cdr (cdr b)))
-             (saved (intern (format "--cl-labels-saved-%s" name))))
-        (setq let-bindings
-              (cons (list saved (list 'and (list 'fboundp (list 'quote name))
-                                      (list 'symbol-function (list 'quote name))))
-                    let-bindings))
-        (setq defalias-forms
-              (cons (list 'defalias (list 'quote name)
-                          (cons 'lambda (cons fn-formals fn-body)))
-                    defalias-forms))
-        (setq unalias-forms
-              (cons (list 'if saved
-                          (list 'defalias (list 'quote name) saved)
-                          (list 'fmakunbound (list 'quote name)))
-                    unalias-forms))))
-    (list 'let (nreverse let-bindings)
-          (cons 'unwind-protect
-                (cons (cons 'progn (append (nreverse defalias-forms) body))
-                      (nreverse unalias-forms))))))
+      ;; Interned (not `make-symbol') so an expansion that is printed and
+      ;; read back (AOT / artifact caches) still names one variable.
+      (let ((var (intern (format "--cl-labels-%s--" (car b)))))
+        (setq alist (cons (cons (car b) var) alist))
+        (setq vars (cons var vars))
+        ;; A raw lambda list, not a closure: the prelude is dynamically
+        ;; scoped, so VAR is spliced in as a constant.
+        (setq env (cons (cons (car b)
+                              (list 'lambda '(&rest args)
+                                    (list 'cons ''funcall
+                                          (list 'cons (list 'quote var)
+                                                'args))))
+                        env))))
+    (dolist (b bindings)
+      (setq setqs
+            (cons (list 'setq (cdr (assq (car b) alist))
+                        (nelisp--cl-labels-subst
+                         (funcall expand
+                          (list 'function
+                                (cons 'lambda (cons (car (cdr b))
+                                                    (cdr (cdr b)))))
+                          env)
+                         alist))
+                  setqs)))
+    (cons 'let
+          (cons (nreverse vars)
+                (append (nreverse setqs)
+                        (list (nelisp--cl-labels-subst
+                               (funcall expand (cons 'progn body) env)
+                               alist)))))))
 
 (defmacro cl-incf (place &optional delta)
   "Increment PLACE by DELTA (default 1).
@@ -6794,191 +8553,6 @@ miss bug, returns garbage instead of signalling and corrupts the compile."
     res))
 
 ;; ---------------------------------------------------------------------------
-;; Doc 49 Wave 7 R6c (2026-05-22) — minimal `backquote' macro.
-;;
-;; The reader (`nelisp-stdlib-reader.el') desugars source-level `\`'
-;; and `,' / `,@' into `(backquote FORM)' / `(comma X)' / `(comma-at X)'
-;; cons forms.  Without a `backquote' macro, evaluating these dies with
-;; `(void-function backquote)' — observed when loading
-;; `nelisp-sexp-layout.el' whose final `defconst' uses `((NAME . ,V) ...)'.
-;;
-;; Scope (Minimal):
-;;   `atom              =>  'atom
-;;   `,X                =>  X
-;;   `(A B C)           =>  (list 'A 'B 'C)
-;;   `(A ,X B)          =>  (list 'A X 'B)
-;;   `(A ,@X B)         =>  (append (list 'A) X (list 'B))
-;;   `(A . ,X)          =>  (cons 'A X)
-;;   `(A . X)           =>  (cons 'A 'X)
-;; Unsupported (signal):  nested ``X, vector quasi `[A ,X B].
-;; ---------------------------------------------------------------------------
-
-;; Doc 224-ish (2026-07-04) — accept BOTH backquote-family spellings.
-;;
-;; This reader's own char-level desugar (src/nelisp-reader.el,
-;; src/nelisp-read.el, lisp/nelisp-cc-reader-parser.el) always turns a
-;; source-level `\=`'/`,'/`,@' character into `(backquote FORM)' /
-;; `(comma X)' / `(comma-at X)', using these plain multi-character
-;; convenience names instead of real Emacs's own punctuation-named
-;; symbols (real Emacs's reader/backquote.el represent the same three
-;; things as the symbols whose print-names are literally "`", ",", and
-;; ",@", requiring backslash-escaping to reference directly, e.g.
-;; `\=`').  Forms loaded through a host-side GNU Emacs replay/.repl
-;; pipeline (as opposed to being read fresh by this reader) can arrive
-;; already `read' by a real Emacs and preserve ITS symbol spelling
-;; instead of this reader's convenience names -- observed for org.el's
-;; `org-with-wide-buffer' (org-macs.el), whose stored macro body's head
-;; symbol is `eq' to (intern "`"), not to `backquote': calling it hit
-;; `(void-function \=`)' because only the `backquote' name had a macro
-;; function bound, and the literal "`"-named symbol had none.  Rather
-;; than special-case that one macro, `nelisp--bq-expand'/
-;; `-expand-list' below recognize either spelling wherever a
-;; backquote/comma/comma-at marker is checked, and `\=`' is defmacro'd
-;; below as an alias so the outer form is itself dispatchable as a
-;; macro under whichever spelling it happens to carry.  `,'/`,@' are
-;; deliberately NOT given independent macro/function bindings here:
-;; real Emacs does not bind them either (they only have meaning nested
-;; inside a backquote template, consumed structurally by the walker),
-;; so a bare `(, X)'/`(,@ X)' outside a template still signals
-;; void-function on both this reader and real Emacs, matching real
-;; Emacs semantics.
-(defun nelisp--bq-tag-p (form tag punct)
-  "Non-nil if FORM is a cons whose car is the backquote-family marker
-TAG (this reader's own convenience symbol, e.g. `comma') or the real
-Emacs-style symbol named the literal punctuation string PUNCT (e.g.
-\",\")."
-  (and (consp form)
-       (let ((head (car form)))
-         (or (eq head tag) (eq head (intern punct))))))
-
-(defun nelisp--bq-expand (form &optional level)
-  "Return the expansion of FORM under `backquote' at nesting LEVEL.
-LEVEL defaults to 1 (directly inside one backquote).  A `,'/`,@' at
-LEVEL 1 fires immediately (its argument is evaluated at macro-expanded
-runtime); above LEVEL 1 it is preserved as inert marker data one level
-shallower, so a matching further `,' can still cancel it down to 0
-\(host Emacs `backquote.el' depth semantics -- see the nested-backquote
-commentary above `nelisp--bq-tag-p')."
-  (let ((level (or level 1)))
-    (cond
-     ((vectorp form)
-      (list 'vconcat (nelisp--bq-expand-list (append form nil) level)))
-     ((not (consp form))
-      (list 'quote form))
-     ((nelisp--bq-tag-p form 'comma ",")
-      (if (= level 1)
-          (cadr form)
-        (list 'list (list 'quote 'comma)
-              (nelisp--bq-expand (cadr form) (1- level)))))
-     ((nelisp--bq-tag-p form 'comma-at ",@")
-      (if (= level 1)
-          (signal 'error (list "nelisp-bq: top-level ,@ not allowed"))
-        (list 'list (list 'quote 'comma-at)
-              (nelisp--bq-expand (cadr form) (1- level)))))
-     ((nelisp--bq-tag-p form 'backquote "`")
-      ;; A nested backquote increments the level for its own content and
-      ;; is itself rebuilt as inert `(backquote ...)' data -- it is only
-      ;; ever "consumed" by a comma at the matching depth, never by
-      ;; simply appearing inside an outer backquote.
-      (list 'list (list 'quote 'backquote)
-            (nelisp--bq-expand (cadr form) (1+ level))))
-     (t (nelisp--bq-expand-list form level)))))
-
-(defun nelisp--bq-expand-list (form level)
-  "Walk list FORM at nesting LEVEL, producing the expansion.
-Recognises both (... ,X ...) interior unquote and (... . ,X) dotted
-unquote / (... . ,@X) dotted splice patterns, at any LEVEL (see
-`nelisp--bq-expand')."
-  (let ((parts nil)        ; alist entries (KIND . EXPR) where KIND = list|splice
-        (cur form)
-        (tail-expr nil)
-        (done nil)
-        (has-splice nil))
-    (while (and (not done) (consp cur))
-      (let ((head (car cur)))
-        (cond
-         ;; cdr-position bare `comma' → source had `. ,X'.
-         ((or (eq head 'comma) (eq head (intern ",")))
-          (if (= level 1)
-              (setq tail-expr (cadr cur))
-            (setq tail-expr (list 'list (list 'quote 'comma)
-                                   (nelisp--bq-expand (cadr cur) (1- level)))))
-          (setq done t))
-         ;; cdr-position bare `comma-at' → source had `. ,@X'.
-         ((or (eq head 'comma-at) (eq head (intern ",@")))
-          (if (= level 1)
-              (progn (setq tail-expr (cadr cur)) (setq has-splice t))
-            (setq tail-expr (list 'list (list 'quote 'comma-at)
-                                   (nelisp--bq-expand (cadr cur) (1- level)))))
-          (setq done t))
-         (t
-          (let ((elem head))
-            (cond
-             ((and (consp elem)
-                   (or (eq (car elem) 'comma-at) (eq (car elem) (intern ",@"))))
-              (if (= level 1)
-                  (progn
-                    (setq has-splice t)
-                    (push (cons 'splice (cadr elem)) parts))
-                (push (cons 'list
-                             (list 'list (list 'quote 'comma-at)
-                                   (nelisp--bq-expand (cadr elem) (1- level))))
-                      parts)))
-             ((and (consp elem)
-                   (or (eq (car elem) 'comma) (eq (car elem) (intern ","))))
-              (if (= level 1)
-                  (push (cons 'list (cadr elem)) parts)
-                (push (cons 'list
-                             (list 'list (list 'quote 'comma)
-                                   (nelisp--bq-expand (cadr elem) (1- level))))
-                      parts)))
-             (t
-              (push (cons 'list (nelisp--bq-expand elem level)) parts))))
-          (setq cur (cdr cur))))))
-    (when (and (not done) (not (null cur)) (not (consp cur)))
-      (setq tail-expr (list 'quote cur)))
-    (nelisp--bq-build (nreverse parts) tail-expr has-splice)))
-
-(defun nelisp--bq-build (parts tail has-splice)
-  "Build the final form from PARTS list, TAIL expression, HAS-SPLICE flag."
-  (cond
-   ((and (null parts) (null tail))
-    (list 'quote nil))
-   ((null parts) tail)
-   ((and (not has-splice) (null tail))
-    (cons 'list (mapcar 'cdr parts)))
-   ((not has-splice)
-    (let ((acc tail) (rp (reverse parts)))
-      (while rp
-        (setq acc (list 'cons (cdr (car rp)) acc))
-        (setq rp (cdr rp)))
-      acc))
-   (t
-    (let ((args nil) (p parts))
-      (while p
-        (let ((kind (car (car p))) (val (cdr (car p))))
-          (cond
-           ((eq kind 'list) (push (list 'list val) args))
-           ((eq kind 'splice) (push val args))))
-        (setq p (cdr p)))
-      (setq args (nreverse args))
-      (when tail (setq args (append args (list tail))))
-      (cons 'append args)))))
-
-(defmacro backquote (form)
-  "Expand FORM as a quasiquoted template (NeLisp minimal subset).
-See `nelisp--bq-expand' for the supported shapes."
-  (nelisp--bq-expand form))
-
-(defmacro \` (form)
-  "Alias for `backquote', bound under real Emacs's own back-quote
-symbol name so a form headed by that literal punctuation-named symbol
-\(rather than this reader's `backquote' convenience name -- see the
-commentary above `nelisp--bq-tag-p') is itself dispatchable as a
-macro call."
-  (nelisp--bq-expand form))
-
-(unless (fboundp 'zerop) (defun zerop (n) "Return t if N is zero." (= n 0)))
 
 ;; ---------------------------------------------------------------------------
 ;; Wave A21-fix (2026-05-24) — cl-case / cl-position / cl-set-difference /
@@ -7025,37 +8599,6 @@ Expands to a `let' + `cond'."
                   clauses)))
     (list 'let (list (list sym expr))
           (cons 'cond cond-clauses))))
-
-(defun cl-position (item seq &rest keys)
-  "Return the 0-based index of ITEM in SEQ (list), or nil if absent.
-NeLisp minimal: list-only.  Recognised KEYS:
-  :test FN   — predicate to use (default `equal').
-Unknown keys are silently ignored."
-  (let* ((test (or (let ((p keys) (v nil))
-                     (while p
-                       (when (eq (car p) :test)
-                         (setq v (car (cdr p))))
-                       (setq p (cdr (cdr p))))
-                     v)
-                   #'equal))
-         (i 0) (cur seq) (found nil))
-    (while (and cur (not found))
-      (if (funcall test (car cur) item)
-          (setq found i)
-        (setq i (1+ i))
-        (setq cur (cdr cur))))
-    found))
-
-(defun cl-set-difference (list1 list2 &rest kw)
-  "Return elements of LIST1 not present in LIST2, preserving order.
-Keywords supported: `:test' `:test-not' `:key' (Emacs cl-seq.el semantics;
-default test `eql')."
-  (if (or (null list1) (null list2))
-      list1
-    (let ((key (plist-get kw :key)) (acc nil))
-      (dolist (x list1 (nreverse acc))
-        (unless (nelisp--cl-seq-member (if key (funcall key x) x) list2 kw)
-          (push x acc))))))
 
 ;; Doc segI (vendor-emacs-lisp), Phase 3: the six unconditional
 ;; `cl-count'/`cl-remove'/`cl-delete'/`cl-assoc'/`cl-sort'/
@@ -7333,6 +8876,19 @@ other gv-using libraries load/run on the bare reader."
     (list 'nelisp--record-set (cadr place)
           (cdr (assq (car place) nelisp-cl-macros--accessor-info))
           val))
+   ;; GNU gv.el's `if' and `progn' places: assign through whichever branch
+   ;; TEST selects (ELSE forms as an implicit `progn' whose last form is
+   ;; the place).  bytecomp.el pushes onto one: `(push var (if assignment
+   ;; byte-compile-free-assignments byte-compile-free-references))'.
+   ((and (consp place) (eq (car place) 'if))
+    (list 'if (cadr place)
+          (nelisp--setf-1 (caddr place) val)
+          (nelisp--setf-1 (cons 'progn (cdddr place)) val)))
+   ((and (consp place) (eq (car place) 'progn))
+    (if (cddr place)
+        (append (cons 'progn (butlast (cdr place)))
+                (list (nelisp--setf-1 (car (last place)) val)))
+      (nelisp--setf-1 (cadr place) val)))
    ((and (consp place) (nelisp--setf-place-macro-p (car place)))
     (nelisp--setf-1 (macroexpand-1 place) val))
    ;; fix/setf-cxxxr-places: `(setf (plist-get (cadr (plist-get x
@@ -7472,6 +9028,41 @@ bindings provide.  &rest is honoured."
                   body))))
 
 (provide 'cl-lib)
+;; This file's own `cl-defgeneric'/`cl-defmethod' (Doc 185 subset, above)
+;; are this substrate's supported `cl-generic' path -- match the `cl-lib'
+;; `provide' immediately above so a GNU library's own `(require
+;; 'cl-generic)' (e.g. real `project.el', `xref.el') is a no-op that
+;; keeps using this subset, instead of a real `require' that would try
+;; to load real `cl-generic.el' from whatever the caller's `load-path'
+;; happens to contain.  That matters beyond tidiness: real `cl-generic.el'
+;; itself is known NOT to fully load on this substrate (confirmed this
+;; session, and already documented above at the `compiled-function-p'
+;; NOTE (Doc 157 §5) -- defining `compiled-function-p' so `cl-generic.el'
+;; can get past its `cl--generic-compiler' defvar makes the file's own
+;; eager `cl--generic-prefill-dispatchers' calls take 280s+ on this
+;; substrate's interpreter), so an unguarded `(require 'cl-generic)'
+;; pulled in as a transitive dependency would make loading e.g.
+;; `project.el' hang or error deep inside someone else's file instead of
+;; using the working subset directly.
+(unless (featurep 'cl-generic)
+  (provide 'cl-generic))
+;; Same reasoning, for `seq': this substrate already has a full `seq-*'
+;; function set (elsewhere in this file -- `seq-elt'/`seq-filter'/
+;; `seq-map'/`seq-reduce'/`seq-find'/`seq-contains-p'/`seq-uniq'/etc. are
+;; all `fboundp' already), but `(featurep 'seq)' was never set, so real
+;; `project.el''s `(require 'seq)' pulled in the real, much larger
+;; `seq.el' from whatever `load-path' the caller supplied -- which itself
+;; then broke earlier than project.el's own code even ran, on
+;; `(cl-defmethod (setf seq-elt) ...)': this substrate's Doc 185
+;; `cl-defmethod' assumes NAME is always a plain symbol (`wrong-type-
+;; argument symbolp (setf seq-elt)'), real `cl-generic.el''s `(setf FUNC)'
+;; generic-function-name support being one more real-`cl-generic.el'-only
+;; feature out of scope per the `cl-generic' NOTE just above.  Marking
+;; `seq' provided sidesteps that combination entirely and is also simply
+;; correct on its own terms: this substrate's `seq-*' functions ARE a
+;; working implementation of the feature.
+(unless (featurep 'seq)
+  (provide 'seq))
 (provide 'nelisp-cl-macros)
 
 ;; nelisp-cl-macros.el ends here
@@ -7579,9 +9170,11 @@ bindings provide.  &rest is honoured."
         (nelisp-pcase--backquote (car rest) value-form))
        ((eq head 'app)
         ;; (app FUN PAT): apply FUN to the value, match PAT on the result.
+        ;; FUN is a plain function name / lambda (called with VALUE-FORM as
+        ;; its one argument), or GNU Emacs 31.1's "extended" (F ARG1 ..
+        ;; ARGn) form, handled by `nelisp-pcase--app-call'.
         (nelisp-pcase--test (car (cdr rest))
-                            (list 'funcall (list 'function (car rest))
-                                  value-form)))
+                            (nelisp-pcase--app-call (car rest) value-form)))
        ;; An unrecognised pattern head used to build the test `t', so it
        ;; matched EVERYTHING: `(pcase 5 ((app 1+ 7) (quote seven))
        ;; (_ (quote other)))' answered seven where Emacs answers other, and
@@ -7607,8 +9200,35 @@ bindings provide.  &rest is honoured."
                            (list 'cl-typep 'v
                                  (list 'quote (car rest)))))
          value-form))
-       (t (error "Unknown %s pattern: %S" head pattern)))))
+       ;; `pcase-defmacro' (defined above) registers a new pattern head by
+       ;; putting a macroexpander function on its `pcase-macroexpander'
+       ;; symbol property; consulting that property here before giving up
+       ;; is what lets vendor `map.el'/`seq.el' patterns -- `(map :a)',
+       ;; `(seq a b)' -- work.  Safe regardless of prelude splice order:
+       ;; this only runs when some CASE actually uses the head, by which
+       ;; point `get'/`put' have already loaded.  Kept in sync with
+       ;; lisp/nelisp-pcase.el's copy.
+       (t (let ((expander (get head 'pcase-macroexpander)))
+            (if expander
+                (nelisp-pcase--test (apply expander rest) value-form)
+              (error "Unknown %s pattern: %S" head pattern)))))))
    (t (cons (list 'equal value-form (list 'quote pattern)) nil))))
+
+(defun nelisp-pcase--app-call (fun value-form)
+  "Build a call form applying `app' pattern FUN to VALUE-FORM.
+Kept in sync with lisp/nelisp-pcase.el's copy; see there for the
+mirrors-GNU-31.1 rationale."
+  (cond
+   ((or (not (consp fun)) (memq (car fun) '(lambda closure)))
+    (list 'funcall (list 'function fun) value-form))
+   ((memq '_ fun)
+    (mapcar (lambda (elt) (if (eq elt '_) value-form elt)) fun))
+   (t (append fun (list value-form)))))
+
+(defmacro pcase--flip (fun arg1 arg2)
+  "Call FUN with ARG1 and ARG2 swapped: (FUN ARG2 ARG1).
+Kept for vendor `app' patterns that predate the `_' placeholder form."
+  (list fun arg2 arg1))
 
 (defun nelisp-pcase--and (patterns value-form)
   "Build (TEST . BINDINGS) for an `and' pattern."
@@ -7842,7 +9462,6 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
     (or (and (consp x) (eq (car x) 'lambda))
         (and (symbolp x) (not (memq x '(nil t))) (fboundp x)))))
 (unless (fboundp 'recordp) (defun recordp (x) nil))
-(unless (fboundp 'nlistp) (defun nlistp (x) (not (listp x))))
 ;; `eql' compares numbers of the SAME TYPE: (eql 0.0 0) is nil, where `='
 ;; says t.  Routing both through `=' made a float and an integer identical,
 ;; which is the one thing `eql' exists to distinguish.
@@ -8299,6 +9918,11 @@ explicitly instead, see the section header comment above); kept so
 (defun nelisp-buffer--reset-registry ()
   "Clear the NeLisp buffer registry.  Test hygiene only."
   (clrhash nelisp-buffer--registry)
+  (when (boundp 'nelisp-buffer--text-cache) (clrhash nelisp-buffer--text-cache))
+  (when (boundp 'nelisp-buffer--tick) (clrhash nelisp-buffer--tick))
+  (when (boundp 'nelisp-buffer--pending-point) (clrhash nelisp-buffer--pending-point))
+  (when (boundp 'nelisp-buffer--blen-cache) (clrhash nelisp-buffer--blen-cache))
+  (when (boundp 'nelisp-buffer--size-cache) (clrhash nelisp-buffer--size-cache))
   (setq nelisp-buffer--current nil))
 
 (defun nelisp-generate-new-buffer (name)
@@ -8324,11 +9948,65 @@ explicitly instead, see the section header comment above); kept so
   "Return the buffer named NAME, or nil if absent."
   (gethash name nelisp-buffer--registry))
 
+;; PERF (search-forward quadratic-cost fix, 2026-09-28): mirrors the
+;; src/nelisp-buffer.el fix of the same name -- see that file's block
+;; comment just below its own `nelisp-buffer--current' defvar for the
+;; measurement and the full rationale.  `nelisp-buffer-string' used to
+;; `concat' `before-gap'/`after-gap' -- O(buffer size) -- on EVERY call,
+;; including from `nelisp-buffer-substring' (asked for as little as one
+;; character, by `nelisp-char-after' et al.).  Measured on the
+;; standalone binary: a `search-forward' loop over an 80KB buffer took
+;; 36.7s, vs. 0.11s for a 2KB buffer of the same shape.
+;;
+;; That alone was not enough: `nelisp-goto-char' (called once per
+;; `re-search-forward' match) reproduced the same quadratic total even
+;; after the fix above, because moving the gap boundary AT ALL still
+;; costs O(current position) via `concat'/`substring' on plain
+;; (immutable) strings, no matter how small the actual move is.  See
+;; `nelisp-buffer--pending-point' below.
+(defvar nelisp-buffer--text-cache (make-hash-table :test 'eq)
+  "BUF -> cached whole-buffer text; see `nelisp-buffer--tick'.")
+
+(defvar nelisp-buffer--tick (make-hash-table :test 'eq)
+  "BUF -> monotonic counter, bumped by `nelisp-buffer--bump-tick' once per
+call that changes BUF's TEXT (`nelisp-insert', `nelisp-delete-region',
+`nelisp-erase-buffer', `nelisp-insert-before-markers').  Deliberately
+NOT bumped by `nelisp-goto-char': a pending point (see `nelisp-buffer--
+pending-point') changes nothing about the concatenated text.")
+
+(defun nelisp-buffer--bump-tick (buf)
+  "Invalidate BUF's cached whole-buffer text (see `nelisp-buffer--tick')."
+  (puthash buf (1+ (gethash buf nelisp-buffer--tick 0)) nelisp-buffer--tick))
+
+(defvar nelisp-buffer--pending-point (make-hash-table :test 'eq)
+  "BUF -> a point value `nelisp-goto-char' recorded but has not yet
+physically moved BUF's gap to match.  Absent means the gap already
+sits exactly at BUF's current point.  See `nelisp-buffer--settle'.")
+
+(defun nelisp-buffer--settle (buf)
+  "Physically move BUF's gap to its pending point, if one is
+outstanding, then clear it.  O(distance from the gap's CURRENT
+physical position to the pending target) -- paid once, lazily, right
+before an operation (`nelisp-insert' et al.) that needs the gap
+actually at point."
+  (let ((pending (gethash buf nelisp-buffer--pending-point)))
+    (when pending
+      (let* ((total (nelisp-buffer-string buf))
+             (idx (1- pending)))
+        (setf (nelisp-buffer-before-gap buf) (substring total 0 idx))
+        (setf (nelisp-buffer-after-gap buf) (substring total idx)))
+      (remhash buf nelisp-buffer--pending-point))))
+
 (defun nelisp-kill-buffer (buf)
   "Remove BUF from the registry.  Returns t on success."
   (let ((name (nelisp-buffer-name buf)))
     (when (gethash name nelisp-buffer--registry)
       (remhash name nelisp-buffer--registry)
+      (remhash buf nelisp-buffer--text-cache)
+      (remhash buf nelisp-buffer--tick)
+      (remhash buf nelisp-buffer--pending-point)
+      (remhash buf nelisp-buffer--blen-cache)
+      (remhash buf nelisp-buffer--size-cache)
       (when (eq nelisp-buffer--current buf)
         (setq nelisp-buffer--current nil))
       t)))
@@ -8347,12 +10025,15 @@ explicitly instead, see the section header comment above); kept so
 (defun nelisp-set-buffer (buf)
   "Set BUF as the current NeLisp buffer.  Returns BUF."
   (setq nelisp-buffer--current buf)
+  (nelisp-goto-char (nelisp-point buf) buf)
   buf)
 
 (defmacro nelisp-with-buffer (buf &rest body)
   "Evaluate BODY with BUF as the NeLisp current buffer."
   (declare (indent 1))
   `(let ((nelisp-buffer--current ,buf))
+     (nelisp-goto-char (nelisp-point nelisp-buffer--current)
+                       nelisp-buffer--current)
      ,@body))
 
 (defun nelisp-buffer--ambient (buf-or-nil)
@@ -8360,16 +10041,79 @@ explicitly instead, see the section header comment above); kept so
   (or buf-or-nil nelisp-buffer--current
       (error "No NeLisp current buffer")))
 
+;; PERF (syntax-scanning quadratic-cost fix, 2026-09-28): `length' on a
+;; large NeLisp string is NOT O(1) here the way it is in real Emacs --
+;; measured directly on this standalone binary: 20000 calls of `length'
+;; on a 100-char string took 2.55s (~127us/call, pure per-call dispatch
+;; overhead) vs 22.10s on a 150000-char string (~1.1ms/call) -- roughly
+;; an order of magnitude slower for a ~1500x bigger string, i.e. `length'
+;; itself carries an O(string size) cost on top of its fixed dispatch
+;; cost.  `aref'/`substring' on the same big string did NOT show this
+;; scaling (both stayed within noise of the small-string baseline), so
+;; this is specific to `length', not a general "big string" tax.
+;;
+;; `nelisp-buffer-size'/`nelisp-point' (below) and `nelisp-buffer-
+;; substring'/`nelisp-char-after'/`nelisp-char-before'/`nelisp-goto-char'
+;; (further down) all called `(length (nelisp-buffer-before-gap b))'
+;; and/or `(length (nelisp-buffer-after-gap b))' on every invocation --
+;; and the syntax-scanning primitives (`forward-sexp', `parse-partial-
+;; sexp', `forward-comment', `skip-chars-forward'/`-backward', etc., all
+;; funnelled through `nelisp--motion-char-at') call `nelisp-point-max'
+;; (hence `nelisp-buffer-size') and `nelisp-buffer-substring' ONCE PER
+;; CHARACTER scanned.  On a 150KB buffer that is ~1-2ms of pure `length'
+;; cost paid again for every single character -- exactly the O(buffer
+;; size) per character, O(buffer size ^ 2) per full scan blowup measured
+;; as ">300s" for a single `forward-sexp' near the front of a 150KB file
+;; (never mind a full-file scan loop): see `~/.cache/tmp/sexp-perf/'.
+;;
+;; Fix: cache BEFORE-GAP's length (and the buffer's total size) per
+;; `nelisp-buffer--tick', the same tick already used to memoize
+;; `nelisp-buffer-string' (search-forward fix, same date).  BEFORE-GAP
+;; only ever changes inside `nelisp-insert'/`nelisp-insert-before-
+;; markers'/`nelisp-delete-region', all of which call `nelisp-buffer--
+;; bump-tick' immediately after touching it (and any physical `nelisp-
+;; buffer--settle' happens strictly before that bump, inside the same
+;; call) -- so BEFORE-GAP's length is provably constant for a given tick
+;; value, making this cache always coherent, never stale.
+(defvar nelisp-buffer--blen-cache (make-hash-table :test 'eq)
+  "BUF -> (TICK . BEFORE-GAP-LENGTH); see the PERF block comment above
+`nelisp-buffer--ambient'.")
+
+(defvar nelisp-buffer--size-cache (make-hash-table :test 'eq)
+  "BUF -> (TICK . TOTAL-SIZE); see the PERF block comment above
+`nelisp-buffer--ambient'.")
+
+(defun nelisp-buffer--before-length (buf)
+  "Cached `(length (nelisp-buffer-before-gap BUF))' -- O(1) once BUF's
+current tick has been seen once; see the PERF block comment above
+`nelisp-buffer--ambient'."
+  (let* ((tick (gethash buf nelisp-buffer--tick 0))
+         (cached (gethash buf nelisp-buffer--blen-cache)))
+    (if (and cached (= (car cached) tick))
+        (cdr cached)
+      (let ((blen (length (nelisp-buffer-before-gap buf))))
+        (puthash buf (cons tick blen) nelisp-buffer--blen-cache)
+        blen))))
+
 (defun nelisp-buffer-size (&optional buf)
   "Return the length of BUF's visible (unrestricted) text."
-  (let ((b (nelisp-buffer--ambient buf)))
-    (+ (length (nelisp-buffer-before-gap b))
-       (length (nelisp-buffer-after-gap b)))))
+  (let* ((b (nelisp-buffer--ambient buf))
+         (tick (gethash b nelisp-buffer--tick 0))
+         (cached (gethash b nelisp-buffer--size-cache)))
+    (if (and cached (= (car cached) tick))
+        (cdr cached)
+      (let ((sz (+ (nelisp-buffer--before-length b)
+                   (length (nelisp-buffer-after-gap b)))))
+        (puthash b (cons tick sz) nelisp-buffer--size-cache)
+        sz))))
 
 (defun nelisp-point (&optional buf)
-  "Return the current point in BUF (1-based)."
-  (1+ (length (nelisp-buffer-before-gap
-               (nelisp-buffer--ambient buf)))))
+  "Return the current point in BUF (1-based).
+Prefers a pending, not-yet-settled `goto-char' target over the gap's
+physical position -- see `nelisp-buffer--pending-point'."
+  (let ((b (nelisp-buffer--ambient buf)))
+    (or (gethash b nelisp-buffer--pending-point)
+        (1+ (nelisp-buffer--before-length b)))))
 
 (defun nelisp-point-min (&optional buf)
   "Return the narrowed point-min of BUF (defaults to 1)."
@@ -8384,24 +10128,45 @@ explicitly instead, see the section header comment above); kept so
         (1+ (nelisp-buffer-size b)))))
 
 (defun nelisp-buffer-string (&optional buf)
-  "Return the entire text of BUF as a new string."
-  (let ((b (nelisp-buffer--ambient buf)))
-    (concat (nelisp-buffer-before-gap b)
-            (nelisp-buffer-after-gap b))))
+  "Return the entire text of BUF as a new string.
+Memoized against `nelisp-buffer--tick': O(1) when BUF's text has not
+changed since the last call, O(buffer size) to rebuild otherwise.  The
+returned string may be shared across calls -- treat it as read-only."
+  (let* ((b (nelisp-buffer--ambient buf))
+         (tick (gethash b nelisp-buffer--tick 0))
+         (cached (gethash b nelisp-buffer--text-cache)))
+    (if (and cached (= (car cached) tick))
+        (cdr cached)
+      (let ((s (concat (nelisp-buffer-before-gap b)
+                        (nelisp-buffer-after-gap b))))
+        (puthash b (cons tick s) nelisp-buffer--text-cache)
+        s))))
 
 (defun nelisp-buffer-substring (start end &optional buf)
-  "Return the substring between 1-based START and END in BUF."
-  (let ((b (nelisp-buffer--ambient buf)))
-    (substring (nelisp-buffer-string b) (1- start) (1- end))))
+  "Return the substring between 1-based START and END in BUF.
+Slices directly from `before-gap'/`after-gap' -- O(END - START)
+regardless of BUF's total size -- rather than building the whole
+buffer text first via `nelisp-buffer-string'."
+  (let* ((b (nelisp-buffer--ambient buf))
+         (before (nelisp-buffer-before-gap b))
+         (blen (nelisp-buffer--before-length b))
+         (si (1- start))
+         (ei (1- end)))
+    (cond
+     ((<= ei blen) (substring before si ei))
+     ((>= si blen) (substring (nelisp-buffer-after-gap b) (- si blen) (- ei blen)))
+     (t (concat (substring before si)
+                (substring (nelisp-buffer-after-gap b) 0 (- ei blen)))))))
 
 (defun nelisp-char-after (&optional pos buf)
   "Return the character at POS (default point) in BUF, or nil."
   (let* ((b (nelisp-buffer--ambient buf))
          (p (or pos (nelisp-point b)))
-         (total (nelisp-buffer-string b))
+         (before (nelisp-buffer-before-gap b))
+         (blen (nelisp-buffer--before-length b))
          (idx (1- p)))
-    (and (>= idx 0) (< idx (length total))
-         (elt total idx))))
+    (and (>= idx 0) (< idx (nelisp-buffer-size b))
+         (if (< idx blen) (aref before idx) (aref (nelisp-buffer-after-gap b) (- idx blen))))))
 
 (defun nelisp-char-before (&optional pos buf)
   "Return the character before POS (default point) in BUF, or nil.
@@ -8410,10 +10175,11 @@ in the same shape as `nelisp-char-after' just above, one index earlier
 (the character before POS sits at POS - 2 in the 0-based string)."
   (let* ((b (nelisp-buffer--ambient buf))
          (p (or pos (nelisp-point b)))
-         (total (nelisp-buffer-string b))
+         (before (nelisp-buffer-before-gap b))
+         (blen (nelisp-buffer--before-length b))
          (idx (- p 2)))
-    (and (>= idx 0) (< idx (length total))
-         (elt total idx))))
+    (and (>= idx 0) (< idx (nelisp-buffer-size b))
+         (if (< idx blen) (aref before idx) (aref (nelisp-buffer-after-gap b) (- idx blen))))))
 
 (defun nelisp-buffer--shift-markers-on-insert (buf at inserted-len)
   "Advance markers at or past AT by INSERTED-LEN."
@@ -8502,37 +10268,55 @@ ones."
                  (t start)))))))
 
 (defun nelisp-goto-char (pos &optional buf)
-  "Move point to POS in BUF, rebalancing the gap.
-POS is clamped into [point-min, point-max] per Emacs semantics."
+  "Move point to POS in BUF.  POS is clamped into [point-min,
+point-max] per Emacs semantics.  Records the move in
+`nelisp-buffer--pending-point' -- O(1) -- instead of physically
+re-splitting `before-gap'/`after-gap' (see that variable's docstring
+for why a physical move costs O(current position) regardless of how
+small the move is).  Does not bump `nelisp-buffer--tick': the
+concatenated text is unchanged."
   (let* ((b (nelisp-buffer--ambient buf))
-         (total (nelisp-buffer-string b))
          (lo (nelisp-point-min b))
          (hi (nelisp-point-max b))
          (clamped (max lo (min hi pos)))
-         (idx (1- clamped)))
-    (setf (nelisp-buffer-before-gap b) (substring total 0 idx))
-    (setf (nelisp-buffer-after-gap b) (substring total idx))
+         (physical (1+ (nelisp-buffer--before-length b))))
+    (if (= clamped physical)
+        (remhash b nelisp-buffer--pending-point)
+      (puthash b clamped nelisp-buffer--pending-point))
     clamped))
 
 (defun nelisp-insert (text &optional buf)
-  "Insert TEXT at point in BUF.  TEXT must be a string."
+  "Insert TEXT at point in BUF.  TEXT must be a string.  Settles any
+pending `goto-char' first (see `nelisp-buffer--settle'): this is the
+one place that genuinely needs `before-gap' to already end exactly at
+point, since it appends TEXT straight onto it."
   (unless (stringp text)
     (signal 'wrong-type-argument (list 'stringp text)))
-  (let* ((b (nelisp-buffer--ambient buf))
-         (before (nelisp-buffer-before-gap b))
-         (at (1+ (length before)))
-         (n (length text)))
-    (setf (nelisp-buffer-before-gap b) (concat before text))
-    (setf (nelisp-buffer-modified b) t)
-    (nelisp-buffer--shift-markers-on-insert b at n)
-    (nelisp-buffer--shift-overlays-on-insert b at n)
-    (nelisp-buffer--shift-text-properties-on-insert b at n))
+  (let ((b (nelisp-buffer--ambient buf)))
+    (nelisp-buffer--settle b)
+    (let* ((before (nelisp-buffer-before-gap b))
+           (at (1+ (length before)))
+           (n (length text)))
+      (setf (nelisp-buffer-before-gap b) (concat before text))
+      (when (nelisp-buffer-narrow-end b)
+        (setf (nelisp-buffer-narrow-end b)
+              (+ (nelisp-buffer-narrow-end b) n)))
+      (setf (nelisp-buffer-modified b) t)
+      (nelisp-buffer--bump-tick b)
+      ;; Empty metadata is the common case; skip the interpreted helpers then.
+      (when (nelisp-buffer-markers b)
+        (nelisp-buffer--shift-markers-on-insert b at n))
+      (when (nelisp-buffer-overlays b)
+        (nelisp-buffer--shift-overlays-on-insert b at n))
+      (when (nelisp-buffer-text-properties b)
+        (nelisp-buffer--shift-text-properties-on-insert b at n))))
   nil)
 
 (defun nelisp-delete-region (start end &optional buf)
   "Delete the text between 1-based START and END (exclusive) in BUF."
   (let* ((b (nelisp-buffer--ambient buf))
          (size (nelisp-buffer-size b))
+         (point-before (nelisp-point b))
          (lo 1)
          (hi (1+ size))
          (s (min start end))
@@ -8541,13 +10325,29 @@ POS is clamped into [point-min, point-max] per Emacs semantics."
       (signal 'args-out-of-range (list start end)))
     (let* ((total (nelisp-buffer-string b))
            (si (1- s))
-           (ei (1- e)))
+           (ei (1- e))
+           (delta (- e s))
+           (old-min (nelisp-buffer-narrow-start b))
+           (old-max (nelisp-buffer-narrow-end b))
+           (new-point (cond ((<= point-before s) point-before)
+                            ((>= point-before e) (- point-before delta))
+                            (t s)))
+           (map-position (lambda (position)
+                           (cond ((<= position s) position)
+                                 ((>= position e) (- position delta))
+                                 (t s)))))
       (setf (nelisp-buffer-before-gap b) (substring total 0 si))
       (setf (nelisp-buffer-after-gap b) (substring total ei))
+      (when old-min
+        (setf (nelisp-buffer-narrow-start b) (funcall map-position old-min)))
+      (when old-max
+        (setf (nelisp-buffer-narrow-end b) (funcall map-position old-max)))
       (setf (nelisp-buffer-modified b) t)
+      (nelisp-buffer--bump-tick b)
       (nelisp-buffer--shift-markers-on-delete b s e)
       (nelisp-buffer--shift-overlays-on-delete b s e)
-      (nelisp-buffer--shift-text-properties-on-delete b s e)))
+      (nelisp-buffer--shift-text-properties-on-delete b s e)
+      (nelisp-goto-char new-point b)))
   nil)
 
 (defun nelisp-erase-buffer (&optional buf)
@@ -8555,7 +10355,13 @@ POS is clamped into [point-min, point-max] per Emacs semantics."
   (let ((b (nelisp-buffer--ambient buf)))
     (setf (nelisp-buffer-before-gap b) "")
     (setf (nelisp-buffer-after-gap b) "")
+    (setf (nelisp-buffer-narrow-start b) nil)
+    (setf (nelisp-buffer-narrow-end b) nil)
     (setf (nelisp-buffer-modified b) t)
+    (nelisp-buffer--bump-tick b)
+    ;; A pending point from before the erase would otherwise be read back
+    ;; as if still valid -- out of range now that the buffer is empty.
+    (remhash b nelisp-buffer--pending-point)
     (dolist (m (nelisp-buffer-markers b))
       (when (nelisp-marker-p m)
         (setf (nelisp-marker-position m) 1)))
@@ -8681,49 +10487,235 @@ POS is clamped into [point-min, point-max] per Emacs semantics."
             (push o result)))))
     (nreverse result)))
 
+;; ---- text-property engine (Doc 210) -----------------------------------
+;; Intervals are `(START END PLIST)' triples forming a non-overlapping
+;; partition of whichever coordinate space the caller is in -- 1-based
+;; for a BUFFER (matching `point-min'/`point-max'), 0-based for a STRING
+;; (matching `length'; strings cannot be narrowed).  A position not
+;; covered by any interval has an implicit empty PLIST, so an entirely
+;; property-free object is simply an empty (or absent) interval list --
+;; there is no need to store a "no properties" placeholder interval.
+;;
+;; Buffers keep their intervals in the existing `nelisp-buffer-text-
+;; properties' struct slot (mutated in place by `nelisp-buffer--shift-
+;; text-properties-on-insert/-delete' below on every `nelisp-insert'/
+;; `nelisp-delete-region' -- unchanged by this doc).  Strings have no
+;; field of their own to hold one (Doc 200's unibyte/multibyte tags
+;; leave no room), so `nelisp--tp-string-properties' is a side table
+;; keyed by the string's own identity (`eq'); a plain string never
+;; propertized never appears in it.
+;;
+;; Every mutator funnels through `nelisp--tp-rebuild', which cuts the
+;; existing partition at the operation's START/END, replaces the
+;; covered sub-ranges via an UPDATER callback, and re-merges adjacent
+;; sub-ranges whose PLISTs name the same properties with `eq'-identical
+;; values -- the same rule Emacs's own interval code uses to decide two
+;; intervals may merge (`textprop.c'/`intervals.c' compare with EQ, not
+;; `equal').  That is also why boundary-scan and merge-decision helpers
+;; below compare with `eq': `next-single-property-change' et al. must
+;; not report a change where Emacs's own `eq'-based interval merge
+;; would already have produced one interval.
+(defvar nelisp--tp-string-properties (make-hash-table :test 'eq)
+  "STRING (by identity) -> its text-property interval list, 0-based.")
+
+(defun nelisp--tp-plist-at (pos intervals)
+  "Return the PLIST covering POS in INTERVALS, or nil if none does."
+  (catch 'nelisp--tp-found
+    (dolist (iv intervals)
+      (when (and (>= pos (nth 0 iv)) (< pos (nth 1 iv)))
+        (throw 'nelisp--tp-found (nth 2 iv))))
+    nil))
+
+(defun nelisp--tp-value-at (pos prop intervals)
+  "Return PROP's value at POS in INTERVALS, or nil."
+  (plist-get (nelisp--tp-plist-at pos intervals) prop))
+
+(defun nelisp--tp-plist-value-eq (a b)
+  "Return non-nil if A and B name the same properties with `eq'
+-identical values -- Emacs's own interval-merge/boundary-change rule."
+  (and (= (length a) (length b))
+       (catch 'nelisp--tp-differ
+         (let ((l a))
+           (while l
+             (let ((m (plist-member b (car l))))
+               (unless (and m (eq (cadr m) (cadr l)))
+                 (throw 'nelisp--tp-differ nil)))
+             (setq l (cddr l))))
+         t)))
+
+(defun nelisp--tp-plist-set (plist prop val)
+  "Return a plist like PLIST with PROP set to VAL, sharing no structure
+with PLIST (safe even though `plist-put' mutates in place)."
+  (plist-put (copy-sequence plist) prop val))
+
+(defun nelisp--tp-plist-add (plist new)
+  "Return a plist like PLIST with every key of NEW set to NEW's value;
+keys of PLIST that NEW does not mention are kept as-is."
+  (let ((out (copy-sequence plist)) (l new))
+    (while l
+      (setq out (plist-put out (car l) (cadr l)))
+      (setq l (cddr l)))
+    out))
+
+(defun nelisp--tp-plist-remove (plist keys)
+  "Return a plist like PLIST with every key in KEYS dropped entirely
+(not merely set to nil -- real `remove-text-properties' deletes the
+key, distinguishable from `put-text-property' PROP nil via
+`text-properties-at'/`plist-member')."
+  (let (out (l plist))
+    (while l
+      (unless (memq (car l) keys)
+        (push (cadr l) out)
+        (push (car l) out))
+      (setq l (cddr l)))
+    out))
+
+(defun nelisp--tp-merge (intervals)
+  "Sort INTERVALS by START, drop empty-PLIST entries, and coalesce
+adjacent entries whose PLISTs are `nelisp--tp-plist-value-eq'."
+  (let ((sorted (sort (copy-sequence intervals)
+                       (lambda (a b) (< (nth 0 a) (nth 0 b)))))
+        result)
+    (dolist (iv sorted)
+      (when (nth 2 iv)
+        (if (and result
+                 (= (nth 1 (car result)) (nth 0 iv))
+                 (nelisp--tp-plist-value-eq (nth 2 (car result)) (nth 2 iv)))
+            (setcar (cdr (car result)) (nth 1 iv))
+          (push (list (nth 0 iv) (nth 1 iv) (nth 2 iv)) result))))
+    (nreverse result)))
+
+(defun nelisp--tp-rebuild (intervals start end updater)
+  "Return INTERVALS with UPDATER applied across [START, END).  UPDATER
+takes the PLIST currently covering a position in that range (nil if
+none) and returns its replacement (nil meaning \"no properties
+there\"); positions outside [START, END) are untouched.  A no-op when
+START >= END, matching Emacs (`put-text-property' etc. with an empty
+range change nothing)."
+  (if (>= start end)
+      intervals
+    (let (boundaries)
+      (dolist (iv intervals)
+        (let ((s (nth 0 iv)) (e (nth 1 iv)))
+          (when (and (> s start) (< s end)) (push s boundaries))
+          (when (and (> e start) (< e end)) (push e boundaries))))
+      (setq boundaries (sort (delete-dups (append (list start end) boundaries)) #'<))
+      (let (fresh (bs boundaries))
+        (while (cdr bs)
+          (let* ((s (car bs)) (e (cadr bs))
+                 (new (funcall updater (nelisp--tp-plist-at s intervals))))
+            (when new (push (list s e new) fresh)))
+          (setq bs (cdr bs)))
+        (let (kept)
+          (dolist (iv intervals)
+            (let ((s (nth 0 iv)) (e (nth 1 iv)) (pl (nth 2 iv)))
+              (when (< s start) (push (list s (min e start) pl) kept))
+              (when (> e end) (push (list (max s end) e pl) kept))))
+          (nelisp--tp-merge (append kept fresh)))))))
+
+(defun nelisp--tp-boundaries-between (intervals lo hi)
+  "Sorted, deduped INTERVALS start/end points strictly between LO and HI
+-- the candidate positions where a merged property value can change."
+  (let (pts)
+    (dolist (iv intervals)
+      (let ((s (nth 0 iv)) (e (nth 1 iv)))
+        (when (and (> s lo) (< s hi)) (push s pts))
+        (when (and (> e lo) (< e hi)) (push e pts))))
+    (sort (delete-dups pts) #'<)))
+
+(defun nelisp--tp-check-object (object)
+  "Signal `wrong-type-argument' unless OBJECT is nil, a string, or a
+`nelisp-buffer'."
+  (when (and object (not (stringp object)) (not (nelisp-buffer-p object)))
+    (signal 'wrong-type-argument (list 'buffer-or-string-p object))))
+
+(defun nelisp--tp-get-intervals (object)
+  "Return the current interval list for OBJECT (nil = current buffer)."
+  (nelisp--tp-check-object object)
+  (if (stringp object)
+      (gethash object nelisp--tp-string-properties)
+    (nelisp-buffer-text-properties (or object nelisp--current-buffer))))
+
+(defun nelisp--tp-set-intervals (object new)
+  "Store NEW as OBJECT's interval list (nil = current buffer)."
+  (if (stringp object)
+      (if new
+          (puthash object new nelisp--tp-string-properties)
+        (remhash object nelisp--tp-string-properties))
+    (setf (nelisp-buffer-text-properties (or object nelisp--current-buffer)) new)))
+
+(defun nelisp--tp-lo (object)
+  "Return OBJECT's lowest valid position (0 for a string, `point-min'
+for a buffer)."
+  (if (stringp object) 0 (nelisp-point-min (or object nelisp--current-buffer))))
+
+(defun nelisp--tp-hi (object)
+  "Return OBJECT's one-past-the-end position (`length' for a string,
+`point-max' for a buffer)."
+  (if (stringp object) (length object) (nelisp-point-max (or object nelisp--current-buffer))))
+
+;; ---- low-level buffer helpers (kept for `nelisp-*'-prefixed callers,
+;; e.g. test/nelisp-marker-test.el, which predate the standard names) --
 (defun nelisp-put-text-property (start end prop val &optional buf)
   "Store PROP=VAL for text in [START, END) of BUF."
-  (let ((b (nelisp-buffer--ambient buf)))
-    (push (list start end (list prop val))
-          (nelisp-buffer-text-properties b))
-    val))
+  (setf (nelisp-buffer-text-properties (nelisp-buffer--ambient buf))
+        (nelisp--tp-rebuild (nelisp-buffer-text-properties (nelisp-buffer--ambient buf))
+                             start end
+                             (lambda (old) (nelisp--tp-plist-set old prop val))))
+  val)
 
 (defun nelisp-get-text-property (pos prop &optional buf)
   "Return the value of PROP at POS in BUF, or nil."
-  (let ((b (nelisp-buffer--ambient buf))
-        (hit nil))
-    (dolist (ival (nelisp-buffer-text-properties b))
-      (unless hit
-        (let ((s (nth 0 ival))
-              (e (nth 1 ival))
-              (pl (nth 2 ival)))
-          (when (and (>= pos s) (< pos e)
-                     (plist-member pl prop))
-            (setq hit (cons :v (plist-get pl prop)))))))
-    (and hit (cdr hit))))
+  (nelisp--tp-value-at pos prop
+                        (nelisp-buffer-text-properties (nelisp-buffer--ambient buf))))
+
+(defun nelisp-text-properties-at (pos &optional buf)
+  "Return the full property list covering POS in BUF."
+  (nelisp--tp-plist-at pos (nelisp-buffer-text-properties (nelisp-buffer--ambient buf))))
 
 (defun nelisp-text-property-intervals (&optional buf)
   "Return a shallow copy of BUF's text-property interval list."
   (copy-sequence
    (nelisp-buffer-text-properties (nelisp-buffer--ambient buf))))
 
-(defun nelisp-remove-text-properties (start end props &optional buf)
-  "Drop each key in PROPS from any interval overlapping [START, END)."
+(defun nelisp-add-text-properties (start end props &optional buf)
+  "Merge PROPS onto [START, END) of BUF, keeping properties not named
+in PROPS."
   (let ((b (nelisp-buffer--ambient buf)))
-    (dolist (ival (nelisp-buffer-text-properties b))
-      (let ((s (nth 0 ival))
-            (e (nth 1 ival)))
-        (when (and (< s end) (> e start))
-          (let* ((pl (nth 2 ival))
-                 (new (let (out)
-                        (while pl
-                          (unless (memq (car pl) props)
-                            (push (car pl) out)
-                            (push (cadr pl) out))
-                          (setq pl (cddr pl)))
-                        (nreverse out))))
-            (setcar (cddr ival) new))))))
+    (setf (nelisp-buffer-text-properties b)
+          (nelisp--tp-rebuild (nelisp-buffer-text-properties b) start end
+                               (lambda (old) (nelisp--tp-plist-add old props)))))
   nil)
+
+(defun nelisp-set-text-properties (start end props &optional buf)
+  "Replace the property list of [START, END) of BUF with PROPS wholesale."
+  (let ((b (nelisp-buffer--ambient buf)))
+    (setf (nelisp-buffer-text-properties b)
+          (nelisp--tp-rebuild (nelisp-buffer-text-properties b) start end
+                               (lambda (_old) (copy-sequence props)))))
+  nil)
+
+(defun nelisp-remove-text-properties (start end props &optional buf)
+  "Drop each key in PROPS from [START, END) of BUF."
+  (let ((b (nelisp-buffer--ambient buf)))
+    (setf (nelisp-buffer-text-properties b)
+          (nelisp--tp-rebuild (nelisp-buffer-text-properties b) start end
+                               (lambda (old) (nelisp--tp-plist-remove old props)))))
+  nil)
+
+(defun nelisp--tp-copy-buffer-range-to-string (buf start end newstring)
+  "Copy BUF's text-property intervals overlapping [START, END) onto
+NEWSTRING, 0-based and offset by START.  What `buffer-substring'
+returns must carry BUF's properties (real Emacs's `make_buffer_string'
+calls `copy_intervals_to_string'); NEWSTRING must be a fresh string not
+`eq' to anything else already carrying properties."
+  (let (out)
+    (dolist (iv (nelisp-buffer-text-properties buf))
+      (let ((s (max (nth 0 iv) start)) (e (min (nth 1 iv) end)))
+        (when (< s e)
+          (push (list (- s start) (- e start) (nth 2 iv)) out))))
+    (when out
+      (nelisp--tp-set-intervals newstring (nelisp--tp-merge out)))))
 
 (defun nelisp-narrow-to-region (start end &optional buf)
   "Restrict visible range of BUF to [START, END]."
@@ -8735,6 +10727,7 @@ POS is clamped into [point-min, point-max] per Emacs semantics."
          (e (max lo (min hi (max start end)))))
     (setf (nelisp-buffer-narrow-start b) s)
     (setf (nelisp-buffer-narrow-end b) e)
+    (nelisp-goto-char (nelisp-point b) b)
     nil))
 
 (defun nelisp-widen (&optional buf)
@@ -8848,7 +10841,20 @@ and binding the name are independent."))
 (unless (fboundp 'point)
   (defun point () (nelisp-point nelisp--current-buffer)))
 (unless (fboundp 'goto-char)
-  (defun goto-char (pos) (nelisp-goto-char pos nelisp--current-buffer)))
+  ;; GNU Emacs 31.1 editfns.c `Fgoto_char': POSITION is an integer or a
+  ;; marker (a marker goes through `set_point_from_marker', which signals
+  ;; when it points nowhere), anything else is `integer-or-marker-p', and
+  ;; the value is POSITION itself.  A marker used to reach `min' raw and
+  ;; fail there -- `display-warning' does (goto-char warning-series).
+  (defun goto-char (pos)
+    (nelisp-goto-char
+     (cond ((integerp pos) pos)
+           ((markerp pos)
+            (or (marker-position pos)
+                (error "Marker does not point anywhere")))
+           (t (signal 'wrong-type-argument (list 'integer-or-marker-p pos))))
+     nelisp--current-buffer)
+    pos))
 (unless (fboundp 'generate-new-buffer)
   (defun generate-new-buffer (name &optional _inhibit-buffer-hooks)
     (nelisp--check-string name)
@@ -8873,9 +10879,19 @@ the registry still maps its name back to this exact object."
   (defun kill-buffer (&optional buffer-or-name)
     "Kill BUFFER-OR-NAME, defaulting to the CURRENT buffer per the Emacs
 contract -- the old stub answered t for a nil argument without killing
-anything (Doc 188 §2.2)."
+anything (Doc 188 §2.2).
+
+Marker slice 1/2: every marker still pointing into B is detached first
+\(buffer set nil, dropped from B's own list\), matching real Emacs's
+`unchain_marker' contract that a dead buffer's markers ARE unlinked
+-- `marker-buffer'/`marker-position' probed against Emacs 31.1 both
+answer nil for a marker whose buffer has since been killed, never a
+stale pointer into the dead buffer."
     (let ((b (if buffer-or-name (get-buffer buffer-or-name) nelisp--current-buffer)))
       (unless b (signal 'error (list "No buffer to kill")))
+      (dolist (m (nelisp-buffer-markers b))
+        (setf (nelisp-marker-buffer m) nil))
+      (setf (nelisp-buffer-markers b) nil)
       (when (eq b nelisp--current-buffer) (setq nelisp--current-buffer nil))
       (or (nelisp-kill-buffer b) t))))
 ;; Doc 205 P1: eight more standard names onto the same model.  Every one of
@@ -8941,6 +10957,151 @@ than the struct -- the same reasoning `buffer-live-p' above carries."
 (unless (fboundp 'widen)
   (defun widen ()
     (nelisp-widen nelisp--current-buffer)))
+
+;; `save-restriction' is real Emacs's own special form (src/editfns.c),
+;; not staged from any Lisp file; built here on this substrate's own
+;; already-genuine, per-buffer `narrow-to-region'/`widen' primitives
+;; (confirmed above -- unlike syntax tables, buffer narrowing IS real
+;; per-buffer state here).  Uses markers (already a real, working
+;; primitive family: `copy-marker'/`marker-position') for BEG/END so a
+;; narrowing boundary survives insertions/deletions during BODY the same
+;; way real Emacs's own marker-backed save/restore does, and restores
+;; via `with-current-buffer' (already fboundp) so BODY switching to a
+;; different buffer and never switching back still restores the
+;; ORIGINAL buffer's restriction, not whatever buffer happens to be
+;; current at exit -- matching real Emacs's own contract ("this special
+;; form ... saves the current buffer's restrictions", not "the buffer
+;; current at exit"'s).  Needed for real: `lisp/simple.el''s own
+;; `count-lines' (staged below) wraps its whole body in this.
+(unless (fboundp 'save-restriction)
+  (defmacro save-restriction (&rest body)
+    "Execute BODY, saving and restoring current buffer's restrictions.
+The buffer's restrictions make parts of the beginning and end invisible.
+\(They are set up with `narrow-to-region' and eliminated with `widen'.)
+This special form, `save-restriction', saves the current buffer's
+restrictions when it is entered, and restores them when it is exited.
+So any `narrow-to-region' within BODY lasts only until the end of the
+form.  The old restrictions settings are restored even in case of
+abnormal exit (throw or error).
+
+The value returned is the value of the last form in BODY.
+
+(fn &rest BODY)"
+    (declare (indent 0) (debug t))
+    (let ((buf (make-symbol "sr-buf"))
+          (beg (make-symbol "sr-beg"))
+          (end (make-symbol "sr-end")))
+      `(let ((,buf (current-buffer))
+             (,beg (copy-marker (point-min) nil))
+             (,end (copy-marker (point-max) t)))
+         (unwind-protect
+             (progn ,@body)
+           (when (buffer-live-p ,buf)
+             (with-current-buffer ,buf
+               (widen)
+               (narrow-to-region (marker-position ,beg) (marker-position ,end)))))))))
+
+;; `selective-display' is a real, `DEFVAR_PER_BUFFER' C variable
+;; (src/buffer.c), default nil -- this substrate has no buffer-local
+;; variables at all (see the many other reduced per-buffer stubs
+;; elsewhere in this file), so it is staged as an ordinary global,
+;; matching every other such variable's own reduction here.  Needed for
+;; real: `count-lines' (staged below) tests `(eq selective-display t)'
+;; unconditionally in its own first `cond' clause.
+(unless (boundp 'selective-display)
+  (defvar selective-display nil
+    "Non-nil enables selective display.
+An integer N as value means display only lines
+that start with less than N columns of space.
+A value of t means, in addition to the above, that
+the character ^M is treated as end-of-line."))
+
+;; Staged verbatim from GNU Emacs 31.1 lisp/simple.el:1795 (preloaded,
+;; not autoloaded).  Needed for real: `woman.el''s own top-level
+;; `(defvar woman-expert-p (let (...) (with-temp-buffer ... (count-lines
+;; ...) ...)))'-style construction (reached through `woman.el''s
+;; unconditional `(require 'man)') calls this directly.  The
+;; `ignore-invisible-lines' branch (needing `get-char-property'/
+;; `buffer-invisibility-spec', neither staged here) is dead code for
+;; that one call site (`ignore-invisible-lines' is always nil there),
+;; but kept rather than trimmed for source fidelity -- Elisp function
+;; bodies are not evaluated until reached, so an unstaged dependency in
+;; a branch nothing in this substrate's scope ever takes is harmless.
+(unless (fboundp 'count-lines)
+  (defun count-lines (start end &optional ignore-invisible-lines)
+    "Return number of lines between START and END.
+This is usually the number of newlines between them, but can be
+one more if START is not equal to END and the greater of them is
+not at the start of a line.
+
+When IGNORE-INVISIBLE-LINES is non-nil, invisible lines are not
+included in the count.
+
+(fn START END &optional IGNORE-INVISIBLE-LINES)"
+    (save-excursion
+      (save-restriction
+        (narrow-to-region start end)
+        (cond ((and (not ignore-invisible-lines)
+                    (eq selective-display t))
+               (goto-char (point-min))
+               (save-match-data
+                 (let ((done 0))
+                   (while (re-search-forward "\n\\|\r[^\n]" nil t 40)
+                     (setq done (+ 40 done)))
+                   (while (re-search-forward "\n\\|\r[^\n]" nil t 1)
+                     (setq done (+ 1 done)))
+                   (goto-char (point-max))
+                   (if (and (/= start end)
+                            (not (bolp)))
+                       (1+ done)
+                     done))))
+              (ignore-invisible-lines
+               (goto-char (point-min))
+               (save-match-data
+                 (- (buffer-size)
+                    (forward-line (buffer-size))
+                    (let ((invisible-count 0)
+                          prop)
+                      (goto-char (point-min))
+                      (while (re-search-forward "\n\\|\r[^\n]" nil t)
+                        (setq prop (get-char-property (1- (point)) 'invisible))
+                        (if (if (eq buffer-invisibility-spec t)
+                                prop
+                              (or (memq prop buffer-invisibility-spec)
+                                  (assq prop buffer-invisibility-spec)))
+                            (setq invisible-count (1+ invisible-count))))
+                      invisible-count))))
+              (t
+               (goto-char (point-max))
+               (if (bolp)
+                   (1- (line-number-at-pos))
+                 (line-number-at-pos))))))))
+
+;; Staged verbatim from GNU Emacs 31.1 lisp/subr.el:2286 (preloaded, not
+;; autoloaded).  Needed for real: `man.el''s own top-level `(defvar
+;; Man-man-k-flags (with-temp-buffer (with-demoted-errors "%S"
+;; (call-process manual-program nil t nil "-k" "apropos")) (let (...
+;; (completions (Man-parse-man-k))) ...)) ...)' actually runs `man -k
+;; apropos' via `call-process' and parses its output through `Man-
+;; parse-man-k' (which calls this) at `man.el''s own load time, reached
+;; through `woman.el''s unconditional `(require 'man)'.  Any
+;; `call-process' failure here (missing `man' binary, `call-process'
+;; itself not fully supported, ...) is caught by real `man.el''s own
+;; `with-demoted-errors', not by anything added in this session.
+;; Aliased by SYMBOL NAME (`'re-search-forward'), not `(symbol-function
+;; 're-search-forward)': confirmed this session that the latter silently
+;; produces a broken, non-fboundp alias here, because `re-search-forward'
+;; is not yet fboundp at THIS point during this substrate's own prelude
+;; bootstrap sequence (it is defined later in this same file) -- unlike
+;; real Emacs, `(symbol-function 'not-yet-fboundp-symbol)' does not
+;; signal `void-function' here, it returns nil, and `(defalias SYM nil)'
+;; leaves SYM silently non-fboundp with no error printed anywhere.  A
+;; plain by-name alias defers the lookup to call time, sidestepping the
+;; ordering hazard entirely, and is how this file's own other simple
+;; aliases (e.g. `count-matches' above) already do it.
+(unless (fboundp 'search-forward-regexp)
+  (defalias 'search-forward-regexp 're-search-forward))
+
 (unless (fboundp 'beginning-of-line)
   (defun beginning-of-line (&optional n)
     "Move point to the beginning of the Nth line from point's line.
@@ -8972,6 +11133,7 @@ Moves and returns nil, the counterpart of `line-end-position'."
          (unless ,b (signal 'error (list (format "No such buffer: %S" ,buffer-or-name))))
          (let ((nelisp--current-buffer ,b)
                (nelisp-buffer--current ,b))
+           (nelisp-goto-char (nelisp-point ,b) ,b)
            ,@body)))))
 ;; This only reads VARIABLE's value while BUFFER is current -- it does
 ;; not give VARIABLE a value that is local TO buffer-local-value's own
@@ -9071,15 +11233,19 @@ AT the insertion point always advances, regardless of its own
   (defun nelisp-insert-before-markers (text &optional buf)
     "Like `nelisp-insert', but every marker exactly at the insertion
 point advances past TEXT instead of consulting its own
-`insertion-type' (see the block comment above)."
+`insertion-type' (see the block comment above).  Settles any pending
+`goto-char' first, same reason as `nelisp-insert'."
     (unless (stringp text)
       (signal 'wrong-type-argument (list 'stringp text)))
+    (let ((b (nelisp-buffer--ambient buf)))
+      (nelisp-buffer--settle b))
     (let* ((b (nelisp-buffer--ambient buf))
            (before (nelisp-buffer-before-gap b))
            (at (1+ (length before)))
            (n (length text)))
       (setf (nelisp-buffer-before-gap b) (concat before text))
       (setf (nelisp-buffer-modified b) t)
+      (nelisp-buffer--bump-tick b)
       (nelisp-buffer--shift-markers-on-insert-before-markers b at n)
       (nelisp-buffer--shift-overlays-on-insert b at n)
       (nelisp-buffer--shift-text-properties-on-insert b at n))
@@ -9157,6 +11323,7 @@ there, `(wrong-type-argument stringp 42)', already matches what
         ;; sites, and unlike the macros it SETs rather than lexically
         ;; unwinding, so there is no `let' to attach a second binding to.
         (setq nelisp-buffer--current b)
+        (nelisp-goto-char (nelisp-point b) b)
         b)))))
 ;; `void-function' on the ~80-file census
 ;; (../nelisp-agent/lisp/nl-agent-ui.el:349: `(pop-to-buffer buffer)',
@@ -9200,7 +11367,13 @@ wrapper instead of touching that file."
            (e (max start end)))
       (when (or (< s lo) (> e hi))
         (signal 'args-out-of-range (list b start end)))
-      (nelisp-buffer-substring s e b))))
+      ;; Doc 210: the returned string carries B's properties over
+      ;; [S, E), same as real Emacs (`buffer-substring-no-properties'
+      ;; below calls `nelisp-buffer-substring' directly instead, so it
+      ;; never reaches this attachment step).
+      (let ((str (nelisp-buffer-substring s e b)))
+        (nelisp--tp-copy-buffer-range-to-string b s e str)
+        str))))
 
 (unless (fboundp 'erase-buffer)
   (defun erase-buffer ()
@@ -9410,6 +11583,20 @@ point itself."
     "Columns a tab advances to the next multiple of, for `current-column'.
 Emacs's own default; nothing in this runtime overrides it per-buffer."))
 
+;; src/buffer.c's `DEFVAR_PER_BUFFER ("fill-column", ...)`, global default 70
+;; (buffer_defaults.fill_column).  Needed by bytecomp.el's docstring-width
+;; check (`byte-compile-docstring-length-max' comparison against
+;; `fill-column'), reached via `(require 'compile)' at bytecomp.el load
+;; time.  Same treatment as `tab-width' just above: this runtime has no
+;; `make-local-variable'/`make-variable-buffer-local' (both void-function),
+;; so a genuinely per-buffer C variable is staged as a plain global default
+;; rather than a fake buffer-local.
+(unless (boundp 'fill-column)
+  (defvar fill-column 70
+    "Column beyond which automatic line-wrapping should happen.
+Emacs's own global default; nothing in this runtime overrides it
+per-buffer."))
+
 (unless (fboundp 'current-column)
   (defun current-column ()
     "Return point's 0-based column on its line, expanding tabs by
@@ -9490,10 +11677,11 @@ supported -- out of Doc 204 P2 scope, no consumer here needs them."
          (set (cdr parsed))
          (start (nelisp-point b))
          (hi (if lim (min lim (nelisp-point-max b)) (nelisp-point-max b)))
+         (text (nelisp-buffer-string b))
          (cur start))
     (while (and (< cur hi)
                 (let ((matches (nelisp--motion-charset-member-p
-                                 (nelisp--motion-char-at cur b) set)))
+                                 (aref text (1- cur)) set)))
                   (if negate (not matches) matches)))
       (setq cur (1+ cur)))
     (nelisp-goto-char cur b)
@@ -9509,10 +11697,11 @@ point may reach."
          (set (cdr parsed))
          (start (nelisp-point b))
          (lo (if lim (max lim (nelisp-point-min b)) (nelisp-point-min b)))
+         (text (nelisp-buffer-string b))
          (cur start))
     (while (and (> cur lo)
                 (let ((matches (nelisp--motion-charset-member-p
-                                 (nelisp--motion-char-at (1- cur) b) set)))
+                                 (aref text (- cur 2)) set)))
                   (if negate (not matches) matches)))
       (setq cur (1- cur)))
     (nelisp-goto-char cur b)
@@ -9759,6 +11948,28 @@ this image's ambient default active table, not merely a value
   (defun syntax-table ()
     (nelisp--syntax-current-table)))
 
+;; Mirrors GNU Emacs 31.1 src/syntax.c:Fcopy_syntax_table's own contract
+;; (a fresh copy of TABLE's entries, defaulting to the standard table,
+;; with the copy's PARENT set to TABLE's own parent or, when TABLE had
+;; none, `standard-syntax-table' itself -- "copied syntax tables should
+;; all have parents"), adapted to this substrate's own `nelisp--syntax-
+;; table' cl-struct representation (a private ENTRIES hash-table plus a
+;; PARENT link, not a real char-table -- see the block comment further
+;; up this section) rather than staged from the real char-table-based
+;; primitive.  Needed for real: `woman.el''s own top-level
+;; `woman-syntax-table' defvar is `(let ((tab (copy-syntax-table
+;; (standard-syntax-table)))) ...)'.
+(unless (fboundp 'copy-syntax-table)
+  (defun copy-syntax-table (&optional table)
+    "Construct a new syntax table and return it.
+It is a copy of the TABLE, which defaults to the standard syntax table.
+
+(fn &optional TABLE)"
+    (setq table (or table (standard-syntax-table)))
+    (make-nelisp--syntax-table
+     :entries (copy-hash-table (nelisp--syntax-table-entries table))
+     :parent (or (nelisp--syntax-table-parent table) (standard-syntax-table)))))
+
 (unless (fboundp 'set-syntax-table)
   (defun set-syntax-table (table)
     "Install TABLE as `nelisp--current-buffer's syntax table.  Returns
@@ -9875,13 +12086,45 @@ pending-escape flag, 7 just-after-a-quote-char flag."
           (if (or instr incom) (aref v 4) nil)
           (reverse stack) nil (aref v 6))))
 
-(defun nelisp--pps-advance (v pos)
+;; PERF (syntax-scanning tight-loop fix, 2026-09-28): TEXT/TABLE let the
+;; driving loops below (`nelisp--pps-scan', `nelisp--scan-lists-
+;; forward'/`-backward', `nelisp--scan-string-forward', `nelisp--scan-
+;; sexps-forward-one'/`-backward-one', `nelisp--forward-comment-1',
+;; `nelisp--motion-skip-forward'/`-backward') fetch the buffer's
+;; memoized whole text (`nelisp-buffer-string', O(1) after the first
+;; call per tick -- search-forward fix, same date) and active syntax
+;; table ONCE per top-level call and pass them down, instead of each
+;; character re-deriving both through `nelisp--motion-char-at'
+;; (buffer/ambient lookups) and `nelisp--syntax-current-table' (a
+;; buffer-table gethash) on every single character.
+;;
+;; This matters even with the earlier `nelisp-buffer--before-length'
+;; cache in place: measured directly on this standalone binary, EVERY
+;; primitive call -- not just `length' on a large string -- costs a
+;; roughly constant ~100-150us of interpreter dispatch overhead
+;; regardless of what it does (e.g. 20000 calls of `length' on a
+;; 100-char string took 2.0-2.5s).  A per-character chain of 4-6 such
+;; calls (`nelisp-point-min'/`-max', `nelisp-buffer-substring',
+;; `nelisp--syntax-current-table', `nelisp--syntax-lookup', ...) was
+;; still costing roughly 2ms/character even after that first fix --
+;; enough on its own to make a 150KB full-file scan take minutes.
+;; Reusing one already-fetched TEXT string via `aref' and one already-
+;; resolved TABLE collapses that per-character cost to essentially the
+;; single unavoidable `nelisp--syntax-lookup' call plus one `aref'.
+;;
+;; TEXT/TABLE are optional (default: looked up exactly as before) so
+;; any caller outside this file's own driving loops keeps working
+;; unchanged.
+(defun nelisp--pps-advance (v pos &optional text table)
   "Advance scan state V (an `nelisp--pps-decode' vector, mutated in
 place) by exactly one character: the one at buffer position POS in
-`nelisp--current-buffer', under its active syntax table.  Returns V."
-  (let* ((buf nelisp--current-buffer)
-         (ch (nelisp--motion-char-at pos buf))
-         (class (nelisp--syntax-lookup (nelisp--syntax-current-table) ch))
+`nelisp--current-buffer', under its active syntax table.  Returns V.
+TEXT/TABLE are an optional pre-fetched `nelisp-buffer-string' and
+active syntax table; see the PERF block comment above."
+  (let* ((text (or text (nelisp-buffer-string nelisp--current-buffer)))
+         (table (or table (nelisp--syntax-current-table)))
+         (ch (aref text (1- pos)))
+         (class (nelisp--syntax-lookup table ch))
          (depth (aref v 0)) (mindepth (aref v 1)) (stack (aref v 2))
          (instr (aref v 3)) (incom (aref v 5)))
     (cond
@@ -9913,17 +12156,18 @@ COMMENTSTOP's best-effort status."
   (let* ((v (nelisp--pps-decode oldstate))
          (buf nelisp--current-buffer)
          (hi (min to (nelisp-point-max buf)))
-         (pos from))
+         (pos from)
+         (text (nelisp-buffer-string buf))
+         (table (nelisp--syntax-current-table)))
     (catch 'nelisp--pps-done
       (while (< pos hi)
         (let ((was-instr (aref v 3)) (was-incom (aref v 5)))
           (when (and stopbefore (not was-instr) (not was-incom) (not (aref v 6)))
-            (let ((class (nelisp--syntax-lookup (nelisp--syntax-current-table)
-                                                 (nelisp--motion-char-at pos buf))))
+            (let ((class (nelisp--syntax-lookup table (aref text (1- pos)))))
               (when (memq class '(?w ?_ ?\" ?<))
                 (nelisp-goto-char pos buf)
                 (throw 'nelisp--pps-done (nelisp--pps-encode v)))))
-          (nelisp--pps-advance v pos)
+          (nelisp--pps-advance v pos text table)
           (setq pos (1+ pos))
           (when (and targetdepth (= (aref v 0) targetdepth))
             (nelisp-goto-char pos buf)
@@ -9963,16 +12207,17 @@ the same `nelisp--pps-advance' step `parse-partial-sexp' uses."
   (let* ((v (nelisp--pps-decode nil))
          (buf nelisp--current-buffer)
          (hi (nelisp-point-max buf))
-         (pos from))
+         (pos from)
+         (text (nelisp-buffer-string buf))
+         (table (nelisp--syntax-current-table)))
     (aset v 0 depth)
     (while (> count 0)
       (let ((found nil))
         (while (and (not found) (< pos hi))
           (let* ((blocked (or (aref v 3) (aref v 5) (aref v 6)))
                  (class (unless blocked
-                          (nelisp--syntax-lookup (nelisp--syntax-current-table)
-                                                  (nelisp--motion-char-at pos buf)))))
-            (nelisp--pps-advance v pos)
+                          (nelisp--syntax-lookup table (aref text (1- pos))))))
+            (nelisp--pps-advance v pos text table)
             (setq pos (1+ pos))
             (cond
              ((and (eq class ?\)) (< (aref v 0) depth))
@@ -9987,13 +12232,14 @@ the same `nelisp--pps-advance' step `parse-partial-sexp' uses."
 above this section: does not skip parens inside strings/comments."
   (let* ((buf nelisp--current-buffer)
          (lo (nelisp-point-min buf))
-         (pos from) (lvl depth))
+         (pos from) (lvl depth)
+         (text (nelisp-buffer-string buf))
+         (table (nelisp--syntax-current-table)))
     (while (> count 0)
       (let ((found nil))
         (while (and (not found) (> pos lo))
           (setq pos (1- pos))
-          (let ((class (nelisp--syntax-lookup (nelisp--syntax-current-table)
-                                               (nelisp--motion-char-at pos buf))))
+          (let ((class (nelisp--syntax-lookup table (aref text (1- pos)))))
             (cond
              ((eq class ?\)) (setq lvl (1+ lvl)))
              ((eq class ?\()
@@ -10016,10 +12262,10 @@ above this section: does not skip parens inside strings/comments."
   "Position just after the string starting at POS (its opening quote),
 honouring backslash escapes; signals `scan-error' if it never closes."
   (let* ((buf nelisp--current-buffer) (hi (nelisp-point-max buf))
-         (term (nelisp--motion-char-at pos buf)) (p (1+ pos)))
-    (while (and (< p hi) (/= (nelisp--motion-char-at p buf) term))
-      (if (eq (nelisp--syntax-lookup (nelisp--syntax-current-table)
-                                      (nelisp--motion-char-at p buf)) ?\\)
+         (text (nelisp-buffer-string buf)) (table (nelisp--syntax-current-table))
+         (term (aref text (1- pos))) (p (1+ pos)))
+    (while (and (< p hi) (/= (aref text (1- p)) term))
+      (if (eq (nelisp--syntax-lookup table (aref text (1- p))) ?\\)
           (setq p (+ p 2))
         (setq p (1+ p))))
     (if (< p hi) (1+ p) (signal 'scan-error (list "Unterminated string literal" pos hi)))))
@@ -10028,23 +12274,21 @@ honouring backslash escapes; signals `scan-error' if it never closes."
   "Position just after the single sexp (list, string, or symbol/number
 run) starting at or after POS, skipping any leading whitespace or reader-
 prefix characters first."
-  (let* ((buf nelisp--current-buffer) (hi (nelisp-point-max buf)))
+  (let* ((buf nelisp--current-buffer) (hi (nelisp-point-max buf))
+         (text (nelisp-buffer-string buf)) (table (nelisp--syntax-current-table)))
     (while (and (< pos hi)
-                (memq (nelisp--syntax-lookup (nelisp--syntax-current-table)
-                                              (nelisp--motion-char-at pos buf))
+                (memq (nelisp--syntax-lookup table (aref text (1- pos)))
                       '(?\s ?\')))
       (setq pos (1+ pos)))
     (when (>= pos hi) (signal 'scan-error (list "Scan error: reached end of buffer" pos pos)))
-    (let ((class (nelisp--syntax-lookup (nelisp--syntax-current-table)
-                                         (nelisp--motion-char-at pos buf))))
+    (let ((class (nelisp--syntax-lookup table (aref text (1- pos)))))
       (cond
        ((eq class ?\() (nelisp--scan-lists-forward pos 1 0))
        ((eq class ?\)) (signal 'scan-error (list "Containing expression ends prematurely" pos pos)))
        ((eq class ?\") (nelisp--scan-string-forward pos))
        (t (let ((p (1+ pos)))
             (while (and (< p hi)
-                        (memq (nelisp--syntax-lookup (nelisp--syntax-current-table)
-                                                      (nelisp--motion-char-at p buf))
+                        (memq (nelisp--syntax-lookup table (aref text (1- p)))
                               '(?w ?_)))
               (setq p (1+ p)))
             p))))))
@@ -10081,15 +12325,14 @@ prefix characters first."
 (defun nelisp--scan-sexps-backward-one (pos)
   "Best-effort mirror of `nelisp--scan-sexps-forward-one' -- see the
 block comment above this section on backward scanning's limitation."
-  (let* ((buf nelisp--current-buffer) (lo (nelisp-point-min buf)))
+  (let* ((buf nelisp--current-buffer) (lo (nelisp-point-min buf))
+         (text (nelisp-buffer-string buf)) (table (nelisp--syntax-current-table)))
     (while (and (> pos lo)
-                (memq (nelisp--syntax-lookup (nelisp--syntax-current-table)
-                                              (nelisp--motion-char-at (1- pos) buf))
+                (memq (nelisp--syntax-lookup table (aref text (- pos 2)))
                       '(?\s ?\')))
       (setq pos (1- pos)))
     (when (<= pos lo) (signal 'scan-error (list "Scan error: reached beginning of buffer" pos pos)))
-    (let ((class (nelisp--syntax-lookup (nelisp--syntax-current-table)
-                                         (nelisp--motion-char-at (1- pos) buf))))
+    (let ((class (nelisp--syntax-lookup table (aref text (- pos 2)))))
       (cond
        ((eq class ?\)) (nelisp--scan-lists-backward pos 1 0))
        ((eq class ?\() (signal 'scan-error (list "Containing expression ends prematurely" pos pos)))
@@ -10098,15 +12341,14 @@ block comment above this section on backward scanning's limitation."
         ;; scanning back from the character before it.  No escape
         ;; awareness in reverse -- see this section's backward-scanning
         ;; limitation note.
-        (let ((term (nelisp--motion-char-at (1- pos) buf)) (p (- pos 2)))
-          (while (and (>= p lo) (/= (nelisp--motion-char-at p buf) term))
+        (let ((term (aref text (- pos 2))) (p (- pos 2)))
+          (while (and (>= p lo) (/= (aref text (1- p)) term))
             (setq p (1- p)))
           (if (>= p lo) p
             (signal 'scan-error (list "Unterminated string literal" pos pos)))))
        (t (let ((p (1- pos)))
             (while (and (> p lo)
-                        (memq (nelisp--syntax-lookup (nelisp--syntax-current-table)
-                                                      (nelisp--motion-char-at (1- p) buf))
+                        (memq (nelisp--syntax-lookup table (aref text (- p 2)))
                               '(?w ?_)))
               (setq p (1- p)))
             p))))))
@@ -10159,17 +12401,15 @@ its comment.
 
 `(< p hi)' is a contract, not a nicety -- `nelisp--motion-char-at'
 answers nil past the end and `nelisp--syntax-lookup' signals on nil."
-  (let ((p pos) (saw nil))
+  (let ((p pos) (saw nil)
+        (text (nelisp-buffer-string buf)) (table (nelisp--syntax-current-table)))
     (while (and (< p hi)
-                (let ((cl (nelisp--syntax-lookup (nelisp--syntax-current-table)
-                                                 (nelisp--motion-char-at p buf))))
+                (let ((cl (nelisp--syntax-lookup table (aref text (1- p)))))
                   (or (eq cl ?\s) (eq cl ?>))))
       (setq p (1+ p)))
-    (when (and (< p hi) (eq (nelisp--syntax-lookup (nelisp--syntax-current-table)
-                                                     (nelisp--motion-char-at p buf)) ?<))
+    (when (and (< p hi) (eq (nelisp--syntax-lookup table (aref text (1- p))) ?<))
       (setq saw t)
-      (while (and (< p hi) (not (eq (nelisp--syntax-lookup (nelisp--syntax-current-table)
-                                                             (nelisp--motion-char-at p buf)) ?>)))
+      (while (and (< p hi) (not (eq (nelisp--syntax-lookup table (aref text (1- p))) ?>)))
         (setq p (1+ p)))
       (when (< p hi) (setq p (1+ p))))
     (cons p saw)))
@@ -10332,24 +12572,292 @@ of KEYMAP's own item list.  Any previously-set parent is dropped first."
       (if prev (setcdr prev parent) (setcdr keymap parent)))
     parent))
 
+;; Mirrors GNU Emacs 31.1 src/keymap.c:keymap_parent (the static helper
+;; behind `Fkeymap_parent'), restricted to the same reduced keymap shape
+;; `set-keymap-parent' above already assumes: walk KEYMAP's own cdr chain
+;; looking for a cell whose OWN car is the symbol `keymap' (a nested
+;; keymap spliced in as a parent, exactly what `set-keymap-parent' above
+;; sets), same loop shape and same terminating condition as the C code's
+;; `for (; CONSP (list); list = XCDR (list)) if (KEYMAPP (list)) return
+;; list;' -- falling off the end (a non-cons tail, ordinarily nil) yields
+;; nil, matching the C code's own `get_keymap (list, 0, autoload)' final
+;; fallback for a non-keymap tail.
+(unless (fboundp 'keymap-parent)
+  (defun keymap-parent (keymap)
+    "Return the parent keymap of KEYMAP.
+If KEYMAP has no parent, return nil."
+    (setq keymap (nelisp--get-keymap keymap))
+    (let ((tail (cdr keymap)))
+      (while (and (consp tail) (not (eq (car tail) 'keymap)))
+        (setq tail (cdr tail)))
+      (and (keymapp tail) tail))))
+
+;; Mirrors GNU Emacs 31.1 src/keymap.c:Fmap_keymap's own documented
+;; contract ("Call FUNCTION once for each event binding in KEYMAP...If
+;; KEYMAP has a parent, the parent's bindings are included as well.
+;; This works recursively") for this substrate's own reduced keymap
+;; shape: walks KEYMAP's own alist spine calling FUNCTION on each (KEY
+;; . DEF) cons's car/cdr, then repeats on `keymap-parent' (above), and
+;; so on up the chain.  DIVERGES from Emacs: a binding stored in a
+;; `make-keymap' char-table (this substrate's own `define-key' never
+;; writes one there -- see the block comment above `make-sparse-keymap',
+;; much further up this file) is not visited, and SORT-FIRST is not
+;; supported (this substrate has no `map-keymap-sorted').
+(unless (fboundp 'map-keymap)
+  (defun map-keymap (function keymap &optional _sort-first)
+    "Call FUNCTION once for each event binding in KEYMAP.
+FUNCTION is called with two arguments: the event that is bound, and
+the definition it is bound to.  If KEYMAP has a parent, the parent's
+bindings are included as well.  This works recursively: if the parent
+has itself a parent, then the grandparent's bindings are also included
+and so on.
+
+(fn FUNCTION KEYMAP &optional SORT-FIRST)"
+    (let ((map (nelisp--get-keymap keymap)))
+      (while map
+        (let ((tail (cdr map)))
+          (while (and (consp tail) (not (eq (car tail) 'keymap)))
+            (let ((item (car tail)))
+              (when (consp item)
+                (funcall function (car item) (cdr item))))
+            (setq tail (cdr tail))))
+        (setq map (keymap-parent map))))
+    nil))
+
+;; Staged verbatim from GNU Emacs 31.1 lisp/subr.el:1642/1645/1678
+;; (preloaded, not autoloaded).  Needed for real: `term.el''s own
+;; top-level `(defvar term-mode-map (let ((map (copy-keymap help-map)))
+;; ... (substitute-key-definition 'describe-key 'term-describe-key map)
+;; ...))'-style construction.  Depends only on names already confirmed
+;; fboundp on this substrate (`map-keymap' just above, `indirect-
+;; function'/`natnump'/`vconcat'/`car-safe'/`define-key'/`lookup-key'/
+;; `keymapp').
+(unless (boundp 'key-substitution-in-progress)
+  (defvar key-substitution-in-progress nil
+    "Keymaps already scanned in `substitute-key-definition'.
+Given as a list, so we can perform this check quickly."))
+
+(unless (fboundp 'substitute-key-definition-key)
+  (defun substitute-key-definition-key (defn olddef newdef prefix keymap)
+    (let (inner-def skipped menu-item)
+      (if (eq (car-safe defn) 'menu-item)
+          (setq menu-item defn defn (nth 2 defn))
+        (while (stringp (car-safe defn))
+          (push (pop defn) skipped))
+        (if (consp (car-safe defn))
+            (setq defn (cdr defn))))
+      (if (or (eq defn olddef)
+              (and (or (stringp defn) (vectorp defn))
+                   (equal defn olddef)))
+          (define-key keymap prefix
+            (if menu-item
+                (let ((copy (copy-sequence menu-item)))
+                  (setcar (nthcdr 2 copy) newdef)
+                  copy)
+              (nconc (nreverse skipped) newdef)))
+        (setq inner-def
+              (or (indirect-function defn) defn))
+        (if (and (keymapp inner-def)
+                 (let ((elt (lookup-key keymap prefix)))
+                   (or (null elt) (natnump elt) (keymapp elt)))
+                 (not (memq inner-def key-substitution-in-progress)))
+            (substitute-key-definition olddef newdef keymap inner-def prefix))))))
+
+(unless (fboundp 'substitute-key-definition)
+  (defun substitute-key-definition (olddef newdef keymap &optional oldmap prefix)
+    "Replace OLDDEF with NEWDEF for any keys in KEYMAP now defined as OLDDEF.
+In other words, OLDDEF is replaced with NEWDEF wherever it appears.
+Alternatively, if optional fourth argument OLDMAP is specified, we redefine
+in KEYMAP as NEWDEF those keys that are defined as OLDDEF in OLDMAP.
+
+\(fn OLDDEF NEWDEF KEYMAP &optional OLDMAP)"
+    (or prefix (setq prefix ""))
+    (let* ((scan (or oldmap keymap))
+           (prefix1 (vconcat prefix [nil]))
+           (key-substitution-in-progress
+            (cons scan key-substitution-in-progress)))
+      (map-keymap
+       (lambda (char defn)
+         (aset prefix1 (length prefix) char)
+         (substitute-key-definition-key defn olddef newdef prefix1 keymap))
+       scan))))
+
+;; Mirrors GNU Emacs 31.1 src/keymap.c:Fkeymap_prompt exactly (a plain
+;; recursive walk over cons cells, no char-table/vector involved, so
+;; this substrate's reduced keymap shape needs no adaptation at all):
+;; the first `stringp' element found while walking KEYMAP's own cdr
+;; chain is the prompt; a nested keymap (a spliced-in parent) is
+;; searched recursively, and the walk stops as soon as any branch
+;; returns non-nil, exactly like the C code's own `if (!NILP (tem))
+;; return tem;' early-return.
+(unless (fboundp 'keymap-prompt)
+  (defun keymap-prompt (map)
+    "Return the prompt-string of a keymap MAP.
+If non-nil, the prompt is shown in the echo-area
+when reading a key-sequence to be looked-up in this keymap."
+    (setq map (nelisp--get-keymap map))
+    (let (result)
+      (while (and (consp map) (not result))
+        (let ((tem (car map)))
+          (cond
+           ((stringp tem) (setq result tem))
+           ((keymapp tem)
+            (let ((sub (keymap-prompt tem)))
+              (when sub (setq result sub))))))
+        (setq map (cdr map)))
+      result)))
+
+;; Staged verbatim from GNU Emacs 31.1 lisp/subr.el:1319 (preloaded, not
+;; autoloaded, immediately before `make-composed-keymap' in real
+;; subr.el too).  Needed for real: both `term.el''s own top-level
+;; `(defvar term-raw-map (let ((map (make-keymap))) ... (suppress-keymap
+;; map) ...))'-style construction and `woman.el''s (via real `man.el''s
+;; own top-level `Man-mode-map' construction, reached through `woman.el''s
+;; unconditional `(require 'man)') both call this directly while
+;; building their mode's base keymap, at each file's own top level.
+(unless (fboundp 'suppress-keymap)
+  (defun suppress-keymap (map &optional nodigits)
+    "Make MAP override all normally self-inserting keys to be undefined.
+Normally, as an exception, digits and minus-sign are set to make prefix args,
+but optional second arg NODIGITS non-nil treats them like other chars.
+
+(fn MAP &optional NODIGITS)"
+    (define-key map [remap self-insert-command] #'undefined)
+    (or nodigits
+        (let (loop)
+          (define-key map "-" #'negative-argument)
+          (setq loop ?0)
+          (while (<= loop ?9)
+            (define-key map (char-to-string loop) #'digit-argument)
+            (setq loop (1+ loop)))))))
+
+;; Staged verbatim from GNU Emacs 31.1 lisp/subr.el:1333 (preloaded, not
+;; autoloaded -- `project.el''s own `project--other-place-prefix' calls
+;; this directly, inside a command, so it is never itself a load-time
+;; blocker, but it is one of the explicit gaps this session's brief
+;; names).  No adaptation needed: it only ever conses onto a keymap's
+;; spine, which this substrate's `keymapp'/`define-key'/`lookup-key'
+;; already walk generically.
+(unless (fboundp 'make-composed-keymap)
+  (defun make-composed-keymap (maps &optional parent)
+    "Construct a new keymap composed of MAPS and inheriting from PARENT.
+When looking up a key in the returned map, the key is looked in each
+keymap of MAPS in turn until a binding is found.
+If no binding is found in MAPS, the lookup continues in PARENT, if non-nil.
+As always with keymap inheritance, a nil binding in MAPS overrides
+any corresponding binding in PARENT, but it does not override corresponding
+bindings in other keymaps of MAPS.
+MAPS can be a list of keymaps or a single keymap.
+PARENT if non-nil should be a keymap."
+    `(keymap
+      ,@(if (keymapp maps) (list maps) maps)
+      ,@parent)))
+
+;; `button-buffer-map'/`button-map' are plain `defvar-keymap' forms in
+;; real Emacs's (preloaded) lisp/button.el.  NOT staged via this
+;; substrate's own `defvar-keymap'/`define-keymap'/`keymap-set': those
+;; are excerpted separately from `vendor/staged-emacs-lisp/keymap.el' by
+;; the standalone build (`scripts/nelisp-standalone-build.el' greps that
+;; file for exactly those 3 names) and linked in AFTER this whole
+;; prelude file's own bootstrap forms run -- confirmed this session: a
+;; `defvar-keymap' call placed here, at prelude-bootstrap time, hits
+;; `void-function' every time (verified directly: `(fboundp
+;; 'defvar-keymap)' is nil during this file's own top-level forms, `t'
+;; once the standalone binary has finished starting).  Built instead
+;; from this substrate's own always-available-from-the-start primitives
+;; (`make-sparse-keymap'/`define-key'/`set-keymap-parent', all defined
+;; earlier in this same file), using plain event vectors rather than
+;; `kbd' for the bracket-syntax entries (`<backtab>', `<mouse-2>', the
+;; two-event `<mode-line> <mouse-2>' style ones): this substrate's own
+;; `kbd' does not parse bracket syntax into symbols the way real Emacs's
+;; does (confirmed this session: `(kbd "<backtab>")' returns the STRING
+;; "<backtab>", not the symbol vector `[backtab]'; `(kbd "<mode-line>
+;; <mouse-2>")' collapses to the single string "<mode-line><mouse-2>",
+;; losing the two-event split entirely) -- matches this file's own
+;; existing precedent (`mode-line-major-mode-keymap' above uses `[mode-
+;; line down-mouse-1]' vector literals directly for the same reason).
+;; Needed for real: `man.el''s own top-level `(defvar-keymap Man-mode-map
+;; :parent (make-composed-keymap button-buffer-map special-mode-map)
+;; ...)', reached through `woman.el''s own unconditional `(require
+;; 'man)'.
+(unless (boundp 'button-buffer-map)
+  (defvar button-buffer-map
+    (let ((map (make-sparse-keymap)))
+      (define-key map "\t" #'forward-button)
+      (define-key map [backtab] #'backward-button)
+      map)
+    "Keymap useful for buffers containing buttons.
+Mode-specific keymaps may want to use this as their parent keymap."))
+
+(unless (boundp 'button-map)
+  (defvar button-map
+    (let ((map (make-sparse-keymap)))
+      (set-keymap-parent map button-buffer-map)
+      (define-key map "\r" #'push-button)
+      (define-key map [mouse-2] #'push-button)
+      (define-key map [follow-link] 'mouse-face)
+      (define-key map [mode-line mouse-2] #'push-button)
+      (define-key map [header-line mouse-2] #'push-button)
+      (define-key map [mode-line touchscreen-down] #'push-button)
+      (define-key map [header-line touchscreen-down] #'push-button)
+      (define-key map [touchscreen-down] #'push-button)
+      map)
+    "Keymap used by buttons."))
+
+;; Mirrors GNU Emacs 31.1 src/keymap.c:get_keyelt: a raw stored binding
+;; cell is not always the definition itself.  Real `access_keymap_1'
+;; (the engine behind `lookup-key') unwraps two "decorated" shapes
+;; before ever handing a binding back to a caller: `(menu-item NAME
+;; DEFN . PROPS)' (a new-style menu item -- DEFN is the actual
+;; definition, PROPS's `:filter' is not applied here, matching this
+;; substrate's `lookup-key' never passing AUTOLOAD=t either) and
+;; `(STRING . DEFN)' (an old-style menu item with a title/help string in
+;; front -- looping handles `(STRING HELP . DEFN)' too, since stripping
+;; once leaves another `(STRING . DEFN)'-shaped cons).  Needed for real:
+;; real `comint.el' stores exactly `(cons "Complete" (make-sparse-keymap
+;; "Complete"))' as `comint-mode-map''s `[menu-bar completion]' binding,
+;; and real `shell.el' does `(copy-keymap (lookup-key comint-mode-map
+;; [menu-bar completion]))' at its own top level -- without this
+;; unwrap, `lookup-key' handed `copy-keymap' the raw `("Complete"
+;; keymap "Complete")' cons instead of the keymap inside it, and
+;; `copy-keymap' rejected that (correctly: real Emacs's own `get_keymap'
+;; would reject it exactly the same way, since real `lookup-key' never
+;; lets that raw shape escape in the first place).
+(defun nelisp--get-keyelt (object)
+  "Mirror GNU Emacs 31.1 src/keymap.c:get_keyelt.  See the block
+comment above this definition for which two binding shapes this
+unwraps and why."
+  (catch 'nelisp--get-keyelt-done
+    (while t
+      (cond
+       ((not (consp object)) (throw 'nelisp--get-keyelt-done object))
+       ((eq (car object) 'menu-item)
+        (if (consp (cdr object))
+            (let ((rest (cdr (cdr object))))
+              (setq object (if (consp rest) (car rest) rest)))
+          (throw 'nelisp--get-keyelt-done object)))
+       ((stringp (car object)) (setq object (cdr object)))
+       (t (throw 'nelisp--get-keyelt-done object))))))
+
 (unless (fboundp 'lookup-key)
   (defun lookup-key (keymap key &optional _accept-default)
     "Look up KEY in KEYMAP and its parent chain (`set-keymap-parent',
-above), returning the binding or nil.  DIVERGES from Emacs: this
-substrate's `define-key' stores KEY exactly as given -- one cons per
-call, no event decomposition, no multi-event sequences (see its own
-block comment above) -- so KEY is compared with `equal' against each
-stored key exactly as `define-key' left it, never split into individual
-events.  Never returns the \"N leading events matched\" integer real
-Emacs returns for an unbound prefix, since there is no prefix concept
-here.
+above), returning the binding or nil.  String and vector event sequences
+are normalized to the same event vector, as in GNU `lookup-key'.  The
+found binding is unwrapped through `nelisp--get-keyelt' (above), same
+as real Emacs's own `access_keymap_1'.  This flattened substrate still
+does not build prefix maps or return the number of matching leading
+events for an unbound prefix.
 
 (fn KEYMAP KEY &optional ACCEPT-DEFAULT)"
-    (let ((tail (cdr keymap)) (result nil) (done nil))
+    (let ((tail (cdr keymap)) (result nil) (done nil)
+          (normalized-key (nelisp--keymap-normalize-sequence key)))
       (while (and tail (consp tail) (not done))
         (let ((item (car tail)))
-          (if (and (consp item) (equal (car item) key))
-              (progn (setq result (cdr item)) (setq done t))
+          (if (and (consp item)
+                   (equal (nelisp--keymap-normalize-sequence (car item))
+                          normalized-key))
+              (progn (setq result (nelisp--get-keyelt (cdr item))) (setq done t))
             (setq tail (cdr tail)))))
       result)))
 
@@ -10363,6 +12871,53 @@ of a parent mode function -- and code written against the real Emacs API
 load without a `void-function' error.
 
 (fn &optional KILL-PERMANENT)"
+    nil))
+
+;; `make-variable-buffer-local'/`make-local-variable' are both real,
+;; C-level primitives (src/data.c) this substrate cannot give genuine
+;; buffer-local semantics to -- same "no buffer-local variable
+;; distinction" reduction as `kill-all-local-variables' just above
+;; (`setq-local'/`setq-default' are plain `setq' aliases).  Each is a
+;; pure no-op beyond returning VARIABLE, matching real Emacs's own
+;; return-value contract, so calling code that only checks the return
+;; value (or ignores it, the common case) sees no difference.  Needed
+;; for real: `woman.el''s own top-level `(defvar woman-imenu-generic-
+;; expression ...)' region calls `(make-variable-buffer-local 'X)' for
+;; several `woman-*' variables directly.
+(unless (fboundp 'make-variable-buffer-local)
+  (defun make-variable-buffer-local (variable)
+    "Make VARIABLE become buffer-local whenever it is set.
+At any time, the value for the current buffer is in effect,
+unless the variable has never been set in this buffer,
+in which case the default value is in effect.
+Note that binding the variable with `let', or setting it while
+a `let'-style binding made in this buffer is in effect,
+does not make the variable buffer-local.  Return VARIABLE.
+
+(fn VARIABLE)"
+    variable))
+
+(unless (fboundp 'make-local-variable)
+  (defun make-local-variable (variable)
+    "Make VARIABLE have a separate value in the current buffer.
+Other buffers will continue to share a common default value.
+\(The buffer-local value of VARIABLE starts out as the same value
+VARIABLE previously had.  If VARIABLE was unbound, it remains
+unbound, locally.)
+Return VARIABLE.
+
+(fn VARIABLE)"
+    variable))
+
+(unless (fboundp 'local-variable-p)
+  (defun local-variable-p (variable &optional _buffer)
+    "Non-nil if VARIABLE has a buffer-local value in BUFFER.
+This substrate has no buffer-local variables at all (see the block
+comment above `make-variable-buffer-local'), so this always returns
+nil, matching the honest answer for every variable here.
+
+(fn VARIABLE &optional BUFFER)"
+    (ignore variable)
     nil))
 
 (unless (boundp 'delay-mode-hooks)
@@ -10564,20 +13119,45 @@ MAJOR-MODE and MODE-NAME, installs the syntax table, runs PARENT (or
 ;; record)' via `make-syntax-table' -> `nelisp--syntax-make-table' ->
 ;; `make-nelisp--syntax-table'.
 
-(unless (fboundp 'save-excursion)
-  (defmacro save-excursion (&rest body)
-    "Save point and the current buffer; run BODY; restore both, even on
-non-local exit; return BODY's value.  See the block comment above this
-section for why this is a macro, not a `defun', and for the known
-`ns-inventory' collision this introduces."
-    (let ((buf (make-symbol "buf")) (pt (make-symbol "pt")))
-      `(let ((,buf nelisp--current-buffer) (,pt (point)))
-         (unwind-protect
-             (progn ,@body)
-           (when (buffer-live-p ,buf)
-             (setq nelisp--current-buffer ,buf)
-             (setq nelisp-buffer--current ,buf)
-             (goto-char ,pt)))))))
+;; Marker slice 1/2: this used to be `(unless (fboundp 'save-excursion)
+;; ...)', which never fired -- `lisp/nelisp-stdlib-eval-special.el''s
+;; own unconditional stub (see the block comment above this section)
+;; loads first and already satisfies `fboundp', so the guarded form
+;; here was dead code and the ACTIVE `save-excursion' was plain
+;; `progn', saving nothing.  Defining it unconditionally instead -- this
+;; file loads after that stub, and `defmacro' always overwrites the
+;; macro cell of whoever loaded last -- makes THIS body the one
+;; actually installed, without touching that other file (out of this
+;; slice's scope).  `save-excursion' is already `shared-shadowing' via
+;; that pre-existing unconditional stub, so this does not newly move
+;; `emacs-compat''s count; it only fixes which body wins.
+;;
+;; The saved point is now a MARKER in the buffer that was current at
+;; save time, not a bare integer -- real Emacs's own `save_excursion_
+;; save'/`-restore' (editfns.c) do the same, and the difference is
+;; observable: probed against Emacs 31.1, `(with-temp-buffer (insert
+;; "xxxxxx") (goto-char 6) (save-excursion (goto-char 1) (insert "XXX"))
+;; (point))' answers 9 (the saved point rides along with the 3-
+;; character insertion that landed before it) -- an integer save would
+;; restore to the ORIGINAL numeric offset 6, landing three characters
+;; too early.  The marker is detached again in the cleanup form so it
+;; does not linger in the buffer's marker list after the macro returns.
+(defmacro save-excursion (&rest body)
+  "Save point (as a marker) and the current buffer; run BODY; restore
+both, even on non-local exit; return BODY's value.  See the block
+comment above this definition for why the saved point is a marker, not
+an integer, and why this is unconditional rather than `unless (fboundp
+...)' guarded."
+  (let ((buf (make-symbol "buf")) (m (make-symbol "marker")))
+    `(let ((,buf nelisp--current-buffer)
+           (,m (point-marker)))
+       (unwind-protect
+           (progn ,@body)
+         (when (buffer-live-p ,buf)
+           (setq nelisp--current-buffer ,buf)
+           (setq nelisp-buffer--current ,buf)
+           (goto-char (marker-position ,m)))
+         (set-marker ,m nil)))))
 
 (defun nelisp--line-number-at (pos buf)
   "1-based line number of POS in BUF, counting newlines from
@@ -10587,12 +13167,19 @@ against Emacs 30.1: on buffer text \"a\\nb\\nc\", position 3 (the `b')
 is line 2)."
   (let* ((lo (nelisp-point-min buf))
          (hi (nelisp-point-max buf))
-         (target (max lo (min pos hi)))
-         (text (nelisp-buffer-substring lo target buf))
-         (n 1) (i 0) (len (length text)))
-    (while (< i len)
-      (when (eq (aref text i) ?\n) (setq n (1+ n)))
-      (setq i (1+ i)))
+         (target pos)
+         (nelisp--current-buffer buf)
+         (n 1))
+    (unless (and (>= target lo) (<= target hi))
+      (signal 'args-out-of-range (list target lo hi)))
+    ;; Materialize the prefix once and count its newlines with the
+    ;; standalone's native byte scanner.  `search-forward' reconstructs the
+    ;; whole buffer substring on every match, while a Lisp loop still pays
+    ;; interpreted overhead per character.  The substring ends before POS,
+    ;; so a newline at POS remains part of the current line.
+    (let* ((text (nelisp-buffer-substring lo target buf))
+           (count (str-count-nl text (string-bytes text))))
+      (setq n (+ n count)))
     n))
 
 (unless (fboundp 'line-number-at-pos)
@@ -10645,6 +13232,16 @@ Doc 204 §6.2's own class-set boundary."
 `re-search-forward' via `regexp-quote' (matching real Emacs's own
 signature: BOUND/NOERROR/COUNT all pass straight through)."
     (re-search-forward (regexp-quote string) bound noerror count)))
+;; `search-backward' was missing entirely (plain `void-function', not just
+;; absent from the ~80-file census above) even though its two building
+;; blocks -- `re-search-backward' and `regexp-quote' -- were both already
+;; native.  Same shape as `search-forward' just above, mirrored onto the
+;; backward primitive instead.
+(unless (fboundp 'search-backward)
+  (defun search-backward (string &optional bound noerror count)
+    "Literal backward search for STRING, layered on the native
+`re-search-backward' via `regexp-quote' (see `search-forward')."
+    (re-search-backward (regexp-quote string) bound noerror count)))
 ;; `void-function' on the ~80-file census
 ;; (../nelisp-agent/test/background-config-test.el:86: `(search-forward
 ;; "...") (replace-match "..." t t)', replacing the just-matched text in
@@ -10676,16 +13273,6 @@ and return nil, matching Emacs's own two-mode contract."
           (insert newtext)
           nil)))))
 
-(unless (fboundp 'user-error)
-  (defun user-error (format-string &rest args)
-    "Signal `user-error' with a `format-message'-formatted message
-\(Emacs subr.el's own definition, ported verbatim\); `error-conditions'/
-`error-message' for the symbol are already registered by the Doc 152
-gate-G block further down this file, which runs at load time before any
-caller could actually signal one -- i.e. before any real caller's own
-runtime `signal' of it."
-    (signal 'user-error (list (apply #'format-message format-string args)))))
-
 (unless (fboundp 'check-parens)
   (defun check-parens ()
     "Verify parentheses in the current buffer are balanced, over Doc 204
@@ -10702,30 +13289,172 @@ moves point to the scan failure position and signals `user-error'
        (goto-char (nth 2 data))
        (user-error "Unmatched bracket or quote")))))
 
-;; No standard-name marker constructors wired here (binary-size-ratchet:
-;; each extra top-level `defun' costs far more than its source size).
-;; `nelisp--emit-to-stream' and the `read' dispatch below drive a marker
-;; PRINTCHARFUN/STREAM via the already-ported `nelisp-marker-p' et al.
-;; directly; construct one the same way, e.g. `(nelisp-copy-marker BUF POS)'.
+;; ---- standard marker constructors (marker slice 1/2) -----------------
 ;;
-;; `markerp' is the one exception, added for a type-dispatch consumer
-;; (../nelisp-agent/lisp/nl-agent-trajectory.el:127: `(or (bufferp value)
-;; (markerp value) (hash-table-p value) (recordp value))', rejecting
-;; runtime objects that should not be serialized into a trajectory
-;; record).  `nelisp-marker-p' (above) is this runtime's REAL marker
-;; predicate, but it is never reachable from ordinary Elisp: nothing
-;; here exposes `point-marker'/`copy-marker'/`set-marker' etc. under
-;; their standard names (see the block comment just above), so no value
-;; an ordinary caller can construct is ever a `nelisp-marker'.  Answering
-;; nil unconditionally is therefore not a stub standing in for a real
-;; predicate -- for every object reachable from Elisp on this runtime,
-;; nil is the correct answer, and the docstring says so.
+;; Real primitives on Emacs 31.1 (`marker.c'), so every name below is
+;; guarded the same way as every other bridge in this file: `(unless
+;; (fboundp 'NAME) (defun NAME ...))' keeps this a `shared-deferring'
+;; addition under `make emacs-compat' rather than a `shared-shadowing'
+;; one (the gate loads this file under host Emacs, where all of these
+;; names are already native).  All of them operate on the `nelisp-
+;; marker' record from this file's own model above (`cl-defstruct
+;; (nelisp-marker ...)'), never allocating a second representation --
+;; superseding the "no standard-name marker constructors wired here"
+;; note this comment used to carry.
+;;
+;; `set-marker' is written from scratch here rather than delegating to
+;; the ported `nelisp-set-marker' above: that internal helper defaults
+;; an omitted BUFFER to the marker's OWN existing buffer, but Emacs's
+;; real contract (`set_marker_internal', which reads `decode_buffer')
+;; defaults an omitted/nil BUFFER to the CURRENT buffer instead -- a
+;; different default, probed against Emacs 31.1 by moving a marker
+;; already attached to buffer A while buffer B is current with `(set-
+;; marker m 3)': the marker lands in B, not A.  POSITION beyond either
+;; bound clamps into `[1, (1+ (nelisp-buffer-size BUF))]' (Emacs's own
+;; unnarrowed `BUF_BEG'/`BUF_Z', not the narrowed `point-min'/`point-
+;; max') rather than signalling, also probed against 31.1.  A nil
+;; POSITION, or a POSITION that is itself a marker pointing nowhere, or
+;; a dead/nil BUFFER, all detach MARKER (it ends up pointing nowhere)
+;; regardless of the other argument -- matching `set_marker_internal''s
+;; own check order exactly, including that a malformed POSITION in that
+;; branch is never type-checked at all.
+(unless (fboundp 'set-marker)
+  (defun set-marker (marker position &optional buffer)
+    "Position MARKER before character number POSITION in BUFFER.
+See the block comment above this section for the exact semantics,
+probed against Emacs 31.1."
+    (unless (nelisp-marker-p marker)
+      (signal 'wrong-type-argument (list 'markerp marker)))
+    (let* ((buf (cond ((null buffer) nelisp--current-buffer)
+                       ((nelisp-buffer-p buffer) buffer)
+                       (t (signal 'wrong-type-argument (list 'bufferp buffer)))))
+           (live (and buf (buffer-live-p buf))))
+      (cond
+       ((or (null position)
+            (and (nelisp-marker-p position) (null (nelisp-marker-buffer position)))
+            (not live))
+        (nelisp-marker-delete marker))
+       (t
+        (let ((pos (cond ((integerp position) position)
+                          ((nelisp-marker-p position) (nelisp-marker-position position))
+                          (t (signal 'wrong-type-argument
+                                      (list 'integer-or-marker-p position))))))
+          (setq pos (max 1 (min (1+ (nelisp-buffer-size buf)) pos)))
+          (unless (eq (nelisp-marker-buffer marker) buf)
+            (nelisp-marker-delete marker)
+            (push marker (nelisp-buffer-markers buf))
+            (setf (nelisp-marker-buffer marker) buf))
+          (setf (nelisp-marker-position marker) pos))))
+      marker)))
+
+(unless (fboundp 'move-marker)
+  (defalias 'move-marker 'set-marker
+    "Alias: real Emacs's own `subr.el' defines `move-marker' as `set-
+marker' under a second name, not a distinct primitive."))
+
+(unless (fboundp 'make-marker)
+  (defun make-marker ()
+    "Return a marker that does not point anywhere."
+    (nelisp-marker--make)))
+
+(unless (fboundp 'copy-marker)
+  (defun copy-marker (&optional position type)
+    "Return a new marker pointing at the same place as POSITION.
+POSITION nil (the default) returns a marker pointing nowhere.  An
+integer POSITION points at that position in the current buffer.  A
+marker POSITION copies its buffer and position (or copies its
+pointing-nowhere-ness, if it has none).  TYPE non-nil makes the new
+marker advance past text inserted at it -- see `marker-insertion-type'.
+
+Delegates to `set-marker' immediately above for the actual placement,
+which is where POSITION's three-way dispatch (nil / integer / marker)
+and the resulting BUFFER default live; probed against Emacs 31.1 to
+confirm this composition reproduces `Fcopy_marker' exactly, including
+that copying a nowhere-pointing marker produces another nowhere-
+pointing marker regardless of which buffer happens to be current."
+    (unless (or (null position) (integerp position) (nelisp-marker-p position))
+      (signal 'wrong-type-argument (list 'integer-or-marker-p position)))
+    (let ((new (nelisp-marker--make)))
+      (set-marker new position
+                  (and (nelisp-marker-p position) (nelisp-marker-buffer position)))
+      (setf (nelisp-marker-insertion-type new) (and type t))
+      new)))
+
+(unless (fboundp 'marker-position)
+  (defun marker-position (marker)
+    "Return the position of MARKER, or nil if it points nowhere."
+    (unless (nelisp-marker-p marker)
+      (signal 'wrong-type-argument (list 'markerp marker)))
+    (and (nelisp-marker-buffer marker) (nelisp-marker-position marker))))
+
+(unless (fboundp 'marker-buffer)
+  (defun marker-buffer (marker)
+    "Return the buffer that MARKER points into, or nil if none."
+    (unless (nelisp-marker-p marker)
+      (signal 'wrong-type-argument (list 'markerp marker)))
+    (nelisp-marker-buffer marker)))
+
+(unless (fboundp 'marker-insertion-type)
+  (defun marker-insertion-type (marker)
+    "Return insertion type of MARKER: t if it stays after inserted text."
+    (unless (nelisp-marker-p marker)
+      (signal 'wrong-type-argument (list 'markerp marker)))
+    (and (nelisp-marker-insertion-type marker) t)))
+
+(unless (fboundp 'set-marker-insertion-type)
+  (defun set-marker-insertion-type (marker type)
+    "Set the insertion-type of MARKER to TYPE."
+    (unless (nelisp-marker-p marker)
+      (signal 'wrong-type-argument (list 'markerp marker)))
+    (setf (nelisp-marker-insertion-type marker) (and type t))
+    type))
+
+;; `point-marker'/`point-min-marker'/`point-max-marker' build a fresh
+;; marker in the CURRENT buffer directly off `nelisp--current-buffer',
+;; the same standard-name-only ambient tracker `point'/`point-min'/
+;; `point-max' above thread (never the ported file's own `nelisp-
+;; buffer--current'), so they stay correct regardless of which of the
+;; two P1 kept in step by `with-current-buffer'/`set-buffer' is
+;; current.  Insertion type nil (the struct default), matching real
+;; Emacs's `build_marker'.
+(unless (fboundp 'point-marker)
+  (defun point-marker ()
+    "Return value of point, as a marker, in the current buffer."
+    (let ((m (nelisp-marker--make :buffer nelisp--current-buffer
+                                   :position (nelisp-point nelisp--current-buffer))))
+      (push m (nelisp-buffer-markers nelisp--current-buffer))
+      m)))
+
+(unless (fboundp 'point-min-marker)
+  (defun point-min-marker ()
+    "Return a marker to the minimum permissible value of point."
+    (let ((m (nelisp-marker--make :buffer nelisp--current-buffer
+                                   :position (nelisp-point-min nelisp--current-buffer))))
+      (push m (nelisp-buffer-markers nelisp--current-buffer))
+      m)))
+
+(unless (fboundp 'point-max-marker)
+  (defun point-max-marker ()
+    "Return a marker to the maximum permissible value of point."
+    (let ((m (nelisp-marker--make :buffer nelisp--current-buffer
+                                   :position (nelisp-point-max nelisp--current-buffer))))
+      (push m (nelisp-buffer-markers nelisp--current-buffer))
+      m)))
+
+;; `mark-marker' (editfns.c) is deliberately NOT wired here: it answers
+;; a per-buffer MARK register this substrate has no concept of at all
+;; (no `mark', `push-mark', `region-active-p', ...) -- inventing one
+;; would be a new subsystem, not a bridge onto an existing model, and
+;; is out of scope for this slice.
+;;
+;; `markerp' -- was hard-coded nil (no marker type reachable from
+;; ordinary Elisp existed yet, per the note this comment used to
+;; carry); now a real predicate over the model the constructors above
+;; build.
 (unless (fboundp 'markerp)
-  (defun markerp (_object)
-    "Always nil: this runtime exposes no marker type under a standard
-name (no `point-marker', `copy-marker', `set-marker', ...), so no
-value constructible from ordinary Elisp code is ever a marker."
-    nil))
+  (defun markerp (object)
+    "Return non-nil if OBJECT is a marker."
+    (nelisp-marker-p object)))
 
 (unless (fboundp 'with-temp-file)
   (defmacro with-temp-file (file &rest body)
@@ -10741,11 +13470,8 @@ write instead of ever touching a real buffer."
              (progn ,@body
                     (write-region (nelisp-buffer-string ,b) nil ,file))
            (nelisp-kill-buffer ,b))))))
-(unless (fboundp 'ignore-errors)
-  (defmacro ignore-errors (&rest body)
-    `(condition-case nil (progn ,@body) (error nil))))
 (unless (fboundp 'insert-file-contents)
-  (defun insert-file-contents (filename &rest _args)
+  (defun insert-file-contents (filename &optional visit beg end replace)
     ;; Real Emacs's `insert-file-contents' does NOT move point past the
     ;; inserted text the way plain `insert' does -- point is left where it
     ;; was before the call (i.e. immediately before the newly-inserted
@@ -10768,11 +13494,33 @@ write instead of ever touching a real buffer."
     ;; `("/tmp/f" 1)', never `("f" 1)'.  `expand-file-name' with no
     ;; DEFAULT-DIRECTORY argument already resolves against the current
     ;; one, same as Emacs's own `default-directory'-relative behavior.
+    (when (and visit (or beg end))
+      (signal 'error (list "Attempt to visit less than an entire file")))
+    (when (file-directory-p filename)
+      (signal 'file-error
+              (list "Read error" "Is a directory"
+                    (expand-file-name filename))))
+    (unless (file-readable-p filename)
+      (signal 'file-missing
+              (list "Opening input file" "No such file or directory"
+                    (expand-file-name filename))))
     (let* ((contents (or (nelisp--syscall-read-file filename) ""))
-           (pos (nelisp-point nelisp--current-buffer)))
-      (nelisp-insert contents nelisp--current-buffer)
+           (full-name (expand-file-name filename))
+           (pos (nelisp-point nelisp--current-buffer))
+           (bytes (and (or beg end)
+                       (encode-coding-string contents 'utf-8-unix)))
+           (byte-size (if bytes (string-bytes bytes) 0))
+           (byte-start (if beg (max 0 (min beg byte-size)) 0))
+           (byte-end (if end (max byte-start (min end byte-size))
+                       byte-size))
+           (selected (if bytes
+                         (decode-coding-string
+                          (substring bytes byte-start byte-end) 'utf-8-unix)
+                       contents)))
+      (when replace (erase-buffer))
+      (nelisp-insert selected nelisp--current-buffer)
       (nelisp-goto-char pos nelisp--current-buffer)
-      (list (expand-file-name filename) (length contents)))))
+      (list full-name (if replace pos (length selected))))))
 ;; feat/standalone-agent-segC-prelude item 1: this used to delegate to
 ;; `insert-file-contents' above, which DECODES -- so a caller doing
 ;; exactly what real Emacs's own docstring tells it to
@@ -11272,77 +14020,152 @@ No-ops on substrates without `nelisp--syscall-path-int' (the historic stub)."
                         (expand-file-name filename))))))
     nil))
 
-;; --- Wave-2 (C): sort (stable merge sort, 2-arg PREDICATE form) ----------
-;; (sort LIST PREDICATE) -> a new list ordered by PREDICATE (a < b).  Stable.
-;; Non-destructive (builds fresh cons cells) to avoid setcar/setcdr churn on
-;; the caller's data under the standalone GC.  Only the LIST + 2-arg form is
-;; supported (the static linker calls `(sort (copy-sequence units) #'pred)').
-(unless (fboundp 'sort)
-  (progn
-    (defun nelisp-stdlib--merge (a b pred)
-      (let ((acc nil))
-        (while (and a b)
-          (if (funcall pred (car b) (car a))
-              (progn (setq acc (cons (car b) acc)) (setq b (cdr b)))
-            (setq acc (cons (car a) acc)) (setq a (cdr a))))
-        (while a (setq acc (cons (car a) acc)) (setq a (cdr a)))
-        (while b (setq acc (cons (car b) acc)) (setq b (cdr b)))
-        (nreverse acc)))
-    (defun nelisp-stdlib--msort (list pred)
-      (if (or (null list) (null (cdr list)))
-          list
-        ;; split into halves via slow/fast pointer
-        (let ((slow list) (fast (cdr list)) (left nil))
-          (while (and fast (cdr fast))
-            (setq fast (cdr (cdr fast)))
-            (setq left (cons (car slow) left))
-            (setq slow (cdr slow)))
-          ;; `left' now holds the reversed first half (excludes slow); take
-          ;; slow's car too, then the rest is the right half.
-          (setq left (nreverse (cons (car slow) left)))
-          (let ((right (cdr slow)))
-            (nelisp-stdlib--merge
-             (nelisp-stdlib--msort left pred)
-             (nelisp-stdlib--msort right pred)
-             pred)))))
-    (defun sort (seq &optional pred)
-      ;; A STRING is a sequence but not sortable: Emacs names
-      ;; `list-or-vector-p', which says which two shapes it does take.
-      (unless (or (listp seq) (vectorp seq))
-        (signal 'wrong-type-argument (list 'list-or-vector-p seq)))
-      (setq pred (or pred (function value<)))
-      (if (vectorp seq)
-          (let ((l (nelisp-stdlib--msort (append seq nil) pred)) (i 0))
-            (while l (aset seq i (car l)) (setq l (cdr l)) (setq i (1+ i)))
-            seq)
-        (nelisp-stdlib--msort seq pred)))))
+;; GNU Emacs 31.1 `sort' accepts both keyword and legacy comparator calls.
+;; Normalize both GNU interfaces here and keep sorting stable in one
+;; Lisp-level implementation.
+(defun nelisp--sort-merge (left right lessp)
+  (let ((result nil))
+    (while (and left right)
+      (if (funcall lessp (car right) (car left))
+          (progn (setq result (cons (car right) result))
+                 (setq right (cdr right)))
+        (setq result (cons (car left) result))
+        (setq left (cdr left))))
+    (while left
+      (setq result (cons (car left) result))
+      (setq left (cdr left)))
+    (while right
+      (setq result (cons (car right) result))
+      (setq right (cdr right)))
+    (nreverse result)))
 
-;; --- Wave-2 (C): symbol plists (put/get) + define-error -----------------
-;; The standalone reader has no per-symbol plist slot, so model the global
-;; symbol-plist store as one hash-table keyed by symbol (gethash/puthash use
-;; symbol-eq on the name).  Each value is a property plist (NAME VAL NAME VAL...).
-(unless (boundp 'nelisp-stdlib--symbol-plists)
-  (setq nelisp-stdlib--symbol-plists (make-hash-table)))
-(unless (fboundp 'symbol-plist)
-  (defun symbol-plist (sym)
-    (nelisp--check-symbol sym)
-    (gethash sym nelisp-stdlib--symbol-plists)))
-(unless (fboundp 'setplist)
-  (defun setplist (sym plist)
-    (nelisp--check-symbol sym)
-    (puthash sym plist nelisp-stdlib--symbol-plists)
-    plist))
-(unless (fboundp 'get)
-  (defun get (sym prop)
-    (nelisp--check-symbol sym)
-    (plist-get (gethash sym nelisp-stdlib--symbol-plists) prop)))
-(unless (fboundp 'put)
-  (defun put (sym prop val)
-    (nelisp--check-symbol sym)
-    (puthash sym
-             (plist-put (gethash sym nelisp-stdlib--symbol-plists) prop val)
-             nelisp-stdlib--symbol-plists)
-    val))
+(defun nelisp--sort-merge-sort (items lessp)
+  (if (or (null items) (null (cdr items)))
+      items
+    (let ((slow items) (fast (cdr items)) (left nil))
+      (while (and fast (cdr fast))
+        (setq fast (cdr (cdr fast)))
+        (setq left (cons (car slow) left))
+        (setq slow (cdr slow)))
+      (setq left (nreverse (cons (car slow) left)))
+      (nelisp--sort-merge
+       (nelisp--sort-merge-sort left lessp)
+       (nelisp--sort-merge-sort (cdr slow) lessp)
+       lessp))))
+
+(defun nelisp--sort-proper-list-p (items)
+  (let ((slow items) (fast items) (valid t))
+    (while (and valid (consp fast) (consp (cdr fast)))
+      (setq slow (cdr slow))
+      (setq fast (cdr (cdr fast)))
+      (when (eq slow fast) (setq valid nil)))
+    (and valid
+         (or (null fast)
+             (and (consp fast) (null (cdr fast)))))))
+
+(defun nelisp--sort-circular-list-p (items)
+  (let ((slow items) (fast items) (cycle nil))
+    (while (and (consp fast) (consp (cdr fast)) (not cycle))
+      (setq slow (cdr slow))
+      (setq fast (cdr (cdr fast)))
+      (when (eq slow fast) (setq cycle t)))
+    cycle))
+
+(defun nelisp--sort-improper-list-tail (items)
+  (let ((slow items) (fast items) (cursor items) (cycle nil))
+    (while (and (consp fast) (consp (cdr fast)) (not cycle))
+      (setq slow (cdr slow))
+      (setq fast (cdr (cdr fast)))
+      (when (eq slow fast) (setq cycle t)))
+    (if cycle
+        items
+      (while (consp cursor) (setq cursor (cdr cursor)))
+      cursor)))
+
+(defun sort (sequence &rest arguments)
+  "Sort SEQUENCE stably using GNU Emacs 31 keyword or legacy options."
+  (unless (or (listp sequence)
+              (and (vectorp sequence) (not (stringp sequence))))
+    (signal 'wrong-type-argument (list 'list-or-vector-p sequence)))
+  (when (nelisp--sort-circular-list-p sequence)
+    (signal 'circular-list (list sequence)))
+  (when (and (listp sequence) (not (nelisp--sort-proper-list-p sequence)))
+    (signal 'wrong-type-argument
+            (list 'listp (nelisp--sort-improper-list-tail sequence))))
+  (let ((key-function #'identity)
+        (lessp #'value<)
+        (reverse nil)
+        (in-place nil)
+        (options arguments))
+    (cond
+     ((null options))
+     ((not (keywordp (car options)))
+      (unless (null (cdr options))
+        (signal 'wrong-number-of-arguments (list 'sort (+ 1 (length options)))))
+      (setq lessp (or (car options) #'value<))
+      (setq in-place t))
+     ((null (cdr options))
+      ;; A lone keyword is the legacy comparator argument.  Calling it during
+      ;; comparison preserves GNU's void-function failure for malformed input.
+      (setq lessp (car options))
+      (setq in-place t))
+     (t
+      (while options
+        (let ((option (car options)))
+          (setq options (cdr options))
+          (unless options
+            (signal 'wrong-number-of-arguments (list 'sort (+ 1 (length arguments)))))
+          (let ((value (car options)))
+            (setq options (cdr options))
+            (cond ((eq option :key) (setq key-function (or value #'identity)))
+                  ((eq option :lessp) (setq lessp (or value #'value<)))
+                  ((eq option :reverse) (setq reverse value))
+                  ((eq option :in-place) (setq in-place value))
+                  (t (signal 'error (list "Invalid keyword argument" option)))))))))
+    (let ((cursor (if (vectorp sequence)
+                      (let ((index 0) (items nil))
+                        (while (< index (length sequence))
+                          (setq items (cons (aref sequence index) items))
+                          (setq index (1+ index)))
+                        (nreverse items))
+                    sequence)))
+      (let ((decorated nil))
+        (while cursor
+          (let ((item (car cursor)))
+            (setq decorated
+                  (cons (cons (funcall key-function item) item) decorated)))
+          (setq cursor (cdr cursor)))
+        (setq decorated (nreverse decorated))
+        (let ((compare
+               (lambda (left right)
+                 (if reverse
+                     (funcall lessp (car right) (car left))
+                   (funcall lessp (car left) (car right))))))
+          (let ((sorted (nelisp--sort-merge-sort decorated compare))
+                (values nil))
+            (while sorted
+              (setq values (cons (cdr (car sorted)) values))
+              (setq sorted (cdr sorted)))
+            (setq values (nreverse values))
+            (cond
+             ((vectorp sequence)
+              (let ((result (if in-place sequence (copy-sequence sequence)))
+                    (index 0))
+                (while values
+                  (aset result index (car values))
+                  (setq index (1+ index))
+                  (setq values (cdr values)))
+                result))
+             (in-place
+              (let ((destination sequence))
+                (while values
+                  (setcar destination (car values))
+                  (setq destination (cdr destination))
+                  (setq values (cdr values)))
+                sequence))
+             (t values))))))))
+
+;; --- Wave-2 (C): define-error ------------------------------------------
 ;; define-error NAME MESSAGE &optional PARENT: register an error symbol.  In
 ;; real elisp this sets `error-conditions'/`error-message' on NAME's plist so
 ;; condition-case can match the hierarchy.  Minimal LOAD-correct version: store
@@ -11585,16 +14408,6 @@ actually refuse a write."
     (let ((new (make-hash-table :test (hash-table-test table))))
       (maphash (lambda (k v) (puthash k v new)) table)
       new)))
-(unless (fboundp 'hash-table-keys)
-  (defun hash-table-keys (table)
-    (let ((acc nil))
-      (maphash (lambda (k _v) (setq acc (cons k acc))) table)
-      (nreverse acc))))
-(unless (fboundp 'hash-table-values)
-  (defun hash-table-values (table)
-    (let ((acc nil))
-      (maphash (lambda (_k v) (setq acc (cons v acc))) table)
-      (nreverse acc))))
 
 ;;; nelisp-stdlib-prn.el --- elisp Sexp printer / serializer  -*- lexical-binding: t; -*-
 
@@ -11645,35 +14458,108 @@ actually refuse a write."
   "Return the concatenation of chunks held in STATE."
   (apply #'concat (car state)))
 
+(defun nelisp--prn-control-char-p (c)
+  "Return non-nil when C is a C-locale control character.
+Mirrors GNU `c_iscntrl' (lib/c-ctype.h) for the ASCII case this runtime
+always uses: codepoints 0x00-0x1F and 0x7F (DEL)."
+  (or (< c 32) (= c 127)))
+
+(defun nelisp--prn-octal-digit-count (c next-is-octal-digit)
+  "Return how many octal digits GNU `octalout' (src/print.c) emits for C.
+3 when C >= 0o100 (64) or NEXT-IS-OCTAL-DIGIT is non-nil -- the latter so a
+reader re-scanning `\\N' followed by a literal 0-7 digit cannot absorb that
+digit into the escape and misread it as one longer number; else 2 when
+C >= 8; else 1."
+  (cond ((or (> c 63) next-is-octal-digit) 3)
+        ((> c 7) 2)
+        (t 1)))
+
+(defun nelisp--prn-octal-escape (c &optional digits)
+  "Return the octal escape for codepoint C (0-255).
+DIGITS fixes the width (1, 2, or 3); omit it for the always-safe 3-digit
+form the pre-existing Doc 200 unibyte-byte escape below uses
+unconditionally.  A caller that must match GNU's variable width exactly
+(see `nelisp--prn-octal-digit-count') passes it explicitly.  Built with one
+fixed-arity `concat' call per width rather than an accumulating
+setq/concat loop, which the source-scanning perf guard
+`nelisp-stdlib-printer-bounds-concat-calls' (test/nelisp-stdlib-test.el)
+would flag."
+  (cond
+   ((eq digits 1) (concat "\\" (char-to-string (+ 48 (logand c 7)))))
+   ((eq digits 2) (concat "\\"
+                          (char-to-string (+ 48 (logand (ash c -3) 7)))
+                          (char-to-string (+ 48 (logand c 7)))))
+   (t             (concat "\\"
+                          (char-to-string (+ 48 (logand (ash c -6) 7)))
+                          (char-to-string (+ 48 (logand (ash c -3) 7)))
+                          (char-to-string (+ 48 (logand c 7)))))))
+
+(defun nelisp--prn-hex-digit-char-p (c)
+  "Non-nil when C is an ASCII hex digit: 0-9, a-f, or A-F."
+  (or (and (>= c 48) (<= c 57))
+      (and (>= c 97) (<= c 102))
+      (and (>= c 65) (<= c 70))))
+
 (defun nelisp--prn-string-escaped (s)
-  "Return S with `\"' and `\\' escaped, which is what Emacs `prin1' escapes.
-Measured on Emacs 30.1 rather than assumed: a newline, tab, carriage return,
-BEL and NUL all pass through VERBATIM inside a printed string -- only the
-two characters that would end the literal or start an escape are doubled.
-Escaping \\n as well made every printed string containing a newline differ
-from Emacs, which `make emacs-parity' caught the first time a case had one.
-Char comparisons use raw integer codepoints (34 / 92) to sidestep any
-difference in how `?\\X' literals get parsed by the bundled reader vs the
-host.  For a tag-14/15 unibyte string, Doc 200 additionally requires every
-byte >= 128 to print as octal, never as a raw byte mistaken for UTF-8."
+  "Return S with characters escaped the way Emacs `prin1' escapes them.
+`\"' and `\\' are always doubled.  The remaining escapes are controlled by
+the standard `print-escape-*' variables (src/print.c `print_object', GNU
+31.1): `print-escape-newlines' turns a literal newline/formfeed into the
+two-character sequence `\\n'/`\\f'; `print-escape-control-characters' turns
+any other C0/DEL control character into an octal escape, GNU's exact
+variable width (see `nelisp--prn-octal-digit-count') -- when
+`print-escape-newlines' is nil, a newline/formfeed still falls under this
+one, since both variables gate against the SAME literal character and
+`print-escape-newlines' is checked first; `print-escape-multibyte' turns a
+non-ASCII character of a multibyte string into a `\\xXXXX' hex escape,
+followed by a `\\ ' separator (GNU's `need_nonhex') before the NEXT
+character if that character would otherwise read as more hex digits of the
+same escape.  All four default to nil, matching GNU's C defaults, so
+unbound callers see exactly the previous fixed behavior: control
+characters other than the quote/backslash pair pass through verbatim.
+
+Char comparisons use raw integer codepoints (34 / 92 / 10 / 12) to sidestep
+any difference in how `?\\X' literals get parsed by the bundled reader vs
+the host.  For a tag-14/15 unibyte string, Doc 200 additionally requires
+every byte >= 128 to print as octal, never as a raw byte mistaken for
+UTF-8 -- that rule is unconditional and independent of
+`print-escape-nonascii' (which this runtime binds for `boundp' parity but
+does not yet gate any behavior on, since the Doc 200 rule already forces
+the stricter octal form GNU's flag would only opt into)."
   (let ((chunks (cons nil nil))
         (i 0)
         (n (length s))
+        (need-nonhex nil)
         (unibyte (and (fboundp 'unibyte-string-p)
                       (unibyte-string-p s))))
     (while (< i n)
       (let ((c (aref s i)))
         (cond
-         ((= c 34) (nelisp--prn-chunks-add chunks "\\\"")) ; ?\"
-         ((= c 92) (nelisp--prn-chunks-add chunks "\\\\")) ; ?\\
+         ((= c 34) (setq need-nonhex nil) (nelisp--prn-chunks-add chunks "\\\"")) ; ?\"
+         ((= c 92) (setq need-nonhex nil) (nelisp--prn-chunks-add chunks "\\\\")) ; ?\\
          ((and unibyte (>= c 128))
+          (setq need-nonhex nil)
+          (nelisp--prn-chunks-add chunks (nelisp--prn-octal-escape c)))
+         ((and print-escape-newlines (= c 10))
+          (setq need-nonhex nil) (nelisp--prn-chunks-add chunks "\\n"))
+         ((and print-escape-newlines (= c 12))
+          (setq need-nonhex nil) (nelisp--prn-chunks-add chunks "\\f"))
+         ((and print-escape-control-characters (nelisp--prn-control-char-p c))
+          (setq need-nonhex nil)
           (nelisp--prn-chunks-add
            chunks
-           (concat "\\"
-                   (char-to-string (+ 48 (/ c 64)))
-                   (char-to-string (+ 48 (logand (/ c 8) 7)))
-                   (char-to-string (+ 48 (logand c 7))))))
-         (t        (nelisp--prn-chunks-add chunks (char-to-string c)))))
+           (nelisp--prn-octal-escape
+            c (nelisp--prn-octal-digit-count
+               c (and (< (1+ i) n)
+                      (let ((nc (aref s (1+ i)))) (and (>= nc 48) (<= nc 55))))))))
+         ((and print-escape-multibyte (not unibyte) (>= c 128))
+          (setq need-nonhex t)
+          (nelisp--prn-chunks-add chunks (format "\\x%04x" c)))
+         (t
+          (when (and need-nonhex (nelisp--prn-hex-digit-char-p c))
+            (nelisp--prn-chunks-add chunks "\\ "))
+          (setq need-nonhex nil)
+          (nelisp--prn-chunks-add chunks (char-to-string c)))))
       (setq i (1+ i)))
     (nelisp--prn-chunks-string chunks)))
 
@@ -11752,6 +14638,28 @@ gone rather than merely made faster."
 ;; out.  Emacs answers "(1 2 ...)" and "(1 (2 ...))".
 (defvar print-length nil)
 (defvar print-level nil)
+;; The four escape toggles below were previously unbound on the standalone
+;; (`(boundp 'print-escape-newlines)' => nil), so binding one around a
+;; `prin1'/`format "%S"' call had no effect: the printer never looked at
+;; them.  Defaults match GNU src/print.c (all nil).  See
+;; `nelisp--prn-string-escaped' for what each one does.
+(defvar print-escape-newlines nil
+  "Non-nil means print newlines in strings as `\\n'.
+Also print formfeeds as `\\f'.")
+(defvar print-escape-control-characters nil
+  "Non-nil means print control characters in strings as `\\OOO'.
+\(OOO is the octal representation of the character code.)")
+(defvar print-escape-nonascii nil
+  "Non-nil means print unibyte non-ASCII chars in strings as \\OOO.
+\(OOO is the octal representation of the character code.)
+Only single-byte characters are affected, and only in `prin1'.
+Bound for `boundp' parity; this runtime's Doc 200 unibyte-string rule
+already forces the octal form unconditionally, so this variable does
+not yet gate anything (see `nelisp--prn-string-escaped').")
+(defvar print-escape-multibyte nil
+  "Non-nil means print multibyte characters in strings as \\xXXXX.
+\(XXXX is the hex representation of the character code.)
+This affects only `prin1'.")
 (defun nelisp--prn-list-body (lst escape &optional depth)
   (setq depth (or depth 0))
   (let ((chunks (cons nil nil)) (cur lst) (first t) (count 0))
@@ -11865,8 +14773,16 @@ claimed to match, only the shape."
 (defun nelisp--prn-to-string (obj escape &optional depth)
   (setq depth (or depth 0))
   (cond
-   ((null obj) "nil")
-   ((eq obj t) "t")
+   ;; `(null obj)' immediately followed by `(eq obj t)' is exactly the
+   ;; shape the byte-compiler's cond-jump-table optimization recognizes
+   ;; (two eq-style tests in a row against the same variable), so it
+   ;; lowers straight to it -- and opcode 183 (Bswitch) is not adoptable
+   ;; yet (see the opcode-183 docstring on `nelisp-prelude-bytecode--
+   ;; opcodes'; a call-frame-dependent VM/GC issue, not this function's
+   ;; own logic). Folding the two tests into one `or'-guarded clause
+   ;; keeps the exact same semantics while compiling to plain
+   ;; goto-if-nil branches instead, so this function can adopt.
+   ((or (null obj) (eq obj t)) (if obj "t" "nil"))
    ((integerp obj) (number-to-string obj))
    ((floatp obj)   (nelisp--prn-float obj))
    ((symbolp obj)
@@ -11884,11 +14800,20 @@ claimed to match, only the shape."
     (concat "#<subr " (symbol-name (car (cdr obj))) ">"))
    ((and (consp obj) (eq (car obj) 'closure)
          (consp (cdr obj)) (consp (cdr (cdr obj))))
-    (concat "#[" (nelisp--prn-to-string (car (cdr (cdr obj))) escape depth)
-            " " (nelisp--prn-to-string (cdr (cdr (cdr obj))) escape depth)
-            " " (nelisp--prn-to-string (nelisp--prn-deref-env (car (cdr obj)))
-                                       escape depth)
-            "]"))
+    ;; GNU Emacs 31.1 prints an interpreted-function object as its slots,
+    ;; #[ARGS BODY ENV] or #[ARGS BODY ENV nil DOC [IFORM]]; `length'/`aref'
+    ;; recover exactly that slot view (docstring and interactive form split
+    ;; out of BODY, `(t)' for an empty lexical environment, captured cells
+    ;; dereferenced), so print through them like a vector.
+    (let ((chunks (cons nil nil)) (n (length obj)) (i 0))
+      (nelisp--prn-chunks-add chunks "#[")
+      (while (< i n)
+        (when (> i 0) (nelisp--prn-chunks-add chunks " "))
+        (nelisp--prn-chunks-add chunks
+                                (nelisp--prn-to-string (aref obj i) escape depth))
+        (setq i (1+ i)))
+      (nelisp--prn-chunks-add chunks "]")
+      (nelisp--prn-chunks-string chunks)))
    ((consp obj)
     ;; Depth is a PARAMETER, not a special variable.  A free
     ;; `nelisp--prn-depth' worked in the standalone and broke
@@ -11899,6 +14824,8 @@ claimed to match, only the shape."
         "..."
       (or (nelisp--prn-reader-macro-abbrev obj escape)
           (concat "(" (nelisp--prn-list-body obj escape (1+ depth)) ")"))))
+   ((and (fboundp 'byte-code-function-p) (byte-code-function-p obj))
+    (if (fboundp 'nelisp--repr) (nelisp--repr obj) (format "%S" obj)))
    ;; `print-level' bounds LIST nesting only -- Emacs prints
    ;; [1 [2 [3 [4]]]] in full at print-level 2, and only the list arm above
    ;; counts depth.  Measured rather than assumed; the first cut guarded
@@ -11916,6 +14843,38 @@ claimed to match, only the shape."
    ;; test/nelisp-shadow-differential-cases.el before this fix landed.
    ((and (fboundp 'nelisp-buffer-p) (nelisp-buffer-p obj))
     (concat "#<buffer " (nelisp-buffer-name obj) ">"))
+   ;; Marker slice 1/2: same reasoning as the buffer clause just above --
+   ;; without this, a marker fell through to the generic `nelisp--prn-
+   ;; record' arm below and printed as `#s(nelisp-marker ...)' instead of
+   ;; Emacs's own `print.c' rendering.  Separate hunk from the buffer
+   ;; clause on purpose (new code, its own blast radius).
+   ((and (fboundp 'nelisp-marker-p) (nelisp-marker-p obj))
+    (if (nelisp-marker-buffer obj)
+        (concat "#<marker at " (number-to-string (nelisp-marker-position obj))
+                " in " (nelisp-buffer-name (nelisp-marker-buffer obj)) ">")
+      "#<marker in no buffer>"))
+   ;; Overlay slice: same reasoning as the buffer/marker clauses just
+   ;; above -- without this, an overlay fell through to the generic
+   ;; `nelisp--prn-record' arm below, which recurses into every slot
+   ;; including `properties' with no cycle guard.  button.el's
+   ;; `make-button' deliberately stores the overlay in its OWN
+   ;; `button' property (`(overlay-put overlay 'button overlay)'), so
+   ;; printing that overlay recursed into itself forever: a hang, not
+   ;; a `max-lisp-eval-depth' signal, because record-slot printing has
+   ;; no depth counter at all (see `nelisp--prn-record').  Confirmed
+   ;; via `timeout 15' on the standalone: `(format "%S" overlay)' on a
+   ;; self-referential overlay never returns.  Emacs's own `print.c'
+   ;; never walks an overlay's property list either -- overlays always
+   ;; print opaquely as `#<overlay from START to END in BUFFER>' /
+   ;; `#<overlay in no buffer>' (verified against Emacs 30.1), so this
+   ;; mirrors real Emacs exactly rather than adding cycle detection to
+   ;; the generic record printer.
+   ((and (fboundp 'nelisp-overlay-p) (nelisp-overlay-p obj))
+    (if (nelisp-overlay-buffer obj)
+        (concat "#<overlay from " (number-to-string (nelisp-overlay-start obj))
+                " to " (number-to-string (nelisp-overlay-end obj))
+                " in " (nelisp-buffer-name (nelisp-overlay-buffer obj)) ">")
+      "#<overlay in no buffer>"))
    ((and (fboundp 'bool-vector-p) (bool-vector-p obj))
     (nelisp--prn-bool-vector obj))
    ((vectorp obj) (nelisp--prn-vector obj escape (1+ depth)))
@@ -11967,56 +14926,163 @@ claimed to match, only the shape."
     (when overrides (nelisp--check-print-overrides overrides))
     (nelisp--prn-to-string object (not noescape))))
 
-;; Strings on this runtime carry no text properties at all: there is no
-;; `propertize', no per-string property side table, and Doc 200's unibyte/
-;; multibyte string layout has no field for one.  A query therefore has
-;; exactly one correct answer -- "there are none" -- which is what GNU
-;; itself would also answer for a plain, property-free string.  These exist
-;; so that dropping the PLIST triples in `#("STRING" START END PLIST ...)'
-;; (the reader's `#(' arm, below) is verifiable rather than merely assumed:
-;; `(get-text-property 0 'face S)' on the result reads nil, not
-;; `void-function'.
+;; Doc 210: strings DO carry text properties now, via the identity-keyed
+;; side table `nelisp--tp-string-properties' (Doc 200's unibyte/multibyte
+;; string layout still has no field of its own for one, so a side table
+;; keyed by `eq' is where a propertized string's intervals live).  The
+;; block comment this replaced argued the opposite and was correct about
+;; the layout, wrong about the conclusion: absence of a struct field
+;; means a side table is needed, not that properties cannot exist.  The
+;; public names below, plus `add-text-properties'/`set-text-properties'/
+;; `remove-text-properties'/`next-single-property-change'/`previous-
+;; single-property-change'/`next-property-change'/`previous-property-
+;; change'/`text-property-any'/`text-property-not-all', are all defined
+;; together with the buffer-side low-level helpers and the shared
+;; interval engine above (search for "text-property engine (Doc 210)"),
+;; since OBJECT nil/buffer routes through the buffer struct's own
+;; `text-properties' slot and OBJECT a string routes through this file's
+;; side table -- both need the same rebuild/merge/boundary machinery.
 (unless (fboundp 'get-text-property)
-  (defun get-text-property (_pos _prop &optional _object) nil))
+  (defun get-text-property (pos prop &optional object)
+    (nelisp--tp-value-at pos prop (nelisp--tp-get-intervals object))))
 (unless (fboundp 'text-properties-at)
-  (defun text-properties-at (_pos &optional _object) nil))
-;; `void-function' on the ~80-file census: `propertize' (1 hit) and
-;; `put-text-property' (1 hit).  Same reasoning as `get-text-property'
-;; just above -- there is no per-string property side table on this
-;; runtime -- carried through to the two mutators/constructors real
-;; Emacs code reaches for most: `propertize' answers a COPY of STRING
-;; (real Emacs also always returns a distinct string object, never the
-;; original) with every PROPERTIES pair silently dropped, and
-;; `put-text-property' is a no-op returning nil (real Emacs's own return
-;; value is unspecified/nil-ish and no caller in this tree looks at it).
+  (defun text-properties-at (pos &optional object)
+    (nelisp--tp-plist-at pos (nelisp--tp-get-intervals object))))
 (unless (fboundp 'propertize)
-  (defun propertize (string &rest _properties)
-    "Return a copy of STRING; PROPERTIES are accepted and dropped (see
-the block comment above `get-text-property' for why this runtime has
-no text-property side table to store them in)."
-    (copy-sequence string)))
+  (defun propertize (string &rest properties)
+    "Return a copy of STRING with PROPERTIES set over its whole length."
+    (let ((new (copy-sequence string)))
+      (when properties
+        (nelisp--tp-set-intervals
+         new
+         (nelisp--tp-rebuild nil 0 (length new)
+                              (lambda (_old) (copy-sequence properties)))))
+      new)))
 (unless (fboundp 'put-text-property)
-  (defun put-text-property (_start _end _prop _value &optional _object)
-    "No-op: see the block comment above `get-text-property'." nil))
-;; `void-function' on the ~80-file census (1 hit,
-;; ../nelisp-agent/lisp/nl-agent-semantic-render.el:210, called with an
-;; explicit STRING argument).  Real Emacs's `match-string-no-properties'
-;; differs from `match-string' only in stripping text properties from
-;; the returned substring; per the block comment above `get-text-
-;; property', strings here never carry any, so the two coincide exactly
-;; -- same reasoning as `substring-no-properties'/`buffer-substring-no-
-;; properties' above in this file.  `match-string' itself is not defined
-;; in this file (it is baked in later, from `lisp/nelisp-stdlib-regexp.el'
-;; plus the `nlre-*' wiring in scripts/nelisp-standalone-build.el's
-;; reader-prelude assembly); calling it by name here is safe regardless
-;; of definition order because a `defun' body resolves callees when
-;; CALLED, not when defined, and by the time any Elisp code can call
-;; `match-string-no-properties' the whole prelude has already loaded.
-(unless (fboundp 'match-string-no-properties)
-  (defun match-string-no-properties (n &optional str)
-    "Same as `match-string': no text properties exist to strip here."
-    (match-string n str)))
-
+  (defun put-text-property (start end prop value &optional object)
+    (nelisp--tp-set-intervals
+     object
+     (nelisp--tp-rebuild (nelisp--tp-get-intervals object) start end
+                          (lambda (old) (nelisp--tp-plist-set old prop value))))
+    nil))
+(unless (fboundp 'add-text-properties)
+  (defun add-text-properties (start end properties &optional object)
+    "Merge PROPERTIES onto [START, END) of OBJECT.  Return t if any
+property actually changed, nil otherwise (Emacs's own contract)."
+    (let* ((intervals (nelisp--tp-get-intervals object))
+           (changed nil))
+      (when (and properties (< start end))
+        (dolist (p (cons start (nelisp--tp-boundaries-between intervals start end)))
+          (let ((cur (nelisp--tp-plist-at p intervals)) (l properties))
+            (while l
+              (unless (eq (plist-get cur (car l)) (cadr l)) (setq changed t))
+              (setq l (cddr l))))))
+      (when changed
+        (nelisp--tp-set-intervals
+         object
+         (nelisp--tp-rebuild intervals start end
+                              (lambda (old) (nelisp--tp-plist-add old properties)))))
+      changed)))
+(unless (fboundp 'set-text-properties)
+  (defun set-text-properties (start end properties &optional object)
+    "Replace the property list of [START, END) of OBJECT with PROPERTIES
+wholesale (a nil PROPERTIES removes every property in the range)."
+    (nelisp--tp-set-intervals
+     object
+     (nelisp--tp-rebuild (nelisp--tp-get-intervals object) start end
+                          (lambda (_old) (copy-sequence properties))))
+    nil))
+(unless (fboundp 'remove-text-properties)
+  (defun remove-text-properties (start end properties &optional object)
+    "Drop each key in PROPERTIES from [START, END) of OBJECT.  Return t
+if any property was actually removed, nil otherwise."
+    (let* ((intervals (nelisp--tp-get-intervals object))
+           (keys nil) (l properties) (changed nil))
+      (while l (push (car l) keys) (setq l (cddr l)))
+      (when (and keys (< start end))
+        (dolist (p (cons start (nelisp--tp-boundaries-between intervals start end)))
+          (let ((cur (nelisp--tp-plist-at p intervals)))
+            (dolist (k keys)
+              (when (plist-member cur k) (setq changed t))))))
+      (when changed
+        (nelisp--tp-set-intervals
+         object
+         (nelisp--tp-rebuild intervals start end
+                              (lambda (old) (nelisp--tp-plist-remove old keys)))))
+      changed)))
+(unless (fboundp 'next-single-property-change)
+  (defun next-single-property-change (position prop &optional object limit)
+    (let* ((intervals (nelisp--tp-get-intervals object))
+           (hi (nelisp--tp-hi object))
+           (eff (if limit (min limit hi) hi)))
+      (if (>= position eff)
+          limit
+        (let ((v0 (nelisp--tp-value-at position prop intervals)))
+          (catch 'nelisp--tp-done
+            (dolist (b (nelisp--tp-boundaries-between intervals position eff))
+              (unless (eq (nelisp--tp-value-at b prop intervals) v0)
+                (throw 'nelisp--tp-done b)))
+            limit))))))
+(unless (fboundp 'previous-single-property-change)
+  (defun previous-single-property-change (position prop &optional object limit)
+    (let* ((intervals (nelisp--tp-get-intervals object))
+           (lo (nelisp--tp-lo object))
+           (eff (if limit (max limit lo) lo)))
+      (if (<= position eff)
+          limit
+        (let ((v0 (nelisp--tp-value-at (1- position) prop intervals)))
+          (catch 'nelisp--tp-done
+            (dolist (b (sort (nelisp--tp-boundaries-between intervals eff position) #'>))
+              (unless (eq (nelisp--tp-value-at (1- b) prop intervals) v0)
+                (throw 'nelisp--tp-done b)))
+            limit))))))
+(unless (fboundp 'next-property-change)
+  (defun next-property-change (position &optional object limit)
+    (let* ((intervals (nelisp--tp-get-intervals object))
+           (hi (nelisp--tp-hi object))
+           (eff (if limit (min limit hi) hi)))
+      (if (>= position eff)
+          limit
+        (let ((v0 (nelisp--tp-plist-at position intervals)))
+          (catch 'nelisp--tp-done
+            (dolist (b (nelisp--tp-boundaries-between intervals position eff))
+              (unless (nelisp--tp-plist-value-eq (nelisp--tp-plist-at b intervals) v0)
+                (throw 'nelisp--tp-done b)))
+            limit))))))
+(unless (fboundp 'previous-property-change)
+  (defun previous-property-change (position &optional object limit)
+    (let* ((intervals (nelisp--tp-get-intervals object))
+           (lo (nelisp--tp-lo object))
+           (eff (if limit (max limit lo) lo)))
+      (if (<= position eff)
+          limit
+        (let ((v0 (nelisp--tp-plist-at (1- position) intervals)))
+          (catch 'nelisp--tp-done
+            (dolist (b (sort (nelisp--tp-boundaries-between intervals eff position) #'>))
+              (unless (nelisp--tp-plist-value-eq
+                       (nelisp--tp-plist-at (1- b) intervals) v0)
+                (throw 'nelisp--tp-done b)))
+            limit))))))
+(unless (fboundp 'text-property-any)
+  (defun text-property-any (start end prop value &optional object)
+    "Return the first position in [START, END) of OBJECT whose PROP is
+`eq' to VALUE, or nil if none is."
+    (let ((intervals (nelisp--tp-get-intervals object)))
+      (catch 'nelisp--tp-found
+        (dolist (p (cons start (nelisp--tp-boundaries-between intervals start end)))
+          (when (and (< p end) (eq (nelisp--tp-value-at p prop intervals) value))
+            (throw 'nelisp--tp-found p)))
+        nil))))
+(unless (fboundp 'text-property-not-all)
+  (defun text-property-not-all (start end prop value &optional object)
+    "Return the first position in [START, END) of OBJECT whose PROP is
+NOT `eq' to VALUE, or nil if every position's is."
+    (let ((intervals (nelisp--tp-get-intervals object)))
+      (catch 'nelisp--tp-found
+        (dolist (p (cons start (nelisp--tp-boundaries-between intervals start end)))
+          (when (and (< p end) (not (eq (nelisp--tp-value-at p prop intervals) value)))
+            (throw 'nelisp--tp-found p)))
+        nil))))
 ;; --- Doc 143: minimal read-from-string for the reader runtime -------------
 ;; Recursive-descent parser for the core sexp grammar (int/float/symbol/string/
 ;; list/dotted/vector/quote forms).  Records (#s) are out of scope (no record
@@ -12539,6 +15605,47 @@ line-continuation escapes, which generate nothing)."
               (cons c1 (+ i 2))))))
        ((= c 35) ; #
          (cond
+          ;; `#[...]' byte-code closure.  Validate the GNU reader's six-slot
+          ;; maximum and descriptor/depth types before calling the permissive
+          ;; constructor; the native path declines invalid shapes into here.
+          ((and (< (1+ i) n) (= (aref s (1+ i)) 91))
+           (let* ((r (nelisp--rd-one s (+ i 1) n))
+                  (vector (car r))
+                  (fields (and (vectorp vector) (append vector nil)))
+                  (count (length fields))
+                  (arglist (nth 0 fields))
+                  (code (nth 1 fields))
+                  (constants (nth 2 fields))
+                  (depth (nth 3 fields)))
+             (unless (and (> (cdr r) (+ i 1))
+                          (= (aref s (1- (cdr r))) 93))
+               (signal 'invalid-read-syntax (list "#[")))
+             (unless (and (<= 3 count 6)
+                          (or (null arglist) (consp arglist)
+                              (and (integerp arglist)
+                                   (<= -2305843009213693952 arglist)
+                                   (<= arglist 2305843009213693951))))
+               (signal 'invalid-read-syntax (list "#[")))
+             (cond
+              ((and (stringp code) (vectorp constants) (>= count 4)
+                    (integerp depth) (<= 0 depth 2305843009213693951))
+               (setcar (cdr fields)
+                       (apply #'unibyte-string (string-to-list code)))
+               (cons (apply #'make-byte-code fields) (cdr r)))
+              ((and (consp code) (or (null constants) (consp constants)))
+               ;; Host accepts this as an interpreted/lazy closure. Keep that
+               ;; acceptance distinct from malformed byte-code syntax until
+               ;; the runtime has an interpreted-function object type.
+               (signal 'unsupported-feature '(interpreted-function-byte-code)))
+              (t (signal 'invalid-read-syntax (list "#["))))))
+          ;; `#:' reads a new uninterned symbol on every occurrence.  Keep
+          ;; its decoded name independent from the global intern table.
+          ((and (< (1+ i) n) (= (aref s (1+ i)) 58))
+           (let* ((start (+ i 2))
+                  (end (nelisp--rd-atom-end s start n)))
+             (cons (make-symbol
+                    (nelisp--rd-symbol-unescape (substring s start end)))
+                   end)))
           ((and (< (1+ i) n) (= (aref s (1+ i)) 39))
            (let ((r (nelisp--rd-one s (+ i 2) n)))
              (cons (list 'function (car r)) (cdr r))))
@@ -12546,6 +15653,13 @@ line-continuation escapes, which generate nothing)."
           ;; exactly two characters even when another atom follows.
           ((and (< (1+ i) n) (= (aref s (1+ i)) 35))
            (cons (intern "") (+ i 2)))
+          ;; In a reader context, `#$' denotes the current dynamic
+          ;; `load-file-name'.  This interpreted fallback is also used when a
+          ;; surrounding form (for example a gensym label) is not accepted by
+          ;; the native fast path; preserve the value directly, without
+          ;; interning or later symbol-name substitution.
+          ((and (< (1+ i) n) (= (aref s (1+ i)) 36))
+           (cons (symbol-value 'load-file-name) (+ i 2)))
           ;; `#("STRING" START1 END1 PLIST1 ...)': GNU's propertized-string
           ;; literal.  GNU applies each PLIST over [START, END) of STRING
           ;; via `set-text-properties'; this runtime attaches no text
@@ -13292,6 +16406,131 @@ harness measured nothing at all.  0 is still the answer where /proc is
 absent; it is documented as \"unknown\", not as a process id."
     (or (nelisp--process-id) 0)))
 
+;; Mirrors GNU Emacs 31.1 src/process.c:Fnum_processors, which delegates to
+;; lib/nproc.c:num_processors.  QUERY `all' counts processors not available
+;; to this process too; QUERY `current' reports this process's affinity mask
+;; without the OMP_NUM_THREADS override; any other QUERY (including the
+;; default nil) is nproc.c's NPROC_CURRENT_OVERRIDABLE, which honours
+;; OMP_NUM_THREADS / OMP_THREAD_LIMIT and otherwise falls back to the
+;; affinity mask.
+;;
+;; `all' counts "processor\t:" field lines in /proc/cpuinfo, matching what
+;; glibc's sysconf(_SC_NPROCESSORS_CONF) itself reads from /proc when Linux's
+;; /sys tree is not being walked (see nproc.c's own commentary on where the
+;; glibc numbers come from).  nil/`current' read /proc/self/status's
+;; "Cpus_allowed_list" -- the same kernel mask sched_getaffinity(2) returns
+;; (nproc.c's num_processors_via_affinity_mask) -- because the standalone
+;; prelude has no direct syscall(2) binding for NR 204; when that file is
+;; unavailable, the /proc/cpuinfo count stands in, since an unrestricted
+;; process may use every processor the kernel reports.  nproc.c's cgroup v2
+;; CPU-quota clamp (cpu_quota) is not modelled: nproc.c itself treats an
+;; absent or "max" quota as unlimited, which is this host's actual state, so
+;; leaving it out does not change the answer here.
+(defun nelisp--num-processors-cpuinfo ()
+  "Count \"processor\t:\" field lines in /proc/cpuinfo, or nil if unreadable."
+  (let ((raw (and (fboundp 'nelisp--syscall-read-file)
+                   (nelisp--syscall-read-file "/proc/cpuinfo"))))
+    (and (stringp raw)
+         (let ((len (length raw)) (i 0) (bol t) (count 0))
+           (while (< i len)
+             (when (and bol (<= (+ i 10) len)
+                        (string= (substring raw i (+ i 10)) "processor\t"))
+               (setq count (1+ count)))
+             (setq bol (= (aref raw i) ?\n))
+             (setq i (1+ i)))
+           (and (> count 0) count)))))
+
+(defun nelisp--num-processors-affinity ()
+  "Cardinality of /proc/self/status's Cpus_allowed_list, or nil if unreadable.
+The value is a comma-separated list of decimal CPU numbers and inclusive
+N-M ranges, e.g. \"0-3,7\"."
+  (let ((raw (and (fboundp 'nelisp--syscall-read-file)
+                   (nelisp--syscall-read-file "/proc/self/status"))))
+    (and (stringp raw)
+         (let* ((key "Cpus_allowed_list:") (klen (length key))
+                (len (length raw)) (i 0) (pos nil))
+           (while (and (not pos) (<= (+ i klen) len))
+             (when (string= (substring raw i (+ i klen)) key)
+               (setq pos (+ i klen)))
+             (setq i (1+ i)))
+           (and pos
+                (let (eol count tok-start)
+                  (while (and (< pos len) (memq (aref raw pos) '(?\s ?\t)))
+                    (setq pos (1+ pos)))
+                  (setq eol pos)
+                  (while (and (< eol len) (/= (aref raw eol) ?\n))
+                    (setq eol (1+ eol)))
+                  (setq count 0 tok-start pos)
+                  (let ((j pos))
+                    (while (<= j eol)
+                      (when (or (= j eol) (= (aref raw j) ?,))
+                        (when (> j tok-start)
+                          (let* ((tok (substring raw tok-start j))
+                                 (tlen (length tok)) (k 0) (dash nil))
+                            (while (and (< k tlen) (not dash))
+                              (when (= (aref tok k) ?-) (setq dash k))
+                              (setq k (1+ k)))
+                            (setq count
+                                  (+ count
+                                     (if dash
+                                         (1+ (- (string-to-number
+                                                 (substring tok (1+ dash)))
+                                                (string-to-number
+                                                 (substring tok 0 dash))))
+                                       1)))))
+                        (setq tok-start (1+ j)))
+                      (setq j (1+ j))))
+                  (and (> count 0) count)))))))
+
+(defun nelisp--num-processors-omp-env (name)
+  "Parse env var NAME the way GNU Emacs's parse_omp_threads does: skip
+leading whitespace, read a run of decimal digits, and accept it only when
+followed by whitespace, end of string, or a comma (the first value of a
+nested OpenMP list).  Return nil for anything else, matching
+parse_omp_threads's 0-for-invalid."
+  (let ((value (getenv name)))
+    (and (stringp value)
+         (let ((len (length value)) (i 0))
+           (while (and (< i len) (memq (aref value i) '(?\s ?\t ?\n ?\r ?\f)))
+             (setq i (1+ i)))
+           (let ((start i))
+             (while (and (< i len)
+                         (>= (aref value i) ?0) (<= (aref value i) ?9))
+               (setq i (1+ i)))
+             (and (> i start)
+                  (let ((digits (substring value start i)) (j i))
+                    (while (and (< j len)
+                                (memq (aref value j) '(?\s ?\t ?\n ?\r ?\f)))
+                      (setq j (1+ j)))
+                    (and (or (= j len) (= (aref value j) ?,))
+                         (string-to-number digits)))))))))
+
+(unless (fboundp 'num-processors)
+  (defun num-processors (&optional query)
+    "Return the number of processors, a positive integer.
+Each usable thread execution unit counts as a processor.  By default,
+count the number of available processors, overridable via the
+OMP_NUM_THREADS environment variable.  If optional argument QUERY is
+`current', ignore OMP_NUM_THREADS.  If QUERY is `all', also count
+processors not available."
+    (cond
+     ((eq query 'all)
+      (or (nelisp--num-processors-cpuinfo) 1))
+     ((eq query 'current)
+      (or (nelisp--num-processors-affinity)
+          (nelisp--num-processors-cpuinfo)
+          1))
+     (t
+      (let ((threads (nelisp--num-processors-omp-env "OMP_NUM_THREADS"))
+            (limit (nelisp--num-processors-omp-env "OMP_THREAD_LIMIT")))
+        (max 1
+             (if threads
+                 (if limit (min threads limit) threads)
+               (let ((n (or (nelisp--num-processors-affinity)
+                            (nelisp--num-processors-cpuinfo)
+                            1)))
+                 (if limit (min n limit) n)))))))))
+
 (defvar nelisp--temp-name-counter 0)
 (defvar nelisp--temp-name-nonce nil
   "This process's share of `make-temp-name' output, computed on first use.")
@@ -13495,26 +16734,161 @@ absent; it is documented as \"unknown\", not as a process id."
 (unless (fboundp 'file-symlink-p)
   (defun file-symlink-p (filename)
     (nelisp--syscall-readlink filename)))
-;; Elements 10/11 (inode number, device number) used to be constant nil,
-;; nil -- correct only in the sense that nothing read them.  Segment 4's
-;; `file-attribute-file-identifier' (below) needs the real pair: Linux
-;; x86_64 `struct stat' has `st_dev' at byte offset 0 and `st_ino' at
-;; offset 8 (see `nl_bi_syscall_stat_field''s own offset comment in
-;; scripts/nelisp-standalone-build.el, which this function already reads
-;; offset 48/88 of for size/mtime), so this is the same stat buffer, two
-;; more fields, not a new syscall.  Measured against host Emacs 31.1
-;; (`(file-attributes "/etc/hostname" 'string)'): a real 12-element list
-;; whose element 10 is the inode number and element 11 the device
-;; number, matching this shape field-for-field.
+;; Emacs 31.1's `files.el' accessors read elements 5, 7, and 10-11, but
+;; every element is now populated from the raw stat buffer.  Linux
+;; x86_64 `struct stat' has `st_dev' at byte offset 0, `st_ino' at 8,
+;; `st_nlink' at 16, `st_mode' at 24, `st_uid' at 28, `st_gid' at 32,
+;; `st_size' at 48, and the sec/nsec pairs `st_atime' 72/80, `st_mtime'
+;; 88/96, `st_ctime' 104/112 (see `nl_bi_syscall_stat_field''s offset
+;; comment in scripts/nelisp-standalone-build.el; that file's per-arch
+;; `nl_os_stat_fixup'/`nl_darwin_stat_to_linux' shims normalize every
+;; build target to this same x86_64 layout before this code ever runs).
+;;
+;; Previous version hard-coded ctime and atime to 0 and truncated mtime
+;; to whole seconds -- it read only the 8-byte second field and never
+;; the adjoining nsec field, even though the raw stat buffer already
+;; carries every one of those values.  It also called
+;; `nelisp--syscall-stat-field' (stat(2), follows symlinks) and gated
+;; existence on `file-exists-p' (also follows), so a symlink's own
+;; attributes were never reachable, and a dangling symlink -- whose
+;; target does not exist, but which does -- wrongly answered nil.
+;;
+;; Fixed version uses `nelisp--syscall-lstat-buf' (lstat(2), does not
+;; follow -- per that primitive's own doc comment in
+;; scripts/nelisp-standalone-build.el, it exists precisely so
+;; file-attributes can report the link itself), reads every field with
+;; `ptr-read-u32'/`ptr-read-u64' at its own offset, and treats a
+;; non-negative buffer pointer as "exists" so dangling symlinks report
+;; their own attributes instead of nil.
+;;
+;; Times: host Emacs 31.1's `file-attributes'/`current-time' return the
+;; (HIGH LOW USEC PSEC) Lisp-timestamp form (measured directly against
+;; host Emacs 31.1, not the newer (TICKS . HZ) form), where
+;; SEC = HIGH*65536+LOW and NSEC splits into USEC = NSEC/1000,
+;; PSEC = (NSEC mod 1000)*1000 -- see `nelisp--stat-lisp-time' below.
+;;
+;; Differential against host Emacs 31.1 on a regular file, a directory,
+;; a plain symlink, a dangling symlink, and a nonexistent path: type,
+;; link count, uid/gid, mtime/ctime (exact, including the sub-second
+;; part), size, mode string, the always-`t' 10th element, inode, and
+;; device all match.  ID-FORMAT `string' is accepted for signature
+;; compatibility, but this runtime has no passwd/group database to
+;; resolve a name from, so it answers with the integer id regardless --
+;; the same fallback real Emacs's own docstring specifies for "a string
+;; value cannot be looked up".  atime is excluded from parity
+;; comparisons on purpose: reading a file to diff its attributes updates
+;; that file's own atime.
+(unless (fboundp 'nelisp--stat-lisp-time)
+  (defun nelisp--stat-lisp-time (sec nsec)
+    "Build a (HIGH LOW USEC PSEC) Lisp timestamp from raw stat SEC/NSEC."
+    (list (ash sec -16) (logand sec 65535)
+          (/ nsec 1000) (* (mod nsec 1000) 1000))))
+(unless (fboundp 'nelisp--stat-mode-string)
+  (defun nelisp--stat-mode-string (mode)
+    "Build the 10-char `ls -l' style mode string for raw stat MODE."
+    (let* ((ifmt (logand mode 61440))
+           (tc (cond ((= ifmt 16384) ?d)   ; S_IFDIR
+                     ((= ifmt 40960) ?l)   ; S_IFLNK
+                     ((= ifmt 8192) ?c)    ; S_IFCHR
+                     ((= ifmt 24576) ?b)   ; S_IFBLK
+                     ((= ifmt 4096) ?p)    ; S_IFIFO
+                     ((= ifmt 49152) ?s)   ; S_IFSOCK
+                     (t ?-)))              ; S_IFREG and anything else
+           (r (lambda (bit) (if (/= (logand mode bit) 0) ?r ?-)))
+           (w (lambda (bit) (if (/= (logand mode bit) 0) ?w ?-)))
+           (x (lambda (bit special setc unsetc)
+                (let ((has-x (/= (logand mode bit) 0))
+                      (has-special (/= (logand mode special) 0)))
+                  (cond ((and has-special has-x) setc)
+                        (has-special unsetc)
+                        (has-x ?x)
+                        (t ?-))))))
+      (string tc
+              (funcall r 256) (funcall w 128) (funcall x 64 2048 ?s ?S)
+              (funcall r 32) (funcall w 16) (funcall x 8 1024 ?s ?S)
+              (funcall r 4) (funcall w 2) (funcall x 1 512 ?t ?T)))))
 (unless (fboundp 'file-attributes)
   (defun file-attributes (filename &optional _id-format)
-    (if (not (file-exists-p filename))
-        nil
-      (let ((size (nelisp--syscall-stat-field filename 48))
-            (mtime (nelisp--syscall-stat-field filename 88))
-            (inode (nelisp--syscall-stat-field filename 8))
-            (device (nelisp--syscall-stat-field filename 0)))
-        (list nil 1 0 0 0 mtime 0 size "" nil inode device)))))
+    (let ((buf (nelisp--syscall-lstat-buf filename)))
+      (if (< buf 0)
+          nil
+        (let* ((mode (ptr-read-u32 buf 24))
+               (ifmt (logand mode 61440))
+               (type (cond ((= ifmt 16384) t)                 ; S_IFDIR
+                           ((= ifmt 40960)                    ; S_IFLNK
+                            (nelisp--syscall-readlink filename))
+                           (t nil))))
+          (list type
+                (ptr-read-u64 buf 16)
+                (ptr-read-u32 buf 28)
+                (ptr-read-u32 buf 32)
+                (nelisp--stat-lisp-time (ptr-read-u64 buf 72) (ptr-read-u64 buf 80))
+                (nelisp--stat-lisp-time (ptr-read-u64 buf 88) (ptr-read-u64 buf 96))
+                (nelisp--stat-lisp-time (ptr-read-u64 buf 104) (ptr-read-u64 buf 112))
+                (ptr-read-u64 buf 48)
+                (nelisp--stat-mode-string mode)
+                t
+                (ptr-read-u64 buf 8)
+                (ptr-read-u64 buf 0)))))))
+;; The accessors below are the standard public interface to the list
+;; `file-attributes' returns (real Emacs's `files.el' defines them as
+;; `defsubst', ported verbatim here as plain field lookups); without
+;; them, callers reading the now-correct atime/mtime/ctime this fix
+;; produces have no host-compatible way to pull a single field out.
+(unless (fboundp 'file-attribute-type)
+  (defun file-attribute-type (attributes) (nth 0 attributes)))
+(unless (fboundp 'file-attribute-link-number)
+  (defun file-attribute-link-number (attributes) (nth 1 attributes)))
+(unless (fboundp 'file-attribute-user-id)
+  (defun file-attribute-user-id (attributes) (nth 2 attributes)))
+(unless (fboundp 'file-attribute-group-id)
+  (defun file-attribute-group-id (attributes) (nth 3 attributes)))
+(unless (fboundp 'file-attribute-access-time)
+  (defun file-attribute-access-time (attributes) (nth 4 attributes)))
+(unless (fboundp 'file-attribute-modification-time)
+  (defun file-attribute-modification-time (attributes) (nth 5 attributes)))
+(unless (fboundp 'file-attribute-status-change-time)
+  (defun file-attribute-status-change-time (attributes) (nth 6 attributes)))
+(unless (fboundp 'file-attribute-size)
+  (defun file-attribute-size (attributes) (nth 7 attributes)))
+(unless (fboundp 'file-attribute-modes)
+  (defun file-attribute-modes (attributes) (nth 8 attributes)))
+(unless (fboundp 'file-attribute-inode-number)
+  (defun file-attribute-inode-number (attributes) (nth 10 attributes)))
+(unless (fboundp 'file-attribute-device-number)
+  (defun file-attribute-device-number (attributes) (nth 11 attributes)))
+;; `time-less-p'/`time-equal-p' are the other half of making the fixed
+;; atime/mtime/ctime usable: callers compare them, they do not just read
+;; them.  This runtime's integers have no bignum (max ~2^61), so a
+;; generic implementation cannot flatten a Lisp timestamp into one
+;; picosecond-since-epoch integer the way real Emacs's C `time_cmp' can;
+;; instead this compares the three components -- whole seconds
+;; (reconstructed from HIGH/LOW, which alone never approaches that
+;; limit), then USEC, then PSEC -- lexicographically, which is exactly
+;; equivalent to full numeric comparison as long as USEC/PSEC stay
+;; normalized to their documented sub-second ranges, true for every
+;; value this runtime's own `file-attributes'/`nelisp--stat-lisp-time'
+;; produces.  Only the integer and 2/3/4-element list Lisp-timestamp
+;; forms are handled (the ones `current-time'/`file-attributes' return
+;; on this host/version -- see the differential in the comment above
+;; `file-attributes'); the newer (TICKS . HZ) cons form is out of scope.
+(unless (fboundp 'nelisp--time-parts)
+  (defun nelisp--time-parts (time)
+    "Return (SEC USEC PSEC) for Lisp timestamp TIME."
+    (if (integerp time)
+        (list time 0 0)
+      (list (+ (* (nth 0 time) 65536) (nth 1 time))
+            (or (nth 2 time) 0)
+            (or (nth 3 time) 0)))))
+(unless (fboundp 'time-less-p)
+  (defun time-less-p (a b)
+    (let* ((pa (nelisp--time-parts a)) (pb (nelisp--time-parts b)))
+      (cond ((/= (nth 0 pa) (nth 0 pb)) (< (nth 0 pa) (nth 0 pb)))
+            ((/= (nth 1 pa) (nth 1 pb)) (< (nth 1 pa) (nth 1 pb)))
+            (t (< (nth 2 pa) (nth 2 pb)))))))
+(unless (fboundp 'time-equal-p)
+  (defun time-equal-p (a b)
+    (equal (nelisp--time-parts a) (nelisp--time-parts b))))
 ;; feat/agent-json-cluster: `void-function' on 3 of the 4 nelisp-agent
 ;; host-only tests fixed by the `insert-file-contents' point-preservation
 ;; fix just above this segment's `json'/config cluster (see that fix's
@@ -13616,34 +16990,6 @@ See the Doc-comment above for the dropped file-name-handler dispatch."
         (setq names (cdr names))
         (when remaining (setq remaining (1- remaining))))
       (nreverse out))))
-(unless (fboundp 'file-attribute-size)
-  (defun nelisp--file-attribute-nth (attrs i)
-    "ATTRS element I, naming the TAIL of an improper list as `listp'.
-`nth' over the same value names the whole list; these accessors do not,
-and only running both says which."
-    (let ((l attrs))
-      (while (and (> i 0) (consp l)) (setq l (cdr l)) (setq i (1- i)))
-      (cond ((consp l) (car l))
-            ((null l) nil)
-            (t (signal 'wrong-type-argument (list 'listp l))))))
-  (defun file-attribute-size (attrs) (nelisp--file-attribute-nth attrs 7)))
-(unless (fboundp 'file-attribute-modification-time)
-  (defun file-attribute-modification-time (attrs)
-    (nelisp--file-attribute-nth attrs 5)))
-;; `void-function' on the ~80-file census (10 hits, all three sites in
-;; ../nelisp-agent/lisp/nl-agent-task-eval.el:288,388,417): a workspace
-;; directory's identity is captured once (`root-id') and compared again
-;; later to detect a TOCTOU swap (the directory replaced by a symlink or
-;; a different directory between setup and use).  Real Emacs's own
-;; `file-attribute-file-identifier' is exactly `(nthcdr 10 attributes)'
-;; (verified against host Emacs 31.1's `subr.el' source and its
-;; docstring: "(INODENUM DEVICE) ... uniquely identifies the file");
-;; `file-attributes' above now reports the real inode/device pair at
-;; those two elements, so this is a plain accessor, not a fabrication.
-(unless (fboundp 'file-attribute-file-identifier)
-  (defun file-attribute-file-identifier (attrs)
-    "The (INODENUM DEVICE) pair in ATTRS.  See `file-attributes'."
-    (nthcdr 10 attrs)))
 ;; `void-function' on the ~80-file census (5 hits: bulk-reader-test,
 ;; bulk-policy-eval-test, bulk-eval-test), each checking a path is not a
 ;; Tramp remote name before doing local file I/O on it.  This runtime has
@@ -13938,17 +17284,7 @@ Windows drive path keeps `C:', and a relative path stays relative."
       (maphash (lambda (k _v) (setq ks (cons k ks))) table)
       (while ks (remhash (car ks) table) (setq ks (cdr ks))))
     table))
-(unless (fboundp 'assoc-delete-all)
-  (defun assoc-delete-all (key alist &optional test)
-    (let ((tt (or test (function equal))))
-      (while (and (consp alist) (consp (car alist)) (funcall tt (car (car alist)) key))
-        (setq alist (cdr alist)))
-      (let ((tail alist))
-        (while (cdr tail)
-          (if (and (consp (car (cdr tail))) (funcall tt (car (car (cdr tail))) key))
-              (setcdr tail (cdr (cdr tail)))
-            (setq tail (cdr tail)))))
-      alist)))
+;; `assoc-delete-all' is supplied from pinned GNU subr.el source.
 (unless (fboundp 'add-to-list)
   (defun add-to-list (list-var element &optional append compare-fn)
     (nelisp--check-symbol list-var)
@@ -13974,16 +17310,738 @@ Windows drive path keeps `C:', and a relative path stays relative."
 ;; specs (a function would try to eval `(indent 1)' -> another void-function).
 (unless (fboundp 'declare)
   (defmacro declare (&rest _specs) nil))
+;; GNU Emacs 31.1 lisp/emacs-lisp/warnings.el, staged verbatim (each form
+;; guarded): the severity tables, customization variables, and the
+;; `display-warning' / `lwarn' / `warn' entry points.  bytecomp.el reports
+;; every compile error and warning through `display-warning', which in
+;; batch (`noninteractive') logs to the "*Warnings*" buffer and then
+;; `message's the text to stderr, the same as GNU.  Left out: the
+;; `(require 'icons)' / `define-icon' / `warnings-suppress' button layer
+;; (display-warning inserts buttons only when interactive), the
+;; `put'/`make-obsolete-variable'/`define-obsolete-variable-alias'
+;; metadata forms, and `(provide 'warnings)', since the file is not
+;; staged whole.  This replaces an earlier no-op `lwarn' stub.
+(unless (boundp 'warning-levels)
+  (defvar warning-levels
+    '((:emergency "Emergency%s: " ding)
+      (:error "Error%s: ")
+      (:warning "Warning%s: ")
+      (:debug "Debug%s: "))
+    "List of severity level definitions for `display-warning'.
+Each element looks like (LEVEL STRING FUNCTION) and
+defines LEVEL as a severity level.  STRING specifies the
+description of this level.  STRING should use `%s' to
+specify where to put the warning type information,
+or it can omit the `%s' so as not to include that information.
+
+The optional FUNCTION, if non-nil, is a function to call
+with no arguments, to get the user's attention.
+
+The standard levels are :emergency, :error, :warning and :debug.
+See `display-warning' for documentation of their meanings.
+Level :debug is ignored by default (see `warning-minimum-level')."))
+(unless (boundp 'warning-level-aliases)
+  (defvar warning-level-aliases
+    '((emergency . :emergency)
+      (error . :error)
+      (warning . :warning)
+      (notice . :warning)
+      (info . :warning)
+      (critical . :emergency)
+      (alarm . :emergency))
+    "Alist of aliases for severity levels for `display-warning'.
+Each element looks like (ALIAS . LEVEL) and defines ALIAS as
+equivalent to LEVEL.  LEVEL must be defined in `warning-levels';
+it may not itself be an alias."))
+(unless (boundp 'warning-minimum-level)
+  (defcustom warning-minimum-level :warning
+    "Minimum severity level for displaying the warning buffer.
+If a warning's severity level is lower than this,
+the warning is logged in the warnings buffer, but the buffer
+is not immediately displayed.  See also `warning-minimum-log-level'."
+    :type '(choice (const :emergency) (const :error)
+                   (const :warning) (const :debug))
+    :version "22.1"))
+(unless (boundp 'warning-minimum-log-level)
+  (defcustom warning-minimum-log-level :warning
+    "Minimum severity level for logging a warning.
+If a warning severity level is lower than this,
+the warning is completely ignored.
+Value must be lower or equal than `warning-minimum-level',
+because warnings not logged aren't displayed either."
+    :type '(choice (const :emergency) (const :error)
+                   (const :warning) (const :debug))
+    :version "22.1"))
+(unless (boundp 'warning-suppress-log-types)
+  (defcustom warning-suppress-log-types nil
+    "List of warning types that should not be logged.
+If any element of this list matches the TYPE argument to `display-warning',
+the warning is completely ignored.
+The element must match the first elements of TYPE.
+Thus, (foo bar) as an element matches (foo bar)
+or (foo bar ANYTHING...) as TYPE.
+If TYPE is a symbol FOO, that is equivalent to the list (FOO),
+so only the element (FOO) will match it."
+    :type '(repeat (repeat symbol))
+    :version "22.1"))
+(unless (boundp 'warning-suppress-types)
+  (defcustom warning-suppress-types nil
+    "List of warning types not to display immediately.
+If any element of this list matches the TYPE argument to `display-warning',
+the warning is logged nonetheless, but the warnings buffer is
+not immediately displayed.
+The element must match an initial segment of the list TYPE.
+Thus, (foo bar) as an element matches (foo bar)
+or (foo bar ANYTHING...) as TYPE.
+If TYPE is a symbol FOO, that is equivalent to the list (FOO),
+so only the element (FOO) will match it.
+See also `warning-suppress-log-types'."
+    :type '(repeat (repeat symbol))
+    :version "22.1"))
+(unless (boundp 'warning-display-at-bottom)
+  (defcustom warning-display-at-bottom t
+    "Whether to display the warning buffer at the bottom of the screen.
+If this is non-nil (the default), Emacs will attempt to display the
+window showing the warning buffer at the bottom of the selected
+frame, whether by reusing the bottom-most window or by creating a
+new window at the bottom of the frame.  The resulting window will be
+scrolled to the bottom of the buffer to show the last warning message.
+
+If the value of this variable is nil, Emacs will display the warning
+buffer in some window, as determined by `display-buffer' and its
+customizations.  In particular, the category designated by the
+symbol `warning' can be used in `display-buffer-alist' to customize
+the display of this buffer.
+
+This option affects display of all the buffers shown by `display-warning',
+including warnings from byte-compiler and native-compiler,
+from `check-declare', etc."
+    :type 'boolean
+    :version "30.1"))
+(unless (boundp 'warning-prefix-function)
+  (defvar warning-prefix-function nil
+    "Function to generate warning prefixes.
+This function, if non-nil, is called with two arguments,
+the severity level and its entry in `warning-levels',
+and should return the entry that should actually be used.
+The warnings buffer is current when this function is called
+and the function can insert text in it.  This text becomes
+the beginning of the warning."))
+(unless (boundp 'warning-series)
+  (defvar warning-series nil
+    "Non-nil means treat multiple `display-warning' calls as a series.
+A marker indicates a position in the warnings buffer
+which is the start of the current series; it means that
+additional warnings in the same buffer should not move point.
+If t, the next warning begins a series (and stores a marker here).
+A symbol with a function definition is like t, except
+also call that function before the next warning."))
+(unless (boundp 'warning-fill-prefix)
+  (defvar warning-fill-prefix nil
+    "Non-nil means fill each warning text using this string as `fill-prefix'."))
+(unless (boundp 'warning-fill-column)
+  (defvar warning-fill-column 78
+    "Value to use for `fill-column' when filling warnings."))
+(unless (boundp 'warning-type-format)
+  (defvar warning-type-format " (%s)"
+    "Format for displaying the warning type in the warning message.
+The result of formatting the type this way gets included in the
+message under the control of the string in `warning-levels'."))
+(unless (boundp 'warning-inhibit-types)
+  (defvar warning-inhibit-types nil
+    "Like `warning-suppress-log-types', but intended for programs to let-bind."))
+(unless (fboundp 'warning-numeric-level)
+  (defun warning-numeric-level (level)
+    "Return a numeric measure of the warning severity level LEVEL."
+    (let* ((elt (assq level warning-levels))
+  	 (link (memq elt warning-levels)))
+      (length link))))
+(unless (fboundp 'warning-suppress-p)
+  (defun warning-suppress-p (type suppress-list)
+    "Non-nil if a warning with type TYPE should be suppressed.
+SUPPRESS-LIST is the list of kinds of warnings to suppress."
+    (let (some-match)
+      (dolist (elt suppress-list)
+        (if (symbolp type)
+  	  ;; If TYPE is a symbol, the ELT must be (TYPE).
+  	  (if (and (consp elt)
+  		   (eq (car elt) type)
+  		   (null (cdr elt)))
+  	      (setq some-match t))
+  	;; If TYPE is a list, ELT must match it or some initial segment of it.
+  	(let ((tem1 type)
+  	      (tem2 elt)
+  	      (match t))
+  	  ;; Check elements of ELT until we run out of them.
+  	  (while tem2
+  	    (if (not (equal (car tem1) (car tem2)))
+  		(setq match nil))
+  	    (setq tem1 (cdr tem1)
+  		  tem2 (cdr tem2)))
+  	  ;; If ELT is an initial segment of TYPE, MATCH is t now.
+  	  ;; So set SOME-MATCH.
+  	  (if match
+  	      (setq some-match t)))))
+      ;; If some element of SUPPRESS-LIST matched,
+      ;; we return t.
+      some-match)))
+(unless (fboundp 'display-warning)
+  (defun display-warning (type message &optional level buffer-name)
+    "Display a warning message, MESSAGE.
+TYPE is the warning type: either a custom group name (a symbol),
+or a list of symbols whose first element is a custom group name.
+\(The rest of the symbols represent subcategories, for warning purposes
+only, and you can use whatever symbols you like.)
+
+LEVEL should be either :debug, :warning, :error, or :emergency
+\(but see `warning-minimum-level' and `warning-minimum-log-level').
+Default is :warning.
+
+:emergency -- a problem that will seriously impair Emacs operation soon
+	      if you do not attend to it promptly.
+:error     -- data or circumstances that are inherently wrong.
+:warning   -- data or circumstances that are not inherently wrong,
+	      but raise suspicion of a possible problem.
+:debug     -- info for debugging only.
+
+BUFFER-NAME, if specified, is the name of the buffer for logging
+the warning.  By default, it is `*Warnings*'.  If this function
+has to create the buffer, it disables undo in the buffer.
+
+See the `warnings' custom group for user customization features.
+
+See also `warning-series', `warning-prefix-function',
+`warning-fill-prefix', and `warning-fill-column' for additional
+programming features.
+
+This will also display buttons allowing the user to permanently
+disable automatic display of the warning or disable the warning
+entirely by setting `warning-suppress-types' or
+`warning-suppress-log-types' on their behalf."
+    (if (not (or after-init-time noninteractive (daemonp)))
+        (or (warning-suppress-p type warning-inhibit-types)
+            ;; Ensure warnings that happen early in the startup sequence
+            ;; are visible when startup completes (bug#20792).
+            (delay-warning type message level buffer-name))
+      (unless level
+        (setq level :warning))
+      (unless buffer-name
+        (setq buffer-name "*Warnings*"))
+      (with-suppressed-warnings ((obsolete warning-level-aliases))
+        (when-let* ((new (cdr (assq level warning-level-aliases))))
+          (warn "Warning level `%s' is obsolete; use `%s' instead" level new)
+          (setq level new)))
+      (or (< (warning-numeric-level level)
+  	   (warning-numeric-level warning-minimum-log-level))
+          (warning-suppress-p type warning-inhibit-types)
+  	(warning-suppress-p type warning-suppress-log-types)
+  	(let* ((typename (if (consp type) (car type) type))
+  	       (old (get-buffer buffer-name))
+  	       (buffer (or old (get-buffer-create buffer-name)))
+  	       (level-info (assq level warning-levels))
+                 ;; `newline' may be unbound during bootstrap.
+                 (newline (if (fboundp 'newline) #'newline
+                            (lambda () (insert "\n"))))
+  	       start end)
+  	  (with-current-buffer buffer
+  	    ;; If we created the buffer, disable undo.
+  	    (unless old
+  	      (when (fboundp 'special-mode) ; Undefined during bootstrap.
+                  (special-mode))
+  	      (setq buffer-read-only t)
+  	      (setq buffer-undo-list t))
+  	    (goto-char (point-max))
+  	    (when (and warning-series (symbolp warning-series))
+  	      (setq warning-series
+  		    (prog1 (point-marker)
+  		      (unless (eq warning-series t)
+  			(funcall warning-series)))))
+  	    (let ((inhibit-read-only t))
+  	      (unless (bolp)
+  		(funcall newline))
+  	      (setq start (point))
+                ;; Don't output the button when doing batch compilation
+                ;; and similar.
+                (unless (or noninteractive (eq type 'bytecomp))
+                  (insert (buttonize (icon-string 'warnings-suppress)
+                                     #'warnings-suppress type)
+                          " "))
+  	      (if warning-prefix-function
+  		  (setq level-info (funcall warning-prefix-function
+  					    level level-info)))
+  	      (insert (format (nth 1 level-info)
+  			      (format warning-type-format typename))
+  		      message)
+                (funcall newline)
+  	      (when (and warning-fill-prefix
+                           (not (string-search "\n" message))
+                           (not noninteractive))
+  		(let ((fill-prefix warning-fill-prefix)
+  		      (fill-column warning-fill-column))
+  		  (fill-region start (point))))
+  	      (setq end (point)))
+  	    (when (and (markerp warning-series)
+  		       (eq (marker-buffer warning-series) buffer))
+  	      (goto-char warning-series)))
+  	  (if (nth 2 level-info)
+  	      (funcall (nth 2 level-info)))
+  	  (cond (noninteractive
+  		 ;; Noninteractively, take the text we inserted
+  		 ;; in the warnings buffer and print it.
+  		 ;; Do this unconditionally, since there is no way
+  		 ;; to view logged messages unless we output them.
+  		 (with-current-buffer buffer
+  		   (save-excursion
+  		     ;; Don't include the final newline in the arg
+  		     ;; to `message', because it adds a newline.
+  		     (goto-char end)
+  		     (if (bolp)
+  			 (forward-char -1))
+  		     (message "%s" (buffer-substring start (point))))))
+                  ;; Use `frame-initial-p'?
+  		((and (daemonp) (eq (selected-frame) terminal-frame))
+  		 ;; Display daemon startup warnings on the first client frame.
+  		 (letrec ((afterfun
+  			   (lambda (frame)
+  			     (remove-hook 'after-make-frame-functions afterfun)
+  			     (with-selected-frame frame
+                                 (warning--display-buffer buffer)))))
+  		   (add-hook 'after-make-frame-functions afterfun))
+  		 ;; Warnings assigned during daemon initialization go into
+  		 ;; the messages buffer.
+  		 (message "%s"
+  			  (with-current-buffer buffer
+  			    (save-excursion
+  			      (goto-char end)
+  			      (if (bolp)
+  				  (forward-char -1))
+  			      (buffer-substring start (point))))))
+  		(t
+  		 ;; Interactively, decide whether the warning merits
+  		 ;; immediate display.
+  		 (or (< (warning-numeric-level level)
+  			(warning-numeric-level warning-minimum-level))
+  		     (warning-suppress-p type warning-suppress-types)
+                       (warning--display-buffer buffer)))))))))
+(unless (fboundp 'warning--display-buffer)
+  (defun warning--display-buffer (buffer)
+    (let ((window (display-buffer
+  		 buffer
+  		 (when warning-display-at-bottom
+  		   `(display-buffer--maybe-at-bottom
+  		     (window-height
+  		      . ,(lambda (window)
+  			   (fit-window-to-buffer window 10)))
+  		     (category . warning))))))
+      (when (and window (markerp warning-series)
+  	       (eq (marker-buffer warning-series) buffer))
+        (set-window-start window warning-series))
+      (when (and window warning-display-at-bottom)
+        (with-selected-window window
+  	(goto-char (point-max))
+  	(forward-line -1)
+  	(recenter -1)))
+      (sit-for 0))))
 (unless (fboundp 'lwarn)
-  (defun lwarn (type level message &rest _args)
-    "Answer nil: no warning buffer here, but MESSAGE is still a string."
-    (unless (stringp message) (signal 'wrong-type-argument (list 'stringp message)))
-    nil))
+  (defun lwarn (type level message &rest args)
+    "Display a warning message made from (format-message MESSAGE ARGS...).
+\\<special-mode-map>
+Aside from generating the message with `format-message',
+this is equivalent to `display-warning'.
+
+TYPE is the warning type: either a custom group name (a symbol),
+or a list of symbols whose first element is a custom group name.
+\(The rest of the symbols represent subcategories and
+can be whatever you like.)
+
+LEVEL should be either :debug, :warning, :error, or :emergency
+\(but see `warning-minimum-level' and `warning-minimum-log-level').
+
+:emergency -- a problem that will seriously impair Emacs operation soon
+	      if you do not attend to it promptly.
+:error     -- invalid data or circumstances.
+:warning   -- suspicious data or circumstances.
+:debug     -- info for debugging only."
+    (display-warning type (apply #'format-message message args) level)))
+(unless (fboundp 'warn)
+  (defun warn (message &rest args)
+    "Display a warning message made from (format-message MESSAGE ARGS...).
+Aside from generating the message with `format-message',
+this is equivalent to `display-warning', using
+`emacs' as the type and `:warning' as the level."
+    (display-warning 'emacs (apply #'format-message message args))))
+;; `display-warning' tests `after-init-time' and `(daemonp)' first.  Both
+;; are C in GNU Emacs 31.1 (emacs.c DEFVAR_LISP `after-init-time', initially
+;; nil, which startup.el sets once init files are loaded; `Fdaemonp', nil
+;; outside a daemon).  This runtime never runs startup.el's init sequence
+;; and is never a daemon, so both keep their initial C values.
+(unless (boundp 'after-init-time)
+  (defvar after-init-time nil
+    "Value of `current-time' after loading the init files.
+This is nil during initialization."))
+(unless (fboundp 'daemonp)
+  (defun daemonp () nil))
+;; GNU Emacs 31.1 lisp/subr.el, staged verbatim: `condition-case-unless-debug'
+;; (macroexp.el's compiler-macro and warning paths use it) and `lambda' as
+;; the macro GNU defines it to be.  The reader still evaluates `lambda'
+;; natively; the macro is what `macroexpand'/`macroexpand-all' see, so a
+;; bare `(lambda ...)' expands to `#'(lambda ...)' as in GNU -- bytecomp.el
+;; rejects an unexpanded one ("`lambda' used as function name is invalid").
+(unless (fboundp 'condition-case-unless-debug)
+  (defmacro condition-case-unless-debug (var bodyform &rest handlers)
+    "Like `condition-case', except that it does not prevent debugging.
+More specifically, if `debug-on-error' is set, then the debugger will
+be invoked even if some handler catches the signal.
+Note that this doesn't prevent the handler from executing, it just
+causes the debugger to be called before running the handler."
+    (declare (debug condition-case) (indent 2))
+    `(condition-case ,var
+         ,bodyform
+       ,@(mapcar (lambda (handler)
+                   (let ((condition (car handler)))
+                     (if (eq condition :success)
+                         handler
+                       `((debug ,@(if (listp condition) condition
+                                    (list condition)))
+                         ,@(cdr handler)))))
+                 handlers))))
+(unless (fboundp 'lambda)
+  (defmacro lambda (&rest cdr)
+    "Return an anonymous function.
+Under dynamic binding, a call of the form (lambda ARGS DOCSTRING
+INTERACTIVE BODY) is self-quoting; the result of evaluating the
+lambda expression is the expression itself.  Under lexical
+binding, the result is a closure.  Regardless, the result is a
+function, i.e., it may be stored as the function value of a
+symbol, passed to `funcall' or `mapcar', etc.
+
+ARGS should take the same form as an argument list for a `defun'.
+DOCSTRING is an optional documentation string.
+ If present, it should describe how to call the function.
+ But documentation strings are usually not useful in nameless functions.
+INTERACTIVE should be a call to the function `interactive', which see.
+It may also be omitted.
+BODY should be a list of Lisp expressions.
+
+\(fn ARGS [DOCSTRING] [INTERACTIVE] BODY)"
+    (declare (doc-string 2) (indent defun)
+             (debug (&define lambda-list lambda-doc
+                             [&optional ("interactive" interactive)]
+                             def-body)))
+    ;; Note that this definition should not use backquotes; subr.el should not
+    ;; depend on backquote.el.
+    (list 'function (cons 'lambda cdr))))
+;; GNU Emacs 31.1 lisp/subr.el `drop', staged verbatim (bytecomp.el calls it).
+(unless (fboundp 'drop) (defalias 'drop #'nthcdr))
+;; GNU Emacs 31.1 lisp/help.el, staged verbatim: cconv.el's unused-variable
+;; message and bytecomp.el's free-variable warning both call
+;; `help-uni-confusable-suggestions'.
+(unless (boundp 'help-uni-confusables)
+  (defconst help-uni-confusables
+    '((#x2018 . "'") ;; LEFT SINGLE QUOTATION MARK
+      (#x2019 . "'") ;; RIGHT SINGLE QUOTATION MARK
+      (#x201B . "'") ;; SINGLE HIGH-REVERSED-9 QUOTATION MARK
+      (#x201C . "\"") ;; LEFT DOUBLE QUOTATION MARK
+      (#x201D . "\"") ;; RIGHT DOUBLE QUOTATION MARK
+      (#x201F . "\"") ;; DOUBLE HIGH-REVERSED-9 QUOTATION MARK
+      (#x301E . "\"") ;; DOUBLE PRIME QUOTATION MARK
+      (#xFF02 . "'") ;; FULLWIDTH QUOTATION MARK
+      (#xFF07 . "'") ;; FULLWIDTH APOSTROPHE
+      )
+    "An alist of confusable characters to give hints about.
+Each alist element is of the form (CHAR . REPLACEMENT), where
+CHAR is the potentially confusable character, and REPLACEMENT is
+the suggested string to use instead.  See
+`help-uni-confusable-suggestions'.")
+  )
+(unless (boundp 'help-uni-confusables-regexp)
+  (defconst help-uni-confusables-regexp
+    (concat "[" (mapcar #'car help-uni-confusables) "]")
+    "Regexp matching any character listed in `help-uni-confusables'."))
+(unless (fboundp 'help-uni-confusable-suggestions)
+  (defun help-uni-confusable-suggestions (string)
+    "Return a message describing confusables in STRING."
+    (let ((i 0)
+          (confusables nil))
+      (while (setq i (string-match help-uni-confusables-regexp string i))
+        (let ((replacement (alist-get (aref string i) help-uni-confusables)))
+          (push (aref string i) confusables)
+          (setq string (replace-match replacement t t string))
+          (setq i (+ i (length replacement)))))
+      (when confusables
+        (format-message
+         (ngettext
+          "Found confusable character: %s, perhaps you meant: `%s'?"
+          "Found confusable characters: %s; perhaps you meant: `%s'?"
+          (length confusables))
+         (mapconcat (lambda (c) (format-message "`%c'" c))
+                    confusables ", ")
+         string))))
+  )
+;; GNU Emacs 31.1 eval.c `Fdefvar_1' / `Fdefconst_1': the function versions
+;; of the special forms, which bytecomp.el emits for a non-top-level
+;; `defvar'/`defconst'.  Translated as evaluating the special form itself
+;; with the value quoted, which is exactly the documented equivalence.
+(unless (fboundp 'defvar-1)
+  (defun defvar-1 (sym initvalue &optional docstring)
+    "Like `defvar' but as a function.
+More specifically behaves like (defvar SYM \='INITVALUE DOCSTRING)."
+    (eval (list 'defvar sym (list 'quote initvalue) docstring) t)))
+(unless (fboundp 'defconst-1)
+  (defun defconst-1 (sym initvalue &optional docstring)
+    "Like `defconst' but as a function.
+More specifically, behaves like (defconst SYM \='INITVALUE DOCSTRING)."
+    (eval (list 'defconst sym (list 'quote initvalue) docstring) t)))
+;; C DEFVAR `locale-coding-system' (coding.c), which mule-cmds.el's
+;; `set-locale-environment' sets from the locale at startup; this runtime
+;; is UTF-8 throughout, which is what GNU derives for a UTF-8 locale.
+;; files.el's `directory-abbrev-make-regexp' decodes with it.
+(unless (boundp 'locale-coding-system)
+  (defvar locale-coding-system 'utf-8-unix
+    "Coding system to use with system messages."))
+;; GNU Emacs 31.1 fileio.c, translated: the file-name handler registry and
+;; its lookup.  This runtime installs no handlers, so the alist starts empty
+;; (GNU's own default holds TRAMP/jka-compr autoload handlers, none of which
+;; exist here), and the lookup is the C algorithm verbatim in Lisp.
+(unless (boundp 'file-name-handler-alist)
+  (defvar file-name-handler-alist nil
+    "Alist of elements (REGEXP . HANDLER) for file names handled specially."))
+(unless (boundp 'inhibit-file-name-handlers)
+  (defvar inhibit-file-name-handlers nil
+    "A list of file name handlers that temporarily should not be used."))
+(unless (boundp 'inhibit-file-name-operation)
+  (defvar inhibit-file-name-operation nil
+    "The operation for which `inhibit-file-name-handlers' is applicable."))
+(unless (fboundp 'find-file-name-handler)
+  (defun find-file-name-handler (filename operation)
+    "Return FILENAME's handler function for OPERATION, if it has one.
+Otherwise, return nil.
+A file name is handled if one of the regular expressions in
+`file-name-handler-alist' matches it.
+
+If OPERATION equals `inhibit-file-name-operation', then ignore
+any handlers that are members of `inhibit-file-name-handlers',
+but still do run any other handlers.  This lets handlers
+use the standard functions without calling themselves recursively."
+    (unless (stringp filename)
+      (signal 'wrong-type-argument (list 'stringp filename)))
+    (let ((inhibited (and (eq operation inhibit-file-name-operation)
+                          inhibit-file-name-handlers))
+          (result nil) (pos -1))
+      (dolist (elt file-name-handler-alist)
+        (when (consp elt)
+          (let* ((string (car elt)) (handler (cdr elt))
+                 (operations (and (symbolp handler) (get handler 'operations)))
+                 (match-pos (and (stringp string)
+                                 (save-match-data (string-match string filename)))))
+            (when (and match-pos (> match-pos pos)
+                       (or (null operations) (memq operation operations))
+                       (not (memq handler inhibited)))
+              (setq result handler pos match-pos)))))
+      result)))
+;; GNU Emacs 31.1 fileio.c `Ffile_name_case_insensitive_p': a handler first,
+;; then the host file system.  The C probe of the file system is not
+;; available here; this answers GNU's per-platform default instead (case
+;; sensitive on GNU/Linux and other POSIX systems, insensitive on
+;; MS-Windows, MS-DOS, Cygwin and macOS's default volumes).
+(unless (fboundp 'file-name-case-insensitive-p)
+  (defun file-name-case-insensitive-p (filename)
+    "Return t if file FILENAME is on a case-insensitive filesystem.
+Return nil if FILENAME does not exist or is not on a case-insensitive
+filesystem, or if there was trouble determining whether the filesystem
+is case-insensitive."
+    (unless (stringp filename)
+      (signal 'wrong-type-argument (list 'stringp filename)))
+    (setq filename (expand-file-name filename))
+    (let ((handler (find-file-name-handler filename 'file-name-case-insensitive-p)))
+      (if handler
+          (funcall handler 'file-name-case-insensitive-p filename)
+        (and (memq system-type '(windows-nt ms-dos cygwin darwin)) t)))))
+;; GNU Emacs 31.1 lisp/files.el, staged verbatim: `abbreviate-file-name'
+;; and `file-relative-name' with the abbreviation table and helpers they
+;; use.  bytecomp.el names the file in every warning it logs through them.
+(unless (boundp 'directory-abbrev-alist)
+  (defcustom directory-abbrev-alist
+    nil
+    "Alist of abbreviations for file directories.
+A list of elements of the form (FROM . TO), each meaning to replace
+a match for FROM with TO when a directory name matches FROM.  This
+replacement is done when setting up the default directory of a
+newly visited file buffer.
+
+FROM is a regexp that is matched against directory names anchored at
+the first character, so it should start with a \"\\\\\\=`\", or, if
+directory names cannot have embedded newlines, with a \"^\".
+
+FROM and TO should be equivalent names, which refer to the
+same directory.  TO should be an absolute directory name.
+Do not use `~' in the TO strings.
+
+Use this feature when you have directories that you normally refer to
+via absolute symbolic links.  Make TO the name of the link, and FROM
+a regexp matching the name it is linked to."
+    :type '(repeat (cons :format "%v"
+  		       :value ("\\`" . "")
+  		       (regexp :tag "From")
+  		       (string :tag "To")))
+    :group 'abbrev
+    :group 'find-file))
+(unless (boundp 'abbreviated-home-dir)
+  (defvar abbreviated-home-dir nil
+    "Regexp matching the user's homedir at the beginning of file name.
+The value includes abbreviation according to `directory-abbrev-alist'."))
+(unless (fboundp 'directory-abbrev-make-regexp)
+  (defun directory-abbrev-make-regexp (directory)
+    "Create a regexp to match DIRECTORY for `directory-abbrev-alist'."
+    (let ((regexp
+           ;; We include a slash at the end, to avoid spurious
+           ;; matches such as `/usr/foobar' when the home dir is
+           ;; `/usr/foo'.
+           (concat "\\`" (regexp-quote directory) "\\(/\\|\\'\\)")))
+      ;; The value of regexp could be multibyte or unibyte.  In the
+      ;; latter case, we need to decode it.
+      (if (multibyte-string-p regexp)
+          regexp
+        (decode-coding-string regexp
+                              (if (eq system-type 'windows-nt)
+                                  'utf-8
+                                locale-coding-system))))))
+(unless (fboundp 'directory-abbrev-apply)
+  (defun directory-abbrev-apply (filename)
+    "Apply the abbreviations in `directory-abbrev-alist' to FILENAME.
+Note that when calling this, you should set `case-fold-search' as
+appropriate for the filesystem used for FILENAME."
+    (dolist (dir-abbrev directory-abbrev-alist filename)
+      (when (string-match (car dir-abbrev) filename)
+           (setq filename (concat (cdr dir-abbrev)
+                                  (substring filename (match-end 0))))))))
+(unless (fboundp 'abbreviate-file-name)
+  (defun abbreviate-file-name (filename)
+    "Return a version of FILENAME shortened using `directory-abbrev-alist'.
+This also substitutes \"~\" for the user's home directory (unless the
+home directory is a root directory).
+
+When this function is first called, it caches the user's home
+directory as a regexp in `abbreviated-home-dir', and reuses it
+afterwards (so long as the home directory does not change;
+if you want to permanently change your home directory after having
+started Emacs, set `abbreviated-home-dir' to nil so it will be recalculated)."
+    ;; Get rid of the prefixes added by the automounter.
+    (save-match-data                      ;FIXME: Why?
+      (if-let* ((handler (find-file-name-handler filename 'abbreviate-file-name)))
+          (funcall handler 'abbreviate-file-name filename)
+        ;; Avoid treating /home/foo as /home/Foo during `~' substitution.
+        (let ((case-fold-search (file-name-case-insensitive-p filename)))
+          ;; If any elt of directory-abbrev-alist matches this name,
+          ;; abbreviate accordingly.
+          (setq filename (directory-abbrev-apply filename))
+
+          ;; Compute and save the abbreviated homedir name.
+          ;; We defer computing this until the first time it's needed, to
+          ;; give time for directory-abbrev-alist to be set properly.
+          (unless abbreviated-home-dir
+            (put 'abbreviated-home-dir 'home (expand-file-name "~"))
+            (setq abbreviated-home-dir
+                  (directory-abbrev-make-regexp
+                   (let ((abbreviated-home-dir "\\`\\'.")) ;Impossible regexp.
+                     (abbreviate-file-name
+                      (get 'abbreviated-home-dir 'home))))))
+
+          ;; If FILENAME starts with the abbreviated homedir,
+          ;; and ~ hasn't changed since abbreviated-home-dir was set,
+          ;; make it start with `~' instead.
+          ;; If ~ has changed, we ignore abbreviated-home-dir rather than
+          ;; invalidating it, on the assumption that a change in HOME
+          ;; is likely temporary (eg for testing).
+          ;; FIXME Is it even worth caching abbreviated-home-dir?
+          ;; Ref: https://debbugs.gnu.org/19657#20
+          (let (mb1)
+            (if (and (string-match abbreviated-home-dir filename)
+                     (setq mb1 (match-beginning 1))
+                     ;; If the home dir is just /, don't change it.
+                     (not (and (= (match-end 0) 1)
+                               (= (aref filename 0) ?/)))
+                     ;; MS-DOS root directories can come with a drive letter;
+                     ;; Novell Netware allows drive letters beyond `Z:'.
+                     (not (and (memq system-type '(ms-dos windows-nt cygwin))
+                               (string-match "\\`[a-zA-`]:/\\'" filename)))
+                     (equal (get 'abbreviated-home-dir 'home)
+                            (expand-file-name "~")))
+                (setq filename
+                      (concat "~"
+                              (substring filename mb1))))
+            filename))))))
+(unless (fboundp 'file-relative-name)
+  (defun file-relative-name (filename &optional directory)
+    "Convert FILENAME to be relative to DIRECTORY (default: `default-directory').
+This function returns a relative file name that is equivalent to FILENAME
+when used with that default directory as the default.
+If FILENAME is a relative file name, it will be interpreted as existing in
+`default-directory'.
+If FILENAME and DIRECTORY lie on different machines or on different drives
+on a DOS/Windows machine, it returns FILENAME in expanded form."
+    (save-match-data
+      (setq directory
+  	  (file-name-as-directory (expand-file-name (or directory
+  							default-directory))))
+      (setq filename (expand-file-name filename))
+      (let ((fremote (file-remote-p filename))
+  	  (dremote (file-remote-p directory))
+  	  (fold-case (or (file-name-case-insensitive-p filename)
+  			 ;; During bootstrap, it can happen that
+                           ;; `read-file-name-completion-ignore-case' is
+                           ;; not defined yet.
+                           ;; FIXME: `read-file-name-completion-ignore-case' is
+                           ;; a user-config which we shouldn't trust to reflect
+                           ;; the actual file system's semantics.
+  			 (and (boundp 'read-file-name-completion-ignore-case)
+  			      read-file-name-completion-ignore-case))))
+        (if ;; Conditions for separate trees
+  	  (or
+  	   ;; Test for different filesystems on DOS/Windows
+  	   (and
+  	    ;; Should `cygwin' really be included here?  --stef
+  	    (memq system-type '(ms-dos cygwin windows-nt))
+  	    (or
+  	     ;; Test for different drive letters
+  	     (not (eq t (compare-strings filename 0 2 directory 0 2 fold-case)))
+  	     ;; Test for UNCs on different servers
+  	     (not (string-equal-ignore-case
+  		   (if (string-match "\\`//\\([^:/]+\\)/" filename)
+  		       (match-string 1 filename)
+  		     ;; Windows file names cannot have ? in
+  		     ;; them, so use that to detect when
+  		     ;; neither FILENAME nor DIRECTORY is a
+  		     ;; UNC.
+  		     "?")
+  		   (if (string-match "\\`//\\([^:/]+\\)/" directory)
+  		       (match-string 1 directory)
+  		     "?")))))
+  	   ;; Test for different remote file system identification
+  	   (not (equal fremote dremote)))
+  	  filename
+          (let ((ancestor ".")
+  	      (filename-dir (file-name-as-directory filename)))
+            (while (not
+  		  (or (string-prefix-p directory filename-dir fold-case)
+  		      (string-prefix-p directory filename fold-case)))
+              (setq directory (file-name-directory (substring directory 0 -1))
+  		  ancestor (if (equal ancestor ".")
+  			       ".."
+  			     (concat "../" ancestor))))
+            ;; Now ancestor is empty, or .., or ../.., etc.
+            (if (string-prefix-p directory filename fold-case)
+  	      ;; We matched within FILENAME's directory part.
+  	      ;; Add the rest of FILENAME onto ANCESTOR.
+  	      (let ((rest (substring filename (length directory))))
+  		(if (and (equal ancestor ".") (not (equal rest "")))
+  		    ;; But don't bother with ANCESTOR if it would give us `./'.
+  		    rest
+  		  (concat (file-name-as-directory ancestor) rest)))
+              ;; We matched FILENAME's directory equivalent.
+              ancestor)))))))
 (unless (fboundp 'identity)
   (defun identity (x) x))
-(unless (fboundp 'booleanp)
-  (defun booleanp (x)
-    (or (eq x t) (eq x nil))))
 (unless (fboundp 'error-message-string)
   ;; Emacs's rule, followed rather than approximated:
   ;;   * `error' and `user-error' take their message from the first datum;
@@ -14823,6 +18881,25 @@ strings is identity since Doc 201 §6.17, not contents."
                 ok)
             nil))
       nil))
+   ;; Marker slice 1/2: GNU's own `internal_equal' (print.c/fns.c family)
+   ;; special-cases markers -- two markers are `equal' when they share a
+   ;; buffer AND, only if that buffer is non-nil, the same position;
+   ;; two markers both pointing nowhere are `equal' unconditionally,
+   ;; their leftover charpos never compared (probed against Emacs 31.1:
+   ;; `(equal (make-marker) (make-marker))' is t even when one was
+   ;; previously attached and detached at a different position than the
+   ;; other ever was).  `insertion-type' is never part of the
+   ;; comparison.  A `nelisp-marker' is a record, not a `vectorp'/
+   ;; `consp' value (same distinction the printer's dispatch above
+   ;; relies on), so without this clause it fell through to the native
+   ;; `equal' below, which -- being a generic record comparison -- does
+   ;; not know to skip `insertion-type' or to short-circuit the nowhere-
+   ;; pointing case.
+   ((or (nelisp-marker-p a) (nelisp-marker-p b))
+    (and (nelisp-marker-p a) (nelisp-marker-p b)
+         (eq (nelisp-marker-buffer a) (nelisp-marker-buffer b))
+         (or (null (nelisp-marker-buffer a))
+             (= (nelisp-marker-position a) (nelisp-marker-position b)))))
    (t (nelisp--native-equal a b))))
 
 ;; A5: native `substring' returned garbage for vectors.  Slice vectors in
@@ -15180,7 +19257,10 @@ field-width layer."
   "Return t if X is callable (lambda / closure / builtin cons, or native)."
   (if (and (consp x) (memq (car x) '(lambda closure builtin)))
       t
-    (if (nelisp--native-functionp x) t nil)))
+    (if (or (and (fboundp 'byte-code-function-p)
+                 (byte-code-function-p x))
+            (and (fboundp 'subrp) (subrp x))
+            (nelisp--native-functionp x)) t nil)))
 
 (unless (fboundp 'type-of)
   (defun type-of (x)
@@ -15205,9 +19285,13 @@ nil), so there is nothing else to update for that name."
     (cond
      ((null x) 'symbol)
      ((and (fboundp 'hash-table-p) (hash-table-p x)) 'hash-table)
+     ((and (fboundp 'byte-code-function-p) (byte-code-function-p x)) 'byte-code-function)
      ((and (fboundp 'recordp) (recordp x)) (aref x 0))
-     ((and (consp x) (memq (car x) '(lambda closure))) 'function)
+     ;; GNU Emacs 31.1: an interpreted closure is an `interpreted-function'
+     ;; object; a bare `(lambda ...)' list is just a cons.
+     ((and (consp x) (eq (car x) 'closure)) 'interpreted-function)
      ((and (consp x) (eq (car x) 'builtin)) 'subr)
+     ((and (fboundp 'subrp) (subrp x)) 'subr)
      ((consp x) 'cons)
      ((symbolp x) 'symbol)
      ((stringp x) 'string)
@@ -15276,14 +19360,17 @@ any other -- to find the final function binding and return it."
 ;; native `(builtin NAME)' values use the small fixed-arity table below.  The
 ;; open range is deliberately represented by `many', matching Emacs.
 (defconst nelisp--builtin-fixed-arities
-  '((1 car cdr car-safe atom consp listp null not stringp
+  '((1 car cdr car-safe atom consp listp nlistp null not stringp
        symbolp integerp bignump natnump numberp floatp vectorp functionp
        length symbol-name symbol-value symbol-function fboundp boundp makunbound
-       make-symbol type-of identity abs 1+ 1- number-to-string string-bytes
-       char-to-string string-to-char lognot nelisp--declare-local-special)
+       make-symbol type-of identity abs sin cos 1+ 1- number-to-string string-bytes
+       char-to-string string-to-char lognot special-form-p
+       nelisp--declare-local-special)
     (2 cons eq eql equal setcar setcdr nth nthcdr elt aref rassoc string=
-       string< make-vector fset)
-    (3 aset))
+       nelisp--native-pin-eq-slots
+       string< make-vector fset ash)
+    (3 aset nelisp--native-pin-copy nelisp--native-unbox-reference)
+    (7 ptr-call))
   "Fixed argument counts shared by introspection and native reader dispatch.
 The build driver reads this literal as data without evaluating the prelude.")
 
@@ -15353,6 +19440,10 @@ unlisted OS-specific entry point."
                   (indirect-function function)
                 function)))
       (cond
+       ((and (fboundp 'nelisp--native-subr-arity)
+             (integerp (nelisp--native-subr-arity fn)))
+        (let ((arity (nelisp--native-subr-arity fn)))
+          (cons arity arity)))
        ((and (consp fn) (eq (car fn) 'macro))
         (let ((inner (cdr fn)))
           (when (and (consp inner)
@@ -15922,19 +20013,54 @@ splicing, is the honest match for Emacs's own documented contract.
 ;; The runtime has no message digest of its own -- the reader's builtin
 ;; table carries only `sxhash-eq', which is identity hashing -- and the
 ;; pure-Elisp implementation in packages/nelisp-secure-hash, though
-;; byte-correct against host Emacs, runs at ~6.3 ms/byte.  The builder's
-;; `nelisp-standalone--toolchain-digest' hashes 3,187,974 bytes before it
-;; compiles anything, which is about 5.6 hours.  Measured 2026-09-18;
-;; that is the whole reason an instrumented self-hosted build sat at 100%
-;; CPU for 30 minutes writing nothing to the unit cache.
+;; byte-correct against host Emacs, runs at ~6.3 ms/byte on this tree-
+;; walking interpreter (measured 2026-09-18: 3,187,974 bytes -> ~5.6 h).
+;; A tighter vector-based rewrite of the same algorithm still measured
+;; ~1.5 ms/byte here (16 B: 56 ms; 1024 B: 1.57 s; 16 KiB: 24 s) --
+;; nowhere near the >=5x-faster bar against the helper below, so this
+;; still shells out rather than adopting either.
 ;;
-;; So this shells out.  Measured from target/nelisp: sha1sum over the
-;; 1.8 MB builder source answers in 0.014 s, byte-identical to the shell.
-;; The trade is stated in Doc 205 §2.5 rather than hidden: a self-hosted
-;; build that depends on coreutils is not self-contained.  If the runtime
-;; ever grows a native digest, THIS is the one function to repoint.
+;; Measured 2026-09-28 (Doc 205 P3 follow-up, segment C2): the *helper*
+;; call itself was not the ~200-280 ms/call cost this file's comment used
+;; to blame on process-spawn.  Breaking the old body down with
+;; `float-time' on this ~124-byte helper line ("<hex>  /tmp/...\n") gave
+;; executable-find ~4-14 ms, `make-temp-file' ~2.5 ms, `write-region'
+;; <1 ms, `call-process' ~9-17 ms, `delete-file' <1 ms -- and
+;; `split-string' on that one short line: 100-450 ms, independent of the
+;; hashed input's size.  That was the whole cost.  Two fixes, no new
+;; dependency:
 ;;
-;; Three things here were measured rather than assumed:
+;;   * `executable-find' result is cached per ALGORITHM (below), so the
+;;     PATH walk happens once per process rather than once per call.
+;;   * The helper is always invoked as `PROGRAM ... FILE' (never stdin's
+;;     "-"), so its output is always exactly "<hex, WIDTH chars>  FILE\n"
+;;     -- slicing the known-fixed WIDTH-character prefix answers the same
+;;     value as the old `split-string' + `substring' without going
+;;     through the regex splitter at all.
+;;
+;; Interleaved before/after timing (sha256, 20 trials/size, this file's
+;; new code vs the pre-fix body, same binary): median 133-149 ms/call ->
+;; 22-29 ms/call, a 5.0x-6.4x speedup at every size from 16 B to 64 KiB;
+;; see test/nelisp-secure-hash-perf-test.el for the harness and
+;; ~/.cache/tmp/secure-hash/timing-table.txt for the full table.
+;;
+;; Widened while rewriting: `secure-hash-algorithms' on host Emacs is
+;; `(md5 sha1 sha224 sha256 sha384 sha512)'; the old helper only covered
+;; `sha1'/`sha256' (the two this tree calls) and dropped `_binary'
+;; entirely.  `nelisp-mach-o-write.el' calls
+;; `(secure-hash 'sha256 ... nil nil t)' -- BINARY non-nil -- and until
+;; this change got a 64-char hex string back where host Emacs returns a
+;; 32-byte raw digest, so its UUID derivation was reading hex *characters*
+;; as if they were bytes.  BINARY now hex-decodes the helper's digest
+;; through `nelisp--secure-hash-hex-to-bytes', verified against host
+;; Emacs 31.1's `(secure-hash 'sha256 "abc" nil nil t)'.  A multibyte
+;; OBJECT is now encoded to UTF-8 before it reaches the helper -- host
+;; Emacs hashes a multibyte string's UTF-8 bytes, not its char codes
+;; (verified: `(secure-hash 'sha256 "日本語")' matches
+;; `(secure-hash 'sha256 (encode-coding-string "日本語" 'utf-8))').
+;;
+;; Three things about the helper call itself were measured rather than
+;; assumed, and still hold:
 ;;
 ;;   * `call-process-region' does not exist here, so in-memory data has to
 ;;     reach the helper through a file.  `make-temp-file' works even with
@@ -15950,34 +20076,90 @@ splicing, is the honest match for Emacs's own documented contract.
 ;; Guarded, like every other bridge in this file: an unguarded definition
 ;; of a stock Emacs name counts as `shared-shadowing' and `emacs-compat'
 ;; runs at zero margin.
+(unless (boundp 'nelisp--secure-hash-widths)
+  (defconst nelisp--secure-hash-widths
+    '((md5 . 32) (sha1 . 40) (sha224 . 56) (sha256 . 64) (sha384 . 96)
+      (sha512 . 128))
+    "Hex-digest width in characters, per `secure-hash' ALGORITHM.
+Matches host Emacs's `secure-hash-algorithms' set."))
+
+(unless (boundp 'nelisp--secure-hash-helper-cache)
+  (defvar nelisp--secure-hash-helper-cache nil
+    "Alist of ALGORITHM -> (PROGRAM-AND-ARGS . WIDTH), or (ALGORITHM . none).
+Populated lazily by `nelisp--secure-hash-helper' the first time each
+ALGORITHM is requested, so `executable-find' -- a PATH walk measured at
+4-14 ms -- runs at most once per algorithm per process instead of once
+per `secure-hash' call."))
+
 (unless (fboundp 'nelisp--secure-hash-helper)
   (defun nelisp--secure-hash-helper (algorithm)
-    "Return (PROGRAM ARGS...) that prints ALGORITHM's hex digest, or nil.
-Prefers the algorithm-specific coreutils tool and falls back to `shasum
--a N', which macOS ships where it has no `sha256sum'.  Located through
-`executable-find' because `call-process' searches PATH here."
-    (let* ((bits (cond ((memq algorithm '(sha1 sha-1)) "1")
-                       ((memq algorithm '(sha256 sha-256)) "256")
-                       (t nil))))
-      (when bits
-        (let ((direct (executable-find (concat "sha" bits "sum"))))
-          (if direct
-              (list direct)
-            (let ((shasum (executable-find "shasum")))
-              (and shasum (list shasum "-a" bits)))))))))
+    "Return (PROGRAM-AND-ARGS . WIDTH) for ALGORITHM, or nil when unsupported.
+PROGRAM-AND-ARGS is a (PROGRAM ARGS...) list that prints ALGORITHM's hex
+digest when called with a trailing FILE argument.  Prefers the
+algorithm-specific coreutils tool (`md5sum' / `sha1sum' / `sha224sum' /
+`sha256sum' / `sha384sum' / `sha512sum') and falls back to `shasum -a N'
+for the sha family, which macOS ships where it has no `shaNsum'.  Located
+through `executable-find' because `call-process' searches PATH here."
+    (let ((cached (assq algorithm nelisp--secure-hash-helper-cache)))
+      (if cached
+          (and (not (eq (cdr cached) 'none)) (cdr cached))
+        (let* ((width (cdr (assq algorithm nelisp--secure-hash-widths)))
+               (program-and-args
+                (and width
+                     (cond
+                      ((eq algorithm 'md5)
+                       (let ((direct (executable-find "md5sum")))
+                         (and direct (list direct))))
+                      (t
+                       (let* ((bits (substring (symbol-name algorithm) 3))
+                              (direct (executable-find
+                                       (concat "sha" bits "sum"))))
+                         (if direct
+                             (list direct)
+                           (let ((shasum (executable-find "shasum")))
+                             (and shasum
+                                  (list shasum "-a" bits)))))))))
+               (result (and program-and-args (cons program-and-args width))))
+          (push (cons algorithm (or result 'none))
+                nelisp--secure-hash-helper-cache)
+          result)))))
+
+(unless (fboundp 'nelisp--secure-hash-hex-digit)
+  (defun nelisp--secure-hash-hex-digit (char)
+    "Return the numeric value of lowercase hex digit CHAR (0-9, a-f)."
+    (if (<= ?0 char ?9) (- char ?0) (- char ?a -10))))
+
+(unless (fboundp 'nelisp--secure-hash-hex-to-bytes)
+  (defun nelisp--secure-hash-hex-to-bytes (hex)
+    "Return even-length lowercase hex string HEX as a unibyte byte string.
+Used to implement `secure-hash''s BINARY argument over the helper's hex
+output."
+    (let* ((count (/ (length hex) 2))
+           (bytes (make-vector count 0)))
+      (dotimes (index count)
+        (aset bytes index
+              (logior (ash (nelisp--secure-hash-hex-digit
+                            (aref hex (* index 2)))
+                           4)
+                      (nelisp--secure-hash-hex-digit
+                       (aref hex (1+ (* index 2)))))))
+      (apply #'unibyte-string (append bytes nil)))))
 
 (unless (fboundp 'secure-hash)
-  (defun secure-hash (algorithm object &optional start end _binary)
-    "Return ALGORITHM's hex digest of OBJECT, computed by an external helper.
-OBJECT is a string or a buffer.  Only `sha1' and `sha256' are supported --
-those are the algorithms this tree asks for; anything else signals rather
-than answering something plausible.  START/END narrow a string or buffer
-the way Emacs does.  BINARY is accepted and ignored: this always returns
-the hex form, which is what every caller here consumes."
+  (defun secure-hash (algorithm object &optional start end binary)
+    "Return ALGORITHM's digest of OBJECT, computed by an external helper.
+OBJECT is a string or a buffer.  ALGORITHM is one of `md5', `sha1',
+`sha224', `sha256', `sha384', or `sha512'.  START/END narrow a string or
+buffer the way Emacs does.  A multibyte OBJECT (or START/END substring)
+is hashed as its UTF-8 encoding, matching host Emacs.  When BINARY is
+non-nil the raw digest bytes are returned as a unibyte string instead of
+the lowercase hex form."
     (let ((spec (nelisp--secure-hash-helper algorithm)))
       (unless spec
         (signal 'error (list "secure-hash: unsupported algorithm" algorithm)))
-      (let* ((text (cond
+      (let* ((program-and-args (car spec))
+             (width (cdr spec))
+             (text (cond
                     ((stringp object)
                      (if (or start end)
                          (substring object (or start 0) end)
@@ -15990,13 +20172,14 @@ the hex form, which is what every caller here consumes."
                          (buffer-string))))
                     (t (signal 'wrong-type-argument
                                (list 'stringp object)))))
-             (width (if (equal (car (last spec)) "256") 64
-                      (if (string-match-p "256" (car spec)) 64 40)))
+             (bytes (if (multibyte-string-p text)
+                        (encode-coding-string text 'utf-8-unix)
+                      text))
              (tmp (make-temp-file "nelisp-secure-hash-"))
              (digest nil))
         (unwind-protect
             (progn
-              (write-region text nil tmp nil 0)
+              (write-region bytes nil tmp nil 0)
               (with-temp-buffer
                 ;; Doc 205 P3 follow-up (segment C1 item 6): TMP used to be
                 ;; passed as `call-process''s INFILE (stdin redirect).  The
@@ -16009,21 +20192,1110 @@ the hex form, which is what every caller here consumes."
                 ;; FILE' / `shasum -a 256 FILE', exactly as run from a
                 ;; shell) does not depend on the backend wiring stdin at
                 ;; all, and still works on Linux (verified below).
-                (let ((rc (apply #'call-process (car spec) nil t nil
-                                 (append (cdr spec) (list tmp)))))
+                (let ((rc (apply #'call-process (car program-and-args) nil t
+                                 nil
+                                 (append (cdr program-and-args) (list tmp)))))
                   (unless (eq rc 0)
                     (signal 'error
                             (list "secure-hash: helper failed"
-                                  (car spec) rc)))
-                  ;; Output is "<hex>  FILENAME"; take the first
-                  ;; whitespace-delimited field, not a fixed-width slice --
-                  ;; robust to either a "-" (stdin) or a real path there.
-                  (let* ((out (buffer-string))
-                         (field (car (split-string out))))
-                    (unless (and field (>= (length field) width))
+                                  (car program-and-args) rc)))
+                  ;; Output is always "<hex, WIDTH chars>  FILE\n" -- TMP
+                  ;; is a real path here, never stdin's "-", so the hex
+                  ;; run is always exactly the first WIDTH characters.
+                  ;; A prior version parsed this with `split-string',
+                  ;; which measured 100-450 ms on this ~30-byte line --
+                  ;; independent of the hashed input's size -- and was
+                  ;; the actual cost this whole function used to pay
+                  ;; (segment C2, see the file header comment above).
+                  (let ((out (buffer-string)))
+                    (unless (>= (length out) width)
                       (signal 'error
                               (list "secure-hash: helper output too short"
-                                    (car spec) out)))
-                    (setq digest (substring field 0 width))))))
+                                    (car program-and-args) out)))
+                    (setq digest (substring out 0 width))))))
           (when (file-exists-p tmp) (delete-file tmp)))
-        digest))))
+        (if binary (nelisp--secure-hash-hex-to-bytes digest) digest)))))
+
+;; Reserve the native function-mirror identity before EvalCtx creation.  The
+;; optional JIT module replaces this source-only fallback when required.
+(defun nelisp-bytecode-jit--runtime-dispatch (&rest _arguments)
+  nil)
+
+;; cconv.el uses GNU `any', an alias defined by subr.el.  These are the
+;; GNU 31.1 subr.el definitions staged in
+;; vendor/staged-emacs-lisp/subr-sequence.el, inlined here (without their
+;; optimization-only compiler macros) because the prelude is baked into
+;; the binary: loading that file relative to `default-directory' failed
+;; with file-missing whenever the binary ran outside the repository.
+(unless (fboundp 'internal--effect-free-fun-arg-p)
+  (defun internal--effect-free-fun-arg-p (x)
+    (or (closurep x) (memq (car-safe x) '(function quote)))))
+(unless (fboundp 'drop-while)
+  (defun drop-while (pred list)
+    "Skip initial elements of LIST satisfying PRED and return the rest."
+    (while (and list (funcall pred (car list)))
+      (setq list (cdr list)))
+    list))
+(unless (fboundp 'member-if)
+  (defun member-if (pred list)
+    "Non-nil if PRED is true for at least one element in LIST.
+Returns the suffix of LIST starting with the first element that
+satisfies PRED, or nil if none do."
+    (drop-while (lambda (x) (not (funcall pred x))) list)))
+(unless (fboundp 'any)
+  (defalias 'any #'member-if))
+
+;; lisp/replace.el's `how-many'/`count-matches' (anvil.el calls these; they
+;; were void-function here).  `replace.el' itself is not vendored in this
+;; tree and is not staged whole: besides `how-many', it defines `keep-lines'/
+;; `flush-lines', which need real markers (`copy-marker', `point-max-marker',
+;; `set-marker' are all void-function on this substrate -- see the
+;; fboundp sweep in worklog), and an interactive `occur'/`read-regexp' layer
+;; this substrate does not have either.  `how-many' itself only touches plain
+;; buffer positions, so it and its two small GNU dependencies below are
+;; staged verbatim from GNU Emacs 31.1's lisp/replace.el and lisp/isearch.el.
+
+;; lisp/isearch.el, `search-upper-case' defcustom.
+(unless (boundp 'search-upper-case)
+  (defcustom search-upper-case 'not-yanks
+    "If non-nil, upper case chars disable case fold searching.
+That is, upper and lower case chars must match exactly.
+This applies no matter where the chars come from, but does not
+apply to chars in regexps that are prefixed with `\\'.
+If this value is `not-yanks', text yanked into the search string
+in Isearch mode is always downcased."
+    :type '(choice (const :tag "off" nil)
+                    (const not-yanks)
+                    (other :tag "on" t))))
+
+;; lisp/isearch.el, `isearch-no-upper-case-p', verbatim.
+(unless (fboundp 'isearch-no-upper-case-p)
+  (defun isearch-no-upper-case-p (string regexp-flag)
+    "Return t if there are no upper case chars in STRING.
+If REGEXP-FLAG is non-nil, disregard letters preceded by `\\' (but not `\\\\')
+since they have special meaning in a regexp."
+    (let (quote-flag (i 0) (len (length string)) found)
+      (while (and (not found) (< i len))
+        (let ((char (aref string i)))
+          (if (and regexp-flag (eq char ?\\))
+              (setq quote-flag (not quote-flag))
+            (if (and (not quote-flag) (not (eq char (downcase char))))
+                (setq found t))
+            (setq quote-flag nil)))
+        (setq i (1+ i)))
+      (not (or found
+               ;; Even if there's no uppercase char, we want to detect the use
+               ;; of [:upper:] or [:lower:] char-class, which indicates
+               ;; clearly that the user cares about case distinction.
+               (and regexp-flag (string-match "\\[:\\(upp\\|low\\)er:]" string)
+                    (condition-case err
+                        (progn
+                          (string-match (substring string 0 (match-beginning 0))
+                                        "")
+                          nil)
+                      (invalid-regexp
+                       (equal "Unmatched [ or [^" (cadr err))))))))))
+
+;; src/editfns.c's `Fngettext' is a C primitive on GNU Emacs, called from the
+;; interactive branch of `how-many' below.  Its own doc comment there calls it
+;; "a placeholder implementation until we get our act together": there is no
+;; message catalog on either substrate, so this reproduces exactly what that
+;; placeholder returns, in elisp instead of C.
+(unless (fboundp 'ngettext)
+  (defun ngettext (msgid msgid-plural n)
+    "Return the translation of MSGID (plural MSGID-PLURAL) depending on N.
+MSGID is the singular form of the string to be converted;
+use it as the key for the search in the translation catalog.
+MSGID-PLURAL is the plural form.  Use N to select the proper translation.
+If no message catalog is found, MSGID is returned if N is equal to 1,
+otherwise MSGID-PLURAL."
+    (unless (stringp msgid) (signal 'wrong-type-argument (list 'stringp msgid)))
+    (unless (stringp msgid-plural)
+      (signal 'wrong-type-argument (list 'stringp msgid-plural)))
+    (unless (integerp n) (signal 'wrong-type-argument (list 'integerp n)))
+    (if (= n 1) msgid msgid-plural)))
+
+;; This substrate has no transient-mark-mode / mark-ring, so there is never
+;; an active region: `nil' is the true answer here, not a placeholder.  Kept
+;; only so `how-many' can take its INTERACTIVE branch without a void-function
+;; error; `region-beginning'/`region-end' stay unimplemented on purpose, since
+;; the `and' in that branch never reaches them while this returns nil.
+(unless (fboundp 'use-region-p)
+  (defun use-region-p ()
+    "Always nil: no transient-mark region support on this substrate."
+    nil))
+
+;; lisp/replace.el, `keep-lines-read-args', verbatim (shared with `keep-lines'
+;; and `flush-lines' on GNU Emacs; neither is staged here, so this is used
+;; only by `how-many''s own `interactive' spec).
+(unless (fboundp 'keep-lines-read-args)
+  (defun keep-lines-read-args (prompt)
+    "Read arguments for `keep-lines' and friends.
+Prompt for a regexp with PROMPT.
+Value is a list, (REGEXP)."
+    (list (read-regexp prompt) nil nil t)))
+
+;; lisp/replace.el, `how-many', verbatim.
+(unless (fboundp 'how-many)
+  (defun how-many (regexp &optional rstart rend interactive)
+    "Print and return number of matches for REGEXP following point.
+When called from Lisp and INTERACTIVE is omitted or nil, just return
+the number, do not print it; if INTERACTIVE is t, the function behaves
+in all respects as if it had been called interactively.
+
+If REGEXP contains upper case characters (excluding those preceded by `\\')
+and `search-upper-case' is non-nil, the matching is case-sensitive.
+
+Second and third arg RSTART and REND specify the region to operate on.
+
+Interactively, in Transient Mark mode when the mark is active, operate
+on the contents of the region.  Otherwise, operate from point to the
+end of (the accessible portion of) the buffer.
+
+This function starts looking for the next match from the end of
+the previous match.  Hence, it ignores matches that overlap
+a previously found match."
+    (interactive
+     (keep-lines-read-args "How many matches for regexp"))
+    (save-excursion
+      (if rstart
+          (if rend
+              (progn
+                (goto-char (min rstart rend))
+                (setq rend (max rstart rend)))
+            (goto-char rstart)
+            (setq rend (point-max)))
+        (if (and interactive (use-region-p))
+            (setq rstart (region-beginning)
+                  rend (region-end))
+          (setq rstart (point)
+                rend (point-max)))
+        (goto-char rstart))
+      (let ((count 0)
+            (case-fold-search
+             (if (and case-fold-search search-upper-case)
+                 (isearch-no-upper-case-p regexp t)
+               case-fold-search)))
+        (while (and (< (point) rend)
+                    (re-search-forward regexp rend t))
+          ;; Ensure forward progress on zero-length matches like "^$".
+          (when (and (= (match-beginning 0) (match-end 0))
+                     (not (eobp)))
+            (forward-char 1))
+          (setq count (1+ count)))
+        (when interactive (message (ngettext "%d occurrence"
+                                              "%d occurrences"
+                                              count)
+                                    count))
+        count))))
+
+;; lisp/replace.el: `count-matches' is a plain alias for `how-many'.
+(unless (fboundp 'count-matches)
+  (defalias 'count-matches 'how-many))
+
+;; lisp/subr.el defvars `user-emacs-directory' to nil, with the doc note
+;; "Emacs sets this at startup."  `normal-top-level' (lisp/startup.el) is
+;; what actually assigns it, via `startup--xdg-or-homedot': prefer
+;; "~/.emacs.d/" when it exists (or, on MS-DOS, "~/_emacs.d/"; Windows also
+;; accepts a legacy dotfile there), else the XDG directory
+;; ($XDG_CONFIG_HOME/emacs/, defaulting to "~/.config/emacs/") when that
+;; exists, else fall back to "~/.emacs.d/".  The standalone never runs
+;; `normal-top-level', so resolve the same GNU default inline, keeping the
+;; unexpanded "~/..." form GNU returns (`file-exists-p' expands the tilde
+;; for the existence check, but the stored value is not expanded).
+(unless (boundp 'user-emacs-directory)
+  (defvar user-emacs-directory
+    (let* ((emacs-d-dir "~/.emacs.d/")
+           (xdg-config-home (getenv "XDG_CONFIG_HOME"))
+           (xdg-dir (if (and xdg-config-home (not (equal xdg-config-home "")))
+                        (concat xdg-config-home "/emacs/")
+                      "~/.config/emacs/")))
+      (cond
+       ((file-exists-p emacs-d-dir) emacs-d-dir)
+       ((file-exists-p xdg-dir) xdg-dir)
+       (t emacs-d-dir)))
+    "Directory beneath which additional per-user Emacs-specific files are placed.
+Various programs in Emacs store information in this directory.
+Note that this should end with a directory separator.
+See also `locate-user-emacs-file'."))
+
+;; `dump-mode' is a C-level `DEFVAR_LISP' in real Emacs's emacs.c, non-nil
+;; ONLY while Emacs is actually dumping itself -- always nil by the time
+;; any Lisp file loads in a normal (or batch) session, which is the only
+;; state this substrate ever has.
+(unless (boundp 'dump-mode)
+  (defvar dump-mode nil
+    "Non-nil when Emacs is dumping itself."))
+
+;; `frame-internal-parameters' is a C-level `DEFVAR_LISP' in real Emacs's
+;; frame.c, its startup value conditional on the `HAVE_X_WINDOWS' compile
+;; flag (present -> 4 base names, absent -> 3).  `dired.el''s own
+;; `(eval-when-compile (require 'desktop))' near its "Desktop support"
+;; section pulls in real `desktop.el' for real (same eager-require
+;; pattern as `autorevert'/`files-x' above), which itself unconditionally
+;; `(require 'frameset)'s; `frameset.el''s own top-level
+;; `frameset-session-filter-alist' defvar reads this directly via
+;; `(mapcar (lambda (p) (cons p :never)) frame-internal-parameters)'.
+;; Value taken directly from this session's host Emacs 31.1
+;; (`/usr/local/bin/emacs --batch -Q --eval "(princ frame-internal-
+;; parameters)"'), rather than assumed from the `HAVE_X_WINDOWS' source
+;; branch: this host's own build answers the non-X 3-name branch (no
+;; `outer-window-id'), confirming it was NOT built with that macro
+;; defined despite being GTK-based, so trusting the measurement instead
+;; of the source guess matters here.
+(unless (boundp 'frame-internal-parameters)
+  (defvar frame-internal-parameters
+    '(undeleted cloned-from frame-id name parent-id window-id)
+    "Frame parameters specific to every frame."))
+
+;; `auto-save-timeout' is a C-level `DEFVAR_LISP' in real Emacs's
+;; keyboard.c, default 30 -- `desktop.el''s own top-level
+;; `desktop-auto-save-timeout' defcustom uses it directly as its default
+;; value expression, reached via the same `(require 'desktop)' chain
+;; documented just above.
+(unless (boundp 'auto-save-timeout)
+  (defvar auto-save-timeout 30
+    "Number of seconds idle time before auto-save.
+Zero or nil means disable auto-saving due to idleness.
+After auto-saving due to this many seconds of idle time,
+Emacs also does a garbage collection if that seems to be warranted."))
+
+;; `standard-display-table' is a C-level `DEFVAR_LISP' in real Emacs's
+;; dispnew.c, default nil.  Needed for real: `term.el''s own top-level
+;; `dired--get-ellipsis-length'-style helper (`term.el' has its own
+;; near-identical copy for its own ellipsis handling) reads it via `(or
+;; (window-display-table) buffer-display-table standard-display-table)'
+;; -- called at `term.el''s own top level this time (unlike `dired.el''s
+;; copy of the same construct, which lives inside a function body never
+;; reached by this substrate's own load-time eager macro-expansion).
+(unless (boundp 'standard-display-table)
+  (defvar standard-display-table nil
+    "Display table to use for buffers that specify none.
+It is also used for standard output and error streams.
+See `buffer-display-table' for more information."))
+
+;; Staged verbatim from GNU Emacs 31.1 lisp/disp-table.el:34 (autoloaded
+;; there, not preloaded, but `term.el' calls it unconditionally at its
+;; own top level, without any `require' of `disp-table' -- confirmed
+;; this session that real Emacs's own autoload cookie is exactly why no
+;; explicit require is needed there; this substrate has no autoload
+;; machinery, so it is staged directly).  Built on this substrate's own
+;; already-genuine `make-char-table' (Doc 186); the `display-table'
+;; subtype's real 18-extra-slot request (`(put 'display-table
+;; 'char-table-extra-slots 18)' in real `disp-table.el', not staged)
+;; exceeds this substrate's fixed 10-slot buffer every char-table gets
+;; (see the char-table block comment further up this file) -- harmless
+;; for `term.el''s own top-level `term-display-table' construction
+;; (staged verbatim as read-only reference in this same comment's
+;; sibling fix, `standard-display-table', just above): it only ever
+;; `aset's ordinary character indices (0-9, 11-31, 128-255), never an
+;; extra slot.
+(unless (fboundp 'make-display-table)
+  (defun make-display-table ()
+    "Return a new, empty display table."
+    (make-char-table 'display-table nil)))
+
+;; Staged verbatim from GNU Emacs 31.1 lisp/env.el:60/63 (preloaded, not
+;; autoloaded).  Needed for real: `files.el''s own `parse-colon-path'
+;; (staged below) calls this; `woman.el''s own `woman-manpath-add-
+;; locales'/`woman-parse-colon-path' call `parse-colon-path' at their
+;; own top level while building `woman-manpath' from the `$MANPATH'
+;; environment variable.
+(unless (boundp 'env--substitute-vars-regexp)
+  (defconst env--substitute-vars-regexp
+    "\\$\\(?:\\(?1:[[:alnum:]_]+\\)\\|{\\(?1:[^{}]+\\)}\\|\\$\\)"))
+
+(unless (fboundp 'substitute-env-vars)
+  (defun substitute-env-vars (string &optional when-undefined)
+    "Substitute environment variables referred to in STRING.
+`$FOO' where FOO is an environment variable name means to substitute
+the value of that variable.  The variable name should be terminated
+with a character not a letter, digit or underscore; otherwise, enclose
+the entire variable name in braces.  For instance, in `ab$cd-x',
+`$cd' is treated as an environment variable.
+
+If WHEN-UNDEFINED is omitted or nil, references to undefined environment
+variables are replaced by the empty string; if it is a function, the
+function is called with the variable's name as argument, and should return
+the text with which to replace it, or nil to leave it unchanged.
+If it is non-nil and not a function, references to undefined variables are
+left unchanged.
+
+Use `$$' to insert a single dollar sign.
+
+(fn STRING &optional WHEN-UNDEFINED)"
+    (let ((start 0))
+      (while (string-match env--substitute-vars-regexp string start)
+        (cond ((match-beginning 1)
+               (let* ((var (match-string 1 string))
+                      (value (getenv var)))
+                 (if (and (null value)
+                          (if (functionp when-undefined)
+                              (null (setq value (funcall when-undefined var)))
+                            when-undefined))
+                     (setq start (match-end 0))
+                   (setq string (replace-match (or value "") t t string)
+                         start (+ (match-beginning 0) (length value))))))
+              (t
+               (setq string (replace-match "$" t t string)
+                     start (+ (match-beginning 0) 1)))))
+      string)))
+
+;; Staged verbatim from GNU Emacs 31.1 lisp/files.el:937 (preloaded, not
+;; autoloaded).  Needed for real: see the block comment above
+;; `substitute-env-vars' just above.
+(unless (fboundp 'parse-colon-path)
+  (defun parse-colon-path (search-path)
+    "Explode a search path into a list of directory names.
+Directories are separated by `path-separator' (which is colon in
+GNU and Unix systems).  Substitute environment variables into the
+resulting list of directory names.  For an empty path element (i.e.,
+a leading or trailing separator, or two adjacent separators), return
+nil (meaning `default-directory') as the associated list element.
+
+(fn SEARCH-PATH)"
+    (when (stringp search-path)
+      (let ((spath (substitute-env-vars search-path))
+            (double-slash-special-p
+             (memq system-type '(windows-nt cygwin ms-dos))))
+        (mapcar (lambda (f)
+                  (if (equal "" f) nil
+                    (let ((dir (file-name-as-directory f)))
+                      (if (string-match "\\`//+" dir)
+                          (substring dir (- (match-end 0)
+                                             (if double-slash-special-p 2 1)))
+                        dir))))
+                (split-string spath path-separator))))))
+
+;; `display-graphic-p'/`tty-display-color-p' both reduce to an honest,
+;; unconditional nil on this substrate: real `display-graphic-p' (Lisp,
+;; `lisp/frame.el', preloaded) asks whether the display's window-system
+;; type is one of `x'/`w32'/`ns'/`pgtk'/`haiku'/`android' via `framep-
+;; on-display' (not staged: this substrate has no terminal/frame
+;; introspection at all), and real `tty-display-color-p' (C primitive,
+;; src/term.c) asks a real tty device's own color-count field -- neither
+;; question has an affirmative answer possible here (no window system,
+;; no real terminal device), so both are staged as their own true,
+;; always-batch-mode answer instead of a partial port: confirmed
+;; against this session's own host Emacs 31.1 running `--batch -Q',
+;; ground truth for the SAME question this substrate is always in:
+;; `(display-graphic-p)' => nil, `(tty-display-color-p)' => nil.  Needed
+;; for real: `woman.el''s own top-level `(defcustom woman-use-own-frame
+;; (display-graphic-p) ...)' calls the former directly; real `faces.el''s
+;; own (already-fboundp on this substrate) `display-color-p' calls the
+;; latter on this substrate's own nil branch.
+(unless (fboundp 'display-graphic-p)
+  (defun display-graphic-p (&optional _display)
+    "Return non-nil if DISPLAY is a graphic display.
+Graphical displays are those which are capable of displaying several
+frames and several different fonts at once.  This is true for displays
+that use a window system such as X, and false for text-only terminals.
+DISPLAY can be a display name, a frame, or nil (meaning the selected
+frame's display).
+
+(fn &optional DISPLAY)"
+    nil))
+
+(unless (fboundp 'tty-display-color-p)
+  (defun tty-display-color-p (&optional _terminal)
+    "Return non-nil if the tty device TERMINAL can display colors.
+
+TERMINAL can be a terminal object, a frame, or nil (meaning the
+selected frame's terminal).  This function always returns nil if
+TERMINAL does not refer to a text terminal.
+
+(fn &optional TERMINAL)"
+    nil))
+
+;; `window-system' is a C-level `DEFVAR_KBOARD' in real Emacs's
+;; dispnew.c ("nil for a termcap frame (a character-only terminal)"),
+;; confirmed nil on this session's own host Emacs 31.1 running `--batch
+;; -Q' -- the same ground truth this always-batch substrate is in.
+;; Needed for real: `woman.el''s own top-level `(defconst woman-
+;; font-lock-keywords ... (eq window-system 'x) ...)'-shaped constant.
+(unless (boundp 'window-system)
+  (defvar window-system nil
+    "Name of window system through which the selected frame is displayed.
+The value is a symbol:
+ nil for a termcap frame (a character-only terminal),
+ `x' for an Emacs frame that is really an X window,
+ `w32' for an Emacs frame that is a window on MS-Windows display,
+ `ns' for an Emacs frame on a GNUstep or Macintosh Cocoa display,
+ `pc' for a direct-write MS-DOS frame,
+ `pgtk' for an Emacs frame using pure GTK facilities,
+ `haiku' for an Emacs frame running in Haiku."))
+
+;; `remote-shell-program' is a plain `defcustom' in real Emacs's
+;; (preloaded) lisp/files.el.  `term.el' has a SECOND, later `(eval-when-
+;; compile (require 'ange-ftp))' beyond the requires block near its own
+;; top (for remote-directory tracking) -- confirmed by instrumenting this
+;; substrate's own `require' to `princ' its argument before delegating,
+;; which showed `REQUIRE: ange-ftp' right before this error fires;
+;; `lisp/net/ange-ftp.el''s own top-level `ange-ftp-shell-prompt-pattern'-
+;; style defcustoms (reached the same eager, real-load way as every other
+;; `eval-when-compile'-required file above) use `remote-shell-program'
+;; directly as a default value.
+(unless (boundp 'remote-shell-program)
+  (defvar remote-shell-program "ssh"
+    "Program to use to execute commands on a remote host (i.e. ssh)."))
+
+;; `remote-file-error' is a C-level error condition registered in real
+;; Emacs's fileio.c (`Fput' calls, not a Lisp `define-error'), a direct
+;; child of `file-error' (itself already registered on this substrate --
+;; confirmed via `(get 'file-error 'error-conditions)' => `(file-error
+;; error)').  Same chain as `lisp/net/ange-ftp.el''s own top-level
+;; `(define-error (quote ftp-error) nil (quote (remote-file-error
+;; file-error)))' (reached through `term.el''s own eval-when-compile
+;; require chain documented above): real `define-error' requires every
+;; PARENT already have its OWN `error-conditions' registered, and this
+;; one never was.
+(unless (get 'remote-file-error 'error-conditions)
+  (define-error 'remote-file-error "Remote file error" 'file-error))
+
+;; `init-file-user' is a plain `defvar' in real Emacs's (preloaded)
+;; lisp/startup.el, left nil by `normal-top-level' whenever `-q'/`--no-
+;; init-file'/`--batch' was given -- always true for this substrate,
+;; which never runs `normal-top-level' or reads any init file at all.
+(unless (boundp 'init-file-user)
+  (defvar init-file-user nil
+    "Identity of user whose init file is or was read.
+The value is nil if `-q' or `--no-init-file' was specified,
+meaning do not load any init file.
+
+Otherwise, the value may be an empty string, meaning
+use the init file for the user who originally logged in,
+or it may be a string containing a user's name meaning
+use that person's init file.
+
+In either of the latter cases, `(concat \"~\" init-file-user \"/\")'
+evaluates to the name of the directory where the init file was
+looked for.
+
+Setting `init-file-user' does not prevent Emacs from loading
+`site-start.el'.  The only way to do that is to use `--no-site-file'."))
+
+;; Staged from GNU Emacs 31.1 lisp/files.el's `convert-standard-filename'
+;; (preloaded, not autoloaded): on every system-type except `windows-nt'/
+;; `ms-dos'/`cygwin', its own body is the plain identity -- confirmed by
+;; reading the full `cond' there, whose only non-trivial branches are
+;; those three, and this substrate's own `system-type' (`gnu/linux', see
+;; above) never takes any of them.  Only the reachable branch is staged;
+;; porting the dead Windows/DOS/Cygwin character-replacement branches
+;; would add real complexity for code that can never run here.
+(unless (fboundp 'convert-standard-filename)
+  (defun convert-standard-filename (filename)
+    "Convert a standard file's name to something suitable for the OS.
+This substrate's `system-type' is always `gnu/linux', so this function's
+own real-Emacs definition is trivial here: it just returns FILENAME.
+
+(fn FILENAME)"
+    filename))
+
+;; Reduced from GNU Emacs 31.1 lisp/files.el's `abbreviate-file-name'
+;; (preloaded, not autoloaded): stages only the home-directory
+;; substitution real Emacs's own version performs (substitute \"~\" for
+;; the value of `(expand-file-name \"~\")'), which is the only behavior
+;; `locate-user-emacs-file' below actually needs.  DIVERGES from Emacs:
+;; no `directory-abbrev-alist' support (unbound on this substrate, and no
+;; consumer in scope ever sets it), no automounter-prefix stripping, no
+;; `find-file-name-handler' dispatch (this substrate has no file-name-
+;; handler-alist machinery), no case-insensitive matching, no
+;; `abbreviated-home-dir' caching (this substrate's `expand-file-name'
+;; is already a cheap, exact, single-call primitive, so nothing here
+;; needs memoizing the way real Emacs's own regexp-based cache does).
+(unless (fboundp 'abbreviate-file-name)
+  (defun abbreviate-file-name (filename)
+    "Return a version of FILENAME shortened using `directory-abbrev-alist'.
+This also substitutes \"~\" for the user's home directory (unless the
+home directory is a root directory).
+
+(fn FILENAME)"
+    (let ((home (file-name-as-directory (expand-file-name "~"))))
+      (if (and (>= (length filename) (length home))
+               (string= (substring filename 0 (length home)) home)
+               (not (string= home "/")))
+          (concat "~/" (substring filename (length home)))
+        filename))))
+
+;; Staged from GNU Emacs 31.1 lisp/files.el's `locate-user-emacs-file'
+;; (preloaded, not autoloaded) -- `shell.el' and `progmodes/project.el'
+;; both reference it directly at their own top level (`shell.el':
+;; `shell-command-history-file-name''s defcustom default value;
+;; `project.el': `project-list-file''s defcustom default value), so a
+;; `void-function' here blocks BOTH files from loading, not merely a
+;; deferred command.  Kept verbatim except for the interactive-directory-
+;; creation branch: real Emacs's own `(or noninteractive dump-mode (let
+;; (errtype) ... (make-directory ...) ...))' already reduces to a no-op
+;; whenever `noninteractive' is non-nil, which is unconditionally true on
+;; this substrate (there is no interactive session to ever set it nil),
+;; so that whole branch is replaced by nothing rather than porting the
+;; unreachable error-reporting body it guards.
+(unless (fboundp 'locate-user-emacs-file)
+  (defun locate-user-emacs-file (new-name &optional old-name)
+    "Return an absolute per-user Emacs-specific file name.
+If NEW-NAME exists in `user-emacs-directory', return it.
+Else if OLD-NAME is non-nil and ~/OLD-NAME exists, return ~/OLD-NAME.
+Else return NEW-NAME in `user-emacs-directory', creating the
+directory if it does not exist.
+
+NEW-NAME can also be a list, in which case consider all names in that
+list, from last to first, and use the first name that exists.  If none
+of them exists, use the `car' of that list.
+
+(fn NEW-NAME &optional OLD-NAME)"
+    (convert-standard-filename
+     (let* ((home (concat "~" (or init-file-user "")))
+            (at-home (and old-name (expand-file-name old-name home)))
+            (bestname (abbreviate-file-name
+                       (if (listp new-name)
+                           (or (car (seq-filter
+                                     #'file-exists-p
+                                     (mapcar
+                                      (lambda (f)
+                                        (expand-file-name f user-emacs-directory))
+                                      (reverse new-name))))
+                               (expand-file-name (car new-name) user-emacs-directory))
+                         (expand-file-name new-name user-emacs-directory)))))
+       (if (and at-home (not (file-readable-p bestname))
+                (file-readable-p at-home))
+           at-home
+         ;; This substrate is always `noninteractive' (see above), so
+         ;; real Emacs's own directory-creation-with-error-reporting
+         ;; branch here is unreachable and not staged; see block comment.
+         bestname)))))
+
+;; lisp/bindings.el preloads the mode-line-modes family; libraries such as
+;; progmodes/compile.el rely on `mode-line-modes' already being bound at
+;; top level (it runs `(add-to-list 'mode-line-modes ...)' for
+;; `compilation-in-progress').  Stage only the exact GNU forms this
+;; substrate needs to reach that point: `make-mode-line-mouse-map' and the
+;; three defvars `mode-line-modes' evaluates into at define time
+;; (`mode-line-mode-menu', `mode-line-major-mode-keymap', then
+;; `mode-line-modes' itself).  Full mode-line display machinery
+;; (`format-mode-line', the `%'-constructs, `mouse-menu-major-mode-map',
+;; `bindings--sort-menu-keymap', `mode-line-widen') is out of scope here;
+;; the substrate has no display engine to drive it.
+(unless (fboundp 'make-mode-line-mouse-map)
+  (defun make-mode-line-mouse-map (mouse function)
+    "Return a keymap with single entry for mouse key MOUSE on the mode line.
+MOUSE is defined to run function FUNCTION with no args in the buffer
+corresponding to the mode line clicked."
+    (let ((map (make-sparse-keymap)))
+      (define-key map (vector 'mode-line mouse) function)
+      map)))
+
+(unless (boundp 'mode-line-mode-menu)
+  (defvar mode-line-mode-menu (make-sparse-keymap "Minor Modes")
+    "Menu of mode operations in the mode line."))
+
+(unless (boundp 'mode-line-major-mode-keymap)
+  (defvar mode-line-major-mode-keymap
+    (let ((map (make-sparse-keymap)))
+      (define-key map [mode-line down-mouse-1]
+        `(menu-item "Menu Bar" ignore
+          :filter ,(lambda (_) (mouse-menu-major-mode-map))))
+      (define-key map [mode-line mouse-2] 'describe-mode)
+      (define-key map [mode-line down-mouse-3]
+        `(menu-item "Minor Modes" ,mode-line-mode-menu
+          :filter bindings--sort-menu-keymap))
+      map)
+    "Keymap to display on major mode."))
+
+(unless (boundp 'mode-line-modes)
+  (defvar mode-line-modes
+    (let ((recursive-edit-help-echo
+           "Recursive edit, type C-M-c to get out"))
+      (list (propertize "%[" 'help-echo recursive-edit-help-echo)
+            '(:eval (car mode-line-modes-delimiters))
+            `(:propertize ("" mode-name)
+              help-echo "Major mode\nmouse-1: Display major mode menu\nmouse-2: Show help for major mode\nmouse-3: Toggle minor modes"
+              mouse-face mode-line-highlight
+              local-map ,mode-line-major-mode-keymap)
+            '("" mode-line-process)
+            (propertize "%n" 'help-echo "mouse-2: Remove narrowing from buffer"
+                        'mouse-face 'mode-line-highlight
+                        'local-map (make-mode-line-mouse-map
+                                    'mouse-2 #'mode-line-widen))
+            '("" mode-line-minor-modes)
+            '(:eval (cdr mode-line-modes-delimiters))
+            (propertize "%]" 'help-echo recursive-edit-help-echo)
+            " "))
+    "Mode line construct for displaying major and minor modes.")
+  (put 'mode-line-modes 'risky-local-variable t))
+
+;; `minor-mode-alist' is a plain `defvar' in real Emacs's (preloaded)
+;; lisp/bindings.el, pre-populated there by an immediately-following
+;; top-level `setq' (staged verbatim below, same 4 built-in entries).
+;; `easy-mmode.el''s `define-minor-mode' -- reached via real GNU
+;; `dired.el'/`shell.el''s own `(eval-when-compile (require
+;; 'easy-mmode))', loaded for real the same way `autorevert'/`files-x'
+;; were in the fixes above -- expands to a top-level `(add-minor-mode
+;; ...)' call that reads this directly, so `void-variable' here blocked
+;; loading before any minor mode's own definition even ran.
+(unless (boundp 'minor-mode-alist)
+  (defvar minor-mode-alist nil
+    "Alist saying how to show minor modes in the mode line.
+Each element looks like (VARIABLE STRING);
+STRING is included in the mode line if VARIABLE's value is non-nil.
+
+Actually, STRING need not be a string; any mode-line construct is
+okay.  See `mode-line-format'.")
+  (put 'minor-mode-alist 'risky-local-variable t)
+  (setq minor-mode-alist
+        '((abbrev-mode " Abbrev")
+          (overwrite-mode overwrite-mode)
+          (auto-fill-function " Fill")
+          ;; not really a minor mode...
+          (defining-kbd-macro mode-line-defining-kbd-macro))))
+
+;; `minor-mode-map-alist' is a C-level `DEFVAR_LISP' in real Emacs's
+;; keymap.c, preloaded to nil and populated only as minor modes define
+;; themselves -- same `add-minor-mode'/`define-minor-mode' load-time
+;; dependency as `minor-mode-alist' just above (`isearch.el' also writes
+;; it directly at its own top level: `(nconc minor-mode-map-alist (list
+;; (cons 'isearch-mode isearch-mode-map)))').
+(unless (boundp 'minor-mode-map-alist)
+  (defvar minor-mode-map-alist nil
+    "Alist of keymaps to use for minor modes.
+Each element looks like (VARIABLE . KEYMAP); KEYMAP is used to read
+key sequences and look up bindings if VARIABLE's value is non-nil.
+If two active keymaps bind the same key, the keymap appearing earlier
+in the list takes precedence."))
+
+;; Mirrors GNU Emacs 31.1 src/buffer.c:Fforce_mode_line_update's own
+;; return-value contract (echoes ALL back) but not its redisplay side
+;; effect: this substrate has no redisplay engine at all (the many other
+;; reduced mode-line/keymap-dispatch stubs elsewhere in this file take
+;; the same position), so there is nothing for "force redisplay" to
+;; drive.  Needed for real: `progmodes/compile.el''s own top-level
+;; `(defvar compilation-mode-tool-bar-map (when (keymapp tool-bar-map)
+;; (let ((map (copy-keymap tool-bar-map))) ... (tool-bar-local-item
+;; ...) ... map)))' calls real, unconditionally-required `tool-bar.el''s
+;; own `tool-bar-local-item', whose own body calls this directly.
+(unless (fboundp 'force-mode-line-update)
+  (defun force-mode-line-update (&optional all)
+    "Force redisplay of the current buffer's mode line and header line.
+With optional non-nil ALL, force redisplay of all mode lines, tab lines
+and header lines.  This function also forces recomputation of the
+menu bar menus and the frame title.
+
+(fn &optional ALL)"
+    all))
+
+;; Staged verbatim from GNU Emacs 31.1 `lisp/widget.el' in full (the
+;; whole file is 65 lines; reproduced here nearly byte-identical).  Real
+;; `widget.el''s own commentary explains why this is safe to stage
+;; without any of `wid-edit.el''s much larger UI-rendering engine:
+;; "This file only contains the code needed to define new widget types.
+;; Everything else is autoloaded from `wid-edit.el'."  `define-widget'
+;; itself is pure property-list bookkeeping (`put' onto NAME's
+;; `widget-type'/`widget-documentation' symbol properties, no rendering,
+;; no `widget-create' call) -- needed for real: `electric.el''s own two
+;; top-level `(define-widget 'electric-char-pair 'const ...)'/`(define-
+;; widget 'electric-quote-chars-pairs 'lazy ...)' calls, reached through
+;; `term.el''s own unconditional `(require 'ehelp)' -> `(require
+;; 'electric)' chain.  `define-widget-keywords' is real Emacs's own
+;; long-obsolete (27.1) no-op macro, kept for source fidelity even though
+;; nothing in this substrate's scope calls it.
+(unless (fboundp 'define-widget-keywords)
+  (defmacro define-widget-keywords (&rest _keys)
+    (declare (obsolete nil "27.1") (indent defun))
+    nil))
+
+(unless (fboundp 'define-widget)
+  (defun define-widget (name class doc &rest args)
+    "Define a new widget type named NAME from CLASS.
+
+NAME and CLASS should both be symbols, CLASS should be one of the
+existing widget types, or nil to create the widget from scratch.
+
+After the new widget has been defined, the following two calls will
+create identical widgets:
+
+* (widget-create NAME)
+
+* (apply #\\='widget-create CLASS ARGS)
+
+The third argument DOC is a documentation string for the widget."
+    (declare (doc-string 3) (indent defun))
+    (unless (or (null doc) (stringp doc))
+      (error "Widget documentation must be nil or a string"))
+    (put name 'widget-type (cons class args))
+    (put name 'widget-documentation doc)
+    name))
+
+;; `help-char' is a C-level `DEFVAR_LISP' in real Emacs's keyboard.c,
+;; preloaded (with its default value already set) before any Lisp file
+;; ever runs -- so no GNU Lisp source ever binds it itself, and this
+;; substrate had no equivalent at all (confirmed: void-variable, not just
+;; the wrong value). `isearch.el' references it directly in two top-level
+;; `defvar' keymap-building forms (`isearch-mode-map', `isearch-help-map'),
+;; so loading it from a `-Q' state crashed at load time, not merely when
+;; the keymap was actually used. Value taken from real Emacs 31.1's C
+;; source and confirmed directly against host Emacs 31.1
+;; (`(princ help-char)' prints 8): `?\C-h', i.e. plain Control-H.
+(unless (boundp 'help-char)
+  (defvar help-char 8
+    "Character to recognize as meaning Help.
+When it is read, do `(eval help-form)', and display result if it's a string.
+If the value of `help-form' is nil, this char can be read normally."))
+
+;; `help-map' is a real `defvar-keymap' in real Emacs's (preloaded)
+;; lisp/help.el.  Built here with this substrate's own always-available
+;; `make-sparse-keymap'/`define-key' (see the `button-buffer-map' block
+;; comment above for why not via `defvar-keymap' itself: it is staged
+;; separately from vendor keymap.el and unavailable this early in
+;; bootstrap) rather than staged verbatim, but the BINDING SET itself is
+;; verbatim from real `help.el' with 3 exceptions: the `(help-key)'
+;; entry is dropped (redundant with the "?"/"<f1>"/"<help>" entries
+;; below it for this substrate's own no-dispatch-loop purposes, and
+;; `help-key' -- the function, not `help-char' the variable -- is not
+;; itself staged); the two 2-event sequences ("4 i", "4 s") are dropped,
+;; matching this substrate's own documented "no multi-event key
+;; sequences" limitation (see the block comment above `make-sparse-
+;; keymap', much further up this file); string keys use literal
+;; control-character escapes (`"\C-a"') rather than `kbd', whose own
+;; bracket/multi-key parsing is unreliable here (see the `button-
+;; buffer-map' block comment above for the measured specifics).  Needed
+;; for real: `term.el''s own top-level `(defvar term-mode-map (let ((map
+;; (copy-keymap help-map))) ...))'-style construction (`M-x term' and
+;; friends inherit from the global help map in real Emacs), reached
+;; through `term.el''s own unconditional `(require 'ehelp)' ->
+;; `(require 'help-mode)'-equivalent chain.
+(unless (boundp 'help-map)
+  (defvar help-map
+    (let ((map (make-sparse-keymap)))
+      (define-key map "." #'display-local-help)
+      (define-key map "?" #'help-for-help)
+      (define-key map [help] #'help-for-help)
+      (define-key map [f1] #'help-for-help)
+      (define-key map "\C-a" #'about-emacs)
+      (define-key map "\C-c" #'describe-copying)
+      (define-key map "\C-d" #'view-emacs-debugging)
+      (define-key map "\C-e" #'view-external-packages)
+      (define-key map "\C-f" #'view-emacs-FAQ)
+      (define-key map "\r" #'view-order-manuals)
+      (define-key map "\C-n" #'view-emacs-news)
+      (define-key map "\C-o" #'describe-distribution)
+      (define-key map "\C-p" #'view-emacs-problems)
+      (define-key map "\C-q" #'help-quick-toggle)
+      (define-key map "\C-s" #'search-forward-help-for-help)
+      (define-key map "\C-t" #'view-emacs-todo)
+      (define-key map "\C-w" #'describe-no-warranty)
+      (define-key map "\C-\\" #'describe-input-method)
+      (define-key map "C" #'describe-coding-system)
+      (define-key map "F" #'Info-goto-emacs-command-node)
+      (define-key map "I" #'describe-input-method)
+      (define-key map "K" #'Info-goto-emacs-key-command-node)
+      (define-key map "L" #'describe-language-environment)
+      (define-key map "S" #'info-lookup-symbol)
+      (define-key map "a" #'apropos-command)
+      (define-key map "b" #'describe-bindings)
+      (define-key map "c" #'describe-key-briefly)
+      (define-key map "d" #'apropos-documentation)
+      (define-key map "e" #'view-echo-area-messages)
+      (define-key map "f" #'describe-function)
+      (define-key map "g" #'describe-gnu-project)
+      (define-key map "h" #'view-hello-file)
+      (define-key map "u" #'apropos-user-option)
+      (define-key map "i" #'info)
+      (define-key map "k" #'describe-key)
+      (define-key map "l" #'view-lossage)
+      (define-key map "m" #'describe-mode)
+      (define-key map "o" #'describe-symbol)
+      (define-key map "n" #'view-emacs-news)
+      (define-key map "p" #'finder-by-keyword)
+      (define-key map "P" #'describe-package)
+      (define-key map "r" #'info-emacs-manual)
+      (define-key map "R" #'info-display-manual)
+      (define-key map "s" #'describe-syntax)
+      (define-key map "t" #'help-with-tutorial)
+      (define-key map "v" #'describe-variable)
+      (define-key map "w" #'where-is)
+      (define-key map "x" #'describe-command)
+      (define-key map "q" #'help-quit)
+      map)
+    "Keymap for characters following the Help key."))
+
+;; `menu-bar-manuals-menu' is a plain `defvar' in real Emacs's
+;; (preloaded) lisp/menu-bar.el, built from ordinary `menu-item'-shaped
+;; `define-key' bindings (which this substrate's own reduced keymap
+;; representation already stores generically, no special handling
+;; needed).  Staged verbatim.  Needed for real: `woman.el''s own
+;; top-level `(define-key-after menu-bar-manuals-menu [woman] ...)'.
+(unless (boundp 'menu-bar-manuals-menu)
+  (defvar menu-bar-manuals-menu
+    (let ((menu (make-sparse-keymap "More Manuals")))
+      (define-key menu [man]
+        '(menu-item "Read Man Page..." manual-entry
+                    :help "Man-page docs for external commands and libraries"))
+      (define-key menu [sep2]
+        menu-bar-separator)
+      (define-key menu [order-emacs-manuals]
+        '(menu-item "Ordering Manuals" view-order-manuals
+                    :help "How to order manuals from the Free Software Foundation"))
+      (define-key menu [lookup-subject-in-all-manuals]
+        '(menu-item "Lookup Subject in all Manuals..." info-apropos
+                    :help "Find description of a subject in all installed manuals"))
+      (define-key menu [other-manuals]
+        '(menu-item "All Other Manuals (Info)" Info-directory
+                    :help "Read any of the installed manuals"))
+      (define-key menu [emacs-lisp-reference]
+        '(menu-item "Emacs Lisp Reference" menu-bar-read-lispref
+                    :help "Read the Emacs Lisp Reference manual"))
+      (define-key menu [emacs-lisp-intro]
+        '(menu-item "Introduction to Emacs Lisp" menu-bar-read-lispintro
+                    :help "Read the Introduction to Emacs Lisp Programming"))
+      menu)))
+
+;; `mounted-file-systems' is a `defcustom' in real Emacs's `files.el', which
+;; this substrate does not load or emulate (no preloaded-files.el layer at
+;; all) -- so any GNU library that references it directly, without its own
+;; `(require 'files)' (real Emacs never needs one; `files.el' is always
+;; already preloaded), hits void-variable.  Traced with `debug-on-error' +
+;; this substrate's own backtrace printer: `dired.el' has `(eval-when-compile
+;; (require 'autorevert))' near its top; `eval-when-compile' only skips its
+;; body when the *byte-compiler* is running, so loading `dired.el' as plain
+;; source (as this substrate always does -- no separate compile step) runs
+;; that `require' for real, pulling in `autorevert.el', whose own top-level
+;; `(defcustom auto-revert-notify-exclude-dir-regexp (concat
+;; mounted-file-systems ...) ...)' is where the void-variable actually
+;; fires (backtrace: concat <- defvar <- defcustom <- require <-
+;; eval-when-compile <- ... <- load).  Verbatim GNU Emacs 31.1 `files.el'
+;; value (the Windows/Cygwin branch is dead on this substrate's
+;; `system-type', kept only for source fidelity); the comment about
+;; `regexp-opt.el' not being dumped is why the second branch is a literal
+;; regexp rather than a `regexp-opt' call, so no `(require 'regexp-opt)' is
+;; needed here either.
+(unless (boundp 'mounted-file-systems)
+  (defvar mounted-file-systems
+    (if (memq system-type '(windows-nt cygwin))
+        "^//[^/]+/"
+      "^\\(?:/\\(?:afs/\\|m\\(?:edia/\\|nt\\)\\|\\(?:ne\\|tmp_mn\\)t/\\)\\)")
+    "File systems that ought to be mounted."))
+
+;; `ignored-local-variables' is a plain `defvar' in real Emacs's `files.el',
+;; same preloaded-but-not-here situation as `mounted-file-systems' just
+;; above.  Same tracing method: `shell.el' has `(eval-when-compile (require
+;; 'files-x))' near its top (real comment: "with-connection-local-
+;; variables"); loaded for real as plain source, `files-x.el' has an
+;; unconditional top-level `(setq ignored-local-variables (cons
+;; 'connection-local-variables-alist ignored-local-variables))', which is
+;; where the void-variable actually fires (backtrace: cons <- setq <-
+;; require <- eval-when-compile <- ... <- load).  Verbatim GNU Emacs 31.1
+;; `files.el' value and risky-local-variable marking.
+(unless (boundp 'ignored-local-variables)
+  (defvar ignored-local-variables
+    '(ignored-local-variables safe-local-variable-values
+      file-local-variables-alist dir-local-variables-alist)
+    "Variables to be ignored in a file's local variable spec.")
+  (put 'ignored-local-variables 'risky-local-variable t))
+
+;; This substrate has its own, self-contained Doc-185 `cl-defstruct'/
+;; `cl-defmethod' subset (further up in this file) and marks `cl-lib' as
+;; already `provide'd so consumers that just want ordinary `cl-'
+;; functions never pull in the real `cl-lib.el'/`cl-macs.el'/
+;; `cl-generic.el' at all.  But when a GNU library's own `(require
+;; 'cl-lib)' -- e.g. real `cl-macs.el''s -- is therefore a silent no-op,
+;; the REAL `cl-lib.el''s own top-level forms never run either, and code
+;; that later loads the genuine `cl-macs.el'/`cl-generic.el' as direct
+;; coverage targets (this substrate's normal `require' would fetch them
+;; for real once a caller `require's a not-yet-provided feature by that
+;; exact file name, and the coverage harness also `load's them directly)
+;; hits whatever *they* expect `cl-lib.el' to have already set up.
+;; Confirmed directly: `(load "cl-macs.el")' on a bare `-Q' state (after
+;; this prelude) fails at `(void-variable cl--proclaims-deferred)`,
+;; before ever reaching `cl--struct-name-p' below -- GNU `cl-macs.el'
+;; line ~2685's `"Process any proclamations made before cl-macs was
+;; loaded."' comment, plus its own `(defvar cl--proclaims-deferred)'
+;; (declares special, does NOT bind), only works on real Emacs because
+;; `cl-lib.el' (always loaded first via `cl-macs.el''s `(require
+;; 'cl-lib)') already ran `(defvar cl--proclaims-deferred nil)' at ITS
+;; own top level.  Verbatim GNU Emacs 31.1 `cl-lib.el' value.
+(unless (boundp 'cl--proclaims-deferred)
+  (defvar cl--proclaims-deferred nil))
+;; `cl-proclaim' itself: real `cl-macs.el' calls it directly (not just
+;; `cl--proclaims-deferred'); GNU `cl-lib.el' defines it right next to
+;; that defvar.  Staged byte-identical from GNU Emacs 31.1 `cl-lib.el'.
+;; The `(fboundp 'cl--do-proclaim)' branch is live once real `cl-macs.el'
+;; itself has loaded (it defines `cl--do-proclaim'), so this correctly
+;; stops deferring after that point, same as real Emacs.
+(unless (fboundp 'cl-proclaim)
+  (defun cl-proclaim (spec)
+    "Record a global declaration specified by SPEC."
+    (if (fboundp 'cl--do-proclaim) (cl--do-proclaim spec t)
+      (push spec cl--proclaims-deferred))
+    nil))
+
+;; `cl--struct-name-p'/`cl--builtin-type-p' are real Emacs's
+;; `cl-preloaded.el' functions (dumped into every real Emacs before any
+;; Lisp file loads, so no GNU source ever defines them itself either).
+;; The real `cl-macs.el''s `cl-defstruct' macro calls `cl--struct-name-p'
+;; unconditionally as its very first step (`"Can't use `cl-check-type'
+;; yet."' comment) and signals `(wrong-type-argument cl-struct-name-p
+;; NAME 'name)' when it returns nil -- this is exactly the
+;; `cl-generic.el' coverage failure this substrate hit
+;; (`(cl-defstruct (cl--generic-generalizer ...))' near the top of the
+;; real file): loading real `cl-macs.el' plus `cl--proclaims-deferred'
+;; just above is enough to make `cl-macs.el' itself load cleanly (it
+;; never calls its own `cl-defstruct' on itself), but `cl-generic.el'
+;; requires `cl--struct-name-p' to actually exist and answer correctly.
+;; Staged verbatim from GNU Emacs 31.1 `cl-preloaded.el': `cl--builtin-
+;; type-p' already self-guards on `built-in-class-p' being unbound
+;; ("Early bootstrap" comment in the original) and simply answers nil,
+;; which is exactly right here -- this substrate has no `cl--class'/
+;; `built-in-class-p' EIEIO-style class registry, so every struct name
+;; correctly reads as "not a builtin type", matching real Emacs's own
+;; early-bootstrap fallback rather than a new special case.
+(unless (fboundp 'cl--builtin-type-p)
+  (defun cl--builtin-type-p (name)
+    (if (not (fboundp 'built-in-class-p)) ;; Early bootstrap
+        nil
+      (let ((class (and (symbolp name) (get name 'cl--class))))
+        (and class (built-in-class-p class))))))
+(unless (fboundp 'cl--struct-name-p)
+  (defun cl--struct-name-p (name)
+    "Return t if NAME is a valid structure name for `cl-defstruct'."
+    (and name (symbolp name) (not (keywordp name))
+         (not (cl--builtin-type-p name)))))
+
+;; `cl-struct-define' is the OTHER real `cl-preloaded.el' function real
+;; `cl-defstruct''s macro expansion calls (after `cl--struct-name-p'
+;; above passes) to register the new struct in the class registry --
+;; needed for `cl-generic.el' itself to load past its own top-level
+;; `(cl-defstruct (cl--generic-generalizer ...))' (confirmed the exact
+;; failure: without this, `cl--struct-name-p' passes but the next form
+;; in the macro expansion is `void-function cl-struct-define').  Real
+;; `cl-preloaded.el''s own `cl-struct-define' is NOT staged verbatim
+;; here: it builds `cl--class'/`cl-structure-class' objects through a
+;; deliberately circular bootstrap (`cl-structure-class' is itself
+;; defined via `(cl-defstruct (cl-structure-class ...))', which only
+;; works because real Emacs's C dump preloads the whole file as one
+;; atomic, pre-compiled unit) that this substrate's own already-staged,
+;; PARTIAL `cl--class' (`nelisp-standalone-build.el' stages only
+;; `cl--class'/`cl-derived-type-class' themselves, not the
+;; `cl-structure-class'/`cl-structure-object' subtypes real
+;; `cl-struct-define' needs) cannot support without redoing that whole
+;; bootstrap -- and per Doc 157 §5 just below (`compiled-function-p'),
+;; this codebase has already deliberately chosen NOT to make real
+;; `cl-generic.el' fully load: defining `compiled-function-p' would let
+;; `cl--generic-compiler' bind the eval-based dispatcher compiler, and
+;; `cl-generic.el''s own eager `cl--generic-prefill-dispatchers' calls
+;; then take over 280s on this substrate's interpreter (measured that
+;; session).  So `cl-generic.el' loading fully clean end-to-end is not
+;; this substrate's design goal; this substrate's OWN Doc-185
+;; `cl-defmethod' subset (elsewhere in this file) is the supported path.
+;; What THIS minimal `cl-struct-define' does is exactly its real,
+;; observable, outward contract for a plain (non-`:include') struct like
+;; `cl--generic-generalizer' -- register NAME so `cl--find-class'/
+;; `cl--struct-name-p' recognize it, mark TAG (so later `(cl-defstruct
+;; (cl--generic-generalizer ...))'-derived code and any subsequent
+;; `cl-defstruct' in the same file do not immediately re-error) -- without
+;; replicating the full parent/child EIEIO lattice real `cl--class-p'
+;; introspection would need (a `cl--class-p' check against this simple
+;; vector answers nil, same as "class not found", which is the same
+;; graceful no-match this substrate's callers already treat as normal --
+;; see `nelisp-cl-generic--subclass-parents' above).  This unblocks
+;; `cl-generic.el''s own struct definitions from erroring immediately
+;; and lets its load reach exactly the same known, documented
+;; `compiled-function-p' stopping point as every other real cl-generic.el
+;; internal that reaches that defvar -- not a new, earlier failure.
+(unless (fboundp 'cl-struct-define)
+  (defun cl-struct-define (name _docstring _parent _type named slots
+                                 children-sym tag _print)
+    (if (boundp children-sym)
+        (add-to-list children-sym tag)
+      (set children-sym (list tag)))
+    (let ((class (vector 'nelisp--cl-struct-class name slots children-sym tag)))
+      (unless (or (eq named t) (eq tag name))
+        (set tag class)
+        (fset tag :quick-object-witness-check))
+      (setf (cl--find-class name) class))))
+
+;; `cl--block-wrapper'/`cl--block-throw': same "we `provide' cl-lib
+;; without running the real file" gap.  Real `cl-macs.el''s `cl-block'
+;; macro (which overrides this substrate's own once real `cl-macs.el'
+;; loads) expands to a literal `(cl--block-wrapper (catch ... ...))'
+;; call; `cl--block-wrapper' is ONLY ever a real function via this
+;; `defalias' to `identity' in `cl-lib.el' -- `cl-define-compiler-macro'
+;; (real `cl-macs.el', used further down in that same file) attaches an
+;; optimizing compiler-macro property to the symbol but deliberately
+;; never defines the symbol itself as a function (`cl-compiler-macroexpand'
+;; docstring: expansion happens only when byte-compiled).  Staged
+;; byte-identical from GNU Emacs 31.1 `cl-lib.el'.
+(unless (fboundp 'cl--block-wrapper)
+  (defalias 'cl--block-wrapper 'identity))
+(unless (fboundp 'cl--block-throw)
+  (defalias 'cl--block-throw 'throw))
+
+;; `cl-copy-list' (ordinary GNU `cl-lib.el' function, not autoloaded, not
+;; preloaded) is another name real `cl-macs.el' expects `cl-lib.el' to
+;; have already provided, same "we `provide' the feature without running
+;; the real file" gap as `cl--proclaims-deferred' above.  Staged
+;; byte-identical from GNU Emacs 31.1 `cl-lib.el'.
+(unless (fboundp 'cl-copy-list)
+  (defun cl-copy-list (list)
+    "Return a copy of LIST, which may be a dotted list.
+The elements of LIST are not copied, just the list structure itself."
+    (declare (side-effect-free error-free))
+    (if (consp list)
+        (let ((res nil))
+          (while (consp list) (push (pop list) res))
+          (prog1 (nreverse res) (setcdr res list)))
+      (car list))))
+
+;; `easy-menu-define' (real GNU `emacs-lisp/easymenu.el' macro) is not
+;; defined anywhere in this substrate at all -- confirmed by grepping the
+;; whole tree.  This substrate's own `load' has a generic fallback for a
+;; top-level form it cannot handle (falls back to re-evaluating the
+;; form's own source text via `nelisp--load-eval-source-declined-form'/
+;; `nelisp--eval-source-string', both native), and THAT fallback path is
+;; where the actual bug lives: traced this session with `debug-on-error'
+;; loading real `term.el' (which calls `easy-menu-define' 5 times, e.g.
+;; `(easy-menu-define term-pager-menu term-pager-break-map ...)' at its
+;; own top level) -- the backtrace bottoms out at `(void-variable progn)'
+;; several frames inside that fallback's own recursive re-evaluation of
+;; the declined form's source text, with `easy-menu-define' itself still
+;; on the stack.  That native fallback is out of reach here (it is a
+;; built-in dispatch entry in `scripts/nelisp-standalone-build.el', not
+;; plain interpretable Lisp text), but the actual FIX is simpler and more
+;; robust than debugging it: define `easy-menu-define' for real, so this
+;; substrate's loader never needs that fallback for it in the first
+;; place.  Not staged from real `easymenu.el' (which drives an actual
+;; menu-bar/keymap rendering pipeline this substrate has none of); this
+;; instead follows the SAME convention already used elsewhere in this
+;; substrate for menu forms it cannot wire up for real (see the
+;; `occur-menu-map'/`cal-menu.el' precedent noted in this project's own
+;; coverage notes): keep every symbol real code goes on to reference
+;; correctly bound, and drop only the actual menu-bar wiring MAPS would
+;; need.  Real Emacs's own contract for non-nil SYMBOL: define it as a
+;; variable holding the menu data, AND as a function (to pop up the
+;; menu); SYMBOL may also be a LIST of symbols (real Emacs supports
+;; binding the same menu under several names) or nil (anonymous, e.g.
+;; term.el's `(easy-menu-define nil map "Complete menu..." ...)' calls --
+;; nothing to bind, so this expands to a no-op).  MAPS/DOC are real
+;; Emacs's keymap(s)-to-wire-into and docstring, both irrelevant without
+;; a menu-bar to wire into, so neither is evaluated.  MENU itself is
+;; stored as literal data (quoted, not evaluated) in the variable slot,
+;; matching real Emacs: MENU's own `:filter'/`:visible'/`:enable' forms
+;; are real Emacs's own lazy, display-time-only expressions, never
+;; evaluated at definition time there either.
+(unless (fboundp 'easy-menu-define)
+  (defmacro easy-menu-define (symbol maps _doc menu)
+    "Minimal stand-in for real Emacs's `easy-menu-define' (see the long
+comment just above this definition for why and how this substrate's
+version differs): binds SYMBOL (or each name in SYMBOL when it is a
+list; a no-op when SYMBOL is nil) as a variable holding MENU and as a
+no-op function, without wiring a real menu-bar item into MAPS."
+    (ignore maps)
+    (let ((names (cond ((null symbol) nil)
+                        ((symbolp symbol) (list symbol))
+                        (t symbol))))
+      `(prog1 nil
+         ,@(mapcar
+            (lambda (name)
+              `(progn
+                 (unless (boundp ',name) (defvar ,name ',menu))
+                 (unless (fboundp ',name)
+                   (defun ,name (&rest _ignored) nil))))
+            names)))))

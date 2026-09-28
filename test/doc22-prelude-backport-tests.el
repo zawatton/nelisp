@@ -97,9 +97,9 @@
       " (read-from-string \"#24r10\") (read-from-string \"#24rN\")"
       " (symbol-name (car (read-from-string \"##\")))"
       " (read-from-string (concat \"#@4abc\" (string 31) \"42\"))"
-      ;; The old Elisp reader does not accept byte-code objects: preserve its
-      ;; one-token result rather than claiming a native byte-code Sexp exists.
-      " (read-from-string \"#[0 \\\"x\\\" [] 0]\")"
+      ;; GNU byte-code literals construct the real callable tag-17 object.
+      " (let ((r (read-from-string \"#[0 \\\"x\\\" [] 0]\")))"
+      "   (list (byte-code-function-p (car r)) (cdr r)))"
       " (condition-case e (read-from-string \"\") (error e))"
       " (condition-case e (read-from-string \" ;comment\\n\") (error e))"
       " (condition-case e (read-from-string \"#37r1\") (error e))"
@@ -107,7 +107,7 @@
       "   (read-from-string (apply #'string '(34 92 117 49 50 34)))"
       "   (error e)))"))
     (concat
-     "(nil (24 . 6) (23 . 5) \"\" (42 . 9) (# . 1) "
+     "(nil (24 . 6) (23 . 5) \"\" (42 . 9) (t 13) "
      "(end-of-file) (end-of-file) "
      "(invalid-read-syntax \"integer, radix 37\") "
      "(invalid-read-syntax \"Short Unicode escape\"))"))))

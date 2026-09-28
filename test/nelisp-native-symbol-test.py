@@ -243,6 +243,16 @@ class NativeSymbol(unittest.TestCase):
 (terpri)
 '''), '(1 1 1 1 1 1 0 0)\n')
 
+    def test_internal_intern_cursor_is_read_only_and_terminates(self):
+        self.assertEqual(self.repl('''
+(setq intern-cursor-a (intern "symbol-test-intern-cursor-a"))
+(setq intern-cursor-b (intern "symbol-test-intern-cursor-b"))
+(prin1 (symbol-test-intern-scan intern-cursor-a intern-cursor-b))
+(terpri)
+(prin1 (symbol-test-intern-boundary))
+(terpri)
+'''), 't\nt\n')
+
 
 if __name__ == '__main__':
     result = unittest.main(exit=False).result

@@ -28,9 +28,9 @@
         (str-len arg)))
     (defun nl_jit_make_symbol_with_id (arg out identity _pad)
       (if (> identity 0)
-          (if (= (extern-call nl_alloc_uninterned_symbol
+          (if (= (extern-call nl_alloc_uninterned_symbol_named
                               (str-bytes-ptr arg)
-                              (nl_jit_make_symbol_name_len arg) identity out) 0)
+                              (nl_jit_make_symbol_name_len arg) identity arg out) 0)
               1
             0)
         1))

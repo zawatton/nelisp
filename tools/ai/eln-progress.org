@@ -1,0 +1,296 @@
+#+TITLE: NeLisp .eln / JIT compatibility progress ledger
+
+# Checked-criteria progress ledger for the NeLisp .eln/JIT compatibility
+# objective (7 stages, see docs/design/206-standalone-execution-model.org,
+# "P5 -- the standalone JIT", and handoff/nelisp-eln-anvil_claude_2026-09-26.md,
+# "Full objective and order" / "Verified integrated state").
+#
+# Evaluate with the generic meter:
+#   bin/progress-meter.sh --ledger dev/nelisp/tools/ai/eln-progress.org
+# See .claude/reference/progress-ledger.md for the ledger format and the
+# meaning of `cmd:` / `evidence:` / `pending` / `#+REQUIRES:`.
+#
+# Binary-dependent criteria are gated by ELN_PROGRESS_BIN (a NeLisp
+# standalone binary built with NELISP_READER_DYNAMIC=1 and the current
+# lisp/ tree). They SKIP, not PASS, when that variable is unset -- the
+# repo-default target/nelisp is a stale build for this dirty tree (it
+# predates the .eln overlay files) and must not be used as a silent
+# fallback. Host-only criteria run test/*.el under `emacs --batch` and do
+# not need a NeLisp binary at all.
+#
+# All statuses below were verified by hand on 2026-09-27 (HEAD 43f918664
+# + 273-entry dirty tree) before writing this ledger: host-only checks
+# via `emacs --batch`, binary checks via
+# $HOME/.cache/nelisp-eln-rebind-luna-20260926/target/nelisp-rebind-luna.
+# The ledger records what was true then; re-run the meter for current
+# status.
+
+* S1 Same GNU .eln unary identity on Emacs and NeLisp (int/string/cons values, GC identity)
+
+** S1.1 The GNU .eln word ABI round-trips fixnums, nil, and pointer tags without decoding them as runtime values
+cmd: ${EMACS_BIN:-emacs} --batch -Q -L lisp -L src -L test $(for d in packages/*/src; do printf ' -L %s' "$d"; done) -l ert -l test/nelisp-eln-abi-test.el -f ert-run-tests-batch-and-exit
+#+NOTE: verified PASS 5/5 on 2026-09-27.
+
+** S1.2 Static .eln metadata (six-slot vector, packed lengths, UTF-8 docs) parses correctly against synthetic fixtures
+cmd: ${EMACS_BIN:-emacs} --batch -Q -L lisp -L src -L test $(for d in packages/*/src; do printf ' -L %s' "$d"; done) -l ert -l test/nelisp-eln-metadata-test.el -f ert-run-tests-batch-and-exit
+#+NOTE: verified PASS 9/9 on 2026-09-27.
+
+** S1.3 A genuine GNU-produced identity .eln artifact loads via ordinary `load` on the NeLisp binary and integer/string/cons values keep `eq` identity across an explicit GC
+#+REQUIRES: ELN_PROGRESS_BIN
+cmd: NELISP_BIN="$ELN_PROGRESS_BIN" NELISP_ELN_GNU_IDENTITY_ONLY=1 NELISP_ELN_GNU_INPUT="$HOME/.cache/tmp/eln-gnu-identity-investigation/gnu-identity.eln" sh test/nelisp-eln-same-artifact-smoke.sh
+#+NOTE: end-to-end for this stage. Artifact sha256 6a363298478b1f3b5e3f860a7f353e110e161b8a77d66d945c13c9ea7e62253a, pinned GNU Emacs 31.1 ABI ba35c031. Verified PASS on 2026-09-27 against the rebind-luna binary (exit 0, "NELISP-ELN-GNU-IDENTITY-SMOKE-PASS"). SKIPs, not PASSes, without ELN_PROGRESS_BIN -- this stage cannot reach 100% from S1.1/S1.2 alone.
+
+* S2 VM/native arity, roots, and exception contracts (incl. builtin-redefinition immunity)
+
+** S2.1 The native raw-call word/argument boundary encodes and decodes without losing arity or root information
+cmd: ${EMACS_BIN:-emacs} --batch -Q -L lisp -L src -L test $(for d in packages/*/src; do printf ' -L %s' "$d"; done) -l ert -l test/nelisp-eln-raw-call-test.el -f ert-run-tests-batch-and-exit
+#+NOTE: verified PASS 8/8 on 2026-09-27.
+
+** S2.2 The raw-call boundary rejects live, retired, and reused metadata words rather than dereferencing them
+cmd: ${EMACS_BIN:-emacs} --batch -Q -L lisp -L src -L test $(for d in packages/*/src; do printf ' -L %s' "$d"; done) -l ert -l test/nelisp-eln-raw-call-metadata-test.el -f ert-run-tests-batch-and-exit
+#+NOTE: verified PASS 2/2 on 2026-09-27.
+
+** S2.3 native-subr admission rejects short reads and structurally unsafe machine code before it is ever called
+cmd: ${EMACS_BIN:-emacs} --batch -Q -L lisp -L src -L test $(for d in packages/*/src; do printf ' -L %s' "$d"; done) -l ert -l test/nelisp-eln-native-subr-test.el -f ert-run-tests-batch-and-exit
+#+NOTE: verified PASS 3/3 on 2026-09-27.
+
+** S2.4 The ABI-keyed tail-import descriptor table and bounded forward-CFG verifier authenticate an import slot's ABI/arity/bound/tagged-delta before a function is published, and reject unknown ABIs or slots closed
+cmd: ${EMACS_BIN:-emacs} --batch -Q -L lisp -L src -L test $(for d in packages/*/src; do printf ' -L %s' "$d"; done) -l ert -l test/nelisp-eln-tail-import-test.el -f ert-run-tests-batch-and-exit
+#+NOTE: verified PASS 9/9 on 2026-09-27 (grew from 7 to 9 when the decrement descriptor was added; worklog digest c173b0830321001a712b483d2c2465016dde54dd).
+
+** S2.5 The full GNU-increment same-artifact lane keeps native-call admission correct across a genuine user-level `(fset '1+ ...)` rebinding of the public builtin
+#+REQUIRES: ELN_PROGRESS_BIN
+cmd: NELISP_BIN="$ELN_PROGRESS_BIN" NELISP_ELN_GNU_INCREMENT=1 NELISP_ELN_GNU_INPUT="$HOME/.cache/tmp/eln-gnu-arithmetic-probe/overlay/eln/31.1-ba35c031/gnu-increment-77ce8652-cfc975a9.eln" sh test/nelisp-eln-same-artifact-smoke.sh
+#+NOTE: end-to-end for this stage, and a KNOWN-RED criterion: keep this a failing cmd, do not turn it into `pending`. Verified FAIL (exit 1) on 2026-09-27 against the rebind-luna binary: fixnum/overflow/float/error/arity all pass, then the driver's own `(fset '1+ (lambda (&rest _) -99))` at line 129 of test/nelisp-eln-increment-same-artifact-driver.el corrupts `nelisp--path-split` (via expand-file-name, called from function-capability validation), raising args-out-of-range. This is the "Immediate NeLisp blocker: public 1+ rebinding" from the 2026-09-26 handoff; no deliberate builtin-redefinition contract exists yet.
+
+* S3 Generic IR arithmetic and branches, without function-name recognizers
+
+** S3.1 Generic tail-code IR classification decodes fixed-width arithmetic fast-path/bound-check sequences structurally, not by function name
+cmd: ${EMACS_BIN:-emacs} --batch -Q -L lisp -L src -L test $(for d in packages/*/src; do printf ' -L %s' "$d"; done) -l ert -l test/nelisp-eln-tail-code-test.el -f ert-run-tests-batch-and-exit
+#+NOTE: verified PASS 6/6 on 2026-09-27.
+
+** S3.2 Generic leaf-code IR classification locates the first unsupported/reserved opcode in fixed-width object-op sequences without per-function special-casing
+cmd: ${EMACS_BIN:-emacs} --batch -Q -L lisp -L src -L test $(for d in packages/*/src; do printf ' -L %s' "$d"; done) -l ert -l test/nelisp-eln-leaf-code-test.el -f ert-run-tests-batch-and-exit
+#+NOTE: verified PASS 4/4 on 2026-09-27.
+
+** S3.3 Owned GNU-layout numeric object views (float/bignum, nested cons graphs) round-trip with retained owners, rollback, and failed-unmap quarantine/retry
+cmd: ${EMACS_BIN:-emacs} --batch -Q -L lisp -L src -L test $(for d in packages/*/src; do printf ' -L %s' "$d"; done) -l ert -l test/nelisp-eln-objects-numeric-test.el -f ert-run-tests-batch-and-exit
+#+NOTE: verified PASS 8/8 on 2026-09-27.
+
+** S3.4 A second genuine GNU-native-compiled arithmetic artifact (decrement, not increment) is pinned and hash-verified, proving the descriptor table is exercised by more than one function
+evidence: $HOME/.cache/tmp/eln-gnu-decrement-sonnet/overlay/eln/31.1-ba35c031/gnu-decrement-65bb3f2f-636770ba.eln sha256=1b88ee51834c329096542154f10b96b1739f4939f7dc28f8c4cf16298cf73e52
+#+NOTE: Host ABI ba35c031 slot 1300 = Fsub1 (gdb freloc base+0x28a0); slot 1301 = Fadd1. Code differs from increment only in bound/tagged-delta/slot offset (worklog digest c173b0830321001a712b483d2c2465016dde54dd).
+
+** S3.5 The decrement artifact's full normal-load execution (host+nelisp phases, GC-rooted overflow, wrong-type-argument, arity checks) has been run end-to-end, mirroring the increment same-artifact lane
+#+REQUIRES: ELN_PROGRESS_BIN
+cmd: sh -c 'out=$(NELISP_ROOT=$PWD NELISP_BIN="$ELN_PROGRESS_BIN" NELISP_ELN_GNU_INCREMENT=1 NELISP_ELN_GNU_OP=decrement NELISP_ELN_GNU_INPUT="$HOME/.cache/tmp/eln-gnu-decrement-sonnet/overlay/eln/31.1-ba35c031/gnu-decrement-65bb3f2f-636770ba.eln" sh test/nelisp-eln-same-artifact-smoke.sh 2>&1); printf "%s" "$out" | grep -q "^NELISP-ELN-GNU-DECREMENT-PASS " || { printf "%s" "$out" | grep -q "NELISP_DECREMENT_STAGE=arity-and-count-check-complete" && printf "%s" "$out" | grep -q "NELISP_DECREMENT_NATIVE_CALLS_RAW=4_HELPER_CALLBACKS=3"; }'
+#+NOTE: PASS when the whole lane passes (its PASS line; the smoke prints only that line on success) or, while the later rebinding phase is red, when the stages through arity plus native-call counters appear. Fixed 2026-09-28: the old check grepped stage lines only and turned FAIL once the full lane started passing. Verified PASS 2026-09-27 on target/nelisp-decrement-luna (sha de7ad1eb...).
+
+* S4 Native-to-native and native-to-VM calls, including errors
+
+** S4.1 The one-argument (callback1) native-to-VM bridge forwards its single argument and zeroes the rest
+cmd: ${EMACS_BIN:-emacs} --batch -Q -L lisp -L src -L test $(for d in packages/*/src; do printf ' -L %s' "$d"; done) -l ert -l test/nelisp-cc-eln-callback1-test.el -f ert-run-tests-batch-and-exit
+#+NOTE: verified PASS 2/2 on 2026-09-27.
+
+** S4.2 The unary callable-import adapter transports rooted objects and preserves exact success/error/throw/quit status, retaining the whole bundle on pop failure
+cmd: ${EMACS_BIN:-emacs} --batch -Q -L lisp -L src -L test $(for d in packages/*/src; do printf ' -L %s' "$d"; done) -l ert -l test/nelisp-eln-callable-import-test.el -f ert-run-tests-batch-and-exit
+#+NOTE: verified PASS 8/8 on 2026-09-27.
+
+** S4.3 The general (multi-argument) callback bridge's name table appends new bridges with stable indices
+cmd: ${EMACS_BIN:-emacs} --batch -Q -L lisp -L src -L test $(for d in packages/*/src; do printf ' -L %s' "$d"; done) -l ert -l test/nelisp-cc-eln-callback-test.el -f ert-run-tests-batch-and-exit
+#+NOTE: KNOWN-RED, found while building this ledger: verified FAIL on 2026-09-27, 1 unexpected result in `nelisp-cc-eln-callback/bridge-names-append-with-stable-indices`. Not previously reported in the 2026-09-26 handoff; keep as a failing cmd, not pending.
+
+** S4.4 The 7-argument callback bridge's paired lists stay paired and append-only across registrations
+cmd: ${EMACS_BIN:-emacs} --batch -Q -L lisp -L src -L test $(for d in packages/*/src; do printf ' -L %s' "$d"; done) -l ert -l test/nelisp-cc-eln-callback7-test.el -f ert-run-tests-batch-and-exit
+#+NOTE: KNOWN-RED, found while building this ledger: verified FAIL on 2026-09-27, 1 unexpected result in `nelisp-cc-eln-callback7/bridge-lists-are-paired-and-append-only`. Keep as a failing cmd, not pending.
+
+** S4.5 The native unary bridge releases every owner (activation, objects, context) exactly once across error, throw, and quit outcomes, under the real allocator
+#+REQUIRES: ELN_PROGRESS_BIN
+cmd: sh -c 'NELISP_BIN="$ELN_PROGRESS_BIN"; LFLAGS=$(for d in packages/*/src; do printf -- "-L %s " "$d"; done); "$NELISP_BIN" -Q -L lisp -L src -L test $LFLAGS --load test/nelisp-eln-native-subr-unwind-smoke.el'
+#+NOTE: needs the real binary because nl-ffi-memory-allocate requires actual Linux x86_64 syscall-direct support, absent under host Emacs. Verified PASS on 2026-09-27 against the rebind-luna binary ("NELISP_UNARY_BRIDGE_ERROR_THROW_QUIT_CLEANUP=PASS", exit 0).
+
+** S4.6 General non-tail unwinding across native-to-native/native-to-VM call chains (beyond the single unary bridge) has a demonstrated gateway and frame-unwind contract
+#+REQUIRES: ELN_PROGRESS_BIN
+cmd: NELISP_BIN="$ELN_PROGRESS_BIN" EMACS_BIN="${EMACS_BIN:-emacs}" sh test/nelisp-eln-nonlocal-chain-smoke.sh
+#+NOTE: end-to-end for this stage. Contract: docs/design/207-eln-nonlocal-exit-chains.org. The smoke runs 19 scenarios (VM->native->VM, VM->native->VM->native->VM, native->native, native->native->VM; return/error/string-tag throw/quit, Fadd1 slow paths, suppression of the Ffuncall hop after a slow-path error, GC inside two live native activations) on host GNU Emacs 31.1 (genuine gnu-chain.eln + gnu-increment.eln, hash-pinned) and on the NeLisp binary via ordinary `load`, requires identical transcripts, and on NeLisp checks owner/binding/pin baselines and exact callback counts after every scenario. Needs host `emacs` = GNU Emacs 31.1 and a binary with the Doc 207 runtime (arity-2 native subrs, LIFO pin frames, adapter exit capture, VM handler-first unwinding). Verified PASS 2026-09-28 (~25 s) on target/nelisp-s46; FAIL on the pre-change runtime (22 checks) and with callback suppression removed (leaf-calls 1). Supersedes the earlier "pending" (handoff 2026-09-26, Doc 206 §4).
+
+* S5 Genuine GNU metadata, imports, and registration
+
+** S5.1 GNU metadata registration writes each of the six authenticated data-relocation words correctly for a real unit/type pair
+cmd: ${EMACS_BIN:-emacs} --batch -Q -L lisp -L src -L test $(for d in packages/*/src; do printf ' -L %s' "$d"; done) -l ert -l test/nelisp-eln-registration-gnu-metadata-test.el -f ert-run-tests-batch-and-exit
+#+NOTE: verified PASS 11/11 on 2026-09-27.
+
+** S5.2 Registration rejects a mutated GNU top-level thunk rather than admitting it
+cmd: ${EMACS_BIN:-emacs} --batch -Q -L lisp -L src -L test $(for d in packages/*/src; do printf ' -L %s' "$d"; done) -l ert -l test/nelisp-eln-registration-gnu-top-level-test.el -f ert-run-tests-batch-and-exit
+#+NOTE: verified PASS 2/2 on 2026-09-27.
+
+** S5.3 Registration metadata keeps shared cyclic identity and enforces a mutation guard
+cmd: ${EMACS_BIN:-emacs} --batch -Q -L lisp -L src -L test $(for d in packages/*/src; do printf ' -L %s' "$d"; done) -l ert -l test/nelisp-eln-registration-metadata-test.el -f ert-run-tests-batch-and-exit
+#+NOTE: verified PASS 3/3 on 2026-09-27.
+
+** S5.4 The registered subr view writes its authenticated metadata type word correctly
+cmd: ${EMACS_BIN:-emacs} --batch -Q -L lisp -L src -L test $(for d in packages/*/src; do printf ' -L %s' "$d"; done) -l ert -l test/nelisp-eln-registration-objects-test.el -f ert-run-tests-batch-and-exit
+#+NOTE: verified PASS 5/5 on 2026-09-27.
+
+** S5.5 The native-subr bridge releases its resources after a successful call
+cmd: ${EMACS_BIN:-emacs} --batch -Q -L lisp -L src -L test $(for d in packages/*/src; do printf ' -L %s' "$d"; done) -l ert -l test/nelisp-eln-native-subr-bridge-test.el -f ert-run-tests-batch-and-exit
+#+NOTE: verified PASS 4/4 on 2026-09-27.
+
+** S5.6 The metadata arena reserves checked, aligned regions and pins the shared symbol base before any mutation is allowed
+cmd: ${EMACS_BIN:-emacs} --batch -Q -L lisp -L src -L test $(for d in packages/*/src; do printf ' -L %s' "$d"; done) -l ert -l test/nelisp-eln-metadata-arena-test.el -f ert-run-tests-batch-and-exit
+#+NOTE: verified PASS 5/5 on 2026-09-27.
+
+** S5.7 Root indirection for imports validates the last-slot boundary rather than reading past it
+cmd: ${EMACS_BIN:-emacs} --batch -Q -L lisp -L src -L test $(for d in packages/*/src; do printf ' -L %s' "$d"; done) -l ert -l test/nelisp-eln-system-loader-indirection-test.el -f ert-run-tests-batch-and-exit
+#+NOTE: verified PASS 7/7 on 2026-09-27.
+
+** S5.8 A genuine GNU artifact's complete registration -- six-slot metadata vector, both unit vector fields, all six data-relocation words, and type reverse identity -- validates end-to-end on normal load, on the real binary
+#+REQUIRES: ELN_PROGRESS_BIN
+cmd: NELISP_BIN="$ELN_PROGRESS_BIN" NELISP_ELN_GNU_IDENTITY_ONLY=1 NELISP_ELN_GNU_INPUT="$HOME/.cache/tmp/eln-gnu-identity-investigation/gnu-identity.eln" sh test/nelisp-eln-same-artifact-smoke.sh
+#+NOTE: end-to-end for this stage; same lane and same verified PASS as S1.3 -- it is the one existing integration point that exercises metadata, imports, and registration together on a genuine GNU artifact. S5.1-S5.7 prove the pieces in isolation with synthetic fixtures; this is the only one that proves them wired together for real.
+
+* S6 Fixed 19 vendor functions: Host/VM/JIT equality, actual native calls, timing
+
+# The 19-function corpus is not enumerated in prose anywhere in the design
+# doc; it is enumerated in the actual current implementation,
+# tools/nelisp-vendor-bytecode-jit-coverage.el (defconst
+# nelisp-vendor-bytecode-jit-coverage--functions / --small-functions),
+# which the design doc's "fixed 19-function corpus" language (lines 741,
+# 803, 896) refers to. Verified on 2026-09-27 that
+# nelisp-vendor-bytecode-jit-coverage-report's :selected field is exactly
+# 19 and :native_execution_measured is :json-false -- i.e. the tool
+# itself states that none of the 19 have had actual native execution
+# timed yet. Decoding/classification is not native execution (design doc
+# line 741, "decoding alone is not native execution").
+
+** S6.1 The vendor coverage classifier correctly separates structural blockers (malformed bytecode, reserved opcodes) from semantic blockers (unsupported IR) for real byte-compiled functions
+cmd: ${EMACS_BIN:-emacs} --batch -Q -L lisp -L src -L test -L tools $(for d in packages/*/src; do printf ' -L %s' "$d"; done) -l ert -l test/nelisp-vendor-bytecode-jit-coverage-test.el -f ert-run-tests-batch-and-exit
+#+NOTE: KNOWN-RED, found while building this ledger: verified FAIL on 2026-09-27, 8/9 as expected, 1 unexpected in `nelisp-vendor-bytecode-jit-coverage/small-tier-is-source-pinned-and-separate` (expected 2 static-jit-eligible-for-fixnum-inputs, computed 3, on this machine's Emacs 31.1). Keep as a failing cmd, not pending, until the discrepancy is understood.
+
+** S6.2 The GNU .eln JIT backend's own metadata validates for the small subr tier before any timing claim is made
+cmd: ${EMACS_BIN:-emacs} --batch -Q -L lisp -L src -L test -L tools $(for d in packages/*/src; do printf ' -L %s' "$d"; done) -l ert -l test/nelisp-bytecode-jit-gnu-eln-test.el -f ert-run-tests-batch-and-exit
+#+NOTE: verified PASS 5/5 on 2026-09-27.
+
+** S6.3 Host/VM/JIT equality, actual native execution, and timing are measured for `macroexp--all-forms`
+pending
+
+** S6.4 Host/VM/JIT equality, actual native execution, and timing are measured for `macroexpand-1`
+pending
+
+** S6.5 Host/VM/JIT equality, actual native execution, and timing are measured for `macroexp-parse-body`
+pending
+
+** S6.6 Host/VM/JIT equality, actual native execution, and timing are measured for `cconv-closure-convert`
+pending
+
+** S6.7 Host/VM/JIT equality, actual native execution, and timing are measured for `cconv--convert-function`
+pending
+
+** S6.8 Host/VM/JIT equality, actual native execution, and timing are measured for `cconv--set-diff`
+#+REQUIRES: ELN_PROGRESS_BIN
+cmd: NELISP_BIN="$ELN_PROGRESS_BIN" sh test/nelisp-eln-s6-measure.sh --eln "$HOME/.cache/tmp/s6-survey-lex/cconv--set-diff/overlay/eln/31.1-ba35c031/gnu-cconv--set-diff.eln" --function cconv--set-diff --source "$HOME/.cache/tmp/s6-survey-lex/cconv--set-diff/cconv--set-diff.el" --corpus test/fixtures/s6-corpus/cconv--set-diff.el
+#+NOTE: Converted from pending on 2026-09-28 (criteria count unchanged). The blocker this stayed pending on -- the VM phase diverging on corpus row (5 nil) -- is fixed: `nl_sf_dolist' (scripts/nelisp-standalone-build.el) now builds GNU's own subr.el expansion (`(let ((tail LIST)) (while tail (let ((VAR (car tail))) BODY... (setq tail (cdr tail)))) RESULT)', via an uninterned `tail' gensym) instead of rewriting into a `mapc' form, so a non-list LIST signals `(wrong-type-argument listp LIST)' through `car'/`cdr' like GNU, not `(wrong-type-argument sequencep LIST)' from `mapc' (which also wrongly accepted vectors/strings). test/nelisp-dolist-listp-parity-smoke.sh locks in host/standalone parity for list, nil, a non-list atom, a vector, a dotted list, a RESULT form, per-iteration closure capture of VAR (GNU 31 lexical semantics), and a non-local exit from BODY. Native admission (the S6.8 lane note this replaces) is unchanged -- same `gnu-verified-subr' registration profile and `set-difference' body template. PASS on 2026-09-28 with a binary built from this tree (target/nelisp-dl): S6_MEASURE_RESULT status=PASS corpus_n=5 host_ns_per_call=572 vm_ns_per_call=287819 native_ns_per_call=76657009 native_raw_calls=30 native_dispatch_calls=108 eln_sha256=7f4cedf583347a9c908d698a5886d717a8ef7492c69cb1d0ff6d307483fb1392.
+
+** S6.9 Host/VM/JIT equality, actual native execution, and timing are measured for `byte-compile-lambda`
+pending
+#+NOTE: 2026-09-28 (closure object model lane): bytecomp.el now loads and self-compiles its 7 functions in the VM, but host/VM still differ on `(lambda (x) x)': compiling a lambda reaches byte-opt.el through its autoload, and this runtime neither calls autoload objects (invalid-function) nor has byte-opt.el vendored. native phase not admitted (`nelisp-eln-registration-error:top-level-instructions-not-admitted': no exact template admits this body).
+
+** S6.10 Host/VM/JIT equality, actual native execution, and timing are measured for `byte-compile-form`
+pending
+#+NOTE: 2026-09-28 (S6.15 lane, survey only): not attempted -- beyond the 8-port budget. The body (about 1750 disassembly lines, 134 calls) imports over 20 distinct freloc slots, including 2 `push_handler' (condition-case, setjmp/longjmp), 12 `specbind', 4 `helper_unbind_n', 7 `slow_eq', and indirect calls through 25 `*(%rax)' sites; the registration is `(form &optional for-effect)' (min 1, max 2), which no admitted registration template accepts.
+#+NOTE: 2026-09-28 (closure object model lane): host/VM results equal on the whole corpus (harness with --allow-stderr; VM stderr differs from host only by blank lines the host phase adds). native phase not admitted (`nelisp-eln-registration-error:top-level-instructions-not-admitted': no exact template admits this body).
+
+** S6.11 Host/VM/JIT equality, actual native execution, and timing are measured for `byte-compile-make-closure`
+pending
+#+NOTE: 2026-09-28 (closure object model lane): host/VM differ -- `internal-make-closure' compilation reaches byte-opt.el through its autoload (no autoload calls in this runtime, byte-opt.el not vendored). native phase not admitted (`nelisp-eln-registration-error:top-level-instructions-not-admitted': no exact template admits this body).
+
+** S6.12 Host/VM/JIT equality, actual native execution, and timing are measured for `byte-compile-if`
+pending
+#+NOTE: 2026-09-28 (S6.15 lane, survey only): not attempted. Its top_level_run registers two native anonymous lambdas (two slot 1031 `Fcomp__register_lambda' calls) before `(require 'bytecomp)' and register_subr, so admission needs a new registration role plus exact templates for both lambda bodies; the 433-line main body calls 945, 1113 `Fmake_closure', 1335, 1119, 10, 1220 and slot 0 through indirect calls (about 7-8 ports).
+#+NOTE: 2026-09-28 (closure object model lane): host/VM results equal on the whole corpus (--allow-stderr; stderr differs only by host blank lines). native phase not admitted (`nelisp-eln-registration-error:top-level-instructions-not-admitted': no exact template admits this body).
+
+** S6.13 Host/VM/JIT equality, actual native execution, and timing are measured for `byte-compile-setq`
+pending
+#+NOTE: 2026-09-28 (closure object model lane): host/VM results equal on the whole corpus (--allow-stderr; stderr differs only by host blank lines). native phase not admitted (`nelisp-eln-registration-error:top-level-instructions-not-admitted': no exact template admits this body).
+#+NOTE: 2026-09-28 (S6.15 lane): not converted; admission work saved as a patch (not applied), ~/.cache/tmp/nelisp-s6bc/s613-setq-wip.patch. The registration is the same `gnu-require-subr' shape as S6.15 (type slot 12, `(require 'bytecomp)' at slot 11) and is admitted by this tree. The 369-byte body fits an exact `setq-form' template with 7 ports (1250 `Flength' and 1220 `Fnth' as new runtime services, 1320 `Feqlsign', 945 `Ffuncall', 1335, 10, 0), but `Ffuncall' is called with argc 2 and 3 through its one slot, which needs a several-argc MANY port in lisp/nelisp-eln-callable-import.el. Any edit to that file (even a comment) makes target/nelisp-integrated25 load it as interpreted source instead of its build-time compiled copy, and S2.5's `(fset '1+ ...)' then hangs the port loops (exit 124; confirmed by a per-file bisect on a seed copy). So this needs a rebuilt binary. Second blocker: the corpus argument `(setq foo 1)' cannot be marshalled. The object codec refuses the interned symbol `setq' (`unsupported-symbol-state setq', fboundp as a special form); only interned symbols with entirely empty global state get GNU views. The body never dereferences an argument symbol, so an opaque-symbol view mode would fix this, but that is a codec design change. With the patch applied, a probe corpus of setq-shaped forms whose symbols are all empty (not ledger evidence) matched host natively on 3 of 4 rows. The 4th row calls `cl--assertion-failed', which this runtime does not define (void-function in both the VM and native phases).
+
+** S6.14 Host/VM/JIT equality, actual native execution, and timing are measured for `byte-compile-funcall`
+pending
+#+NOTE: 2026-09-28 (closure object model lane): host/VM equal for `(funcall 'foo 1 2)'; `(funcall)' differs -- its warning path calls `advice--cd*r' (nadvice.el, which needs the OClosure subsystem, absent here). native phase not admitted (`nelisp-eln-registration-error:top-level-instructions-not-admitted': no exact template admits this body).
+
+** S6.15 Host/VM/JIT equality, actual native execution, and timing are measured for `byte-compile-constant`
+#+REQUIRES: ELN_PROGRESS_BIN
+cmd: NELISP_BIN="$ELN_PROGRESS_BIN" sh test/nelisp-eln-s6-measure.sh --eln "$HOME/.cache/tmp/s6-survey-lex/byte-compile-constant/overlay/eln/31.1-ba35c031/gnu-byte-compile-constant.eln" --function byte-compile-constant --source "$HOME/.cache/tmp/s6-survey-lex/byte-compile-constant/byte-compile-constant.el" --corpus test/fixtures/s6-corpus/byte-compile-constant.el --wrapper test/fixtures/s6-corpus/byte-compile-constant.wrapper.el
+#+NOTE: Converted from pending on 2026-09-28 (criteria count unchanged; S6.15 lane). Host/VM results and stderr were already equal (closure object model lane); native admission is new. The 93-byte top_level_run (Feval of `(require 'bytecomp)', then register_subr) is admitted by the exact `gnu-require-subr' registration template (lisp/nelisp-eln-registration.el): arity 1, type slot 4 (a genuine `(function (t) t)'), and a Feval call site whose d_reloc form/lexenv decode statically to exactly `(require 'FEATURE)' / `t' with FEATURE in `nelisp-eln-registration--admitted-require-features' (bytecomp); the admitted role sequence (require register) runs NeLisp's own `require', never the artifact's form. The 110-byte body is admitted by the exact `for-effect-constant' multi-import template (lisp/nelisp-eln-tail-code.el): slots 1335 `Fsymbol_value', 945 `Ffuncall' (MANY 2) and 10 `set_internal', all authenticated against freloc-ba35c031.tsv and backed by existing runtime-services implementations (3 ports), d_reloc[0] `byte-compile--for-effect' and d_reloc[2] `byte-compile-push-constant' by identity. Negative tests (tampered byte, unauthenticated call target, wrong type slot, wrong Feval form slot, non-admitted require forms): test/nelisp-eln-s615-constant-admission-test.el (e2e with NELISP_S615_BIN). PASS on 2026-09-28 with target/nelisp-integrated25 (no scripts/ change): S6_MEASURE_RESULT status=PASS corpus_n=2 host_ns_per_call=1526 vm_ns_per_call=669193 native_ns_per_call=42044592 native_raw_calls=27 native_dispatch_calls=54 eln_sha256=f837d057cc7ab74b9684491ad9164a9373c38cf6fe2f56f9dbfef3777d86f5de.
+#+NOTE: Known red under bin/progress-meter.sh only because of its fixed 55 s cmd budget (exit 124): the harness run takes about 80 s (host 2 s, VM 31 s, native 47 s), and both NeLisp phases are dominated by loading vendor bytecomp.el from source (about 27 s: its `(eval-when-compile (require 'compile))' about 13.6 s and its self-byte-compile `eval-when-compile' block about 6 s). Run directly (no meter timeout) it exits 0. It turns green once bytecomp.el loads faster or the meter budget grows; the check itself must not be weakened.
+
+** S6.16 Host/VM/JIT equality, actual native execution, and timing are measured for `zerop`
+#+REQUIRES: ELN_PROGRESS_BIN
+cmd: NELISP_BIN="$ELN_PROGRESS_BIN" sh test/nelisp-eln-s6-measure.sh --eln "$HOME/.cache/tmp/s6-survey-lex/zerop/overlay/eln/31.1-ba35c031/gnu-zerop.eln" --function zerop --source "$HOME/.cache/tmp/s6-survey-lex/zerop/zerop.el" --corpus test/fixtures/s6-corpus/zerop.el
+#+NOTE: Harness exits 0 only when host, NeLisp VM and NeLisp native-load agree on the whole corpus AND native-call counters advanced; faithful lexical-binding artifact (see ~/.cache/tmp/s6-survey-lex/). The native phase loads the genuine artifact through the authenticated registration path into an isolated namespace (`nelisp-eln-registration-isolated-namespace'). PASS on 2026-09-28 (S6.16 pair-admission lane, binary target/nelisp-s616 built from this tree): the `gnu-eval-subr-pair' profile's second body `zerop--anon-cmacro' is admitted by the exact 60-byte `cons-form-constant' template (slot 1119 `Fcons', d_reloc[1] `='), with its own multi-import proof and lease (role plist :lease2, checked against :leaf-cap2) over the shared import table, whose slots are authenticated against freloc-ba35c031.tsv and may not collide with the first body's; it registers as a binary native subr (6-slot tag-18 record, new in scripts/nelisp-standalone-build.el, so ELN_PROGRESS_BIN must include it -- target/nelisp-integrated14 still FAILs with callback-status), and the pair's second type is authenticated through the metadata capability. `zerop''s own MANY (argc, argv) call to slot 1320 now goes through the seven-word callback entry (callback1 zero-filled argv). A tampered second body is rejected with leaf-instructions-not-admitted (test/nelisp-eln-s6-pair-admission-test.el).
+
+** S6.17 Host/VM/JIT equality, actual native execution, and timing are measured for `caar`
+#+REQUIRES: ELN_PROGRESS_BIN
+cmd: NELISP_BIN="$ELN_PROGRESS_BIN" sh test/nelisp-eln-s6-measure.sh --eln "$HOME/.cache/tmp/s6-survey-lex/caar/overlay/eln/31.1-ba35c031/gnu-caar.eln" --function caar --source "$HOME/.cache/tmp/s6-survey-lex/caar/caar.el" --corpus test/fixtures/s6-corpus/caar.el
+#+NOTE: Harness exits 0 only when host, NeLisp VM and NeLisp native-load agree on the whole corpus AND native-call counters advanced; faithful lexical-binding artifact (see ~/.cache/tmp/s6-survey-lex/). The native phase now loads the genuine artifact through the unchanged authenticated registration path into an isolated namespace (`nelisp-eln-registration-isolated-namespace') when the name is already a runtime function, calls the returned native subr directly, and checks the runtime's own binding/plist are untouched. PASS on 2026-09-28 (harness redesign lane) on both target/nelisp-integrated10 and a binary built from this tree: the body's `wrong_type_argument' import (fixed arity 2) now goes through the seven-word callback entry instead of callback1 (which zero-filled the second argument), and the authenticated d_reloc `listp' constant decodes by identity.
+
+** S6.18 Host/VM/JIT equality, actual native execution, and timing are measured for `cadr`
+#+REQUIRES: ELN_PROGRESS_BIN
+cmd: NELISP_BIN="$ELN_PROGRESS_BIN" sh test/nelisp-eln-s6-measure.sh --eln "$HOME/.cache/tmp/s6-survey-lex/cadr/overlay/eln/31.1-ba35c031/gnu-cadr.eln" --function cadr --source "$HOME/.cache/tmp/s6-survey-lex/cadr/cadr.el" --corpus test/fixtures/s6-corpus/cadr.el
+#+NOTE: Harness exits 0 only when host, NeLisp VM and NeLisp native-load agree on the whole corpus AND native-call counters advanced; faithful lexical-binding artifact (see ~/.cache/tmp/s6-survey-lex/). The native phase now loads the genuine artifact through the unchanged authenticated registration path into an isolated namespace (`nelisp-eln-registration-isolated-namespace') when the name is already a runtime function, calls the returned native subr directly, and checks the runtime's own binding/plist are untouched. PASS on 2026-09-28 (harness redesign lane), same fixes as S6.17.
+
+** S6.19 Host/VM/JIT equality, actual native execution, and timing are measured for `fixnump`
+#+REQUIRES: ELN_PROGRESS_BIN
+cmd: NELISP_BIN="$ELN_PROGRESS_BIN" sh test/nelisp-eln-s6-measure.sh --eln "$HOME/.cache/tmp/s6-survey-lex/fixnump/overlay/eln/31.1-ba35c031/gnu-fixnump.eln" --function fixnump --source "$HOME/.cache/tmp/s6-survey-lex/fixnump/fixnump.el" --corpus test/fixtures/s6-corpus/fixnump.el
+#+NOTE: Harness exits 0 only when host, NeLisp VM and NeLisp native-load agree on the whole corpus AND native-call counters advanced; faithful lexical-binding artifact (see ~/.cache/tmp/s6-survey-lex/). The native phase now loads the genuine artifact through the unchanged authenticated registration path into an isolated namespace (`nelisp-eln-registration-isolated-namespace') when the name is already a runtime function, calls the returned native subr directly, and checks the runtime's own binding/plist are untouched. PASS on 2026-09-28 (harness redesign lane) with a binary built from this tree (needs the new `nelisp_eln_callback_portN_entry_word' slot-identifying ports; target/nelisp-integrated10 lacks them and fails closed): exact-template multi-import shape (`nelisp-eln-tail-code--multi-import-shapes' `fixnum-range'), slot 1317 `Fleq' and slot 1 `helper_PSEUDOVECTOR_TYPEP_XUNTAG' each installed on their own port and authenticated against the freloc slot table; both ports exercised by the corpus.
+
+** S6.20 Host/VM/JIT equality, actual native execution, and timing are measured for `bignump`
+#+REQUIRES: ELN_PROGRESS_BIN
+cmd: NELISP_BIN="$ELN_PROGRESS_BIN" sh test/nelisp-eln-s6-measure.sh --eln "$HOME/.cache/tmp/s6-survey-lex/bignump/overlay/eln/31.1-ba35c031/gnu-bignump.eln" --function bignump --source "$HOME/.cache/tmp/s6-survey-lex/bignump/bignump.el" --corpus test/fixtures/s6-corpus/bignump.el
+#+NOTE: Harness exits 0 only when host, NeLisp VM and NeLisp native-load agree on the whole corpus AND native-call counters advanced; faithful lexical-binding artifact (see ~/.cache/tmp/s6-survey-lex/). The native phase now loads the genuine artifact through the unchanged authenticated registration path into an isolated namespace (`nelisp-eln-registration-isolated-namespace') when the name is already a runtime function, calls the returned native subr directly, and checks the runtime's own binding/plist are untouched. PASS on 2026-09-28 (harness redesign lane) with a binary built from this tree (port entries, see S6.19): exact `bignum' shape, ports for slots 945 `Ffuncall', 1 and 7 `slow_eq'; d_reloc[1] `fixnump' / d_reloc[4] `t' decode by authenticated identity; f_symbols_with_pos_enabled_reloc points at an owned zero byte (symbols with position are never enabled in NeLisp).
+
+** S6.21 Host/VM/JIT equality, actual native execution, and timing are measured for `frame-configuration-p`
+#+REQUIRES: ELN_PROGRESS_BIN
+cmd: NELISP_BIN="$ELN_PROGRESS_BIN" sh test/nelisp-eln-s6-measure.sh --eln "$HOME/.cache/tmp/s6-survey-lex/frame-configuration-p/overlay/eln/31.1-ba35c031/gnu-frame-configuration-p.eln" --function frame-configuration-p --source "$HOME/.cache/tmp/s6-survey-lex/frame-configuration-p/frame-configuration-p.el" --corpus test/fixtures/s6-corpus/frame-configuration-p.el
+#+NOTE: Harness exits 0 only when host, NeLisp VM and NeLisp native-load agree on the whole corpus AND native-call counters advanced; faithful lexical-binding artifact (see ~/.cache/tmp/s6-survey-lex/). The native phase now loads the genuine artifact through the unchanged authenticated registration path into an isolated namespace (`nelisp-eln-registration-isolated-namespace') when the name is already a runtime function, calls the returned native subr directly, and checks the runtime's own binding/plist are untouched. PASS on 2026-09-28 (harness redesign lane) with a binary built from this tree (port entries, see S6.19): exact `car-eq-constant' shape; the corpus's interned `frame-configuration' encodes to exactly the artifact's authenticated d_reloc[1] word, and an interned symbol with entirely empty global state (`not-frame-configuration') gets an interned view, both only during the S6 multi-import call; bound interned symbols still fail closed.
+
+** S6.22 Host/VM/JIT actual-execution parity and timing have been measured across the full fixed-19 vendor corpus, not merely classified/decoded
+pending
+#+NOTE: end-to-end for this stage. `nelisp-vendor-bytecode-jit-coverage-report`'s own `native_execution_measured` field is `:json-false` as of 2026-09-27; this stage is 0% by the tool's own admission, independent of S6.3-S6.21.
+
+* S7 Replace the old .neln path within proven coverage; crash/cleanup handling
+
+** S7.1 A symbol-base lease pins through unit/symbol cleanup, keeping metadata pointers valid across release
+cmd: ${EMACS_BIN:-emacs} --batch -Q -L lisp -L src -L test $(for d in packages/*/src; do printf ' -L %s' "$d"; done) -l ert -l test/nelisp-eln-symbol-base-lease-test.el -f ert-run-tests-batch-and-exit
+#+NOTE: verified PASS 3/3 on 2026-09-27.
+
+** S7.2 An empty-symbol add/release failure quarantines the registry instead of silently continuing
+cmd: ${EMACS_BIN:-emacs} --batch -Q -L lisp -L src -L test $(for d in packages/*/src; do printf ' -L %s' "$d"; done) -l ert -l test/nelisp-eln-objects-empty-symbols-test.el -f ert-run-tests-batch-and-exit
+#+NOTE: verified PASS 3/3 on 2026-09-27. This is the regression cover for the malformed unwind-protect fixed in nelisp-eln-objects--add-symbols (design doc lines 882-889): commit-inside-dolist plus cleanup-inside-protected-body used to poison the registry on empty-symbol processing.
+
+** S7.3 String object views validate their owner before any field read
+cmd: ${EMACS_BIN:-emacs} --batch -Q -L lisp -L src -L test $(for d in packages/*/src; do printf ' -L %s' "$d"; done) -l ert -l test/nelisp-eln-string-test.el -f ert-run-tests-batch-and-exit
+#+NOTE: verified PASS 13/13 on 2026-09-27.
+
+** S7.4 Float object views reject access before allocation rather than reading uninitialized state
+cmd: ${EMACS_BIN:-emacs} --batch -Q -L lisp -L src -L test $(for d in packages/*/src; do printf ' -L %s' "$d"; done) -l ert -l test/nelisp-eln-float-test.el -f ert-run-tests-batch-and-exit
+#+NOTE: verified PASS 2/2 on 2026-09-27.
+
+** S7.5 Bignum object views enforce the same allocation/lifetime discipline as float views
+cmd: ${EMACS_BIN:-emacs} --batch -Q -L lisp -L src -L test $(for d in packages/*/src; do printf ' -L %s' "$d"; done) -l ert -l test/nelisp-eln-bignum-test.el -f ert-run-tests-batch-and-exit
+#+NOTE: verified PASS 3/3 on 2026-09-27.
+
+** S7.6 The default (NeLisp-emitted fixture) same-artifact lane retains exactly the expected pending owner when a metadata read is made to fail
+#+REQUIRES: ELN_PROGRESS_BIN
+cmd: NELISP_BIN="$ELN_PROGRESS_BIN" sh test/nelisp-eln-same-artifact-smoke.sh
+#+NOTE: KNOWN-RED, found while building this ledger: verified FAIL (exit 1) on 2026-09-27 against the rebind-luna binary, at a `cleanup-failure-driver.el` negative control: "cleanup failure did not retain one pending owner". Also verified that the default *repo* target/nelisp (built 2026-09-23, stale relative to the current .eln overlay files) fails much earlier, inside nelisp-eln-objects.el's own top-level `require` -- confirming the repo-default binary must not be used as a fallback for any ELN_PROGRESS_BIN-gated check.
+
+** S7.7 The old `.neln` path has been replaced within proven coverage, with a demonstrated migration/unload switchover and general (not just per-fixture) crash handling
+#+REQUIRES: ELN_PROGRESS_BIN
+cmd: NELISP_BIN="$ELN_PROGRESS_BIN" sh test/nelisp-eln-switchover-smoke.sh
+#+NOTE: end-to-end for this stage and for the whole objective's switchover. Converted from pending on 2026-09-28 (criteria count unchanged). Design: docs/design/208-neln-to-eln-switchover.org, which defines "proven coverage" concretely (pinned genuine artifacts by sha256 with their S1.3/S5.8/S6.17-21 + S7.7.4 evidence; self-emitted migrated artifacts of kind constant/identity/expression whose migration record matches their bytes; argument coverage bounded by the object codec, with a recorded per-call fallback). Router: lisp/nelisp-eln-switchover.el; loader hook `nelisp-artifact-neln-eln-router' (nil by default). The smoke compiles a real .neln with host Emacs, then two concurrent binary processes: migrate the cache to GNU-format .eln, route one batch with truncated / wrong-ABI / flipped-byte artifacts in the middle plus the pinned GNU identity artifact (rejections recorded, batch continues, results equal the .neln definitions, registry consistent), unload (previous definitions restored, owners/units/handles and /proc/self/maps private copies released), reload with new module ids, defer release while a routed function is still referenced, and propagate a registry quarantine as recorded fallbacks. Verified PASS 2026-09-28 on target/nelisp-integrated14 in 31-36 s on a loaded host; negative controls (router without restore / without owner release) fail at UNLOAD_RESTORED / UNLOAD_RELEASED. Does NOT make P5 complete: the stage's other red/pending criteria and S6.22 stand; native run-time faults inside admitted code are excluded by admission, not recovered (Doc 208 §5).
+
+** S7.7.4 The corpus-wide crash gate loads every genuine .eln artifact on hand plus the self-emitted fixture, and rejects a corrupted copy of each (flipped .text byte, truncation, wrong ABI hash) without a process crash or registry inconsistency
+#+REQUIRES: ELN_PROGRESS_BIN
+cmd: NELISP_BIN="$ELN_PROGRESS_BIN" sh tools/nelisp-eln-crash-corpus-gate.sh
+#+NOTE: Added 2026-09-28 (criteria count 56 -> 57). KNOWN-RED: 91/93 on nelisp-integrated (sha 09d1a843...), zero crashes; gnu-increment and gnu-decrement are ADMITTED with a flipped .text byte because the tail-import analysis skips per-instruction validation once it recognizes a tail descriptor. Keep as a failing cmd until admission covers every byte of the admitted body. Re-run 2026-09-28 (S7.7 lane) on target/nelisp-integrated14: PASS 101/101, zero crashes, gnu-increment/decrement corrupt-text now rejected.

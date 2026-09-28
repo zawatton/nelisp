@@ -1,0 +1,6 @@
+(defun nelisp-autoload-rollback-existing ()
+  'changed)
+(defun nelisp-autoload-rollback-new ()
+  'new)
+(provide 'nelisp-autoload-rollback-feature)
+(error "autoload fixture failure")

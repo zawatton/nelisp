@@ -1,0 +1,105 @@
+;;; nl-ffi-loader-symbol-info-test.el --- Bounded ELF object reads -*- lexical-binding: t; -*-
+
+(require 'ert)
+(require 'cl-lib)
+(require 'nl-ffi-loader)
+
+(defun nl-ffi-loader-symbol-info-test--handle ()
+  (list :nl-ffi-loader-magic nl-ffi-loader--magic
+        :path "/artifact" :graph
+        (let ((graph (make-hash-table :test 'equal)))
+          (puthash "/artifact"
+                   (list :bias #x100000
+                         :loads '((#x1000 0 #x200 #x200 4)))
+                   graph)
+          graph)
+        :search-order '("/artifact")))
+
+(ert-deftest nl-ffi-loader-symbol-info-preserves-lookup-fields ()
+  (let ((graph (make-hash-table :test 'equal)))
+    (puthash "/root" (list :dyn nil) graph)
+    (cl-letf (((symbol-function 'nl-ffi-loader--lookup-in-node)
+               (lambda (_node _name) (list #x1234 2 1 19 7))))
+      (should (equal (nl-ffi-loader--lookup-across-graph graph '("/root") "blob")
+                     '(#x1234 2 1 "/root" 19 7))))))
+
+(ert-deftest nl-ffi-loader-read-root-object-bytes-success ()
+  (let ((handle (nl-ffi-loader-symbol-info-test--handle))
+        (reads 0))
+        (cl-letf (((symbol-function 'nl-ffi-loader-symbol-info)
+               (lambda (_handle _name)
+                 (list :address #x101000 :size 4 :type 1
+                       :source-path "/artifact" :section-index 18)))
+              ((symbol-function 'ptr-read-bytes)
+               (lambda (address length)
+                 (setq reads (1+ reads))
+                 (should (= address #x101001))
+                 (should (= length 2))
+                 (unibyte-string #x41 #x42))))
+      (should (equal (nl-ffi-loader-read-root-object-bytes handle "blob" 1 2)
+                     (unibyte-string #x41 #x42)))
+      (should (= reads 1)))))
+
+(ert-deftest nl-ffi-loader-read-root-object-bytes-preserves-all-octets ()
+  (let ((handle (nl-ffi-loader-symbol-info-test--handle))
+        (values [0 128 255]))
+    (cl-letf (((symbol-function 'nl-ffi-loader-symbol-info)
+               (lambda (_handle _name)
+                 (list :address #x101000 :size 3 :type 1
+                       :source-path "/artifact" :section-index 18)))
+              ((symbol-function 'ptr-read-bytes)
+               (lambda (_address length)
+                 (should (= length 3))
+                 (apply #'unibyte-string (append values nil)))))
+      (let ((bytes (nl-ffi-loader-read-root-object-bytes handle "blob" 0 3)))
+        (should (= (length bytes) 3))
+        (should (equal bytes (unibyte-string 0 128 255)))))))
+
+(ert-deftest nl-ffi-loader-symbol-info-rejects-reserved-sections ()
+  (let ((handle (nl-ffi-loader-symbol-info-test--handle)))
+    (dolist (section '(0 #xff00 #xff01 #xfff1 #xfff2 #xffff))
+      (cl-letf (((symbol-function 'nl-ffi-loader--lookup-across-graph)
+                 (lambda (&rest _args)
+                   (list #x101000 1 1 "/artifact" 4 section))))
+        (should (eq (condition-case err
+                        (progn (nl-ffi-loader-symbol-info handle "blob") nil)
+                      (nl-ffi-loader-unsupported (car err)))
+                    'nl-ffi-loader-unsupported))))))
+
+(ert-deftest nl-ffi-loader-read-root-object-bytes-rejects-before-payload-read ()
+  (dolist (case '((:negative -1 1 1 "/artifact" 18)
+                  (:overrun 3 2 1 "/artifact" 18)
+                  (:wrong-type 0 1 2 "/artifact" 18)
+                  (:dependency 0 1 1 "/dependency" 18)
+                  (:bss 0 1 1 "/artifact" 18)
+                  (:undefined-section 0 1 1 "/artifact" 0)
+                  (:absolute-section 0 1 1 "/artifact" #xfff1)
+                  (:common-section 0 1 1 "/artifact" #xfff2)
+                  (:extended-section 0 1 1 "/artifact" #xffff)))
+    (let ((handle (nl-ffi-loader-symbol-info-test--handle))
+          (reads 0)
+          (tag (nth 0 case))
+          (offset (nth 1 case))
+          (length (nth 2 case))
+          (type (nth 3 case))
+          (source (nth 4 case))
+          (section (if (nth 5 case) (nth 5 case) 18))
+          (address #x101000))
+      (when (eq tag :bss) (setq address #x101300))
+      (cl-letf (((symbol-function 'nl-ffi-loader-symbol-info)
+                 (lambda (_handle _name)
+                   (list :address address :size 4 :type type
+                         :source-path source :section-index section)))
+                ((symbol-function 'ptr-read-bytes)
+                 (lambda (&rest _args) (setq reads (1+ reads)) 0)))
+        (let ((condition (condition-case err
+                             (progn (nl-ffi-loader-read-root-object-bytes
+                                     handle "blob" offset length)
+                                    nil)
+                           (nl-ffi-loader-unsupported (car err)))))
+          (ert-info ((format "case=%S" case))
+            (should (eq condition 'nl-ffi-loader-unsupported))))
+        (should (= reads 0))))))
+
+(provide 'nl-ffi-loader-symbol-info-test)
+;;; nl-ffi-loader-symbol-info-test.el ends here

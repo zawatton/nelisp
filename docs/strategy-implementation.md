@@ -136,6 +136,13 @@ Formal arguments retain lexical classification; they are not part of the new
 declared-special `let` path. These limits prevent a claim of complete lexical
 and dynamic binding compatibility.
 
+The proposed next package-management architecture is
+[Doc 203: Nelix as the shared package foundation](design/203-nelix-package-foundation.org).
+It preserves `nelisp.toml`/`nelisp.lock` and CLI behavior while moving verified
+artifact acquisition/storage behind a versioned Nelix API, followed by resolver
+and standalone qualification. Its protocol, isolation/recovery requirements and
+acceptance cases guide subsequent work; integration is not yet implemented.
+
 The [package resolution contract](package-resolution.md) defines the initial
 offline version solver and deterministic lock encoding. CLI update/fetch and
 shared runtime dependency loading are now connected, with HTTPS artifact

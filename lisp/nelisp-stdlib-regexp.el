@@ -23,6 +23,9 @@ distinct patterns from all-cold into (after the first pass) all-warm.")
 (defvar nlre--compiled-cache-tick 0
   "Monotonic counter stamped onto a cache entry's TICK slot on add/touch;
 higher means more recently used.  See `nlre--cache-evict'.")
+(defvar nlre--match-end-limit nil
+  "Dynamic exclusive ceiling for characters consumed by the matcher.
+The full input length remains available for anchors and boundary context.")
 (defvar nlre--compiled-cache-last nil
   "The most recently added-or-hit entry: an O(1) repeat-call shortcut for
 `nlre--compiled-pattern' that does not depend on `nlre--compiled-cache-lru'
@@ -708,21 +711,27 @@ return that atom node; else nil."
               (and span (cons (+ start (car span)) (+ start (cdr span))))))
       (setq i (1+ i)))))
 
+(defun nlre--can-consume-p (pos n)
+  "Return non-nil when a character at POS is within the matcher bounds."
+  (< pos (if nlre--match-end-limit
+             (min n nlre--match-end-limit)
+           n)))
+
 (defun nlre--match-atom1 (node s pos n)
   "Match a single non-quantified atom NODE at POS; return end-pos or nil.
 Does NOT continue to any rest (used for one repetition)."
   (let ((tag (car node)))
     (cond
-     ((eq tag :lit) (and (< pos n)
+     ((eq tag :lit) (and (nlre--can-consume-p pos n)
                          (eq (nlre--fold-char (aref s pos))
                              (nlre--fold-char (nth 1 node)))
                          (1+ pos)))
-     ((eq tag :any) (and (< pos n) (not (eq (aref s pos) ?\n)) (1+ pos)))
-     ((eq tag :set) (and (< pos n) (nlre--set-match (nth 1 node) (nth 2 node) (aref s pos)) (1+ pos)))
-     ((eq tag :word) (and (< pos n) (let ((w (nlre--word-p (aref s pos)))) (if (nth 1 node) (not w) w)) (1+ pos)))
-     ((eq tag :space) (and (< pos n) (let ((w (nlre--space-p (aref s pos)))) (if (nth 1 node) (not w) w)) (1+ pos)))
+     ((eq tag :any) (and (nlre--can-consume-p pos n) (not (eq (aref s pos) ?\n)) (1+ pos)))
+     ((eq tag :set) (and (nlre--can-consume-p pos n) (nlre--set-match (nth 1 node) (nth 2 node) (aref s pos)) (1+ pos)))
+     ((eq tag :word) (and (nlre--can-consume-p pos n) (let ((w (nlre--word-p (aref s pos)))) (if (nth 1 node) (not w) w)) (1+ pos)))
+     ((eq tag :space) (and (nlre--can-consume-p pos n) (let ((w (nlre--space-p (aref s pos)))) (if (nth 1 node) (not w) w)) (1+ pos)))
      ((eq tag :syntax)
-      (and (< pos n)
+      (and (nlre--can-consume-p pos n)
            (let ((m (nlre--syntax-p (nth 1 node) (aref s pos))))
              (if (nth 2 node) (not m) m))
            (1+ pos)))
@@ -836,6 +845,32 @@ Return end-pos or nil."
        (let ((nd (car nodes)))
          (and (consp nd) (eq (car nd) :lit) (nth 1 nd)))))
 
+;; PERF (Doc 205 split-string follow-up, 2026-09-28): `nlre--leading-lit-char'
+;; only ever fires for a bare `:lit', so a pattern like "[ \t\n]+" -- a
+;; `:plus' of a `:set', with no single leading literal -- got no filter at
+;; all: every rejected position paid a full `nlre--match-list' `:plus'
+;; rewrite-and-recurse.  `:plus'/`:lazyplus' require >=1 repetition, so the
+;; wrapped atom must hold at the candidate start exactly like a bare `:lit'
+;; does; `:star'/`:opt'/lazy variants are excluded below because they allow
+;; zero repetitions, so a match can start there even when the atom itself
+;; does not.  The tags matched here are the same fixed-width, capture-free
+;; ones `nlre--single-atom-node' already trusts for its own fast plan.
+(defun nlre--leading-required-atom (nodes)
+  "Return the leading fixed-width atom NODES's first match must satisfy at
+its start position, or nil.  This is either a bare `:lit'/`:any'/`:set'/
+`:word'/`:space'/`:syntax' node, or one wrapped in a `:plus'/`:lazyplus'."
+  (and (consp nodes)
+       (let ((nd (car nodes)))
+         (and (consp nd)
+              (cond
+               ((memq (car nd) '(:lit :any :set :word :space :syntax)) nd)
+               ((memq (car nd) '(:plus :lazyplus))
+                (let ((inner (nth 1 nd)))
+                  (and (consp inner)
+                       (memq (car inner) '(:lit :any :set :word :space :syntax))
+                       inner)))
+               (t nil))))))
+
 (defun nlre--caps-clear (v)
   "Set every slot of vector V to nil.
 `fillarray' is not available on the standalone reader prelude."
@@ -844,9 +879,11 @@ Return end-pos or nil."
       (setq k (1- k))
       (aset v k nil))))
 
-(defun nlre-string-match (regexp string &optional start)
-  "Pure-elisp `string-match'.  Return match start index, or nil.
-Sets `nlre--match-data' (and host match-data when available via set-match-data)."
+(defun nlre-string-match (regexp string &optional start max-end)
+  "Pure-elisp `string-match'; return match start index, or nil.
+START is the first candidate start.  If MAX-END is non-nil, require the
+match to end at or before that index while preserving anchors against all
+of STRING.  Sets `nlre--match-data' as usual."
   (setq nlre--string-match-calls (1+ nlre--string-match-calls))
   (when (and nlre--string-match-counter-file
              (= (mod nlre--string-match-calls nlre--string-match-counter-interval) 0)
@@ -856,6 +893,8 @@ Sets `nlre--match-data' (and host match-data when available via set-match-data).
   (let* ((nlre--fold case-fold-search)
          (compiled (nlre--compiled-pattern regexp))
          (n (length string))
+         (limit (if max-end (max 0 (min n max-end)) n))
+         (nlre--match-end-limit limit)
          (i (or start 0))
          (ng (aref compiled 1))
          (plan (aref compiled 2))
@@ -864,41 +903,73 @@ Sets `nlre--match-data' (and host match-data when available via set-match-data).
          (hit nil))
     (setq nlre--caps caps)
     (cond
-     ((and plan (eq (aref plan 0) :literal))
+     ((and (null max-end) plan (eq (aref plan 0) :literal))
       (setq nlre--fast-plan-hits (1+ nlre--fast-plan-hits)
             hit (nlre--literal-plan-match plan string i n))
       (when hit (aset caps 0 (cons hit (+ hit (length (aref plan 1)))))))
-     ((and plan (eq (aref plan 0) :suffix))
+     ((and (null max-end) plan (eq (aref plan 0) :suffix))
       (setq nlre--fast-plan-hits (1+ nlre--fast-plan-hits))
       (let ((result (nlre--suffix-plan-match plan string i n)))
         (when result
           (setq hit (car result))
           (nlre--plan-set-caps caps (cdr result) hit n))))
-     ((and plan (eq (aref plan 0) :atom))
+     ((and (null max-end) plan (eq (aref plan 0) :atom))
       (setq nlre--fast-plan-hits (1+ nlre--fast-plan-hits)
             hit (nlre--atom-plan-match plan string i n))
       (when hit (aset caps 0 (cons hit (1+ hit)))))
      (t
       (let* ((top (nlre--seq-nodes (aref compiled 0)))
              (lead (nlre--leading-lit-char top))
-             (lead (and lead (nlre--fold-char lead))))
-        (when lead
+             (lead (and lead (nlre--fold-char lead)))
+             (req-atom (and (not lead) (nlre--leading-required-atom top))))
+        (when (or lead req-atom)
           (setq nlre--leading-filter-calls (1+ nlre--leading-filter-calls)))
-        (if lead
-            (while (and (not hit) (< i n))
-              (if (not (eq (nlre--fold-char (aref string i)) lead))
-                  (setq i (1+ i))
-                (when (> ng 1) (nlre--caps-clear caps))
-                (let ((e (nlre--match-list top string i n)))
-                  (if e
-                      (progn (aset caps 0 (cons i e)) (setq hit i))
-                    (setq i (1+ i))))))
-          (while (and (not hit) (<= i n))
+        (cond
+         (lead
+          (while (and (not hit) (< i limit))
+            (if (not (eq (nlre--fold-char (aref string i)) lead))
+                (setq i (1+ i))
+              (when (> ng 1) (nlre--caps-clear caps))
+              (let ((e (nlre--match-list top string i n)))
+                (if e
+                    (progn (aset caps 0 (cons i e)) (setq hit i))
+                  (setq i (1+ i)))))))
+         (req-atom
+          ;; Same cheap-reject idea as the `:lit' branch above, generalized
+          ;; to any single-char atom (see `nlre--leading-required-atom').
+          ;; Inlined rather than calling `nlre--match-atom1' -- that call
+          ;; would repeat the bounds check this loop's own `(< i limit)'
+          ;; already guarantees, and this loop runs once per rejected
+          ;; character, so each avoided function call matters.
+          (let ((tag (car req-atom)))
+            (while (and (not hit) (< i limit))
+              (let ((c (aref string i)))
+                (if (not (cond
+                          ((eq tag :lit)
+                           (eq (nlre--fold-char c) (nlre--fold-char (nth 1 req-atom))))
+                          ((eq tag :any) (not (eq c ?\n)))
+                          ((eq tag :set) (nlre--set-match (nth 1 req-atom) (nth 2 req-atom) c))
+                          ((eq tag :word)
+                           (let ((w (nlre--word-p c))) (if (nth 1 req-atom) (not w) w)))
+                          ((eq tag :space)
+                           (let ((w (nlre--space-p c))) (if (nth 1 req-atom) (not w) w)))
+                          ((eq tag :syntax)
+                           (let ((m (nlre--syntax-p (nth 1 req-atom) c)))
+                             (if (nth 2 req-atom) (not m) m)))
+                          (t nil)))
+                    (setq i (1+ i))
+                  (when (> ng 1) (nlre--caps-clear caps))
+                  (let ((e (nlre--match-list top string i n)))
+                    (if e
+                        (progn (aset caps 0 (cons i e)) (setq hit i))
+                      (setq i (1+ i)))))))))
+         (t
+          (while (and (not hit) (<= i limit))
             (when (> ng 1) (nlre--caps-clear caps))
             (let ((e (nlre--match-list top string i n)))
               (if e
                   (progn (aset caps 0 (cons i e)) (setq hit i))
-                (setq i (1+ i)))))))))
+                (setq i (1+ i))))))))))
     (when hit
       (setq nlre--last-caps caps)
       hit)))
@@ -921,32 +992,190 @@ Sets `nlre--match-data' (and host match-data when available via set-match-data).
                 (cons (+ offset (car span)) (+ offset (cdr span))))))
       (setq i (1+ i)))))
 
+;; PERF (search-forward quadratic-cost fix, 2026-09-28): each of the three
+;; functions below used to hand `nlre-string-match' a freshly built
+;; `(buffer-substring base LIMIT)' -- a copy of everything from point out
+;; to BOUND/`point-max', even when the match (or non-match) lay a handful
+;; of characters away.  On a buffer with no BOUND that copy was the whole
+;; remaining buffer, EVERY call, so a loop like `(while (search-forward
+;; "\n" nil t) ...)' paid O(buffer size) per match instead of O(distance
+;; to the next match): measured 36.7s for an 80KB buffer vs. 0.11s for a
+;; 2KB buffer of the same shape (should be ~linear, i.e. ~40x, not ~334x).
+;; `nlre-string-match' already takes START/MAX-END to scan a window of an
+;; existing string without copying it, so the fix is to hand it `(buffer-
+;; string)' (itself memoized per buffer against a content tick -- see
+;; `nelisp-buffer-string' in src/nelisp-buffer.el / this file's own
+;; scripts/nelisp-stdlib-prelude.el mirror) instead of a fresh substring,
+;; with START/MAX-END doing the windowing that used to require a copy.
+;; `nlre--caps-offset' then wants 1 (0-based full-string index -> 1-based
+;; buffer position), not BASE, since index 0 of the whole-buffer string is
+;; always buffer position 1, regardless of where the scan started.
+;;
+;; `nelisp-buffer-string' always returns BUF's UNRESTRICTED text, so a
+;; narrowed buffer takes the pre-fix path (`buffer-substring' over
+;; exactly [BASE, LIMIT)): narrowing is not exercised by this fix's own
+;; timing case and is left at its original, correctness-preserving
+;; cost.  `nlre--buffer-narrowed-p' below decides which path applies,
+;; using only already-public names so this file does not need to know
+;; about `nelisp-buffer''s narrow-start/narrow-end slots directly.
+;;
+;; One side effect, verified against Emacs 31.1 rather than assumed: the
+;; pre-fix substring truncated to BOUND also truncated what `$'/`\'' saw
+;; as "the end of the string", so `(re-search-forward "hello$" 6 t)' on
+;; buffer text "helloworld" incorrectly matched at BOUND=6 (there is no
+;; newline or buffer end there).  Real Emacs's anchors ignore BOUND (they
+;; only care about a real newline or true `point-max'), and passing the
+;; untruncated whole-buffer string now agrees with that -- a correctness
+;; improvement of the same fix, not a separate change.
+(defun nlre--buffer-narrowed-p ()
+  "Non-nil if the current buffer's accessible range is not the whole
+buffer."
+  (or (/= (point-min) 1) (/= (point-max) (1+ (buffer-size)))))
+
 (defun nlre--looking-at (regexp)
   (let* ((base (point))
-         (hit (nlre-string-match
-               regexp (buffer-substring base (point-max)) 0)))
-    (when (and hit (= hit 0))
-      (nlre--caps-offset base)
+         (narrowed (nlre--buffer-narrowed-p))
+         (hit (if narrowed
+                  (nlre-string-match regexp (buffer-substring base (point-max)) 0)
+                (nlre-string-match regexp (buffer-string) (1- base) (1- (point-max))))))
+    (when (and hit (= hit (if narrowed 0 (1- base))))
+      (nlre--caps-offset (if narrowed base 1))
       t)))
 
 (defun nlre--re-search-forward (regexp &optional bound noerror count)
-  (let ((left (or count 1)) (limit (or bound (point-max))) result)
-    (while (> left 0)
-      (let* ((base (point))
-             (hit (nlre-string-match regexp (buffer-substring base limit) 0)))
-        (if (null hit) (setq left 0 result nil)
-          (nlre--caps-offset base)
-          (goto-char (nlre-match-end 0))
-          (setq result (point) left (1- left)))))
-    (if result result
-      (if noerror
-          (progn (unless (eq noerror t) (goto-char limit)) nil)
-        (signal 'search-failed (list regexp))))))
+  ;; Two pre-existing (not perf-related) parity gaps found while adding
+  ;; the timing/parity matrix for the fix above; both probed against
+  ;; Emacs 31.1 rather than assumed, and both fixed here since they sit
+  ;; in the exact function the perf fix already touches.  Neither was
+  ;; reachable via the search-forward/search-backward literal-string
+  ;; wrappers before now, since `search-backward' itself did not exist
+  ;; (see `search-backward' in scripts/nelisp-stdlib-prelude.el).
+  ;;
+  ;; 1) COUNT 0 used to fall through to `(or count 1)' treating 0 as
+  ;;    itself (0 is non-nil in Lisp), leaving the search loop's `left'
+  ;;    at 0 -- no iterations, `result' stays nil, and NOERROR t then
+  ;;    answered nil instead of real Emacs's unconditional "no-op,
+  ;;    return point" for COUNT 0.  Probed against Emacs 31.1: true
+  ;;    under NOERROR nil/t/other alike, AND even with an otherwise
+  ;;    invalid (wrong-side) BOUND -- 0 repetitions never looks at BOUND
+  ;;    at all -- so this check must come before check 2 below, not
+  ;;    after it.
+  (if (eq count 0)
+      (point)
+    ;; 2) BOUND on the wrong side of point signalled nothing at all here
+    ;;    (`re-search-backward' already has the mirror-image check for
+    ;;    its own direction) -- real Emacs signals plain `error'
+    ;;    "Invalid search bound (wrong side of point)" UNCONDITIONALLY,
+    ;;    even under NOERROR t (NOERROR only covers a search that fails
+    ;;    to match, not an invalid BOUND).  A BOUND past `point-max' is
+    ;;    fine (Emacs just clamps it via `point-max' below, same as this
+    ;;    function already did before this comment).
+    (when (and bound (< bound (point)))
+      (signal 'error (list "Invalid search bound (wrong side of point)")))
+    (let ((left (or count 1)) (limit (or bound (point-max))) result)
+      (while (> left 0)
+        (let* ((base (point))
+               (narrowed (nlre--buffer-narrowed-p))
+               (hit (if narrowed
+                        (nlre-string-match regexp (buffer-substring base limit) 0)
+                      (nlre-string-match regexp (buffer-string) (1- base) (1- limit)))))
+          (if (null hit) (setq left 0 result nil)
+            (nlre--caps-offset (if narrowed base 1))
+            (goto-char (nlre-match-end 0))
+            (setq result (point) left (1- left)))))
+      (if result result
+        (if noerror
+            (progn (unless (eq noerror t) (goto-char limit)) nil)
+          (signal 'search-failed (list regexp)))))))
+
+(defun nlre--regex-last-match-before (regexp string lower max-end)
+  "Return the rightmost (START . CAPS) match in STRING.
+LOWER is the minimum candidate start and MAX-END bounds match consumption.
+The full STRING remains visible to anchors and boundary assertions."
+  (let* ((nlre--fold case-fold-search)
+         (compiled (nlre--compiled-pattern regexp))
+         (nlre--match-end-limit max-end)
+         (n (length string))
+         (ng (aref compiled 1))
+         (nodes (nlre--seq-nodes (aref compiled 0)))
+         (caps (make-vector ng nil))
+         (pos max-end)
+         (result nil))
+    (setq nlre--caps caps)
+    (while (and (null result) (>= pos lower))
+      (when (> ng 1) (nlre--caps-clear caps))
+      (let ((end (nlre--match-list nodes string pos n)))
+        (when end
+          (aset caps 0 (cons pos end))
+          (setq result (cons pos caps))))
+      (setq pos (1- pos)))
+    result))
+
+(defun nlre--re-search-backward (regexp &optional bound noerror count)
+  "Search backward for REGEXP, preserving full-buffer anchor context.
+This uses `nlre-string-match' backtracking with a separate match-end ceiling."
+  (setq count (or count 1))
+  (unless (integerp count)
+    (signal 'wrong-type-argument (list 'integerp count)))
+  (if (= count 0)
+      (point)
+    (when (and bound (markerp bound))
+      (setq bound (marker-position bound)))
+    (when (and bound (not (integerp bound)))
+      (signal 'wrong-type-argument (list 'integer-or-marker-p bound)))
+    (let* ((origin (point))
+           (base (point-min))
+           (end (point-max))
+           (direction (if (< count 0) 1 -1))
+           (limit (if bound
+                      (progn
+                        (when (if (> direction 0) (< bound origin) (> bound origin))
+                          (error "Invalid search bound (wrong side of point)"))
+                        (max base (min end bound)))
+                    (if (> direction 0) end base))))
+      (if (> direction 0)
+          (nlre--re-search-forward regexp limit noerror (- count))
+        ;; See the PERF block comment above `nlre--looking-at': BASE/END
+        ;; here are always `(point-min)'/`(point-max)', so when the buffer
+        ;; is not narrowed they already denote the whole accessible text
+        ;; -- `(buffer-string)' (memoized) is exactly that text, without
+        ;; re-`concat'ing it on every call the way `buffer-substring' did.
+        ;; OFF converts a 0-based index of whichever string was chosen
+        ;; back to an absolute 1-based buffer position, generalizing the
+        ;; original's hardcoded BASE.
+        (let* ((narrowed (nlre--buffer-narrowed-p))
+               (old-caps nlre--last-caps)
+               (text (if narrowed (buffer-substring base end) (buffer-string)))
+               (off (if narrowed base 1))
+               (lower (- limit off))
+               (cursor (- origin off))
+               (remaining count)
+               (last-match nil)
+               (failed nil))
+          (while (and (> remaining 0) (not failed))
+            (setq last-match
+                  (nlre--regex-last-match-before regexp text lower cursor))
+            (if last-match
+                (progn
+                  (setq cursor (car last-match)
+                        remaining (1- remaining)))
+              (setq failed t)))
+          (if failed
+              (progn
+                (setq nlre--last-caps old-caps)
+                (if noerror
+                    (progn (unless (eq noerror t) (goto-char limit)) nil)
+                  (signal 'search-failed (list regexp))))
+            (setq nlre--last-caps (cdr last-match))
+            (nlre--caps-offset off)
+            (goto-char (+ off (car last-match)))))))))
 
 (unless (fboundp 'looking-at)
   (fset 'looking-at (symbol-function 'nlre--looking-at)))
 (unless (fboundp 're-search-forward)
   (fset 're-search-forward (symbol-function 'nlre--re-search-forward)))
+(unless (fboundp 're-search-backward)
+  (fset 're-search-backward (symbol-function 'nlre--re-search-backward)))
 
 ;; ---- regexp-dependent string helpers (built on nlre-string-match) ----
 
@@ -971,13 +1200,60 @@ Sets `nlre--match-data' (and host match-data when available via set-match-data).
   "Emacs-regexp metacharacters that make a would-be one-byte SEPARATOR to
 `nlre-split-string' unsafe to treat as a plain literal byte.")
 
+;; PERF: SEPARATORS nil (the overwhelmingly common call shape -- every
+;; `(split-string STRING)' with no args) used to fall straight into
+;; `nlre-split-string--regexp-path' against "[ \f\t\n\r\v]+", a `:plus' of
+;; a `:set'.  `nlre-string-match''s leading-char filter only recognizes a
+;; bare `:lit', so that path gets none: every rejected character pays a
+;; full `nlre--match-list' `:plus'->`:star' rewrite-and-recurse instead of
+;; one cheap comparison.  Measured on this tree (Doc 205 split-string
+;; follow-up, 2026-09-28): splitting a real ~124-byte "<hex>  /tmp/...\n"
+;; line this way cost 100-450 ms, independent of the string's length and
+;; driven entirely by how many non-whitespace characters had to be
+;; rejected before the first separator -- the same shape of bug already
+;; fixed once for `executable-find' (Doc 201 §6.8) and for a literal
+;; one-byte SEPARATOR just above.  A plain `aref' scan for the same fixed,
+;; small character set answers in microseconds and needs no regexp engine
+;; at all.
+(defconst nlre--split-whitespace-chars '(?\s ?\f ?\t ?\n ?\r ?\v)
+  "Characters `split-string-default-separators' (\"[ \\f\\t\\n\\r\\v]+\")
+matches, used by `nlre--split-on-whitespace' to skip the regexp engine
+for `split-string' calls with SEPARATORS nil.")
+
+(defun nlre--split-on-whitespace (string)
+  "Fast path for `(split-string STRING)' (SEPARATORS nil): split on runs of
+`nlre--split-whitespace-chars', always omitting empty fields and trimming
+any leading/trailing run -- exactly the SEPARATORS-nil contract, which
+forces OMIT-NULLS to t (see `split-string''s docstring).  Also updates the
+match data to the last separator run consumed, as `split-string' via
+repeated `string-match' calls would."
+  (let ((len (length string)) (i 0) (parts nil) (last-sep nil))
+    (while (and (< i len) (memq (aref string i) nlre--split-whitespace-chars))
+      (setq i (1+ i)))
+    (when (> i 0) (setq last-sep (cons 0 i)))
+    (while (< i len)
+      (let ((start i))
+        (while (and (< i len)
+                    (not (memq (aref string i) nlre--split-whitespace-chars)))
+          (setq i (1+ i)))
+        (setq parts (cons (substring string start i) parts))
+        (let ((sep-start i))
+          (while (and (< i len)
+                      (memq (aref string i) nlre--split-whitespace-chars))
+            (setq i (1+ i)))
+          (when (> i sep-start) (setq last-sep (cons sep-start i))))))
+    (when last-sep (setq nlre--last-caps (vector last-sep)))
+    (nreverse parts)))
+
 (defun nlre-split-string (string &optional separators omit-nulls)
   "Like `split-string'.  Default SEPARATORS = whitespace run, which also
 implies OMIT-NULLS and leading/trailing trim (matching GNU Emacs)."
-  (if (and separators (= (length separators) 1)
-           (not (memq (aref separators 0) nlre--split-single-byte-metachars)))
-      (nelisp--split-on-char string (aref separators 0) omit-nulls)
-    (nlre-split-string--regexp-path string separators omit-nulls)))
+  (cond
+   ((null separators) (nlre--split-on-whitespace string))
+   ((and (= (length separators) 1)
+         (not (memq (aref separators 0) nlre--split-single-byte-metachars)))
+    (nelisp--split-on-char string (aref separators 0) omit-nulls))
+   (t (nlre-split-string--regexp-path string separators omit-nulls))))
 
 (defun nlre-split-string--regexp-path (string separators omit-nulls)
   (let* ((default (null separators))

@@ -441,9 +441,22 @@ Set `nelisp-jit-enabled' to toggle JIT on/off without uninstalling."
 ;; would make the default a value nobody acts on.  The advice itself
 ;; reads the flag on every call, so installing here does not commit the
 ;; session to the JIT -- binding the flag nil still takes the bcl path.
-(unless (advice-member-p #'nelisp-jit--bc-try-advice
-                         'nelisp-bc-try-compile-lambda)
-  (nelisp-jit-install))
+;;
+;; The JIT emits host Elisp for `byte-compile' and is wired in through
+;; nadvice, so it only exists where nadvice does (host Emacs, where
+;; nadvice is preloaded).  The NeLisp standalone has no nadvice, and
+;; `nelisp-bytecode' soft-requires this file: calling `advice-member-p'
+;; unconditionally there signalled `(void-function advice-member-p)'
+;; from inside that `require' (its NOERROR covers only a missing file),
+;; so `(require 'nelisp-bytecode)' -- and with it every standalone
+;; `extend-runtime-image' run, whose embedded command source requires
+;; the bytecode lane -- aborted before reading its arguments.  Without
+;; nadvice the bcl path simply stays in charge, exactly as in a tree
+;; without this package.
+(when (fboundp 'advice-add)
+  (unless (advice-member-p #'nelisp-jit--bc-try-advice
+                           'nelisp-bc-try-compile-lambda)
+    (nelisp-jit-install)))
 
 (provide 'nelisp-jit)
 ;;; nelisp-jit.el ends here

@@ -29,6 +29,11 @@
 
 ;;; Code:
 
+(unless (fboundp 'json-parse-string)
+  (error "json-parse-string should be available before requiring json"))
+(unless (eq (json-parse-string "true") t)
+  (error "json-parse-string should parse before requiring json"))
+
 (require 'json)
 
 (defvar nelisp--json-compat-smoke-cases 0)
@@ -83,6 +88,16 @@
  "parse-string default object-type hash-table value"
  (gethash "a" (json-parse-string "{\"a\":1}"))
  1)
+
+(nelisp--json-compat-smoke-check
+ "parse-string honors array and null/false sentinel options"
+ (json-parse-string "{\"n\":null,\"f\":false,\"a\":[null,false]}"
+                    :object-type 'alist
+                    :array-type 'list
+                    :null-object 'null-token
+                    :false-object 'false-token)
+ '((n . null-token) (f . false-token)
+   (a null-token false-token)))
 
 (with-temp-buffer
   (insert "{\"a\":1,\"b\":{\"c\":2}}")

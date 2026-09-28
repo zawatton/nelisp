@@ -73,6 +73,12 @@
   i64
   (:alloc none :ffi may :unsafe may))
 
+(sys:extern nelisp_env_lookup_value
+  (:symbol "nelisp_env_lookup_value" :abi c :unsafe t)
+  ((mirror_ptr usize) (frames_ptr usize) (name_ptr usize) (out_ptr usize))
+  i64
+  (:alloc none :ffi may :unsafe may))
+
 (sys:extern nelisp_env_bind_local
   (:symbol "nelisp_env_bind_local" :abi c :unsafe t)
   ((mirror_ptr usize) (frames_ptr usize) (name_ptr usize)
@@ -481,10 +487,77 @@
      (sys:poke-u64 buf 107083775959404)
      (nl_alloc_symbol buf 6 sym_slot))))
 
+;; Opt-in JIT binder diagnostics. The marker exists only while the JIT
+;; artifact compiler is evaluating generated source with tracing enabled.
+(sys:defun nl_bf_arity_trace_write_marker
+    ((sym_slot usize))
+  usize
+  (:alloc may :ffi may :unsafe may)
+  (let ((buf usize (sys:alloc 40 1)))
+    (sys:unsafe
+     (sys:poke-u64 buf 7074434230661178734)
+     (sys:poke-u64 (+ buf 8) 3271131133926274169)
+     (sys:poke-u64 (+ buf 16) 7955998162902346090)
+     (sys:poke-u64 (+ buf 24) 3271129974537727332)
+     (sys:poke-u64 (+ buf 32) 28259013852491365)
+     (nl_alloc_symbol buf 39 sym_slot))))
+
+(sys:defun nl_bf_arity_trace_write_name
+    ((sym_slot usize))
+  usize
+  (:alloc may :ffi may :unsafe may)
+  (let ((buf usize (sys:alloc 40 1)))
+    (sys:unsafe
+     (sys:poke-u64 buf 3255381746650998126)
+     (sys:poke-u64 (+ buf 8) 8388352524414050668)
+     (sys:poke-u64 (+ buf 16) 8241918702437098029)
+     (sys:poke-u64 (+ buf 24) 7161130725800506473)
+     (sys:poke-u64 (+ buf 32) 101)
+     (nl_alloc_symbol buf 33 sym_slot))))
+
+(sys:defun nl_bf_arity_trace_write_int
+    ((value i64) (slot usize))
+  i64
+  (:alloc none :ffi may :unsafe may)
+  (sys:unsafe
+   (sys:poke-u64 slot 2)
+   (sys:poke-u64 (+ slot 8) value)
+   (sys:poke-u64 (+ slot 16) 0)
+   (sys:poke-u64 (+ slot 24) 0)))
+
+(sys:defun nl_bf_arity_trace
+    ((env (ptr eval_ctx)) (required i64) (got i64))
+  i64
+  (:alloc may :ffi may :unsafe may)
+  (let ((marker usize (sys:alloc 32 8))
+        (bound usize (sys:alloc 32 8))
+        (name usize (sys:alloc 32 8))
+        (required-slot usize (sys:alloc 32 8))
+        (got-slot usize (sys:alloc 32 8))
+        (nil-slot usize (sys:alloc 32 8))
+        (tail usize (sys:alloc 32 8))
+        (trace usize (sys:alloc 32 8))
+        (mirror usize (+ (sys:cast usize env) (sys:offsetof eval_ctx mirror)))
+        (frames usize (+ (sys:cast usize env) (sys:offsetof eval_ctx frames))))
+    (nl_bf_arity_trace_write_marker marker)
+    (if (= (sys:unsafe (nelisp_env_lookup_value mirror frames marker bound)) 0)
+        (if (= (sys:unsafe (sys:peek-u64 bound)) 0)
+            (sys:cast i64 0)
+          (seq (nl_bf_arity_trace_write_name name)
+               (nl_bf_arity_trace_write_int required required-slot)
+               (nl_bf_arity_trace_write_int got got-slot)
+               (nl_env_write_nil_slot nil-slot)
+               (sys:unsafe
+                (nelisp_cons_construct got-slot nil-slot tail)
+                (nelisp_cons_construct required-slot tail trace))
+               (nl_env_set_value env name trace)))
+      0)))
+
 (sys:defun nl_bf_err_arity
     ((env (ptr eval_ctx)) (required i64) (got i64))
   i64
   (:alloc may :ffi may :unsafe may)
+  (nl_bf_arity_trace env required got)
   (let ((tag_slot usize (sys:alloc 32 8))
         (lambda_slot usize (sys:alloc 32 8))
         (int_slot usize (sys:alloc 32 8))

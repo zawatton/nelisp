@@ -90,10 +90,20 @@ non-local-exit behaviour are covered by the standalone reader smoke."
          ((equal needle tree) t)
          ((consp tree)
           (or (tree-member-p needle (car tree))
-              (tree-member-p needle (cdr tree)))))))
+              (tree-member-p needle (cdr tree))))))
+       (tree-count
+        (needle tree)
+        (cond
+         ((equal needle tree) 1)
+         ((consp tree)
+          (+ (tree-count needle (car tree))
+             (tree-count needle (cdr tree))))
+         (t 0))))
     ;; Stage 2's write and mark sides both exist, and the scan applies the
     ;; ordinary tagged-slot marker to every 32-byte entry in [region, top).
-    (dolist (name '(nl_root_mark nl_root_reserve nl_root_release
+    (dolist (name '(nl_root_mark nl_root_reserve nl_root_reserve_checked
+                    nl_root_release nl_root_pin_begin nl_root_pin_reserve
+                    nl_root_pin_end nl_gc_mark_pinned_roots
                     nl_thread_registry_add nl_thread_registry_clear
                     nl_gc_mark_rootstack nl_gc_mark_thread_roots
                     nl_thread_park_request_begin
@@ -104,6 +114,26 @@ non-local-exit behaviour are covered by the standalone reader smoke."
                             nelisp-cc-rootstack--source)))
       (should (tree-member-p '(extern-call nl_gc_mark_slot p) walk))
       (should (tree-symbol-p 'nl_gc_mark_slot walk)))
+    (let ((reserve (defun-form 'nl_root_reserve_checked
+                               nelisp-cc-rootstack--source)))
+      (should (tree-member-p '(nl_thread_registry_find env) reserve))
+      (should (tree-member-p '(nl_root_reserve_slot slot) reserve))
+      (should (tree-member-p '(nl_root_reserve_private env entry slot)
+                             reserve))
+      (should (tree-member-p '(+ env 1052672) reserve))
+      (should (tree-member-p '(logand (- slot base) 31) reserve))
+      (should-not (tree-symbol-p 'nl_root_reserve_or_scratch reserve)))
+    (let ((begin (defun-form 'nl_root_pin_begin nelisp-cc-rootstack--source))
+          (reserve (defun-form 'nl_root_pin_reserve nelisp-cc-rootstack--source))
+          (end (defun-form 'nl_root_pin_end nelisp-cc-rootstack--source))
+          (mark (defun-form 'nl_gc_mark_pinned_roots
+                             nelisp-cc-rootstack--source)))
+      (should (tree-member-p '(data-addr nl_root_pin_control) begin))
+      (should (tree-member-p '(data-addr nl_root_pin_region) reserve))
+      (should (tree-member-p '(ptr-read-u64 control 8) reserve))
+      (should (tree-member-p '(ptr-read-u64 control 16) reserve))
+      (should (tree-member-p '(atomic-compare-exchange control 1 0) end))
+      (should (tree-member-p '(nl_gc_mark_rootstack_walk base top) mark)))
 
     ;; The public diagnostic tuple keeps the live registry count at index 16,
     ;; followed by current/last parked, missed, and successful-collect counts.
@@ -188,10 +218,27 @@ non-local-exit behaviour are covered by the standalone reader smoke."
            (drive-body (cdddr drive)))
       (should walk)
       (should drive)
-      (should (equal (length (caddr drive)) 4))
+      ;; The drive helper owns the seven checked slots as explicit parameters;
+      ;; its only caller must pass that same frame in the same order.
+      (should (equal (caddr drive)
+                     '(cur_ptr env_ptr acc_slot root_mark state_slot eval_slot
+                       nil_slot node_slot head_slot tail_slot status_slot)))
+      (should (= (tree-count 'nl_root_reserve_checked body) 7))
+      (should (equal
+               (mapcar #'car (cadr (car body)))
+               '(root_mark state_slot eval_slot nil_slot node_slot head_slot
+                 tail_slot status_slot)))
+      (should (tree-member-p
+               '(if (= status_slot 0)
+                    (seq (nl_root_release env_ptr root_mark) 1)
+                  (nl_eval_arg_list_drive
+                   cur_ptr env_ptr acc_slot root_mark state_slot eval_slot
+                   nil_slot node_slot head_slot tail_slot status_slot))
+               body))
+      (should (= (tree-count 'nl_eval_arg_list_drive body) 1))
       (should (tree-symbol-p 'while drive-body))
       (should (tree-symbol-p 'nl_root_mark body))
-      (should (tree-symbol-p 'nl_root_reserve body))
+      (should (tree-symbol-p 'nl_root_reserve_checked body))
       (should (tree-symbol-p 'nl_root_release drive-body))
       (should (tree-symbol-p 'nl_sexp_clone_into drive-body))
       (should (tree-symbol-p 'nl_eval_arg_list_copy32 drive-body))
@@ -657,6 +704,32 @@ A dispatch arm nothing installs is dead code that still links."
     (should (cl-find "ExitProcess" relocs
                      :key (lambda (r) (plist-get r :symbol))
                      :test #'equal))))
+
+(ert-deftest nelisp-standalone-target-linux-start-checks-stack-mmap ()
+  "The Linux x86_64 start unit branches away when the native-stack mmap fails.
+Without the check a failed mmap became rsp = -errno + SIZE - 16 and the
+`call driver' push faulted: a silent rc=139 with no output."
+  (let* ((nelisp-standalone--target 'linux-x86_64)
+         (unit (nelisp-standalone--target-start-unit t))
+         (text (cdr (assq 'text (plist-get unit :sections))))
+         (reloc (car (plist-get unit :relocs)))
+         (check (unibyte-string #x0f #x05                      ; syscall
+                                #x48 #x3d #x01 #xf0 #xff #xff  ; cmp rax, -4095
+                                #x73))                         ; jae fail
+         (pos (string-search check text)))
+    (should (equal (plist-get unit :name) "start.o"))
+    (should pos)
+    ;; The mmap syscall is the first one; the check follows it directly.
+    (should (= pos (string-search (unibyte-string #x0f #x05) text)))
+    ;; The branch target lies past the normal exit syscall and starts with
+    ;; `neg rax'.
+    (let ((target (+ pos (length check) 1 (aref text (+ pos (length check))))))
+      (should (equal (substring text target (+ target 3))
+                     (unibyte-string #x48 #xf7 #xd8))))
+    (should (equal (plist-get reloc :symbol) "driver"))
+    (should (= (aref text (1- (plist-get reloc :offset))) #xe8))
+    (should (string-search nelisp-standalone--native-stack-mmap-fail-message
+                           text))))
 
 (ert-deftest nelisp-standalone-target-windows-reader-uses-wide-file-api ()
   "Windows reader opens files with CreateFileW and UTF-8/UTF-16 conversion."
@@ -1572,7 +1645,11 @@ Windows uses the target-correct `.obj' unit name; linux/macOS keep `.o'."
                                 (cons "nl_gc_conserv_state"
                                       (+ 57616 4194304 96 176 64 56 40 1040
                                          (if (eq target 'windows-x86_64) 8 0)
-                                         64 192 64 40 8))))
+                                         64 192 64 40 8))
+                                (cons "nl_root_pin_control"
+                                      (nelisp-standalone--driver-bss-base-size))
+                                (cons "nl_root_pin_region"
+                                      (nelisp-standalone--root-pin-region-offset))))
           (let ((sym (cdr (assoc (car expected) by-name))))
             (should sym)
             (should (equal (cdr expected) (plist-get sym :value)))
@@ -1593,10 +1670,9 @@ Windows uses the target-correct `.obj' unit name; linux/macOS keep `.o'."
         ;; then the 64-byte large-free-list head array after the 192-byte
         ;; aref cache table, then 40 bytes for the collector-only start index
         ;; and an 8-byte small-bucket occupancy mask, followed by the external
-        ;; conservative collector's 64-byte work queue/cache record.
-        (should (equal (+ 57616 4194304 96 176 64 56 40 1040
-                          (if (eq target 'windows-x86_64) 8 0)
-                          64 192 64 40 8 64)
+        ;; conservative collector's 64-byte work queue/cache record.  The
+        ;; pin control and aligned 16K-slot root region follow this legacy BSS.
+        (should (equal (nelisp-standalone--driver-bss-size)
                        (cdr (assq 'bss (plist-get u :sections)))))))))
 
 (ert-deftest nelisp-standalone-target-stage8-build-appends-arena-base-slot-unit ()
@@ -2755,13 +2831,29 @@ without the async core and process adapter that define the standard names."
 
 (ert-deftest nelisp-standalone-fixed-arities-match-host-contracts ()
   (dolist (contract (nelisp-standalone--builtin-fixed-arities))
-    (if (equal (car contract) "nelisp--declare-local-special")
-        ;; This private reader bridge has no Emacs subr counterpart.  Its
-        ;; accepted/rejected calls are exercised by the native arity suite.
-        (should (= (cdr contract) 1))
+    (if (member (car contract)
+                '("nelisp--declare-local-special"
+                  "nelisp--native-pin-copy" "nelisp--native-pin-eq-slots"
+                  "nelisp--native-unbox-reference" "ptr-call"))
+        ;; These private reader bridges have no Emacs subr counterpart.  Their
+        ;; accepted/rejected calls are exercised by native runtime suites.
+        (should (= (cdr contract)
+                   (cond ((equal (car contract) "ptr-call") 7)
+                         ((equal (car contract) "nelisp--native-pin-eq-slots")
+                          2)
+                         ((member (car contract)
+                                  '("nelisp--native-pin-copy"
+                                    "nelisp--native-unbox-reference"))
+                          3)
+                         (t 1))))
       ;; Unknown names still fail instead of silently dropping host coverage.
       (should (equal (func-arity (intern (car contract)))
                      (cons (cdr contract) (cdr contract)))))))
+
+(ert-deftest nelisp-standalone-fixed-arity-registers-ptr-call-contract ()
+  "The reader's indirect call validates address plus six native arguments."
+  (should (equal (assoc "ptr-call" (nelisp-standalone--builtin-fixed-arities))
+                 '("ptr-call" . 7))))
 
 (defvar nelisp-standalone-test--arity-side-effect nil)
 

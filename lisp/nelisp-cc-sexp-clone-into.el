@@ -101,7 +101,7 @@
             (if (= tag 9)  (nelisp_nlchartable_clone box)
               (if (= tag 10) (nelisp_nlboolvector_clone box)
                 (if (= tag 11) (nelisp_nlcell_clone box)
-                  (if (= tag 12) (nelisp_nlrecord_clone box)
+                  (if (or (= tag 12) (= tag 17)) (nelisp_nlrecord_clone box)
                     0))))))))
 
     ;; Boxed path: bump rc, then bit-copy the slot.
@@ -133,7 +133,7 @@
     ;; a refcounted box that does not exist for this tag; this is an
     ;; explicit tag-13 arm instead, matching Str/Symbol's own explicitness.
     (defun nl_sci_dispatch (src dst tag)
-      (if (or (= tag 14) (= tag 16))
+      (if (or (= tag 14) (= tag 16) (= tag 18))
           ;; Immutable raw-byte strings and identity-bearing symbols retain
           ;; their buffers; cloning must not create a new symbol identity.
           (nl_sci_copy src dst)
@@ -149,13 +149,9 @@
           (if (< tag 4) (nl_sci_copy src dst)
             (nl_sci_rc src dst tag)))))))
 
-    ;; Public C-ABI entry: nl_sexp_clone_into(dst, src) = ptr::write(dst,(*src).clone()).
-    ;; Doc 135 cutover fix: the param order is (DST SRC) to match the Rust
-    ;; signature, the `(sys:extern ...)' decls, and EVERY caller (which all
-    ;; pass dst first).  The prior `(src dst)' defun had params reversed vs.
-    ;; all callers, so every clone wrote the SOURCE slot and read the DEST --
-    ;; corrupting e.g. the bootstrap unbound-marker.  (Latent: the eval
-    ;; driver never reached runtime before this cutover, so it was untested.)
+    ;; Public C-ABI entry: nl_sexp_clone_into(src, dst) = ptr::write(dst,(*src).clone()).
+    ;; The executable defun and callers use source first, destination second;
+    ;; the final writes always target DST.
     (defun nl_sci_store_imm (word dst)
       ;; Doc 146 §3.0 step 6: materialise an immediate value WORD as a 32-byte
       ;; storage Sexp at DST.  (word&3)==1 Int -> tag2 + (sar word 2); word==3

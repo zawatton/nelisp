@@ -47,6 +47,25 @@
                   (wf_write_nil out) 0))
             ((:lit "symbol-test-global-get") .
              (seq (nelisp_mirror_lookup_value (+ env 0) (wf_arg_ptr args 0) out) 0))
+            ((:lit "symbol-test-intern-scan") .
+             (let* ((scratch (alloc-bytes 32 8)))
+               (if (= (nl_symbol_test_intern_scan
+                       0 (wf_arg_ptr args 0) (wf_arg_ptr args 1) scratch) 1)
+                   (wf_write_t out) (wf_write_nil out))))
+            ((:lit "symbol-test-intern-boundary") .
+             (let* ((scratch (alloc-bytes 32 8)))
+               (seq
+                (wf_write_int scratch 123)
+                (if (= (nl_intern_next 1048576 scratch) -1)
+                    (if (and (= (sexp-tag scratch) 2)
+                             (= (ptr-read-u64 scratch 8) 123))
+                        (if (= (nl_intern_next -1 scratch) -1)
+                            (if (and (= (sexp-tag scratch) 2)
+                                     (= (ptr-read-u64 scratch 8) 123))
+                                (wf_write_t out) (wf_write_nil out))
+                          (wf_write_nil out))
+                      (wf_write_nil out))
+                  (wf_write_nil out)))))
             ((:lit "symbol-test-bind") .
              (let* ((scratch (alloc-bytes 96 8)))
                (wf_write_int out (nelisp_frame_bind
@@ -85,6 +104,23 @@
                  (wf_write_t out) (wf_write_nil out)))))
          (nelisp-standalone--applyfn-bf-helpers
           (append nelisp-standalone--applyfn-bf-helpers
+                  '((defun nl_symbol_test_intern_scan
+                      (cursor a b scratch)
+                      (let* ((next 0) (seen-a 0) (seen-b 0)
+                             (done 0) (monotonic 1))
+                        (while (= done 0)
+                          (setq next (nl_intern_next cursor scratch))
+                          (if (< next 0)
+                              (setq done 1)
+                            (seq
+                             (if (<= next cursor) (setq monotonic 0) 0)
+                             (if (= (symbol-eq scratch a) 1)
+                                 (setq seen-a (+ seen-a 1)) 0)
+                             (if (= (symbol-eq scratch b) 1)
+                                 (setq seen-b (+ seen-b 1)) 0)
+                             (setq cursor next))))
+                        (if (and (= done 1) (= monotonic 1)
+                                 (= seen-a 1) (= seen-b 1)) 1 0))))
                   (cdr nelisp-cc-jit-make-symbol--source)))
          (nelisp-standalone--applyfn-bf-arms
           (append arms nelisp-standalone--applyfn-bf-arms))

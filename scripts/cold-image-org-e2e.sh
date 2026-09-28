@@ -167,43 +167,10 @@ if [ -z "$TAIL_LINE" ]; then
 fi
 head -n "$((TAIL_LINE - 1))" "$WORKDIR/raw.repl" > "$WORKDIR/load-only.repl"
 
-# --- workaround for a nelisp-emacs-lib .repl-generation defect (found while
-# diagnosing why `org-element-parse-buffer' silently returned nil/(error nil)
-# on this cold-loaded image; see FINDINGS.md).  The generated replay stream's
-# own foundational bootstrap section (nemacs-bootstrap.repl's
-# `src/emacs-backquote.el' chunk, replayed via this .repl) installs a
-# BODY-LESS `(defmacro backquote (form))' -- and, from replaying this
-# worktree's own scripts/nelisp-stdlib-prelude.el through the SAME
-# generator, two more identical body-less copies -- before ANY of the 60
-# org vendor files are replayed.  Root cause (verified against host Emacs):
-# host Emacs's own `backquote' is `(macro . #[byte-code ...])', a compiled
-# byte-code object with no Lisp-readable body, so whatever host-side
-# machinery in nelisp-emacs-lib serializes "the body of this defmacro" for
-# replay cannot recover one and silently emits an empty body instead of
-# skipping the (re)definition or preserving semantics.  A body-less
-# `defmacro' legitimately expands to nil on ANY Lisp implementation
-# (including real Emacs), so this is not a bug in this reader's
-# reader/evaluator/GC: replaying that hollow form simply clobbers this
-# reader's own correctly-behaving, natively-prelude-baked `backquote' (and
-# its real-Emacs-style `\=`' alias) with a permanent always-nil stand-in for
-# the rest of the chain.  Every macro that expands via backquote/`,@' syntax
-# breaks silently from that point on -- notably org-macs.el's
-# `org-with-wide-buffer' and `org-no-read-only', both load-bearing for
-# `org-element-org-data-parser' / `org-element-parse-buffer'.
-#
-# `nelisp--bq-expand' (the actual quasiquote-expansion logic `backquote'
-# delegates to) is unaffected -- it is a plain function, never itself named
-# "backquote", so it survives the clobber intact and is already loaded and
-# correct by this point in the chain.  Re-asserting the two one-line
-# `defmacro's below, once, right after the vendor chain and before this
-# worktree's own arena dump, is therefore sufficient to restore correct
-# backquote/,@ semantics for the image that gets dumped and cold-loaded --
-# with no change to this reader's own reader/evaluator/GC and no edit to
-# nelisp-emacs-lib (whose replay generator owns the actual defect and is out
-# of scope here; see FINDINGS.md for the full repro/diagnosis).
+# Host replay can serialize the compiled macro with an empty body. Reload the
+# exact pinned GNU provider after replay so the image retains its real macro.
 cat >> "$WORKDIR/load-only.repl" <<'BQFIXEOF'
-(defmacro backquote (form) (nelisp--bq-expand form))
-(defmacro \` (form) (nelisp--bq-expand form))
+(load "backquote.el")
 BQFIXEOF
 
 # --- faithfulness conjuncts, shared verbatim between the replay probe and

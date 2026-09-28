@@ -105,27 +105,28 @@
         (if (= (logand word 1) 0)
             (nl_eval_arg_list_copy32 cur word)
           (nl_sci_store_imm word cur))))
-    ;; ROOT-MARK owns seven consecutive slots: state, eval, nil, node, head,
-    ;; tail, and status.  Deriving addresses here keeps the helper within the
-    ;; register ABI.
-    (defun nl_eval_arg_list_drive (cur_ptr env_ptr acc_slot root_mark)
+    ;; Use the exact slots returned by `nl_root_reserve'.  At root-stack
+    ;; capacity, reservations may be scratch slots rather than contiguous.
+    (defun nl_eval_arg_list_drive
+        (cur_ptr env_ptr acc_slot root_mark state_slot eval_slot nil_slot
+         node_slot head_slot tail_slot status_slot)
       (seq
-       (nl_write_nil_slot (+ root_mark 0))
-       (nl_write_nil_slot (+ root_mark 32))
-       (nl_write_nil_slot (+ root_mark 64))
-       (nl_write_nil_slot (+ root_mark 96))
-       (nl_write_nil_slot (+ root_mark 128))
-       (nl_write_nil_slot (+ root_mark 160))
-       (nl_eval_arg_list_status (+ root_mark 192) 0)
-       (nl_eval_arg_list_copy32 (+ root_mark 0) cur_ptr)
-       (while (= (nl_val_store_word (+ root_mark 192)) 1)
-         (if (= (sexp-tag (+ root_mark 0)) 7)
-             (let* ((car-word (nl_eval_arg_list_car_word (+ root_mark 0))))
+       (nl_write_nil_slot state_slot)
+       (nl_write_nil_slot eval_slot)
+       (nl_write_nil_slot nil_slot)
+       (nl_write_nil_slot node_slot)
+       (nl_write_nil_slot head_slot)
+       (nl_write_nil_slot tail_slot)
+       (nl_eval_arg_list_status status_slot 0)
+       (nl_eval_arg_list_copy32 state_slot cur_ptr)
+       (while (= (nl_val_store_word status_slot) 1)
+         (if (= (sexp-tag state_slot) 7)
+             (let* ((car-word (nl_eval_arg_list_car_word state_slot)))
                (seq
                 (if (< (nl_val_tag car-word) 4)
                     ;; Self-evaluating immediate: materialise it directly
                     ;; from the raw WORD (perf/arglist-raw-word above).
-                    (nl_sexp_clone_into car-word (+ root_mark 32))
+                    (nl_sexp_clone_into car-word eval_slot)
                   ;; Preserve symbol identity for variable lookup.  Cloning
                   ;; the unevaluated form would create a fresh Symbol.
                   ;; CAR-WORD is already the pointer `nl_cons_car_ptr'
@@ -133,58 +134,63 @@
                   ;; raw-word above).
                   (if (= (nelisp_eval_call
                           car-word
-                          env_ptr (+ root_mark 32)) 0)
+                          env_ptr eval_slot) 0)
                       0
-                    (nl_eval_arg_list_status (+ root_mark 192) 2)))
-                ;; Construct and append only when evaluation succeeded.  The
-                ;; cons cdr is one tagged word, so direct linking is O(1).
-                (if (= (nl_val_store_word (+ root_mark 192)) 1)
-                    (let* ((durable-node (alloc-bytes 32 8)))
+                    (nl_eval_arg_list_status status_slot 2)))
+                ;; Construct into the rooted NODE slot before any further
+                ;; allocation.  Then make a distinct durable wrapper for the
+                ;; list: linking NODE directly would alias every appended
+                ;; element to the same reusable root slot.
+                (if (= (nl_val_store_word status_slot) 1)
+                    (seq
+                     (nelisp_cons_construct eval_slot nil_slot node_slot)
+                     (let* ((durable-node (alloc-bytes 32 8)))
                       (seq
-                       (nelisp_cons_construct (+ root_mark 32)
-                                              (+ root_mark 64)
-                                              durable-node)
-                       (if (= (sexp-tag (+ root_mark 128)) 0)
+                       (nl_sexp_clone_into node_slot durable-node)
+                       (if (= (sexp-tag head_slot) 0)
                            (seq
-                            (nl_eval_arg_list_copy32
-                             (+ root_mark 128) durable-node)
-                            (nl_eval_arg_list_copy32
-                             (+ root_mark 160) durable-node))
+                            (nl_eval_arg_list_copy32 head_slot durable-node)
+                            (nl_eval_arg_list_copy32 tail_slot durable-node))
                          (seq
                           ;; The cdr word points at the durable Sexp wrapper,
                           ;; not directly at its consbox payload.
                           (ptr-write-u64
-                           (+ (ptr-read-u64 (+ root_mark 160) 8) 8)
+                           (+ (ptr-read-u64 tail_slot 8) 8)
                            0 durable-node)
-                          (nl_eval_arg_list_copy32
-                           (+ root_mark 160) durable-node)))
+                          (nl_eval_arg_list_copy32 tail_slot durable-node)))
                        ;; Re-derive the cdr from rooted STATE after
                        ;; allocation, directly in place (perf/arglist-raw-
                        ;; word above -- no scratch box for an immediate).
-                       (nl_eval_arg_list_advance_cdr (+ root_mark 0))
-                       (nl_eval_arg_list_status (+ root_mark 192) 0)))
+                       (nl_eval_arg_list_advance_cdr state_slot)
+                       (nl_eval_arg_list_status status_slot 0))))
                   0)))
            ;; Preserve the historical dotted-tail truncation behavior.
-           (nl_eval_arg_list_status (+ root_mark 192) 1)))
+           (nl_eval_arg_list_status status_slot 1)))
        ;; Proper and historical dotted-tail termination both return the head;
        ;; an evaluator failure returns an error after releasing the roots.
-       (if (= (nl_val_store_word (+ root_mark 192)) 5)
+       (if (= (nl_val_store_word status_slot) 5)
            (seq
-            (nl_eval_arg_list_copy32 acc_slot (+ root_mark 128))
+            (nl_eval_arg_list_copy32 acc_slot head_slot)
             (nl_root_release env_ptr root_mark)
             0)
          (seq (nl_root_release env_ptr root_mark) 1))))
     (defun nl_eval_arg_list_walk (cur_ptr env_ptr acc_slot)
       (let* ((root_mark (nl_root_mark env_ptr))
-             (state_slot (nl_root_reserve env_ptr))
-             (eval_slot (nl_root_reserve env_ptr))
-             (nil_slot (nl_root_reserve env_ptr))
-             (node_slot (nl_root_reserve env_ptr))
-             (head_slot (nl_root_reserve env_ptr))
-             (tail_slot (nl_root_reserve env_ptr))
-             (status_slot (nl_root_reserve env_ptr)))
-        (nl_eval_arg_list_drive
-         cur_ptr env_ptr acc_slot root_mark)))
+             (state_slot (nl_root_reserve_checked env_ptr))
+             (eval_slot (nl_root_reserve_checked env_ptr))
+             (nil_slot (nl_root_reserve_checked env_ptr))
+             (node_slot (nl_root_reserve_checked env_ptr))
+             (head_slot (nl_root_reserve_checked env_ptr))
+             (tail_slot (nl_root_reserve_checked env_ptr))
+             (status_slot (nl_root_reserve_checked env_ptr)))
+        ;; The checked reservations are all-or-nothing from the walker's
+        ;; perspective.  If any slot could not be rooted, fail before drive
+        ;; dereferences it; `status_slot' is nonzero only if all seven passed.
+        (if (= status_slot 0)
+            (seq (nl_root_release env_ptr root_mark) 1)
+          (nl_eval_arg_list_drive
+           cur_ptr env_ptr acc_slot root_mark state_slot eval_slot nil_slot
+           node_slot head_slot tail_slot status_slot))))
     (defun nl_eval_arg_list (args_ptr env out_list_slot)
       (let* ((env_ptr env))
         (nl_eval_arg_list_walk args_ptr env_ptr out_list_slot)))))

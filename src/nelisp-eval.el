@@ -93,6 +93,8 @@
 
 ;;; Code:
 
+(require 'nelisp-vendor-source)
+
 (require 'nelisp-read)
 ;; Phase 6.2.0 — anvil-http port preparation. `url-host' / `url-port' /
 ;; `url-filename' / `url-type' are cl-defstruct accessors defined in
@@ -178,14 +180,18 @@ returned and `nelisp--apply-closure' handles it."
   (list 'nelisp-closure env params body))
 
 (defun nelisp--lambda-body (body)
-  "Return BODY with an optional leading docstring removed.
+  "Return BODY without its optional docstring and declaration forms.
 Emacs treats a string after the lambda list in `defun' and `lambda'
-as documentation, not as an executable body form.  Dropping it before
-closure creation also keeps vendor docstrings out of the bytecode
-precompile probe."
-  (if (and (consp body) (stringp (car body)))
-      (cdr body)
-    body))
+as documentation, and leading `declare' forms as definition metadata,
+not executable body forms."
+  (let ((forms (if (and (consp body) (stringp (car body)))
+                   (cdr body)
+                 body)))
+    (while (and (consp forms)
+                (consp (car forms))
+                (eq (caar forms) 'declare))
+      (setq forms (cdr forms)))
+    forms))
 
 (defsubst nelisp--closure-env    (c) (nth 1 c))
 (defsubst nelisp--closure-params (c) (nth 2 c))
@@ -714,50 +720,37 @@ as `(VAR DEFAULT [SUPPLIEDP])'."
 (defconst nelisp--primitive-symbols
   '(;; Pair / list constructors + shape predicates
     car cdr car-safe caar cadr cdar cddr caddr cdddr
-    cons list null not atom consp listp
-    length nth nthcdr last butlast reverse nreverse append
+    cons list null not atom consp listp nlistp
+    length nth nthcdr reverse nreverse append
+    safe-length take
     member memq assq assoc
     ;; List mutation (cons cell slot writes)
     setcar setcdr
     ;; General sequence / list helpers (Phase 5-B.0)
     copy-sequence elt nconc delq
     ;; Equality / identity / type predicates
-    eq eql equal identity ignore functionp vectorp
+    eq eql equal identity ignore functionp subrp vectorp recordp
+    documentation-stringp
     ;; Vector constructors
     vector make-vector
     ;; Arithmetic
     + - * / mod /= < <= > >= =
     1+ 1- abs max min zerop numberp integerp float
-    ;; Phase 2B/2C (integration/wave6 audit hardening): `bignump' was
-    ;; missing here while `natnump' (a plain top-level `defun' in
-    ;; `scripts/nelisp-stdlib-prelude.el', needing no borrow at all) was
-    ;; already present -- an inconsistency, not a deliberate omission.
-    ;; Real Emacs has had `bignump' as a native predicate since bignum
-    ;; support landed (confirmed: host Emacs 30.1's `(fboundp
-    ;; 'bignump)' answers `t'); on the standalone target it is its own
-    ;; native dispatch arm (`scripts/nelisp-standalone-build.el's
-    ;; `(:lit "bignump")' entry), not an elisp `defun' anywhere, so
-    ;; the self-hosted-under-real-Emacs evaluator this list serves had
-    ;; no source for it at all and would read it void. Added here so
-    ;; `symbol-function' borrows host Emacs's own real implementation,
-    ;; the same mechanism every other predicate in this list already
-    ;; uses.
-    bignump
     ;; Bit arithmetic
     ash logand logior
     ;; String / format
-    stringp concat substring string= string-to-number number-to-string
+    stringp concat substring substring-no-properties string= string-equal string-lessp string-to-number number-to-string
     upcase downcase format prin1-to-string string make-string
     aref aset nelisp--raw-aref nelisp--raw-aset
     nelisp--char-table-vector-bridge-p
-    string-match-p string-match string-empty-p
+    string-match-p string-match match-beginning match-end compare-strings
     char-or-string-p
     ;; String search / split (Phase 5-B.0)
     string-search split-string
     ;; Symbol surface (interning side; variable / function cells handled
     ;; via NeLisp-aware wrappers below for our own table — but the
     ;; host `symbol-function' is a useful escape hatch for bootstrap)
-    symbolp keywordp intern make-symbol symbol-name gensym
+    symbolp keywordp intern make-symbol symbol-name bare-symbol gensym
     symbol-function fset
     ;; Property lists (used by condition-case to read error-conditions)
     get put plist-get plist-put
@@ -799,7 +792,7 @@ as `(VAR DEFAULT [SUPPLIEDP])'."
     goto-char point point-min point-max
     buffer-substring-no-properties re-search-forward
     ;; List util (Phase 5-C.0)
-    assq-delete-all
+    assq-delete-all delete
     ;; Time + numeric rounding + RNG (Phase 5-D.0 — worker metrics
     ;; and correlation id generation)
     float-time format-time-string truncate random
@@ -814,8 +807,6 @@ as `(VAR DEFAULT [SUPPLIEDP])'."
     ;; Regex capture + line metadata (Phase 5-E.0 — file-outline
     ;; tool dispatcher)
     line-number-at-pos match-string
-    ;; Alist access (Phase 5-E.0 — JSON-RPC params / MCP tool args)
-    alist-get
     ;; SQLite primitives (Phase 5-F.1.0 — anvil-state port 前提、
     ;; host 委譲 SBCL-style。with-sqlite-transaction は移植性不安定
     ;; のため primitive 化せず、手書き BEGIN/COMMIT で回避)
@@ -1050,6 +1041,116 @@ primitive installation for entries nothing in a given run needs."
     (puthash 'nelisp-bc-run (symbol-function 'nelisp-bc-run)
              nelisp--functions)))
 
+(defun nelisp--install-vendor-association-functions ()
+  "Install exact pinned GNU association helpers in the NeLisp evaluator."
+  (let ((forms
+         (nelisp-read-all
+          (nelisp-vendor-source-forms
+           "vendor/staged-emacs-lisp/subr.el"
+           '(alist-get assoc-default assoc-delete-all assq-delete-all)))))
+    (while forms
+      (nelisp-eval-form (car forms) nil)
+      (setq forms (cdr forms)))))
+
+(defun nelisp--install-vendor-string-functions ()
+  "Install exact GNU Emacs 31.1 string helpers in the source evaluator."
+  (let ((forms
+         (nelisp-read-all
+          (concat
+           (nelisp-vendor-source-forms
+            "vendor/staged-emacs-lisp/subr.el"
+            '(string-trim-left string-trim-right string-trim
+              string-prefix-p string-suffix-p
+              string-equal-ignore-case string-greaterp))
+           "\n"
+           (nelisp-vendor-source-forms
+            "vendor/staged-emacs-lisp/subr.el" '(string= string< string>))
+           "\n"
+           (nelisp-vendor-source-forms
+            "vendor/staged-emacs-lisp/subr.el"
+            '(match-string-no-properties))
+           "\n"
+           (nelisp-vendor-source-form
+            "vendor/staged-emacs-lisp/simple.el" 'string-empty-p)))))
+    (while forms
+      (nelisp-eval-form (car forms) nil)
+      (setq forms (cdr forms)))))
+
+(defun nelisp--install-vendor-pure-predicates ()
+  "Install exact GNU Emacs 31.1 simple predicates and identity functions."
+  ;; These are C-provided globals in GNU Emacs, so the source evaluator's
+  ;; separate value table must import the host values after each reset.
+  (puthash 'most-positive-fixnum most-positive-fixnum nelisp--globals)
+  (puthash 'most-negative-fixnum most-negative-fixnum nelisp--globals)
+  (let ((forms
+         (nelisp-read-all
+          (nelisp-vendor-source-forms
+           "vendor/staged-emacs-lisp/subr.el"
+           '(gensym-counter gensym frame-configuration-p apply-partially
+             booleanp fixnump bignump zerop ignore always)))))
+    (while forms
+      (nelisp-eval-form (car forms) nil)
+      (setq forms (cdr forms)))))
+
+(defun nelisp--install-vendor-list-accessors ()
+  "Install exact GNU Emacs 31.1 list-accessor forms in the source evaluator."
+  (let ((forms
+         (nelisp-read-all
+          (nelisp-vendor-source-forms
+           "vendor/staged-emacs-lisp/subr.el"
+           '(internal--compiler-macro-cXXr caar cadr cdar cddr
+             caaar caadr cadar caddr cdaar cdadr cddar cdddr cadddr)))))
+    (while forms
+      (nelisp-eval-form (car forms) nil)
+      (setq forms (cdr forms)))))
+
+(defun nelisp--install-vendor-list-functions ()
+  "Install exact GNU Emacs 31.1 list, sequence, and tree helpers."
+  (let ((forms
+         (nelisp-read-all
+          (nelisp-vendor-source-forms
+           "vendor/staged-emacs-lisp/subr.el"
+           '(last butlast nbutlast copy-tree delete-dups
+             number-sequence ensure-list flatten-tree)))))
+    (while forms
+      (nelisp-eval-form (car forms) nil)
+      (setq forms (cdr forms)))))
+
+(defun nelisp--install-vendor-conditional-macros ()
+  "Install exact GNU conditional-binding macros after the macro system loads."
+  (dolist (group '(("vendor/staged-emacs-lisp/subr.el"
+                    internal--build-binding internal--build-bindings)
+                   ("vendor/staged-emacs-lisp/macroexp.el" macroexp-progn)
+                   ("vendor/staged-emacs-lisp/subr.el"
+                    if-let if-let* when-let when-let* and-let* while-let)))
+    (let ((forms (nelisp-read-all
+                  (nelisp-vendor-source-forms (car group) (cdr group)))))
+      (while forms
+        (nelisp-eval-form (car forms) nil)
+        (setq forms (cdr forms))))))
+
+(defun nelisp--install-vendor-error-helpers ()
+  "Install exact GNU Emacs 31.1 error helpers from pinned `subr.el'."
+  (let ((forms
+         (nelisp-read-all
+          (nelisp-vendor-source-forms
+           "vendor/staged-emacs-lisp/subr.el" '(ignore-errors ignore-error user-error)))))
+    (while forms
+      (nelisp-eval-form (car forms) nil)
+      (setq forms (cdr forms)))))
+
+(defun nelisp--install-vendor-file-attribute-accessors ()
+  "Install exact GNU Emacs 31.1 file attribute accessors from pinned `files.el'."
+  (let ((forms
+         (nelisp-read-all
+          (nelisp-vendor-source-forms
+           "vendor/staged-emacs-lisp/files.el"
+           '(file-attribute-size file-attribute-modification-time
+             file-attribute-file-identifier)))))
+    (while forms
+      (nelisp-eval-form (car forms) nil)
+      (setq forms (cdr forms)))))
+
 (defconst nelisp--core-macro-source
   "\
 (defmacro defsubst (name params &rest body)
@@ -1065,6 +1166,9 @@ primitive installation for entries nothing in a given run needs."
   `(defvar ,name ,default))
 
 (defmacro defface (&rest _ignored)
+  nil)
+
+(defmacro interactive (&rest _ignored)
   nil)
 
 (defmacro push (elt place)
@@ -1113,7 +1217,11 @@ self-sufficient — `dolist' is one of the macros being installed."
   (let ((forms (nelisp-read-all nelisp--core-macro-source)))
     (while forms
       (nelisp-eval (car forms))
-      (setq forms (cdr forms)))))
+      (setq forms (cdr forms))))
+  ;; GNU helpers are installed only after the evaluator bootstraps `defsubst'.
+  (nelisp--install-vendor-string-functions)
+  (nelisp--install-vendor-error-helpers)
+  (nelisp--install-vendor-file-attribute-accessors))
 
 ;;; Public API ---------------------------------------------------------
 
@@ -1136,11 +1244,21 @@ Intended for test hygiene; callers should expect to re-run every
   (clrhash nelisp--specials)
   (clrhash nelisp--macros)
   (nelisp--install-primitives)
+  (nelisp--install-vendor-pure-predicates)
+  (nelisp--install-vendor-association-functions)
+  (nelisp--install-vendor-list-accessors)
+  (nelisp--install-vendor-list-functions)
   (nelisp--install-core-macros)
+  (when (featurep 'nelisp-macro)
+    (nelisp--install-vendor-conditional-macros))
   (when (fboundp 'nelisp-load--reset-registry)
     (nelisp-load--reset-registry)))
 
 (nelisp--install-primitives)
+(nelisp--install-vendor-pure-predicates)
+(nelisp--install-vendor-association-functions)
+(nelisp--install-vendor-list-accessors)
+(nelisp--install-vendor-list-functions)
 ;; Core macros (dolist / push / defsubst / …) reach into the evaluator
 ;; via the macro system, which lives in `nelisp-macro.el'.  That file
 ;; has not been loaded yet when this file is read, so

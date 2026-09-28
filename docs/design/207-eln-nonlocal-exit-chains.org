@@ -1,0 +1,234 @@
+#+TITLE: Doc 207 — Non-local exits through GNU native and VM call chains
+#+AUTHOR: NeLisp
+#+STATUS: DRAFT (2026-09-28) — contract demonstrated for the admitted GNU 31.1 chain and increment leaves by test/nelisp-eln-nonlocal-chain-smoke.sh (ledger S4.6). Not a general N-ary native ABI.
+#+STATUS2: Closes the gap Doc 206 §4 names: "Non-tail exceptions remain unsupported until a gateway demonstrates their status and frame-unwind behavior."
+
+* §0 Summary
+
+GNU Emacs leaves a native-compiled frame on =signal= or =throw= with
+=longjmp=: the rest of the native frame never runs, and =unbind_to= and
+=unwind-protect= cleanups run in order from the innermost frame out. NeLisp
+cannot =longjmp= over GNU machine code. Its non-local exits are return codes
+plus a stash (M6 flag/tag/value). This document defines how the callback
+gateway and the Lisp bridges make that implementation observably equal to
+GNU for native frames admitted under trust model C:
+
+1. The first non-local exit raised inside any import callback of a native
+   activation is *recorded* and the callback returns a neutral word.
+2. Every later import callback of the *same activation* is *suppressed*: it
+   runs no Lisp and returns a neutral word, so the remainder of the native
+   frame has no observable effect.
+3. When the native frame returns, the bridge discards its return value,
+   retires every owner exactly once, and *resumes* the recorded exit with
+   the same condition, tag and value objects.
+
+Between native frames sit ordinary NeLisp (interpreter or byte-code VM)
+frames, which unwind with their own =unwind-protect= and special-binding
+rules. The composition of these rules gives GNU order for any chain
+VM -> native -> VM -> native -> VM, and native -> native through =Ffuncall=.
+
+* §1 Scope and trust model
+
+A native frame here is a GNU 31.1 (ABI =ba35c031=) leaf admitted by
+=nelisp-eln-registration-load= from an unchanged artifact:
+
+- =nelisp-gnu-increment= / =-decrement=: fixnum fast path, tail =JMP= to
+  Fadd1/Fsub1 (freloc 1301/1300).
+- =nelisp-gnu-chain= =(g x)=: =(funcall g (1+ x))=, with a *non-tail* =CALL=
+  to Fadd1 on the slow path and a *non-tail* =CALL= to =Ffuncall= (freloc
+  945) with a two-element MANY array. Admission
+  (=nelisp-eln-tail-code-analyze-chain-call=) proves the exact instruction
+  sequence: forward control flow only, no loops, no memory writes except the
+  argument array, and exactly those two authenticated imports.
+
+The contract relies on two properties admission proves and this document
+does not relax:
+
+- *All Lisp-visible effects go through authenticated imports.* The native
+  code only computes in registers and its own stack frame between import
+  calls.
+- *Forward-only control flow.* A suppressed callback cannot drive the
+  native frame into a loop, so the native frame always returns.
+
+Given both, suppressing every import after the first exit makes the rest of
+the native frame unobservable, which is what GNU's =longjmp= guarantees.
+A leaf that needs backward branches, direct heap writes, or unauthenticated
+imports stays inadmissible.
+
+* §2 Components
+
+** §2.1 Import table
+
+Registration installs one adapter address per authenticated slot. A single
+tail import (increment/decrement) uses =nelisp_eln_callback1_entry_word=,
+which forwards word 0 and zeroes the rest. The chain leaf's two imports use
+the S6 slot-identifying ports, in import order:
+
+| import | convention | adapter |
+|---|---|---|
+| Fadd1 (non-tail slow path) | fixed, arity 1 | =nelisp_eln_callback_port0_entry_word= |
+| =Ffuncall= (MANY) | =(nargs, args)= in =rdi=, =rsi= | =nelisp_eln_callback_port1_entry_word= |
+
+Each port forwards the six argument registers and stamps its own tag into
+descriptor word 6; the dispatcher (=--dispatch-port=) maps the tag to the
+slot's authenticated identity (canonical =1+= or =funcall=). The chain lease
+(=nelisp-eln-native-subr--chain-lease-valid-p=) re-checks on every call that
+each slot still holds its own port (=nelisp-eln-native-subr--import-entries=).
+Ports delegate to the seven-word entry, so the exit capture of §2.3 covers
+them.
+
+** §2.2 Activation frame
+
+Each bridge call (=nelisp-eln-callable-import--call-unary=,
+=--call-chain=) pushes one frame on =nelisp-eln-callable-import--frames=
+and one record on the native callback context. The frame carries:
+
+- the primary identity (canonical =1+= / =1-= snapshot, unary) and, for the
+  chain, the MANY identity =(2 . funcall)=;
+- the argument unit and its activation, a result unit, and every result
+  activation leased by a callback (=:result-activations=). A later callback
+  or the native return value may carry an earlier callback's result word
+  (the Fadd1 slow-path float or bignum becomes the =Ffuncall= argument), so
+  decoding tries every lease of the frame;
+- =:condition= (error or quit trapped in the dispatcher), =:exit= (a throw
+  or any other exit leaving the dispatcher), =:outcome= and =:suppressed=.
+
+** §2.3 Recording an exit
+
+=nelisp-eln-callable-import--dispatch=:
+
+- traps =error= and =quit= with =condition-case= and records the condition;
+- lets every other exit leave. Its =unwind-protect= marks =:exit :pending=.
+  The gateway then returns status 1 with the runtime stash intact, and
+  =nl_eln_callback7_capture_exit= (AOT, in the adapter) copies the stash
+  into the bridge's pinned context slots before anything else can reuse it:
+  =args-slot= receives =(TAG . VALUE)=, =out-slot= the flag (1 signal, 2
+  throw). Only the first exit of an activation is published.
+
+The stash cannot be read reliably from Lisp: the byte-code VM clears the
+flag while an =unwind-protect= cleanup runs, and a Lisp reader of the stash
+would itself depend on how the dispatcher happens to be executed. Capture
+therefore happens once, in the adapter, where the gateway's status is
+produced.
+
+** §2.4 Suppression
+
+On entry, a dispatcher whose frame already has a =:condition= or =:exit=
+increments =:suppressed= and returns the pair =(0 . 0)= (GNU =Qnil=)
+without decoding arguments or running Lisp. Example: =(nelisp-gnu-chain g
+"x")= takes the slow path; Fadd1 signals =wrong-type-argument=; the native
+code continues to its =Ffuncall= call with =nil=; that callback is
+suppressed, so =g= is never called, as in GNU.
+
+** §2.5 Resuming and cleanup
+
+After the native call returns, the bridge
+
+1. resolves a pending =:exit= from its pinned slots
+   (=nelisp-eln-callable-import--published-exit=);
+2. closes any special bindings a native frame left above its entry depth
+   (=nelisp-eln-runtime-services-helper-unbind-n=, unchanged from S4.5);
+3. pops its frame and retires its bundle (context pop, pin frame end,
+   callback status restore, every activation, both units, the raw-call
+   context) exactly once; a failed pop retains the whole bundle;
+4. re-raises the exit outside native code with =throw= or =signal=, with
+   the original objects: a string or closure =catch= tag still matches by
+   =eq=.
+
+The native return value is discarded whenever an exit was recorded.
+
+** §2.6 Nesting
+
+A callback may call a native subr again (=Ffuncall= of an admitted leaf,
+directly or through a VM frame). Each activation has its own frame,
+context record and pin frame:
+
+- The callback context and the seven-word adapter already nested (depth 8).
+- Pin frames were single-owner and non-reentrant, so a second bridge inside
+  a callback failed closed. The owning env may now nest pin frames strictly
+  LIFO (=nl_root_pin_begin_nested=): a nested frame starts with a
+  fixnum-tagged link slot holding the enclosing marker; ending it restores
+  that marker. Enclosing slots stay in the scanned root range but outside
+  the inner frame's active range. A different env or a registered worker
+  still fails closed.
+- Native subrs may now have arity 2 (the record has 4 + arity slots), which
+  the chain leaf needs to be published by the ordinary load path.
+
+An inner exit is resumed by the inner bridge into the VM frame that called
+it, unwinds that frame, reaches the outer dispatcher, and is recorded there
+again; the outer activation then suppresses and resumes in turn.
+
+** §2.7 VM frames
+
+A VM or interpreter frame between native frames must itself unwind in GNU
+order. The byte-code VM drained every cleanup of the current function
+before searching for a handler, so a =condition-case= inside an
+=unwind-protect= in the same function never caught its error and the
+cleanup ran twice. The VM now searches handlers first
+(=wf_bytecode_try_throw= / =_try_signal= unwind exactly to the matching
+frame) and drains all cleanups only when no handler of the function
+matches. The bridge's own dispatcher is baked as byte code with exactly
+that shape, so this repair is part of the contract, not a side fix.
+
+* §3 Contract (GNU semantics)
+
+For any chain of VM frames and admitted native frames:
+
+1. *Exit identity.* The condition object (=signal=), or the tag and value
+   (=throw=), reaching the outer handler are the objects raised; a =quit=
+   stays =quit=.
+2. *No execution after the exit.* No import callback of a native activation
+   after the first exit runs Lisp; no VM frame below an exited native
+   frame is entered afterwards.
+3. *Cleanup order.* =unwind-protect= cleanups run exactly once, innermost
+   first, each while its own frame's special bindings are still in effect;
+   every binding is restored once its frame is left.
+4. *Owners.* Every bridge-owned object unit, activation, identity record,
+   callback frame, context record, pin frame and special binding is
+   released exactly once on every outcome; the registries return to their
+   baseline after each call.
+5. *Handlers are searched before unwinding*, both across frames and inside
+   one byte-code function.
+
+* §4 Evidence
+
+=test/nelisp-eln-nonlocal-chain-smoke.sh= (ledger S4.6, about 25 s):
+
+- compiles the VM frames (=test/nelisp-eln-nonlocal-chain-vm.el=) once with
+  host GNU Emacs 31.1; both runtimes run that byte code;
+- runs =test/nelisp-eln-nonlocal-chain-driver.el= on host GNU Emacs 31.1
+  (which loads the genuine =gnu-chain.eln= and =gnu-increment.eln=
+  natively) and on NeLisp (ordinary =load=, trust model C, artifacts
+  hash-pinned and unchanged);
+- requires the 19-line transcripts to be identical. Scenarios cover
+  VM->native->VM with return, error, string-tag throw, quit, the Fadd1
+  slow path (float and bignum results decoded again for the =Ffuncall=
+  hop), and a slow-path error that must suppress the hop;
+  VM->native->VM->native->VM with every exit kind, a GC inside the
+  innermost frame, and four callbacks across two activations;
+  native->native (=Ffuncall= of the increment leaf, both slow paths, and
+  an arity error at the native boundary); native->native->VM through
+  =apply-partially=;
+- on NeLisp, also checks after every scenario that owners, the special
+  binding depth and the outermost pin marker are back at baseline, and the
+  exact number of callbacks (including suppressed ones).
+
+Negative controls, run while building this document: the pre-change runtime
+fails the NeLisp run (22 failed checks), and a dispatcher without
+suppression fails =slow-path-error-suppresses-hop= (=leaf-calls 1=).
+
+* §5 Limits
+
+- *Callables are not encodable.* The GNU object codec has no representation
+  for a NeLisp function, so the driver passes G as a fresh uninterned
+  symbol and binds its function cell after the bridge has encoded it.
+  Admission proves native code only stores G into the =Ffuncall= array,
+  so the GNU view of that symbol's function cell is never read. Passing
+  arbitrary callables to native code needs a codec change, not this
+  contract.
+- The MANY identity is fixed at =(2 . funcall)=; other MANY arities need
+  their own admitted shapes.
+- Only leaves admitted by §1 are covered. General native code with loops
+  or direct heap writes cannot be suppressed safely and stays inadmissible.
+- A cleanup that raises a new exit while the VM drains a function with no
+  matching handler keeps the pre-existing VM behavior.

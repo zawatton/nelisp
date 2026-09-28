@@ -1,4 +1,4 @@
-.PHONY: lisp-byte-compile version-consistency actor-bench all aot-differential bench bench-aot-checked-arith bench-aot-tco clean compile gc-bench jit-unverified neln-loader-test nl-check-gate nl-dev-loop nl-safe-bench nl-safe-native-bench nl-violation-corpus ns-gate ns-inventory parens-check soak soak-1h soak-full soak-worker standalone-reader-recursion-guard-smoke test test-fast test-jit test-nojit test-one test-parallel unsafe-inventory wasm-dtw-compile wasm-dtw-site wasm-dtw-site-smoke wasm-dtw-skeleton-smoke wasm-dtw-smoke wasm-dtw-transpile wasm-runtime-image-smoke wasm-smoke \
+.PHONY: lisp-byte-compile version-consistency actor-bench all aot-differential bench bench-aot-checked-arith bench-aot-tco clean compile compile-parallel gc-bench jit-unverified neln-loader-test nl-check-gate nl-dev-loop nl-safe-bench nl-safe-native-bench nl-violation-corpus ns-gate ns-inventory parens-check soak soak-1h soak-full soak-worker standalone-reader-recursion-guard-smoke test test-fast test-jit test-nojit test-one test-parallel unsafe-inventory wasm-dtw-compile wasm-dtw-site wasm-dtw-site-smoke wasm-dtw-skeleton-smoke wasm-dtw-smoke wasm-dtw-transpile wasm-runtime-image-smoke wasm-smoke \
         sqlite-module sqlite-module-clean \
         release-artifact release-checksum soak-blocker soak-post-ship \
         bench-actual bench-allocator bench-allocator-heavy \
@@ -21,7 +21,8 @@
         nl-num-standalone-smoke nelisp-toml-standalone-smoke nelisp-thread-standalone-smoke \
         nelisp-thread-allocating-standalone-smoke \
         nelisp-thread-mirror-guard-standalone-smoke \
-        nelisp-thread-percpu-roots-smoke
+        nelisp-thread-percpu-roots-smoke \
+        nelisp-prognleak-standalone-smoke
 
 EMACS ?= emacs
 
@@ -362,6 +363,22 @@ compile: nl-check-gate
 	  $(PACKAGE_SRC_LOADS) \
 	  --eval '(setq byte-compile-error-on-warn t)' \
 	  -f batch-byte-compile $(SRCS) $(PACKAGE_SRCS)
+
+# Parallel byte compilation for independent files.  `nelisp-read.el` must
+# be compiled first because `nelisp.el` requires it while byte-compiling.
+# Override JOBS to control memory/CPU pressure (default: host core count).
+JOBS ?= $(shell nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)
+compile-parallel: nl-check-gate
+	@set -eu; \
+	root_files='$(filter src/nelisp-read.el,$(SRCS))'; \
+	if [ -n "$$root_files" ]; then \
+	  $(EMACS) --batch -Q -L src $(PACKAGE_SRC_LOADS) \
+	    --eval '(setq byte-compile-error-on-warn nil)' \
+	    -f batch-byte-compile $$root_files; \
+	fi; \
+	files='$(filter-out src/nelisp-read.el,$(SRCS)) $(PACKAGE_SRCS)'; \
+	printf '%s\n' $$files | xargs -r -n 1 -P $(JOBS) sh -c \
+	  '$(EMACS) --batch -Q -L src $(PACKAGE_SRC_LOADS) --eval '\''(setq byte-compile-error-on-warn nil)'\'' -f batch-byte-compile "$$0"'
 
 clean:
 	find . -name '*.elc' -type f -delete
@@ -793,6 +810,27 @@ nl-hygiene-standalone-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,s
 	  exit 0; \
 	fi; \
 	"$$bin" --load packages/nl-hygiene/test/nl-hygiene-standalone-smoke.el
+
+# fix/prognleak: GNU-semantics regression for unknown top-level
+# forms and the M6 signal-stash cross-form isolation fix -- see the
+# Commentary in test/nelisp-prognleak-standalone-smoke.sh.  Runnable-host
+# guard: see `nl-condition-standalone-smoke' above.
+.PHONY: nelisp-prognleak-standalone-smoke
+nelisp-prognleak-standalone-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+	  --eval '(kill-emacs (if (nelisp-standalone--target-runnable-on-host-p) 0 3))' \
+	  >/dev/null 2>&1; \
+	host_rc=$$?; \
+	if [ "$$host_rc" = 3 ]; then \
+	  echo "GATE-SKIP target $(STANDALONE_GATE_TARGET) cannot run on this host"; \
+	  exit 0; \
+	fi; \
+	bin=$(STANDALONE_BIN); \
+	if [ ! -f "$$bin" ]; then \
+	  echo "GATE-SKIP no nelisp binary in target/ after build attempt"; \
+	  exit 0; \
+	fi; \
+	NELISP_BIN="$$bin" NELISP_ROOT=$(CURDIR) sh test/nelisp-prognleak-standalone-smoke.sh
 
 # Runnable-host guard: see `nl-condition-standalone-smoke' above.
 nl-resource-standalone-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)

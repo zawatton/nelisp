@@ -176,6 +176,40 @@
     ;; = 2x + 1 -- calls through an R_X86_64_JUMP_SLOT-resolved PLT stub.
     (nl-ffi-loader-smoke-should (= (ptr-call addr 20 0 0 0 0 0) 41))))
 
+(nl-ffi-loader-smoke-deftest ffi-loader-ptr-call-rejects-invalid-arity-before-call
+  ;; Exercise the reader's fixed-arity guard with a real, pure exported leaf.
+  ;; Every refusal is caught in this process; a padded seven-argument call
+  ;; afterward proves that the signal path did not poison later FFI calls.
+  (let* ((h (nl-ffi-loader-open nl-ffi-loader-smoke--fixture))
+         (addr (nl-ffi-loader-symbol h "nl_ffi_loader_fixture_double"))
+         (count 0))
+    (nl-ffi-loader-smoke-should (> addr 0))
+    (while (<= count 6)
+      (let* ((arguments (if (= count 0) nil
+                          (cons addr (make-list (1- count) 0))))
+             (caught (condition-case data
+                         (progn (apply 'ptr-call arguments)
+                                'nl-ffi-loader-smoke--no-error)
+                       (wrong-number-of-arguments data))))
+        (nl-ffi-loader-smoke-should
+         (equal caught (list 'wrong-number-of-arguments 'ptr-call count))))
+      (setq count (1+ count)))
+    (let ((caught (condition-case data
+                      (progn (apply 'ptr-call (cons addr (make-list 7 0)))
+                             'nl-ffi-loader-smoke--no-error)
+                    (wrong-number-of-arguments data))))
+      (nl-ffi-loader-smoke-should
+       (equal caught '(wrong-number-of-arguments ptr-call 8))))
+    (nl-ffi-loader-smoke-should (= (ptr-call addr 20 0 0 0 0 0) 40))
+    ;; Rebinding the named function cell must still bypass the builtin arm.
+    (let ((saved (symbol-function 'ptr-call)))
+      (unwind-protect
+          (progn
+            (fset 'ptr-call (lambda (&rest arguments) (length arguments)))
+            (nl-ffi-loader-smoke-should
+             (= (apply 'ptr-call (make-list 8 0)) 8)))
+        (fset 'ptr-call saved)))))
+
 (nl-ffi-loader-smoke-deftest ffi-loader-glob-dat-call
   (let* ((h (nl-ffi-loader-open nl-ffi-loader-smoke--fixture))
          (addr (nl-ffi-loader-symbol h "nl_ffi_loader_fixture_call_triple")))

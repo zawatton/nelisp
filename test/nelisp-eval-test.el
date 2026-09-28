@@ -40,6 +40,39 @@
   (should-error (nelisp-eval '(no-such-fn 1 2))
                 :type 'nelisp-void-function))
 
+(ert-deftest nelisp-eval-nlistp-host-primitive-survives-reset ()
+  (dolist (value (list nil t 0.0 1 '(a) [1] "x" 'symbol))
+    (nelisp--reset)
+    (should (eq (nelisp-eval (list 'nlistp (list 'quote value)))
+                (nlistp value)))
+    (should (eq (gethash 'nlistp nelisp--functions)
+                (symbol-function 'nlistp)))))
+
+(ert-deftest nelisp-eval-vendor-error-helpers-match-gnu-source ()
+  (nelisp--reset)
+  (should (= (nelisp-eval '(ignore-errors (+ 20 22))) 42))
+  (should-not (nelisp-eval '(ignore-errors (signal 'error '("ignored")))))
+  (should (equal (nelisp-eval
+                  '(condition-case err
+                       (user-error "missing %s" "item")
+                     (user-error err)))
+                 '(user-error "missing item"))))
+
+(ert-deftest nelisp-eval-vendor-ignore-error-matches-gnu-source ()
+  (nelisp--reset)
+  (let ((forms '((ignore-error error (+ 20 22))
+                 (ignore-error error (error "ignored"))
+                 (ignore-error (error quit) (error "ignored"))
+                 (ignore-error quit (error "propagated")))))
+    (dolist (form forms)
+      (should (equal (nelisp-macroexpand form) (macroexpand form)))))
+  (should (= (nelisp-eval '(ignore-error error (+ 20 22))) 42))
+  (should-not (nelisp-eval '(ignore-error error (error "ignored"))))
+  (should-not (nelisp-eval '(ignore-error (error quit) (error "ignored"))))
+  (should-error (nelisp-eval '(ignore-error quit (error "propagated")))
+                :type 'error)
+  (nelisp--reset))
+
 ;;; quote / function --------------------------------------------------
 
 (ert-deftest nelisp-eval-quote ()
@@ -68,6 +101,17 @@
     (nelisp--reset)
     (let ((cl (nelisp-eval '(function (lambda (x) x)))))
       (should (eq (car cl) 'nelisp-closure)))))
+
+(ert-deftest nelisp-eval-subrp-preserves-host-primitive-semantics ()
+  (nelisp--reset)
+  (let ((bytecode (byte-compile '(lambda (x) x))))
+    (dolist (case `(((subrp (symbol-function 'car)) . t)
+                    ((subrp (function (lambda (x) x))) . nil)
+                    ((subrp (quote ,bytecode)) . nil)
+                    ((subrp 'car) . nil)
+                    ((subrp 42) . nil)
+                    ((subrp nil) . nil)))
+      (should (eq (nelisp-eval (car case)) (cdr case))))))
 
 ;;; if / progn --------------------------------------------------------
 

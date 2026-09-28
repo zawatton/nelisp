@@ -384,6 +384,21 @@
        (mut-str-push-byte buf 41)  ; )
        1))
 
+    (defun nl_fmt_sexp_write_symbol (s buf)
+      ;; A registered symbol prints from its canonical mutable name Sexp.
+      ;; The byte-only reader path remains printable before symbol-name is
+      ;; first requested, using the immutable symbol bytes as fallback.
+      (let* ((tag (sexp-tag s))
+             (kind (if (= tag 16) 2 1))
+             (key (if (= tag 16) (ptr-read-u64 s 8) (ptr-read-u64 s 16)))
+             (name-ptr (ptr-read-u64 s 16))
+             (name-len (ptr-read-u64 s 24))
+             (entry (nl_symbol_name_entry_for kind key name-len)))
+        (if (= entry 0)
+            (nl_fmt_sexp_write_symbol_bytes name-ptr 0 name-len buf)
+          (nl_fmt_sexp_write_symbol_bytes
+           (str-bytes-ptr (+ entry 40)) 0 (str-len (+ entry 40)) buf))))
+
     ;; -----------------------------------------------------------------------
     ;; (12) Main dispatch (equivalent to write_sexp)
     ;; -----------------------------------------------------------------------
@@ -414,9 +429,8 @@
                                (ptr-read-u64 s 8) buf) 0)
                1))
          ;; Symbol (tag=4) → readable escaped atom
-         ((= (sexp-tag s) 4)
-          (nl_fmt_sexp_write_symbol_bytes
-           (str-bytes-ptr s) 0 (str-len s) buf))
+         ((or (= (sexp-tag s) 4) (= (sexp-tag s) 16))
+          (nl_fmt_sexp_write_symbol s buf))
          ;; All four string representations → "..." with escaping.
          ((or (= (sexp-tag s) 5) (= (sexp-tag s) 6)
               (= (sexp-tag s) 14) (= (sexp-tag s) 15))

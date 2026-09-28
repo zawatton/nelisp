@@ -216,11 +216,9 @@ existing callers already assume (see the `cs' closure in the Makefile's
 `encode-coding-string' yourself before passing it as a `:pointer'
 argument.
 
-The buffer is allocated with `alloc-bytes' and is never freed -- like
-every other caller-built argument buffer in this runtime, it lives for
-the rest of the process.  Fine for the short, low-volume strings FFI
-arguments typically are; do not use this to marshal large or
-high-frequency string traffic."
+The buffer is allocated with `alloc-bytes'.  Its address is not a GC root;
+callers must keep any required storage alive across a collection while C
+uses it.  Loader calls use `nl-ffi--call-with-owned-cstring' instead."
   (let* ((n (length string))
          (buf (alloc-bytes (1+ n) 1))
          (i 0))
@@ -229,6 +227,61 @@ high-frequency string traffic."
       (setq i (1+ i)))
     (ptr-write-u8 buf n 0)
     buf))
+
+(defvar nl-ffi--package-directory
+  (and load-file-name (file-name-directory load-file-name)))
+
+(defvar nl-ffi--pending-cstring-releases nil
+  "External C-string owners whose release failed and may be retried.")
+
+(defun nl-ffi--ensure-memory-api ()
+  "Load the sibling external-memory provider needed by loader calls."
+  (unless (featurep 'nl-ffi-memory)
+    (or (require 'nl-ffi-memory nil t)
+        (let ((path (and nl-ffi--package-directory
+                         (expand-file-name "nl-ffi-memory.el"
+                                           nl-ffi--package-directory))))
+          (unless (and path (file-readable-p path))
+            (error "nl-ffi: cannot locate sibling nl-ffi-memory.el"))
+          (load path nil nil t)))
+    (unless (and (fboundp 'nl-ffi-memory-cstring)
+                 (fboundp 'nl-ffi-memory-address)
+                 (fboundp 'nl-ffi-memory-release))
+      (error "nl-ffi: nl-ffi-memory provider lacks required APIs"))))
+
+(defun nl-ffi--retry-cstring-releases ()
+  "Retry queued external C-string releases; return remaining owner count."
+  (let ((pending nl-ffi--pending-cstring-releases)
+        (remaining nil))
+    (setq nl-ffi--pending-cstring-releases nil)
+    (while pending
+      (let ((owner (pop pending)))
+        (condition-case nil
+            (nl-ffi-memory-release owner)
+          (error (push owner remaining)))))
+    (setq nl-ffi--pending-cstring-releases (nreverse remaining))
+    (length nl-ffi--pending-cstring-releases)))
+
+(defun nl-ffi--call-with-owned-cstring (string function)
+  "Call FUNCTION with an externally owned NUL-terminated copy of STRING.
+The owner remains live across FUNCTION, including any GC.  Failed releases
+are retained for retry and never replace FUNCTION's result or error."
+  (nl-ffi--ensure-memory-api)
+  (nl-ffi--retry-cstring-releases)
+  (let* ((owner (nl-ffi-memory-cstring string))
+         (address (nl-ffi-memory-address owner))
+         (primary-error nil)
+         (result nil))
+    (unwind-protect
+        (condition-case data
+            (setq result (funcall function address))
+          (error (setq primary-error data)))
+      (condition-case nil
+          (nl-ffi-memory-release owner)
+        (error (push owner nl-ffi--pending-cstring-releases))))
+    (when primary-error
+      (signal (car primary-error) (cdr primary-error)))
+    result))
 
 (defun nl-ffi--convert-arg (fn-name index type value)
   "Convert VALUE for TYPE, the type of argument INDEX (1-based) of FN-NAME.
@@ -488,9 +541,12 @@ whether `nl-ffi-call' is `fboundp' first (see `ffi:library'); this
 function does not, since without that check `nl-ffi--call-checked'
 would already signal `nl-ffi-unavailable' for the same reason, just
 less directly attributed."
-  (let* ((path (nl-ffi--string-to-cstring soname))
-         (flags (logior nl-ffi--rtld-now nl-ffi--rtld-local))
-         (handle (nl-ffi--call-checked 'ffi:library "dlopen" path flags)))
+  (let* ((flags (logior nl-ffi--rtld-now nl-ffi--rtld-local))
+         (handle
+          (nl-ffi--call-with-owned-cstring
+           soname
+           (lambda (path)
+             (nl-ffi--call-checked 'ffi:library "dlopen" path flags)))))
     (when (or (not (integerp handle)) (zerop handle))
       (signal 'nl-ffi-library-open-failed (list soname (nl-ffi--dlerror-text))))
     handle))
@@ -502,8 +558,10 @@ signal that something here is unavailable -- see
 `nl-ffi--resolve-via-dlsym', the only caller, for how a whole search
 across every declared library turns a final 0 into
 `nl-ffi-unresolved-symbol'."
-  (nl-ffi--call-checked 'nl-ffi--dlsym "dlsym" handle
-                         (nl-ffi--string-to-cstring symbol)))
+  (nl-ffi--call-with-owned-cstring
+   symbol
+   (lambda (name)
+     (nl-ffi--call-checked 'nl-ffi--dlsym "dlsym" handle name))))
 
 (defvar nl-ffi--library-order nil
   "SONAMEs successfully `dlopen'ed via `ffi:library', most-recently-declared

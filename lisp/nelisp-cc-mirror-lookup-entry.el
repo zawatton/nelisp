@@ -106,7 +106,9 @@
       ;; crashing the process.  A sound "not found" on a malformed key
       ;; matches the existing `wf_key_eq_depth' precedent (commit
       ;; 7aa3ed8b): a miss is always safe, a crash is not.
-      (if (= (extern-call nl_gc_in_arena sym-ptr) 0)
+      (if (and (= (extern-call nl_gc_in_arena sym-ptr) 0)
+               (= (extern-call nl_root_pin_slot_active sym-ptr) 0)
+               (= (extern-call nl_rootstack_slot_active sym-ptr) 0))
           0
         (if (or (= (sexp-tag sym-ptr) 4) (= (sexp-tag sym-ptr) 16))
             1

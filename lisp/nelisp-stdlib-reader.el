@@ -18,10 +18,8 @@
 ;;   dot int float str symbol sharps-paren
 ;;
 ;; The lexer covers the Doc 44 §3.2 LOCKED subset that the Rust lexer
-;; covers; deferred features (= byte-code literal `#[...]', meta char
-;; modifiers `?\M-X' beyond the ASCII case) signal a `nelisp-read-error'
-;; with a descriptive message identical in spirit to the Rust
-;; `ReadError::NotYetImplemented' variant.
+;; covers, plus GNU byte-code literals `#[...]'.  Meta-character modifiers
+;; `?\M-X' beyond the ASCII case remain deferred.
 ;;
 ;; The lexer state is a 5-element vector `[STRING I LINE COL LEN]'
 ;; mutated through `nelisp--read-tok-bump'.  Vector slots are accessed
@@ -30,6 +28,9 @@
 ;; `cl-defstruct' macro is defined).
 
 ;;; Code:
+
+(unless (get 'unsupported-feature 'error-conditions)
+  (define-error 'unsupported-feature "Unsupported feature" 'error))
 
 ;; Stage 7.2.a uses plain `error' for reader failures.  Stage 7.2.b will
 ;; introduce a `nelisp-read-error' symbol once the parser surface needs
@@ -186,7 +187,16 @@
              ((eq esc ?r) (push 13  parts))
              ((eq esc ?\\) (push 92 parts))
              ((eq esc ?\") (push 34 parts))
-             ((eq esc ?0) (push 0   parts))
+             ((and (>= esc ?0) (<= esc ?7))
+              (let ((value (- esc ?0)) (count 1))
+                (while (and (< count 3)
+                            (let ((next (nelisp--read-tok-peek lx)))
+                              (and next (>= next ?0) (<= next ?7))))
+                  (setq value (+ (* value 8)
+                                 (- (nelisp--read-tok-peek lx) ?0)))
+                  (setq count (1+ count))
+                  (nelisp--read-tok-bump lx))
+                (push value parts)))
              ((eq esc ?e) (push 27  parts))
              ((eq esc ?s) (push 32  parts))
              ((eq esc ?b) (push 8   parts))
@@ -273,8 +283,8 @@
       (nelisp--read-tok-bump lx)
       (nelisp--read-tok-make 'function-quote nil pos))
      ((eq c ?\[)
-      (nelisp--read-tok-error
-       "byte-code literal #[...] is deferred (Doc 44 §3.2)" pos))
+      (nelisp--read-tok-bump lx)
+      (nelisp--read-tok-make 'byte-code-open nil pos))
      ((eq c ?s)
       (nelisp--read-tok-bump lx)
       (let ((next (nelisp--read-tok-peek lx)))
@@ -662,6 +672,7 @@ Returns `(cons FORM REMAINING-TOKENS)' or signals on error."
      ((eq type 'function-quote) (nelisp--read-parse-prefix 'function rest))
      ((eq type 'lparen)         (nelisp--read-parse-list rest tok))
      ((eq type 'lbracket)       (nelisp--read-parse-vector rest tok))
+     ((eq type 'byte-code-open) (nelisp--read-parse-byte-code rest tok))
      ((eq type 'sharps-paren)   (nelisp--read-parse-record rest tok))
      ((eq type 'dot)
       (nelisp--read-parse-error "unexpected `.'" tok))
@@ -736,6 +747,39 @@ Returns `(cons FORM REMAINING-TOKENS)' or signals on error."
             (push (car sub) elements)
             (setq toks (cdr sub)))))))
     (cons (apply 'vector (nreverse elements)) toks)))
+
+(defun nelisp--read-byte-code-fixnum-p (value)
+  "Return non-nil when VALUE fits GNU's signed 62-bit fixnum range."
+  (and (integerp value)
+       (<= -2305843009213693952 value)
+       (<= value 2305843009213693951)))
+
+(defun nelisp--read-parse-byte-code (tokens open-tok)
+  "Parse a supported `#[...]' byte-code literal.
+GNU also accepts cons-code interpreted closures here, but this runtime has
+no corresponding object type yet and rejects that form explicitly."
+  (let* ((parsed (nelisp--read-parse-vector tokens open-tok))
+         (fields (append (car parsed) nil))
+         (count (length fields))
+         (arglist (nth 0 fields))
+         (code (nth 1 fields))
+         (constants (nth 2 fields))
+         (depth (nth 3 fields)))
+    (unless (and (<= 3 count 6)
+                 (or (null arglist) (consp arglist)
+                     (nelisp--read-byte-code-fixnum-p arglist)))
+      (nelisp--read-parse-error "invalid byte-code object" open-tok))
+    (cond
+     ((and (consp code) (or (null constants) (consp constants)))
+      (signal 'unsupported-feature '(interpreted-function-byte-code)))
+     ((and (<= 4 count 6)
+           (stringp code) (vectorp constants)
+           (nelisp--read-byte-code-fixnum-p depth) (>= depth 0))
+      ;; GNU byte-code functions require their instruction stream as unibyte.
+      (setcar (cdr fields)
+              (apply #'unibyte-string (string-to-list code)))
+      (cons (apply #'make-byte-code fields) (cdr parsed)))
+     (t (nelisp--read-parse-error "invalid byte-code object" open-tok)))))
 
 (defun nelisp--read-parse-record (tokens open-tok)
   "Parse a `#s(TYPE V0 V1 ...)' record body.

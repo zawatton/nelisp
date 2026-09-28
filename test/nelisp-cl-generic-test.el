@@ -172,6 +172,23 @@ DEFINITION was nil (unbound at snapshot time)."
   (nelisp-cl-generic-test--snapshot)
   "Real Emacs's own definitions, captured before `nelisp-cl-macros' loads.")
 
+;; Force a GENUINE reload here, regardless of what already ran earlier in
+;; this shared batch process.  `require' is a no-op once a feature is
+;; already `provide'd, and the sibling `test/nelisp-cl-generic-
+;; subclass-test.el' can be that earlier loader (its own file name sorts
+;; alphabetically BEFORE this one, so `make test''s own default order
+;; already loads it first): without this line, `nelisp-cl-macros' would
+;; already be provided, THIS file's `require' below would silently do
+;; nothing, and `--subset-fns' just below would collapse to be identical
+;; to `--real-emacs-fns'.  Confirmed this session with the reversed
+;; repro (`-l test/nelisp-cl-generic-subclass-test.el -l
+;; test/nelisp-cl-generic-test.el'): every `nelisp-cl-generic-deftest'
+;; test below would then run with real Emacs's own `cl-defgeneric'/
+;; `cl-defmethod' instead of this subset's, defeating the whole point of
+;; this file.  Un-providing first makes this file's own require immune
+;; to load order, mirroring the courtesy delq the sibling file already
+;; performs afterward for the opposite order.
+(setq features (delq 'nelisp-cl-macros features))
 (require 'nelisp-cl-macros)
 
 (defvar nelisp-cl-generic-test--subset-fns
@@ -419,11 +436,52 @@ case is useful during EIEIO bootstrap, before class ancestry is available."
   (should (eq 'fallback (cgt-subclass '(subclass cgt-other)))))
 
 (nelisp-cl-generic-deftest nelisp-cl-generic/unsupported-lambda-list-keyword-signals ()
+  "`&context' is now a SUPPORTED lambda-list keyword (see the
+`context-specializer-*' tests below, added for the same fix) -- real
+project.el's own `(cl-defmethod project-root (project &context
+(project--within-roots-fallback (eql nil))) ...)' needs it.  Exercise a
+lambda-list keyword this substrate's Doc 185 subset genuinely still does
+not support (`&whole', real CL/`cl-generic.el' grammar this subset never
+adopted) instead, to keep covering the general \"unrecognised &FOO signals
+a named error\" contract this test was written for."
   (cl-defgeneric cgt-ctx (x))
   (should-error
    (nelisp-cl-generic-test--eval
-    (cl-defmethod cgt-ctx (x &context (major-mode c-mode)) 'nope))
+    (cl-defmethod cgt-ctx (&whole w x) w))
    :type 'error))
+
+;; A value-less `(defvar SYM)' only hints file-local specialness to the
+;; byte compiler; it does not make SYM a true global dynamic variable.
+;; `nelisp-cl-generic-deftest' runs its body via a separate `eval' call
+;; (see its own docstring above), outside this file's own lexical scope,
+;; so these need a real default value to be genuinely dynamic there too.
+(defvar cgt-ctx-var nil)
+(defvar cgt-ctx-var2 nil)
+
+(nelisp-cl-generic-deftest nelisp-cl-generic/context-specializer-dispatches-on-match ()
+  "`&context (EXPR SPEC)' dispatches on EXPR's dynamic value, matching
+real project.el's own usage (`&context (project--within-roots-fallback
+(eql nil))')."
+  (cl-defgeneric cgt-ctx-eq (x))
+  (cl-defmethod cgt-ctx-eq (x &context (cgt-ctx-var (eql t)))
+    (ignore x) 'context-t)
+  (cl-defmethod cgt-ctx-eq (x) (ignore x) 'fallback)
+  (let ((cgt-ctx-var t))
+    (should (eq 'context-t (cgt-ctx-eq 1))))
+  (let ((cgt-ctx-var nil))
+    (should (eq 'fallback (cgt-ctx-eq 1)))))
+
+(nelisp-cl-generic-deftest nelisp-cl-generic/context-specializer-plain-positional-arg-still-works ()
+  "A method combining one plain positional arg with one `&context' pair
+-- real project.el's `project-root' method has this exact shape
+\(`(project &context (project--within-roots-fallback (eql nil)))')
+-- still receives its positional argument normally and dispatches only
+when the context specializer also matches."
+  (cl-defgeneric cgt-ctx-plain (project))
+  (cl-defmethod cgt-ctx-plain (project &context (cgt-ctx-var2 (eql nil)))
+    project)
+  (let ((cgt-ctx-var2 nil))
+    (should (eq 'the-project (cgt-ctx-plain 'the-project)))))
 
 (nelisp-cl-generic-deftest nelisp-cl-generic/bare-before-after-order-and-result ()
   "Bare standard qualifiers run around the primary chain, with before

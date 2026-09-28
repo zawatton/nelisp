@@ -112,6 +112,82 @@ as `ne'.  Both are killed on exit."
     (should (equal "hello there world" (nelisp-buffer-string buf)))
     (should (= 13 (nelisp-point buf)))))
 
+(ert-deftest nelisp-buffer-parity-insert-while-narrowed ()
+  "Insertion at an interior point extends the active restriction's end."
+  (nelisp-buffer-test--with-pair "insert-narrowed"
+    (with-current-buffer host
+      (insert "abcd")
+      (narrow-to-region 2 4)
+      (goto-char 3)
+      (insert "X"))
+    (nelisp-insert "abcd" ne)
+    (nelisp-narrow-to-region 2 4 ne)
+    (nelisp-goto-char 3 ne)
+    (nelisp-insert "X" ne)
+    (should (= (with-current-buffer host (point-max)) (nelisp-point-max ne)))
+    (should (= (with-current-buffer host (point-min)) (nelisp-point-min ne)))
+    (should (= (with-current-buffer host (point)) (nelisp-point ne)))
+    (should (equal (with-current-buffer host
+                     (buffer-substring (point-min) (point-max)))
+                   (nelisp-buffer-substring
+                    (nelisp-point-min ne) (nelisp-point-max ne) ne)))))
+
+(ert-deftest nelisp-buffer-parity-insert-metadata ()
+  "Insertion keeps marker, overlay, and text-property positions in sync."
+  (nelisp-buffer-test--with-pair "insert-metadata"
+    (let ((host-marker (make-marker))
+          (host-advancing-marker (make-marker))
+          host-overlay
+          (ne-marker (nelisp-marker--make :buffer ne :position 2))
+          (ne-advancing-marker
+           (nelisp-marker--make :buffer ne :position 2 :insertion-type t))
+          (ne-overlay
+           (nelisp-overlay--make :buffer ne :start 2 :end 4)))
+      (with-current-buffer host
+        (insert "abcd")
+        (goto-char 2)
+        (set-marker host-marker 2)
+        (set-marker host-advancing-marker 2)
+        (set-marker-insertion-type host-advancing-marker t)
+        (setq host-overlay (make-overlay 2 4))
+        (put-text-property 1 3 'face 'bold)
+        (insert "XY"))
+      (nelisp-insert "abcd" ne)
+      (nelisp-goto-char 2 ne)
+      (setf (nelisp-buffer-markers ne)
+            (list ne-marker ne-advancing-marker)
+            (nelisp-buffer-overlays ne) (list ne-overlay))
+      (nelisp-put-text-property 1 3 'face 'bold ne)
+      (nelisp-insert "XY" ne)
+      (should (equal (nelisp-buffer-string ne)
+                     (with-current-buffer host (buffer-string))))
+      (should (= (nelisp-marker-position ne-marker)
+                 (marker-position host-marker)))
+      (should (= (nelisp-marker-position ne-advancing-marker)
+                 (marker-position host-advancing-marker)))
+      (should (= (nelisp-overlay-start ne-overlay)
+                 (overlay-start host-overlay)))
+      (should (= (nelisp-overlay-end ne-overlay)
+                 (overlay-end host-overlay)))
+      (should (eq (nelisp-get-text-property 1 'face ne) 'bold))
+      (should (eq (with-current-buffer host (get-text-property 1 'face))
+                  'bold))
+      (delete-overlay host-overlay)
+      (set-marker host-marker nil)
+      (set-marker host-advancing-marker nil))))
+
+(ert-deftest nelisp-buffer-insert-skips-empty-metadata-helpers ()
+  "Insertion with no metadata does not invoke positional shift helpers."
+  (nelisp-buffer-test--fresh "insert-empty-metadata"
+    (cl-letf (((symbol-function 'nelisp-buffer--shift-markers-on-insert)
+               (lambda (&rest _) (error "unexpected marker helper call")))
+              ((symbol-function 'nelisp-buffer--shift-overlays-on-insert)
+               (lambda (&rest _) (error "unexpected overlay helper call")))
+              ((symbol-function 'nelisp-buffer--shift-text-properties-on-insert)
+               (lambda (&rest _) (error "unexpected text-property helper call"))))
+      (nelisp-insert "x"))
+    (should (equal "x" (nelisp-buffer-string buf)))))
+
 (ert-deftest nelisp-buffer-insert-type-errors ()
   (nelisp-buffer-test--fresh "type"
     (should-error (nelisp-insert 42) :type 'wrong-type-argument)
@@ -187,9 +263,12 @@ normalized to (min . max) then delete [min, max)."
 (ert-deftest nelisp-buffer-erase-resets ()
   (nelisp-buffer-test--fresh "erase"
     (nelisp-insert "something")
+    (nelisp-narrow-to-region 3 5)
     (nelisp-erase-buffer)
     (should (equal "" (nelisp-buffer-string buf)))
-    (should (= 1 (nelisp-point buf)))))
+    (should (= 1 (nelisp-point buf)))
+    (should (= 1 (nelisp-point-min buf)))
+    (should (= 1 (nelisp-point-max buf)))))
 
 (ert-deftest nelisp-buffer-modified-flag ()
   (nelisp-buffer-test--fresh "mod"
@@ -210,6 +289,52 @@ normalized to (min . max) then delete [min, max)."
     (nelisp-widen)
     (should (= 1 (nelisp-point-min buf)))
     (should (= 11 (nelisp-point-max buf)))))
+
+(ert-deftest nelisp-buffer-narrowing-keeps-point-and-edit-range-in-sync ()
+  (nelisp-buffer-test--with-pair "narrow-point"
+    (with-current-buffer host
+      (insert "abcdefghij")
+      (goto-char 1)
+      (narrow-to-region 3 7))
+    (nelisp-with-buffer ne
+      (nelisp-insert "abcdefghij")
+      (nelisp-goto-char 1)
+      (nelisp-narrow-to-region 3 7 ne))
+    (should (equal (with-current-buffer host
+                     (list (point) (point-min) (point-max)))
+                   (list (nelisp-point ne) (nelisp-point-min ne)
+                         (nelisp-point-max ne))))
+    (with-current-buffer host
+      (goto-char (point-max))
+      (insert "X")
+      (delete-region 4 6))
+    (nelisp-with-buffer ne
+      (nelisp-goto-char (nelisp-point-max ne) ne)
+      (nelisp-insert "X" ne)
+      (nelisp-delete-region 4 6 ne))
+    (should (equal (with-current-buffer host
+                     (list (point) (point-min) (point-max)))
+                   (list (nelisp-point ne) (nelisp-point-min ne)
+                         (nelisp-point-max ne))))
+    (with-current-buffer host (widen))
+    (nelisp-widen ne)
+    (should (equal (with-current-buffer host (buffer-string))
+                   (nelisp-buffer-string ne)))))
+
+(ert-deftest nelisp-buffer-switch-restores-clamped-point-per-buffer ()
+  (let ((nelisp-buffer--current nil)
+        (a (nelisp-generate-new-buffer "switch-a"))
+        (b (nelisp-generate-new-buffer "switch-b")))
+    (nelisp-insert "abcdef" a)
+    (nelisp-goto-char 1 a)
+    (nelisp-narrow-to-region 3 5 a)
+    (nelisp-insert "xyz" b)
+    (nelisp-goto-char 2 b)
+    (nelisp-set-buffer b)
+    (nelisp-set-buffer a)
+    (should (= 3 (nelisp-point a)))
+    (should (<= (nelisp-point-min a) (nelisp-point a)))
+    (should (<= (nelisp-point a) (nelisp-point-max a)))))
 
 (ert-deftest nelisp-buffer-save-restriction-restores ()
   (nelisp-buffer-test--fresh "sr"

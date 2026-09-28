@@ -614,6 +614,12 @@
 
 ;;; Code:
 
+(unless (featurep 'nl-ffi-memory)
+  (load (expand-file-name
+         "nl-ffi-memory.el"
+         (or (and load-file-name (file-name-directory load-file-name))
+             default-directory))))
+
 (declare-function syscall-direct "ext:nelisp-runtime" (nr a0 a1 a2 a3 a4 a5))
 (declare-function alloc-bytes "ext:nelisp-runtime" (nbytes align))
 (declare-function ptr-read-u8 "ext:nelisp-runtime" (ptr offset))
@@ -731,6 +737,15 @@ tag-presence refusal, no `.relr.dyn' bytes are ever read.")
   "ELF64_ST_BIND value for STB_WEAK -- see this file's Commentary, \"A real
 defect found while implementing\".")
 
+(defconst nl-ffi-loader--stt-func 2
+  "ELF64_ST_TYPE value for STT_FUNC.")
+
+(defconst nl-ffi-loader--stt-notype 0
+  "ELF64_ST_TYPE value for STT_NOTYPE.")
+
+(defconst nl-ffi-loader--stt-object 1
+  "ELF64_ST_TYPE value for STT_OBJECT.")
+
 (defconst nl-ffi-loader--stt-tls 6
   "ELF64_ST_TYPE value for STT_TLS -- see this file's Commentary, \"TLS\",
 for why a symbol of this type is refused rather than silently mishandled
@@ -808,21 +823,10 @@ misclassified as \"a small errno\" and vice versa."
 ;;;; --- reading the file: open + fstat + read-only mmap -----------------------
 
 (defun nl-ffi-loader--cstring (string)
-  "Copy STRING into a fresh NUL-terminated buffer; return its address.
-A local copy of `nl-ffi.el's own `nl-ffi--string-to-cstring' (same
-`alloc-bytes'/`ptr-write-u8' shape) rather than a cross-file call to it:
-that name is `nl-ffi.el's private (`--') helper, and `nl-ns-inventory'
-polices exactly that file-privacy boundary.  STRING is treated as a
-sequence of bytes, exactly as the original does; see its docstring for
-the same caveats (multibyte text, the buffer never being freed)."
-  (let* ((n (length string))
-         (buf (alloc-bytes (1+ n) 1))
-         (i 0))
-    (while (< i n)
-      (ptr-write-u8 buf i (aref string i))
-      (setq i (1+ i)))
-    (ptr-write-u8 buf n 0)
-    buf))
+  "Return an external-memory owner for a NUL-terminated copy of STRING.
+The caller must obtain its address with `nl-ffi-memory-address' and
+release the owner after the native call, including on nonlocal exit."
+  (nl-ffi-memory-cstring (string-as-unibyte string)))
 
 (defun nl-ffi-loader--open-ro (path)
   "openat(AT_FDCWD, PATH, O_RDONLY); return the fd, or signal.
@@ -833,10 +837,13 @@ search-path resolution the way real `dlopen' does for a bare library
 name; a caller wants a real, openable path here (dependency resolution,
 `nl-ffi-loader--resolve-soname', does that search and hands THIS function
 a real path too)."
-  (let* ((path-c (nl-ffi-loader--cstring path))
-         (fd (syscall-direct nl-ffi-loader--sys-openat
-                              nl-ffi-loader--at-fdcwd path-c
-                              nl-ffi-loader--o-rdonly 0 0 0)))
+  (let* ((path-owner (nl-ffi-loader--cstring path))
+         (fd (unwind-protect
+                 (syscall-direct nl-ffi-loader--sys-openat
+                                 nl-ffi-loader--at-fdcwd
+                                 (nl-ffi-memory-address path-owner)
+                                 nl-ffi-loader--o-rdonly 0 0 0)
+               (nl-ffi-memory-release path-owner))))
     (if (nl-ffi-loader--syscall-error-p fd)
         (signal 'nl-ffi-loader-open-failed (list path fd))
       fd)))
@@ -846,10 +853,13 @@ a real path too)."
 Used only by SONAME search-path resolution to test a CANDIDATE path
 before committing to it -- closes the fd immediately either way; never
 signals."
-  (let* ((path-c (nl-ffi-loader--cstring path))
-         (fd (syscall-direct nl-ffi-loader--sys-openat
-                              nl-ffi-loader--at-fdcwd path-c
-                              nl-ffi-loader--o-rdonly 0 0 0)))
+  (let* ((path-owner (nl-ffi-loader--cstring path))
+         (fd (unwind-protect
+                 (syscall-direct nl-ffi-loader--sys-openat
+                                 nl-ffi-loader--at-fdcwd
+                                 (nl-ffi-memory-address path-owner)
+                                 nl-ffi-loader--o-rdonly 0 0 0)
+               (nl-ffi-memory-release path-owner))))
     (if (nl-ffi-loader--syscall-error-p fd)
         nil
       (syscall-direct nl-ffi-loader--sys-close fd 0 0 0 0 0)
@@ -1342,7 +1352,7 @@ derives is a fragile, last-resort guess rather than a real field."
     (nl-ffi-get-string (+ (plist-get dyn :strtab) name-off))))
 
 (defun nl-ffi-loader--dynsym-entry (dyn symtab-index)
-  "Return (VALUE SHNDX BIND TYPE) at SYMTAB-INDEX in DYN's `.dynsym'.
+  "Return (VALUE SHNDX BIND TYPE SIZE) at SYMTAB-INDEX in DYN's `.dynsym'.
 BIND/TYPE come from the single `st_info' byte at offset 4 (upper/lower 4
 bits respectively) -- see this file's Commentary, \"A real defect found
 while implementing\" (BIND, for STB_WEAK) and \"IFUNC\" (TYPE, for
@@ -1350,13 +1360,14 @@ STT_GNU_IFUNC)."
   (let* ((sym (+ (plist-get dyn :symtab) (* symtab-index (plist-get dyn :syment))))
          (st-value (ptr-read-u64 sym 8))
          (st-shndx (nl-ffi-loader--u16 sym 6))
-         (st-info (ptr-read-u8 sym 4)))
-    (list st-value st-shndx (ash st-info -4) (logand st-info #xf))))
+         (st-info (ptr-read-u8 sym 4))
+         (st-size (ptr-read-u64 sym 16)))
+    (list st-value st-shndx (ash st-info -4) (logand st-info #xf) st-size)))
 
 (defun nl-ffi-loader--lookup-in-node (node name)
   "Resolve NAME within NODE's own `.dynsym' only -- no cross-object search.
-Returns (VALUE BIND TYPE), all already biased/absolute where applicable,
-for a DEFINED match, or nil."
+Returns (VALUE BIND TYPE SIZE SHNDX), all already biased/absolute where
+applicable, for a DEFINED match, or nil."
   (let* ((dyn (plist-get node :dyn))
          (index
           (cond
@@ -1366,19 +1377,22 @@ for a DEFINED match, or nil."
     (when index
       (let ((entry (nl-ffi-loader--dynsym-entry dyn index)))
         (when (/= (nth 1 entry) 0) ; SHN_UNDEF
-          (list (+ (plist-get node :bias) (nth 0 entry)) (nth 2 entry) (nth 3 entry)))))))
+          (list (+ (plist-get node :bias) (nth 0 entry))
+                (nth 2 entry) (nth 3 entry) (nth 4 entry) (nth 1 entry)))))))
 
 (defun nl-ffi-loader--lookup-across-graph (graph search-order name)
   "Resolve NAME across every node in SEARCH-ORDER (paths into GRAPH, a
 hash table path->node), first DEFINED match wins.  Returns (VALUE BIND
-TYPE SOURCE-PATH), or nil.  See this file's Commentary, \"Symbol search
-order\"."
+TYPE SOURCE-PATH SIZE SHNDX), or nil.  See this file's Commentary,
+\"Symbol search order\"."
   (let ((paths search-order) (found nil))
     (while (and paths (not found))
       (let* ((path (car paths))
              (node (gethash path graph))
              (hit (and node (nl-ffi-loader--lookup-in-node node name))))
-        (when hit (setq found (append hit (list path)))))
+        (when hit
+          (setq found (list (nth 0 hit) (nth 1 hit) (nth 2 hit) path
+                            (nth 3 hit) (nth 4 hit)))))
       (setq paths (cdr paths)))
     found))
 
@@ -1631,7 +1645,34 @@ anything ROOT-PATH's own traversal did not already reach."
 form that exists on x86-64 -- Elf64_Rel, without an inline addend, is not
 part of this ABI at all).")
 
-(defun nl-ffi-loader--resolve-relocation-symbol (path bias dyn graph search-order r-sym)
+(defun nl-ffi-loader--copy-runtime-symbols (path runtime-symbols)
+  "Validate and copy PATH's optional trusted runtime symbol provider.
+RUNTIME-SYMBOLS is an alist of (NAME . ADDRESS) entries.  Addresses are
+caller-owned native code addresses; the caller must keep their mappings
+alive for the returned handle's lifetime.  This checks representation
+and rejects null/low addresses, but cannot prove ADDRESS is mapped or
+executable."
+  (let ((rest runtime-symbols) (result nil) (seen nil))
+    (while (consp rest)
+      (let ((entry (car rest)))
+        (unless (and (consp entry)
+                     (stringp (car entry))
+                     (> (length (car entry)) 0)
+                     (integerp (cdr entry))
+                     (>= (cdr entry) nl-ffi-loader--page-size)
+                     (not (member (car entry) seen)))
+          (signal 'nl-ffi-loader-unsupported
+                  (list :runtime-symbol-provider-invalid path entry)))
+        (setq seen (cons (car entry) seen))
+        (setq result (cons (cons (copy-sequence (car entry)) (cdr entry)) result)))
+      (setq rest (cdr rest)))
+    (unless (null rest)
+      (signal 'nl-ffi-loader-unsupported
+              (list :runtime-symbol-provider-invalid path runtime-symbols)))
+    (nreverse result)))
+
+(defun nl-ffi-loader--resolve-relocation-symbol
+    (path bias dyn graph search-order r-sym &optional runtime-symbols reloc-type)
   "Resolve dynsym index R-SYM for a GLOB_DAT/JUMP_SLOT relocation
 belonging to the object at PATH (bias BIAS, own table DYN).  Returns the
 resolved, already-biased runtime address (0 for a legitimately
@@ -1667,9 +1708,20 @@ separate code path."
                           (nl-ffi-loader--dynsym-name dyn r-sym) path)))
           (+ bias l-value))
       (let* ((name (nl-ffi-loader--dynsym-name dyn r-sym))
-             (hit (and graph search-order
+             (provided (assoc name runtime-symbols))
+             (hit (and (not provided) graph search-order
                        (nl-ffi-loader--lookup-across-graph graph search-order name))))
         (cond
+         (provided
+          ;; A provider is for code imports only.  STT_NOTYPE is accepted
+          ;; only for JUMP_SLOT, whose PLT relocation is unambiguously a
+          ;; call site; GLOB_DAT may instead name imported data.
+          (unless (or (= l-type nl-ffi-loader--stt-func)
+                      (and (= l-type nl-ffi-loader--stt-notype)
+                           (= reloc-type nl-ffi-loader--reloc-jump-slot)))
+            (signal 'nl-ffi-loader-unsupported
+                    (list :runtime-symbol-type path name l-type reloc-type)))
+          (cdr provided))
          (hit
           (when (= (nth 2 hit) nl-ffi-loader--stt-gnu-ifunc)
             (signal 'nl-ffi-loader-unsupported
@@ -1723,7 +1775,8 @@ elsewhere refuses to do."
             (signal 'nl-ffi-loader-unsupported
                     (list :undefined-tls-symbol path name))))))))
 
-(defun nl-ffi-loader--apply-one-relocation (path bias dyn rela-addr &optional graph search-order)
+(defun nl-ffi-loader--apply-one-relocation
+    (path bias dyn rela-addr &optional graph search-order runtime-symbols)
   "Apply the single Elf64_Rela relocation at RELA-ADDR, belonging to the
 object at PATH (bias BIAS, own table DYN).  GRAPH/SEARCH-ORDER (both
 optional) enable cross-object symbol search for an otherwise-undefined
@@ -1751,7 +1804,7 @@ Commentary."
      ((or (= r-type nl-ffi-loader--reloc-glob-dat)
           (= r-type nl-ffi-loader--reloc-jump-slot))
       (let ((value (nl-ffi-loader--resolve-relocation-symbol
-                    path bias dyn graph search-order r-sym)))
+                    path bias dyn graph search-order r-sym runtime-symbols r-type)))
         (ptr-write-u64 target 0 (+ value r-addend))))
      ((= r-type nl-ffi-loader--reloc-irelative)
       (let* ((resolver-addr (+ bias r-addend))
@@ -1770,7 +1823,8 @@ Commentary."
                       (error nil))))))))
 
 (defun nl-ffi-loader--apply-relocation-table
-    (path bias dyn addr size entsize graph search-order irelative-box)
+    (path bias dyn addr size entsize graph search-order irelative-box
+          &optional runtime-symbols)
   "Apply every NON-IRELATIVE relocation in the table at ADDR (SIZE bytes,
 ENTSIZE each).  An `R_X86_64_IRELATIVE' entry's address is pushed onto
 IRELATIVE-BOX (a one-element list used as a mutable box) instead of being
@@ -1786,10 +1840,11 @@ later pass."
           (if (= r-type nl-ffi-loader--reloc-irelative)
               (setcar irelative-box (cons rela-addr (car irelative-box)))
             (nl-ffi-loader--apply-one-relocation
-             path bias dyn rela-addr graph search-order)))
+             path bias dyn rela-addr graph search-order runtime-symbols)))
         (setq i (1+ i))))))
 
-(defun nl-ffi-loader--apply-relocations-for-node (node graph search-order)
+(defun nl-ffi-loader--apply-relocations-for-node
+    (node graph search-order &optional runtime-symbols)
   "Apply every NON-IRELATIVE relocation (`.rela.dyn' and `.rela.plt', if
 present -- both Elf64_Rela on x86-64; refuses `:rel-style-plt-not-rela'
 if `DT_PLTREL' ever claims otherwise) for NODE, THEN protect NODE's
@@ -1804,11 +1859,11 @@ then irelative) is required."
       (signal 'nl-ffi-loader-unsupported (list :rel-style-plt-not-rela path)))
     (nl-ffi-loader--apply-relocation-table
      path bias dyn (plist-get dyn :rela) (plist-get dyn :relasz) (plist-get dyn :relaent)
-     graph search-order irelative-box)
+     graph search-order irelative-box runtime-symbols)
     (nl-ffi-loader--apply-relocation-table
      path bias dyn (plist-get dyn :jmprel) (plist-get dyn :pltrelsz)
      24 ; .rela.plt entries are always Elf64_Rela (24 bytes) on x86-64.
-     graph search-order irelative-box)
+     graph search-order irelative-box runtime-symbols)
     (nl-ffi-loader--protect-segments bias (plist-get node :loads))
     (dolist (rela-addr (nreverse (car irelative-box)))
       (nl-ffi-loader--apply-one-relocation path bias dyn rela-addr graph search-order))))
@@ -1849,7 +1904,7 @@ whether to resolve a symbol through `nl-ffi-loader-symbol' or `dlsym'."
   (and (consp handle) (eq (plist-get handle :nl-ffi-loader-magic)
                            nl-ffi-loader--magic)))
 
-(defun nl-ffi-loader--open-graph (path)
+(defun nl-ffi-loader--open-graph (path &optional runtime-symbols)
   "Discover, relocate, protect, and initialize PATH's whole dependency
 graph.  Returns (GRAPH ORDER) on success.  On ANY failure anywhere in the
 graph, unmaps every address-space reservation made so far (see this
@@ -1862,7 +1917,9 @@ down."
              (graph (car built)) (order (cdr built))
              (postorder (nl-ffi-loader--postorder graph order path)))
         (dolist (p postorder)
-          (nl-ffi-loader--apply-relocations-for-node (gethash p graph) graph order))
+          (nl-ffi-loader--apply-relocations-for-node
+           (gethash p graph) graph order
+           (and (equal p path) runtime-symbols)))
         (dolist (p postorder)
           (nl-ffi-loader--run-initializers-for-node (gethash p graph)))
         (list graph order))
@@ -1870,7 +1927,7 @@ down."
      (nl-ffi-loader--unmap-reservations)
      (signal (car err) (cdr err)))))
 
-(defun nl-ffi-loader-open (path)
+(defun nl-ffi-loader-open (path &optional runtime-symbols)
   "Map, relocate, protect, and initialize the shared object at PATH, and
 every `DT_NEEDED' dependency it (transitively) names -- see this file's
 Commentary for the full design, especially \"THE LIBC / SECOND-COPY
@@ -1880,6 +1937,15 @@ PATH itself is used exactly as given -- opened with
 `openat(AT_FDCWD, PATH, O_RDONLY)', no search -- unlike a `DT_NEEDED'
 name found while discovering PATH's own dependencies, which IS resolved
 via `nl-ffi-loader--resolve-soname'.
+
+RUNTIME-SYMBOLS, when non-nil, is a caller-owned alist of (NAME . ADDRESS)
+trusted native function addresses.  It applies only to undefined symbol
+relocations in PATH itself; dependencies use the normal graph resolver.
+It does not resolve `DT_NEEDED' names, provide dependency symbols, or bypass
+the loader's `DT_RELR' refusal.
+The caller must keep each address mapped for the handle's lifetime.  Only
+STT_FUNC imports use these entries, plus STT_NOTYPE on JUMP_SLOT (whose PLT
+relocation proves call use); ambiguous NOTYPE GLOB_DAT imports are refused.
 
 Returns an opaque handle (`nl-ffi-loader-handle-p' recognizes it) that
 `nl-ffi-loader-symbol'/`nl-ffi-loader-symbol-object' resolve names
@@ -1893,7 +1959,8 @@ increment's scope, whether in PATH itself (`:not-elf64-shared-object',
 -- a `PT_TLS' segment this loader could not give real storage; see this
 file's Commentary, \"TLS\" -- `:no-dynamic-section', `:relr-relocations',
 `:no-dynamic-symbols', `:overlapping-segments', `:rel-style-plt-not-rela',
-`:undefined-symbol', `:ifunc-symbol-via-relocation',
+`:undefined-symbol', `:runtime-symbol-provider-invalid',
+`:runtime-symbol-type', `:ifunc-symbol-via-relocation',
 `:tls-symbol-via-relocation', `:tls-relocation' (a TLS relocation type
 this file still refuses -- General-Dynamic/Local-Dynamic and TPOFF64's
 GOT-indirect/32-bit-immediate cousins; `R_X86_64_TPOFF64' itself is now
@@ -1904,16 +1971,18 @@ or anywhere in its dependency graph (the same set, wrapped as
 requester/soname/resolved-path/inner-condition chain -- see
 `nl-ffi-loader--map-node-as-dependency' -- or `:dependency-not-found'
 when a `DT_NEEDED' name cannot be resolved to any real path at all)."
-  (let ((nl-ffi-loader--file-mappings nil)
+  (let ((runtime-symbols (nl-ffi-loader--copy-runtime-symbols path runtime-symbols))
+        (nl-ffi-loader--file-mappings nil)
         (nl-ffi-loader--reservations nil))
     (unwind-protect
-        (let* ((g (nl-ffi-loader--open-graph path))
+        (let* ((g (nl-ffi-loader--open-graph path runtime-symbols))
                (graph (nth 0 g)) (order (nth 1 g))
                (root (gethash path graph)))
           (list :nl-ffi-loader-magic nl-ffi-loader--magic
                 :path path :bias (plist-get root :bias)
                 :dyn (plist-get root :dyn)
-                :graph graph :search-order order))
+                :graph graph :search-order order
+                :runtime-symbols runtime-symbols))
       (nl-ffi-loader--unmap-file-mappings))))
 
 (defun nl-ffi-loader-symbol (handle name)
@@ -1936,8 +2005,97 @@ relocation context here to combine it with the defining object's own
               (plist-get handle :graph) (plist-get handle :search-order) name)))
     (if (and hit (/= (nth 2 hit) nl-ffi-loader--stt-gnu-ifunc)
              (/= (nth 2 hit) nl-ffi-loader--stt-tls))
-        (nth 0 hit)
+      (nth 0 hit)
       0)))
+
+(defun nl-ffi-loader-symbol-info (handle name)
+  "Return a plist describing defined NAME in HANDLE's object graph.
+
+The plist has :address, :size, :type, :binding, :source-path, and
+:section-index entries.  SIZE is ELF st_size metadata; validate it against
+a mapped segment before reading.  IFUNC and TLS addresses are refused."
+  (unless (nl-ffi-loader-handle-p handle)
+    (signal 'wrong-type-argument (list 'nl-ffi-loader-handle-p handle)))
+  (let ((hit (nl-ffi-loader--lookup-across-graph
+              (plist-get handle :graph) (plist-get handle :search-order) name)))
+    (when hit
+      (when (= (nth 2 hit) nl-ffi-loader--stt-gnu-ifunc)
+        (signal 'nl-ffi-loader-unsupported
+                (list :ifunc-symbol-info name (nth 3 hit))))
+      (when (= (nth 2 hit) nl-ffi-loader--stt-tls)
+        (signal 'nl-ffi-loader-unsupported
+                (list :tls-symbol-info name (nth 3 hit))))
+      (unless (and (> (nth 5 hit) 0) (< (nth 5 hit) #xff00))
+        (signal 'nl-ffi-loader-unsupported
+                (list :non-file-section-symbol-info name (nth 5 hit))))
+      (list :address (nth 0 hit)
+            :binding (nth 1 hit)
+            :type (nth 2 hit)
+            :source-path (nth 3 hit)
+            :size (nth 4 hit)
+            :section-index (nth 5 hit)))))
+
+(defun nl-ffi-loader--root-object-file-backed-p (handle info)
+  "Return non-nil when INFO's whole symbol extent belongs to a readable,
+file-backed PT_LOAD in HANDLE's root object."
+  (let* ((path (plist-get handle :path))
+         (source (plist-get info :source-path))
+         (graph (plist-get handle :graph))
+         (node (and (equal source path) (gethash path graph)))
+         (bias (and node (plist-get node :bias)))
+         (address (plist-get info :address))
+         (size (plist-get info :size))
+         (vaddr (and bias (>= address bias) (- address bias)))
+         (loads (and node (plist-get node :loads)))
+         (found nil))
+    (when (and vaddr (integerp size) (> size 0))
+      (while (and loads (not found))
+        (let* ((load (car loads))
+               (load-vaddr (nth 0 load))
+               (file-size (nth 2 load))
+               (flags (nth 4 load)))
+          (when (and (/= (logand flags nl-ffi-loader--pf-r) 0)
+                     (>= vaddr load-vaddr)
+                     (<= (- vaddr load-vaddr) file-size)
+                     (<= size (- file-size (- vaddr load-vaddr))))
+            (setq found t)))
+        (setq loads (cdr loads))))
+    found))
+
+(defun nl-ffi-loader-read-root-object-bytes (handle name offset length)
+  "Read LENGTH bytes at OFFSET from a defined root-object symbol NAME.
+
+The whole symbol must be an STT_OBJECT in the root ELF and fit inside one
+readable, file-backed PT_LOAD.  OFFSET and LENGTH must fit st_size.  Every
+check precedes the first payload-byte read.  Dependency symbols, functions,
+BSS-only objects, reserved/undefined section indices, and out-of-range
+requests are refused."
+  (unless (and (integerp offset) (>= offset 0)
+               (integerp length) (>= length 0))
+    (signal 'nl-ffi-loader-unsupported
+            (list :symbol-byte-range-invalid name offset length)))
+  (let* ((info (nl-ffi-loader-symbol-info handle name))
+         (size (and info (plist-get info :size)))
+         (address (and info (plist-get info :address))))
+    (unless info
+      (signal 'nl-ffi-loader-unsupported (list :symbol-not-found name)))
+    (unless (= (plist-get info :type) nl-ffi-loader--stt-object)
+      (signal 'nl-ffi-loader-unsupported
+              (list :symbol-not-object name (plist-get info :type))))
+    (unless (let ((section (plist-get info :section-index)))
+              (and (integerp section) (> section 0) (< section #xff00)))
+      (signal 'nl-ffi-loader-unsupported
+              (list :symbol-not-file-section name
+                    (plist-get info :section-index))))
+    (unless (nl-ffi-loader--root-object-file-backed-p handle info)
+      (signal 'nl-ffi-loader-unsupported
+              (list :symbol-not-root-file-backed name
+                    (plist-get info :source-path) size)))
+    (unless (and (<= offset size)
+                 (<= length (- size offset)))
+      (signal 'nl-ffi-loader-unsupported
+              (list :symbol-byte-range-out-of-bounds name offset length size)))
+    (ptr-read-bytes (+ address offset) length)))
 
 (defun nl-ffi-loader-symbol-object (handle name)
   "Return the PATH (within HANDLE's own dependency graph) whose

@@ -240,6 +240,144 @@ lifetime of a Sexp value.  No `let' binding needed.")
        (ptr-write-u64 result-slot 24 n)
        result-slot))
 
+    ;; Canonical mutable name objects are kept in an external open-addressed
+    ;; table.  It is outside the moving Lisp heap; values at entry+40 are
+    ;; traced explicitly by the collector. Entry layout (80 bytes): state,
+    ;; key-kind, key, byte-length, hash, name-Sexp, last-mark-epoch.
+    ;; Key-kind 1 is an interned/tag-4 name buffer; 2 is a tag-16 identity.
+    (defun nl_symname_copy32 (src dst off)
+      (if (>= off 32) 1
+        (seq (ptr-write-u64 dst off (ptr-read-u64 src off))
+             (nl_symname_copy32 src dst (+ off 8)))))
+    (defun nl_symname_copy80 (src dst off)
+      (if (>= off 80) 1
+        (seq (ptr-write-u64 dst off (ptr-read-u64 src off))
+             (nl_symname_copy80 src dst (+ off 8)))))
+    (defun nl_symname_entry_match (entry kind key len hash)
+      (if (or (/= (ptr-read-u64 entry 8) kind)
+              (/= (ptr-read-u64 entry 32) hash)) 0
+        (if (= kind 2)
+            (if (= (ptr-read-u64 entry 16) key) 1 0)
+          (if (/= (ptr-read-u64 entry 24) len) 0
+            (nl_intern_eq (ptr-read-u64 entry 16) key 0 len)))))
+    (defun nl_symname_probe (table cap kind key len hash step first-tomb)
+      (if (>= step cap) first-tomb
+        (let* ((entry (+ table (* (logand (+ hash step) (- cap 1)) 80)))
+               (state (ptr-read-u64 entry 0)))
+          (if (= state 0)
+              (if (= first-tomb 0) entry first-tomb)
+            (if (= state 2)
+                (nl_symname_probe table cap kind key len hash (+ step 1)
+                                  (if (= first-tomb 0) entry first-tomb))
+              (if (= (nl_symname_entry_match entry kind key len hash) 1)
+                  entry
+                (nl_symname_probe table cap kind key len hash (+ step 1)
+                                  first-tomb)))))))
+    (defun nl_symname_hash (kind key len)
+      (if (= kind 2)
+          (logand (* (logxor key (sar key 32)) 2654435761) 4294967295)
+        (nl_intern_hash key 0 len 2166136261)))
+    ;; Interned raw name buffers occupy the dedicated name arena, beginning
+    ;; 16 MiB after its base. Other kind-1 keys are ordinary heap buffers and
+    ;; remain live only while a reachable Symbol points at them.
+    (defun nl_symbol_name_key_permanent (key len)
+      ;; A buffer merely landing in the intern mapping is insufficient: only
+      ;; a currently occupied intern-table row grants permanent lifetime.
+      (let* ((base (ptr-read-u64 268436288 0)))
+        (if (= base 0) 0
+          (let* ((slot (nl_intern_probe
+                        base (logand (nl_intern_hash key 0 len 2166136261) 1048575)
+                        key len 0)))
+            (if (= slot 0) 0
+              (if (= (ptr-read-u64 slot 0) (+ len 1))
+                  (if (= (ptr-read-u64 slot 8) key) 1 0)
+                0))))))
+    (defun nl_symname_reinsert (new-table new-cap old-entry)
+      (let* ((hash (ptr-read-u64 old-entry 32)) (step 0) (done 0))
+        (while (and (< step new-cap) (= done 0))
+          (let* ((entry (+ new-table (* (logand (+ hash step) (- new-cap 1)) 80))))
+            (if (= (ptr-read-u64 entry 0) 0)
+                (seq (nl_symname_copy80 old-entry entry 0) (setq done 1))
+              (setq step (+ step 1)))))
+        done))
+    (defun nl_symname_rehash_walk (old-table old-cap new-table new-cap)
+      (let* ((i 0) (valid 1))
+        (while (and (< i old-cap) (= valid 1))
+          (let* ((entry (+ old-table (* i 80))))
+            (if (and (= (ptr-read-u64 entry 0) 1)
+                     (= (nl_symname_reinsert new-table new-cap entry) 0))
+                (setq valid 0) 0)
+            (setq i (+ i 1))))
+        valid))
+    (defun nl_symname_grow ()
+      (let* ((state (data-addr nl_symbol_name_state))
+             (old (ptr-read-u64 state 0))
+             (cap (ptr-read-u64 state 8))
+             (new-cap (if (= cap 0) 256 (* cap 2))))
+        ;; Power-of-two capacity and 80-byte entries must remain in signed
+        ;; i64 range. Allocation failure leaves the old table untouched.
+        (if (or (< cap 0) (>= cap 72057594037927936)) 0
+          (let* ((bytes (* new-cap 80)) (new (nl_os_alloc_chunk bytes)))
+            (if (< new 4096) 0
+              (if (= (nl_os_commit_range new 0 bytes) 0)
+                  (seq (nl_os_free_chunk new bytes) 0)
+                (if (= (nl_symname_rehash_walk old cap new new-cap) 0)
+                    (seq (nl_os_free_chunk new bytes) 0)
+                  (seq (ptr-write-u64 state 0 new)
+                       (ptr-write-u64 state 8 new-cap)
+                       ;; Publication is complete before reclaim. If the OS
+                       ;; refuses this valid unmap, the old table leaks but
+                       ;; the new live table remains fully usable.
+                       (if (> old 0) (nl_os_free_chunk old (* cap 80)) 0)
+                       1))))))))
+    (defun nl_symname_entry (kind key len hash)
+      (let* ((state (data-addr nl_symbol_name_state))
+             (base (ptr-read-u64 state 0))
+             (cap (ptr-read-u64 state 8)))
+        (if (= base 0)
+            (if (= (nl_symname_grow) 0) 0
+              (nl_symname_entry kind key len hash))
+          (let* ((entry (nl_symname_probe base cap kind key len hash 0 0))
+                 (used (ptr-read-u64 state 16)))
+            (if (= entry 0) 0
+              (if (= (ptr-read-u64 entry 0) 1) entry
+                (if (>= (* (+ used 1) 4) (* cap 3))
+                    (if (= (nl_symname_grow) 0) 0
+                      (nl_symname_entry kind key len hash))
+                  entry)))))))
+    ;; Return the entry address without allocating. Used by the GC hooks.
+    (defun nl_symbol_name_entry_for (kind key len)
+      (let* ((state (data-addr nl_symbol_name_state))
+             (base (ptr-read-u64 state 0)) (cap (ptr-read-u64 state 8)))
+        (if (= base 0) 0
+          (let* ((hash (nl_symname_hash kind key len))
+                 (entry (nl_symname_probe base cap kind key len hash 0 0)))
+            (if (if (= entry 0) 1
+                  (if (= (ptr-read-u64 entry 0) 1)
+                      (if (= (nl_symname_entry_match entry kind key len hash) 1) 0 1)
+                    1)) 0 entry)))))
+    ;; First insertion wins: an intern hit must retain the original name Sexp.
+    (defun nl_symbol_name_register (kind key len name-slot)
+      (let* ((hash (nl_symname_hash kind key len))
+             (entry (nl_symname_entry kind key len hash)))
+        (if (= entry 0) 0
+          (if (= (ptr-read-u64 entry 0) 1) 1
+            (seq (ptr-write-u64 entry 8 kind)
+                 (ptr-write-u64 entry 16 key)
+                 (ptr-write-u64 entry 24 len)
+                 (ptr-write-u64 entry 32 hash)
+                 (nl_symname_copy32 name-slot (+ entry 40) 0)
+                 (ptr-write-u64 entry 72 (ptr-read-u64 (data-addr nl_symbol_name_state) 24))
+                 (ptr-write-u64 entry 0 1)
+                 (ptr-write-u64 (data-addr nl_symbol_name_state) 16
+                                (+ (ptr-read-u64 (data-addr nl_symbol_name_state) 16) 1))
+                 1)))))
+    (defun nl_symbol_name_copy_out (entry out)
+      (if (= entry 0) 0
+        (if (= (ptr-read-u64 entry 0) 1)
+            (seq (nl_symname_copy32 (+ entry 40) out 0) 1)
+          0)))
+
     (defun nl_next_symbol_identity ()
       ;; Shared with the reader and C-ABI producer. The mutation epoch is
       ;; monotonic and survives image restoration; callers reject overflow.
@@ -402,7 +540,134 @@ lifetime of a Sexp value.  No `let' binding needed.")
 
     ;; Public entry: nl_alloc_symbol(bytes_ptr, len, result_slot).
     (defun nl_alloc_symbol (bytes-ptr len result-slot)
+      ;; Construction has no canonical name Sexp yet. `symbol-name' creates
+      ;; it lazily in a checked root slot; this keeps intern hits allocation
+      ;; free and avoids retaining an unrooted 32-byte scratch box here.
       (nl_alloc_symbol_pos bytes-ptr (if (< len 0) 0 len) result-slot))
+
+    ;; The miss-only heap fallback allocates before rereading the rooted input
+    ;; string. A GC during `alloc-bytes' may move its byte buffer.
+    (defun nl_alloc_symbol_plain_named (name-slot n result-slot)
+      (let* ((alloc-n (if (= n 0) 1 n))
+             (char-buf (alloc-bytes alloc-n 1)))
+        (nl_alloc_symbol_write (str-bytes-ptr name-slot) n alloc-n
+                               result-slot char-buf)))
+    (defun nl_intern_finish_named (slot n name-slot result-slot)
+      (if (= slot 0)
+          (nl_alloc_symbol_plain_named name-slot n result-slot)
+        (if (= (ptr-read-u64 slot 0) 0)
+            (if (= (nl_intern_arena_fits n) 1)
+                (nl_intern_insert slot (str-bytes-ptr name-slot) n result-slot
+                                  (nl_intern_bump n))
+              (nl_alloc_symbol_plain_named name-slot n result-slot))
+          (nl_intern_write_sexp result-slot (ptr-read-u64 slot 8) n))))
+    ;; NAME-SLOT is a borrowed, caller-rooted string Sexp for the whole call.
+    ;; Re-read its byte pointer after any allocating fallback. Existing
+    ;; intern rows retain their first canonical string.
+    (defun nl_alloc_symbol_named (bytes-ptr len name-slot result-slot)
+      (let* ((n (if (< len 0) 0 len))
+             (probe (if (or (= (nl_name_is_nil bytes-ptr n) 1)
+                            (= (nl_name_is_t bytes-ptr n) 1)
+                            (= (ptr-read-u64 268436288 0) 0)) 0
+                      (nl_intern_probe
+                       (ptr-read-u64 268436288 0)
+                       (logand (nl_intern_hash bytes-ptr 0 n 2166136261) 1048575)
+                       bytes-ptr n 0)))
+             (was-present (if (= probe 0) 0
+                            (if (= (ptr-read-u64 probe 0) (+ n 1)) 1 0))))
+        (if (= (nl_name_is_nil bytes-ptr n) 1)
+            (nl_write_canonical_nil result-slot)
+          (if (= (nl_name_is_t bytes-ptr n) 1)
+              (nl_write_canonical_t result-slot)
+            (let* ((slot (if (= (ptr-read-u64 268436288 0) 0) 0
+                           (nl_intern_probe
+                            (ptr-read-u64 268436288 0)
+                            (logand (nl_intern_hash bytes-ptr 0 n 2166136261) 1048575)
+                            bytes-ptr n 0))))
+              (if (= (nl_intern_finish_named slot n name-slot result-slot) 0) 0
+                (if (= was-present 1) 1
+                  (nl_symbol_name_register
+                   1 (ptr-read-u64 result-slot 16) n name-slot))))))))
+
+    ;; NAME-SLOT is caller-rooted through allocation; bytes are reread from
+    ;; that updated Sexp only after the destination buffer has been allocated.
+    (defun nl_alloc_uninterned_symbol_named (bytes-ptr n identity name-slot result-slot)
+      (if (<= identity 0) 0
+        (let* ((alloc-n (if (= n 0) 1 n))
+               (char-buf (alloc-bytes alloc-n 1)))
+          (if (= (nl_uninterned_symbol_write
+                  (str-bytes-ptr name-slot) n identity result-slot char-buf) 0) 0
+            (nl_symbol_name_register 2 identity n name-slot)))))
+
+    ;; Return the canonical original name Sexp for a symbol, lazily creating
+    ;; it for symbols produced by the reader's byte-only construction path.
+    (defun nl_symbol_name_value (env symbol-slot out)
+      (let* ((tag (ptr-read-u64 symbol-slot 0)))
+        (if (= tag 4)
+            (let* ((key (ptr-read-u64 symbol-slot 16))
+                   (len (ptr-read-u64 symbol-slot 24))
+                   (entry (nl_symbol_name_entry_for 1 key len)))
+              (if (/= entry 0)
+                  (nl_symbol_name_copy_out entry out)
+                (nl_symbol_name_value_create env symbol-slot out)))
+          (if (= tag 16)
+              (let* ((identity (ptr-read-u64 symbol-slot 8))
+                     (key (ptr-read-u64 symbol-slot 16))
+                     (len (ptr-read-u64 symbol-slot 24))
+                     (entry (nl_symbol_name_entry_for 2 identity len)))
+                (if (/= entry 0)
+                    (nl_symbol_name_copy_out entry out)
+                  (nl_symbol_name_value_create env symbol-slot out)))
+            0))))
+
+    (defun nl_symbol_name_value_create (env symbol-slot out)
+      (let* ((marker (nl_root_mark env))
+             (symbol-root (nl_root_reserve_checked env)))
+        (if (= symbol-root 0) 0
+          (let* ((tmp (nl_root_reserve_checked env)))
+            (if (= tmp 0)
+                (seq (nl_root_release env marker) 0)
+              (seq
+               (nl_symname_copy32 symbol-slot symbol-root 0)
+               ;; Allocate destination first. This may collect/compact; the
+               ;; rooted symbol slot is reread afterwards for its moved key.
+               (let* ((len (ptr-read-u64 symbol-root 24))
+                      (alloc-n (if (= len 0) 1 len))
+                      (buf (alloc-bytes alloc-n 1)))
+                 (let* ((tag (ptr-read-u64 symbol-root 0))
+                        (kind (if (= tag 4) 1 2))
+                        (name-key (if (= tag 4) (ptr-read-u64 symbol-root 16)
+                                    (ptr-read-u64 symbol-root 8)))
+                        (key (ptr-read-u64 symbol-root 16)))
+                   (if (= (nl_alloc_str_write key len alloc-n tmp buf) 0)
+                       (seq (nl_root_release env marker) 0)
+                     (if (= (nl_symbol_name_register kind name-key len tmp) 1)
+                         (seq (nl_symname_copy32 tmp out 0)
+                              (nl_root_release env marker) 1)
+                       (seq (nl_root_release env marker) 0)))))))))))
+
+    (defun nl_symbol_name_immediate (env tag out)
+      (let* ((state (if (= tag 0) (data-addr nl_symbol_name_nil)
+                      (data-addr nl_symbol_name_t))))
+        (if (= (ptr-read-u64 state 0) 5)
+            (seq (nl_symname_copy32 state out 0) 1)
+          (let* ((marker (nl_root_mark env))
+                 (tmp (nl_root_reserve_checked env))
+                 (len (if (= tag 0) 3 1)))
+            (if (= tmp 0) 0
+              (let* ((buf (if (= tag 0) (data-addr nl_symbol_name_nil_bytes)
+                            (data-addr nl_symbol_name_t_bytes))))
+                (seq
+                 (if (= tag 0)
+                     (seq (ptr-write-u8 buf 0 110) (ptr-write-u8 buf 1 105)
+                          (ptr-write-u8 buf 2 108))
+                   (ptr-write-u8 buf 0 116))
+               (if (= (nl_alloc_str buf len tmp) 0) 0
+                 (seq (nl_symname_copy32 tmp state 0)
+                      (nl_symname_copy32 tmp out 0)
+                      1))
+               (nl_root_release env marker)
+               (if (= (ptr-read-u64 state 0) 5) 1 0))))))))
 
     ;; ---- symbol-name LOOKUP WITHOUT INSERT (Doc 163 Phase C) ----
     ;; `nl_alloc_symbol' always inserts on a miss (= `intern' semantics: the
@@ -469,11 +734,36 @@ lifetime of a Sexp value.  No `let' binding needed.")
     ;; scripts/nelisp-standalone-build.el and `intern-soft' in
     ;; lisp/nelisp-stdlib-misc.el).
     (defun nl_intern_lookup (bytes-ptr len result-slot)
-      (nl_intern_lookup_pos bytes-ptr (if (< len 0) 0 len) result-slot)))
+      (nl_intern_lookup_pos bytes-ptr (if (< len 0) 0 len) result-slot))
+
+    ;; Internal read-only cursor used by native diagnostics and future
+    ;; obarray work.  CURSOR is a slot index in [0, 2^20].  A hit writes the
+    ;; current symbol value and returns its slot index + 1; -1 means end or
+    ;; an invalid cursor, and leaves RESULT-SLOT untouched.  This deliberately
+    ;; does not call Lisp or allocate: interned name bytes live in the
+    ;; permanent mmap region and the caller owns RESULT-SLOT.
+    (defun nl_intern_next_scan (table cursor result-slot)
+      (let* ((scan cursor) (slot 0) (word 0))
+        (while (and (< scan 1048576) (= word 0))
+          (setq slot (+ table (* scan 16)))
+          (setq word (ptr-read-u64 slot 0))
+          (if (= word 0) (setq scan (+ scan 1)) 0))
+        (if (= word 0)
+            -1
+          (seq
+           (nl_intern_write_sexp
+            result-slot (ptr-read-u64 slot 8) (- word 1))
+           (+ scan 1)))))
+    (defun nl_intern_next (cursor result-slot)
+      (if (or (< cursor 0) (>= cursor 1048576)
+              (= (ptr-read-u64 268436288 0) 0))
+          -1
+        (nl_intern_next_scan (ptr-read-u64 268436288 0) cursor result-slot)))
+  )
   "AOT direct-symbol source for `nl_alloc_str' + `nl_alloc_symbol' +
 `nl_intern_lookup'.
 
-Single `(seq DEFUN ...)' manifest.  Public entry points:
+Single `(seq DEFUN ...)' manifest.  Native symbols exported by this object:
 - `nl_alloc_str'      — allocate + intern-independent Sexp::Str (tag=5).
 - `nl_alloc_symbol'   — allocate-or-intern Sexp::Symbol (tag=4); always
   succeeds, inserting into the intern region's open-addressing table on
@@ -482,6 +772,10 @@ Single `(seq DEFUN ...)' manifest.  Public entry points:
   163 Phase C): returns 0 on a miss without inserting; on a hit, writes
   the existing interned Sexp::Symbol into RESULT-SLOT and returns
   RESULT-SLOT.  Backs `intern-soft''s real soft-fail path.
+- `nl_intern_next'    — internal native read-only cursor over occupied
+  slots.  It is not registered as a Lisp builtin; a hit writes one symbol
+  and returns the next cursor, while end/invalid cursors return -1 without
+  touching RESULT-SLOT.
 
 Private helpers (shared within this `.o'):
 - `nl_alloc_str_copy_loop' / `nl_alloc_str_write' / `nl_alloc_str_pos'
@@ -508,6 +802,10 @@ Private helpers (shared within this `.o'):
   that the probe spun forever and the bump pointer ran off the mapping.
 - `nl_intern_lookup_finish' / `nl_intern_lookup_pos'
   — lookup-only chain backing `nl_intern_lookup' (Doc 163 Phase C).
+- `nl_intern_next_scan'
+  — iterative table scan backing the internal enumeration cursor; it calls
+  no allocator or Lisp callback and only reads table slots / writes the
+  caller-owned Sexp value.
 
 Originally replaced the Rust `#[no_mangle]' bodies for both `nl_alloc_str'
 and `nl_alloc_symbol' in nlstr.rs (lines 102-118, 17 LOC across both) plus

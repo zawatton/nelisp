@@ -81,8 +81,8 @@
 ;;   - Radix integers `#x10' / `#o17' / `#b1010' covered (Doc 116 §116.B+).
 ;;     Payload first byte = base marker (`x'/`o'/`b'); remaining bytes =
 ;;     the digit text (incl. optional `+'/`-' sign).  Parser converts.
-;;   - Byte-code `#[..]' literal still deferred (rare; falls through to
-;;     the Rust legacy path in §116.C).
+;;   - Byte-code `#[..]' literal is tokenized for the GNU tag-17
+;;     constructor in the parser.
 ;;
 ;; Side-effect sequencing pattern (= no `(seq ...)' in value form):
 ;;   The AOT grammar's `seq' is statement-only; defun bodies
@@ -936,6 +936,14 @@
            scratch payload-slot cursor-out-slot end
            (nelisp_reader_classify_atom str-ptr start end)))))
 
+    ;; `#:' starts an uninterned symbol.  Unlike an ordinary atom, the
+    ;; payload is never classified as a number or a special symbol.
+    (defun nelisp_reader_lex_uninterned_symbol
+        (str-ptr cursor n payload-slot cursor-out-slot scratch)
+      (let* ((end (nelisp_reader_scan_atom str-ptr (+ cursor 2) n scratch)))
+        (nelisp_reader_finalize_classified
+         scratch payload-slot cursor-out-slot end 29)))
+
     (defun nelisp_reader_finalize_classified
         (scratch payload-slot cursor-out-slot end kind)
       ;; Write cursor-out, finalize scratch -> payload-slot, return kind.
@@ -1019,7 +1027,7 @@
        payload-slot cursor-out-slot scratch))
 
     ;; ===========================================================
-    ;; Sharpsign dispatch: `#'' / `##' / `#(' / `#N='/`#N#' / `#s(' /
+    ;; Sharpsign dispatch: `#'' / `#[...' / `##' / `#$' / `#(' / `#N='/`#N#' / `#s(' /
     ;; `#^[' / `#^^[' / `#&' / `#x..' / `#o..' / `#b..' / fail.
     ;; ===========================================================
 
@@ -1031,6 +1039,9 @@
          ;; `#''  -> function-quote (kind 9), 2-byte token.
          ((= (str-byte-at str-ptr (+ cursor 1)) 39)
           (nelisp_reader_emit_double cursor-out-slot cursor 9))
+         ;; `#[...' is a callable GNU byte-code function literal.
+         ((= (str-byte-at str-ptr (+ cursor 1)) 91)
+          (nelisp_reader_emit_double cursor-out-slot cursor 15))
          ;; Propertized string.  The parser reads the parenthesized body and
          ;; keeps the first (string) item; this runtime has no text-property
          ;; storage yet, so the remaining range/plist items are discarded.
@@ -1073,6 +1084,16 @@
             (mut-str-push-byte scratch 35)
             (nelisp_reader_finalize_classified
              scratch payload-slot cursor-out-slot (+ cursor 2) 23))))
+         ;; Reader variable: the parser resolves this token from its caller's
+         ;; dynamic environment.  Keeping a distinct token preserves escaped
+         ;; literal input (`\\#\\$') as an ordinary symbol.
+         ((= (str-byte-at str-ptr (+ cursor 1)) 36)
+          (nelisp_reader_emit_double cursor-out-slot cursor 28))
+         ;; `#:' -> uninterned symbol.  Scan the name after the prefix and
+         ;; preserve its own token kind even for numeric-looking names.
+         ((= (str-byte-at str-ptr (+ cursor 1)) 58)
+          (nelisp_reader_lex_uninterned_symbol
+           str-ptr cursor n payload-slot cursor-out-slot scratch))
          ;; Read labels.  The first decimal digit is at CURSOR+1.
          ((= (nelisp_reader_is_digit
               (str-byte-at str-ptr (+ cursor 1))) 1)

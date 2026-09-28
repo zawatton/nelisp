@@ -1,0 +1,133 @@
+#+TITLE: NeLisp standalone GC pause time reduction
+
+* S1 Measurement and attribution
+
+** S1.1 The mid-form GC pause growth breakdown tool exists and is loadable
+#+NOTE: scripts/nelisp-gc-pause-growth.el (Doc 201 sec 6.14) belongs to a
+#+NOTE: parallel lane measuring the pause breakdown; this only confirms it
+#+NOTE: is present with its documented summary marker, never edits it.
+cmd: test -r scripts/nelisp-gc-pause-growth.el && grep -q GCW-SUMMARY scripts/nelisp-gc-pause-growth.el
+
+** S1.2 The pause-budget tool runs a scenario end to end and reports PASS at a generous budget
+#+REQUIRES: GC_PROGRESS_BIN
+cmd: env NELISP_BIN="$GC_PROGRESS_BIN" test/nelisp-gc-pause-budget.sh --scenario a --budget-ms 100000
+
+** S1.3 The pause-budget tool rejects an impossible budget (negative control)
+#+NOTE: A budget check whose success and failure look the same lets a
+#+NOTE: broken workload pass silently; this proves 1ms is correctly FAILed.
+#+REQUIRES: GC_PROGRESS_BIN
+cmd: ! env NELISP_BIN="$GC_PROGRESS_BIN" test/nelisp-gc-pause-budget.sh --scenario a --budget-ms 1
+
+** S1.4 A 1.3M-live-object baseline capture exists and is pinned by hash
+#+NOTE: Building the 1.3M-entry live set alone took ~108s on
+#+NOTE: GC_PROGRESS_BIN (sha256 09d1a843...), far past any ledger cmd
+#+NOTE: timeout, so this scenario is captured once and replayed (see
+#+NOTE: S4.4) rather than re-run by the meter.
+evidence: $HOME/.cache/tmp/gc-ledger/gc-pause-budget-d-baseline.log sha256=abd8a1bcfab839847219aba0faaa720b0eb44e148572d03ff7f819e625903943
+
+** S1.5 GC pause phases are attributed to a root cause (mark vs. sweep vs. alloc-debt check) with evidence
+#+NOTE: Owned by the parallel breakdown lane; record its evidence
+#+NOTE: file+sha here once it lands. Not yet demonstrated.
+pending
+
+* S2 Sweep off the mid-form pause path (lazy sweep)
+
+** S2.1 Sweep no longer runs synchronously on the mid-form back-edge pause path
+#+NOTE: The actual GC-code change; out of this ledger's writer scope
+#+NOTE: (scripts/nelisp-standalone-build.el belongs to another session's
+#+NOTE: area). Not yet demonstrated.
+pending
+
+** S2.2 Pre-change baseline: the existing standalone GC unit-test suite is green
+#+NOTE: 6 files / 149 assertions on host Emacs; no binary needed. This is
+#+NOTE: the regression floor the lazy-sweep change must not break.
+cmd: make test-one FILE="test/nelisp-gc-test.el test/nelisp-gc-inner-test.el test/nelisp-dev-gc-test.el test/nelisp-gc-verify-test.el test/nelisp-allocator-gc-interop-test.el test/nelisp-gc-verify-hooks-test.el"
+
+** S2.3 Parity and ELN lanes confirmed unaffected by the sweep change
+#+NOTE: `make emacs-parity` rebuilds target/nelisp from scratch in a
+#+NOTE: worktree with no prior build (none exists here yet); a from-scratch
+#+NOTE: build is far past a ledger cmd's timeout, so this stays pending
+#+NOTE: until checked against a built binary outside the ledger.
+pending
+
+** S2.4 Lazy sweep shipped: change landed and S2.2/S2.3 both hold on the post-change binary
+pending
+
+* S3 Empty-chunk return / heap shrink
+
+** S3.1 Empty-chunk return returns fully-free chunks to the OS
+#+NOTE: The actual GC-code change; out of this ledger's writer scope.
+#+NOTE: Not yet demonstrated.
+pending
+
+** S3.2 Baseline: arena-reserved bytes drop after a garbage burst, once idle
+#+NOTE: Grows the heap with the 100k-live scenario, drops the live
+#+NOTE: reference, forces 8 idle collections, and checks whether the
+#+NOTE: allocator's reserved-bytes counter (nl_gc_diag+728) ever falls
+#+NOTE: below its post-burst value. Today it never does (exit 1): this is
+#+NOTE: the known-red baseline for S3, not the true OS RSS (see S3.3).
+#+REQUIRES: GC_PROGRESS_BIN
+cmd: "$GC_PROGRESS_BIN" --eval '(progn (setq gcb-mode (quote cons)) (setq gcb-live-n 100000) (setq gcb-turn-alloc 60000) (setq gcb-max-turns 19))' --load test/nelisp-gc-pause-budget-driver.el --eval '(progn (setq gcb-live nil) (dotimes (i 8) (garbage-collect)) (if (< (gcb-reserved) 335544320) (kill-emacs 0) (kill-emacs 1)))' >/dev/null 2>&1
+
+** S3.3 Process RSS after a garbage burst returns below a defined threshold
+#+NOTE: Needs an OS-level RSS probe (outside this ledger's two-file
+#+NOTE: writer scope) once S3.1 lands; the arena-reserved proxy in S3.2 is
+#+NOTE: not the same measurement. Not yet demonstrated.
+pending
+
+** S3.4 Heap shrink shipped: RSS drops below threshold and the arena-reserved baseline (S3.2) flips to PASS
+pending
+
+* S4 Pause budgets
+
+** S4.1 Garbage-only cons loop stays within a 50ms GC pause budget
+#+NOTE: known-red: measured median/max ~355-400ms on GC_PROGRESS_BIN.
+#+REQUIRES: GC_PROGRESS_BIN
+cmd: env NELISP_BIN="$GC_PROGRESS_BIN" test/nelisp-gc-pause-budget.sh --scenario a --budget-ms 50
+
+** S4.2 Garbage-only string/split-string loop stays within a 50ms GC pause budget
+#+NOTE: known-red: measured median/max ~420-455ms on GC_PROGRESS_BIN.
+#+REQUIRES: GC_PROGRESS_BIN
+cmd: env NELISP_BIN="$GC_PROGRESS_BIN" test/nelisp-gc-pause-budget.sh --scenario b --budget-ms 50
+
+** S4.3 100k live objects stays within a 100ms GC pause budget
+#+NOTE: known-red: measured median/max ~1.3-1.7s on GC_PROGRESS_BIN.
+#+REQUIRES: GC_PROGRESS_BIN
+cmd: env NELISP_BIN="$GC_PROGRESS_BIN" test/nelisp-gc-pause-budget.sh --scenario c --budget-ms 100
+
+** S4.4 1.3M live objects stays within a 200ms GC pause budget
+#+NOTE: known-red: measured median/max ~15.0-15.5s in the S1.4 capture.
+#+NOTE: Replays that frozen capture (no NELISP_BIN needed) rather than
+#+NOTE: rebuilding a 1.3M-entry live set on every check; see S1.4/S4.4
+#+NOTE: header comment in test/nelisp-gc-pause-budget.sh.
+cmd: test/nelisp-gc-pause-budget.sh --scenario d --budget-ms 200 --replay-log "$HOME/.cache/tmp/gc-ledger/gc-pause-budget-d-baseline.log"
+
+** S4.5 All four pause budgets hold at once
+#+REQUIRES: GC_PROGRESS_BIN
+cmd: env NELISP_BIN="$GC_PROGRESS_BIN" test/nelisp-gc-pause-budget.sh --scenario a --budget-ms 50 && env NELISP_BIN="$GC_PROGRESS_BIN" test/nelisp-gc-pause-budget.sh --scenario b --budget-ms 50 && env NELISP_BIN="$GC_PROGRESS_BIN" test/nelisp-gc-pause-budget.sh --scenario c --budget-ms 100 && test/nelisp-gc-pause-budget.sh --scenario d --budget-ms 200 --replay-log "$HOME/.cache/tmp/gc-ledger/gc-pause-budget-d-baseline.log"
+
+* S5 Regression safety
+
+** S5.1 The existing standalone GC unit-test suite stays green
+#+NOTE: Same 6-file/149-assertion suite as S2.2, re-listed here as the
+#+NOTE: regression gate this stage owns.
+cmd: make test-one FILE="test/nelisp-gc-test.el test/nelisp-gc-inner-test.el test/nelisp-dev-gc-test.el test/nelisp-gc-verify-test.el test/nelisp-allocator-gc-interop-test.el test/nelisp-gc-verify-hooks-test.el"
+
+** S5.2 test/nelisp-eln-same-artifact-smoke.sh's default lane passes
+#+NOTE: known-red today, unrelated to GC: this file is untracked (WIP) in
+#+NOTE: this seeded worktree and fails ("form aborted without signal") on
+#+NOTE: GC_PROGRESS_BIN with "nelisp: form aborted without signal (rc=1)";
+#+NOTE: not chmod'd (run via `sh`) since it is not this ledger's file to
+#+NOTE: modify. Re-check once the owning lane lands/commits it.
+#+REQUIRES: GC_PROGRESS_BIN
+cmd: env NELISP_BIN="$GC_PROGRESS_BIN" sh test/nelisp-eln-same-artifact-smoke.sh
+
+** S5.3 The emacs-parity gate stays green on the post-change binary
+#+NOTE: Needs a built target/nelisp; out of scope for a live ledger cmd
+#+NOTE: in a fresh worktree (see S2.3). Not yet demonstrated.
+pending
+
+** S5.4 Regression safety demonstrated end to end on the shipped change
+#+NOTE: S5.1 + S5.2 + S5.3 (and emacs-parity/ELN lanes generally) all
+#+NOTE: green on the binary that actually ships S2/S3's changes.
+pending

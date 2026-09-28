@@ -537,7 +537,19 @@ always JSON null\" divergence, see the file commentary above) and
 recognised unconditionally regardless of ARGS -- ARGS only add another
 recognised sentinel, they never take either of those two away, so
 existing callers that never pass these keywords see no behavior
-change."
+change.
+
+ARGS comes from a `&rest', so it is always a proper list and can
+never be dotted or circular -- the only way it can fail to be a
+plist is an odd element count.  Real Emacs's `json-serialize' rejects
+that upfront, naming the whole ARGS list: `(json-serialize \"s\" \"k\")'
+signals `(wrong-type-argument plistp (\"k\"))' rather than silently
+treating the dangling element as absent.  `plist-get' below is
+deliberately still used once ARGS is known to be well-formed -- it is
+the lenient accessor and that is correct there; only the length itself
+is what real Emacs also checks."
+  (when (/= 0 (mod (length args) 2))
+    (signal 'wrong-type-argument (list 'plistp args)))
   (list :null-object (if (memq :null-object args)
                           (plist-get args :null-object)
                         :null)

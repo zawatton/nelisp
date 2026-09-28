@@ -384,6 +384,39 @@ Caller is responsible for `delete-file' on cleanup."
     (should (eq (nelisp-aot-compiler--ir-kind inner) 'let-rt-n))
     (should (eq (nelisp-aot-compiler--ir-repr inner) 'raw-i64))))
 
+(ert-deftest nelisp-aot-compiler/jit-checked-car-is-explicit-and-boxed ()
+  "Only the named, JIT-guarded intrinsic emits direct cons access."
+  (let* ((nelisp-aot-compiler--runtime-entry-params t)
+         (nelisp-aot-compiler--allow-external-user-calls t)
+         (form '(defun jit-car-probe ((value :type sexp))
+                  (nelisp-jit-checked-car value)))
+         (ir (nelisp-aot-compiler--parse form))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (unit (nelisp-aot-compile-to-link-unit
+                form :arch 'x86_64 :format 'elf))
+         (metadata (car (plist-get unit :defuns))))
+    (while (memq (nelisp-aot-compiler--ir-kind body) '(let-rt let-rt-n))
+      (setq body (nelisp-aot-compiler--ir-get body :body)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'if))
+    (should (eq (nelisp-aot-compiler--ir-kind
+                 (car (nelisp-aot-compiler--ir-get
+                       (nelisp-aot-compiler--ir-get body :else) :forms)))
+                'cons-car))
+    (should (eq (plist-get metadata :param-repr) 'sexp-ptr))
+    (should (eq (plist-get metadata :return-repr) 'sexp-ptr))
+    (should
+     (string-match-p
+      "JIT caller must reject fixnums before native entry"
+      (documentation 'nelisp-aot-compiler--parse-jit-checked-car t))))
+  (let* ((nelisp-aot-compiler--runtime-entry-params t)
+         (nelisp-aot-compiler--allow-external-user-calls t)
+         (ordinary (nelisp-aot-compiler--parse
+                    '(defun ordinary-car-probe ((value :type sexp))
+                       (car value))))
+         (printed (prin1-to-string ordinary)))
+    (should (string-match-p "nelisp_aot_builtin_call1" printed))
+    (should-not (string-match-p "cons-car" printed))))
+
 (ert-deftest nelisp-aot-compiler/parse-nested-let-arith ()
   "Nested let + chained arithmetic resolves to a single integer."
   (let ((ir (nelisp-aot-compiler--parse

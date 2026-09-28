@@ -89,7 +89,8 @@
        els env out))
 
     ;; Walk else-list as progn.
-    ;; If Nil → return 0 (out stays Nil); else fetch car first (FIRST ✓).
+    ;; If Nil → return 0 (OUT was cleared to nil by `nl_sf_if_branch');
+    ;; else fetch car first (FIRST ✓).
     ;; Arity 4 (even).
     (defun nl_sf_if_else (els env out _pad)
       (if (= (sexp-tag els) 0)
@@ -117,10 +118,17 @@
           ;; Test eval errored.
           1
         (if (= truthy 0)
-            ;; Test is nil/false: eval else-list = cdr of cdr.
-            (nl_sf_if_else
-             (extern-call nl_cons_cdr_ptr cdr)
-             env out 0)
+            ;; Test is nil/false: eval else-list = cdr of cdr.  OUT is
+            ;; cleared first: an empty else-list must answer nil, and OUT is
+            ;; not guaranteed to start nil -- callers reuse one result slot
+            ;; across sibling forms, so `(list (list 1) (if nil 2))' answered
+            ;; ((1) (1)) and a body ending in `(if nil X)' returned the
+            ;; previous form's value.
+            (seq
+             (nl_cons_write_nil out)
+             (nl_sf_if_else
+              (extern-call nl_cons_cdr_ptr cdr)
+              env out 0))
           ;; Test is truthy: eval then = car of cdr.
           (nl_sf_if_then_eval
            (extern-call nl_cons_car_ptr cdr)

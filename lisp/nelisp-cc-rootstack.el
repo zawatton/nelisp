@@ -39,6 +39,7 @@
 ;; API (consumed by Stage 3):
 ;;   nl_root_mark ENV        -> current top (a release marker; LIFO)
 ;;   nl_root_reserve ENV     -> reserve one zeroed 32B slot, return addr
+;;   nl_root_reserve_checked ENV -> reserve one registered slot, or 0 at capacity
 ;;   nl_root_release ENV M   -> restore top to marker M (pop the frame)
 ;;
 ;; Tier 3b park protocol (`nl_thread_parallel_ctx'):
@@ -108,7 +109,7 @@
     (defun nl_thread_registry_clear ()
       (ptr-write-u64 (data-addr nl_thread_registry) 0 0))
     (defun nl_thread_registry_find_from (env i count)
-      (if (>= i count) 0
+      (if (or (>= i count) (>= i 64)) 0
         (if (= (ptr-read-u64 (nl_thread_registry_entry i) 0) env)
             (nl_thread_registry_entry i)
           (nl_thread_registry_find_from env (+ i 1) count))))
@@ -254,6 +255,38 @@
     ;; had before Stage 3, rather than memory corruption.
     (defun nl_rootstack_end ()
       (+ (data-addr nl_rootstack_region) 4194304))
+    ;; Mirror lookup accepts a Sexp view only while its 32-byte slot is a
+    ;; live root. Main-thread roots occupy the global BSS range; registered
+    ;; workers use their private env+4096 arena and publish the active top in
+    ;; the registry. Keep this check bounded and require a complete aligned
+    ;; slot below the current top so freed, future, or interior addresses do
+    ;; not become trusted lookup keys.
+    (defun nl_rootstack_slot_active_worker (slot i count)
+      (if (>= i count) 0
+        (let* ((entry (nl_thread_registry_entry i))
+               (env (ptr-read-u64 entry 0))
+               (top (atomic-fetch-add (+ entry 8) 0))
+               (base (+ env 4096))
+               (end (+ env 1052672)))
+          (if (and (/= env 0)
+                   (>= top base) (<= top end)
+                   (= (logand (- top base) 31) 0)
+                   (>= slot base) (<= slot (- top 32))
+                   (= (logand (- slot base) 31) 0))
+              1
+            (nl_rootstack_slot_active_worker slot (+ i 1) count)))))
+    (defun nl_rootstack_slot_active (slot)
+      (let* ((base (data-addr nl_rootstack_region))
+             (end (nl_rootstack_end))
+             (top (ptr-read-u64 (data-addr nl_rootstack_top) 0)))
+        (if (and (/= top 0)
+                 (>= top base) (<= top end)
+                 (= (logand (- top base) 31) 0)
+                 (>= slot base) (<= slot (- top 32))
+                 (= (logand (- slot base) 31) 0))
+            1
+          (nl_rootstack_slot_active_worker
+           slot 0 (ptr-read-u64 (data-addr nl_thread_registry) 0)))))
     (defun nl_root_reserve_slot (slot)
       (if (= slot 0) 0
         (if (> (+ slot 32) (nl_rootstack_end)) 0
@@ -292,6 +325,31 @@
          (nl_root_reserve_private env entry (ptr-read-u64 env 120)))))
     (defun nl_root_reserve (env)
       (nl_root_reserve_at env (nl_thread_registry_find env)))
+    ;; The native loader cannot use `nl_root_reserve': its capacity fallback
+    ;; is deliberately unrooted scratch for legacy callers.  Object arguments
+    ;; must remain visible to a moving collection, so this variant reserves
+    ;; only from a validated registered region and answers 0 on exhaustion.
+    (defun nl_root_reserve_checked (env)
+      (let* ((entry (nl_thread_registry_find env)))
+        (if (= entry 0)
+            (seq
+             (if (= (ptr-read-u64 (data-addr nl_rootstack_top) 0) 0)
+                 (nl_rootstack_init) 0)
+             (let* ((slot (ptr-read-u64 (data-addr nl_rootstack_top) 0))
+                    (base (data-addr nl_rootstack_region)))
+               (if (if (< slot base) 1
+                     (if (> (+ slot 32) (nl_rootstack_end)) 1
+                       (if (/= (logand (- slot base) 31) 0) 1 0)))
+                   0
+                 (nl_root_reserve_slot slot))))
+          (let* ((slot (ptr-read-u64 env 120))
+                 (base (+ env 4096))
+                 (end (+ env 1052672)))
+            (if (if (< slot base) 1
+                  (if (> (+ slot 32) end) 1
+                    (if (/= (logand (- slot base) 31) 0) 1 0)))
+                0
+              (nl_root_reserve_private env entry slot))))))
     (defun nl_root_release_at (env entry marker)
       (if (= entry 0)
           (ptr-write-u64 (data-addr nl_rootstack_top) 0 marker)
@@ -301,15 +359,162 @@
          0)))
     (defun nl_root_release (env marker)
       (nl_root_release_at env (nl_thread_registry_find env) marker))
+    ;; Native loader roots live in a separate driver-owned BSS region.  The
+    ;; evaluator restores its ordinary root top after every interpreted call,
+    ;; so a loader frame must never borrow that stack.  Pinning is single-owner:
+    ;; calls from registered workers, and any caller with a different env,
+    ;; fail closed instead of sharing mutable roots.  Doc 207: the owning env
+    ;; may nest frames strictly LIFO (a native activation calling back into
+    ;; Lisp that enters another native activation).  A nested frame starts
+    ;; with a link slot holding the enclosing marker; the enclosing frame's
+    ;; slots stay below it, still scanned as roots, but outside the inner
+    ;; frame's active range.
+    (defun nl_root_pin_begin_nested (env)
+      (let* ((control (data-addr nl_root_pin_control))
+             (base (data-addr nl_root_pin_region))
+             (end (+ base 524288))
+             (top (atomic-fetch-add (+ control 24) 0))
+             (prev (ptr-read-u64 control 16)))
+        (if (if (/= (atomic-fetch-add control 0) 1) 1
+              (if (/= (ptr-read-u64 control 8) env) 1
+                (if (< top base) 1
+                  (if (> (+ top 64) end) 1
+                    (if (/= (logand (- top base) 31) 0) 1 0)))))
+            0
+          (seq
+           ;; Fixnum-tagged link: the collector treats it as an integer.
+           (ptr-write-u64 top 0 2)
+           (ptr-write-u64 (+ top 8) 0 prev)
+           (ptr-write-u64 (+ top 16) 0 1234567890123456789)
+           (ptr-write-u64 (+ top 24) 0 (+ top 32))
+           (ptr-write-u64 (+ control 24) 0 (+ top 32))
+           (ptr-write-u64 (+ control 16) 0 (+ top 32))
+           (+ top 32)))))
+    (defun nl_root_pin_begin (env)
+      (if (/= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0)
+          0
+        (if (= (atomic-compare-exchange
+                (data-addr nl_root_pin_control) 0 1)
+               1)
+            (seq
+             (ptr-write-u64 (data-addr nl_root_pin_control) 8 env)
+             (if (= (ptr-read-u64 (data-addr nl_root_pin_control) 24) 0)
+                 (ptr-write-u64 (data-addr nl_root_pin_control) 24
+                                (data-addr nl_root_pin_region))
+               0)
+             (let ((marker
+                    (ptr-read-u64 (data-addr nl_root_pin_control) 24)))
+               (ptr-write-u64 (data-addr nl_root_pin_control) 16 marker)
+               marker))
+          (nl_root_pin_begin_nested env))))
+    (defun nl_root_pin_reserve (env marker)
+      (let* ((control (data-addr nl_root_pin_control))
+             (base (data-addr nl_root_pin_region))
+             (end (+ base 524288))
+             (top (atomic-fetch-add (+ control 24) 0)))
+        (if (if (/= (atomic-fetch-add control 0) 1) 1
+              (if (/= (ptr-read-u64 control 8) env) 1
+                (if (/= (ptr-read-u64 control 16) marker) 1
+                  (if (if (< top base) 1
+                        (if (> (+ top 32) end) 1
+                          (if (/= (logand (- top base) 31) 0) 1 0)))
+                      1 0))))
+            0
+          (seq
+           (ptr-write-u64 top 0 0)
+           (ptr-write-u64 (+ top 8) 0 0)
+           (ptr-write-u64 (+ top 16) 0 0)
+           (ptr-write-u64 (+ top 24) 0 0)
+           (if (= (atomic-compare-exchange (+ control 24) top (+ top 32)) 1)
+               top
+             0)))))
+    ;; Native artifact name slots are valid Sexp views while their pin frame
+    ;; is active, even though the driver-owned pin region is outside the GC
+    ;; arena.  Keep acceptance bounded to an aligned, fully reserved slot.
+    (defun nl_root_pin_slot_active (slot)
+      (let* ((control (data-addr nl_root_pin_control))
+             (base (data-addr nl_root_pin_region))
+             (end (+ base 524288))
+             (top (atomic-fetch-add (+ control 24) 0))
+             (marker (ptr-read-u64 control 16)))
+        (if (and (= (atomic-fetch-add control 0) 1)
+                 (> (ptr-read-u64 control 8) 0)
+                 (>= top base)
+                 (<= top end)
+                 (= (logand (- top base) 31) 0)
+                 (>= marker base)
+                 (<= marker top)
+                 (<= marker end)
+                 (= (logand (- marker base) 31) 0)
+                 (>= slot marker)
+                 (>= slot base)
+                 (<= slot (- top 32))
+                 (= (logand (- slot base) 31) 0))
+            1
+          0)))
+    (defun nl_root_pin_end_valid (base top marker)
+        (if (< marker base) 0
+          (if (> marker top) 0
+            (if (> top (+ base 524288)) 0
+              (if (/= (logand (- marker base) 31) 0) 0 1)))))
+    (defun nl_root_pin_nested_link_p (base marker)
+      (if (< marker (+ base 32)) 0
+        (let ((link (- marker 32)))
+          (if (and (= (ptr-read-u64 link 0) 2)
+                   (= (ptr-read-u64 link 16) 1234567890123456789)
+                   (= (ptr-read-u64 link 24) marker))
+              1 0))))
+    (defun nl_root_pin_end_nested (control marker)
+      (let ((link (- marker 32)))
+        (seq
+         (ptr-write-u64 (+ control 16) 0 (ptr-read-u64 link 8))
+         (ptr-write-u64 (+ control 24) 0 link)
+         (ptr-write-u64 link 0 0)
+         (ptr-write-u64 (+ link 8) 0 0)
+         (ptr-write-u64 (+ link 16) 0 0)
+         (ptr-write-u64 (+ link 24) 0 0)
+         1)))
+    (defun nl_root_pin_end (env marker)
+      (let* ((control (data-addr nl_root_pin_control))
+             (base (data-addr nl_root_pin_region))
+             (top (atomic-fetch-add (+ control 24) 0)))
+        (if (= (atomic-fetch-add control 0) 1)
+            (if (= (ptr-read-u64 control 8) env)
+                (if (= (ptr-read-u64 control 16) marker)
+                    (if (= (nl_root_pin_end_valid base top marker) 1)
+                        (if (= (nl_root_pin_nested_link_p base marker) 1)
+                            (nl_root_pin_end_nested control marker)
+                        (seq
+                         (ptr-write-u64 (+ control 24) 0 marker)
+                         (ptr-write-u64 (+ control 8) 0 0)
+                         (ptr-write-u64 (+ control 16) 0 0)
+                         (if (= (atomic-compare-exchange control 1 0) 1) 1 0)))
+                      0)
+                  0)
+              0)
+          0)))
     ;; GC: walk [region, top) in 32-byte steps, mark each slot like a root.
     (defun nl_gc_mark_rootstack_walk (p end)
       (if (>= p end) 0
           (seq (extern-call nl_gc_mark_slot p)
                (nl_gc_mark_rootstack_walk (+ p 32) end))))
     (defun nl_gc_mark_rootstack ()
-      (if (= (ptr-read-u64 (data-addr nl_rootstack_top) 0) 0) 0
-          (nl_gc_mark_rootstack_walk (data-addr nl_rootstack_region)
-                                     (ptr-read-u64 (data-addr nl_rootstack_top) 0))))
+      (seq
+       (if (= (ptr-read-u64 (data-addr nl_rootstack_top) 0) 0) 0
+         (nl_gc_mark_rootstack_walk (data-addr nl_rootstack_region)
+                                    (ptr-read-u64 (data-addr nl_rootstack_top) 0)))
+       (nl_gc_mark_pinned_roots)))
+    (defun nl_gc_mark_pinned_roots ()
+      (let* ((base (data-addr nl_root_pin_region))
+             (top (atomic-fetch-add
+                   (+ (data-addr nl_root_pin_control) 24) 0)))
+        (if (= (atomic-fetch-add (data-addr nl_root_pin_control) 0) 0)
+            0
+          (if (if (< top base) 1
+                (if (> top (+ base 524288)) 1
+                  (if (/= (logand (- top base) 31) 0) 1 0)))
+              0
+            (nl_gc_mark_rootstack_walk base top)))))
     ;; Tier 3b: marker-side enumeration of every published private reserve.
     ;; The barrier has stopped workers before this runs; the atomic top load is
     ;; still paired with reserve/release publication so the API is explicit.

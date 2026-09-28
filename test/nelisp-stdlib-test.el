@@ -29,6 +29,9 @@
   (should (eq (nelisp-eval '(listp (list 1 2))) t))
   (should (eq (nelisp-eval '(listp 42)) nil)))
 
+(ert-deftest nelisp-stdlib-functionp-returns-boolean-for-lambda ()
+  (should (eq (nelisp-eval '(functionp '(lambda () 1))) t)))
+
 (ert-deftest nelisp-stdlib-length ()
   (should (= (nelisp-eval '(length (list 1 2 3 4))) 4))
   (should (= (nelisp-eval '(length nil)) 0))
@@ -41,6 +44,79 @@
 
 (ert-deftest nelisp-stdlib-last ()
   (should (equal (nelisp-eval '(last (list 1 2 3))) '(3))))
+
+(ert-deftest nelisp-stdlib-vendor-list-utilities-source-eval ()
+  (nelisp--reset)
+  (should (equal '(2 3) (nelisp-eval '(last '(1 2 3) 2))))
+  (should (equal '(1) (nelisp-eval '(butlast '(1 2 3) 2))))
+  (should-error (nelisp-eval '(butlast '(a b c) 1.5)))
+  (should-error (nelisp-eval '(nbutlast '(a . tail) 1)))
+  (should (eq 'item (nelisp-eval '(last 'item))))
+  (should (equal '(t (1))
+                 (nelisp-eval
+                  '(let ((items (list 1 2 3)))
+                     (list (eq (nbutlast items 2) items) items)))))
+  (should (equal [1 2]
+                 (nelisp-eval
+                  '(let* ((v (vector 1 2))
+                          (copy (copy-tree (list v) t)))
+                     (aset (car copy) 0 99)
+                     v))))
+  (should (equal '(t (a b))
+                 (nelisp-eval
+                  '(let* ((items (list 'a 'a 'b))
+                          (head items)
+                          (result (delete-dups items)))
+                     (list (eq head result) items)))))
+  (should (equal '(t 102 1 102)
+                 (nelisp-eval
+                  '(let* ((items (append (number-sequence 1 101) '(1 102 102)))
+                          (head items)
+                          (result (delete-dups items)))
+                     (list (eq head result) (length items)
+                           (car result) (car (last result))))))))
+
+(ert-deftest nelisp-stdlib-vendor-list-utilities-standalone-type-check ()
+  (let ((binary (expand-file-name (or (getenv "NELISP_BIN") "target/nelisp")
+                                  default-directory)))
+    (unless (file-executable-p binary)
+      (ert-skip "target/nelisp is not built; standalone-reader gate owns it"))
+    (with-temp-buffer
+      (let ((status (call-process binary nil t nil "--eval"
+                                  "(butlast '(a b c) 1.5)")))
+        (should-not (= status 0))
+        (should (string-match-p "integerp" (buffer-string)))))
+    (with-temp-buffer
+      (let ((status (call-process binary nil t nil "--eval"
+                                  "(let ((items (list 1 2 3))) (list (eq (nbutlast items 2) items) items))")))
+        (should (= status 0))
+        (should (string-match-p "(t (1))" (buffer-string)))))
+    (with-temp-buffer
+      (let ((status (call-process binary nil t nil "--eval"
+                                  "(let* ((r (record 'foo (vector 1 2))) (c (copy-tree r t))) (aset (aref c 1) 0 99) (list (recordp c) (eq r c) (aref r 1)))")))
+        (should (= status 0))
+        (should (equal "(t nil [1 2])\n" (buffer-string)))))))
+
+(ert-deftest nelisp-stdlib-vendor-match-string-no-properties-standalone ()
+  (let ((binary (expand-file-name (or (getenv "NELISP_BIN") "target/nelisp")
+                                  default-directory)))
+    (unless (file-executable-p binary)
+      (ert-skip "target/nelisp is not built; standalone-reader gate owns it"))
+    (with-temp-buffer
+      (let ((status (call-process binary nil t nil "--eval"
+                                  "(progn (string-match \"\\\\(ab\\\\)\" \"zab\") (match-string-no-properties 1 \"zab\"))")))
+        (should (= status 0))
+        (should (equal "\"ab\"\n" (buffer-string)))))
+    (with-temp-buffer
+      (let ((status (call-process binary nil t nil "--eval"
+                                  "(progn (string-match \"\\\\(x\\\\)\" \"zab\") (match-string-no-properties 1 \"zab\"))")))
+        (should (= status 0))
+        (should (equal "nil\n" (buffer-string)))))
+    (with-temp-buffer
+      (let ((status (call-process binary nil t nil "--eval"
+                                  "(with-temp-buffer (insert \"zab\") (goto-char (point-min)) (re-search-forward \"\\\\(ab\\\\)\") (match-string-no-properties 1))")))
+        (should (= status 0))
+        (should (equal "\"ab\"\n" (buffer-string)))))))
 
 (ert-deftest nelisp-stdlib-reverse ()
   (should (equal (nelisp-eval '(reverse (list 1 2 3))) '(3 2 1))))
@@ -127,7 +203,13 @@
   (should (= (nelisp-eval '(max 3 1 4 1 5)) 5))
   (should (= (nelisp-eval '(min 3 1 4 1 5)) 1))
   (should (eq (nelisp-eval '(zerop 0)) t))
-  (should (eq (nelisp-eval '(zerop 1)) nil)))
+  (should (eq (nelisp-eval '(zerop 1)) nil))
+  (should (eq (nelisp-eval '(booleanp t)) t))
+  (should (eq (nelisp-eval '(booleanp 0)) nil))
+  (should (eq (nelisp-eval '(fixnump most-positive-fixnum)) t))
+  (should (eq (nelisp-eval '(fixnump 2305843009213693952)) nil))
+  (should (eq (nelisp-eval '(ignore 1 2)) nil))
+  (should (eq (nelisp-eval '(always 1 2)) t)))
 
 (ert-deftest nelisp-stdlib-numeric-predicates ()
   (should (eq (nelisp-eval '(numberp 42)) t))
@@ -948,6 +1030,46 @@ rename-file round-trip on a temp file."
                                                    (c . 3) (a . 4))))))
   (should (equal nil
                  (nelisp-eval '(assq-delete-all 'x nil)))))
+
+(ert-deftest nelisp-stdlib-vendor-association-functions ()
+  (should-not (nelisp-eval
+               '(assoc-default 'missing '((key . value)) nil 'fallback)))
+  (should (equal 'first
+                 (nelisp-eval
+                  '(assoc-default 11 '((1 . first) (11 . second))
+                                  (lambda (a b) (= (% a 10) (% b 10)))))))
+  (let ((result
+         (nelisp-eval
+          '(let ((alist (list (cons 'y 2) (cons 'x 1) (cons 'z 3))))
+             (let ((filtered (assq-delete-all 'x alist)))
+               (list filtered alist))))))
+    (should (equal '(((y . 2) (z . 3)) ((y . 2) (z . 3))) result)))
+  (should-error (nelisp-eval '(assoc-default 'x 1)))
+  (should-error (nelisp-eval '(assoc-delete-all 'x 1)))
+  (should-error (nelisp-eval '(assq-delete-all 'x 1))))
+
+(ert-deftest nelisp-stdlib-vendor-conditional-binding-macros ()
+  (require 'nelisp)
+  (should (= 7 (nelisp-eval
+                '(if-let* ((x 2) (y (+ x 3))) (+ x y) 'missing))))
+  (should (= 0 (nelisp-eval '(if-let (x 0) x 'missing))))
+  (should (= 3 (nelisp-eval '(when-let (x 2) (+ x 1)))))
+  (should (= 5 (nelisp-eval '(and-let* ((x 2) (y (+ x 3)))))))
+  (should (= 0 (nelisp-eval '(when-let* ((x 0)) x))))
+  (should-error
+   (nelisp-eval '(while-let ((x 1)) (throw 'while-let--done 'caught)))
+   :type 'no-catch)
+  (should-error (nelisp-eval '(if-let* ((x 1 2)) x)) :type 'error))
+
+(ert-deftest nelisp-stdlib-vendor-string-helpers ()
+  (should (equal "hello"
+                 (nelisp-eval '(string-trim "xxhello yy" "x+" " y+"))))
+  (should (equal "hello yy"
+                 (nelisp-eval '(string-trim-left "xxhello yy" "x+"))))
+  (should (equal "xxhello"
+                 (nelisp-eval '(string-trim-right "xxhello yy" " y+"))))
+  (should (eq t (nelisp-eval '(string-prefix-p "AB" "abcd" t))))
+  (should (eq t (nelisp-eval '(string-suffix-p "CD" "abcd" t)))))
 
 (ert-deftest nelisp-stdlib-phase5c-make-network-process-registered ()
   "`make-network-process' is a host subr in the primitive table.

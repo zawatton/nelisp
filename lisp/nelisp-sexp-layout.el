@@ -52,6 +52,10 @@ identical to its byte count.")
   "Uninterned-symbol variant used by the public native producer.
 Identity is a positive integer at +8; immutable public-name buffer and byte
 length are at +16 and +24.")
+(defconst nelisp-sexp-layout-tag-byte-code-function 17
+  "Opaque byte-code function value, privately backed by an NlRecord box.")
+(defconst nelisp-sexp-layout-tag-native-subr 18
+  "Managed native function value, backed by an NlRecord box.")
 
 ;; predate the namespace boundary and use private names across files; new ABI
 ;; entries do not need to extend that conceded private-name escape surface.

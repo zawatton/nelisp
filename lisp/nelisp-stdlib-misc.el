@@ -2,24 +2,6 @@
 
 (defun list (&rest args) args)
 
-(defun alist-get (key alist &optional default _remove testfn)
-  (let ((cur alist) (found nil) (result default))
-    (while (and cur (not found))
-      (let ((pair (car cur)))
-        (cond
-         ((not (consp pair)) (setq cur (cdr cur)))
-         ((cond
-           ((null testfn) (equal (car pair) key))
-           ((eq testfn 'eq) (eq (car pair) key))
-           ((eq testfn 'equal) (equal (car pair) key))
-           ((or (eq testfn 'string=) (eq testfn 'string-equal))
-            (and (stringp (car pair)) (stringp key) (equal (car pair) key)))
-           (t (funcall testfn (car pair) key)))
-          (setq result (cdr pair))
-          (setq found t))
-         (t (setq cur (cdr cur))))))
-    result))
-
 ;; string-prefix-p moved to nelisp-stdlib-plist-str.el (Rust-min
 ;; 2026-05-06): the old impl ignored the IGNORE-CASE arg; the new
 ;; one routes through `compare-strings' for proper case-fold
@@ -53,27 +35,8 @@ trampoline is available."
    ((floatp n) (nelisp--number-to-string-float n))
    (t (signal 'wrong-type-argument (list 'numberp n)))))
 
-;; Rust-min batch 6a (2026-05-06): `gensym' migrated from Rust to
-;; elisp.  `make-symbol' stays in Rust because uninterned-symbol
-;; construction needs a Sexp::Symbol primitive that bypasses any
-;; obarray; `gensym' is just a thin wrapper that defaults the
-;; prefix to "g" and routes to `make-symbol' (which already adds a
-;; per-process counter suffix to guarantee freshness).
-(defun gensym (&optional prefix)
-  (make-symbol
-   (cond ((stringp prefix) prefix)
-         ((symbolp prefix) (if prefix (symbol-name prefix) "g"))
-         (t "g"))))
-
-;; Rust-min batch 6f (2026-05-06): leaf predicates / intern-soft
-;; expressible without self-reference.  `booleanp' uses only `eq';
-;; `keywordp' checks symbol type, a colon prefix, and intern-table identity.
-;; Each was a thin
-;; wrapper in Rust (`bi_predicate' + `matches!') with no Sexp-internal
-;; logic.
-(defun booleanp (x)
-  (or (eq x t) (eq x nil)))
-
+;; Rust-min batch 6f (2026-05-06): `keywordp' checks symbol type, a colon
+;; prefix, and intern-table identity without native Sexp-internal logic.
 (defun keywordp (x)
   (and (symbolp x)
        (let ((n (symbol-name x)))
@@ -155,12 +118,6 @@ FRESH buffer (the old `(t seq)' arm returned the same object, so a following
 ;; round-trip, plus simpler call shape.  `maphash' / `hash-table-count'
 ;; gain elisp definitions for the first time.
 
-(defun hash-table-keys (table)
-  (mapcar (function car) (nelisp--hash-pairs table)))
-
-(defun hash-table-values (table)
-  (mapcar (function cdr) (nelisp--hash-pairs table)))
-
 (defun hash-table-count (table)
   (length (nelisp--hash-pairs table)))
 
@@ -194,20 +151,82 @@ call time, so it is safe for FN to mutate TABLE during the walk
 ;; side effect (two consecutive `intern-soft' calls on the same
 ;; never-interned name both return nil; a name only starts returning its
 ;; symbol once something ELSE actually `intern's it).
-(defun intern-soft (name &optional obarray)
-  "Return the symbol named NAME if it is interned, else nil.
-NeLisp has one global intern table and no first-class obarray object, so a
-non-nil OBARRAY is not honoured.  The probe is `nelisp--intern-lookup\', which
-reports a miss instead of interning -- falling back to `intern\', which never
-answers nil, is what made a `(while (setq x (intern-soft ...)))\' probe loop
-run forever."
-  (when (and obarray (not (obarrayp obarray)))
+(defvar nelisp--obarray-marker (make-symbol "nelisp-obarray-marker"))
+
+(defun obarrayp (object)
+  "Return non-nil when OBJECT has the private NeLisp obarray shape."
+  (and (recordp object)
+       (= (nelisp--record-length object) 3)
+       (eq (nelisp--record-type object) 'obarray)
+       (eq (nelisp--record-ref object 0) nelisp--obarray-marker)
+       (hash-table-p (nelisp--record-ref object 1))
+       (eq (hash-table-test (nelisp--record-ref object 1)) 'equal)))
+
+(defun obarray-make (&rest args)
+  "Return a fresh obarray with a private native hash table."
+  (when (> (length args) 1)
+    (signal 'wrong-number-of-arguments (list 'obarray-make (length args))))
+  (when (and args (car args)
+             (or (not (integerp (car args))) (< (car args) 0)))
+    (signal 'wrong-type-argument (list 'wholenump (car args))))
+  (nelisp--make-record 'obarray nelisp--obarray-marker
+                       (make-hash-table :test 'equal)))
+
+(defun nelisp--obarray-table (obarray)
+  (unless (obarrayp obarray)
     (signal 'wrong-type-argument (list 'obarrayp obarray)))
-  (cond ((symbolp name)
-         (let ((found (nelisp--intern-lookup (symbol-name name))))
-           (and (eq found name) found)))
-        ((stringp name) (nelisp--intern-lookup name))
+  (nelisp--record-ref obarray 1))
+
+(defun nelisp--obarray-name (name)
+  (cond ((stringp name) name)
+        ((symbolp name) (symbol-name name))
         (t (signal 'wrong-type-argument (list 'stringp name)))))
+
+(defun nelisp--obarray-intern (name obarray)
+  "Intern string NAME into private OBARRAY, returning its canonical symbol."
+  (unless (stringp name)
+    (signal 'wrong-type-argument (list 'stringp name)))
+  (let* ((table (nelisp--obarray-table obarray))
+         (symbol (gethash name table)))
+    (or symbol
+        (let ((fresh (make-symbol name)))
+          (puthash name fresh table)
+          fresh))))
+
+(defun intern-soft (name &optional obarray)
+  "Return the symbol named NAME if it is interned in OBARRAY, else nil."
+  (if obarray
+      (let* ((table (nelisp--obarray-table obarray))
+             (found (gethash (nelisp--obarray-name name) table)))
+        (if (and (symbolp name) (not (eq found name))) nil found))
+    (cond ((symbolp name)
+           (let ((found (nelisp--intern-lookup (symbol-name name))))
+             (and (eq found name) found)))
+          ((stringp name) (nelisp--intern-lookup name))
+          (t (signal 'wrong-type-argument (list 'stringp name))))))
+
+(defun unintern (name &optional obarray)
+  "Remove NAME from OBARRAY and return non-nil when it was present.
+The standalone global intern table has no removal operation yet; pass an
+obarray returned by `obarray-make' for supported removal."
+  (unless obarray
+    (signal 'unsupported-feature '(global-unintern)))
+  (let* ((table (nelisp--obarray-table obarray))
+         (key (nelisp--obarray-name name))
+         (found (gethash key table)))
+    (if (and found (or (not (symbolp name)) (eq found name)))
+        (progn (remhash key table) t)
+      nil)))
+
+(defun mapatoms (function &optional obarray)
+  "Call FUNCTION for each symbol interned in OBARRAY.
+The standalone global intern table has no iteration operation yet; pass an
+obarray returned by `obarray-make' for supported iteration."
+  (unless obarray
+    (signal 'unsupported-feature '(global-mapatoms)))
+  (maphash (lambda (_name symbol) (funcall function symbol))
+           (nelisp--obarray-table obarray))
+  nil)
 
 ;; Rust-min batch 6m (2026-05-06): `error' migrated from Rust to
 ;; elisp.  The previous `bi_error' was a 3-step pipeline:
@@ -725,15 +744,6 @@ round-tripping, but nothing in this runtime currently decodes it back
 out to a byte, unlike real Emacs."
     (if (< ch 128) ch (+ ch #x3FFF00))))
 
-(unless (fboundp 'fixnump)
-  (defun fixnump (object)
-    "NeLisp standalone stub for Emacs's C primitive `fixnump'.
-Real Emacs answers t for an immediate (non-bignum) integer.  This
-runtime has no bignum representation at all (see `bignump', already
-native here and always nil) -- every integer is what real Emacs would
-call a fixnum -- so this is exactly `integerp'."
-    (integerp object)))
-
 ;; Doc segI (vendor-emacs-lisp) follow-up: `decoded-time-SLOT' accessors
 ;; for the `decoded-time' value vendored `calendar/time-date.el' reads
 ;; AND writes through, e.g. `decoded-time-add' (time-date.el line ~473):
@@ -828,7 +838,29 @@ Read by the `nelisp--setf-1' clause that gives these accessors a working
 ;; dispatch + registered-name list and exposes the alias structure
 ;; (= `(symbol-function 'string=)' now returns `string-equal' so
 ;; callers can distinguish the canonical name).
-(defalias 'equal-including-properties 'equal)
+;; Was a bare `(defalias 'equal-including-properties 'equal)', which
+;; ignored string text properties entirely.  That was defensible only
+;; while this file had no property storage; it has had one since
+;; `nelisp--tp-string-properties' / `put-text-property' / `get-text-property'
+;; (below) were added, so the alias silently went stale.  Matches the
+;; standalone prelude's `equal-including-properties' (scripts/nelisp-stdlib-prelude.el),
+;; using this file's own `gethash'-on-`nelisp--tp-string-properties'
+;; accessor in place of the prelude's unified `nelisp--tp-get-intervals'.
+(defun equal-including-properties (a b)
+  "Like `equal', but for strings also compares text properties."
+  (and (equal a b)
+       (if (and (stringp a) (stringp b))
+           (let ((la (gethash a nelisp--tp-string-properties))
+                 (lb (gethash b nelisp--tp-string-properties)))
+             (or (and (null la) (null lb))
+                 (let ((n (length a)) (i 0) (ok t))
+                   (while (and ok (< i n))
+                     (unless (equal (nelisp--tp-plist-at i la)
+                                    (nelisp--tp-plist-at i lb))
+                       (setq ok nil))
+                     (setq i (1+ i)))
+                   ok)))
+         t)))
 ;; `eql' is NOT `equal': strings and conses compare by identity, numbers by
 ;; same-type value (Doc 201 §6.17).  Guarded so a runtime that already has
 ;; the right `eql' -- the standalone prelude, host Emacs -- keeps it; the
@@ -1168,7 +1200,6 @@ No-ops on substrates without `nelisp--syscall-path-int' (the historic stub)."
 (unless (fboundp 'substring-no-properties)
   (defun substring-no-properties (string &optional from to)
     (substring string from to)))
-
 
 ;; ---------------------------------------------------------------------
 ;; Hooks: add-hook / remove-hook / run-hooks / run-hook-with-args /
@@ -1650,15 +1681,20 @@ the string itself."
   (defun file-locked-p (filename)
     (and (gethash (file-truename filename) nelisp--file-locks) t)))
 
+;; Marker slice 1/2: mirror of the prelude's copy, same as every other
+;; entry in this "segment 4" block -- a host running this file for real
+;; keeps its own native `markerp', and a standalone image that already
+;; loaded the prelude keeps THAT copy (the prelude loads first, so its
+;; `(unless (fboundp 'markerp) ...)' already wins by the time this file
+;; loads); this guarded copy only matters when this file is loaded
+;; alone (byte-compile, standalone smoke targets that `--load' it
+;; directly).  `nelisp-marker-p' is declared, not redefined, above (see
+;; the "segment 4" header comment for why: it is one of the prelude-
+;; only internal names this file forward-references).
 (unless (fboundp 'markerp)
-  (defun markerp (_object)
-    "Always nil on the standalone target; see the prelude's copy."
-    nil))
-
-(unless (fboundp 'file-attribute-file-identifier)
-  (defun file-attribute-file-identifier (attrs)
-    "The (INODENUM DEVICE) pair in ATTRS.  See `file-attributes'."
-    (nthcdr 10 attrs)))
+  (defun markerp (object)
+    "Return non-nil if OBJECT is a marker; see the prelude's copy."
+    (nelisp-marker-p object)))
 
 (unless (fboundp 'file-remote-p)
   (defun file-remote-p (_filename &optional _identification _connected)
@@ -1688,19 +1724,66 @@ Other major modes are defined by comparison with this one.
     (setq mode-name "Fundamental")
     (run-mode-hooks)))
 
+;; Doc 210: this minimal reader image (loaded standalone, with none of
+;; the prelude's buffer/marker/overlay object model available -- see
+;; `standalone-reader-intern-soft-smoke' et al. in the Makefile, which
+;; `load' this file directly onto the bare ~175-builtin reader) still
+;; has ordinary strings, so it can and should carry a real string-side
+;; text-property store -- the OBJECT-is-a-buffer case has nothing to
+;; store into here and stays a no-op, same as before.  This mirrors the
+;; prelude's fix (search that file for "text-property engine (Doc
+;; 210)") at a much smaller scale: no buffer/interval-splitting engine,
+;; just the layered "most recent write wins" model direct string
+;; text-property support actually needs, keyed on string identity.
+(defvar nelisp--tp-string-properties (make-hash-table :test 'eq)
+  "STRING (by identity) -> its text-property interval list, 0-based.")
+(defun nelisp--tp-plist-at (pos intervals)
+  "Return the merged property list at POS across INTERVALS: for each
+key, the value from the most recently added interval that mentions it
+explicitly (`put-text-property' below always prepends a new,
+single-prop interval rather than splitting existing ones, so the most
+recently pushed entry for a given key is always the correct one)."
+  (let (out seen)
+    (dolist (iv intervals)
+      (when (and (>= pos (nth 0 iv)) (< pos (nth 1 iv)))
+        (let ((l (nth 2 iv)))
+          (while l
+            (unless (memq (car l) seen)
+              (push (car l) seen)
+              (push (cadr l) out) (push (car l) out))
+            (setq l (cddr l))))))
+    out))
 (unless (fboundp 'propertize)
-  (defun propertize (string &rest _properties)
-    "Return a copy of STRING; PROPERTIES are dropped.  See the
-prelude's copy for why this runtime has no property side table."
-    (copy-sequence string)))
+  (defun propertize (string &rest properties)
+    "Return a copy of STRING with PROPERTIES set over its whole length."
+    (let ((new (copy-sequence string)))
+      (when properties
+        (puthash new (list (list 0 (length new) properties))
+                 nelisp--tp-string-properties))
+      new)))
 (unless (fboundp 'put-text-property)
-  (defun put-text-property (_start _end _prop _value &optional _object)
-    "No-op; see the prelude's copy." nil))
-(unless (fboundp 'match-string-no-properties)
-  (defun match-string-no-properties (n &optional str)
-    "Same as `match-string' on this runtime; see the prelude's copy."
-    (match-string n str)))
-
+  (defun put-text-property (start end prop value &optional object)
+    "Store PROP=VALUE for [START, END) of OBJECT.  A no-op when OBJECT
+is a buffer or nil: this image has no buffer model to store into (see
+the prelude's copy for that case)."
+    (when (stringp object)
+      (puthash object
+               (cons (list start end (list prop value))
+                     (gethash object nelisp--tp-string-properties))
+               nelisp--tp-string-properties))
+    nil))
+(unless (fboundp 'get-text-property)
+  (defun get-text-property (pos prop &optional object)
+    "Return PROP's value at POS in OBJECT, or nil.  Always nil when
+OBJECT is a buffer or nil (see `put-text-property' just above)."
+    (and (stringp object)
+         (plist-get (nelisp--tp-plist-at
+                      pos (gethash object nelisp--tp-string-properties))
+                     prop))))
+(unless (fboundp 'text-properties-at)
+  (defun text-properties-at (pos &optional object)
+    (and (stringp object)
+         (nelisp--tp-plist-at pos (gethash object nelisp--tp-string-properties)))))
 (unless (boundp 'buffer-file-coding-system)
   (defvar buffer-file-coding-system nil
     "See the prelude's copy for the full rationale."))
@@ -1897,15 +1980,21 @@ point always advances, regardless of its own `insertion-type'."
 (unless (fboundp 'nelisp-insert-before-markers)
   (defun nelisp-insert-before-markers (text &optional buf)
     "Same as the prelude's copy: like `nelisp-insert', but every marker
-exactly at the insertion point advances past TEXT."
+exactly at the insertion point advances past TEXT instead of consulting
+its own `insertion-type'.  Settles any pending `goto-char' first, same
+reason as `nelisp-insert' (both defined in `src/nelisp-buffer.el',
+loaded alongside this file in the hosted image)."
     (unless (stringp text)
       (signal 'wrong-type-argument (list 'stringp text)))
+    (let ((b (nelisp-buffer--ambient buf)))
+      (nelisp-buffer--settle b))
     (let* ((b (nelisp-buffer--ambient buf))
            (before (nelisp-buffer-before-gap b))
            (at (1+ (length before)))
            (n (length text)))
       (setf (nelisp-buffer-before-gap b) (concat before text))
       (setf (nelisp-buffer-modified b) t)
+      (nelisp-buffer--bump-tick b)
       (nelisp-buffer--shift-markers-on-insert-before-markers b at n)
       (nelisp-buffer--shift-overlays-on-insert b at n)
       (nelisp-buffer--shift-text-properties-on-insert b at n))
@@ -1966,9 +2055,12 @@ composed from the native predicates as before."
     (cond
      ((null x) 'symbol)
      ((and (fboundp 'hash-table-p) (hash-table-p x)) 'hash-table)
+     ((and (fboundp 'byte-code-function-p) (byte-code-function-p x))
+      'byte-code-function)
      ((and (fboundp 'recordp) (recordp x)) (aref x 0))
-     ((and (consp x) (memq (car x) '(lambda closure))) 'function)
+     ((and (consp x) (eq (car x) 'closure)) 'interpreted-function)
      ((and (consp x) (eq (car x) 'builtin)) 'subr)
+     ((and (fboundp 'subrp) (subrp x)) 'subr)
      ((consp x) 'cons)
      ((symbolp x) 'symbol)
      ((stringp x) 'string)
@@ -2403,6 +2495,19 @@ plain variable (it goes through `setq')."
       (list 'nelisp--record-set (cadr place)
             (cdr (assq (car place) nelisp-cl-macros--accessor-info))
             val))
+     ;; GNU gv.el's `if' and `progn' places: assign through whichever branch
+     ;; TEST selects (ELSE forms as an implicit `progn' whose last form is
+     ;; the place).  bytecomp.el pushes onto one: `(push var (if assignment
+     ;; byte-compile-free-assignments byte-compile-free-references))'.
+     ((and (consp place) (eq (car place) 'if))
+      (list 'if (cadr place)
+            (nelisp--setf-1 (caddr place) val)
+            (nelisp--setf-1 (cons 'progn (cdddr place)) val)))
+     ((and (consp place) (eq (car place) 'progn))
+      (if (cddr place)
+          (append (cons 'progn (butlast (cdr place)))
+                  (list (nelisp--setf-1 (car (last place)) val)))
+        (nelisp--setf-1 (cadr place) val)))
      ((and (consp place) (nelisp--setf-place-macro-p (car place)))
       (nelisp--setf-1 (macroexpand-1 place) val))
      ;; fix/setf-cxxxr-places: `(setf (plist-get (cadr (plist-get x
@@ -2474,7 +2579,6 @@ plain variable (it goes through `setq')."
 ;; 35545199914.  A stub that answers a capability question with a lie is
 ;; worse than the `void-function' it replaces; the one consumer that wanted
 ;; a functionp back (nelisp-agent's trajectory test) fails honestly instead.
-
 
 ;; This only reads VARIABLE's value while BUFFER is current -- it does
 ;; not give VARIABLE a value that is local TO buffer-local-value's own

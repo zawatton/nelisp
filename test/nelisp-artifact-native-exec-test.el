@@ -63,6 +63,48 @@ x86_64 Linux."
       (when (file-directory-p temp-dir)
         (delete-directory temp-dir t)))))
 
+(ert-deftest nelisp-artifact/raw-bool-return-metadata-is-source-proven ()
+  "Only boolean tail literals receive raw-bool return metadata."
+  (skip-unless (and (nelisp-artifact-native-exec-test--linux-x86_64-p)
+                    (executable-find "cc")
+                    (executable-find "objcopy")))
+  (let* ((temp-dir (make-temp-file "nelisp-raw-bool-metadata-" t))
+         (source-path (expand-file-name "raw-bool.el" temp-dir))
+         (artifact-path (concat source-path ".neln"))
+         (source
+          (concat
+           "(defun p5rb-consp (x) (if (consp x) t nil))\n"
+           "(defun p5rb-symbolp (x) (if (symbolp x) t nil))\n"
+           "(defun p5rb-symbolp-direct (x) (symbolp x))\n"
+           "(defun p5rb-int-branch (x) (if (null x) 1 0))\n"
+           "(defun p5rb-helper (x) (if (null x) t nil))\n"
+           "(defun p5rb-helper-caller (x) (p5rb-helper x))\n"
+           "(defun p5rb-int-zero (x) 0)\n"
+           "(defun p5rb-int-one (x) 1)\n")))
+    (unwind-protect
+        (progn
+          (write-region source nil source-path nil 'silent)
+          (nelisp-artifact-compile-file
+           source-path artifact-path nil nil nil nil nil 'neln)
+          (let* ((manifest (nelisp-artifact-read-manifest artifact-path))
+                 (native (plist-get manifest :native))
+                 (repr (lambda (name)
+                         (plist-get
+                          (nelisp-artifact--native-defun-metadata native name)
+                          :return-repr))))
+            (should (eq (funcall repr "p5rb-consp") 'raw-bool))
+            (should (eq (funcall repr "p5rb-symbolp") 'raw-bool))
+            ;; Known gap: a boolean helper called by another defun is not
+            ;; raw-bool-tagged yet, so the caller can expose its raw word.
+            (should (eq (funcall repr "p5rb-helper") 'unknown))
+            (should (eq (funcall repr "p5rb-helper-caller") 'unknown))
+            (should (eq (funcall repr "p5rb-symbolp-direct") 'sexp-ptr))
+            (should-not (eq (funcall repr "p5rb-int-branch") 'raw-bool))
+            (should (eq (funcall repr "p5rb-int-zero") 'raw-i64))
+            (should (eq (funcall repr "p5rb-int-one") 'raw-i64))))
+      (when (file-directory-p temp-dir)
+        (delete-directory temp-dir t)))))
+
 (ert-deftest nelisp-artifact/native-exec-general-builtin-calln-eq ()
   "A vararg builtin calln defun executes through the host proof harness."
   (skip-unless (and (nelisp-artifact-native-exec-test--linux-x86_64-p)

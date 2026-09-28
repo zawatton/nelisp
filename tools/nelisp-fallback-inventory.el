@@ -88,7 +88,13 @@ can check.")
     ;; at a form boundary (the loop's exit, not a fallback), the other
     ;; records where it stopped parsing.  Both are printed in the report.
     nelisp-prelude-toplevel--note-eof
-    nelisp-prelude-toplevel--note-unreadable)
+    nelisp-prelude-toplevel--note-unreadable
+    ;; lisp/nelisp-eln-switchover.el (Doc 208): appends every routing,
+    ;; fallback, unload and migration decision to `nelisp-eln-switchover-log',
+    ;; which `nelisp-eln-switchover-log-for' and the S7.7 smoke read back;
+    ;; `--fallback' always appends exactly one such record.
+    nelisp-eln-switchover--record
+    nelisp-eln-switchover--fallback)
   "Names whose presence in a handler counts as leaving a trace.
 
 Reviewed 2026-08-19, the first time anything in this inventory was looked

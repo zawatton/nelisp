@@ -339,6 +339,19 @@ only `alist' changed in this segment."
   (should (equal (nelisp-json-serialize '(:a 1 :b 2))
                  "{\"a\":1,\"b\":2}")))
 
+;; Real Emacs's `json-serialize' rejects a malformed keyword-args plist
+;; upfront, naming the whole trailing list -- `(json-serialize "s" "k")'
+;; signals `(wrong-type-argument plistp ("k"))' rather than silently
+;; ignoring the dangling element.  Measured on stock Emacs 31.1 and 30.1
+;; 2026-09-28.  A well-formed (even-length) ARGS must still work.
+(ert-deftest nelisp-json-serialize-rejects-malformed-args-plist ()
+  (should-error (nelisp-json-serialize "s" "k")
+                :type 'wrong-type-argument)
+  (should (equal (condition-case e (nelisp-json-serialize "s" "k")
+                   (wrong-type-argument (caddr e)))
+                 '("k")))
+  (should (equal (nelisp-json-encode "s" "k" "j") "\"s\"")))
+
 ;;; Pretty print -----------------------------------------------------
 
 (ert-deftest nelisp-json-pretty-print-string-object ()

@@ -59,6 +59,53 @@
   ;; buffer content; must now reflect the real buffer size + 1.
   (should (= 3 (with-temp-buffer (insert "hi") (point-max)))))
 
+(ert-deftest nelisp-buffer/narrowing-clamps-point-and-widen-preserves-it ()
+  ;; Host Emacs 31.1: narrowing clamps point into the new restriction;
+  ;; widening keeps the resulting point.
+  (should (equal '(3 3 5 3 1 7)
+                 (with-temp-buffer
+                   (insert "abcdef")
+                   (goto-char 1)
+                   (narrow-to-region 3 5)
+                   (let ((narrow-state (list (point) (point-min) (point-max))))
+                     (widen)
+                     (append narrow-state (list (point) (point-min) (point-max))))))))
+
+(ert-deftest nelisp-buffer/narrowing-tracks-text-edits ()
+  ;; Host Emacs 31.1: insertions at point-max extend the narrowed end;
+  ;; deleting within the restriction adjusts point and point-max.
+  (should (equal '(6 3 6 "abcfXghij")
+                 (with-temp-buffer
+                   (insert "abcdefghij")
+                   (narrow-to-region 3 7)
+                   (goto-char (point-max))
+                   (insert "X")
+                   (delete-region 4 6)
+                   (list (point) (point-min) (point-max)
+                         (progn (widen) (buffer-string)))))))
+
+(ert-deftest nelisp-buffer/narrowing-point-survives-buffer-switch ()
+  ;; Each NeLisp buffer owns its gap point and restriction independently.
+  (let ((outer (current-buffer))
+        (a (generate-new-buffer "smoke-narrow-a"))
+        (b (generate-new-buffer "smoke-narrow-b")))
+    (unwind-protect
+        (progn
+          (set-buffer a)
+          (insert "abcdef")
+          (goto-char 1)
+          (narrow-to-region 3 5)
+          (set-buffer b)
+          (insert "xyz")
+          (goto-char 2)
+          (set-buffer a)
+          (should (equal '(3 3 5) (list (point) (point-min) (point-max))))
+          (set-buffer b)
+          (should (equal '(2 1 4) (list (point) (point-min) (point-max)))))
+      (set-buffer outer)
+      (when (buffer-live-p a) (kill-buffer a))
+      (when (buffer-live-p b) (kill-buffer b)))))
+
 (ert-deftest nelisp-buffer/kill-buffer-then-not-live ()
   ;; Doc 188 §2.2: `kill-buffer'/`buffer-live-p'/`generate-new-buffer'
   ;; now read and write one coherent representation, not two.
@@ -166,11 +213,13 @@
 (ert-deftest nelisp-buffer/erase-buffer-clears-and-resets-point ()
   (with-temp-buffer
     (insert "abc")
+    (narrow-to-region 2 3)
     (should (equal nil (erase-buffer)))
     (should (equal "" (buffer-string)))
     ;; Point clamps back to 1 (point-min) once the buffer is empty --
     ;; Doc 188 DoD point-clamping edge case.
     (should (= 1 (point)))
+    (should (= 1 (point-min)))
     (should (= 1 (point-max)))))
 
 (ert-deftest nelisp-buffer/textprop-hook-attaches-to-real-buffer ()
