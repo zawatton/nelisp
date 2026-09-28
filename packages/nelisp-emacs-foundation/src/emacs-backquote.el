@@ -189,6 +189,171 @@ surrounding list).  Single-level only; nested backquotes are not
 supported by this polyfill (Phase 2.1)."
     (emacs-backquote--expand form)))
 
+;;;; --- GNU backquote.el helper API (S2 coverage batch) -------------------
+;;
+;; The macro above expands our own reader's `(comma X)' / `(comma-at X)'
+;; convention directly and never calls the functions below -- our reader
+;; does not emit GNU's `\,' / `\,@' / `` \` `` triad at all.  These are
+;; faithful ports of real GNU Emacs 31.1 `lisp/emacs-lisp/backquote.el'
+;; (verified against its source) for any vendored code that calls them
+;; directly against that triad, independent of which macro expands `` `...` ''
+;; forms.  Pure list/algorithm code; no native support needed.
+
+(unless (fboundp 'backquote-list*-function)
+  (defun backquote-list*-function (first &rest list)
+    "Like `list' but the last argument is the tail of the new list.
+
+For example (backquote-list* \\='a \\='b \\='c) => (a b . c)"
+    (if list
+        (let* ((rest list) (newlist (cons first nil)) (last newlist))
+          (while (cdr rest)
+            (setcdr last (cons (car rest) nil))
+            (setq last (cdr last)
+                  rest (cdr rest)))
+          (setcdr last (car rest))
+          newlist)
+      first)))
+
+(unless (fboundp 'backquote-list*-macro)
+  (defmacro backquote-list*-macro (first &rest list)
+    "Like `list' but the last argument is the tail of the new list.
+
+For example (backquote-list* \\='a \\='b \\='c) => (a b . c)"
+    (setq list (nreverse (cons first list))
+          first (car list)
+          list (cdr list))
+    (if list
+        (let* ((second (car list))
+               (rest (cdr list))
+               (newlist (list 'cons second first)))
+          (while rest
+            (setq newlist (list 'cons (car rest) newlist)
+                  rest (cdr rest)))
+          newlist)
+      first)))
+
+(unless (fboundp 'backquote-list*)
+  (defalias 'backquote-list* (symbol-function 'backquote-list*-macro)))
+
+(unless (fboundp 'backquote-listify)
+  (defun backquote-listify (list old-tail)
+    "Decide between `append', `list', `backquote-list*', and `cons' for LIST.
+LIST is a list of (TAG . STRUCTURE) pairs from `backquote-process';
+OLD-TAIL is the (TAG . STRUCTURE) pair for what should be appended
+at the end."
+    (let ((heads nil) (tail (cdr old-tail)) (list-tail list) (item nil))
+      (if (= (car old-tail) 0)
+          (setq tail (eval tail)
+                old-tail nil))
+      (while (consp list-tail)
+        (setq item (car list-tail))
+        (setq list-tail (cdr list-tail))
+        (if (or heads old-tail (/= (car item) 0))
+            (setq heads (cons (cdr item) heads))
+          (setq tail (cons (eval (cdr item)) tail))))
+      (cond
+       (tail
+        (if (null old-tail)
+            (setq tail (list 'quote tail)))
+        (if heads
+            (let ((use-list* (or (cdr heads)
+                                  (and (consp (car heads))
+                                       (eq (car (car heads))
+                                           backquote-splice-symbol)))))
+              (cons (if use-list* 'backquote-list* 'cons)
+                    (append heads (list tail))))
+          tail))
+       (t (cons 'list heads))))))
+
+(unless (fboundp 'backquote-delay-process)
+  (defun backquote-delay-process (s level)
+    "Process a (un|back|splice)quote inside a backquote.
+This simply recurses through the body."
+    (let ((exp (backquote-listify (list (cons 0 (list 'quote (car s))))
+                                   (backquote-process (cdr s) level))))
+      (cons (if (eq (car-safe exp) 'quote) 0 1) exp))))
+
+(unless (fboundp 'backquote-process)
+  (defun backquote-process (s &optional level)
+    "Process the body of a backquote.
+S is the body.  Returns a cons cell whose cdr is a piece of code which
+is the macro-expansion of S, and whose car is a small integer whose
+value can either indicate that the code is constant (0), or not (1),
+or returns a list which should be spliced into its environment (2).
+LEVEL is only used internally and indicates the nesting level: 0 (the
+default) is for the toplevel nested inside a single backquote.
+
+This is a faithful port of GNU Emacs's own `backquote-process',
+operating on the `\\=`' / `\\=,' / `\\=,@' triad (`backquote-backquote-symbol'
+/ `backquote-unquote-symbol' / `backquote-splice-symbol' above) -- it is
+independent of this file's own `(comma X)' / `(comma-at X)' reader
+convention used by the `backquote' macro."
+    (unless level (setq level 0))
+    (cond
+     ((vectorp s)
+      (let ((n (backquote-process (append s ()) level)))
+        (if (= (car n) 0)
+            (cons 0 s)
+          (cons 1 (cond
+                   ((not (listp (cdr n)))
+                    (list 'vconcat (cdr n)))
+                   ((eq (nth 1 n) 'list)
+                    (cons 'vector (nthcdr 2 n)))
+                   ((eq (nth 1 n) 'append)
+                    (cons 'vconcat (nthcdr 2 n)))
+                   (t
+                    (list 'apply '(function vector) (cdr n))))))))
+     ((atom s)
+      (cons 0 (if (or (null s) (eq s t) (not (symbolp s)))
+                  s
+                (list 'quote s))))
+     ((eq (car s) backquote-unquote-symbol)
+      (if (<= level 0)
+          (cond
+           ((> (length s) 2)
+            (error "Multiple args to , are not supported: %S" s))
+           (t (cons (if (eq (car-safe (nth 1 s)) 'quote) 0 1)
+                     (nth 1 s))))
+        (backquote-delay-process s (1- level))))
+     ((eq (car s) backquote-splice-symbol)
+      (if (<= level 0)
+          (if (> (length s) 2)
+              (error "Multiple args to ,@ are not supported: %S" s)
+            (cons 2 (nth 1 s)))
+        (backquote-delay-process s (1- level))))
+     ((eq (car s) backquote-backquote-symbol)
+      (backquote-delay-process s (1+ level)))
+     (t
+      (let ((rest s)
+            item firstlist list lists expression)
+        (while (and (consp rest)
+                    (not (or (eq (car rest) backquote-unquote-symbol)
+                             (eq (car rest) backquote-backquote-symbol))))
+          (setq item (backquote-process (car rest) level))
+          (cond
+           ((= (car item) 2)
+            (if (null lists)
+                (setq firstlist list
+                      list nil))
+            (if list
+                (push (backquote-listify list '(0 . nil)) lists))
+            (push (cdr item) lists)
+            (setq list nil))
+           (t
+            (setq list (cons item list))))
+          (setq rest (cdr rest)))
+        (if (or rest list)
+            (push (backquote-listify list (backquote-process rest level))
+                  lists))
+        (setq expression
+              (if (or (cdr lists)
+                      (eq (car-safe (car lists)) backquote-splice-symbol))
+                  (cons 'append (nreverse lists))
+                (car lists)))
+        (if firstlist
+            (setq expression (backquote-listify firstlist (cons 1 expression))))
+        (cons (if (eq (car-safe expression) 'quote) 0 1) expression))))))
+
 (provide 'emacs-backquote)
 (provide 'backquote)
 

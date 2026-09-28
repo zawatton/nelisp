@@ -47,10 +47,12 @@
   "Directory that contains the stub facade and its sibling features.")
 
 (defun emacs-stub--load-feature (feature)
-  "Load FEATURE from the stub facade directory."
-  (load (expand-file-name (concat (symbol-name feature) ".el")
-                          emacs-stub--load-directory)
-        nil t))
+  "Load FEATURE from the stub facade directory, unless already loaded.
+See the identical `featurep' rationale on `emacs-foundation--load-feature'."
+  (unless (featurep feature)
+    (load (expand-file-name (concat (symbol-name feature) ".el")
+                            emacs-stub--load-directory)
+          nil t)))
 
 ;;;; --- keymap.c -----------------------------------------------------------
 
@@ -1404,41 +1406,67 @@ machine-readable stdout."
 ;;;; --- display.c ----------------------------------------------------------
 
 (unless (fboundp 'redraw-display)
-  (defun redraw-display (&rest _) nil))
+  (defun redraw-display (&rest _) nil)
+  (put 'redraw-display 'emacs-stub-bulk t))
 
 (unless (fboundp 'redisplay)
-  (defun redisplay (&optional force) (ignore force) nil))
+  (defun redisplay (&optional force) (ignore force) nil)
+  (put 'redisplay 'emacs-stub-bulk t))
 
 (unless (fboundp 'force-mode-line-update)
-  (defun force-mode-line-update (&optional all) (ignore all) nil))
+  (defun force-mode-line-update (&optional all) (ignore all) nil)
+  (put 'force-mode-line-update 'emacs-stub-bulk t))
 
 
 ;;;; --- buffer.c (minimal subset; nelisp-ec-* covers the rest) ------------
 
+;; These synthetic placeholders return values in a throwaway `(buffer)'
+;; shape unrelated to either buffer representation this repo actually
+;; uses (the standalone prelude's native `nelisp-buffer-p' record or this
+;; repo's own `nelisp-ec-buffer' struct).  Tag each one `emacs-stub-bulk',
+;; matching the `display.c' block above, so
+;; `emacs-buffer-builtins--install-function-p' (which treats an already
+;;-fboundp name as a trustworthy prior owner, like a host C subr, unless
+;; it is stub-bulk-tagged) lets `emacs-buffer-builtins.el''s real
+;; `nelisp-ec'-backed definitions override this placeholder instead of it
+;; permanently winning the load-order race merely for having defined the
+;; name first.  Without this tag, whichever of these names happens to be
+;; absent from a given NeLisp build's own native buffer family (currently
+;; `get-buffer-create') gets stuck on this placeholder forever, handing
+;; callers a buffer object neither `get-buffer' nor `with-current-buffer'
+;; recognizes -- see `test/nemacs-process-sync-smoke.el' and
+;; `emacs-buffer-builtins-test/get-buffer-create-buffer-is-recognized-by-get-buffer'.
 (unless (fboundp 'current-buffer)
   (defun current-buffer ()
     "Stub: synthetic placeholder.  Real impl needs nelisp-ec-current-buffer alias."
-    (cons 'buffer nil)))
+    (cons 'buffer nil))
+  (put 'current-buffer 'emacs-stub-bulk t))
 
 (unless (fboundp 'bufferp)
-  (defun bufferp (object) (and (consp object) (eq (car object) 'buffer))))
+  (defun bufferp (object) (and (consp object) (eq (car object) 'buffer)))
+  (put 'bufferp 'emacs-stub-bulk t))
 
 (unless (fboundp 'buffer-live-p)
-  (defun buffer-live-p (buffer) (bufferp buffer)))
+  (defun buffer-live-p (buffer) (bufferp buffer))
+  (put 'buffer-live-p 'emacs-stub-bulk t))
 
 (unless (fboundp 'get-buffer)
-  (defun get-buffer (buffer-or-name) (ignore buffer-or-name) nil))
+  (defun get-buffer (buffer-or-name) (ignore buffer-or-name) nil)
+  (put 'get-buffer 'emacs-stub-bulk t))
 
 (unless (fboundp 'get-buffer-create)
   (defun get-buffer-create (buffer-or-name &optional inhibit-buffer-hooks)
     (ignore buffer-or-name inhibit-buffer-hooks)
-    (cons 'buffer nil)))
+    (cons 'buffer nil))
+  (put 'get-buffer-create 'emacs-stub-bulk t))
 
 (unless (fboundp 'buffer-name)
-  (defun buffer-name (&optional buffer) (ignore buffer) ""))
+  (defun buffer-name (&optional buffer) (ignore buffer) "")
+  (put 'buffer-name 'emacs-stub-bulk t))
 
 (unless (fboundp 'buffer-list)
-  (defun buffer-list (&optional frame) (ignore frame) nil))
+  (defun buffer-list (&optional frame) (ignore frame) nil)
+  (put 'buffer-list 'emacs-stub-bulk t))
 
 
 ;;;; --- minor-mode helpers -------------------------------------------------
@@ -2183,10 +2211,32 @@ degrades to 1 (no pow primitive in the standalone reader)."
 ;; speed).  Reader-gated (`rdf') so host Emacs keeps its real `define-inline'.
 ;; Lowering helpers are pure and defined unconditionally (harmless on host,
 ;; and unit-testable there); only the `define-inline' macro is reader-gated.
+(defun emacs-stub--inline-uncomma--unquote-p (form)
+  "Return non-nil if FORM is a reader-level unquote marker `(comma X)'."
+  (and (consp form)
+       (let ((head (car form)))
+         (or (eq head 'comma)
+             (and (symbolp head) (string= (symbol-name head) ","))))))
+
 (defun emacs-stub--inline-uncomma (form)
   "Lower runtime backquote unquotes in FORM: (comma X) -> X, recursively."
   (cond
    ((not (consp form)) form)
+   ;; `#',EXPR' inside `inline-quote' reads as `(function (comma EXPR))'
+   ;; (this runtime's backquote marks `,' as `comma', not a `\,' read
+   ;; syntax character).  Mirror `inline.el's `inline--dont-quote' case for
+   ;; `` `#'(,'\, ,e) '' : for the function-body (non-inlining) path this
+   ;; must lower to the bare EXPR, not `(function EXPR)'.  EXPR (e.g. `(get
+   ;; type 'cl-deftype-satisfies)' in `cl-macs.el's `cl-typep') already
+   ;; evaluates to the function value at call time; `function' does not
+   ;; evaluate a non-lambda argument, so leaving the wrapper in place turns
+   ;; EXPR's own unevaluated *source* into the `funcall' target and signals
+   ;; `invalid-function' (observed via `defclass' -> `cl-check-type' ->
+   ;; `cl-typep' -> `(funcall #'(get type (quote cl-deftype-satisfies)) val)').
+   ((and (eq (car form) 'function)
+         (emacs-stub--inline-uncomma--unquote-p (cadr form))
+         (null (cddr form)))
+    (emacs-stub--inline-lower (cadr (cadr form))))
    ((let ((head (car form)))
       (or (eq head 'comma)
           (and (symbolp head)
@@ -4115,18 +4165,31 @@ is required."
 (unless (featurep 'help-macro)
   (provide 'help-macro))
 
-;; Phase B5 — coding-string identity stubs.  Standalone NeLisp strings
-;; are UTF-8 already; the bulk-stub no-op (returns nil) breaks JSON-RPC
-;; parsing when callers wrap incoming strings with `decode-coding-string'.
-;; Forward to identity so the round-trip is a no-op.
+;; Phase B5 — UTF-8 coding-string stubs.  Standalone NeLisp strings
+;; already hold UTF-8 bytes, so no byte conversion is needed, but the
+;; result KIND is observable: a decoded string must be multibyte (so
+;; `length' counts characters and JSON encodes characters, not bytes)
+;; and an encoded string must be unibyte (so `aref' yields bytes).  The
+;; former identity stubs left SQLite text unibyte, which reached MCP
+;; clients as double-encoded UTF-8 and was written back as invalid
+;; UTF-8.  This mirrors the reader's own definitions in
+;; nelisp-stdlib-misc.el, which this layer replaces on standalone.
 (when (emacs-stub--install-function-p 'decode-coding-string)
   (defun decode-coding-string (string &optional _coding-system _nocopy &rest _)
-    "Identity stub — return STRING unchanged.  NeLisp strings are UTF-8."
-    string))
+    "Return STRING's UTF-8 bytes as a multibyte string."
+    (if (and (stringp string)
+             (not (multibyte-string-p string))
+             (fboundp 'string-as-multibyte))
+        (string-as-multibyte string)
+      string)))
 (when (emacs-stub--install-function-p 'encode-coding-string)
   (defun encode-coding-string (string &optional _coding-system _nocopy &rest _)
-    "Identity stub — return STRING unchanged."
-    string))
+    "Return multibyte STRING as its unibyte UTF-8 bytes."
+    (if (and (stringp string)
+             (multibyte-string-p string)
+             (fboundp 'string-as-unibyte))
+        (string-as-unibyte string)
+      string)))
 
 ;; T75 (2026-09) — `fboundp' / `macrop' / `commandp' / `indirect-function'
 ;; all incorrectly signal `(wrong-type-argument symbolp nil)' when called on

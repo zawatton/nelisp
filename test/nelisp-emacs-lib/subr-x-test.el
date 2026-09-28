@@ -57,6 +57,74 @@
                 (loop (1- n) (* acc n))))
              120)))
 
+;; S2 coverage batch (2026-09-28): text-property and buffer-text helpers
+;; ported verbatim from GNU Emacs 31.1's `subr-x.el'.  Values pinned
+;; against real GNU Emacs 31.1.
+
+(ert-deftest subr-x-test/s2-batch-fboundp ()
+  (dolist (sym '(string-fill add-display-text-property
+                 add-remove--display-text-property
+                 remove-display-text-property
+                 emacs-etc--hide-local-variables))
+    (should (fboundp sym))))
+
+(ert-deftest subr-x-test/string-fill-wraps-at-width ()
+  (should (string= (string-fill "aaaa bbbb cccc" 9) "aaaa bbbb\ncccc"))
+  ;; A single word wider than WIDTH is left alone rather than split.
+  (should (string= (string-fill "aaaaaaaaaa" 4) "aaaaaaaaaa")))
+
+(ert-deftest subr-x-test/display-text-property-add-remove ()
+  ;; A single spec is stored bare (a scalar `display' value), not wrapped
+  ;; in an extra list -- matches real GNU Emacs 31.1.
+  (should (equal
+           (with-temp-buffer
+             (insert "hello world")
+             (add-display-text-property 1 6 'height 2.0)
+             (get-text-property 1 'display))
+           '(height 2.0)))
+  ;; A second spec promotes the property to a list of specs, most recent
+  ;; first, retaining the earlier one.
+  (should (equal
+           (with-temp-buffer
+             (insert "hello world")
+             (add-display-text-property 1 6 'height 2.0)
+             (add-display-text-property 1 6 'raise 0.1)
+             (get-text-property 1 'display))
+           '((raise 0.1) (height 2.0))))
+  ;; `remove-display-text-property' drops only the named spec.
+  (should (equal
+           (with-temp-buffer
+             (insert "hello world")
+             (add-display-text-property 1 6 'height 2.0)
+             (add-display-text-property 1 6 'raise 0.1)
+             (remove-display-text-property 1 6 'height)
+             (get-text-property 1 'display))
+           '((raise 0.1))))
+  ;; OBJECT may be a string instead of a buffer.
+  (should (equal
+           (let ((s (copy-sequence "hello world")))
+             (add-display-text-property 1 6 'height 2.0 s)
+             (get-text-property 1 'display s))
+           '(height 2.0))))
+
+(ert-deftest subr-x-test/hide-local-variables-narrows-before-marker ()
+  ;; Real usage (`emacs-authors-mode' &c.) always has a blank line before
+  ;; the "Local Variables:" block; `forward-line -1' from the marker then
+  ;; lands right after the body, excluding the blank separator too.
+  (should (equal
+           (with-temp-buffer
+             (insert "body text\n\nLocal Variables:\nfoo: 1\nEnd:\n")
+             (emacs-etc--hide-local-variables)
+             (cons (point-min) (point-max)))
+           (cons 1 11)))
+  ;; No "Local Variables:" marker: narrowing is a no-op (widens to eob).
+  (should (equal
+           (with-temp-buffer
+             (insert "body text only\n")
+             (emacs-etc--hide-local-variables)
+             (cons (point-min) (point-max)))
+           (cons 1 16))))
+
 (provide 'subr-x-test)
 
 ;;; subr-x-test.el ends here

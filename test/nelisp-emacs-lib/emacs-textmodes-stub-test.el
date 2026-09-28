@@ -224,17 +224,20 @@
 (ert-deftest emacs-textmodes-test/count-matches-basic ()
   (with-temp-buffer
     (insert "banana")
+    (goto-char (point-min))
     (should (= 3 (emacs-textmodes-count-matches "a")))))
 
 (ert-deftest emacs-textmodes-test/count-matches-non-overlap ()
   "Matches advance past the previous match end (= non-overlapping)."
   (with-temp-buffer
     (insert "abracadabra")
+    (goto-char (point-min))
     (should (= 2 (emacs-textmodes-count-matches "ab")))))
 
 (ert-deftest emacs-textmodes-test/count-matches-no-match ()
   (with-temp-buffer
     (insert "banana")
+    (goto-char (point-min))
     (should (= 0 (emacs-textmodes-count-matches "z")))))
 
 (ert-deftest emacs-textmodes-test/count-matches-bounded ()
@@ -242,6 +245,43 @@
   (with-temp-buffer
     (insert "aaaa")
     (should (= 2 (emacs-textmodes-count-matches "a" 1 3)))))
+
+(defun emacs-textmodes-test--count-matches-result
+    (function regexp rstart rend narrow-start narrow-end initial-point)
+  "Run FUNCTION with REGEXP and bounds in a controlled buffer."
+  (with-temp-buffer
+    (insert "ababa\n\nxy")
+    (when narrow-start
+      (narrow-to-region narrow-start narrow-end))
+    (goto-char (or initial-point (point-min)))
+    (list (funcall function regexp rstart rend) (point)
+          (point-min) (point-max))))
+
+(ert-deftest emacs-textmodes-test/count-matches-host-bounds-and-narrowing ()
+  "Match GNU Emacs for point defaults, reversed bounds, and narrowing."
+  (dolist (case '(("a" nil nil nil nil 3)
+                  ("a" 6 2 nil nil 1)
+                  ("a" 3 nil nil nil 1)
+                  ("a" nil nil 2 8 2)
+                  ("a" 7 3 2 8 2)))
+    (let ((host (apply #'emacs-textmodes-test--count-matches-result
+                       #'count-matches case))
+          (compat (apply #'emacs-textmodes-test--count-matches-result
+                         #'emacs-textmodes-count-matches case)))
+      (should (equal host compat)))))
+
+(ert-deftest emacs-textmodes-test/count-matches-host-zero-width ()
+  "Match GNU Emacs's forward progress and terminal-boundary behavior."
+  (dolist (case '(("" nil nil nil nil 1)
+                  ("" 1 2 nil nil 1)
+                  ("^" nil nil nil nil 1)
+                  ("" nil nil 2 3 2)
+                  ("$" nil nil 1 6 1)))
+    (let ((host (apply #'emacs-textmodes-test--count-matches-result
+                       #'count-matches case))
+          (compat (apply #'emacs-textmodes-test--count-matches-result
+                         #'emacs-textmodes-count-matches case)))
+      (should (equal host compat)))))
 
 (provide 'emacs-textmodes-stub-test)
 

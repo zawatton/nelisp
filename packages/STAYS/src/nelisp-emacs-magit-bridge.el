@@ -596,12 +596,47 @@ The guard tests that property, not `fboundp': the stub is already bound."
             nil 'no-message t t))))
 
 (defun nelisp-emacs-magit-bridge--ensure-advice-runtime ()
-  "Ensure `add-function' / `remove-function' advice helpers exist."
+  "Ensure `add-function' / `remove-function' / `advice-*' helpers exist.
+
+Runtime-image bakes can carry `add-function'/`remove-function' through
+while dropping sibling `defun's from the same source file (e.g.
+`advice-member-p', `advice-add', `advice-remove') — the base image
+apparently preserves some plain top-level `defun' forms across the
+dump/extend boundary but not others (measured 2026-09-28: bundle load
+crashed with `void-function: advice-member-p' even though
+`add-function'/`remove-function' were already fboundp at this point).
+Gating the `emacs-stub.el' reload on only two of the five names in that
+family let the other three go unchecked.  Check every name the vendor
+Magit/transient/cl-lib chain actually calls so a partial survival still
+triggers the reload, and keep the reload-independent explicit fallback
+below as a second line of defense (mirrors the existing
+`add-function'/`remove-function' pattern)."
   (let ((root (nelisp-emacs-magit-bridge--repo-root)))
     (unless (and (fboundp 'add-function)
-                 (fboundp 'remove-function))
+                 (fboundp 'remove-function)
+                 (fboundp 'advice-add)
+                 (fboundp 'advice-remove)
+                 (fboundp 'advice-member-p))
       (load (expand-file-name "src/emacs-stub.el" root)
             nil 'no-message t t))
+    ;; Defense in depth, mirroring the `add-function'/`remove-function'
+    ;; fallbacks just below: the `load' above already (re)defines these
+    ;; three plus their private `emacs-stub--advice-*' implementations
+    ;; unconditionally whenever it runs, so this branch is normally a
+    ;; no-op; it only fires if `emacs-stub.el' itself could not be found
+    ;; or somehow still left one of the three void.
+    (unless (fboundp 'advice-member-p)
+      (defun advice-member-p (function symbol)
+        "Standalone fallback for `nadvice.el' `advice-member-p'."
+        (emacs-stub--advice-member-p function symbol)))
+    (unless (fboundp 'advice-add)
+      (defun advice-add (symbol where function &optional props)
+        "Standalone fallback for `nadvice.el' `advice-add'."
+        (emacs-stub--advice-add symbol where function props)))
+    (unless (fboundp 'advice-remove)
+      (defun advice-remove (symbol function)
+        "Standalone fallback for `nadvice.el' `advice-remove'."
+        (emacs-stub--advice-remove symbol function)))
     (unless (fboundp 'add-function)
       (defmacro add-function (how place function &optional props)
         "Standalone subset of `nadvice.el' `add-function'."
@@ -2174,6 +2209,17 @@ that simplification is deliberately documented rather than silent."
              (tabulated-list-entries . nil)
              (tabulated-list-format . nil)
              (tabulated-list-sort-key . nil)
+             ;; Real Emacs's C core `DEFVAR_LISP's `transient-mark-mode'
+             ;; before any Lisp loads, so `simple.el''s own
+             ;; `(define-minor-mode transient-mark-mode ... :variable
+             ;; (default-value 'transient-mark-mode))' deliberately skips
+             ;; defvar-ing it ("It's defined in C/cus-start, this stops
+             ;; the d-m-m macro defining it again" -- simple.el's own
+             ;; comment).  `default-value' on a never-bound symbol signals
+             ;; `void-variable', which aborts loading `simple.el' itself
+             ;; (not merely a later caller) at that top-level form.  Real
+             ;; Emacs's own C default is `t'.
+             (transient-mark-mode . t)
              (widen-automatically . t)))
     (unless (boundp (car spec))
       ;; Same `eval'-built `defvar' as -ensure-files-el-globals: makes

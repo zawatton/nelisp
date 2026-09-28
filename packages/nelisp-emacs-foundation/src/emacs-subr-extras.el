@@ -345,12 +345,32 @@ KIND is accepted for API parity but not distinguished."
 ;; bookkeeping that real `define-symbol-prop' performs is irrelevant
 ;; on standalone (= unload-feature is not used).
 
-(unless (fboundp 'define-symbol-prop)
-  (defun define-symbol-prop (symbol prop val)
-    "Define the property PROP of SYMBOL to be VAL.
+;; Unconditional, NOT `unless fboundp': NeLisp core's own automatic default
+;; bootstrap (loaded from `$NELISP_HOME's `vendor/staged-emacs-lisp/subr.el'
+;; before any of this library's own files run) already provides a REAL
+;; `define-symbol-prop' with `current-load-list' push/assq bookkeeping, so
+;; the `unless fboundp' guard this used to have never installed this
+;; simpler version at all.  That bookkeeping does not survive
+;; `exec-runtime-image''s cold replay faithfully (S5.4): `current-load-list'
+;; ends up holding the bare symbol `define-symbol-props' instead of a
+;; list, so a later `cl-define-compiler-macro' call's `(assq
+;; 'define-symbol-props current-load-list)' aborts with
+;; `wrong-type-argument'.  Reproduces with zero magit content -- generic
+;; `cl-macs.el''s own top-level self-application
+;; `(cl-define-compiler-macro cl--block-wrapper ...)' is enough; see
+;; ~/.cache/tmp/nel-lib-s54c/repro/.  The same crash does NOT happen under
+;; `dump-runtime-image'/`extend-runtime-image''s forward execution of the
+;; identical content, only under `exec-runtime-image' replay -- a core
+;; replay-fidelity gap this library cannot fix directly.  Since
+;; `unload-feature' is never used on this headless standalone runtime, the
+;; bookkeeping this skips is genuinely unneeded here (not merely a
+;; workaround), so unconditionally overriding core's real-but-broken-under-
+;; replay version with this simpler, replay-safe one is the correct fix.
+(defun define-symbol-prop (symbol prop val)
+  "Define the property PROP of SYMBOL to be VAL.
 Minimal subr.el port — matches host Emacs `put' behaviour but
 skips the `current-load-list' bookkeeping (= unused on standalone)."
-    (put symbol prop val)))
+  (put symbol prop val))
 
 ;; ---- byte-compile-only metadata declarations ----
 ;;

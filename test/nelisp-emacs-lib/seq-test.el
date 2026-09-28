@@ -122,6 +122,71 @@ mishandles vectors)."
   (should (equal '(2 3) (seq-subseq '(1 2 3 4) 1 3)))
   (should (equal '(1 2) (seq-take '(1 2 3 4) 2))))
 
+(ert-deftest seq-test/s2-batch-loads ()
+  "S2 coverage batch: remaining plain GNU `seq.el' names are bound."
+  (dolist (sym '(seq-contains seq-set-equal-p seq-positions
+                 seq-remove-at-position seq--count-successive seq--elt-safe
+                 seq--into-list seq--into-vector seq--into-string seq-split
+                 seq-setq))
+    (should (fboundp sym))))
+
+(ert-deftest seq-test/s2-batch-values ()
+  "Exact values, pinned against real GNU Emacs 31.1's own `seq.el'."
+  (should (equal (seq--count-successive #'cl-evenp '(2 4 6 7 8)) 3))
+  (should (equal (seq--elt-safe '(1 2 3) 5) nil))
+  (should (equal (seq--elt-safe '(1 2 3) 1) 2))
+  (should (equal (seq--into-list [1 2 3]) '(1 2 3)))
+  (should (equal (seq--into-list '(1 2 3)) '(1 2 3)))
+  (should (equal (seq--into-vector '(1 2 3)) [1 2 3]))
+  (should (equal (seq--into-vector [1 2 3]) [1 2 3]))
+  (should (equal (seq--into-string '(?a ?b ?c)) "abc"))
+  (should (equal (seq-split '(1 2 3 4 5) 2) '((1 2) (3 4) (5))))
+  (should (equal (seq-contains '(1 2 3) 2) 2))
+  (should (equal (seq-contains '(1 2 3) 9) nil))
+  (should (equal (seq-set-equal-p '(1 2 3) '(3 2 1)) t))
+  (should (equal (seq-set-equal-p '(1 2 3) '(1 2)) nil))
+  (should (equal (seq-positions '(1 2 3 2 1) 2) '(1 3)))
+  (should (equal (seq-remove-at-position '(1 2 3 4) 1) '(1 3 4)))
+  (should (equal (seq-remove-at-position [1 2 3 4] 1) [1 3 4]))
+  (let ((a nil) (b nil))
+    (seq-setq (a b) '(10 20))
+    (should (equal (list a b) '(10 20))))
+  (let ((a nil) (r nil))
+    (seq-setq (a &rest r) '(1 2 3))
+    (should (equal (list a r) '(1 (2 3))))))
+
+(ert-deftest seq-test/s2-batch-errors ()
+  "Error case pinned against real GNU Emacs 31.1: `seq-split' rejects
+a non-positive LENGTH with a plain `error' signal."
+  (should (eq (car (should-error (seq-split '(1 2 3) 0))) 'error)))
+
+;; S2 coverage batch (2026-09-28): the real `seq' pcase pattern, ported
+;; verbatim from GNU Emacs 31.1's `seq.el'.  This is new, additive
+;; surface -- `seq-let'/`seq-setq' above keep their existing direct
+;; `seq-elt'/`seq-drop' shim rather than being rewired onto it.  Values
+;; pinned against real GNU Emacs 31.1.
+
+(ert-deftest seq-test/s2-batch-pcase-fboundp ()
+  (dolist (sym '(seq--make-pcase-bindings seq--make-pcase-patterns
+                 seq--pcase-macroexpander))
+    (should (fboundp sym))))
+
+(ert-deftest seq-test/pcase-seq-pattern ()
+  (should (equal (pcase [1 2 3] ((seq x y z) (list x y z))) '(1 2 3)))
+  ;; Fewer patterns than elements: extras are ignored, match still succeeds.
+  (should (equal (pcase '(1 2 3) ((seq x y) (list x y))) '(1 2)))
+  ;; Fewer elements than patterns: missing ones bind to nil.
+  (should (equal (pcase '(1) ((seq x y) (list x y))) '(1 nil)))
+  ;; No match (not a seq) falls through to the next clause.
+  (should (equal (pcase 5 ((seq x) x) (_ 'no-match)) 'no-match)))
+
+(ert-deftest seq-test/s2-batch-pcase-helper-values ()
+  "Exact shapes of the pcase-building helpers, pinned against real GNU
+Emacs 31.1."
+  (should (equal (seq--make-pcase-bindings '(a b))
+                 '((app (seq--elt-safe _ 1) b) (app (seq--elt-safe _ 0) a))))
+  (should (equal (seq--make-pcase-patterns '(a b)) '(seq a b))))
+
 (provide 'seq-test)
 
 ;;; seq-test.el ends here

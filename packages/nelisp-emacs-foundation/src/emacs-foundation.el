@@ -34,11 +34,26 @@
   "Directory that contains the foundation feature files.")
 
 (defun emacs-foundation--load-feature (feature)
-  "Load FEATURE from the foundation package directory."
-  (let ((file (expand-file-name (concat (symbol-name feature) ".el")
-                                emacs-foundation--load-directory)))
-    (unless (load file nil t)
-      (require feature))))
+  "Load FEATURE from the foundation package directory, unless already loaded.
+The `featurep' guard matters when this file's own body is replayed as
+part of a pre-concatenated bootstrap bundle (see
+`scripts/build-nelisp-bootstrap.el'): by the time this loader runs, the
+bundle's dependency-ordered concatenation has already provided every
+member of `emacs-foundation-features' except a couple of trailing ones,
+so re-`load'ing them here — unconditionally, regardless of `featurep' —
+cost a real second read+eval of each already-loaded file, plus whatever
+each of THOSE files reloads in turn (measured 2026-09-28: ~11 s of a
+~56 s cold bundle replay, and the same duplicated source content baked a
+second time into the generated bundle because the builder's host-Emacs
+load-history trace records the forced reload as a second load event).
+On host Emacs, or when this file is required directly from `src/'
+without the bundle, FEATURE is not loaded yet, so the guard is a no-op
+and every feature is still loaded exactly as before."
+  (unless (featurep feature)
+    (let ((file (expand-file-name (concat (symbol-name feature) ".el")
+                                  emacs-foundation--load-directory)))
+      (unless (load file nil t)
+        (require feature)))))
 
 ;; Order matters: emacs-eval (defalias) before emacs-list (uses defalias);
 ;; emacs-fns (plist-get) before emacs-symbol (uses plist-get + plist-put);

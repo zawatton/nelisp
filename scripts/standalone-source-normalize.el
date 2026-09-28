@@ -1640,6 +1640,18 @@ runtime meaning."
          (equal standalone-source-normalize-current-file "cal-menu.el")
          (symbolp (cadr form)))
     (list (list 'defvar (cadr form) nil)))
+   ;; S2 coverage batch 5 (2026-09-28): `replace.el's `occur-mode-map' and
+   ;; `occur-edit-mode-map' defvars (kept -- they are ordinary keymaps, not
+   ;; menu wiring) each reference `occur-menu-map' via `bindings--define-
+   ;; key', so unconditionally dropping `(easy-menu-define occur-menu-map
+   ;; ...)' below left it void and signalled `void-variable' the first time
+   ;; either keymap defvar ran.  Same fix as the `cal-menu.el' case just
+   ;; above: keep the symbol bound, drop the actual menu wiring.
+   ((and (consp form)
+         (eq (car form) 'easy-menu-define)
+         (equal standalone-source-normalize-current-file "replace.el")
+         (symbolp (cadr form)))
+    (list (list 'defvar (cadr form) nil)))
    ;; Key/menu declarations are UI wiring, not callable runtime definitions.
    ;; They appear in long contiguous runs in files such as org-agenda.el and
    ;; add substantial load pressure in standalone replay.

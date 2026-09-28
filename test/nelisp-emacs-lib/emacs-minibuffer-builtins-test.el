@@ -193,6 +193,33 @@
              (lambda (&rest _) nil)))
     (should (emacs-minibuffer-builtins--install-function-p 'read-string))))
 
+(ert-deftest emacs-minibuffer-builtins-test/minibufferp-live-bridge-smoke ()
+  "The standalone alias routes both arguments to the minibuffer substrate."
+  (let* ((host-function (symbol-function 'minibufferp))
+         (old-plist (copy-sequence (symbol-plist 'minibufferp)))
+         (file (locate-library "emacs-minibuffer-builtins")))
+    (unwind-protect
+        (progn
+          (should file)
+          (put 'minibufferp 'emacs-stub-bulk t)
+          (fmakunbound 'minibufferp)
+          (load file nil t)
+          (should (eq (indirect-function 'minibufferp)
+                      (symbol-function 'emacs-minibuffer-minibufferp)))
+          (emacs-minibuffer-builtins-test--with-fresh-world
+            (let* ((base (nelisp-ec-generate-new-buffer " *Minibuf-0*"))
+                   (active (nelisp-ec-generate-new-buffer " *Minibuf-1*"))
+                   (inactive (nelisp-ec-generate-new-buffer " *Minibuf-2*")))
+              (let ((emacs-minibuffer--buffers (list active))
+                    (emacs-minibuffer--depth 1))
+                (should (minibufferp " *Minibuf-0*"))
+                (should (minibufferp active t))
+                (should-not (minibufferp inactive t))
+                (should-error (minibufferp 7)
+                              :type 'wrong-type-argument)))))
+      (fset 'minibufferp host-function)
+      (setplist 'minibufferp old-plist))))
+
 (provide 'emacs-minibuffer-builtins-test)
 
 ;;; emacs-minibuffer-builtins-test.el ends here

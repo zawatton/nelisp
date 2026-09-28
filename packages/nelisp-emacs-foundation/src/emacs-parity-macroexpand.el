@@ -81,7 +81,25 @@ expander (either a function or a `(macro . EXPANDER)' cell)."
   (cond
    ((not (consp form)) form)
    ((eq (car form) 'quote) form)
-   ((eq (car form) 'function) form)
+   ((eq (car form) 'function)
+    ;; Mirror GNU's macroexp.el `(function . REST)' case: only
+    ;; `#'(lambda ARGLIST . BODY)' needs expanding, and only its BODY (the
+    ;; ARGLIST is left untouched, matching `macroexp--all-forms F 2').  A
+    ;; bare `#'SYMBOL' function-cell reference is left untouched.  Without
+    ;; this, macros used inside a closure passed via `#'(lambda ...)' (e.g.
+    ;; `inline.el's `define-inline' expands its whole body -- including any
+    ;; `#'(lambda ...)' sharing helper pcase.el may introduce -- with
+    ;; `macroexpand-all') are never expanded, leaving raw unexpanded macro
+    ;; calls in the installed function and causing `invalid-function' at
+    ;; call time.
+    (if (and (eq (car-safe (cadr form)) 'lambda) (null (cddr form)))
+        (let* ((lam (cadr form))
+               (arglist (cadr lam))
+               (body (cddr lam)))
+          (list 'function
+                (append (list 'lambda arglist)
+                        (mapcar #'macroexpand-all--rec body))))
+      form))
    ((eq (car form) 'eval-when-compile)
     (list 'quote (eval (macroexp-progn (cdr form)) t)))
    (t

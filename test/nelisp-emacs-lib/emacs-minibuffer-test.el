@@ -320,14 +320,34 @@
 
 (ert-deftest emacs-minibuffer-minibufferp-during-read ()
   (emacs-minibuffer-test--with-fresh-world
-    (let ((seen-flag nil))
+    (let (seen-flag seen-live seen-name-live)
       (setq emacs-minibuffer--read-fn
             (lambda (_p _i _d _h _k _r)
-              (setq seen-flag (emacs-minibuffer-minibufferp
-                               (emacs-minibuffer--current-buffer)))
+              (let* ((buffer (emacs-minibuffer--current-buffer))
+                     (name (nelisp-ec-buffer-name buffer)))
+                (setq seen-flag (emacs-minibuffer-minibufferp buffer)
+                      seen-live (emacs-minibuffer-minibufferp buffer t)
+                      seen-name-live (emacs-minibuffer-minibufferp name t)))
               "x"))
       (emacs-minibuffer-read-from-minibuffer "P: ")
-      (should seen-flag))))
+      (should seen-flag)
+      (should seen-live)
+      (should seen-name-live))))
+
+(ert-deftest emacs-minibuffer-minibufferp-buffer-name-inactive-and-type ()
+  (emacs-minibuffer-test--with-fresh-world
+    (let* ((base (nelisp-ec-generate-new-buffer " *Minibuf-0*"))
+           (inactive (nelisp-ec-generate-new-buffer " *Minibuf-7*"))
+           (ordinary (nelisp-ec-generate-new-buffer "ordinary")))
+      (should (emacs-minibuffer-minibufferp base))
+      (should (emacs-minibuffer-minibufferp " *Minibuf-0*"))
+      (should-not (emacs-minibuffer-minibufferp base t))
+      (should (emacs-minibuffer-minibufferp inactive))
+      (should-not (emacs-minibuffer-minibufferp inactive t))
+      (should-not (emacs-minibuffer-minibufferp ordinary))
+      (should-not (emacs-minibuffer-minibufferp "missing"))
+      (should-error (emacs-minibuffer-minibufferp 7)
+                    :type 'wrong-type-argument))))
 
 (ert-deftest emacs-minibuffer-active-window-during-read ()
   (emacs-minibuffer-test--with-fresh-world

@@ -96,6 +96,65 @@
   (should (= (map-nested-elt '((a . ((b . 42)))) '(a b)) 42))
   (should (eq (map-nested-elt '((a . nil)) '(a b) 'fallback) 'fallback)))
 
+(ert-deftest map-test/s2-batch-loads ()
+  "S2 coverage batch: GNU `map.el' plist compatibility shims are bound."
+  (dolist (sym '(map--plist-member-1 map--plist-put-1 map--plist-put
+                 map--plist-delete))
+    (should (fboundp sym)))
+  (should (boundp 'map--plist-has-predicate)))
+
+(ert-deftest map-test/s2-batch-values ()
+  "Exact values, pinned against real GNU Emacs 31.1's own `map.el'."
+  (should (equal (map--plist-member-1 '(:a 1 :b 2) :b) '(:b 2)))
+  (should (equal (map--plist-member-1 nil :b) nil))
+  (should (equal (map--plist-put-1 '(:a 1) :b 2) '(:a 1 :b 2)))
+  (should (equal (map--plist-put '(:a 1) :b 2) '(:a 1 :b 2)))
+  (should (equal (map--plist-delete '(:a 1 :b 2 :c 3) :b) '(:a 1 :c 3)))
+  (should (equal (map--plist-delete '(:a 1) :a) nil)))
+
+(ert-deftest map-test/s2-batch-put-1-error ()
+  "`map--plist-put-1' with a non-eq/nil PREDICATE signals
+`wrong-type-argument' on a malformed (odd-length) plist, matching
+real GNU Emacs 31.1."
+  (should (eq (car (should-error
+                     (map--plist-put-1 '(:a) :b 2 #'equal)))
+              'wrong-type-argument)))
+
+;; S2 coverage batch (2026-09-28): `map-let' and the real `map' pcase
+;; pattern, ported verbatim from GNU Emacs 31.1's `map.el'.  Values pinned
+;; against real GNU Emacs 31.1.
+
+(ert-deftest map-test/s2-batch-pcase-fboundp ()
+  (dolist (sym '(map-let map--pcase-map-elt map--make-pcase-bindings
+                 map--make-pcase-patterns map--pcase-macroexpander))
+    (should (fboundp sym))))
+
+(ert-deftest map-test/map-let-binds-keys ()
+  (should (equal (map-let (a b) '((a . 10) (b . 20)) (list a b)) '(10 20)))
+  ;; (KEY VAR DEFAULT) sublists, DEFAULT used when KEY is absent.
+  (should (equal (map-let ((:x x 99)) '(:y 1) (list x)) '(99))))
+
+(ert-deftest map-test/pcase-map-pattern ()
+  (should (equal (pcase '((a . 1) (b . 2)) ((map a b) (list a b))) '(1 2)))
+  ;; Bare keyword element is shorthand for (:SYMBOL SYMBOL).
+  (should (equal (pcase '(:x 5) ((map :x) (list x))) '(5)))
+  ;; No match (not a map) falls through to the next clause.
+  (should (equal (pcase 5 ((map a) a) (_ 'no-match)) 'no-match)))
+
+(ert-deftest map-test/s2-batch-pcase-helper-values ()
+  "Exact shapes of the pcase-building helpers, pinned against real GNU
+Emacs 31.1 running under `emacs-major-version' >= 30 (this facade
+always reports 30+, so only that branch of
+`map--make-pcase-bindings' is reachable; see its definition)."
+  (should (equal (map--make-pcase-bindings '(a b))
+                 '((app (map-elt _ 'a) a) (app (map-elt _ 'b) b))))
+  (should (equal (map--make-pcase-patterns '(a (map b)))
+                 '(map a (map map b))))
+  ;; Obsolete pre-30 helper macro: kept present (like upstream) but
+  ;; unreachable from `map--make-pcase-bindings' on a 30+ build.
+  (should (= (map--pcase-map-elt 'a 99 '((a . 1))) 1))
+  (should (= (map--pcase-map-elt 'missing 99 '((a . 1))) 99)))
+
 (provide 'map-test)
 
 ;;; map-test.el ends here

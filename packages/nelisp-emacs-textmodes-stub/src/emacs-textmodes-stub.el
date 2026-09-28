@@ -436,27 +436,53 @@ detect)."
 (unless (fboundp 'fill-region)
   (defalias 'fill-region #'emacs-textmodes-fill-region))
 
-;; -- count-matches (non-overlapping regex count between BEG/END) -------
+;; -- count-matches (GNU Emacs replace.el semantics) --------------------
 
-(defun emacs-textmodes-count-matches (regexp &optional rstart rend &rest _)
-  "Phase 4 'C' polyfill: count non-overlapping matches of REGEXP in
-the current buffer between RSTART (default `point-min') and REND
-(default `point-max'), returning the integer count.
+(defun emacs-textmodes-count-matches
+    (regexp &optional rstart rend interactive)
+  "Print and return the number of matches for REGEXP following point.
+When called from Lisp, return the count without printing it.  Non-nil
+INTERACTIVE selects the active region when one exists and reports the count.
 
-Mirrors the non-interactive contract of `lisp/replace.el's
-`count-matches' — no echo-area report, no INTERACTIVE branch."
+RSTART and REND specify the region.  Reversed bounds are normalized.  When
+RSTART is non-nil and REND is nil, search from RSTART to `point-max'.
+Matches do not overlap.  This follows `how-many' in GNU Emacs `replace.el',
+which is the implementation aliased by `count-matches'."
+  (interactive (list (read-regexp "How many matches for regexp")
+                     nil nil t))
   (save-excursion
-    (goto-char (or rstart (point-min)))
-    (let ((bound (or rend (point-max)))
-          (count 0))
-      (while (re-search-forward regexp bound t)
-        (setq count (1+ count))
-        ;; Advance past a zero-length match to avoid infinite loop.
-        (when (= (match-beginning 0) (match-end 0))
-          (if (< (point) bound)
-              (forward-char 1)
-            ;; Empty match at end-of-region — nothing more to scan.
-            (goto-char bound))))
+    (if rstart
+        (if rend
+            (progn
+              (goto-char (min rstart rend))
+              (setq rend (max rstart rend)))
+          (goto-char rstart)
+          (setq rend (point-max)))
+      (if (and interactive (fboundp 'use-region-p) (use-region-p))
+          (setq rstart (region-beginning)
+                rend (region-end))
+        (setq rstart (point)
+              rend (point-max)))
+      (goto-char rstart))
+    (let ((count 0)
+          (case-fold-search
+           (if (and case-fold-search
+                    (boundp 'search-upper-case)
+                    search-upper-case
+                    (fboundp 'isearch-no-upper-case-p))
+               (isearch-no-upper-case-p regexp t)
+             case-fold-search)))
+      (while (and (< (point) rend)
+                  (re-search-forward regexp rend t))
+        ;; Advancing only when not at the accessible end is GNU Emacs's
+        ;; zero-width rule.  The outer point<Rend guard excludes a terminal
+        ;; empty match and also prevents repeated matches at a bounded end.
+        (when (and (= (match-beginning 0) (match-end 0))
+                   (not (eobp)))
+          (forward-char 1))
+        (setq count (1+ count)))
+      (when interactive
+        (message (if (= count 1) "%d occurrence" "%d occurrences") count))
       count)))
 
 (unless (fboundp 'count-matches)

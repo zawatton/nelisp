@@ -385,6 +385,172 @@ ARGS may end with `&rest VAR' to bind VAR to the remaining elements."
       (list 'let (list (list seq-var (list 'append sequence nil)))
             (append (list 'let (nreverse bindings)) body)))))
 
+;;; S2 coverage batch -- remaining plain GNU seq.el names.  GNU 31.1
+;;; defines most of these as `cl-defgeneric' default bodies; this facade
+;;; has no per-type dispatch, so each is ported as a plain function that
+;;; reuses the facade's own generic helpers (`seq-elt' / `seq--list' /
+;;; `seq-subseq' / `seq-concatenate' / `seq-do-indexed'), matching the
+;;; file's existing style.
+
+(defun seq--count-successive (pred sequence)
+  "Count successive elements in SEQUENCE for which PRED returns non-nil."
+  (let ((n 0)
+        (len (seq-length sequence)))
+    (while (and (< n len)
+                (funcall pred (seq-elt sequence n)))
+      (setq n (+ 1 n)))
+    n))
+
+(defun seq--elt-safe (sequence n)
+  "Return the element of SEQUENCE whose zero-based index is N.
+If no element is found, return nil."
+  (ignore-errors (seq-elt sequence n)))
+
+(defun seq--into-list (sequence)
+  "Concatenate the elements of SEQUENCE into a list."
+  (if (listp sequence)
+      sequence
+    (append sequence nil)))
+
+(defun seq--into-vector (sequence)
+  "Concatenate the elements of SEQUENCE into a vector."
+  (if (vectorp sequence)
+      sequence
+    (vconcat sequence)))
+
+(defun seq--into-string (sequence)
+  "Concatenate the elements of SEQUENCE into a string."
+  (if (stringp sequence)
+      sequence
+    (concat sequence)))
+
+(defun seq-split (sequence length)
+  "Split SEQUENCE into a list of sub-sequences of at most LENGTH elements.
+All the sub-sequences will be LENGTH long, except the last one, which
+may be shorter.  This does not modify SEQUENCE."
+  (when (< length 1)
+    (error "Sub-sequence length must be larger than zero"))
+  (let ((result nil)
+        (len (seq-length sequence))
+        (start 0))
+    (while (< start len)
+      (push (seq-subseq sequence start
+                         (setq start (min len (+ start length))))
+            result))
+    (nreverse result)))
+
+(defun seq-contains (sequence elt &optional testfn)
+  "Return the first element in SEQUENCE that is \"equal\" to ELT.
+\"Equality\" is defined by the function TESTFN, which defaults to `equal'.
+Obsolete since Emacs 27.1; use `seq-contains-p' instead."
+  (seq-some (lambda (e)
+              (when (funcall (or testfn #'equal) elt e)
+                e))
+            sequence))
+
+(defun seq-set-equal-p (sequence1 sequence2 &optional testfn)
+  "Return non-nil if SEQUENCE1 and SEQUENCE2 contain the same elements.
+The order of the elements in the sequences is not important.
+\"Equality\" of elements is defined by the function TESTFN, which
+defaults to `equal'."
+  (and (seq-every-p (lambda (item1) (seq-contains-p sequence2 item1 testfn)) sequence1)
+       (seq-every-p (lambda (item2) (seq-contains-p sequence1 item2 testfn)) sequence2)))
+
+(defun seq-positions (sequence elt &optional testfn)
+  "Return list of indices of SEQUENCE elements for which TESTFN returns non-nil.
+
+TESTFN is a two-argument function which is called with each element of
+SEQUENCE as the first argument and ELT as the second.  TESTFN defaults
+to `equal'.  The result is a list of (zero-based) indices."
+  (let ((result '()))
+    (seq-do-indexed
+     (lambda (e index)
+       (when (funcall (or testfn #'equal) e elt)
+         (push index result)))
+     sequence)
+    (nreverse result)))
+
+(defun seq-remove-at-position (sequence n)
+  "Return a copy of SEQUENCE with the element at index N removed.
+N is the (zero-based) index of the element that should not be in the
+result.  The result is a sequence of the same type as SEQUENCE.  This
+does not modify SEQUENCE."
+  (seq-concatenate
+   (if (listp sequence) 'list (type-of sequence))
+   (seq-subseq sequence 0 n)
+   (seq-subseq sequence (1+ n))))
+
+;; `seq-setq' is GNU's `(pcase-setq (seq--make-pcase-patterns ARGS) SEQUENCE)'.
+;; This facade's `seq-let' above already destructures directly with
+;; `seq-elt' / `seq-drop' instead of registering a pcase pattern; `seq-setq'
+;; mirrors that same direct approach, using `setq' instead of `let'.
+(unless (fboundp 'seq-setq)
+  (defmacro seq-setq (args sequence)
+    "Assign the elements of SEQUENCE to the variables in ARGS.
+ARGS may end with `&rest VAR' to bind VAR to the remaining elements."
+    (let ((seq-var (make-symbol "seq"))
+          (assignments nil)
+          (index 0)
+          (tail args))
+      (while tail
+        (let ((arg (car tail)))
+          (cond
+           ((eq arg '&rest)
+            (push (list 'setq (cadr tail) (list 'seq-drop seq-var index)) assignments)
+            (setq tail nil))
+           (t
+            (push (list 'setq arg (list 'seq-elt seq-var index)) assignments)
+            (setq index (1+ index)
+                  tail (cdr tail))))))
+      (list 'let (list (list seq-var (list 'append sequence nil)))
+            (cons 'progn (nreverse assignments))))))
+
+;; The real `seq' pcase pattern, ported verbatim from GNU Emacs 31.1
+;; lisp/emacs-lisp/seq.el.  `seq-let'/`seq-setq' above stay on their
+;; existing direct `seq-elt'/`seq-drop' shim (see the comment at their
+;; definitions) rather than being rewired onto this; this adds the
+;; `(pcase (seq A B ...) EXP)' pattern itself as new, additive surface,
+;; which needs only `pcase-defmacro', `seq-doseq' and `seq--elt-safe',
+;; all already present.
+(when (fboundp 'pcase-defmacro)
+  (defun seq--make-pcase-bindings (args)
+    "Return list of bindings of the variables in ARGS to the elements of a sequence."
+    (let ((bindings '())
+          (index 0)
+          (rest-marker nil))
+      (seq-doseq (name args)
+        (unless rest-marker
+          (pcase name
+            (`&rest
+             (progn (push `(app (seq-drop _ ,index)
+                                ,(seq--elt-safe args (1+ index)))
+                          bindings)
+                    (setq rest-marker t)))
+            (_
+             (push `(app (seq--elt-safe _ ,index) ,name) bindings))))
+        (setq index (1+ index)))
+      bindings))
+
+  (defun seq--make-pcase-patterns (args)
+    "Return a list of `(seq ...)' pcase patterns from the argument list ARGS."
+    (cons 'seq
+          (seq-map (lambda (elt)
+                     (if (seqp elt)
+                         (seq--make-pcase-patterns elt)
+                       elt))
+                   args)))
+
+  (pcase-defmacro seq (&rest patterns)
+    "Build a `pcase' pattern that matches elements of SEQUENCE.
+
+The `pcase' pattern will match each element of PATTERNS against the
+corresponding element of SEQUENCE.
+
+Extra elements of the sequence are ignored if fewer PATTERNS are
+given, and the match does not fail."
+    `(and (pred seqp)
+          ,@(seq--make-pcase-bindings patterns))))
+
 (provide 'seq)
 
 ;;; seq.el ends here

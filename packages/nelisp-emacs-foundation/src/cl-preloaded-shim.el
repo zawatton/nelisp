@@ -67,7 +67,22 @@
     (unless (listp parents) (setq parents (list parents)))
     (list 'put (list 'quote name) (list 'quote 'cl--class)
           (list 'built-in-class--make (list 'quote name) nil
-                (list 'mapcar (list 'function 'cl--find-class)
+                ;; `(mapcar (function cl--find-class) parents)' would take
+                ;; `cl--find-class''s FUNCTION VALUE via `#'', but genuine
+                ;; vendor `cl-macs.el' (unconditionally active once the base
+                ;; bundle finishes loading) defines `cl--find-class' as a
+                ;; MACRO (nelisp-emacs vendor `cl-macs.el:3040', verbatim
+                ;; GNU: it expands inline to `(get TYPE 'cl--class)' for
+                ;; speed) -- `(function cl--find-class)' then evaluates to a
+                ;; macro closure, and `mapcar' cannot call one
+                ;; (`invalid-function'), observed via S5.4 as
+                ;; `cl-preloaded-shim.el''s own `(cl--define-built-in-type
+                ;; atom t)' etc. at load time.  A `lambda' that CALLS
+                ;; `cl--find-class' normally (letting the macro expand in
+                ;; place, same as any other macro invocation) works
+                ;; regardless of whether `cl--find-class' is a function or a
+                ;; macro at expansion time.
+                (list 'mapcar (list 'lambda '(p) (list 'cl--find-class 'p))
                       (list 'quote parents)))))
 
   ;; --- value -> type --------------------------------------------------------

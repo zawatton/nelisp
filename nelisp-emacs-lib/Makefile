@@ -180,6 +180,9 @@ NEMACS_LIBRARY_PACKAGE_LOAD_PATH ?= $(shell sh scripts/nemacs-library-package-lo
 NEMACS_LIBRARY_APP_SCAFFOLD_LOAD_PATH ?= -L packages/nelisp-emacs-app-gui/lisp
 NEMACS_LIBRARY_PACKAGE_APP_LOAD_PATH ?= $(NEMACS_LIBRARY_PACKAGE_LOAD_PATH) $(NEMACS_LIBRARY_APP_SCAFFOLD_LOAD_PATH)
 NEMACS_LIBRARY_PACKAGE_HOST_ERT_PRELUDE ?= --eval '(require (quote ert))'
+NEMACS_HOST_TEST_PRELUDE ?= $(NEMACS_LIBRARY_PACKAGE_HOST_ERT_PRELUDE) \
+	--eval '(require (quote jka-compr))' \
+	--eval '(setq load-prefer-newer nil load-suffixes (cons ".el" (delete ".el" load-suffixes)))'
 NEMACS_LIBRARY_PACKAGE_MANIFEST ?= $(BUILD_DIR)/nemacs-library-package-manifest.tsv
 NEMACS_LIBRARY_PACKAGE_MANIFEST_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-manifest-summary.org
 NEMACS_LIBRARY_CONTRACT ?= $(BUILD_DIR)/nemacs-library-contract.tsv
@@ -741,7 +744,7 @@ TEST_FILES = $(wildcard test/*-test.el)
 # built reader; they have dedicated targets (gate5/gate6/vendor-nelc-cache[-set])
 # and must stay out of the umbrella `make test'.
 #
-# The four `*-binary-verify.el' scripts are not ERT suites at all: each is a
+# The five `*-binary-verify.el' scripts are not ERT suites at all: each is a
 # `--load'-only probe (see their own header comments) meant to run under the
 # *built standalone* `vendor/nelisp/target/nelisp' binary, never under host
 # Emacs (host has no `nl-ffi-call').  Each unconditionally `load's
@@ -771,6 +774,7 @@ TEST_INTEGRATION_FILES = \
 	test/emacs-network-ffi-inet6-binary-verify.el \
 	test/emacs-pipe-process-binary-verify.el \
 	test/emacs-pty-ffi-binary-verify.el \
+	test/emacs-sqlite-ffi-binary-verify.el \
 	test/emacs-sigchld-reap-binary-verify.el \
 	test/nemacs-process-sync-smoke.el \
 	test/nemacs-process-bidi-smoke.el
@@ -789,6 +793,7 @@ TEST_FAST_FILES = \
 	test/emacs-keymap-test.el \
 	test/emacs-parity-core-vars-test.el \
 	test/emacs-parity-shims-test.el \
+	test/emacs-parity-macroexpand-test.el \
 	test/emacs-minibuffer-builtins-test.el \
 	test/emacs-minibuffer-test.el \
 	test/emacs-command-loop-builtins-test.el \
@@ -808,6 +813,7 @@ TEST_FAST_FILES = \
 	test/emacs-vc-test.el \
 	test/emacs-tier3-facades-test.el \
 	test/emacs-stub-nil-callable-predicates-test.el \
+	test/emacs-stub-coding-string-test.el \
 	test/emacs-compile-test.el \
 	test/nemacs-wrap-init-test.el
 
@@ -1649,13 +1655,13 @@ nemacs-runtime-image-input-inventory: build-nelisp-bootstrap nemacs-library-pack
 		-f nemacs-runtime-image-input-inventory-batch
 
 test:
-	$(EMACS) --eval '(setq load-prefer-newer t)' \
+	$(EMACS) $(NEMACS_HOST_TEST_PRELUDE) \
 		-L src -L test -L demo -L scripts $(NELISP_LOAD_PATH) \
 		$(foreach t,$(TEST_UNIT_FILES),-l $(t)) \
 		-f ert-run-tests-batch-and-exit
 
 test-fast:
-	$(EMACS) --eval '(setq load-prefer-newer t)' \
+	$(EMACS) $(NEMACS_HOST_TEST_PRELUDE) \
 		-L src -L test -L demo -L scripts $(NELISP_LOAD_PATH) \
 		$(foreach t,$(TEST_FAST_FILES),-l $(t)) \
 		-f ert-run-tests-batch-and-exit
@@ -1851,10 +1857,7 @@ proc-smoke: standalone-reader-passthrough
 		NEMACS_PROCESS_SRC="$(abspath src)" \
 		"$(NELISP_BIN)" --load "$(abspath test/nemacs-process-sync-smoke.el)" 2>&1)"; \
 	printf '%s\n' "$$out"; \
-	if printf '%s\n' "$$out" | grep -q '^CALL-PROCESS-ECHO rc=0 output="hello\\n"$$' && \
-	   printf '%s\n' "$$out" | grep -q '^CALL-PROCESS-FALSE rc=1 output=""$$' && \
-	   printf '%s\n' "$$out" | grep -q '^CALL-PROCESS-BUFFER rc=0 output="buffer-destination\\n"$$' && \
-	   printf '%s\n' "$$out" | grep -q '^CALL-PROCESS-GIT rc=0 output="git version '; then \
+	if printf '%s\n' "$$out" | grep -q '^PROC-SMOKE-RESULT: PASS$$'; then \
 	  echo "[proc-smoke] PASS"; \
 	else \
 	  echo "[proc-smoke] FAIL"; exit 1; \

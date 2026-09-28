@@ -71,7 +71,11 @@
         (setq available (cons feature available))))
     (setq available (nreverse available))
     (let ((coding-system-for-write 'utf-8-unix)
-          (rows nil))
+          (rows nil)
+          ;; De-dup key: (provided . name), independent of `kind' -- see
+          ;; the `cl-defmethod' fix below, which can otherwise emit the
+          ;; same generic name once per specialized method.
+          (seen (make-hash-table :test 'equal)))
       (dolist (entry load-history)
         (let* ((provided (catch 'found
                            (dolist (item (cdr entry))
@@ -85,13 +89,29 @@
                ;; commentary: this was emitted as "fn" until 2026-09-12,
                ;; which probed every variable with `fboundp'.
                ((symbolp item)
-                (setq rows (cons (list provided "var" item) rows)))
+                (let ((key (cons provided item)))
+                  (unless (gethash key seen)
+                    (puthash key t seen)
+                    (setq rows (cons (list provided "var" item) rows)))))
                ((and (consp item) (eq (car item) 'defun))
-                (setq rows (cons (list provided "fn" (cdr item)) rows)))
+                (let ((key (cons provided (cdr item))))
+                  (unless (gethash key seen)
+                    (puthash key t seen)
+                    (setq rows (cons (list provided "fn" (cdr item)) rows)))))
                ;; A generic's own name is `fboundp' once any method defines
-               ;; it, so callers can hit it exactly like a `defun'.
+               ;; it, so callers can hit it exactly like a `defun'.  The
+               ;; load-history entry for a NON-trivial method is `(cl-defmethod
+               ;; NAME QUALIFIER SPECIALIZER...)', so `(cdr item)' is that
+               ;; whole tuple, not the bare name -- printing it and
+               ;; `intern'-ing it downstream makes a symbol nothing can ever
+               ;; be `fboundp' for.  Take just the name, and de-dup: the same
+               ;; generic contributes one entry per specialized method.
                ((and (consp item) (eq (car item) 'cl-defmethod))
-                (setq rows (cons (list provided "fn" (cdr item)) rows)))
+                (let* ((name (if (consp (cdr item)) (cadr item) (cdr item)))
+                       (key (cons provided name)))
+                  (unless (gethash key seen)
+                    (puthash key t seen)
+                    (setq rows (cons (list provided "fn" name) rows)))))
                ;; `provide'/`require' are features, `defface' is a face, and
                ;; `define-type'/`define-symbol-props' are neither a function
                ;; nor a variable.  None of them is a name a caller binds or
