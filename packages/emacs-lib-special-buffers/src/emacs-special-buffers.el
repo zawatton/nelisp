@@ -77,11 +77,30 @@ Supported keys:
    (t nil)))
 
 (defun emacs-special-buffers--ensure-core-buffer (name)
-  "Ensure special buffer NAME exists in the core buffer substrate."
+  "Ensure special buffer NAME exists in the core buffer substrate.
+Dispatch on the type of an already-existing buffer when one is found,
+rather than trusting `emacs-special-buffers--core-buffer-substrate-p'
+alone: that predicate only says an `nelisp-ec-*' substrate is AVAILABLE,
+not that a particular NAME already visited by `emacs-special-buffers--
+find-buffer' was created through it.  NeLisp's own native `message'
+primitive can create NAME (e.g. \"*Messages*\") as a genuine native
+buffer before this file's `nelisp-ec-generate-new-buffer' ever runs, and
+`--find-buffer' hands that native buffer straight back via its
+`get-buffer' fallback.  Calling `nelisp-ec-with-current-buffer' on a
+native buffer object then failed with `wrong-type-argument' on
+`nelisp-ec-buffer-p' (caught via the S6.4 usable-progress smoke:
+`save-buffer' calling `message', which touches \"*Messages*\", right
+after a successful file write).  See the same per-buffer type check
+`emacs-special-buffers-append-to-buffer' already does below."
   (unless (emacs-special-buffers-special-buffer-p name)
     (signal 'wrong-type-argument (list 'emacs-special-buffer-name name)))
-  (if (emacs-special-buffers--core-buffer-substrate-p)
-      (let ((buf (or (emacs-special-buffers--find-buffer name)
+  (let* ((existing (emacs-special-buffers--find-buffer name))
+         (use-nelisp-ec
+          (if existing
+              (and (fboundp 'nelisp-ec-buffer-p) (nelisp-ec-buffer-p existing))
+            (emacs-special-buffers--core-buffer-substrate-p))))
+  (if use-nelisp-ec
+      (let ((buf (or existing
                      (nelisp-ec-generate-new-buffer name))))
         (nelisp-ec-with-current-buffer buf
           (when (and (equal (nelisp-ec-buffer-string) "")
@@ -93,7 +112,7 @@ Supported keys:
           (when (fboundp 'emacs-buffer-set-buffer-modified-p)
             (emacs-buffer-set-buffer-modified-p nil buf)))
         buf)
-    (let ((buf (or (emacs-special-buffers--find-buffer name)
+    (let ((buf (or existing
                    (get-buffer-create name))))
       (with-current-buffer buf
         (when (and (equal (buffer-string) "")
@@ -104,7 +123,7 @@ Supported keys:
                 (emacs-special-buffers-read-only-p name)))
         (when (fboundp 'set-buffer-modified-p)
           (set-buffer-modified-p nil)))
-      buf)))
+      buf))))
 
 (defun emacs-special-buffers-ensure-buffer (name)
   "Ensure special buffer NAME exists and return it when possible."

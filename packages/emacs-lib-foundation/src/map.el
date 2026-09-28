@@ -346,6 +346,167 @@
          (merged (map--merge-to-table function maps test)))
     (map--table-into (car merged) (cadr merged) type)))
 
+;;;; --- GNU map.el plist compatibility shims (S2 coverage batch) ---------
+;;
+;; This facade implements its own plist helpers above (`map--plist-p',
+;; `map--plist-member', `map--plist-put-existing', ...) with different
+;; names/signatures, so `map-elt' / `map-put!' / `map-delete' above do
+;; not call these.  These are faithful ports of the real GNU Emacs 31.1
+;; `lisp/emacs-lisp/map.el' names under their own exact names, for any
+;; vendored code that calls them directly.  Pure plist algorithms; no
+;; native support needed.
+
+(unless (boundp 'map--plist-has-predicate)
+  (defconst map--plist-has-predicate
+    (condition-case nil
+        (with-no-warnings (plist-get () nil #'eq) t)
+      (wrong-number-of-arguments nil)
+      (error nil))
+    "Non-nil means `plist-get' & co. accept a predicate in Emacs 29+.
+Note that support for this predicate in map.el is patchy and
+deprecated."))
+
+(unless (fboundp 'map--plist-member-1)
+  (defun map--plist-member-1 (plist prop &optional predicate)
+    "Compatibility shim for the PREDICATE argument of `plist-member'.
+Assumes non-nil PLIST satisfies `map--plist-p'."
+    (if (or (memq predicate '(nil eq)) (null plist))
+        (plist-member plist prop)
+      (let ((tail plist) found)
+        (while (and (not (setq found (funcall predicate (car tail) prop)))
+                    (consp (setq tail (cdr tail)))
+                    (consp (setq tail (cdr tail)))))
+        (and tail (not found)
+             (signal 'wrong-type-argument (list 'plistp plist)))
+        tail))))
+
+(unless (fboundp 'map--plist-put-1)
+  (defun map--plist-put-1 (plist prop val &optional predicate)
+    "Compatibility shim for the PREDICATE argument of `plist-put'.
+Assumes non-nil PLIST satisfies `map--plist-p'."
+    (if (or (memq predicate '(nil eq)) (null plist))
+        (plist-put plist prop val)
+      (let ((tail plist) prev found)
+        (while (and (consp (cdr tail))
+                    (not (setq found (funcall predicate (car tail) prop)))
+                    (consp (setq prev tail tail (cddr tail)))))
+        (cond (found (setcar (cdr tail) val))
+              (tail (signal 'wrong-type-argument (list 'plistp plist)))
+              (prev (setcdr (cdr prev) (cons prop (cons val (cddr prev)))))
+              ((setq plist (cons prop (cons val plist)))))
+        plist))))
+
+(unless (fboundp 'map--plist-put)
+  (defalias 'map--plist-put
+    (if map--plist-has-predicate #'plist-put #'map--plist-put-1)
+    "Compatibility shim for `plist-put' in Emacs 29+.
+\n(fn PLIST PROP VAL &optional PREDICATE)"))
+
+(unless (fboundp 'map--plist-delete)
+  (defun map--plist-delete (map key)
+    "Delete KEY in-place from plist MAP and return the resulting plist."
+    (let ((tail map) last)
+      (while (consp tail)
+        (cond
+         ((not (eq key (car tail)))
+          (setq last tail)
+          (setq tail (cddr last)))
+         (last
+          (setq tail (cddr tail))
+          (setf (cddr last) tail))
+         (t
+          (setq map (cddr map))
+          (setq tail map))))
+      map)))
+
+;; The real `map' pcase pattern plus `map-let', ported verbatim from GNU
+;; Emacs 31.1 lisp/emacs-lisp/map.el (only the `emacs-major-version >= 30'
+;; branch of `map--make-pcase-bindings' can ever run here, since this
+;; facade always reports 30+; the pre-30 branch is kept for byte-for-byte
+;; parity with upstream but calls `map--pcase-map-elt', which stays
+;; defined -- just unreachable -- like it is upstream on a 30+ build).
+(when (fboundp 'pcase-defmacro)
+  (defmacro map--pcase-map-elt (key default map)
+    "A macro to make MAP the last argument to `map-elt'.
+
+This allows using default values for `map-elt', which can't be
+done using `pcase--flip'.
+
+KEY is the key sought in the map.  DEFAULT is the default value."
+    ;; It's obsolete in Emacs>29, but `map.el' is distributed via GNU ELPA
+    ;; for earlier Emacsen.
+    (declare (obsolete _ "30.1"))
+    `(map-elt ,map ,key ,default))
+
+  (defun map--make-pcase-bindings (args)
+    "Return a list of pcase bindings from ARGS to the elements of a map."
+    (mapcar (if (< emacs-major-version 30)
+                (lambda (elt)
+                  (cond ((consp elt)
+                         `(app (map--pcase-map-elt ,(car elt) ,(caddr elt))
+                               ,(cadr elt)))
+                        ((keywordp elt)
+                         (let ((var (intern (substring (symbol-name elt) 1))))
+                           `(app (pcase--flip map-elt ,elt) ,var)))
+                        (t `(app (pcase--flip map-elt ',elt) ,elt))))
+              (lambda (elt)
+                (cond ((consp elt)
+                       `(app (map-elt _ ,(car elt) ,(caddr elt))
+                             ,(cadr elt)))
+                      ((keywordp elt)
+                       (let ((var (intern (substring (symbol-name elt) 1))))
+                         `(app (map-elt _ ,elt) ,var)))
+                      (t `(app (map-elt _ ',elt) ,elt)))))
+            args))
+
+  (defun map--make-pcase-patterns (args)
+    "Return a list of `(map ...)' pcase patterns built from ARGS."
+    (cons 'map
+          (mapcar (lambda (elt)
+                    (if (eq (car-safe elt) 'map)
+                        (map--make-pcase-patterns elt)
+                      elt))
+                  args)))
+
+  (pcase-defmacro map (&rest args)
+    "Build a `pcase' pattern matching map elements.
+
+ARGS is a list of elements to be matched in the map.
+
+Each element of ARGS can be of the form (KEY PAT [DEFAULT]),
+which looks up KEY in the map and matches the associated value
+against `pcase' pattern PAT.  DEFAULT specifies the fallback
+value to use when KEY is not present in the map.  If omitted, it
+defaults to nil.  Both KEY and DEFAULT are evaluated.
+
+Each element can also be a SYMBOL, which is an abbreviation of
+a (KEY PAT) tuple of the form (\\='SYMBOL SYMBOL).  When SYMBOL
+is a keyword, it is an abbreviation of the form (:SYMBOL SYMBOL),
+useful for binding plist values.
+
+An element of ARGS fails to match if PAT does not match the
+associated value or the default value.  The overall pattern fails
+to match if any element of ARGS fails to match."
+    `(and (pred mapp)
+          ,@(map--make-pcase-bindings args)))
+
+  (unless (fboundp 'map-let)
+    (defmacro map-let (keys map &rest body)
+      "Bind the variables in KEYS to the elements of MAP, then evaluate BODY.
+
+KEYS can be a list of symbols, in which case each element will be
+bound to the looked up value in MAP.
+
+KEYS can also be a list of (KEY VARNAME [DEFAULT]) sublists, in
+which case KEY and DEFAULT are unquoted forms.
+
+MAP can be an alist, plist, hash-table, or array."
+      (declare (indent 2)
+               (debug ((&rest &or symbolp ([form symbolp &optional form]))
+                       form body)))
+      `(pcase-let ((,(map--make-pcase-patterns keys) ,map))
+         ,@body))))
+
 (provide 'map)
 
 ;;; map.el ends here

@@ -240,6 +240,32 @@
              (emacs-frame--runtime-ref object 'backend)
            nil)))
 
+;; Core's `nelisp--check-live-frame' (nelisp-stdlib-prelude.el) is the single
+;; chokepoint behind `internal-lisp-face-p', `internal-make-lisp-face',
+;; `internal-copy-lisp-face', `internal-get/set-lisp-face-attribute',
+;; `internal-lisp-face-empty-p', `internal-merge-in-global-face',
+;; `frame-parameter'/`set-frame-parameter', and `window-system': it
+;; unconditionally signals `wrong-type-argument' for ANY non-nil FRAME, on
+;; the documented assumption that "this runtime never creates a frame" (so
+;; `frame-list' is always `(nil)' and no FRAME argument can ever be live).
+;; That assumption no longer holds once this file installs a real frame
+;; registry above (`frame-list'/`frame-live-p'/`make-frame' etc. now return
+;; genuine, non-nil frame objects), so every vendor `make-face' call's
+;; `(dolist (frame (frame-list)) (internal-make-lisp-face face frame))'
+;; aborts on its first iteration -- observed via the magit/transient bundle's
+;; `defface' forms (S5.4).  All of the functions above use a single
+;; global-only store regardless of which particular frame is passed (their
+;; own comments say so: "F is always NULL in this runtime's terms"), so
+;; accepting a genuinely live frame here is safe: it degrades to exactly the
+;; same global-store behavior core already gives a nil FRAME.  Override
+;; unconditionally (core's own `nelisp--check-live-frame' is not
+;; `unless fboundp'-guarded), consulting the real `frame-live-p' just
+;; defined above instead of unconditionally rejecting every FRAME.
+(fset 'nelisp--check-live-frame
+      '(lambda (frame)
+         (unless (frame-live-p frame)
+           (signal 'wrong-type-argument (list 'frame-live-p frame)))))
+
 (fset 'selected-frame
       '(lambda ()
          (emacs-frame--runtime-ensure-initial)))

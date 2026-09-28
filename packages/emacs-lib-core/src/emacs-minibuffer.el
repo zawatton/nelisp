@@ -1815,17 +1815,33 @@ Honours `emacs-minibuffer-completion-ignore-case'."
 ;;; E. minibuffer state / control
 
 ;;;###autoload
-(defun emacs-minibuffer-minibufferp (&optional buffer)
+(defun emacs-minibuffer-minibufferp (&optional buffer live)
   "Return t if BUFFER is a minibuffer.
-BUFFER defaults to the current `nelisp-ec' buffer.  A buffer is a
-minibuffer iff it appears in the active stack OR its name matches
-\"^ \\*Minibuf-\\*[0-9]+\\*\"."
-  (let ((b (or buffer (nelisp-ec-current-buffer))))
-    (and (nelisp-ec-buffer-p b)
-         (or (memq b emacs-minibuffer--buffers)
-             (let ((name (nelisp-ec-buffer-name b)))
-               (and (stringp name)
-                    (string-match-p "\\` \\*Minibuf-[0-9]+\\*\\'" name)))))))
+BUFFER may be a buffer record or name; nil means the current buffer.
+When LIVE is non-nil, return t only for an active recursive minibuffer."
+  (let* ((arg (or buffer (nelisp-ec-current-buffer)))
+         (b (cond ((stringp arg)
+                   (cdr (assoc arg nelisp-ec--buffers)))
+                  ((or (null arg) (nelisp-ec-buffer-p arg)) arg)
+                  (t (signal 'wrong-type-argument (list 'bufferp arg))))))
+    (when (and (nelisp-ec-buffer-p b)
+               (not (nelisp-ec-buffer-killed-p b)))
+      (let ((active nil)
+            (stack emacs-minibuffer--buffers)
+            (depth emacs-minibuffer--depth))
+        (while (and stack (> depth 0) (not active))
+          (when (eq b (car stack))
+            (setq active t))
+          (setq stack (cdr stack)
+                depth (1- depth)))
+        (if live
+            (and active t)
+          (or active
+              (let ((name (nelisp-ec-buffer-name b)))
+                (and (stringp name)
+                     (string-match-p
+                      "\\` \\*Minibuf-[0-9]+\\*\\'" name)
+                     t))))))))
 
 ;;;###autoload
 (defun emacs-minibuffer-active-minibuffer-window ()

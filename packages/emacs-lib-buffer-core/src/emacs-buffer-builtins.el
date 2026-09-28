@@ -67,13 +67,19 @@ replaces the whole buffer-op chain with `nelisp-ec-*' -- fires on nemacs."
 
 (defun emacs-buffer-builtins--install-function-p (symbol)
   "Return non-nil when SYMBOL should be installed by this bridge."
-  (if (emacs-buffer-builtins--standalone-p)
-      ;; Every call site in this file is part of the explicit bridge
-      ;; surface.  Under standalone, replace `emacs-stub' placeholders
-      ;; without repeated fboundp checks.
-      t
-    (or (get symbol 'emacs-stub-bulk)
-        (not (fboundp symbol)))))
+  ;; A standalone image can already provide a complete native implementation
+  ;; from its prelude.  Preserve it exactly as host Emacs preserves a C subr;
+  ;; only marked bulk stubs and genuinely absent names need this bridge.
+  (or (get symbol 'emacs-stub-bulk)
+      (not (fboundp symbol))))
+
+(defun emacs-buffer-builtins--replace-buffer-family-p ()
+  "Return non-nil when standalone needs the complete compatibility family.
+Keep an already installed `current-buffer' as the owner of a coherent native
+buffer API.  When it is absent, the compatibility aliases must still be
+installed as one family rather than mixed with unrelated partial fallbacks."
+  (and (emacs-buffer-builtins--standalone-p)
+       (not (fboundp 'current-buffer))))
 
 (defun emacs-buffer-builtins--call-emacs-buffer (function args)
   "Lazy-load `emacs-buffer' and call FUNCTION with ARGS."
@@ -155,7 +161,7 @@ replaces the whole buffer-op chain with `nelisp-ec-*' -- fires on nemacs."
          (set-marker-insertion-type  . nelisp-ec-set-marker-insertion-type)
          (point-marker               . nelisp-ec-point-marker)
          (insert-before-markers      . nelisp-ec-insert-before-markers))))
-  (if (emacs-buffer-builtins--standalone-p)
+  (if (emacs-buffer-builtins--replace-buffer-family-p)
       (dolist (--cell-- --aliases--)
         (fset (car --cell--) (cdr --cell--)))
     (dolist (--cell-- --aliases--)
@@ -641,29 +647,87 @@ select it, and return it."
 
 ;;;; --- registry lookup (Phase L1, 2026-05-03) --------------------------
 
-(when (emacs-buffer-builtins--install-function-p 'get-buffer)
+;; S2 coverage batch 5 (2026-09-28): on the standalone, a NATIVE `get-buffer'
+;; primitive is already `fboundp' at this point (bound to the reader's own
+;; buffer family: `nelisp-buffer-p'/`nelisp-get-buffer', operating on the
+;; *scratch* buffer the runtime creates at startup), so
+;; `emacs-buffer-builtins--install-function-p' used to skip installing this
+;; polyfill entirely.  That native `get-buffer' has no notion of this
+;; bridge's own `nelisp-ec-buffer' struct (the type `buffer-list' below
+;; returns), so `(get-buffer SOME-NELISP-EC-BUFFER)' fell through its `cond'
+;; to a `(signal (list \\='stringp buffer-or-name))' clause -- observed via
+;; `(with-current-buffer (car (buffer-list)) ...)', which expands (using the
+;; native `with-current-buffer') to exactly that call.  Real Emacs's own
+;; `get-buffer' accepts either a buffer or a name, so this is a genuine gap,
+;; not a deliberate native/bridge split.  Fixed by always installing this
+;; polyfill on the standalone (`emacs-buffer-builtins--standalone-p'), and
+;; keeping the pre-existing implementation (native primitive or an earlier
+;; stub) as an explicit fallback for anything this bridge's own registry
+;; does not know about -- e.g. `(get-buffer "*Messages*")' when the native
+;; `message' primitive created that buffer natively before this bridge's
+;; own `nelisp-ec-generate-new-buffer' ever ran (the same native-buffer case
+;; `emacs-special-buffers--ensure-core-buffer' already documents above).
+;; Host Emacs is unaffected: `emacs-buffer-builtins--standalone-p' is nil
+;; there, so the original `install-function-p' gate alone still applies and
+;; the genuine C `get-buffer' is left untouched.
+(defvar emacs-buffer-builtins--native-get-buffer
+  (and (fboundp 'get-buffer) (symbol-function 'get-buffer))
+  "The `get-buffer' implementation in place before this file's own
+polyfill replaces it (a native primitive on the standalone, or an earlier
+stub).  `get-buffer' below falls back to this for anything it does not
+recognize as one of its own `nelisp-ec-buffer' structs or registry
+entries, so buffers created outside this bridge keep resolving exactly
+as before.")
+
+(when (or (emacs-buffer-builtins--install-function-p 'get-buffer)
+          (emacs-buffer-builtins--standalone-p))
   (defun get-buffer (buffer-or-name)
     "Phase L1 polyfill: look BUFFER-OR-NAME up in the `nelisp-ec' registry.
 When BUFFER-OR-NAME is a buffer object, return it if live else nil.
-When it is a string, return the matching buffer record or nil."
+When it is a string, return the matching buffer record if this bridge
+has one; otherwise fall back to `emacs-buffer-builtins--native-get-buffer'
+(covers native-only buffers such as *Messages*, and host Emacs's own
+buffers when this polyfill is active there)."
     (cond
      ((null buffer-or-name) nil)
      ((nelisp-ec-buffer-p buffer-or-name)
       (if (nelisp-ec-buffer-killed-p buffer-or-name)
           nil
         buffer-or-name))
-     ((stringp buffer-or-name)
+     ((and (stringp buffer-or-name) (assoc buffer-or-name nelisp-ec--buffers))
       (cdr (assoc buffer-or-name nelisp-ec--buffers)))
+     (emacs-buffer-builtins--native-get-buffer
+      (funcall emacs-buffer-builtins--native-get-buffer buffer-or-name))
      (t nil))))
 
 (when (emacs-buffer-builtins--install-function-p 'get-buffer-create)
   (defun get-buffer-create (buffer-or-name &optional inhibit-buffer-hooks)
     "Phase L1 polyfill: get an existing buffer or create a fresh one.
 INHIBIT-BUFFER-HOOKS is accepted for API parity but no buffer-hook
-subsystem exists yet to honor it."
+subsystem exists yet to honor it.
+
+Creates through the plain `generate-new-buffer' symbol, not the
+`nelisp-ec'-prefixed constructor, so the object returned is always the
+same buffer representation the currently active `get-buffer' recognizes
+-- mirroring GNU's own `Fget_buffer_create' (buffer.c), which builds
+through the same primitives `Fget_buffer' uses and never a foreign
+buffer representation.  On a standalone image whose prelude already
+ships a complete native buffer family (`get-buffer'/`bufferp'/
+`current-buffer'/`generate-new-buffer' already `fboundp', so
+`emacs-buffer-builtins--install-function-p' leaves that family installed
+as-is per its C-subr-preservation policy), `generate-new-buffer'
+resolves to the SAME native constructor `get-buffer' already
+understands.  Calling `nelisp-ec-generate-new-buffer' unconditionally
+here used to hand back this repo's own `nelisp-ec-buffer' struct even on
+such an image, which the native `get-buffer'/`with-current-buffer' only
+recognize via their own `nelisp-buffer-p' record -- the very next lookup
+of that buffer then hit their `(t (signal \\='wrong-type-argument
+(list \\='stringp buffer-or-name)))' fallback (see
+`test/nemacs-process-sync-smoke.el' and
+`emacs-buffer-builtins-test/get-buffer-create-buffer-is-recognized-by-get-buffer')."
     (ignore inhibit-buffer-hooks)
     (or (get-buffer buffer-or-name)
-        (nelisp-ec-generate-new-buffer
+        (generate-new-buffer
          (cond
           ((stringp buffer-or-name) buffer-or-name)
           ((nelisp-ec-buffer-p buffer-or-name)

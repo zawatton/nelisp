@@ -34,10 +34,18 @@
   "Directory that contains the subr-x facade and its sibling features.")
 
 (defun subr-x--load-feature (feature)
-  "Load FEATURE from the subr-x facade directory."
-  (load (expand-file-name (concat (symbol-name feature) ".el")
-                          subr-x--load-directory)
-        nil t))
+  "Load FEATURE from the subr-x facade directory, unless already loaded.
+See the identical `featurep' rationale on `emacs-foundation--load-feature':
+inside the pre-concatenated bootstrap bundle several of the features
+listed below (emacs-eval, emacs-string, emacs-hash, cl-lib) are already
+provided by the time this file runs, so an unconditional `load' here
+re-read and re-evaluated each one from disk a second time.  A feature
+not yet provided (e.g. emacs-subr-extras, which the bundle currently
+provides later) is still loaded exactly as before."
+  (unless (featurep feature)
+    (load (expand-file-name (concat (symbol-name feature) ".el")
+                            subr-x--load-directory)
+          nil t)))
 
 (subr-x--load-feature 'emacs-eval)
 (subr-x--load-feature 'emacs-subr-extras)
@@ -209,6 +217,119 @@ When START is non-nil, pad on the left."
     "Apply FUNCTION across SEQUENCE and concatenate the list results."
     (let ((results (apply #'mapcar function sequence more-sequences)))
       (apply #'nconc results))))
+
+;; Ported verbatim from GNU Emacs 31.1 lisp/emacs-lisp/subr-x.el.  Only the
+;; pure text-property and buffer-text helpers are ported here; the
+;; pixel-width helpers (`string-pixel-width', `truncate-string-pixelwise',
+;; `work-buffer--prepare-pixelwise') need `buffer-text-pixel-size', a
+;; display/font-metrics primitive the standalone does not implement, and
+;; `read-process-name' needs a live process list, so both stay out of this
+;; facade.
+
+(when (subr-x--define-p 'string-fill)
+  (defun string-fill (string width)
+    "Try to word-wrap STRING so that it displays with lines no wider than WIDTH.
+STRING is wrapped where there is whitespace in it.  If there are
+individual words in STRING that are wider than WIDTH, the result
+will have lines that are wider than WIDTH."
+    (declare (important-return-value t))
+    (with-temp-buffer
+      (insert string)
+      (goto-char (point-min))
+      (let ((fill-column width)
+            (adaptive-fill-mode nil))
+        (fill-region (point-min) (point-max)))
+      (buffer-string))))
+
+(when (subr-x--define-p 'add-remove--display-text-property)
+  (defun add-remove--display-text-property (start end spec value
+                                                  &optional object remove)
+    (let ((sub-start start)
+          (sub-end 0)
+          (limit (if (stringp object)
+                     (min (length object) end)
+                   (min end (point-max))))
+          disp)
+      (while (< sub-end end)
+        (setq sub-end (next-single-property-change sub-start 'display object
+                                                    limit))
+        (if (not (setq disp (get-text-property sub-start 'display object)))
+            ;; No old properties in this range.
+            (unless remove
+              (put-text-property sub-start sub-end 'display (list spec value)
+                                 object))
+          ;; We have old properties.
+          (let ((changed nil)
+                type)
+            ;; Make disp into a list.
+            (setq disp
+                  (cond
+                   ((vectorp disp)
+                    (setq type 'vector)
+                    (seq-into disp 'list))
+                   ((or (not (consp (car-safe disp)))
+                        ;; If disp looks like ((margin ...) ...), that's
+                        ;; still a single display specification.
+                        (eq (caar disp) 'margin))
+                    (setq type 'scalar)
+                    (list disp))
+                   (t
+                    (setq type 'list)
+                    disp)))
+            ;; Remove any old instances.
+            (when-let* ((old (assoc spec disp)))
+              ;; If the property value was a list, don't modify the
+              ;; original value in place; it could be used by other
+              ;; regions of text.
+              (setq disp (if (eq type 'list)
+                             (remove old disp)
+                           (delete old disp))
+                    changed t))
+            (unless remove
+              (setq disp (cons (list spec value) disp)
+                    changed t))
+            (when changed
+              (if (not disp)
+                  (remove-text-properties sub-start sub-end '(display nil) object)
+                (when (eq type 'vector)
+                  (setq disp (seq-into disp 'vector)))
+                ;; Finally update the range.
+                (put-text-property sub-start sub-end 'display disp object)))))
+        (setq sub-start sub-end)))))
+
+(when (subr-x--define-p 'add-display-text-property)
+  (defun add-display-text-property (start end spec value &optional object)
+    "Add the display specification (SPEC VALUE) to the text from START to END.
+If any text in the region has a non-nil `display' property, the existing
+display specifications are retained.
+
+OBJECT is either a string or a buffer to add the specification to.
+If omitted, OBJECT defaults to the current buffer."
+    (add-remove--display-text-property start end spec value object)))
+
+(when (subr-x--define-p 'remove-display-text-property)
+  (defun remove-display-text-property (start end spec &optional object)
+    "Remove the display specification SPEC from the text from START to END.
+SPEC is the car of the display specification to remove, e.g. `height'.
+If any text in the region has other display specifications, those specs
+are retained.
+
+OBJECT is either a string or a buffer to remove the specification from.
+If omitted, OBJECT defaults to the current buffer."
+    (add-remove--display-text-property start end spec nil object 'remove)))
+
+(when (subr-x--define-p 'emacs-etc--hide-local-variables)
+  (defun emacs-etc--hide-local-variables ()
+    "Hide local variables.
+Used by `emacs-authors-mode' and `emacs-news-mode'."
+    (narrow-to-region (point-min)
+                      (save-excursion
+                        (goto-char (point-max))
+                        ;; Obfuscate to avoid this being interpreted
+                        ;; as a local variable section itself.
+                        (if (re-search-backward "^Local\sVariables:$" nil t)
+                            (progn (forward-line -1) (point))
+                          (point-max))))))
 
 (provide 'subr-x)
 

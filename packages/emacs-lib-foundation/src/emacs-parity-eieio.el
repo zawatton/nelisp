@@ -132,5 +132,86 @@ child `eieio--class' as declared in eieio-core.el.")
            (length emacs-parity-eieio--accessor-index)
            (if (get 'cl--find-class 'cl-simple-setter) " + cl--find-class" "")))
 
+;; `cl--struct-name-p'/`cl--builtin-type-p'/`cl-struct-define' are real
+;; Emacs's `cl-preloaded.el' functions (dumped before any Lisp loads, so no
+;; GNU source ever defines them itself); NeLisp core's own prelude
+;; (nelisp-stdlib-prelude.el) already ships correct `unless fboundp'
+;; fallbacks for exactly these three (verbatim GNU semantics, adapted for a
+;; runtime with no real EIEIO class registry).  But `emacs-stub-bulk.el''s
+;; generic "unknown name -> safe no-op" bulk list ALSO names all three
+;; (plus `cl--struct-class-p'/`-named'/`-print'/`-slots'/`-type' and
+;; `cl--struct-get-class', which core has no fallback for at all), and it
+;; wins the race: on this checkout, `emacs-stub-bulk.el' installs before
+;; whatever makes core's own guarded fallback apply, so `cl--struct-name-p'
+;; ends up bound to `(lambda (&rest _) nil)' -- NOT a safe no-op here,
+;; since genuine `cl-macs.el''s `cl-defstruct' (unconditionally active once
+;; the base bundle finishes loading; see `src/emacs-cl-macros.el' and Doc
+;; 40 §3.1's "prelude cl-defstruct" note) calls it unconditionally as its
+;; very first step and aborts the whole struct definition when it answers
+;; nil for a perfectly valid name.  Reproduces with zero magit content: the
+;; base bundle's own bundled `cl-macs.el' self-applying
+;; `(cl-define-compiler-macro cl--block-wrapper ...)' does not trip this
+;; (a compiler-macro definition, not a struct), but `eieio-core.el''s own
+;; `(cl-defstruct cl--class ...)' bootstrap does, observed via S5.4 as
+;; `wrong-type-argument: (cl-struct-name-p cl--class name)'.  Re-supply
+;; core's own correct logic here, unconditionally (matching this file's
+;; existing unconditional-override pattern), so it does not depend on
+;; winning that load-order race a second time.  `cl--struct-get-class' is
+;; ALSO in `emacs-stub-bulk.el''s list with no core fallback at all; supply
+;; it too (consistent with `cl-struct-define''s own vector shape just
+;; above: `(vector 'nelisp--cl-struct-class name slots children-sym tag)',
+;; matching `nelisp-stdlib-prelude.el:18749') since `:include'-based
+;; `cl-defstruct' forms (`eieio--class' includes `cl--class') read the
+;; parent class through it.
+(defun cl--builtin-type-p (name)
+  "Verbatim GNU `cl-preloaded.el' early-bootstrap fallback: this substrate
+has no `built-in-class-p'/EIEIO-style built-in-type registry, so every
+name correctly reads as \"not a builtin type\"."
+  (if (not (fboundp 'built-in-class-p))
+      nil
+    (let ((class (and (symbolp name) (get name 'cl--class))))
+      (and class (built-in-class-p class)))))
+
+(defun cl--struct-name-p (name)
+  "Return t if NAME is a valid structure name for `cl-defstruct'."
+  (and name (symbolp name) (not (keywordp name))
+       (not (cl--builtin-type-p name))))
+
+(unless (fboundp 'cl-struct-define)
+  (defun cl-struct-define (name _docstring _parent _type named slots
+                                 children-sym tag _print)
+    (if (boundp children-sym)
+        (add-to-list children-sym tag)
+      (set children-sym (list tag)))
+    (let ((class (vector 'nelisp--cl-struct-class name slots children-sym tag)))
+      (unless (or (eq named t) (eq tag name))
+        (set tag class)
+        (fset tag :quick-object-witness-check))
+      (setf (cl--find-class name) class))))
+
+(defun emacs-parity-eieio--struct-class-p (object)
+  "Non-nil if OBJECT is one of `cl-struct-define''s registered class
+vectors (`[nelisp--cl-struct-class NAME SLOTS CHILDREN-SYM TAG]', see
+`nelisp-stdlib-prelude.el:18749')."
+  (and (vectorp object) (> (length object) 0)
+       (eq (aref object 0) 'nelisp--cl-struct-class)))
+
+(unless (fboundp 'cl--struct-get-class)
+  (defun cl--struct-get-class (name)
+    "Return NAME's registered struct class object, or nil.
+NAME is usually a symbol to look up via `cl--find-class', but genuine
+`cl-macs.el' callers (e.g. `cl-struct-slot-info', via `cl-defstruct''s
+own `:include' handling: `(cl-struct-slot-info include)' where `include'
+is already `(cl--struct-get-class include-name)''s RESULT, not a name)
+also pass an already-resolved class object straight through -- real
+`cl-preloaded.el''s C implementation accepts both; this substrate-side
+port must too, or `(get VECTOR 'cl--class)' aborts with
+`wrong-type-argument: symbolp' on the second, already-resolved call."
+    (if (emacs-parity-eieio--struct-class-p name)
+        name
+      (let ((class (and (symbolp name) (fboundp 'cl--find-class)
+                         (cl--find-class name))))
+        (and (emacs-parity-eieio--struct-class-p class) class)))))
+
 (provide 'emacs-parity-eieio)
 ;;; emacs-parity-eieio.el ends here

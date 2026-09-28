@@ -126,6 +126,12 @@ final `.el' suffix with `.repl'.")
     ;; source loading.
     "emacs-parity-shims.el"
     "emacs-parity-misc.el"
+    ;; `emacs-parity-fns2.el' requires `emacs-translation-table' (its
+    ;; `coding-system-get'/`define-translation-table' section); that owner
+    ;; module has no other requirer on the default boot path and is not
+    ;; naturally reached via `load-history', so it needs its own bootstrap
+    ;; manifest entry immediately ahead of its consumer.
+    "emacs-translation-table.el"
     "emacs-parity-fns2.el"
     "emacs-parity-org.el"
     ;; Lightweight standard simple.el shim.  Its visual-line mode family is
@@ -153,12 +159,129 @@ final `.el' suffix with `.repl'.")
 
 (defvar nelisp-bootstrap-vendor-extra-files
   '("emacs-lisp/emacs-lisp/ring.el"
-    "emacs-lisp/org/org-version.el")
+    "emacs-lisp/org/org-version.el"
+    ;; S2 coverage batch 3 (2026-09-28): a GNU Emacs 31.1 file with no
+    ;; top-level `require' of its own, pulled in verbatim the same way
+    ;; `ring.el' already is.  `thingatpt.el' was tried here too, but
+    ;; `standalone-source-normalize-dropped-source-files' already denylists
+    ;; it by basename for the REPL bootstrap path (the path the standalone
+    ;; binary and `nemacs-feature-coverage.sh' actually load): its forms
+    ;; silently vanish from `build/nemacs-bootstrap.repl' even though they
+    ;; still land in the `.el' bundle, so it contributes nothing measurable
+    ;; and was dropped from this list.
+    "emacs-lisp/format-spec.el")
   "Vendor files injected into the bootstrap bundle as real sources.
 These are existing vendor implementations, not local reimplementations.")
 
 (defvar nelisp-bootstrap-vendor-tail-extra-files
-  '("emacs-lisp/emacs-lisp/advice.el")
+  '("emacs-lisp/emacs-lisp/advice.el"
+    ;; S2 coverage batch 4 (2026-09-28): `custom.el' below, plus one more
+    ;; GNU Emacs 31.1 file tried in the same batch and dropped (see the
+    ;; `url-vars.el' paragraph a few lines down).  `custom.el' was verified
+    ;; against the standalone before being added here (see the batch 4
+    ;; worklog).  It belongs at the tail, not in
+    ;; `nelisp-bootstrap-vendor-extra-files' alongside `ring.el'/
+    ;; `format-spec.el': tried there first, the coverage sweep's own
+    ;; `list.el' step failed with `(error "Cannot open load file: widget")',
+    ;; because that list is spliced in right after `src/emacs-mode.el', long
+    ;; before `src/nemacs-main.el's
+    ;; post-file forms seed `load-path' (see
+    ;; `nelisp-bootstrap--runtime-load-path-prologue-forms').  The tail list
+    ;; is appended after everything, including that `load-path' seeding, so
+    ;; a real runtime `require' against a vendor directory resolves here.
+    ;;
+    ;; `url-vars.el' was tried here too: it is pure `defvar'/`defcustom' plus
+    ;; three small functions, with no top-level `require' of its own and no
+    ;; buffer/overlay/syntax-table use.  Like `thingatpt.el' in batch 3,
+    ;; though, `standalone-source-normalize-dropped-source-files' already
+    ;; denylists it by basename for the REPL bootstrap path (it sits right
+    ;; next to `url-privacy.el' in that list) -- its forms silently vanish
+    ;; from `build/nemacs-bootstrap.repl' (confirmed: an empty `>>> ... <<<'
+    ;; span there) even though they still land in the `.el' bundle, so it
+    ;; contributes nothing measurable and was dropped from this list too.
+    ;;
+    ;; `custom.el' has one top-level `(require 'widget)'.  `widget.el' is a
+    ;; tiny two-function facade (`define-widget' plus an obsolete alias) --
+    ;; NOT the large `wid-edit.el' UI implementation, which is reached only
+    ;; via autoloads that this standalone does not register, so it never
+    ;; loads and never enters play here.  `widget.el' is itself denylisted
+    ;; in `standalone-source-normalize-dropped-source-files' for the REPL
+    ;; bootstrap *manifest* path, so it is deliberately left off every file
+    ;; list here; `custom.el's plain top-level `require' form survives
+    ;; normalization unchanged (no matching entry in
+    ;; `standalone-source-normalize-elided-require-features-by-file'), so at
+    ;; tail replay time the standalone's own `require' resolves `widget' by
+    ;; a live `load' against `vendor/emacs-lisp' on the now-seeded
+    ;; `load-path' -- the same mechanism used for every ordinary
+    ;; `(require ...)' call already baked into this bundle, just aimed at a
+    ;; file no list here carries directly.  Confirmed with a direct
+    ;; standalone probe: `custom.el' loads cleanly, `(featurep 'widget)' is
+    ;; t, and `custom-set-default' / `custom-reevaluate-setting' /
+    ;; `enable-theme' / `disable-theme' all run and behave correctly against
+    ;; a real `defcustom'.
+    "emacs-lisp/custom.el"
+    ;; S2 coverage batch 5 (2026-09-28): eight more GNU Emacs 31.1 vendor
+    ;; files, verified via a raw standalone `load' probe against the batch-4
+    ;; bundle before being added here -- each of these loads with zero
+    ;; errors end to end (confirmed either by the probe's own condition-case
+    ;; reporting no failure, or, for `simple.el', by a per-top-level-form
+    ;; loader that ran all ~608 of its forms without one) once ordered so a
+    ;; file's own `(require ...)' targets are already satisfied (either
+    ;; already provided earlier in this bundle, or resolved live against
+    ;; `vendor/emacs-lisp' on the load-path this tail phase seeds -- the same
+    ;; mechanism `custom.el' above uses for `widget').  Adding a file whose
+    ;; load signals ANY uncaught error is unsafe here: this whole tail is one
+    ;; flat sequence of top-level forms replayed by the standalone's own
+    ;; `--load', which does not continue past an uncaught error in one form
+    ;; to the next (confirmed directly: a 5-form probe file with a
+    ;; deliberate `error' in form 2 never reached forms 3-5) -- so an
+    ;; unclean addition here would silently truncate everything bundled
+    ;; after it, not just fail to gain that one file's own coverage.
+    ;;
+    ;; `vc-hooks.el' loads clean but changes nothing measurable on its own
+    ;; (56/73 present before and after): something earlier in this bundle
+    ;; already binds most of its names.  It is still listed first, ahead of
+    ;; `vc.el' (which `require's it), for a real load rather than a second
+    ;; live `require' resolution.
+    "emacs-lisp/vc/vc-hooks.el"
+    "emacs-lisp/vc/vc.el"
+    "emacs-lisp/man.el"
+    "emacs-lisp/progmodes/xref.el"
+    "emacs-lisp/replace.el"
+    "emacs-lisp/comint.el"
+    ;; `simple.el' (595 reference names, the single largest S2 gap) crashed
+    ;; on a `defcustom' `:set' callback ("visual-line-fringe-indicators")
+    ;; that Emacs's real `custom-initialize-reset' runs immediately at load
+    ;; time: the callback does `(dolist (buf (buffer-list)) (with-current-
+    ;; buffer buf ...))', and the native `with-current-buffer' this
+    ;; standalone provides expands to a native `get-buffer' call that had no
+    ;; case for this bridge's own `nelisp-ec-buffer' struct (the type
+    ;; `buffer-list' returns) -- see the `get-buffer' fix in
+    ;; `emacs-buffer-builtins.el' (S2 coverage batch 5).  With that fix in
+    ;; place, a per-form probe ran clean through all ~608 of `simple.el's
+    ;; top-level forms; the coverage delta this file contributes was
+    ;; measured directly (136/595 -> 564/595 present) rather than assumed
+    ;; from the form count.
+    "emacs-lisp/simple.el"
+    ;; `cl-macs.el' MUST be last in this list, after every struct-defining
+    ;; file above.  It loads clean on its own (50/129 -> 125/129) but
+    ;; installs the real, complete `cl-defstruct'/`cl-defmethod' machinery;
+    ;; placed earlier, it made `xref.el's `(cl-defmethod xref-location-group
+    ;; ((l xref-file-location)) ...)' -- a method specialized on a plain
+    ;; struct type, no `:include' involved -- signal `(wrong-type-argument
+    ;; cl-struct-name-p ...)' while replaying `build/nemacs-bootstrap.el'
+    ;; (caught by the repo's own S1.4 bootstrap-load smoke, NOT by the
+    ;; `.repl'-based coverage probe used to validate the files above, which
+    ;; is why this ordering constraint is called out explicitly rather than
+    ;; left implicit): this standalone's `cl-generic' struct-based dispatch
+    ;; is the same incomplete subsystem behind the `project.el'/
+    ;; `cl-generic.el' core gaps recorded in the batch 5 worklog.  Whatever
+    ;; weaker `cl-defmethod'/`cl-defstruct' this bundle already had active
+    ;; tolerates a struct specializer without that crash; the real one from
+    ;; this file does not.  Keeping `cl-macs.el' after every file that
+    ;; defines or specializes on a struct sidesteps the gap for this
+    ;; bundle; it is not a fix for the underlying `cl-generic' limitation.
+    "emacs-lisp/emacs-lisp/cl-macs.el")
   "Vendor files appended as the absolute tail of bootstrap replay.
 Use this for vendor sources whose dependencies are only guaranteed after the
 self-healing replay phase has completed.")
@@ -850,6 +973,67 @@ overrides them for workflow tests."
      ((string= rel "src/nemacs-main.el")
       (nelisp-bootstrap--runtime-load-path-prologue-forms)))))
 
+(defvar nelisp-bootstrap-normalized-bundle-files
+  '("vendor/emacs-lisp/vc/vc-hooks.el"
+    "vendor/emacs-lisp/vc/vc.el"
+    "vendor/emacs-lisp/man.el"
+    "vendor/emacs-lisp/progmodes/xref.el"
+    "vendor/emacs-lisp/replace.el"
+    "vendor/emacs-lisp/comint.el"
+    "vendor/emacs-lisp/simple.el"
+    "vendor/emacs-lisp/emacs-lisp/cl-macs.el")
+  "Bundle members inserted as normalized source rather than verbatim text.
+
+`nelisp-bootstrap--write-bundle' otherwise concatenates every file
+verbatim, byte for byte, so the `.el' bundle stays maximally faithful to
+the real vendor sources it packages.  S2 coverage batch 5 (2026-09-28)
+added these eight files verbatim to `nelisp-bootstrap-vendor-tail-extra-
+files' and grew the S1.4 standalone cold-load smoke
+(tools/ai/usable-progress.org) from ~36s to ~50-54s, mostly from reading
+and parsing each file's full text rather than from running it: an
+interpreted `defun' does not execute its body at load time, only at call
+time, so shrinking the TEXT read (comments, docstrings, and the handful
+of oversized bodies past `standalone-source-normalize-large-defun-
+character-limit') shrinks cold-load wall time without touching what
+runs when a function is actually called.
+
+`standalone-source-normalize-file-to-string' already performs exactly
+this normalization for `build/nemacs-bootstrap.repl' -- the file
+`scripts/nemacs-feature-coverage.sh' actually loads to measure
+`fboundp'/`boundp' presence -- so routing these same eight files through
+the same normalizer for the `.el' bundle cannot regress
+`build/nemacs-feature-coverage.tsv': that sweep never reads the `.el'
+bundle, and every name it probes already reflects whatever this
+normalizer elides.  A handful of functions longer than the character
+limit get a callable placeholder body instead of their real one -- the
+same placeholder `.repl' replay already validated end to end -- guarded
+so any symbol the reusable `src/' substrate already implements for real
+keeps that real implementation instead
+(`standalone-source-normalize--large-defun-form').
+
+Scoped to only these eight files: the rest of the bundle (the core
+`src/' substrate plus every file bundled before this batch) keeps
+verbatim source, since other gates (S3-S6) exercise real behavior beyond
+presence and were never validated against a normalized/elided body.
+
+A broader, strictly non-eliding docstring-only strip (reusing
+`nelisp-bootstrap--standalone-repl-form' without any of the elision
+lists above) was measured across all 169 files during investigation:
+zero read failures, 5,214,037 -> 2,846,320 bytes (54.6%), but paired
+S1.4-style timing runs on this box (3 rounds each, user CPU time) showed
+no reliable further win over this eight-file scope (narrow ~43.6s avg
+vs broad ~44.8s avg across the rounds actually completed, both against
+~47-48s baselines measured in the same sessions) -- cold-load wall time
+here is not simply proportional to bundle text size, so the extra
+196-file blast radius was not worth taking for an inconsistent gain.")
+
+(defun nelisp-bootstrap--insert-bundle-file-body (file rel)
+  "Insert FILE's bundle body text for relative name REL at point."
+  (if (member rel nelisp-bootstrap-normalized-bundle-files)
+      (insert (standalone-source-normalize-file-to-string file))
+    (insert-file-contents file)
+    (goto-char (point-max))))
+
 (defun nelisp-bootstrap--write-bundle (files output)
   "Write FILES into OUTPUT as one lexical-binding Elisp bundle."
   (make-directory (file-name-directory output) t)
@@ -870,8 +1054,7 @@ overrides them for workflow tests."
     (dolist (file files)
       (let ((rel (file-relative-name file nelisp-bootstrap-repo-root)))
         (insert "\n;;; >>> " rel "\n")
-        (insert-file-contents file)
-        (goto-char (point-max))
+        (nelisp-bootstrap--insert-bundle-file-body file rel)
         (dolist (feature (nelisp-bootstrap--file-features file))
           (insert "\n(provide '")
           (insert (symbol-name feature))

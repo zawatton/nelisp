@@ -12,7 +12,7 @@
 ;;
 ;; Re-defining the function here re-expands its `pcase' at load time, which is
 ;; correct.  Body copied verbatim from `src/rx.el' (its helper callees --
-;; `rx--normalise-char-pattern', `rx--translate-syntax', etc. -- are already
+;; `rx--normalize-char-pattern', `rx--translate-syntax', etc. -- are already
 ;; defined by the baked `rx.el').  Standalone only: guarded on a baked rx
 ;; helper so host Emacs (real C-free rx) is untouched.
 (when (and (fboundp 'nelisp--write-stdout-bytes)
@@ -22,7 +22,7 @@
 If NEGATED, negate the sense (thus making it positive)."
     (unless (and body (null (cdr body)))
       (error "rx `not' form takes exactly one argument"))
-    (let ((arg (rx--normalise-char-pattern (car body))))
+    (let ((arg (rx--normalize-char-pattern (car body))))
       (pcase arg
         (`(not . ,args)
          (rx--translate-not      (not negated) args))

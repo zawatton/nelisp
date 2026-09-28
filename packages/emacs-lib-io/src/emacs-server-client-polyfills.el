@@ -128,7 +128,29 @@
   (defun find-file-noselect (filename &rest _ignored)
     (error "emacs-server-client-polyfills: file visiting not wired (%s)"
            filename))
-  (defun generate-new-buffer (name &optional _inhibit-hooks) name)
+  ;; This defun used to be unconditional (a bare `name' return), unlike
+  ;; every other stub in this block.  That is a real difference: unlike
+  ;; `find-file-noselect' / `save-buffer' / etc. above, whose `fboundp' is
+  ;; nil here, the standalone reader's OWN prelude already provides a
+  ;; complete, self-consistent native `generate-new-buffer' /
+  ;; `with-current-buffer' / `insert' / `buffer-string' / `current-buffer'
+  ;; buffer family (measured 2026-09-28: works end to end with zero Elisp
+  ;; loaded).  Installing this stub unconditionally silently discarded that
+  ;; working native buffer and returned the bare NAME string instead, which
+  ;; broke every later caller outside the emacsclient filter lane -- e.g.
+  ;; `emacs-fileio.el's `find-file-noselect', which does
+  ;; `(generate-new-buffer ...)' then `(with-current-buffer buf ...)' --
+  ;; `with-current-buffer' then errored ("No such buffer") because BUF was
+  ;; just a string with no buffer behind it (caught via the S6.4 usable-
+  ;; progress smoke: `find-file-noselect' erroring before any edit/save).
+  ;; Guard it like the rest of the codebase's bridges do (see CLAUDE.md /
+  ;; AGENTS.md's API policy: "Host Emacs compatibility must not silently
+  ;; override host C primitives unless the module is explicitly a
+  ;; compatibility shim and is gated") so the native primitive wins when it
+  ;; exists, and this remains the load-bearing never-void fallback only
+  ;; when it does not.
+  (unless (fboundp 'generate-new-buffer)
+    (defun generate-new-buffer (name &optional _inhibit-hooks) name))
   (defun get-scratch-buffer-create () "*scratch*")
   (defun revert-buffer (&rest _ignored) nil)
   (defun save-buffer (&rest _ignored) nil)

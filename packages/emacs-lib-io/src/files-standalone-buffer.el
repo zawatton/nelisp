@@ -121,13 +121,27 @@
 
 (defvar files--native-buffer-modified-p
   (and (fboundp 'buffer-modified-p)
+       (not (get 'buffer-modified-p 'emacs-stub-bulk))
        (symbol-function 'buffer-modified-p))
-  "Native `buffer-modified-p' captured before this fallback overrides it.")
+  "Native `buffer-modified-p' captured before this fallback overrides it.
+Excludes `emacs-stub-bulk's always-nil placeholder (installed whenever
+`buffer-modified-p' is not genuinely native, same as every other bulk
+name -- see `emacs-buffer-builtins--install-function-p's `(get symbol
+'emacs-stub-bulk)' clause): capturing that stub as \"native\" made every
+caller that defers to it on a real edit (see `erase-buffer' / `insert'
+above) believe a working native `buffer-modified-p' existed to read the
+flag back, when the stub always answers nil regardless of any edit.
+`save-buffer' then reported \"(No changes need to be saved)\" and skipped
+writing a genuinely modified buffer (caught via the S6.4 usable-progress
+smoke).")
 
 (defvar files--native-set-buffer-modified-p
   (and (fboundp 'set-buffer-modified-p)
+       (not (get 'set-buffer-modified-p 'emacs-stub-bulk))
        (symbol-function 'set-buffer-modified-p))
-  "Native `set-buffer-modified-p' captured before this fallback overrides it.")
+  "Native `set-buffer-modified-p' captured before this fallback overrides it.
+See `files--native-buffer-modified-p' for why the `emacs-stub-bulk'
+placeholder must not be captured as \"native\" here either.")
 
 (defun files--absolute-clean-p (path)
   "Return non-nil when PATH is an absolute POSIX path with no `//', `/./',
@@ -457,7 +471,17 @@ START and END may be integers or markers and are order-independent."
     (if (and files--native-erase-buffer (files--host-buffer-available-p))
         (funcall files--native-erase-buffer)
       (files--set-buffer-string-value "")
-      (files--set-buffer-point-value 1)
+      (files--set-buffer-point-value 1))
+    ;; `files--buffer-modified-value' (the read side) only skips this
+    ;; tracker when a NATIVE `buffer-modified-p' exists to read instead
+    ;; (`files--native-buffer-modified-p'); the standalone reader has no
+    ;; such primitive, so the write side must record the edit here too,
+    ;; even on the native-delegate branch above.  Before this fix, editing
+    ;; a native buffer through this wrapper left the tracker untouched,
+    ;; so `buffer-modified-p' kept reporting "unmodified" and `save-buffer'
+    ;; skipped writing ("(No changes need to be saved)") after a real
+    ;; edit (caught via the S6.4 usable-progress smoke).
+    (unless files--native-buffer-modified-p
       (files--set-buffer-modified-value t))
     nil))
 
@@ -477,7 +501,15 @@ START and END may be integers or markers and are order-independent."
   (defun insert (&rest strings)
     "Insert STRINGS at fallback point."
     (if (and files--native-insert (files--host-buffer-available-p))
-        (apply files--native-insert strings)
+        (progn
+          (apply files--native-insert strings)
+          ;; See the matching comment on `erase-buffer': the modified
+          ;; tracker's read side has no native `buffer-modified-p' to
+          ;; defer to here, so the native-delegate branch must record the
+          ;; edit itself instead of relying on `files--fallback-insert-
+          ;; strings' (which never runs on this branch).
+          (unless files--native-buffer-modified-p
+            (files--set-buffer-modified-value t)))
       (files--fallback-insert-strings strings))
     nil))
 
@@ -1302,15 +1334,30 @@ ignored."
 ;; Bridge the file reader to the standalone reader's `rdf' primitive (the only
 ;; file-read entry point baked into target/nelisp).  files--read-file-text
 ;; prefers `nelisp--syscall-read-file'; provide it on top of `rdf'.  `rdf'
-;; returns "" for a missing OR empty file, so map empty -> nil to let
-;; insert-file-contents signal `file-error' for a genuinely absent file.
+;; returns "" for a missing OR empty file, so an empty result on its own
+;; cannot tell "missing" from "exists but is empty" apart.
+;;
+;; Mapping every empty `rdf' result straight to nil (pre-2026-09-28) picked
+;; "missing" unconditionally, which is wrong for a genuinely empty existing
+;; file -- e.g. a freshly `make-temp-file'd path, before anything has been
+;; written to it.  `insert-file-contents' then signalled `file-error'
+;; ("Cannot read file") for a file that was actually there and readable,
+;; just empty (caught via the S6.4 usable-progress smoke: `find-file-
+;; noselect' on a brand-new temp file failed here before any edit/save).
+;; Disambiguate with an independent existence check instead of guessing:
+;; `file-exists-p' does not depend on reading any bytes, so it still tells
+;; the two cases apart when `rdf' cannot.
 (when (and (fboundp 'rdf) (fboundp 'nelisp--write-stderr-line))
   ;; The reader's baked nelisp--syscall-read-file throws uncatchably when
   ;; called with a path; redefine it on top of rdf (the working file-read
   ;; primitive).  Gated on the standalone marker so host Emacs is untouched.
   (defun nelisp--syscall-read-file (filename)
-    (let ((s (rdf (expand-file-name filename))))
-      (and (stringp s) (> (length s) 0) s))))
+    (let* ((expanded (expand-file-name filename))
+           (s (rdf expanded)))
+      (cond
+       ((and (stringp s) (> (length s) 0)) s)
+       ((file-exists-p expanded) "")
+       (t nil)))))
 
 (provide 'files-standalone-buffer)
 

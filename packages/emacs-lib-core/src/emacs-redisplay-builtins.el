@@ -181,29 +181,24 @@ avoid clobbering the existing substrate `emacs-redisplay-redisplay'."
 
 (defun emacs-redisplay-builtins--install-function-p (symbol)
   "Return non-nil when SYMBOL should be installed as an unprefixed bridge.
-`(not (boundp \\='emacs-version))' alone is not a reliable standalone
-signal (the NeLisp reader binds `emacs-version' too), and this gate had
-no other compensating check at all: `force-mode-line-update'/
-`redisplay'/`redraw-display' are all defined individually (and
-untagged) in `emacs-stub.el', which loads first and would otherwise
-permanently win over this bridge via the `(not (fboundp symbol))'
-fallback.  Force install unconditionally on standalone via a NeLisp-only
-primitive, matching `emacs-char-table--standalone-p' in
-`emacs-char-table.el'."
-  (or (fboundp 'nl-write-file)
-      (fboundp 'nelisp--write-stdout-bytes)
-      (not (boundp 'emacs-version))
-      (not (fboundp symbol))))
+Install over an absent function or an explicit `emacs-stub' placeholder.
+A standalone runtime can already provide a native compatible function, so
+standalone detection alone must not authorize replacing its public API."
+  (or (not (fboundp symbol))
+      (get symbol 'emacs-stub-bulk)))
 
 (when (emacs-redisplay-builtins--install-function-p 'force-mode-line-update)
   (defalias 'force-mode-line-update
-    #'emacs-redisplay-force-mode-line-update))
+    #'emacs-redisplay-force-mode-line-update)
+  (put 'force-mode-line-update 'emacs-stub-bulk nil))
 
 (when (emacs-redisplay-builtins--install-function-p 'redraw-display)
-  (defalias 'redraw-display #'emacs-redisplay-redraw-display))
+  (defalias 'redraw-display #'emacs-redisplay-redraw-display)
+  (put 'redraw-display 'emacs-stub-bulk nil))
 
 (when (emacs-redisplay-builtins--install-function-p 'redraw-frame)
-  (defalias 'redraw-frame #'emacs-redisplay-redraw-frame))
+  (defalias 'redraw-frame #'emacs-redisplay-redraw-frame)
+  (put 'redraw-frame 'emacs-stub-bulk nil))
 
 ;; Note: `redisplay' under host Emacs is a C primitive that takes
 ;; an optional FORCE arg; our impl matches the arity contract.  We
@@ -211,7 +206,8 @@ primitive, matching `emacs-char-table--standalone-p' in
 ;; prefixed `emacs-redisplay-trigger-redisplay' helper above is
 ;; reachable explicitly from standalone callers.
 (when (emacs-redisplay-builtins--install-function-p 'redisplay)
-  (defalias 'redisplay #'emacs-redisplay-trigger-redisplay))
+  (defalias 'redisplay #'emacs-redisplay-trigger-redisplay)
+  (put 'redisplay 'emacs-stub-bulk nil))
 
 (provide 'emacs-redisplay-builtins)
 

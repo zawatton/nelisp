@@ -456,6 +456,59 @@ The helper is unconditional; the macro itself is reader-gated."
                                                         t)
                                                   (list comma 'types))))))))))))
 
+(ert-deftest emacs-stub-residuals-test/define-inline-lowers-function-quote-of-unquote ()
+  "`#\\=',EXPR' inside `inline-quote' reads as `(function (comma EXPR))'.
+For the function-body (non-inlining) lowering this must drop the
+`function' wrapper and keep the bare EXPR, mirroring `inline.el's
+`inline--dont-quote' `` `#\\='(,\\='\\, ,e)' '' case: EXPR already evaluates to
+the function value at call time, and `function' does not evaluate a
+non-lambda argument, so leaving the wrapper in place turns EXPR's own
+unevaluated source into the `funcall' target (`invalid-function').  This
+is the exact shape `cl-macs.el's `cl-typep' uses for user-defined types:
+`(funcall #\\=',(get type \\='cl-deftype-satisfies) val)'."
+  (let ((comma (intern ",")))
+    (should (equal '(defun f (type val) (funcall (get type 'cl-deftype-satisfies) val))
+                   (emacs-stub--define-inline
+                    'f '(type val)
+                    (list (list 'inline-quote
+                                (list 'funcall
+                                      (list 'function
+                                            (list comma
+                                                  (list 'get 'type ''cl-deftype-satisfies)))
+                                      (list comma 'val)))))))
+    ;; A bare `#\\='SYMBOL' (no unquote inside) is untouched.
+    (should (equal '(defun g (x) (funcall #'car x))
+                   (emacs-stub--define-inline
+                    'g '(x) '((inline-quote (funcall (function car) (comma x)))))))
+    ;; `#\\='(lambda ...)' (no unquote inside) is untouched.
+    (should (equal '(defun h (x) (funcall #'(lambda (y) y) x))
+                   (emacs-stub--define-inline
+                    'h '(x) '((inline-quote
+                               (funcall (function (lambda (y) y)) (comma x)))))))))
+
+(ert-deftest emacs-stub-residuals-test/define-inline-function-quote-of-unquote-runs ()
+  "End-to-end: the generated function actually calls the computed
+predicate, matching `cl-typep's real runtime usage (a `defclass' whose
+`cl-deftype-satisfies' property is only known at call time, not when
+`cl-typep' itself is defined)."
+  (let* ((comma (intern ","))
+         (generated
+          (emacs-stub--define-inline
+           'emacs-stub-test--typep '(type val)
+           (list (list 'inline-quote
+                       (list 'funcall
+                             (list 'function
+                                   (list comma (list 'get 'type ''cl-deftype-satisfies)))
+                             (list comma 'val)))))))
+    (eval generated t)
+    (unwind-protect
+        (progn
+          (put 'emacs-stub-test--even-type 'cl-deftype-satisfies #'cl-evenp)
+          (should (emacs-stub-test--typep 'emacs-stub-test--even-type 4))
+          (should-not (emacs-stub-test--typep 'emacs-stub-test--even-type 3)))
+      (fmakunbound 'emacs-stub-test--typep)
+      (put 'emacs-stub-test--even-type 'cl-deftype-satisfies nil))))
+
 (ert-deftest emacs-stub-residuals-test/define-inline-generated-function-runs ()
   (let* ((comma (intern ","))
          (comma-at (intern ",@"))

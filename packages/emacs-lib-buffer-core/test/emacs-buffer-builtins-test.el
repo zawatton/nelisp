@@ -816,6 +816,73 @@ shadows our defun."
   (cl-letf (((symbol-function 'nelisp--write-stdout-bytes) (lambda (&rest _) nil)))
     (should (emacs-buffer-builtins--standalone-p))))
 
+(ert-deftest emacs-buffer-builtins-test/native-buffer-family-is-preserved ()
+  "Standalone keeps a complete native family and fills an absent one."
+  (cl-letf (((symbol-function 'emacs-buffer-builtins--standalone-p)
+             (lambda () t)))
+    (should-not (emacs-buffer-builtins--replace-buffer-family-p))
+    (should-not (emacs-buffer-builtins--install-function-p 'current-buffer))
+    (should (emacs-buffer-builtins--install-function-p
+             (make-symbol "emacs-buffer-builtins-test-absent")))
+    (let ((saved (symbol-function 'current-buffer)))
+      (unwind-protect
+          (progn
+            (fmakunbound 'current-buffer)
+            (should (emacs-buffer-builtins--replace-buffer-family-p)))
+        (fset 'current-buffer saved)))))
+
+(ert-deftest emacs-buffer-builtins-test/install-function-p-respects-emacs-stub-bulk ()
+  "`--install-function-p' must let a stub-bulk-tagged name be overridden
+even though it is already `fboundp', not just when it is altogether
+absent -- otherwise a same-named throwaway placeholder installed by an
+earlier-loaded file (e.g. one of `emacs-stub.el''s synthetic buffer.c
+placeholders) wins the load-order race forever and this bridge's real
+`nelisp-ec'-backed definition never takes over.  Regression for the
+`get-buffer-create' buffer-identity mismatch fixed alongside this test:
+see `emacs-buffer-builtins-test/emacs-stub-buffer-placeholders-are-tagged-stub-bulk'
+and `test/nemacs-process-sync-smoke.el' (`wrong-type-argument:
+(stringp (buffer))' from `get-buffer'/`with-current-buffer' when handed
+the placeholder's throwaway buffer object)."
+  (let ((sym (make-symbol "emacs-buffer-builtins-test--temp-already-bound")))
+    (fset sym (lambda () 'placeholder))
+    (should (fboundp sym))
+    ;; Negative control: an ordinary already-fboundp, untagged name is left
+    ;; alone -- this is the real predicate under test seeing the real
+    ;; "not tagged yet" state, not a copy of unrelated data.
+    (should-not (get sym 'emacs-stub-bulk))
+    (should-not (emacs-buffer-builtins--install-function-p sym))
+    ;; Mutating the same symbol's plist (what `emacs-stub.el' does via
+    ;; `put' right after installing a placeholder) flips the same
+    ;; predicate call to non-nil.
+    (put sym 'emacs-stub-bulk t)
+    (should (emacs-buffer-builtins--install-function-p sym))))
+
+(ert-deftest emacs-buffer-builtins-test/emacs-stub-buffer-placeholders-are-tagged-stub-bulk ()
+  "Each `buffer.c' synthetic placeholder in `emacs-stub.el' must tag its
+own name `emacs-stub-bulk' (like the `display.c' placeholders just above
+them in that file) so `get-buffer-create' -- or any sibling absent from a
+given NeLisp build's own native buffer family -- is not stuck forever on
+this throwaway `(cons \\='buffer nil)' shape once
+`emacs-buffer-builtins.el' loads its real definition.  Without the tag,
+`--install-function-p' treats the placeholder as a trustworthy prior
+owner (like a host C subr) and never installs the real one; see
+`emacs-buffer-builtins-test/install-function-p-respects-emacs-stub-bulk'
+for that mechanism in isolation."
+  (let ((file (locate-library "emacs-stub")))
+    (should file)
+    (with-temp-buffer
+      (insert-file-contents (if (string-match-p "\\.elc\\'" file)
+                                (substring file 0 -1)
+                              file))
+      (dolist (name '("current-buffer" "bufferp" "buffer-live-p"
+                      "get-buffer" "get-buffer-create" "buffer-name"
+                      "buffer-list"))
+        (goto-char (point-min))
+        (should (search-forward (format "(unless (fboundp '%s)" name) nil t))
+        (goto-char (point-min))
+        (should (search-forward
+                 (format "(put '%s 'emacs-stub-bulk t)" name) nil t))))))
+
 (provide 'emacs-buffer-builtins-test)
 
 ;;; emacs-buffer-builtins-test.el ends here

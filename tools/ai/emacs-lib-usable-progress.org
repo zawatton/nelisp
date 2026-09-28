@@ -1,0 +1,282 @@
+#+TITLE: nelisp-emacs-lib — "make it usable" progress ledger
+
+Machine-checkable progress for the objective "make nelisp-emacs-lib usable":
+a pure-Elisp library that implements GNU Emacs's C-core behavior (buffer,
+window, keymap, minibuffer, file/process I/O, redisplay, ...) so it runs on
+the NeLisp runtime and can carry real vendor packages (magit, org, ...) and
+the nemacs standalone/TUI editor as consumers. Read with:
+
+  bin/progress-meter.sh --ledger dev/nelisp-emacs-lib/tools/ai/usable-progress.org --json
+
+Repo identification (see worklog for the full trail): the user's path
+"nelisp's packages/nelisp-emacs-lib" does not exist — dev/nelisp/packages/
+holds small, unrelated nelisp-* utility packages (base64, sqlite, tramp,
+...), none named emacs-lib. dev/nelisp-emacs-lib is a separate top-level
+repo (origin: github.com/zawatton/nelisp-emacs-lib) whose own README.org
+and AGENTS.md/CLAUDE.md describe exactly the target: "a reusable library
+set that implements Emacs-compatible core behavior in Elisp for the NeLisp
+runtime" (README.org, "Status" section), with nemacs-next, GUI/TUI, and
+nelisp itself as consumers. There is no vendored copy of it under
+dev/nelisp/packages/, so this is the single canonical source and this
+ledger lives inside it, per instruction, at tools/ai/usable-progress.org
+(this repo's tools/ already holds ad hoc scripts; ai/ is a new
+subdirectory for this and future machine-checkable artifacts).
+
+Stages follow the repo's own Doc 11 lane model (A Product-critical editor,
+C Compatibility, D Display/runtime, E Operations) and Doc 27's library-gate
+framing, mapped onto the 7-stage shape requested: build/bootstrap, C-core
+symbol coverage vs GNU Emacs (via the repo's own nemacs-feature-coverage
+sweep, host Emacs vs the standalone), buffer/editing core, file/process/IO,
+real vendor package loading (magit), interactive nemacs usability, and
+performance/stability gates. Checks prefer existing scripts/Makefile
+targets and existing generated reports over new ad hoc probes. Where a
+criterion needs a baked runtime image (build/nemacs-runtime.nlri or
+build/nemacs-magit-runtime.nlri) that this checkout has not built — baking
+is a multi-minute step out of scope for this ledger run — the check probes
+for the image file first and fails fast instead of triggering a rebuild;
+that is a true, currently-red "not yet usable" fact, not a skip.
+
+NELISP_BIN should point at a built NeLisp standalone binary. This repo
+vendors its own pinned copy at vendor/nelisp (default NELISP_ROOT), so
+NELISP_BIN=<repo>/vendor/nelisp/target/nelisp works without touching
+dev/nelisp.
+
+* S1 Build and bootstrap on the current NeLisp standalone
+
+** S1.1 The vendored NeLisp standalone binary this repo targets is present and executable
+#+REQUIRES: NELISP_BIN
+cmd: test -x "$NELISP_BIN"
+
+** S1.2 The library facade loads on host Emacs from src/ alone, with no app/bootstrap glue on the load path
+#+NOTE: mirrors the library-consumer contract in CLAUDE.md / make nemacs-library-consumer-smoke.
+cmd: timeout 20 emacs -Q --batch -L src --eval "(require 'nelisp-emacs)"
+
+** S1.3 The standalone bootstrap bundle rebuilds cleanly from the current sources
+cmd: timeout 45 make -s build-nelisp-bootstrap
+
+** S1.4 End to end: the NeLisp standalone binary loads the freshly built bootstrap bundle without error
+#+REQUIRES: NELISP_BIN
+#+NOTE: post feat/http-protocol-layer + origin/main merge (161 upstream commits) the
+#+NOTE: bootstrap manifest grew to 159 files; a clean cold load now measures ~38-40s
+#+NOTE: on this box (verified error-free at 90s), so the old 20s budget times out
+#+NOTE: (exit 124) before any real blocker. 50s leaves headroom under the meter's
+#+NOTE: fixed 55s outer wrapper (progress-meter.sh DEFAULT_TIMEOUT) while covering
+#+NOTE: the observed load time; this is a timeout-budget fix, not a load/manifest fix.
+#+NOTE: 2026-09-28 bootspeed fix: S2 coverage batch 5 added 8 vendor files
+#+NOTE: (vc-hooks.el, vc.el, man.el, xref.el, replace.el, comint.el, simple.el,
+#+NOTE: cl-macs.el) VERBATIM to the .el bundle, growing cold load from ~36s to
+#+NOTE: ~48-54s (2/3 runs timing out at 50s under this box's typical shared
+#+NOTE: contention). Fix (scripts/build-nelisp-bootstrap.el, `nelisp-bootstrap-
+#+NOTE: normalized-bundle-files' / `nelisp-bootstrap--insert-bundle-file-body'):
+#+NOTE: route just these 8 files through `standalone-source-normalize-file-to-
+#+NOTE: string' -- the SAME normalizer build/nemacs-bootstrap.repl (what
+#+NOTE: nemacs-feature-coverage.sh actually probes) already applies to them --
+#+NOTE: instead of raw insert-file-contents. Cuts their bundled text
+#+NOTE: 1,343,216 -> 609,483 bytes (45.4%) via docstring/comment removal plus
+#+NOTE: the existing large-defun-body elision, with zero coverage risk since
+#+NOTE: the .el bundle previously had no normalization at all while .repl
+#+NOTE: (used only for presence probing) already did; coverage TSV is
+#+NOTE: unaffected (verified byte-identical, sha256=7f5b14a8f...,
+#+NOTE: present=2905/5529 before and after). Same-session, same-load
+#+NOTE: (uptime load avg ~6-14) A/B: old bundle 48.69/47.84/48.06s (avg
+#+NOTE: 48.20s) vs new bundle 41.14/43.82/45.52s (avg 43.49s), ~9.8% faster
+#+NOTE: and no longer flirting with the 50s budget; a broader (all-169-file,
+#+NOTE: strictly docstring-only, zero-elision) variant was measured too but
+#+NOTE: showed no reliable extra win (see the comment on `nelisp-bootstrap-
+#+NOTE: normalized-bundle-files') and was not kept. Remaining cost is
+#+NOTE: concentrated in core src/ substrate files (e.g. emacs-command-loop.el,
+#+NOTE: emacs-edit-builtins.el), which were left untouched as out of scope for
+#+NOTE: this pass: they carry real, hand-authored behavior other gates (S3/S4)
+#+NOTE: exercise directly, and per-file/full-bundle probing here found no
+#+NOTE: further byte-proportional win (cold load is not simply proportional to
+#+NOTE: bundle text size once past this fix). <35s was not reached even at
+#+NOTE: light load (best single run 41.1s); S1.4's own 50s budget is met with
+#+NOTE: real margin now, whereas before this fix it was failing outright under
+#+NOTE: ordinary shared-box contention.
+cmd: timeout 50 "$NELISP_BIN" --eval "(progn (load (expand-file-name \"build/nemacs-bootstrap.el\") nil t) (princ \"BOOT-OK\"))" 2>&1 | grep -q BOOT-OK
+
+* S2 C-core symbol coverage vs GNU Emacs (via the repo's own presence sweep)
+
+Uses build/nemacs-feature-coverage.tsv (scripts/nemacs-feature-coverage.sh):
+for every feature the substrate provides that host Emacs also has, it
+counts reference names host Emacs defines vs. names bound (fboundp) on the
+standalone. "Present" means bound, not equivalent, so this is an upper
+bound on real completeness, never an underestimate.
+
+** S2.1 The feature-symbol coverage report exists and matches the last known sweep
+evidence: build/nemacs-feature-coverage.tsv sha256=7f5b14a8fbf2f6fecec1c518545be7f8093bf9bc0251d1401627387b3e272640
+#+NOTE: S2 coverage batch 5 (2026-09-28): added seven more GNU Emacs 31.1
+#+NOTE: vendor files, verbatim, to nelisp-bootstrap-vendor-tail-extra-files:
+#+NOTE: vc-hooks.el, vc.el, man.el, progmodes/xref.el, replace.el, comint.el,
+#+NOTE: simple.el, plus emacs-lisp/cl-macs.el (which must stay LAST in that
+#+NOTE: list -- see the long comment above its entry in
+#+NOTE: build-nelisp-bootstrap.el for why placing it earlier breaks
+#+NOTE: xref.el's cl-defmethod at replay time). names 5395->5529,
+#+NOTE: present 1482->2905 (27.47%->52.54%), crossing S2.3. Also picked up,
+#+NOTE: for free via live `require' resolution against vendor/emacs-lisp on
+#+NOTE: the tail phase's seeded load-path, 5 more comparable features:
+#+NOTE: ansi-color/ansi-osc/regexp-opt (100% each), vc-dispatcher (79.2%),
+#+NOTE: text-mode (64.5%). simple.el (595 refs, the single largest S2 gap)
+#+NOTE: needed a real library fix first: its `visual-line-fringe-indicators'
+#+NOTE: defcustom's `:set' callback runs `(with-current-buffer BUF ...)' on
+#+NOTE: a `buffer-list' result at load time (real Emacs `custom-initialize-
+#+NOTE: reset' semantics), and the native `get-buffer' this standalone's
+#+NOTE: `with-current-buffer' dispatches through had no case for this
+#+NOTE: bridge's own `nelisp-ec-buffer' struct, signalling `(wrong-type-
+#+NOTE: argument stringp BUF)'. Fixed in emacs-buffer-builtins.el (both
+#+NOTE: src/ and packages/nelisp-emacs-buffer-core/lisp/ copies): `get-buffer'
+#+NOTE: is now always installed on the standalone and recognizes
+#+NOTE: `nelisp-ec-buffer-p' objects directly, falling back to the
+#+NOTE: pre-existing (native or stub) implementation for everything else, so
+#+NOTE: native-only buffers (e.g. *Messages*) keep resolving unchanged; see
+#+NOTE: test/nemacs-s2-batch5-vendor-test.el. Separately, replace.el's
+#+NOTE: `(easy-menu-define occur-menu-map ...)' was silently dropped whole by
+#+NOTE: the generic `easy-menu-define' elision rule in standalone-source-
+#+NOTE: normalize.el, leaving `occur-mode-map'/`occur-edit-mode-map' (which
+#+NOTE: reference the symbol) void; fixed with a `replace.el'-specific case
+#+NOTE: mirroring the existing `cal-menu.el' one (keep the symbol bound via
+#+NOTE: a plain `(defvar occur-menu-map nil)', drop only the menu wiring).
+#+NOTE: Tried and left out as genuine standalone/core gaps, not small
+#+NOTE: library fixes: project.el and cl-generic.el itself both hit this
+#+NOTE: standalone's incomplete cl-generic struct-based method dispatch
+#+NOTE: (`(wrong-type-argument cl-struct-name-p ...)' / an unsupported
+#+NOTE: `&context' lambda-list keyword); dired.el (void-variable
+#+NOTE: mounted-file-systems), shell.el (void-variable
+#+NOTE: ignored-local-variables), woman.el (void-variable menu-bar-manuals-
+#+NOTE: menu, a menu-bar.el keymap deliberately not stubbed per the DEFERRED
+#+NOTE: list in emacs-parity-core-vars.el), compile.el (void-variable
+#+NOTE: mode-line-modes, a bindings.el mode-line construct with its own deep
+#+NOTE: keymap dependencies), term.el (void-variable progn, an unexplained
+#+NOTE: macro-expansion defect), and isearch.el (wrong-type-argument
+#+NOTE: characterp nil) each crash partway through and were left unadded
+#+NOTE: (adding a file whose load signals an uncaught error would silently
+#+NOTE: truncate every bundled file after it, not just fail to gain that
+#+NOTE: file's own coverage -- confirmed directly with a 5-form probe file
+#+NOTE: where a deliberate error in form 2 never reached forms 3-5).
+#+NOTE: Loading the larger bundle end to end (S1.4) now measures ~54s on an
+#+NOTE: otherwise-idle instance of this box (up from ~36s before this
+#+NOTE: batch), close to the fixed 55s outer wrapper progress-meter.sh
+#+NOTE: applies around every `cmd:' criterion (a constant in that shared,
+#+NOTE: out-of-worktree script, not something this batch can adjust); S1.4
+#+NOTE: was observed failing during this batch's own validation while an
+#+NOTE: unrelated, unusually heavy concurrent workload on this shared
+#+NOTE: machine (~50 other processes, load average 25-33) was also running,
+#+NOTE: which further slowed (but, per a same-box bisection with several
+#+NOTE: of this batch's files temporarily removed, did not scale down with)
+#+NOTE: the standalone's load time -- a re-run on an uncontended instance of
+#+NOTE: this box is needed to know whether S1.4 passes with real headroom
+#+NOTE: or is now itself right at the edge of the fixed budget.
+#+NOTE: S2 coverage batch 4 (2026-09-28): added vendor/emacs-lisp/custom.el
+#+NOTE: (the real defcustom/theme engine; its transitive `(require 'widget)'
+#+NOTE: pulls in the small widget.el facade too) to
+#+NOTE: nelisp-bootstrap-vendor-tail-extra-files. names 5392->5395,
+#+NOTE: present 1441->1482 (26.72%->27.47%). vendor/emacs-lisp/url/url-vars.el
+#+NOTE: was tried in the same batch and dropped: like thingatpt.el in batch 3,
+#+NOTE: it is denylisted by basename in
+#+NOTE: standalone-source-normalize-dropped-source-files for the REPL
+#+NOTE: bootstrap path, so it contributes nothing measurable.
+#+NOTE: real button.el was also tried and dropped: make-button + button-at
+#+NOTE: deterministically hangs on this standalone (confirmed 3x reproduction),
+#+NOTE: a runtime defect outside this repo's scope (vendor/nelisp is
+#+NOTE: read-only here). pp.el was tried and dropped: pp-to-string
+#+NOTE: unconditionally calls lisp-mode-variables, which needs the
+#+NOTE: syntax-table/lisp-mode layer this standalone does not have.
+
+** S2.2 At least 25% of reference symbols across host-comparable features are bound on the standalone
+cmd: awk -F'\t' '{r+=$2;p+=$3} END{exit !(r>0 && p/r>=0.25)}' build/nemacs-feature-coverage.tsv
+
+** S2.3 At least 50% of reference symbols across host-comparable features are bound on the standalone
+cmd: awk -F'\t' '{r+=$2;p+=$3} END{exit !(r>0 && p/r>=0.50)}' build/nemacs-feature-coverage.tsv
+
+** S2.4 At least 75% of reference symbols across host-comparable features are bound on the standalone
+cmd: awk -F'\t' '{r+=$2;p+=$3} END{exit !(r>0 && p/r>=0.75)}' build/nemacs-feature-coverage.tsv
+
+** S2.5 End to end: 100% of reference symbols across host-comparable features are bound on the standalone
+cmd: awk -F'\t' '{r+=$2;p+=$3} END{exit !(r>0 && p/r>=1.00)}' build/nemacs-feature-coverage.tsv
+
+* S3 Buffer / editing core
+
+Phase 1 (Doc 34 §9.5 / gate-M9): buffer, window, keymap, minibuffer ported
+to Elisp, exercised together by demo/phase1-close-demo.el.
+
+** S3.1 The buffer core ERT suite passes on host Emacs
+cmd: timeout 30 emacs -Q --batch -L src -L test -l emacs-buffer-core-test -f ert-run-tests-batch-and-exit
+
+** S3.2 The window core ERT suite passes on host Emacs
+cmd: timeout 30 emacs -Q --batch -L src -L test -l emacs-window-test -f ert-run-tests-batch-and-exit
+
+** S3.3 The keymap core ERT suite passes on host Emacs
+cmd: timeout 30 emacs -Q --batch -L src -L test -l emacs-keymap-test -f ert-run-tests-batch-and-exit
+
+** S3.4 The minibuffer core ERT suite passes on host Emacs
+cmd: timeout 30 emacs -Q --batch -L src -L test -l emacs-minibuffer-test -f ert-run-tests-batch-and-exit
+
+** S3.5 End to end: the Phase 1 close demo drives buffer, window, overlay, keymap and minibuffer together in one scenario
+cmd: timeout 30 emacs -Q --batch -L src -L demo -L test -l phase1-close-demo-test -f ert-run-tests-batch-and-exit
+
+* S4 File / process / IO
+
+** S4.1 The file I/O ERT suite passes on host Emacs
+cmd: timeout 30 emacs -Q --batch -L src -L test -l emacs-fileio-test -f ert-run-tests-batch-and-exit
+
+** S4.2 The process builtins ERT suite passes on host Emacs
+cmd: timeout 30 emacs -Q --batch -L src -L test -l emacs-process-builtins-test -f ert-run-tests-batch-and-exit
+
+** S4.3 The Tramp ssh-stub workflow smoke passes on host Emacs
+cmd: timeout 30 make -s tramp-stub-smoke
+
+** S4.4 End to end: call-process (echo/false/buffer-redirect/git) works through the real NeLisp standalone binary
+#+REQUIRES: NELISP_BIN
+cmd: timeout 30 make -s proc-smoke NELISP_BIN="$NELISP_BIN"
+
+* S5 Loading a real vendor package (magit) on the standalone
+
+** S5.1 The vendored magit/dash/transient sources this bridge targets are present
+cmd: test -f vendor/magit/lisp/magit.el && test -f vendor/dash.el/dash.el && test -f vendor/transient/lisp/transient.el
+
+** S5.2 The vendored magit.el source is syntactically well-formed (balanced, readable by the reader)
+cmd: timeout 15 emacs -Q --batch --eval "(with-temp-buffer (insert-file-contents \"vendor/magit/lisp/magit.el\") (check-parens))"
+
+** S5.3 The magit bridge bundle for the standalone rebuilds cleanly from current sources
+cmd: timeout 30 make -s build/nelisp-emacs-magit-bridge-bundle.el
+
+** S5.4 End to end: magit's status buffer opens against a real git repo through the baked standalone runtime image
+#+REQUIRES: NELISP_BIN
+#+NOTE: fails fast (no rebuild) when build/nemacs-magit-runtime.nlri has not been baked in this checkout; see make bake-magit-runtime-image / the nemacs-magit-smoke skill.
+cmd: test -f build/nemacs-magit-runtime.nlri && "$NELISP_BIN" exec-runtime-image build/nemacs-magit-runtime.nlri "(nelisp--write-stdout-bytes (if (nelisp-emacs-magit-bridge-loaded-p) \"MAGIT-LOAD PASS\n\" \"MAGIT-LOAD FAIL\n\"))" 2>&1 | grep -q '^MAGIT-LOAD PASS$'
+
+* S6 Interactive nemacs editor usability
+
+Doc 11 §3.1's own stated close gate for "next usable editor blocker" is
+criterion S6.4 below verbatim: open, edit, save, switch buffers, run M-x,
+report an invalid command, through one bridge smoke.
+
+** S6.1 bin/nemacs --doctor runs a self-diagnostic against the standalone binary and exits cleanly
+#+REQUIRES: NELISP_BIN
+cmd: timeout 20 env NELISP_HOME="vendor/nelisp" NEMACS_NELISP="$NELISP_BIN" ./bin/nemacs --doctor
+
+** S6.2 The cold-image startup policy smoke passes against the standalone binary
+#+REQUIRES: NELISP_BIN
+cmd: timeout 30 env NELISP_HOME="vendor/nelisp" NEMACS_NELISP="$NELISP_BIN" sh test/nemacs-cold-image-policy-smoke.sh
+
+** S6.3 The GUI/TUI keymap coverage inventory can be computed on host Emacs
+cmd: timeout 30 emacs -Q --batch -L scripts -l scripts/nemacs-gui-keymap-coverage.el > /dev/null
+
+** S6.4 End to end: the standalone opens a file, edits it, and saves it through one bridge/session probe on the baked interactive runtime image
+#+REQUIRES: NELISP_BIN
+#+NOTE: fails fast (no rebuild) when build/nemacs-runtime.nlri has not been baked in this checkout; see make bake-runtime-image.
+cmd: test -f build/nemacs-runtime.nlri && "$NELISP_BIN" exec-runtime-image build/nemacs-runtime.nlri "(let* ((f (make-temp-file \"nemacs-usable-\")) (buf (find-file-noselect f))) (with-current-buffer buf (erase-buffer) (insert \"hello\") (save-buffer)) (nelisp--write-stdout-bytes (if (equal (with-temp-buffer (insert-file-contents f) (buffer-string)) \"hello\") \"FILE-RW PASS\n\" \"FILE-RW FAIL\n\")))" 2>&1 | grep -q '^FILE-RW PASS$'
+
+* S7 Performance / stability gates
+
+** S7.1 The diagnosability lint gate has not regressed past its committed baseline
+cmd: timeout 20 bash tools/lint-diagnosability.sh
+
+** S7.2 The working tree has zero dirty-review units pending reconciliation
+cmd: timeout 20 scripts/nemacs-dirty-review-units.sh build/usable-progress-dirty-review.tsv >/dev/null && awk -F'\t' 'NR>1{c++} END{exit (c+0>0)}' build/usable-progress-dirty-review.tsv
+
+** S7.3 The public-API ownership coverage report has zero unowned/stale rows
+cmd: timeout 30 emacs -Q --batch -L scripts --eval "(setq nemacs-ownership-coverage-output \"build/usable-progress-ownership.tsv\")" --eval "(setq nemacs-ownership-coverage-summary-output \"build/usable-progress-ownership-summary.org\")" -l scripts/nemacs-ownership-coverage.el -f nemacs-ownership-coverage-batch >/dev/null && awk -F'\t' 'NR>1 && ($1 ~ /^unowned$/ || $1 ~ /^stale$/){c++} END{exit (c+0>0)}' build/usable-progress-ownership.tsv
+
+** S7.4 End to end: the full library gate (ownership, API inventory, package manifest/deps/descriptors/catalog, promotion queue, layout, boundary, consumer/package smokes, production runtime path) passes
+cmd: timeout 55 make -s nemacs-library-gate

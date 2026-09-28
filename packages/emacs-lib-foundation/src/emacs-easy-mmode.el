@@ -112,6 +112,25 @@ nothing.")
      ((null spec) (list mode nil))
      ((eq spec t) (list mode nil))
      ((symbolp spec) (list spec nil))
+     ;; `(default-value 'SYM)' is real Emacs's own idiom (see simple.el's
+     ;; `transient-mark-mode': ":variable (default-value 'transient-mark-
+     ;; mode)") for "SYM already exists (typically a C-core DEFVAR_LISP
+     ;; predating any Lisp load), so `define-minor-mode' must not `defvar'
+     ;; MODE itself".  It is a GETTER EXPRESSION naming SYM, not the
+     ;; unrelated `(ROOT . SETTER-FN)' cons the `consp' arm below handles
+     ;; (e.g. `emacs-lock-mode').  Without this arm, the `consp' arm below
+     ;; wrongly took `(car spec)' = the symbol `default-value' itself as
+     ;; the mode variable, so the `defvar' a few lines down in the caller
+     ;; never bound the REAL variable (SYM) -- `transient-mark-mode' then
+     ;; stayed void when this macro's own generated `(when MODE
+     ;; (add-to-list 'global-minor-modes ...))' `:global' form read it
+     ;; (S5.4).  `setq' on a non-buffer-local SYM (the `:global t' case,
+     ;; which skips `make-variable-buffer-local') already writes the
+     ;; default value, so no custom setter is needed here.
+     ((and (consp spec) (eq (car spec) 'default-value)
+           (consp (cdr spec)) (consp (cadr spec))
+           (eq (car (cadr spec)) 'quote) (symbolp (cadr (cadr spec))))
+      (list (cadr (cadr spec)) nil))
      ((and (consp spec) (symbolp (car spec)))
       (list (car spec)
             (if (symbolp (cdr spec))

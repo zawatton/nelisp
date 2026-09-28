@@ -18,18 +18,20 @@
 ;;; Code:
 
 (defun nemacs-feature-coverage-probe--rows (path)
-  "Read feature/kind/name rows from PATH."
+  "Read feature/kind/name rows from PATH.
+Reads the whole buffer and splits on newlines rather than walking
+point/`eobp' line by line: on the standalone, `nelisp-ec-point-max'
+inside a `with-temp-buffer' does not track size after `insert' /
+`insert-file-contents' (a buffer-core substrate gap outside this
+script's scope), which made `eobp' report t immediately and this
+probe silently read zero rows.  `buffer-string' is unaffected."
   (let ((rows nil))
     (with-temp-buffer
       (insert-file-contents path)
-      (goto-char (point-min))
-      (while (not (eobp))
-        (let* ((line (buffer-substring-no-properties
-                      (line-beginning-position) (line-end-position)))
-               (parts (split-string line "\t")))
+      (dolist (line (split-string (buffer-string) "\n" t))
+        (let ((parts (split-string line "\t")))
           (when (= (length parts) 3)
-            (setq rows (cons parts rows))))
-        (forward-line 1)))
+            (setq rows (cons parts rows))))))
     (nreverse rows)))
 
 (defun nemacs-feature-coverage-probe-batch ()

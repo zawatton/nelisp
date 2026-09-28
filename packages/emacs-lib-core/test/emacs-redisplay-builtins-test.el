@@ -73,6 +73,17 @@
                          sym)
                  nil t))))))
 
+(ert-deftest emacs-redisplay-builtins-test/install-preserves-real-provider ()
+  "Only explicit stubs may be replaced once a public provider is installed."
+  (let ((symbol (make-symbol "redisplay-provider")))
+    (fset symbol #'ignore)
+    (unwind-protect
+        (progn
+          (should-not (emacs-redisplay-builtins--install-function-p symbol))
+          (put symbol 'emacs-stub-bulk t)
+          (should (emacs-redisplay-builtins--install-function-p symbol)))
+      (fmakunbound symbol))))
+
 ;;;; B. set-current-handle / current-handle accessors
 
 (ert-deftest emacs-redisplay-builtins-test/set-and-get-current-handle ()

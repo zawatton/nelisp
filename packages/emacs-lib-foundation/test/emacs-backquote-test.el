@@ -260,6 +260,42 @@ the load so host Emacs keeps its own definitions; only used from
                      (buffer-string))))))
 
 
+;;;; --- S2 coverage batch: GNU backquote.el helper API --------------------
+;;
+;; These are faithful ports of real GNU Emacs 31.1's own
+;; `backquote-list*'/`backquote-process'/`backquote-listify'/
+;; `backquote-delay-process' (operating on the `\,'/`\,@'/`` \` `` triad,
+;; independent of this file's own `(comma X)' polyfill above).  They are
+;; `unless (fboundp ...)'-gated, so under host Emacs these tests exercise
+;; real Emacs's own functions -- the exact values below are pinned against
+;; that ground truth.
+
+(ert-deftest emacs-backquote-test/s2-batch-loads ()
+  (dolist (sym '(backquote-list*-function backquote-list*-macro
+                 backquote-list* backquote-process backquote-delay-process
+                 backquote-listify))
+    (should (fboundp sym))))
+
+(ert-deftest emacs-backquote-test/list*-values ()
+  (should (equal (backquote-list*-function 'a 'b 'c) '(a b . c)))
+  (should (equal (backquote-list*-function 'a) 'a))
+  (should (equal (backquote-list* 'a 'b 'c) '(a b . c))))
+
+(ert-deftest emacs-backquote-test/process-values ()
+  (should (equal (backquote-process 5) '(0 . 5)))
+  (should (equal (backquote-process ''foo) '(0 quote 'foo)))
+  (should (equal (backquote-process [1 2 3]) '(0 . [1 2 3])))
+  (let ((form (list 'a (list backquote-unquote-symbol 'b) 'c)))
+    (should (equal (backquote-process form) '(1 backquote-list* 'a b '(c)))))
+  (let ((form (list 'a (list backquote-splice-symbol 'b))))
+    (should (equal (backquote-process form) '(1 cons 'a b)))))
+
+(ert-deftest emacs-backquote-test/process-errors ()
+  "More than one arg to `,' signals a plain `error', matching real
+GNU Emacs 31.1 (`Multiple args to , are not supported')."
+  (let ((form (list backquote-unquote-symbol 'x 'y)))
+    (should (eq (car (should-error (backquote-process form))) 'error))))
+
 (provide 'emacs-backquote-test)
 
 ;;; emacs-backquote-test.el ends here
