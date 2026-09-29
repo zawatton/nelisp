@@ -1,0 +1,429 @@
+#+TITLE: Doc 211 — Emacs API layer as packages: nel-lib into NeLisp, a minimal-native core, and native demotion
+#+AUTHOR: NeLisp
+#+STATUS: DRAFT (2026-09-30) — design and inventory only. Nothing here is implemented; nothing was written to either repository. Every fact is measured against dev/nelisp (branch feat/eln-jit-2026-09-28, HEAD build =nelisp-head37=) and dev/nelisp-emacs-lib (branch feat/http-protocol-layer) on 2026-09-30; inventories live in =~/.cache/tmp/nelisp-doc211/inventory/=.
+#+STATUS2: Ledger: =~/.cache/tmp/nelisp-doc211/migration-progress.org= (9 stages, all pending). Companion: Doc 209 (bytecode native compiler, other session) and the eln JIT ledger =tools/ai/eln-progress.org= (70 criteria).
+
+* Decisions (user, 2026-09-30)
+
+Round 1
+- D1 Native code in NeLisp is the bare minimum; the general native compiler and the JIT path are the route to speed.
+  New natives need a written justification and a measurement (§6).
+- D3 The NeLisp core keeps only the language core (eval, reader, GC, basic list/string/number operations, a minimal OS
+  interface). Emacs-API Lisp in the prelude and =lisp/= moves to packages.
+- D4 Only vendored GNU files that packages or the bundle actually load move into =nelisp/vendor/emacs-lisp=, each with
+  sha256 and origin.
+- D5 History is preserved (filter-repo or subtree). Completion = every criterion that passes today still passes: nel-lib usable
+  ledger 27/30 (FAIL S2.5 S5.4 S6.2), NeLisp =tools/ai/eln-progress.org= 70/70, all NeLisp gates, plus the new migration ledger.
+- D6 Existing natives are also REDUCED where possible: natives buy speed but lose Lisp's inspectability, redefinability and
+  portability. Demote in batches keeping every passing criterion and the time caps (meter 55 s, S1.4 50 s); recover speed via the
+  general native compiler / JIT (Doc 209, eln path), never by keeping a hand-written native. Demotions needing that compiler are
+  listed as blocked (§7.4).
+
+Round 2 (answers to the first draft's open questions)
+- D7 (Q1) nel-lib is FULLY integrated into nelisp and the nel-lib repository is RETIRED (no thin consumer). Everything moves,
+  with history: packages (canonical), the bootstrap-bundle build, apps, magit/org bridges, tests, tools, the usable-progress
+  ledger (into =nelisp/tools/ai/=), and the new C-core work: =tools/c-core-coverage.sh=, =tools/c-core-areas.tsv=,
+  =tools/ai/c-core-progress.org= (24 criteria, 8 stages), =test/c-core-*=, and the =src/emacs-cc-*.el= units that GPT-6-Luna
+  workers are writing now (about 97 units; they land in nel-lib =src/= first and must move with history). =vendor/nelisp= disappears
+  (no two-repo pin). The cutover must keep every currently-passing criterion passing (usable 27/30, c-core ledger, eln 70/70, gates).
+- D8 (Q2/Q5) Instead of an API-including image for the JIT harness, FIRST make GNU bytecomp bootstrapping independent of the API
+  layer (accepted as large): its own early stage with criteria (§2.1, ledger S3). The two-image idea is kept only if still needed after
+  that stage (§5).
+- D9 (Q3) On the 183 duplicate names nel-lib's implementation wins by default, decided per family with differential evidence,
+  after mechanical relocation.
+- D10 (Q4) Vendor: one GNU 31.1 tree. The 17 bundle files currently taken from 30.1 are re-verified on 31.1.
+- D11 Implementation of every stage is done by GPT-6-Luna workers in small units (at most 12 functions or one file per unit). The
+  ledger is structured for that (§8.1): each stage has a machine-readable unit manifest, and the stage criteria aggregate over units.
+- D12 (answer to Q9) The core scratch buffer for GNU bytecomp is accepted as the single exception to the API-layer rule:
+  private nelisp--scratch-* names plus at most 15 GNU-named aliases, removable once the buffer package loads (S3).
+- D13 (answer to Q6) A short freeze of C-core unit landings in nel-lib is acceptable at cutover (S6); units land in
+  nelisp afterwards, and the import stays repeatable.
+
+* §0 Summary
+
+NeLisp is pure Lisp (zero Rust). Its "native" surface is the dispatch table
+=nelisp-standalone--reader-builtins= (=scripts/nelisp-standalone-build.el:25198=), 257
+names by the census (111 GNU C primitives plus 146 NeLisp-specific), compiled from the
+AOT DSL. Everything else the binary offers is Lisp from =scripts/nelisp-stdlib-prelude.el=
+(21 900 lines), baked into a 289 MB cold image. The Emacs API layer (buffers, markers,
+text properties, syntax tables, the sexp scanner, files, process objects, time formatting,
+...) lives in that prelude and in =lisp/nelisp-stdlib-*.el= / =src/nelisp-buffer.el=.
+
+nel-lib (=dev/nelisp-emacs-lib=) is a second, richer implementation of the same layer:
+of the 221 API-layer names the census finds Lisp-defined in NeLisp, 183 are also defined in
+nel-lib =src/=. nel-lib's =packages/= tree is only a generated, drifting mirror of =src/=
+(110 of 120 files identical, 5 drifted, 122 of 237 =src= files have no package home).
+
+The user decided (2026-09-30) to end this duplication and to shrink the native surface.
+This document specifies:
+
+1. What stays in the NeLisp core (§2) and the rule that decides it (§6).
+2. Where each API-layer file goes: the =nelisp-emacs-*= packages in =dev/nelisp/packages/=, canonical there, and how the
+   whole nel-lib repository (apps, bundle build, tools, tests, ledgers, C-core units) is merged into nelisp with history and
+   then retired (§3, §4).
+3. How to make GNU bytecomp independent of the API layer first (§2.1), and how packages reach a running system without
+   breaking the 50 s / 55 s caps (§5): bake them; do not source-load them at start.
+4. A demotion program that replaces hand-written natives by Lisp in measured batches,
+   recovering speed through the general native compiler / JIT rather than new natives (§7).
+5. Ten ledger stages with a real end-to-end criterion each (§8, =migration-progress.org=).
+
+Key numbers: 221 API-layer names move, 134 stay as core Lisp; 257 natives = 151 must-stay,
+86 demotable, 20 review; 29 vendored GNU files are needed by the bundle (21 new to NeLisp's
+vendor dir); cold bundle load is 38.4 s against a 50 s cap and must not grow.
+
+* §1 Problem, with measurements
+
+** 1.1 Two owners of one layer
+- Prelude API sections (lines): text-property engine 10681, standard-name wiring 10933,
+  current-buffer/set-buffer 11477, motion 11603, syntax tables 11928, parse-partial-sexp 12208,
+  emacs-lisp-mode/check-parens/save-excursion 12644, markers 13516; about 4600 lines (21 %).
+  Beyond the prelude: =lisp/nelisp-stdlib-os.el= (6445 lines), =nelisp-stdlib-regexp.el= (1401),
+  =src/nelisp-buffer.el= (901), =src/nelisp-text-buffer.el= (484), =src/nelisp-coding.el= (1935).
+- nel-lib src/: 237 =.el= files (474 counting untracked =.elc=), 6923 definitions;
+  =emacs-buffer=, =emacs-window=, =emacs-keymap=, =emacs-fileio=, etc.
+- Overlap: 183/221 API names defined in both; 132/371 language-core names redefined in nel-lib.
+  (=inventory/dup-api-in-nellib.txt=, =a2-classified.tsv=.) Which definition wins today depends
+  on load order (=tools/nelisp-emacs-compat.el= classes: shared-deferring vs shared-shadowing).
+
+** 1.2 The packages/ tree in nel-lib is not a source of truth
+Header of every =*-pkg.el=: "Source of truth remains src/". 138 tracked files; mirror drift:
+=emacs-load.el= differs by 949 diff lines, three others by 18-34. The bundle build reads =src/=
+(=scripts/build-nelisp-bootstrap.el=), not =packages/=. About 45 =scripts/nemacs-library-*=
+generators and ~100 Makefile targets exist only to keep the mirror, its metadata, signing and
+release bundles coherent (Doc 12/24-29 of nel-lib).
+
+** 1.3 Startup and caps
+- Bare =nelisp-head37 --eval '(princ 1)'=: 3.6 s (prelude baked in the cold image).
+- nel-lib bundle (=build/nemacs-bootstrap.el=, 5.4 MB, 96 395 lines, 166 sections = 137 src + 29 vendor)
+  loaded as source: 38.4 s measured, S1.4 cap 50 s inside the meter's fixed 55 s.
+- eln S6.x criteria run 32-34 s directly (loading vendor =bytecomp.el= from source is ~27 s of that);
+  they have little headroom.
+
+** 1.4 The JIT depends on the API layer
+=lisp/nelisp-eln-runtime-services.el= implements GNU import ports (record_unwind_current_buffer,
+save_excursion, Fpoint, ...) by calling =current-buffer=, =set-buffer=, =buffer-live-p=,
+=point-marker=, =goto-char=, =window-buffer=, =set-window-point=. The S6 harness loads GNU
+=bytecomp.el=, which needs =with-temp-buffer=, syntax tables, =check-parens=, =emacs-lisp-mode=
+(exactly the prelude Doc 204 P3-P5 sections). See =inventory/a4-coupling-risks.md=.
+
+
+** 1.5 Collisions that the full merge creates (measured 2026-09-30)
+- Same file names: =src/nelisp-coding.el= and =src/nelisp-text-buffer.el= exist in both repos and DIFFER; =nelisp-coding-jis-tables.el= is
+  identical. nel-lib =src/nelisp-regex.el= collides by feature name with NeLisp =packages/nelisp-regex=. Other overlaps: =test/nelisp-coding-test.el=,
+  =test/fixtures/=, =bin/nemacs= (nelisp already ships =bin/nemacs=), and 30 design-doc numbers (nel-lib =docs/design/06..46= vs nelisp
+  =docs/design/47..211=; nel-lib has 46 docs numbered from 1).
+- Resolution rules (§4.3): each colliding file gets an explicit owner decision before the merge (NeLisp copy vs nel-lib copy, recorded in the
+  ledger); nel-lib docs are imported under =docs/design/nemacs/= keeping their numbers; =bin/nemacs= is reconciled by name.
+- nel-lib's C-core tooling calls =vendor/nelisp/tools/nelisp-c-primitive-census.sh=; after the merge it calls the in-tree tool.
+
+* §2 What stays in the core
+
+Rule (§6.1): a definition stays in the core iff the language cannot run, or cannot load the
+next file, without it. Concretely:
+
+| Core piece | Where today | Stays as |
+|---|---|---|
+| Evaluator, special forms, macroexpand entry, apply/funcall/signal | =src/nelisp-eval.el=, =lisp/nelisp-stdlib-eval-*.el=, AOT arms | native (must-stay) + Lisp |
+| Reader / printer | =lisp/nelisp-stdlib-reader.el=, =-prn.el=, arm =nelisp--read-all-from-string-native= | mixed, unchanged |
+| Allocation, symbols, cons/vector/string/record/bool-vector/char-table data types | AOT arms 6359..19782 | native (must-stay) |
+| GC, heap image dump/load | =nelisp--arena-*= | native (must-stay) |
+| List/string/number/hash/sequence basics (=134= language-core Lisp defs + 77+34 GNU natives) | prelude, =lisp/nelisp-stdlib-{list,hash,plist-str,math,equal,hof}.el= | Lisp (demotion candidates in §7) |
+| Format, printing to strings, =require/provide/load/autoload=, hooks, errors, catch/throw | prelude | Lisp |
+| Minimal OS: =syscall-direct=, =ptr-*=, =alloc-bytes=, thread/fork, rdf/wrf/exit/clock | reader-builtins | native (must-stay) |
+| The eln/JIT/AOT compilers (=lisp/nelisp-cc-*=, =-eln-*=, =-aot-*=, =src/nelisp-bytecode*.el=) | =lisp/=, =src/= | stay: they are the compiler, not the API layer; they REQUIRE the API packages at runtime (§5.3) |
+
+Leaves the core (221 census names + their prelude bodies): buffers, markers, text properties,
+overlays, syntax tables, sexp scanner, search/regexp-on-buffer, keymaps, faces, frames/windows,
+process objects, sockets-as-Emacs-objects, file-name and file predicates, directory listing,
+time formatting/encoding, coding systems, completion, minibuffer reads, json/base64/secure-hash
+front ends. Category counts: buffer 56, files 27, process 24, keymap 16, face/display 16,
+textprop 14, search 14, syntax 9, marker 8, i18n/misc 8, time 7, data formats 7, coding 6,
+completion 5, frame/window 4.
+
+Note on regex: =string-match=, =match-data=, =looking-at=, =re-search-*= are classified API layer
+because the engine is the =nelisp-regex= package. The prelude and loader call =string-match= on
+the boot path, so the regex engine is a BOOT-CRITICAL package: it must always be in the image (§5).
+
+
+** 2.1 Making GNU bytecomp independent of the API layer (D8)
+Measured on the vendored 31.1 sources (=nelisp/vendor/emacs-lisp/emacs-lisp/=, top-level call-site counts of API names):
+| File | API call sites |
+|---|---|
+| =bytecomp.el= | =insert= 28, =message= 26, =with-current-buffer= 13, =goto-char= 12, =point= 11, =current-buffer= 10, =point-min= 8, =point-max= 6, =prin1= 4, =write-region= 3, =get-buffer-create= 3, =erase-buffer= 3 |
+| =byte-opt.el= | =point= 3, =message= 3, =save-excursion= 1 |
+| =cconv.el=, =macroexp.el=, =byte-run.el= | =message= and one =print= only |
+So the compiler proper is nearly pure; its only real API need is ONE output buffer (=byte-compile-outbuffer=: create, insert, position, erase,
+write to file). No syntax tables, no markers, no text properties and no keymaps are used by these five files (the residual from the harness and
+from =src/nelisp-gnu-bytecode-vm.el= (=check-parens=, =set-buffer=) and the prelude Doc 204 P3-P5 sections must be measured; the existing tool
+=tools/nelisp-vendor-bytecomp-first-blocker.el= is the starting probe). Two further costs are not API needs: =(eval-when-compile (require 'compile))=
+(about 13.6 s per S6.x run per the ledger note) and the self-compile =eval-when-compile= block (about 6 s).
+
+Design: a *core compiler scratch buffer* in the language core, a string-builder with a private prefix (=nelisp--scratch-*=): create, insert, point,
+goto-char, point-min/max, erase, buffer-string, write-region. The GNU names bytecomp calls are then bound in the core to these ONLY as a thin
+alias set of at most 15 names, documented as the single "bootstrap buffer" exception to the API-layer rule (§6.1 clause 6). The API package
+(=nelisp-emacs-buffer-core=) later redefines the same 15 names with the full implementation, so nothing is duplicated once packages are loaded
+and the core copy is removable in one commit (deletion test in ledger S3). Rejected: a second private copy of bytecomp (breaks "vendored verbatim");
+advising bytecomp's calls (needs =nadvice=, which is itself an API layer). Options for the two non-API costs: provide =compile= as a stub feature
+carrying only the =defvar=s that bytecomp reads at compile time (skips the 13.6 s load), and make the S6 harness skip self-compile when the
+compiled bytecomp is cached (evidence-checked). Proof = the eln S6 and S10 harness runs on a core-only image (no API packages in the image) with
+identical results and timings inside 55 s. If that passes, the api image is NOT needed for the JIT ledger.
+
+* §3 Target layout in =dev/nelisp/packages/=
+
+Existing NeLisp packages that already own part of the layer stay and become dependencies:
+=nelisp-overlay=, =nelisp-textprop-{display,hook,keymap}=, =nelisp-regex=, =nelisp-redisplay=,
+=nelisp-dired=, =nelisp-tramp=, =nelisp-process=, =nelisp-process-adapter=, =nelisp-json=,
+=nelisp-base64=, =nelisp-secure-hash=, =nelisp-network=, =nelisp-sys=, =nelisp-eventloop=.
+
+Packages moving from nel-lib (dependency order taken from the =-pkg.el= files, 2026-09-30):
+
+| # | Package | Content (nel-lib =src/=) | Requires | Files now / proposed |
+|---|---|---|---|---|
+| 1 | =nelisp-emacs-foundation= | cl-macros, seq/map/json/pp/generator/ert GNU-name libs, char-table data, parity fixups (=emacs-parity-*=, 26), cl-preloaded/oclosure shims | (core only) | 29 / 29+46 |
+| 2 | =nelisp-emacs-text-core= | text buffer, text-property tables | foundation | 5 / 5 |
+| 3 | =nelisp-emacs-buffer-core= | buffer, marker, overlay bridge, buffer-ui | foundation, text-core | 11 / 11 |
+| 4 | =nelisp-emacs-editing= | line/search/edit/undo | buffer-core, foundation | 4 / 4 |
+| 5 | =nelisp-emacs-io= | fileio, eventloop, process/network/sqlite/tls/pty/font FFI, stdio, server polyfills | buffer-core, foundation, text-core | 16 / 16+15 |
+| 6 | =nelisp-emacs-core= | command loop, keymap, minibuffer, mode, faces, frame, window, help, redisplay-core, syntax-table | buffer-core, editing, foundation | 31 / 31+8 |
+| 7 | =nelisp-emacs-special-buffers= | special buffers | buffer-core | 1 / 1 |
+| 8 | =nelisp-emacs-textmodes-stub= | textmode stubs | buffer-core | 5 / 5 |
+| 9 | =nelisp-emacs-tools= (NEW) | lazy GNU-name UI overrides: comint, compile, eshell, shell, man, woman, dired, vc, project, xref, imenu, info, calc, org agenda/capture, tab-bar, treesit, isearch, replace, nxml, gnus | core, io, editing | 0 / 45 |
+| 10 | =nelisp-emacs-facade= | umbrella =nelisp-emacs.el= | all above | 2 / 2 |
+
+Nothing stays in nel-lib (D7). The app/consumer parts land in nelisp as follows:
+| nel-lib | nelisp destination |
+|---|---|
+| =packages/nelisp-emacs-app-gui= (11: nemacs-main, loadup, image-baker, gtk frontend) | =packages/nelisp-emacs-app-gui/= |
+| =src/emacs-cc-*.el= (about 97 C-core units, landing now), =test/c-core-*=, =tools/c-core-*=, =tools/ai/c-core-progress.org= | NEW =packages/nelisp-emacs-ccore/= (units), tests beside it, tools in =tools/=, ledger in =tools/ai/= |
+| magit and org bridges (=nelisp-emacs-magit-bridge=, =-org-bridge=, bundle builders) | =packages/nelisp-emacs-bridges/= (NEW); builders in =scripts/= |
+| =nemacs-runtime-{cdb,skk,stdlib-extra}=, =standalone-soak=, =emacs-tier3-facades= | =packages/nelisp-emacs-runtime/= (NEW) |
+| =nemacs-tramp= | merged into existing =packages/nelisp-tramp/= (per-name check) |
+| =scripts/build-nelisp-bootstrap.el=, =standalone-source-normalize.el=, bake targets | =scripts/= and Makefile targets in nelisp |
+| =apps/=, =gui/=, =bin/= (nemacs, nemacs-server, elprop-run, vendor-coverage; =bin/build-nelisp= deleted) | =apps/=, =gui/=, =bin/= (reconcile =bin/nemacs=) |
+| =tools/ai/usable-progress.org=, =lint-diagnosability.sh=, =run-with-deadline.sh= | =tools/ai/=, =tools/= |
+| =docs/= (46 design docs) | =docs/design/nemacs/= |
+| consumer vendors (magit, transient, with-editor, dash.el, compat, cond-let, llama, emacs-etc) | =vendor/= (third-party, distinct from GNU Lisp; sha256 recorded) |
+
+Prelude extraction package (ledger S7): the prelude API sections first move AS-IS (mechanical, zero
+behaviour change) into =packages/nelisp-api-prelude/= split by section into
+=-buffer=, =-syntax=, =-marker=, =-textprop=, =-files=, =-time=; only then (ledger S9) are the 183
+duplicate names resolved against the nel-lib packages, one differential parity probe per
+family (skill =nelisp-parity-probe=). This separates "relocate" (reversible, no semantics) from
+"deduplicate" (semantic, per-name evidence).
+
+Layout inside each package follows NeLisp's convention (=manifest.el=, =README.org=, =src/=, =test/=);
+nel-lib's =lisp/= and =lazy/= subdirs become =src/= with the lazy feature list recorded in
+=manifest.el= (=:lazy= key, new). Unit ERT moves with the package (226 =test/*.el= in nel-lib,
+assigned by feature). =*-pkg.el= descriptors, the signing/archive/release machinery
+(=nemacs-library-package-*=) are retired: NeLisp's =nelisp-pkg= manifests and =make pkg-graph=
+replace them. Every moved package must satisfy =pkg-graph=, =pkg-load-lists=, =ns-inventory=.
+
+* §4 Migration mechanics: full integration and retirement of nel-lib
+
+** 4.1 History-preserving import (whole repository)
+1. In a scratch clone of nel-lib (never in place): =git filter-repo= with path renames from a mapping file generated from
+   =inventory/a1-src-to-package.tsv= plus the rules in §3 (=src/X.el= to =packages/P/src/X.el=, =test/*= to =packages/P/test/= or =test/=,
+   =tools/=, =scripts/=, =apps/=, =gui/=, =bin/=, =docs/design/= to =docs/design/nemacs/=). Drop: the generated =packages/= mirror commits
+   (duplicate of =src/=), =build/=, =target/=, =vendor/nelisp= (a clone; 527 MB), and =vendor/emacs-lisp*= (replaced by the S5 selective import).
+   =git-filter-repo= is at =~/.local/bin/git-filter-repo=.
+2. Merge into a nelisp migration branch with =--allow-unrelated-histories= (merge commit, no squash).
+3. Determinism: filter-repo with identical arguments on an identical input gives identical commit ids. The C-core units keep landing in nel-lib
+   during the migration, so the import is REPEATABLE: re-run the same filter on the newer nel-lib head and merge again; only the new commits are added.
+   Ledger criterion S4.3 proves this on a scratch copy before any real merge.
+4. Verify by walk: every moved file has equal sha256; reachable commit count preserved for the kept paths; =git log --follow= on sampled files reaches
+   the original first commit.
+5. Rollback: tag =pre-doc211= on nelisp and =pre-doc211-final= on nel-lib; abandon the migration branch by deleting it.
+
+** 4.2 Freeze and cutover protocol (keeps every passing criterion)
+Phase 0 (dual-run, weeks): nel-lib remains the working repo for the C-core workers; nelisp receives repeated imports on a migration branch and its
+ledgers run there. Phase 1 (freeze): announce a freeze in nel-lib (no merges except worker landings queued in a list), run the LAST import, run
+the full baseline check (usable 27/30 same FAILs, c-core ledger equal to its recorded state, eln 70/70, all gates) on the migration branch built
+with in-tree sources only. Phase 2 (cutover): fast-forward nelisp main to the migration branch; point every worker brief, AGENTS.md and skill to nelisp paths;
+archive nel-lib read-only (branch protection or a README stub), keep a =git bundle= of the final state verified by cloning it (memory rule: bundle verify
+is not enough). Phase 3 (retire): =vendor/nelisp= is gone; nel-lib is not deleted until one full week of green nelisp CI on main. Rollback: nelisp main reset to
+=pre-doc211=; nel-lib un-archived; both are unmodified because the import never wrote to nel-lib.
+Worker landings during Phase 0 use one rule: a unit is accepted in nel-lib =src/= as today; the next import carries it to
+=packages/nelisp-emacs-ccore/src/=. After Phase 2, workers target nelisp packages directly.
+
+** 4.3 Collision decisions (must be recorded before the first merge)
+=nelisp-coding.el=, =nelisp-text-buffer.el= (differ), =nelisp-regex= (feature collision with the package), =test/nelisp-coding-test.el=, =test/fixtures/=,
+=bin/nemacs=, design-doc numbers. Each row of the ledger S4 decision file names the surviving copy and the reason; default for API-layer names is D9 (nel-lib wins),
+for =nelisp-coding= the NeLisp copy is the default until a differential shows nel-lib is a superset.
+
+** 4.4 Making packages canonical
+nelisp has no =src/= mirror and no generator. The nel-lib mirror machinery (=nemacs-library-package-*= scripts, about 45; about 100 Makefile targets; signing,
+archive, release bundle) is retired with the mirror. NeLisp's =nelisp-pkg= manifests and =make pkg-graph= replace it. The 5 drifted mirror files: =src/= wins
+(newer per git log). =manifest.el= gains a =:lazy= key for lazy features.
+
+** 4.5 The bundle build inside nelisp
+=scripts/build-nelisp-bootstrap.el= resolves feature files through a feature-to-package-path table generated from manifests (the concatenation order,
+hoisting and normalisation are unchanged). =bin/build-nelisp= and the vendor checkout logic are deleted: the binary comes from the same tree. Acceptance: the
+regenerated bundle equals the previous bundle modulo path comments, then S1.4 boots it under 50 s.
+
+** 4.6 Vendor (D4, D10)
+One tree, GNU 31.1, under =nelisp/vendor/emacs-lisp/<gnu path>=, with entries in =vendor/SHA256SUMS= and =vendor/ORIGIN= (release, source path, decompress command),
+extending the existing convention. Contents: the 29 files named in the bundle lists plus the runtime-required set measured by a =load= trace during the S1.4 replay.
+The 17 files the bundle takes from 30.1 are each re-verified on 31.1 (bundle build, S1.4 boot, census diff, and the owning package's ERT); a failing file gets a
+documented shim or a temporary =vendor/emacs-lisp-30.1/= exception recorded as a waiver. 6 same-named files differ between the trees (ring, custom, comint,
+compile, isearch, cl-macs) and are handled first. The 74 MB 30.1 tree is not imported.
+
+** 4.7 Gate and ratchet work that lands in the SAME commit as a move
+=emacs-compat= baseline, =ns-gate= accepted file (digest keys embed paths), =fallback-inventory= pins, =substrate-presence-corpus-check= ledger, =parens-check= roots
+(add =packages/=), the census tool (third state "in-package"), =nelisp-standalone--builtin-fixed-arities= (parses the prelude), =pkg-graph=, =pkg-load-lists=, =doc-claims=
+(new design docs need VERIFIED-BY lines). Procedure = skill =nelisp-prelude-ratchets=, fixed order, once per slice.
+
+** 4.8 Circularity
+Vanishes with the retirement: one repository, no pin. The remaining rule stays: the language core must not =require= any =nelisp-emacs-*= feature (gate S2.4).
+
+* §5 Loading and baking
+
+Measured facts: bare start 3.6 s; source bundle 38.4 s (cap 50 s); artifact-cache replay measured
+25-28x SLOWER than source in nel-lib notes; cold image 289 MB.
+
+| Option | Startup | Cap risk | Image size | Redefinability | Verdict |
+|---|---|---|---|---|---|
+| A. Bake selected packages into the cold image at build time | ~3.6 s + load of image | none | grows by the API fraction (measure) | full (Lisp closures) | recommended for boot-critical and JIT/harness packages |
+| B. Source-load packages at start | +up to 38 s | breaks S1.4-type caps and 55 s meter | none | full | only for rare lazy packages |
+| C. Per-package artifact cache (.neln/.nelc) | worse today | breaks | small | reduced | reject until Doc 209 lands |
+| D. Autoload stubs in the core image, package loaded at first call | 3.6 s + first-call cost | first call can exceed caps (bytecomp-style bulk) | small | full | good for =nelisp-emacs-tools= (lazy UIs) |
+| E. Two cold images: =core= and =core+api= (A applied twice) | each fast | none | 2 images | full | recommended packaging |
+
+Recommendation (revised by D8): after ledger S3 proves bytecomp on a core-only image, the JIT ledger no longer needs an API image, so the default is ONE
+image family: the core image, plus the api image only for consumers that need Emacs APIs (nemacs, magit smokes, presence corpus). If S3 fails, fall back to the
+two-image plan below. Original recommendation: E with A and D. =target/nelisp.cold= stays language-core only (the "minimal" image);
+=target/nelisp-api.cold= (name provisional) = core + packages in manifest order
+(regex, foundation, text-core, buffer-core, editing, io, core, special-buffers, textmodes-stub, facade);
+=nelisp-emacs-tools= is autoload-only. The JIT ledger and the S6 harness run on the core image once ledger S3 passes (until then they would need the api image); the substrate-presence corpus runs on the api image and additionally has a
+core-only variant that asserts the minimal set. Default image for gates is Q2 in §11. The bundle
+build in nel-lib becomes a strict subset step: after the packages are baked, the source bundle only carries
+consumer glue and the 29 vendor files (target: S1.4 well below 38 s; the criterion cap stays 50 s).
+
+Open technical proof (ledger S8, before the prelude copies are deleted): that a package can be loaded on top of a
+core image at build time and re-dumped with =nelisp--arena-dump-image-*=, and that
+=nelisp--arena-load-split-verify= supports layered images. If layering is impossible, a full image rebuild
+per package change (minutes) is the cost; Doc 210 already accepted the same rebuild cost for the eln path (its Q5/Q7/Q9).
+
+* §6 Minimal-native policy
+
+** 6.1 The rule (usable verbatim in review)
+A function may be native (an entry in =nelisp-standalone--reader-builtins= / a =(:lit ...)= arm) iff at
+least one of these holds, stated in the commit that adds it:
+ 1. Allocation or tagged-object access that has no Lisp form (cons, vector, string, symbol cell, record,
+    char-table slot, bool-vector).
+ 2. Evaluator or GC entry (eval, funcall, apply, signal, garbage-collect, heap image dump/load).
+ 3. Raw OS or memory access (=syscall-direct=, =ptr-*=, =alloc-bytes=, thread/fork, atomics).
+ 4. Needed before the first Lisp form can run (file read for the prelude loader, stdout, exit, clock).
+ 5. Arithmetic on tagged numbers where an inlined native operation is the only non-recursive form
+    (fixnum ops), until the native compiler owns them.
+ 6. (Exception, D8) The bootstrap scratch buffer of §2.1: at most 15 aliased names, removable in one commit once the API package supplies them.
+Everything else is Lisp, in a package or the core prelude. "Faster" is NOT a qualifying reason.
+
+** 6.2 Requirements for any new native
+A written justification naming the clause above; a measurement (before/after ns per call on the
+census corpus, plus S1.4 and 55 s criteria timings) recorded in the ledger NOTE of the criterion that
+introduces it; a Lisp reference implementation kept in the tree (so demotion is one deletion); and an
+entry in =tools/nelisp-native-inventory.txt= (proposed, machine-generated from the reader-builtins table
+plus =a2-classified.tsv= verdicts).
+
+** 6.3 Where it is recorded and enforced
+- =AGENTS.md= (nelisp): a "Minimal native surface" section quoting §6.1-6.2 verbatim.
+- New gate =native-inventory= (added to =FAST_GATES= in =tools/ai/preflight.sh=): fails when the
+  reader-builtins table gains a name not in the inventory file with a verdict and justification, or when
+  a must-stay name loses its clause; the count may only fall (ratchet, like =unsafe-inventory=).
+- Existing =tools/nelisp-c-primitive-census.sh= gets a third state (in-package) and is re-run in the
+  stage-end criteria.
+- Review checklist item in the =lane-brief= skill.
+
+* §7 Demotion program (D6)
+
+** 7.1 Classification (inventory =a2-classified.tsv=, 587 rows)
+| Class | Count | Notes |
+|---|---|---|
+| Natives must-stay | 151 (77 GNU + 74 NeLisp) | clauses 1-5 above |
+| Natives demotable | 86 (34 GNU + 52 NeLisp) | Lisp sketch and perf note in the tsv |
+| Natives review | 20 | language-core functions needing a per-name call (=butlast last error not zerop string= string< special-form-p= ...) |
+
+** 7.2 Demotion batches (cold to hot)
+| Batch | Names | Lisp replacement source | Perf risk | Blocked on |
+|---|---|---|---|---|
+| Q1 diagnostics | =nelisp--arena-walk-verify=, =size-census=, =alloc-check-report=, =gc-diag=, =arena-stats=, =debug-switch=, =arena-value-survival= (7) | short Lisp over =ptr-read-u64= (dev-only; may move to a dev package) | none (not on boot path) | nothing |
+| Q2 data front ends | =nelisp--sha256=, =-bytes=, =nelisp--json-encode= (3) | =packages/nelisp-secure-hash=, =nelisp-json= already exist | warm (cache keys) | none; time S6 harness before/after |
+| Q3 syscall wrappers | =nelisp--syscall-*= (14) | Lisp over =syscall-direct= + =ptr-read/write= (stat/dirent decode) | warm on file-heavy loops | none; time file-heavy smokes |
+| Q4 process/socket/thread wrappers | =nelisp-process-*= (14), =nelisp-socket-*= (7), =nelisp-thread-*= (5) | =packages/nelisp-process(-adapter)=, =nelisp-network=, thread over =thread-spawn= | cold | none |
+| Q5 string/char conversions | =char-to-string=, =string-to-char=, =number-to-string=, =string-{as,to,make}-{multi,uni}byte= (8) | make-string/aset loops; GNU has Lisp forms for the make-* pair | warm | needs a must-stay representation flag primitive |
+| Q6 char-table ops | =make-char-table=, =char-table-{p,subtype,parent,range,extra-slot}=, =set-char-table-*=, =map-char-table= (10) | GNU =chartab.c= algorithms as Lisp; =nelisp--char-table-vector-bridge-p= exists | HOT in syntax/case tables | native compiler / JIT for speed |
+| Q7 math | =sin=, =cos= (2) | fdlibm kernel port in Lisp (GNU calls libm) | cold | none |
+| Q8 list/sequence hot paths | =memq member assq assoc rassoc nth nthcdr plist-get append mapcar length list elt= (13) | short Lisp loops (e.g. =(while (and l (not (eq (car l) x))) (setq l (cdr l)))=) | HOT: census scores plist-get 9493, list 5721, length 2341, assq 1585, nth 1491, append 846, memq 817, mapcar 412 | BLOCKED on Doc 209 / eln JIT |
+
+** 7.3 Safeguards per batch
+- One batch per lane; each batch is a separate revertable commit.
+- Entry: record before timings: the census corpus, =S1.4= boot time, the eln S6 direct-run times,
+  =make test= wall time, =nelisp-performance-gate=, and =bench-aot-tco=; store as evidence files in the ledger.
+- Exit (all must hold): eln ledger 70/70; nel-lib usable ledger 27/30 with the same three FAILs;
+  every gate in =tools/ai/preflight.sh --list= (fast + slow); parity smokes against host GNU
+  (=emacs-parity=, =substrate-parity-smoke=, =nelisp-parity-fuzz= seeds); timings within caps
+  (meter 55 s, S1.4 50 s) and no criterion slower than +10 % without a written waiver.
+- Negative control per batch (skill =nelisp-integrate-slice=): reintroduce a wrong Lisp body, confirm the
+  parity check goes red.
+- Rollback: the native arm is deleted only after the batch has been green for the whole ledger; until then
+  the Lisp definition sits behind the native (=(unless (fboundp ...))=) and both are compared by a
+  differential test. Deletion is the last commit of the batch.
+
+** 7.4 Blocked-on-compiler list
+Q6 (chartab hot lookups), Q8 (all 13), and the arithmetic core (=+ - * / % 1+ 1- = < > <= >= logand ...=,
+kept under rule clause 5) can only be demoted when the general native compiler (Doc 209) or the eln JIT
+compiles the interpreted Lisp loops to a speed at or better than today's arms. Acceptance for unblocking
+(ledger S10.4): the same timing corpus on the JIT-compiled Lisp definition is within +10 % of the arm.
+No demotion in this list is proposed to happen before that evidence exists; nothing here may break S1-S10 of
+the eln ledger, whose admission code itself calls these primitives through import ports.
+
+* §8 Phased plan
+
+| Stage | Content | Exit (real e2e) | Rollback |
+|---|---|---|---|
+| S1 Baseline freeze | record usable 27/30, c-core ledger state, eln 70/70, gate table, census, timings as evidence | one script re-derives all baselines equal | none (read-only) |
+| S2 Policy and core boundary | AGENTS.md text, =native-inventory= and core-purity gates, classification committed | preflight fast gates green with the new gates | revert commit |
+| S3 Bytecomp independent of the API layer (D8) | measure needs, core scratch buffer (at most 15 names), =compile= feature stub, run S6/S10 on a core-only image | eln 70/70 on an image with no API package, timings inside caps | revert; keep prelude buffers until S7 |
+| S4 History-preserving import | repeatable filter-repo of the whole nel-lib into a migration branch, collision decisions | full sha walk plus moved ERT counts equal, repeat import adds only new commits | delete branch |
+| S5 Vendor consolidation (31.1) | 29+N files with sha/ORIGIN, re-verify the 17 from-30.1 files, runtime-require trace | bundle built from nelisp vendor equals old bundle modulo paths and boots | revert vendor commit |
+| S6 Cutover and retirement of nel-lib | freeze, last import, in-tree builds of apps/bundle/magit/org, ledgers moved, vendor/nelisp gone, nel-lib archived | usable 27/30 same FAILs, c-core ledger equal, eln 70/70, all gates, all built in nelisp only | reset main to =pre-doc211=, un-archive nel-lib |
+| S7 Prelude relocation | mechanical move of API sections to packages; ratchets regenerated | eln 70/70 and all gates; standalone buffer smokes pass | per-slice revert |
+| S8 Baking and startup | image layering proof, image family per §5, default-image rule | cold start and S1.4 within caps; presence gate on the images in use | keep prelude-baked build as fallback |
+| S9 Deduplication (nel-lib wins by default, D9) | resolve 183 names per family with differential evidence | parity probes: zero new divergences; all ledgers unchanged | per-family revert |
+| S10 Native demotion | batches Q1-Q8 as §7 | all ledgers, gates, timings equal or better | per-batch revert; arms deleted last |
+
+Ordering rationale: baselines and policy first (cheap); bytecomp independence early because it removes the biggest coupling and decides the image
+question; import and vendor before cutover; cutover before relocation so the whole system is in one tree when semantics start to change; relocation before
+deduplication; image work before deleting prelude copies; demotion last (needs stable timings and the compiler).
+
+** 8.1 Splitting into worker units (D11)
+Each stage owns a machine-readable manifest =tools/ai/doc211-units.tsv= (columns: unit id, stage, files, function count, owner check command, status). A unit is at most
+12 functions or one file, whichever is smaller, and has its own acceptance command (focused ERT or a probe) so a GPT-6-Luna worker can implement and verify it
+alone, in an isolated worktree, one writer per file. The ledger's stage criteria aggregate over the manifest (a criterion passes iff every unit of that slice is
+done), so the meter stays at a few criteria per slice while the manifest carries the fine granularity: about 237 src files, 226 test files, the 221 API names, the
+183 duplicates by family, 86 demotable natives (Q1-Q8), and about 97 C-core units. Units that touch the same file are serialized by the manifest.
+
+* §9 Risks
+
+1. Duplicate winners regress a passing criterion (183 names). Mitigation: S6 relocates without choosing;
+   S8 decides per family with differential evidence.
+2. Startup and caps: unbaked packages add up to 38 s. Mitigation: option E; S7 proof before S6 deletes prelude code.
+3. Bytecomp independence (S3) is large and may leave residual needs (=check-parens=, the harness's own buffers): fallback is the api image for the JIT harness.
+   The 13.6 s =compile= load and the 6 s self-compile block must be cut or the 55 s cap stays tight.
+4. Ratchet churn on every slice (emacs-compat zero slack, ns digests). Mitigation: §4.7 same-commit rule.
+5. Image build time and 289 MB size growth; layering unproven.
+6. 30.1/31.1 vendor mix; runtime-required vendor set is unenumerated until traced.
+7. Cutover risk: about 97 C-core units land in nel-lib while the migration runs. Mitigation: repeatable deterministic import (§4.1), freeze protocol (§4.2).
+   Full-merge collisions (§1.5) must be decided first.
+8. Demotion of hot natives before the compiler exists would break caps: blocked list in §7.4.
+9. Working tree of both repos has uncommitted work (nelisp native compiler; nel-lib dirty files): the migration must
+   branch from committed heads and never touch a dirty tree.
+
+10. Loss of nel-lib CI/gates on retirement: the nemacs-library gates die with the mirror; anything they guarded (public API ownership, consumer smokes) must be re-homed or explicitly dropped in S6.
+
+* §10 Non-goals
+Rewriting the Emacs API layer, changing behaviour of any relocated function in S6, replacing the eln JIT, changing
+the meter's 55 s cap, or moving magit/org/transient sources.
+
+* §11 Open questions (for the user)
+See =open-questions.md=. Q1 to Q5 of the first draft are answered (D7 to D10); the remaining questions are non-blocking except the C-core landing protocol during the migration.

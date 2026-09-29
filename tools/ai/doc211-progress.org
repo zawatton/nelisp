@@ -1,0 +1,391 @@
+#+TITLE: Doc 211 migration — nel-lib merged into NeLisp and retired, API layer as packages, minimal-native core, native demotion
+
+Machine-checkable progress for docs/design/211-emacs-api-packages.org (draft, revised 2026-09-30 after the user's round-2 decisions D7-D11).
+Read with:  bin/progress-meter.sh --ledger PATH --json   (from the Notes workspace root).
+
+Status: every criterion is `pending` because the migration has not started and none of the checking commands exist yet. Each criterion carries
+a #+NOTE with the intended command; when a command is written it replaces `pending` in the same change that lands the work it measures.
+Commands that would exceed the meter's 55 s cap use `evidence:` files from a longer run (pattern of tools/ai/eln-progress.org S6.22).
+Baselines held at every stage end (D5, D7): nel-lib usable ledger 27 of 30 (FAIL S2.5 S5.4 S6.2 stay failing), nel-lib C-core ledger (snapshot at freeze),
+NeLisp eln ledger 70 of 70, all NeLisp gates. Worker structure (D11): each stage keeps a unit manifest tools/ai/doc211-units.tsv; a unit is at most
+12 functions or one file; stage criteria aggregate over units. Paths in notes are relative to the workspace (dev/nelisp, dev/nelisp-emacs-lib).
+
+* S1 Baseline freeze: everything that passes today is recorded as evidence
+
+** S1.1 nel-lib usable ledger baseline recorded: 27 of 30 PASS with exactly S2.5 S5.4 S6.2 failing
+#+WEIGHT: 1
+#+NOTE: intended check: bin/progress-meter.sh --ledger dev/nelisp-emacs-lib/tools/ai/usable-progress.org --json > target/progress/doc211-baseline-usable.json; checker asserts pass=27 and the failing set (tools/ai/doc211-baseline-check.sh usable, to be written).
+pending
+
+** S1.2 nel-lib C-core ledger baseline recorded (24 criteria, 8 stages): per-criterion PASS/FAIL snapshot stored, and re-recorded at each cutover freeze
+#+WEIGHT: 1
+#+NOTE: intended check: bin/progress-meter.sh --ledger dev/nelisp-emacs-lib/tools/ai/c-core-progress.org --json; checker doc211-baseline-check.sh ccore compares against the stored snapshot (the snapshot is taken at freeze because about 97 units are still landing).
+pending
+
+** S1.3 NeLisp eln ledger baseline recorded: 70 of 70 PASS on the pinned binary
+#+WEIGHT: 1
+#+NOTE: intended check: bin/progress-meter.sh --ledger dev/nelisp/tools/ai/eln-progress.org --json with ELN_PROGRESS_BIN set; checker asserts pass=70.
+pending
+
+** S1.4 NeLisp gate table recorded: every gate in tools/ai/preflight.sh --list PASS, with wall times
+#+WEIGHT: 1
+#+NOTE: intended check: bash dev/nelisp/tools/ai/preflight.sh (verify a json/summary option, else parse per-gate exit codes); includes parens-check emacs-compat ns-gate ns-inventory fallback-inventory substrate-presence-corpus-check.
+pending
+
+** S1.5 Timing baseline recorded: bare start 3.6 s, bundle load (S1.4 cmd) 38.4 s, eln S6.x direct runs, make test wall time
+#+WEIGHT: 1
+#+NOTE: intended check: cmd runs the S1.4 command under time and writes target/progress/doc211-timings.json; the first two numbers were measured 2026-09-30 on nelisp-head37.
+pending
+
+** S1.6 Native and API inventories regenerate byte-identically from a clean HEAD build
+#+WEIGHT: 1
+#+NOTE: intended check: EMACS=emacs bash tools/nelisp-c-primitive-census.sh --bin $BASE_BIN --out X && python3 inventory/classify.py; sha256 compare with a2-census-raw.txt and a2-classified.tsv.
+pending
+
+** S1.7 END-TO-END: one script re-derives all baselines and reports them equal to the stored evidence
+#+WEIGHT: 1
+#+NOTE: intended check: tools/ai/doc211-baseline-check.sh all (to be written); exits 0 iff usable=27/30 same fails, c-core snapshot equal, eln=70/70, gates PASS, timings within 10 percent.
+pending
+
+* S2 Minimal-native policy and core boundary are written and enforced
+
+** S2.1 nelisp AGENTS.md contains the Minimal native surface section (rule clauses 1-6 and the new-native requirements)
+#+WEIGHT: 1
+#+NOTE: intended check: grep -q 'Minimal native surface' dev/nelisp/AGENTS.md (text from Doc 211 section 6.1-6.2).
+pending
+
+** S2.2 tools/nelisp-native-inventory.txt lists all 257 natives with verdict and matches the reader-builtins table
+#+WEIGHT: 1
+#+NOTE: intended check: emacs --batch check comparing nelisp-standalone--reader-builtins (scripts/nelisp-standalone-build.el:25198) with the file (tools/nelisp-native-inventory-check.el, to be written).
+pending
+
+** S2.3 make native-inventory fails when a native is added without an entry (negative control) and passes on HEAD
+#+WEIGHT: 1
+#+NOTE: intended check: make native-inventory (new) plus a negative-control script that appends a fake builtin in a temp copy.
+pending
+
+** S2.4 core-purity gate: no file under lisp/ src/ scripts/ requires a nelisp-emacs-* feature
+#+WEIGHT: 1
+#+NOTE: intended check: make core-purity (new); negative control with a temp require.
+pending
+
+** S2.5 native-inventory and core-purity are wired into tools/ai/preflight.sh FAST_GATES
+#+WEIGHT: 1
+#+NOTE: intended check: bash tools/ai/preflight.sh --list | grep native-inventory; grep core-purity.
+pending
+
+** S2.6 Unit manifest for this stage exists in tools/ai/doc211-units.tsv: every unit is at most 12 functions or one file, has its own acceptance command, and no two open units write the same file
+#+WEIGHT: 1
+#+NOTE: intended check: tools/ai/doc211-units-check.sh <stage> (to be written): validates the manifest columns, the size limit, per-unit command presence, and file-overlap serialization; exit 0 iff valid.
+pending
+
+** S2.7 END-TO-END: preflight fast gates (existing plus the two new) all PASS on the migration branch
+#+WEIGHT: 1
+#+NOTE: intended check: bash tools/ai/preflight.sh (fast tier); exit 0.
+pending
+
+* S3 GNU bytecomp bootstraps without the API layer (core-only image)
+
+** S3.1 Measured need list committed: what bytecomp, byte-opt, cconv, macroexp, byte-run and the S6/S10 harness call from buffers/syntax/files, by name and count
+#+WEIGHT: 1
+#+NOTE: intended check: tools/ai/doc211-bytecomp-needs.el (to be written) scans the vendored 31.1 files and the harness; Doc 211 section 2.1 already records the first measurement (bytecomp: insert 28, with-current-buffer 13, goto-char 12, ...).
+pending
+
+** S3.2 Core scratch buffer implemented with private nelisp--scratch-* names and at most 15 GNU-named aliases; each function has a Lisp reference and ERT
+#+WEIGHT: 1
+#+NOTE: intended check: emacs --batch ERT file test/nelisp-scratch-buffer-test.el (to be written) plus a name-count check (<= 15).
+pending
+
+** S3.3 compile feature stub carries only the defvars bytecomp reads at compile time; loading bytecomp no longer runs (eval-when-compile (require 'compile)) from source
+#+WEIGHT: 1
+#+NOTE: intended check: standalone probe: (featurep 'compile) after load and time of the bytecomp load (was about 13.6 s in that step per the eln ledger S6 note).
+pending
+
+** S3.4 GNU byte-compile of the S6 corpus forms gives byte-identical results on the core-only image and on stock Emacs
+#+WEIGHT: 1
+#+NOTE: intended check: test/nelisp-eln-s6-measure.sh on a core-only image binary (no API package baked): PASS equality rows for the corpus functions.
+pending
+
+** S3.5 Deletion test: removing the 15 aliases and loading the API buffer package yields the same S6 results (nothing depends on the core copy once packages exist)
+#+WEIGHT: 1
+#+NOTE: intended check: two runs of the S6 driver, with and without the core aliases plus the buffer package; results equal.
+pending
+
+** S3.6 Unit manifest for this stage exists in tools/ai/doc211-units.tsv: every unit is at most 12 functions or one file, has its own acceptance command, and no two open units write the same file
+#+WEIGHT: 1
+#+NOTE: intended check: tools/ai/doc211-units-check.sh <stage> (to be written): validates the manifest columns, the size limit, per-unit command presence, and file-overlap serialization; exit 0 iff valid.
+pending
+
+** S3.7 END-TO-END: eln ledger 70 of 70 PASS on a core-only image with every S6/S10 direct run inside the 55 s cap
+#+WEIGHT: 1
+#+NOTE: intended check: bin/progress-meter.sh --ledger tools/ai/eln-progress.org with ELN_PROGRESS_BIN=<core-only binary>; evidence-based rows regenerated per the ledger's own REGENERATE notes.
+pending
+
+* S4 Whole nel-lib history is imported into a nelisp migration branch, repeatably
+
+** S4.1 Mapping file covers every tracked nel-lib path (src, test, tools, scripts, apps, gui, bin, docs, ledgers, vendor consumer trees) with a destination or an explicit drop
+#+WEIGHT: 1
+#+NOTE: intended check: tools/ai/doc211-import-map-check.sh (to be written): git ls-files of nel-lib versus the mapping; unmapped count must be 0; drops limited to mirror packages/, build, target, vendor/nelisp, vendor/emacs-lisp*.
+pending
+
+** S4.2 Collision decision file names the surviving copy for nelisp-coding, nelisp-text-buffer, nelisp-regex, test/nelisp-coding-test.el, test/fixtures, bin/nemacs and design-doc numbers
+#+WEIGHT: 1
+#+NOTE: intended check: tools/ai/doc211-collisions-check.sh: every collision found by a fresh comm scan has a decision row.
+pending
+
+** S4.3 Determinism: running the import twice on identical input gives identical commit ids, and a second import after new nel-lib commits adds only those commits
+#+WEIGHT: 1
+#+NOTE: intended check: script tools/ai/doc211-import-verify.sh repeat on a scratch copy (git-filter-repo at ~/.local/bin).
+pending
+
+** S4.4 Every moved file keeps its sha256; reachable commit count for kept paths is preserved; git log --follow on 5 sampled files reaches the original first commit
+#+WEIGHT: 1
+#+NOTE: intended check: tools/ai/doc211-import-verify.sh sha count follow.
+pending
+
+** S4.5 Merge is a real merge commit with two parents; tags pre-doc211 (nelisp) and pre-doc211-final (nel-lib) exist
+#+WEIGHT: 1
+#+NOTE: intended check: git rev-list --parents -n1 HEAD | wc -w == 3; git tag -l.
+pending
+
+** S4.6 Unit manifest for this stage exists in tools/ai/doc211-units.tsv: every unit is at most 12 functions or one file, has its own acceptance command, and no two open units write the same file
+#+WEIGHT: 1
+#+NOTE: intended check: tools/ai/doc211-units-check.sh <stage> (to be written): validates the manifest columns, the size limit, per-unit command presence, and file-overlap serialization; exit 0 iff valid.
+pending
+
+** S4.7 END-TO-END: moved package unit ERT run from packages/<pkg>/test/ passes with the same counts as in nel-lib, and nelisp make pkg-graph pkg-load-lists ns-inventory emacs-compat parens-check pass with the packages present
+#+WEIGHT: 1
+#+NOTE: intended check: tools/ai/doc211-import-verify.sh ert; then for g in pkg-graph pkg-load-lists ns-inventory emacs-compat parens-check; do make $g || exit 1; done (baselines regenerated per Doc 211 section 4.7).
+pending
+
+* S5 Vendored GNU Lisp is one 31.1 tree in nelisp/vendor with sha256 and origin
+
+** S5.1 Every vendor file loaded by the bundle (29 named in build-nelisp-bootstrap.el) exists in nelisp/vendor/emacs-lisp as GNU 31.1
+#+WEIGHT: 1
+#+NOTE: intended check: tools/ai/doc211-vendor-check.sh exist reads inventory/a3-vendor.tsv.
+pending
+
+** S5.2 vendor/SHA256SUMS and vendor/ORIGIN list each added file (release 31.1, source path, sha256) and match the files
+#+WEIGHT: 1
+#+NOTE: intended check: sha256sum -c vendor/SHA256SUMS in dev/nelisp/vendor; ORIGIN entry count equals added files.
+pending
+
+** S5.3 The 17 bundle files formerly taken from 30.1 each load and behave on 31.1: bundle build, S1.4 boot and the owning package ERT pass, or a recorded waiver names a temporary 30.1 exception
+#+WEIGHT: 1
+#+NOTE: intended check: tools/ai/doc211-vendor-check.sh versions (one row per file, evidence recorded).
+pending
+
+** S5.4 The 6 same-named files that differ between nel-lib's 30.1 and nelisp's 31.1 (ring custom comint compile isearch cl-macs) have a recorded decision and a passing load test
+#+WEIGHT: 1
+#+NOTE: intended check: doc211-vendor-check.sh differing.
+pending
+
+** S5.5 Runtime-required vendor set measured: load trace during the S1.4 replay is recorded and every traced file is vendored or explained
+#+WEIGHT: 1
+#+NOTE: intended check: tools/ai/doc211-vendor-trace.sh (to be written); evidence file with sha256.
+pending
+
+** S5.6 vendor-shadow-gate and doc-claims pass with the added files
+#+WEIGHT: 1
+#+NOTE: intended check: make vendor-shadow-gate && make doc-claims.
+pending
+
+** S5.7 Unit manifest for this stage exists in tools/ai/doc211-units.tsv: every unit is at most 12 functions or one file, has its own acceptance command, and no two open units write the same file
+#+WEIGHT: 1
+#+NOTE: intended check: tools/ai/doc211-units-check.sh <stage> (to be written): validates the manifest columns, the size limit, per-unit command presence, and file-overlap serialization; exit 0 iff valid.
+pending
+
+** S5.8 END-TO-END: the bootstrap bundle built from nelisp vendor equals the previous bundle modulo path comments and boots (S1.4 cmd, under 50 s)
+#+WEIGHT: 1
+#+NOTE: intended check: make build-nelisp-bootstrap with the vendor root pointing at dev/nelisp/vendor; normalized diff against build/nemacs-bootstrap.el; then the S1.4 command.
+pending
+
+* S6 Cutover: nel-lib is retired and everything builds and passes inside nelisp
+
+** S6.1 Freeze protocol executed: freeze announced, last import run, queued worker landings applied, imported head recorded
+#+WEIGHT: 1
+#+NOTE: intended check: tools/ai/doc211-cutover.sh freeze (to be written) writes target/progress/doc211-cutover.json with nel-lib head sha; evidence file.
+pending
+
+** S6.2 nelisp builds the bootstrap bundle, the magit and org bridges, and the apps entirely from in-tree sources; no path mentions vendor/nelisp or bin/build-nelisp
+#+WEIGHT: 1
+#+NOTE: intended check: grep -R 'vendor/nelisp' over scripts Makefile bin tools returns nothing; make build-nelisp-bootstrap and the two bridge bundle targets succeed.
+pending
+
+** S6.3 usable-progress.org and c-core-progress.org run from nelisp/tools/ai/ (paths, NELISP_BIN and the census tool repointed to in-tree)
+#+WEIGHT: 1
+#+NOTE: intended check: bin/progress-meter.sh --ledger tools/ai/usable-progress.org --json and same for c-core-progress.org run without vendor/nelisp.
+pending
+
+** S6.4 Usable ledger is 27 of 30 with exactly S2.5 S5.4 S6.2 failing after cutover
+#+WEIGHT: 1
+#+NOTE: intended check: doc211-baseline-check.sh usable.
+pending
+
+** S6.5 C-core ledger equals the freeze snapshot (every criterion that passed still passes; newly landed units are counted separately)
+#+WEIGHT: 1
+#+NOTE: intended check: doc211-baseline-check.sh ccore.
+pending
+
+** S6.6 Guards previously provided by nemacs-library gates (ownership, API inventory, consumer smokes) are re-homed as nelisp gates or explicitly dropped with a recorded reason
+#+WEIGHT: 1
+#+NOTE: intended check: doc211-cutover.sh guards: compares the retired target list against a decision file; every row decided.
+pending
+
+** S6.7 nel-lib is archived read-only with a README stub and a verified git bundle (verified by cloning it: ref count and tip content); nelisp CI green for one week before deletion is allowed
+#+WEIGHT: 1
+#+NOTE: intended check: git clone the bundle to a temp dir and compare refs and tip tree hash; date check of the CI record.
+pending
+
+** S6.8 Unit manifest for this stage exists in tools/ai/doc211-units.tsv: every unit is at most 12 functions or one file, has its own acceptance command, and no two open units write the same file
+#+WEIGHT: 1
+#+NOTE: intended check: tools/ai/doc211-units-check.sh <stage> (to be written): validates the manifest columns, the size limit, per-unit command presence, and file-overlap serialization; exit 0 iff valid.
+pending
+
+** S6.9 END-TO-END: eln 70/70, usable 27/30, c-core snapshot, every gate in preflight --list PASS, and the bundle boots under 50 s, all in a tree with no vendor/nelisp
+#+WEIGHT: 1
+#+NOTE: intended check: tools/ai/doc211-baseline-check.sh all; S1.4 command.
+pending
+
+* S7 Prelude API layer is relocated mechanically into packages
+
+** S7.1 Relocation slices listed: buffer, marker, textprop, syntax, sexp-scanner, files, time each map to a package file and a removed prelude line range
+#+WEIGHT: 1
+#+NOTE: intended check: tools/ai/doc211-relocation-map.sh emits slice -> package/file -> old prelude range; exit 0 iff every range is gone from scripts/nelisp-stdlib-prelude.el.
+pending
+
+** S7.2 Per-slice ratchets regenerated in the same commit: emacs-compat, ns-gate, fallback-inventory, substrate-presence ledger, parens-check roots include packages/
+#+WEIGHT: 1
+#+NOTE: intended check: for g in parens-check compile emacs-compat ns-gate ns-inventory fallback-inventory substrate-presence-corpus-check emacs-parity; do make $g; done (skill nelisp-prelude-ratchets order).
+pending
+
+** S7.3 Census third state in-package: 221 API names reported in-package; interpreted count equals the language-core count
+#+WEIGHT: 1
+#+NOTE: intended check: tools/nelisp-c-primitive-census.sh extended (to be written); grep header counts.
+pending
+
+** S7.4 Standalone buffer smokes pass with packages baked: nelisp-buffer-unification-standalone-smoke and primspeed-parity smoke
+#+WEIGHT: 1
+#+NOTE: intended check: run both smokes with the built image (test files exist).
+pending
+
+** S7.5 Parity: substrate-parity-smoke and parity-fuzz seeds show zero new divergences versus host GNU
+#+WEIGHT: 1
+#+NOTE: intended check: ./tools/nelisp-substrate-parity-smoke.sh and make parity-fuzz seeds.
+pending
+
+** S7.6 Unit manifest for this stage exists in tools/ai/doc211-units.tsv: every unit is at most 12 functions or one file, has its own acceptance command, and no two open units write the same file
+#+WEIGHT: 1
+#+NOTE: intended check: tools/ai/doc211-units-check.sh <stage> (to be written): validates the manifest columns, the size limit, per-unit command presence, and file-overlap serialization; exit 0 iff valid.
+pending
+
+** S7.7 END-TO-END: eln 70/70 (core-only image per S3), usable 27/30, c-core snapshot, all gates PASS after the last slice
+#+WEIGHT: 1
+#+NOTE: intended check: tools/ai/doc211-baseline-check.sh all.
+pending
+
+* S8 Baking and startup stay within caps
+
+** S8.1 Layering proof: a package set is loaded on a core image at build time and re-dumped; the result starts and answers a probe (fboundp 'goto-char)
+#+WEIGHT: 1
+#+NOTE: intended check: tools/ai/doc211-bake-proof.sh (to be written) using nelisp--arena-dump-image-* natives.
+pending
+
+** S8.2 Image family decided by evidence: single core image if S3 held, otherwise core plus api; each image recorded with sha256 and size
+#+WEIGHT: 1
+#+NOTE: intended check: make nelisp-image-core [nelisp-image-api] (new); evidence file.
+pending
+
+** S8.3 Cold start of every image is within 10 percent of the S1 baseline (3.6 s)
+#+WEIGHT: 1
+#+NOTE: intended check: time --eval '(princ 1)' per image.
+pending
+
+** S8.4 Default-image rule documented in AI.md and reported by tools/ai/nelisp-ai.sh doctor
+#+WEIGHT: 1
+#+NOTE: intended check: grep plus doctor output.
+pending
+
+** S8.5 Substrate-presence corpus passes on each image in use with documented per-image expectations
+#+WEIGHT: 1
+#+NOTE: intended check: make substrate-presence-corpus-check with an image flag (to be added).
+pending
+
+** S8.6 Unit manifest for this stage exists in tools/ai/doc211-units.tsv: every unit is at most 12 functions or one file, has its own acceptance command, and no two open units write the same file
+#+WEIGHT: 1
+#+NOTE: intended check: tools/ai/doc211-units-check.sh <stage> (to be written): validates the manifest columns, the size limit, per-unit command presence, and file-overlap serialization; exit 0 iff valid.
+pending
+
+** S8.7 END-TO-END: S1.4 boot under 50 s, usable 27/30 and eln 70/70 on the shipped images
+#+WEIGHT: 1
+#+NOTE: intended check: S1.4 cmd; meter on usable-progress.org and eln-progress.org.
+pending
+
+* S9 Duplicate API definitions are resolved by evidence (nel-lib wins by default)
+
+** S9.1 Duplicate list frozen: the 183 names defined by both the relocated prelude code and nel-lib packages are listed with a family and a default winner (nel-lib)
+#+WEIGHT: 1
+#+NOTE: intended check: inventory/dup-api-in-nellib.txt regenerated after S7; tools/ai/doc211-dup-list.sh compares.
+pending
+
+** S9.2 Each family (buffer marker textprop syntax files process time keymap face) has a differential probe on NeLisp and stock Emacs with only reviewed divergences
+#+WEIGHT: 1
+#+NOTE: intended check: skill nelisp-parity-probe; tools/ai/doc211-family-probe.sh <family>.
+pending
+
+** S9.3 Losing definitions are deleted family by family and no name has two live definitions
+#+WEIGHT: 1
+#+NOTE: intended check: make emacs-compat shared-shadowing count for API names is 0; doc211-dup-list.sh count == 0.
+pending
+
+** S9.4 No passing criterion regressed after any family deletion (per-family evidence lists ledger snapshots)
+#+WEIGHT: 1
+#+NOTE: intended check: doc211-baseline-check.sh all after each family; evidence with sha256.
+pending
+
+** S9.5 Unit manifest for this stage exists in tools/ai/doc211-units.tsv: every unit is at most 12 functions or one file, has its own acceptance command, and no two open units write the same file
+#+WEIGHT: 1
+#+NOTE: intended check: tools/ai/doc211-units-check.sh <stage> (to be written): validates the manifest columns, the size limit, per-unit command presence, and file-overlap serialization; exit 0 iff valid.
+pending
+
+** S9.6 END-TO-END: usable 27/30, c-core snapshot, eln 70/70, all gates PASS, timings within caps after all deletions
+#+WEIGHT: 1
+#+NOTE: intended check: tools/ai/doc211-baseline-check.sh all.
+pending
+
+* S10 Native demotion in measured batches
+
+** S10.1 Batches Q1 to Q8 are defined with names, Lisp replacement, before timings and blocked-on markers in the inventory
+#+WEIGHT: 1
+#+NOTE: intended check: tools/nelisp-native-inventory.txt columns verdict/batch; check asserts every demotable row has a batch.
+pending
+
+** S10.2 Batches Q1 (diagnostics) and Q2 (sha256, json) demoted: arms removed only after differential parity and full ledger green; negative control turns parity red
+#+WEIGHT: 1
+#+NOTE: intended check: doc211-baseline-check.sh all after each batch; native-inventory count decreased.
+pending
+
+** S10.3 Batches Q3 to Q7 demoted (syscall wrappers, process/socket/thread, conversions, char-table non-hot ops, sin/cos): each keeps all ledgers and gates green with before/after timings recorded
+#+WEIGHT: 1
+#+NOTE: intended check: doc211-demotion-check.sh <batch> validates per-batch evidence files.
+pending
+
+** S10.4 Blocked list (char-table hot lookups, list/sequence hot paths, arithmetic core) has a measured JIT-compiled Lisp comparison and passes the +10 percent bar or stays native with a written waiver
+#+WEIGHT: 1
+#+NOTE: intended check: doc211-demotion-check.sh jit-compare (needs Doc 209 or the eln JIT compiling the Lisp definition); pending until then.
+pending
+
+** S10.5 Native count fell monotonically and no native was added without written justification and measurement
+#+WEIGHT: 1
+#+NOTE: intended check: make native-inventory ratchet and git log over the inventory file.
+pending
+
+** S10.6 Unit manifest for this stage exists in tools/ai/doc211-units.tsv: every unit is at most 12 functions or one file, has its own acceptance command, and no two open units write the same file
+#+WEIGHT: 1
+#+NOTE: intended check: tools/ai/doc211-units-check.sh <stage> (to be written): validates the manifest columns, the size limit, per-unit command presence, and file-overlap serialization; exit 0 iff valid.
+pending
+
+** S10.7 END-TO-END: eln 70/70, usable 27/30, c-core snapshot, all gates and parity smokes, timings within caps (meter 55 s, S1.4 50 s) after the final batch
+#+WEIGHT: 1
+#+NOTE: intended check: tools/ai/doc211-baseline-check.sh all plus timings versus S1.
+pending
