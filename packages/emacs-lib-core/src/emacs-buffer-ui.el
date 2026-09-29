@@ -40,7 +40,7 @@
 
 (defun emacs-buffer-ui--load-feature (feature)
   "Load FEATURE from the buffer-ui shim directory, unless already loaded.
-See the identical `featurep' rationale on `emacs-foundation--load-feature'."
+See the identical `featurep' rationale on the foundation feature loader."
   (unless (featurep feature)
     (let ((file (expand-file-name (concat (symbol-name feature) ".el")
                                   emacs-buffer-ui--load-directory)))

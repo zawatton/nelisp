@@ -97,7 +97,14 @@
           ((stringp object) 'string)
           ((consp object) 'cons)
           ((vectorp object) 'vector)
-          ((recordp object) 'record)
+          ;; GNU: a record's type is its tag symbol, or the class NAME when the
+          ;; tag is a class record (EIEIO instances), so cl-generic dispatch
+          ;; can find methods specialised on the class.
+          ((recordp object)
+           (let ((tag (aref object 0)))
+             (cond ((symbolp tag) tag)
+                   ((and (recordp tag) (> (length tag) 1)) (aref tag 1))
+                   (t 'record))))
           ((and (fboundp 'hash-table-p) (hash-table-p object)) 'hash-table)
           ((functionp object) 'function)
           (t 'atom)))

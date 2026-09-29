@@ -14,6 +14,7 @@
 ;; environment data (`nelisp--environment'), and finally to NeLisp
 ;; syscall/runtime getenv backends.
 
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- getenv/setenv share the process environment with the bridge.
 ;;; Code:
 
 (defvar process-environment nil

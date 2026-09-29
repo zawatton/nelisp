@@ -220,7 +220,9 @@ has no lazy `define-coding-system' registry to trigger."
 (unless (fboundp 'custom-add-to-group)
   (defun custom-add-to-group (group option widget)
     "To existing GROUP add a new OPTION of type WIDGET (no dup)."
-    (let ((members (get group 'custom-group))
+    ;; The standalone normalizer lowers `defgroup' to (put G 'custom-group t);
+    ;; treat that marker as an empty member list instead of appending to `t'.
+    (let ((members (let ((m (get group 'custom-group))) (and (listp m) m)))
           (entry (list option widget)))
       (unless (member entry members)
         (put group 'custom-group (nconc members (list entry)))))))

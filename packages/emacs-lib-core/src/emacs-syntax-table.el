@@ -34,6 +34,7 @@
 ;; keyword pass so syntactic faces win over keyword fontification
 ;; in string / comment text.
 
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- syntax tables and parse-partial-sexp work on ec-buffers.
 ;;; Code:
 
 (require 'emacs-buffer)
@@ -208,7 +209,7 @@ matchers (= e.g. a keyword that should only fire in code)."
 The NeLisp reader binds `emacs-version' just like host Emacs, so a bare
 `(not (boundp 'emacs-version))' test misfires there.  Detect the
 standalone path by a NeLisp-only primitive (`nl-write-file'), matching
-`emacs-char-table--standalone-p' in `emacs-char-table.el'."
+the standalone predicate in `emacs-char-table.el'."
   (or (fboundp 'nl-write-file)
       (not (boundp 'emacs-version))))
 
@@ -433,8 +434,16 @@ syntax flag bits are not modeled; the INTERNAL slot is nil."
 (when (emacs-syntax-table--install-function-p 'copy-syntax-table)
   (defun copy-syntax-table (&optional table)
     "Return a copy of TABLE, or of the standard syntax table."
+    ;; TABLE can be a core `nelisp--syntax-table' object (e.g. the
+    ;; `text-mode-syntax-table' that emacs-stub.el seeds from the core
+    ;; `standard-syntax-table' before this file installs the char-table
+    ;; implementation).  `emacs-char-table-copy' reads raw vector slots and
+    ;; SEGFAULTS on such a record (magit bundle part 4, info.el's
+    ;; `Info-mode-syntax-table'), so fall back to the standard char-table.
     (emacs-char-table-copy
-     (or table (emacs-syntax-table-standard)))))
+     (if (and table (emacs-char-table-p table))
+         table
+       (emacs-syntax-table-standard)))))
 
 (unless (boundp 'emacs-lisp-mode-syntax-table)
   ;; Approximation sufficient for url.el consumers until a vendored

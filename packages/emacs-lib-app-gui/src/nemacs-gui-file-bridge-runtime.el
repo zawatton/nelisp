@@ -1,4 +1,5 @@
 ;;; nemacs-gui-file-bridge-runtime.el --- GUI file bridge runtime adapter -*- lexical-binding: nil; -*-
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- GUI bridge runtime overrides operate on the ec-buffer/session layer.
 
 ;; This source is intentionally written with `setq' and `fset' instead
 ;; of `defvar' / `defun'.  The current source-v1 runtime-image replay

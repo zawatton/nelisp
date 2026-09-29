@@ -48,6 +48,7 @@
 ;;   B.5: execute-extended-command / prefix-arg / current-prefix-arg
 ;;   B.6: keyboard-quit / recursive-edit / abort-recursive-edit
 
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- quit/sigint state belongs to the nemacs command loop.
 ;;; Code:
 
 (require 'emacs-command-loop)

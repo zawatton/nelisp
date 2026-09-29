@@ -60,6 +60,7 @@
 ;; supersedes from `emacs-stub.el' (= same load-order shadowing risk
 ;; that Phase 11.A' fixed for the buffer side).
 
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- search/match-data primitives must operate on the ec-buffer layer.
 ;;; Code:
 
 (require 'nelisp-emacs-compat)

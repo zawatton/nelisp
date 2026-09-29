@@ -19,7 +19,7 @@
 ;;
 ;; Keys are tracked in a parallel list rather than enumerated via `maphash':
 ;; the pure-elisp standalone reader's `maphash' does not iterate (see
-;; `emacs-process-events--all-fds'), so a hash-only design could neither prune
+;; the process-events fd enumerator), so a hash-only design could neither prune
 ;; nor enumerate.  The hash gives O(1) get/put; the list gives reliable
 ;; iteration.
 

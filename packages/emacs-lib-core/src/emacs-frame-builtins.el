@@ -38,12 +38,13 @@
 ;;   - `select-frame' / `frame-focus'
 ;;   - `frame-windows' / `display-pixel-width' / `display-pixel-height'
 
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- frames are the nemacs headless frame model.
 ;;; Code:
 
 (require 'emacs-frame)
 
 ;; T62: `tool-bar-local-item' had an fboundp-guarded on-demand loader
-;; (`nelisp-emacs-magit-bridge--ensure-tool-bar-runtime') only inside
+;; (the magit bridge tool-bar-runtime helper) only inside
 ;; `src/nelisp-emacs-magit-bridge.el', which is not on the default boot
 ;; path.  The load matrix hit `(void-function tool-bar-local-item)' for
 ;; `geiser-guile', which is not magit at all.  The vendored

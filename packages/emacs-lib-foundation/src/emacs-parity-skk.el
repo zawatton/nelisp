@@ -186,7 +186,8 @@ from the font tables / colour list, handled elsewhere in faces.el)."
 ;; `custom' does not already ship.  No display/C backend is involved.
 (defun emacs-parity-skk--custom-add-to-group (group option widget)
   "Add OPTION (of custom type WIDGET) to customization GROUP."
-  (let ((members (get group 'custom-group))
+  ;; `t' is the standalone normalizer's `defgroup' marker, not a member list.
+  (let ((members (let ((m (get group 'custom-group))) (and (listp m) m)))
         (entry (list option widget)))
     (unless (member entry members)
       (put group 'custom-group (nconc members (list entry))))))

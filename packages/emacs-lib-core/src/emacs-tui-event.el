@@ -80,6 +80,7 @@
 ;;     provides a pluggable input function so the glue can pass in
 ;;     `process-filter' bytes or `read-from-minibuffer' bytes).
 
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- terminal job-control hooks belong to the nemacs TUI backend.
 ;;; Code:
 
 (require 'cl-lib)
@@ -818,7 +819,7 @@ fired yet."
 
 (defun emacs-tui-event--install-function-p (symbol)
   "Return non-nil when SYMBOL should be installed as an unprefixed bridge.
-Same contract as `emacs-command-loop-builtins--install-function-p': a
+Same contract as the command-loop-builtins install predicate: a
 plain `fboundp' test is not enough, because these names are not host
 Emacs functions and the binding that already exists can be a bootstrap
 placeholder from another in-tree module.  A placeholder says so with

@@ -80,6 +80,14 @@ no-op; existing attributes are preserved."
             (gethash name emacs-redisplay--face-registry
                      emacs-faces--unset))
     (puthash name nil emacs-redisplay--face-registry))
+  ;; Mirror the face into the core face table too.  The magit bundle
+  ;; normalizer lowers `defface' to this function, and core
+  ;; `face-differs-from-default-p'/`face-equal' (used by diff-mode's
+  ;; `diff-use-changed-face' defvar) signal (error \"Invalid face\" NAME)
+  ;; for a face core never heard of.
+  (when (and (fboundp 'make-empty-face) (fboundp 'facep)
+             (not (condition-case nil (facep name) (error nil))))
+    (condition-case nil (make-empty-face name) (error nil)))
   name)
 
 ;;;; --- attribute accessors --------------------------------------------
@@ -232,6 +240,12 @@ Returns a flat plist or nil."
          ((null first-entry)    (setq first-entry e)))))
     (let ((entry (or default-entry t-entry first-entry)))
       (and entry (emacs-faces--entry-attrs entry)))))
+
+;; Public entry point for other ownership groups (FND Custom fallback uses it).
+(defalias 'emacs-faces-default-attrs-from-spec
+  #'emacs-faces--default-attrs-from-spec
+  "Extract a flat attribute plist from a `defface' SPEC value, or nil.
+Public name for `emacs-faces--default-attrs-from-spec'.")
 
 (defconst emacs-faces--x-resource-attrs
   '(:family :foundry :width :height :weight :slant :foreground

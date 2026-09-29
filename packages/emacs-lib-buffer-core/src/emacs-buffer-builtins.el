@@ -44,6 +44,7 @@
 ;;   - hooks like `before-change-functions' / `after-change-functions'
 ;;     (= callers in the 22/27 working set don't depend on them).
 
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- buffer/point/insert/print-stream primitives must operate on the ec-buffer layer.
 ;;; Code:
 
 (require 'nelisp-emacs-compat)
@@ -651,7 +652,7 @@ select it, and return it."
 ;; primitive is already `fboundp' at this point (bound to the reader's own
 ;; buffer family: `nelisp-buffer-p'/`nelisp-get-buffer', operating on the
 ;; *scratch* buffer the runtime creates at startup), so
-;; `emacs-buffer-builtins--install-function-p' used to skip installing this
+;; the buffer-builtins install predicate used to skip installing this
 ;; polyfill entirely.  That native `get-buffer' has no notion of this
 ;; bridge's own `nelisp-ec-buffer' struct (the type `buffer-list' below
 ;; returns), so `(get-buffer SOME-NELISP-EC-BUFFER)' fell through its `cond'
@@ -714,7 +715,7 @@ through the same primitives `Fget_buffer' uses and never a foreign
 buffer representation.  On a standalone image whose prelude already
 ships a complete native buffer family (`get-buffer'/`bufferp'/
 `current-buffer'/`generate-new-buffer' already `fboundp', so
-`emacs-buffer-builtins--install-function-p' leaves that family installed
+the buffer-builtins install predicate leaves that family installed
 as-is per its C-subr-preservation policy), `generate-new-buffer'
 resolves to the SAME native constructor `get-buffer' already
 understands.  Calling `nelisp-ec-generate-new-buffer' unconditionally
@@ -751,7 +752,23 @@ buffers are returned regardless."
         (while acc
           (setq rev (cons (car acc) rev))
           (setq acc (cdr acc)))
-        rev))))
+        ;; S2 coverage batch 6: a standalone whose core ships the native
+        ;; buffer family (`nelisp-buffer-list') owns the real buffers, and its
+        ;; `with-current-buffer' only accepts those (it calls `nelisp-point'
+        ;; on the object).  Return them, followed by any bridge-registry
+        ;; buffer the native list does not already cover by name, so that
+        ;; `(dolist (b (buffer-list)) (with-current-buffer b ...))' -- which
+        ;; dired.el's `dired-mouse-drag-files' :set callback runs at load
+        ;; time -- works on such a core.
+        (if (fboundp 'nelisp-buffer-list)
+            (let* ((native (nelisp-buffer-list))
+                   (names (mapcar #'buffer-name native))
+                   (extra nil))
+              (dolist (b rev)
+                (unless (member (nelisp-ec-buffer-name b) names)
+                  (setq extra (cons b extra))))
+              (append native (nreverse extra)))
+          rev)))))
 
 ;;;; --- current buffer ---------------------------------------------------
 
@@ -943,7 +960,7 @@ required N parameter (= the same lambda-arity-mismatch that bit
 ;; `setq' alias ("NeLisp has no buffer-local"), so without this
 ;; polyfill every buffer would share one poisoned default the moment
 ;; ANY buffer ran `setq-default' on a per-buffer symbol — e.g.
-;; `nelisp-emacs-magit-bridge--ensure-buffer-defaults's own
+;; the magit bridge buffer-defaults helper's own
 ;; `(setq-default buffer-read-only nil)' would otherwise never persist
 ;; once `magit-section-mode' next sets the GLOBAL `buffer-read-only' to
 ;; `t' via ordinary `setq'.  Each SYM/VALUE pair routes through

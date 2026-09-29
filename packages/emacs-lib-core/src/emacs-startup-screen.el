@@ -70,7 +70,7 @@ runtime version separately; this text stays version-neutral."
 
 (defvar emacs-startup-screen-file-arguments nil
   "CLI file arguments visible to the splash gate.
-`nemacs-main--apply-startup-gate' reflects the `:args' options-plist key
+the nemacs-main startup gate reflects the `:args' options-plist key
 here before `nemacs-init' runs; a non-nil value suppresses the splash
 screen just like invoking Emacs with file arguments does.")
 
@@ -123,7 +123,7 @@ substrates that never loaded `nemacs-loadup'."
 
 (defun emacs-startup-screen--core-substrate-p ()
   "Return non-nil when the NeLisp core buffer substrate should be used.
-Matches `nemacs--ensure-scratch-buffer''s substrate choice: whenever the
+Matches the loadup scratch-buffer substrate choice: whenever the
 `nelisp-ec-*' compat layer is loaded, the splash buffer must live in the
 same registry as the bootstrap's *scratch* buffer (`nelisp-ec-set-buffer'
 only accepts that substrate's buffer objects)."

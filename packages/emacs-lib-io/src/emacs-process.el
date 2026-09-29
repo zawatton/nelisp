@@ -477,16 +477,24 @@ not do (it returns only an exit code and leaks stdout to the parent)."
        (fboundp 'nelisp-process-wait)
        (fboundp 'nelisp-process-read-output)))
 
+(defun emacs-process--destination-list-p (destination)
+  "Return non-nil when DESTINATION is a `(REAL ERROR)' or `(:file F)' list.
+A `nelisp-ec' buffer object is itself a cons cell, so a plain `consp' test
+would misread it as a destination list."
+  (and (consp destination)
+       (not (memq (car destination) '(nelisp-ec-buffer buffer)))
+       (not (and (fboundp 'bufferp) (bufferp destination)))))
+
 (defun emacs-process--call-process-real-destination (destination)
   "Return the stdout destination part of call-process DESTINATION."
-  (if (and (consp destination)
+  (if (and (emacs-process--destination-list-p destination)
            (not (eq (car destination) :file)))
       (car destination)
     destination))
 
 (defun emacs-process--call-process-stderr-destination (destination)
   "Return the stderr destination part of call-process DESTINATION, if any."
-  (and (consp destination)
+  (and (emacs-process--destination-list-p destination)
        (not (eq (car destination) :file))
        (cadr destination)))
 
@@ -495,14 +503,39 @@ not do (it returns only an exit code and leaks stdout to the parent)."
 STDERR is the stderr component returned by
 `emacs-process--call-process-stderr-destination'."
   (cond
-   ((and (consp destination) (null stderr))
+   ;; (:file FILE): stdout and stderr both go to FILE, as with a plain
+   ;; buffer destination.
+   ((and (emacs-process--destination-list-p destination)
+         (eq (car destination) :file))
+    "exec \"$@\" 2>&1")
+   ((and (emacs-process--destination-list-p destination) (null stderr))
     "exec \"$@\" 2>/dev/null")
    ((stringp stderr)
     (concat "exec \"$@\" 2>"
             (shell-quote-argument (expand-file-name stderr))))
-   ((eq destination t)
+   ;; ERROR-DESTINATION t: stderr goes wherever stdout goes.
+   ((and (emacs-process--destination-list-p destination) (eq stderr t))
+    "exec \"$@\" 2>&1")
+   ;; Discarded stdout (nil / 0) discards stderr too.
+   ((or (null destination) (eq destination 0))
+    "exec \"$@\" 2>/dev/null")
+   ;; t, a buffer, or a buffer name: stderr is mixed into stdout.
+   ((not (emacs-process--destination-list-p destination))
     "exec \"$@\" 2>&1")
    (t nil)))
+
+(defun emacs-process--buffer-by-name (name)
+  "Return the buffer named NAME, creating it, in the current buffer layer.
+When the session runs on the `nelisp-ec' buffer layer, `get-buffer-create'
+can hand back a text-layer buffer that `set-buffer' rejects, so look the
+name up in the ec registry (and create an ec buffer) instead."
+  (if (and (fboundp 'nelisp-ec-buffer-p)
+           (boundp 'nelisp-ec--buffers)
+           (fboundp 'nelisp-ec-generate-new-buffer)
+           (ignore-errors (nelisp-ec-buffer-p (current-buffer))))
+      (or (cdr (assoc name nelisp-ec--buffers))
+          (nelisp-ec-generate-new-buffer name))
+    (get-buffer-create name)))
 
 (defun emacs-process--call-process-target-buffer (destination)
   "Resolve the stdout buffer for call-process DESTINATION, or nil to discard.
@@ -515,7 +548,7 @@ nil because file output is handled separately."
      ((eq real 0) nil)
      ((eq real t) (current-buffer))
      ((and (consp real) (eq (car real) :file)) nil)
-     ((stringp real) (get-buffer-create real))
+     ((stringp real) (emacs-process--buffer-by-name real))
      ((and (fboundp 'bufferp) (bufferp real)) real)
      ((not (fboundp 'bufferp)) real)
      (t nil))))
@@ -540,6 +573,25 @@ nil because file output is handled separately."
    (t
     (signal 'emacs-process-not-implemented (list 'write-region)))))
 
+(defun emacs-process--call-in-buffer (buffer function)
+  "Call FUNCTION with BUFFER current, then restore the previous buffer.
+Deliberately built from `current-buffer' / `set-buffer' functions instead of
+the `with-current-buffer' macro: those functions are resolved at call time,
+so this stays correct when a bridge later swaps the session to the
+`nelisp-ec' buffer layer (a macro expanded earlier would still bind the
+text-layer current buffer and fail with `wrong-type-argument arrayp')."
+  (let ((old (current-buffer)))
+    (unwind-protect
+        (progn (set-buffer buffer)
+               (funcall function))
+      ;; `buffer-live-p' may signal `wrong-type-argument' when OLD belongs
+      ;; to a different buffer layer than the active predicate; in that case
+      ;; assume it is live and let `set-buffer' report a real failure.
+      (when (condition-case nil
+                (buffer-live-p old)
+              (wrong-type-argument t))
+        (set-buffer old)))))
+
 (defun emacs-process--insert-call-process-output (destination output)
   "Insert or write call-process OUTPUT according to DESTINATION."
   (let ((target (emacs-process--call-process-target-buffer destination))
@@ -547,8 +599,7 @@ nil because file output is handled separately."
     (cond
      (file (emacs-process--write-string-to-file output file))
      (target
-      (with-current-buffer target
-        (insert output))))))
+      (emacs-process--call-in-buffer target (lambda () (insert output)))))))
 
 (defun emacs-process--program-name-absolute-p (program)
   "Return non-nil when PROGRAM already names a path."
@@ -630,10 +681,10 @@ Emacs `call-process' semantics (see `emacs-process--call-process-cwd')."
                 command)
       command)))
 
-(defun emacs-process--standalone-call-process (program infile destination args)
+(defun emacs-process--standalone-run (program infile destination args)
   "Run PROGRAM with ARGS synchronously via the nelisp-process async
-primitives, capturing stdout and inserting it per call-process
-DESTINATION.  Returns the child's integer exit code.
+primitives, capturing stdout (and stderr per call-process
+DESTINATION).  Returns (EXIT-CODE . OUTPUT-STRING) without inserting.
 
 This is the standalone-reader path that gives `call-process' real output
 capture: the synchronous `nelisp-process-call-process' facade only
@@ -649,6 +700,7 @@ reader primitive surface has no direct child-stdin redirection parameter.
 Caveat: draining after exit assumes the child's total stdout fits the
 reader's stdout buffer; multi-megabyte streaming output is out of scope
   for this synchronous path."
+  (emacs-process--check-program-exists program)
   (let* ((command (emacs-process--call-process-command program infile args))
          (stderr (emacs-process--call-process-stderr-destination destination))
          (stderr-wrapper
@@ -667,9 +719,95 @@ reader's stdout buffer; multi-megabyte streaming output is out of scope
          (chunk nil))
     (while (setq chunk (nelisp-process-read-output proc 65536))
       (setq out (concat out chunk)))
+    (cons (if (integerp rc) rc 0) out)))
+
+(defun emacs-process--standalone-call-process (program infile destination args)
+  "Run PROGRAM synchronously and insert its output per DESTINATION.
+Return the exit code (nil for DESTINATION 0, as GNU does).  See
+`emacs-process--standalone-run' for the capture mechanism."
+  (let* ((result (emacs-process--standalone-run
+                  program infile destination args))
+         (out (cdr result)))
     (when (> (length out) 0)
       (emacs-process--insert-call-process-output destination out))
-    (if (integerp rc) rc 0)))
+    (if (eq (emacs-process--call-process-real-destination destination) 0)
+        nil
+      (car result))))
+
+(defun emacs-process-capture-output (program args)
+  "Run PROGRAM with ARGS; return (EXIT-CODE . OUTPUT-STRING).
+Stderr is mixed into OUTPUT like `call-process' with DESTINATION t.  This
+never touches a buffer, so it is independent of the active buffer layer.
+Requires the standalone capture primitives; otherwise it falls back to a
+temporary buffer and `call-process'."
+  (if (and (emacs-standalone-mode-p)
+           (emacs-process--standalone-capture-available-p))
+      (emacs-process--standalone-run program nil t args)
+    (let ((buffer (generate-new-buffer \" *process-capture*\"))
+          (rc nil)
+          (out \"\"))
+      (unwind-protect
+          (progn
+            (setq rc (apply #'emacs-process-call-process
+                            program nil buffer nil args))
+            (setq out (emacs-process--call-in-buffer
+                       buffer
+                       (lambda ()
+                         (buffer-substring-no-properties
+                          (point-min) (point-max))))))
+        (kill-buffer buffer))
+      (cons rc out))))
+
+(defun emacs-process--check-program-exists (program)
+  "Signal `file-missing' like GNU `call-process' when PROGRAM cannot be found."
+  (when (stringp program)
+    (let ((resolved (emacs-process--resolve-program program)))
+      (unless (and (stringp resolved)
+                   (fboundp 'file-exists-p)
+                   (file-exists-p resolved))
+        (signal 'file-missing
+                (list "Searching for program" "No such file or directory"
+                      program))))))
+
+(defvar emacs-process--region-input-counter 0
+  "Counter used to name `call-process-region' temporary input files.")
+
+(defun emacs-process--region-pid ()
+  "Return a pid-like number for temporary file names."
+  (if (fboundp 'emacs-pid) (emacs-pid) 0))
+
+(defun emacs-process--standalone-call-process-region
+    (start end program delete destination display args)
+  "Standalone `call-process-region': feed START..END (or string START) to PROGRAM.
+The region text is written to a temporary file used as INFILE.  When DELETE
+is non-nil the region is deleted first, as in GNU; output is then inserted
+per DESTINATION at point."
+  (ignore display)
+  (let* ((text (cond ((stringp start) start)
+                     ((null start) (buffer-substring-no-properties
+                                    (point-min) (point-max)))
+                     (t (buffer-substring-no-properties start end))))
+         (file (concat (or (and (boundp 'temporary-file-directory)
+                                temporary-file-directory)
+                           "/tmp/")
+                       "emacs-process-region-"
+                       (number-to-string (emacs-process--region-pid))
+                       "-"
+                       (number-to-string
+                        (setq emacs-process--region-input-counter
+                              (1+ emacs-process--region-input-counter)))))
+         (rc nil))
+    (when (and delete (not (stringp start)))
+      (if (null start)
+          (delete-region (point-min) (point-max))
+        (delete-region start end)))
+    (emacs-process--write-string-to-file text file)
+    (unwind-protect
+        (setq rc (emacs-process--standalone-call-process
+                  program file destination args))
+      (when (file-exists-p file)
+        (delete-file file)))
+    rc))
 
 (defun emacs-process-call-process (program &optional infile destination
                                            display &rest args)
@@ -701,9 +839,13 @@ unavailable and proceeds, rather than aborting the whole load."
                                                 delete buffer display
                                                 &rest args)
   "Synchronous program execution with input from a buffer region."
+  (if (and (emacs-standalone-mode-p)
+           (emacs-process--standalone-capture-available-p))
+      (emacs-process--standalone-call-process-region
+       start end program delete buffer display args)
   (emacs-process--delegate 'call-process-region
                            (append (list start end program delete buffer display)
-                                   args)))
+                                   args))))
 
 (defun emacs-process--find-file-name-handler (filename operation)
   "Return file-name handler for FILENAME and OPERATION, if any."
@@ -1055,19 +1197,13 @@ unchanged.  Otherwise build a `call-process' invocation manually."
 (defun emacs-process-shell-command-to-string (command)
   "Run COMMAND through the shell, return its stdout as a string."
   (cond
-   ((emacs-process--delegate-p 'shell-command-to-string)
+   ((and (not (emacs-standalone-mode-p))
+         (emacs-process--delegate-p 'shell-command-to-string))
     (funcall (indirect-function 'shell-command-to-string) command))
    (t
-    (let* ((std-buf (and (fboundp 'generate-new-buffer)
-                         (generate-new-buffer " *shell-cmd*"))))
-      (unwind-protect
-          (progn
-            (apply #'emacs-process-call-process
-                   emacs-process-shell-file-name
-                   nil std-buf nil
-                   (list emacs-process-shell-command-switch command))
-            (and std-buf (with-current-buffer std-buf (buffer-string))))
-        (when std-buf (kill-buffer std-buf)))))))
+    (cdr (emacs-process-capture-output
+          emacs-process-shell-file-name
+          (list emacs-process-shell-command-switch command))))))
 
 
 ;;;; --- A19 follow-up: deferred filter/sentinel/plist/query/send-region ---

@@ -12,6 +12,7 @@
 ;; standalone path needs, so this file provides the common map API
 ;; directly over the standard data shapes.
 
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- native map-elt/map-keys reject arrays; shim handles them (audit 2026-09-29).
 ;;; Code:
 
 (require 'seq)

@@ -48,7 +48,7 @@
 
 (defun emacs-stub--load-feature (feature)
   "Load FEATURE from the stub facade directory, unless already loaded.
-See the identical `featurep' rationale on `emacs-foundation--load-feature'."
+See the identical `featurep' rationale on the foundation feature loader."
   (unless (featurep feature)
     (load (expand-file-name (concat (symbol-name feature) ".el")
                             emacs-stub--load-directory)
@@ -1078,7 +1078,7 @@ nadvice, etc.; the runtime previously left it void."
 ;; These are degenerate placeholders (no-op / fixed position).  The REAL
 ;; line-navigation primitives live in `emacs-line-builtins', which only
 ;; overrides a binding it finds carrying the `emacs-stub-bulk' marker (see
-;; `emacs-line-builtins--install-function-p').  Mark each stub so the real
+;; the line-builtins install predicate).  Mark each stub so the real
 ;; implementation wins; without the marker the no-op stub shadowed it, e.g.
 ;; `forward-line' never advanced and `line-end-position' returned point-min,
 ;; corrupting `org-element-headline-parser' bounds into an infinite recursion.
@@ -1218,6 +1218,11 @@ when no real redisplay window is available."
 
 (unless (fboundp 'modify-syntax-entry)
   (defun modify-syntax-entry (char newentry &optional table) (ignore char newentry table) nil))
+
+;; Batch/standalone has no color terminal (GNU answers nil on a non-color tty);
+;; magit-diff's face setup calls this at load time.
+(unless (fboundp 'tty-display-color-p)
+  (defun tty-display-color-p (&optional _terminal) nil))
 
 (unless (boundp 'outline-mode-syntax-table)
   (defvar outline-mode-syntax-table (standard-syntax-table)))
@@ -1425,7 +1430,7 @@ machine-readable stdout."
 ;; uses (the standalone prelude's native `nelisp-buffer-p' record or this
 ;; repo's own `nelisp-ec-buffer' struct).  Tag each one `emacs-stub-bulk',
 ;; matching the `display.c' block above, so
-;; `emacs-buffer-builtins--install-function-p' (which treats an already
+;; the buffer-builtins install predicate (which treats an already
 ;;-fboundp name as a trustworthy prior owner, like a host C subr, unless
 ;; it is stub-bulk-tagged) lets `emacs-buffer-builtins.el''s real
 ;; `nelisp-ec'-backed definitions override this placeholder instead of it
@@ -1496,10 +1501,37 @@ machine-readable stdout."
       (cons depth function)
     function))
 
+(defun emacs-stub--hook-canonical-var (sym)
+  "Return the canonical variable SYM aliases to.
+Follow `define-obsolete-variable-alias' metadata (the
+`byte-obsolete-variable' property, whose car is the current name) then the
+`defvaralias' registry, with cycle protection.  A `make-obsolete-variable'
+whose replacement is a string is not followed.  Real Emacs shares one value
+cell between an obsolete hook name and its canonical name; the standalone
+`defvaralias' is a one-shot value copy, so hook helpers resolve the chain
+explicitly and read/write the canonical cell."
+  (let ((cur sym) (seen nil) (done nil))
+    (while (not done)
+      (if (memq cur seen)
+          (setq done t)
+        (push cur seen)
+        (let ((next
+               (or (let ((info (and (symbolp cur)
+                                    (get cur 'byte-obsolete-variable))))
+                     (and (car-safe info) (symbolp (car info)) (car info)))
+                   (and (boundp 'nelisp--defvaralias-registry)
+                        (cdr (assq cur nelisp--defvaralias-registry))))))
+          (if (and next (symbolp next) (not (eq next cur)))
+              (setq cur next)
+            (setq done t)))))
+    cur))
+
 (defun emacs-stub--add-hook (hook function &optional depth _local)
   "Add FUNCTION to HOOK and return HOOK's new value.
 This is a minimal standalone implementation of Emacs hook variables.  DEPTH
-nil prepends, t appends, and numeric depths sort low-to-high."
+nil prepends, t appends, and numeric depths sort low-to-high.  HOOK is
+resolved to its canonical (obsolete-alias aware) variable first."
+  (setq hook (emacs-stub--hook-canonical-var hook))
   (let* ((current (emacs-stub--hook-normalize
                    (and (boundp hook) (symbol-value hook))))
          (entry (emacs-stub--hook-entry function depth))
@@ -1534,6 +1566,7 @@ nil prepends, t appends, and numeric depths sort low-to-high."
 
 (defun emacs-stub--remove-hook (hook function &optional _local)
   "Remove FUNCTION from HOOK and return HOOK's new value."
+  (setq hook (emacs-stub--hook-canonical-var hook))
   (let ((current (emacs-stub--hook-normalize
                   (and (boundp hook) (symbol-value hook))))
         (new nil))
@@ -1546,7 +1579,8 @@ nil prepends, t appends, and numeric depths sort low-to-high."
     new))
 
 (defun emacs-stub--run-hook (hook args)
-  "Run HOOK with ARGS and return nil."
+  "Run HOOK with ARGS and return nil (obsolete-alias aware)."
+  (setq hook (emacs-stub--hook-canonical-var hook))
   (let ((entries (emacs-stub--hook-normalize
                   (and (boundp hook) (symbol-value hook)))))
     (while entries
@@ -1781,6 +1815,21 @@ word / symbol boundaries (matches the GNU `regexp-opt' grouping contract)."
       (set symbol new)))
   nil)
 
+;; Public names for the advice substrate so other ownership groups (the IO
+;; magit bridge fallbacks) need not call the private `--' implementations.
+(dolist (pair '((emacs-stub-advice-add . emacs-stub--advice-add)
+                (emacs-stub-advice-remove . emacs-stub--advice-remove)
+                (emacs-stub-advice-member-p . emacs-stub--advice-member-p)
+                (emacs-stub-add-function-symbol
+                 . emacs-stub--add-function-symbol)
+                (emacs-stub-add-function-value
+                 . emacs-stub--add-function-value)
+                (emacs-stub-remove-function-symbol
+                 . emacs-stub--remove-function-symbol)
+                (emacs-stub-remove-function-value
+                 . emacs-stub--remove-function-value)))
+  (defalias (car pair) (cdr pair)))
+
 (when (or (not (boundp 'emacs-version))
           (get 'add-function 'emacs-stub-bulk))
   (defmacro add-function (how place function &optional props)
@@ -1848,7 +1897,8 @@ Preserve existing entries, append new ones, and keep the full
 `(OPTION WIDGET)' pair unique so the same OPTION may appear with
 different widgets."
     (let ((entry (list option widget))
-          (members (get group 'custom-group)))
+          ;; `t' is the normalizer's defgroup marker, not a member list.
+          (members (let ((m (get group 'custom-group))) (and (listp m) m))))
       (unless (member entry members)
         (put group 'custom-group (append members (list entry)))))))
 
@@ -2237,6 +2287,15 @@ degrades to 1 (no pow primitive in the standalone reader)."
          (emacs-stub--inline-uncomma--unquote-p (cadr form))
          (null (cddr form)))
     (emacs-stub--inline-lower (cadr (cadr form))))
+   ;; `',EXPR' inside `inline-quote' reads as `(quote (comma EXPR))'.  In the
+   ;; function-body path the template IS the code, so `',EXPR' must lower to
+   ;; the bare EXPR (its value), not the literal quoted symbol EXPR (which
+   ;; made `cl-typep' on `(or A B)' / `(and A B)' recurse on the symbol
+   ;; `head': "Unknown type head").  Mirrors `inline--dont-quote'.
+   ((and (eq (car form) 'quote)
+         (emacs-stub--inline-uncomma--unquote-p (cadr form))
+         (null (cddr form)))
+    (emacs-stub--inline-lower (cadr (cadr form))))
    ((let ((head (car form)))
       (or (eq head 'comma)
           (and (symbolp head)
@@ -2554,7 +2613,11 @@ normal macro-writing contract."
           (list 'quote 'cl-simple-setter)
           (list 'quote setter))))
 
-(unless (fboundp 'gv-letplace)
+;; On the standalone runtime the binary preloads `gv-letplace' as a
+;; `(&rest _) nil' macro, so a plain `unless fboundp' guard never installed
+;; the working version below (`cl-callf' then expanded to nil and silently
+;; skipped the write, e.g. eieio's slots-list -> vector conversion).
+(unless (and (fboundp 'gv-letplace) (not (fboundp 'nelisp--record-set)))
   (defmacro gv-letplace (vars place &rest body)
     "Simplified `gv-letplace': bind VARS to PLACE's expression and a setter.
 
@@ -2578,7 +2641,10 @@ on) hit `void-variable' on the setter symbol at first invocation."
                     (list 'lambda '(v)
                           (list 'list
                                 (list 'quote 'setf)
-                                (list 'quote getter)
+                                ;; GETTER holds the place FORM at macro time;
+                                ;; splice its value (quoting the symbol built
+                                ;; `(setf getter V)', a write to a global).
+                                getter
                                 'v))))
              body)))))
 
@@ -2600,8 +2666,79 @@ on) hit `void-variable' on the setter symbol at first invocation."
 (unless (boundp 'macro-declarations-alist)
   (defvar macro-declarations-alist nil))
 
+;; The two cl-macs.el helpers that NeLisp's lazily loaded oclosure/nadvice
+;; substrate (`nelisp-nadvice-substrate') needs
+;; (lives here, not in cl-lib.el, because hand-picked load lists such as the
+;; proc-smoke one load emacs-stub.el without cl-lib.el).  The substrate stages them by
+;; READING all of the staged GNU cl-macs.el (~18s), and skips that whole step
+;; when `cl--arglist-args' is already bound.  These are the verbatim GNU
+;; definitions (cl-macs.el), so nothing changes semantically; without them the
+;; first `advice-add' during bootstrap pushes the cold load past its budget.
+(unless (boundp 'cl--lambda-list-keywords)
+  (defconst cl--lambda-list-keywords
+    '(&optional &rest &key &allow-other-keys &aux &whole &body &environment)))
+(unless (fboundp 'cl--arglist-args)
+  (defun cl--arglist-args (args)
+    (if (nlistp args) (list args)
+      (let ((res nil) (kind nil) arg)
+        (while (consp args)
+          (setq arg (pop args))
+          (if (memq arg cl--lambda-list-keywords) (setq kind arg)
+            (if (eq arg '&cl-defs) (pop args)
+              (and (consp arg) kind (setq arg (car arg)))
+              (and (consp arg) (cdr arg) (eq kind '&key) (setq arg (cadr arg)))
+              (setq res (nconc res (cl--arglist-args arg))))))
+        (nconc res (and args (list args)))))))
+
+
+;; Load NeLisp's oclosure/nadvice/gv substrate now, with this library's own
+;; vendored GNU copies hidden from `load-path'.  The substrate pairs NeLisp's
+;; staged cl-preloaded.el with its own vendored oclosure.el, gv.el and
+;; nadvice.el and locates every one of them through `load-path'.  Runtime
+;; images and nemacs put this library's `vendor/emacs-lisp{,/emacs-lisp}' on
+;; `load-path' ahead of NeLisp's directories; the first `advice-add' would
+;; then load a mismatched pair of definitions (oclosure defined twice,
+;; "Type oclosure already in another class").  Forcing the load here, where
+;; the first advice consumers are still ahead, keeps NeLisp's implementation
+;; authoritative without shadowing it.
+(defun emacs-stub--load-nadvice-substrate ()
+  "Force NeLisp's lazily loaded nadvice substrate under a clean `load-path'."
+  (let ((fn (and (fboundp 'advice-add) (symbol-function 'advice-add))))
+    (when (and (eq (car-safe fn) 'autoload)
+               (equal (format "%s" (car-safe (cdr-safe fn)))
+                      "nelisp-nadvice-substrate")
+               (fboundp 'autoload-do-load))
+      (let ((saved load-path)
+            (root (and (boundp 'nelisp-emacs-vendor-root)
+                       (stringp nelisp-emacs-vendor-root)
+                       (expand-file-name "emacs-lisp" nelisp-emacs-vendor-root)))
+            (filtered nil))
+        (dolist (dir load-path)
+          (unless (and root (stringp dir)
+                       (let ((d (directory-file-name (expand-file-name dir))))
+                         (or (string= d root)
+                             (string-prefix-p (concat root "/") d))))
+            (push dir filtered)))
+        (setq load-path (nreverse filtered))
+        (unwind-protect
+            (autoload-do-load fn 'advice-add)
+          (setq load-path saved))))))
+(emacs-stub--load-nadvice-substrate)
+
 ;; Provide gv as a feature so cl-lib's `(require 'gv)' (if any) succeeds.
-(unless (featurep 'gv) (provide 'gv))
+;; Not when the runtime ships a loadable GNU gv.el (current NeLisp vendors
+;; it and `nelisp-nadvice-substrate' requires it on the first `advice-add'):
+;; a fake feature would keep the real gv.el (and thus `gv-deref', which
+;; nadvice.el needs) from ever loading.
+(unless (or (featurep 'gv)
+            (and (fboundp 'advice-add)
+                 (eq (car-safe (symbol-function 'advice-add)) 'autoload)
+                 (equal (format "%s" (car-safe (cdr-safe (symbol-function 'advice-add))))
+                        "nelisp-nadvice-substrate")))
+  ;; `(provide (identity 'gv))' rather than a literal `(provide 'gv)': the
+  ;; bootstrap bundler scans for literal provide forms and would emit an
+  ;; unconditional one after this file, defeating the guard above.
+  (provide (identity 'gv)))
 
 ;;;; --- pcase placeholder (avoid loading vendor pcase.el which uses old `\,' symbol escape) ---
 
@@ -3409,27 +3546,28 @@ real Emacs `push' accepts any gv place, and vendor code relies on that
 ;; breaks anvil-memory--fallback-display-name when handed a basename
 ;; without an extension.  Real impl: strip last `.EXT' suffix, return
 ;; original string when no `.' present in the basename.
-(defun file-name-sans-extension (filename)
-  "Return FILENAME with its extension (the last `.EXT' suffix) removed.
+(unless (fboundp 'file-name-sans-extension)
+  (defun file-name-sans-extension (filename)
+    "Return FILENAME with its extension (the last `.EXT' suffix) removed.
 Returns FILENAME unchanged when no extension is present."
-  (cond
-   ((null filename) nil)
-   (t
-    ;; Use string-match to find the last `.' after the last `/'.  Walk
-    ;; backwards: scan from the end looking for `.', stop at `/' or
-    ;; start.
-    (let* ((n (length filename))
-           (i (- n 1))
-           (dot-pos nil))
-      (while (and (>= i 0) (null dot-pos))
-        (let ((c (aref filename i)))
-          (cond
-           ((eq c ?/) (setq i -1))            ; passed last directory sep
-           ((eq c ?.) (setq dot-pos i) (setq i -1))
-           (t (setq i (- i 1))))))
-      (if dot-pos
-          (substring filename 0 dot-pos)
-        filename)))))
+    (cond
+     ((null filename) nil)
+     (t
+      ;; Use string-match to find the last `.' after the last `/'.  Walk
+      ;; backwards: scan from the end looking for `.', stop at `/' or
+      ;; start.
+      (let* ((n (length filename))
+             (i (- n 1))
+             (dot-pos nil))
+	(while (and (>= i 0) (null dot-pos))
+          (let ((c (aref filename i)))
+            (cond
+             ((eq c ?/) (setq i -1))            ; passed last directory sep
+             ((eq c ?.) (setq dot-pos i) (setq i -1))
+             (t (setq i (- i 1))))))
+	(if dot-pos
+            (substring filename 0 dot-pos)
+          filename))))))
 
 
 
@@ -3662,8 +3800,8 @@ release that package version targets."))
     ;; substrate functions for this dynamic Custom API instead.
     (when (fboundp 'emacs-faces-make-face)
       (emacs-faces-make-face face)
-      (let ((attrs (and (fboundp 'emacs-faces--default-attrs-from-spec)
-                        (emacs-faces--default-attrs-from-spec spec))))
+      (let ((attrs (and (fboundp 'emacs-faces-default-attrs-from-spec)
+                        (emacs-faces-default-attrs-from-spec spec))))
         (when (and attrs (fboundp 'emacs-faces-set-attribute))
           (apply #'emacs-faces-set-attribute face nil attrs))))
     (put face 'face-defface-spec spec)
@@ -4209,7 +4347,7 @@ is required."
 ;;   (defalias 'SYM (cc-eval-when-compile
 ;;                     (unless (or c-use-extents (cc-bytecomp-boundp V))
 ;;                       (byte-compile (lambda ...)))))
-;; `emacs-parity-cc--byte-compile' (see emacs-parity-cc.el) guards its
+;; the parity-cc byte-compile shim (see emacs-parity-cc.el) guards its
 ;; native-symbol special case with `(and (symbolp form) (fboundp form))';
 ;; when the `unless' body above is skipped (COND true) `form' is nil, and
 ;; merely evaluating `(fboundp nil)' to decide the answer aborted the whole

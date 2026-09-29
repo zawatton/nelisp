@@ -249,7 +249,7 @@ Return a plist with `:keys', `:command', `:effective-command', and
     ("search"  . (:glyph "⌕" :ascii "[/]" :file "search")))
   "Toolbar icon name -> (:glyph UNICODE :ascii FALLBACK :file BASENAME).
 Every `:glyph' is a single BMP codepoint outside the East Asian Wide /
-emoji ranges in `emacs-string--build-char-width-table', so it always
+emoji ranges in the string char-width table builder, so it always
 measures as one display column under this runtime's `string-width'.
 `:ascii' is a short bracketed mnemonic for non-UTF-8 terminals, loosely
 tied to the underlying Emacs command (K = kill-region, W = kill-ring-save,

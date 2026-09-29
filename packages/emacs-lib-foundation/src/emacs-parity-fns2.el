@@ -115,7 +115,7 @@ If optional BASE-ONLY is non-nil, only base coding systems are listed."
 
 ;;;; --- mule.el: coding-system-get --------------------------------------
 ;; T52: moved here from `src/nelisp-emacs-magit-bridge.el' (originally
-;; `nelisp-emacs-magit-bridge--ensure-vendor-preload-globals', a
+;; the magit bridge vendor-preload-globals helper, a
 ;; fboundp-guarded shim reached only when the magit bundle itself loads),
 ;; which left it void on the default boot path -- the load matrix showed
 ;; `(void-function coding-system-get)' for 4 features that are not magit at

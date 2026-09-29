@@ -47,6 +47,7 @@
 ;; supersedes from `emacs-stub.el' (= same load-order shadowing risk
 ;; that Phase 11.A' / 11.B' fixed for buffer / search).
 
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- keymap primitives use the nemacs keymap representation.
 ;;; Code:
 
 (require 'emacs-list)
@@ -216,6 +217,11 @@ the conventional shape expected by `defvar-keymap :suppress'."
   (defvar ctl-x-map (emacs-keymap-make-sparse-keymap)
     "Standard C-x prefix keymap for standalone NeLisp."))
 
+;; GNU bindings.el: `Control-X-prefix' is the command whose function cell is
+;; the C-x keymap; keymap parents may name it (term.el does).
+(unless (fboundp 'Control-X-prefix)
+  (fset 'Control-X-prefix ctl-x-map))
+
 (unless (boundp 'ctl-x-4-map)
   (defvar ctl-x-4-map (emacs-keymap-make-sparse-keymap)
     "Standard C-x 4 prefix keymap for standalone NeLisp."))
@@ -231,6 +237,23 @@ the conventional shape expected by `defvar-keymap :suppress'."
 (unless (boundp 'help-map)
   (defvar help-map (emacs-keymap-make-sparse-keymap)
     "Standard help prefix keymap for standalone NeLisp."))
+
+;; GNU bindings.el's `search-map' (M-s prefix); isearch.el binds into it at
+;; load time (`isearch-forward-word' etc.).
+(unless (boundp 'search-map)
+  (defvar search-map
+    (let ((map (emacs-keymap-make-sparse-keymap)))
+      (emacs-keymap-define-key map "o" 'occur)
+      (emacs-keymap-define-key map (kbd "M-w") 'eww-search-words)
+      (emacs-keymap-define-key map "hr" 'highlight-regexp)
+      (emacs-keymap-define-key map "hp" 'highlight-phrase)
+      (emacs-keymap-define-key map "hl" 'highlight-lines-matching-regexp)
+      (emacs-keymap-define-key map "h." 'highlight-symbol-at-point)
+      (emacs-keymap-define-key map "hu" 'unhighlight-regexp)
+      (emacs-keymap-define-key map "hf" 'hi-lock-find-patterns)
+      (emacs-keymap-define-key map "hw" 'hi-lock-write-interactive-patterns)
+      map)
+    "Keymap for search related commands."))
 
 ;; `minibuffer-local-map' is normally supplied by the preloaded GNU
 ;; minibuffer implementation.  The standalone bootstrap has only the
@@ -252,7 +275,8 @@ the conventional shape expected by `defvar-keymap :suppress'."
   (emacs-keymap-define-key global-map "\e" esc-map)
   (emacs-keymap-define-key global-map "\C-h" help-map)
   (emacs-keymap-define-key ctl-x-map "4" ctl-x-4-map)
-  (emacs-keymap-define-key ctl-x-map "5" ctl-x-5-map))
+  (emacs-keymap-define-key ctl-x-map "5" ctl-x-5-map)
+  (emacs-keymap-define-key esc-map "s" search-map))
 
 (when (emacs-keymap-builtins--install-function-p 'current-global-map)
   (defalias 'current-global-map #'emacs-keymap-current-global-map))

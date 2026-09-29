@@ -997,7 +997,7 @@ bind `emacs-version' to a non-string sentinel (so `boundp' is true but
 the value is not a version string) rather than leaving it unbound.
 Check the NeLisp-only markers `nl-write-file' / `nelisp--write-stdout-bytes'
 first, matching `emacs-window-builtins--install-function-p' /
-`emacs-char-table--standalone-p', so standalone always installs these
+the char-table standalone predicate, so standalone always installs these
 five names regardless of load order, while host Emacs -- where SYMBOL
 is already bound to a real subr or dumped Lisp function from
 `window.el' -- never has that definition replaced."

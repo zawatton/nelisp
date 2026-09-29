@@ -11,6 +11,7 @@
 ;; keeps the first `find-file' / `insert' / `save-buffer' cycle useful
 ;; without forcing the heavier bootstrap path.
 
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- fallback buffer model for files.el before the ec-buffer bridge loads.
 ;;; Code:
 
 (require 'files-runtime)
@@ -916,6 +917,11 @@ the directory built so far."
                     resolved)))))
       (if (= (length true) 0) "/" true))))
 
+;; Public entry point for other ownership groups (IO uses it).
+(defalias 'files-standalone-truename-walk #'files--truename-walk
+  "Resolve symbolic links in absolute PATH component by component.
+Public name for `files--truename-walk'.")
+
 (when (files--install-fallback-function-p 'file-truename)
   (defun file-truename (filename &optional counter prev-dirs)
     "Return the canonical name of FILENAME, resolving all symbolic links via
@@ -1211,10 +1217,12 @@ when access(2) is unavailable."
         (= 0 (nelisp--syscall-path-int files--syscall-access probe files--ok-exist))))
      ((let ((n (length filename))) (and (> n 0) (eq (aref filename (1- n)) ?/))) t)
      (t nil))))
-(when (files--install-fallback-function-p 'make-directory)
+;; Only fill when the runtime has no `make-directory': current NeLisp ships a
+;; real one, and the old no-op broke `make-directory' with PARENTS and
+;; `make-temp-file' DIR-FLAG (audit 2026-09-29).
+(unless (fboundp 'make-directory)
   (defun make-directory (_dir &optional _parents)
-    "No-op: the standalone reader has no mkdir syscall; the parent directory is
-assumed to already exist."
+    "No-op: the runtime has no mkdir; the parent directory is assumed to exist."
     nil))
 
 ;; --- file / directory removal via the reader's `nelisp--syscall-path' -------

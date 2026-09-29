@@ -42,6 +42,7 @@
 ;; `file-name-history' / `read-string-history' / `buffer-name-history' /
 ;; `regexp-history' / `extended-command-history'.
 
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- minibuffer reads go through the nemacs minibuffer.
 ;;; Code:
 
 (require 'emacs-minibuffer)

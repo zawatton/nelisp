@@ -30,6 +30,7 @@
 ;;   - face-remap, frame-parameter-driven attribute fallback
 ;;   - X-resource fallback
 
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- faces use the nemacs face registry.
 ;;; Code:
 
 (require 'emacs-faces)

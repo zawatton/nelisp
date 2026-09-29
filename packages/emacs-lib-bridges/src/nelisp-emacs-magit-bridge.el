@@ -621,22 +621,22 @@ below as a second line of defense (mirrors the existing
             nil 'no-message t t))
     ;; Defense in depth, mirroring the `add-function'/`remove-function'
     ;; fallbacks just below: the `load' above already (re)defines these
-    ;; three plus their private `emacs-stub--advice-*' implementations
+    ;; three plus their `emacs-stub-advice-*' implementations
     ;; unconditionally whenever it runs, so this branch is normally a
     ;; no-op; it only fires if `emacs-stub.el' itself could not be found
     ;; or somehow still left one of the three void.
     (unless (fboundp 'advice-member-p)
       (defun advice-member-p (function symbol)
         "Standalone fallback for `nadvice.el' `advice-member-p'."
-        (emacs-stub--advice-member-p function symbol)))
+        (emacs-stub-advice-member-p function symbol)))
     (unless (fboundp 'advice-add)
       (defun advice-add (symbol where function &optional props)
         "Standalone fallback for `nadvice.el' `advice-add'."
-        (emacs-stub--advice-add symbol where function props)))
+        (emacs-stub-advice-add symbol where function props)))
     (unless (fboundp 'advice-remove)
       (defun advice-remove (symbol function)
         "Standalone fallback for `nadvice.el' `advice-remove'."
-        (emacs-stub--advice-remove symbol function)))
+        (emacs-stub-advice-remove symbol function)))
     (unless (fboundp 'add-function)
       (defmacro add-function (how place function &optional props)
         "Standalone subset of `nadvice.el' `add-function'."
@@ -644,14 +644,14 @@ below as a second line of defense (mirrors the existing
          ((and (consp place)
                (eq (car place) 'local)
                (eq (car-safe (cadr place)) 'quote))
-          (list 'emacs-stub--add-function-symbol how (cadr place) function props t))
+          (list 'emacs-stub-add-function-symbol how (cadr place) function props t))
          ((and (consp place)
                (eq (car place) 'var))
           (list 'setq (cadr place)
-                (list 'emacs-stub--add-function-value
+                (list 'emacs-stub-add-function-value
                       how (cadr place) function props)))
          ((symbolp place)
-          (list 'emacs-stub--add-function-symbol
+          (list 'emacs-stub-add-function-symbol
                 how (list 'quote place) function props nil))
          (t nil))))
     (unless (fboundp 'remove-function)
@@ -661,13 +661,13 @@ below as a second line of defense (mirrors the existing
          ((and (consp place)
                (eq (car place) 'local)
                (eq (car-safe (cadr place)) 'quote))
-          (list 'emacs-stub--remove-function-symbol (cadr place) function t))
+          (list 'emacs-stub-remove-function-symbol (cadr place) function t))
          ((and (consp place)
                (eq (car place) 'var))
           (list 'setq (cadr place)
-                (list 'emacs-stub--remove-function-value (cadr place) function)))
+                (list 'emacs-stub-remove-function-value (cadr place) function)))
          ((symbolp place)
-          (list 'emacs-stub--remove-function-symbol
+          (list 'emacs-stub-remove-function-symbol
                 (list 'quote place) function nil))
          (t nil))))))
 
@@ -2450,7 +2450,37 @@ mirroring the real Emacs startup invariant, not a vendor patch."
                   (set-buffer-modified-p . emacs-buffer-set-buffer-modified-p)
                   (restore-buffer-modified-p . emacs-buffer-restore-buffer-modified-p)))
     (when (fboundp (cdr cell))
-      (fset (car cell) (symbol-function (cdr cell))))))
+      (fset (car cell) (symbol-function (cdr cell)))))
+  ;; The buffer FUNCTIONS above now speak `nelisp-ec-buffer' objects, but the
+  ;; prelude's `with-current-buffer' / `with-temp-buffer' / `save-excursion'
+  ;; MACROS still bind the text-layer `nelisp-buffer--current' to whatever
+  ;; `get-buffer' returns (an ec-buffer) and call `nelisp-goto-char' on it:
+  ;; every `(with-current-buffer B ...)' died with (wrong-type-argument arrayp
+  ;; (nelisp-ec-buffer ...)) inside `magit-setup-buffer-internal'.  Forward
+  ;; the macros to the ec-layer forms, same shape as
+  ;; `emacs-buffer-builtins.el's polyfills.
+  (when (and (fboundp 'nelisp-ec-with-current-buffer)
+             (fboundp 'nelisp-ec-generate-new-buffer)
+             (fboundp 'nelisp-ec-kill-buffer))
+    (fset 'with-current-buffer
+          (cons 'macro
+                (lambda (buf &rest body)
+                  (cons 'nelisp-ec-with-current-buffer (cons buf body)))))
+    (fset 'with-temp-buffer
+          (cons 'macro
+                (lambda (&rest body)
+                  (let ((buf (make-symbol "buf")))
+                    (list 'let (list (list buf (list 'nelisp-ec-generate-new-buffer
+                                                     " *temp*")))
+                          (list 'unwind-protect
+                                (cons 'nelisp-ec-with-current-buffer
+                                      (cons buf body))
+                                (list 'nelisp-ec-kill-buffer buf)))))))
+    (when (fboundp 'nelisp-ec-save-excursion)
+      (fset 'save-excursion
+            (cons 'macro
+                  (lambda (&rest body)
+                    (cons 'nelisp-ec-save-excursion body)))))))
 
 (defun nelisp-emacs-magit-bridge--ensure-buffer-selection-builtins ()
   "Ensure current-buffer selection helpers use the standalone runtime.
@@ -4149,7 +4179,13 @@ builtin otherwise."
   (interactive)
   (let ((section (magit-current-section)))
     (when nelisp-emacs-magit-bridge--magit-section-forward-orig
-      (funcall nelisp-emacs-magit-bridge--magit-section-forward-orig))
+      ;; The vendor body compares a section's `end' MARKER with `(1+ (point))'
+      ;; via `=', and this runtime's numeric predicates reject ec markers
+      ;; ((wrong-type-argument number-or-marker-p #<marker ...>)).  Treat that
+      ;; as "did not move" and let the section-tree fallback below do the work.
+      (condition-case nil
+          (funcall nelisp-emacs-magit-bridge--magit-section-forward-orig)
+        (wrong-type-argument nil)))
     (when (eq section (magit-current-section))
       (or (nelisp-emacs-magit-bridge--magit-section-forward-fallback section)
           (user-error "No next section")))))

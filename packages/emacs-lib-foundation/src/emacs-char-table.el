@@ -49,6 +49,7 @@
 ;; install our implementations unconditionally so they override the
 ;; earlier `emacs-stub-bulk.el' nil-stubs.
 
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- char-tables use the library char-table representation.
 ;;; Code:
 
 (defconst emacs-char-table--tag '--nemacs-char-table

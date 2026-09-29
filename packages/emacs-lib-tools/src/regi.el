@@ -10,6 +10,7 @@
 ;; packages.  It interprets a frame of line predicates and actions over
 ;; the current buffer without pulling in the full vendor file.
 
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- column/indentation primitives operate on ec-buffers.
 ;;; Code:
 
 (require 'emacs-buffer-builtins)

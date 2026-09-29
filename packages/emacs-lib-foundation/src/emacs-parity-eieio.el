@@ -1,4 +1,5 @@
 ;;; emacs-parity-eieio.el --- eieio class-system setf-place bootstrap fix -*- lexical-binding: t; -*-
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- struct/type registry hooks for the library cl-defstruct.
 
 ;; This shim repairs the single core defect that collapses the entire eieio
 ;; class system on the standalone NeLisp substrate (~64 of the 238 caught
@@ -212,6 +213,197 @@ port must too, or `(get VECTOR 'cl--class)' aborts with
       (let ((class (and (symbolp name) (fboundp 'cl--find-class)
                          (cl--find-class name))))
         (and (emacs-parity-eieio--struct-class-p class) class)))))
+
+;; `:include' layout fix (S5.4, eieio accessor index mix-up).  GNU
+;; `cl-defstruct' resolves `(:include PARENT)' through
+;; `(cl-struct-slot-info PARENT)', i.e. `(cl--struct-get-class PARENT)'.  The
+;; `cl--class' stand-in is defined by the PRELUDE `cl-defstruct', which never
+;; calls `cl-struct-define', so its class object was nil and `eieio--class'
+;; (`:include cl--class') was laid out with ZERO inherited slots: its own
+;; `children' landed at record index 1, `class-slots' at 3, and so on, while
+;; the accessor table above (and GNU) put parents/slots at 2/3.  That made
+;; `eieio--class-slots' read the `parents' list ("wrong-type-argument arrayp
+;; (#s(built-in-class))" in `eieio-defclass-internal').  Register the
+;; stand-in through `cl-struct-define' with GNU's slot order so the include
+;; contributes indices 1..5 and eieio--class's own slots start at 6 (record
+;; indices; the tag is index 0).
+(defun emacs-parity-eieio--raw-desc-class-p (class)
+  "Non-nil if CLASS is a `cl-struct-define' vector holding raw slot descs."
+  (and (emacs-parity-eieio--struct-class-p class)
+       (listp (aref class 2))))
+
+;; The substrate `cl-struct-define' (prelude/fallback above) ignored PARENT, so
+;; a child struct's tag never reached its ancestors' `cl-struct-NAME-tags'
+;; lists: `(cl--class-p (eieio--class-make ...))' answered nil and every
+;; `cl--class-*' accessor signalled `(wrong-type-argument cl--class OBJ)' on
+;; an `eieio--class' record (transient-child in the magit bundle).  Real
+;; `cl-struct-define' pushes the tag onto every ancestor's children list.
+(when emacs-parity-eieio--standalone-p
+  (defun cl-struct-define (name _docstring parent _type named slots
+                                children-sym tag _print)
+    (if (boundp children-sym)
+        (add-to-list children-sym tag)
+      (set children-sym (list tag)))
+    (let ((class (vector 'nelisp--cl-struct-class name slots children-sym tag
+                         parent)))
+      (unless (or (eq named t) (eq tag name))
+        (set tag class)
+        (fset tag :quick-object-witness-check))
+      (let ((p parent))
+        (while p
+          (let ((pc (cl--struct-get-class p)))
+            (if (emacs-parity-eieio--struct-class-p pc)
+                (progn (add-to-list (aref pc 3) tag)
+                       (setq p (and (> (length pc) 5) (aref pc 5))))
+              (setq p nil)))))
+      (setf (cl--find-class name) class))))
+
+(when emacs-parity-eieio--standalone-p
+  (when (and (fboundp 'cl--class-p) (fboundp 'cl-struct-define)
+             (not (cl--struct-get-class 'cl--class)))
+    (cl-struct-define 'cl--class nil nil nil t
+                      '((cl-tag-slot) (name) (docstring) (parents)
+                        (slots) (index-table))
+                      'cl-struct-cl--class-tags 'cl--class nil))
+  ;; `cl-struct-slot-info' (genuine cl-macs.el) decodes a class through
+  ;; `cl--struct-class-slots'/`-type', which `emacs-stub-bulk.el' otherwise
+  ;; leaves as `(lambda (&rest _) nil)'.  The substrate `cl-struct-define'
+  ;; keeps the RAW descs `(NAME DEFAULT . OPTS)' (tag slot first); decode them
+  ;; into the descriptor vector real `cl-preloaded.el' would have stored.
+  (defun cl--struct-class-slots (class)
+    "Return CLASS's slots as a vector of `cl-slot-descriptor' objects."
+    (if (and (emacs-parity-eieio--raw-desc-class-p class)
+             (fboundp 'cl--make-slot-descriptor))
+        (let (out)
+          (dolist (d (aref class 2))
+            (unless (eq (car d) 'cl-tag-slot)
+              (let ((opts (cddr d)))
+                (push (cl--make-slot-descriptor
+                       (car d) (cadr d)
+                       (if (plist-member opts :type) (plist-get opts :type) t)
+                       nil)
+                      out))))
+          (vconcat (nreverse out)))
+      (vector)))
+  (defun cl--struct-class-type (_class)
+    "Substrate structs are always `record'-typed (GNU stores nil)."
+    nil))
+
+;; cl-macs.el declares its arglist-destructuring state with BARE `(defvar V)'
+;; forms, which the standalone bootstrap drops; `cl--transform-lambda' then
+;; `let*'-binds them lexically and `cl--do-arglist' (a separate function)
+;; hits "void-variable cl--bind-lets".  Make them genuinely special.
+(when emacs-parity-eieio--standalone-p
+  (defvar cl--bind-block nil)
+  (defvar cl--bind-defs nil)
+  (defvar cl--bind-enquote nil)
+  (defvar cl--bind-lets nil)
+  (defvar cl--bind-forms nil)
+  ;; Same bare-`defvar' loss for cl-seq.el's keyword-parsing state
+  ;; ("void-variable cl-test" in the magit bundle) and cl-macs.el's loop
+  ;; and optimize state.
+  (defvar cl--alist nil)
+  (defvar cl-if nil)
+  (defvar cl-if-not nil)
+  (defvar cl-key nil)
+  (defvar cl-test nil)
+  (defvar cl-test-not nil)
+  (defvar cl--loop-accum-var nil)
+  (defvar cl--loop-accum-vars nil)
+  (defvar cl--loop-args nil)
+  (defvar cl--loop-bindings nil)
+  (defvar cl--loop-body nil)
+  (defvar cl--loop-conditions nil)
+  (defvar cl--loop-finally nil)
+  (defvar cl--loop-finish-flag nil)
+  (defvar cl--loop-first-flag nil)
+  (defvar cl--loop-initially nil)
+  (defvar cl--loop-iterator-function nil)
+  (defvar cl--loop-name nil)
+  (defvar cl--loop-result nil)
+  (defvar cl--loop-result-explicit nil)
+  (defvar cl--loop-result-var nil)
+  (defvar cl--loop-steps nil)
+  (defvar cl--loop-symbol-macs nil)
+  (defvar cl--optimize-safety nil)
+  (defvar cl--optimize-speed nil))
+
+;; NeLisp-core gap (minimal repro: `(type-of (record (record 'cl--class 'bar) 1))'
+;; answers the tag RECORD, GNU answers its name `bar'): EIEIO objects carry
+;; their class object as record tag, and `cl--class-p'/cl-generic dispatch
+;; test `(memq (type-of obj) TAGS)', so every method call on an instance
+;; ("cl-no-applicable-method initialize-instance") and `make-instance' failed.
+;; Library-side shim until core follows GNU: resolve a record tag to its
+;; class name (slot 1 of the class record) like `Ftype_of' does.
+(when (and emacs-parity-eieio--standalone-p
+           (fboundp 'type-of)
+           (recordp (type-of (record (record 'emacs-parity-eieio--probe 'name) 1))))
+  (let ((orig (symbol-function 'type-of)))
+    (fset 'type-of
+          (lambda (object)
+            (let ((type (funcall orig object)))
+              (if (and (recordp type) (> (length type) 1))
+                  (aref type 1)
+                type))))))
+
+;; `emacs-stub-bulk.el' otherwise leaves `cl-type-of' as `(lambda (&rest _) nil)',
+;; which is what cl-generic's typeof generalizer dispatches on in GNU 30+.
+;; Same semantics as the GNU C primitive on the value classes this runtime
+;; distinguishes; records answer their tag / class name via `type-of'.
+(when (and emacs-parity-eieio--standalone-p (not (fboundp 'cl-type-of)))
+  (defun cl-type-of (object)
+    "Return OBJECT's most specific type symbol (GNU `cl-type-of' subset)."
+    (cond ((null object) 'null)
+          ((integerp object) 'fixnum)
+          ((floatp object) 'float)
+          ((symbolp object) 'symbol)
+          ((stringp object) 'string)
+          ((consp object) 'cons)
+          ((recordp object) (let ((ty (type-of object))) (if (symbolp ty) ty 'record)))
+          ((vectorp object) 'vector)
+          ((and (fboundp 'hash-table-p) (hash-table-p object)) 'hash-table)
+          ((functionp object) 'function)
+          (t 'atom))))
+
+;; Core `cl-defmethod' dispatch (nelisp-cl-macros.el) matches a record argument
+;; through `nelisp--record-type' and the `:include' registry
+;; `nelisp-cl-macros--struct-info'.  An EIEIO instance's tag is its class
+;; RECORD, absent from that registry, so `(cl-defmethod F ((x SOME-CLASS)))'
+;; never applied to `make-instance' results ("cl-no-applicable-method
+;; initialize-instance").  Bridge it library-side: report the class NAME as
+;; the record type and let the ancestry walks fall back to the class's first
+;; EIEIO parent.  (Core gap: EIEIO classes are not struct types for
+;; `nelisp-cl-generic'; repro in the S5.4 report.)
+(defun emacs-parity-eieio--class-parent-name (tag)
+  "Return the first EIEIO parent class name of class symbol TAG, or nil."
+  (let ((c (and (symbolp tag) tag (get tag 'cl--class))))
+    (when (and c (fboundp 'eieio--class-p) (eieio--class-p c))
+      (let (r)
+        (dolist (p (eieio--class-parents c))
+          (when (and (null r) (eieio--class-p p))
+            (setq r (eieio--class-name p))))
+        r))))
+
+(when (and emacs-parity-eieio--standalone-p
+           (fboundp 'nelisp--record-type)
+           (fboundp 'nelisp-cl-generic--struct-parent)
+           (fboundp 'nelisp-cl-macros--struct-isa))
+  (let ((orig-type (symbol-function 'nelisp--record-type))
+        (orig-parent (symbol-function 'nelisp-cl-generic--struct-parent))
+        (orig-isa (symbol-function 'nelisp-cl-macros--struct-isa)))
+    (fset 'nelisp--record-type
+          (lambda (record)
+            (let ((ty (funcall orig-type record)))
+              (if (and (recordp ty) (> (length ty) 1)) (aref ty 1) ty))))
+    (fset 'nelisp-cl-generic--struct-parent
+          (lambda (tag)
+            (or (funcall orig-parent tag)
+                (emacs-parity-eieio--class-parent-name tag))))
+    (fset 'nelisp-cl-macros--struct-isa
+          (lambda (tag target)
+            (or (funcall orig-isa tag target)
+                (let ((p (emacs-parity-eieio--class-parent-name tag)))
+                  (and p (funcall 'nelisp-cl-macros--struct-isa p target))))))))
 
 (provide 'emacs-parity-eieio)
 ;;; emacs-parity-eieio.el ends here

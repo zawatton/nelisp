@@ -13,6 +13,7 @@
 ;; Local delta: keep the override standalone-only in this repository, and
 ;; preserve absolute-path `load' when `locate-library' does not resolve it.
 
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- load/load-file implement the library artifact-cache load layer.
 ;;; Code:
 
 (declare-function nelisp--syscall-stat-field "nelisp-runtime" (path offset))
@@ -3508,7 +3509,7 @@ converted for `read-from-string'.  Reject any non-comment trailing input."
              path)))))))
 
   ;; NOTE (2026-07-12): a retry-with-rewrite fallback (rewriting top-level
-  ;; `defalias' to `nelisp--defalias-late' on load failure) was attempted
+  ;; `defalias' to `nelisp-defalias-late' on load failure) was attempted
   ;; here and REVERTED: wrapping the fast loader in `condition-case'
   ;; mis-captures its internal non-local exits on this substrate (known
   ;; condition-case/throw defect), silently turning successful by-name
@@ -3530,7 +3531,7 @@ subtrees are left untouched."
            ((memq nelisp--load-rw-head '(quote function))
             nelisp--load-rw-form)
            ((eq nelisp--load-rw-head 'defalias)
-            (setcar nelisp--load-rw-form 'nelisp--defalias-late)
+            (setcar nelisp--load-rw-form 'nelisp-defalias-late)
             nelisp--load-rw-form)
            ((memq nelisp--load-rw-head nelisp--load-rewrite-wrapper-heads)
             (let ((nelisp--load-rw-tail (cdr nelisp--load-rw-form))

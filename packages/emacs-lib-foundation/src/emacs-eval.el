@@ -16,6 +16,7 @@
 ;; runtime semantics under Emacs either; it is purely a
 ;; byte-compiler hint, so a no-op macro is the correct port.
 
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- eval/macro entry points route through the library expander.
 ;;; Code:
 
 (unless (boundp 'lexical-binding)
@@ -278,6 +279,11 @@ and only paid for when a workflow actually calls them."
                   (list 'apply (list 'quote definition) 'args)))
     (fset symbol definition))
   symbol)
+
+;; Public entry point for the load-time rewriter in `emacs-load.el'.
+(defalias 'nelisp-defalias-late #'nelisp--defalias-late
+  "Bind SYMBOL to DEFINITION even when DEFINITION is not yet fbound.
+Public name for `nelisp--defalias-late'.")
 
 ;; Obsoletion-tracking aliases.  Vendor Emacs Lisp consults the same symbol
 ;; properties the byte-compiler uses, so keep the metadata even when warning

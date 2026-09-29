@@ -31,6 +31,7 @@
 ;;   offset 4  i16 events
 ;;   offset 6  i16 revents
 
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- accept-process-output/sit-for drive the nemacs event loop.
 ;;; Code:
 
 (require 'emacs-network-ffi)

@@ -2574,10 +2574,18 @@ that walks down into the guarded definition."
      '(defgroup org nil
         "Outline-based notes management and organizer."
         :group 'outlines))
+	    ;; `custom-group' must stay unset: it is the member list that
+	    ;; `custom-add-to-group' nconc's onto (S5.4: `(nconc t ...)' signalled).
 	    '((progn
-	        (put 'org 'custom-group t)
 	        (put 'org 'custom-args t)
 	        'org)))))
+
+(ert-deftest standalone-source-normalize-test/retains-cl-macs-large-defuns ()
+  "The two large cl-macs.el defuns the magit bundle needs are never elided."
+  (should (memq 'cl--do-arglist
+                standalone-source-normalize-retained-large-defun-symbols))
+  (should (memq 'cl--parse-loop-clause
+                standalone-source-normalize-retained-large-defun-symbols)))
 
 (ert-deftest standalone-source-normalize-test/rewrites-top-level-defface-lightly ()
   (should
