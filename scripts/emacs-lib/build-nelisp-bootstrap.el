@@ -72,8 +72,13 @@ final `.el' suffix with `.repl'.")
     "emacs-tui-event.el")
   "Local src files that host Emacs may not load but standalone NeLisp needs.")
 
+(defun nelisp-bootstrap--c-core-unit-files ()
+  "Return the src/emacs-cc-*.el C-core unit files, sorted by name."
+  (directory-files (expand-file-name "src" nelisp-bootstrap-repo-root)
+                   nil "\\`emacs-cc-.*\\.el\\'"))
+
 (defvar nelisp-bootstrap-late-extra-files
-  '("lisp.el"
+  `("lisp.el"
     "emacs-fileio.el"
     "case-table.el"
     "emacs-process-events.el"
@@ -155,15 +160,9 @@ final `.el' suffix with `.repl'.")
     "emacs-parity-clmacros.el"
     "emacs-parity-skk.el"
     "emacs-parity-subdirs.el"
-    ;; GNU C-core coverage (tools/ai/c-core-progress.org); one owned file
-    ;; per area so parallel work merges cleanly.
-    "emacs-c-core-buffer-chars.el"
-    ;; -- files / other --
-    "emacs-c-core-files-other.el"
-    ;; -- display / x-gui --
-    "emacs-c-core-display.el"
-    ;; -- process --
-    "emacs-c-core-process.el")
+    ;; GNU C-core coverage (tools/ai/c-core-progress.org): every
+    ;; src/emacs-cc-*.el unit, in name order.
+    ,@(nelisp-bootstrap--c-core-unit-files))
   "Local src files inserted after buffer/face substrates are available.")
 
 (defvar nelisp-bootstrap-vendor-extra-files
