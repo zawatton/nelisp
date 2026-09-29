@@ -348,27 +348,34 @@ cmd: NELISP_BIN="$ELN_PROGRESS_BIN" sh test/nelisp-eln-handler-probe-smoke.sh no
 * S9 Native handler semantics: push_handler port, CONDITION_CASE match, unwind, landing
 
 ** S9.1 The push_handler port mints a GNU-layout handler (type/next at 0x00/0x20), records pdlcount and rejects any type other than CONDITION_CASE
-pending
-#+NOTE: intended cmd: ert test/nelisp-eln-handler-port-test.el (unit; type 0 accepted only after S11)
+#+REQUIRES: ELN_PROGRESS_BIN
+cmd: NELISP_BIN="$ELN_PROGRESS_BIN" sh test/nelisp-eln-handler-s9-smoke.sh port
+#+NOTE: Converted from pending on 2026-09-29 (S9 lane; criteria count unchanged; the intended ert file became a NeLisp-side driver because the port writes native memory: test/nelisp-eln-handler-s9-driver.el mode port). lisp/nelisp-eln-handler-port.el (new): `mint' takes a zeroed 0x140 block from the S8 pool (now with release/reuse), writes type +0x00, tag word +0x08, next +0x20 (the previous handlerlist), pdlcount +0x110 (specpdl depth), links thread+0x68 and records (block type tag pdlcount entry-sp) on the rooted activation frame. Negatives: types 0 2 3 4 5 6 and -1 refused with no block minted and the chain unmoved; a non-handler-bearing activation refused; the callable entry point fails closed (condition recorded on the frame, a linked placeholder block answered so the native `_setjmp' and pop stay safe, released at retire); unpopped handlers at retire fail closed. Also checks the consuming longjmp stub (returns twice with 7, zeroes its buffer) and that the Lisp resume offset 672 equals the adapter's constant.
 
 ** S9.2 Handler matching equals GNU find_handler_clause (memq over error-conditions, t, quit) and the non-matching path stays the Doc 207 suppress-and-resume path
-pending
-#+NOTE: intended cmd: sh test/nelisp-eln-handler-probe-smoke.sh match  (T5, T6)
+#+REQUIRES: ELN_PROGRESS_BIN
+cmd: NELISP_BIN="$ELN_PROGRESS_BIN" sh test/nelisp-eln-handler-s9-smoke.sh match
+#+NOTE: Converted from pending on 2026-09-29 (S9 lane). 14 scenarios over the genuine host-compiled probes (test/fixtures/eln-handler/s9-handler-probes.eln, GNU 31.1 native-compile, sha256 in MANIFEST): tag (error) vs void-variable/arith-error/plain error/quit, (quit), (t), (arith-error), a normal return, and a throw. The T-lines printed by stock Emacs 31.1 (the same .eln through GNU's loader) and by NeLisp are compared byte for byte; unmatched exits (error vs (quit) tag, quit vs (error) tag, arith tag vs void-variable) keep the Doc 207 path and surface as the identical outer error. Pre-change control: the same scenarios with native handlers disabled must differ from the host transcript (recorded as S9_RED_CONTROL_DIFFERS=PASS).
 
 ** S9.3 specpdl unwinding runs handler by handler innermost first before landing, including cleanups that raise
-pending
-#+NOTE: intended cmd: sh test/nelisp-eln-handler-probe-smoke.sh unwind  (T4, T7)
+#+REQUIRES: ELN_PROGRESS_BIN
+cmd: NELISP_BIN="$ELN_PROGRESS_BIN" sh test/nelisp-eln-handler-s9-smoke.sh unwind
+#+NOTE: Converted from pending on 2026-09-29 (S9 lane). GNU unwind_to_catch order on the native specpdl analogue: specbind entries of the guarded `let' and Lisp-registered cleanups run innermost first, each handler to its recorded pdlcount, before the landing; a cleanup that raises replaces the exit and matching restarts at the handler being unwound (GNU has not advanced handlerlist past it), verified for one and two nested native handlers (the replacement lands on the INNER handler exactly as on host). Nested native activations (an inner probe that catches, one that does not, two deep) are covered. 14 scenarios, host and NeLisp transcripts identical; pre-change control differs.
 
 ** S9.4 The adapter divert lands in the pad exactly once, the buffer is invalidated after use and a forged chain or replayed buffer fails closed
-pending
-#+NOTE: intended cmd: sh test/nelisp-eln-handler-probe-smoke.sh negatives  (T10, T11; red control on the pre-change binary recorded as evidence:)
+#+REQUIRES: ELN_PROGRESS_BIN
+cmd: NELISP_BIN="$ELN_PROGRESS_BIN" sh test/nelisp-eln-handler-s9-smoke.sh negatives
+#+NOTE: Converted from pending on 2026-09-29 (S9 lane). The callback adapter (lisp/nelisp-cc-eln-callback7.el, AOT DSL; a 64-byte resume block added after the callback7 context in the driver BSS, two one-line hunks in scripts/nelisp-standalone-build.el) publishes its stack pointer at every port entry and, after the gateway, the dispatcher and the root release, consumes a landing request: it validates the buffer (16-aligned, inside the runtime-owned handler region), saved rip inside the admitted body range, saved rsp 16-aligned and above the adapter's own sp by at most 4096, then calls the consuming longjmp stub (`call-ptr'; no Rust); the request is cleared unconditionally and a refused one publishes status 5 without jumping. The consuming stub zeroes the buffer, so a replay finds rip 0. Negatives (all fail closed, no landing, chain and pool back to baseline): forged handlerlist head, forged next, forged type, forged pdlcount, forged current_thread cell, rip outside the body, rsp misaligned/too far/below the adapter, unpopped handler, adapter-side refusal of rip-outside/rsp-wrong/outside-region/misaligned requests, replay of a consumed (zeroed) buffer, non-handler activation; positive control: a clean run lands exactly once. Red control: with native handlers disabled the error propagates. Recorded evidence that the pre-change behaviour is red: the S9.2/S9.3/S9.5/S9.6 red controls in the same smoke.
 
 ** S9.5 End to end: the condition-case probe returns caught on host and NeLisp with identical transcripts under error, quit and nested-activation scenarios, with a GC in the guarded region
-pending
-#+NOTE: intended cmd: sh test/nelisp-eln-handler-probe-smoke.sh all  (T2, T3, T7, T12)
+#+REQUIRES: ELN_PROGRESS_BIN
+cmd: NELISP_BIN="$ELN_PROGRESS_BIN" sh test/nelisp-eln-handler-s9-smoke.sh all
+#+NOTE: Converted from pending on 2026-09-29 (S9 lane). Runs every scenario group (match, unwind, gc, debugger; 4 GC scenarios: GC in the guarded region before an error, on the normal path, with a native specbind live, and inside a cleanup) once on stock Emacs 31.1 and once on NeLisp, requires the two transcripts identical and the pre-change control to differ; the pool and chain are quiescent afterwards.
+
 ** S9.6 Before a native CONDITION_CASE handler catches, handler-bind handlers and the debugger decision (debug-on-error, debug-ignored-errors, debugger) run in GNU signal_or_quit order, with identical host/NeLisp transcripts
-pending
-#+NOTE: intended cmd: sh test/nelisp-eln-handler-probe-smoke.sh debugger  (handler-bind that observes and declines; one that exits non-locally; debug-on-error t with a recording debugger; debug-ignored-errors match)
+#+REQUIRES: ELN_PROGRESS_BIN
+cmd: NELISP_BIN="$ELN_PROGRESS_BIN" sh test/nelisp-eln-handler-s9-smoke.sh debugger
+#+NOTE: Converted from pending on 2026-09-29 (S9 lane). GNU signal_or_quit: handler-bind handlers inner to the native frame run first (they run in the raise path, inside the dispatcher's condition-case); a handler-bind that exits non-locally skips the native handler; then the debugger decision runs only when the matched clause is `debug'-bearing or the bare symbol `error' or debug-on-signal is set, through maybe_call_debugger (inhibit-debugger, debug-on-quit vs wants_debugger of debug-on-error, debug-ignored-errors symbols and message regexps, internal-when-entered-debugger) and call_debugger's bindings, all before the specpdl unwinds (the debugger sees the native `let' binding) and before the landing. 17 scenarios, identical transcripts, pre-change control differs. scripts/nelisp-stdlib-prelude.el: `handler-bind-1' now also traps quit (it only saw error), and the GNU signal_or_quit variables (debug-on-quit, debug-on-signal, debug-ignored-errors, debugger, inhibit-debugger, debugger-may-continue, inhibit-redisplay, inhibit-changing-match-data, internal-when-entered-debugger) are bound there next to debug-on-error. Known differences, declared: signal-hook-function is not run; NeLisp's handler-bind is the prelude's post-unwind approximation of GNU's (a handler inner to the native frame still runs before the native handler, which is the order S9.6 needs); the debugger runs after the Lisp frames between the raise and the native call have unwound, before the native specpdl unwinds.
 
 * S10 byte-compile-form under handler admission
 

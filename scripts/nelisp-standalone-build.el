@@ -530,7 +530,7 @@ confused with a fixed base immediate."
      (* nelisp-standalone--root-pin-slots 32)
      nelisp-cc-eln-callback-context-bss-bytes
      112
-     nelisp-cc-eln-callback7-bss-bytes
+     nelisp-cc-eln-callback7-total-bss-bytes
      32))
 
 ;; Cold-image build digest.  The marker is assembled from bytes (never
@@ -845,7 +845,7 @@ storage — not an arena reservation."
                               (+ (nelisp-standalone--root-pin-region-offset)
                                  (* nelisp-standalone--root-pin-slots 32)
                                  nelisp-cc-eln-callback-context-bss-bytes 112
-                                 nelisp-cc-eln-callback7-bss-bytes)
+                                 nelisp-cc-eln-callback7-total-bss-bytes)
                               :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_gc_stats"
                               (+ 57616 4194304 96 176 64 56 40 1040

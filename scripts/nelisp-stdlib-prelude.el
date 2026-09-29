@@ -2876,9 +2876,11 @@ loop for the exponent (= no `expt' / `float' primitive needed)."
 ;; from its handler) reads a global binding that survives this gap.
 (unless (fboundp 'handler-bind-1)
   (defun handler-bind-1 (body-thunk &rest cond-handler-plist)
+    ;; `quit' is signaled like any other condition and GNU's `handler-bind'
+    ;; sees it too (Doc 210 S9.6 needs a `quit' handler to run in order).
     (condition-case err
         (funcall body-thunk)
-      (error
+      ((error quit)
        (let ((conditions (get (car err) 'error-conditions))
              (plist cond-handler-plist))
          (while plist
@@ -3540,6 +3542,21 @@ reseeds from its characters; nil -> a full LCG value."
 ;; GNU `debug-on-error' (a C DEFVAR_LISP, nil): vendor cl-preloaded.el's
 ;; `cl--assertion-failed' reads it before signalling `cl-assertion-failed'.
 (unless (boundp 'debug-on-error) (defvar debug-on-error nil))
+;; The rest of the variables GNU `signal_or_quit' consults (eval.c DEFVARs, all
+;; nil / their GNU defaults).  Doc 210 S9.6 (lisp/nelisp-eln-handler-port.el)
+;; runs the same debugger decision for errors a native handler catches and
+;; needs them bound and special so `let' binds them dynamically.
+(unless (boundp 'debug-on-quit) (defvar debug-on-quit nil))
+(unless (boundp 'debug-on-signal) (defvar debug-on-signal nil))
+(unless (boundp 'debug-ignored-errors) (defvar debug-ignored-errors nil))
+(unless (boundp 'debugger) (defvar debugger 'debug))
+(unless (boundp 'inhibit-debugger) (defvar inhibit-debugger nil))
+(unless (boundp 'debugger-may-continue) (defvar debugger-may-continue nil))
+(unless (boundp 'inhibit-redisplay) (defvar inhibit-redisplay nil))
+(unless (boundp 'inhibit-changing-match-data)
+  (defvar inhibit-changing-match-data nil))
+(unless (boundp 'internal-when-entered-debugger)
+  (defvar internal-when-entered-debugger -1))
 ;; GNU `cl-assert' (cl-lib.el): on failure call the preloaded
 ;; `cl--assertion-failed', which signals `(cl-assertion-failed FORM)'.
 (unless (fboundp 'cl-assert)

@@ -11,6 +11,24 @@
      (* nelisp-cc-eln-callback7-capacity
         nelisp-cc-eln-callback7-record-bytes)))
 
+(defconst nelisp-cc-eln-callback7-resume-offset
+  nelisp-cc-eln-callback7-bss-bytes
+  "Offset of the Doc 210 S9 native-handler resume block from the context.
+The block follows the header and the activation records.")
+(defconst nelisp-cc-eln-callback7-resume-bytes 64
+  "Size of the resume block: eight u64 words.
+Word 0 is the pending landing request (address of the target handler's jmp
+buffer, 0 when none).  Word 1 is the address of the consuming longjmp stub.
+Word 2 is the stack pointer of the most recent port entry, written on every
+entry.  Words 3-4 bound the admitted body (the saved rip must lie in
+[lo, hi)).  Words 5-6 bound the runtime-owned handler region the buffer must
+lie in.  Word 7 counts landings.")
+(defconst nelisp-cc-eln-callback7-total-bss-bytes
+  (+ nelisp-cc-eln-callback7-bss-bytes nelisp-cc-eln-callback7-resume-bytes)
+  "Context bytes including the resume block; the driver BSS reserves this.")
+(defconst nelisp-cc-eln-callback7-divert-max-window 4096
+  "Largest distance the saved rsp may lie above the adapter's own stack pointer.")
+
 (defconst nelisp-cc-eln-callback7-port-count 32
   "Number of slot-identifying callback ports (see the port entries below).
 This is the single table the AOT entries, the loader's symbol list, and
@@ -109,6 +127,33 @@ recover which authenticated slot was called from the descriptor alone.")
                  (nl_eln_callback7_unlock)
                  1))
             (seq (nl_eln_callback7_unlock) 0)))))
+    (defun nl_eln_callback7_divert_ok (resume sp)
+      ;; Doc 210 A1 validation at the divert, run by the adapter itself
+      ;; after every Lisp-side check: the request must name a 16-aligned
+      ;; jmp buffer inside the runtime-owned handler region, the saved rip
+      ;; must lie in the admitted body range, and the saved rsp must be
+      ;; 16-aligned and lie above this activation's own stack pointer by
+      ;; at most the divert window (the native caller frame is the frame
+      ;; that made this port call).  A consumed buffer has rip 0 and fails.
+      (let* ((buffer (ptr-read-u64 resume 0))
+             (target (ptr-read-u64 resume 8))
+             (lo (ptr-read-u64 resume 24))
+             (hi (ptr-read-u64 resume 32))
+             (region-lo (ptr-read-u64 resume 40))
+             (region-hi (ptr-read-u64 resume 48))
+             (sane (if (and (> buffer 4096) (> target 4096) (> lo 4096)
+                            (> hi lo) (> region-lo 4096) (> region-hi region-lo)
+                            (>= buffer region-lo) (< (+ buffer 64) region-hi)
+                            (= (logand buffer 15) 0))
+                       1 0))
+             (rip (if (= sane 1) (ptr-read-u64 buffer 56) 0))
+             (bsp (if (= sane 1) (ptr-read-u64 buffer 48) 0)))
+        (if (and (= sane 1)
+                 (>= rip lo) (< rip hi)
+                 (> bsp sp)
+                 (<= (- bsp sp) ,nelisp-cc-eln-callback7-divert-max-window)
+                 (= (logand bsp 15) 0))
+            1 0)))
     (defun nl_eln_callback7_capture_exit (active-record)
       ;; Doc 207: the gateway reported a non-local exit.  Before any other
       ;; code can reuse the M6 stash, publish the first exit of this native
@@ -210,6 +255,8 @@ recover which authenticated slot was called from the descriptor alone.")
         (if (= token 0)
             (seq (nl_eln_callback7_reject_if_idle) 0)
           (let* ((control (data-addr nl_eln_callback7_context))
+                 (resume (+ control ,nelisp-cc-eln-callback7-resume-offset))
+                 (sp0 (aot-current-sp))
                  (record (nl_eln_callback7_record_at control (- token 1)))
                  (active (data-addr nl_eln_callback_context))
                  (active-depth (ptr-read-u64 active 16))
@@ -232,6 +279,10 @@ recover which authenticated slot was called from the descriptor alone.")
             (ptr-write-u64 record 32 word4)
             (ptr-write-u64 record 40 word5)
             (ptr-write-u64 record 48 word6)
+            ;; Doc 210: publish this entry's stack pointer for the Lisp
+            ;; handler port and clear any stale landing request.
+            (ptr-write-u64 resume 16 sp0)
+            (ptr-write-u64 resume 0 0)
             (if (or (= reserved 0)
                     (>= descriptor 2305843009213693952))
                 (seq
@@ -273,10 +324,31 @@ recover which authenticated slot was called from the descriptor alone.")
                          (seq
                           (ptr-write-u32 record 72 low)
                           (ptr-write-u32 record 76 high)
-                          (let ((raw-word (ptr-read-u64 record 72)))
-                            (nl_root_release env mark)
-                            (nl_eln_callback7_finish token 0)
-                            raw-word)))))))))))))
+                          (let* ((raw-word (ptr-read-u64 record 72))
+                                 (buffer (ptr-read-u64 resume 0))
+                                 (verdict
+                                  (if (= buffer 0) 0
+                                    (if (= (nl_eln_callback7_divert_ok
+                                            resume sp0)
+                                           1)
+                                        1 2))))
+                            ;; Doc 210 divert: only after the gateway, the
+                            ;; dispatcher, every VM frame and the root mark
+                            ;; of this callback are gone.  The request is
+                            ;; consumed unconditionally; a refused one
+                            ;; publishes status 5 and never jumps.
+                            (seq
+                             (ptr-write-u64 resume 0 0)
+                             (nl_root_release env mark)
+                             (nl_eln_callback7_finish
+                              token (if (= verdict 2) 5 0))
+                             (if (= verdict 1)
+                                 (seq
+                                  (ptr-write-u64
+                                   resume 56 (+ (ptr-read-u64 resume 56) 1))
+                                  (call-ptr (ptr-read-u64 resume 8)
+                                            buffer 1 0 0 0 0))
+                               raw-word)))))))))))))))
     (defun nelisp_eln_callback1_entry_word (raw0)
       ;; Supply initialized values for the fixed seven-word backend entry.
       ;; Never read caller registers other than the one declared argument.

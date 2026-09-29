@@ -193,6 +193,24 @@ for the existing callers that already spell it that way."
             (setq i (1+ i)))
           (nreverse taken))))))
 
+(defun nelisp-eln-callable-import-current-frame ()
+  "Return the innermost active native-call frame plist, or nil (Doc 210)."
+  (car nelisp-eln-callable-import--frames))
+
+(defun nelisp-eln-callable-import-frame-put (frame property value)
+  "Public form of `nelisp-eln-callable-import--frame-put' (Doc 210)."
+  (nelisp-eln-callable-import--frame-put frame property value))
+
+(defun nelisp-eln-callable-import-decode-word (frame word)
+  "Public form of `nelisp-eln-callable-import--decode-word' (Doc 210)."
+  (nelisp-eln-callable-import--decode-word frame word))
+
+(defun nelisp-eln-callable-import-adapter-context-address ()
+  "Return the address of the callback adapter's `nl_eln_callback7_context'."
+  (unless (fboundp 'nelisp-native-load--symbol-addr)
+    (require 'nelisp-native-load))
+  (nelisp-native-load--symbol-addr "nl_eln_callback7_context"))
+
 (defun nelisp-eln-callable-import--frame-put (frame property value)
   "Set PROPERTY to VALUE in active FRAME, including the dynamic stack cell."
   (setq frame (plist-put frame property value))
@@ -263,6 +281,30 @@ callback's result, or else a view in the argument activation."
            (plist-get frame :argument-activation))
        word)))))
 
+(declare-function nelisp-eln-handler-port-entry-sp "nelisp-eln-handler-port" ())
+(declare-function nelisp-eln-handler-port-try-divert
+  "nelisp-eln-handler-port" (frame failure))
+(declare-function nelisp-eln-handler-port-frame-plist
+  "nelisp-eln-handler-port" (capability options))
+(declare-function nelisp-eln-handler-port-frame-retire
+  "nelisp-eln-handler-port" (frame))
+
+(defun nelisp-eln-callable-import--handler-hook (function &rest arguments)
+  "Call the Doc 210 S9 handler-port FUNCTION with ARGUMENTS, loading it once.
+Only activations opened with handler options ever reach this."
+  (unless (fboundp 'nelisp-eln-handler-port-try-divert)
+    (require 'nelisp-eln-handler-port))
+  (apply function arguments))
+
+(defun nelisp-eln-callable-import--divert (frame failure)
+  "Offer FAILURE, raised inside a port callback of FRAME, to its native handlers.
+Return nil (not handled: keep the Doc 207 path), (:diverted) when a native
+CONDITION_CASE handler consumed it and the adapter will land in its pad, or
+\(:failure ERROR) when the handler machinery failed closed."
+  (and (plist-get frame :handler-range)
+       (nelisp-eln-callable-import--handler-hook
+        #'nelisp-eln-handler-port-try-divert frame failure)))
+
 (defun nelisp-eln-callable-import--dispatch-port (descriptor frame)
   "Dispatch one slot-identifying port callback at DESCRIPTOR for FRAME.
 Descriptor word 6 names the port; FRAME's `:ports' maps each port tag to
@@ -304,6 +346,15 @@ bool in %al; `void' answers nothing (a zero pair)."
         ('bool (cons (if value 1 0) 0))
         ;; A C `void' callee: the native caller never reads %rax.
         ('void (cons 0 0))
+        ;; A C integer or pointer result (Doc 210 `push_handler' answers the
+        ;; address of its minted handler block): the machine word as is.
+        ('raw
+         (unless (and (integerp value) (<= 0 value) (< value 281474976710656))
+           (signal 'nelisp-eln-callable-import-error
+                   (list 'invalid-raw-result value)))
+         (setq frame (nelisp-eln-callable-import--frame-put
+                      frame :outcome :ok))
+         (cons (logand value #xffffffff) (logand (ash value -32) #xffffffff)))
         ('lisp
          (let* ((word (nelisp-eln-objects-encode
                        (plist-get frame :result-unit) value))
@@ -386,7 +437,13 @@ call, answers the zero pair."
                     (cdr (assoc (nelisp-eln-abi-read-word descriptor 48)
                                 (plist-get frame :ports)))))
          (kind (plist-get spec :return)))
-    (if (memq kind '(lisp handle handle-nil))
+    (cond
+     ;; Doc 210: a raw-result port whose native caller dereferences the
+     ;; answer (`push_handler') supplies its own safe placeholder.
+     ((and (eq kind 'raw) (functionp (plist-get spec :suppressed-raw)))
+      (let ((word (funcall (plist-get spec :suppressed-raw) frame)))
+        (cons (logand word #xffffffff) (logand (ash word -32) #xffffffff))))
+     ((memq kind '(lisp handle handle-nil))
         (let ((word (plist-get frame :suppressed-word)))
           (unless word
             (let* ((memory (nl-ffi-memory-allocate 16))
@@ -399,7 +456,27 @@ call, answers the zero pair."
                            (cons memory (plist-get frame :handle-owners))))
               (nelisp-eln-callable-import--frame-put
                frame :suppressed-word word)))
-          (cons (logand word #xffffffff) (logand (ash word -32) #xffffffff)))
+          (cons (logand word #xffffffff) (logand (ash word -32) #xffffffff))))
+     (t (cons 0 0)))))
+
+(defun nelisp-eln-callable-import--record-failure (frame failure)
+  "Handle FAILURE (an error or quit) trapped in a callback of FRAME.
+A failure a native CONDITION_CASE handler of FRAME matches is consumed and
+answered with a normal pair (the adapter then lands in the handler's pad).
+Anything else is recorded as the frame's condition (Doc 207): the callback
+ABI requires a pair, and the outer bridge ignores it when the saved
+condition is present and re-signals after leaving native."
+  (let ((verdict (nelisp-eln-callable-import--divert frame failure)))
+    (setq frame (or (car nelisp-eln-callable-import--frames) frame))
+    (if (eq (car-safe verdict) :diverted)
+        (progn
+          (nelisp-eln-callable-import--frame-put frame :outcome :ok)
+          (cons 0 0))
+      (when (eq (car-safe verdict) :failure)
+        (setq failure (cadr verdict)))
+      (setq frame (nelisp-eln-callable-import--frame-put
+                   frame :condition failure))
+      (nelisp-eln-callable-import--frame-put frame :outcome :condition)
       (cons 0 0))))
 
 (defun nelisp-eln-callable-import--dispatch (descriptor)
@@ -418,6 +495,13 @@ throw is captured from the runtime stash while it passes this function's
           (nelisp-eln-callable-import--frame-put
            frame :suppressed (1+ (or (plist-get frame :suppressed) 0)))
           (nelisp-eln-callable-import--suppressed-answer frame descriptor))
+      ;; Doc 210 S9: capture this callback's adapter stack pointer before
+      ;; anything can call back into native code and overwrite it.
+      (when (plist-get frame :handler-range)
+        (setq frame (nelisp-eln-callable-import--frame-put
+                     frame :entry-sp
+                     (nelisp-eln-callable-import--handler-hook
+                      #'nelisp-eln-handler-port-entry-sp))))
       (unwind-protect
           (prog1
               (condition-case failure
@@ -464,19 +548,9 @@ throw is captured from the runtime stash while it passes this function's
                       (cons (logand word #xffffffff)
                             (logand (ash word -32) #xffffffff))))
                 (error
-                 (setq frame (nelisp-eln-callable-import--frame-put
-                              frame :condition failure))
-                 (setq frame (nelisp-eln-callable-import--frame-put
-                              frame :outcome :condition))
-                 ;; The callback ABI requires a pair. The outer bridge ignores it when
-                 ;; the saved condition is present and re-signals after leaving native.
-                 (cons 0 0))
+                 (nelisp-eln-callable-import--record-failure frame failure))
                 (quit
-                 (setq frame (nelisp-eln-callable-import--frame-put
-                              frame :condition failure))
-                 (setq frame (nelisp-eln-callable-import--frame-put
-                              frame :outcome :condition))
-                 (cons 0 0)))
+                 (nelisp-eln-callable-import--record-failure frame failure)))
             (setq completed t))
         (unless completed
           ;; A throw (or any exit the handlers above do not trap) is leaving
@@ -591,7 +665,7 @@ list, removing each only after its own release succeeded (as
 
 (defun nelisp-eln-callable-import--call-unary
     (capability implementation argument &optional convention arity constants
-                ports extra-arguments)
+                ports extra-arguments handler-options)
   "Call authenticated tail-import CAPABILITY with ARGUMENT via IMPLEMENTATION.
 EXTRA-ARGUMENTS, when non-nil, lists further Lisp arguments passed after
 ARGUMENT (a binary multi-import body; see
@@ -610,7 +684,13 @@ PORTS, when non-nil, is an alist of (PORT-TAG . SPEC) for a body whose
 several authenticated imports each reach
 `nelisp-eln-callable-import--dispatch' through their own port (see
 `nelisp-eln-callable-import--dispatch-port'); IMPLEMENTATION, CONVENTION
-and ARITY are then unused and IMPLEMENTATION must be nil."
+and ARITY are then unused and IMPLEMENTATION must be nil.
+HANDLER-OPTIONS, when non-nil, opens the activation for native
+CONDITION_CASE handlers (Doc 210 S9): a plist naming the loaded artifact
+\(:handle HANDLE) whose `_setjmp' binding and handler chain are verified
+first.  The activation's port for `push_handler' mints the handlers, the
+dispatcher offers matching errors to them, and the activation retires
+fail-closed if a handler is left unpopped."
   (unless (fboundp 'nelisp-native-load--symbol-addr)
     (require 'nelisp-native-load))
   (when nelisp-eln-callable-import--pending-cleanups
@@ -652,16 +732,21 @@ and ARITY are then unused and IMPLEMENTATION must be nil."
                              extra-arguments)))
                 (setq argument-activation
                       (nelisp-eln-objects-activation-acquire argument-unit))
-                (setq frame (list :outcome :not-called :condition nil
-                                  :result-activation nil
-                                  :implementation implementation
-                                  :convention (or convention 'unary)
-                                  :arity (or arity 1)
-                                  :constants constants
-                                  :ports ports
-                                  :result-activations nil
-                                  :argument-activation argument-activation
-                                  :result-unit result-unit))
+                (setq frame (append
+                             (list :outcome :not-called :condition nil
+                                   :result-activation nil
+                                   :implementation implementation
+                                   :convention (or convention 'unary)
+                                   :arity (or arity 1)
+                                   :constants constants
+                                   :ports ports
+                                   :result-activations nil
+                                   :argument-activation argument-activation
+                                   :result-unit result-unit)
+                             (and handler-options
+                                  (nelisp-eln-callable-import--handler-hook
+                                   #'nelisp-eln-handler-port-frame-plist
+                                   capability handler-options))))
                 (let ((env (nelisp--native-env))
                       (push-address
                         (nelisp-native-load--symbol-addr
@@ -754,6 +839,20 @@ and ARITY are then unused and IMPLEMENTATION must be nil."
                        entry-specpdl-depth)))
         (when (> leaked 0)
           (nelisp-eln-runtime-services-helper-unbind-n leaked)))
+      ;; Doc 210 S9: hand the handler chain back exactly as found, releasing
+      ;; every block; a handler left unpopped is a fail-closed error.
+      (when (and frame (or (plist-get frame :handler-range)
+                           (plist-get frame :dummy-blocks)))
+        (let ((current (car nelisp-eln-callable-import--frames)))
+          (when (and current
+                     (eq (plist-get current :argument-activation)
+                         argument-activation))
+            (setq frame current)))
+        (let ((retire-failure
+               (nelisp-eln-callable-import--handler-hook
+                #'nelisp-eln-handler-port-frame-retire frame)))
+          (when (and retire-failure (null failure))
+            (setq failure retire-failure))))
       (when frame
         (when (eq (car nelisp-eln-callable-import--frames) frame)
           (setq nelisp-eln-callable-import--frames

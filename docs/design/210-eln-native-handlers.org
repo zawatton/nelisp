@@ -56,6 +56,15 @@ AOT elisp DSL).
   S6.22 check); S10.3 is the stage-ending e2e and runs both the S6.10
   measurement and the S6.22 validator. Net new criteria: 13 (57 -> 70).
 
+** Remaining gaps after S9 (2026-09-29)
+
+- The debugger decision runs in GNU order (before the native handler
+  catches and before the native specpdl unwinds), but only after the Lisp
+  frames between the raise and the native call have unwound, so a
+  debugger's backtrace is shorter than GNU's.
+- =signal-hook-function= is not run for errors that reach a native
+  handler (GNU's =signal_or_quit= runs it first).
+
 * §1 Problem and scope
 
 ** §1.1 Handler patterns

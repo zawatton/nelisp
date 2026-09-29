@@ -47,7 +47,8 @@
 (defconst nelisp-eln-handler-substrate-handler-size #x140)
 (defconst nelisp-eln-handler-substrate-handler-next-offset #x20)
 (defconst nelisp-eln-handler-substrate-handler-jmp-offset #x40)
-(defconst nelisp-eln-handler-substrate--region-size 8192)
+(defconst nelisp-eln-handler-substrate--region-size 24576
+  "Bytes of the private mapping: thread block, cell, sentinel and 75 handler blocks.")
 (defconst nelisp-eln-handler-substrate--cell-offset #x80)
 (defconst nelisp-eln-handler-substrate--sentinel-offset #x100)
 (defconst nelisp-eln-handler-substrate--pool-offset #x240)
@@ -76,16 +77,45 @@
       (ptr-write-u8 address i (aref bytes i))
       (setq i (1+ i)))))
 
+(defun nelisp-eln-handler-substrate--emit-longjmp-consume (buf label)
+  "Emit into BUF, at LABEL, the landing variant of the private longjmp.
+RDI is the buffer.  It restores the callee-saved registers, rsp and rip
+saved by the private setjmp and lands with EAX = 1 (the value GNU's
+`unwind_to_catch' passes to `sys_longjmp'; RSI is ignored), but first it
+zeroes all eight saved words, so a buffer can be used for exactly one
+landing: a replay finds rip = 0 and is refused by the adapter's divert
+check (Doc 210 I1).  The transfer is `push r11; ret' after rsp is set, which
+leaves rsp exactly as saved."
+  (nelisp-asm-x86_64-define-label buf label)
+  (nelisp-asm-x86_64-mov-imm32 buf 'rax 1)
+  (nelisp-asm-x86_64-mov-reg-mem-disp8 buf 'r11 'rdi 56)
+  (nelisp-asm-x86_64-mov-reg-mem-disp8 buf 'r10 'rdi 48)
+  (nelisp-asm-x86_64-mov-reg-mem-disp8 buf 'rbx 'rdi 0)
+  (nelisp-asm-x86_64-mov-reg-mem-disp8 buf 'rbp 'rdi 8)
+  (nelisp-asm-x86_64-mov-reg-mem-disp8 buf 'r12 'rdi 16)
+  (nelisp-asm-x86_64-mov-reg-mem-disp8 buf 'r13 'rdi 24)
+  (nelisp-asm-x86_64-mov-reg-mem-disp8 buf 'r14 'rdi 32)
+  (nelisp-asm-x86_64-mov-reg-mem-disp8 buf 'r15 'rdi 40)
+  (nelisp-asm-x86_64-mov-imm32 buf 'r9 0)
+  (dolist (offset '(0 8 16 24 32 40 48 56))
+    (nelisp-asm-x86_64-mov-mem-reg-disp8 buf 'rdi offset 'r9))
+  (nelisp-asm-x86_64-mov-reg-reg buf 'rsp 'r10)
+  (nelisp-asm-x86_64-push buf 'r11)
+  (nelisp-asm-x86_64-ret buf))
+
 (defun nelisp-eln-handler-substrate--stub-bytes ()
-  "Assemble the private setjmp/longjmp pair; return (BYTES SETJMP LONGJMP)."
+  "Assemble the private stubs; return (BYTES SETJMP LONGJMP LONGJMP-CONSUME)."
   (let ((buf (nelisp-asm-x86_64-make-buffer)))
     (nelisp-native-jump-x86_64-emit-setjmp buf 'substrate-setjmp)
     (nelisp-native-jump-x86_64-emit-longjmp buf 'substrate-longjmp)
+    (nelisp-eln-handler-substrate--emit-longjmp-consume
+     buf 'substrate-longjmp-consume)
     (let* ((bytes (nelisp-asm-x86_64-resolve-fixups buf))
            (labels (nelisp-asm-x86_64-buffer-labels buf)))
       (list bytes
             (cdr (assq 'substrate-setjmp labels))
-            (cdr (assq 'substrate-longjmp labels))))))
+            (cdr (assq 'substrate-longjmp labels))
+            (cdr (assq 'substrate-longjmp-consume labels))))))
 
 (defun nelisp-eln-handler-substrate--make-stub-page ()
   "Map one page, write the stub pair, make it R|X; return (PAGE SETJMP LONGJMP)."
@@ -98,13 +128,15 @@
     (nelisp-eln-handler-substrate--write-bytes page bytes)
     (unless (= (syscall-direct 10 page nelisp-native-load-page-bytes 5 0 0 0) 0)
       (nelisp-eln-handler-substrate--fail 'stub-page-mprotect-failed page))
-    (list page (+ page (nth 1 assembled)) (+ page (nth 2 assembled)))))
+    (list page (+ page (nth 1 assembled)) (+ page (nth 2 assembled))
+          (+ page (nth 3 assembled)))))
 
 ;;;; Shadow blocks ----------------------------------------------------
 
 (defun nelisp-eln-handler-substrate-ensure ()
   "Create (once) and return the substrate plist.
-Keys: :region :thread :cell :sentinel :stub-page :setjmp :longjmp :pool-next."
+Keys: :region :thread :cell :sentinel :stub-page :setjmp :longjmp
+:longjmp-consume :pool-next :free :live."
   (or nelisp-eln-handler-substrate--state
       (let* ((region (nelisp-native-load-map-anonymous
                       nelisp-eln-handler-substrate--region-size nil))
@@ -120,9 +152,10 @@ Keys: :region :thread :cell :sentinel :stub-page :setjmp :longjmp :pool-next."
         (setq nelisp-eln-handler-substrate--state
               (list :region region :thread thread :cell cell :sentinel sentinel
                     :stub-page (nth 0 stubs) :setjmp (nth 1 stubs)
-                    :longjmp (nth 2 stubs)
+                    :longjmp (nth 2 stubs) :longjmp-consume (nth 3 stubs)
                     :pool-next (+ region
-                                  nelisp-eln-handler-substrate--pool-offset))))))
+                                  nelisp-eln-handler-substrate--pool-offset)
+                    :free nil :live nil)))))
 
 (defun nelisp-eln-handler-substrate-thread-address ()
   (plist-get (nelisp-eln-handler-substrate-ensure) :thread))
@@ -138,25 +171,74 @@ Keys: :region :thread :cell :sentinel :stub-page :setjmp :longjmp :pool-next."
   (ptr-read-u64 (nelisp-eln-handler-substrate-thread-address)
                 nelisp-eln-handler-substrate-handlerlist-offset))
 
+(defun nelisp-eln-handler-substrate--zero-block (block)
+  (let ((i 0))
+    (while (< i nelisp-eln-handler-substrate-handler-size)
+      (ptr-write-u64 block i 0)
+      (setq i (+ i 8)))))
+
 (defun nelisp-eln-handler-substrate-allocate-block ()
   "Return a zeroed 16-aligned GNU-layout handler block from the substrate pool.
-Bump allocation with no release: S9 owns real minting and reclamation."
+Released blocks are reused first; the pool is fixed-size and exhaustion fails
+closed.  S9 mints blocks with this and returns them with
+`nelisp-eln-handler-substrate-release-block'."
   (let* ((state (nelisp-eln-handler-substrate-ensure))
-         (next (plist-get state :pool-next))
-         (end (+ (plist-get state :region)
-                 nelisp-eln-handler-substrate--region-size)))
-    (unless (<= (+ next nelisp-eln-handler-substrate-handler-size) end)
-      (nelisp-eln-handler-substrate--fail 'handler-pool-exhausted next))
-    (plist-put state :pool-next
-               (+ next nelisp-eln-handler-substrate-handler-size))
-    next))
+         (free (plist-get state :free))
+         (block nil))
+    (if free
+        (progn (setq block (car free))
+               (plist-put state :free (cdr free)))
+      (let ((next (plist-get state :pool-next))
+            (end (+ (plist-get state :region)
+                    nelisp-eln-handler-substrate--region-size)))
+        (unless (<= (+ next nelisp-eln-handler-substrate-handler-size) end)
+          (nelisp-eln-handler-substrate--fail 'handler-pool-exhausted next))
+        (plist-put state :pool-next
+                   (+ next nelisp-eln-handler-substrate-handler-size))
+        (setq block next)))
+    (nelisp-eln-handler-substrate--zero-block block)
+    (plist-put state :live (cons block (plist-get state :live)))
+    block))
+
+(defun nelisp-eln-handler-substrate-block-live-p (block)
+  "True when BLOCK is a currently minted (not released) handler block."
+  (and (integerp block)
+       (memql block (plist-get (nelisp-eln-handler-substrate-ensure) :live))
+       t))
+
+(defun nelisp-eln-handler-substrate-release-block (block)
+  "Zero BLOCK and return it to the pool.  Releasing a block that is not live
+\(never minted, or already released) signals."
+  (let ((state (nelisp-eln-handler-substrate-ensure)))
+    (unless (nelisp-eln-handler-substrate-block-live-p block)
+      (nelisp-eln-handler-substrate--fail 'release-of-unminted-block block))
+    (nelisp-eln-handler-substrate--zero-block block)
+    (plist-put state :live (delq block (plist-get state :live)))
+    (plist-put state :free (cons block (plist-get state :free)))
+    nil))
+
+(defun nelisp-eln-handler-substrate-live-block-count ()
+  (length (plist-get (nelisp-eln-handler-substrate-ensure) :live)))
+
+(defun nelisp-eln-handler-substrate-region-bounds ()
+  "Return (LO . HI): the runtime-owned mapping every handler block lies in."
+  (let ((region (plist-get (nelisp-eln-handler-substrate-ensure) :region)))
+    (cons region (+ region nelisp-eln-handler-substrate--region-size))))
+
+(defun nelisp-eln-handler-substrate-landing-stub-address ()
+  "Return the address of the consuming longjmp stub the adapter divert calls.
+It is written into the adapter's resume block and nowhere else; it is never
+handed to Lisp as a callable."
+  (nelisp-eln-handler-substrate--stub-address 'longjmp-consume))
 
 (defun nelisp-eln-handler-substrate--stub-address (kind)
   "Return the private stub address for KIND (`setjmp' or `longjmp').
-Internal: only the loader's GOT binding and the adapter divert (S9) may use it."
+Internal: only the loader's GOT binding and the adapter divert (S9) may use it.
+KIND `longjmp-consume' is the landing variant that zeroes the buffer."
   (plist-get (nelisp-eln-handler-substrate-ensure)
              (cond ((eq kind 'setjmp) :setjmp)
                    ((eq kind 'longjmp) :longjmp)
+                   ((eq kind 'longjmp-consume) :longjmp-consume)
                    (t (nelisp-eln-handler-substrate--fail 'unknown-stub kind)))))
 
 ;;;; Artifact-side helpers -------------------------------------------

@@ -47,6 +47,28 @@
                     nelisp-native-load-bridgeable-symbols))
     (should names)))
 
+(ert-deftest nelisp-cc-eln-callback7/doc210-resume-block-and-divert-shape ()
+  ;; Doc 210 S9: the resume block follows the records; the Lisp side
+  ;; (`nelisp-eln-handler-port--resume-offset') hardcodes 672.
+  (should (= nelisp-cc-eln-callback7-resume-offset 672))
+  (should (= nelisp-cc-eln-callback7-resume-bytes 64))
+  (should (= nelisp-cc-eln-callback7-total-bss-bytes 736))
+  (let* ((forms nelisp-cc-eln-callback7--source)
+         (divert (seq-find (lambda (form)
+                             (eq (cadr form) 'nl_eln_callback7_divert_ok))
+                           forms))
+         (entry-word (seq-find (lambda (form)
+                                 (eq (cadr form) 'nelisp_eln_callback7_entry_word))
+                               forms))
+         (used (nelisp-cc-eln-callback7-test--symbols-used entry-word)))
+    (should divert)
+    ;; the divert is an indirect call after the finish, validated by the
+    ;; adapter's own check, and the entry publishes its stack pointer
+    (should (memq 'call-ptr used))
+    (should (memq 'aot-current-sp used))
+    (should (memq 'nl_eln_callback7_divert_ok used))
+    (should (memq 'logand (nelisp-cc-eln-callback7-test--symbols-used divert)))))
+
 (defun nelisp-cc-eln-callback7-test--symbols-used (form)
   (let ((symbols nil))
     (cl-labels ((walk (node)
