@@ -19749,31 +19749,15 @@ nil), so there is nothing else to update for that name."
      ((and (fboundp 'bool-vector-p) (bool-vector-p x)) 'bool-vector)
      (t 'cons))))
 
-;; native `fboundp' rejects `nil' and `t' with `(wrong-type-argument
-;; symbolp nil)' even though `symbolp' correctly accepts both -- nil and
-;; t are symbols, just ones whose function cell can never usefully hold
-;; anything in ordinary use.  cc-mode's cc-defs.el hits this at load time
-;; through `(and (symbolp form) (fboundp form))' with FORM bound to nil,
-;; so every package that requires cc-mode (json-mode, csharp-mode, ...)
-;; failed to load on the standalone reader.  Measured against Emacs 31.1:
-;; `(fboundp nil)' is nil (nil can never be `fset', so this is always
-;; false); `(fboundp t)' is nil in the ordinary case but t if `t' has
-;; actually been `fset' (unlike nil, t's function cell is not otherwise
-;; protected) -- so this defers to `symbol-function' for every symbol
-;; rather than hard-coding nil/t as always-unbound.  `symbol-function'
-;; itself sometimes answers the internal `nelisp--unbound-marker'
-;; sentinel for a symbol that only ever got a `defconst' (see the sibling
-;; gap this masks: a variable-only symbol's function-cell mirror entry
-;; holds the marker, not a clean nil), so that is filtered here too, the
-;; same as the native check already did for ordinary symbols.
+;; The native `fboundp' answers nil for `nil' and `t' (both are symbols whose
+;; function cell is unset; measured against Emacs 31.1: `(fboundp nil)' and
+;; `(fboundp t)' are nil, and it filters the unbound marker of a
+;; variable-only symbol itself), so no wrapper is needed.  A prelude closure
+;; here made every `fboundp' call an interpreted call (~50us vs ~5us), and
+;; the bootstrap bundle makes 20k+ of them.  cc-mode's cc-defs.el relies on
+;; `(and (symbolp form) (fboundp form))' with FORM bound to nil.
 (unless (fboundp 'nelisp--native-fboundp)
   (fset 'nelisp--native-fboundp (symbol-function 'fboundp)))
-(defun fboundp (symbol)
-  "Return t if SYMBOL's function definition is not nil."
-  (if (symbolp symbol)
-      (let ((def (symbol-function symbol)))
-        (and def (not (eq def 'nelisp--unbound-marker)) t))
-    (nelisp--native-fboundp symbol)))
 
 ;; `macrop', `commandp' and `indirect-function' do not exist at all on the
 ;; standalone reader (void-function) -- cc-mode and friends have been

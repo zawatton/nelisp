@@ -10151,7 +10151,15 @@ eval applyfn.")
                           (if (= (nl_ht_key_hash_stable_p (nl_cons_car_ptr key_ptr) (- depth 1)) 1)
                               (nl_ht_key_hash_stable_p (nl_cons_cdr_ptr key_ptr) (- depth 1))
                             0))
-                      0)))))))))
+                      ;; Every other tag (vector, record, buffer, hash table,
+                      ;; closure, ...) hashes to its bare tag in
+                      ;; `nl_ht_key_hash': the bucket cannot depend on the
+                      ;; object's contents or address, so a miss in that
+                      ;; bucket is a real miss.  Answering 0 here made every
+                      ;; such miss scan ALL buckets (0.3-1.1 ms on an empty
+                      ;; table), e.g. the per-buffer syntax-table lookup that
+                      ;; every regexp call performs.
+                      1)))))))))
     (defun nl_ht_bucket_index (vec key_ptr)
       (let* ((n (vector-len vec))
              (h (nl_ht_key_hash key_ptr 8)))
@@ -16993,13 +17001,20 @@ baked build's own `<'/`>'/`=' arms need it too.")
                     1)
                 1)
             1))))
+    ;; nil and t are symbols whose function cell is never set here, so they
+    ;; answer nil instead of signalling.  This used to live in a prelude
+    ;; wrapper around the native arm; every `fboundp' call then ran as an
+    ;; interpreted closure (about 50us instead of about 5us) although the
+    ;; bootstrap bundle asks tens of thousands of such questions.
     (defun bf_fboundp (args env out)
       (let* ((sym (wf_arg_ptr args 0)) (tmp (alloc-bytes 32 8)) (mirror (+ env 0)) (unbound (+ env 64)))
         (if (or (= (ptr-read-u64 sym 0) 4) (= (ptr-read-u64 sym 0) 16))
             (if (= (nelisp_env_lookup_function mirror unbound sym tmp) 0)
                 (if (= (bf_fboundp_cell_p tmp) 0) (wf_write_nil out) (wf_write_t out))
               (wf_write_nil out))
-          (bf_wrong_type_symbolp sym))))
+          (if (or (= (ptr-read-u64 sym 0) 0) (= (ptr-read-u64 sym 0) 1))
+              (wf_write_nil out)
+            (bf_wrong_type_symbolp sym)))))
     ;; `symbol-function' (backing opcode 75, Bsymbol_function): return
     ;; SYMBOL's raw function-cell value verbatim -- an alias symbol, an
     ;; autoload list, a real function object, or nil -- never resolving

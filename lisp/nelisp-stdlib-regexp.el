@@ -1007,6 +1007,30 @@ of STRING.  Sets `nlre--match-data' as usual."
                     (if e
                         (progn (aset caps 0 (cons i e)) (setq hit i))
                       (setq i (1+ i)))))))))
+         ;; A pattern that starts with \` can only match at index 0, and one
+         ;; that starts with ^ only at index 0 or right after a newline.
+         ;; Without these two arms every rejected position paid a full
+         ;; `nlre--match-list' attempt, so a failing "^ZZZ" scan cost the
+         ;; same per character as a real match attempt.
+         ((eq (car-safe (car top)) :bos)
+          (when (= i 0)
+            (when (> ng 1) (nlre--caps-clear caps))
+            (let ((e (nlre--match-list top string 0 n)))
+              (when e
+                (aset caps 0 (cons 0 e))
+                (setq hit 0)))))
+         ((eq (car-safe (car top)) :bol)
+          (while (and (not hit) (<= i limit))
+            (if (or (= i 0) (eq (aref string (1- i)) ?\n))
+                (progn
+                  (when (> ng 1) (nlre--caps-clear caps))
+                  (let ((e (nlre--match-list top string i n)))
+                    (if e
+                        (progn (aset caps 0 (cons i e)) (setq hit i))
+                      (setq i (1+ i)))))
+              ;; Jump to the position after the next newline (or past LIMIT).
+              (let ((nl (nlre--literal-search "\n" string i)))
+                (setq i (if nl (1+ nl) (1+ limit)))))))
          (t
           (while (and (not hit) (<= i limit))
             (when (> ng 1) (nlre--caps-clear caps))
