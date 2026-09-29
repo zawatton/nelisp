@@ -1,0 +1,93 @@
+# Function counts are function-cell wrapper counts on standalone and GNU 31.1; callers are not attributed. Native/internal calls bypassing Lisp function cells are not observed. Variable rows are static source references, not runtime reads; static scan recognizes buffer/mark/syntax/default-directory/case-fold/inhibit-read-only names in defvar, setq, and let bindings and may miss indirect or differently named variable access.
+# Runtime path: bytecomp.el load + S6.10 wrapper invoked on both byte-compile-form corpus forms.
+name	kind	evidence	count	notes
+beginning-of-line	function	runtime	standalone=0;host=12	S6.10 byte-compile-form wrapper; cell calls
+bobp	function	runtime	standalone=0;host=4	S6.10 byte-compile-form wrapper; cell calls
+bolp	function	runtime	standalone=2;host=12	S6.10 byte-compile-form wrapper; cell calls
+buffer-file-name	function	runtime	standalone=0;host=2	S6.10 byte-compile-form wrapper; cell calls
+buffer-live-p	function	runtime	standalone=2;host=1033	S6.10 byte-compile-form wrapper; cell calls
+buffer-name	function	runtime	standalone=0;host=509	S6.10 byte-compile-form wrapper; cell calls
+buffer-size	function	runtime	standalone=0;host=1	S6.10 byte-compile-form wrapper; cell calls
+buffer-string	function	runtime	standalone=2;host=167	S6.10 byte-compile-form wrapper; cell calls
+buffer-substring	function	runtime	standalone=1;host=170	S6.10 byte-compile-form wrapper; cell calls
+bufferp	function	runtime	standalone=1;host=335	S6.10 byte-compile-form wrapper; cell calls
+call-process	function	runtime	standalone=0;host=164	S6.10 byte-compile-form wrapper; cell calls
+current-buffer	function	runtime	standalone=4;host=320	S6.10 byte-compile-form wrapper; cell calls
+current-column	function	runtime	standalone=0;host=4	S6.10 byte-compile-form wrapper; cell calls
+current-time	function	runtime	standalone=0;host=2310	S6.10 byte-compile-form wrapper; cell calls
+decode-coding-string	function	runtime	standalone=1;host=1	S6.10 byte-compile-form wrapper; cell calls
+define-key	function	runtime	standalone=1;host=0	S6.10 byte-compile-form wrapper; cell calls
+directory-file-name	function	runtime	standalone=0;host=6	S6.10 byte-compile-form wrapper; cell calls
+eobp	function	runtime	standalone=0;host=4	S6.10 byte-compile-form wrapper; cell calls
+equal-including-properties	function	runtime	standalone=0;host=211	S6.10 byte-compile-form wrapper; cell calls
+expand-file-name	function	runtime	standalone=20;host=2674	S6.10 byte-compile-form wrapper; cell calls
+file-directory-p	function	runtime	standalone=3;host=129	S6.10 byte-compile-form wrapper; cell calls
+file-exists-p	function	runtime	standalone=6;host=545	S6.10 byte-compile-form wrapper; cell calls
+file-name-as-directory	function	runtime	standalone=8;host=569	S6.10 byte-compile-form wrapper; cell calls
+file-name-case-insensitive-p	function	runtime	standalone=3;host=257	S6.10 byte-compile-form wrapper; cell calls
+file-name-directory	function	runtime	standalone=0;host=492	S6.10 byte-compile-form wrapper; cell calls
+file-name-nondirectory	function	runtime	standalone=8;host=608	S6.10 byte-compile-form wrapper; cell calls
+file-readable-p	function	runtime	standalone=13;host=2	S6.10 byte-compile-form wrapper; cell calls
+file-regular-p	function	runtime	standalone=0;host=1	S6.10 byte-compile-form wrapper; cell calls
+file-symlink-p	function	runtime	standalone=0;host=6	S6.10 byte-compile-form wrapper; cell calls
+file-writable-p	function	runtime	standalone=0;host=234	S6.10 byte-compile-form wrapper; cell calls
+find-file-name-handler	function	runtime	standalone=5;host=823	S6.10 byte-compile-form wrapper; cell calls
+following-char	function	runtime	standalone=0;host=423	S6.10 byte-compile-form wrapper; cell calls
+format-message	function	runtime	standalone=2;host=1	S6.10 byte-compile-form wrapper; cell calls
+forward-char	function	runtime	standalone=1;host=251	S6.10 byte-compile-form wrapper; cell calls
+forward-line	function	runtime	standalone=0;host=4	S6.10 byte-compile-form wrapper; cell calls
+generate-new-buffer-name	function	runtime	standalone=0;host=216	S6.10 byte-compile-form wrapper; cell calls
+get-buffer	function	runtime	standalone=3;host=107	S6.10 byte-compile-form wrapper; cell calls
+get-buffer-create	function	runtime	standalone=1;host=215	S6.10 byte-compile-form wrapper; cell calls
+get-text-property	function	runtime	standalone=0;host=1	S6.10 byte-compile-form wrapper; cell calls
+goto-char	function	runtime	standalone=4;host=745	S6.10 byte-compile-form wrapper; cell calls
+insert	function	runtime	standalone=25;host=829	S6.10 byte-compile-form wrapper; cell calls
+insert-file-contents	function	runtime	standalone=3;host=3	S6.10 byte-compile-form wrapper; cell calls
+interactive-form	function	runtime	standalone=0;host=99	S6.10 byte-compile-form wrapper; cell calls
+key-description	function	runtime	standalone=0;host=1	S6.10 byte-compile-form wrapper; cell calls
+kill-all-local-variables	function	runtime	standalone=1;host=1	S6.10 byte-compile-form wrapper; cell calls
+kill-buffer	function	runtime	standalone=0;host=170	S6.10 byte-compile-form wrapper; cell calls
+kill-emacs	function	runtime	standalone=0;host=1	S6.10 byte-compile-form wrapper; cell calls
+line-end-position	function	runtime	standalone=0;host=159	S6.10 byte-compile-form wrapper; cell calls
+local-variable-p	function	runtime	standalone=0;host=11	S6.10 byte-compile-form wrapper; cell calls
+looking-at	function	runtime	standalone=0;host=80	S6.10 byte-compile-form wrapper; cell calls
+make-local-variable	function	runtime	standalone=0;host=2	S6.10 byte-compile-form wrapper; cell calls
+make-sparse-keymap	function	runtime	standalone=1;host=0	S6.10 byte-compile-form wrapper; cell calls
+marker-position	function	runtime	standalone=1;host=0	S6.10 byte-compile-form wrapper; cell calls
+markerp	function	runtime	standalone=1;host=65	S6.10 byte-compile-form wrapper; cell calls
+match-beginning	function	runtime	standalone=2;host=382	S6.10 byte-compile-form wrapper; cell calls
+match-data	function	runtime	standalone=0;host=582	S6.10 byte-compile-form wrapper; cell calls
+match-end	function	runtime	standalone=3;host=62	S6.10 byte-compile-form wrapper; cell calls
+message	function	runtime	standalone=1;host=1	S6.10 byte-compile-form wrapper; cell calls
+nelisp--sha256	function	runtime	standalone=2;host=0	S6.10 byte-compile-form wrapper; cell calls
+nelisp--syscall-path-int	function	runtime	standalone=22;host=0	S6.10 byte-compile-form wrapper; cell calls
+nelisp--syscall-stat-field	function	runtime	standalone=16;host=0	S6.10 byte-compile-form wrapper; cell calls
+point	function	runtime	standalone=4;host=728	S6.10 byte-compile-form wrapper; cell calls
+point-marker	function	runtime	standalone=1;host=0	S6.10 byte-compile-form wrapper; cell calls
+point-max	function	runtime	standalone=1;host=250	S6.10 byte-compile-form wrapper; cell calls
+point-min	function	runtime	standalone=1;host=12	S6.10 byte-compile-form wrapper; cell calls
+prefix-numeric-value	function	runtime	standalone=0;host=1	S6.10 byte-compile-form wrapper; cell calls
+propertize	function	runtime	standalone=0;host=1	S6.10 byte-compile-form wrapper; cell calls
+re-search-forward	function	runtime	standalone=0;host=300	S6.10 byte-compile-form wrapper; cell calls
+regexp-quote	function	runtime	standalone=1;host=0	S6.10 byte-compile-form wrapper; cell calls
+search-backward	function	runtime	standalone=0;host=2	S6.10 byte-compile-form wrapper; cell calls
+search-forward	function	runtime	standalone=0;host=205	S6.10 byte-compile-form wrapper; cell calls
+secure-hash	function	runtime	standalone=2;host=0	S6.10 byte-compile-form wrapper; cell calls
+selected-frame	function	runtime	standalone=0;host=2	S6.10 byte-compile-form wrapper; cell calls
+set-buffer	function	runtime	standalone=0;host=136	S6.10 byte-compile-form wrapper; cell calls
+set-buffer-multibyte	function	runtime	standalone=0;host=2	S6.10 byte-compile-form wrapper; cell calls
+set-marker	function	runtime	standalone=1;host=0	S6.10 byte-compile-form wrapper; cell calls
+set-syntax-table	function	runtime	standalone=1;host=1	S6.10 byte-compile-form wrapper; cell calls
+skip-chars-backward	function	runtime	standalone=0;host=15	S6.10 byte-compile-form wrapper; cell calls
+skip-chars-forward	function	runtime	standalone=0;host=15	S6.10 byte-compile-form wrapper; cell calls
+string-match	function	runtime	standalone=13;host=736	S6.10 byte-compile-form wrapper; cell calls
+syntax-table	function	runtime	standalone=21;host=0	S6.10 byte-compile-form wrapper; cell calls
+try-completion	function	runtime	standalone=0;host=1	S6.10 byte-compile-form wrapper; cell calls
+widen	function	runtime	standalone=0;host=3	S6.10 byte-compile-form wrapper; cell calls
+write-region	function	runtime	standalone=0;host=1	S6.10 byte-compile-form wrapper; cell calls
+buffer-file-coding-system	variable	static	static	source variable reference
+buffer-file-name	variable	static	static	source variable reference
+buffer-read-only	variable	static	static	source variable reference
+case-fold-search	variable	static	static	source variable reference
+default-directory	variable	static	static	source variable reference
+inhibit-read-only	variable	static	static	source variable reference

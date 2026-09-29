@@ -81,8 +81,9 @@ cmd: bash tools/ai/preflight.sh
 
 ** S3.1 Measured need list committed: what bytecomp, byte-opt, cconv, macroexp, byte-run and the S6/S10 harness call from buffers/syntax/files, by name and count
 #+WEIGHT: 1
-#+NOTE: intended check: tools/ai/doc211-bytecomp-needs.el (to be written) scans the vendored 31.1 files and the harness; Doc 211 section 2.1 already records the first measurement (bytecomp: insert 28, with-current-buffer 13, goto-char 12, ...).
-pending
+#+NOTE: Runtime count regeneration (long run): make doc211-bytecomp-needs-measure NELISP_BIN=<standalone>; compares pinned standalone and host GNU 31.1 function-cell counts and rewrites tools/ai/doc211-bytecomp-need.tsv. Tracer counts only calls through wrapped Lisp function cells; it does not attribute callers or see native/internal bypasses. Variable evidence is a static source scan.
+cmd: make doc211-bytecomp-needs
+#+NOTE: 2026-09-30 measured on nelisp-head37 and host GNU Emacs: count source file contains runtime counts for S6.10's byte-compile-form wrapper and two corpus forms. Separate plain `time`: standalone `(require 'compile)` process 16.666 s, bare start 4.081 s (increment 12.585 s). Counts are in tools/ai/doc211-bytecomp-need.tsv; regeneration is intentionally separate from the <=55 s validator.
 
 ** S3.2 Core scratch buffer implemented with private nelisp--scratch-* names and at most 15 GNU-named aliases; each function has a Lisp reference and ERT
 #+WEIGHT: 1

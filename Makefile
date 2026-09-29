@@ -4748,3 +4748,20 @@ native-inventory:
 
 core-purity:
 	@bash tools/core-purity.sh .
+
+# Doc 211 S3.1: reproducible call-cell tracing (long-running measurement)
+# and a fast committed-list validator for the progress-meter command.
+.PHONY: doc211-bytecomp-needs doc211-bytecomp-needs-measure
+doc211-bytecomp-needs:
+	python3 tools/ai/doc211-bytecomp-needs.py check
+
+doc211-bytecomp-needs-measure:
+	@test -n "$(NELISP_BIN)" || { echo 'set NELISP_BIN to the standalone binary' >&2; exit 2; }
+	@mkdir -p target/progress/doc211-bytecomp
+	@api_names=$$(awk -F '\t' '$$3 == "api-layer" { printf "%s%s", sep, $$1; sep="," }' "$${NELISP_BYTECOMP_INVENTORY:-/home/madblack-21/.cache/tmp/nelisp-doc211/inventory/a2-classified.tsv}"); \
+	  NELISP_BYTECOMP_TRACE_NAMES="$$api_names" NELISP_BYTECOMP_ROOT="$(CURDIR)" NELISP_BYTECOMP_TRACE_OUT="$(CURDIR)/target/progress/doc211-bytecomp/standalone.tsv" \
+	  "$(NELISP_BIN)" -L tools -l tools/nelisp-bytecomp-api-trace.el -l tools/nelisp-bytecomp-api-trace-run.el
+	@api_names=$$(awk -F '\t' '$$3 == "api-layer" { printf "%s%s", sep, $$1; sep="," }' "$${NELISP_BYTECOMP_INVENTORY:-/home/madblack-21/.cache/tmp/nelisp-doc211/inventory/a2-classified.tsv}"); \
+	  NELISP_BYTECOMP_TRACE_NAMES="$$api_names" NELISP_BYTECOMP_ROOT="$(CURDIR)" NELISP_BYTECOMP_TRACE_OUT="$(CURDIR)/target/progress/doc211-bytecomp/host.tsv" \
+	  $${EMACS_BIN:-emacs} --batch -Q -L tools -l tools/nelisp-bytecomp-api-trace.el -l tools/nelisp-bytecomp-api-trace-run.el
+	@python3 tools/ai/doc211-bytecomp-needs-merge.py target/progress/doc211-bytecomp/standalone.tsv target/progress/doc211-bytecomp/host.tsv
