@@ -1876,6 +1876,64 @@ passed on to a later port, or returned.")
         (append nelisp-eln-tail-code--multi-import-shapes
                 nelisp-eln-tail-code--multi-import-shapes-closure)))
 
+;;; S6.14: `byte-compile-funcall' (vendor bytecomp.el).  Kept in its own constant
+;;; (appended to the shape list) so concurrent lanes adding shapes do not
+;;; touch the same source lines.
+
+(defconst nelisp-eln-tail-code--multi-import-shapes-funcall
+  (list
+   (list 'funcall-form
+         :template
+         [#x41 #x55 #x8d #x47 #xfd #x41 #x54 #x55 #x53 #x48 #x83 #xec
+      #x48 #x4c #x8b #x2d nil nil nil nil #x49 #x8b #x6d #x00
+      #xa8 #x07 #x75 #x64 #x48 #x8b #x77 #x05 #x48 #x8d #x5f #xfd
+      #x4c #x8b #x25 nil nil nil nil #x48 #x85 #xf6 #x74 #x67
+      #x49 #x8b #x7c #x24 #x20 #xff #x95 #x50 #x25 #x00 #x00 #x48
+      #x8b #x73 #x08 #x8d #x46 #xfd #xa8 #x07 #x0f #x85 #xa6 #x00
+      #x00 #x00 #x48 #x8b #x7e #x05 #xff #x95 #x10 #x27 #x00 #x00
+      #x66 #x41 #x0f #x6f #x44 #x24 #x40 #x48 #x89 #x44 #x24 #x30
+      #x48 #x8d #x74 #x24 #x20 #xbf #x03 #x00 #x00 #x00 #x0f #x29
+      #x44 #x24 #x20 #xff #x95 #x88 #x1d #x00 #x00 #x48 #x83 #xc4
+      #x48 #x5b #x5d #x41 #x5c #x41 #x5d #xc3 #x4c #x8b #x25 nil
+      nil nil nil #x48 #x85 #xff #x74 #x0b #x48 #x89 #xfe #x49
+      #x8b #x7c #x24 #x70 #xff #x55 #x00 #x49 #x8b #x44 #x24 #x18
+      #x48 #x8d #x74 #x24 #x08 #xbf #x01 #x00 #x00 #x00 #x48 #x89
+      #x44 #x24 #x08 #xff #x95 #xf8 #x15 #x00 #x00 #x48 #x8d #x74
+      #x24 #x10 #xbf #x02 #x00 #x00 #x00 #xf3 #x41 #x0f #x7e #x44
+      #x24 #x08 #x66 #x48 #x0f #x6e #xc8 #x66 #x0f #x6c #xc1 #x0f
+      #x29 #x44 #x24 #x10 #xff #x95 #x88 #x1d #x00 #x00 #x49 #x8b
+      #x7c #x24 #x30 #xff #x95 #xb8 #x29 #x00 #x00 #x66 #x41 #x0f
+      #x6f #x44 #x24 #x20 #xe9 #x6e #xff #xff #xff #x0f #x1f #x00
+      #x48 #x85 #xf6 #x74 #x0b #x49 #x8b #x45 #x00 #x49 #x8b #x7c
+      #x24 #x70 #xff #x10 #x31 #xff #xe9 #x47 #xff #xff #xff]
+         :gots '((16 . freloc) (39 . d-reloc) (131 . d-reloc))
+         :imports '(1194 1250 945 0 703 1335)
+         :data '(1 3 4 5 6 8 9 14)))
+  "Exact multi-import shape of gnu-byte-compile-funcall.eln (S6.14); see
+`nelisp-eln-native-subr--multi-import-specs-funcall'.
+
+`funcall-form' (263 bytes) is vendor bytecomp.el `byte-compile-funcall'
+itself: FORM is tag-checked as a list (a non-list calls slot 0
+`wrong_type_argument' with d_reloc[14], `listp'); when (cdr FORM) is
+non-nil slot 1194 `Fmapc' runs d_reloc[4] (`byte-compile-form') over it,
+slot 1250 `Flength' counts (cdr (cdr FORM)) (a non-list tail is again
+rejected through slot 0), and a MANY (3, argv) slot 945 `Ffuncall' calls
+d_reloc[8] (`byte-compile-out') on d_reloc[9] (`byte-call') and that
+length, whose result is returned.  Otherwise slot 703 `Fformat_message'
+\(MANY, 1) formats d_reloc[3] (the string \"`funcall\\=' called with no
+arguments\"), a MANY (2, argv) `Ffuncall' of d_reloc[1]
+\(`byte-compile-report-error') reports it, and a MANY (3, argv) `Ffuncall'
+of d_reloc[4] (`byte-compile-form') on d_reloc[5] (the quoted form
+`(signal \\='wrong-number-of-arguments \\='(funcall 0))') and slot 1335
+`Fsymbol_value' of d_reloc[6] (`byte-compile--for-effect') gives the
+result.  `Ffuncall' is thus called with two argument counts through its one
+slot.  d_reloc[0], [2], [7] and [10]-[13] are never read by the body.")
+
+(unless (assq 'funcall-form nelisp-eln-tail-code--multi-import-shapes)
+  (setq nelisp-eln-tail-code--multi-import-shapes
+        (append nelisp-eln-tail-code--multi-import-shapes
+                nelisp-eln-tail-code--multi-import-shapes-funcall)))
+
 (defun nelisp-eln-tail-code--disp32 (bytes offset)
   "Return the signed disp32 at OFFSET in BYTES."
   (let ((value (logior (aref bytes offset)

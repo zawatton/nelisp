@@ -11529,14 +11529,20 @@ when there is none.  A POS that is itself a line start answers itself."
   (let ((lo (nelisp-point-min buf)))
     (if (<= pos lo)
         lo
-      (let* ((text (nelisp-buffer-substring lo pos buf))
-             (i (1- (length text)))
-             (found nil))
-        (while (and (>= i 0) (not found))
-          (if (eq (elt text i) ?\n)
-              (setq found i)
-            (setq i (1- i))))
-        (if found (+ lo found 1) lo)))))
+      ;; Scan backward in geometrically growing (x2) chunks ending at POS:
+      ;; O(distance to the line start), not O(POS - point-min).
+      (let ((to pos) (chunk 64) (found nil))
+        (while (and (> to lo) (not found))
+          (let* ((from (max lo (- to chunk)))
+                 (text (nelisp-buffer-substring from to buf))
+                 (i (1- (length text))))
+            (while (and (>= i 0) (not found))
+              (if (eq (elt text i) ?\n)
+                  (setq found (+ from i))
+                (setq i (1- i))))
+            (setq to from)
+            (setq chunk (* chunk 2))))
+        (if found (1+ found) lo)))))
 
 (defun nelisp--motion-eol (pos buf)
   "Return the 1-based position of the end of the line containing POS in
@@ -11545,9 +11551,18 @@ the line runs to the end of the (accessible) buffer with none."
   (let ((hi (nelisp-point-max buf)))
     (if (>= pos hi)
         hi
-      (let* ((text (nelisp-buffer-substring pos hi buf))
-             (i (string-match "\n" text)))
-        (if i (+ pos i) hi)))))
+      ;; Scan forward in geometrically growing (x2) chunks starting at POS:
+      ;; O(distance to the line end), not O(point-max - POS).
+      (let ((from pos) (chunk 64) (found nil))
+        (while (and (< from hi) (not found))
+          (let* ((to (min hi (+ from chunk)))
+                 (text (nelisp-buffer-substring from to buf))
+                 (i (string-match "\n" text)))
+            (if i
+                (setq found (+ from i))
+              (setq from to)
+              (setq chunk (* chunk 2)))))
+        (or found hi)))))
 
 (defun nelisp--motion-prev-bol (pos buf)
   "Return the start of the line immediately before the line that starts
@@ -11574,10 +11589,9 @@ share this so the latter two can compute without moving anything."
         (while (and (> remaining 0) (not ran-out))
           (if (>= cur hi)
               (setq ran-out t)
-            (let* ((text (nelisp-buffer-substring cur hi buf))
-                   (i (string-match "\n" text)))
-              (if i
-                  (progn (setq cur (+ cur i 1))
+            (let ((nl (nelisp--motion-eol cur buf)))
+              (if (< nl hi)
+                  (progn (setq cur (1+ nl))
                          (setq remaining (1- remaining)))
                 (setq cur hi)
                 (setq ran-out t)))))

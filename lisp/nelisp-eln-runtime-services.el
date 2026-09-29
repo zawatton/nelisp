@@ -572,6 +572,19 @@ OBJECT is a byte-code function object, else nil."
 spread like `nelisp-eln-runtime-services-fmake-closure'."
   (apply #'format args))
 
+;; S6.14 (`byte-compile-funcall'): `Fmapc' (fixed 2) and `Fformat_message'
+;; (1, MANY), each NeLisp's own primitive called the way the byte-code
+;; interpreter calls it.
+(defun nelisp-eln-runtime-services-fmapc (function sequence)
+  "NeLisp equivalent of GNU `Fmapc' (src/fns.c): call FUNCTION on each
+element of SEQUENCE for effect and return SEQUENCE."
+  (mapc function sequence))
+
+(defun nelisp-eln-runtime-services-fformat-message (&rest args)
+  "NeLisp equivalent of GNU `Fformat_message' (src/editfns.c, 1 MANY).
+ARGS are spread like `nelisp-eln-runtime-services-fformat'."
+  (apply #'format-message args))
+
 (defun nelisp-eln-runtime-services-fvconcat (&rest sequences)
   "NeLisp equivalent of GNU `Fvconcat' (src/fns.c, 0 MANY).  SEQUENCES are
 spread like `nelisp-eln-runtime-services-fmake-closure'."
@@ -894,7 +907,17 @@ with `<='."
     :index 1234 :symbol "Fvconcat" :convention 'many :arity 1
     :noreturn nil :implementation #'nelisp-eln-runtime-services-fvconcat
     :status 'supported
-    :evidence "freloc tsv sha 3e8591ab..f0758, index 1234; GNU src/fns.c Fvconcat (0, MANY); spread arguments"))
+    :evidence "freloc tsv sha 3e8591ab..f0758, index 1234; GNU src/fns.c Fvconcat (0, MANY); spread arguments")
+   (nelisp-eln-runtime-services--descriptor
+    :index 1194 :symbol "Fmapc" :convention 'fixed :arity 2
+    :noreturn nil :implementation #'nelisp-eln-runtime-services-fmapc
+    :status 'supported
+    :evidence "freloc tsv sha 3e8591ab..f0758, index 1194; GNU src/fns.c Fmapc")
+   (nelisp-eln-runtime-services--descriptor
+    :index 703 :symbol "Fformat_message" :convention 'many :arity 1
+    :noreturn nil :implementation #'nelisp-eln-runtime-services-fformat-message
+    :status 'supported
+    :evidence "freloc tsv sha 3e8591ab..f0758, index 703; GNU src/editfns.c Fformat_message (1, MANY); spread arguments"))
   "One plist per supported/unsupported GNU .eln runtime service.
 See the Commentary above for the plist shape.  Cross-check against the
 authenticated freloc table with

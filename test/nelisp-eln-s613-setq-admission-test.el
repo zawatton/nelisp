@@ -178,8 +178,13 @@
                  ;; conses and passes symbols only to authenticated ports.
                  ;; S6.3 `accumulate-forms', S6.6 `closure-convert' and S6.4
                  ;; `macroexpand-1' likewise.
+                 ;; S6.9 `lambda-form', S6.11 `lambda-cons-form' and
+                 ;; `make-closure-form' and S6.14 `funcall-form' declare it
+                 ;; too (each only conses, compares and passes symbol words
+                 ;; to authenticated ports).
                  '(parse-body setq-form if-form accumulate-forms
-                   closure-convert macroexpand-1))))
+                   closure-convert macroexpand-1 lambda-form lambda-cons-form
+                   make-closure-form funcall-form))))
 
 ;;; End-to-end on a standalone binary (optional)
 

@@ -14589,18 +14589,65 @@ baked build's own `<'/`>'/`=' arms need it too.")
               (= (ptr-read-u64 (data-addr nl_thread_parallel_ctx) 16) 1))
           -1
         (let* ((slot (nl_aref_cache_slot bufptr)))
-          (if (if (= (ptr-read-u64 slot 0) bufptr) (= (ptr-read-u64 slot 8) nb) nil)
+          (if (if (= (ptr-read-u64 slot 0) bufptr)
+                  (= (mod (ptr-read-u64 slot 8) 4294967296) nb)
+                nil)
               (ptr-read-u64 slot 16)
             -1))))
     (defun nl_aref_cache_store (bufptr nb packed)
       (if (or (> nb 2147483647)
               (= (ptr-read-u64 (data-addr nl_thread_parallel_ctx) 16) 1))
           packed
-        (let* ((slot (nl_aref_cache_slot bufptr)))
+        (let* ((slot (nl_aref_cache_slot bufptr))
+               (old (ptr-read-u64 slot 8))
+               ;; Keep the cached char count (high half of the nb word)
+               ;; only when the row already describes this very buffer.
+               (keep (if (if (= (ptr-read-u64 slot 0) bufptr)
+                             (= (mod old 4294967296) nb)
+                           nil)
+                         (- old (mod old 4294967296))
+                       0)))
           (seq (ptr-write-u64 slot 0 bufptr)
-               (ptr-write-u64 slot 8 nb)
+               (ptr-write-u64 slot 8 (+ nb keep))
                (ptr-write-u64 slot 16 packed)
                packed))))
+    ;; Drop the row describing BUFPTR, if any.  Needed by the one in-place
+    ;; byte writer that can change char structure through an alias: `aset'
+    ;; on a UNIBYTE string whose buffer a `string-as-multibyte' result
+    ;; shares.  (Multibyte `aset' is an ASCII-for-ASCII swap: structure
+    ;; and char count cannot change, so it must NOT invalidate.)
+    (defun nl_aref_cache_invalidate (bufptr)
+      (let* ((slot (nl_aref_cache_slot bufptr)))
+        (if (= (ptr-read-u64 slot 0) bufptr)
+            (ptr-write-u64 slot 0 0)
+          0)))
+    ;; GNU `SCHARS': char count of a tag-5 Str, cached in the same row as
+    ;; the char<->byte cursor (nb word: low 32 bits = byte length, high 32
+    ;; bits = char count + 1, 0 = unknown).  Strings below 64 bytes skip
+    ;; the table (a direct walk is cheaper than a probe and they would only
+    ;; evict the cursor of a large string).
+    (defun nl_str_charlen_c (p)
+      (let* ((nb (m5_strlen p)))
+        (if (or (< nb 64)
+                (or (> nb 2147483647)
+                    (= (ptr-read-u64 (data-addr nl_thread_parallel_ctx) 16) 1)))
+            (nl_str_charlen p)
+          (let* ((bufptr (ptr-read-u64 p 16))
+                 (slot (nl_aref_cache_slot bufptr))
+                 (w (ptr-read-u64 slot 8))
+                 (hit (if (= (ptr-read-u64 slot 0) bufptr)
+                          (= (mod w 4294967296) nb)
+                        nil)))
+            (if (if hit (> (/ w 4294967296) 0) nil)
+                (- (/ w 4294967296) 1)
+              (let* ((n (nl_str_charlen p)))
+                (seq
+                 (if hit
+                     (ptr-write-u64 slot 8 (+ nb (* (+ n 1) 4294967296)))
+                   (seq (ptr-write-u64 slot 0 bufptr)
+                        (ptr-write-u64 slot 8 (+ nb (* (+ n 1) 4294967296)))
+                        (ptr-write-u64 slot 16 0)))
+                 n)))))))
     (defun nl_aref_cache_clear_slot (i)
       (ptr-write-u64 (+ (data-addr nl_aref_cache_table) (* i 24)) 0 0))
     (defun nl_aref_cache_clear ()
@@ -14705,7 +14752,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (let* ((tag (ptr-read-u64 p 0)))
         (if (= tag 14) (m5_strlen p)
           (if (= tag 15) (m5_strlen p)
-        (if (= tag 5) (nl_str_charlen p)
+        (if (= tag 5) (nl_str_charlen_c p)
           (if (= tag 6) (nl_str_charlen p)
             (if (= tag 4) (m5_strlen p)
               (if (= tag 7) (m5_list_len p 0)
@@ -16144,7 +16191,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (let* ((cp (ptr-read-u64 val 8)))
               (if (if (< cp 0) 1 (if (> cp 255) 1 0))
                   (bf_args_out_of_range_byte val)
-                (bf_aset_string_write arr idx val out))))
+                (seq (nl_aref_cache_invalidate (bf_str_ptr arr))
+                     (bf_aset_string_write arr idx val out)))))
         (bf_wrong_type_integerp val)))
     ;; Tag 5 goes through the same O(1)-amortized cache `bf_aref_checked'
     ;; uses (fusing the bounds check into the walk); tag 6 keeps the old
@@ -16889,7 +16937,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
               (seq (wf_write_int out (nl_closure_length p)) 0)
             (bf_length_list p 0 out)))
          ((= tag 8) (seq (wf_write_int out (vector-len p)) 0))
-         ((or (= tag 5) (= tag 6))
+         ((= tag 5)
+          (seq (wf_write_int out (nl_str_charlen_c p)) 0))
+         ((= tag 6)
           (seq (wf_write_int out (nl_str_charlen p)) 0))
          ((or (= tag 14) (= tag 15))
           (seq (wf_write_int out (m5_strlen p)) 0))
@@ -18012,6 +18062,22 @@ baked build's own `<'/`>'/`=' arms need it too.")
            (seq (setq byte (+ byte (nl_u8_clen_at (m5_byte_at src byte))))
                 (setq char (+ char 1))))
          byte)))
+    ;; Absolute char index TARGET -> byte offset for `read-from-string',
+    ;; through the shared tag-5 cursor cache so a sequential caller (START
+    ;; = previous cdr) costs O(delta) instead of O(START).  Same clamping
+    ;; as `bf_read_one_char_to_byte' from byte 0: <= 0 -> 0, past the end
+    ;; -> LIMIT (the byte length).
+    (defun bf_read_one_cb (src target limit)
+      (if (= (bf_string_unibyte_p src) 1)
+          target
+        (if (<= target 0)
+            0
+          (if (= (ptr-read-u64 src 0) 5)
+              (if (>= target (nl_str_charlen_c src))
+                  limit
+                (let* ((r (nl_str_sub_byte_off src limit target)))
+                  (if (< r 0) limit r)))
+            (bf_read_one_char_to_byte src 0 0 target limit)))))
     (defun bf_read_one_bytes_to_chars (src from to)
       (if (= (bf_string_unibyte_p src) 1)
           (- to from)
@@ -18165,9 +18231,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (start (wf_argval args 1))
              (end (wf_argval args 2))
              (byte-len (bf_str_len src))
-             (byte-start (bf_read_one_char_to_byte src 0 0 start byte-len))
-             (byte-end (bf_read_one_char_to_byte
-                        src byte-start start end byte-len))
+             (byte-start (bf_read_one_cb src start byte-len))
+             (byte-end (if (<= end start)
+                           byte-start
+                         (bf_read_one_cb src end byte-len)))
              (view (alloc-bytes 32 8))
              (cursor (alloc-bytes 32 8))
              (result (alloc-bytes 32 8))
@@ -18229,6 +18296,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
                position
                (+ start (bf_read_one_bytes_to_chars
                          src byte-start byte-pos)))
+              ;; Leave the shared cursor at the returned position so the
+              ;; next sequential `read-from-string' starts there in O(1).
+              (if (if (= (ptr-read-u64 src 0) 5) (>= start 0) nil)
+                  (nl_aref_cache_store
+                   (ptr-read-u64 src 16) byte-len
+                   (+ (* (ptr-read-u64 position 8) 4294967296) byte-pos))
+                0)
               (cons-make-with-clone result position out)
               (ptr-write-u64 268436448 0 prevcap)
               0)

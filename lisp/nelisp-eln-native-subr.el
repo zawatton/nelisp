@@ -1287,6 +1287,36 @@ see `nelisp-eln-native-subr--multi-import-specs' for the format.")
         (append nelisp-eln-native-subr--multi-import-specs
                 nelisp-eln-native-subr--multi-import-specs-closure)))
 
+;; S6.14 (`byte-compile-funcall'): the body's ports.  `Fmapc' and
+;; `Fformat_message' results are only ever passed on or dropped by the exact
+;; body, so they stay opaque handles (or Qnil) and never touch the object
+;; codec; `Flength' (a fixnum), `Fsymbol_value' and the returned `Ffuncall'
+;; results keep the ordinary `lisp' encoding.
+(defconst nelisp-eln-native-subr--multi-import-specs-funcall
+  '((funcall-form
+     :ports ((1194 fixed 2 (lisp lisp) handle-nil)
+             (1250 fixed 1 (lisp) lisp)
+             (945 many (2 3) (lisp lisp lisp) lisp)
+             (0 fixed 2 (lisp lisp) void)
+             (703 many 1 (lisp) handle-nil)
+             (1335 fixed 1 (lisp) lisp))
+     :constants ((1 . byte-compile-report-error)
+                 (3 . "`funcall' called with no arguments")
+                 (4 . byte-compile-form)
+                 (5 . (signal 'wrong-number-of-arguments '(funcall 0)))
+                 (6 . byte-compile--for-effect)
+                 (8 . byte-compile-out)
+                 (9 . byte-call)
+                 (14 . listp))
+     :opaque-argument-symbols t))
+  "Dispatcher spec for `nelisp-eln-tail-code--multi-import-shapes-funcall';
+see `nelisp-eln-native-subr--multi-import-specs' for the format.")
+
+(unless (assq 'funcall-form nelisp-eln-native-subr--multi-import-specs)
+  (setq nelisp-eln-native-subr--multi-import-specs
+        (append nelisp-eln-native-subr--multi-import-specs
+                nelisp-eln-native-subr--multi-import-specs-funcall)))
+
 (defun nelisp-eln-native-subr--multi-reject (reason &rest detail)
   "Reject an exactly matched multi-import body for REASON with DETAIL.
 Once CODE matches a `nelisp-eln-tail-code--multi-import-shapes' template
@@ -1300,7 +1330,9 @@ explicit, reasoned rejection -- never a quiet nil."
     ;; S6.11: `Fformat' (1, MANY) and `Fvconcat' (0, MANY), both called with
     ;; two arguments; NeLisp's own `format'/`vconcat' are Lisp functions,
     ;; not builtin cells, so they are runtime services.
-    ("ba35c031" 704 2) ("ba35c031" 1234 2))
+    ("ba35c031" 704 2) ("ba35c031" 1234 2)
+    ;; S6.14: `Fformat_message' (1, MANY), called with one argument.
+    ("ba35c031" 703 1))
   "Authenticated (ABI SLOT ARITY) MANY slots answered by a runtime service
 implementation rather than a canonical builtin: 1113 is `Fmake_closure' and
 1196 is `Fnconc' \(src/alloc.c, 1 MANY; src/fns.c, 0 MANY), whose NeLisp implementations
