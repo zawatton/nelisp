@@ -2014,6 +2014,23 @@ standalone-reader-read-string-escapes-smoke: standalone-reader
 # that skipping the synthetic `(if (boundp ...) nil (set ...))' form would
 # also skip its boundp gate.  `defvar' must leave an already-bound value
 # alone; `defconst' must overwrite it.
+# A bodyless top-level `(defvar SYM)' is a per-file local special declaration
+# (GNU eval.c Fdefvar; readevalloop binds `internal-interpreter-environment'
+# once per file).  `--load' and `load' must keep it across top-level forms and
+# must not leak it into a nested `load'ed file.  Expected line = host Emacs.
+.PHONY: standalone-reader-defvar-local-scope-smoke
+standalone-reader-defvar-local-scope-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@want='t1=5 t2=9 t3=4 t4=void top=6 b=void special=(nil nil)'; \
+	d=test/fixtures/defvar-local-scope; \
+	o1="$$($(STANDALONE_BIN) --load $$d/a.el -- 2>&1 | head -1)"; \
+	o2="$$($(STANDALONE_BIN) --eval "(load \"$$PWD/$$d/a.el\")" 2>&1 | head -1)"; \
+	if [ "$$o1" = "$$want" ] && [ "$$o2" = "$$want" ]; then \
+	  echo "[standalone-reader-defvar-local-scope-smoke] PASS: -> $$o1"; \
+	else \
+	  echo "[standalone-reader-defvar-local-scope-smoke] FAIL: --load -> $$o1 ; load -> $$o2 (expected $$want)"; \
+	  exit 1; \
+	fi
+
 .PHONY: standalone-reader-defvar-alloc-smoke
 standalone-reader-defvar-alloc-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
 	@bin=$(STANDALONE_BIN); \

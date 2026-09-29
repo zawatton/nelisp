@@ -14,6 +14,7 @@ vendor/emacs-lisp/
   emacs-lisp/rx.el
   emacs-lisp/cl-seq.el
   emacs-lisp/bytecomp.el
+  emacs-lisp/byte-opt.el
   emacs-lisp/macroexp.el
   emacs-lisp/cconv.el
   emacs-lisp/inline.el
@@ -158,6 +159,14 @@ this segment introduces.
   `094fa608bed9d9feffd4364b8df3288c1eb2bf1efd5dfa57fcd6d9bd13cdd099`.
   It supplies the missing library required by `require 'bytecomp`; the
   existing `vendor/emacs-lisp/emacs-lisp` load path makes it discoverable.
+- `emacs-lisp/byte-opt.el` is an unmodified GNU Emacs 31.1 source file
+  (decompressed byte-for-byte from `lisp/emacs-lisp/byte-opt.el.gz` of the
+  installed 31.1 tree, i.e. `emacs-mirror/emacs` tag `emacs-31.1`, peeled
+  commit `a360712c9d272d950d8d8255ef74570f7e90b7d9`). Its SHA-256 is
+  `84e5d15e9fc3d413a9a69d03fff6742c52cd746ec7988d0441e402b0dcb04f99`.
+  `bytecomp.el` reaches it through the `byte-optimize-*' autoloads; the
+  standalone runtime loads it on first call via GNU autoload semantics and
+  bakes it like `bytecomp.el` (`nelisp-standalone--vendor-bytecode-files`).
 - `emacs-lisp/progmodes/compile.el` is an unmodified GNU Emacs 31.1 source
   file from the official `emacs-mirror/emacs` release tag `emacs-31.1`, peeled
   commit `a360712c9d272d950d8d8255ef74570f7e90b7d9`. Its SHA-256 is

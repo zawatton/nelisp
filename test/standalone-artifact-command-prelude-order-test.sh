@@ -40,18 +40,11 @@
 # blob and cannot exhibit this defect class; it is still enumerated below
 # so this script accounts for every member of `nl_artifact_command_p'.
 #
-# Two SEPARATE, PRE-EXISTING defects were found while validating this fix
-# (both unreachable before it, since every artifact command aborted on the
-# string-match-p regression first) and are explicitly out of scope here --
-# see the comments at their call sites below: `compile-elisp-artifacts'
-# hangs (busy CPU, never returns) in something downstream of
-# `nelisp-artifact--standalone-host-helper-compile'/`nelisp-artifact-
-# compile-file'; `inspect-elisp-artifact' on a missing artifact hangs in
-# `nelisp-artifact--read-manifest-full'/`nelisp-artifact--read-one-private-
-# form''s handling of an empty/missing manifest file.  Neither is in code
-# this fix touches (verified: both reproduce identically with the artifact
-# runtime cache enabled and disabled).  `RUN_TIMEOUT_SECS' below bounds
-# every invocation so a regression here never hangs the whole suite.
+# Two further defects found while validating that fix are now covered too:
+# `compile-elisp-artifacts' (step 5) and `inspect-elisp-artifact' on a missing
+# artifact (final negative control).  The artifact bootstrap takes ~20s, which
+# an earlier 15-30s bound misread as a busy-CPU hang; `RUN_TIMEOUT_SECS' below
+# bounds every invocation well above that so a real hang never blocks the suite.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -78,7 +71,9 @@ check_no_prelude_regression() {
   fi
 }
 
-RUN_TIMEOUT_SECS=30
+# Artifact commands replay the embedded bootstrap (~20s on a loaded host), so
+# the bound must sit well above that while still catching a real hang.
+RUN_TIMEOUT_SECS="${RUN_TIMEOUT_SECS:-120}"
 
 run_ok() {
   # run_ok LABEL OUTFILE ERRFILE ARGS...
@@ -86,7 +81,7 @@ run_ok() {
   shift 3
   timeout "$RUN_TIMEOUT_SECS" "$binary" "$@" >"$outfile" 2>"$errfile" || rc=$?
   if [[ "$rc" -eq 124 ]]; then
-    fail "$label timed out after ${RUN_TIMEOUT_SECS}s (hung, not a prelude-order crash -- see header for known pre-existing hangs this fix does not touch)"
+    fail "$label timed out after ${RUN_TIMEOUT_SECS}s (hung, not a prelude-order crash)"
   fi
   if [[ "$rc" -ne 0 ]]; then
     check_no_prelude_regression "$label" "$errfile"
@@ -124,29 +119,14 @@ grep -q "nelisp-elisp-artifact-manifest-v1" "$tmp_dir/inspect.out" \
   || fail "inspect-elisp-artifact manifest missing expected marker"
 
 # 5. compile-elisp-artifacts (batch/plural form, single FILE.el input).
-# Best-effort, like native-exec-elisp-artifact below: this command is
-# CONFIRMED to hang (busy CPU, no output, never returns; reproduces
-# identically with the artifact runtime cache enabled and disabled, so it
-# is independent of which bootstrap variant this task's fix touches) in
-# something downstream of `nelisp-artifact--standalone-host-helper-compile'
-# / `nelisp-artifact-compile-file', unrelated to prelude priming and
-# unreachable before this fix (every artifact command aborted on the
-# string-match-p regression first).  A hard timeout here is a tracked,
-# separate finding, not this test's failure to fix.
-timeout "$RUN_TIMEOUT_SECS" "$binary" compile-elisp-artifacts --kind nelc "$src" \
-  >"$tmp_dir/compile-many.out" 2>"$tmp_dir/compile-many.err"
-compile_many_rc=$?
-if [[ "$compile_many_rc" -eq 124 ]]; then
-  echo "standalone-artifact-command-prelude-order-test: SKIP compile-elisp-artifacts (pre-existing hang, out of scope for the prelude-order fix -- see comment above)" >&2
-elif [[ "$compile_many_rc" -ne 0 ]]; then
-  check_no_prelude_regression "compile-elisp-artifacts" "$tmp_dir/compile-many.err"
-  cat "$tmp_dir/compile-many.err" >&2
-  fail "compile-elisp-artifacts exited nonzero"
-else
-  check_no_prelude_regression "compile-elisp-artifacts" "$tmp_dir/compile-many.err"
-  grep -q "^compiled=1 failed=0 kind=nelc$" "$tmp_dir/compile-many.out" \
-    || fail "compile-elisp-artifacts unexpected output: $(cat "$tmp_dir/compile-many.out")"
-fi
+# The plural command wrote its artifact next to the source; it is a hard
+# check (a busy-CPU hang here shows up as a `timeout' failure via run_ok).
+run_ok "compile-elisp-artifacts" "$tmp_dir/compile-many.out" "$tmp_dir/compile-many.err" \
+  compile-elisp-artifacts --kind nelc "$src"
+grep -q "^compiled=1 failed=0 kind=nelc$" "$tmp_dir/compile-many.out" \
+  || fail "compile-elisp-artifacts unexpected output: $(cat "$tmp_dir/compile-many.out")"
+[[ -e "$src.nelc" ]] || fail "compile-elisp-artifacts did not write $src.nelc"
+[[ -e "$src.nelc.manifest.el" ]] || fail "compile-elisp-artifacts did not write $src.nelc.manifest.el"
 
 # 6/7. compile-runtime-image (dump-runtime-image itself is a separate,
 # already-safe cond arm -- it never replays this blob -- but its output
@@ -235,15 +215,21 @@ check_no_prelude_regression "eval-elisp-artifact (missing artifact, negative con
 grep -q "invalid artifact magic\|nelisp direct artifact error" "$tmp_dir/neg-eval-art.err" \
   || fail "eval-elisp-artifact on a missing artifact did not report the expected named error: $(cat "$tmp_dir/neg-eval-art.err")"
 
-# `inspect-elisp-artifact' on a missing artifact is NOT used as a negative
-# control: it hangs (busy CPU loop, no output, never returns -- verified
-# with `timeout 15', reproduces identically with the artifact runtime
-# cache both enabled and disabled, i.e. independent of which bootstrap
-# variant this task's fix touches).  Pre-existing in `nelisp-artifact--
-# read-manifest-full' / `nelisp-artifact--read-one-private-form''s handling
-# of an empty/missing manifest file; simply unreachable before this fix
-# (every artifact command aborted on the string-match-p regression first).
-# Out of scope for a prelude-ordering fix -- left as a separate, tracked
-# finding rather than silently fixed or silently dropped.
+# `inspect-elisp-artifact' on a missing artifact must fail fast with a clear
+# `file-missing' error naming the missing manifest.  It used to spin (or, once
+# the read returned "", report a misleading "empty private artifact form").
+set +e
+timeout "$RUN_TIMEOUT_SECS" "$binary" inspect-elisp-artifact "$tmp_dir/does-not-exist.nelc" \
+  >"$tmp_dir/neg-inspect.out" 2>"$tmp_dir/neg-inspect.err"
+neg_rc=$?
+set -e
+[[ "$neg_rc" -eq 124 ]] && fail "inspect-elisp-artifact on a missing artifact timed out after ${RUN_TIMEOUT_SECS}s (hung)"
+[[ "$neg_rc" -eq 1 ]] || fail "inspect-elisp-artifact on a missing artifact exit=$neg_rc (expected 1)"
+check_no_prelude_regression "inspect-elisp-artifact (missing artifact, negative control)" "$tmp_dir/neg-inspect.err"
+grep -q "No such file or directory.*does-not-exist.nelc.manifest.el" "$tmp_dir/neg-inspect.err" \
+  || fail "inspect-elisp-artifact on a missing artifact did not report a file-missing error: $(cat "$tmp_dir/neg-inspect.err")"
+if grep -q "empty private artifact form" "$tmp_dir/neg-inspect.err"; then
+  fail "inspect-elisp-artifact on a missing artifact reported the misleading empty-form error"
+fi
 
 echo "standalone-artifact-command-prelude-order-test: PASS"

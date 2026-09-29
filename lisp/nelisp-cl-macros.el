@@ -151,6 +151,13 @@ together, which is what CL does."
           (when (eq (car tail) 'by)
             (setq by (car (cdr tail)) tail (cdr (cdr tail))))
           (cons (list :kind 'in :pat pat :seq seq :by by) tail)))
+       ((eq kw 'in-ref)
+        ;; `for VAR in-ref LIST [by STEPFN]': VAR is a symbol macro for the
+        ;; current element's place, so `setf' on it writes into LIST.
+        (let ((seq (car rest)) (by nil) (tail (cdr rest)))
+          (when (eq (car tail) 'by)
+            (setq by (car (cdr tail)) tail (cdr (cdr tail))))
+          (cons (list :kind 'in :ref t :pat pat :seq seq :by by) tail)))
        ((eq kw 'on)
         (cons (list :kind 'on :pat pat :seq (car rest)) (cdr rest)))
        ((eq kw 'across)
@@ -188,7 +195,7 @@ sequential: a `for VAR = FORM' clause may read a variable an earlier
 clause bound this iteration, which is what CL promises and the only way
 `for a in L for s = (* a 2)' can work.  FIRST-SYM names the flag that is
 non-nil during the first iteration only, for `= INIT then UPDATE'."
-  (let ((binds nil) (tests nil) (varbinds nil) (steps nil))
+  (let ((binds nil) (tests nil) (varbinds nil) (steps nil) (symmacs nil))
     (while iters
       (let* ((it (car iters))
              (kind (plist-get it :kind))
@@ -198,12 +205,14 @@ non-nil during the first iteration only, for `= INIT then UPDATE'."
           (let ((cur (make-symbol "--loop-cur--")))
             (setq binds (append binds (list (list cur (plist-get it :seq)))))
             (setq tests (append tests (list cur)))
-            (setq varbinds
-                  (append varbinds
-                          (let ((src (if (eq kind 'on) cur (list 'car cur))))
-                            (if (symbolp pat)
-                                (list (list pat src))
-                              (nelisp-cl-macros--loop-destructure-bindings pat src)))))
+            (if (plist-get it :ref)
+                (setq symmacs (append symmacs (list (list pat (list 'car cur)))))
+              (setq varbinds
+                    (append varbinds
+                            (let ((src (if (eq kind 'on) cur (list 'car cur))))
+                              (if (symbolp pat)
+                                  (list (list pat src))
+                                (nelisp-cl-macros--loop-destructure-bindings pat src))))))
             (setq steps
                   (append steps
                           (list (list 'setq cur
@@ -252,7 +261,7 @@ non-nil during the first iteration only, for `= INIT then UPDATE'."
                                               (plist-get it :then))
                                       (plist-get it :init)))))))))
       (setq iters (cdr iters)))
-    (list binds tests varbinds steps)))
+    (list binds tests varbinds steps symmacs)))
 
 (defun nelisp-cl-macros--loop-guard (cond negate form)
   "Wrap FORM in COND, negated when NEGATE, or return FORM when COND is nil."
@@ -296,6 +305,7 @@ this subset does not model expands to nil, as it always has."
         (guard nil) (guard-negate nil)
         (extra-tests nil) (bodyless-forms nil)
         (repeat-count nil)
+        (finally-forms nil) (finally-return nil) (finally-return-p nil)
         (first-sym (make-symbol "--loop-first--"))
         (cur clauses) (recognised t))
     (when (and clauses
@@ -370,6 +380,21 @@ this subset does not model expands to nil, as it always has."
                                guard guard-negate
                                (list 'cl-return (car (cdr cur)))))))
           (setq guard nil guard-negate nil cur (cdr (cdr cur))))
+         ((eq kw 'finally)
+          ;; `finally return FORM' sets the loop's value; `finally do FORMS'
+          ;; / `finally FORM' run once when the loop ends normally.
+          (setq cur (cdr cur))
+          (cond
+           ((eq (car cur) 'return)
+            (setq finally-return (car (cdr cur)) finally-return-p t
+                  cur (cdr (cdr cur))))
+           ((eq (car cur) 'do)
+            (setq cur (cdr cur))
+            (while (consp (car cur))
+              (setq finally-forms (append finally-forms (list (car cur)))
+                    cur (cdr cur))))
+           (t (setq finally-forms (append finally-forms (list (car cur)))
+                    cur (cdr cur)))))
          ((eq kw 'while)
           (setq extra-tests (append extra-tests (list (car (cdr cur)))))
           (setq cur (cdr (cdr cur))))
@@ -401,6 +426,7 @@ this subset does not model expands to nil, as it always has."
              (tests (nth 1 plan))
              (varbinds (nth 2 plan))
              (steps (nth 3 plan))
+             (symmacs (nth 4 plan))
              (going (and extra-tests (make-symbol "--loop-going--")))
              (acc (and acc-kind (make-symbol "--loop-acc--")))
              (acc-init (cond ((memq acc-kind '(sum count)) 0)
@@ -436,6 +462,7 @@ this subset does not model expands to nil, as it always has."
                            ((memq acc-kind '(sum count)) acc)
                            ((eq acc-kind 'always) t)
                            (t nil)))
+             (result (if finally-return-p finally-return result))
              (all-binds (append (if acc (list (list acc acc-init)) nil)
                                 (if going (list (list going t)) nil)
                                 (list (list first-sym t))
@@ -447,7 +474,10 @@ this subset does not model expands to nil, as it always has."
               (cons 'while
                     (cons head
                           (append
-                           (list (cons 'let* (cons varbinds guarded-body)))
+                           (list (let ((inner (cons 'let* (cons varbinds guarded-body))))
+                                   (if symmacs
+                                       (list 'cl-symbol-macrolet symmacs inner)
+                                     inner)))
                            (if going
                                (list (cons 'when
                                            (cons going
@@ -457,7 +487,11 @@ this subset does not model expands to nil, as it always has."
         (list 'cl-block nil
               (cons 'let (cons all-binds
                                (append (list loop-form)
-                                       (if result (list result) nil))))))))))
+                                       finally-forms
+                                       (cond (result (list result))
+                                             ;; GNU: the loop's value is nil,
+                                             ;; not the last `finally' form's.
+                                             (finally-forms (list nil))))))))))))
 
 (defun nelisp-cl-macros--loop-unbuildable-p (clauses)
   "Return non-nil when CLAUSES are a shape this subset does not model."

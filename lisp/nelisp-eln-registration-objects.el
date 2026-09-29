@@ -229,13 +229,16 @@ This function only reads existing state; it never mutates it.
 (defun nelisp-eln-registration-objects-subr-view
     (activation name c-name intspec command-modes doc-index type
                 &optional arity metadata-token native-constructor
-                type-index)
+                type-index min-arity)
   "Create a temporary scalar PVEC_SUBR view for registration.
 NAME and C-NAME are strings; DOC-INDEX is a nonnegative integer.
 ARITY is the exact admitted fixed arity: zero, one, or two (only a
 NATIVE-CONSTRUCTOR-built binary body, e.g. a pair's compiler macro).
 METADATA-TOKEN, when non-nil, authenticates TYPE and supplies its GNU word;
 TYPE-INDEX is TYPE's data-relocation index there (default 0).
+MIN-ARITY, when non-nil, is a smaller minimum arity than ARITY (an
+`&optional' function, S6.6): the view records (MIN-ARITY . ARITY) and the
+NATIVE-CONSTRUCTOR's callable must have exactly that `func-arity'.
 NATIVE-CONSTRUCTOR, when non-nil, is called as (NATIVE-CONSTRUCTOR HANDLE
 C-NAME NAME) in place of the default `nelisp-eln-native-subr-create' --
 S6.25's hook for a leaf body shape (e.g. caar/cadr's
@@ -274,8 +277,9 @@ The returned plist contains its GNU :word and the canonical NeLisp
          (handle (aref unit 1))
          (objects (aref unit 2))
          (capability (nelisp-eln-system-loader-function-capability handle c-name))
-         (_key (list capability name c-name intspec command-modes doc-index
-                     (unless metadata-token type) arity))
+         (_key (append (list capability name c-name intspec command-modes
+                             doc-index (unless metadata-token type) arity)
+                       (and min-arity (list min-arity))))
          (cached (cl-find-if
                   (lambda (entry)
                     (and (equal _key (aref entry 5))
@@ -290,7 +294,7 @@ The returned plist contains its GNU :word and the canonical NeLisp
          (memory nil) (symbol-owner nil) (c-name-owner nil)
          (address nil) (word nil) (entry nil) (new-entries nil)
          (new-cache nil) (ok nil))
-    (unless (equal (func-arity native) (cons arity arity))
+    (unless (equal (func-arity native) (cons (or min-arity arity) arity))
       (signal 'nelisp-eln-registration-objects-error
               (list 'native-callable-arity-mismatch
                     (func-arity native) arity)))
@@ -309,7 +313,8 @@ The returned plist contains its GNU :word and the canonical NeLisp
                   (nelisp-eln-abi-write-word
                    address 0 (nelisp-eln-registration-objects--header 18 10 0))
                   (nelisp-eln-abi-write-word address 8 (nth 3 capability))
-                  (nelisp-eln-registration-objects--write-short address 16 arity)
+                  (nelisp-eln-registration-objects--write-short
+                   address 16 (or min-arity arity))
                   (nelisp-eln-registration-objects--write-short address 18 arity)
                   (nelisp-eln-abi-write-word
                    address 24 (nl-ffi-memory-address symbol-owner))

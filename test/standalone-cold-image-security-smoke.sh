@@ -149,4 +149,45 @@ grep -qi 'cold-load rejected (invalid relocation table)' "$work/t4.err" \
   || fail "t4: no rejection diagnostic on stderr (see $work/t4.err)"
 echo "PASS t4: out-of-range relocation-table entry rejected with diagnostic, normal boot proceeded"
 
+# ---------------------------------------------------------------------
+# Test 5: a structurally valid header with no build-digest trailer, or with
+# a wrong one, is rejected ("build digest mismatch") and the fallback boot
+# still works.  5a: tlen=0, empty regions, no trailer.  5b/5c (only when a
+# stamped "$binary.cold" exists): the real image with its last byte flipped
+# (wrong digest), and with the trailer truncated away.
+# ---------------------------------------------------------------------
+no_trailer="$work/no-trailer.bin"
+python3 - "$no_trailer" <<'PY'
+import struct, sys
+hdr = struct.pack("<8Q", 1179407692, 64, 0, 0, 0, 0, 0, 0)
+with open(sys.argv[1], "wb") as f:
+    f.write(hdr + b"\x00" * 64)
+PY
+check_t5() {
+  local name="$1" img="$2" out
+  out="$(run_cold_load_from "$img" 2>"$work/$name.err")" \
+    || fail "$name: process exited nonzero (see $work/$name.err)"
+  [[ "$out" == "$expect" ]] || fail "$name: expected $expect, got $out"
+  grep -qi 'cold-load rejected (build digest mismatch)' "$work/$name.err" \
+    || fail "$name: no digest-mismatch diagnostic (see $work/$name.err)"
+}
+check_t5 t5a "$no_trailer"
+if [[ -f "$binary.cold" ]]; then
+  bad_digest="$work/bad-digest.bin"
+  cp "$binary.cold" "$bad_digest"
+  python3 - "$bad_digest" <<'PY'
+import sys
+with open(sys.argv[1], "r+b") as f:
+    f.seek(-1, 2); b = f.read(1)
+    f.seek(-1, 2); f.write(bytes([b[0] ^ 0xff]))
+PY
+  check_t5 t5b "$bad_digest"
+  cp "$binary.cold" "$work/no-trailer-real.bin"
+  truncate -s -48 "$work/no-trailer-real.bin"
+  check_t5 t5c "$work/no-trailer-real.bin"
+  echo "PASS t5: missing/incorrect build-digest trailer rejected (synthetic, flipped digest, truncated)"
+else
+  echo "PASS t5a: header without trailer rejected (real image absent, 5b/5c skipped)"
+fi
+
 echo "PASS standalone-cold-image-security-smoke"

@@ -2,23 +2,24 @@
 ;;; Code:
 (defconst nelisp-cc-evalport-nonenv-char-table-map--source
   '(seq
+    ;; Smallest span boundary > CURSOR over the table and its parents.  Each
+    ;; table is a sorted interval array: the first interval ending at or
+    ;; after CURSOR yields either its start (still ahead) or end + 1.
     (defun nl_ct_map_next_boundary (box cursor)
       (let* ((best 4194304) (walk box) (len 0) (entries 0)
-             (i 0) (key 0) (candidate 0))
+             (i 0) (candidate 0))
         (while (/= walk 0)
           (setq len (ptr-read-u64 (+ walk 80) 0))
           (setq entries (ptr-read-u64 (+ walk 64) 0))
-          (setq i 0)
-          (while (< i len)
-            (setq key (ptr-read-u64 (+ entries (* i 40)) 0))
-            (if (and (> key cursor) (< key best))
-                (setq best key)
-              0)
-            (setq candidate (+ key 1))
-            (if (and (> candidate cursor) (< candidate best))
-                (setq best candidate)
-              0)
-            (setq i (+ i 1)))
+          (setq i (nl_ct_lower_end entries len cursor))
+          (if (< i len)
+              (seq
+               (setq candidate (nl_ct_start entries i))
+               (if (<= candidate cursor)
+                   (setq candidate (+ (nl_ct_end entries i) 1))
+                 0)
+               (if (< candidate best) (setq best candidate) 0))
+            0)
           (setq walk (ptr-read-u64 (+ walk 88) 0)))
         best))
     (defun nl_ct_map_parent_next (box)

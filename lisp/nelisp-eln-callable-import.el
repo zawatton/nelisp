@@ -53,7 +53,7 @@
     (require 'nelisp-native-load))
   (nelisp-native-load--symbol-addr "nelisp_eln_callback1_entry_word"))
 
-(defconst nelisp-eln-callable-import--port-count 8
+(defconst nelisp-eln-callable-import--port-count 32
   "Number of slot-identifying callback ports the standalone runtime has.
 Must equal `nelisp-cc-eln-callback7-port-count'.")
 (defconst nelisp-eln-callable-import--port-tag-base 1347375700
@@ -197,7 +197,10 @@ for the existing callers that already spell it that way."
   frame)
 
 (defun nelisp-eln-callable-import--port-words (descriptor spec)
-  "Return SPEC's raw argument words from port callback DESCRIPTOR."
+  "Return SPEC's raw argument words from port callback DESCRIPTOR.
+A MANY spec's :ARITY is the one admitted argc, or a list of every argc
+the admitted body passes through that one slot (e.g. `Ffuncall' called
+with 2 and with 3 arguments)."
   (let ((convention (plist-get spec :convention))
         (arity (plist-get spec :arity))
         (words nil) (i 0))
@@ -208,7 +211,9 @@ for the existing callers that already spell it that way."
     (cond
      ((eq convention 'many)
       (let ((argc (car words)) (argv (cadr words)) (taken nil) (i 0))
-        (unless (and (integerp arity) (= argc arity)
+        (unless (and (integerp argc)
+                     (if (consp arity) (memql argc arity)
+                       (and (integerp arity) (= argc arity)))
                      (integerp argv) (> argv 4096))
           (signal 'nelisp-eln-callable-import-error
                   (list 'invalid-many-arguments argc arity argv)))
@@ -237,8 +242,13 @@ callback's result, or else a view in the argument activation."
                   (when (and (integerp (car entry)) (= (car entry) word))
                     (throw 'found entry)))
                 nil))))
-    (if constant
-        (cdr constant)
+    (cond
+     (constant (cdr constant))
+     ;; An opaque handle an earlier `handle' port answered (see
+     ;; `nelisp-eln-callable-import--dispatch-port').
+     ((and (integerp word) (assoc word (plist-get frame :handles)))
+      (cdr (assoc word (plist-get frame :handles))))
+     (t
       ;; The newest result activation leasing WORD decodes it; otherwise
       ;; the argument activation must, and signals when it does not.
       (nelisp-eln-objects-activation-decode
@@ -247,7 +257,7 @@ callback's result, or else a view in the argument activation."
                           activation word))
                        (plist-get frame :result-activations))
            (plist-get frame :argument-activation))
-       word))))
+       word)))))
 
 (defun nelisp-eln-callable-import--dispatch-port (descriptor frame)
   "Dispatch one slot-identifying port callback at DESCRIPTOR for FRAME.
@@ -265,8 +275,16 @@ bool in %al; `void' answers nothing (a zero pair)."
          (arguments nil))
     (unless spec
       (signal 'nelisp-eln-callable-import-error (list 'unknown-port tag)))
-    (let ((words (nelisp-eln-callable-import--port-words descriptor spec))
-          (kinds (plist-get spec :arguments)))
+    (let* ((words (nelisp-eln-callable-import--port-words descriptor spec))
+           (kinds (plist-get spec :arguments))
+           ;; A MANY port admitting several argc values lists one
+           ;; argument kind per position of its largest argc; a call with
+           ;; fewer arguments uses that many leading kinds.
+           (kinds (if (and (eq (plist-get spec :convention) 'many)
+                           (consp (plist-get spec :arity))
+                           (<= (length words) (length kinds)))
+                      (cl-subseq kinds 0 (length words))
+                    kinds)))
       (unless (= (length kinds) (length words))
         (signal 'nelisp-eln-callable-import-error
                 (list 'port-argument-kinds kinds (length words))))
@@ -293,6 +311,27 @@ bool in %al; `void' answers nothing (a zero pair)."
                               (plist-get frame :result-activations))))
            (setq frame (nelisp-eln-callable-import--frame-put
                         frame :result-activation activation))
+           (setq frame (nelisp-eln-callable-import--frame-put
+                        frame :outcome :ok))
+           (cons (logand word #xffffffff)
+                 (logand (ash word -32) #xffffffff))))
+        ;; An object that only ever flows on to other authenticated ports
+        ;; (an `Fmake_closure' result): native code gets a fresh, unique,
+        ;; never-dereferenced word backed by an owned poison block, and the
+        ;; frame remembers word -> object until the whole call retires.
+        ('handle
+         (let* ((memory (nl-ffi-memory-allocate 16))
+                (address (nl-ffi-memory-address memory))
+                (word (+ address 5)))
+           (ptr-write-u64 address 0 0)
+           (ptr-write-u64 address 8 0)
+           (setq frame (nelisp-eln-callable-import--frame-put
+                        frame :handle-owners
+                        (cons memory (plist-get frame :handle-owners))))
+           (setq frame (nelisp-eln-callable-import--frame-put
+                        frame :handles
+                        (cons (cons word value)
+                              (plist-get frame :handles))))
            (setq frame (nelisp-eln-callable-import--frame-put
                         frame :outcome :ok))
            (cons (logand word #xffffffff)
@@ -396,6 +435,15 @@ for `nelisp-eln-callable-import-retry-cleanup'."
     (setcar box (cdr (car box))))
   t)
 
+(defun nelisp-eln-callable-import--release-memories (box)
+  "Release every owned memory block in BOX, a cons whose car is the pending
+list, removing each only after its own release succeeded (as
+`nelisp-eln-callable-import--release-activations' does)."
+  (while (car box)
+    (nl-ffi-memory-release (car (car box)))
+    (setcar box (cdr (car box))))
+  t)
+
 (defun nelisp-eln-callable-import--retire (bundle)
   "Retire resources in BUNDLE in reference-safe order; return non-nil if done."
   (let ((failed nil))
@@ -437,7 +485,7 @@ for `nelisp-eln-callable-import-retry-cleanup'."
             (error (setq failed t))
             (quit (setq failed t))))
         (unless failed
-          (dolist (field '(:result-activations
+          (dolist (field '(:result-activations :handle-owners
                            :result-activation :argument-activation
                            :result-unit :argument-unit :raw-context))
             (let ((value (plist-get bundle field)))
@@ -449,6 +497,8 @@ for `nelisp-eln-callable-import-retry-cleanup'."
                                   #'nelisp-eln-objects-activation-release)
                                  (:result-activations
                                   #'nelisp-eln-callable-import--release-activations)
+                                 (:handle-owners
+                                  #'nelisp-eln-callable-import--release-memories)
                                  ((or :result-unit :argument-unit)
                                   #'nelisp-eln-objects-release)
                                  (:raw-context
@@ -460,7 +510,7 @@ for `nelisp-eln-callable-import-retry-cleanup'."
     (and (not failed)
          (cl-every (lambda (field) (null (plist-get bundle field)))
                    '(:callback-token :pin-marker :result-activation
-                     :result-activations
+                     :result-activations :handle-owners
                      :argument-activation :result-unit :argument-unit
                      :raw-context)))))
 
@@ -656,6 +706,9 @@ and ARITY are then unused and IMPLEMENTATION must be nil."
                    :result-activations
                    (and (plist-get frame :result-activations)
                         (list (plist-get frame :result-activations)))
+                   :handle-owners
+                   (and (plist-get frame :handle-owners)
+                        (list (plist-get frame :handle-owners)))
                    :argument-activation argument-activation
                    :result-unit result-unit :argument-unit argument-unit
                    :raw-context context)))

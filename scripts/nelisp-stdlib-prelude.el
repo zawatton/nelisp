@@ -4854,6 +4854,12 @@ traps), and only recognises GNU's `(macro . CLOSURE)' shape. Native declaration
 bootstrap definitions are excluded by identity."
   (if (and (symbolp head) (fboundp head))
       (let ((f (symbol-function head)))
+        ;; GNU Fmacroexpand: an autoload whose TYPE is `macro' or t is loaded
+        ;; (macro-only) and the fresh definition is examined instead.
+        (when (and (consp f) (eq (car f) 'autoload)
+                   (memq (nth 4 f) '(t macro)))
+          (autoload-do-load f head 'macro)
+          (setq f (symbol-function head)))
         (if (and (consp f) (eq (car f) 'macro)
                  (not (memq f nelisp--native-declaration-macros)))
             (cdr f)
@@ -5082,12 +5088,29 @@ DEFAULT)) so the core lambda only ever sees a plain &optional symbol."
       (setq cur (cdr cur)))
     (nreverse acc)))
 
+(defun nelisp--cl-strip-defs (formals)
+  "Split cl-macs.el's `&cl-defs (DEF . ALIST)' marker out of FORMALS.
+Returns (DEFS . FORMALS-WITHOUT-THE-MARKER); DEFS is nil when absent."
+  (let ((out nil) (defs nil) (cur formals))
+    (while cur
+      (if (eq (car cur) '&cl-defs)
+          (setq defs (car (cdr cur))
+                cur (cdr (cdr cur)))
+        (setq out (cons (car cur) out)
+              cur (cdr cur))))
+    (cons defs (nreverse out))))
+
 (defmacro cl-defun (name formals &rest body)
   "Standalone `cl-defun' subset with positional, optional, rest and key args.
 Optional parameters may carry a default as (VAR DEFAULT) (Doc 22 A15): the
 core lambda binder accepts only plain &optional symbols, so the default is
-desugared into a body prelude (unless VAR (setq VAR DEFAULT))."
-  (let* ((parsed (nelisp--parse-cl-formals formals))
+desugared into a body prelude (unless VAR (setq VAR DEFAULT)).
+`&cl-defs (DEF . ALIST)' gives the default of a &key parameter that has none,
+as in cl-macs.el (ALIST entries are (VAR DEFAULT))."
+  (let* ((stripped (nelisp--cl-strip-defs formals))
+         (defs (car stripped))
+         (formals (cdr stripped))
+         (parsed (nelisp--parse-cl-formals formals))
          (positional (car parsed))
          (optionals (car (cdr parsed)))
          (rest-sym (car (cdr (cdr parsed))))
@@ -5114,11 +5137,16 @@ desugared into a body prelude (unless VAR (setq VAR DEFAULT))."
              (bindings
               (mapcar
                (lambda (key-spec)
-                 (let ((keyword (car key-spec))
-                       (param (car (cdr key-spec)))
-                       (default (car (cdr (cdr key-spec)))))
+                 (let* ((keyword (car key-spec))
+                        (param (car (cdr key-spec)))
+                        (default (car (cdr (cdr key-spec))))
+                        (default (if (and (null default) defs)
+                                     (or (car (cdr (assq param (cdr defs))))
+                                         (car defs))
+                                   default)))
                    (list param
-                         (list 'or
+                         (list 'if
+                               (list 'memq (list 'quote keyword) rest-name)
                                (list 'car
                                      (list 'cdr
                                            (list 'memq
@@ -5356,6 +5384,13 @@ together, which is what CL does."
           (when (eq (car tail) 'by)
             (setq by (car (cdr tail)) tail (cdr (cdr tail))))
           (cons (list :kind 'in :pat pat :seq seq :by by) tail)))
+       ((eq kw 'in-ref)
+        ;; `for VAR in-ref LIST [by STEPFN]': VAR is a symbol macro for the
+        ;; current element's place, so `setf' on it writes into LIST.
+        (let ((seq (car rest)) (by nil) (tail (cdr rest)))
+          (when (eq (car tail) 'by)
+            (setq by (car (cdr tail)) tail (cdr (cdr tail))))
+          (cons (list :kind 'in :ref t :pat pat :seq seq :by by) tail)))
        ((eq kw 'on)
         (cons (list :kind 'on :pat pat :seq (car rest)) (cdr rest)))
        ((eq kw 'across)
@@ -5393,7 +5428,7 @@ sequential: a `for VAR = FORM' clause may read a variable an earlier
 clause bound this iteration, which is what CL promises and the only way
 `for a in L for s = (* a 2)' can work.  FIRST-SYM names the flag that is
 non-nil during the first iteration only, for `= INIT then UPDATE'."
-  (let ((binds nil) (tests nil) (varbinds nil) (steps nil))
+  (let ((binds nil) (tests nil) (varbinds nil) (steps nil) (symmacs nil))
     (while iters
       (let* ((it (car iters))
              (kind (plist-get it :kind))
@@ -5403,12 +5438,14 @@ non-nil during the first iteration only, for `= INIT then UPDATE'."
           (let ((cur (make-symbol "--loop-cur--")))
             (setq binds (append binds (list (list cur (plist-get it :seq)))))
             (setq tests (append tests (list cur)))
-            (setq varbinds
-                  (append varbinds
-                          (let ((src (if (eq kind 'on) cur (list 'car cur))))
-                            (if (symbolp pat)
-                                (list (list pat src))
-                              (nelisp-cl-macros--loop-destructure-bindings pat src)))))
+            (if (plist-get it :ref)
+                (setq symmacs (append symmacs (list (list pat (list 'car cur)))))
+              (setq varbinds
+                    (append varbinds
+                            (let ((src (if (eq kind 'on) cur (list 'car cur))))
+                              (if (symbolp pat)
+                                  (list (list pat src))
+                                (nelisp-cl-macros--loop-destructure-bindings pat src))))))
             (setq steps
                   (append steps
                           (list (list 'setq cur
@@ -5457,7 +5494,7 @@ non-nil during the first iteration only, for `= INIT then UPDATE'."
                                               (plist-get it :then))
                                       (plist-get it :init)))))))))
       (setq iters (cdr iters)))
-    (list binds tests varbinds steps)))
+    (list binds tests varbinds steps symmacs)))
 
 (defun nelisp-cl-macros--loop-guard (cond negate form)
   "Wrap FORM in COND, negated when NEGATE, or return FORM when COND is nil."
@@ -5501,6 +5538,7 @@ this subset does not model expands to nil, as it always has."
         (guard nil) (guard-negate nil)
         (extra-tests nil) (bodyless-forms nil)
         (repeat-count nil)
+        (finally-forms nil) (finally-return nil) (finally-return-p nil)
         (first-sym (make-symbol "--loop-first--"))
         (cur clauses) (recognised t))
     (when (and clauses
@@ -5575,6 +5613,21 @@ this subset does not model expands to nil, as it always has."
                                guard guard-negate
                                (list 'cl-return (car (cdr cur)))))))
           (setq guard nil guard-negate nil cur (cdr (cdr cur))))
+         ((eq kw 'finally)
+          ;; `finally return FORM' sets the loop's value; `finally do FORMS'
+          ;; / `finally FORM' run once when the loop ends normally.
+          (setq cur (cdr cur))
+          (cond
+           ((eq (car cur) 'return)
+            (setq finally-return (car (cdr cur)) finally-return-p t
+                  cur (cdr (cdr cur))))
+           ((eq (car cur) 'do)
+            (setq cur (cdr cur))
+            (while (consp (car cur))
+              (setq finally-forms (append finally-forms (list (car cur)))
+                    cur (cdr cur))))
+           (t (setq finally-forms (append finally-forms (list (car cur)))
+                    cur (cdr cur)))))
          ((eq kw 'while)
           (setq extra-tests (append extra-tests (list (car (cdr cur)))))
           (setq cur (cdr (cdr cur))))
@@ -5606,6 +5659,7 @@ this subset does not model expands to nil, as it always has."
              (tests (nth 1 plan))
              (varbinds (nth 2 plan))
              (steps (nth 3 plan))
+             (symmacs (nth 4 plan))
              (going (and extra-tests (make-symbol "--loop-going--")))
              (acc (and acc-kind (make-symbol "--loop-acc--")))
              (acc-init (cond ((memq acc-kind '(sum count)) 0)
@@ -5641,6 +5695,7 @@ this subset does not model expands to nil, as it always has."
                            ((memq acc-kind '(sum count)) acc)
                            ((eq acc-kind 'always) t)
                            (t nil)))
+             (result (if finally-return-p finally-return result))
              (all-binds (append (if acc (list (list acc acc-init)) nil)
                                 (if going (list (list going t)) nil)
                                 (list (list first-sym t))
@@ -5652,7 +5707,10 @@ this subset does not model expands to nil, as it always has."
               (cons 'while
                     (cons head
                           (append
-                           (list (cons 'let* (cons varbinds guarded-body)))
+                           (list (let ((inner (cons 'let* (cons varbinds guarded-body))))
+                                   (if symmacs
+                                       (list 'cl-symbol-macrolet symmacs inner)
+                                     inner)))
                            (if going
                                (list (cons 'when
                                            (cons going
@@ -5662,7 +5720,11 @@ this subset does not model expands to nil, as it always has."
         (list 'cl-block nil
               (cons 'let (cons all-binds
                                (append (list loop-form)
-                                       (if result (list result) nil))))))))))
+                                       finally-forms
+                                       (cond (result (list result))
+                                             ;; GNU: the loop's value is nil,
+                                             ;; not the last `finally' form's.
+                                             (finally-forms (list nil))))))))))))
 
 (defun nelisp-cl-macros--loop-unbuildable-p (clauses)
   "Return non-nil when CLAUSES are a shape this subset does not model."
@@ -8257,14 +8319,29 @@ replacing the elements in the beginning of the constant-vector."
 ;; (byte-compilation) so the dispatchers compile fast — a reader-core perf item.
 (unless (fboundp 'interpreted-function-p)
   (defun interpreted-function-p (object) (eq (car-safe object) 'closure)))
+;; GNU eval.c `Ffunction' consumes a lambda's leading `(:documentation FORM)'
+;; when the closure is created (it becomes slot 4: the OClosure type).  This
+;; runtime keeps the form in the body, where the native slot view reads it,
+;; so running the body must skip it.
+(unless (fboundp ':documentation)
+  (defmacro :documentation (&rest _form)
+    "Ignore a leading `(:documentation FORM)' of a lambda body (see `function')."
+    nil))
 ;; GNU Emacs 31.1 eval.c `Fmake_interpreted_closure', over this runtime's
 ;; `(closure ENV ARGS . BODY)' representation: DOCSTRING and IFORM go back
 ;; in front of BODY exactly where `function' found them, so `aref'/`length'
 ;; (which recover GNU's slot view natively) read them back as slots 4/5.
 ;; ENV keeps only its (SYMBOL . VALUE) bindings: GNU's `t' marker (lexical
 ;; binding) and bare locally-special symbols have no counterpart in this
-;; runtime, whose closures are all lexical.  A non-string DOCSTRING (an
-;; OClosure type) cannot be represented and is dropped.
+;; runtime, whose closures are all lexical.  ENV is GNU's innermost-first
+;; slot-2 order; this runtime stores the captured frames outermost first
+;; (the native slot-2 view walks them back), so the bindings are reversed --
+;; except for a typed closure, see below.
+;; A DOCSTRING that is not a string (an OClosure type symbol, a DOC-file
+;; offset) rides in front of BODY as the form (:documentation 'VALUE) -- the
+;; very form GNU `function' evaluates for the same purpose -- which the
+;; native slot-4 view recognises and the `:documentation' macro below turns
+;; into a no-op when the body runs.
 (unless (fboundp 'make-interpreted-closure)
   (defun make-interpreted-closure (args body env &optional docstring iform)
     "Make an interpreted closure.
@@ -8278,10 +8355,17 @@ IFORM if non-nil should be of the form (interactive ...)."
     (let ((lexenv nil))
       (dolist (binding env)
         (when (consp binding) (setq lexenv (cons binding lexenv))))
+      ;; A typed closure's slot-2 view is in capture order (see the native
+      ;; view), so its bindings stay in the order given.
+      (when (and docstring (not (stringp docstring)))
+        (setq lexenv (nreverse lexenv)))
       (cons 'closure
-            (cons (nreverse lexenv)
+            (cons lexenv
                   (cons args
-                        (append (and (stringp docstring) (list docstring))
+                        (append (cond ((stringp docstring) (list docstring))
+                                      (docstring
+                                       (list (list :documentation
+                                                   (list 'quote docstring)))))
                                 (and iform (list iform))
                                 body)))))))
 ;; GNU Emacs 31.1 data.c `Finteractive_form', translated: the
@@ -8915,6 +8999,11 @@ other gv-using libraries load/run on the bare reader."
       (nelisp--setf-1 (list (if (eq first ?a) 'car 'cdr)
                             (list inner-accessor arg))
                       val)))
+   ;; GNU gv.el (loaded on demand, e.g. by nadvice's `add-function') owns
+   ;; every place this table does not know: `gv-get' hands its setter a
+   ;; copyable expression for PLACE, exactly as GNU's own `setf' does.
+   ((and (consp place) (fboundp 'gv-get))
+    (gv-get place (lambda (_getter setter) (funcall setter val))))
    (t
     (signal 'error
             (list "setf: unsupported place"
@@ -12919,6 +13008,25 @@ nil, matching the honest answer for every variable here.
 (fn VARIABLE &optional BUFFER)"
     (ignore variable)
     nil))
+;; Same reduction for the default-value family: without per-buffer values
+;; the default value is the value (nadvice's `add-function' on a bare symbol
+;; place reads and writes `(default-value SYMBOL)').
+(unless (fboundp 'default-value)
+  (defun default-value (symbol)
+    "Return SYMBOL's default value (its value: there are no buffer-locals here)."
+    (symbol-value symbol)))
+(unless (fboundp 'set-default)
+  (defun set-default (symbol value)
+    "Set SYMBOL's default value to VALUE and return VALUE."
+    (set symbol value)))
+(unless (fboundp 'default-boundp)
+  (defun default-boundp (symbol)
+    "Return t if SYMBOL has a non-void default value."
+    (boundp symbol)))
+(unless (fboundp 'kill-local-variable)
+  (defun kill-local-variable (variable)
+    "No-op (there are no buffer-local values here); return VARIABLE."
+    variable))
 
 (unless (boundp 'delay-mode-hooks)
   (defvar delay-mode-hooks nil
@@ -14770,6 +14878,17 @@ claimed to match, only the shape."
           (concat head ")")
         (concat head " data ("
                 (mapconcat 'identity (nreverse parts) " ") "))")))))
+(defun nelisp--prn-slots (obj escape depth)
+  "Print function object OBJ as `#[SLOT...]' through `length'/`aref'."
+  (let ((chunks (cons nil nil)) (n (length obj)) (i 0))
+    (nelisp--prn-chunks-add chunks "#[")
+    (while (< i n)
+      (when (> i 0) (nelisp--prn-chunks-add chunks " "))
+      (nelisp--prn-chunks-add chunks
+                              (nelisp--prn-to-string (aref obj i) escape depth))
+      (setq i (1+ i)))
+    (nelisp--prn-chunks-add chunks "]")
+    (nelisp--prn-chunks-string chunks)))
 (defun nelisp--prn-to-string (obj escape &optional depth)
   (setq depth (or depth 0))
   (cond
@@ -14805,15 +14924,7 @@ claimed to match, only the shape."
     ;; recover exactly that slot view (docstring and interactive form split
     ;; out of BODY, `(t)' for an empty lexical environment, captured cells
     ;; dereferenced), so print through them like a vector.
-    (let ((chunks (cons nil nil)) (n (length obj)) (i 0))
-      (nelisp--prn-chunks-add chunks "#[")
-      (while (< i n)
-        (when (> i 0) (nelisp--prn-chunks-add chunks " "))
-        (nelisp--prn-chunks-add chunks
-                                (nelisp--prn-to-string (aref obj i) escape depth))
-        (setq i (1+ i)))
-      (nelisp--prn-chunks-add chunks "]")
-      (nelisp--prn-chunks-string chunks)))
+    (nelisp--prn-slots obj escape depth))
    ((consp obj)
     ;; Depth is a PARAMETER, not a special variable.  A free
     ;; `nelisp--prn-depth' worked in the standalone and broke
@@ -14825,7 +14936,10 @@ claimed to match, only the shape."
       (or (nelisp--prn-reader-macro-abbrev obj escape)
           (concat "(" (nelisp--prn-list-body obj escape (1+ depth)) ")"))))
    ((and (fboundp 'byte-code-function-p) (byte-code-function-p obj))
-    (if (fboundp 'nelisp--repr) (nelisp--repr obj) (format "%S" obj)))
+    ;; Print the slots like GNU (`#[ARGS CODE CONSTS DEPTH DOC IFORM]'), so a
+    ;; docstring keeps its raw newlines and the code string its octal
+    ;; escapes exactly as `print.c' emits them.
+    (nelisp--prn-slots obj escape depth))
    ;; `print-level' bounds LIST nesting only -- Emacs prints
    ;; [1 [2 [3 [4]]]] in full at print-level 2, and only the list arm above
    ;; counts depth.  Measured rather than assumed; the first cut guarded
@@ -16549,8 +16663,11 @@ processors not available."
 (unless (fboundp 'make-temp-name)
   (defun make-temp-name (prefix)
     (nelisp--check-string prefix)
-    (unless nelisp--temp-name-nonce
-      (setq nelisp--temp-name-nonce (nelisp--temp-name-process-token)))
+    ;; Re-derive the token on every call: a cold image restored by
+    ;; `--cold-load-from' would otherwise carry the build process's
+    ;; cached nonce into every booted process and make concurrent
+    ;; processes generate identical temp names.
+    (setq nelisp--temp-name-nonce (nelisp--temp-name-process-token))
     (setq nelisp--temp-name-counter (1+ nelisp--temp-name-counter))
     (format "%s%s-%d" prefix nelisp--temp-name-nonce
             nelisp--temp-name-counter)))
@@ -19443,7 +19560,8 @@ unlisted OS-specific entry point."
        ((and (fboundp 'nelisp--native-subr-arity)
              (integerp (nelisp--native-subr-arity fn)))
         (let ((arity (nelisp--native-subr-arity fn)))
-          (cons arity arity)))
+          ;; 3 encodes a native subr with `&optional' arity (1 . 2).
+          (if (eql arity 3) (cons 1 2) (cons arity arity))))
        ((and (consp fn) (eq (car fn) 'macro))
         (let ((inner (cdr fn)))
           (when (and (consp inner)
@@ -20244,6 +20362,50 @@ satisfies PRED, or nil if none do."
     (drop-while (lambda (x) (not (funcall pred x))) list)))
 (unless (fboundp 'any)
   (defalias 'any #'member-if))
+;; GNU 31 preloads nadvice.el.  Here it (with oclosure.el and gv.el, all
+;; the genuine vendored sources) loads on first use of any of its entry
+;; points, through lisp/nelisp-nadvice-substrate.el.
+(dolist (nelisp--f '(advice--cd*r advice--p advice--car advice--cdr
+                     advice--how advice--props advice--cons advice--copy
+                     advice--make advice--member-p advice--add-function
+                     advice--remove-function advice--buffer-local
+                     advice--symbol-function advice-eval-interactive-spec
+                     advice-function-mapc advice-function-member-p
+                     advice-add advice-remove advice-mapc advice-member-p
+                     oclosure-type oclosure--copy oclosure--get oclosure--set
+                     oclosure--slot-value oclosure--set-slot-value))
+  (unless (fboundp nelisp--f)
+    (autoload nelisp--f "nelisp-nadvice-substrate")))
+(dolist (nelisp--m '(add-function remove-function define-advice oclosure-define
+                     oclosure-lambda oclosure--lambda))
+  (unless (fboundp nelisp--m)
+    (autoload nelisp--m "nelisp-nadvice-substrate" nil nil 'macro)))
+;; GNU 31 `oddp'/`evenp' are C subrs (gv.el's `setf' calls `oddp').
+(unless (fboundp 'oddp)
+  (defun oddp (integer)
+    "Return t if INTEGER is odd."
+    (if (integerp integer)
+        (/= (% integer 2) 0)
+      (signal 'wrong-type-argument (list 'integerp integer)))))
+(unless (fboundp 'evenp)
+  (defun evenp (integer)
+    "Return t if INTEGER is even."
+    (if (integerp integer)
+        (= (% integer 2) 0)
+      (signal 'wrong-type-argument (list 'integerp integer)))))
+(unless (fboundp 'all)
+  (defun all (pred list)
+    "Non-nil if PRED is true for every element of LIST (t for nil), else nil.
+Like GNU 31's C `all': LIST must be a proper list; a non-list tail
+signals `wrong-type-argument' `listp' when it is reached."
+    (let ((tail list) (ok t))
+      (while (and ok tail)
+        (if (consp tail)
+            (if (funcall pred (car tail))
+                (setq tail (cdr tail))
+              (setq ok nil))
+          (signal 'wrong-type-argument (list 'listp tail))))
+      ok)))
 
 ;; lisp/replace.el's `how-many'/`count-matches' (anvil.el calls these; they
 ;; were void-function here).  `replace.el' itself is not vendored in this

@@ -555,7 +555,84 @@
            (progn (fset 'nconc (lambda (&rest _) 'shadow))
                   (byte-code (unibyte-string 192 193 164 135) [(a) (b)] 3))
          (fset 'nconc old))))
-    (varset (193 24 194 16 8 41 135) [bytecode-x 1 2] 2))
+    (varset (193 24 194 16 8 41 135) [bytecode-x 1 2] 2)
+    ;; Bsymbol_value (74), Bset (76), Bget (78), Bcdr_safe (163): GNU
+    ;; src/bytecode.c calls Fsymbol_value/Fset/Fget/CDR_SAFE directly, so
+    ;; each must also ignore a later `fset' of the public function.
+    (symbol-value-keyword (192 74 135) [:kw] 2)
+    (symbol-value-nil-t (192 74 193 74 68 135) [nil t] 3)
+    (symbol-value-special nil nil nil
+     (progn (defvar nl-parity-sv 41)
+            (let ((nl-parity-sv 42))
+              (byte-code (unibyte-string 192 74 135) [nl-parity-sv] 2))))
+    (symbol-value-void nil nil nil
+     (condition-case e
+         (byte-code (unibyte-string 192 74 135) [nl-parity-sv-unbound-xyz] 2)
+       (error (list (car e) (cadr e)))))
+    (symbol-value-wrong-type nil nil nil
+     (condition-case e (byte-code (unibyte-string 192 74 135) [5] 2)
+       (error (list (car e) (cadr e)))))
+    (symbol-value-fset-override nil nil nil
+     (let ((old (symbol-function 'symbol-value)))
+       (unwind-protect
+           (progn (fset 'symbol-value (lambda (&rest _) 'shadow))
+                  (byte-code (unibyte-string 192 74 135) [:kw] 2))
+         (fset 'symbol-value old))))
+    (set-returns-value nil nil nil
+     (progn (defvar nl-parity-set 0)
+            (list (byte-code (unibyte-string 192 193 76 135) [nl-parity-set 9] 3)
+                  nl-parity-set)))
+    (set-dynamic-binding-restored nil nil nil
+     (progn (defvar nl-parity-set2 1)
+            (list (let ((nl-parity-set2 2))
+                    (byte-code (unibyte-string 192 193 76 135)
+                               [nl-parity-set2 3] 3)
+                    nl-parity-set2)
+                  nl-parity-set2)))
+    (set-nil-constant nil nil nil
+     (condition-case e (byte-code (unibyte-string 192 193 76 135) [nil 1] 3)
+       (error (list (car e) (cadr e)))))
+    (set-keyword-constant nil nil nil
+     (condition-case e (byte-code (unibyte-string 192 193 76 135) [:kw 1] 3)
+       (error (list (car e) (cadr e)))))
+    (set-wrong-type nil nil nil
+     (condition-case e (byte-code (unibyte-string 192 193 76 135) [5 1] 3)
+       (error (list (car e) (cadr e)))))
+    (set-fset-override nil nil nil
+     (progn
+       (defvar nl-parity-set3 0)
+       (let ((old (symbol-function 'set)))
+         (unwind-protect
+             (progn (fset 'set (lambda (&rest _) 'shadow))
+                    (list (byte-code (unibyte-string 192 193 76 135)
+                                     [nl-parity-set3 7] 3)
+                          nl-parity-set3))
+           (fset 'set old)))))
+    (get-present nil nil nil
+     (progn (put 'nl-parity-get 'nl-prop 'v1)
+            (byte-code (unibyte-string 192 193 78 135) [nl-parity-get nl-prop] 3)))
+    (get-absent (192 193 78 135) [nl-parity-get-none nl-prop] 3)
+    (get-wrong-type nil nil nil
+     (condition-case e (byte-code (unibyte-string 192 193 78 135) [5 p] 3)
+       (error (list (car e) (cadr e)))))
+    (get-fset-override nil nil nil
+     (progn
+       (put 'nl-parity-get2 'nl-prop 'v2)
+       (let ((old (symbol-function 'get)))
+         (unwind-protect
+             (progn (fset 'get (lambda (&rest _) 'shadow))
+                    (byte-code (unibyte-string 192 193 78 135)
+                               [nl-parity-get2 nl-prop] 3))
+           (fset 'get old)))))
+    (cdr-safe-cons (192 163 135) [(1 . 2)] 2)
+    (cdr-safe-nil (192 163 135) [nil] 2)
+    (cdr-safe-non-list (192 163 135) [4] 2)
+    (cdr-safe-fset-override nil nil nil
+     (let ((old (symbol-function 'cdr-safe)))
+       (unwind-protect
+           (progn (fset 'cdr-safe (lambda (&rest _) 'shadow))
+                  (byte-code (unibyte-string 192 163 135) [(a b)] 2))
+         (fset 'cdr-safe old)))))
   "One focused case per requested opcode, in implementation order.")
 
 (defvar nelisp-catch-parity-dynamic nil
@@ -716,7 +793,10 @@
     ;; signalling AN error (status 0 under this condition-case), just a
     ;; different one -- tracked here, not in wf_bytecode_call_gateway's
     ;; scope (autoload resolution is native-ABI function-cell dispatch).
-    (call-autoload-missing-file-known-gap
+    ;; Was a known gap (standalone signalled invalid-function); GNU autoload
+    ;; call semantics now signal file-missing like the host, so it is a
+    ;; regular parity case.
+    (call-autoload-missing-file
      (let ((sym (make-symbol "nl-parity-autoload-fn")))
        (fset sym '(autoload "nl-parity-nonexistent-file-xyz" nil nil nil))
        (condition-case e
@@ -828,7 +908,6 @@
                             concat3-properties-known-gap
                             max-bignum-float-known-gap
                             min-bignum-float-known-gap
-                            call-autoload-missing-file-known-gap
                             aset-wrong-type-known-gap
                             aset-out-of-range-known-gap))
                (and (equal host-status 0) (equal standalone-status 0)

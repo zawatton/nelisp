@@ -176,10 +176,14 @@
     ;; Public handler-body entry.  `s1' is arena scratch, so root a stable
     ;; clone before any handler form can collect (extern-call FIRST).
     ;; Arity 4 (even).
+    ;; OUT is cleared first: an empty handler body must answer nil, not
+    ;; whatever the failed protected form left in the shared result slot.
     (defun nl_sf_cc_body (body env out _pad)
-      (nl_sf_cc_body_mark
-       (extern-call nl_root_mark env)
-       body env out))
+      (seq
+       (nl_cons_write_nil out)
+       (nl_sf_cc_body_mark
+        (extern-call nl_root_mark env)
+        body env out)))
 
     ;;--- Match dispatch ---
 

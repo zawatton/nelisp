@@ -34,6 +34,8 @@ if [ ! -x "$binary" ]; then
     echo "NELISP_BIN is not executable: $binary" >&2
     exit 2
 fi
+. "$script_dir/lib/nelisp-boot-args.sh"
+nl_cold_image_setup "$binary" || exit 1
 for input in "$chain_eln" "$increment_eln" "$driver" "$vm_source"; do
     if [ ! -r "$input" ]; then
         echo "S4.6 input is not readable: $input" >&2
@@ -101,7 +103,7 @@ wrapper=$out_dir/load-wrapper.el
 lflags=
 for d in packages/*/src; do lflags="$lflags -L $d"; done
 # shellcheck disable=SC2086
-"$binary" -L "$repo/lisp" -L "$repo/src" $lflags \
+"$binary" ${NL_COLD_IMAGE_PATH:+--cold-load-from "$NL_COLD_IMAGE_PATH"} -L "$repo/lisp" -L "$repo/src" $lflags \
     --load "$repo/lisp/nelisp-eln-native-subr.el" \
     --load "$repo/lisp/nelisp-eln-registration.el" \
     --load "$wrapper" --load "$driver" \

@@ -200,7 +200,11 @@
 # the macro's backquoted handler template `,@(mapcar ...)', not a handler
 # this code runs: every expansion hands the caller's own handlers through
 # (with `debug' added), so nothing is swallowed by the macro itself.
-silent-fallback 237
+# 2026-09-29: +3 for the S6.9 opaque vector views in nelisp-eln-objects.el
+# (`--add-vectors', `--rollback-vectors'): each handler records its failure
+# (retained cleanup, releasing unit, retained record list), mirroring the
+# pinned symbol/string handlers.
+silent-fallback 246
 pinned-site silent-fallback	nelisp-native-unit.el	defun nelisp-native-unit-publish	342dd783996d 1
 pinned-site silent-fallback	nelisp-native-unit.el	defun nelisp-native-unit-stage	3cc661a0aa0d 1
 pinned-site bare-handler	nelisp-native-unit.el	defun nelisp-native-unit-code-info	5f806c245674 1
@@ -370,7 +374,11 @@ pinned-site ignore-errors	nelisp-native-unit-development.el	defun nelisp-native-
 # each, pinned by shape below.  Taken from the scanner, not summed on paper.
 # 118 -> 119 (faces JIT-ledger fix): `nelisp--merge-face-heights' bare
 # `(condition-case nil ...)', pinned above alongside its silent-fallback twin.
-bare-handler 119
+# 2026-09-29: +3 for the S6.9 opaque vector views in nelisp-eln-objects.el
+# (`--add-vectors', `--rollback-vectors'): each handler records its failure
+# (retained cleanup, releasing unit, retained record list), mirroring the
+# pinned symbol/string handlers.
+bare-handler 122
 pinned-site bare-handler	nelisp-native-unit-development.el	defun nelisp-native-unit-development--wait	4bcd97633357 1
 
 # 0, and it should stay 0.  `nl_dbg_note' has no enable flag on purpose --
@@ -777,12 +785,15 @@ pinned-site bare-handler	nelisp-eln-objects.el	defun nelisp-eln-objects--add-str
 pinned-site bare-handler	nelisp-eln-objects.el	defun nelisp-eln-objects--add-symbols	26388a0a5b09 1
 pinned-site bare-handler	nelisp-eln-objects.el	defun nelisp-eln-objects--add-symbols	ac784f05f51b 1
 pinned-site bare-handler	nelisp-eln-objects.el	defun nelisp-eln-objects--add-symbols	cb7ed9a2be63 1
+pinned-site bare-handler	nelisp-eln-objects.el	defun nelisp-eln-objects--add-vectors	7adfd4b201f0 1
+pinned-site bare-handler	nelisp-eln-objects.el	defun nelisp-eln-objects--add-vectors	ac784f05f51b 1
 pinned-site bare-handler	nelisp-eln-objects.el	defun nelisp-eln-objects--ensure-symbol-base	92bd28194741 1
 pinned-site bare-handler	nelisp-eln-objects.el	defun nelisp-eln-objects--ensure-symbol-base	c90c294dd024 1
 pinned-site bare-handler	nelisp-eln-objects.el	defun nelisp-eln-objects--rollback-add	b9a4c089cd88 1
 pinned-site bare-handler	nelisp-eln-objects.el	defun nelisp-eln-objects--rollback-numerics	3ee342a0b1ba 1
 pinned-site bare-handler	nelisp-eln-objects.el	defun nelisp-eln-objects--rollback-strings	2756f835c15f 1
 pinned-site bare-handler	nelisp-eln-objects.el	defun nelisp-eln-objects--rollback-symbols	7cac80e8ee29 1
+pinned-site bare-handler	nelisp-eln-objects.el	defun nelisp-eln-objects--rollback-vectors	bd820daa84e9 1
 pinned-site bare-handler	nelisp-eln-objects.el	defun nelisp-eln-objects-encode	26388a0a5b09 1
 pinned-site bare-handler	nelisp-eln-objects.el	defun nelisp-eln-objects-retry-pending-cleanup	02812a2e4c38 1
 pinned-site bare-handler	nelisp-eln-objects.el	defun nelisp-eln-objects-retry-pending-cleanup	cd17dd2f4917 1
@@ -820,7 +831,8 @@ pinned-site silent-fallback	nelisp-bytecode-jit.el	defun nelisp-bytecode-jit--ru
 pinned-site silent-fallback	nelisp-bytecode-jit.el	defun nelisp-bytecode-jit--runtime-identity	4b8e0ad85e1b 1
 pinned-site silent-fallback	nelisp-bytecode-jit.el	defun nelisp-bytecode-jit-drain-pending	e3f2648caa3a 1
 pinned-site silent-fallback	nelisp-bytecode-jit.el	defun nelisp-bytecode-jit-prepare	e3f2648caa3a 2
-pinned-site silent-fallback	nelisp-bytecode-opcode-parity.el	defconst nelisp-bytecode-opcode-parity-cases	044423193980 18
+# 2026-09-29: +6 vmops parity cases (set/symbol-value/get/cdr-safe error probes) expect a GNU error; the handler returns the error as data, not a fallback.
+pinned-site silent-fallback	nelisp-bytecode-opcode-parity.el	defconst nelisp-bytecode-opcode-parity-cases	044423193980 24
 pinned-site silent-fallback	nelisp-bytecode-opcode-parity.el	defconst nelisp-bytecode-opcode-parity-cases	311aea842f7c 3
 pinned-site silent-fallback	nelisp-bytecode-opcode-parity.el	defconst nelisp-bytecode-opcode-parity-cases	3655dfbfd623 1
 pinned-site silent-fallback	nelisp-bytecode-opcode-parity.el	defconst nelisp-bytecode-opcode-parity-cases	7d910b062006 1
@@ -860,12 +872,15 @@ pinned-site silent-fallback	nelisp-eln-objects.el	defun nelisp-eln-objects--add-
 pinned-site silent-fallback	nelisp-eln-objects.el	defun nelisp-eln-objects--add-symbols	00f47cc973ed 1
 pinned-site silent-fallback	nelisp-eln-objects.el	defun nelisp-eln-objects--add-symbols	0d590d4ae2a7 1
 pinned-site silent-fallback	nelisp-eln-objects.el	defun nelisp-eln-objects--add-symbols	1793575f947e 1
+pinned-site silent-fallback	nelisp-eln-objects.el	defun nelisp-eln-objects--add-vectors	0d590d4ae2a7 1
+pinned-site silent-fallback	nelisp-eln-objects.el	defun nelisp-eln-objects--add-vectors	1793575f947e 1
 pinned-site silent-fallback	nelisp-eln-objects.el	defun nelisp-eln-objects--ensure-symbol-base	96070e11f890 1
 pinned-site silent-fallback	nelisp-eln-objects.el	defun nelisp-eln-objects--ensure-symbol-base	fd75283ab8be 1
 pinned-site silent-fallback	nelisp-eln-objects.el	defun nelisp-eln-objects--rollback-add	7a8b80a344fc 1
 pinned-site silent-fallback	nelisp-eln-objects.el	defun nelisp-eln-objects--rollback-numerics	3cdccb0b35de 1
 pinned-site silent-fallback	nelisp-eln-objects.el	defun nelisp-eln-objects--rollback-strings	9f55aeb98064 1
 pinned-site silent-fallback	nelisp-eln-objects.el	defun nelisp-eln-objects--rollback-symbols	3cdccb0b35de 1
+pinned-site silent-fallback	nelisp-eln-objects.el	defun nelisp-eln-objects--rollback-vectors	3cdccb0b35de 1
 pinned-site silent-fallback	nelisp-eln-objects.el	defun nelisp-eln-objects-encode	00f47cc973ed 1
 pinned-site silent-fallback	nelisp-eln-objects.el	defun nelisp-eln-objects-retry-pending-cleanup	76cd4cf6f830 1
 pinned-site silent-fallback	nelisp-eln-objects.el	defun nelisp-eln-objects-retry-pending-cleanup	e3f2648caa3a 1

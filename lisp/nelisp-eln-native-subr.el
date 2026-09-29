@@ -71,7 +71,14 @@
 (defconst nelisp-eln-native-subr--many-descriptors
   '(("ba35c031" 1320 = 2)
     ("ba35c031" 945 funcall 2)
-    ("ba35c031" 1317 <= 2))
+    ("ba35c031" 946 apply 2)
+    ("ba35c031" 1317 <= 2)
+    ;; S6.9 (`byte-compile-lambda'): 946 `Fapply' (1, MANY) called with four
+    ;; arguments, 1117 `Fvector' (MANY) with two and 1236 `Fappend' (MANY)
+    ;; with two or three -- NeLisp's own `apply'/`vector'/`append'.
+    ("ba35c031" 946 apply 4)
+    ("ba35c031" 1117 vector 2)
+    ("ba35c031" 1236 append 2))
   "Authenticated (ABI SLOT BUILTIN ARITY) GNU MANY-convention descriptors.
 
 Verified against the authenticated slot table
@@ -102,13 +109,21 @@ this entry.
 Row 1317, offset 0x2928, resolves to `Fleq' (src/data.c), the C
 implementation backing `<='; genuine vendor subr.el `fixnump' makes two
 MANY (2, argv) calls through it (see
-`nelisp-eln-native-subr-multi-import-analysis').")
+`nelisp-eln-native-subr-multi-import-analysis').
 
-(defun nelisp-eln-native-subr--many-descriptor (abi-hash slot)
-  "Return the verified MANY descriptor for ABI-HASH and SLOT, or nil."
+Row 946, offset 0x1d90, resolves to `Fapply' (src/eval.c, S6.4): genuine
+`macroexpand-1' calls it through a MANY (2, argv) pair, (FUNCTION ARGLIST).
+As for `Ffuncall', `--canonical-builtin' authenticates only that the slot
+reaches genuine, unredefined `apply'.")
+
+(defun nelisp-eln-native-subr--many-descriptor (abi-hash slot &optional arity)
+  "Return the verified MANY descriptor for ABI-HASH and SLOT, or nil.
+A slot may own several rows with different argument counts (`Fapply');
+when ARITY is a number the row must carry exactly that count."
   (cl-find-if (lambda (descriptor)
                 (and (equal abi-hash (nth 0 descriptor))
-                     (equal slot (nth 1 descriptor))))
+                     (equal slot (nth 1 descriptor))
+                     (or (not (natnump arity)) (equal arity (nth 3 descriptor)))))
               nelisp-eln-native-subr--many-descriptors))
 
 (defun nelisp-eln-native-subr--tail-import-context-abi-hash ()
@@ -877,12 +892,103 @@ in the surveyed artifacts)."
      :constants ((0 . nil) (4 . listp))
      :module-counter "quitcounter"
      :arity 2)
+    (parse-body
+     :ports ((0 fixed 2 (lisp lisp) void)
+             (13 fixed 0 () void)
+             (14 fixed 0 () void)
+             (1376 fixed 1 (lisp) lisp)
+             (1354 fixed 1 (lisp) lisp)
+             (1119 fixed 2 (lisp lisp) lisp)
+             (1209 fixed 1 (lisp) lisp)
+             (1217 fixed 2 (lisp lisp) lisp))
+     :constants ((0 . nil)
+                 (1 . (:documentation declare interactive cl-declare))
+                 (5 . listp))
+     :module-counter "quitcounter"
+     :opaque-argument-symbols t)
     (for-effect-constant
      :ports ((1335 fixed 1 (lisp) lisp)
              (945 many 2 (lisp lisp) lisp)
              (10 fixed 4 (lisp lisp lisp raw) void))
      :constants ((0 . byte-compile--for-effect)
-                 (2 . byte-compile-push-constant))))
+                 (2 . byte-compile-push-constant)))
+    (setq-form
+     :ports ((1250 fixed 1 (lisp) lisp)
+             (1320 many 2 (lisp lisp) lisp)
+             (1220 fixed 2 (lisp lisp) lisp)
+             (945 many (2 3) (lisp lisp lisp) lisp)
+             (1335 fixed 1 (lisp) lisp)
+             (10 fixed 4 (lisp lisp lisp raw) void)
+             (0 fixed 2 (lisp lisp) void))
+     :constants ((3 . byte-compile-form)
+                 (4 . byte-compile--for-effect)
+                 (5 . byte-compile-variable-set)
+                 (6 . byte-compile-out)
+                 (7 . byte-dup)
+                 (9 . cl--assertion-failed)
+                 (10 . (= (length form) 3))
+                 (15 . listp))
+     :opaque-argument-symbols t)
+    (lambda-nth-form
+     :ports ((1220 fixed 2 (lisp lisp) lisp)
+             (1335 fixed 1 (lisp) lisp)
+             (945 many (3) (lisp lisp lisp) lisp))
+     :constants ((0 . byte-compile-form)
+                 (3 . byte-compile--for-effect))
+     :arity 0)
+    (lambda-cdr-form
+     :ports ((0 fixed 2 (lisp lisp) void)
+             (1335 fixed 1 (lisp) lisp)
+             (945 many (3) (lisp lisp lisp) lisp))
+     :constants ((3 . byte-compile--for-effect)
+                 (4 . byte-compile-body)
+                 (24 . listp))
+     :arity 0)
+    (if-form
+     :ports ((945 many (1 2 3) (lisp lisp lisp) lisp)
+             (1113 many 2 (lisp lisp) handle)
+             (1119 fixed 2 (lisp lisp) lisp)
+             (10 fixed 4 (lisp lisp lisp raw) void)
+             (1335 fixed 1 (lisp) lisp)
+             (0 fixed 2 (lisp lisp) void))
+     :constants ((0 . byte-compile-form)
+                 (3 . byte-compile--for-effect)
+                 (5 . byte-compile-make-tag)
+                 (7 . byte-compile-goto)
+                 (8 . byte-goto-if-nil)
+                 (9 . byte-compile--maybe-guarded)
+                 (11 . (:bytecode 0 (194 195 192 56 9 34 135)
+                                  [V0 byte-compile--for-effect
+                                      byte-compile-form 2]
+                                  3))
+                 (12 . byte-goto)
+                 (13 . byte-compile-out-tag)
+                 (14 . not)
+                 (15 . (:bytecode 0 (194 192 65 65 65 9 34 135)
+                                  [V0 byte-compile--for-effect
+                                      byte-compile-body]
+                                  3))
+                 (16 . byte-goto-if-nil-else-pop)
+                 (24 . listp))
+     :opaque-argument-symbols t)
+    (accumulate-forms
+     :ports ((1320 many 2 (lisp lisp) lisp)
+             (945 many 2 (lisp lisp) lisp)
+             (7 fixed 2 (lisp lisp) bool)
+             (1354 fixed 1 (lisp) lisp)
+             (1119 fixed 2 (lisp lisp) lisp)
+             (1209 fixed 1 (lisp) lisp)
+             (1196 many 2 (lisp lisp) lisp)
+             (1300 fixed 1 (lisp) lisp)
+             (0 fixed 2 (lisp lisp) void)
+             (13 fixed 0 () void)
+             (14 fixed 0 () void))
+     :constants ((0 . nil) (1 . macroexp--expand-all) (5 . t) (7 . listp))
+     :module-counter "quitcounter"
+     :arity 2
+     :min-arity 1
+     :symbols-with-pos t
+     :opaque-argument-symbols t))
   "Per exact multi-import shape (`nelisp-eln-tail-code--multi-import-shapes'):
 :PORTS lists, in port order, (SLOT CONVENTION ARITY ARGUMENT-KINDS
 RETURN-KIND) for each freloc import -- a MANY slot must have an
@@ -893,8 +999,10 @@ arity (both tables are cross-checked against the freloc slot table
 1317 `Fleq', 945 `Ffuncall', 1 `helper_PSEUDOVECTOR_TYPEP_XUNTAG', 7
 `slow_eq', 1119 `Fcons', 0 `wrong_type_argument', 13 `maybe_gc', 14
 `maybe_quit', 1217 `Fmemq', 1209 `Fnreverse', 1335 `Fsymbol_value', 10
-`set_internal').  Argument kind `raw' is a
-C int; return kind `bool' a C bool, `void' no value (%rax is left 0).
+`set_internal', 1250 `Flength', 1220 `Fnth').  A MANY port's ARITY may
+be a list of argc values when the body calls that one slot with several
+argument counts; only the variadic `Ffuncall' row admits that.  Argument
+kind `raw' is a C int; return kind `bool' a C bool, `void' no value (%rax is left 0).
 :MODULE-COUNTER names the module-local `.bss' counter object the body
 reaches by direct RIP-relative access (see
 `nelisp-eln-native-subr--module-counter-valid-p'); a shape without it
@@ -902,8 +1010,157 @@ must not access one.  :ARITY is the body's own fixed Lisp arity (default 1);
 only `nelisp-eln-native-subr-create-multi-binary' builds an arity-2 body.
 :CONSTANTS lists (D-RELOC-INDEX . VALUE) for every `d_reloc' constant the
 body reads; each must decode to exactly VALUE in the artifact's own data
-relocations, and the live words are then decoded by identity when the
-body passes or returns them.")
+relocations (a symbol or immediate by identity, a quoted list constant,
+which no admitted body mutates, by `equal'), and the live words are then
+decoded by identity when the body passes or returns them.
+:MIN-ARITY (default :ARITY) is the smallest argument count the Lisp
+function accepts: a lower one makes it `(MIN-ARITY &optional ...)' up to
+:ARITY, the missing ones being nil exactly as GNU pads them.
+:SYMBOLS-WITH-POS non-nil admits the body's reads of
+f_symbols_with_pos_enabled_reloc in a binary shape (the cell stays zero).
+:OPAQUE-ARGUMENT-SYMBOLS non-nil states that the exact body never reads a
+symbol's cells inline (it only compares, stores and passes symbol words
+to authenticated ports), so interned symbols with non-empty global state
+reachable from its arguments or port results may cross as opaque views
+\(see `nelisp-eln-objects--admit-opaque-interned-symbols').
+A constant written (:bytecode ARGS BYTES CONSTANTS DEPTH) is a byte-code
+function object whose four components must equal those values (BYTES a
+list of byte values); the analysis then carries the live object.  Return
+kind `handle' answers an opaque, identity-preserving word for an object
+that only ever flows on to other authenticated ports (see
+`nelisp-eln-callable-import--dispatch-port').")
+
+;; S6.6 (`cconv-closure-convert'): kept in its own constant, appended to the
+;; spec list, so concurrent lanes adding specs do not touch the same lines.
+;; Slot 12 `specbind' and slot 4 `helper_unbind_n' are the runtime-services
+;; unwind-stack services; the body's three specbinds are undone by its own
+;; `helper_unbind_n' (3) on a normal return and, on any non-local exit past
+;; the native frame, by `nelisp-eln-callable-import--call-unary'.
+(defconst nelisp-eln-native-subr--multi-import-specs-cconv
+  '((closure-convert
+     :ports ((12 fixed 2 (lisp lisp) void)
+             (945 many (2 3 4) (lisp lisp lisp lisp) lisp)
+             (1335 fixed 1 (lisp) lisp)
+             (1209 fixed 1 (lisp) lisp)
+             (10 fixed 4 (lisp lisp lisp raw) void)
+             (4 fixed 1 (lisp) void))
+     :constants ((1 . cconv-var-classification)
+                 (2 . cconv-freevars-alist)
+                 (3 . cconv--dynbound-variables)
+                 (4 . cconv-analyze-form)
+                 (5 . cconv-convert)
+                 (7 . cl--assertion-failed)
+                 (8 . (null cconv-freevars-alist)))
+     ;; `(FORM &optional DYNBOUND-VARS)': one required argument (S6.4's
+     ;; preflight compares this with the registration's own MINARGS).
+     :arity 2 :min-arity 1
+     :opaque-argument-symbols t))
+  "Dispatcher specs for the vendor cconv.el shapes of
+`nelisp-eln-tail-code--multi-import-shapes-cconv'; see
+`nelisp-eln-native-subr--multi-import-specs' for the format.")
+
+(unless (assq 'closure-convert nelisp-eln-native-subr--multi-import-specs)
+  (setq nelisp-eln-native-subr--multi-import-specs
+        (append nelisp-eln-native-subr--multi-import-specs
+                nelisp-eln-native-subr--multi-import-specs-cconv)))
+
+;; S6.4 (`macroexpand-1'): kept in its own constant, appended to the spec
+;; list, like the cconv one above.  :MIN-ARITY 1 with :ARITY 2 is the
+;; `(FORM &optional ENVIRONMENT)' registration (see
+;; `nelisp-eln-native-subr-multi-min-arity'); :SYMBOLS-WITH-POS declares that
+;; the body reads the `symbols_with_pos_enabled' byte through
+;; f_symbols_with_pos_enabled_reloc (see
+;; `nelisp-eln-native-subr-multi-swp-declared-p').
+(defconst nelisp-eln-native-subr--multi-import-specs-macroexpand
+  '((macroexpand-1
+     :ports ((0 fixed 2 (lisp lisp) void)
+             (7 fixed 2 (lisp lisp) bool)
+             (945 many 2 (lisp lisp) lisp)
+             (946 many 2 (lisp lisp) lisp)
+             (948 fixed 3 (lisp lisp lisp) lisp)
+             (1119 fixed 2 (lisp lisp) lisp)
+             (1215 fixed 2 (lisp lisp) lisp)
+             (1339 fixed 1 (lisp) lisp)
+             (1350 fixed 1 (lisp) lisp)
+             (1378 fixed 1 (lisp) lisp))
+     :constants ((3 . macro) (5 . macrop) (7 . t) (9 . listp))
+     :arity 2 :min-arity 1 :symbols-with-pos t
+     :opaque-argument-symbols t))
+  "Dispatcher specs for the vendor macroexp.el shapes of
+`nelisp-eln-tail-code--multi-import-shapes-macroexpand'; see
+`nelisp-eln-native-subr--multi-import-specs' for the format.  Verified
+against ~/.cache/tmp/slot-auth/freloc-ba35c031.tsv (sha256 3e8591ab..f0758):
+948 `Fautoload_do_load', 1215 `Fassq', 1339 `Ffboundp', 1350
+`Fsymbol_function', 1378 `Fsymbolp', 946 `Fapply', 945 `Ffuncall', 1119
+`Fcons', 7 `slow_eq', 0 `wrong_type_argument'.")
+
+(unless (assq 'macroexpand-1 nelisp-eln-native-subr--multi-import-specs)
+  (setq nelisp-eln-native-subr--multi-import-specs
+        (append nelisp-eln-native-subr--multi-import-specs
+                nelisp-eln-native-subr--multi-import-specs-macroexpand)))
+
+;; S6.9 (`byte-compile-lambda'): kept in its own constant, appended to the
+;; spec list.  Ports 13 `maybe_gc' and 14 `maybe_quit' are reached only
+;; through the body's exact local `maybe_gc_quit' helper (see the shape's
+;; :HELPER); the body reads GNU's `symbols_with_pos_enabled' cell through
+;; f_symbols_with_pos_enabled_reloc and never enables symbols with position.
+(defconst nelisp-eln-native-subr--multi-import-specs-lambda
+  '((lambda-form
+     :ports ((1354 fixed 1 (lisp) lisp)
+             (945 many (2 3 4 5 6) (lisp lisp lisp lisp lisp lisp) lisp)
+             (7 fixed 2 (lisp lisp) bool)
+             (1335 fixed 1 (lisp) lisp)
+             (1236 many (2 3) (lisp lisp lisp) lisp)
+             (12 fixed 2 (lisp lisp) void)
+             (1376 fixed 1 (lisp) lisp)
+             (1215 fixed 2 (lisp lisp) lisp)
+             (1217 fixed 2 (lisp lisp) lisp)
+             (1119 fixed 2 (lisp lisp) lisp)
+             (1218 fixed 2 (lisp lisp) lisp)
+             (1117 many 2 (lisp lisp) lisp)
+             (946 many 4 (lisp lisp lisp lisp) handle)
+             (1263 fixed 3 (lisp lisp lisp) lisp)
+             (1392 fixed 1 (lisp) lisp)
+             (1323 fixed 3 (lisp lisp lisp) lisp)
+             (4 fixed 1 (lisp) void)
+             (10 fixed 4 (lisp lisp lisp raw) void)
+             (951 fixed 2 (lisp lisp) void)
+             (13 fixed 0 () void)
+             (14 fixed 0 () void))
+     :constants ((0 . lambda) (1 . nil) (2 . byte-compile-check-lambda-list)
+                 (3 . byte-run-strip-symbol-positions)
+                 (4 . byte-compile-arglist-vars) (6 . lexical-binding)
+                 (7 . byte-compile-bound-variables) (8 . interactive)
+                 (9 . byte-compile-top-level) (10 . progn) (11 . byte-code)
+                 (13 . make-byte-code) (14 . bytecomp--code-strings)
+                 (15 . byte-native-compiling) (18 . byte-to-native-lambdas-h)
+                 (20 . cl-struct-byte-to-native-lambda-tags)
+                 (22 . wrong-type-argument) (23 . byte-to-native-lambda)
+                 (25 . byte-compile-make-args-desc)
+                 (26 . cl--assertion-failed)
+                 (27 . (eq 'byte-code (car-safe compiled)))
+                 (28 . byte-compile-make-lambda-lexenv)
+                 (29 . byte-compile-warn-x)
+                 (30 . "malformed interactive spec: %s")
+                 (31 . seq-every-p) (32 . symbolp)
+                 (33 . (let let* progn save-excursion)) (34 . list)
+                 (35 . "malformed `interactive' specification: %s")
+                 (36 . byte-compile--docstring) (37 . "")
+                 (38 . is-a-value) (39 . byte-compile--known-dynamic-vars)
+                 (40 . byte-compile--warn-lexical-dynamic)
+                 (41 . help-add-fundoc-usage) (42 . error)
+                 (43 . "Not a lambda list: %S") (46 . t) (48 . listp))
+     :arity 2 :min-arity 1 :symbols-with-pos t
+     :opaque-argument-symbols t :opaque-vectors t
+     :helper-counter "quitcounter"))
+  "Dispatcher spec for `nelisp-eln-tail-code--multi-import-shapes-lambda';
+see `nelisp-eln-native-subr--multi-import-specs' for the format.
+:HELPER-COUNTER names the module-local counter the shape's :HELPER bumps.")
+
+(unless (assq 'lambda-form nelisp-eln-native-subr--multi-import-specs)
+  (setq nelisp-eln-native-subr--multi-import-specs
+        (append nelisp-eln-native-subr--multi-import-specs
+                nelisp-eln-native-subr--multi-import-specs-lambda)))
 
 (defun nelisp-eln-native-subr--multi-reject (reason &rest detail)
   "Reject an exactly matched multi-import body for REASON with DETAIL.
@@ -913,16 +1170,57 @@ explicit, reasoned rejection -- never a quiet nil."
   (signal 'nelisp-eln-native-subr-error
           (cons 'multi-import-not-admitted (cons reason detail))))
 
+(defconst nelisp-eln-native-subr--many-service-descriptors
+  '(("ba35c031" 1113 2) ("ba35c031" 1196 2))
+  "Authenticated (ABI SLOT ARITY) MANY slots answered by a runtime service
+implementation rather than a canonical builtin: 1113 is `Fmake_closure' and
+1196 is `Fnconc' \(src/alloc.c, 1 MANY; src/fns.c, 0 MANY), whose NeLisp implementations
+are `nelisp-eln-runtime-services-fmake-closure' and `-fnconc'.  Cross-checked against
+freloc-ba35c031.tsv row 1113 and the runtime-services descriptor table.")
+
+(defun nelisp-eln-native-subr--many-service-implementation (abi-hash slot arity)
+  "Return the runtime-services implementation of MANY service SLOT, or nil.
+Nil when ABI-HASH and SLOT are not an authenticated
+`nelisp-eln-native-subr--many-service-descriptors' row; a row whose
+ARITY or runtime-services descriptor does not authenticate is rejected."
+  (let ((row (cl-find-if (lambda (r) (and (equal abi-hash (nth 0 r))
+                                          (equal slot (nth 1 r))))
+                         nelisp-eln-native-subr--many-service-descriptors)))
+    (when row
+      (let* ((d (nelisp-eln-native-subr--runtime-services-descriptor slot))
+             (impl (plist-get d :implementation)))
+        (unless (and (equal (nth 2 row) arity) d
+                     (eq (plist-get d :status) 'supported)
+                     (eq (plist-get d :convention) 'many))
+          (nelisp-eln-native-subr--multi-reject
+           'unauthenticated-many-service-slot slot))
+        (if (symbolp impl) (symbol-function impl) impl)))))
+
 (defun nelisp-eln-native-subr--multi-port-spec (abi-hash port)
   "Return the authenticated dispatcher spec for PORT, or reject."
   (let* ((slot (nth 0 port)) (convention (nth 1 port)) (arity (nth 2 port))
          (implementation
           (if (eq convention 'many)
-              (let ((d (nelisp-eln-native-subr--many-descriptor abi-hash slot)))
-                (unless (and d (equal (nth 3 d) arity))
+              (or
+               (nelisp-eln-native-subr--many-service-implementation
+                abi-hash slot arity)
+              (let ((d (nelisp-eln-native-subr--many-descriptor
+                        abi-hash slot arity)))
+                ;; A list ARITY (several argc values through one slot) is
+                ;; admitted only for the variadic `Ffuncall' row, with one
+                ;; `lisp' argument kind per position of the largest argc.
+                (unless (and d (if (consp arity)
+                                   (and (memq (nth 2 d) '(funcall append))
+                                        (cl-every (lambda (n)
+                                                    (and (natnump n) (<= 1 n 8)))
+                                                  arity)
+                                        (equal (nth 3 port)
+                                               (make-list (apply #'max arity)
+                                                          'lisp)))
+                                 (equal (nth 3 d) arity)))
                   (nelisp-eln-native-subr--multi-reject
                    'unauthenticated-many-slot slot))
-                (nelisp-eln-native-subr--canonical-builtin d))
+                (nelisp-eln-native-subr--canonical-builtin d)))
             (let* ((d (nelisp-eln-native-subr--runtime-services-descriptor
                        slot))
                    (impl (plist-get d :implementation)))
@@ -1028,6 +1326,100 @@ cell or any other authenticated root object through it."
                         dynamic-symbols)
                t))))))
 
+(defun nelisp-eln-native-subr--bytecode-spec-p (expected)
+  "Non-nil when EXPECTED is a (:bytecode ARGS BYTES CONSTANTS DEPTH) spec."
+  (and (consp expected) (eq (car expected) :bytecode)))
+
+(defun nelisp-eln-native-subr--closure-slot (closure index)
+  "Return byte-code function CLOSURE's slot INDEX.
+Called through the `aref' function cell, never the inlined VM opcode: the
+compiled `aref' opcode does not read byte-code function objects in this
+runtime, while the function itself does."
+  (funcall (symbol-function 'aref) closure index))
+
+(defun nelisp-eln-native-subr--deep-equal (a b)
+  "Return non-nil when A and B are `equal', vectors compared element-wise.
+Called through the `equal' function cell: the compiled `equal' opcode
+compares vectors only by identity in this runtime, while the function
+recurses into them."
+  (funcall (symbol-function 'equal) a b))
+
+(defun nelisp-eln-native-subr--bytecode-matches-p (actual spec)
+  "Non-nil when ACTUAL is a byte-code function object equal to SPEC.
+SPEC is (ARGS BYTES CONSTANTS DEPTH), BYTES a list of byte values."
+  (and (byte-code-function-p actual)
+       (proper-list-p spec) (= (length spec) 4)
+       (nelisp-eln-native-subr--deep-equal
+        (nelisp-eln-native-subr--closure-slot actual 0) (nth 0 spec))
+       (stringp (nelisp-eln-native-subr--closure-slot actual 1))
+       (equal (mapcar (lambda (c) (if (>= c #x3fff80) (- c #x3fff00) c))
+                      (append (nelisp-eln-native-subr--closure-slot actual 1)
+                              nil))
+              (nth 1 spec))
+       (nelisp-eln-native-subr--deep-equal
+        (nelisp-eln-native-subr--closure-slot actual 2) (nth 2 spec))
+       (nelisp-eln-native-subr--deep-equal
+        (nelisp-eln-native-subr--closure-slot actual 3) (nth 3 spec))
+       ;; Exactly four slots.
+       (eql (funcall (symbol-function 'length) actual) 4)))
+
+(defun nelisp-eln-native-subr--multi-constant-matches-p (actual expected)
+  "Non-nil when d_reloc constant ACTUAL is EXPECTED.
+Symbols and immediates by identity; a byte-code constant by its
+components; any other quoted list constant (never mutated by an admitted
+body) by `equal'."
+  (cond ((eq actual expected) t)
+        ;; A string constant (never mutated by an admitted body) by `equal'.
+        ((stringp expected) (and (stringp actual) (equal actual expected)))
+        ((nelisp-eln-native-subr--bytecode-spec-p expected)
+         (nelisp-eln-native-subr--bytecode-matches-p actual (cdr expected)))
+        ((consp expected) (equal actual expected))))
+
+;; S6.9: the local `maybe_gc_quit' helper preceding a body.
+(defun nelisp-eln-native-subr--helper-analysis
+    (handle analysis spec function-vaddr freloc-got)
+  "Authenticate ANALYSIS's :HELPER region, exactly :BACK bytes before the
+body at FUNCTION-VADDR: its on-file bytes must match the helper template
+\(`nelisp-eln-tail-code-analyze-helper'), its one freloc GOT load must
+reach FREELOC-GOT (the body's own), and its module-counter accesses must
+all reach one and the same object that
+`nelisp-eln-native-subr--module-counter-valid-p' authenticates as SPEC's
+:HELPER-COUNTER.  The registration preflight separately requires the live
+bytes to equal the file's (`nelisp-eln-registration--raw-read-bytes' on
+the returned range).  Return (ADDRESS . SIZE) of the region."
+  (let* ((helper (plist-get analysis :helper))
+         (state (nelisp-eln-system-loader--state handle))
+         (bias (plist-get state :bias))
+         (file-bytes (plist-get state :file-bytes))
+         (back (plist-get helper :back))
+         (vaddr (and (integerp back) (- function-vaddr back)))
+         ;; Executable PT_LOAD (flags bit 0) containing the whole region.
+         (row (and vaddr
+                   (catch 'found
+                     (dolist (r (plist-get (plist-get state :elf) :loads))
+                       (when (and (/= 0 (logand (nth 4 r) 1))
+                                  (>= vaddr (nth 0 r))
+                                  (<= (+ (- vaddr (nth 0 r)) back) (nth 2 r)))
+                         (throw 'found r)))
+                     nil))))
+    (unless (and row (stringp (plist-get spec :helper-counter)))
+      (nelisp-eln-native-subr--multi-reject 'malformed-helper-spec vaddr))
+    (let* ((file-offset (+ (nth 1 row) (- vaddr (nth 0 row))))
+           (bytes (substring file-bytes file-offset (+ file-offset back)))
+           (result (nelisp-eln-tail-code-analyze-helper
+                    bytes helper function-vaddr)))
+      (unless result
+        (nelisp-eln-native-subr--multi-reject 'helper-instructions vaddr))
+      (unless (and (= (plist-get result :freloc) freloc-got)
+                   (nelisp-eln-native-subr--module-counter-valid-p
+                    file-bytes (plist-get result :counter)
+                    (plist-get spec :helper-counter)
+                    (plist-get (plist-get state :elf) :symbols)))
+        (nelisp-eln-native-subr--multi-reject
+         'unauthenticated-helper (plist-get result :counter)
+         (plist-get result :freloc) freloc-got))
+      (cons (+ bias vaddr) back))))
+
 (defun nelisp-eln-native-subr-multi-import-analysis
     (handle capability code &optional abi-hash)
   "Return verified S6 multi-import analysis for CODE in CAPABILITY.
@@ -1118,11 +1510,22 @@ an invalid root slot.  The result adds :PORT-SPECS, :CONSTANTS,
           (unless (and (or (vectorp relocations) (listp relocations))
                        (cl-every (lambda (c)
                                    (and (< (car c) (length relocations))
-                                        (eq (elt relocations (car c))
-                                            (cdr c))))
+                                        (nelisp-eln-native-subr--multi-constant-matches-p
+                                         (elt relocations (car c)) (cdr c))))
                                  constants))
             (nelisp-eln-native-subr--multi-reject 'constant-identity-mismatch
                                                   constants))
+          ;; A byte-code constant travels as the live object.
+          (setq constants
+                (mapcar (lambda (c)
+                          (if (nelisp-eln-native-subr--bytecode-spec-p (cdr c))
+                              (cons (car c) (elt relocations (car c)))
+                            c))
+                        constants))
+          (when (plist-get analysis :helper)
+            (setq analysis (plist-put analysis :helper-range
+                                      (nelisp-eln-native-subr--helper-analysis
+                                       handle analysis spec vaddr freloc-got))))
           (setq analysis (plist-put analysis :port-specs port-specs))
           (setq analysis (plist-put analysis :constants constants))
           (setq analysis (plist-put analysis :d-reloc-address d-reloc-target))
@@ -1246,6 +1649,21 @@ constants decode by identity."
                               (cons (nelisp-eln-callable-import-port-tag port)
                                     spec))
                             (plist-get analysis :port-specs))))
+           ;; Only an exact shape whose body never reads symbol cells
+           ;; inline admits opaque interned symbol views (see
+           ;; `nelisp-eln-native-subr--multi-import-specs').
+           (opaque-symbols
+            (and (plist-get (cdr (assq (plist-get analysis :shape)
+                                       nelisp-eln-native-subr--multi-import-specs))
+                            :opaque-argument-symbols)
+                 t))
+           ;; Likewise vectors: only a shape declaring :OPAQUE-VECTORS admits
+           ;; opaque identity-only vector views.
+           (opaque-vectors
+            (and (plist-get (cdr (assq (plist-get analysis :shape)
+                                       nelisp-eln-native-subr--multi-import-specs))
+                            :opaque-vectors)
+                 t))
            (constant-cells
             (mapcar (lambda (c)
                       (cons (+ d-reloc-address (* 8 (car c))) (cdr c)))
@@ -1278,7 +1696,8 @@ constants decode by identity."
                  symbol-words
                  (lambda ()
                    (nelisp-eln-callable-import--call-unary
-                    capability nil argument nil nil constants ports)))))))
+                    capability nil argument nil nil constants ports))
+                 opaque-symbols opaque-vectors)))))
       (nelisp--native-subr-create capability function-name module-id
                                   bridge 1))))
 
@@ -1293,14 +1712,34 @@ This is its `nelisp-eln-native-subr--multi-import-specs' :ARITY, or 1."
                  :arity)
       1))
 
+(defun nelisp-eln-native-subr-multi-min-arity (analysis)
+  "Return the number of required arguments of multi-import ANALYSIS's shape.
+This is its spec's :MIN-ARITY (S6.4: 1 for the `&optional' `macroexpand-1'),
+defaulting to its `nelisp-eln-native-subr-multi-arity'."
+  (or (plist-get (cdr (assq (plist-get analysis :shape)
+                            nelisp-eln-native-subr--multi-import-specs))
+                 :min-arity)
+      (nelisp-eln-native-subr-multi-arity analysis)))
+
+(defun nelisp-eln-native-subr-multi-swp-declared-p (analysis)
+  "Non-nil when ANALYSIS's shape spec declares :SYMBOLS-WITH-POS."
+  (and (plist-get (cdr (assq (plist-get analysis :shape)
+                             nelisp-eln-native-subr--multi-import-specs))
+                  :symbols-with-pos)
+       t))
+
 (defun nelisp-eln-native-subr-create-multi-binary
-    (handle name &optional function-name)
+    (handle name &optional function-name min-arity)
   "Create a managed genuine binary S6 multi-import subr for root NAME.
 Exactly like `nelisp-eln-native-subr-create-multi' -- the same exact
 template, per-slot port, `d_reloc' constant and live-lease
 authentication -- but only for a shape whose spec declares :ARITY 2 and
-reads no f_symbols_with_pos_enabled_reloc cell; the bridge passes both
-Lisp arguments to the native body (%rdi, %rsi)."
+reads f_symbols_with_pos_enabled_reloc iff it declares :SYMBOLS-WITH-POS;
+the bridge passes both
+Lisp arguments to the native body (%rdi, %rsi).  MIN-ARITY 1 (S6.6)
+makes the second argument `&optional' -- an arity (1 . 2) subr whose
+omitted second argument reaches the body as nil, as in GNU's native
+calling convention; any other non-nil MIN-ARITY signals."
   ;; Same reason as `-create-multi': `port-tag' runs at construction time.
   (unless (fboundp 'nelisp-eln-callable-import-port-tag)
     (require 'nelisp-eln-callable-import))
@@ -1319,7 +1758,14 @@ Lisp arguments to the native body (%rdi, %rsi)."
          (module-id (nelisp-eln-system-loader-module-id handle)))
     (unless (and analysis (integerp d-reloc-address) (> d-reloc-address 0)
                  (= (nelisp-eln-native-subr-multi-arity analysis) 2)
-                 (null (plist-get analysis :symbols-with-pos-address))
+                 (or (null min-arity) (eql min-arity 1))
+                 ;; The constructor's MIN-ARITY must be the spec's own.
+                 (= (or min-arity 2)
+                    (nelisp-eln-native-subr-multi-min-arity analysis))
+                 ;; The `symbols_with_pos_enabled' byte is read iff the
+                 ;; exact shape declares it.
+                 (eq (and (plist-get analysis :symbols-with-pos-address) t)
+                     (nelisp-eln-native-subr-multi-swp-declared-p analysis))
                  (nelisp-eln-native-subr--multi-lease-valid-p
                   lease handle capability t)
                  (or (null function-name)
@@ -1340,11 +1786,26 @@ Lisp arguments to the native body (%rdi, %rsi)."
                               (cons (nelisp-eln-callable-import-port-tag port)
                                     spec))
                             (plist-get analysis :port-specs))))
+           ;; As in `nelisp-eln-native-subr-create-multi': only an exact
+           ;; shape whose body never reads symbol cells inline admits
+           ;; opaque interned symbol views (S6.6 `closure-convert').
+           (opaque-symbols
+            (and (plist-get (cdr (assq (plist-get analysis :shape)
+                                       nelisp-eln-native-subr--multi-import-specs))
+                            :opaque-argument-symbols)
+                 t))
+           ;; Likewise vectors: only a shape declaring :OPAQUE-VECTORS admits
+           ;; opaque identity-only vector views.
+           (opaque-vectors
+            (and (plist-get (cdr (assq (plist-get analysis :shape)
+                                       nelisp-eln-native-subr--multi-import-specs))
+                            :opaque-vectors)
+                 t))
            (constant-cells
             (mapcar (lambda (c)
                       (cons (+ d-reloc-address (* 8 (car c))) (cdr c)))
                     (plist-get analysis :constants)))
-           (bridge
+           (bridge-fn
             (lambda (first second)
               (unless (nelisp-eln-native-subr--multi-lease-valid-p
                        lease handle capability)
@@ -1369,9 +1830,60 @@ Lisp arguments to the native body (%rdi, %rsi)."
                  (lambda ()
                    (nelisp-eln-callable-import--call-unary
                     capability nil first nil nil constants ports
-                    (list second))))))))
-      (nelisp--native-subr-create capability function-name module-id
-                                  bridge 2))))
+                    (list second)))
+                 opaque-symbols opaque-vectors))))
+           (bridge (if min-arity
+                       (lambda (first &optional second)
+                         (funcall bridge-fn first second))
+                     bridge-fn)))
+      (if min-arity
+          (nelisp--native-subr-create capability function-name module-id
+                                      bridge 2 min-arity)
+        (nelisp--native-subr-create capability function-name module-id
+                                    bridge 2)))))
+
+(defun nelisp-eln-native-subr-create-lambda-placeholder
+    (handle name &optional function-name)
+  "Create a managed arity-0 subr for the registered anonymous lambda NAME.
+S6.12: GNU's `comp--register-lambda' stores each native anonymous lambda's
+subr into a `d_reloc' slot that no admitted body reads.  The subr's body is
+admitted (a `jmp' thunk, or an exact arity-0 multi-import template with every
+import and constant authenticated), but calling it is refused: the bridge
+signals `registered-lambda-not-callable'.  FUNCTION-NAME only names the
+subr; it is never published (a string is used for an uninterned symbol)."
+  (let* ((capability
+          (nelisp-eln-system-loader-function-capability handle name))
+         (size (nth 6 capability))
+         (code (and (integerp size) (> size 0)
+                    (nelisp-eln-system-loader-read-root-function-bytes
+                     handle name 0 size)))
+         (thunk (and code (= (length code) size) (= size 2)
+                     (= (aref code 0) #xeb)))
+         (analysis (and code (= (length code) size) (not thunk)
+                        (nelisp-eln-native-subr-multi-import-analysis
+                         handle capability code
+                         (nelisp-eln-native-subr--tail-import-context-abi-hash))))
+         (module-id (nelisp-eln-system-loader-module-id handle)))
+    (unless (and (or thunk
+                     (and analysis
+                          (= (nelisp-eln-native-subr-multi-arity analysis) 0)))
+                 (or (null function-name) (symbolp function-name)
+                     (and (stringp function-name)
+                          (= (length function-name)
+                             (string-bytes function-name)))))
+      (signal 'nelisp-eln-native-subr-error
+              (list 'unsupported-native-abi name size)))
+    (nelisp-eln-system-loader-validate-function-capability capability)
+    (setq function-name
+          (cond ((and function-name (symbolp function-name)) function-name)
+                ((stringp function-name) (make-symbol function-name))
+                (t (make-symbol name))))
+    (nelisp--native-subr-create
+     capability function-name module-id
+     (lambda ()
+       (signal 'nelisp-eln-native-subr-error
+               (list 'registered-lambda-not-callable name)))
+     0)))
 
 (defun nelisp-eln-native-subr-create (handle name &optional function-name)
   "Create a managed scalar0 or unary leaf subr for root NAME in HANDLE.

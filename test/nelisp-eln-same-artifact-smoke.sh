@@ -33,6 +33,8 @@ if [ ! -x "$binary" ]; then
     echo "NELISP_BIN is not executable: $binary" >&2
     exit 2
 fi
+. "$script_dir/lib/nelisp-boot-args.sh"
+nl_cold_image_setup "$binary" || exit 1
 if [ -z "$provided_load_wrapper" ]; then
     # The generator also bakes the adopted core-module byte-code
     # (nelisp-standalone--core-bytecode-src), so that defun and the repo
@@ -113,7 +115,7 @@ if [ "${NELISP_ELN_GNU_INCREMENT:-0}" = 1 ]; then
         exit 1
     fi
     export NELISP_ELN_INCREMENT_PHASE=nelisp
-    if ! "$binary" -L "$increment_lisp" -L "$repo/src" \
+    if ! "$binary" ${NL_COLD_IMAGE_PATH:+--cold-load-from "$NL_COLD_IMAGE_PATH"} -L "$increment_lisp" -L "$repo/src" \
         -L "$repo/packages/nl-ffi/src" -L "$repo/lisp" \
         --load "$increment_lisp/nelisp-eln-native-subr.el" \
         --load "$increment_lisp/nelisp-eln-registration.el" \
@@ -218,7 +220,7 @@ EL
         (setq i (1+ i))))
     (princ "NELISP_GNU_METADATA_VECTOR_TYPE_RELOCS_PASS\n")))
 EL
-    if ! "$binary" -L "$repo/lisp" -L "$shared_lisp" \
+    if ! "$binary" ${NL_COLD_IMAGE_PATH:+--cold-load-from "$NL_COLD_IMAGE_PATH"} -L "$repo/lisp" -L "$shared_lisp" \
         -L "$ffi_root/packages/nl-ffi/src" \
         --load "$shared_lisp/nelisp-eln-emitter.el" \
         --load "$shared_lisp/nelisp-eln-objects.el" \
@@ -254,7 +256,7 @@ fi
 if [ "${NELISP_ELN_BRANCH_ONLY:-0}" = 1 ]; then
     branch_eln=$out_dir/same-artifact-branch.eln
     export NELISP_ELN_SYSTEM_LOADER_ELN=$branch_eln
-    if ! "$binary" -L "$shared_lisp" \
+    if ! "$binary" ${NL_COLD_IMAGE_PATH:+--cold-load-from "$NL_COLD_IMAGE_PATH"} -L "$shared_lisp" \
         --eval '(progn (require (quote nelisp-eln-emitter)) (let ((ir (nelisp-aot-compiler--parse-stmt (quote (defun nelisp-eln-same-artifact-branch (value) (if value (if value 17 19) 23))) nil nil nil))) (nelisp-eln-emitter-write-ir ir (getenv "NELISP_ELN_SYSTEM_LOADER_ELN"))) (princ "NELISP-ELN-BRANCH-EMIT-PASS\n"))' \
         >"$out_dir/branch-emit.stdout" 2>"$out_dir/branch-emit.stderr"; then
         cat "$out_dir/branch-emit.stdout"
@@ -297,7 +299,7 @@ EL
         cat "$out_dir/branch-host.stderr" >&2
         exit 1
     fi
-    if ! "$binary" -L "$repo/lisp" -L "$shared_lisp" \
+    if ! "$binary" ${NL_COLD_IMAGE_PATH:+--cold-load-from "$NL_COLD_IMAGE_PATH"} -L "$repo/lisp" -L "$shared_lisp" \
         -L "$ffi_root/packages/nl-ffi/src" \
         --load "$shared_lisp/nelisp-eln-emitter.el" \
         --load "$shared_lisp/nelisp-eln-objects.el" \
@@ -380,7 +382,7 @@ if ! command -v "$emacs_bin" >/dev/null 2>&1; then
     exit 2
 fi
 
-if ! "$binary" -L "$repo/lisp" \
+if ! "$binary" ${NL_COLD_IMAGE_PATH:+--cold-load-from "$NL_COLD_IMAGE_PATH"} -L "$repo/lisp" \
     --eval '(progn (require (quote nelisp-eln-emitter)) (let ((ir (nelisp-aot-compiler--parse-stmt (quote (defun nelisp-eln-same-artifact-fixture () 17)) nil nil nil))) (nelisp-eln-emitter-write-ir ir (getenv "NELISP_ELN_OUT"))) (princ "NELISP-ELN-SAME-ARTIFACT-EMIT-PASS\n"))' \
     >"$out_dir/emit.stdout" 2>"$out_dir/emit.stderr"; then
     cat "$out_dir/emit.stdout"
@@ -395,7 +397,7 @@ if [ -s "$out_dir/emit.stderr" ] || \
     exit 1
 fi
 before=$(sha256sum "$eln" | cut -d ' ' -f 1)
-if ! "$binary" -L "$repo/lisp" \
+if ! "$binary" ${NL_COLD_IMAGE_PATH:+--cold-load-from "$NL_COLD_IMAGE_PATH"} -L "$repo/lisp" \
     --eval '(progn (require (quote nelisp-eln-emitter)) (let ((ir (nelisp-aot-compiler--parse-stmt (quote (defun nelisp-eln-same-artifact-identity (value) value)) nil nil nil))) (nelisp-eln-emitter-write-ir ir (getenv "NELISP_ELN_ARG1_OUT"))) (princ "NELISP-ELN-IDENTITY-EMIT-PASS\n"))' \
     >"$out_dir/identity-emit.stdout" 2>"$out_dir/identity-emit.stderr"; then
     cat "$out_dir/identity-emit.stdout"
@@ -477,7 +479,7 @@ cat >"$out_dir/nelisp-driver.el" <<'EL'
   (princ "NELISP_DIRECT_NATIVE_SUBR_RESULTS=17,17,17\n"))
 EL
 export NELISP_ELN_SAME_ARTIFACT_C_NAME=$function_c_name
-if ! "$binary" -L "$repo/lisp" -L "$shared_lisp" \
+if ! "$binary" ${NL_COLD_IMAGE_PATH:+--cold-load-from "$NL_COLD_IMAGE_PATH"} -L "$repo/lisp" -L "$shared_lisp" \
     -L "$ffi_root/packages/nl-ffi/src" \
     --load "$normal_load_wrapper" \
     --load "$shared_lisp/nelisp-eln-emitter.el" \
@@ -500,7 +502,7 @@ if [ -s "$out_dir/cleanup.stderr" ] || \
     exit 1
 fi
 
-if ! "$binary" -L "$repo/lisp" \
+if ! "$binary" ${NL_COLD_IMAGE_PATH:+--cold-load-from "$NL_COLD_IMAGE_PATH"} -L "$repo/lisp" \
     -L "$ffi_root/packages/nl-ffi/src" \
     --load "$out_dir/nelisp-driver.el" \
     >"$out_dir/nelisp.stdout" 2>"$out_dir/nelisp.stderr"; then
@@ -521,7 +523,7 @@ if [ "$before" != "$after_ne_lisp" ]; then
     exit 1
 fi
 
-if ! OUTDIR="$out_dir" "$binary" -L "$repo/lisp" -L "$shared_lisp" \
+if ! OUTDIR="$out_dir" "$binary" ${NL_COLD_IMAGE_PATH:+--cold-load-from "$NL_COLD_IMAGE_PATH"} -L "$repo/lisp" -L "$shared_lisp" \
     -L "$ffi_root/packages/nl-ffi/src" \
     --load "$normal_load_wrapper" \
     --eval '(princ "REGTRACE source-load nelisp-eln-emitter\n")' \

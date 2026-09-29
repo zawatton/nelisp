@@ -127,9 +127,13 @@
     ;; Arity 4 (even).
     (defun nl_sf_let_setup_done (setup-rc args env out)
       (if (= setup-rc 0)
-          (nl_sf_let_body
-           (extern-call nl_cons_cdr_ptr args)
-           env out 0)
+          ;; OUT is cleared first: an empty body must answer nil, not the
+          ;; previous sibling form's value left in the shared result slot.
+          (seq
+           (nl_cons_write_nil out)
+           (nl_sf_let_body
+            (extern-call nl_cons_cdr_ptr args)
+            env out 0))
         1))
 
     ;; bindings = car(args) already fetched as first arg.

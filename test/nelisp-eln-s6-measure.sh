@@ -106,6 +106,8 @@ if [ ! -x "$binary" ]; then
     echo "NELISP_BIN is not executable: $binary" >&2
     exit 2
 fi
+. "$script_dir/lib/nelisp-boot-args.sh"
+nl_cold_image_setup "$binary" || exit 1
 if ! command -v "$emacs_bin" >/dev/null 2>&1; then
     echo "EMACS_BIN is not executable: $emacs_bin" >&2
     exit 2
@@ -174,7 +176,7 @@ fi
 corpus_n=$(grep -c '^S6_RESULT ' "$out_dir/host.stdout")
 
 vm_ok=1
-run_phase vm "$binary" -L "$shared_lisp" -L "$repo/src" -L "$ffi_src" \
+run_phase vm "$binary" ${NL_COLD_IMAGE_PATH:+--cold-load-from "$NL_COLD_IMAGE_PATH"} -L "$shared_lisp" -L "$repo/src" -L "$ffi_src" \
     --load "$driver" || vm_ok=0
 if [ "$vm_ok" != 1 ] || { [ "$allow_stderr" != 1 ] && [ -s "$out_dir/vm.stderr" ]; } || \
    ! grep -Fq "S6_PHASE_DONE phase=vm function=$function_name status=ok" \
@@ -186,7 +188,7 @@ if [ "$vm_ok" != 1 ] || { [ "$allow_stderr" != 1 ] && [ -s "$out_dir/vm.stderr" 
 fi
 
 native_ok=1
-run_phase native "$binary" -L "$shared_lisp" -L "$repo/src" -L "$ffi_src" \
+run_phase native "$binary" ${NL_COLD_IMAGE_PATH:+--cold-load-from "$NL_COLD_IMAGE_PATH"} -L "$shared_lisp" -L "$repo/src" -L "$ffi_src" \
     --load "$shared_lisp/nelisp-eln-native-subr.el" \
     --load "$shared_lisp/nelisp-eln-registration.el" \
     --load "$wrapper" \

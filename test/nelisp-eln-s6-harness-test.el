@@ -35,6 +35,8 @@
 ;; loads it eagerly (S7.7.4 corpus-gate laziness), only on first genuine
 ;; use inside its own admission/activation path.
 (require 'nelisp-eln-callable-import)
+(require 'nelisp-native-load)
+(require 'nelisp-cc-eln-callback7)
 
 ;;; Isolated registration namespace
 
@@ -153,6 +155,72 @@ unchanged, ignores unspecified registers, and answers a C bool."
                 :type 'nelisp-eln-callable-import-error)
   (should-error (nelisp-eln-callable-import-port-tag -1)
                 :type 'nelisp-eln-callable-import-error))
+
+;; Data-driven port table: 32 ports, every index authenticated.
+
+(ert-deftest nelisp-eln-s6-port-table-is-32-and-consistent ()
+  (should (= nelisp-eln-callable-import--port-count 32))
+  (should (= nelisp-eln-callable-import--port-count
+             (symbol-value 'nelisp-cc-eln-callback7-port-count)))
+  (should (= nelisp-eln-callable-import--port-tag-base
+             (symbol-value 'nelisp-cc-eln-callback7-port-tag-base)))
+  (should (= nelisp-eln-callable-import--port-count
+             (symbol-value 'nelisp-native-load--port-count)))
+  (should (equal (funcall 'nelisp-native-load--port-symbol-names)
+                 (funcall 'nelisp-cc-eln-callback7-port-symbol-names)))
+  (should (equal (car (last (funcall 'nelisp-cc-eln-callback7-port-symbol-names)))
+                 "nelisp_eln_callback_port31_entry_word")))
+
+(ert-deftest nelisp-eln-s6-twelve-imports-dispatch-to-their-own-slot ()
+  "A body with 12 authenticated imports reaches each slot's own spec."
+  (let* ((seen nil)
+         (frame (list :ports
+                      (cl-loop
+                       for n from 0 below 12
+                       collect (let ((n n))
+                                 (cons (nelisp-eln-callable-import-port-tag n)
+                                       (list :slot n :convention 'fixed :arity 1
+                                             :arguments '(raw) :return 'bool
+                                             :implementation
+                                             (lambda (w) (push (cons n w) seen) t))))))))
+    (dotimes (n 12)
+      (nelisp-eln-s6-test--with-descriptor
+       (vector (+ 100 n) 0 0 0 0 0 (nelisp-eln-callable-import-port-tag n))
+       (should (equal (nelisp-eln-callable-import--dispatch-port 8192 frame)
+                      '(1 . 0)))))
+    (should (equal (nreverse seen)
+                   (cl-loop for n from 0 below 12 collect (cons n (+ 100 n)))))))
+
+(ert-deftest nelisp-eln-s6-out-of-range-and-unauthenticated-ports-rejected ()
+  (let* ((seen nil)
+         (spec (list :slot 0 :convention 'fixed :arity 1 :arguments '(raw)
+                     :return 'bool
+                     :implementation (lambda (&rest a) (setq seen a) t)))
+         ;; Only port 31 (the last) is authenticated.
+         (frame (list :ports (list (cons (nelisp-eln-callable-import-port-tag 31)
+                                         spec)))))
+    ;; Port index range is checked on both ends.
+    (should-error (nelisp-eln-callable-import-port-tag 32)
+                  :type 'nelisp-eln-callable-import-error)
+    (should-error (nelisp-eln-callable-import-port-entry-address 32)
+                  :type 'nelisp-eln-callable-import-error)
+    ;; Tags for a valid but unauthenticated port, one past the range, and
+    ;; below the base are all unknown.
+    (dolist (tag (list (nelisp-eln-callable-import-port-tag 30)
+                       (+ nelisp-eln-callable-import--port-tag-base 32)
+                       (1- nelisp-eln-callable-import--port-tag-base)))
+      (nelisp-eln-s6-test--with-descriptor (vector 1 0 0 0 0 0 tag)
+        (should (equal (should-error
+                        (nelisp-eln-callable-import--dispatch-port 8192 frame)
+                        :type 'nelisp-eln-callable-import-error)
+                       (list 'nelisp-eln-callable-import-error 'unknown-port tag)))))
+    (should-not seen)
+    ;; The one authenticated high port still dispatches.
+    (nelisp-eln-s6-test--with-descriptor
+     (vector 5 0 0 0 0 0 (nelisp-eln-callable-import-port-tag 31))
+     (should (equal (nelisp-eln-callable-import--dispatch-port 8192 frame)
+                    '(1 . 0))))
+    (should (equal seen '(5)))))
 
 ;;; Exact multi-import shapes
 

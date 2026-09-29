@@ -81,6 +81,15 @@ below.  Genuine GNU top_level_run units call this slot once, on a
 compiled `(byte-code ...)' object, to install `function-put' properties
 for the subr `nelisp-eln-registration--slot' just registered (S6.16-24;
 see `nelisp-eln-registration--eval-effect').")
+(defconst nelisp-eln-registration--lambda-slot 1031
+  "The ba35c031 freloc import table index for `Fcomp__register_lambda'.
+
+Authenticated against ~/.cache/tmp/slot-auth/freloc-ba35c031.tsv (sha256
+3e8591ab81130c91375221fb3efeaa377c2cd90ccf45fcd58adb3f31c55f0758), whose
+row 1031 (offset 0x2038) reads \"Fcomp__register_lambda in section .text of
+/usr/local/bin/emacs-31.1\"; GNU src/comp.c registers an anonymous lambda
+as a subr and stores it into `d_reloc[RELOC_IDX]'.  Only the S6.12
+`gnu-lambda-require-subr' profile calls it.")
 (defconst nelisp-eln-registration--table-slots 1031)
 (defconst nelisp-eln-registration--owner-marker 'nelisp-eln-registration-owner)
 (defconst nelisp-eln-registration--owner-size 20
@@ -457,15 +466,22 @@ three-byte `mov (%rcx),%r8'; GNU emits it when the type constant is not
 the first d_reloc entry.")
 
 (defconst nelisp-eln-registration--gnu-verified-subr-holes
-  '((7 . 11) (17 . 21) (36 . 40) (43 . 44) (45 . 49) (54 . 58))
+  '((7 . 11) (17 . 21) (24 . 25) (28 . 29) (32 . 33) (36 . 40) (43 . 44)
+    (45 . 49) (54 . 58))
   "Variable byte ranges in
 `nelisp-eln-registration--gnu-verified-subr-template': the three
 RIP-relative pointer loads (d_reloc_eph, d_reloc, freloc_link_table, in
-that order), the `subr-type' d_reloc slot offset, and the register_subr
-call's min and max arity immediates.")
+that order), the three one-byte d_reloc_eph slot offsets (offsets 24, 28
+and 32: the registration's rest, c-name and name words, see
+`nelisp-eln-registration--gnu-verified-subr-top-level'), the `subr-type'
+d_reloc slot offset, and the register_subr call's max and min arity
+immediates.")
 
 (defun nelisp-eln-registration--gnu-verified-subr-top-level (handle cap actual)
-  "Return (ARITY . TYPE-INDEX) for the checked `gnu-verified-subr' thunk.
+  "Return (ARITY TYPE-INDEX MIN-ARITY) for the checked `gnu-verified-subr' thunk.
+ARITY is the maximum argument count; MIN-ARITY equals it for a fixed
+arity, or is 1 for the one admitted variable arity 1..2 (`(A &optional
+B)', S6.4).  Any other min/max pair is rejected.
 Return nil when ACTUAL is not that exact shape; signal when it is, but
 its RIP-relative loads, arity immediates or type slot offset do not
 authenticate.  The type slot offset must name a nonzero d_reloc index
@@ -476,19 +492,31 @@ checked against the artifact's own data relocations by
   (when (nelisp-eln-registration--match-holed-template
          actual nelisp-eln-registration--gnu-verified-subr-template
          nelisp-eln-registration--gnu-verified-subr-holes)
-    (let ((minarg (nelisp-eln-registration--gnu-arity actual 45))
-          (maxarg (nelisp-eln-registration--gnu-arity actual 54))
+    ;; `Fcomp__register_subr' takes MINARGS in %edx (offset 54) and MAXARGS
+    ;; in %ecx (offset 45).
+    (let ((maxarg (nelisp-eln-registration--gnu-arity actual 45))
+          (minarg (nelisp-eln-registration--gnu-arity actual 54))
           (type-index (nelisp-eln-registration--d-reloc-index actual 43)))
       (unless (and (nelisp-eln-registration--validate-rip-relocs
                     handle (nth 3 cap) actual
                     '((7 . "d_reloc_eph") (17 . "d_reloc")
                       (36 . "freloc_link_table")))
-                   minarg maxarg (= minarg maxarg)
+                   minarg maxarg
+                   (or (= minarg maxarg)
+                       (and (= minarg 1) (= maxarg 2)))
+                   ;; The d_reloc_eph words the registration reads sit one
+                   ;; word later when MIN and MAX both precede the name
+                   ;; (variable arity): 0x18/0x10/0x08 for a fixed arity,
+                   ;; 0x20/0x18/0x10 for 1..2.
+                   (let ((shift (if (= minarg maxarg) 0 8)))
+                     (and (= (aref actual 24) (+ #x18 shift))
+                          (= (aref actual 28) (+ #x10 shift))
+                          (= (aref actual 32) (+ #x08 shift))))
                    type-index (> type-index 0))
         (nelisp-eln-registration--fail 'top-level-instructions-not-admitted
                                        (list (length actual) actual
                                              'gnu-verified-subr)))
-      (cons minarg type-index))))
+      (list maxarg type-index minarg))))
 
 (defconst nelisp-eln-registration--gnu-require-subr-template
   (unibyte-string
@@ -520,7 +548,8 @@ d_reloc slot offsets, the RIP-relative d_reloc_eph load, the
 register_subr call's `subr-type' d_reloc slot offset, and its max and
 min arity immediates.")
 
-(defconst nelisp-eln-registration--admitted-require-features '(bytecomp)
+(defconst nelisp-eln-registration--admitted-require-features
+  '(bytecomp cconv macroexp)
   "Features a `gnu-require-subr' top_level_run may `require'.
 The artifact's Feval form is never evaluated; after it statically
 decodes to exactly `(require \\='FEATURE)' with FEATURE in this list,
@@ -555,6 +584,221 @@ checked against the artifact's own data relocations during preflight
                                              'gnu-require-subr)))
       (list minarg type-index lexenv-index form-index))))
 
+;; S6.6: the same skeleton for a function with `&optional' arguments
+;; (min < max arity).  GNU then keeps BOTH arities in d_reloc_eph
+;; ([MIN MAX NAME C-NAME REST], 40 bytes) so the register_subr call's
+;; name/c-name/rest loads sit one word higher (eph+0x10/0x18/0x20).
+(defconst nelisp-eln-registration--gnu-require-subr-opt-template
+  (let ((template (copy-sequence
+                   nelisp-eln-registration--gnu-require-subr-template)))
+    (aset template 68 #x20)
+    (aset template 72 #x18)
+    (aset template 76 #x10)
+    template)
+  "Genuine GNU 31.1 (Feval, register_subr) top_level_run skeleton for a
+`(require \\='FEATURE)' file whose one `defun' has `&optional' arguments
+\(S6.6, gnu-cconv-closure-convert.eln: sha256 of that artifact is
+recorded in tools/ai/eln-progress.org).  Byte-for-byte
+`nelisp-eln-registration--gnu-require-subr-template' except that the
+three ephemeral-relocation loads (name, c-name, rest) are one word
+higher; the holes are the same.")
+
+(defun nelisp-eln-registration--gnu-require-subr-opt-top-level
+    (handle cap actual)
+  "Return (MAXARG TYPE-INDEX LEXENV-INDEX FORM-INDEX MINARG) for the
+checked optional-argument `gnu-require-subr' thunk, or nil when ACTUAL is
+not that exact shape.  Signal when it is, but its RIP-relative loads,
+arity immediates or slot offsets do not authenticate.  Requires
+0 <= MINARG < MAXARG <= 8; the fixed-arity case is
+`nelisp-eln-registration--gnu-require-subr-top-level'."
+  (when (nelisp-eln-registration--match-holed-template
+         actual nelisp-eln-registration--gnu-require-subr-opt-template
+         nelisp-eln-registration--gnu-require-subr-holes)
+    (let ((maxarg (nelisp-eln-registration--gnu-arity actual 52))
+          (minarg (nelisp-eln-registration--gnu-arity actual 61))
+          (lexenv-index (nelisp-eln-registration--d-reloc-index actual 27))
+          (form-index (nelisp-eln-registration--d-reloc-index actual 31))
+          (type-index (nelisp-eln-registration--d-reloc-index actual 50)))
+      (unless (and (nelisp-eln-registration--validate-rip-relocs
+                    handle (nth 3 cap) actual
+                    '((3 . "freloc_link_table") (13 . "d_reloc")
+                      (43 . "d_reloc_eph")))
+                   minarg maxarg (< minarg maxarg)
+                   type-index lexenv-index form-index
+                   (/= type-index lexenv-index) (/= type-index form-index)
+                   (/= lexenv-index form-index))
+        (nelisp-eln-registration--fail 'top-level-instructions-not-admitted
+                                       (list (length actual) actual
+                                             'gnu-require-subr-opt)))
+      (list maxarg type-index lexenv-index form-index minarg))))
+
+;; S6.9 (`byte-compile-lambda'): the same skeleton once the function's
+;; d_reloc slot indices exceed 15, so GNU encodes every d_reloc load with a
+;; four-byte displacement (`mov 0x170(%rbp),%rsi' is `48 8b b5 disp32'),
+;; and the function has `&optional' arguments (min < max) while its
+;; ephemeral vector keeps the plain [1 NAME C-NAME REST] layout (name at
+;; +8, c-name +0x10, rest +0x18, all fixed bytes below).
+(defconst nelisp-eln-registration--gnu-require-subr-wide-template
+  (unibyte-string
+   #x48 #x8b #x05 0 0 0 0 #x41 #x54 #x55 #x48 #x8b
+   #x2d 0 0 0 0 #x53 #x4c #x8b #x20 #x48 #x89 #xfb
+   #x48 #x8b #xb5 0 0 0 0 #x48 #x8b #xbd 0 0 0 0
+   #x41 #xff #x94 #x24 #x98 #x1d #x00 #x00
+   #x48 #x8b #x05 0 0 0 0 #x4c #x8b #x85 0 0 0 0
+   #xb9 0 0 0 0 #x48 #x83 #xec #x08
+   #xba 0 0 0 0 #x4c #x8b #x48 #x18 #x48 #x8b #x70 #x10
+   #x48 #x8b #x78 #x08 #x53 #x41 #xff #x94 #x24 #x30 #x20 #x00 #x00
+   #x5a #x59 #x5b #x5d #x41 #x5c #xc3)
+  "Genuine GNU 31.1 x86-64 (Feval, register_subr) top_level_run skeleton
+for a `(require \\='FEATURE)' file whose one `defun' has `&optional'
+arguments and whose d_reloc slots need four-byte displacements (S6.9,
+gnu-byte-compile-lambda.eln; 102 bytes).")
+
+(defconst nelisp-eln-registration--gnu-require-subr-wide-holes
+  '((3 . 7) (13 . 17) (27 . 31) (34 . 38) (49 . 53) (56 . 60)
+    (61 . 65) (70 . 74))
+  "Variable byte ranges of
+`nelisp-eln-registration--gnu-require-subr-wide-template': the RIP loads
+of freloc_link_table (3), d_reloc (13) and d_reloc_eph (49), the Feval
+lexenv (27) and form (34) and register_subr type (56) d_reloc slot
+displacements, and the max (61) and min (70) arity immediates.")
+
+(defun nelisp-eln-registration--gnu-require-subr-wide-top-level
+    (handle cap actual)
+  "Return (MAXARG TYPE-INDEX LEXENV-INDEX FORM-INDEX MINARG) for the
+checked wide `gnu-require-subr' thunk, or nil when ACTUAL is not that
+exact shape.  Signal when it is, but a RIP load, arity immediate or slot
+offset does not authenticate.  Requires 0 <= MINARG < MAXARG <= 8."
+  (when (nelisp-eln-registration--match-holed-template
+         actual nelisp-eln-registration--gnu-require-subr-wide-template
+         nelisp-eln-registration--gnu-require-subr-wide-holes)
+    (let ((maxarg (nelisp-eln-registration--gnu-arity actual 61))
+          (minarg (nelisp-eln-registration--gnu-arity actual 70))
+          (lexenv-index (nelisp-eln-registration--d-reloc-index32 actual 27))
+          (form-index (nelisp-eln-registration--d-reloc-index32 actual 34))
+          (type-index (nelisp-eln-registration--d-reloc-index32 actual 56)))
+      (unless (and (nelisp-eln-registration--validate-rip-relocs
+                    handle (nth 3 cap) actual
+                    '((3 . "freloc_link_table") (13 . "d_reloc")
+                      (49 . "d_reloc_eph")))
+                   minarg maxarg (< minarg maxarg)
+                   type-index lexenv-index form-index
+                   (/= type-index lexenv-index) (/= type-index form-index)
+                   (/= lexenv-index form-index))
+        (nelisp-eln-registration--fail 'top-level-instructions-not-admitted
+                                       (list (length actual) actual
+                                             'gnu-require-subr-wide)))
+      (list maxarg type-index lexenv-index form-index minarg))))
+
+(defconst nelisp-eln-registration--gnu-lambda-require-subr-template
+  (unibyte-string
+   #x41 #x55 #xb9 0 0 0 0 #xba 0 0 0 0
+   #x41 #x54 #x55 #x48 #x89 #xfd #x53 #x48 #x83 #xec #x10 #x48
+   #x8b #x1d 0 0 0 0 #x4c #x8b #x25 0 0 0
+   0 #x48 #x8b #x05 0 0 0 0 #x4c #x8b #x4b #x08
+   #x4d #x8b #x84 #x24 0 0 0 0 #x4c #x8b #x28 #x48
+   #x8b #x33 #x57 #xbf 0 0 0 0 #x41 #xff #x95 #x38
+   #x20 #x00 #x00 #x4c #x8b #x4b #x18 #x48 #x8b #x73 #x10 #xb9
+   0 0 0 0 #x4d #x8b #x84 #x24 0 0 0 0
+   #xba 0 0 0 0 #x48 #x89 #x2c #x24 #xbf 0 0
+   0 0 #x41 #xff #x95 #x38 #x20 #x00 #x00 #x49 #x8b #xb4
+   #x24 0 0 0 0 #x49 #x8b #xbc #x24 0 0 0
+   0 #x41 #xff #x95 #x98 #x1d #x00 #x00 #x4c #x8b #x4b #x38
+   #x48 #x8b #x73 #x30 #xb9 0 0 0 0 #x4d #x8b #x84
+   #x24 0 0 0 0 #x48 #x8b #x7b #x28 #xba 0 0
+   0 0 #x48 #x89 #x2c #x24 #x41 #xff #x95 #x30 #x20 #x00
+   #x00 #x48 #x83 #xc4 #x18 #x5b #x5d #x41 #x5c #x41 #x5d #xc3)
+  "Genuine GNU 31.1 x86-64 top_level_run skeleton (S6.12) that registers
+two native anonymous lambdas (two `Fcomp__register_lambda' calls, slot
+1031), evaluates a file-level `(require \\='FEATURE)' (slot 947 `Feval'),
+then registers one fixed-arity subr (slot 1030 `Fcomp__register_subr').
+It is byte-for-byte the 192-byte top_level_run of gnu-byte-compile-if.eln
+outside `nelisp-eln-registration--gnu-lambda-require-subr-holes'.  Every
+import slot, every callee-saved-register move and every d_reloc_eph field
+offset is fixed; only the RIP-relative loads, the two lambda d_reloc
+indices, the arities and the d_reloc slot offsets are variable.")
+
+(defconst nelisp-eln-registration--gnu-lambda-require-subr-holes
+  '((3 . 7) (8 . 12) (26 . 30) (33 . 37) (40 . 44) (52 . 56) (64 . 68)
+    (84 . 88) (92 . 96) (97 . 101) (106 . 110) (121 . 125) (129 . 133)
+    (149 . 153) (157 . 161) (166 . 170))
+  "Variable byte ranges of
+`nelisp-eln-registration--gnu-lambda-require-subr-template': the first
+lambda's max and min arity (3, 8), the RIP-relative d_reloc_eph,
+d_reloc and freloc_link_table loads (26, 33, 40), the lambda type slot
+offset (52) and first lambda d_reloc index (64), the second lambda's
+max arity (84), type slot offset (92), min arity (97) and d_reloc index
+\(106), the Feval lexenv and form slot offsets (121, 129), and the
+registered subr's max arity (149), type slot offset (157) and min arity
+\(166).")
+
+(defconst nelisp-eln-registration--lambda-c-name-prefix
+  "F616e6f6e796d6f75732d6c616d626461_anonymous_lambda_"
+  "GNU's mangled C name prefix for anonymous native lambdas.")
+
+(defun nelisp-eln-registration--lambda-c-name-p (name &optional suffix)
+  "Non-nil when NAME is the anonymous-lambda C name (with SUFFIX if given)."
+  (and (stringp name)
+       (string-prefix-p nelisp-eln-registration--lambda-c-name-prefix name)
+       (let ((tail (substring name
+                              (length nelisp-eln-registration--lambda-c-name-prefix))))
+         (and (> (length tail) 0)
+              (string-match-p "\\`[0-9]+\\'" tail)
+              (or (null suffix) (equal tail suffix))))))
+
+(defun nelisp-eln-registration--d-reloc-index32 (actual offset)
+  "Decode the four-byte d_reloc slot offset at ACTUAL's OFFSET to its index.
+Return nil unless it is a multiple of eight below 65536."
+  (let ((raw (nelisp-eln-registration--read-u32-le actual offset)))
+    (and (= (mod raw 8) 0) (< raw 65536) (/ raw 8))))
+
+(defun nelisp-eln-registration--gnu-fixnum-immediate (actual offset)
+  "Decode the fixnum immediate at ACTUAL's four bytes from OFFSET.
+Return the integer in [0, 8191], or nil."
+  (let ((value (nelisp-eln-abi-decode-immediate
+                (nelisp-eln-registration--read-u32-le actual offset))))
+    (and (integerp value) (<= 0 value 8191) value)))
+
+(defun nelisp-eln-registration--gnu-lambda-require-subr-top-level
+    (handle cap actual)
+  "Return the decoded fields of the checked `gnu-lambda-require-subr' thunk,
+or nil when ACTUAL is not that exact shape: (ARITY TYPE-INDEX LEXENV-INDEX
+FORM-INDEX LAMBDA-TYPE-INDEX LAMBDA-IDX1 LAMBDA-IDX2 LAMBDA-ARITY).  Signal
+when it is, but its RIP-relative loads, arities or slot offsets do not
+authenticate.  What the d_reloc slots hold is checked against the
+artifact's own data relocations during preflight."
+  (when (nelisp-eln-registration--match-holed-template
+         actual nelisp-eln-registration--gnu-lambda-require-subr-template
+         nelisp-eln-registration--gnu-lambda-require-subr-holes)
+    (let ((max1 (nelisp-eln-registration--gnu-arity actual 3))
+          (min1 (nelisp-eln-registration--gnu-arity actual 8))
+          (max2 (nelisp-eln-registration--gnu-arity actual 84))
+          (min2 (nelisp-eln-registration--gnu-arity actual 97))
+          (maxm (nelisp-eln-registration--gnu-arity actual 149))
+          (minm (nelisp-eln-registration--gnu-arity actual 166))
+          (idx1 (nelisp-eln-registration--gnu-fixnum-immediate actual 64))
+          (idx2 (nelisp-eln-registration--gnu-fixnum-immediate actual 106))
+          (ltype1 (nelisp-eln-registration--d-reloc-index32 actual 52))
+          (ltype2 (nelisp-eln-registration--d-reloc-index32 actual 92))
+          (lexenv (nelisp-eln-registration--d-reloc-index32 actual 121))
+          (form (nelisp-eln-registration--d-reloc-index32 actual 129))
+          (type (nelisp-eln-registration--d-reloc-index32 actual 157)))
+      (unless (and (nelisp-eln-registration--validate-rip-relocs
+                    handle (nth 3 cap) actual
+                    '((26 . "d_reloc_eph") (33 . "d_reloc")
+                      (40 . "freloc_link_table")))
+                   min1 max1 (= min1 max1) min2 max2 (= min2 max2)
+                   (= min1 min2) minm maxm (= minm maxm)
+                   idx1 idx2 (/= idx1 idx2)
+                   ltype1 ltype2 (= ltype1 ltype2)
+                   lexenv form type
+                   (/= type lexenv) (/= type form) (/= lexenv form)
+                   (/= ltype1 type) (/= ltype1 lexenv) (/= ltype1 form))
+        (nelisp-eln-registration--fail 'top-level-instructions-not-admitted
+                                       (list (length actual) actual
+                                             'gnu-lambda-require-subr)))
+      (list minm type lexenv form ltype1 idx1 idx2 min1))))
+
 (defun nelisp-eln-registration--require-effect (metadata form-index lexenv-index)
   "Return the FEATURE a `gnu-require-subr' Feval call site requires.
 FORM-INDEX and LEXENV-INDEX are the d_reloc slots the admitted
@@ -583,6 +827,20 @@ evaluated."
         (nelisp-eln-registration--fail 'eval-form-not-admitted
                                        (list 'require form)))
       (nth 1 (nth 1 form)))))
+
+(defun nelisp-eln-registration--verified-optional-subr-type-p
+    (type min-arity max-arity)
+  "Return non-nil if TYPE is a genuine (function ARGS VALUE) constant whose
+ARGS is exactly MIN-ARITY types, one `&optional', then MAX-ARITY minus
+MIN-ARITY types (no `&rest')."
+  (and (consp type) (eq (car type) 'function)
+       (proper-list-p type) (= (length type) 3)
+       (proper-list-p (nth 1 type))
+       (< min-arity max-arity)
+       (= (length (nth 1 type)) (1+ max-arity))
+       (eq (nth min-arity (nth 1 type)) '&optional)
+       (= (cl-count '&optional (nth 1 type)) 1)
+       (not (memq '&rest (nth 1 type)))))
 
 (defun nelisp-eln-registration--verified-subr-type-p (type arity)
   "Return non-nil if TYPE is a genuine fixed-ARITY `subr-type' constant.
@@ -780,8 +1038,15 @@ the artifact's own bytes."
       (let ((verified (nelisp-eln-registration--gnu-verified-subr-top-level
                        handle cap actual)))
         (when verified
-          (setq arity (car verified) expected t profile 'gnu-verified-subr
-                extra (list :type-index (cdr verified))))))
+          (setq arity (nth 0 verified) expected t profile 'gnu-verified-subr
+                extra (if (= (nth 2 verified) (nth 0 verified))
+                          (list :type-index (nth 1 verified))
+                        ;; S6.4: `(A &optional B)', 1..2 -- the same
+                        ;; `:min-arity'/`:eph-offset' extras S6.6's
+                        ;; optional `gnu-require-subr' uses.
+                        (list :type-index (nth 1 verified)
+                              :min-arity (nth 2 verified)
+                              :eph-offset 1))))))
     (unless expected
       (let ((required (nelisp-eln-registration--gnu-require-subr-top-level
                        handle cap actual)))
@@ -790,6 +1055,37 @@ the artifact's own bytes."
                 extra (list :type-index (nth 1 required)
                             :lexenv-index (nth 2 required)
                             :form-index (nth 3 required))))))
+    (unless expected
+      (let ((required (nelisp-eln-registration--gnu-require-subr-opt-top-level
+                       handle cap actual)))
+        (when required
+          (setq arity (nth 0 required) expected t profile 'gnu-require-subr
+                extra (list :type-index (nth 1 required)
+                            :lexenv-index (nth 2 required)
+                            :form-index (nth 3 required)
+                            :min-arity (nth 4 required)
+                            :eph-offset 1)))))
+    (unless expected
+      (let ((required (nelisp-eln-registration--gnu-require-subr-wide-top-level
+                       handle cap actual)))
+        (when required
+          (setq arity (nth 0 required) expected t profile 'gnu-require-subr
+                extra (list :type-index (nth 1 required)
+                            :lexenv-index (nth 2 required)
+                            :form-index (nth 3 required)
+                            :min-arity (nth 4 required))))))
+    (unless expected
+      (let ((lreq (nelisp-eln-registration--gnu-lambda-require-subr-top-level
+                   handle cap actual)))
+        (when lreq
+          (setq arity (nth 0 lreq) expected t profile 'gnu-lambda-require-subr
+                extra (list :type-index (nth 1 lreq)
+                            :lexenv-index (nth 2 lreq)
+                            :form-index (nth 3 lreq)
+                            :lambda-type-index (nth 4 lreq)
+                            :lambda-idx1 (nth 5 lreq)
+                            :lambda-idx2 (nth 6 lreq)
+                            :lambda-arity (nth 7 lreq))))))
     (unless expected
       (when (nelisp-eln-registration--match-holed-template
              actual nelisp-eln-registration--gnu-eval-subr-template
@@ -939,7 +1235,7 @@ report that."
                         handle cap code abi-hash)))
                   (and multi (list :kind 'multi :analysis multi))))))))))))
 
-(defun nelisp-eln-registration--native-constructor-for (shape)
+(defun nelisp-eln-registration--native-constructor-for (shape &optional min-arity)
   "Return a NATIVE-CONSTRUCTOR for
 `nelisp-eln-registration-objects-subr-view', or nil for its default, from
 a preflight-admitted SHAPE (see
@@ -954,6 +1250,13 @@ no place for."
       (lambda (handle c-name name)
         (nelisp-eln-native-subr-create-cxr
          handle c-name first-disp d-reloc-slot name))))
+   ((and (eq (plist-get shape :kind) 'multi)
+         (= (nelisp-eln-native-subr-multi-arity (plist-get shape :analysis))
+            2)
+         min-arity)
+    (lambda (handle c-name name)
+      (nelisp-eln-native-subr-create-multi-binary
+       handle c-name name min-arity)))
    ((and (eq (plist-get shape :kind) 'multi)
          (= (nelisp-eln-native-subr-multi-arity (plist-get shape :analysis))
             2))
@@ -1031,6 +1334,81 @@ for a :kind other than tail/many/cxr/multi (no import at all)."
           (setq highest slot))))
     highest))
 
+(defun nelisp-eln-registration--admit-lambda-bodies (handle metadata extra main)
+  "Admit the two native anonymous lambdas a `gnu-lambda-require-subr'
+artifact registers, and return (:LAMBDAS INFO :CAPS (CAP0 CAP1 CAP2)
+:ANALYSES (A0 A2)).
+
+The first registered lambda (eph[0], suffix 1) must be GNU's 2-byte
+`jmp rel8' identical-code-folding thunk to the exported lambda with
+suffix 0, whose 102-byte body must be exactly the `lambda-nth-form'
+template; the second (eph[2], suffix 2) must be exactly the 90-byte
+`lambda-cdr-form' template.  Both are authenticated by
+`nelisp-eln-native-subr-multi-import-analysis' (every import slot and
+d_reloc constant), are fixed-arity 0, and read no
+f_symbols_with_pos_enabled_reloc cell.  MAIN is the registered subr's own
+multi-import proof: none of the three bodies may read either d_reloc slot
+`Fcomp__register_lambda' overwrites, so the registered lambda subrs are
+provably unreachable from admitted code."
+  (let* ((eph (plist-get metadata :ephemeral-data-relocations))
+         (abi-hash (plist-get metadata :abi-hash))
+         (prefix nelisp-eln-registration--lambda-c-name-prefix)
+         (c1 (aref eph 0)) (c2 (aref eph 2))
+         (c0 (concat prefix "0"))
+         (idx1 (plist-get extra :lambda-idx1))
+         (idx2 (plist-get extra :lambda-idx2))
+         (cap1 (nelisp-eln-system-loader-function-capability handle c1))
+         (cap2 (nelisp-eln-system-loader-function-capability handle c2))
+         (cap0 (nelisp-eln-system-loader-function-capability handle c0))
+         (code1 (and (eql (nth 6 cap1) 2)
+                     (nelisp-eln-system-loader-read-root-function-bytes
+                      handle c1 0 2)))
+         (code0 (and (integerp (nth 6 cap0)) (> (nth 6 cap0) 0)
+                     (nelisp-eln-system-loader-read-root-function-bytes
+                      handle c0 0 (nth 6 cap0))))
+         (code2 (and (integerp (nth 6 cap2)) (> (nth 6 cap2) 0)
+                     (nelisp-eln-system-loader-read-root-function-bytes
+                      handle c2 0 (nth 6 cap2))))
+         (a0 nil) (a2 nil))
+    (unless (and (nelisp-eln-registration--lambda-c-name-p c1 "1")
+                 (nelisp-eln-registration--lambda-c-name-p c2 "2"))
+      (nelisp-eln-registration--fail 'lambda-c-name-not-admitted (list c1 c2)))
+    ;; The thunk: `jmp rel8' (EB xx) landing exactly on the lambda-0 body.
+    (unless (and (stringp code1) (= (length code1) 2) (= (aref code1 0) #xeb)
+                 (= (+ (nth 3 cap1) 2
+                       (let ((rel (aref code1 1)))
+                         (if (>= rel 128) (- rel 256) rel)))
+                    (nth 3 cap0)))
+      (nelisp-eln-registration--fail 'lambda-thunk-not-admitted c1))
+    (setq a0 (and (= (length code0) (nth 6 cap0))
+                  (nelisp-eln-native-subr-multi-import-analysis
+                   handle cap0 code0 abi-hash))
+          a2 (and (= (length code2) (nth 6 cap2))
+                  (nelisp-eln-native-subr-multi-import-analysis
+                   handle cap2 code2 abi-hash)))
+    (dolist (entry (list (cons a0 'lambda-nth-form) (cons a2 'lambda-cdr-form)))
+      (let ((a (car entry)))
+        (unless (and a (eq (plist-get a :shape) (cdr entry))
+                     (eq (plist-get a :proof) :multi-import-call)
+                     (= (nelisp-eln-native-subr-multi-arity a) 0)
+                     (eql (plist-get extra :lambda-arity) 0)
+                     (null (plist-get a :symbols-with-pos-got)))
+          (nelisp-eln-registration--fail 'leaf-instructions-not-admitted
+                                         (cdr entry)))))
+    ;; The two overwritten d_reloc slots are read by no admitted body.
+    (dolist (a (list main a0 a2))
+      (dolist (d (plist-get a :data-relocations))
+        (when (memq (plist-get d :slot) (list idx1 idx2))
+          (nelisp-eln-registration--fail 'lambda-slot-read-by-body
+                                         (plist-get d :slot)))))
+    (list :lambdas
+          (list (list :idx idx1 :c-name c1 :rest (aref eph 1) :cap cap1
+                      :arity 0)
+                (list :idx idx2 :c-name c2 :rest (aref eph 3) :cap cap2
+                      :arity 0))
+          :caps (list cap0 cap1 cap2)
+          :analyses (list a0 a2))))
+
 (defun nelisp-eln-registration--preflight (handle)
   "Validate all emitted metadata, root extents, and imported call sites."
   (nelisp-eln-registration--trace "REGTRACE metadata-start\n")
@@ -1042,25 +1420,34 @@ for a :kind other than tail/many/cxr/multi (no import at all)."
          (profile (nth 2 top-info))
          (extra (nth 3 top-info))
          (pair (eq profile 'gnu-eval-subr-pair))
-         (eph-size (if pair 64 32))
+         (lambda-p (eq profile 'gnu-lambda-require-subr))
+         (eph-size (cond ((or pair lambda-p) 64)
+                         ((plist-get extra :eph-offset) 40)
+                         (t 32)))
          (eph (plist-get metadata :ephemeral-data-relocations))
          (data-size (plist-get metadata :d-reloc-size))
          (reloc-count
           (nelisp-eln-registration--metadata-data-count
            metadata profile arity extra))
-         (name (and (vectorp eph) (> (length eph) 1) (aref eph 1)))
-         (c-name (and (vectorp eph) (> (length eph) 2) (aref eph 2)))
-         (rest (and (vectorp eph) (> (length eph) 3) (aref eph 3)))
+         (eoff (or (plist-get extra :eph-offset) 0))
+         (name (and (vectorp eph) (> (length eph) (+ 1 eoff))
+                    (aref eph (if lambda-p 5 (+ 1 eoff)))))
+         (c-name (and (vectorp eph) (> (length eph) (+ 2 eoff))
+                      (aref eph (if lambda-p 6 (+ 2 eoff)))))
+         (rest (and (vectorp eph) (> (length eph) (+ 3 eoff))
+                    (aref eph (if lambda-p 7 (+ 3 eoff)))))
          (name2 (and pair (vectorp eph) (> (length eph) 5) (aref eph 5)))
          (c-name2 (and pair (vectorp eph) (> (length eph) 6) (aref eph 6)))
          (rest2 (and pair (vectorp eph) (> (length eph) 7) (aref eph 7)))
          (role-sequence
           (cond ((eq profile 'gnu-eval-subr) '(register eval))
                 ((eq profile 'gnu-require-subr) '(require register))
+                (lambda-p '(lambda lambda require register))
                 (pair '(register eval register))))
          (expected-type
           (and (memq profile '(gnu-eval-subr gnu-eval-subr-pair
-                               gnu-verified-subr gnu-require-subr))
+                               gnu-verified-subr gnu-require-subr
+                               gnu-lambda-require-subr))
                (aref (plist-get metadata :data-relocations)
                      (plist-get extra :type-index))))
          (expected-type2
@@ -1073,7 +1460,7 @@ for a :kind other than tail/many/cxr/multi (no import at all)."
            handle "d_reloc"
            (if (and (memq profile '(gnu-single-leaf gnu-eval-subr
                                      gnu-eval-subr-pair gnu-verified-subr
-                                     gnu-require-subr))
+                                     gnu-require-subr gnu-lambda-require-subr))
                     (integerp data-size) (<= 8 data-size 65536))
                data-size 8)))
          (eph-address (nelisp-eln-registration--writable-object
@@ -1083,7 +1470,10 @@ for a :kind other than tail/many/cxr/multi (no import at all)."
          (link-table nil) (link-table-address nil)
          (leaf-cap nil) (leaf-code nil) (tail-analysis nil)
          (leaf-shape nil) (leaf-shape2 nil) (tail-imports2 nil)
-         (table-slots nelisp-eln-registration--table-slots)
+         (table-slots (if lambda-p
+                          (1+ nelisp-eln-registration--lambda-slot)
+                        nelisp-eln-registration--table-slots))
+         (lambda-info nil) (lambda-caps nil)
          (swp-address nil)
          (eval-effects nil)
          (saved-data nil))
@@ -1130,7 +1520,8 @@ for a :kind other than tail/many/cxr/multi (no import at all)."
           (when tail-analysis
             (setq table-slots
                   (1+ (nth 1 (plist-get tail-analysis :descriptor))))))))
-    (when (memq profile '(gnu-verified-subr gnu-require-subr))
+    (when (memq profile '(gnu-verified-subr gnu-require-subr
+                          gnu-lambda-require-subr))
       ;; S6.8 (and S6.15's `gnu-require-subr'): the body must be exactly one genuine multi-import template
       ;; (`nelisp-eln-tail-code--multi-import-shapes') whose every import
       ;; slot, d_reloc constant and module counter authenticates (see
@@ -1150,7 +1541,17 @@ for a :kind other than tail/many/cxr/multi (no import at all)."
           (unless (and multi
                        (eq (plist-get multi :proof) :multi-import-call)
                        (= (nelisp-eln-native-subr-multi-arity multi) arity)
-                       (null (plist-get multi :symbols-with-pos-got)))
+                       (or (not lambda-p)
+                           (eq (plist-get multi :shape) 'if-form))
+                       ;; A variable arity must match the registration's
+                       ;; own MINARGS exactly (a fixed arity has none).
+                       (= (nelisp-eln-native-subr-multi-min-arity multi)
+                          (or (plist-get extra :min-arity) arity))
+                       ;; The `symbols_with_pos_enabled' byte is read iff
+                       ;; the exact shape declares it.
+                       (eq (and (plist-get multi :symbols-with-pos-got) t)
+                           (nelisp-eln-native-subr-multi-swp-declared-p
+                            multi)))
             (nelisp-eln-registration--fail
              'leaf-instructions-not-admitted c-name))
           (setq tail-analysis multi
@@ -1159,7 +1560,14 @@ for a :kind other than tail/many/cxr/multi (no import at all)."
                 (max table-slots
                      (1+ (nelisp-eln-registration--leaf-shape-slot
                           leaf-shape))))))
-      (when (eq profile 'gnu-require-subr)
+      (when lambda-p
+        ;; S6.12: the two native lambdas registered before the require are
+        ;; admitted by their own exact templates, and never read.
+        (setq lambda-info
+              (nelisp-eln-registration--admit-lambda-bodies
+               handle metadata extra tail-analysis)
+              lambda-caps (plist-get lambda-info :caps)))
+      (when (memq profile '(gnu-require-subr gnu-lambda-require-subr))
         ;; S6.15: the Feval call site that precedes the registration must
         ;; statically decode to an admitted `(require \='FEATURE)'.
         (setq eval-effects
@@ -1262,11 +1670,24 @@ for a :kind other than tail/many/cxr/multi (no import at all)."
     (setq link-table
           (nl-ffi-memory-allocate (* 8 table-slots))
           link-table-address (nl-ffi-memory-address link-table))
+    (let ((helper (plist-get tail-analysis :helper-range)))
+      ;; S6.9: the helper's on-file bytes matched its exact template during
+      ;; analysis; its live bytes must equal the file's.
+      (when helper
+        (nelisp-eln-registration--raw-read-bytes
+         handle (car helper) (cdr helper))))
     (nelisp-eln-registration--validate-executable-regions
      handle
      (list (cons (nth 3 top-cap) (nth 6 top-cap))
            (and leaf-cap (cons (nth 3 leaf-cap) (nth 6 leaf-cap)))
-           (and leaf-cap2 (cons (nth 3 leaf-cap2) (nth 6 leaf-cap2)))))
+           (and leaf-cap2 (cons (nth 3 leaf-cap2) (nth 6 leaf-cap2)))
+           (plist-get tail-analysis :helper-range)
+           (and lambda-caps (cons (nth 3 (nth 0 lambda-caps))
+                                  (nth 6 (nth 0 lambda-caps))))
+           (and lambda-caps (cons (nth 3 (nth 1 lambda-caps))
+                                  (nth 6 (nth 1 lambda-caps))))
+           (and lambda-caps (cons (nth 3 (nth 2 lambda-caps))
+                                  (nth 6 (nth 2 lambda-caps))))))
     (list :metadata metadata :name name :c-name c-name :arity arity
           :profile profile :data-reloc-count reloc-count
           :leaf-cap leaf-cap
@@ -1285,6 +1706,11 @@ for a :kind other than tail/many/cxr/multi (no import at all)."
           :type2-index (plist-get extra :type2-index)
           :leaf-cap2 leaf-cap2 :name2 name2 :c-name2 c-name2 :rest2 rest2
           :arity2 (plist-get extra :arity2)
+          :min-arity (plist-get extra :min-arity)
+          :eph-offset (plist-get extra :eph-offset)
+          :lambda-info lambda-info
+          :lambda-type-index (plist-get extra :lambda-type-index)
+          :rest1 rest
           :eph-word-count (/ eph-size 8)
           :leaf-shape leaf-shape :leaf-shape2 leaf-shape2
           :saved-relocs (list (nelisp-eln-abi-read-word data-address 0)
@@ -1326,24 +1752,53 @@ ignore it."
          (count (and (vectorp reloc) (length reloc)))
          (size (plist-get metadata :d-reloc-size))
          (pair (eq profile 'gnu-eval-subr-pair))
+         ;; S6.6: an `&optional' function's ephemeral vector leads with MIN
+         ;; and MAX arity ([MIN MAX NAME C-NAME REST]); EOFF shifts the rest.
+         (eoff (or (plist-get extra :eph-offset) 0))
+         (lambda-p (eq profile 'gnu-lambda-require-subr))
          (common (and (equal (plist-get metadata :abi-hash) "ba35c031")
                       (vectorp reloc)
-                      (vectorp eph) (= (length eph) (if pair 8 4))
-                      (integerp (aref eph 0))
-                      (symbolp (aref eph 1)) (stringp (aref eph 2))
-                      (equal (aref eph 3) '(0 nil nil))
-                      (equal (aref eph 2)
-                             (nelisp-eln-emitter--symbol-name (aref eph 1)))
-                      (or (not pair)
-                          (and (integerp (aref eph 4))
+                      (vectorp eph)
+                      (= (length eph) (cond ((or pair lambda-p) 8)
+                                            (t (+ 4 eoff))))
+                      (if lambda-p
+                          ;; S6.12: [C-NAME-1 REST-1 C-NAME-2 REST-2 1
+                          ;; NAME C-NAME REST], the two lambdas first.
+                          (and (nelisp-eln-registration--lambda-c-name-p
+                                (aref eph 0))
+                               (equal (aref eph 1) '(0 nil nil))
+                               (nelisp-eln-registration--lambda-c-name-p
+                                (aref eph 2))
+                               (equal (aref eph 3) '(1 nil nil))
+                               (eql (aref eph 4) 1)
                                (symbolp (aref eph 5)) (stringp (aref eph 6))
-                               (equal (aref eph 7) '(1 nil nil))
                                (equal (aref eph 6)
                                       (nelisp-eln-emitter--symbol-name
-                                       (aref eph 5)))))
+                                       (aref eph 5)))
+                               (equal (aref eph 7) '(2 nil nil)))
+                        (and (integerp (aref eph 0))
+                             (or (= eoff 0)
+                                 (and (integerp (aref eph 1))
+                                      (eql (aref eph 0)
+                                           (plist-get extra :min-arity))
+                                      (eql (aref eph 1) arity)))
+                             (symbolp (aref eph (+ 1 eoff)))
+                             (stringp (aref eph (+ 2 eoff)))
+                             (equal (aref eph (+ 3 eoff)) '(0 nil nil))
+                             (equal (aref eph (+ 2 eoff))
+                                    (nelisp-eln-emitter--symbol-name
+                                     (aref eph (+ 1 eoff))))
+                             (or (not pair)
+                                 (and (integerp (aref eph 4))
+                                      (symbolp (aref eph 5))
+                                      (stringp (aref eph 6))
+                                      (equal (aref eph 7) '(1 nil nil))
+                                      (equal (aref eph 6)
+                                             (nelisp-eln-emitter--symbol-name
+                                              (aref eph 5)))))))
                       (integerp (plist-get metadata :d-reloc-eph-size))
                       (= (plist-get metadata :d-reloc-eph-size)
-                         (if pair 64 32)))))
+                         (cond ((or pair lambda-p) 64) ((= eoff 1) 40) (t 32))))))
     (unless (and common
                  (cond
                   ((eq profile 'self-emitter)
@@ -1369,11 +1824,46 @@ ignore it."
                      (and (<= 0 arity 8) (<= 1 count 8192)
                           (integerp size) (= size (* 8 count))
                           (integerp (aref eph 0))
-                          (= (aref eph 0) (if (eql arity 2) 2 1))
+                          (if (plist-get extra :min-arity)
+                              t
+                            (= (aref eph 0) (if (eql arity 2) 2 1)))
+                          (integerp type-index) (< 0 type-index count)
+                          (if (plist-get extra :min-arity)
+                              (nelisp-eln-registration--verified-optional-subr-type-p
+                               (aref reloc type-index)
+                               (plist-get extra :min-arity) arity)
+                            (nelisp-eln-registration--verified-subr-type-p
+                             (aref reloc type-index) arity))
+                          (vectorp docs) (<= 0 (length docs) 8192)
+                          (<= (+ size (* 8 (length docs))) 65536))))
+                  ((eq profile 'gnu-lambda-require-subr)
+                   ;; The require-subr envelope, plus the two lambdas'
+                   ;; shared `(function nil t)' type slot and their two
+                   ;; "#$" placeholder slots, all distinct from the
+                   ;; subr's own type slot.
+                   (let ((type-index (plist-get extra :type-index))
+                         (ltype (plist-get extra :lambda-type-index))
+                         (idx1 (plist-get extra :lambda-idx1))
+                         (idx2 (plist-get extra :lambda-idx2)))
+                     (and (<= 0 arity 8) (<= 1 count 8192)
+                          (integerp size) (= size (* 8 count))
+                          (eql (plist-get extra :lambda-arity) 0)
                           (integerp type-index) (< 0 type-index count)
                           (nelisp-eln-registration--verified-subr-type-p
                            (aref reloc type-index) arity)
-                          (vectorp docs) (<= 0 (length docs) 8192)
+                          (integerp ltype) (< 0 ltype count)
+                          (equal (aref reloc ltype) '(function nil t))
+                          (integerp idx1) (integerp idx2)
+                          (< -1 idx1 count) (< -1 idx2 count)
+                          (equal (aref reloc idx1) "#$")
+                          (equal (aref reloc idx2) "#$")
+                          (not (memq idx1 (list type-index ltype
+                                                (plist-get extra :lexenv-index)
+                                                (plist-get extra :form-index))))
+                          (not (memq idx2 (list type-index ltype
+                                                (plist-get extra :lexenv-index)
+                                                (plist-get extra :form-index))))
+                          (vectorp docs) (<= 3 (length docs) 8192)
                           (<= (+ size (* 8 (length docs))) 65536))))
                   ((memq profile '(gnu-eval-subr gnu-eval-subr-pair))
                    (and (<= 0 arity 8) (<= 1 count 8192)
@@ -1418,10 +1908,15 @@ ignore it."
          (link-address (plist-get preflight :link-address))
          (slots (plist-get preflight :link-table-slots))
          (tail-imports (plist-get preflight :tail-imports))
+         (lambda-p (eq (plist-get preflight :profile)
+                       'gnu-lambda-require-subr))
+         (base-slots (if lambda-p
+                         (1+ nelisp-eln-registration--lambda-slot)
+                       nelisp-eln-registration--table-slots))
          (i 0))
     (unless (and (integerp table) (> table 0)
                  (integerp link-address) (> link-address 0)
-                 (integerp slots) (>= slots nelisp-eln-registration--table-slots)
+                 (integerp slots) (>= slots base-slots)
                  (integerp registration-callback-address)
                  (> registration-callback-address 0))
       (nelisp-eln-registration--fail 'invalid-import-table))
@@ -1430,6 +1925,11 @@ ignore it."
       (setq i (1+ i)))
     (ptr-write-u64 table (* 8 nelisp-eln-registration--slot)
                    registration-callback-address)
+    (when lambda-p
+      ;; S6.12: `Fcomp__register_lambda' shares the same generic
+      ;; seven-word trampoline; `--callback' dispatches by admitted role.
+      (ptr-write-u64 table (* 8 nelisp-eln-registration--lambda-slot)
+                     registration-callback-address))
     (when (plist-get preflight :role-sequence)
       ;; The S6.16-24 `gnu-eval-subr'(-pair) profiles' Feval call site
       ;; shares this same generic seven-word trampoline; `--callback'
@@ -1446,7 +1946,7 @@ ignore it."
        (unless (= slots (if (plist-get preflight :tail-imports2)
                             (nelisp-eln-registration--expected-table-slots
                              preflight)
-                          (max nelisp-eln-registration--table-slots (1+ slot))))
+                          (max base-slots (1+ slot))))
         (nelisp-eln-registration--fail 'invalid-tail-import-table-size slots))
        ;; One entry per authenticated import slot; a multi-import body
        ;; gets a distinct slot-identifying port in each.
@@ -1454,7 +1954,8 @@ ignore it."
         (unless (and (integerp (cdr entry)) (> (cdr entry) 0))
           (nelisp-eln-registration--fail 'tail-import-callback-unavailable))
         (when (memq (car entry) (list nelisp-eln-registration--slot
-                                      nelisp-eln-registration--eval-slot))
+                                      nelisp-eln-registration--eval-slot
+                                      nelisp-eln-registration--lambda-slot))
           (nelisp-eln-registration--fail 'tail-import-slot-collision
                                          (car entry)))
         (ptr-write-u64 table (* 8 (car entry)) (cdr entry)))))
@@ -1568,7 +2069,8 @@ admitted expectations (plain fields for 1; the S6.16-24 role plist's
           (if second (plist-get plist :name-word2) (aref owner 14)))
          (expected-arity
           (if second (plist-get plist :arity2) (aref owner 15)))
-         (expected-rest (if second (plist-get plist :rest2) '(0 nil nil)))
+         (expected-rest (if second (plist-get plist :rest2)
+                          (or (plist-get plist :rest1) '(0 nil nil))))
          (expected-leaf-cap (if second (plist-get plist :leaf-cap2)
                               (aref owner 8)))
          (expected-type-value
@@ -1593,7 +2095,8 @@ admitted expectations (plain fields for 1; the S6.16-24 role plist's
              (= (nth 6 (nelisp-eln-system-loader-function-capability
                         (aref unit 1) c-name))
                 (nth 6 expected-leaf-cap))
-             (= min-args expected-arity)
+             (= min-args (or (and (not second) (plist-get plist :min-arity))
+                             expected-arity))
              (= max-args expected-arity)
              (cond
               (expected-type-value (equal type expected-type-value))
@@ -1621,10 +2124,12 @@ admitted expectations (plain fields for 1; the S6.16-24 role plist's
          activation (symbol-name name) c-name (nth 1 rest) (nth 2 rest)
          (car rest) type expected-arity (aref owner 16)
          (nelisp-eln-registration--native-constructor-for
-          (plist-get plist (if second :leaf-shape2 :leaf-shape)))
+          (plist-get plist (if second :leaf-shape2 :leaf-shape))
+          (and (not second) (plist-get plist :min-arity)))
          ;; The pair's second registration authenticates its own type
          ;; slot through the same metadata capability (S6.16).
-         (nelisp-eln-registration--type-index owner second))))
+         (nelisp-eln-registration--type-index owner second)
+         (and (not second) (plist-get plist :min-arity)))))
     (setq callable (plist-get view :callable) word (plist-get view :word))
     (nelisp-eln-registration--trace "REGTRACE callback-view-created\n")
     (if second
@@ -1639,6 +2144,96 @@ admitted expectations (plain fields for 1; the S6.16-24 role plist's
             nelisp-eln-registration--registered-callable callable))
     (nelisp-eln-registration--trace "REGTRACE callback-published\n")
     (cons (logand word #xffffffff) (logand (ash word -32) #xffffffff))))
+
+(defun nelisp-eln-registration--lambda-ordinal (owner)
+  "Return which admitted `lambda' call this is (1 or 2) for OWNER's role plan."
+  (let* ((plan (plist-get (nelisp-eln-registration--role-plist owner)
+                          :role-sequence))
+         (i 0) (n 0) (rest plan))
+    (while (and rest (< i nelisp-eln-registration--call-index))
+      (when (eq (car rest) 'lambda) (setq n (1+ n)))
+      (setq rest (cdr rest) i (1+ i)))
+    n))
+
+(defun nelisp-eln-registration--register-lambda-callback (descriptor ordinal)
+  "Implement the authenticated `Fcomp__register_lambda' imported callback.
+ORDINAL is 1 or 2, selecting the owner's own admitted lambda expectation
+\(d_reloc index, C name, `rest' descriptor, extent and arity, all decoded
+statically during preflight).  The seven decoded call words must match it
+exactly, the shared `(function nil t)' type must come through the
+metadata capability, and the lambdas must be registered in order, once
+each.  It builds a NeLisp-managed subr view -- a callable that signals
+`registered-lambda-not-callable' when called, since no admitted body ever
+reads the slot -- and stores its word into d_reloc[RELOC-IDX], exactly what
+GNU's `comp--register-lambda' does; the subr is published under no name."
+  (let* ((owner nelisp-eln-registration--active-owner)
+         (unit (and owner (aref owner 1)))
+         (activation (and owner (aref owner 2)))
+         (plist (nelisp-eln-registration--role-plist owner))
+         (expected (nth (1- ordinal) (plist-get plist :lambdas)))
+         (words (nelisp-eln-registration--args descriptor))
+         (idx (nelisp-eln-abi-decode-immediate (nth 0 words)))
+         (c-name (and unit (nelisp-eln-registration-objects-decode-word
+                            unit (nth 1 words))))
+         (min-args (nelisp-eln-abi-decode-immediate (nth 2 words)))
+         (max-args (nelisp-eln-abi-decode-immediate (nth 3 words)))
+         (token (and owner (aref owner 16)))
+         (type-index (plist-get plist :lambda-type-index))
+         (metadata (and owner (aref owner 7)))
+         (type (and token unit
+                    (nelisp-eln-registration-metadata-decode
+                     token (nth 4 words))))
+         (rest (and unit (nelisp-eln-registration-objects-decode-word
+                          unit (nth 5 words))))
+         (unit-word (and unit (nelisp-eln-registration-objects-unit-word unit)))
+         (previous (nth 0 (plist-get plist :lambda-callables)))
+         (view nil))
+    (unless (and owner unit activation token expected (memq ordinal '(1 2))
+                 ;; In order, once each.
+                 (= (length (plist-get plist :lambda-callables))
+                    (1- ordinal))
+                 (or (= ordinal 1) previous)
+                 (eql idx (plist-get expected :idx))
+                 (equal c-name (plist-get expected :c-name))
+                 (= (nth 6 (nelisp-eln-system-loader-function-capability
+                            (aref unit 1) c-name))
+                    (nth 6 (plist-get expected :cap)))
+                 (eql min-args (plist-get expected :arity))
+                 (eql max-args (plist-get expected :arity))
+                 (integerp type-index)
+                 (= (nth 4 words)
+                    (nelisp-eln-registration-metadata-type-word
+                     token type-index))
+                 (eq type (aref (plist-get metadata :data-relocations)
+                                type-index))
+                 (equal type '(function nil t))
+                 (equal rest (plist-get expected :rest))
+                 (= (nth 6 words) unit-word)
+                 (= (nth 1 words) (nelisp-eln-registration-objects-encode-word
+                                   unit c-name))
+                 (= (nth 5 words) (nelisp-eln-registration-objects-encode-word
+                                   unit rest)))
+      (nelisp-eln-registration--fail
+       'callback-arguments-not-admitted
+       (list 'lambda ordinal words idx c-name min-args max-args type rest
+             unit-word)))
+    (let ((nelisp-eln-native-subr--tail-import-context (aref owner 17)))
+      (setq view
+            (nelisp-eln-registration-objects-subr-view
+             activation c-name c-name (nth 1 rest) (nth 2 rest) (car rest)
+             type (plist-get expected :arity) token
+             (lambda (handle name display-name)
+               (nelisp-eln-native-subr-create-lambda-placeholder
+                handle name display-name))
+             type-index)))
+    (let ((word (plist-get view :word)))
+      (nelisp-eln-abi-write-word (plist-get plist :d-reloc-address)
+                                 (* 8 idx) word)
+      (aset owner 18
+            (plist-put (aref owner 18) :lambda-callables
+                       (append (plist-get (aref owner 18) :lambda-callables)
+                               (list (plist-get view :callable)))))
+      (cons (logand word #xffffffff) (logand (ash word -32) #xffffffff)))))
 
 (defun nelisp-eln-registration--apply-eval-callback (_descriptor)
   "Implement the authenticated Feval (slot 947) imported callback.
@@ -1711,6 +2306,11 @@ and how to decode it."
           (nelisp-eln-registration--register-callback
            descriptor
            (nelisp-eln-registration--register-ordinal
+            nelisp-eln-registration--active-owner)))
+         ((eq role 'lambda)
+          (nelisp-eln-registration--register-lambda-callback
+           descriptor
+           (nelisp-eln-registration--lambda-ordinal
             nelisp-eln-registration--active-owner)))
          ((eq role 'eval)
           (nelisp-eln-registration--apply-eval-callback descriptor))
@@ -1826,6 +2426,17 @@ and how to decode it."
         (nelisp-eln-abi-write-word eph-address (* i 8)
                                    (nelisp-eln-abi-encode-nil))
         (setq i (1+ i)))))
+  ;; S6.12: `Fcomp__register_lambda' left transient subr-view words in its
+  ;; two d_reloc slots; put the artifact's own placeholder words back before
+  ;; those views retire, so no slot ever dangles.
+  (let* ((plist (aref owner 18))
+         (token (aref owner 16))
+         (address (plist-get plist :d-reloc-address)))
+    (dolist (lambda-entry (plist-get plist :lambdas))
+      (let ((idx (plist-get lambda-entry :idx)))
+        (nelisp-eln-abi-write-word
+         address (* 8 idx)
+         (nelisp-eln-registration-metadata-slot-word token 'data idx)))))
   (nelisp-eln-registration-objects-retire-activation activation)
   (nelisp-eln-registration-vectors-end-activation vectors-activation)
   (setq nelisp-eln-registration--active-owner nil
@@ -2028,11 +2639,19 @@ registration(s) into that namespace instead of the global function cells."
                         :c-name2 (plist-get preflight :c-name2)
                         :rest2 (plist-get preflight :rest2)
                         :arity2 (plist-get preflight :arity2)
+                        :min-arity (plist-get preflight :min-arity)
                         :leaf-cap2 (plist-get preflight :leaf-cap2)
                         :leaf-shape (plist-get preflight :leaf-shape)
                         :leaf-shape2 (plist-get preflight :leaf-shape2)
                         :type-index (plist-get preflight :type-index)
-                        :type2-index (plist-get preflight :type2-index)))
+                        :type2-index (plist-get preflight :type2-index)
+                        :rest1 (plist-get preflight :rest1)
+                        :lambdas (plist-get (plist-get preflight :lambda-info)
+                                            :lambdas)
+                        :lambda-type-index (plist-get preflight
+                                                      :lambda-type-index)
+                        :d-reloc-address (plist-get preflight
+                                                    :d-reloc-address)))
             (aset owner 12 (plist-get preflight :link-table))
             (setq nelisp-eln-registration--owners
                   (cons owner nelisp-eln-registration--owners)
@@ -2072,7 +2691,8 @@ registration(s) into that namespace instead of the global function cells."
             ;; materialize; every d_reloc slot is then populated from it.
             (when (memq (plist-get preflight :profile)
                         '(gnu-single-leaf gnu-eval-subr gnu-eval-subr-pair
-                          gnu-verified-subr gnu-require-subr))
+                          gnu-verified-subr gnu-require-subr
+                          gnu-lambda-require-subr))
               (require 'nelisp-eln-registration-metadata)
               (setq metadata-token
                     (nelisp-eln-registration-metadata-create
@@ -2085,6 +2705,8 @@ registration(s) into that namespace instead of the global function cells."
             ;; Admit the actual interned NAME, then allocate every other
             ;; callback value and metadata vector before activating the codec.
             (let* ((name2 (plist-get preflight :name2))
+                   (lambda-p (eq (plist-get preflight :profile)
+                                 'gnu-lambda-require-subr))
                    (unit-word (nelisp-eln-registration-objects-unit-word unit))
                    (name-entries (nelisp-eln-objects-admit-registration-symbols
                                   (aref unit 2) (if name2 (list name name2)
@@ -2101,7 +2723,18 @@ registration(s) into that namespace instead of the global function cells."
                           unit (plist-get preflight :c-name2))))
                    (rest-word
                     (nelisp-eln-registration-objects-encode-word
-                     unit (aref (plist-get metadata :ephemeral-data-relocations) 3)))
+                     unit (aref (plist-get metadata :ephemeral-data-relocations)
+                                (if lambda-p 7 (+ 3 (or (plist-get preflight :eph-offset) 0))))))
+                   ;; S6.12: the two lambdas' own C names and descriptors.
+                   (lambda-words
+                    (and lambda-p
+                         (mapcar
+                          (lambda (i)
+                            (nelisp-eln-registration-objects-encode-word
+                             unit (aref (plist-get metadata
+                                                   :ephemeral-data-relocations)
+                                        i)))
+                          '(0 1 2 3))))
                    (rest2-word
                     (and name2
                          (nelisp-eln-registration-objects-encode-word
@@ -2206,13 +2839,41 @@ registration(s) into that namespace instead of the global function cells."
                (t
                 (nelisp-eln-abi-write-word
                  d-reloc-address 0 (nelisp-eln-abi-encode-nil))))
-              (nelisp-eln-abi-write-word
-               eph-address 0
-               (nelisp-eln-abi-encode-fixnum
-                (aref (plist-get metadata :ephemeral-data-relocations) 0)))
-              (nelisp-eln-abi-write-word eph-address 8 name-word)
-              (nelisp-eln-abi-write-word eph-address 16 c-name-word)
-              (nelisp-eln-abi-write-word eph-address 24 rest-word)
+              (if lambda-p
+                  (let ((i 0))
+                    ;; [C-NAME-1 REST-1 C-NAME-2 REST-2 1 NAME C-NAME REST]
+                    (dolist (word lambda-words)
+                      (nelisp-eln-abi-write-word eph-address (* 8 i) word)
+                      (setq i (1+ i)))
+                    (nelisp-eln-abi-write-word
+                     eph-address 32
+                     (nelisp-eln-abi-encode-fixnum
+                      (aref (plist-get metadata :ephemeral-data-relocations)
+                            4)))
+                    (nelisp-eln-abi-write-word eph-address 40 name-word)
+                    (nelisp-eln-abi-write-word eph-address 48 c-name-word)
+                    (nelisp-eln-abi-write-word eph-address 56 rest-word))
+                (progn
+                (nelisp-eln-abi-write-word
+                 eph-address 0
+                 (nelisp-eln-abi-encode-fixnum
+                  (aref (plist-get metadata :ephemeral-data-relocations) 0)))
+                (when (eql (plist-get preflight :eph-offset) 1)
+                  ;; S6.6: the `&optional' layout's second word is MAX arity.
+                  (nelisp-eln-abi-write-word
+                   eph-address 8
+                   (nelisp-eln-abi-encode-fixnum
+                    (aref (plist-get metadata :ephemeral-data-relocations) 1))))
+                (nelisp-eln-abi-write-word
+                 eph-address (* 8 (+ 1 (or (plist-get preflight :eph-offset) 0)))
+                 name-word)
+                (nelisp-eln-abi-write-word
+                 eph-address (* 8 (+ 2 (or (plist-get preflight :eph-offset) 0)))
+                 c-name-word)
+                (nelisp-eln-abi-write-word
+                 eph-address (* 8 (+ 3 (or (plist-get preflight :eph-offset) 0)))
+                 rest-word)
+                  ))
               (when name2
                 (aset owner 18 (plist-put (aref owner 18)
                                           :name-word2 name-word2))
@@ -2224,11 +2885,19 @@ registration(s) into that namespace instead of the global function cells."
                 (nelisp-eln-abi-write-word eph-address 48 c-name2-word)
                 (nelisp-eln-abi-write-word eph-address 56 rest2-word))
               (nelisp-eln-abi-write-word unit-cell-address 0 unit-word)
-              (unless (= (nelisp-eln-abi-read-word eph-address 8) name-word)
+              (unless (= (nelisp-eln-abi-read-word
+                          eph-address
+                          (if lambda-p
+                              40
+                            (* 8 (+ 1 (or (plist-get preflight :eph-offset) 0)))))
+                         name-word)
                 (nelisp-eln-registration--fail 'name-word-relocation-mismatch
                                                (list name-word
                                                      (nelisp-eln-abi-read-word
-                                                      eph-address 8))))
+                                                      eph-address
+                                                      (if lambda-p
+                                                          40
+                                                        (* 8 (+ 1 (or (plist-get preflight :eph-offset) 0))))))))
               (when (plist-get preflight :symbols-with-pos-address)
                 ;; GNU points this cell at its `symbols_with_pos_enabled'
                 ;; bool; NeLisp never enables symbols with position, so
@@ -2435,6 +3104,7 @@ loads.  See `nelisp-eln-registration--validate-direct-rip-relocs'.")
         (unibyte-string #x0f #x1f #x80 #x00 #x00 #x00 #x00)
         (unibyte-string #x0f #x1f #x84 #x00 #x00 #x00 #x00 #x00)
         (unibyte-string #x66 #x0f #x1f #x84 #x00 #x00 #x00 #x00 #x00)
+        (unibyte-string #x66 #x2e #x0f #x1f #x84 #x00 #x00 #x00 #x00 #x00)
         (unibyte-string #x66 #x66 #x2e #x0f #x1f #x84 #x00 #x00 #x00 #x00 #x00))
   "The standard x86-64 multi-byte NOP encodings binutils/GCC use for
 alignment padding.  The first nine are the canonical one-per-length (1-9
@@ -2445,7 +3115,10 @@ choice for a gap it cannot fill with one 1-9 byte form alone; confirmed
 against a genuine GNU 31.1 toolchain artifact
 \(~/.cache/tmp/eln-gnu-identity-investigation/gnu-identity.eln, a 12-byte
 alignment gap GAS filled with this 11-byte form plus one 1-byte `nop').
-Matching is never positional-by-length any more -- see
+The ten-byte `cs nopw 0x0(%rax,%rax,1)' form (`66 2e 0f 1f 84' plus a
+four-byte zero displacement, the Intel-recommended 10-byte NOP; S6.12:
+GAS fills the ten-byte gap after `byte-compile-if''s first lambda with
+it).  Matching is never positional-by-length any more -- see
 `nelisp-eln-registration--padding-decomposes-p', which tries every entry
 at every position -- so entries need not be contiguous by length.")
 
@@ -2527,6 +3200,63 @@ state already holds; see `nelisp-eln-registration--elf-section-in-bytes'."
                  (plist-get state :file-bytes) name)))
     (and found (cons (nth 0 found) (nth 2 found)))))
 
+;; Layout shift.  GNU's linker places `.got'/`.got.plt' at the next page
+;; boundary after the last executable byte, so an artifact whose `.text'
+;; crosses a 4 KiB boundary (e.g. byte-compile-lambda, `.text' 0x10c6
+;; bytes) has every GOT-relative displacement in the fixed `.init'/`.plt'/
+;; `.plt.got'/CRT-stub bytes larger by a whole number of pages than the
+;; smaller artifacts the templates were captured from (`.got.plt' at
+;; 0x3fe8).  The templates stay byte-exact: each GOT-relative
+;; displacement field (listed explicitly per template) is increased by
+;; the file's own `.got.plt' shift, which must be a non-negative multiple
+;; of 0x1000 and, when `.dynamic' exists, must agree with DT_PLTGOT.
+
+(defconst nelisp-eln-registration--base-got-plt-address #x3fe8
+  "`.got.plt' address of the artifacts the fixed templates were captured from.")
+
+(defconst nelisp-eln-registration--init-got-fields '(7))
+(defconst nelisp-eln-registration--plt-got-fields '(2))
+(defconst nelisp-eln-registration--plt-fields '(2 8))
+(defconst nelisp-eln-registration--crt-stub-got-fields '(22 87 129 142))
+
+(defun nelisp-eln-registration--layout-shift-in-bytes (bytes)
+  "Return the authenticated GOT page shift of the ELF in BYTES, or nil."
+  (let* ((got (nelisp-eln-registration--elf-section-in-bytes bytes ".got.plt"))
+         (entries (nelisp-eln-registration--parse-dynamic-entries bytes))
+         (pltgot (nelisp-eln-registration--dynamic-values entries 3)))
+    (and got
+         (let ((shift (- (nth 0 got)
+                         nelisp-eln-registration--base-got-plt-address)))
+           (and (>= shift 0) (< shift #x100000) (= (% shift #x1000) 0)
+                (or (null entries) (equal pltgot (list (nth 0 got))))
+                shift)))))
+
+(defun nelisp-eln-registration--shift-template (template fields shift)
+  "Return a copy of TEMPLATE with each u32 field offset in FIELDS raised by SHIFT."
+  (if (= shift 0)
+      template
+    (let ((out (copy-sequence template)))
+      (dolist (f fields)
+        (let ((v (+ (nelisp-eln-registration--read-u32-le out f) shift)))
+          (dotimes (i 4)
+            (aset out (+ f i) (logand (ash v (* -8 i)) #xff)))))
+      out)))
+
+(defun nelisp-eln-registration--fixed-templates (shift)
+  "Return (INIT PLT PLT-GOT CRT-STUB) templates shifted by SHIFT."
+  (list (nelisp-eln-registration--shift-template
+         nelisp-eln-registration--init-template
+         nelisp-eln-registration--init-got-fields shift)
+        (nelisp-eln-registration--shift-template
+         nelisp-eln-registration--plt-template
+         nelisp-eln-registration--plt-fields shift)
+        (nelisp-eln-registration--shift-template
+         nelisp-eln-registration--plt-got-template
+         nelisp-eln-registration--plt-got-fields shift)
+        (nelisp-eln-registration--shift-template
+         nelisp-eln-registration--crt-stub-template
+         nelisp-eln-registration--crt-stub-got-fields shift)))
+
 (defun nelisp-eln-registration--validate-crt-stubs (handle)
   "Validate the CRT stub block at the very start of `.text', if this
 artifact has one.  `deregister_tm_clones' and its siblings have no
@@ -2543,12 +3273,17 @@ content mandatory, never optional."
     (or (null init)
         (let* ((bias (plist-get (nelisp-eln-system-loader--state handle) :bias))
                (address (+ bias (car text)))
-               (actual (nelisp-eln-registration--raw-read-bytes
-                       handle address
-                       (length nelisp-eln-registration--crt-stub-template))))
-          (and (nelisp-eln-registration--match-holed-template
-                actual nelisp-eln-registration--crt-stub-template
-                nelisp-eln-registration--crt-stub-holes)
+               (shift (nelisp-eln-registration--layout-shift-in-bytes
+                       (plist-get (nelisp-eln-system-loader--state handle)
+                                  :file-bytes)))
+               (crt (and shift (nth 3 (nelisp-eln-registration--fixed-templates
+                                       shift))))
+               (actual (and crt
+                            (nelisp-eln-registration--raw-read-bytes
+                             handle address (length crt)))))
+          (and crt
+               (nelisp-eln-registration--match-holed-template
+                actual crt nelisp-eln-registration--crt-stub-holes)
                (nelisp-eln-registration--validate-direct-rip-relocs
                 address actual
                 nelisp-eln-registration--crt-stub-reloc-groups))))))
@@ -2714,26 +3449,34 @@ DT_NEEDED name is in `nelisp-eln-registration--allowed-needed-libraries'."
   "Authenticate BYTES before `nelisp-eln-system-loader-open' ever calls
 `nl-ffi--dlopen' on them: `.init'/`.plt'/`.plt.got'/`.fini', the CRT stub
 block, and `.dynamic' (DT_INIT/DT_FINI/INIT_ARRAY/FINI_ARRAY/RPATH/
-RUNPATH/PREINIT_ARRAY/TEXTREL/NEEDED). Installed as
+RUNPATH/PREINIT_ARRAY/TEXTREL/NEEDED). GOT-relative displacements in the
+fixed templates are checked against the file's own authenticated GOT page
+shift (`nelisp-eln-registration--layout-shift-in-bytes').  Installed as
 `nelisp-eln-system-loader-preopen-validator' below."
   (let* ((init (nelisp-eln-registration--elf-section-in-bytes bytes ".init"))
-         (text (nelisp-eln-registration--elf-section-in-bytes bytes ".text")))
+         (text (nelisp-eln-registration--elf-section-in-bytes bytes ".text"))
+         (shift (if (nelisp-eln-registration--elf-section-in-bytes
+                     bytes ".got.plt")
+                    (nelisp-eln-registration--layout-shift-in-bytes bytes)
+                  0))
+         (templates (and shift
+                         (nelisp-eln-registration--fixed-templates shift))))
     (unless
-        (and (nelisp-eln-registration--validate-fixed-section-in-bytes
-              bytes ".init" nelisp-eln-registration--init-template)
+        (and shift
              (nelisp-eln-registration--validate-fixed-section-in-bytes
-              bytes ".plt" nelisp-eln-registration--plt-template)
+              bytes ".init" (nth 0 templates))
              (nelisp-eln-registration--validate-fixed-section-in-bytes
-              bytes ".plt.got" nelisp-eln-registration--plt-got-template)
+              bytes ".plt" (nth 1 templates))
+             (nelisp-eln-registration--validate-fixed-section-in-bytes
+              bytes ".plt.got" (nth 2 templates))
              (nelisp-eln-registration--validate-fixed-section-in-bytes
               bytes ".fini" nelisp-eln-registration--fini-template)
              (or (null init)
                  (let ((actual (substring bytes (nth 1 text)
                                           (+ (nth 1 text)
-                                             (length
-                                              nelisp-eln-registration--crt-stub-template)))))
+                                             (length (nth 3 templates))))))
                    (and (nelisp-eln-registration--match-holed-template
-                         actual nelisp-eln-registration--crt-stub-template
+                         actual (nth 3 templates)
                          nelisp-eln-registration--crt-stub-holes)
                         (nelisp-eln-registration--validate-direct-rip-relocs
                          (nth 0 text) actual
@@ -2889,14 +3632,26 @@ be nothing but padding."
 `.plt.got', `.fini', the CRT stub block, and `.text' padding around
 RANGES (the already-otherwise-authenticated admitted functions -- see
 the file-level commentary above for what this can and cannot prevent)."
-  (unless (and (nelisp-eln-registration--validate-fixed-section
-                handle ".init" nelisp-eln-registration--init-template)
-               (nelisp-eln-registration--validate-fixed-section
-                handle ".plt" nelisp-eln-registration--plt-template)
-               (nelisp-eln-registration--validate-fixed-section
-                handle ".plt.got" nelisp-eln-registration--plt-got-template)
-               (nelisp-eln-registration--validate-fixed-section
-                handle ".fini" nelisp-eln-registration--fini-template)
+  (unless (and (let* ((file-bytes (plist-get
+                                   (nelisp-eln-system-loader--state handle)
+                                   :file-bytes))
+                      (shift (if (nelisp-eln-registration--elf-section-in-bytes
+                                  file-bytes ".got.plt")
+                                 (nelisp-eln-registration--layout-shift-in-bytes
+                                  file-bytes)
+                               0))
+                      (templates (and shift
+                                      (nelisp-eln-registration--fixed-templates
+                                       shift))))
+                 (and shift
+                      (nelisp-eln-registration--validate-fixed-section
+                       handle ".init" (nth 0 templates))
+                      (nelisp-eln-registration--validate-fixed-section
+                       handle ".plt" (nth 1 templates))
+                      (nelisp-eln-registration--validate-fixed-section
+                       handle ".plt.got" (nth 2 templates))
+                      (nelisp-eln-registration--validate-fixed-section
+                       handle ".fini" nelisp-eln-registration--fini-template)))
                (nelisp-eln-registration--validate-crt-stubs handle)
                (nelisp-eln-registration--validate-text-padding
                 handle

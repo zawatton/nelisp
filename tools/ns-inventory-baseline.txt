@@ -1319,7 +1319,7 @@ pinned-collision ns-collision-divergent	cancel-timer	packages/nelisp-eventloop/s
 pinned-collision ns-collision-divergent	capitalize	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	2e371d19995f
 pinned-collision ns-collision-divergent	ceiling	lisp/nelisp-stdlib.el scripts/nelisp-stdlib-prelude.el	214b796e79a8
 pinned-collision ns-collision-divergent	cl-defstruct	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	0ec8a4e350d1
-pinned-collision ns-collision-divergent	cl-defun	lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el	7283404cc0b8
+pinned-collision ns-collision-divergent	cl-defun	lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el	85fba2d2c82a
 pinned-collision ns-collision-divergent	cl-remove-if-not	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	6fc2ba48ca8d
 pinned-collision ns-collision-divergent	clrhash	lisp/nelisp-stdlib-hash.el scripts/nelisp-stdlib-prelude.el	28724fb94126
 pinned-collision ns-collision-divergent	cond	lisp/nelisp-jit-substrate.el lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el	8f47ca1817eb
@@ -1656,7 +1656,8 @@ pinned-collision ns-collision	current-time-string	lisp/nelisp-stdlib-misc.el scr
 pinned-collision ns-collision	decode-time	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	encode-time	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	format-time-string	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
-pinned-collision ns-collision	nelisp--setf-1	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+# 2026-09-29 (S6.14): the prelude `nelisp--setf-1' now defers to GNU gv.el's `gv-get' for unknown places, so it diverges from the misc copy.
+pinned-collision ns-collision-divergent	nelisp--setf-1	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	9a661b22eeaf
 pinned-collision ns-collision	nelisp--tm-civil-from-days	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	nelisp--tm-dayname	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	nelisp--tm-days-from-civil	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
@@ -1738,7 +1739,7 @@ pinned-collision ns-collision-divergent	nelisp--prn-to-string	lisp/nelisp-stdlib
 # interpreted closure through its GNU Emacs 31 slot view (`length'/`aref'),
 # #[ARGS BODY ENV ...]; lisp/nelisp-stdlib-prn.el keeps the older printer
 # for the hosted runtime, which has no such view.
-pinned-collision ns-collision-divergent	nelisp--prn-to-string	lisp/nelisp-stdlib-prn.el scripts/nelisp-stdlib-prelude.el	f2b4067f9f4b
+pinned-collision ns-collision-divergent	nelisp--prn-to-string	lisp/nelisp-stdlib-prn.el scripts/nelisp-stdlib-prelude.el	8ce8ff7178df
 pinned-collision ns-collision-divergent	nelisp--tp-plist-at	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	cce5c98a67e3
 pinned-collision ns-collision-divergent	nelisp-buffer--reset-registry	scripts/nelisp-stdlib-prelude.el src/nelisp-buffer.el	c1eaa321e55b
 pinned-collision ns-collision-divergent	nelisp-bytecode-jit--runtime-dispatch	lisp/nelisp-bytecode-jit.el scripts/nelisp-stdlib-prelude.el	98bbf74d9310

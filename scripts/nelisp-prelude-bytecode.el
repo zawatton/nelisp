@@ -7,7 +7,7 @@
 (require 'cl-lib)
 
 (defconst nelisp-prelude-bytecode--opcodes
-  '(0 8 16 24 32 40 48 49 50 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 75 79 80 81 83 84 85 86 87 88 89 90 92 93 94 95 129 130 131 132 133 134 135 136 137 142 152 154 155 157 158 159 160 161 162 166 167 168 175 178 182 183 192)
+  '(0 8 16 24 32 40 48 49 50 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 78 79 80 81 83 84 85 86 87 88 89 90 92 93 94 95 129 130 131 132 133 134 135 136 137 142 152 154 155 157 158 159 160 161 162 163 166 167 168 175 178 182 183 192)
   "GNU byte-code opcodes admitted by the focused standalone prelude VM.
 Opcode 32 is CALL (raw 32-39, arity 0-7 plus the explicit 1-/2-byte operand
 widths): verified for both core-mode and the general prelude -- see the
@@ -506,7 +506,14 @@ reason, source line, source-form digest, opcode sequence, and retained metadata.
                     (metadata "")
                     (source-digest (secure-hash 'sha256
                                                 (substring source start end)))
-                    (fixture (assq name parity-fixtures)))
+                    (fixture (assq name parity-fixtures))
+                    ;; Vendor mode only (see
+                    ;; `nelisp-prelude-bytecode-vendor-transform').
+                    (vendor-rejection
+                     (and (eq core-mode 'vendor)
+                          (byte-code-function-p compiled)
+                          (nelisp-prelude-bytecode--vendor-rejection
+                           form compiled (substring source start end)))))
                (cond
                 ((and (consp compiled) (eq (car compiled) :compile-error))
                  (setq reason (format "compile-error:%s"
@@ -527,6 +534,8 @@ reason, source line, source-form digest, opcode sequence, and retained metadata.
                 (unexpanded-macros
                  (setq reason (format "unexpanded-tree-macros:%S"
                                       unexpanded-macros)))
+                (vendor-rejection
+                 (setq reason vendor-rejection))
                 ((and (null fixture) (not core-mode))
                  (setq reason "no-parity-fixture"))
                 ;; REVERT NOTE (this session): a broader relaxation was
@@ -629,8 +638,16 @@ reason, source line, source-form digest, opcode sequence, and retained metadata.
                                           (list 'quote (aref compiled 2))
                                           (aref compiled 3)
                                           doc)
+                                    ;; The interactive slot is data, never
+                                    ;; evaluated at definition time (GNU 30
+                                    ;; stores a compiled form here).
                                     (when (> (length compiled) 5)
-                                      (list (aref compiled 5)))))))))
+                                      (list (list 'quote
+                                                  (aref compiled 5))))))))))
+               (when (and (equal status "adopt") (eq core-mode 'vendor))
+                 (setq replacement
+                       (nelisp-prelude-bytecode--vendor-replacement
+                        form replacement)))
                (push (list provenance
                            (1+ (cl-count ?\n source :end start))
                            name status reason source-digest
@@ -691,6 +708,389 @@ reason, source line, source-form digest, opcode sequence, and retained metadata.
     (list output
           count
           (nreverse report))))))
+
+;;; Vendor (GNU library) bakes.
+;;
+;; `nelisp-prelude-bytecode-vendor-transform' prepares a vendored GNU Emacs
+;; library for loading the way GNU loads its `.elc': each top-level defun
+;; the standalone VM can run is replaced by the host GNU compiler's
+;; byte-code, and a top-level `(eval-when-compile (require 'FEATURE))' for
+;; an allowlisted compile-time-only FEATURE is evaluated at bake time
+;; instead of load time, exactly as `byte-compile-file' does.  The vendored
+;; file itself is never edited; the result is a derived build artifact.
+
+(defconst nelisp-prelude-bytecode-vendor-compile-time-features '(compile)
+  "Features whose top-level `eval-when-compile' require a vendor bake may fold.
+GNU's `.elc' of a library that says `(eval-when-compile (require 'F))'
+never loads F.  Folding is still refused, and the form kept as source, when
+any form the bake keeps as source mentions a macro or inline function F's
+files define (such a form would need F at load time, while GNU's `.elc'
+has it expanded).")
+
+(defvar nelisp-prelude-bytecode--vendor-struct-names nil
+  "`cl-defstruct' type names of the vendor file being baked.
+Host `cl-defstruct' code (inlined accessors, `cl-struct-TYPE-tags') does
+not match this runtime's own struct representation, so a defun that names
+one of these types stays source.")
+
+(defun nelisp-prelude-bytecode--top-level-spans (source)
+  "Return ((START END FORM) ...) for each top-level form of SOURCE."
+  (let ((position 0) (length (length source)) (spans nil))
+    (while (< position length)
+      (setq position (nelisp-prelude-bytecode--skip-trivia source position))
+      (if (>= position length)
+          (setq position length)
+        (let ((read-result (read-from-string source position)))
+          (push (list position (cdr read-result) (car read-result)) spans)
+          (setq position (cdr read-result)))))
+    (nreverse spans)))
+
+(defun nelisp-prelude-bytecode--load-time-forms (forms)
+  "Return FORMS flattened through load-time top-level wrappers.
+Descends `progn', `eval-and-compile', `when', `unless' and `if' bodies,
+never `eval-when-compile' (whose body does not run when GNU loads `.elc')."
+  (let ((pending forms) (result nil))
+    (while pending
+      (let ((form (car pending)))
+        (setq pending (cdr pending))
+        (if (memq (car-safe form) '(progn eval-and-compile when unless if))
+            (setq pending (append (cl-remove-if-not #'consp (cdr form))
+                                  pending))
+          (push form result))))
+    (nreverse result)))
+
+(defun nelisp-prelude-bytecode--vendor-feature-files (wanted dirs)
+  "Return (FILES . MISSING) for the vendor files features WANTED load.
+Plain `require's are followed transitively.  DIRS are the vendor
+directories searched; MISSING lists the features not found there."
+  (let ((queue (copy-sequence wanted)) (seen nil) (files nil)
+        (missing nil))
+    (while queue
+      (let ((feature (car queue)))
+        (setq queue (cdr queue))
+        (unless (memq feature seen)
+          (push feature seen)
+          (let ((path (locate-file (symbol-name feature) dirs '(".el"))))
+            (if (null path)
+                (push feature missing)
+              (push path files)
+              (dolist (form (nelisp-prelude-bytecode--load-time-forms
+                             (mapcar #'cl-third
+                                     (nelisp-prelude-bytecode--top-level-spans
+                                      (with-temp-buffer
+                                        (insert-file-contents path)
+                                        (buffer-string))))))
+                (when (and (eq (car-safe form) 'require)
+                           (eq (car-safe (nth 1 form)) 'quote)
+                           (symbolp (cadr (nth 1 form))))
+                  (setq queue (append queue
+                                      (list (cadr (nth 1 form))))))))))))
+    (cons (nreverse files) (nreverse missing))))
+
+(defun nelisp-prelude-bytecode--vendor-definitions (files)
+  "Return (MACRO-FORMS INLINE-NAMES FUNCTION-NAMES) defined at load in FILES.
+MACRO-FORMS are the `defmacro' forms; INLINE-NAMES name every other
+definer whose uses a compiler expands (`cl-defmacro', `defsubst',
+`cl-defsubst', `define-inline'); FUNCTION-NAMES name ordinary functions."
+  (let ((macros nil) (inlines nil) (functions nil))
+    (dolist (path files)
+      (dolist (form (nelisp-prelude-bytecode--load-time-forms
+                     (mapcar #'cl-third
+                             (nelisp-prelude-bytecode--top-level-spans
+                              (with-temp-buffer
+                                (insert-file-contents path)
+                                (buffer-string))))))
+        (let ((head (car-safe form)) (name (nth 1 form)))
+          (cond
+           ((and (eq head 'defmacro) (symbolp name)) (push form macros))
+           ((and (memq head '(cl-defmacro defsubst cl-defsubst define-inline))
+                 (symbolp name))
+            (push name inlines))
+           ((and (memq head '(defun cl-defun define-derived-mode
+                                    define-minor-mode
+                                    define-globalized-minor-mode))
+                 (symbolp name))
+            (push name functions))
+           ((and (eq head 'defalias) (eq (car-safe name) 'quote)
+                 (symbolp (cadr name)))
+            (push (cadr name) functions))))))
+    (list (nreverse macros) inlines functions)))
+
+(defun nelisp-prelude-bytecode--form-symbols (form table)
+  "Record in hash TABLE every symbol that occurs anywhere in FORM."
+  (let ((pending (list form)))
+    (while pending
+      (let ((object (car pending)))
+        (setq pending (cdr pending))
+        (cond
+         ((symbolp object) (puthash object t table))
+         ((consp object)
+          (while (consp object)
+            (push (car object) pending)
+            (setq object (cdr object)))
+          (when object (push object pending)))
+         ((and (vectorp object) (not (byte-code-function-p object)))
+          (setq pending (append (append object nil) pending))))))
+    table))
+
+(defun nelisp-prelude-bytecode--host-autoloads (symbols)
+  "Return (SYMBOL FILE DOC INTERACTIVE TYPE) for SYMBOLS autoloaded by GNU.
+Asked of a fresh `emacs -Q --batch' of the running host, so the answer is
+GNU's own preloaded autoloads, independent of what this build process has
+loaded."
+  (if (null symbols)
+      nil
+    (with-temp-buffer
+      (let ((status
+             (call-process
+              (expand-file-name invocation-name invocation-directory)
+              nil t nil "--batch" "-Q" "--eval"
+              (format "(let ((print-length nil) (print-level nil) (print-escape-newlines t)) (prin1 (delq nil (mapcar (lambda (s) (let ((f (symbol-function s))) (and (autoloadp f) (cons s (cdr f))))) '%S))))"
+                      symbols))))
+        (unless (eql status 0)
+          (error "host autoload query failed (%S): %s" status (buffer-string)))
+        (goto-char (point-min))
+        (read (current-buffer))))))
+
+(defun nelisp-prelude-bytecode--vendor-body-prefix (form)
+  "Return FORM's leading docstring/`declare'/`interactive' forms."
+  (let ((rest (nthcdr 3 form)) (prefix nil))
+    (while (and rest (cdr rest)
+                (or (stringp (car rest))
+                    (memq (car-safe (car rest)) '(declare interactive))))
+      (push (car rest) prefix)
+      (setq rest (cdr rest)))
+    (when (and rest (null (cdr rest))
+               (memq (car-safe (car rest)) '(declare interactive)))
+      (push (car rest) prefix))
+    (nreverse prefix)))
+
+(defun nelisp-prelude-bytecode--vendor-constants (compiled)
+  "Return every constant of COMPILED and of its nested byte-code functions."
+  (let ((pending (list compiled)) (seen nil) (constants nil))
+    (while pending
+      (let ((function (car pending)))
+        (setq pending (cdr pending))
+        (when (and (byte-code-function-p function) (not (memq function seen))
+                   (> (length function) 2) (vectorp (aref function 2)))
+          (push function seen)
+          (dolist (constant (append (aref function 2) nil))
+            (push constant constants)
+            (when (byte-code-function-p constant)
+              (push constant pending))))))
+    constants))
+
+(defun nelisp-prelude-bytecode--vendor-rejection (form compiled text)
+  "Return a rejection reason for vendor defun FORM compiled to COMPILED.
+TEXT is FORM's source text.  Return nil when FORM may be adopted."
+  (let ((struct (cl-find-if (lambda (name)
+                              (string-match-p (regexp-quote (symbol-name name))
+                                              text))
+                            nelisp-prelude-bytecode--vendor-struct-names)))
+    (cond
+     (struct (format "cl-defstruct-type-reference:%s" struct))
+     ((cl-some (lambda (constant)
+                 (and (symbolp constant)
+                      (string-match-p "\\`cl-struct-.*-tags\\'"
+                                      (symbol-name constant))))
+               (nelisp-prelude-bytecode--vendor-constants compiled))
+      "cl-struct-tags-reference")
+     ((and (assq 'interactive
+                 (cl-remove-if-not #'consp
+                                   (nelisp-prelude-bytecode--vendor-body-prefix
+                                    form)))
+           (not (> (length compiled) 5)))
+      "interactive-spec-lost"))))
+
+(defun nelisp-prelude-bytecode--vendor-replacement (form replacement)
+  "Return adopted REPLACEMENT for vendor FORM, keeping its definer's effects.
+A `defsubst', or a defun with `declare' forms, runs its own definer first on
+an empty body so this runtime's `defun'/`defsubst' records the same symbol
+properties loading the source would (inline expander, `declare' effects);
+the byte-code `fset' then installs the function itself."
+  (let ((declarations (cl-remove-if-not
+                       (lambda (x) (eq (car-safe x) 'declare))
+                       (nelisp-prelude-bytecode--vendor-body-prefix form))))
+    (if (or (eq (car form) 'defsubst) declarations)
+        (list 'prog1 (nth 1 replacement)
+              (append (list (car form) (nth 1 form) (nth 2 form))
+                      declarations
+                      (list nil))
+              (nth 2 replacement))
+      replacement)))
+
+(defun nelisp-prelude-bytecode--vendor-fold (source dirs adopted)
+  "Fold SOURCE's compile-time-only requires; return (TEXT REPORT).
+DIRS are the vendor directories.  ADOPTED names the defuns the bake
+replaces with byte-code (their macros are expanded by the host compiler,
+so they never need a folded feature at load time).  REPORT rows name each
+candidate `eval-when-compile' form and whether it was folded."
+  (let* ((spans (nelisp-prelude-bytecode--top-level-spans source))
+         (runtime-requires
+          (delq nil (mapcar (lambda (form)
+                              (and (eq (car-safe form) 'require)
+                                   (eq (car-safe (nth 1 form)) 'quote)
+                                   (cadr (nth 1 form))))
+                            (nelisp-prelude-bytecode--load-time-forms
+                             (mapcar #'cl-third spans)))))
+         (candidates nil) (folded nil) (report nil) (reason nil))
+    (dolist (span spans)
+      (let ((form (nth 2 span)))
+        (when (and (eq (car-safe form) 'eval-when-compile)
+                   (cdr form)
+                   (cl-every
+                    (lambda (x)
+                      (and (eq (car-safe x) 'require)
+                           (eq (car-safe (nth 1 x)) 'quote)
+                           (null (nthcdr 2 x))
+                           (memq (cadr (nth 1 x))
+                                 nelisp-prelude-bytecode-vendor-compile-time-features)
+                           (not (memq (cadr (nth 1 x)) runtime-requires))))
+                    (cdr form)))
+          (push span candidates)
+          (dolist (x (cdr form)) (cl-pushnew (cadr (nth 1 x)) folded)))))
+    (setq candidates (nreverse candidates))
+    (if (null candidates)
+        (list source nil)
+      (let* ((kept-requires
+              ;; Features the file still loads: its plain requires and
+              ;; every `eval-when-compile' require that is not folded
+              ;; (kept source, so it runs at load exactly as before).
+              ;; Definitions their files provide are available at load.
+              (append runtime-requires
+                      (delq nil
+                            (mapcar (lambda (form)
+                                      (and (eq (car-safe form) 'require)
+                                           (eq (car-safe (nth 1 form)) 'quote)
+                                           (cadr (nth 1 form))))
+                                    (apply #'append
+                                           (mapcar (lambda (span)
+                                                     (and (eq (car-safe (nth 2 span))
+                                                              'eval-when-compile)
+                                                          (not (memq span candidates))
+                                                          (cdr (nth 2 span))))
+                                                   spans))))))
+             ;; Subtracting only the kept files that were found errs
+             ;; toward keeping more names in the checked set.
+             (kept-files (car (nelisp-prelude-bytecode--vendor-feature-files
+                               kept-requires dirs)))
+             (folded-files (nelisp-prelude-bytecode--vendor-feature-files
+                            folded dirs))
+             (files (if (cdr folded-files)
+                        'missing
+                      (cl-set-difference (car folded-files) kept-files
+                                         :test #'equal)))
+             (definitions (and (listp files)
+                               (nelisp-prelude-bytecode--vendor-definitions files)))
+             (macro-forms (nth 0 definitions))
+             (macro-names (mapcar #'cadr macro-forms))
+             (expanded nil)
+             (symbols (make-hash-table :test 'eq)))
+        (if (eq files 'missing)
+            (setq reason "feature-file-not-vendored")
+          ;; A kept top-level form whose head is one of the folded
+          ;; features' macros is expanded here, as `byte-compile-file'
+          ;; would, with the vendored `defmacro' itself.
+          (dolist (span spans)
+            (unless (or (memq span candidates)
+                        (and (memq (car-safe (nth 2 span)) '(defun defsubst))
+                             (memq (nth 1 (nth 2 span)) adopted)))
+              (let ((form (nth 2 span)) (changed nil) (guard 0))
+                (while (and (consp form) (memq (car form) macro-names)
+                            (< guard 16))
+                  (let ((definition (cl-find (car form) macro-forms
+                                             :key #'cadr)))
+                    (setq form (apply (eval (list 'function
+                                                  (cons 'lambda
+                                                        (nthcdr 2 definition)))
+                                            t)
+                                      (cdr form))
+                          changed t guard (1+ guard))))
+                (when changed (push (cons span form) expanded))
+                (nelisp-prelude-bytecode--form-symbols form symbols))))
+          (let ((used (cl-remove-if-not
+                       (lambda (name) (gethash name symbols))
+                       (append macro-names (nth 1 definitions)))))
+            (when used
+              (setq reason (format "kept-source-uses-compile-time-definitions:%S"
+                                   used)))))
+        (if reason
+            (progn
+              (dolist (span candidates)
+                (push (list (nth 2 span) "keep" reason) report))
+              (list source (nreverse report)))
+          (let* ((referenced (cl-remove-if-not
+                              (lambda (name) (gethash name symbols))
+                              (delete-dups (copy-sequence (nth 2 definitions)))))
+                 (autoloads (nelisp-prelude-bytecode--host-autoloads
+                             referenced))
+                 (autoload-text
+                  (mapconcat (lambda (entry)
+                               (let ((print-escape-newlines nil))
+                                 (prin1-to-string
+                                  (list 'unless (list 'fboundp
+                                                      (list 'quote (car entry)))
+                                        (cons 'autoload
+                                              (cons (list 'quote (car entry))
+                                                    (cdr entry)))))))
+                             autoloads "\n"))
+                 (patches nil)
+                 (first t))
+            (dolist (span candidates)
+              (push (list (nth 0 span) (nth 1 span)
+                          (if (and first (> (length autoload-text) 0))
+                              autoload-text
+                            "nil"))
+                    patches)
+              (setq first nil)
+              (push (list (nth 2 span) "fold"
+                          (format "compile-time-only;autoloads=%S"
+                                  (mapcar #'car autoloads)))
+                    report))
+            (dolist (entry expanded)
+              (push (list (nth 0 (car entry)) (nth 1 (car entry))
+                          (let ((print-escape-control-characters t))
+                            (prin1-to-string (cdr entry))))
+                    patches))
+            (let ((output source))
+              (dolist (patch (sort patches (lambda (a b) (> (car a) (car b)))))
+                (setq output (concat (substring output 0 (nth 0 patch))
+                                     (nth 2 patch)
+                                     (substring output (nth 1 patch)))))
+              (list output (nreverse report)))))))))
+
+(defun nelisp-prelude-bytecode-vendor-transform (source provenance dirs)
+  "Bake vendored GNU library SOURCE the way GNU loads its `.elc'.
+PROVENANCE is its repository-relative name and DIRS the vendor directories
+used to find folded features.  Return (TEXT COUNT REPORT) like
+`nelisp-prelude-bytecode-transform', REPORT extended with one row per
+folded or kept `eval-when-compile' form."
+  (let* ((nelisp-prelude-bytecode--vendor-struct-names
+          (delq nil (mapcar (lambda (form)
+                              (and (eq (car-safe form) 'cl-defstruct)
+                                   (let ((name (nth 1 form)))
+                                     (if (consp name) (car name) name))))
+                            (mapcar #'cl-third
+                                    (nelisp-prelude-bytecode--top-level-spans
+                                     source)))))
+         ;; Adoption depends only on each defun's own form, so a first
+         ;; pass over the unfolded source names the defuns that will not
+         ;; stay source.
+         (adopted (delq nil (mapcar (lambda (row)
+                                      (and (equal (nth 3 row) "adopt")
+                                           (nth 2 row)))
+                                    (nth 2 (nelisp-prelude-bytecode-transform
+                                            source provenance nil 'vendor)))))
+         (fold (nelisp-prelude-bytecode--vendor-fold source dirs adopted))
+         (result (nelisp-prelude-bytecode-transform
+                  (car fold) provenance nil 'vendor)))
+    (list (nth 0 result) (nth 1 result)
+          (append (mapcar (lambda (row)
+                            (list provenance 0
+                                  (format "%.60S" (nth 0 row))
+                                  (nth 1 row) (nth 2 row) "" "" "" "" "" ""))
+                          (nth 1 fold))
+                  (nth 2 result)))))
 
 (defun nelisp-prelude-bytecode-write-report (path reports)
   "Write REPORTS to PATH as a TSV adoption/rejection manifest.

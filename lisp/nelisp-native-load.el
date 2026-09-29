@@ -43,8 +43,22 @@
 (require 'cl-lib)
 (require 'nelisp-runtime-reload-abi)
 
+(defconst nelisp-native-load--port-count 32
+  "Number of callback-port entries the reader defines.
+Must equal `nelisp-cc-eln-callback7-port-count'; the loader/reader list
+equality test and the port-count test both check it.")
+
+(defun nelisp-native-load--port-symbol-names ()
+  "Return the callback-port entry symbol names in port order."
+  (let ((names nil) (i 0))
+    (while (< i nelisp-native-load--port-count)
+      (push (format "nelisp_eln_callback_port%d_entry_word" i) names)
+      (setq i (1+ i)))
+    (nreverse names)))
+
 (defconst nelisp-native-load-bridgeable-symbols
-  '("nelisp_aot_builtin_call1"
+  (append
+   '("nelisp_aot_builtin_call1"
     "nelisp_aot_builtin_calln"
     "nl_alloc_symbol"
     "nl_alloc_str"
@@ -73,15 +87,8 @@
     "nelisp_eln_callback7_root_mark"
     "nl_eln_callback7_context"
     "nelisp_eln_callback7_entry_word"
-    "nelisp_eln_callback1_entry_word"
-    "nelisp_eln_callback_port0_entry_word"
-    "nelisp_eln_callback_port1_entry_word"
-    "nelisp_eln_callback_port2_entry_word"
-    "nelisp_eln_callback_port3_entry_word"
-    "nelisp_eln_callback_port4_entry_word"
-    "nelisp_eln_callback_port5_entry_word"
-    "nelisp_eln_callback_port6_entry_word"
-    "nelisp_eln_callback_port7_entry_word")
+    "nelisp_eln_callback1_entry_word")
+   (nelisp-native-load--port-symbol-names))
   "Runtime symbols a stub can be pointed at, in `nelisp--native-symbol-addr' order.
 
 The index is the contract: the builtin selects from a chain of

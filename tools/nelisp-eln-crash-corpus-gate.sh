@@ -113,6 +113,8 @@ if [ ! -x "$binary" ]; then
   echo "NELISP_BIN is not executable: $binary" >&2
   exit 2
 fi
+. "$repo/test/lib/nelisp-boot-args.sh"
+nl_cold_image_setup "$binary" || exit 1
 if [ ! -r "$driver" ]; then
   echo "missing driver: $driver" >&2
   exit 2
@@ -243,7 +245,7 @@ fi
 # --- 2. Discover the pinned ABI hash from the binary under test ---
 # Read from the running binary rather than hardcoded, so a future ABI bump
 # does not silently corrupt the wrong bytes in step 5 below.
-abi_hash=$("$binary" -L "$shared_lisp" --eval \
+abi_hash=$("$binary" ${NL_COLD_IMAGE_PATH:+--cold-load-from "$NL_COLD_IMAGE_PATH"} -L "$shared_lisp" --eval \
     '(progn (require (quote nelisp-eln-abi)) (princ (format "ABI_HASH=%s\n" (plist-get nelisp-eln-abi-gnu-31-1-x86_64 :producer-abi-hash))))' \
     2>"$run_dir/abi.stderr" | sed -n '1p' | sed 's/^ABI_HASH=//')
 if [ -z "$abi_hash" ]; then
@@ -257,7 +259,7 @@ abi_replacement=$(printf '%s' "$abi_hash" | sed 's/./0/g')
 # Same recipe as test/nelisp-eln-crash-general-smoke.sh's fixture.
 self_fixture=$run_dir/self-emitted-fixture.eln
 export NELISP_ELN_CRASH_CORPUS_SELF_FIXTURE=$self_fixture
-if ! "$binary" -L "$shared_lisp" --eval \
+if ! "$binary" ${NL_COLD_IMAGE_PATH:+--cold-load-from "$NL_COLD_IMAGE_PATH"} -L "$shared_lisp" --eval \
     '(progn (require (quote nelisp-eln-emitter)) (let ((ir (nelisp-aot-compiler--parse-stmt (quote (defun nelisp-eln-crash-corpus-self-emitted-fixture () 71)) nil nil nil))) (nelisp-eln-emitter-write-ir ir (getenv "NELISP_ELN_CRASH_CORPUS_SELF_FIXTURE"))) (princ "NELISP-ELN-CRASH-CORPUS-SELF-EMIT-PASS\n"))' \
     >"$run_dir/self-emit.stdout" 2>"$run_dir/self-emit.stderr"; then
   cat "$run_dir/self-emit.stdout"
@@ -471,7 +473,7 @@ NELISP_ELN_CRASH_CORPUS_JOB=load \
 NELISP_ELN_CRASH_CORPUS_ARTIFACT=$artifact \
 NELISP_ELN_CRASH_CORPUS_LABEL=$label.$check_kind \
 NELISP_ELN_CRASH_CORPUS_EXPECT=$expect \
-  timeout "$TIMEOUT_SECS" "$BINARY" \
+  timeout "$TIMEOUT_SECS" "$BINARY" ${NL_COLD_IMAGE_PATH:+--cold-load-from "$NL_COLD_IMAGE_PATH"} \
     -L "$REPO/lisp" -L "$SHARED_LISP" -L "$FFI_ROOT/packages/nl-ffi/src" \
     --load "$LOAD_WRAPPER" --load "$DRIVER" \
     >"$out" 2>"$err" || rc=$?
@@ -521,7 +523,7 @@ budget=$((TIMEOUT_SECS * lines))
 [ "$budget" -ge "$TIMEOUT_SECS" ] || budget=$TIMEOUT_SECS
 start=$(date +%s.%N)
 NELISP_ELN_CRASH_CORPUS_BATCH_FILE=$chunkfile \
-  timeout "$budget" "$BINARY" \
+  timeout "$budget" "$BINARY" ${NL_COLD_IMAGE_PATH:+--cold-load-from "$NL_COLD_IMAGE_PATH"} \
     -L "$REPO/lisp" -L "$SHARED_LISP" -L "$FFI_ROOT/packages/nl-ffi/src" \
     --load "$LOAD_WRAPPER" --load "$BATCH_DRIVER" \
     >"$out" 2>"$err" || rc=$?
@@ -695,7 +697,7 @@ LC_ALL=C awk -F'\t' -v durfile="$duration_cache" '
   | LC_ALL=C sort -t "$(printf '\t')" -k1,1nr -k2,2n \
   | cut -f3- >"$queue_ordered"
 
-export RUN_DIR=$run_dir BINARY=$binary REPO=$repo SHARED_LISP=$shared_lisp \
+export NL_COLD_IMAGE_PATH RUN_DIR=$run_dir BINARY=$binary REPO=$repo SHARED_LISP=$shared_lisp \
        FFI_ROOT=$ffi_root LOAD_WRAPPER=$load_wrapper DRIVER=$driver \
        BATCH_DRIVER=$batch_driver TIMEOUT_SECS=$timeout_secs WORKER=$worker \
        BATCH_WORKER=$batch_worker
@@ -765,7 +767,7 @@ done <"$order"
 neg_detect_rc=0
 NELISP_ELN_CRASH_CORPUS_JOB=negative-control \
 NELISP_ELN_CRASH_CORPUS_SKIP_REPORTER=0 \
-  timeout "$timeout_secs" "$binary" \
+  timeout "$timeout_secs" "$binary" ${NL_COLD_IMAGE_PATH:+--cold-load-from "$NL_COLD_IMAGE_PATH"} \
     -L "$repo/lisp" -L "$shared_lisp" -L "$ffi_root/packages/nl-ffi/src" \
     --load "$driver" \
     >"$run_dir/negative-control-assert.stdout" 2>"$run_dir/negative-control-assert.stderr" || neg_detect_rc=$?
@@ -773,7 +775,7 @@ NELISP_ELN_CRASH_CORPUS_SKIP_REPORTER=0 \
 neg_skip_rc=0
 NELISP_ELN_CRASH_CORPUS_JOB=negative-control \
 NELISP_ELN_CRASH_CORPUS_SKIP_REPORTER=1 \
-  timeout "$timeout_secs" "$binary" \
+  timeout "$timeout_secs" "$binary" ${NL_COLD_IMAGE_PATH:+--cold-load-from "$NL_COLD_IMAGE_PATH"} \
     -L "$repo/lisp" -L "$shared_lisp" -L "$ffi_root/packages/nl-ffi/src" \
     --load "$driver" \
     >"$run_dir/negative-control-skip.stdout" 2>"$run_dir/negative-control-skip.stderr" || neg_skip_rc=$?

@@ -101,8 +101,12 @@
     ;; Returns: 0=Ok (last form value in *out), 1=Err.
     ;; Empty progn (args is Nil, tag 0) → out stays Nil, returns 0.
     ;; Arity 4 (even): no prologue sub rsp → no needs-align double-sub.
+    ;; OUT is cleared to nil first: an empty progn must answer nil, and OUT is
+    ;; not guaranteed to start nil -- callers reuse one result slot across
+    ;; sibling forms (`(list (list 1) (progn))' answered ((1) (1))).
     (defun nl_sf_progn (args env out _pad)
       (let ((state (if (= (sexp-tag args) 0) 0 args)))
+        (nl_cons_write_nil out)
         (while (> state 0)
           (setq state
                 (nl_sf_progn_body_step

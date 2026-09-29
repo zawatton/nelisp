@@ -469,6 +469,99 @@ list tail, like `CHECK_LIST_END'."
 destructively and return the result."
   (nreverse seq))
 
+(defun nelisp-eln-runtime-services-flength (sequence)
+  "NeLisp equivalent of GNU `Flength' (src/fns.c): the number of elements
+of SEQUENCE; signals `wrong-type-argument' for a dotted list or a
+non-sequence, and `circular-list' for a circular list, like GNU."
+  (length sequence))
+
+(defun nelisp-eln-runtime-services-fnth (n list)
+  "NeLisp equivalent of GNU `Fnth' (src/fns.c): the Nth element of LIST,
+i.e. (car (nthcdr N LIST)); N must be an integer and LIST a list."
+  (nth n list))
+
+(defun nelisp-eln-runtime-services-fstringp (object)
+  "NeLisp equivalent of GNU `Fstringp' (src/data.c): t if OBJECT is a
+string, else nil."
+  (stringp object))
+
+(defun nelisp-eln-runtime-services-fcar-safe (object)
+  "NeLisp equivalent of GNU `Fcar_safe' (src/data.c): the car of OBJECT
+if it is a cons cell, else nil; never signals."
+  (car-safe object))
+
+(defun nelisp-eln-runtime-services-fmember (elt list)
+  "NeLisp equivalent of GNU `Fmember' (src/fns.c): the tail of LIST whose
+car is `equal' to ELT, or nil."
+  (member elt list))
+
+(defun nelisp-eln-runtime-services-fgethash (key table dflt)
+  "NeLisp equivalent of GNU `Fgethash' (src/fns.c): the value of KEY in
+hash TABLE, or DFLT when absent."
+  (gethash key table dflt))
+
+(defun nelisp-eln-runtime-services-faset (array idx newelt)
+  "NeLisp equivalent of GNU `Faset' (src/data.c): store NEWELT at IDX of
+ARRAY and return NEWELT."
+  (aset array idx newelt))
+
+(defun nelisp-eln-runtime-services-ftype-of (object)
+  "NeLisp equivalent of GNU `Ftype_of' (src/data.c): the type symbol of OBJECT."
+  (type-of object))
+
+(defun nelisp-eln-runtime-services-fsignal (error-symbol data)
+  "NeLisp equivalent of GNU `Fsignal' (src/eval.c): signal ERROR-SYMBOL with
+DATA; never returns."
+  (signal error-symbol data))
+
+(defun nelisp-eln-runtime-services-fmake-closure (&rest args)
+  "NeLisp equivalent of GNU `Fmake_closure' (src/alloc.c, 1 MANY).
+ARGS is (PROTOTYPE . CLOSURE-VARS), spread (unlike this module's other
+`many' services, which take one list): the admitted S6 dispatcher
+applies a MANY service to its decoded arguments.  Returns a copy of the
+byte-code function PROTOTYPE whose leading constants are CLOSURE-VARS,
+via NeLisp's own `make-closure'.  Fewer than one argument, or a
+PROTOTYPE that is not a byte-code function, signals like GNU."
+  (unless args
+    (signal 'wrong-number-of-arguments
+            (list 'nelisp-eln-runtime-services-fmake-closure 0)))
+  (unless (byte-code-function-p (car args))
+    (signal 'wrong-type-argument (list 'byte-code-function-p (car args))))
+  (apply #'make-closure args))
+
+(defun nelisp-eln-runtime-services-fnconc (&rest args)
+  "NeLisp equivalent of GNU `Fnconc' (src/fns.c, 0 MANY).
+ARGS are the lists to concatenate destructively, spread like
+`nelisp-eln-runtime-services-fmake-closure' (the admitted S6 dispatcher
+applies a MANY service to its decoded arguments); the last one is
+shared, not copied, and may be any object."
+  (apply #'nconc args))
+
+(defun nelisp-eln-runtime-services-fsymbolp (object)
+  "NeLisp equivalent of GNU `Fsymbolp' (src/data.c): t if OBJECT is a
+symbol (including nil and t), else nil."
+  (symbolp object))
+
+(defun nelisp-eln-runtime-services-ffboundp (symbol)
+  "NeLisp equivalent of GNU `Ffboundp' (src/data.c): t if SYMBOL's
+function cell is non-nil; signals `wrong-type-argument' `symbolp' for a
+non-symbol, like GNU's CHECK_SYMBOL."
+  (fboundp symbol))
+
+(defun nelisp-eln-runtime-services-fsymbol-function (symbol)
+  "NeLisp equivalent of GNU `Fsymbol_function' (src/data.c): SYMBOL's
+function cell (nil when unbound); signals `wrong-type-argument' `symbolp'
+for a non-symbol, like GNU's CHECK_SYMBOL."
+  (symbol-function symbol))
+
+(defun nelisp-eln-runtime-services-fautoload-do-load
+    (fundef funname macro-only)
+  "NeLisp equivalent of GNU `Fautoload_do_load' (src/eval.c): when FUNDEF
+is an autoload object, load its file and return FUNNAME's new definition
+\(for MACRO-ONLY non-nil, only a macro autoload is loaded, and `macro'
+restricts it to those); any other FUNDEF is returned unchanged."
+  (autoload-do-load fundef funname macro-only))
+
 (defun nelisp-eln-runtime-services-fsymbol-value (symbol)
   "NeLisp equivalent of GNU `Fsymbol_value' (src/data.c): SYMBOL's
 dynamic value, or a `void-variable' signal if it has none."
@@ -617,6 +710,36 @@ with `<='."
     :status 'supported
     :evidence "freloc tsv sha 3e8591ab..f0758, index 1209; GNU src/fns.c Fnreverse")
    (nelisp-eln-runtime-services--descriptor
+    :index 1376 :symbol "Fstringp" :convention 'fixed :arity 1
+    :noreturn nil :implementation #'nelisp-eln-runtime-services-fstringp
+    :status 'supported
+    :evidence "freloc tsv sha 3e8591ab..f0758, index 1376; GNU src/data.c Fstringp")
+   (nelisp-eln-runtime-services--descriptor
+    :index 1354 :symbol "Fcar_safe" :convention 'fixed :arity 1
+    :noreturn nil :implementation #'nelisp-eln-runtime-services-fcar-safe
+    :status 'supported
+    :evidence "freloc tsv sha 3e8591ab..f0758, index 1354; GNU src/data.c Fcar_safe")
+   (nelisp-eln-runtime-services--descriptor
+    :index 1378 :symbol "Fsymbolp" :convention 'fixed :arity 1
+    :noreturn nil :implementation #'nelisp-eln-runtime-services-fsymbolp
+    :status 'supported
+    :evidence "freloc tsv sha 3e8591ab..f0758, index 1378; GNU src/data.c Fsymbolp")
+   (nelisp-eln-runtime-services--descriptor
+    :index 1339 :symbol "Ffboundp" :convention 'fixed :arity 1
+    :noreturn nil :implementation #'nelisp-eln-runtime-services-ffboundp
+    :status 'supported
+    :evidence "freloc tsv sha 3e8591ab..f0758, index 1339; GNU src/data.c Ffboundp")
+   (nelisp-eln-runtime-services--descriptor
+    :index 1350 :symbol "Fsymbol_function" :convention 'fixed :arity 1
+    :noreturn nil :implementation #'nelisp-eln-runtime-services-fsymbol-function
+    :status 'supported
+    :evidence "freloc tsv sha 3e8591ab..f0758, index 1350; GNU src/data.c Fsymbol_function")
+   (nelisp-eln-runtime-services--descriptor
+    :index 948 :symbol "Fautoload_do_load" :convention 'fixed :arity 3
+    :noreturn nil :implementation #'nelisp-eln-runtime-services-fautoload-do-load
+    :status 'supported
+    :evidence "freloc tsv sha 3e8591ab..f0758, index 948; GNU src/eval.c Fautoload_do_load")
+   (nelisp-eln-runtime-services--descriptor
     :index 1335 :symbol "Fsymbol_value" :convention 'fixed :arity 1
     :noreturn nil :implementation #'nelisp-eln-runtime-services-fsymbol-value
     :status 'supported
@@ -650,7 +773,52 @@ with `<='."
     :index 1300 :symbol "Fsub1" :convention 'fixed :arity 1
     :noreturn nil :implementation #'nelisp-eln-runtime-services-fsub1
     :status 'supported
-    :evidence "freloc tsv sha 3e8591ab..f0758, index 1300; GNU src/data.c Fsub1"))
+    :evidence "freloc tsv sha 3e8591ab..f0758, index 1300; GNU src/data.c Fsub1")
+   (nelisp-eln-runtime-services--descriptor
+    :index 1113 :symbol "Fmake_closure" :convention 'many :arity 1
+    :noreturn nil :implementation #'nelisp-eln-runtime-services-fmake-closure
+    :status 'supported
+    :evidence "freloc tsv sha 3e8591ab..f0758, index 1113; GNU src/alloc.c Fmake_closure (1, MANY); spread arguments")
+   (nelisp-eln-runtime-services--descriptor
+    :index 1250 :symbol "Flength" :convention 'fixed :arity 1
+    :noreturn nil :implementation #'nelisp-eln-runtime-services-flength
+    :status 'supported
+    :evidence "freloc tsv sha 3e8591ab..f0758, index 1250; GNU src/fns.c Flength")
+   (nelisp-eln-runtime-services--descriptor
+    :index 1220 :symbol "Fnth" :convention 'fixed :arity 2
+    :noreturn nil :implementation #'nelisp-eln-runtime-services-fnth
+    :status 'supported
+    :evidence "freloc tsv sha 3e8591ab..f0758, index 1220; GNU src/fns.c Fnth")
+   (nelisp-eln-runtime-services--descriptor
+    :index 1196 :symbol "Fnconc" :convention 'many :arity 1
+    :noreturn nil :implementation #'nelisp-eln-runtime-services-fnconc
+    :status 'supported
+    :evidence "freloc tsv sha 3e8591ab..f0758, index 1196; GNU src/fns.c Fnconc (0, MANY)")
+   (nelisp-eln-runtime-services--descriptor
+    :index 1218 :symbol "Fmember" :convention 'fixed :arity 2
+    :noreturn nil :implementation #'nelisp-eln-runtime-services-fmember
+    :status 'supported
+    :evidence "freloc tsv sha 3e8591ab..f0758, index 1218; GNU src/fns.c Fmember")
+   (nelisp-eln-runtime-services--descriptor
+    :index 1263 :symbol "Fgethash" :convention 'fixed :arity 3
+    :noreturn nil :implementation #'nelisp-eln-runtime-services-fgethash
+    :status 'supported
+    :evidence "freloc tsv sha 3e8591ab..f0758, index 1263; GNU src/fns.c Fgethash")
+   (nelisp-eln-runtime-services--descriptor
+    :index 1323 :symbol "Faset" :convention 'fixed :arity 3
+    :noreturn nil :implementation #'nelisp-eln-runtime-services-faset
+    :status 'supported
+    :evidence "freloc tsv sha 3e8591ab..f0758, index 1323; GNU src/data.c Faset")
+   (nelisp-eln-runtime-services--descriptor
+    :index 1392 :symbol "Ftype_of" :convention 'fixed :arity 1
+    :noreturn nil :implementation #'nelisp-eln-runtime-services-ftype-of
+    :status 'supported
+    :evidence "freloc tsv sha 3e8591ab..f0758, index 1392; GNU src/data.c Ftype_of")
+   (nelisp-eln-runtime-services--descriptor
+    :index 951 :symbol "Fsignal" :convention 'fixed :arity 2
+    :noreturn t :implementation #'nelisp-eln-runtime-services-fsignal
+    :status 'supported
+    :evidence "freloc tsv sha 3e8591ab..f0758, index 951; GNU src/eval.c Fsignal"))
   "One plist per supported/unsupported GNU .eln runtime service.
 See the Commentary above for the plist shape.  Cross-check against the
 authenticated freloc table with

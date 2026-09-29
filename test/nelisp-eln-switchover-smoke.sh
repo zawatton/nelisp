@@ -39,6 +39,8 @@ if [ ! -x "$binary" ]; then
   echo "NELISP_BIN is not executable: $binary" >&2
   exit 2
 fi
+. "$script_dir/lib/nelisp-boot-args.sh"
+nl_cold_image_setup "$binary" || exit 1
 if [ ! -r "$gnu_identity" ]; then
   echo "missing pinned GNU identity artifact: $gnu_identity" >&2
   exit 2
@@ -48,7 +50,7 @@ run_driver() {
   # $1 = label, $2 = driver file
   NELISP_S77_NELN=$src.neln NELISP_S77_ELN_DIR=$out_dir/eln \
     NELISP_S77_GNU_IDENTITY=$gnu_identity NELISP_S77_TEST_DIR=$script_dir \
-    "$binary" -L "$repo/lisp" -L "$repo/packages/nl-ffi/src" \
+    "$binary" ${NL_COLD_IMAGE_PATH:+--cold-load-from "$NL_COLD_IMAGE_PATH"} -L "$repo/lisp" -L "$repo/packages/nl-ffi/src" \
     --load "$script_dir/$2" \
     >"$out_dir/$1.stdout" 2>"$out_dir/$1.stderr"
 }

@@ -11,8 +11,18 @@
      (* nelisp-cc-eln-callback7-capacity
         nelisp-cc-eln-callback7-record-bytes)))
 
-(defconst nelisp-cc-eln-callback7-port-count 8
-  "Number of slot-identifying callback ports (see the port entries below).")
+(defconst nelisp-cc-eln-callback7-port-count 32
+  "Number of slot-identifying callback ports (see the port entries below).
+This is the single table the AOT entries, the loader's symbol list, and
+the dispatcher's range check are all generated from.")
+
+(defun nelisp-cc-eln-callback7-port-symbol-names ()
+  "Return the AOT entry symbol name of every callback port, in port order."
+  (let ((names nil) (i 0))
+    (while (< i nelisp-cc-eln-callback7-port-count)
+      (push (format "nelisp_eln_callback_port%d_entry_word" i) names)
+      (setq i (1+ i)))
+    (nreverse names)))
 (defconst nelisp-cc-eln-callback7-port-tag-base 1347375700
   "Descriptor word 6 of a port entry is this base plus the port number.
 The base (ASCII \"PORT\") is an arbitrary nonzero fixnum; the ports only

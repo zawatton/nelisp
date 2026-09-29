@@ -196,7 +196,8 @@
     ;; Arity 4 (even): no prologue sub rsp → no double-sub misalignment.
     (defun nl_sf_setq (args env out _pad)
       (if (= (sexp-tag args) 0)
-          0
+          ;; Empty `(setq)' answers nil, not the previous sibling's value.
+          (seq (nl_cons_write_nil out) 0)
         (nl_sf_setq_pair
          (extern-call nl_cons_cdr_ptr args)
          args env out))))

@@ -798,6 +798,56 @@ SLOT's own decoded identity in the artifact's `:data-relocations'."
          :gots '((23 . d-reloc) (30 . freloc))
          :module-counter '((97 . 0) (110 . 0) (121 . 4) (197 . 0) (206 . 0))
          :imports '(0 13 14 1217 1119 1209) :data '(0 4))
+   (list 'parse-body
+         :template
+         [#x41 #x57 #x41 #x56 #x41 #x55 #x41 #x54 #x55 #x53 #x48 #x89
+      #xfb #x48 #x83 #xec #x18 #x4c #x8b #x2d nil nil nil nil
+      #x4c #x8b #x35 nil nil nil nil #x49 #x8b #x6d #x00 #x4d
+      #x8b #x26 #x48 #x85 #xff #x0f #x84 #x94 #x00 #x00 #x00 #x90
+      #x8d #x43 #xfd #xa8 #x07 #x0f #x85 #x15 #x01 #x00 #x00 #x4c
+      #x8b #x7b #xfd #x48 #x8d #x43 #xfd #x48 #x89 #x44 #x24 #x08
+      #x4c #x89 #xff #xff #x95 #x00 #x2b #x00 #x00 #x48 #x85 #xc0
+      #x0f #x84 #x96 #x00 #x00 #x00 #x48 #x8b #x44 #x24 #x08 #x48
+      #x8b #x50 #x08 #x48 #x85 #xd2 #x0f #x84 #x74 #x01 #x00 #x00
+      #x48 #x89 #xdf #x48 #x89 #x54 #x24 #x08 #xff #x95 #x50 #x2a
+      #x00 #x00 #x4c #x89 #xe6 #x48 #x89 #xc7 #xff #x95 #xf8 #x22
+      #x00 #x00 #x48 #x8b #x5c #x24 #x08 #x49 #x89 #xc4 #x8b #x05
+      nil nil nil nil #x83 #xc0 #x01 #x89 #x05 nil nil nil
+      nil #xc1 #xe8 #x09 #x74 #x8e #xc7 #x05 nil nil nil nil
+      #x00 #x00 #x00 #x00 #x49 #x8b #x45 #x00 #xff #x50 #x68 #x49
+      #x8b #x45 #x00 #xff #x50 #x70 #x48 #x85 #xdb #x0f #x85 #x6d
+      #xff #xff #xff #x4c #x89 #xe7 #xff #x95 #xc8 #x25 #x00 #x00
+      #x48 #x89 #xde #x48 #x89 #xc7 #x48 #x8b #x85 #xf8 #x22 #x00
+      #x00 #x48 #x83 #xc4 #x18 #x5b #x5d #x41 #x5c #x41 #x5d #x41
+      #x5e #x41 #x5f #xff #xe0 #x0f #x1f #x80 #x00 #x00 #x00 #x00
+      #x4c #x89 #xff #xff #x95 #x50 #x2a #x00 #x00 #x49 #x8b #x76
+      #x08 #x48 #x89 #xc7 #xff #x95 #x08 #x26 #x00 #x00 #x48 #x85
+      #xc0 #x74 #xb8 #x4c #x8b #x7b #x05 #x48 #x89 #xdf #x4c #x89
+      #xfb #xff #x95 #x50 #x2a #x00 #x00 #x4c #x89 #xe6 #x48 #x89
+      #xc7 #xff #x95 #xf8 #x22 #x00 #x00 #x49 #x89 #xc4 #x8b #x05
+      nil nil nil nil #x83 #xc0 #x01 #x89 #x05 nil nil nil
+      nil #xc1 #xe8 #x09 #x0f #x84 #x78 #xff #xff #xff #xe9 #x5b
+      #xff #xff #xff #x66 #x0f #x1f #x84 #x00 #x00 #x00 #x00 #x00
+      #x49 #x8b #x45 #x00 #x49 #x8b #x7e #x28 #x48 #x89 #xde #xff
+      #x10 #x31 #xff #xff #x95 #x00 #x2b #x00 #x00 #x48 #x85 #xc0
+      #x74 #x0d #x49 #x8b #x45 #x00 #x49 #x8b #x7e #x28 #x48 #x89
+      #xde #xff #x10 #x31 #xff #xff #x95 #x50 #x2a #x00 #x00 #x49
+      #x8b #x76 #x08 #x48 #x89 #xc7 #xff #x95 #x08 #x26 #x00 #x00
+      #x48 #x85 #xc0 #x0f #x84 #x2e #xff #xff #xff #x49 #x8b #x45
+      #x00 #x48 #x89 #xde #x49 #x8b #x7e #x28 #xff #x10 #x48 #x89
+      #xdf #x31 #xdb #xff #x95 #x50 #x2a #x00 #x00 #x4c #x89 #xe6
+      #x48 #x89 #xc7 #xff #x95 #xf8 #x22 #x00 #x00 #x49 #x89 #xc4
+      #x8b #x05 nil nil nil nil #x83 #xc0 #x01 #x89 #x05 nil
+      nil nil nil #xc1 #xe8 #x09 #x0f #x85 #xce #xfe #xff #xff
+      #xe9 #xea #xfe #xff #xff #x0f #x1f #x80 #x00 #x00 #x00 #x00
+      #x4c #x89 #xff #xff #x95 #x50 #x2a #x00 #x00 #x49 #x8b #x76
+      #x08 #x48 #x89 #xc7 #xff #x95 #x08 #x26 #x00 #x00 #x48 #x85
+      #xc0 #x0f #x84 #xc4 #xfe #xff #xff #x48 #x8b #x44 #x24 #x08
+      #x4c #x8b #x78 #x08 #xe9 #x02 #xff #xff #xff]
+         :gots '((20 . freloc) (27 . d-reloc))
+         :module-counter '((144 . 0) (153 . 0) (164 . 4) (300 . 0) (309 . 0)
+                           (446 . 0) (455 . 0))
+         :imports '(0 13 14 1376 1354 1119 1209 1217) :data '(0 1 5))
    (list 'for-effect-constant
          :template
          [#x55 #x53 #x48 #x83 #xec #x28 #x48 #x8b #x05 nil nil nil
@@ -811,7 +861,243 @@ SLOT's own decoded identity in the artifact's `:data-relocations'."
       #x31 #xf6 #xff #x53 #x50 #x48 #x83 #xc4 #x28 #x31 #xc0 #x5b
       #x5d #xc3]
          :gots '((9 . freloc) (16 . d-reloc))
-         :imports '(1335 945 10) :data '(0 2)))
+         :imports '(1335 945 10) :data '(0 2))
+   (list 'setq-form
+         :template
+         [#x41 #x55 #x41 #x54 #x55 #x48 #x89 #xfd #x53 #x48 #x83 #xec
+      #x68 #x4c #x8b #x25 nil nil nil nil #x49 #x8b #x1c #x24
+      #xff #x93 #x10 #x27 #x00 #x00 #x48 #x89 #xe6 #xbf #x02 #x00
+      #x00 #x00 #x48 #xc7 #x44 #x24 #x08 #x0e #x00 #x00 #x00 #x48
+      #x89 #x04 #x24 #xff #x93 #x40 #x29 #x00 #x00 #x4c #x8b #x2d
+      nil nil nil nil #x48 #x85 #xc0 #x0f #x84 #xa7 #x00 #x00
+      #x00 #x8d #x45 #xfd #xa8 #x07 #x0f #x85 #xc2 #x00 #x00 #x00
+      #x48 #x8b #x75 #x05 #x8d #x46 #xfd #xa8 #x07 #x0f #x85 #xfd
+      #x00 #x00 #x00 #x4c #x8b #x66 #xfd #x48 #x89 #xee #xbf #x0a
+      #x00 #x00 #x00 #xff #x93 #x20 #x26 #x00 #x00 #xbf #x02 #x00
+      #x00 #x00 #x48 #x8d #x74 #x24 #x10 #xf3 #x41 #x0f #x7e #x45
+      #x18 #x66 #x48 #x0f #x6e #xc8 #x66 #x0f #x6c #xc1 #x0f #x29
+      #x44 #x24 #x10 #xff #x93 #x88 #x1d #x00 #x00 #x49 #x8b #x7d
+      #x20 #xff #x93 #xb8 #x29 #x00 #x00 #x48 #x85 #xc0 #x0f #x84
+      #x84 #x00 #x00 #x00 #xf3 #x41 #x0f #x7e #x45 #x28 #x66 #x49
+      #x0f #x6e #xd4 #x48 #x8d #x74 #x24 #x20 #xbf #x02 #x00 #x00
+      #x00 #x66 #x0f #x6c #xc2 #x0f #x29 #x44 #x24 #x20 #xff #x93
+      #x88 #x1d #x00 #x00 #x49 #x8b #x7d #x20 #x31 #xc9 #x31 #xd2
+      #x31 #xf6 #xff #x53 #x50 #x48 #x83 #xc4 #x68 #x31 #xc0 #x5b
+      #x5d #x41 #x5c #x41 #x5d #xc3 #x66 #x0f #x1f #x44 #x00 #x00
+      #xf3 #x41 #x0f #x6f #x45 #x48 #x48 #x8d #x74 #x24 #x30 #xbf
+      #x02 #x00 #x00 #x00 #x0f #x29 #x44 #x24 #x30 #xff #x93 #x88
+      #x1d #x00 #x00 #x8d #x45 #xfd #xa8 #x07 #x0f #x84 #x3e #xff
+      #xff #xff #x48 #x85 #xed #x74 #x0d #x49 #x8b #x04 #x24 #x49
+      #x8b #x7d #x78 #x48 #x89 #xee #xff #x10 #x45 #x31 #xe4 #xe9
+      #x37 #xff #xff #xff #x66 #x41 #x0f #x6f #x45 #x30 #x48 #x8d
+      #x74 #x24 #x40 #xbf #x03 #x00 #x00 #x00 #x48 #xc7 #x44 #x24
+      #x50 #x02 #x00 #x00 #x00 #x0f #x29 #x44 #x24 #x40 #xff #x93
+      #x88 #x1d #x00 #x00 #xe9 #x53 #xff #xff #xff #x0f #x1f #x80
+      #x00 #x00 #x00 #x00 #x48 #x85 #xf6 #x74 #xc3 #x49 #x8b #x04
+      #x24 #x49 #x8b #x7d #x78 #xff #x10 #xeb #xb7]
+         :gots '((16 . freloc) (60 . d-reloc))
+         :imports '(1250 1320 1220 945 1335 10 0)
+         :data '(3 4 5 6 7 9 10 15))
+   (list 'lambda-nth-form
+         :template
+         [#x41 #x54 #xbe #x02 #x00 #x00 #x00 #xbf #x0a #x00 #x00 #x00
+      #x55 #x53 #x48 #x83 #xec #x20 #x48 #x8b #x05 nil nil nil
+      nil #x48 #x8b #x18 #xff #x93 #x20 #x26 #x00 #x00 #x4c #x8b
+      #x25 nil nil nil nil #x48 #x89 #xc5 #x49 #x8b #x7c #x24
+      #x18 #xff #x93 #xb8 #x29 #x00 #x00 #xf3 #x41 #x0f #x7e #x04
+      #x24 #x66 #x48 #x0f #x6e #xcd #x48 #x89 #xe6 #x48 #x89 #x44
+      #x24 #x10 #xbf #x03 #x00 #x00 #x00 #x66 #x0f #x6c #xc1 #x0f
+      #x29 #x04 #x24 #xff #x93 #x88 #x1d #x00 #x00 #x48 #x83 #xc4
+      #x20 #x5b #x5d #x41 #x5c #xc3]
+         :gots '((21 . freloc) (37 . d-reloc))
+         :imports '(1220 1335 945) :data '(0 3))
+   (list 'lambda-cdr-form
+         :template
+         [#x55 #xbe #x02 #x00 #x00 #x00 #x53 #x48 #x83 #xec #x28 #x48
+      #x8b #x05 nil nil nil nil #x48 #x8b #x2d nil nil nil
+      nil #x48 #x8b #x18 #x48 #x8b #xbd #xc0 #x00 #x00 #x00 #xff
+      #x13 #x48 #x8b #x7d #x18 #xff #x93 #xb8 #x29 #x00 #x00 #x48
+      #x8b #x55 #x20 #x48 #x89 #xe6 #x48 #xc7 #x44 #x24 #x08 #x00
+      #x00 #x00 #x00 #x48 #x89 #x44 #x24 #x10 #xbf #x03 #x00 #x00
+      #x00 #x48 #x89 #x14 #x24 #xff #x93 #x88 #x1d #x00 #x00 #x48
+      #x83 #xc4 #x28 #x5b #x5d #xc3]
+         :gots '((14 . freloc) (21 . d-reloc))
+         :imports '(0 1335 945) :data '(3 4 24))
+   (list 'if-form
+         :template
+         [#x41 #x57 #x8d #x47 #xfd #x41 #x56 #x41 #x55 #x49 #x89 #xfd
+      #x41 #x54 #x55 #x53 #x48 #x81 #xec #x58 #x01 #x00 #x00 #x4c
+      #x8b #x35 nil nil nil nil #x49 #x8b #x1e #xa8 #x07 #x0f
+      #x85 #x3f #x03 #x00 #x00 #x48 #x8b #x77 #x05 #x4c #x8d #x7f
+      #xfd #x8d #x46 #xfd #xa8 #x07 #x0f #x85 #x2c #x04 #x00 #x00
+      #xf3 #x0f #x7e #x4e #xfd #x4c #x8b #x25 nil nil nil nil
+      #xf3 #x41 #x0f #x7e #x04 #x24 #x48 #x8d #x74 #x24 #x20 #xbf
+      #x02 #x00 #x00 #x00 #x66 #x0f #x6c #xc1 #x0f #x29 #x44 #x24
+      #x20 #xff #x93 #x88 #x1d #x00 #x00 #x49 #x8b #x77 #x08 #x8d
+      #x46 #xfd #xa8 #x07 #x0f #x85 #x7a #x03 #x00 #x00 #x48 #x8b
+      #x6e #xfd #x49 #x8b #x44 #x24 #x28 #x48 #x8d #x74 #x24 #x10
+      #xbf #x01 #x00 #x00 #x00 #x48 #x89 #x44 #x24 #x10 #xff #x93
+      #x88 #x1d #x00 #x00 #x49 #x8b #x77 #x08 #x48 #x89 #x04 #x24
+      #x8d #x46 #xfd #xa8 #x07 #x0f #x85 #xd9 #x01 #x00 #x00 #x48
+      #x8b #x76 #x05 #x8d #x46 #xfd #xa8 #x07 #x0f #x85 #xca #x01
+      #x00 #x00 #x48 #x83 #x7e #x05 #x00 #x0f #x84 #xd1 #x01 #x00
+      #x00 #x49 #x8b #x44 #x24 #x28 #x48 #x8d #x74 #x24 #x18 #xbf
+      #x01 #x00 #x00 #x00 #x48 #x89 #x44 #x24 #x18 #xff #x93 #x88
+      #x1d #x00 #x00 #xf3 #x41 #x0f #x6f #x4c #x24 #x38 #xbf #x03
+      #x00 #x00 #x00 #x48 #x8d #xb4 #x24 #x90 #x00 #x00 #x00 #x48
+      #x89 #x84 #x24 #xa0 #x00 #x00 #x00 #x0f #x29 #x8c #x24 #x90
+      #x00 #x00 #x00 #x48 #x89 #x44 #x24 #x08 #xff #x93 #x88 #x1d
+      #x00 #x00 #x66 #x49 #x0f #x6e #xd5 #x48 #x8d #x74 #x24 #x30
+      #xf3 #x41 #x0f #x7e #x4c #x24 #x58 #xbf #x02 #x00 #x00 #x00
+      #x66 #x0f #x6c #xca #x0f #x29 #x4c #x24 #x30 #xff #x93 #xc8
+      #x22 #x00 #x00 #x66 #x48 #x0f #x6e #xdd #xbf #x03 #x00 #x00
+      #x00 #xf3 #x41 #x0f #x7e #x4c #x24 #x48 #x48 #x8d #xb4 #x24
+      #xb0 #x00 #x00 #x00 #x48 #x89 #x84 #x24 #xc0 #x00 #x00 #x00
+      #x66 #x0f #x6c #xcb #x0f #x29 #x8c #x24 #xb0 #x00 #x00 #x00
+      #xff #x93 #x88 #x1d #x00 #x00 #x49 #x8b #x44 #x24 #x38 #xbf
+      #x03 #x00 #x00 #x00 #x48 #x8d #xb4 #x24 #xd0 #x00 #x00 #x00
+      #x48 #x89 #x84 #x24 #xd0 #x00 #x00 #x00 #x49 #x8b #x44 #x24
+      #x60 #x48 #x89 #x84 #x24 #xd8 #x00 #x00 #x00 #x48 #x8b #x04
+      #x24 #x48 #x89 #x84 #x24 #xe0 #x00 #x00 #x00 #xff #x93 #x88
+      #x1d #x00 #x00 #x48 #x8d #x74 #x24 #x40 #xbf #x02 #x00 #x00
+      #x00 #xf3 #x0f #x7e #x44 #x24 #x08 #xf3 #x41 #x0f #x7e #x4c
+      #x24 #x68 #x66 #x0f #x6c #xc8 #x0f #x29 #x4c #x24 #x40 #xff
+      #x93 #x88 #x1d #x00 #x00 #x48 #x89 #xef #x31 #xf6 #xff #x93
+      #xf8 #x22 #x00 #x00 #x49 #x8b #x7c #x24 #x70 #x48 #x89 #xc6
+      #xff #x93 #xf8 #x22 #x00 #x00 #x66 #x49 #x0f #x6e #xe5 #x48
+      #x8d #x74 #x24 #x50 #xf3 #x41 #x0f #x7e #x44 #x24 #x78 #x48
+      #x89 #xc5 #xbf #x02 #x00 #x00 #x00 #x66 #x0f #x6c #xc4 #x0f
+      #x29 #x44 #x24 #x50 #xff #x93 #xc8 #x22 #x00 #x00 #x66 #x48
+      #x0f #x6e #xed #xbf #x03 #x00 #x00 #x00 #xf3 #x41 #x0f #x7e
+      #x44 #x24 #x48 #x48 #x8d #xb4 #x24 #xf0 #x00 #x00 #x00 #x48
+      #x89 #x84 #x24 #x00 #x01 #x00 #x00 #x66 #x0f #x6c #xc5 #x0f
+      #x29 #x84 #x24 #xf0 #x00 #x00 #x00 #xff #x93 #x88 #x1d #x00
+      #x00 #x48 #x8d #x74 #x24 #x60 #xbf #x02 #x00 #x00 #x00 #xf3
+      #x41 #x0f #x7e #x44 #x24 #x68 #x0f #x16 #x04 #x24 #x0f #x29
+      #x44 #x24 #x60 #xff #x93 #x88 #x1d #x00 #x00 #x49 #x8b #x7c
+      #x24 #x18 #x31 #xc9 #x31 #xd2 #x31 #xf6 #xff #x53 #x50 #x48
+      #x81 #xc4 #x58 #x01 #x00 #x00 #x31 #xc0 #x5b #x5d #x41 #x5c
+      #x41 #x5d #x41 #x5e #x41 #x5f #xc3 #x66 #x0f #x1f #x84 #x00
+      #x00 #x00 #x00 #x00 #x48 #x85 #xf6 #x74 #x0d #x49 #x8b #x06
+      #x49 #x8b #xbc #x24 #xc0 #x00 #x00 #x00 #xff #x10 #x49 #x8b
+      #x7c #x24 #x18 #xff #x93 #xb8 #x29 #x00 #x00 #x48 #x85 #xc0
+      #x0f #x84 #x6a #x01 #x00 #x00 #xf3 #x41 #x0f #x7e #x4c #x24
+      #x40 #xf3 #x41 #x0f #x7e #x44 #x24 #x38 #x48 #x8b #x04 #x24
+      #xbf #x03 #x00 #x00 #x00 #x48 #x8d #xb4 #x24 #x10 #x01 #x00
+      #x00 #x66 #x0f #x6c #xc1 #x48 #x89 #x84 #x24 #x20 #x01 #x00
+      #x00 #x0f #x29 #x84 #x24 #x10 #x01 #x00 #x00 #xff #x93 #x88
+      #x1d #x00 #x00 #x66 #x49 #x0f #x6e #xf5 #x48 #x8d #x74 #x24
+      #x70 #xf3 #x41 #x0f #x7e #x44 #x24 #x58 #xbf #x02 #x00 #x00
+      #x00 #x66 #x0f #x6c #xc6 #x0f #x29 #x44 #x24 #x70 #xff #x93
+      #xc8 #x22 #x00 #x00 #x66 #x48 #x0f #x6e #xfd #xbf #x03 #x00
+      #x00 #x00 #xf3 #x41 #x0f #x7e #x44 #x24 #x48 #x48 #x8d #xb4
+      #x24 #x30 #x01 #x00 #x00 #x48 #x89 #x84 #x24 #x40 #x01 #x00
+      #x00 #x66 #x0f #x6c #xc7 #x0f #x29 #x84 #x24 #x30 #x01 #x00
+      #x00 #xff #x93 #x88 #x1d #x00 #x00 #xf3 #x41 #x0f #x7e #x44
+      #x24 #x68 #xbf #x02 #x00 #x00 #x00 #x48 #x8d #xb4 #x24 #x80
+      #x00 #x00 #x00 #x0f #x16 #x04 #x24 #x0f #x29 #x84 #x24 #x80
+      #x00 #x00 #x00 #xff #x93 #x88 #x1d #x00 #x00 #xe9 #xf3 #xfe
+      #xff #xff #x66 #x0f #x1f #x44 #x00 #x00 #x4c #x8b #x25 nil
+      nil nil nil #x48 #x89 #xfd #x48 #x85 #xff #x0f #x84 #xa5
+      #x00 #x00 #x00 #x49 #x8b #xbc #x24 #xc0 #x00 #x00 #x00 #x4c
+      #x89 #xee #x31 #xed #xff #x13 #x49 #x8b #x04 #x24 #x48 #x8d
+      #x74 #x24 #x20 #xbf #x02 #x00 #x00 #x00 #x48 #xc7 #x44 #x24
+      #x28 #x00 #x00 #x00 #x00 #x48 #x89 #x44 #x24 #x20 #xff #x93
+      #x88 #x1d #x00 #x00 #x49 #x8b #x06 #x4c #x89 #xee #x49 #x8b
+      #xbc #x24 #xc0 #x00 #x00 #x00 #xff #x10 #x49 #x8b #x44 #x24
+      #x28 #x48 #x8d #x74 #x24 #x10 #xbf #x01 #x00 #x00 #x00 #x48
+      #x89 #x44 #x24 #x10 #xff #x93 #x88 #x1d #x00 #x00 #x49 #x8b
+      #xbc #x24 #xc0 #x00 #x00 #x00 #x4c #x89 #xee #x48 #x89 #x04
+      #x24 #x49 #x8b #x06 #xff #x10 #xe9 #xa3 #xfe #xff #xff #x90
+      #x48 #x85 #xf6 #x74 #x0d #x49 #x8b #x06 #x49 #x8b #xbc #x24
+      #xc0 #x00 #x00 #x00 #xff #x10 #x31 #xed #xe9 #x71 #xfc #xff
+      #xff #x0f #x1f #x80 #x00 #x00 #x00 #x00 #xf3 #x41 #x0f #x7e
+      #x8c #x24 #x80 #x00 #x00 #x00 #xe9 #x8e #xfe #xff #xff #x90
+      #x49 #x8b #x04 #x24 #x48 #x8d #x74 #x24 #x20 #xbf #x02 #x00
+      #x00 #x00 #x48 #xc7 #x44 #x24 #x28 #x00 #x00 #x00 #x00 #x48
+      #x89 #x44 #x24 #x20 #xff #x93 #x88 #x1d #x00 #x00 #x49 #x8b
+      #x44 #x24 #x28 #x48 #x8d #x74 #x24 #x10 #xbf #x01 #x00 #x00
+      #x00 #x48 #x89 #x44 #x24 #x10 #xff #x93 #x88 #x1d #x00 #x00
+      #x48 #x89 #x04 #x24 #xe9 #x2d #xfe #xff #xff #x0f #x1f #x00
+      #x4c #x8b #x25 nil nil nil nil #x48 #x85 #xf6 #x74 #x0a
+      #x49 #x8b #xbc #x24 #xc0 #x00 #x00 #x00 #xff #x13 #x66 #x0f
+      #xef #xc9 #xe9 #xc1 #xfb #xff #xff]
+         :gots '((26 . freloc) (68 . d-reloc) (875 . d-reloc) (1131 . d-reloc))
+         :imports '(945 1113 1119 10 1335 0)
+         :data '(0 3 5 7 8 9 11 12 13 14 15 16 24))
+   (list 'accumulate-forms
+         :template
+         [#x41 #x57 #x41 #x56 #x41 #x55 #x41 #x54 #x49 #x89 #xfc #x55
+      #x53 #x48 #x89 #xfb #x48 #x83 #xec #x68 #x4c #x8b #x3d nil
+      nil nil nil #x4c #x8b #x35 nil nil nil nil #x48 #x8d #x4c
+      #x24 #x50 #x48 #x89 #x74 #x24 #x18 #x49 #x8b #x07 #x49 #x8b
+      #x2e #x48 #x89 #x7c #x24 #x08 #x48 #x89 #x4c #x24 #x28 #x48
+      #x89 #x04 #x24 #x8d #x47 #xfd #xa8 #x07 #x0f #x85 #xc7 #x01
+      #x00 #x00 #x0f #x1f #x44 #x00 #x00 #x49 #x83 #x7f #x28 #x00
+      #x0f #x84 #xb7 #x01 #x00 #x00 #x49 #x8d #x44 #x24 #xfd #x48
+      #x83 #x7c #x24 #x18 #x00 #x4d #x8b #x6c #x24 #xfd #x48 #x89
+      #x44 #x24 #x20 #x74 #x2c #x48 #x8b #x44 #x24 #x18 #x48 #x8b
+      #x74 #x24 #x28 #xbf #x02 #x00 #x00 #x00 #x48 #xc7 #x44 #x24
+      #x58 #x02 #x00 #x00 #x00 #x48 #x89 #x44 #x24 #x50 #xff #x95
+      #x40 #x29 #x00 #x00 #x48 #x85 #xc0 #x0f #x84 #x02 #x02 #x00
+      #x00 #xf3 #x41 #x0f #x7e #x47 #x08 #x66 #x49 #x0f #x6e #xcd
+      #x48 #x8d #x74 #x24 #x40 #xbf #x02 #x00 #x00 #x00 #x66 #x0f
+      #x6c #xc1 #x0f #x29 #x44 #x24 #x40 #xff #x95 #x88 #x1d #x00
+      #x00 #x48 #x89 #x44 #x24 #x10 #x48 #x8b #x44 #x24 #x10 #x49
+      #x39 #xc5 #x0f #x84 #xeb #x00 #x00 #x00 #x48 #x8b #x05 nil
+      nil nil nil #x48 #x8b #x00 #x80 #x38 #x00 #x74 #x25 #xe9 #xb7
+      #x00 #x00 #x00 #x0f #x1f #x80 #x00 #x00 #x00 #x00 #xc7 #x05
+      nil nil nil nil #x00 #x00 #x00 #x00 #x49 #x8b #x06 #xff #x50
+      #x68 #x49 #x8b #x06 #xff #x50 #x70 #x4c #x89 #xeb #x8d #x43
+      #xfd #x83 #xe0 #x07 #x41 #x89 #xc5 #x4c #x39 #xe3 #x74 #x51
+      #x48 #x8b #x05 nil nil nil nil #x48 #x8b #x00 #x80 #x38 #x00
+      #x0f #x85 #x26 #x01 #x00 #x00 #x45 #x85 #xed #x75 #x61 #x4c
+      #x8b #x6b #x05 #x48 #x89 #xdf #xff #x95 #x50 #x2a #x00 #x00
+      #x48 #x8b #x34 #x24 #x48 #x89 #xc7 #xff #x95 #xf8 #x22 #x00
+      #x00 #x48 #x89 #x04 #x24 #x8b #x05 nil nil nil nil #x83 #xc0
+      #x01 #x89 #xc2 #xc1 #xea #x09 #x75 #x93 #x89 #x05 nil nil nil
+      nil #xeb #xa1 #x0f #x1f #x00 #x49 #x83 #x7f #x28 #x00 #x0f
+      #x85 #x0d #x01 #x00 #x00 #x85 #xc0 #x74 #xb8 #x49 #x8b #x06
+      #x49 #x8b #x7f #x38 #x48 #x89 #xde #xff #x10 #x45 #x31 #xed
+      #xeb #xab #x0f #x1f #x84 #x00 #x00 #x00 #x00 #x00 #x48 #x85
+      #xdb #x75 #xe2 #xeb #xec #x66 #x0f #x1f #x84 #x00 #x00 #x00
+      #x00 #x00 #x48 #x8b #x74 #x24 #x10 #x4c #x89 #xef #xff #x55
+      #x38 #x84 #xc0 #x0f #x84 #x56 #xff #xff #xff #x66 #x90 #x66
+      #x66 #x2e #x0f #x1f #x84 #x00 #x00 #x00 #x00 #x00 #x49 #x83
+      #x7f #x28 #x00 #x0f #x84 #x3e #xff #xff #xff #x48 #x8b #x44
+      #x24 #x20 #x48 #x8b #x40 #x08 #x48 #x89 #x44 #x24 #x08 #x8b
+      #x05 nil nil nil nil #x83 #xc0 #x01 #x89 #xc1 #xc1 #xe9 #x09
+      #x74 #x5f #xc7 #x05 nil nil nil nil #x00 #x00 #x00 #x00 #x49
+      #x8b #x06 #xff #x50 #x68 #x49 #x8b #x06 #xff #x50 #x70 #x48
+      #x8b #x44 #x24 #x08 #x49 #x89 #xc4 #x83 #xe8 #x03 #xa8 #x07
+      #x0f #x84 #x3e #xfe #xff #xff #x48 #x8b #x3c #x24 #xff #x95
+      #xc8 #x25 #x00 #x00 #x48 #x89 #x5c #x24 #x38 #x48 #x8d #x74
+      #x24 #x30 #xbf #x02 #x00 #x00 #x00 #x48 #x89 #x44 #x24 #x30
+      #xff #x95 #x60 #x25 #x00 #x00 #x48 #x83 #xc4 #x68 #x5b #x5d
+      #x41 #x5c #x41 #x5d #x41 #x5e #x41 #x5f #xc3 #x0f #x1f #x00
+      #x89 #x05 nil nil nil nil #xeb #xaf #x48 #x8b #x74 #x24 #x08
+      #x48 #x89 #xdf #xff #x55 #x38 #x84 #xc0 #x0f #x84 #xc7 #xfe
+      #xff #xff #x49 #x83 #x7f #x28 #x00 #x0f #x84 #xbc #xfe #xff
+      #xff #x45 #x85 #xed #x74 #x11 #x48 #x85 #xdb #x0f #x85 #x81
+      #x00 #x00 #x00 #x31 #xdb #xeb #x08 #x85 #xc0 #x75 #x79 #x48
+      #x8b #x5b #x05 #x48 #x8b #x34 #x24 #x48 #x8b #x7c #x24 #x10
+      #xff #x95 #xf8 #x22 #x00 #x00 #x48 #x89 #x04 #x24 #xe9 #x2b
+      #xff #xff #xff #x48 #x8b #x4c #x24 #x18 #x89 #xc8 #x83 #xe8
+      #x02 #xa8 #x03 #x75 #x32 #x48 #x89 #xc8 #x48 #xb9 #x00 #x00
+      #x00 #x00 #x00 #x00 #x00 #xe0 #x48 #xc1 #xf8 #x02 #x48 #x39
+      #xc8 #x74 #x1c #x48 #x8d #x04 #x85 #xfe #xff #xff #xff #x4c
+      #x89 #x6c #x24 #x10 #x48 #x89 #x44 #x24 #x18 #xe9 #xec #xfd
+      #xff #xff #x0f #x1f #x44 #x00 #x00 #x49 #x8b #x06 #x48 #x8b
+      #x7c #x24 #x18 #xff #x90 #xa0 #x28 #x00 #x00 #x4c #x89 #x6c
+      #x24 #x10 #x48 #x89 #x44 #x24 #x18 #xe9 #xca #xfd #xff #xff
+      #x49 #x8b #x06 #x48 #x89 #xde #x49 #x8b #x7f #x38 #x31 #xdb
+      #xff #x10 #xe9 #x78 #xff #xff #xff]
+         :gots '((23 . d-reloc) (30 . freloc)
+                 (216 . symbols-with-pos) (282 . symbols-with-pos))
+         :module-counter '((242 . 4) (335 . 0) (351 . 0) (475 . 0)
+                           (491 . 4) (586 . 0))
+         :imports '(1320 945 7 1354 1119 1209 1196 1300 0 13 14)
+         :data '(0 1 5 7)))
   "Genuine GNU 31.1 (ABI ba35c031) native bodies admitted by exact bytes.
 Every byte is fixed except the RIP-relative GOT displacements (nil); each
 entry of :GOTS is (DISP32-OFFSET . KIND), the displacement being the last
@@ -860,12 +1146,542 @@ inside its instruction (the 4-byte immediate of `movl $0,COUNTER(%rip)');
 all of them must reach one and the same address, which callers must then
 authenticate as the artifact's own `quitcounter' object.
 
+`parse-body' is vendor macroexp.el `macroexp-parse-body' (525 bytes,
+S6.5): a `while' over BODY that, per element E = (car BODY) (BODY
+tag-checked; a non-list tail calls slot 0 `wrong_type_argument' with
+d_reloc[5], `listp'), tests slot 1376 `Fstringp' of E (then requires a
+non-nil (cdr BODY)) or else slot 1217 `Fmemq' of slot 1354 `Fcar_safe'
+\(E) in d_reloc[1] (the quoted list (:documentation declare interactive
+cl-declare)), and pushes each matched element on DECLS through slot 1119
+`Fcons' (DECLS starting at d_reloc[0], nil); it ends with a tail JMP
+through slot 1119 `Fcons' of slot 1209 `Fnreverse' (DECLS) and the
+remaining BODY.  Every iteration increments the module-local `quitcounter'
+by direct RIP-relative access and every 512th one calls slots 13
+`maybe_gc' and 14 `maybe_quit' (see `set-difference'); the seven
+accesses are listed in :MODULE-COUNTER.  Eight distinct freloc slots use
+every one of the eight callback ports.
+
 `for-effect-constant' is vendor bytecomp.el `byte-compile-constant'
 \(110 bytes, S6.15): slot 1335 `Fsymbol_value' of d_reloc[0]
 \(`byte-compile--for-effect'); a nil value makes a MANY (2, argv) call
 through slot 945 `Ffuncall' of d_reloc[2] (`byte-compile-push-constant')
 on the argument and returns its value, a non-nil one calls slot 10
-`set_internal' (d_reloc[0], nil, nil, SET_INTERNAL_SET) and returns nil.")
+`set_internal' (d_reloc[0], nil, nil, SET_INTERNAL_SET) and returns nil.
+
+`setq-form' is vendor bytecomp.el `byte-compile-setq' (369 bytes, S6.13):
+`cl-assert' of (= (length FORM) 3) -- slot 1250 `Flength', then a MANY
+\(2, argv) slot 1320 `Feqlsign' against 3, a failure calling slot 945
+`Ffuncall' of d_reloc[9] (`cl--assertion-failed') on d_reloc[10] (the
+quoted assertion form); VAR = (nth 1 FORM) inline, list-tag checked (a
+non-list calls slot 0 `wrong_type_argument' with d_reloc[15], `listp');
+then `Ffuncall' of d_reloc[3] (`byte-compile-form') on slot 1220 `Fnth'
+\(2, FORM); unless slot 1335 `Fsymbol_value' of d_reloc[4]
+\(`byte-compile--for-effect') is non-nil, a MANY (3, argv) `Ffuncall' of
+d_reloc[6] (`byte-compile-out') on d_reloc[7] (`byte-dup') and 0; then
+`Ffuncall' of d_reloc[5] (`byte-compile-variable-set') on VAR, and slot 10
+`set_internal' (d_reloc[4], nil, nil, SET_INTERNAL_SET); it returns nil.
+`Ffuncall' is thus called with two different argument counts through its
+one slot.
+
+`lambda-nth-form' and `lambda-cdr-form' are the two native anonymous
+lambdas GNU emits next to vendor bytecomp.el `byte-compile-if' (102 and
+90 bytes, S6.12): with the closure variable left as the placeholder
+fixnum 0 they compute (byte-compile-form (nth 2 V0) FOR-EFFECT) through
+slots 1220 `Fnth', 1335 `Fsymbol_value' and 945 `Ffuncall', and
+(byte-compile-body (cdr (cdr (cdr V0))) FOR-EFFECT), whose first `cdr' of
+that placeholder calls slot 0 `wrong_type_argument' (`listp').  Nothing
+in the admitted registration reads the `d_reloc' slots that hold them.
+
+`if-form' is vendor bytecomp.el `byte-compile-if' itself (1159 bytes,
+S6.12): five `Ffuncall' calls of `byte-compile-form', `byte-compile-make-tag',
+`byte-compile-goto', `byte-compile-out-tag' and friends on inline `car'/`cdr'
+walks of FORM, two slot 1113 `Fmake_closure' calls on the byte-code
+prototypes d_reloc[11] and d_reloc[15] and FORM, slot 1119 `Fcons' to build
+`(not CLAUSE)', a final slot 10 `set_internal' of `byte-compile--for-effect'
+to nil, and slot 0 `wrong_type_argument' with d_reloc[24] (`listp') on any
+non-list walk.  The closures are only ever passed on to `Ffuncall'; the body
+never reads through them.")
+
+;;; S6.6: `cconv-closure-convert' (vendor cconv.el).  Kept in its own constant
+;;; (appended to the shape list below) so concurrent lanes adding shapes
+;;; do not touch the same source lines.
+
+(defconst nelisp-eln-tail-code--multi-import-shapes-cconv
+  (list
+   (list 'closure-convert
+         :template
+         [#x41 #x55 #x49 #x89 #xf5 #x31 #xf6 #x41 #x54 #x49 #x89 #xfc
+      #x55 #x53 #x48 #x83 #xec #x58 #x48 #x8b #x05 nil nil nil nil
+      #x48 #x8b #x2d nil nil nil nil #x48 #x8b #x18 #x48 #x8b #x7d
+      #x08 #xff #x53 #x60 #x31 #xf6 #x48 #x8b #x7d #x10 #xff #x53
+      #x60 #x48 #x8b #x7d #x18 #x4c #x89 #xee #xff #x53 #x60 #xf3
+      #x0f #x7e #x45 #x20 #x66 #x49 #x0f #x6e #xcc #x48 #x8d #x74
+      #x24 #x10 #x48 #xc7 #x44 #x24 #x20 #x00 #x00 #x00 #x00 #xbf
+      #x03 #x00 #x00 #x00 #x66 #x0f #x6c #xc1 #x0f #x29 #x44 #x24
+      #x10 #xff #x93 #x88 #x1d #x00 #x00 #x48 #x8b #x7d #x10 #xff
+      #x93 #xb8 #x29 #x00 #x00 #x48 #x89 #xc7 #xff #x93 #xc8 #x25
+      #x00 #x00 #x31 #xc9 #x31 #xd2 #x48 #x8b #x7d #x10 #x48 #x89
+      #xc6 #xff #x53 #x50 #xf3 #x0f #x7e #x45 #x28 #x66 #x49 #x0f
+      #x6e #xd4 #xbf #x04 #x00 #x00 #x00 #x48 #x8d #x74 #x24 #x30
+      #x66 #x0f #x6c #xc2 #x0f #x29 #x44 #x24 #x30 #x66 #x0f #xef
+      #xc0 #x0f #x29 #x44 #x24 #x40 #xff #x93 #x88 #x1d #x00 #x00
+      #x48 #x8b #x7d #x10 #x49 #x89 #xc4 #xff #x93 #xb8 #x29 #x00
+      #x00 #x48 #x85 #xc0 #x74 #x17 #xf3 #x0f #x6f #x45 #x38 #x48
+      #x89 #xe6 #xbf #x02 #x00 #x00 #x00 #x0f #x29 #x04 #x24 #xff
+      #x93 #x88 #x1d #x00 #x00 #xbf #x0e #x00 #x00 #x00 #xff #x53
+      #x20 #x48 #x83 #xc4 #x58 #x4c #x89 #xe0 #x5b #x5d #x41 #x5c
+      #x41 #x5d #xc3]
+         :gots '((21 . freloc) (28 . d-reloc))
+         :imports '(12 945 1335 1209 10 4)
+         :data '(1 2 3 4 5 7 8)))
+  "Exact multi-import shapes for vendor cconv.el bodies (S6).
+
+`closure-convert' is `cconv-closure-convert' (245 bytes, S6.6), whose
+arguments are (FORM DYNBOUND-VARS): it `specbind's (slot 12) the three
+specials d_reloc[1] `cconv-var-classification' and d_reloc[2]
+`cconv-freevars-alist' to nil and d_reloc[3] `cconv--dynbound-variables'
+to DYNBOUND-VARS; a MANY (3, argv) slot 945 `Ffuncall' of d_reloc[4]
+`cconv-analyze-form' on (FORM nil); then slot 1335 `Fsymbol_value' of
+d_reloc[2], slot 1209 `Fnreverse' and slot 10 `set_internal' store the
+reversed list back; a MANY (4, argv) `Ffuncall' of d_reloc[5]
+`cconv-convert' on (FORM nil nil) gives the result; when slot 1335
+`Fsymbol_value' of d_reloc[2] is then non-nil a MANY (2, argv)
+`Ffuncall' of d_reloc[7] `cl--assertion-failed' on d_reloc[8] (the quoted
+assertion form) runs; finally slot 4 `helper_unbind_n' unbinds the three
+specbinds (fixnum 3) and the result is returned.  `Ffuncall' is called
+with three different argument counts through its one slot.
+
+`accumulate-forms' is vendor macroexp.el `macroexp--all-forms' (784
+bytes, S6.3), the `macroexp--accumulate' loop over FORMS with an
+optional SKIP: while SKIP is nil (slot 0 `Qnil') or slot 1320 `Feqlsign'
+\(SKIP, 0) is true, slot 945 `Ffuncall' of d_reloc[1]
+\(`macroexp--expand-all') on the current element (MANY, 2); otherwise SKIP
+is decremented (inline for a fixnum, else slot 1300 `Fsub1') and the
+element itself, read with slot 1354 `Fcar_safe', is kept.  Results are
+consed with slot 1119 `Fcons'.  A non-list tail is rejected through slot
+0 `wrong_type_argument' with d_reloc[7] (`listp'), d_reloc[5] (t) guards
+the loop, and the end returns slot 1196 `Fnconc' (slot 1209 `Fnreverse'
+of the accumulator, the remaining tail) as a MANY (2, argv) call.  Each
+iteration bumps the module-local `quitcounter' (every 512th calls slot 13
+`maybe_gc' then slot 14 `maybe_quit'), and `symbols_with_pos_enabled'
+is read through f_symbols_with_pos_enabled_reloc at two sites (both must
+reach the same cell), enabling slot 7 `slow_eq' comparisons only when
+set (never, in NeLisp).  It is the first admitted shape with an
+optional argument: arity 2, minimum 1.")
+
+(unless (assq 'closure-convert nelisp-eln-tail-code--multi-import-shapes)
+  (setq nelisp-eln-tail-code--multi-import-shapes
+        (append nelisp-eln-tail-code--multi-import-shapes
+                nelisp-eln-tail-code--multi-import-shapes-cconv)))
+
+;;; S6.4: `macroexpand-1' (vendor macroexp.el).  Kept in its own constant
+;;; (appended to the shape list below) so concurrent lanes adding shapes
+;;; do not touch the same source lines.
+
+(defconst nelisp-eln-tail-code--multi-import-shapes-macroexpand
+  (list
+   (list 'macroexpand-1
+         :template
+         [#x41 #x57 #x8d #x47 #xfd #x41 #x56 #x41 #x55 #x41 #x54 #x55
+      #x53 #x48 #x89 #xfb #x48 #x83 #xec #x28 #xa8 #x07 #x74 #x18
+      #x48 #x89 #xd8 #x48 #x83 #xc4 #x28 #x5b #x5d #x41 #x5c #x41
+      #x5d #x41 #x5e #x41 #x5f #xc3 #x66 #x0f #x1f #x44 #x00 #x00
+      #x48 #x8b #x2d nil nil nil nil #x48 #x83 #x7d #x38 #x00
+      #x74 #xda #x4c #x8b #x35 nil nil nil nil #x4c #x8b #x6f
+      #xfd #x4c #x8d #x7f #xfd #x4d #x8b #x26 #x4c #x89 #xef #x41
+      #xff #x94 #x24 #xf8 #x25 #x00 #x00 #x48 #x89 #xc6 #x48 #x85
+      #xc0 #x74 #x3d #x8d #x40 #xfd #xa8 #x07 #x0f #x85 #x52 #x01
+      #x00 #x00 #x48 #x8b #x46 #x05 #x48 #x85 #xc0 #x74 #xa1 #x66
+      #x48 #x0f #x6e #xc0 #x48 #x8d #x74 #x24 #x10 #xbf #x02 #x00
+      #x00 #x00 #x41 #x0f #x16 #x47 #x08 #x0f #x29 #x44 #x24 #x10
+      #x41 #xff #x94 #x24 #x90 #x1d #x00 #x00 #xeb #x81 #x66 #x0f
+      #x1f #x44 #x00 #x00 #x4c #x89 #xef #x41 #xff #x94 #x24 #x10
+      #x2b #x00 #x00 #x48 #x85 #xc0 #x0f #x84 #x64 #xff #xff #xff
+      #x4c #x89 #xef #x41 #xff #x94 #x24 #xd8 #x29 #x00 #x00 #x48
+      #x85 #xc0 #x0f #x84 #x50 #xff #xff #xff #x4c #x89 #xef #x41
+      #xff #x94 #x24 #x30 #x2a #x00 #x00 #x4c #x89 #xee #x48 #x8b
+      #x55 #x18 #x48 #x89 #xc7 #x41 #xff #x94 #x24 #xa0 #x1d #x00
+      #x00 #x49 #x89 #xc5 #x48 #x89 #xc7 #x41 #xff #x94 #x24 #x10
+      #x2b #x00 #x00 #x48 #x85 #xc0 #x74 #x48 #xf3 #x0f #x7e #x45
+      #x28 #x66 #x49 #x0f #x6e #xcd #x48 #x8d #x74 #x24 #x10 #xbf
+      #x02 #x00 #x00 #x00 #x66 #x0f #x6c #xc1 #x0f #x29 #x44 #x24
+      #x10 #x41 #xff #x94 #x24 #x88 #x1d #x00 #x00 #x48 #x85 #xc0
+      #x74 #x1e #x49 #x8b #x77 #x08 #x4c #x89 #xef #x41 #xff #x94
+      #x24 #xf8 #x22 #x00 #x00 #xe9 #xe5 #xfe #xff #xff #x66 #x2e
+      #x0f #x1f #x84 #x00 #x00 #x00 #x00 #x00 #x41 #x8d #x45 #xfd
+      #xa8 #x07 #x0f #x85 #xcc #xfe #xff #xff #x48 #x83 #x7d #x38
+      #x00 #x0f #x84 #xc1 #xfe #xff #xff #x49 #x8b #x7d #xfd #x48
+      #x8b #x75 #x18 #x4d #x8d #x75 #xfd #x48 #x39 #xf7 #x74 #x2b
+      #x48 #x8b #x05 nil nil nil nil #x48 #x8b #x00 #x80 #x38
+      #x00 #x0f #x84 #x9d #xfe #xff #xff #x41 #xff #x54 #x24 #x38
+      #x84 #xc0 #x0f #x84 #x90 #xfe #xff #xff #x48 #x83 #x7d #x38
+      #x00 #x0f #x84 #x85 #xfe #xff #xff #xf3 #x41 #x0f #x7e #x46
+      #x08 #x48 #x89 #xe6 #xbf #x02 #x00 #x00 #x00 #x41 #x0f #x16
+      #x47 #x08 #x0f #x29 #x04 #x24 #x41 #xff #x94 #x24 #x90 #x1d
+      #x00 #x00 #xe9 #x64 #xfe #xff #xff #x66 #x0f #x1f #x84 #x00
+      #x00 #x00 #x00 #x00 #x49 #x8b #x06 #x48 #x8b #x7d #x48 #xff
+      #x10 #xe9 #x4a #xfe #xff #xff]
+         :gots '((51 . d-reloc) (65 . freloc) (363 . symbols-with-pos))
+         :imports '(0 7 945 946 948 1119 1215 1339 1350 1378)
+         :data '(3 5 7 9)))
+  "Exact GNU 31.1 body of vendor macroexp.el `macroexpand-1' (462 bytes,
+S6.4; `(FORM &optional ENVIRONMENT)', so the body takes two Lisp arguments
+and its registration is the variable-arity 1..2 `gnu-verified-subr' shape).
+A non-cons FORM is returned.  Otherwise HEAD = (car FORM) goes to slot
+1215 `Fassq' with ENVIRONMENT (a non-nil, non-cons answer calls slot 0
+`wrong_type_argument' with d_reloc[9], `listp'); a found entry's non-nil
+cdr is applied to (cdr FORM) through the MANY (2, argv) slot 946 `Fapply',
+a nil cdr returns FORM.  Without an entry, a HEAD that is not a symbol
+\(slot 1378 `Fsymbolp') accepted by slot 1339 `Ffboundp' returns FORM;
+else DEF = slot 948 `Fautoload_do_load' of slot 1350 `Fsymbol_function'
+\(HEAD), HEAD and d_reloc[3] (`macro').  A symbol DEF that a MANY (2, argv)
+slot 945 `Ffuncall' of d_reloc[5] (`macrop') accepts gives (slot 1119
+`Fcons' DEF (cdr FORM)); a non-cons DEF gives FORM; a cons whose car is
+`eq' d_reloc[3] (the inline compare falls back to slot 7 `slow_eq' only
+when `symbols_with_pos_enabled', read through
+f_symbols_with_pos_enabled_reloc, is set) has its cdr applied to
+\(cdr FORM) through slot 946.  Ten distinct freloc slots use ten callback
+ports; d_reloc[7] (t) is compared with nil inline.")
+
+(unless (assq 'macroexpand-1 nelisp-eln-tail-code--multi-import-shapes)
+  (setq nelisp-eln-tail-code--multi-import-shapes
+        (append nelisp-eln-tail-code--multi-import-shapes
+                nelisp-eln-tail-code--multi-import-shapes-macroexpand)))
+
+;;; S6.9: `byte-compile-lambda' (vendor bytecomp.el).  Kept in its own
+;;; constant (appended to the shape list below).
+
+(defconst nelisp-eln-tail-code--multi-import-shapes-lambda
+  (list
+   (list 'lambda-form
+         :template
+         [#x41 #x57 #x41 #x56 #x41 #x55 #x41 #x54 #x55 #x48 #x89 #xfd #x53
+      #x48 #x81 #xec #x48 #x02 #x00 #x00 #x4c #x8b #x35 nil nil nil nil
+      #x48 #x89 #x74 #x24 #x18 #x4d #x8b #x3e #x41 #xff #x97 #x50 #x2a
+      #x00 #x00 #x48 #x8b #x1d nil nil nil nil #x48 #x8b #x33 #x48 #x39
+      #xf0 #x74 #x67 #x48 #x8b #x15 nil nil nil nil #x48 #x8b #x12 #x80
+      #x3a #x00 #x75 #x48 #x66 #x0f #x6f #x83 #x50 #x01 #x00 #x00 #x48
+      #x89 #xac #x24 #x20 #x02 #x00 #x00 #xbf #x03 #x00 #x00 #x00 #x48
+      #x8d #xb4 #x24 #x10 #x02 #x00 #x00 #x0f #x29 #x84 #x24 #x10 #x02
+      #x00 #x00 #x41 #xff #x97 #x88 #x1d #x00 #x00 #x45 #x31 #xed #x48
+      #x81 #xc4 #x48 #x02 #x00 #x00 #x4c #x89 #xe8 #x5b #x5d #x41 #x5c
+      #x41 #x5d #x41 #x5e #x41 #x5f #xc3 #x0f #x1f #x40 #x00 #x48 #x89
+      #xc7 #x41 #xff #x57 #x38 #x84 #xc0 #x74 #xad #x0f #x1f #x44 #x00
+      #x00 #x48 #x83 #xbb #x70 #x01 #x00 #x00 #x00 #x74 #x9e #x44 #x8d
+      #x65 #xfd #x41 #x83 #xe4 #x07 #x0f #x85 #x60 #x0a #x00 #x00 #x48
+      #x8b #x75 #x05 #x4c #x8d #x6d #xfd #x8d #x46 #xfd #xa8 #x07 #x0f
+      #x85 #xf7 #x0a #x00 #x00 #xf3 #x0f #x7e #x4e #xfd #xf3 #x0f #x7e
+      #x43 #x10 #x48 #x8d #x74 #x24 #x50 #xbf #x02 #x00 #x00 #x00 #x66
+      #x0f #x6c #xc1 #x0f #x29 #x44 #x24 #x50 #x41 #xff #x97 #x88 #x1d
+      #x00 #x00 #x49 #x8b #x75 #x08 #x8d #x46 #xfd #xa8 #x07 #x0f #x85
+      #x92 #x04 #x00 #x00 #x48 #x8b #x46 #xfd #x48 #x89 #x44 #x24 #x20
+      #xf3 #x0f #x7e #x43 #x18 #x48 #x8d #x74 #x24 #x60 #xbf #x02 #x00
+      #x00 #x00 #x0f #x16 #x44 #x24 #x20 #x0f #x29 #x44 #x24 #x60 #x41
+      #xff #x97 #x88 #x1d #x00 #x00 #xf3 #x0f #x7e #x43 #x20 #x48 #x8d
+      #x74 #x24 #x70 #xbf #x02 #x00 #x00 #x00 #x48 #x89 #x44 #x24 #x30
+      #x0f #x16 #x44 #x24 #x20 #x0f #x29 #x44 #x24 #x70 #x41 #xff #x97
+      #x88 #x1d #x00 #x00 #xf3 #x0f #x7e #x43 #x18 #xbf #x02 #x00 #x00
+      #x00 #x48 #x8d #xb4 #x24 #x80 #x00 #x00 #x00 #x66 #x48 #x0f #x6e
+      #xd8 #x66 #x0f #x6c #xc3 #x0f #x29 #x84 #x24 #x80 #x00 #x00 #x00
+      #x41 #xff #x97 #x88 #x1d #x00 #x00 #x48 #x8b #x7b #x30 #x48 #x89
+      #x44 #x24 #x40 #x41 #xff #x97 #xb8 #x29 #x00 #x00 #x48 #x85 #xc0
+      #x0f #x84 #xe1 #x03 #x00 #x00 #x48 #x8b #x15 nil nil nil nil #x48
+      #x8b #x12 #x80 #x3a #x00 #x0f #x85 #xaf #x03 #x00 #x00 #x45 #x31
+      #xed #x48 #x8b #x7b #x38 #x41 #xff #x97 #xb8 #x29 #x00 #x00 #x48
+      #x8d #xb4 #x24 #x90 #x00 #x00 #x00 #xbf #x02 #x00 #x00 #x00 #x4c
+      #x89 #xac #x24 #x90 #x00 #x00 #x00 #x48 #x89 #x84 #x24 #x98 #x00
+      #x00 #x00 #x41 #xff #x97 #xa0 #x26 #x00 #x00 #x48 #x8b #x7b #x38
+      #x48 #x89 #xc6 #x41 #xff #x57 #x60 #x45 #x85 #xe4 #x0f #x85 #xe0
+      #x08 #x00 #x00 #x48 #x8b #x75 #x05 #x8d #x46 #xfd #xa8 #x07 #x0f
+      #x85 #xb1 #x09 #x00 #x00 #x48 #x8b #x6e #x05 #x8d #x45 #xfd #xa8
+      #x07 #x0f #x85 #xba #x07 #x00 #x00 #x48 #x83 #x7d #x05 #x00 #x4c
+      #x8d #x65 #xfd #x0f #x84 #xbf #x07 #x00 #x00 #x48 #x8b #x7d #xfd
+      #x41 #xff #x97 #x00 #x2b #x00 #x00 #x48 #x85 #xc0 #x0f #x84 #xab
+      #x07 #x00 #x00 #x48 #x8b #x45 #xfd #x49 #x8b #x6c #x24 #x08 #x48
+      #x89 #x44 #x24 #x10 #x66 #x0f #x1f #x84 #x00 #x00 #x00 #x00 #x00
+      #x48 #x8b #x7b #x40 #x48 #x89 #xee #x41 #xff #x97 #xf8 #x25 #x00
+      #x00 #x48 #x8b #x7b #x30 #x48 #x89 #x44 #x24 #x08 #x48 #x8b #x43
+      #x08 #x48 #x89 #x44 #x24 #x38 #x41 #xff #x97 #xb8 #x29 #x00 #x00
+      #x48 #x85 #xc0 #x0f #x84 #xf0 #x00 #x00 #x00 #x48 #x83 #x7c #x24
+      #x20 #x00 #x74 #x3b #xf3 #x0f #x7e #x83 #x48 #x01 #x00 #x00 #x48
+      #x8b #x44 #x24 #x30 #xbf #x03 #x00 #x00 #x00 #x48 #x8d #xb4 #x24
+      #x60 #x01 #x00 #x00 #x0f #x16 #x44 #x24 #x10 #x48 #x89 #x84 #x24
+      #x70 #x01 #x00 #x00 #x0f #x29 #x84 #x24 #x60 #x01 #x00 #x00 #x41
+      #xff #x97 #x88 #x1d #x00 #x00 #x48 #x89 #x44 #x24 #x10 #x48 #x8b
+      #x44 #x24 #x40 #x48 #x85 #xc0 #x0f #x84 #x9f #x00 #x00 #x00 #x49
+      #x89 #xc5 #x48 #x8d #x84 #x24 #x40 #x01 #x00 #x00 #x48 #x89 #x44
+      #x24 #x28 #x4d #x89 #xec #x90 #x66 #x66 #x2e #x0f #x1f #x84 #x00
+      #x00 #x00 #x00 #x00 #x41 #x8d #x44 #x24 #xfd #xa8 #x07 #x0f #x85
+      #x53 #x06 #x00 #x00 #x4d #x8d #x6c #x24 #xfd #x4d #x8b #x64 #x24
+      #xfd #x48 #x8b #xbb #x38 #x01 #x00 #x00 #x41 #xff #x97 #xb8 #x29
+      #x00 #x00 #x48 #x89 #xc6 #x4c #x89 #xe7 #x41 #xff #x97 #xf8 #x25
+      #x00 #x00 #x48 #x85 #xc0 #x74 #x35 #x48 #x8b #x03 #x66 #x49 #x0f
+      #x6e #xd4 #x48 #x8b #x74 #x24 #x28 #xbf #x03 #x00 #x00 #x00 #xf3
+      #x0f #x7e #x83 #x40 #x01 #x00 #x00 #x48 #x89 #x84 #x24 #x50 #x01
+      #x00 #x00 #x66 #x0f #x6c #xc2 #x0f #x29 #x84 #x24 #x40 #x01 #x00
+      #x00 #x41 #xff #x97 #x88 #x1d #x00 #x00 #x4d #x8b #x65 #x08 #xe8
+      #x5b #xfc #xff #xff #x4d #x85 #xe4 #x75 #x86 #x66 #x0f #x1f #x44
+      #x00 #x00 #x48 #x8b #x7c #x24 #x10 #x41 #xff #x97 #x00 #x2b #x00
+      #x00 #x48 #x85 #xc0 #x74 #x58 #x48 #x8b #x83 #x28 #x01 #x00 #x00
+      #x48 #x8d #xb4 #x24 #xe0 #x01 #x00 #x00 #xf3 #x0f #x7e #x83 #x20
+      #x01 #x00 #x00 #x48 #xc7 #x84 #x24 #xf8 #x01 #x00 #x00 #x00 #x00
+      #x00 #x00 #xbf #x05 #x00 #x00 #x00 #x48 #x89 #x84 #x24 #xf0 #x01
+      #x00 #x00 #x48 #x8b #x83 #x30 #x01 #x00 #x00 #x0f #x16 #x44 #x24
+      #x10 #x0f #x29 #x84 #x24 #xe0 #x01 #x00 #x00 #x48 #x89 #x84 #x24
+      #x00 #x02 #x00 #x00 #x41 #xff #x97 #x88 #x1d #x00 #x00 #x48 #x89
+      #x44 #x24 #x10 #x48 #x83 #x7c #x24 #x08 #x00 #x0f #x84 #x43 #x06
+      #x00 #x00 #x48 #x8b #x4c #x24 #x08 #x8d #x45 #xfd #x83 #xe0 #x07
+      #x48 #x89 #x4c #x24 #x28 #x41 #x89 #xc4 #x0f #x85 #x92 #x09 #x00
+      #x00 #x48 #x8b #x75 #xfd #x48 #x8b #x4c #x24 #x08 #x48 #x8d #x45
+      #xfd #x48 #x39 #xce #x0f #x84 #xb9 #x09 #x00 #x00 #x48 #x8b #x05
+      nil nil nil nil #x48 #x8b #x00 #x80 #x38 #x00 #x0f #x85 #xd7 #x0a
+      #x00 #x00 #x8b #x44 #x24 #x08 #x83 #xe8 #x03 #xa8 #x07 #x0f #x85
+      #x12 #x09 #x00 #x00 #x48 #x8b #x44 #x24 #x08 #x4c #x8d #x60 #xfd
+      #x49 #x8b #x44 #x24 #x08 #x8d #x50 #xfd #x83 #xe2 #x07 #x0f #x85
+      #x6f #x01 #x00 #x00 #x48 #x83 #xbb #x70 #x01 #x00 #x00 #x00 #x0f
+      #x84 #x66 #x01 #x00 #x00 #x48 #x8b #x40 #x05 #xf3 #x0f #x6f #x83
+      #xf8 #x00 #x00 #x00 #xbf #x03 #x00 #x00 #x00 #x48 #x8d #xb4 #x24
+      #x20 #x01 #x00 #x00 #x48 #x89 #x84 #x24 #x30 #x01 #x00 #x00 #x0f
+      #x29 #x84 #x24 #x20 #x01 #x00 #x00 #x41 #xff #x97 #x88 #x1d #x00
+      #x00 #x48 #x85 #xc0 #x0f #x84 #x55 #x07 #x00 #x00 #x49 #x8b #x74
+      #x24 #x08 #x8d #x46 #xfd #xa8 #x07 #x0f #x85 #x88 #x07 #x00 #x00
+      #x48 #x8b #x46 #x05 #x48 #x83 #xee #x03 #x48 #x89 #x44 #x24 #x38
+      #x4c #x8b #x2e #xf3 #x0f #x7e #x43 #x48 #x66 #x49 #x0f #x6e #xed
+      #xbf #x02 #x00 #x00 #x00 #x48 #x8d #xb4 #x24 #xe0 #x00 #x00 #x00
+      #x66 #x0f #x6c #xc5 #x0f #x29 #x84 #x24 #xe0 #x00 #x00 #x00 #x41
+      #xff #x97 #x88 #x1d #x00 #x00 #x48 #x89 #x6c #x24 #x28 #x48 #x89
+      #x44 #x24 #x48 #x4c #x89 #xe0 #x4d #x89 #xec #x49 #x89 #xc5 #x90
+      #x66 #x66 #x2e #x0f #x1f #x84 #x00 #x00 #x00 #x00 #x00 #x4c #x89
+      #xe7 #x41 #xff #x97 #x50 #x2a #x00 #x00 #x48 #x8b #xb3 #x08 #x01
+      #x00 #x00 #x48 #x89 #xc7 #x41 #xff #x97 #x08 #x26 #x00 #x00 #x48
+      #x85 #xc0 #x0f #x84 #x9c #x07 #x00 #x00 #x41 #x8d #x44 #x24 #xfd
+      #x4c #x89 #xe5 #xa8 #x07 #x74 #x17 #xe9 #x5b #x07 #x00 #x00 #x0f
+      #x1f #x00 #x48 #x83 #xbb #x70 #x01 #x00 #x00 #x00 #x74 #x15 #xe8
+      #x79 #xfa #xff #xff #x48 #x8d #x45 #xfd #x48 #x8b #x68 #x08 #x8d
+      #x55 #xfd #x83 #xe2 #x07 #x74 #xe1 #x4c #x8b #x20 #xe8 #x61 #xfa
+      #xff #xff #xeb #x9f #x31 #xf6 #x48 #x89 #xc7 #x41 #xff #x57 #x38
+      #x84 #xc0 #x0f #x84 #x40 #xfc #xff #xff #x0f #x1f #x00 #x66 #x66
+      #x2e #x0f #x1f #x84 #x00 #x00 #x00 #x00 #x00 #x48 #x83 #xbb #x70
+      #x01 #x00 #x00 #x00 #x0f #x84 #x24 #xfc #xff #xff #x4c #x8b #x6c
+      #x24 #x40 #xe9 #x1d #xfc #xff #xff #x0f #x1f #x84 #x00 #x00 #x00
+      #x00 #x00 #x48 #x85 #xf6 #x74 #x0c #x49 #x8b #x06 #x48 #x8b #xbb
+      #x80 #x01 #x00 #x00 #xff #x10 #x48 #xc7 #x44 #x24 #x20 #x00 #x00
+      #x00 #x00 #xe9 #x58 #xfb #xff #xff #x48 #x85 #xc0 #x74 #x3e #xf3
+      #x0f #x7e #x83 #xf0 #x00 #x00 #x00 #x48 #x8d #xb4 #x24 #xa0 #x01
+      #x00 #x00 #xbf #x04 #x00 #x00 #x00 #xf3 #x0f #x7e #x8b #xe8 #x00
+      #x00 #x00 #x0f #x16 #x44 #x24 #x08 #x0f #x16 #x4c #x24 #x08 #x0f
+      #x29 #x8c #x24 #xa0 #x01 #x00 #x00 #x0f #x29 #x84 #x24 #xb0 #x01
+      #x00 #x00 #x41 #xff #x97 #x88 #x1d #x00 #x00 #x48 #x8b #x7b #x50
+      #x48 #x89 #xee #x41 #xff #x97 #xf8 #x22 #x00 #x00 #x48 #x8b #x7b
+      #x30 #x48 #x89 #xc5 #x41 #xff #x97 #xb8 #x29 #x00 #x00 #x48 #x85
+      #xc0 #x74 #x29 #xf3 #x0f #x7e #x83 #xe0 #x00 #x00 #x00 #x48 #x8d
+      #xb4 #x24 #xd0 #x00 #x00 #x00 #xbf #x02 #x00 #x00 #x00 #x0f #x16
+      #x44 #x24 #x40 #x0f #x29 #x84 #x24 #xd0 #x00 #x00 #x00 #x41 #xff
+      #x97 #x88 #x1d #x00 #x00 #xf3 #x0f #x7e #x43 #x48 #x66 #x48 #x0f
+      #x6e #xe5 #x48 #x8b #x13 #x48 #x89 #x84 #x24 #x30 #x02 #x00 #x00
+      #x48 #x8b #x44 #x24 #x18 #x48 #x8d #xb4 #x24 #x10 #x02 #x00 #x00
+      #xbf #x06 #x00 #x00 #x00 #x48 #xc7 #x84 #x24 #x20 #x02 #x00 #x00
+      #x00 #x00 #x00 #x00 #x66 #x0f #x6c #xc4 #x48 #x89 #x94 #x24 #x28
+      #x02 #x00 #x00 #x0f #x29 #x84 #x24 #x10 #x02 #x00 #x00 #x48 #x89
+      #x84 #x24 #x38 #x02 #x00 #x00 #x41 #xff #x97 #x88 #x1d #x00 #x00
+      #x48 #x89 #xc5 #x48 #x89 #xc7 #x41 #xff #x97 #x50 #x2a #x00 #x00
+      #x48 #x8b #x73 #x58 #x48 #x39 #xf0 #x0f #x84 #xe4 #x03 #x00 #x00
+      #x48 #x8b #x15 nil nil nil nil #x48 #x8b #x12 #x80 #x3a #x00 #x0f
+      #x85 #xc1 #x03 #x00 #x00 #x66 #x0f #x6f #x83 #xd0 #x00 #x00 #x00
+      #x48 #x8d #xb4 #x24 #xc0 #x00 #x00 #x00 #xbf #x02 #x00 #x00 #x00
+      #x0f #x29 #x84 #x24 #xc0 #x00 #x00 #x00 #x41 #xff #x97 #x88 #x1d
+      #x00 #x00 #x48 #x8b #x7b #x30 #x41 #xff #x97 #xb8 #x29 #x00 #x00
+      #x48 #x85 #xc0 #x74 #x2e #xf3 #x0f #x7e #x83 #xc8 #x00 #x00 #x00
+      #x48 #x8d #xb4 #x24 #xb0 #x00 #x00 #x00 #xbf #x02 #x00 #x00 #x00
+      #x0f #x16 #x44 #x24 #x20 #x0f #x29 #x84 #x24 #xb0 #x00 #x00 #x00
+      #x41 #xff #x97 #x88 #x1d #x00 #x00 #x48 #x89 #x44 #x24 #x30 #x44
+      #x8d #x65 #xfd #x41 #x83 #xe4 #x07 #x0f #x85 #x79 #x03 #x00 #x00
+      #x48 #x8b #x75 #x05 #x8d #x46 #xfd #xa8 #x07 #x0f #x85 #x4a #x04
+      #x00 #x00 #x4c #x8b #x6e #xfd #x48 #x8b #x7b #x70 #x41 #xff #x97
+      #xb8 #x29 #x00 #x00 #x4c #x89 #xef #x48 #x89 #xc6 #x41 #xff #x97
+      #x10 #x26 #x00 #x00 #x48 #x89 #xc6 #x48 #x85 #xc0 #x0f #x84 #x82
+      #x02 #x00 #x00 #x8d #x40 #xfd #xa8 #x07 #x0f #x85 #xaf #x05 #x00
+      #x00 #x4c #x8b #x6e #xfd #x45 #x85 #xe4 #x0f #x85 #x72 #x03 #x00
+      #x00 #x48 #x8b #x75 #x05 #x8d #x46 #xfd #xa8 #x07 #x0f #x85 #xe3
+      #x03 #x00 #x00 #x48 #x8b #x46 #x05 #x48 #x89 #x44 #x24 #x18 #x48
+      #x8b #x7c #x24 #x10 #x48 #x89 #xf8 #x48 #x0b #x44 #x24 #x28 #x0f
+      #x84 #x4f #x06 #x00 #x00 #x31 #xf6 #x41 #xff #x97 #xf8 #x22 #x00
+      #x00 #x48 #x83 #x7c #x24 #x38 #x00 #x48 #x89 #x44 #x24 #x10 #x0f
+      #x84 #x6d #x02 #x00 #x00 #x8b #x44 #x24 #x28 #x83 #xe8 #x03 #xa8
+      #x07 #x0f #x85 #xce #x05 #x00 #x00 #x48 #x8b #x44 #x24 #x28 #x48
+      #x8b #x70 #x05 #x8d #x46 #xfd #xa8 #x07 #x0f #x85 #xee #x05 #x00
+      #x00 #x48 #x8b #x46 #xfd #x48 #x89 #x84 #x24 #xa0 #x00 #x00 #x00
+      #x48 #x8b #x44 #x24 #x38 #xbf #x02 #x00 #x00 #x00 #x48 #x8d #xb4
+      #x24 #xa0 #x00 #x00 #x00 #x48 #x89 #x84 #x24 #xa8 #x00 #x00 #x00
+      #x41 #xff #x97 #xe8 #x22 #x00 #x00 #x31 #xf6 #x48 #x89 #xc7 #x41
+      #xff #x97 #xf8 #x22 #x00 #x00 #x48 #x89 #x44 #x24 #x08 #x48 #x8b
+      #x44 #x24 #x18 #x48 #x8d #xb4 #x24 #x00 #x01 #x00 #x00 #xbf #x03
+      #x00 #x00 #x00 #x48 #x89 #x84 #x24 #x00 #x01 #x00 #x00 #x48 #x8b
+      #x44 #x24 #x10 #x48 #x89 #x84 #x24 #x08 #x01 #x00 #x00 #x48 #x8b
+      #x44 #x24 #x08 #x48 #x89 #x84 #x24 #x10 #x01 #x00 #x00 #x41 #xff
+      #x97 #xa0 #x26 #x00 #x00 #x48 #x8b #x53 #x68 #x48 #x8b #x4c #x24
+      #x30 #x4c #x89 #xac #x24 #x90 #x01 #x00 #x00 #xbf #x04 #x00 #x00
+      #x00 #x48 #x89 #x84 #x24 #x98 #x01 #x00 #x00 #x48 #x8d #xb4 #x24
+      #x80 #x01 #x00 #x00 #x48 #x89 #x94 #x24 #x80 #x01 #x00 #x00 #x48
+      #x89 #x8c #x24 #x88 #x01 #x00 #x00 #x41 #xff #x97 #x90 #x1d #x00
+      #x00 #x48 #x8b #x7b #x78 #x49 #x89 #xc5 #x41 #xff #x97 #xb8 #x29
+      #x00 #x00 #x48 #x85 #xc0 #x74 #x7f #x45 #x85 #xe4 #x0f #x85 #xa8
+      #x04 #x00 #x00 #x48 #x8b #x75 #x05 #x8d #x46 #xfd #xa8 #x07 #x0f
+      #x85 #x19 #x05 #x00 #x00 #x48 #x8b #x6e #xfd #x48 #x8b #xbb #x90
+      #x00 #x00 #x00 #x41 #xff #x97 #xb8 #x29 #x00 #x00 #x31 #xd2 #x48
+      #x89 #xef #x48 #x89 #xc6 #x41 #xff #x97 #x78 #x27 #x00 #x00 #x48
+      #x89 #xc7 #x48 #x89 #xc5 #x41 #xff #x97 #x80 #x2b #x00 #x00 #x48
+      #x8b #xbb #xa0 #x00 #x00 #x00 #x49 #x89 #xc4 #x41 #xff #x97 #xb8
+      #x29 #x00 #x00 #x4c #x89 #xe7 #x48 #x89 #xc6 #x41 #xff #x97 #x08
+      #x26 #x00 #x00 #x48 #x85 #xc0 #x0f #x84 #x23 #x05 #x00 #x00 #x4c
+      #x89 #xea #xbe #x06 #x00 #x00 #x00 #x48 #x89 #xef #x41 #xff #x97
+      #x58 #x29 #x00 #x00 #xbf #x06 #x00 #x00 #x00 #x41 #xff #x57 #x20
+      #xe9 #x3b #xf7 #xff #xff #x0f #x1f #x40 #x00 #x49 #x8b #x06 #x4c
+      #x89 #xe6 #x48 #x8b #xbb #x80 #x01 #x00 #x00 #x4d #x89 #xe5 #xff
+      #x10 #x48 #x8b #xbb #x38 #x01 #x00 #x00 #x41 #xff #x97 #xb8 #x29
+      #x00 #x00 #x31 #xff #x48 #x89 #xc6 #x41 #xff #x97 #xf8 #x25 #x00
+      #x00 #x48 #x85 #xc0 #x74 #x2f #xf3 #x0f #x7e #x83 #x40 #x01 #x00
+      #x00 #x48 #x8b #x03 #xbf #x03 #x00 #x00 #x00 #x48 #x8d #xb4 #x24
+      #x40 #x01 #x00 #x00 #x48 #x89 #x84 #x24 #x50 #x01 #x00 #x00 #x0f
+      #x29 #x84 #x24 #x40 #x01 #x00 #x00 #x41 #xff #x97 #x88 #x1d #x00
+      #x00 #x49 #x8b #x06 #x48 #x8b #xbb #x80 #x01 #x00 #x00 #x4c #x89
+      #xee #xff #x10 #xe8 #xfc #xf5 #xff #xff #xe9 #xa7 #xf9 #xff #xff
+      #x0f #x1f #x80 #x00 #x00 #x00 #x00 #x48 #x85 #xed #x74 #x0f #x49
+      #x8b #x06 #x48 #x8b #xbb #x80 #x01 #x00 #x00 #x48 #x89 #xee #xff
+      #x10 #x48 #xc7 #x44 #x24 #x10 #x00 #x00 #x00 #x00 #xe9 #x5e #xf8
+      #xff #xff #x66 #x0f #x1f #x44 #x00 #x00 #x48 #x8b #x7b #x70 #x41
+      #xff #x97 #xb8 #x29 #x00 #x00 #x4c #x89 #xef #x48 #x89 #xc6 #x41
+      #xff #x97 #xf8 #x22 #x00 #x00 #x48 #x8b #x7b #x70 #x31 #xc9 #x31
+      #xd2 #x48 #x89 #xc6 #x41 #xff #x57 #x50 #xe9 #x61 #xfd #xff #xff
+      #x0f #x1f #x40 #x00 #x48 #xc7 #x44 #x24 #x28 #x00 #x00 #x00 #x00
+      #xe9 #xcc #xfb #xff #xff #x66 #x2e #x0f #x1f #x84 #x00 #x00 #x00
+      #x00 #x00 #x48 #x83 #x7c #x24 #x08 #x00 #x0f #x84 #xe8 #xfd #xff
+      #xff #x8b #x44 #x24 #x28 #x83 #xe8 #x03 #xa8 #x07 #x0f #x85 #x27
+      #x04 #x00 #x00 #x48 #x8b #x44 #x24 #x28 #x48 #x8b #x70 #x05 #x8d
+      #x46 #xfd #xa8 #x07 #x0f #x85 #x03 #x02 #x00 #x00 #x48 #x8b #x46
+      #xfd #x48 #x89 #x44 #x24 #x38 #x48 #x8b #x7c #x24 #x38 #x31 #xf6
+      #x41 #xff #x97 #xf8 #x22 #x00 #x00 #x48 #x89 #x44 #x24 #x08 #xe9
+      #xa4 #xfd #xff #xff #x48 #x89 #xc7 #x41 #xff #x57 #x38 #x84 #xc0
+      #x0f #x84 #x30 #xfc #xff #xff #x90 #x48 #x83 #xbb #x70 #x01 #x00
+      #x00 #x00 #x0f #x85 #x45 #xfc #xff #xff #xe9 #x1c #xfc #xff #xff
+      #x0f #x1f #x44 #x00 #x00 #x48 #x85 #xed #x74 #x0f #x49 #x8b #x06
+      #x48 #x8b #xbb #x80 #x01 #x00 #x00 #x48 #x89 #xee #xff #x10 #x45
+      #x31 #xed #xe9 #x7e #xfc #xff #xff #x0f #x1f #x40 #x00 #x48 #x85
+      #xed #x74 #x0f #x49 #x8b #x06 #x48 #x8b #xbb #x80 #x01 #x00 #x00
+      #x48 #x89 #xee #xff #x10 #x48 #xc7 #x44 #x24 #x10 #x00 #x00 #x00
+      #x00 #x31 #xed #xe9 #x54 #xf7 #xff #xff #x0f #x1f #x40 #x00 #x48
+      #x85 #xed #x74 #x0f #x49 #x8b #x06 #x48 #x8b #xbb #x80 #x01 #x00
+      #x00 #x48 #x89 #xee #xff #x10 #x48 #xc7 #x44 #x24 #x18 #x00 #x00
+      #x00 #x00 #xe9 #x84 #xfc #xff #xff #x66 #x0f #x1f #x44 #x00 #x00
+      #x48 #x85 #xed #x0f #x84 #xf6 #x02 #x00 #x00 #x49 #x8b #x06 #x48
+      #x8b #xbb #x80 #x01 #x00 #x00 #x48 #x89 #xee #xff #x10 #x48 #x8b
+      #x43 #x10 #x48 #x8d #x74 #x24 #x50 #xbf #x02 #x00 #x00 #x00 #x48
+      #xc7 #x44 #x24 #x58 #x00 #x00 #x00 #x00 #x48 #x89 #x44 #x24 #x50
+      #x41 #xff #x97 #x88 #x1d #x00 #x00 #x49 #x8b #x06 #x48 #x89 #xee
+      #x48 #x8b #xbb #x80 #x01 #x00 #x00 #xff #x10 #xe9 #x3a #xfa #xff
+      #xff #x66 #x0f #x1f #x84 #x00 #x00 #x00 #x00 #x00 #x48 #x85 #xf6
+      #x74 #x8f #x49 #x8b #x06 #x48 #x8b #xbb #x80 #x01 #x00 #x00 #xff
+      #x10 #xeb #x81 #x0f #x1f #x44 #x00 #x00 #x48 #x85 #xf6 #x0f #x84
+      #x2b #xff #xff #xff #x49 #x8b #x06 #x48 #x8b #xbb #x80 #x01 #x00
+      #x00 #xff #x10 #xe9 #x1a #xff #xff #xff #x66 #x0f #x1f #x44 #x00
+      #x00 #x48 #x85 #xf6 #x0f #x84 #x2b #xff #xff #xff #x49 #x8b #x06
+      #x48 #x8b #xbb #x80 #x01 #x00 #x00 #xff #x10 #xe9 #x1a #xff #xff
+      #xff #x48 #x85 #xf6 #x74 #x0c #x49 #x8b #x06 #x48 #x8b #xbb #x80
+      #x01 #x00 #x00 #xff #x10 #x66 #x0f #xef #xc9 #xe9 #xf4 #xf4 #xff
+      #xff #xf3 #x0f #x7e #x83 #x18 #x01 #x00 #x00 #x48 #x8d #xb4 #x24
+      #xc0 #x01 #x00 #x00 #xbf #x04 #x00 #x00 #x00 #xf3 #x0f #x7e #x8b
+      #xe8 #x00 #x00 #x00 #x0f #x16 #x44 #x24 #x08 #x0f #x16 #x4c #x24
+      #x08 #x0f #x29 #x8c #x24 #xc0 #x01 #x00 #x00 #x0f #x29 #x84 #x24
+      #xd0 #x01 #x00 #x00 #x41 #xff #x97 #x88 #x1d #x00 #x00 #xe9 #x68
+      #xf8 #xff #xff #x48 #x85 #xf6 #x74 #x2d #x49 #x8b #x06 #x48 #x8b
+      #xbb #x80 #x01 #x00 #x00 #xff #x10 #x49 #x8b #x74 #x24 #x08 #x8d
+      #x46 #xfd #xa8 #x07 #x0f #x84 #xf5 #x02 #x00 #x00 #x48 #x85 #xf6
+      #x74 #x0c #x49 #x8b #x06 #x48 #x8b #xbb #x80 #x01 #x00 #x00 #xff
+      #x10 #x48 #xc7 #x44 #x24 #x38 #x00 #x00 #x00 #x00 #x45 #x31 #xed
+      #xe9 #x45 #xf8 #xff #xff #x48 #x85 #xf6 #x0f #x84 #xfd #xfd #xff
+      #xff #x49 #x8b #x06 #x48 #x8b #xbb #x80 #x01 #x00 #x00 #xff #x10
+      #xe9 #xec #xfd #xff #xff #x0f #x1f #x40 #x00 #x4d #x85 #xe4 #x74
+      #x1e #x49 #x8b #x06 #x48 #x8b #xbb #x80 #x01 #x00 #x00 #x4c #x89
+      #xe6 #xff #x10 #x49 #x8b #x06 #x48 #x8b #xbb #x80 #x01 #x00 #x00
+      #x4c #x89 #xe6 #xff #x10 #x45 #x31 #xe4 #xe9 #x9f #xf8 #xff #xff
+      #x0f #x1f #x44 #x00 #x00 #x4c #x89 #xe8 #x4d #x89 #xe5 #x48 #x8b
+      #x6c #x24 #x28 #x49 #x89 #xc4 #x4c #x89 #xef #x41 #xff #x97 #x50
+      #x2a #x00 #x00 #x48 #x8b #xb3 #x10 #x01 #x00 #x00 #x48 #x39 #xf0
+      #x0f #x84 #xbf #x01 #x00 #x00 #x48 #x8b #x15 nil nil nil nil #x48
+      #x8b #x12 #x80 #x3a #x00 #x0f #x85 #x9d #x01 #x00 #x00 #x4d #x8b
+      #x24 #x24 #x48 #x8b #x7c #x24 #x48 #x31 #xf6 #x41 #xff #x97 #xf8
+      #x22 #x00 #x00 #x48 #x89 #xc6 #x4c #x89 #xe7 #x41 #xff #x97 #xf8
+      #x22 #x00 #x00 #x48 #x89 #x44 #x24 #x08 #x48 #x89 #x44 #x24 #x28
+      #xe9 #xd9 #xf8 #xff #xff #x0f #x1f #x80 #x00 #x00 #x00 #x00 #x49
+      #x8b #x06 #x48 #x8b #xbb #x80 #x01 #x00 #x00 #x45 #x31 #xed #xff
+      #x10 #xe9 #x41 #xfa #xff #xff #x0f #x1f #x40 #x00 #x4c #x8b #x6c
+      #x24 #x08 #x49 #x8b #x06 #x48 #x8b #xbb #x80 #x01 #x00 #x00 #x4c
+      #x89 #xee #xff #x10 #x49 #x8b #x06 #x48 #x8b #xbb #x80 #x01 #x00
+      #x00 #x4c #x89 #xee #xff #x10 #xe9 #x92 #xf8 #xff #xff #x48 #x85
+      #xed #x74 #x0f #x49 #x8b #x06 #x48 #x8b #xbb #x80 #x01 #x00 #x00
+      #x48 #x89 #xee #xff #x10 #x31 #xed #xe9 #x50 #xfb #xff #xff #x0f
+      #x1f #x44 #x00 #x00 #x48 #x85 #xed #x74 #x0f #x49 #x8b #x06 #x48
+      #x8b #xbb #x80 #x01 #x00 #x00 #x48 #x89 #xee #xff #x10 #x31 #xf6
+      #xe9 #x69 #xf6 #xff #xff #x0f #x1f #x44 #x00 #x00 #x48 #x8b #x74
+      #x24 #x08 #x48 #x85 #xf6 #x74 #x0c #x49 #x8b #x06 #x48 #x8b #xbb
+      #x80 #x01 #x00 #x00 #xff #x10 #x31 #xc0 #xe9 #x2d #xfa #xff #xff
+      #x48 #x83 #xbb #x70 #x01 #x00 #x00 #x00 #x0f #x84 #x4c #xf6 #xff
+      #xff #x48 #x8b #x68 #x08 #xe9 #x43 #xf6 #xff #xff #x48 #x85 #xf6
+      #x75 #xd1 #x31 #xc0 #xe9 #x0a #xfa #xff #xff #x48 #x85 #xf6 #x74
+      #x8f #x49 #x8b #x06 #x48 #x8b #xbb #x80 #x01 #x00 #x00 #x31 #xed
+      #xff #x10 #xe9 #xd3 #xfa #xff #xff #x48 #xc7 #x44 #x24 #x10 #x00
+      #x00 #x00 #x00 #x48 #x83 #x7c #x24 #x38 #x00 #x75 #xad #x48 #xc7
+      #x44 #x24 #x08 #x00 #x00 #x00 #x00 #xe9 #x0d #xfa #xff #xff #x48
+      #x8b #x43 #x10 #x48 #x8d #x74 #x24 #x50 #xbf #x02 #x00 #x00 #x00
+      #x48 #xc7 #x44 #x24 #x58 #x00 #x00 #x00 #x00 #x48 #x89 #x44 #x24
+      #x50 #x41 #xff #x97 #x88 #x1d #x00 #x00 #xe9 #x62 #xf7 #xff #xff
+      #x31 #xf6 #x48 #x89 #xef #x41 #xff #x97 #xf8 #x22 #x00 #x00 #x48
+      #x8b #xbb #xb8 #x00 #x00 #x00 #x48 #x89 #xc6 #x41 #xff #x97 #xf8
+      #x22 #x00 #x00 #x48 #x8b #xbb #xb0 #x00 #x00 #x00 #x48 #x89 #xc6
+      #x41 #xff #x97 #xb8 #x1d #x00 #x00 #xe9 #x02 #xf2 #xff #xff #x49
+      #x8b #x06 #x48 #x8b #xbb #x80 #x01 #x00 #x00 #x48 #x8b #x74 #x24
+      #x08 #xff #x10 #xe9 #xe0 #xfb #xff #xff #x48 #x89 #xc7 #x41 #xff
+      #x57 #x38 #x84 #xc0 #x0f #x84 #x54 #xfe #xff #xff #x48 #x83 #xbb
+      #x70 #x01 #x00 #x00 #x00 #x0f #x84 #x46 #xfe #xff #xff #x48 #x8b
+      #x7b #x30 #x41 #xff #x97 #xb8 #x29 #x00 #x00 #x48 #x85 #xc0 #x0f
+      #x85 #x32 #xfe #xff #xff #xf3 #x0f #x7e #x43 #x18 #x48 #x8d #xb4
+      #x24 #xf0 #x00 #x00 #x00 #xbf #x02 #x00 #x00 #x00 #x0f #x16 #x44
+      #x24 #x08 #x0f #x29 #x84 #x24 #xf0 #x00 #x00 #x00 #x41 #xff #x97
+      #x88 #x1d #x00 #x00 #x48 #x89 #x44 #x24 #x08 #x48 #x89 #x44 #x24
+      #x28 #xe9 #x04 #xf7 #xff #xff #x48 #x8b #x7c #x24 #x08 #x41 #xff
+      #x57 #x38 #x84 #xc0 #x0f #x84 #x18 #xf5 #xff #xff #x48 #x83 #xbb
+      #x70 #x01 #x00 #x00 #x00 #x0f #x84 #x0a #xf5 #xff #xff #x48 #x8d
+      #x45 #xfd #x45 #x85 #xe4 #x0f #x84 #xb1 #xfe #xff #xff #x48 #x85
+      #xed #x74 #x0f #x49 #x8b #x06 #x48 #x8b #xbb #x80 #x01 #x00 #x00
+      #x48 #x89 #xee #xff #x10 #x31 #xed #xe9 #xe2 #xf4 #xff #xff #x31
+      #xc0 #x48 #x83 #xee #x03 #x48 #x89 #x44 #x24 #x38 #xe9 #x5f #xf5
+      #xff #xff]
+         :gots '((23 . freloc) (45 . d-reloc) (60 . symbols-with-pos) (402 . symbols-with-pos) (1031 . symbols-with-pos) (1711 . symbols-with-pos) (3291 . symbols-with-pos))
+         :imports '(1354 945 7 1335 1236 12 1376 1215 1217 1119 1218 1117 946 1263 1392 1323 4 10 951 13 14)
+         :data '(0 1 2 3 4 6 7 8 9 10 11 13 14 15 18 20 22 23 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 46 48)
+         :helper
+         (list :back 80
+               :template
+               [#x8b #x05 nil nil nil nil #x83 #xc0 #x01 #x89 #xc2 #xc1 #xea #x09
+      #x75 #x10 #x89 #x05 nil nil nil nil #xc3 #x66 #x0f #x1f #x84 #x00
+      #x00 #x00 #x00 #x00 #x53 #x48 #x8b #x1d nil nil nil nil #xc7 #x05
+      nil nil nil nil #x00 #x00 #x00 #x00 #x48 #x8b #x03 #xff #x50 #x68
+      #x48 #x8b #x03 #x5b #x48 #x8b #x40 #x70 #xff #xe0 #x0f #x1f #x00
+      #x66 #x66 #x2e #x0f #x1f #x84 #x00 #x00 #x00 #x00 #x00]
+               :gots '((2 . counter) (18 . counter) (36 . freloc) (42 . counter4)))))
+  "Exact multi-import shape for vendor bytecomp.el `byte-compile-lambda'
+\(3909 bytes, S6.9); see `nelisp-eln-native-subr--multi-import-specs-lambda'.
+:HELPER is GNU's local `maybe_gc_quit' (0x50 bytes including its trailing
+alignment padding) that sits exactly :BACK bytes before the body: it bumps
+the module-local `quitcounter' and, every 512th call, calls slots 13
+`maybe_gc' (through the freloc table) and tail-jumps to slot 14
+`maybe_quit'.  The body reaches it by direct `call' at fixed
+displacements (fixed template bytes).")
+
+(unless (assq 'lambda-form nelisp-eln-tail-code--multi-import-shapes)
+  (setq nelisp-eln-tail-code--multi-import-shapes
+        (append nelisp-eln-tail-code--multi-import-shapes
+                nelisp-eln-tail-code--multi-import-shapes-lambda)))
 
 (defun nelisp-eln-tail-code--disp32 (bytes offset)
   "Return the signed disp32 at OFFSET in BYTES."
@@ -919,9 +1735,14 @@ address as the artifact's own `quitcounter' object."
                           (nelisp-eln-tail-code--disp32 bytes (car got)))))
             (when (< vaddr 0) (throw 'invalid nil))
             (pcase (cdr got)
-              ('freloc (setq freloc vaddr))
-              ('d-reloc (setq d-reloc vaddr))
-              ('symbols-with-pos (setq swp vaddr))
+              ;; Several loads of one kind must all reach one and the same
+              ;; GOT slot.
+              ('freloc (when (and freloc (/= freloc vaddr)) (throw 'invalid nil))
+                       (setq freloc vaddr))
+              ('d-reloc (when (and d-reloc (/= d-reloc vaddr)) (throw 'invalid nil))
+                        (setq d-reloc vaddr))
+              ('symbols-with-pos (when (and swp (/= swp vaddr)) (throw 'invalid nil))
+                                 (setq swp vaddr))
               (_ (throw 'invalid nil)))))
         (unless (and freloc d-reloc) (throw 'invalid nil))
         (list :safe t :shape (car shape)
@@ -934,7 +1755,44 @@ address as the artifact's own `quitcounter' object."
                                         (plist-get (cdr shape) :data))
               :symbols-with-pos-got swp
               :module-counter-vaddr counter
+              :helper (plist-get (cdr shape) :helper)
               :proof :multi-import-call)))))
+
+;; S6.9: exact local helper regions preceding a body.
+(defun nelisp-eln-tail-code-analyze-helper (bytes helper function-vaddr)
+  "Verify BYTES as the exact HELPER template placed :BACK bytes before the
+body at FUNCTION-VADDR, or return nil.  HELPER is a shape's :HELPER plist
+\(:BACK N :TEMPLATE V :GOTS ((OFFSET . KIND) ...)).  Return
+\(:VADDR V :SIZE N :COUNTER C :FRELOC F): C is the one module-counter
+object every `counter'/`counter4' access reaches (`counter4' marks a
+`movl $imm32,disp(%rip)' whose immediate follows the displacement) and F
+the one freloc GOT slot its `freloc' load reaches; any disagreement, a
+missing kind or a template mismatch returns nil.  As with the body
+verifiers, this proves only the instruction bytes; callers must
+authenticate the counter object and the GOT slot."
+  (catch 'invalid
+    (let* ((template (plist-get helper :template))
+           (back (plist-get helper :back))
+           (vaddr (and (integerp function-vaddr) (integerp back)
+                       (- function-vaddr back)))
+           (counter nil) (freloc nil))
+      (unless (and (stringp bytes) (vectorp template) vaddr (>= vaddr 0)
+                   (= (length template) back)
+                   (nelisp-eln-tail-code--match-template bytes template))
+        (throw 'invalid nil))
+      (dolist (got (plist-get helper :gots))
+        (let* ((kind (cdr got))
+               (target (+ vaddr (car got) 4 (if (eq kind 'counter4) 4 0)
+                          (nelisp-eln-tail-code--disp32 bytes (car got)))))
+          (when (< target 0) (throw 'invalid nil))
+          (pcase (if (eq kind 'counter4) 'counter kind)
+            ('counter (when (and counter (/= counter target)) (throw 'invalid nil))
+                      (setq counter target))
+            ('freloc (when (and freloc (/= freloc target)) (throw 'invalid nil))
+                     (setq freloc target))
+            (_ (throw 'invalid nil)))))
+      (unless (and counter freloc) (throw 'invalid nil))
+      (list :vaddr vaddr :size back :counter counter :freloc freloc))))
 
 (provide 'nelisp-eln-tail-code)
 

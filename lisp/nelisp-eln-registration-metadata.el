@@ -22,7 +22,7 @@
   'nelisp-eln-registration-metadata-token)
 (defconst nelisp-eln-registration-metadata--profiles
   '(gnu-single-leaf gnu-eval-subr gnu-eval-subr-pair gnu-verified-subr
-    gnu-require-subr)
+    gnu-require-subr gnu-lambda-require-subr)
   "Registration profiles whose exact top_level_run shape was admitted by
 `nelisp-eln-registration--top-level-code' before metadata is created.")
 (defvar nelisp-eln-registration-metadata--live nil)
@@ -49,11 +49,17 @@
          ((null object) nil)
          ((integerp object) (nelisp-eln-abi-encode-fixnum object))
          ((or (symbolp object) (consp object) (stringp object)
+              (byte-code-function-p object)
               (nelisp-eln-registration-metadata--vector-p object))
           (unless (assq object seen)
             (let ((kind (cond ((symbolp object) 'symbol)
                               ((consp object) 'cons)
                               ((stringp object) 'string)
+                              ;; A byte-code function constant (S6.12) is an
+                              ;; opaque, identity-preserving word: native
+                              ;; code only ever passes it on, and it is never
+                              ;; traversed.
+                              ((byte-code-function-p object) 'closure)
                               (t 'vector)))
                   (detail nil) (plan nil))
               (when (eq kind 'string)
@@ -83,6 +89,7 @@
     ('symbol 48)
     ('string (+ nelisp-eln-string--descriptor-bytes
                 (nth 1 (aref plan 2)) 1))
+    ('closure 16)
     ('vector (* 8 (1+ (length (aref plan 0)))))))
 
 (defun nelisp-eln-registration-metadata--source-word (token object)
@@ -102,6 +109,7 @@
     (pcase kind
       ('cons (+ address 3))
       ('string (+ address 4))
+      ('closure (+ address 5))
       ('vector (+ address 5))
       ('symbol (nelisp-eln-objects--symbol-word address)))))
 
@@ -152,6 +160,11 @@
             (nelisp-eln-registration-metadata--source-word
              token (aref snapshot i)))
            (setq i (1+ i)))))
+      ('closure
+       ;; Poison: no decoder accepts these words as a vector header, and the
+       ;; admitted bodies never dereference the word.
+       (nelisp-eln-abi-write-word address 0 0)
+       (nelisp-eln-abi-write-word address 8 0))
       ('symbol (nelisp-eln-registration-metadata--write-symbol
                 token plan address)))))
 

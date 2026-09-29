@@ -115,24 +115,43 @@ the (inclusive) span and returns VALUE."
     (should (eq 42 (aref tbl ?b)))
     (should (eq 42 (aref tbl ?c)))))
 
-(ert-deftest nelisp-char-table/range-nil-not-default-slot ()
-  "Doc 186 §3.3 scope note, pinned so it cannot silently drift: RANGE =
-nil is NOT implemented as \"the default slot `aref' falls back to\".
-Checked directly against host Emacs: `(set-char-table-range tbl nil
-V)' does NOT change what `aref' falls through to afterward -- it is
-evidently keyed to Emacs's real multi-level sub-char-table structure,
-which this flat implementation has no equivalent for.  nil is
-therefore scoped out, same bucket as `t' (see the next test) rather
-than given an approximate, wrong meaning."
+(ert-deftest nelisp-char-table/range-nil-is-default-slot ()
+  "GNU semantics, verified against host Emacs: RANGE = nil reads/writes the
+default slot.  `make-char-table' fills every slot with INIT, so changing the
+default does not change what an untouched char answers; it only shows
+through slots that hold nil."
   (let ((tbl (make-char-table 'test 'DEF)))
     (should (eq 'DEF (char-table-range tbl nil)))
-    (set-char-table-range tbl nil 'NEWDEF)
-    ;; `aref' still answers the OLD default -- `set-char-table-range' with
-    ;; nil did not touch it.  This is host Emacs's own behavior, not a
-    ;; NeLisp limitation; NeLisp's `bf_set_char_table_range' declines nil
-    ;; outright (signals `char-table-range-too-large') rather than
-    ;; reproducing whatever host Emacs actually did here.
-    (should (eq 'DEF (aref tbl ?z)))))
+    (should (eq 'NEWDEF (set-char-table-range tbl nil 'NEWDEF)))
+    (should (eq 'NEWDEF (char-table-range tbl nil)))
+    (should (eq 'DEF (aref tbl ?z)))
+    (aset tbl ?z nil)
+    (should (eq 'NEWDEF (aref tbl ?z)))))
+
+(ert-deftest nelisp-char-table/huge-ranges-have-no-ceiling ()
+  "The 4096-entry ceiling is gone: any range is one interval operation."
+  (let ((tbl (make-char-table 'test nil)))
+    (should (eq 'p (set-char-table-range tbl (cons #x100 4194303) 'p)))
+    (should (eq nil (aref tbl #xff)))
+    (should (eq 'p (aref tbl #x100)))
+    (should (eq 'p (aref tbl 4194303)))
+    (set-char-table-range tbl (cons 5000 9000) 'q)
+    (should (eq 'p (aref tbl 4999)))
+    (should (eq 'q (aref tbl 5000)))
+    (should (eq 'q (aref tbl 9000)))
+    (should (eq 'p (aref tbl 9001)))
+    (should (eq 7 (set-char-table-range tbl t 7)))
+    (should (eq 7 (aref tbl 0)))
+    (should (eq 7 (aref tbl 4194303)))))
+
+(ert-deftest nelisp-char-table/range-errors ()
+  (let ((tbl (make-char-table 'test nil)))
+    (should-error (set-char-table-range tbl (cons 0 4194304) 1)
+                  :type 'wrong-type-argument)
+    (should-error (aref tbl -1) :type 'wrong-type-argument)
+    (should-error (char-table-range tbl 'a) :type 'error)
+    (should (eq 1 (set-char-table-range tbl (cons 9 5) 1)))
+    (should (eq nil (aref tbl 7)))))
 
 (ert-deftest nelisp-char-table/wrong-type-argument ()
   "A non-char-table signals `(wrong-type-argument char-table-p OBJ)' --

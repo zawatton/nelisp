@@ -431,6 +431,20 @@ hot paths."
         (setq ok nil)))
     ok))
 
+(defun nelisp-artifact--check-nonempty-read (path text)
+  "Return TEXT read from PATH, signaling `file-missing' for a missing PATH.
+The standalone artifact readers answer the empty string for a file that does
+not exist instead of signaling (`(or (nelisp--syscall-read-file PATH) \"\")'),
+so a missing manifest used to surface later as a misleading \"empty private
+artifact form\" error.  An empty result is only suspicious, so the existence
+check runs solely in that case."
+  (if (and (stringp text)
+           (= (length text) 0)
+           (not (file-exists-p path)))
+      (signal 'file-missing
+              (list "Opening input file" "No such file or directory" path))
+    text))
+
 (defun nelisp-artifact--read-file-as-string (path)
   "Read PATH as a string.
 Artifacts and manifests are project-internal cache files read on the
@@ -2917,14 +2931,18 @@ Return (t VALUE . END) when handled, otherwise nil."
 (defun nelisp-artifact--read-manifest-full (artifact-path)
   "Read ARTIFACT-PATH's sibling manifest with the full private plist reader."
   (let* ((manifest-path (nelisp-artifact--sibling-manifest-path artifact-path))
-         (source (nelisp-artifact--read-file-as-string manifest-path)))
+         (source (nelisp-artifact--check-nonempty-read
+                  manifest-path
+                  (nelisp-artifact--read-file-as-string manifest-path))))
     (nelisp-artifact--read-one-private-form source manifest-path)))
 
 (defun nelisp-artifact--read-manifest-fast (artifact-path &optional keys)
   "Read ARTIFACT-PATH's sibling manifest via generated-key scanner.
 When KEYS is non-nil, read only those top-level keys."
   (let* ((manifest-path (nelisp-artifact--sibling-manifest-path artifact-path))
-         (source (nelisp-artifact--read-file-as-string manifest-path))
+         (source (nelisp-artifact--check-nonempty-read
+                  manifest-path
+                  (nelisp-artifact--read-file-as-string manifest-path)))
          (manifest nil)
          (compiler-text (prin1-to-string (nelisp-artifact--compiler-plist))))
     (dolist (key (or keys

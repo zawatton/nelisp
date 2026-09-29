@@ -533,6 +533,50 @@ confused with a fixed base immediate."
      nelisp-cc-eln-callback7-bss-bytes
      32))
 
+;; Cold-image build digest.  The marker is assembled from bytes (never
+;; written out as one literal) so no other copy of it can end up in a binary
+;; and confuse the stamp's single-occurrence search.
+(defconst nelisp-standalone--build-digest-marker
+  (apply #'unibyte-string
+         (append '(127) (string-to-list "NELISP-BLDDGST") '(1)))
+  "16-byte marker preceding the 32 build-digest bytes in `nl_build_digest'.")
+
+(defun nelisp-standalone--build-digest-placeholder ()
+  "Return the unstamped 48-byte `nl_build_digest' rodata payload."
+  (concat nelisp-standalone--build-digest-marker (make-string 32 0)))
+
+(defun nelisp-standalone--stamp-build-digest (binary)
+  "Stamp BINARY's `nl_build_digest' with a digest of BINARY itself.
+The digest is the SHA-256 of the linked file with the 32 digest bytes still
+zero, so it is deterministic for a given build and differs whenever any
+code or data byte differs.  The cold-image dumper copies it into the image
+trailer and `--cold-load-from' accepts only an image carrying the loading
+binary's own digest.  Returns the digest as a hex string."
+  (let* ((bytes (with-temp-buffer
+                  (set-buffer-multibyte nil)
+                  (let ((coding-system-for-read 'binary))
+                    (insert-file-contents-literally binary))
+                  (buffer-string)))
+         (marker nelisp-standalone--build-digest-marker)
+         (pos (string-search marker bytes))
+         (field (and pos (+ pos (length marker)))))
+    (unless pos
+      (error "build digest marker not found in %s" binary))
+    (when (string-search marker bytes (1+ pos))
+      (error "build digest marker is not unique in %s" binary))
+    (unless (string= (substring bytes field (+ field 32)) (make-string 32 0))
+      (error "build digest field in %s is already stamped" binary))
+    (let* ((hex (secure-hash 'sha256 bytes))
+           (raw (secure-hash 'sha256 bytes nil nil t)))
+      (with-temp-buffer
+        (set-buffer-multibyte nil)
+        (insert (substring bytes 0 field) raw (substring bytes (+ field 32)))
+        (let ((coding-system-for-write 'binary)
+              (modes (file-modes binary)))
+          (write-region (point-min) (point-max) binary nil 'silent)
+          (set-file-modes binary modes)))
+      hex)))
+
 (defun nelisp-standalone--arena-base-slot-unit ()
   "Doc 140 Stage 8: a tiny driver-owned bss link unit exporting
 `nl_arena_base'.  `nl_arena_init' stores the runtime chunk-0 base in this
@@ -691,10 +735,14 @@ storage — not an arena reservation."
    ;; ptr@+0, generation@+8, active-call count@+16, install CAS lock@+24.
    ;; Additive and independent of the block above: zero bytes, same as
    ;; today, unless this build ALSO declares >=1 callsite entry.
-   (list (cons 'bss (nelisp-standalone--driver-bss-size)))
+   (list (cons 'bss (nelisp-standalone--driver-bss-size))
+         ;; cold-image build digest (see `nelisp-standalone--stamp-build-digest').
+         (cons 'rodata (nelisp-standalone--build-digest-placeholder)))
    ;; The aref cache follows the 64-byte GC statistics record in this BSS.
    (append
-    (list (nelisp-link-symbol "nl_arena_base" 0
+    (list (nelisp-link-symbol "nl_build_digest" 0
+                             :section 'rodata :bind 'global :type 'object)
+          (nelisp-link-symbol "nl_arena_base" 0
                              :section 'bss :bind 'global :type 'object)
          (nelisp-link-symbol "nl_rootstack_top" 8
                              :section 'bss :bind 'global :type 'object)
@@ -3074,8 +3122,9 @@ REPL-facing module it feeds."
 ;;                   len@sp+24); ptr -> separate char buffer (no Sexp kids).
 ;;   MutStr (tag 6): sp+8 NlStr* box (cap@+0,ptr@+8,len@+16); ptr -> buf.
 ;;   CharTable (tag 9): box+0 subtype Sexp, box+32 default Sexp,
-;;                   entries {ptr@+64,cap@+72,len@+80} with 40-byte
-;;                   {i64 key,32-byte Sexp} rows, parent box ptr@+88,
+;;                   entries {ptr@+64,cap@+72,len@+80} with 48-byte
+;;                   {i64 start,32-byte Sexp value,i64 end} sorted disjoint
+;;                   interval rows, parent box ptr@+88,
 ;;                   extra {ptr@+96,cap@+104,len@+112} of 32-byte Sexps,
 ;;                   rc@+120.
   ;;   BoolVector (tag 10): box+0 bit_len, box+8 data_ptr,
@@ -3474,7 +3523,7 @@ REPL-facing module it feeds."
            (nl_gc_mark_slot box)
            (nl_gc_mark_slot (+ box 32))
            (nl_gc_mark_buf entries)
-           (nl_gc_mark_char_table_slots entries 0 entries_len 40 8)
+           (nl_gc_mark_char_table_slots entries 0 entries_len 48 8)
            (if (= parent 0) 0 (nl_gc_mark_char_table_box parent))
            (nl_gc_mark_buf extra)
            (nl_gc_mark_char_table_slots extra 0 extra_len 32 0))))))
@@ -3757,8 +3806,13 @@ REPL-facing module it feeds."
                bt))
     (defun nl_gc_sweep_one (hdr)
       (if (= (nl_gc_is_boot hdr) 1)
-          (nl_seq2 (nl_hdr_set_mark hdr 0)                ; boot block: keep live, reset mark
-                   (nl_gc_live_add (nl_hdr_bt hdr)))
+          ;; A FREE (mark 2) block below the watermark (a cold-loaded image
+          ;; carries the dumping run's freed blocks, relinked at load) must
+          ;; stay free; resetting it to mark 0 leaks it past the rebuild.
+          (if (= (nl_hdr_mark hdr) 2)
+              0
+            (nl_seq2 (nl_hdr_set_mark hdr 0)              ; boot block: keep live, reset mark
+                     (nl_gc_live_add (nl_hdr_bt hdr))))
       (let* ((m (nl_hdr_mark hdr)) (bt (nl_hdr_bt hdr)))
         ;; Doc155 §8.12: m==1 (recursed-live) OR m==4 (conserv-PINNED, a live
         ;; in-flight root never precisely recursed) both SURVIVE and reset to 0
@@ -4627,8 +4681,20 @@ REPL-facing module it feeds."
                (ptr-read-u64 (+ slot 8) 0) slot form_ptr 0)
             (seq (atomic-compare-exchange slot 1 form_ptr) 0))
         0))
+    ;; PERF (cold boot): `nl_gc_is_boot' covers the WHOLE cold-loaded image (the
+    ;; watermark is set past it), but the pointer-keyed caches below only need
+    ;; to exclude the driver's reused scratch slots, which a cold boot allocates
+    ;; AFTER the image.  nl_gc_stats+56 holds the image end (0 on a normal
+    ;; boot, where every boot block is scratch-or-older), so image objects
+    ;; (prelude function bodies, stable and never moved) stay cacheable.
+    ;; Without this every macro call site in the prelude/vendor code re-expanded
+    ;; on each evaluation after `--cold-load-from' (macroexpand-all ~40x slower).
+    (defun nl_cache_boot_p (addr)
+      (if (= (nl_gc_is_boot addr) 1)
+          (if (< addr (ptr-read-u64 (data-addr nl_gc_stats) 56)) 0 1)
+        0))
     (defun nl_mxcache_lookup (form_ptr)
-      (if (= (nl_gc_is_boot form_ptr) 1) 0
+      (if (= (nl_cache_boot_p form_ptr) 1) 0
       (if (= (ptr-read-u64 (data-addr nl_mxcache_disable_lookup) 0) 1) 0
         (let* ((base (ptr-read-u64 (data-addr nl_mxcache_table_base) 0)))
           (if (= base 0) 0
@@ -4681,7 +4747,7 @@ REPL-facing module it feeds."
                0))
           0)))
     (defun nl_mxcache_store (form_ptr expansion_ptr)
-      (if (= (nl_gc_is_boot form_ptr) 1) 0
+      (if (= (nl_cache_boot_p form_ptr) 1) 0
       (seq
        (nl_mxcache_table_init)
        (let* ((base (ptr-read-u64 (data-addr nl_mxcache_table_base) 0)))
@@ -4801,7 +4867,7 @@ REPL-facing module it feeds."
             (seq (atomic-compare-exchange slot 1 args_ptr) 0))
         0))
     (defun nl_fvcache_lookup (args_ptr)
-      (if (= (nl_gc_is_boot args_ptr) 1) 0
+      (if (= (nl_cache_boot_p args_ptr) 1) 0
       (if (= (ptr-read-u64 (data-addr nl_fvcache_disable_lookup) 0) 1) 0
         (let* ((base (ptr-read-u64 (data-addr nl_fvcache_table_base) 0)))
           (if (= base 0) 0
@@ -4823,7 +4889,7 @@ REPL-facing module it feeds."
                0))
           0)))
     (defun nl_fvcache_store (args_ptr filter_ptr)
-      (if (= (nl_gc_is_boot args_ptr) 1) 0
+      (if (= (nl_cache_boot_p args_ptr) 1) 0
       (seq
        (nl_fvcache_table_init)
        (let* ((base (ptr-read-u64 (data-addr nl_fvcache_table_base) 0)))
@@ -8782,6 +8848,38 @@ leave symbols unresolved at link time."
       (if (if (< off len) 0 1) off
         (let ((r (nl_os_read_file_handle fd (+ buf off) (- len off))))
           (if (< r 1) off (nl_fa_read_all fd buf len (+ off r))))))
+    ;; Build digest (cold-image identity).  `nl_build_digest' is a 48-byte
+    ;; rodata blob in the arena-base unit: a 16-byte marker, then 32 digest
+    ;; bytes that `nelisp-standalone--stamp-build-digest' patches into the
+    ;; linked binary (sha256 of the binary with the digest bytes zeroed).
+    ;; Nothing is hashed at runtime.  An unstamped build keeps all-zero bytes
+    ;; and can neither produce a loadable image nor load one.
+    (defun nl_build_digest_ptr () (+ (data-addr nl_build_digest) 16))
+    (defun nl_build_digest_stamped_p ()
+      (let ((p (nl_build_digest_ptr)) (i 0) (nz 0))
+        (seq
+         (while (< i 32)
+           (nl_seq2 (if (= (ptr-read-u8 (+ p i) 0) 0) 0 (setq nz 1))
+                    (setq i (+ i 1))))
+         nz)))
+    (defun nl_build_digest_eq (q)
+      (let ((p (nl_build_digest_ptr)) (i 0) (ok 1))
+        (seq
+         (while (and (= ok 1) (< i 32))
+           (if (= (ptr-read-u8 (+ p i) 0) (ptr-read-u8 (+ q i) 0))
+               (setq i (+ i 1))
+             (setq ok 0)))
+         ok)))
+    ;; Fill the 48-byte image trailer {magic, version, digest} at TRL.
+    (defun nl_build_digest_trailer (trl)
+      (let ((p (nl_build_digest_ptr)) (i 0))
+        (seq
+         (ptr-write-u64 trl 0 1195655758)
+         (ptr-write-u64 trl 8 1)
+         (while (< i 32)
+           (nl_seq2 (ptr-write-u8 (+ trl (+ 16 i)) 0 (ptr-read-u8 (+ p i) 0))
+                    (setq i (+ i 1))))
+         0)))
     (defun bf_arena_dump_image_to_file (args out)
       (let* ((cpath (nl_bi_make_cpath (wf_arg_ptr args 0)))
              (head (ptr-read-u64 268436160 0))
@@ -8810,9 +8908,13 @@ leave symbols unresolved at link time."
            (seq (ptr-write-u64 (+ dest i) 0 (ptr-read-u64 (+ sstart i) 0)) (setq i (+ i 8))))
          (while (< j isz)
            (seq (ptr-write-u64 (+ dest (+ slen j)) 0 (ptr-read-u64 (+ ib j) 0)) (setq j (+ j 8))))
+         ;; exact object-start index for the walk's dedup marks; see the
+         ;; matching comment in `bf_arena_dump_image_stream'.
+         (nl_gc_index_prepare)
          (ptr-write-u64 (data-addr nl_gc_loop_ctx) 24 1)
          (nl_fa_roots sstart slen dest cin cout 3)
          (ptr-write-u64 (data-addr nl_gc_loop_ctx) 24 0)
+         (nl_gc_index_end)
          (bf_arena_mr_chunks (ptr-read-u64 268436160 0) cout cout)
          (ptr-write-u64 cout 0 0)
          (setq tlen (ptr-read-u64 cin 0))
@@ -8874,6 +8976,7 @@ leave symbols unresolved at link time."
                                         ; alloc between computing `total' and writing
                                         ; the regions -- otherwise the 64B header bump
                                         ; would desync hdr+8=total from the written size)
+             (trl (alloc-bytes 48 8))   ; build-digest trailer, same reason
              (head (ptr-read-u64 268436160 0))
              (sstart (ptr-read-u64 (+ head 24) 0))   ; chunk-0 data-start (= ds for in-place)
              (abase (- sstart 1024))
@@ -8912,9 +9015,12 @@ leave symbols unresolved at link time."
              (foff (nl_mc_imgoff fbox total ib ie))
              (uoff (nl_mc_imgoff ubox total ib ie))
              (tlen 0) (fd 0))
-        (if (= tblbase 0)
-            (wf_write_int out -1)
+        (if (or (= tblbase 0) (= (nl_build_digest_stamped_p) 0))
+            ;; an unstamped build cannot vouch for its image: refuse.
+            (seq (if (= tblbase 0) 0 (nl_os_free_chunk tblbase tblcap))
+                 (wf_write_int out -1))
           (seq
+           (nl_build_digest_trailer trl)
            ;; header is fully built from pre-swizzle reads (slen=total, tlen patched after)
            (ptr-write-u64 hdr 0 1179407692)
            (ptr-write-u64 hdr 16 isz)
@@ -8928,11 +9034,24 @@ leave symbols unresolved at link time."
               (ptr-write-u64 (data-addr nl_fa_tbl_base) 0 tbl)
               ;; ---- from here to the restore: NO alloc / GC / eval (arena is swizzled) ----
               (ptr-write-u64 cin 0 0) (ptr-write-u64 cout 0 0)
+              ;; The walk dedups through `nl_gc_mark_block', whose
+              ;; `nl_gc_object_start_p' check falls back to an exact
+              ;; header-chain walk from the chunk start whenever the
+              ;; collector's object-start index is not active.  Outside a
+              ;; collection that made every visited edge O(heap) -- the
+              ;; whole walk quadratic -- so the dump spun at 100% CPU
+              ;; before its first write.  Build the index for the walk
+              ;; (off-arena mmap, no arena allocation) and drop it again
+              ;; before anything can allocate.  Only POINTER fields are
+              ;; rewritten by the swizzle, never block headers, so the
+              ;; index stays exact throughout.
+              (nl_gc_index_prepare)
               (ptr-write-u64 (data-addr nl_gc_loop_ctx) 24 1)
               ;; span=total: cross-chunk pointers swizzle to coalesced logical offsets;
               ;; dest=ds=sstart: loc=dest+(waddr-ds)=waddr => in-place over ANY chunk.
               (nl_fa_roots sstart total sstart cin cout 3)
               (ptr-write-u64 (data-addr nl_gc_loop_ctx) 24 0)
+              (nl_gc_index_end)
               (ptr-write-u64 (data-addr nl_fa_tbl_base) 0 0)   ; reset override
               (setq tlen (ptr-read-u64 cin 0))
               (ptr-write-u64 hdr 8 total) (ptr-write-u64 hdr 24 tlen)
@@ -8940,10 +9059,16 @@ leave symbols unresolved at link time."
               (nl_fa_write_all fd tbl (* tlen 8) 0)
               (nl_mc_write_chunks fd head)   ; coalesced chunk regions, logical order (single: chunk-0)
               (nl_fa_write_all fd ib isz 0)   ; live intern (un-swizzled, fixed on load)
+              (nl_fa_write_all fd trl 48 0)   ; build-digest trailer
               (nl_os_close_handle fd)
               (bf_arena_inplace_restore_mc tbl tlen ib total)   ; restore the live arena
+              ;; clear the walk's dedup marks (as `bf_arena_dump_image_to_file'
+              ;; does): a block left at mark 1 reads as "already recursed" to
+              ;; the next collection, so a post-dump child reachable only
+              ;; through it would be swept while still live.
+              (bf_arena_mr_chunks (ptr-read-u64 268436160 0) cout cout)
               (nl_os_free_chunk tblbase tblcap)
-              (wf_write_int out (+ 64 (+ (* tlen 8) (+ total isz))))))))))
+              (wf_write_int out (+ 64 (+ (* tlen 8) (+ total (+ isz 48)))))))))))
     (defun bf_arena_load_image_from_file (args out)
       (let* ((cpath (nl_bi_make_cpath (wf_arg_ptr args 0)))
              (hdr (alloc-bytes 64 8))
@@ -9486,9 +9611,13 @@ leave symbols unresolved at link time."
            (seq (ptr-write-u64 (+ dest (+ slen j)) 0 (ptr-read-u64 (+ ib j) 0))
                 (setq j (+ j 8))))
          ;; 2. swizzle DEST + emit the relocation table (dir 3)
+         ;; exact object-start index for the walk's dedup marks; see the
+         ;; matching comment in `bf_arena_dump_image_stream'.
+         (nl_gc_index_prepare)
          (ptr-write-u64 (data-addr nl_gc_loop_ctx) 24 1)
          (nl_fa_roots sstart slen dest cin cout 3)
          (ptr-write-u64 (data-addr nl_gc_loop_ctx) 24 0)
+         (nl_gc_index_end)
          (bf_arena_mr_chunks (ptr-read-u64 268436160 0) cnblk cnblk)
          (ptr-write-u64 cnblk 0 0)
          ;; 3. LOAD as the boot would: per table entry F, DEST[F] += DEST
@@ -12699,6 +12828,42 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                               (wf_bytecode_slot slots (- sp 1))
                                               (wf_bytecode_slot slots (- sp 1)) 1) 0)
                                           0 (setq done 4)))
+                                     ;; Bcdr_safe: GNU CDR_SAFE -- the cdr of
+                                     ;; a cons, nil for anything else.  Never
+                                     ;; signals.
+                                     ((= base 163)
+                                      (let* ((top (wf_bytecode_slot slots (- sp 1))))
+                                        (if (= (ptr-read-u64 top 0) 7)
+                                            (wf_bytecode_copy top (nl_cons_cdr_ptr top))
+                                          (wf_write_nil top))))
+                                     ;; Bset: GNU `Fset (TOP, v1)' -- assign
+                                     ;; the dynamic/global value (never a
+                                     ;; lexical cell), leaving the value on
+                                     ;; the stack.  nil/t signal
+                                     ;; setting-constant, as do keywords
+                                     ;; (`bf_keyword_raw'; the dynamic-value
+                                     ;; helper only refuses mirror constants),
+                                     ;; any other
+                                     ;; non-symbol wrong-type-argument
+                                     ;; symbolp.  Native, so a later `fset'
+                                     ;; of `set' does not reach it.
+                                     ((= base 76)
+                                      (let* ((symbol (wf_bytecode_slot slots (- sp 2)))
+                                             (value (wf_bytecode_slot slots (- sp 1)))
+                                             (tag (ptr-read-u64 symbol 0)))
+                                        (if (or (= tag 4) (= tag 16))
+                                            (if (= (bf_keyword_raw symbol) 1)
+                                                (seq (bf_setting_constant symbol)
+                                                     (setq done 4))
+                                              (if (= (bf_set_dynamic_value env symbol value) 0)
+                                                  (seq (wf_bytecode_copy symbol value)
+                                                       (setq sp (- sp 1)))
+                                                (setq done 4)))
+                                          (if (or (= tag 0) (= tag 1))
+                                              (seq (bf_setting_constant symbol)
+                                                   (setq done 4))
+                                            (seq (bf_wrong_type_symbolp symbol)
+                                                 (setq done 4))))))
                                      ((= base 63)
                                       (let* ((top (wf_bytecode_slot slots (- sp 1))))
                                         (if (= (ptr-read-u64 top 0) 0)
@@ -14000,13 +14165,50 @@ baked build's own `<'/`>'/`=' arms need it too.")
                   0)
               0))
         0))
+    ;; 1 when P is a leading `(:documentation ARG)' body form whose ARG is
+    ;; `(quote VALUE)' or a self-evaluating constant.  GNU `function'
+    ;; evaluates that form at closure creation and stores the value as
+    ;; slot 4 (how an OClosure type is attached); here the form stays in
+    ;; front of the body, where a string docstring would sit, and the
+    ;; prelude's `:documentation' macro makes it a no-op when the body runs.
+    (defun nl_closure_docmark_p (p)
+      (if (= (ptr-read-u64 p 0) 7)
+          (let* ((h (nl_cons_car_ptr p))
+                 (d (nl_cons_cdr_ptr p)))
+            (if (= (ptr-read-u64 h 0) 4)
+                (if (= (symbol-eq h ':documentation) 1)
+                    (if (= (ptr-read-u64 d 0) 7)
+                        (let* ((arg (nl_cons_car_ptr d)))
+                          (if (= (ptr-read-u64 arg 0) 7)
+                              (let* ((qh (nl_cons_car_ptr arg))
+                                     (qd (nl_cons_cdr_ptr arg)))
+                                (if (= (ptr-read-u64 qh 0) 4)
+                                    (if (= (symbol-eq qh 'quote) 1)
+                                        (if (= (ptr-read-u64 qd 0) 7) 1 0)
+                                      0)
+                                  0))
+                            1))
+                      0)
+                  0)
+              0))
+        0))
     (defun nl_closure_doc_p (body)
       (if (= (ptr-read-u64 body 0) 7)
           (let* ((tg (ptr-read-u64 (nl_cons_car_ptr body) 0)))
-            (if (if (= tg 5) 1 (if (= tg 6) 1 (if (= tg 14) 1 (if (= tg 15) 1 0))))
+            (if (if (= tg 5) 1 (if (= tg 6) 1 (if (= tg 14) 1 (if (= tg 15) 1
+                    (nl_closure_docmark_p (nl_cons_car_ptr body))))))
                 (if (= (ptr-read-u64 (nl_cons_cdr_ptr body) 0) 7) 1 0)
               0))
         0))
+    ;; Slot-4 value of a closure whose BODY starts with a doc element.
+    (defun nl_closure_doc_value (body)
+      (let* ((e (nl_cons_car_ptr body)))
+        (if (= (nl_closure_docmark_p e) 1)
+            (let* ((arg (nl_cons_car_ptr (nl_cons_cdr_ptr e))))
+              (if (= (ptr-read-u64 arg 0) 7)
+                  (nl_cons_car_ptr (nl_cons_cdr_ptr arg))
+                arg))
+          e)))
     (defun nl_closure_iform_p (body)
       (if (= (ptr-read-u64 body 0) 7)
           (let* ((a (nl_cons_car_ptr body)))
@@ -14057,7 +14259,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                (seq (mut-str-push-byte ms 32) (m5_push_lit_nil ms)
                     (mut-str-push-byte ms 32)
                     (if (= dp 1)
-                        (m5_prin1 ms (nl_cons_car_ptr b0))
+                        (m5_prin1 ms (nl_closure_doc_value b0))
                       (m5_push_lit_nil ms))
                     (if (= ip 1)
                         (let* ((ifcdr (nl_cons_cdr_ptr (nl_cons_car_ptr b1))))
@@ -14962,7 +15164,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                 (bf_wrong_type_arrayp constants)))))))
     (defun bf_make_native_subr (args out env)
       (let* ((argc (m5_list_len args 0)))
-        (if (and (/= argc 3) (/= argc 5))
+        (if (and (/= argc 3) (/= argc 5) (/= argc 6))
             (bf_wrong_number_of_args (wf_arg_ptr args 1) argc)
           (let* ((mark (nl_root_mark env))
                  (base (nl_root_reserve_checked env))
@@ -14987,17 +15189,23 @@ baked build's own `<'/`>'/`=' arms need it too.")
                (wf_copy32 name-slot (wf_arg_ptr args 1))
                (wf_copy32 cap-slot (wf_arg_ptr args 0))
                (wf_copy32 module-slot (wf_arg_ptr args 2))
-               (if (= argc 5)
+               (if (>= argc 5)
                    (wf_copy32 bridge-slot (wf_arg_ptr args 3))
                  0)
                ;; Doc 207: a bridged subr has arity 1 or 2.  The arity is
                ;; the record's slot count minus four (5 or 6 slots).
-               (if (and (= argc 5)
+               ;; S6.6: a six-argument call (CAP NAME MODULE BRIDGE 2 1)
+               ;; makes an `&optional' arity (1 . 2) subr with 7 slots.
+               (if (and (>= argc 5)
                         (or (and (/= (ptr-read-u8 bridge-slot 0) 7)
                                  (/= (ptr-read-u8 bridge-slot 0) 17))
                             (/= (ptr-read-u8 (wf_arg_ptr args 4) 0) 2)
                             (and (/= (wf_argval args 4) 1)
-                                 (/= (wf_argval args 4) 2))))
+                                 (/= (wf_argval args 4) 2))
+                            (and (= argc 6)
+                                 (or (/= (wf_argval args 4) 2)
+                                     (/= (ptr-read-u8 (wf_arg_ptr args 5) 0) 2)
+                                     (/= (wf_argval args 5) 1)))))
                    (seq
                     (nl_root_release env mark)
                     (if (and (/= (ptr-read-u8 bridge-slot 0) 7)
@@ -15018,19 +15226,24 @@ baked build's own `<'/`>'/`=' arms need it too.")
                       (wf_write_int address-slot address)
                       (wf_copy32 address-root address-slot)
                       (record-make name-slot
-                                   (if (= argc 5) (+ 4 (wf_argval args 4)) 4)
+                                   (if (= argc 6) 7
+                                     (if (= argc 5) (+ 4 (wf_argval args 4)) 4))
                                    base)
                       (record-slot-set base 0 name-slot)
                       (record-slot-set base 1 cap-slot)
                       (record-slot-set base 2 address-root)
                       (record-slot-set base 3 module-slot)
-                      (if (= argc 5)
+                      (if (>= argc 5)
                           (record-slot-set base 4 bridge-slot)
                         0)
                       ;; The arity-2 marker slot repeats the bridge so every
                       ;; slot holds a valid, already-rooted object.
-                      (if (and (= argc 5) (= (wf_argval args 4) 2))
+                      (if (and (>= argc 5) (= (wf_argval args 4) 2))
                           (record-slot-set base 5 bridge-slot)
+                        0)
+                      ;; The `&optional' marker slot (7-slot record).
+                      (if (= argc 6)
+                          (record-slot-set base 6 bridge-slot)
                         0)
                       (ptr-write-u8 base 0 18)
                       (let* ((box (ptr-read-u64 base 8))
@@ -15106,6 +15319,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (ptr-write-u64 (+ box 104) 0 10)
          (ptr-write-u64 (+ box 112) 0 10)
          (ptr-write-u64 (+ box 120) 0 1)
+         ;; GNU `make-char-table' fills every slot with INIT (and the
+         ;; default slot too): model that as one interval over all chars.
+         (if (= (ptr-read-u64 default_ptr 0) 0)
+             0
+           (nl_ct_set_range box 0 4194303 default_ptr))
          (ptr-write-u64 out 0 9)
          (ptr-write-u64 (+ out 8) 0 box)
          (ptr-write-u64 (+ out 16) 0 0)
@@ -15279,75 +15497,101 @@ baked build's own `<'/`>'/`=' arms need it too.")
                          (wf_copy32 out val) 0)))
               (bf_wrong_type_fixnump nbox))
           (bf_wrong_type_char_table_p ct))))
-    ;; char-table-range / set-char-table-range (Doc 186 §3.3 -- SCOPED, not
-    ;; general).  RANGE is a single fixnum char or a (FROM . TO) cons --
-    ;; the only two forms the doc names as in scope.  Emacs's other two
-    ;; forms, nil (the default slot) and `t' (every char), both signal
-    ;; `char-table-range-too-large' instead of being handled: `t' per the
-    ;; doc's explicit "has no honest small-N encoding... signals the same
-    ;; way"; nil was tried and DROPPED after checking host Emacs directly
-    ;; -- `(set-char-table-range tbl nil V)' does NOT change what `aref'
-    ;; falls through to (verified: `aref' after it still answers the OLD
-    ;; default), so it is evidently keyed to some part of Emacs's real
-    ;; multi-level sub-char-table structure this flat entries-array
-    ;; representation has no equivalent for. Claiming nil == "the
-    ;; default_val aref falls back to" would have been a confident, wrong
-    ;; parity claim, which is worse than declining the form outright.
-    ;;
-    ;; GET on a (FROM . TO) cons returns the value AT FROM -- verified
-    ;; against host Emacs (both a uniform-value range and a non-uniform one
-    ;; answer the FROM-boundary value, not "nil unless uniform" as the
-    ;; multi-level sub-char-table docstring might suggest; this flat
-    ;; implementation has no sub-table concept to do otherwise).
+    ;; char-table-range / set-char-table-range, GNU semantics.  RANGE is
+    ;; nil (the default slot), t (every char; set only), a char, or a
+    ;; (FROM . TO) cons of chars.  GET on a cons answers the value at FROM
+    ;; (verified against host Emacs).  The interval store makes SET over any
+    ;; range O(log n) plus one array shift, so there is no size ceiling.
+    (defun nl_ct_char_ok (n) (if (< n 0) 0 (if (> n 4194303) 0 1)))
+    (defun bf_char_table_bad_range (set-p out)
+      (let* ((bytes (alloc-bytes 56 1))
+             (message-slot (alloc-bytes 32 8))
+             (nil-slot (alloc-bytes 32 8))
+             (args-slot (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 bytes 0 2334106421097295433)
+         (ptr-write-u64 (+ bytes 8) 0 8241904274985861458)
+         (ptr-write-u64 (+ bytes 16) 0 8367816125151278439)
+         (if (= set-p 0)
+             (seq (ptr-write-u64 (+ bytes 24) 0 3274786980023509103)
+                  (ptr-write-u64 (+ bytes 32) 0 7021724682657358196)
+                  (ptr-write-u64 (+ bytes 40) 0 660957038)
+                  (nl_alloc_str bytes 44 message-slot))
+           (seq (ptr-write-u64 (+ bytes 24) 0 7146496162783043695)
+                (ptr-write-u64 (+ bytes 32) 0 7809911855420432744)
+                (ptr-write-u64 (+ bytes 40) 0 2838788863905901925)
+                (nl_alloc_str bytes 48 message-slot)))
+         (wf_write_nil nil-slot)
+         (nelisp_cons_construct message-slot nil-slot args-slot)
+         (bf_error args-slot out))))
+    ;; Validate a (FROM . TO) cons: returns 0 when both ends are chars,
+    ;; else signals (wrong-type-argument characterp OFFENDER).
+    (defun nl_ct_cons_ok (fromp top)
+      (if (= (ptr-read-u64 fromp 0) 2)
+          (if (= (nl_ct_char_ok (ptr-read-u64 fromp 8)) 1)
+              (if (= (ptr-read-u64 top 0) 2)
+                  (if (= (nl_ct_char_ok (ptr-read-u64 top 8)) 1)
+                      0
+                    (bf_wrong_type_characterp top))
+                (bf_wrong_type_characterp top))
+            (bf_wrong_type_characterp fromp))
+        (bf_wrong_type_characterp fromp)))
     (defun bf_char_table_range (args out)
       (let* ((ct (wf_arg_ptr args 0)) (range (wf_arg_ptr args 1)))
         (if (= (ptr-read-u64 ct 0) 9)
             (let* ((rtag (ptr-read-u64 range 0)))
-              (if (= rtag 2)
-                  (seq (nl_char_table_get_raw ct (ptr-read-u64 range 8) out) 0)
-                (if (= rtag 7)
-                    (let* ((from (nl_cons_car_ptr range)))
-                      (if (= (ptr-read-u64 from 0) 2)
-                          (seq (nl_char_table_get_raw
-                                ct (ptr-read-u64 from 8) out)
-                               0)
-                        (bf_wrong_type_fixnump from)))
-                  (bf_char_table_range_too_large range))))
+              (if (= rtag 0)
+                  (seq (nl_sexp_clone_into (+ (ptr-read-u64 ct 8) 32) out) 0)
+                (if (= rtag 2)
+                    (if (= (nl_ct_char_ok (ptr-read-u64 range 8)) 1)
+                        (seq (nl_char_table_get_raw ct (ptr-read-u64 range 8) out) 0)
+                      (bf_wrong_type_characterp range))
+                  (if (= rtag 7)
+                      (let* ((fromp (nl_cons_car_ptr range))
+                             (top (nl_cons_cdr_ptr range))
+                             (bad (nl_ct_cons_ok fromp top)))
+                        (if (= bad 0)
+                            (seq (nl_char_table_get_local_raw
+                                  ct (ptr-read-u64 fromp 8) out)
+                                 0)
+                          bad))
+                    (bf_char_table_bad_range 0 out)))))
           (bf_wrong_type_char_table_p ct))))
-    ;; SET on a (FROM . TO) cons expands to one `nl_char_table_set_raw' call
-    ;; per character, guarded by the 4096-entry ceiling Doc 186 §3.3 sets
-    ;; (comfortably above a full ASCII+Latin-1+Latin-Extended-A syntax
-    ;; table, the doc's own stated near-term consumer) -- LOUD signal above
-    ;; the ceiling, never silent truncation or a silent O(n) slow path.
-    (defun nl_ct_set_range_loop (ct to val out i)
-      (if (> i to) 0
-        (seq (nl_char_table_set_raw ct i val out)
-             (nl_ct_set_range_loop ct to val out (+ i 1)))))
     (defun bf_set_char_table_range (args out)
       (let* ((ct (wf_arg_ptr args 0)) (range (wf_arg_ptr args 1))
              (val (wf_arg_ptr args 2)))
         (if (= (ptr-read-u64 ct 0) 9)
             (let* ((rtag (ptr-read-u64 range 0)))
-              (if (= rtag 2)
+              (if (= rtag 0)
                   (seq (wf_dirty)
-                       (nl_char_table_set_raw ct (ptr-read-u64 range 8) val out)
-                       0)
-                (if (= rtag 7)
-                    (let* ((fromp (nl_cons_car_ptr range))
-                           (top (nl_cons_cdr_ptr range)))
-                      (if (if (= (ptr-read-u64 fromp 0) 2)
-                              (= (ptr-read-u64 top 0) 2) 0)
-                          (let* ((from (ptr-read-u64 fromp 8))
-                                 (to (ptr-read-u64 top 8)))
-                            (if (> from to)
-                                (bf_wrong_type_fixnump fromp)
-                              (if (> (+ (- to from) 1) 4096)
-                                  (bf_char_table_range_too_large range)
-                                (seq (wf_dirty)
-                                     (nl_ct_set_range_loop ct to val out from)
-                                     (wf_copy32 out val) 0))))
-                        (bf_wrong_type_fixnump fromp)))
-                  (bf_char_table_range_too_large range))))
+                       (nl_sexp_clone_into val (+ (ptr-read-u64 ct 8) 32))
+                       (wf_copy32 out val) 0)
+                (if (= rtag 1)
+                    (seq (wf_dirty)
+                         (nl_char_table_set_range_raw ct 0 4194303 val out) 0)
+                  (if (= rtag 2)
+                      (if (= (nl_ct_char_ok (ptr-read-u64 range 8)) 1)
+                          (seq (wf_dirty)
+                               (nl_char_table_set_range_raw
+                                ct (ptr-read-u64 range 8) (ptr-read-u64 range 8)
+                                val out)
+                               0)
+                        (bf_wrong_type_characterp range))
+                    (if (= rtag 7)
+                        (let* ((fromp (nl_cons_car_ptr range))
+                               (top (nl_cons_cdr_ptr range))
+                               (bad (nl_ct_cons_ok fromp top)))
+                          (if (= bad 0)
+                              (let* ((from (ptr-read-u64 fromp 8))
+                                     (to (ptr-read-u64 top 8)))
+                                (if (> from to)
+                                    (seq (wf_copy32 out val) 0)
+                                  (seq (wf_dirty)
+                                       (nl_char_table_set_range_raw
+                                        ct from to val out)
+                                       0)))
+                            bad))
+                      (bf_char_table_bad_range 1 out))))))
           (bf_wrong_type_char_table_p ct))))
     ;; wrong-type-argument char-table-p OFFENDER -- mirrors
     ;; `bf_wrong_type_symbolp' exactly, byte-packed the same way (verified
@@ -15370,24 +15614,6 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (wf_write_nil nil-slot)
          (nelisp_cons_construct offender nil-slot data-tail)
          (nelisp_cons_construct expected data-tail 268435512)
-         (ptr-write-u64 268435472 0 1)
-         (atomic-fetch-add 268435544 1)
-         1)))
-    ;; char-table-range-too-large OFFENDER -- Doc 186 §3.3's own new error
-    ;; symbol (not an Emacs one; no host-Emacs form exercises it), same
-    ;; stash-and-raise shape as `bf_wrong_type_char_table_p' above but with
-    ;; a single-element data list.
-    (defun bf_char_table_range_too_large (offender)
-      (let* ((wbuf (alloc-bytes 32 1))
-             (nil-slot (alloc-bytes 32 8)))
-        (seq
-         (ptr-write-u64 wbuf 0 7089075026999208035) ; "char-tab"
-         (ptr-write-u64 (+ wbuf 8) 0 7306930285238379884) ; "le-range"
-         (ptr-write-u64 (+ wbuf 16) 0 8241987735463621677) ; "-too-lar"
-         (ptr-write-u64 (+ wbuf 24) 0 25959) ; "ge"
-         (nl_alloc_symbol wbuf 26 268435480)
-         (wf_write_nil nil-slot)
-         (nelisp_cons_construct offender nil-slot 268435512)
          (ptr-write-u64 268435472 0 1)
          (atomic-fetch-add 268435544 1)
          1)))
@@ -15524,7 +15750,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
             ;; matching Emacs's own "aref past what was `aset' returns the
             ;; default" char-table semantics rather than an out-of-range error.
             (if (= tg 9)
-                (seq (nl_char_table_get_raw arr idx out) 0)
+                (if (= (nl_ct_char_ok idx) 1)
+                    (seq (nl_char_table_get_raw arr idx out) 0)
+                  (bf_wrong_type_characterp (wf_arg_ptr args 1)))
               ;; Unibyte strings are character-indexed raw-byte arrays.
               (if (or (= tg 14) (= tg 15))
                   (if (if (< idx 0) 1 (if (< idx (m5_strlen arr)) 0 1))
@@ -15590,12 +15818,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
                0 out))
              ((= idx 2)
               (if (= (ptr-read-u64 (nl_cons_car_ptr d1) 0) 7)
-                  (bf_closure_env_view (nl_cons_car_ptr d1) out)
+                  (if (= (bf_closure_typed_p b0) 1)
+                      (bf_closure_env_view_fwd (nl_cons_car_ptr d1) out)
+                    (bf_closure_env_view (nl_cons_car_ptr d1) out))
                 (bf_closure_slot_or_singleton (nl_cons_car_ptr d1) 1 out)))
              ((= idx 3) (seq (wf_write_nil out) 0))
              ((= idx 4)
               (if (= (nl_closure_doc_p b0) 1)
-                  (seq (wf_copy32 out (nl_cons_car_ptr b0)) 0)
+                  (seq (wf_copy32 out (nl_closure_doc_value b0)) 0)
                 (seq (wf_write_nil out) 0)))
              (t (bf_closure_iform_value
                  (nl_cons_cdr_ptr (nl_cons_car_ptr b1)) out)))))))
@@ -15640,6 +15870,40 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (let* ((acc (alloc-bytes 32 8)))
         (seq (wf_write_nil acc)
              (bf_closure_env_view_rev env acc out))))
+    ;; The same view in capture order (the order `make-interpreted-closure'
+    ;; was given, or first-mention order for a `lambda' evaluated here), for
+    ;; a closure carrying a `(:documentation 'TYPE)' marker.  This runtime
+    ;; keeps a frame's parallel `let' bindings in no binding order (only the
+    ;; body's mention order survives capture), so the innermost-first view
+    ;; cannot give GNU's order; oclosure.el pairs slot 2 with the OClosure's
+    ;; slots by position, and `oclosure--lambda' mentions the slots in slot
+    ;; order, so capture order is the order it needs.
+    (defun bf_closure_env_view_fwd (node out)
+      (if (= (ptr-read-u64 node 0) 7)
+          (let* ((entry (nl_cons_car_ptr node))
+                 (rest (nl_cons_cdr_ptr node))
+                 (tail (alloc-bytes 32 8)))
+            (seq
+             (bf_closure_env_view_fwd rest tail)
+             (if (= (bf_closure_env_shadowed_p (bf_closure_env_key entry) rest) 1)
+                 (seq (wf_copy32 out tail) 0)
+               (if (= (ptr-read-u64 entry 0) 7)
+                   (let* ((val (alloc-bytes 32 8))
+                          (pair (alloc-bytes 32 8))
+                          (box (nl_cons_cdr_ptr entry)))
+                     (seq (if (= (ptr-read-u64 box 0) 11)
+                              (nl_cell_get_value box val)
+                            (wf_copy32 val box))
+                          (nelisp_cons_construct (nl_cons_car_ptr entry) val pair)
+                          (nelisp_cons_construct pair tail out)
+                          0))
+                 (seq (nelisp_cons_construct entry tail out) 0)))))
+        (seq (wf_write_nil out) 0)))
+    ;; 1 when the closure body B0 starts with a `(:documentation 'TYPE)' form.
+    (defun bf_closure_typed_p (b0)
+      (if (= (nl_closure_doc_p b0) 1)
+          (nl_closure_docmark_p (nl_cons_car_ptr b0))
+        0))
     ;; P itself when non-nil, else a fresh one-element list: `(nil)' for an
     ;; empty body (GNU never stores an empty body), `(t)' for an empty
     ;; lexical environment (GNU's marker for lexical binding).
@@ -15955,7 +16219,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
                 ;; entries array is a PERSISTENT-structure escape site exactly
                 ;; like `vector-slot-set'/`record-slot-set'.
                 (if (= (ptr-read-u64 arr 0) 9)
-                    (seq (wf_dirty) (nl_char_table_set_raw arr idx val out) 0)
+                    (if (= (nl_ct_char_ok idx) 1)
+                        (seq (wf_dirty) (nl_char_table_set_raw arr idx val out) 0)
+                      (bf_wrong_type_characterp (wf_arg_ptr args 1)))
                   ;; BoolVector(10): flip bit IDX to non-nil/nil, bounds-
                   ;; checked against the box's own N (offset 0 of the box
                   ;; at arr+8; see lisp/nelisp-cc-nlboolvector-alloc.el).
@@ -17281,6 +17547,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
                  (seq (if (= pushed 1) (nl_gc_ctx_pop) 0)
                       (if (= rc 0) drain-rc rc)))))))
     (defun bf_load_eval_loop (src cursor result pool env out bsym more)
+      ;; GNU `readevalloop' binds `internal-interpreter-environment' once
+      ;; for the whole file, so a bodyless top-level `(defvar SYM)' stays
+      ;; a local special declaration for the rest of THAT file (and only
+      ;; that file).  `nelisp_eval_call' pushes a throwaway root frame per
+      ;; top-level form when none exists, which dropped the declaration at
+      ;; the form boundary.  Keep one boundary frame for the whole file.
+      (nelisp_frame_scope_push (+ env 32))
       (while (= more 1)
         (seq
          ;; perf/macroexpansion-cache ROOT-CAUSE FIX #3: evict any cache row
@@ -17334,6 +17607,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
              ;; a form.  These used to be one branch, so a file that stopped
              ;; on a bad token finished "loaded".
              (if (= prc 2) (setq more 0) (setq more 3))))))
+      (nl_env_pop_frame env)
       more)
     (defun bf_eval_source_string_loop (src cursor result pool env out bsym more)
       (while (= more 1)
@@ -19078,7 +19352,10 @@ into that constant unconditionally is what broke every aarch64 build."
               (wf_write_int out 1)
             (if (= slots 6)
                 (wf_write_int out 2)
-              (wf_write_nil out))))))
+              ;; 3 encodes the `&optional' arity (1 . 2) (S6.6).
+              (if (= slots 7)
+                  (wf_write_int out 3)
+                (wf_write_nil out)))))))
     ((:lit "make-record") . (bf_make_record args out))
     ((:lit "make-byte-code") . (bf_make_byte_code args out))
     ((:lit "fetch-bytecode") . (wf_write_nil out))
@@ -21978,7 +22255,11 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
          body tag_slot env out eqres_slot)))
     (defun nl_ct_catch_after_tag (rc body tag_slot env out eqres_slot)
       (if (= rc 0)
-          (nl_ct_catch_body body tag_slot env out eqres_slot 0)
+          ;; OUT is cleared first: an empty catch body must answer nil, not
+          ;; the previous sibling form's value in the shared result slot.
+          (seq
+           (nl_cons_write_nil out)
+           (nl_ct_catch_body body tag_slot env out eqres_slot 0))
         1))
     (defun nl_ct_catch_got_body (body tag_form env out tag_slot eqres_slot)
       (nl_ct_catch_after_tag
@@ -24970,7 +25251,7 @@ listing it would make the load-path lie about what is reachable."
     position))
 
 (defconst nelisp-standalone--prelude-bytecode-opcodes
-  '(0 8 16 24 32 40 48 49 50 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 75 79 80 81 83 84 85 86 87 88 89 90 92 93 94 95 129 130 131 132 133 134 135 136 137 142 152 154 155 157 158 159 160 161 162 166 167 168 175 178 182 183 192)
+  '(0 8 16 24 32 40 48 49 50 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 78 79 80 81 83 84 85 86 87 88 89 90 92 93 94 95 129 130 131 132 133 134 135 136 137 142 152 154 155 157 158 159 160 161 162 163 166 167 168 175 178 182 183 192)
   "GNU byte-code opcodes currently supported for build-time prelude defuns.
 
 This deliberately starts with the stack, car/cdr and return operations needed
@@ -25136,7 +25417,11 @@ keeps this slice independent of caller-scope dynamic-variable semantics."
                     (expand-file-name "scripts/nelisp-stdlib-prelude.el"
                                       nelisp-standalone--repo-root))
                    (buffer-string)))
-         (position (nelisp-standalone--prelude-source-boundary source)))
+         (position (nelisp-standalone--prelude-source-boundary source))
+         (source-only
+          (equal (getenv "NELISP_STANDALONE_PRELUDE_SOURCE_ONLY") "1"))
+         ;; Source-only builds stay pure source: no vendor bake.
+         (vendor-src (if source-only "" (nelisp-standalone--vendor-bytecode-src))))
     (let* ((list-source (nelisp-standalone--vendor-list-accessors-src))
            (file-attrs-header
             "\n;; --- GNU Emacs 31.1 files.el: file attribute accessors ---\n")
@@ -25147,6 +25432,7 @@ keeps this slice independent of caller-scope dynamic-variable semantics."
                file-attribute-file-identifier)))
            (files-source
            (concat file-attrs-header file-attrs-forms-text
+                   vendor-src
                    (nelisp-standalone--after-load-runtime-src)))
            (metadata-source
             (concat "\n;; Preserve GNU cXXr compiler-macro declarations.\n"
@@ -25159,8 +25445,6 @@ keeps this slice independent of caller-scope dynamic-variable semantics."
            (combined
             (concat (substring source 0 position) list-source
                     (substring source position) files-source metadata-source))
-           (source-only
-            (equal (getenv "NELISP_STANDALONE_PRELUDE_SOURCE_ONLY") "1"))
            (cache-key (cons source-only (secure-hash 'sha256 combined)))
            (cached (assoc cache-key nelisp-standalone--prelude-source-cache)))
       (if cached
@@ -25221,6 +25505,7 @@ keeps this slice independent of caller-scope dynamic-variable semantics."
                       (concat (substring source 0 position)
                               accessor-source tail
                               file-attrs-header file-attrs-tail
+                              vendor-src
                               (nelisp-standalone--after-load-runtime-src)
                               metadata-source)))))
                (count nelisp-standalone--prelude-bytecode-count))
@@ -25315,7 +25600,12 @@ which reach this non-inline prelude variant with INLINE nil)."
    "               (if (and entry\n"
    "                        (equal (secure-hash 'sha256 source) (nth 1 entry)))\n"
    "                   (nelisp--core-bytecode-load source-file (nth 2 entry))\n"
-   "                 (apply nelisp--base-load source-file arguments))))))\n"
+   "                 (let ((pieces (and (stringp source-file)\n"
+   "                                    (fboundp 'nelisp--vendor-bytecode-pieces)\n"
+   "                                    (nelisp--vendor-bytecode-pieces source-file))))\n"
+   "                   (if pieces\n"
+   "                       (nelisp--core-bytecode-load source-file pieces)\n"
+   "                     (apply nelisp--base-load source-file arguments))))))))\n"
    "      (when result\n"
    "        (when (fboundp 'nelisp--after-load-feature)\n"
    "          (nelisp--after-load-feature source-file)))\n"
@@ -25552,6 +25842,149 @@ which reach this non-inline prelude variant with INLINE nil)."
      "                (end-of-file (setq done t))))))))\n"
      "    t))\n")))
 
+(defconst nelisp-standalone--vendor-bytecode-files
+  '("vendor/emacs-lisp/emacs-lisp/bytecomp.el"
+    "vendor/emacs-lisp/emacs-lisp/byte-opt.el")
+  "Vendored GNU libraries baked for `.elc'-like loading.
+See `nelisp-prelude-bytecode-vendor-transform'.")
+
+(defvar nelisp-standalone--vendor-bytecode-cache nil
+  "(KEY . SOURCE) of the last `nelisp-standalone--vendor-bytecode-src' result.")
+
+(defun nelisp-standalone--vendor-bytecode-src ()
+  "Bake `nelisp-standalone--vendor-bytecode-files'; return the runtime map.
+Loading bytecomp.el from source is expensive: its `(eval-when-compile
+\(require \\='compile))' loads compile.el, comint.el and their dependencies,
+and its hot compiler functions stay interpreted.  GNU never pays either
+cost, because it loads bytecomp.elc.  Each listed file is baked here the
+same way (`nelisp-prelude-bytecode-vendor-transform') into
+target/nelisp-vendor-bytecode/NAME-SHA256.eld, a printed list of the
+baked text's top-level form pieces.
+
+The returned source defines `nelisp--vendor-bytecode-map', one entry
+\(NAME SOURCE-SHA256 ARTIFACT-FILE ARTIFACT-SHA256) per file, baked into
+this binary.  The runtime `load' uses an artifact only when the live
+source file hashes to SOURCE-SHA256 and the artifact file hashes to
+ARTIFACT-SHA256, so it can never be stale: a changed source or artifact
+file, or a binary built from different inputs, falls back to loading the
+source."
+  (require 'bytecomp)
+  (require 'nelisp-prelude-bytecode)
+  (let* ((dirs (nelisp-standalone--reader-tree-load-path))
+         (sources (mapcar (lambda (relative)
+                            (let ((path (expand-file-name
+                                         relative nelisp-standalone--repo-root)))
+                              (list relative path
+                                    (with-temp-buffer
+                                      (insert-file-contents path)
+                                      (buffer-string)))))
+                          nelisp-standalone--vendor-bytecode-files))
+         (key (secure-hash 'sha256
+                           (prin1-to-string
+                            (list dirs
+                                  (mapcar (lambda (s)
+                                            (list (car s)
+                                                  (secure-hash 'sha256 (nth 2 s))))
+                                          sources)
+                                  emacs-version
+                                  nelisp-prelude-bytecode--opcodes)))))
+    (if (equal (car nelisp-standalone--vendor-bytecode-cache) key)
+        (cdr nelisp-standalone--vendor-bytecode-cache)
+      (let ((out-dir (expand-file-name "target/nelisp-vendor-bytecode/"
+                                       nelisp-standalone--repo-root))
+            (entries nil)
+            (reports nil))
+        (make-directory out-dir t)
+        ;; byte-opt.el (GNU 31.1) uses `macroexp-preserve-posification', which
+        ;; 31.1's macroexp.el defines but an older host (30.x) lacks: without it
+        ;; the host compiler would bake a call to a nonexistent function where
+        ;; GNU's own .elc has the expansion.  Define the vendored macro from the
+        ;; exact vendored macroexp.el text (fail closed if it is missing).
+        (unless (macrop 'macroexp-preserve-posification)
+          (with-temp-buffer
+            (insert-file-contents
+             (expand-file-name "vendor/emacs-lisp/emacs-lisp/macroexp.el"
+                               nelisp-standalone--repo-root))
+            (goto-char (point-min))
+            (unless (re-search-forward
+                     "^(defmacro macroexp-preserve-posification " nil t)
+              (error "vendored macroexp.el lacks macroexp-preserve-posification"))
+            (goto-char (match-beginning 0))
+            (defvar macroexp-enable-preserve-posification)
+            (eval (read (current-buffer)) t)))
+        (dolist (s sources)
+          (let* ((relative (nth 0 s))
+                 (name (file-name-nondirectory relative))
+                 (transformed (nelisp-prelude-bytecode-vendor-transform
+                               (nth 2 s) relative dirs))
+                 (text (car transformed))
+                 (pieces nil)
+                 (position 0)
+                 (len (length text)))
+            ;; Consecutive substrings, one per top-level form (leading
+            ;; comments stay with the form they precede), plus whatever
+            ;; trails the last form: the shape `nelisp--core-bytecode-load'
+            ;; reads one piece at a time.
+            (while (< position len)
+              (if (>= (nelisp-prelude-bytecode--skip-trivia text position) len)
+                  (progn (push (substring text position) pieces)
+                         (setq position len))
+                (let ((end (cdr (read-from-string text position))))
+                  (push (substring text position end) pieces)
+                  (setq position end))))
+            (setq pieces (nreverse pieces))
+            (unless (equal (apply #'concat pieces) text)
+              (error "vendor bytecode pieces do not reassemble %s" relative))
+            (let* ((artifact (let ((print-escape-control-characters t)
+                                   (print-escape-newlines nil)
+                                   (print-length nil)
+                                   (print-level nil))
+                               (concat (prin1-to-string pieces) "\n")))
+                   (artifact-hash (secure-hash 'sha256 artifact))
+                   (artifact-file (expand-file-name
+                                   (format "%s-%s.eld"
+                                           (file-name-sans-extension name)
+                                           artifact-hash)
+                                   out-dir)))
+              (let ((create-lockfiles nil)
+                    (coding-system-for-write 'utf-8-unix))
+                (unless (and (file-readable-p artifact-file)
+                             (equal (with-temp-buffer
+                                      (insert-file-contents artifact-file)
+                                      (secure-hash 'sha256 (buffer-string)))
+                                    artifact-hash))
+                  (with-temp-file artifact-file (insert artifact))))
+              (push (list name (secure-hash 'sha256 (nth 2 s))
+                          artifact-file artifact-hash)
+                    entries))
+            (setq reports (append reports (nth 2 transformed)))))
+        (nelisp-prelude-bytecode-write-report
+         (expand-file-name "target/nelisp-vendor-bytecode-report.tsv"
+                           nelisp-standalone--repo-root)
+         reports)
+        (let ((result
+               (concat
+                "\n;; --- vendored GNU libraries baked like .elc (nelisp-standalone--vendor-bytecode-src) ---\n"
+                (format "(defvar nelisp--vendor-bytecode-map '%S)\n"
+                        (nreverse entries))
+                "(defun nelisp--vendor-bytecode-pieces (source-file)\n"
+                "  (let ((entry (assoc (file-name-nondirectory source-file)\n"
+                "                      nelisp--vendor-bytecode-map)))\n"
+                "    (when (and entry (file-readable-p source-file)\n"
+                "               (file-readable-p (nth 2 entry))\n"
+                "               (equal (secure-hash 'sha256\n"
+                "                                   (with-temp-buffer\n"
+                "                                     (insert-file-contents source-file)\n"
+                "                                     (buffer-string)))\n"
+                "                      (nth 1 entry)))\n"
+                "      (let ((artifact (with-temp-buffer\n"
+                "                        (insert-file-contents (nth 2 entry))\n"
+                "                        (buffer-string))))\n"
+                "        (when (equal (secure-hash 'sha256 artifact) (nth 3 entry))\n"
+                "          (car (read-from-string artifact)))))))\n")))
+          (setq nelisp-standalone--vendor-bytecode-cache (cons key result))
+          result)))))
+
 
 (defun nelisp-standalone--load-path-src (&optional defer-easy-mmode)
   "Return shared load-path and staged-provider source every bootstrap needs.
@@ -25746,6 +26179,17 @@ resolved fine.  Same feature, different answer per entry point."
    "\n;; --- GNU Emacs 31.1 cl-preloaded.el: cl--define-derived-type ---\n"
    (nelisp-vendor-source-form
    "vendor/staged-emacs-lisp/cl-preloaded.el" 'cl--define-derived-type)
+   ;; `cl-assert' expansions (e.g. vendor bytecomp.el `byte-compile-setq')
+   ;; call this preloaded helper on failure.  Stage GNU's exact error symbol
+   ;; and helper, each guarded so an existing definition is never replaced.
+   "\n;; --- GNU Emacs 31.1 cl-preloaded.el: cl--assertion-failed ---\n"
+   "(unless (get 'cl-assertion-failed 'error-conditions)\n"
+   (nelisp-standalone--vendor-define-error-source
+    "vendor/staged-emacs-lisp/cl-preloaded.el" 'cl-assertion-failed)
+   ")\n(unless (fboundp 'cl--assertion-failed)\n"
+   (nelisp-vendor-source-form
+    "vendor/staged-emacs-lisp/cl-preloaded.el" 'cl--assertion-failed)
+   ")\n"
    ;; ansi-color.el begins with genuine face declarations; stage the exact
    ;; GNU custom.el macro form before that source library is required.
    "\n;; --- GNU Emacs 31.1 custom.el: defface macro ---\n"
@@ -25887,6 +26331,38 @@ caller at once and broke the JIT ledger's S1.3/S3.5/S5.8/S6.16-21/S7.6."
 RELATIVE-FILE must match its pinned upstream SHA-256.  Fail closed if the
 file changed or the form is missing or duplicated."
   (nelisp-vendor-source-form relative-file function-name))
+
+(defun nelisp-standalone--vendor-define-error-source (relative-file name)
+  "Return the exact source text of RELATIVE-FILE's `(define-error \\='NAME ...)'.
+RELATIVE-FILE must match its pinned upstream SHA-256 (see
+`nelisp-vendor-source-whole-file').  Fail closed unless exactly one
+top-level form defines NAME that way."
+  (let* ((source (nelisp-vendor-source-whole-file relative-file))
+         (length (length source)) (position 0) (found nil))
+    (while (< position length)
+      ;; Skip whitespace and line comments so START is the form's own
+      ;; opening parenthesis.
+      (let ((skipping t))
+        (while (and skipping (< position length))
+          (let ((char (aref source position)))
+            (cond ((memq char '(9 10 12 13 32)) (setq position (1+ position)))
+                  ((= char 59)
+                   (while (and (< position length)
+                               (/= (aref source position) 10))
+                     (setq position (1+ position))))
+                  (t (setq skipping nil))))))
+      (when (< position length)
+        (let* ((start position)
+               (parsed (read-from-string source position))
+               (form (car parsed)))
+          (when (and (eq (car-safe form) 'define-error)
+                     (equal (nth 1 form) (list 'quote name)))
+            (push (substring source start (cdr parsed)) found))
+          (setq position (cdr parsed)))))
+    (unless (= (length found) 1)
+      (error "Expected one define-error %S in %s; found %d"
+             name relative-file (length found)))
+    (car found)))
 
 (defun nelisp-standalone--vendor-menu-bar-final-items-source ()
   "Return menu-bar.el's exact preloaded final-items assignment."
@@ -26119,6 +26595,51 @@ can use it."
          ,@(nelisp-standalone--byte-write-forms name-buf "<prelude>")
          (nl_eval_source_all ,src ,cursor ,result ,pool ,out ,ctx ,builtin-sym 0
                               ,name-buf ,(length (encode-coding-string "<prelude>" 'utf-8 t)))
+         (ptr-write-u64 268436216 0 1))))))
+
+(defconst nelisp-standalone--cold-boot-reinit-source
+  "(condition-case nil
+  (progn
+    (if (boundp 'process-environment)
+        (setq process-environment
+              (mapcar (lambda (cell) (concat (car cell) \"=\" (cdr cell)))
+                      nelisp--environment)))
+    (if (boundp 'temporary-file-directory)
+        (setq temporary-file-directory (or (getenv \"TMPDIR\") \"/tmp\")))
+    (if (boundp 'user-emacs-directory)
+        (setq user-emacs-directory
+              (let* ((emacs-d-dir \"~/.emacs.d/\")
+                     (xdg-config-home (getenv \"XDG_CONFIG_HOME\"))
+                     (xdg-dir (if (and xdg-config-home
+                                       (not (equal xdg-config-home \"\")))
+                                  (concat xdg-config-home \"/emacs/\")
+                                \"~/.config/emacs/\")))
+                (cond ((file-exists-p emacs-d-dir) emacs-d-dir)
+                      ((file-exists-p xdg-dir) xdg-dir)
+                      (t emacs-d-dir)))))
+    nil)
+  (error nil))
+"
+  "Source evaluated once after a `--cold-load-from' boot, before user code.
+The image froze the prelude's load-time values; the driver re-sets the
+per-process globals it owns (argv, `nelisp--environment',
+`default-directory', invocation names) on every boot, and this re-derives
+the prelude globals whose DEFVAR value was computed from the environment or
+the file system -- `process-environment', `temporary-file-directory' and
+`user-emacs-directory' -- with the same formulas as their defvars in
+scripts/nelisp-stdlib-prelude.el (keep in sync).")
+
+(defun nelisp-standalone--reader-cold-reinit-forms (src cursor result pool
+                                                        out ctx builtin-sym)
+  "Return Phase47 forms evaluating `nelisp-standalone--cold-boot-reinit-source'."
+  (let ((name-buf (make-symbol "cold-name-buf")))
+    `((let* ((,name-buf (alloc-bytes 16 1)))
+        (seq
+         (ptr-write-u64 268436216 0 0)
+         (sexp-write-str-lit ,src ,nelisp-standalone--cold-boot-reinit-source)
+         ,@(nelisp-standalone--byte-write-forms name-buf "<cold-boot>")
+         (nl_eval_source_all ,src ,cursor ,result ,pool ,out ,ctx ,builtin-sym 0
+                              ,name-buf ,(length (encode-coding-string "<cold-boot>" 'utf-8 t)))
          (ptr-write-u64 268436216 0 1))))))
 
 (defun nelisp-standalone--reader-repl-eval-suffix ()
@@ -26568,6 +27089,11 @@ no-catch tail above, not this defensive path."
     (defun nl_eval_source_all (src cursor result pool out ctx builtin_sym report_errors file_ptr file_len)
       (seq
        (ptr-write-u64 cursor 0 2) (ptr-write-u64 cursor 8 0)
+       ;; User-facing --load/--eval/FILE (REPORT_ERRORS=1): one boundary
+       ;; frame for the whole source so a bodyless `(defvar SYM)' persists
+       ;; across top-level forms like GNU's per-file interpreter
+       ;; environment.  See `bf_load_eval_loop'.
+       (if (= report_errors 1) (nelisp_frame_scope_push (+ ctx 32)) 0)
        (ptr-write-u64 out 0 0) (ptr-write-u64 out 8 0)
        (let* ((more 1)
               ;; Doc 180 Phase 1: FORM_INDEX is 1-based and counts every
@@ -26736,6 +27262,7 @@ no-catch tail above, not this defensive path."
                    (setq prev_start this_start)
                    (nl_eval_source_reader_error src report_errors file_ptr file_len form_index this_start line_no)
                    (setq more 0))))))))
+       (if (= report_errors 1) (nl_env_pop_frame ctx) 0)
        0))
     ;; A reader failure that is not clean EOF used to be indistinguishable
     ;; from EOF in `nl_eval_source_all''s loop -- see the comment at its own
@@ -28707,7 +29234,8 @@ never recurse through one enormous `seq' cdr chain."
   "Cached embedded `.neln' demo metadata for the standalone reader.")
 
 (defconst nelisp-standalone--reader-neln-bridgeable-symbols
-  '("nelisp_aot_builtin_call1"
+  (append
+   '("nelisp_aot_builtin_call1"
     "nelisp_aot_builtin_calln"
     "nl_alloc_symbol"
     "nl_alloc_str"
@@ -28740,15 +29268,8 @@ never recurse through one enormous `seq' cdr chain."
     "nelisp_eln_callback7_root_mark"
     "nl_eln_callback7_context"
     "nelisp_eln_callback7_entry_word"
-    "nelisp_eln_callback1_entry_word"
-    "nelisp_eln_callback_port0_entry_word"
-    "nelisp_eln_callback_port1_entry_word"
-    "nelisp_eln_callback_port2_entry_word"
-    "nelisp_eln_callback_port3_entry_word"
-    "nelisp_eln_callback_port4_entry_word"
-    "nelisp_eln_callback_port5_entry_word"
-    "nelisp_eln_callback_port6_entry_word"
-    "nelisp_eln_callback_port7_entry_word")
+    "nelisp_eln_callback1_entry_word")
+   (nelisp-cc-eln-callback7-port-symbol-names))
   "Runtime symbols the in-process loader can point a stub at.
 
 A stub is `movabs rax, ADDR; jmp rax', and ADDR comes from `data-addr',
@@ -32262,13 +32783,18 @@ correctly."
     ;; Clear GC mark bits in the loaded chunk-0 region: the dumped image keeps
     ;; whatever mark state it had, but a fresh runtime expects mark=0 (post-sweep)
     ;; -- stale marks make the first GC mis-handle live objects -> SIGSEGV.
+    ;; Mark 2 (FREE) is preserved: those blocks are relinked into the free
+    ;; lists by `nl_cold_load_arena' so the memory is reusable.
     (defun nl_cold_clear_marks (ds end)
       (let ((hdr ds))
         (seq
          (while (and (> hdr 0) (< hdr end))
            (let* ((h (ptr-read-u64 hdr 0)) (bt (- h (logand h 7))))
              (if (< bt 8) (setq hdr end)
-               (nl_seq2 (ptr-write-u64 hdr 0 bt) (setq hdr (+ hdr bt))))))
+               (nl_seq2 (if (= (logand h 7) 2)
+                            0                    ; keep FREE (mark 2) blocks free
+                          (ptr-write-u64 hdr 0 bt))
+                        (setq hdr (+ hdr bt))))))
          0)))
     (defun nl_cold_reloc (tbl tlen ds slen ib)
       (let ((i 0))
@@ -32317,6 +32843,36 @@ correctly."
         (seq
          (while (< i n) (nl_seq2 (ptr-write-u64 (+ start i) 0 0) (setq i (+ i 8))))
          0)))
+    ;; A rejected image must leave the arena exactly as a fresh boot expects
+    ;; it: chunk-0's data area past the cursor, the table/trailer scratch and
+    ;; the (still empty) intern region were overwritten by the reads, and the
+    ;; fallback normal boot relies on zero-filled memory there.
+    (defun nl_cold_reject_scrub (ds slen tbl tlen ib isz)
+      (seq
+       (nl_cold_zero ds slen)
+       (nl_cold_zero tbl (+ (* tlen 8) 48))
+       (nl_cold_zero ib (if (< isz 64) 64 isz))
+       0))
+    ;; Trailer = {u64 magic 1195655758 ("NBDG"), u64 version 1, 32-byte build
+    ;; digest}.  Valid iff complete, the magic/version match, THIS binary is
+    ;; stamped (a non-zero digest; an unstamped build never cold-loads), and
+    ;; the digest equals ours.
+    (defun nl_cold_trailer_valid_p (trl n)
+      (if (< n 48) 0
+        (if (/= (ptr-read-u64 trl 0) 1195655758) 0
+          (if (/= (ptr-read-u64 trl 8) 1) 0
+            (if (= (nl_build_digest_stamped_p) 0) 0
+              (nl_build_digest_eq (+ trl 16)))))))
+    (defun nl_cold_diag_bad_digest ()
+      (let* ((buf (alloc-bytes 128 1)))
+        (seq
+         ,@(nelisp-standalone--byte-write-forms
+            'buf "nelisp: cold-load rejected (build digest mismatch)\n")
+         (nl_cold_diag
+          buf
+          ,(length (encode-coding-string
+                    "nelisp: cold-load rejected (build digest mismatch)\n"
+                    'utf-8 t))))))
     ;; Increment 2 (multi-chunk cold-load, this branch): grow chunk-0 to a
     ;; single big contiguous mmap when the image's coalesced region does not
     ;; fit the default first-chunk reservation.  Preserves the interned-region
@@ -32388,7 +32944,12 @@ correctly."
                       ;; region read below overwrites the header sitting in `ib0'.
                       (oldib (ptr-read-u64 ib0 56)))
                  (if (= (nl_cold_header_invalid_p magic slen isz tlen) 1)
-                     (seq (nl_os_close_handle fd) (nl_cold_diag_bad_header) -1)
+                     (seq (nl_os_close_handle fd)
+                          ;; the header was read into the (still empty)
+                          ;; intern table's first slots; zero them again so
+                          ;; the fallback normal boot sees a clean table.
+                          (nl_cold_zero ib0 64)
+                          (nl_cold_diag_bad_header) -1)
                    (let* (;; required chunk-0 bytes: control block + coalesced
                           ;; region + reloc table (its transient DS+slen
                           ;; scratch) + 8 MiB slack (room for the boot allocs
@@ -32409,17 +32970,35 @@ correctly."
                          (nl_fa_read_all fd tbl (* tlen 8) 0)
                          (nl_fa_read_all fd ds slen 0)
                          (nl_fa_read_all fd ib isz 0)
-                         (nl_os_close_handle fd)
-                         (if (= (nl_cold_reloc_table_valid_p tbl tlen slen) 0)
-                             (seq (nl_cold_diag_bad_reloc) -1)
+                         ;; build-digest trailer (48 bytes) right after the
+                         ;; table in the chunk-0 scratch; `trl_n' < 48 means
+                         ;; the file has no (or a truncated) trailer.
+                         (let* ((trl (+ tbl (* tlen 8)))
+                                (trl_n (nl_fa_read_all fd trl 48 0)))
+                           (seq
+                            (nl_os_close_handle fd)
+                            (if (= (nl_cold_reloc_table_valid_p tbl tlen slen) 0)
+                                (seq (nl_cold_reject_scrub ds slen tbl tlen ib isz)
+                                     (nl_cold_diag_bad_reloc) -1)
+                              ;; The image must come from THIS build: its
+                              ;; trailer carries the digest the build stamped
+                              ;; into the dumping binary (`nl_build_digest'),
+                              ;; compared byte-for-byte with ours.  Checked
+                              ;; after the table bounds (so a malformed table
+                              ;; still reports as such) and before anything
+                              ;; in the image is relocated or trusted.
+                              (if (= (nl_cold_trailer_valid_p trl trl_n) 0)
+                                  (seq (nl_cold_reject_scrub ds slen tbl tlen ib isz)
+                                       (nl_cold_diag_bad_digest) -1)
                            (seq
                             (nl_cold_reloc tbl tlen ds slen ib)
                             (nl_cold_reloc_intern ib oldib)
-                            ;; scrub the now-dead relocation table so the bump
+                            ;; scrub the now-dead relocation table (and the
+                            ;; digest trailer after it) so the bump
                             ;; cursor (set to 1024+slen below) re-arms over
                             ;; ZEROED memory -- matching the fresh-mmap
                             ;; invariant the boot constructors depend on.
-                            (nl_cold_zero tbl (* tlen 8))
+                            (nl_cold_zero tbl (+ (* tlen 8) 48))
                             (nl_cold_clear_marks ds (+ ds slen))
                             (ptr-write-u64 base 0 (+ 1024 slen))
                             ;; Keep the chunk-0 descriptor cursor in sync with
@@ -32429,12 +33008,26 @@ correctly."
                             ;; see the bootstrap cursor (1024).
                             (ptr-write-u64 (+ base 784) 0 (+ 1024 slen))
                             (ptr-write-u64 (+ base 840) 0 (+ ib isz))
+                            ;; PERF: the dumped image carries the dumping run's
+                            ;; FREE blocks (mark 2; the prelude's swept
+                            ;; garbage, most of the image).  Clearing them to
+                            ;; mark 0 (old behaviour) and leaving every free
+                            ;; list empty made that memory permanently dead:
+                            ;; all post-boot allocation bumped into fresh
+                            ;; pages/chunks (page faults, growth, ~3x slower
+                            ;; `--load').  Keep them free and rebuild the free
+                            ;; lists from the header walk, as a GC sweep does.
+                            (nl_gc_coalesce_and_rebuild_freelist)
+                            ;; image end: lets the pointer-keyed macro/function
+                            ;; caches treat image objects as cacheable (see
+                            ;; `nl_cache_boot_p').
+                            (ptr-write-u64 (data-addr nl_gc_stats) 56 (+ ds slen))
                             ;; push the GC next-trigger far out so a
                             ;; collection does not fire on the freshly-loaded
                             ;; (already-live) image during early eval.
                             (ptr-write-u64 (+ base 104) 0
                                            (+ (+ 1024 slen) 1073741824))
-                            1))))))))))))))
+                            1)))))))))))))))))
     ;; cold path globals install: re-read the header for globals_off and point
     ;; the GLOBALS slot at the loaded globals Record (tag 12, box = DS + goff).
     ;; Frames/unbound keep the fresh ones from `nl_bootstrap_make_mirror'.
@@ -33676,7 +34269,36 @@ correctly."
             ;; the runtime-image/artifact FORM scanners, which start at a
             ;; fixed physical offset and are out of scope for `-L') still
             ;; need them.
-            (base_idx (if (= argv_shifted_p 1) 0 1))
+            (base_idx0 (if (= argv_shifted_p 1) 0 1))
+            ;; `--cold-load-from PATH' as the LEADING pair is a boot option,
+            ;; not a command: it is consumed here and the rest of argv is
+            ;; dispatched exactly as if the pair were absent, so
+            ;; `--cold-load-from IMG --eval EXPR' / `--load FILE' / `-l' /
+            ;; `-f' / `-L DIR ...' / bare FILE all run on the loaded image
+            ;; (previously only the REPL did).  With no further argument the
+            ;; shifted `path' is argv[argc] = NULL -> the REPL branch, the
+            ;; old behavior.  A bare `--cold-load-from' without PATH is not
+            ;; consumed and still reaches the usage error below.
+            (cold_override (if (< (+ base_idx0 1) argc)
+                               (if (= (nl_cstr_eq_cold_load_from
+                                       (nl_argv_word sp0 base_idx0)) 1)
+                                   (nl_argv_word sp0 (+ base_idx0 1))
+                                 0)
+                             0))
+            ;; `--cold-load-from IMG --no-prompt' / `--no-print' keeps its
+            ;; old meaning (REPL on the image, options read as arg3): the
+            ;; pair is left in place and the `--cold-load-from' branch of
+            ;; the dispatch below runs the REPL.
+            (cold_repl_opt_p (if (= cold_override 0) 0
+                               (if (< (+ base_idx0 2) argc)
+                                   (let ((w (nl_argv_word sp0 (+ base_idx0 2))))
+                                     (if (= (nl_cstr_eq_no_prompt w) 1) 1
+                                       (nl_cstr_eq_no_print w)))
+                                 0)))
+            (base_idx (if (= cold_override 0) base_idx0
+                        (if (= cold_repl_opt_p 1) base_idx0 (+ base_idx0 2))))
+            ;; argc as seen by the command after the consumed boot pair.
+            (cmd_argc (- argc (- base_idx base_idx0)))
             (eff_idx (nl_cli_ldir_index sp0 argc base_idx))
             (path (nl_argv_word sp0 eff_idx))
             (arg2 (if (< (+ eff_idx 1) argc) (nl_argv_word sp0 (+ eff_idx 1)) 0))
@@ -33685,7 +34307,6 @@ correctly."
             ;; exists (or `--cold-load-from PATH' named an image), load it into
             ;; the arena + bump the cursor past it so every following alloc
             ;; lands after the image (no clobber).  -1 = no marker / no flag.
-            (cold_override (if (= (nl_cstr_eq_cold_load_from path) 1) arg2 0))
             (_cl (nl_cold_load_arena cold_override))
             ;; Doc 152 §11.21 root-coverage fix (2026-07-04): capture
             ;; STACK_TOP here, AFTER `nl_cold_load_arena' has run, instead of
@@ -34018,6 +34639,18 @@ correctly."
         ;; a cold-load regression.
         ;; Final boot boundary: discard debt accumulated while installing
         ;; the driver itself; user forms start with an unarmed budget.
+        ;; cold boot: re-derive the environment-dependent prelude globals
+        ;; the image froze (see `nelisp-standalone--cold-boot-reinit-source').
+        (if (< _cl 0) 0
+          (seq
+           ;; PERF: the 16 MiB trigger above sits far below the loaded image, so
+           ;; the first form boundary would run a full ~0.5 s mark+sweep that
+           ;; frees nothing (the image is permanent and its garbage is already
+           ;; on the free lists).  Arm the first collection 16 MiB past the
+           ;; CURRENT reservation instead, as a normal post-GC re-arm does.
+           (ptr-write-u64 268435560 0 (+ (ptr-read-u64 268436184 0) 16777216))
+           ,@(nelisp-standalone--reader-cold-reinit-forms
+              'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym)))
         (ptr-write-u64 (data-addr nl_gc_stats) 0 0)
         (ptr-write-u64 (data-addr nl_gc_stats) 8 0)
         (if (= argv_shifted_p 1)
@@ -34029,7 +34662,7 @@ correctly."
           0)
         (cond
          ((= path 0)
-          (if (= (nl_repl_usage_error_p argc arg2 arg3) 1)
+          (if (= (nl_repl_usage_error_p cmd_argc arg2 arg3) 1)
               (seq (nl_cli_write_help fbuf) 2)
             (seq
              ;; cold path: the loaded image already carries the prelude; skip the
@@ -34267,7 +34900,7 @@ correctly."
                                   embedded-name-buf ,(length (encode-coding-string "<embedded>" 'utf-8 t)))
              (ptr-read-u64 out 8))))
          ((= (nl_cstr_eq_repl path) 1)
-          (if (= (nl_repl_usage_error_p argc arg2 arg3) 1)
+          (if (= (nl_repl_usage_error_p cmd_argc arg2 arg3) 1)
               (seq (nl_cli_write_help fbuf) 2)
             (seq
              ;; cold path: the loaded image already carries the prelude; skip the
@@ -35393,8 +36026,10 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
                    (name (record-slot-ref-ptr func_ptr 0))
                    (slots (record-slot-count func_ptr))
                    (argc (nl_apply_list_len args_list_ptr)))
-              (if (or (= slots 5) (= slots 6))
-                  (if (/= argc (- slots 4))
+              (if (or (= slots 5) (= slots 6) (= slots 7))
+                  (if (if (= slots 7)
+                          (or (< argc 1) (> argc 2))
+                        (/= argc (- slots 4)))
                       (bf_wrong_number_of_args name argc)
                     (nl_apply_function
                      (record-slot-ref-ptr func_ptr 4)
@@ -35424,6 +36059,97 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
                       form))
                   forms))
     (cons (car src) (cons helper forms))))
+
+;; GNU autoload semantics for calls (eval.c Fautoload_do_load, reached from
+;; eval_sub/funcall_general/Fmacroexpand): a symbol whose function cell holds
+;; `(autoload FILE DOC INTERACTIVE TYPE)' is loaded through the Lisp
+;; `autoload-do-load' (prelude; signals when FILE does not define the symbol)
+;; and the call is re-dispatched on the new definition.  Only call-dispatch
+;; lookups are rewritten: every DEFUN whose body applies a function through
+;; `nl_apply_function' (plus three resolver defuns that hand the cell to a
+;; helper) has its `nelisp_env_lookup_function' calls replaced by
+;; `nl_lookup_fn_autoload'.  `fboundp'/`symbol-function'/`fset' lookups do not
+;; apply anything and keep the raw lookup, so they still see the autoload
+;; object like GNU.
+(defconst nelisp-standalone--autoload-lookup-helpers
+  '((defun nl_autoload_cell_p (cell)
+      (if (= (sexp-tag cell) 7)
+          (let* ((head (nl_cons_car_ptr cell)))
+            (if (= (sexp-tag head) 4)
+                (nl_apply_sym_eq_w head 7233184988050781537 0 0 0 8 1 0)
+              0))
+        0))
+    (defun nl_lookup_fn_autoload_load (mirror unbound sym out)
+      ;; Call (autoload-do-load CELL SYM) then look SYM up again.
+      (let* ((buf (alloc-bytes 16 1)) (name_slot (alloc-bytes 32 8))
+             (fn_slot (alloc-bytes 32 8)) (nil_slot (alloc-bytes 32 8))
+             (tail (alloc-bytes 32 8)) (args (alloc-bytes 32 8))
+             (res (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 buf 0 7233184988050781537)
+         (ptr-write-u64 (+ buf 8) 0 7233184986943153197)
+         (nl_alloc_symbol buf 16 name_slot)
+         (nl_apply_write_nil nil_slot)
+         (nelisp_cons_construct sym nil_slot tail)
+         (nelisp_cons_construct out tail args)
+         (if (= (nelisp_env_lookup_function mirror unbound name_slot fn_slot) 0)
+             (let* ((rc (nl_apply_function fn_slot args mirror res)))
+               (if (= rc 0)
+                   (nl_lookup_fn_autoload mirror unbound sym out)
+                 rc))
+           (nl_cons_stash_void_function mirror name_slot)))))
+    (defun nl_lookup_fn_autoload (mirror unbound sym out)
+      (let* ((rc (nelisp_env_lookup_function mirror unbound sym out)))
+        (if (= rc 0)
+            (if (= (nl_autoload_cell_p out) 1)
+                (nl_lookup_fn_autoload_load mirror unbound sym out)
+              0)
+          rc))))
+  "Autoload-aware call-dispatch lookup helpers (see comment above).")
+
+(defun nelisp-standalone--autoload-mentions-apply-p (form)
+  (cond ((eq form 'nl_apply_function) t)
+        ((consp form) (or (nelisp-standalone--autoload-mentions-apply-p (car form))
+                          (nelisp-standalone--autoload-mentions-apply-p (cdr form))))))
+
+(defun nelisp-standalone--autoload-rewrite-lookups (form)
+  (cond ((and (consp form) (eq (car form) 'nelisp_env_lookup_function)
+              (= (length form) 5))
+         (cons 'nl_lookup_fn_autoload
+               (mapcar #'nelisp-standalone--autoload-rewrite-lookups (cdr form))))
+        ((consp form)
+         (cons (nelisp-standalone--autoload-rewrite-lookups (car form))
+               (nelisp-standalone--autoload-rewrite-lookups (cdr form))))
+        (t form)))
+
+(defun nelisp-standalone--patch-autoload-lookups (src &optional with-helpers)
+  "Return SRC (a `(seq (defun ...) ...)') with call-dispatch lookups made
+autoload-aware; append the helpers when WITH-HELPERS."
+  (cons (car src)
+        (append
+         (mapcar (lambda (form)
+                   (cond
+                    ;; An autoload load failure returns non-zero from the
+                    ;; lookup; the callers' miss arms would then overwrite the
+                    ;; real error with `void-function'.  Keep a signal that
+                    ;; is already pending.
+                    ((and (consp form) (eq (car form) 'defun)
+                          (eq (cadr form) 'nl_cons_stash_void_function))
+                     (list 'defun 'nl_cons_stash_void_function (nth 2 form)
+                           (list 'if '(= (ptr-read-u64 268435472 0) 1) 1
+                                 (car (nthcdr 3 form)))))
+                    (t
+                   (if (and (consp form) (eq (car form) 'defun)
+                            (or (memq (cadr form)
+                                      '(nl_eval_inner_cons_symbol_slot
+                                        nl_apply_do_apply_resolve
+                                        wf_mapcar_resolve_fn))
+                                (nelisp-standalone--autoload-mentions-apply-p
+                                 (cdddr form))))
+                       (nelisp-standalone--autoload-rewrite-lookups form)
+                     form))))
+                 (cdr src))
+         (and with-helpers nelisp-standalone--autoload-lookup-helpers))))
 
 ;; WAVE-2 (PATCH 4): condition-case clears the M6 arena signal flag on a clause
 ;; MATCH.  Pairs with PATCH 1 (the errstub no longer clears flag@268435472), so a
@@ -35569,7 +36295,8 @@ genuine general interpreter for the 11 special forms + installed builtins."
                                 nelisp-standalone--manifest)))
          ;; Full reader applyfn (arithmetic + HT + strings/format + file I/O).
          (applyfn (nelisp-standalone--cached-unit
-                   "applyfn-reader.o" (nelisp-standalone--applyfn-source)
+                   "applyfn-reader.o" (nelisp-standalone--patch-autoload-lookups
+                                     (nelisp-standalone--applyfn-source))
                    nelisp-standalone--this-file))
          ;; M4: keyword self-eval patched eval-inner, PLUS perf/macroexpansion-
          ;; cache's `nl_ei_cons_dispatch'/`nl_ei_cons_tail' form-threading
@@ -35592,17 +36319,20 @@ genuine general interpreter for the 11 special forms + installed builtins."
                           (require 'nelisp-cc-evalport-combiner-cons)
                           (nelisp-standalone--cached-unit
                            "combiner-cons-mxcache.o"
-                           (nelisp-standalone--patch-combiner-cons-mxcache
-                            (nelisp-standalone--patch-combiner-cons-full
-                             (symbol-value 'nelisp-cc-evalport-combiner-cons--source)))
+                           (nelisp-standalone--patch-autoload-lookups
+                            (nelisp-standalone--patch-combiner-cons-mxcache
+                             (nelisp-standalone--patch-combiner-cons-full
+                              (symbol-value 'nelisp-cc-evalport-combiner-cons--source))))
                            (list nelisp-standalone--this-file (locate-library "nelisp-cc-evalport-combiner-cons")))))
          ;; M3: do_fset rc-fix patched combiner-apply.
          (combiner (progn
                      (require 'nelisp-cc-evalport-combiner-apply)
                      (nelisp-standalone--cached-unit
                       "combiner-apply-fix.o"
-                      (nelisp-standalone--patch-combiner-apply
-                       (symbol-value 'nelisp-cc-evalport-combiner-apply--source))
+                      (nelisp-standalone--patch-autoload-lookups
+                       (nelisp-standalone--patch-combiner-apply
+                        (symbol-value 'nelisp-cc-evalport-combiner-apply--source))
+                       t)
                       (list nelisp-standalone--this-file (locate-library "nelisp-cc-evalport-combiner-apply")))))
          (extras (mapcar #'nelisp-standalone--reader-extra-unit
                          nelisp-standalone--reader-extra-manifest))
@@ -36033,8 +36763,56 @@ bridge is deliberately callable only through a raw builtin descriptor."
     (message "[standalone-reader] linked %d units -> %s (src=%S)"
              (length units) out
              (nelisp-standalone--reader-src))
+    (let ((digest (nelisp-standalone--stamp-build-digest out)))
+      ;; the stamp rewrote the file: re-sign (idempotent) on macOS.
+      (when (eq nelisp-standalone--target 'macos-aarch64)
+        (nelisp-standalone--codesign-macos-adhoc out))
+      (message "[standalone-reader] build digest %s" digest))
+    (nelisp-standalone--build-cold-image out)
     (nelisp-standalone-build-artifact-runtime-cache)
     out))
+
+(defun nelisp-standalone--cold-image-path (binary)
+  "Return the build-time cold image path for BINARY (BINARY.cold)."
+  (concat binary ".cold"))
+
+(defun nelisp-standalone--build-cold-image (binary)
+  "Dump BINARY's post-prelude heap to `nelisp-standalone--cold-image-path'.
+Runs only when the target executes on this host; NELISP_STANDALONE_COLD_IMAGE=0
+skips it.  The image is used only via an explicit `--cold-load-from PATH', and
+only when its trailer carries BINARY's own build digest, so a stale or foreign
+file is rejected at load and startup falls back to the normal prelude boot.
+The dump runs in a scrubbed environment and a neutral directory: every
+per-process global the driver sets (argv, environment alist,
+`default-directory', invocation names) is re-set on each cold boot anyway, and
+nothing from the build's own environment should leak into the image.
+A failed dump is reported and leaves no image; it does not fail the build."
+  (let ((image (nelisp-standalone--cold-image-path binary)))
+    (when (file-exists-p image) (delete-file image))
+    (if (or (equal (getenv "NELISP_STANDALONE_COLD_IMAGE") "0")
+            (not (nelisp-standalone--target-runnable-on-host-p)))
+        (message "[standalone-reader] cold image skipped")
+      (let* ((default-directory temporary-file-directory)
+             (process-environment
+              (list "PATH=/usr/bin:/bin" "LANG=C.UTF-8" "HOME=/nonexistent"))
+             (form (format "(nelisp--arena-dump-image-stream %S)"
+                           (expand-file-name image)))
+             (status nil) (output nil))
+        (with-temp-buffer
+          (setq status (call-process (expand-file-name binary) nil t nil
+                                     "--eval" form))
+          (setq output (string-trim (buffer-string))))
+        (if (and (eql status 0)
+                 (string-match-p "\\`[0-9]+\\'" output)
+                 (> (string-to-number output) 0)
+                 (file-exists-p image)
+                 (= (file-attribute-size (file-attributes image))
+                    (string-to-number output)))
+            (message "[standalone-reader] cold image -> %s (%d bytes)"
+                     image (string-to-number output))
+          (when (file-exists-p image) (delete-file image))
+          (message "[standalone-reader] WARNING: cold image dump failed (%S): %s"
+                   status output))))))
 
 ;;;###autoload
 (defun nelisp-standalone--reader-run-command (binary &rest argv)
@@ -37213,10 +37991,13 @@ unrelated to char-tables and confirmed present before this branch --
              "(defvar nelisp-ct-srtbl (make-char-table 'test nil))\n"
              "(defvar nelisp-ct-check12 (eq 42 (set-char-table-range nelisp-ct-srtbl (cons 97 99) 42)))\n"
              "(defvar nelisp-ct-check13 (and (eq 42 (aref nelisp-ct-srtbl 97)) (eq 42 (aref nelisp-ct-srtbl 98)) (eq 42 (aref nelisp-ct-srtbl 99))))\n"
-             ;; P2: the ceiling -- LOUD, not a silent truncation/slow path.
-             "(defvar nelisp-ct-check14 (eq 'signalled (condition-case nil (progn (set-char-table-range nelisp-ct-srtbl (cons 0 5000) 1) 'no-signal) (char-table-range-too-large 'signalled))))\n"
-             ;; P2: `t' (every char) is explicitly out of scope, same signal.
-             "(defvar nelisp-ct-check15 (eq 'signalled (condition-case nil (progn (set-char-table-range nelisp-ct-srtbl t 1) 'no-signal) (char-table-range-too-large 'signalled))))\n"
+             ;; P2: no range-size ceiling any more (interval store).
+             "(defvar nelisp-ct-check14 (let ((tb (make-char-table 'test nil))) (and (eq 1 (set-char-table-range tb (cons 0 5000) 1)) (eq 1 (aref tb 0)) (eq 1 (aref tb 4999)) (eq 1 (aref tb 5000)) (eq nil (aref tb 5001)))))\n"
+             ;; P2: `t' (every char) and nil (default slot) follow GNU.
+             "(defvar nelisp-ct-check15 (let ((tb (make-char-table 'test nil))) (and (eq 7 (set-char-table-range tb t 7)) (eq 7 (aref tb 0)) (eq 7 (aref tb 4194303)) (eq 3 (set-char-table-range tb nil 3)) (eq 3 (char-table-range tb nil)) (eq 7 (aref tb 65)) (progn (aset tb 65 nil) (eq 3 (aref tb 65))))))\n"
+             ;; Lazy huge range (isearch.el shape), coalescing, split.
+             "(defvar nelisp-ct-check18 (let ((tb (make-char-table 'test nil)) (n 0)) (set-char-table-range tb (cons 256 4194303) 'p) (aset tb 300 'q) (set-char-table-range tb (cons 400 500) 'p) (map-char-table (lambda (k v) (setq n (1+ n))) tb) (and (eq 'p (aref tb 256)) (eq 'q (aref tb 300)) (eq 'p (aref tb 301)) (eq nil (aref tb 255)) (eq 'p (aref tb 4194303)) (= n 3))))\n"
+             "(defvar nelisp-ct-check19 (eq 'signalled (condition-case nil (progn (set-char-table-range (make-char-table 'test nil) (cons 0 4194304) 1) 'no-signal) (wrong-type-argument 'signalled))))\n"
              ;; wrong-type-argument on a non-char-table.
              "(defvar nelisp-ct-check16 (eq 'signalled (condition-case nil (progn (char-table-parent 5) 'no-signal) (wrong-type-argument 'signalled))))\n"
              ;; wrong-number-of-arguments, not a crash (`bf_make_char_table's
@@ -37225,10 +38006,10 @@ unrelated to char-tables and confirmed present before this branch --
           (with-temp-buffer
             (call-process nelisp-standalone--reader-out nil t nil
                           "eval-elisp-source" tmp
-                          "(list nelisp-ct-check1 nelisp-ct-check2 nelisp-ct-check3 nelisp-ct-check4 nelisp-ct-check5 nelisp-ct-check6 nelisp-ct-check7 nelisp-ct-check8 nelisp-ct-check9 nelisp-ct-check10 nelisp-ct-check11 nelisp-ct-check12 nelisp-ct-check13 nelisp-ct-check14 nelisp-ct-check15 nelisp-ct-check16 nelisp-ct-check17)")
+                          "(list nelisp-ct-check1 nelisp-ct-check2 nelisp-ct-check3 nelisp-ct-check4 nelisp-ct-check5 nelisp-ct-check6 nelisp-ct-check7 nelisp-ct-check8 nelisp-ct-check9 nelisp-ct-check10 nelisp-ct-check11 nelisp-ct-check12 nelisp-ct-check13 nelisp-ct-check14 nelisp-ct-check15 nelisp-ct-check16 nelisp-ct-check17 nelisp-ct-check18 nelisp-ct-check19)")
             (setq out (string-trim (buffer-string))))
-          (unless (string= out "(t t t t t t t t t t t t t t t t t)")
-            (error "char-table smoke -> %S (expected (t t t t t t t t t t t t t t t t t))" out)))
+          (unless (string= out "(t t t t t t t t t t t t t t t t t t t)")
+            (error "char-table smoke -> %S (expected (t t t t t t t t t t t t t t t t t t t))" out)))
       (ignore-errors (delete-file tmp)))))
 
 (defun nelisp-standalone--reader-defvaralias-smoke ()

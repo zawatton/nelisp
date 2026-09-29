@@ -8,6 +8,16 @@
 ;; float views across unit and activation leases. Numeric views retain their
 ;; canonical immutable source identity. Interned symbols are admitted only by
 ;; an explicit registration-only path; their views expire with that activation.
+;; Inside one authenticated S6 native call an interned symbol may also cross
+;; as an empty view (its global state is entirely empty) or, when the exact
+;; admitted body never reads symbol cells inline, as an opaque view: an
+;; identity-only view whose value, function and plist cells hold a poison word
+;; that no decoder accepts (see `nelisp-eln-objects--opaque-symbol-cell-word').
+;; A vector may likewise cross, inside one authenticated S6 native call whose
+;; exact admitted body only passes vectors through (or reads them with
+;; authenticated ports), as an opaque view: an identity-preserving 16-byte
+;; block whose header and content words hold a poison word no decoder
+;; accepts (see `nelisp-eln-objects--admit-opaque-vectors').
 ;; This is not general symbol-cell synchronization or an .eln loader.
 
 ;;; Code:
@@ -62,6 +72,28 @@ unused slot in this codec's own tag-0/48-byte-stride private wire space
 `nelisp-eln-objects--symbol-base' lease or heap allocation to encode or
 decode: both are pure immediates handled before any base-relative lookup.")
 (defconst nelisp-eln-objects--symbol-interned-in-initial-obarray 2)
+(defconst nelisp-eln-objects--symbol-nowrite-trapped-write 1
+  "GNU 31.1 lisp.h `SYMBOL_NOWRITE', the 2-bit `trapped_write' field at
+bits 3-4 of a symbol's first byte (after `gcmarkbit' and the 2-bit
+`redirect').  Opaque views carry it so GNU's own `set_internal' would
+refuse to write through them.")
+(defconst nelisp-eln-objects--opaque-symbol-cell-word 1
+  "Poison word stored in an opaque symbol view's value, function and plist
+cells.  Its tag 1 is GNU 31.1's `Lisp_Type_Unused0', never a valid Lisp
+object, and every decoder here classifies it `unused' and signals
+`nelisp-eln-objects-unsupported'.  A native body that read one of these
+cells and passed or returned the result therefore fails closed instead
+of observing a fabricated value or function.")
+;; Opaque vector views are 16 bytes: a header word and one content word, both
+;; the poison word.  Unit slot 8 holds their local records
+;; [VECTOR ADDRESS GLOBAL LEASED]; the shared record is
+;; [VECTOR `vector' ADDRESS OWNER nil UNIT-LEASES ACTIVATION-LEASES STATE nil].
+(defconst nelisp-eln-objects--opaque-vector-view-bytes 16)
+(defconst nelisp-eln-objects--vector-tag 5)
+(defun nelisp-eln-objects--opaque-symbol-header-byte ()
+  "Return the first byte of an opaque interned symbol view."
+  (logior (lsh nelisp-eln-objects--symbol-interned-in-initial-obarray 5)
+          (lsh nelisp-eln-objects--symbol-nowrite-trapped-write 3)))
 (defvar nelisp-eln-objects--live-units nil
   "Handle-to-owner entries; this registry is the strong root for unit data.")
 (defvar nelisp-eln-objects--identity-records nil
@@ -262,6 +294,10 @@ decode: both are pure immediates handled before any base-relative lookup.")
       (when (aref record 3)
         (nl-ffi-memory-release (aref record 3))
         (aset record 3 nil)))
+     ((eq (aref record 1) 'vector)
+      (when (aref record 3)
+        (nl-ffi-memory-release (aref record 3))
+        (aset record 3 nil)))
      ((memq (aref record 1) '(bignum float))
       (when (aref record 3)
         (condition-case failure
@@ -320,7 +356,7 @@ decode: both are pure immediates handled before any base-relative lookup.")
   "Return a plan of supported reachable objects in ROOTS."
   (let ((pending roots) (seen-conses nil) (seen-strings nil) (seen-symbols nil)
         (seen-numerics nil) (conses nil) (strings nil) (string-plans nil)
-        (symbols nil) (numerics nil))
+        (symbols nil) (numerics nil) (seen-vectors nil) (vectors nil))
     (while pending
       (let ((value (pop pending)))
         (cond
@@ -384,7 +420,8 @@ decode: both are pure immediates handled before any base-relative lookup.")
               (signal 'nelisp-eln-objects-unsupported
                       (list 'registration-symbol-outside-activation value)))
             (unless (or (nelisp-eln-objects--fresh-symbol-p value unit)
-                        (nelisp-eln-objects--empty-interned-symbol-p value))
+                        (nelisp-eln-objects--empty-interned-symbol-p value)
+                        (nelisp-eln-objects--opaque-interned-symbol-p value))
               (signal 'nelisp-eln-objects-unsupported
                       (list 'unsupported-symbol-state value)))
             (push value seen-symbols)
@@ -396,9 +433,15 @@ decode: both are pure immediates handled before any base-relative lookup.")
             (push value conses)
             (push (car value) pending)
             (push (cdr value) pending)))
+         ;; An opaque vector is never descended into: its contents stay
+         ;; invisible to native code (see `--admit-opaque-vectors').
+         ((and (vectorp value) nelisp-eln-objects--admit-opaque-vectors)
+          (unless (memq value seen-vectors)
+            (push value seen-vectors)
+            (push value vectors)))
          (t (signal 'nelisp-eln-objects-unsupported (list value))))))
     (vector (nreverse conses) (nreverse strings) (nreverse string-plans)
-            (nreverse symbols) (nreverse numerics))))
+            (nreverse symbols) (nreverse numerics) (nreverse vectors))))
 
 (defun nelisp-eln-objects--global-cell-free-p (symbol)
   "Return non-nil only when SYMBOL has no global mirror variable cell.
@@ -455,13 +498,43 @@ cells, which is faithful precisely because
 plist, alias/mirror or special state); decoding its word returns the
 same interned symbol.  Any other interned symbol still fails closed.")
 
-(defun nelisp-eln-objects-call-with-artifact-symbols (symbol-words function)
+(defvar nelisp-eln-objects--admit-opaque-interned-symbols nil
+  "Non-nil admits any other interned symbol as an opaque view.
+Set only around one S6 multi-import native call whose exact admitted
+body is declared never to read symbol cells inline (spec key
+:OPAQUE-ARGUMENT-SYMBOLS in `nelisp-eln-native-subr--multi-import-specs').
+An opaque view preserves identity -- its word decodes back to the same
+interned symbol, so authenticated ports receive the genuine NeLisp
+symbol and act on its genuine state -- but it never mirrors that state:
+its value, function and plist cells hold
+`nelisp-eln-objects--opaque-symbol-cell-word', which no decoder accepts,
+and its `trapped_write' is `SYMBOL_NOWRITE'.  The cells are checked
+unchanged at every native boundary.  Symbols with entirely empty state
+still get ordinary empty views.")
+
+(defvar nelisp-eln-objects--admit-opaque-vectors nil
+  "Non-nil admits vectors as opaque identity-only views.
+Set only around one S6 multi-import native call whose exact admitted body is
+declared (spec key :OPAQUE-VECTORS in
+`nelisp-eln-native-subr--multi-import-specs') to only pass vectors on to
+authenticated ports.  A vector's word decodes back to the same vector, but
+the 16-byte view holds only `nelisp-eln-objects--opaque-symbol-cell-word' in
+its header and content words; contents are never mirrored and the words are
+checked unchanged at every native boundary.  Without this a vector fails
+closed as unsupported.")
+
+(defun nelisp-eln-objects-call-with-artifact-symbols
+    (symbol-words function &optional opaque-symbols opaque-vectors)
   "Call FUNCTION with artifact symbol constants and empty interned views.
 SYMBOL-WORDS is an alist (SYMBOL . GNU-WORD) of authenticated artifact
 constants (see `nelisp-eln-objects--constant-symbol-words'); while
 FUNCTION runs, encoding each SYMBOL yields its word and interned symbols
 with entirely empty global state may get views (see
-`nelisp-eln-objects--admit-empty-interned-symbols').  Both are restored
+`nelisp-eln-objects--admit-empty-interned-symbols').  OPAQUE-SYMBOLS
+non-nil also admits any other interned symbol as an opaque view (see
+`nelisp-eln-objects--admit-opaque-interned-symbols').  OPAQUE-VECTORS
+non-nil admits vectors as opaque views (see
+`nelisp-eln-objects--admit-opaque-vectors').  All are restored
 on any exit."
   (unless (and (listp symbol-words)
                (cl-every (lambda (entry)
@@ -472,7 +545,10 @@ on any exit."
     (signal 'nelisp-eln-objects-unsupported
             (list 'invalid-artifact-symbol-words symbol-words)))
   (let ((nelisp-eln-objects--constant-symbol-words symbol-words)
-        (nelisp-eln-objects--admit-empty-interned-symbols t))
+        (nelisp-eln-objects--admit-empty-interned-symbols t)
+        (nelisp-eln-objects--admit-opaque-interned-symbols
+         (and opaque-symbols t))
+        (nelisp-eln-objects--admit-opaque-vectors (and opaque-vectors t)))
     (funcall function)))
 
 (defvar nelisp-eln-objects--isolated-registration-symbols nil
@@ -524,6 +600,21 @@ See `nelisp-eln-objects--admit-empty-interned-symbols'."
        (not (memq symbol nelisp-eln-objects--isolated-registration-symbols))
        (nelisp-eln-objects--registration-symbol-p symbol)))
 
+(defun nelisp-eln-objects--opaque-interned-symbol-p (symbol)
+  "Non-nil when SYMBOL may get an opaque interned view now.
+See `nelisp-eln-objects--admit-opaque-interned-symbols'."
+  (and nelisp-eln-objects--admit-opaque-interned-symbols
+       (symbolp symbol)
+       symbol (not (eq symbol t))
+       (not (nelisp-eln-objects--unbound-sentinel-p symbol))
+       (not (memq symbol nelisp-eln-objects--isolated-registration-symbols))
+       (eq (intern-soft (symbol-name symbol)) symbol)))
+
+(defun nelisp-eln-objects--opaque-view-p (local)
+  "Non-nil when symbol unit record LOCAL leases an opaque view."
+  (let ((global (aref local 2)))
+    (and (vectorp global) (eq (aref global 4) 'opaque))))
+
 (defun nelisp-eln-objects--registration-only-symbol-p (unit symbol)
   (let ((local (nelisp-eln-objects--symbol-record unit symbol)))
     (and local (aref local 4))))
@@ -567,6 +658,12 @@ plist; later cell changes make synchronization fail closed."
 (defun nelisp-eln-objects--numeric-record (unit number &optional records)
   (let ((records (or records (aref unit 9))))
     (while (and records (not (eq number (aref (car records) 0))))
+      (setq records (cdr records)))
+    (car records)))
+
+(defun nelisp-eln-objects--vector-record (unit vector-object)
+  (let ((records (aref unit 8)))
+    (while (and records (not (eq vector-object (aref (car records) 0))))
       (setq records (cdr records)))
     (car records)))
 
@@ -689,10 +786,10 @@ plist; later cell changes make synchronization fail closed."
 (defun nelisp-eln-objects--drop-unit-lease (unit kind local)
   "Drop UNIT's lease for LOCAL and remove its local whitelist entry."
   (let ((shared (cond ((eq kind 'string) (aref local 3))
-                      ((eq kind 'symbol) (aref local 2))
+                      ((memq kind '(symbol vector)) (aref local 2))
                       ((memq kind '(bignum float)) (aref local 1))
                       (t (nth 2 local))))
-        (leased (cond ((memq kind '(string symbol))
+        (leased (cond ((memq kind '(string symbol vector))
                        (aref local (if (eq kind 'string) 4 3)))
                       ((memq kind '(bignum float)) (aref local 2))
                       (t (nth 3 local)))))
@@ -700,9 +797,9 @@ plist; later cell changes make synchronization fail closed."
       (signal 'nelisp-eln-objects-error (list "unit record lacks shared identity")))
     (when leased
       (aset shared 5 (1- (aref shared 5)))
-      (if (memq kind '(string symbol bignum float))
+      (if (memq kind '(string symbol vector bignum float))
           (aset local (cond ((eq kind 'string) 4)
-                            ((eq kind 'symbol) 3)
+                            ((memq kind '(symbol vector)) 3)
                             (t 2)) nil)
         (setcar (nthcdr 3 local) nil)))
     (nelisp-eln-objects--finish-global-release shared)
@@ -712,6 +809,8 @@ plist; later cell changes make synchronization fail closed."
            (nelisp-eln-objects--remove-unit-symbol-record unit local))
           ((memq kind '(bignum float))
            (nelisp-eln-objects--remove-unit-numeric-record unit local))
+          ((eq kind 'vector)
+           (aset unit 8 (delq local (aref unit 8))))
           (t (nelisp-eln-objects--remove-unit-cons-record unit local)))))
 
 (defun nelisp-eln-objects--encode-word (unit value)
@@ -747,6 +846,11 @@ plist; later cell changes make synchronization fail closed."
       (unless record
         (signal 'nelisp-eln-objects-error (list "symbol missing from preflight")))
       (nelisp-eln-objects--symbol-word (aref record 1))))
+   ((vectorp value)
+    (let ((record (nelisp-eln-objects--vector-record unit value)))
+      (unless record
+        (signal 'nelisp-eln-objects-error (list "vector missing from preflight")))
+      (+ (aref record 1) nelisp-eln-objects--vector-tag)))
    (t (signal 'nelisp-eln-objects-unsupported (list value)))))
 
 (defun nelisp-eln-objects--add-strings (unit strings plans)
@@ -805,18 +909,32 @@ plist; later cell changes make synchronization fail closed."
                 (signal 'nelisp-eln-objects-unsupported
                         (list 'symbol-view-mode-conflict symbol)))
               (unless local
-                (unless (if registration-only
-                            (nelisp-eln-objects--registration-symbol-p symbol)
-                          (or (nelisp-eln-objects--fresh-symbol-p symbol unit)
-                              (nelisp-eln-objects--empty-interned-symbol-p
-                               symbol)))
+               (let* ((shared (nelisp-eln-objects--global-record symbol))
+                      ;; An existing view keeps its mode; a new one is
+                      ;; opaque only for a symbol no faithful view admits.
+                      (opaque
+                       (and (not registration-only)
+                            (if shared
+                                (eq (aref shared 4) 'opaque)
+                              (not (or (nelisp-eln-objects--fresh-symbol-p
+                                        symbol unit)
+                                       (nelisp-eln-objects--empty-interned-symbol-p
+                                        symbol)))))))
+                (unless (cond
+                         (registration-only
+                          (nelisp-eln-objects--registration-symbol-p symbol))
+                         (opaque
+                          (nelisp-eln-objects--opaque-interned-symbol-p symbol))
+                         (t (or (nelisp-eln-objects--fresh-symbol-p symbol unit)
+                                (nelisp-eln-objects--empty-interned-symbol-p
+                                 symbol))))
                 (signal 'nelisp-eln-objects-unsupported
                         (list 'symbol-state-changed symbol)))
-              (let ((shared (nelisp-eln-objects--global-record symbol)))
                 (if shared
                     (progn
                       (unless (and (eq (aref shared 1) 'symbol)
                                    (eq (aref shared 7) 'open)
+                                   (eq (aref shared 4) (and opaque 'opaque))
                                    (eq (aref shared 8)
                                        (and registration-only t)))
                         (signal 'nelisp-eln-objects-error
@@ -832,7 +950,8 @@ plist; later cell changes make synchronization fail closed."
                                (name (symbol-name symbol))
                                (name-record
                                 (nelisp-eln-objects--string-record unit name))
-                               (global (vector symbol 'symbol address owner nil
+                               (global (vector symbol 'symbol address owner
+                                               (and opaque 'opaque)
                                                1 0 'open
                                                (and registration-only t)))
                                (local (vector symbol address global t
@@ -843,17 +962,27 @@ plist; later cell changes make synchronization fail closed."
                           ;; GNU 31.1 lread.c sets enum value 2 for symbols
                           ;; interned in the initial obarray. Other cells stay
                           ;; restricted to the validated empty snapshot.
+                          ;; An opaque view mirrors only the name: its value,
+                          ;; function and plist cells hold the poison word and
+                          ;; it is `SYMBOL_NOWRITE'.
                           (ptr-write-u8
                            address 0
-                           (if (or registration-only
-                                   (eq (intern-soft name) symbol))
-                               (lsh nelisp-eln-objects--symbol-interned-in-initial-obarray 5)
-                             0))
+                           (cond
+                            (opaque
+                             (nelisp-eln-objects--opaque-symbol-header-byte))
+                            ((or registration-only
+                                 (eq (intern-soft name) symbol))
+                             (lsh nelisp-eln-objects--symbol-interned-in-initial-obarray 5))
+                            (t 0)))
                           (nelisp-eln-objects--write-word
                            address 8 (+ (aref name-record 2) 4))
-                          (nelisp-eln-objects--write-word address 16 48)
-                          (nelisp-eln-objects--write-word address 24 0)
-                          (nelisp-eln-objects--write-word address 32 0)
+                          (let ((poison nelisp-eln-objects--opaque-symbol-cell-word))
+                            (nelisp-eln-objects--write-word
+                             address 16 (if opaque poison 48))
+                            (nelisp-eln-objects--write-word
+                             address 24 (if opaque poison 0))
+                            (nelisp-eln-objects--write-word
+                             address 32 (if opaque poison 0)))
                           (nelisp-eln-objects--write-word address 40 0)
                           (push (cons symbol global)
                                 nelisp-eln-objects--identity-records)
@@ -876,6 +1005,77 @@ plist; later cell changes make synchronization fail closed."
         (condition-case nil
             (nelisp-eln-objects--release-unused-symbol-base)
           (error (nelisp-eln-objects--poison-registry)))))))
+
+;; The views themselves are only ever the poison block; see
+;; `nelisp-eln-objects--admit-opaque-vectors'.
+(defun nelisp-eln-objects--add-vectors (unit vectors)
+  "Lease opaque views for VECTORS in UNIT and return the new local records."
+  (let ((new-records nil) (complete nil))
+    (unwind-protect
+        (progn
+          (dolist (object vectors)
+            (unless (nelisp-eln-objects--vector-record unit object)
+              (let ((shared (nelisp-eln-objects--global-record object)))
+                (if shared
+                    (progn
+                      (unless (and (eq (aref shared 1) 'vector)
+                                   (eq (aref shared 7) 'open))
+                        (signal 'nelisp-eln-objects-error
+                                (list "vector view is releasing" object)))
+                      (aset shared 5 (1+ (aref shared 5)))
+                      (push (vector object (aref shared 2) shared t)
+                            new-records))
+                  (let ((owner (nelisp-eln-objects--allocate-view-memory
+                                nelisp-eln-objects--opaque-vector-view-bytes))
+                        (published nil))
+                    (unwind-protect
+                        (let* ((address (nl-ffi-memory-address owner))
+                               (global (vector object 'vector address owner nil
+                                               1 0 'open nil))
+                               (local (vector object address global t))
+                               (poison nelisp-eln-objects--opaque-symbol-cell-word))
+                          (nelisp-eln-objects--write-word address 0 poison)
+                          (nelisp-eln-objects--write-word address 8 poison)
+                          (push (cons object global)
+                                nelisp-eln-objects--identity-records)
+                          (setq published t)
+                          (push local new-records))
+                      (unless published
+                        (condition-case nil
+                            (nl-ffi-memory-release owner)
+                          (error
+                           (nelisp-eln-objects--retain-cleanup
+                            'memory owner))))))))))
+          (setq new-records (nreverse new-records))
+          (aset unit 8 (append new-records (aref unit 8)))
+          (setq complete t)
+          new-records)
+      (unless complete
+        (dolist (local new-records)
+          (condition-case nil
+              (nelisp-eln-objects--drop-unit-lease unit 'vector local)
+            (error (aset unit 1 'releasing))))))))
+
+(defun nelisp-eln-objects--rollback-vectors (unit records)
+  "Undo vector leases in RECORDS after a pre-write failure."
+  (let ((remaining nil))
+    (dolist (record records)
+      (condition-case nil
+          (nelisp-eln-objects--drop-unit-lease unit 'vector record)
+        (error (push record remaining))))
+    (when remaining
+      (aset unit 8 (append (nreverse remaining) (aref unit 8)))
+      (aset unit 1 'releasing))))
+
+(defun nelisp-eln-objects--check-vector-view (_unit local)
+  "Reject native edits to an opaque vector view's poison words."
+  (let ((address (aref local 1))
+        (poison nelisp-eln-objects--opaque-symbol-cell-word))
+    (unless (and (= (nelisp-eln-objects--read-word address 0) poison)
+                 (= (nelisp-eln-objects--read-word address 8) poison))
+      (signal 'nelisp-eln-objects-unsupported
+              (list 'native-vector-cell-mutation (aref local 0))))
+    t))
 
 (defun nelisp-eln-objects-admit-registration-symbols (handle symbols
                                                             &optional isolated)
@@ -1117,12 +1317,17 @@ variable state is then checked here (see
   "Reject native edits to unsupported symbol cells before any sync commits."
   ;; An interned view (see `nelisp-eln-objects--admit-empty-interned-symbols')
   ;; stays valid only while its symbol's global state is still entirely
-  ;; empty, and carries the interned-in-initial-obarray bit.
-  (let ((interned (eq (intern-soft (symbol-name (aref local 0)))
-                      (aref local 0))))
-    (unless (if interned
-                (nelisp-eln-objects--registration-symbol-p (aref local 0))
-              (nelisp-eln-objects--fresh-symbol-p (aref local 0) unit))
+  ;; empty, and carries the interned-in-initial-obarray bit.  An opaque
+  ;; view (see `nelisp-eln-objects--admit-opaque-interned-symbols') never
+  ;; mirrors that state, so only its identity and poison cells are checked.
+  (let* ((opaque (nelisp-eln-objects--opaque-view-p local))
+         (interned (eq (intern-soft (symbol-name (aref local 0)))
+                       (aref local 0)))
+         (cell-word (if opaque nelisp-eln-objects--opaque-symbol-cell-word)))
+    (unless (cond (opaque interned)
+                  (interned
+                   (nelisp-eln-objects--registration-symbol-p (aref local 0)))
+                  (t (nelisp-eln-objects--fresh-symbol-p (aref local 0) unit)))
       (signal 'nelisp-eln-objects-unsupported
               (list 'symbol-state-changed (aref local 0))))
     (let* ((address (aref local 1))
@@ -1131,13 +1336,18 @@ variable state is then checked here (see
            (name-word (and name-record (+ (aref name-record 2) 4))))
       (unless (and name-word
                    (= (ptr-read-u8 address 0)
-                      (if interned
-                          (lsh nelisp-eln-objects--symbol-interned-in-initial-obarray 5)
-                        0))
+                      (cond (opaque
+                             (nelisp-eln-objects--opaque-symbol-header-byte))
+                            (interned
+                             (lsh nelisp-eln-objects--symbol-interned-in-initial-obarray 5))
+                            (t 0)))
                    (= (nelisp-eln-objects--read-word address 8) name-word)
-                   (= (nelisp-eln-objects--read-word address 16) 48)
-                   (= (nelisp-eln-objects--read-word address 24) 0)
-                   (= (nelisp-eln-objects--read-word address 32) 0)
+                   (= (nelisp-eln-objects--read-word address 16)
+                      (or cell-word 48))
+                   (= (nelisp-eln-objects--read-word address 24)
+                      (or cell-word 0))
+                   (= (nelisp-eln-objects--read-word address 32)
+                      (or cell-word 0))
                    (= (nelisp-eln-objects--read-word address 40) 0))
         (signal 'nelisp-eln-objects-unsupported
                 (list 'native-symbol-cell-mutation (aref local 0))))
@@ -1162,6 +1372,7 @@ explicitly to publish changed canonical Lisp edges."
          (string-plans (aref plan 2))
          (symbols (aref plan 3))
          (numerics (aref plan 4))
+         (vectors (aref plan 5))
          (new-strings (nelisp-eln-objects--add-strings
                        unit strings string-plans))
          (new-numerics (condition-case failure
@@ -1179,9 +1390,18 @@ explicitly to publish changed canonical Lisp edges."
                              (nelisp-eln-objects--release-unused-symbol-base)
                            (error (nelisp-eln-objects--poison-registry)))
                          (signal (car failure) (cdr failure)))))
+         (new-vectors (condition-case failure
+                          (nelisp-eln-objects--add-vectors unit vectors)
+                        (error
+                         (nelisp-eln-objects--rollback-symbols unit new-symbols)
+                         (nelisp-eln-objects--rollback-numerics
+                          unit new-numerics)
+                         (nelisp-eln-objects--rollback-strings unit new-strings)
+                         (signal (car failure) (cdr failure)))))
          (transaction (condition-case failure
                           (nelisp-eln-objects--add-conses unit conses)
                         (error
+                         (nelisp-eln-objects--rollback-vectors unit new-vectors)
                          (nelisp-eln-objects--rollback-symbols unit new-symbols)
                          (nelisp-eln-objects--rollback-numerics
                           unit new-numerics)
@@ -1192,6 +1412,7 @@ explicitly to publish changed canonical Lisp edges."
                      (nelisp-eln-objects--stage-records unit new-records)
                     (error
                     (nelisp-eln-objects--rollback-add unit transaction)
+                    (nelisp-eln-objects--rollback-vectors unit new-vectors)
                     (nelisp-eln-objects--rollback-symbols unit new-symbols)
                     (nelisp-eln-objects--rollback-numerics
                      unit new-numerics)
@@ -1203,6 +1424,7 @@ explicitly to publish changed canonical Lisp edges."
        (nelisp-eln-objects--poison-registry)
        (aset unit 1 'releasing)
        (nelisp-eln-objects--rollback-add unit transaction)
+       (nelisp-eln-objects--rollback-vectors unit new-vectors)
        (nelisp-eln-objects--rollback-symbols unit new-symbols)
        (nelisp-eln-objects--rollback-numerics unit new-numerics)
        (nelisp-eln-objects--rollback-strings unit new-strings)
@@ -1216,7 +1438,16 @@ explicitly to publish changed canonical Lisp edges."
      ((eq kind 'nil) nil)
      ((eq kind 'fixnum) (nelisp-eln-abi-decode-fixnum word))
      ((eq kind 'vectorlike)
-      (nelisp-eln-objects--decode-numeric unit word 'bignum))
+      (let* ((address (- (nelisp-eln-abi-normalize-word word)
+                         nelisp-eln-objects--vector-tag))
+             (records (aref unit 8)) found)
+        (while (and records (not found))
+          (if (= address (aref (car records) 1))
+              (setq found (car records))
+            (setq records (cdr records))))
+        (if found
+            (aref found 0)
+          (nelisp-eln-objects--decode-numeric unit word 'bignum))))
      ((eq kind 'float)
       (nelisp-eln-objects--decode-numeric unit word 'float))
      ((eq kind 'string)
@@ -1302,6 +1533,8 @@ at the boundary."
                                   (aref unit 5))
                           (mapcar (lambda (local) (aref local 2))
                                   (aref unit 6))
+                          (mapcar (lambda (local) (aref local 2))
+                                  (aref unit 8))
                           (mapcar (lambda (local) (aref local 1))
                                   (aref unit 9))))
          (members (mapcar (lambda (record) (cons record t)) records))
@@ -1321,7 +1554,8 @@ at the boundary."
 (defun nelisp-eln-objects--word-address (kind word)
   "Return the view address pointer WORD of KIND names."
   (let* ((tag (cond ((eq kind 'cons) 3) ((eq kind 'string) 4)
-                    ((eq kind 'bignum) 5) ((eq kind 'float) 7) (t 0)))
+                    ((memq kind '(bignum vector)) 5)
+                    ((eq kind 'float) 7) (t 0)))
          (bits (nelisp-eln-abi-normalize-word word))
          (signed (if (and (eq kind 'symbol)
                           (> bits nelisp-eln-abi-signed-word-max))
@@ -1365,6 +1599,13 @@ between rejecting it and trying another activation without a handler."
       (setq members (cdr members)))
     found))
 
+(defun nelisp-eln-objects--activation-find-word (activation kind word)
+  "Return ACTIVATION's leased record for WORD of decoder KIND.
+A vectorlike word (decoder kind `bignum') may also name an opaque vector."
+  (or (nelisp-eln-objects--activation-find activation kind word)
+      (and (eq kind 'bignum)
+           (nelisp-eln-objects--activation-find activation 'vector word))))
+
 (defun nelisp-eln-objects--word-kind (word)
   "Return the decoder kind of GNU WORD (bignum for any vectorlike)."
   (let ((raw-kind (nelisp-eln-abi-classify-word word)))
@@ -1386,7 +1627,7 @@ word only when TOKEN leases its record.  Never decodes."
               nelisp-eln-objects--symbol-t-word))
       t)
      ((memq kind '(cons string symbol bignum float))
-      (and (nelisp-eln-objects--activation-find activation kind word) t))
+      (and (nelisp-eln-objects--activation-find-word activation kind word) t))
      (t nil))))
 
 (defun nelisp-eln-objects-activation-decode (token word)
@@ -1404,7 +1645,7 @@ word only when TOKEN leases its record.  Never decodes."
                (= (nelisp-eln-abi-normalize-word word)
                   nelisp-eln-objects--symbol-t-word))
           t
-        (let ((found (nelisp-eln-objects--activation-find
+        (let ((found (nelisp-eln-objects--activation-find-word
                       activation kind word)))
           (unless found
             (signal 'nelisp-eln-objects-error
@@ -1455,8 +1696,12 @@ word only when TOKEN leases its record.  Never decodes."
                                 (aref unit 5)))
          (owned-symbols (mapcar (lambda (record) (aref record 0))
                                (aref unit 6)))
+         (owned-vectors (mapcar (lambda (record) (aref record 0))
+                                (aref unit 8)))
          (plan (nelisp-eln-objects--preflight
-                (append (aref unit 4) existing owned-strings owned-symbols) unit))
+                (append (aref unit 4) existing owned-strings owned-symbols
+                        owned-vectors)
+                unit))
          (new-strings (nelisp-eln-objects--add-strings
                        unit (aref plan 1) (aref plan 2)))
          (new-numerics (condition-case failure
@@ -1471,9 +1716,18 @@ word only when TOKEN leases its record.  Never decodes."
                           unit new-numerics)
                          (nelisp-eln-objects--rollback-strings unit new-strings)
                          (signal (car failure) (cdr failure)))))
+         (new-vectors (condition-case failure
+                          (nelisp-eln-objects--add-vectors unit (aref plan 5))
+                        (error
+                         (nelisp-eln-objects--rollback-symbols unit new-symbols)
+                         (nelisp-eln-objects--rollback-numerics
+                          unit new-numerics)
+                         (nelisp-eln-objects--rollback-strings unit new-strings)
+                         (signal (car failure) (cdr failure)))))
          (transaction (condition-case failure
                           (nelisp-eln-objects--add-conses unit (aref plan 0))
                         (error
+                         (nelisp-eln-objects--rollback-vectors unit new-vectors)
                          (nelisp-eln-objects--rollback-symbols unit new-symbols)
                          (nelisp-eln-objects--rollback-numerics
                           unit new-numerics)
@@ -1489,12 +1743,15 @@ word only when TOKEN leases its record.  Never decodes."
                   staged-strings))
           (dolist (record (aref unit 6))
             (nelisp-eln-objects--check-symbol-view unit record))
+          (dolist (record (aref unit 8))
+            (nelisp-eln-objects--check-vector-view unit record))
           (setq staged-strings (nreverse staged-strings))
           (dolist (string-plan staged-strings)
             (nelisp-eln-string-validate-sync-plan string-plan))
           (setq validated t))
       (error
        (nelisp-eln-objects--rollback-add unit transaction)
+       (nelisp-eln-objects--rollback-vectors unit new-vectors)
        (nelisp-eln-objects--rollback-symbols unit new-symbols)
        (nelisp-eln-objects--rollback-numerics unit new-numerics)
        (nelisp-eln-objects--rollback-strings unit new-strings)
@@ -1519,6 +1776,8 @@ No native pointer is dereferenced unless it is an owned cons address."
   (let ((records (aref unit 3)) (staged nil) (string-plans nil))
     (dolist (record (aref unit 6))
       (nelisp-eln-objects--check-symbol-view unit record))
+    (dolist (record (aref unit 8))
+      (nelisp-eln-objects--check-vector-view unit record))
     (dolist (record (aref unit 5))
       (push (nelisp-eln-string-prepare-sync-from (aref record 1))
             string-plans))
@@ -1558,6 +1817,8 @@ No native pointer is dereferenced unless it is an owned cons address."
       (nelisp-eln-objects--drop-unit-lease unit 'string (car (aref unit 5))))
     (while (aref unit 6)
       (nelisp-eln-objects--drop-unit-lease unit 'symbol (car (aref unit 6))))
+    (while (aref unit 8)
+      (nelisp-eln-objects--drop-unit-lease unit 'vector (car (aref unit 8))))
     (while (aref unit 9)
       (nelisp-eln-objects--drop-unit-lease
        unit (aref (aref (car (aref unit 9)) 1) 1) (car (aref unit 9))))
