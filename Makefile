@@ -4713,3 +4713,17 @@ release-checksum:
 	  else \
 	    shasum -a 256 --check $(RELEASE_VERSION)-$(PLATFORM).tar.gz.sha256; \
 	  fi
+
+.PHONY: eln-s6-corpus-evidence eln-s6-corpus-check
+# Runs every fixed-19 S6 measurement (ledger tools/ai/eln-progress.org
+# S6.3-S6.21, ~20-50 s each, sequential so timings are not disturbed) and
+# writes target/progress/s6-corpus-evidence.json, which the S6.22 check
+# validates.  Usage: make eln-s6-corpus-evidence ELN_PROGRESS_BIN=target/nelisp-X
+# (ELN_S6_JOBS=N for bounded parallelism at the cost of timing accuracy).
+eln-s6-corpus-evidence:
+	@test -n "$(ELN_PROGRESS_BIN)" || { echo "set ELN_PROGRESS_BIN=<binary>"; exit 2; }
+	ELN_PROGRESS_BIN="$(ELN_PROGRESS_BIN)" $(EMACS) --batch -Q -l tools/nelisp-eln-s6-corpus.el -f nelisp-eln-s6-corpus-batch-regenerate
+
+eln-s6-corpus-check:
+	@test -n "$(ELN_PROGRESS_BIN)" || { echo "set ELN_PROGRESS_BIN=<binary>"; exit 2; }
+	ELN_PROGRESS_BIN="$(ELN_PROGRESS_BIN)" $(EMACS) --batch -Q -l tools/nelisp-eln-s6-corpus.el -f nelisp-eln-s6-corpus-batch-validate

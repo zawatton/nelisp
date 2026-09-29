@@ -347,9 +347,45 @@ Marginals simulate adding semantic support in ascending opcode order."
           :opcode-marginals
           (nelisp-vendor-bytecode-jit-coverage--opcode-marginals rows))))
 
+(defun nelisp-vendor-bytecode-jit-coverage--native-measurement ()
+  "Return the corpus-wide native measurement state from the S6.22 evidence file.
+The evidence file is written by `make eln-s6-corpus-evidence'.  The result is
+an alist with `measured' (t only when every fixed-19 function has a fresh real
+PASS measurement against the binary in ELN_PROGRESS_BIN / NELISP_BIN), the
+validator's `problems', and the evidence rows by function name."
+  (load (expand-file-name "tools/nelisp-eln-s6-corpus.el"
+                          (nelisp-vendor-bytecode-jit-coverage--root))
+        nil t t)
+  (let* ((config (nelisp-eln-s6-corpus--config))
+         (evidence (nth 0 config))
+         (binary (nth 1 config))
+         (ledger (nth 2 config))
+         (problems (nelisp-eln-s6-corpus-validate evidence binary ledger))
+         (rows (and (file-readable-p evidence)
+                    (ignore-errors
+                      (alist-get 'functions
+                                 (nelisp-eln-s6-corpus-read-evidence evidence))))))
+    `((measured . ,(null problems))
+      (problems . ,problems)
+      (evidence . ,evidence)
+      (rows . ,rows))))
+
+(defun nelisp-vendor-bytecode-jit-coverage--native-row-json (measurement name)
+  "Return the native_execution object for function NAME from MEASUREMENT."
+  (let ((row (cl-find name (alist-get 'rows measurement)
+                      :key (lambda (r) (alist-get 'function r)) :test #'equal)))
+    (if (null row)
+        `((status . "NOT_MEASURED") (reason . "no evidence row"))
+      (mapcar (lambda (key) (cons key (alist-get key row)))
+              '(status reason equality_host_vm equality_host_native corpus_n
+                host_ns_per_call vm_ns_per_call native_ns_per_call
+                native_raw_calls native_dispatch_calls eln_sha256
+                finished_at)))))
+
 (defun nelisp-vendor-bytecode-jit-coverage--json-object (report)
   "Convert REPORT's internal plists into a compact JSON object."
-  (let ((functions
+  (let* ((measurement (nelisp-vendor-bytecode-jit-coverage--native-measurement))
+         (functions
          (mapcar
           (lambda (row)
             `((tier . ,(symbol-name (plist-get row :tier)))
@@ -368,7 +404,10 @@ Marginals simulate adding semantic support in ascending opcode order."
               (legacy_instruction_decoder_decoded
                . ,(if (plist-get row :legacy-instruction-decoder-decoded) t :json-false))
               (static_jit_eligible_for_fixnum_inputs
-               . ,(if (plist-get row :static-jit-eligible-for-fixnum-inputs) t :json-false))))
+               . ,(if (plist-get row :static-jit-eligible-for-fixnum-inputs) t :json-false))
+              (native_execution
+               . ,(nelisp-vendor-bytecode-jit-coverage--native-row-json
+                   measurement (symbol-name (plist-get row :function))))))
           (plist-get report :functions)))
         (sources
          (mapcar (lambda (row)
@@ -410,7 +449,12 @@ Marginals simulate adding semantic support in ascending opcode order."
        . "new generic-IR-valid functions after enabling each opcode in order")
       (single_opcode_definition
        . "baseline functions whose only unsupported semantic opcode is this opcode")
-      (native_execution_measured . :json-false)
+      (native_execution_measured
+       . ,(if (alist-get 'measured measurement) t :json-false))
+      (native_execution_definition
+       . "t only when tools/nelisp-eln-s6-corpus.el validates a fresh evidence file (binary/.eln/ledger-cmd digests) with a real S6_MEASURE_RESULT PASS for all fixed-19 functions; regenerate with make eln-s6-corpus-evidence")
+      (native_execution_evidence . ,(alist-get 'evidence measurement))
+      (native_execution_problems . ,(vconcat (alist-get 'problems measurement)))
       (generic_ir_decode_definition . "success of nelisp-bytecode-jit--decode-ir")
       (legacy_instruction_decoder_definition
        . "success of nelisp-bytecode-jit--decode-instructions; this is a separate legacy decode pass")
