@@ -97,7 +97,13 @@
       (should (plist-get (cdr fixnump-row) :legacy-instruction-decoder-decoded))
       (should (plist-get (cdr fixnump-row) :static-jit-eligible-for-fixnum-inputs)))
     (let ((json (nelisp-vendor-bytecode-jit-coverage--json-object report)))
-      (should (eq (alist-get 'native_execution_measured json) :json-false)))))
+      ;; The flag follows the S6.22 evidence validator: t exactly when a
+      ;; fresh evidence file validates with no problems, :json-false otherwise.
+      (should (eq (alist-get 'native_execution_measured json)
+                  (if (and (alist-get 'native_execution_evidence json)
+                           (= 0 (length (alist-get 'native_execution_problems json))))
+                      t
+                    :json-false))))))
 
 (ert-deftest nelisp-vendor-bytecode-jit-coverage/retains-malformed-label-for-invalid-target ()
   (let* ((function (make-byte-code 257 (unibyte-string 130 9 0 135) [] 2))
