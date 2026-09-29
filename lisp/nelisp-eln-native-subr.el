@@ -1317,6 +1317,62 @@ see `nelisp-eln-native-subr--multi-import-specs' for the format.")
         (append nelisp-eln-native-subr--multi-import-specs
                 nelisp-eln-native-subr--multi-import-specs-funcall)))
 
+;; S6.7 (`cconv--convert-function'): the body and the one native anonymous
+;; lambda it calls directly through the module-local PLT, in their own
+;; constant appended to the spec list.  The body is the `(ARGS BODY ENV
+;; PARENTFORM &optional DOCSTRING)' registration (arity 5, min 4); the lambda
+;; is registered with arity 5.  Both share one link table: every slot the
+;; lambda imports (1354, 1119, 0) is also one of the body's, with the same
+;; authenticated port descriptor, and every d_reloc constant the lambda reads
+;; (0, 16) is one the body declares with the same value.  The body reads
+;; GNU's `symbols_with_pos_enabled' cell and polls `maybe_gc'/`maybe_quit'
+;; through the module's own `quitcounter' inline.
+(defconst nelisp-eln-native-subr--multi-import-specs-cconv-convert
+  '((cconv-convert-lambda
+     :ports ((1354 fixed 1 (lisp) lisp)
+             (1119 fixed 2 (lisp lisp) lisp)
+             (0 fixed 2 (lisp lisp) void))
+     :constants ((0 . internal-get-closed-var) (16 . consp))
+     :arity 5)
+    (cconv-convert-function-form
+     :ports ((1335 fixed 1 (lisp) lisp)
+             (1201 fixed 2 (lisp lisp) lisp)
+             (10 fixed 4 (lisp lisp lisp raw) void)
+             (1354 fixed 1 (lisp) lisp)
+             (1119 fixed 2 (lisp lisp) lisp)
+             (1209 fixed 1 (lisp) lisp)
+             (1215 fixed 2 (lisp lisp) lisp)
+             (1301 fixed 1 (lisp) lisp)
+             (1353 fixed 1 (lisp) lisp)
+             (7 fixed 2 (lisp lisp) bool)
+             (945 many (2 5) (lisp lisp lisp lisp lisp) lisp)
+             (0 fixed 2 (lisp lisp) void)
+             (13 fixed 0 () void)
+             (14 fixed 0 () void))
+     :constants ((0 . internal-get-closed-var) (2 . cconv-freevars-alist)
+                 (4 . cconv--convert-funcbody) (5 . internal-make-closure)
+                 (6 . function) (7 . lambda) (9 . car-safe)
+                 (10 . cl--assertion-failed)
+                 (11 . (equal body (caar cconv-freevars-alist)))
+                 (15 . t) (16 . consp) (17 . listp))
+     :module-counter "quitcounter"
+     :arity 5 :min-arity 4 :symbols-with-pos t
+     :opaque-argument-symbols t))
+  "Dispatcher specs for `nelisp-eln-tail-code--multi-import-shapes-cconv-convert';
+see `nelisp-eln-native-subr--multi-import-specs' for the format.  Verified
+against ~/.cache/tmp/slot-auth/freloc-ba35c031.tsv (sha256 3e8591ab..f0758):
+1201 `Fequal', 1353 `Fcdr_safe', 1354 `Fcar_safe', 1301 `Fadd1', 1209
+`Fnreverse', 1215 `Fassq', 1335 `Fsymbol_value', 1119 `Fcons', 945 `Ffuncall'
+\(argc 2 for the assertion failure, 5 for `cconv--convert-funcbody'), 10
+`set_internal', 7 `slow_eq', 0 `wrong_type_argument', 13 `maybe_gc', 14
+`maybe_quit'.")
+
+(unless (assq 'cconv-convert-function-form
+              nelisp-eln-native-subr--multi-import-specs)
+  (setq nelisp-eln-native-subr--multi-import-specs
+        (append nelisp-eln-native-subr--multi-import-specs
+                nelisp-eln-native-subr--multi-import-specs-cconv-convert)))
+
 (defun nelisp-eln-native-subr--multi-reject (reason &rest detail)
   "Reject an exactly matched multi-import body for REASON with DETAIL.
 Once CODE matches a `nelisp-eln-tail-code--multi-import-shapes' template
@@ -2055,9 +2111,96 @@ calling convention; any other non-nil MIN-ARITY signals."
         (nelisp--native-subr-create capability function-name module-id
                                     bridge 2)))))
 
-(defun nelisp-eln-native-subr-create-lambda-placeholder
+;;; Five-argument multi-import body (S6.7): `(A B C D &optional E)'.
+
+(defun nelisp-eln-native-subr-create-multi-nary
     (handle name &optional function-name)
-  "Create a managed arity-0 subr for the registered anonymous lambda NAME.
+  "Create a managed genuine S6 multi-import subr of arity (4 . 5) for NAME.
+Exactly like `nelisp-eln-native-subr-create-multi-binary' -- same exact
+template, per-slot port, `d_reloc' constant and live-lease authentication --
+but only for a shape whose spec declares :ARITY 5 and :MIN-ARITY 4.  The
+bridge passes all five Lisp arguments to the native body (%rdi, %rsi, %rdx,
+%rcx, %r8); an omitted fifth argument reaches it as nil."
+  (unless (fboundp 'nelisp-eln-callable-import-port-tag)
+    (require 'nelisp-eln-callable-import))
+  (let* ((capability
+          (nelisp-eln-system-loader-function-capability handle name))
+         (size (nth 6 capability))
+         (code (and (integerp size) (> size 0)
+                    (nelisp-eln-system-loader-read-root-function-bytes
+                     handle name 0 size)))
+         (analysis (nelisp-eln-native-subr--lease-port-numbers
+                    (and code (= (length code) size)
+                         (nelisp-eln-native-subr-multi-import-analysis
+                          handle capability code
+                          (nelisp-eln-native-subr--tail-import-context-abi-hash)))))
+         (lease nelisp-eln-native-subr--tail-import-context)
+         (d-reloc-address (plist-get analysis :d-reloc-address))
+         (module-id (nelisp-eln-system-loader-module-id handle)))
+    (unless (and analysis
+                 (or (null (plist-get analysis :constants))
+                     (and (integerp d-reloc-address) (> d-reloc-address 0)))
+                 (= (nelisp-eln-native-subr-multi-arity analysis) 5)
+                 (= (nelisp-eln-native-subr-multi-min-arity analysis) 4)
+                 (eq (and (plist-get analysis :symbols-with-pos-address) t)
+                     (nelisp-eln-native-subr-multi-swp-declared-p analysis))
+                 (nelisp-eln-native-subr--multi-lease-valid-p
+                  lease handle capability t)
+                 (or (null function-name)
+                     (symbolp function-name)
+                     (and (stringp function-name)
+                          (= (length function-name)
+                             (string-bytes function-name)))))
+      (signal 'nelisp-eln-native-subr-error
+              (list 'unsupported-native-abi name size)))
+    (nelisp-eln-system-loader-validate-function-capability capability)
+    (setq function-name
+          (cond ((and function-name (symbolp function-name)) function-name)
+                ((stringp function-name) (intern function-name))
+                (t (intern name))))
+    (let* ((ports (nelisp-eln-native-subr--port-tags analysis))
+           (spec (cdr (assq (plist-get analysis :shape)
+                            nelisp-eln-native-subr--multi-import-specs)))
+           (opaque-symbols (and (plist-get spec :opaque-argument-symbols) t))
+           (opaque-vectors (and (plist-get spec :opaque-vectors) t))
+           (constant-cells
+            (mapcar (lambda (c)
+                      (cons (+ d-reloc-address (* 8 (car c)))
+                            (if (eq (cdr c) :registered-lambda)
+                                (cons :registered-lambda (car c))
+                              (cdr c))))
+                    (plist-get analysis :constants)))
+           (bridge-fn
+            (lambda (first second third fourth fifth)
+              (unless (nelisp-eln-native-subr--multi-lease-valid-p
+                       lease handle capability)
+                (signal 'nelisp-eln-native-subr-error
+                        (list 'expired-import-table)))
+              (let* ((constants
+                      (nelisp-eln-native-subr--resolve-constant-cells
+                       constant-cells lease))
+                     (symbol-words
+                      (delq nil
+                            (mapcar (lambda (c)
+                                      (and (cdr c) (not (eq (cdr c) t))
+                                           (symbolp (cdr c))
+                                           (cons (cdr c) (car c))))
+                                    constants))))
+                (nelisp-eln-objects-call-with-artifact-symbols
+                 symbol-words
+                 (lambda ()
+                   (nelisp-eln-callable-import--call-unary
+                    capability nil first nil nil constants ports
+                    (list second third fourth fifth)))
+                 opaque-symbols opaque-vectors))))
+           (bridge (lambda (first second third fourth &optional fifth)
+                     (funcall bridge-fn first second third fourth fifth))))
+      (nelisp--native-subr-create capability function-name module-id
+                                  bridge 5 4))))
+
+(defun nelisp-eln-native-subr-create-lambda-placeholder
+    (handle name &optional function-name arity)
+  "Create a managed arity-0 (or ARITY) subr for the registered anonymous lambda NAME.
 S6.12: GNU's `comp--register-lambda' stores each native anonymous lambda's
 subr into a `d_reloc' slot that no admitted body reads.  The subr's body is
 admitted (a `jmp' thunk, or an exact arity-0 multi-import template with every
@@ -2079,7 +2222,8 @@ subr; it is never published (a string is used for an uninterned symbol)."
          (module-id (nelisp-eln-system-loader-module-id handle)))
     (unless (and (or thunk
                      (and analysis
-                          (= (nelisp-eln-native-subr-multi-arity analysis) 0)))
+                          (= (nelisp-eln-native-subr-multi-arity analysis)
+                             (or arity 0))))
                  (or (null function-name) (symbolp function-name)
                      (and (stringp function-name)
                           (= (length function-name)
@@ -2087,16 +2231,22 @@ subr; it is never published (a string is used for an uninterned symbol)."
       (signal 'nelisp-eln-native-subr-error
               (list 'unsupported-native-abi name size)))
     (nelisp-eln-system-loader-validate-function-capability capability)
+    ;; S6.7 (ARITY given): the runtime's subr constructor refuses an
+    ;; uninterned name (S6.12's arity-0 placeholder therefore never gets
+    ;; built), so a label symbol is interned; it is never given a function
+    ;; binding, so the lambda stays reachable only through its PLT call.
     (setq function-name
           (cond ((and function-name (symbolp function-name)) function-name)
+                ((and arity (stringp function-name)) (intern function-name))
+                (arity (intern name))
                 ((stringp function-name) (make-symbol function-name))
                 (t (make-symbol name))))
     (nelisp--native-subr-create
      capability function-name module-id
-     (lambda ()
+     (lambda (&rest _arguments)
        (signal 'nelisp-eln-native-subr-error
                (list 'registered-lambda-not-callable name)))
-     0)))
+     (or arity 0))))
 
 (defun nelisp-eln-native-subr-create (handle name &optional function-name)
   "Create a managed scalar0 or unary leaf subr for root NAME in HANDLE.

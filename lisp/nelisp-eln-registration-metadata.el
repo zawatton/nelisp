@@ -25,6 +25,10 @@
     gnu-require-subr gnu-lambda-require-subr gnu-lambdas-require-subr)
   "Registration profiles whose exact top_level_run shape was admitted by
 `nelisp-eln-registration--top-level-code' before metadata is created.")
+;; S6.7: one native lambda called directly by the body, then require, then
+;; the registered subr.
+(add-to-list 'nelisp-eln-registration-metadata--profiles
+             'gnu-lambda-call-subr)
 (defvar nelisp-eln-registration-metadata--live nil)
 
 (declare-function ptr-write-u8 "ext:nelisp-runtime" (ptr offset value))

@@ -3479,8 +3479,24 @@ reseeds from its characters; nil -> a full LCG value."
 (unless (fboundp 'sit-for) (defun sit-for (&rest _) t))
 (unless (fboundp 'cl-dolist) (defmacro cl-dolist (spec &rest body) `(cl-block nil (dolist ,spec ,@body))))
 (unless (fboundp 'cl-dotimes) (defmacro cl-dotimes (spec &rest body) `(cl-block nil (dotimes ,spec ,@body))))
+;; GNU `debug-on-error' (a C DEFVAR_LISP, nil): vendor cl-preloaded.el's
+;; `cl--assertion-failed' reads it before signalling `cl-assertion-failed'.
+(unless (boundp 'debug-on-error) (defvar debug-on-error nil))
+;; GNU `cl-assert' (cl-lib.el): on failure call the preloaded
+;; `cl--assertion-failed', which signals `(cl-assertion-failed FORM)'.
 (unless (fboundp 'cl-assert)
-  (defmacro cl-assert (form &rest _) `(unless ,form (error "Assertion failed: %S" ',form))))
+  (defmacro cl-assert (form &optional show-args string &rest args)
+    (let ((sargs (and show-args
+                      (delq nil (mapcar (lambda (x)
+                                          (unless (macroexp-const-p x) x))
+                                        (cdr-safe form))))))
+      `(progn
+         (or ,form
+             (cl--assertion-failed
+              ',form ,@(if (or string sargs args)
+                           (list string (if sargs (cons 'list sargs))
+                                 (if args (cons 'list args))))))
+         nil))))
 (unless (fboundp 'cl-check-type)
   (defmacro cl-check-type (x type &rest _) `(unless (cl-typep ,x ',type) (error "Wrong type: %S is not %S" ,x ',type))))
 (unless (fboundp 'with-demoted-errors)
@@ -19574,8 +19590,11 @@ unlisted OS-specific entry point."
        ((and (fboundp 'nelisp--native-subr-arity)
              (integerp (nelisp--native-subr-arity fn)))
         (let ((arity (nelisp--native-subr-arity fn)))
-          ;; 3 encodes a native subr with `&optional' arity (1 . 2).
-          (if (eql arity 3) (cons 1 2) (cons arity arity))))
+          ;; 3 encodes a native subr with `&optional' arity (1 . 2), 4 one
+          ;; with `&optional' arity (4 . 5).
+          (cond ((eql arity 3) (cons 1 2))
+                ((eql arity 4) (cons 4 5))
+                (t (cons arity arity)))))
        ((and (consp fn) (eq (car fn) 'macro))
         (let ((inner (cdr fn)))
           (when (and (consp inner)

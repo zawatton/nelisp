@@ -232,8 +232,9 @@ This function only reads existing state; it never mutates it.
                 type-index min-arity)
   "Create a temporary scalar PVEC_SUBR view for registration.
 NAME and C-NAME are strings; DOC-INDEX is a nonnegative integer.
-ARITY is the exact admitted fixed arity: zero, one, or two (only a
-NATIVE-CONSTRUCTOR-built binary body, e.g. a pair's compiler macro).
+ARITY is the exact admitted arity: zero, one, or two or five (only a
+NATIVE-CONSTRUCTOR-built body, e.g. a pair's compiler macro; S6.7's
+five-argument `cconv--convert-function' and its registered lambda).
 METADATA-TOKEN, when non-nil, authenticates TYPE and supplies its GNU word;
 TYPE-INDEX is TYPE's data-relocation index there (default 0).
 MIN-ARITY, when non-nil, is a smaller minimum arity than ARITY (an
@@ -254,7 +255,8 @@ The returned plist contains its GNU :word and the canonical NeLisp
   ;; Arity 2 exists only for the Doc 207 chain leaf, whose admitted shape
   ;; always supplies its own NATIVE-CONSTRUCTOR.
   (unless (and (stringp name) (stringp c-name)
-               (or (memq arity '(0 1)) (and (eql arity 2) native-constructor))
+               (or (memq arity '(0 1))
+                   (and (memq arity '(2 5)) native-constructor))
                (integerp doc-index)
                (<= 0 doc-index) (<= doc-index (1- (ash 1 63)))
                (= (length name) (string-bytes name))

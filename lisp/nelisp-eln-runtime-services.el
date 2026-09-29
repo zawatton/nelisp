@@ -1002,6 +1002,40 @@ only if FILE itself cannot be read."
                     problems)))))))
     (nreverse problems)))
 
+;; S6.7 (`cconv--convert-function'): `Fequal' and `Fcdr_safe', in their own
+;; constant appended to the descriptor table (kept apart from the main list so
+;; lanes adding descriptors do not touch the same lines).
+(defun nelisp-eln-runtime-services-fequal (a b)
+  "NeLisp equivalent of GNU `Fequal' (src/fns.c): structural equality.
+Called through the `equal' function cell so that vectors compare element-wise."
+  (funcall (symbol-function 'equal) a b))
+
+(defun nelisp-eln-runtime-services-fcdr-safe (object)
+  "NeLisp equivalent of GNU `Fcdr_safe' (src/data.c): the cdr of OBJECT
+if it is a cons cell, else nil; never signals."
+  (cdr-safe object))
+
+(defconst nelisp-eln-runtime-services-descriptors-s67
+  (list
+   (nelisp-eln-runtime-services--descriptor
+    :index 1201 :symbol "Fequal" :convention 'fixed :arity 2
+    :noreturn nil :implementation #'nelisp-eln-runtime-services-fequal
+    :status 'supported
+    :evidence "freloc tsv sha 3e8591ab..f0758, index 1201; GNU src/fns.c Fequal")
+   (nelisp-eln-runtime-services--descriptor
+    :index 1353 :symbol "Fcdr_safe" :convention 'fixed :arity 1
+    :noreturn nil :implementation #'nelisp-eln-runtime-services-fcdr-safe
+    :status 'supported
+    :evidence "freloc tsv sha 3e8591ab..f0758, index 1353; GNU src/data.c Fcdr_safe"))
+  "Runtime-service descriptors added for S6.7; see
+`nelisp-eln-runtime-services-descriptors'.")
+
+(unless (cl-find 1201 nelisp-eln-runtime-services-descriptors
+                 :key (lambda (d) (plist-get d :index)))
+  (setq nelisp-eln-runtime-services-descriptors
+        (append nelisp-eln-runtime-services-descriptors
+                nelisp-eln-runtime-services-descriptors-s67)))
+
 (provide 'nelisp-eln-runtime-services)
 
 ;;; nelisp-eln-runtime-services.el ends here

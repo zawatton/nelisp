@@ -371,6 +371,37 @@ bool in %al; `void' answers nothing (a zero pair)."
                    (list 'unsupported-port-return
                          (plist-get spec :return))))))))
 
+(defun nelisp-eln-callable-import--suppressed-answer (frame descriptor)
+  "Return the answer pair of a callback whose Lisp is not run (S6.7).
+Once an activation has recorded a non-local exit, GNU would already have left
+the native frame, but the native body keeps executing until it returns; its
+result is discarded and the exit resumed.  A port body may write through the
+word an earlier `lisp' or `handle' port answered (an inline `setcar' of a
+fresh cons), so such a port answers a word that is safe to dereference: a
+cons-tagged word over a zeroed 16-byte block the frame owns until it retires
+\(car and cdr both nil).  Every other callback, and a call that is not a port
+call, answers the zero pair."
+  (let* ((spec (and (plist-get frame :ports) (integerp descriptor)
+                    (> descriptor 4096)
+                    (cdr (assoc (nelisp-eln-abi-read-word descriptor 48)
+                                (plist-get frame :ports)))))
+         (kind (plist-get spec :return)))
+    (if (memq kind '(lisp handle handle-nil))
+        (let ((word (plist-get frame :suppressed-word)))
+          (unless word
+            (let* ((memory (nl-ffi-memory-allocate 16))
+                   (address (nl-ffi-memory-address memory)))
+              (ptr-write-u64 address 0 0)
+              (ptr-write-u64 address 8 0)
+              (setq word (+ address 3))
+              (setq frame (nelisp-eln-callable-import--frame-put
+                           frame :handle-owners
+                           (cons memory (plist-get frame :handle-owners))))
+              (nelisp-eln-callable-import--frame-put
+               frame :suppressed-word word)))
+          (cons (logand word #xffffffff) (logand (ash word -32) #xffffffff)))
+      (cons 0 0))))
+
 (defun nelisp-eln-callable-import--dispatch (descriptor)
   "Decode GNU arguments, invoke the active callable, and encode the result.
 Doc 207 frame contract: once this native activation has recorded a
@@ -386,7 +417,7 @@ throw is captured from the runtime stash while it passes this function's
         (progn
           (nelisp-eln-callable-import--frame-put
            frame :suppressed (1+ (or (plist-get frame :suppressed) 0)))
-          (cons 0 0))
+          (nelisp-eln-callable-import--suppressed-answer frame descriptor))
       (unwind-protect
           (prog1
               (condition-case failure

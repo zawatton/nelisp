@@ -1934,6 +1934,183 @@ slot.  d_reloc[0], [2], [7] and [10]-[13] are never read by the body.")
         (append nelisp-eln-tail-code--multi-import-shapes
                 nelisp-eln-tail-code--multi-import-shapes-funcall)))
 
+;; S6.7 (`cconv--convert-function'): vendor cconv.el's body and the one native
+;; anonymous lambda GNU emits next to it.  Own constant, appended to the shape
+;; list.  A shape's :PLT-CALLS lists the offsets of `call rel32' displacement
+;; fields that reach a module-local PLT entry; the analyzer reports the
+;; absolute target of each so the registration can authenticate it against
+;; the artifact's own `.plt'/`.rela.plt'.
+(defconst nelisp-eln-tail-code--multi-import-shapes-cconv-convert
+  (list
+   (list 'cconv-convert-lambda
+         :template
+         [#x41 #x57 #x49 #x89 #xff #x41 #x56 #x4d #x89 #xc6 #x41 #x55 #x49
+      #x89 #xf5 #x41 #x54 #x49 #x89 #xcc #x55 #x48 #x89 #xd5 #x53 #x48
+      #x83 #xec #x18 #x48 #x8b #x05 nil nil nil nil #x48 #x8b #x18 #xff
+      #x93 #x50 #x2a #x00 #x00 #x4c #x89 #xf7 #x48 #x89 #xc6 #xff #x93
+      #xf8 #x22 #x00 #x00 #x41 #x8d #x57 #xfd #x83 #xe2 #x07 #x0f #x85
+      #x8a #x00 #x00 #x00 #x4c #x8b #x35 nil nil nil nil #x4c #x89 #xef
+      #x49 #x89 #x47 #xfd #xff #x93 #x50 #x2a #x00 #x00 #x31 #xf6 #x48
+      #x89 #xc7 #xff #x93 #xf8 #x22 #x00 #x00 #x49 #x8b #x3e #x48 #x89
+      #xc6 #xff #x93 #xf8 #x22 #x00 #x00 #x4c #x89 #xe7 #x48 #x89 #xc6
+      #xff #x93 #xf8 #x22 #x00 #x00 #x48 #x89 #xef #x49 #x89 #xc4 #xff
+      #x93 #x50 #x2a #x00 #x00 #x4c #x89 #xe7 #x48 #x89 #xc6 #xff #x93
+      #xf8 #x22 #x00 #x00 #x48 #x89 #xc3 #x8d #x45 #xfd #xa8 #x07 #x74
+      #x16 #x48 #x8b #x05 nil nil nil nil #x49 #x8b #xbe #x80 #x00 #x00
+      #x00 #x48 #x89 #xee #x48 #x8b #x00 #xff #x10 #x48 #x89 #x5d #xfd
+      #x48 #x83 #xc4 #x18 #x48 #x89 #xd8 #x5b #x5d #x41 #x5c #x41 #x5d
+      #x41 #x5e #x41 #x5f #xc3 #x0f #x1f #x44 #x00 #x00 #x48 #x89 #x44
+      #x24 #x08 #x48 #x8b #x05 nil nil nil nil #x4c #x89 #xfe #x4c #x8b
+      #x35 nil nil nil nil #x48 #x8b #x10 #x49 #x8b #xbe #x80 #x00 #x00
+      #x00 #xff #x12 #x48 #x8b #x44 #x24 #x08 #xe9 #x51 #xff #xff #xff]
+         :gots '((32 . freloc) (73 . d-reloc) (162 . freloc) (216 . freloc)
+                 (226 . d-reloc))
+         :imports '(1354 1119 0)
+         :data '(0 16))
+   (list 'cconv-convert-function-form
+         :template
+         [#x41 #x57 #x41 #x56 #x49 #x89 #xf6 #x41 #x55 #x41 #x54 #x55 #x53
+      #x48 #x81 #xec #xb8 #x00 #x00 #x00 #x4c #x8b #x2d nil nil nil nil
+      #x4c #x8b #x25 nil nil nil nil #x48 #x89 #x7c #x24 #x48 #x49 #x8b
+      #x5d #x00 #x49 #x8b #x7c #x24 #x10 #x48 #x89 #x54 #x24 #x28 #x48
+      #x89 #x4c #x24 #x50 #x4c #x89 #x44 #x24 #x58 #xff #x93 #xb8 #x29
+      #x00 #x00 #x48 #x89 #xc6 #x83 #xe8 #x03 #xa8 #x07 #x0f #x85 #x25
+      #x05 #x00 #x00 #x48 #x8b #x76 #xfd #x8d #x46 #xfd #xa8 #x07 #x0f
+      #x85 #x16 #x05 #x00 #x00 #x48 #x8b #x76 #xfd #x4c #x89 #xf7 #xff
+      #x93 #x88 #x25 #x00 #x00 #x48 #x85 #xc0 #x0f #x84 #x27 #x05 #x00
+      #x00 #x49 #x8b #x7c #x24 #x10 #xff #x93 #xb8 #x29 #x00 #x00 #x48
+      #x89 #xc5 #x8d #x40 #xfd #xa8 #x07 #x0f #x85 #x4f #x05 #x00 #x00
+      #x48 #x8b #x75 #x05 #x49 #x8b #x7c #x24 #x10 #x31 #xc9 #x31 #xd2
+      #xff #x53 #x50 #x48 #x89 #xef #xff #x93 #x50 #x2a #x00 #x00 #x48
+      #x89 #xc6 #x8d #x40 #xfd #xa8 #x07 #x0f #x85 #x08 #x05 #x00 #x00
+      #x48 #x8b #x6e #x05 #x31 #xf6 #x31 #xff #xff #x93 #xf8 #x22 #x00
+      #x00 #x31 #xf6 #xbf #x02 #x00 #x00 #x00 #x48 #x89 #x44 #x24 #x10
+      #xff #x93 #xf8 #x22 #x00 #x00 #x31 #xf6 #x31 #xff #x48 #x89 #x44
+      #x24 #x08 #xff #x93 #xf8 #x22 #x00 #x00 #x48 #x89 #xef #x48 #x89
+      #x44 #x24 #x18 #xff #x93 #xc8 #x25 #x00 #x00 #x48 #x8b #x54 #x24
+      #x18 #x48 #x8b #x4c #x24 #x10 #x49 #x89 #xc7 #x8d #x42 #xfd #x4c
+      #x8d #x51 #xfd #x83 #xe0 #x07 #x4c #x8d #x5a #xfd #x89 #x44 #x24
+      #x3c #x89 #xc8 #x48 #x8b #x4c #x24 #x08 #x83 #xe8 #x03 #x83 #xe0
+      #x07 #x4c #x8d #x49 #xfd #x89 #x44 #x24 #x38 #x8d #x41 #xfd #x83
+      #xe0 #x07 #x89 #x44 #x24 #x24 #x4d #x85 #xff #x0f #x84 #xe9 #x01
+      #x00 #x00 #x48 #x89 #x4c #x24 #x08 #x4c #x89 #x4c #x24 #x30 #x4c
+      #x89 #x5c #x24 #x60 #x4c #x89 #x54 #x24 #x68 #x4c #x89 #x74 #x24
+      #x40 #xe9 #x90 #x00 #x00 #x00 #x66 #x0f #x1f #x44 #x00 #x00 #x48
+      #xb9 #xff #xff #xff #xff #xff #xff #xff #x1f #x48 #x89 #xf8 #x48
+      #xc1 #xf8 #x02 #x48 #x39 #xc8 #x0f #x84 #x1b #x01 #x00 #x00 #x48
+      #x8d #x2c #x85 #x06 #x00 #x00 #x00 #x8b #x74 #x24 #x24 #x85 #xf6
+      #x74 #x13 #x49 #x8b #x45 #x00 #x49 #x8b #xbc #x24 #x80 #x00 #x00
+      #x00 #x48 #x8b #x74 #x24 #x08 #xff #x10 #x48 #x8b #x44 #x24 #x30
+      #x8b #x4c #x24 #x20 #x48 #x89 #x28 #x85 #xc9 #x0f #x85 #xff #x00
+      #x00 #x00 #x8b #x05 nil nil nil nil #x4d #x8b #x7f #x05 #x83 #xc0
+      #x01 #x89 #x05 nil nil nil nil #xc1 #xe8 #x09 #x74 #x18 #xc7 #x05
+      nil nil nil nil #x00 #x00 #x00 #x00 #x49 #x8b #x45 #x00 #xff #x50
+      #x68 #x49 #x8b #x45 #x00 #xff #x50 #x70 #x4d #x85 #xff #x0f #x84
+      #x36 #x01 #x00 #x00 #x41 #x8d #x47 #xfd #x83 #xe0 #x07 #x89 #x44
+      #x24 #x20 #x0f #x85 #x05 #x01 #x00 #x00 #x49 #x8b #x6f #xfd #x48
+      #x8b #x74 #x24 #x28 #x48 #x89 #xef #xff #x93 #xf8 #x25 #x00 #x00
+      #x48 #x89 #xc6 #x8d #x40 #xfd #xa8 #x07 #x0f #x85 #xc5 #x00 #x00
+      #x00 #x4c #x8b #x76 #x05 #x4d #x85 #xf6 #x0f #x84 #xcb #x00 #x00
+      #x00 #x41 #x8d #x46 #xfd #xa8 #x07 #x75 #x32 #x49 #x83 #x7c #x24
+      #x78 #x00 #x74 #x2a #x4c #x89 #xf7 #xff #x93 #x50 #x2a #x00 #x00
+      #x49 #x8b #x74 #x24 #x48 #x48 #x39 #xf0 #x0f #x84 #x21 #x02 #x00
+      #x00 #x48 #x8b #x15 nil nil nil nil #x48 #x8b #x12 #x80 #x3a #x00
+      #x0f #x85 #xfe #x01 #x00 #x00 #x48 #x8b #x54 #x24 #x18 #x48 #x8b
+      #x74 #x24 #x08 #x4d #x89 #xf0 #x48 #x89 #xe9 #x48 #x8b #x7c #x24
+      #x10 #xe8 nil nil nil nil #x48 #x8b #x7c #x24 #x08 #xff #x93 #x50
+      #x2a #x00 #x00 #x48 #x89 #xc7 #x8d #x40 #xfe #xa8 #x03 #x0f #x84
+      #xcb #xfe #xff #xff #x49 #x8b #x45 #x00 #xff #x90 #xa8 #x28 #x00
+      #x00 #x48 #x89 #xc5 #xe9 #xdb #xfe #xff #xff #x66 #x0f #x1f #x84
+      #x00 #x00 #x00 #x00 #x00 #x49 #x8b #x45 #x00 #x49 #x8b #xbc #x24
+      #x88 #x00 #x00 #x00 #x4c #x89 #xfe #xff #x10 #x8b #x05 nil nil nil
+      nil #x83 #xc0 #x01 #x89 #x05 nil nil nil nil #xc1 #xe8 #x09 #x74
+      #x4b #x45 #x31 #xff #xe9 #xec #xfe #xff #xff #x0f #x1f #x00 #x48
+      #x85 #xf6 #x74 #x0e #x49 #x8b #x45 #x00 #x49 #x8b #xbc #x24 #x88
+      #x00 #x00 #x00 #xff #x10 #x49 #x89 #xee #xe9 #x2d #xff #xff #xff
+      #x0f #x1f #x44 #x00 #x00 #x49 #x8b #x45 #x00 #x49 #x8b #xbc #x24
+      #x88 #x00 #x00 #x00 #x4c #x89 #xfe #x31 #xed #xff #x10 #xe9 #xe7
+      #xfe #xff #xff #x0f #x1f #x84 #x00 #x00 #x00 #x00 #x00 #x4c #x8b
+      #x74 #x24 #x40 #x48 #x8b #x7c #x24 #x10 #xff #x93 #x50 #x2a #x00
+      #x00 #x48 #x89 #xc7 #xff #x93 #xc8 #x25 #x00 #x00 #x44 #x8b #x44
+      #x24 #x38 #x48 #x89 #xc5 #x45 #x85 #xc0 #x74 #x13 #x49 #x8b #x45
+      #x00 #x49 #x8b #xbc #x24 #x80 #x00 #x00 #x00 #x48 #x8b #x74 #x24
+      #x10 #xff #x10 #x48 #x8b #x44 #x24 #x10 #x4c #x8b #x7c #x24 #x18
+      #x48 #x89 #x68 #xfd #x4c #x89 #xff #xff #x93 #x50 #x2a #x00 #x00
+      #x48 #x89 #xc7 #xff #x93 #xc8 #x25 #x00 #x00 #x8b #x7c #x24 #x3c
+      #x48 #x89 #xc5 #x85 #xff #x74 #x11 #x49 #x8b #x45 #x00 #x49 #x8b
+      #xbc #x24 #x80 #x00 #x00 #x00 #x4c #x89 #xfe #xff #x10 #x48 #x8b
+      #x44 #x24 #x18 #x48 #x89 #x68 #xfd #x48 #x89 #xc7 #xff #x93 #x50
+      #x2a #x00 #x00 #x49 #x8b #x54 #x24 #x20 #x4c #x8b #x7c #x24 #x48
+      #x4c #x89 #xb4 #x24 #x90 #x00 #x00 #x00 #x48 #x89 #x84 #x24 #x98
+      #x00 #x00 #x00 #x48 #x8b #x44 #x24 #x50 #xbf #x05 #x00 #x00 #x00
+      #x48 #x8d #xb4 #x24 #x80 #x00 #x00 #x00 #x48 #x89 #x94 #x24 #x80
+      #x00 #x00 #x00 #x4c #x89 #xbc #x24 #x88 #x00 #x00 #x00 #x48 #x89
+      #x84 #x24 #xa0 #x00 #x00 #x00 #xff #x93 #x88 #x1d #x00 #x00 #x4c
+      #x8b #x6c #x24 #x10 #x48 #x89 #xc5 #x4c #x89 #xef #xff #x93 #x50
+      #x2a #x00 #x00 #x4c #x8b #x74 #x24 #x58 #x4c #x09 #xf0 #x0f #x84
+      #xf0 #x01 #x00 #x00 #x4c #x89 #xef #xff #x93 #x50 #x2a #x00 #x00
+      #x48 #x89 #xee #x4c #x89 #xf7 #x49 #x89 #xc5 #xff #x93 #xf8 #x22
+      #x00 #x00 #x4c #x89 #xef #x48 #x89 #xc6 #xff #x93 #xf8 #x22 #x00
+      #x00 #x4c #x89 #xff #x48 #x89 #xc6 #xff #x93 #xf8 #x22 #x00 #x00
+      #x49 #x8b #x7c #x24 #x28 #x48 #x89 #xc6 #xff #x93 #xf8 #x22 #x00
+      #x00 #x48 #x81 #xc4 #xb8 #x00 #x00 #x00 #x5b #x5d #x41 #x5c #x41
+      #x5d #x41 #x5e #x41 #x5f #xc3 #x48 #x89 #xc7 #xff #x53 #x38 #x84
+      #xc0 #x0f #x84 #xf4 #xfd #xff #xff #x66 #x90 #x49 #x83 #x7c #x24
+      #x78 #x00 #x0f #x84 #xe6 #xfd #xff #xff #x4c #x89 #xf7 #xff #x93
+      #x48 #x2a #x00 #x00 #x48 #x89 #xc7 #x8d #x40 #xfd #xa8 #x07 #x0f
+      #x85 #xcf #xfd #xff #xff #x49 #x83 #x7c #x24 #x78 #x00 #x0f #x84
+      #xc3 #xfd #xff #xff #xff #x93 #x50 #x2a #x00 #x00 #x48 #x8b #x7c
+      #x24 #x10 #x49 #x89 #xc6 #xff #x93 #x50 #x2a #x00 #x00 #x4c #x89
+      #xf7 #x48 #x89 #xc6 #xff #x93 #xf8 #x22 #x00 #x00 #x8b #x54 #x24
+      #x38 #x49 #x89 #xc6 #x85 #xd2 #x74 #x13 #x49 #x8b #x45 #x00 #x49
+      #x8b #xbc #x24 #x80 #x00 #x00 #x00 #x48 #x8b #x74 #x24 #x10 #xff
+      #x10 #x48 #x8b #x44 #x24 #x68 #x48 #x8b #x7c #x24 #x08 #x4c #x89
+      #x30 #xff #x93 #x50 #x2a #x00 #x00 #x31 #xf6 #x48 #x89 #xc7 #xff
+      #x93 #xf8 #x22 #x00 #x00 #x49 #x8b #x3c #x24 #x48 #x89 #xc6 #xff
+      #x93 #xf8 #x22 #x00 #x00 #x31 #xf6 #x48 #x89 #xc7 #xff #x93 #xf8
+      #x22 #x00 #x00 #x49 #x8b #x7c #x24 #x48 #x48 #x89 #xc6 #xff #x93
+      #xf8 #x22 #x00 #x00 #x48 #x89 #xef #x48 #x89 #xc6 #xff #x93 #xf8
+      #x22 #x00 #x00 #x4c #x8b #x74 #x24 #x18 #x48 #x89 #xc5 #x4c #x89
+      #xf7 #xff #x93 #x50 #x2a #x00 #x00 #x48 #x89 #xef #x48 #x89 #xc6
+      #xff #x93 #xf8 #x22 #x00 #x00 #x48 #x89 #xc5 #x8b #x44 #x24 #x3c
+      #x85 #xc0 #x74 #x11 #x49 #x8b #x45 #x00 #x49 #x8b #xbc #x24 #x80
+      #x00 #x00 #x00 #x4c #x89 #xf6 #xff #x10 #x48 #x8b #x44 #x24 #x60
+      #x48 #x89 #x28 #xe9 #x09 #xfd #xff #xff #x0f #x1f #x44 #x00 #x00
+      #x48 #x85 #xf6 #x74 #x0e #x49 #x8b #x45 #x00 #x49 #x8b #xbc #x24
+      #x88 #x00 #x00 #x00 #xff #x10 #x31 #xf6 #x4c #x89 #xf7 #xff #x93
+      #x88 #x25 #x00 #x00 #x48 #x85 #xc0 #x0f #x85 #xd9 #xfa #xff #xff
+      #x66 #x41 #x0f #x6f #x44 #x24 #x50 #x48 #x8d #x74 #x24 #x70 #xbf
+      #x02 #x00 #x00 #x00 #x0f #x29 #x44 #x24 #x70 #xff #x93 #x88 #x1d
+      #x00 #x00 #xe9 #xb8 #xfa #xff #xff #x48 #x85 #xf6 #x74 #x0e #x49
+      #x8b #x45 #x00 #x49 #x8b #xbc #x24 #x88 #x00 #x00 #x00 #xff #x10
+      #x31 #xed #xe9 #xe2 #xfa #xff #xff #x66 #x0f #x1f #x44 #x00 #x00
+      #x48 #x85 #xed #x74 #x11 #x49 #x8b #x45 #x00 #x49 #x8b #xbc #x24
+      #x88 #x00 #x00 #x00 #x48 #x89 #xee #xff #x10 #x31 #xf6 #xe9 #x98
+      #xfa #xff #xff #x0f #x1f #x00 #x48 #x8b #x7c #x24 #x48 #x48 #x89
+      #xee #xff #x93 #xf8 #x22 #x00 #x00 #x49 #x8b #x7c #x24 #x38 #x48
+      #x89 #xc6 #xff #x93 #xf8 #x22 #x00 #x00 #x31 #xf6 #x48 #x89 #xc7
+      #xff #x93 #xf8 #x22 #x00 #x00 #x49 #x8b #x7c #x24 #x30 #x48 #x89
+      #xc6 #xff #x93 #xf8 #x22 #x00 #x00 #xe9 #x14 #xfe #xff #xff]
+         :gots '((23 . freloc) (30 . d-reloc) (594 . symbols-with-pos))
+         :module-counter '((435 . 0) (448 . 0) (459 . 4) (707 . 0) (716 . 0))
+         :plt-calls '(632)
+         :imports '(1335 1201 10 1354 1119 1209 1215 1301 1353 7 945 0 13 14)
+         :data '(0 2 4 5 6 7 9 10 11 15 16 17)))
+  "Exact multi-import shapes of gnu-cconv--convert-function.eln (S6.7); see
+`nelisp-eln-native-subr--multi-import-specs-cconv-convert'.
+
+`cconv-convert-lambda' (252 bytes) is the native anonymous lambda
+taking five Lisp arguments, which `cconv--convert-function' calls
+directly, through the module-local PLT, for its side effects on its
+local boxes; `cconv-convert-function-form' (1594 bytes) is
+vendor cconv.el `cconv--convert-function' itself, with inline module-counter
+`maybe_gc'/`maybe_quit' polling.")
+
+(unless (assq 'cconv-convert-function-form nelisp-eln-tail-code--multi-import-shapes)
+  (setq nelisp-eln-tail-code--multi-import-shapes
+        (append nelisp-eln-tail-code--multi-import-shapes
+                nelisp-eln-tail-code--multi-import-shapes-cconv-convert)))
+
 (defun nelisp-eln-tail-code--disp32 (bytes offset)
   "Return the signed disp32 at OFFSET in BYTES."
   (let ((value (logior (aref bytes offset)
@@ -2009,6 +2186,11 @@ address as the artifact's own `quitcounter' object."
                                         (plist-get (cdr shape) :data))
               :symbols-with-pos-got swp
               :module-counter-vaddr counter
+              :plt-calls (mapcar
+                          (lambda (offset)
+                            (+ function-vaddr offset 4
+                               (nelisp-eln-tail-code--disp32 bytes offset)))
+                          (plist-get (cdr shape) :plt-calls))
               :helper (plist-get (cdr shape) :helper)
               :proof :multi-import-call)))))
 
