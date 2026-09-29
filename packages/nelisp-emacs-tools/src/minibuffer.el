@@ -10,7 +10,7 @@
 Standalone NeLisp binds `emacs-version' to a real string too (for vendor
 compatibility), so neither disjunct after the first fires there; detect
 the standalone path by a NeLisp-only primitive instead, matching
-`emacs-char-table--standalone-p' in `emacs-char-table.el'.")
+the standalone predicate in `emacs-char-table.el'.")
 
 (defun minibuffer--host-load-standard ()
   "Load host Emacs's standard minibuffer library."

@@ -11,6 +11,7 @@
 ;; replaces them with an ASCII-oriented implementation sufficient for the
 ;; vendor case-table API and early i18n/bootstrap loads.
 
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- case/syntax tables use the library char-table representation.
 ;;; Code:
 
 (defconst case-table--size 256
@@ -24,7 +25,7 @@
 The NeLisp reader binds `emacs-version' just like host Emacs, so a bare
 `(not (boundp 'emacs-version))' test misfires there.  Detect the
 standalone path by a NeLisp-only primitive, matching
-`emacs-char-table--standalone-p' in `emacs-char-table.el'."
+the standalone predicate in `emacs-char-table.el'."
   (or (fboundp 'nl-write-file)
       (not (boundp 'emacs-version))))
 

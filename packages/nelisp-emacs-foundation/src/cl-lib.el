@@ -422,6 +422,13 @@ For unrecognised places, signals an error at expansion time."
                                                            value)))
                                      (list (list 'setf (car clause) value))))
                                  args)))))
+                ((and (symbolp fn) (fboundp 'gv-get) (get fn 'gv-expander))
+                 ;; A place registered with GNU gv.el (`gv-define-setter',
+                 ;; `gv-define-expander', ...), e.g. `gv-deref' from the
+                 ;; vendored gv.el that NeLisp loads lazily for nadvice.
+                 ;; Delegate to gv itself rather than synthesizing a call to
+                 ;; a `FN--setter' that nothing defines.
+                 (gv-get place (lambda (_getter setter) (funcall setter value))))
                 ((and (symbolp fn) (fboundp fn)
                       (eq (car-safe (symbol-function fn)) 'macro))
                  ;; A generalized place defined as a MACRO (e.g. cl-generic's

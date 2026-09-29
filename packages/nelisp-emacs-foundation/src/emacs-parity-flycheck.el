@@ -35,7 +35,7 @@
 ;;
 ;;   `emacs-cl-macros.el' (emacs-cl-macros.el:1326) already carries the correct
 ;;   definition -- it routes a non-symbol place through `setf' -- but gates it
-;;   behind `emacs-cl-macros--define-p', which declines to install because the
+;;   behind the cl-macros define predicate, which declines to install because the
 ;;   broken prelude `cl-pushnew' is already `fboundp'.  So the good version is
 ;;   never reached and the broken one stays live when Flycheck loads.
 ;;

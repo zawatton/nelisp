@@ -91,7 +91,7 @@ and every feature is still loaded exactly as before."
 ;; NeLisp v1.2.0's reader provides the `cl-lib' FEATURE itself (its
 ;; prelude carries cl-loop / cl-defstruct / cl-case natively) but not the
 ;; whole surface Layer 2 reaches for: `cl-member-if' is absent, and
-;; `emacs-keymap--set-binding' calls it while vendored `pp.el' installs
+;; the keymap binding setter calls it while vendored `pp.el' installs
 ;; its keymap at load time.  With the feature already provided, the
 ;; `(require 'cl-lib)' above never reaches `src/cl-lib.el', whose
 ;; fboundp-gated polyfills close exactly that gap (measured 2026-09-04,

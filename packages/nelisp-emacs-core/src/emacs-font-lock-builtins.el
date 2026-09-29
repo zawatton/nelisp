@@ -68,7 +68,7 @@ dolist tagged -- it misses names such as `font-lock-mode'/
 and untagged, which load first and would otherwise permanently look
 \"live\" to `emacs-font-lock-builtins--function-cell-live-p' and win
 over this bridge.  Force install unconditionally on standalone via a
-NeLisp-only primitive, matching `emacs-char-table--standalone-p' in
+NeLisp-only primitive, matching the char-table standalone predicate in
 `emacs-char-table.el'."
   (or (fboundp 'nl-write-file)
       (fboundp 'nelisp--write-stdout-bytes)

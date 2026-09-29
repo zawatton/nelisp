@@ -36,6 +36,7 @@
 ;; Depends on: `pcase' (= emacs-pcase.el).  Make sure that loads first
 ;; if you want full pattern support inside cl-* expansions.
 
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- library cl macros; guarded via emacs-cl-macros--define-p.
 ;;; Code:
 
 (defun emacs-cl-macros--define-p (symbol)
@@ -225,8 +226,7 @@ Accept both real-Emacs-compatible `(symbol-function 'foo)' and
 
 ;;;; --- cl-defun ---------------------------------------------------------
 
-(when (or (emacs-cl-macros--standalone-p)
-          (emacs-cl-macros--define-p 'cl-defun))
+(when (emacs-cl-macros--define-p 'cl-defun)
   ;; cl-defun supporting &optional, &rest, &key (= adequate for
   ;; anvil-memory / anvil-state arglists).
   ;;
@@ -297,8 +297,7 @@ Accept both real-Emacs-compatible `(symbol-function 'foo)' and
 
 ;;;; --- cl-incf / cl-decf ------------------------------------------------
 
-(when (or (emacs-cl-macros--standalone-p)
-          (emacs-cl-macros--define-p 'cl-incf))
+(when (emacs-cl-macros--define-p 'cl-incf)
   (defmacro cl-incf (place &optional delta)
     "Stub: increment PLACE by DELTA, defaulting to 1."
     (let ((value (list '+ place (or delta 1))))
@@ -306,8 +305,7 @@ Accept both real-Emacs-compatible `(symbol-function 'foo)' and
           (list 'setq place value)
         (list 'setf place value)))))
 
-(when (or (emacs-cl-macros--standalone-p)
-          (emacs-cl-macros--define-p 'cl-decf))
+(when (emacs-cl-macros--define-p 'cl-decf)
   (defmacro cl-decf (place &optional delta)
     (let ((value (list '- place (or delta 1))))
       (if (symbolp place)
@@ -608,8 +606,7 @@ is bound to the unconsumed cdr.  This helper is shared by `cl-loop',
             (cons (emacs-cl-macros--loop-destructure-bindings pattern item)
                   forms)))))
 
-(when (or (emacs-cl-macros--standalone-p)
-          (emacs-cl-macros--define-p 'cl-loop))
+(when (emacs-cl-macros--define-p 'cl-loop)
   ;; cl-loop is incredibly complex; provide a minimal version that
   ;; handles the patterns anvil-memory uses (= for X in LIST do/collect).
   (defmacro cl-loop (&rest clauses)
@@ -939,8 +936,7 @@ Unrecognised shapes return nil (= caller gets a no-op expansion)."
 
 ;;;; --- cl-defgeneric / cl-defmethod / cl-defstruct -------------------
 
-(when (or (emacs-cl-macros--standalone-p)
-          (emacs-cl-macros--define-p 'cl-deftype))
+(when (emacs-cl-macros--define-p 'cl-deftype)
   (defmacro cl-deftype (name arglist &rest body)
     "Standalone load-time fallback: ignore CL type declarations."
     (ignore arglist body)
@@ -986,8 +982,7 @@ cycles."
              (setq guard (1+ guard))))
          hit)))
 
-(when (or (emacs-cl-macros--standalone-p)
-          (emacs-cl-macros--define-p 'cl-defstruct))
+(when (emacs-cl-macros--define-p 'cl-defstruct)
   (defmacro cl-defstruct (name &rest slots)
     "Stub: defstruct → minimal alist/vector-backed accessors.
 
@@ -1340,8 +1335,7 @@ descriptor."
         (list 'let (list (list value-sym expr))
               (cons 'cond rev))))))
 
-(when (or (emacs-cl-macros--standalone-p)
-          (emacs-cl-macros--define-p 'cl-pushnew))
+(when (emacs-cl-macros--define-p 'cl-pushnew)
   (defmacro cl-pushnew (item place &rest _keys)
     "Cons ITEM onto PLACE unless it is already `member' of PLACE.
 PLACE may be a symbol (expands to `setq') or a generalized place
@@ -1428,8 +1422,7 @@ macro-time constants, then restore previously bound values."
                                     (list 'set (list 'car cell) nil))
                               (list 'setq saved (list 'cdr saved)))))))))
 
-(when (or (emacs-cl-macros--standalone-p)
-          (emacs-cl-macros--define-p 'cl-letf))
+(when (emacs-cl-macros--define-p 'cl-letf)
   (defmacro cl-letf (bindings &rest body)
     "Minimal `cl-letf' for variable and function-cell bindings.
 This covers the common test/vendor pattern of temporarily rebinding
@@ -1472,8 +1465,7 @@ bindings."
                         (append (nreverse setup-forms) body))
                   (cons 'progn cleanup-forms))))))
 
-(when (or (emacs-cl-macros--standalone-p)
-          (emacs-cl-macros--define-p 'cl-letf*))
+(when (emacs-cl-macros--define-p 'cl-letf*)
   (defalias 'cl-letf* 'cl-letf))
 
 (unless (fboundp 'cl-flet)
@@ -2265,8 +2257,7 @@ A TYPE of t or `otherwise' is the default clause."
 ;; `make-symbol'.  The standalone-aware gate replaces the earlier flat-only
 ;; prelude stub while host Emacs keeps its real cl-lib version.
 
-(when (or (emacs-cl-macros--standalone-p)
-          (emacs-cl-macros--define-p 'cl-destructuring-bind))
+(when (emacs-cl-macros--define-p 'cl-destructuring-bind)
   (defmacro cl-destructuring-bind (arglist expr &rest body)
     "Bind the variables in ARGLIST to successive elements of the list EXPR.
 Supports &optional (with defaults), &rest/&body, &key (with defaults) and
@@ -2423,14 +2414,26 @@ for the last place.  Return the original value of the first place."
     "Set PLACE to (FUNC PLACE ARGS...).
 FUNC is spliced literally into the call (an unquoted function name or a
 lambda form), matching `cl-callf'."
-    (let ((call (cons func (cons place args))))
+    (let ((call (if (symbolp func)
+                    (cons func (cons place args))
+                  ;; A lambda form (or #'FN) must be funcall'ed: the runtime
+                  ;; has no ((lambda ...) ARG) call-head support.
+                  (cons 'funcall (cons (if (eq (car-safe func) 'lambda)
+                                           (list 'function func)
+                                         func)
+                                       (cons place args))))))
       (if (symbolp place) (list 'setq place call) (list 'setf place call)))))
 
 (unless (fboundp 'cl-callf2)
   (defmacro cl-callf2 (func arg1 place &rest args)
     "Set PLACE to (FUNC ARG1 PLACE ARGS...).
 FUNC is spliced literally into the call, matching `cl-callf2'."
-    (let ((call (cons func (cons arg1 (cons place args)))))
+    (let ((call (if (symbolp func)
+                    (cons func (cons arg1 (cons place args)))
+                  (cons 'funcall (cons (if (eq (car-safe func) 'lambda)
+                                           (list 'function func)
+                                         func)
+                                       (cons arg1 (cons place args)))))))
       (if (symbolp place) (list 'setq place call) (list 'setf place call)))))
 
 ;;;; --- Doc 16 breadth round 21: cl iteration macros (cl-do / cl-do*) ----

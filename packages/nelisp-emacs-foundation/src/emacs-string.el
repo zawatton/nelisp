@@ -336,7 +336,7 @@ TAB resolves to `tab-width' (matching host `char-width')."
 ;; matrix hit `(void-function unibyte-char-to-multibyte)' for 10 features:
 ;; dash, emojify, magit, magit-delta, magit-section, markdown-mode,
 ;; math-preview, ob-async, org-roam, treemacs -- rx.el:519 is the shared
-;; callsite, `rx--string-to-intervals' decoding an interval boundary byte).
+;; callsite, the rx interval decoder decoding an interval boundary byte).
 ;;
 ;; GNU semantics verified against host Emacs 31.1: ASCII (< 128) passes
 ;; through unchanged; a raw byte 128..255 maps to the "eight-bit" character

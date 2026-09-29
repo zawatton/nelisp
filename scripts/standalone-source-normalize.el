@@ -162,7 +162,15 @@ envelope.")
     ;; defuns (`smie-next-sexp', `smie-indent-keyword') stay elided.
     smie-bnf->prec2
     smie-bnf--closer-alist
-    smie-prec2->grammar)
+    smie-prec2->grammar
+    ;; GNU cl-macs.el's arglist destructurer: every `cl-defun'/`cl-defmacro'/
+    ;; `cl-destructuring-bind' expansion with &key/&optional-default (e.g.
+    ;; the vendor Magit chain's part3 top-level forms) calls it at expansion
+    ;; time.  The elided placeholder signalled "Standalone source body
+    ;; elided: cl--do-arglist" and aborted the bundle load.
+    cl--do-arglist
+    ;; The `cl-loop' clause parser (the only other large cl-macs.el defun).
+    cl--parse-loop-clause)
   "Top-level defuns exempt from generic large-body replay elision.
 These symbols are core runtime substrate where replacing the body with a
 callable nil stub silently corrupts downstream semantics.")
@@ -1101,7 +1109,11 @@ as many small `puthash' forms."
   (let ((symbol (cadr form)))
     (list
      'progn
-     (list 'put (list 'quote symbol) ''custom-group t)
+     ;; Do NOT seed `custom-group' with `t': it is the member LIST that
+     ;; `custom-add-to-group' `nconc's onto, and `(nconc t ...)' signalled
+     ;; (wrong-type-argument listp t) at the magit bundle's first
+     ;; (custom-add-to-group 'magit-faces ...).  Group existence stays
+     ;; marked by `custom-args'.
      (list 'put (list 'quote symbol) ''custom-args t)
      (list 'quote symbol))))
 
@@ -1652,6 +1664,19 @@ runtime meaning."
          (equal standalone-source-normalize-current-file "replace.el")
          (symbolp (cadr form)))
     (list (list 'defvar (cadr form) nil)))
+   ;; S2 coverage batch 6 (2026-09-29): woman.el ends with
+   ;; `(if (featurep (quote dired)) (woman-dired-define-keys)
+   ;;    (add-hook (quote dired-mode-hook) (function woman-dired-define-keys)))'.
+   ;; On this standalone `(featurep (quote dired))' is already t (src/dired.el
+   ;; is the repo's minimal stand-in, not GNU dired.el), but that stand-in's
+   ;; `dired-mode-map' has no `[menu-bar immediate]' sub-keymap, so the eager
+   ;; branch signals `emacs-keymap-not-keymap' at load time.  Always take the
+   ;; deferred branch: the hook runs when a Dired mode actually starts.
+   ((and (consp form)
+         (eq (car form) 'if)
+         (equal standalone-source-normalize-current-file "woman.el")
+         (equal (cadr form) '(featurep 'dired)))
+    (list '(add-hook 'dired-mode-hook #'woman-dired-define-keys)))
    ;; Key/menu declarations are UI wiring, not callable runtime definitions.
    ;; They appear in long contiguous runs in files such as org-agenda.el and
    ;; add substantial load pressure in standalone replay.

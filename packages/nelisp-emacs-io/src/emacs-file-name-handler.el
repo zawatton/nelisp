@@ -31,6 +31,7 @@
 ;;   - handler-aware standalone fallbacks for `file-remote-p',
 ;;     `file-local-name', and `unhandled-file-name-directory'.
 
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- file-remote-p dispatches through the library handler table.
 ;;; Code:
 
 (defun emacs-fnh-find-file-name-handler (filename operation)

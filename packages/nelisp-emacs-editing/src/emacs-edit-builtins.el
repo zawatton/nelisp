@@ -30,6 +30,7 @@
 ;; Each definition is gated on `unless (fboundp ...)' / `unless
 ;; (boundp ...)' so loading inside a host Emacs is a cheap no-op.
 
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- editing/scan primitives operate on ec-buffers.
 ;;; Code:
 
 (require 'nelisp-emacs-compat)

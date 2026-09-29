@@ -31,6 +31,7 @@
 ;; Phases 11.A' / 11.B' / 11.C'' fixed for the buffer / search /
 ;; keymap / frame / window sides).
 
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- line/point motion must operate on the ec-buffer layer.
 ;;; Code:
 
 (require 'nelisp-emacs-compat)
@@ -47,7 +48,7 @@ dolist tagged -- it misses names such as `eolp'/`line-number-at-pos'
 that `emacs-stub.el' defines individually and untagged, which load
 first and would otherwise permanently win over this bridge.  Force
 install unconditionally on standalone via a NeLisp-only primitive,
-matching `emacs-char-table--standalone-p' in `emacs-char-table.el'."
+matching the standalone predicate in `emacs-char-table.el'."
   (or (fboundp 'nl-write-file)
       (fboundp 'nelisp--write-stdout-bytes)
       (not (boundp 'emacs-version))

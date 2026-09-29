@@ -402,7 +402,7 @@ Forwarder to `forward-char' with negated count."
       ;; value cell without marking the symbol special, so under
       ;; lexical-binding a later `(let ((inhibit-read-only t)) ...)'
       ;; creates an invisible LEXICAL binding and the read-only check in
-      ;; `emacs-buffer--barf-if-read-only' still sees the global nil --
+      ;; the buffer read-only check still sees the global nil --
       ;; exactly the `default-process-coding-system' defect class the
       ;; magit bridge documented, recurring here for every name below.
       (eval (list 'defvar --s-- nil) t))))

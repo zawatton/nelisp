@@ -15,7 +15,7 @@
 ;;; Code:
 
 ;; T52: moved here from `src/nelisp-emacs-magit-bridge.el' (originally
-;; `nelisp-emacs-magit-bridge--ensure-vendor-preload-globals', reached only
+;; the magit bridge vendor-preload-globals helper, reached only
 ;; when the magit bundle loads), which left it void on the default boot
 ;; path -- the load matrix showed `(void-variable button-buffer-map)' for 3
 ;; features that are not magit at all (consult, flycheck,

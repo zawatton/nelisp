@@ -184,8 +184,8 @@ Each value is a plist with keys:
   "Return BUFFER's visited file name, or nil."
   (cond
    ((org-capture--nelisp-buffer-p buffer)
-    (or (and (fboundp 'emacs-fileio--direct-buffer-file-name)
-             (emacs-fileio--direct-buffer-file-name buffer))
+    (or (and (fboundp 'emacs-fileio-buffer-file-name-direct)
+             (emacs-fileio-buffer-file-name-direct buffer))
         (and (boundp 'emacs-fileio--buffer-files)
              (cdr (assq buffer emacs-fileio--buffer-files)))
         (ignore-errors (buffer-file-name buffer))))

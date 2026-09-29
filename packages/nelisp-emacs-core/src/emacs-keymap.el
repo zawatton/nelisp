@@ -80,6 +80,7 @@
 ;;     Doc 34 7 段 chain byte-identical)
 ;;   - mouse / function-key remap (= deferred to event-handler module)
 
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- keymap constructors use the nemacs keymap representation.
 ;;; Code:
 
 (require 'cl-lib)
@@ -545,6 +546,17 @@ Returns nil if not found in this keymap or any ancestor."
   "Return KEYMAP's binding for K, walking parent inheritance."
   (emacs-keymap--lookup-with-parent keymap k))
 
+(defun emacs-keymap--get-keyelt (object)
+  "Strip old-style menu-item wrappers from binding OBJECT.
+Like GNU `get_keyelt' for the (STRING . DEFN) and (STRING HELP . DEFN)
+shapes, so `lookup-key' on a menu-bar key returns the sub-keymap itself,
+not the item cons that holds it.  The (menu-item NAME DEFN . PROPS) shape
+is deliberately left intact: this repo's easymenu substrate
+(`easy-menu-change' etc.) reads it back through `lookup-key'."
+  (while (and (consp object) (stringp (car object)))
+    (setq object (cdr object)))
+  object)
+
 ;;;###autoload
 (defun emacs-keymap-lookup-key (keymap key &optional accept-default)
   "Look up KEY in KEYMAP, return its binding.
@@ -578,6 +590,7 @@ without a `keymapp' guard, exactly as it would on real Emacs."
                  (b (emacs-keymap--lookup-with-parent current k)))
             (when (and (null b) accept-default)
               (setq b (emacs-keymap--lookup-with-parent current t)))
+            (when b (setq b (emacs-keymap--get-keyelt b)))
             (cond
              ((null b)
               (setq binding nil)
@@ -616,6 +629,11 @@ Returns PARENT.  Detects direct cycles (= keymap == parent) and
 signals `emacs-keymap-error'."
   (unless (emacs-keymap-keymapp keymap)
     (signal 'emacs-keymap-not-keymap (list keymap)))
+  ;; GNU `get_keymap' follows a symbol's function cell, so a prefix command
+  ;; such as `Control-X-prefix' is a valid parent (term.el relies on it).
+  (when (and parent (symbolp parent) (fboundp parent)
+             (emacs-keymap-keymapp (indirect-function parent)))
+    (setq parent (indirect-function parent)))
   (when (and parent (not (emacs-keymap-keymapp parent)))
     (signal 'emacs-keymap-not-keymap (list parent)))
   (when (eq keymap parent)

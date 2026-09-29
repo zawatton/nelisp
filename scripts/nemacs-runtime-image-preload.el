@@ -102,7 +102,22 @@ batch entry is still unavailable."
   (load (concat repo-root "/scripts/nemacs-runtime-frame-tab-preload.el")
         nil 'no-message t t)
   (nemacs-runtime-image-preload--install-daily-driver-core)
+  (nemacs-runtime-image-preload--reassert-process-bridge)
   t)
+
+(defun nemacs-runtime-image-preload--reassert-process-bridge ()
+  "Re-point the public process entry points at the `emacs-process' facade.
+Later vendor/prelude loads can replace `shell-command-to-string' with the
+GNU definition, which needs a buffer-valued `standard-output' that NeLisp's
+`with-output-to-string' does not provide.  The facade versions capture
+output into ec-buffers correctly."
+  (dolist (pair '((shell-command-to-string
+                   . emacs-process-shell-command-to-string)
+                  (call-process . emacs-process-call-process)
+                  (call-process-region . emacs-process-call-process-region)
+                  (process-file . emacs-process-process-file)))
+    (when (fboundp (cdr pair))
+      (fset (car pair) (symbol-function (cdr pair))))))
 
 (defun nemacs-runtime-image-preload-interactive (repo-root bootstrap-file)
   "Preload the interactive TUI entry into the current NeLisp image."

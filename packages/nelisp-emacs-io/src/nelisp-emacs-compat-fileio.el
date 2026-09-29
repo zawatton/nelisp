@@ -74,6 +74,7 @@
 ;;     which is *not* part of `nelisp-ec' buffers in MVP).  We accept
 ;;     a VISIT argument for shape-compat and silently ignore it.
 
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- nelisp-ec-* file layer targets ec-buffers.
 ;;; Code:
 
 (require 'cl-lib)
@@ -897,6 +898,11 @@ Phase 7.5 will swap this to `nl-syscall-write-file' once T76 lands."
                       #'write-region)))
       (funcall writer unibyte nil file append 'silent)
       (length unibyte)))))
+
+;; Public entry point for other ownership groups (IO uses it).
+(defalias 'nelisp-ec-write-raw-bytes #'nelisp-ec--write-raw-bytes
+  "Write UNIBYTE bytes to FILE.  When APPEND non-nil, append.
+Public name for `nelisp-ec--write-raw-bytes'.")
 
 ;;;###autoload
 (defun nelisp-ec-insert-file-contents (file &optional visit beg end replace)

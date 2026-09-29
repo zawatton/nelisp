@@ -263,6 +263,30 @@ These are existing vendor implementations, not local reimplementations.")
     ;; measured directly (136/595 -> 564/595 present) rather than assumed
     ;; from the form count.
     "emacs-lisp/simple.el"
+    ;; S2 coverage batch 6 (2026-09-29): compile, pcomplete (shell.el's
+    ;; live-`require' target), shell, ehelp (term.el's), term, woman,
+    ;; project.  All are also listed in `nelisp-bootstrap-normalized-bundle-
+    ;; files' so the `.el' bundle carries normalized text (S1.4 cold load).
+    ;; pcomplete.el/ehelp.el are bundled here rather than left to live
+    ;; `require' because a live `require' of the raw file costs ~1.7s/~5.6s
+    ;; on the standalone, several times the cost of replaying the same forms.
+    ;; Tried and left out (all load clean on the standalone, but cost S1.4
+    ;; too much wall time -- measured on this box with the 35s baseline):
+    ;; dired.el (+6.5s, needs an `easy-menu-define' keep-rule for woman's
+    ;; `[menu-bar immediate]' lookup) and calc/calc.el (+11.5s, ~7s of it
+    ;; live `calc-macs'/`rect'/`calc-loaddefs' loads).  isearch.el is not
+    ;; added: it needs `search-map' (a bindings.el keymap) and was not
+    ;; probed further.  woman.el's eager `woman-dired-define-keys' call is
+    ;; rewritten to the deferred `dired-mode-hook' branch in
+    ;; standalone-source-normalize.el.
+    "emacs-lisp/progmodes/compile.el"
+    "emacs-lisp/pcomplete.el"
+    "emacs-lisp/shell.el"
+    "emacs-lisp/ehelp.el"
+    "emacs-lisp/term.el"
+    "emacs-lisp/woman.el"
+    "emacs-lisp/progmodes/project.el"
+    "emacs-lisp/isearch.el"
     ;; `cl-macs.el' MUST be last in this list, after every struct-defining
     ;; file above.  It loads clean on its own (50/129 -> 125/129) but
     ;; installs the real, complete `cl-defstruct'/`cl-defmethod' machinery;
@@ -981,6 +1005,14 @@ overrides them for workflow tests."
     "vendor/emacs-lisp/replace.el"
     "vendor/emacs-lisp/comint.el"
     "vendor/emacs-lisp/simple.el"
+    "vendor/emacs-lisp/progmodes/compile.el"
+    "vendor/emacs-lisp/pcomplete.el"
+    "vendor/emacs-lisp/shell.el"
+    "vendor/emacs-lisp/ehelp.el"
+    "vendor/emacs-lisp/term.el"
+    "vendor/emacs-lisp/woman.el"
+    "vendor/emacs-lisp/progmodes/project.el"
+    "vendor/emacs-lisp/isearch.el"
     "vendor/emacs-lisp/emacs-lisp/cl-macs.el")
   "Bundle members inserted as normalized source rather than verbatim text.
 

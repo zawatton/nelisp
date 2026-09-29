@@ -29,6 +29,7 @@
 ;;   - syntax-table per-mode binding
 ;;   - mode-line-format integration
 
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- major/minor mode state lives on ec-buffers.
 ;;; Code:
 
 (require 'emacs-mode)
@@ -268,7 +269,7 @@ template.  See `emacs-mode-define-derived-mode' for the fuller note."
 ;;;; --- simple.el: special-mode / special-mode-map ----------------------
 
 ;; T62: `special-mode'/`special-mode-map' had only an fboundp/boundp-guarded
-;; on-demand definition (`nelisp-emacs-magit-bridge--ensure-special-mode')
+;; on-demand definition (the magit bridge special-mode helper)
 ;; inside `src/nelisp-emacs-magit-bridge.el', which is not on the default
 ;; boot path.  The load matrix hit `(void-variable special-mode-map)' for
 ;; `diff-hl' (which requires real Emacs `vc-dir'/`log-view', both of which

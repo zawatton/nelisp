@@ -19,6 +19,7 @@
 ;; - major-mode dispatch through a minimum `auto-mode-alist'
 ;; - global `C-x C-f' / `C-x C-s' / `C-x C-w' bindings
 
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- kill-buffer/file hooks work on ec-buffers.
 ;;; Code:
 
 (require 'cl-lib)

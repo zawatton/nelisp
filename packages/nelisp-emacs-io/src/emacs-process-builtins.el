@@ -29,6 +29,7 @@
 ;;   - process-coding-system handling
 ;;   - network processes
 
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- process primitives are backed by the nemacs process/event-loop bridge.
 ;;; Code:
 
 (require 'emacs-process)
@@ -120,6 +121,42 @@
 (when (emacs-process-builtins--install-function-p 'shell-command-to-string)
   (defalias 'shell-command-to-string
     #'emacs-process-shell-command-to-string))
+
+;;;; --- process-lines family (subr.el) ---------------------------------
+
+(unless (fboundp 'process-lines-handling-status)
+  (defun process-lines-handling-status (program status-handler &rest args)
+    "Run PROGRAM with ARGS and return its output as a list of lines.
+STATUS-HANDLER, when non-nil, is called with the exit status; when nil a
+non-zero exit status signals an error."
+    ;; Capture through the buffer-free facade: `with-temp-buffer', `eobp'
+    ;; and `forward-line' are macros or layer-specific primitives that break
+    ;; when the session swaps between buffer layers.
+    (let* ((result (emacs-process-capture-output program args))
+           (status (car result))
+           (text (cdr result)))
+      (if status-handler
+          (funcall status-handler status)
+        (unless (eq status 0)
+          (error "%s exited with status %s" program status)))
+      (let ((start 0)
+            (lines nil))
+        (while (< start (length text))
+          (let ((nl (string-match "\n" text start)))
+            (setq lines (cons (substring text start (or nl (length text)))
+                              lines))
+            (setq start (if nl (1+ nl) (length text)))))
+        (nreverse lines)))))
+
+(unless (fboundp 'process-lines)
+  (defun process-lines (program &rest args)
+    "Run PROGRAM with ARGS; return output lines, error on non-zero status."
+    (apply #'process-lines-handling-status program nil args)))
+
+(unless (fboundp 'process-lines-ignore-status)
+  (defun process-lines-ignore-status (program &rest args)
+    "Run PROGRAM with ARGS; return output lines, ignoring the exit status."
+    (apply #'process-lines-handling-status program #'ignore args)))
 
 ;;;; --- variable bridges ----------------------------------------------
 

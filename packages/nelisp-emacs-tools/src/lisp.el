@@ -11,6 +11,7 @@
 ;; as a stable NeLisp compatibility surface.  This facade exposes the
 ;; common Lisp editing commands without pulling in the full vendor file.
 
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- sexp motion operates on ec-buffers.
 ;;; Code:
 
 (require 'emacs-buffer-builtins)
@@ -22,7 +23,7 @@
 Standalone NeLisp binds `emacs-version' too (for vendor compatibility),
 so a bare `(not (boundp 'emacs-version))' test misfires there; detect the
 standalone path by a NeLisp-only primitive instead, matching
-`emacs-char-table--standalone-p' in `emacs-char-table.el'."
+the standalone predicate in `emacs-char-table.el'."
   (if (or (fboundp 'nl-write-file)
           (not (boundp 'emacs-version)))
       t

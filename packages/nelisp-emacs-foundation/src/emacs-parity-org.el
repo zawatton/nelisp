@@ -549,81 +549,9 @@ publishing will be done asynchronously, in another process."
     "Alist of properties and functions to adjust inserted property values."))
 
 ;;;; ========= obsolete-variable-alias-aware hook running ==============
-;; Root cause of the `void-function: org-export-before-parsing-hook' x30
-;; audit errors.  In stock Emacs `define-obsolete-variable-alias'
-;; (org-compat.el:503) installs a LIVE alias so the obsolete name
-;; `org-export-before-parsing-hook' and the canonical
-;; `org-export-before-parsing-functions' share ONE value cell.  The
-;; standalone substrate's `defvaralias' (src/emacs-stub.el:611) is a one-shot
-;; value copy, so when the canonical is a forward reference the obsolete
-;; name's cell diverges and holds a stale / self-referential value.
-;; `ox.el:3078' still runs the obsolete name via `run-hook-with-args', and
-;; `emacs-stub--run-hook' funcalls that bad value -> `void-function' on the
-;; hook symbol itself, once per export (~30x).
-;;
-;; Fix (real, not a stub): make the substrate hook helpers follow the
-;; obsolete/defvaralias chain to the canonical variable and read/write THAT
-;; cell, giving obsolete hooks the single-shared-cell behaviour real Emacs
-;; has.  Standalone only, guarded on the `emacs-stub--*' substrate host Emacs
-;; never routes hooks through.  A non-aliased hook resolves to itself, so
-;; normal-hook behaviour is byte-for-byte identical to the baked runner.
-(when (fboundp 'emacs-stub--run-hook)
-
-  (defun emacs-stub--hook-canonical-var (sym)
-    "Return the canonical variable SYM aliases to.
-Follow `define-obsolete-variable-alias' metadata (the
-`byte-obsolete-variable' property, whose car is the current name) then the
-`defvaralias' registry, with cycle protection.  A `make-obsolete-variable'
-whose replacement is a string is not followed."
-    (let ((cur sym) (seen nil) (done nil))
-      (while (not done)
-        (if (memq cur seen)
-            (setq done t)
-          (push cur seen)
-          (let ((next
-                 (or (let ((info (and (symbolp cur)
-                                      (get cur 'byte-obsolete-variable))))
-                       (and (car-safe info) (symbolp (car info)) (car info)))
-                     (and (boundp 'nelisp--defvaralias-registry)
-                          (cdr (assq cur nelisp--defvaralias-registry))))))
-            (if (and next (symbolp next) (not (eq next cur)))
-                (setq cur next)
-              (setq done t)))))
-      cur))
-
-  ;; Read path -- identical to the baked `emacs-stub--run-hook' except it
-  ;; resolves HOOK to its canonical variable before reading the value cell.
-  (defun emacs-stub--run-hook (hook args)
-    "Run HOOK with ARGS and return nil (obsolete-alias aware)."
-    (let* ((canon (emacs-stub--hook-canonical-var hook))
-           (entries (emacs-stub--hook-normalize
-                     (and (boundp canon) (symbol-value canon)))))
-      (while entries
-        (let ((fn (emacs-stub--hook-entry-function (car entries))))
-          (unless (eq fn t)
-            (apply fn args)))
-        (setq entries (cdr entries))))
-    nil)
-
-  ;; Write paths -- resolve to canonical, then delegate to the original
-  ;; substrate mutators (captured once, idempotent under reload) so additions
-  ;; through either the obsolete or the canonical name accumulate in ONE cell.
-  (unless (fboundp 'emacs-parity-org--stub-add-hook-orig)
-    (defalias 'emacs-parity-org--stub-add-hook-orig
-      (symbol-function 'emacs-stub--add-hook)))
-  (unless (fboundp 'emacs-parity-org--stub-remove-hook-orig)
-    (defalias 'emacs-parity-org--stub-remove-hook-orig
-      (symbol-function 'emacs-stub--remove-hook)))
-
-  (defun emacs-stub--add-hook (hook function &optional depth local)
-    "Add FUNCTION to HOOK's canonical variable (obsolete-alias aware)."
-    (emacs-parity-org--stub-add-hook-orig
-     (emacs-stub--hook-canonical-var hook) function depth local))
-
-  (defun emacs-stub--remove-hook (hook function &optional local)
-    "Remove FUNCTION from HOOK's canonical variable (obsolete-alias aware)."
-    (emacs-parity-org--stub-remove-hook-orig
-     (emacs-stub--hook-canonical-var hook) function local)))
+;; The alias-aware hook helpers (the `org-export-before-parsing-hook'
+;; obsolete-alias fix) now live with their owner in `emacs-stub.el', so
+;; this FEAT file no longer redefines FND-private functions.
 
 (provide 'emacs-parity-org)
 

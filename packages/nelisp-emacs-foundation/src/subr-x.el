@@ -107,6 +107,9 @@ provides later) is still loaded exactly as before."
   "Return non-nil when HASH-TABLE has no entries."
   (= (hash-table-count hash-table) 0))
 
+;; Kept unguarded (audit 2026-09-29): on host Emacs `emacs-hash' may claim these
+;; names first with an alist-backed polyfill that breaks real hash tables; the
+;; maphash versions below are equivalent to the native ones on NeLisp.
 (defun hash-table-keys (hash-table)
   "Return a list of HASH-TABLE keys."
   (let (keys)

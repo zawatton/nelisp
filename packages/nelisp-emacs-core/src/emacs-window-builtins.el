@@ -50,6 +50,7 @@
 ;;     replacing the nil no-op stubs that `emacs-stub-bulk.el' would
 ;;     otherwise install for these names)
 ;;
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- windows are the nemacs window model.
 ;;; Code:
 
 (require 'emacs-window)
@@ -87,7 +88,7 @@ non-`eq'-stable stub object on every call, `(window-live-p ...)' and
 `(window-list)' never delegated to the real window model, and
 `save-selected-window''s restore half was a no-op.  Force install
 unconditionally on standalone via a NeLisp-only primitive, matching
-`emacs-char-table--standalone-p' in `emacs-char-table.el' and the same
+the standalone predicate in `emacs-char-table.el' and the same
 fix already applied to `emacs-font-lock-builtins.el' /
 `emacs-redisplay-builtins.el' for the identical defect class."
   (or (fboundp 'nl-write-file)

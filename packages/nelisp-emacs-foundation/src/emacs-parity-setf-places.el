@@ -135,6 +135,11 @@
                                  (eq (car else-place) 'default-value))
                             (list 'set-default (cadr else-place) val))
                            (t (list 'setf else-place val))))))
+            ;; Places registered with GNU gv.el (loaded lazily by NeLisp for
+            ;; nadvice/oclosure, e.g. `gv-deref'): delegate to gv itself.
+            ((and (consp place) (symbolp (car place))
+                  (fboundp 'gv-get) (get (car place) 'gv-expander))
+             (gv-get place (lambda (_getter setter) (funcall setter val))))
             (t
              (signal 'error
                      (list "setf: unsupported place"

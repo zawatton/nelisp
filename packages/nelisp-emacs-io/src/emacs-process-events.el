@@ -39,6 +39,7 @@
 ;; Each polyfill is gated on `unless (fboundp ...)' so under host Emacs
 ;; this file is a no-op.
 
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- process filter/sentinel state lives in the nemacs event-loop bridge.
 ;;; Code:
 
 (require 'emacs-network-ffi)

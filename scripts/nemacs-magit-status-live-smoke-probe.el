@@ -89,7 +89,11 @@
                  "MAGIT-SMOKE STEP S7c size=%S" ok-size)
                 (setq ok-prop (get-text-property (point-min) 'magit-section))
                 (nemacs-magit-status-live-smoke--print
-                 "MAGIT-SMOKE STEP S7d prop=%S" ok-prop)
+                 ;; Print only presence: the section object is a cyclic
+                 ;; record (parent <-> children) and the runtime printer has
+                 ;; no print-circle, so `%S' of it dies with
+                 ;; excessive-lisp-nesting 16000.
+                 "MAGIT-SMOKE STEP S7d prop=%S" (and ok-prop t))
                 (let ((children (oref magit-root-section children)))
                   (setq ok-children (and children (> (length children) 0))))
                 (nemacs-magit-status-live-smoke--print

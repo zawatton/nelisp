@@ -592,10 +592,10 @@
                (lambda (_proc) 0)))
       (with-temp-buffer
         (let ((rc (emacs-process--standalone-call-process
-                   "/bin/tool" nil (list t nil) '("arg"))))
+                   "/bin/sh" nil (list t nil) '("arg"))))
           (should (eq rc 0))
           (should (member "exec \"$@\" 2>/dev/null" command))
-          (should (member "/bin/tool" command))
+          (should (member "/bin/sh" command))
           (should (equal (buffer-string) "stdout\n")))))))
 
 (ert-deftest emacs-process-builtins-test/standalone-call-process-merges-stderr-for-plain-t ()
@@ -610,7 +610,7 @@
                (lambda (_proc) 0)))
       (with-temp-buffer
         (let ((rc (emacs-process--standalone-call-process
-                   "/bin/tool" nil t '("arg"))))
+                   "/bin/sh" nil t '("arg"))))
           (should (eq rc 0))
           (should (member "exec \"$@\" 2>&1" command))
           (should (equal (buffer-string) "stdout+stderr\n")))))))
@@ -628,7 +628,7 @@
                (lambda (_proc) 0)))
       (with-temp-buffer
         (let ((rc (emacs-process--standalone-call-process
-                   "/bin/tool" nil (list t stderr-file) '("arg"))))
+                   "/bin/sh" nil (list t stderr-file) '("arg"))))
           (should (eq rc 0))
           (should
            (member
@@ -677,7 +677,13 @@
                    "/bin/cat" "/tmp/input.txt" nil '("--flag"))
                   0))
       (should (equal captured
+                     ;; DESTINATION nil discards stderr as well, so the
+                     ;; infile wrapper is nested inside the stderr wrapper.
                      (list emacs-process-shell-file-name
+                           emacs-process-shell-command-switch
+                           "exec \"$@\" 2>/dev/null"
+                           "emacs-process-call-process-stderr"
+                           emacs-process-shell-file-name
                            emacs-process-shell-command-switch
                            "infile=$1; shift; exec \"$@\" < \"$infile\""
                            "emacs-process-call-process"
@@ -708,6 +714,106 @@
                   42))
       (should (equal captured
                      '(process-file "/remote:/bin/git" nil t nil "--version"))))))
+
+;;;; Standalone capture bridge (fake nelisp-process primitives)
+
+(defmacro emacs-process-builtins-test--with-fake-capture (output &rest body)
+  "Run BODY in forced standalone mode with fake capture primitives.
+The fake child prints OUTPUT and exits 0; the started command is stored
+in `fake-command'."
+  (declare (indent 1) (debug (form body)))
+  `(let ((emacs-standalone-force-mode t)
+         (emacs-standalone--primitives (make-hash-table :test 'eq))
+         (fake-command nil)
+         (chunks (list ,output)))
+     (cl-letf (((symbol-function 'nelisp-process-start)
+                (lambda (&rest command) (setq fake-command command) 'fake-proc))
+               ((symbol-function 'nelisp-process-wait) (lambda (_p) 0))
+               ((symbol-function 'nelisp-process-read-output)
+                (lambda (_p _n) (pop chunks))))
+       ,@body)))
+
+(ert-deftest emacs-process-builtins-test/standalone-capture-inserts-at-point ()
+  (emacs-process-builtins-test--with-fake-capture "XY"
+    (with-temp-buffer
+      (insert "ab")
+      (goto-char 2)
+      (should (eq (emacs-process-call-process "/bin/sh" nil t nil "-c" "x") 0))
+      (should (equal (buffer-string) "aXYb"))
+      (should (= (point) 4)))))
+
+(ert-deftest emacs-process-builtins-test/standalone-capture-buffer-destinations ()
+  (emacs-process-builtins-test--with-fake-capture "hi"
+    (let ((b (generate-new-buffer " *cp-dest*")))
+      (unwind-protect
+          (progn
+            (should (eq (emacs-process-call-process "/bin/sh" nil b nil) 0))
+            (with-current-buffer b
+              (should (equal (buffer-string) "hi"))
+              (should (= (point) 3))))
+        (kill-buffer b))))
+  (emacs-process-builtins-test--with-fake-capture "hi"
+    (with-temp-buffer
+      (should (eq (emacs-process-call-process "/bin/sh" nil '(t nil) nil) 0))
+      (should (equal (buffer-string) "hi"))
+      (should (string-match-p "2>/dev/null" (mapconcat #'identity fake-command " ")))))
+  (emacs-process-builtins-test--with-fake-capture "hi"
+    (with-temp-buffer
+      (should (eq (emacs-process-call-process "/bin/sh" nil '(t "/tmp/cp-err") nil) 0))
+      (should (string-match-p "2>/tmp/cp-err"
+                              (mapconcat #'identity fake-command " ")))))
+  (emacs-process-builtins-test--with-fake-capture "hi"
+    (with-temp-buffer
+      ;; DESTINATION 0 discards output and returns nil, as GNU does.
+      (should (null (emacs-process-call-process "/bin/sh" nil 0 nil)))
+      (should (equal (buffer-string) "")))))
+
+(ert-deftest emacs-process-builtins-test/standalone-missing-program-signals ()
+  (emacs-process-builtins-test--with-fake-capture ""
+    (let ((err (should-error
+                (emacs-process-call-process "no-such-prog-xyz" nil t nil)
+                :type 'file-missing)))
+      (should (equal (car (last err)) "no-such-prog-xyz")))))
+
+(ert-deftest emacs-process-builtins-test/standalone-call-process-region ()
+  (emacs-process-builtins-test--with-fake-capture "ABC"
+    (with-temp-buffer
+      (insert "abc def")
+      (should (eq (emacs-process-call-process-region 1 4 "/bin/sh" t t nil) 0))
+      (should (equal (buffer-string) " defABC"))
+      (should (= (point) 8)))))
+
+(ert-deftest emacs-process-builtins-test/ec-buffer-cons-is-not-a-destination-list ()
+  "A `nelisp-ec-buffer' object is a cons cell but a single DESTINATION."
+  (let ((ec-buffer (list 'nelisp-ec-buffer (cons :name "x") (cons :point 1))))
+    (should-not (emacs-process--destination-list-p ec-buffer))
+    (should (eq (emacs-process--call-process-real-destination ec-buffer)
+                ec-buffer))
+    (should-not (emacs-process--call-process-stderr-destination ec-buffer))
+    (should (equal (emacs-process--standalone-call-process-stderr-wrapper
+                    ec-buffer nil)
+                   "exec \"$@\" 2>&1"))
+    (should (emacs-process--destination-list-p '(t nil)))
+    (should (emacs-process--destination-list-p '(:file "f")))
+    (should (eq (emacs-process--call-process-real-destination '(t "err")) t))
+    (should (equal (emacs-process--call-process-stderr-destination '(t "err"))
+                   "err"))))
+
+(ert-deftest emacs-process-builtins-test/standalone-capture-output-is-buffer-free ()
+  (emacs-process-builtins-test--with-fake-capture "a\nb\n"
+    (should (equal (emacs-process-capture-output "/bin/sh" '("-c" "x"))
+                   '(0 . "a\nb\n")))
+    (should (string-match-p "2>&1" (mapconcat #'identity fake-command " ")))))
+
+(ert-deftest emacs-process-builtins-test/process-lines-family ()
+  (should (fboundp 'process-lines))
+  (should (fboundp 'process-lines-ignore-status))
+  (emacs-process-builtins-test--skip-unless-shell
+    (should (equal (process-lines "/bin/sh" "-c" "printf 'a\\nb\\n'")
+                   '("a" "b")))
+    (should (equal (process-lines-ignore-status "/bin/sh" "-c" "echo x; exit 1")
+                   '("x")))
+    (should-error (process-lines "/bin/sh" "-c" "exit 1"))))
 
 (provide 'emacs-process-builtins-test)
 

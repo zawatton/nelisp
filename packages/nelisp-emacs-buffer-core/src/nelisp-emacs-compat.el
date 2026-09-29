@@ -660,6 +660,26 @@ Ignores narrowing — this is always the underlying text length."
   (nelisp-ec--set-buffer-text-tick
    buf (1+ (nelisp-ec-buffer-text-tick buf))))
 
+(defun nelisp-ec-clear-buffer-modified-flag (buf)
+  "Mark BUF as unmodified.  Public wrapper for other ownership groups."
+  (nelisp-ec--set-buffer-modified-p buf nil))
+
+(defun nelisp-ec-replace-buffer-text (buf text)
+  "Replace BUF's whole contents with TEXT via the standalone text buffer.
+Point moves to the end, narrowing is cleared and the text tick is bumped.
+Return non-nil when the standalone substrate handled the replacement, and
+nil (leaving BUF untouched) when it is not active."
+  (when (and (nelisp-text-buffer--standalone-p)
+             (fboundp 'nelisp-text-buffer--standalone-replace-logical))
+    (let ((chars (length text)))
+      (nelisp-text-buffer--standalone-replace-logical
+       (nelisp-ec--text buf) text chars)
+      (nelisp-ec--set-buffer-point buf (1+ chars))
+      (nelisp-ec--set-buffer-narrow-start buf nil)
+      (nelisp-ec--set-buffer-narrow-end buf nil)
+      (nelisp-ec--bump-buffer-text-tick buf)
+      t)))
+
 ;;; C. text editing  (6 APIs)
 
 (defun nelisp-ec-insert-char-code-fast (char)

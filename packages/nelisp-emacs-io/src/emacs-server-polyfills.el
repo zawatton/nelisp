@@ -144,17 +144,19 @@ Delegates other queries to the underlying stub (which returns nil)."
 
 (when emacs-server-polyfills--standalone-p
 
-  (defun file-exists-p (path)
-    "Polyfill: wrap libc `access(path, F_OK)'.  Returns t when the
+  (unless (fboundp 'file-exists-p)
+    (defun file-exists-p (path)
+      "Polyfill: wrap libc `access(path, F_OK)'.  Returns t when the
 path exists (= readable or writable or just present)."
-    (and (stringp path)
-         (let ((rc (nl-ffi-call emacs-network-ffi-libc-path
-                                "access" [:sint32 :string :sint32]
-                                path 0)))   ; F_OK = 0
-           (and (integerp rc) (zerop rc)))))
+      (and (stringp path)
+           (let ((rc (nl-ffi-call emacs-network-ffi-libc-path
+                                  "access" [:sint32 :string :sint32]
+                                  path 0)))   ; F_OK = 0
+             (and (integerp rc) (zerop rc))))))
 
-  (defun file-attributes (path &optional _id-format)
-    "Polyfill: synthesised attrs list for any existing PATH.
+  (unless (fboundp 'file-attributes)
+    (defun file-attributes (path &optional _id-format)
+      "Polyfill: synthesised attrs list for any existing PATH.
 
 server-start uses `(file-attributes DIR \\='integer)' to confirm the
 socket-dir is owned by us and has 0700 mode bits.  We return:
@@ -162,10 +164,10 @@ socket-dir is owned by us and has 0700 mode bits.  We return:
    INODE DEVICE)
 with TYPE = t (= directory) when `file-directory-p' agrees, else nil.
 ACCESS times are zero since standalone has no real stat."
-    (when (and (stringp path) (file-exists-p path))
-      (let ((uid (user-uid)))
-        (list (if (file-directory-p path) t nil)
-              1 uid uid '(0 0) '(0 0) '(0 0) 0 "drwx------" nil 0 0))))
+      (when (and (stringp path) (file-exists-p path))
+	(let ((uid (user-uid)))
+          (list (if (file-directory-p path) t nil)
+		1 uid uid '(0 0) '(0 0) '(0 0) 0 "drwx------" nil 0 0)))))
 
   (unless (fboundp 'file-attribute-type)
     (defun file-attribute-type (attrs) (nth 0 attrs)))
@@ -193,17 +195,18 @@ ACCESS times are zero since standalone has no real stat."
        ((and (integerp rc) (zerop rc)) t)
        (t (= 17 (emacs-network-ffi--errno))))))   ; EEXIST
 
-  (defun make-directory (dir &optional parents)
-    "Polyfill: `mkdir' via libc, with optional recursive `parents' flag."
-    (let ((path (directory-file-name (expand-file-name dir))))
-      (if parents
-          (let ((parts (split-string path "/" t))
-                (acc ""))
-            (dolist (p parts)
-              (setq acc (concat acc "/" p))
-              (emacs-server-polyfills--mkdir-1 acc)))
-        (emacs-server-polyfills--mkdir-1 path))
-      nil)))
+  (unless (fboundp 'make-directory)
+    (defun make-directory (dir &optional parents)
+      "Polyfill: `mkdir' via libc, with optional recursive `parents' flag."
+      (let ((path (directory-file-name (expand-file-name dir))))
+	(if parents
+            (let ((parts (split-string path "/" t))
+                  (acc ""))
+              (dolist (p parts)
+		(setq acc (concat acc "/" p))
+		(emacs-server-polyfills--mkdir-1 acc)))
+          (emacs-server-polyfills--mkdir-1 path))
+	nil))))
 
 
 ;;;; --- process plist accessors --------------------------------------

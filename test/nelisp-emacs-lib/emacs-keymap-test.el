@@ -977,5 +977,44 @@ one and several modifiers)."
                "C-c C-c" "M-RET" "C-x (" "C-M-<up>"))
     (should (equal (key-parse d) (emacs-keymap--standalone-key-parse d)))))
 
+;;;; S2 coverage batch 6 (2026-09-29): menu-item lookup + symbol parents
+
+(ert-deftest emacs-keymap-lookup-key-strips-menu-item-string ()
+  "shell.el copies `(lookup-key comint-mode-map [menu-bar completion])',
+which GNU `get_keyelt' resolves to the sub-keymap, not the (STRING . KEYMAP)
+menu item that holds it."
+  (let ((map (emacs-keymap-make-sparse-keymap))
+        (sub (emacs-keymap-make-sparse-keymap)))
+    (emacs-keymap-define-key sub [foo] 'ignore)
+    (emacs-keymap-define-key map [menu-bar completion] (cons "Complete" sub))
+    (should (eq (emacs-keymap-lookup-key map [menu-bar completion]) sub))
+    (should (eq (emacs-keymap-lookup-key sub [foo]) 'ignore))
+    ;; A help string between the name and the definition is skipped too.
+    (emacs-keymap-define-key map [menu-bar other] (cons "Name" (cons "Help" sub)))
+    (should (eq (emacs-keymap-lookup-key map [menu-bar other]) sub))
+    ;; The (menu-item NAME DEFN . PROPS) shape stays raw: the easymenu
+    ;; substrate reads it back through `lookup-key'.
+    (emacs-keymap-define-key map [menu-bar mi] (list 'menu-item "Mi" 'ignore :help "x"))
+    (should (eq (car-safe (emacs-keymap-lookup-key map [menu-bar mi])) 'menu-item))
+    ;; An unbound key is still nil, and a plain command is unchanged.
+    (should (null (emacs-keymap-lookup-key map [menu-bar nothing])))
+    (emacs-keymap-define-key map "a" 'self-insert-command)
+    (should (eq (emacs-keymap-lookup-key map "a") 'self-insert-command))))
+
+(ert-deftest emacs-keymap-set-keymap-parent-follows-symbol-function ()
+  "term.el does `(set-keymap-parent map 'Control-X-prefix)'; GNU
+`get_keymap' follows the symbol's function cell."
+  (let ((map (emacs-keymap-make-sparse-keymap))
+        (parent (emacs-keymap-make-sparse-keymap)))
+    (fset 'nemacs-s2-batch6-test-prefix parent)
+    (unwind-protect
+        (progn
+          (emacs-keymap-set-keymap-parent map 'nemacs-s2-batch6-test-prefix)
+          (should (eq (emacs-keymap-keymap-parent map) parent))
+          ;; Negative control: a symbol that is not a keymap still signals.
+          (should-error (emacs-keymap-set-keymap-parent map 'car)
+                        :type 'emacs-keymap-not-keymap))
+      (fmakunbound 'nemacs-s2-batch6-test-prefix))))
+
 (provide 'emacs-keymap-test)
 ;;; emacs-keymap-test.el ends here

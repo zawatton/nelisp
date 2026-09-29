@@ -6,6 +6,7 @@
 ;; adapters.  The core path uses the normal NeLisp buffer substrate; adapters
 ;; may register a backend when their buffer state is serialized elsewhere.
 
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- message/warn write to the nemacs special buffers.
 ;;; Code:
 
 (require 'emacs-buffer-builtins)

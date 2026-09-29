@@ -104,7 +104,16 @@ standalone. "Present" means bound, not equivalent, so this is an upper
 bound on real completeness, never an underestimate.
 
 ** S2.1 The feature-symbol coverage report exists and matches the last known sweep
-evidence: build/nemacs-feature-coverage.tsv sha256=7f5b14a8fbf2f6fecec1c518545be7f8093bf9bc0251d1401627387b3e272640
+evidence: build/nemacs-feature-coverage.tsv sha256=3c2864c557a0864fdc603294d1d5c27462114053bbc6d68d31ae626d6ab97f93
+#+NOTE: 2026-09-29 S2 coverage batch 6 merged (compile, pcomplete, shell, ehelp,
+#+NOTE: term, woman, project, isearch added to the bundle tail; buffer-list /
+#+NOTE: lookup-key / set-keymap-parent / Control-X-prefix / search-map fixes).
+#+NOTE: Sweep re-run on vendor/nelisp (062fa96c7): names 5747->5930, present
+#+NOTE: 3180->4536 (55.33%->76.49%). Evidence hash re-pinned (denominator moved).
+#+NOTE: 2026-09-29 NeLisp vendor bump (dev/nelisp 062fa96c7): sweep re-run against
+#+NOTE: the new binary; names 5529->5747, present 2905->3180 (52.54%->55.33%)
+#+NOTE: because NeLisp now natively provides more of the reference symbols.
+#+NOTE: The evidence hash was re-pinned to that sweep (denominator moved).
 #+NOTE: S2 coverage batch 5 (2026-09-28): added seven more GNU Emacs 31.1
 #+NOTE: vendor files, verbatim, to nelisp-bootstrap-vendor-tail-extra-files:
 #+NOTE: vc-hooks.el, vc.el, man.el, progmodes/xref.el, replace.el, comint.el,

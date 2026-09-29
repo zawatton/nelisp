@@ -35,6 +35,7 @@
 ;; under host Emacs (= where vendor pcase.el is already loaded) is
 ;; a cheap no-op.
 
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- library pcase (needs parity review against native pcase).
 ;;; Code:
 
 (defun emacs-pcase--install-function-p (symbol)

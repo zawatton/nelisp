@@ -122,9 +122,9 @@ there; exclude standalone explicitly via
                 '(0 "UTC"))))))
 
 ;; Live-replace gate — same pattern as `truncate' below.  NeLisp v1.2.0's
-;; native `float-time' reads the clock but ignores its optional argument, so
-;; preserve it as the no-argument clock source and wrap value conversion here.
-;; Under regular Emacs the host's correct implementation is kept intact.
+;; native `float-time' ignored its optional argument; current NeLisp (062fa96c7+)
+;; is GNU-correct (returns floats, honours TIME-VALUE), so the wrapper is now
+;; installed only when `float-time' is unbound (see `emacs-time--install-float-time').
 
 (defun emacs-time--install-float-time-p ()
   "Return non-nil when the compatibility `float-time' should be installed."
@@ -149,7 +149,8 @@ there; exclude standalone explicitly via
              (not (fboundp 'emacs-time--standalone-float-time)))
     (defalias 'emacs-time--standalone-float-time
       (symbol-function 'float-time)))
-  (defalias 'float-time #'emacs-time--float-time))
+  (unless (fboundp 'float-time)
+    (defalias 'float-time #'emacs-time--float-time)))
 
 (when (emacs-time--install-float-time-p)
   (emacs-time--install-float-time))
@@ -325,8 +326,9 @@ shape is (SEC MIN HOUR DAY MONTH YEAR DOW DST ZONE) using UTC-like fields."
         (setq dow (+ dow 7)))
       (list second minute hour day month year dow nil 0))))
 
-(unless (and (emacs-time--host-runtime-p)
-             (fboundp 'encode-time))
+;; Native `encode-time' returns a valid time value (an integer); the old shim
+;; returned (UNIX 0 0 0), which is not one (audit 2026-09-29).
+(unless (fboundp 'encode-time)
   (defun encode-time (&rest args)
     "Encode decoded time ARGS into the standalone time representation."
     (let* ((values (if (and (= (length args) 1) (consp (car args)))

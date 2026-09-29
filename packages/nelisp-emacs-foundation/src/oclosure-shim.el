@@ -20,6 +20,7 @@
 ;; which the list-closure representation does not expose; cl-generic dispatch does
 ;; not use slotted OClosures (its generalizers are cl-defstructs, not OClosures).
 
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- oclosure shim (needs parity review).
 ;;; Code:
 
 ;; NOTE: standalone NeLisp binds `emacs-version' too (a real string, for

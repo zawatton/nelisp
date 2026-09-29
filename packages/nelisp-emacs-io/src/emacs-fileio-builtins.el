@@ -46,6 +46,8 @@
 (require 'files-runtime)
 (require 'emacs-file-name-handler)
 
+;; `file-attributes' is deliberately absent (audit 2026-09-29): the native one is
+;; GNU-correct while `nelisp-ec-file-attributes' returned nil uid/modes and size 0.
 (defconst emacs-fileio-builtins--standalone-overrides
   '(insert-file-contents
     load-file
@@ -68,8 +70,7 @@
     revert-buffer
     file-exists-p
     file-readable-p
-    file-directory-p
-    file-attributes)
+    file-directory-p)
   "Functions this bridge may overwrite under standalone NeLisp.
 Path parsing, predicates, and directory/syscall primitives are left to
 the runtime when they already exist because `load' / `require' depend on
@@ -585,8 +586,9 @@ of a primitive's name."
                ((not symlink-target)
                 (directory-file-name absolute))
                ((and (emacs-fileio-builtins--standalone-p)
-                     (fboundp 'files--truename-walk))
-                (directory-file-name (files--truename-walk absolute 0)))
+                     (fboundp 'files-standalone-truename-walk))
+                (directory-file-name
+                 (files-standalone-truename-walk absolute 0)))
                ((emacs-fileio-builtins--host-emacs-p)
                 (condition-case nil
                     (directory-file-name (file-truename absolute))
@@ -719,7 +721,7 @@ substrate has no file-locking subsystem yet."
      (t
       ;; One behaviour, one owner: `nelisp-ec-write-region' now handles
       ;; string START itself (and reaches the captured host writer through
-      ;; `nelisp-ec--write-raw-bytes'), so the former dead-end signal is
+      ;; `nelisp-ec-write-raw-bytes'), so the former dead-end signal is
       ;; replaced by the same path every other case takes.
       (nelisp-ec-write-region start nil filename append visit))))
    ;; Buffer-sourced writes (nil or integer START) must read from the
@@ -1019,6 +1021,12 @@ the substrate has no rename-on-visit / lockfile interaction yet."
           (and (boundp 'emacs-fileio--buffer-files)
                (cdr (assq buffer emacs-fileio--buffer-files)))))))
 
+;; Public entry point for other ownership groups (FEAT org-capture uses it).
+(defalias 'emacs-fileio-buffer-file-name-direct
+  #'emacs-fileio--direct-buffer-file-name
+  "Return BUFFER's visited file name, or nil.
+Public name for `emacs-fileio--direct-buffer-file-name'.")
+
 (defun emacs-fileio--direct-buffer-string (buffer)
   "Return BUFFER contents as a string."
   (cond
@@ -1040,9 +1048,9 @@ the substrate has no rename-on-visit / lockfile interaction yet."
 (defun emacs-fileio--write-file-text-direct (path text)
   "Write TEXT to PATH using the best available runtime primitive."
   (cond
-   ((and (fboundp 'nelisp-ec--write-raw-bytes)
+   ((and (fboundp 'nelisp-ec-write-raw-bytes)
          (fboundp 'nelisp-coding-utf8-encode-string))
-    (nelisp-ec--write-raw-bytes
+    (nelisp-ec-write-raw-bytes
      path (nelisp-coding-utf8-encode-string text) nil))
    ((fboundp 'write-region)
     (write-region text nil path nil 'silent))
@@ -1136,21 +1144,8 @@ shapes leave leading `~/' paths literal instead of expanding `$HOME'."
 (defun emacs-fileio--replace-direct-buffer-text (buffer text)
   "Replace BUFFER contents with TEXT through the owned buffer substrate."
   (cond
-   ((and (fboundp 'nelisp-text-buffer--standalone-p)
-         (nelisp-text-buffer--standalone-p)
-         (fboundp 'nelisp-ec--text)
-         (fboundp 'nelisp-text-buffer--standalone-replace-logical))
-    (let ((chars (length text)))
-      (nelisp-text-buffer--standalone-replace-logical
-       (nelisp-ec--text buffer) text chars)
-      (when (fboundp 'nelisp-ec--set-buffer-point)
-        (nelisp-ec--set-buffer-point buffer (1+ chars)))
-      (when (fboundp 'nelisp-ec--set-buffer-narrow-start)
-        (nelisp-ec--set-buffer-narrow-start buffer nil))
-      (when (fboundp 'nelisp-ec--set-buffer-narrow-end)
-        (nelisp-ec--set-buffer-narrow-end buffer nil))
-      (when (fboundp 'nelisp-ec--bump-buffer-text-tick)
-        (nelisp-ec--bump-buffer-text-tick buffer))))
+   ((and (fboundp 'nelisp-ec-replace-buffer-text)
+         (nelisp-ec-replace-buffer-text buffer text)))
    (t
     (when (fboundp 'nelisp-ec-erase-buffer)
       (nelisp-ec-erase-buffer))
@@ -1183,8 +1178,8 @@ before the full interactive file I/O runtime is available."
             (when (stringp text)
               (emacs-fileio--replace-direct-buffer-text buffer text)))
           (cond
-           ((fboundp 'nelisp-ec--set-buffer-modified-p)
-            (nelisp-ec--set-buffer-modified-p buffer nil))
+           ((fboundp 'nelisp-ec-clear-buffer-modified-flag)
+            (nelisp-ec-clear-buffer-modified-flag buffer))
            ((fboundp 'emacs-buffer-set-buffer-modified-p)
             (emacs-buffer-set-buffer-modified-p nil buffer))
            ((fboundp 'set-buffer-modified-p)

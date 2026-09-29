@@ -1,4 +1,5 @@
 ;;; emacs-parity-macroexpand.el --- correct macroexpand for (macro CLOSURE) -*- lexical-binding: t; -*-
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- macroexpand entry points route through the library macro table (needs parity review).
 
 ;; The standalone substrate stores an interpreted macro's function cell as
 ;;   (macro CLOSURE)          ; the closure is the CADR
@@ -24,7 +25,7 @@
 ;;   2. `macroexpand-all' must dynamically bind the GLOBAL
 ;;      `macroexpand-all-environment' to its ENVIRONMENT argument, because
 ;;      macros such as `rx' read the local definitions from that global
-;;      (`rx--to-expr' does `(assq :rx-locals macroexpand-all-environment)').
+;;      (the rx translator does `(assq :rx-locals macroexpand-all-environment)').
 ;;      The earlier shim only passed the env as an argument, so `:rx-locals'
 ;;      was invisible and local rx names were undefined.
 ;;

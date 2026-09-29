@@ -40,10 +40,8 @@
 (defun calc-shift-prefix (&optional _argument)
   "Signal that GNU Calc letter-prefix mode is outside this facade."
   (interactive "P")
-  (if (fboundp 'emacs-tier3-facades--unsupported)
-      (emacs-tier3-facades--unsupported 'calc 'calc-shift-prefix)
-    (signal 'emacs-tier3-facade-unsupported
-            '("calc does not implement calc-shift-prefix"))))
+  (signal 'emacs-tier3-facade-unsupported
+          '("calc does not implement calc-shift-prefix")))
 
 (defun calc-init-prefixes ()
   "Install the prefix-independent bindings supported by the facade."

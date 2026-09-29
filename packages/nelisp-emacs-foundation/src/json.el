@@ -28,6 +28,7 @@
 ;; signal `json-error' so callers (e.g. `anvil-server-process-jsonrpc')
 ;; can `condition-case' on parse failures.
 
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- shim honours json-array-type/json-object-type; native json-read-from-string ignores them.
 ;;; Code:
 
 (defvar json-encoding-pretty-print nil

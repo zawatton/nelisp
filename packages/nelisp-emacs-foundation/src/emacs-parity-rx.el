@@ -16,6 +16,7 @@
 ;; defined by the baked `rx.el').  Standalone only: guarded on a baked rx
 ;; helper so host Emacs (real C-free rx) is untouched.
 (when (and (fboundp 'nelisp--write-stdout-bytes)
+           (bound-and-true-p rx--nemacs-shim-active) ; native rx needs no patch
            (fboundp 'rx--translate-syntax))
   (defun rx--translate-not (negated body)
     "Translate a (not ...) construct.  Return (REGEXP . PRECEDENCE).

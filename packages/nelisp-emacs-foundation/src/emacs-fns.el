@@ -30,6 +30,7 @@
 ;; table, string, and number primitives ship in their own
 ;; emacs-X.el files.
 
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- require/provide/featurep implement the library load layer.
 ;;; Code:
 
 ;;;; --- trivial primitives -----------------------------------------------

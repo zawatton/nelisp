@@ -1372,6 +1372,25 @@ these use gv.el / the real macro; the standalone shims pin this contract."
       (should (equal 9 (gethash 'z c)))
       (should-not (gethash 'z h)))))
 
+;; S5.4: `\='\=',EXPR' (= `(quote (comma EXPR))') must lower to EXPR's value.
+;; `cl-typep' on `(or A B)' / `(and A B)' builds `(cl-typep val \='\=',head)'
+;; and used to receive the literal symbol `head' ("Unknown type head"), which
+;; broke every eieio `defclass' slot type check.
+(ert-deftest emacs-stub-residuals-test/define-inline-lowers-quote-of-unquote ()
+  (let ((comma (intern ",")))
+    (should (equal '(defun f (v head) (cl-typep v head))
+                   (emacs-stub--define-inline
+                    'f '(v head)
+                    (list (list 'inline-quote
+                                (list 'cl-typep (list comma 'v)
+                                      (list 'quote (list comma 'head))))))))
+    ;; A plain quoted symbol stays quoted.
+    (should (equal '(defun g (v) (cl-typep v 'integer))
+                   (emacs-stub--define-inline
+                    'g '(v)
+                    (list (list 'inline-quote
+                                (list 'cl-typep (list comma 'v) ''integer))))))))
+
 (provide 'emacs-stub-residuals-test)
 
 ;;; emacs-stub-residuals-test.el ends here
