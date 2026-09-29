@@ -16099,25 +16099,170 @@ line-continuation escapes, which generate nothing)."
 (defvar nelisp--stdin-read-pending ""
   "Bytes drawn from stdin but not yet consumed by `read'.")
 
+(defun nelisp--read-buffer-scan (s i n)
+  "Classify the datum that starts at or after index I of S, limit N.
+Answers nil when the text ends before one complete datum (GNU signals
+`end-of-file'), (close . INDEX) when the first token is a stray `)' or
+`]', and t otherwise.  Only bracket structure is followed: strings,
+comments, character literals, backslash escapes and prefix operators.
+Anything it does not model (`#@', `#$') answers t and is left to the
+reader."
+  (let ((depth 0) (res 'pending) c j)
+    (while (eq res 'pending)
+      (setq c (and (< i n) (aref s i)))
+      (cond
+       ((null c) (setq res nil))
+       ((or (= c 32) (= c 9) (= c 10) (= c 13) (= c 12)) (setq i (1+ i)))
+       ((= c 59)
+        (while (and (< i n) (/= (aref s i) 10)) (setq i (1+ i))))
+       ((or (= c 41) (= c 93))
+        (if (= depth 0)
+            (setq res (cons 'close i))
+          (setq depth (1- depth) i (1+ i))
+          (when (= depth 0) (setq res t))))
+       ((or (= c 40) (= c 91)) (setq depth (1+ depth) i (1+ i)))
+       ((= c 34)
+        (setq j (1+ i))
+        (while (and (< j n) (/= (aref s j) 34))
+          (setq j (if (= (aref s j) 92) (+ j 2) (1+ j))))
+        (if (>= j n)
+            (setq res nil)
+          (setq i (1+ j))
+          (when (= depth 0) (setq res t))))
+       ((and (= c 44) (< (1+ i) n) (= (aref s (1+ i)) 64)) (setq i (+ i 2)))
+       ((or (= c 39) (= c 96) (= c 44)) (setq i (1+ i)))
+       ((= c 35)
+        (let ((c1 (and (< (1+ i) n) (aref s (1+ i)))))
+          (cond
+           ((null c1) (setq res nil))
+           ((or (= c1 64) (= c1 36)) (setq res t))
+           ((= c1 39) (setq i (+ i 2)))
+           ((= c1 40) (setq i (1+ i)))
+           ((= c1 91) (setq i (1+ i)))
+           ((and (= c1 115) (< (+ i 2) n) (= (aref s (+ i 2)) 40))
+            (setq i (+ i 2)))
+           ((and (>= c1 48) (<= c1 57))
+            (setq j (+ i 2))
+            (while (and (< j n) (>= (aref s j) 48) (<= (aref s j) 57))
+              (setq j (1+ j)))
+            (if (and (< j n) (= (aref s j) 61))
+                (setq i (1+ j))
+              (setq i j)
+              (when (= depth 0) (setq res t))))
+           (t (setq j (+ i 2)
+                    i (progn
+                        (while (and (< j n)
+                                    (not (memq (aref s j)
+                                               '(32 9 10 13 12 40 41 91 93
+                                                 34 59 39 96 44))))
+                          (setq j (if (= (aref s j) 92) (+ j 2) (1+ j))))
+                        (min j n)))
+              (when (= depth 0) (setq res t))))))
+       (t
+        (setq j (if (= c 63)
+                    (if (and (< (1+ i) n) (= (aref s (1+ i)) 92))
+                        (+ i 3)
+                      (+ i 2))
+                  i))
+        (while (and (< j n)
+                    (not (memq (aref s j)
+                               '(32 9 10 13 12 40 41 91 93 34 59 39 96 44))))
+          (setq j (if (= (aref s j) 92) (+ j 2) (1+ j))))
+        (if (and (> j n) (= (aref s (1- n)) 92))
+            (setq res nil)
+          (setq i (min j n))
+          (when (= depth 0) (setq res t))))))
+    res))
+
+(defun nelisp--read-buffer-form (buf start end lo)
+  "Read one form from BUF's text between 0-based START and END.
+END nil means the end of the text; LO is the index where the accessible
+portion starts (lines and columns are counted from it).  Returns
+\(FORM . END-INDEX) like
+`read-from-string'; nil when the text ends before a complete form; or
+\[close INDEX LINE COLUMN] for a stray closing bracket, INDEX being the
+bracket's index.  BUF's whole-buffer text is memoized per edit tick, so
+a caller reading form after form never re-copies the buffer; the native
+single-form reader then seeks START through the shared char<->byte
+cursor cache.  What the native reader declines (spellings it does not
+decode, and every incomplete or malformed form) is first classified by
+`nelisp--read-buffer-scan', so that end of input and stray brackets
+are reported the way GNU does, and the rest takes `read-from-string'."
+  (let* ((cached (gethash buf nelisp-buffer--text-cache))
+         ;; Inlined memo check of `nelisp-buffer-string': one call less
+         ;; per form, which is measurable at ten thousand forms.
+         (full (if (and cached (= (car cached)
+                                  (gethash buf nelisp-buffer--tick 0)))
+                   (cdr cached)
+                 (nelisp-buffer-string buf)))
+         (end (or end (length full)))
+         (r (and (<= start end)
+                 (fboundp 'nelisp--read-all-from-string-native)
+                 (nelisp--read-all-from-string-native full start end))))
+    (or r
+        (let ((kind (nelisp--read-buffer-scan full start end)))
+          (cond
+           ((null kind) nil)
+           ((consp kind)
+            (let* ((idx (cdr kind)) (line 1) (bol lo) (k lo))
+              (while (< k idx)
+                (when (= (aref full k) 10) (setq line (1+ line) bol (1+ k)))
+                (setq k (1+ k)))
+              (vector 'close idx line (1+ (- idx bol)))))
+           (t (condition-case nil
+                  (read-from-string full start end)
+                (end-of-file nil))))))))
+
 (defun nelisp--read-dispatch (stream)
   "Resolve STREAM for `read', every shape but a plain string."
   (cond
    ((nelisp-buffer-p stream)
-    (let* ((full (nelisp-buffer-string stream))
-           (start (1- (nelisp-point stream)))
-           (r (condition-case nil
-                  (read-from-string full start)
-                (end-of-file (signal 'end-of-file (list stream))))))
-      (nelisp-goto-char (1+ (cdr r)) stream)
-      (car r)))
+    ;; Point comes straight from the pending goto-char target or the gap
+    ;; position and the accessible end from the narrowing, both O(1), and
+    ;; point is advanced by recording the new pending target -- the same
+    ;; state `nelisp-goto-char' records -- since the end of a form just
+    ;; read is always inside the accessible portion.  As in GNU, point is
+    ;; left after the form, after a stray bracket, or at the end of the
+    ;; accessible portion when the text ran out.
+    (let* ((pend (gethash stream nelisp-buffer--pending-point))
+           (start (1- (or pend (1+ (nelisp-buffer--before-length stream)))))
+           (ne (nelisp-buffer-narrow-end stream))
+           (end (and ne (1- ne)))
+           (ns (nelisp-buffer-narrow-start stream))
+           (r (nelisp--read-buffer-form stream start end (if ns (1- ns) 0))))
+      (cond
+       ((null r)
+        (puthash stream (or ne (1+ (nelisp-buffer-size stream)))
+                 nelisp-buffer--pending-point)
+        (signal 'end-of-file (list stream)))
+       ((vectorp r)
+        (puthash stream (+ 2 (aref r 1)) nelisp-buffer--pending-point)
+        (signal 'invalid-read-syntax
+                (list (if (= (aref (nelisp-buffer-string stream) (aref r 1)) 41)
+                          ")" "]")
+                      (aref r 2) (aref r 3))))
+       (t (puthash stream (1+ (cdr r)) nelisp-buffer--pending-point)
+          (car r)))))
    ((nelisp-marker-p stream)
     (let ((mbuf (nelisp-marker-buffer stream)))
       (unless mbuf (signal 'error (list "read: marker does not point anywhere" stream)))
-      (let* ((full (nelisp-buffer-string mbuf))
-             (start (1- (nelisp-marker-position stream)))
-             (r (read-from-string full start)))
-        (setf (nelisp-marker-position stream) (1+ (cdr r)))
-        (car r))))
+      (let* ((start (1- (nelisp-marker-position stream)))
+             (ne (nelisp-buffer-narrow-end mbuf))
+             (end (and ne (1- ne)))
+             (ns (nelisp-buffer-narrow-start mbuf))
+             (r (nelisp--read-buffer-form mbuf start end (if ns (1- ns) 0))))
+        (cond
+         ((null r)
+          (setf (nelisp-marker-position stream)
+                (or ne (1+ (nelisp-buffer-size mbuf))))
+          (signal 'end-of-file nil))
+         ((vectorp r)
+          (setf (nelisp-marker-position stream) (+ 2 (aref r 1)))
+          (signal 'invalid-read-syntax
+                  (list (if (= (aref (nelisp-buffer-string mbuf) (aref r 1)) 41)
+                            ")" "]"))))
+         (t (setf (nelisp-marker-position stream) (1+ (cdr r)))
+            (car r))))))
    ((functionp stream)
     (let (chars c)
       (while (setq c (funcall stream))
