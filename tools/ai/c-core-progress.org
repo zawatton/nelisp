@@ -1,0 +1,119 @@
+#+TITLE: nelisp-emacs-lib -- GNU Emacs C-core coverage in NeLisp Lisp
+
+Objective (user, 2026-09-30): implement every GNU Emacs 31.1 C primitive for the
+NeLisp runtime in Lisp (nelisp-emacs-lib), keeping native implementations to the
+bare minimum.  Areas and the missing set come from tools/c-core-coverage.sh
+(regenerate: `tools/c-core-coverage.sh regen`, ~1 min; checks read its fresh
+output and fail when it is older than the bundle or the binary).  Baseline
+2026-09-30: 786/1460 bound after bootstrap; missing x-gui 31, display 213,
+process 136, buffer 77, chars 54, files 43, other 120.
+
+"Bound" is not "equivalent": each area also needs a host ERT file and an
+end-to-end parity smoke that runs the standalone after the bundle loads and
+diffs against host `emacs --batch` (GNU 31.1).  Batch semantics are the
+reference for display/GUI functions (what GNU returns with no window system).
+
+* C1 X11/GUI primitives (x-*) with GNU batch semantics
+
+** C1.1 No x-gui C primitive is unbound after the bootstrap bundle loads
+#+REQUIRES: NELISP_BIN
+cmd: sh tools/c-core-coverage.sh check x-gui
+
+** C1.2 Host ERT for the x-gui implementations passes on GNU Emacs 31.1
+cmd: timeout 50 emacs -Q --batch -L src -L test -l test/c-core-x-gui-test.el -f ert-run-tests-batch-and-exit
+
+** C1.3 End to end: the x-gui parity smoke matches host emacs --batch on the standalone after the bundle loads
+#+REQUIRES: NELISP_BIN
+cmd: sh test/c-core-x-gui-parity-smoke.sh
+
+* C2 Display, window, frame, face, font, overlay primitives with GNU batch semantics
+
+** C2.1 No display C primitive is unbound after the bootstrap bundle loads
+#+REQUIRES: NELISP_BIN
+cmd: sh tools/c-core-coverage.sh check display
+
+** C2.2 Host ERT for the display implementations passes on GNU Emacs 31.1
+cmd: timeout 50 emacs -Q --batch -L src -L test -l test/c-core-display-test.el -f ert-run-tests-batch-and-exit
+
+** C2.3 End to end: the display parity smoke matches host emacs --batch on the standalone after the bundle loads
+#+REQUIRES: NELISP_BIN
+cmd: sh test/c-core-display-parity-smoke.sh
+
+* C3 Process, network, threads and optional-library primitives
+
+** C3.1 No process C primitive is unbound after the bootstrap bundle loads
+#+REQUIRES: NELISP_BIN
+cmd: sh tools/c-core-coverage.sh check process
+
+** C3.2 Host ERT for the process implementations passes on GNU Emacs 31.1
+cmd: timeout 50 emacs -Q --batch -L src -L test -l test/c-core-process-test.el -f ert-run-tests-batch-and-exit
+
+** C3.3 End to end: the process parity smoke matches host emacs --batch on the standalone after the bundle loads
+#+REQUIRES: NELISP_BIN
+cmd: sh test/c-core-process-parity-smoke.sh
+
+* C4 Buffer, marker, text property, syntax, keymap, command-loop primitives
+
+** C4.1 No buffer C primitive is unbound after the bootstrap bundle loads
+#+REQUIRES: NELISP_BIN
+cmd: sh tools/c-core-coverage.sh check buffer
+
+** C4.2 Host ERT for the buffer implementations passes on GNU Emacs 31.1
+cmd: timeout 50 emacs -Q --batch -L src -L test -l test/c-core-buffer-test.el -f ert-run-tests-batch-and-exit
+
+** C4.3 End to end: the buffer parity smoke matches host emacs --batch on the standalone after the bundle loads
+#+REQUIRES: NELISP_BIN
+cmd: sh test/c-core-buffer-parity-smoke.sh
+
+* C5 Character, string, charset and coding primitives
+
+** C5.1 No chars C primitive is unbound after the bootstrap bundle loads
+#+REQUIRES: NELISP_BIN
+cmd: sh tools/c-core-coverage.sh check chars
+
+** C5.2 Host ERT for the chars implementations passes on GNU Emacs 31.1
+cmd: timeout 50 emacs -Q --batch -L src -L test -l test/c-core-chars-test.el -f ert-run-tests-batch-and-exit
+
+** C5.3 End to end: the chars parity smoke matches host emacs --batch on the standalone after the bundle loads
+#+REQUIRES: NELISP_BIN
+cmd: sh test/c-core-chars-parity-smoke.sh
+
+* C6 File, directory, load and native-comp primitives
+
+** C6.1 No files C primitive is unbound after the bootstrap bundle loads
+#+REQUIRES: NELISP_BIN
+cmd: sh tools/c-core-coverage.sh check files
+
+** C6.2 Host ERT for the files implementations passes on GNU Emacs 31.1
+cmd: timeout 50 emacs -Q --batch -L src -L test -l test/c-core-files-test.el -f ert-run-tests-batch-and-exit
+
+** C6.3 End to end: the files parity smoke matches host emacs --batch on the standalone after the bundle loads
+#+REQUIRES: NELISP_BIN
+cmd: sh test/c-core-files-parity-smoke.sh
+
+* C7 Remaining C primitives
+
+** C7.1 No other C primitive is unbound after the bootstrap bundle loads
+#+REQUIRES: NELISP_BIN
+cmd: sh tools/c-core-coverage.sh check other
+
+** C7.2 Host ERT for the other implementations passes on GNU Emacs 31.1
+cmd: timeout 50 emacs -Q --batch -L src -L test -l test/c-core-other-test.el -f ert-run-tests-batch-and-exit
+
+** C7.3 End to end: the other parity smoke matches host emacs --batch on the standalone after the bundle loads
+#+REQUIRES: NELISP_BIN
+cmd: sh test/c-core-other-parity-smoke.sh
+
+* C8 Whole C core
+
+** C8.1 All 1460 GNU 31.1 C primitives are bound after the bootstrap bundle loads
+#+REQUIRES: NELISP_BIN
+cmd: sh tools/c-core-coverage.sh summary | awk '{s+=$3} END{exit !(NR==7 && s==0)}'
+
+** C8.2 The bootstrap bundle still loads within its 50s cap with every area added
+#+REQUIRES: NELISP_BIN
+cmd: timeout 50 "$NELISP_BIN" --eval "(progn (load (expand-file-name \"build/nemacs-bootstrap.el\") nil t) (princ \"BOOT-OK\"))" 2>&1 | grep -q BOOT-OK
+
+** C8.3 End to end: every area parity smoke passes in one run against the same binary
+#+REQUIRES: NELISP_BIN
+cmd: for a in x-gui display process buffer chars files other; do sh test/c-core-$a-parity-smoke.sh || exit 1; done

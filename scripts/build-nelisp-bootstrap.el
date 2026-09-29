@@ -154,7 +154,16 @@ final `.el' suffix with `.repl'.")
     "emacs-parity-makunbound.el"
     "emacs-parity-clmacros.el"
     "emacs-parity-skk.el"
-    "emacs-parity-subdirs.el")
+    "emacs-parity-subdirs.el"
+    ;; GNU C-core coverage (tools/ai/c-core-progress.org); one owned file
+    ;; per area so parallel work merges cleanly.
+    "emacs-c-core-buffer-chars.el"
+    ;; -- files / other --
+    "emacs-c-core-files-other.el"
+    ;; -- display / x-gui --
+    "emacs-c-core-display.el"
+    ;; -- process --
+    "emacs-c-core-process.el")
   "Local src files inserted after buffer/face substrates are available.")
 
 (defvar nelisp-bootstrap-vendor-extra-files
