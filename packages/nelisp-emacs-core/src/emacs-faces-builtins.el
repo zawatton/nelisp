@@ -94,7 +94,12 @@
                 (load-theme . load-theme)))
   (let ((symbol (car pair))
         (target (cdr pair)))
-    (when (emacs-faces-builtins--install-function-p symbol)
+    ;; Each pair names the function emacs-faces.el already defines under
+    ;; the GNU name.  Aliasing a symbol to itself would create a
+    ;; cyclic function indirection whenever a bulk stub marker is left on
+    ;; the symbol, so only install a genuinely different target.
+    (when (and (not (eq symbol target))
+               (emacs-faces-builtins--install-function-p symbol))
       (defalias symbol target))))
 
 ;;;; --- defface macro -------------------------------------------------

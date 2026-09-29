@@ -3644,18 +3644,14 @@ optimization candidate; keep the normal load path on the fast reader."
                        cc-redef
                        "\n(setq nelisp--cc-replay-file"
                        " (pop nelisp--cc-replay-file-stack))"))))
-            (let* ((parent (or (file-name-directory resolved) "./"))
-                   (prior-lfn (and (boundp 'load-file-name) load-file-name))
-                   (prior-dd (and (boundp 'default-directory) default-directory))
+            (let* ((prior-lfn (and (boundp 'load-file-name) load-file-name))
                    (loader (nelisp--load-source-loader source)))
               (setq load-file-name resolved)
-              (setq default-directory parent)
               (unwind-protect
                   (progn
                     (funcall loader source)
                     t)
-                (setq load-file-name prior-lfn)
-                (setq default-directory prior-dd))))))))))
+                (setq load-file-name prior-lfn))))))))))
 
   (defun emacs-load--resolve-file (file nosuffix must-suffix)
     "Resolve FILE once using `load' suffix and search-path semantics."
