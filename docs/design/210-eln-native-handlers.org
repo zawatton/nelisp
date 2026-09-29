@@ -56,6 +56,29 @@ AOT elisp DSL).
   S6.22 check); S10.3 is the stage-ending e2e and runs both the S6.10
   measurement and the S6.22 validator. Net new criteria: 13 (57 -> 70).
 
+** S10 result (2026-09-29): what admitting =byte-compile-form= showed
+
+- The source form behind the two =condition-case= regions is GNU's inlined
+  =macroexp--const-symbol-p= (=macroexp.el:792=, a =defsubst=): =(condition-case nil
+  (progn (set symbol (symbol-value symbol)) nil) (setting-constant t))=, guarded by
+  =(if any-value ...)=. In the genuine body =any-value= is read from a stack
+  slot whose only reaching definition (a reaching-definition analysis of the whole
+  body, =0x13eb=) is the constant nil (=d_reloc= slot 2), so /both regions are
+  unreachable at run time for every input/: the body never calls =push_handler=
+  on the ordinary corpus, and the =forced= test mode makes them run by setting
+  that live constant non-nil (no code byte touched). The handler mechanism
+  itself (push, private =_setjmp=, guarded =Fsymbol_value=/=Fset=,
+  =setting-constant= caught by the native handler, landing, pops) is then
+  verified on the genuine body (5 pushes, 4 landings, identical transcripts).
+- The frame-local rule is a separate checker over the actual bytes
+  (=lisp/nelisp-eln-handler-frame.el=), not only a consequence of the exact
+  template; the template's =:PLT-CALLS= displacements and the new GOT kind
+  =current-thread= are checked against the =.plt= entry and the artifact's own
+  =current_thread_reloc= root object.
+- Registration binds the S8 substrate in =--load-1= for a body whose shape
+  declares =:HANDLERS=; the body digest is declared in production
+  (=nelisp-eln-registration--setjmp-declared-body-sha256s=).
+
 ** Remaining gaps after S9 (2026-09-29)
 
 - The debugger decision runs in GNU order (before the native handler

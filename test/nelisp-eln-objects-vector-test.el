@@ -192,7 +192,9 @@
     ;; `lambda-form' (S6.9) and, for forms that may carry vector literals
     ;; and `Fmapcar' results, `make-closure-form' (S6.11), whose body reads
     ;; only FORM's conses and the `Fmapcar' list inline.
-    (should (equal declared '(make-closure-form lambda-form))))
+    ;; S10 `compile-form-form' (byte-compile-form) may be handed a vector
+    ;; literal as its FORM, which its body only passes to authenticated ports.
+    (should (equal declared '(compile-form-form make-closure-form lambda-form))))
   ;; Nothing leaks out of a scoped call.
   (should-not nelisp-eln-objects--admit-opaque-vectors)
   (nelisp-eln-objects-call-with-artifact-symbols

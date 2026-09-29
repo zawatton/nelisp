@@ -146,9 +146,16 @@
     (dolist (entry nelisp-eln-native-subr--multi-import-specs)
       (when (plist-get (cdr entry) :min-arity) (push (car entry) optional))
       (when (plist-get (cdr entry) :symbols-with-pos) (push (car entry) swp)))
+    ;; Later lanes added `lambda-form' (S6.9), `cconv-convert-function-form'
+    ;; (S6.7) and `compile-form-form' (S10): all `&optional' and all reading
+    ;; symbols_with_pos_enabled.
     (should (equal (reverse optional)
-                   '(accumulate-forms closure-convert macroexpand-1)))
-    (should (equal (reverse swp) '(accumulate-forms macroexpand-1))))
+                   '(accumulate-forms closure-convert macroexpand-1
+                     lambda-form cconv-convert-function-form
+                     compile-form-form)))
+    (should (equal (reverse swp)
+                   '(accumulate-forms macroexpand-1 lambda-form
+                     cconv-convert-function-form compile-form-form))))
   (should (= (nelisp-eln-native-subr-multi-arity (list :shape 'macroexpand-1))
              2))
   (should (= (nelisp-eln-native-subr-multi-min-arity

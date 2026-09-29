@@ -110,7 +110,11 @@ surface predicate and the pre-dlopen validator."
   "Production declares no handler-bearing body: the surface alone admits nothing."
   (let ((bytes (nelisp-eln-handler-admission-test--bytes)))
     (should (nelisp-eln-registration--setjmp-plt-surface-p bytes))
-    (should (null nelisp-eln-registration--setjmp-declared-body-sha256s))
+    ;; Production (Doc 210 S10) declares exactly the `byte-compile-form' body;
+    ;; the S8 probe body is not in the list.
+    (should (equal (length nelisp-eln-registration--setjmp-declared-body-sha256s) 1))
+    (should-not (member nelisp-eln-handler-admission-test--body-sha256
+                        nelisp-eln-registration--setjmp-declared-body-sha256s))
     (should-not (nelisp-eln-registration--setjmp-surface-admitted-p bytes))
     (should-error (nelisp-eln-registration--validate-preopen bytes)
                   :type 'nelisp-eln-registration-error)))

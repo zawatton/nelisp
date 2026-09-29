@@ -1036,6 +1036,43 @@ if it is a cons cell, else nil; never signals."
         (append nelisp-eln-runtime-services-descriptors
                 nelisp-eln-runtime-services-descriptors-s67)))
 
+;; S10 (`byte-compile-form'): `Fget' and `Fset', appended in their own constant.
+;; `Fset' is the guarded call of the `condition-case' in GNU's inlined
+;; `macroexp--const-symbol-p' (a constant symbol signals `setting-constant',
+;; which the native handler catches); `Fget' reads a form's `byte-compile'
+;; handler.
+(defun nelisp-eln-runtime-services-fget (symbol propname)
+  "NeLisp equivalent of GNU `Fget' (src/fns.c): the value of SYMBOL's
+PROPNAME property, or nil; signals `wrong-type-argument' `symbolp' for a
+non-symbol like GNU's CHECK_SYMBOL."
+  (get symbol propname))
+
+(defun nelisp-eln-runtime-services-fset (symbol newval)
+  "NeLisp equivalent of GNU `Fset' (src/data.c): set SYMBOL's value to
+NEWVAL and return it; a constant symbol signals `setting-constant'."
+  (set symbol newval))
+
+(defconst nelisp-eln-runtime-services-descriptors-s10
+  (list
+   (nelisp-eln-runtime-services--descriptor
+    :index 1205 :symbol "Fget" :convention 'fixed :arity 2
+    :noreturn nil :implementation #'nelisp-eln-runtime-services-fget
+    :status 'supported
+    :evidence "freloc tsv sha 3e8591ab..f0758, index 1205; GNU src/fns.c Fget")
+   (nelisp-eln-runtime-services--descriptor
+    :index 1334 :symbol "Fset" :convention 'fixed :arity 2
+    :noreturn nil :implementation #'nelisp-eln-runtime-services-fset
+    :status 'supported
+    :evidence "freloc tsv sha 3e8591ab..f0758, index 1334; GNU src/data.c Fset"))
+  "Runtime-service descriptors added for S10; see
+`nelisp-eln-runtime-services-descriptors'.")
+
+(unless (cl-find 1205 nelisp-eln-runtime-services-descriptors
+                 :key (lambda (d) (plist-get d :index)))
+  (setq nelisp-eln-runtime-services-descriptors
+        (append nelisp-eln-runtime-services-descriptors
+                nelisp-eln-runtime-services-descriptors-s10)))
+
 (provide 'nelisp-eln-runtime-services)
 
 ;;; nelisp-eln-runtime-services.el ends here

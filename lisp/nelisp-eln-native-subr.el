@@ -1373,6 +1373,97 @@ against ~/.cache/tmp/slot-auth/freloc-ba35c031.tsv (sha256 3e8591ab..f0758):
         (append nelisp-eln-native-subr--multi-import-specs
                 nelisp-eln-native-subr--multi-import-specs-cconv-convert)))
 
+;; S10 (`byte-compile-form'): the handler-bearing body of Doc 210.  Port 2 is
+;; `push_handler' (raw tag word and type in, raw block address out), served
+;; only by the Doc 210 handler port (`nelisp-eln-handler-port-push-port-spec');
+;; every other port is an ordinary authenticated service.  Result kinds follow
+;; how the exact body uses them: `Fget', `Fsymbol_function' and `Fnth' results
+;; are only passed on (a handle, so a subr or byte-code object never touches
+;; the object codec); `Fset' is called for effect; results the body tests
+;; inline (tag checks, `eq' against a constant, `car'/`cdr' reads) keep the
+;; `lisp' encoding.  `Ffuncall' is called with 1 to 6 arguments through its
+;; one slot.  Ports 13 and 14 are reached only through the local
+;; `maybe_gc_quit' helper (shared with S6.9).  Verified against
+;; ~/.cache/tmp/slot-auth/freloc-ba35c031.tsv: 0 `wrong_type_argument', 1
+;; `helper_PSEUDOVECTOR_TYPEP_XUNTAG', 2 `push_handler', 4 `helper_unbind_n',
+;; 7 `slow_eq', 10 `set_internal', 12 `specbind', 13 `maybe_gc', 14
+;; `maybe_quit', 945 `Ffuncall', 1119 `Fcons', 1205 `Fget', 1217 `Fmemq', 1220
+;; `Fnth', 1334 `Fset', 1335 `Fsymbol_value', 1350 `Fsymbol_function', 1353
+;; `Fcdr_safe', 1354 `Fcar_safe', 1376 `Fstringp', 1378 `Fsymbolp'.
+(defconst nelisp-eln-native-subr--multi-import-specs-form
+  '((compile-form-form
+     :ports ((12 fixed 2 (lisp lisp) void)
+             (1335 fixed 1 (lisp) lisp)
+             (1119 fixed 2 (lisp lisp) lisp)
+             (1378 fixed 1 (lisp) lisp)
+             (1205 fixed 2 (lisp lisp) handle-nil)
+             (945 many (1 2 3 4 5 6) (lisp lisp lisp lisp lisp lisp) lisp)
+             (1217 fixed 2 (lisp lisp) lisp)
+             (1354 fixed 1 (lisp) lisp)
+             (1376 fixed 1 (lisp) lisp)
+             (1220 fixed 2 (lisp lisp) handle-nil)
+             (4 fixed 1 (lisp) void)
+             (0 fixed 2 (lisp lisp) void)
+             (7 fixed 2 (lisp lisp) bool)
+             (1 fixed 2 (lisp raw) bool)
+             (1350 fixed 1 (lisp) handle-nil)
+             (2 fixed 2 (raw raw) raw :handler-push)
+             (10 fixed 4 (lisp lisp lisp raw) void)
+             (1334 fixed 2 (lisp lisp) void)
+             (1353 fixed 1 (lisp) lisp)
+             (13 fixed 0 () void)
+             (14 fixed 0 () void))
+     :constants ((0 . byte-compile--for-effect)
+                 (1 . byte-compile-form-stack) (2 . nil)
+                 (3 . byte-code-function-p) (4 . byte-compile-normal-call)
+                 (6 . byte-compile-discard) (7 . byte-optimize)
+                 (8 . (t lap)) (9 . byte-compile-unfold-bcf)
+                 (10 . byte-compile) (11 . function-get)
+                 (12 . interactive-only)
+                 (13 . (set symbol-value run-hooks add-hook remove-hook run-hook-with-args run-hook-with-args-until-success run-hook-with-args-until-failure))
+                 (14 . (add-hook remove-hook)) (15 . (nil t))
+                 (16 . mutates-arguments) (17 . funarg-positions)
+                 (18 . macro) (19 . functionp)
+                 (20 . cl-byte-compile-compiler-macro)
+                 (21 . side-effect-free) (22 . for-effect-no-warn)
+                 (23 . bytecomp--actually-important-return-value-p)
+                 (24 . byte-compile-warning-enabled-p)
+                 (25 . ignored-return-value) (26 . byte-compile-warn-x)
+                 (27 . "value from call to `%s' is unused%s") (28 . mapcar)
+                 (29 . "") (30 . "; use `mapc' or `dolist' instead")
+                 (31 . important-return-value) (32 . error-free)
+                 (33 . progn) (34 . byte-compile-progn)
+                 (35 . byte-compile-delete-errors)
+                 (36 . byte-compile-report-error) (37 . format-message)
+                 (38 . "`%s' defined after use in %S (missing `require' of a library file?)")
+                 (39 . quote) (40 . lambda)
+                 (41 . "(lambda %s ...) quoted with %s rather than with #%s")
+                 (42 . "'") (43 . "()") (44 . arrayp) (45 . mutate-constant)
+                 (46 . "`%s' on constant %s (arg %d)") (47 . type-of)
+                 (48 . "list") (49 . "`%s' is for interactive use only%s")
+                 (50 . ".") (51 . t) (52 . "; use `%s' instead.")
+                 (53 . format) (54 . "; %s") (55 . substitute-command-keys)
+                 (56 . suspicious) (57 . "`%s' called as a function")
+                 (58 . keywordp) (59 . byte-compile-const-variables)
+                 (60 . boundp) (61 . (setting-constant))
+                 (62 . byte-compile-check-variable)
+                 (63 . byte-compile-lexical-variables) (64 . lexical)
+                 (65 . byte-compile-warn)
+                 (66 . "%s cannot use lexical var `%s'")
+                 (67 . byte-compile-interactive-only-functions)
+                 (68 . byte-compile-constant)
+                 (69 . byte-compile-variable-ref) (73 . listp))
+     :arity 2 :min-arity 1 :symbols-with-pos t
+     :opaque-argument-symbols t :opaque-vectors t
+     :helper-counter "quitcounter"))
+  "Dispatcher spec for `nelisp-eln-tail-code--multi-import-shapes-form'; see
+`nelisp-eln-native-subr--multi-import-specs' for the format.")
+
+(unless (assq 'compile-form-form nelisp-eln-native-subr--multi-import-specs)
+  (setq nelisp-eln-native-subr--multi-import-specs
+        (append nelisp-eln-native-subr--multi-import-specs
+                nelisp-eln-native-subr--multi-import-specs-form)))
+
 (defun nelisp-eln-native-subr--multi-reject (reason &rest detail)
   "Reject an exactly matched multi-import body for REASON with DETAIL.
 Once CODE matches a `nelisp-eln-tail-code--multi-import-shapes' template
@@ -1413,8 +1504,42 @@ ARITY or runtime-services descriptor does not authenticate is rejected."
            'unauthenticated-many-service-slot slot))
         (if (symbolp impl) (symbol-function impl) impl)))))
 
-(defun nelisp-eln-native-subr--multi-port-spec (abi-hash port)
-  "Return the authenticated dispatcher spec for PORT, or reject."
+(declare-function nelisp-eln-handler-port-push-port-spec "nelisp-eln-handler-port" ())
+
+(defun nelisp-eln-native-subr--handler-push-spec (port handlers)
+  "Return the dispatcher spec of the `push_handler' PORT of a handler shape.
+Only the fixed slot-2 port with raw (tag word, type) arguments and a raw
+result is admitted, and only for a shape that declares HANDLERS (Doc 210);
+its implementation is the Doc 210 handler port, never a runtime service."
+  (unless (and handlers
+               (equal (list (nth 0 port) (nth 1 port) (nth 2 port)
+                            (nth 3 port) (nth 4 port))
+                      (list (plist-get handlers :push-slot) 'fixed 2
+                            '(raw raw) 'raw)))
+    (nelisp-eln-native-subr--multi-reject 'unauthenticated-handler-port
+                                          (nth 0 port)))
+  (unless (fboundp 'nelisp-eln-handler-port-push-port-spec)
+    (require 'nelisp-eln-handler-port))
+  (let ((spec (nelisp-eln-handler-port-push-port-spec)))
+    (unless (and (eq (plist-get spec :convention) 'fixed)
+                 (eql (plist-get spec :arity) 2)
+                 (equal (plist-get spec :arguments) '(raw raw))
+                 (eq (plist-get spec :return) 'raw)
+                 (functionp (plist-get spec :implementation))
+                 (functionp (plist-get spec :suppressed-raw)))
+      (nelisp-eln-native-subr--multi-reject 'handler-port-spec-drift))
+    (append (list :slot (nth 0 port)) spec)))
+
+(defun nelisp-eln-native-subr--multi-port-spec (abi-hash port &optional handlers)
+  "Return the authenticated dispatcher spec for PORT, or reject.
+HANDLERS is the shape's Doc 210 :HANDLERS plist, which alone admits a
+`:handler-push' port."
+  (if (eq (nth 5 port) :handler-push)
+      (nelisp-eln-native-subr--handler-push-spec port handlers)
+    (nelisp-eln-native-subr--multi-port-spec-1 abi-hash port)))
+
+(defun nelisp-eln-native-subr--multi-port-spec-1 (abi-hash port)
+  "Return the authenticated dispatcher spec for an ordinary PORT, or reject."
   (let* ((slot (nth 0 port)) (convention (nth 1 port)) (arity (nth 2 port))
          (implementation
           (if (eq convention 'many)
@@ -1647,6 +1772,62 @@ the returned range).  Return (ADDRESS . SIZE) of the region."
          (plist-get result :freloc) freloc-got))
       (cons (+ bias vaddr) back))))
 
+(declare-function nelisp-eln-registration-section "nelisp-eln-registration"
+                  (bytes name))
+(declare-function nelisp-eln-registration-setjmp-surface-admitted-p
+                  "nelisp-eln-registration" (bytes))
+(declare-function nelisp-eln-handler-frame-check "nelisp-eln-handler-frame"
+                  (bytes plt-offsets allowed-slots function-vaddr thread-got
+                         &optional push-slot))
+
+(defun nelisp-eln-native-subr--handler-analysis (handle analysis code vaddr)
+  "Add the Doc 210 handler proof to the multi-import ANALYSIS of CODE.
+Requires, in order: the artifact's `_setjmp' PLT surface and its declared
+body digests (S8); every `call _setjmp@plt' site reaches exactly the
+second `.plt' entry (the one lazy-binding entry of that surface); the
+GOT slot the native `handlerlist' pops read is the artifact's own
+`current_thread_reloc' root object; and the frame-local rule
+\(`nelisp-eln-handler-frame-check') holds for the actual bytes.  Return
+ANALYSIS plus :HANDLER-REGIONS and :CURRENT-THREAD-ADDRESS."
+  (let* ((state (nelisp-eln-system-loader--state handle))
+         (bias (plist-get state :bias))
+         (file-bytes (plist-get state :file-bytes))
+         (handlers (plist-get analysis :handlers))
+         (thread-got (plist-get analysis :current-thread-got)))
+    (unless (and (fboundp 'nelisp-eln-registration-setjmp-surface-admitted-p)
+                 (fboundp 'nelisp-eln-handler-frame-check))
+      (unless (fboundp 'nelisp-eln-registration-setjmp-surface-admitted-p)
+        (require 'nelisp-eln-registration))
+      (unless (fboundp 'nelisp-eln-handler-frame-check)
+        (require 'nelisp-eln-handler-frame)))
+    (unless (nelisp-eln-registration-setjmp-surface-admitted-p file-bytes)
+      (nelisp-eln-native-subr--multi-reject 'handler-setjmp-surface-refused))
+    (let* ((plt (nelisp-eln-registration-section file-bytes ".plt"))
+           (entry (and plt (+ (nth 0 plt) 16)))
+           (targets (plist-get analysis :plt-calls)))
+      (unless (and entry targets
+                   (cl-every (lambda (target) (eql target entry)) targets))
+        (nelisp-eln-native-subr--multi-reject 'setjmp-call-not-the-plt-entry
+                                              targets entry)))
+    (unless (and (integerp thread-got) (> thread-got 0))
+      (nelisp-eln-native-subr--multi-reject 'no-current-thread-got))
+    (let ((ct-address (nelisp-eln-system-loader-validate-root-indirection
+                       handle (+ bias thread-got) "current_thread_reloc")))
+      (unless (and (integerp ct-address) (> ct-address 0))
+        (nelisp-eln-native-subr--multi-reject 'invalid-current-thread-root
+                                              ct-address))
+      (let ((regions
+             (condition-case failure
+                 (nelisp-eln-handler-frame-check
+                  code (plist-get analysis :plt-call-offsets)
+                  (plist-get handlers :guarded-slots) vaddr thread-got
+                  (plist-get handlers :push-slot))
+               (nelisp-eln-handler-frame-error
+                (nelisp-eln-native-subr--multi-reject
+                 'handler-frame-rule (cdr failure))))))
+        (setq analysis (plist-put analysis :current-thread-address ct-address))
+        (plist-put analysis :handler-regions regions)))))
+
 (defun nelisp-eln-native-subr-multi-import-analysis
     (handle capability code &optional abi-hash)
   "Return verified S6 multi-import analysis for CODE in CAPABILITY.
@@ -1710,7 +1891,7 @@ an invalid root slot.  The result adds :PORT-SPECS, :CONSTANTS,
         (let* ((port-specs
                 (mapcar (lambda (port)
                           (nelisp-eln-native-subr--multi-port-spec
-                           abi-hash port))
+                           abi-hash port (plist-get analysis :handlers)))
                         (plist-get spec :ports)))
                ;; Each validator signals its own reasoned loader error.
                (freloc-target
@@ -1761,7 +1942,12 @@ an invalid root slot.  The result adds :PORT-SPECS, :CONSTANTS,
           (setq analysis (plist-put analysis :d-reloc-address d-reloc-target))
           (setq analysis (plist-put analysis :module-counter-address
                                     (and counter-vaddr (+ bias counter-vaddr))))
-          (plist-put analysis :symbols-with-pos-address swp-target))))))
+          (setq analysis (plist-put analysis :symbols-with-pos-address
+                                    swp-target))
+          (if (plist-get analysis :handlers)
+              (nelisp-eln-native-subr--handler-analysis
+               handle analysis code vaddr)
+            analysis))))))
 
 (defun nelisp-eln-native-subr--multi-lease-valid-p
     (lease handle capability &optional require-active)
@@ -2054,6 +2240,7 @@ calling convention; any other non-nil MIN-ARITY signals."
                 ((stringp function-name) (intern function-name))
                 (t (intern name))))
     (let* ((ports (nelisp-eln-native-subr--port-tags analysis))
+           (handler-body (and (plist-get analysis :handlers) t))
            ;; As in `nelisp-eln-native-subr-create-multi': only an exact
            ;; shape whose body never reads symbol cells inline admits
            ;; opaque interned symbol views (S6.6 `closure-convert').
@@ -2099,7 +2286,10 @@ calling convention; any other non-nil MIN-ARITY signals."
                  (lambda ()
                    (nelisp-eln-callable-import--call-unary
                     capability nil first nil nil constants ports
-                    (list second)))
+                    (list second)
+                    ;; Doc 210: a handler-bearing body opens its activation
+                    ;; for native CONDITION_CASE handlers.
+                    (and handler-body (list :handle handle))))
                  opaque-symbols opaque-vectors))))
            (bridge (if min-arity
                        (lambda (first &optional second)

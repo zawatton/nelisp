@@ -182,9 +182,14 @@
                  ;; `make-closure-form' and S6.14 `funcall-form' declare it
                  ;; too (each only conses, compares and passes symbol words
                  ;; to authenticated ports).
+                 ;; S6.7 `cconv-convert-function-form' and S10
+                 ;; `compile-form-form' (byte-compile-form; its body reads
+                 ;; only conses inline and passes symbols to authenticated
+                 ;; ports) likewise.
                  '(parse-body setq-form if-form accumulate-forms
                    closure-convert macroexpand-1 lambda-form lambda-cons-form
-                   make-closure-form funcall-form))))
+                   make-closure-form funcall-form cconv-convert-function-form
+                   compile-form-form))))
 
 ;;; End-to-end on a standalone binary (optional)
 

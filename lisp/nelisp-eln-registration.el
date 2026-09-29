@@ -3452,6 +3452,19 @@ registration(s) into that namespace instead of the global function cells."
           nelisp-eln-registration-isolated-namespace)))
     (nelisp-eln-registration--load-1 path)))
 
+(defun nelisp-eln-registration--bind-handler-surface (handle preflight)
+  "Bind Doc 210's native handler substrate to HANDLE when PREFLIGHT's admitted
+body declares handlers: the artifact's `current_thread_reloc' chain and the
+private `_setjmp' stub in its own `.got.plt' slot, both read back.  Anything
+but a handler-bearing proof is left untouched."
+  (let ((proof (plist-get preflight :tail-imports)))
+    (when (and proof (plist-get proof :handlers))
+      (unless (fboundp 'nelisp-eln-handler-substrate-bind-chain)
+        (require 'nelisp-eln-handler-substrate))
+      (nelisp-eln-handler-substrate-bind-chain handle)
+      (nelisp-eln-handler-substrate-bind-setjmp handle)
+      (nelisp-eln-registration--trace "REGTRACE handler-surface-bound\n"))))
+
 (defun nelisp-eln-registration--load-1 (path)
   "Body of `nelisp-eln-registration-load'."
   (let* ((handle nil) (preflight nil) (unit nil) (activation nil)
@@ -3475,6 +3488,7 @@ registration(s) into that namespace instead of the global function cells."
           (setq handle (nelisp-eln-system-loader-open path)
                 preflight (nelisp-eln-registration--preflight handle)
                 name (plist-get preflight :name))
+          (nelisp-eln-registration--bind-handler-surface handle preflight)
           (nelisp-eln-registration--trace "REGTRACE preflight-done\n")
           (nelisp-eln-registration--trace "REGTRACE binding-check-before\n")
           (when (or (nelisp-eln-registration--target-fboundp name)
@@ -4266,13 +4280,15 @@ nil.  Signals if more than one relocation binds NAME."
 
 ;;; Doc 210 S8: the one admitted `_setjmp' PLT surface --------------------
 
-(defvar nelisp-eln-registration--setjmp-declared-body-sha256s nil
+(defvar nelisp-eln-registration--setjmp-declared-body-sha256s
+  (list "477c67368d2d3fac3572b443814b909f766f6ce7b49c3fe8195b0804c7dbe0eb")
   "SHA-256 hex digests of the exact native bodies whose template declares
 that they call the undefined `_setjmp@GLIBC_2.2.5' through the artifact's
-own PLT (Doc 210 section 4.A.5).  Empty in production until a handler-
-bearing template (S10) is registered: no `_setjmp' PLT surface is admitted
-for any body that is not in this list.  The unit test binds it to the
-digest of its pinned probe body; nothing else may.")
+own PLT (Doc 210 section 4.A.5).  Production declares exactly one: the
+7661-byte `byte-compile-form' body of gnu-byte-compile-form.eln (Doc 210 S10,
+shape `compile-form-form').  No `_setjmp' PLT surface is admitted for any
+body that is not in this list.  Tests bind it to the digest of their pinned
+probe body; nothing else may.")
 
 (defconst nelisp-eln-registration--setjmp-weak-undefined
   '("_ITM_deregisterTMCloneTable" "__gmon_start__"

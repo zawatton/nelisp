@@ -4727,3 +4727,17 @@ eln-s6-corpus-evidence:
 eln-s6-corpus-check:
 	@test -n "$(ELN_PROGRESS_BIN)" || { echo "set ELN_PROGRESS_BIN=<binary>"; exit 2; }
 	ELN_PROGRESS_BIN="$(ELN_PROGRESS_BIN)" $(EMACS) --batch -Q -l tools/nelisp-eln-s6-corpus.el -f nelisp-eln-s6-corpus-batch-validate
+
+.PHONY: eln-s610-evidence eln-s610-check
+# S10.3 end-to-end evidence: S6.10 measurement + the byte-compile-form handler
+# scenarios (scenarios, forced, tamper, mutation) on the binary, ~4 min,
+# written to target/progress/s610-e2e-evidence.json and validated by the S10.3
+# check (which also runs the S6.22 validator).  Usage:
+#   make eln-s610-evidence ELN_PROGRESS_BIN=target/nelisp-X
+eln-s610-evidence:
+	@test -n "$(ELN_PROGRESS_BIN)" || { echo "set ELN_PROGRESS_BIN=<binary>"; exit 2; }
+	ELN_PROGRESS_BIN="$(ELN_PROGRESS_BIN)" $(EMACS) --batch -Q -l tools/nelisp-eln-s610-evidence.el -f nelisp-eln-s610-batch-regenerate
+
+eln-s610-check:
+	@test -n "$(ELN_PROGRESS_BIN)" || { echo "set ELN_PROGRESS_BIN=<binary>"; exit 2; }
+	ELN_PROGRESS_BIN="$(ELN_PROGRESS_BIN)" $(EMACS) --batch -Q -l tools/nelisp-eln-s610-evidence.el -f nelisp-eln-s610-batch-validate
