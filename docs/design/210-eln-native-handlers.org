@@ -1,0 +1,718 @@
+#+TITLE: Doc 210 — Native handler frames for admitted GNU .eln code
+#+AUTHOR: NeLisp
+#+STATUS: DRAFT (2026-09-29) — design only. Nothing in this document is implemented; every NeLisp fact is cited file:line against the checkout of 2026-09-29, every GNU fact against the Emacs 31.1 source in =/tmp/emacs-31.1-source/src= and the disassemblies in =~/.cache/tmp/s6-survey-lex/=. Anything not checked is marked *UNVERIFIED*.
+#+STATUS2: Targets ledger criterion S6.10 (=byte-compile-form=) of =tools/ai/eln-progress.org=. Extends Doc 207 (non-local exits through native frames); does not relax it for any frame that is not admitted under this document.
+
+* §0 Summary
+
+GNU native-compiled code implements =condition-case= and =catch= with
+=push_handler(tag,type)= followed by an /inline/ =_setjmp= on the returned
+=struct handler='s =jmp= field, called through the artifact's own PLT. On a
+=signal= or =throw= GNU runs =unwind_to_catch=, which unwinds the specpdl,
+sets =handlerlist=, and =longjmp='s back into the native frame's landing pad.
+Doc 207 makes NeLisp deliberately never enter that landing pad: the exit is
+recorded, later callbacks are suppressed, the native frame runs to its return
+and the exit is resumed. For a handler that /catches/ the error this is not
+observably equal to GNU, because the handler body is code the native frame
+must execute and then /continue/ normally.
+
+Of the fixed 19 vendor functions exactly one uses handlers:
+=byte-compile-form= (2 =push_handler= sites, both =CONDITION_CASE=, ledger
+S6.10). This document specifies how to admit such frames:
+
+1. GNU-exact =struct handler= / =struct thread_state= shadow blocks, owned by
+   the NeLisp runtime, native-visible, never scanned by the GC (§2, §7).
+2. A callable =push_handler= import port that mints a shadow handler block.
+3. A =_setjmp= PLT target under NeLisp control and a =longjmp= issued only
+   by the callback adapter /after/ all Lisp-side state of the callback has
+   been released, and only to a handler in the /same native frame/ that made
+   the callback (the /frame-local/ restriction, §4.A). No NeLisp interpreter
+   or VM frame is ever skipped by a jump.
+4. Handler matching, specpdl unwinding, =handlerlist= restoration and
+   exactly-once landing performed on the Lisp side before the jump (§4.A.4).
+
+Recommendation (§6): option A in its frame-local, template-verified form,
+delivered in three ledger stages (S8-S10), the last of which closes S6.10.
+Rust LOC added: zero (Lisp, the existing NeLisp x86-64 assembler, and the
+AOT elisp DSL).
+
+* Decisions (user, 2026-09-29)
+
+- Q1/Q2: proceed with option *A1* (NeLisp's own assembler setjmp/longjmp
+  pair bound to the artifact's GOT slot, runtime rip/rsp validation at the
+  divert). A2 stays only as the documented fallback if the =.got.plt= slot
+  proves unwritable after load (S8 verifies this first).
+- Q3/Q4: frame-local landing is the admitted contract; =condition-case VAR=
+  and =CATCHER= are deferred to a later stage (S11), outside the S6.10 path.
+- Q8: *GNU order is required.* Before a native =CONDITION_CASE= handler
+  catches, =handler-bind= handlers and the debugger decision
+  (=debug-on-error=, =debug-ignored-errors=, =debugger=) run exactly as GNU's
+  =signal_or_quit= runs them. This is a criterion (S9.6), not a known gap.
+- Q5/Q7/Q9: only the =NELISP_READER_DYNAMIC= flavor loads .eln;
+  handler-bearing native calls are main-thread only (already serialized);
+  the rebuild and S6 evidence regeneration cost is accepted.
+- Q6 (X support / struct size) is verified during S8.
+- Ledger: S10.4 of the draft is dropped (it would re-count the existing
+  S6.22 check); S10.3 is the stage-ending e2e and runs both the S6.10
+  measurement and the S6.22 validator. Net new criteria: 13 (57 -> 70).
+
+* §1 Problem and scope
+
+** §1.1 Handler patterns
+
+GNU's =enum handlertype= (=lisp.h:3803=):
+
+| type | value | emitted by native-comp | this document |
+|---|---|---|---|
+| =CATCHER= | 0 | yes (=Bpushcatch=; =comp.c:2294=) | designed, deferred to a later stage (S11, §6) |
+| =CONDITION_CASE= | 1 | yes (=Bpushconditioncase=; =comp.c:2296=) | first-class, needed by S6.10 |
+| =CATCHER_ALL= | 2 | *no*: only C code (=internal_catch_all=) pushes it; =comp.c= maps only the two symbols =catcher= and =condition-case= (=comp.c:2294-2297=) | out of scope for =.eln= admission; a template that pushes type 2 stays inadmissible |
+| =CATCHER_ALL_DEBUGGABLE=, =HANDLER_BIND=, =SKIP_CONDITIONS= | 3, 4, 5 | no (=handler-bind= is a function call, =eval.c:1551=) | inadmissible |
+
+The type is an immediate in =esi= at the =push_handler= call. Templates
+verify it byte-exactly (§4.A.5).
+
+** §1.2 Census over the fixed-19 corpus
+
+Method: =grep -c= over =~/.cache/tmp/s6-survey-lex/<fn>/<fn>.disasm.txt= for
+=_setjmp= and =push_handler=, plus the survey's =classification.tsv=.
+
+| function | =call _setjmp@plt= sites | =push_handler= (freloc 2) call sites | note |
+|---|---|---|---|
+| =byte-compile-form= | *2* (=0x24c9=, =0x2601=) | *2* (=call *0x10(%rbp)= at =0x24c2=, =call *0x10(%rax)= at =0x25fa=) | 1601 insns, 111 backward branches, 140 freloc imports; ledger S6.10 |
+| the other 18 | 0 | 0 | no handlers; =0x68(%reg)= hits in =byte-compile-if=, =-lambda=, =cconv--set-diff= etc. are unrelated fields (not =handlerlist=; none of these bodies loads =current_thread_reloc=) — the =_setjmp= count is 0 for all of them |
+
+(=grep -c '_setjmp'= on =byte-compile-form.disasm.txt= prints 5: the PLT0
+label, the PLT entry, its =jmp *GOT=, and the two call sites.) So the
+corpus need is exactly two =CONDITION_CASE= regions in one function.
+
+** §1.3 What is and is not in scope
+
+In scope: shadow structs, =push_handler= port, =_setjmp= binding, longjmp
+divert, unwinding, admission rules for handler-bearing bodies, tests, GC
+requests.
+
+Not in scope (still required for S6.10, separate lanes, listed so the ledger
+is honest): the exact-byte template of the 7661-byte body (=.dynsym= size of
+=F627974652d636f6d70696c652d666f726d_byte_compile_form_0=) and of its
+=top_level_run=; registration of an =(form &optional for-effect)= subr (min 1,
+max 2); about 20 further ports (=specbind= x12, =helper_unbind_n= x4,
+=slow_eq= x7, 25 indirect =call *(%r..)= sites), all noted in
+=tools/ai/eln-progress.org= (S6.10 notes, 2026-09-28) and
+=~/.cache/tmp/nelisp-s610/out/NOTES.txt= item 4. Doc 210 removes only the
+handler blocker (NOTES items 1-3).
+
+** §1.4 Corrections to the blocker analysis (checked, not assumed)
+
+- NOTES.txt says an =_setjmp= PLT slot "cannot be resolved (no dlsym; FFI
+  extern table is build-time and fixed)". In the checkout the .eln is opened
+  by the real dynamic linker: =nl-ffi--dlopen= uses =RTLD_NOW|RTLD_LOCAL=
+  (=packages/nl-ffi/src/nl-ffi.el:535-552=), =dlopen/dlsym/dlerror/dlclose=
+  are rows of the fixed extern table (=scripts/nelisp-standalone-build.el:19846-19849=),
+  and =nelisp-eln-system-loader--load-bias= already calls =nl-ffi--dlsym= and
+  libc =dladdr= (=lisp/nelisp-eln-system-loader.el:246-274=). The genuine
+  artifact has =DT_NEEDED libc.so.6= and =.rela.plt= =R_X86_64_JUMP_SLOT
+  _setjmp@GLIBC_2.2.5= at =.got.plt= =0x5000= (=readelf -d/-r= on
+  =overlay/eln/31.1-ba35c031/gnu-byte-compile-form.eln=). So ld.so /would/
+  bind the slot to glibc's =_setjmp= at load; what blocks today is
+  /admission/, not resolution: =nelisp-eln-registration--plt-target-name=
+  admits only a JUMP_SLOT to a module-local anonymous lambda
+  (=lisp/nelisp-eln-registration.el:1778-1800=). Whether the pre-open
+  validator rejects the artifact before =dlopen= is *UNVERIFIED* (the
+  recorded failure is =top-level-instructions-not-admitted=).
+- The premise "pure-elisp standalone, no libc linkage" therefore holds only
+  for the reader binaries built without =NELISP_READER_DYNAMIC=
+  (=scripts/nelisp-standalone-build.el:19812-19815=); any binary that loads a
+  GNU .eln is dynamically linked to libc, by construction. Option A2 (§4)
+  exists because of this.
+- Runtime-side =current_thread_reloc=: no NeLisp code writes the artifact's
+  =current_thread_reloc= cell (=grep -i thread lisp/nelisp-eln-registration.el=
+  is empty; only the emitter names the symbol, =lisp/nelisp-eln-emitter.el:38=).
+  GNU's loader stores =&current_thread= there. The =byte-compile-form= landing
+  pad dereferences it (§2.4); today it would read a zero cell.
+
+* §2 GNU semantics (Emacs 31.1, x86_64, Linux)
+
+** §2.1 =struct handler= layout (=lisp.h:3839-3871=)
+
+Offsets derived from the declaration order (LP64) and cross-checked against
+the disassembly where the genuine code touches them.
+
+| offset | field | size | touched by genuine =byte-compile-form=? |
+|---|---|---|---|
+| 0x00 | =type= (enum) | 4 (+4 pad) | no (set by =push_handler=, a callback) |
+| 0x08 | =tag_or_ch= | 8 | no |
+| 0x10 | =nonlocal_exit= (enum) | 4 (+4 pad) | no |
+| 0x18 | =val= | 8 | no (see §2.4: the landing pads do not load it) |
+| 0x20 | =next= | 8 | *read* by the pop sequence (=0x24e7 mov 0x20(%rdx),%rdx=, =0x261f=, =0x2b9d..0x2ba1=, =0x2bfb..0x2bff=) |
+| 0x28 | =nextfree= | 8 | no |
+| 0x30 | =bytecode_top= | 8 | no |
+| 0x38 | =bytecode_dest= (int) | 4 (+4) | no |
+| 0x40 | =jmp= (=sys_jmp_buf=, glibc =jmp_buf= = 200 bytes; =sys_setjmp= is =_setjmp=, =lisp.h:2276=) | 200 | *passed* as =rdi= (=lea 0x40(%rax),%rdi=, =0x24c5=, =0x25fd=) |
+| 0x108 | =f_lisp_eval_depth= | 8 | no |
+| 0x110 | =pdlcount= | 8 | no |
+| 0x118 | =act_rec= | 8 | no |
+| 0x120 | =poll_suppress_count= | 4 | no |
+| 0x124 | =interrupt_input_blocked= | 4 | no |
+| 0x128 | =x_error_handler_depth= (only =HAVE_X_WINDOWS=) | 4 | no; sizeof = 0x128 (no X) or 0x130 (X). Which the genuine 31.1 build has is *UNVERIFIED*; blocks are sized for the larger |
+
+The =+0x20= read is evidence that the compiler's =handler_next_field= is
+at 0x20, matching the table.
+
+** §2.2 =struct thread_state= (=thread.h=)
+
+=m_handlerlist= is at *0x68*: header 0x00, then nine Lisp_Object fields
+(=last_thing_searched= .. =event_object=) at 0x08..0x48, =m_stack_bottom=
+0x50, =stack_top= 0x58, =m_catchlist= 0x60, =m_handlerlist= 0x68,
+=m_handlerlist_sentinel= 0x70 (no Android). The disassembly reads and
+writes exactly 0x68 (=0x24e3 mov 0x68(%rax),%rdx= ... =0x24eb mov %rdx,0x68(%rax)=).
+
+The access path is three loads: =GOT[0x4fb0]= (an =R_X86_64_GLOB_DAT= naming the
+artifact's own =current_thread_reloc=, a 8-byte =.data= object at 0x5800) ->
+=*(that)= (GNU stores =&current_thread= there at load; =comp.c= models it as
+=current_thread_ref=) -> =*(&current_thread)= = the thread pointer.
+
+** §2.3 =push_handler= (=eval.c:1830-1867=)
+
+=push_handler_nosignal=: takes =handlerlist->nextfree= or =malloc=s a handler,
+then sets =type, tag_or_ch, val=Qnil, next=handlerlist,
+f_lisp_eval_depth=lisp_eval_depth, pdlcount=SPECPDL_INDEX (),
+act_rec=get_act_rec (current_thread), poll_suppress_count,
+interrupt_input_blocked= (and =x_error_handler_depth=), then
+=handlerlist = c=. It returns =c=; =push_handler= calls =memory_full= on
+failure. It is a callback in the artifact's link table (freloc index 2,
+=freloc-ba35c031.tsv=), currently a fail-closed stub
+(=lisp/nelisp-eln-runtime-services.el:305-328=, registry row at =:721=).
+
+** §2.4 The native call-site pattern and the landing pad
+
+=emit_limple_push_handler= (=comp.c:2195-2220=): =c = push_handler(tag,type);
+if (_setjmp(&c->jmp)) goto handler_bb; else goto guarded_bb;=. Genuine
+bytes, region 1 (region 2 at =0x25e5..0x2c07= is the same with a different
+frame base):
+
+#+begin_example
+24b1  mov  0x1e8(%rbx),%rdi        ; tag  = d_reloc[61] (a condition list)
+24b8  mov  $1,%esi                  ; type = CONDITION_CASE
+24c2  call *0x10(%rbp)              ; push_handler (freloc 2)
+24c5  lea  0x40(%rax),%rdi          ; &c->jmp
+24c9  call _setjmp@plt              ; PLT 0x1030 -> GOT 0x5000
+24ce  test %eax,%eax
+24d0  je   2b50                     ; 0: guarded_bb
+24d6..24eb  landing pad: thread = **GOT[0x4fb0]; thread->handlerlist
+            = thread->handlerlist->next          ; pop (no read of ->val)
+24ef..250b  rax = d_reloc[0x198/8]; test; jump to the join
+2b50  guarded_bb: Fsymbol_value(x) ; Fset(x, result)   ; same symbol twice
+2b80..2ba1  normal-path pop_handler, same 3-load sequence, then join
+#+end_example
+
+Guarded region facts (region 1, =0x2b50..0x2ba9=): exactly two authenticated
+port calls (=Fsymbol_value= freloc 1335 at =0x2b67=, =Fset= freloc 1334 at
+=0x2b7a=), no local =call rel32=, no indirect call except through the
+link-table register, no loop. The identity of the source form is
+*UNVERIFIED* (=bytecomp.el= =byte-compile-form= at line 3403 contains no
+=condition-case= textually; the handler comes from an inlined macro).
+
+Landing-pad contract (from =comp.c:2333-2355= =fetch_handler= and the bytes
+above): on arrival the code expects (a) callee-saved registers and =rsp= as
+they were at the =_setjmp= call (GCC treats them as restored by setjmp),
+(b) =eax != 0=, (c) =thread->handlerlist == c= so its inline pop yields
+=c->next=, (d) stack frame slots written before the =_setjmp= intact,
+(e) nothing about =c->val= for these two sites; a =condition-case VAR= site
+would additionally load =c->val= (=+0x18=) via =fetch_handler=. Expectation
+(c) is why the shadow =next= chain must be real, native-readable memory.
+
+** §2.5 Search and unwind (=eval.c=)
+
+- =signal_or_quit= walks =handlerlist= innermost first; for =CONDITION_CASE=
+  it applies =find_handler_clause (tag_or_ch, conditions)= (=eval.c:2241-2261=):
+  a match is =memq= of a condition in the error's =error-conditions=, or the
+  element =t=. On a match it calls =unwind_to_catch (h, NONLOCAL_EXIT_SIGNAL,
+  error)= (=eval.c:2064=) with =error = (SYMBOL . DATA)=. Debugger and
+  =handler-bind= (type 4) participate in the walk; neither exists in admitted
+  frames.
+- =Fthrow= matches =CATCHER= by =EQ (tag_or_ch, tag)= (=eval.c:1477=) and passes
+  the thrown value.
+- =unwind_to_catch= (=eval.c:1423-1462=): store =nonlocal_exit= (+0x10) and
+  =val= (+0x18) in the target; restore =poll_suppress_count= and
+  =interrupt_input_blocked=; then loop { =unbind_to (handlerlist->pdlcount)=;
+  advance =handlerlist= } until =handlerlist == catch=; restore
+  =lisp_eval_depth= and =act_rec=; =sys_longjmp (catch->jmp, 1)=. So specpdl
+  entries (including =unwind-protect= cleanups, which run Lisp) are unwound
+  /handler by handler, innermost first, before the jump/, and the jump lands
+  with =handlerlist == catch=.
+- Non-local-exit state that is /not/ specpdl-managed and matters to NeLisp:
+  none identified beyond the above; =poll_suppress_count=,
+  =interrupt_input_blocked=, =act_rec=, =lisp_eval_depth= have no NeLisp
+  counterpart for native activations (=*UNVERIFIED*= for =lisp_eval_depth=:
+  NeLisp's own nesting counter is unwound by ordinary returns).
+
+** §2.6 What genuine code touches (the entire native-visible contract)
+
+| memory | access | source |
+|---|---|---|
+| =GOT[current_thread_reloc]= -> cell -> =&current_thread= -> thread | 3 dependent loads | §2.2 |
+| thread+0x68 | read, write | pop |
+| handler+0x20 | read | pop |
+| handler+0x40..+0x108 | written by =_setjmp=, read by =longjmp= | §2.4 |
+| handler+0x18 | not touched by S6.10 sites | §2.4 |
+| every other thread/handler byte | untouched | template check (§4.A.5) |
+
+* §3 NeLisp facts this design builds on
+
+| fact | where |
+|---|---|
+| Exit model: return codes plus a stash (THROW flag @arena+16, TAG @+24, VAL @+56); no handler chain in native-visible memory | =scripts/nelisp-standalone-build.el:1621-1625= |
+| VM handler search then exact unwind to the matching frame | =wf_bytecode_try_throw= =:11713=, =wf_bytecode_try_signal= =:11783=; Doc 207 §2.7 |
+| Callback adapter (AOT elisp DSL): reserve context token, root mark, call gateway, on =rc/=0= =capture_exit=, =nl_root_release=, =nl_eln_callback7_finish=, return 0 | =lisp/nelisp-cc-eln-callback7.el:112-131= (capture), =:201-272= (=_entry_word=), 32 ports =:289-297= |
+| Adapter serializes on a gettid lock: one active thread | =lisp/nelisp-cc-eln-callback7.el:88-110= |
+| Dispatcher: frame with =:exit=/=:condition= suppresses later callbacks; otherwise =condition-case= traps error/quit and an =unwind-protect= marks pending throws | =lisp/nelisp-eln-callable-import.el:405-450= |
+| Suppressed answer (S6.7 mitigation): cons-safe zeroed word for lisp/handle ports, else (0 . 0) | =lisp/nelisp-eln-callable-import.el:374-404= |
+| Bridge resume of a recorded exit after native return | =--published-exit= =:106=, =--resume= =:135=, =--call-unary= =:592=, =--call-chain= =:792= |
+| Native-side specpdl analogue: list =nelisp-eln-runtime-services--specpdl=, depth =...-specpdl-depth=, =--unbind-1=, =specbind=, =helper-unbind-n= | =lisp/nelisp-eln-runtime-services.el:127-150, 221-250= |
+| Private returns-twice pair (RBX RBP R12-R15, post-call RSP, RIP in a 64-byte buffer; longjmp normalizes 0 to 1) built with the NeLisp assembler, canary-tested, "never passed to glibc" | =lisp/nelisp-native-jump-x86_64.el:31-70=, =test/nelisp-native-jump-x86_64-test.el= |
+| Registration authenticates the PLT/GOT: exactly one JUMP_SLOT to a local lambda; live GOT slot re-checked after dlopen | =lisp/nelisp-eln-registration.el:1778-1800, 1886-1890= |
+| Owned native memory helper (malloc-backed owner, address, release) | =packages/nl-ffi/src/nl-ffi-memory.el:45=; used for the suppressed word =lisp/nelisp-eln-callable-import.el:394= |
+| Executable page helper | =lisp/nelisp-native-load.el:742= (=--mmap size executable=) |
+| Activation frames are a Lisp special-variable list and carry every lease | Doc 207 §2.2; =nelisp-eln-callable-import--frames= |
+
+* §4 Design options
+
+** §4.0 Invariants every option must keep
+
+- I1 /Exactly-once/: a shadow handler record is consumed by at most one
+  landing; its buffer is invalidated when consumed or retired.
+- I2 /GNU order/: cleanups (native specpdl entries, then VM frames as they
+  return) run innermost first, each before any outer one, all before the
+  landing pad runs.
+- I3 /No skipped NeLisp frame/: no NeLisp interpreter, VM, gateway or
+  adapter state is discarded by a jump; only GNU-generated frames are.
+- I4 /Doc 207 unchanged for everything unmatched/: an exit that matches no
+  native handler of its activation takes exactly the current suppress-and-
+  resume path.
+- I5 /Fail closed/: any inconsistency (chain not a runtime-minted suffix,
+  wrong thread, buffer or pointer out of range, unpopped handler at return)
+  retires the activation with an error rather than continuing.
+
+** §4.A Option A: NeLisp-provided setjmp/longjmp, runtime-owned shadow structs
+
+*** §4.A.1 Shadow structures (runtime-owned, native-visible)
+
+- One =thread= block (>= 0x80 bytes, zeroed) with =handlerlist= at 0x68
+  pointing at the innermost /shadow handler/ of the running activation, or a
+  runtime-owned sentinel handler (=next= = 0) when none.
+- One 8-byte =current_thread= cell holding the thread block's address.
+  Registration writes the artifact's =current_thread_reloc= cell (=.data=
+  0x5800 of the genuine artifact) with the address of that cell, exactly as
+  GNU's loader does; the loader verifies the cell was zero first.
+- Handler blocks (0x140 bytes, zeroed, 16-aligned) minted by the
+  =push_handler= port. The runtime writes =type=, =next=, and leaves
+  =tag_or_ch=/=val= at 0 (native code never reads them at these sites; §2.4).
+  The real Lisp tag (the condition list or catch tag) lives only in the
+  Lisp-side record. Requests to the GC owner: §7.
+
+*** §4.A.2 =push_handler= port
+
+An admitted body imports freloc 2 through a port (=convention fixed=,
+=arity 2=, =return raw=). The Lisp implementation, run inside the callback:
+
+1. validates the activation (=frame=) is the top frame and its thread is the
+   adapter's active thread (I5);
+2. decodes =tag= (a GNU word from the body's declared constants, resolved
+   through the existing constant-cell mechanism, not decoded from memory) and
+   =type= (must be 0 or 1, else fail closed);
+3. mints a block, links =next= to the current =thread+0x68=, records
+   =(block type tag pdlcount)= on the frame's =:native-handlers= (a Lisp list
+   held by the rooted frame), with =pdlcount = (specpdl-depth)=;
+4. writes =thread+0x68 := block= and returns the block address as the raw
+   word.
+
+*** §4.A.3 =_setjmp= and =longjmp=
+
+Two variants (choose in §6):
+
+- *A1, private assembler pair.* Reuse =nelisp-native-jump-x86_64-emit-setjmp=
+  and =-emit-longjmp= (=nelisp-native-jump-x86_64.el:31, :47=) in an
+  executable page (=nelisp-native-load--mmap=). After the real =dlopen=
+  (RTLD_NOW, so ld.so has already bound the slot to glibc), the loader
+  overwrites =.got.plt= word at =bias+0x5000= with the stub address and reads
+  it back. The private buffer needs 64 bytes and fits in the 200-byte =jmp=
+  field. The stub is reachable only through that one GOT slot; its address is
+  never given to Lisp as a callable.
+  Requires: slot writable after load (=.got.plt= starts at =0x4fe8=,
+  =GNU_RELRO= is =0x4dd0+=; the S6.7 code already reads the live slot, but
+  writability is *UNVERIFIED*; fallback is A2).
+- *A2, glibc-bound.* Leave ld.so's binding to libc =_setjmp=. Admission
+  compares the live slot with =nl-ffi--dlsym= of libc =_setjmp= and requires
+  =DT_NEEDED= exactly =libc.so.6=. The runtime lands with libc =_longjmp=,
+  resolved once with =nl-ffi--dlsym= and invoked with =ptr-call= (as
+  =nelisp-eln-system-loader.el:256= calls =dladdr=). No assembler, no GOT
+  patch, but the runtime cannot validate the saved =rip=/=rsp= (glibc mangles
+  them with the pointer guard) and depends on libc semantics
+  (=_longjmp_unwind= runs pthread cleanup handlers: none exist in these
+  frames, *UNVERIFIED* on the process's own stack).
+  There is no CET shadow stack in the artifact (=readelf -n=: only a build-id
+  note), so a non-glibc longjmp is safe for A1 (*UNVERIFIED* for the host
+  binary).
+
+*** §4.A.4 The divert: how a signal reaches the landing pad
+
+The jump is issued from the adapter, not from Lisp, in this order
+(the adapter today does capture, =nl_root_release=, =finish=, return; the new
+step is added after =finish=):
+
+1. Dispatcher (Lisp) traps an =error=/=quit= (as today, =callable-import.el:423=).
+   Before recording it as the frame's =:condition=, it reads =thread+0x68=,
+   checks the chain against the frame's =:native-handlers= (I5), prunes
+   handlers the native code already popped (its pop writes only =+0x68=),
+   and walks innermost first applying =find_handler_clause= semantics
+   (=memq= over =error-conditions=, or =t=) for type 1.
+2. On a match H: run =unbind_to= for every handler from the innermost to H,
+   each to its recorded =pdlcount= (=--unbind-1= repeated;
+   =callable-import= already exposes =helper-unbind-n= to the bridge). Cleanups
+   that raise a new exit replace the exit, as GNU (the new exit re-enters
+   step 1 with the remaining chain).
+3. Drop the records above H, release their blocks; write =H.nonlocal_exit=
+   (+0x10, =1= signal) and =H.val= (+0x18: 0 for these sites; a
+   =condition-case VAR= site needs the encoded =(SYMBOL . DATA)= through the
+   existing activation-lease codec, so it stays inadmissible until the codec
+   can encode it, §8 Q4); write =thread+0x68 := H=.
+4. Clear the frame's suppress state (the exit is consumed, I4), store =H= in
+   a runtime cell =nl_eln_native_resume= (address of H's =jmp= buffer, value 1),
+   and return a normal answer pair.
+5. The adapter (AOT DSL), after =nl_eln_callback7_finish=, reads and clears
+   =nl_eln_native_resume=; if non-zero it releases the callback lock (already
+   released by =finish=) and jumps: =longjmp(buffer, 1)= (A1: the stub; A2:
+   =ptr-call _longjmp=). Otherwise it returns the word as today.
+
+Why no NeLisp frame is skipped (I3): step 5 runs after the gateway, the
+dispatcher, every VM frame under the raising callback, and every root/pin
+mark of the adapter have returned or been released. The frames discarded
+are the adapter's own leaf frame and GNU-generated frames between the
+adapter and the target.
+
+Frame-local restriction: the target must be in the /same/ native frame that
+called the port that raised. Admission proves it: between the =push_handler=
+return and each matching pop the body has only authenticated port calls
+(=call *slot(%reg)=), forward control flow, no local =call rel32=, no PLT
+call other than =_setjmp=. Then no unknown native frame exists between adapter
+and target, and the target's =rsp= is exactly the adapter's caller frame
+(checkable with the recorded =rsp= in A1). A body whose guarded region calls
+another native function (nested native frames) is not admitted by this
+document.
+
+*** §4.A.5 Trust model C: what must be template-verified
+
+Exact-byte template for the body and =top_level_run= remains the unit of
+trust; on top, this document adds these mandatory checks to handler-bearing
+templates:
+
+- each =push_handler= call is preceded by the exact tag load (declared
+  constant) and =mov $1,%esi=, and followed by exactly
+  =lea 0x40(%rax),%rdi; call PLT(_setjmp); test %eax,%eax; je/jne=;
+- the PLT/GOT surface is exactly PLT0 + one entry, one JUMP_SLOT at the
+  fourth =.got.plt= word whose symbol is the undefined =.dynsym= function
+  named =_setjmp= with version =GLIBC_2.2.5=, =DT_NEEDED= is exactly
+  =libc.so.6=, =DT_JMPREL/PLTRELSZ/PLTREL= name only it (extension of
+  =--plt-target-name=, =registration.el:1778=);
+- the only thread/handler memory operations in the whole body are the
+  3-load path, thread+0x68 read/write, handler+0x20 read and the address
+  computation +0x40 (a linear byte-pattern scan of the body for any other
+  displacement off those registers is part of the template, not inferred);
+- =current_thread_reloc= GOT slot (=GOT 0x4fb0=) is the artifact's own
+  =.data= object and initially zero;
+- the guarded region contains only authenticated port calls (frame-local
+  rule).
+
+Attack surface of a callable setjmp: an artifact that could reach the stub
+with a free =rdi= gets a 64-byte (A1) or 72-byte (A2, =__mask_was_saved=)
+write at any address, and a forged buffer would redirect control. Both are
+closed by exact templates (no free =rdi=) plus, for A1, the runtime check at
+the divert that the buffer's =rip= lies in the authenticated body range and
+=rsp= is the expected value (A2 cannot check). The stub's address is
+installed in one GOT slot of one admitted artifact.
+
+*** §4.A.6 Correctness argument versus GNU
+
+For the admitted shape, GNU's observable sequence is: search -> unbind in
+handler order -> =handlerlist= := target -> jump with =eax=1=. The design
+produces the same sequence in the same order, the same landing register
+state (setjmp-saved callee-saved registers, =rsp=, =rip=, restored by the
+same pair that saved them), and the same post-landing native pop
+(=handlerlist = H->next=, executed by the artifact's own bytes on shadow
+memory that has a real =next=). Differences, all declared: the search does
+not visit debugger or =handler-bind= entries; =lisp_eval_depth=,
+=poll_suppress_count=, =interrupt_input_blocked=, =act_rec= are not
+restored (no counterpart); an exit passes VM frames deeper than the native
+frame before the handler match (Doc 207 §3.5 already covers this for
+native-to-native).
+
+*** §4.A.7 GC and roots
+
+Native-visible blocks hold no Lisp pointers; tags and values live in the
+frame plist (a rooted Lisp structure) and reach native code only as
+authenticated constant words or activation leases. The GC is not asked to
+scan or move any block (§7). The discarded native frames hold GNU words for
+units the frame already leased; those leases stay until the activation
+retires, so nothing dangles.
+
+*** §4.A.8 Size and Rust LOC
+
+Rust LOC: 0. Estimate (lines, *UNVERIFIED*, from comparable existing files):
+loader (thread/handler blocks, =current_thread_reloc= write, GOT retarget or
+libc binding, admission extension) 250 elisp; =push_handler= port + chain
+validation + handler match/unwind + resume cell 350 elisp; adapter divert
+40 AOT DSL lines in =nelisp-cc-eln-callback7.el= (forces a standalone rebuild
+and re-bake); probe/negative harness 500; exact templates of the
+handler-bearing body are the separate S6.10 lane.
+
+*** §4.A.9 Test plan (with negative controls)
+
+See §5 (shared) and stage criteria S8-S10 in §6.
+
+** §4.B Option B: trampolining (no native longjmp)
+
+Split an admitted body at handler boundaries: the guarded region runs under
+NeLisp's own =condition-case=; the handler region is a separate continuation
+invoked by NeLisp; native code never longjmps.
+
+Feasibility check against the real code: the guarded region (=0x2b50..0x2ba9=)
+is not a function. It shares the stack frame (=0x38(%rsp)=, =0x48(%rsp)=
+slots), callee-saved registers (=rbx= = constants base, =rbp=/=r12= reloaded
+from =(%rsp)=) and the join point =0x2502= with the enclosing body. Splitting it
+needs one of:
+
+- *B1 code rewriting* (patch the body so the region becomes a callable and
+  the landing a resume point): breaks "exact genuine bytes", the premise of
+  trust model C. Rejected.
+- *B2 region emulation*: a template-verified straight-line subset interpreter
+  in Lisp executes the region and the landing pad (about 20 instructions per
+  region here: =mov/lea/test/jcc/call *slot/movups/punpcklqdq/jmp=), then
+  hands control back to native code at the join with a synthetic register and
+  stack state. This needs an x86 decoder proven equal to hardware, register
+  and frame reconstruction, and a way to re-enter native code mid-function,
+  which /is/ a longjmp-like transfer (to the join address with rebuilt
+  registers) but built from scratch. It shrinks to A's problem plus a
+  decoder.
+
+Trade-offs: correctness argument is stronger for control flow (no native
+frame discarded at all) but weaker for state (emulated instructions must
+match the CPU); trust model C impact: the interpreter's subset is a new
+trusted decoder, and every template needs the region proven inside the
+subset; attack surface: none from setjmp, but the decoder is a new parser of
+adversarial-looking bytes; GC: none; Rust LOC 0; size 1500-2500 lines
+(*UNVERIFIED*); generality: each new handler shape needs the emulator to
+grow. Test plan: differential decoder tests against hardware execution for
+each instruction form, plus the shared handler probes.
+
+** §4.C Option C: keep S6.10 out of scope
+
+Leave =byte-compile-form= on the VM (host/VM results already equal, S6.10
+notes 2026-09-28). No new trusted code. Consequences: ledger S6.10 stays a
+=pending= row and S6.22 stays a known-red =cmd= (it requires all 19); to make
+the ledger truthful without a mechanism the user must edit the criteria
+(the meter forbids downgrading a red check), which changes the denominator.
+Rust LOC 0, size 0, GC none, attack surface unchanged. Correctness: not
+applicable (function not native). Test plan: none new; keep the existing
+negative that the artifact is rejected with
+=top-level-instructions-not-admitted=.
+
+* §5 Comparison
+
+| | A1 private asm | A2 glibc-bound | B2 emulation | C out of scope |
+|---|---|---|---|---|
+| closes S6.10 handler blocker | yes | yes | yes | no |
+| new trusted code | stub + GOT retarget + templates | templates + libc binding check | decoder + templates | none |
+| runtime can validate saved rip/rsp | yes | no | n/a | n/a |
+| depends on libc semantics | no (loader still needs libc for dlopen) | yes (=_setjmp=/=_longjmp=) | no | no |
+| RELRO/GOT-write risk | yes (UNVERIFIED) | none | none | none |
+| new asm | 0 (existing pair) | 0 | 0 | 0 |
+| adapter (AOT) change | yes | yes | maybe | no |
+| Rust LOC | 0 | 0 | 0 | 0 |
+| relative size | ~1200 lines incl. tests | ~1100 | ~2500 | 0 |
+| generality beyond frame-local | extendable (nested native frames) | extendable | poor | n/a |
+
+Shared test matrix (A and B; each row also run against the pre-change
+runtime as the red control):
+
+| id | scenario | expected | negative control |
+|---|---|---|---|
+| T1 | host-compiled probe =(defun p (x) (condition-case nil (progn (set x (symbol-value x)) 'ok) (error 'caught)))= (genuine 31.1 native-comp output; contains =push_handler= + =_setjmp=), x bound | returns =ok= | none needed |
+| T2 | same, x unbound (=void-variable= from =Fsymbol_value=) | returns =caught=; host and NeLisp transcripts identical | pre-change runtime: never reaches the landing pad (returns after suppression) |
+| T3 | =Fset= on a constant symbol (=setting-constant=) | =caught= | same as T2 |
+| T4 | inner =unwind-protect= cleanup and inner VM =condition-case= between raise and handler | cleanup runs once, before landing, in GNU order | swap cleanup and unwind order in the runtime: T4 fails |
+| T5 | signal not matching the handler's conditions | Doc 207 path: suppress, resume outside | force match-all: T5 fails |
+| T6 | =quit= in guarded region with handler list =(error)= vs =(quit)= vs =(t)= | matches GNU =find_handler_clause= | wrong list semantics fails |
+| T7 | nested native activation (handler frame -> callback -> VM -> native leaf that signals) | consumed at the outer native frame | drop inner-exit resume: fails |
+| T8 | normal completion (pop inline) then return | =thread+0x68= back at sentinel, blocks freed, registries at baseline | leave a handler unpopped: activation fails closed |
+| T9 | tampered body: =lea 0x40= displacement, type immediate, =_setjmp= reloc symbol renamed (=_longjmp=, =system=), extra thread store | registration refuses each | admit without the check: test goes red |
+| T10 | forged =thread+0x68= (harness writes garbage before a callback) | fail closed | remove chain validation: falls over or misjumps |
+| T11 | replay of a consumed buffer | fail closed, second landing refused | remove invalidation: second landing happens |
+| T12 | GC (including compacting collection) inside the guarded region and inside a cleanup | no crash, identical result | none |
+| T13 | second thread calls a handler-bearing native subr | refused (main thread only, §8 Q7) | n/a |
+
+Then the closing e2e is the S6.10 measure itself (=byte-compile-form= corpus
+equal on host, VM and native, native raw/dispatch calls > 0).
+
+* §6 Recommendation and phased plan
+
+Recommend *A1* (private assembler pair, frame-local, template-verified),
+with *A2* as the documented fallback if the =.got.plt= slot is not writable
+after load. Reasons: the runtime can validate the saved =rip=/=rsp= (A2
+cannot); no dependency on libc's longjmp cleanup semantics; the pair already
+exists and is canary-tested; the Doc 207 contract stays intact for everything
+that does not match. Do not do B2 (a decoder is a larger trusted base than
+the stub) and do not do C unless the user decides S6.10/S6.22 are to be
+re-scoped (§8 Q1).
+
+Stages (new stages in =tools/ai/eln-progress.org=; ids proposed; per
+=progress-ledger.md= each stage has >= 3 criteria and ends with a real e2e;
+all start =pending= because none of the commands exist yet; the =cmd:= shown
+is the intended check and is a proposed path, not an existing file. Adding
+S8-S10 raises the denominator from 57 to 69 (see the count below); state that when reported).
+
+** Stage S8: shadow structs and callable binding (no handler semantics yet)
+
+#+begin_src org
+* S8 Native handler substrate: shadow thread/handler blocks and the _setjmp binding
+
+** S8.1 Loader writes GNU's current_thread_reloc chain and the shadow thread block has handlerlist at +0x68
+pending
+#+NOTE: intended cmd: sh test/nelisp-eln-handler-substrate-smoke.sh chain  (host probe .eln reads thread+0x68 through the 3-load path and gets the sentinel)
+
+** S8.2 Registration admits exactly one undefined _setjmp@GLIBC_2.2.5 JUMP_SLOT and refuses every other undefined PLT symbol, extra JUMP_SLOTs and extra DT_NEEDED
+pending
+#+NOTE: intended cmd: emacs --batch -l test/nelisp-eln-handler-admission-test.el -f ert-run-tests-batch-and-exit (negatives: renamed symbol, second reloc, DT_NEEDED libm)
+
+** S8.3 The private setjmp/longjmp pair is bound to the artifact's GOT slot, read back, and a probe body returns twice with callee-saved registers restored
+pending
+#+NOTE: intended cmd: sh test/nelisp-eln-handler-substrate-smoke.sh jump  (canaries on rbx rbp r12-r15; fallback A2 variant behind ELN_HANDLER_BIND=libc)
+
+** S8.4 End to end: a genuine host-compiled condition-case probe .eln loads on NeLisp, runs its normal (no-error) path and leaves handlerlist at the sentinel
+pending
+#+NOTE: intended cmd: sh test/nelisp-eln-handler-probe-smoke.sh normal  (T1, T8; compares host and NeLisp transcripts)
+#+end_src
+
+** Stage S9: handler semantics (push_handler, match, unwind, divert)
+
+#+begin_src org
+* S9 Native handler semantics: push_handler port, CONDITION_CASE match, unwind, landing
+
+** S9.1 The push_handler port mints a GNU-layout handler (type/next at 0x00/0x20), records pdlcount and rejects any type other than CONDITION_CASE
+pending
+#+NOTE: intended cmd: ert test/nelisp-eln-handler-port-test.el (unit; type 0 accepted only after S11)
+
+** S9.2 Handler matching equals GNU find_handler_clause (memq over error-conditions, t, quit) and the non-matching path stays the Doc 207 suppress-and-resume path
+pending
+#+NOTE: intended cmd: sh test/nelisp-eln-handler-probe-smoke.sh match  (T5, T6)
+
+** S9.3 specpdl unwinding runs handler by handler innermost first before landing, including cleanups that raise
+pending
+#+NOTE: intended cmd: sh test/nelisp-eln-handler-probe-smoke.sh unwind  (T4, T7)
+
+** S9.4 The adapter divert lands in the pad exactly once, the buffer is invalidated after use and a forged chain or replayed buffer fails closed
+pending
+#+NOTE: intended cmd: sh test/nelisp-eln-handler-probe-smoke.sh negatives  (T10, T11; red control on the pre-change binary recorded as evidence:)
+
+** S9.5 End to end: the condition-case probe returns caught on host and NeLisp with identical transcripts under error, quit and nested-activation scenarios, with a GC in the guarded region
+pending
+#+NOTE: intended cmd: sh test/nelisp-eln-handler-probe-smoke.sh all  (T2, T3, T7, T12)
+** S9.6 Before a native CONDITION_CASE handler catches, handler-bind handlers and the debugger decision (debug-on-error, debug-ignored-errors, debugger) run in GNU signal_or_quit order, with identical host/NeLisp transcripts
+pending
+#+NOTE: intended cmd: sh test/nelisp-eln-handler-probe-smoke.sh debugger  (handler-bind that observes and declines; one that exits non-locally; debug-on-error t with a recording debugger; debug-ignored-errors match)
+#+end_src
+
+** Stage S10: admission of the handler-bearing vendor function (closes S6.10)
+
+#+begin_src org
+* S10 byte-compile-form under handler admission
+
+** S10.1 Exact templates for the byte-compile-form body and top_level_run, including both push_handler/_setjmp regions and the pop sequences, admit the genuine artifact and refuse every single-byte mutation of the handler bytes
+pending
+#+NOTE: intended cmd: ert test/nelisp-eln-s610-admission-test.el; the non-handler part of the template (ports, arity (1 . 2)) is the separate S6.10 lane
+
+** S10.2 The frame-local rule is enforced: a body with a local call or unauthenticated indirect call inside a guarded region is refused
+pending
+#+NOTE: intended cmd: same test file, mutated bodies
+
+** S10.3 End to end: S6.10 (byte-compile-form Host/VM/JIT equality, native execution, timing) passes and the S6.22 corpus validator passes with all 19 functions native
+pending
+#+NOTE: intended cmd: the existing S6.10 measure row, then make eln-s6-corpus-check ELN_PROGRESS_BIN=...; S6.10 and S6.22 themselves stay their own (currently red/pending) criteria
+#+end_src
+
+Net new criteria after the 2026-09-29 decisions: S8 (4) + S9 (6, incl.
+S9.6) + S10 (3) = 13, denominator 57 -> 70 (recompute with the meter).
+
+A later optional stage S11 (=CATCHER=: the =catch= form, throw match by =eq=,
+and =condition-case VAR= via an encoded =val=) needs the codec to encode
+=(SYMBOL . DATA)= and is not on the S6.10 path.
+
+Ordering: S8 and S9 are testable with a small host-compiled probe .eln
+(compile with the reference Emacs 31.1 =native-compile=) long before the
+7661-byte template exists, so the mechanism is proven independently of
+S6.10's template size. A standalone rebuild and re-bake of the binary is
+required at S9 (adapter change); the S6 corpus evidence must be regenerated
+afterwards (10-15 minutes, per ledger note S6.22).
+
+* §7 Requests to the GC-owner session
+
+Nothing below asks the GC to scan or move new objects; the requests are for
+stable, unscanned native memory and for confirmations.
+
+| id | request | size / alignment | lifetime | root / scan requirements |
+|---|---|---|---|---|
+| R1 | =thread= block | >= 0x80 bytes (use 0x80), 16-aligned, zero-filled | one per process, until process exit | not in the GC arena or an arena region excluded from sweep/compaction; address stable; never scanned; holds no Lisp words (only =+0x68=: a pointer to R3 or R4 blocks) |
+| R2 | =current_thread= cell | 8 bytes, 8-aligned | process lifetime | as R1; holds R1's address |
+| R3 | shadow handler blocks | 0x140 bytes (sizeof =struct handler= 0x128, or 0x130 with X; 16-byte slack), 16-aligned, zeroed before each mint | minted by the =push_handler= port; released exactly once at consumption, unwind or activation retire; at most 64 live per activation (fail closed beyond) | unscanned; address stable while live; may carry only 0 or owner-leased GNU words in =tag_or_ch=/=val= (never raw NeLisp Sexp pointers) |
+| R4 | sentinel handler | one 0x140 block, zeroed, =next=0 | process lifetime | as R3 |
+| R5 | confirmation: =nelisp-eln-callable-import--frames= and the =:native-handlers= plist entries (tags, condition lists, exit values) are GC roots and survive compaction | n/a | activation | Doc 207 §2.2 already relies on the frame list being scanned; state whether plist values inside a frame are moved and re-linked |
+| R6 | confirmation: at the divert point the adapter frame holds no arena state | n/a | n/a | the divert occurs after =nl_root_release= and =nl_eln_callback7_finish=; confirm no allocator lock, GC in-progress flag, pin frame or root mark is owned by an adapter or gateway frame after those two calls; confirm root-stack marks are per-callback and the outer =nl_root_pin_begin_nested= chain (Doc 207 §2.6) is untouched by discarding native frames |
+| R7 | confirmation: GNU native frames between adapter and target hold no arena pointers by ABI, and no conservative stack scan exists | n/a | n/a | only GNU words for owner-leased units; those leases are retained by the frame until it retires |
+| R8 | executable page for the A1 stubs | one page, RX after write | process lifetime | outside the arena; created with the existing =nelisp-native-load--mmap= (not a GC request unless the arena owns mmap accounting) |
+
+Allocator choice (=nl-ffi-memory-allocate= owners versus a dedicated
+immortal region) is left to the GC owner as long as the properties hold.
+
+* §8 Open questions for the user
+
+1. *Q1 Scope.* Is admitting a trusted setjmp/longjmp pair worth closing
+   S6.10, or is C acceptable (18 of 19 native; S6.10/S6.22 stay red or the
+   criteria are edited)? This decides everything below.
+2. *Q2 A1 or A2.* Prefer the private assembler pair with a GOT retarget
+   (validatable, extra loader step) or glibc's own =_setjmp=/=_longjmp=
+   (less code, no rip/rsp validation)?
+3. *Q3 Frame-local contract.* Accept permanently that a handler must be in the
+   same native frame as the raising callback (nested native frames between
+   are not admitted)? =byte-compile-form= satisfies it.
+4. *Q4 Value and CATCHER.* Defer =condition-case VAR= (needs =(SYMBOL . DATA)=
+   through the object codec) and =CATCHER= to S11? The corpus needs neither.
+5. *Q5 Binary flavor.* Confirm every binary that loads .eln is the
+   =NELISP_READER_DYNAMIC= flavor (dlopen/dlsym/libc present), correcting the
+   "no libc linkage" premise of the brief.
+6. *Q6 GNU build flags.* Does the genuine 31.1 =.eln= producer build with X
+   (=struct handler= 0x130) or without (0x128)? Blocks are sized for the
+   larger; only the doc's =sizeof= statement depends on it.
+7. *Q7 Threads.* Handler-bearing native calls on the main thread only (the
+   adapter already serializes on one tid, =callback7.el:88=)?
+8. *Q8 Debugger.* Accept that =debug-on-error= and =handler-bind= are not
+   consulted for errors caught by native handlers?
+9. *Q9 Rebuild cost.* The adapter change forces a standalone rebuild plus a
+   full S6 evidence regeneration; acceptable?
+
+* §9 Evidence and unverified list
+
+Verified: handler struct layout and enum (=lisp.h=), =push_handler=,
+=unwind_to_catch=, =find_handler_clause=, =emit_limple_push_handler=
+(=eval.c=, =comp.c= of 31.1); disassembly offsets in §2.4; census in §1.2;
+=readelf= of the artifact (PLT, one JUMP_SLOT, =DT_NEEDED libc.so.6=, no CET
+note); NeLisp citations in §3.
+
+Unverified (each must be checked before or during S8): writability of the
+=.got.plt= word at 0x5000 after load; whether the pre-open validator rejects
+the artifact before =dlopen=; X support of the genuine build (struct size);
+that the AOT DSL can call a raw address or expose =rsp= for the A1 buffer
+check; adapter behavior of =nl_root_release=/=finish= as R6 assumes;
+script and test file names in §6 (all proposed, none exist); size estimates;
+source form behind the two =condition-case= regions; interaction with the
+bytecode-native compiler ABI of Doc 209 (only its header was read; a shared
+handler-frame ABI is a possible later unification).

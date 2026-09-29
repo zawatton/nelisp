@@ -322,3 +322,61 @@ cmd: NELISP_BIN="$ELN_PROGRESS_BIN" sh test/nelisp-eln-switchover-smoke.sh
 #+REQUIRES: ELN_PROGRESS_BIN
 cmd: NELISP_BIN="$ELN_PROGRESS_BIN" sh tools/nelisp-eln-crash-corpus-gate.sh
 #+NOTE: Added 2026-09-28 (criteria count 56 -> 57). KNOWN-RED: 91/93 on nelisp-integrated (sha 09d1a843...), zero crashes; gnu-increment and gnu-decrement are ADMITTED with a flipped .text byte because the tail-import analysis skips per-instruction validation once it recognizes a tail descriptor. Keep as a failing cmd until admission covers every byte of the admitted body. Re-run 2026-09-28 (S7.7 lane) on target/nelisp-integrated14: PASS 101/101, zero crashes, gnu-increment/decrement corrupt-text now rejected.
+
+* S8 Native handler substrate: shadow thread/handler blocks and the _setjmp binding
+#+NOTE: Stages S8-S10 added 2026-09-29 from docs/design/210-eln-native-handlers.org (user decision: option A1, GNU-order handler-bind/debugger); 13 new criteria, denominator 57 -> 70.
+
+** S8.1 Loader writes GNU's current_thread_reloc chain and the shadow thread block has handlerlist at +0x68
+pending
+#+NOTE: intended cmd: sh test/nelisp-eln-handler-substrate-smoke.sh chain  (host probe .eln reads thread+0x68 through the 3-load path and gets the sentinel)
+
+** S8.2 Registration admits exactly one undefined _setjmp@GLIBC_2.2.5 JUMP_SLOT and refuses every other undefined PLT symbol, extra JUMP_SLOTs and extra DT_NEEDED
+pending
+#+NOTE: intended cmd: emacs --batch -l test/nelisp-eln-handler-admission-test.el -f ert-run-tests-batch-and-exit (negatives: renamed symbol, second reloc, DT_NEEDED libm)
+
+** S8.3 The private setjmp/longjmp pair is bound to the artifact's GOT slot, read back, and a probe body returns twice with callee-saved registers restored
+pending
+#+NOTE: intended cmd: sh test/nelisp-eln-handler-substrate-smoke.sh jump  (canaries on rbx rbp r12-r15; fallback A2 variant behind ELN_HANDLER_BIND=libc)
+
+** S8.4 End to end: a genuine host-compiled condition-case probe .eln loads on NeLisp, runs its normal (no-error) path and leaves handlerlist at the sentinel
+pending
+#+NOTE: intended cmd: sh test/nelisp-eln-handler-probe-smoke.sh normal  (T1, T8; compares host and NeLisp transcripts)
+
+* S9 Native handler semantics: push_handler port, CONDITION_CASE match, unwind, landing
+
+** S9.1 The push_handler port mints a GNU-layout handler (type/next at 0x00/0x20), records pdlcount and rejects any type other than CONDITION_CASE
+pending
+#+NOTE: intended cmd: ert test/nelisp-eln-handler-port-test.el (unit; type 0 accepted only after S11)
+
+** S9.2 Handler matching equals GNU find_handler_clause (memq over error-conditions, t, quit) and the non-matching path stays the Doc 207 suppress-and-resume path
+pending
+#+NOTE: intended cmd: sh test/nelisp-eln-handler-probe-smoke.sh match  (T5, T6)
+
+** S9.3 specpdl unwinding runs handler by handler innermost first before landing, including cleanups that raise
+pending
+#+NOTE: intended cmd: sh test/nelisp-eln-handler-probe-smoke.sh unwind  (T4, T7)
+
+** S9.4 The adapter divert lands in the pad exactly once, the buffer is invalidated after use and a forged chain or replayed buffer fails closed
+pending
+#+NOTE: intended cmd: sh test/nelisp-eln-handler-probe-smoke.sh negatives  (T10, T11; red control on the pre-change binary recorded as evidence:)
+
+** S9.5 End to end: the condition-case probe returns caught on host and NeLisp with identical transcripts under error, quit and nested-activation scenarios, with a GC in the guarded region
+pending
+#+NOTE: intended cmd: sh test/nelisp-eln-handler-probe-smoke.sh all  (T2, T3, T7, T12)
+** S9.6 Before a native CONDITION_CASE handler catches, handler-bind handlers and the debugger decision (debug-on-error, debug-ignored-errors, debugger) run in GNU signal_or_quit order, with identical host/NeLisp transcripts
+pending
+#+NOTE: intended cmd: sh test/nelisp-eln-handler-probe-smoke.sh debugger  (handler-bind that observes and declines; one that exits non-locally; debug-on-error t with a recording debugger; debug-ignored-errors match)
+
+* S10 byte-compile-form under handler admission
+
+** S10.1 Exact templates for the byte-compile-form body and top_level_run, including both push_handler/_setjmp regions and the pop sequences, admit the genuine artifact and refuse every single-byte mutation of the handler bytes
+pending
+#+NOTE: intended cmd: ert test/nelisp-eln-s610-admission-test.el; the non-handler part of the template (ports, arity (1 . 2)) is the separate S6.10 lane
+
+** S10.2 The frame-local rule is enforced: a body with a local call or unauthenticated indirect call inside a guarded region is refused
+pending
+#+NOTE: intended cmd: same test file, mutated bodies
+
+** S10.3 End to end: S6.10 (byte-compile-form Host/VM/JIT equality, native execution, timing) passes and the S6.22 corpus validator passes with all 19 functions native
+pending
+#+NOTE: intended cmd: the existing S6.10 measure row, then make eln-s6-corpus-check ELN_PROGRESS_BIN=...; S6.10 and S6.22 themselves stay their own (currently red/pending) criteria
