@@ -40,6 +40,13 @@ cleanup_smoke() {
 }
 trap cleanup_smoke EXIT
 
+# Hermetic user init: an ordinary start loads the caller's real init file, so
+# a developer's ~/.emacs.d/init.el (large, and free to fail) would decide this
+# policy smoke.  Point the documented test override at an empty directory.
+NEMACS_USER_EMACS_DIRECTORY="$smoke_dir/user-emacs/"
+mkdir -p "$NEMACS_USER_EMACS_DIRECTORY"
+export NEMACS_USER_EMACS_DIRECTORY
+
 # --- 2. a missing image must not start a 52-minute build -------------------
 # Run this first: it is the check that fails loudly if the default flips back.
 NEMACS_COLD_CACHE_ROOT="$smoke_dir/miss" \

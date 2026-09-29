@@ -535,16 +535,11 @@ of a primitive's name."
         (let ((source (rdf absolute)))
           (unless (stringp source)
             (signal 'file-error (list "Cannot open load file" absolute)))
-          (let ((prior-name (and (boundp 'load-file-name) load-file-name))
-                (prior-directory
-                 (and (boundp 'default-directory) default-directory)))
+          (let ((prior-name (and (boundp 'load-file-name) load-file-name)))
             (setq load-file-name absolute)
-            (setq default-directory
-                  (or (nelisp-ec-file-name-directory absolute) "/"))
             (unwind-protect
                 (nelisp--eval-source-string source)
-              (setq load-file-name prior-name)
-              (setq default-directory prior-directory)))
+              (setq load-file-name prior-name)))
           t)
       (load absolute nil nil t nil))))
 
