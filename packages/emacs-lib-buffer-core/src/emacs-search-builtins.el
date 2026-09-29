@@ -68,13 +68,14 @@
 
 (defun emacs-search-builtins--install-function-p (symbol)
   "Return non-nil when SYMBOL should be installed as an unprefixed bridge."
+  ;; Native-first (see `emacs-edit-builtins--install-function-p'): a search
+  ;; primitive the NeLisp core implements natively works on the native
+  ;; buffers `with-temp-buffer' creates; the ec-layer polyfill sees an empty
+  ;; ec buffer there.  The no-op `emacs-stub-bulk' stubs (e.g.
+  ;; `replace-match') are still replaced by the substrate-backed versions.
   (or (not (boundp 'emacs-version))
-      (not (fboundp symbol))
-      ;; NeLisp reader (`rdf' present): these substrate-backed search/match
-      ;; polyfills are the real implementations and must win over the no-op
-      ;; `emacs-stub-bulk' stubs (e.g. `replace-match') that pre-bind some of
-      ;; these symbols.  Host Emacs (`rdf' absent) keeps its C builtins.
-      (fboundp 'rdf)))
+      (get symbol 'emacs-stub-bulk)
+      (not (fboundp symbol))))
 
 ;;;; --- string-match family (Phase 4 B, 2026-05-06) ---------------------
 
@@ -249,7 +250,12 @@ with the host builtin but applied via a simple loop here."
   (defalias 'looking-at #'nelisp-ec-looking-at))
 
 (when (emacs-search-builtins--install-function-p 'looking-at-p)
-  (defalias 'looking-at-p #'nelisp-ec-looking-at-p))
+  (defun looking-at-p (regexp)
+    "Like `looking-at' but without changing the match data."
+    (if (and (fboundp 'nelisp-buffer-p) (nelisp-buffer-p (current-buffer)))
+        ;; Native buffer (the standalone core owns `looking-at' for these).
+        (save-match-data (and (looking-at regexp) t))
+      (nelisp-ec-looking-at-p regexp))))
 
 ;;;; --- match-data accessors --------------------------------------------
 

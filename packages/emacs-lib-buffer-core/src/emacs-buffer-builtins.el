@@ -930,7 +930,16 @@ required N parameter (= the same lambda-arity-mismatch that bit
 `delete-backward-char' before its 2026-05-04 fix)."
     (interactive "p")
     (ignore killflag)
-    (nelisp-ec-delete-char n)))
+    (if (and (fboundp 'nelisp-buffer-p) (nelisp-buffer-p (current-buffer)))
+        ;; The standalone core's buffers (`with-temp-buffer',
+        ;; `find-file-noselect', ...) are native; the ec layer below never sees
+        ;; them.  Same contract as Fdelete_char.
+        (let ((pos (+ (point) n)))
+          (cond ((< pos (point-min)) (signal 'beginning-of-buffer nil))
+                ((> pos (point-max)) (signal 'end-of-buffer nil))
+                (t (delete-region (min pos (point)) (max pos (point)))))
+          nil)
+      (nelisp-ec-delete-char n))))
 
 ;; buffer-string / buffer-substring / buffer-substring-no-properties
 ;; batched into the dolist near the top.

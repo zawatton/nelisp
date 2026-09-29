@@ -60,6 +60,21 @@
     "String for the current buffer's version control status in the mode line.
 nil means the buffer is not under version control."))
 
+;;;; --- files.el: enable-dir-local-variables (stock default t) --------
+;; project.el's `project--find-in-directory' reads it; files.el defines it
+;; with default t.
+(unless (boundp 'enable-dir-local-variables)
+  (defvar enable-dir-local-variables t
+    "Non-nil means enable use of directory-local variables.
+Some modes may wish to set this to nil to prevent directory-local settings
+being applied, but still respect file-local ones."))
+
+;;;; --- files.el: mode-require-final-newline (stock default t) --------
+;; text-mode.el's `text-mode' body reads it.
+(unless (boundp 'mode-require-final-newline)
+  (defvar mode-require-final-newline t
+    "Whether to add a newline at end of file, in certain major modes."))
+
 ;;;; --- lisp-mode.el: lisp-imenu-generic-expression (exact stock) -----
 ;; Verbatim Emacs 30.1 value; `[[:space:]\n]' preserves the literal newline
 ;; inside the `defvar' matcher's whitespace class.

@@ -1153,7 +1153,9 @@ when no real redisplay window is available."
   (defun delete-region (start end) (ignore start end) nil))
 
 (unless (fboundp 'delete-char)
-  (defun delete-char (n &optional killflag) (ignore n killflag) nil))
+  (defun delete-char (n &optional killflag) (ignore n killflag) nil)
+  ;; Tagged so `emacs-buffer-builtins' replaces this no-op with the real one.
+  (put 'delete-char 'emacs-stub-bulk t))
 
 (unless (fboundp 'erase-buffer)
   (defun erase-buffer () nil))

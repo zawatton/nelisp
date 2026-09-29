@@ -243,10 +243,11 @@ These are existing vendor implementations, not local reimplementations.")
     ;; already binds most of its names.  It is still listed first, ahead of
     ;; `vc.el' (which `require's it), for a real load rather than a second
     ;; live `require' resolution.
-    "emacs-lisp/vc/vc-hooks.el"
-    "emacs-lisp/vc/vc.el"
+    "emacs-lisp-31.1/vc/vc-hooks.el"
+    "emacs-lisp-31.1/vc/vc-dispatcher.el"
+    "emacs-lisp-31.1/vc/vc.el"
     "emacs-lisp/man.el"
-    "emacs-lisp/progmodes/xref.el"
+    "emacs-lisp-31.1/progmodes/xref.el"
     "emacs-lisp/replace.el"
     "emacs-lisp/comint.el"
     ;; `simple.el' (595 reference names, the single largest S2 gap) crashed
@@ -285,8 +286,23 @@ These are existing vendor implementations, not local reimplementations.")
     "emacs-lisp/ehelp.el"
     "emacs-lisp/term.el"
     "emacs-lisp/woman.el"
-    "emacs-lisp/progmodes/project.el"
+    "emacs-lisp-31.1/progmodes/project.el"
     "emacs-lisp/isearch.el"
+    ;; S2 coverage batch 7 (2026-09-29): real GNU 31.1 json.el, imenu.el, ielm.el
+    ;; and url/url-vars.el replace the partial src facades' coverage (json 12/75,
+    ;; imenu 3/59, ielm 5/42, url-vars 5/51).  pp.el was tried and left out:
+    ;; its pp-to-string needs lisp-mode-variables/syntax-ppss, which the
+    ;; standalone lacks, so loading it regressed the working src/pp.el.  Each was
+    ;; loaded on top of the bundle and exercised against host Emacs before
+    ;; being listed; url-vars.el was removed from the normalizer's dropped-file
+    ;; list so its defvars/defcustoms survive into the REPL bundle.
+    "emacs-lisp-31.1/imenu.el"
+    "emacs-lisp-31.1/json.el"
+    "emacs-lisp-31.1/ielm.el"
+    "emacs-lisp-31.1/url/url-vars.el"
+    "emacs-lisp-31.1/dired.el"
+    "emacs-lisp-31.1/obsolete/cl.el"
+    "emacs-lisp-31.1/button.el"
     ;; `cl-macs.el' MUST be last in this list, after every struct-defining
     ;; file above.  It loads clean on its own (50/129 -> 125/129) but
     ;; installs the real, complete `cl-defstruct'/`cl-defmethod' machinery;
@@ -309,6 +325,17 @@ These are existing vendor implementations, not local reimplementations.")
   "Vendor files appended as the absolute tail of bootstrap replay.
 Use this for vendor sources whose dependencies are only guaranteed after the
 self-healing replay phase has completed.")
+
+;; Local files re-appended AFTER the vendor tail.  GNU `dired.el' (vendor tail)
+;; redefines `dired', `dired-mode', `dired-mark', ... over the lightweight
+;; `emacs-dired-min' browser, and the GNU `dired' entry point cannot run on
+;; this substrate yet (find-file-visit-truename, insert-directory, ...).
+;; Replaying the minimal browser afterwards keeps the working commands while
+;; every name only GNU defines stays bound to the real GNU definition.
+(defvar nelisp-bootstrap-post-vendor-tail-files
+  '("emacs-dired-min.el"
+    "dired.el")
+  "Local src files moved behind `nelisp-bootstrap-vendor-tail-extra-files'.")
 
 (defvar nelisp-bootstrap-tail-extra-files
   '("emacs-load.el")
@@ -541,6 +568,11 @@ path recorded in `load-history'."
       (let ((file (nelisp-bootstrap--vendor-source-file name)))
         (unless file
           (error "Missing readable bootstrap vendor tail extra: %s" name))
+        (setq out (append (delete file out) (list file)))))
+    (dolist (name nelisp-bootstrap-post-vendor-tail-files)
+      (let ((file (expand-file-name name src)))
+        (unless (file-readable-p file)
+          (error "Missing readable bootstrap post-vendor-tail file: %s" name))
         (setq out (append (delete file out) (list file)))))
     out))
 
@@ -983,6 +1015,12 @@ overrides them for workflow tests."
     (cond
      ((string= rel "src/emacs-stub.el")
       '("(provide 'custom)\n"))
+     ;; GNU imenu.el redefines `imenu' and `imenu--make-index-alist'; its index
+     ;; builder needs marker arithmetic the core lacks, so bind the working
+     ;; `emacs-imenu' symbol index back over both.  Every other GNU imenu name
+     ;; keeps its real definition.
+     ((string= rel "vendor/emacs-lisp-31.1/imenu.el")
+      '("(when (fboundp 'emacs-imenu-install) (emacs-imenu-install))\n"))
      ((string= rel "src/nemacs-main.el")
       (mapcar (lambda (form)
                 (concat (prin1-to-string form) "\n"))
@@ -994,14 +1032,17 @@ overrides them for workflow tests."
     (cond
      ((string= rel "src/emacs-stub.el")
       '((provide 'custom)))
+     ((string= rel "vendor/emacs-lisp-31.1/imenu.el")
+      '((when (fboundp 'emacs-imenu-install) (emacs-imenu-install))))
      ((string= rel "src/nemacs-main.el")
       (nelisp-bootstrap--runtime-load-path-prologue-forms)))))
 
 (defvar nelisp-bootstrap-normalized-bundle-files
-  '("vendor/emacs-lisp/vc/vc-hooks.el"
-    "vendor/emacs-lisp/vc/vc.el"
+  '("vendor/emacs-lisp-31.1/vc/vc-hooks.el"
+    "vendor/emacs-lisp-31.1/vc/vc-dispatcher.el"
+    "vendor/emacs-lisp-31.1/vc/vc.el"
     "vendor/emacs-lisp/man.el"
-    "vendor/emacs-lisp/progmodes/xref.el"
+    "vendor/emacs-lisp-31.1/progmodes/xref.el"
     "vendor/emacs-lisp/replace.el"
     "vendor/emacs-lisp/comint.el"
     "vendor/emacs-lisp/simple.el"
@@ -1011,8 +1052,16 @@ overrides them for workflow tests."
     "vendor/emacs-lisp/ehelp.el"
     "vendor/emacs-lisp/term.el"
     "vendor/emacs-lisp/woman.el"
-    "vendor/emacs-lisp/progmodes/project.el"
+    "vendor/emacs-lisp-31.1/progmodes/project.el"
     "vendor/emacs-lisp/isearch.el"
+    "vendor/emacs-lisp-31.1/imenu.el"
+    "vendor/emacs-lisp-31.1/json.el"
+    "vendor/emacs-lisp-31.1/ielm.el"
+    "vendor/emacs-lisp-31.1/url/url-vars.el"
+    "vendor/emacs-lisp-31.1/dired.el"
+    "vendor/emacs-lisp-31.1/button.el"
+    "vendor/emacs-lisp-31.1/imenu.el"
+    "vendor/emacs-lisp-31.1/obsolete/cl.el"
     "vendor/emacs-lisp/emacs-lisp/cl-macs.el")
   "Bundle members inserted as normalized source rather than verbatim text.
 
