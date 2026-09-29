@@ -209,12 +209,48 @@ SPANS contains (START . END) pairs for each element after the list head."
              '((nelisp--path-split "" "" "pass"
                 "standalone-byte-opcode-parity" "bytecode"
                 "fddde430251ce99f8d1e417a93331f1302553d966f9a64849da5ddf5d160013b" "-")
-               (expand-file-name "" "" "pass"
-                "standalone-byte-opcode-parity" "bytecode"
-                "3a49025c2fe1f13b65706071c38277eb13cefbbca5c8bcf1eea4f8299b2a0afb" "32")
                (make-temp-name "" "" "pass"
                 "standalone-byte-opcode-parity" "bytecode"
-                "a9f396ac0db78a1201097aaca65d76bd04e89e250bc8a7d2b4246f24c66e30ef" "32")))
+                "a9f396ac0db78a1201097aaca65d76bd04e89e250bc8a7d2b4246f24c66e30ef" "32")
+               (nelisp--expand-file-name-general "" "" "pass"
+                "standalone-byte-opcode-parity" "bytecode"
+                "f83901e31a642159c7e056899e01a826b977389d31f1b9c8fc6a6957a21fc9e9" "-")
+               (nelisp--path-plain-p "" "" "pass"
+                "standalone-byte-opcode-parity" "bytecode"
+                "521b9596a1013e34354505b789da837c4991cbd3eb2fc0fce321ac1eb0b102f6" "-")
+               (mapconcat "" "" "pass"
+                "standalone-byte-opcode-parity" "bytecode"
+                "93a00b81cde076d9757232978450400b644775575b6b65a9409960f07ede1a44" "-")
+               (file-name-directory "" "" "pass"
+                "standalone-byte-opcode-parity" "bytecode"
+                "836213d367db633c0baaca59dddea096345bb3fc16212d9b42b6e540e5377ed4" "-")
+               (file-name-nondirectory "" "" "pass"
+                "standalone-byte-opcode-parity" "bytecode"
+                "4085f9f30d7e7ae6b592e166c1e500c5b1d7fd9e19050f82b1071e2aa6f02aa5" "-")
+               (equal "" "" "pass"
+                "standalone-byte-opcode-parity" "bytecode"
+                "87d282f8c708d48bb19dec9b2e7db9a90d49a9d8da41ec0bd266a9300d2d7f03" "-")
+               (string-equal "" "" "pass"
+                "standalone-byte-opcode-parity" "bytecode"
+                "a9b552b768f71861c087f591abfb8d45baa483777cbae4865acd47b867b01181" "-")
+               (string-search "" "" "pass"
+                "standalone-byte-opcode-parity" "bytecode"
+                "7a446243362c27d43becd834dd9ab1cfe3a5290e8f8f19eedd568836877b6b1e" "-")
+               (regexp-quote "" "" "pass"
+                "standalone-byte-opcode-parity" "bytecode"
+                "1c263589f0769e7d2c925cd7f2bad037b6338a1a149995db7aa29a77f937d820" "-")
+               (file-name-as-directory "" "" "pass"
+                "standalone-byte-opcode-parity" "bytecode"
+                "e64ec629e62104e67a39b8957ac456a5d0500b2d7160ede619061dfd5a7ac200" "-")
+               (directory-file-name "" "" "pass"
+                "standalone-byte-opcode-parity" "bytecode"
+                "05d600d6b8b63511c9b1ad9a6cb791eec3b0989bf2a2c68546bb1316bc06c3f7" "-")
+               ;; Primitive-speed lane (test/nelisp-primspeed-parity-smoke.sh
+               ;; compares each of these against host GNU Emacs on the built
+               ;; binary, bytecode cells active).
+               (expand-file-name "" "" "pass"
+                "standalone-byte-opcode-parity" "bytecode"
+                "2f2a991ed99d7c263cddf5eb772e67071e1d14e9b7b285ed93cea4086fde582e" "-")))
       (unless (assq (car fixture) rows)
         (push fixture rows)))
     (nreverse rows))))

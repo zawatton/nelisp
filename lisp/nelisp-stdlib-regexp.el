@@ -94,6 +94,10 @@ being recency-ordered (it is not; see `nlre--cache-touch').")
       (setq nlre--compiled-cache-count (1- nlre--compiled-cache-count)))))
 
 (defun nlre--cache-add (pat fold table compiled)
+  ;; Key on a private copy: a caller may mutate PAT in place afterwards
+  ;; (GNU recompiles on content), and a mutated key would both poison the
+  ;; hash and make the `eq' head shortcut return a stale program.
+  (setq pat (copy-sequence pat))
   (let ((e (vector pat fold table compiled
                    (setq nlre--compiled-cache-tick (1+ nlre--compiled-cache-tick)))))
     (puthash pat (cons e (gethash pat nlre--compiled-cache))
@@ -266,6 +270,11 @@ Return (REVERSED-EXPANSION-NODES . newpos)."
           (let ((j (+ i 2)) (class nil))
             (when (< j n) (setq class (aref pat j)) (setq j (1+ j)))
             (cons (list :syntax class t) j)))
+         ;; \1 .. \9: back reference to a numbered group.
+         ((and (>= d ?1) (<= d ?9))
+          (when (> (- d ?0) nlre--gcount)
+            (signal 'invalid-regexp (list "Invalid back reference")))
+          (cons (list :backref (- d ?0)) (+ i 2)))
          ((eq d 96) (cons (list :bos) (+ i 2)))  ;; \` = beginning of string
          ((eq d 39) (cons (list :eos) (+ i 2)))  ;; \' = end of string
          (t (cons (list :lit d) (+ i 2))))))
@@ -456,7 +465,9 @@ Return (REVERSED-EXPANSION-NODES . newpos)."
       (while (< i n)
         (let ((c (aref s i)))
           (setq out (concat out (char-to-string
-                                 (if (and (>= c ?A) (<= c ?Z)) (+ c 32) c)))))
+                                 (if (< c 128)
+                                     (if (and (>= c ?A) (<= c ?Z)) (+ c 32) c)
+                                   (nlre--downcase-char c))))))
         (setq i (1+ i)))
       out)))
 
@@ -564,13 +575,30 @@ return that atom node; else nil."
 ;; Fold only comparison operands; rewriting the regexp would invert \W/\B.
 (defvar nlre--fold nil "Non-nil while the current match folds case.")
 
+(defun nlre--downcase-char (c)
+  "Non-ASCII case fold of C.  A separate function so the hot callers below
+keep only allowlisted bytecode opcodes (the inline `downcase' opcode is not
+one, which would demote them to the interpreter)."
+  (downcase c))
+
+(defun nlre--upcase-char (c)
+  "Non-ASCII upcase of C; see `nlre--downcase-char'."
+  (upcase c))
+
 (defun nlre--fold-char (c)
-  (if (and nlre--fold (>= c ?A) (<= c ?Z)) (+ c 32) c))
+  ;; ASCII folds inline; anything above goes through `downcase', the same
+  ;; case table GNU's translate table is built from.
+  (if nlre--fold
+      (if (< c 128)
+          (if (and (>= c ?A) (<= c ?Z)) (+ c 32) c)
+        (nlre--downcase-char c))
+    c))
 
 (defun nlre--flip-case (c)
   (cond ((and (>= c ?a) (<= c ?z)) (- c 32))
         ((and (>= c ?A) (<= c ?Z)) (+ c 32))
-        (t c)))
+        ((< c 128) c)
+        (t (let ((d (nlre--downcase-char c))) (if (eq d c) (nlre--upcase-char c) d)))))
 
 (defun nlre--space-p (c) (or (= c 32) (= c 9) (= c 10) (= c 13) (= c 12)))
 ;; `_` is a symbol constituent, not a word constituent.
@@ -750,6 +778,22 @@ Does NOT continue to any rest (used for one repetition)."
              (after (and (< pos n) (nlre--word-p (aref s pos)) t))
              (boundary (not (eq before after))))
         (and (if (nth 1 node) (not boundary) boundary) pos)))
+     ((eq tag :backref)
+      ;; Matches the text the numbered group last captured (fold-aware);
+      ;; an unset group never matches, as in GNU.
+      (let ((cap (aref nlre--caps (nth 1 node))))
+        (and cap (car cap) (cdr cap)
+             (let* ((from (car cap)) (len (- (cdr cap) from)) (end (+ pos len))
+                    (lim (if nlre--match-end-limit (min n nlre--match-end-limit) n))
+                    (i 0))
+               (and (<= end lim)
+                    (progn
+                      (while (and (< i len)
+                                  (eq (nlre--fold-char (aref s (+ from i)))
+                                      (nlre--fold-char (aref s (+ pos i)))))
+                        (setq i (1+ i)))
+                      (= i len))
+                    end)))))
      ((eq tag :bol) (and (or (= pos 0) (eq (aref s (1- pos)) ?\n)) pos))
      ((eq tag :eol) (and (or (= pos n) (eq (aref s pos) ?\n)) pos))
      ((eq tag :bos) (and (= pos 0) pos))

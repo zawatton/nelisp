@@ -618,12 +618,21 @@ times, so `(exp -1.0e6)' took ~1.44e6 iterations and `(exp -1.0e9)' ~1.44e9
       (when (or (< start 0) (> start (length haystack)))
         (signal 'args-out-of-range (list start))))
     (let ((nl (length needle)) (hl (length haystack)) (i (or start 0)) (found nil))
-      (if (= nl 0) i
+      (cond
+       ((= nl 0) i)
+       ;; Unibyte on both sides: byte index == char index, so the native
+       ;; scanner answers directly (one call instead of an O(n*m) walk of
+       ;; interpreted `substring'/`string=' allocations).
+       ((and (fboundp 'nelisp--string-search)
+             (not (multibyte-string-p needle))
+             (not (multibyte-string-p haystack)))
+        (nelisp--string-search needle haystack i))
+       (t
         (while (and (not found) (<= (+ i nl) hl))
           (if (string= needle (substring haystack i (+ i nl)))
               (setq found i)
             (setq i (1+ i))))
-        found))))
+        found)))))
 
 (defmacro when (cond &rest body)
   "If COND yields non-nil, eval BODY forms sequentially and return last value."
@@ -1311,13 +1320,17 @@ from `(defvar X nil)'."
 ;; -- a type bug turned into a plausible-looking yes.  Emacs takes strings
 ;; and symbols and signals for anything else.
 (defun string-equal (a b)
-  (let ((sa (cond ((stringp a) a)
-                  ((symbolp a) (symbol-name a))
-                  (t (signal 'wrong-type-argument (list 'stringp a)))))
-        (sb (cond ((stringp b) b)
-                  ((symbolp b) (symbol-name b))
-                  (t (signal 'wrong-type-argument (list 'stringp b))))))
-    (equal sa sb)))
+  ;; Two strings (the overwhelmingly common call) go straight to the native
+  ;; comparison, skipping the interpreted `equal' dispatch (~70us).
+  (if (and (stringp a) (stringp b) (fboundp 'nelisp--native-equal))
+      (nelisp--native-equal a b)
+    (let ((sa (cond ((stringp a) a)
+                    ((symbolp a) (symbol-name a))
+                    (t (signal 'wrong-type-argument (list 'stringp a)))))
+          (sb (cond ((stringp b) b)
+                    ((symbolp b) (symbol-name b))
+                    (t (signal 'wrong-type-argument (list 'stringp b))))))
+      (equal sa sb))))
 
 ;; `lsh' was missing entirely (void-function).  It is NOT `ash': a right
 ;; shift of a negative number fills with zeros rather than the sign bit, so
@@ -1510,18 +1523,20 @@ from `(defvar X nil)'."
 ;; answered void-variable.
 (defun mapconcat (fn seq &optional sep)
   (nelisp--check-seq-list seq)
+  ;; Collect the pieces and concatenate once: appending to OUT per item was
+  ;; O(n^2) in the total length (2.2ms for a 20-element path join).
   (let* ((items (if (if (null seq) 1 (consp seq)) seq (append seq nil)))
-         (out "")
+         (parts nil)
          (first t)
          (joiner (or sep ""))
          (tail items))
     (while tail
       (unless first
-        (setq out (concat out joiner)))
-      (setq out (concat out (funcall fn (car tail))))
+        (setq parts (cons joiner parts)))
+      (setq parts (cons (funcall fn (car tail)) parts))
       (setq first nil)
       (setq tail (cdr tail)))
-    out))
+    (apply #'concat (nreverse parts))))
 
 (defun nelisp--case-pair-p (c lo hi even-is-upper)
   "Non-nil when C sits in the LO..HI block of alternating case pairs."
@@ -1675,20 +1690,19 @@ from `(defvar X nil)'."
   "Return the directory part of PATH, or nil if PATH has no slash.
 Result keeps the trailing slash."
   (nelisp--check-string path)
-  (let ((idx -1)
-        (i 0)
-        (n (length path)))
-    (while (< i n)
-      (when (eq (aref path i) ?/)
-        (setq idx i))
-      (setq i (1+ i)))
+  ;; Scan backwards: the last slash is usually near the end, so this touches
+  ;; only the basename instead of the whole name.
+  (let ((idx (1- (length path))))
+    (while (if (>= idx 0) (not (eq (aref path idx) ?/)) nil)
+      (setq idx (1- idx)))
     (if (< idx 0)
         nil
       (substring path 0 (1+ idx)))))
 (defun file-name-nondirectory (path)
   (nelisp--check-string path)
-  (let ((idx -1) (i 0) (n (length path)))
-    (while (< i n) (when (eq (aref path i) ?/) (setq idx i)) (setq i (1+ i)))
+  (let ((idx (1- (length path))))
+    (while (if (>= idx 0) (not (eq (aref path idx) ?/)) nil)
+      (setq idx (1- idx)))
     (if (< idx 0) path (substring path (1+ idx)))))
 ;; An empty name is the CURRENT directory, so Emacs answers "./".  This
 ;; answered "/" -- turning a relative nothing into the filesystem root,
@@ -1814,7 +1828,46 @@ nothing."
         s
       (mapconcat 'identity (nreverse (cons (substring s start) parts)) "/"))))
 
+(defun nelisp--path-plain-p (s)
+  "Non-nil when S is a non-empty unibyte name needing no normalisation.
+That is: no doubled slash, no `.'/`..' component, no leading `~' and no
+trailing `.'.  Such a name expands to itself (rooted) or to BASE/S
+(relative), so `expand-file-name' can skip the component walk.  The
+checks use `nelisp--string-search' (a native primitive) and `aref', never
+the interpreted `string-search', which costs ~5ms per call here."
+  (let ((n (length s)))
+    (and (> n 0)
+         (not (multibyte-string-p s))
+         (let ((c0 (aref s 0)))
+           (not (or (eq c0 ?~)
+                    (and (eq c0 ?.)
+                         (or (= n 1)
+                             (let ((c1 (aref s 1))) (or (eq c1 ?/) (eq c1 ?.))))))))
+         (not (eq (aref s (1- n)) ?.))
+         (not (nelisp--string-search "//" s 0))
+         (not (nelisp--string-search "/./" s 0))
+         (not (nelisp--string-search "/../" s 0)))))
+
 (defun expand-file-name (path &optional base)
+  ;; Fast paths (POSIX only): an already-canonical absolute PATH, or a plain
+  ;; relative PATH under a canonical absolute BASE / `default-directory',
+  ;; are answered by one `concat'.  Everything else takes the general walk.
+  (let ((fast nil))
+    (when (and (stringp path)
+               (fboundp 'nelisp--string-search)
+               (not (and (boundp 'system-type) (eq system-type 'windows-nt)))
+               (nelisp--path-plain-p path))
+      (if (eq (aref path 0) ?/)
+          (setq fast (substring path 0))
+        (let ((b (or base (and (boundp 'default-directory) default-directory))))
+          (when (and (stringp b) (> (length b) 0) (eq (aref b 0) ?/)
+                     (nelisp--path-plain-p b))
+            (setq fast (if (eq (aref b (1- (length b))) ?/)
+                           (concat b path)
+                         (concat b "/" path)))))))
+    (or fast (nelisp--expand-file-name-general path base))))
+
+(defun nelisp--expand-file-name-general (path &optional base)
   (let* ((win (nelisp--windows-paths-p))
          (p (if (null path) "" path))
          (p (if win (nelisp--path-slashify p) p))
@@ -1842,6 +1895,7 @@ nothing."
          (need-base (if drive nil (if rooted win t)))
          (anchor "")
          (parts nil)
+         (up nil)
          (stack nil))
     (when need-base
       (let* ((b (or base
@@ -1862,10 +1916,14 @@ nothing."
       (let ((c (car parts)))
         (cond
          ((equal c ".") nil)
-         ((equal c "..") (setq stack (cdr stack)))
+         ;; GNU quirk (fileio.c): a `..' that climbs above the root is not
+         ;; dropped -- an odd number of them leaves one `/..' behind
+         ;; ("/../etc" stays, "/../../etc" is "/etc"), so it toggles UP.
+         ((equal c "..") (if stack (setq stack (cdr stack)) (setq up (not up))))
          (t (setq stack (cons c stack)))))
       (setq parts (cdr parts)))
     (setq stack (nreverse stack))
+    (when up (setq stack (cons ".." stack)))
     (let ((res (concat (or drive "") "/" (mapconcat 'identity stack "/"))))
       (if (if trailing (> (length stack) 0) nil)
           (concat res "/")
@@ -19012,6 +19070,11 @@ identical objects and cost one interpreted operation on every other pair
 (Doc 201 §6.15).  It is no longer a correctness hazard either -- `eq' on
 strings is identity since Doc 201 §6.17, not contents."
   (cond
+   ;; Strings, symbols and integers can never be a cons, vector or marker
+   ;; case below, so the native comparison decides them outright.  Testing
+   ;; them first spares every string/symbol comparison (the bulk of `equal'
+   ;; calls) the cons/vector/bool-vector/marker predicate chain.
+   ((or (stringp a) (symbolp a) (integerp a)) (nelisp--native-equal a b))
    ((and (consp a) (consp b))
     (and (equal (car a) (car b)) (equal (cdr a) (cdr b))))
    ((and (or (vectorp a) (and (fboundp 'bool-vector-p) (bool-vector-p a)))
@@ -19607,6 +19670,17 @@ unlisted OS-specific entry point."
         (nelisp--func-arity-formals (car (cdr (cdr fn)))))
        ((and (consp fn) (eq (car fn) 'lambda))
         (nelisp--func-arity-formals (car (cdr fn))))
+       ;; GNU `func-arity' on a byte-code function reads slot 0: an
+       ;; integer descriptor (bits 0-6 mandatory, bit 7 &rest, bits 8-14
+       ;; max non-rest) or, for old-style objects, the arglist itself.
+       ((and (fboundp 'byte-code-function-p) (byte-code-function-p fn))
+        (let ((desc (aref fn 0)))
+          (if (integerp desc)
+              (cons (logand desc 127)
+                    (if (= (logand desc 128) 0)
+                        (logand (ash desc -8) 127)
+                      'many))
+            (nelisp--func-arity-formals desc))))
        (t (signal 'invalid-function (list fn)))))))
 
 (unless (fboundp 'commandp)
@@ -20305,6 +20379,19 @@ buffer the way Emacs does.  A multibyte OBJECT (or START/END substring)
 is hashed as its UTF-8 encoding, matching host Emacs.  When BINARY is
 non-nil the raw digest bytes are returned as a unibyte string instead of
 the lowercase hex form."
+    ;; sha256 of a string is answered in-process by the native
+    ;; `nelisp--sha256' (2.5ms for 20KB).  The external-helper path below
+    ;; costs ~130ms per call regardless of size (temp file + sha256sum
+    ;; process) and was paid twice per vendored `require' by the baked
+    ;; bytecode loader.  Buffers, other algorithms and any failure of the
+    ;; native primitive keep the helper path.
+    (if (and (eq algorithm 'sha256) (stringp object)
+             (fboundp 'nelisp--sha256))
+        (let ((digest (nelisp--sha256
+                       (if (or start end)
+                           (substring object (or start 0) end)
+                         object))))
+          (if binary (nelisp--secure-hash-hex-to-bytes digest) digest))
     (let ((spec (nelisp--secure-hash-helper algorithm)))
       (unless spec
         (signal 'error (list "secure-hash: unsupported algorithm" algorithm)))
@@ -20365,7 +20452,7 @@ the lowercase hex form."
                                     (car program-and-args) out)))
                     (setq digest (substring out 0 width))))))
           (when (file-exists-p tmp) (delete-file tmp)))
-        (if binary (nelisp--secure-hash-hex-to-bytes digest) digest)))))
+        (if binary (nelisp--secure-hash-hex-to-bytes digest) digest))))))
 
 ;; Reserve the native function-mirror identity before EvalCtx creation.  The
 ;; optional JIT module replaces this source-only fallback when required.
