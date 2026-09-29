@@ -60,6 +60,10 @@ Must equal `nelisp-cc-eln-callback7-port-count'.")
   "Descriptor word 6 of port N's callbacks is this base plus N.
 Must equal `nelisp-cc-eln-callback7-port-tag-base'.")
 
+(defun nelisp-eln-callable-import-port-count ()
+  "Return how many slot-identifying callback ports the runtime has."
+  nelisp-eln-callable-import--port-count)
+
 (defun nelisp-eln-callable-import-port-tag (port)
   "Return the descriptor word-6 tag callbacks through PORT carry."
   (unless (and (integerp port) (<= 0 port)
@@ -319,6 +323,33 @@ bool in %al; `void' answers nothing (a zero pair)."
         ;; (an `Fmake_closure' result): native code gets a fresh, unique,
         ;; never-dereferenced word backed by an owned poison block, and the
         ;; frame remembers word -> object until the whole call retires.
+        ;; S6.11: like `handle', except that a nil result is answered as
+        ;; GNU's own nil word (0).  For a port whose result the exact body
+        ;; only tests for nil, passes on to a later port or returns: a
+        ;; non-nil object is never dereferenced, and nil-ness stays visible
+        ;; to the body's inline `test'.
+        ('handle-nil
+         (if (null value)
+             (progn
+               (setq frame (nelisp-eln-callable-import--frame-put
+                            frame :outcome :ok))
+               (cons 0 0))
+           (let* ((memory (nl-ffi-memory-allocate 16))
+                  (address (nl-ffi-memory-address memory))
+                  (word (+ address 5)))
+             (ptr-write-u64 address 0 0)
+             (ptr-write-u64 address 8 0)
+             (setq frame (nelisp-eln-callable-import--frame-put
+                          frame :handle-owners
+                          (cons memory (plist-get frame :handle-owners))))
+             (setq frame (nelisp-eln-callable-import--frame-put
+                          frame :handles
+                          (cons (cons word value)
+                                (plist-get frame :handles))))
+             (setq frame (nelisp-eln-callable-import--frame-put
+                          frame :outcome :ok))
+             (cons (logand word #xffffffff)
+                   (logand (ash word -32) #xffffffff)))))
         ('handle
          (let* ((memory (nl-ffi-memory-allocate 16))
                 (address (nl-ffi-memory-address memory))

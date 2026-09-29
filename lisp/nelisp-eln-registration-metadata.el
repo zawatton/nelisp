@@ -22,7 +22,7 @@
   'nelisp-eln-registration-metadata-token)
 (defconst nelisp-eln-registration-metadata--profiles
   '(gnu-single-leaf gnu-eval-subr gnu-eval-subr-pair gnu-verified-subr
-    gnu-require-subr gnu-lambda-require-subr)
+    gnu-require-subr gnu-lambda-require-subr gnu-lambdas-require-subr)
   "Registration profiles whose exact top_level_run shape was admitted by
 `nelisp-eln-registration--top-level-code' before metadata is created.")
 (defvar nelisp-eln-registration-metadata--live nil)

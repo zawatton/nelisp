@@ -537,6 +537,46 @@ applies a MANY service to its decoded arguments); the last one is
 shared, not copied, and may be any object."
   (apply #'nconc args))
 
+;; S6.11 (`byte-compile-make-closure'): the fixed and MANY services its body
+;; and its three native lambdas call.  Each is NeLisp's own primitive, called
+;; the way the byte-code interpreter calls it.
+(defun nelisp-eln-runtime-services-fintern (string obarray)
+  "NeLisp equivalent of GNU `Fintern' (src/lread.c): intern STRING in
+OBARRAY (nil selects the standard obarray)."
+  (intern string obarray))
+
+(defun nelisp-eln-runtime-services-fmapcar (function sequence)
+  "NeLisp equivalent of GNU `Fmapcar' (src/fns.c): the list of FUNCTION
+applied to each element of SEQUENCE.  A native anonymous lambda passed as
+FUNCTION is an ordinary callable subr here."
+  (mapcar function sequence))
+
+(defun nelisp-eln-runtime-services-fnthcdr (n list)
+  "NeLisp equivalent of GNU `Fnthcdr' (src/fns.c): the Nth cdr of LIST."
+  (nthcdr n list))
+
+(defun nelisp-eln-runtime-services-faref (array idx)
+  "NeLisp equivalent of GNU `Faref' (src/data.c): element IDX of ARRAY.
+Called through the `aref' function cell, never the inlined VM opcode, which
+does not read byte-code function objects in this runtime while the function
+itself does."
+  (funcall (symbol-function 'aref) array idx))
+
+(defun nelisp-eln-runtime-services-fbyte-code-function-p (object)
+  "NeLisp equivalent of GNU `Fbyte_code_function_p' (src/data.c): t if
+OBJECT is a byte-code function object, else nil."
+  (byte-code-function-p object))
+
+(defun nelisp-eln-runtime-services-fformat (&rest args)
+  "NeLisp equivalent of GNU `Fformat' (src/editfns.c, 1 MANY).  ARGS are
+spread like `nelisp-eln-runtime-services-fmake-closure'."
+  (apply #'format args))
+
+(defun nelisp-eln-runtime-services-fvconcat (&rest sequences)
+  "NeLisp equivalent of GNU `Fvconcat' (src/fns.c, 0 MANY).  SEQUENCES are
+spread like `nelisp-eln-runtime-services-fmake-closure'."
+  (apply #'vconcat sequences))
+
 (defun nelisp-eln-runtime-services-fsymbolp (object)
   "NeLisp equivalent of GNU `Fsymbolp' (src/data.c): t if OBJECT is a
 symbol (including nil and t), else nil."
@@ -818,7 +858,43 @@ with `<='."
     :index 951 :symbol "Fsignal" :convention 'fixed :arity 2
     :noreturn t :implementation #'nelisp-eln-runtime-services-fsignal
     :status 'supported
-    :evidence "freloc tsv sha 3e8591ab..f0758, index 951; GNU src/eval.c Fsignal"))
+    :evidence "freloc tsv sha 3e8591ab..f0758, index 951; GNU src/eval.c Fsignal")
+   (nelisp-eln-runtime-services--descriptor
+    :index 1006 :symbol "Fintern" :convention 'fixed :arity 2
+    :noreturn nil :implementation #'nelisp-eln-runtime-services-fintern
+    :status 'supported
+    :evidence "freloc tsv sha 3e8591ab..f0758, index 1006; GNU src/lread.c Fintern")
+   (nelisp-eln-runtime-services--descriptor
+    :index 1195 :symbol "Fmapcar" :convention 'fixed :arity 2
+    :noreturn nil :implementation #'nelisp-eln-runtime-services-fmapcar
+    :status 'supported
+    :evidence "freloc tsv sha 3e8591ab..f0758, index 1195; GNU src/fns.c Fmapcar")
+   (nelisp-eln-runtime-services--descriptor
+    :index 1221 :symbol "Fnthcdr" :convention 'fixed :arity 2
+    :noreturn nil :implementation #'nelisp-eln-runtime-services-fnthcdr
+    :status 'supported
+    :evidence "freloc tsv sha 3e8591ab..f0758, index 1221; GNU src/fns.c Fnthcdr")
+   (nelisp-eln-runtime-services--descriptor
+    :index 1324 :symbol "Faref" :convention 'fixed :arity 2
+    :noreturn nil :implementation #'nelisp-eln-runtime-services-faref
+    :status 'supported
+    :evidence "freloc tsv sha 3e8591ab..f0758, index 1324; GNU src/data.c Faref")
+   (nelisp-eln-runtime-services--descriptor
+    :index 1364 :symbol "Fbyte_code_function_p" :convention 'fixed :arity 1
+    :noreturn nil
+    :implementation #'nelisp-eln-runtime-services-fbyte-code-function-p
+    :status 'supported
+    :evidence "freloc tsv sha 3e8591ab..f0758, index 1364; GNU src/data.c Fbyte_code_function_p")
+   (nelisp-eln-runtime-services--descriptor
+    :index 704 :symbol "Fformat" :convention 'many :arity 1
+    :noreturn nil :implementation #'nelisp-eln-runtime-services-fformat
+    :status 'supported
+    :evidence "freloc tsv sha 3e8591ab..f0758, index 704; GNU src/editfns.c Fformat (1, MANY); spread arguments")
+   (nelisp-eln-runtime-services--descriptor
+    :index 1234 :symbol "Fvconcat" :convention 'many :arity 1
+    :noreturn nil :implementation #'nelisp-eln-runtime-services-fvconcat
+    :status 'supported
+    :evidence "freloc tsv sha 3e8591ab..f0758, index 1234; GNU src/fns.c Fvconcat (0, MANY); spread arguments"))
   "One plist per supported/unsupported GNU .eln runtime service.
 See the Commentary above for the plist shape.  Cross-check against the
 authenticated freloc table with

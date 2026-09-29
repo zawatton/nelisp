@@ -28,32 +28,32 @@
 
 (require 'cl-lib)
 
-(defun nelisp-nadvice-substrate--skip-trivia (source position)
-  "Return the first position at or after POSITION in SOURCE that starts a form.
-Whitespace and `;' comment lines between top-level forms are skipped."
-  (while (and (< position (length source))
-              (eq (string-match "[ \t\n\r\f]+\\|;[^\n]*" source position)
-                  position))
-    (setq position (match-end 0)))
-  position)
-
-(defun nelisp-nadvice-substrate--stage-forms (library predicate)
-  "Evaluate the top-level forms of LIBRARY's source for which PREDICATE is true.
-The forms are read from the vendored GNU source exactly as written."
-  (let ((file (locate-library library nil nil)))
+(defun nelisp-nadvice-substrate--stage-forms (library predicate expected)
+  "Evaluate selected top-level forms of LIBRARY's vendored GNU source.
+The forms are read one after another exactly as written, and those for which
+PREDICATE is true are collected; reading stops as soon as EXPECTED forms have
+been collected and they are then evaluated in file order.  Reaching the end of
+the source first signals `end-of-file' from the reader, so a missing form is
+never silent.  The source is read from a buffer with `read' alone: every
+`length', `string-match', `read-from-string' offset or `forward-line' on a
+large multibyte source costs time proportional to its whole length here, and
+skipping trivia and reading from a string offset made this loader quadratic
+(25 seconds for cl-macs.el)."
+  (let ((file (locate-library library nil nil))
+        (forms nil)
+        (count 0))
     (unless file
       (signal 'file-missing (list "Cannot locate staged GNU source" library)))
-    (let ((source (with-temp-buffer
-                    (insert-file-contents file)
-                    (buffer-string)))
-          (position 0))
-      (while (< (setq position
-                      (nelisp-nadvice-substrate--skip-trivia source position))
-                (length source))
-        (let ((read-result (read-from-string source position)))
-          (setq position (cdr read-result))
-          (when (funcall predicate (car read-result))
-            (eval (car read-result) t)))))))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (goto-char (point-min))
+      (while (< count expected)
+        (let ((form (read (current-buffer))))
+          (when (funcall predicate form)
+            (push form forms)
+            (setq count (1+ count))))))
+    (dolist (form (nreverse forms))
+      (eval form t))))
 
 (defun nelisp-nadvice-substrate--defstruct-named-p (form names)
   "Non-nil if FORM is a `cl-defstruct' whose type name is in NAMES."
@@ -76,7 +76,8 @@ The forms are read from the vendored GNU source exactly as written."
            (and (eq (car-safe form) 'cl--define-built-in-type)
                 (memq (nth 1 form) '(t atom function compiled-function closure
                                        byte-code-function
-                                       interpreted-function))))))))
+                                       interpreted-function)))))
+     12)))
 
 (defun nelisp-nadvice-substrate--stage-cl-macs ()
   "Define the two cl-macs.el helpers oclosure.el uses, and provide `cl-macs'."
@@ -87,7 +88,8 @@ The forms are read from the vendored GNU source exactly as written."
        (or (and (eq (car-safe form) 'defconst)
                 (eq (nth 1 form) 'cl--lambda-list-keywords))
            (and (eq (car-safe form) 'defun)
-                (eq (nth 1 form) 'cl--arglist-args))))))
+                (eq (nth 1 form) 'cl--arglist-args))))
+     2))
   (unless (featurep 'cl-macs)
     (provide 'cl-macs)))
 

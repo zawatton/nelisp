@@ -338,6 +338,20 @@ this segment introduces.
   `emacs-lisp/oclosure.el`, which does not load on this runtime today --
   a closure-representation mismatch, not a missing name).
 
+- `isearch.el` and `help-macro.el` (directly under `emacs-lisp/`, mirroring
+  their `lisp/` location) are byte-for-byte the decompressed GNU Emacs 31.1
+  sources from `/usr/local/share/emacs/31.1/lisp/isearch.el.gz` and
+  `help-macro.el.gz`. Compressed source SHA-256:
+  `7184edb7764482b44957d504cf3ae1c7330a50a380be7c496fe8cf556d37fc84` and
+  `ea77a70046b753ebc01cdc3b4bcca0417e9a3922b296024adba03ab8fc04662e`;
+  decompressed vendored SHA-256:
+  `a38c3114fd14bf6a7b06e2f75a901e994a27cecc76b7830da7e1773648dcbcf7` and
+  `552064df15d34c165526a2e57cf3b6c4817f334d2b8f8eb983db5efd015725be`.
+  `isearch.el` loads on the standalone reader (`(require 'isearch)`) with the
+  prelude's `meta-prefix-char`, `esc-map`, `ctl-x-map`,
+  `minibuffer-local-map`, `search-map` and `cl-callf` providers; see
+  `test/nelisp-isearch-standalone-smoke.sh`.
+
 ## Rules
 
 - **Do not edit these files.** They are not maintained here. A local

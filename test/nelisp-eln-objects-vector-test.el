@@ -189,7 +189,10 @@
     (dolist (spec nelisp-eln-native-subr--multi-import-specs)
       (when (plist-get (cdr spec) :opaque-vectors)
         (push (car spec) declared)))
-    (should (equal declared '(lambda-form))))
+    ;; `lambda-form' (S6.9) and, for forms that may carry vector literals
+    ;; and `Fmapcar' results, `make-closure-form' (S6.11), whose body reads
+    ;; only FORM's conses and the `Fmapcar' list inline.
+    (should (equal declared '(make-closure-form lambda-form))))
   ;; Nothing leaks out of a scoped call.
   (should-not nelisp-eln-objects--admit-opaque-vectors)
   (nelisp-eln-objects-call-with-artifact-symbols

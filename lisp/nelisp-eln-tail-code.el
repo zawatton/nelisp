@@ -1683,6 +1683,199 @@ displacements (fixed template bytes).")
         (append nelisp-eln-tail-code--multi-import-shapes
                 nelisp-eln-tail-code--multi-import-shapes-lambda)))
 
+;; S6.11 (`byte-compile-make-closure'): vendor bytecomp.el's body and the three
+;; native anonymous lambdas GNU emits next to it.  Kept in its own constant,
+;; appended to the shape list, so concurrent lanes adding shapes do not touch
+;; the same source lines.
+(defconst nelisp-eln-tail-code--multi-import-shapes-closure
+  (list
+   (list 'lambda-intern-format
+         :template
+         [#x53 #x66 #x48 #x0f #x6e #xcf #xbf #x02 #x00 #x00 #x00 #x48 #x83
+      #xec #x10 #x48 #x8b #x05 nil nil nil nil #x48 #x89 #xe6 #x48 #x8b
+      #x18 #x48 #x8b #x05 nil nil nil nil #xf3 #x0f #x7e #x40 #x10 #x66
+      #x0f #x6c #xc1 #x0f #x29 #x04 #x24 #xff #x93 #x00 #x16 #x00 #x00
+      #x31 #xf6 #x48 #x89 #xc7 #xff #x93 #x70 #x1f #x00 #x00 #x48 #x83
+      #xc4 #x10 #x5b #xc3]
+         :gots '((18 . freloc) (31 . d-reloc))
+         :imports '(704 1006)
+         :data '(2))
+   (list 'lambda-aref-form
+         :template
+         [#x48 #x8b #x05 nil nil nil nil #x48 #x89 #xfe #xbf #x02 #x00 #x00
+      #x00 #x48 #x8b #x00 #x48 #x8b #x80 #x60 #x29 #x00 #x00 #xff #xe0]
+         :gots '((3 . freloc))
+         :imports '(1324)
+         :data '())
+   (list 'lambda-cons-form
+         :template
+         [#x48 #x8b #x05 nil nil nil nil #x53 #x31 #xf6 #x48 #x8b #x18 #xff
+      #x93 #xf8 #x22 #x00 #x00 #x48 #x89 #xc6 #x48 #x8b #x05 nil nil nil
+      nil #x48 #x8b #x78 #x20 #x48 #x8b #x83 #xf8 #x22 #x00 #x00 #x5b
+      #xff #xe0]
+         :gots '((3 . freloc) (25 . d-reloc))
+         :imports '(1119)
+         :data '(4))
+   (list 'make-closure-form
+         :template
+         [#x41 #x57 #x41 #x56 #x41 #x55 #x41 #x54 #x49 #x89 #xfc #x55 #x53
+      #x48 #x81 #xec #x88 #x01 #x00 #x00 #x4c #x8b #x35 nil nil nil nil
+      #x48 #x8b #x2d nil nil nil nil #x49 #x8b #x1e #x48 #x8b #x7d #x30
+      #xff #x93 #xb8 #x29 #x00 #x00 #x48 #x85 #xc0 #x74 #x24 #x48 #x8b
+      #x7d #x30 #x31 #xc9 #x31 #xd2 #x31 #xf6 #xff #x53 #x50 #x31 #xc0
+      #x48 #x81 #xc4 #x88 #x01 #x00 #x00 #x5b #x5d #x41 #x5c #x41 #x5d
+      #x41 #x5e #x41 #x5f #xc3 #x0f #x1f #x00 #x49 #x89 #xc5 #x41 #x8d
+      #x44 #x24 #xfd #xa8 #x07 #x0f #x85 #x88 #x05 #x00 #x00 #x49 #x8b
+      #x74 #x24 #x05 #x8d #x46 #xfd #xa8 #x07 #x0f #x85 #xf8 #x05 #x00
+      #x00 #x48 #x8b #x46 #xfd #x48 #x89 #x44 #x24 #x10 #x4c #x89 #xe6
+      #xbf #x0a #x00 #x00 #x00 #xff #x93 #x20 #x26 #x00 #x00 #x4c #x89
+      #xe6 #xbf #x0e #x00 #x00 #x00 #x49 #x89 #xc7 #xff #x93 #x20 #x26
+      #x00 #x00 #x4c #x89 #xe6 #xbf #x12 #x00 #x00 #x00 #x48 #x89 #x44
+      #x24 #x08 #xff #x93 #x28 #x26 #x00 #x00 #x48 #x8b #x7c #x24 #x10
+      #x48 #x89 #xc6 #xff #x93 #xf8 #x22 #x00 #x00 #x48 #x8b #x7d #x58
+      #x48 #x89 #xc6 #xff #x93 #xf8 #x22 #x00 #x00 #x4c #x89 #xff #x49
+      #x89 #xc4 #xff #x93 #x10 #x27 #x00 #x00 #x66 #x49 #x0f #x6e #xd4
+      #xbf #x03 #x00 #x00 #x00 #xf3 #x0f #x7e #x45 #x50 #x48 #x8d #xb4
+      #x24 #xd0 #x00 #x00 #x00 #x48 #x89 #x84 #x24 #xe0 #x00 #x00 #x00
+      #x66 #x0f #x6c #xc2 #x0f #x29 #x84 #x24 #xd0 #x00 #x00 #x00 #xff
+      #x93 #x88 #x1d #x00 #x00 #x4c #x89 #xff #x49 #x89 #xc4 #xff #x93
+      #x10 #x27 #x00 #x00 #x48 #x8d #x74 #x24 #x30 #xbf #x02 #x00 #x00
+      #x00 #x48 #xc7 #x44 #x24 #x38 #x02 #x00 #x00 #x00 #x48 #x89 #x44
+      #x24 #x30 #xff #x93 #x30 #x29 #x00 #x00 #x48 #x0b #x44 #x24 #x08
+      #x0f #x84 #x00 #x05 #x00 #x00 #x4c #x89 #xe7 #xff #x93 #xa0 #x2a
+      #x00 #x00 #x48 #x85 #xc0 #x0f #x84 #x6e #x04 #x00 #x00 #xf3 #x0f
+      #x7e #x45 #x70 #x48 #x8d #x74 #x24 #x40 #xbf #x02 #x00 #x00 #x00
+      #x0f #x16 #x44 #x24 #x08 #x0f #x29 #x44 #x24 #x40 #xff #x93 #x88
+      #x1d #x00 #x00 #x48 #x85 #xc0 #x0f #x84 #x06 #x03 #x00 #x00 #x4c
+      #x89 #xff #xff #x93 #x10 #x27 #x00 #x00 #x48 #x89 #xc7 #x8d #x40
+      #xfe #xa8 #x03 #x0f #x84 #xb7 #x02 #x00 #x00 #x49 #x8b #x06 #xff
+      #x90 #xa0 #x28 #x00 #x00 #x48 #x8b #x95 #xc8 #x00 #x00 #x00 #x48
+      #x8d #xb4 #x24 #xf0 #x00 #x00 #x00 #xbf #x03 #x00 #x00 #x00 #x48
+      #xc7 #x84 #x24 #xf8 #x00 #x00 #x00 #x02 #x00 #x00 #x00 #x48 #x89
+      #x84 #x24 #x00 #x01 #x00 #x00 #x48 #x89 #x94 #x24 #xf0 #x00 #x00
+      #x00 #xff #x93 #x88 #x1d #x00 #x00 #x48 #x8b #xbd #xc0 #x00 #x00
+      #x00 #x48 #x89 #xc6 #xff #x93 #x58 #x25 #x00 #x00 #x66 #x49 #x0f
+      #x6e #xdc #xbf #x02 #x00 #x00 #x00 #xf3 #x0f #x7e #x85 #xd8 #x00
+      #x00 #x00 #x48 #x8d #xb4 #x24 #x80 #x00 #x00 #x00 #x48 #x89 #x44
+      #x24 #x10 #x66 #x0f #x6c #xc3 #x0f #x29 #x84 #x24 #x80 #x00 #x00
+      #x00 #xff #x93 #xc8 #x22 #x00 #x00 #x4c #x89 #xe7 #x48 #x89 #x44
+      #x24 #x18 #xff #x93 #x10 #x27 #x00 #x00 #x48 #x89 #xc7 #x8d #x40
+      #xfe #xa8 #x03 #x0f #x85 #x43 #x02 #x00 #x00 #x48 #xba #x00 #x00
+      #x00 #x00 #x00 #x00 #x00 #xe0 #x48 #x89 #xf8 #x48 #xc1 #xf8 #x02
+      #x48 #x39 #xd0 #x0f #x84 #x29 #x02 #x00 #x00 #x48 #x8d #x04 #x85
+      #xfe #xff #xff #xff #x48 #x8b #x95 #xc8 #x00 #x00 #x00 #x48 #x8d
+      #xb4 #x24 #x10 #x01 #x00 #x00 #xbf #x03 #x00 #x00 #x00 #x48 #xc7
+      #x84 #x24 #x18 #x01 #x00 #x00 #x12 #x00 #x00 #x00 #x48 #x89 #x84
+      #x24 #x20 #x01 #x00 #x00 #x48 #x89 #x94 #x24 #x10 #x01 #x00 #x00
+      #xff #x93 #x88 #x1d #x00 #x00 #x48 #x8b #x7c #x24 #x18 #x48 #x89
+      #xc6 #xff #x93 #x58 #x25 #x00 #x00 #x4c #x89 #xe7 #xbe #x02 #x00
+      #x00 #x00 #x48 #x89 #x44 #x24 #x28 #xff #x93 #x60 #x29 #x00 #x00
+      #x4c #x89 #xe7 #xbe #x06 #x00 #x00 #x00 #x48 #x89 #x44 #x24 #x18
+      #xff #x93 #x60 #x29 #x00 #x00 #x4c #x89 #xe7 #xbe #x0a #x00 #x00
+      #x00 #x48 #x89 #x44 #x24 #x20 #xff #x93 #x60 #x29 #x00 #x00 #x48
+      #x8b #x4c #x24 #x10 #xbf #x02 #x00 #x00 #x00 #x48 #x8d #xb4 #x24
+      #x90 #x00 #x00 #x00 #x48 #x89 #x84 #x24 #x98 #x00 #x00 #x00 #x48
+      #x89 #x8c #x24 #x90 #x00 #x00 #x00 #xff #x93 #x90 #x26 #x00 #x00
+      #x4c #x89 #xe7 #xbe #x0e #x00 #x00 #x00 #x48 #x89 #x44 #x24 #x10
+      #xff #x93 #x60 #x29 #x00 #x00 #x48 #x83 #x7c #x24 #x08 #x00 #x48
+      #x8b #x54 #x24 #x28 #x49 #x89 #xc4 #x0f #x84 #x8c #x00 #x00 #x00
+      #xf3 #x0f #x7e #x85 #x98 #x00 #x00 #x00 #x48 #x89 #x54 #x24 #x28
+      #xbf #x02 #x00 #x00 #x00 #x48 #x8d #xb4 #x24 #xa0 #x00 #x00 #x00
+      #x0f #x16 #x44 #x24 #x08 #x0f #x29 #x84 #x24 #xa0 #x00 #x00 #x00
+      #xff #x93 #x88 #x1d #x00 #x00 #x48 #x8d #xb4 #x24 #x30 #x01 #x00
+      #x00 #xbf #x03 #x00 #x00 #x00 #xf3 #x0f #x7e #x85 #xe8 #x00 #x00
+      #x00 #x66 #x48 #x0f #x6e #xe0 #x48 #x8b #x85 #xf0 #x00 #x00 #x00
+      #x66 #x0f #x6c #xc4 #x48 #x89 #x84 #x24 #x40 #x01 #x00 #x00 #x0f
+      #x29 #x84 #x24 #x30 #x01 #x00 #x00 #xff #x93 #x88 #x1d #x00 #x00
+      #x48 #x8b #x54 #x24 #x28 #x8d #x4a #xfd #x83 #xe1 #x07 #x0f #x85
+      #x84 #x02 #x00 #x00 #x4c #x8b #x6a #x05 #x4c #x89 #xee #x48 #x89
+      #xc7 #xff #x93 #xf8 #x22 #x00 #x00 #x48 #x89 #xc2 #x48 #x8b #x45
+      #x78 #x48 #x89 #x94 #x24 #x78 #x01 #x00 #x00 #x48 #x8d #xb4 #x24
+      #x50 #x01 #x00 #x00 #xbf #x06 #x00 #x00 #x00 #x4c #x89 #xa4 #x24
+      #x70 #x01 #x00 #x00 #x48 #x89 #x84 #x24 #x50 #x01 #x00 #x00 #x48
+      #x8b #x44 #x24 #x18 #x48 #x89 #x84 #x24 #x58 #x01 #x00 #x00 #x48
+      #x8b #x44 #x24 #x20 #x48 #x89 #x84 #x24 #x60 #x01 #x00 #x00 #x48
+      #x8b #x44 #x24 #x10 #x48 #x89 #x84 #x24 #x68 #x01 #x00 #x00 #xff
+      #x93 #x90 #x1d #x00 #x00 #x4c #x89 #xfe #x48 #x89 #xc7 #xff #x93
+      #xf8 #x22 #x00 #x00 #x48 #x8b #xbd #xd0 #x00 #x00 #x00 #x48 #x89
+      #xc6 #xff #x93 #xf8 #x22 #x00 #x00 #x66 #x48 #x0f #x6e #xc0 #xf3
+      #x0f #x7e #x4d #x68 #x48 #x8d #x74 #x24 #x70 #xbf #x02 #x00 #x00
+      #x00 #x66 #x0f #x6c #xc8 #x0f #x29 #x4c #x24 #x70 #xff #x93 #x88
+      #x1d #x00 #x00 #xe9 #x02 #xfc #xff #xff #x0f #x1f #x80 #x00 #x00
+      #x00 #x00 #x48 #xba #x00 #x00 #x00 #x00 #x00 #x00 #x00 #xe0 #x48
+      #x89 #xf8 #x48 #xc1 #xf8 #x02 #x48 #x39 #xd0 #x0f #x84 #x2f #xfd
+      #xff #xff #x48 #x8d #x04 #x85 #xfe #xff #xff #xff #xe9 #x2b #xfd
+      #xff #xff #x90 #x49 #x8b #x06 #xff #x90 #xa0 #x28 #x00 #x00 #xe9
+      #xd1 #xfd #xff #xff #x66 #x90 #xbe #x02 #x00 #x00 #x00 #x4c #x89
+      #xe7 #xff #x93 #x60 #x29 #x00 #x00 #xbe #x06 #x00 #x00 #x00 #x4c
+      #x89 #xe7 #x48 #x89 #x44 #x24 #x10 #xff #x93 #x60 #x29 #x00 #x00
+      #x4c #x89 #xfe #x48 #x8b #xbd #x90 #x00 #x00 #x00 #x48 #x89 #x44
+      #x24 #x18 #xff #x93 #xf8 #x22 #x00 #x00 #xbe #x0a #x00 #x00 #x00
+      #x4c #x89 #xe7 #x49 #x89 #xc5 #xff #x93 #x60 #x29 #x00 #x00 #x31
+      #xf6 #x48 #x89 #xc7 #xff #x93 #xf8 #x22 #x00 #x00 #x4c #x89 #xef
+      #x48 #x89 #xc6 #xff #x93 #xf8 #x22 #x00 #x00 #x48 #x8b #xbd #x88
+      #x00 #x00 #x00 #x48 #x89 #xc6 #xff #x93 #xf8 #x22 #x00 #x00 #xbe
+      #x0e #x00 #x00 #x00 #x4c #x89 #xe7 #x49 #x89 #xc5 #xff #x93 #x60
+      #x29 #x00 #x00 #x48 #x8d #x74 #x24 #x50 #xbf #x02 #x00 #x00 #x00
+      #xf3 #x0f #x7e #x85 #x98 #x00 #x00 #x00 #x49 #x89 #xc6 #x0f #x16
+      #x44 #x24 #x08 #x0f #x29 #x44 #x24 #x50 #xff #x93 #x88 #x1d #x00
+      #x00 #x48 #x8d #x74 #x24 #x60 #xbf #x02 #x00 #x00 #x00 #x4c #x89
+      #x64 #x24 #x60 #x48 #xc7 #x44 #x24 #x68 #x00 #x00 #x00 #x00 #x49
+      #x89 #xc7 #xff #x93 #xa0 #x26 #x00 #x00 #xbf #x16 #x00 #x00 #x00
+      #x48 #x89 #xc6 #xff #x93 #x28 #x26 #x00 #x00 #x48 #x8b #xbd #xa8
+      #x00 #x00 #x00 #x48 #x89 #xc6 #xff #x93 #x58 #x25 #x00 #x00 #x4c
+      #x89 #xff #x48 #x89 #xc6 #xff #x93 #xf8 #x22 #x00 #x00 #x4c #x89
+      #xf7 #x48 #x89 #xc6 #xff #x93 #xf8 #x22 #x00 #x00 #x4c #x89 #xef
+      #x48 #x89 #xc6 #xff #x93 #xf8 #x22 #x00 #x00 #x48 #x8b #x7c #x24
+      #x18 #x48 #x89 #xc6 #xff #x93 #xf8 #x22 #x00 #x00 #x48 #x8b #x7c
+      #x24 #x10 #x48 #x89 #xc6 #xff #x93 #xf8 #x22 #x00 #x00 #x48 #x8b
+      #x7d #x78 #x48 #x89 #xc6 #xff #x93 #xf8 #x22 #x00 #x00 #x66 #x48
+      #x0f #x6e #xc0 #xe9 #x64 #xfe #xff #xff #x66 #x0f #x1f #x44 #x00
+      #x00 #xf3 #x0f #x6f #x85 #xf8 #x00 #x00 #x00 #x48 #x8d #xb4 #x24
+      #xb0 #x00 #x00 #x00 #xbf #x02 #x00 #x00 #x00 #x0f #x29 #x84 #x24
+      #xb0 #x00 #x00 #x00 #xff #x93 #x88 #x1d #x00 #x00 #xe9 #x6a #xfb
+      #xff #xff #x0f #x1f #x84 #x00 #x00 #x00 #x00 #x00 #x4d #x85 #xe4
+      #x74 #x0f #x49 #x8b #x06 #x48 #x8b #xbd #x38 #x01 #x00 #x00 #x4c
+      #x89 #xe6 #xff #x10 #x48 #xc7 #x44 #x24 #x10 #x00 #x00 #x00 #x00
+      #xe9 #x6f #xfa #xff #xff #x66 #x0f #x1f #x44 #x00 #x00 #x48 #x85
+      #xd2 #x0f #x84 #x77 #xfd #xff #xff #x49 #x8b #x0e #x48 #x89 #x44
+      #x24 #x08 #x48 #x89 #xd6 #x48 #x8b #xbd #x38 #x01 #x00 #x00 #xff
+      #x11 #x48 #x8b #x44 #x24 #x08 #xe9 #x59 #xfd #xff #xff #x90 #xf3
+      #x0f #x7e #x85 #xf8 #x00 #x00 #x00 #x48 #x8d #xb4 #x24 #xc0 #x00
+      #x00 #x00 #xbf #x02 #x00 #x00 #x00 #x0f #x16 #x85 #x08 #x01 #x00
+      #x00 #x0f #x29 #x84 #x24 #xc0 #x00 #x00 #x00 #xff #x93 #x88 #x1d
+      #x00 #x00 #xe9 #xd1 #xfa #xff #xff #x90 #x48 #x85 #xf6 #x74 #x8f
+      #x49 #x8b #x06 #x48 #x8b #xbd #x38 #x01 #x00 #x00 #xff #x10 #xeb
+      #x81]
+         :gots '((23 . freloc) (30 . d-reloc))
+         :imports '(1335 10 1220 1221 1119 1250 945 1318 1364 1300 1195 1113 1324 1234 946 1236 0)
+         :data '(6 10 11 13 14 15 17 18 19 21 24 25 26 27 29 30 31 32 33 39)))
+  "Exact multi-import shapes of gnu-byte-compile-make-closure.eln (S6.11); see
+`nelisp-eln-native-subr--multi-import-specs-closure'.
+
+`lambda-intern-format' (71 bytes) is GNU's `(lambda (i) (intern (format
+\"V%d\" i)))' through slots 704 `Fformat' (MANY, 2) and 1006 `Fintern',
+`lambda-aref-form' (27 bytes, no d_reloc read) tail-calls slot 1324 `Faref'
+with the placeholder fixnum 0 as the array, and `lambda-cons-form' (43 bytes)
+is `(cons \='quote (list x))' through two slot 1119 `Fcons' calls (the second
+a tail call).  `make-closure-form' (1667 bytes) is vendor bytecomp.el
+`byte-compile-make-closure' itself: inline `car'/`cdr' walks of FORM, slot
+945 `Ffuncall' of `byte-compile-lambda', `macroexp-const-p', `number-sequence',
+`eval', `byte-compile-form' and the assertion failure, three slot 1195
+`Fmapcar' calls (two of them over the registered native lambdas read from
+d_reloc[24] and d_reloc[21], the middle one over an `Fmake_closure' result),
+slot 1234 `Fvconcat', slot 1324 `Faref' of the compiled function's slots,
+slot 946 `Fapply' of `make-byte-code' with six arguments and slot 1236
+`Fappend', ending in a `Ffuncall' of `byte-compile-form'.  Its inline reads
+touch only FORM's own conses and the `Fmapcar' result list (`cdr' of the
+optional-argument list); every other port result is only tested for nil,
+passed on to a later port, or returned.")
+
+(unless (assq 'make-closure-form nelisp-eln-tail-code--multi-import-shapes)
+  (setq nelisp-eln-tail-code--multi-import-shapes
+        (append nelisp-eln-tail-code--multi-import-shapes
+                nelisp-eln-tail-code--multi-import-shapes-closure)))
+
 (defun nelisp-eln-tail-code--disp32 (bytes offset)
   "Return the signed disp32 at OFFSET in BYTES."
   (let ((value (logior (aref bytes offset)
@@ -1744,7 +1937,10 @@ address as the artifact's own `quitcounter' object."
               ('symbols-with-pos (when (and swp (/= swp vaddr)) (throw 'invalid nil))
                                  (setq swp vaddr))
               (_ (throw 'invalid nil)))))
-        (unless (and freloc d-reloc) (throw 'invalid nil))
+        ;; A shape that declares no `d_reloc' constant (S6.11's 27-byte
+        ;; `lambda-aref-form') has no d_reloc GOT load at all.
+        (unless (and freloc (or d-reloc (null (plist-get (cdr shape) :data))))
+          (throw 'invalid nil))
         (list :safe t :shape (car shape)
               :imports (mapcar (lambda (slot)
                                  (list :slot slot :got-vaddr freloc))

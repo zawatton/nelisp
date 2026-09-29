@@ -678,7 +678,8 @@ A dispatch arm nothing installs is dead code that still links."
       (setq svc-count (1+ svc-count)
             pos (match-end 0)))
     (should (> (length text) 80))
-    (should (= svc-count 2))
+    ;; mmap, exit, and the mmap-failure block's two writes plus its exit.
+    (should (= svc-count 5))
     (should (cl-find "driver" relocs
                      :key (lambda (r) (plist-get r :symbol))
                      :test #'equal))
@@ -730,6 +731,67 @@ Without the check a failed mmap became rsp = -errno + SIZE - 16 and the
     (should (= (aref text (1- (plist-get reloc :offset))) #xe8))
     (should (string-search nelisp-standalone--native-stack-mmap-fail-message
                            text))))
+
+;; Little-endian instruction word I of the arm64 TEXT.
+(defun nelisp-standalone-target-test--word (text i)
+  (logior (aref text (* 4 i)) (ash (aref text (+ (* 4 i) 1)) 8)
+          (ash (aref text (+ (* 4 i) 2)) 16) (ash (aref text (+ (* 4 i) 3)) 24)))
+
+(ert-deftest nelisp-standalone-target-linux-aarch64-start-checks-stack-mmap ()
+  "The Linux arm64 start unit branches away when the native-stack mmap fails.
+The kernel returns -errno in x0, so the check is `cmp x0, #-4095; b.hs fail'
+with the failure block reporting the errno and exiting 88."
+  (let* ((nelisp-standalone--target 'linux-aarch64)
+         (unit (nelisp-standalone--target-start-unit t))
+         (text (cdr (assq 'text (plist-get unit :sections))))
+         (w (lambda (i) (nelisp-standalone-target-test--word text i)))
+         (svc0 #xd4000001)
+         (i 0))
+    (should (equal (plist-get unit :name) "start.o"))
+    (while (/= (funcall w i) svc0) (setq i (1+ i)))
+    ;; mov x11, #-4095 (movz/movk chain) precedes the cmp; find the cmp.
+    (let ((cmp #xeb0b001f) (j (1+ i)))
+      (while (/= (funcall w j) cmp) (setq j (1+ j)))
+      (should (< (- j i) 6))
+      (should (= (funcall w (1+ j)) #x54000043))     ; b.lo .+8 (inverted hs)
+      (should (= (logand (funcall w (+ j 2)) #xfc000000) #x14000000)) ; b fail
+      (let* ((imm26 (logand (funcall w (+ j 2)) #x3ffffff))
+             (target-word (+ j 2 imm26)))
+        ;; The failure block starts with `sub x9, xzr, x0' (errno = -x0).
+        (should (= (funcall w target-word) #xcb0003e9))
+        ;; It ends with exit(88): svc after mov x8,#93 preceded by mov x0,#88.
+        (should (string-search nelisp-standalone--native-stack-mmap-fail-message
+                               text))))
+    ;; Exactly one exit-88 path plus the normal exit: x0 = 88 is loaded once.
+    (should (= 1 (cl-loop for k below (/ (length text) 4)
+                          count (= (funcall w k) #xd2800b00))))))
+
+(ert-deftest nelisp-standalone-target-macos-aarch64-start-checks-stack-mmap ()
+  "The macOS arm64 reader start unit branches away when the mmap fails.
+Darwin signals failure with the carry flag and returns errno in x0, so the
+check is `b.cs fail' straight after the mmap `svc #0x80'."
+  (let* ((nelisp-standalone--target 'macos-aarch64)
+         (unit (nelisp-standalone--target-start-unit t))
+         (text (cdr (assq 'text (plist-get unit :sections))))
+         (w (lambda (i) (nelisp-standalone-target-test--word text i)))
+         (svc80 #xd4001001)
+         (i 0))
+    (should (equal (plist-get unit :name) "start.o"))
+    (while (/= (funcall w i) svc80) (setq i (1+ i)))
+    ;; The mmap svc is directly followed by b.cc .+8 (inverted cs) and a B.
+    (should (= (funcall w (1+ i)) #x54000043))
+    (should (= (logand (funcall w (+ i 2)) #xfc000000) #x14000000))
+    (let* ((imm26 (logand (funcall w (+ i 2)) #x3ffffff))
+           (target-word (+ i 2 imm26)))
+      ;; The failure block starts with `mov x9, x0' (errno already positive).
+      (should (= (funcall w target-word) #xaa0003e9))
+      ;; and its exit uses Darwin exit (x16 = 1), so it is reached only by branch.
+      (should (> target-word (+ i 20))))
+    (should (string-search nelisp-standalone--native-stack-mmap-fail-message
+                           text))
+    ;; x0 = 88 (movz x0,#88) is loaded exactly once, in the failure block.
+    (should (= 1 (cl-loop for k below (/ (length text) 4)
+                          count (= (funcall w k) #xd2800b00))))))
 
 (ert-deftest nelisp-standalone-target-windows-reader-uses-wide-file-api ()
   "Windows reader opens files with CreateFileW and UTF-8/UTF-16 conversion."

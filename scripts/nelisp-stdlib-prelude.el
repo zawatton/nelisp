@@ -21086,6 +21086,16 @@ The third argument DOC is a documentation string for the widget."
     (put name 'widget-documentation doc)
     name))
 
+;; `meta-prefix-char' is a C `DEFVAR_INT' in real Emacs 31.1's src/keyboard.c
+;; (default 27, i.e. ESC), preloaded before any Lisp runs; this substrate
+;; had no equivalent (void-variable).  `isearch.el' calls
+;; `(char-to-string meta-prefix-char)' in its top-level keymap-building
+;; forms.  Value and docstring confirmed against host Emacs 31.1.
+(unless (boundp 'meta-prefix-char)
+  (defvar meta-prefix-char 27
+    "Meta-prefix character code.
+Meta-foo as command input turns into this character followed by foo."))
+
 ;; `help-char' is a C-level `DEFVAR_LISP' in real Emacs's keyboard.c,
 ;; preloaded (with its default value already set) before any Lisp file
 ;; ever runs -- so no GNU Lisp source ever binds it itself, and this
@@ -21178,6 +21188,77 @@ If the value of `help-form' is nil, this char can be read normally."))
       (define-key map "q" #'help-quit)
       map)
     "Keymap for characters following the Help key."))
+
+;; The prefix keymaps below are created by C in real Emacs 31.1 (src/keymap.c:
+;; `esc-map' and `ctl-x-map', full keymaps bound in `global-map' through the
+;; `ESC-prefix' / `Control-X-prefix' function cells; src/minibuf.c:
+;; `minibuffer-local-map', a sparse keymap), so no Lisp file ever defines them
+;; and this substrate had none (void-variable).  `isearch.el' binds into
+;; `esc-map' and `search-map' at load time and uses `minibuffer-local-map' as
+;; the parent of `minibuffer-local-isearch-map'.  Differences from GNU:
+;; `esc-map'/`ctl-x-map' are SPARSE here, because a `make-keymap' char-table
+;; baked into the image makes test/nelisp-eln-same-artifact-smoke.sh segfault
+;; (measured by bisection); `global-map' does not exist yet at this point, so
+;; the two `define-key' bindings into it are made right after its definition
+;; in scripts/nelisp-standalone-build.el; and `minibuffer-local-map' is left
+;; empty (GNU's bindings.el fills it in, and that file is not loaded).
+(unless (boundp 'esc-map)
+  (defvar esc-map (make-sparse-keymap)
+    "Default keymap for ESC (meta) commands.
+The normal global definition of the character ESC indirects to this keymap.")
+  (fset 'ESC-prefix esc-map))
+(unless (boundp 'ctl-x-map)
+  (defvar ctl-x-map (make-sparse-keymap)
+    "Default keymap for C-x commands.
+The normal global definition of the character C-x indirects to this keymap.")
+  (fset 'Control-X-prefix ctl-x-map))
+(unless (boundp 'minibuffer-local-map)
+  (defvar minibuffer-local-map (make-sparse-keymap)
+    "Default keymap to use when reading from the minibuffer."))
+
+;; `search-map' is a `defvar-keymap' in GNU Emacs 31.1's (preloaded)
+;; lisp/bindings.el, followed by `(define-key esc-map "s" search-map)'.
+;; Same binding set, built with `define-key' because `defvar-keymap' is not
+;; usable this early in bootstrap (see the `button-buffer-map' block comment
+;; above) and because nested `define-key' on a prefix map that was itself
+;; bound with `define-key' does not propagate here, so the "h" prefix is
+;; built with vector sequences on the one map instead.
+(unless (boundp 'search-map)
+  (defvar search-map
+    (let ((map (make-sparse-keymap)))
+      (define-key map "o" #'occur)
+      (define-key map "\M-w" #'eww-search-words)
+      (define-key map [?h ?r] #'highlight-regexp)
+      (define-key map [?h ?p] #'highlight-phrase)
+      (define-key map [?h ?l] #'highlight-lines-matching-regexp)
+      (define-key map [?h ?.] #'highlight-symbol-at-point)
+      (define-key map [?h ?u] #'unhighlight-regexp)
+      (define-key map [?h ?f] #'hi-lock-find-patterns)
+      (define-key map [?h ?w] #'hi-lock-write-interactive-patterns)
+      map)
+    "Keymap for search related commands.")
+  (define-key esc-map "s" search-map))
+
+;; `cl-callf' is defined in GNU cl-macs.el (autoloaded from cl-lib).  Real
+;; `isearch.el' uses it at load time (`isearch-define-mode-toggle' expands to
+;; `cl-callf'; its `(eval-when-compile (require 'cl-lib))' makes it available
+;; when the source is loaded).  GNU's definition expands through
+;; `gv-letplace', but `(require 'gv)' at runtime replaces this substrate's own
+;; `setf' machinery and breaks it (`void-function (setf
+;; nelisp-buffer-markers)'), so this expands through the native `setf' like
+;; this file's `cl-incf'.  Unlike GNU, PLACE's subforms are therefore
+;; evaluated twice.
+(unless (fboundp 'cl-callf)
+  (defmacro cl-callf (func place &rest args)
+    "Set PLACE to (FUNC PLACE ARGS...).
+FUNC should be an unquoted function name or a lambda expression.
+PLACE may be a symbol, or any generalized variable allowed by
+`setf'."
+    (declare (indent 2))
+    (let ((rargs (cons place args)))
+      (list 'setf place
+            (if (symbolp func) (cons func rargs)
+              (cons 'funcall (cons (list 'function func) rargs)))))))
 
 ;; `menu-bar-manuals-menu' is a plain `defvar' in real Emacs's
 ;; (preloaded) lisp/menu-bar.el, built from ordinary `menu-item'-shaped

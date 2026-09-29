@@ -78,7 +78,11 @@
     ;; with two or three -- NeLisp's own `apply'/`vector'/`append'.
     ("ba35c031" 946 apply 4)
     ("ba35c031" 1117 vector 2)
-    ("ba35c031" 1236 append 2))
+    ("ba35c031" 1236 append 2)
+    ;; S6.11 (`byte-compile-make-closure'): 946 `Fapply' with six arguments
+    ;; (`make-byte-code' and its five) and 1318 `Fgtr' (`>') with two.
+    ("ba35c031" 946 apply 6)
+    ("ba35c031" 1318 > 2))
   "Authenticated (ABI SLOT BUILTIN ARITY) GNU MANY-convention descriptors.
 
 Verified against the authenticated slot table
@@ -699,6 +703,56 @@ fail closed."
           (plist-put analysis :constant-address
                      (+ d-reloc-target (* 8 d-reloc-slot))))))))
 
+(defun nelisp-eln-native-subr--port-number (analysis index)
+  "Return the callback port number of ANALYSIS's INDEXth import.
+That is INDEX itself, unless ANALYSIS carries `:port-numbers' (S6.11): a
+profile whose bodies share one link table gives every freloc slot the same
+port number in every body, so one table entry serves each slot for all of
+them (see `nelisp-eln-registration--assign-port-numbers')."
+  (let ((numbers (plist-get analysis :port-numbers)))
+    (if numbers
+        (or (nth index numbers)
+            (signal 'nelisp-eln-native-subr-error
+                    (list 'missing-port-number index)))
+      index)))
+
+(defun nelisp-eln-native-subr--port-tags (analysis)
+  "Return ((PORT-TAG . SPEC) ...) for ANALYSIS's :PORT-SPECS, in import order."
+  (let ((index -1))
+    (mapcar (lambda (spec)
+              (setq index (1+ index))
+              (cons (nelisp-eln-callable-import-port-tag
+                     (nelisp-eln-native-subr--port-number analysis index))
+                    spec))
+            (plist-get analysis :port-specs))))
+
+(defun nelisp-eln-native-subr--resolve-constant-cells (cells lease)
+  "Return the (WORD . VALUE) constants of CELLS, read live for this call.
+CELLS is ((ADDRESS . VALUE) ...).  A VALUE of the form (:registered-lambda
+. INDEX) names the d_reloc slot INDEX that `Fcomp__register_lambda'
+overwrote; it resolves to the owner's registered native subr, and only when
+the slot still holds exactly the word the owner published there when
+registration finished.  LEASE is the calling body's own lease."
+  (mapcar
+   (lambda (cell)
+     (let ((word (nelisp-eln-abi-read-word (car cell) 0))
+           (value (cdr cell)))
+       (if (eq (car-safe value) :registered-lambda)
+           (let* ((index (cdr value))
+                  (owner (and (vectorp lease) (aref lease 2)))
+                  (plist (and (vectorp owner) (>= (length owner) 19)
+                              (aref owner 18)))
+                  (callable (cdr (assq index
+                                       (plist-get plist :lambda-callables))))
+                  (expected (cdr (assq index
+                                       (plist-get plist :lambda-slot-words)))))
+             (unless (and callable (integerp expected) (eql word expected))
+               (signal 'nelisp-eln-native-subr-error
+                       (list 'registered-lambda-slot-not-live index word (and callable t) expected)))
+             (cons word callable))
+         (cons word value))))
+   cells))
+
 (defun nelisp-eln-native-subr-import-entries (analysis)
   "Return ((SLOT . ENTRY-ADDRESS) ...) for every import ANALYSIS proves.
 A proof with several distinct freloc slots gives each slot its own
@@ -718,14 +772,15 @@ existing single entry (`nelisp-eln-native-subr-import-entry-address')."
     ;; Doc 207: the two-import chain leaf uses ports too (Fadd1 is port 0,
     ;; the `Ffuncall' MANY hop port 1).
     (if (memq (plist-get analysis :proof) '(:multi-import-call :chain-call))
-        (let ((port 0) (entries nil))
+        (let ((index 0) (entries nil))
           (unless (fboundp 'nelisp-eln-callable-import-port-entry-address)
             (require 'nelisp-eln-callable-import))
           (dolist (import imports)
             (push (cons (plist-get import :slot)
-                        (nelisp-eln-callable-import-port-entry-address port))
+                        (nelisp-eln-callable-import-port-entry-address
+                         (nelisp-eln-native-subr--port-number analysis index)))
                   entries)
-            (setq port (1+ port)))
+            (setq index (1+ index)))
           (nreverse entries))
       (list (cons (plist-get (car imports) :slot)
                   (nelisp-eln-native-subr-import-entry-address analysis))))))
@@ -1162,6 +1217,76 @@ see `nelisp-eln-native-subr--multi-import-specs' for the format.
         (append nelisp-eln-native-subr--multi-import-specs
                 nelisp-eln-native-subr--multi-import-specs-lambda)))
 
+;; S6.11 (`byte-compile-make-closure'): the body and its three registered
+;; native lambdas, in their own constant appended to the spec list.  Port
+;; return kind `handle-nil' answers Qnil (word 0) for a nil result and an
+;; opaque, identity-preserving handle otherwise; it is used for every port
+;; whose result the exact body only tests for nil, passes on to a later port
+;; or returns (see `nelisp-eln-tail-code--multi-import-shapes-closure').  The
+;; ports whose result the body reads inline -- `Flength' and `Fsub1'
+;; (fixnums), `Fgtr' and `Fbyte_code_function_p' (booleans), `Fsymbol_value'
+;; and the `Fmapcar' list whose `cdr' the docstring path reads -- keep the
+;; ordinary `lisp' encoding.  A constant `:registered-lambda' names a d_reloc
+;; slot GNU's `Fcomp__register_lambda' overwrites: it is resolved per call to
+;; the owner's registered native subr (see
+;; `nelisp-eln-native-subr--resolve-constant-cells').
+(defconst nelisp-eln-native-subr--multi-import-specs-closure
+  '((lambda-intern-format
+     :ports ((704 many 2 (lisp lisp) handle-nil)
+             (1006 fixed 2 (lisp lisp) handle-nil))
+     :constants ((2 . "V%d"))
+     :arity 1)
+    (lambda-aref-form
+     :ports ((1324 fixed 2 (lisp lisp) handle-nil))
+     :constants nil
+     :arity 1)
+    (lambda-cons-form
+     :ports ((1119 fixed 2 (lisp lisp) handle-nil))
+     :constants ((4 . quote))
+     :arity 1
+     :opaque-argument-symbols t)
+    (make-closure-form
+     :ports ((1335 fixed 1 (lisp) lisp)
+             (10 fixed 4 (lisp lisp lisp raw) void)
+             (1220 fixed 2 (lisp lisp) handle-nil)
+             (1221 fixed 2 (lisp lisp) handle-nil)
+             (1119 fixed 2 (lisp lisp) handle-nil)
+             (1250 fixed 1 (lisp) lisp)
+             (945 many (2 3) (lisp lisp lisp) handle-nil)
+             (1318 many 2 (lisp lisp) lisp)
+             (1364 fixed 1 (lisp) lisp)
+             (1300 fixed 1 (lisp) lisp)
+             (1195 fixed 2 (lisp lisp) lisp)
+             (1113 many 2 (lisp lisp) handle)
+             (1324 fixed 2 (lisp lisp) handle-nil)
+             (1234 many 2 (lisp lisp) handle-nil)
+             (946 many 6 (lisp lisp lisp lisp lisp lisp) handle)
+             (1236 many 2 (lisp lisp) handle-nil)
+             (0 fixed 2 (lisp lisp) void))
+     :constants ((6 . byte-compile--for-effect) (10 . byte-compile-lambda)
+                 (11 . lambda) (13 . byte-compile-form)
+                 (14 . macroexp-const-p) (15 . make-byte-code)
+                 (17 . vconcat) (18 . vector)
+                 (19 . byte-run-strip-symbol-positions)
+                 (21 . :registered-lambda) (24 . :registered-lambda)
+                 (25 . number-sequence) (26 . make-closure)
+                 (27 . (:bytecode 257 (192 1 72 135) [V0] 3 "
+
+(fn I)"))
+                 (29 . eval) (30 . t) (31 . cl--assertion-failed)
+                 (32 . (byte-code-function-p fun))
+                 (33 . (or (> (length env) 0) docstring-exp))
+                 (39 . listp))
+     :arity 1
+     :opaque-argument-symbols t :opaque-vectors t))
+  "Dispatcher spec for `nelisp-eln-tail-code--multi-import-shapes-closure';
+see `nelisp-eln-native-subr--multi-import-specs' for the format.")
+
+(unless (assq 'make-closure-form nelisp-eln-native-subr--multi-import-specs)
+  (setq nelisp-eln-native-subr--multi-import-specs
+        (append nelisp-eln-native-subr--multi-import-specs
+                nelisp-eln-native-subr--multi-import-specs-closure)))
+
 (defun nelisp-eln-native-subr--multi-reject (reason &rest detail)
   "Reject an exactly matched multi-import body for REASON with DETAIL.
 Once CODE matches a `nelisp-eln-tail-code--multi-import-shapes' template
@@ -1171,7 +1296,11 @@ explicit, reasoned rejection -- never a quiet nil."
           (cons 'multi-import-not-admitted (cons reason detail))))
 
 (defconst nelisp-eln-native-subr--many-service-descriptors
-  '(("ba35c031" 1113 2) ("ba35c031" 1196 2))
+  '(("ba35c031" 1113 2) ("ba35c031" 1196 2)
+    ;; S6.11: `Fformat' (1, MANY) and `Fvconcat' (0, MANY), both called with
+    ;; two arguments; NeLisp's own `format'/`vconcat' are Lisp functions,
+    ;; not builtin cells, so they are runtime services.
+    ("ba35c031" 704 2) ("ba35c031" 1234 2))
   "Authenticated (ABI SLOT ARITY) MANY slots answered by a runtime service
 implementation rather than a canonical builtin: 1113 is `Fmake_closure' and
 1196 is `Fnconc' \(src/alloc.c, 1 MANY; src/fns.c, 0 MANY), whose NeLisp implementations
@@ -1346,9 +1475,11 @@ recurses into them."
 
 (defun nelisp-eln-native-subr--bytecode-matches-p (actual spec)
   "Non-nil when ACTUAL is a byte-code function object equal to SPEC.
-SPEC is (ARGS BYTES CONSTANTS DEPTH), BYTES a list of byte values."
+SPEC is (ARGS BYTES CONSTANTS DEPTH), BYTES a list of byte values, or
+\(ARGS BYTES CONSTANTS DEPTH DOC) for an object that carries a fifth
+documentation slot (S6.11's closure prototype)."
   (and (byte-code-function-p actual)
-       (proper-list-p spec) (= (length spec) 4)
+       (proper-list-p spec) (memq (length spec) '(4 5))
        (nelisp-eln-native-subr--deep-equal
         (nelisp-eln-native-subr--closure-slot actual 0) (nth 0 spec))
        (stringp (nelisp-eln-native-subr--closure-slot actual 1))
@@ -1360,8 +1491,12 @@ SPEC is (ARGS BYTES CONSTANTS DEPTH), BYTES a list of byte values."
         (nelisp-eln-native-subr--closure-slot actual 2) (nth 2 spec))
        (nelisp-eln-native-subr--deep-equal
         (nelisp-eln-native-subr--closure-slot actual 3) (nth 3 spec))
-       ;; Exactly four slots.
-       (eql (funcall (symbol-function 'length) actual) 4)))
+       ;; Exactly four (or, with a documentation slot, five) slots.
+       (eql (funcall (symbol-function 'length) actual) (length spec))
+       ;; The documentation slot, when the spec has one, equals it exactly.
+       (or (= (length spec) 4)
+           (let ((doc (nelisp-eln-native-subr--closure-slot actual 4)))
+             (and (stringp doc) (equal doc (nth 4 spec)))))))
 
 (defun nelisp-eln-native-subr--multi-constant-matches-p (actual expected)
   "Non-nil when d_reloc constant ACTUAL is EXPECTED.
@@ -1369,6 +1504,10 @@ Symbols and immediates by identity; a byte-code constant by its
 components; any other quoted list constant (never mutated by an admitted
 body) by `equal'."
   (cond ((eq actual expected) t)
+        ;; A d_reloc slot `Fcomp__register_lambda' overwrites (S6.11): the
+        ;; file holds GNU's own "#$" placeholder there.
+        ((eq expected :registered-lambda)
+         (and (stringp actual) (equal actual "#$")))
         ;; A string constant (never mutated by an admitted body) by `equal'.
         ((stringp expected) (and (stringp actual) (equal actual expected)))
         ((nelisp-eln-native-subr--bytecode-spec-p expected)
@@ -1490,8 +1629,10 @@ an invalid root slot.  The result adds :PORT-SPECS, :CONSTANTS,
                 (nelisp-eln-system-loader-validate-root-indirection
                  handle (+ bias freloc-got) "freloc_link_table"))
                (d-reloc-target
-                (nelisp-eln-system-loader-validate-root-indirection
-                 handle (+ bias d-reloc-got) "d_reloc"))
+                ;; A shape that reads no d_reloc constant has no d_reloc GOT.
+                (and d-reloc-got
+                     (nelisp-eln-system-loader-validate-root-indirection
+                      handle (+ bias d-reloc-got) "d_reloc")))
                (swp-target
                 (and swp-got
                      (nelisp-eln-system-loader-validate-root-indirection
@@ -1502,7 +1643,8 @@ an invalid root slot.  The result adds :PORT-SPECS, :CONSTANTS,
                           #'nelisp-eln-system-loader-read-root-object-bytes))
                (relocations (plist-get metadata :data-relocations)))
           (unless (and (integerp freloc-target) (> freloc-target 0)
-                       (integerp d-reloc-target) (> d-reloc-target 0)
+                       (or (and (null d-reloc-got) (null data))
+                           (and (integerp d-reloc-target) (> d-reloc-target 0)))
                        (or (null swp-got)
                            (and (integerp swp-target) (> swp-target 0))))
             (nelisp-eln-native-subr--multi-reject
@@ -1557,10 +1699,17 @@ position are never enabled in NeLisp)."
          (second (and (vectorp owner) (>= (length owner) 19)
                       (listp (aref owner 18))
                       (eq (plist-get (aref owner 18) :lease2) lease)))
+         ;; S6.11: each registered native lambda holds its own lease over the
+         ;; same retained table, kept as (LEASE . CAPABILITY) in :lambda-leases.
+         (lambda-entry (and (vectorp owner) (>= (length owner) 19)
+                            (listp (aref owner 18))
+                            (assq lease (plist-get (aref owner 18)
+                                                   :lambda-leases))))
          (owner-cap (and (vectorp owner) (>= (length owner) 18)
-                         (if second
-                             (plist-get (aref owner 18) :leaf-cap2)
-                           (aref owner 8))))
+                         (cond (lambda-entry (cdr lambda-entry))
+                               (second
+                                (plist-get (aref owner 18) :leaf-cap2))
+                               (t (aref owner 8)))))
          (unit (and owner (aref owner 1)))
          (owner-handle (and (vectorp unit) (> (length unit) 1)
                             (aref unit 1)))
@@ -1573,7 +1722,7 @@ position are never enabled in NeLisp)."
          (eq (aref lease 1) handle)
          (eq owner-handle handle)
          (eq (aref owner 12) table-owner)
-         (or second (eq (aref owner 17) lease))
+         (or second lambda-entry (eq (aref owner 17) lease))
          (or (not require-active)
              (and (boundp 'nelisp-eln-registration--active-owner)
                   (eq nelisp-eln-registration--active-owner owner)))
@@ -1602,6 +1751,28 @@ position are never enabled in NeLisp)."
                   (= (ptr-read-u64 (nl-ffi-memory-address swp-memory) 0)
                      0))))))
 
+(defun nelisp-eln-native-subr--lease-port-numbers (analysis)
+  "Return ANALYSIS carrying the port numbering of the live lease's proof.
+A profile whose bodies share one link table (S6.11) numbers the ports of
+every body's proof alike (`:port-numbers', see
+`nelisp-eln-registration--assign-port-numbers'); a body's constructor
+re-derives its analysis from the file's own bytes, so that numbering is
+re-applied here from the lease's proof -- and only when that proof imports
+exactly the same slots in the same order.  Without `:port-numbers' in the
+proof ANALYSIS is returned unchanged."
+  (let* ((lease nelisp-eln-native-subr--tail-import-context)
+         (proof (and (vectorp lease) (= (length lease) 8) (aref lease 7)))
+         (numbers (plist-get proof :port-numbers)))
+    (cond
+     ((or (null analysis) (null numbers)) analysis)
+     ((equal (mapcar (lambda (i) (plist-get i :slot))
+                     (plist-get analysis :imports))
+             (mapcar (lambda (i) (plist-get i :slot))
+                     (plist-get proof :imports)))
+      (plist-put (copy-sequence analysis) :port-numbers numbers))
+     (t (nelisp-eln-native-subr--multi-reject
+         'lease-proof-imports-mismatch (plist-get analysis :imports))))))
+
 (defun nelisp-eln-native-subr-create-multi (handle name &optional function-name)
   "Create a managed genuine unary S6 multi-import subr for root NAME.
 Its body calls several distinct authenticated freloc slots (see
@@ -1620,14 +1791,17 @@ constants decode by identity."
          (code (and (integerp size) (> size 0)
                     (nelisp-eln-system-loader-read-root-function-bytes
                      handle name 0 size)))
-         (analysis (and code (= (length code) size)
-                        (nelisp-eln-native-subr-multi-import-analysis
-                         handle capability code
-                         (nelisp-eln-native-subr--tail-import-context-abi-hash))))
+         (analysis (nelisp-eln-native-subr--lease-port-numbers
+                    (and code (= (length code) size)
+                         (nelisp-eln-native-subr-multi-import-analysis
+                          handle capability code
+                          (nelisp-eln-native-subr--tail-import-context-abi-hash)))))
          (lease nelisp-eln-native-subr--tail-import-context)
          (d-reloc-address (plist-get analysis :d-reloc-address))
          (module-id (nelisp-eln-system-loader-module-id handle)))
-    (unless (and analysis (integerp d-reloc-address) (> d-reloc-address 0)
+    (unless (and analysis
+                 (or (null (plist-get analysis :constants))
+                     (and (integerp d-reloc-address) (> d-reloc-address 0)))
                  (= (nelisp-eln-native-subr-multi-arity analysis) 1)
                  (nelisp-eln-native-subr--multi-lease-valid-p
                   lease handle capability t)
@@ -1643,12 +1817,7 @@ constants decode by identity."
           (cond ((and function-name (symbolp function-name)) function-name)
                 ((stringp function-name) (intern function-name))
                 (t (intern name))))
-    (let* ((ports (let ((port -1))
-                    (mapcar (lambda (spec)
-                              (setq port (1+ port))
-                              (cons (nelisp-eln-callable-import-port-tag port)
-                                    spec))
-                            (plist-get analysis :port-specs))))
+    (let* ((ports (nelisp-eln-native-subr--port-tags analysis))
            ;; Only an exact shape whose body never reads symbol cells
            ;; inline admits opaque interned symbol views (see
            ;; `nelisp-eln-native-subr--multi-import-specs').
@@ -1666,7 +1835,10 @@ constants decode by identity."
                  t))
            (constant-cells
             (mapcar (lambda (c)
-                      (cons (+ d-reloc-address (* 8 (car c))) (cdr c)))
+                      (cons (+ d-reloc-address (* 8 (car c)))
+                            (if (eq (cdr c) :registered-lambda)
+                                (cons :registered-lambda (car c))
+                              (cdr c))))
                     (plist-get analysis :constants)))
            (bridge
             (lambda (argument)
@@ -1681,10 +1853,8 @@ constants decode by identity."
               ;; entirely empty (see `nelisp-eln-objects--admit-empty-
               ;; interned-symbols'); both only for the duration of this call.
               (let* ((constants
-                      (mapcar (lambda (cell)
-                                (cons (nelisp-eln-abi-read-word (car cell) 0)
-                                      (cdr cell)))
-                              constant-cells))
+                      (nelisp-eln-native-subr--resolve-constant-cells
+                       constant-cells lease))
                      (symbol-words
                       (delq nil
                             (mapcar (lambda (c)
@@ -1721,6 +1891,18 @@ defaulting to its `nelisp-eln-native-subr-multi-arity'."
                  :min-arity)
       (nelisp-eln-native-subr-multi-arity analysis)))
 
+(defun nelisp-eln-native-subr-multi-registered-lambda-slots (analysis)
+  "Return the d_reloc slots ANALYSIS's exact shape reads as registered lambdas.
+These are the slots its spec declares as `:registered-lambda' constants
+\(S6.11): d_reloc slots that `Fcomp__register_lambda' overwrites."
+  (let ((slots nil))
+    (dolist (c (plist-get (cdr (assq (plist-get analysis :shape)
+                                     nelisp-eln-native-subr--multi-import-specs))
+                          :constants))
+      (when (eq (cdr c) :registered-lambda)
+        (push (car c) slots)))
+    (nreverse slots)))
+
 (defun nelisp-eln-native-subr-multi-swp-declared-p (analysis)
   "Non-nil when ANALYSIS's shape spec declares :SYMBOLS-WITH-POS."
   (and (plist-get (cdr (assq (plist-get analysis :shape)
@@ -1749,14 +1931,17 @@ calling convention; any other non-nil MIN-ARITY signals."
          (code (and (integerp size) (> size 0)
                     (nelisp-eln-system-loader-read-root-function-bytes
                      handle name 0 size)))
-         (analysis (and code (= (length code) size)
-                        (nelisp-eln-native-subr-multi-import-analysis
-                         handle capability code
-                         (nelisp-eln-native-subr--tail-import-context-abi-hash))))
+         (analysis (nelisp-eln-native-subr--lease-port-numbers
+                    (and code (= (length code) size)
+                         (nelisp-eln-native-subr-multi-import-analysis
+                          handle capability code
+                          (nelisp-eln-native-subr--tail-import-context-abi-hash)))))
          (lease nelisp-eln-native-subr--tail-import-context)
          (d-reloc-address (plist-get analysis :d-reloc-address))
          (module-id (nelisp-eln-system-loader-module-id handle)))
-    (unless (and analysis (integerp d-reloc-address) (> d-reloc-address 0)
+    (unless (and analysis
+                 (or (null (plist-get analysis :constants))
+                     (and (integerp d-reloc-address) (> d-reloc-address 0)))
                  (= (nelisp-eln-native-subr-multi-arity analysis) 2)
                  (or (null min-arity) (eql min-arity 1))
                  ;; The constructor's MIN-ARITY must be the spec's own.
@@ -1780,12 +1965,7 @@ calling convention; any other non-nil MIN-ARITY signals."
           (cond ((and function-name (symbolp function-name)) function-name)
                 ((stringp function-name) (intern function-name))
                 (t (intern name))))
-    (let* ((ports (let ((port -1))
-                    (mapcar (lambda (spec)
-                              (setq port (1+ port))
-                              (cons (nelisp-eln-callable-import-port-tag port)
-                                    spec))
-                            (plist-get analysis :port-specs))))
+    (let* ((ports (nelisp-eln-native-subr--port-tags analysis))
            ;; As in `nelisp-eln-native-subr-create-multi': only an exact
            ;; shape whose body never reads symbol cells inline admits
            ;; opaque interned symbol views (S6.6 `closure-convert').
@@ -1803,7 +1983,10 @@ calling convention; any other non-nil MIN-ARITY signals."
                  t))
            (constant-cells
             (mapcar (lambda (c)
-                      (cons (+ d-reloc-address (* 8 (car c))) (cdr c)))
+                      (cons (+ d-reloc-address (* 8 (car c)))
+                            (if (eq (cdr c) :registered-lambda)
+                                (cons :registered-lambda (car c))
+                              (cdr c))))
                     (plist-get analysis :constants)))
            (bridge-fn
             (lambda (first second)
@@ -1814,10 +1997,8 @@ calling convention; any other non-nil MIN-ARITY signals."
               ;; Same per-call constant and artifact-symbol handling as
               ;; the unary `nelisp-eln-native-subr-create-multi' bridge.
               (let* ((constants
-                      (mapcar (lambda (cell)
-                                (cons (nelisp-eln-abi-read-word (car cell) 0)
-                                      (cdr cell)))
-                              constant-cells))
+                      (nelisp-eln-native-subr--resolve-constant-cells
+                       constant-cells lease))
                      (symbol-words
                       (delq nil
                             (mapcar (lambda (c)

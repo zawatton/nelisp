@@ -23920,6 +23920,62 @@ for the baked-form path, then exits through KERNEL32!ExitProcess."
                  :addend 0
                  :section 'text)))))
 
+;; The arm64 start units report a failed native-stack mmap the same way the
+;; x86_64 unit does: "nelisp: cannot mmap the native stack: errno=N\n" on fd 2,
+;; then exit 88.  The syscall error conventions differ per target: Linux returns
+;; -errno in x0 (checked as an unsigned x0 >= -4095), Darwin sets the carry flag
+;; and returns the positive errno in x0.
+(defun nelisp-standalone--arm64-emit-mmap-fail (buf sysreg write-nr exit-nr svc-imm negate-p)
+  "Emit the arm64 mmap-failure block into BUF, ending with the message bytes.
+Defines labels `mmap-fail', `mmap-digits' and `mmap-msg'.  SYSREG is the
+syscall-number register (x8 Linux, x16 Darwin); WRITE-NR / EXIT-NR the syscall
+numbers; SVC-IMM the svc immediate.  When NEGATE-P the errno arrives as -errno
+in x0 (Linux), otherwise as errno (Darwin).  The block runs on the kernel entry
+stack, writes the message and the decimal errno, and exits 88."
+  (let ((msg nelisp-standalone--native-stack-mmap-fail-message))
+    (nelisp-asm-arm64-define-label buf 'mmap-fail)
+    (if negate-p
+        (nelisp-asm-arm64-sub-reg-reg buf 'x9 'xzr 'x0)   ; x9 = errno
+      (nelisp-asm-arm64-mov-reg-reg buf 'x9 'x0))
+    (nelisp-asm-arm64-mov-imm64 buf 'x0 2)                ; fd = stderr
+    (nelisp-asm-arm64-adr buf 'x1 'mmap-msg)
+    (nelisp-asm-arm64-mov-imm64 buf 'x2 (string-bytes msg))
+    (nelisp-asm-arm64-mov-imm64 buf sysreg write-nr)
+    (nelisp-asm-arm64-svc buf svc-imm)
+    (nelisp-asm-arm64-sub-imm buf 'sp 'sp 32)
+    (nelisp-asm-arm64-mov-imm64 buf 'x10 10)
+    (nelisp-asm-arm64-strb-imm buf 'x10 'sp 31)           ; "\n" at sp+31
+    (nelisp-asm-arm64-add-imm buf 'x11 'sp 31)            ; x11 = write cursor
+    (nelisp-asm-arm64-define-label buf 'mmap-digits)
+    (nelisp-asm-arm64-sdiv-reg-reg buf 'x13 'x9 'x10)
+    (nelisp-asm-arm64-msub-reg-reg buf 'x14 'x13 'x10 'x9) ; x14 = x9 mod 10
+    (nelisp-asm-arm64-add-imm buf 'x14 'x14 48)           ; + '0'
+    (nelisp-asm-arm64-sub-imm buf 'x11 'x11 1)
+    (nelisp-asm-arm64-strb-imm buf 'x14 'x11 0)
+    (nelisp-asm-arm64-mov-reg-reg buf 'x9 'x13)
+    (nelisp-asm-arm64-cmp-imm buf 'x9 0)
+    (nelisp-asm-arm64-b-cond buf 'ne 'mmap-digits)
+    (nelisp-asm-arm64-mov-imm64 buf 'x0 2)
+    (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x11)
+    (nelisp-asm-arm64-add-imm buf 'x15 'sp 32)
+    (nelisp-asm-arm64-sub-reg-reg buf 'x2 'x15 'x11)      ; len = end - cursor
+    (nelisp-asm-arm64-mov-imm64 buf sysreg write-nr)
+    (nelisp-asm-arm64-svc buf svc-imm)
+    (nelisp-asm-arm64-mov-imm64 buf 'x0 88)
+    (nelisp-asm-arm64-mov-imm64 buf sysreg exit-nr)
+    (nelisp-asm-arm64-svc buf svc-imm)
+    (nelisp-asm-arm64-define-label buf 'mmap-msg)
+    ;; Message bytes as little-endian words (zero padded to a word multiple),
+    ;; so that only the buffer's existing word emitter is needed.
+    (let* ((bytes (append (string-to-list msg) nil))
+           (pad (mod (- 4 (mod (length bytes) 4)) 4)))
+      (setq bytes (append bytes (make-list pad 0)))
+      (while bytes
+        (nelisp-asm-arm64--emit-word
+         buf (logior (nth 0 bytes) (ash (nth 1 bytes) 8)
+                     (ash (nth 2 bytes) 16) (ash (nth 3 bytes) 24)))
+        (setq bytes (nthcdr 4 bytes))))))
+
 (defun nelisp-standalone--macos-aarch64-basic-start-unit ()
   "Return the small macOS arm64 Mach-O `_main' start unit.
 Dyld enters `_main(argc, argv, envp)'.  The driver expects the Linux entry-stack
@@ -23987,6 +24043,7 @@ through the Darwin raw syscall ABI with x16=1 and SVC #0x80."
     (nelisp-asm-arm64-mov-imm64 buf 'x5 0)
     (nelisp-asm-arm64-mov-imm64 buf 'x16 197)    ; Darwin mmap
     (nelisp-asm-arm64-svc buf #x80)
+    (nelisp-asm-arm64-b-cond buf 'cs 'mmap-fail) ; Darwin: carry set = error, x0 = errno
     (nelisp-asm-arm64-mov-imm64 buf 'x10 size)
     (nelisp-asm-arm64-add-reg-reg buf 'x9 'x0 'x10)
     (nelisp-asm-arm64-sub-imm buf 'x9 'x9 64)
@@ -24007,6 +24064,8 @@ through the Darwin raw syscall ABI with x16=1 and SVC #0x80."
     (nelisp-asm-arm64--emit-word buf #x94000000) ; bl driver
     (nelisp-asm-arm64-mov-imm64 buf 'x16 1)
     (nelisp-asm-arm64-svc buf #x80)
+    (nelisp-standalone--arm64-emit-mmap-fail buf 'x16 4 1 #x80 nil)
+    (nelisp-asm-arm64-resolve-fixups buf)
     (nelisp-link-unit-make
      "start.o"
      (list (cons 'text (nelisp-asm-arm64-buffer-bytes buf)))
@@ -24046,6 +24105,9 @@ the ORIGINAL sp as arg0, then exit(driver-return) via SVC #0 (x8=93)."
     (nelisp-asm-arm64-mov-imm64 buf 'x5 0)       ; offset
     (nelisp-asm-arm64-mov-imm64 buf 'x8 222)     ; mmap (arm64 Linux)
     (nelisp-asm-arm64-svc buf 0)
+    (nelisp-asm-arm64-mov-imm64 buf 'x11 -4095)  ; -4095..-1 = -errno
+    (nelisp-asm-arm64-cmp-reg-reg buf 'x0 'x11)
+    (nelisp-asm-arm64-b-cond buf 'hs 'mmap-fail) ; unsigned x0 >= -4095: failed
     (nelisp-asm-arm64-mov-imm64 buf 'x10 (- size 16))
     (nelisp-asm-arm64-add-reg-reg buf 'x9 'x0 'x10) ; page-aligned base + size-16
     (nelisp-asm-arm64-add-imm buf 'sp 'x9 0)     ; switch onto the native stack
@@ -24055,6 +24117,8 @@ the ORIGINAL sp as arg0, then exit(driver-return) via SVC #0 (x8=93)."
     (nelisp-asm-arm64--emit-word buf #x94000000) ; bl driver
     (nelisp-asm-arm64-mov-imm64 buf 'x8 93)      ; exit (arm64 Linux)
     (nelisp-asm-arm64-svc buf 0)
+    (nelisp-standalone--arm64-emit-mmap-fail buf 'x8 64 93 0 t)
+    (nelisp-asm-arm64-resolve-fixups buf)
     (nelisp-link-unit-make
      (nelisp-standalone--target-object-name "start.o")
      (list (cons 'text (nelisp-asm-arm64-buffer-bytes buf)))
@@ -26104,6 +26168,9 @@ resolved fine.  Same feature, different answer per entry point."
    ;; Preserve global bindings in the standalone keymap representation.
    "\n;; --- Standalone global keymap substrate ---\n"
    "(defvar global-map (make-sparse-keymap) \"Global keymap.\")\n"
+   ;; GNU keymap.c binds the C-created prefix maps into the global map.
+   "(define-key global-map [27] 'ESC-prefix)\n"
+   "(define-key global-map [24] 'Control-X-prefix)\n"
    "(defun current-global-map () global-map)\n"
    "(defun global-set-key (key definition)\n"
    "  (define-key (current-global-map) key definition))\n"
