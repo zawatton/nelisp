@@ -25990,7 +25990,15 @@ which reach this non-inline prelude variant with INLINE nil)."
       (make-directory (file-name-directory report-path) t)
       (nelisp-prelude-bytecode-write-report report-path reports))
     (concat
-     (format "\n(defvar nelisp--core-bytecode-source-map '%S)\n"
+     ;; A plain `setq', not `defvar': a binary or cold image built from an
+     ;; older tree already binds this map, and `defvar' would keep that
+     ;; stale map.  Its hashes then miss every edited file, and the loader
+     ;; silently falls back to interpreting the source, where a rebound
+     ;; public `1+' (Doc 210 S2.5) reaches Lisp helpers that byte-code
+     ;; would have run through the `1+' opcode.  This wrapper was
+     ;; generated from the tree it is loaded with, so its map is the
+     ;; authority; the per-file hash check at load time still applies.
+     (format "\n(defvar nelisp--core-bytecode-source-map nil)\n(setq nelisp--core-bytecode-source-map '%S)\n"
              (nreverse entries))
      ;; SOURCE is either one baked text (the historical shape) or its
      ;; PIECES (`split-pieces' above).  Pieces are read one at a
