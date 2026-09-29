@@ -746,6 +746,12 @@ plus one for the entry address."
       (error "nelisp-native-load: mmap of %d bytes failed (%d)" size addr))
     addr))
 
+(defun nelisp-native-load-map-anonymous (size executable)
+  "Map SIZE bytes anonymously (zero-filled), executable when EXECUTABLE.
+Public entry to `nelisp-native-load--mmap' for consumers that need native
+memory outside the GC arena (Doc 210 handler substrate)."
+  (nelisp-native-load--mmap size executable))
+
 (defun nelisp-native-load--poke-bytes (addr offset bytes)
   "Write the list BYTES into ADDR at OFFSET."
   (let ((i offset)

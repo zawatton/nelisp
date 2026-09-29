@@ -1,0 +1,9 @@
+# Doc 210 S8 pinned probe (docs/design/210-eln-native-handlers.org, S8.4).
+# s8-handler-probe.eln is the unmodified output of host GNU Emacs 31.1
+#   (comp-abi-hash ba35c031) `native-compile' of s8-handler-probe.el:
+#   emacs --batch --eval '(progn (setq native-comp-eln-load-path
+#     (list "OUTDIR")) (native-compile "s8-handler-probe.el"))'
+# eln_sha256 pins the whole file; body_sha256 pins the one native body
+# F..._s8_handler_probe_0 (the exact template declared to the registration).
+eln_sha256 f46be5f57f392f5a5aa30f4b650d24cc0e0e6414f7e02655527a7224a134abbe
+body_sha256 98455081bbd8a42a5ec6fab0ceb44ace64765cef35c003fcd9a4851ddbe2cd5a

@@ -413,6 +413,21 @@ only detect such a swap after `dlopen' has already mapped (and, for
       (remhash handle nelisp-eln-system-loader--handles)
       t)))
 
+(defun nelisp-eln-system-loader-layout (handle)
+  "Return (:PATH P :BIAS B :FILE-BYTES BYTES :LOADS ROWS) for a live HANDLE.
+ROWS are the root PT_LOAD rows (VADDR OFFSET FILESZ MEMSZ FLAGS).  Read-only
+metadata of the integrity-checked open; it grants no capability."
+  (let ((state (nelisp-eln-system-loader--state handle)))
+    (list :path (plist-get state :path) :bias (plist-get state :bias)
+          :file-bytes (plist-get state :file-bytes)
+          :loads (plist-get (plist-get state :elf) :loads))))
+
+(defun nelisp-eln-system-loader-libc-symbol (name)
+  "Return the address of libc symbol NAME (an integer), closing the libc handle."
+  (let ((libc-handle (nl-ffi--dlopen "libc.so.6")))
+    (unwind-protect (nl-ffi--dlsym libc-handle name)
+      (nelisp-eln-system-loader--close-resource libc-handle))))
+
 (defun nelisp-eln-system-loader-symbol-info (handle name)
   "Return root-owned symbol metadata for NAME in a live HANDLE."
   (let* ((state (nelisp-eln-system-loader--state handle))

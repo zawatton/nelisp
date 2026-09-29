@@ -4218,10 +4218,250 @@ state already holds; see `nelisp-eln-registration--elf-section-in-bytes'."
 *GOT[3](%rip)', `push $0', `jmp PLT0' (S6.7).  Its GOT displacement (offset
 2) is shifted like PLT0's; the rest has no hole.")
 
+;;; Doc 210 S8: public entry points for the handler substrate -----------
+
+(defun nelisp-eln-registration-section (bytes name)
+  "Return (ADDR OFFSET SIZE) of ELF section NAME in file BYTES, or nil."
+  (nelisp-eln-registration--elf-section-in-bytes bytes name))
+
+(defun nelisp-eln-registration-setjmp-surface-admitted-p (bytes)
+  "Public form of `nelisp-eln-registration--setjmp-surface-admitted-p'."
+  (nelisp-eln-registration--setjmp-surface-admitted-p bytes))
+
+(defun nelisp-eln-registration-glob-dat-slot (bytes name)
+  "Return the `.got' address whose GLOB_DAT relocation binds NAME in BYTES, or
+nil.  Signals if more than one relocation binds NAME."
+  (let ((rela (nelisp-eln-registration--elf-section-in-bytes bytes ".rela.dyn"))
+        (found nil))
+    (when rela
+      (let ((off (nth 1 rela)) (end (+ (nth 1 rela) (nth 2 rela))))
+        (while (< off end)
+          (let* ((info (nelisp-eln-registration--read-u64-le bytes (+ off 8)))
+                 (index (ash info -32))
+                 (entry (and (/= index 0)
+                             (nelisp-eln-registration--dynsym-entry
+                              bytes index))))
+            (when (and entry (equal (nth 0 entry) name)
+                       (= (logand info #xffffffff) 6))
+              (when found
+                (nelisp-eln-registration--fail 'duplicate-glob-dat name))
+              (setq found (nelisp-eln-registration--read-u64-le bytes off))))
+          (setq off (+ off 24)))))
+    found))
+
+(defun nelisp-eln-registration-relro-range (bytes)
+  "Return (START . END) of the GNU_RELRO segment's vaddr range in BYTES, or nil."
+  (let ((phoff (nelisp-eln-registration--read-u64-le bytes 32))
+        (phentsize (nelisp-eln-registration--read-u16-le bytes 54))
+        (phnum (nelisp-eln-registration--read-u16-le bytes 56))
+        (found nil) (i 0))
+    (while (< i phnum)
+      (let ((ph (+ phoff (* i phentsize))))
+        (when (= (nelisp-eln-registration--read-u32-le bytes ph) #x6474e552)
+          (let ((vaddr (nelisp-eln-registration--read-u64-le bytes (+ ph 16)))
+                (memsz (nelisp-eln-registration--read-u64-le bytes (+ ph 40))))
+            (setq found (cons vaddr (+ vaddr memsz))))))
+      (setq i (1+ i)))
+    found))
+
+;;; Doc 210 S8: the one admitted `_setjmp' PLT surface --------------------
+
+(defvar nelisp-eln-registration--setjmp-declared-body-sha256s nil
+  "SHA-256 hex digests of the exact native bodies whose template declares
+that they call the undefined `_setjmp@GLIBC_2.2.5' through the artifact's
+own PLT (Doc 210 section 4.A.5).  Empty in production until a handler-
+bearing template (S10) is registered: no `_setjmp' PLT surface is admitted
+for any body that is not in this list.  The unit test binds it to the
+digest of its pinned probe body; nothing else may.")
+
+(defconst nelisp-eln-registration--setjmp-weak-undefined
+  '("_ITM_deregisterTMCloneTable" "__gmon_start__"
+    "_ITM_registerTMCloneTable" "__cxa_finalize")
+  "The only other undefined `.dynsym' names an artifact with the `_setjmp'
+surface may carry; all four are weak (GNU crtstuff/libc hooks).")
+
+(defun nelisp-eln-registration--dynsym-entry (bytes index)
+  "Return (NAME INFO SHNDX VALUE SIZE) of `.dynsym' entry INDEX in BYTES, or nil."
+  (let ((dynsym (nelisp-eln-registration--elf-section-in-bytes bytes ".dynsym"))
+        (dynstr (nelisp-eln-registration--elf-section-in-bytes bytes ".dynstr")))
+    (and dynsym dynstr (>= index 0)
+         (<= (* 24 (1+ index)) (nth 2 dynsym))
+         (let ((sym (+ (nth 1 dynsym) (* 24 index)))
+               (name-off nil))
+           (setq name-off (nelisp-eln-registration--read-u32-le bytes sym))
+           (and (< name-off (nth 2 dynstr))
+                (list (nelisp-eln-registration--c-string-at
+                       bytes (+ (nth 1 dynstr) name-off))
+                      (aref bytes (+ sym 4))
+                      (nelisp-eln-registration--read-u16-le bytes (+ sym 6))
+                      (nelisp-eln-registration--read-u64-le bytes (+ sym 8))
+                      (nelisp-eln-registration--read-u64-le bytes (+ sym 16))))))))
+
+(defun nelisp-eln-registration--symbol-version (bytes index)
+  "Return (FILE . VERSION) naming the `.gnu.version_r' need of `.dynsym'
+entry INDEX in BYTES, or nil when it has none."
+  (let ((versym (nelisp-eln-registration--elf-section-in-bytes
+                 bytes ".gnu.version"))
+        (verneed (nelisp-eln-registration--elf-section-in-bytes
+                  bytes ".gnu.version_r"))
+        (dynstr (nelisp-eln-registration--elf-section-in-bytes
+                 bytes ".dynstr")))
+    (when (and versym verneed dynstr (<= (* 2 (1+ index)) (nth 2 versym)))
+      (let ((version (logand (nelisp-eln-registration--read-u16-le
+                              bytes (+ (nth 1 versym) (* 2 index)))
+                             #x7fff))
+            (off (nth 1 verneed))
+            (end (+ (nth 1 verneed) (nth 2 verneed)))
+            (found nil))
+        (while (and (not found) (< off end))
+          (let ((count (nelisp-eln-registration--read-u16-le bytes (+ off 2)))
+                (file (nelisp-eln-registration--read-u32-le bytes (+ off 4)))
+                (aux (+ off (nelisp-eln-registration--read-u32-le
+                             bytes (+ off 8))))
+                (next (nelisp-eln-registration--read-u32-le bytes (+ off 12)))
+                (k 0))
+            (while (and (not found) (< k count) (< aux end))
+              (when (= (nelisp-eln-registration--read-u16-le bytes (+ aux 6))
+                       version)
+                (setq found
+                      (cons (nelisp-eln-registration--c-string-at
+                             bytes (+ (nth 1 dynstr) file))
+                            (nelisp-eln-registration--c-string-at
+                             bytes (+ (nth 1 dynstr)
+                                      (nelisp-eln-registration--read-u32-le
+                                       bytes (+ aux 8)))))))
+              (setq aux (+ aux (nelisp-eln-registration--read-u32-le
+                                bytes (+ aux 12))))
+              (setq k (1+ k)))
+            (setq off (if (= next 0) end (+ off next)))))
+        found))))
+
+(defun nelisp-eln-registration--setjmp-undefined-set-p (bytes setjmp-index)
+  "True when the undefined `.dynsym' symbols of BYTES are exactly the one at
+SETJMP-INDEX (`_setjmp') plus at most the weak hooks of
+`nelisp-eln-registration--setjmp-weak-undefined', and no `.rela.dyn' entry
+binds any undefined symbol except a GLOB_DAT of one of those weak hooks."
+  (let ((dynsym (nelisp-eln-registration--elf-section-in-bytes bytes ".dynsym"))
+        (rela (nelisp-eln-registration--elf-section-in-bytes bytes ".rela.dyn"))
+        (ok t) (i 1))
+    (unless dynsym (setq ok nil))
+    (when ok
+      (while (and ok (< i (/ (nth 2 dynsym) 24)))
+        (let ((entry (nelisp-eln-registration--dynsym-entry bytes i)))
+          (when (= (nth 2 entry) 0)
+            (unless (or (= i setjmp-index)
+                        (and (member (nth 0 entry)
+                                     nelisp-eln-registration--setjmp-weak-undefined)
+                             (= (ash (nth 1 entry) -4) 2)))
+              (setq ok nil))))
+        (setq i (1+ i))))
+    (when (and ok rela)
+      (let ((off (nth 1 rela)) (end (+ (nth 1 rela) (nth 2 rela))))
+        (while (and ok (< off end))
+          (let* ((info (nelisp-eln-registration--read-u64-le bytes (+ off 8)))
+                 (index (ash info -32))
+                 (type (logand info #xffffffff)))
+            (when (/= index 0)
+              (let ((entry (nelisp-eln-registration--dynsym-entry bytes index)))
+                (when (= (nth 2 entry) 0)
+                  (unless (and (= type 6)
+                               (/= index setjmp-index)
+                               (member (nth 0 entry)
+                                       nelisp-eln-registration--setjmp-weak-undefined))
+                    (setq ok nil))))))
+          (setq off (+ off 24)))))
+    ok))
+
+(defun nelisp-eln-registration--setjmp-plt-surface-p (bytes)
+  "True iff the whole lazy-binding surface of the ELF in BYTES is exactly the
+Doc 210 `_setjmp' shape: a 32-byte `.plt' (PLT0 plus one entry), a
+`.rela.plt' of exactly one R_X86_64_JUMP_SLOT with zero addend at the fourth
+`.got.plt' word naming the UNDEFINED global `.dynsym' function `_setjmp'
+whose `.gnu.version_r' need is `libc.so.6'/`GLIBC_2.2.5'; every other
+undefined symbol is one of the four weak hooks (and no other relocation
+binds an undefined symbol); DT_NEEDED is exactly one `libc.so.6'; a
+`.got.plt' of four words whose fourth initially points at the entry's own
+`push'; DT_JMPREL/DT_PLTRELSZ/DT_PLTREL name only that relocation."
+  (let* ((plt (nelisp-eln-registration--elf-section-in-bytes bytes ".plt"))
+         (rela (nelisp-eln-registration--elf-section-in-bytes bytes ".rela.plt"))
+         (got (nelisp-eln-registration--elf-section-in-bytes bytes ".got.plt"))
+         (dynstr (nelisp-eln-registration--elf-section-in-bytes bytes ".dynstr"))
+         (entries (nelisp-eln-registration--parse-dynamic-entries bytes))
+         (relocs (nelisp-eln-registration--parse-rela-entries bytes ".rela.plt")))
+    (and plt rela got dynstr entries
+         (= (nth 2 plt) 32) (= (nth 2 rela) 24) (= (length relocs) 1)
+         (= (nth 2 got) 32)
+         (let* ((reloc (car relocs))
+                (info (nelisp-eln-registration--read-u64-le
+                       bytes (+ (nth 1 rela) 8)))
+                (index (ash info -32))
+                (sym (nelisp-eln-registration--dynsym-entry bytes index)))
+           (and (= (nth 0 reloc) (+ (nth 0 got) 24))
+                (= (nth 1 reloc) 7)
+                (= (nth 2 reloc) 0)
+                (> index 0) sym
+                (equal (nth 0 sym) "_setjmp")
+                (= (nth 1 sym) #x12)   ; STB_GLOBAL, STT_FUNC
+                (= (nth 2 sym) 0)      ; SHN_UNDEF
+                (equal (nelisp-eln-registration--symbol-version bytes index)
+                       '("libc.so.6" . "GLIBC_2.2.5"))
+                (nelisp-eln-registration--setjmp-undefined-set-p bytes index)
+                ;; Exactly one DT_NEEDED, and it is libc.
+                (let ((needed (nelisp-eln-registration--dynamic-values
+                               entries nelisp-eln-registration--dt-needed)))
+                  (and (= (length needed) 1)
+                       (equal (nelisp-eln-registration--c-string-at
+                               bytes (+ (nth 1 dynstr) (car needed)))
+                              "libc.so.6")))
+                (equal (nelisp-eln-registration--dynamic-values entries 23)
+                       (list (nth 0 rela)))
+                (equal (nelisp-eln-registration--dynamic-values entries 2)
+                       '(24))
+                (equal (nelisp-eln-registration--dynamic-values entries 20)
+                       '(7))
+                (= (nelisp-eln-registration--read-u64-le
+                    bytes (+ (nth 1 got) 24))
+                   (+ (nth 0 plt) 16 6)))))))
+
+(defun nelisp-eln-registration--setjmp-declared-p (bytes)
+  "True when BYTES has at least one defined function besides `top_level_run'
+and every such function's exact bytes are declared in
+`nelisp-eln-registration--setjmp-declared-body-sha256s'."
+  (let ((text (nelisp-eln-registration--elf-section-in-bytes bytes ".text"))
+        (dynsym (nelisp-eln-registration--elf-section-in-bytes bytes ".dynsym"))
+        (count 0) (ok t) (i 1))
+    (when (and text dynsym)
+      (while (and ok (< i (/ (nth 2 dynsym) 24)))
+        (let ((entry (nelisp-eln-registration--dynsym-entry bytes i)))
+          (when (and (= (logand (nth 1 entry) #xf) 2) (/= (nth 2 entry) 0)
+                     (not (equal (nth 0 entry) "top_level_run")))
+            (let* ((value (nth 3 entry)) (size (nth 4 entry))
+                   (start (+ (nth 1 text) (- value (nth 0 text)))))
+              (setq count (1+ count))
+              (unless (and (> size 0) (>= value (nth 0 text))
+                           (<= (+ value size) (+ (nth 0 text) (nth 2 text)))
+                           (member (secure-hash 'sha256
+                                                (substring bytes start
+                                                           (+ start size)))
+                                   nelisp-eln-registration--setjmp-declared-body-sha256s))
+                (setq ok nil)))))
+        (setq i (1+ i))))
+    (and ok text dynsym (> count 0))))
+
+(defun nelisp-eln-registration--setjmp-surface-admitted-p (bytes)
+  "True iff BYTES carries exactly the `_setjmp' PLT surface AND every native
+body it defines is a declared exact template (see
+`nelisp-eln-registration--setjmp-declared-body-sha256s').  The only
+admission of an undefined PLT symbol in this file."
+  (and (nelisp-eln-registration--setjmp-plt-surface-p bytes)
+       (nelisp-eln-registration--setjmp-declared-p bytes)))
+
 (defun nelisp-eln-registration--layout-adjustments (bytes shift)
   "Return (CODE-SHIFT DATA-EXTRA PLT-ENTRY-P) for the ELF in BYTES, or nil.
 An artifact whose `.plt' carries the one lazy-binding entry of a module-local
-call (S6.7, authenticated by `nelisp-eln-registration--plt-target-name') has
+call (S6.7, authenticated by `nelisp-eln-registration--plt-target-name'), or
+the one declared `_setjmp' entry of Doc 210 S8 (authenticated by
+`nelisp-eln-registration--setjmp-surface-admitted-p'), has
 its `.plt.got' and `.text' CODE-SHIFT bytes (a multiple of 16) later than the
 smaller artifacts the fixed templates were captured from, and its `.data'
 DATA-EXTRA bytes (beyond the page SHIFT) later because `.got.plt' grew by one
@@ -4235,7 +4475,9 @@ those amounts, never by anything else.  An artifact with the plain
          (data (nelisp-eln-registration--elf-section-in-bytes bytes ".data")))
     (cond
      ((not (and plt (= (nth 2 plt) 32) plt-got text data)) (list 0 0 nil))
-     ((not (nelisp-eln-registration--plt-target-name bytes)) nil)
+     ((not (or (nelisp-eln-registration--plt-target-name bytes)
+               (nelisp-eln-registration--setjmp-surface-admitted-p bytes)))
+      nil)
      (t
       (let ((code (- (nth 0 plt-got)
                      nelisp-eln-registration--base-plt-got-address))
@@ -4246,17 +4488,69 @@ those amounts, never by anything else.  An artifact with the plain
              (>= extra 0) (< extra #x100) (= (% extra 8) 0)
              (list code extra t)))))))
 
+(defun nelisp-eln-registration--weak-got-slots (bytes)
+  "Return an alist (NAME . SLOT-ADDRESS) of the GLOB_DAT `.got' slots that
+`.rela.dyn' in BYTES binds to each of the four weak hooks, or nil unless every
+hook has exactly one such slot and no hook is bound any other way.  The slot
+of a symbol is what its own relocation says, never a position guess."
+  (let ((rela (nelisp-eln-registration--elf-section-in-bytes bytes ".rela.dyn"))
+        (slots nil))
+    (when rela
+      (let ((off (nth 1 rela)) (end (+ (nth 1 rela) (nth 2 rela))))
+        (while (< off end)
+          (let* ((info (nelisp-eln-registration--read-u64-le bytes (+ off 8)))
+                 (index (ash info -32))
+                 (entry (and (/= index 0)
+                             (nelisp-eln-registration--dynsym-entry bytes index))))
+            (when (and entry
+                       (member (nth 0 entry)
+                               nelisp-eln-registration--setjmp-weak-undefined))
+              (if (and (= (logand info #xffffffff) 6)
+                       (= (nelisp-eln-registration--read-u64-le
+                           bytes (+ off 16))
+                          0))
+                  (push (cons (nth 0 entry)
+                              (nelisp-eln-registration--read-u64-le bytes off))
+                        slots)
+                (push (cons (nth 0 entry) nil) slots))))
+          (setq off (+ off 24)))))
+    (and (= (length slots) 4)
+         (cl-every (lambda (name)
+                     (let ((hits (cl-remove-if-not
+                                  (lambda (cell) (equal (car cell) name)) slots)))
+                       (and (= (length hits) 1) (cdr (car hits)))))
+                   nelisp-eln-registration--setjmp-weak-undefined)
+         slots)))
+
+(defun nelisp-eln-registration--patch-rip-field (template field slot next-ip)
+  "Return TEMPLATE with the u32 at FIELD set so a RIP-relative operand
+ending at NEXT-IP addresses SLOT."
+  (let ((out (copy-sequence template))
+        (value (logand (- slot next-ip) #xffffffff)))
+    (dotimes (i 4)
+      (aset out (+ field i) (logand (ash value (* -8 i)) #xff)))
+    out))
+
 (defun nelisp-eln-registration--fixed-templates (shift &optional bytes)
   "Return (INIT PLT PLT-GOT CRT-STUB) templates shifted by SHIFT.
 With the file BYTES, an artifact carrying S6.7's one `.plt' entry gets the
 32-byte `.plt' and the code/data displacement adjustments of
 `nelisp-eln-registration--layout-adjustments'; one whose layout does not
-authenticate gets the plain templates, which then fail to match."
+authenticate gets the plain templates, which then fail to match.  An
+artifact with the declared Doc 210 `_setjmp' surface additionally has the
+four RIP-relative operands that address the weak hooks' `.got' slots
+(`.init', `.plt.got', two in the CRT stub block) set to exactly the slot its
+own `.rela.dyn' binds to that very hook: those slots move with the
+artifact's GOT layout, so the plain page-shift arithmetic cannot hold them."
   (let* ((adjust (or (and bytes
                           (nelisp-eln-registration--layout-adjustments
                            bytes shift))
                      (list 0 0 nil)))
          (code (nth 0 adjust)) (extra (nth 1 adjust))
+         (slots (and bytes (nth 2 adjust)
+                     (not (nelisp-eln-registration--plt-target-name bytes))
+                     (nelisp-eln-registration--setjmp-surface-admitted-p bytes)
+                     (nelisp-eln-registration--weak-got-slots bytes)))
          (plt (nelisp-eln-registration--shift-template
                nelisp-eln-registration--plt-template
                nelisp-eln-registration--plt-fields shift)))
@@ -4265,18 +4559,40 @@ authenticate gets the plain templates, which then fail to match."
                         (nelisp-eln-registration--shift-template
                          nelisp-eln-registration--plt-entry-template
                          '(2) shift))))
-    (list (nelisp-eln-registration--shift-template
-           nelisp-eln-registration--init-template
-           nelisp-eln-registration--init-got-fields shift)
-          plt
-          (nelisp-eln-registration--shift-template
-           nelisp-eln-registration--plt-got-template
-           nelisp-eln-registration--plt-got-fields (- shift code))
-          (nelisp-eln-registration--shift-template
-           (nelisp-eln-registration--shift-template
-            nelisp-eln-registration--crt-stub-template
-            '(22 87 129) (- shift code))
-           '(142) (+ (- shift code) extra)))))
+    (let ((init (nelisp-eln-registration--shift-template
+                 nelisp-eln-registration--init-template
+                 nelisp-eln-registration--init-got-fields shift))
+          (plt-got (nelisp-eln-registration--shift-template
+                    nelisp-eln-registration--plt-got-template
+                    nelisp-eln-registration--plt-got-fields (- shift code)))
+          (crt (nelisp-eln-registration--shift-template
+                (nelisp-eln-registration--shift-template
+                 nelisp-eln-registration--crt-stub-template
+                 '(22 87 129) (- shift code))
+                '(142) (+ (- shift code) extra))))
+      (when slots
+        (let ((init-s (nelisp-eln-registration--elf-section-in-bytes bytes ".init"))
+              (plt-got-s (nelisp-eln-registration--elf-section-in-bytes
+                          bytes ".plt.got"))
+              (text-s (nelisp-eln-registration--elf-section-in-bytes
+                       bytes ".text")))
+          (when (and init-s plt-got-s text-s)
+            (setq init (nelisp-eln-registration--patch-rip-field
+                        init 7 (cdr (assoc "__gmon_start__" slots))
+                        (+ (nth 0 init-s) 11))
+                  plt-got (nelisp-eln-registration--patch-rip-field
+                           plt-got 2 (cdr (assoc "__cxa_finalize" slots))
+                           (+ (nth 0 plt-got-s) 6))
+                  crt (nelisp-eln-registration--patch-rip-field
+                       crt 22 (cdr (assoc "_ITM_deregisterTMCloneTable" slots))
+                       (+ (nth 0 text-s) 26))
+                  crt (nelisp-eln-registration--patch-rip-field
+                       crt 87 (cdr (assoc "_ITM_registerTMCloneTable" slots))
+                       (+ (nth 0 text-s) 91))
+                  crt (nelisp-eln-registration--patch-rip-field
+                       crt 129 (cdr (assoc "__cxa_finalize" slots))
+                       (+ (nth 0 text-s) 134))))))
+      (list init plt plt-got crt))))
 
 (defun nelisp-eln-registration--validate-crt-stubs (handle)
   "Validate the CRT stub block at the very start of `.text', if this

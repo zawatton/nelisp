@@ -327,20 +327,23 @@ cmd: NELISP_BIN="$ELN_PROGRESS_BIN" sh tools/nelisp-eln-crash-corpus-gate.sh
 #+NOTE: Stages S8-S10 added 2026-09-29 from docs/design/210-eln-native-handlers.org (user decision: option A1, GNU-order handler-bind/debugger); 13 new criteria, denominator 57 -> 70.
 
 ** S8.1 Loader writes GNU's current_thread_reloc chain and the shadow thread block has handlerlist at +0x68
-pending
-#+NOTE: intended cmd: sh test/nelisp-eln-handler-substrate-smoke.sh chain  (host probe .eln reads thread+0x68 through the 3-load path and gets the sentinel)
+#+REQUIRES: ELN_PROGRESS_BIN
+cmd: NELISP_BIN="$ELN_PROGRESS_BIN" sh test/nelisp-eln-handler-substrate-smoke.sh chain
+#+NOTE: Converted from pending on 2026-09-29 (S8 lane; criteria count unchanged). lisp/nelisp-eln-handler-substrate.el (new): one anonymous mapping made with `nelisp-native-load--mmap' (outside the GC arena, unscanned) holds the 0x80 thread block, the 8-byte current_thread cell and the zeroed sentinel handler; `bind-chain' writes the artifact's current_thread_reloc with &current_thread only if the cell is a writable zero 8-byte object, and `artifact-handlerlist' walks the artifact's own GOT slot -> cell -> thread -> +0x68 and gets the sentinel. Negatives in the smoke: undeclared artifact refused pre-dlopen, unbound chain is dead, second bind refused (cell not zero), tampered thread word and moved handlerlist detected. Fixture: test/fixtures/eln-handler (source, .eln, MANIFEST with sha256s). The loader step is a function the S10 registration path will call after the executable-region validation; nothing in production registration calls it yet because no production body declares _setjmp.
 
 ** S8.2 Registration admits exactly one undefined _setjmp@GLIBC_2.2.5 JUMP_SLOT and refuses every other undefined PLT symbol, extra JUMP_SLOTs and extra DT_NEEDED
-pending
-#+NOTE: intended cmd: emacs --batch -l test/nelisp-eln-handler-admission-test.el -f ert-run-tests-batch-and-exit (negatives: renamed symbol, second reloc, DT_NEEDED libm)
+cmd: ${EMACS_BIN:-emacs} --batch -Q -L lisp -L src -L test $(for d in packages/*/src; do printf ' -L %s' "$d"; done) -l ert -l test/nelisp-eln-handler-admission-test.el -f ert-run-tests-batch-and-exit
+#+NOTE: Converted from pending on 2026-09-29 (S8 lane). lisp/nelisp-eln-registration.el: `--setjmp-plt-surface-p' (exact surface: 32-byte .plt, one JUMP_SLOT at the fourth .got.plt word naming the UND global FUNC `_setjmp' with .gnu.version_r need libc.so.6/GLIBC_2.2.5, every other undefined symbol one of the four weak hooks, exactly one DT_NEEDED = libc.so.6, lazy GOT word) plus `--setjmp-declared-p' (every native body's exact sha256 must be in `--setjmp-declared-body-sha256s', empty in production, so no body is admitted yet: the admission applies only to bodies whose templates declare it); `--layout-adjustments'/`--fixed-templates' accept the surface and authenticate the four weak-hook GOT operands of .init/.plt.got/CRT stubs against the artifact's own .rela.dyn slots (they move with the GOT layout). Negatives: renamed symbol x3, wrong version, second reloc, extra JUMP_SLOT, libm DT_NEEDED, extra DT_NEEDED, other undefined symbol x2, lazy GOT word, mutated body x6, undeclared body; each paired with the unmutated positive.
 
 ** S8.3 The private setjmp/longjmp pair is bound to the artifact's GOT slot, read back, and a probe body returns twice with callee-saved registers restored
-pending
-#+NOTE: intended cmd: sh test/nelisp-eln-handler-substrate-smoke.sh jump  (canaries on rbx rbp r12-r15; fallback A2 variant behind ELN_HANDLER_BIND=libc)
+#+REQUIRES: ELN_PROGRESS_BIN
+cmd: NELISP_BIN="$ELN_PROGRESS_BIN" sh test/nelisp-eln-handler-substrate-smoke.sh jump
+#+NOTE: Converted from pending on 2026-09-29 (S8 lane). A1: `bind-setjmp' checks the admitted surface, that the GOT word is writable after load (PT_LOAD PF_W and outside the GNU_RELRO page range; cross-checked against /proc/self/maps rw), that ld.so bound it to libc `_setjmp' (RTLD_NOW), stores the private assembler stub and reads it back. Returns-twice canaries on rbx rbp r12-r15 and rsp via an assembler harness that calls through the artifact's live GOT word (value 7 and 0->1). Negatives: glibc-bound layout differs, undeclared bind refused, clobbered saved rbx caught by the canary check, tampered GOT word refused by read-back. The A2 libc variant (ELN_HANDLER_BIND=libc) was not built: the GOT word is writable, so the fallback is not needed.
 
 ** S8.4 End to end: a genuine host-compiled condition-case probe .eln loads on NeLisp, runs its normal (no-error) path and leaves handlerlist at the sentinel
-pending
-#+NOTE: intended cmd: sh test/nelisp-eln-handler-probe-smoke.sh normal  (T1, T8; compares host and NeLisp transcripts)
+#+REQUIRES: ELN_PROGRESS_BIN
+cmd: NELISP_BIN="$ELN_PROGRESS_BIN" sh test/nelisp-eln-handler-probe-smoke.sh normal
+#+NOTE: Converted from pending on 2026-09-29 (S8 lane). The unmodified host GNU 31.1 native-compile output of test/fixtures/eln-handler/s8-handler-probe.el (sha256 pinned in MANIFEST) is opened by the ordinary system loader (preopen validator, dlopen), given the chain and the private _setjmp, and its body runs the no-error path; handlerlist is back at the sentinel and the result line equals host Emacs 31.1's. Only the three imports are test stubs assembled in the driver (push_handler mints a GNU-layout block in the substrate pool = the S9 port's job; Fsymbol_value and Fset are identity/return-value); no signal is raised in the guarded region (S9). Negatives: glibc-bound control has a non-private jump buffer, a push_handler that links a wrong next leaves handlerlist off the sentinel and is detected.
 
 * S9 Native handler semantics: push_handler port, CONDITION_CASE match, unwind, landing
 
