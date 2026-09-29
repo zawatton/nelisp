@@ -46,9 +46,13 @@
   ;; are already `fboundp' as nil-returning shims.  The NeLisp bootstrap now
   ;; also binds `emacs-version', so do not use that alone as the host/standalone
   ;; discriminator.
-  (or (fboundp 'nl-write-file)
-      (fboundp 'nelisp--write-stdout-bytes)
-      (get symbol 'emacs-stub-bulk)
+  ;; Native-first, like `emacs-buffer-builtins--install-function-p': a
+  ;; primitive the NeLisp core already implements (skip-chars-forward, ...)
+  ;; operates on the native buffer that `with-temp-buffer' creates, whereas
+  ;; this bridge's polyfills read the separate ec-buffer layer and silently
+  ;; did nothing there.  Only nil-returning bulk stubs and absent names are
+  ;; installed.
+  (or (get symbol 'emacs-stub-bulk)
       (not (boundp 'emacs-version))
       (not (fboundp symbol))))
 

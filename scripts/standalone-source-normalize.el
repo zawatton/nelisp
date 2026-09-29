@@ -566,7 +566,7 @@ The first symbol in each group emits all aliases; later symbols are dropped.")
 	    "dictionary-connection.el" "m4-mode.el" "cookie1.el"
 	    "spook.el" "yow.el" "bruce.el" "autoarg.el" "tvi970.el"
 	    "sun.el" "subdirs.el" "edt-lk201.el" "edt-vt100.el"
-	    "rng-util.el" "rng-dt.el" "url-vars.el" "url-privacy.el"
+	    "rng-util.el" "rng-dt.el" "url-privacy.el"
 	    "edt-pc.el" "w32-vars.el" "novice.el" "page.el"
 	    "cl-compat.el" "elide-head.el" "iimage.el"
 	    "emacs-authors-mode.el" "textsec-check.el" "debug-early.el"

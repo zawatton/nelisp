@@ -49,9 +49,7 @@ that `emacs-stub.el' defines individually and untagged, which load
 first and would otherwise permanently win over this bridge.  Force
 install unconditionally on standalone via a NeLisp-only primitive,
 matching the standalone predicate in `emacs-char-table.el'."
-  (or (fboundp 'nl-write-file)
-      (fboundp 'nelisp--write-stdout-bytes)
-      (not (boundp 'emacs-version))
+  (or (not (boundp 'emacs-version))
       (get symbol 'emacs-stub-bulk)
       (not (fboundp symbol))))
 

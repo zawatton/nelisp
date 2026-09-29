@@ -505,6 +505,32 @@ BODY."
            (file-truename (directory-file-name (expand-file-name path-b))))))
 (unless (fboundp 'f-same?) (defalias 'f-same? 'f-same-p))
 
+;; `with-output-to-string' (subr.el): GNU binds `standard-output' to a buffer, so
+;; body code may `(with-current-buffer standard-output ...)' or `insert' into it
+;; (json.el's `json--with-output-to-string' does).  The standalone core's
+;; native macro binds it to an accumulator function instead, which breaks any
+;; such caller with wrong-type-argument.  Same definition as GNU subr.el.
+(when (fboundp 'nelisp--write-stdout-bytes)
+  (defmacro with-output-to-string (&rest body)
+    "Execute BODY, return the text it sent to `standard-output', as a string."
+    (declare (indent 0) (debug t))
+    `(let ((standard-output (generate-new-buffer " *string-output*" t)))
+       (unwind-protect
+           (progn
+             (let ((standard-output standard-output))
+               ,@body)
+             (with-current-buffer standard-output
+               (buffer-string)))
+         (kill-buffer standard-output)))))
+
+;; `derived-mode-set-parent' (subr.el, Emacs 31): vc-dispatcher.el calls it at load
+;; time.  Same definition as GNU subr.el; `derived-mode--flush' is already bound.
+(unless (fboundp 'derived-mode-set-parent)
+  (defun derived-mode-set-parent (mode parent)
+    "Declare PARENT to be the parent of MODE."
+    (put mode 'derived-mode-parent parent)
+    (derived-mode--flush mode)))
+
 (provide 'emacs-parity-shims)
 
 ;;; emacs-parity-shims.el ends here
