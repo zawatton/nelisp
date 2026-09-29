@@ -710,6 +710,33 @@ its own separate (but equally already-safe) copy."
             (setq done t)))))
       pos))
 
+  (defvar emacs-load--gc-cost-ratio 10
+    "Minimum ratio of mutator time to GC time between periodic `load' GCs.
+A `garbage-collect' costs time proportional to the whole heap, so once a
+large image is resident a fixed every-N-forms GC dominates ordinary loads
+(1.5s per collection after the bootstrap bundle).  Bounding GC overhead to
+1/RATIO keeps the arena guard while loads stay proportional to their size.")
+
+  (defvar emacs-load--gc-last-end nil
+    "`float-time' at which the last periodic `load' GC finished.")
+
+  (defvar emacs-load--gc-last-cost 0.0
+    "Seconds taken by the last periodic `load' GC.")
+
+  (defun emacs-load--periodic-gc (count)
+    "Run the periodic `load' GC when COUNT hits the interval and it is cheap enough."
+    (when (and load-garbage-collect-interval
+               (> load-garbage-collect-interval 0)
+               (= (% count load-garbage-collect-interval) 0)
+               (fboundp 'garbage-collect))
+      (let ((now (float-time)))
+        (when (or (null emacs-load--gc-last-end)
+                  (>= (- now emacs-load--gc-last-end)
+                      (* emacs-load--gc-cost-ratio emacs-load--gc-last-cost)))
+          (garbage-collect)
+          (setq emacs-load--gc-last-end (float-time))
+          (setq emacs-load--gc-last-cost (- emacs-load--gc-last-end now))))))
+
   (defun nelisp--load-map-source-forms (source callback)
     "Read SOURCE one top-level form at a time and call CALLBACK on each.
 The reader uses the same whitespace/comment skipping and closing-paren
@@ -746,11 +773,7 @@ Return the last CALLBACK result."
                            (nelisp--load-rewrite-defalias-form (car read))))
             (setq pos form-end))
           (setq count (+ count 1))
-          (when (and load-garbage-collect-interval
-                     (> load-garbage-collect-interval 0)
-                     (= (% count load-garbage-collect-interval) 0)
-                     (fboundp 'garbage-collect))
-            (garbage-collect))))
+          (emacs-load--periodic-gc count)))
       last))
 
   (defun nelisp--load-eval-one-form (form)
@@ -961,11 +984,7 @@ scan unchanged."
                      (nelisp--load-rewrite-defalias-form (car read))))
               (setq pos form-end))))
           (setq count (+ count 1))
-          (when (and load-garbage-collect-interval
-                     (> load-garbage-collect-interval 0)
-                     (= (% count load-garbage-collect-interval) 0)
-                     (fboundp 'garbage-collect))
-            (garbage-collect))))
+          (emacs-load--periodic-gc count)))
       last))
 
   (defun nelisp--load-normalize-source-rewriting (source)
@@ -1075,8 +1094,13 @@ work belong elsewhere."
 
   (defun nelisp--load-source-loader (source)
     "Return the preferred source evaluator for SOURCE."
+    ;; A source with a `defalias' rewrite target goes through the incremental
+    ;; loader too: the one-shot path re-serializes every form with the
+    ;; Lisp-level `prin1-to-string' (~20ms per form), which made loading e.g.
+    ;; regexp-opt.el take 1.5s instead of 0.09s.
     (if (or (not (fboundp 'nelisp--eval-source-string))
-            (nelisp--load-source-large-p source))
+            (nelisp--load-source-large-p source)
+            (nelisp--load-rewrite-target-present-p source))
         #'nelisp--load-eval-source-incremental
       #'nelisp--load-eval-source-hybrid))
 
@@ -2863,11 +2887,7 @@ non-nil return values instead of retaining the original section objects."
                   (push section sections)))
               (setq pos section-end))))
           (setq count (1+ count))
-          (when (and load-garbage-collect-interval
-                     (> load-garbage-collect-interval 0)
-                     (= (% count load-garbage-collect-interval) 0)
-                     (fboundp 'garbage-collect))
-            (garbage-collect))))
+          (emacs-load--periodic-gc count)))
         (nreverse sections)))
 
   (defun emacs-load--artifact-native-sections-from-payload (payload path)
