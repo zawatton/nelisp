@@ -51,38 +51,31 @@ pending
 
 ** S2.1 nelisp AGENTS.md contains the Minimal native surface section (rule clauses 1-6 and the new-native requirements)
 #+WEIGHT: 1
-#+NOTE: intended check: grep -q 'Minimal native surface' dev/nelisp/AGENTS.md (text from Doc 211 section 6.1-6.2).
-pending
+cmd: grep -q 'Minimal native surface' AGENTS.md && grep -q 'clause above' AGENTS.md
 
-** S2.2 tools/nelisp-native-inventory.txt lists all 257 natives with verdict and matches the reader-builtins table
+** S2.2 tools/nelisp-native-inventory.txt lists every native in the reader dispatch table with verdict and matches the table
 #+WEIGHT: 1
-#+NOTE: intended check: emacs --batch check comparing nelisp-standalone--reader-builtins (scripts/nelisp-standalone-build.el:25198) with the file (tools/nelisp-native-inventory-check.el, to be written).
-pending
+cmd: make native-inventory
 
 ** S2.3 make native-inventory fails when a native is added without an entry (negative control) and passes on HEAD
 #+WEIGHT: 1
-#+NOTE: intended check: make native-inventory (new) plus a negative-control script that appends a fake builtin in a temp copy.
-pending
+cmd: make native-inventory && bash tools/ai/doc211-s2-negative-controls.sh native
 
 ** S2.4 core-purity gate: no file under lisp/ src/ scripts/ requires a nelisp-emacs-* feature
 #+WEIGHT: 1
-#+NOTE: intended check: make core-purity (new); negative control with a temp require.
-pending
+cmd: make core-purity && bash tools/ai/doc211-s2-negative-controls.sh purity
 
 ** S2.5 native-inventory and core-purity are wired into tools/ai/preflight.sh FAST_GATES
 #+WEIGHT: 1
-#+NOTE: intended check: bash tools/ai/preflight.sh --list | grep native-inventory; grep core-purity.
-pending
+cmd: bash tools/ai/preflight.sh --list | grep -q native-inventory && bash tools/ai/preflight.sh --list | grep -q core-purity
 
 ** S2.6 Unit manifest for this stage exists in tools/ai/doc211-units.tsv: every unit is at most 12 functions or one file, has its own acceptance command, and no two open units write the same file
 #+WEIGHT: 1
-#+NOTE: intended check: tools/ai/doc211-units-check.sh <stage> (to be written): validates the manifest columns, the size limit, per-unit command presence, and file-overlap serialization; exit 0 iff valid.
-pending
+cmd: bash tools/ai/doc211-units-check.sh S2
 
 ** S2.7 END-TO-END: preflight fast gates (existing plus the two new) all PASS on the migration branch
 #+WEIGHT: 1
-#+NOTE: intended check: bash tools/ai/preflight.sh (fast tier); exit 0.
-pending
+cmd: bash tools/ai/preflight.sh
 
 * S3 GNU bytecomp bootstraps without the API layer (core-only image)
 

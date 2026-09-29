@@ -1,5 +1,55 @@
 # Agent Instructions
 
+## Minimal native surface
+
+A function may be native (an entry in `nelisp-standalone--reader-builtins` / a `(:lit ...)` arm) iff at
+least one of these holds, stated in the commit that adds it:
+ 1. Allocation or tagged-object access that has no Lisp form (cons, vector, string, symbol cell, record,
+    char-table slot, bool-vector).
+ 2. Evaluator or GC entry (eval, funcall, apply, signal, garbage-collect, heap image dump/load).
+ 3. Raw OS or memory access (`syscall-direct`, `ptr-*`, `alloc-bytes`, thread/fork, atomics).
+ 4. Needed before the first Lisp form can run (file read for the prelude loader, stdout, exit, clock).
+ 5. Arithmetic on tagged numbers where an inlined native operation is the only non-recursive form
+    (fixnum ops), until the native compiler owns them.
+ 6. (Exception, D8) The bootstrap scratch buffer of §2.1: at most 15 aliased names, removable in one commit once the API package supplies them.
+Everything else is Lisp, in a package or the core prelude. "Faster" is NOT a qualifying reason.
+
+### Requirements for any new native
+
+A written justification naming the clause above; a measurement (before/after ns per call on the
+census corpus, plus S1.4 and 55 s criteria timings) recorded in the ledger NOTE of the criterion that
+introduces it; a Lisp reference implementation kept in the tree (so demotion is one deletion); and an
+entry in `tools/nelisp-native-inventory.txt`.
+
+Demote existing natives in measured batches per Doc 211 §10 (the demotion program), preserving passing
+criteria and timing caps. Recover speed through the general native compiler / JIT, never by keeping a
+hand-written native for speed.
+
+## Minimal native surface
+
+A function may be native (an entry in `nelisp-standalone--reader-builtins` / a `(:lit ...)` arm) iff at
+least one of these holds, stated in the commit that adds it:
+ 1. Allocation or tagged-object access that has no Lisp form (cons, vector, string, symbol cell, record,
+    char-table slot, bool-vector).
+ 2. Evaluator or GC entry (eval, funcall, apply, signal, garbage-collect, heap image dump/load).
+ 3. Raw OS or memory access (`syscall-direct`, `ptr-*`, `alloc-bytes`, thread/fork, atomics).
+ 4. Needed before the first Lisp form can run (file read for the prelude loader, stdout, exit, clock).
+ 5. Arithmetic on tagged numbers where an inlined native operation is the only non-recursive form
+    (fixnum ops), until the native compiler owns them.
+ 6. (Exception, D8) The bootstrap scratch buffer of §2.1: at most 15 aliased names, removable in one commit once the API package supplies them.
+Everything else is Lisp, in a package or the core prelude. "Faster" is NOT a qualifying reason.
+
+### Requirements for any new native
+
+A written justification naming the clause above; a measurement (before/after ns per call on the
+census corpus, plus S1.4 and 55 s criteria timings) recorded in the ledger NOTE of the criterion that
+introduces it; a Lisp reference implementation kept in the tree (so demotion is one deletion); and an
+entry in `tools/nelisp-native-inventory.txt`.
+
+Demote existing natives in measured batches per Doc 211 §10 (the demotion program), preserving passing
+criteria and timing caps. Recover speed through the general native compiler / JIT, never by keeping a
+hand-written native for speed.
+
 Read [`AI.md`](AI.md) first: it is the orientation page for this
 repository — how to see the current state, the inner loop, and the rules
 that exist because each one was broken here.  This file covers worklog

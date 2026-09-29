@@ -30,6 +30,8 @@ esac
 # Ordered to match .github/workflows/ci.yml's own Linux lane, so the first
 # thing that fails here is the first thing that would fail there.
 FAST_GATES=(
+  "native-inventory|make native-inventory"
+  "core-purity|make core-purity"
   "compile|make compile"
   "unsafe-inventory|make unsafe-inventory"
   "ns-inventory|make ns-inventory"

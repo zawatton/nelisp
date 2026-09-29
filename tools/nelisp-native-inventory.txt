@@ -1,0 +1,267 @@
+# name	verdict	reason
++	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it)
+-	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it)
+*	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it)
+/	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it)
+mod	native-review	No classification row; review against Doc 211 §6.
+%	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it)
+/=	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it)
+1+	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it)
+1-	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it)
+floor	native-review	No classification row; review against Doc 211 §6.
+truncate	native-review	No classification row; review against Doc 211 §6.
+ceiling	native-review	No classification row; review against Doc 211 §6.
+sin	native-demotable	Lisp range reduction + polynomial (fdlibm __kernel_sin port, GNU calls libm)
+cos	native-demotable	as sin
+=	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it)
+<	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it)
+>	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it)
+<=	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it)
+>=	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it)
+car	native-must-stay	allocation/tagged-object primitive
+cdr	native-must-stay	allocation/tagged-object primitive
+cons	native-must-stay	allocation/tagged-object primitive
+list	native-demotable	(lambda (&rest a) a) once funcall builds &rest list natively
+eq	native-must-stay	type predicate on tag bits
+null	native-must-stay	type predicate on tag bits
+not	native-review	No classification row; review against Doc 211 §6.
+special-form-p	native-review	No classification row; review against Doc 211 §6.
+nelisp--env-globals-op	native-review	No classification row; review against Doc 211 §6.
+make-hash-table	native-review	No classification row; review against Doc 211 §6.
+puthash	native-must-stay	hash-table core
+gethash	native-must-stay	hash-table core: address hashing + open-addressing bootstrap (obarray/globals use it)
+remhash	native-must-stay	hash-table core
+hash-table-count	native-must-stay	hash-table core
+maphash	native-review	No classification row; review against Doc 211 §6.
+nelisp--hash-table-make-raw	native-review	No classification row; review against Doc 211 §6.
+nelisp--cell-value	native-review	No classification row; review against Doc 211 §6.
+nelisp--assoc-raw	native-review	No classification row; review against Doc 211 §6.
+nelisp--byte-code-wrap-test	native-review	No classification row; review against Doc 211 §6.
+nelisp--plist-get-eq	native-review	No classification row; review against Doc 211 §6.
+nelisp--plist-member-eq	native-review	No classification row; review against Doc 211 §6.
+memq	native-demotable	GNU C prim; Lisp loop over cons cells (e.g. `(while (and l (not (eq (car l) x))) (setq l (cdr l))) l`)
+member	native-demotable	GNU C prim; Lisp loop over cons cells (e.g. `(while (and l (not (eq (car l) x))) (setq l (cdr l))) l`)
+assq	native-demotable	GNU C prim; Lisp loop over cons cells (e.g. `(while (and l (not (eq (car l) x))) (setq l (cdr l))) l`)
+assoc	native-demotable	GNU C prim; Lisp loop over cons cells (e.g. `(while (and l (not (eq (car l) x))) (setq l (cdr l))) l`)
+rassoc	native-demotable	GNU C prim; Lisp loop over cons cells (e.g. `(while (and l (not (eq (car l) x))) (setq l (cdr l))) l`)
+nth	native-demotable	GNU C prim; Lisp loop over cons cells (e.g. `(while (and l (not (eq (car l) x))) (setq l (cdr l))) l`)
+nthcdr	native-demotable	GNU C prim; Lisp loop over cons cells (e.g. `(while (and l (not (eq (car l) x))) (setq l (cdr l))) l`)
+last	native-review	No classification row; review against Doc 211 §6.
+butlast	native-review	No classification row; review against Doc 211 §6.
+append	native-demotable	GNU C prim; Lisp loop over cons cells (e.g. `(while (and l (not (eq (car l) x))) (setq l (cdr l))) l`)
+plist-get	native-demotable	GNU C prim; Lisp loop over cons cells (e.g. `(while (and l (not (eq (car l) x))) (setq l (cdr l))) l`)
+mapcar	native-demotable	GNU C prim; Lisp loop over cons cells (e.g. `(while (and l (not (eq (car l) x))) (setq l (cdr l))) l`)
+length	native-demotable	list branch: loop counting conses; string/vector branch needs representation access (keep a `nelisp--seq-length` native for those)
+string-byte	native-review	No classification row; review against Doc 211 §6.
+string-bytes	native-must-stay	string representation
+concat	native-must-stay	bulk string copy (memcpy); Lisp loop would be O(n) aset calls
+substring	native-review	No classification row; review against Doc 211 §6.
+make-string	native-must-stay	allocation/tagged-object primitive
+string=	native-review	No classification row; review against Doc 211 §6.
+unibyte-string-p	native-review	No classification row; review against Doc 211 §6.
+multibyte-string-p	native-must-stay	type predicate on tag bits
+string-as-unibyte	native-demotable	obsolete; as above
+string-to-unibyte	native-demotable	same
+string-make-unibyte	native-demotable	same
+string-as-multibyte	native-demotable	obsolete; prelude wrapper over representation flag
+string-to-multibyte	native-demotable	bit-flag flip + copy; needs representation primitive `nelisp--string-set-multibyte` (must-stay)
+string-make-multibyte	native-demotable	GNU has Lisp-level equivalent via string-to-multibyte
+char-to-string	native-demotable	(string c) using make-string+aset
+string-to-char	native-demotable	(if (= (length s) 0) 0 (aref s 0))
+number-to-string	native-demotable	GNU C Fnumber_to_string; Lisp digit loop for ints, float via nelisp--fmt-float
+string-to-number	native-review	No classification row; review against Doc 211 §6.
+format	native-review	No classification row; review against Doc 211 §6.
+nelisp--repr	native-review	No classification row; review against Doc 211 §6.
+nelisp--json-encode	native-review	No classification row; review against Doc 211 §6.
+nelisp--sha256	native-review	No classification row; review against Doc 211 §6.
+nelisp--sha256-bytes	native-review	No classification row; review against Doc 211 §6.
+nelisp--string-search	native-review	No classification row; review against Doc 211 §6.
+nelisp--arena-stats	native-review	No classification row; review against Doc 211 §6.
+garbage-collect	native-must-stay	GC entry
+nelisp--fmt-float	native-review	No classification row; review against Doc 211 §6.
+nelisp--debug-switch	native-review	No classification row; review against Doc 211 §6.
+nelisp--gc-diag	native-review	No classification row; review against Doc 211 §6.
+nelisp--arena-force-grow-smoke	native-review	No classification row; review against Doc 211 §6.
+nelisp--size-census	native-review	No classification row; review against Doc 211 §6.
+nelisp--arena-walk-verify	native-review	No classification row; review against Doc 211 §6.
+nelisp--alloc-check-report	native-review	No classification row; review against Doc 211 §6.
+nelisp--arena-dump-copy-verify	native-review	No classification row; review against Doc 211 §6.
+nelisp--arena-mark-reach-verify	native-review	No classification row; review against Doc 211 §6.
+nelisp--pool-root-coverage	native-review	No classification row; review against Doc 211 §6.
+nelisp--arena-swizzle-verify	native-review	No classification row; review against Doc 211 §6.
+nelisp--arena-load-relocate-verify	native-review	No classification row; review against Doc 211 §6.
+nelisp--arena-image-root-verify	native-review	No classification row; review against Doc 211 §6.
+nelisp--arena-dump-table-verify	native-review	No classification row; review against Doc 211 §6.
+nelisp--arena-dump-image-to-file	native-review	No classification row; review against Doc 211 §6.
+nelisp--arena-dump-image-stream	native-review	No classification row; review against Doc 211 §6.
+nelisp--arena-load-image-from-file	native-review	No classification row; review against Doc 211 §6.
+nelisp--native-unbox-reference	native-review	No classification row; review against Doc 211 §6.
+nelisp--arena-boot-load-verify	native-review	No classification row; review against Doc 211 §6.
+nelisp--arena-load-split-verify	native-review	No classification row; review against Doc 211 §6.
+nelisp--arena-value-survival	native-review	No classification row; review against Doc 211 §6.
+nelisp--env-capture-roots	native-review	No classification row; review against Doc 211 §6.
+nelisp--record-expand	native-review	No classification row; review against Doc 211 §6.
+wrf	native-review	No classification row; review against Doc 211 §6.
+rdf	native-review	No classification row; review against Doc 211 §6.
+slen	native-review	No classification row; review against Doc 211 §6.
+load	native-review	No classification row; review against Doc 211 §6.
+str-count-nl	native-review	No classification row; review against Doc 211 §6.
+str-line-start	native-review	No classification row; review against Doc 211 §6.
+str-kv-line	native-review	No classification row; review against Doc 211 §6.
+str-filter-prefix-lines	native-review	No classification row; review against Doc 211 §6.
+nl-nanosleep	native-review	No classification row; review against Doc 211 §6.
+nelisp--eval-source-string	native-review	No classification row; review against Doc 211 §6.
+nelisp--syscall-read-file	native-review	No classification row; review against Doc 211 §6.
+nl-write-file	native-review	No classification row; review against Doc 211 §6.
+nelisp--syscall-path	native-review	No classification row; review against Doc 211 §6.
+nelisp--syscall-path2	native-review	No classification row; review against Doc 211 §6.
+nelisp--syscall-path-int	native-review	No classification row; review against Doc 211 §6.
+nelisp--syscall-stat-field	native-review	No classification row; review against Doc 211 §6.
+nelisp--syscall-stat-buf	native-review	No classification row; review against Doc 211 §6.
+nelisp--syscall-lstat-buf	native-review	No classification row; review against Doc 211 §6.
+nelisp--syscall-readlink	native-review	No classification row; review against Doc 211 §6.
+nelisp--syscall-readdir-names	native-review	No classification row; review against Doc 211 §6.
+nelisp--readdir-scan-raw	native-review	No classification row; review against Doc 211 §6.
+nelisp--syscall-utimes	native-review	No classification row; review against Doc 211 §6.
+nelisp--syscall-statx-buf	native-review	No classification row; review against Doc 211 §6.
+nelisp--syscall-unshare	native-review	No classification row; review against Doc 211 §6.
+nelisp--syscall-mount	native-review	No classification row; review against Doc 211 §6.
+nelisp--syscall-pivot-root	native-review	No classification row; review against Doc 211 §6.
+nelisp--write-stdout-bytes	native-review	No classification row; review against Doc 211 §6.
+nelisp--write-stderr-line	native-review	No classification row; review against Doc 211 §6.
+nelisp--read-all-from-string-native	native-review	No classification row; review against Doc 211 §6.
+nl-current-unix-time	native-review	No classification row; review against Doc 211 §6.
+nl-unix-time-usec	native-review	No classification row; review against Doc 211 §6.
+float-time	native-must-stay	clock syscall
+exit	native-review	No classification row; review against Doc 211 §6.
+consp	native-must-stay	type predicate on tag bits
+atom	native-must-stay	type predicate on tag bits
+subrp	native-must-stay	type predicate on tag bits
+stringp	native-must-stay	type predicate on tag bits
+symbolp	native-must-stay	type predicate on tag bits
+symbol-with-pos-p	native-must-stay	type predicate on tag bits
+integerp	native-must-stay	type predicate on tag bits
+natnump	native-review	No classification row; review against Doc 211 §6.
+numberp	native-must-stay	type predicate on tag bits
+floatp	native-must-stay	type predicate on tag bits
+sxhash-eq	native-must-stay	address identity hash
+nl--read-int	native-review	No classification row; review against Doc 211 §6.
+nl--int-token-p	native-review	No classification row; review against Doc 211 §6.
+nl--nthcdr	native-review	No classification row; review against Doc 211 §6.
+byte-code	native-must-stay	allocation/tagged-object primitive
+byte-code-function-p	native-must-stay	type predicate on tag bits
+make-byte-code	native-must-stay	allocation/tagged-object primitive
+fetch-bytecode	native-review	No classification row; review against Doc 211 §6.
+vectorp	native-must-stay	type predicate on tag bits
+listp	native-must-stay	type predicate on tag bits
+nlistp	native-must-stay	type predicate on tag bits
+zerop	native-review	No classification row; review against Doc 211 §6.
+set	native-review	No classification row; review against Doc 211 §6.
+makunbound	native-must-stay	evaluator core (eval/apply/funcall/signal/symbol cells)
+symbol-value	native-must-stay	evaluator core (eval/apply/funcall/signal/symbol cells)
+symbol-function	native-must-stay	evaluator core (eval/apply/funcall/signal/symbol cells)
+fboundp	native-must-stay	evaluator core (eval/apply/funcall/signal/symbol cells)
+boundp	native-must-stay	evaluator core (eval/apply/funcall/signal/symbol cells)
+featurep	native-must-stay	feature registry read by bootstrap loader
+provide	native-review	No classification row; review against Doc 211 §6.
+require	native-review	No classification row; review against Doc 211 §6.
+symbol-name	native-must-stay	evaluator core (eval/apply/funcall/signal/symbol cells)
+bare-symbol	native-must-stay	type predicate on tag bits
+intern	native-review	No classification row; review against Doc 211 §6.
+intern-soft	native-review	No classification row; review against Doc 211 §6.
+make-symbol	native-must-stay	allocation/tagged-object primitive
+nelisp--intern-lookup	native-review	No classification row; review against Doc 211 §6.
+nelisp--format-simple	native-review	No classification row; review against Doc 211 §6.
+unibyte-string	native-must-stay	allocation/tagged-object primitive
+nelisp--native-subr-create	native-review	No classification row; review against Doc 211 §6.
+nelisp--native-subr-live-count	native-review	No classification row; review against Doc 211 §6.
+nelisp--native-subr-arity	native-review	No classification row; review against Doc 211 §6.
+make-vector	native-must-stay	allocation/tagged-object primitive
+vector	native-must-stay	allocation/tagged-object primitive
+make-bool-vector	native-must-stay	allocation/tagged-object primitive
+bool-vector	native-must-stay	allocation/tagged-object primitive
+bool-vector-p	native-must-stay	allocation/tagged-object primitive
+aref	native-must-stay	allocation/tagged-object primitive
+elt	native-demotable	(if (listp s) (nth n s) (aref s n))
+aset	native-must-stay	allocation/tagged-object primitive
+record	native-must-stay	allocation/tagged-object primitive
+recordp	native-must-stay	allocation/tagged-object primitive
+make-record	native-must-stay	allocation/tagged-object primitive
+nelisp--raw-aref	native-review	No classification row; review against Doc 211 §6.
+nelisp--raw-aset	native-review	No classification row; review against Doc 211 §6.
+nelisp--char-table-vector-bridge-p	native-review	No classification row; review against Doc 211 §6.
+char-table-p	native-demotable	record-tag test once char-tables are records (`nelisp--char-table-vector-bridge-p` exists)
+make-char-table	native-demotable	GNU chartab.c algorithm in Lisp: 4-level vector trie built with make-vector (already in nelisp-emacs-lib src/emacs-char-table?)
+char-table-subtype	native-demotable	(aref ct 0)-style slot accessor once record-based
+char-table-parent	native-demotable	slot accessor
+set-char-table-parent	native-demotable	slot setter
+char-table-extra-slot	native-demotable	slot accessor
+set-char-table-extra-slot	native-demotable	slot setter
+char-table-range	native-demotable	trie lookup in Lisp (chartab.c char_table_ref_and_range)
+set-char-table-range	native-demotable	trie store in Lisp (chartab.c char_table_set_range)
+map-char-table	native-demotable	trie walk in Lisp (chartab.c map_char_table)
+signal	native-must-stay	evaluator core (eval/apply/funcall/signal/symbol cells)
+error	native-review	No classification row; review against Doc 211 §6.
+equal	native-review	No classification row; review against Doc 211 §6.
+setcar	native-must-stay	allocation/tagged-object primitive
+setcdr	native-must-stay	allocation/tagged-object primitive
+ash	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it)
+logand	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it)
+logior	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it)
+logxor	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it)
+lognot	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it)
+string<	native-review	No classification row; review against Doc 211 §6.
+syscall-direct	native-review	No classification row; review against Doc 211 §6.
+atomic-fetch-add	native-review	No classification row; review against Doc 211 §6.
+ptr-read-u8	native-review	No classification row; review against Doc 211 §6.
+ptr-write-u8	native-review	No classification row; review against Doc 211 §6.
+ptr-read-u32	native-review	No classification row; review against Doc 211 §6.
+ptr-write-u32	native-review	No classification row; review against Doc 211 §6.
+nelisp--float-word-half	native-review	No classification row; review against Doc 211 §6.
+ptr-read-u64	native-review	No classification row; review against Doc 211 §6.
+ptr-write-u64	native-review	No classification row; review against Doc 211 §6.
+alloc-bytes	native-review	No classification row; review against Doc 211 §6.
+ptr-read-bytes	native-review	No classification row; review against Doc 211 §6.
+ptr-write-bytes	native-review	No classification row; review against Doc 211 §6.
+nelisp--exit-process	native-review	No classification row; review against Doc 211 §6.
+nelisp-process-call-process	native-review	No classification row; review against Doc 211 §6.
+nelisp-process-start	native-review	No classification row; review against Doc 211 §6.
+nelisp-process-start-process	native-review	No classification row; review against Doc 211 §6.
+nelisp-process-object-p	native-review	No classification row; review against Doc 211 §6.
+nelisp-process-async-ready-p	native-review	No classification row; review against Doc 211 §6.
+nelisp-process-pid	native-review	No classification row; review against Doc 211 §6.
+nelisp-process-status	native-review	No classification row; review against Doc 211 §6.
+nelisp-process-exit-status	native-review	No classification row; review against Doc 211 §6.
+nelisp-process-read-output	native-review	No classification row; review against Doc 211 §6.
+nelisp-process-write	native-review	No classification row; review against Doc 211 §6.
+nelisp-process-close-stdin	native-review	No classification row; review against Doc 211 §6.
+nelisp-process-poll	native-review	No classification row; review against Doc 211 §6.
+nelisp-process-wait	native-review	No classification row; review against Doc 211 §6.
+nelisp-process-delete	native-review	No classification row; review against Doc 211 §6.
+nelisp-portable-syscall	native-review	No classification row; review against Doc 211 §6.
+ptr-call	native-review	No classification row; review against Doc 211 §6.
+ptr-call-typed	native-review	No classification row; review against Doc 211 §6.
+thread-spawn	native-review	No classification row; review against Doc 211 §6.
+thread-join	native-must-stay	thread substrate (syscall futex)
+fork-spawn	native-review	No classification row; review against Doc 211 §6.
+nelisp--target-os-code	native-review	No classification row; review against Doc 211 §6.
+nelisp--target-arch-code	native-review	No classification row; review against Doc 211 §6.
+nelisp-socket-listen	native-review	No classification row; review against Doc 211 §6.
+nelisp-socket-accept	native-review	No classification row; review against Doc 211 §6.
+nelisp-socket-connect	native-review	No classification row; review against Doc 211 §6.
+nelisp-socket-send	native-review	No classification row; review against Doc 211 §6.
+nelisp-socket-recv	native-review	No classification row; review against Doc 211 §6.
+nelisp-socket-close	native-review	No classification row; review against Doc 211 §6.
+nelisp-socket-poll	native-review	No classification row; review against Doc 211 §6.
+nelisp-socket-connect-error	native-review	No classification row; review against Doc 211 §6.
+nelisp-thread-shared-alloc	native-review	No classification row; review against Doc 211 §6.
+nelisp-thread-atomic-add	native-review	No classification row; review against Doc 211 §6.
+nelisp-thread-atomic-read	native-review	No classification row; review against Doc 211 §6.
+nelisp-thread-spawn	native-review	No classification row; review against Doc 211 §6.
+nelisp-thread-join	native-review	No classification row; review against Doc 211 §6.
+nelisp-thread-gc-inhibit	native-review	No classification row; review against Doc 211 §6.
+nelisp--native-symbol-addr	native-review	No classification row; review against Doc 211 §6.
+nelisp--native-env	native-review	No classification row; review against Doc 211 §6.
+nelisp--native-pin-copy	native-review	No classification row; review against Doc 211 §6.
+nelisp--native-pin-eq-slots	native-review	No classification row; review against Doc 211 §6.
+nelisp--symbol-global-cell-p	native-review	No classification row; review against Doc 211 §6.

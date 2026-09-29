@@ -4741,3 +4741,10 @@ eln-s610-evidence:
 eln-s610-check:
 	@test -n "$(ELN_PROGRESS_BIN)" || { echo "set ELN_PROGRESS_BIN=<binary>"; exit 2; }
 	ELN_PROGRESS_BIN="$(ELN_PROGRESS_BIN)" $(EMACS) --batch -Q -l tools/nelisp-eln-s610-evidence.el -f nelisp-eln-s610-batch-validate
+# Doc 211 S2 core-boundary ratchets.
+.PHONY: native-inventory core-purity
+native-inventory:
+	@emacs --batch -Q -l tools/nelisp-native-inventory.el
+
+core-purity:
+	@bash tools/core-purity.sh .
