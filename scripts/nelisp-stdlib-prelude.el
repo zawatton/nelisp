@@ -15307,6 +15307,11 @@ NOT `eq' to VALUE, or nil if every position's is."
 ;; list/dotted/vector/quote forms).  Records (#s) are out of scope (no record
 ;; constructor primitive yet).  Deps: aref/length/substring/intern/
 ;; string-to-number/vector/cons/setcdr/char-to-string -- all reader primitives.
+(defvar nelisp--rd-skip-nil nil
+  "Non-nil when `nelisp--rd-skip-ws' just consumed GNU's `#@00' marker.")
+(defvar nelisp--rd-error-index nil
+  "String index of the closing bracket behind the last `invalid-read-syntax'.")
+
 (defun nelisp--rd-skip-ws (s i n)
   (let ((go t))
     (while go
@@ -15318,19 +15323,18 @@ NOT `eq' to VALUE, or nil if every position's is."
       (when (and (< i n) (= (aref s i) 59)) ; ;
         (while (and (< i n) (not (= (aref s i) 10))) (setq i (1+ i)))
         (setq go t))
-      ;; GNU's byte-compiler comment syntax: `#@N' skips the following N
-      ;; characters, then reading resumes at the next form.  It is handled
-      ;; beside semicolon comments because it can appear anywhere whitespace
-      ;; may, including before the first form.
-      (when (and (< (+ i 2) n)
-                 (= (aref s i) 35) (= (aref s (1+ i)) 64)
-                 (>= (aref s (+ i 2)) 48) (<= (aref s (+ i 2)) 57))
-        (let ((j (+ i 2)) (count 0))
+      ;; GNU 31.1's `#@NUMBER' on a string or buffer stream (measured):
+      ;; everything up to the end of the input is skipped, never just NUMBER
+      ;; bytes, so what follows is end-of-file -- except that `#@' followed
+      ;; by two or more zeros (`#@00', GNU's "skip to end of file") makes the
+      ;; read answer nil, which `nelisp--rd-skip-nil' reports to the caller.
+      (when (and (< (1+ i) n) (= (aref s i) 35) (= (aref s (1+ i)) 64))
+        (let ((j (+ i 2)) (zeros t))
           (while (and (< j n) (>= (aref s j) 48) (<= (aref s j) 57))
-            (setq count (+ (* count 10) (- (aref s j) 48))
-                  j (1+ j)))
-          (setq i (min n (+ j count))
-                go t))))
+            (unless (= (aref s j) 48) (setq zeros nil))
+            (setq j (1+ j)))
+          (setq nelisp--rd-skip-nil (and zeros (>= (- j i 2) 2)))
+          (setq i n))))
     i))
 
 (defun nelisp--rd-atom-end (s i n)
@@ -15406,10 +15410,13 @@ are numbers; `1.' is the integer 1."
 ;; `nelisp-standalone--applyfn-bignum-helpers') accepts.  Float tokens
 ;; keep going through `string-to-number' unchanged, below.
 (defun nelisp--rd-int-token-p (tok)
+  "Non-nil when numeric TOK is an integer: no `e'/`E', and at most one `.'
+in the final position (`1.' is the integer 1)."
   (let ((i 0) (n (length tok)) (plain t))
     (while (< i n)
       (let ((c (aref tok i)))
-        (when (or (= c 46) (= c 101) (= c 69)) (setq plain nil)))
+        (when (or (and (= c 46) (< (1+ i) n)) (= c 101) (= c 69))
+          (setq plain nil)))
       (setq i (1+ i)))
     plain))
 
@@ -15465,8 +15472,10 @@ Return (CODE . NEXT-POS)."
         (setq i (1+ i)))
       (unless valid
         (signal 'invalid-read-syntax (list "Invalid character code")))
-      (cons (string-to-number (substring body digit-start end) 16)
-            (1+ end)))))
+      (let ((code (string-to-number (substring body digit-start end) 16)))
+        (when (> code #x10FFFF)
+          (signal 'invalid-read-syntax (list "Invalid character code")))
+        (cons code (1+ end))))))
 
 (defun nelisp--rd-string-ctrl-char (c)
   "Return GNU's general control-code fold of C, or nil when C isn't foldable.
@@ -15721,32 +15730,56 @@ line-continuation escapes, which generate nothing)."
   "Read one form and resolve labels using a table local to this read."
   (let ((nelisp--rd-labels nil)
         (nelisp--rd-label-proxies nil))
-    (let ((result (nelisp--rd-one string start end)))
+    (setq nelisp--rd-skip-nil nil nelisp--rd-error-index nil)
+    (let ((result (nelisp--rd-one string start end t)))
       (cons (nelisp--rd-resolve-labels (car result) nil) (cdr result)))))
 
-(defun nelisp--rd-one (s i n)
+(defun nelisp--rd-one (s i n &optional top)
+  "Read one datum of S from I; TOP non-nil for the outermost call.
+An input that ends before a datum starts is `end-of-file', as in GNU, apart
+from the top-level empty read that callers turn into `end-of-file' or nil."
   (setq i (nelisp--rd-skip-ws s i n))
-  (if (>= i n) (cons nil i)
+  (if (>= i n)
+      (if (or top (and nelisp--rd-skip-nil (= i n)))
+          (cons nil i)
+        (signal 'end-of-file nil))
     (let ((c (aref s i)))
       (cond
        ((= c 34) ; "
         (let ((j (1+ i)) (started (1+ i)))
           (while (and (< j n) (not (= (aref s j) 34)))
             (if (= (aref s j) 92) (setq j (+ j 2)) (setq j (1+ j))))
+          (when (>= j n) (signal 'end-of-file nil))
           (cons (nelisp--rd-unescape (substring s started j)) (1+ j))))
+       ;; A closing bracket with nothing open is invalid, at any depth of
+       ;; prefix operators (`'\)').
+       ((or (= c 41) (= c 93))
+        (setq nelisp--rd-error-index i)
+        (signal 'invalid-read-syntax (list (if (= c 41) ")" "]"))))
        ((= c 40) ; (
         (let ((items nil) (k (1+ i)) (done nil) (tail nil) (has-tail nil))
           (while (not done)
             (setq k (nelisp--rd-skip-ws s k n))
             (cond
-             ((>= k n) (setq done t))
+             ((>= k n) (signal 'end-of-file nil))
              ((= (aref s k) 41) (setq k (1+ k)) (setq done t))
              ((and (= (aref s k) 46) (< (1+ k) n)
                    (let ((nc (aref s (1+ k)))) (or (= nc 32) (= nc 9) (= nc 10) (= nc 13))))
+              ;; `(. X)' and `(A . )' are invalid, as in GNU; a dotted tail
+              ;; must be followed by the closing paren.
+              (when (null items)
+                (signal 'invalid-read-syntax (list ".")))
+              (let ((j (nelisp--rd-skip-ws s (1+ k) n)))
+                (when (and (< j n) (= (aref s j) 41))
+                  (setq nelisp--rd-error-index j)
+                  (signal 'invalid-read-syntax (list ")"))))
               (let ((r (nelisp--rd-one s (1+ k) n)))
                 (setq tail (car r) has-tail t)
                 (setq k (nelisp--rd-skip-ws s (cdr r) n))
-                (when (and (< k n) (= (aref s k) 41)) (setq k (1+ k)))
+                (when (>= k n) (signal 'end-of-file nil))
+                (unless (= (aref s k) 41)
+                  (signal 'invalid-read-syntax (list "expected )")))
+                (setq k (1+ k))
                 (setq done t)))
              (t (let ((r (nelisp--rd-one s k n)))
                   (setq items (cons (car r) items) k (cdr r))))))
@@ -15759,7 +15792,7 @@ line-continuation escapes, which generate nothing)."
         (let ((items nil) (k (1+ i)) (done nil))
           (while (not done)
             (setq k (nelisp--rd-skip-ws s k n))
-            (cond ((>= k n) (setq done t))
+            (cond ((>= k n) (signal 'end-of-file nil))
                   ((= (aref s k) 93) (setq k (1+ k)) (setq done t))
                   (t (let ((r (nelisp--rd-one s k n)))
                        (setq items (cons (car r) items) k (cdr r))))))
@@ -15799,6 +15832,9 @@ line-continuation escapes, which generate nothing)."
                     (cons (intern (substring s i (nelisp--rd-atom-end s i n)))
                           (nelisp--rd-atom-end s i n))
                   (let ((c2 (aref s (+ i 2))))
+                    (if (= c2 78) ; N -- ?\N{U+XXXX} (names need a database)
+                        (let ((r (nelisp--rd-named-unicode-escape s (+ i 2) n)))
+                          r)
                     (if (memq c2 '(77 83 72 65 115 67 94)) ; M S H A s C ^
                         ;; GNU's `read_char_literal' simply ORs any modifier
                         ;; bits `read_char_escape' leaves pending onto the
@@ -15820,7 +15856,7 @@ line-continuation escapes, which generate nothing)."
                                      ((= c2 118) 11)   ; v
                                      ((= c2 48) 0)     ; 0
                                      (t c2))))         ; \ \" \? \( ...
-                        (cons v (+ i 3))))))
+                        (cons v (+ i 3)))))))
               (cons c1 (+ i 2))))))
        ((= c 35) ; #
          (cond
@@ -15895,14 +15931,24 @@ line-continuation escapes, which generate nothing)."
            (let ((r (nelisp--rd-one s (+ i 2) n)))
              (unless (stringp (car r))
                (signal 'invalid-read-syntax (list "#")))
-             (let ((str (car r)) (k (cdr r)) (done nil))
+             (let ((str (copy-sequence (car r))) (k (cdr r)) (done nil))
                (while (not done)
                  (setq k (nelisp--rd-skip-ws s k n))
                  (cond
                   ((>= k n) (signal 'end-of-file nil))
                   ((= (aref s k) 41) (setq k (1+ k) done t))
-                  (t (let ((r2 (nelisp--rd-one s k n)))
-                       (setq k (cdr r2))))))
+                  (t
+                   ;; START END PLIST triples, applied as GNU does with
+                   ;; `set-text-properties'.
+                   (let* ((r1 (nelisp--rd-one s k n))
+                          (r2 (nelisp--rd-one s (cdr r1) n))
+                          (r3 (nelisp--rd-one s (cdr r2) n)))
+                     (unless (and (integerp (car r1)) (integerp (car r2)))
+                       (signal 'invalid-read-syntax (list "Invalid string property list")))
+                     (unless (<= 0 (car r1) (car r2) (length str))
+                       (signal 'args-out-of-range (list (car r1) (car r2))))
+                     (set-text-properties (car r1) (car r2) (car r3) str)
+                     (setq k (cdr r3))))))
                (cons str k))))
           ;; `#&LENGTH"BYTES"' bool-vector literal (GNU Emacs lread.c):
           ;; each byte holds 8 bits low-bit-first, trailing bits of the
@@ -16013,8 +16059,13 @@ line-continuation escapes, which generate nothing)."
                         ;; string big))' round-trip -- see
                         ;; `scripts/standalone-bignum-smoke.el'.  Float
                         ;; tokens (anything with `.'/`e'/`E') are unaffected.
-                        (if (and (nelisp--rd-int-token-p raw-tok) (fboundp 'nl--read-int))
-                            (nl--read-int raw-tok)
+                        (if (nelisp--rd-int-token-p raw-tok)
+                            (let ((digits (if (= (aref raw-tok (1- (length raw-tok))) 46)
+                                              (substring raw-tok 0 -1)
+                                            raw-tok)))
+                              (if (fboundp 'nl--read-int)
+                                  (nl--read-int digits)
+                                (string-to-number digits)))
                           (string-to-number raw-tok)))
                       ;; `intern' on "nil"/"t" allocates a fresh Symbol Sexp
                       ;; that is NOT `eq' to the canonical nil/t sentinel this
@@ -16072,7 +16123,8 @@ line-continuation escapes, which generate nothing)."
       ;; position 0.  Answering (nil . 0) means a caller reading forms in a
       ;; loop never learns it reached the end, and reads nil for ever.
       (when (and (null (car r)) (>= (cdr r) (length s))
-                 (not (string-match-p "[^ \t\n\r\f]" s)))
+                 (>= (nelisp--rd-skip-ws s 0 (length s)) (length s))
+                 (not nelisp--rd-skip-nil))
         (signal 'end-of-file nil))
       (cons (car r) (+ base (cdr r))))))
 
@@ -16209,9 +16261,24 @@ are reported the way GNU does, and the rest takes `read-from-string'."
                 (when (= (aref full k) 10) (setq line (1+ line) bol (1+ k)))
                 (setq k (1+ k)))
               (vector 'close idx line (1+ (- idx bol)))))
-           (t (condition-case nil
-                  (read-from-string full start end)
-                (end-of-file nil))))))))
+           (t (let ((nelisp--rd-error-index nil))
+                (condition-case err
+                    (read-from-string full start end)
+                  (end-of-file nil)
+                  ;; A closing bracket the interpreted reader rejected (for
+                  ;; instance `(a . )') is reported like a stray one, at the
+                  ;; bracket's line and column.
+                  (invalid-read-syntax
+                   (if (and nelisp--rd-error-index
+                            (member (cadr err) '(")" "]")))
+                       (let* ((idx (+ start nelisp--rd-error-index))
+                              (line 1) (bol lo) (k lo))
+                         (while (< k idx)
+                           (when (= (aref full k) 10)
+                             (setq line (1+ line) bol (1+ k)))
+                           (setq k (1+ k)))
+                         (vector 'close idx line (1+ (- idx bol))))
+                     (signal (car err) (cdr err))))))))))))
 
 (defun nelisp--read-dispatch (stream)
   "Resolve STREAM for `read', every shape but a plain string."
@@ -16327,6 +16394,14 @@ are reported the way GNU does, and the rest takes `read-from-string'."
 (when (fboundp 'nelisp--read-all-from-string-native)
   (fset 'read-from-string
         (lambda (string &optional start end)
+         ;; Fast path for the common `(read-from-string STRING [START])': the
+         ;; validation below costs about as much interpreted as a short form
+         ;; costs to parse.  Anything unusual or declined takes the full path.
+         (or (and (stringp string) (null end)
+                  (let ((len (length string)) (st (or start 0)))
+                    (and (integerp st) (>= st 0) (<= st len)
+                         (nelisp--read-all-from-string-native string st len))))
+          (progn
           (nelisp--check-string string)
           (when start
             (unless (integerp start)
@@ -16357,9 +16432,10 @@ are reported the way GNU does, and the rest takes `read-from-string'."
                      (r (nelisp--rd-read-one s 0 (length s))))
                 (when (and (null (car r)) (>= (cdr r) (length s))
                            (>= (nelisp--rd-skip-ws s 0 (length s))
-                               (length s)))
+                               (length s))
+                           (not nelisp--rd-skip-nil))
                   (signal 'end-of-file nil))
-                (cons (car r) (+ base (cdr r))))))))
+                (cons (car r) (+ base (cdr r))))))))))
   (fset 'read
         (lambda (&optional stream)
           (let ((s (or stream standard-input)))

@@ -10966,7 +10966,12 @@ above this defconst for the shadow-vs-delegate rationale.")
     ;; value fits the fixnum bound for its sign, else a canonical
     ;; Sexp::Bignum; either way returns RESULT_SLOT.
     (defun nl_read_int_or_bignum (sp result_slot)
-      (let* ((n (m5_strlen sp))
+      (let* ((n (let* ((len (m5_strlen sp)))
+                  ;; `1.' is the integer 1: drop a trailing dot (the lexer
+                  ;; only passes it for GNU's trailing-dot integer syntax).
+                  (if (if (> len 0) (= (m5_byte_at sp (- len 1)) 46) nil)
+                      (- len 1)
+                    len)))
              (c0 (if (> n 0) (m5_byte_at sp 0) 48))
              (neg (if (= c0 45) 1 0))
              (start (if (if (= c0 45) 1 (if (= c0 43) 1 0)) 1 0))
@@ -18022,8 +18027,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (tail (alloc-bytes 32 8))
              (node (alloc-bytes 32 8))
              (nil-slot (alloc-bytes 32 8))
+             ;; Pool cost is per nesting level now (iterative list/vector
+             ;; reader), so a suffix-proportional pool is pure waste (128MB
+             ;; for a 5MB string, all of it marked by every GC).
              (cap (let ((n (* 4 (m5_strlen src))))
-                    (if (< n 256) 256 (if (> n 4194304) 4194304 n))))
+                    (if (< n 256) 256 (if (> n 65536) 65536 n))))
              (pool (alloc-bytes (* cap 32) 8))
              (load-file-name (alloc-bytes 32 8))
              (prevcap (ptr-read-u64 268436448 0))
@@ -18184,21 +18192,24 @@ baked build's own `<'/`>'/`=' arms need it too.")
                       0)))
               0))
            (t 1)))))
+    ;; Scan the string body starting at AT (just past the opening quote).
+    ;; Returns the byte offset just past the closing quote, END for an
+    ;; unterminated string, or -1 when an escape needs the fallback reader.
     (defun bf_read_one_scan_string (src at end)
-      (let* ((ok 1))
+      (let* ((res 0))
         (seq
-         (while (and (= ok 1) (< at end))
+         (while (and (= res 0) (< at end))
            (let* ((byte (m5_byte_at src at)))
              (cond
               ((= byte 34)
-               (setq at end))
+               (setq res (+ at 1)))
               ((= byte 92)
                (if (= (bf_read_one_string_escape_supported_p
                        src (+ at 1) end) 1)
                    (setq at (+ at 2))
-                 (setq ok 0)))
+                 (setq res -1)))
               (t (setq at (+ at 1))))))
-         ok)))
+         (if (= res 0) end res))))
     (defun bf_read_one_skip_comment (src at end)
       (let* ((more 1))
         (while (and (= more 1) (< at end))
@@ -18214,13 +18225,21 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (cond
               ((= byte 59)
                (setq at (bf_read_one_skip_comment src at end)))
+              ;; Skip the whole string body: bytes inside it are data, so a
+              ;; `;', `?' or `\\' there must not be read as code (that used to
+              ;; flip the string/code parity for the rest of the form and
+              ;; decline forms whose comments merely contained `\\S').
               ((= byte 34)
-               (if (= (bf_read_one_scan_string src (+ at 1) end) 1)
-                   ;; The parsed cursor bounds exactly one complete form, so
-                   ;; no later source needs inspection once its string scan
-                   ;; succeeds.  Continue conservatively for nested forms.
-                   (setq at (+ at 1))
-                 (setq ok 0)))
+               (let* ((nx (bf_read_one_scan_string src (+ at 1) end)))
+                 (if (< nx 0)
+                     (setq ok 0)
+                   (setq at nx))))
+              ;; `#@N' (skip) and `#(...)' (text properties) are owned by the
+              ;; interpreted reader, which implements GNU's semantics.
+              ((and (= byte 35) (< (+ at 1) end)
+                    (or (= (m5_byte_at src (+ at 1)) 64)
+                        (= (m5_byte_at src (+ at 1)) 40)))
+               (setq ok 0))
               ;; Escaped atom bytes cannot open a string or spell `##'.
               ((= byte 92) (setq at (+ at 2)))
               ;; GNU's bare `##' is the empty-name symbol.  The load reader
@@ -18234,7 +18253,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
               ((= byte 63)
                (if (and (< (+ at 1) end)
                         (= (m5_byte_at src (+ at 1)) 92))
-                   (setq at (+ at 3))
+                   ;; `?\\N{...}' is decoded by the interpreted reader.
+                   (if (and (< (+ at 2) end)
+                            (= (m5_byte_at src (+ at 2)) 78))
+                       (setq ok 0)
+                     (setq at (+ at 3)))
                  (setq at (+ (+ at 1)
                               (if (< (+ at 1) end)
                                   (nl_u8_clen_at
@@ -18270,7 +18293,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
              ;; enough for any form in the view).
              (limit (let ((n (* 4 (- byte-end byte-start))))
                       (if (< n 256) 256 (if (> n 4194304) 4194304 n))))
-             (cap (if (> limit 2048) 2048 limit))
+             ;; Lists and vectors are read iteratively, so the pool cost is
+             ;; 4 slots per NESTING level (not per element): 256 slots (8KB,
+             ;; ~60 levels) covers essentially every form.  The old 2048-slot
+             ;; (64KB) start allocated ~650MB over a 5MB bundle read form by
+             ;; form; a deeper form still grows 8x per retry below.
+             (cap (if (> limit 256) 256 limit))
              (pool (alloc-bytes (* cap 32) 8))
              (prc 0)
              (byte-pos 0)

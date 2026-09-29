@@ -279,6 +279,12 @@
            ;; Last byte was `e'/`E' (bit 4 still set) -> an exponent marker
            ;; with no exponent after it.  `12e' is a symbol on a host.
            ((= (logand class 16) 16) 23)
+           ;; A trailing dot with no fraction and no exponent (`1.', `-1.') is
+           ;; GNU's integer spelling: the digits are the value and the dot is
+           ;; dropped by the integer conversion.
+           ((and (= (logand class 3) 1)
+                 (= (str-byte-at str-ptr (- i 1)) 46))
+            20)
            ;; Has dot OR exponent -> Float.
            ((> (logand class 3) 0) 21)
            ;; Otherwise -> Int.

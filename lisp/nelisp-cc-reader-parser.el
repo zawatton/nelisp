@@ -1235,59 +1235,135 @@
     ;; otherwise  -> parse item; recurse for tail; cons-make-with-clone
     ;; ===========================================================
 
+;; Iterative sequence reader shared by list bodies (MODE 0, terminator
+    ;; RParen, dotted tail allowed) and vector bodies (MODE 1, terminator
+    ;; RBracket).  The previous shape recursed once per ELEMENT (the tail was
+    ;; parsed at depth+1 and consed on the way back), so a list of N items
+    ;; cost 4*N pool slots, capped the readable list length by the pool size,
+    ;; and forced callers to allocate pools proportional to the source size.
+    ;; This version appends in place: the pool cost is 4 slots per NESTING
+    ;; level only, and the work per element is O(1).
+    ;;
+    ;; Slots at DEPTH: head = list under construction (Nil until the first
+    ;; element), spare = last cons, cdr = scratch cons, car = element.
+    ;; The public entry points keep their historical (even) arities.
+    (defun nelisp_reader_p_copy32 (dst src)
+      (seq (ptr-write-u64 dst 0 (ptr-read-u64 src 0))
+           (ptr-write-u64 dst 8 (ptr-read-u64 src 8))
+           (ptr-write-u64 dst 16 (ptr-read-u64 src 16))
+           (ptr-write-u64 dst 24 (ptr-read-u64 src 24))
+           0))
+
+    (defun nelisp_reader_p_seq_link (head tail node _pad)
+      (if (= (sexp-tag head) 0)
+          (seq (nelisp_reader_p_copy32 head node)
+               (nelisp_reader_p_copy32 tail node)
+               0)
+        (seq (cons-set-cdr tail node)
+             (nelisp_reader_p_copy32 tail node)
+             0)))
+
+    (defun nelisp_reader_p_parse_seq
+        (str-ptr cursor-slot result-slot slot-pool depth mode)
+      (if (= (nelisp_reader_p_depth_ok_p slot-pool depth) 0)
+          (nelisp_reader_p_stash_excessive_nesting
+           (nelisp_reader_p_max_depth) 0)
+        (seq
+         (ptr-write-u64 (nelisp_reader_p_slot slot-pool
+                                              (nelisp_reader_p_head_idx depth))
+                        0 0)
+         (nelisp_reader_p_seq_loop
+          str-ptr cursor-slot result-slot slot-pool depth mode))))
+
+    (defun nelisp_reader_p_seq_loop
+        (str-ptr cursor-slot result-slot slot-pool depth mode)
+      (nelisp_reader_p_seq_dispatch
+       str-ptr cursor-slot result-slot slot-pool depth
+       (+ (nelisp_reader_p_lex_one
+           str-ptr cursor-slot
+           (nelisp_reader_p_slot slot-pool 1)
+           (nelisp_reader_p_slot slot-pool 0))
+          (+ 100 (* 200 mode)))))
+
+    (defun nelisp_reader_p_seq_dot
+        (str-ptr cursor-slot result-slot slot-pool depth _pad)
+      (if (= (nelisp_reader_p_parse_at
+              str-ptr cursor-slot
+              (nelisp_reader_p_slot slot-pool (nelisp_reader_p_car_idx depth))
+              slot-pool (+ depth 1))
+             1)
+          ;; The dotted tail must be followed by the closing paren.
+          (if (= (nelisp_reader_p_lex_one
+                  str-ptr cursor-slot
+                  (nelisp_reader_p_slot slot-pool 1)
+                  (nelisp_reader_p_slot slot-pool 0))
+                 2)
+              (seq
+               (cons-set-cdr (nelisp_reader_p_slot
+                              slot-pool (nelisp_reader_p_spare_idx depth))
+                             (nelisp_reader_p_slot
+                              slot-pool (nelisp_reader_p_car_idx depth)))
+               (nelisp_reader_p_copy32
+                result-slot
+                (nelisp_reader_p_slot slot-pool
+                                      (nelisp_reader_p_head_idx depth)))
+               1)
+            -1)
+        -1))
+
+    (defun nelisp_reader_p_seq_dispatch
+        (str-ptr cursor-slot result-slot slot-pool depth km)
+      (cond
+       ;; Terminator (RParen for a list, RBracket for a vector body).
+       ((= km (if (>= km 200) 304 102))
+        (seq
+         (nelisp_reader_p_copy32
+          result-slot
+          (nelisp_reader_p_slot slot-pool (nelisp_reader_p_head_idx depth)))
+         1))
+       ;; Dot: only after at least one element of a list.
+       ((= km 110)
+        (if (= (sexp-tag (nelisp_reader_p_slot
+                          slot-pool (nelisp_reader_p_head_idx depth)))
+               0)
+            -1
+          (nelisp_reader_p_seq_dot
+           str-ptr cursor-slot result-slot slot-pool depth 0)))
+       ((= (- km (if (>= km 200) 300 100)) -2)
+        (nelisp_reader_p_stash_raw_byte_unrepresentable))
+       ;; EOF, stray closer, dot in a vector, or lexer error.
+       ((< (- km (if (>= km 200) 300 100)) 1) -1)
+       ((= (- km (if (>= km 200) 300 100)) 2) -1)
+       ((= (- km (if (>= km 200) 300 100)) 4) -1)
+       ((= (- km (if (>= km 200) 300 100)) 10) -1)
+       (t
+        (if (= (nelisp_reader_p_dispatch
+                str-ptr cursor-slot
+                (nelisp_reader_p_slot slot-pool
+                                      (nelisp_reader_p_car_idx depth))
+                slot-pool (+ depth 1)
+                (- km (if (>= km 200) 300 100)))
+               1)
+            (seq
+             (cons-make-with-clone
+              (nelisp_reader_p_slot slot-pool (nelisp_reader_p_car_idx depth))
+              (nelisp_reader_p_slot slot-pool 2)
+              (nelisp_reader_p_slot slot-pool (nelisp_reader_p_cdr_idx depth)))
+             (nelisp_reader_p_seq_link
+              (nelisp_reader_p_slot slot-pool (nelisp_reader_p_head_idx depth))
+              (nelisp_reader_p_slot slot-pool (nelisp_reader_p_spare_idx depth))
+              (nelisp_reader_p_slot slot-pool (nelisp_reader_p_cdr_idx depth))
+              0)
+             (nelisp_reader_p_seq_loop
+              str-ptr cursor-slot result-slot slot-pool depth
+              (if (>= km 200) 1 0)))
+          -1))))
+
+    ;; Parse a list body (the open paren is already consumed).
     (defun nelisp_reader_p_parse_list_step
         (str-ptr cursor-slot result-slot slot-pool depth)
-      (nelisp_reader_p_list_dispatch
-       str-ptr cursor-slot result-slot slot-pool depth
-       (nelisp_reader_p_lex_one
-        str-ptr cursor-slot
-        (nelisp_reader_p_slot slot-pool 1)
-        (nelisp_reader_p_slot slot-pool 0))))
-
-    (defun nelisp_reader_p_list_dispatch
-        (str-ptr cursor-slot result-slot slot-pool depth kind)
-      (cond
-       ;; RParen: empty (rest of) list.  Force Nil tag (= 0) into
-       ;; result-slot in case it was previously written (= safety).
-       ((= kind 2)
-        (nelisp_reader_p_prog2 (ptr-write-u8 result-slot 0 0) 1))
-       ;; Dot tail.
-       ((= kind 10)
-        (and (= (nelisp_reader_p_parse_at
-                 str-ptr cursor-slot result-slot
-                 slot-pool (+ depth 1))
-                1)
-             ;; Consume the closing RParen.
-             (= (nelisp_reader_p_lex_one
-                 str-ptr cursor-slot
-                 (nelisp_reader_p_slot slot-pool 1)
-                 (nelisp_reader_p_slot slot-pool 0))
-                2)
-             1))
-       ;; EOF / stray RBracket / error: parse error.
-       ((= kind 0) -1)
-       ((= kind 4) -1)
-       ((= kind -2) (nelisp_reader_p_stash_raw_byte_unrepresentable))
-       ((< kind 0) -1)
-       (t
-        (and (= (nelisp_reader_p_dispatch
-                 str-ptr cursor-slot
-                 (nelisp_reader_p_slot slot-pool
-                                 (nelisp_reader_p_car_idx depth))
-                 slot-pool (+ depth 1) kind)
-                1)
-             (= (nelisp_reader_p_parse_list_step
-                 str-ptr cursor-slot
-                 (nelisp_reader_p_slot slot-pool
-                                 (nelisp_reader_p_cdr_idx depth))
-                 slot-pool (+ depth 1))
-                1)
-             (cons-make-with-clone (nelisp_reader_p_slot slot-pool
-                                                   (nelisp_reader_p_car_idx depth))
-                                   (nelisp_reader_p_slot slot-pool
-                                                   (nelisp_reader_p_cdr_idx depth))
-                                   result-slot)
-             1))))
+      (nelisp_reader_p_parse_seq
+       str-ptr cursor-slot result-slot slot-pool depth 0))
 
     ;; ===========================================================
     ;; `#s(hash-table ... data (...))' reader literal support.
@@ -1546,46 +1622,8 @@
 
     (defun nelisp_reader_p_parse_vector_step
         (str-ptr cursor-slot list-slot slot-pool depth _pad)
-      (nelisp_reader_p_vec_dispatch
-       str-ptr cursor-slot list-slot slot-pool depth
-       (nelisp_reader_p_lex_one
-        str-ptr cursor-slot
-        (nelisp_reader_p_slot slot-pool 1)
-        (nelisp_reader_p_slot slot-pool 0))))
-
-    (defun nelisp_reader_p_vec_dispatch
-        (str-ptr cursor-slot list-slot slot-pool depth kind)
-      (cond
-       ;; RBracket — body terminated.  Force list-slot tag to Nil (= 0).
-       ((= kind 4)
-        (nelisp_reader_p_prog2 (ptr-write-u8 list-slot 0 0) 1))
-       ;; EOF / stray RParen / stray Dot / lex error → parse error.
-       ((= kind 0) -1)
-       ((= kind 2) -1)
-       ((= kind 10) -1)
-       ((= kind -2) (nelisp_reader_p_stash_raw_byte_unrepresentable))
-       ((< kind 0) -1)
-       ;; Otherwise parse one item into car[d], recurse for tail at
-       ;; cdr[d], cons-make-with-clone into list-slot.
-       (t
-        (and (= (nelisp_reader_p_dispatch
-                 str-ptr cursor-slot
-                 (nelisp_reader_p_slot slot-pool
-                                 (nelisp_reader_p_car_idx depth))
-                 slot-pool (+ depth 1) kind)
-                1)
-             (= (nelisp_reader_p_parse_vector_step
-                 str-ptr cursor-slot
-                 (nelisp_reader_p_slot slot-pool
-                                 (nelisp_reader_p_cdr_idx depth))
-                 slot-pool (+ depth 1) 0)
-                1)
-             (cons-make-with-clone (nelisp_reader_p_slot slot-pool
-                                                   (nelisp_reader_p_car_idx depth))
-                                   (nelisp_reader_p_slot slot-pool
-                                                   (nelisp_reader_p_cdr_idx depth))
-                                   list-slot)
-             1))))
+      (nelisp_reader_p_parse_seq
+       str-ptr cursor-slot list-slot slot-pool depth 1))
 
     ;; ===========================================================
     ;; Cons-list length walker — raw NlConsBox* iteration via the

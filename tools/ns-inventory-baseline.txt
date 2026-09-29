@@ -1426,7 +1426,7 @@ pinned-collision ns-collision-divergent	prin1-to-string	lisp/nelisp-stdlib-prn.e
 pinned-collision ns-collision-divergent	princ	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	3975e89c8c57
 pinned-collision ns-collision-divergent	print	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	f088947fd5e7
 pinned-collision ns-collision-divergent	read	lisp/nelisp-stdlib-reader.el scripts/nelisp-stdlib-prelude.el	e3d91bd5df73
-pinned-collision ns-collision-divergent	read-from-string	lisp/nelisp-stdlib-reader.el scripts/nelisp-stdlib-prelude.el	ca42399e9bcd
+pinned-collision ns-collision-divergent	read-from-string	lisp/nelisp-stdlib-reader.el scripts/nelisp-stdlib-prelude.el	04c2095a877e
 pinned-collision ns-collision-divergent	recordp	lisp/nelisp-stdlib.el scripts/nelisp-stdlib-prelude.el	20096afadd80
 pinned-collision ns-collision-divergent	regexp-quote	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	e92681fb0b02
 pinned-collision ns-collision-divergent	round	lisp/nelisp-stdlib.el scripts/nelisp-stdlib-prelude.el	b6b8448a8348
