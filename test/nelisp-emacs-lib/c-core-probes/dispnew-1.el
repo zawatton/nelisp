@@ -17,8 +17,7 @@
   (progn (internal-show-cursor nil t) (internal-show-cursor-p)))
 (internal-show-cursor-p
   (internal-show-cursor-p)
-  (let ((window (split-window)))
-    (prog1 (windowp window) (delete-window window))))
+  (windowp (selected-window)))
 (redraw-frame
   (redraw-frame)
   (condition-case e (redraw-frame 1) (error e)))

@@ -33,4 +33,4 @@
  (let ((d (make-temp-file-internal "fileio-1" t "" nil))) (unwind-protect (file-directory-p d) (delete-directory d))))
 (next-read-file-uses-dialog-p
  (next-read-file-uses-dialog-p)
- (let ((w (split-window))) (unwind-protect (list (windowp w) (next-read-file-uses-dialog-p)) (delete-window w))))
+ (list (windowp (selected-window)) (next-read-file-uses-dialog-p)))

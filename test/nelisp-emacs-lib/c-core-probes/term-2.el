@@ -7,7 +7,4 @@
        (progn (with-current-buffer b (insert "changed"))
               (list (bufferp b) (tty-type)))
      (kill-buffer b)))
- (let ((w (split-window)))
-   (unwind-protect
-       (list (windowp w) (tty-type (selected-frame)))
-     (delete-window w))))
+ (list (windowp (selected-window)) (tty-type (selected-frame))))

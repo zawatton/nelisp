@@ -46,7 +46,8 @@
 (unless (fboundp 'malloc-info)
   (defun malloc-info ()
     "Report malloc information to stderr."
-    (when (fboundp 'external-debugging-output)
+    (when (and (fboundp 'external-debugging-output)
+               (boundp 'external-debugging-output))
       (princ "" external-debugging-output))
     nil))
 

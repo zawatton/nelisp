@@ -11,16 +11,16 @@
 (unless (fboundp 'window-new-pixel)
   (defun window-new-pixel (&optional window)
     "Return new pixel size of window WINDOW."
-    (emacs-cc-window-4--valid-window (or window (selected-window))
-                                     'window-valid-p)
-    0))
+    (let ((win (emacs-cc-window-4--valid-window
+                (or window (selected-window)) 'window-valid-p)))
+      (or (window-parameter win 'new-pixel) 0))))
 
 (unless (fboundp 'window-new-total)
   (defun window-new-total (&optional window)
     "Return the new total size of window WINDOW."
-    (emacs-cc-window-4--valid-window (or window (selected-window))
-                                     'window-valid-p)
-    0))
+    (let ((win (emacs-cc-window-4--valid-window
+                (or window (selected-window)) 'window-valid-p)))
+      (or (window-parameter win 'new-total) 0))))
 
 (unless (fboundp 'window-next-sibling)
   (defun window-next-sibling (&optional window)

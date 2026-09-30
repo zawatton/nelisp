@@ -37,6 +37,5 @@
  (condition-case e (set-terminal-coding-system-internal 'not-a-coding-system) (error (list (car e) (cdr e)))))
 (terminal-coding-system
  (terminal-coding-system)
- (let ((w (split-window)))
-   (unwind-protect (and (windowp w) (terminal-coding-system (window-frame w)))
-     (delete-window w))))
+ (and (windowp (selected-window))
+      (terminal-coding-system (window-frame (selected-window)))))

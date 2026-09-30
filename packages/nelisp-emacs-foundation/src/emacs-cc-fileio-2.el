@@ -13,9 +13,11 @@
 (unless (fboundp 'recent-auto-save-p)
   (defun recent-auto-save-p ()
     "Return t if current buffer has been auto-saved recently."
-    ;; This standalone runtime has no auto-save subsystem; marking a buffer
-    ;; does not correspond to an auto-save file having been written.
-    nil))
+    (let* ((buffer (current-buffer))
+           (saved (assq buffer emacs-cc-fileio-2--auto-saved-ticks))
+           (saved-tick (cdr saved))
+           (current-tick (emacs-cc-fileio-2--tick buffer)))
+      (and saved current-tick (equal saved-tick current-tick)))))
 
 (unless (fboundp 'set-binary-mode)
   (defun set-binary-mode (stream mode)

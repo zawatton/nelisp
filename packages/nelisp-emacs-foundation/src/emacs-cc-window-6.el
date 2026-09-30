@@ -30,8 +30,12 @@
 (unless (fboundp 'window-top-line)
   (defun window-top-line (&optional window)
     "Return top line of window WINDOW."
-    (emacs-cc-window-6--window window 'window-valid-p)
-    0))
+    (let* ((win (emacs-cc-window-6--window window 'window-valid-p))
+           (start (window-start win)))
+      (with-current-buffer (window-buffer win)
+        (save-excursion
+          (goto-char start)
+          (1- (line-number-at-pos start)))))))
 
 (unless (fboundp 'window-total-height)
   (defun window-total-height (&optional window round)

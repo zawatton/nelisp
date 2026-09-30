@@ -112,8 +112,9 @@
 (unless (fboundp 'window-new-normal)
   (defun window-new-normal (&optional window)
     "Return new normal size of window WINDOW."
-    (emacs-cc-window-3--check-window (or window (selected-window)) nil)
-    0))
+    (let ((win (emacs-cc-window-3--check-window
+                (or window (selected-window)) nil)))
+      (or (window-parameter win 'new-normal) 0))))
 
 (provide 'emacs-cc-window-3)
 
