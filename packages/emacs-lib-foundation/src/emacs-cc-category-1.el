@@ -2,8 +2,6 @@
 
 ;;; Code:
 
-(require 'emacs-char-table)
-
 (defvar emacs-cc-category-1--docs (make-hash-table :test 'eq))
 
 (defun emacs-cc-category-1--docs-for (table)

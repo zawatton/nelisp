@@ -2,9 +2,6 @@
 
 ;;; Code:
 
-(require 'emacs-window)
-(require 'emacs-frame)
-
 (unless (fboundp 'window-pixel-height)
   (defun window-pixel-height (&optional window)
     "Return the height of window WINDOW in pixels."

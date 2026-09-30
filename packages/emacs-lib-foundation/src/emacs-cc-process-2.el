@@ -16,8 +16,8 @@
                        (and (> (length process) 5)
                             (integerp (aref process 0))
                             (integerp (aref process 1)))))
-              (and (fboundp 'emacs-process-events--processp)
-                   (emacs-process-events--processp process)))
+              (and (vectorp process) (>= (length process) 14)
+                   (eq (aref process 0) :emacs-process-events)))
     (signal 'wrong-type-argument (list 'processp process)))
   process)
 
@@ -114,8 +114,8 @@
                        (get-buffer-process process))))
         'pipe
       (let ((p (emacs-cc-process-2--get-process process)))
-        (cond ((and (fboundp 'emacs-process-events--processp)
-                    (emacs-process-events--processp p))
+      (cond ((and (vectorp p) (>= (length p) 14)
+                  (eq (aref p 0) :emacs-process-events))
                (if (memq (aref p 3) '(network-server network-connection))
                    'network 'pipe))
               ((and (vectorp p) (> (length p) 0)
