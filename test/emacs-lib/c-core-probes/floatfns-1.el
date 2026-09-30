@@ -1,0 +1,6 @@
+(acos (let ((b (get-buffer-create " *floatfns-probe*"))) (with-current-buffer b (erase-buffer) (insert "x") (acos (/ (float (length (buffer-string))) 2.0))) (kill-buffer b)) (acos 0.5) (condition-case e (acos nil) (error e)))
+(asin (let ((b (get-buffer-create " *floatfns-probe*"))) (with-current-buffer b (erase-buffer) (insert "xx") (asin (/ (float (length (buffer-string))) 4.0))) (kill-buffer b)) (asin 0.5) (condition-case e (asin nil) (error e)))
+(copysign (let ((b (get-buffer-create " *floatfns-probe*"))) (with-current-buffer b (insert "x") (copysign 2.5 (if (= (buffer-size) 1) -1.0 1.0))) (kill-buffer b)) (copysign 3.0 1.0) (condition-case e (copysign 2 -1.0) (error e)))
+(frexp (let ((b (get-buffer-create " *floatfns-probe*"))) (with-current-buffer b (insert "xxx") (frexp (float (buffer-size)))) (kill-buffer b)) (frexp 12.0) (condition-case e (frexp nil) (error e)))
+(ldexp (let ((b (get-buffer-create " *floatfns-probe*"))) (with-current-buffer b (insert "xxx") (ldexp 0.5 (buffer-size))) (kill-buffer b)) (ldexp 0.75 3) (condition-case e (ldexp 1.0 1.5) (error e)))
+(tan (let ((b (get-buffer-create " *floatfns-probe*"))) (with-current-buffer b (insert "x") (tan (float (buffer-size)))) (kill-buffer b)) (tan 0.5) (condition-case e (tan nil) (error e)))
