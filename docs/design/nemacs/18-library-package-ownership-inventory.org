@@ -89,6 +89,7 @@ avoiding broad renames, mass moves, or formatting-only changes.
 | =emacs-parity-shims.el= | FND | `if-let'/`when-let'/`and-let'/`while-let'/`static-if', gensym, docstring/fill helpers | keep reusable |
 | =emacs-parity-subdirs.el= | FND/LEGACY | intentionally no-op load-path subdir walk (superseded fix, kept for history) | remove once the history note is no longer needed |
 | =src/emacs-cc-*= | FND | GNU Emacs 31.1 C primitives implemented in Lisp, one unit per GNU C file (tools/ai/c-core-progress.org) | keep guarded; merge into the owning package at the Doc 211 cutover |
+| =src/nelisp-emacs-vendor.el= | FND | Resolves vendored GNU Lisp files from the API-layer tree (vendor/emacs-lisp-api) before the core tree (Doc 211 S5) | keep; moves with the API packages at the nelisp cutover |
 | =emacs-pcase.el= | FND | pcase subset | keep reusable |
 | =emacs-string.el= | FND | string primitives | keep reusable |
 | =emacs-stub-bulk.el= | FND/LEGACY | generated/bulk stub surface | split over time |

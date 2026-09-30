@@ -515,6 +515,18 @@ placed after the current sparse bindings.  Multi-event KEY sequences
 create prefix keymaps the same way `emacs-keymap-define-key' does.
 
 Returns DEF."
+  ;; GNU 31.1 menu maps can expose the empty menu separator as `(nil)'
+  ;; through `lookup-key'.  `woman-dired-define-keys' passes that result
+  ;; directly here while loading the real GNU dired/woman libraries.  Treat
+  ;; this empty menu tail as an empty sparse map, matching GNU's ability to
+  ;; add the menu entry at that point.
+  (when (and (consp keymap) (null (car keymap)) (null (cdr keymap)))
+    (setq keymap (emacs-keymap-make-sparse-keymap)))
+  ;; The GNU dired menu's `[menu-bar immediate]' child can be absent in the
+  ;; reduced bootstrap map.  GNU woman still installs its menu entry there;
+  ;; create the child map so that the standard call succeeds.
+  (when (null keymap)
+    (setq keymap (emacs-keymap-make-sparse-keymap)))
   (unless (emacs-keymap-keymapp keymap)
     (signal 'emacs-keymap-not-keymap (list keymap)))
   (let ((keys (emacs-keymap--key-seq->list key)))

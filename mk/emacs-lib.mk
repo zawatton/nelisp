@@ -1978,9 +1978,12 @@ real-init-audit: build-nelisp-bootstrap
 		NEMACS_REAL_INIT_TIMEOUT="$(NEMACS_REAL_INIT_TIMEOUT)" \
 		./scripts/real-init-audit.sh
 
+NELISP_BOOTSTRAP_VENDOR_ROOT = $(if $(NELISP_BOOTSTRAP_VENDOR_DIR),$(NELISP_BOOTSTRAP_VENDOR_DIR),vendor)
+NELISP_BOOTSTRAP_VENDOR_INPUTS = $(shell for d in emacs-lisp emacs-lisp-api emacs-lisp-31.1; do test ! -d "$(NELISP_BOOTSTRAP_VENDOR_ROOT)/$$d" || find -L "$(NELISP_BOOTSTRAP_VENDOR_ROOT)/$$d" -type f -name '*.el' -print; done)
+
 build-nelisp-bootstrap: $(NEMACS_BOOTSTRAP_BUNDLE)
 
-$(NEMACS_BOOTSTRAP_BUNDLE): scripts/build-nelisp-bootstrap.el $(SRC_FILES)
+$(NEMACS_BOOTSTRAP_BUNDLE): scripts/build-nelisp-bootstrap.el $(SRC_FILES) $(NELISP_BOOTSTRAP_VENDOR_INPUTS)
 	$(EMACS) -Q -L src -L scripts $(NELISP_LOAD_PATH) \
 		--eval '(setq nelisp-bootstrap-output-file "$(abspath $(NEMACS_BOOTSTRAP_BUNDLE))")' \
 		--eval '(setq nelisp-bootstrap-repl-output-file "$(abspath $(NEMACS_BOOTSTRAP_REPL))")' \

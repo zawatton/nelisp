@@ -334,6 +334,28 @@ These are existing vendor implementations, not local reimplementations.")
 Use this for vendor sources whose dependencies are only guaranteed after the
 self-healing replay phase has completed.")
 
+(defconst nelisp-bootstrap-runtime-lazy-vendor-files
+  '("emacs-lisp-api/emacs-lisp/cl-macs.el"
+    "emacs-lisp-api/man.el"
+    "emacs-lisp-api/woman.el"
+    "emacs-lisp/isearch.el")
+  "Vendor sources omitted from the eager .el boot and resolved on first require.
+
+The full .repl manifest retains these files for feature-coverage measurement.
+The ordinary runtime bundle has the vendor load path seeded, so GNU `require'
+loads the verbatim source on first use; these libraries are command/macro
+packages rather than bootstrap dependencies. Keeping them out of eager replay
+preserves the boot budget without changing their source or feature code.")
+
+(defun nelisp-bootstrap--eager-runtime-files (files)
+  "Return FILES without the vendor sources reserved for first-use loading."
+  (cl-remove-if
+   (lambda (file)
+     (and (stringp file)
+          (member (file-relative-name file (nelisp-bootstrap--vendor-dir))
+                  nelisp-bootstrap-runtime-lazy-vendor-files)))
+   files))
+
 ;; Local files re-appended AFTER the vendor tail.  GNU `dired.el' (vendor tail)
 ;; redefines `dired', `dired-mode', `dired-mark', ... over the lightweight
 ;; `emacs-dired-min' browser, and the GNU `dired' entry point cannot run on
@@ -393,9 +415,10 @@ split: special and large forms remain direct, while ordinary small forms use
    (expand-file-name "src" nelisp-bootstrap-repo-root)))
 
 (defun nelisp-bootstrap--vendor-dir ()
-  "Return the absolute vendor directory."
+  "Return the absolute vendor directory, honoring an explicit build override."
   (file-name-as-directory
-   (expand-file-name "vendor" nelisp-bootstrap-repo-root)))
+   (expand-file-name (or (getenv "NELISP_BOOTSTRAP_VENDOR_DIR") "vendor")
+                     nelisp-bootstrap-repo-root)))
 
 (defun nelisp-bootstrap--source-file (file)
   "Return local src source file for FILE, or nil.
@@ -415,8 +438,15 @@ path recorded in `load-history'."
 
 (defun nelisp-bootstrap--vendor-source-file (name)
   "Return absolute vendor source file for relative vendor NAME, or nil."
-  (let ((file (expand-file-name name (nelisp-bootstrap--vendor-dir))))
-    (and (file-readable-p file) file)))
+  (let* ((vendor (nelisp-bootstrap--vendor-dir))
+         (file (expand-file-name name vendor))
+         (api-file
+          (and (string-prefix-p "emacs-lisp/" name)
+               (expand-file-name
+                (substring name (length "emacs-lisp/"))
+                (expand-file-name "emacs-lisp-api" vendor)))))
+    (cond ((file-readable-p file) file)
+          ((and api-file (file-readable-p api-file)) api-file))))
 
 (defun nelisp-bootstrap--collect-loaded-src-files ()
   "Return loaded local src files in dependency-first order."
@@ -982,10 +1012,21 @@ concatenated bootstrap bundle must make the order explicit."
 
 (defun nelisp-bootstrap--default-load-paths ()
   "Return the default standalone load-path baked into the bootstrap."
-  (cons (nelisp-bootstrap--src-dir)
-        (mapcar (lambda (relative)
-                  (expand-file-name relative nelisp-bootstrap-repo-root))
-                nelisp-bootstrap-vendor-load-path-subdirs)))
+  (let* ((vendor (nelisp-bootstrap--vendor-dir))
+         (api (expand-file-name "emacs-lisp-api" vendor)))
+    (append
+     (cons (nelisp-bootstrap--src-dir)
+           (mapcar (lambda (relative)
+                     (expand-file-name (string-remove-prefix "vendor/" relative)
+                                       vendor))
+                   nelisp-bootstrap-vendor-load-path-subdirs))
+     ;; The API vendor tree is intentionally separate from NeLisp core's
+     ;; load-path.  A bundle build may point VENDOR at a nelisp checkout or
+     ;; at a staging root containing both emacs-lisp/ and emacs-lisp-api/.
+     (when (file-directory-p api)
+       (cons api
+             (seq-filter #'file-directory-p
+                         (directory-files api t "^[^.].*" t)))))))
 
 (defun nelisp-bootstrap--runtime-anchor-prologue-forms ()
   "Return standalone REPL forms that seed source-location globals.
@@ -1015,7 +1056,7 @@ overrides them for workflow tests."
       (unless (boundp 'load-path)
         (defvar load-path nil))
       (setq nelisp-emacs-vendor-root ,vendor-root)
-      (setq load-path ',load-paths))))
+      (setq load-path (append ',load-paths load-path)))))
 
 (defun nelisp-bootstrap--emit-post-file-bundle-forms (file)
   "Return extra bundle forms that should follow FILE."
@@ -1116,9 +1157,30 @@ vs broad ~44.8s avg across the rounds actually completed, both against
 here is not simply proportional to bundle text size, so the extra
 196-file blast radius was not worth taking for an inconsistent gain.")
 
+(defun nelisp-bootstrap--normalized-bundle-file-p (file rel)
+  "Whether FILE or REL names a bundle member selected for normalization.
+
+An explicit vendor root can live outside this repository.  In particular,
+GNU files resolved from its `emacs-lisp-api/' fallback must retain the same
+normalization policy as their former `emacs-lisp/' paths."
+  (or (member rel nelisp-bootstrap-normalized-bundle-files)
+      (let* ((vendor (nelisp-bootstrap--vendor-dir))
+             (relative (file-relative-name file vendor))
+             (api-prefix "emacs-lisp-api/")
+             (api-relative
+              (and (string-prefix-p api-prefix relative)
+                   (substring relative (length api-prefix)))))
+        (or (member (concat "vendor/" relative)
+                    nelisp-bootstrap-normalized-bundle-files)
+            (and api-relative
+                 (or (member (concat "vendor/emacs-lisp/" api-relative)
+                             nelisp-bootstrap-normalized-bundle-files)
+                     (member (concat "vendor/emacs-lisp-31.1/" api-relative)
+                             nelisp-bootstrap-normalized-bundle-files)))))))
+
 (defun nelisp-bootstrap--insert-bundle-file-body (file rel)
   "Insert FILE's bundle body text for relative name REL at point."
-  (if (member rel nelisp-bootstrap-normalized-bundle-files)
+  (if (nelisp-bootstrap--normalized-bundle-file-p file rel)
       (insert (standalone-source-normalize-file-to-string file))
     (insert-file-contents file)
     (goto-char (point-max))))
@@ -1138,6 +1200,11 @@ here is not simply proportional to bundle text size, so the extra
     (insert ";; Bundle contract: `load-file-name' is nil inside this concatenated file.\n")
     (insert ";; Bundled members locate siblings through their `src/' probes.\n")
     (insert "(setq load-file-name nil)\n\n")
+    ;; Vendor-backed `require' forms can run before `nemacs-main.el' is
+    ;; reached, so seed both core and API vendor paths before any bundle code.
+    (dolist (form (nelisp-bootstrap--runtime-load-path-prologue-forms))
+      (insert (prin1-to-string form) "\n"))
+    (insert "\n")
     (insert nelisp-bootstrap--feature-registry-prologue)
     (insert "\n")
     (dolist (file files)
@@ -1346,7 +1413,8 @@ Nested source-string evaluation is reserved for explicit diagnostics."
             (expand-file-name
              (or nelisp-bootstrap-repl-output-file
                  (concat (file-name-sans-extension output) ".repl")))))
-      (nelisp-bootstrap--write-bundle files output)
+      (nelisp-bootstrap--write-bundle
+       (nelisp-bootstrap--eager-runtime-files files) output)
       (nelisp-bootstrap--write-repl-bundle files repl-output)
       (princ (format "nelisp-bootstrap bundle=%s repl=%s files=%d\n"
                      output repl-output (length files))))))
