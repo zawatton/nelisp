@@ -8,7 +8,7 @@
                         (file-name-directory (or load-file-name buffer-file-name)))))
 
 (defconst nelisp-scratch-test--aliases
-  '(current-buffer point point-min point-max goto-char insert erase-buffer
+  '(current-buffer point point-min point-max goto-char forward-char insert buffer-substring erase-buffer
     buffer-string write-region get-buffer-create set-buffer with-current-buffer))
 
 (ert-deftest nelisp-scratch-buffer-alias-count-and-private-api ()
@@ -50,6 +50,22 @@
          (host (nelisp-scratch-test--run "emacs" expr))
          (standalone (nelisp-scratch-test--run binary expr)))
     (should (string-match-p (regexp-quote host) standalone))))
+
+(ert-deftest nelisp-scratch-buffer-forward-char-parity-with-gnu-311 ()
+  (let* ((binary (or (getenv "NELISP_BIN")
+                     (expand-file-name "target/nelisp" nelisp-scratch-test--root)))
+         (expr "(princ (prin1-to-string (with-temp-buffer (insert \"abcd\") (goto-char 2) (forward-char 2) (list (point) (condition-case err (forward-char 9) (error (car err)))))))")
+         (host (nelisp-scratch-test--run "emacs" expr))
+         (standalone (nelisp-scratch-test--run binary expr)))
+    (should (string-match-p (regexp-quote (string-trim host)) standalone))))
+
+(ert-deftest nelisp-scratch-buffer-buffer-substring-parity-with-gnu-311 ()
+  (let* ((binary (or (getenv "NELISP_BIN")
+                     (expand-file-name "target/nelisp" nelisp-scratch-test--root)))
+         (expr "(princ (with-temp-buffer (insert \"abcd\") (buffer-substring 2 4)))")
+         (host (nelisp-scratch-test--run "emacs" expr))
+         (standalone (nelisp-scratch-test--run binary expr)))
+    (should (string-match-p (regexp-quote (string-trim host)) standalone))))
 
 (ert-deftest nelisp-scratch-buffer-bytecomp-corpus-runs-without-api-buffer-functions ()
   (let* ((binary (or (getenv "NELISP_BIN")

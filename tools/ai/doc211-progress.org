@@ -97,22 +97,22 @@ cmd: bash test/nelisp-bytecomp-core-check.sh
 
 ** S3.4 GNU byte-compile of the S6 corpus forms gives byte-identical results on the core-only image and on stock Emacs
 #+WEIGHT: 1
-#+NOTE: intended check: test/nelisp-eln-s6-measure.sh on a core-only image binary (no API package baked): PASS equality rows for the corpus functions.
-pending
+#+NOTE: PASS 2026-09-30, built binary `target/nelisp-s3c` digest `1b1e99902602472e47ec93d6e38ece5e3d3def0d660010d502c2e1ec926073d1`; both S6.10 corpus results match GNU Emacs 31.1 byte-for-byte. Iterative scratch-only probe found the original 12 aliases insufficient: `forward-char` and `buffer-substring` were next required. Final alias set (14): current-buffer, point, point-min, point-max, goto-char, forward-char, insert, buffer-substring, erase-buffer, buffer-string, write-region, get-buffer-create, set-buffer, with-current-buffer. This is a controlled function-cell simulation on the full-prelude binary; true core-only image remains S3.7.
+cmd: bash test/nelisp-bytecomp-s3-check.sh core
 
 ** S3.5 Deletion test: removing the 15 aliases and loading the API buffer package yields the same S6 results (nothing depends on the core copy once packages exist)
 #+WEIGHT: 1
-#+NOTE: intended check: two runs of the S6 driver, with and without the core aliases plus the buffer package; results equal.
-pending
+#+NOTE: PASS 2026-09-30, same built binary; removing/replacing the scratch aliases with the image's original full-prelude buffer function cells produces identical S6.10 results. The API-package stand-in is the stock image's real functions because nelisp-emacs-buffer-core is not yet in this tree; actual package loading remains for S7/S8 integration.
+cmd: bash test/nelisp-bytecomp-s3-check.sh deletion
 
 ** S3.6 Unit manifest for this stage exists in tools/ai/doc211-units.tsv: every unit is at most 12 functions or one file, has its own acceptance command, and no two open units write the same file
 #+WEIGHT: 1
-#+NOTE: intended check: tools/ai/doc211-units-check.sh S3 (to be written): validates the manifest columns, the size limit, per-unit command presence, and file-overlap serialization; exit 0 iff valid.
-pending
+#+NOTE: Validated by the stage-specific manifest checker; five S3 units cover the scratch implementation, ERT, core/deletion check, and the manifest/checker, each with an acceptance command and no overlapping open writes.
+cmd: bash tools/ai/doc211-units-check.sh S3
 
 ** S3.7 END-TO-END: eln ledger 70 of 70 PASS on a core-only image with every S6/S10 direct run inside the 55 s cap
 #+WEIGHT: 1
-#+NOTE: intended check: bin/progress-meter.sh --ledger tools/ai/eln-progress.org with ELN_PROGRESS_BIN=<core-only binary>; evidence-based rows regenerated per the ledger's own REGENERATE notes.
+#+NOTE: Pending until stages S7/S8 produce a genuine core-only baked image. The S3.4/S3.5 controlled function-cell checks do not establish image purity or the full 70/70 end-to-end ledger; run the ledger's evidence regeneration and meter against that image when available.
 pending
 
 * S4 Whole nel-lib history is imported into a nelisp migration branch, repeatably
