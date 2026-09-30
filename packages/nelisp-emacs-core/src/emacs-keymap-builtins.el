@@ -115,6 +115,14 @@ through."
 (when (emacs-keymap-builtins--install-function-p 'define-key-after)
   (defalias 'define-key-after #'emacs-keymap-define-key-after))
 
+;; GNU 31.1's `woman-dired-define-keys' passes the result of
+;; `(lookup-key dired-mode-map [menu-bar immediate])' here.  Keep the
+;; public entry point on the keymap substrate so its empty-menu handling
+;; applies even when a host or earlier bootstrap stub already defined it.
+(when (or (fboundp 'nl-write-file)
+          (fboundp 'nelisp--write-stdout-bytes))
+  (defalias 'define-key-after #'emacs-keymap-define-key-after))
+
 (when (emacs-keymap-builtins--install-function-p 'define-prefix-command)
   (defun define-prefix-command (command &optional mapvar name)
     "Define COMMAND as a prefix command backed by a sparse keymap.

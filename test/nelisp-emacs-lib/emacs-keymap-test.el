@@ -207,6 +207,11 @@ substrate."
     (emacs-keymap-map-keymap (lambda (k _v) (push k seen)) m)
     (should (equal (nreverse seen) (list ?b ?c ?a)))))
 
+(ert-deftest emacs-keymap-define-key-after-creates-missing-menu-child ()
+  "GNU woman.el passes a missing Dired menu child to define-key-after."
+  (should (eq 'woman
+              (emacs-keymap-define-key-after nil [woman] 'woman 'view))))
+
 (ert-deftest emacs-keymap-define-key-after-multi-key-uses-prefix-map ()
   (let ((m (emacs-keymap-make-sparse-keymap))
         (seen '()))

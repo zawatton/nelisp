@@ -11,15 +11,8 @@
 
 (defun widget--vendor-file ()
   "Return the vendored `widget.el' path for standalone loads, or nil."
-  (let* ((root (or (and (boundp 'nelisp-emacs-vendor-root)
-                        nelisp-emacs-vendor-root)
-                   (let ((here (or (and (boundp 'load-file-name) load-file-name)
-                                   (and (boundp 'buffer-file-name) buffer-file-name))))
-                     (and here
-                          (expand-file-name "../vendor"
-                                            (file-name-directory here))))))
-         (file (and root (expand-file-name "emacs-lisp/widget.el" root))))
-    (and file (file-readable-p file) file)))
+  (require 'nelisp-emacs-vendor)
+  (nelisp-emacs-vendor-file "widget.el"))
 
 (defun widget--host-load-standard ()
   "Load host Emacs's standard `widget' library."
@@ -39,8 +32,7 @@
 
 (if (widget--standalone-runtime-p)
     (let ((file (widget--vendor-file)))
-      (when file
-        (load file nil t)))
+      (load file nil t))
   (widget--host-load-standard))
 
 ;;; widget.el ends here
