@@ -57,15 +57,17 @@ run() {
     local a
     for a in $AREAS; do
       awk -F'\t' -v a="$a" '$2==a {print $1}' tools/c-core-areas.tsv > "$OUT/names-$a"
-      paste -d '\001' "$OUT/host.out" "$OUT/nelisp.out" | awk -F '\001' -v a="$a" -v names="$OUT/names-$a" '
+      awk -v a="$a" -v names="$OUT/names-$a" -v other="$OUT/nelisp.out" '
         BEGIN { while ((getline n < names) > 0) { want[n]=1; total++ } }
-        $1 ~ /^P\| / { split($1, h, " \\| "); nm=h[2]; if (nm in want) { seen[nm]=1; if ($1 != $2) bad[nm]=1 } }
+        { h=$0; if ((getline o < other) <= 0) o="";
+          if (h ~ /^P\| /) { nm=h; sub(/^P\| /, "", nm); sub(/ \|.*$/, "", nm);
+            if (nm in want) { seen[nm]=1; if (h != o) bad[nm]=1 } } }
         END {
           covered=0; nbad=0
           for (n in want) { if (n in seen) covered++; if (n in bad) nbad++ }
           status = (total > 0 && covered == total && nbad == 0) ? "PASS" : "FAIL"
           printf "%s covered=%d/%d differing=%d\n", status, covered, total, nbad
-        }' > "$OUT/$a.result"
+        }' "$OUT/host.out" > "$OUT/$a.result"
       echo "  $a: $(cat "$OUT/$a.result")"
     done
   fi
