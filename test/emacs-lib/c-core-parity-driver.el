@@ -37,7 +37,7 @@
          (unit (getenv "C_CORE_UNIT"))
          (files (if (and unit (not (equal unit "")))
                     (list (expand-file-name (concat unit ".el") dir))
-                  (directory-files dir t "\\.el\\'"))))
+                  (sort (directory-files dir t "\\.el\\'") #'string<))))
     (dolist (file files)
       (dolist (entry (c-core-parity--read-entries file))
         (let ((name (car entry)))
