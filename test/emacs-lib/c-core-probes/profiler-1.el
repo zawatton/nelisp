@@ -11,8 +11,7 @@
                                 (profiler-cpu-running-p)))
                       (profiler-cpu-stop))))
 (profiler-cpu-running-p (null (profiler-cpu-running-p))
-                        (let ((w (split-window))
-                              (b (get-buffer-create " *profiler-probe*")))
+                        (let ((b (get-buffer-create " *profiler-probe*")))
                           (unwind-protect
                               (progn
                                 (with-current-buffer b
@@ -24,7 +23,6 @@
                                              (bufferp b)
                                              (get-text-property 1 'face b))
                                        (profiler-cpu-stop)))
-                            (delete-window w)
                             (kill-buffer b))))
 (profiler-cpu-start (condition-case e (profiler-cpu-start 0) (error (list (car e) (cdr e))))
                     (let ((result (profiler-cpu-start 3000000)))

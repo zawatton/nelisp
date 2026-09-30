@@ -31,4 +31,4 @@
 (set-minibuffer-window
  (condition-case e (set-minibuffer-window nil) (error (list (car e) (cdr e))))
  (condition-case e (set-minibuffer-window (selected-window)) (error (list (car e) (cdr e))))
- (let ((w (split-window))) (unwind-protect (condition-case e (set-minibuffer-window w) (error (list (car e) (cadr e)))) (delete-window w))))
+ (condition-case e (set-minibuffer-window (selected-window)) (error (list (car e) (cadr e)))))

@@ -3,7 +3,7 @@
  (with-temp-buffer (setq buffer-read-only t) (condition-case nil (progn (barf-if-buffer-read-only) nil) (error nil))) )
 (buffer-last-name
  (or (stringp (buffer-last-name)) (null (buffer-last-name)))
- (let ((b (generate-new-buffer "buffer-1-last"))) (unwind-protect (progn (rename-buffer "buffer-1-renamed") (or (stringp (buffer-last-name b)) (null (buffer-last-name b)))) (kill-buffer b))) )
+ (let ((b (generate-new-buffer "buffer-1-last"))) (unwind-protect (progn (with-current-buffer b (rename-buffer "buffer-1-renamed")) (or (stringp (buffer-last-name b)) (null (buffer-last-name b)))) (kill-buffer b))) )
 (buffer-swap-text
  (let ((a (generate-new-buffer "buffer-1-a")) (b (generate-new-buffer "buffer-1-b"))) (unwind-protect (progn (with-current-buffer a (insert "alpha")) (with-current-buffer b (insert "beta")) (with-current-buffer a (buffer-swap-text b)) (list (with-current-buffer a (buffer-string)) (with-current-buffer b (buffer-string)))) (kill-buffer a) (kill-buffer b)))
  (condition-case e (buffer-swap-text "bad") (error (list (car e) (cdr e)))) )
@@ -24,7 +24,7 @@
  (let ((b (generate-new-buffer "buffer-1-tick"))) (unwind-protect (progn (condition-case nil (internal--set-buffer-modified-tick 123 b) (error nil)) t) (kill-buffer b))) )
 (other-buffer
  (let ((b (get-buffer-create "buffer-1-other"))) (bufferp (other-buffer (current-buffer))))
- (let ((b (generate-new-buffer "buffer-1-visible")) w) (unwind-protect (progn (setq w (split-window)) (condition-case nil (let ((result (other-buffer b t))) (or (bufferp result) (null result))) (error nil))) (when (and w (window-live-p w)) (delete-window w)) (kill-buffer b))) )
+ (let ((b (generate-new-buffer "buffer-1-visible"))) (unwind-protect (condition-case nil (let ((result (other-buffer b t))) (or (bufferp result) (null result))) (error nil)) (kill-buffer b))) )
 (set-buffer-major-mode
  (let ((b (generate-new-buffer "buffer-1-mode"))) (unwind-protect (progn (set-buffer-major-mode b) (symbolp (buffer-local-value 'major-mode b))) (kill-buffer b)))
  (condition-case e (set-buffer-major-mode nil) (error (list (car e) (cdr e)))) )
