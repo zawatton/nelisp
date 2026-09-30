@@ -2,8 +2,6 @@
 
 ;;; Code:
 
-(require 'nelisp-regex)
-
 (defun emacs-cc-search-1--string-match (regexp string start inhibit)
   (let ((m (nelisp-rx-string-match regexp string (or start 0))))
     (when m

@@ -50,9 +50,7 @@
   (defun current-bidi-paragraph-direction (&optional buffer)
     "Return paragraph direction at point in BUFFER."
     (let ((s (emacs-cc-xdisp-1--object-string buffer)))
-      (if (or (and (fboundp 'emacs-redisplay--base-direction)
-                  (eq (emacs-redisplay--base-direction s) 'right-to-left))
-              (string-match-p "[א-תء-ي]" s))
+      (if (string-match-p "[א-תء-ي]" s)
           'right-to-left 'left-to-right))))
 
 (unless (fboundp 'display--line-is-continued-p)
