@@ -431,7 +431,7 @@ HI is the absolute exclusive upper bound of the visible region."
   "Store a whole-match START/END pair in `nelisp-ec--match-data'."
   (nelisp-ec--set-match-data (list start end)))
 
-(defun nelisp-ec--rx-match-data-to-ec (base match)
+(defun nelisp-ec-rx-match-data-to-ec (base match)
   "Convert regex MATCH relative to BASE into Emacs-compatible match-data."
   (let ((data (list (+ base (plist-get match :start))
                     (+ base (plist-get match :end)))))
@@ -1203,7 +1203,7 @@ On failure, return nil when NOERROR is non-nil, else signal
      ((and match
            (or (null bound) (<= abs-end bound)))
       (nelisp-ec--set-buffer-point buf abs-end)
-      (nelisp-ec--rx-match-data-to-ec base match)
+      (nelisp-ec-rx-match-data-to-ec base match)
       abs-end)
      (noerror nil)
      (t (signal 'nelisp-ec-error
@@ -1234,7 +1234,7 @@ non-nil.  On failure honor NOERROR like `nelisp-ec-re-search-forward'."
      (best
       (let ((new-point (+ base (plist-get best :start))))
         (nelisp-ec--set-buffer-point buf new-point)
-        (nelisp-ec--rx-match-data-to-ec base best)
+      (nelisp-ec-rx-match-data-to-ec base best)
         new-point))
      (noerror nil)
      (t (signal 'nelisp-ec-error
@@ -1252,7 +1252,7 @@ non-nil.  On failure honor NOERROR like `nelisp-ec-re-search-forward'."
          (point-index (nth 2 region))
          (match (nelisp-rx-string-match regexp text point-index)))
     (when (and match (= (plist-get match :start) point-index))
-      (nelisp-ec--rx-match-data-to-ec base match))))
+      (nelisp-ec-rx-match-data-to-ec base match))))
 
 ;;;###autoload
 (defun nelisp-ec-match-data ()

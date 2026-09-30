@@ -9,6 +9,7 @@
 ;;; Code:
 
 (require 'package)
+(require 'nemacs-library-package-compile-cache)
 
 (defvar nemacs-library-package-index-smoke-repo-root
   (expand-file-name ".." (file-name-directory
@@ -163,6 +164,10 @@
     (make-directory nemacs-library-package-index-smoke-install-root t)
     (setq package-user-dir
           (expand-file-name "elpa"
+                            nemacs-library-package-index-smoke-install-root))
+    ;; Keep package.el's quickstart cache inside this disposable smoke root.
+    (setq package-quickstart-file
+          (expand-file-name "package-quickstart.el"
                             nemacs-library-package-index-smoke-install-root))
     (setq package-archives
           `((,nemacs-library-package-index-smoke--archive-name

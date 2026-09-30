@@ -82,8 +82,91 @@ and every feature is still loaded exactly as before."
     emacs-time
     emacs-numeric
     emacs-subr-extras
-    emacs-edebug-stubs)
+    emacs-edebug-stubs
+)
   "Reusable FND package features loaded by `emacs-foundation'.")
+
+;; GNU Emacs 31.1 C primitives are packaged as guarded compatibility
+;; companions.  Keep these lazy: some units have optional dependencies on
+;; higher-level editor modules and must not create foundation load-time edges.
+(defconst emacs-foundation-c-core-features
+  '(
+    emacs-cc-alloc-1
+    emacs-cc-buffer-1
+    emacs-cc-bytecode-1
+    emacs-cc-casetab-1
+    emacs-cc-category-1
+    emacs-cc-ccl-1
+    emacs-cc-character-1
+    emacs-cc-charset-1
+    emacs-cc-charset-2
+    emacs-cc-coding-2
+    emacs-cc-coding-3
+    emacs-cc-comp-1
+    emacs-cc-comp-2
+    emacs-cc-composite-1
+    emacs-cc-decompress-1
+    emacs-cc-dired-1
+    emacs-cc-dispnew-1
+    emacs-cc-doc-1
+    emacs-cc-editfns-1
+    emacs-cc-editfns-2
+    emacs-cc-emacs-1
+    emacs-cc-emacs-module-1
+    emacs-cc-fileio-1
+    emacs-cc-fileio-2
+    emacs-cc-filelock-1
+    emacs-cc-floatfns-1
+    emacs-cc-fns-1
+    emacs-cc-fns-2
+    emacs-cc-font-1
+    emacs-cc-font-2
+    emacs-cc-fontset-1
+    emacs-cc-frame-1
+    emacs-cc-frame-2
+    emacs-cc-fringe-1
+    emacs-cc-gnutls-1
+    emacs-cc-gnutls-2
+    emacs-cc-image-1
+    emacs-cc-inotify-1
+    emacs-cc-macros-1
+    emacs-cc-marker-1
+    emacs-cc-menu-1
+    emacs-cc-minibuf-1
+    emacs-cc-misc-1
+    emacs-cc-pdumper-1
+    emacs-cc-pgtkfns-2
+    emacs-cc-pgtkfns-3
+    emacs-cc-pgtkfns-4
+    emacs-cc-pgtkmenu-1
+    emacs-cc-pgtkselect-1
+    emacs-cc-print-1
+    emacs-cc-process-1
+    emacs-cc-profiler-1
+    emacs-cc-search-1
+    emacs-cc-syntax-1
+    emacs-cc-sysdep-1
+    emacs-cc-term-1
+    emacs-cc-term-2
+    emacs-cc-thread-1
+    emacs-cc-thread-2
+    emacs-cc-timefns-1
+    emacs-cc-treesit-1
+    emacs-cc-treesit-2
+    emacs-cc-treesit-3
+    emacs-cc-treesit-4
+    emacs-cc-treesit-5
+    emacs-cc-window-1
+    emacs-cc-window-2
+    emacs-cc-window-3
+    emacs-cc-window-4
+    emacs-cc-window-5
+    emacs-cc-window-6
+    emacs-cc-xdisp-2
+    emacs-cc-xfaces-2
+    emacs-cc-xml-1
+    emacs-cc-xsettings-1)
+  "Lazy C-core compatibility features owned by the FND package.")
 
 (dolist (feature emacs-foundation-features)
   (emacs-foundation--load-feature feature))

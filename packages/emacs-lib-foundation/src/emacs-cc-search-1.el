@@ -8,7 +8,7 @@
   (let ((m (nelisp-rx-string-match regexp string (or start 0))))
     (when m
       (unless inhibit
-        (nelisp-ec--rx-match-data-to-ec 0 m))
+        (nelisp-ec-rx-match-data-to-ec 0 m))
       (plist-get m :start))))
 
 (unless (fboundp 'newline-cache-check)

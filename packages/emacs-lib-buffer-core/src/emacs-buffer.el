@@ -1466,6 +1466,13 @@ Checks read-only text and shifts/shrinks text-property intervals."
     (cl-incf (emacs-buffer--ext-modified-tick ext))))
 
 ;;;###autoload
+(defun emacs-buffer-set-modified-tick (tick &optional buf)
+  "Set BUF's chars-modification TICK and return TICK."
+  (let* ((b (or buf (emacs-buffer--current)))
+         (ext (emacs-buffer--ensure-ext b)))
+    (setf (emacs-buffer--ext-modified-tick ext) tick)))
+
+;;;###autoload
 (defmacro emacs-buffer-modify-without-undo (&rest body)
   "Run BODY with undo recording temporarily disabled in the current buffer.
 Restores the prior undo-list (or t) on normal *and* non-local exit."

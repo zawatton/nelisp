@@ -10,6 +10,7 @@
 ;;; Code:
 
 (require 'package)
+(require 'nemacs-library-package-compile-cache)
 
 (defvar nemacs-library-package-release-bundle-smoke-repo-root
   (expand-file-name ".." (file-name-directory
@@ -245,6 +246,11 @@ Return a plist with retained and pending counts."
     (setq package-user-dir
           (expand-file-name
            "elpa"
+           nemacs-library-package-release-bundle-smoke-install-root))
+    ;; Keep package.el's quickstart cache inside the disposable smoke root.
+    (setq package-quickstart-file
+          (expand-file-name
+           "package-quickstart.el"
            nemacs-library-package-release-bundle-smoke-install-root))
     (setq package-archives
           `((,nemacs-library-package-release-bundle-smoke--archive-name
