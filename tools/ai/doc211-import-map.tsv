@@ -225,6 +225,88 @@ packages/nelisp-emacs-facade/README.org	DROP: mirror copy; canonical history com
 packages/nelisp-emacs-facade/lisp/nelisp-emacs-libs.el	DROP: mirror copy; canonical history comes from src/
 packages/nelisp-emacs-facade/lisp/nelisp-emacs.el	DROP: mirror copy; canonical history comes from src/
 packages/nelisp-emacs-foundation/README.org	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-alloc-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-buffer-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-bytecode-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-casetab-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-category-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-ccl-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-character-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-charset-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-charset-2.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-chartab-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-coding-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-coding-2.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-coding-3.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-comp-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-comp-2.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-composite-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-decompress-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-dired-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-dispnew-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-doc-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-editfns-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-editfns-2.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-emacs-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-emacs-module-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-fileio-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-fileio-2.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-filelock-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-floatfns-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-fns-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-fns-2.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-font-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-font-2.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-fontset-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-frame-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-frame-2.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-fringe-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-gnutls-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-gnutls-2.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-image-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-inotify-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-macros-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-marker-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-menu-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-minibuf-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-misc-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-pdumper-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-pgtkfns-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-pgtkfns-2.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-pgtkfns-3.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-pgtkfns-4.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-pgtkim-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-pgtkmenu-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-pgtkselect-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-print-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-process-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-process-2.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-profiler-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-search-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-syntax-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-sysdep-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-term-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-term-2.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-terminal-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-thread-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-thread-2.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-timefns-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-treesit-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-treesit-2.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-treesit-3.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-treesit-4.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-treesit-5.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-window-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-window-2.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-window-3.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-window-4.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-window-5.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-window-6.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-xdisp-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-xdisp-2.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-xfaces-2.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-xml-1.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lazy/emacs-cc-xsettings-1.el	DROP: mirror copy; canonical history comes from src/
 packages/nelisp-emacs-foundation/lisp/calendar.el	DROP: mirror copy; canonical history comes from src/
 packages/nelisp-emacs-foundation/lisp/cl-lib.el	DROP: mirror copy; canonical history comes from src/
 packages/nelisp-emacs-foundation/lisp/emacs-backquote.el	DROP: mirror copy; canonical history comes from src/
@@ -251,6 +333,7 @@ packages/nelisp-emacs-foundation/lisp/emacs-subr-extras.el	DROP: mirror copy; ca
 packages/nelisp-emacs-foundation/lisp/emacs-symbol.el	DROP: mirror copy; canonical history comes from src/
 packages/nelisp-emacs-foundation/lisp/emacs-time.el	DROP: mirror copy; canonical history comes from src/
 packages/nelisp-emacs-foundation/lisp/emacs-vars.el	DROP: mirror copy; canonical history comes from src/
+packages/nelisp-emacs-foundation/lisp/nelisp-emacs-vendor.el	DROP: mirror copy; canonical history comes from src/
 packages/nelisp-emacs-foundation/lisp/subr-x.el	DROP: mirror copy; canonical history comes from src/
 packages/nelisp-emacs-foundation/lisp/url.el	DROP: mirror copy; canonical history comes from src/
 packages/nelisp-emacs-foundation/lisp/widget.el	DROP: mirror copy; canonical history comes from src/
@@ -340,6 +423,7 @@ scripts/nemacs-library-package-archive-index.el	scripts/nemacs-library-package-a
 scripts/nemacs-library-package-archive-smoke.el	scripts/nemacs-library-package-archive-smoke.el
 scripts/nemacs-library-package-archive.el	scripts/nemacs-library-package-archive.el
 scripts/nemacs-library-package-catalog.el	scripts/nemacs-library-package-catalog.el
+scripts/nemacs-library-package-compile-cache.el	scripts/nemacs-library-package-compile-cache.el
 scripts/nemacs-library-package-dependency-publication-policy.el	scripts/nemacs-library-package-dependency-publication-policy.el
 scripts/nemacs-library-package-deps.el	scripts/nemacs-library-package-deps.el
 scripts/nemacs-library-package-descriptors.el	scripts/nemacs-library-package-descriptors.el
@@ -434,6 +518,88 @@ src/emacs-button-builtins.el	packages/nelisp-emacs-foundation/src/emacs-button-b
 src/emacs-calc.el	packages/nelisp-emacs-tools/src/emacs-calc.el
 src/emacs-callproc.el	packages/nelisp-emacs-foundation/src/emacs-callproc.el
 src/emacs-capf.el	packages/nelisp-emacs-tools/src/emacs-capf.el
+src/emacs-cc-alloc-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-alloc-1.el
+src/emacs-cc-buffer-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-buffer-1.el
+src/emacs-cc-bytecode-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-bytecode-1.el
+src/emacs-cc-casetab-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-casetab-1.el
+src/emacs-cc-category-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-category-1.el
+src/emacs-cc-ccl-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-ccl-1.el
+src/emacs-cc-character-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-character-1.el
+src/emacs-cc-charset-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-charset-1.el
+src/emacs-cc-charset-2.el	packages/nelisp-emacs-foundation/src/emacs-cc-charset-2.el
+src/emacs-cc-chartab-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-chartab-1.el
+src/emacs-cc-coding-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-coding-1.el
+src/emacs-cc-coding-2.el	packages/nelisp-emacs-foundation/src/emacs-cc-coding-2.el
+src/emacs-cc-coding-3.el	packages/nelisp-emacs-foundation/src/emacs-cc-coding-3.el
+src/emacs-cc-comp-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-comp-1.el
+src/emacs-cc-comp-2.el	packages/nelisp-emacs-foundation/src/emacs-cc-comp-2.el
+src/emacs-cc-composite-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-composite-1.el
+src/emacs-cc-decompress-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-decompress-1.el
+src/emacs-cc-dired-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-dired-1.el
+src/emacs-cc-dispnew-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-dispnew-1.el
+src/emacs-cc-doc-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-doc-1.el
+src/emacs-cc-editfns-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-editfns-1.el
+src/emacs-cc-editfns-2.el	packages/nelisp-emacs-foundation/src/emacs-cc-editfns-2.el
+src/emacs-cc-emacs-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-emacs-1.el
+src/emacs-cc-emacs-module-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-emacs-module-1.el
+src/emacs-cc-fileio-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-fileio-1.el
+src/emacs-cc-fileio-2.el	packages/nelisp-emacs-foundation/src/emacs-cc-fileio-2.el
+src/emacs-cc-filelock-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-filelock-1.el
+src/emacs-cc-floatfns-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-floatfns-1.el
+src/emacs-cc-fns-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-fns-1.el
+src/emacs-cc-fns-2.el	packages/nelisp-emacs-foundation/src/emacs-cc-fns-2.el
+src/emacs-cc-font-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-font-1.el
+src/emacs-cc-font-2.el	packages/nelisp-emacs-foundation/src/emacs-cc-font-2.el
+src/emacs-cc-fontset-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-fontset-1.el
+src/emacs-cc-frame-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-frame-1.el
+src/emacs-cc-frame-2.el	packages/nelisp-emacs-foundation/src/emacs-cc-frame-2.el
+src/emacs-cc-fringe-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-fringe-1.el
+src/emacs-cc-gnutls-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-gnutls-1.el
+src/emacs-cc-gnutls-2.el	packages/nelisp-emacs-foundation/src/emacs-cc-gnutls-2.el
+src/emacs-cc-image-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-image-1.el
+src/emacs-cc-inotify-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-inotify-1.el
+src/emacs-cc-macros-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-macros-1.el
+src/emacs-cc-marker-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-marker-1.el
+src/emacs-cc-menu-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-menu-1.el
+src/emacs-cc-minibuf-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-minibuf-1.el
+src/emacs-cc-misc-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-misc-1.el
+src/emacs-cc-pdumper-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-pdumper-1.el
+src/emacs-cc-pgtkfns-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-pgtkfns-1.el
+src/emacs-cc-pgtkfns-2.el	packages/nelisp-emacs-foundation/src/emacs-cc-pgtkfns-2.el
+src/emacs-cc-pgtkfns-3.el	packages/nelisp-emacs-foundation/src/emacs-cc-pgtkfns-3.el
+src/emacs-cc-pgtkfns-4.el	packages/nelisp-emacs-foundation/src/emacs-cc-pgtkfns-4.el
+src/emacs-cc-pgtkim-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-pgtkim-1.el
+src/emacs-cc-pgtkmenu-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-pgtkmenu-1.el
+src/emacs-cc-pgtkselect-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-pgtkselect-1.el
+src/emacs-cc-print-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-print-1.el
+src/emacs-cc-process-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-process-1.el
+src/emacs-cc-process-2.el	packages/nelisp-emacs-foundation/src/emacs-cc-process-2.el
+src/emacs-cc-profiler-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-profiler-1.el
+src/emacs-cc-search-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-search-1.el
+src/emacs-cc-syntax-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-syntax-1.el
+src/emacs-cc-sysdep-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-sysdep-1.el
+src/emacs-cc-term-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-term-1.el
+src/emacs-cc-term-2.el	packages/nelisp-emacs-foundation/src/emacs-cc-term-2.el
+src/emacs-cc-terminal-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-terminal-1.el
+src/emacs-cc-thread-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-thread-1.el
+src/emacs-cc-thread-2.el	packages/nelisp-emacs-foundation/src/emacs-cc-thread-2.el
+src/emacs-cc-timefns-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-timefns-1.el
+src/emacs-cc-treesit-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-treesit-1.el
+src/emacs-cc-treesit-2.el	packages/nelisp-emacs-foundation/src/emacs-cc-treesit-2.el
+src/emacs-cc-treesit-3.el	packages/nelisp-emacs-foundation/src/emacs-cc-treesit-3.el
+src/emacs-cc-treesit-4.el	packages/nelisp-emacs-foundation/src/emacs-cc-treesit-4.el
+src/emacs-cc-treesit-5.el	packages/nelisp-emacs-foundation/src/emacs-cc-treesit-5.el
+src/emacs-cc-window-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-window-1.el
+src/emacs-cc-window-2.el	packages/nelisp-emacs-foundation/src/emacs-cc-window-2.el
+src/emacs-cc-window-3.el	packages/nelisp-emacs-foundation/src/emacs-cc-window-3.el
+src/emacs-cc-window-4.el	packages/nelisp-emacs-foundation/src/emacs-cc-window-4.el
+src/emacs-cc-window-5.el	packages/nelisp-emacs-foundation/src/emacs-cc-window-5.el
+src/emacs-cc-window-6.el	packages/nelisp-emacs-foundation/src/emacs-cc-window-6.el
+src/emacs-cc-xdisp-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-xdisp-1.el
+src/emacs-cc-xdisp-2.el	packages/nelisp-emacs-foundation/src/emacs-cc-xdisp-2.el
+src/emacs-cc-xfaces-2.el	packages/nelisp-emacs-foundation/src/emacs-cc-xfaces-2.el
+src/emacs-cc-xml-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-xml-1.el
+src/emacs-cc-xsettings-1.el	packages/nelisp-emacs-foundation/src/emacs-cc-xsettings-1.el
 src/emacs-char-table.el	packages/nelisp-emacs-foundation/src/emacs-char-table.el
 src/emacs-cl-macros.el	packages/nelisp-emacs-foundation/src/emacs-cl-macros.el
 src/emacs-comint.el	packages/nelisp-emacs-tools/src/emacs-comint.el
@@ -608,6 +774,7 @@ src/nelisp-emacs-compat.el	packages/nelisp-emacs-buffer-core/src/nelisp-emacs-co
 src/nelisp-emacs-libs.el	packages/nelisp-emacs-facade/src/nelisp-emacs-libs.el
 src/nelisp-emacs-magit-bridge.el	packages/STAYS/src/nelisp-emacs-magit-bridge.el
 src/nelisp-emacs-org-bridge.el	packages/STAYS/src/nelisp-emacs-org-bridge.el
+src/nelisp-emacs-vendor.el	packages/nelisp-emacs-foundation/src/nelisp-emacs-vendor.el
 src/nelisp-emacs.el	packages/nelisp-emacs-facade/src/nelisp-emacs.el
 src/nelisp-regex.el	packages/nelisp-emacs-text-core/src/nelisp-regex.el
 src/nelisp-text-buffer.el	packages/nelisp-emacs-buffer-core/src/nelisp-text-buffer.el
@@ -652,6 +819,88 @@ src/xref.el	packages/nelisp-emacs-tools/src/xref.el
 test/c-core-parity-driver.el	test/nelisp-emacs-lib/c-core-parity-driver.el
 test/c-core-parity-smoke.sh	test/nelisp-emacs-lib/c-core-parity-smoke.sh
 test/c-core-probes/.keep	test/nelisp-emacs-lib/c-core-probes/.keep
+test/c-core-probes/alloc-1.el	test/nelisp-emacs-lib/c-core-probes/alloc-1.el
+test/c-core-probes/buffer-1.el	test/nelisp-emacs-lib/c-core-probes/buffer-1.el
+test/c-core-probes/bytecode-1.el	test/nelisp-emacs-lib/c-core-probes/bytecode-1.el
+test/c-core-probes/casetab-1.el	test/nelisp-emacs-lib/c-core-probes/casetab-1.el
+test/c-core-probes/category-1.el	test/nelisp-emacs-lib/c-core-probes/category-1.el
+test/c-core-probes/ccl-1.el	test/nelisp-emacs-lib/c-core-probes/ccl-1.el
+test/c-core-probes/character-1.el	test/nelisp-emacs-lib/c-core-probes/character-1.el
+test/c-core-probes/charset-1.el	test/nelisp-emacs-lib/c-core-probes/charset-1.el
+test/c-core-probes/charset-2.el	test/nelisp-emacs-lib/c-core-probes/charset-2.el
+test/c-core-probes/chartab-1.el	test/nelisp-emacs-lib/c-core-probes/chartab-1.el
+test/c-core-probes/coding-1.el	test/nelisp-emacs-lib/c-core-probes/coding-1.el
+test/c-core-probes/coding-2.el	test/nelisp-emacs-lib/c-core-probes/coding-2.el
+test/c-core-probes/coding-3.el	test/nelisp-emacs-lib/c-core-probes/coding-3.el
+test/c-core-probes/comp-1.el	test/nelisp-emacs-lib/c-core-probes/comp-1.el
+test/c-core-probes/comp-2.el	test/nelisp-emacs-lib/c-core-probes/comp-2.el
+test/c-core-probes/composite-1.el	test/nelisp-emacs-lib/c-core-probes/composite-1.el
+test/c-core-probes/decompress-1.el	test/nelisp-emacs-lib/c-core-probes/decompress-1.el
+test/c-core-probes/dired-1.el	test/nelisp-emacs-lib/c-core-probes/dired-1.el
+test/c-core-probes/dispnew-1.el	test/nelisp-emacs-lib/c-core-probes/dispnew-1.el
+test/c-core-probes/doc-1.el	test/nelisp-emacs-lib/c-core-probes/doc-1.el
+test/c-core-probes/editfns-1.el	test/nelisp-emacs-lib/c-core-probes/editfns-1.el
+test/c-core-probes/editfns-2.el	test/nelisp-emacs-lib/c-core-probes/editfns-2.el
+test/c-core-probes/emacs-1.el	test/nelisp-emacs-lib/c-core-probes/emacs-1.el
+test/c-core-probes/emacs-module-1.el	test/nelisp-emacs-lib/c-core-probes/emacs-module-1.el
+test/c-core-probes/fileio-1.el	test/nelisp-emacs-lib/c-core-probes/fileio-1.el
+test/c-core-probes/fileio-2.el	test/nelisp-emacs-lib/c-core-probes/fileio-2.el
+test/c-core-probes/filelock-1.el	test/nelisp-emacs-lib/c-core-probes/filelock-1.el
+test/c-core-probes/floatfns-1.el	test/nelisp-emacs-lib/c-core-probes/floatfns-1.el
+test/c-core-probes/fns-1.el	test/nelisp-emacs-lib/c-core-probes/fns-1.el
+test/c-core-probes/fns-2.el	test/nelisp-emacs-lib/c-core-probes/fns-2.el
+test/c-core-probes/font-1.el	test/nelisp-emacs-lib/c-core-probes/font-1.el
+test/c-core-probes/font-2.el	test/nelisp-emacs-lib/c-core-probes/font-2.el
+test/c-core-probes/fontset-1.el	test/nelisp-emacs-lib/c-core-probes/fontset-1.el
+test/c-core-probes/frame-1.el	test/nelisp-emacs-lib/c-core-probes/frame-1.el
+test/c-core-probes/frame-2.el	test/nelisp-emacs-lib/c-core-probes/frame-2.el
+test/c-core-probes/fringe-1.el	test/nelisp-emacs-lib/c-core-probes/fringe-1.el
+test/c-core-probes/gnutls-1.el	test/nelisp-emacs-lib/c-core-probes/gnutls-1.el
+test/c-core-probes/gnutls-2.el	test/nelisp-emacs-lib/c-core-probes/gnutls-2.el
+test/c-core-probes/image-1.el	test/nelisp-emacs-lib/c-core-probes/image-1.el
+test/c-core-probes/inotify-1.el	test/nelisp-emacs-lib/c-core-probes/inotify-1.el
+test/c-core-probes/macros-1.el	test/nelisp-emacs-lib/c-core-probes/macros-1.el
+test/c-core-probes/marker-1.el	test/nelisp-emacs-lib/c-core-probes/marker-1.el
+test/c-core-probes/menu-1.el	test/nelisp-emacs-lib/c-core-probes/menu-1.el
+test/c-core-probes/minibuf-1.el	test/nelisp-emacs-lib/c-core-probes/minibuf-1.el
+test/c-core-probes/misc-1.el	test/nelisp-emacs-lib/c-core-probes/misc-1.el
+test/c-core-probes/pdumper-1.el	test/nelisp-emacs-lib/c-core-probes/pdumper-1.el
+test/c-core-probes/pgtkfns-1.el	test/nelisp-emacs-lib/c-core-probes/pgtkfns-1.el
+test/c-core-probes/pgtkfns-2.el	test/nelisp-emacs-lib/c-core-probes/pgtkfns-2.el
+test/c-core-probes/pgtkfns-3.el	test/nelisp-emacs-lib/c-core-probes/pgtkfns-3.el
+test/c-core-probes/pgtkfns-4.el	test/nelisp-emacs-lib/c-core-probes/pgtkfns-4.el
+test/c-core-probes/pgtkim-1.el	test/nelisp-emacs-lib/c-core-probes/pgtkim-1.el
+test/c-core-probes/pgtkmenu-1.el	test/nelisp-emacs-lib/c-core-probes/pgtkmenu-1.el
+test/c-core-probes/pgtkselect-1.el	test/nelisp-emacs-lib/c-core-probes/pgtkselect-1.el
+test/c-core-probes/print-1.el	test/nelisp-emacs-lib/c-core-probes/print-1.el
+test/c-core-probes/process-1.el	test/nelisp-emacs-lib/c-core-probes/process-1.el
+test/c-core-probes/process-2.el	test/nelisp-emacs-lib/c-core-probes/process-2.el
+test/c-core-probes/profiler-1.el	test/nelisp-emacs-lib/c-core-probes/profiler-1.el
+test/c-core-probes/search-1.el	test/nelisp-emacs-lib/c-core-probes/search-1.el
+test/c-core-probes/syntax-1.el	test/nelisp-emacs-lib/c-core-probes/syntax-1.el
+test/c-core-probes/sysdep-1.el	test/nelisp-emacs-lib/c-core-probes/sysdep-1.el
+test/c-core-probes/term-1.el	test/nelisp-emacs-lib/c-core-probes/term-1.el
+test/c-core-probes/term-2.el	test/nelisp-emacs-lib/c-core-probes/term-2.el
+test/c-core-probes/terminal-1.el	test/nelisp-emacs-lib/c-core-probes/terminal-1.el
+test/c-core-probes/thread-1.el	test/nelisp-emacs-lib/c-core-probes/thread-1.el
+test/c-core-probes/thread-2.el	test/nelisp-emacs-lib/c-core-probes/thread-2.el
+test/c-core-probes/timefns-1.el	test/nelisp-emacs-lib/c-core-probes/timefns-1.el
+test/c-core-probes/treesit-1.el	test/nelisp-emacs-lib/c-core-probes/treesit-1.el
+test/c-core-probes/treesit-2.el	test/nelisp-emacs-lib/c-core-probes/treesit-2.el
+test/c-core-probes/treesit-3.el	test/nelisp-emacs-lib/c-core-probes/treesit-3.el
+test/c-core-probes/treesit-4.el	test/nelisp-emacs-lib/c-core-probes/treesit-4.el
+test/c-core-probes/treesit-5.el	test/nelisp-emacs-lib/c-core-probes/treesit-5.el
+test/c-core-probes/window-1.el	test/nelisp-emacs-lib/c-core-probes/window-1.el
+test/c-core-probes/window-2.el	test/nelisp-emacs-lib/c-core-probes/window-2.el
+test/c-core-probes/window-3.el	test/nelisp-emacs-lib/c-core-probes/window-3.el
+test/c-core-probes/window-4.el	test/nelisp-emacs-lib/c-core-probes/window-4.el
+test/c-core-probes/window-5.el	test/nelisp-emacs-lib/c-core-probes/window-5.el
+test/c-core-probes/window-6.el	test/nelisp-emacs-lib/c-core-probes/window-6.el
+test/c-core-probes/xdisp-1.el	test/nelisp-emacs-lib/c-core-probes/xdisp-1.el
+test/c-core-probes/xdisp-2.el	test/nelisp-emacs-lib/c-core-probes/xdisp-2.el
+test/c-core-probes/xfaces-2.el	test/nelisp-emacs-lib/c-core-probes/xfaces-2.el
+test/c-core-probes/xml-1.el	test/nelisp-emacs-lib/c-core-probes/xml-1.el
+test/c-core-probes/xsettings-1.el	test/nelisp-emacs-lib/c-core-probes/xsettings-1.el
 test/c-core-units-test.el	test/nelisp-emacs-lib/c-core-units-test.el
 test/calc-ext-test.el	test/nelisp-emacs-lib/calc-ext-test.el
 test/case-table-test.el	test/nelisp-emacs-lib/case-table-test.el
@@ -835,6 +1084,7 @@ test/nelisp-emacs-org-bridge-test.el	test/nelisp-emacs-lib/nelisp-emacs-org-brid
 test/nelisp-emacs-package-smoke-test.el	test/nelisp-emacs-lib/nelisp-emacs-package-smoke-test.el
 test/nelisp-emacs-stdio-test.el	test/nelisp-emacs-lib/nelisp-emacs-stdio-test.el
 test/nelisp-emacs-test.el	test/nelisp-emacs-lib/nelisp-emacs-test.el
+test/nelisp-emacs-vendor-test.el	test/nelisp-emacs-lib/nelisp-emacs-vendor-test.el
 test/nelisp-regex-test.el	test/nelisp-emacs-lib/nelisp-regex-test.el
 test/nelisp-t77-undo-tree-defstruct-setf-parity-test.el	test/nelisp-emacs-lib/nelisp-t77-undo-tree-defstruct-setf-parity-test.el
 test/nemacs-bootstrap-nelisp-test.el	test/nelisp-emacs-lib/nemacs-bootstrap-nelisp-test.el
