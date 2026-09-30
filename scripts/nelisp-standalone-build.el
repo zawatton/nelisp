@@ -5649,7 +5649,10 @@ REPL-facing module it feeds."
                    (ptr-read-u64 (+ (ptr-read-u64 268436160 0) 48) 0))
                 0)
               (nl_seq2 (ptr-write-u64 (data-addr nl_gc_loop_ctx) 40
-                                      (+ (ptr-read-u64 268436184 0) 16777216))
+                                      (+ (ptr-read-u64 268436184 0)
+                                         (if (< 16777216 (/ (ptr-read-u64 268436184 0) 2))
+                                             (/ (ptr-read-u64 268436184 0) 2)
+                                           16777216)))
                        (ptr-write-u64 (data-addr nl_gc_loop_ctx) 32
                                       (+ (ptr-read-u64 (data-addr nl_gc_loop_ctx) 32) 1))))))
         0))
