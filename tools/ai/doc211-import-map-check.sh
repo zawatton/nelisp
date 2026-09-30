@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+export LC_ALL=C
 set -euo pipefail
 repo=${1:-${DOC211_SOURCE:-$(git rev-parse --show-toplevel 2>/dev/null)/../nel-lib-d211s4-src}}
 map=${DOC211_MAP:-$(dirname "$0")/doc211-import-map.tsv}

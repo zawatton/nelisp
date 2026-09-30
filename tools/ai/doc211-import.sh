@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+export LC_ALL=C
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 target=${1:-$(git -C "$here/../.." rev-parse --show-toplevel)}

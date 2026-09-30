@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+export LC_ALL=C
 set -euo pipefail
 target=${1:-$(git rev-parse --show-toplevel)}
 source=${2:-${DOC211_SOURCE:-$target/../nel-lib-d211s4-src}}

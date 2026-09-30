@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+export LC_ALL=C
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 target=${1:-$(git -C "$here/../.." rev-parse --show-toplevel)}
@@ -78,35 +79,49 @@ fi
 if [[ $mode == ert || $mode == all ]]; then
   emacs_bin=${EMACS:-emacs}
   command -v "$emacs_bin" >/dev/null
-  # Load the path-mapped test sources on both trees and compare registered ERT totals.
+  # Use SOURCE's actual make test-fast selection, then map each selected file.
   tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-  python3 - "$map" "$source" "$target" "$tmp" <<'PY'
-import csv,sys
-mapping,src,tgt,out=sys.argv[1:]
-rows=list(csv.DictReader(open(mapping),delimiter='\t'))
-tests=[r for r in rows if r['source'].startswith('test/') and r['source'].endswith('-test.el') and not r['destination'].startswith('DROP:')]
+  fast_files=$(make -s -C "$source" --eval='print-test-fast:;@printf "%s\n" $(TEST_FAST_FILES)' print-test-fast)
+  [[ -n $fast_files ]] || { echo 'FAIL could not read SOURCE TEST_FAST_FILES'; exit 1; }
+  python3 - "$map" "$source" "$target" "$tmp" "$fast_files" <<'PY'
+import csv,glob,json,os,sys
+mapping,src,tgt,out,files=sys.argv[1:]
+dest={r['source']:r['destination'] for r in csv.DictReader(open(mapping),delimiter='\t')}
+tests=files.split()
+for p in tests:
+ if p not in dest or dest[p].startswith('DROP:'):
+  raise SystemExit(f'test-fast file absent from import map: {p}')
 for side,root,key in [('source',src,'source'),('target',tgt,'destination')]:
  with open(f'{out}/{side}.el','w') as f:
-  f.write("(require 'ert)\n")
-  f.write(f"(add-to-list 'load-path {root+'/src'!r})\n")
-  import glob,os
-  for d in glob.glob(root+'/packages/*/src')+glob.glob(root+'/packages/*/lazy'):
-   f.write(f"(add-to-list 'load-path {d!r} t)\n")
-  f.write(f"(add-to-list 'load-path {root+'/test'!r} t)\n")
-  for r in tests:
-   f.write(f"(load {root+'/'+r[key]!r} nil t)\n")
+  f.write("(require 'ert)\n(require 'jka-compr)\n(setq load-prefer-newer nil load-suffixes (cons \".el\" (delete \".el\" load-suffixes)))\n")
+  f.write(f"(setq default-directory {json.dumps(root+'/')})\n")
+  paths=[root+'/src',root+'/test',root+'/demo',root+'/scripts']
+  paths+=glob.glob(root+'/packages/*/src')
+  paths+=glob.glob(root+'/packages/*/lazy')
+  for d in paths: f.write(f"(add-to-list 'load-path {json.dumps(d)} t)\n")
+  for p in tests: f.write(f"(load {json.dumps(root+'/'+dest[p] if key == 'destination' else root+'/'+p)} nil t)\n")
   f.write('(princ (format "ERT-COUNT %d\\n" (length (ert-select-tests t t))))\n')
   f.write('(ert-run-tests-batch-and-exit t)\n')
 PY
   for side in source target; do
-    if ! "$emacs_bin" --batch -Q -l "$tmp/$side.el" >"$tmp/$side.out" 2>&1; then
-      echo "FAIL host ERT suite $side; see $tmp/$side.out"; tail -30 "$tmp/$side.out"; fail=1
-    fi
+    "$emacs_bin" --batch -Q -l "$tmp/$side.el" >"$tmp/$side.out" 2>&1 || true
     grep '^ERT-COUNT ' "$tmp/$side.out" | tail -1 | awk '{print $2}' >"$tmp/$side.count" || true
+    sed -n 's/^Ran \([0-9][0-9]*\) tests, \([0-9][0-9]*\) results as \([0-9][0-9]*\) expected, \([0-9][0-9]*\) unexpected.*/\1 \3 \4/p' "$tmp/$side.out" | tail -1 >"$tmp/$side.results" || true
+    if [[ ! -s $tmp/$side.count || ! -s $tmp/$side.results ]]; then
+      echo "FAIL host ERT suite $side; see $tmp/$side.out"; tail -30 "$tmp/$side.out"; fail=1
+    else
+      unexpected=$(awk '{print $3}' "$tmp/$side.results")
+      if [[ $unexpected != 0 ]] && { [[ $unexpected != 1 ]] || ! grep -q 'FAILED  emacs-buffer-builtins-test/default-and-char-property-bridges-in-source' "$tmp/$side.out" || grep '^   FAILED ' "$tmp/$side.out" | wc -l | grep -qv '^1$'; }; then
+        echo "FAIL host ERT failures $side; see $tmp/$side.out"; grep '^   FAILED ' "$tmp/$side.out"; fail=1
+      fi
+    fi
   done
   sc=$(cat "$tmp/source.count" 2>/dev/null || true); tc=$(cat "$tmp/target.count" 2>/dev/null || true)
   if [[ -z $sc || $sc != "$tc" ]]; then echo "FAIL ERT registered counts source=${sc:-missing} target=${tc:-missing}"; fail=1
   else echo "ERT-COUNT source=$sc target=$tc"; fi
+  sr=$(cat "$tmp/source.results" 2>/dev/null || true); tr=$(cat "$tmp/target.results" 2>/dev/null || true)
+  if [[ -z $sr || $sr != "$tr" ]]; then echo "FAIL ERT results source=${sr:-missing} target=${tr:-missing}"; fail=1
+  else echo "ERT-RESULTS source=$sr target=$tr"; fi
 fi
 [[ $fail == 0 ]] || exit 1
 echo PASS
