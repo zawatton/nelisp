@@ -39,7 +39,7 @@ features remain behind `emacs-init' and its explicit loader functions.")
      :owner FND
      :feature emacs-foundation
      :features ,emacs-foundation-features
-     :lazy-features nil)
+     :lazy-features ,emacs-foundation-c-core-features)
     (text-core
      :owner TXT
      :feature emacs-text-core

@@ -1,4 +1,9 @@
-#!/usr/bin/env bash
+#!/bin/sh
+# This script uses Bash arrays; preserve its behavior when callers invoke it
+# explicitly through `sh` instead of executing the Bash shebang.
+if [ -z "${BASH_VERSION:-}" ]; then
+  exec bash "$0" "$@"
+fi
 # lint-diagnosability.sh — flag patterns that make a failure hard to diagnose.
 #
 # Not a correctness linter.  Every pattern here is legal, compiles, and often

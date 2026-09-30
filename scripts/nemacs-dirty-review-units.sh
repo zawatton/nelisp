@@ -7,11 +7,14 @@ mkdir -p "$(dirname "$output")"
 unit_for_path() {
   local path="$1"
   case "$path" in
-    scripts/nemacs-dirty-review-units.sh)
+    scripts/nemacs-dirty-review-units.sh|tools/lint-diagnosability.sh)
       printf '%s' "banking-tooling"
       ;;
-    packages/nelisp-emacs-*|scripts/nemacs-library-app-scaffold.el|test/nelisp-emacs-test.el|docs/design/18-library-package-ownership-inventory.org)
+    packages/nelisp-emacs-*|scripts/nemacs-library-app-scaffold.el|scripts/nemacs-public-api-inventory.el|scripts/nemacs-library-boundary-report.el|scripts/nemacs-library-package-archive.el|scripts/nemacs-library-package-compile-cache.el|scripts/nemacs-library-package-archive-smoke.el|scripts/nemacs-library-package-index-smoke.el|scripts/nemacs-library-package-release-bundle-smoke.el|src/nelisp-emacs.el|src/emacs-cc-*.el|test/nelisp-emacs-test.el|docs/design/18-library-package-ownership-inventory.org)
       printf '%s' "package-scaffold"
+      ;;
+    vendor/*)
+      printf '%s' "vendored-dependency"
       ;;
     bin/nemacs|src/nemacs-main.el|src/emacs-fns.el|scripts/verify-nemacs-tui.sh|src/nemacs-loadup.el)
       printf '%s' "production-launcher-tui"

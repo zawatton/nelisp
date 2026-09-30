@@ -147,6 +147,15 @@ This includes event loop definitions and backend callbacks.")
 (defun nemacs-library-boundary-report--file-group (ownership relative)
   "Return ownership group for RELATIVE using OWNERSHIP."
   (or (gethash relative ownership)
+      ;; Match Doc 18 prefix rows, including the C-core unit family.
+      (let (group)
+        (maphash
+         (lambda (pattern owner)
+           (when (and (string-suffix-p "*" pattern)
+                      (string-prefix-p (substring pattern 0 -1) relative))
+             (setq group owner)))
+         ownership)
+        group)
       (and (string-prefix-p "gui/" relative) "GUI")
       "UNOWNED"))
 

@@ -81,9 +81,8 @@
     (let ((target (or buffer (current-buffer))))
       (unless (integerp tick) (signal 'wrong-type-argument (list 'integerp tick)))
       (emacs-cc-buffer-1--buffer target)
-      (when (and (fboundp 'emacs-buffer--ensure-ext)
-                 (fboundp 'emacs-buffer--ext-modified-tick))
-        (setf (emacs-buffer--ext-modified-tick (emacs-buffer--ensure-ext target)) tick))
+      (when (fboundp 'emacs-buffer-set-modified-tick)
+        (emacs-buffer-set-modified-tick tick target))
       tick)))
 
 (unless (fboundp 'other-buffer)

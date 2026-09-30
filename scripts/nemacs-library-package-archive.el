@@ -148,7 +148,25 @@
           (nemacs-library-package-archive--copy-file
            source
            (expand-file-name basename stage-dir))
-          (setq count (1+ count)))))
+          (setq count (1+ count))
+          ;; `compile' has already produced these artifacts before the
+          ;; library gate reaches archive installation. Carry each one beside
+          ;; the source; the install smokes freshness-check the complete cache
+          ;; before reusing it. Source remains in the archive and is loaded by
+          ;; the smoke assertions from the installed package.
+          (let* ((compile-source
+                  (expand-file-name
+                   (nth 3 row) nemacs-library-package-archive-repo-root))
+                 (compiled (concat compile-source "c")))
+            (when (and (file-readable-p compiled)
+                       (not (file-newer-than-file-p compile-source compiled)))
+              (setq seen
+                    (nemacs-library-package-archive--ensure-unique-basename
+                     (concat basename "c") seen package))
+              (nemacs-library-package-archive--copy-file
+               compiled
+               (expand-file-name (concat basename "c") stage-dir))
+              (setq count (1+ count)))))))
     (list stage-dir count)))
 
 (defun nemacs-library-package-archive--tar-package (metadata)
