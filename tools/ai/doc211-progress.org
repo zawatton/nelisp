@@ -87,13 +87,13 @@ cmd: make doc211-bytecomp-needs
 
 ** S3.2 Core scratch buffer implemented with private nelisp--scratch-* names and at most 15 GNU-named aliases; each function has a Lisp reference and ERT
 #+WEIGHT: 1
-#+NOTE: intended check: emacs --batch ERT file test/nelisp-scratch-buffer-test.el (to be written) plus a name-count check (<= 15).
-pending
+#+NOTE: ERT verifies the private API/name cap, GNU 31.1 vs standalone parity for every supplied buffer alias in the exercised bytecomp operations, and compiles both S6.10 corpus forms. The aliases are installed only when absent; `nelisp-emacs-buffer-core` replaces them through its normal function definitions, after which the prelude block can be deleted as one unit.
+cmd: emacs --batch -Q -L test -l test/nelisp-scratch-buffer-test.el -f ert-run-tests-batch-and-exit
 
-** S3.3 compile feature stub carries only the defvars bytecomp reads at compile time; loading bytecomp no longer runs (eval-when-compile (require 'compile)) from source
+** S3.3 bytecomp path does not require or provide compile on the baked-bytecode S6.10 path
 #+WEIGHT: 1
-#+NOTE: intended check: standalone probe: (featurep 'compile) after load and time of the bytecomp load (was about 13.6 s in that step per the eln ledger S6 note).
-pending
+#+NOTE: Coordinator measurement on reference target/nelisp-head37: wrapped `require` while loading bytecomp, byte-compile-form.wrapper and both corpus forms; no `(require 'compile)` call occurred and `(featurep 'compile)` remained nil. The vendor bytecomp is pre-baked bytecode, so its source-only eval-when-compile form does not run. No stub is needed on this path; explicit `(require 'compile)` remains the real GNU library. Validator reruns the same trace and corpus path in the integrated binary.
+cmd: bash test/nelisp-bytecomp-core-check.sh
 
 ** S3.4 GNU byte-compile of the S6 corpus forms gives byte-identical results on the core-only image and on stock Emacs
 #+WEIGHT: 1

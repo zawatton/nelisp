@@ -21884,3 +21884,58 @@ no-op function, without wiring a real menu-bar item into MAPS."
                  (unless (fboundp ',name)
                    (defun ,name (&rest _ignored) nil))))
             names)))))
+
+;; Doc 211 S3.2: compiler bootstrap scratch buffer.  This is deliberately
+;; a small string-backed buffer over the core's existing NeLisp buffer
+;; representation.  Keep the private entry points stable so the API buffer
+;; package can replace the aliases below when it loads; no package feature
+;; is required here.
+(defun nelisp--scratch-buffer (&optional name)
+  (or (nelisp-get-buffer (or name " *nelisp-byte-compile*"))
+      (nelisp-get-buffer-create (or name " *nelisp-byte-compile*"))))
+
+(defun nelisp--scratch-current-buffer ()
+  (or nelisp-buffer--current (nelisp--scratch-buffer)))
+(defun nelisp--scratch-set-buffer (buffer)
+  (unless (nelisp-buffer-p buffer)
+    (signal 'wrong-type-argument (list 'bufferp buffer)))
+  (setq nelisp-buffer--current buffer)
+  buffer)
+(defun nelisp--scratch-point () (nelisp-point (nelisp--scratch-current-buffer)))
+(defun nelisp--scratch-point-min () (nelisp-point-min (nelisp--scratch-current-buffer)))
+(defun nelisp--scratch-point-max () (nelisp-point-max (nelisp--scratch-current-buffer)))
+(defun nelisp--scratch-goto-char (position)
+  (nelisp-goto-char position (nelisp--scratch-current-buffer)))
+(defun nelisp--scratch-insert (&rest strings)
+  (dolist (string strings) (nelisp-insert string (nelisp--scratch-current-buffer)))
+  nil)
+(defun nelisp--scratch-erase-buffer ()
+  (nelisp-erase-buffer (nelisp--scratch-current-buffer)))
+(defun nelisp--scratch-buffer-string ()
+  (nelisp-buffer-string (nelisp--scratch-current-buffer)))
+(defun nelisp--scratch-write-region (start end filename &optional append visit _lockname mustbenew)
+  (write-region (if (numberp start)
+                    (substring (nelisp--scratch-buffer-string) (1- start) (1- end))
+                  start)
+                nil filename append visit nil mustbenew))
+
+;; D12 permits at most 15 GNU names.  Define only missing names: a real
+;; buffer implementation already on the image owns its function cell.  When
+;; nelisp-emacs-buffer-core loads, its ordinary definitions replace these
+;; bootstrap aliases; deleting this block is the S3.5 removal operation.
+(unless (fboundp 'current-buffer)
+  (defalias 'current-buffer #'nelisp--scratch-current-buffer))
+(unless (fboundp 'point) (defalias 'point #'nelisp--scratch-point))
+(unless (fboundp 'point-min) (defalias 'point-min #'nelisp--scratch-point-min))
+(unless (fboundp 'point-max) (defalias 'point-max #'nelisp--scratch-point-max))
+(unless (fboundp 'goto-char) (defalias 'goto-char #'nelisp--scratch-goto-char))
+(unless (fboundp 'insert) (defalias 'insert #'nelisp--scratch-insert))
+(unless (fboundp 'erase-buffer) (defalias 'erase-buffer #'nelisp--scratch-erase-buffer))
+(unless (fboundp 'buffer-string) (defalias 'buffer-string #'nelisp--scratch-buffer-string))
+(unless (fboundp 'write-region) (defalias 'write-region #'nelisp--scratch-write-region))
+(unless (fboundp 'get-buffer-create) (defalias 'get-buffer-create #'nelisp--scratch-buffer))
+(unless (fboundp 'set-buffer) (defalias 'set-buffer #'nelisp--scratch-set-buffer))
+(unless (fboundp 'with-current-buffer)
+  (defmacro with-current-buffer (buffer &rest body)
+    (declare (indent 1) (debug t))
+    `(let ((nelisp-buffer--current ,buffer)) ,@body)))
