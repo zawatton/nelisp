@@ -375,6 +375,30 @@ this segment introduces.
 
 ## Refreshing
 
+## S5 same-name version decisions (2026-09-30)
+
+For each file that differed between the 30.1 consumer tree and this 31.1
+tree, D10 selects GNU 31.1. `vendor/ORIGIN` records the exact installed
+source path and SHA-256; the bundle-load and `make test-fast` evidence was
+collected against the rebuilt sibling bundle. The API-only files are resolved
+by the sibling bundle load path, not by the core reader.
+
+| File | Decision and evidence |
+|---|---|
+| `ring.el` | Keep GNU 31.1 at `vendor/emacs-lisp/emacs-lisp/ring.el`; its bundled feature load succeeds and its exact source hash is pinned in `vendor/ORIGIN`. |
+| `custom.el` | Keep GNU 31.1 at `vendor/emacs-lisp-api/custom.el`; the bundle loads it with the 31.1 `widget` provider available, and the broad package test run passes apart from the recorded buffer bridge case. |
+| `comint.el` | Keep GNU 31.1 at `vendor/emacs-lisp/comint.el` eagerly. A negative boot probe with its section omitted fails on the required `comint-mode-map`; the full section is traced during boot. |
+| `compile.el` | Keep GNU 31.1 at `vendor/emacs-lisp/progmodes/compile.el`; full bundle replay and compile package tests pass, with its section timed in the S5.5 trace. |
+| `isearch.el` | Keep GNU 31.1 at `vendor/emacs-lisp/isearch.el`, but defer the full section from eager boot; a post-boot `(require 'isearch)` succeeds from the vendor load path. |
+| `cl-macs.el` | Keep GNU 31.1 at `vendor/emacs-lisp-api/emacs-lisp/cl-macs.el`, but defer the full section from eager boot; post-boot `(require 'cl-macs)` succeeds. |
+
+`man.el` and `woman.el` are also deferred from eager replay: their sections
+are not boot dependencies, the API vendor load path remains active, and each
+feature was explicitly required after boot. The `.repl` coverage bundle keeps
+all four deferred sections; the refreshed coverage totals do not regress.
+
+## Refreshing
+
 The list-accessor forms `internal--compiler-macro-cXXr`, `caar`, `cadr`,
 `cdar`, `cddr`, `caaar`, `caadr`, `cadar`, `caddr`, `cdaar`, `cdadr`,
 `cddar`, `cdddr`, and `cadddr` are selected byte-for-byte from staged

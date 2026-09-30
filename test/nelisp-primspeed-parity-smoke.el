@@ -162,5 +162,14 @@
 (ps--p (list (directory-file-name "a/") (directory-file-name "a//") (directory-file-name "/") (directory-file-name "///") (directory-file-name "a") (directory-file-name "")))
 (ps--p (list (file-name-as-directory 5)))
 (ps--p (list (regexp-quote 5)))
+;; logb: integer and float exponents, subnormal/large values, non-finites,
+;; signed zero, and GNU's numberp type error.
+(ps--p (mapcar #'logb (list 0 1 -1 2 -2 3 most-positive-fixnum
+                           (1+ most-positive-fixnum))))
+(ps--p (mapcar #'logb (list 0.0 -0.0 0.5 1.0 2.0 3.0 8.0 0.1
+                           5.0e-324 1.7976931348623157e+308)))
+(ps--p (list (logb (/ 1.0 0.0)) (logb (/ -1.0 0.0))
+             (logb (/ 0.0 0.0))))
+(ps--p (logb "not a number"))
 (ignore)
 ;;; nelisp-primspeed-parity-smoke.el ends here

@@ -22,3 +22,8 @@ S3-U2	S3	test/nelisp-scratch-buffer-test.el	3	emacs --batch -Q -L test -l test/n
 S3-U3	S3	test/nelisp-bytecomp-s3-check.sh	0	bash test/nelisp-bytecomp-s3-check.sh core && bash test/nelisp-bytecomp-s3-check.sh deletion	done
 S3-U4	S3	tools/ai/doc211-units.tsv	0	bash tools/ai/doc211-units-check.sh S3	done
 S3-U5	S3	tools/ai/doc211-units-check.sh	0	bash tools/ai/doc211-units-check.sh S3	done
+S5-U1	S5	vendor/ORIGIN	0	bash tools/ai/doc211-vendor-check.sh exist	done
+S5-U2	S5	vendor/SHA256SUMS	0	bash tools/ai/doc211-vendor-check.sh versions	done
+S5-U3	S5	tools/ai/doc211-vendor-check.sh	0	bash tools/ai/doc211-vendor-check.sh differing	done
+S5-U4	S5	tools/ai/doc211-vendor-check.sh	0	bash tools/ai/doc211-vendor-check.sh api-boundary	done
+S5-U5	S5	tools/ai/doc211-vendor-trace.sh	0	bash tools/ai/doc211-vendor-check.sh exist	open

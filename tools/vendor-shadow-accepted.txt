@@ -37,3 +37,29 @@
 #   (string-join '("a" "b" "c") "-")                          -> "a-b-c"
 # All nine remaining entries: identical on this build and on host Emacs 31.1.
 named-let|scripts/nelisp-stdlib-prelude.el|pre-existing NeLisp subr-x-shaped helper, verified byte-for-byte vs Emacs 31.1 (measured before vendor/emacs-lisp/emacs-lisp/subr-x.el existed, per vendor/README.md's load-path-ordering note)
+
+# S5 core/API boundary review (2026-09-30).  These are bootstrap-owned
+# evaluator/compiler forms or compatibility entry points; the matching GNU
+# library is still reachable by explicit require.  They are not substitutes
+# for a GNU library file on load-path.
+byte-compile-file|src/nelisp-bytecode.el|NeLisp artifact compiler entry point emits the runtime's .eln format; GNU bytecomp remains explicitly require-able for GNU source forms.
+define-obsolete-function-alias|lisp/nelisp-stdlib-misc.el|Core compatibility alias primitive is installed before package loading; GNU alias declarations use the same symbol-alias contract.
+define-obsolete-variable-alias|lisp/nelisp-stdlib-misc.el|Core compatibility alias primitive is installed before package loading; GNU alias declarations use the same variable-alias contract.
+defmacro|lisp/nelisp-jit-substrate.el|Evaluator/compiler bootstrap special form; required to define Lisp macros before any GNU package can load.
+defsubst|lisp/nelisp-cl-macros.el|Core macro form lowered by the NeLisp compiler; GNU package definitions use it as source syntax.
+defun|lisp/nelisp-jit-substrate.el|Evaluator/compiler bootstrap special form; required to define functions before any GNU package can load.
+eval-and-compile|lisp/nelisp-stdlib-eval-special.el|Core compile-time evaluator form required while loading the Lisp compiler and GNU packages.
+eval-when-compile|lisp/nelisp-stdlib-eval-special.el|Core compile-time evaluator form required while loading the Lisp compiler and GNU packages.
+isearch-no-upper-case-p|scripts/nelisp-stdlib-prelude.el|Core prelude supplies the bootstrap predicate before API packages; GNU isearch.el remains explicitly loadable and owns interactive isearch commands.
+macroexp--fgrep|scripts/nelisp-stdlib-prelude.el|Core prelude bootstrap helper is available before macroexp.el; source is an internal helper and GNU macroexp.el can be explicitly loaded.
+macroexp-parse-body|lisp/nelisp-stdlib.el|Core compiler helper parses declaration/doc/body forms before optional API packages load.
+macroexpand-1|lisp/nelisp-stdlib.el|Core evaluator/compiler expansion primitive; GNU macroexp.el remains explicitly require-able for extended macro utilities.
+macroexpand-all|scripts/nelisp-stdlib-prelude.el|Core bootstrap expansion helper is available before macroexp.el; GNU macroexp.el remains explicitly loadable.
+make-obsolete|lisp/nelisp-stdlib-misc.el|Core compatibility declaration helper is installed before package loading; GNU obsolete declarations use the same compatibility metadata.
+make-obsolete-variable|lisp/nelisp-stdlib-misc.el|Core compatibility declaration helper is installed before package loading; GNU obsolete declarations use the same compatibility metadata.
+regexp-opt|scripts/nelisp-stdlib-prelude.el|Core bootstrap regexp compiler primitive is available before regex consumers; GNU regexp-opt.el remains explicitly require-able.
+regexp-opt-charset|scripts/nelisp-stdlib-prelude.el|Core regexp compiler helper is used by the bootstrap regexp-opt implementation; GNU regexp-opt.el remains explicitly require-able.
+regexp-opt-group|scripts/nelisp-stdlib-prelude.el|Core regexp compiler helper is used by the bootstrap regexp-opt implementation; GNU regexp-opt.el remains explicitly require-able.
+setf|lisp/nelisp-cl-macros.el|Core generalized-variable macro expansion is required while loading core/compiler forms; GNU cl-macs.el remains explicitly require-able.
+with-no-warnings|lisp/nelisp-stdlib-eval-special.el|Core compiler declaration form is parsed during bootstrap; GNU packages use it as source syntax.
+with-suppressed-warnings|lisp/nelisp-stdlib-eval-special.el|Core compiler declaration form is parsed during bootstrap; GNU packages use it as source syntax.

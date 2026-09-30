@@ -140,6 +140,34 @@ OBJECT can be a string or an external documentation reference."
   (defun nelisp--check-number (x)
     (unless (numberp x) (signal 'wrong-type-argument (list 'numberp x)))
     x))
+(unless (fboundp 'logb)
+  (defun logb (arg)
+    "Return the largest integer not greater than log2 of the magnitude of ARG."
+    (nelisp--check-number arg)
+    (let ((magnitude (if (< arg 0) (- 0 arg) arg)))
+      (cond
+       ((= magnitude 0) (/ -1.0 0.0))
+       ((integerp magnitude)
+        (let ((exponent 0))
+          (while (>= magnitude 2)
+            (setq magnitude (/ magnitude 2)
+                  exponent (1+ exponent)))
+          exponent))
+       ;; NaN is the only number unequal to itself.  Infinity needs a
+       ;; separate exit because repeated division by two leaves it infinite.
+       ((not (= magnitude magnitude)) magnitude)
+       ((= magnitude (/ 1.0 0.0)) magnitude)
+       (t
+        ;; Scaling by powers of two is exact for binary floats, including
+        ;; subnormals; it also avoids rounding around exact powers of two.
+        (let ((exponent 0))
+          (while (>= magnitude 2.0)
+            (setq magnitude (/ magnitude 2.0)
+                  exponent (1+ exponent)))
+          (while (< magnitude 1.0)
+            (setq magnitude (* magnitude 2.0)
+                  exponent (1- exponent)))
+          exponent))))))
 (unless (fboundp 'nelisp--check-integer)
   (defun nelisp--check-integer (x)
     (unless (integerp x) (signal 'wrong-type-argument (list 'integerp x)))

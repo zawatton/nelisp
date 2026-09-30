@@ -8,9 +8,10 @@
 ;; the pieces GNU gets from its dump, without editing any vendored file:
 ;;
 ;; - The class objects `oclosure.el' builds on: `cl-slot-descriptor',
-;;   `built-in-class' and the `t' .. `interpreted-function' branch of the
-;;   built-in type DAG, taken as the exact top-level forms of GNU's
-;;   cl-preloaded.el (vendor/staged-emacs-lisp), plus `cl--arglist-args' and
+;;   `built-in-class' and every built-in type class in file order of the
+;;   built-in type DAG and derived type definitions, taken as the exact
+;;   top-level forms of GNU's cl-preloaded.el (vendor/staged-emacs-lisp),
+;;   plus `cl--arglist-args' and
 ;;   `cl--lambda-list-keywords' from cl-macs.el.  The prelude's own
 ;;   cl-lib subset stands in for the rest of cl-macs, so `cl-macs' is
 ;;   provided (loading GNU's would replace that subset).
@@ -73,11 +74,32 @@ skipping trivia and reading from a string offset made this loader quadratic
                 (memq (nth 1 form) '(cl--copy-slot-descriptor
                                      cl--class-allparents
                                      cl--define-built-in-type)))
-           (and (eq (car-safe form) 'cl--define-built-in-type)
-                (memq (nth 1 form) '(t atom function compiled-function closure
-                                       byte-code-function
-                                       interpreted-function)))))
-     12)))
+           ;; GNU 31.1 derived types (for example `natnum') may be parents
+           ;; of later vendor definitions. Stage all type declarations in
+           ;; source order so parents are registered before their children.
+           (memq (car-safe form) '(cl--define-built-in-type cl-deftype))))
+     61)
+    ;; Guard the staging contract against GNU source changes: every type
+    ;; declared by cl-preloaded must now be visible to cl's class lookup.
+    (nelisp-nadvice-substrate--check-preloaded-types)))
+
+(defun nelisp-nadvice-substrate--check-preloaded-types ()
+  "Signal if any type declared in GNU cl-preloaded.el was not registered."
+  (let ((file (locate-library "cl-preloaded" nil nil)) names)
+    (unless file
+      (signal 'file-missing (list "Cannot locate staged GNU source" "cl-preloaded")))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (goto-char (point-min))
+      (condition-case nil
+          (while t
+            (let ((form (read (current-buffer))))
+              (when (memq (car-safe form) '(cl--define-built-in-type cl-deftype))
+                (push (nth 1 form) names))))
+        (end-of-file nil)))
+    (dolist (name (nreverse names))
+      (unless (cl--find-class name)
+        (error "GNU cl-preloaded type was not registered: %S" name)))))
 
 (defun nelisp-nadvice-substrate--stage-cl-macs ()
   "Define the two cl-macs.el helpers oclosure.el uses, and provide `cl-macs'."
