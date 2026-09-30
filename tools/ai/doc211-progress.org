@@ -107,7 +107,7 @@ pending
 
 ** S3.6 Unit manifest for this stage exists in tools/ai/doc211-units.tsv: every unit is at most 12 functions or one file, has its own acceptance command, and no two open units write the same file
 #+WEIGHT: 1
-#+NOTE: intended check: tools/ai/doc211-units-check.sh <stage> (to be written): validates the manifest columns, the size limit, per-unit command presence, and file-overlap serialization; exit 0 iff valid.
+#+NOTE: intended check: tools/ai/doc211-units-check.sh S3 (to be written): validates the manifest columns, the size limit, per-unit command presence, and file-overlap serialization; exit 0 iff valid.
 pending
 
 ** S3.7 END-TO-END: eln ledger 70 of 70 PASS on a core-only image with every S6/S10 direct run inside the 55 s cap
@@ -119,37 +119,37 @@ pending
 
 ** S4.1 Mapping file covers every tracked nel-lib path (src, test, tools, scripts, apps, gui, bin, docs, ledgers, vendor consumer trees) with a destination or an explicit drop
 #+WEIGHT: 1
-#+NOTE: intended check: tools/ai/doc211-import-map-check.sh (to be written): git ls-files of nel-lib versus the mapping; unmapped count must be 0; drops limited to mirror packages/, build, target, vendor/nelisp, vendor/emacs-lisp*.
+#+NOTE: intended check: tools/ai/doc211-s4-check.sh S4.1; checks source git ls-files against the complete map, rejects extra rows, and enforces the allowed drop prefixes.
 pending
 
 ** S4.2 Collision decision file names the surviving copy for nelisp-coding, nelisp-text-buffer, nelisp-regex, test/nelisp-coding-test.el, test/fixtures, bin/nemacs and design-doc numbers
 #+WEIGHT: 1
-#+NOTE: intended check: tools/ai/doc211-collisions-check.sh: every collision found by a fresh comm scan has a decision row.
+#+NOTE: intended check: tools/ai/doc211-s4-check.sh S4.2; recomputes mapped destination collisions from both git indexes and requires a decision for each plus the named feature collisions.
 pending
 
 ** S4.3 Determinism: running the import twice on identical input gives identical commit ids, and a second import after new nel-lib commits adds only those commits
 #+WEIGHT: 1
-#+NOTE: intended check: script tools/ai/doc211-import-verify.sh repeat on a scratch copy (git-filter-repo at ~/.local/bin).
+#+NOTE: intended check: tools/ai/doc211-s4-check.sh S4.3; filters two identical clones and a third clone with one new kept-file commit, asserting identical IDs and a one-commit delta.
 pending
 
 ** S4.4 Every moved file keeps its sha256; reachable commit count for kept paths is preserved; git log --follow on 5 sampled files reaches the original first commit
 #+WEIGHT: 1
-#+NOTE: intended check: tools/ai/doc211-import-verify.sh sha count follow.
+#+NOTE: intended check: tools/ai/doc211-s4-check.sh S4.4; validates the sha/history/follow evidence from tools/ai/doc211-import-verify.sh.
 pending
 
 ** S4.5 Merge is a real merge commit with two parents; tags pre-doc211 (nelisp) and pre-doc211-final (nel-lib) exist
 #+WEIGHT: 1
-#+NOTE: intended check: git rev-list --parents -n1 HEAD | wc -w == 3; git tag -l.
+#+NOTE: intended check: tools/ai/doc211-s4-check.sh S4.5; asserts two merge parents and both rollback tags.
 pending
 
 ** S4.6 Unit manifest for this stage exists in tools/ai/doc211-units.tsv: every unit is at most 12 functions or one file, has its own acceptance command, and no two open units write the same file
 #+WEIGHT: 1
-#+NOTE: intended check: tools/ai/doc211-units-check.sh <stage> (to be written): validates the manifest columns, the size limit, per-unit command presence, and file-overlap serialization; exit 0 iff valid.
+#+NOTE: intended check: tools/ai/doc211-s4-check.sh S4.6; tools/ai/doc211-units-check.sh S4 validates the manifest columns, one-file/12-function bound, command presence, status, and open-unit overlap.
 pending
 
 ** S4.7 END-TO-END: moved package unit ERT run from packages/<pkg>/test/ passes with the same counts as in nel-lib, and nelisp make pkg-graph pkg-load-lists ns-inventory emacs-compat parens-check pass with the packages present
 #+WEIGHT: 1
-#+NOTE: intended check: tools/ai/doc211-import-verify.sh ert; then for g in pkg-graph pkg-load-lists ns-inventory emacs-compat parens-check; do make $g || exit 1; done (baselines regenerated per Doc 211 section 4.7).
+#+NOTE: intended check: tools/ai/doc211-s4-check.sh S4.7; compares host-Emacs ERT counts, then runs each listed make gate and reports the first exact failure (baseline regeneration may be required by §4.7).
 pending
 
 * S5 Vendored GNU Lisp is one 31.1 tree in nelisp/vendor with sha256 and origin
@@ -186,7 +186,7 @@ pending
 
 ** S5.7 Unit manifest for this stage exists in tools/ai/doc211-units.tsv: every unit is at most 12 functions or one file, has its own acceptance command, and no two open units write the same file
 #+WEIGHT: 1
-#+NOTE: intended check: tools/ai/doc211-units-check.sh <stage> (to be written): validates the manifest columns, the size limit, per-unit command presence, and file-overlap serialization; exit 0 iff valid.
+#+NOTE: intended check: tools/ai/doc211-units-check.sh S5 (to be written): validates the manifest columns, the size limit, per-unit command presence, and file-overlap serialization; exit 0 iff valid.
 pending
 
 ** S5.8 END-TO-END: the bootstrap bundle built from nelisp vendor equals the previous bundle modulo path comments and boots (S1.4 cmd, under 50 s)
@@ -233,7 +233,7 @@ pending
 
 ** S6.8 Unit manifest for this stage exists in tools/ai/doc211-units.tsv: every unit is at most 12 functions or one file, has its own acceptance command, and no two open units write the same file
 #+WEIGHT: 1
-#+NOTE: intended check: tools/ai/doc211-units-check.sh <stage> (to be written): validates the manifest columns, the size limit, per-unit command presence, and file-overlap serialization; exit 0 iff valid.
+#+NOTE: intended check: tools/ai/doc211-units-check.sh S6 (to be written): validates the manifest columns, the size limit, per-unit command presence, and file-overlap serialization; exit 0 iff valid.
 pending
 
 ** S6.9 END-TO-END: eln 70/70, usable 27/30, c-core snapshot, every gate in preflight --list PASS, and the bundle boots under 50 s, all in a tree with no vendor/nelisp
@@ -270,7 +270,7 @@ pending
 
 ** S7.6 Unit manifest for this stage exists in tools/ai/doc211-units.tsv: every unit is at most 12 functions or one file, has its own acceptance command, and no two open units write the same file
 #+WEIGHT: 1
-#+NOTE: intended check: tools/ai/doc211-units-check.sh <stage> (to be written): validates the manifest columns, the size limit, per-unit command presence, and file-overlap serialization; exit 0 iff valid.
+#+NOTE: intended check: tools/ai/doc211-units-check.sh S7 (to be written): validates the manifest columns, the size limit, per-unit command presence, and file-overlap serialization; exit 0 iff valid.
 pending
 
 ** S7.7 END-TO-END: eln 70/70 (core-only image per S3), usable 27/30, c-core snapshot, all gates PASS after the last slice
@@ -307,7 +307,7 @@ pending
 
 ** S8.6 Unit manifest for this stage exists in tools/ai/doc211-units.tsv: every unit is at most 12 functions or one file, has its own acceptance command, and no two open units write the same file
 #+WEIGHT: 1
-#+NOTE: intended check: tools/ai/doc211-units-check.sh <stage> (to be written): validates the manifest columns, the size limit, per-unit command presence, and file-overlap serialization; exit 0 iff valid.
+#+NOTE: intended check: tools/ai/doc211-units-check.sh S8 (to be written): validates the manifest columns, the size limit, per-unit command presence, and file-overlap serialization; exit 0 iff valid.
 pending
 
 ** S8.7 END-TO-END: S1.4 boot under 50 s, usable 27/30 and eln 70/70 on the shipped images
@@ -339,7 +339,7 @@ pending
 
 ** S9.5 Unit manifest for this stage exists in tools/ai/doc211-units.tsv: every unit is at most 12 functions or one file, has its own acceptance command, and no two open units write the same file
 #+WEIGHT: 1
-#+NOTE: intended check: tools/ai/doc211-units-check.sh <stage> (to be written): validates the manifest columns, the size limit, per-unit command presence, and file-overlap serialization; exit 0 iff valid.
+#+NOTE: intended check: tools/ai/doc211-units-check.sh S9 (to be written): validates the manifest columns, the size limit, per-unit command presence, and file-overlap serialization; exit 0 iff valid.
 pending
 
 ** S9.6 END-TO-END: usable 27/30, c-core snapshot, eln 70/70, all gates PASS, timings within caps after all deletions
@@ -376,7 +376,7 @@ pending
 
 ** S10.6 Unit manifest for this stage exists in tools/ai/doc211-units.tsv: every unit is at most 12 functions or one file, has its own acceptance command, and no two open units write the same file
 #+WEIGHT: 1
-#+NOTE: intended check: tools/ai/doc211-units-check.sh <stage> (to be written): validates the manifest columns, the size limit, per-unit command presence, and file-overlap serialization; exit 0 iff valid.
+#+NOTE: intended check: tools/ai/doc211-units-check.sh S10 (to be written): validates the manifest columns, the size limit, per-unit command presence, and file-overlap serialization; exit 0 iff valid.
 pending
 
 ** S10.7 END-TO-END: eln 70/70, usable 27/30, c-core snapshot, all gates and parity smokes, timings within caps (meter 55 s, S1.4 50 s) after the final batch

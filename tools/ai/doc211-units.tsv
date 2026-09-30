@@ -1,10 +1,10 @@
 unit_id	stage	files	function_count	owner_check_command	status
-S2-U1	S2	AGENTS.md	0	grep -q 'Minimal native surface' AGENTS.md	done
-S2-U2	S2	tools/nelisp-native-inventory.el	0	make native-inventory	done
-S2-U3	S2	tools/nelisp-native-inventory.txt	0	make native-inventory	done
-S2-U4	S2	Makefile	0	make native-inventory && make core-purity	done
-S2-U5	S2	tools/core-purity.sh	0	make core-purity	done
-S2-U6	S2	tools/ai/preflight.sh	0	bash tools/ai/preflight.sh --list | grep -E 'native-inventory|core-purity'	done
-S2-U7	S2	tools/ai/doc211-units.tsv	0	bash tools/ai/doc211-units-check.sh S2	done
-S2-U8	S2	tools/ai/doc211-units-check.sh	0	bash tools/ai/doc211-units-check.sh S2	done
-S2-U9	S2	tools/ai/doc211-progress.org	0	/home/madblack-21/Cowork/Notes/bin/progress-meter.sh --ledger tools/ai/doc211-progress.org --only S2.7	done
+S4-map	S4	tools/ai/doc211-import-map.tsv	0	tools/ai/doc211-import-map-check.sh	done
+S4-map-check	S4	tools/ai/doc211-import-map-check.sh	0	tools/ai/doc211-s4-check.sh S4.1	done
+S4-collisions	S4	tools/ai/doc211-collisions.tsv	0	tools/ai/doc211-collisions-check.sh	done
+S4-collisions-check	S4	tools/ai/doc211-collisions-check.sh	0	tools/ai/doc211-s4-check.sh S4.2	done
+S4-import	S4	tools/ai/doc211-import.sh	0	bash -n tools/ai/doc211-import.sh	open
+S4-verify	S4	tools/ai/doc211-import-verify.sh	0	bash -n tools/ai/doc211-import-verify.sh	open
+S4-units-check	S4	tools/ai/doc211-units-check.sh	0	tools/ai/doc211-units-check.sh S4	done
+S4-check	S4	tools/ai/doc211-s4-check.sh	0	bash -n tools/ai/doc211-s4-check.sh	open
+S4-ledger	S4	tools/ai/doc211-progress.org	0	tools/ai/doc211-s4-check.sh S4.6	open
