@@ -75,8 +75,9 @@
    #'string<))
 
 (defun nemacs-ownership-coverage--wildcard-prefix (relative)
-  "Return wildcard prefix for RELATIVE when it is a simple `path/*' row."
-  (and (string-suffix-p "/*" relative)
+  "Return wildcard prefix for RELATIVE when it is a simple `prefix*' row.
+Both `path/*' (a directory) and `path/name-*' (a file-name prefix) match."
+  (and (string-suffix-p "*" relative)
        (substring relative 0 -1)))
 
 (defun nemacs-ownership-coverage--owner-for (relative entries)
