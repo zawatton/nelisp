@@ -1411,7 +1411,7 @@ nemacs-library-package-signature-release-sign: nemacs-library-package-signature-
 		-f nemacs-library-package-signature-release-sign-batch
 
 nemacs-library-package-signature-release-verify:
-	$(MAKE) nemacs-library-package-release-key-policy \
+	$(MAKE) --no-print-directory -f $(firstword $(MAKEFILE_LIST)) nemacs-library-package-release-key-policy \
 		NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_STRICT=1
 	mkdir -p "$(BUILD_DIR)"
 	$(EMACS) -Q -L scripts \
@@ -1483,7 +1483,7 @@ nemacs-library-package-release-bundle-smoke: nemacs-library-package-release-bund
 		-f nemacs-library-package-release-bundle-smoke-summary-batch
 
 nemacs-library-package-release-publication-policy: nemacs-library-package-release-bundle-smoke
-	$(MAKE) nemacs-library-package-release-publication-policy-run
+	$(MAKE) --no-print-directory -f $(firstword $(MAKEFILE_LIST)) nemacs-library-package-release-publication-policy-run
 
 nemacs-library-package-release-publication-policy-run:
 	mkdir -p "$(BUILD_DIR)"
@@ -1498,15 +1498,15 @@ nemacs-library-package-release-publication-policy-run:
 		-f nemacs-library-package-release-publication-policy-batch
 
 nemacs-library-package-release-bundle: nemacs-library-package-dependency-publication-policy nemacs-library-package-signature-release
-	$(MAKE) nemacs-library-package-release-bundle-manifest \
+	$(MAKE) --no-print-directory -f $(firstword $(MAKEFILE_LIST)) nemacs-library-package-release-bundle-manifest \
 		NEMACS_LIBRARY_RELEASE_BUNDLE_STRICT=1 \
 		NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_STRICT=1 \
 		NEMACS_LIBRARY_RELEASE_SIGNATURE_STRICT=1
-	$(MAKE) nemacs-library-package-release-bundle-smoke \
+	$(MAKE) --no-print-directory -f $(firstword $(MAKEFILE_LIST)) nemacs-library-package-release-bundle-smoke \
 		NEMACS_LIBRARY_RELEASE_BUNDLE_STRICT=1 \
 		NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_STRICT=1 \
 		NEMACS_LIBRARY_RELEASE_SIGNATURE_STRICT=1
-	$(MAKE) nemacs-library-package-release-publication-policy-run \
+	$(MAKE) --no-print-directory -f $(firstword $(MAKEFILE_LIST)) nemacs-library-package-release-publication-policy-run \
 		NEMACS_LIBRARY_RELEASE_PUBLICATION_STRICT=1 \
 		NEMACS_LIBRARY_RELEASE_BUNDLE_STRICT=1 \
 		NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_STRICT=1 \
@@ -1529,7 +1529,7 @@ nemacs-library-package-release-rehearsal: nemacs-library-package-release-rehears
 		exit 1; \
 	fi; \
 	GNUPGHOME="$(abspath $(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_GNUPGHOME))" \
-		$(MAKE) nemacs-library-package-release-bundle \
+		$(MAKE) --no-print-directory -f $(firstword $(MAKEFILE_LIST)) nemacs-library-package-release-bundle \
 		NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_FILE="$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_PUBLIC_KEY)" \
 		NEMACS_LIBRARY_RELEASE_SIGNING_KEY_FINGERPRINT="$$fingerprint" \
 		NEMACS_LIBRARY_PACKAGE_ARCHIVE="$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/archive.tsv" \
@@ -1614,12 +1614,12 @@ nemacs-library-package-release-config-check:
 		"$(abspath $(NEMACS_LIBRARY_PACKAGE_RELEASE_CONFIG_CHECK_SUMMARY))"
 
 nemacs-library-package-release-ready: nemacs-library-package-release-config-check
-	$(MAKE) nemacs-library-package-release-key-policy \
+	$(MAKE) --no-print-directory -f $(firstword $(MAKEFILE_LIST)) nemacs-library-package-release-key-policy \
 		NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_STRICT=1
 
 nemacs-library-package-release-from-config:
-	$(MAKE) nemacs-library-package-release-ready
-	$(MAKE) nemacs-library-package-release-bundle
+	$(MAKE) --no-print-directory -f $(firstword $(MAKEFILE_LIST)) nemacs-library-package-release-ready
+	$(MAKE) --no-print-directory -f $(firstword $(MAKEFILE_LIST)) nemacs-library-package-release-bundle
 
 nemacs-library-package-dependency-publication-policy: nemacs-library-package-metadata nemacs-library-package-scaffold nemacs-library-package-deps
 	mkdir -p "$(BUILD_DIR)"
@@ -1662,7 +1662,7 @@ nemacs-library-package-vendor-lock: nemacs-library-package-dependency-publicatio
 		-f nemacs-library-package-vendor-lock-batch
 
 nemacs-library-package-vendor-release-verify:
-	$(MAKE) nemacs-library-package-vendor-lock \
+	$(MAKE) --no-print-directory -f $(firstword $(MAKEFILE_LIST)) nemacs-library-package-vendor-lock \
 		NEMACS_LIBRARY_VENDOR_RELEASE_STRICT=1 \
 		NEMACS_LIBRARY_PACKAGE_VENDOR_LOCK="$(NEMACS_LIBRARY_PACKAGE_VENDOR_RELEASE_LOCK)" \
 		NEMACS_LIBRARY_PACKAGE_VENDOR_LOCK_SUMMARY="$(NEMACS_LIBRARY_PACKAGE_VENDOR_RELEASE_LOCK_SUMMARY)"
@@ -2031,7 +2031,7 @@ $(NEMACS_BOOTSTRAP_BUNDLE): scripts/build-nelisp-bootstrap.el scripts/doc211-boo
 compile-nelisp-bootstrap-artifact: $(NEMACS_BOOTSTRAP_ARTIFACT)
 	@test -r "$(NEMACS_BOOTSTRAP_ARTIFACT).manifest.el" || { \
 		rm -f "$(NEMACS_BOOTSTRAP_ARTIFACT)"; \
-		$(MAKE) "$(NEMACS_BOOTSTRAP_ARTIFACT)"; \
+		$(MAKE) --no-print-directory -f $(firstword $(MAKEFILE_LIST)) "$(NEMACS_BOOTSTRAP_ARTIFACT)"; \
 	}
 	test -r "$(NEMACS_BOOTSTRAP_ARTIFACT).manifest.el"
 
@@ -2100,7 +2100,7 @@ $(NEMACS_INTERACTIVE_RUNTIME_IMAGE): $(NEMACS_BOOTSTRAP_BUNDLE) $(NEMACS_RUNTIME
 	mv "$(NEMACS_INTERACTIVE_RUNTIME_IMAGE).tmp" "$(NEMACS_INTERACTIVE_RUNTIME_IMAGE)"
 
 bake-vendor-core-runtime-image: nemacs-library-package-scaffold nemacs-library-app-scaffold
-	test -r "$(NEMACS_RUNTIME_IMAGE)" || $(MAKE) "$(NEMACS_RUNTIME_IMAGE)"
+	test -r "$(NEMACS_RUNTIME_IMAGE)" || $(MAKE) --no-print-directory -f $(firstword $(MAKEFILE_LIST)) "$(NEMACS_RUNTIME_IMAGE)"
 	test -x "$(NELISP_BIN)"
 	mkdir -p "$(dir $(NEMACS_VENDOR_CORE_RUNTIME_IMAGE))"
 	ulimit -s "$(NELISP_STACK_LIMIT)" 2>/dev/null || true; \
@@ -2132,7 +2132,7 @@ $(NEMACS_ORG_BRIDGE_BUNDLE): scripts/build-nelisp-emacs-org-bridge-bundle.el pac
 		-f nelisp-emacs-org-bridge-bundle-build-batch
 
 bake-magit-runtime-image: $(NEMACS_MAGIT_BRIDGE_BUNDLE) nemacs-library-package-scaffold nemacs-library-app-scaffold
-	test -r "$(NEMACS_RUNTIME_IMAGE)" || $(MAKE) "$(NEMACS_RUNTIME_IMAGE)"
+	test -r "$(NEMACS_RUNTIME_IMAGE)" || $(MAKE) --no-print-directory -f $(firstword $(MAKEFILE_LIST)) "$(NEMACS_RUNTIME_IMAGE)"
 	test -x "$(NELISP_BIN)"
 	mkdir -p "$(dir $(NEMACS_MAGIT_RUNTIME_IMAGE))"
 	ulimit -s "$(NELISP_STACK_LIMIT)" 2>/dev/null || true; \

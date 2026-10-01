@@ -232,7 +232,7 @@ pending
 
 ** S6.8 Unit manifest for this stage exists in tools/ai/doc211-units.tsv: every unit is at most 12 functions or one file, has its own acceptance command, and no two open units write the same file
 #+WEIGHT: 1
-#+NOTE: doc211-units-check.sh S6 validates manifest columns, the unit size limit, acceptance commands and overlap serialization. The units include source resolution, launcher/local-artifact relocation and production path/scaffold identity repairs. The stage still requires the independent S6.9 end-to-end criterion.
+#+NOTE: doc211-units-check.sh S6 validates manifest columns, the unit size limit, acceptance commands and overlap serialization. The units include source resolution, launcher/local-artifact relocation, production path/scaffold identity repairs and explicit recursive Makefile routing. The stage still requires the independent S6.9 end-to-end criterion.
 cmd: bash tools/ai/doc211-units-check.sh S6
 
 ** S6.9 END-TO-END: eln 70/70, usable 27/30, c-core snapshot, every gate in preflight --list PASS, and the bundle boots under 50 s, all in a single in-tree build
