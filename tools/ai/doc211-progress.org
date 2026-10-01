@@ -133,8 +133,8 @@ cmd: DOC211_SOURCE=${DOC211_SOURCE:?set DOC211_SOURCE to the frozen nel-lib chec
 
 ** S4.3 Determinism: running the import twice on identical input gives identical commit ids, and a second import after new nel-lib commits adds only those commits
 #+WEIGHT: 1
-#+NOTE: intended check: tools/ai/doc211-s4-check.sh S4.3; filters two identical clones and a third clone with one new kept-file commit, asserting identical IDs and a one-commit delta.
-pending
+#+NOTE: Produce evidence with tools/ai/doc211-import-repeat-probe.py using the current clean target and frozen source. The fast verifier binds all 37 import assertions to the source and target commits, map, importer, producer and verifier hashes; it checks deterministic merges, incremental history, metadata recovery and rejection controls.
+cmd: DOC211_SOURCE=${DOC211_SOURCE:?set DOC211_SOURCE to the frozen nel-lib checkout} bash tools/ai/doc211-s4-check.sh S4.3
 
 ** S4.4 Every moved file keeps its sha256; reachable commit count for kept paths is preserved; git log --follow on 5 sampled files reaches the original first commit
 #+WEIGHT: 1

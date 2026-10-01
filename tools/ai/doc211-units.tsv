@@ -35,7 +35,7 @@ S6-U5	S6	scripts/build-nelisp-emacs-magit-bridge-bundle.el	0	make build/nelisp-e
 S6-U6	S6	scripts/build-nelisp-emacs-org-bridge-bundle.el	0	make build/nelisp-emacs-org-bridge-bundle.el	done
 S6-U7	S6	tools/ai/doc211-cutover.sh	0	bash tools/ai/doc211-cutover.sh freeze	done
 S6-U8	S6	tools/ai/doc211-cutover-guards.tsv	0	bash tools/ai/doc211-cutover.sh guards	open
-S6-U9	S6	tools/ai/doc211-baseline-check.sh	0	bash tools/ai/doc211-baseline-check.sh ccore	open
+S6-U9	S6	tools/ai/doc211-baseline-check.sh	0	bash tools/ai/doc211-baseline-check.sh ccore	done
 S6-U10	S6	tools/ai/usable-progress.org	0	bash tools/ai/doc211-baseline-check.sh usable	open
 S6-U11	S6	tools/ai/c-core-progress.org	0	bash tools/ai/doc211-baseline-check.sh ccore	open
 S6-U12	S6	tools/c-core-coverage.sh	0	bash tools/c-core-coverage.sh summary	open
@@ -60,3 +60,8 @@ S6-U30	S6	packages/nl-ns/test/nl-ns-test.el	0	emacs -Q --batch -L packages/nl-ns
 S6-U31	S6	tools/ai/doc211-import-map-check.sh	0	bash tools/ai/doc211-s4-check.sh S4.1	open
 S6-U32	S6	tools/ai/doc211-collisions-check.sh	0	bash tools/ai/doc211-s4-check.sh S4.2	open
 S6-U33	S6	tools/ai/doc211-s4-check.sh	0	bash tools/ai/doc211-s4-check.sh S4.5	open
+S6-U34	S6	tools/ai/doc211-import-verify.sh	0	bash -n tools/ai/doc211-import-verify.sh	open
+S6-U35	S6	test/nelisp-emacs-lib/nemacs-wrap-init-test.el	0	emacs -Q --batch -L test/nelisp-emacs-lib -l nemacs-wrap-init-test -f ert-run-tests-batch-and-exit	open
+S6-U36	S6	tools/ai/doc211-baseline-check.sh	0	bash -n tools/ai/doc211-baseline-check.sh	open
+S6-U37	S6	tools/ai/doc211-import.sh	0	bash -n tools/ai/doc211-import.sh	open
+S6-U38	S6	tools/ai/doc211-import-repeat-probe.py	10	python3 tools/ai/doc211-import-repeat-probe.py . ${DOC211_SOURCE:?} d5bfa93489a587f09369089800d776a5c94128ae target/progress/doc211-import-repeat-evidence.json	open

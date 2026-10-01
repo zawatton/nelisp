@@ -18,7 +18,7 @@
 
 (defconst nemacs-wrap-init-test--source
   (expand-file-name
-   "../scripts/nemacs-wrap-init.el"
+   "../../scripts/nemacs-wrap-init.el"
    (file-name-directory (or load-file-name buffer-file-name))))
 
 (load nemacs-wrap-init-test--source nil t)

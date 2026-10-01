@@ -105,7 +105,7 @@ ledger_names={'usable':['tools/ai/usable-progress.org'],'ccore':['tools/ai/c-cor
 for ledger in ledger_names:
  original=r/ledger; source_lines=original.read_text().splitlines(); criteria=[]; current=None; seen=collections.Counter()
  for line in source_lines:
-  heading=re.match(r'^\*\* ([SC]\d+\.\d+)(?:\s|$)',line)
+  heading=re.match(r'^\*\* ([SC]\d+(?:\.\d+)+)(?:\s|$)',line)
   if heading:
    if current: criteria.append(current)
    cid=heading.group(1); seen[cid]+=1
@@ -123,7 +123,7 @@ for ledger in ledger_names:
  derived=derived_dir/original.name; rewritten=[]
  by_occurrence={(c['criterion_id'],c['occurrence']):c for c in criteria}; heading_seen=collections.Counter(); active=None
  for line in source_lines:
-  heading=re.match(r'^\*\* ([SC]\d+\.\d+)(?:\s|$)',line)
+  heading=re.match(r'^\*\* ([SC]\d+(?:\.\d+)+)(?:\s|$)',line)
   if heading:
    cid=heading.group(1); heading_seen[cid]+=1
    active=by_occurrence[(cid,heading_seen[cid])]
@@ -210,7 +210,7 @@ for prefix,path in [('nelisp',bin),('eln',eln)]:
  if (stored_path,stored_hash)!=(current_path,current_hash): fail('stale/missing companion cold image '+str(cold))
 expected=[]
 for ledger in ('tools/ai/usable-progress.org','tools/ai/c-core-progress.org','tools/ai/eln-progress.org'):
- ids=re.findall(r'^\*\* ([SC]\d+\.\d+)',(r/ledger).read_text(),re.M); seen={}
+ ids=re.findall(r'^\*\* ([SC]\d+(?:\.\d+)+)(?:\s|$)',(r/ledger).read_text(),re.M); seen={}
  for i in ids:
   seen[i]=seen.get(i,0)+1; expected.append(ledger+':'+i+'#'+str(seen[i]))
 expected += ['preflight-list','bundle-boot']; by={z.get('id'):z for z in rows}

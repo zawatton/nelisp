@@ -7,7 +7,7 @@ source=${DOC211_SOURCE:-$target/../nel-lib-d211s4-src}
 case "$criterion" in
   S4.1) "$here/doc211-import-map-check.sh" "$source" ;;
   S4.2) "$here/doc211-collisions-check.sh" "$target" "$source" ;;
-  S4.3) "$here/doc211-import-verify.sh" "$target" "$source" repeat ;;
+  S4.3) "$here/doc211-import-verify.sh" "$target" "$source" repeat-evidence ;;
   S4.4) "$here/doc211-import-verify.sh" "$target" "$source" history ;;
   S4.5)
     base_ref=${DOC211_BASE_REF:-refs/tags/pre-doc211}
