@@ -15,9 +15,9 @@
 # which fails when it is older than the bundle, the binary, the driver, the
 # area table or any probe file.
 set -u
-here=$(cd "$(dirname "$0")/.." && pwd) || exit 1
+here=$(cd "$(dirname "$0")/../.." && pwd) || exit 1
 cd "$here" || exit 1
-BIN=${NELISP_BIN:-$here/vendor/nelisp/target/nelisp}
+BIN=${NELISP_BIN:-$here/target/nelisp}
 HOST=${EMACS:-emacs}
 OUT=build/c-core-parity
 AREAS="x-gui display process buffer chars files other"
@@ -33,12 +33,12 @@ run() {
   done
   mkdir -p "$OUT" || return 1
   [ -f build/nemacs-bootstrap.el ] || { echo "c-core-parity: build/nemacs-bootstrap.el missing" >&2; return 1; }
-  C_CORE_UNIT=$unit timeout 120 "$HOST" -Q --batch -l test/c-core-parity-driver.el \
+  C_CORE_UNIT=$unit timeout 120 "$HOST" -Q --batch -l test/nelisp-emacs-lib/c-core-parity-driver.el \
     > "$OUT/host.raw" 2> "$OUT/host.err"
   {
     echo '(load (expand-file-name "build/nemacs-bootstrap.el") nil t)'
     [ -n "$extra" ] && printf '(load (expand-file-name "%s") nil t)\n' "$extra"
-    echo '(load (expand-file-name "test/c-core-parity-driver.el") nil t)'
+    echo '(load (expand-file-name "test/nelisp-emacs-lib/c-core-parity-driver.el") nil t)'
   } > "$OUT/run.el"
   C_CORE_UNIT=$unit timeout 300 "$BIN" --load "$here/$OUT/run.el" \
     > "$OUT/nelisp.raw" 2> "$OUT/nelisp.err"
@@ -80,7 +80,7 @@ check() {
   f="$OUT/$a.result"
   [ -f "$f" ] || { echo "c-core-parity: no result for $a; run: $0 run" >&2; return 1; }
   local dep
-  for dep in build/nemacs-bootstrap.el "$BIN" test/c-core-parity-driver.el tools/c-core-areas.tsv test/c-core-probes/*.el; do
+  for dep in build/nemacs-bootstrap.el "$BIN" test/nelisp-emacs-lib/c-core-parity-driver.el tools/c-core-areas.tsv test/nelisp-emacs-lib/c-core-probes/*.el; do
     [ -e "$dep" ] || continue
     [ "$f" -nt "$dep" ] || { echo "c-core-parity: $f is older than $dep; rerun: $0 run" >&2; return 1; }
   done

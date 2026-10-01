@@ -31,27 +31,27 @@
   "Generated app/frontend scaffold identifier.")
 
 (defconst nemacs-library-app-scaffold--entries
-  '(("app-bootstrap" "src/emacs-init.el"
-     "packages/nelisp-emacs-app-gui/lisp/emacs-init.el")
-    ("app-bootstrap" "src/nemacs-loadup.el"
-     "packages/nelisp-emacs-app-gui/lisp/nemacs-loadup.el")
-    ("app-utility" "src/nemacs-init-transport.el"
+  '(("app-bootstrap" "packages/nelisp-emacs-app-gui/src/emacs-init.el"
+     "packages/nelisp-emacs-app-gui/lisp/emacs-init.el" "src/emacs-init.el")
+    ("app-bootstrap" "packages/nelisp-emacs-app-gui/src/nemacs-loadup.el"
+     "packages/nelisp-emacs-app-gui/lisp/nemacs-loadup.el" "src/nemacs-loadup.el")
+    ("app-utility" "packages/nelisp-emacs-app-gui/src/nemacs-init-transport.el"
      "packages/nelisp-emacs-app-gui/lisp/nemacs-init-transport.el")
-    ("app-utility" "src/image-baker.el"
-     "packages/nelisp-emacs-app-gui/lisp/image-baker.el")
-    ("app-entry" "src/nemacs-main.el"
-     "packages/nelisp-emacs-app-gui/lisp/nemacs-main.el")
-    ("bridge-family" "src/emacs-fileio-gui.el"
+    ("app-utility" "packages/nelisp-emacs-app-gui/src/image-baker.el"
+     "packages/nelisp-emacs-app-gui/lisp/image-baker.el" "src/image-baker.el")
+    ("app-entry" "packages/nelisp-emacs-app-gui/src/nemacs-main.el"
+     "packages/nelisp-emacs-app-gui/lisp/nemacs-main.el" "src/nemacs-main.el")
+    ("bridge-family" "packages/nelisp-emacs-app-gui/src/emacs-fileio-gui.el"
      "packages/nelisp-emacs-app-gui/lisp/emacs-fileio-gui.el")
-    ("bridge-family" "src/emacs-dired-min-gui.el"
+    ("bridge-family" "packages/nelisp-emacs-app-gui/src/emacs-dired-min-gui.el"
      "packages/nelisp-emacs-app-gui/lisp/emacs-dired-min-gui.el")
-    ("bridge-family" "src/emacs-help-gui.el"
+    ("bridge-family" "packages/nelisp-emacs-app-gui/src/emacs-help-gui.el"
      "packages/nelisp-emacs-app-gui/lisp/emacs-help-gui.el")
-    ("bridge-runtime" "src/nemacs-gui-file-bridge-runtime.el"
+    ("bridge-runtime" "packages/nelisp-emacs-app-gui/src/nemacs-gui-file-bridge-runtime.el"
      "packages/nelisp-emacs-app-gui/lisp/nemacs-gui-file-bridge-runtime.el")
-    ("frontend" "src/nemacs-gtk-view-menu.el"
+    ("frontend" "packages/nelisp-emacs-app-gui/src/nemacs-gtk-view-menu.el"
      "packages/nelisp-emacs-app-gui/lisp/nemacs-gtk-view-menu.el")
-    ("frontend" "src/nemacs-gtk-frontend.el"
+    ("frontend" "packages/nelisp-emacs-app-gui/src/nemacs-gtk-frontend.el"
      "packages/nelisp-emacs-app-gui/lisp/nemacs-gtk-frontend.el"))
   "App/frontend source files staged for package-backed smoke tests.")
 
@@ -81,6 +81,7 @@
   (let* ((role (nth 0 entry))
          (source-relative (nth 1 entry))
          (target-relative (nth 2 entry))
+         (source-identity (or (nth 3 entry) source-relative))
          (source (expand-file-name source-relative
                                    nemacs-library-app-scaffold-repo-root))
          (target (nemacs-library-app-scaffold--target-path target-relative)))
@@ -89,7 +90,7 @@
     (make-directory (file-name-directory target) t)
     (copy-file source target t)
     (list "file" nemacs-library-app-scaffold--app-id role
-          source-relative target-relative)))
+          source-identity target-relative)))
 
 (defun nemacs-library-app-scaffold--delete-obsolete-targets ()
   "Delete generated app scaffold files that no longer belong to APP."

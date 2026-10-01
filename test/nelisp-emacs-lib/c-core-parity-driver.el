@@ -33,7 +33,7 @@
 
 (defun c-core-parity--run ()
   "Evaluate every probe entry and print one comparable line per form."
-  (let* ((dir (expand-file-name "test/c-core-probes"))
+  (let* ((dir (expand-file-name "test/nelisp-emacs-lib/c-core-probes"))
          (unit (getenv "C_CORE_UNIT"))
          (files (if (and unit (not (equal unit "")))
                     (list (expand-file-name (concat unit ".el") dir))
