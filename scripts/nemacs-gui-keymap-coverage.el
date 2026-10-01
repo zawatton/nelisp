@@ -13,9 +13,18 @@
 (require 'cl-lib)
 
 (defvar nemacs-gui-keymap-coverage-runtime
-  (expand-file-name
-   "../src/nemacs-gui-file-bridge-runtime.el"
-   (file-name-directory (or load-file-name buffer-file-name)))
+  (let* ((script-dir (file-name-directory (or load-file-name buffer-file-name)))
+         (root (expand-file-name ".." script-dir))
+         (load-path (cons (expand-file-name "packages/nelisp-pkg/src" root)
+                          load-path)))
+    (load (expand-file-name "scripts/doc211-source-roots.el" root) nil t)
+    (or (cl-some (lambda (dir)
+                   (let ((candidate
+                          (expand-file-name "nemacs-gui-file-bridge-runtime.el"
+                                            dir)))
+                     (and (file-readable-p candidate) candidate)))
+                 (doc211-source-root-dirs root))
+        (error "Cannot resolve nemacs GUI runtime under %s" root)))
   "Runtime source file that owns GUI bridge keymap semantics.")
 
 (defun nemacs-gui-keymap-coverage--slurp (file)

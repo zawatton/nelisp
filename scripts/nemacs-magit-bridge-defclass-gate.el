@@ -25,7 +25,7 @@
 ;;
 ;; Usage (roughly five minutes; run it in the background):
 ;;
-;;   timeout 1800 env NELISP_HOME=$PWD/vendor/nelisp vendor/nelisp/target/nelisp \
+;;   timeout 1800 env NELISP_HOME=$PWD target/nelisp \
 ;;     exec-runtime-image build/nemacs-runtime.nlri \
 ;;     "$(cat scripts/nemacs-magit-bridge-defclass-gate.el)" > /tmp/gate.log 2>&1
 ;;   grep -aE '^GATE' /tmp/gate.log

@@ -33,16 +33,16 @@
 #   nemacs --help                   this message
 #
 # Environment overrides:
-#   NEMACS_HOME      directory containing src/ (default: this script's parent)
-#   NELISP_HOME      nelisp checkout (default: vendor/nelisp, then ../nelisp)
+#   NEMACS_HOME      imported repository root (default: this script's root)
+#   NELISP_HOME      NeLisp checkout (default: this in-tree repository)
 #   NEMACS_DRIVER    `host' (default) or `nelisp'
 #   NEMACS_EMACS     emacs binary path (default: emacs)
 #   NEMACS_NELISP    nelisp binary path (default: standalone-reader)
 #   NEMACS_NELISP_STACK stack limit for the nelisp driver (default: unlimited)
 #   NEMACS_BOOTSTRAP_BUNDLE optional generated NeLisp preload bundle
-#                    (default: $NEMACS_HOME/build/nemacs-bootstrap.el)
+#                    (default: $NELISP_HOME/build/nemacs-bootstrap.el)
 #   NEMACS_BOOTSTRAP_REPL optional generated NeLisp REPL bootstrap input
-#                    (default: $NEMACS_HOME/build/nemacs-bootstrap.repl)
+#                    (default: $NELISP_HOME/build/nemacs-bootstrap.repl)
 #   NEMACS_RUNTIME_IMAGE optional NeLisp .nlri runtime image for --driver=nelisp
 #                    (set to `auto' to choose build/*.nlri by mode)
 #   NEMACS_COLD_IMAGE flat-arena cold image output/cache path
@@ -61,15 +61,11 @@
 set -euo pipefail
 
 SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)"
-NEMACS_HOME="${NEMACS_HOME:-$(cd "$SCRIPT_PATH/.." && pwd)}"
+IMPORTED_ROOT="$(cd "$SCRIPT_PATH/../.." && pwd)"
+NEMACS_HOME="${NEMACS_HOME:-$IMPORTED_ROOT}"
 
-# NeLisp provides a pure-Elisp standalone reader at target/nelisp.
-# Prefer this repo's vendored checkout,
-# then the common sibling checkout used during joint development, then
-# the legacy ~/Notes/dev path.
-DEFAULT_VENDOR_NELISP="$NEMACS_HOME/vendor/nelisp"
-DEFAULT_SIBLING_NELISP="$(cd "$NEMACS_HOME/.." && pwd)/nelisp"
-DEFAULT_LEGACY_NELISP="$HOME/Notes/dev/nelisp"
+# NeLisp's standalone reader and the imported consumer sources share this root.
+DEFAULT_NELISP_ROOT="$IMPORTED_ROOT"
 nelisp_default_bin() {
   local root="$1"
   if [[ -x "$root/target/nelisp" ]]; then
@@ -80,16 +76,13 @@ nelisp_default_bin() {
     printf '%s\n' "$root/target/nelisp-standalone-reader"
   fi
 }
-if [[ -z "${NELISP_HOME:-}" ]]; then
-  if [[ -n "$(nelisp_default_bin "$DEFAULT_VENDOR_NELISP")" ]]; then
-    NELISP_HOME="$DEFAULT_VENDOR_NELISP"
-  elif [[ -n "$(nelisp_default_bin "$DEFAULT_SIBLING_NELISP")" ]]; then
-    NELISP_HOME="$DEFAULT_SIBLING_NELISP"
-  elif [[ -n "$(nelisp_default_bin "$DEFAULT_LEGACY_NELISP")" ]]; then
-    NELISP_HOME="$DEFAULT_LEGACY_NELISP"
-  else
-    NELISP_HOME="$DEFAULT_VENDOR_NELISP"
-  fi
+NELISP_HOME="${NELISP_HOME:-$DEFAULT_NELISP_ROOT}"
+NEMACS_SOURCE_ROOT="${NEMACS_SOURCE_ROOT:-$NELISP_HOME/build/doc211-bootstrap-root/src}"
+if [[ -r "$NELISP_HOME/scripts/doc211-bootstrap-source-root.sh" ]]; then
+  bash "$NELISP_HOME/scripts/doc211-bootstrap-source-root.sh" \
+    "$(dirname "$NEMACS_SOURCE_ROOT")" >/dev/null
+else
+  NEMACS_SOURCE_ROOT="$NEMACS_HOME/src"
 fi
 NEMACS_DRIVER="${NEMACS_DRIVER:-host}"
 NEMACS_EMACS="${NEMACS_EMACS:-emacs}"
@@ -105,8 +98,8 @@ NEMACS_NELISP_STACK="${NEMACS_NELISP_STACK:-unlimited}"
 # above any legitimate editor session (baseline ~60 MiB) yet well under host RAM.
 # Set NEMACS_NELISP_MEMORY=unlimited to disable.
 NEMACS_NELISP_MEMORY="${NEMACS_NELISP_MEMORY:-8388608}"
-NEMACS_BOOTSTRAP_BUNDLE="${NEMACS_BOOTSTRAP_BUNDLE:-$NEMACS_HOME/build/nemacs-bootstrap.el}"
-NEMACS_BOOTSTRAP_REPL="${NEMACS_BOOTSTRAP_REPL:-$NEMACS_HOME/build/nemacs-bootstrap.repl}"
+NEMACS_BOOTSTRAP_BUNDLE="${NEMACS_BOOTSTRAP_BUNDLE:-$NELISP_HOME/build/nemacs-bootstrap.el}"
+NEMACS_BOOTSTRAP_REPL="${NEMACS_BOOTSTRAP_REPL:-$NELISP_HOME/build/nemacs-bootstrap.repl}"
 NEMACS_RUNTIME_IMAGE="${NEMACS_RUNTIME_IMAGE:-}"
 
 # A flat arena is tied to the exact NeLisp executable that wrote it.  Content
@@ -167,9 +160,9 @@ NEMACS_COLD_SIDECAR="${NEMACS_COLD_SIDECAR:-$NEMACS_COLD_IMAGE.srcinputs}"
 # an image costs ~20 s (so waiting two minutes to maybe save 19 s is a loss).
 # Wait long enough to let a nearly-finished builder publish, then go.
 NEMACS_COLD_LOCK_TIMEOUT="${NEMACS_COLD_LOCK_TIMEOUT:-5}"
-NEMACS_BATCH_RUNTIME_IMAGE="${NEMACS_BATCH_RUNTIME_IMAGE:-$NEMACS_HOME/build/nemacs-runtime.nlri}"
-NEMACS_INTERACTIVE_RUNTIME_IMAGE="${NEMACS_INTERACTIVE_RUNTIME_IMAGE:-$NEMACS_HOME/build/nemacs-interactive-runtime.nlri}"
-NEMACS_VENDOR_CORE_RUNTIME_IMAGE="${NEMACS_VENDOR_CORE_RUNTIME_IMAGE:-$NEMACS_HOME/build/nemacs-vendor-core-runtime.nlri}"
+NEMACS_BATCH_RUNTIME_IMAGE="${NEMACS_BATCH_RUNTIME_IMAGE:-$NELISP_HOME/build/nemacs-runtime.nlri}"
+NEMACS_INTERACTIVE_RUNTIME_IMAGE="${NEMACS_INTERACTIVE_RUNTIME_IMAGE:-$NELISP_HOME/build/nemacs-interactive-runtime.nlri}"
+NEMACS_VENDOR_CORE_RUNTIME_IMAGE="${NEMACS_VENDOR_CORE_RUNTIME_IMAGE:-$NELISP_HOME/build/nemacs-vendor-core-runtime.nlri}"
 NEMACS_KEEP_REPL_BOOT="${NEMACS_KEEP_REPL_BOOT:-}"
 if [[ "$NEMACS_BOOTSTRAP_BUNDLE" == "none" ]]; then
   NEMACS_BOOTSTRAP_BUNDLE=""
@@ -209,8 +202,8 @@ nemacs paths:
   NEMACS_BATCH_RUNTIME_IMAGE = $NEMACS_BATCH_RUNTIME_IMAGE
   NEMACS_INTERACTIVE_RUNTIME_IMAGE = $NEMACS_INTERACTIVE_RUNTIME_IMAGE
   NEMACS_VENDOR_CORE_RUNTIME_IMAGE = $NEMACS_VENDOR_CORE_RUNTIME_IMAGE
-  src/             = $NEMACS_HOME/src
-  vendor/          = $NEMACS_HOME/vendor
+  src/             = $NEMACS_SOURCE_ROOT
+  vendor/          = $NELISP_HOME/vendor
 EOF
 }
 
@@ -223,7 +216,7 @@ doctor_block() {
 
 nelisp_driver_kind() {
   case "$(basename "$NEMACS_NELISP")" in
-    nelisp|nelisp-standalone-reader) printf '%s\n' "standalone-reader" ;;
+    nelisp|nelisp-standalone-reader|nelisp-*) printf '%s\n' "standalone-reader" ;;
     *) printf '%s\n' "cli" ;;
   esac
 }
@@ -322,9 +315,9 @@ compile_bootstrap_artifact() {
     --input "$NEMACS_BOOTSTRAP_BUNDLE" \
     --output "$NEMACS_COLD_ARTIFACT" \
     --native-policy opportunistic \
-    --load-path "$NEMACS_HOME/src" \
-    --load-path "$NEMACS_HOME/vendor/emacs-lisp" \
-    --load-path "$NEMACS_HOME/vendor/emacs-lisp/emacs-lisp"
+    --load-path "$NEMACS_SOURCE_ROOT" \
+    --load-path "$NELISP_HOME/vendor/emacs-lisp" \
+    --load-path "$NELISP_HOME/vendor/emacs-lisp/emacs-lisp"
 }
 
 # Reached only when the artifact route is enabled -- see
@@ -372,9 +365,9 @@ cold_cache_probe_hit() {
 cold_source_inputs() {
   printf '%s\n' \
     "$NEMACS_BOOTSTRAP_BUNDLE" \
-    "$NEMACS_HOME/scripts/nemacs-runtime-process-preload.el" \
-    "$NEMACS_HOME/scripts/nemacs-runtime-frame-tab-preload.el" \
-    "$NEMACS_HOME/scripts/nemacs-runtime-image-preload.el"
+    "$NELISP_HOME/scripts/nemacs-runtime-process-preload.el" \
+    "$NELISP_HOME/scripts/nemacs-runtime-frame-tab-preload.el" \
+    "$NELISP_HOME/scripts/nemacs-runtime-image-preload.el"
 }
 
 cold_source_route_available_p() {
@@ -419,9 +412,9 @@ build_cold_image_from_source() {
   {
     printf '(progn '
     printf '(load "%s" nil (quote no-message) t t) ' \
-      "$NEMACS_HOME/scripts/nemacs-runtime-process-preload.el" \
-      "$NEMACS_HOME/scripts/nemacs-runtime-frame-tab-preload.el" \
-      "$NEMACS_HOME/scripts/nemacs-runtime-image-preload.el"
+      "$NELISP_HOME/scripts/nemacs-runtime-process-preload.el" \
+      "$NELISP_HOME/scripts/nemacs-runtime-frame-tab-preload.el" \
+      "$NELISP_HOME/scripts/nemacs-runtime-image-preload.el"
     # `-batch' is the verified entry (22/22 functional checks on its image).
     # `nemacs-runtime-image-preload-interactive' bakes the TUI too and would
     # plausibly start faster, but it has not been checked -- do not swap it in
@@ -716,8 +709,8 @@ fi
 # (unchanged pre-Phase-3 behavior).
 if [[ "$NEMACS_DRIVER" == "nelisp" && "$NO_INIT" != 1 ]] \
    && command -v "$NEMACS_EMACS" >/dev/null 2>&1; then
-  "$NEMACS_EMACS" -Q --batch -L "$NEMACS_HOME/src" \
-    -l nemacs-loadup -l "$NEMACS_HOME/scripts/nemacs-wrap-init.el" \
+  "$NEMACS_EMACS" -Q --batch -L "$NEMACS_SOURCE_ROOT" \
+    -l nemacs-loadup -l "$NELISP_HOME/scripts/nemacs-wrap-init.el" \
     --eval "(let ((dir (nemacs-resolve-user-emacs-directory)))
               (when (or (file-readable-p (concat dir \"early-init.el\"))
                         (file-readable-p (concat dir \"init.el\")))
@@ -761,9 +754,9 @@ resolve_repl_load_path() {
   esac
   local dir
   for dir in "${LOAD_PATHS[@]+"${LOAD_PATHS[@]}"}" \
-             "$NEMACS_HOME/src" \
-             "$NEMACS_HOME/vendor/emacs-lisp" \
-             "$NEMACS_HOME/vendor/emacs-lisp/emacs-lisp"; do
+             "$NEMACS_SOURCE_ROOT" \
+             "$NELISP_HOME/vendor/emacs-lisp" \
+             "$NELISP_HOME/vendor/emacs-lisp/emacs-lisp"; do
     if [[ -r "$dir/$1" ]]; then
       printf '%s\n' "$dir/$1"
       return
@@ -839,10 +832,10 @@ EOF
   BOOT_LOAD_PATH_FORM="$(cat <<EOF
   (setq load-path
         (append (list$LOAD_PATH_LIST
-                      "$(shell_quote "$NEMACS_HOME/src")")
+                      "$(shell_quote "$NEMACS_SOURCE_ROOT")")
                 (and (boundp 'load-path) load-path)
-                (list "$(shell_quote "$NEMACS_HOME/vendor/emacs-lisp")"
-                      "$(shell_quote "$NEMACS_HOME/vendor/emacs-lisp/emacs-lisp")")))
+                (list "$(shell_quote "$NELISP_HOME/vendor/emacs-lisp")"
+                      "$(shell_quote "$NELISP_HOME/vendor/emacs-lisp/emacs-lisp")")))
 EOF
 )"
 else
@@ -850,9 +843,9 @@ else
   BOOT_LOAD_PATH_FORM="$(cat <<EOF
   (setq load-path
         (append (list$LOAD_PATH_LIST
-                      "$(shell_quote "$NEMACS_HOME/src")"
-                      "$(shell_quote "$NEMACS_HOME/vendor/emacs-lisp")"
-                      "$(shell_quote "$NEMACS_HOME/vendor/emacs-lisp/emacs-lisp")")
+                      "$(shell_quote "$NEMACS_SOURCE_ROOT")"
+                      "$(shell_quote "$NELISP_HOME/vendor/emacs-lisp")"
+                      "$(shell_quote "$NELISP_HOME/vendor/emacs-lisp/emacs-lisp")")
                 (and (boundp 'load-path) load-path)))
 EOF
 )"
@@ -866,8 +859,8 @@ fi
 BOOT_NELISP_SOURCE_REFRESH=""
 if [[ "$NEMACS_DRIVER" == "nelisp" ]]; then
   BOOT_NELISP_SOURCE_REFRESH="$(cat <<EOF
-  (load "$(shell_quote "$NEMACS_HOME/src/emacs-fns.el")" nil 'no-message)
-  (load "$(shell_quote "$NEMACS_HOME/src/nemacs-main.el")" nil 'no-message)
+  (load "$(shell_quote "$NEMACS_SOURCE_ROOT/emacs-fns.el")" nil 'no-message)
+  (load "$(shell_quote "$NEMACS_SOURCE_ROOT/nemacs-main.el")" nil 'no-message)
 EOF
 )"
 fi
@@ -936,7 +929,7 @@ BOOT_FORM="$(cat <<EOF
   (unless (boundp 'load-path) (defvar load-path nil))
   $NEMACS_INIT_GATE_FORM
   $NEMACS_PACKAGE_STARTUP_FORM
-  (setq nelisp-emacs-vendor-root "$(shell_quote "$NEMACS_HOME/vendor")")
+  (setq nelisp-emacs-vendor-root "$(shell_quote "$NELISP_HOME/vendor")")
 $BOOT_HOST_PRELOAD_FORM
 $BOOT_LOAD_PATH_FORM
 (setq emacs-load-auto-native-compile nil)
@@ -979,7 +972,7 @@ COLD_BOOT_FORM="$(cat <<EOF
   (unless (boundp 'load-path) (defvar load-path nil))
   $NEMACS_INIT_GATE_FORM
   $NEMACS_PACKAGE_STARTUP_FORM
-  (setq nelisp-emacs-vendor-root "$(shell_quote "$NEMACS_HOME/vendor")")
+  (setq nelisp-emacs-vendor-root "$(shell_quote "$NELISP_HOME/vendor")")
 $BOOT_LOAD_PATH_FORM
   (setq emacs-load-auto-native-compile t)
   (setq nemacs-main-options
@@ -1010,7 +1003,7 @@ case "$NEMACS_DRIVER" in
   nelisp)
     if [[ ! -x "$NEMACS_NELISP" ]]; then
       echo "nemacs: nelisp driver requested but $NEMACS_NELISP is not executable" >&2
-      echo "  Set NEMACS_NELISP, export NELISP_HOME, or build it via: bin/build-nelisp" >&2
+      echo "  Set NEMACS_NELISP, export NELISP_HOME, or build it with: make standalone-reader" >&2
       echo "  Direct build: cd $NELISP_HOME && make standalone-reader" >&2
       exit 1
     fi
@@ -1178,7 +1171,7 @@ case "$NEMACS_DRIVER" in
         fi
         printf '%s\n' "(setq emacs-load-auto-native-compile nil)" >> "$tmp"
         cat "$NEMACS_BOOTSTRAP_REPL" >> "$tmp"
-        printf '%s\n' "(setq nelisp-emacs-vendor-root \"$(shell_quote "$NEMACS_HOME/vendor")\")" >> "$tmp"
+        printf '%s\n' "(setq nelisp-emacs-vendor-root \"$(shell_quote "$NELISP_HOME/vendor")\")" >> "$tmp"
         printf '%s\n' "$(one_line_form "$BOOT_LOAD_PATH_FORM")" >> "$tmp"
         printf '%s\n' "(require 'emacs-cl-macros)" >> "$tmp"
         printf '%s\n' "(require 'nemacs-main)" >> "$tmp"

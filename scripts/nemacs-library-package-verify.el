@@ -19,6 +19,8 @@
 (require 'nemacs-library-package-descriptors)
 (require 'nemacs-library-package-guide)
 (require 'nemacs-library-package-layout)
+(load (expand-file-name "doc211-source-roots.el"
+                        (file-name-directory (or load-file-name buffer-file-name))) nil t)
 
 (defvar nemacs-library-package-verify-repo-root
   (expand-file-name ".." (file-name-directory
@@ -58,8 +60,17 @@
 
 (defun nemacs-library-package-verify--relative-exists-p (relative)
   "Return non-nil if RELATIVE exists under repository root."
-  (file-exists-p
-   (expand-file-name relative nemacs-library-package-verify-repo-root)))
+  (or (file-exists-p
+       (expand-file-name relative nemacs-library-package-verify-repo-root))
+      (and (string-prefix-p "src/" relative)
+           (let ((suffix (substring relative 4)))
+             (cl-some
+              (lambda (dir)
+                (and (string-match-p "/packages/\\(?:nelisp-emacs-[^/]+\\|STAYS\\)/src\\'" dir)
+                     (file-exists-p (expand-file-name
+                                     suffix dir))))
+              (doc211-source-root-dirs
+               nemacs-library-package-verify-repo-root))))))
 
 (defun nemacs-library-package-verify--duplicates (values)
   "Return duplicate VALUES using `equal'."

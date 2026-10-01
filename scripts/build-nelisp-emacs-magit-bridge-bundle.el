@@ -381,7 +381,7 @@ bundle form #951 and form #1658; both PASS as fresh loads, both SIGSEGV
 in-context).  This became visible when the item 244 `copy-alist' fix let
 every `defclass' in the bundle complete real EIEIO registration (deeper
 evaluation per form) instead of aborting early down a shallow error path.
-The core per-load degradation is a vendor/nelisp reader gap, out of this
+The core per-load degradation is a in-tree reader gap, out of this
 generator's scope; the bundle-level mitigation is to split the bundle into
 part files of at most this many forms each and chain them with one nested
 `(load ...)' per part -- each nested `load' resets the per-load budget.
@@ -495,8 +495,17 @@ relocatable."
       (dolist (entry nelisp-emacs-magit-bridge-bundle-files)
         (let* ((rel (car entry))
                (feature (cdr entry))
-               (file (expand-file-name rel nelisp-emacs-magit-bridge-bundle-repo-root))
-               (saw-self-provide nil))
+         (file (expand-file-name rel nelisp-emacs-magit-bridge-bundle-repo-root))
+         (api-file
+          (and (string-prefix-p "vendor/emacs-lisp/" rel)
+               (expand-file-name
+                (concat "vendor/emacs-lisp-api/"
+                        (substring rel (length "vendor/emacs-lisp/")))
+                nelisp-emacs-magit-bridge-bundle-repo-root)))
+         (saw-self-provide nil))
+    (unless (file-readable-p file)
+      (when (and api-file (file-readable-p api-file))
+        (setq file api-file)))
           (unless (file-readable-p file)
             (error "magit bridge bundle: missing vendor source %s" file))
           (push (format "\n;;; >>> %s (%s)\n" rel feature) pending-comments)

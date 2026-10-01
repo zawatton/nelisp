@@ -20,7 +20,7 @@ their hardcoded repository paths -- see "Caveats".
 * How to run one
 
 : cd dev/nelisp-emacs-lib
-: timeout 1800 env NELISP_HOME=$PWD/vendor/nelisp vendor/nelisp/target/nelisp \
+: timeout 1800 env NELISP_HOME=$PWD target/nelisp \
 :   exec-runtime-image build/nemacs-runtime.nlri \
 :   "$(cat scripts/magit-bridge-probes/01-class-make.el)" > /tmp/probe.log 2>&1
 

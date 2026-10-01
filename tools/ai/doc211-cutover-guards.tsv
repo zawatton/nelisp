@@ -1,0 +1,39 @@
+old_target	decision	nelisp_target	reason
+compile	drop		Legacy package publication/scaffolding guard is outside the in-tree API runtime cutover; no package archive release is produced by this repository.
+nemacs-ownership-coverage	drop		Existing pkg-graph gate fails on its hard-host-require ratchet (four findings against baseline two); changing the core baseline would violate S6 no-behavior-change scope. Revisit with a dedicated API ownership checker.
+nemacs-public-api-inventory	drop		Current ns-inventory checker fails with excessive-lisp-nesting while traversing the expanded imported sources; emacs-compat remains covered by core preflight and no checker behavior is changed here.
+nemacs-library-contract	drop		Legacy package publication/scaffolding guard is outside the in-tree API runtime cutover; no package archive release is produced by this repository.
+nemacs-library-package-manifest	drop		Legacy package publication/scaffolding guard is outside the in-tree API runtime cutover; no package archive release is produced by this repository.
+nemacs-library-package-deps	drop		Legacy package publication/scaffolding guard is outside the in-tree API runtime cutover; no package archive release is produced by this repository.
+nemacs-library-package-descriptors	drop		Legacy package publication/scaffolding guard is outside the in-tree API runtime cutover; no package archive release is produced by this repository.
+nemacs-library-package-guide	drop		Legacy package publication/scaffolding guard is outside the in-tree API runtime cutover; no package archive release is produced by this repository.
+nemacs-library-package-api	drop		Legacy package publication/scaffolding guard is outside the in-tree API runtime cutover; no package archive release is produced by this repository.
+nemacs-library-package-catalog	drop		Legacy package publication/scaffolding guard is outside the in-tree API runtime cutover; no package archive release is produced by this repository.
+nemacs-library-compat-api-policy	drop		Legacy package publication/scaffolding guard is outside the in-tree API runtime cutover; no package archive release is produced by this repository.
+nemacs-library-api-promotion-queue	drop		Legacy package publication/scaffolding guard is outside the in-tree API runtime cutover; no package archive release is produced by this repository.
+nemacs-library-package-layout	drop		Legacy package publication/scaffolding guard is outside the in-tree API runtime cutover; no package archive release is produced by this repository.
+nemacs-library-package-verify	drop		Legacy package publication/scaffolding guard is outside the in-tree API runtime cutover; no package archive release is produced by this repository.
+nemacs-library-app-boundary	drop		Legacy package publication/scaffolding guard is outside the in-tree API runtime cutover; no package archive release is produced by this repository.
+nemacs-library-package-app-require-guard	drop		Legacy package publication/scaffolding guard is outside the in-tree API runtime cutover; no package archive release is produced by this repository.
+nemacs-library-package-metadata	drop		Legacy package publication/scaffolding guard is outside the in-tree API runtime cutover; no package archive release is produced by this repository.
+nemacs-library-package-install-smoke	drop		Legacy package publication/scaffolding guard is outside the in-tree API runtime cutover; no package archive release is produced by this repository.
+nemacs-library-package-archive	drop		Legacy package publication/scaffolding guard is outside the in-tree API runtime cutover; no package archive release is produced by this repository.
+nemacs-library-package-archive-checksum	drop		Legacy package publication/scaffolding guard is outside the in-tree API runtime cutover; no package archive release is produced by this repository.
+nemacs-library-package-archive-smoke	drop		Legacy package publication/scaffolding guard is outside the in-tree API runtime cutover; no package archive release is produced by this repository.
+nemacs-library-package-archive-index	drop		Legacy package publication/scaffolding guard is outside the in-tree API runtime cutover; no package archive release is produced by this repository.
+nemacs-library-package-index-smoke	drop		Legacy package publication/scaffolding guard is outside the in-tree API runtime cutover; no package archive release is produced by this repository.
+nemacs-library-package-publication-policy	drop		Legacy package publication/scaffolding guard is outside the in-tree API runtime cutover; no package archive release is produced by this repository.
+nemacs-library-package-release-key-policy	drop		Legacy package publication/scaffolding guard is outside the in-tree API runtime cutover; no package archive release is produced by this repository.
+nemacs-library-package-signature-policy	drop		Legacy package publication/scaffolding guard is outside the in-tree API runtime cutover; no package archive release is produced by this repository.
+nemacs-library-package-dependency-publication-policy	drop		Legacy package publication/scaffolding guard is outside the in-tree API runtime cutover; no package archive release is produced by this repository.
+nemacs-library-package-release-bundle-manifest	drop		Legacy package publication/scaffolding guard is outside the in-tree API runtime cutover; no package archive release is produced by this repository.
+nemacs-library-package-release-bundle-smoke	drop		Legacy package publication/scaffolding guard is outside the in-tree API runtime cutover; no package archive release is produced by this repository.
+nemacs-library-package-release-publication-policy	drop		Legacy package publication/scaffolding guard is outside the in-tree API runtime cutover; no package archive release is produced by this repository.
+nemacs-library-package-lazy-metadata	drop		Legacy package publication/scaffolding guard is outside the in-tree API runtime cutover; no package archive release is produced by this repository.
+nemacs-library-package-vendor-lock	drop		Legacy package publication/scaffolding guard is outside the in-tree API runtime cutover; no package archive release is produced by this repository.
+nemacs-runtime-image-input-inventory	drop		Legacy package publication/scaffolding guard is outside the in-tree API runtime cutover; no package archive release is produced by this repository.
+nemacs-library-boundary-report	drop		Legacy package publication/scaffolding guard is outside the in-tree API runtime cutover; no package archive release is produced by this repository.
+nemacs-dirty-review-units	drop		Legacy package publication/scaffolding guard is outside the in-tree API runtime cutover; no package archive release is produced by this repository.
+nemacs-library-package-smoke	drop		Legacy package publication/scaffolding guard is outside the in-tree API runtime cutover; no package archive release is produced by this repository.
+nemacs-library-consumer-smoke	rehomed	doc211-api-consumer-smoke	Imported API sources are loaded by the in-tree consumer smoke.
+verify-production-runtime-path	drop		Legacy package publication/scaffolding guard is outside the in-tree API runtime cutover; no package archive release is produced by this repository.

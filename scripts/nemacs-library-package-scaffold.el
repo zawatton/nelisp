@@ -30,7 +30,7 @@
   "Org summary output path.")
 
 (defconst nemacs-library-package-scaffold--facade-source
-  "src/nelisp-emacs.el"
+  "packages/nelisp-emacs-facade/src/nelisp-emacs.el"
   "Source file for the generated umbrella facade scaffold.")
 
 (defconst nemacs-library-package-scaffold--facade-target

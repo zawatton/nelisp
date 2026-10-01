@@ -99,6 +99,15 @@
       (let* ((rel (car entry))
              (feature (cdr entry))
              (file (expand-file-name rel nelisp-emacs-org-bridge-bundle-repo-root))
+             (api-file
+              (and (string-prefix-p "vendor/emacs-lisp/" rel)
+                   (expand-file-name
+                    (concat "vendor/emacs-lisp-api/"
+                            (substring rel (length "vendor/emacs-lisp/")))
+                    nelisp-emacs-org-bridge-bundle-repo-root)))
+             (file (if (and (not (file-readable-p file)) api-file
+                            (file-readable-p api-file))
+                       api-file file))
              (saw-self-provide nil))
         (unless (file-readable-p file)
           (error "org bridge bundle: missing vendor source %s" file))

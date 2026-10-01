@@ -48,7 +48,7 @@ apps/nemacs-next/scripts/smoke.sh	apps/nemacs-next/scripts/smoke.sh
 apps/nemacs-next/scripts/theme-smoke.sh	apps/nemacs-next/scripts/theme-smoke.sh
 apps/nemacs-next/scripts/wrap-init-production-smoke.sh	apps/nemacs-next/scripts/wrap-init-production-smoke.sh
 bench/bench-redisplay.el	nelisp-emacs-lib/bench/bench-redisplay.el
-bin/build-nelisp	bin/build-nelisp
+bin/build-nelisp	DROP: superseded by in-tree standalone-reader target
 bin/elprop-run	bin/elprop-run
 bin/nemacs	nelisp-emacs-lib/bin/nemacs
 bin/nemacs-server	bin/nemacs-server

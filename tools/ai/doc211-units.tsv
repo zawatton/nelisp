@@ -27,3 +27,22 @@ S5-U2	S5	vendor/SHA256SUMS	0	bash tools/ai/doc211-vendor-check.sh versions	done
 S5-U3	S5	tools/ai/doc211-vendor-check.sh	0	bash tools/ai/doc211-vendor-check.sh differing	done
 S5-U4	S5	tools/ai/doc211-vendor-check.sh	0	bash tools/ai/doc211-vendor-check.sh api-boundary	done
 S5-U5	S5	tools/ai/doc211-vendor-trace.sh	0	bash tools/ai/doc211-vendor-check.sh exist	open
+S6-U1	S6	Makefile	0	make build-nelisp-bootstrap	done
+S6-U2	S6	nelisp-emacs-lib/Makefile	0	make build-nelisp-bootstrap	done
+S6-U3	S6	scripts/doc211-bootstrap-source-root.sh	0	bash scripts/doc211-bootstrap-source-root.sh	done
+S6-U4	S6	scripts/build-nelisp-bootstrap.el	0	make build-nelisp-bootstrap	done
+S6-U5	S6	scripts/build-nelisp-emacs-magit-bridge-bundle.el	0	make build/nelisp-emacs-magit-bridge-bundle.el	done
+S6-U6	S6	scripts/build-nelisp-emacs-org-bridge-bundle.el	0	make build/nelisp-emacs-org-bridge-bundle.el	done
+S6-U7	S6	tools/ai/doc211-cutover.sh	0	bash tools/ai/doc211-cutover.sh freeze	done
+S6-U8	S6	tools/ai/doc211-cutover-guards.tsv	0	bash tools/ai/doc211-cutover.sh guards	open
+S6-U9	S6	tools/ai/doc211-baseline-check.sh	0	bash tools/ai/doc211-baseline-check.sh ccore	open
+S6-U10	S6	tools/ai/usable-progress.org	0	bash tools/ai/doc211-baseline-check.sh usable	open
+S6-U11	S6	tools/ai/c-core-progress.org	0	bash tools/ai/doc211-baseline-check.sh ccore	open
+S6-U12	S6	tools/c-core-coverage.sh	0	bash tools/c-core-coverage.sh summary	open
+S6-U13	S6	test/nelisp-emacs-lib/c-core-parity-smoke.sh	0	bash test/nelisp-emacs-lib/c-core-parity-smoke.sh check buffer	open
+S6-U14	S6	tools/ai/doc211-progress.org	0	bash tools/ai/doc211-units-check.sh S6	done
+S6-U15	S6	tools/ai/doc211-units.tsv	0	bash tools/ai/doc211-units-check.sh S6	done
+S6-U16	S6	tools/ai/doc211-units-check.sh	0	bash tools/ai/doc211-units-check.sh S6	done
+S6-U17	S6	.gitignore	0	git check-ignore .serena/project.yml packages/nelisp-emacs-foundation/lisp/cl-lib.el && ! git check-ignore --no-index packages/nelisp-emacs-foundation/src/cl-lib.el	open
+S6-U18	S6	nelisp-emacs-lib/bin/nemacs	0	NEMACS_NELISP=$(command -v true) env -u NELISP_HOME -u NEMACS_HOME nelisp-emacs-lib/bin/nemacs --version	open
+S6-U19	S6	scripts/doc211-source-roots.el	3	DOC211_SOURCE_ROOTS_PRINT=1 emacs -Q --batch -L packages/nelisp-pkg/src -l scripts/doc211-source-roots.el	open

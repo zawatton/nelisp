@@ -35,7 +35,7 @@
 #   E2E_PRELUDE       override the stdlib prelude fed to host-side .repl
 #                     generation (default: this worktree's own
 #                     scripts/nelisp-stdlib-prelude.el).  Set to
-#                     $NELISP_LIB_ROOT/vendor/nelisp/scripts/nelisp-stdlib-prelude.el
+#                     $NELISP_LIB_ROOT/scripts/nelisp-stdlib-prelude.el
 #                     to reproduce nelisp-emacs-lib's
 #                     `make diagnose-vendor-repl-replay' gate prelude
 #                     instead -- read-only from that checkout, never
@@ -61,7 +61,7 @@
 # argv.  It is ALSO deliberately scoped to THIS checkout's own binary path
 # rather than a bare `target/nelisp', so it never touches a reader running
 # from a sibling worktree or from nelisp-emacs-lib's
-# vendor/nelisp/target/nelisp mirror.  (An earlier revision hardcoded the
+# nested target/nelisp mirror.  (An earlier revision hardcoded the
 # `wt-coldload' worktree path here, which silently matched nothing once the
 # branch merged to main and the script ran from other checkouts.)
 
@@ -82,7 +82,7 @@ NELISP_BIN="$REPO_ROOT/target/nelisp"
 # (fast replay, org-mode not installed -- see Doc 156 §7).  E2E_BOOTSTRAP_REPL
 # / E2E_PRELUDE opt in to substituting the *gate's* inputs instead (read-only
 # from the nelisp-emacs-lib checkout -- e.g.
-# "$NELISP_LIB_ROOT/vendor/nelisp/scripts/nelisp-stdlib-prelude.el", the
+# "$NELISP_LIB_ROOT/scripts/nelisp-stdlib-prelude.el", the
 # vendored prelude copy `make diagnose-vendor-repl-replay' uses by default via
 # VENDOR_REPL_PRELUDE/VENDOR_LOAD_PRELUDE), to reproduce the gate's slower but
 # org-mode-installing load.  Unset (default): behavior is unchanged.

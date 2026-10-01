@@ -439,6 +439,10 @@ path recorded in `load-history'."
 (defun nelisp-bootstrap--vendor-source-file (name)
   "Return absolute vendor source file for relative vendor NAME, or nil."
   (let* ((vendor (nelisp-bootstrap--vendor-dir))
+         (name (if (string-prefix-p "emacs-lisp-31.1/" name)
+                   (concat "emacs-lisp/"
+                           (substring name (length "emacs-lisp-31.1/")))
+                 name))
          (file (expand-file-name name vendor))
          (api-file
           (and (string-prefix-p "emacs-lisp/" name)

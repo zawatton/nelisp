@@ -26,7 +26,7 @@
 (defun elprop-run--nelisp-bin (root)
   "Return the NeLisp binary path, preferring the vendored build."
   (or (getenv "NEMACS_NELISP")
-      (let ((v (expand-file-name "vendor/nelisp/target/nelisp" root)))
+      (let ((v (expand-file-name "target/nelisp" root)))
         (and (file-executable-p v) v))
       (let ((e (expand-file-name "build/nelisp-experiment" root)))
         (and (file-executable-p e) e))))

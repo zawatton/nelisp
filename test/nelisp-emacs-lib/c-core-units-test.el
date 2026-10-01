@@ -21,7 +21,7 @@
 (require 'cl-lib)
 
 (defconst c-core-units--root
-  (expand-file-name ".." (file-name-directory (or load-file-name buffer-file-name))))
+  (expand-file-name "../.." (file-name-directory (or load-file-name buffer-file-name))))
 
 (defun c-core-units--areas ()
   "Return an alist (NAME . AREA) from tools/c-core-areas.tsv."
@@ -31,7 +31,12 @@
             (split-string (buffer-string) "\n" t))))
 
 (defun c-core-units--files ()
-  (directory-files (expand-file-name "src" c-core-units--root) t "\\`emacs-cc-.*\\.el\\'"))
+  (let (files)
+    (dolist (package (directory-files (expand-file-name "packages" c-core-units--root) t "\\`nelisp-emacs-"))
+      (let ((src (expand-file-name "src" package)))
+        (when (file-directory-p src)
+          (setq files (nconc files (directory-files src t "\\`emacs-cc-.*\\.el\\'"))))))
+    files))
 
 (defun c-core-units--forms (file)
   (with-temp-buffer

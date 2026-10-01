@@ -14,10 +14,10 @@ diffs against host `emacs --batch` (GNU 31.1).  Batch semantics are the
 reference for display/GUI functions (what GNU returns with no window system).
 
 Units: implementations live in src/emacs-cc-*.el (bundled automatically, in
-name order); probes in test/c-core-probes/*.el as (NAME FORM...) entries.
-C?.2 is the static unit contract (test/c-core-units-test.el: guarded, in the
+name order); probes in test/nelisp-emacs-lib/c-core-probes/*.el as (NAME FORM...) entries.
+C?.2 is the static unit contract (test/nelisp-emacs-lib/c-core-units-test.el: guarded, in the
 area table, not an empty stub).  C?.3 validates the recorded result of
-`sh test/c-core-parity-smoke.sh run` (host vs standalone after the bundle;
+`sh test/nelisp-emacs-lib/c-core-parity-smoke.sh run` (host vs standalone after the bundle;
 every area name probed, no differing line) and fails when that result is
 older than the bundle, binary, driver, area table or any probe file.
 
@@ -28,11 +28,11 @@ older than the bundle, binary, driver, area table or any probe file.
 cmd: sh tools/c-core-coverage.sh check x-gui
 
 ** C1.2 Host ERT for the x-gui implementations passes on GNU Emacs 31.1
-cmd: timeout 50 emacs -Q --batch -L test -l test/c-core-units-test.el --eval '(c-core-units-run "x-gui")'
+cmd: timeout 50 emacs -Q --batch -L test -l test/nelisp-emacs-lib/c-core-units-test.el --eval '(c-core-units-run "x-gui")'
 
 ** C1.3 End to end: the x-gui parity smoke matches host emacs --batch on the standalone after the bundle loads
 #+REQUIRES: NELISP_BIN
-cmd: sh test/c-core-parity-smoke.sh check x-gui
+cmd: sh test/nelisp-emacs-lib/c-core-parity-smoke.sh check x-gui
 
 * C2 Display, window, frame, face, font, overlay primitives with GNU batch semantics
 
@@ -41,11 +41,11 @@ cmd: sh test/c-core-parity-smoke.sh check x-gui
 cmd: sh tools/c-core-coverage.sh check display
 
 ** C2.2 Host ERT for the display implementations passes on GNU Emacs 31.1
-cmd: timeout 50 emacs -Q --batch -L test -l test/c-core-units-test.el --eval '(c-core-units-run "display")'
+cmd: timeout 50 emacs -Q --batch -L test -l test/nelisp-emacs-lib/c-core-units-test.el --eval '(c-core-units-run "display")'
 
 ** C2.3 End to end: the display parity smoke matches host emacs --batch on the standalone after the bundle loads
 #+REQUIRES: NELISP_BIN
-cmd: sh test/c-core-parity-smoke.sh check display
+cmd: sh test/nelisp-emacs-lib/c-core-parity-smoke.sh check display
 
 * C3 Process, network, threads and optional-library primitives
 
@@ -54,11 +54,11 @@ cmd: sh test/c-core-parity-smoke.sh check display
 cmd: sh tools/c-core-coverage.sh check process
 
 ** C3.2 Host ERT for the process implementations passes on GNU Emacs 31.1
-cmd: timeout 50 emacs -Q --batch -L test -l test/c-core-units-test.el --eval '(c-core-units-run "process")'
+cmd: timeout 50 emacs -Q --batch -L test -l test/nelisp-emacs-lib/c-core-units-test.el --eval '(c-core-units-run "process")'
 
 ** C3.3 End to end: the process parity smoke matches host emacs --batch on the standalone after the bundle loads
 #+REQUIRES: NELISP_BIN
-cmd: sh test/c-core-parity-smoke.sh check process
+cmd: sh test/nelisp-emacs-lib/c-core-parity-smoke.sh check process
 
 * C4 Buffer, marker, text property, syntax, keymap, command-loop primitives
 
@@ -67,11 +67,11 @@ cmd: sh test/c-core-parity-smoke.sh check process
 cmd: sh tools/c-core-coverage.sh check buffer
 
 ** C4.2 Host ERT for the buffer implementations passes on GNU Emacs 31.1
-cmd: timeout 50 emacs -Q --batch -L test -l test/c-core-units-test.el --eval '(c-core-units-run "buffer")'
+cmd: timeout 50 emacs -Q --batch -L test -l test/nelisp-emacs-lib/c-core-units-test.el --eval '(c-core-units-run "buffer")'
 
 ** C4.3 End to end: the buffer parity smoke matches host emacs --batch on the standalone after the bundle loads
 #+REQUIRES: NELISP_BIN
-cmd: sh test/c-core-parity-smoke.sh check buffer
+cmd: sh test/nelisp-emacs-lib/c-core-parity-smoke.sh check buffer
 
 * C5 Character, string, charset and coding primitives
 
@@ -80,11 +80,11 @@ cmd: sh test/c-core-parity-smoke.sh check buffer
 cmd: sh tools/c-core-coverage.sh check chars
 
 ** C5.2 Host ERT for the chars implementations passes on GNU Emacs 31.1
-cmd: timeout 50 emacs -Q --batch -L test -l test/c-core-units-test.el --eval '(c-core-units-run "chars")'
+cmd: timeout 50 emacs -Q --batch -L test -l test/nelisp-emacs-lib/c-core-units-test.el --eval '(c-core-units-run "chars")'
 
 ** C5.3 End to end: the chars parity smoke matches host emacs --batch on the standalone after the bundle loads
 #+REQUIRES: NELISP_BIN
-cmd: sh test/c-core-parity-smoke.sh check chars
+cmd: sh test/nelisp-emacs-lib/c-core-parity-smoke.sh check chars
 
 * C6 File, directory, load and native-comp primitives
 
@@ -93,11 +93,11 @@ cmd: sh test/c-core-parity-smoke.sh check chars
 cmd: sh tools/c-core-coverage.sh check files
 
 ** C6.2 Host ERT for the files implementations passes on GNU Emacs 31.1
-cmd: timeout 50 emacs -Q --batch -L test -l test/c-core-units-test.el --eval '(c-core-units-run "files")'
+cmd: timeout 50 emacs -Q --batch -L test -l test/nelisp-emacs-lib/c-core-units-test.el --eval '(c-core-units-run "files")'
 
 ** C6.3 End to end: the files parity smoke matches host emacs --batch on the standalone after the bundle loads
 #+REQUIRES: NELISP_BIN
-cmd: sh test/c-core-parity-smoke.sh check files
+cmd: sh test/nelisp-emacs-lib/c-core-parity-smoke.sh check files
 
 * C7 Remaining C primitives
 
@@ -106,11 +106,11 @@ cmd: sh test/c-core-parity-smoke.sh check files
 cmd: sh tools/c-core-coverage.sh check other
 
 ** C7.2 Host ERT for the other implementations passes on GNU Emacs 31.1
-cmd: timeout 50 emacs -Q --batch -L test -l test/c-core-units-test.el --eval '(c-core-units-run "other")'
+cmd: timeout 50 emacs -Q --batch -L test -l test/nelisp-emacs-lib/c-core-units-test.el --eval '(c-core-units-run "other")'
 
 ** C7.3 End to end: the other parity smoke matches host emacs --batch on the standalone after the bundle loads
 #+REQUIRES: NELISP_BIN
-cmd: sh test/c-core-parity-smoke.sh check other
+cmd: sh test/nelisp-emacs-lib/c-core-parity-smoke.sh check other
 
 * C8 Whole C core
 
@@ -124,4 +124,4 @@ cmd: timeout 50 "$NELISP_BIN" --eval "(progn (load (expand-file-name \"build/nem
 
 ** C8.3 End to end: every area parity smoke passes in one run against the same binary
 #+REQUIRES: NELISP_BIN
-cmd: for a in x-gui display process buffer chars files other; do sh test/c-core-parity-smoke.sh check $a || exit 1; done
+cmd: for a in x-gui display process buffer chars files other; do sh test/nelisp-emacs-lib/c-core-parity-smoke.sh check $a || exit 1; done

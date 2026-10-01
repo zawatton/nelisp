@@ -6,8 +6,8 @@
 #   tools/c-core-coverage.sh check AREA     # exit 0 iff AREA has 0 missing
 #   tools/c-core-coverage.sh summary        # per-area missing counts
 #
-# The C-primitive set is measured, not declared: vendor/nelisp's
-# tools/nelisp-c-primitive-census.sh asks the host GNU Emacs ($EMACS, default
+# The C-primitive set is measured, not declared: tools/nelisp-c-primitive-census.sh
+# asks the host GNU Emacs ($EMACS, default
 # `emacs', must be 31.1) which functions are C subrs.  A name counts as
 # present when it is fboundp on $NELISP_BIN after build/nemacs-bootstrap.el
 # loads.  "Present" means bound, not equivalent: behaviour is checked by the
@@ -31,7 +31,7 @@
 set -u
 here=$(cd "$(dirname "$0")/.." && pwd) || exit 1
 cd "$here" || exit 1
-BIN=${NELISP_BIN:-$here/vendor/nelisp/target/nelisp}
+BIN=${NELISP_BIN:-$here/target/nelisp}
 HOST=${EMACS:-emacs}
 CENSUS=build/c-core-census.tsv
 MISSING=build/c-core-missing.tsv
@@ -53,7 +53,7 @@ regen() {
   "$HOST" --batch --eval '(princ emacs-version)' 2>/dev/null | grep -q '^31\.1' \
     || { echo "c-core-coverage: host $HOST is not GNU Emacs 31.1" >&2; return 1; }
   [ -f build/nemacs-bootstrap.el ] || { echo "c-core-coverage: build/nemacs-bootstrap.el missing (make the bundle first)" >&2; return 1; }
-  ( cd vendor/nelisp && EMACS=$HOST timeout 600 bash tools/nelisp-c-primitive-census.sh \
+  ( cd "$here" && EMACS=$HOST timeout 600 bash tools/nelisp-c-primitive-census.sh \
       --bin "$BIN" --out "$here/$CENSUS" ) > build/c-core-census.log 2>&1 \
     || { echo "c-core-coverage: census failed (build/c-core-census.log)" >&2; return 1; }
   local probe=build/c-core-probe.el names

@@ -6,21 +6,14 @@ window, keymap, minibuffer, file/process I/O, redisplay, ...) so it runs on
 the NeLisp runtime and can carry real vendor packages (magit, org, ...) and
 the nemacs standalone/TUI editor as consumers. Read with:
 
-  bin/progress-meter.sh --ledger dev/nelisp-emacs-lib/tools/ai/usable-progress.org --json
+  "$PROGRESS_METER" --ledger tools/ai/usable-progress.org --json
 
-Repo identification (see worklog for the full trail): the user's path
-"nelisp's packages/nelisp-emacs-lib" does not exist — dev/nelisp/packages/
-holds small, unrelated nelisp-* utility packages (base64, sqlite, tramp,
-...), none named emacs-lib. dev/nelisp-emacs-lib is a separate top-level
-repo (origin: github.com/zawatton/nelisp-emacs-lib) whose own README.org
-and AGENTS.md/CLAUDE.md describe exactly the target: "a reusable library
-set that implements Emacs-compatible core behavior in Elisp for the NeLisp
-runtime" (README.org, "Status" section), with nemacs-next, GUI/TUI, and
-nelisp itself as consumers. There is no vendored copy of it under
-dev/nelisp/packages/, so this is the single canonical source and this
-ledger lives inside it, per instruction, at tools/ai/usable-progress.org
-(this repo's tools/ already holds ad hoc scripts; ai/ is a new
-subdirectory for this and future machine-checkable artifacts).
+Set PROGRESS_METER to the Notes workspace's bin/progress-meter.sh.
+This ledger originated in nelisp-emacs-lib and is retained by the Doc 211
+history-preserving import. Canonical imported sources live in
+packages/nelisp-emacs-*/src; generated publication mirrors are not sources.
+The frozen external library remains available until cutover acceptance
+and verified archival complete.
 
 Stages follow the repo's own Doc 11 lane model (A Product-critical editor,
 C Compatibility, D Display/runtime, E Operations) and Doc 27's library-gate
@@ -37,9 +30,8 @@ for the image file first and fails fast instead of triggering a rebuild;
 that is a true, currently-red "not yet usable" fact, not a skip.
 
 NELISP_BIN should point at a built NeLisp standalone binary. This repo
-vendors its own pinned copy at vendor/nelisp (default NELISP_ROOT), so
-NELISP_BIN=<repo>/vendor/nelisp/target/nelisp works without touching
-dev/nelisp.
+uses the in-tree NeLisp sources as NELISP_ROOT, so
+NELISP_BIN=<repo>/target/nelisp works without a nested runtime checkout.
 
 * S1 Build and bootstrap on the current NeLisp standalone
 
@@ -49,7 +41,7 @@ cmd: test -x "$NELISP_BIN"
 
 ** S1.2 The library facade loads on host Emacs from src/ alone, with no app/bootstrap glue on the load path
 #+NOTE: mirrors the library-consumer contract in CLAUDE.md / make nemacs-library-consumer-smoke.
-cmd: timeout 20 emacs -Q --batch -L src --eval "(require 'nelisp-emacs)"
+cmd: make -s doc211-api-consumer-smoke
 
 ** S1.3 The standalone bootstrap bundle rebuilds cleanly from the current sources
 cmd: timeout 45 make -s build-nelisp-bootstrap
@@ -104,7 +96,7 @@ standalone. "Present" means bound, not equivalent, so this is an upper
 bound on real completeness, never an underestimate.
 
 ** S2.1 The feature-symbol coverage report exists and matches the last known sweep
-evidence: build/nemacs-feature-coverage.tsv sha256=1ce260f520d21ccaf6b8947ce1d831f3e8abd400e7a05c1a738f478659984362
+evidence: build/nemacs-feature-coverage.tsv sha256=17b2860d827f55d3f811d0ed39391b3a996bad531bdf2c4654e7fc656e5b5529
 #+NOTE: 2026-09-30 S2 coverage batch 7: names 5930->6020 (json, url-vars, ielm, button,
 #+NOTE: cl now counted), present 4536->5297 (76.49%->87.99%). Added to the bundle tail:
 #+NOTE: GNU json/ielm/url-vars/dired/vc*/project/xref/button/imenu/cl, mostly from the new
@@ -114,7 +106,7 @@ evidence: build/nemacs-feature-coverage.tsv sha256=1ce260f520d21ccaf6b8947ce1d83
 #+NOTE: 2026-09-29 S2 coverage batch 6 merged (compile, pcomplete, shell, ehelp,
 #+NOTE: term, woman, project, isearch added to the bundle tail; buffer-list /
 #+NOTE: lookup-key / set-keymap-parent / Control-X-prefix / search-map fixes).
-#+NOTE: Sweep re-run on vendor/nelisp (062fa96c7): names 5747->5930, present
+#+NOTE: Sweep re-run on in-tree NeLisp (062fa96c7): names 5747->5930, present
 #+NOTE: 3180->4536 (55.33%->76.49%). Evidence hash re-pinned (denominator moved).
 #+NOTE: 2026-09-29 NeLisp vendor bump (dev/nelisp 062fa96c7): sweep re-run against
 #+NOTE: the new binary; names 5529->5747, present 2905->3180 (52.54%->55.33%)
@@ -192,7 +184,7 @@ evidence: build/nemacs-feature-coverage.tsv sha256=1ce260f520d21ccaf6b8947ce1d83
 #+NOTE: bootstrap path, so it contributes nothing measurable.
 #+NOTE: real button.el was also tried and dropped: make-button + button-at
 #+NOTE: deterministically hangs on this standalone (confirmed 3x reproduction),
-#+NOTE: a runtime defect outside this repo's scope (vendor/nelisp is
+#+NOTE: a runtime defect outside this repo's scope (in-tree NeLisp is
 #+NOTE: read-only here). pp.el was tried and dropped: pp-to-string
 #+NOTE: unconditionally calls lisp-mode-variables, which needs the
 #+NOTE: syntax-table/lisp-mode layer this standalone does not have.
@@ -215,34 +207,34 @@ Phase 1 (Doc 34 §9.5 / gate-M9): buffer, window, keymap, minibuffer ported
 to Elisp, exercised together by demo/phase1-close-demo.el.
 
 ** S3.1 The buffer core ERT suite passes on host Emacs
-cmd: timeout 30 emacs -Q --batch -L src -L test -l emacs-buffer-core-test -f ert-run-tests-batch-and-exit
+cmd: timeout 30 env EMACSLOADPATH="$(printf '%s:' packages/*/src)" emacs -Q --batch -L src -L test/nelisp-emacs-lib -l emacs-buffer-core-test -f ert-run-tests-batch-and-exit
 
 ** S3.2 The window core ERT suite passes on host Emacs
-cmd: timeout 30 emacs -Q --batch -L src -L test -l emacs-window-test -f ert-run-tests-batch-and-exit
+cmd: timeout 30 env EMACSLOADPATH="$(printf '%s:' packages/*/src)" emacs -Q --batch -L test/nelisp-emacs-lib -l emacs-window-test -f ert-run-tests-batch-and-exit
 
 ** S3.3 The keymap core ERT suite passes on host Emacs
-cmd: timeout 30 emacs -Q --batch -L src -L test -l emacs-keymap-test -f ert-run-tests-batch-and-exit
+cmd: timeout 30 env EMACSLOADPATH="$(printf '%s:' packages/*/src)" emacs -Q --batch -L src -L test/nelisp-emacs-lib -l emacs-keymap-test -f ert-run-tests-batch-and-exit
 
 ** S3.4 The minibuffer core ERT suite passes on host Emacs
-cmd: timeout 30 emacs -Q --batch -L src -L test -l emacs-minibuffer-test -f ert-run-tests-batch-and-exit
+cmd: timeout 30 env EMACSLOADPATH="$(printf '%s:' packages/*/src)" emacs -Q --batch -L test/nelisp-emacs-lib -l emacs-minibuffer-test -f ert-run-tests-batch-and-exit
 
 ** S3.5 End to end: the Phase 1 close demo drives buffer, window, overlay, keymap and minibuffer together in one scenario
-cmd: timeout 30 emacs -Q --batch -L src -L demo -L test -l phase1-close-demo-test -f ert-run-tests-batch-and-exit
+cmd: timeout 30 env EMACSLOADPATH="$(printf '%s:' packages/*/src)" emacs -Q --batch -L nelisp-emacs-lib/demo -L test/nelisp-emacs-lib -l phase1-close-demo-test -f ert-run-tests-batch-and-exit
 
 * S4 File / process / IO
 
 ** S4.1 The file I/O ERT suite passes on host Emacs
-cmd: timeout 30 emacs -Q --batch -L src -L test -l emacs-fileio-test -f ert-run-tests-batch-and-exit
+cmd: timeout 30 env EMACSLOADPATH="$(printf '%s:' packages/*/src)" emacs -Q --batch -L src -L test/nelisp-emacs-lib -l emacs-fileio-test -f ert-run-tests-batch-and-exit
 
 ** S4.2 The process builtins ERT suite passes on host Emacs
-cmd: timeout 30 emacs -Q --batch -L src -L test -l emacs-process-builtins-test -f ert-run-tests-batch-and-exit
+cmd: timeout 30 env EMACSLOADPATH="$(printf '%s:' packages/*/src)" emacs -Q --batch -L src -L test/nelisp-emacs-lib -l emacs-process-builtins-test -f ert-run-tests-batch-and-exit
 
 ** S4.3 The Tramp ssh-stub workflow smoke passes on host Emacs
-cmd: timeout 30 make -s tramp-stub-smoke
+cmd: timeout 30 env EMACSLOADPATH="$(printf '%s:' packages/*/src)" emacs -Q --batch -L test/nelisp-emacs-lib -l nemacs-tramp-stub-ssh-test -f ert-run-tests-batch-and-exit
 
 ** S4.4 End to end: call-process (echo/false/buffer-redirect/git) works through the real NeLisp standalone binary
 #+REQUIRES: NELISP_BIN
-cmd: timeout 30 make -s proc-smoke NELISP_BIN="$NELISP_BIN"
+cmd: timeout 30 make -s -f nelisp-emacs-lib/Makefile proc-smoke NELISP_BIN="$NELISP_BIN"
 
 * S5 Loading a real vendor package (magit) on the standalone
 
@@ -268,14 +260,14 @@ report an invalid command, through one bridge smoke.
 
 ** S6.1 bin/nemacs --doctor runs a self-diagnostic against the standalone binary and exits cleanly
 #+REQUIRES: NELISP_BIN
-cmd: timeout 20 env NELISP_HOME="vendor/nelisp" NEMACS_NELISP="$NELISP_BIN" ./bin/nemacs --doctor
+cmd: timeout 20 env NELISP_HOME="." NEMACS_NELISP="$NELISP_BIN" ./nelisp-emacs-lib/bin/nemacs --doctor
 
 ** S6.2 The cold-image startup policy smoke passes against the standalone binary
 #+REQUIRES: NELISP_BIN
-cmd: timeout 30 env NELISP_HOME="vendor/nelisp" NEMACS_NELISP="$NELISP_BIN" sh test/nemacs-cold-image-policy-smoke.sh
+cmd: timeout 30 env NELISP_HOME="." NEMACS_NELISP="$NELISP_BIN" sh test/nelisp-emacs-lib/nemacs-cold-image-policy-smoke.sh
 
 ** S6.3 The GUI/TUI keymap coverage inventory can be computed on host Emacs
-cmd: timeout 30 emacs -Q --batch -L scripts -l scripts/nemacs-gui-keymap-coverage.el > /dev/null
+cmd: timeout 30 env EMACSLOADPATH="$(printf '%s:' packages/*/src)" emacs -Q --batch -L scripts -l nemacs-gui-keymap-coverage > /dev/null
 
 ** S6.4 End to end: the standalone opens a file, edits it, and saves it through one bridge/session probe on the baked interactive runtime image
 #+REQUIRES: NELISP_BIN

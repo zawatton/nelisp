@@ -22,10 +22,11 @@
 set -eu
 
 smoke_script_dir=$(cd "$(dirname "$0")" && pwd)
-smoke_root=$(cd "$smoke_script_dir/.." && pwd)
+smoke_root=$(cd "$smoke_script_dir/../.." && pwd)
 cd "$smoke_root"
+nemacs_launcher="$smoke_root/nelisp-emacs-lib/bin/nemacs"
 
-NELISP_HOME=${NELISP_HOME:-$smoke_root/vendor/nelisp}
+NELISP_HOME=${NELISP_HOME:-$smoke_root}
 NEMACS_NELISP=${NEMACS_NELISP:-$NELISP_HOME/target/nelisp}
 export NELISP_HOME NEMACS_NELISP
 
@@ -50,7 +51,7 @@ export NEMACS_USER_EMACS_DIRECTORY
 # --- 2. a missing image must not start a 52-minute build -------------------
 # Run this first: it is the check that fails loudly if the default flips back.
 NEMACS_COLD_CACHE_ROOT="$smoke_dir/miss" \
-    ./bin/nemacs --driver=nelisp --batch --no-banner \
+    "$nemacs_launcher" --driver=nelisp --batch --no-banner \
     --eval '(princ "MISS-OK\n")' > "$smoke_dir/miss.out" 2>&1 || true
 
 if ! grep -q 'MISS-OK' "$smoke_dir/miss.out"; then
@@ -80,7 +81,7 @@ smoke_default_root="${XDG_CACHE_HOME:-$HOME/.cache}/nemacs"
 smoke_existing=$(find "$smoke_default_root" -name 'nemacs-bootstrap.flat.nlri' 2>/dev/null | head -1 || true)
 if [ -n "$smoke_existing" ]; then
     smoke_start=$(date +%s)
-    ./bin/nemacs --driver=nelisp --batch --no-banner \
+    "$nemacs_launcher" --driver=nelisp --batch --no-banner \
         --eval '(princ "WARM-OK\n")' > "$smoke_dir/warm.out" 2>&1 || true
     smoke_elapsed=$(( $(date +%s) - smoke_start ))
     if ! grep -q 'WARM-OK' "$smoke_dir/warm.out"; then
@@ -101,7 +102,7 @@ fi
 
 # --- 3. an opted-in build dies with its launcher ---------------------------
 NEMACS_COLD_CACHE_ROOT="$smoke_dir/build" NEMACS_COLD_BUILD=1 \
-    ./bin/nemacs --driver=nelisp --batch --no-banner \
+    "$nemacs_launcher" --driver=nelisp --batch --no-banner \
     --eval '(princ "BUILD-OK\n")' > "$smoke_dir/build.out" 2>&1 &
 smoke_launcher=$!
 

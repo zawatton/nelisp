@@ -19,7 +19,7 @@
   "Repository root.")
 
 (defvar nemacs-library-package-deps-ownership-doc
-  (expand-file-name "docs/design/18-library-package-ownership-inventory.org"
+  (expand-file-name "docs/design/nemacs/18-library-package-ownership-inventory.org"
                     nemacs-library-package-deps-repo-root)
   "Doc 18 ownership inventory path.")
 
@@ -75,7 +75,11 @@
 
 (defun nemacs-library-package-deps--relative (path)
   "Return PATH relative to repository root."
-  (file-relative-name path nemacs-library-package-deps-repo-root))
+  (let ((relative (file-relative-name path
+                                       nemacs-library-package-deps-repo-root)))
+    (if (string-match "\\`packages/\\(?:nelisp-emacs-[^/]+\\|STAYS\\)/src/\\(.*\\)" relative)
+        (concat "src/" (match-string 1 relative))
+      relative)))
 
 (defun nemacs-library-package-deps--ownership ()
   "Return a hash table mapping repo-relative paths to primary owner group."
@@ -98,15 +102,22 @@
 
 (defun nemacs-library-package-deps--elisp-files ()
   "Return repository Elisp files relevant to package dependency analysis."
-  (sort
-   (append
-    (directory-files-recursively
-     (expand-file-name "src" nemacs-library-package-deps-repo-root)
-     "\\.el\\'")
-    (let ((gui (expand-file-name "gui" nemacs-library-package-deps-repo-root)))
-      (and (file-directory-p gui)
-           (directory-files-recursively gui "\\.el\\'"))))
-   #'string<))
+  (let ((load-path
+         (cons (expand-file-name "packages/nelisp-pkg/src"
+                                 nemacs-library-package-deps-repo-root)
+               load-path)))
+    (load (expand-file-name "scripts/doc211-source-roots.el"
+                            nemacs-library-package-deps-repo-root) nil t)
+    (append
+     (cl-mapcan
+      (lambda (dir)
+        (when (or (string-match-p "/packages/nelisp-emacs-[^/]+/src\\'" dir)
+                  (string-match-p "/packages/STAYS/src\\'" dir))
+          (directory-files-recursively dir "\\.el\\'")))
+      (doc211-source-root-dirs nemacs-library-package-deps-repo-root))
+     (let ((gui (expand-file-name "gui" nemacs-library-package-deps-repo-root)))
+       (and (file-directory-p gui)
+            (directory-files-recursively gui "\\.el\\'"))))))
 
 (defun nemacs-library-package-deps--file-group (ownership relative)
   "Return ownership group for RELATIVE using OWNERSHIP."
@@ -226,8 +237,17 @@ loader and member features."
 
 (defun nemacs-library-package-deps--requires-in-file (relative)
   "Return required feature entries found in RELATIVE."
-  (let ((file (expand-file-name relative nemacs-library-package-deps-repo-root))
+  (let ((file (or (let ((direct (expand-file-name relative nemacs-library-package-deps-repo-root)))
+                   (and (file-exists-p direct) direct))
+                 (when (string-prefix-p "src/" relative)
+                   (let ((suffix (substring relative 4)))
+                     (cl-some
+                      (lambda (dir)
+                        (let ((candidate (expand-file-name suffix dir)))
+                          (and (file-exists-p candidate) candidate)))
+                      (doc211-source-root-dirs nemacs-library-package-deps-repo-root))))))
         entries)
+    (unless file (error "Missing package source: %s" relative))
     (dolist (form (nemacs-library-package-deps--read-forms file))
       (setq entries
             (append entries

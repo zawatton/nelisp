@@ -2926,8 +2926,7 @@ standalone-reader-fmt-smoke: standalone-reader
 # `equal' wrapper into `nelisp--native-equal', turning its native delegate
 # into a self-call and breaking every subsequent `equal' call.  Investigated
 # 2026-07: this exact regression was independently observed against a STALE
-# vendored nelisp copy (nelisp-emacs-lib's vendor/nelisp, which predates this
-# fix); it does not reproduce against this reader.  This smoke pins that down
+# stale external nelisp copy, which predates this fix; it does not reproduce against this reader.  This smoke pins that down
 # so a future prelude edit cannot silently reintroduce it.
 standalone-reader-prelude-equal-reload-smoke: standalone-reader
 	@mkdir -p target
@@ -4765,3 +4764,24 @@ doc211-bytecomp-needs-measure:
 	  NELISP_BYTECOMP_TRACE_NAMES="$$api_names" NELISP_BYTECOMP_ROOT="$(CURDIR)" NELISP_BYTECOMP_TRACE_OUT="$(CURDIR)/target/progress/doc211-bytecomp/host.tsv" \
 	  $${EMACS_BIN:-emacs} --batch -Q -L tools -l tools/nelisp-bytecomp-api-trace.el -l tools/nelisp-bytecomp-api-trace-run.el
 	@python3 tools/ai/doc211-bytecomp-needs-merge.py target/progress/doc211-bytecomp/standalone.tsv target/progress/doc211-bytecomp/host.tsv
+# Doc 211 S6: the imported consumer build now runs from this source tree.
+.PHONY: build-nelisp-bootstrap build/nelisp-emacs-magit-bridge-bundle.el build/nelisp-emacs-org-bridge-bundle.el
+build-nelisp-bootstrap:
+	$(MAKE) -f nelisp-emacs-lib/Makefile $@
+
+build/nelisp-emacs-magit-bridge-bundle.el build/nelisp-emacs-org-bridge-bundle.el:
+	$(MAKE) -f nelisp-emacs-lib/Makefile $@
+
+.PHONY: nemacs-library-gate
+nemacs-library-gate:
+	$(MAKE) -f nelisp-emacs-lib/Makefile $@ NELISP_ROOT=.
+
+.PHONY: doc211-api-ownership doc211-api-inventory doc211-api-consumer-smoke
+doc211-api-ownership:
+	$(MAKE) pkg-graph
+
+doc211-api-inventory:
+	$(MAKE) ns-inventory emacs-compat
+
+doc211-api-consumer-smoke:
+	@bash -c 'set -e; args=(); for d in packages/nelisp-emacs-*/src; do args+=(-L "$$d"); done; exec emacs --batch -Q "$${args[@]}" --eval "(require (quote nelisp-emacs))"'

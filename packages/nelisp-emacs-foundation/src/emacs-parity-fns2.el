@@ -214,7 +214,7 @@ rather than a fabricated value."
 ;; `load-path' search, is robust to the bundle-replay context (see the
 ;; identical `tool-bar.el' fix in `emacs-frame-builtins.el', T62).
 (unless (featurep 'vc-hooks)
-  (load (expand-file-name "vendor/emacs-lisp/vc/vc-hooks.el" default-directory)
+  (load (expand-file-name "vendor/emacs-lisp-api/vc/vc-hooks.el" default-directory)
         nil 'no-message t t))
 
 ;;;; --- editfns.c: replace-buffer-contents (behavioral port) ----------

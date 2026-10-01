@@ -57,8 +57,18 @@
   (let ((table (make-hash-table :test 'equal)))
     (dolist (row (nemacs-public-api-inventory--rows) table)
       (let ((symbol (nth 6 row)))
-        (unless (gethash symbol table)
-          (puthash symbol row table))))))
+        (let* ((old (gethash symbol table))
+               (old-group (and old (nth 0 old)))
+               (new-group (nth 0 row)))
+          ;; The imported source split can define a core API variable in an
+          ;; app bootstrap too.  Keep the manifest-owned reusable definition
+          ;; as the inventory representative when the app copy appears first.
+          (when (or (null old)
+                    (and (not (member old-group
+                                      nemacs-public-api-inventory--reusable-groups))
+                         (member new-group
+                                 nemacs-public-api-inventory--reusable-groups)))
+            (puthash symbol row table)))))))
 
 (defun nemacs-library-compat-api-policy--policy-for-class (class)
   "Return consumer policy for API CLASS."

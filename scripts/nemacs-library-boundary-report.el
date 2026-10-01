@@ -24,7 +24,7 @@
   "Repository root.")
 
 (defvar nemacs-library-boundary-report-ownership-doc
-  (expand-file-name "docs/design/18-library-package-ownership-inventory.org"
+  (expand-file-name "docs/design/nemacs/18-library-package-ownership-inventory.org"
                     nemacs-library-boundary-report-repo-root)
   "Doc 18 ownership inventory path.")
 

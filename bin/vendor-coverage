@@ -18,7 +18,7 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"; ROOT="$(cd "$HERE/.." && pwd)"; cd "$ROOT"
 EMACS="${EMACS:-emacs}"
-BIN="${NEMACS_NELISP:-$ROOT/vendor/nelisp/target/nelisp}"
+BIN="${NEMACS_NELISP:-$ROOT/target/nelisp}"
 TOPN="${VCOV_TOPN:-1200}"; SHOW="${VCOV_SHOW:-60}"
 OUT="$ROOT/build/vendor-coverage-missing.tsv"; mkdir -p "$ROOT/build"
 [ -x "$BIN" ] || { echo "vendor-coverage: no reader at $BIN"; exit 1; }
@@ -49,7 +49,7 @@ syms="$(awk -F'\t' '{print $3}' "$call" | tr '\n' ' ')"
 # The bare reader's --eval does not load these, so subtract them: a symbol is
 # only TRULY missing if no source layer defines it.
 grep -rhoE "\((cl-)?(defun|defmacro|defalias|defsubst|define-error|define-minor-mode|define-derived-mode|define-globalized-minor-mode) #?'?[A-Za-z0-9+*/<>=_!?:-]+" \
-  src/ scripts/nelisp-stdlib-prelude.el vendor/nelisp/lisp vendor/nelisp/src 2>/dev/null \
+  src/ lisp/ scripts/nelisp-stdlib-prelude.el packages/nelisp-emacs-*/src/ 2>/dev/null \
   | sed -E "s/^\([A-Za-z0-9-]+ +#?'?//" | sort -u > "$defined"
 grep -vxF -f "$defined" "$miss.bare" > "$miss"; rm -f "$miss.bare"
 

@@ -3425,7 +3425,7 @@ REPO-ROOT is the repository root (matches the other preload entry points'
 REPO-ROOT convention); the Magit bridge bundle and its own preconditions
 are resolved relative to it."
   (nemacs-runtime-image-preload--load-source-file
-   (expand-file-name "src/nelisp-emacs-magit-bridge.el" repo-root))
+   (expand-file-name "packages/STAYS/src/nelisp-emacs-magit-bridge.el" repo-root))
   (setq nelisp-emacs-magit-bridge-repo-root repo-root)
   (nelisp-emacs-magit-bridge-load)
   t)

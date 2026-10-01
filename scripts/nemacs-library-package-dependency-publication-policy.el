@@ -55,7 +55,7 @@
 (defconst nemacs-library-package-dependency-publication-policy--vendor-features
   '(("nelisp-process" .
      ("vendored-nelisp-package-dependency"
-      "vendor/nelisp/packages/nelisp-process"
+      "packages/nelisp-process"
       "vendored nelisp package; release lock is verified by the vendor lock gate")))
   "Allowlisted vendored package publication policies.")
 

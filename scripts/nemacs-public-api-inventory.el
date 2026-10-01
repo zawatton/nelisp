@@ -21,7 +21,7 @@
   "Repository root.")
 
 (defvar nemacs-public-api-inventory-ownership-doc
-  (expand-file-name "docs/design/18-library-package-ownership-inventory.org"
+  (expand-file-name "docs/design/nemacs/18-library-package-ownership-inventory.org"
                     nemacs-public-api-inventory-repo-root)
   "Doc 18 ownership inventory path.")
 
@@ -45,7 +45,11 @@
 
 (defun nemacs-public-api-inventory--relative (path)
   "Return PATH relative to repository root."
-  (file-relative-name path nemacs-public-api-inventory-repo-root))
+  (let ((relative (file-relative-name path
+                                       nemacs-public-api-inventory-repo-root)))
+    (if (string-match "\\`packages/\\(?:nelisp-emacs-[^/]+\\|STAYS\\)/src/\\(.*\\)" relative)
+        (concat "src/" (match-string 1 relative))
+      relative)))
 
 (defun nemacs-public-api-inventory--primary-group (group)
   "Return primary ownership group from GROUP."
@@ -71,15 +75,22 @@
 
 (defun nemacs-public-api-inventory--elisp-files ()
   "Return repository Elisp files relevant to API inventory."
-  (sort
-   (append
-    (directory-files-recursively
-     (expand-file-name "src" nemacs-public-api-inventory-repo-root)
-     "\\.el\\'")
-    (let ((gui (expand-file-name "gui" nemacs-public-api-inventory-repo-root)))
-      (and (file-directory-p gui)
-           (directory-files-recursively gui "\\.el\\'"))))
-   #'string<))
+  (let ((load-path
+         (cons (expand-file-name "packages/nelisp-pkg/src"
+                                 nemacs-public-api-inventory-repo-root)
+               load-path)))
+    (load (expand-file-name "scripts/doc211-source-roots.el"
+                            nemacs-public-api-inventory-repo-root) nil t)
+    (append
+      (cl-mapcan
+       (lambda (dir)
+         (when (or (string-match-p "/packages/nelisp-emacs-[^/]+/src\\'" dir)
+                   (string-match-p "/packages/STAYS/src\\'" dir))
+           (directory-files-recursively dir "\\.el\\'")))
+       (doc211-source-root-dirs nemacs-public-api-inventory-repo-root))
+      (let ((gui (expand-file-name "gui" nemacs-public-api-inventory-repo-root)))
+        (and (file-directory-p gui)
+             (directory-files-recursively gui "\\.el\\'"))))))
 
 (defun nemacs-public-api-inventory--line-number-at (pos)
   "Return 1-based line number at POS in current buffer."

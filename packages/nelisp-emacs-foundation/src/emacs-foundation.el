@@ -23,6 +23,12 @@
     (cond
      (source-file
       (file-name-directory source-file))
+     ((catch 'source-dir
+        (dolist (entry load-path)
+          (when (and (stringp entry)
+                     (file-readable-p
+                      (expand-file-name "emacs-fns.el" entry)))
+            (throw 'source-dir (file-name-as-directory entry))))))
      ((and (boundp 'default-directory)
            (stringp default-directory))
       (let ((src (expand-file-name "src/" default-directory)))

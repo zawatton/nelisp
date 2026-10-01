@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# bin/elprop-run - property comparison: host Emacs vs vendored NeLisp (Doc 03 §6.3)
+# bin/elprop-run - property comparison: host Emacs vs in-tree NeLisp (Doc 03 §6.3)
 #
 # Evaluates each form in the corpus (default test/elprop-forms-auto.el) on
-# host Emacs and on the vendored NeLisp binary, then diffs the printed
+# host Emacs and on the in-tree NeLisp binary, then diffs the printed
 # results.  Writes build/elprop-results.csv and prints a pass% summary.
 #
 # Env overrides:
 #   EMACS          host Emacs binary (default: emacs)
-#   NEMACS_NELISP  NeLisp binary (default: vendor/nelisp/target/nelisp)
+#   NEMACS_NELISP  NeLisp binary (default: target/nelisp)
 #   ELPROP_FORMS   corpus file (default: test/elprop-forms-auto.el)
 #   ELPROP_STRICT  set to exit non-zero on any mismatch (CI gate)
 set -euo pipefail

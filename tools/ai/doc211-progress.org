@@ -222,7 +222,7 @@ cmd: bash tools/ai/doc211-baseline-check.sh ccore
 
 ** S6.6 Guards previously provided by nemacs-library gates (ownership, API inventory, consumer smokes) are re-homed as nelisp gates or explicitly dropped with a recorded reason
 #+WEIGHT: 1
-#+NOTE: intended check: doc211-cutover.sh guards: compares the retired target list against a decision file; every row decided.
+#+NOTE: doc211-cutover.sh guards compares all 38 legacy targets against the decision file. It recognizes target-specific variables and the compile-before-consumer aggregate, rejects omitted/unknown/duplicate decisions and unknown recursion, and executes rehomed checks. Core package-graph and imported API package contracts still have failing findings; this coverage check does not make them pass.
 cmd: bash tools/ai/doc211-cutover.sh guards
 
 ** S6.7 nel-lib is archived read-only with a README stub and a verified git bundle (verified by cloning it: ref count and tip content); nelisp CI green for one week before deletion is allowed
