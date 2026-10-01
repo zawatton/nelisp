@@ -1765,7 +1765,7 @@ test-nemacs-server-client:
 verify-production-runtime-path: build-nelisp-bootstrap nemacs-library-package-scaffold nemacs-library-app-scaffold
 	$(EMACS) -Q -L scripts \
 		--eval '(setq verify-production-runtime-path-bootstrap "$(abspath $(NEMACS_BOOTSTRAP_BUNDLE))")' \
-		--eval '(setq verify-production-runtime-path-main "$(abspath src/nemacs-main.el)")' \
+		--eval '(setq verify-production-runtime-path-main "$(abspath packages/nelisp-emacs-app-gui/src/nemacs-main.el)")' \
 		--eval '(setq verify-production-runtime-path-package-scaffold "$(abspath $(NEMACS_LIBRARY_PACKAGE_SCAFFOLD))")' \
 		--eval '(setq verify-production-runtime-path-app-scaffold "$(abspath $(NEMACS_LIBRARY_APP_SCAFFOLD))")' \
 		--eval '(setq verify-production-runtime-path-summary-output "$(abspath $(NEMACS_PRODUCTION_RUNTIME_PATH_SUMMARY))")' \

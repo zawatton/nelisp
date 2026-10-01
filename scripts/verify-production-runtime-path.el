@@ -24,7 +24,7 @@
   "Generated bootstrap bundle to inspect.")
 
 (defvar verify-production-runtime-path-main
-  (expand-file-name "src/nemacs-main.el"
+  (expand-file-name "packages/nelisp-emacs-app-gui/src/nemacs-main.el"
                     verify-production-runtime-path-repo-root)
   "Production entry point to inspect.")
 

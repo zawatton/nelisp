@@ -81,7 +81,14 @@
   (let* ((role (nth 0 entry))
          (source-relative (nth 1 entry))
          (target-relative (nth 2 entry))
-         (source-identity (or (nth 3 entry) source-relative))
+         (source-identity
+          (or (nth 3 entry)
+              (if (string-match
+                   "\\`packages/nelisp-emacs-[^/]+/src/\\(.+\\)\\'"
+                   source-relative)
+                  (concat "src/"
+                          (file-name-nondirectory (match-string 1 source-relative)))
+                source-relative)))
          (source (expand-file-name source-relative
                                    nemacs-library-app-scaffold-repo-root))
          (target (nemacs-library-app-scaffold--target-path target-relative)))

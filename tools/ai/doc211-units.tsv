@@ -46,3 +46,5 @@ S6-U16	S6	tools/ai/doc211-units-check.sh	0	bash tools/ai/doc211-units-check.sh S
 S6-U17	S6	.gitignore	0	git check-ignore .serena/project.yml packages/nelisp-emacs-foundation/lisp/cl-lib.el && ! git check-ignore --no-index packages/nelisp-emacs-foundation/src/cl-lib.el	open
 S6-U18	S6	nelisp-emacs-lib/bin/nemacs	0	NEMACS_NELISP=$(command -v true) env -u NELISP_HOME -u NEMACS_HOME nelisp-emacs-lib/bin/nemacs --version	open
 S6-U19	S6	scripts/doc211-source-roots.el	3	DOC211_SOURCE_ROOTS_PRINT=1 emacs -Q --batch -L packages/nelisp-pkg/src -l scripts/doc211-source-roots.el	open
+S6-U20	S6	scripts/nemacs-library-app-scaffold.el	1	make -f nelisp-emacs-lib/Makefile nemacs-library-app-boundary	open
+S6-U21	S6	scripts/verify-production-runtime-path.el	0	emacs -Q --batch -L scripts -l scripts/verify-production-runtime-path.el -f verify-production-runtime-path-batch	open
