@@ -2119,13 +2119,13 @@ bake-vendor-core-runtime-image: nemacs-library-package-scaffold nemacs-library-a
 # mirrors bake-vendor-core-runtime-image's mechanism (extend-runtime-image
 # on the base batch image), calling
 # nemacs-runtime-image-preload-magit-extension.
-$(NEMACS_MAGIT_BRIDGE_BUNDLE): scripts/build-nelisp-emacs-magit-bridge-bundle.el packages/STAYS/src/nelisp-emacs-magit-bridge.el scripts/standalone-source-normalize.el $(NELISP_BOOTSTRAP_VENDOR_INPUTS) $(NELISP_CONSUMER_VENDOR_INPUTS)
+$(NEMACS_MAGIT_BRIDGE_BUNDLE): scripts/build-nelisp-emacs-magit-bridge-bundle.el packages/nelisp-emacs-io/src/nelisp-emacs-magit-bridge.el scripts/standalone-source-normalize.el $(NELISP_BOOTSTRAP_VENDOR_INPUTS) $(NELISP_CONSUMER_VENDOR_INPUTS)
 	NEMACS_MAGIT_BUNDLE_TRACE_FORMS="$(NEMACS_MAGIT_BUNDLE_TRACE_FORMS)" $(EMACS) -Q -L scripts \
 		--eval '(setq nelisp-emacs-magit-bridge-bundle-output-file "$(abspath $(NEMACS_MAGIT_BRIDGE_BUNDLE))")' \
 		-l scripts/build-nelisp-emacs-magit-bridge-bundle.el \
 		-f nelisp-emacs-magit-bridge-bundle-build-batch
 
-$(NEMACS_ORG_BRIDGE_BUNDLE): scripts/build-nelisp-emacs-org-bridge-bundle.el packages/STAYS/src/nelisp-emacs-org-bridge.el scripts/standalone-source-normalize.el $(NELISP_BOOTSTRAP_VENDOR_INPUTS) $(NELISP_CONSUMER_VENDOR_INPUTS)
+$(NEMACS_ORG_BRIDGE_BUNDLE): scripts/build-nelisp-emacs-org-bridge-bundle.el packages/nelisp-emacs-io/src/nelisp-emacs-org-bridge.el scripts/standalone-source-normalize.el $(NELISP_BOOTSTRAP_VENDOR_INPUTS) $(NELISP_CONSUMER_VENDOR_INPUTS)
 	$(EMACS) --batch -Q $(NELISP_LOAD_PATH) -L scripts \
 		--eval '(setq nelisp-emacs-org-bridge-bundle-output-file "$(abspath $(NEMACS_ORG_BRIDGE_BUNDLE))")' \
 		-l scripts/build-nelisp-emacs-org-bridge-bundle.el \

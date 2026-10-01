@@ -757,13 +757,26 @@ The file must contain one readable plist with keys `:emacs-version',
   "Return FORM with equivalent backquote reader heads made identical."
   (cond
    ((consp form)
-    (let ((head (car form)))
-      (cons (cond
-             ((memq head '(\` backquote)) 'backquote)
-             ((memq head '(\, comma)) 'comma)
-             ((memq head '(\,@ comma-at)) 'comma-at)
-             (t (nl-ns--normalise-definition-form head)))
-            (nl-ns--normalise-definition-form (cdr form)))))
+    (let ((tail form) (slow form) (fast form) (heads nil))
+      ;; Walk the cdr spine iteratively.  Recursing once for every sibling
+      ;; made large, shallow definition forms exhaust `max-lisp-eval-depth'.
+      (while (consp tail)
+        (let ((head (car tail)))
+          (push (cond
+                 ((memq head '(\` backquote)) 'backquote)
+                 ((memq head '(\, comma)) 'comma)
+                 ((memq head '(\,@ comma-at)) 'comma-at)
+                 (t (nl-ns--normalise-definition-form head)))
+                heads))
+        (setq tail (cdr tail)
+              slow (and (consp slow) (cdr slow))
+              fast (and (consp fast) (cdr fast))
+              fast (and (consp fast) (cdr fast)))
+        (when (and (consp slow) (eq slow fast))
+          ;; Match the bounded failure class of the old recursive walk.
+          (signal 'excessive-lisp-nesting nil)))
+      (nconc (nreverse heads)
+             (nl-ns--normalise-definition-form tail))))
    ((vectorp form)
     (let ((out (make-vector (length form) nil)) (i 0))
       (while (< i (length form))

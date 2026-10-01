@@ -772,8 +772,8 @@ src/nelisp-emacs-compat-face.el	packages/nelisp-emacs-core/src/nelisp-emacs-comp
 src/nelisp-emacs-compat-fileio.el	packages/nelisp-emacs-io/src/nelisp-emacs-compat-fileio.el
 src/nelisp-emacs-compat.el	packages/nelisp-emacs-buffer-core/src/nelisp-emacs-compat.el
 src/nelisp-emacs-libs.el	packages/nelisp-emacs-facade/src/nelisp-emacs-libs.el
-src/nelisp-emacs-magit-bridge.el	packages/STAYS/src/nelisp-emacs-magit-bridge.el
-src/nelisp-emacs-org-bridge.el	packages/STAYS/src/nelisp-emacs-org-bridge.el
+src/nelisp-emacs-magit-bridge.el	packages/nelisp-emacs-io/src/nelisp-emacs-magit-bridge.el
+src/nelisp-emacs-org-bridge.el	packages/nelisp-emacs-io/src/nelisp-emacs-org-bridge.el
 src/nelisp-emacs-vendor.el	packages/nelisp-emacs-foundation/src/nelisp-emacs-vendor.el
 src/nelisp-emacs.el	packages/nelisp-emacs-facade/src/nelisp-emacs.el
 src/nelisp-regex.el	packages/nelisp-emacs-text-core/src/nelisp-regex.el
@@ -789,7 +789,7 @@ src/nemacs-main.el	packages/nelisp-emacs-app-gui/src/nemacs-main.el
 src/nemacs-runtime-cdb.el	packages/STAYS/src/nemacs-runtime-cdb.el
 src/nemacs-runtime-skk.el	packages/STAYS/src/nemacs-runtime-skk.el
 src/nemacs-runtime-stdlib-extra.el	packages/STAYS/src/nemacs-runtime-stdlib-extra.el
-src/nemacs-tramp.el	packages/STAYS/src/nemacs-tramp.el
+src/nemacs-tramp.el	packages/nelisp-emacs-io/src/nemacs-tramp.el
 src/nxml-mode.el	packages/nelisp-emacs-tools/src/nxml-mode.el
 src/nxml.el	packages/nelisp-emacs-tools/src/nxml.el
 src/oclosure-shim.el	packages/nelisp-emacs-foundation/src/oclosure-shim.el

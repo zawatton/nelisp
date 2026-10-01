@@ -48,35 +48,56 @@ Both hold if a start is a column-0 `(' whose enclosing parens, if any,
 were themselves opened at column 0.  A still-open column-0 paren means a
 previous top-level form failed to close; anything opened deeper means we
 are genuinely inside one."
-  (let ((starts nil) (columns nil) (state nil) (pos (point-min)))
-    (while (< pos (point-max))
-      (goto-char pos)
-      (when (and (= (current-column) 0)
-                 (eq (char-after) ?\()
-                 (not (or (nth 3 state) (nth 4 state)))
-                 (let ((rest columns) (nested nil))
-                   (while rest
-                     (when (> (car rest) 0) (setq nested t))
-                     (setq rest (cdr rest)))
-                   (not nested)))
-        (setq starts (cons pos starts)))
-      (let ((line-end (line-end-position))
-            (scan pos))
-        (while (< scan line-end)
-          (goto-char scan)
-          (let ((outside (not (or (nth 3 state) (nth 4 state))))
-                (char (char-after)))
-            (cond
-             ((and outside (eq char ?\())
-              (setq columns (cons (current-column) columns)))
-             ((and outside (eq char ?\)) columns)
-              (setq columns (cdr columns)))))
-          (setq state (parse-partial-sexp scan (1+ scan) nil nil state))
-          (setq scan (1+ scan)))
-        (let ((next (min (point-max) (1+ line-end))))
-          (setq state (parse-partial-sexp line-end next nil nil state))
-          (setq pos next))))
+  (goto-char (point-min))
+  (let ((starts nil) (columns nil) (state nil) (scan (point-min)))
+    (while (and (re-search-forward "[()]" nil t))
+      (let* ((pos (1- (point)))
+             (char (char-after pos)))
+        ;; Let the parser consume ordinary text in one span.  Its state is
+        ;; still authoritative at each delimiter (including escapes, strings,
+        ;; comments, and multiline forms).
+        (setq state (parse-partial-sexp scan pos nil nil state))
+        (goto-char pos)
+        (let ((outside (not (or (nth 3 state) (nth 4 state)))))
+          (when (and outside (eq char ?\() (= (current-column) 0)
+                     (not (let ((rest columns) (nested nil))
+                            (while rest
+                              (when (> (car rest) 0) (setq nested t))
+                              (setq rest (cdr rest)))
+                            nested)))
+            (setq starts (cons pos starts)))
+          (cond
+           ((and outside (eq char ?\())
+            (setq columns (cons (current-column) columns)))
+           ((and outside (eq char ?\)) columns)
+            (setq columns (cdr columns)))))
+        (setq state (parse-partial-sexp pos (1+ pos) nil nil state))
+        (setq scan (1+ pos))
+        (goto-char scan)))
+    (setq state (parse-partial-sexp scan (point-max) nil nil state))
     (nreverse starts)))
+
+(defun nl-parens--guard-wrapper-boundaries (starts)
+  "Return (OPEN . CLOSE) boundaries for balanced fboundp guard forms in STARTS.
+Only inspect forms with a plausible `when' or `unless' guard head.  Reading
+the form validates its balance without evaluating it."
+  (let ((wrappers nil))
+    (dolist (start starts)
+      (save-excursion
+        (goto-char start)
+        (when (looking-at "(\\(?:when\\|unless\\)[ \t\n]+(fboundp[ \t\n]+'[^() \t\n;]+")
+          (condition-case nil
+              (let* ((form (read (current-buffer)))
+                     (guard (cadr form))
+                     (quoted (cadr guard)))
+                (when (and (memq (car-safe form) '(when unless))
+                           (eq (car-safe guard) 'fboundp)
+                           (eq (car-safe quoted) 'quote)
+                           (symbolp (cadr quoted))
+                           (eq (char-before) ?\)))
+                  (setq wrappers (cons (cons start (1- (point))) wrappers))))
+            (error nil)))))
+    (nreverse wrappers)))
 
 (defun nl-parens--form-end (start limit)
   "Return the insertion point after the final non-whitespace text before LIMIT."
@@ -210,7 +231,9 @@ report can call the placement a guess."
   "Return (FINDINGS . REPAIRS) for the current Emacs Lisp buffer.
 REPAIRS contains (POSITION . COUNT) pairs for positive-depth findings only."
   (emacs-lisp-mode)
-  (let ((starts (nl-parens--form-starts)) (findings nil) (repairs nil))
+  (let* ((starts (nl-parens--form-starts))
+         (wrappers (nl-parens--guard-wrapper-boundaries starts))
+         (findings nil) (repairs nil))
     (while starts
       (let* ((start (car starts))
              (following (cdr starts))
@@ -218,6 +241,13 @@ REPAIRS contains (POSITION . COUNT) pairs for positive-depth findings only."
              (depth (condition-case nil
                         (car (parse-partial-sexp start limit))
                       (scan-error 0))))
+        ;; A valid runtime-marker guard spans several physical candidate
+        ;; intervals.  Balance only its known boundary parens; leave every
+        ;; body interval intact so broken definitions remain visible.
+        (when (assq start wrappers) (setq depth (1- depth)))
+        (dolist (wrapper wrappers)
+          (when (and (<= start (cdr wrapper)) (< (cdr wrapper) limit))
+            (setq depth (1+ depth))))
         (when (/= depth 0)
           (let* ((end (nl-parens--form-end start limit))
                  (plan (and (> depth 0) (nl-parens--repair-plan start limit depth)))

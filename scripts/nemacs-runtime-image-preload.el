@@ -3416,7 +3416,7 @@ image startup."
 ;; Task #17 (M1) — Magit bridge extension.  Mirrors
 ;; `nemacs-runtime-image-preload-vendor-core-extension' above: a thin
 ;; dispatcher that hands off to the real logic owned by
-;; `src/nelisp-emacs-magit-bridge.el' (per CLAUDE.md/AGENTS.md, session/image
+;; `packages/nelisp-emacs-io/src/nelisp-emacs-magit-bridge.el' (per CLAUDE.md/AGENTS.md, session/image
 ;; wiring stays thin; the reusable "bring the real vendor Magit chain into a
 ;; NeLisp session" behavior belongs in a `src/' module, not here).
 (defun nemacs-runtime-image-preload-magit-extension (repo-root)

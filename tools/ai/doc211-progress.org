@@ -3,8 +3,8 @@
 Machine-checkable progress for docs/design/211-emacs-api-packages.org (draft, revised 2026-09-30 after the user's round-2 decisions D7-D11).
 Read with:  bin/progress-meter.sh --ledger PATH --json   (from the Notes workspace root).
 
-Status: every criterion is `pending` because the migration has not started and none of the checking commands exist yet. Each criterion carries
-a #+NOTE with the intended command; when a command is written it replaces `pending` in the same change that lands the work it measures.
+Status is measured by the progress meter; this header does not describe current completion. Each criterion carries
+a #+NOTE explaining its check; when a command is implemented it replaces `pending` in the same change that lands the work it measures.
 Commands that would exceed the meter's 55 s cap use `evidence:` files from a longer run (pattern of tools/ai/eln-progress.org S6.22).
 Baselines held at every stage end (D5, D7): nel-lib usable ledger 27 of 30 (FAIL S2.5 S5.4 S6.2 stay failing), nel-lib C-core ledger (snapshot at freeze),
 NeLisp eln ledger 70 of 70, all NeLisp gates. Worker structure (D11): each stage keeps a unit manifest tools/ai/doc211-units.tsv; a unit is at most
@@ -117,15 +117,19 @@ pending
 
 * S4 Whole nel-lib history is imported into a nelisp migration branch, repeatably
 
+The executable source checks require DOC211_SOURCE to name the frozen checkout
+with its pre-doc211-final tag. A stale sibling checkout is not an acceptable
+substitute; complete-map extra-row checks remain enabled.
+
 ** S4.1 Mapping file covers every tracked nel-lib path (src, test, tools, scripts, apps, gui, bin, docs, ledgers, vendor consumer trees) with a destination or an explicit drop
 #+WEIGHT: 1
-#+NOTE: intended check: tools/ai/doc211-s4-check.sh S4.1; checks source git ls-files against the complete map, rejects extra rows, and enforces the allowed drop prefixes.
-pending
+#+NOTE: Checks source git ls-files against the complete map, rejects extra rows and duplicate destinations, and enforces allowed drop prefixes. The explicit obsolete build-wrapper supersession requires its exact recorded reason and the in-tree replacement target.
+cmd: DOC211_SOURCE=${DOC211_SOURCE:?set DOC211_SOURCE to the frozen nel-lib checkout} bash tools/ai/doc211-s4-check.sh S4.1
 
 ** S4.2 Collision decision file names the surviving copy for nelisp-coding, nelisp-text-buffer, nelisp-regex, test/nelisp-coding-test.el, test/fixtures, bin/nemacs and design-doc numbers
 #+WEIGHT: 1
-#+NOTE: intended check: tools/ai/doc211-s4-check.sh S4.2; recomputes mapped destination collisions from both git indexes and requires a decision for each plus the named feature collisions.
-pending
+#+NOTE: Recomputes mapped destination collisions against the immutable pre-doc211 tree after import (or the current tracked tree before import), requiring every actual collision decision plus the named feature collisions. Imported files must not be mistaken for pre-existing collisions.
+cmd: DOC211_SOURCE=${DOC211_SOURCE:?set DOC211_SOURCE to the frozen nel-lib checkout} bash tools/ai/doc211-s4-check.sh S4.2
 
 ** S4.3 Determinism: running the import twice on identical input gives identical commit ids, and a second import after new nel-lib commits adds only those commits
 #+WEIGHT: 1
@@ -139,18 +143,18 @@ pending
 
 ** S4.5 Merge is a real merge commit with two parents; tags pre-doc211 (nelisp) and pre-doc211-final (nel-lib) exist
 #+WEIGHT: 1
-#+NOTE: intended check: tools/ai/doc211-s4-check.sh S4.5; asserts two merge parents and both rollback tags.
-pending
+#+NOTE: Verifies the original history-import merge on the migration ancestry, its two parents and both rollback tags. Later reviewed commits do not change the import commit's parent count.
+cmd: DOC211_SOURCE=${DOC211_SOURCE:?set DOC211_SOURCE to the frozen nel-lib checkout} bash tools/ai/doc211-s4-check.sh S4.5
 
 ** S4.6 Unit manifest for this stage exists in tools/ai/doc211-units.tsv: every unit is at most 12 functions or one file, has its own acceptance command, and no two open units write the same file
 #+WEIGHT: 1
-#+NOTE: intended check: tools/ai/doc211-s4-check.sh S4.6; tools/ai/doc211-units-check.sh S4 validates the manifest columns, one-file/12-function bound, command presence, status, and open-unit overlap.
-pending
+#+NOTE: tools/ai/doc211-units-check.sh S4 validates the manifest columns, one-file/12-function bound, command presence, status, and open-unit overlap.
+cmd: bash tools/ai/doc211-s4-check.sh S4.6
 
 ** S4.7 END-TO-END: moved package unit ERT run from packages/<pkg>/test/ passes with the same counts as in nel-lib, and nelisp make pkg-graph pkg-load-lists ns-inventory emacs-compat parens-check pass with the packages present
 #+WEIGHT: 1
-#+NOTE: intended check: tools/ai/doc211-s4-check.sh S4.7; compares host-Emacs ERT counts, then runs each listed make gate and reports the first exact failure (baseline regeneration may be required by §4.7).
-pending
+#+NOTE: Compares host-Emacs ERT counts, then runs each listed make gate and reports the first exact failure. Existing package graph, load-list and namespace failures remain real failing checks; focused checker fixes alone cannot complete this stage.
+cmd: DOC211_SOURCE=${DOC211_SOURCE:?set DOC211_SOURCE to the frozen nel-lib checkout} bash tools/ai/doc211-s4-check.sh S4.7
 
 * S5 Vendored GNU Lisp is one 31.1 tree in nelisp/vendor with sha256 and origin
 
@@ -232,7 +236,7 @@ pending
 
 ** S6.8 Unit manifest for this stage exists in tools/ai/doc211-units.tsv: every unit is at most 12 functions or one file, has its own acceptance command, and no two open units write the same file
 #+WEIGHT: 1
-#+NOTE: doc211-units-check.sh S6 validates manifest columns, the unit size limit, acceptance commands and overlap serialization. The units include source resolution, launcher/local-artifact relocation, production path/scaffold identity repairs and explicit recursive Makefile routing. The stage still requires the independent S6.9 end-to-end criterion.
+#+NOTE: doc211-units-check.sh S6 validates manifest columns, the unit size limit, acceptance commands and overlap serialization. The units include source resolution, launcher/local-artifact relocation, production path/scaffold identity repairs, explicit recursive Makefile routing, IO bridge relocation and bounded checker/provenance repairs. The stage still requires the independent S6.9 end-to-end criterion.
 cmd: bash tools/ai/doc211-units-check.sh S6
 
 ** S6.9 END-TO-END: eln 70/70, usable 27/30, c-core snapshot, every gate in preflight --list PASS, and the bundle boots under 50 s, all in a single in-tree build

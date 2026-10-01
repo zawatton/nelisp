@@ -28,7 +28,7 @@ S5-U3	S5	tools/ai/doc211-vendor-check.sh	0	bash tools/ai/doc211-vendor-check.sh 
 S5-U4	S5	tools/ai/doc211-vendor-check.sh	0	bash tools/ai/doc211-vendor-check.sh api-boundary	done
 S5-U5	S5	tools/ai/doc211-vendor-trace.sh	0	bash tools/ai/doc211-vendor-check.sh exist	open
 S6-U1	S6	Makefile	0	make build-nelisp-bootstrap	done
-S6-U2	S6	nelisp-emacs-lib/Makefile	0	make build-nelisp-bootstrap	done
+S6-U2	S6	nelisp-emacs-lib/Makefile	0	make build-nelisp-bootstrap build/nelisp-emacs-magit-bridge-bundle.el build/nelisp-emacs-org-bridge-bundle.el	open
 S6-U3	S6	scripts/doc211-bootstrap-source-root.sh	0	bash scripts/doc211-bootstrap-source-root.sh	done
 S6-U4	S6	scripts/build-nelisp-bootstrap.el	0	make build-nelisp-bootstrap	done
 S6-U5	S6	scripts/build-nelisp-emacs-magit-bridge-bundle.el	0	make build/nelisp-emacs-magit-bridge-bundle.el	done
@@ -48,3 +48,15 @@ S6-U18	S6	nelisp-emacs-lib/bin/nemacs	0	NEMACS_NELISP=$(command -v true) env -u 
 S6-U19	S6	scripts/doc211-source-roots.el	3	DOC211_SOURCE_ROOTS_PRINT=1 emacs -Q --batch -L packages/nelisp-pkg/src -l scripts/doc211-source-roots.el	open
 S6-U20	S6	scripts/nemacs-library-app-scaffold.el	1	make -f nelisp-emacs-lib/Makefile nemacs-library-app-boundary	open
 S6-U21	S6	scripts/verify-production-runtime-path.el	0	emacs -Q --batch -L scripts -l scripts/verify-production-runtime-path.el -f verify-production-runtime-path-batch	open
+S6-U22	S6	packages/nl-parens/src/nl-parens.el	3	emacs -Q --batch -L packages/nl-parens/src -L packages/nl-parens/test -l nl-parens-test -f ert-run-tests-batch-and-exit	open
+S6-U23	S6	packages/nl-parens/test/nl-parens-test.el	0	emacs -Q --batch -L packages/nl-parens/src -L packages/nl-parens/test -l nl-parens-test -f ert-run-tests-batch-and-exit	open
+S6-U24	S6	packages/nelisp-emacs-io/src/nelisp-emacs-magit-bridge.el	0	test "$(git hash-object packages/nelisp-emacs-io/src/nelisp-emacs-magit-bridge.el)" = e9485903f242337bc927c6398c28bbe565bf7c6d	open
+S6-U25	S6	packages/nelisp-emacs-io/src/nelisp-emacs-org-bridge.el	0	test "$(git hash-object packages/nelisp-emacs-io/src/nelisp-emacs-org-bridge.el)" = 59db5c457af7db39da1d6ad49801612a95f7d319	open
+S6-U26	S6	packages/nelisp-emacs-io/src/nemacs-tramp.el	0	test "$(git hash-object packages/nelisp-emacs-io/src/nemacs-tramp.el)" = db3fc35d6e09a2bb01e16179cb1ee385962bd854	open
+S6-U27	S6	tools/ai/doc211-import-map.tsv	0	bash tools/ai/doc211-import-map-check.sh	open
+S6-U28	S6	scripts/nemacs-runtime-image-preload.el	0	emacs -Q --batch --eval '(with-temp-buffer (insert-file-contents "scripts/nemacs-runtime-image-preload.el") (check-parens))'	open
+S6-U29	S6	packages/nl-ns/src/nl-ns.el	1	emacs -Q --batch -L packages/nl-ns/src -L packages/nl-ns/test -l nl-ns-test -f ert-run-tests-batch-and-exit	open
+S6-U30	S6	packages/nl-ns/test/nl-ns-test.el	0	emacs -Q --batch -L packages/nl-ns/src -L packages/nl-ns/test -l nl-ns-test -f ert-run-tests-batch-and-exit	open
+S6-U31	S6	tools/ai/doc211-import-map-check.sh	0	bash tools/ai/doc211-s4-check.sh S4.1	open
+S6-U32	S6	tools/ai/doc211-collisions-check.sh	0	bash tools/ai/doc211-s4-check.sh S4.2	open
+S6-U33	S6	tools/ai/doc211-s4-check.sh	0	bash tools/ai/doc211-s4-check.sh S4.5	open

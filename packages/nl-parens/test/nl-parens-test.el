@@ -53,6 +53,18 @@
   (nl-parens-test--with-file "(defun f ()\n  ;; )\n  1)\n"
     (lambda (path) (should-not (nl-parens-check-file path)))))
 
+(ert-deftest nl-parens-delimiter-scan-preserves-parser-context ()
+  (nl-parens-test--with-file
+      (concat "(defun f ()\n"
+              "  \"a string across\n"
+              "(several) lines\"\n"
+              "  (list ?\\( ?\\) ; comment with )\n"
+              "        (list 1))\n"
+              "  (let ((data '((nested)\n"
+              "                (forms))))\n"
+              "    data))\n")
+    (lambda (path) (should-not (nl-parens-check-file path)))))
+
 (ert-deftest nl-parens-extra-is-reported-but-not-fixed ()
   (nl-parens-test--with-file "(defun nl-parens-test-extra ()\n  1))\n"
     (lambda (path)
@@ -122,6 +134,33 @@
                               (nl-parens-report (list finding) 'rich)))
         (should (string-match ":insert-line"
                               (nl-parens-report (list finding) 'sexp)))))))
+
+(ert-deftest nl-parens-balanced-fboundp-wrapper-is-clean-and-not-fixed ()
+  (let ((text "(when (fboundp 'runtime-marker)\n(defun wrapped-one () 1)\n)\n(unless (fboundp 'another-marker)\n(defun wrapped-two () 2)\n)\n"))
+    (nl-parens-test--with-file text
+      (lambda (path)
+        (should-not (nl-parens-check-file path))
+        (should-not (nl-parens-fix-file path t))
+        (should (= (nl-parens-fix-file path) 0))
+        (should (equal text (nl-parens-test--contents path)))))))
+
+(ert-deftest nl-parens-malformed-fboundp-wrapper-controls-remain-visible ()
+  (dolist (case
+           '(("(when (fboundp 'runtime-marker)\n(defun wrapped () 1)\n"
+              parens-missing)
+             ("(when (fboundp 'runtime-marker)\n(defun wrapped () 1))\n)\n"
+              parens-extra)
+             ("(when (fboundp 'runtime-marker)\n(defun wrapped-broken ()\n  1\n(defun absorbed-sibling () 2))\n)\n"
+              parens-missing wrapped-broken)))
+    (nl-parens-test--with-file (car case)
+      (lambda (path)
+        (let ((findings (nl-parens-check-file path)))
+          (should findings)
+          (should (memq (plist-get (car findings) :kind) '(parens-missing parens-extra)))
+          (should (memq (cadr case) (mapcar (lambda (f) (plist-get f :kind)) findings)))
+          (when (caddr case)
+            (should (memq (caddr case)
+                          (mapcar (lambda (f) (plist-get f :name)) findings)))))))))
 
 (provide 'nl-parens-test)
 

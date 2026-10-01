@@ -229,6 +229,76 @@ assert nothing when the answer is no."
     (should (= (length (nl-ns-findings-of-kind findings 'ns-collision)) 1))
     (should-not (nl-ns-findings-of-kind findings 'ns-collision-divergent))))
 
+(ert-deftest nl-ns-normalise-long-proper-list-without-recursing-on-cdr ()
+  (let ((form nil) (i 0))
+    (while (< i 700)
+      (setq form (cons i form))
+      (setq i (1+ i)))
+    (let* ((original-tail (nthcdr 350 form))
+           (definition (append '(defun eql ()) form))
+           (findings (nl-ns-test--check
+                      (list (list "a.el" (list definition))
+                            (list "b.el" (list definition))))))
+      (should (= (length (nl-ns-findings-of-kind findings 'ns-collision)) 1))
+      (should-not (nl-ns-findings-of-kind findings 'ns-collision-divergent))
+      (should (eq (nthcdr 350 form) original-tail)))))
+
+(ert-deftest nl-ns-normalise-long-dotted-list-preserves-tail-and-reader-heads ()
+  (let ((form '((\` . first) (\, . second) (\,@ . third))) (i 0))
+    (while (< i 700)
+      (setq form (cons i form))
+      (setq i (1+ i)))
+    (let* ((definition (list 'defun 'eql nil (list 'quote form)))
+           (findings (nl-ns-test--check
+                      (list (list "a.el" (list definition))
+                            (list "b.el" (list definition))))))
+      (should (= (length (nl-ns-findings-of-kind findings 'ns-collision)) 1))
+      (should-not (nl-ns-findings-of-kind findings 'ns-collision-divergent))
+      (should (equal (nthcdr 700 form)
+                     '((\` . first) (\, . second) (\,@ . third)))))))
+
+(ert-deftest nl-ns-normalise-still-recurses-for-genuine-nesting ()
+  (let ((form 1) (i 0))
+    (while (< i 400)
+      (setq form (list form))
+      (setq i (1+ i)))
+    (should-error
+     (nl-ns-test--check
+      (list (list "a.el" (list (list 'defun 'eql nil form)))
+            (list "b.el" (list (list 'defun 'eql nil form))))))))
+
+(ert-deftest nl-ns-normalise-rejects-circular-cdr-spines-boundedly ()
+  (dolist (cycle-size '(1 2))
+    (let* ((first (cons 1 nil))
+           (second (cons 2 nil))
+           (definition (list 'defun 'eql nil))
+           (owner (make-hash-table :test 'eq)))
+      (if (= cycle-size 1)
+          (setcdr first first)
+        (setcdr first second)
+        (setcdr second first))
+      (setcdr (last definition) first)
+      (puthash 'eql '("a.el" "b.el") owner)
+      (should-error
+       (nl-ns-check
+        (list :files
+              (list (list :file "a.el" :defines '(eql)
+                          :definition-forms (list (cons 'eql definition)))
+                    (list :file "b.el" :defines '(eql)
+                          :definition-forms (list (cons 'eql definition))))
+              :owner owner
+              :feature-owner (make-hash-table :test 'eq)))
+       :type 'excessive-lisp-nesting))))
+
+(ert-deftest nl-ns-normalise-shared-acyclic-form-is-accepted ()
+  (let* ((shared (list 'quote (list 'value 1)))
+         (definition (list 'defun 'eql nil shared shared))
+         (findings (nl-ns-test--check
+                    (list (list "a.el" (list definition))
+                          (list "b.el" (list definition))))))
+    (should (= (length (nl-ns-findings-of-kind findings 'ns-collision)) 1))
+    (should-not (nl-ns-findings-of-kind findings 'ns-collision-divergent))))
+
 (ert-deftest nl-ns-collision-divergent-records-definition-heads ()
   (let ((finding (car (nl-ns-findings-of-kind
                        (nl-ns-test--check
