@@ -1636,7 +1636,14 @@ nemacs-library-package-dependency-publication-policy: nemacs-library-package-met
 
 nemacs-library-package-lazy-metadata: nemacs-library-package-metadata nemacs-library-package-scaffold nemacs-library-package-deps
 	mkdir -p "$(BUILD_DIR)"
+	@scaffold_root="$(abspath $(BUILD_DIR)/doc211-scaffold-root)"; \
+	if [ ! -e "$$scaffold_root/scripts/doc211-source-roots.el" ]; then \
+		ln -s "$(abspath $(NELISP_ROOT)/scripts/doc211-source-roots.el)" "$$scaffold_root/scripts/doc211-source-roots.el"; \
+	fi
 	$(EMACS) -Q $(NELISP_LOAD_PATH) -L scripts \
+		--eval '(setq nemacs-library-package-lazy-metadata-repo-root "$(abspath $(BUILD_DIR)/doc211-scaffold-root)")' \
+		--eval '(setq nemacs-library-package-deps-repo-root "$(abspath $(BUILD_DIR)/doc211-scaffold-root)")' \
+		--eval '(setq nemacs-library-package-deps-ownership-doc "$(abspath $(NELISP_ROOT)/docs/design/nemacs/18-library-package-ownership-inventory.org)")' \
 		--eval '(setq nemacs-library-package-lazy-metadata-metadata "$(abspath $(NEMACS_LIBRARY_PACKAGE_METADATA))")' \
 		--eval '(setq nemacs-library-package-lazy-metadata-scaffold "$(abspath $(NEMACS_LIBRARY_PACKAGE_SCAFFOLD))")' \
 		--eval '(setq nemacs-library-package-lazy-metadata-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_LAZY_METADATA))")' \

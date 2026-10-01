@@ -207,7 +207,7 @@ cmd: NELISP_BIN=${NELISP_BIN:?set NELISP_BIN to the pinned baseline binary} make
 
 ** S6.3 usable-progress.org and c-core-progress.org run from nelisp/tools/ai/ (paths, NELISP_BIN and the census tool repointed to in-tree)
 #+WEIGHT: 1
-#+NOTE: expensive producer: set NELISP_BIN and ELN_PROGRESS_BIN to the in-tree binaries, then run `bash tools/ai/doc211-baseline-check.sh produce-usable` and `... produce-ccore`. It records each criterion's actual status, meter exit code and duration plus source and binary hashes. Meter checks run one criterion at a time under the default 55 s cap. The criterion uses the fast evidence validator.
+#+NOTE: expensive producer: set NELISP_BIN and ELN_PROGRESS_BIN to the in-tree binaries, then run `bash tools/ai/doc211-baseline-check.sh produce-usable` and `... produce-ccore`. It records each criterion's actual status from fresh meter JSON, command diagnostics, meter exit code and duration plus source and binary hashes. Duplicate IDs share one invocation with a 65 s outer budget per occurrence; individual meter checks retain the default 55 s cap. Missing or stale snapshots are rejected. The criterion uses the fast evidence validator.
 cmd: bash tools/ai/doc211-baseline-check.sh ledgers
 
 ** S6.4 Usable ledger is 27 of 30 with exactly S2.5 S5.4 S6.2 failing after cutover

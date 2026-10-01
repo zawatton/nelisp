@@ -35,7 +35,7 @@ produce|produce-usable|produce-ccore|produce-eln|produce-gates)
  export NELISP_BIN="$bin" ELN_PROGRESS_BIN="$eln_bin" PROGRESS_OUT_DIR="$out"
  family=${mode#produce-}; [[ $mode == produce ]] && family=all
  python3 - "$root" "$out" "$evidence" "$meter" "$before" "$bsha" "$esha" "$family" <<'PY'
-import json,os,pathlib,re,subprocess,sys,time,collections,signal
+import json,os,pathlib,re,subprocess,sys,time,collections,signal,shlex,datetime
 r,out,evidence,meter,source,bsha,esha,family=sys.argv[1:]; r=pathlib.Path(r); out=pathlib.Path(out); rows=[]
 def cold_identity(path):
  p=pathlib.Path(path+'.cold')
@@ -73,9 +73,9 @@ def signal_owned(owned,sig):
   if current.get(pid,(-1,-1))[1]!=starttime: continue
   try: os.kill(pid,sig)
   except ProcessLookupError: pass
-def run(label,cmd,timeout=55):
+def run(label,cmd,timeout=55,env=None):
  t=time.monotonic()
- p=subprocess.Popen(cmd,cwd=r,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,env=os.environ.copy(),start_new_session=True)
+ p=subprocess.Popen(cmd,cwd=r,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,env=env or os.environ.copy(),start_new_session=True)
  try: output,_=p.communicate(timeout=timeout); rc=p.returncode
  except subprocess.TimeoutExpired as e:
   rc=124
@@ -103,13 +103,72 @@ def run(label,cmd,timeout=55):
  rows.append({'id':label,'cmd':cmd,'rc':rc,'seconds':round(time.monotonic()-t,3),'output':output if label=='preflight' else output[-4000:]}); return rows[-1]
 ledger_names={'usable':['tools/ai/usable-progress.org'],'ccore':['tools/ai/c-core-progress.org'],'eln':['tools/ai/eln-progress.org'],'all':['tools/ai/usable-progress.org','tools/ai/c-core-progress.org','tools/ai/eln-progress.org'],'gates':[]}[family]
 for ledger in ledger_names:
- ids=re.findall(r'^\*\* ([SC]\d+\.\d+)',(r/ledger).read_text(),re.M); seen=collections.Counter()
- for cid in ids:
-  seen[cid]+=1; key=ledger+':'+cid+'#'+str(seen[cid])
-  row={'id':key,'criterion_id':cid,'occurrence':seen[cid],'cmd':[meter,'--ledger',ledger,'--root',str(r),'--only',cid,'--json','--checkpoint']}
-  result=run(key,row['cmd'],65); row.update(rc=result['rc'],seconds=result['seconds'],output=result['output']); row['id']=key
-  matches=re.findall(r'checkpoint:\s+'+re.escape(cid)+r'\s+(PASS|FAIL|SKIP|UNKNOWN|PENDING)',result['output'])
-  rows[-1].update(criterion_id=cid,occurrence=seen[cid],criterion_status=matches[seen[cid]-1] if len(matches)>=seen[cid] else None)
+ original=r/ledger; source_lines=original.read_text().splitlines(); criteria=[]; current=None; seen=collections.Counter()
+ for line in source_lines:
+  heading=re.match(r'^\*\* ([SC]\d+\.\d+)(?:\s|$)',line)
+  if heading:
+   if current: criteria.append(current)
+   cid=heading.group(1); seen[cid]+=1
+   current={'criterion_id':cid,'occurrence':seen[cid],'statement':line[3:], 'kind':'pending','actual_command':None}
+  elif current and line.startswith('cmd:'):
+   current['kind']='cmd'; current['actual_command']=line[4:].strip()
+  elif current and line.startswith('evidence:'):
+   current['kind']='evidence'
+  elif current and line.startswith('pending'):
+   current['kind']='pending'
+ if current: criteria.append(current)
+ if not criteria: raise SystemExit('no criteria parsed from '+ledger)
+ derived_dir=out/'derived-ledgers'; derived_dir.mkdir(parents=True,exist_ok=True)
+ diagnostic_dir=out/'diagnostics'/pathlib.Path(ledger).stem; diagnostic_dir.mkdir(parents=True,exist_ok=True)
+ derived=derived_dir/original.name; rewritten=[]
+ by_occurrence={(c['criterion_id'],c['occurrence']):c for c in criteria}; heading_seen=collections.Counter(); active=None
+ for line in source_lines:
+  heading=re.match(r'^\*\* ([SC]\d+\.\d+)(?:\s|$)',line)
+  if heading:
+   cid=heading.group(1); heading_seen[cid]+=1
+   active=by_occurrence[(cid,heading_seen[cid])]
+  if active and line.startswith('cmd:'):
+   cid=active['criterion_id']; occurrence=active['occurrence']
+   safe=re.sub(r'[^A-Za-z0-9_.-]+','_',cid)
+   log=diagnostic_dir/f'{safe}-{occurrence}.log'; active['diagnostic_log']=str(log)
+   wrapped='exec sh -c '+shlex.quote(active['actual_command'])+' > '+shlex.quote(str(log))+' 2>&1'
+   rewritten.append('cmd: '+wrapped); active=None
+  else: rewritten.append(line)
+ derived.write_text('\n'.join(rewritten)+'\n')
+ # The meter writes JSON by ledger basename. Delete any prior snapshot so a
+ # timeout or failed invocation cannot silently reuse an older verdict.
+ snapshot=out/(derived.stem+'.json'); by_id={}
+ for c in criteria: by_id.setdefault(c['criterion_id'],[]).append(c)
+ for cid,occurrences in by_id.items():
+  rowcmd=[meter,'--ledger',str(derived),'--root',str(r),'--only',cid,'--json','--checkpoint']
+  try: snapshot.unlink()
+  except FileNotFoundError: pass
+  meter_env=os.environ.copy(); meter_env['PROGRESS_DEFAULT_TIMEOUT']='55'
+  group_budget=65*len(occurrences)
+  started=time.time(); result=run(ledger+':'+cid+'#1',rowcmd,group_budget,meter_env); rows.pop()
+  statuses=[]; generated_at=None; status_error=None
+  if result['rc']==124 or 'PRODUCER_TIMEOUT' in result['output']:
+   status_error='meter timeout; no verdict accepted'
+  elif result['rc']!=0: status_error=f'meter exited {result["rc"]}; no verdict accepted'
+  elif not snapshot.is_file(): status_error='fresh meter JSON missing; no verdict accepted'
+  else:
+   try:
+    measured=json.loads(snapshot.read_text()); generated_at=measured['generated_at']
+    stamp=datetime.datetime.fromisoformat(generated_at.replace('Z','+00:00')).timestamp()
+    if measured.get('ledger')!=str(derived.resolve()): raise ValueError('JSON ledger identity mismatch')
+    if stamp < started-1 or snapshot.stat().st_mtime < started-1: raise ValueError('stale meter JSON')
+    statuses=[c for stage in measured['stages'] for c in stage['criteria'] if c.get('id')==cid]
+    if len(statuses)!=len(occurrences): raise ValueError(f'JSON occurrence count {len(statuses)} != expected {len(occurrences)}')
+   except Exception as e: statuses=[]; status_error='invalid/freshness check failed: '+str(e)
+  for index,c in enumerate(occurrences):
+   key=ledger+':'+cid+'#'+str(c['occurrence'])
+   rows.append({'id':key,'criterion_id':cid,'occurrence':c['occurrence'],'criterion_kind':c['kind'],
+    'ledger':ledger,'derived_ledger':str(derived),'cmd':rowcmd,'actual_command':c['actual_command'],
+    'diagnostic_log':c.get('diagnostic_log'),'meter_json':str(snapshot),'meter_json_generated_at':generated_at,
+    'criterion_status':statuses[index].get('status') if index<len(statuses) else None,
+    'status_error':status_error,'rc':result['rc'],'seconds':result['seconds'],'output':result['output'],
+    'group_run_count':len(occurrences),'group_timeout_seconds':group_budget,
+    'group_elapsed_seconds':result['seconds'],'meter_default_timeout_seconds':55})
 if family in ('gates','all'):
  listing=run('preflight-list',['bash','tools/ai/preflight.sh','--list'])
  gate_specs=re.findall(r'"([A-Za-z0-9_-]+)\|([^"\n]+)"',listing['output'])
