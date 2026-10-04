@@ -178,7 +178,7 @@ Return startup source and its manifest; constructor/numeric/call remain refused.
                  (equal (plist-get layout :domain) "nelisp-rooted-elf-v2")
                  (eq (plist-get layout :target) 'x86_64-linux)
                  (= (plist-get layout :sexp-bytes) 32)
-                 (= (length (plist-get layout :exports)) 15))
+                 (= (length (plist-get layout :exports)) 16))
       (error "Unauthenticated protocol generation inputs"))
     (dolist (record (alist-get 'records closure))
       (let* ((name (alist-get 'name record))
@@ -287,6 +287,7 @@ dependencies, subprocess result and source owners are checked before return."
          (loader (expand-file-name "lisp/nelisp-native-load.el" root))
          (python (executable-find "python3"))
          (source-paths (list script owner-script template loader
+                             (expand-file-name "lisp/nelisp-native-funcall-v2.el" root)
                              (expand-file-name "lisp/nelisp-runtime-reload-abi.el" root)
                              (expand-file-name "lisp/nelisp-native-raw-file.el" root)))
          (sources (mapcar (lambda (path)
@@ -314,7 +315,7 @@ dependencies, subprocess result and source owners are checked before return."
                  (substring (buffer-string) 0 (min 2000 (buffer-size)))))
         (setq result (nelisp-native-rooted-startup-evidence-render
                       capture closure (substring (buffer-string) 0 64) template layout)))
-      (dolist (relative '("lisp/nelisp-runtime-reload-abi.el" "lisp/nelisp-native-load.el"
+      (dolist (relative '("lisp/nelisp-native-funcall-v2.el" "lisp/nelisp-runtime-reload-abi.el" "lisp/nelisp-native-load.el"
                           "lisp/nelisp-native-raw-file.el"))
         (let* ((path (expand-file-name relative root))
                (source (nelisp-native-rooted-startup-evidence--source

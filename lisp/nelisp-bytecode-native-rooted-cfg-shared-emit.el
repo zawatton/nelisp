@@ -149,6 +149,17 @@
                     (nelisp-bytecode-native-rooted-cfg-shared-emit--materialize-inputs
                      inputs materialized id index body)
                   body)))))
+         ((memq opcode '(primitive-call funcall))
+          (let ((function (nelisp-bytecode-native-rooted-cfg-shared-emit--resolve
+                           context (plist-get operation :function-root)))
+                (inputs (mapcar (lambda (root)
+                                  (nelisp-bytecode-native-rooted-cfg-shared-emit--resolve context root))
+                                (plist-get operation :argument-roots))))
+            (if (and function (cl-every #'identity inputs))
+                (nelisp-native-funcall-v2-emit
+                 operation function inputs
+                 (nelisp-bytecode-native-rooted-cfg-shared-emit--operations context block (1+ index) stop path))
+              (nelisp-bytecode-native-rooted-cfg-shared-emit--fail context "Unresolved F1 function/argument") 0)))
          ((memq opcode '(car cdr cons))
           (let* ((inputs (mapcar (lambda (root)
                                    (nelisp-bytecode-native-rooted-cfg-shared-emit--resolve
@@ -247,6 +258,7 @@
          (analysis (and input (nelisp-bytecode-native-rooted-cfg-postdom-analyze input))))
     (if (not (and (eq (plist-get plan :status) 'complete)
                   (or (null (plist-get plan :exit-root-base))
+                      (plist-get plan :funcall-version)
                       (nelisp-bytecode-native-rooted-cfg-plan-guard-context-p plan))
                   (equal verified plan)
                   (eq (plist-get analysis :status) 'complete)
@@ -296,13 +308,14 @@
                                  '("nl_root_pin_slot_v2")))
                         #'string<)
                   :additional-source
-                  (and (plist-get plan :exit-root-base)
+                  (and (plist-get plan :arithmetic-context)
                        (nelisp-native-optimization-guard-v1-source
                         (plist-get plan :arithmetic-guard-mode)))
                   :arithmetic-context (plist-get plan :arithmetic-context)
                   :arithmetic-guard-context (plist-get plan :arithmetic-guard-context)
                   :arithmetic-guard-mode (plist-get plan :arithmetic-guard-mode)
                   :exit-root-base (plist-get plan :exit-root-base)
+                  :primitive-initializers (plist-get plan :primitive-initializers)
                   :initial-roots (plist-get plan :initial-roots)
                   :constant-initializers (plist-get plan :constant-initializers)
                   :immediate-initializers (plist-get plan :immediate-initializers)

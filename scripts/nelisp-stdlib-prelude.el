@@ -447,9 +447,19 @@ a negative, and signalling there turned a limit into a failure."
 ;; this file, not "only if my own earlier stub hasn't already claimed it".
 (unless (fboundp 'locate-library)
   (defun locate-library (library &optional _nosuffix _path _interactive-call)
-    "Find LIBRARY on `load-path', trying .el; nil when not found."
+    "Find LIBRARY on `load-path', preferring compiled Elisp files."
     (nelisp--check-string library)
-    (locate-file library load-path '(".el" ""))))
+    (let ((dirs load-path) (hit nil))
+      (while (and dirs (null hit))
+        (let ((dir (car dirs)))
+          (when (stringp dir)
+            (dolist (suffix '(".elc" ".el" ""))
+              (let ((candidate
+                     (concat (expand-file-name library dir) suffix)))
+                (when (and (null hit) (file-regular-p candidate))
+                  (setq hit candidate))))))
+        (setq dirs (cdr dirs)))
+      hit)))
 (unless (fboundp 'exp)
   (defun nelisp--two-sum (a b)
     "A+B as an exact pair (SUM . ERR)."
@@ -629,7 +639,8 @@ times, so `(exp -1.0e6)' took ~1.44e6 iterations and `(exp -1.0e9)' ~1.44e9
           (dolist (suf (or suffixes '("")))
             (let ((cand (and (stringp suf)
                              (concat (file-name-as-directory (or dir ".")) filename suf))))
-              (when (and cand (not hit) (file-exists-p cand)) (setq hit cand)))))
+              (when (and cand (not hit) (file-regular-p cand))
+                (setq hit cand)))))
         (setq dirs (cdr dirs)))
       hit)))
 (unless (fboundp 'sequencep)
@@ -2386,10 +2397,31 @@ Lisp argument list ARGS (see `cl-destructuring-bind').
         `(defmacro ,name (&rest ,whole)
            ,@(and docstring (list docstring))
            (cl-destructuring-bind ,args ,whole ,@body))))))
+;; Exact GNU Emacs 31.1 cl-lib/cl-macs generalized-place closure.
+(unless (boundp 'cl--simple-funcs)
+  (defconst cl--simple-funcs '(car cdr nth aref elt if and or + - 1+ 1- min max car-safe cdr-safe progn prog1 prog2)))
+(unless (boundp 'cl--safe-funcs)
+  (defconst cl--safe-funcs '(* / % length memq list vector vectorp < > <= >= = error)))
+(unless (fboundp 'cl--simple-expr-p)
+  (defun cl--simple-expr-p (x &optional size) "Check if no side effects, and executes quickly." (or size (setq size 10)) (if (and (consp x) (not (memq (car x) '(quote function cl-function)))) (and (symbolp (car x)) (or (memq (car x) cl--simple-funcs) (get (car x) 'side-effect-free)) (progn (setq size (1- size)) (while (and (setq x (cdr x)) (setq size (cl--simple-expr-p (car x) size)))) (and (null x) (>= size 0) size))) (and (> size 0) (1- size)))))
+(unless (fboundp 'cl--safe-expr-p)
+  (defun cl--safe-expr-p (x) "Check if no side effects." (or (not (and (consp x) (not (memq (car x) '(quote function cl-function))))) (and (symbolp (car x)) (or (memq (car x) cl--simple-funcs) (memq (car x) cl--safe-funcs) (get (car x) 'side-effect-free)) (progn (while (and (setq x (cdr x)) (cl--safe-expr-p (car x)))) (null x))))))
+(unless (fboundp 'cl-callf2)
+  (defmacro cl-callf2 (func arg1 place &rest args) "Set PLACE to (FUNC ARG1 PLACE ARGS...).
+Like `cl-callf', but PLACE is the second argument of FUNC, not the first.
+
+(fn FUNC ARG1 PLACE ARGS...)" (declare (indent 3) (debug (cl-function form place &rest form))) (if (and (cl--safe-expr-p arg1) (cl--simple-expr-p place) (symbolp func)) `(setf ,place (,func ,arg1 ,place ,@args)) (macroexp-let2 nil a1 arg1 (gv-letplace (getter setter) place (let* ((rargs (cl-list* a1 getter args))) (funcall setter (if (symbolp func) (cons func rargs) `(funcall #',func ,@rargs)))))))))
 (unless (fboundp 'cl-pushnew)
-  (defmacro cl-pushnew (item place &rest _keys)
-    `(let ((cl--x ,item))
-       (if (member cl--x ,place) ,place (setq ,place (cons cl--x ,place))))))
+  (defmacro cl-pushnew (x place &rest keys) "Add X to the list stored in PLACE unless X is already in the list.
+PLACE is a generalized variable that stores a list.
+
+Like (push X PLACE), except that PLACE is unmodified if X is `eql'
+to an element already in the list stored in PLACE.
+
+
+Keywords supported:  :test :test-not :key
+
+(fn X PLACE [KEYWORD VALUE]...)" (declare (debug (form place &rest &or [[&or ":test" ":test-not" ":key"] form] [keywordp form]))) (if (symbolp place) (if (null keys) (macroexp-let2 nil var x `(if (memql ,var ,place) (with-no-warnings ,place) (setq ,place (cons ,var ,place)))) `(setq ,place (cl-adjoin ,x ,place ,@keys))) `(cl-callf2 cl-adjoin ,x ,place ,@keys))))
 ;; Doc 160 breadth round 2: cl-lib predicates / accessors / seq / string.
 (unless (fboundp 'cl-evenp) (defun cl-evenp (n) (= 0 (mod n 2))))
 (unless (fboundp 'cl-oddp) (defun cl-oddp (n) (not (= 0 (mod n 2)))))
@@ -6057,7 +6089,9 @@ parent's accessor indices remain valid for the child record.  The
 parent's predicate continues to satisfy child records via the
 runtime chain walk in `nelisp-cl-macros--struct-isa'.
 
-Limitations: no `:type', no `setf' integration.  A leading docstring IS
+Accessors publish compiler-macro metadata for their exact record slot,
+so GNU GV can lower generalized places through its ordinary `aref' owner.
+Limitations: no `:type'.  A leading docstring IS
 accepted (and discarded), which it previously was not -- it was taken for a
 slot name.  That only worked because `symbol-name' used to answer for a
 string; once it signalled `symbolp', as Emacs does, every `cl-defstruct'
@@ -6239,6 +6273,19 @@ bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
         (let ((acc (intern (concat conc-name (symbol-name s)))))
           (push (list 'defun acc (list rec-sym)
                       (list 'nelisp--record-ref rec-sym i))
+                forms)
+          ;; GNU cl-defstruct exposes slot access through define-inline's
+          ;; compiler-macro metadata.  Retain the same GV route and the
+          ;; existing getter's aref semantics, including the record tag.
+          ;; Emit metadata after its definition as a real load-time form.
+          (push (list 'put (list 'quote acc) (list 'quote 'compiler-macro)
+                      (list 'quote
+                            (list 'lambda (list '_form rec-sym)
+                                  (list 'list (list 'quote 'aref)
+                                        rec-sym (1+ i)))))
+                forms)
+          (push (list 'put (list 'quote acc)
+                      (list 'quote 'document-generalized-variable) t)
                 forms))
         (setq i (1+ i)))
       ;; Result form: (progn DEFUN ... 'NAME).
@@ -6453,8 +6500,7 @@ a loud `error' naming NAME and the position."
   (memq type-name '(integer number float string symbol cons list vector null t)))
 
 (defun nelisp-cl-generic--type-match (val type)
-  "Doc 185 §3.2, verbatim: `cl-typep' for the ten builtins, struct
-ancestry via `nelisp-cl-macros--struct-isa' for anything `recordp'."
+  "Match builtin types, CL struct ancestry, or genuine class precedence."
   (cond
    ;; `funcall' with a QUOTED symbol, matching the identical fix (and its
    ;; full explanation) at the same line in this block's mirror copy,
@@ -6467,6 +6513,12 @@ ancestry via `nelisp-cl-macros--struct-isa' for anything `recordp'."
    ((and (recordp val)
          (nelisp-cl-macros--struct-isa (nelisp--record-type val) type))
     t)
+   ;; GNU EIEIO's type generalizer uses the genuine class precedence list.
+   ((and (recordp val)
+         (recordp (nelisp--record-type val))
+         (fboundp 'cl--class-p)
+         (cl--class-p (nelisp--record-type val)))
+    (memq type (cl--class-allparents (nelisp--record-type val))))
    (t nil)))
 
 (defun nelisp-cl-generic--struct-parent (tag)
@@ -6475,7 +6527,9 @@ ancestry via `nelisp-cl-macros--struct-isa' for anything `recordp'."
     (and info (car (cdr (memq :parent info))))))
 
 (defun nelisp-cl-generic--struct-depth (tag target)
-  "Number of `:include' hops from TAG up to TARGET.  Callers only call
+  "Return TARGET's class precedence position or CL struct include depth.
+For a genuine class descriptor, use its authoritative precedence list.
+For a symbolic CL struct TAG, callers only call
 this once `nelisp-cl-macros--struct-isa' has already confirmed TAG isa
 TARGET, so the walk is expected to terminate at TARGET -- but the walk
 is bounded defensively at the registry's own size rather than trusting
@@ -6485,7 +6539,14 @@ lies (this session's own `s/(nelisp-cl-macros--struct-isa ...)/t)/'
 through nil forever otherwise, hanging the whole dispatch instead of
 signalling -- exactly the silent-vs-loud failure shape §3.5 exists to
 avoid, just one level lower than a dispatch decision."
-  (let ((n 0) (cur tag)
+  (if (and (recordp tag) (fboundp 'cl--class-p) (cl--class-p tag))
+      (let ((parents (cl--class-allparents tag)) (depth 0))
+        (while (and parents (not (eq (car parents) target)))
+          (setq parents (cdr parents) depth (1+ depth)))
+        (unless parents
+          (error "Class precedence does not contain specializer %S" target))
+        depth)
+    (let ((n 0) (cur tag)
         (bound (1+ (length nelisp-cl-macros--struct-info))))
     (while (and (not (eq cur target)) (> bound 0))
       (setq cur (nelisp-cl-generic--struct-parent cur))
@@ -6494,7 +6555,7 @@ avoid, just one level lower than a dispatch decision."
     (unless (eq cur target)
       (error "nelisp-cl-generic--struct-depth: %S never reaches %S via :include ancestry (nelisp-cl-macros--struct-isa said it would)"
              tag target))
-    n))
+    n)))
 
 (defun nelisp-cl-generic--same-specializer-p (a b)
   "Non-nil iff method entries A and B are the SAME method identity --
@@ -7248,6 +7309,10 @@ function's docstring for the full per-option grammar (`(declare ...)',
 cases (a doc string or `declare' given twice).  A non-docstring,
 non-option BODY form used to be an unconditional loud `error' before
 this addendum; it is now the start of the default method body instead."
+  ;; GNU cl-generic.el uses the actual GV setter symbol for a setf name.
+  (when (eq 'setf (car-safe name))
+    (require 'gv)
+    (setq name (gv-setter (cadr name))))
   (let ((precedence
          (nelisp-cl-generic--parse-argument-precedence-order arglist body)))
     `(prog1 ',name
@@ -7285,6 +7350,10 @@ addendum), or a `(subclass CLASS)' form.  Specializers at more than one
 argument position are supported and are jointly applicable; a bare symbol
 is unspecialized (§2.1/§3.1).  The method body can call
 `cl-call-next-method'/`cl-next-method-p' (§2.2)."
+  ;; Lower generalized function names before symbol metadata registration.
+  (when (eq 'setf (car-safe name))
+    (require 'gv)
+    (setq name (gv-setter (cadr name))))
   (let (extra combinator)
     (when (and args (eq (car args) :extra))
       (unless (and (cdr args) (stringp (cadr args)))
@@ -7967,15 +8036,23 @@ However, a key definition which is a symbol whose definition is a keymap
 is not copied."
     (nelisp--copy-keymap-1 keymap 0)))
 (defun nelisp--keymap-normalize-sequence (key)
-  "Return KEY in the event-vector representation used by keymap bindings.
-GNU `kbd' returns a string for ASCII/control sequences, while `keymap-set'
-stores the vector returned by `key-parse'.  Normalize strings at both the
-binding and lookup boundaries so those public forms address the same entry."
-  (if (and (stringp key) (fboundp 'key-parse))
-      (key-parse key)
+  "Normalize raw key events without parsing them as key descriptions."
+  ;; GNU Emacs 31.1 subr.el `listify-key-sequence' decoding.
+  (if (stringp key)
+      (vconcat
+       (if (multibyte-string-p key)
+           (append key nil)
+         (mapcar (lambda (c)
+                   (if (> c 127)
+                       (logxor c (logior 128 ?\M-\C-@))
+                     c))
+                 key)))
     key))
+
 (unless (fboundp 'define-key)
   (defun define-key (keymap key def &optional _remove)
+    (unless (or (stringp key) (vectorp key))
+      (signal 'wrong-type-argument (list 'arrayp key)))
     (setq key (nelisp--keymap-normalize-sequence key))
     (setcdr keymap (cons (cons key def) (cdr keymap)))
     def))
@@ -9941,6 +10018,15 @@ reproduce of Emacs's coding-region/buffer-multibyte interaction.
 own default for a buffer `set-buffer-multibyte' was never called on)."
     (gethash buffer nelisp--buffer-multibyte-table t)))
 
+;; Expose the existing authoritative buffer flag through its GNU public name.
+;; Genuine host Emacs already owns this buffer-local readonly variable.
+(unless (boundp 'enable-multibyte-characters)
+  (defvar enable-multibyte-characters
+    (nelisp--buffer-multibyte-p
+     (and (boundp 'nelisp--current-buffer) nelisp--current-buffer))
+    "Non-nil when the current buffer stores multibyte characters.")
+  (nelisp--env-globals-set-constant 'enable-multibyte-characters t))
+
 (unless (fboundp 'nelisp--char-arg-to-string)
   (defun nelisp--char-arg-to-string (char multibyte)
     "Convert CHAR (an Emacs character code) to the string `insert'/
@@ -9978,6 +10064,7 @@ positions ever need adjusting; the only thing this function actually
 does is record the flag for `insert'/`insert-char'/`insert-before-
 markers'/`decode-coding-region' to consult."
     (puthash nelisp--current-buffer (and flag t) nelisp--buffer-multibyte-table)
+    (nelisp--env-globals-set-value 'enable-multibyte-characters (and flag t))
     flag))
 ;; Doc 200 string representation primitives are native standalone builtins.
 ;; Do not install Elisp fallbacks for them here: a fallback binding shadows
@@ -11100,7 +11187,11 @@ stale pointer into the dead buffer."
       (dolist (m (nelisp-buffer-markers b))
         (setf (nelisp-marker-buffer m) nil))
       (setf (nelisp-buffer-markers b) nil)
-      (when (eq b nelisp--current-buffer) (setq nelisp--current-buffer nil))
+      (when (eq b nelisp--current-buffer)
+        (setq nelisp--current-buffer nil)
+        (when (boundp 'enable-multibyte-characters)
+          (nelisp--env-globals-set-value 'enable-multibyte-characters
+                                         (nelisp--buffer-multibyte-p nil))))
       (or (nelisp-kill-buffer b) t))))
 ;; Doc 205 P1: eight more standard names onto the same model.  Every one of
 ;; them already had its implementation here under a `nelisp-' name -- these
@@ -11336,13 +11427,20 @@ Moves and returns nil, the counterpart of `line-end-position'."
 ;; correctly inside them without being passed an explicit BUF.
 (unless (fboundp 'with-current-buffer)
   (defmacro with-current-buffer (buffer-or-name &rest body)
-    (let ((b (make-symbol "buf")))
-      `(let ((,b (get-buffer ,buffer-or-name)))
+    (let ((b (make-symbol "buf")) (saved (make-symbol "multibyte")))
+      `(let ((,b (get-buffer ,buffer-or-name))
+             (,saved nelisp--current-buffer))
          (unless ,b (signal 'error (list (format "No such buffer: %S" ,buffer-or-name))))
          (let ((nelisp--current-buffer ,b)
                (nelisp-buffer--current ,b))
-           (nelisp-goto-char (nelisp-point ,b) ,b)
-           ,@body)))))
+           (unwind-protect
+               (progn
+                 (nelisp--env-globals-set-value 'enable-multibyte-characters
+                                                (nelisp--buffer-multibyte-p ,b))
+                 (nelisp-goto-char (nelisp-point ,b) ,b)
+                 ,@body)
+             (nelisp--env-globals-set-value 'enable-multibyte-characters
+                                            (nelisp--buffer-multibyte-p ,saved))))))))
 ;; This only reads VARIABLE's value while BUFFER is current -- it does
 ;; not give VARIABLE a value that is local TO buffer-local-value's own
 ;; buffer if there isn't one already, unlike `make-local-variable'/
@@ -11357,13 +11455,20 @@ this definition)."
     (with-current-buffer buffer (symbol-value variable))))
 (unless (fboundp 'with-temp-buffer)
   (defmacro with-temp-buffer (&rest body)
-    (let ((b (make-symbol "buf")))
+    (let ((b (make-symbol "buf")) (saved (make-symbol "multibyte")))
       `(let* ((,b (nelisp-generate-new-buffer " *temp*"))
+              (,saved nelisp--current-buffer)
               (nelisp--current-buffer ,b)
               (nelisp-buffer--current ,b))
          (unwind-protect
-             (progn ,@body)
-           (nelisp-kill-buffer ,b))))))
+             (progn
+               (nelisp--env-globals-set-value 'enable-multibyte-characters
+                                              (nelisp--buffer-multibyte-p ,b))
+               ,@body)
+           (unwind-protect
+               (nelisp-kill-buffer ,b)
+             (nelisp--env-globals-set-value 'enable-multibyte-characters
+                                            (nelisp--buffer-multibyte-p ,saved))))))))
 (when (fboundp 'rdf)
   ;; Keep the public compatibility name on `rdf' so callers get the same
   ;; value-returning read path used by the short builtin.
@@ -11531,6 +11636,8 @@ there, `(wrong-type-argument stringp 42)', already matches what
         ;; sites, and unlike the macros it SETs rather than lexically
         ;; unwinding, so there is no `let' to attach a second binding to.
         (setq nelisp-buffer--current b)
+        (nelisp--env-globals-set-value 'enable-multibyte-characters
+                                       (nelisp--buffer-multibyte-p b))
         (nelisp-goto-char (nelisp-point b) b)
         b)))))
 ;; `void-function' on the ~80-file census
@@ -13072,6 +13179,8 @@ does not build prefix maps or return the number of matching leading
 events for an unbound prefix.
 
 (fn KEYMAP KEY &optional ACCEPT-DEFAULT)"
+    (unless (or (stringp key) (vectorp key))
+      (signal 'wrong-type-argument (list 'arrayp key)))
     (let ((tail (cdr keymap)) (result nil) (done nil)
           (normalized-key (nelisp--keymap-normalize-sequence key)))
       (while (and tail (consp tail) (not done))
@@ -13129,18 +13238,18 @@ unbound, locally.)
 Return VARIABLE.
 
 (fn VARIABLE)"
+    (when (eq variable 'enable-multibyte-characters)
+      (signal 'setting-constant (list variable)))
     variable))
 
 (unless (fboundp 'local-variable-p)
   (defun local-variable-p (variable &optional _buffer)
     "Non-nil if VARIABLE has a buffer-local value in BUFFER.
-This substrate has no buffer-local variables at all (see the block
-comment above `make-variable-buffer-local'), so this always returns
-nil, matching the honest answer for every variable here.
+The builtin buffer flag `enable-multibyte-characters' is local in every
+buffer.  Other variables retain the existing global-value substrate.
 
 (fn VARIABLE &optional BUFFER)"
-    (ignore variable)
-    nil))
+    (eq variable 'enable-multibyte-characters)))
 ;; Same reduction for the default-value family: without per-buffer values
 ;; the default value is the value (nadvice's `add-function' on a bare symbol
 ;; place reads and writes `(default-value SYMBOL)').
@@ -13395,8 +13504,7 @@ an integer, and why this is unconditional rather than `unless (fboundp
        (unwind-protect
            (progn ,@body)
          (when (buffer-live-p ,buf)
-           (setq nelisp--current-buffer ,buf)
-           (setq nelisp-buffer--current ,buf)
+           (set-buffer ,buf)
            (goto-char (marker-position ,m)))
          (set-marker ,m nil)))))
 
@@ -15723,6 +15831,17 @@ line-continuation escapes, which generate nothing)."
       (setq tail (cdr tail)))
     number))
 
+(defun nelisp--rd-resolve-completed-label-shallow (object)
+  "Resolve a completed label proxy in OBJECT without descending into it."
+  (let ((number (nelisp--rd-label-proxy-number object)))
+    (if number
+        (let ((entry (assq number nelisp--rd-labels)))
+          (if (and entry (eq (nth 1 entry) 'done))
+              (let ((target (nth 2 entry)))
+                (if (nelisp--rd-label-proxy-number target) object target))
+            object))
+      object)))
+
 (defun nelisp--rd-resolve-labels (object seen)
   "Replace `#N#' proxies in OBJECT, preserving sharing and cycles."
   (let ((number (nelisp--rd-label-proxy-number object)))
@@ -15909,6 +16028,11 @@ from the top-level empty read that callers turn into `end-of-file' or nil."
                                    (<= -2305843009213693952 arglist)
                                    (<= arglist 2305843009213693951))))
                (signal 'invalid-read-syntax (list "#[")))
+             (setq code (nelisp--rd-resolve-completed-label-shallow code)
+                   constants
+                   (nelisp--rd-resolve-completed-label-shallow constants))
+             (setcar (cdr fields) code)
+             (setcar (cdr (cdr fields)) constants)
              (cond
               ((and (stringp code) (vectorp constants) (>= count 4)
                     (integerp depth) (<= 0 depth 2305843009213693951))
@@ -19324,34 +19448,44 @@ comment above this definition for how that value was measured."))
     "Smallest value that is a valid fixnum in this runtime.  See
 `most-positive-fixnum'."))
 
-;; A3: native `equal' never compared vectors element-wise.  Capture native
-;; `equal' for the atom/string/number leaves and recurse over cons + vector.
+;; A3: capture native `equal' before supplying structural array comparison.
 (unless (fboundp 'nelisp--native-equal) (fset 'nelisp--native-equal (symbol-function 'equal)))
-(defun equal (a b)
-  "Structural equality with vector support (Doc 22 A3).
-Only `cons' and `vector' are walked in elisp; every atom (number, string,
-symbol, nil, t) is delegated to the native `equal', which compares them
-correctly.  No `(eq a b)' fast path: it would save one native call on
-identical objects and cost one interpreted operation on every other pair
-(Doc 201 §6.15).  It is no longer a correctness hazard either -- `eq' on
-strings is identity since Doc 201 §6.17, not contents."
+(defun nelisp--equal-recursive (a b)
+  "Compare A and B structurally, keeping recursive dispatch in Lisp.
+The public `equal' name is backed by the native primitive in some runtime
+call paths, so recursive calls through that name would skip this vector
+handling when a vector is nested inside a cons."
   (cond
-   ;; Strings, symbols and integers can never be a cons, vector or marker
-   ;; case below, so the native comparison decides them outright.  Testing
-   ;; them first spares every string/symbol comparison (the bulk of `equal'
-   ;; calls) the cons/vector/bool-vector/marker predicate chain.
-   ((or (stringp a) (symbolp a) (integerp a)) (nelisp--native-equal a b))
-   ((and (consp a) (consp b))
-    (and (equal (car a) (car b)) (equal (cdr a) (cdr b))))
-   ((and (or (vectorp a) (and (fboundp 'bool-vector-p) (bool-vector-p a)))
-         (or (vectorp b) (and (fboundp 'bool-vector-p) (bool-vector-p b))))
-    (if (= (if (and (fboundp 'bool-vector-p) (bool-vector-p a)) 1 0)
-           (if (and (fboundp 'bool-vector-p) (bool-vector-p b)) 1 0))
+   ;; Native truth is conservative: string/numeric/symbol leaves use this
+   ;; same primitive, and cons truth requires truth at both children.
+   ;; Vectors, bool-vectors, byte-code objects and records yield truth only
+   ;; by identity, accepted by the slot walk or the record fallback.
+   ;; Marker identity implies the same buffer/position, ignoring insertion.
+   ;; Interpreted closures use cons truth, so their projected slots agree.
+   ((nelisp--native-equal a b) t)
+   ((or (stringp a) (symbolp a) (integerp a)) nil)
+   ((and (consp a) (consp b)
+         (not (interpreted-function-p a)) (not (interpreted-function-p b)))
+    (let ((ok t))
+      ;; Try the accelerator on each element, never on each remaining tail.
+      (while (and ok (consp a) (consp b))
+        (setq ok (nelisp--equal-recursive (car a) (car b))
+              a (cdr a) b (cdr b)))
+      (and ok (nelisp--equal-recursive a b))))
+   ((and (or (vectorp a) (and (fboundp 'bool-vector-p) (bool-vector-p a))
+             (byte-code-function-p a) (interpreted-function-p a))
+         (or (vectorp b) (and (fboundp 'bool-vector-p) (bool-vector-p b))
+             (byte-code-function-p b) (interpreted-function-p b)))
+    ;; GNU compares closures slot-wise, but distinct array kinds differ.
+    (if (and (eq (byte-code-function-p a) (byte-code-function-p b))
+             (eq (interpreted-function-p a) (interpreted-function-p b))
+             (= (if (and (fboundp 'bool-vector-p) (bool-vector-p a)) 1 0)
+                (if (and (fboundp 'bool-vector-p) (bool-vector-p b)) 1 0)))
         (let ((n (length a)))
           (if (= n (length b))
               (let ((i 0) (ok t))
                 (while (and ok (< i n))
-                  (if (equal (aref a i) (aref b i))
+                  (if (nelisp--equal-recursive (aref a i) (aref b i))
                       (setq i (1+ i))
                     (setq ok nil)))
                 ok)
@@ -19376,7 +19510,11 @@ strings is identity since Doc 201 §6.17, not contents."
          (eq (nelisp-marker-buffer a) (nelisp-marker-buffer b))
          (or (null (nelisp-marker-buffer a))
              (= (nelisp-marker-position a) (nelisp-marker-position b)))))
-   (t (nelisp--native-equal a b))))
+   (t nil)))
+
+(defun equal (a b)
+  "Return non-nil when A and B have the same structure and contents."
+  (nelisp--equal-recursive a b))
 
 ;; A5: native `substring' returned garbage for vectors.  Slice vectors in
 ;; elisp via `aref'/`aset'; defer strings to the (correct) native path.
@@ -19830,6 +19968,7 @@ any other -- to find the final function binding and return it."
        nelisp--native-pin-eq-slots
        string< make-vector fset ash)
     (3 aset nelisp--native-pin-copy nelisp--native-unbox-reference)
+    (4 nelisp--native-pin-copy-v2)
     (7 ptr-call))
   "Fixed argument counts shared by introspection and native reader dispatch.
 The build driver reads this literal as data without evaluating the prelude.")

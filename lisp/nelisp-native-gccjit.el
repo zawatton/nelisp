@@ -6,6 +6,7 @@
 ;; after loading, so cached shared objects survive process ASLR.
 ;;; Code:
 (require 'cl-lib)
+(require 'nelisp-native-funcall-v2)
 (require 'nelisp-native-load)
 (declare-function alloc-bytes "ext:runtime" (size kind))
 (declare-function ptr-write-u8 "ext:runtime" (address offset value))
@@ -210,6 +211,12 @@
                  (let* ((name (symbol-name (cadr node))) (cell (assoc name cells))
                         (values (mapcar (lambda (arg) (freeze (expr arg scope))) (cddr node))))
                    (unless cell (error "gccjit: unresolved import %s" name))
+                   (when (equal name "nl_native_funcall_v2")
+                     (unless (and (= (length values) 6)
+                                  (= (plist-get (nelisp-native-funcall-v2-descriptor) :arity) 6)
+                                  (equal (plist-get (nelisp-native-funcall-v2-descriptor) :params)
+                                         '(u64 u64 u64 u64 u64 u64)))
+                       (error "gccjit: funcall descriptor mismatch")))
                    (setq values (append values (make-list (- 6 (length values)) (constant 0))))
                    (let ((type (call "gcc_jit_context_new_function_ptr_type" ctx 0 int 6
                                      (nelisp-native-gccjit--array (make-list 6 int)) 0)))

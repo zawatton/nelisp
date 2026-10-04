@@ -87,7 +87,9 @@ cmd: out=$(timeout 1500 target/progress/general-native-r9-codex-20261003/b1-cold
 pending
 
 ** F1.2 End to end: a compiled function calling three different primitives and one user-defined Lisp function through the bridge matches the interpreter on a fixed corpus, on both backends
-pending
+#+NOTE: 2026-10-04 F1a (gpt-6.1-sol, design target/agent-worktrees/f1-bridge-sol-20261004/F1-DESIGN.md) added nl_native_funcall_v2 (six words, over wf_bytecode_call_gateway) appended to the bridge list, primitive-call/funcall plan kinds, both emitters, contracts, F1 startup proof and the gccjit binding. Readers rebuilt from the integrated tree (target/agent-worktrees/reader-f1-20261004: static 277256dd with cold image, dynamic 2e807c2d). Root run: in-house compile 98.9 s / cache load+corpus 9.1 s; gccjit 70.2 s / 12.1 s; identical corpus digest 52c26b63...; validations 1 at compile, 0 on load. Per-call native cost is about 6-7 ms versus about 0.08 ms interpreted (frame protocol plus four bridge calls): a known performance gap. Dynamic cold boot still segfaults while issuing the F1 proof (gccjit runs use normal boot).
+#+TIMEOUT: 600
+cmd: test/standalone-bytecode-native-funcall-smoke.sh --both target/agent-worktrees/reader-f1-20261004/target/nelisp-static target/agent-worktrees/reader-f1-20261004/target/nelisp-dyn 2>&1 | grep -c 'F1-CORPUS-DIGEST=52c26b63098a83d62c044908b231afd5cce3a85da3b559147e6dc4810eeac2ef' | grep -qx 2
 
 * F2 Full opcode lowering (inline or runtime call)
 

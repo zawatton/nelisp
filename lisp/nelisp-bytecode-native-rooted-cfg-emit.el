@@ -114,6 +114,12 @@ does not write an artifact or invoke a backend."
                                                 phi-roots path))))
                 (cond
                  ((memq opcode '(const stack-ref dup discard)) (funcall next))
+                 ((memq opcode '(primitive-call funcall))
+                  (nelisp-native-funcall-v2-emit
+                   operation
+                   (nelisp-bytecode-native-rooted-cfg-emit--resolve-root plan (plist-get operation :function-root) phi-roots)
+                   (mapcar (lambda (root) (nelisp-bytecode-native-rooted-cfg-emit--resolve-root plan root phi-roots))
+                           (plist-get operation :argument-roots)) (funcall next)))
                  ((memq opcode '(car cdr cons car-safe cdr-safe))
                   (let* ((inputs (mapcar
                                   (lambda (root)
@@ -203,6 +209,8 @@ does not write an artifact or invoke a backend."
                    (append (plist-get plan :gateway-imports)
                            '("nl_root_pin_slot_v2")))
                   #'string<)
+            :primitive-initializers (plist-get plan :primitive-initializers)
+            :exit-root-base (plist-get plan :exit-root-base)
             :initial-roots (plist-get plan :initial-roots)
             :constant-initializers (plist-get plan :constant-initializers)
             :immediate-initializers (plist-get plan :immediate-initializers)

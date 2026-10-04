@@ -22,6 +22,12 @@
 
 (ert-deftest nelisp-native-gccjit/cons-raw-v2-abi-and-indirect-import ()
   (nelisp-native-gccjit-test--ffi
+    (should (integerp
+             (nelisp-native-gccjit-lower
+              (nelisp-native-gccjit-test--form '(extern-call nl_native_funcall_v2 env ticket 1 2 6 12))
+              '(("nl_native_funcall_v2" . 8192)))))
+    (should (= (nth 4 (assoc "gcc_jit_context_new_call_through_ptr" calls)) 6)))
+  (nelisp-native-gccjit-test--ffi
     (let ((form '(defun probe (env ticket argument-count root-count)
                    (if (/= argument-count 2) 3
                      (if (/= root-count 4) 3

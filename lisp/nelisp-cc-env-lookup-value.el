@@ -22,9 +22,11 @@
 ;;   2. Check mirror entry existence via `nelisp_mirror_lookup_entry'.
 ;;      If miss (= 0), return 1 (= unbound-var sentinel).
 ;;
-;;   3. If mirror hit: call `nelisp_mirror_lookup_value' to fill out-ptr
-;;      (refcount-safe via record-slot-ref → nl_sexp_clone_into, per
-;;      Doc 111 §111.C v3 fix).  Return 0.
+;;   3. On a nonalias mirror hit, clone slot 0 directly. On a genuine
+;;      slot-4 alias, authenticate the Env/table/entry tags, resolve the
+;;      bounded chain, recheck the requested frame class for the terminal
+;;      symbol, then read its frame or mirror value. Legacy four-slot
+;;      entries retain the nonalias path.
 ;;
 ;; *** Critical fix vs Wave a ***
 ;; Wave a used `(cell-value cell-ptr out-ptr)' — a raw 32-byte SIMD
@@ -52,7 +54,7 @@
 ;;   nelisp_frame_stack_find      — lexical frame walk (0 = miss)
 ;;   nl_cell_get_value            — refcount-safe cell value clone (Rust)
 ;;   nelisp_mirror_lookup_entry   — mirror hit/miss check (0 = miss)
-;;   nelisp_mirror_lookup_value   — mirror value fill (refcount-safe)
+;;   nelisp_mirror_lookup_value   — retained mirror value helper
 
 ;;; Code:
 
@@ -69,11 +71,128 @@
     ;; wrapper (which would re-hash).  2 hashes → 1 per call on hit;
     ;; semantics identical (= `record-slot-ref' uses the same refcount-
     ;; safe `nl_sexp_clone_into' as the wrapper).
-    (defun nelisp_env_lkv_mirror (mirror-ptr name-ptr out-ptr _pad)
+    (defun nelisp_env_alias_slot_candidate (entry-ptr _pad)
+      ;; Allocation-free classification for ordinary value reads/writes.
+      ;; 0=real alias, 1=malformed, 3=nonalias or legacy four-slot entry.
+      (if (/= (sexp-tag entry-ptr) 12)
+          1
+        (if (<= (record-slot-count entry-ptr) 4)
+            3
+          (let ((target-ptr (record-slot-ref-ptr entry-ptr 4)))
+            (if (= (sexp-tag target-ptr) 0) 3
+              (if (= (sexp-tag target-ptr) 4) 0 1))))))
+
+    (defun nelisp_env_alias_canonicalize
+        (mirror-ptr entry-ptr name-ptr result-address-ptr)
+      ;; RESULT-ADDRESS-PTR is raw u64 storage. Status 3 is the fast path:
+      ;; no alias slot, including a legacy four-slot symbol-entry. On a real
+      ;; alias, authenticate record tags against fixed names before invoking
+      ;; the shared borrowed resolver. No Sexp clone escapes this helper.
+      (ptr-write-u64 result-address-ptr 0 name-ptr)
+      (if (/= (sexp-tag entry-ptr) 12)
+          1
+        (if (<= (record-slot-count entry-ptr) 4)
+            3
+          (let ((target-ptr (record-slot-ref-ptr entry-ptr 4)))
+            (if (= (sexp-tag target-ptr) 0)
+                3
+              (if (/= (sexp-tag target-ptr) 4)
+                  1
+                (let ((env-tag (alloc-bytes 32 8))
+                      (table-tag (alloc-bytes 32 8))
+                      (entry-tag (alloc-bytes 32 8))
+                      (table-ptr 0)
+                      (status 1))
+                  (sexp-write-nil env-tag)
+                  (sexp-write-nil table-tag)
+                  (sexp-write-nil entry-tag)
+                  (if (and (= (sexp-tag mirror-ptr) 12)
+                           (> (record-slot-count mirror-ptr) 0))
+                      (seq
+                       (record-type-tag mirror-ptr env-tag)
+                       (if (= (nl_sp_eq_lit env-tag 10
+                                           7290607012774962542 30318) 1)
+                           (seq
+                            (setq table-ptr
+                                  (record-slot-ref-ptr mirror-ptr 0))
+                            (if (and (= (sexp-tag table-ptr) 12)
+                                     (> (record-slot-count table-ptr) 1))
+                                (seq
+                                 (record-type-tag table-ptr table-tag)
+                                 (if (= (nl_sp_eq_lit table-tag 15
+                                                     8314040931539181926
+                                                     28548142445374824) 1)
+                                     (seq
+                                      (record-type-tag entry-ptr entry-tag)
+                                      (if (= (nl_sp_eq_lit entry-tag 12
+                                                          7290602597431212403
+                                                          2037544046) 1)
+                                          (setq status
+                                                (extern-call
+                                                 nelisp_mirror_alias_resolve_borrowed
+                                                 mirror-ptr name-ptr env-tag
+                                                 table-tag entry-tag
+                                                 result-address-ptr))
+                                        0))
+                                   0))
+                              0))
+                         0))
+                    0)
+                  (dealloc-bytes entry-tag 32 8)
+                  (dealloc-bytes table-tag 32 8)
+                  (dealloc-bytes env-tag 32 8)
+                  status)))))))
+
+    (defun nelisp_env_lkv_mirror_with_frames
+        (mirror-ptr frames-ptr name-ptr out-ptr frame-mode _pad _pad2 _pad3)
       (let ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr)))
         (if (= entry 0)
             1
-          (and (record-slot-ref entry 0 out-ptr) 0))))
+          (if (/= (sexp-tag entry) 12)
+              1
+            (if (<= (record-slot-count entry) 4)
+                (and (record-slot-ref entry 0 out-ptr) 0)
+              (let ((target-ptr (record-slot-ref-ptr entry 4)))
+                (if (= (sexp-tag target-ptr) 0)
+                    (and (record-slot-ref entry 0 out-ptr) 0)
+                  (if (/= (sexp-tag target-ptr) 4)
+                      1
+                    (let ((canonical-address (alloc-bytes 8 8))
+                          (status 1))
+                      (setq status
+                            (nelisp_env_alias_canonicalize
+                             mirror-ptr entry name-ptr canonical-address))
+                      (if (= status 0)
+                          (let* ((canonical-ptr
+                                  (ptr-read-u64 canonical-address 0))
+                                 (cell-ptr
+                                  (if (= frames-ptr 0) 0
+                                    (if (= frame-mode 1)
+                                        (extern-call nelisp_frame_stack_find_kind
+                                                     frames-ptr canonical-ptr 1 0)
+                                      (extern-call nelisp_frame_stack_find
+                                                   frames-ptr canonical-ptr)))))
+                            (if (= cell-ptr 0)
+                                (let ((canonical-entry
+                                       (extern-call nelisp_mirror_lookup_entry
+                                                    mirror-ptr canonical-ptr)))
+                                  (if (= canonical-entry 0)
+                                      (setq status 1)
+                                    (setq status
+                                          (and (record-slot-ref canonical-entry 0 out-ptr)
+                                               0))))
+                              (setq status
+                                    (extern-call nl_cell_get_value
+                                                 cell-ptr out-ptr))))
+                        ;; Invalid metadata and cycles are lookup failures, never nil.
+                        (setq status 1))
+                      (dealloc-bytes canonical-address 8 8)
+                      status)))))))))
+
+    ;; Preserve the established four-argument global-mirror ABI. It cannot
+    ;; inspect frames, so frame-aware callers use the eight-argument entry.
+    (defun nelisp_env_lkv_mirror (mirror-ptr name-ptr out-ptr _pad)
+      (nelisp_env_lkv_mirror_with_frames mirror-ptr 0 name-ptr out-ptr 0 0 0 0))
 
     ;; nelisp_env_lookup_value
     ;;
@@ -90,7 +209,8 @@
       (let ((cell-ptr (extern-call nelisp_frame_stack_find frames-ptr name-ptr)))
         (if (= cell-ptr 0)
             ;; Frame miss: check mirror.
-            (nelisp_env_lkv_mirror mirror-ptr name-ptr out-ptr 0)
+            (nelisp_env_lkv_mirror_with_frames
+             mirror-ptr frames-ptr name-ptr out-ptr 0 0 0 0)
           ;; Frame hit: read cell value (refcount-safe).
           (extern-call nl_cell_get_value cell-ptr out-ptr)))))
   "AOT source for Wave a-2 `Env::lookup_value' body.

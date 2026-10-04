@@ -13,6 +13,7 @@
 (require 'nelisp-native-load)
 (require 'nelisp-bytecode-compiler-input)
 (require 'nelisp-bytecode-native-rooted-cfg-contract)
+(require 'nelisp-bytecode-native-rooted-cfg-safe-contract)
 (require 'nelisp-runtime-reload-abi)
 
 (defconst nelisp-native-cache--format "nelisp-native-cache-v1")
@@ -29,7 +30,7 @@
     nelisp-runtime-reload-abi nelisp-asm-x86_64 nelisp-asm-arm64
     nelisp-elf-write nelisp-sexp-layout
     ;; These compile-path dependencies also affect the generated artifact.
-    nelisp-bytecode-native-rooted-cfg-constructor-contract nelisp-standalone-build))
+    nelisp-native-funcall-v2 nelisp-bytecode-native-rooted-cfg-constructor-contract nelisp-standalone-build))
 (defvar nelisp-native-cache--abi :unset)
 (defvar nelisp-native-cache--compiler-revision :unset)
 (defvar nelisp-native-cache--addresses nil)
@@ -97,6 +98,10 @@ A missing source disables caching rather than creating an incomplete key."
         (nelisp-native-load--rooted-branch-join-contract-hash 'cons)
         (nelisp-native-load--rooted-branch-join-contract-hash 'car)
         (nelisp-native-load-rooted-production-contract-hash)
+        (nelisp-native-funcall-v2-descriptor)
+        (nelisp-native-funcall-v2-hash)
+        nelisp-bytecode-native-rooted-cfg-safe-contract-version
+        nelisp-bytecode-native-rooted-cfg-safe-contract-f1-version
         nelisp-native-cache--format))
 
 (defun nelisp-native-cache-abi-hash ()
@@ -235,7 +240,8 @@ The caller must inhibit mid-form collection until the syscall returns."
                           :arity (plist-get result :argument-count)
                           :root-count (plist-get result :required-root-count)
                           :exit-root-base (plist-get (plist-get result :plan) :exit-root-base)
-                          :initializers (append (plist-get result :constant-initializers)
+                          :initializers (append (plist-get result :primitive-initializers)
+                                                (plist-get result :constant-initializers)
                                                 (plist-get result :immediate-initializers)))))
               (unless (eq (plist-get result :status) 'complete)
                 (error "Native cache compilation incomplete"))
@@ -289,6 +295,10 @@ The caller must inhibit mid-form collection until the syscall returns."
                                   (nelisp-bytecode-native-rooted-cfg-contract-create-shared-v2 input plan emitted))))
               (unless (and contract (nelisp-bytecode-native-rooted-cfg-contract-valid-p contract))
                 (error "gccjit: shared-v2 compile contract refused"))
+              (when (plist-get plan :funcall-version)
+                (unless (and (fboundp 'nelisp-native-load-compiler-f1-runtime-p)
+                             (nelisp-native-load-compiler-f1-runtime-p))
+                  (error "gccjit: source-pinned F1 runtime unavailable")))
               (let* ((names (plist-get contract :imports))
                      (imports (nelisp-native-cache--gccjit-imports names)))
                 (nelisp-native-gccjit-compile-to-file (plist-get emitted :form) imports library)
@@ -301,7 +311,8 @@ The caller must inhibit mid-form collection until the syscall returns."
                                     :arity (plist-get emitted :argument-count)
                                     :root-count (plist-get emitted :required-root-count)
                                     :exit-root-base (plist-get plan :exit-root-base)
-                                    :initializers (append (plist-get emitted :constant-initializers)
+                                    :initializers (append (plist-get emitted :primitive-initializers)
+                                                          (plist-get emitted :constant-initializers)
                                                           (plist-get emitted :immediate-initializers))
                                     :imports names :library-sha256 (nelisp-native-cache--file-hash file))))
                   (setq temporary (make-temp-file (expand-file-name ".header-" (file-name-directory file))))
@@ -369,6 +380,7 @@ The caller must inhibit mid-form collection until the syscall returns."
   (let ((env (plist-get addresses :environment))
         (arity (plist-get header :arity)) (count (plist-get header :root-count))
         (initializers (plist-get header :initializers))
+        (primitive-initializer (symbol-function 'nelisp-native-funcall-v2-initializer))
         (exit-base (plist-get header :exit-root-base))
         (broken nil))
     (lambda (&rest arguments)
@@ -396,7 +408,9 @@ The caller must inhibit mid-form collection until the syscall returns."
               (dolist (init initializers)
                 (let ((index (plist-get init :root)))
                   (unless (eql (nelisp--native-pin-copy-v2
-                                env ticket index (plist-get init :value))
+                                env ticket index (if (plist-get init :primitive)
+                                                     (funcall primitive-initializer (plist-get init :primitive))
+                                                   (plist-get init :value)))
                                (nth index slots))
                     (error "Native cache initializer root mismatch"))))
               (cl-loop for slot in slots for index from 0 do

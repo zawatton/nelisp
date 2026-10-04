@@ -17,6 +17,7 @@
 (require 'nelisp-bytecode-native-arithmetic-lowering)
 (require 'nelisp-bytecode-native-guarded-lowering)
 (require 'nelisp-bytecode-native-call1-layout)
+(require 'nelisp-native-funcall-v2)
 
 ;; Resolve cl-every's autoload before the planner seals its function cell.
 (cl-every #'identity nil)
@@ -125,7 +126,8 @@
     ((or 'car 'car-safe) "nl_native_car_v2")
     ((or 'cdr 'cdr-safe) "nl_native_cdr_v2")
     ('cons "nl_native_cons_v2")
-    ('add "nl_native_add_v2")))
+    ('add "nl_native_add_v2")
+    ((or 'primitive-call 'funcall) "nl_native_funcall_v2")))
 
 (defun nelisp-bytecode-native-rooted-cfg--unsupported (reason)
   (list :status 'unsupported :reason reason))
@@ -244,6 +246,11 @@ phis at joins.  It refuses before any backend or artifact side effect."
          (root-next 0) (phi-next 0) (states nil)
          (phis nil) (planned-blocks nil) (returns nil) (failure nil)
          (arithmetic-p nil) (exit-root-base nil) (call1-layout nil)
+         (f1-p (and (not (eq (plist-get (nelisp-bytecode-native-call1-layout input) :status) 'complete))
+                    (cl-some (lambda (block)
+                               (cl-some (lambda (instruction) (eq (plist-get instruction :kind) 'call))
+                                        (append (plist-get block :instructions) nil))) blocks)))
+         (primitive-roots nil) (scratch-root nil)
          (guard-mode (or arithmetic-guard-mode 'off)))
     (unless (and (guard-valid-p)
                  (memq arithmetic-guard-mode '(nil off on))
@@ -252,7 +259,18 @@ phis at joins.  It refuses before any backend or artifact side effect."
                      (or (and (eq (plist-get input :status) 'complete)
                               (nelisp-bytecode-native-rooted-cfg--canonical-input-p input))
                          (nelisp-bytecode-native-rooted-cfg--safe-input-p input))
-                   (eq (plist-get input :status) 'complete))
+                   (or (eq (plist-get input :status) 'complete)
+                       (and f1-p
+                            (nelisp-bytecode-native-rooted-cfg--canonical-input-p input)
+                            (cl-every (lambda (item)
+                                        (or (and (eq (cdr item) 'non-fixnum-constant))
+                                            (and (eq (cdr item) 'unsupported-semantics)
+                                                 (cl-some (lambda (row)
+                                                            (and (= (aref row 0) (car item))
+                                                                 (or (memq (aref row 1) '(64 65 66))
+                                                                     (<= 32 (aref row 1) 39))))
+                                                          (append (plist-get (plist-get input :ir-result) :instructions) nil)))))
+                                      (plist-get (plist-get input :ir-result) :unsupported)))))
                  (eq (plist-get frame :status) 'complete)
                  (integerp arity) (>= arity 0)
                  (integerp initial-depth) (= initial-depth arity)
@@ -289,6 +307,10 @@ phis at joins.  It refuses before any backend or artifact side effect."
       (push (cons index root-next) constant-roots)
       (setq root-next (1+ root-next)))
     (setq constant-roots (nreverse constant-roots))
+    (when f1-p
+      (dolist (name '(car cdr cons))
+        (push (cons name root-next) primitive-roots)
+        (setq root-next (1+ root-next))))
     (when (>= root-next 256)
         (cl-return-from nelisp-bytecode-native-rooted-cfg-plan
           (nelisp-bytecode-native-rooted-cfg--unsupported "root-slot limit exceeded")))
@@ -393,6 +415,11 @@ phis at joins.  It refuses before any backend or artifact side effect."
                     (progn (setq op 'return)
                            (push (cons start (car inputs)) returns))
                   (setq failure "return must select one stack value")))
+               ((and f1-p (eq kind 'call))
+                (if (and (<= 32 opcode 39) (= (length outputs) 1)
+                         (> (length inputs) 0))
+                    (setq op 'funcall output-root root-next root-next (1+ root-next))
+                  (setq failure "Malformed generic byte-call")))
                ((eq kind 'call)
                 (if (and (eq (plist-get call1-layout :status) 'complete)
                          (integerp (plist-get call1-layout :function-root))
@@ -417,6 +444,12 @@ phis at joins.  It refuses before any backend or artifact side effect."
                          (= root-next 3))
                     (setq op 'call1 output-root 3 root-next 7 exit-root-base 4)
                   (setq failure "CALL1 is outside the qualified fixed-layout subset")))
+               ((and f1-p (eq kind 'primitive)
+                     (nelisp-native-funcall-v2-primitive opcode))
+                (let ((primitive (nelisp-native-funcall-v2-primitive opcode)))
+                  (if (and (= (length inputs) (nth 2 primitive)) (= (length outputs) 1))
+                      (setq op 'primitive-call output-root root-next root-next (1+ root-next))
+                    (setq failure "Malformed generic primitive call"))))
                ((eq kind 'primitive)
                 (setq op (cdr (assq opcode
                                     nelisp-bytecode-native-rooted-cfg--gateway-opcodes)))
@@ -445,6 +478,18 @@ phis at joins.  It refuses before any backend or artifact side effect."
                                             (if (memq opcode '(131 133)) 'nil 'not-nil))
                              :type-error-input (and (memq op '(car cdr)) (car inputs))
                              :pc (plist-get instruction :pc))))
+                  (when (memq op '(primitive-call funcall))
+                    (let* ((primitive (and (eq op 'primitive-call)
+                                           (nelisp-native-funcall-v2-primitive opcode)))
+                           (arguments (if primitive inputs (cdr inputs)))
+                           (count (length arguments)))
+                      (setq operation
+                            (append operation
+                                    (list :function-root (if primitive (cdr (assq (nth 1 primitive) primitive-roots)) (car inputs))
+                                          :argument-roots arguments :argument-count count
+                                          :staging-roots (number-sequence root-next (+ root-next count -1))
+                                          :provider 'nl_native_funcall_v2)))
+                      (setq root-next (+ root-next count))))
                   (when (eq op 'call1)
                     (setq operation
                           (append operation
@@ -477,6 +522,14 @@ phis at joins.  It refuses before any backend or artifact side effect."
             (push (list :start start :phis phis-here
                         :operations (nreverse ops) :successors successors)
                   planned-blocks)))))
+    (when f1-p
+      (setq scratch-root root-next exit-root-base (1+ root-next) root-next (+ root-next 4))
+      (dolist (block planned-blocks)
+        (dolist (operation (plist-get block :operations))
+          (when (memq (plist-get operation :opcode) '(primitive-call funcall))
+            (plist-put operation :result-root scratch-root)
+            (plist-put operation :exit-root-base exit-root-base)))))
+    (when (and f1-p arithmetic-p) (setq failure "F1 numeric coexistence is not qualified"))
     (when arithmetic-p
       (unless (nelisp-bytecode-native-rooted-cfg--canonical-input-p input)
         (setq failure "arithmetic input is not canonical authenticated compiler input"))
@@ -505,7 +558,7 @@ phis at joins.  It refuses before any backend or artifact side effect."
                            (cl-loop for block in planned-blocks append
                                     (cl-remove-if-not
                                      (lambda (op) (memq (plist-get op :opcode)
-                                                       '(car cdr cons add car-safe cdr-safe)))
+                                                       '(car cdr cons add car-safe cdr-safe primitive-call funcall)))
                                      (plist-get block :operations)))))
                   #'string<))
            (ordered-blocks (nreverse planned-blocks))
@@ -553,6 +606,14 @@ phis at joins.  It refuses before any backend or artifact side effect."
             :gateway-imports gateway-imports :entry-ast entry-ast)
        (and (eq (plist-get call1-layout :status) 'complete)
             (list :call-exit-root-base exit-root-base :call-exit-root-count 3))
+       (and f1-p
+            (list :funcall-version nelisp-native-funcall-v2-version
+                  :funcall-descriptor (nelisp-native-funcall-v2-descriptor)
+                  :funcall-hash (nelisp-native-funcall-v2-hash)
+                  :primitive-initializers
+                  (mapcar (lambda (pair) (list :root (cdr pair) :primitive (car pair)))
+                          (nreverse primitive-roots))
+                  :result-root scratch-root :exit-root-base exit-root-base))
        (and arithmetic-p
             (list :exit-root-base exit-root-base
                   :arithmetic-context

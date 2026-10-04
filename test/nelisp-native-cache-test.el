@@ -188,6 +188,7 @@ compiler input refuse host bytecode, so the genuine contract is derived first."
           (should-not (equal name (nelisp-native-cache-file fn))))))))
 
 (ert-deftest nelisp-native-cache/name-every-abi-component ()
+  (should (member (nelisp-native-funcall-v2-descriptor) (nelisp-native-cache--abi-components)))
   (nelisp-native-cache-test--runtime
     (nelisp-native-cache-test--directory
       (let* ((fn (nelisp-native-cache-test--function))

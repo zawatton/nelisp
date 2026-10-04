@@ -1045,6 +1045,12 @@ GOT + section VAs pinned here match the emitted bytes.  Returns FILE-PATH
            (elf (nelisp-elf-build-dynamic-binary
                  (list :text text :rodata rodata :data data :bss-size bss-size
                        :entry-vaddr entry-vaddr
+                       :symbols (nelisp-link--export-symtab
+                                 (let ((copy (copy-hash-table symtab)))
+                                   (dolist (import imports)
+                                     (remhash (cdr import) copy)
+                                     (remhash (concat "__got_" (cdr import)) copy))
+                                   copy) layout)
                        :imports imports :interp interp)))
            (coding-system-for-write 'binary))
       (with-temp-file file-path

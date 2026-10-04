@@ -377,9 +377,10 @@
              (prev (ptr-read-u64 control 16)))
         (if (if (/= (atomic-fetch-add control 0) 1) 1
               (if (/= (ptr-read-u64 control 8) env) 1
+                (if (/= (ptr-read-u64 control 48) 1) 1
                 (if (< top base) 1
                   (if (> (+ top 64) end) 1
-                    (if (/= (logand (- top base) 31) 0) 1 0)))))
+                    (if (/= (logand (- top base) 31) 0) 1 0))))))
             0
           (seq
            ;; Fixnum-tagged link: the collector treats it as an integer.
@@ -391,22 +392,27 @@
            (ptr-write-u64 (+ control 16) 0 (+ top 32))
            (+ top 32)))))
     (defun nl_root_pin_begin (env)
-      (if (/= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0)
-          0
-        (if (= (atomic-compare-exchange
-                (data-addr nl_root_pin_control) 0 1)
-               1)
-            (seq
-             (ptr-write-u64 (data-addr nl_root_pin_control) 8 env)
-             (if (= (ptr-read-u64 (data-addr nl_root_pin_control) 24) 0)
-                 (ptr-write-u64 (data-addr nl_root_pin_control) 24
-                                (data-addr nl_root_pin_region))
-               0)
-             (let ((marker
-                    (ptr-read-u64 (data-addr nl_root_pin_control) 24)))
-               (ptr-write-u64 (data-addr nl_root_pin_control) 16 marker)
-               marker))
-          (nl_root_pin_begin_nested env))))
+        (if (/= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0)
+            0
+        (if (= (ptr-read-u64 (data-addr nl_root_pin_control) 48) 0)
+            (if (= (atomic-compare-exchange
+                    (data-addr nl_root_pin_control) 0 1)
+                   1)
+                (seq
+                 (ptr-write-u64 (data-addr nl_root_pin_control) 8 env)
+                 (if (= (ptr-read-u64 (data-addr nl_root_pin_control) 24) 0)
+                     (ptr-write-u64 (data-addr nl_root_pin_control) 24
+                                    (data-addr nl_root_pin_region))
+                   0)
+                 (let ((marker
+                        (ptr-read-u64 (data-addr nl_root_pin_control) 24)))
+                   (ptr-write-u64 (data-addr nl_root_pin_control) 16 marker)
+                   (ptr-write-u64 (data-addr nl_root_pin_control) 48 1)
+                   marker))
+              0)
+          (if (= (ptr-read-u64 (data-addr nl_root_pin_control) 48) 1)
+              (nl_root_pin_begin_nested env)
+            0))))
     (defun nl_root_pin_reserve (env marker)
       (let* ((control (data-addr nl_root_pin_control))
              (base (data-addr nl_root_pin_region))
@@ -414,11 +420,12 @@
              (top (atomic-fetch-add (+ control 24) 0)))
         (if (if (/= (atomic-fetch-add control 0) 1) 1
               (if (/= (ptr-read-u64 control 8) env) 1
-                (if (/= (ptr-read-u64 control 16) marker) 1
+              (if (/= (ptr-read-u64 control 48) 1) 1
+               (if (/= (ptr-read-u64 control 16) marker) 1
                   (if (if (< top base) 1
                         (if (> (+ top 32) end) 1
                           (if (/= (logand (- top base) 31) 0) 1 0)))
-                      1 0))))
+                      1 0)))))
             0
           (seq
            (ptr-write-u64 top 0 0)
@@ -479,20 +486,266 @@
              (base (data-addr nl_root_pin_region))
              (top (atomic-fetch-add (+ control 24) 0)))
         (if (= (atomic-fetch-add control 0) 1)
-            (if (= (ptr-read-u64 control 8) env)
-                (if (= (ptr-read-u64 control 16) marker)
-                    (if (= (nl_root_pin_end_valid base top marker) 1)
-                        (if (= (nl_root_pin_nested_link_p base marker) 1)
-                            (nl_root_pin_end_nested control marker)
-                        (seq
-                         (ptr-write-u64 (+ control 24) 0 marker)
-                         (ptr-write-u64 (+ control 8) 0 0)
-                         (ptr-write-u64 (+ control 16) 0 0)
-                         (if (= (atomic-compare-exchange control 1 0) 1) 1 0)))
+            (if (= (ptr-read-u64 control 48) 1)
+                (if (= (ptr-read-u64 control 8) env)
+                    (if (= (ptr-read-u64 control 16) marker)
+                        (if (= (nl_root_pin_end_valid base top marker) 1)
+                            (if (= (nl_root_pin_nested_link_p base marker) 1)
+                                (nl_root_pin_end_nested control marker)
+                              (seq
+                               (ptr-write-u64 (+ control 24) 0 marker)
+                               (ptr-write-u64 (+ control 8) 0 0)
+                               (ptr-write-u64 (+ control 16) 0 0)
+                               (ptr-write-u64 (+ control 48) 0 0)
+                               (if (= (atomic-compare-exchange control 1 0) 1)
+                                   1 0)))
+                          0)
                       0)
                   0)
               0)
           0)))
+    ;; V2 tickets are process-local identities, independent of reusable root
+    ;; addresses.  Control offsets +32/+40/+48 hold current/next/mode; nested
+    ;; links store the enclosing ticket in their +16 word.  The monotonic
+    ;; counter fails closed before signed-i64 wrap and is never serialized.
+    ;; The standalone linker reserves a 64-byte control prefix before the
+    ;; pin-root region so these fields cannot overlap the first root slot.
+    (defun nl_root_pin_v2_next_token (control)
+      (let* ((next (ptr-read-u64 control 40))
+             (token (if (= next 0) 1 next)))
+        ;; Tickets are positive signed-i64 values in the ptr-call ABI; stop at
+        ;; INT64_MAX instead of allowing an emitter or host to wrap the u64.
+        (if (>= token 9223372036854775807) 0 token)))
+    (defun nl_root_pin_v2_commit_token (control token)
+      (seq
+       (ptr-write-u64 (+ control 32) 0 token)
+       (ptr-write-u64 (+ control 40) 0 (+ token 1))
+       token))
+    (defun nl_root_pin_begin_v2 (env)
+      (let* ((control (data-addr nl_root_pin_control))
+             (base (data-addr nl_root_pin_region))
+             (mode (ptr-read-u64 control 48))
+             (token (nl_root_pin_v2_next_token control)))
+        (if (or (= token 0)
+                (/= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0))
+            0
+          (if (= mode 0)
+              (if (= (atomic-compare-exchange control 0 1) 1)
+                  (seq
+                   (ptr-write-u64 (+ control 8) 0 env)
+                   (if (= (ptr-read-u64 control 24) 0)
+                       (ptr-write-u64 (+ control 24) 0 base)
+                     0)
+                   (ptr-write-u64 (+ control 16) 0
+                                  (ptr-read-u64 control 24))
+                   (ptr-write-u64 (+ control 48) 0 2)
+                   (nl_root_pin_v2_commit_token control token))
+                0)
+            (if (= mode 2)
+                (let* ((top (atomic-fetch-add (+ control 24) 0))
+                       (prev-marker (ptr-read-u64 control 16))
+                       (prev-token (ptr-read-u64 control 32))
+                       (end (+ base 524288)))
+                  (if (if (/= (atomic-fetch-add control 0) 1) 1
+                        (if (/= (ptr-read-u64 control 8) env) 1
+                          (if (< top base) 1
+                            (if (> (+ top 64) end) 1
+                              (if (/= (logand (- top base) 31) 0) 1 0)))))
+                      0
+                    (seq
+                     (ptr-write-u64 top 0 2)
+                     (ptr-write-u64 (+ top 8) 0 prev-marker)
+                     (ptr-write-u64 (+ top 16) 0 prev-token)
+                     (ptr-write-u64 (+ top 24) 0 (+ top 32))
+                     (ptr-write-u64 (+ control 24) 0 (+ top 32))
+                     (ptr-write-u64 (+ control 16) 0 (+ top 32))
+                     (nl_root_pin_v2_commit_token control token))))
+              0)))))
+    (defun nl_root_pin_reserve_v2 (env token)
+      (let* ((control (data-addr nl_root_pin_control))
+             (base (data-addr nl_root_pin_region))
+             (end (+ base 524288))
+             (top (atomic-fetch-add (+ control 24) 0)))
+        (if (if (/= (atomic-fetch-add control 0) 1) 1
+              (if (/= (ptr-read-u64 control 48) 2) 1
+                (if (/= (ptr-read-u64 control 8) env) 1
+                  (if (/= (ptr-read-u64 control 32) token) 1
+                    (if (if (< top base) 1
+                          (if (> (+ top 32) end) 1
+                            (if (/= (logand (- top base) 31) 0) 1 0)))
+                        1 0)))))
+            0
+          (seq
+           (ptr-write-u64 top 0 0)
+           (ptr-write-u64 (+ top 8) 0 0)
+           (ptr-write-u64 (+ top 16) 0 0)
+           (ptr-write-u64 (+ top 24) 0 0)
+           (if (= (atomic-compare-exchange (+ control 24) top (+ top 32)) 1)
+               top
+             0)))))
+    (defun nl_root_pin_end_v2 (env token)
+      (let* ((control (data-addr nl_root_pin_control))
+             (base (data-addr nl_root_pin_region))
+             (top (atomic-fetch-add (+ control 24) 0))
+             (marker (ptr-read-u64 control 16)))
+        (if (= (atomic-fetch-add control 0) 1)
+          (if (= (ptr-read-u64 control 48) 2)
+           (if (= (ptr-read-u64 control 8) env)
+            (if (= (ptr-read-u64 control 32) token)
+             (if (= (nl_root_pin_end_valid base top marker) 1)
+            (if (> marker base)
+                (let ((link (- marker 32)))
+                  (if (and (= (ptr-read-u64 link 0) 2)
+                           (= (ptr-read-u64 link 24) marker)
+                           (> (ptr-read-u64 link 16) 0))
+                      (seq
+                       (ptr-write-u64 (+ control 16) 0
+                                      (ptr-read-u64 link 8))
+                       (ptr-write-u64 (+ control 24) 0 link)
+                       (ptr-write-u64 (+ control 32) 0
+                                      (ptr-read-u64 link 16))
+                       (ptr-write-u64 link 0 0)
+                       (ptr-write-u64 (+ link 8) 0 0)
+                       (ptr-write-u64 (+ link 16) 0 0)
+                       (ptr-write-u64 (+ link 24) 0 0)
+                       1)
+                    0))
+              (seq
+               (ptr-write-u64 (+ control 24) 0 marker)
+               (ptr-write-u64 (+ control 8) 0 0)
+               (ptr-write-u64 (+ control 16) 0 0)
+               (ptr-write-u64 (+ control 32) 0 0)
+               (ptr-write-u64 (+ control 48) 0 0)
+               (if (= (atomic-compare-exchange control 1 0) 1) 1 0)))
+             0)
+            0)
+           0)
+          0)
+          0)))
+    ;; Return an index into only the active frame's reserved slots.  The
+    ;; caller supplies no address, so every pointer is derived from the
+    ;; runtime-owned frame marker after validating its ticket and link.
+    (defun nl_root_pin_slot_v2 (env token index)
+      (let* ((control (data-addr nl_root_pin_control))
+             (base (data-addr nl_root_pin_region))
+             (region-end (if (> base 9223372036854251519)
+                             0 (+ base 524288)))
+             (top (atomic-fetch-add (+ control 24) 0))
+             (marker (ptr-read-u64 control 16))
+             (safe-marker
+              (if (if (= region-end 0) 1
+                    (if (< marker base) 1 (> marker region-end)))
+                  base marker))
+             (safe-top
+              (if (if (= region-end 0) 1
+                    (if (< top base) 1 (> top region-end)))
+                  base top))
+             (safe-index
+              (if (if (< index 0) 1
+                    (if (>= index 16384)
+                        1 (> safe-marker 9223372036854251519)))
+                  0 index))
+             (slot (+ safe-marker (* safe-index 32)))
+             (slot-end (if (> slot 9223372036854775775)
+                           0 (+ slot 32)))
+             (link (if (> safe-marker base) (- safe-marker 32) base))
+             (parent-marker (ptr-read-u64 link 8))
+             (safe-parent-marker
+              (if (if (< parent-marker base) 1 (> parent-marker link))
+                  base parent-marker))
+             (parent-token (ptr-read-u64 link 16))
+             (frame-valid
+              (if (= safe-marker base) 1
+                (if (and (> safe-marker base)
+                         (>= link base)
+                         (= (ptr-read-u64 link 0) 2)
+                         (= (ptr-read-u64 link 24) safe-marker)
+                         (>= parent-marker base)
+                         (<= parent-marker link)
+                         (= (logand (- safe-parent-marker base) 31) 0)
+                         (> parent-token 0)
+                         (< parent-token token))
+                    1 0))))
+        (if (if (or (/= (atomic-fetch-add control 0) 1)
+                    (/= (ptr-read-u64 control 48) 2)
+                    (/= (ptr-read-u64 control 8) env)
+                    (<= token 0)
+                    (/= (ptr-read-u64 control 32) token)
+                    (= region-end 0)
+                    (< marker base) (> marker top) (> top region-end)
+                    (/= (logand (- marker base) 31) 0)
+                    (/= (logand (- safe-top base) 31) 0)
+                    (= frame-valid 0)
+                    (< index 0) (>= index 16384)
+                    (= slot-end 0) (< slot marker) (> slot-end top))
+                1 0)
+            0
+          slot)))
+    ;; Return status: 0 success, 1 unsupported input tag, 2 malformed request.
+    ;; The caller supplies only root-slot indices; both addresses are resolved
+    ;; and authenticated before either slot is dereferenced.  No object pointer
+    ;; is kept across the CAR accessor call, which may materialise an immediate.
+    (defun nl_native_car_v2 (env token input-index output-index)
+      (let* ((input (nl_root_pin_slot_v2 env token input-index))
+             (output (nl_root_pin_slot_v2 env token output-index)))
+        (if (or (= input 0) (= output 0)) 2
+          (let ((tag (ptr-read-u64 input 0)))
+            (if (= tag 0)
+                (seq
+                 (ptr-write-u64 output 0 0)
+                 (ptr-write-u64 output 8 0)
+                 (ptr-write-u64 output 16 0)
+                 (ptr-write-u64 output 24 0)
+                 0)
+              (if (= tag 7)
+                  (let ((car-slot (extern-call nl_cons_car_ptr input)))
+                    (if (= car-slot 0) 2
+                      (seq
+                       (ptr-write-u64 output 0 (ptr-read-u64 car-slot 0))
+                       (ptr-write-u64 output 8 (ptr-read-u64 car-slot 8))
+                       (ptr-write-u64 output 16 (ptr-read-u64 car-slot 16))
+                       (ptr-write-u64 output 24 (ptr-read-u64 car-slot 24))
+                       0)))
+                1))))))
+    ;; Return status: 0 success, 2 malformed request.  Resolve every input
+    ;; and output slot before reading values or calling the allocating
+    ;; constructor.  The constructor receives only addresses inside this live
+    ;; frame, so its allocations can collect without losing either input.
+    (defun nl_native_cons_v2 (env token car-index cdr-index output-index)
+      (let* ((car-slot (nl_root_pin_slot_v2 env token car-index))
+             (cdr-slot (nl_root_pin_slot_v2 env token cdr-index))
+             (output-slot (nl_root_pin_slot_v2 env token output-index)))
+        (if (or (= car-slot 0) (= cdr-slot 0) (= output-slot 0))
+            2
+          (seq (extern-call nelisp_cons_construct
+                            car-slot cdr-slot output-slot)
+               0))))
+    ;; Return status: 0 success, 1 wrong type, 2 malformed request.
+    ;; The result of nl_cons_cdr_ptr is copied immediately into the already
+    ;; authenticated output root; the input/output roots remain live during
+    ;; any materialization allocation inside that accessor.
+    (defun nl_native_cdr_v2 (env token input-index output-index)
+      (let* ((input (nl_root_pin_slot_v2 env token input-index))
+             (output (nl_root_pin_slot_v2 env token output-index)))
+        (if (or (= input 0) (= output 0)) 2
+          (let ((tag (ptr-read-u64 input 0)))
+            (if (= tag 0)
+                (seq
+                 (ptr-write-u64 output 0 0)
+                 (ptr-write-u64 output 8 0)
+                 (ptr-write-u64 output 16 0)
+                 (ptr-write-u64 output 24 0)
+                 0)
+              (if (= tag 7)
+                  (let ((cdr-slot (extern-call nl_cons_cdr_ptr input)))
+                    (if (= cdr-slot 0) 2
+                      (seq
+                       (ptr-write-u64 output 0 (ptr-read-u64 cdr-slot 0))
+                       (ptr-write-u64 output 8 (ptr-read-u64 cdr-slot 8))
+                       (ptr-write-u64 output 16 (ptr-read-u64 cdr-slot 16))
+                       (ptr-write-u64 output 24 (ptr-read-u64 cdr-slot 24))
+                       0)))
+                1))))))
     ;; GC: walk [region, top) in 32-byte steps, mark each slot like a root.
     (defun nl_gc_mark_rootstack_walk (p end)
       (if (>= p end) 0

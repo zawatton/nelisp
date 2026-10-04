@@ -516,6 +516,18 @@ boxed .neln unit. Return the backend result, or a plist with :status
           (nelisp-bytecode-native-compiler--call1-compile input artifact-path)
         (list :status 'unsupported :reason "CALL1 requires fixed raw-v2 entry"
               :input input)))
+     ((and (not (plist-get input :call1-symbol-template-p))
+           (cl-some (lambda (block)
+                      (cl-some (lambda (instruction) (eq (plist-get instruction :kind) 'call))
+                               (append (plist-get block :instructions) nil)))
+                    (append (plist-get (plist-get input :frame-result) :blocks) nil)))
+      (require 'nelisp-bytecode-native-rooted-cfg-native)
+      (if (and (stringp artifact-path) (string-suffix-p ".nelr" artifact-path)
+               (equal entry-name nelisp-bytecode-native-rooted-cfg-contract-shared-entry))
+          (nelisp-bytecode-native-rooted-cfg-native-build-shared-v2 input artifact-path 'off)
+        (list :status 'unsupported :artifact-kind 'raw-runtime-v2
+              :reason "Generic call requires the authenticated shared CFG entry and .nelr output"
+              :input input)))
      ((or (nelisp-bytecode-native-compiler-rooted-branch-join-operation input)
           (equal entry-name nelisp-bytecode-native-rooted-branch-join-entry))
       (let ((operation

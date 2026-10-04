@@ -263,5 +263,9 @@ nelisp-thread-gc-inhibit	native-review	No classification row; review against Doc
 nelisp--native-symbol-addr	native-review	No classification row; review against Doc 211 §6.
 nelisp--native-env	native-review	No classification row; review against Doc 211 §6.
 nelisp--native-pin-copy	native-review	No classification row; review against Doc 211 §6.
+nelisp--native-pin-copy-v2	native-review	No classification row; review against Doc 211 §6.
 nelisp--native-pin-eq-slots	native-review	No classification row; review against Doc 211 §6.
 nelisp--symbol-global-cell-p	native-review	No classification row; review against Doc 211 §6.
+nelisp--native-runtime-contract-word	native-must-stay	Build-embedded ABI identity word of the running binary; no Lisp form can read it (clause 3). Raw artifact admission compares it in every build (ledger S3.3).
+
+nl_native_funcall_v2	native-must-stay	Evaluator entry (clause 2), authenticated rooted funcall and exit publication; Lisp reference nelisp-native-funcall-v2-reference; measurements in F1.1/F1.2.

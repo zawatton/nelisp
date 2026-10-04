@@ -86,7 +86,7 @@
     (should-not (member "nl_native_call_v2" (plist-get plan :gateway-imports)))
     (should (equal input before))))
 
-(ert-deftest nelisp-bytecode-native-rooted-cfg-call1-plan/refuses-unsupported-shapes ()
+(ert-deftest nelisp-bytecode-native-rooted-cfg-call1-plan/routes-wider-shapes-through-f1 ()
   (dolist (form '((lambda (f) (funcall f))
                   (lambda (f x) (funcall f x x))
                   (lambda (f x) (funcall f 17))
@@ -94,7 +94,8 @@
     (let* ((input (nelisp-bytecode-native-rooted-cfg-call1-plan-test--input form))
            (plan (nelisp-bytecode-native-rooted-cfg-plan input)))
       (should (eq (plist-get input :status) 'complete))
-      (should (eq (plist-get plan :status) 'unsupported)))))
+      (should (eq (plist-get plan :status) 'complete))
+      (should (equal (plist-get plan :gateway-imports) '("nl_native_funcall_v2"))))))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-call1-plan/refuses-rebound-layout-functions ()
   (let ((input (nelisp-bytecode-native-rooted-cfg-call1-plan-test--input

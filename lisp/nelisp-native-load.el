@@ -42,6 +42,7 @@
 
 (require 'cl-lib)
 (require 'nelisp-runtime-reload-abi)
+(require 'nelisp-native-funcall-v2)
 
 (defvar nelisp-native-load--active-calls (make-hash-table :test 'eq)
   "Per-handle native call depth, including nested calls.")
@@ -110,7 +111,8 @@ equality test and the port-count test both check it.")
     "nl_native_cons_v2"
     "nl_native_cdr_v2"
     "wf_bytecode_call_gateway_exit")
-   (nelisp-native-load--port-symbol-names))
+   (nelisp-native-load--port-symbol-names)
+   '("nl_native_funcall_v2"))
   "Runtime symbols a stub can be pointed at, in `nelisp--native-symbol-addr' order.
 
 The index is the contract: the builtin selects from a chain of
@@ -974,6 +976,9 @@ retain the legacy byte conversion and conses, floats, and bignums are refused."
         (nelisp-native-load--payload-string addr)))
      ((= tag nelisp-native-load-tag-symbol)
       (intern (nelisp-native-load--payload-string addr)))
+     ((and (memq tag '(6 8 9 10 12 15 18))
+           (integerp env) (> env 0) (integerp pin-frame) (> pin-frame 0))
+      (nelisp--native-unbox-reference addr env pin-frame))
      ((= tag nelisp-native-load-tag-cons)
       (if (and (integerp env) (> env 0)
                (integerp pin-frame) (> pin-frame 0))
@@ -1634,7 +1639,7 @@ classifies a data relocation so the loader can make a return stub instead of
 a jump stub; an unlisted data import is rejected during the pre-flight pass.")
 
 (defconst nelisp-native-load-raw-v2-import-contract-version
-  "nelisp-runtime-raw-v2-import-v1"
+  "nelisp-runtime-raw-v2-import-v2"
   "Version for the narrow authenticated v2 callable-import extension.")
 
 (defconst nelisp-native-load-raw-v2-call1-contract-version
@@ -1819,7 +1824,7 @@ The returned plist has :environment, :begin, :reserve, :end, and :slot fields."
           '(0 success 1 wrong-type 2 malformed 3 unsupported-opcode)))))
 
 (defconst nelisp-native-load-raw-v2-bridgeable-imports
-  '("nl_native_car_v2" "nl_native_cdr_v2" "nl_native_cons_v2")
+  '("nl_native_car_v2" "nl_native_cdr_v2" "nl_native_cons_v2" "nl_native_funcall_v2")
   "Exact v2 native bridge imports backed by the binary symbol-address table.
 
 Root-pin operations remain host-controlled; raw units receive an authenticated
@@ -1902,7 +1907,8 @@ ticket and slot indices and may call only the CAR gateway.")
    (prin1-to-string
     (list nelisp-native-load-raw-v2-import-contract-version
           resolver-symbols
-          nelisp-native-load-raw-v2-bridgeable-imports))))
+          nelisp-native-load-raw-v2-bridgeable-imports
+          (nelisp-native-funcall-v2-descriptor)))))
 
 (defun nelisp-native-load--raw-v2-contract-hash (&optional contract)
   "Return the digest of CONTRACT's canonical printed representation."
@@ -2624,8 +2630,9 @@ object, its print digest and validator identity after output publication."
              (plan (plist-get rooted-cfg-spec :plan))
              (emitted (plist-get rooted-cfg-spec :emitted))
              (cfg-contract (plist-get rooted-cfg-spec :contract))
-             (shared-v2 (equal (plist-get cfg-contract :version)
-                               nelisp-bytecode-native-rooted-cfg-contract-shared-version))
+             (shared-v2 (member (plist-get cfg-contract :version)
+                                (list nelisp-bytecode-native-rooted-cfg-contract-shared-version
+                                      nelisp-bytecode-native-rooted-cfg-contract-f1-shared-version)))
              (version (plist-get cfg-contract :version))
              (entry-name (if shared-v2
                              nelisp-bytecode-native-rooted-cfg-contract-shared-entry
@@ -2665,7 +2672,9 @@ object, its print digest and validator identity after output publication."
                      (not conditional-spec) (not rooted-branch-spec)
                      (not rooted-branch-join-spec)
                      (member version (list nelisp-bytecode-native-rooted-cfg-contract-version
-                                           nelisp-bytecode-native-rooted-cfg-contract-shared-version))
+                                           nelisp-bytecode-native-rooted-cfg-contract-shared-version
+                                           nelisp-bytecode-native-rooted-cfg-contract-f1-version
+                                           nelisp-bytecode-native-rooted-cfg-contract-f1-shared-version))
                      reconstruction
                      (eq validator (symbol-function 'nelisp-bytecode-native-rooted-cfg-contract-valid-p))
                      (equal input canonical-input)
@@ -2728,12 +2737,12 @@ object, its print digest and validator identity after output publication."
                             (cl-some
                              (lambda (name) (member name safe-imports))
                              '("nl_native_car_v2" "nl_native_cdr_v2"
-                               "nl_native_cons_v2"))
+                               "nl_native_cons_v2" "nl_native_funcall_v2"))
                             (cl-every
                              (lambda (name)
                                (member name
                                        '("nl_native_car_v2" "nl_native_cdr_v2"
-                                         "nl_native_cons_v2"
+                                         "nl_native_cons_v2" "nl_native_funcall_v2"
                                          "nl_root_pin_slot_v2")))
                              safe-imports)))
                      (< (plist-get safe-contract :root-count) 256)
@@ -2849,8 +2858,9 @@ object, its print digest and validator identity after output publication."
       (when rooted-cfg-spec
         (let* ((cfg-contract (plist-get rooted-cfg-spec :contract))
                (entry-name
-                (if (equal (plist-get cfg-contract :version)
-                           nelisp-bytecode-native-rooted-cfg-contract-shared-version)
+                (if (member (plist-get cfg-contract :version)
+                            (list nelisp-bytecode-native-rooted-cfg-contract-shared-version
+                                  nelisp-bytecode-native-rooted-cfg-contract-f1-shared-version))
                     nelisp-bytecode-native-rooted-cfg-contract-shared-entry
                   "nl_native_rooted_cfg_probe_v1"))
                (export (nelisp-native-load--raw-export
@@ -2877,7 +2887,7 @@ object, its print digest and validator identity after output publication."
                                           (member import
                                                   '("nl_native_car_v2"
                                                     "nl_native_cdr_v2"
-                                                    "nl_native_cons_v2"
+                                                    "nl_native_cons_v2" "nl_native_funcall_v2"
                                                     "nl_root_pin_slot_v2"))))
                (mode (cond (provider 'arithmetic-provider-v1)
                            (typed-call1 'call1-typed-v1)
@@ -3090,7 +3100,7 @@ object, its print digest and validator identity after output publication."
           (setq manifest
                 (append manifest
                         (list :native-rooted-cfg-safe-v3-contract-version
-                              nelisp-bytecode-native-rooted-cfg-safe-contract-version
+                              (plist-get safe-contract :version)
                               :native-rooted-cfg-safe-v3-contract safe-contract
                               :native-rooted-cfg-safe-v3-entry
                               "nl_native_rooted_cfg_safe_probe_v3"
@@ -3311,8 +3321,9 @@ only semantic reconstruction is omitted, never the manifest structure."
          (native (nelisp-native-load--raw-native manifest))
          (entry-name (plist-get contract :entry))
          (version (plist-get contract :version))
-         (shared-v2 (equal version
-                           nelisp-bytecode-native-rooted-cfg-contract-shared-version))
+         (shared-v2 (member version
+                            (list nelisp-bytecode-native-rooted-cfg-contract-shared-version
+                                  nelisp-bytecode-native-rooted-cfg-contract-f1-shared-version)))
          (expected-entry (if shared-v2
                              nelisp-bytecode-native-rooted-cfg-contract-shared-entry
                            "nl_native_rooted_cfg_probe_v1"))
@@ -3325,7 +3336,9 @@ only semantic reconstruction is omitted, never the manifest structure."
          (descriptors (plist-get manifest :native-rooted-cfg-import-descriptors)))
     (and (member version
                  (list nelisp-bytecode-native-rooted-cfg-contract-version
-                       nelisp-bytecode-native-rooted-cfg-contract-shared-version))
+                       nelisp-bytecode-native-rooted-cfg-contract-shared-version
+                       nelisp-bytecode-native-rooted-cfg-contract-f1-version
+                       nelisp-bytecode-native-rooted-cfg-contract-f1-shared-version))
          (equal (plist-get manifest :native-rooted-cfg-contract-version) version)
          (or compiled-contract-valid
              (nelisp-bytecode-native-rooted-cfg-contract-valid-p contract))
@@ -3361,7 +3374,7 @@ only semantic reconstruction is omitted, never the manifest structure."
                                          :test #'equal))))
               (or (nelisp-native-load--rooted-cfg-provider-import-valid-p descriptor contract)
               (and (member name '("nl_native_car_v2" "nl_native_cdr_v2"
-                                  "nl_native_cons_v2" "nl_root_pin_slot_v2"))
+                                  "nl_native_cons_v2" "nl_native_funcall_v2" "nl_root_pin_slot_v2"))
                    (eq (nelisp-native-load--raw-import-kind descriptor) 'func)
                    (equal (plist-get descriptor :abi) nelisp-native-load-raw-runtime-abi-v2)
                    (eq (plist-get descriptor :address-mode)
@@ -3378,7 +3391,7 @@ only semantic reconstruction is omitted, never the manifest structure."
                                      (plist-get contract :runtime-imports)))
                   (cl-some (lambda (name) (member name actual-names))
                            '("nl_native_car_v2" "nl_native_cdr_v2"
-                             "nl_native_cons_v2")))
+                             "nl_native_cons_v2" "nl_native_funcall_v2")))
            (and (null actual-names)
                 (null expected-names)
                 (null descriptors))))))
@@ -3487,7 +3500,10 @@ only semantic reconstruction is omitted, never the manifest structure."
                            #'string<)))
          (expected (plist-get contract :imports)))
     (and (equal (plist-get manifest :native-rooted-cfg-safe-v3-contract-version)
-                nelisp-bytecode-native-rooted-cfg-safe-contract-version)
+                (plist-get contract :version))
+         (member (plist-get contract :version)
+                 (list nelisp-bytecode-native-rooted-cfg-safe-contract-version
+                       nelisp-bytecode-native-rooted-cfg-safe-contract-f1-version))
          (equal (plist-get manifest :native-rooted-cfg-safe-v3-entry) entry-name)
          (equal (plist-get manifest :native-rooted-cfg-safe-v3-contract-hash)
                 (plist-get contract :digest))
@@ -3504,11 +3520,11 @@ only semantic reconstruction is omitted, never the manifest structure."
                      (sort (delete-dups (copy-sequence expected)) #'string<))
               (cl-some (lambda (name) (member name expected))
                        '("nl_native_car_v2" "nl_native_cdr_v2"
-                         "nl_native_cons_v2"))
+                         "nl_native_cons_v2" "nl_native_funcall_v2"))
               (cl-every
                (lambda (name)
                  (member name '("nl_native_car_v2" "nl_native_cdr_v2"
-                                "nl_native_cons_v2" "nl_root_pin_slot_v2")))
+                                "nl_native_cons_v2" "nl_native_funcall_v2" "nl_root_pin_slot_v2")))
                expected))
          (equal (plist-get manifest :native-rooted-cfg-safe-v3-imports) expected)
          (equal names expected)
@@ -3523,7 +3539,7 @@ only semantic reconstruction is omitted, never the manifest structure."
                             (cl-position name nelisp-native-load-bridgeable-symbols
                                          :test #'equal))))
               (and (member name '("nl_native_car_v2" "nl_native_cdr_v2"
-                                  "nl_native_cons_v2" "nl_root_pin_slot_v2"))
+                                  "nl_native_cons_v2" "nl_native_funcall_v2" "nl_root_pin_slot_v2"))
                    (eq (nelisp-native-load--raw-import-kind descriptor) 'func)
                    (equal (plist-get descriptor :abi)
                           nelisp-native-load-raw-runtime-abi-v2)
@@ -3992,8 +4008,9 @@ candidate's self-described table order."
         (funcall add (list :raw-native-rooted-stack-selected-entry name)))
       (when (and (plist-get manifest :native-rooted-cfg-contract-version)
                  (not (equal name
-                             (if (equal (plist-get manifest :native-rooted-cfg-contract-version)
-                                        nelisp-bytecode-native-rooted-cfg-contract-shared-version)
+                             (if (member (plist-get manifest :native-rooted-cfg-contract-version)
+                                         (list nelisp-bytecode-native-rooted-cfg-contract-shared-version
+                                               nelisp-bytecode-native-rooted-cfg-contract-f1-shared-version))
                                  nelisp-bytecode-native-rooted-cfg-contract-shared-entry
                                "nl_native_rooted_cfg_probe_v1"))))
         (funcall add (list :raw-native-rooted-cfg-selected-entry name)))
@@ -5835,7 +5852,7 @@ in this file needs that."
      (nelisp-native-load-call (nelisp-native-load-artifact path name) args))))
 
 (defconst nelisp-native-load--rooted-production-layout
-  '(:domain "nelisp-rooted-elf-v2" :target x86_64-linux :version 1
+  '(:domain "nelisp-rooted-elf-v2" :target x86_64-linux :version 2
     :sexp-bytes 32 :root-frame-version 2 :root-slot-limit 16384
     :environment-globals-offset 0 :environment-frames-offset 32
     :environment-lexical-offset 64
@@ -5846,7 +5863,8 @@ in this file needs that."
               ("wf_bytecode_call_gateway" text 6) ("nl_alloc_symbol" text 3)
               ("nelisp_cons_construct" text 3) ("nl_arena_base" data 8)
               ("nl_gc_mark_pinned_roots" text 0) ("nl_gc_mark_thread_roots" text 0)
-              ("nl_gc_mark_recorded_env" text 1)))
+              ("nl_gc_mark_recorded_env" text 1)
+              ("nl_native_funcall_v2" text 6)))
   "Immutable production root layout, independently domain separated from reload.")
 
 (defun nelisp-native-load--rooted-contract-copy-node (item ancestors depth budget)

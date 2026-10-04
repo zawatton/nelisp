@@ -19,6 +19,8 @@
 
 (defconst nelisp-bytecode-native-rooted-cfg-safe-contract-version
   "nelisp-native-rooted-cfg-safe-v3")
+(defconst nelisp-bytecode-native-rooted-cfg-safe-contract-f1-version
+  "nelisp-native-rooted-cfg-safe-f1-v1")
 (defconst nelisp-bytecode-native-rooted-cfg-safe-contract-entry
   "nl_native_rooted_cfg_safe_probe_v3")
 
@@ -186,6 +188,7 @@ before plist access or copying so cyclic and oversized specs fail first."
     (input plan emitted)
   "Create a portable safe-v3 contract from verified INPUT, PLAN and EMITTED."
   (let* ((function (plist-get input :function))
+         (f1 (plist-get plan :funcall-version))
          (recipe (and (nelisp-bytecode-native-rooted-cfg-safe-contract--canonical-input-p
                        input)
                       (nelisp-bytecode-native-rooted-cfg-contract-input-recipe input)))
@@ -210,14 +213,16 @@ before plist access or copying so cyclic and oversized specs fail first."
                (equal (plist-get emitted :entry-name)
                       nelisp-bytecode-native-rooted-cfg-safe-contract-entry)
                imports
-               (cl-some (lambda (name) (member name imports))
-                        '("nl_native_car_v2" "nl_native_cdr_v2"))
-               (cl-every (lambda (name)
-                           (member name '("nl_native_car_v2" "nl_native_cdr_v2"
-                                          "nl_native_cons_v2"
-                                          "nl_root_pin_slot_v2")))
-                         imports)
-               (list :version nelisp-bytecode-native-rooted-cfg-safe-contract-version
+               (if f1
+                   (equal imports '("nl_native_funcall_v2" "nl_root_pin_slot_v2"))
+                 (and (cl-some (lambda (name) (member name imports))
+                               '("nl_native_car_v2" "nl_native_cdr_v2"))
+                      (cl-every (lambda (name)
+                                  (member name '("nl_native_car_v2" "nl_native_cdr_v2"
+                                                 "nl_native_cons_v2" "nl_root_pin_slot_v2")))
+                                imports)))
+               (list :version (if f1 nelisp-bytecode-native-rooted-cfg-safe-contract-f1-version
+                                nelisp-bytecode-native-rooted-cfg-safe-contract-version)
                      :emitter-mode "safe-primitives-v3"
                      :entry nelisp-bytecode-native-rooted-cfg-safe-contract-entry
                      :abi 2 :entry-kind 'func :entry-arity 4
@@ -231,11 +236,18 @@ before plist access or copying so cyclic and oversized specs fail first."
                             plan)
                      :entry-ast (plist-get emitted :form)
                      :initializers (append
+                                    (plist-get emitted :primitive-initializers)
                                     (plist-get emitted :constant-initializers)
                                     (plist-get emitted :immediate-initializers))
                      :imports (sort (copy-sequence imports) #'string<)
                      :status-base 512 :error-base 256))))
     (when contract
+      (when f1
+        (setq contract (append contract
+                               (list :funcall-descriptor (nelisp-native-funcall-v2-descriptor)
+                                     :funcall-hash (nelisp-native-funcall-v2-hash)
+                                     :exit-root-base (plist-get plan :exit-root-base)
+                                     :exit-status-base 1024))))
       (plist-put contract :digest
                  (nelisp-bytecode-native-rooted-cfg-safe-contract--digest contract))
       contract)))

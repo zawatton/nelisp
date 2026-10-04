@@ -90,6 +90,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'nelisp-standalone-arena-rewrite)
 ;; Optional, same reading as the `subr-x' requires made optional in
 ;; cd64c0bd7: this file is loaded by the standalone runtime, which has no
 ;; Emacs underneath it to load `macroexp' from.  It does not need one -- this
@@ -12719,6 +12720,46 @@ Uses `emit-bytes' for the 0F-prefix opcode form."
                  (nelisp-asm-x86_64--reg-low3 src))))
     (nelisp-asm-x86_64-emit-bytes
      buf (unibyte-string rex #x0F #xAF modrm))))
+
+;;;###autoload
+(defun nelisp-aot-compiler-unit-data (ir unit-name target)
+  "Materialize readonly blobs in IR for the standalone UNIT-NAME and TARGET.
+Return sections, qualified object symbols and a same-unit reference map.
+This narrow facade accepts only rodata without embedded relocations. Qualified
+global names permit static linking without changing its local-symbol rules."
+  (let ((blobs (nelisp-aot-compiler--collect-data-blobs ir))
+        (names nil) (offset 0) sections symbols references)
+    (when blobs
+      (unless (and (stringp unit-name) (> (length unit-name) 0)
+                   (eq target 'linux-x86_64))
+        (signal 'nelisp-aot-compiler-error (list :standalone-unit-data-target target)))
+      (dolist (blob blobs)
+        (let ((name (plist-get blob :name)))
+          (unless (and (stringp name) (> (length name) 0)
+                       (eq (plist-get blob :section) 'rodata)
+                       (null (plist-get blob :relocs))
+                       (not (member name names)))
+            (signal 'nelisp-aot-compiler-error (list :standalone-unit-data-blob name)))
+          (push name names)))
+      (let ((identity (secure-hash
+                       'sha256
+                       (concat unit-name "\0" (symbol-name target) "\0"
+                               (mapconcat
+                                (lambda (blob)
+                                  (concat (plist-get blob :name) "\0"
+                                          (secure-hash 'sha256 (plist-get blob :bytes))))
+                                blobs "\n")))))
+        (dolist (blob blobs)
+          (let* ((raw (plist-get blob :name))
+                 (name (format "__nelisp_unit_data_%s_%s" identity raw))
+                 (bytes (plist-get blob :bytes)))
+            (push (cons raw name) references)
+            (push (list :name name :value offset :size (length bytes)
+                        :section 'rodata :bind 'global :type 'object) symbols)
+            (push bytes sections)
+            (setq offset (+ offset (length bytes)))))
+        (list :sections (list (cons 'rodata (apply #'concat (nreverse sections))))
+              :symbols (nreverse symbols) :references (nreverse references))))))
 
 (defun nelisp-aot-compiler--emit-x86_64-mod-r10 (buf)
   "Emit signed integer remainder for RAX mod R10, leaving result in RAX."

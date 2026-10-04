@@ -44,6 +44,7 @@
        (let ((record (assq result nelisp-bytecode-native-rooted-cfg-native--registry)))
          (and record
               (or (null (plist-get (plist-get result :plan) :exit-root-base))
+                  (plist-get (plist-get result :plan) :funcall-version)
                   (and
                    (eq (plist-get (nelisp-bytecode-native-rooted-cfg-plan
                                    (plist-get (plist-get result :plan) :input)
@@ -65,6 +66,8 @@
 (let ((constructor-checker
        (and (fboundp 'nelisp-native-load-compiler-constructor-contract-p)
             (symbol-function 'nelisp-native-load-compiler-constructor-contract-p)))
+      (f1-checker (and (fboundp 'nelisp-native-load-compiler-f1-runtime-p)
+                       (symbol-function 'nelisp-native-load-compiler-f1-runtime-p)))
       (lookup (symbol-function 'symbol-function))
       (same (symbol-function 'eq)))
 (defun nelisp-bytecode-native-rooted-cfg-native--build (input artifact-path shared-v2 &optional guard-mode)
@@ -117,6 +120,9 @@
                        (stage "runtime-match-start" source)
                        (prog1 (nelisp-runtime-reload-contract-matches-p)
                          (stage "runtime-match-end" source)))
+                     (and shared-v2 f1-checker
+                          (funcall same f1-checker (funcall lookup 'nelisp-native-load-compiler-f1-runtime-p))
+                          (and (plist-get plan :funcall-version) (funcall f1-checker)))
                      (and shared-v2
                           constructor-checker
                           (funcall same constructor-checker
@@ -176,6 +182,7 @@
                       :argument-count (plist-get plan :arity)
                       :required-root-count (plist-get plan :required-root-count)
                       :gateway-imports (plist-get emitted :gateway-imports)
+                      :primitive-initializers (plist-get emitted :primitive-initializers)
                       :constant-initializers (plist-get emitted :constant-initializers)
                       :immediate-initializers (plist-get emitted :immediate-initializers)
                       :artifact-path (expand-file-name artifact-path)
@@ -199,6 +206,9 @@
   "Build verified INPUT as a separately versioned shared-continuation artifact."
   (nelisp-bytecode-native-rooted-cfg-native--build input artifact-path t guard-mode))
 
+(let ((f1-owner (and (fboundp 'nelisp-native-load-compiler-f1-runtime-p)
+                      (symbol-function 'nelisp-native-load-compiler-f1-runtime-p)))
+      (lookup (symbol-function 'symbol-function)) (same (symbol-function 'eq)))
 (defun nelisp-bytecode-native-rooted-cfg-native-build-safe-v3
     (input artifact-path)
   "Build verified INPUT with opt-in safe-v3 lowering at ARTIFACT-PATH."
@@ -217,7 +227,11 @@
                  contract
                  (nelisp-bytecode-native-rooted-cfg-safe-contract-valid-p contract)
                  (stringp artifact-path) (string-suffix-p ".nelr" artifact-path)
-                 (stringp binary) (nelisp-runtime-reload-contract-matches-p))
+                 (stringp binary)
+                 (or (nelisp-runtime-reload-contract-matches-p)
+                     (and (plist-get plan :funcall-version) f1-owner
+                          (funcall same f1-owner (funcall lookup 'nelisp-native-load-compiler-f1-runtime-p))
+                          (funcall f1-owner))))
       (error "rooted-cfg-safe-v3: verified input or runtime contract is unavailable"))
     (let ((source (make-temp-file "nelisp-rooted-cfg-safe-v3-" nil ".el"))
           (forms nil) (manifest nil) (result nil))
@@ -251,12 +265,12 @@
                   (list :status 'complete :input input :plan plan
                         :form (plist-get emitted :form)
                         :contract contract
-                        :contract-version
-                        nelisp-bytecode-native-rooted-cfg-safe-contract-version
+                        :contract-version (plist-get contract :version)
                         :entry-name nelisp-bytecode-native-rooted-cfg-safe-contract-entry
                         :argument-count (plist-get plan :arity)
                         :required-root-count (plist-get plan :required-root-count)
                         :gateway-imports (plist-get emitted :gateway-imports)
+                        :primitive-initializers (plist-get emitted :primitive-initializers)
                         :constant-initializers
                         (plist-get emitted :constant-initializers)
                         :immediate-initializers
@@ -272,5 +286,6 @@
             result)
         (when (file-exists-p source) (delete-file source)))))))
 
+)
 (provide 'nelisp-bytecode-native-rooted-cfg-native)
 ;;; nelisp-bytecode-native-rooted-cfg-native.el ends here

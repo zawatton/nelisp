@@ -5,9 +5,10 @@
 ;; function names.  Unsupported candidates stay source and are reported.
 
 (require 'cl-lib)
+(require 'bytecomp)
 
 (defconst nelisp-prelude-bytecode--opcodes
-  '(0 8 16 24 32 40 48 49 50 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 78 79 80 81 83 84 85 86 87 88 89 90 92 93 94 95 129 130 131 132 133 134 135 136 137 142 152 154 155 157 158 159 160 161 162 163 166 167 168 175 178 182 183 192)
+  '(0 8 16 24 32 40 48 49 50 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 78 79 80 81 83 84 85 86 87 88 89 90 92 93 94 95 129 130 131 132 133 134 135 136 137 142 152 154 155 157 158 159 160 161 162 163 164 166 167 168 175 178 182 183 192)
   "GNU byte-code opcodes admitted by the focused standalone prelude VM.
 Opcode 32 is CALL (raw 32-39, arity 0-7 plus the explicit 1-/2-byte operand
 widths): verified for both core-mode and the general prelude -- see the
@@ -395,6 +396,114 @@ libraries the vendored copies were taken from."
                                      macro-forms))
                 environment))))
 
+(defun nelisp-prelude-bytecode-vendor-compile-functions
+    (source provenance dirs &optional timeout)
+  "Compile SOURCE as a complete GNU file in a child.
+PROVENANCE labels diagnostics; DIRS is the source/load path for vendored
+features.  Return source-ordered (NAME FUNCTION DOCUMENTATION) rows.  The
+child reads the `.elc' as data and never loads it, so ordinary runtime
+top-level forms are not evaluated by this bootstrap.  Documentation
+references are resolved while the temporary `.elc' still exists.  This is a
+host-build API; it is not a NeLisp runtime evaluation path."
+  (let* ((directory (make-temp-file "nelisp-prelude-gnu-file-" t))
+         (temporary-source (expand-file-name "input.el" directory))
+         (source-candidates
+          (cons (expand-file-name provenance)
+                (mapcar (lambda (dir)
+                          (expand-file-name (file-name-nondirectory provenance)
+                                            dir))
+                        dirs)))
+         (source-path
+          (or (cl-find-if
+               (lambda (path)
+                 (and (file-readable-p path)
+                      (equal (with-temp-buffer
+                               (insert-file-contents path)
+                               (secure-hash 'sha256 (current-buffer)))
+                             (secure-hash 'sha256 source))))
+               source-candidates)
+              temporary-source))
+         (elc-file (expand-file-name "input.elc" directory))
+         (result-file (expand-file-name "functions.el" directory))
+         (child-process nil)
+         (child-code
+          (format
+           "(let ((source %S) (elc %S) (result %S) (dirs '%S))\n  (unless (equal emacs-version \"31.1\") (error \"expected GNU Emacs 31.1, got %%s\" emacs-version))\n  (require 'bytecomp)\n  (require 'cl-lib)\n  (setq load-path (append load-path dirs))\n  (let ((byte-compile-dest-file-function (lambda (_file) elc)))\n    (unless (byte-compile-file source) (error \"GNU file compilation failed: %%s\" source)))\n  (let ((entries nil))\n    (cl-labels ((collect (form)\n                  (cond\n                   ((and (eq (car-safe form) 'defalias)\n                         (eq (car-safe (nth 1 form)) 'quote)\n                         (symbolp (cadr (nth 1 form)))\n                         (byte-code-function-p (nth 2 form)))\n                    (push (cons (cadr (nth 1 form)) (nth 2 form)) entries))\n                   ((memq (car-safe form) '(progn eval-and-compile eval-when-compile))\n                    (mapc #'collect (cdr form)))\n                   ((eq (car-safe form) 'if) (mapc #'collect (cddr form)))\n                   ((memq (car-safe form) '(let let*)) (mapc #'collect (cddr form))))))\n      (with-temp-buffer\n        (insert-file-contents elc)\n        (goto-char (point-min))\n        (let ((read-eval nil))\n          (condition-case nil\n              (while t (collect (read (current-buffer))))\n            (end-of-file nil)))))\n    (let ((print-length nil) (print-level nil) (print-escape-newlines t))\n      (with-temp-file result (prin1 (nreverse entries) (current-buffer)))))\n  0)"
+           source-path elc-file result-file dirs))
+         (buffer (generate-new-buffer " *prelude GNU compile*"))
+         (functions nil))
+    (unwind-protect
+        (progn
+          (when (equal source-path temporary-source)
+            (with-temp-file temporary-source (insert source)))
+          (let ((process-connection-type nil))
+            (setq child-process
+                  (make-process
+                   :name "nelisp-prelude-gnu-compile"
+                   :buffer buffer :noquery t
+                   :command (list
+                             (expand-file-name invocation-name invocation-directory)
+                             "--batch" "-Q" "--eval" child-code)))
+            (let ((limit (or timeout 60.0))
+                  (deadline (+ (float-time) (or timeout 60.0))))
+              (while (and (process-live-p child-process)
+                          (< (float-time) deadline))
+                (accept-process-output child-process 0.1))
+              (when (process-live-p child-process)
+                (error "GNU whole-file compile timed out for %s after %ss"
+                       provenance limit)))
+            (unless (and (= (process-exit-status child-process) 0)
+                         (file-readable-p result-file))
+              (error "GNU whole-file compile failed for %s (status %S): %s"
+                     provenance (process-exit-status child-process)
+                     (with-current-buffer buffer
+                       (substring (buffer-string) 0
+                                  (min 2400 (buffer-size)))))))
+          (with-temp-buffer
+            (insert-file-contents result-file)
+            (let ((read-eval nil))
+              (setq functions (read (current-buffer)))))
+          (unless (and (listp functions)
+                       (cl-every (lambda (entry)
+                                   (and (consp entry) (symbolp (car entry))
+                                        (byte-code-function-p (cdr entry))))
+                                 functions))
+            (error "Malformed GNU compile result for %s" provenance))
+          (setq functions
+                (mapcar
+                 (lambda (entry)
+                   (let* ((function (cdr entry))
+                          (raw-doc (and (> (length function) 4)
+                                        (aref function 4)))
+                          (doc-function
+                           (if (and (consp raw-doc) (null (car raw-doc)))
+                               (make-byte-code
+                                (aref function 0) (aref function 1)
+                                (aref function 2) (aref function 3)
+                                (cons elc-file (cdr raw-doc))
+                                (and (> (length function) 5)
+                                     (aref function 5)))
+                             function)))
+                     (list (car entry) function
+                           (documentation doc-function t))))
+                 functions))
+          functions)
+      (when (buffer-live-p buffer) (kill-buffer buffer))
+      (when (and child-process (process-live-p child-process))
+        (delete-process child-process))
+      (delete-directory directory t))))
+
+(defun nelisp-prelude-bytecode--copy-function-map (functions)
+  "Group source-ordered ELC defaliases by function name for one pass."
+  (let ((map nil))
+    (dolist (entry functions)
+      (let ((slot (assq (car entry) map)))
+                       (let ((payload (cons (nth 1 entry) (nth 2 entry))))
+                         (if slot
+                             (setcdr slot (append (cdr slot) (list payload)))
+                           (push (list (car entry) payload) map)))))
+    (nreverse map)))
+
 (defun nelisp-prelude-bytecode--declare-specials (body specials)
   "Return BODY with a local `(defvar SYM)' for each of SPECIALS.
 The declarations follow BODY's leading docstring, `declare' and
@@ -412,16 +521,21 @@ The declarations follow BODY's leading docstring, `declare' and
               (mapcar (lambda (symbol) (list 'defvar symbol)) specials)
               rest))))
 
-(defun nelisp-prelude-bytecode-transform (source provenance &optional parity-fixtures core-mode)
+(defun nelisp-prelude-bytecode-transform
+    (source provenance &optional parity-fixtures core-mode whole-file-functions
+            whole-file-compile-p)
   "Compile SOURCE defuns whose GNU byte-code uses admitted opcodes.
 PROVENANCE is a repository-relative source filename.  Return (TEXT COUNT
 REPORT), where REPORT has one row for each source defun and names its decision,
 reason, source line, source-form digest, opcode sequence, and retained metadata."
-  (let ((position 0)
+    (let ((position 0)
         (source-length (length source))
         (count 0)
         (report nil)
         (replacements nil)
+        (whole-file-mode whole-file-compile-p)
+        (whole-file-functions (nelisp-prelude-bytecode--copy-function-map
+                               whole-file-functions))
         (compile-lexical (and core-mode
                               (nelisp-prelude-bytecode--source-lexical-p
                                source)))
@@ -440,8 +554,8 @@ reason, source line, source-form digest, opcode sequence, and retained metadata.
              (let* ((name (nth 1 form))
                     (args (nth 2 form))
                     (body (cdddr form))
-                    (doc (and (stringp (nth 3 form))
-                              (cddddr form) (nth 3 form)))
+                    (source-doc (and (stringp (nth 3 form))
+                                     (cddddr form) (nth 3 form)))
                     (lambda-form
                      (append (list 'lambda args)
                              (if compile-lexical
@@ -452,8 +566,22 @@ reason, source line, source-form digest, opcode sequence, and retained metadata.
                                  (nelisp-prelude-bytecode--declare-specials
                                   body (car compile-context))
                                body)))
+                    (compiled-entry
+                     (if whole-file-mode
+                         (let ((entry (assq name whole-file-functions)))
+                           (if (and entry (cdr entry))
+                               (pop (cdr entry))
+                             (list :compile-error
+                                   (list 'error
+                                         (format "whole-file compiler has no definition for %S"
+                                                 name)))))))
                     (compiled
-                     (condition-case err
+                     (if whole-file-mode
+                         (if (and (consp compiled-entry)
+                                  (byte-code-function-p (car compiled-entry)))
+                             (car compiled-entry)
+                           compiled-entry)
+                       (condition-case err
                          (with-temp-buffer
                            ;; The general prelude (scripts/nelisp-stdlib-
                            ;; prelude.el, vendor/staged-emacs-lisp) is
@@ -481,7 +609,13 @@ reason, source line, source-form digest, opcode sequence, and retained metadata.
                                   (append (cddr compile-context)
                                           byte-compile-initial-macro-environment)))
                              (byte-compile lambda-form)))
-                       (error (list :compile-error err))))
+                       (error (list :compile-error err)))))
+                    (doc
+                     (if (and whole-file-mode
+                              (consp compiled-entry)
+                              (byte-code-function-p (car compiled-entry)))
+                         (or (cdr compiled-entry) source-doc)
+                       source-doc))
                     (code (and (byte-code-function-p compiled)
                                (aref compiled 1)))
                     (opcodes (and (stringp code)
@@ -618,18 +752,11 @@ reason, source line, source-form digest, opcode sequence, and retained metadata.
                 ;; callee-cell variety (builtin/lambda/byte-code/void/
                 ;; autoload) -- see the call-* cases in
                 ;; tools/nelisp-bytecode-opcode-parity.el -- so it is just
-                ;; another allowlisted opcode now, in both modes. One
-                ;; confirmed gap remains tracked, not fixed, by that parity
-                ;; suite: a THROW from a Bcall-invoked callee that needs to
-                ;; escape the top-level `byte-code' call itself (no matching
-                ;; pushcatch/pophandler within the same byte-code region)
-                ;; loses its tag/value pair in the native "byte-code" entry
-                ;; point's unhandled-exit path -- see
-                ;; call-throw-escapes-bytecode-known-gap in the parity file.
-                ;; That is a property of the native "byte-code" entry point
-                ;; used by every already-baked function today, not
-                ;; something adopting more of them via this opcode
-                ;; introduces or worsens.
+                ;; another allowlisted opcode now, in both modes. The former
+                ;; top-level THROW propagation defect now passes host-versus-
+                ;; native parity as `call-throw-escapes-bytecode'; do not
+                ;; count it as a live gap. That case exercises the existing
+                ;; native "byte-code" entry point, not a new opcode.
                 ((and fixture (not core-mode)
                       (not (equal (nth 6 fixture) source-digest)))
                  (setq reason "source-form-digest-mismatch"))
@@ -780,6 +907,10 @@ one of these types stays source.")
           (push (list position (cdr read-result) (car read-result)) spans)
           (setq position (cdr read-result)))))
     (nreverse spans)))
+
+(defun nelisp-prelude-bytecode-top-level-spans (source)
+  "Return top-level source spans using the prelude byte-code reader."
+  (nelisp-prelude-bytecode--top-level-spans source))
 
 (defun nelisp-prelude-bytecode--load-time-forms (forms)
   "Return FORMS flattened through load-time top-level wrappers.
@@ -1095,13 +1226,18 @@ candidate `eval-when-compile' form and whether it was folded."
                                      (substring output (nth 1 patch)))))
               (list output (nreverse report)))))))))
 
-(defun nelisp-prelude-bytecode-vendor-transform (source provenance dirs)
+(defun nelisp-prelude-bytecode-vendor-transform
+    (source provenance dirs &optional gnu-timeout)
   "Bake vendored GNU library SOURCE the way GNU loads its `.elc'.
 PROVENANCE is its repository-relative name and DIRS the vendor directories
 used to find folded features.  Return (TEXT COUNT REPORT) like
 `nelisp-prelude-bytecode-transform', REPORT extended with one row per
-folded or kept `eval-when-compile' form."
-  (let* ((nelisp-prelude-bytecode--vendor-struct-names
+folded or kept `eval-when-compile' form. GNU-TIMEOUT, when non-nil, bounds
+the child compile in seconds."
+  (let* ((whole-file-functions
+          (nelisp-prelude-bytecode-vendor-compile-functions
+           source provenance dirs gnu-timeout))
+         (nelisp-prelude-bytecode--vendor-struct-names
           (delq nil (mapcar (lambda (form)
                               (and (eq (car-safe form) 'cl-defstruct)
                                    (let ((name (nth 1 form)))
@@ -1116,10 +1252,11 @@ folded or kept `eval-when-compile' form."
                                       (and (equal (nth 3 row) "adopt")
                                            (nth 2 row)))
                                     (nth 2 (nelisp-prelude-bytecode-transform
-                                            source provenance nil 'vendor)))))
+                                            source provenance nil 'vendor
+                                            whole-file-functions t)))))
          (fold (nelisp-prelude-bytecode--vendor-fold source dirs adopted))
          (result (nelisp-prelude-bytecode-transform
-                  (car fold) provenance nil 'vendor)))
+                  (car fold) provenance nil 'vendor whole-file-functions t)))
     (list (nth 0 result) (nth 1 result)
           (append (mapcar (lambda (row)
                             (list provenance 0

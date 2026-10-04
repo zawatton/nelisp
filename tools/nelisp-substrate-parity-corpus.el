@@ -332,6 +332,12 @@
                    (eq (nelisp--raw-aset table 2 'new) 'new)
                    (eq (nelisp--raw-aref table 2) 'new))
               1 0)))
+    ;; F1 interpreter oracle: boxed function calls preserve object identity.
+    (54 shared (if (let* ((shared (vector 11))
+        (input (cons shared shared))
+        (result (funcall (lambda (x) (cons (car x) (cdr x))) input)))
+   (aset shared 0 19)
+   (and (eq (car result) (cdr result)) (= (aref (car result) 0) 19))) 1 0))
     ))
 
 (provide 'nelisp-substrate-parity-corpus)

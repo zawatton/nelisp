@@ -17,16 +17,16 @@
 (defvar nelisp-native-compiler-startup-evidence--source-root nil)
 (defvar nelisp-native-compiler-startup-evidence--boot-sources nil)
 (defconst nelisp-native-compiler-startup-evidence--boot-modules
-  '(nelisp-bytecode-ir nelisp-bytecode-frame-ir nelisp-bytecode-compiler-input
+  '(nelisp-native-funcall-v2 nelisp-bytecode-ir nelisp-bytecode-frame-ir nelisp-bytecode-compiler-input
     nelisp-bytecode-native-rooted-cfg nelisp-native-arithmetic-v2
     nelisp-bytecode-native-arithmetic-lowering nelisp-native-optimization-guard-v1
     nelisp-bytecode-native-guarded-lowering nelisp-bytecode-native-rooted-cfg-plan
     nelisp-bytecode-native-rooted-cfg-emit nelisp-bytecode-native-rooted-cfg-postdom
     nelisp-bytecode-native-rooted-cfg-shared-emit nelisp-bytecode-native-rooted-cfg-contract
+    nelisp-bytecode-native-rooted-cfg-safe-contract
     nelisp-bytecode-native-rooted-cfg-constructor-contract))
 (defconst nelisp-native-compiler-startup-evidence--post-modules
   '(nelisp-native-compiler-constructor-loader
-    nelisp-bytecode-native-rooted-cfg-safe-contract
     nelisp-bytecode-native-rooted-cfg-native))
 
 (defun nelisp-native-compiler-startup-evidence--source-path (feature)
@@ -46,14 +46,14 @@
          (canonical (nelisp-native-compiler-startup-evidence--forms source))
          (derived (nelisp-native-compiler-startup-evidence--forms template)) found)
     (unless (and (equal (nelisp-native-rooted-build-evidence-source-hash source 4194304)
-                        "64c3d629c9bb54e75306e940523bec52db597018b834437fa4f5a73c8c78fb26")
+                        "f1de7e5cbeb510e6fd09667e720f9d2a503111bdb49897b2f541db8bc9eaa0d8")
                  (equal (nelisp-native-rooted-build-evidence-source-hash template 4194304)
-                        "accbcbc15ecb8d1cc6d8f0ebf845383518063e867050be1d661175a53a204c70")
+                        "838885b3171e95e1854de79bd03d936328880864f6d9f35ee22c26563b0d3863")
                  (equal (alist-get 'source declaration) "lisp/nelisp-native-load.el")
                  (equal (alist-get 'source_sha256 declaration)
-                        "64c3d629c9bb54e75306e940523bec52db597018b834437fa4f5a73c8c78fb26")
+                        "f1de7e5cbeb510e6fd09667e720f9d2a503111bdb49897b2f541db8bc9eaa0d8")
                  (equal (alist-get 'output_sha256 declaration)
-                        "accbcbc15ecb8d1cc6d8f0ebf845383518063e867050be1d661175a53a204c70")
+                        "838885b3171e95e1854de79bd03d936328880864f6d9f35ee22c26563b0d3863")
                  (equal (alist-get 'definitions declaration) (mapcar #'symbol-name names))
                  (= (alist-get 'exact_runtime_gate_transforms declaration) 3))
       (error "Canonical constructor loader template provenance rejected"))
@@ -192,15 +192,17 @@
              (setq offsets (1+ offsets)) '(= (length offsets) 13))
             ((and generator (consp object) (eq (car object) 'dolist)
                   (equal (cadr object)
-                         '(relative '("lisp/nelisp-runtime-reload-abi.el" "lisp/nelisp-native-load.el"
+                         '(relative '("lisp/nelisp-native-funcall-v2.el" "lisp/nelisp-runtime-reload-abi.el" "lisp/nelisp-native-load.el"
                                       "lisp/nelisp-native-raw-file.el"))))
              ;; The ticket startup has already established these owners. Re-evaluating
              ;; them would invalidate its captured owner identities before user code.
              (setq embeds (1+ embeds)) nil)
             ((and generator (equal object '(list script owner-script template loader
+                    (expand-file-name "lisp/nelisp-native-funcall-v2.el" root)
                                                 (expand-file-name "lisp/nelisp-runtime-reload-abi.el" root)
                                                 (expand-file-name "lisp/nelisp-native-raw-file.el" root))))
              '(list script owner-script template loader
+                    (expand-file-name "lisp/nelisp-native-funcall-v2.el" root)
                     (expand-file-name "lisp/nelisp-runtime-reload-abi.el" root)
                     (expand-file-name "lisp/nelisp-native-raw-file.el" root)
                     (expand-file-name "lisp/nelisp-native-compiler-startup-evidence.el" root)

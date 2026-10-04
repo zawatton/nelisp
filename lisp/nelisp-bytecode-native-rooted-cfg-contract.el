@@ -21,6 +21,8 @@
   "nelisp-native-rooted-cfg-v1")
 (defconst nelisp-bytecode-native-rooted-cfg-contract-shared-version
   "nelisp-native-rooted-cfg-shared-v2")
+(defconst nelisp-bytecode-native-rooted-cfg-contract-f1-version "nelisp-native-rooted-cfg-f1-v1")
+(defconst nelisp-bytecode-native-rooted-cfg-contract-f1-shared-version "nelisp-native-rooted-cfg-f1-shared-v1")
 (defconst nelisp-bytecode-native-rooted-cfg-contract-shared-entry
   "nl_native_rooted_cfg_shared_probe_v2")
 
@@ -172,14 +174,14 @@
                         (cl-some (lambda (name)
                                    (member name (plist-get emitted :gateway-imports)))
                                  '("nl_native_car_v2" "nl_native_cdr_v2"
-                                   "nl_native_cons_v2")))
+                                   "nl_native_cons_v2" "nl_native_funcall_v2")))
                    arithmetic
                    (and (null imports)
                         (nelisp-bytecode-native-rooted-cfg-contract--canonical-empty-imports-p
                          input plan emitted)))
                (cl-every (lambda (name)
                            (or (member name '("nl_native_car_v2" "nl_native_cdr_v2"
-                                              "nl_native_cons_v2" "nl_root_pin_slot_v2"))
+                                              "nl_native_cons_v2" "nl_native_funcall_v2" "nl_root_pin_slot_v2"))
                                (and arithmetic
                                     (equal name (if (eq (plist-get plan :arithmetic-guard-mode) 'on)
                                                     "nl_native_add_guard_v1" "nl_native_add_v2")))))
@@ -191,9 +193,16 @@
                      :input-recipe recipe
                      :plan (nelisp-bytecode-native-rooted-cfg-contract--plan-data plan)
                      :entry-ast entry-ast
-                     :initializers (append (plist-get emitted :constant-initializers)
+                     :initializers (append (plist-get emitted :primitive-initializers)
+                                           (plist-get emitted :constant-initializers)
                                            (plist-get emitted :immediate-initializers))
                      :imports imports :status-base 512 :error-base 256))))
+    (when (and contract (plist-get plan :funcall-version))
+      (setq contract (append contract
+                             (list :funcall-descriptor (nelisp-native-funcall-v2-descriptor)
+                                   :funcall-hash (nelisp-native-funcall-v2-hash)
+                                   :exit-root-base (plist-get plan :exit-root-base) :exit-base 1024)))
+      (setq contract (plist-put contract :version nelisp-bytecode-native-rooted-cfg-contract-f1-version)))
     (when (and contract arithmetic)
       (let* ((source (nelisp-native-optimization-guard-v1-source
                       (plist-get plan :arithmetic-guard-mode)))
@@ -233,7 +242,9 @@
       (when contract
         (setq contract
               (plist-put contract :version
-                         nelisp-bytecode-native-rooted-cfg-contract-shared-version))
+                         (if (plist-get plan :funcall-version)
+                             nelisp-bytecode-native-rooted-cfg-contract-f1-shared-version
+                           nelisp-bytecode-native-rooted-cfg-contract-shared-version)))
         (setq contract (plist-put contract :emitter-mode "postdom-shared-v2"))
         (setq contract (plist-put contract :entry
                                   nelisp-bytecode-native-rooted-cfg-contract-shared-entry))
@@ -324,13 +335,16 @@ The result is data for comparison, never a certificate or cached authority."
              (input (nelisp-bytecode-compiler-input-build function))
              (plan (nelisp-bytecode-native-rooted-cfg-plan
                     input (plist-get (plist-get copy :plan) :lowering-mode)
-                    (if (equal (plist-get copy :version)
-                               nelisp-bytecode-native-rooted-cfg-contract-shared-version)
+                    (if (member (plist-get copy :version)
+                                (list nelisp-bytecode-native-rooted-cfg-contract-shared-version
+                                      nelisp-bytecode-native-rooted-cfg-contract-f1-shared-version))
                         (plist-get (plist-get copy :plan) :arithmetic-guard-mode) 'off)))
-             (shared-v2 (equal (plist-get copy :version)
-                               nelisp-bytecode-native-rooted-cfg-contract-shared-version))
-             (v1 (equal (plist-get copy :version)
-                        nelisp-bytecode-native-rooted-cfg-contract-version))
+             (shared-v2 (member (plist-get copy :version)
+                                (list nelisp-bytecode-native-rooted-cfg-contract-shared-version
+                                      nelisp-bytecode-native-rooted-cfg-contract-f1-shared-version)))
+             (v1 (member (plist-get copy :version)
+                         (list nelisp-bytecode-native-rooted-cfg-contract-version
+                               nelisp-bytecode-native-rooted-cfg-contract-f1-version)))
              (emitted (and (eq (plist-get plan :status) 'complete)
                            (if shared-v2
                                (nelisp-bytecode-native-rooted-cfg-shared-emit-build

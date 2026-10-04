@@ -48,5 +48,20 @@ roots and CONS. Arithmetic, calls, accessors and branches remain outside it."
               (equal (plist-get plan :gateway-imports) imports)
               (equal (plist-get contract :imports) imports))))))
 
+(require 'nelisp-bytecode-native-rooted-cfg-safe-contract)
+(let ((validator (symbol-function 'nelisp-bytecode-native-rooted-cfg-contract-valid-p))
+      (safe-validator (symbol-function 'nelisp-bytecode-native-rooted-cfg-safe-contract-valid-p))
+      (lookup (symbol-function 'symbol-function)) (same (symbol-function 'eq)))
+(defun nelisp-bytecode-native-rooted-cfg-contract-f1-p (contract)
+  "Authenticate the separate generic evaluator domain without widening CONS."
+  (and (funcall same validator (funcall lookup 'nelisp-bytecode-native-rooted-cfg-contract-valid-p))
+       (funcall same safe-validator (funcall lookup 'nelisp-bytecode-native-rooted-cfg-safe-contract-valid-p))
+       (if (equal (plist-get contract :version) nelisp-bytecode-native-rooted-cfg-safe-contract-f1-version)
+           (funcall safe-validator contract)
+         (funcall validator contract))
+       (plist-get (plist-get contract :plan) :funcall-version)
+       (equal (plist-get contract :funcall-descriptor) (nelisp-native-funcall-v2-descriptor))
+       (equal (plist-get contract :funcall-hash) (nelisp-native-funcall-v2-hash))
+       (equal (plist-get contract :imports) '("nl_native_funcall_v2" "nl_root_pin_slot_v2")))))
 (provide 'nelisp-bytecode-native-rooted-cfg-constructor-contract)
 ;;; nelisp-bytecode-native-rooted-cfg-constructor-contract.el ends here

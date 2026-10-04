@@ -45,6 +45,12 @@
 ;;; Code:
 
 (list
+ ;; Generic evaluator arguments preserve nested mutable aliases.
+ (let* ((shared (vector 11))
+        (input (cons shared shared))
+        (result (funcall (lambda (x) (cons (car x) (cdr x))) input)))
+   (aset shared 0 19)
+   (and (eq (car result) (cdr result)) (= (aref (car result) 0) 19)))
  ;; Directory existence must use the target's access operation.  Darwin's
  ;; former ENOSYS stub made both checks false and hid host helper executables.
  (list (file-exists-p ".") (file-directory-p "."))

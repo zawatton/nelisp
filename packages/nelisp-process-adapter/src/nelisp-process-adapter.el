@@ -74,6 +74,7 @@
 ;;; Code:
 
 (require 'nelisp-async-core)
+(require 'nelisp-process-buffer)
 
 ;; Native `nelisp-socket-*' primitives (Doc 184 follow-on / Doc 194 S1.1,
 ;; `feat/socket-primitives-p1', dispatch-table entries in `scripts/nelisp-
@@ -212,14 +213,17 @@ against host Emacs 31.1 (2026-09-20), byte for byte:
 A dead or absent `:buffer' means there is nothing to insert into, same
 as a live process whose buffer was killed out from under it on a
 host -- the default sentinel silently does nothing there too."
-  (let ((sentinel (process-get proc :sentinel)))
-    (if sentinel
-        (funcall sentinel proc status)
-      (let ((buffer (process-get proc :buffer)))
-        (when (and buffer (buffer-live-p buffer))
-          (with-current-buffer buffer
-            (goto-char (point-max))
-            (insert (format "\nProcess %s %s" (process-get proc :name) status))))))))
+  (nelisp-process-buffer-drain-stderr proc)
+  (unwind-protect
+      (let ((sentinel (process-get proc :sentinel)))
+        (if sentinel
+            (funcall sentinel proc status)
+          (let ((buffer (process-get proc :buffer)))
+            (when (and buffer (buffer-live-p buffer))
+              (with-current-buffer buffer
+                (goto-char (point-max))
+                (insert (format "\nProcess %s %s" (process-get proc :name) status)))))))
+    (nelisp-process-buffer-close-stderr proc)))
 
 ;;; make-process: real :filter -------------------------------------------
 
@@ -252,12 +256,29 @@ at 2e3361b13: `(make-process :name \"e\" :command (list \"echo\" \"hi\")
     (unless command (signal 'wrong-type-argument (list 'listp command)))
     (unless (fboundp 'nelisp-process-start)
       (signal 'error (list "make-process: no native process primitive (nelisp-process-start) in this runtime")))
-    (let ((proc (apply #'nelisp-process-start resolved)))
+    (let* ((transport (if (fboundp 'nl-ffi-call)
+                          (nelisp-process-buffer-stderr-command resolved stderr-buffer)
+                        (list resolved nil nil)))
+           (proc (condition-case err
+                     (apply #'nelisp-process-start (car transport))
+                   (error
+                    (when (nth 2 transport) (delete-file (nth 2 transport)))
+                    (when (nth 1 transport)
+                      (nelisp-process-buffer-delete (nth 1 transport)))
+                    (signal (car err) (cdr err))))))
+      (unless proc
+        (when (nth 2 transport) (delete-file (nth 2 transport)))
+        (when (nth 1 transport) (nelisp-process-buffer-delete (nth 1 transport)))
+        (error "Native process start failed"))
       (process-put proc :name name)
       (process-put proc :sentinel sentinel)
       (process-put proc :stderr stderr-buffer)
       (process-put proc :filter filter)
       (process-put proc :buffer buffer)
+      (process-put proc :stderr-channel (nth 1 transport))
+      (process-put proc :stderr-spool (nth 2 transport))
+      (when (nth 1 transport) (process-put (nth 1 transport) :owner proc))
+      (when (fboundp 'nl-ffi-call) (process-mark proc))
       (process-put proc :adapter-sentinel-fired nil)
       (setq nelisp-process-adapter--live (cons proc nelisp-process-adapter--live))
       proc)))
@@ -301,6 +322,8 @@ own \"current buffer's process\" default is not modelled -- this
 runtime's buffer/process association is out of scope; nil here is
 simply a no-op, not an error)."
   (cond
+   ((nelisp-process-buffer-p process)
+    (nelisp-process-buffer-delete process))
    ((and process (nelisp--network-process-p process))
     (nelisp--network-process-delete process))
    ((and process (fboundp 'nelisp-process-object-p) (nelisp-process-object-p process))
@@ -328,18 +351,16 @@ output this file used to drop on the floor entirely (measured against
 host Emacs 31.1 on Linux at 2e3361b13: BUF stayed empty here, held
 \"hi\\n\" on a host).
 
-This runtime has no per-process output marker (`process-mark') yet, so
-this always appends at `(point-max)' of the buffer rather than tracking
-a persistent marker position the way a host does -- code that also
-moves point or inserts into the SAME buffer while the process is live
-will not see host Emacs's exact marker-vs-point interleaving, but
-plain output collection (what the reproducer and every ordinary
-`:buffer'-only caller actually want) matches."
-  (let ((buffer (process-get proc :buffer)))
-    (when (and buffer (buffer-live-p buffer))
-      (with-current-buffer buffer
-        (goto-char (point-max))
-        (insert chunk)))))
+The marker is Lisp-owned and follows buffer edits. Point moves with output
+only when it was at that marker before insertion."
+  (if (fboundp 'nl-ffi-call)
+      (nelisp-process-buffer-insert proc chunk)
+    (let ((buffer (process-get proc :buffer)))
+      (when (and buffer (buffer-live-p buffer))
+        (with-current-buffer buffer
+          (let ((moving (= (point) (point-max))))
+            (save-excursion (goto-char (point-max)) (insert chunk))
+            (when moving (goto-char (point-max)))))))))
 
 (defun nelisp-process-adapter--dispatch-output (proc chunk filter)
   "Deliver CHUNK read from PROC: call FILTER when non-nil -- exactly as
@@ -368,12 +389,14 @@ S3.1's own design).  A `network-process' is dispatched to
 nonblocking wiring, S3.3) instead of the native `nelisp-process-poll'
 path below, which assumes the OTHER tagged-vector shape (a fixed-offset
 native process object) and does not know this one."
+  (if (nelisp-process-buffer-p proc)
+      (nelisp-process-buffer-drain proc)
   (if (nelisp--network-process-p proc)
       (nelisp-process-adapter--drain-and-fire-network proc)
     (let* ((ev (nelisp-process-poll proc))
            (ready (aref ev 0))
            (exited (aref ev 1))
-           (got-bytes nil)
+           (got-bytes (nelisp-process-buffer-drain-stderr proc))
            (filter (process-get proc :filter)))
       (when (= ready 1)
         (let ((chunk (nelisp-process-read-output proc 65536)))
@@ -391,7 +414,7 @@ native process object) and does not know this one."
         (setq nelisp-process-adapter--live (delq proc nelisp-process-adapter--live))
         (nelisp-process-adapter--fire-sentinel
          proc (nelisp-process-adapter--sentinel-message proc)))
-      got-bytes)))
+      got-bytes))))
 
 ;;; network-process nonblocking I/O (Doc 194 P4/P5, S3.3) -----------------
 ;; `nelisp-process-adapter--drain-and-fire''s `network-process' branch,
@@ -1567,6 +1590,11 @@ widens the check to also accept the native shape, so the generic \"not
 a process at all\" case now matches real Emacs's own vocabulary
 (measured directly: `(wrong-type-argument processp 42)')."
   (cond
+   ((nelisp-process-buffer-p process)
+    (unless (process-live-p process)
+      (nelisp-process-adapter--subprocess-not-running-error process))
+    (unless (stringp string) (signal 'wrong-type-argument (list 'stringp string)))
+    (aset process 5 (concat (aref process 5) string)))
    ((nelisp--network-process-p process)
     (nelisp-socket-send (aref process 3) string))
    ((and (fboundp 'nelisp-process-object-p) (nelisp-process-object-p process))
@@ -1605,6 +1633,12 @@ argument' against `nelisp-process-object-p', the mirror image of
 restriction."
   (cond
    ((null process) nil)
+   ((nelisp-process-buffer-p process)
+    (unless (process-live-p process)
+      (nelisp-process-adapter--subprocess-not-running-error process))
+    (nelisp-process-buffer-drain process)
+    (aset process 2 'closed)
+    process)
    ((and (fboundp 'nelisp-process-object-p) (nelisp-process-object-p process))
     (unless (process-live-p process)
       (nelisp-process-adapter--subprocess-not-running-error process))
