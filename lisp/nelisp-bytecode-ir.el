@@ -26,8 +26,10 @@ Return a result plist with :status `valid', `unsupported', or `malformed',
 :reason for non-valid results. Branch operands are absolute byte offsets.
 GNU byte-code 31.1 stack-ref opcodes 1 through 5 encode their index in the
 opcode; opcode 6 consumes one index byte and opcode 7 consumes a little-endian
-16-bit index. Opcode 0 is reserved and rejected. Only instruction widths and
-semantics explicitly listed here are accepted."
+16-bit index. Opcode 0 is reserved and rejected as malformed: bytecomp.el
+marks it unused/invalid and src/bytecode.c routes Bstack_ref through
+CASE_ABORT. Only instruction widths and semantics explicitly listed here are
+accepted."
   (cond
    ((not (stringp code)) (nelisp-bytecode-ir--fail 'malformed "code is not a string"))
    ((not (vectorp constants)) (nelisp-bytecode-ir--fail 'malformed "constants is not a vector"))
@@ -75,17 +77,28 @@ semantics explicitly listed here are accepted."
                              0)))
                       metadata (list :compact-index immediate
                                      :operand-width operand-width)))
-              (cond
-               ((= family 8)
-                (setq kind 'variable-ref delta 1
-                      lowerable (and (< operand (length constants))
-                                     (symbolp (aref constants operand)))))
-               ((= family 16) (setq kind 'variable-set delta -1))
-               ((= family 24) (setq kind 'variable-bind delta 0))
-               ((= family 32) (setq kind 'call delta (- (or operand immediate)))
-                )
-               ((= family 40) (setq kind 'unbind delta 0))
-               (t (setq failure (format "unknown compact opcode %d at %d" op pc))))
+              (unless failure
+                (cond
+                 ((= family 8)
+                  (setq kind 'variable-ref delta 1
+                        lowerable (and (< operand (length constants))
+                                       (symbolp (aref constants operand)))))
+                 ((= family 16) (setq kind 'variable-set delta -1))
+                 ((= family 24)
+                  (setq metadata (plist-put metadata :constant-index operand)
+                        metadata (plist-put metadata :minimum-inputs 1))
+                  (if (and (integerp operand) (<= 0 operand)
+                           (< operand (length constants))
+                           (symbolp (aref constants operand)))
+                      (setq kind 'variable-bind delta -1)
+                    (setq failure
+                          (format "invalid variable-bind constant index %S at %d"
+                                  operand pc))))
+                 ((= family 32) (setq kind 'call delta (- (or operand immediate))))
+                 ((= family 40)
+                  (setq kind 'unbind delta 0
+                        metadata (plist-put metadata :binding-count operand)))
+                 (t (setq failure (format "unknown compact opcode %d at %d" op pc)))))
               (unless (or failure lowerable)
                 (push (cons pc 'unsupported-semantics) unsupported))))
            ((memq op '(57 58 59 60))
@@ -108,6 +121,11 @@ semantics explicitly listed here are accepted."
               (setq kind (nth 1 entry) delta (nth 2 entry)
                     lowerable (memq op '(61 64 65))
                     metadata (list :width 1))
+              (when (memq op '(74 76 78))
+                (setq metadata
+                      (append metadata
+                              (list :minimum-inputs (if (= op 74) 1 2)
+                                    :runtime-op kind :may-signal t))))
               (unless lowerable
                 (push (cons pc 'unsupported-semantics) unsupported))))
            ((and (<= 147 op) (<= op 168))
@@ -438,6 +456,7 @@ their value restoration makes stack depth unknown without VM handler rules."
           (let* ((old (assq pc depths)) (op (aref insn 1))
                  (next (aref insn 2)) (operand (aref insn 3))
                  (delta (plist-get (aref insn 4) :stack-delta))
+                 (minimum-inputs (plist-get (aref insn 4) :minimum-inputs))
                  (after (and (numberp delta) (+ depth delta))))
             (cond
              ((and old (/= (cdr old) depth))
@@ -453,6 +472,10 @@ their value restoration makes stack depth unknown without VM handler rules."
                             depth))
                 (setq failure (format "stack reference outside depth %d at %d"
                                       depth pc)))
+              (when (and minimum-inputs (< depth minimum-inputs))
+                (setq failure
+                      (format "stack requires minimum input %d at %d"
+                              minimum-inputs pc)))
               (when (or (null after) (< after 0))
                 (setq failure (format "stack underflow/unknown effect at %d" pc)))
               (when (and after (> after maximum)) (setq maximum after))
@@ -501,6 +524,18 @@ as `unsupported'; this function never executes byte-code."
                 (setq result (plist-put result :status 'malformed)
                       result (plist-put result :reason (plist-get stack :reason)))))))))
     result))
+
+(defun nelisp-bytecode-ir-native-package-dependencies ()
+  "Return decoder and validator identities guarded by native packages."
+  '(nelisp-bytecode-ir--fail
+    nelisp-bytecode-ir-decode-result
+    nelisp-bytecode-ir-decode-instructions
+    nelisp-bytecode-ir--instruction-table
+    nelisp-bytecode-ir-validate-targets
+    nelisp-bytecode-ir-cfg-valid-p
+    nelisp-bytecode-ir-single-backedge-loop
+    nelisp-bytecode-ir-analyze-stack
+    nelisp-bytecode-ir-validate))
 
 (provide 'nelisp-bytecode-ir)
 ;;; nelisp-bytecode-ir.el ends here

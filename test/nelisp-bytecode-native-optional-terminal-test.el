@@ -1,0 +1,27 @@
+;;; optional-test.el --- General terminal optional slot controls -*- lexical-binding: t; -*-
+(require 'ert)
+(require 'nelisp-bytecode-native-compiler)
+
+(ert-deftest nelisp-optional-terminal-general-bounds-and-refusal ()
+  (let ((lexical-binding t))
+    (dolist (source '((lambda (&optional value) value)
+                      (lambda (first second &optional third) third)
+                      (lambda (first &optional second third) third)))
+      (let* ((function (byte-compile source))
+             (input (nelisp-bytecode-compiler-input-build function))
+             (artifact (make-temp-name (expand-file-name "optional-slot-" temporary-file-directory)))
+             (result (nelisp-bytecode-native-compiler-build function artifact "optional_slot")))
+        (unwind-protect
+            (progn
+              (should (eq (plist-get result :status) 'complete))
+              (should (= (plist-get result :return-argument-index)
+                         (1- (plist-get input :argument-max))))
+              (should (equal (plist-get result :hidden-constant-indices) []))
+              (should (= (plist-get result :hidden-constant-count) 0))
+              (should (file-readable-p artifact)))
+          (when (file-exists-p artifact) (delete-file artifact)))))
+    (let* ((function (byte-compile '(lambda (first second &optional third) (cons third nil))))
+           (artifact (make-temp-name (expand-file-name "optional-refused-" temporary-file-directory)))
+           (result (nelisp-bytecode-native-compiler-build function artifact "optional_refused")))
+      (should (eq (plist-get result :status) 'unsupported))
+      (should-not (file-exists-p artifact)))))

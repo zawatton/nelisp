@@ -1,0 +1,38 @@
+;;; standalone-locate-stop.el --- GNU root-search regexp controls -*- lexical-binding: t; -*-
+(let ((root (getenv "NELISP_GNU_BUILD_SOURCE_ROOT"))
+      (standalone (eq (plist-get (nelisp-bytecode-compiler-input-dialect) :runtime-evidence)
+                      'standalone-build-verified)))
+  (if standalone
+      (progn
+        (when (boundp 'locate-dominating-stop-dir-regexp) (error "Locate stop fixture already initialized"))
+        (dolist (invalid (list nil (concat root "missing/")))
+          (let ((refused nil))
+            (condition-case nil (nelisp-stdlib-locate-stop-install invalid)
+              (error (setq refused t)))
+            (unless (and refused (not (boundp 'locate-dominating-stop-dir-regexp)))
+              (error "Invalid locate stop source published default"))))
+        (unless (eq (nelisp-stdlib-locate-stop-install root) 'installed)
+          (error "Locate stop installation differs")))
+    (let ((saved locate-dominating-stop-dir-regexp))
+      (unless (and (eq (nelisp-stdlib-locate-stop-install nil) 'preserved)
+                   (equal saved locate-dominating-stop-dir-regexp))
+        (error "GNU root-search default changed"))))
+  (dolist (row '(("/net/" . t) ("/afs/" . t) ("/.../" . t) ("//server/" . t)
+                 ("/project/" . nil) ("/net/server/" . nil)))
+    (unless (eq (not (null (string-match-p locate-dominating-stop-dir-regexp (car row))))
+                (cdr row))
+      (error "Genuine root-stop regexp differs: %S" row)))
+  (when standalone
+    (let ((locate-dominating-stop-dir-regexp "user-choice"))
+      (unless (and (eq (nelisp-stdlib-locate-stop-install root) 'preserved)
+                   (equal locate-dominating-stop-dir-regexp "user-choice"))
+        (error "User root-stop regexp changed")))
+    (let ((saved nelisp-stdlib-locate-stop--form) (refused nil))
+      (unwind-protect
+          (progn
+            (setq nelisp-stdlib-locate-stop--form '(defvar locate-dominating-stop-dir-regexp nil))
+            (condition-case nil (nelisp-stdlib-locate-stop-install root)
+              (error (setq refused t)))
+            (unless refused (error "Changed root-stop source payload admitted")))
+        (setq nelisp-stdlib-locate-stop--form saved)))))
+(princ "LOCATE-STOP-PASS\n")

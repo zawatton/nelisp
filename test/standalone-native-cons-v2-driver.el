@@ -1,0 +1,87 @@
+;;; standalone-native-cons-v2-driver.el --- Authenticated CONS smoke -*- lexical-binding: t; -*-
+
+(require 'nelisp-native-load)
+
+(defun nelisp-test-native-cons-v2-smoke ()
+  (let* ((env (nelisp--native-env))
+         (begin-addr (nelisp-native-load--symbol-addr "nl_root_pin_begin_v2"))
+         (reserve-addr (nelisp-native-load--symbol-addr "nl_root_pin_reserve_v2"))
+         (end-addr (nelisp-native-load--symbol-addr "nl_root_pin_end_v2"))
+         (cons-addr (nelisp-native-load--symbol-addr "nl_native_cons_v2"))
+         (car-addr (nelisp-native-load--symbol-addr "nl_native_car_v2"))
+         (ticket (ptr-call begin-addr env 0 0 0 0 0))
+         (car-value (ptr-call reserve-addr env ticket 0 0 0 0))
+         (cdr-value (ptr-call reserve-addr env ticket 0 0 0 0))
+         (inner (ptr-call reserve-addr env ticket 0 0 0 0))
+         (outer (ptr-call reserve-addr env ticket 0 0 0 0))
+         (car-result (ptr-call reserve-addr env ticket 0 0 0 0))
+         (inner-car-result (ptr-call reserve-addr env ticket 0 0 0 0))
+         (inner-status nil)
+         (outer-status nil)
+         (car-status nil)
+         (identity-before nil)
+         (gc nil)
+         (identity-after nil)
+         (mutation-status nil)
+         (mutation-value nil)
+         (bad-car-status nil)
+         (bad-cdr-status nil)
+         (bad-output-status nil)
+         (failure-output-unchanged nil)
+         (stale-ticket ticket)
+         (end nil)
+         (next-ticket nil)
+         (next-output nil)
+         (stale-status nil)
+         (stale-output-unchanged nil)
+         (next-end nil))
+    (nelisp-native-load-box car-value "inner leaf")
+    (nelisp-native-load-box cdr-value nil)
+    (setq inner-status (ptr-call cons-addr env ticket 0 1 2 0))
+    (setq outer-status (ptr-call cons-addr env ticket 2 1 3 0))
+    (setq car-status (ptr-call car-addr env ticket 3 4 0 0))
+    (setq identity-before
+          (and (= (ptr-read-u64 car-result 0) 7)
+               (= (ptr-read-u64 car-result 8) (ptr-read-u64 inner 8))))
+    (setq gc (garbage-collect))
+    (setq identity-after
+          (and (= (ptr-read-u64 car-result 0) 7)
+               (= (ptr-read-u64 car-result 8) (ptr-read-u64 inner 8))))
+    ;; Mutate the nested cons CAR in place to the immediate Int(123) word.
+    (ptr-write-u64 (ptr-read-u64 inner 8) 0 493)
+    (setq mutation-status (ptr-call car-addr env ticket 2 5 0 0))
+    (setq mutation-value (ptr-read-u64 inner-car-result 8))
+    ;; A bad input or output index must be rejected before changing slot 4.
+    (nelisp-native-load-box car-result 777)
+    (setq bad-car-status (ptr-call cons-addr env ticket -1 1 4 0))
+    (setq bad-cdr-status (ptr-call cons-addr env ticket 0 16384 4 0))
+    (setq bad-output-status (ptr-call cons-addr env ticket 0 1 16384 0))
+    (setq failure-output-unchanged
+          (and (= (ptr-read-u64 car-result 0) 2)
+               (= (ptr-read-u64 car-result 8) 777)))
+    (setq end (ptr-call end-addr env ticket 0 0 0 0))
+    ;; With a new frame active, the prior ticket must still be refused without
+    ;; modifying the new frame's output slot.
+    (setq next-ticket (ptr-call begin-addr env 0 0 0 0 0))
+    (setq next-output (ptr-call reserve-addr env next-ticket 0 0 0 0))
+    (nelisp-native-load-box next-output 888)
+    (setq stale-status
+          (ptr-call cons-addr env stale-ticket 0 0 0 0))
+    (setq stale-output-unchanged
+          (and (= (ptr-read-u64 next-output 0) 2)
+               (= (ptr-read-u64 next-output 8) 888)))
+    (setq next-end (ptr-call end-addr env next-ticket 0 0 0 0))
+    (and (> ticket 0) (> car-value 0) (> cdr-value 0) (> inner 0)
+         (> outer 0) (> car-result 0) (> inner-car-result 0)
+         (= inner-status 0) (= outer-status 0) (= car-status 0)
+         identity-before gc identity-after
+         (= mutation-status 0) (= (ptr-read-u64 inner-car-result 0) 2)
+         (= mutation-value 123)
+         (= bad-car-status 2) (= bad-cdr-status 2) (= bad-output-status 2)
+         failure-output-unchanged (= end 1)
+         (> next-ticket 0) (> next-output 0) (= stale-status 2)
+         stale-output-unchanged (= next-end 1))))
+
+(provide 'standalone-native-cons-v2-driver)
+
+;;; standalone-native-cons-v2-driver.el ends here

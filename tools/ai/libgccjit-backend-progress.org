@@ -1,0 +1,51 @@
+#+TITLE: NeLisp native compilation on the Emacs model (trust model, dual backend)
+#+PROJECT: NeLisp Emacs-model native compilation
+
+#+NOTE: The file name predates the scope widening (it began as the libgccjit feasibility ledger); the title is authoritative.
+#+NOTE: Added 2026-10-04 after the user's decision to stop the in-house validation-heavy design. The three general-native ledgers are paused, not deleted. Hard requirement: NeLisp itself stays pure Elisp; libgccjit (and libffi) are external shared libraries reached through the existing nl-ffi dlopen path.
+#+NOTE: 2026-10-04 user direction: (1) introduce the .eln-style trust model first, so a function is validated once at compile time, cached under a content+ABI hash and loaded without revalidation; (2) make both the libgccjit backend and the in-house x86-64 generator usable on the same front end, for verification and comparison, and keep the in-house generator if the difference is small; (3) model every other part on GNU Emacs (comp.el / comp.c / native-elisp-load) to simplify.
+#+NOTE: Denominator history: 6 criteria at creation (L1 x3 plus three placeholders). On 2026-10-04 the placeholders L2-L4 were replaced by stages T1 (trust model), D1 (dual backend) and C1 (decision), for 3 + 3 + 3 + 1 = 10 criteria. L1 stays green and unchanged.
+
+* L1 Feasibility: NeLisp drives libgccjit through FFI
+
+** L1.1 A NeLisp process opens libgccjit.so.0 and resolves gcc_jit_context_acquire, gcc_jit_context_compile and gcc_jit_result_get_code to non-zero addresses
+#+NOTE: NELISP_DYNAMIC_BIN must be a dynamic-reader NeLisp (nl-ffi dlopen available), e.g. the anvil standalone binary; the static production reader refuses dlopen (nl-ffi-unavailable). 2026-10-04 first green: L1 symbols=t.
+#+REQUIRES: NELISP_DYNAMIC_BIN
+cmd: out=$(NELISP_ROOT="$PWD" timeout 200 "$NELISP_DYNAMIC_BIN" --load target/progress/libgccjit-l1/l1-gate.el 2>&1) && printf '%s\n' "$out" | grep -qx 'L1 symbols=t'
+
+** L1.2 A NeLisp process calls a C function that takes more than six integer/pointer arguments with correct results (libgccjit's gcc_jit_context_new_function takes eight), and a deliberately wrong argument count is detected
+#+NOTE: ptr-call passes at most six register arguments; calls with more go through libffi (ffi_prep_cif FFI_UNIX64 + ffi_call), both reached with ptr-call. The 8-argument new_function returning a non-zero handle is the correctness check; a 7-argument raw ptr-call request is refused in Lisp.
+#+REQUIRES: NELISP_DYNAMIC_BIN
+cmd: out=$(NELISP_ROOT="$PWD" timeout 200 "$NELISP_DYNAMIC_BIN" --load target/progress/libgccjit-l1/l1-gate.el 2>&1) && printf '%s\n' "$out" | grep -qx 'L1 wrong-arity-detected=t' && printf '%s\n' "$out" | grep -q '^L1 add=(:fn t '
+
+** L1.3 End to end: NeLisp builds int add (int, int) with libgccjit in memory, compiles it, calls the code pointer with 40 and 2, gets 42, and releases the result and context; a mutated body (subtraction) gives 38
+#+NOTE: 2026-10-04 first green: add 42, sub 38, both compiles and calls 0.18 s in total (the in-house emitter needed 63-70 s per function).
+#+REQUIRES: NELISP_DYNAMIC_BIN
+cmd: out=$(NELISP_ROOT="$PWD" timeout 200 "$NELISP_DYNAMIC_BIN" --load target/progress/libgccjit-l1/l1-gate.el 2>&1) && printf '%s\n' "$out" | grep -qx 'L1 add=(:fn t :code t :value 42)' && printf '%s\n' "$out" | grep -qx 'L1 sub=(:fn t :code t :value 38)'
+
+* T1 Trust model on the Emacs pattern (in-house backend first)
+
+** T1.1 The cache file name is a pure function of the input content hash and the runtime ABI hash (the comp-el-to-eln-filename pattern): the same input gives the same name, and a one-byte input change or an ABI change gives a different one
+pending
+
+** T1.2 Loading a cached unit performs zero full validations (no raw-v2-check, no contract reconstruction, no manifest re-derivation, no admission). Only the header ABI and hash identity are checked, and a corrupted header or an ABI mismatch is refused before any code is mapped
+pending
+
+** T1.3 End to end: process A compiles compiler-r3-cons once into the cache; process B loads it from the cache and makes 1000 calls with exact results, with zero full validations, and B's load plus 1000 calls take under 10 seconds on the native runtime
+pending
+
+* D1 Dual backend on one front end
+
+** D1.1 The libgccjit backend lowers the same front-end plan as the in-house generator for the compiler-r3-cons fixture and returns identical results for a fixed argument set
+pending
+
+** D1.2 Both backends emit cacheable units that load through the same T1 trust path
+pending
+
+** D1.3 End to end: one receipt records compile time, load time and per-call time for both backends on the same inputs, with exact result agreement
+pending
+
+* C1 Backend decision
+
+** C1.1 A decision record cites the D1.3 receipt and applies the user's rule (keep the in-house generator unless the measured difference is material), and names the default backend and the fallback
+pending

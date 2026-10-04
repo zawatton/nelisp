@@ -1,0 +1,642 @@
+;;; Rooted memory protocol build template -*- lexical-binding: t; -*-
+;; Unrendered source cannot issue a proof. Generation replaces the four
+;; literal refusal pins from the exact active build before startup embedding.
+;; Expected evidence is generated from prelink unit objects.  It has no image
+;; digest or addresses.  An opaque proof requires actual ELF and memory checks.
+(require 'cl-lib)
+(require 'nelisp-bytecode-compiler-input)
+(require 'nelisp-native-load)
+(require 'nelisp-native-rooted-abi-evidence)
+(require 'nelisp-native-raw-file)
+
+(let* ((lookup (symbol-function 'symbol-function))
+          (same (symbol-function 'eq)) (kind (symbol-function 'subrp))
+          (head (symbol-function 'car)) (tail (symbol-function 'cdr))
+          (field (symbol-function 'nth))
+          (reject (symbol-function 'error)) (self nil)
+          (native-repr (and (fboundp 'nelisp--repr) (symbol-function 'nelisp--repr)))
+          (byte-names '(string-as-multibyte string-as-unibyte multibyte-string-p
+                        nelisp--string-search unibyte-string))
+          (byte-owners (mapcar (lambda (symbol)
+                                 (and (fboundp symbol) (funcall lookup symbol))) byte-names))
+          (byte-ready (not (memq nil (mapcar kind byte-owners))))
+          (as-multi (nth 0 byte-owners)) (as-byte (nth 1 byte-owners))
+          (high-byte (nth 2 byte-owners)) (search-byte (nth 3 byte-owners))
+          (byte-string (nth 4 byte-owners))
+          (controls (when byte-ready
+                      (let ((i 0) result)
+                        (while (<= i 31)
+                          (push (funcall byte-string i) result)
+                          (setq i (+ i 1)))
+                        (cons (funcall byte-string 127) result))))
+          (native-ascii
+           (lambda (string)
+             (let ((bytes (funcall as-byte string)) (remaining controls) (safe t))
+               (when (funcall high-byte (funcall as-multi bytes)) (setq safe nil))
+               (while (and safe remaining)
+                 (when (funcall search-byte (car remaining) bytes 0) (setq safe nil))
+                 (setq remaining (cdr remaining)))
+               safe)))
+          (ascii-safe
+           (lambda (string symbol-mode)
+             (let ((i 0) (n (length string)) (safe t) character)
+               (when (and symbol-mode (not (<= 1 n))) (setq safe nil))
+               (while (and safe (<= (+ i 1) n))
+                 (setq character (aref string i))
+                 (setq safe
+                       (if symbol-mode
+                           (or (and (<= 65 character) (<= character 90))
+                               (and (<= 97 character) (<= character 122))
+                               (memq character '(95 58))
+                               (and (<= 1 i)
+                                    (or (and (<= 48 character) (<= character 57))
+                                        (memq character
+                                              '(46 47 43 42 60 62 61 33 63 36 37 38 126 94 64 45)))))
+                         (and (<= 32 character) (<= character 126))))
+                 (setq i (+ i 1)))
+               safe)))
+          (names (append '(sxhash-eq memq make-vector aref aset logand
+                   cons car cdr list nth consp + <= stringp symbolp integerp string-bytes
+                   apply concat setcar setcdr
+                   symbol-name length
+                   prin1-to-string funcall eq symbol-function subrp error)
+                         (and native-repr '(nelisp--repr))
+                         (and byte-ready byte-names)))
+          (owners (mapcar (lambda (symbol)
+                            (let ((owner (funcall lookup symbol)))
+                              (list symbol owner (funcall kind owner)))) names))
+          (symbol-member (funcall lookup 'memq))
+          (identity-hash (funcall lookup 'sxhash-eq)))
+     (unless (funcall kind identity-hash)
+       (funcall reject "Constructor serializer native identity hash absent"))
+     (defun nelisp-native-rooted-abi-proof--data-bytes (value)
+       "Serialize bounded evidence with the original printer and precise EQ aliases."
+       (unless (funcall same self (funcall lookup 'nelisp-native-rooted-abi-proof--data-bytes))
+         (funcall reject "Constructor serializer definition changed"))
+       (let ((remaining owners))
+         (while remaining
+           (let* ((entry (funcall head remaining))
+                  (symbol (funcall head entry)) (owner (funcall lookup symbol)))
+             (unless (and (funcall same (funcall field 1 entry) owner)
+                          (funcall same (funcall field 2 entry) (funcall kind owner)))
+               (funcall reject "Constructor serializer owner changed: %S" symbol)))
+           (setq remaining (funcall tail remaining))))
+       ;; Verify the small private search table before any native admission.
+       ;; A bounded traversal rejects interior mutation and cyclic replacements.
+       (when byte-ready
+         (let ((remaining controls) (i 32))
+           (while (<= 0 i)
+             (let ((item (funcall head remaining)))
+               (unless (and (consp remaining) (stringp item)
+                            (eq (string-bytes item) 1)
+                            (eq (aref item 0) (if (eq i 32) 127 i)))
+                 (funcall reject "Constructor serializer control table changed")))
+             (setq remaining (funcall tail remaining) i (+ i -1)))
+           (when remaining (funcall reject "Constructor serializer control table changed"))))
+       (let ((work (list (cons value 0))) (seen (make-vector 4096 nil))
+             (nodes 0) (bytes 0) (admitted-symbols nil)
+             (strings nil)
+             (native-safe (and native-repr (funcall kind native-repr))))
+         (while work
+           (let* ((item (car work)) (object (car item)) (depth (cdr item)))
+             (setq nodes (+ nodes 1))
+             (unless (and (<= nodes 65536) (<= depth 64))
+               (error "Root evidence node/depth bound exceeded"))
+             (cond
+              ((consp object)
+               ;; Object rendering and reader abbreviations differ from the
+               ;; original printer for these otherwise ordinary data heads.
+               (when (memq (car object)
+                           '(builtin closure quote function backquote comma comma-at))
+                 (setq native-safe nil))
+               (let* ((index (logand (funcall identity-hash object) 4095))
+                      (bucket (aref seen index)))
+                 ;; Collisions retain precise EQ membership. The original node
+                 ;; bound also bounds every bucket; no extra valid-input refusal.
+                 (when (memq object bucket) (error "Cyclic/shared root evidence rejected"))
+                 (aset seen index (cons object bucket)))
+               ;; Retain the private queue head for the cdr, inserting its car
+               ;; behind it. This preserves cdr-first traversal and exact depth
+               ;; accounting without allocating a second work item and head.
+               (setcar item (cdr object))
+               (setcdr work (cons (cons (car object) (+ depth 1)) (cdr work))))
+              (t
+               (setq work (cdr work))
+               (cond
+                ((stringp object)
+                 (setq bytes (+ bytes (string-bytes object)))
+                 (unless (and (<= (string-bytes object) 4096) (<= bytes 1048576))
+                   (error "Root evidence string bound exceeded"))
+                 ;; Keep native byte strings in one representation: the runtime
+                 ;; refuses concat of raw high bytes and multibyte characters.
+                 (setq strings (cons (if byte-ready (funcall as-byte object) object)
+                                     strings)))
+                ((symbolp object)
+                 ;; Raw native symbols need neither reader escapes nor numeric disambiguation.
+                 (unless (funcall symbol-member object admitted-symbols)
+                   (if (funcall ascii-safe (symbol-name object) t)
+                       (push object admitted-symbols)
+                     (setq native-safe nil))))
+                ((integerp object)
+                 ;; Avoid native signed-minimum negation and unqualified bignum paths.
+                 (unless (and (<= 0 object) (<= object 9223372036854775807))
+                   (setq native-safe nil)))
+                (t (error "Invalid root evidence type")))))))
+         ;; The byte bound is already enforced for every occurrence. ASCII
+         ;; membership of a concatenation is exactly membership of each string;
+         ;; scan the fixed control table once, only within this invocation.
+         (when strings
+           (let ((text (apply #'concat strings)))
+             (unless (if byte-ready (funcall native-ascii text)
+                       (funcall ascii-safe text nil))
+               (setq native-safe nil))))
+         (let ((print-circle nil) (print-length nil) (print-level nil)
+               (print-escape-newlines t) (print-escape-control-characters t)
+               (print-escape-nonascii nil) (print-escape-multibyte nil)
+               (print-quoted nil) (print-gensym nil))
+           (if native-safe (funcall native-repr value) (prin1-to-string value)))))
+     (setq self (funcall lookup 'nelisp-native-rooted-abi-proof--data-bytes)))
+
+(defun nelisp-native-rooted-abi-proof--data-hash (value)
+  "Hash the bounded canonical evidence protocol, independent of printers."
+  (secure-hash 'sha256 (nelisp-native-rooted-abi-proof--data-bytes value)))
+
+(defconst nelisp-native-rooted-abi-proof--evidence-owner
+  (symbol-function 'nelisp-native-rooted-abi-evidence))
+(defconst nelisp-native-rooted-abi-proof--expected
+  (funcall nelisp-native-rooted-abi-proof--evidence-owner))
+(defconst nelisp-native-rooted-abi-proof--expected-hash
+  (nelisp-native-rooted-abi-proof--data-hash nelisp-native-rooted-abi-proof--expected))
+(defconst nelisp-native-rooted-abi-proof--primitive-owners
+  (mapcar (lambda (name) (cons name (symbol-function name)))
+          (append '(ptr-read-u8 ptr-read-u64 ptr-call nelisp--native-env
+                    nelisp--native-symbol-addr subrp funcall eq equal secure-hash)
+                  (and (fboundp 'nelisp--string-search)
+                       (subrp (symbol-function 'nelisp--string-search))
+                       '(nelisp--string-search)))))
+
+(defun nelisp-native-rooted-abi-proof--u (bytes offset width)
+  "Decode a bounded little endian integer."
+  (unless (and (memq width '(2 4 8)) (<= 0 offset)
+               (<= (+ offset width) (length bytes)))
+    (error "Root proof integer range rejected"))
+  (let ((value 0) (index 0))
+    (while (< index width)
+      (setq value (logior value (lsh (aref bytes (+ offset index)) (* 8 index)))
+            index (+ index 1)))
+    value))
+
+(defun nelisp-native-rooted-abi-proof--self-path ()
+  "Resolve the real running file through the captured native proc link helper."
+  (let ((path (nelisp--syscall-readlink "/proc/self/exe")))
+    (unless (and (stringp path) (< 0 (length path) 4096))
+      (error "Actual running executable path unavailable"))
+    path))
+
+(defun nelisp-native-rooted-abi-proof--read (offset size)
+  "Read an exact bounded byte window from the actual running executable."
+  (nelisp-native-rooted-abi-proof--self-path)
+  (nelisp-native-raw-file-read "/proc/self/exe" offset size))
+
+
+(let* ((elf-lookup (symbol-function 'symbol-function))
+       (elf-same (symbol-function 'eq)) (elf-kind (symbol-function 'subrp))
+       (elf-reject (symbol-function 'error)) (elf-self nil)
+       (elf-search (and (fboundp 'nelisp--string-search)
+                        (funcall elf-kind (funcall elf-lookup 'nelisp--string-search))
+                        (funcall elf-lookup 'nelisp--string-search)))
+       (elf-zero (unibyte-string 0))
+       (elf-owners
+        (mapcar (lambda (name)
+                  (let ((owner (funcall elf-lookup name)))
+                    (list name owner (funcall elf-kind owner))))
+                (append '(symbol-function eq subrp error aref + * unibyte-string)
+                        (and elf-search '(nelisp--string-search))))))
+(defun nelisp-native-rooted-abi-proof--elf ()
+  "Return bounded actual section and defined symbol records."
+  (unless (funcall elf-same elf-self (funcall elf-lookup 'nelisp-native-rooted-abi-proof--elf))
+    (funcall elf-reject "Root proof ELF definition changed"))
+  (dolist (entry elf-owners)
+    (let ((owner (funcall elf-lookup (car entry))))
+      (unless (and (funcall elf-same owner (nth 1 entry))
+                   (funcall elf-same (funcall elf-kind owner) (nth 2 entry)))
+        (funcall elf-reject "Root proof ELF byte owner changed: %S" (car entry)))))
+  (unless (and (stringp elf-zero) (= (length elf-zero) 1) (= (aref elf-zero 0) 0))
+    (funcall elf-reject "Root proof ELF terminator changed"))
+  (let* ((header (nelisp-native-rooted-abi-proof--read 0 64))
+         (section-offset (nelisp-native-rooted-abi-proof--u header 40 8))
+         (count (nelisp-native-rooted-abi-proof--u header 60 2))
+         (symbols (make-hash-table :test #'equal))
+         (requested (make-hash-table :test #'equal)) sections)
+    ;; Scan every bounded name, but decode ownership metadata only for the
+    ;; authenticated protocol/layout/data closure.  Unknown relocation
+    ;; targets remain absent and are refused by the text validator.
+    (dolist (record (plist-get nelisp-native-rooted-abi-proof--expected :functions))
+      (puthash (plist-get record :name) t requested))
+    (dolist (record (plist-get (plist-get nelisp-native-rooted-abi-proof--expected :layout) :exports))
+      (puthash (car record) t requested))
+    (dolist (record (plist-get nelisp-native-rooted-abi-proof--expected :bss-offsets))
+      (puthash (car record) t requested))
+    (unless (and (equal (substring header 0 6) (unibyte-string 127 69 76 70 2 1))
+                 (= (nelisp-native-rooted-abi-proof--u header 16 2) 2)
+                 (= (nelisp-native-rooted-abi-proof--u header 18 2) 62)
+                 (= (nelisp-native-rooted-abi-proof--u header 58 2) 64)
+                 (<= 1 count 256))
+      (error "Root proof ELF domain rejected"))
+    (let ((bytes (nelisp-native-rooted-abi-proof--read section-offset (* count 64))))
+      (dotimes (index count)
+        (let ((offset (* index 64)))
+          (push (list :type (nelisp-native-rooted-abi-proof--u bytes (+ offset 4) 4)
+                      :flags (nelisp-native-rooted-abi-proof--u bytes (+ offset 8) 8)
+                      :address (nelisp-native-rooted-abi-proof--u bytes (+ offset 16) 8)
+                      :offset (nelisp-native-rooted-abi-proof--u bytes (+ offset 24) 8)
+                      :size (nelisp-native-rooted-abi-proof--u bytes (+ offset 32) 8)
+                      :link (nelisp-native-rooted-abi-proof--u bytes (+ offset 40) 4)
+                      :entry (nelisp-native-rooted-abi-proof--u bytes (+ offset 56) 8)) sections))))
+    (setq sections (vconcat (nreverse sections)))
+    (let* ((tables (cl-remove-if-not (lambda (section) (= (plist-get section :type) 2))
+                                    (append sections nil)))
+           (table (car tables)))
+      (unless (and (= (length tables) 1) (= (plist-get table :entry) 24)
+                   (= (mod (plist-get table :size) 24) 0)
+                   (<= (/ (plist-get table :size) 24) 20000)
+                   (< (plist-get table :link) count))
+        (error "Root proof symbol table rejected"))
+      (let* ((strings-section (aref sections (plist-get table :link)))
+             (strings (nelisp-native-rooted-abi-proof--read
+                       (plist-get strings-section :offset) (plist-get strings-section :size)))
+             (entries (nelisp-native-rooted-abi-proof--read
+                       (plist-get table :offset) (plist-get table :size))))
+        (dotimes (index (/ (length entries) 24))
+          (let* ((offset (* index 24))
+                 ;; The 24-byte entry loop bounds both fixed-width fields.
+                 (name-offset (+ (aref entries offset)
+                                 (* (aref entries (+ offset 1)) 256)
+                                 (* (aref entries (+ offset 2)) 65536)
+                                 (* (aref entries (+ offset 3)) 16777216)))
+                 (section (+ (aref entries (+ offset 6))
+                             (* (aref entries (+ offset 7)) 256))))
+            (when (and (> name-offset 0) (> section 0) (< section count))
+              (unless (< name-offset (length strings)) (error "Invalid ELF symbol name"))
+              (let* ((end (if elf-search (funcall elf-search elf-zero strings name-offset)
+                            (cl-position 0 strings :start name-offset)))
+                     (name (and end (substring strings name-offset end))))
+                (unless (and name (<= (length name) 256)) (error "Unbounded ELF name"))
+                (when (gethash name requested)
+                  (let* ((address (nelisp-native-rooted-abi-proof--u entries (+ offset 8) 8))
+                         (record (list :address address :section section
+                                       :type (logand (aref entries (+ offset 4)) 15)))
+                         (old (gethash name symbols)))
+                    (when (and old (not (equal old record))) (error "Ambiguous ELF symbol"))
+                    (puthash name record symbols)))))))))
+    (list sections symbols)))
+
+(setq elf-self (funcall elf-lookup 'nelisp-native-rooted-abi-proof--elf)))
+
+(defun nelisp-native-rooted-abi-proof--memory (address size)
+  "Read one actual native text window within the helper bound."
+  (unless (and (> address 0) (<= 1 size 65536)) (error "Unbounded root text"))
+  (let ((bytes (string-as-unibyte (make-string size 0))) (index 0))
+    (while (< index size)
+      (aset bytes index (ptr-read-u8 address index))
+      (setq index (+ index 1)))
+    bytes))
+
+(defun nelisp-native-rooted-abi-proof--protocol-p ()
+  "Require the reviewed ticket+GC closure; other operation eligibility is refused."
+  (let ((functions (plist-get nelisp-native-rooted-abi-proof--expected :functions))
+        (arena (plist-get nelisp-native-rooted-abi-proof--expected :arena-protocol))
+        (total 0) names)
+    (and (eq (plist-get nelisp-native-rooted-abi-proof--expected :protocol-domain)
+             'ticket-gc-memory-v1)
+         (equal (plist-get nelisp-native-rooted-abi-proof--expected :operation-eligibility)
+                '(ticket gc))
+         (equal (plist-get nelisp-native-rooted-abi-proof--expected :protocol-roots)
+                '("nl_root_pin_begin_v2" "nl_root_pin_reserve_v2" "nl_root_pin_end_v2"
+                  "nl_root_pin_slot_v2" "nl_gc_mark_pinned_roots"
+                  "nl_gc_mark_thread_roots" "nl_gc_mark_recorded_env"))
+         (equal (plist-get arena :builder-sha256)
+                "NELISP_BUILD_SOURCE_PIN")
+         (= (length functions) 0)
+         (cl-every (lambda (record)
+                     (let ((name (plist-get record :name)) (size (plist-get record :size)))
+                       (and (stringp name) (not (member name names))
+                            (integerp size) (<= 1 size 65536)
+                            (not (plist-get record :indirect))
+                            (progn (push name names) (setq total (+ total size)) t))))
+                   functions)
+         (= total 0)
+         (cl-every (lambda (record)
+                     (cl-every (lambda (edge) (member (cdr (assq 'target edge)) names))
+                               (plist-get record :direct))) functions))))
+
+(defun nelisp-native-rooted-abi-proof--verify (&optional issued-metadata)
+  "Verify actual text against source units and actual relocation targets.
+ISSUED-METADATA is used only from the private issuance record on revalidation.
+It saves ELF parsing; every actual memory window is still checked."
+  (unless (nelisp-native-rooted-abi-proof--protocol-p)
+    (error "Unqualified rooted operation protocol"))
+  (let* ((elf (if issued-metadata
+                  (list (plist-get issued-metadata :sections)
+                        (plist-get issued-metadata :symbols))
+                (nelisp-native-rooted-abi-proof--elf)))
+         (sections (car elf)) (symbols (cadr elf))
+         (functions (plist-get nelisp-native-rooted-abi-proof--expected :functions))
+         (total 0) addresses)
+    (unless (<= 15 (length functions) 128) (error "Invalid expected helper closure"))
+    (dolist (record functions)
+      (let* ((name (plist-get record :name)) (size (plist-get record :size))
+             (symbol (gethash name symbols))
+             (section (and symbol (aref sections (plist-get symbol :section))))
+             (address (and symbol (plist-get symbol :address))))
+        (unless (and symbol (= (plist-get symbol :type) 2)
+                     (= (plist-get section :type) 1) (/= (logand (plist-get section :flags) 4) 0)
+                     (<= 1 size 65536) (<= (plist-get section :address) address)
+                     (<= (+ address size) (+ (plist-get section :address) (plist-get section :size))))
+          (error "Missing or unbounded helper: %s" name))
+        (setq total (+ total size))
+        (unless (<= total 524288) (error "Aggregate helper bound exceeded"))
+        (let* ((memory (nelisp-native-rooted-abi-proof--memory address size))
+               (file (if issued-metadata (copy-sequence memory)
+                       (nelisp-native-rooted-abi-proof--read
+                        (+ (plist-get section :offset) (- address (plist-get section :address))) size)))
+               (used (make-hash-table :test #'eql))
+               (relocations (plist-get record :relocations)))
+          (unless (equal memory file) (error "Actual helper memory differs: %s" name))
+          (unless (<= (length relocations) 4096) (error "Unbounded relocation closure"))
+          (dolist (relocation relocations)
+            (let* ((offset (plist-get relocation :offset))
+                   (target (gethash (plist-get relocation :symbol) symbols))
+                   (unsigned (nelisp-native-rooted-abi-proof--u file offset 4))
+                   (actual (if (>= unsigned 2147483648) (- unsigned 4294967296) unsigned)))
+              (unless (and target (memq (plist-get relocation :type) '(pc32 plt32))
+                           (= (plist-get relocation :width) 4) (<= 0 offset)
+                           (<= (+ offset 4) size)
+                           (= actual (- (+ (plist-get target :address) (plist-get relocation :addend))
+                                        (+ address offset 4))))
+                (error "Unknown or altered relocation target"))
+              (dotimes (index 4)
+                (when (gethash (+ offset index) used) (error "Overlapping relocation"))
+                (puthash (+ offset index) t used)
+                (aset memory (+ offset index) 0))))
+          (unless (equal (secure-hash 'sha256 memory) (plist-get record :sha256))
+            (error "Helper unit provenance differs: %s" name)))
+        (push (cons name address) addresses)))
+    (list :addresses addresses :symbols symbols :sections sections)))
+
+(let ((captured-module-owners nil) (captured-all-owners nil)
+      (captured-eligibility nil)
+      (captured-evidence-owner nelisp-native-rooted-abi-proof--evidence-owner)
+      (captured-evidence nelisp-native-rooted-abi-proof--expected)
+      (captured-evidence-hash nelisp-native-rooted-abi-proof--expected-hash)
+      (captured-eq (symbol-function 'eq))
+      (captured-car (symbol-function 'car))
+      (captured-cdr (symbol-function 'cdr))
+      (captured-symbol-function (symbol-function 'symbol-function))
+      (captured-primitive-owners
+       (mapcar (lambda (entry) (cons (car entry) (cdr entry)))
+               nelisp-native-rooted-abi-proof--primitive-owners)))
+
+(defun nelisp-native-rooted-abi-proof-dependency-context ()
+  "Return bounded current owner/evidence state used by sealed native packages."
+  (let ((evidence-hash
+         (if (and (funcall captured-eq captured-evidence-owner
+                           (funcall captured-symbol-function 'nelisp-native-rooted-abi-evidence))
+                  (funcall captured-eq captured-evidence (funcall captured-evidence-owner))
+                  (funcall captured-eq captured-evidence nelisp-native-rooted-abi-proof--expected))
+             (nelisp-native-rooted-abi-proof--data-hash captured-evidence)
+           'invalid-evidence-identity)))
+  (list (mapcar (lambda (entry) (cons (car entry) (symbol-function (car entry))))
+                captured-primitive-owners)
+        (symbol-function 'nelisp-native-rooted-abi-evidence)
+        evidence-hash
+        (nelisp-bytecode-compiler-input-native-package-runtime-context)
+        evidence-hash
+        (mapcar (lambda (name) (cons name (symbol-function name)))
+                '(nelisp-native-rooted-abi-proof--data-hash
+                  nelisp-native-rooted-abi-proof--u nelisp-native-rooted-abi-proof--self-path
+                  nelisp-native-rooted-abi-proof--read
+                  nelisp-native-rooted-abi-proof--elf nelisp-native-rooted-abi-proof--memory
+                  nelisp-native-rooted-abi-proof--verify nelisp-native-rooted-abi-proof--eligible-p
+                  nelisp-native-rooted-abi-proof--runtime
+                  nelisp-native-rooted-abi-proof-create nelisp-native-rooted-abi-proof-valid-p
+                  nelisp-native-rooted-abi-proof-dependency-context
+                  nelisp-bytecode-compiler-input-dialect
+                  nelisp-bytecode-compiler-input-native-package-runtime-context
+                  nelisp-native-load-running-binary-sha256
+                  nelisp-native-load-rooted-production-contract
+                  insert-file-contents-literally string-as-unibyte make-string aset aref))
+        (mapcar (lambda (entry) (cons (car entry) (symbol-function (car entry))))
+                captured-module-owners)
+        (nelisp-native-raw-file-dependency-context)
+        (nelisp-native-load-sha256-dependency-context))))
+
+(defun nelisp-native-rooted-abi-proof--eligible-p ()
+  "Require genuine captured native owners and unchanged generated evidence."
+  (let ((owners captured-all-owners) (owned t) (count 0))
+    ;; Do not create a callback closure over the recursive owner context.
+    ;; The source-owned list is bounded and every original owner is checked.
+    (while (and owned owners (< count 128))
+      (let ((entry (funcall captured-car owners)))
+        (unless (funcall captured-eq (funcall captured-cdr entry)
+                         (funcall captured-symbol-function (funcall captured-car entry)))
+          (setq owned nil)))
+      (setq owners (funcall captured-cdr owners) count (+ count 1)))
+  (and owned (not owners) (> count 0)
+       ;; This source pin authenticates the reviewed prelink text/data
+       ;; provenance.  Capturing an arbitrary provider at load is insufficient.
+       (equal captured-evidence-hash
+              "NELISP_BUILD_EVIDENCE_PIN")
+       (eq captured-evidence-owner
+           (symbol-function 'nelisp-native-rooted-abi-evidence))
+       ;; The generated provider returns one quoted object.  Identity binds
+       ;; that object; hashing it once still detects every interior mutation.
+       (eq captured-evidence (funcall captured-evidence-owner))
+       (eq captured-evidence nelisp-native-rooted-abi-proof--expected)
+       (equal captured-evidence-hash
+              (nelisp-native-rooted-abi-proof--data-hash captured-evidence))
+       (cl-every (lambda (entry)
+                   (and (if (memq (car entry) '(equal secure-hash))
+                            ;; Normal standalone publishes these two genuine
+                            ;; Lisp owners; their captured identities are sealed.
+                            (not (subrp (cdr entry)))
+                          (subrp (cdr entry)))
+                        (eq (cdr entry) (symbol-function (car entry)))))
+                 captured-primitive-owners)
+       (eq (plist-get (nelisp-bytecode-compiler-input-dialect) :runtime-evidence)
+           'standalone-build-verified))))
+
+(defun nelisp-native-rooted-abi-proof--environment-domain-p (arena env)
+  "Recognize ENV in the authenticated initial chunk allocation chain.
+Uncertified additional chunks and exhausted walk budgets are refused."
+  (let* ((protocol (plist-get nelisp-native-rooted-abi-proof--expected :arena-protocol))
+         (size (plist-get protocol :initial-chunk-bytes))
+         (descriptor (+ arena 768))
+         cursor
+         (header (+ arena 1024)) (steps 0) found)
+    (unless (and (equal (plist-get protocol :header-domain) 'single-u64-low32-size-low3-mark)
+                 (integerp size) (<= 1024 size 268435456)
+                 (> arena 0) (> env 0))
+      (error "Unauthenticated environment allocation evidence"))
+    ;; nl_chunk_cursor_addr/nl_gc_chunk_cursor use the legacy arena+0
+    ;; cursor for the head descriptor.  Its descriptor+16 field stays at
+    ;; the bootstrap value and is not the live allocation boundary.
+    (setq cursor (ptr-read-u64 arena 0))
+    (unless (and
+                 (= (ptr-read-u64 arena 704) descriptor)
+                 (= (ptr-read-u64 descriptor 0) arena)
+                 (= (ptr-read-u64 descriptor 8) size)
+                 (= (ptr-read-u64 descriptor 24) header)
+                 (= (ptr-read-u64 descriptor 32) (+ arena size))
+                 (integerp cursor) (<= 1024 cursor size)
+                 (<= (+ header 8) env) (<= (+ env 120) (+ arena cursor)))
+      (error "Unauthenticated environment allocation domain"))
+    (while (and (not found) (< header (- env 7)) (< steps 65536))
+      (let* ((word (ptr-read-u64 header 0))
+             (total (logand word 4294967288))
+             (mark (logand word 7)))
+        (unless (and (>= total 16) (<= (+ header total) (+ arena cursor))
+                     (memq mark '(0 1 2)))
+          (error "Invalid authenticated allocation header"))
+        (when (= (+ header 8) env)
+          (setq found (and (memq mark '(0 1)) (>= (- total 8) 120))))
+        (setq header (+ header total) steps (+ steps 1))))
+    (and found t)))
+
+(defun nelisp-native-rooted-abi-proof--runtime (verified)
+  "Bind actual BSS layout, bridge addresses and current root environment."
+  (let* ((symbols (plist-get verified :symbols))
+         (sections (plist-get verified :sections))
+         (layout (plist-get nelisp-native-rooted-abi-proof--expected :layout))
+         (contract (nelisp-native-load-rooted-production-contract))
+         (bridge-names (nth 2 contract))
+         (arena-symbol (gethash "nl_arena_base" symbols))
+         (base (and arena-symbol (plist-get arena-symbol :address)))
+         (bss (and arena-symbol (aref sections (plist-get arena-symbol :section))))
+         (offsets (plist-get nelisp-native-rooted-abi-proof--expected :bss-offsets)))
+    (unless (and (equal layout (car contract)) base (= (plist-get bss :type) 8)
+                 (/= (logand (plist-get bss :flags) 1) 0) (= (length offsets) 12)
+                 (<= (plist-get bss :address) base)
+                 (<= (+ base (plist-get nelisp-native-rooted-abi-proof--expected :bss-size))
+                     (+ (plist-get bss :address) (plist-get bss :size))))
+      (error "Actual rooted BSS/domain rejected"))
+    (dolist (record offsets)
+      (let ((symbol (gethash (car record) symbols)))
+        (unless (and symbol (= (plist-get symbol :section) (plist-get arena-symbol :section))
+                     (= (plist-get symbol :address) (+ base (cdr record))))
+          (error "Generated BSS owner layout differs"))))
+    (dolist (export (plist-get layout :exports))
+      (let* ((name (car export)) (index (cl-position name bridge-names :test #'equal))
+             (symbol (gethash name symbols)))
+        (unless symbol (error "Missing rooted ABI export"))
+        (when index
+          (unless (= (nelisp--native-symbol-addr index) (plist-get symbol :address))
+            (error "Native bridge owner differs from actual ELF")))))
+    (let* ((env (nelisp--native-env)) (arena (ptr-read-u64 base 0))
+           (addresses (plist-get verified :addresses))
+           (begin (cdr (assoc "nl_root_pin_begin_v2" addresses)))
+           (reserve (cdr (assoc "nl_root_pin_reserve_v2" addresses)))
+           (end (cdr (assoc "nl_root_pin_end_v2" addresses)))
+           (slot (cdr (assoc "nl_root_pin_slot_v2" addresses)))
+           (control (plist-get (gethash "nl_root_pin_control" symbols) :address))
+           (region (plist-get (gethash "nl_root_pin_region" symbols) :address))
+           (prior-mode (ptr-read-u64 control 48))
+           (prior-env (ptr-read-u64 control 8)) ticket)
+      (unless (and (> env 0) (> arena 0)
+                   (nelisp-native-rooted-abi-proof--environment-domain-p arena env)
+                   (= (ptr-read-u64 env 0) 12) (= (ptr-read-u64 env 32) 12))
+        (error "Genuine environment domain rejected before native call"))
+      (setq ticket (ptr-call begin env 0 0 0 0 0))
+      (unless (> ticket 0)
+        (error "Genuine root environment unavailable"))
+      (unwind-protect
+          (let ((address (ptr-call reserve env ticket 0 0 0 0)))
+            (unless (and (> address 0) (= address (ptr-call slot env ticket 0 0 0 0))
+                         (<= region address) (< address (+ region 524288))
+                         (= (mod (- address region) 32) 0)
+                         (= (ptr-read-u64 control 8) env)
+                         (= (ptr-read-u64 control 32) ticket)
+                         (= (ptr-read-u64 control 48) 2)
+                         (= (ptr-call slot (+ env 1) ticket 0 0 0 0) 0)
+                         (>= env arena) (= (ptr-read-u64 env 0) 12)
+                         (= (ptr-read-u64 env 32) 12)
+                         (>= (ptr-read-u64 env 8) arena)
+                         (>= (ptr-read-u64 env 40) arena))
+              (error "Root environment memory protocol rejected")))
+        (unless (= (ptr-call end env ticket 0 0 0 0) 1)
+          (error "Root proof cleanup rejected")))
+      (unless (and (= prior-mode (ptr-read-u64 control 48))
+                   (= prior-env (ptr-read-u64 control 8)))
+        (error "Root proof changed active environment ownership"))
+      env)))
+
+(let ((issued-records (make-hash-table :test #'eq)))
+  ;; Issuance is shared only by these captured functions.  A public symbol
+  ;; value cannot install a fabricated record; validation still checks the
+  ;; genuine evidence, helper owners and actual runtime memory protocol.
+(defun nelisp-native-rooted-abi-proof-create ()
+  "Create an opaque ticket+GC memory proof after actual ownership checks.
+This does not grant constructor, numeric or call operation eligibility."
+  (unless (funcall captured-eligibility)
+    (error "Root proof native/evidence ownership rejected"))
+  (let* ((context (nelisp-native-rooted-abi-proof-dependency-context))
+         (verified (nelisp-native-rooted-abi-proof--verify))
+         (env (nelisp-native-rooted-abi-proof--runtime verified))
+         (image (nelisp-native-load-running-binary-sha256))
+         (proof (make-symbol "nelisp-rooted-elf-proof")))
+    (unless (and (stringp image) (= (length image) 64)
+                 (equal context (nelisp-native-rooted-abi-proof-dependency-context)))
+      (error "Root proof context changed during verification"))
+    (let ((record (list :context context :environment env :image image :verified verified
+                        :layout-hash (nelisp-native-rooted-abi-proof--data-hash
+                                      (plist-get nelisp-native-rooted-abi-proof--expected :layout)))))
+      (puthash proof record issued-records))
+    proof))
+
+(defun nelisp-native-rooted-abi-proof-valid-p (proof expected-layout)
+  "Accept only a registered proof for exact EXPECTED-LAYOUT and current owners."
+  (condition-case nil
+      (let ((record (gethash proof issued-records)))
+        (and record
+             (funcall captured-eligibility)
+             (equal (plist-get record :layout-hash)
+                    (nelisp-native-rooted-abi-proof--data-hash expected-layout))
+             (equal expected-layout (plist-get nelisp-native-rooted-abi-proof--expected :layout))
+             (= (plist-get record :environment) (nelisp--native-env))
+             (equal (plist-get record :context) (nelisp-native-rooted-abi-proof-dependency-context))
+             (equal (plist-get record :image) (nelisp-native-load-running-binary-sha256))
+             (= (plist-get record :environment)
+                (nelisp-native-rooted-abi-proof--runtime
+                 (nelisp-native-rooted-abi-proof--verify (plist-get record :verified))))
+             t))
+    (error nil))))
+(setq captured-module-owners
+  (mapcar (lambda (name) (cons name (symbol-function name)))
+          '(nelisp-native-rooted-abi-proof--data-bytes
+            nelisp-native-rooted-abi-proof--data-hash nelisp-native-rooted-abi-proof--u
+            nelisp-native-rooted-abi-proof--self-path nelisp-native-rooted-abi-proof--read
+            nelisp-native-rooted-abi-proof--elf
+            nelisp-native-rooted-abi-proof--environment-domain-p
+            nelisp-native-rooted-abi-proof--protocol-p member memq
+            nelisp-native-rooted-abi-proof--memory nelisp-native-rooted-abi-proof--verify
+            nelisp-native-rooted-abi-proof--runtime nelisp-native-rooted-abi-proof--eligible-p
+            nelisp-native-rooted-abi-proof-create nelisp-native-rooted-abi-proof-valid-p
+            nelisp-native-rooted-abi-proof-dependency-context
+            symbol-function car cdr cons mapcar plist-get gethash puthash make-hash-table copy-sequence
+            prin1-to-string string-bytes symbolp integerp consp stringp
+            pop push cond when unless and or
+            insert-file-contents-literally set-buffer-multibyte buffer-string buffer-size
+            cl-remove-if-not cl-position cl-every assq assoc aref aset
+            substring string-as-unibyte make-string logand logior lsh mod
+            + - * / < <= > >= = /= length append vconcat make-symbol
+            nelisp-bytecode-compiler-input-dialect
+            nelisp-bytecode-compiler-input-native-package-runtime-context
+            nelisp-native-load-rooted-production-contract
+            nelisp-native-load-sha256-dependency-context
+            nelisp-native-load-running-binary-sha256 nelisp--syscall-readlink
+            syscall-direct ptr-write-u8 ptr-read-bytes
+            nelisp-native-raw-file-read nelisp-native-raw-file--read
+            nelisp-native-raw-file-dependency-context unibyte-string)))
+(setq captured-all-owners (append captured-module-owners captured-primitive-owners)
+      captured-eligibility (symbol-function 'nelisp-native-rooted-abi-proof--eligible-p)))
+(provide 'nelisp-native-rooted-abi-proof)

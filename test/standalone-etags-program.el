@@ -1,0 +1,33 @@
+;;; standalone-etags-program.el --- Genuine GNU etags default controls -*- lexical-binding: t; -*-
+(let ((root (getenv "NELISP_GNU_BUILD_SOURCE_ROOT"))
+      (standalone (eq (plist-get (nelisp-bytecode-compiler-input-dialect) :runtime-evidence)
+                      'standalone-build-verified)))
+  (if standalone
+      (progn
+        (unless (not (boundp 'etags-program-name)) (error "Etags fixture already initialized"))
+        (dolist (invalid (list nil (concat root "missing/")))
+          (let ((refused nil))
+            (condition-case nil (nelisp-stdlib-etags-program-install invalid)
+              (error (setq refused t)))
+            (unless (and refused (not (boundp 'etags-program-name)))
+              (error "Unconfigured/wrong-root initializer admitted"))))
+        (unless (and (eq (nelisp-stdlib-etags-program-install root) 'installed)
+                     (equal etags-program-name "etags"))
+          (error "Genuine non-Android program default differs"))
+        (let ((saved (symbol-function 'secure-hash)) (refused nil))
+          (unwind-protect
+              (progn
+                (fset 'secure-hash (lambda (&rest _args) "forged"))
+                (condition-case nil (nelisp-stdlib-etags-program-install root)
+                  (error (setq refused t)))
+                (unless refused (error "Changed initializer owner admitted")))
+            (fset 'secure-hash saved))))
+    (let ((saved etags-program-name))
+      (unless (and (eq (nelisp-stdlib-etags-program-install nil) 'preserved)
+                   (equal etags-program-name saved))
+        (error "GNU host program-name owner changed"))))
+  (let ((etags-program-name "configured-etags"))
+    (unless (and (eq (nelisp-stdlib-etags-program-install root) 'preserved)
+                 (equal etags-program-name "configured-etags"))
+      (error "Existing user program choice changed"))))
+(princ "ETAGS-PROGRAM-PASS\n")

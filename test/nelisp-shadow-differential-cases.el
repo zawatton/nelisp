@@ -48,6 +48,27 @@
  ;; Directory existence must use the target's access operation.  Darwin's
  ;; former ENOSYS stub made both checks false and hid host helper executables.
  (list (file-exists-p ".") (file-directory-p "."))
+ ;; A symbolic `fset' definition is the raw function cell and must follow a
+ ;; later redefinition of its target when called indirectly.
+ (let* ((suffix (number-to-string (random 1000000000)))
+        (target (intern (concat "shadow-fset-target-" suffix)))
+        (alias (intern (concat "shadow-fset-alias-" suffix)))
+        (old-target-bound (fboundp target))
+        (old-alias-bound (fboundp alias))
+        (old-target (and old-target-bound (symbol-function target)))
+        (old-alias (and old-alias-bound (symbol-function alias)))
+        (returned nil) (stored nil) (before nil) (after nil))
+   (unwind-protect
+       (progn
+         (fset target 'identity)
+         (setq returned (fset alias target)
+               stored (symbol-function alias)
+               before (funcall alias 42))
+         (fset target 'ignore)
+         (setq after (funcall alias 42))
+         (list (eq returned target) (eq stored target) before after))
+     (if old-target-bound (fset target old-target) (fmakunbound target))
+     (if old-alias-bound (fset alias old-alias) (fmakunbound alias))))
  ;; The rest of Darwin's path/stat layer was ENOSYS too until v1.3.1 -- stat,
  ;; lstat, rename, readlink, opendir/getdents and utimes all answered -38, so
  ;; `file-attribute-size' returned a negative errno as a SIZE and
@@ -195,6 +216,39 @@
  ;; equal: structure, not identity, and 1 is not 1.0
  (equal '(1 (2 3)) '(1 (2 3))) (equal "a" "a") (equal [1 2] [1 2]) (equal 1 1.0)
  (equal nil nil) (equal '(1 . 2) '(1 . 2))
+ ;; Byte-code objects compare every slot, including constants nested in lists.
+ (let ((a (make-byte-code 514 (unibyte-string 1 135) [] 3))
+       (b (make-byte-code 514 (unibyte-string 1 135) [] 3))
+       (c (make-byte-code 514 (unibyte-string 1 135) [] 4)))
+   (list (equal a b) (equal a c) (equal (list a) (list b))
+         (equal (vector a) (vector b))
+         (equal a (vector 514 (unibyte-string 1 135) [] 3))))
+ ;; A native negative must still reach the Lisp array and marker rules.
+ (list (equal (list [1 [2]]) (list [1 [2]]))
+       (equal (list (bool-vector t nil)) (list (bool-vector t nil)))
+       (equal (bool-vector t nil) (bool-vector nil t))
+       (equal (bool-vector t nil) [t nil]))
+ (with-temp-buffer
+   (insert "abc")
+   (let ((a (copy-marker 2)) (b (copy-marker 2 t)) (different (copy-marker 1)))
+     (list (equal a b) (equal (list a) (list b)) (equal a different)
+           (progn (set-marker a nil) (set-marker b nil) (equal a b)))))
+ ;; Preserve record identity and different-content answers too; the fresh
+ ;; same-content pair also exposes the existing standalone record divergence.
+ (let ((same (record 'shadow-equal 7)))
+   (list (equal same same) (equal (list same) (list same))
+         (equal (record 'shadow-equal 7) (record 'shadow-equal 8))
+         (equal (record 'shadow-equal 7) (record 'shadow-equal 7))))
+ (let ((a (string-to-number "0.0e+NaN")) (b (string-to-number "0.0e+NaN")))
+   (list (equal 1.5 1.5) (equal a b) (equal a a) (equal (list a) (list b))
+         (equal 0.0 -0.0) (equal -0.0 -0.0) (equal 1.0 1)))
+ (list (equal (string-as-unibyte "ab") (concat "ab" ""))
+       (equal (unibyte-string 233) (string 233))
+       (equal (propertize "ab" 'face 'bold) (propertize "ab" 'face 'italic)))
+ (let ((a (make-interpreted-closure '(x) '((+ x y)) '((y . 7))))
+       (b (make-interpreted-closure '(x) '((+ x y)) '((y . 7))))
+       (c (make-interpreted-closure '(x) '((- x y)) '((y . 7)))))
+   (list (equal a b) (equal a c) (equal (list a) (list b))))
  ;; Bool-vectors: packed literals use low-bit-first bytes, constructors are
  ;; mutable, and the type survives the sequence/printer surface.  These
  ;; values are intentionally derived through ordinary operations so the

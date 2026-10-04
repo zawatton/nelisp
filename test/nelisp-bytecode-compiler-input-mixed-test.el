@@ -1,0 +1,41 @@
+;;; nelisp-bytecode-compiler-input-mixed-test.el --- Mixed frame operations -*- lexical-binding: t; -*-
+(require 'ert)
+(require 'nelisp-bytecode-compiler-input)
+
+(defun nelisp-input-mixed-test--function (&optional code depth)
+  (make-byte-code 257 (or code (unibyte-string 137 192 66 136 135))
+                  [nil] (or depth 3)))
+
+(ert-deftest nelisp-input-mixed/genuine-source-free-cons-discard ()
+  (let* ((function (nelisp-input-mixed-test--function))
+         (value (list 'identity))
+         (result (nelisp-bytecode-compiler-input-build function)))
+    (should (eq (funcall function value) value))
+    (should (eq (plist-get result :status) 'complete))
+    (should (= (plist-get result :argument-count) 1))))
+
+(ert-deftest nelisp-input-mixed/stack-and-unknown-opcode-refusal ()
+  (dolist (function (list (nelisp-input-mixed-test--function nil 1)
+                          (nelisp-input-mixed-test--function (unibyte-string 136 66 135))
+                          (nelisp-input-mixed-test--function (unibyte-string 137 192 66 136 191 135))))
+    (should-not (eq (plist-get (nelisp-bytecode-compiler-input-build function) :status)
+                    'complete))))
+
+(ert-deftest nelisp-input-mixed/ir-opcode-and-frame-counterfeits-refused ()
+  (let* ((function (nelisp-input-mixed-test--function))
+         (code (aref function 1))
+         (ir (nelisp-bytecode-ir-validate code [nil] 1))
+         (frame (nelisp-bytecode-frame-ir-build code [nil] 1)))
+    (should (nelisp-bytecode-compiler-input--cons-ir-supported-p ir frame))
+    (let ((bad (copy-tree ir t)))
+      (aset (cl-find 3 (plist-get bad :instructions) :key (lambda (row) (aref row 0))) 1 137)
+      (should-not (nelisp-bytecode-compiler-input--cons-ir-supported-p bad frame)))
+    (let ((bad (copy-tree ir t)))
+      (plist-put bad :unsupported (cons '(99 . unsupported-semantics)
+                                       (plist-get bad :unsupported)))
+      (should-not (nelisp-bytecode-compiler-input--cons-ir-supported-p bad frame)))
+    (let ((bad (copy-tree frame t)))
+      (plist-put bad :status 'malformed)
+      (should-not (nelisp-bytecode-compiler-input--cons-ir-supported-p ir bad)))))
+
+;;; nelisp-bytecode-compiler-input-mixed-test.el ends here

@@ -1,0 +1,1350 @@
+#+TITLE: Bytecode-Native Compiler ABI Contract
+#+NOTE: 2026-10-01: Integrated generated core-bytecode loader scope fix, builder0125bfb1171632cb6e1c8ca54b87fd26ba6f92dc1435bf17bc0a85fb513f84ed (only8additions/30deletions). Authenticated source pieces reassemble in original order and execute through the existing scoped native source reader; no new primitive, forced special declaration or nil initialization. Exact generated emission on normal63b compiles genuine baked bytecomp lambda to bytecode returning42; bare declarations remain unbound before/after, error unwinds and later forms do not execute. Separate string/pieces/trailing-comment/explicit-EOF controls pass; old loader fails the same declaration/EOF assertions. Guarded evidence: target/progress/pre-core-bytecode-loader-scope-integration-20261001/accepted-manifest.json. Normal current-source image and full GNU libraries/bytecomp/Magit criterion remain pending;102 criteria/caps unchanged.
+#+NOTE: 2026-10-01: Integrated byte-opt source-reader public facade and callable defvaralias provider v3. Prelude-bytecodea2be5326 and builder2663a783 replace one cross-module private call with the canonical owner's public API; provider7298e54b preserves existing function cells, delegates alias mutation to the reader SF and stores documentation verbatim after success. Root exact491-file namespace gate passes prefix328/private852 without baseline changes. Actual pinned provider calls the public walker once and installs genuine GNU tables30/67; altered source refuses before evaluation/transformation/cache publication. Evidence: target/progress/pre-byteopt-public-facade-provider-v3-integration-20261001/accepted-manifest.json. Provider startup hook and dynamic additions are not integrated; coherent candidate validation remains pending. All102 criteria and known-red checks are unchanged.
+#+NOTE: 2026-10-01: Integrated equivalent safe-recipe metadata dispatch using cond instead of pcase, safe-contract1a237cded816e2806cee466bc5e8bbbd5b2cea7e4cafa1bb4b44c3153daff5d1. Root source-loaded host probe reconstructs genuine function lengths4/5/6 and rejects six rehashed length/code mutations; a checksum-only validator fails the same mutation assertion. Generic contracta956 and inert bounds/reconstruction comparisons remain intact. Guarded backup/evidence: target/progress/pre-safe-recipe-cond-integration-20261001/accepted-manifest.json. Native optional execution remains unqualified until the coherent candidate satisfies reload-source guards; no criterion or denominator change.
+#+NOTE: 2026-10-01: Vendor per-function baking now evaluates the two actual GNU byte-opt compile-time tables from its pinned eval-when-compile source before transformation. An altered source pin is refused before evaluation/cache/publication. The normal dedicated image passes original33 package acceptance, while actual cal-french still fails at missing callable defvaralias. This is genuine provider bootstrap support, not complete GNU library or magit acceptance; see target/progress/pre-gnu-byteopt-provider-integration-20261001/accepted-manifest.json.
+#+NOTE: 2026-10-01: Safe-contract import extraction now distinguishes an active AST cycle from an already completed shared subtree. The bounded iterative walker accepts acyclic sharing, rejects cons/vector cycles, and enforces depth/node/vector limits. Root paired regression and existing contract/admission tests pass; old MAIN rejects an equivalent shared AST that its copied tree accepts. This corrects contract import analysis only; original optional LIST1 native validation remains incomplete. See target/progress/pre-safe-import-shared-dag-integration-20261001/accepted-manifest.json.
+#+NOTE: 2026-10-01: Package compilation now seals genuine frontend analysis in one-use closure-owned preflight tokens, checks unchanged function/code/constant slots and analysis/helper context before the backend, and discards tokens on failure. Public owner dependency APIs preserve private helper identity guards without new namespace escapes. Missing requested names fail before analysis; bounded-snapshot overflow rebuilds through the ordinary public compiler after an independent source witness check. Root focused tests and namespace490 pass. The original33 R15 source-overlay acceptance passed under280s; API changes and a rebuilt current-MAIN production image remain unqualified. See target/progress/pre-package-sealed-preflight-r16-integration-20261001/accepted-manifest.json.
+#+NOTE: 2026-10-01: The private mirror alias installer now calls the canonical slot store with its four declared arguments (entry, expected tag, target, pad). Root's generated-DSL ABI check rejects the old six-argument call and accepts the corrected source. Guarded source and qualified isolated runtime evidence are recorded in target/progress/pre-alias-slot-arity-integration-20261001/accepted-manifest.json. This correction does not establish general dynamic binding, catchable cycle errors, or rebuilt production package acceptance.
+#+NOTE: 2026-10-01: V1/shared-v2 producer now includes its verified generated contract in the authenticated result, fixing the native mode run's missing-result-contract regression. Contract inclusion precedes registry fingerprinting; caller validation remains strict. Native retry is pending. The staged safe-v3 matrix timed out124 at240 seconds before raw-arity completion and final assertions, despite reaching public success/nil/GC/type and raw-type end stages; this is not full acceptance. Evidence: target/progress/pre-cfg-result-contract-integration/accepted-manifest.json.
+#+NOTE: 2026-10-01: The namespace failure is fixed by a public pinned-inventory accessor; exact equality checks remain. Root namespace passes 490 files/private=852 with unchanged baselines, and focused producer ERT passes 11/11. The expanded genuine producer/public-caller nil/type/GC/error matrix timed out240 seconds/status124 and has not qualified; only the prior single CAR proof is accepted in its scope. Evidence: target/progress/pre-safe-v3-inventory-accessor-integration/accepted-manifest.json and integrated-safe-v3-inventory-accessor logs.
+#+NOTE: 2026-10-01: V1/shared-v2 contracts derive exact imports from the canonical emitted AST. Root ERT passes 5/5; an overclaimed root-pin import fails validation even after re-signing. CAR leaf entry imports only CAR; branch entries keep root-pin when actually called. Native caller/loader alignment remains pending, and the current namespace failure has not been relaxed. Evidence: target/progress/pre-cfg-exact-imports-integration/accepted-manifest.json. No native guard or optimization acceptance is claimed.
+#+NOTE: 2026-10-01: Safe-v3 producer, loader and public caller changes are integrated with root combined ERT 42/42. A genuine pinned88cb same-process CAR bytecode-to-native producer/authentication/load/public-call proof passes without mocked identity. Namespace validation currently fails at private escapes 853 versus baseline 852; a public inventory identity accessor is being implemented without raising that baseline. Evidence: target/progress/pre-safe-v3-production-integration/accepted-manifest.json and the compiled-prelude-candidate-20261001 lane's target/progress/safe-v3-preparation/evidence.json. This is scoped CAR proof, not production package/full-dialect acceptance.
+#+NOTE: 2026-10-01: The fset parity corpus addition is integrated. It exercises interned symbolic definitions and restores prior function cells: r5 produces (t nil 42 42), while r6 and GNU produce (t t 42 nil), each with empty stderr. The initial uninterned test would pass before the fix and was replaced. Evidence: target/progress/pre-fset-symbol-storage-integration/parity-corpus-manifest.json. Full parity gate not rerun.
+#+NOTE: 2026-10-01: The shipped builtin fset replacement now stores symbolic definitions verbatim through its existing scratch/mirror setter; indirect calls resolve at call time. The unused shim edit is excluded. Root MAIN AOT passes (1510 bytes/10 externs); namespace passes 490 files with unchanged baselines. Diagnostic candidate r6 passes the original byte-exact existing-target fixture that failed on r5, and GNU-matched function-target redefinition is observed. This is not normal-prelude or public defvaralias acceptance. Evidence: target/progress/pre-fset-symbol-storage-integration/accepted-manifest.json. Cross-substrate parity corpus additions are being prepared separately.
+#+NOTE: 2026-10-01: The alias setter helper now takes eight raw arguments, including lookup mode and padding. Direct set uses dynamic-only canonical-target lookup; setq keeps ordinary frame lookup. All three literal call sites are updated. Root focused MAIN AOT compilation and 490-file namespace inventory pass. Frozen r4 native evidence covers diagnostic installer value writes and dynamic restoration only; its full fixture remains red for builtin fset, and the unused shim-fset edit is excluded. Public alias special-state semantics and production cal-french remain pending. Evidence: target/progress/pre-alias-set-dynamic-integration/accepted-manifest.json. Quoted DSL names are outside ordinary top-level caller indexing; scoped literal inspection does not establish dynamic call completeness.
+#+NOTE: 2026-10-01: Shared SSA emission precomputes phi membership once with an EQ hash table. Root ERT passes 8/8 and namespace inventory passes 490 files with unchanged baselines. The old source fails the new zero-mapcar assertion; before/after ASTs are identical. Three fixtures each eliminate 2 mapcar calls and 4 temporary cons per build, excluding hash-table allocation; no wall-clock or native speed claim is made. Evidence: target/progress/pre-shared-emit-phi-membership-integration/accepted-manifest.json and the generic-rooted-cfg-emit-20261001 lane's target/progress/shared-emit-phi-membership-20261001/evidence.json. S6 remains incomplete.
+#+NOTE: 2026-10-01: The independent raw-v2 successful-check memo helper is integrated with host-only evidence. It snapshots bounded immutable manifest/runtime/name data, retains validator identity, and caches only nil refusals; cycles, excessive data, changed inputs and failed checks run the full validator. Root ERT passes 10/10; the equality-disabled mutation fails 5 tests. Namespace inventory passes 490 files with unchanged baselines. The loader hook is not integrated and no native or end-to-end performance claim is made. Evidence: target/progress/root-raw-v2-check-memo-proof and pre-raw-v2-check-memo-integration/accepted-manifest.json.
+#+STATUS: DRAFT (2026-09-29) — bounded boxed constant-return proof exists; the general bytecode-native ABI remains unimplemented.
+#+SOURCE: Runtime inventory recorded from the source hashes in §7. Re-check those hashes before using this contract as a release gate.
+
+* §1 Purpose and scope
+
+This document defines the ABI questions that must be settled before verified
+bytecode CFGs can be lowered to callable native code. It separates the raw
+runtime-unit interface that exists today from the boxed object/call interface
+that a general bytecode compiler needs. It is a design constraint and evidence
+record, not an implementation claim, shipped format, or authorization to call
+an arbitrary native artifact.
+
+The current bytecode frame IR can represent stack slots and verified control
+flow for an admitted subset. That does not make its blocks callable native
+code. In particular, Bswitch edges currently describe a snapshot of a mutable
+constant hash table, and frame IR marks runtime switch lowering unsupported
+until a mutation guard or equivalent dynamic dispatch is specified.
+
+* §2 Verified current ABI: raw runtime units
+
+The current raw-v1 interface is a deliberately narrow machine-word interface:
+
+- The loader names it =nelisp-runtime-raw-v1= and accepts Linux =gnu/linux=
+  =x86_64= only. Calls use the ordinary x86-64 SysV integer argument
+  registers, up to six arguments, and one unsigned 64-bit result word.
+- Its manifest names =nelisp-private-nelr-v1= as the artifact format and
+  =nelisp-aot-raw-unit-v1= as the native payload format. The payload is
+  serialized link-unit text plus explicit relocation/import metadata; it is
+  not an ELF relocatable object.
+- Its versioned layout id is
+  =nelisp-runtime-reload-layout-v1:x86_64:sexp32:block16:bss-state64=.
+  The =sexp32= label is a layout identity, not evidence that raw-v1 call
+  arguments are validated or rooted Lisp objects.
+- =nelisp-native-unit-call= admits only integer arguments of the declared
+  export arity and returns a raw word. Unit staging refuses imports, and
+  fixes the public export names, order, arities, and runtime binary identity
+  for the lifetime of a unit id. This API is not a boxed Lisp function-call
+  ABI.
+
+=nelisp-native-load-raw-check= validates the raw kind, format, runtime ABI,
+opt-in marker, layout id, platform, architecture, section sizes, exports,
+imports, and declared artifact hash before mapping. The v1 loader carries the
+binary SHA-256, layout id, build id, source SHA-256, artifact SHA-256, and
+object SHA-256 on its handle where supplied by the manifest. The unit stage
+path additionally compares the manifest binary hash to the running binary,
+re-hashes the source and artifact around staging, validates the artifact's
+own hash, and requires an empty imports list. These checks establish identity
+and admission for this raw interface; they do not establish a boxed-object,
+closure, or bytecode execution contract.
+
+* §3 Existing boxed-object mechanisms (not a general compiler ABI)
+
+There are useful mechanisms in adjacent runtime paths, but they do not close
+the bytecode-native ABI:
+
+- =nelisp-native-load-call= distinguishes =:abi raw= from =:abi boxed= and
+  honors parameter and return representations. Its boxed path reserves an
+  exclusive pinned boundary frame containing result, mirror/environment,
+  frame, scratch, name, callback, and scratch-cell slots; it refuses a busy
+  frame. This is a bounded trampoline convention, not yet the frame layout
+  or stack-map contract for arbitrary compiler-generated control flow.
+- =nelisp-eln-objects-encode= creates stable GNU views of supported object
+  graphs, tracks roots in its unit, and records leases for pointer-valued
+  objects. Activation decode only accepts pointer words leased by that
+  activation; activation release drops those leases. The current main tree
+  adds restricted S6-only cases: authenticated artifact-symbol words,
+  entirely empty interned-symbol views, opaque identity-only interned-symbol
+  views, and opaque identity-only vector views. Opaque symbol cells and
+  vector contents are poison words checked at native boundaries; only exact
+  admitted multi-import shapes can enable them, and vectors are not traversed
+  or synchronized as ordinary object graphs. These are constrained bridges
+  to authenticated ports, not general readable/writable object layouts.
+  Selected conses, strings, bignums, and floats still use the existing
+  leased-view paths. Neither these views nor the S6 registered-lambda
+  constant resolution in =nelisp-eln-native-subr--resolve-constant-cells=
+  define a general bytecode closure object ABI or captured-environment GC
+  policy.
+- Doc 207 demonstrates a narrowly admitted GNU Emacs 31.1 nonlocal-exit
+  chain. Its safety depends on its exact authenticated imports, forward-only
+  control flow, suppression after the first exit, and a dispatcher that
+  captures and resumes the exit after native frames return. It is not a
+  general unwind ABI for loops, arbitrary native calls, or VM frames.
+
+These are precedent and implementation material. A future bytecode compiler
+must name the selected mechanism explicitly in its manifest and prove that
+its requirements are met; it must not infer that any raw-v1 export is a boxed
+callable.
+
+* §4 Required contract for a general boxed bytecode entry
+
+The following items are mandatory before a compiler-generated bytecode
+function can be admitted as a boxed native entry.
+
+** §4.1 Values and object identity
+
+Specify the tagged-word layout, immediate encodings, pointer/handle encoding,
+word width, endianness, alignment, and supported object classes under a
+versioned ABI id. Preserve Lisp identity and mutation semantics across every
+boundary. A value word must never be mistaken for a raw integer or an address
+without a declared representation. Define how constants and mutable constant
+objects are retained and observed.
+
+** §4.2 Allocation, safepoints, and GC roots
+
+Every allocating or blocking operation must define when collection can occur.
+At each such point the native frame must expose every live Lisp value through
+an explicit stack map, pinned slot, or stable handle understood by the
+collector. State whether objects move, how interior pointers are handled, and
+how returned or callback-created objects acquire roots before the next
+safepoint. Define root lifetime for normal return, error, quit, throw, unwind,
+and cancellation. Raw machine temporaries are not roots.
+
+** §4.3 Calls, callbacks, and results
+
+Specify argument and result slot layout, arity rules, direct and indirect call
+gateways, import authentication, callback re-entry, and the representation
+of return values. A call must distinguish a Lisp result from error/quit/throw
+status without smuggling condition state through an untyped integer. Define
+tail-call behavior and whether generated code may call host/runtime primitives
+directly. Preserve effects and evaluation order established by bytecode
+verification.
+
+** §4.4 Unwind and nonlocal exits
+
+Define the frame record and handler/cleanup search order. A nonlocal exit must
+cross generated frames while running each cleanup exactly once and releasing
+roots only after values needed by cleanup are protected. Specify how native
+and VM frames compose, how exits are captured/resumed, and how a cleanup that
+signals a replacement condition behaves. Doc 207's admitted-chain protocol
+can be reused only for code satisfying its admission proof; it cannot be
+silently generalized.
+
+** §4.5 Closures and function values
+
+Specify a closure representation containing callable identity and captured
+environment, how captures are rooted and updated, and how function-cell
+lookup, dynamic rebinding, =funcall=, equality, and lifetime work. Define
+re-entrant calls and recursive closures. Until function objects and captures
+have a validated representation and GC policy, closure-valued constants,
+indirect calls, and callback values remain unsupported.
+
+* §5 Manifest lifecycle and cache identity
+
+The raw-unit lifecycle is a useful precedent: stage validates without
+publication, candidates have a 900-second TTL and bounded capacity, publish
+checks the expected table/generation identity and atomically switches the
+stable gates, and a rejected candidate is reclaimed. Publication records
+generation, source/artifact hashes, binary identity, and a bounded history.
+Superseded code and tables remain mapped because the runtime cannot prove no
+caller is still executing through an old generation; current reclaim refuses
+to release retired generations. These facts must remain visible in any
+bytecode-native lifecycle contract.
+
+The standalone artifact-lifecycle acceptance case now builds raw artifacts
+from materialized byte-code objects without source forms. Equivalent inputs
+produce identical stable manifest fields; changing bytecode or constants
+changes native object identity. Rehashed manifests with a wrong runtime ABI
+or binary SHA are refused by the real stage path without advancing the active
+generation. Three valid stage/publish/call replacements reach generation 3.
+A separately loaded boxed entry preserves a mutable constant's object
+identity across forced GC and three open/close cycles. These bounded checks
+exercise the existing lifecycle; they do not establish general cache reuse,
+safe reclamation of retired code, or arbitrary bytecode support.
+
+The current main loader also generates 32 callback-port symbol names and
+includes them in its bridgeable-symbol list. That count is checked against
+the reader's callback-port count. These indexed, authenticated ports expand
+the bounded S6 import gateway; they do not make raw-v1 exports general Lisp
+callbacks.
+
+The boxed loader now tracks active calls per handle and refuses unload before
+unmapping or clearing fields while a call is in progress. The call extent is
+released through =unwind-protect=, including nested calls and errors. A
+standalone smoke attempts close from a wrapped call trampoline, checks the
+specific refusal, then calls the still-open unit and closes it after return.
+A mutation disabling the guard makes the focused refusal test fail. This
+proves the protected loader call extent, but the smoke does not attempt unload
+from a callback running inside the mapped bytecode-native body. The current
+bytecode-native emitter has no such call path, and retired mappings still lack
+a quiescence proof; S5.1 remains open.
+
+A bounded package module now reads an existing GNU 31.1 =.elc= as data,
+compiles two admitted byte-code definitions into separate =.neln= entries,
+and publishes a manifest after hashing the copied =.elc= and both artifacts.
+Cold standalone startup validates all hashes and manifest paths before
+evaluating the copied top-level forms once. Calls open native units lazily;
+the test checks native call counts, mutable-object identity through GC,
+disabled-native routing, and function-cell redefinition. Corrupt artifact
+hashes, a truncated final form, path traversal, duplicate entries, and a
+simulated publication failure are refused without package side effects or
+partial publication. The ordinary NeLisp =load= path now explicitly rejects
+GNU =.elc= before artifact probing or top-level effects. An opt-in
+=nelisp-load-gnu-elc-host= diagnostic preflights the complete file and
+evaluates it in GNU Emacs's host namespace; its globals and function cells
+remain invisible to =nelisp-eval=. The package module admits only a narrow readable
+top-level profile ending in an exact =(provide FEATURE)= form. It does not
+implement general GNU =.elc= reader/load-history, autoload, advice, or the
+full package workload; S5.2, S5.3, and S7.3 remain open.
+
+The package output directory is now claimed with a non-recursive, exclusive
+=make-directory= after creating only its parent. An injected second publisher
+that creates the directory after the absence precheck makes the losing
+publisher fail without deleting the winner's manifest or artifact. The
+source-free cold-load test is the end-to-end check. This closes that directory
+race, not the remaining cache/publication contracts of S5.1.
+
+The same bounded package path also compiled 33 distinct GNU 31.1 =.elc=
+functions through NeLisp and cold-loaded them from a separate source-free
+process. Native calls to entries 0, 16, and 32 preserved a mutable cons across
+GC; duplicate names, absent definitions, and a changed artifact hash were
+refused. Removing the last manifest entry made the acceptance assertion fail.
+This verifies package entry count beyond 32, not support for 33 callback ports
+or the other closure/rest/binding requirements in S3.5.
+
+A separate real-library gate compiles the installed GNU 31.1
+=cal-french.elc=, publishes a native artifact for
+=calendar-french-accents-p=, removes the source, and opens the package in a
+cold NeLisp process. The gate is currently red at the library's top-level
+=(require 'calendar)=; no native call is credited. Library discovery now
+rejects directory shadows and prefers regular =.elc= files over =.el= files.
+The source loader resolves regular =.el= or bare source paths independently;
+it does not execute GNU =.elc= dependencies in the shared evaluator. The lookup
+smoke verifies both suffix discovery and source =require= in a rebuilt runtime;
+its pre-change control fails the suffix-order assertion. Compile, namespace
+inventory, and fallback inventory gates remain red with identical findings
+before and after this slice. S5.3a remains a failing
+command criterion until the cold call actually runs once through native code.
+
+The standalone buffer view now derives =enable-multibyte-characters= from
+the existing per-buffer multibyte table. Switches and nested cleanup restore
+the authoritative current flag for the original buffer, including mutations
+made while another buffer wrapper is active. Four GNU/native component
+controls pass; the preceding saved-boolean implementation fails those same
+controls. The misc setter keeps the same body, while intentional Tier2
+buffer-free macros remain separate. The accepted source and log hashes are
+recorded in =target/progress/pre-buffer-multibyte-authority-integration-20261001/accepted-manifest.json=.
+This does not establish direct =setq= signal parity, font capability, a fresh
+normal image, or the complete Magit workload; S5.3 remains open.
+
+The genuine GNU 31.1 =calendar.el=, =cal-loaddefs.el= and =cal-menu.el=
+source providers are now vendored with repository-relative SHA-256 pins.
+A separate source-first probe on the attested raw-runtime-v2 reader advances
+=require= to the missing =display-color-cells= primitive. This is dependency
+evidence only; it does not make the cold native-library acceptance pass.
+
+An experimental =nelisp-gnu-bytecode-vm-load-file= path now reads a GNU
+31.1 =.elc= without source and preflights every form and opcode before
+acting. It translates only compact variable read/write, compact constants,
+=ADD1=, =RETURN=, compact =CALL0..CALL15=, the verified compact
+=STACK-REF 1= through =STACK-REF 3= argument access into NeLisp BCL, admitting literal =defvar=,
+=provide=, supported top-level =byte-code=, and fixed-arity =defalias=
+forms. A standalone cold process observes one top-level counter update in
+=nelisp--globals=, four BCL function cells in =nelisp--functions=, a =42=
+result, and object identity across GC. Malformed later forms and unsupported
+opcodes are refused before earlier side effects; changing the ADD1 lowering
+to SUB1 makes the standalone acceptance fail. Ordinary =nelisp-load-file=
+remains fail-closed for GNU =.elc=. This is a bounded interpreter bridge for
+load semantics, not native lowering or full S5.2.
+
+The compact call path requires a symbol constant whose same-arity, fixed-arity
+BCL is already installed in =nelisp--functions= or was defined earlier in the
+same =.elc= at preflight. A private signature map is updated in file order
+after each definition is validated, while no file action runs until the whole
+file passes. BCL's runtime
+CALL reads the current function cell, so a source-free caller follows a
+same-arity replacement after loading. The standalone check confirms the
+NeLisp function store is bound, preserves a returned cons across GC, and
+observes the replacement result. Unknown targets, wrong arity, and malformed
+CALL stacks are refused before file effects. A forward call is refused even
+if a stale function cell with that name exists before loading. Recursive and
+forward calls in the same =.elc= remain outside this bounded preflight;
+ordinary loading remains fail-closed. This extends the interpreter bridge only.
+For a one-argument call, GNU 31.1 emits bytes =192 1 33 135= and the bridge
+emits BCL =1 0 2 1 30 1 0=. The original parameter stays beneath the
+returned value, so the verified return allows that two-slot shape. The cold
+smoke checks =CALL1= through a same-file function cell and redefinition;
+invalid stack references fail preflight before file effects.
+
+The experimental bridge also accepts the observed GNU 31.1 three-argument
+shape, descriptor =771= and bytes =(192 3 3 3 35 135)=. Each compact
+=STACK-REF 3= copies one original argument, then compact =CALL3= invokes the
+earlier same-file fixed-arity function cell through BCL. ERT pins the lowered
+instruction sequence and rejects a forward CALL3 before top-level effects;
+the source-free cold smoke checks values, same-arity redefinition, error
+return, and object identity across GC. This does not add native lowering or
+extend support beyond the observed fixed-arity call form.
+
+One GNU 31.1 special =let= shape now lowers compact =VARBIND 0= and
+=UNBIND 1= to BCL's specpdl operations. The preflight tracks binding depth,
+rejects underflow and an unclosed binding at return, and leaves earlier file
+effects untouched on malformed input. A source-free cold process sees the
+special's global value restored after both a normal return and a failing
+current function-cell target. This is VM execution, not native unwind support.
+
+The existing artifact/manifest pair writer now treats backup deletion after
+both installs as best-effort cleanup: a cleanup error cannot report a
+committed pair as failed. Failure injection also verifies that a manifest
+rename error before the pair is installed restores both old files. The
+source-free artifact load test and the full 82-test artifact file pass with
+=XDG_CACHE_HOME= set to a writable temporary cache. This repairs one
+publication failure path; it does not make the two renames an indivisible
+transaction for concurrent readers or complete S5.1.
+
+A future bytecode-native cache key must bind at least:
+
+1. canonical bytecode and constant-pool identity (including the defined
+   treatment of mutable tables and object identity);
+2. compiler implementation/version and lowering contract version;
+3. target architecture, platform, calling convention, tagged-value layout,
+   frame/stack-map layout, and unwind ABI ids;
+4. runtime binary SHA-256 and authenticated import/export contract;
+5. artifact format and payload/object SHA-256.
+
+Paths and timestamps may be provenance fields but are not cache identity.
+Stage must hash bounded literal inputs, validate the manifest before mapping,
+recheck inputs after mapping to close time-of-check/time-of-use gaps, and bind
+the candidate to the expected published generation. Cache hit reuse must
+repeat compatibility checks against the active runtime and ABI versions.
+
+* §6 Explicit unresolved decisions
+
+Standalone startup now embeds the exact pinned opcode inventory after the
+existing GNU build-host source/table proof. Native runtime verification
+hashes the embedded4066-byte inventory with authenticated reader and SHA
+helpers; GNU host verification continues reading genuine external evidence.
+The input owner's public runtime-context API copies bounded evidence, and
+sealed package builds compare it on every use, including after initial
+cache success. Mutated, malformed and oversized evidence cannot reuse a
+valid token. Generated startup runs in an empty directory on an existing
+image, publishes genuine runtime metadata, and supports GNU bytecomp42 and
+complete bytecode input. A rebuilt normal image and fresh native compilation
+remain required. Integration evidence:
+=target/progress/pre-embedded-inventory-startup-integration-20261001/accepted-manifest.json=.
+
+Runtime ABI digest memoization now uses bounded copied source data and opaque
+SHA-owner helper identities. It preserves the original slow serialization
+when printer settings are noncanonical, strings have text properties, or
+otherwise valid data exceeds cache eligibility limits. Shared acyclic lists
+are accepted; cycles refuse. A cached digest is copied on return and all
+eight native contract words remain read. Root reproduced and then verified
+the property-mutation regression. Host and native51 controls pass. The
+three-digest component cost decreased from382.886ms to182.969ms; complete
+package performance and SSA/guard acceptance remain unproven. Only the ABI
+module and the SHA owner's public dependency API were integrated.
+
+The optional compatibility metadata provider installs numeric =emacs-version=
+=31.1= only after pinned standalone dialect evidence and an existing genuine
+=nelisp-version=. The former names the Lisp API target; the latter names the
+runtime implementation. Neither metadata field attests complete package or
+native ABI compatibility. Existing GNU host metadata is preserved. Startup
+must supply the exact runtime version declaration and authenticated compiler
+input context before invoking the provider. Only the provider and regression
+tests are integrated; normal startup qualification remains open.
+
+The standalone producer now attests the existing native source evaluator
+independently of public compatibility metadata. It captures evaluator and
+primitive function identities, checks native subr status, and evaluates an
+inert quote of the already interned =:status= keyword. The exact runtime
+marker and opcode inventory remain required. GNU host verification retains
+its genuine version, source and opcode-table checks. This witness does not
+claim fresh-symbol identity, complete API compatibility, or native ABI
+coverage. Package preflight includes the new helper identities through the
+input owner's public dependency API.
+
+The same actual native driver succeeds before and after publishing the
+numeric Lisp API target and refuses changed helper cells before backend
+entry. Its old-source control fails after metadata publication. Reviewed
+source integration is recorded in
+=target/progress/pre-dialect-native-attestation-integration-20261001/accepted-manifest.json=.
+This is component evidence on an existing image, not current normal-startup
+or complete package acceptance.
+
+This draft intentionally does not choose the following:
+
+- Whether boxed values cross native calls as inline tagged words, pinned
+  addresses, or stable opaque handles; and whether the production runtime is
+  moving or nonmoving for each object class.
+- The canonical =sexp32= tagging, fixnum range, pointer compression, and
+  portability story beyond x86_64/Linux.
+- Stack-map encoding, safepoint placement, root-slot allocation, and the
+  allocator/collector handshake for generated frames.
+- How generated calls return conditions and nonlocal exits, how native frames
+  compose with VM frames, and how cleanup replacement exits are handled.
+- General closure and function-cell representation, captured-environment
+  rooting, dynamic rebinding, and authenticated indirect-call policy. A
+  registered-lambda artifact constant in an admitted S6 shape is a narrow
+  existing mechanism, not proof of a general closure value ABI.
+- Which mutable constants are snapshotted, rooted, guarded, or dispatched at
+  runtime. In particular, Bswitch's current CFG edge snapshot is not sound as
+  a runtime dispatch plan if its hash table may subsequently change.
+- Exact manifest schema/versioning, cryptographic artifact identity fields,
+  cache invalidation rules, concurrent publication policy, and safe retired
+  generation reclamation.
+
+Until these are resolved and implemented with negative controls, general
+boxed bytecode-native entries must be rejected as unsupported. Raw-v1 remains
+limited to its current integer-word contract.
+
+=nelisp-bytecode-native-boxed-op.el= records a proposed v2 operation gateway
+with runtime-issued frame identity, indexed registered root slots, a rooted
+result slot, and explicit success/type/condition/quit/throw/unwind statuses.
+It classifies pinned =car=, =cdr=, and =cons= operation requirements while
+returning =unsupported= without emitting an artifact. The currently
+authenticated =nelisp_aot_builtin_call1= uses a raw integer argument ABI,
+and =nl_jit_cons_car= is not an authenticated import; neither establishes
+the rooted result and exit handoff needed here. A standalone =car= probe
+confirms that the public compiler still refuses the function and leaves no
+artifact. The v2 contract is a proposal, not a runtime capability.
+
+The standalone runtime now has a narrower root-pin ticket API:
+=nl_root_pin_begin_v2=, =nl_root_pin_reserve_v2=, and =nl_root_pin_end_v2=.
+Its process-local monotonic ticket rejects an earlier frame even when the
+same physical root slot is reused. Nested frames restore the enclosing
+ticket in LIFO order; legacy and v2 frames refuse cross-mode calls. The
+driver BSS reserves 64 bytes for control before the root region, keeping
+ticket and mode fields separate from slots. A fresh standalone smoke checks
+stale tokens, nested calls, GC, cleanup, and the legacy pin path; forcing
+stale acceptance in a copy of the verifier makes it fail. This API returns
+slot addresses and does not implement the proposed indexed frame record,
+operation status handoff, or safe native =car= lowering.
+
+=nl_root_pin_slot_v2= now derives a reserved slot address from the active
+ticket and a frame-local index. It checks owner, mode, nested link, index,
+alignment, reservation extent, and arithmetic bounds before returning an
+address. The standalone smoke covers two slots, GC, same-address reuse with
+a different ticket, and stale/foreign/unreserved/nested/cross-mode refusals.
+This is an authenticated index accessor, not the proposed boxed-operation
+frame record or a condition/unwind handoff.
+
+=nl_native_car_v2= is a first bounded operation over the authenticated slot
+indices. It resolves both reserved slots before dereferencing either, returns
+status 0 for nil or cons, 1 for a wrong input tag, and 2 for malformed or
+stale ticket/index input. A nonzero status leaves the output slot unchanged.
+A fresh standalone smoke checks a mutable cons, rooted output identity across
+GC, nil, wrong type, invalid index, and a stale ticket. The older ticket and
+index smokes still pass. This runtime entry does not enable native CAR in the
+public compiler: condition, quit, throw, and unwind handoff remains unresolved.
+
+=nelisp-native-load-car= is a checked Lisp caller for that runtime entry. It
+uses a v2 ticket for temporary proper-list boxing, authenticates input and
+result slots by index, and unboxes the result while the frame is live. Native
+status 1 becomes =(wrong-type-argument listp VALUE)=; status 2 becomes a
+distinct internal error. Its standalone smoke checks GC identity, nil,
+wrong-type, unsupported inputs, and root cleanup after errors. This is a
+Lisp-side wrapper, not a condition handoff for generated machine frames.
+
+=nl_native_cons_v2= takes a live ticket and three frame-local indices. It
+authenticates both operands and the rooted destination before reading or
+allocating, returns 0 on construction and 2 for a malformed request, and
+leaves the destination untouched on refusal. A fresh standalone binary
+constructs nested conses, retains their identity through GC, observes a
+mutation, and rejects invalid/stale tickets and indices. CAR and pin smokes
+still pass on that binary. Native compiler emission remains disabled.
+
+GNU 31.1 packed rest descriptors 128 and 385 now produce input/frame metadata
+for the required count and rest-list entry slot. The source-free fixture is
+compiled in a temporary directory, then read without loading. Optional slots
+before rest remain unsupported. The public native compiler still refuses
+variable arity, because its fixed-arity trampoline cannot construct and root
+the rest list.
+
+The frame IR now represents GNU 31.1 compact dynamic =varbind= and =unbind=
+families with explicit stack transfers, constant indexes, bytecode PCs,
+binding-count changes, and unresolved possible nonlocal exits. A fixed-point
+CFG pass rejects binding-depth mismatches at joins and unbind underflow.
+A real GNU 31.1 dynamic-let =.elc= is converted to a source-free frame in
+standalone NeLisp, with malformed controls. The decoder still marks these
+operations not lowerable, and the native compiler does not emit them; full
+dynamic binding and unwind semantics remain in S3.5/S4.3.
+
+* §7 Evidence and source identity
+
+The initial ABI audit inspected the main repository at commit
+=062fa96c71d35b412ad422f3105bab62ea00998e=, relative to baseline
+=3edc5b180=. At that audit, there were committed changes in
+=nelisp-native-load.el= and =nelisp-eln-objects.el= since that baseline,
+and no unstaged changes to the runtime source files then reviewed. The
+loader change replaces a fixed
+callback-port list with 32 generated names matching the reader. The object
+codec change adds guarded S6 artifact-symbol/empty-symbol/opaque-symbol and
+opaque-vector paths, with poison-cell checks and identity leases. The
+registered-lambda constant path was also checked in
+=nelisp-eln-native-subr--resolve-constant-cells= because it affects the
+scope of the closure limitation. No behavior was copied into this worktree.
+The later raw CFG slice added a public running-image SHA-256 accessor in
+=nelisp-native-load.el= for artifact identity; its current hash is below.
+
+The standalone Anvil wrapper initialized successfully; a targeted query for
+=nelisp-native-load.el= timed out after 20 seconds. A batched call returned a
+partial lexical excerpt for =nelisp-native-unit.el=; it was not treated as
+complete. The final audit therefore used the requested base-to-main diff,
+targeted symbol searches, and bounded exact source ranges. No runtime test or
+probe was added: this change records a contract and makes no executable
+claim.
+
+SHA-256 of the source snapshots reviewed (updated 2026-10-02; the
+=nelisp-native-load.el= row was re-pinned on 2026-10-04 after retained-artifact
+S2.1a let =nelisp-native-load-raw-v2-artifact= also accept an already
+parsed manifest plus an origin label. The ABI contract, export names and
+the path route are unchanged; previous hash =31ffe042f50c0c6e8e28b3159392117d6c39dc269dd8d22aa528ed83da14abbe=.
+It was re-pinned again the same day after =nelisp-native-load-unload= began
+invalidating the handle before unmapping; previous hash
+=96c3d64933fa1f03cc2e0fb38a3a45a3c4d0332cbf7ad4848c6e4980b115afb4=. Re-pinned again after C1b let raw-v2-compile-file reuse its own same-object contract validation (eq object, eq validator, unchanged digest); previous hash =b4dbfff118dbc9405890cca5a39a59a12e1ae4bf3bfa11646ebbc5a3fc4bc66b=):
+
+The =nelisp-eln-native-subr.el= hash includes concurrent S6 dispatcher
+specifications and a registered-lambda placeholder outside the bytecode
+compiler entry path. The boxed ABI anchors above remain limited to the
+reviewed call and constant-resolution interfaces.
+
+| File | SHA-256 |
+|---+----------|
+| =lisp/nelisp-native-load.el= | =ea5649da0eff7de2ab1795b3fea9ecd0da00314fed17c3f36c1bed36aa097241= |
+| =lisp/nelisp-native-unit.el= | =128b8bc81c0d97cf93d0360e83ff5e4001e01db197455f21df03a5e9b5e9c568= |
+| =lisp/nelisp-eln-objects.el= | =4e185ecfac6313dd1cb55f1a1c76e7343e09dac2646153b8102126bd8a3794d7= |
+| =lisp/nelisp-eln-native-subr.el= | =5427affe1a3ff75af0d306c9200b3bb2d83afc025d9261683ab426fee08ca747= |
+| =docs/design/207-eln-nonlocal-exit-chains.org= | =8bac7ebc90eab0c0a57dfee0b274e7fb552a9faf21a918289ef56897830c1965= |
+
+* §8 Bounded implementation checkpoint
+
+=nelisp-bytecode-native-constant-return-build= accepts a verified straight-line
+frame CFG using constants, argument variable references, stack references,
+duplication, discard, and return. It emits x86-64 bytes,
+constructs an ELF object, and uses =nelisp-artifact-write-native-link-unit=
+to serialize a NeLisp-owned =.neln= without reconstructing source Lisp forms.
+The generated body receives the constant as a hidden boxed argument; the
+machine code contains no address of the Lisp object. The emitted leaf body
+restores the loader trampoline's frame before returning.
+
+=nelisp-native-boxed-unit-open-with-constants= retains the process-local
+constant vector while the unit is open. Its call path passes those constants
+through the existing pinned boxed boundary and rejects raw return/argument
+representations. The standalone smoke constructs a materialized byte-code
+function in the runtime, passes its exact constant vector to the unit, and
+checks that the native result is =eq= to the VM result and constant before
+and after forced GC. It also checks malformed bytecode, wrong ABI, and calls
+after close. Run it with =test/standalone-bytecode-native-constant-smoke.sh=
+and a compatible =NELISP_BINARY=.
+
+=nelisp-bytecode-native-compiler-build= connects a materialized byte-code
+function to the bounded straight-line backend. Its input adapter pins the
+GNU 31.1 opcode inventory and decodes packed argument bounds. GNU VM probes
+show that packed integer descriptors seed the maximum argument slots, including
+missing optional values, while list descriptors do not seed operand slots.
+The adapter now verifies those bounded forms at their respective entry depths
+and reports unbounded rest descriptors as unsupported. The
+public entry rejects unsupported argument descriptors and effects with a
+reason; it preserves the original function and metadata in its input result.
+The current public-entry smoke builds in GNU Emacs and compares the generated
+native entry with the NeLisp VM for a mutable argument across forced GC.
+The public entry also routes verified packed descriptor =257= functions with
+one pure conditional and either terminal arms or a two-arm boxed join to the
+boxed branch backend. An attested standalone smoke compiles, loads, and calls
+both shapes through that public entry and checks both arms' object identity
+across GC; effectful calls, malformed streams, and a join-bypass edge are
+rejected.
+
+Packed descriptor =513= has two narrow optional-argument routes. One is a
+terminal return of the second entry slot. The other covers the exact GNU 31.1
+six-byte =dup; conditional-else-pop; stack-ref; return= sequences for
+=(lambda (x &optional y) (or y x))= and
+=(lambda (x &optional y) (and y x))=. Each requires its exact bytecode, an
+empty constant pool, and a verified three-block CFG with a direct taken edge
+into the return join. The native branch places the rooted optional argument
+cell in the join slot and replaces it with the rooted required argument cell
+on the fallback edge. The boxed call adapter accepts one or two arguments and
+supplies =nil= for the absent second argument. The standalone smoke compares
+missing, nil, and nonnil paths with the VM for both forms, checks mutable
+object identity across GC, and refuses wrong descriptors, malformed jumps,
+and effectful bytecode without artifacts. A second bounded path accepts GNU
+31.1 named descriptor =(value &optional supplied)= when its verified CFG
+proves variable-ref, conditional branch, fallback variable-ref, and one
+return join. The observed OR/AND bytecode is =8 134/133 5 0 9 135=, distinct
+from the packed form. Source-free standalone native calls match the GNU VM
+on both arms and preserve cons identity across GC. A changed branch target
+is refused before artifact creation. Other list-form optional bodies remain
+unsupported.
+
+The standalone build source now derives a GNU 31.1 dialect marker only after
+checking all 256 opcode names and stack adjustments, the pinned inventory
+hash, and the =bytecomp=/=comp= source hashes. With an attestation generated
+through that gate and loaded into an existing standalone binary,
+=standalone-bytecode-native-compiler-in-runtime-smoke.sh= runs the public
+compiler, writes and opens =.neln=, calls the native entry, and checks VM/native
+object identity across GC. It rejects malformed bytecode and a changed
+marker without producing artifacts. A full =make standalone-reader= cold build
+subsequently linked 113 units and exited successfully. Its fresh binary
+contains the marker without an external attestation;
+=standalone-bytecode-native-compiler-production-smoke.sh= verifies public
+compile/load/call, VM/native identity across GC, and both negative controls
+using that binary alone. The build log still contains two nonfatal
+=byte-opt--side-effect-free-ops= messages. Source-only prelude generation
+does not publish the verified marker.
+
+The separate raw-i64 CFG proof now executes two nested backedges. Its
+=byte-not= lowering is admitted only for nil/t values proven through the
+frame CFG; the standalone smoke stages and publishes the native body and
+compares its result with GNU VM (=42=). The raw proof alone does not establish
+the boxed or general opcode ABI.
+
+The raw-i64 backend also lowers a pinned GNU 31.1 =Bswitch= case for an
+=eq=/=eql= table with signed 32-bit integer keys and a selector proven to be
+a raw integer. GNU VM returns 10, 20, and 30 for selectors 1, 2, and 7;
+standalone native ELF stage/publish/call returns the same values. The
+standalone proof binary does not expose =make-byte-code=, so this test uses
+the GNU VM results as goldens rather than claiming in-runtime VM parity.
+Dynamic or boxed tables and selectors remain unsupported.
+
+The raw CFG backend also carries a live integer slot through a diamond join.
+GNU VM returns 30 and 20 for the two fixed condition values, and standalone
+native ELF stage/publish/call returns the same values. A changed arm that
+drops its value is rejected by frame verification for inconsistent stack
+depth. Raw artifact generation now asks the loader for the running image's
+SHA-256; hashing =invocation-name= could identify a wrapper instead of the
+loaded executable and cause artifact admission to fail.
+
+The public =nelisp-bytecode-native-compiler-raw-build= entrypoint now accepts
+a materialized byte-code function only with a verified dialect and an explicit
+=raw-i64= contract for each required positional argument. It proves every
+return is an integer through constants, stack copies, and joined incoming
+slots before calling the raw CFG writer. A standalone smoke compiles two
+source-free diamond functions, then stages, publishes and calls their ELF
+artifacts; the nil and t paths match GNU VM goldens 30 and 20. Its explicit
+raw word contract must not be
+confused with the boxed public entrypoint.
+
+The input adapter now admits materialized =Bswitch= only when frame IR is
+complete and structural IR's unsupported markers consist solely of that
+opcode and its hash-table constant. The raw CFG's existing proof then checks
+=eq=/=eql= table semantics, signed integer keys, and an integer selector.
+Through the public raw entrypoint, a source-free byte-code function with one
+required argument compiles to native ELF and returns 10, 20, and 30 for
+selectors 1, 2, and 7, matching GNU VM. An =equal= table and a nil selector
+are rejected before artifact output.
+
+The v2 root-pin ABI also exposes an authenticated =nl_native_cdr_v2= gateway.
+It checks both reserved current-frame slot indices before reading or writing,
+returns nil for nil, and copies the CDR of a cons into the rooted output slot.
+Wrong type and malformed requests return distinct statuses without changing
+the output. A standalone smoke checks a nested tail across forced GC and
+regresses the CAR, CONS, and v2 pin paths. This gateway is not yet emitted by
+the public bytecode compiler; the frame and nonlocal-exit handoff remain open.
+The checked Lisp caller =nelisp-native-load-cdr= authenticates input/output
+slots, maps wrong type to =wrong-type-argument=, and releases the v2 ticket on
+normal and error paths. Its input boxing currently covers nil and finite
+proper lists by reconstructing their cons cells, so equality with an
+original input cons is not established. Its standalone smoke checks nested
+tails, condition paths, and subsequent frame reuse.
+The evaluator-to-v2-slot copy check now passes for the standalone builtin
+=nelisp--native-pin-copy-v2(env,ticket,index,value)=. The reader resolves the
+destination through =nl_root_pin_slot_v2= and copies the evaluator's existing
+Sexp into the rooted slot. A stale ticket or unreserved index returns zero
+without changing another slot. The copied cons remains =eq= to the original
+after GC and sees later mutation. This proves the caller-side identity
+bridge. A separate raw-v2 ELF smoke admits exactly =nl_native_car_v2= through
+the authenticated bridgeable-symbol table. It verifies CAR on an original
+evaluator cons, =eq= identity and mutation across GC, stale ticket/index
+refusal, and unchanged output on failure. The public compiler still refuses
+CAR bytecode. A checked evaluator-to-raw-v2 caller now creates a v2 frame,
+copies the original Sexp into it, invokes the authenticated CAR entry, and
+releases the frame on normal and wrong-type exits. Its smoke verifies nil,
+original-object identity after GC, wrong-type recovery, and strict import
+admission. These proofs cover the machine call boundary, not source-free CAR
+bytecode lowering.
+
+A separate raw-v2 ELF probe dispatches opcode IDs 1 and 2 to the existing
+authenticated CAR and CDR gateways. Its versioned manifest fixes the two
+imports and opcode allowlist; adding an opcode with a recomputed artifact hash
+is refused. The machine smoke checks both returned evaluator objects before
+and after GC, nil and wrong-type behavior, and unchanged output for invalid
+IDs or slots. This is an authenticated ELF dispatch proof. The public bytecode
+compiler does not lower CAR or CDR through this selectable-operation entry.
+Instead, its exact GNU 31.1 unary templates use descriptor 257, bytes
+=(64 135)= or =(65 135)=, empty constants, declared depth 2 and computed
+temporary depth 1. Each =.nelr= entry embeds its operation and imports only
+the matching authenticated gateway. The source-free smoke extracts the same
+GNU =.elc= objects after deleting source, compares an independent GNU oracle,
+and checks GC identity, mutation, nil, wrong-type and nearby-shape refusals.
+Ordinary boxed packages refuse these raw-v2 templates before mutations.
+The separate =nelisp-bytecode-native-unary-chain= builder admits verified
+single-block CAR/CDR sequences with descriptor =257=, empty constants,
+declared depth =2=, an optional single argument-preserving DUP, and final
+RETURN. It emits authenticated gateway calls that alternate rooted slots
+=1/2= and stop immediately on any nonzero status. Its explicit final-root
+index covers both even and odd chain lengths. Source-free GNU 31.1 ELC
+tests attest the literal input and compare native/VM behavior, identity
+with GC while roots remain live, and first/intermediate error stops.
+The public compiler dispatches these sequences to the versioned entry
+=nl_native_chain_probe_v2=. The public rooted caller validates its live
+mapping, entry, arity, runtime ABI and imports. Status =17/18= identifies
+the failed input root slot =1/2=, regardless of instruction position;
+the caller decodes that protected operand before signalling the exact
+wrong-type condition. Legacy status =1= is refused. The final result slot
+is supplied from the producer's result metadata and checked to be =1/2=.
+The smoke deletes its original source before execution. Ordinary boxed
+packages refuse chains before directory or backend effects. Other
+instruction sequences remain unsupported by this route.
+
+The general rooted-stack slice admits fixed required arity and a single
+block containing constants, stack references, DUP, DISCARD, CAR, CDR,
+CONS and RETURN. It allocates protected slots for intermediate values,
+authenticates the exact producer AST and typed raw-v2 imports, and uses
+the four-word =nl_native_stack_probe_v1= entry. Failed operand statuses
+identify the protected input slot before signalling. Direct and public
+source-free GNU bytecode probes exercise native execution, identity,
+mutation, GC, exact error payloads and recovery. The legacy unary-chain
+compiler pipeline remains outside the new conditional source guard.
+
+Authentication currently uses a process-local result registry; this is
+not a cold portable generic package. GNU lazy documentation references
+are distinguished from captures, while a leading V0 constant is still
+conservatively refused, including legitimate literal collisions. Optional
+arguments, captures, general control flow and unwind remain outside this
+slice. Its candidate binary uses the explicit source-only prelude fallback.
+The caller performs one full result-fingerprint and artifact-digest
+authentication after pure shape checks and before any root-frame, mapping
+or native effects. No global validation cache or weaker digest is used.
+The isolated combined five-function smoke completes all error and recovery
+controls within its original 240-second limit; root integration measurement
+of that unchanged criterion is recorded in the progress ledger.
+
+An adjacent fixed conditional route admits only GNU 31.1's exact
+capture-free three-required-argument =(if x y z)= frame, with an empty
+constant vector. The public compiler requires an explicit
+=nl_native_rooted_conditional_probe_v1= entry and an absent =.nelr= output;
+boxed packages refuse it before publication effects. Its sole typed import
+is =nl_root_pin_slot_v2= under a separate manifest contract. Native status
+=258/259= selects the original still-protected argument, preserving object
+identity without copying tagged object words. Both source-free branches
+and identity across GC are tested. Authentication remains process-local;
+this route does not implement general CFG joins or a portable cold package.
+
+The adjacent rooted branch route admits only the exact nine-byte GNU 31.1
+capture-free frame for =(if x (car y) (cdr z))=, descriptor =771= and an
+empty constant vector. Its explicit public entry is
+=nl_native_rooted_branch_probe_v1= in an absent =.nelr= output. A separate
+manifest contract admits exactly the typed CAR, CDR and root-slot gateways.
+The caller validates a positive frame ticket before mapping, reserves and
+initializes all five protected slots, and retrieves results while the frame
+is alive. Wrong-type payloads use the original protected operand. Both
+arms, GC identity, mutation refusal, error cleanup and recovery are checked
+through the public compiler with exactly five authenticated native calls.
+The existing selector caller now also rejects failed tickets before mapping;
+its negative control fails on the previous caller. These bounded routes do
+not establish general boxed CFG, variable arity or cold-package support.
+
+The adjacent joined branch route admits the exact four-block GNU 31.1
+frames for =(car (if condition left right))= and the analogous CDR form.
+Its fixed entry and manifest authenticate the selected operation and
+exactly its typed gateway plus root-slot import. Native code checks the
+three-argument/five-root counts before slot access; the caller checks the
+manifest before beginning a frame. Distinct left/right objects, GNU VM
+identity, mutation, type errors and recovery are required through the
+public compiler for both operations. All previous selector and branch
+routes remain intact. This bounded join is not a general CFG emitter.
+
+The variable-alias differential runner requires the same full GNU oracle
+on both runtimes and succeeds only when both pass. The diagnostic candidate
+currently fails at callable =defvaralias=. Private alias storage is not
+public alias support: function cells and plists must remain independent,
+and value lookup, assignment, dynamic binding and alias detachment still
+require genuine runtime integration. The production library criterion
+remains failing independently on its pinned binary.
+
+The private native resolver validates active mirror/table/entry tags and
+walks at most 64 interned-symbol alias links, freeing its borrowed-pointer
+scratch storage on every status. Legacy four-slot entries and absent
+entries terminate the chain. Malformed targets, cycles and excess depth
+are refused. The dedicated diagnostic native binary passes actual chain,
+nil, cycle, invalid-target, legacy-entry and hop-limit cases without test
+preflight bypasses. Only the resolver source and build registration are
+integrated; its test wrapper and diagnostic binary are not production
+exports or evidence of callable =defvaralias= support.
+
+The adjacent private six-argument installer accepts existing five-slot
+entries only. It validates the target chain and rejects prospective cycles
+before changing slot four, preserving slots zero through three. In
+particular, retargeting =A -> D= to =A -> B= with =B -> A= is refused
+without mutating the old graph. Root independently executes the dedicated
+native acceptance for normal install, independent cells, cycles, invalid
+targets and legacy refusal. Its source and AOT registration are integrated;
+public callable adaptation, entry creation and variable routing remain
+unfinished. Scratch symbols follow the canonical traced clone semantics;
+the slot setter installs a cloned value rather than an escaping borrowed
+pointer. No diagnostic wrapper or candidate binary is promoted.
+
+The GNU VM now permits explicitly registered CALL arity sets only for the
+same currently installed BCL function object. Registration validates the
+requested arities against simple required/optional/rest parameters and
+rejects malformed or unsupported lambda lists. Replacing the function
+cell invalidates the registration; unregistered functions retain the
+existing exact fixed-arity rule. Source-first VM tests include genuine
+GNU CALL2/CALL3 lowering, stale identities and invalid signatures. This
+admission mechanism alone does not install or execute variable aliases.
+
+Runtime probes establish two execution domains: source evaluator and BCL
+globals use =nelisp--globals=, while the native reader has its own
+=nelisp-env= mirror. GNU ELC initialization changes the former; reader
+=setq= changes the latter independently. The existing-reader alias
+adapter therefore cannot implement VM aliases. The logical VM now shares
+alias resolution for reads, writes and dynamic bindings and installs genuine
+BCL callable providers through its public bundle API. The source-free GNU
+CALL2/CALL3 differential passes on diagnostic binary =a7506bf3=, including
+independent function/plist cells, intrinsic SYMBOL_VALUE identity, dynamic
+restoration, cycle refusal and alias detachment. This proves the logical
+store path; it does not repair the native reader mirror or production
+cal-french loading by copying initial values between domains.
+
+The inert rooted-stack cold comparator compares a stored artifact with a
+fresh authenticated result, normalizing only the generated source pathname
+and its dependent outer checksum. Runtime, machine code, imports, exports,
+relocations and source hashes remain strict. A matching real source-free
+GNU ELC/artifact pair passes; a different function's artifact is refused.
+The comparator neither maps nor executes the stored artifact and does not
+provide independent cold provenance authentication.
+
+Bytecode module initialization loads the genuine standard prelude when
+=logb= is absent, before loading compiler dependencies. The provider is
+resolved relative to the module or through =NELISP_REPO_ROOT=; a missing
+provider is an error. This repairs source initialization on the pinned
+production binary without adding a native primitive or a substitute Lisp
+implementation. The VM reader now skips top-level GNU ELC =#@N=
+documentation escapes by byte count, validates the unit separator, and
+masks those spans only in a position-preserving copy for strict parentheses
+validation. UTF-8 payloads and unmatched parentheses in documentation are
+covered; marker lookalikes in strings and comments remain data. All forms
+are read and checked before ELC effects execute. Genuine source-free GNU
+ELC execution is required separately from module loading.
+
+The host-only =nelisp-bytecode-native-rooted-cfg-topology-check= component
+checks a completed frame IR before future branch lowering. It admits at most
+12 blocks and 256 terminal paths, orders reachable acyclic blocks, records
+nil/non-nil polarity for GNU opcodes 131/132, and rejects invalid transfer
+shapes, unknown targets and cycles. Genuine GNU byte compilation supplies the
+branch fixture; malformed-input and path-limit tests supply negative controls.
+Its result explicitly has =:scope topology-only=. It does not emit native
+branches, read evaluator roots, implement joins or establish S4/S6 completion.
+
+Separate rooted-CFG planner, emitter, producer and caller modules now lower
+bounded acyclic GNU frame inputs containing CAR/CDR/CONS and scalar root-index
+phis. The =nelisp-native-rooted-cfg-v1= manifest stores a data-only input
+recipe, canonical plan and entry AST, initializer recipes and exact typed
+imports. Independent validation reconstructs the input and emitted entry;
+the loader reuses approvals only for unchanged deep snapshots and runtime
+ABI/generation keys. The existing fixed stack/branch/join contracts retain
+their interfaces. Eighteen focused tests pass, including mutable descriptor
+and recipe controls. A retained source-free diagnostic on pinned =88cb8517=
+executed one two-diamond native entry and matched GNU VM structure and
+CAR/CDR identity, with ten cache hits over eleven validations. Root repeated
+the source-free diagnostic on the integrated files and confirmed the same
+native result and cache counts; only the expected retained-artifact notice
+appeared on stderr. The full branch/carried-phi matrix remains pending.
+This bounded route does not establish closure/binding, full opcode,
+optimization or production cold-package completion.
+
+GNU VM dispatch now handles byte-quo 165 and byte-negate 91 through the existing
+tagged arithmetic primitives, with operand-stack underflow checks. This is a
+library-loading compatibility repair, not native lowering of those opcodes.
+The dedicated source-free fixture checks GNU numeric results and conditions;
+its standalone acceptance binary used the explicit source-only prelude
+fallback. The production cal-french cold-load criterion remains separate and
+failing, and the dedicated numeric binary is not a raw-v2 acceptance binary.
+
+Private variable-alias storage adds a nil-initialized fifth symbol-entry
+slot. Value, function, plist and constant slots and the allocator calling
+convention retain their positions. Lisp reference and private AOT getters
+and setters validate record tags, reject non-symbol targets, and treat a
+legacy four-slot record as a separate safe status. Borrowed type-tag scratch
+storage is freed on both paths without dropping the borrowed object. The
+standalone builder includes only the private helper source facade; isolated
+test dispatch is excluded. Actual dedicated storage/helper checks pass,
+using the source-only prelude fallback. Public =defvaralias=, evaluator
+alias routing and dynamic binding remain incomplete; this storage repair
+does not establish real-library or production-native completion.
+
+The reader value path now consumes a borrowed canonical-symbol address
+without leaking a cloned Sexp. Its original four-argument mirror helper ABI
+is retained; a separate eight-argument helper rechecks canonical frames and
+preserves the dynamic-only visibility of =symbol-value= and =boundp=.
+Nonalias and legacy entries avoid resolver scratch allocation. Root ran
+the same genuine reader/GC probe on prechange =a7506bf3= (failure at the
+first alias read) and candidate =b16f816d= (PASS, empty stderr), then
+integrated the three AOT source units and one dynamic-lookup callsite.
+The candidate includes an isolated private adapter and source-only prelude
+fallback; neither is promoted by that source integration. Public alias
+creation, alias-let canonicalization, constant-target aliases and native
+=makunbound= production coverage remain incomplete. A single 30,000-iteration
+nonalias read/write sample measured 4.545 s before and 4.483 s after; these
+wall times are diagnostic evidence, not a performance improvement claim.
+
+The private native alias-detachment helper now marks successful guarded
+persistent writes with =wf_dirty=. A hardware watchpoint traced the earlier
+lost write to boundary reclamation with an unchanged mutation epoch; no
+snapshot allocation is needed. Root verified the strict fixture on the
+dirty-only diagnostic binary =561aefac=, including repeated detachment,
+dynamic base bindings, GC and independent function/plist cells. The builder
+and helper are integrated, but the private adapter and source-only prelude
+fallback remain diagnostic. Public alias installation, constant-target
+coverage and guard/cycle failure paths still require actual validation.
+
+Host prelude bootstrap now compiles each vendor file once in an isolated
+GNU 31.1 child, preserving genuine file compilation context. It reads the
+resulting ELC as data and does not execute runtime top-level forms. GNU
+documentation references, including generated argument usage, are resolved
+before temporary-file cleanup. Main focused tests pass 8/8 and include
+computed compile-time constants/macros, metadata parity, missing-function
+refusal and bounded child cleanup. The byte-opt blocker is now unsupported
+opcode 164 rather than missing compile-time variables. This host bootstrap
+repair supplies neither a NeLisp native provider nor opcode lowering.
+
+The separate legacy VM in =src/nelisp-bytecode.el= also implements opcode
+164 with a load-time captured destructive operation. Its focused GNU
+parity test covers shared tail identity, condition data, stack underflow,
+and public =nconc= redefinition. The same test fails on the prior legacy
+VM. This component evidence does not prove native lowering of opcode 164
+or qualify a rebuilt production image.
+
+GNU opcode 164 (=NCONC=) now lowers into the source VM through a captured
+destructive operation. Captured primitive providers preserve its behavior
+when public function cells are changed. Root verified 26 focused tests and
+a source-free two/three-argument GNU ELC on diagnostic =687c23aa=, including
+return and tail identity; the old VM rejects that same ELC at opcode 164.
+The standalone test uses public function-cell access. Generic prelude
+admission now also includes opcode 164, retaining the normal mode's parity
+fixture and source-digest checks. Removing the opcode rejects the same
+functions; stale digests also remain rejected. The two byte-opt providers
+using this opcode now adopt under the existing core source-hash gate.
+Normal compiled-prelude validation and generic native gateway lowering
+remain separate work; this integration does not make those paths complete.
+
+The adjacent opt-in =nelisp-bytecode-native-raw-package-v1= format packages
+one exact GNU CAR/CDR function, with =package.nraw= published last as its
+commit marker. It validates copied ELC, runtime and inner artifact identity
+before ELC effects, remembers native eligibility by feature, function name,
+ELC SHA and input fingerprint, and rechecks artifact bytes before lazy
+mapping. Preprovided or changed function cells use the current VM function.
+Close refuses an active call; closed handles remain registered for repeated
+close and dispatch-count inspection, but cannot be called. The genuine GNU
+=tq-queue= proof uses separate writer and reader processes, removes the
+original source and ELC, and checks native dispatch, fallback and tampering.
+This does not satisfy the separate cal-french dependency/cold-load check.
+
+A separate GNU fixture proves five-level native CALL1 / VM callback /
+native CONS recursion with allocation and GC, mutable payload identity,
+and signal/throw cleanup. Counters observe dispatch to authenticated native
+entry addresses and delegate the actual call; they are not hardware body
+events. This proof uses the existing exact CALL1/CONS routes and does not
+establish arbitrary CALL or full opcode lowering.
+
+The opt-in raw-v2 CONS caller now copies two evaluator values into authenticated
+slots, invokes a machine ELF entry importing exactly =nl_native_cons_v2=,
+reauthenticates the output, and releases the frame on every exit. Its smoke
+verifies allocation, GC identity, mutation visibility, malformed-index output
+preservation, and altered-import rejection. The compiler now admits only the
+exact GNU 31.1 two-argument CONS template: descriptor 514, bytes
+=(1 1 66 135)=, empty constants, and stack depth 4. Its result explicitly
+declares =raw-runtime-v2=, a =.nelr= artifact, machine =u64= status, and
+evaluator =sexp= output. Ordinary boxed =.neln= packages refuse this template
+before directory creation or backend work; a guard-removal control proves the
+zero-effects assertion detects the broken implementation. The source-free
+smoke uses a multibyte GNU doc record, checks the stock GNU VM as an independent
+oracle, removes the =.el= source, and compiles/calls through NeLisp with GC
+identity and mutation parity. This does not admit other CONS bytecode bodies.
+
+A separate exit-frame prerequisite reserves authenticated status, tag, value,
+and staging slots. Its smoke verifies normal values and signal/throw payload
+identity across GC, unchanged invalid-request output, stale ownership refusal,
+and a deliberately broken output-preservation control. It does not capture
+the VM exit stash or resume signal/throw. The separate native CALL1 adapter
+now captures real VM exits, retains payload identity across GC before
+resumption, follows current function-cell redefinition, and runs caller
+cleanup exactly once. Invalid raw indexes and stale ownership return status 2
+without modifying output. A corrupted signal payload is rejected. The adapter
+remains outside public bytecode compiler admission; this does not prove native
+CALL opcode lowering.
+
+The checked CALL1 adapter uses six raw u64 arguments: environment, v2 ticket,
+function index, argument index, output index, and reserved word. Its admitted
+indexes are exactly 4, 5, 2, and 0. These words are immediate integers, not
+Sexp addresses: =sexp-tag= must only inspect authenticated slot pointers.
+A failed prototype dereferenced address 4 during the first normal call;
+this is a real runtime failure, not signal/throw evidence. The revised design
+compares index words directly and resolves all six frame slots through
+=nl_root_pin_slot_v2= before accessing their contents. The dedicated executable
+=aea8ea77673f590d5716b5861a37366c849706e6fa05f54c6813f1cd9872db4a=
+passes actual exit capture, GC before resumption, exactly-once cleanup, and
+unchanged invalid-request output through the separate adapter smoke.
+The current raw-runtime ABI attestation and GC resolver are emitted only by
+builds with =NELISP_RUNTIME_RELOAD=1=. A GNU dialect marker alone does not
+attest this ABI, and the CONS frontend must refuse such an executable.
+
+The pinned authentic GNU 31.1 =tq.el= additionally supplies a real-library
+raw native proof: =tq-queue= is read from its source-free ELC without
+evaluating the library, then compiled through the fixed CAR entry. The
+stock oracle, VM result, rooted mutable identity, and mutation aliasing
+agree. Actual source-pin mutation and disabled-check controls run in the
+smoke. This does not establish ordinary native package cold-load admission;
+the existing =cal-french= criterion remains failing at the calendar provider.
+
+The public compiler additionally admits one exact GNU 31.1 CALL1 template:
+descriptor =257=, bytes =(192 1 33 135)=, one non-nil interned symbol
+constant, and declared/computed frame depth =3=. It emits the fixed
+=nl_native_bytecode_call1_exit= entry and returns a process-local opaque
+token. The two-argument token caller binds the original symbol, follows its
+current function cell, and rejects forged, closed, input-mutated, or
+artifact-mutated tokens before native entry. The six-u64 import requires a
+separate typed manifest contract; generic import admission remains closed.
+Independent mutation tests cover signatures, source AST, actual export
+metadata, selected entry, and refusal before mmap/backend work. The real
+source-free ELC smoke verifies normal return, redefinition, GC identity,
+signal/throw resumption, and frame cleanup. Closing a token invalidates its
+registry entry; executable mappings remain process-owned. This does not
+provide cold portable CALL artifacts, general CALL lowering, or boxed package
+admission for this raw entry.
+
+One exact GNU 31.1 required-plus-REST bytecode template, =\10\207= with a
+single constant naming the REST slot, can be lowered to a native entry that
+returns the rooted REST argument slot. The caller packages evaluator-produced
+extra arguments into a fresh list and preserves each element's identity
+across GC. The public compiler and package path admit this template, record
+its required count with an unbounded maximum, and compare the source-free
+=.elc= descriptor before package effects. Descriptor and bytecode mutations
+are refused. Other variable-arity bodies remain unsupported.
+The experimental GNU 31.1 =.elc= interpreter bridge now lowers the observed
+two-argument compact-call shape (descriptor =514=, bytes
+=(192 2 2 34 135)=) to BCL CALL2 after whole-file preflight. It calls the
+current shared function cell, follows same-arity redefinition, refuses a
+forward target before top-level effects, and propagates an exceptional call.
+This interpreter bridge is separate from native opcode lowering and remains
+behind the ordinary loader's fail-closed boundary.
+The native package manifest format is now v2. It records a SHA-256 fingerprint
+over the pinned GNU bytecode dialect/inventory and the current =.neln= runtime
+ABI identifier. Package open compares this value before hashing artifacts or
+evaluating the copied =.elc=. The two-process smoke verifies that host build
+and standalone open agree and that a tampered value leaves package effects
+absent. The S5.1 acceptance combines this package admission and publication
+check with artifact cache invalidation and active-frame unload smokes.
+Each boxed package entry records =:hidden-constant-count= and the ordered
+=:hidden-constant-indices= vector. Open validates the layout against the
+pinned ELC constant pool and native entry arity before evaluating load-time
+forms. After evaluation it stages the selected objects from the installed
+eligible function, preserving their identity in the native unit roots.
+For an already provided feature, eligibility compares the installed bytecode
+descriptor, code, depth and constant-slot contents against the pinned module.
+Distinct materialized function objects can therefore reuse native code while
+their installed constant objects retain identity; mismatched fields use the VM.
+A shallow function witness records the argument descriptor, copied code
+bytes, constant-slot identities and stack depth. Changes to these fields
+retire the cached native unit and follow the current VM function. Mutations
+inside unchanged constant objects remain visible through the shared roots.
+The reviewed R8 source slice passes the unchanged cal-french cold-open smoke
+over a normal standalone candidate; current-MAIN compiled-image qualification
+remains a separate production gate.
+The package publisher race smoke now synchronizes two standalone processes
+after each has observed an absent output directory. The exclusive directory
+claim admits exactly one; the loser receives the expected file-exists error
+and cannot delete the winner's four-file package. The surviving manifest and
+artifacts retain their hashes through a cold native open. This verifies the
+atomic directory claim under actual process competition.
+
+The compiler input adapter records the static descriptor of a GNU 31.1
+closure template, including its optional source-file provenance. A compiled
+file does not contain the captured runtime values. The source-free closure
+fixture therefore remains unsupported for public native emission, and its
+standalone smoke verifies that no artifact or top-level side effect appears.
+For catch/throw, frame IR now reports handler target PC, handler depth, and
+dynamic-binding depth from genuine GNU 31.1 bytecode. Its call transfer is
+marked unresolved and produces no CFG blocks; malformed handler targets are
+rejected. Neither addition establishes a closure or unwind native ABI.
+
+The same public raw route now compiles a materialized nested-loop function
+with two backedges. The input adapter admits opcode 136 discard only when
+frame IR verifies the CFG and the structural IR's unsupported markers are
+exactly those discard instructions. The return proof accepts a cyclic slot
+only if every incoming path is valid and some path grounds it in an integer
+constant or a declared raw argument. A cycle with no such ground is rejected;
+the standalone native loop returns 42, matching GNU VM.
+
+=nelisp-bytecode-native-boxed-branch-build= proves one bounded boxed branch:
+packed one- or two-required-argument descriptors =257= and =514=, one conditional with either
+two terminal return arms or two pure arms feeding one return join. Native
+code reads the tag word at offset zero from
+the pinned Sexp argument cell, compares it with =nelisp-native-load-tag-nil=,
+then uses a resolved Jcc. Direct comparison of Sexp slot addresses would be
+incorrect because equal Lisp values occupy distinct pin slots. GNU VM and
+native tests cover nil, t, and mutable cons results from both join arms,
+including =eq= after GC. The join uses an actual stack slot for the selected
+rooted object cell. A frame-valid branch that bypasses the slot-writing arms
+is rejected. List descriptors, effects, calls, and other join shapes remain
+outside this branch slice.
+
+For descriptor =514= the backend maps both entry stack slots to their boxed
+ABI arguments after the hidden constant arguments. The public compiler routes
+this shape without reconstructing source. In a standalone process, the
+materialized function compiles, loads, and returns either a hidden cons or the
+second mutable argument; both paths retain VM/native =eq= across forced GC and
+mutation. Wrong arity and call-bearing bytecode are refused before artifact
+output. The six machine-register argument limit still applies.
+
+The S2.5 corpus checks the bounded control-flow frontend in one standalone
+process. It materializes packed boxed 257/514 branches and a boxed join plus
+raw nil/t diamonds, an integer =Bswitch=, and a two-backedge loop. Each
+artifact is emitted through a public compiler API, opened through the
+appropriate native unit API, and called. VM and native results match fixed
+goldens; boxed cons identity and mutation survive forced GC. An unsupported
+call and an unsafe raw return leave no artifact. This satisfies the baseline
+control-flow stage without implying general opcode, call, unwind, or package
+coverage.
+
+The S3.4 numeric acceptance now passes. The loader decodes rooted bignums
+from a bounded sign and 32-bit limb array. Its boxed native result copy uses
+eight 32-bit words, preserving float payloads that exceeded the NeLisp fixnum
+range when copied through 64-bit Lisp integers. Finite binary64 decoding
+derives the sign, exponent, and fraction from the words and scales in floating
+point; NaN, infinity, and malformed bignum layouts are rejected. Standalone
+VM/native checks cover fixnum boundaries, bignum numeric equality, =1.25=,
+=-0.0=, the smallest subnormal, the largest finite value, and mutable cons
+identity through forced GC. The smoke log is =target/progress/s34-numeric.log=.
+
+The current test returns an actual mutable user argument and checks =eq= with
+the VM before and after forced GC. A separate six-argument test returns a
+hidden constant. The compiler rejects general optional/rest descriptors,
+special arguments, effects, and branches outside the bounded packed cases.
+The main boxed smoke builds the artifact
+in a GNU Emacs host process. A separate =standalone-bytecode-native-constant-internal-smoke.sh=
+builds the same source-free constant CFG artifact, loads it, and runs it
+entirely inside NeLisp. This establishes in-runtime compiler hosting for
+this narrow shape; general frame CFG operations, safepoints,
+calls, unwind, closures, and cache/publish lifecycle remain unresolved.
+
+Relevant anchors include =nelisp-native-load-raw-check=,
+=nelisp-native-load-raw-artifact=, =nelisp-native-load-call=,
+=nelisp-native-load--port-count=, =nelisp-native-load--port-symbol-names=,
+=nelisp-native-unit--stage=, =nelisp-native-unit-stage=,
+=nelisp-native-unit-publish=, =nelisp-native-unit-status=,
+=nelisp-native-unit-code-info=, =nelisp-native-unit-call=,
+=nelisp-eln-objects-encode=, =nelisp-eln-objects-activation-decode=,
+=nelisp-eln-objects-activation-release=,
+=nelisp-eln-objects-call-with-artifact-symbols=,
+=nelisp-eln-objects--admit-opaque-vectors=,
+=nelisp-eln-native-subr--resolve-constant-cells=, and Doc 207 §§1–5.
+
+Validation for this document-only slice: source hashes recorded above; no
+focused runtime tests were run because no behavior changed. Reviewers should
+check org syntax and validate each ABI statement against the exact source
+hashes before promoting this draft or using it as an implementation gate.
+
+* Rooted CFG postdominator analysis integration (2026-10-01)
+
+=nelisp-bytecode-native-rooted-cfg-postdom.el= validates the supplied plan
+against freshly decoded canonical compiler input, then computes postdominator
+sets over an acyclic topology. Branches with a unique nearest common
+postdominator report that join; valid branches ending at independent exits
+report no common join. Invalid or cyclic inputs are refused.
+
+The integrated module SHA-256 is
+=a37bc8664b9db249f054ee98cf428e97eb574af71972bfcb9f9b5a84b6e3c98a=.
+Its focused ERT passes 5/5, including genuine GNU two-diamond input,
+identifier renumbering, multiple exits, and canonical-input mutation refusal.
+Disabling the analysis causes the genuine positive ERT to fail. Evidence is
+=target/progress/integrated-rooted-cfg-postdom-ert.log= and
+=target/progress/pre-rooted-cfg-postdom-integration/accepted-manifest.json=.
+
+This is an analysis foundation for emitting shared continuations. Optimized
+native emission, edge-specific phi selection, guard slow paths, and measured
+package performance remain implementation and acceptance work under S6.
+
+* Shared continuation emitter integration (2026-10-01)
+
+The separate =nelisp-bytecode-native-rooted-cfg-shared-emit-build= entry
+revalidates a canonical rooted plan and uses the postdominator analysis to
+emit each common continuation once. Incoming edges assign scalar root-index
+selectors for logical phi values. Continuations run only after a successful
+arm; existing gateway errors retain their operand-root status payload.
+The existing v1 reference emitter and native manifest contract are unchanged.
+Shared emission refuses branches without a common join; the reference mode
+remains available for such input.
+
+Root ERT passes 7/7, including genuine GNU/reference evaluator comparisons
+for carried and multiple phi values, identity after mutation, nil CAR/CDR,
+error roots, and phi-edge mutation detection. Root namespace inventory
+passes 487 files with unchanged baselines. A two-diamond fixture reduces
+AOT text from 1938 to 1127 bytes; carried-phi size reduction is unproven.
+These checks validate source AST behavior and AOT generation, not execution
+of an optimized native artifact or package performance.
+
+Module SHA-256:
+=639c07db5b104e8aa292eda7f3fd46962eeb477c9b94e77dedb7b8ab11f08279=.
+Test SHA-256:
+=e620135db2f066d3c852a427b44e65185264f624759d99f78ff51696cf9d0923=.
+Evidence: =target/progress/integrated-rooted-cfg-shared-emit-ert.log=,
+=target/progress/integrated-rooted-cfg-shared-emit-namespace.log= and
+=target/progress/pre-rooted-cfg-shared-emit-integration/namespace-amendment.json=.
+
+The versioned shared contract unit is also integrated. Its explicit version
+is =nelisp-native-rooted-cfg-shared-v2=, mode is =postdom-shared-v2=, and
+fixed export is =nl_native_rooted_cfg_shared_probe_v2=. Validation rebuilds
+the input, canonical plan and selected emitter independently; re-signed
+mode/version/entry/AST/root-recipe/import mutations fail. V1 remains on its
+original reconstruction route. Combined contract/producer ERT passes 5/5;
+module SHA-256 is
+=0581510e62285e6d07eb8e29d8964c32506e2491f302193f44e0cdac8f4761d2=.
+The separately versioned producer and loader admission are now integrated.
+The public =nelisp-bytecode-native-rooted-cfg-native-build-shared-v2= route
+selects the fixed v2 export and preserves the v1 route. The loader reconstructs
+the selected plan/emitter, checks outer and inner contract versions, and
+authenticates the typed export before mapping. Root focused ERT passes 5/5;
+namespace inventory passes 488 files with unchanged baselines. Evidence:
+=target/progress/integrated-rooted-cfg-shared-route-ert.log=,
+=target/progress/integrated-rooted-cfg-shared-route-namespace.log= and
+=target/progress/pre-rooted-cfg-shared-route-integration/accepted-manifest.json=.
+
+The current loader regression passes 25/25 with the full =lisp/src/scripts=
+load paths; the exact immediate pre-integration loader backup also passes
+25/25. Logs are =target/progress/integrated-rooted-cfg-shared-route-loader-regression.log=
+and =target/progress/pre-shared-route-loader-regression-control.log=.
+
+An isolated source-free GNU 31.1 one-case native probe passes result parity,
+object identity and post-GC argument mutation. Its artifact SHA-256 is
+=0c7ace050dceb5ef156fde88d2743325ae75bdaa1486fb942321ec5b5bfb9817=.
+The default full branch/error matrix timed out after 240 seconds during its
+second call. The one-case result does not establish full optimization
+acceptance, main-tree native matrix parity, or arithmetic/call slow paths.
+
+A subsequent MAIN-source diagnostic completes two differing second-diamond
+arms using one artifact, exit 0 and empty stderr. Root independently checks
+artifact SHA-256
+=fb06c8e0b4d342fc3af95bf57ea75d70227d49ecafb877a9178e4d25ca5bd073=.
+Evidence is under
+=target/agent-worktrees/generic-rooted-cfg-emit-20261001/target/progress/shared-v2-profile-main/=.
+The timed native entries take about 12 and 13 ms, while repeated raw checking
+takes about 8.2 seconds and the first map takes about 9.85 seconds. These
+measurements identify invocation overhead; they do not establish full matrix
+coverage or final package performance. The default full matrix remains intact.
+
+The integrated loader now memoizes the runtime-key digest against a bounded,
+immutable copy of its live inputs. Executable hashing still runs on every
+lookup. ABI, import/resolver contents, root-pin index and runtime generation
+changes invalidate the memo, including in-place mutations; malformed or
+oversized input falls back to the original digest derivation. Contract,
+artifact, address, root and GC admission checks remain enforced. Root regression
+passes 31/31 and namespace inventory passes 489 files with unchanged baselines.
+Evidence is =target/progress/pre-runtime-key-memo-integration/accepted-manifest.json=
+and =target/progress/integrated-runtime-key-memo-ert.log=.
+
+The subsequent default v1/off and shared-v2 full matrix runs both exit through
+their wrappers with status 124 at the unchanged 240-second cap. Shared-v2
+executes six native entries and starts reserve call seven; this is incomplete
+acceptance. Preserve both runs in the generic-rooted-cfg-emit-20261001 lane,
+under =target/progress/cache-memo-full-matrix-20261001/= and
+=target/progress/shared-v2-cache-memo-20261001/=. The earlier one-entry memo
+diagnostic did not capture authoritative process exit and is not a passing
+acceptance result. Arithmetic/call guards and real package performance remain
+unverified, and all 102 criteria remain unchanged.
+
+* Opt-in safe primitive lowering preparation (2026-10-01)
+
+The rooted planner accepts an optional =safe-primitives-v3= mode. This mode
+rebuilds the genuine byte-code function through the pinned public input builder
+and requires exact canonical input/dialect equality before selective admission
+of CAR-SAFE/CDR-SAFE. Coherently modified IR/frame rows cannot replace the
+original code. Fixed arity and capture restrictions remain enforced. Default
+plans retain their original shape and continue refusing these safe opcodes.
+
+The reference emitter reuses authenticated CAR/CDR imports. On type status 1,
+it obtains the distinct output root slot and explicitly writes four zero u64
+words, then continues; infrastructure statuses propagate. Host AST evaluation
+uses actual operand roots for nil/integer/string/cons semantics, poisoned output
+slots for NIL materialization, and a disabled-store negative. These tests do
+not execute the native gateway or establish native ABI/GC behavior for v3.
+
+Root validation passes 4 safe planner tests, 3 admission tests, 4 semantic tests,
+and 22 default/shared regression tests. Namespace inventory passes 488 files
+without baseline changes. Evidence: =target/progress/integrated-rooted-cfg-safe-v3-regression.log=,
+=target/progress/integrated-rooted-cfg-safe-v3-namespace.log= and
+=target/progress/pre-rooted-cfg-safe-v3-integration/accepted-manifest.json=.
+The distinct =nelisp-native-rooted-cfg-safe-v3= contract and fixed export
+=nl_native_rooted_cfg_safe_probe_v3= are the next admission boundary; producer,
+loader integration and actual native v3 execution remain incomplete. This
+preparation does not complete all-opcode acceptance.
+
+The separate safe-v3 inert contract module is now integrated. It creates the
+fixed version/export contract from canonical input and independently rebuilds
+the recipe, plan and reference AST when validating. Rehashed mutations and
+cyclic data fail; depth/node/vector/string limits apply before reconstruction.
+Root ERT passes 3/3 and namespace inventory passes 489 files. Evidence:
+=target/progress/integrated-rooted-cfg-safe-contract-ert.log= and
+=target/progress/pre-safe-contract-pair-stage-integration/accepted-manifest.json=.
+This does not yet admit safe-v3 artifacts through the producer/loader.
+
+* Absent-entry alias pair staging foundation (2026-10-01)
+
+The integrated staging module can prepare two absent six-slot entries with
+all arguments rooted before either preparation or collection. It retains the
+original registered Env pointer for mutation guards and exact-mark release.
+A fresh bucket vector/table/count preserves old heads and composes collisions;
+the final Env table slot is published only after epoch/table/head validation.
+Role checks accept only explicit alias/base roles. Empty old heads are NIL;
+new staged heads remain cons cells.
+
+The source-only r6 diagnostic passes empty/nonempty same-bucket cases,
+different buckets, entry/function/plist identity, and synthetic epoch refusal
+with unchanged table/count/affected heads and absent keys. Root independently
+replays the final fixture. A SHA-guarded dedicated executable copy changes
+only the six-byte epoch OR short-circuit branch to NOPs; the same fixture
+then fails at the intended refusal assertion with status 0. The copied cold
+image is unchanged. This is a missing-check mutation control, not concurrency
+evidence. The earlier branch-inversion probe is separate and unused as this
+control.
+
+Evidence: =target/progress/root-mirror-alias-pair-r6-final-proof/manifest.json=.
+Only the source foundation is integrated; test adapters/builder and diagnostic
+binaries are not promoted. The public alias provider, special/dynamic binding
+semantics, cal-french cold loading and production qualification remain open.
+
+The installer now uses this pair transaction for ordinary symbols when both
+entries are absent. It keeps the six-argument ABI, roots the active Env unbound
+marker and all source objects before allocation, constructs two real six-slot
+entries, and sets the alias target/presence fields before one publication.
+The production builder includes the stage object as a required dependency;
+diagnostic adapters and test entrypoints are excluded from integration.
+
+Root independently runs the same corrected fixture on the source-only r1
+candidate and unchanged r6 predecessor. The candidate exits 0 with exact
+38-byte marker/NIL stdout and empty stderr; the predecessor exits 1 at the
+intended absent-both installation assertion. The fixture compares all four
+value/function slots by EQ to the trusted unbound marker, checks target and
+presence fields and NIL plist/constant fields, and observes both records in
+the published active mirror. Both executable and cold-image hashes are
+verified. Evidence is in the native-alias-value-20261001 lane under
+=target/progress/root-alias-installer-r1-proof/manifest.json= and MAIN
+=target/progress/pre-alias-installer-missing-integration/accepted-manifest.json=.
+This does not establish existing-target migration, public provider routing,
+special/dynamic semantics or production cal-french acceptance.

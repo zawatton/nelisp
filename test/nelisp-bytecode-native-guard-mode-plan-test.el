@@ -1,0 +1,215 @@
+;;; nelisp-bytecode-native-guard-mode-plan-test.el --- Authenticated mode controls -*- lexical-binding: t; -*-
+(require 'ert)
+(require 'nelisp-bytecode-native-rooted-cfg-shared-emit)
+(require 'nelisp-bytecode-native-rooted-cfg-contract)
+(require 'nelisp-bytecode-native-rooted-cfg-native)
+
+(ert-deftest nelisp-root-guard-mode-plan-seals-options-and-distinct-source ()
+  (let* ((fixture (byte-compile '(lambda (left right) (+ left right))))
+         (input (nelisp-bytecode-compiler-input-build fixture))
+         (off (nelisp-bytecode-native-rooted-cfg-plan input))
+         (on (nelisp-bytecode-native-rooted-cfg-plan input nil 'on))
+         (off-emitted (nelisp-bytecode-native-rooted-cfg-shared-emit-build off "mode_entry"))
+         (on-emitted (nelisp-bytecode-native-rooted-cfg-shared-emit-build on "mode_entry")))
+    (should (eq (plist-get off :status) 'complete))
+    (should (eq (plist-get on :status) 'complete))
+    (should (eq (plist-get off :arithmetic-guard-mode) 'off))
+    (should (eq (plist-get on :arithmetic-guard-mode) 'on))
+    (should (equal off (nelisp-bytecode-native-rooted-cfg-plan input nil 'off)))
+    (should (eq (plist-get off-emitted :status) 'complete))
+    (should (eq (plist-get on-emitted :status) 'complete))
+    (should-not (equal (plist-get off-emitted :form) (plist-get on-emitted :form)))
+    (should (= (length (cdr (plist-get off-emitted :additional-source))) 4))
+    (should (= (length (cdr (plist-get on-emitted :additional-source))) 5))
+    (should (nelisp-bytecode-native-rooted-cfg-plan-guard-context-p off))
+    (let ((changed (copy-sequence off)))
+      (setq changed (plist-put changed :arithmetic-guard-mode 'on))
+      (should (eq (plist-get (nelisp-bytecode-native-rooted-cfg-shared-emit-build
+                             changed "mode_entry") :status) 'unsupported)))
+    (should (eq (plist-get (nelisp-bytecode-native-rooted-cfg-plan input nil 'unknown)
+                          :status) 'unsupported))
+    (aset (plist-get off :arithmetic-guard-context) 0 nil)
+    (should (eq (plist-get (nelisp-bytecode-native-rooted-cfg-shared-emit-build
+                           off "mode_entry") :status) 'unsupported))
+    (should (eq (plist-get (nelisp-bytecode-native-rooted-cfg-plan input nil 'off)
+                          :status) 'complete))))
+
+(ert-deftest nelisp-root-guard-mode-plan-refuses-owner-replacement-before-plan ()
+  (let* ((native-comp-enable-subr-trampolines nil)
+         (fixture (byte-compile '(lambda (left right) (+ left right))))
+         (input (nelisp-bytecode-compiler-input-build fixture))
+         (owner (symbol-function 'nelisp-bytecode-native-guarded-lowering-build))
+         (calls 0))
+    (unwind-protect
+        (progn
+          (fset 'nelisp-bytecode-native-guarded-lowering-build
+                (lambda (&rest _) (setq calls (1+ calls)) (list :status 'complete)))
+          (should (eq (plist-get (nelisp-bytecode-native-rooted-cfg-plan input nil 'on)
+                                :status) 'unsupported))
+          (should (= calls 0)))
+      (fset 'nelisp-bytecode-native-guarded-lowering-build owner))))
+
+(ert-deftest nelisp-native-source-context/mutation-does-not-alias-private-snapshot ()
+  (let* ((input (nelisp-bytecode-compiler-input-build
+                 (byte-compile '(lambda (left right) (+ left right)))))
+         (plan (nelisp-bytecode-native-rooted-cfg-plan input nil 'on))
+         (context (plist-get plan :arithmetic-guard-context))
+         (provider (aref (aref context 6) 4))
+         (source (aref provider 7)))
+    (should (nelisp-bytecode-native-rooted-cfg-plan-guard-context-p plan))
+    (setcar source 'changed-source)
+    (should-not (nelisp-bytecode-native-rooted-cfg-plan-guard-context-p plan))
+    (should (nelisp-bytecode-native-rooted-cfg-plan-guard-context-p
+             (nelisp-bytecode-native-rooted-cfg-plan input nil 'on)))))
+
+(ert-deftest nelisp-native-source-context/cyclic-source-refused-with-fresh-plan-intact ()
+  (let* ((input (nelisp-bytecode-compiler-input-build
+                 (byte-compile '(lambda (left right) (+ left right)))))
+         (plan (nelisp-bytecode-native-rooted-cfg-plan input nil 'on))
+         (context (plist-get plan :arithmetic-guard-context))
+         (source (aref (aref context 7) 2)))
+    (should (nelisp-bytecode-native-rooted-cfg-plan-guard-context-p plan))
+    (setcdr source source)
+    (should-not (nelisp-bytecode-native-rooted-cfg-plan-guard-context-p plan))
+    (should (nelisp-bytecode-native-rooted-cfg-plan-guard-context-p
+             (nelisp-bytecode-native-rooted-cfg-plan input nil 'on)))))
+
+(ert-deftest nelisp-root-guard-mode-fingerprint-never-traverses-opaque-owner-context ()
+  (let* ((guard (vector (lambda () (error "Opaque guard must not be serialized"))))
+         (arithmetic (vector (lambda () (error "Opaque arithmetic must not be serialized"))))
+         (result (list :status 'complete
+                       :plan (list :arithmetic-guard-context guard :arithmetic-context arithmetic
+                                   :arithmetic-guard-mode 'on :arity 2)))
+         (print-owner (symbol-function 'prin1-to-string))
+         (seen 0))
+    (cl-letf (((symbol-function 'prin1-to-string)
+               (lambda (value &rest arguments)
+                 (cl-labels ((walk (item)
+                               (cond ((or (eq item guard) (eq item arithmetic)) (setq seen (1+ seen)))
+                                     ((functionp item) nil)
+                                     ((consp item) (walk (car item)) (walk (cdr item)))
+                                     ((vectorp item) (mapc #'walk item)))))
+                   (walk value))
+                 (apply print-owner value arguments))))
+      (should (stringp (nelisp-bytecode-native-rooted-cfg-native--fingerprint result))))
+    (should (= seen 0))
+    (should (eq (plist-get (plist-get result :plan) :arithmetic-guard-context) guard))))
+
+(ert-deftest nelisp-root-guard-mode-refuses-provider-before-context-invocation ()
+  (let* ((native-comp-enable-subr-trampolines nil)
+         (fixture (byte-compile '(lambda (left right) (+ left right))))
+         (input (nelisp-bytecode-compiler-input-build fixture))
+         (owner (symbol-function 'nelisp-native-optimization-guard-v1-source))
+         (calls 0))
+    (unwind-protect
+        (progn
+          (fset 'nelisp-native-optimization-guard-v1-source
+                (lambda (&rest _) (setq calls (1+ calls)) nil))
+          (should (eq (plist-get (nelisp-bytecode-native-rooted-cfg-plan input nil 'on)
+                                :status) 'unsupported))
+          (should (= calls 0)))
+      (fset 'nelisp-native-optimization-guard-v1-source owner))))
+
+(ert-deftest nelisp-root-guard-mode-private-copy-owner-refuses-before-invocation ()
+  (let* ((native-comp-enable-subr-trampolines nil)
+         (fixture (byte-compile '(lambda (left right) (+ left right))))
+         (input (nelisp-bytecode-compiler-input-build fixture))
+         (owner (symbol-function 'nelisp-native-optimization-guard-v1--copy))
+         (calls 0))
+    (unwind-protect
+        (progn
+          ;; A white-box mutation tests the provider's public sealing boundary.
+          (fset 'nelisp-native-optimization-guard-v1--copy
+                (lambda (&rest _) (setq calls (1+ calls)) nil))
+          (should (eq (plist-get (nelisp-bytecode-native-rooted-cfg-plan input nil 'on)
+                                :status) 'unsupported))
+          (should (= calls 0)))
+      (fset 'nelisp-native-optimization-guard-v1--copy owner))))
+
+(ert-deftest nelisp-root-guard-mode-contract-distinguishes-local-source-and-runtime-imports ()
+  (let* ((fixture (byte-compile '(lambda (left right) (+ left right))))
+         (input (nelisp-bytecode-compiler-input-build fixture)))
+    (dolist (mode '(off on))
+      (let* ((plan (nelisp-bytecode-native-rooted-cfg-plan input nil mode))
+             (emitted (nelisp-bytecode-native-rooted-cfg-shared-emit-build
+                       plan nelisp-bytecode-native-rooted-cfg-contract-shared-entry))
+             (contract (nelisp-bytecode-native-rooted-cfg-contract-create-shared-v2 input plan emitted)))
+        (should contract)
+        (should (nelisp-bytecode-native-rooted-cfg-contract-valid-p contract))
+        (should (= (length (plist-get contract :local-functions)) (if (eq mode 'on) 5 4)))
+        (should (= (length (plist-get contract :runtime-imports)) 8))
+        (should (eq (plist-get contract :arithmetic-guard-mode) mode))
+        (dolist (local (plist-get contract :local-functions))
+          (should-not (member local (plist-get contract :imports))))
+        (let ((wrong (copy-tree contract)))
+          (setq wrong (plist-put wrong :additional-source
+                                 (nelisp-native-optimization-guard-v1-source
+                                  (if (eq mode 'on) 'off 'on))))
+          (setq wrong (plist-put wrong :digest
+                                 (nelisp-bytecode-native-rooted-cfg-contract--digest wrong)))
+          (should-not (nelisp-bytecode-native-rooted-cfg-contract-valid-p wrong)))))))
+
+(ert-deftest nelisp-root-guard-mode-legacy-v1-default-shape-and-opaque-clone-refusal ()
+  (let* ((fixture (byte-compile '(lambda (value) (car value))))
+         (input (nelisp-bytecode-compiler-input-build fixture))
+         (plan (nelisp-bytecode-native-rooted-cfg-plan input))
+         (emitted (nelisp-bytecode-native-rooted-cfg-emit plan "nl_native_rooted_cfg_probe_v1"))
+         (contract (nelisp-bytecode-native-rooted-cfg-contract-create input plan emitted)))
+    (should contract)
+    (should (nelisp-bytecode-native-rooted-cfg-contract-valid-p contract))
+    (should-not (memq :arithmetic-guard-mode (plist-get contract :plan)))
+    (should-not (memq :arithmetic-guard-context (plist-get contract :plan)))
+    (should-not (memq :arithmetic-guard-mode (plist-get (plist-get contract :plan) :entry-ast))))
+  (let* ((fixture (byte-compile '(lambda (left right) (+ left right))))
+         (input (nelisp-bytecode-compiler-input-build fixture))
+         (plan (nelisp-bytecode-native-rooted-cfg-plan input nil 'on))
+         (name 'nelisp-bytecode-native-guarded-lowering-build)
+         (owner (symbol-function name))
+         (clone (make-interpreted-closure (aref owner 0) (aref owner 1)
+                                          (aref owner 2) (aref owner 4) (aref owner 3))))
+    (should (equal owner clone))
+    (should-not (eq owner clone))
+    (aset (plist-get plan :arithmetic-guard-context) 0 clone)
+    (should-not (nelisp-bytecode-native-rooted-cfg-plan-guard-context-p plan))
+    (should (eq (plist-get (nelisp-bytecode-native-rooted-cfg-shared-emit-build
+                           plan "mode_entry") :status) 'unsupported))))
+
+(ert-deftest nelisp-root-guard-mode-arithmetic-context-clone-refusal ()
+  (let* ((fixture (byte-compile '(lambda (left right) (+ left right))))
+         (input (nelisp-bytecode-compiler-input-build fixture))
+         (plan (nelisp-bytecode-native-rooted-cfg-plan input nil 'on))
+         (owner (symbol-function 'nelisp-bytecode-native-arithmetic-lowering-build))
+         (clone (make-interpreted-closure (aref owner 0) (aref owner 1)
+                                          (aref owner 2) (aref owner 4) (aref owner 3))))
+    (should (nelisp-bytecode-native-rooted-cfg-plan-guard-context-p plan))
+    (should (equal owner clone))
+    (should-not (eq owner clone))
+    (aset (plist-get plan :arithmetic-context) 0 clone)
+    (should-not (nelisp-bytecode-native-rooted-cfg-plan-guard-context-p plan))
+    (should (eq (plist-get (nelisp-bytecode-native-rooted-cfg-shared-emit-build
+                           plan "mode_entry") :status) 'unsupported))
+    (should (nelisp-bytecode-native-rooted-cfg-plan-guard-context-p
+             (nelisp-bytecode-native-rooted-cfg-plan input nil 'on)))))
+
+(ert-deftest nelisp-root-guard-mode-producer-refuses-before-backend ()
+  (let* ((native-comp-enable-subr-trampolines nil)
+         (fixture (byte-compile '(lambda (left right) (+ left right))))
+         (input (nelisp-bytecode-compiler-input-build fixture))
+         (owner (symbol-function 'nelisp-bytecode-native-guarded-lowering-build))
+         (backend-calls 0) (lowering-calls 0))
+    (unwind-protect
+        (progn
+          (fset 'nelisp-bytecode-native-guarded-lowering-build
+                (lambda (&rest _) (setq lowering-calls (1+ lowering-calls)) nil))
+          ;; Remove unrelated admission refusals in this source-only control.
+          ;; No native pointers, artifact compilation, or image claim occurs.
+          (cl-letf (((symbol-function 'nelisp-native-load-running-binary-sha256)
+                     (lambda () (make-string 64 ?a)))
+                    ((symbol-function 'nelisp-runtime-reload-contract-matches-p) (lambda () t))
+                    ((symbol-function 'nelisp-native-load-raw-v2-compile-file)
+                     (lambda (&rest _) (setq backend-calls (1+ backend-calls)))))
+            (should-error (nelisp-bytecode-native-rooted-cfg-native-build-shared-v2
+                           input "unissued.nelr" 'on)))
+          (should (= backend-calls 0))
+          (should (= lowering-calls 0)))
+      (fset 'nelisp-bytecode-native-guarded-lowering-build owner))))

@@ -1,0 +1,14 @@
+#+TITLE: Retained state-validation diagnostic profiling
+#+PROJECT: Retained state-validation diagnostic profiling
+#+NOTE: A diagnostic objective defined before implementation. It neither adds to nor completes the main compiler21 or performance9 criteria. Production137ff remains uninstrumented; no cache or validation removal is authorized by this ledger.
+
+* S1 Measure remaining validation work
+
+** S1.1 Complete reader and exact diagnostic-removal AST scope gate preserve every original check and seal
+evidence: target/progress/general-native-r9-codex-20261003/state-profiler-frozen/host-qualified-receipt.json sha256=fba97e9518d87fbea3b181b29f3c2ad4e8fd2aa0039a992fedb40534305f4c17
+
+** S1.2 Fresh host assertions and retained mutation preserve decisions, short-circuit counts, and detect a missing observation wrapper
+evidence: target/progress/general-native-r9-codex-20261003/state-profiler-frozen/host-qualified-receipt.json sha256=fba97e9518d87fbea3b181b29f3c2ad4e8fd2aa0039a992fedb40534305f4c17
+
+** S1.3 End to end: genuine normal-reader producer and issuance once, repeated public assertions, mutation restoration, preparation and mapping report complete finite phase counts/times with pinned inputs
+evidence: target/progress/general-native-r9-codex-20261003/retained-integration-native/state-profile-qualified-receipt.json sha256=f28767e2db5bbef7739d6e7f94fc9ef834a2b62e6385f2950b93d801b5f3aa14

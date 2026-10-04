@@ -1,0 +1,103 @@
+;;; closure-test.el --- Captured constant admission acceptance -*- lexical-binding: t; -*-
+(require 'ert)
+(require 'bytecomp)
+(require 'nelisp-bytecode-native-consumer)
+(require 'nelisp-bytecode-native-compiler)
+(require 'nelisp-bytecode-native-package)
+
+(defun nelisp-captured-cons-test--cold-closure (marker)
+  "Read a genuine factory from a cold file after removing its source."
+  (let* ((directory (make-temp-file "nelisp-cold-factory-" t))
+         (source (expand-file-name "factory.el" directory)))
+    (unwind-protect
+        (progn
+          (with-temp-file source
+            (insert ";;; -*- lexical-binding: t; -*-\n"
+                    "(defun nelisp-captured-cons-factory (captured) (lambda () captured))\n"))
+          (byte-compile-file source)
+          (delete-file source)
+          (should-not (file-exists-p source))
+          (let ((factory
+                 (cdr (assq 'nelisp-captured-cons-factory
+                            (nelisp-bytecode-native-consumer-read-elc-functions
+                             (concat source "c"))))))
+            (funcall factory marker)))
+      (delete-directory directory t))))
+
+(ert-deftest nelisp-captured-cons/genuine-cold-factory-frame-and-identity ()
+  (let* ((marker (cons 'capture 'tail))
+         (closure (nelisp-captured-cons-test--cold-closure marker))
+         (input (nelisp-bytecode-compiler-input-build closure)))
+    (should (= (aref closure 0) 0))
+    (should (equal (aref closure 1) (unibyte-string 192 135)))
+    (should (eq (aref (aref closure 2) 0) marker))
+    (should (eq (plist-get (plist-get input :frame-result) :status) 'complete))
+    (should (equal (plist-get (plist-get input :ir-result) :unsupported)
+                   '((0 . non-fixnum-constant))))
+    (should (eq (funcall closure) marker))
+    (garbage-collect)
+    (setcar marker 'changed)
+    (should (eq (funcall closure) marker))
+    (should (eq (car (funcall closure)) 'changed))))
+
+(ert-deftest nelisp-captured-cons/public-compilation-must-reach-hidden-root-backend ()
+  (let* ((marker (cons 'capture 'tail))
+         (closure (nelisp-captured-cons-test--cold-closure marker))
+         (directory (make-temp-file "nelisp-captured-cons-" t))
+         (artifact (expand-file-name "capture.neln" directory)))
+    (unwind-protect
+        (let ((result (nelisp-bytecode-native-compiler-build closure artifact "capture_entry")))
+          (should (eq (plist-get result :status) 'complete))
+          (should (eq (aref (plist-get result :constants) 0) marker))
+          (should (equal (plist-get result :hidden-constant-indices) [0]))
+          (should (= (plist-get result :hidden-constant-count) 1))
+          (should (= (plist-get result :user-arity) 0))
+          (should (file-readable-p artifact)))
+      (delete-directory directory t))))
+
+(ert-deftest nelisp-captured-cons/multiple-genuine-captures-and-slot-witness ()
+  (let* ((byte-optimize nil)
+         (factory (byte-compile '(lambda (left right) (lambda () (progn left right)))))
+         (left (cons 'left nil)) (right (cons 'right nil))
+         (closure (funcall factory left right))
+         (constants (aref closure 2))
+         (witness (nelisp-bytecode-native-package--function-witness closure))
+         (directory (make-temp-file "nelisp-captured-multiple-" t))
+         (artifact (expand-file-name "multiple.neln" directory)))
+    (unwind-protect
+        (let ((result (nelisp-bytecode-native-compiler-build closure artifact "multiple_entry")))
+          (should (= (length constants) 2))
+          (should (memq left (append constants nil)))
+          (should (memq right (append constants nil)))
+          (should (eq (funcall closure) right))
+          (should (eq (plist-get result :status) 'complete))
+          (should (equal (plist-get result :hidden-constant-indices) [0 1]))
+          (garbage-collect)
+          (setcar right 'mutated)
+          (should (eq (funcall closure) right))
+          (should (nelisp-bytecode-native-package--function-matches-witness-p closure witness))
+          (aset constants 0 (cons 'replacement nil))
+          (should-not (nelisp-bytecode-native-package--function-matches-witness-p closure witness)))
+      (delete-directory directory t))))
+
+(ert-deftest nelisp-captured-cons/refuses-effects-rest-template-and-malformed-code ()
+  (let* ((marker (cons 'capture nil))
+         (closure (nelisp-captured-cons-test--cold-closure marker))
+         (input (nelisp-bytecode-compiler-input-build closure)))
+    (should (nelisp-bytecode-native-compiler--boxed-constant-return-input-p input))
+    (dolist (field '(:rest-argument-p :potential-capture-placeholder-p :closure-template-descriptor))
+      (let ((changed (copy-sequence input)))
+        (setq changed (plist-put changed field t))
+        (should-not (nelisp-bytecode-native-compiler--boxed-constant-return-input-p changed))))
+    (let ((changed (copy-tree input t)))
+      (plist-put (plist-get changed :ir-result) :unsupported '((0 . unsupported-semantics)))
+      (should-not (nelisp-bytecode-native-compiler--boxed-constant-return-input-p changed)))
+    (let* ((effect-factory (byte-compile '(lambda (captured) (lambda () (setcar captured 'changed)))))
+           (effect-closure (funcall effect-factory marker)))
+      (should-not (nelisp-bytecode-native-compiler--boxed-constant-return-input-p
+                   (nelisp-bytecode-compiler-input-build effect-closure))))
+    (let ((malformed (nelisp-bytecode-compiler-input-build
+                      (make-byte-code 0 (unibyte-string 193 135) [nil] 1))))
+      (should (eq (plist-get malformed :status) 'malformed))
+      (should-not (nelisp-bytecode-native-compiler--boxed-constant-return-input-p malformed)))))
+

@@ -1,0 +1,55 @@
+;;; standalone-bytecode-native-compiler-driver.el --- Compiler entrypoint smoke -*- lexical-binding: t; -*-
+
+(defun nelisp-test-bytecode-native-compiler-build ()
+  "Build a native artifact from a materialized variable-ref function."
+  (let* ((root (getenv "NELISP_REPO_ROOT"))
+         (api-root (or (getenv "NELISP_ARTIFACT_API_ROOT") root))
+         (artifact (getenv "NELISP_BC_ENTRY_ARTIFACT"))
+         (api-file (expand-file-name "lisp/nelisp-artifact.el" api-root))
+         (function (make-byte-code '(x) (unibyte-string 8 135)
+                                   (vector 'x) 1))
+         (value (cons 'materialized-argument nil))
+         (vm-answer (funcall function value))
+         result)
+    (unless (and root artifact (not (file-exists-p artifact)))
+      (error "bytecode native compiler smoke paths are invalid"))
+    (load api-file nil nil t)
+    (require 'nelisp-bytecode-native-compiler)
+    (setq result
+          (nelisp-bytecode-native-compiler-build
+           function artifact "nl_bc_materialized_arg"))
+    (unless (and (eq (plist-get result :status) 'complete)
+                 (eq vm-answer value)
+                 (file-readable-p artifact))
+      (error "materialized byte-code compilation failed: %S" result))
+    (princ (format "artifact=%s\n" artifact))))
+
+(defun nelisp-test-bytecode-native-compiler-run ()
+  "Compare VM and native argument identity across forced GC and mutation."
+  (let* ((root (getenv "NELISP_REPO_ROOT"))
+         (artifact (getenv "NELISP_BC_ENTRY_ARTIFACT"))
+         (function (make-byte-code '(x) (unibyte-string 8 135)
+                                   (vector 'x) 1))
+         (constants (aref function 2))
+         (value (cons 'materialized-argument nil))
+         (vm-answer (funcall function value))
+         unit native-before native-after)
+    (load (expand-file-name "lisp/nelisp-native-boxed-unit.el" root)
+          nil nil t)
+    (setq unit (nelisp-native-boxed-unit-open-with-constants
+                artifact "nl_bc_materialized_arg" constants 1))
+    (garbage-collect)
+    (setq native-before (nelisp-native-boxed-unit-call unit (list value)))
+    (setcdr value 'mutated)
+    (garbage-collect)
+    (setq native-after (nelisp-native-boxed-unit-call unit (list value)))
+    (nelisp-native-boxed-unit-close unit)
+    (unless (and (eq vm-answer value)
+                 (eq native-before value)
+                 (eq native-after value)
+                 (eq (cdr native-after) 'mutated))
+      (error "VM/native materialized argument identity mismatch"))
+    t))
+
+(provide 'standalone-bytecode-native-compiler-driver)
+;;; standalone-bytecode-native-compiler-driver.el ends here

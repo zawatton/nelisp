@@ -173,6 +173,10 @@ accounting of what a repeated replacement keeps mapped and why."
   ;; nativecaller is compiled ONCE against source A's stable gate address.
   ;; ------------------------------------------------------------------
   (setq retained-state (list "日本語" [17 29]))
+  (nelisp-smoke--check "equal-recurses-through-vector-in-cons"
+                       (equal (cons [1] nil) (cons [1] nil)))
+  (nelisp-smoke--check "equal-rejects-different-vector-in-cons"
+                       (not (equal (cons [1] nil) (cons [2] nil))))
   (setq source-a-result
         (nelisp-native-unit-rebuild-and-reload
          (expand-file-name "source-a.el" dir) nil '("publicscore") root))

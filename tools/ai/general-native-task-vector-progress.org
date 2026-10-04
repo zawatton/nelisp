@@ -1,0 +1,18 @@
+#+TITLE: Retained comparator task-vector experiment
+#+PROJECT: Retained comparator task-vector experiment
+#+NOTE: A bounded representation experiment defined before implementation. The main compiler21 and performance9 criteria are unchanged. No cache, relaxed bound, function-hole shortcut or execution-format fallback is authorized. Actual GC evidence is required for GC qualification.
+#+NOTE: The experiment is stopped without adoption: the matched pair showed no shorter overall or repeated time. S1.4 now explicitly requires observed shortening; the denominator remains four. Its preserved command remains red. Native disabled-comparator/copy-counter and live-task GC qualification were not run after the rejection.
+
+* S1 Reduce internal task overhead while preserving admission
+
+** S1.1 Exact task-only AST substitutions, mandatory and sealed vector dependency, and calibrated scope controls pass
+evidence: target/progress/general-native-r9-codex-20261003/task-vector-corrected-frozen/scope-qualified-receipt.json sha256=095e19c78e5e4637df0fbc2a6b7f5493f06d0041a13c9bfe56f19ba205fc2f43
+
+** S1.2 Independent host decisions, comparator boundary cases, sealed vector-owner refusal and pre-seal disabled-comparator public gate pass
+evidence: target/progress/general-native-r9-codex-20261003/task-vector-host-qualification/qualified-receipt.json sha256=a2e0192272de48aa3842151e69c090b33794938c5b83d8e49238f4db9c122c02
+
+** S1.3 End to end: genuine producer and issuance once, public original/mutation decisions, preparation/mapping and zero-projection/copy gate pass with source pins
+pending
+
+** S1.4 End to end: matched uninstrumented workload shortens overall and repeated time and records RSS, with actual collection during traversal and retained-reference correctness established
+cmd: python3 target/progress/general-native-r9-codex-20261003/check-task-vector-speedup.py

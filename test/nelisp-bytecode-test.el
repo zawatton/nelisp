@@ -24,6 +24,7 @@
 
 (require 'ert)
 (require 'nelisp-bytecode)
+(require 'nelisp-prelude-bytecode)
 
 (defun nelisp-bc-test--code (ops)
   "Assemble OPS (list of (OP ARG...) or bare OP symbol) into a vector.
@@ -96,6 +97,50 @@ Each symbolic op is replaced with its opcode byte via
     (put sym prop 31)
     (should (= (nelisp-bc-run vm) (funcall host sym prop)))
     (should (= (nelisp-bc-run vm) 31))))
+
+(ert-deftest nelisp-bc-byte-nconc-emacs-parity ()
+  "BYTE-NCONC consumes two stack values with GNU's destructive semantics."
+  (should (= (nelisp-bc-opcode 'BYTE-NCONC) 164))
+  (should (= (aref nelisp-bc--opcode-arg-bytes 164) 0))
+  (should (memq 164 nelisp-prelude-bytecode--opcodes))
+  (let* ((left (list 'left))
+         (right (list 'right))
+         (vm (nelisp-bc-make nil '(left right) [] [2 1 2 1 164 0] 4 0))
+         (host (byte-compile '(lambda (left right) (nconc left right))))
+         (host-left (list 'left))
+         (host-right (list 'right)))
+    (should (memq 164 (append (aref host 1) nil)))
+    (should (equal (nelisp-bc-run vm (list left right))
+                   (funcall host host-left host-right)))
+    (should (eq (cdr left) right))
+    (should (eq (cdr host-left) host-right)))
+  (let ((vm (nelisp-bc-make nil '(left right) [] [2 1 2 1 164 0] 4 0)))
+    (should (equal (nelisp-bc-run vm (list nil '(tail))) '(tail)))
+    (should (equal (nelisp-bc-run vm (list '(head) 'tail)) '(head . tail)))
+    (let* ((host (byte-compile '(lambda (left right) (nconc left right))))
+           (vm-error (condition-case error-data
+                         (nelisp-bc-run vm (list 'not-a-list '(tail)))
+                       (error (cons (car error-data) (cdr error-data)))))
+           (host-error (condition-case error-data
+                           (funcall host 'not-a-list '(tail))
+                         (error (cons (car error-data) (cdr error-data))))))
+      (should (equal vm-error host-error)))
+    (should-error
+     (nelisp-bc-run (nelisp-bc-make nil nil [] [164 0] 1 0))))
+  ;; GNU's compiled opcode keeps the original primitive when the public
+  ;; function cell is rebound. The VM must use the same load-time identity.
+  (let* ((vm (nelisp-bc-make nil '(left right) [] [2 1 2 1 164 0] 4 0))
+         (host (byte-compile '(lambda (left right) (nconc left right))))
+         (old-nconc (symbol-function 'nconc))
+         (left (list 'left))
+         (right (list 'right)))
+    (unwind-protect
+        (progn
+          (fset 'nconc (lambda (&rest _) 'shadowed))
+          (should (equal (nelisp-bc-run vm (list left right)) '(left right)))
+          (should (equal (funcall host (list 'left) (list 'right))
+                         '(left right))))
+      (fset 'nconc old-nconc))))
 
 (ert-deftest nelisp-bc-byte-get-ignores-shadowed-accessors ()
   "BYTE-GET ignores rebinding of `get', `symbol-plist', and `plist-get'."

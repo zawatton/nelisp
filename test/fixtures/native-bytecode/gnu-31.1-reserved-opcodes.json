@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "dialect": "GNU Emacs 31.1",
+  "upstream": "GNU Emacs tag emacs-31.1 (emacs-mirror/emacs mirror)",
+  "inventory_sha256": "147da590c9f5bdcf190b5b410c6af878c793ac89e07eafa4ae9f05a9b7aa7bcb",
+  "reserved_invalid_opcodes": [0],
+  "unused_unassigned_opcodes": [
+    51, 52, 53, 54, 55,
+    128,
+    146,
+    169, 170, 171, 172, 173, 174,
+    180, 181,
+    184, 185, 186, 187, 188, 189, 190, 191
+  ],
+  "sources": [
+    {
+      "gnu_path": "lisp/emacs-lisp/bytecomp.el",
+      "repository_path": "vendor/emacs-lisp/emacs-lisp/bytecomp.el",
+      "sha256": "094fa608bed9d9feffd4364b8df3288c1eb2bf1efd5dfa57fcd6d9bd13cdd099",
+      "evidence_lines": [[749, 751], [764, 764], [841, 841], [883, 883], [908, 908], [916, 916], [933, 933]]
+    },
+    {
+      "gnu_path": "src/bytecode.c",
+      "tag": "emacs-31.1",
+      "sha256": "97fb8f41758f88c02684da4f766d7694e3c3274077f4be46a3163949bb6431ab",
+      "evidence_lines": [[24, 31], [65, 261], [567, 568], [575, 580], [1605, 1610], [1698, 1705]],
+      "interpretation": "Opcode zero reaches CASE_ABORT and errors. The other listed slots are absent from BYTE_CODES; bytecomp.el calls them unused. The switch interpreter's default path shares Bconstant handling when BYTE_CODE_SAFE is false, so these slots are classified as unassigned, not as guaranteed runtime errors."
+    }
+  ]
+}

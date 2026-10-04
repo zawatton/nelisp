@@ -99,6 +99,10 @@
 ;; `:native' section; on host the bytecode lane is used and the native
 ;; section is metadata only.
 (defconst nelisp-artifact--native-runtime-abi "nelisp-neln-aot-v1")
+
+(defun nelisp-artifact-native-runtime-abi ()
+  "Return the native runtime ABI identifier used by artifacts."
+  nelisp-artifact--native-runtime-abi)
 (defconst nelisp-artifact--native-class 'native)
 (defconst nelisp-artifact--native-object-format 'nelisp-aot-elf-v1)
 (defconst nelisp-artifact--native-section-version 2)
@@ -1251,18 +1255,21 @@ the Nth instruction came from the Nth form."
 
 (defun nelisp-artifact--native-defun-entry (entry)
   "Normalize one native defun ENTRY plist for artifact storage."
-  (list :name (plist-get entry :name)
-        :offset (plist-get entry :offset)
-        :size (plist-get entry :size)
-        :arity (plist-get entry :arity)
-        :param-class (plist-get entry :param-class)
-        ;; The register class is not the representation.  Recorded so a
-        ;; caller reads how to hand the arguments over instead of
-        ;; inferring it from the extern set, a different question.
-        :param-repr (plist-get entry :param-repr)
-        :rt-slot-count (plist-get entry :rt-slot-count)
-        :return-repr (plist-get entry :return-repr)
-        :body-offset (plist-get entry :body-offset)))
+  (append
+   (list :name (plist-get entry :name)
+         :offset (plist-get entry :offset)
+         :size (plist-get entry :size)
+         :arity (plist-get entry :arity)
+         :param-class (plist-get entry :param-class)
+         ;; The register class is not the representation.  Recorded so a
+         ;; caller reads how to hand the arguments over instead of
+         ;; inferring it from the extern set, a different question.
+         :param-repr (plist-get entry :param-repr)
+         :rt-slot-count (plist-get entry :rt-slot-count)
+         :return-repr (plist-get entry :return-repr)
+         :body-offset (plist-get entry :body-offset))
+   (when (memq :rest-required-count entry)
+     (list :rest-required-count (plist-get entry :rest-required-count)))))
 
 (defun nelisp-artifact--native-defun-metadata (native symbol)
   "Return NATIVE defun metadata for SYMBOL."
@@ -2273,6 +2280,72 @@ large parsed forms."
          ")\n")
       (nelisp-artifact--profile-log "artifact-wrap-string" wrap-start))))
 
+(defun nelisp-artifact-write-native-link-unit
+    (artifact-path source-id object-path unit)
+  "Write a source-free `.neln' ARTIFACT-PATH from ELF OBJECT-PATH and UNIT.
+
+UNIT must contain final :text bytes, x86_64 symbol/relocation metadata, and
+:defuns with boxed Sexp-pointer ABI metadata. SOURCE-ID is a stable artifact
+label, not a source path. This writes the standard embedded native artifact
+payload without reading or reconstructing Lisp source forms. It does not
+write a cache sidecar manifest."
+  (let* ((arch (plist-get unit :machine))
+         (text (plist-get unit :text))
+         (defuns (plist-get unit :defuns)))
+    (unless (and (stringp artifact-path) (stringp source-id)
+                 (stringp object-path) (eq arch 'x86_64)
+                 (stringp text) (= (string-bytes text) (length text))
+                 (listp defuns) defuns)
+      (error "artifact-native-link-unit: invalid artifact, source id, unit, or target"))
+    (unless (fboundp 'nelisp-elf-read-symbol-bytes)
+      (require 'nelisp-elf-write))
+    (dolist (entry defuns)
+      (let ((name (plist-get entry :name))
+            (offset (plist-get entry :offset))
+            (size (plist-get entry :size))
+            (arity (plist-get entry :arity))
+            (body-offset (plist-get entry :body-offset)))
+        (unless (and (stringp name) (integerp offset) (>= offset 0)
+                     (integerp size) (> size 0) (<= (+ offset size) (length text))
+                     (integerp arity) (<= 1 arity 6)
+                     (eq (plist-get entry :param-class) 'gp)
+                     (eq (plist-get entry :param-repr) 'sexp-ptr)
+                     (eq (plist-get entry :return-repr) 'sexp-ptr)
+                     (integerp (plist-get entry :rt-slot-count))
+                     (integerp body-offset) (<= 0 body-offset) (< body-offset size))
+          (error "artifact-native-link-unit: invalid boxed entry metadata: %S"
+                 name))
+        (when (memq :rest-required-count entry)
+          (let ((required (plist-get entry :rest-required-count)))
+            (unless (and (integerp required) (>= required 0)
+                         (= arity (1+ required)))
+              (error "artifact-native-link-unit: invalid REST call ABI: %S"
+                     name))))
+        (unless (equal (nelisp-elf-read-symbol-bytes object-path name)
+                       (substring text offset (+ offset size)))
+          (error "artifact-native-link-unit: ELF body differs from UNIT text for %s"
+                 name))))
+    (let* ((names (mapcar (lambda (entry) (plist-get entry :name)) defuns))
+           (report (mapcar (lambda (name) (list :name name :native t)) names))
+           (symbols names)
+           (native (nelisp-artifact--native-section-plist
+                    object-path unit arch symbols report))
+           (payload
+            (list :format nelisp-artifact--format
+                  :kind 'neln
+                  :source source-id
+                  :module-init nil
+                  :features nil
+                  :top-level-count 0
+                  :module-policy 'bytecode
+                  :compiler (nelisp-artifact--compiler-plist)
+                  :native native
+                  :native-report report
+                  :entry (list :type 'native-only :id source-id))))
+      (nelisp-artifact--write-file
+       artifact-path (nelisp-artifact--artifact-string payload))
+      artifact-path)))
+
 (defun nelisp-artifact--preload-records (preloads)
   "Return Doc 142 §5 `:preloads' records (path + sha256) for PRELOADS."
   (mapcar #'nelisp-artifact--file-record preloads))
@@ -2369,9 +2442,11 @@ ABI, and NATIVE metadata (object hash, symbols, arch) is recorded."
           (rename-file manifest-temp manifest-path t)
           (setq manifest-installed t)
           (when artifact-backup
-            (delete-file artifact-backup))
+            ;; Both files are installed now; cleanup failure cannot undo the
+            ;; committed pair and must not make publication appear to fail.
+            (ignore-errors (delete-file artifact-backup)))
           (when manifest-backup
-            (delete-file manifest-backup))
+            (ignore-errors (delete-file manifest-backup)))
           t)
       (unless (and artifact-installed manifest-installed)
         (when manifest-installed
