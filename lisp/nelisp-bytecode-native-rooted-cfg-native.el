@@ -149,21 +149,24 @@
                  (cfg-spec (and built-contract
                                 (list :input input :plan plan :emitted emitted
                                       :contract built-contract))))
-          (unless (and cfg-spec
-                       (nelisp-bytecode-native-rooted-cfg-contract-valid-p
-                        built-contract))
+          (unless cfg-spec
             (error "rooted-cfg: input constants are not safely serializable"))
           (setq result-contract built-contract)
-          (setq manifest
-                (nelisp-native-load-raw-v2-compile-file
-                 source artifact-path
-                 (if shared-v2 "gnu31-rooted-cfg-shared-v2" "gnu31-rooted-cfg-v1") binary
-                 nil nil nil nil nil cfg-spec))
-          (stage "compile-return" source)
-          (let ((problems (nelisp-native-load-raw-v2-check
-                           manifest entry-name)))
-            (when problems
-              (error "rooted-cfg: raw-v2 artifact refused: %S" problems)))
+          ;; Compile-file owns the single semantic reconstruction.  Carry its
+          ;; receipt locally; the serialized artifact remains unchanged.
+          (let ((compiled
+                 (nelisp-native-load--raw-v2-compile-file-with-validation
+                  source artifact-path
+                  (if shared-v2 "gnu31-rooted-cfg-shared-v2" "gnu31-rooted-cfg-v1") binary
+                  nil nil nil nil nil cfg-spec)))
+            (setq manifest (plist-get compiled :manifest))
+            (stage "compile-return" source)
+            (let ((problems
+                   (nelisp-native-load--raw-v2-check-after-compile
+                    manifest entry-name (plist-get compiled :validated-contract)
+                    (plist-get compiled :digest) (plist-get compiled :validator))))
+              (when problems
+                (error "rooted-cfg: raw-v2 artifact refused: %S" problems))))
           (stage "manifest-accepted" source))
           (stage "result-seal-start" source)
           (setq result

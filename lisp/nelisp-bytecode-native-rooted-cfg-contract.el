@@ -283,6 +283,8 @@ Preserve sharing and refuse cycles without a flat-list depth limit."
               (dotimes (index (length old)) (aset new index (allocate (aref old index)))))))
         root))))
 
+(defvar nelisp-bytecode-native-rooted-cfg-contract--validation-count 0)
+
 (let ((snapshot-owner (symbol-function 'nelisp-bytecode-native-rooted-cfg-contract--snapshot-data))
       (lookup (symbol-function 'symbol-function)) (same (symbol-function 'eq)))
 (defun nelisp-bytecode-native-rooted-cfg-contract-valid-p (contract &optional result-mode)
@@ -290,6 +292,8 @@ Preserve sharing and refuse cycles without a flat-list depth limit."
 Nil RESULT-MODE preserves the boolean API.  Exact `:reconstruction' returns
 fresh full input, plan, emission and expected contract after every check passes.
 The result is data for comparison, never a certificate or cached authority."
+  (setq nelisp-bytecode-native-rooted-cfg-contract--validation-count
+        (1+ nelisp-bytecode-native-rooted-cfg-contract--validation-count))
   (and (memq result-mode '(nil :reconstruction))
        (or (null result-mode)
            (funcall same snapshot-owner

@@ -2445,7 +2445,7 @@ The enclosing CFG admission must still authenticate the complete contract."
 (let ((cfg-validator-owner
        (symbol-function 'nelisp-bytecode-native-rooted-cfg-contract-valid-p)))
 (defun nelisp-native-load-raw-v2-compile-file
-    (source-path artifact-path &optional build-id binary-sha256 call1-template rooted-stack-spec conditional-spec rooted-branch-spec rooted-branch-join-spec rooted-cfg-spec safe-v3-spec)
+    (source-path artifact-path &optional build-id binary-sha256 call1-template rooted-stack-spec conditional-spec rooted-branch-spec rooted-branch-join-spec rooted-cfg-spec safe-v3-spec validation-receiver)
   "Compile a complete GC/arena SOURCE-PATH to v2 ARTIFACT-PATH.
 
 The source is a snapshot of ordinary raw `defun' forms.  The canonical
@@ -2459,7 +2459,9 @@ The ABI module supplies the ordered GC contract and resolver namespace.  All
 contract entries must be present with their declared arity (including the
 seven-argument entry points), and every external relocation must be one of
 the resolver names.  The generated manifest is a v2 raw artifact; v1 callers
-continue to use `nelisp-native-load-raw-compile-file'."
+continue to use `nelisp-native-load-raw-compile-file'.
+VALIDATION-RECEIVER is internal: when supplied, receive the validated CFG
+object, its print digest and validator identity after output publication."
   (cl-labels ((stage (label)
                 (let ((path (getenv "NELISP_ROOTED_CFG_STAGE_LOG")))
                   (when (and (stringp path) (> (length path) 0))
@@ -3122,8 +3124,26 @@ continue to use `nelisp-native-load-raw-compile-file'."
           (when (and temporary (file-exists-p temporary))
             (ignore-errors (delete-file temporary)))))
       (stage "atomic-output-end")
+      (when (and validation-receiver cfg-validation-result)
+        (funcall validation-receiver cfg-validated-contract
+                 cfg-validation-digest cfg-validator-owner))
       manifest))))
 )
+
+(defun nelisp-native-load--raw-v2-compile-file-with-validation
+    (source-path artifact-path &optional build-id binary-sha256 call1-template rooted-stack-spec conditional-spec rooted-branch-spec rooted-branch-join-spec rooted-cfg-spec safe-v3-spec)
+  "Return the compiled manifest and its call-local CFG validation receipt."
+  (let (validated-contract digest validator)
+    (let ((manifest
+           (nelisp-native-load-raw-v2-compile-file
+            source-path artifact-path build-id binary-sha256 call1-template
+            rooted-stack-spec conditional-spec rooted-branch-spec
+            rooted-branch-join-spec rooted-cfg-spec safe-v3-spec
+            (lambda (contract print-digest owner)
+              (setq validated-contract contract digest print-digest
+                    validator owner)))))
+      (list :manifest manifest :validated-contract validated-contract
+            :digest digest :validator validator))))
 
 (defun nelisp-native-load-raw-v2-compile-call1-file
     (source-path artifact-path &optional build-id binary-sha256)
@@ -3281,8 +3301,11 @@ continue to use `nelisp-native-load-raw-compile-file'."
                                  -2)))))))
           expected))))
 
-(defun nelisp-native-load--raw-v2-rooted-cfg-contract-valid-slow-p (manifest)
-  "Validate generic CFG plan, entry, imports, and canonical typed ABIs."
+(defun nelisp-native-load--raw-v2-rooted-cfg-contract-valid-slow-p
+    (manifest &optional compiled-contract-valid)
+  "Validate generic CFG plan, entry, imports, and canonical typed ABIs.
+COMPILED-CONTRACT-VALID is internal to the immediate post-compile check;
+only semantic reconstruction is omitted, never the manifest structure."
   (require 'nelisp-bytecode-native-rooted-cfg-contract)
   (let* ((contract (plist-get manifest :native-rooted-cfg-contract))
          (native (nelisp-native-load--raw-native manifest))
@@ -3304,7 +3327,8 @@ continue to use `nelisp-native-load-raw-compile-file'."
                  (list nelisp-bytecode-native-rooted-cfg-contract-version
                        nelisp-bytecode-native-rooted-cfg-contract-shared-version))
          (equal (plist-get manifest :native-rooted-cfg-contract-version) version)
-         (nelisp-bytecode-native-rooted-cfg-contract-valid-p contract)
+         (or compiled-contract-valid
+             (nelisp-bytecode-native-rooted-cfg-contract-valid-p contract))
          (equal entry-name expected-entry)
          (equal (plist-get contract :entry-arity) 4)
          (integerp (plist-get contract :argument-count))
@@ -3537,8 +3561,14 @@ continue to use `nelisp-native-load-raw-compile-file'."
                   (plist-get manifest :native-object-opcodes)
                   (plist-get manifest :native-object-op-contract-hash))))))
 
+(defvar nelisp-native-load--rooted-cfg-outer-validation-count 0)
+(defvar nelisp-native-load--raw-v2-check-count 0)
+(defvar nelisp-native-load--trusted-map-count 0)
+
 (defun nelisp-native-load-raw-v2-rooted-cfg-contract-valid-p (manifest)
   "Validate generic CFG contract, reusing only an unchanged verified snapshot."
+  (setq nelisp-native-load--rooted-cfg-outer-validation-count
+        (1+ nelisp-native-load--rooted-cfg-outer-validation-count))
   (when (nelisp-native-load--rooted-cfg-safe-v3-manifest-p manifest)
     (require 'nelisp-bytecode-native-rooted-cfg-safe-contract))
   (if (nelisp-native-load--rooted-cfg-safe-v3-manifest-p manifest)
@@ -3578,13 +3608,34 @@ continue to use `nelisp-native-load-raw-compile-file'."
               (setcdr (nthcdr 31 nelisp-native-load--raw-v2-rooted-cfg-validation-cache) nil)))
           valid))))))
 
+(defun nelisp-native-load--raw-v2-check-after-compile
+    (manifest name validated-contract digest validator)
+  "Check MANIFEST using a receipt from this compile only when still identical."
+  (if (and validated-contract
+           (not (nelisp-native-load--rooted-cfg-safe-v3-manifest-p manifest))
+           (eq (plist-get manifest :native-rooted-cfg-contract) validated-contract)
+           (eq validator
+               (symbol-function 'nelisp-bytecode-native-rooted-cfg-contract-valid-p))
+           (equal digest
+                  (let ((print-length nil) (print-level nil)
+                        (print-circle t) (print-escape-newlines t))
+                    (secure-hash 'sha256 (prin1-to-string validated-contract)))))
+      (nelisp-native-load--raw-v2-check manifest name t)
+    (nelisp-native-load-raw-v2-check manifest name)))
+
 (defun nelisp-native-load-raw-v2-check (manifest &optional name)
+  "Return complete refusal reasons for a v2 raw runtime MANIFEST."
+  (nelisp-native-load--raw-v2-check manifest name))
+
+(defun nelisp-native-load--raw-v2-check (manifest name &optional compiled-contract-valid)
   "Return refusal reasons for a full v2 raw runtime MANIFEST.
 
 This check is deliberately complete before mmap: it validates the executable
 identity, the shared resolver index, every GC table entry and every import
 relocation.  An absent ABI module is a refusal, never a reason to trust the
 candidate's self-described table order."
+  (setq nelisp-native-load--raw-v2-check-count
+        (1+ nelisp-native-load--raw-v2-check-count))
   (let ((safe-marker (nelisp-native-load--rooted-cfg-safe-v3-manifest-p manifest)))
     (when (memq safe-marker '(:malformed :oversized))
       (error "nelisp-native-load: malformed safe-v3 manifest plist"))
@@ -3611,7 +3662,9 @@ candidate's self-described table order."
          (rooted-branch-join-contract
           (nelisp-native-load--raw-v2-rooted-branch-join-contract-valid-p manifest))
          (rooted-cfg-contract
-          (nelisp-native-load-raw-v2-rooted-cfg-contract-valid-p manifest))
+          (if compiled-contract-valid
+              (nelisp-native-load--raw-v2-rooted-cfg-contract-valid-slow-p manifest t)
+            (nelisp-native-load-raw-v2-rooted-cfg-contract-valid-p manifest)))
          (conditional-declared
           (or (plist-get manifest :native-rooted-conditional-contract-version)
               (plist-get manifest :native-rooted-conditional-entry)
@@ -4112,6 +4165,236 @@ followed by the 24 contract entry addresses in ABI order."
             (ignore-errors
               (syscall-direct 11 table (nelisp-native-load--page-round table-size)
                               0 0 0 0))))))))
+
+(defconst nelisp-native-load--trusted-max-text-bytes (* 64 1024 1024))
+(defconst nelisp-native-load--trusted-max-entries 65536)
+
+(defun nelisp-native-load--trusted-list-p (value)
+  "Accept only proper, bounded, acyclic VALUE lists."
+  (let ((n (proper-list-p value)))
+    (and n (<= n nelisp-native-load--trusted-max-entries))))
+
+(defun nelisp-native-load--raw-v2-symbol-addr-trusted (name &optional entry _manifest)
+  "Resolve a compile-validated import without semantic contract validation."
+  (let ((address
+         (if (or (member name nelisp-native-load-raw-v2-bridgeable-imports)
+                 (memq (plist-get entry :address-mode)
+                       '(arithmetic-provider-v1 call1-typed-v1))
+                 (nelisp-native-load--raw-v2-conditional-import-mode name))
+             (nelisp-native-load--symbol-addr name)
+           (nelisp-native-load--raw-symbol-addr name))))
+    (unless (and (integerp address) (> address nelisp-native-load-page-bytes))
+      (error "nelisp-native-load: trusted import resolution failed"))
+    address))
+
+(defun nelisp-native-load--raw-v2-trusted-decode (manifest name)
+  "Decode MANIFEST, checking memory safety independently of semantic admission."
+  (unless (and (nelisp-native-load--trusted-list-p manifest)
+               (zerop (% (length manifest) 2)))
+    (error "nelisp-native-load: malformed trusted manifest"))
+  (let* ((native (nelisp-native-load--raw-native manifest))
+         (_native-shape
+          (unless (and (nelisp-native-load--trusted-list-p native)
+                       (zerop (% (length native) 2)))
+            (error "nelisp-native-load: malformed trusted native section")))
+         (encoded (plist-get native :text-base64))
+         (imports (plist-get native :imports))
+         (exports (nelisp-native-load--raw-exports native))
+         (relocs (plist-get native :relocs))
+         (entries (plist-get manifest :gc-entries))
+         (contract (nelisp-native-load--raw-v2-contract))
+         (text nil) (names nil) (export-names nil) (indices nil))
+    (unless (and (nelisp-native-load--trusted-list-p native)
+                 (stringp encoded)
+                 (<= (length encoded)
+                     (* 2 nelisp-native-load--trusted-max-text-bytes))
+                 (cl-every #'nelisp-native-load--trusted-list-p
+                           (list imports exports relocs entries))
+                 exports contract)
+      (error "nelisp-native-load: trusted structural decode refused"))
+    (setq text (nelisp-native-load--raw-bytes native :text-base64))
+    (unless (and (stringp text) (> (string-bytes text) 0)
+                 (<= (string-bytes text) nelisp-native-load--trusted-max-text-bytes)
+                 (eql (string-bytes text) (plist-get native :text-size))
+                 (eql (string-bytes text) (plist-get native :object-size))
+                 (zerop (or (plist-get native :data-size) 0))
+                 (zerop (or (plist-get native :bss-size) 0)))
+      (error "nelisp-native-load: trusted text size refused"))
+    (dolist (entry imports)
+      (unless (and (nelisp-native-load--trusted-list-p entry)
+                   (stringp (plist-get entry :name))
+                   (not (member (plist-get entry :name) names))
+                   (memq (nelisp-native-load--raw-import-kind entry) '(func data)))
+        (error "nelisp-native-load: malformed trusted import"))
+      (push (plist-get entry :name) names))
+    (dolist (entry exports)
+      (unless (nelisp-native-load--trusted-list-p entry)
+        (error "nelisp-native-load: malformed trusted export"))
+      (let ((offset (plist-get entry :value)) (size (plist-get entry :size)))
+        (unless (and (nelisp-native-load--trusted-list-p entry)
+                     (stringp (plist-get entry :name))
+                     (not (member (plist-get entry :name) export-names))
+                     (integerp offset) (>= offset 0)
+                     (integerp size) (> size 0)
+                     (<= (+ offset size) (string-bytes text))
+                     (integerp (plist-get entry :arity))
+                     (<= 0 (plist-get entry :arity) nelisp-native-load-raw-max-arity-v2))
+          (error "nelisp-native-load: trusted export bounds refused"))
+        (push (plist-get entry :name) export-names)))
+    (unless (member name export-names)
+      (error "nelisp-native-load: trusted entry missing"))
+    (dolist (reloc relocs)
+      (unless (and (nelisp-native-load--trusted-list-p reloc)
+                   (not (nelisp-native-load--raw-reloc-problem
+                         reloc (string-bytes text) names)))
+        (error "nelisp-native-load: trusted relocation refused")))
+    (unless (and (= (length entries) (length contract))
+                 (eql (plist-get manifest :gc-table-count) (length entries))
+                 (eql (plist-get manifest :gc-table-magic)
+                      nelisp-native-load-raw-gc-table-magic))
+      (error "nelisp-native-load: trusted GC table count refused"))
+    (dolist (entry entries)
+      (unless (nelisp-native-load--trusted-list-p entry)
+        (error "nelisp-native-load: malformed trusted GC entry"))
+      (let ((index (plist-get entry :index)))
+        (unless (and (nelisp-native-load--trusted-list-p entry)
+                     (integerp index) (<= 0 index) (< index (length entries))
+                     (not (memq index indices))
+                     (member (plist-get entry :name) export-names))
+          (error "nelisp-native-load: trusted GC table index refused"))
+        (push index indices)))
+    text))
+
+(defun nelisp-native-load-raw-v2-artifact-trusted (manifest name origin)
+  "Map private-cache MANIFEST after the caller checked the process ABI.
+Only semantic validation is skipped; all memory boundaries remain checked."
+  (let* ((native (nelisp-native-load--raw-native manifest))
+         (exports (and native (nelisp-native-load--raw-exports native)))
+         (chosen name)
+         (declared-binary (plist-get manifest :binary-sha256))
+         (decoded (nelisp-native-load--raw-v2-trusted-decode manifest name)))
+    (setq nelisp-native-load--trusted-map-count
+          (1+ nelisp-native-load--trusted-map-count))
+    (let* ((text decoded)
+           (text-length (string-bytes text))
+           (imports0 (plist-get native :imports))
+           (stub-base (* 16 (/ (+ text-length 15) 16)))
+           (code-size (nelisp-native-load--page-round
+                       (+ stub-base (* nelisp-native-load-stub-bytes
+                                       (length imports0)))))
+           (codepage nil) (table nil) (table-size nil)
+           (stub-offsets nil) (success nil))
+      (unwind-protect
+          (progn
+            (setq codepage (nelisp-native-load--mmap code-size nil))
+            (nelisp-native-load--poke-string codepage 0 text)
+            (let ((rest imports0) (idx 0))
+              (while rest
+                (let* ((entry (car rest))
+                       (import (nelisp-native-load--raw-import-name entry))
+                       (kind (nelisp-native-load--raw-import-kind entry))
+                       (offset (+ stub-base (* nelisp-native-load-stub-bytes idx)))
+                       (addr (nelisp-native-load--raw-v2-symbol-addr-trusted
+                              import entry manifest)))
+                  (setq stub-offsets (cons (cons import offset) stub-offsets))
+                  (if (eq kind 'data)
+                      (nelisp-native-load--poke-bytes
+                       codepage offset
+                       '(#x48 #xb8 0 0 0 0 0 0 0 0 #xc3))
+                    (nelisp-native-load--poke-bytes
+                     codepage offset
+                     '(#x48 #xb8 0 0 0 0 0 0 0 0 #xff #xe0)))
+                  (ptr-write-u64 codepage (+ offset 2) addr))
+                (setq idx (1+ idx) rest (cdr rest))))
+            (let ((rest (plist-get native :relocs)))
+              (while rest
+                (let* ((reloc (car rest))
+                       (offset (plist-get reloc :offset))
+                       (symbol (plist-get reloc :symbol))
+                       (addend (or (plist-get reloc :addend) 0))
+                       (stub (assoc symbol stub-offsets)))
+                  (unless stub
+                    (error "nelisp-native-load: v2 relocation has no stub: %s"
+                           symbol))
+                  (let ((displacement (- (+ (cdr stub) addend) offset)))
+                    (unless (and (>= displacement (- (expt 2 31)))
+                                 (< displacement (expt 2 31)))
+                      (error "nelisp-native-load: trusted relocation displacement overflow"))
+                    (ptr-write-u32 codepage offset displacement)))
+                (setq rest (cdr rest))))
+            ;; Table memory is writable only during construction, then R.
+            (setq table-size (+ 16 (* 8 (length (plist-get manifest :gc-entries)))))
+            (setq table (nelisp-native-load--mmap
+                         (nelisp-native-load--page-round table-size) nil))
+            (ptr-write-u64 table 0 (length (plist-get manifest :gc-entries)))
+            (ptr-write-u64 table 8 nelisp-native-load-raw-gc-table-magic)
+            (let ((rest (plist-get manifest :gc-entries)))
+              (while rest
+                (let* ((entry (car rest))
+                       (addr (cdr (assoc (plist-get entry :name)
+                                         (let ((xs nil) (es exports))
+                                           (while es
+                                             (push (cons (plist-get (car es) :name)
+                                                         (plist-get (car es) :value)) xs)
+                                             (setq es (cdr es)))
+                                           xs)))))
+                  (unless (integerp addr)
+                    (error "nelisp-native-load: v2 GC export missing: %s"
+                           (plist-get entry :name)))
+                  (ptr-write-u64 table (+ 16 (* 8 (plist-get entry :index)))
+                                 (+ codepage addr)))
+                (setq rest (cdr rest))))
+            (unless (= 0 (syscall-direct
+                          10 table (nelisp-native-load--page-round table-size)
+                          1 0 0 0))
+              (error "nelisp-native-load: mprotect read-only GC table failed"))
+            (nelisp-native-load--mprotect-rx codepage code-size)
+            (let ((addresses nil) (rest exports))
+              (while rest
+                (let ((entry (car rest)))
+                  (push (cons (plist-get entry :name)
+                              (+ codepage (plist-get entry :value))) addresses))
+                (setq rest (cdr rest)))
+              (setq addresses (nreverse addresses))
+              (let ((handle (list :kind 'raw-runtime-v2 :path origin
+                                  :entry (cdr (assoc chosen addresses))
+                                  :entry-name chosen :exports addresses
+                                  :codepage codepage :code-size code-size
+                                  :gc-table table :gc-table-size table-size
+                                  :runtime-abi (plist-get manifest :runtime-abi)
+                                  :raw-abi (plist-get native :raw-abi)
+                                  :layout-id (plist-get manifest :layout-id)
+                                  :build-id (plist-get manifest :build-id)
+                                  :binary-sha256 declared-binary
+                                  :imports (mapcar #'nelisp-native-load--raw-import-name imports0)
+                                  :native-object-op-contract-version
+                                  (plist-get manifest
+                                             :native-object-op-contract-version)
+                                  :native-object-op-gateway-imports
+                                  (plist-get manifest
+                                             :native-object-op-gateway-imports)
+                                  :native-object-opcodes
+                                  (plist-get manifest :native-object-opcodes)
+                                  :native-object-op-contract-hash
+                                  (plist-get manifest
+                                             :native-object-op-contract-hash)
+                                  :source-sha256 (plist-get manifest :source-sha256)
+                                  :artifact-sha256 (plist-get manifest :artifact-sha256)
+                                  :object-sha256 (plist-get native :object-sha256)
+                                  :arity (plist-get (nelisp-native-load--raw-export
+                                                     native chosen) :arity)
+                                  :retained t)))
+                (push handle nelisp-native-load-raw-mappings)
+                (setq success t)
+                handle)))
+        (unless success
+          (when (and (integerp codepage) (> codepage 0))
+            (ignore-errors (syscall-direct 11 codepage code-size 0 0 0 0)))
+          (when (and (integerp table) (> table 0))
+            (ignore-errors
+              (syscall-direct 11 table (nelisp-native-load--page-round table-size)
+                              0 0 0 0))))))))
+
 
 (defun nelisp-native-load-raw-check (manifest &optional name)
   "Return structured refusal reasons for raw MANIFEST and optional NAME.

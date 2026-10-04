@@ -4,6 +4,8 @@
 #+NOTE: The file name predates the scope widening (it began as the libgccjit feasibility ledger); the title is authoritative.
 #+NOTE: Added 2026-10-04 after the user's decision to stop the in-house validation-heavy design. The three general-native ledgers are paused, not deleted. Hard requirement: NeLisp itself stays pure Elisp; libgccjit (and libffi) are external shared libraries reached through the existing nl-ffi dlopen path.
 #+NOTE: 2026-10-04 user direction: (1) introduce the .eln-style trust model first, so a function is validated once at compile time, cached under a content+ABI hash and loaded without revalidation; (2) make both the libgccjit backend and the in-house x86-64 generator usable on the same front end, for verification and comparison, and keep the in-house generator if the difference is small; (3) model every other part on GNU Emacs (comp.el / comp.c / native-elisp-load) to simplify.
+#+NOTE: 2026-10-04 (later) user direction: widen the front end the way GNU comp.el does (every valid opcode lowered either inline or as a call to a runtime function, shared by both backends), reduce compile-time validation to one, and boot from a cold image. Stages V1, B1 and F1-F3 were added; the denominator changes from 10 to 19.
+#+NOTE: 2026-10-04 (evening) user approved speeding up the in-house generator in the order seal-skip, direct forms, then no embedded GC-contract functions (stage P1). The denominator changes from 19 to 22.
 #+NOTE: Denominator history: 6 criteria at creation (L1 x3 plus three placeholders). On 2026-10-04 the placeholders L2-L4 were replaced by stages T1 (trust model), D1 (dual backend) and C1 (decision), for 3 + 3 + 3 + 1 = 10 criteria. L1 stays green and unchanged.
 
 * L1 Feasibility: NeLisp drives libgccjit through FFI
@@ -26,26 +28,87 @@ cmd: out=$(NELISP_ROOT="$PWD" timeout 200 "$NELISP_DYNAMIC_BIN" --load target/pr
 * T1 Trust model on the Emacs pattern (in-house backend first)
 
 ** T1.1 The cache file name is a pure function of the input content hash and the runtime ABI hash (the comp-el-to-eln-filename pattern): the same input gives the same name, and a one-byte input change or an ABI change gives a different one
-pending
+#+NOTE: 2026-10-04 lisp/nelisp-native-cache.el (gpt-6.1-sol, T1 attempts 1-2; design target/progress/general-native-r9-codex-20261003/t1-trust-model-design.md v3 after two scoped gpt-6-astra reviews). Directory key = ABI hash (binary, raw-v2/import contracts, production layout, bridge symbols, runtime key) + compiler revision (fixed module list hashed eagerly); file key = input recipe hash + mode. The root moved the test fixture derivation outside the runtime stubs (the stubbed primitives make host compiler input refuse).
+cmd: emacs -Q --batch -L lisp -L src -L scripts -L test -l test/nelisp-native-cache-test.el -f ert-run-tests-batch-and-exit 2>&1 | grep -q '^Ran 17 tests, 17 results as expected, 0 unexpected'
 
 ** T1.2 Loading a cached unit performs zero full validations (no raw-v2-check, no contract reconstruction, no manifest re-derivation, no admission). Only the header ABI and hash identity are checked, and a corrupted header or an ABI mismatch is refused before any code is mapped
-pending
+#+NOTE: Host: counters in raw-v2-check, the outer rooted-CFG validator and contract-valid-p stay unchanged on a cache load, every checked path moves them (positive controls), corrupt header/ABI/input refuse with the trusted-map counter unchanged. Native rows B03-B06 and C01-C02 in the T1.3 evidence confirm the same on the runtime.
+cmd: emacs -Q --batch -L lisp -L src -L scripts -L test -l test/nelisp-native-cache-test.el -f ert-run-tests-batch-and-exit 2>&1 | grep -q '^Ran 17 tests, 17 results as expected, 0 unexpected' && test "$(sha256sum target/progress/general-native-r9-codex-20261003/t1-native-evidence.json | cut -d ' ' -f 1)" = 3865c156b3c4818310d7e0bcee8ee6a51035100ef1c7b119d1237540b52d5fef
 
 ** T1.3 End to end: process A compiles compiler-r3-cons once into the cache; process B loads it from the cache and makes 1000 calls with exact results, with zero full validations, and B's load plus 1000 calls take under 10 seconds on the native runtime
-pending
+#+NOTE: 2026-10-04 native (diagnostic reader reader-t1-20261004 8c7f072d, not adopted): A compile 69.8 s and publish; B trusted load 1.06 s + 1000 exact calls 3.08 s (about 3 ms/call versus 1.7 s retained CALL and 15 s public CALL), validation deltas 0, trusted map 1, admission not loaded.
+evidence: target/progress/general-native-r9-codex-20261003/t1-native-evidence.json sha256=3865c156b3c4818310d7e0bcee8ee6a51035100ef1c7b119d1237540b52d5fef
 
 * D1 Dual backend on one front end
 
 ** D1.1 The libgccjit backend lowers the same front-end plan as the in-house generator for the compiler-r3-cons fixture and returns identical results for a fixed argument set
-pending
+#+NOTE: 2026-10-04 lisp/nelisp-native-gccjit.el (gpt-6.1-sol D1 attempt 1) lowers the shared-emit raw form (14 arithmetic/compare ops, let/if, root memory, imports through function pointers) with the raw-v2 entry ABI. Native: 1000 exact calls on each backend and an identical 50-call result digest f1ac014e... Host ERT 24/24 (the root fixed the test's repository-root path).
+cmd: emacs -Q --batch -L lisp -L src -L scripts -L test -l test/nelisp-native-gccjit-test.el -f ert-run-tests-batch-and-exit 2>&1 | grep -q '^Ran 24 tests, 24 results as expected, 0 unexpected' && test "$(sha256sum target/progress/general-native-r9-codex-20261003/d1-native-evidence.json | cut -d ' ' -f 1)" = de257870ad60f03b8b97214a0d617cbb2cb89409cb0ddaf731ff823da395cb65
 
 ** D1.2 Both backends emit cacheable units that load through the same T1 trust path
-pending
+#+NOTE: gccjit units are a .so plus a .nelh header (backend tag in key and header), published with the same no-clobber link; load = header checks + dlopen/dlsym, zero validations (counter deltas 0 natively), same callable as in-house.
+evidence: target/progress/general-native-r9-codex-20261003/d1-native-evidence.json sha256=de257870ad60f03b8b97214a0d617cbb2cb89409cb0ddaf731ff823da395cb65
 
 ** D1.3 End to end: one receipt records compile time, load time and per-call time for both backends on the same inputs, with exact result agreement
-pending
+#+NOTE: 2026-10-04 receipt (dynamic diagnostic reader 5414551c): compile gccjit 26.8 s versus in-house 69.6 s (in-house still validates three times until unit V1); trusted load 0.85 s versus 1.08 s; 1000 calls 3.24 s versus 3.28 s; identical result digests. Per-call cost is dominated by the shared frame protocol.
+evidence: target/progress/general-native-r9-codex-20261003/d1-native-evidence.json sha256=de257870ad60f03b8b97214a0d617cbb2cb89409cb0ddaf731ff823da395cb65
 
 * C1 Backend decision
 
 ** C1.1 A decision record cites the D1.3 receipt and applies the user's rule (keep the in-house generator unless the measured difference is material), and names the default backend and the fallback
+#+NOTE: 2026-10-04 decision: default in-house, libgccjit as verification/alternative backend; revisit after F2 on an arithmetic-heavy corpus.
+evidence: target/progress/general-native-r9-codex-20261003/c1-backend-decision.md sha256=cf5d5299a7c0322969873744569fef66435769434871f5c9b7feb435ddc0d66f
+
+* V1 One semantic validation per compile (Emacs model)
+
+** V1.1 One in-house compile performs exactly one contract reconstruction (counter), the produced artifact is byte-equivalent (artifact-equal EQUAL), a mutated or revalidated-validator case still revalidates and refuses, and the public raw-v2-check is unchanged
+#+NOTE: 2026-10-04 gpt-6.1-sol V1: --build no longer pre-validates the contract it just built; the post-compile check keeps every structural part and skips only the semantic reconstruction of the same validated contract (eq object, eq validator, unchanged digest). The test fails on the pre-V1 baseline (5 of 6).
+cmd: emacs -Q --batch -L lisp -L src -L scripts -L test -l test/v1-single-validation-test.el -f ert-run-tests-batch-and-exit 2>&1 | grep -q '^Ran 6 tests, 6 results as expected, 0 unexpected' && emacs -Q --batch -l target/agent-worktrees/compile-speed-sol-20261004/tools/artifact-equal.el target/agent-worktrees/compile-speed-sol-20261004/runs/v1-base/public-cons.nelr target/agent-worktrees/compile-speed-sol-20261004/runs/v1-final/public-cons.nelr 2>/dev/null | grep -qx EQUAL
+
+** V1.2 End to end: the native in-house compile of compiler-r3-cons is at least 15 seconds faster than the C1b measurement (63.1 s) on the same runner
+#+NOTE: 2026-10-04 same-session base 63.81 s versus V1 45.03 s (-18.8 s).
+evidence: target/progress/general-native-r9-codex-20261003/v1-evidence.json sha256=66c60563f4515081723d99911346bba855c569be2fcd63ad3a9f9ef2e419f03f
+
+* B1 Cold-image boot (Emacs pdump pattern)
+
+** B1.1 A cold image dumped after the compiler modules and nelisp-aot-compiler are loaded boots a fresh process whose first evaluation sees them loaded, and compiles compiler-r3-cons to status complete
+#+NOTE: Uses the existing Doc 156 arena dump (nelisp--arena-dump-image-stream / --cold-load-from) on the T1 diagnostic reader. 2026-10-04 first green.
+#+TIMEOUT: 600
+cmd: out=$(timeout 1500 target/progress/general-native-r9-codex-20261003/b1-cold-image-gate.sh "$PWD/target/agent-worktrees/reader-t1-20261004/target/nelisp" 2>&1); printf '%s\n' "$out" | grep -q 'B1.1=1'
+
+** B1.2 End to end: startup from the cold image is at least 10 seconds faster than the normal boot of the same binary (measured 2026-10-04: 1.7 s versus 19.3 s including the AOT compiler require)
+#+NOTE: 2026-10-04 gate run: normal boot to first evaluation 14.05 s, cold boot 0.20 s (446 MB image); a cold-boot compile still takes about 56 s, so the compile itself needs V1.
+#+TIMEOUT: 600
+cmd: out=$(timeout 1500 target/progress/general-native-r9-codex-20261003/b1-cold-image-gate.sh "$PWD/target/agent-worktrees/reader-t1-20261004/target/nelisp" 2>&1); printf '%s\n' "$out" | grep -q 'B1.2=1'
+
+* F1 Generic runtime call bridge for native code (comp.el freloc pattern)
+
+** F1.1 Raw-v2 native code can call any Lisp function value held in a root with N rooted arguments and receive the result in a root (one import, both backends), with signal/throw from the callee propagating through the existing exit protocol
+pending
+
+** F1.2 End to end: a compiled function calling three different primitives and one user-defined Lisp function through the bridge matches the interpreter on a fixed corpus, on both backends
+pending
+
+* F2 Full opcode lowering (inline or runtime call)
+
+** F2.1 The coverage audit reports every valid GNU 31.1 opcode as lowered (inline or bridge call) except the documented non-local-exit group, with an independent semantic test per opcode family
+pending
+
+** F2.2 Variable access (varref/varset/varbind/unbind) and non-local exits (catch, condition-case, unwind-protect, handlers) are lowered with tests that restore bindings and roots
+pending
+
+* F3 Real-code corpus
+
+** F3.1 End to end: a corpus of at least 50 real GNU 31.1 .elc functions compiles on both backends, loads through the trust path and matches the interpreter on recorded inputs
+pending
+
+* P1 In-house generator compile speed (Emacs .eln artifact shape)
+
+** P1.1 A cache compile skips the admission result seal and hands the emitted forms to the AOT compiler without a source-file round trip; the artifact is artifact-equal to before and the trust-path load still works
+pending
+
+** P1.2 A cached in-house artifact contains only the user entry (no embedded GC-contract functions); GC contract entries resolve to runtime-owned functions by import, and a forced GC during and after calls keeps results exact
+pending
+
+** P1.3 End to end: the native in-house compile of compiler-r3-cons takes at most 27 seconds (libgccjit parity, D1.3 receipt) on the same runner
 pending

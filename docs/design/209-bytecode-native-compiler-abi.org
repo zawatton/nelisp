@@ -517,7 +517,7 @@ parsed manifest plus an origin label. The ABI contract, export names and
 the path route are unchanged; previous hash =31ffe042f50c0c6e8e28b3159392117d6c39dc269dd8d22aa528ed83da14abbe=.
 It was re-pinned again the same day after =nelisp-native-load-unload= began
 invalidating the handle before unmapping; previous hash
-=96c3d64933fa1f03cc2e0fb38a3a45a3c4d0332cbf7ad4848c6e4980b115afb4=. Re-pinned again after C1b let raw-v2-compile-file reuse its own same-object contract validation (eq object, eq validator, unchanged digest); previous hash =b4dbfff118dbc9405890cca5a39a59a12e1ae4bf3bfa11646ebbc5a3fc4bc66b=):
+=96c3d64933fa1f03cc2e0fb38a3a45a3c4d0332cbf7ad4848c6e4980b115afb4=. Re-pinned again after C1b let raw-v2-compile-file reuse its own same-object contract validation (eq object, eq validator, unchanged digest); previous hash =b4dbfff118dbc9405890cca5a39a59a12e1ae4bf3bfa11646ebbc5a3fc4bc66b=. Re-pinned again after T1 added the trusted raw-v2 mapper, trusted symbol resolution and validation counters (additive; checked paths unchanged); previous hash =ea5649da0eff7de2ab1795b3fea9ecd0da00314fed17c3f36c1bed36aa097241=. Re-pinned again after V1 let the rooted-CFG build skip the post-compile semantic reconstruction of the same validated contract (structural checks kept); previous hash =24a4253f0b3b48c76b47e11549a3f4f0304f93081533306fc0bd72812fba4d43=):
 
 The =nelisp-eln-native-subr.el= hash includes concurrent S6 dispatcher
 specifications and a registered-lambda placeholder outside the bytecode
@@ -526,7 +526,7 @@ reviewed call and constant-resolution interfaces.
 
 | File | SHA-256 |
 |---+----------|
-| =lisp/nelisp-native-load.el= | =ea5649da0eff7de2ab1795b3fea9ecd0da00314fed17c3f36c1bed36aa097241= |
+| =lisp/nelisp-native-load.el= | =64c3d629c9bb54e75306e940523bec52db597018b834437fa4f5a73c8c78fb26= |
 | =lisp/nelisp-native-unit.el= | =128b8bc81c0d97cf93d0360e83ff5e4001e01db197455f21df03a5e9b5e9c568= |
 | =lisp/nelisp-eln-objects.el= | =4e185ecfac6313dd1cb55f1a1c76e7343e09dac2646153b8102126bd8a3794d7= |
 | =lisp/nelisp-eln-native-subr.el= | =5427affe1a3ff75af0d306c9200b3bb2d83afc025d9261683ab426fee08ca747= |
