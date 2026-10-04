@@ -47,6 +47,7 @@ cmd: make -s doc211-api-consumer-smoke
 cmd: timeout 45 make -s build-nelisp-bootstrap
 
 ** S1.4 End to end: the NeLisp standalone binary loads the freshly built bootstrap bundle without error
+#+NOTE: 2026-10-05 N3-11 keeps the 50s source cap: n2b and N3-11 both time out without completion at 50.080/50.089s (rc=124, empty stderr). The identity-bound image instead passes startup in 0.666s. No source-load pass or cap increase is claimed. Clause-2 evaluator measurements stay within 3% on all measured paths; target census qualification and the separate remaining G1/G4 compatibility gaps are recorded under tools/ai/c-core-progress.org C7.3/C8.2 and ../work/perf-final.json.
 #+NOTE: 2026-10-04 N2 qualification keeps the 50s source cap: seed and N2 both exit 124 at 50.052/50.053s without completion output. The final C-core identity-bound image instead starts in 0.566s (rc=0, exact marker, empty stderr). Source timing debt remains failing. Census native before/after ns/call, clauses, Lisp references and 55s results are recorded at tools/ai/c-core-progress.org C5.3/C7.3 and ../work/qualification.json.
 #+REQUIRES: NELISP_BIN
 #+NOTE: post feat/http-protocol-layer + origin/main merge (161 upstream commits) the

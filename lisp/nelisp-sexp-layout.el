@@ -56,6 +56,10 @@ length are at +16 and +24.")
   "Opaque byte-code function value, privately backed by an NlRecord box.")
 (defconst nelisp-sexp-layout-tag-native-subr 18
   "Managed native function value, backed by an NlRecord box.")
+(defconst nelisp-sexp-layout-tag-symbol-with-pos 19
+  "Immutable GC-traced positioned symbol. Slot +8 points to a 40-byte box:
+inline bare-symbol Sexp at box+0, signed fixnum position at box+32.
+Clones retain box identity; marking and image relocation trace the bare symbol.")
 
 ;; predate the namespace boundary and use private names across files; new ABI
 ;; entries do not need to extend that conceded private-name escape surface.

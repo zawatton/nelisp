@@ -11025,7 +11025,10 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
     ;; keyword was assigned outright.
     (when (or (eq sym t) (null sym) (keywordp sym))
       (signal 'setting-constant (list sym)))
-    (nelisp--check-symbol sym)
+    ;; Keep validation at this Lisp-owned semantic boundary without entering
+    ;; a second function scope for the same symbol predicate.
+    (unless (symbolp sym)
+      (signal 'wrong-type-argument (list 'symbolp sym)))
   (funcall '(builtin set) sym val)
   val)
 (unless (fboundp 'defalias)
@@ -16390,6 +16393,11 @@ claimed to match, only the shape."
    ;; own logic). Folding the two tests into one `or'-guarded clause
    ;; keeps the exact same semantics while compiling to plain
    ;; goto-if-nil branches instead, so this function can adopt.
+   ((symbol-with-pos-p obj)
+    (let ((bare (bare-symbol obj)))
+      (if print-symbols-bare (nelisp--prn-to-string bare escape depth)
+        (concat "#<symbol " (nelisp--prn-to-string bare escape depth)
+                " at " (number-to-string (symbol-with-pos-pos obj)) ">"))))
    ((or (null obj) (eq obj t)) (if obj "t" "nil"))
    ((integerp obj) (number-to-string obj))
    ((floatp obj)   (nelisp--prn-float obj))
@@ -16817,6 +16825,73 @@ OBJECT is a string or buffer and defaults to the current buffer."
   "Return the first character from START to END whose PROP is not VALUE.
 Compare values with `eq'.  OBJECT defaults to the current buffer."
   (nelisp--w202-property-find start end prop value object t)))
+
+;; N4a: positioned-symbol policy. Clause 1 leaves only box creation/access
+;; native; GNU's public checks, reader mode and removal stay in Lisp.
+(defvar symbols-with-pos-enabled nil
+  "Non-nil makes positioned symbols behave as their bare symbols.")
+(defvar print-symbols-bare nil
+  "Non-nil prints positioned symbols without their positions.")
+(defvar nelisp--rd-positioning nil "Private mode for positioning reads.")
+(defvar nelisp--rd-position-base 0 "Stream adjustment to character offsets.")
+;; Explicit installation keeps the native bridge address list unchanged.
+(when (fboundp 'nelisp--native-env)
+  (fset 'nelisp--symbol-position-op '(builtin nelisp--symbol-position-op)))
+(unless (fboundp 'position-symbol)
+(defun position-symbol (sym pos)
+  "Make a new positioned SYM at signed fixnum POS, ignoring the enable flag.
+SYM may already have a position. POS may supply another symbol's position."
+  (let ((bare (bare-symbol sym)))
+    (cond ((symbol-with-pos-p pos) (setq pos (symbol-with-pos-pos pos)))
+          ((not (fixnump pos))
+           (signal 'wrong-type-argument (list 'fixnum-or-symbol-with-pos-p pos))))
+    (nelisp--symbol-position-op 0 bare pos))))
+
+(unless (fboundp 'symbol-with-pos-pos)
+(defun symbol-with-pos-pos (sympos)
+  "Extract SYMPOS's position, ignoring `symbols-with-pos-enabled'."
+  (unless (symbol-with-pos-p sympos)
+    (signal 'wrong-type-argument (list 'symbol-with-pos-p sympos)))
+  (nelisp--symbol-position-op 1 sympos nil)))
+
+(unless (fboundp 'remove-pos-from-symbol)
+(defun remove-pos-from-symbol (object)
+  "Return OBJECT's bare symbol if positioned, otherwise OBJECT itself."
+  (if (symbol-with-pos-p object) (bare-symbol object) object)))
+(defun nelisp--rd-position-symbol (symbol position)
+  "Position a token SYMBOL at character POSITION in the current stream.
+GNU leaves nil and reader-generated quote/function/backquote heads bare."
+  (if (and nelisp--rd-positioning symbol)
+      (position-symbol symbol (+ position nelisp--rd-position-base)) symbol))
+(unless (fboundp 'read-positioning-symbols)
+(defun read-positioning-symbols (&optional stream)
+  "Read one expression from STREAM, retaining character positions on symbols."
+  (let* ((s (or stream standard-input))
+         (nelisp--rd-positioning t)
+         (nelisp--rd-position-base
+          (cond ((nelisp-buffer-p s) 1)
+                ((nelisp-marker-p s) (- 1 (nelisp-marker-position s)))
+                (t 0))))
+    (read s))))
+(defun nelisp--positioning-read-from-string (string start end)
+  "Positioning reader reference path; indexes remain character indexes."
+  (nelisp--check-string string)
+  (when start (unless (fixnump start)
+                (signal 'wrong-type-argument (list 'integerp start))))
+  (when end (unless (fixnump end)
+              (signal 'wrong-type-argument (list 'integerp end))))
+  (let* ((n (length string)) (base (or start 0)) (limit (or end n)))
+    (when (< base 0) (setq base (+ n base)))
+    (when (< limit 0) (setq limit (+ n limit)))
+    (when (or (< base 0) (> base n) (< limit 0) (> limit n))
+      (signal 'args-out-of-range (list string start end)))
+    (let ((r (nelisp--rd-read-one string base limit)))
+      (when (and (null (car r)) (>= (cdr r) limit)
+                 (>= (nelisp--rd-skip-ws string base limit) limit)
+                 (not nelisp--rd-skip-nil))
+        (signal 'end-of-file nil))
+      r)))
+
 ;; --- Doc 143: minimal read-from-string for the reader runtime -------------
 ;; Recursive-descent parser for the core sexp grammar (int/float/symbol/string/
 ;; list/dotted/vector/quote forms).  Records (#s) are out of scope (no record
@@ -17379,7 +17454,8 @@ from the top-level empty read that callers turn into `end-of-file' or nil."
           ;; maximum and descriptor/depth types before calling the permissive
           ;; constructor; the native path declines invalid shapes into here.
           ((and (< (1+ i) n) (= (aref s (1+ i)) 91))
-           (let* ((r (nelisp--rd-one s (+ i 1) n))
+           (let* ((nelisp--rd-positioning nil)
+                  (r (nelisp--rd-one s (+ i 1) n))
                   (vector (car r))
                   (fields (and (vectorp vector) (append vector nil)))
                   (count (length fields))
@@ -17413,9 +17489,19 @@ from the top-level empty read that callers turn into `end-of-file' or nil."
           ((and (< (1+ i) n) (= (aref s (1+ i)) 58))
            (let* ((start (+ i 2))
                   (end (nelisp--rd-atom-end s start n)))
-             (cons (make-symbol
-                    (nelisp--rd-symbol-unescape (substring s start end)))
+             (cons (nelisp--rd-position-symbol
+                    (make-symbol (nelisp--rd-symbol-unescape
+                                  (substring s start end))) start)
                    end)))
+          ((and (< (1+ i) n) (= (aref s (1+ i)) 95))
+           (let* ((start (+ i 2)) (end (nelisp--rd-atom-end s start n))
+                  (symbol (intern (nelisp--rd-symbol-unescape
+                                   (substring s start end)))))
+             (cons (if (= start end) symbol
+                     (nelisp--rd-position-symbol symbol start)) end)))
+          ((and nelisp--rd-positioning (< (+ i 2) n)
+                (= (aref s (1+ i)) 115) (= (aref s (+ i 2)) 40))
+           (let ((nelisp--rd-positioning nil)) (read-from-string s i n)))
           ((and (< (1+ i) n) (= (aref s (1+ i)) 39))
            (let ((r (nelisp--rd-one s (+ i 2) n)))
              (cons (list 'function (car r)) (cdr r))))
@@ -17443,7 +17529,8 @@ from the top-level empty read that callers turn into `end-of-file' or nil."
           ;; list form -- a corrupted parse, not a decline -- because `('
           ;; is one of `nelisp--rd-atom-end''s terminator characters.
           ((and (< (1+ i) n) (= (aref s (1+ i)) 40))
-           (let ((r (nelisp--rd-one s (+ i 2) n)))
+           (let* ((nelisp--rd-positioning nil)
+                  (r (nelisp--rd-one s (+ i 2) n)))
              (unless (stringp (car r))
                (signal 'invalid-read-syntax (list "#")))
              (let ((str (copy-sequence (car r))) (k (cdr r)) (done nil))
@@ -17593,8 +17680,8 @@ from the top-level empty read that callers turn into `end-of-file' or nil."
                       ;; embedded here so they resolve to the SAME sentinel
                       ;; `defun'/`if' bodies use throughout the interpreter.
                        ((string= raw-tok "nil") nil)
-                       ((string= raw-tok "t") t)
-                       (t (intern escaped)))
+                       ((string= raw-tok "t") (nelisp--rd-position-symbol t i))
+                       (t (nelisp--rd-position-symbol (intern escaped) i)))
                  e)))))))
 
 (unless (fboundp 'read-from-string)
@@ -17763,7 +17850,7 @@ are reported the way GNU does, and the rest takes `read-from-string'."
                    (cdr cached)
                  (nelisp-buffer-string buf)))
          (end (or end (length full)))
-         (r (and (<= start end)
+         (r (and (not nelisp--rd-positioning) (<= start end)
                  (fboundp 'nelisp--read-all-from-string-native)
                  (nelisp--read-all-from-string-native full start end))))
     (or r
@@ -17909,6 +17996,8 @@ are reported the way GNU does, and the rest takes `read-from-string'."
 (when (fboundp 'nelisp--read-all-from-string-native)
   (fset 'read-from-string
         (lambda (string &optional start end)
+         (if nelisp--rd-positioning
+             (nelisp--positioning-read-from-string string start end)
          ;; Fast path for the common `(read-from-string STRING [START])': the
          ;; validation below costs about as much interpreted as a short form
          ;; costs to parse.  Anything unusual or declined takes the full path.
@@ -17950,7 +18039,7 @@ are reported the way GNU does, and the rest takes `read-from-string'."
                                (length s))
                            (not nelisp--rd-skip-nil))
                   (signal 'end-of-file nil))
-                (cons (car r) (+ base (cdr r))))))))))
+                (cons (car r) (+ base (cdr r)))))))))))
   (fset 'read
         (lambda (&optional stream)
           (let ((s (or stream standard-input)))
@@ -20952,7 +21041,7 @@ Hash tables compare only by identity; markers compare buffer and position."
    ;; case below, so the native comparison decides them outright.  Testing
    ;; them first spares every string/symbol comparison (the bulk of `equal'
    ;; calls) the cons/vector/bool-vector/marker predicate chain.
-   ((or (stringp a) (symbolp a) (integerp a)) (nelisp--native-equal a b))
+   ((or (stringp a) (symbolp a) (integerp a) (symbol-with-pos-p a)) (nelisp--native-equal a b))
    ((eq a b) t)
    ((and (consp a) (consp b))
     ;; Native tables use cons storage, but GNU does not compare contents.
@@ -21391,6 +21480,7 @@ nil), so there is nothing else to update for that name."
      ((and (fboundp 'subrp) (subrp x)) 'subr)
      ((consp x) 'cons)
      ((symbolp x) 'symbol)
+     ((symbol-with-pos-p x) 'symbol-with-pos)
      ((stringp x) 'string)
      ((integerp x) 'integer)
      ((floatp x) 'float)
@@ -21443,7 +21533,7 @@ any other -- to find the final function binding and return it."
 (defconst nelisp--builtin-fixed-arities
   '((0 garbage-collect)
     (1 nelisp--clear-string-bytes car cdr car-safe atom consp listp nlistp null not stringp
-       symbolp integerp bignump natnump numberp floatp vectorp functionp
+       symbolp symbol-with-pos-p bare-symbol integerp bignump natnump numberp floatp vectorp functionp
        bool-vector-p char-table-p recordp
        length symbol-name symbol-value symbol-function fboundp boundp makunbound
        make-symbol type-of identity abs sin cos 1+ 1- number-to-string string-bytes
@@ -21452,7 +21542,7 @@ any other -- to find the final function binding and return it."
     (2 nelisp--equal-leaf cons eq eql equal setcar setcdr nth nthcdr elt aref rassoc memq member assq string=
        nelisp--native-pin-eq-slots
        string< make-vector fset ash)
-    (3 aset nelisp--native-pin-copy nelisp--native-unbox-reference)
+    (3 nelisp--symbol-position-op aset nelisp--native-pin-copy nelisp--native-unbox-reference)
     (7 ptr-call))
   "Fixed argument counts shared by introspection and native reader dispatch.
 The build driver reads this literal as data without evaluating the prelude.")
@@ -21490,6 +21580,9 @@ unlisted OS-specific entry point."
         (setq groups (cdr groups)))
       (if fixed (cons fixed fixed)
         (cond
+         ((eq name 'eval) '(1 . 2))
+         ((assq name nelisp--special-form-arities)
+          (cons (cdr (assq name nelisp--special-form-arities)) 'unevalled))
          ((memq name '(featurep intern-soft)) '(1 . 2))
          ((memq name '(floor truncate ceiling)) '(1 . 2))
          ((memq name '(float-time)) '(0 . 1))
@@ -23701,3 +23794,34 @@ The first query initializes the snapshot with one explicit collection."
     (if nelisp--gc-last-snapshot
         (nelisp--gc-statistics nelisp--gc-last-snapshot)
       (garbage-collect))))
+
+;; N3: special objects and arity policy are Lisp-owned. Native clause 2
+;; dispatch honors these cells (including aliases and explicit tombstones),
+;; and funcall/apply reject unevaluated objects. Retain the existing Lisp
+;; macro implementation as a reference/fallback for non-native forms.
+(defvar nelisp--special-form-arities
+  '((if . 2) (let . 1) (let* . 1) (setq . 0) (while . 1)
+    (progn . 0) (quote . 1) (function . 1) (condition-case . 2)
+    (unwind-protect . 1) (catch . 1) (and . 0) (or . 0)
+    (cond . 0) (prog1 . 1) (defvar . 1) (defconst . 2)
+    (interactive . 0) (save-current-buffer . 0) (save-excursion . 0)
+    (save-restriction . 0) (inline . 0)))
+(dolist (entry nelisp--special-form-arities)
+  (let ((name (car entry)))
+    (unless (and (consp (symbol-function name))
+                 (eq (car (symbol-function name)) 'builtin)
+                 (eq (cadr (symbol-function name)) name))
+      (fset name (list 'builtin name (symbol-function name))))))
+;; GNU's obsolete inline special form is the same subr as progn.
+(fset 'inline (symbol-function 'progn))
+
+(defun nelisp--set-special-form-implementation (symbol implementation)
+  "Install the Lisp reference IMPLEMENTATION behind SYMBOL's special object.
+Consumers use this when connecting library-owned buffer semantics. The
+function cell remains a special-form object; ordinary advice cannot wrap it."
+  (let ((object (symbol-function symbol)))
+    (unless (and (consp object) (eq (car object) 'builtin)
+                 (assq symbol nelisp--special-form-arities))
+      (signal 'wrong-type-argument (list 'special-form-p symbol)))
+    (setcar (cddr object) implementation)
+    nil))

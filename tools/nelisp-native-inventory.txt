@@ -25,8 +25,8 @@ list	native-demotable	(lambda (&rest a) a) once funcall builds &rest list native
 eq	native-must-stay	type predicate on tag bits
 null	native-must-stay	type predicate on tag bits
 not	native-review	No classification row; review against Doc 211 §6.
-special-form-p	native-review	No classification row; review against Doc 211 §6.
-nelisp--env-globals-op	native-review	No classification row; review against Doc 211 §6.
+special-form-p	native-must-stay	Minimal native surface clause 2: N3 evaluator entry; rooted watcher callbacks or special-form function cells. Lisp references retained in packages/nelisp-sys/eval-port/ and test/nelisp-n3-reference.el; Lisp watcher policy in library foundation.
+nelisp--env-globals-op	native-must-stay	Minimal native surface clause 2: N3 evaluator entry; rooted watcher callbacks or special-form function cells. Lisp references retained in packages/nelisp-sys/eval-port/ and test/nelisp-n3-reference.el; Lisp watcher policy in library foundation.
 make-hash-table	native-review	No classification row; review against Doc 211 §6.
 puthash	native-must-stay	hash-table core
 gethash	native-must-stay	Minimal native surface clause 1: tagged hash-table buckets; eq/eql string identity fallback after byte mutation (GNU reference test/nelisp-n2-reference.el)
@@ -141,7 +141,7 @@ atom	native-must-stay	type predicate on tag bits
 subrp	native-must-stay	type predicate on tag bits
 stringp	native-must-stay	type predicate on tag bits
 symbolp	native-must-stay	type predicate on tag bits
-symbol-with-pos-p	native-must-stay	type predicate on tag bits
+symbol-with-pos-p	native-must-stay	Clause 1: dedicated positioned-symbol tag predicate; ignores enable flag.
 integerp	native-must-stay	type predicate on tag bits
 natnump	native-review	No classification row; review against Doc 211 §6.
 numberp	native-must-stay	type predicate on tag bits
@@ -158,21 +158,22 @@ vectorp	native-must-stay	type predicate on tag bits
 listp	native-must-stay	type predicate on tag bits
 nlistp	native-must-stay	type predicate on tag bits
 zerop	native-review	No classification row; review against Doc 211 §6.
-set	native-review	No classification row; review against Doc 211 §6.
-makunbound	native-must-stay	evaluator core (eval/apply/funcall/signal/symbol cells)
+set	native-must-stay	Minimal native surface clause 2: N3 evaluator entry; rooted watcher callbacks or special-form function cells. Lisp references retained in packages/nelisp-sys/eval-port/ and test/nelisp-n3-reference.el; Lisp watcher policy in library foundation.
+makunbound	native-must-stay	Minimal native surface clause 2: N3 evaluator entry; rooted watcher callbacks or special-form function cells. Lisp references retained in packages/nelisp-sys/eval-port/ and test/nelisp-n3-reference.el; Lisp watcher policy in library foundation.
 symbol-value	native-must-stay	evaluator core (eval/apply/funcall/signal/symbol cells)
-symbol-function	native-must-stay	evaluator core (eval/apply/funcall/signal/symbol cells)
+symbol-function	native-must-stay	Minimal native surface clause 2: N3 evaluator entry; rooted watcher callbacks or special-form function cells. Lisp references retained in packages/nelisp-sys/eval-port/ and test/nelisp-n3-reference.el; Lisp watcher policy in library foundation.
 fboundp	native-must-stay	evaluator core (eval/apply/funcall/signal/symbol cells)
 boundp	native-must-stay	evaluator core (eval/apply/funcall/signal/symbol cells)
 featurep	native-must-stay	feature registry read by bootstrap loader
 provide	native-review	No classification row; review against Doc 211 §6.
 require	native-review	No classification row; review against Doc 211 §6.
 symbol-name	native-must-stay	evaluator core (eval/apply/funcall/signal/symbol cells)
-bare-symbol	native-must-stay	type predicate on tag bits
+bare-symbol	native-must-stay	Clause 1: tagged-object access to positioned-symbol bare slot; ignores enable flag.
 intern	native-review	No classification row; review against Doc 211 §6.
 intern-soft	native-review	No classification row; review against Doc 211 §6.
 make-symbol	native-must-stay	allocation/tagged-object primitive
 nelisp--intern-lookup	native-review	No classification row; review against Doc 211 §6.
+nelisp--symbol-position-op	native-must-stay	Clause 1: allocate immutable GC-traced tag-19 box (bare Sexp + signed fixnum), or access its position; public validation, reader and removal references are in scripts/nelisp-stdlib-prelude.el.
 nelisp--format-simple	native-review	No classification row; review against Doc 211 §6.
 unibyte-string	native-must-stay	allocation/tagged-object primitive
 nelisp--native-subr-create	native-review	No classification row; review against Doc 211 §6.
@@ -267,3 +268,24 @@ nelisp--native-env	native-review	No classification row; review against Doc 211 �
 nelisp--native-pin-copy	native-review	No classification row; review against Doc 211 §6.
 nelisp--native-pin-eq-slots	native-review	No classification row; review against Doc 211 §6.
 nelisp--symbol-global-cell-p	native-review	No classification row; review against Doc 211 §6.
+# N3 private evaluator units; native bridge order/membership unchanged.
+nl_apply_do_eval	native-must-stay	Minimal native surface clause 2: N3 evaluator entry; rooted watcher callbacks or special-form function cells. Lisp references retained in packages/nelisp-sys/eval-port/ and test/nelisp-n3-reference.el; Lisp watcher policy in library foundation.
+nl_apply_lambda_inner	native-must-stay	Minimal native surface clause 2: N3 evaluator entry; rooted watcher callbacks or special-form function cells. Lisp references retained in packages/nelisp-sys/eval-port/ and test/nelisp-n3-reference.el; Lisp watcher policy in library foundation.
+nl_env_set_value	native-must-stay	Minimal native surface clause 2: N3 evaluator entry; rooted watcher callbacks or special-form function cells. Lisp references retained in packages/nelisp-sys/eval-port/ and test/nelisp-n3-reference.el; Lisp watcher policy in library foundation.
+bf_set_dynamic_value	native-must-stay	Minimal native surface clause 2: N3 evaluator entry; rooted watcher callbacks or special-form function cells. Lisp references retained in packages/nelisp-sys/eval-port/ and test/nelisp-n3-reference.el; Lisp watcher policy in library foundation.
+bf_bind_frame_declared	native-must-stay	Minimal native surface clause 2: N3 evaluator entry; rooted watcher callbacks or special-form function cells. Lisp references retained in packages/nelisp-sys/eval-port/ and test/nelisp-n3-reference.el; Lisp watcher policy in library foundation.
+nl_env_pop_frame	native-must-stay	Minimal native surface clause 2: N3 evaluator entry; rooted watcher callbacks or special-form function cells. Lisp references retained in packages/nelisp-sys/eval-port/ and test/nelisp-n3-reference.el; Lisp watcher policy in library foundation.
+nl_apply_do_fset	native-must-stay	Minimal native surface clause 2: N3 evaluator entry; rooted watcher callbacks or special-form function cells. Lisp references retained in packages/nelisp-sys/eval-port/ and test/nelisp-n3-reference.el; Lisp watcher policy in library foundation.
+nl_sf_defvaralias_apply	native-must-stay	Minimal native surface clause 2: N3 evaluator entry; rooted watcher callbacks or special-form function cells. Lisp references retained in packages/nelisp-sys/eval-port/ and test/nelisp-n3-reference.el; Lisp watcher policy in library foundation.
+nl_apply_special	native-must-stay	Minimal native surface clause 2: N3 evaluator entry; rooted watcher callbacks or special-form function cells. Lisp references retained in packages/nelisp-sys/eval-port/ and test/nelisp-n3-reference.el; Lisp watcher policy in library foundation.
+nl_apply_builtin	native-must-stay	Minimal native surface clause 2: N3 evaluator entry; rooted watcher callbacks or special-form function cells. Lisp references retained in packages/nelisp-sys/eval-port/ and test/nelisp-n3-reference.el; Lisp watcher policy in library foundation.
+nl_n3_cell_set	native-must-stay	Minimal native surface clause 2: N3 evaluator entry; rooted watcher callbacks or special-form function cells. Lisp references retained in packages/nelisp-sys/eval-port/ and test/nelisp-n3-reference.el; Lisp watcher policy in library foundation.
+nl_cell_get_value	native-must-stay	Minimal native surface clause 2: N3 evaluator entry; rooted watcher callbacks or special-form function cells. Lisp references retained in packages/nelisp-sys/eval-port/ and test/nelisp-n3-reference.el; Lisp watcher policy in library foundation.
+nelisp_env_set_value_name_ok	native-must-stay	Minimal native surface clause 2: evaluator entry; active-root setter validation, declaration lookup or watched default writes. Original lowered Lisp references retained; GNU reference in test/nelisp-n3-reference.el and test/nelisp-n3-unwind-reference.el.
+bf_special_registry	native-must-stay	Minimal native surface clause 2: evaluator entry; active-root setter validation, declaration lookup or watched default writes. Original lowered Lisp references retained; GNU reference in test/nelisp-n3-reference.el and test/nelisp-n3-unwind-reference.el.
+bf_set_declared_default	native-must-stay	Minimal native surface clause 2: evaluator entry; active-root setter validation, declaration lookup or watched default writes. Original lowered Lisp references retained; GNU reference in test/nelisp-n3-reference.el and test/nelisp-n3-unwind-reference.el.
+nl_let_setup	native-must-stay	Minimal native surface clause 2: evaluator binding entry, pending-initializer root lifetime and silent formal-binding declaration classification. Lowered Lisp originals retained in lisp/nelisp-cc-evalport-env-leaves-{logic,frame,bind}.el; GNU unwind/GC references in test/nelisp-n3-unwind-reference.el.
+nl_let_collect_with_slot	native-must-stay	Minimal native surface clause 2: evaluator binding entry, pending-initializer root lifetime and silent formal-binding declaration classification. Lowered Lisp originals retained in lisp/nelisp-cc-evalport-env-leaves-{logic,frame,bind}.el; GNU unwind/GC references in test/nelisp-n3-unwind-reference.el.
+nl_push_and_bind	native-must-stay	Minimal native surface clause 2: evaluator binding entry, pending-initializer root lifetime and silent formal-binding declaration classification. Lowered Lisp originals retained in lisp/nelisp-cc-evalport-env-leaves-{logic,frame,bind}.el; GNU unwind/GC references in test/nelisp-n3-unwind-reference.el.
+bf_bind_frame_silent	native-must-stay	Minimal native surface clause 2: evaluator binding entry, pending-initializer root lifetime and silent formal-binding declaration classification. Lowered Lisp originals retained in lisp/nelisp-cc-evalport-env-leaves-{logic,frame,bind}.el; GNU unwind/GC references in test/nelisp-n3-unwind-reference.el.
+nl_n3_pop_names	native-must-stay	Minimal native surface clause 2: evaluator unbinding retains callback writes on failed restoration, including a void value, without overwriting the pending signal. Original lowered frame-pop reference retained; GNU recursive-write/void/GC error references in test/nelisp-n3-unwind-reference.el.
