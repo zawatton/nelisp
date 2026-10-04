@@ -2,9 +2,9 @@
 
 ;;; Code:
 
-;; Positioned symbols require a native object type.  Likewise, backtrace
-;; enumeration, obarray bucket layout, and the focus event queue are not
-;; exposed by this runtime.  Do not replace them with fabricated Lisp data.
+;; Positioned symbols and activation records are supplied by the runtime.
+;; Obarray bucket layout and the focus event queue still require runtime
+;; access; do not replace those with fabricated Lisp data.
 
 (defun emacs-cc-census-other-w302--arity (name args minimum maximum)
   "Check the number of ARGS accepted by NAME."

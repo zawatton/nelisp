@@ -51,8 +51,8 @@ The optional FORCE argument is accepted for historical reasons and ignored."
 
 ;; The remaining assigned primitives keep their existing bindings:
 ;;
-;; backtrace--frames-from-thread needs evaluator frame access.  The bundle's
-;; backtrace-frame--internal is only a nil stub, not an inspection interface.
+;; backtrace--frames-from-thread is provided by the runtime activation ABI.
+;; Its Lisp veneer uses GC-rooted evaluator records, including cold-image runs.
 ;;
 ;; set-window-dedicated-p, set-window-display-table and set-window-hscroll
 ;; need working readers and storage in the shared window model.  Their
