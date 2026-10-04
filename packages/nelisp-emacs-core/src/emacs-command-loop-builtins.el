@@ -308,6 +308,26 @@ secondary source after `emacs-command-loop--unread-events' is empty."))
   (defvar pre-command-hook nil
     "Phase B.4 bridge: hook run before each command-loop dispatch."))
 
+(unless (fboundp 'tooltip-hide)
+  (defvar tooltip-timeout-id nil)
+  (defvar tooltip-hide-time nil)
+  (defun tooltip-hide (&optional _ignored-arg)
+    "Hide a tooltip, clearing its echo-area fallback on non-graphic frames."
+    (when (timerp tooltip-timeout-id)
+      (cancel-timer tooltip-timeout-id)
+      (setq tooltip-timeout-id nil))
+    (if (display-graphic-p)
+        (when (and (fboundp 'x-hide-tip) (x-hide-tip))
+          (setq tooltip-hide-time (float-time)))
+      (let ((text (current-message)))
+        (message "")
+        (when (and text (not (equal text "")))
+          (setq tooltip-hide-time (float-time))))))
+  ;; GNU's default pre-command hook hides tooltips before every command,
+  ;; including macro commands.  Keep this in the shared loop so binding or
+  ;; removing the hook also suppresses the echo-area clear normally.
+  (add-hook 'pre-command-hook #'tooltip-hide))
+
 (unless (boundp 'post-command-hook)
   (defvar post-command-hook nil
     "Phase B.4 bridge: hook run after each command-loop dispatch."))

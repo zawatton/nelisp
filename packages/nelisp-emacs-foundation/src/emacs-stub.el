@@ -1383,6 +1383,10 @@ machine-readable stdout.  Nil and empty messages emit a blank line unless
         (cond
          ((and (emacs-stub--standalone-batch-message-p)
                (fboundp 'nelisp--write-stderr-line))
+          (when (and (boundp 'emacs-batch-stdio-pending-newline)
+                     emacs-batch-stdio-pending-newline)
+            (setq emacs-batch-stdio-pending-newline nil)
+            (nelisp--write-stderr-line ""))
           (nelisp--write-stderr-line (or text "")))
          ((emacs-stub--standalone-batch-message-p)
           (nelisp--write-stdout-bytes (concat "nemacs: " (or text "") "\n")))

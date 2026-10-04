@@ -1,5 +1,38 @@
 ;;; emacs-cc-print-1.el --- C-core print primitives -*- lexical-binding: t; -*-
 
+(defvar emacs-batch-stdio-pending-newline nil
+  "Non-nil after batch stdout printing, until the next displayed message.
+GNU separates stdout printing from the next stderr message with an extra
+newline, even when the stdout text already ended in a newline.")
+
+(defun emacs-cc-print-1--note-stdout (stream)
+  "Remember batch printing to stdout through STREAM."
+  (when (and (boundp 'noninteractive) noninteractive
+             (let ((target (or stream standard-output)))
+               (or (null target) (eq target t))))
+    (setq emacs-batch-stdio-pending-newline t)))
+
+(defun emacs-cc-print-1--stdout-around (original &rest args)
+  "Track stdout output by `princ', `prin1', or `print'."
+  (prog1 (apply original args)
+    (emacs-cc-print-1--note-stdout (nth 1 args))))
+
+(defun emacs-cc-print-1--terpri-around (original &rest args)
+  "Track stdout output by `terpri'."
+  (prog1 (apply original args)
+    (emacs-cc-print-1--note-stdout (car args))))
+
+;; Host Emacs owns this state in print.c; only the standalone needs the
+;; compatibility tracking.  Buffer/function streams and string rendering
+;; do not set the flag, and inhibited messages must not consume it.
+(when (and (boundp 'noninteractive) noninteractive
+           (fboundp 'nelisp--write-stdout-bytes))
+  (dolist (printer '(princ prin1 print))
+    (unless (advice-member-p #'emacs-cc-print-1--stdout-around printer)
+      (advice-add printer :around #'emacs-cc-print-1--stdout-around)))
+  (unless (advice-member-p #'emacs-cc-print-1--terpri-around 'terpri)
+    (advice-add 'terpri :around #'emacs-cc-print-1--terpri-around)))
+
 (defvar emacs-cc-print-1--debugging-output-file nil)
 (defvar print-circle nil)
 (defvar print-length nil)

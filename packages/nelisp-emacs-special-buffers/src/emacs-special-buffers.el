@@ -282,7 +282,12 @@ stderr output independently of `message-log-max'."
     (when (and (emacs-special-buffers--standalone-batch-p)
                (not (and (boundp 'inhibit-message) inhibit-message)))
       (if (fboundp 'nelisp--write-stderr-line)
-          (nelisp--write-stderr-line (or text ""))
+          (progn
+            (when (and (boundp 'emacs-batch-stdio-pending-newline)
+                       emacs-batch-stdio-pending-newline)
+              (setq emacs-batch-stdio-pending-newline nil)
+              (nelisp--write-stderr-line ""))
+            (nelisp--write-stderr-line (or text "")))
         (nelisp--write-stdout-bytes (concat "nemacs: " (or text "") "\n"))))
     text))
 
