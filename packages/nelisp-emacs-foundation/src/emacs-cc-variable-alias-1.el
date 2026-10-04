@@ -50,8 +50,10 @@
     (defun set (symbol value)
       (let ((target (nelisp--alias-canonical symbol)))
         (funcall nelisp--alias-raw-set target value)
-        (dolist (alias (cdr (assq target nelisp--defvaralias-reverse)))
-          (funcall nelisp--alias-raw-set alias value))
+        (when nelisp--defvaralias-reverse
+          (let ((emacs-parity-misc--inhibit-watchers t))
+            (dolist (alias (cdr (assq target nelisp--defvaralias-reverse)))
+              (funcall nelisp--alias-raw-set alias value))))
         value))
     (defun symbol-value (symbol)
       (funcall nelisp--alias-raw-symbol-value
@@ -67,8 +69,10 @@
                 (assq-delete-all symbol nelisp--defvaralias-registry))
           (nelisp--alias-rebuild-reverse))
         (funcall nelisp--alias-raw-makunbound target)
-        (dolist (alias (cdr (assq target nelisp--defvaralias-reverse)))
-          (funcall nelisp--alias-raw-makunbound alias))
+        (when nelisp--defvaralias-reverse
+          (let ((emacs-parity-misc--inhibit-watchers t))
+            (dolist (alias (cdr (assq target nelisp--defvaralias-reverse)))
+              (funcall nelisp--alias-raw-makunbound alias))))
         symbol))
     (defun defvaralias (new-alias base-variable &optional docstring)
       (unless (symbolp new-alias)
@@ -79,7 +83,10 @@
         (error "Cannot make a constant an alias: %S" new-alias))
       (unless (symbolp base-variable)
         (signal 'wrong-type-argument (list 'symbolp base-variable)))
-      (let ((doc docstring)
+      (when (fboundp 'emacs-parity-misc--notify)
+        (emacs-parity-misc--notify new-alias base-variable 'defvaralias nil))
+      (let ((emacs-parity-misc--inhibit-watchers t)
+            (doc docstring)
             (target (nelisp--alias-canonical base-variable))
             (alias-bound (funcall nelisp--alias-raw-boundp new-alias)))
         (when (or (eq new-alias base-variable) (eq new-alias target))
@@ -97,6 +104,11 @@
                    (funcall nelisp--alias-raw-symbol-value target)))
         (when doc
           (put new-alias 'variable-documentation doc))
+        ;; GNU discards the alias's former watcher list when its variable
+        ;; cell becomes an indirection. Future registration uses the base.
+        (when (boundp 'emacs-parity-misc--variable-watchers)
+          (remhash new-alias emacs-parity-misc--variable-watchers)
+          (emacs-parity-misc--watcher-flag))
         base-variable))
     (defun nelisp--alias-rebuild-reverse ()
         (setq nelisp--defvaralias-reverse nil)

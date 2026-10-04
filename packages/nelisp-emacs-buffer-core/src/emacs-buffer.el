@@ -326,7 +326,8 @@ at all."
     (progn
       (unless (gethash sym emacs-buffer--default-values)
         (when (boundp sym)
-          (emacs-buffer-set-default sym (symbol-value sym))))
+          (let ((emacs-parity-misc--inhibit-watchers t))
+            (emacs-buffer-set-default sym (symbol-value sym)))))
       (let* ((b (or buf (emacs-buffer--current)))
              (ext (emacs-buffer--ensure-ext b)))
         (unless (assq sym (emacs-buffer--ext-locals ext))
@@ -428,6 +429,8 @@ This is an explicit setter; our MVP does not intercept the host
 this helper (or `make-local-variable' + global `setq')."
   (unless (symbolp sym)
     (signal 'wrong-type-argument (list 'symbolp sym)))
+  (when (fboundp 'emacs-parity-misc--notify)
+    (emacs-parity-misc--notify sym value 'set buf))
   (let* ((ext (emacs-buffer--ensure-ext buf))
          (index (emacs-buffer--local-index ext))
          (cell (gethash sym index)))
@@ -522,6 +525,8 @@ The default value seeds new buffer-local bindings created by
 `make-local-variable'."
   (unless (symbolp sym)
     (signal 'wrong-type-argument (list 'symbolp sym)))
+  (when (fboundp 'emacs-parity-misc--notify)
+    (emacs-parity-misc--notify sym value 'set 'default))
   (puthash sym (cons t value) emacs-buffer--default-values)
   value)
 
@@ -545,12 +550,19 @@ own local binding sees a new default right away) — see
       sym
     (let* ((b (or buf (emacs-buffer--current)))
            (ext (gethash b emacs-buffer--state)))
-      (when ext
+      (when (and ext (assq sym (emacs-buffer--ext-locals ext)))
+        (when (fboundp 'emacs-parity-misc--notify)
+          (emacs-parity-misc--notify sym nil 'makunbound b))
         ;; assq-delete-all can splice the list without changing its head.
         (remhash ext emacs-buffer--local-indexes)
         (setq emacs-buffer--active-cache nil)
         (setf (emacs-buffer--ext-locals ext)
-              (assq-delete-all sym (emacs-buffer--ext-locals ext))))
+              (assq-delete-all sym (emacs-buffer--ext-locals ext)))
+        (when (eq b (emacs-buffer--current))
+          (let ((emacs-parity-misc--inhibit-watchers t))
+            (if (emacs-buffer-default-boundp sym)
+                (nelisp--env-globals-set-value sym (emacs-buffer-default-value sym))
+              (makunbound sym)))))
       sym)))
 
 ;;;###autoload
@@ -760,8 +772,9 @@ has finished, and queue only values that need installing or recording."
     (while pending
       (let ((row (car pending)))
         (when (aref row 2)
-          (if (aref row 3) (makunbound (aref row 0))
-            (set (aref row 0) (aref row 1))))
+          (let ((emacs-parity-misc--inhibit-watchers t))
+            (if (aref row 3) (makunbound (aref row 0))
+              (set (aref row 0) (aref row 1)))))
         (puthash (aref row 0)
                  (if (aref row 3) 'emacs-buffer--swap-unset (aref row 1))
                  emacs-buffer--swapped-in))

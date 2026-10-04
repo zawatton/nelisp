@@ -2051,7 +2051,13 @@ Supersedes the vendor NeLisp stdlib `setq-default' (plain `setq' alias)
     (setq emacs-buffer-builtins--restriction-bridge-installed t)
     (advice-add 'nelisp-narrow-to-region :around #'emacs-buffer-builtins--restricted-narrow)
     (advice-add 'nelisp-widen :around #'emacs-buffer-builtins--restricted-widen)
-    (advice-add 'save-restriction :around #'emacs-buffer-builtins--save-labeled-restriction)))
+    (if (fboundp 'nelisp--set-special-form-implementation)
+        (nelisp--set-special-form-implementation
+         'save-restriction
+         (cons 'macro
+               (lambda (&rest body)
+                 (apply #'emacs-buffer-builtins--save-labeled-restriction nil body))))
+      (advice-add 'save-restriction :around #'emacs-buffer-builtins--save-labeled-restriction))))
 
 ;;;; --- narrow / widen ---------------------------------------------------
 
