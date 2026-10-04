@@ -23825,3 +23825,118 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
       (signal 'wrong-type-argument (list 'special-form-p symbol)))
     (setcar (cddr object) implementation)
     nil))
+
+;;;; Evaluator activation records (N4b, native policy clause 2).
+;; The private operation returns copied Lisp data plus generation handles.
+;; Public argument checking, BASE selection and callbacks stay in Lisp.
+(defun nelisp-backtrace--snapshot ()
+  (let ((raw (nelisp--env-globals-op 'backtrace 0 nil)) (frames nil))
+    (dolist (frame raw)
+      (let ((function (aref frame 2)))
+        (unless (or (= (aref frame 5) 1)
+                    (and (symbolp function)
+                     (or (eq function 'nelisp--env-globals-op)
+                         (string-prefix-p "nelisp-backtrace--" (symbol-name function)))))
+          (push frame frames))))
+    (nreverse frames)))
+
+(defun nelisp-backtrace--index (level)
+  (unless (and (integerp level) (>= level 0) (<= level most-positive-fixnum))
+    (signal 'wrong-type-argument (list 'wholenump level)))
+  level)
+
+(defun nelisp-backtrace--base (frames base)
+  (let ((offset 0) (search base))
+    (when (and (consp base) (integerp (car base)))
+      (setq offset (max 0 (car base)) base (cdr base)))
+    (when search
+      (let ((function (indirect-function base t)))
+        (while (and frames
+                    (not (eq function (indirect-function (aref (car frames) 2) t))))
+          (setq frames (cdr frames)))))
+    (nthcdr offset frames)))
+
+(defun nelisp-backtrace--select (level base)
+  (nelisp-backtrace--index level)
+  (nth level (nelisp-backtrace--base (nelisp-backtrace--snapshot) base)))
+
+(defun nelisp-backtrace--require-frame (level base)
+  (or (nelisp-backtrace--select level base)
+      (error "Activation frame not found!")))
+
+(defun nelisp-backtrace--flags (frame)
+  (and (aref frame 4) '(:debug-on-exit t)))
+
+(defun backtrace-frame--internal (function nframes base)
+  "Call FUNCTION with the evaluated flag, function, args and flags of a frame."
+  (let ((frame (nelisp-backtrace--select nframes base)))
+    (when frame
+      (funcall function (aref frame 1) (aref frame 2) (aref frame 3)
+               (nelisp-backtrace--flags frame)))))
+
+(defun mapbacktrace (function &optional base)
+  "Call FUNCTION for each activation starting at BASE, returning nil."
+  ;; Freeze the traversal before invoking callbacks. Callback recursion adds
+  ;; frames and may collect; these copied frame values are ordinary GC roots.
+  (let ((frames (nelisp-backtrace--base (nelisp-backtrace--snapshot) base)))
+    (dolist (frame frames)
+      (aset frame 4 (nelisp--env-globals-op 'backtrace 4 (list (aref frame 0))))
+      (funcall function (aref frame 1) (aref frame 2) (aref frame 3)
+               (nelisp-backtrace--flags frame))))
+  nil)
+
+(defun backtrace--locals (nframes &optional base)
+  "Return an alist of live locals for the selected activation."
+  (nelisp-backtrace--index nframes)
+  (when (= nframes 0)
+    (signal 'wrong-type-argument '(wholenump -1)))
+  (let ((frame (nelisp-backtrace--require-frame nframes base)))
+    (nelisp--env-globals-op 'backtrace 1 (list (aref frame 0)))))
+
+(defun backtrace-debug (level flag &optional base)
+  "Set the selected activation's exit-debug flag and return FLAG."
+  (let ((frame (nelisp-backtrace--select level base)))
+    (when frame
+      (nelisp--env-globals-op 'backtrace 2 (list (aref frame 0) flag))))
+  flag)
+
+(defun backtrace-eval (expression nframes &optional base)
+  "Evaluate EXPRESSION at the selected activation's binding boundary."
+  (let ((frame (nelisp-backtrace--require-frame nframes base)))
+    (nelisp--env-globals-op 'backtrace 3 (list (aref frame 0) expression))))
+
+(defun backtrace--frames-from-thread (thread)
+  "Return frame lists for THREAD, innermost first."
+  (unless (threadp thread)
+    (signal 'wrong-type-argument (list 'threadp thread)))
+  (when (eq thread (current-thread))
+    (let ((result nil))
+      (dolist (frame (nelisp-backtrace--snapshot))
+        (push (cons (aref frame 1) (cons (aref frame 2) (aref frame 3))) result))
+      (nreverse result))))
+
+;; GNU 31.1's subr.el helpers use the six interfaces above unchanged.
+(defun backtrace-frame (nframes &optional base)
+  (backtrace-frame--internal
+   (lambda (evald function args _flags) (cons evald (cons function args)))
+   nframes (or base #'backtrace-frame)))
+(defun backtrace-frames (&optional base)
+  (let ((frames nil))
+    (mapbacktrace (lambda (&rest frame) (push frame frames))
+                  (or base #'backtrace-frames))
+    (nreverse frames)))
+(defun backtrace ()
+  "Print the current activation stack to `standard-output'."
+  (mapbacktrace
+   (lambda (evald function args flags)
+     (princ (if (plist-get flags :debug-on-exit) "* " "  "))
+     (if evald
+         (progn (prin1 function) (princ "("))
+       (princ "(") (setq args (cons function args)))
+     (while args
+       (prin1 (car args))
+       (setq args (cdr args))
+       (when args (princ " ")))
+     (princ ")\n"))
+   'backtrace)
+  nil)

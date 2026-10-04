@@ -5042,7 +5042,8 @@ REPL-facing module it feeds."
              0)))))
     ;; Mark every root (split out so the DEBUG skip-mark gate is a single if).
     (defun nl_gc_mark_roots (ctx result out pool src cursor bsym)
-      (nl_seq2 (nl_gc_conserv_maybe)             ; Doc 152 §11.21 conservative stack scan
+      (nl_seq2 (nl_n4_mark_env ctx)
+       (nl_seq2 (nl_gc_conserv_maybe)             ; Doc 152 §11.21 conservative stack scan
        (if (= (nl_gc_conserv_failed_p) 1) 0
          (nl_seq2 (nl_gc_mark_root_blocks ctx result out pool src cursor bsym)
        (nl_seq2 (nl_seq2 (nl_gc_mark_slot (+ ctx 0))
@@ -5084,7 +5085,7 @@ REPL-facing module it feeds."
                                 ;; epoch cache entry's key+expansion alive (mirrors
                                 ;; the block+slot marking pair above).
                                 (nl_seq2 (nl_mxcache_mark_all)
-                                         (nl_fvcache_mark_all)))))))))))))))) ; bsym + shared symentry + conserv pin
+                                         (nl_fvcache_mark_all))))))))))))))))) ; bsym + shared symentry + conserv pin
     ;; ===== Doc 146 §5 moving GC (compaction). Phase 2 = forwarding. =====
     ;; Behind flag 268435608 (1=ON by default, wired at boot init; 0 = mark+sweep
     ;; escape hatch).  Forwarding hash side-table base
@@ -5371,7 +5372,8 @@ REPL-facing module it feeds."
                (setq i (+ i 1))))
            (nl_gc_symname_sweep_all)))))
     (defun nl_compact_rw_roots (ctx result out pool src cursor bsym)
-      (seq (nl_compact_rw_slot (+ ctx 0))
+      (seq (nl_n4_rewrite_env ctx)
+           (nl_compact_rw_slot (+ ctx 0))
            (nl_compact_rw_slot (+ ctx 32))
            (nl_compact_rw_slot (+ ctx 64))
            (nl_compact_rw_slot result)
@@ -5605,11 +5607,12 @@ REPL-facing module it feeds."
          (nl_gc_mark_slot sp))))
     (defun nl_gc_mark_recorded_env (env)
       (if (= env 0) 0
+        (nl_seq2 (nl_n4_mark_env env)
         (nl_seq2 (nl_gc_mark_block env)
          (nl_seq2 (nl_gc_mark_recorded_slot (+ env 0))     ; mirror / globals
           (nl_seq2 (nl_gc_mark_mirror_buckets (+ env 0))
            (nl_seq2 (nl_gc_mark_recorded_slot (+ env 32))  ; frame stack
-                    (nl_gc_mark_recorded_slot (+ env 64)))))))) ; unbound marker
+                    (nl_gc_mark_recorded_slot (+ env 64))))))))) ; unbound marker
     ;; POOL is THIS frame's parse pool; the cap word @268436448 belongs to the
     ;; load that is running NOW.  Nested loads size their pools from their own
     ;; source length (`bf_load_readable' / `bf_eval_source_string'), so an
@@ -6191,7 +6194,8 @@ argument (reachability + in-arena bounds checks).")
           ;; Active recursive evaluations already have their root.  Avoid
           ;; decoding the frame record on every argument/body evaluation.
           (if (and (= (ptr-read-u64 (+ env 96) 0) 0)
-                   (= (sexp-int-unwrap (record-slot-ref-ptr (+ env 32) 1)) 0))
+                   (= (sar (ptr-read-u64
+                              (ptr-read-u64 (ptr-read-u64 env 40) 32) 8) 2) 0))
               (seq (nelisp_frame_scope_push (+ env 32))
                    (nelisp_eval_call_root_done
                     (nelisp_eval_call_inner form_ptr env out) env))
@@ -17524,8 +17528,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (nl_bind_frame_fast frames name value)
          (if (or (/= (logand (ptr-read-u64 (+ env 112) 0) 2097152) 0)
                  (if (= table 0) 0
-                   (/= (nl_ht_find_table (nl_ht_data_slot table) name
-                                        (nl_ht_test_mode table)) 0)))
+                   (if (= (nl_n4_captured_lexical_p frames name) 1) 0
+                     (/= (nl_ht_find_table (nl_ht_data_slot table) name
+                                          (nl_ht_test_mode table)) 0))))
              (if (= (nelisp_frame_binding_dynamic_p frame name) 1) 1
                (let* ((names (alloc-bytes 32 8)))
                  (seq (cons-make-with-clone name (record-slot-ref-ptr frame 1) names)
@@ -17533,8 +17538,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
            1))))
     (defun bf_bind_frame_declared (env frames name value)
       (if (= (logand (ptr-read-u64 (+ env 112) 0) 1048576) 0)
-          (seq (nl_bind_frame_fast frames name value)
-               (bf_mark_declared_special (+ env 0) frames name))
+          (nl_n4_bind_declared env frames name value)
         (nl_n3_bind env frames name value)))
     (defun bf_mark_binding_result (rc mirror frames name)
       (if (= rc 1) (bf_mark_declared_special mirror frames name) rc))
@@ -19478,8 +19482,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; Fresh per-thread env: copy mirror/frames/unbound (96 bytes, shared boxes,
     ;; read-only during a compile), fresh rec_cur@+96=0, copy rec_max@+104.
     (defun nl_make_thread_env (penv)
-      (let ((e (alloc-bytes 128 8)))
+      (let ((e (alloc-bytes 184 8)))
         (seq (nl_copy_words e penv 12)
+             (ptr-write-u64 e 176 0)
              (ptr-write-u64 (+ e 96) 0 0)
              (ptr-write-u64 (+ e 104) 0 (ptr-read-u64 (+ penv 104) 0))
              e)))
@@ -25034,7 +25039,7 @@ KERNEL32!ExitProcess with the driver return already in x0/w0."
     `(defun driver ()
        (let* ((arena (nl_arena_init))
               (globals (alloc-bytes 32 8)) (frames (alloc-bytes 32 8)) (unbound (alloc-bytes 32 8))
-              (ctx (alloc-bytes 120 8))
+              (ctx (alloc-bytes 184 8))
               (opbuf (alloc-bytes 8 1)) (op_sym (alloc-bytes 32 8))
               (builtin_buf (alloc-bytes 8 1)) (builtin_sym (alloc-bytes 32 8))
               (int1 (alloc-bytes 32 8)) (int2 (alloc-bytes 32 8))
@@ -25065,6 +25070,7 @@ KERNEL32!ExitProcess with the driver return already in x0/w0."
 ;; ceiling, so deep recursion died as a silent exit 127 instead of signalling
 ;; `excessive-lisp-nesting': the guard could never fire.  The budget remains
 ;; best-effort: re-measure both root and native stack use when eval frames grow.
+(ptr-write-u64 ctx 176 0)
 (ptr-write-u64 ctx 96 0) (ptr-write-u64 ctx 104 16000)
           (nl_alloc_symbol opbuf 1 op_sym)
           (ptr-write-u64 int1 0 2) (ptr-write-u64 int1 8 ,a) (ptr-write-u64 int1 16 0) (ptr-write-u64 int1 24 0)
@@ -32759,6 +32765,7 @@ gets no native definitions and is gated by
                (ptr-write-u64 region 144 0)
                (ptr-write-u64 region 152 0)
                (ptr-write-u64 region 160 0)
+               (ptr-write-u64 region 176 0)
                (if (< (nl_thread_registry_add region) 0)
                    (- 0 12)
                  region))))))
@@ -35335,7 +35342,7 @@ correctly."
             ;; `nl_arena_base' never changes after `nl_arena_init'.
             (_sptop (ptr-write-u64 268436456 0 (aot-current-sp)))
             (globals (alloc-bytes 32 8)) (frames (alloc-bytes 32 8)) (unbound (alloc-bytes 32 8))
-            (ctx (alloc-bytes 120 8))
+            (ctx (alloc-bytes 184 8))
             (builtin_buf (alloc-bytes 8 1)) (builtin_sym (alloc-bytes 32 8))
             (src (alloc-bytes 32 8)) (cursor (alloc-bytes 32 8))
             ;; Doc 147 Phase 1.5 Group P — RAW parse-pool buffer (32768*32
@@ -35526,6 +35533,7 @@ correctly."
 ;; ceiling, so deep recursion died as a silent exit 127 instead of signalling
 ;; `excessive-lisp-nesting': the guard could never fire.  The budget remains
 ;; best-effort: re-measure both root and native stack use when eval frames grow.
+(ptr-write-u64 ctx 176 0)
 (ptr-write-u64 ctx 96 0) (ptr-write-u64 ctx 104 16000)
         ;; M11 env inherit: POSIX entry stacks carry envp immediately after
         ;; argv, while macOS `nl_os_environ_init' has already installed the
@@ -36294,7 +36302,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
          (if (= depth 0)
              0
            (if (= filtered 1)
-               (if (= (sexp-tag filter-ptr) 7)
+               (if (= filtered 1)
                    ;; Doc 147 Phase 1.5: build the `invec' WITHOUT holding a
                    ;; raw write-through interior pointer into its data buffer.
                    ;; The old code did `(... (vector-ref-ptr invec N))' as a
@@ -36355,7 +36363,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
             (seq
              (nl_clx_write_nil raw_filter_slot)
              (nl_clx_symbol_filter_walk_raw lambda-args raw_filter_slot)
-             (nl_env_capture_lexical_with_filter env raw_filter_slot 1 out)))
+             (nl_n4_capture_filtered env raw_filter_slot out)))
         (let* ((cached (nl_fvcache_lookup lambda-args)))
           (if (= cached 0)
               (let* ((filter_slot (alloc-bytes 32 8)))
@@ -36364,8 +36372,8 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                  (if (= (sexp-tag filter_slot) 7)
                      (nl_fvcache_store lambda-args filter_slot)
                    0)
-                 (nl_env_capture_lexical_with_filter env filter_slot 1 out)))
-            (nl_env_capture_lexical_with_filter env cached 1 out)))))))
+                 (nl_n4_capture_filtered env filter_slot out)))
+            (nl_n4_capture_filtered env cached out)))))))
 
 ;; ===================================================================
 ;; TOP-LEVEL FORM-BOUNDARY ARENA RECLAMATION (the safe reclamation point).
@@ -36445,6 +36453,21 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
               ((eq (cadr form) 'nl_bf_bind_sym)
                (cl-subst 'bf_bind_frame_silent 'bf_bind_frame_declared
                          (replace-call form)))
+              ((eq (cadr form) 'nl_capture_walk_bucket)
+               (cl-subst
+                '(if (= filtered 2)
+                     (if (= (sexp-tag cell-view) 11)
+                         (= (ptr-read-u64 cell-view 16) 13107) 0)
+                   (nl_capture_name_allowed filtered filter-ptr name-ptr))
+                '(nl_capture_name_allowed filtered filter-ptr name-ptr)
+                form :test #'equal))
+              ((eq (cadr form) 'nl_capture_walk_frame)
+               (cl-subst
+                '(seq (nl_capture_walk_filter_symbols frame-ptr filter-ptr pair-slot out)
+                      (nl_capture_walk_frame frame-ptr pair-slot out 2 filter-ptr))
+                '(nl_capture_walk_filter_symbols frame-ptr filter-ptr pair-slot out)
+                (cl-subst '(/= filtered 1) '(= filtered 0) form :test #'equal)
+                :test #'equal))
               ((eq (cadr form) 'nl_push_captured_walk)
                '(defun nl_push_captured_walk (alist_ptr mirror_ptr frames_ptr unbound_ptr)
                   (if (= (sexp-tag alist_ptr) 7)
@@ -36500,8 +36523,10 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
              (nl_n3_eval_bind_pairs (nl_cons_cdr_ptr alist) frames)
              (if (= (sexp-tag pair) 7)
                  (let* ((cell (alloc-bytes 128 8)))
-                   (seq (cell-make pair cell)
-                        (ptr-write-u64 cell 16 13107)
+                   (seq (if (= (sexp-tag (nl_cons_cdr_ptr pair)) 11)
+                            (nl_sexp_clone_into (nl_cons_cdr_ptr pair) cell)
+                          (seq (cell-make pair cell)
+                               (ptr-write-u64 cell 16 13107)))
                         (nelisp_frame_bind frames (nl_cons_car_ptr pair) cell
                                            (+ cell 32) (+ cell 64) (+ cell 96)) 0))
                (if (or (= (sexp-tag pair) 4) (= (sexp-tag pair) 16))
@@ -36640,8 +36665,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                  (= (nelisp_frame_local_special_p frames sym) 1))
              (setq rc (nl_n3_notify env sym val 2)) 0)
          (if (= rc 0)
-             (setq rc (seq (nl_bind_frame_fast frames sym val)
-                          (bf_mark_declared_special (+ env 0) frames sym)))
+             (setq rc (nl_n4_bind_declared env frames sym val))
            (setq rc 0))
          (nl_cons_root_finish env mark rc))))
     (defun nl_n3_dynamic_write (env name value operation)
@@ -36692,7 +36716,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
              (setq rc (nl_n3_notify env sym val 1)) 0)
          (if (= rc 0) (setq rc (nl_n3_setq_raw env sym val)) 0)
          (nl_cons_root_finish env mark rc))))
-    (defun nl_n3_pop_names (env names depth status)
+    (defun nl_n4_pop_names_raw (env names depth status)
       (if (= (sexp-tag names) 7)
           (let* ((sym (nl_cons_car_ptr names))
                  (frames (+ env 32))
@@ -36719,6 +36743,11 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                   (setq status 1))))
              (nl_n3_pop_names env (nl_cons_cdr_ptr names) depth status)))
         status))
+    (defun nl_n3_pop_names (env names depth status)
+      (if (and (= (sexp-tag names) 7)
+               (= (sexp-tag (nl_cons_car_ptr names)) 7))
+          (nl_n4_pop_repeat env names depth status)
+        (nl_n4_pop_names_raw env names depth status)))
     (defun nl_n3_pop (env)
       (let* ((frames (+ env 32))
              (depth (sexp-int-unwrap (record-slot-ref-ptr frames 1)))
@@ -36798,7 +36827,9 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
           (push '(defun nl_apply_do_globals_op (args_list_ptr env out)
                    (if (= (sexp-name-eq (nl_apply_list_nth args_list_ptr 0) "variable-watchers") 1)
                        (nl_n3_globals_mode args_list_ptr env out)
-                     (nl_n3_globals_raw args_list_ptr env out))) out))
+                     (if (= (sexp-name-eq (nl_apply_list_nth args_list_ptr 0) "backtrace") 1)
+                         (nl_n4_frame_op args_list_ptr env out)
+                       (nl_n3_globals_raw args_list_ptr env out)))) out))
          ((eq name 'nl_apply_lambda_inner)
           (push (cl-subst
                  '(or (= (sexp-tag captured) 0)
@@ -37415,28 +37446,28 @@ always return 0, so `signal' flows to the builtin applyfn (bf_signal) instead of
   '((defun nl_apply_root_finish (env root_mark status)
       (seq (nl_root_release env root_mark) status))
     (defun nl_apply_do_apply_after_append
-        (rc_app env out root_mark func_slot spliced_slot)
+        (rc_app env out root_mark func_slot spliced_slot call_name)
       (if (= rc_app 0)
           (nl_apply_root_finish
-           env root_mark (nl_apply_function func_slot spliced_slot env out))
+           env root_mark (nl_n4_named_apply call_name func_slot spliced_slot env out))
         (nl_apply_root_finish env root_mark 1)))
     (defun nl_apply_do_apply_append
-        (prefix_slot last_ptr env out root_mark func_slot spliced_slot)
+        (prefix_slot last_ptr env out root_mark func_slot spliced_slot call_name)
       (nl_apply_do_apply_after_append
        (nl_apply_list_append prefix_slot last_ptr spliced_slot)
-       env out root_mark func_slot spliced_slot))
+       env out root_mark func_slot spliced_slot call_name))
     (defun nl_apply_do_apply_after_init
-        (rc_init rest_args env out root_mark func_slot prefix_slot)
+        (rc_init rest_args env out root_mark func_slot prefix_slot call_name)
       (if (= rc_init 0)
           (nl_apply_do_apply_append
            prefix_slot (nl_apply_list_last_cdr rest_args)
-           env out root_mark func_slot (nl_root_reserve env))
+           env out root_mark func_slot (nl_root_reserve env) call_name)
         (nl_apply_root_finish env root_mark 1)))
     (defun nl_apply_do_apply_list
-        (rest_args env out root_mark func_slot prefix_slot)
+        (rest_args env out root_mark func_slot prefix_slot call_name)
       (nl_apply_do_apply_after_init
        (nl_apply_list_init rest_args prefix_slot)
-       rest_args env out root_mark func_slot prefix_slot))
+       rest_args env out root_mark func_slot prefix_slot call_name))
     (defun nl_apply_do_apply_after_resolve
         (resolve_rc arg0_ptr args_list_ptr env out root_mark func_slot)
       (if (= resolve_rc 0)
@@ -37447,7 +37478,7 @@ always return 0, so `signal' flows to the builtin applyfn (bf_signal) instead of
              (if (= (sexp-tag args_list_ptr) 7)
                  (nl_cons_cdr_ptr args_list_ptr)
                args_list_ptr)
-             env out root_mark func_slot (nl_root_reserve env)))
+             env out root_mark func_slot (nl_root_reserve env) arg0_ptr))
         (nl_apply_root_finish
          env root_mark (nl_cons_stash_void_function env arg0_ptr))))
     (defun nl_apply_do_apply_resolve
@@ -37798,6 +37829,376 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
        (concat (file-name-sans-extension name) "-epoch.o")
        patched (list nelisp-standalone--this-file (locate-library (symbol-name feat)))))))
 
+;; N4b private activation ABI. Policy clause 2 (evaluator / GC entry).
+;; EvalCtx+176 points to a per-context transient mmap: header {depth,serial},
+;; then 32768 160-byte records. Each record owns copied Sexp root views for
+;; function, arguments and shared frame stack; remaining words are entry
+;; binding depth, eval mode, evaluated, exit-debug and generation. No handles
+;; contain arena addresses. Cold restore creates a fresh EvalCtx and rebuilds
+;; this stack from execution; suspended native continuations are never dumped.
+(defconst nelisp-standalone--n4-source
+  `(seq
+    (defun nl_n4_state (env)
+      (if (= (ptr-read-u64 env 176) 0)
+          (let* ((state (nl_os_alloc_chunk 5242912)))
+            (seq (ptr-write-u64 env 176 state) state))
+        (ptr-read-u64 env 176)))
+    (defun nl_n4_record (state index)
+      (+ state (+ 32 (* index 160))))
+    (defun nl_n4_internal_p (function)
+      (if (or (= (sexp-tag function) 4) (= (sexp-tag function) 16))
+          (if (= (sexp-name-eq function "nelisp--env-globals-op") 1) 1
+            (let* ((length (ptr-read-u64 function 24))
+                   (bytes (ptr-read-u64 function 16)))
+              (if (< length 18) 0
+                (if (= (ptr-read-u64 bytes 0) 7074434230661178734) ; nelisp-b
+                    (if (= (ptr-read-u64 bytes 8) 7305790164732437345) ; acktrace
+                        (if (= (ptr-read-u16 bytes 16) 11565) 1 0) 0) 0))))
+        0))
+    (defun nl_n4_veneer_p (function)
+      (if (= (sexp-name-eq function "backtrace-frame--internal") 1) 1
+        (if (= (sexp-name-eq function "backtrace--locals") 1) 1
+          (if (= (sexp-name-eq function "backtrace-debug") 1) 1
+            (if (= (sexp-name-eq function "backtrace-eval") 1) 1
+              (if (= (sexp-name-eq function "mapbacktrace") 1) 1
+                (if (= (sexp-name-eq function "backtrace--frames-from-thread") 1) 1 0)))))))
+    (defun nl_n4_hidden (state depth function evaluated)
+      (if (= (nl_n4_internal_p function) 1) 1
+        (if (or (= evaluated 1) (= depth 0)) 0
+          (let* ((parent (nl_n4_record state (- depth 1))))
+            (if (= (nl_n4_veneer_p parent) 1) 1
+              (ptr-read-u64 parent 136))))))
+    (defun nl_n4_push (env function args evaluated)
+      (let* ((state (nl_n4_state env)) (depth (ptr-read-u64 state 0)))
+        (if (>= depth 32768) 0
+          (let* ((frame (nl_n4_record state depth)))
+            (seq
+             (wf_copy32 frame function)
+             (wf_copy32 (+ frame 32) args)
+             ;; The shared stack is a Record view with zero hint words.
+             ;; mmap initialized its words 16/24; only its payload changes.
+             (ptr-write-u64 frame 64 12)
+             (ptr-write-u64 frame 72 (ptr-read-u64 env 40))
+             (ptr-write-u64 frame 96
+                            (sar (nelisp_frame_slot_raw_word (+ env 32) 1) 2))
+             (ptr-write-u64 frame 104 (logand (ptr-read-u64 env 112) 2097152))
+             (ptr-write-u64 frame 112 evaluated)
+             (ptr-write-u64 frame 120 0)
+             ;; Visibility is classified only when inspecting a stack.
+             ;; Keep the entry kind after direct calls become evaluated.
+             (ptr-write-u64 frame 144 evaluated)
+             (ptr-write-u64 state 8 (+ (ptr-read-u64 state 8) 1))
+             (ptr-write-u64 frame 128 (ptr-read-u64 state 8))
+             (ptr-write-u64 state 0 (+ depth 1))
+             frame)))))
+    (defun nl_n4_exit_debug (env out)
+      (let* ((mark (nl_root_mark env)) (name (nl_root_reserve env))
+             (fn (nl_root_reserve env)) (args (nl_root_reserve env))
+             (value (nl_root_reserve env)) (tag (nl_root_reserve env))
+             (buf (alloc-bytes 8 1)))
+        (seq
+         (nl_sexp_clone_into out value)
+         (ptr-write-u64 buf 0 8243108387020236132) ; debugger
+         (nl_alloc_symbol buf 8 name)
+         (ptr-write-u64 buf 0 1953069157) ; exit
+         (nl_alloc_symbol buf 4 tag)
+         (wf_write_nil args)
+         (nelisp_cons_construct value args args)
+         (nelisp_cons_construct tag args args)
+         (nl_cons_root_finish env mark
+          (if (= (bf_dynamic_lookup env name fn) 0)
+              (nl_apply_function fn args env out) 1)))))
+    (defun nl_n4_finish (rc env out frame)
+      (if (= frame 0) rc
+        (let* ((state (ptr-read-u64 env 176)))
+          (seq
+           (if (and (= rc 0) (/= (ptr-read-u64 frame 120) 0))
+               (setq rc (nl_n4_exit_debug env out)) 0)
+           (ptr-write-u64 state 0 (- (ptr-read-u64 state 0) 1))
+           rc))))
+    (defun nl_n4_direct_apply (function args env out)
+      ;; The cons evaluator already owns the activation. Keep its original
+      ;; operator (including aliases), and replace forms only after evaluation.
+      (let* ((state (ptr-read-u64 env 176))
+             (frame (nl_n4_record state (- (ptr-read-u64 state 0) 1))))
+        (seq (wf_copy32 (+ frame 32) args)
+             (ptr-write-u64 frame 112 1)
+             (nl_n4_apply_raw function args env out))))
+    (defun nl_n4_apply_name (function)
+      (if (= (sexp-tag function) 18) (record-slot-ref-ptr function 0)
+        (if (= (sexp-tag function) 7)
+            (if (= (sexp-name-eq (nl_cons_car_ptr function) "builtin") 1)
+                (nl_apply_list_nth function 1) function)
+          function)))
+    (defun nl_n4_named_apply (name function args env out)
+      (let* ((frame (nl_n4_push env name args 1)))
+        (nl_n4_finish (nl_n4_apply_raw function args env out) env out frame)))
+    (defun nl_n4_mark_env (env)
+      (if (= (ptr-read-u64 env 176) 0) 0
+        (let* ((state (ptr-read-u64 env 176)) (i 0))
+          (seq
+           (while (< i (ptr-read-u64 state 0))
+             (let* ((frame (nl_n4_record state i)))
+               (seq (nl_gc_mark_slot frame)
+                    (nl_gc_mark_slot (+ frame 32))
+                    (nl_gc_mark_slot (+ frame 64))))
+             (setq i (+ i 1))) 0))))
+    (defun nl_n4_rewrite_env (env)
+      (if (= (ptr-read-u64 env 176) 0) 0
+        (let* ((state (ptr-read-u64 env 176)) (i 0))
+          (seq
+           (while (< i (ptr-read-u64 state 0))
+             (let* ((frame (nl_n4_record state i)))
+               (seq (nl_compact_rw_slot frame)
+                    (nl_compact_rw_slot (+ frame 32))
+                    (nl_compact_rw_slot (+ frame 64))))
+             (setq i (+ i 1))) 0))))
+    (defun nl_n4_find (state serial)
+      (let* ((i (- (ptr-read-u64 state 0) 1)) (found 0))
+        (seq
+         (while (>= i 0)
+           (if (= (ptr-read-u64 (nl_n4_record state i) 128) serial)
+               (seq (setq found (+ i 1)) (setq i -1))
+             (setq i (- i 1))))
+         found)))
+    (defun nl_n4_snapshot (env out)
+      (let* ((mark (nl_root_mark env)) (list (nl_root_reserve env))
+             (item (nl_root_reserve env)) (value (nl_root_reserve env))
+             (state (nl_n4_state env)) (i 0))
+        (seq
+         (wf_write_nil list)
+         (while (< i (ptr-read-u64 state 0))
+           (let* ((frame (nl_n4_record state i)))
+             (seq (ptr-write-u64 frame 136
+                         (nl_n4_hidden state i frame (ptr-read-u64 frame 144)))
+                  (vector-make 6 item)
+                  (wf_write_int value (ptr-read-u64 frame 128))
+                  (vector-slot-set item 0 value)
+                  (if (= (ptr-read-u64 frame 112) 0) (wf_write_nil value)
+                    (wf_write_t value))
+                  (vector-slot-set item 1 value)
+                  (vector-slot-set item 2 frame)
+                  (if (= (ptr-read-u64 frame 112) 0)
+                      (vector-slot-set item 3 (+ frame 32))
+                    (seq (nl_bf_bind_rest_copy_spine (+ frame 32) value)
+                         (vector-slot-set item 3 value)))
+                  (if (= (ptr-read-u64 frame 120) 0) (wf_write_nil value)
+                    (wf_write_t value))
+                  (vector-slot-set item 4 value)
+                  (wf_write_int value (ptr-read-u64 frame 136))
+                  (vector-slot-set item 5 value)
+                  (nelisp_cons_construct item list list)))
+           (setq i (+ i 1)))
+         (nl_sexp_clone_into list out)
+         (nl_cons_root_finish env mark 0))))
+    (defun nl_n4_local_bucket (bucket out env)
+      (if (= (sexp-tag bucket) 7)
+          (let* ((pair (nl_cons_car_ptr bucket)) (value (alloc-bytes 32 8))
+                 (entry (alloc-bytes 32 8)))
+            (seq (nl_cell_get_value (nl_cons_cdr_ptr pair) value)
+                 (nelisp_cons_construct (nl_cons_car_ptr pair) value entry)
+                 (nelisp_cons_construct entry out out)
+                 (nl_n4_local_bucket (nl_cons_cdr_ptr bucket) out env)))
+        0))
+    (defun nl_n4_local_history (names out)
+      (if (= (sexp-tag names) 7)
+          (let* ((pair (nl_cons_car_ptr names)))
+            (seq
+             (if (= (sexp-tag pair) 7)
+                 (let* ((value (alloc-bytes 32 8)) (entry (alloc-bytes 32 8)))
+                   (seq (nl_cell_get_value (nl_cons_cdr_ptr pair) value)
+                        (nelisp_cons_construct (nl_cons_car_ptr pair) value entry)
+                        (nelisp_cons_construct entry out out))) 0)
+             (nl_n4_local_history (nl_cons_cdr_ptr names) out))) 0))
+    (defun nl_n4_locals (env index out)
+      (let* ((state (nl_n4_state env))
+             (frame (nl_n4_record state index))
+             (start (ptr-read-u64 frame 96))
+             (end (if (< (+ index 1) (ptr-read-u64 state 0))
+                      (ptr-read-u64 (nl_n4_record state (+ index 1)) 96)
+                    (sar (nelisp_frame_slot_raw_word (+ env 32) 1) 2)))
+             (backing (record-slot-ref-ptr (+ frame 64) 0))
+             (mark (nl_root_mark env)) (result (nl_root_reserve env))
+             (i (- end 1)))
+        (seq
+         (wf_write_nil result)
+         (while (>= i start)
+           (let* ((local (vector-ref-ptr backing i))
+                  (table (record-slot-ref-ptr local 0))
+                  (buckets (record-slot-ref-ptr table 1)) (j 0)
+                  (count (sexp-int-unwrap (record-slot-ref-ptr table 0))))
+             (while (< j count)
+               (seq (nl_n4_local_bucket (vector-ref-ptr buckets j) result env)
+                    (setq j (+ j 1))))
+             (nl_n4_local_history (record-slot-ref-ptr local 1) result))
+           (setq i (- i 1)))
+         (nl_sexp_clone_into result out)
+         (nl_cons_root_finish env mark 0))))
+    (defun nl_n4_reverse (list out)
+      (if (= (sexp-tag list) 7)
+          (seq (nelisp_cons_construct (nl_cons_car_ptr list) out out)
+               (nl_n4_reverse (nl_cons_cdr_ptr list) out)) 0))
+    (defun nl_n4_eval_finish (rc env saved flags mark)
+      (seq (nl_sexp_clone_into saved (+ env 32))
+           (ptr-write-u64 env 112 flags)
+           (nl_cons_root_finish env mark rc)))
+    (defun nl_n4_frame_eval (env frame expression out)
+      ;; Clone the binding stack prefix, retaining shared records/cells. The
+      ;; suspended suffix stays rooted in SAVED and each activation record.
+      ;; This has N3 eval's scope isolation while allowing live cell mutation.
+      (let* ((mark (nl_root_mark env)) (saved (nl_root_reserve env))
+             (fresh (nl_root_reserve env)) (backing (nl_root_reserve env))
+             (type (nl_root_reserve env)) (depth-slot (nl_root_reserve env))
+             (alist (nl_root_reserve env)) (pair (nl_root_reserve env))
+             (expr (nl_root_reserve env)) (args (nl_root_reserve env))
+             (depth (ptr-read-u64 frame 96)) (flags (ptr-read-u64 env 112))
+             (i 0))
+        (seq
+         (nl_sexp_clone_into expression expr)
+         (nl_sexp_clone_into (+ env 32) saved)
+         (record-type-tag (+ frame 64) type)
+         (vector-make (+ depth 8) backing)
+         (while (< i depth)
+           (seq (vector-slot-set backing i
+                  (vector-ref-ptr (record-slot-ref-ptr (+ frame 64) 0) i))
+                (setq i (+ i 1))))
+         (record-make type 2 fresh)
+         (record-slot-set fresh 0 backing)
+         (wf_write_int depth-slot depth)
+         (record-slot-set fresh 1 depth-slot)
+         (wf_write_nil alist)
+         (wf_write_nil pair)
+         (if (= (ptr-read-u64 frame 104) 0)
+             (seq (nl_capture_walk_frames backing (- depth 1) pair alist 0 pair)
+                  (wf_write_nil pair)
+                  (nl_n4_reverse alist pair)
+                  (nl_sexp_clone_into pair alist)) 0)
+         (nl_sexp_clone_into fresh (+ env 32))
+         (ptr-write-u64 env 112
+                        (logior (logand flags -2097153) (ptr-read-u64 frame 104)))
+         ;; Captured cells are installed directly by the N3 binder. Alist
+         ;; precedence is inner-first, matching N3's explicit-alist contract.
+         (wf_write_nil args)
+         (if (= (ptr-read-u64 frame 104) 0)
+             (seq (if (= (sexp-tag alist) 0) (wf_write_t alist) 0)
+                  (nelisp_cons_construct alist args args))
+           (nelisp_cons_construct args args args))
+         (nelisp_cons_construct expr args args)
+         (nl_n4_eval_finish (nl_n3_eval_slow args env out) env saved flags mark))))
+    (defun nl_n4_frame_op (args env out)
+      (let* ((code (sexp-int-unwrap (nl_apply_list_nth args 1)))
+             (payload (nl_apply_list_nth args 2)) (state (nl_n4_state env)))
+        (if (= code 0) (nl_n4_snapshot env out)
+          (let* ((serial (sexp-int-unwrap (nl_apply_list_nth payload 0)))
+                 (found (nl_n4_find state serial)))
+            (if (= found 0) (seq (wf_write_nil out) 0)
+              (let* ((index (- found 1)) (frame (nl_n4_record state index)))
+                (if (= code 4)
+                    (seq (if (= (ptr-read-u64 frame 120) 0) (wf_write_nil out)
+                           (wf_write_t out)) 0)
+                 (if (= code 1) (nl_n4_locals env index out)
+                  (if (= code 2)
+                      (seq (ptr-write-u64 frame 120
+                            (if (= (sexp-tag (nl_apply_list_nth payload 1)) 0) 0 1))
+                           (nl_sexp_clone_into (nl_apply_list_nth payload 1) out) 0)
+                    (nl_n4_frame_eval env frame (nl_apply_list_nth payload 1) out))))))))))
+    (defun nl_n4_reflection_filter_p (filter)
+      (if (= (sexp-tag filter) 7)
+          (let* ((name (nl_cons_car_ptr filter)))
+            (if (or (= (nl_n4_veneer_p name) 1)
+                    (= (nl_n4_internal_p name) 1)
+                    (= (sexp-name-eq name "backtrace") 1)
+                    (= (sexp-name-eq name "backtrace-frame") 1)
+                    (= (sexp-name-eq name "backtrace-frames") 1))
+                1 (nl_n4_reflection_filter_p (nl_cons_cdr_ptr filter)))) 0))
+    (defun nl_n4_capture_filtered (env filter out)
+      ;; Reflection needs variables the body does not mention. Keep the
+      ;; existing filtered closure ABI for ordinary and OClosure consumers;
+      ;; explicit eval-alist overrides are always retained by mode 2.
+      (nl_env_capture_lexical_with_filter env filter
+        (if (= (nl_n4_reflection_filter_p filter) 1) 0 1) out))
+    (defun nl_n4_captured_lexical_p (frames name)
+      (let* ((depth (sexp-int-unwrap (record-slot-ref-ptr frames 1))))
+        (if (< depth 2) 0
+          (let* ((captured (vector-ref-ptr (record-slot-ref-ptr frames 0) (- depth 2))))
+            (if (= (nelisp_frame_scope_boundary_p captured) 1)
+                (if (= (nelisp_frame_stack_find_in_frame captured name) 0) 0
+                  (if (= (nelisp_frame_binding_dynamic_p captured name) 1) 0 1))
+              0)))))
+    (defun nl_n4_bind_declared (env frames name value)
+      (let* ((frame (vector-ref-ptr (record-slot-ref-ptr frames 0)
+                      (- (sexp-int-unwrap (record-slot-ref-ptr frames 1)) 1)))
+             (old (nelisp_frame_stack_find_in_frame frame name)))
+        (if (and (/= old 0) (= (nelisp_frame_binding_dynamic_p frame name) 1))
+            (let* ((history (alloc-bytes 32 8)) (names (alloc-bytes 32 8)))
+              (seq (nelisp_cons_construct name old history)
+                   (nelisp_cons_construct history (record-slot-ref-ptr frame 1) names)
+                   (record-slot-set frame 1 names)
+                   (nl_bind_frame_fast frames name value) 1))
+          (seq (nl_bind_frame_fast frames name value)
+               (bf_mark_declared_special env frames name)))))
+    (defun nl_n4_pop_repeat (env names depth status)
+      (let* ((pair (nl_cons_car_ptr names)) (sym (nl_cons_car_ptr pair))
+             (old (nl_cons_cdr_ptr pair)) (value (alloc-bytes 32 8)))
+        (seq
+         (nl_cell_get_value old value)
+         (if (= (nl_n3_notify env sym value 3) 0)
+             (let* ((scratch (alloc-bytes 96 8)))
+               (nelisp_frame_bind (+ env 32) sym old scratch (+ scratch 32) (+ scratch 64)))
+           (let* ((current (nelisp_frame_stack_find_kind (+ env 32) sym 1 0)))
+             (seq (nl_cell_get_value current value)
+                  (nl_n3_cell_set old value) (setq status 1))))
+         (nl_n3_pop_names env (nl_cons_cdr_ptr names) depth status)))))
+  "N4b activation roots and frame access; public selection/policy stays Lisp.")
+
+(defun nelisp-standalone--patch-n4-eval (source)
+  "Instrument the owner-provided cons entry, including macro-cache hits."
+  (cons 'seq
+        (mapcar (lambda (form)
+                  (if (eq (cadr form) 'nl_ei_cons_tail)
+                      `(defun nl_ei_cons_tail (cdr-ptr car-ptr form env out)
+                         (let* ((n4-frame (nl_n4_push env car-ptr cdr-ptr 0)))
+                           (nl_n4_finish (seq ,@(cdddr form)) env out n4-frame)))
+                    form)) (cdr source))))
+
+(defun nelisp-standalone--patch-n4-cons (source)
+  "Reuse the original evaluator activation after arguments are evaluated."
+  (cons 'seq
+        (mapcar (lambda (form)
+                  (if (eq (cadr form) 'nl_eval_inner_cons_after_args)
+                      (cl-subst 'nl_n4_direct_apply 'nl_apply_function form)
+                    form)) (cdr source))))
+
+(defun nelisp-standalone--patch-n4-apply (source)
+  "Track indirect, bytecode and native entries, hiding bridge activations."
+  (let (result)
+    (dolist (form (cdr source))
+      (let ((name (cadr form)))
+        (cond
+         ((eq name 'nl_apply_function)
+          (push (cl-subst 'nl_n4_apply_raw 'nl_apply_function form) result)
+          (push '(defun nl_apply_function (func_ptr args_list_ptr env out)
+                   (nl_n4_named_apply (nl_n4_apply_name func_ptr)
+                    func_ptr args_list_ptr env out)) result))
+         ((eq name 'nl_apply_native_subr)
+          (push (cl-subst 'nl_n4_apply_raw 'nl_apply_function form) result))
+         ((eq name 'nl_apply_do_funcall)
+          (push (cl-subst '(nl_n4_named_apply arg0_ptr func_slot args1_plus env out)
+                         '(nl_apply_function func_slot args1_plus env out)
+                         (cl-subst '(nl_n4_named_apply arg0_ptr func_slot spliced_slot env out)
+                                   '(nl_apply_function func_slot spliced_slot env out)
+                                   form :test #'equal) :test #'equal) result))
+         (t (push form result)))))
+    (cons 'seq (nreverse result))))
+
+;; Preserve the original lowered evaluator body as the executable reference.
+(setq nelisp-standalone--n4-source
+      (append nelisp-standalone--n4-source
+              (list (cons 'defun (cons 'nl_n4_eval_tail_raw
+                                     (cddr nelisp-standalone--mxcache-ei-cons-tail))))))
+(setq nelisp-standalone--shim-source
+      (append nelisp-standalone--shim-source (cdr nelisp-standalone--n4-source)))
+
 (defun nelisp-standalone--reader-units ()
   "Build the ORDERED reader-path unit list (start first, arena last).
 Links the REAL special-form + env machinery (no trap stubs) so the binary is a
@@ -37872,9 +38273,10 @@ genuine general interpreter for the 11 special forms + installed builtins."
                        (require 'nelisp-cc-eval-inner)
                        (nelisp-standalone--cached-unit
                         "eval-inner-mxcache.o"
+                        (nelisp-standalone--patch-n4-eval
                         (nelisp-standalone--patch-eval-inner-mxcache
                          (nelisp-standalone--patch-eval-inner
-                          (symbol-value 'nelisp-cc-eval-inner--source)))
+                          (symbol-value 'nelisp-cc-eval-inner--source))))
                         (list nelisp-standalone--this-file (locate-library "nelisp-cc-eval-inner")))))
          ;; M6 catch/throw dispatch + void-function miss fix, PLUS
          ;; perf/macroexpansion-cache's `nl_cons_macro_apply_eval'/
@@ -37884,20 +38286,22 @@ genuine general interpreter for the 11 special forms + installed builtins."
                           (require 'nelisp-cc-evalport-combiner-cons)
                           (nelisp-standalone--cached-unit
                            "combiner-cons-mxcache.o"
+                           (nelisp-standalone--patch-n4-cons
                            (nelisp-standalone--patch-autoload-lookups
                             (nelisp-standalone--patch-combiner-cons-mxcache
                              (nelisp-standalone--patch-combiner-cons-full
-                              (symbol-value 'nelisp-cc-evalport-combiner-cons--source))))
+                              (symbol-value 'nelisp-cc-evalport-combiner-cons--source)))))
                            (list nelisp-standalone--this-file (locate-library "nelisp-cc-evalport-combiner-cons")))))
          ;; M3: do_fset rc-fix patched combiner-apply.
          (combiner (progn
                      (require 'nelisp-cc-evalport-combiner-apply)
                      (nelisp-standalone--cached-unit
                       "combiner-apply-fix.o"
+                      (nelisp-standalone--patch-n4-apply
                       (nelisp-standalone--patch-autoload-lookups
                        (nelisp-standalone--patch-combiner-apply
                         (symbol-value 'nelisp-cc-evalport-combiner-apply--source))
-                       t)
+                       t))
                       (list nelisp-standalone--this-file (locate-library "nelisp-cc-evalport-combiner-apply")))))
          (extras (mapcar #'nelisp-standalone--reader-extra-unit
                          nelisp-standalone--reader-extra-manifest))

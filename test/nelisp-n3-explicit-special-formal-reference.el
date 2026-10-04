@@ -1,7 +1,5 @@
-;;; nelisp-n3-explicit-special-formal-reference.el --- Known eval gap -*- lexical-binding: t; -*-
-;; An explicit lexical alist entry overrides the global special declaration
-;; while binding a same-named closure parameter. GNU prints (7 1); N3-11
-;; currently prints (7 7). Keep this known-failing reference separate.
+;;; nelisp-n3-explicit-special-formal-reference.el --- Explicit lexical formal -*- lexical-binding: t; -*-
+;; Explicit eval-alist binding shadows the global special declaration even for a same-named closure formal.
 (defvar n3explicit-special 1)
 (let ((fn (eval '(lambda (n3explicit-special)
                   (list n3explicit-special (symbol-value 'n3explicit-special)))

@@ -1,8 +1,5 @@
-;;; nelisp-n3-duplicate-dynamic-reference.el --- Known watcher gap -*- lexical-binding: t; -*-
-;; GNU has two unlet callbacks for the repeated dynamic bindings below.
-;; The reader's parallel-let binding table retains only the last cell.
-;; let* is a passing control. Keep this reference separate from the passing
-;; N3 suite.
+;;; nelisp-n3-duplicate-dynamic-reference.el --- Repeated dynamic bindings -*- lexical-binding: t; -*-
+;; Repeated parallel-let dynamic bindings unwind individually; let* is a control.
 (defvar n3dup-x 1)
 (defvar n3dup-events nil)
 (defun n3dup-w (_s v op _where) (push (list v op) n3dup-events))
