@@ -1,0 +1,13 @@
+#+TITLE: Symbol-function signal wiring and native parity
+
+* S1 Signal ABI validation before native qualification
+
+** S1.1 Imported signal ABI matches and rejects the original defect and empty scope
+cmd: emacs -Q --batch -L lisp -L src -L scripts -l test/nelisp-symbol-function-wiring-test.el -f ert-run-tests-batch-and-exit
+
+** S1.2 Native source syntax is balanced
+cmd: make parens-check
+
+** S1.3 End to end: all registered fixed-arity native calls and state recovery pass
+#+REQUIRES: NELISP_BIN
+cmd: python3 test/nelisp-builtin-arity-test.py

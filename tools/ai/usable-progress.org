@@ -47,6 +47,7 @@ cmd: make -s doc211-api-consumer-smoke
 cmd: timeout 45 make -s build-nelisp-bootstrap
 
 ** S1.4 End to end: the NeLisp standalone binary loads the freshly built bootstrap bundle without error
+#+NOTE: 2026-10-04 N2 qualification keeps the 50s source cap: seed and N2 both exit 124 at 50.052/50.053s without completion output. The final C-core identity-bound image instead starts in 0.566s (rc=0, exact marker, empty stderr). Source timing debt remains failing. Census native before/after ns/call, clauses, Lisp references and 55s results are recorded at tools/ai/c-core-progress.org C5.3/C7.3 and ../work/qualification.json.
 #+REQUIRES: NELISP_BIN
 #+NOTE: post feat/http-protocol-layer + origin/main merge (161 upstream commits) the
 #+NOTE: bootstrap manifest grew to 159 files; a clean cold load now measures ~38-40s

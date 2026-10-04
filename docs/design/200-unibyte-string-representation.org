@@ -218,7 +218,11 @@ read をそのまま使える」は tag 15 では偽で、=str-byte-at= 相当�
 =(34 92 51 49 48 92 51 49 49 34)= で、raw 200/201 は出力に現れない。
 =standalone-reader-test= の Doc 200 smoke が両経路を別々に保持する。
 
-** §8.3 §4 scope refusal — raw-byte characters
+** §8.3 Historical §4 scope refusal — raw-byte characters
+
+The following refusal describes the 2026-08-27 implementation.  The C-core
+continuation in §8.7 adds the missing representation and conversions; do not
+treat this historical refusal as the current acceptance contract.
 
 NeLisp は Emacs の raw-byte character =#x3FFF00 + B= を表現しない。stock
 Emacs 30.1 の実測は次の通り:
@@ -292,3 +296,42 @@ smoke が保持する。
 
 関連: =feedback_nelisp_standalone_utf8_raw_byte_block=（NeLisp の String は
 Rust の UTF-8 で、byte >= 128 が膨張する既知の制約）。
+
+** §8.7 C-core continuation: byte8 and explicit multibyte state
+
+The 2026-10-02 continuation repairs GNU's two-byte internal byte8 encoding
+and five-byte extended characters.  The batch18 reader passes 23 GNU storage,
+substring, concatenation and printer comparisons.  Its predecessor passes
+only 9/23, including actual codepoint truncation rather than a printer-only
+difference.
+
+Batch19 adds the four string conversions, raw-unibyte promotion in concat
+and formatting, and removes representation refusal from append/vconcat,
+which preserve the input sequences' numeric character values.  External-byte
+interpretation validates sequence width, continuation bytes and overlong
+encodings; internal C0/C1 byte8 sequences are not valid external sequences.
+The first candidate passes 84/89 cases.  Its five failing cases establish
+the remaining explicit-ASCII-multibyte and format-template requirements.
+
+Immutable tag-5 strings reserve capacity-word bit 62 for explicit multibyte
+state; the low 62 bits remain allocation capacity.  Default ASCII strings
+retain their existing unibyte behavior.  Conversion creates a distinct flagged
+string even for ASCII or empty input.  Concat, substring, copying and formatting
+propagate representation.  Reverse conversion creates ordinary unibyte output.
+Tags, byte pointers, lengths and mutable NlStr/refcount layout are unchanged;
+GC marks the inline buffer pointer, not the capacity metadata.  Both shallow
+and legacy deep clones preserve the flag.  Any future immutable-capacity
+consumer must mask out bit 62 before treating that word as an allocation size.
+
+The final batch19 reader passes 100/103 byte-level GNU conversion comparisons,
+including identity, flag propagation, GC and ASCII mutation, and 23/23 storage
+comparisons.  Three native error-position cases remain failing.  The package
+provider =emacs-cc-byte8-conversion-1.el= retains native allocation and corrects
+only those error positions in Lisp; preloading it passes 103/103.  The bare
+=standalone-reader-character-conversion-test= intentionally retains the three
+failures.  The pre-flag candidate passes only 84/100.  Also run
+=standalone-reader-character-storage-test= and the integrated
+=raw-byte-conversion-1= canonical unit in nelisp-emacs-lib.  These are focused
+evidence, not proof of all string semantics or the complete C core.  Mixed
+raw-byte/Unicode reader literals still have the historical §8.6 refusal;
+that reader path and other unverified producers remain follow-up work.

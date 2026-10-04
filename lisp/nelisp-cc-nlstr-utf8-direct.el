@@ -172,6 +172,24 @@ fields ptr@16, len@24.")
           (and (ptr-write-u64 out-cp 0 b0)
                (ptr-write-u64 out-bw 0 1)
                1)
+        (if (< b0 194)
+            ;; GNU byte8: C0/C1 plus a continuation represents 0x3fff80..ff.
+            (if (< (+ idx 1) len)
+                (and (ptr-write-u64 out-cp 0
+                       (+ 4194176 (* (logand b0 1) 64)
+                          (logand (ptr-read-u8 data (+ idx 1)) 63)))
+                     (ptr-write-u64 out-bw 0 2) 1)
+              0)
+        (if (= b0 248)
+            ;; GNU's extended non-Unicode characters have a five-byte form.
+            (if (< (+ idx 4) len)
+                (and (ptr-write-u64 out-cp 0
+                       (logior (* (logand (ptr-read-u8 data (+ idx 1)) 15) 262144)
+                         (logior (* (logand (ptr-read-u8 data (+ idx 2)) 63) 4096)
+                           (logior (* (logand (ptr-read-u8 data (+ idx 3)) 63) 64)
+                                   (logand (ptr-read-u8 data (+ idx 4)) 63)))))
+                     (ptr-write-u64 out-bw 0 5) 1)
+              0)
         (if (= (logand b0 224) 192)
             ;; 2-byte: 110xxxxx 10xxxxxx  (need idx+1 < len)
             (if (< (+ idx 1) len)
@@ -203,7 +221,7 @@ fields ptr@16, len@24.")
                          1)
                   0)
               ;; invalid leading byte
-              0)))))
+              0)))))))
 
     ;; Given b0 (leading byte), check char boundary then decode.
     ;; A char boundary means b0 is NOT a continuation byte.

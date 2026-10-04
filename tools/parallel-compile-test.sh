@@ -8,7 +8,7 @@
 # COW-isolated copy of the whole address space (its own arena / mirror / frames
 # / env), so N concurrent compiles share NO mutable eval state and cannot race.
 # Workers join through a MAP_SHARED counter (atomic-fetch-add visible across the
-# COW boundary) that the parent `thread-join's on.  Each worker compiles a
+# COW boundary) that the parent `nelisp-spin-until' waits on.  Each worker compiles a
 # distinct program -> its own native ELF; we then exec all of them and assert
 # every exit code, so a lost/torn/raced compile would fail the assertion.
 set -euo pipefail
@@ -115,7 +115,7 @@ cat >> "$driver" <<EOF
 (fork-spawn (quote (progn (nelisp-selfhost-compile (quote (exit 22)) "$o2") (atomic-fetch-add 134217728 1))))
 (fork-spawn (quote (progn (nelisp-selfhost-compile (quote (exit 33)) "$o3") (atomic-fetch-add 134217728 1))))
 (fork-spawn (quote (progn (nelisp-selfhost-compile (quote (exit 44)) "$o4") (atomic-fetch-add 134217728 1))))
-(thread-join 134217728 4)
+(nelisp-spin-until 134217728 4)
 0
 EOF
 

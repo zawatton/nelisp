@@ -1,0 +1,13 @@
+#+TITLE: Native aset bounds and vector/record length validation
+
+* S1 Existing native array primitives validate before touching memory
+** S1.1 aset bounds and make-vector/make-record length errors match GNU 31.1
+#+REQUIRES: NELISP_BIN
+cmd: bash test/nelisp-vector-bounds-parity-test.sh
+** S1.2 The predecessor binary reproduces the recorded unchecked behaviour
+#+REQUIRES: NELISP_BEFORE_BIN
+cmd: NELISP_BIN="$NELISP_BEFORE_BIN" bash test/nelisp-vector-bounds-parity-test.sh --expect-defect 4c0261d4fa1d4c094d225290481bbafcc1c56a53988ac8acb11a75e008e147b8
+** S1.3 End to end: the census-buffer-06 unit, whose case-table probe performs the out-of-range aset, runs to completion through the C-core runner
+#+REQUIRES: NELISP_BIN,NELISP_LIBRARY_ROOT
+cmd: cd "$NELISP_LIBRARY_ROOT" && NELISP_BIN="$NELISP_BIN" bash test/nelisp-emacs-lib/c-core-parity-smoke.sh run --unit census-buffer-06 2>&1 | grep -v "transcripts differ" ; test -s "$NELISP_LIBRARY_ROOT/build/c-core-parity/units/census-buffer-06/nelisp.out" && grep -q '^P-DONE$' "$NELISP_LIBRARY_ROOT/build/c-core-parity/units/census-buffer-06/nelisp.out"
+#+NOTE: Repairs existing native routines in scripts/nelisp-standalone-build.el (bf_aset_checked vector arm, bf_make_vector, bf_make_record); no new native entry. The unchecked vector-slot-set wrote outside a 7-slot vector for (aset V 65 ..), corrupted the heap and stalled later evaluation nondeterministically. S1.3 only requires the unit to reach P-DONE: its rows still differ from GNU for other reasons (copy-sequence of a char-table, case-table aware downcase). Not covered: record (tag 12) slot bounds, string-bytes / puthash / remhash argument validation.

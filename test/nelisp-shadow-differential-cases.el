@@ -45,6 +45,19 @@
 ;;; Code:
 
 (list
+ ;; Ordinary defvaralias calls must honor their installed Lisp function cell.
+ (let ((was (fboundp 'defvaralias))
+       (old (and (fboundp 'defvaralias) (symbol-function 'defvaralias))))
+   (unwind-protect
+       (progn
+         (defalias 'defvaralias (lambda (a b &optional doc) (list a b doc)))
+         (list (defvaralias 'route-a 'route-b "doc")
+               (funcall 'defvaralias 'route-a 'route-b "doc")))
+     (if was (defalias 'defvaralias old) (fmakunbound 'defvaralias))))
+ ;; Missing operands must signal before the native list-search body reads them.
+ (condition-case err (memq) (wrong-number-of-arguments err))
+ (condition-case err (member nil) (wrong-number-of-arguments err))
+ (condition-case err (assq nil nil nil) (wrong-number-of-arguments err))
  ;; Directory existence must use the target's access operation.  Darwin's
  ;; former ENOSYS stub made both checks false and hid host helper executables.
  (list (file-exists-p ".") (file-directory-p "."))

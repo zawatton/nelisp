@@ -1,0 +1,13 @@
+#+TITLE: Character parity probe CLI without accidental runtime startup
+
+* S1 Strict option handling with unchanged real parity comparisons
+
+** S1.1 Help and invalid options exit without starting a runtime
+cmd: python3 test/nelisp-character-probe-cli-test.py
+
+** S1.2 CLI and probe sources compile
+cmd: python3 -m py_compile test/nelisp-character-probe-cli-test.py test/nelisp-character-storage-regression.py
+
+** S1.3 End to end: the real conversion corpus matches GNU with the Lisp provider
+#+REQUIRES: NELISP_BIN,NELISP_CONVERSION_PROVIDER
+cmd: python3 test/nelisp-character-storage-regression.py --conversions --preload "$NELISP_CONVERSION_PROVIDER"

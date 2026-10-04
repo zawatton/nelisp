@@ -118,9 +118,10 @@ the stricter octal form GNU's flag would only opt into)."
         (cond
          ((= c 34) (setq need-nonhex nil) (nelisp--prn-chunks-add chunks "\\\"")) ; ?\"
          ((= c 92) (setq need-nonhex nil) (nelisp--prn-chunks-add chunks "\\\\")) ; ?\\
-         ((and unibyte (>= c 128))
+         ((or (and unibyte (>= c 128)) (>= c #x3fff80))
           (setq need-nonhex nil)
-          (nelisp--prn-chunks-add chunks (nelisp--prn-octal-escape c)))
+          (nelisp--prn-chunks-add chunks
+            (nelisp--prn-octal-escape (if unibyte c (- c #x3fff00)))))
          ((and print-escape-newlines (= c 10))
           (setq need-nonhex nil) (nelisp--prn-chunks-add chunks "\\n"))
          ((and print-escape-newlines (= c 12))

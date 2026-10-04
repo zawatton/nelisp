@@ -524,14 +524,18 @@ confused with a fixed base immediate."
   "Return the 32-byte-aligned offset of the pinned-root array in driver BSS."
   (logand (+ (nelisp-standalone--driver-bss-base-size) 32 31) -32))
 
-(defun nelisp-standalone--driver-bss-size ()
-  "Return driver BSS size including pinned roots and symbol-name state."
+(defun nelisp-standalone--catch-head-offset ()
+  "Return the dedicated main evaluator catch-head offset in driver BSS."
   (+ (nelisp-standalone--root-pin-region-offset)
      (* nelisp-standalone--root-pin-slots 32)
      nelisp-cc-eln-callback-context-bss-bytes
      112
      nelisp-cc-eln-callback7-total-bss-bytes
      32))
+
+(defun nelisp-standalone--driver-bss-size ()
+  "Return driver BSS size including roots, loader state and catch head."
+  (+ (nelisp-standalone--catch-head-offset) 8 128))
 
 ;; Cold-image build digest.  The marker is assembled from bytes (never
 ;; written out as one literal) so no other copy of it can end up in a binary
@@ -846,6 +850,12 @@ storage — not an arena reservation."
                                  (* nelisp-standalone--root-pin-slots 32)
                                  nelisp-cc-eln-callback-context-bss-bytes 112
                                  nelisp-cc-eln-callback7-total-bss-bytes)
+                              :section 'bss :bind 'global :type 'object))
+    (list (nelisp-link-symbol "nl_gc_typed_state"
+                              (+ (nelisp-standalone--catch-head-offset) 8)
+                              :section 'bss :bind 'global :type 'object))
+    (list (nelisp-link-symbol "nl_catch_head"
+                              (nelisp-standalone--catch-head-offset)
                               :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_gc_stats"
                               (+ 57616 4194304 96 176 64 56 40 1040
@@ -3140,6 +3150,116 @@ REPL-facing module it feeds."
 ;; have to be enumerated just like every other live box.
 (defconst nelisp-standalone--gc-source
   '(seq
+
+    ;; N2: clauses 1/2. A request-scoped identity set counts logical objects,
+    ;; not the evaluator's transient Sexp views. It is external scratch, never
+    ;; an image edge; releasing it after the snapshot avoids relocation debt.
+    ;; State: mode, table, capacity, used, six counts, clear key/len/family.
+    (defun nl_gc_typed_probe (base cap kind key aux)
+      (let* ((i (logand (logxor (/ key 8) (* kind 40503) aux) (- cap 1)))
+             (row (+ base (* i 32))) (go 1))
+        (while (= go 1)
+          (if (= (ptr-read-u64 row 0) 0) (setq go 0)
+            (if (and (= (ptr-read-u64 row 0) kind)
+                     (= (ptr-read-u64 row 8) key)
+                     (= (ptr-read-u64 row 16) aux))
+                (setq go 0)
+              (seq (setq i (logand (+ i 1) (- cap 1)))
+                   (setq row (+ base (* i 32)))))))
+        row))
+    (defun nl_gc_typed_grow ()
+      (let* ((st (data-addr nl_gc_typed_state))
+             (old (ptr-read-u64 st 8)) (cap (ptr-read-u64 st 16))
+             (newcap (if (= cap 0) 65536 (* cap 2)))
+             (base (nl_os_alloc_chunk (* newcap 32))) (i 0))
+        (if (= base 0) 0
+          (seq
+           (while (< i cap)
+             (let* ((src (+ old (* i 32))) (kind (ptr-read-u64 src 0)))
+               (if (= kind 0) 0
+                 (let* ((key (ptr-read-u64 src 8)) (aux (ptr-read-u64 src 16))
+                        (dst (nl_gc_typed_probe base newcap kind key aux)))
+                   (seq (ptr-write-u64 dst 0 kind)
+                        (ptr-write-u64 dst 8 key) (ptr-write-u64 dst 16 aux))))
+               (setq i (+ i 1))))
+           (ptr-write-u64 st 8 base) (ptr-write-u64 st 16 newcap)
+           (if (= old 0) 0 (nl_os_free_chunk old (* cap 32))) 1))))
+    (defun nl_gc_typed_add (kind key aux countoff amount)
+      (let* ((st (data-addr nl_gc_typed_state)))
+        (if (= (ptr-read-u64 st 0) 1)
+            (if (if (= (ptr-read-u64 st 16) 0) (= (nl_gc_typed_grow) 0)
+                  (if (>= (* (+ (ptr-read-u64 st 24) 1) 4)
+                          (* (ptr-read-u64 st 16) 3))
+                      (= (nl_gc_typed_grow) 0) 0))
+                ;; Fail closed: do not publish a partial census.
+                (ptr-write-u64 st 0 3)
+              (let* ((row (nl_gc_typed_probe (ptr-read-u64 st 8)
+                                            (ptr-read-u64 st 16) kind key aux)))
+                (if (= (ptr-read-u64 row 0) 0)
+                    (seq (ptr-write-u64 row 0 kind) (ptr-write-u64 row 8 key)
+                         (ptr-write-u64 row 16 aux)
+                         (ptr-write-u64 st 24 (+ (ptr-read-u64 st 24) 1))
+                         (ptr-write-u64 st countoff
+                                        (+ (ptr-read-u64 st countoff) amount))
+                         ;; A string owns its byte payload; alias views count once.
+                         (if (or (= kind 3) (= kind 4))
+                             (ptr-write-u64 st 56 (+ (ptr-read-u64 st 56) aux)) 0))
+                  0))) 0)))
+    (defun nl_gc_typed_slot (sp tag)
+      (let* ((st (data-addr nl_gc_typed_state)) (mode (ptr-read-u64 st 0)))
+        (if (= mode 2)
+            ;; N2 clear-string: only real string Sexp edges may be rewritten.
+            ;; Match the object's family as well as backing+length: a distinct
+            ;; representation view is not an alias, even if it shares bytes.
+            (if (or (= tag 5) (= tag 14))
+                (if (and (= tag (ptr-read-u64 st 96))
+                         (= (ptr-read-u64 sp 16) (ptr-read-u64 st 80))
+                         (= (ptr-read-u64 sp 24) (ptr-read-u64 st 88)))
+                    (seq (ptr-write-u64 sp 8
+                           (logand (ptr-read-u64 sp 8) 4611686018427387903))
+                         (ptr-write-u8 sp 0 14)) 0)
+              (if (or (= tag 6) (= tag 15))
+                  (if (= (ptr-read-u64 sp 8) (ptr-read-u64 st 80))
+                      (ptr-write-u8 sp 0 15) 0) 0))
+          (if (= mode 1)
+              (cond
+               ((= tag 7)
+                (if (= (nl_gc_object_start_p (ptr-read-u64 sp 8)) 0) 0
+                  (nl_gc_typed_add 1 (ptr-read-u64 sp 8) 0 32 1)))
+               ((or (= tag 4) (= tag 16))
+                (nl_gc_typed_add (if (= tag 4) 2 6)
+                                (ptr-read-u64 sp (if (= tag 4) 16 8))
+                                (ptr-read-u64 sp 24) 40 1))
+               ((or (= tag 5) (= tag 14))
+                (let ((ptr (ptr-read-u64 sp 16)) (len (ptr-read-u64 sp 24)))
+                  (if (= (nl_gc_object_start_p ptr) 0) 0
+                    (if (or (< len 0) (> len (nl_gc_block_elem_cap ptr 1))) 0
+                      (nl_gc_typed_add 3 (if (= len 0) 1 ptr) len 48 1)))))
+               ((or (= tag 6) (= tag 15))
+                (let ((box (ptr-read-u64 sp 8)))
+                  (if (= (nl_gc_object_start_p box) 0) 0
+                    (if (< (nl_hdr_bt (- box 8)) 40) 0
+                      (nl_gc_typed_add 4 box (ptr-read-u64 box 16) 48 1)))))
+               ((or (= tag 8) (= tag 12) (= tag 17) (= tag 18)
+                    (= tag 9) (= tag 10))
+                (let* ((box (ptr-read-u64 sp 8)))
+                  (if (= (nl_gc_object_start_p box) 0) 0
+                    (let* ((len (if (= tag 8) (ptr-read-u64 box 16)
+                              (if (or (= tag 12) (= tag 17) (= tag 18))
+                                  (+ (ptr-read-u64 box 48) 1) 0)))
+                       (before (ptr-read-u64 st 64)))
+                  (seq (nl_gc_typed_add 5 box 0 64 1)
+                       (if (> (ptr-read-u64 st 64) before)
+                           (ptr-write-u64 st 72 (+ (ptr-read-u64 st 72) len)) 0))))))
+               (t 0)) 0))))
+    (defun nl_gc_typed_interns (slot)
+      (let ((cursor 0))
+        (while (>= cursor 0)
+          (setq cursor (nl_intern_next cursor slot))
+          (if (< cursor 0) 0 (nl_gc_typed_slot slot 4)))
+        ;; nil and t are immediate symbols, with no name allocation needed.
+        (ptr-write-u64 (data-addr nl_gc_typed_state) 40
+                       (+ (ptr-read-u64 (data-addr nl_gc_typed_state) 40) 2)) 0))
     ;; Chunk-aware membership.  During Doc 140 Stage 3 only chunk 0 is active,
     ;; but the walk already follows the descriptor list introduced in Stage 2.
     ;; Membership is restricted to [data-start, base+cursor) so fixed control
@@ -3466,6 +3586,7 @@ REPL-facing module it feeds."
            (seq
             (setq go 0)
             (let ((box (ptr-read-u64 sp 8)))
+              (nl_gc_typed_slot sp 7)
               (if (= (nl_gc_mark_block box) 0)
                   0                                ; foreign / already marked
                 (nl_seq2
@@ -3671,6 +3792,7 @@ REPL-facing module it feeds."
     ;; Mark one Sexp slot at SP (32 bytes).  Pure recursion per type.
     (defun nl_gc_mark_slot (sp)
       (let ((tag (ptr-read-u8 sp 0)))
+        (nl_gc_typed_slot sp tag)
         (if (= tag 7)
             (nl_gc_mark_cons sp)
           (if (= tag 8)
@@ -6393,11 +6515,23 @@ argument (reachability + in-arena bounds checks).")
     ((:lit "nelisp--cell-value") . (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 11)
                                        (nl_cell_get_value (wf_arg_ptr args 0) out)
                                      (seq (wf_copy32 out (wf_arg_ptr args 0)) 0)))
-    ((:lit "puthash")          . (seq (wf_dirty) (nl_ht_put args out)))
+    ((:lit "puthash")          . (let* ((argc (m5_list_len args 0)))
+                                  (if (/= argc 3)
+                                      (bf_wrong_number_of_args name_ptr argc)
+                                    (let* ((h (wf_arg_ptr args 2)))
+                                      (if (= (bf_hash_table_p_raw h) 1)
+                                          (seq (wf_dirty) (nl_ht_put args out))
+                                        (bf_wrong_type_hash_table h))))))
     ((:lit "gethash")          . (if (= (bf_hash_table_p_raw (wf_arg_ptr args 1)) 1)
                             (nl_ht_get args out)
                           (bf_wrong_type_hash_table (wf_arg_ptr args 1))))
-    ((:lit "remhash")          . (seq (wf_dirty) (nl_ht_rem args out)))
+    ((:lit "remhash")          . (let* ((argc (m5_list_len args 0)))
+                                  (if (/= argc 2)
+                                      (bf_wrong_number_of_args name_ptr argc)
+                                    (let* ((h (wf_arg_ptr args 1)))
+                                      (if (= (bf_hash_table_p_raw h) 1)
+                                          (seq (wf_dirty) (nl_ht_rem args out))
+                                        (bf_wrong_type_hash_table h))))))
     ;; This read a count out of whatever it was handed: (hash-table-count 0)
     ;; answered 0, which is also what an empty table answers.
     ((:lit "hash-table-count") . (let* ((h (wf_arg_ptr args 0)))
@@ -6411,7 +6545,11 @@ argument (reachability + in-arena bounds checks).")
     ((:lit "string-byte")      . (wf_write_int out
                                   (m5_byte_at (wf_arg_ptr args 0)
                                                (ptr-read-u64 (wf_arg_ptr args 1) 8))))
-    ((:lit "string-bytes")     . (wf_write_int out (m5_strlen (wf_arg_ptr args 0))))
+    ((:lit "string-bytes")     . (let* ((s (wf_arg_ptr args 0))
+                                          (tag (ptr-read-u64 s 0)))
+                                  (if (= (m5_string_tag_p tag) 1)
+                                      (wf_write_int out (m5_strlen s))
+                                    (bf_wrong_type_stringp s))))
     ((:lit "string=")          . (if (= (bf_strsym_raw (wf_arg_ptr args 0)) 0)
                                       (bf_wrong_type_stringp (wf_arg_ptr args 0))
                                     (if (= (bf_strsym_raw (wf_arg_ptr args 1)) 0)
@@ -6427,8 +6565,7 @@ argument (reachability + in-arena bounds checks).")
     ((:lit "multibyte-string-p") .
      (let* ((sx (wf_arg_ptr args 0)) (tag (ptr-read-u64 sx 0)))
        (if (and (= (m5_string_tag_p tag) 1)
-                (= (m5_unibyte_tag_p tag) 0)
-                (= (m5_ascii_bytes_p sx 0 (m5_strlen sx)) 0))
+                (= (m5_observably_unibyte_p sx) 0))
            (wf_write_t out)
          (wf_write_nil out))))
     ((:lit "string-as-unibyte") .
@@ -6520,15 +6657,12 @@ argument (reachability + in-arena bounds checks).")
     ((:lit "concat")           . (let* ((why (m5_concat_first_bad_kind args)))
                                    (if (= why 0)
                                        (let* ((all-unibyte (m5_concat_all_unibyte_p args)))
-                                         (if (and (= all-unibyte 0)
-                                                  (= (m5_concat_has_raw_high_p args) 1))
-                                             (bf_raw_byte_unrepresentable)
                                            (let* ((ms (alloc-bytes 32 8)))
                                              (seq (m5_make_builder
                                                    ms (m5_concat_string_capacity args 0)
                                                    all-unibyte)
                                                   (m5_concat_walk ms args)
-                                                  (mut-str-finalize ms out) 0))))
+                                                  (m5_finish_string ms out (- 1 all-unibyte)) 0)))
                                      (let* ((bad (m5_concat_first_bad_ptr args)))
                                        (if (= why 1)
                                            (bf_wrong_type_sequencep bad)
@@ -6601,9 +6735,11 @@ argument (reachability + in-arena bounds checks).")
                                                  (ct-byte (nl_str_sub_byte_off s nb to-raw)))
                                             (if (if (< cf-byte 0) 1 (if (< ct-byte 0) 1 0))
                                                 (bf_args_out_of_range3 s from-box to-box)
-                                              (seq (m5_make_builder ms 16 0)
+                                              (seq (m5_make_builder ms 16
+                                                     (m5_observably_unibyte_p s))
                                                    (m5_push_str_bytes ms s cf-byte ct-byte)
-                                                   (mut-str-finalize ms out) 0)))))
+                                                   (m5_finish_string ms out
+                                                     (- 1 (m5_observably_unibyte_p s))) 0)))))
                                      (let* ((clen (m5_length s))
                                             (to (if (= has-to 1) to-raw clen))
                                             (cf (if (< from 0) (+ clen from) from))
@@ -6616,7 +6752,7 @@ argument (reachability + in-arena bounds checks).")
                                                   (if (> ct clen) 1 (if (> cf ct) 1 0)))))
                                            (bf_args_out_of_range3 s from-box to-box)
                                          (seq (m5_make_builder
-                                               ms 16 (m5_unibyte_tag_p (ptr-read-u64 s 0)))
+                                               ms 16 (m5_observably_unibyte_p s))
                                               ;; CF/CT are CHAR indices -> byte offsets
                                               (m5_push_str_bytes ms s
                                                 (if (= (m5_unibyte_tag_p (ptr-read-u64 s 0)) 1)
@@ -6625,18 +6761,16 @@ argument (reachability + in-arena bounds checks).")
                                                 (if (= (m5_unibyte_tag_p (ptr-read-u64 s 0)) 1)
                                                     ct
                                                   (nl_u8_cidx_byte s 0 nb 0 ct)))
-                                              (mut-str-finalize ms out) 0)))))))
+                                              (m5_finish_string ms out
+                                                (- 1 (m5_observably_unibyte_p s))) 0)))))))
                           (bf_wrong_type_integerp (wf_arg_ptr args 1)))))
     ((:lit "format")           . (let* ((ms (alloc-bytes 32 8))
                                         (fmt (wf_arg_ptr args 0))
                                         (all-unibyte (m5_concat_all_unibyte_p args)))
-                                   (if (and (= all-unibyte 0)
-                                            (= (m5_concat_has_raw_high_p args) 1))
-                                       (bf_raw_byte_unrepresentable)
                                      (seq (m5_make_builder ms 32 all-unibyte)
                                           (m5_fmt_loop ms fmt 0 (m5_strlen fmt)
                                                        (nl_cons_cdr_ptr args))
-                                          (mut-str-finalize ms out) 0))))
+                                          (m5_finish_string ms out (- 1 all-unibyte)) 0)))
     ((:lit "nelisp--repr")     . (let* ((ms (alloc-bytes 32 8)))
                                    (seq (mut-str-make-empty ms 32)
                                         (m5_prin1 ms (wf_arg_ptr args 0))
@@ -6684,8 +6818,7 @@ argument (reachability + in-arena bounds checks).")
     ((:lit "nelisp--arena-boot-load-verify") . (bf_arena_boot_load_verify args out))
     ((:lit "nelisp--arena-load-split-verify") . (bf_arena_load_split_verify args out))
     ((:lit "nelisp--arena-value-survival") . (bf_arena_value_survival args out))
-    ((:lit "garbage-collect") . (seq (nl_gc_collect_from_recorded_roots 0)
-                                     (bf_arena_stats out)))
+    ((:lit "garbage-collect") . (bf_garbage_collect func_ptr args env out))
     ((:lit "nelisp--debug-switch") . (bf_debug_switch args out))
     ;; Compatibility alias for existing probes/scripts; prefer `nelisp--debug-switch'.
     ((:lit "nelisp--gc-diag") . (bf_debug_switch args out))
@@ -7720,7 +7853,7 @@ leave symbols unresolved at link time."
                    (setq hdr end)
                  (seq
                   (ptr-write-u64 total 0 (+ (ptr-read-u64 total 0) 1))
-                  (if (= (nl_hdr_mark hdr) 1)
+                  (if (or (= (nl_hdr_mark hdr) 1) (= (nl_hdr_mark hdr) 4))
                       (seq (ptr-write-u64 reach 0 (+ (ptr-read-u64 reach 0) 1))
                            (nl_hdr_set_mark hdr 0))
                     0)
@@ -9325,6 +9458,40 @@ leave symbols unresolved at link time."
                             (if (= (ptr-read-u8 dw 0) 7)
                                 (nl_fa_cons dw ds span dest cin cout dir)
                               (nl_fa_slot dw ds span dest cin cout dir)))))))))))
+    ;; Heap-image edge inventory (Sexp ABI tags 0..18): 0..3 are scalars;
+    ;; 4/5/13/14/16 own inline buffers; 6/15 own NlStr boxes; 7 cons,
+    ;; 8 vector, 9 char-table, 10 bool-vector, 11 cell, 12/17/18 record.
+    ;; Char-table slots are inline Sexps, unlike vector/record WORD slots.
+    ;; Capture every source pointer before swizzling: dir 3 mutates the
+    ;; live arena while producing the streaming image's relocation table.
+    (defun nl_fa_char_table_slots (base len stride off ds span dest cin cout dir)
+      (if (= (nl_gc_in_arena base) 0) 0
+        (let* ((cap (nl_gc_block_elem_cap base stride))
+               (n (if (< len cap) len cap)) (i 0))
+          (while (< i n)
+            (nl_seq2
+             (nl_fa_slot (+ base (+ off (* i stride))) ds span dest cin cout dir)
+             (setq i (+ i 1))))
+          0)))
+    (defun nl_fa_char_table_box (box ds span dest cin cout dir)
+      (if (= (nl_gc_mark_block box) 0) 0
+        (if (< (nl_hdr_bt (- box 8)) 136) 0
+          (let* ((entries (ptr-read-u64 box 64))
+                 (entries_len (ptr-read-u64 box 80))
+                 (parent (ptr-read-u64 box 88))
+                 (extra (ptr-read-u64 box 96))
+                 (extra_len (ptr-read-u64 box 112)))
+            (seq
+             (nl_fa_slot box ds span dest cin cout dir)
+             (nl_fa_slot (+ box 32) ds span dest cin cout dir)
+             (nl_fa_field (+ box 64) entries ds span dest cin cout dir)
+             (nl_fa_char_table_slots entries entries_len 48 8 ds span dest cin cout dir)
+             (if (= parent 0) 0
+               (seq (nl_fa_field (+ box 88) parent ds span dest cin cout dir)
+                    (nl_fa_char_table_box parent ds span dest cin cout dir)))
+             (nl_fa_field (+ box 96) extra ds span dest cin cout dir)
+             (nl_fa_char_table_slots extra extra_len 32 0 ds span dest cin cout dir)
+             0)))))
     (defun nl_fa_slot (sp ds span dest cin cout dir)
       (let ((tag (ptr-read-u8 sp 0)))
         (if (= tag 7)
@@ -9358,14 +9525,20 @@ leave symbols unresolved at link time."
                       (nl_seq2 (nl_fa_field (+ sp 8) box ds span dest cin cout dir)
                         (if (= (nl_gc_mark_block box) 0) 0
                           (nl_fa_field (+ box 8) (ptr-read-u64 box 8) ds span dest cin cout dir))))
-                  (if (or (= tag 5) (= tag 14))
+                  (if (or (= tag 5) (= tag 14) (= tag 13))
                       (nl_fa_field (+ sp 16) (ptr-read-u64 sp 16) ds span dest cin cout dir)
                     (if (or (= tag 4) (= tag 16))
                         (nl_fa_field (+ sp 16) (ptr-read-u64 sp 16) ds span dest cin cout dir)
                       (if (= tag 9)
-                          (nl_fa_field (+ sp 8) (ptr-read-u64 sp 8) ds span dest cin cout dir)
+                          (let ((box (ptr-read-u64 sp 8)))
+                            (seq (nl_fa_field (+ sp 8) box ds span dest cin cout dir)
+                                 (nl_fa_char_table_box box ds span dest cin cout dir)))
                         (if (= tag 10)
-                            (nl_fa_field (+ sp 8) (ptr-read-u64 sp 8) ds span dest cin cout dir)
+                            (let ((box (ptr-read-u64 sp 8)))
+                              (seq (nl_fa_field (+ sp 8) box ds span dest cin cout dir)
+                                   (if (= (nl_gc_mark_block box) 0) 0
+                                     (nl_fa_field (+ box 8) (ptr-read-u64 box 8)
+                                                  ds span dest cin cout dir))))
                           0)))))))))))
     (defun nl_fa_pool_slots (base i cap ds span dest cin cout dir)
       (let* ((k i))
@@ -9723,7 +9896,76 @@ the same way `nelisp_eval_call' already reaches into `reader-gc.o'."
 ;;   +0 total-nonfree  +8 free  +16 cons(BT=88)  +24 le256  +32 b257-4k
 ;;   +40 b4k-256k  +48 b256k-2m (~1MB parse pool lands here)  +56 b>2m
 (defconst nelisp-standalone--applyfn-census-helpers
-  '((defun bf_size_census_block (hdr acc)
+  '(
+    ;; N2 clauses 1/3: destructive byte erasure has no equivalent Lisp form.
+    ;; No replacement payload is allocated, and traversal changes only aliases
+    ;; of this object. Substring/conversion/copy constructors own fresh backing.
+    (defun bf_clear_string_bytes (args env out)
+      (let* ((sx (wf_arg_ptr args 0)) (tag (ptr-read-u64 sx 0))
+             (st (data-addr nl_gc_typed_state))
+             (ptr (bf_str_ptr sx)) (len (bf_str_len sx))
+             (reach (alloc-bytes 8 8)) (total (alloc-bytes 8 8)) (i 0))
+        (if (= (m5_string_tag_p tag) 0) (bf_wrong_type_stringp sx)
+          (if (or (= (ptr-read-u64 (data-addr nl_thread_parallel_ctx) 16) 1)
+                  (= (ptr-read-u64 (data-addr nl_gc_loop_ctx) 24) 1))
+              (bf_signal_memory_full)
+            (if (= (nl_gc_index_prepare) 0) (bf_signal_memory_full)
+              (seq
+               (ptr-write-u64 (data-addr nl_gc_loop_ctx) 24 1)
+               (ptr-write-u64 st 80 (if (or (= tag 6) (= tag 15))
+                                       (ptr-read-u64 sx 8) ptr))
+               (ptr-write-u64 st 88 len) (ptr-write-u64 st 96 tag)
+               (ptr-write-u64 st 0 2)
+               (while (< i len)
+                 (ptr-write-u8 ptr i 0) (setq i (+ i 1)))
+               (nl_aref_cache_invalidate ptr)
+               (nl_gc_mark_recorded_contexts) (nl_gc_mark_rootstack)
+               (nl_gc_mark_thread_roots) (nl_gc_mark_symentry)
+               (nl_mxcache_mark_all) (nl_fvcache_mark_all)
+               (nl_gc_symname_mark_roots)
+               (nl_gc_typed_slot sx tag)
+               (ptr-write-u64 st 0 0)
+               (ptr-write-u64 reach 0 0) (ptr-write-u64 total 0 0)
+               (bf_arena_mr_chunks (ptr-read-u64 268436160 0) reach total)
+               (nl_gc_index_end)
+               (ptr-write-u64 (data-addr nl_gc_loop_ctx) 24 0)
+               (wf_write_nil out) 0))))))
+    ;; N2 clause 2: collect and copy a typed snapshot before Lisp constructs
+    ;; GNU-shaped rows. The allocator has no typed free-cell pools; their
+    ;; truthful free count is zero (raw arena diagnostics remain separate).
+    (defun bf_garbage_collect (func args env out)
+      (let ((argc (m5_list_len args 0)))
+        (if (= argc 0) (bf_garbage_collect_snapshot env out)
+          (bf_wrong_number_of_args func argc))))
+    (defun bf_garbage_collect_snapshot (env out)
+      (let* ((st (data-addr nl_gc_typed_state))
+             (mark (nl_root_mark env)) (snapshot (nl_root_reserve env))
+             (argv (nl_root_reserve env)) (tmp (nl_root_reserve env)) (i 0))
+        (seq
+         (while (< i 80) (ptr-write-u64 st i 0) (setq i (+ i 8)))
+         (ptr-write-u64 st 0 1)
+         (nl_gc_collect_from_recorded_roots 0)
+         (nl_gc_typed_interns tmp)
+         (ptr-write-u64 st 0 (if (= (ptr-read-u64 st 0) 3) 3 0))
+         (if (= (ptr-read-u64 st 0) 3)
+             (seq (if (= (ptr-read-u64 st 8) 0) 0
+                      (nl_os_free_chunk (ptr-read-u64 st 8)
+                                        (* (ptr-read-u64 st 16) 32)))
+                  (ptr-write-u64 st 0 0) (nl_root_release env mark)
+                  (bf_signal_memory_full))
+           (seq
+            (vector-make 6 snapshot)
+            (setq i 0)
+            (while (< i 6)
+              (wf_write_int tmp (ptr-read-u64 st (+ 32 (* i 8))))
+              (vector-slot-set snapshot i tmp) (setq i (+ i 1)))
+            (if (= (ptr-read-u64 st 8) 0) 0
+              (nl_os_free_chunk (ptr-read-u64 st 8) (* (ptr-read-u64 st 16) 32)))
+            (ptr-write-u64 st 8 0) (ptr-write-u64 st 16 0)
+            (wf_write_nil tmp) (nelisp_cons_construct snapshot tmp argv)
+            (let ((rc (bf_n2_call_lisp_gc argv env out)))
+              (nl_root_release env mark) rc))))))
+    (defun bf_size_census_block (hdr acc)
       (let ((bt (nl_hdr_bt hdr))
             (mark (nl_hdr_mark hdr)))
         ;; le256 sub-buckets: +24 le32-bytes +32 le32-COUNT +40 bt33-64 +48 bt65-256
@@ -10205,9 +10447,16 @@ eval applyfn.")
             (let* ((idx (nl_ht_bucket_index data_ptr key_ptr))
                    (entry_ptr (nl_ht_find (vector-ref-ptr data_ptr idx) key_ptr mode)))
               (if (= entry_ptr 0)
-                  (if (= (nl_ht_key_hash_stable_p key_ptr 8) 1)
-                      0
-                    (nl_ht_find_vec_from data_ptr key_ptr 0 (vector-len data_ptr) mode))
+                  ;; N2: eq/eql retain identity after destructive string
+                  ;; mutation, while these shared buckets hash string bytes.
+                  ;; A miss must search for that same object under its old
+                  ;; bucket. Keep content-keyed equal table behavior intact.
+                  (if (and (> mode 0)
+                           (= (m5_string_tag_p (ptr-read-u64 key_ptr 0)) 1))
+                      (nl_ht_find_vec_from data_ptr key_ptr 0 (vector-len data_ptr) mode)
+                    (if (= (nl_ht_key_hash_stable_p key_ptr 8) 1)
+                        0
+                      (nl_ht_find_vec_from data_ptr key_ptr 0 (vector-len data_ptr) mode)))
                 entry_ptr))
           (nl_ht_find data_ptr key_ptr mode))))
     (defun nl_ht_get_default (args out)
@@ -11988,13 +12237,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (let* ((why (m5_concat_first_bad_kind args)))
         (if (= why 0)
             (let* ((all-unibyte (m5_concat_all_unibyte_p args)))
-              (if (and (= all-unibyte 0)
-                       (= (m5_concat_has_raw_high_p args) 1))
-                  (bf_raw_byte_unrepresentable)
                 (let* ((ms (alloc-bytes 32 8)))
                   (seq (m5_make_builder ms 16 all-unibyte)
                        (m5_concat_walk ms args)
-                       (mut-str-finalize ms out) 0))))
+                       (m5_finish_string ms out (- 1 all-unibyte)) 0)))
           (let* ((bad (m5_concat_first_bad_ptr args)))
             (if (= why 1)
                 (bf_wrong_type_sequencep bad)
@@ -12237,7 +12483,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                  (rest (/ shape 4294967296)))
             (if (or (< argc required)
                     (and (= rest 0) (> argc maximum)))
-                (bf_wrong_number_of_args func argc)
+                (bf_wrong_number_of_args (bf_subr_arity_name func env) argc)
               (let* ((code (record-slot-ref-ptr func 1))
                      (constants (record-slot-ref-ptr func 2))
                      (depth (record-slot-ref-ptr func 3))
@@ -12363,7 +12609,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                   (bf_invalid_byte_code_object out)
                 (if (or (< argc mandatory)
                         (and (= rest 0) (> argc maxargs)))
-                    (bf_wrong_number_of_args func argc)
+                    (bf_wrong_number_of_args (bf_subr_arity_name func env) argc)
                   (let* ((code (record-slot-ref-ptr func 1))
                          (constants (record-slot-ref-ptr func 2))
                          (depth (record-slot-ref-ptr func 3))
@@ -13239,7 +13485,22 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun m5_observably_unibyte_p (str)
       (let* ((tag (ptr-read-u64 str 0)))
         (if (= (m5_unibyte_tag_p tag) 1) 1
-          (m5_ascii_bytes_p str 0 (m5_strlen str)))))
+          (if (= (m5_forced_multibyte_p str) 1) 0
+            (m5_ascii_bytes_p str 0 (m5_strlen str))))))
+    (defun m5_forced_multibyte_p (str)
+      ;; Inline immutable string capacity uses bit 62 for an explicit
+      ;; multibyte representation.  Low 62 bits retain the allocation size.
+      ;; This leaves tags, buffer pointers, lengths and mutable NlStr ABI intact.
+      (if (= (ptr-read-u64 str 0) 5)
+          (if (= (logand (ptr-read-u64 str 8) 4611686018427387904) 0) 0 1)
+        0))
+    (defun m5_finish_string (ms out multibyte)
+      (seq (mut-str-finalize ms out)
+           (if (= multibyte 1)
+               (ptr-write-u64 out 8
+                 (logior (ptr-read-u64 out 8) 4611686018427387904))
+             0)
+           0))
     (defun m5_raw_high_p (str)
       (let* ((tag (ptr-read-u64 str 0)))
         (if (= (m5_unibyte_tag_p tag) 1)
@@ -13318,6 +13579,22 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (m5_push_str_bytes_slow ms src_ptr i n)))))
     (defun m5_push_str (ms src_ptr)
       (m5_push_str_bytes ms src_ptr 0 (m5_strlen src_ptr)))
+    (defun m5_push_str_promoted (ms src)
+      ;; Only concatenation/formatting promote raw unibyte input.  Physical
+      ;; output through m5_emit_value must continue to emit the original bytes.
+      (if (and (= (m5_unibyte_tag_p (ptr-read-u64 ms 0)) 0)
+               (= (m5_unibyte_tag_p (ptr-read-u64 src 0)) 1))
+          (let ((i 0) (n (m5_strlen src)))
+            (while (< i n)
+              (let ((b (m5_byte_at src i)))
+                (nl_u8_encode ms (if (< b 128) b (+ b 4194048))))
+              (setq i (+ i 1)))
+            1)
+        (m5_push_str ms src)))
+    (defun m5_emit_formatted_value (ms value)
+      (if (= (m5_string_tag_p (ptr-read-u64 value 0)) 1)
+          (m5_push_str_promoted ms value)
+        (m5_emit_value ms value)))
     (defun m5_push_repeat (ms b count)
       (if (<= count 0) 1
         (seq (mut-str-push-byte ms b)
@@ -13683,19 +13960,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
           (seq (mut-str-push-byte ms 45) (m5_push_uoct ms (- 0 v)))
         (m5_push_uoct ms v)))
     (defun m5_push_char (ms v)
-      (if (< v 128)
-          (mut-str-push-byte ms v)
-        (if (< v 2048)
-            (seq (mut-str-push-byte ms (+ 192 (/ v 64)))
-                 (mut-str-push-byte ms (+ 128 (mod v 64))))
-          (if (< v 65536)
-              (seq (mut-str-push-byte ms (+ 224 (/ v 4096)))
-                   (mut-str-push-byte ms (+ 128 (mod (/ v 64) 64)))
-                   (mut-str-push-byte ms (+ 128 (mod v 64))))
-            (seq (mut-str-push-byte ms (+ 240 (/ v 262144)))
-                 (mut-str-push-byte ms (+ 128 (mod (/ v 4096) 64)))
-                 (mut-str-push-byte ms (+ 128 (mod (/ v 64) 64)))
-                 (mut-str-push-byte ms (+ 128 (mod v 64))))))))
+      (nl_u8_encode ms v))
     (defun m5_push_lit_nil (ms)
       (seq (mut-str-push-byte ms 110) (mut-str-push-byte ms 105)
            (mut-str-push-byte ms 108) 1))
@@ -14073,9 +14338,17 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun m5_prin1_string_bytes (ms src_ptr i n)
       (if (>= i n)
           1
-        (seq
-         (m5_prin1_string_byte ms (m5_byte_at src_ptr i))
-         (m5_prin1_string_bytes ms src_ptr (+ i 1) n))))
+        (let ((b (m5_byte_at src_ptr i)))
+          ;; Emacs byte8 characters use C0/C1, never ordinary UTF-8.
+          (if (and (>= b 192) (< b 194) (< (+ i 1) n))
+              (seq
+               (m5_prin1_octal_byte ms
+                 (+ 128 (* (logand b 1) 64)
+                    (logand (m5_byte_at src_ptr (+ i 1)) 63)))
+               (m5_prin1_string_bytes ms src_ptr (+ i 2) n))
+            (seq
+             (m5_prin1_string_byte ms b)
+             (m5_prin1_string_bytes ms src_ptr (+ i 1) n))))))
     (defun m5_prin1_string (ms vptr)
       (seq (mut-str-push-byte ms 34)
            (m5_prin1_string_bytes ms vptr 0 (m5_strlen vptr))
@@ -14463,7 +14736,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
        (if (= (ptr-read-u64 p 0) 7) (+ acc 1) acc)))
     ;; --- Doc 161 UTF-8 char-aware helpers (storage stays UTF-8 bytes) ---
     (defun nl_u8_clen_at (b)
-      (if (< b 128) 1 (if (< b 224) 2 (if (< b 240) 3 4))))
+      (if (< b 128) 1
+        (if (< b 224) 2 (if (< b 240) 3 (if (< b 248) 4 5)))))
     ;; §exec-diag (rc=127 native-exec crash root cause): this used to be a
     ;; self-recursive `nl_str_charlen_loop' taking one native stack frame per
     ;; INPUT BYTE (not per character) -- `nelisp-cc' does not eliminate tail
@@ -14726,19 +15000,32 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun nl_u8_decode (p bi)
       (let* ((b (m5_byte_at p bi)))
         (if (< b 128) b
+          (if (< b 194)
+              (+ 4194176 (* (logand b 1) 64)
+                 (logand (m5_byte_at p (+ bi 1)) 63))
           (if (< b 224)
               (logior (* (logand b 31) 64) (logand (m5_byte_at p (+ bi 1)) 63))
             (if (< b 240)
                 (logior (* (logand b 15) 4096)
                         (logior (* (logand (m5_byte_at p (+ bi 1)) 63) 64)
                                 (logand (m5_byte_at p (+ bi 2)) 63)))
+              (if (< b 248)
               (logior (* (logand b 7) 262144)
                       (logior (* (logand (m5_byte_at p (+ bi 1)) 63) 4096)
                               (logior (* (logand (m5_byte_at p (+ bi 2)) 63) 64)
-                                      (logand (m5_byte_at p (+ bi 3)) 63)))))))))
+                                      (logand (m5_byte_at p (+ bi 3)) 63))))
+                (logior (* (logand (m5_byte_at p (+ bi 1)) 15) 262144)
+                        (logior (* (logand (m5_byte_at p (+ bi 2)) 63) 4096)
+                                (logior (* (logand (m5_byte_at p (+ bi 3)) 63) 64)
+                                        (logand (m5_byte_at p (+ bi 4)) 63)))))))))))
     ;; encode codepoint CP as UTF-8 into mut-str MS (right shift = `/' since
     ;; `ash' is not linked here; >>6 = /64, >>12 = /4096, >>18 = /262144).
     (defun nl_u8_encode (ms cp)
+      ;; Preserve GNU's full 22-bit character range.  Byte8 uses C0/C1;
+      ;; non-Unicode characters above 0x1fffff use F8 plus four tails.
+      (if (>= cp 4194176)
+          (seq (mut-str-push-byte ms (logior 192 (logand (/ cp 64) 1)))
+               (mut-str-push-byte ms (logior 128 (logand cp 63))))
       (if (< cp 128) (mut-str-push-byte ms cp)
         (if (< cp 2048)
             (seq (mut-str-push-byte ms (logior 192 (/ cp 64)))
@@ -14747,10 +15034,16 @@ baked build's own `<'/`>'/`=' arms need it too.")
               (seq (mut-str-push-byte ms (logior 224 (/ cp 4096)))
                    (mut-str-push-byte ms (logior 128 (logand (/ cp 64) 63)))
                    (mut-str-push-byte ms (logior 128 (logand cp 63))))
+            (if (< cp 2097152)
             (seq (mut-str-push-byte ms (logior 240 (/ cp 262144)))
                  (mut-str-push-byte ms (logior 128 (logand (/ cp 4096) 63)))
                  (mut-str-push-byte ms (logior 128 (logand (/ cp 64) 63)))
-                 (mut-str-push-byte ms (logior 128 (logand cp 63))))))))
+                 (mut-str-push-byte ms (logior 128 (logand cp 63))))
+              (seq (mut-str-push-byte ms 248)
+                   (mut-str-push-byte ms (logior 128 (logand (/ cp 262144) 15)))
+                   (mut-str-push-byte ms (logior 128 (logand (/ cp 4096) 63)))
+                   (mut-str-push-byte ms (logior 128 (logand (/ cp 64) 63)))
+                   (mut-str-push-byte ms (logior 128 (logand cp 63))))))))))
     (defun nl_u8_repeat (ms n cp)
       ;; Keep large `make-string' calls iterative.  The recursive form used
       ;; one native frame per encoded codepoint and overflowed the native
@@ -14888,7 +15181,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
         (if (= tg 0) 1
           (if (= tg 7) (m5_concat_chars_list ms carp)
             (if (= tg 8) (m5_concat_chars_vec ms carp 0 (vector-len carp))
-              (m5_emit_value ms carp))))))
+              (m5_push_str_promoted ms carp))))))
     (defun m5_concat_walk (ms cur)
       (if (= (ptr-read-u64 cur 0) 7)
           (seq (m5_concat_one ms (nl_cons_car_ptr cur))
@@ -14919,7 +15212,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                               (seq (m5_emit_value ms (m5_fmt_argptr argp))
                                    (m5_fmt_loop ms fmt (+ i 2) n (nl_cons_cdr_ptr argp)))
                             (if (= d 115)
-                            (seq (m5_emit_value ms (m5_fmt_argptr argp))
+                            (seq (m5_emit_formatted_value ms (m5_fmt_argptr argp))
                                  (m5_fmt_loop ms fmt (+ i 2) n (nl_cons_cdr_ptr argp)))
                               (if (= d 83)
                                   (seq (m5_emit_value ms (m5_fmt_argptr argp))
@@ -14939,7 +15232,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                         (seq (mut-str-push-byte ms 37)
                                              (mut-str-push-byte ms d)
                                              (m5_fmt_loop ms fmt (+ i 2) n argp)))))))))))))))
-            (seq (mut-str-push-byte ms c)
+            (seq (if (and (= (m5_unibyte_tag_p (ptr-read-u64 fmt 0)) 1)
+                          (= (m5_unibyte_tag_p (ptr-read-u64 ms 0)) 0)
+                          (>= c 128))
+                     (nl_u8_encode ms (+ c 4194048))
+                   (mut-str-push-byte ms c))
                  (m5_fmt_loop ms fmt (+ i 1) n argp)))))))
   "M5 string + format helpers (reader-only).")
 
@@ -14988,20 +15285,76 @@ baked build's own `<'/`>'/`=' arms need it too.")
           (if (>= byte 128) char-index
             (bf_first_nonascii_char sx (+ i 1) n (+ char-index 1))))))
     (defun bf_string_as_unibyte (sx out)
-      (bf_copy_string_tag sx 14 out))
+      (if (= (m5_observably_unibyte_p sx) 1)
+          (seq (wf_copy32 out sx) 0)
+        (let ((ms (alloc-bytes 32 8)) (i 0) (n (bf_str_len sx)))
+          (seq (m5_make_builder ms n 1)
+               (while (< i n)
+                 (let ((b (m5_byte_at sx i)))
+                   (if (and (>= b 192) (< b 194))
+                       (seq (mut-str-push-byte ms
+                              (+ 128 (* (logand b 1) 64)
+                                 (logand (m5_byte_at sx (+ i 1)) 63)))
+                            (setq i (+ i 2)))
+                     (seq (mut-str-push-byte ms b) (setq i (+ i 1))))))
+               (mut-str-finalize ms out) 0))))
     (defun bf_string_to_unibyte (sx out)
-      (if (= (bf_string_unibyte_p sx) 1)
-          (bf_copy_string_tag sx 14 out)
-        (let* ((bad (bf_first_nonascii_char sx 0 (bf_str_len sx) 0)))
-          (if (< bad 0)
-              (bf_copy_string_tag sx 14 out)
-            (bf_cannot_convert_unibyte bad out)))))
+      (if (= (m5_observably_unibyte_p sx) 1)
+          (seq (wf_copy32 out sx) 0)
+        (let ((ms (alloc-bytes 32 8)) (i 0)
+              (n (bf_str_len sx)) (bad -1))
+          (seq (m5_make_builder ms n 1)
+               (while (and (< i n) (< bad 0))
+                 (let ((cp (nl_u8_decode sx i)))
+                   (if (or (< cp 128) (>= cp 4194176))
+                       (mut-str-push-byte ms (if (< cp 128) cp (- cp 4194048)))
+                     (setq bad i))
+                   (setq i (+ i (nl_u8_clen_at (m5_byte_at sx i))))))
+               (if (< bad 0)
+                   (seq (mut-str-finalize ms out) 0)
+                 (bf_cannot_convert_unibyte
+                   (bf_read_one_bytes_to_chars sx 0 bad) out))))))
+    (defun bf_external_sequence_width (sx i n)
+      ;; GNU string-as-multibyte disallows internal C0/C1 byte8 sequences,
+      ;; rejects overlong/truncated sequences, and accepts surrogate chars.
+      (let ((b (m5_byte_at sx i)))
+        (if (< b 128) 1
+          (if (or (< b 194) (> b 248)) 0
+            (let ((width (nl_u8_clen_at b)) (j (+ i 1)) (valid 1))
+              (if (> (+ i width) n) 0
+                (seq
+                 (while (and (< j (+ i width)) (= valid 1))
+                   (if (= (logand (m5_byte_at sx j) 192) 128) 1
+                     (setq valid 0))
+                   (setq j (+ j 1)))
+                 (if (= valid 0) 0
+                   (let ((cp (nl_u8_decode sx i)))
+                     (if (and (= width 3) (< cp 2048)) 0
+                       (if (and (= width 4) (< cp 65536)) 0
+                         (if (and (= width 5)
+                                  (or (> (m5_byte_at sx (+ i 1)) 143)
+                                      (< cp 2097152) (> cp 4194175)))
+                             0 width))))))))))))
     (defun bf_string_as_multibyte (sx out)
-      (bf_copy_string_tag sx 5 out))
+      (if (= (m5_observably_unibyte_p sx) 0)
+          (seq (wf_copy32 out sx) 0)
+        (let ((ms (alloc-bytes 32 8)) (i 0) (n (bf_str_len sx)))
+          (seq (mut-str-make-empty ms n)
+               (while (< i n)
+                 (let ((width (bf_external_sequence_width sx i n)))
+                   (if (> width 0)
+                       (seq (m5_push_str_bytes ms sx i (+ i width))
+                            (setq i (+ i width)))
+                     (seq (nl_u8_encode ms (+ (m5_byte_at sx i) 4194048))
+                          (setq i (+ i 1))))))
+               (m5_finish_string ms out 1) 0))))
     (defun bf_string_to_multibyte (sx out)
-      (if (= (m5_raw_high_p sx) 1)
-          (bf_raw_byte_unrepresentable)
-        (bf_copy_string_tag sx 5 out)))
+      (if (= (m5_observably_unibyte_p sx) 1)
+          (let ((ms (alloc-bytes 32 8)))
+            (seq (mut-str-make-empty ms (bf_str_len sx))
+                 (m5_push_str_promoted ms sx)
+                 (m5_finish_string ms out 1) 0))
+        (seq (wf_copy32 out sx) 0)))
     (defun bf_intern (sx out)
       (if (= (nl_alloc_symbol_named (bf_str_ptr sx) (bf_str_len sx) sx out) 1)
           0
@@ -15090,15 +15443,31 @@ baked build's own `<'/`>'/`=' arms need it too.")
                           0)
                       0)))))
           (bf_fmt_simple_scan fmt (+ i 1) n argp))))
+    (defun bf_format_plain_p (fmt)
+      (let ((i 0) (n (m5_strlen fmt)))
+        (seq
+         (while (and (< i n) (if (= (m5_byte_at fmt i) 37) 0 1))
+           (setq i (+ i 1)))
+         (if (= i n) 1 0))))
     (defun bf_format_simple (fmt argl out)
       (if (= (m5_string_tag_p (ptr-read-u64 fmt 0)) 0) (wf_write_nil out)
+        ;; GNU returns the original string for a plain template and the
+        ;; sole %s string argument, preserving identity and text properties.
+        (if (= (bf_format_plain_p fmt) 1)
+            (seq (wf_copy32 out fmt) 0)
+        (if (and (= (m5_strlen fmt) 2) (= (m5_byte_at fmt 0) 37)
+                 (= (m5_byte_at fmt 1) 115) (= (ptr-read-u64 argl 0) 7)
+                 (= (m5_string_tag_p (ptr-read-u64 (nl_cons_car_ptr argl) 0)) 1))
+            (seq (wf_copy32 out (nl_cons_car_ptr argl)) 0)
         (if (= (m5_unibyte_tag_p (ptr-read-u64 fmt 0)) 1) (wf_write_nil out)
           (if (= (bf_fmt_simple_scan fmt 0 (m5_strlen fmt) argl) 0) (wf_write_nil out)
-            (let* ((ms (alloc-bytes 32 8)))
-              (seq (m5_make_builder ms 32 0)
+            (let* ((ms (alloc-bytes 32 8))
+                   (unibyte (if (= (m5_observably_unibyte_p fmt) 1)
+                                (m5_concat_all_unibyte_p argl) 0)))
+              (seq (m5_make_builder ms 32 unibyte)
                    (m5_fmt_loop ms fmt 0 (m5_strlen fmt) argl)
-                   (mut-str-finalize ms out)
-                   0))))))
+                   (m5_finish_string ms out (- 1 unibyte))
+                   0))))))))
     ;; Legacy name-encoding helpers. Public bf_make_symbol below now stores
     ;; the name unchanged and a separate tag-16 identity. It reuses the
     ;; monotonic mutation epoch (whose reset is disabled), as the old
@@ -15173,9 +15542,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (let* ((tag (wf_arg_ptr args 0))
              (n (ptr-read-u64 (wf_arg_ptr args 1) 8))
              (init (wf_arg_ptr args 2)))
-        (seq (record-make tag n out)
-             (bf_mkrec_fill out 0 n init)
-             0)))
+        ;; LENGTH is validated like `bf_make_vector'.
+        (if (if (= (ptr-read-u64 (wf_arg_ptr args 1) 0) 2) (if (< n 0) 0 1) 0)
+            (seq (record-make tag n out)
+                 (bf_mkrec_fill out 0 n init)
+                 0)
+          (bf_wrong_type_wholenump (wf_arg_ptr args 1)))))
     ;; Construct the opaque tag-17 object from GNU's four required fields and
     ;; arbitrary trailing elements.
     (defun bf_byte_code_arg_count (args count)
@@ -15703,12 +16075,16 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (if (>= i n) 0
         (seq (vector-slot-set vec i init)
              (bf_mv_fill vec (+ i 1) n init))))
+    ;; LENGTH must be a non-negative fixnum (GNU: wrong-type-argument
+    ;; wholenump).  Unchecked, any object's payload word was used as the count.
     (defun bf_make_vector (args out)
       (let* ((n (ptr-read-u64 (wf_arg_ptr args 0) 8))
              (init (wf_arg_ptr args 1)))
-        (seq (vector-make n out)
-             (bf_mv_fill out 0 n init)
-             0)))
+        (if (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 2) (if (< n 0) 0 1) 0)
+            (seq (vector-make n out)
+                 (bf_mv_fill out 0 n init)
+                 0)
+          (bf_wrong_type_wholenump (wf_arg_ptr args 0)))))
     ;; vector &rest -> Vector(tag8) from the arg list.
     (defun bf_vec_fill (vec i node)
       (if (= (ptr-read-u64 node 0) 7)
@@ -16142,9 +16518,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
           (bf_wrong_type_integerp np))))
     (defun bf_elt_list_walk (node idx0 out)
       (bf_elt_list_walk2 node (if (< idx0 0) 0 idx0) out node))
-    ;; Running off an IMPROPER list is an error naming the WHOLE list, the
-    ;; way `nth' reports it -- answering nil said "past the end" about a list
-    ;; that could not be walked at all.
+    ;; Landing exactly on an improper tail names that tail, as car(nthcdr)
+    ;; does. Overshooting it names the original list that could not be walked.
     (defun bf_elt_list_walk2 (node idx out orig)
       (if (= (ptr-read-u64 node 0) 7)
           (if (= idx 0)
@@ -16152,7 +16527,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (bf_elt_list_walk2 (nl_cons_cdr_ptr node) (- idx 1) out orig))
         (if (= (ptr-read-u64 node 0) 0)
             (seq (wf_write_nil out) 0)
-          (bf_wrong_type_listp orig))))
+          (bf_wrong_type_listp (if (= idx 0) node orig)))))
     ;; elt SEQ N.  Emacs defines this as `nth' for a list and `aref' for
     ;; anything else, and that is now literally what it does -- because the
     ;; hand-written version was `bf_aref' minus every repair `bf_aref' has
@@ -16265,8 +16640,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (idx (ptr-read-u64 (wf_arg_ptr args 1) 8))
              (val (wf_arg_ptr args 2)))
         (if (= (ptr-read-u64 arr 0) 8)
-            (seq (wf_dirty) (vector-slot-set arr idx val)
-                 (wf_copy32 out val) 0)
+            ;; Bounds are checked exactly like `bf_aref_checked': an unchecked
+            ;; `vector-slot-set' wrote outside the vector (found 2026-10-03 via
+            ;; `(aset V 65 ..)' on a 7-slot vector, which corrupted the heap
+            ;; and stalled later evaluation nondeterministically).
+            (if (if (< idx 0) 1 (if (< idx (vector-len arr)) 0 1))
+                (bf_args_out_of_range arr (wf_arg_ptr args 1))
+              (seq (wf_dirty) (vector-slot-set arr idx val)
+                   (wf_copy32 out val) 0))
           ;; Doc 200 P3: unibyte values are exactly one byte.  Multibyte
           ;; replacement is permitted only when both old and new characters
           ;; are ASCII, so neither the tag nor byte length can change.
@@ -18520,7 +18901,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
                  (if (= tg 4) (nl_ht_str_hash p)
                    (if (or (= tg 5) (= tg 14) (= tg 13))
                        (if (= (ptr-read-u64 p 24) 0)
-                           tg
+                           ;; Empty string encoding changes preserve identity.
+                           (if (= tg 13) 13 5)
                          (+ (sar (ptr-read-u64 p 16) 3)
                             (* 31 (ptr-read-u64 p 24))))
                      (sar (ptr-read-u64 p 8) 3)))))))
@@ -18560,6 +18942,42 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; A missing argument has no value slot to dereference.  Check exact
     ;; arity first, including surplus arguments, and publish the standard
     ;; (FUNCTION ARGCOUNT) condition data.  Shared by reader dispatch guards.
+    (defun bf_subr_arity_name (key env)
+      ;; KEY is an interpreted body spine or a byte-code object.  All
+      ;; references are normal heap values, so image relocation/GC preserve
+      ;; identity; no raw pointer cache or extra lambda-call state is needed.
+      (let* ((bytes (alloc-bytes 32 1))
+             (symbol (alloc-bytes 32 8))
+             (registry (alloc-bytes 32 8))
+             (cursor 0) (name key) (done 0))
+        (seq
+         (ptr-write-u64 bytes 0 3255381746650998126)
+         (ptr-write-u64 bytes 8 7598242369147925875)
+         (ptr-write-u64 bytes 16 8315172552237218164)
+         (nl_alloc_symbol bytes 24 symbol)
+         (if (= (nelisp_env_lookup_value (+ env 0) (+ env 32) symbol registry) 0)
+             (seq
+              (setq cursor registry)
+              (while (and (= done 0) (= (sexp-tag cursor) 7))
+                (let* ((entry (nl_cons_car_ptr cursor)))
+                  (if (= (bf_eq2 key (nl_cons_car_ptr entry)) 1)
+                      (seq (setq name (nl_cons_cdr_ptr entry)) (setq done 1))
+                    (setq cursor (nl_cons_cdr_ptr cursor))))))
+           0)
+         name)))
+    (defun bf_subr_arity_repair (body env)
+      ;; Called at the binder's failure branch only.  Do not rename body
+      ;; errors from nested callees or malformed-formal type errors.
+      (let* ((tag (alloc-bytes 32 8)))
+        (seq
+         (nl_bf_err_arity_write_wna_sym tag)
+         (if (= (symbol-eq tag 268435480) 1)
+             (let* ((name (bf_subr_arity_name body env)))
+               (if (= (sexp-tag name) 4)
+                   (cons-set-car 268435512 name)
+                 0))
+           0)
+         1)))
     (defun bf_wrong_number_of_args (name argc)
       (let* ((wbuf (alloc-bytes 32 1))
              (count (alloc-bytes 32 8))
@@ -18984,7 +19402,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
                  ;; parent: wait until the child has captured+acked its box, so
                  ;; the NEXT spawn does not clobber the shared handshake slot.
                  (seq (nl_spin_zero 268435688) (wf_write_int out 1)))))))
-    ;; thread-join: spin until *ADDR >= TARGET.  Uses the COMPILED (aot,
+    ;; nelisp-spin-until (formerly the bare name `thread-join', which
+    ;; collided with GNU's `thread-join THREAD' and crashed on a non-address
+    ;; argument): spin until *ADDR >= TARGET.  Uses the COMPILED (aot,
     ;; iterative) `while' — NOT the interpreter's recursive `while' that
     ;; overflows the native stack on a long spin — so the parent joins N
     ;; concurrent threads in O(1) stack.
@@ -19523,7 +19943,9 @@ into that constant unconditionally is what broke every aarch64 build."
     ((:lit "signal")      . (bf_signal args out))
     ((:lit "error")       . (bf_error args out))
     ;; equal (member/assoc use it).  eq is REPLACED (not appended) in the table.
-    ((:lit "equal")       . (bf_equal args out))
+    ((:lit "nelisp--clear-string-bytes") . (bf_clear_string_bytes args env out))
+    ((:lit "nelisp--equal-leaf") . (bf_equal args out))
+    ((:lit "equal")       . (bf_n2_call_lisp_equal args env out))
     ;; setcar/setcdr: in-place cons mutation (plist-put / nconc need these).
     ;; Installs V (possibly a box) into a PRE-EXISTING cons -> persistent escape
     ;; -> bump the mutation epoch (NO-ESCAPE gate in `nelisp_eval_call').
@@ -19704,8 +20126,7 @@ into that constant unconditionally is what broke every aarch64 build."
     ;; `ptr-read-u8' / `ptr-write-u8' walk.
     ((:lit "ptr-read-bytes") . (nl_bi_ptr_read_bytes args out))
     ((:lit "ptr-write-bytes") . (nl_bi_ptr_write_bytes args out))
-    ((:lit "garbage-collect") . (seq (nl_gc_collect_from_recorded_roots 0)
-                                     (bf_arena_stats out)))
+    ((:lit "garbage-collect") . (bf_garbage_collect func_ptr args env out))
     )
    nelisp-standalone--process-posix-dispatch-arms
    '(
@@ -19719,7 +20140,7 @@ into that constant unconditionally is what broke every aarch64 build."
     ;; pad unused trailing native arguments with 0.
     ((:lit "ptr-call") . (wf_write_int out (call-ptr (wf_argval args 0) (wf_argval args 1) (wf_argval args 2) (wf_argval args 3) (wf_argval args 4) (wf_argval args 5) (wf_argval args 6))))
     ((:lit "thread-spawn") . (bf_thread_spawn args env out))
-    ((:lit "thread-join") . (bf_thread_join args env out))
+    ((:lit "nelisp-spin-until") . (bf_thread_join args env out))
     ((:lit "fork-spawn") . (bf_fork_spawn args env out))
     ;; nelisp--target-os-code / nelisp--target-arch-code: per-target
     ;; COMPILE-TIME constants -- see `nl_target_os_code'/`nl_target_arch_code'
@@ -19779,7 +20200,7 @@ families.")
     "char-table-parent" "set-char-table-parent"
     "char-table-extra-slot" "set-char-table-extra-slot"
     "char-table-range" "set-char-table-range" "map-char-table"
-    "signal" "error" "equal" "setcar" "setcdr" "load"
+    "signal" "error" "equal" "nelisp--equal-leaf" "nelisp--clear-string-bytes" "setcar" "setcdr" "load"
     ;; Wave-2 (C): bitwise / shift / string<
     "ash" "logand" "logior" "logxor" "lognot" "string<"
     "syscall-direct" "atomic-fetch-add" "garbage-collect"
@@ -19793,7 +20214,7 @@ families.")
     "nelisp-process-read-output" "nelisp-process-write"
     "nelisp-process-close-stdin" "nelisp-process-poll"
     "nelisp-process-wait" "nelisp-process-delete" "nelisp-portable-syscall"
-    "ptr-call" "ptr-call-typed" "thread-spawn" "thread-join" "fork-spawn")
+    "ptr-call" "ptr-call-typed" "thread-spawn" "nelisp-spin-until" "fork-spawn")
   "Builtin names added by Wave-1 (B) breadth glue; appended to
 `nelisp-standalone--reader-builtins'.")
 
@@ -20530,8 +20951,62 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
          (cons (car entry)
                `(let* ((builtin_argc (m5_list_len args 0)))
                   (if (= builtin_argc ,(cdr contract)) ,(cdr entry)
-                    (bf_wrong_number_of_args name_ptr builtin_argc)))))))
+                    (bf_wrong_number_of_args func_ptr builtin_argc)))))))
    table))
+
+
+(defun nelisp-standalone--n2-lisp-delegates ()
+  "Narrow evaluator bridges; GNU policy and row construction live in Lisp."
+  (mapcar
+   (lambda (entry)
+     (let* ((name (string-as-unibyte (cdr entry)))
+            (writes nil))
+       (dotimes (i (length name))
+         (push `(ptr-write-u8 buf ,i ,(aref name i)) writes))
+       `(defun ,(car entry) (args env out)
+          (let* ((mark (nl_root_mark env))
+                 (sym (nl_root_reserve env)) (fn (nl_root_reserve env))
+                 (buf (alloc-bytes ,(length name) 1)))
+            (seq ,@(nreverse writes)
+                 (nl_alloc_symbol buf ,(length name) sym)
+                 (let ((rc (if (if (= (nelisp_env_lookup_function
+                                       (+ env 0) (+ env 64) sym fn) 0)
+                                   (/= (sexp-tag fn) 0) 0)
+                               (nl_apply_function fn args env out)
+                             ,(if (eq (car entry) 'bf_n2_call_lisp_equal)
+                                  '(bf_equal args out)
+                                '(nl_cons_stash_void_function env sym)))))
+                   (nl_root_release env mark) rc))))))
+   '((bf_n2_call_lisp_gc . "nelisp--gc-statistics")
+     (bf_n2_call_lisp_equal . "nelisp--equal-reference"))))
+
+(defun nelisp-standalone--n2-direct-arity-helper ()
+  "Guard direct calls with the shared fixed-arity contract.
+GNU eval reports the original call symbol; funcall/apply report the callable."
+  (let* ((table
+          (mapcar
+           (lambda (entry)
+             (cons (list :lit (car entry))
+                   `(let ((argc (m5_list_len args 0)))
+                      (if (= argc ,(cdr entry)) 0
+                        (bf_wrong_number_of_args
+                         (if (= call_name 0) func call_name) argc)))))
+           (nelisp-standalone--builtin-fixed-arities)))
+         (check (nelisp-standalone--applyfn-build-dispatch table 0)))
+    `(defun bf_n2_direct_arity (func args env call_name)
+       (if (or (= (sexp-tag func) 4) (= (sexp-tag func) 16))
+           (let* ((mark (nl_root_mark env)) (resolved (nl_root_reserve env)))
+             (let ((rc (if (= (nelisp_env_lookup_function
+                               (+ env 0) (+ env 64) func resolved) 0)
+                           (bf_n2_direct_arity resolved args env call_name) 0)))
+               (nl_root_release env mark) rc))
+         (if (= (sexp-tag func) 7)
+             (let ((head (nl_cons_car_ptr func)))
+               (if (if (= (sexp-tag head) 4)
+                       (= (sexp-name-eq head "builtin") 1) 0)
+                   (let ((name_ptr (nl_cons_car_ptr (nl_cons_cdr_ptr func))))
+                     ,check)
+                 0)) 0)))))
 
 (defun nelisp-standalone--applyfn-source ()
   "Full reader-path applyfn: arithmetic + hash tables + strings/format + file I/O
@@ -20542,6 +21017,8 @@ extern arms in dynamic builds."
    (list nelisp-standalone--applyfn-core-helpers
          nelisp-standalone--applyfn-fa-file-helpers
          nelisp-standalone--applyfn-census-helpers
+         (nelisp-standalone--n2-lisp-delegates)
+         (list (nelisp-standalone--n2-direct-arity-helper))
         nelisp-standalone--applyfn-ht-helpers
         nelisp-standalone--applyfn-search-helpers
          nelisp-standalone--applyfn-bignum-helpers
@@ -22258,9 +22735,118 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
            (ptr-write-u64 dst 16 (ptr-read-u64 src 16))
            (ptr-write-u64 dst 24 (ptr-read-u64 src 24))
            0))
+    ;; Evaluator-internal state (minimal-native clause 2), not a new public
+    ;; primitive.  A registered worker owns env+160; its mmap metadata page
+    ;; leaves that word free after the result at +128..159.  Main evaluation
+    ;; uses a dedicated zero-filled BSS word, outside the GC arena.
+    (defun nl_ct_head_slot (env)
+      (if (= (nl_thread_registry_find env) 0)
+          (data-addr nl_catch_head)
+        (+ env 160)))
+    ;; Each link is a registered root slot tagged as an integer: payload +8
+    ;; is the previous link, unused +16 is the rooted tag-slot address.  The
+    ;; collector ignores those integer metadata words, while the separately
+    ;; registered tag remains live.  No arena scratch link survives a GC.
+    (defun nl_ct_target_p (node tag_slot)
+      ;; GNU deliberately forbids throwing to nil, including catch nil.
+      (if (if (= (sexp-tag tag_slot) 0) 1 (= node 0)) 0
+        (if (= (nl_ct_tag_eq (ptr-read-u64 node 16) tag_slot) 1) 1
+          (nl_ct_target_p (ptr-read-u64 node 8) tag_slot))))
+    (defun nl_ct_active_finish (rc head_slot previous)
+      (seq (ptr-write-u64 head_slot 0 previous) rc))
+    (defun nl_ct_active_prepare (body tag_slot env out head_slot node)
+      (seq
+       (sexp-int-make node (ptr-read-u64 head_slot 0))
+       (ptr-write-u64 node 16 tag_slot)
+       (ptr-write-u64 head_slot 0 node)
+       (nl_ct_active_finish
+        (nl_ct_catch_body body tag_slot env out 0 0)
+        head_slot (ptr-read-u64 node 8))))
+    (defun nl_ct_active_body (body tag_slot env out)
+      (nl_ct_active_prepare body tag_slot env out
+                            (nl_ct_head_slot env) (nl_root_reserve env)))
+    (defun nl_ct_no_catch_publish (env data error_slot name_buf)
+      (seq
+       (ptr-write-u64 name_buf 0 7521983764263432046)
+       (nl_alloc_symbol name_buf 8 error_slot)
+       (cons-make-with-clone error_slot data data)
+       (nl_env_stash_signal env data)))
+    (defun nl_ct_no_catch_build (env tag_slot val_slot nil_slot data error_slot)
+      (seq
+       (cons-make-with-clone val_slot nil_slot data)
+       (cons-make-with-clone tag_slot data data)
+       (nl_ct_no_catch_publish env data error_slot (alloc-bytes 8 1))))
+    (defun nl_ct_no_catch_rooted (env tag_slot val_slot rooted_val)
+      (seq
+       (nl_ct_copy32 rooted_val val_slot 0 0)
+       (nl_ct_no_catch_build env tag_slot rooted_val
+                             (nl_root_reserve env) (nl_root_reserve env)
+                             (nl_root_reserve env))))
+    (defun nl_ct_no_catch (env tag_slot val_slot)
+      (nl_ct_no_catch_rooted env tag_slot val_slot (nl_root_reserve env)))
+    ;; Validate the complete operand list before evaluating any operand.
+    ;; Errors use rooted data and the same signal publication as no-catch.
+    ;; KIND 0 is arity (DATUM is a count); KIND 1 is a dotted-tail type error
+    ;; (DATUM is a Sexp slot). Runtime values travel in helper arguments.
+    (defun nl_ct_arg_error_name (env name_word kind data symbol_slot buffer)
+      (seq
+       (ptr-write-u64 buffer 0 name_word)
+       (nl_alloc_symbol buffer 5 symbol_slot)
+       (cons-make-with-clone symbol_slot data data)
+       (if (= kind 0)
+           (seq
+            (ptr-write-u64 buffer 0 8461750672133419639)
+            (ptr-write-u64 buffer 8 3271424420314702445)
+            (ptr-write-u64 buffer 16 8389754676633367137)
+            (ptr-write-u64 buffer 24 115))
+         (seq
+          (ptr-write-u64 buffer 0 8751669898145395319)
+          (ptr-write-u64 buffer 8 7887324063363589488)
+          (ptr-write-u64 buffer 16 7630437)))
+       (nl_alloc_symbol buffer (if (= kind 0) 25 19) symbol_slot)
+       (cons-make-with-clone symbol_slot data data)
+       (nl_env_stash_signal env data)))
+    (defun nl_ct_arg_error_build (env name_word kind value nil_slot data)
+      (seq
+       (cons-make-with-clone value nil_slot data)
+       (nl_ct_arg_error_name env name_word kind data
+                             (nl_root_reserve env) (alloc-bytes 32 8))))
+    (defun nl_ct_arg_error_value (env datum name_word kind marker value)
+      (seq
+       (if (= kind 0) (sexp-int-make value datum)
+         (nl_ct_copy32 value datum 0 0))
+       (nl_ct_root_finish
+        env marker
+        (nl_ct_arg_error_build env name_word kind value
+                              (nl_root_reserve env) (nl_root_reserve env)))))
+    (defun nl_ct_arg_error_mark (env datum name_word kind marker)
+      (nl_ct_arg_error_value env datum name_word kind
+                            marker (nl_root_reserve env)))
+    (defun nl_ct_arg_error (env datum name_word kind)
+      (nl_ct_arg_error_mark env datum name_word kind (nl_root_mark env)))
+    (defun nl_ct_args_done (count args env out mode)
+      (if (= mode 0)
+          (if (= count 2)
+              (nl_sf_throw_mark args env out (nl_root_mark env))
+            (nl_ct_arg_error env count 512970877044 0))
+        (if (> count 0)
+            (nl_sf_catch_mark args env out (nl_root_mark env))
+          (nl_ct_arg_error env count 448345170275 0))))
+    (defun nl_ct_args_check (tail count args env out mode)
+      (if (= (sexp-tag tail) 0)
+          (nl_ct_args_done count args env out mode)
+        (if (= (sexp-tag tail) 7)
+            (nl_ct_args_check (nl_cons_cdr_ptr tail) (+ count 1)
+                              args env out mode)
+          (nl_ct_arg_error env tail 482990057836 1))))
     ;;================= THROW =================
-    (defun nl_ct_throw_after_val (rc val_slot tag_slot _p3)
+    (defun nl_ct_throw_after_val (rc val_slot tag_slot env)
       (if (= rc 0)
+          ;; Detect missing targets before unwinding, so a condition-case
+          ;; surrounding this throw can catch no-catch in the same scope.
+          (if (= (nl_ct_target_p
+                  (ptr-read-u64 (nl_ct_head_slot env) 0) tag_slot) 0)
+              (nl_ct_no_catch env tag_slot val_slot)
           (seq
            (nl_ct_copy32 268435480 tag_slot 0 0)
            (nl_ct_copy32 268435512 val_slot 0 0)
@@ -22271,13 +22857,13 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
            ;; `error'/`t' condition-case handler.
            (ptr-write-u64 268435472 0 2)
            (atomic-fetch-add 268435544 1)
-           1)
+           1))
         1))
     (defun nl_ct_throw_after_tag (rc val_form env out tag_slot val_slot)
       (if (= rc 0)
           (nl_ct_throw_after_val
            (extern-call nelisp_eval_call val_form env val_slot)
-           val_slot tag_slot 0)
+           val_slot tag_slot env)
         1))
     (defun nl_ct_throw_eval_tag (tag_form val_form env out tag_slot val_slot)
       (nl_ct_throw_after_tag
@@ -22307,9 +22893,7 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
       (nl_sf_throw_run args env out (nl_root_reserve env)
                        (alloc-bytes 32 8) root_mark))
     (defun nl_sf_throw (args env out _pad)
-      (if (= (sexp-tag args) 7)
-          (nl_sf_throw_mark args env out (nl_root_mark env))
-        1))
+      (nl_ct_args_check args 0 args env out 0))
     ;;================= CATCH =================
     ;; Generic `eq' tag-match helper.  `nl_ct_catch_check_tag' used to reuse
     ;; `nelisp_eq_symbol' for the tag comparison, but that primitive
@@ -22400,7 +22984,7 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
           ;; the previous sibling form's value in the shared result slot.
           (seq
            (nl_cons_write_nil out)
-           (nl_ct_catch_body body tag_slot env out eqres_slot 0))
+           (nl_ct_active_body body tag_slot env out))
         1))
     (defun nl_ct_catch_got_body (body tag_form env out tag_slot eqres_slot)
       (nl_ct_catch_after_tag
@@ -22427,9 +23011,7 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
     (defun nl_sf_catch_mark (args env out root_mark)
       (nl_sf_catch_slots args env out root_mark (nl_root_reserve env)))
     (defun nl_sf_catch (args env out _pad)
-      (if (= (sexp-tag args) 7)
-          (nl_sf_catch_mark args env out (nl_root_mark env))
-        1)))
+      (nl_ct_args_check args 0 args env out 1)))
   "M6 catch/throw special-form impls.  nl_sf_catch/nl_sf_throw are dispatched
 from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
 
@@ -23410,7 +23992,9 @@ if-chain intact."
                       (if (= (nl_sp_eq_defalias name_ptr) 1)
                           (nl_sf_defalias args_ptr env_ptr out 0)
                         (if (= (nl_sp_eq_defvaralias name_ptr) 1)
-                            (nl_sf_defvaralias args_ptr env_ptr out 0)
+                            (if (= (nl_sf_definer_lookup 7809648991760967012 7561577 11 env_ptr out 0) 0)
+                                2
+                              (nl_sf_defvaralias args_ptr env_ptr out 0))
                           (if (= (nl_sp_eq_cl_defun name_ptr) 1)
                               (nl_sf_cl_defun args_ptr env_ptr out 0)
                             (if (= (nl_sp_eq_when name_ptr) 1)
@@ -23698,16 +24282,18 @@ computed expansion into `nl_mxcache_store' before evaluating it.")
   '((defun nl_cons_root_finish (env root_mark status)
       (seq (nl_root_release env root_mark) status))
     (defun nl_eval_inner_cons_after_args
-        (rc_args env out root_mark func_slot args_slot)
+        (rc_args env out root_mark func_slot args_slot call_name)
       (if (= rc_args 0)
           (nl_cons_root_finish
-           env root_mark (nl_apply_function func_slot args_slot env out))
+           env root_mark
+           (if (= (bf_n2_direct_arity func_slot args_slot env call_name) 0)
+               (nl_apply_function func_slot args_slot env out) 1))
         (nl_cons_root_finish env root_mark 1)))
     (defun nl_eval_inner_cons_eval_args
-        (tail_ptr env out root_mark func_slot args_slot)
+        (tail_ptr env out root_mark func_slot args_slot call_name)
       (nl_eval_inner_cons_after_args
        (nl_eval_arg_list tail_ptr env args_slot)
-       env out root_mark func_slot args_slot))
+       env out root_mark func_slot args_slot call_name))
     (defun nl_eval_inner_cons_after_lookup
         (rc_lu form_ptr head_ptr tail_ptr env out root_mark func_slot)
       (if (= rc_lu 0)
@@ -23723,23 +24309,23 @@ computed expansion into `nl_mxcache_store' before evaluating it.")
                 ;; ordinary call path below.
                 (nl_eval_inner_cons_alias
                  (nl_apply_special func_slot tail_ptr env out)
-                 tail_ptr env out root_mark func_slot)
+                 tail_ptr env out root_mark func_slot head_ptr)
               (if (= (nl_cons_is_macro func_slot) 1)
                   (nl_cons_root_finish
                    env root_mark
                    (nl_cons_macro_apply_eval
                     form_ptr func_slot tail_ptr env out))
                 (nl_eval_inner_cons_eval_args
-                 tail_ptr env out root_mark func_slot (nl_root_reserve env)))))
+                 tail_ptr env out root_mark func_slot (nl_root_reserve env) head_ptr))))
         (nl_cons_root_finish
          env root_mark (nl_cons_stash_void_function env head_ptr))))
     ;; SPECIAL_RC is `nl_apply_special''s answer for the alias target:
     ;; 0/1 when it was a special form (evaluated / signalled), 2 otherwise.
     (defun nl_eval_inner_cons_alias
-        (special_rc tail_ptr env out root_mark func_slot)
+        (special_rc tail_ptr env out root_mark func_slot call_name)
       (if (= special_rc 2)
           (nl_eval_inner_cons_eval_args
-           tail_ptr env out root_mark func_slot (nl_root_reserve env))
+           tail_ptr env out root_mark func_slot (nl_root_reserve env) call_name)
         (nl_cons_root_finish env root_mark special_rc)))
     (defun nl_eval_inner_cons_symbol_slot
         (form_ptr head_ptr tail_ptr env out root_mark func_slot)
@@ -23760,7 +24346,7 @@ computed expansion into `nl_mxcache_store' before evaluating it.")
         (rc_eval tail_ptr env out root_mark func_slot)
       (if (= rc_eval 0)
           (nl_eval_inner_cons_eval_args
-           tail_ptr env out root_mark func_slot (nl_root_reserve env))
+           tail_ptr env out root_mark func_slot (nl_root_reserve env) 0)
         (nl_cons_root_finish env root_mark 1)))
     (defun nl_eval_inner_cons_callable_slot
         (head_ptr tail_ptr env out root_mark func_slot)
@@ -25160,7 +25746,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "string-as-multibyte" "string-to-multibyte" "string-make-multibyte"
     "char-to-string" "string-to-char" "number-to-string" "string-to-number" "format"
     "nelisp--repr" "nelisp--json-encode" "nelisp--sha256" "nelisp--sha256-bytes" "nelisp--string-search" "nelisp--arena-stats" "garbage-collect"
-    "nelisp--fmt-float"
+    "nelisp--fmt-float" "nelisp--clear-string-bytes" "nelisp--equal-leaf"
     "nelisp--debug-switch" "nelisp--gc-diag" "nelisp--arena-force-grow-smoke" "nelisp--size-census" "nelisp--arena-walk-verify"
     "nelisp--alloc-check-report"
     "nelisp--arena-dump-copy-verify" "nelisp--arena-mark-reach-verify" "nelisp--pool-root-coverage" "nelisp--arena-swizzle-verify"
@@ -25219,7 +25805,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "nelisp-process-read-output" "nelisp-process-write"
     "nelisp-process-close-stdin" "nelisp-process-poll"
     "nelisp-process-wait" "nelisp-process-delete" "nelisp-portable-syscall"
-    "ptr-call" "ptr-call-typed" "thread-spawn" "thread-join" "fork-spawn"
+    "ptr-call" "ptr-call-typed" "thread-spawn" "nelisp-spin-until" "fork-spawn"
     ;; Per-target compile-time OS/arch tags (Doc 184 follow-on): back
     ;; `system-type'/`system-configuration' in
     ;; scripts/nelisp-stdlib-prelude.el.
@@ -26741,10 +27327,17 @@ can use it."
             ;; ticks once the integer part is a ~10-digit epoch value, so
             ;; there is no reliable source for picosecond precision here.
             ;; `time-convert'/`current-time'-with-FORM are out of scope.
+            ;; `current-time-list' nil selects GNU's (TICKS . HZ) pair.  The
+            ;; clock supplies integer microseconds, so no float rounding is
+            ;; involved; nanosecond ticks are used while they fit a fixnum.
             "(defun current-time ()\n"
-            "  (let* ((ft (float-time)) (secs (floor ft))\n"
-            "         (usec (floor (* (- ft secs) 1000000))))\n"
-            "    (list (floor secs 65536) (mod secs 65536) usec 0)))\n")
+            "  (let* ((ticks (nl-unix-time-usec)) (secs (floor ticks 1000000))\n"
+            "         (usec (mod ticks 1000000)))\n"
+            "    (if (and (boundp 'current-time-list) (not current-time-list))\n"
+            "        (if (<= (abs ticks) (/ most-positive-fixnum 1000))\n"
+            "            (cons (* ticks 1000) 1000000000)\n"
+            "          (cons ticks 1000000))\n"
+            "      (list (floor secs 65536) (mod secs 65536) usec 0))))\n")
     ;; Now both the matcher and the string-match family are defined, so
     ;; `do-after-load-evaluation' can safely process rx/cl-seq notifications.
     ;; It is also safe to load genuine faces.el here (strictly after
@@ -26789,8 +27382,39 @@ can use it."
     ;; parseable after it as "never parsed" leftover, since a lone
     ;; comment before EOF is not itself a form. A trivial closing form
     ;; gives it something to consume.
+    (insert (nelisp-standalone--prelude-subr-arity-metadata))
     (insert "\nt\n")
     (buffer-string)))
+
+(defun nelisp-standalone--prelude-subr-arity-metadata ()
+  "Register Lisp replacements of GNU subrs after prelude installation.
+GNU Emacs is already the build-time compiler.  Exclude native-compiled
+Lisp functions: subrp also accepts them, but they are not C subrs.
+Use canonical C subr
+names rather than the native bridge inventory: demoting a subr to Lisp
+must not change its arity error identity.  Store the actual installed
+objects, so aliases and calls through symbol-function retain the name,
+while later user definitions and ordinary lambdas stay ordinary lambdas.
+The registry is consulted only after argument binding has failed."
+  (let (names)
+    (mapatoms (lambda (symbol)
+                (when (and (fboundp symbol)
+                           (subrp (symbol-function symbol))
+                           (not (native-comp-function-p (symbol-function symbol))))
+                  (cl-pushnew (intern (subr-name (symbol-function symbol))) names))))
+    (format
+     "\n(setq nelisp--subr-arity-names nil)
+(dolist (name '%S)
+  (when (fboundp name)
+    (let ((fn (symbol-function name)))
+      (cond
+       ((and (consp fn) (memq (car fn) '(lambda closure)))
+        (let ((body (if (eq (car fn) 'closure) (cdddr fn) (cddr fn))))
+          (when body
+            (push (cons body name) nelisp--subr-arity-names))))
+       ((byte-code-function-p fn)
+        (push (cons fn name) nelisp--subr-arity-names))))))\n"
+     (sort names (lambda (a b) (string< (symbol-name a) (symbol-name b)))))))
 
 (defun nelisp-standalone--reader-repl-prelude-forms (fbuf src cursor result pool
                                                           out ctx builtin-sym)
@@ -26814,7 +27438,7 @@ can use it."
          (ptr-write-u64 268436216 0 1))))))
 
 (defconst nelisp-standalone--cold-boot-reinit-source
-  "(condition-case nil
+  (concat "(condition-case nil
   (progn
     (if (boundp 'process-environment)
         (setq process-environment
@@ -26833,9 +27457,46 @@ can use it."
                 (cond ((file-exists-p emacs-d-dir) emacs-d-dir)
                       ((file-exists-p xdg-dir) xdg-dir)
                       (t emacs-d-dir)))))
+    ;; A loaded editor library has its own shared environment initializer
+    ;; (notably directory trailing slashes and PATH-derived exec-path).
+    ;; Reapply it after the prelude defaults, just as a source load does.
+    (when (fboundp 'emacs-os-detect-and-set-dirs!)
+      (emacs-os-detect-and-set-dirs!))
     nil)
   (error nil))
 "
+   ;; Foreign handles, function addresses, scratch allocations and TLS
+   ;; mappings belong to the dumping process.  Never close/unmap those
+   ;; stale addresses in the new process.  Keep declaration order, and
+   ;; let the existing resolver open each library on its first use.
+   ;; This runs outside the environment reinit's best-effort handler:
+   ;; invalidation must not silently leave a stale cache usable.
+   (prin1-to-string
+    '(progn
+       (when (boundp 'nl-ffi--libraries)
+         (let ((libraries (make-hash-table :test 'equal)))
+           (maphash (lambda (soname entry)
+                      (when (null (plist-get entry :handle))
+                        (puthash soname entry libraries)))
+                    nl-ffi--libraries)
+           (setq nl-ffi--libraries libraries))
+         (setq nl-ffi--dlsym-cache (make-hash-table :test 'equal))
+         (defun nl-ffi-library-handle (soname)
+           (when (and (member soname nl-ffi--library-order)
+                      (null (gethash soname nl-ffi--libraries)))
+             ;; Preserve the original resolution precedence; ffi:library
+             ;; normally pushes newly opened declarations onto this list.
+             (let ((nl-ffi--library-order nil)) (ffi:library soname)))
+           (plist-get (gethash soname nl-ffi--libraries) :handle)))
+       (dolist (name '(nl-ffi--pending-cstring-releases
+                      nl-ffi-loader--file-mappings nl-ffi-loader--reservations
+                      nl-ffi-loader--tls-tp nelisp-native-load-raw-mappings))
+         (when (boundp name) (set name nil)))
+       (when (boundp 'nl-ffi-loader--tls-used)
+         (setq nl-ffi-loader--tls-used 0))
+       (when (boundp 'nelisp-native-load--running-binary-sha256-cache)
+         (setq nelisp-native-load--running-binary-sha256-cache :unset))
+       nil)))
   "Source evaluated once after a `--cold-load-from' boot, before user code.
 The image froze the prelude's load-time values; the driver re-sets the
 per-process globals it owns (argv, `nelisp--environment',
@@ -26843,7 +27504,9 @@ per-process globals it owns (argv, `nelisp--environment',
 the prelude globals whose DEFVAR value was computed from the environment or
 the file system -- `process-environment', `temporary-file-directory' and
 `user-emacs-directory' -- with the same formulas as their defvars in
-scripts/nelisp-stdlib-prelude.el (keep in sync).")
+scripts/nelisp-stdlib-prelude.el (keep in sync).  Foreign library declarations
+survive, but their handles and dlsym caches are re-created lazily; raw
+mappings, pending foreign frees and loader TLS state are discarded.")
 
 (defun nelisp-standalone--reader-cold-reinit-forms (src cursor result pool
                                                         out ctx builtin-sym)
@@ -31956,6 +32619,7 @@ gets no native definitions and is gated by
      ;;   +0..119   private EvalCtx
      ;;   +120      private root-stack top metadata
      ;;   +128..159 result Sexp slot
+     ;;   +160      private active-catch head (not an inherited parent catch)
      ;;   +4096..   private 1 MiB root-stack reserve
      ;; Doc 152 Stage 3 uses the process-global root stack in the single-thread
      ;; evaluator.  Tier 3b registers this private EvalCtx after construction;
@@ -31981,6 +32645,7 @@ gets no native definitions and is gated by
                (ptr-write-u64 region 136 0)
                (ptr-write-u64 region 144 0)
                (ptr-write-u64 region 152 0)
+               (ptr-write-u64 region 160 0)
                (if (< (nl_thread_registry_add region) 0)
                    (- 0 12)
                  region))))))
@@ -35656,6 +36321,13 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
            (lambda (form)
              (cond
               ((not (and (consp form) (eq (car form) 'defun))) form)
+              ((eq (cadr form) 'nl_ali_bind_done)
+               (let ((body (cadddr form)))
+                 `(defun ,(cadr form) ,(caddr form)
+                    (if ,(cadr body)
+                        ,(nth 2 body)
+                      (seq (bf_subr_arity_repair body-list env)
+                           ,(nth 3 body))))))
               ((eq (cadr form) 'nl_logic_bind_local)
                (replace-call form))
               ((eq (cadr form) 'nl_push_captured_walk)
@@ -35901,19 +36573,26 @@ This swaps `nl_bf_bind_rest' for the rc/lifetime-safe version and makes
 ;; `(symbol-function 'no-such-fn)' aborted the whole top-level form flagless.
 (defconst nelisp-standalone--reader-do-symbol-function-fixed
   '(defun nl_apply_do_symbol_function (args_list_ptr env out)
-     (let* ((arg0_ptr (nl_apply_list_nth args_list_ptr 0)))
-       (if (= arg0_ptr 0)
-           (nl_apply_stash_wta env args_list_ptr)
-         (let* ((mirror_ptr (+ env 0)) (unbound_ptr (+ env 64)))
-           (let* ((rc (nelisp_env_lookup_function mirror_ptr unbound_ptr arg0_ptr out)))
-             (if (= rc 0)
-                 0
-               ;; Emacs answers nil for a symbol with no function cell --
-               ;; `(symbol-function 'never-defined)' is nil, not an error.
-               ;; Signalling here was measured against Emacs and diverged.
-               (nl_apply_write_nil out)))))))
-  "Rc-correct `(symbol-function SYM)' handler: stashes `void-function' on an
-unbound-symbol miss instead of passing a bare, unstashed rc=1 through.")
+     (let ((argc (m5_list_len args_list_ptr 0)))
+       (if (= argc 1)
+           (let* ((arg0_ptr (nl_apply_list_nth args_list_ptr 0))
+                  (tag (ptr-read-u64 arg0_ptr 0)))
+             (if (or (= tag 0) (= tag 1) (= tag 4) (= tag 16))
+                 (let* ((mirror_ptr (+ env 0)) (unbound_ptr (+ env 64))
+                        (rc (nelisp_env_lookup_function mirror_ptr unbound_ptr arg0_ptr out)))
+                   (if (= rc 0) 0 (nl_apply_write_nil out)))
+               (nl_apply_stash_wrong_symbolp env arg0_ptr)))
+         (let* ((bytes (alloc-bytes 16 1)) (name (alloc-bytes 32 8))
+                (signal_slot (alloc-bytes 32 8)))
+           (seq
+            (ptr-write-u64 bytes 0 7362660191469140339)
+            (ptr-write-u64 bytes 8 31084746153094773)
+            (nl_alloc_symbol bytes 15 name)
+            (bf_wrong_number_of_args name argc)
+            (cons-make-with-clone 268435480 268435512 signal_slot)
+            (nl_env_stash_signal env signal_slot)
+            1)))))
+  "Validate symbol-function's fast-path arity/type and return nil on misses.")
 
 ;; M4 keyword self-eval.  Without this, evaluating a keyword symbol (e.g. the
 ;; `:test' in `(make-hash-table :test 'equal)') routes through nl_env_lookup_val
@@ -39872,7 +40551,7 @@ its header for the `cat PRELUDE yourfile.el | binary' usage.")
                 "      (unless (equal (condition-case e\n"
                 "                         (apply (list 'builtin name) argv)\n"
                 "                       (wrong-number-of-arguments e))\n"
-                "                     (list 'wrong-number-of-arguments name (length argv)))\n"
+                "                     (list 'wrong-number-of-arguments (list 'builtin name) (length argv)))\n"
                 "        (setq bad (cons (list name argv) bad)))))\n"
                 "  (unless (subrp (symbol-function 'nlistp))\n"
                 "    (setq bad (cons 'nlistp-not-native bad)))\n"
@@ -39883,7 +40562,7 @@ its header for the `cat PRELUDE yourfile.el | binary' usage.")
                 "    (unless (equal (condition-case e\n"
                 "                       (apply '(builtin nlistp) argv)\n"
                 "                     (wrong-number-of-arguments e))\n"
-                "                   (list 'wrong-number-of-arguments 'nlistp (length argv)))\n"
+                "                   (list 'wrong-number-of-arguments '(builtin nlistp) (length argv)))\n"
                 "      (setq bad (cons (list 'nlistp-arity argv) bad))))\n"
                 "  (if (null bad) 0 (error \"func-arity smoke mismatch\")))\n")
                cases))

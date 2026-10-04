@@ -1471,6 +1471,20 @@ standalone-reader-test:
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-reader-test
 
+# Run against an already built reader; no implicit native rebuild.
+.PHONY: standalone-reader-catch-target-test
+standalone-reader-catch-target-test:
+	EMACS=$(EMACS) bash test/nelisp-catch-target-regression.sh
+
+# Full-range character storage parity, using the supplied reader unchanged.
+.PHONY: standalone-reader-character-storage-test
+standalone-reader-character-storage-test:
+	EMACS=$(EMACS) python3 test/nelisp-character-storage-regression.py
+
+.PHONY: standalone-reader-character-conversion-test
+standalone-reader-character-conversion-test:
+	EMACS=$(EMACS) python3 test/nelisp-character-storage-regression.py --conversions
+
 nelisp-performance-gate:
 	./tools/nelisp-performance-gate.sh
 

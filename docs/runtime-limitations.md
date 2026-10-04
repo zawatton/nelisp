@@ -109,25 +109,21 @@ Grouped A–E by impact on C-equivalence.  Each item cites a primary source.
 
 ## F. Standalone Lisp raw-byte characters
 
-- **Unibyte strings are represented and consumed as raw bytes, but a raw byte
-  128–255 still cannot be represented as a character inside a multibyte
-  string.**  `concat`, `format`, `vconcat`, and `append` signal
-  `nelisp-raw-byte-unrepresentable` when such a conversion would be required;
-  `string-to-multibyte` signals the same condition.  ASCII-only unibyte input
-  remains freely mixable.  This is deliberate: silently treating a raw byte
-  buffer as UTF-8 invents characters and was the pre-Doc-200 behaviour.
-  Stock Emacs 30.1 represents such a byte `B` as raw-byte character
-  `#x3FFF00 + B`; measured examples are
-  `(append (concat (unibyte-string 200) "あ") nil)` →
-  `(4194248 12354)`, `(append (string-to-multibyte (unibyte-string 200))
-  nil)` → `(4194248)`, `(append "\310あ" nil)` → `(4194248 12354)`, and
-  `(string-bytes (concat (unibyte-string 200) "あ"))` → `5`.  NeLisp has no
-  representation for `4194248`, so signalling is the explicit scope refusal,
-  not an approximation.  Primary implementation sources:
-  `scripts/nelisp-standalone-build.el` (`bf_raw_byte_unrepresentable`, the
-  `concat`/`format`/`string-to-multibyte` builtin arms) and
-  `docs/design/200-unibyte-string-representation.org` (§4 implementation
-  report).
+- **The historical raw-byte string refusal is being removed through verified
+  C-core slices.**  The batch18 reader preserves GNU byte8 characters
+  `#x3FFF00 + B` in multibyte strings and passes 23 storage/printer comparisons.
+  Batch19 implements explicit conversions and mixed concat/format, with
+  append/vconcat preserving numeric input characters.  The final native reader
+  passes 100/103 conversion cases; three error-position cases remain red.
+  The package's Lisp diagnostic provider corrects those positions and passes
+  103/103 with the same reader.  Explicit ASCII-multibyte state, cloning and
+  GC are covered by these focused tests.  Mixed raw-byte/Unicode
+  reader literals such as `"\310あ"` retain the reader-specific refusal.
+  Do not infer complete string compatibility from these focused cases.
+  Primary sources: `scripts/nelisp-standalone-build.el`,
+  `scripts/nelisp-stdlib-prelude.el`,
+  `test/nelisp-character-storage-regression.py`, and
+  `docs/design/200-unibyte-string-representation.org` §8.7.
 - **String `aset` follows the stricter Emacs 31.1 fixed-width rule and
   deliberately differs from the Emacs 30.1 parity host in two cases.**
   Unibyte strings accept only values 0–255.  Multibyte strings mutate only

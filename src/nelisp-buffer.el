@@ -166,7 +166,7 @@ actually at point, rather than on every `goto-char' that got it there."
   "Return a fresh `nelisp-buffer', uniquifying NAME via `<N>' suffix."
   (let* ((base name)
          (final name)
-         (count 0))
+         (count 1))
     (while (gethash final nelisp-buffer--registry)
       (setq count (1+ count))
       (setq final (format "%s<%d>" base count)))

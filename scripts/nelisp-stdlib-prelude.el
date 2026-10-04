@@ -383,18 +383,68 @@ a negative, and signalling there turned a limit into a failure."
           (setq k (1+ k)))
         c))))
 
+(defvar current-time-list t
+  "Non-nil means `current-time' returns a four-element timestamp list.")
+
+(defun nelisp--w101-time-seconds (time)
+  "Return whole seconds from TIME, ignoring legacy subsecond fields."
+  (cond
+   ((null time) (floor (nl-unix-time-usec) 1000000))
+   ((integerp time) time)
+   ((floatp time)
+    (condition-case nil (floor time)
+      (error (error "Invalid time specification"))))
+   ((and (consp time) (integerp (car time)))
+    (cond
+     ((and (integerp (cdr time)) (> (cdr time) 0))
+      (floor (car time) (cdr time)))
+     ((and (consp (cdr time)) (integerp (car (cdr time))))
+      (+ (* (car time) 65536) (car (cdr time))))
+     (t (error "Invalid time specification"))))
+   (t (error "Invalid time specification"))))
+
+(defun nelisp--w101-charset-code (code)
+  "Convert CODE's integer, integral float, or 16-bit pair to an unsigned code."
+  (let ((value
+         (cond
+          ((integerp code) code)
+          ((and (floatp code) (>= code 0) (<= code 4294967295)
+                (= code (floor code)))
+           (floor code))
+          ((consp code)
+           (let ((high (car code))
+                 (low (if (consp (cdr code)) (car (cdr code)) (cdr code))))
+             (when (and (integerp high) (integerp low)
+                        (>= high 0) (<= high 65535)
+                        (>= low 0) (<= low 65535))
+               (+ (* high 65536) low)))))))
+    (unless (and (integerp value) (>= value 0) (<= value 4294967295))
+      (error "Not an in-range integer, integral float, or cons of integers"))
+    value))
+
+(defun nelisp--w101-directory-arguments (directory match count)
+  "Validate DIRECTORY, MATCH and COUNT in GNU's argument-check order."
+  (unless (stringp directory)
+    (signal 'wrong-type-argument (list 'stringp directory)))
+  (when (and count (or (not (integerp count)) (< count 0)))
+    (signal 'wrong-type-argument (list 'wholenump count)))
+  (when (and match (not (stringp match)))
+    (signal 'wrong-type-argument (list 'stringp match))))
+
 (unless (fboundp 'bool-vector-subsetp)
   (defun bool-vector-subsetp (a b)
-    "Return t when every set element of A is set in B."
-    (unless (bool-vector-p a) (signal 'wrong-type-argument (list 'bool-vector-p a)))
-    (unless (bool-vector-p b) (signal 'wrong-type-argument (list 'bool-vector-p b)))
-    (unless (= (length a) (length b))
-      (signal 'wrong-length-argument (list (length a) (length b))))
-    (let ((n (length a)) (i 0) (ok t))
-      (while (and ok (< i n))
-        (when (and (aref a i) (not (aref b i))) (setq ok nil))
-        (setq i (1+ i)))
-      ok)))
+  "Return t if every set bit of bool-vector A is also set in B."
+  (unless (bool-vector-p a)
+    (signal 'wrong-type-argument (list 'bool-vector-p a)))
+  (unless (bool-vector-p b)
+    (signal 'wrong-type-argument (list 'bool-vector-p b)))
+  (let ((n (length a)) (m (length b)) (i 0) (subset t))
+    (unless (= n m)
+      (signal 'wrong-length-argument (list n m m)))
+    (while (and subset (< i n))
+      (when (and (aref a i) (not (aref b i))) (setq subset nil))
+      (setq i (1+ i)))
+    subset)))
 
 (defun nelisp--bool-vector-binop (a b c op)
   (unless (bool-vector-p a) (signal 'wrong-type-argument (list 'bool-vector-p a)))
@@ -1084,18 +1134,199 @@ SUBLIST (compared by `eq') removed, not an approximation."
         (push (pop list) res))
       (nreverse res))))
 
+(defun nelisp--buffer-multibyte-p (buffer)
+  "Return BUFFER's local multibyte flag, defaulting to t."
+  (with-current-buffer buffer
+    (if (local-variable-p 'enable-multibyte-characters)
+        enable-multibyte-characters
+      t)))
+
+(defun nelisp--time-invalid ()
+  "Signal the GNU error for an invalid time value."
+  (signal 'error '("Invalid time specification")))
+
+(defun nelisp--time-value (value)
+  "Return (SECONDS NUMERATOR DENOMINATOR) for VALUE.
+For a float, NUMERATOR is its fractional part and DENOMINATOR is nil."
+  (when (null value) (setq value (current-time)))
+  (cond
+   ((integerp value) (list value 0 1))
+   ((floatp value)
+    (let ((seconds (condition-case nil (floor value)
+                     (error (nelisp--time-invalid)))))
+      (list seconds (- value seconds) nil)))
+   ((and (consp value) (integerp (car value))
+         (integerp (cdr value)) (> (cdr value) 0))
+    (let ((seconds (floor (car value) (cdr value))))
+      (list seconds (mod (car value) (cdr value)) (cdr value))))
+   ((and (consp value) (integerp (car value))
+         (consp (cdr value)) (integerp (cadr value)))
+    (let* ((tail (cddr value))
+           (usec (cond ((null tail) 0) ((integerp tail) tail)
+                       ((consp tail) (car tail))
+                       (t (nelisp--time-invalid))))
+           (rest (and (consp tail) (cdr tail)))
+           (psec (if (consp rest) (car rest) 0)))
+      (unless (and (integerp usec) (integerp psec))
+        (nelisp--time-invalid))
+      ;; Normalize each component before scaling, avoiding large products.
+      (let* ((micro (+ (mod usec 1000000) (floor psec 1000000)))
+             (seconds (+ (* (car value) 65536) (cadr value)
+                         (floor usec 1000000) (floor micro 1000000)))
+             (fraction (+ (* (mod micro 1000000) 1000000)
+                          (mod psec 1000000))))
+        (list seconds fraction 1000000000000))))
+   (t (nelisp--time-invalid))))
+
+(defun nelisp--time-fraction-compare (an ad bn bd)
+  "Compare nonnegative rational fractions without overflowing products."
+  (let ((sign 1) result)
+    (while (null result)
+      (let ((aq (/ an ad)) (bq (/ bn bd))
+            (ar (% an ad)) (br (% bn bd)))
+        (cond
+         ((/= aq bq) (setq result (* sign (if (< aq bq) -1 1))))
+         ((or (= ar 0) (= br 0))
+          (setq result (* sign (cond ((= ar br) 0) ((= ar 0) -1) (t 1)))))
+         (t (setq an ad ad ar bn bd bd br sign (- sign))))))
+    result))
+
+(defun nelisp--time-float-fraction-compare (fraction numerator denominator)
+  "Compare a floating FRACTION with an exact rational fraction.
+Compare binary digits, preserving distinctions lost by float division."
+  (let (result)
+    (while (null result)
+      (let* ((next (* fraction 2.0))
+             (fb (if (>= next 1.0) 1 0))
+             ;; Doubling a remainder this way cannot overflow a fixnum.
+             (rb (if (>= numerator (- denominator numerator)) 1 0)))
+        (setq fraction (- next fb)
+              numerator (if (= rb 1)
+                            (- numerator (- denominator numerator))
+                          (+ numerator numerator)))
+        (cond ((/= fb rb) (setq result (if (< fb rb) -1 1)))
+              ((= fraction 0.0)
+               (setq result (if (= numerator 0) 0 -1)))
+              ((= numerator 0) (setq result 1)))))
+    result))
+
+(defun nelisp--time-compare (a b)
+  "Compare GNU time values A and B, returning -1, 0, or 1."
+  ;; Resolve nil once, so comparing two current-time values is reflexive.
+  (when (or (null a) (null b))
+    (let ((now (current-time)))
+      (when (null a) (setq a now))
+      (when (null b) (setq b now))))
+  (let* ((pa (nelisp--time-value a)) (pb (nelisp--time-value b))
+         (as (car pa)) (bs (car pb))
+         (an (cadr pa)) (bn (cadr pb))
+         (ad (nth 2 pa)) (bd (nth 2 pb)))
+    (cond
+     ((/= as bs) (if (< as bs) -1 1))
+     ((and ad bd) (nelisp--time-fraction-compare an ad bn bd))
+     ((and (null ad) (null bd)) (cond ((< an bn) -1) ((> an bn) 1) (t 0)))
+     ((null ad) (nelisp--time-float-fraction-compare an bn bd))
+     (t (- (nelisp--time-float-fraction-compare bn an ad))))))
+
+(defun nelisp--key-modifier (modifier)
+  "Return the event mask for MODIFIER, or nil for a base event."
+  (cdr (assq modifier '((alt . 4194304) (super . 8388608)
+                       (hyper . 16777216) (shift . 33554432)
+                       (control . 67108864) (meta . 134217728)
+                       (double . 16) (triple . 32)
+                       (down . 2) (drag . 4)
+                       (click . 8)))))
+
+(defun nelisp--key-prefix (mask)
+  "Return the standard display prefix for event modifier MASK."
+  (let ((prefix ""))
+    (dolist (entry '((4194304 . "A-") (67108864 . "C-")
+                     (16777216 . "H-") (134217728 . "M-")
+                     (33554432 . "S-") (8388608 . "s-")))
+      (unless (= (logand mask (car entry)) 0)
+        (setq prefix (concat prefix (cdr entry)))))
+    prefix))
+
+(defun nelisp--key-list-event (key)
+  "Convert a list event specification KEY to an integer or symbol."
+  (if (or (null (cdr key))
+          (and (consp (cdr key)) (consp (cadr key))))
+      (car key)
+    (let ((tail key) (mask 0) base found)
+      (while (consp tail)
+        (let* ((part (car tail))
+               (modifier (and (or found (consp (cdr tail)))
+                              (nelisp--key-modifier part))))
+          (if modifier
+              (setq mask (logior mask modifier))
+            (when found (error "Two bases given in one event"))
+            (setq base part found t)))
+        (setq tail (cdr tail)))
+      (cond
+       ((integerp base)
+        ;; Control folds ASCII letters and @.._ into control codes.
+        ;; Uppercase letters retain an explicit shift modifier.
+        (when (and (/= (logand mask 67108864) 0)
+                   (or (and (>= base ?@) (<= base ?_))
+                       (and (>= base ?a) (<= base ?z))))
+          (when (and (>= base ?A) (<= base ?Z))
+            (setq mask (logior mask 33554432)))
+          (setq base (logand base 31)
+                mask (logand mask (lognot 67108864))))
+        (when (and (/= (logand mask 33554432) 0) (>= base ?a) (<= base ?z))
+          (setq base (- base 32) mask (logand mask (lognot 33554432))))
+        (logior base mask))
+       ((symbolp base)
+        (let ((prefix (nelisp--key-prefix mask)))
+          (dolist (entry '((16 . "double-") (32 . "triple-")
+                           (2 . "down-") (4 . "drag-")))
+            (unless (= (logand mask (car entry)) 0)
+              (setq prefix (concat prefix (cdr entry)))))
+          (intern (concat prefix (symbol-name base)))))
+       (t base)))))
+
+(defun nelisp--hash-text (object start end)
+  "Validate OBJECT, START and END, and return the selected text."
+  (cond
+   ((stringp object)
+    (dolist (position (list start end))
+      (unless (or (null position) (integerp position))
+        (signal 'wrong-type-argument (list 'integerp position))))
+    (if (or start end) (substring object (or start 0) end) object))
+   ((bufferp object)
+    (dolist (position (list start end))
+      (unless (or (null position) (integerp position) (markerp position))
+        (signal 'wrong-type-argument (list 'integer-or-marker-p position))))
+    (with-current-buffer object
+      (let ((first (if (markerp start) (marker-position start) start))
+            (last (if (markerp end) (marker-position end) end)))
+        (setq first (or first (point-min)) last (or last (point-max)))
+        (when (> first last) (let ((tmp first)) (setq first last last tmp)))
+        (unless (and (<= (point-min) first) (<= last (point-max)))
+          (signal 'args-out-of-range (list first last)))
+        (buffer-substring first last))))
+   (t (signal 'error (list "Invalid object argument" object)))))
+
+(defun nelisp--hash-program (algorithm)
+  "Return a lazily located hash command and digest width for ALGORITHM."
+  (if (memq algorithm '(sha3-224 sha3-256 sha3-384 sha3-512))
+      (let ((program (executable-find "openssl"))
+            (bits (substring (symbol-name algorithm) 5)))
+        (and program (cons (list program "dgst"
+                                 (concat "-sha3-" bits) "-r")
+                           (/ (string-to-number bits) 4))))
+    (nelisp--secure-hash-helper algorithm)))
+
+(provide 'prelude-overrides-w304)
+
 (unless (fboundp 'unibyte-char-to-multibyte)
   (defun unibyte-char-to-multibyte (ch)
-    "NeLisp standalone stub for Emacs's C primitive `unibyte-char-to-multibyte'.
-Real Emacs maps a raw byte 0-255 to its multibyte counterpart: ASCII
-(< 128) unchanged, and 128-255 to the \"raw byte\" character range
-(#x3FFF80 and up) so it round-trips through `multibyte-char-to-unibyte'.
-This runtime does not maintain a separate unibyte/multibyte string
-representation, so CH already behaves as a plain character for ASCII;
-the >= 128 branch reproduces Emacs's raw-byte numbering for
-round-tripping, but nothing in this runtime currently decodes it back
-out to a byte, unlike real Emacs."
-    (if (< ch 128) ch (+ ch #x3FFF00))))
+  "Convert byte CH to its multibyte character code."
+  (unless (and (integerp ch) (>= ch 0) (<= ch #x3fffff))
+    (signal 'wrong-type-argument (list 'characterp ch)))
+  (when (> ch 255)
+    (error "Not a unibyte character: %d" ch))
+  (if (< ch 128) ch (+ ch #x3fff00))))
 
 ;; Doc segI (vendor-emacs-lisp) follow-up: `decoded-time-SLOT' accessors
 ;; for the `decoded-time' value vendored `calendar/time-date.el' reads
@@ -1637,6 +1868,35 @@ from `(defvar X nil)'."
 (defun nelisp--case-letter-p (c)
   (not (and (eq (nelisp--case-up-char c) c) (eq (nelisp--case-down-char c) c))))
 
+;; The library installs this buffer-local adapter; nil keeps bare defaults.
+(defvar nelisp--case-table nil)
+
+(defun nelisp--case-installed (obj upcasep)
+  "Convert OBJ through the installed current table, preserving byte limits."
+  (let ((table (if upcasep (get-upcase-table nelisp--case-table)
+                 nelisp--case-table)))
+    (if (integerp obj)
+        (let ((value (case-table--char-table-range table obj)))
+          (if (and (integerp value) (<= 0 value) (<= value 4194303)) value obj))
+      (let ((unibyte (unibyte-string-p obj))
+            (i 0) (n (length obj)) (parts nil))
+        (while (< i n)
+          (let* ((char (aref obj i))
+                 (key (if (and unibyte (>= char 128)) (+ char #x3fff00) char))
+                 (value (case-table--char-table-range table key))
+                 (mapped (if (and (integerp value) (<= 0 value)
+                                  (<= value 4194303)) value char)))
+            (push (if unibyte
+                      (cond ((< mapped 256) mapped)
+                            ((>= mapped #x3fff80) (- mapped #x3fff00))
+                            (upcasep (if (and (<= ?a char) (<= char ?z)) (- char 32) char))
+                            (t (if (and (<= ?A char) (<= char ?Z)) (+ char 32) char)))
+                    (if (and upcasep (= char #xDF)) "SS" (char-to-string mapped))) parts))
+          (setq i (1+ i)))
+        (if unibyte
+            (apply #'unibyte-string (nreverse parts))
+          (string-make-multibyte (apply #'concat (nreverse parts))))))))
+
 (defun nelisp--case-unibyte-string (string upcasep)
   "Fold ASCII letters in raw-byte STRING and preserve every other byte."
   (let ((i 0) (n (length string)) (bytes nil))
@@ -1654,7 +1914,8 @@ from `(defvar X nil)'."
   (unless (or (stringp obj)
               (and (integerp obj) (>= obj 0) (<= obj 4194303)))
     (signal 'wrong-type-argument (list 'char-or-string-p obj)))
-  (cond ((and (stringp obj) (unibyte-string-p obj))
+  (cond (nelisp--case-table (nelisp--case-installed obj nil))
+        ((and (stringp obj) (unibyte-string-p obj))
          (nelisp--case-unibyte-string obj nil))
         ((stringp obj)
          (let ((out "") (i 0) (n (length obj)))
@@ -1671,6 +1932,9 @@ from `(defvar X nil)'."
 ;; easy mistake here.
 (unless (fboundp 'upcase-initials)
  (defun upcase-initials (obj)
+  "Convert each word's initial in character or string OBJ to upper case."
+  (unless (or (stringp obj) (integerp obj))
+    (signal 'wrong-type-argument (list 'char-or-string-p obj)))
   (if (integerp obj) (upcase obj)
     (let ((n (length obj)) (i 0) (out "") (prev nil))
       (while (< i n)
@@ -1700,7 +1964,8 @@ from `(defvar X nil)'."
   (unless (or (stringp obj)
               (and (integerp obj) (>= obj 0) (<= obj 4194303)))
     (signal 'wrong-type-argument (list 'char-or-string-p obj)))
-  (cond ((and (stringp obj) (unibyte-string-p obj))
+  (cond (nelisp--case-table (nelisp--case-installed obj t))
+        ((and (stringp obj) (unibyte-string-p obj))
          (nelisp--case-unibyte-string obj t))
         ((stringp obj)
          (let ((out "") (i 0) (n (length obj)))
@@ -2120,16 +2385,22 @@ Return (FROM . TO).  STR, START, and END are used only for the
 ;; compiling its own hot recursive functions).
 (unless (fboundp 'copy-alist)
   (defun copy-alist (alist)
-    "Return a copy of ALIST.
-This is an alist which represents the same mapping from objects to objects,
-but does not share the alist structure with ALIST.
-The objects mapped (cars and cdrs of elements of the alist)
-are shared, however.
-Elements of ALIST that are not conses are also shared.
-
-\(fn ALIST)"
-    (mapcar (lambda (elt) (if (consp elt) (cons (car elt) (cdr elt)) elt))
-            alist)))
+  "Copy ALIST's spine and each cons element, sharing keys and values."
+  (unless (listp alist)
+    (signal 'wrong-type-argument (list 'listp alist)))
+  (let ((tail alist) (slow alist) (fast alist) (out nil))
+    (while (consp tail)
+      (let ((elt (car tail)))
+        (setq out (cons (if (consp elt) (cons (car elt) (cdr elt)) elt)
+                        out)))
+      (setq tail (cdr tail))
+      (setq slow (and (consp slow) (cdr slow)))
+      (setq fast (and (consp fast) (cdr fast)))
+      (setq fast (and (consp fast) (cdr fast)))
+      (when (and (consp fast) (eq slow fast))
+        (signal 'circular-list (list alist))))
+    (when tail (signal 'wrong-type-argument (list 'listp tail)))
+    (nreverse out))))
 (unless (fboundp 'take)
   (defun take (n list)
     (unless (integerp n) (signal 'wrong-type-argument (list 'integerp n)))
@@ -2246,16 +2517,134 @@ Elements of ALIST that are not conses are also shared.
     (let ((m (plist-member plist key))) (if m (cadr m) default))))
 ;; `value<' is Emacs's default ordering, and `sort' falls back to it when no
 ;; predicate is given -- calling nil as a function is what it did before.
+(defun nelisp--obarray-table (object)
+  "Return OBJECT's symbol table, accepting legacy vector obarrays.
+A nonempty legacy vector stores its obarray in slot zero.  Allocate that
+obarray lazily when the slot still contains the integer zero."
+  (let ((array object))
+    (when (and (vectorp object) (> (length object) 0))
+      (setq array (aref object 0))
+      (when (eq array 0)
+        (setq array (obarray-make))
+        (aset object 0 array)))
+    (unless (obarrayp array)
+      (signal 'wrong-type-argument (list 'obarrayp object)))
+    (nelisp--record-ref array 1)))
+
+(defun nelisp--value-order-kind (value)
+  "Return the basic comparison type of VALUE."
+  (cond ((numberp value) 'number)
+        ((stringp value) 'string)
+        ((symbolp value) 'symbol)
+        ((markerp value) 'marker)
+        ((bufferp value) 'buffer)
+        ((processp value) 'process)
+        ((hash-table-p value) 'hash-table)
+        ((obarrayp value) 'obarray)
+        ((byte-code-function-p value) 'byte-code-function)
+        ((char-table-p value) 'char-table)
+        ;; Some opaque GNU types have Lisp representations supplied by
+        ;; the bundle.  They remain unordered rather than becoming lists
+        ;; or records merely because of that representation.
+        ((and (fboundp 'overlayp) (overlayp value)) 'overlay)
+        ((and (fboundp 'windowp) (windowp value)) 'window)
+        ((and (fboundp 'framep) (framep value)) 'frame)
+        ((and (fboundp 'threadp) (threadp value)) 'thread)
+        ((and (fboundp 'mutexp) (mutexp value)) 'mutex)
+        ((and (fboundp 'condition-variable-p) (condition-variable-p value))
+         'condition-variable)
+        ((recordp value) 'record)
+        ((vectorp value) 'vector)
+        ((bool-vector-p value) 'bool-vector)
+        (t (type-of value))))
+
+(defun nelisp--value-name-compare (a b)
+  "Compare names A and B, with a missing name preceding a present one."
+  (cond ((eq a b) 0)
+        ((null a) -1)
+        ((null b) 1)
+        ((string< a b) -1)
+        ((string< b a) 1)
+        (t 0)))
+
+(defun nelisp--value-list-compare (a b depth)
+  "Compare list tails A and B at comparison DEPTH.
+Track cycles in the right-hand list without scanning past the first
+unequal element or allocating a visited-element table."
+  (let ((checkpoint b) (power 2) (steps 0)
+        (result 0))
+    (while (and (= result 0) (consp a) (consp b))
+      (when (> steps 0)
+        (if (= steps power)
+            (setq checkpoint b power (* power 2) steps 0)
+          (when (eq b checkpoint)
+            (signal 'circular-list (list b)))))
+      (setq result (nelisp--value-compare (car a) (car b) (1+ depth)))
+      (when (= result 0)
+        (setq a (cdr a) b (cdr b) steps (1+ steps))))
+    (cond ((/= result 0) result)
+          ((and (null a) (consp b)) -1)
+          ((and (consp a) (null b)) 1)
+          (t (nelisp--value-compare a b depth)))))
+
+(defun nelisp--value-array-compare (a b depth)
+  "Compare the elements and then lengths of arrays A and B."
+  (let ((i 0) (na (length a)) (nb (length b)) (result 0))
+    (while (and (= result 0) (< i na) (< i nb))
+      (setq result (nelisp--value-compare (aref a i) (aref b i)
+                                        (1+ depth))
+            i (1+ i)))
+    (cond ((/= result 0) result)
+          ((< na nb) -1)
+          ((> na nb) 1)
+          (t 0))))
+
+(defun nelisp--value-compare (a b depth)
+  "Return -1, 0 or 1 for A and B in standard value order."
+  (when (> depth 200)
+    (error "Maximum depth exceeded in comparison"))
+  (if (eq a b) 0
+    (let ((ka (nelisp--value-order-kind a))
+          (kb (nelisp--value-order-kind b)))
+      ;; Nil is both the empty list and a symbol.  It shares the list
+      ;; ordering only when the other operand is a cons.
+      (cond
+       ((and (eq ka 'cons) (null b)) 1)
+       ((and (null a) (eq kb 'cons)) -1)
+       ((not (eq ka kb)) (signal 'type-mismatch (list a b)))
+       ((eq ka 'number) (cond ((< a b) -1) ((< b a) 1) (t 0)))
+       ((eq ka 'string) (nelisp--value-name-compare a b))
+       ((eq ka 'symbol)
+        (nelisp--value-name-compare (symbol-name a) (symbol-name b)))
+       ((eq ka 'cons) (nelisp--value-list-compare a b depth))
+       ((memq ka '(vector bool-vector record))
+        (nelisp--value-array-compare a b depth))
+       ((eq ka 'buffer)
+        (nelisp--value-name-compare (buffer-name a) (buffer-name b)))
+       ((eq ka 'process)
+        (nelisp--value-name-compare (process-name a) (process-name b)))
+       ((eq ka 'marker)
+        (let* ((ba (marker-buffer a)) (bb (marker-buffer b))
+               (order (nelisp--value-name-compare
+                       (and ba (buffer-name ba))
+                       (and bb (buffer-name bb)))))
+          (if (/= order 0) order
+            (nelisp--value-compare (or (marker-position a) 0)
+                                  (or (marker-position b) 0) depth))))
+       (t 0)))))
+
 (unless (fboundp 'value<)
-  (defun value< (a b)
-    (cond
-     ((and (numberp a) (numberp b)) (< a b))
-     ((and (stringp a) (stringp b)) (string< a b))
-     ((and (symbolp a) (symbolp b)) (string< (symbol-name a) (symbol-name b)))
-     ((and (consp a) (consp b))
-      (if (equal (car a) (car b)) (value< (cdr a) (cdr b)) (value< (car a) (car b))))
-     ((and (null a) (null b)) nil)
-     (t (signal 'wrong-type-argument (list 'value< a b))))))
+  (defun value< (&rest arguments)
+  "Return non-nil if A precedes B in standard value order.
+A and B must have the same basic type.  Compare numbers numerically,
+strings and symbols by name, and lists, vectors, bool-vectors and records
+lexicographically.  Compare buffers and processes by name, and markers
+by buffer and position.  Other types are unordered.
+
+(fn A B)"
+  (unless (= (length arguments) 2)
+    (signal 'wrong-number-of-arguments (list 'value< (length arguments))))
+  (< (nelisp--value-compare (car arguments) (cadr arguments) 0) 0)))
 (unless (fboundp 'seq-sort)
   (defun seq-sort (pred seq)
     (let ((l (sort (nelisp-seq--to-list seq) pred)))
@@ -2549,15 +2938,27 @@ Lisp argument list ARGS (see `cl-destructuring-bind').
              (and (eq found name) found)))
           ((stringp name) (nelisp--intern-lookup name))
           (t (signal 'wrong-type-argument (list 'stringp name))))))
-(defun unintern (name &optional obarray)
-  (unless obarray
-    (signal 'unsupported-feature '(global-unintern)))
-  (let* ((table (nelisp--obarray-table obarray))
-         (key (nelisp--obarray-name name))
-         (found (gethash key table)))
-    (if (and found (or (not (symbolp name)) (eq found name)))
-        (progn (remhash key table) t)
-      nil)))
+(defun unintern (&rest arguments)
+  "Delete NAME from OBARRAY, returning t if a symbol was deleted.
+NAME may be a string or a symbol.  A symbol must belong to OBARRAY;
+another symbol with the same name is not deleted.
+
+(fn NAME &optional OBARRAY)"
+  (unless (and arguments (<= (length arguments) 2))
+    (signal 'wrong-number-of-arguments (list 'unintern (length arguments))))
+  (let ((name (car arguments)) (obarray (cadr arguments)))
+    (if (null obarray)
+        ;; Removing entries from the native global intern table is not
+        ;; exposed to Lisp.  Keep that limitation explicit.
+        (progn
+          (nelisp--obarray-name name)
+          (signal 'unsupported-feature '(global-unintern)))
+      (let* ((table (nelisp--obarray-table obarray))
+             (key (nelisp--obarray-name name))
+             (found (gethash key table)))
+        (if (and found (or (stringp name) (eq found name)))
+            (progn (remhash key table) t)
+          nil)))))
 (defun mapatoms (function &optional obarray)
   (unless obarray
     (signal 'unsupported-feature '(global-mapatoms)))
@@ -2567,7 +2968,6 @@ Lisp argument list ARGS (see `cl-destructuring-bind').
 (unless (fboundp 'vconcat)
   (defun vconcat (&rest seqs)
     (dolist (x seqs) (nelisp--check-seq-list x))
-    (nelisp--doc200-check-string-mix seqs)
     (apply #'vector (apply #'append (mapcar (lambda (x) (append x nil)) seqs)))))
 ;; `string-to-number' existed only in lisp/nelisp-stdlib-plist-str.el, which
 ;; the standalone never loads, so the native integer-only parser answered:
@@ -2841,38 +3241,102 @@ loop for the exponent (= no `expt' / `float' primitive needed)."
     (if (listp seq)
         (let ((k 0)) (while (and seq (<= k n)) (setq k (1+ k) seq (cdr seq))) (> k n))
       (> (length seq) n))))
-(unless (fboundp 'file-name-concat)
-  (defun file-name-concat (directory &rest components)
-    (let ((out (or directory "")))
-      (dolist (c components)
-        (when (and c (not (equal c "")))
-          (setq out (if (or (equal out "")
-                            (eq (aref out (1- (length out))) ?/))
-                        (concat out c)
-                      (concat out "/" c)))))
-      out)))
-(unless (fboundp 'string-distance)
-  (defun string-distance (a b &optional _bytecompare)
-    ;; Levenshtein, one row at a time: the full matrix is not needed and the
-    ;; row form keeps this linear in space for the long strings callers pass.
-    (let* ((la (length a)) (lb (length b))
-           (prev (make-vector (1+ lb) 0))
-           (cur (make-vector (1+ lb) 0))
-           (i 0))
-      (while (<= i lb) (aset prev i i) (setq i (1+ i)))
-      (setq i 0)
-      (while (< i la)
-        (aset cur 0 (1+ i))
-        (let ((j 0))
-          (while (< j lb)
-            (let ((cost (if (eq (aref a i) (aref b j)) 0 1)))
-              (aset cur (1+ j) (min (1+ (aref cur j))
-                                    (1+ (aref prev (1+ j)))
-                                    (+ cost (aref prev j)))))
-            (setq j (1+ j))))
-        (let ((tmp prev)) (setq prev cur) (setq cur tmp))
+(defun nelisp--message-quoting-style ()
+  "Return the effective quoting style for messages.
+Use the terminal-aware primitive when available.  The standalone's
+Unicode output uses curved quotes by default."
+  (if (fboundp 'text-quoting-style)
+      (text-quoting-style)
+    (let ((style (condition-case nil text-quoting-style
+                   (void-variable nil))))
+      (if (memq style '(straight grave)) style 'curve))))
+
+(defun nelisp--message-quote-template (template style)
+  "Replace literal quotes in TEMPLATE according to STYLE.
+Leave format directives intact, including invalid conversion characters,
+so that formatting reports errors using the original directive."
+  (if (eq style 'grave)
+      template
+    (let ((i 0) (n (length template)) (start 0) (pieces nil))
+      (while (< i n)
+        (let ((c (aref template i)))
+          (cond
+           ((= c 37)
+            ;; Skip the directive's flags, argument number, width and
+            ;; precision, followed by its conversion character.
+            (setq i (1+ i))
+            (while (and (< i n)
+                        (let ((ch (aref template i)))
+                          (or (and (>= ch 48) (<= ch 57))
+                              (memq ch '(32 35 36 43 45 46)))))
+              (setq i (1+ i))))
+           ((or (= c 96) (and (= c 39) (eq style 'curve)))
+            (let ((replacement
+                   (char-to-string
+                    (if (eq style 'straight) 39
+                      (if (= c 96) 8216 8217)))))
+              (set-text-properties 0 1 (text-properties-at i template)
+                                   replacement)
+              (push (substring template start i) pieces)
+              (push replacement pieces)
+              (setq start (1+ i))))))
         (setq i (1+ i)))
-      (aref prev lb))))
+      (if (null pieces)
+          template
+        (push (substring template start) pieces)
+        (apply #'concat (nreverse pieces))))))
+
+(provide 'prelude-overrides-w102)
+
+(unless (fboundp 'file-name-concat)
+  (defun file-name-concat (&rest components)
+  "Append COMPONENTS to DIRECTORY, inserting directory separators.
+Each argument must be a string or nil.  Empty strings and nil are
+ignored.  Return a new string without text properties.
+
+(fn DIRECTORY &rest COMPONENTS)"
+  (unless components
+    (signal 'wrong-number-of-arguments (list 'file-name-concat 0)))
+  (let ((out ""))
+    (dolist (part components)
+      (unless (or (null part) (stringp part))
+        (signal 'wrong-type-argument (list 'stringp part)))
+      (when (and part (> (length part) 0))
+        (setq out (concat out
+                          (if (or (= (length out) 0)
+                                  (= (aref out (1- (length out))) 47))
+                              ""
+                            "/")
+                          (substring-no-properties part)))))
+    out)))
+(unless (fboundp 'string-distance)
+  (defun string-distance (a b &optional bytecompare)
+  "Return the Levenshtein distance between strings A and B.
+When BYTECOMPARE is non-nil, compare their stored bytes."
+  (unless (stringp a) (signal 'wrong-type-argument (list 'stringp a)))
+  (unless (stringp b) (signal 'wrong-type-argument (list 'stringp b)))
+  (when bytecompare
+    (setq a (string-as-unibyte a) b (string-as-unibyte b)))
+  ;; The shorter string determines the two working rows.
+  (when (< (length a) (length b))
+    (let ((tmp a)) (setq a b b tmp)))
+  (let* ((la (length a)) (lb (length b))
+         (prev (make-vector (1+ lb) 0))
+         (cur (make-vector (1+ lb) 0)) (i 0))
+    (while (<= i lb) (aset prev i i) (setq i (1+ i)))
+    (setq i 0)
+    (while (< i la)
+      (aset cur 0 (1+ i))
+      (let ((j 0))
+        (while (< j lb)
+          (aset cur (1+ j)
+                (min (1+ (aref cur j)) (1+ (aref prev (1+ j)))
+                     (+ (if (= (aref a i) (aref b j)) 0 1)
+                        (aref prev j))))
+          (setq j (1+ j))))
+      (let ((tmp prev)) (setq prev cur cur tmp))
+      (setq i (1+ i)))
+    (aref prev lb))))
 ;; Doc 160 breadth round 2: control/binding macros.
 (unless (fboundp 'letrec)
   (defmacro letrec (bindings &rest body)
@@ -3259,43 +3723,230 @@ trailing newline) that `message' would otherwise do.")
 ;; shadows it, calling the raw constructor underneath.
 (defun nelisp--signal-invalid (msg arg)
   (signal 'error (cons msg (if (proper-list-p arg) arg (list arg)))))
+;; These representation helpers must precede the capacity policy below.
+;; Prelude buffer creation calls puthash before the later buffer/printer code.
+(defun hash-table-p (x)
+  (and (consp x)
+       (let ((m (car x)))
+         (and (vectorp m) (> (length m) 1) (eq (aref m 0) 'hash-table)))))
+(defun maphash (fn table)
+  (unless (hash-table-p table) (signal 'wrong-type-argument (list 'hash-table-p table)))
+  ;; The core `make-hash-table' returns (Int(0) . BUCKETS) where BUCKETS is a
+  ;; vector whose slots are node lists of (KEY . VALUE) pairs.  (A legacy shape
+  ;; stored a flat ((KEY . VALUE) ...) alist directly in the cdr.)  Walk both.
+  (let ((data (cdr table)))
+    (if (vectorp data)
+        (let ((i 0) (n (length data)))
+          (while (< i n)
+            (let ((node (aref data i)))
+              (while (consp node)
+                (let ((entry (car node)))
+                  (when (consp entry) (funcall fn (car entry) (cdr entry))))
+                (setq node (cdr node))))
+            (setq i (1+ i))))
+      (let ((node data))
+        (while (consp node)
+          (let ((entry (car node)))
+            (when (consp entry) (funcall fn (car entry) (cdr entry))))
+          (setq node (cdr node))))))
+  nil)
+
+(unless (fboundp 'hash-table-test)
+  (defun hash-table-test (table)
+    ;; The requested test IS recorded now -- marker slot 2 -- so this reports
+    ;; what the caller asked for instead of a fixed answer.  Since Doc 201
+    ;; §6.17 the native lookup reads the same slot (`nl_ht_test_mode') and
+    ;; compares keys with `eq' / `eql' / `equal' accordingly.
+    (unless (hash-table-p table)
+      (signal 'wrong-type-argument (list 'hash-table-p table)))
+    (or (and (> (length (car table)) 2) (aref (car table) 2)) 'eql)))
+
+;; Capacity policy belongs to Lisp; the raw leaves still own hashing.
+;; Native count updates use temporary boxes.  Slot 1 is a count cache,
+;; synchronized with aset when counted/rehashed; slot 5 is a conservative
+;; insertion budget.  Public hash-table-count always counts real entries.
+(unless (fboundp 'nelisp--hash-put-leaf)
+  (fset 'nelisp--hash-put-leaf (symbol-function 'puthash))
+  (fset 'nelisp--hash-get-leaf (symbol-function 'gethash))
+  (fset 'nelisp--hash-rem-leaf (symbol-function 'remhash))
+  (fset 'nelisp--hash-count-leaf (symbol-function 'hash-table-count)))
+(defvar nelisp--hash-absent (make-symbol "hash-absent"))
+
+(defun nelisp--hash-index-size (capacity)
+  (let ((size 1))
+    (while (<= size capacity) (setq size (* size 2)))
+    size))
+
+(defun nelisp--hash-new (test capacity &optional weakness)
+  (cons (vector 'hash-table 0 test capacity weakness 0)
+        (make-vector (nelisp--hash-index-size capacity) nil)))
+
+(defun nelisp--hash-resize (table capacity)
+  "Reserve CAPACITY in TABLE without changing its identity or key test."
+  (let ((new (nelisp--hash-new (or (aref (car table) 2) 'eql) capacity
+                               (and (> (length (car table)) 4)
+                                    (aref (car table) 4))))
+        (count 0))
+    (if (vectorp (cdr table))
+        (let* ((buckets (cdr table)) (i 0) (n (length buckets)))
+          (while (< i n)
+            (let ((nodes (aref buckets i)))
+              (while nodes
+                (let ((entry (car nodes)))
+                  (nelisp--hash-put-leaf (car entry) (cdr entry) new))
+                (setq count (1+ count) nodes (cdr nodes))))
+            (setq i (1+ i))))
+      ;; Reader data is newest-first and may repeat a key.  Retain the
+      ;; first entry, while reserving the original number of data pairs.
+      (let ((entries (cdr table)))
+        (while entries
+          (let ((entry (car entries)))
+            (when (eq (nelisp--hash-get-leaf (car entry) new
+                               nelisp--hash-absent) nelisp--hash-absent)
+              (nelisp--hash-put-leaf (car entry) (cdr entry) new)
+              (setq count (1+ count))))
+          (setq entries (cdr entries)))))
+    (aset (car new) 1 count)
+    (aset (car new) 5 count)
+    (setcar table (car new))
+    (setcdr table (cdr new)))
+  table)
+
+(defun nelisp--hash-capacity (table)
+  "Adopt reader and legacy raw tables on their first policy operation.
+Reader literals reserve one slot per data pair, ignoring printed SIZE.
+Legacy native bucket tables retain their existing reservation: a power
+of two index vector reserves INDEX-SIZE minus one slots.  They are
+internal compatibility objects, not calls to the new public constructor."
+  (unless (hash-table-p table)
+    (signal 'wrong-type-argument (list 'hash-table-p table)))
+  (when (< (length (car table)) 6)
+    (let* ((marker (car table))
+           (buckets (cdr table))
+           (count (nelisp--hash-count-leaf table)))
+      (if (and (= (length marker) 3) (vectorp buckets)
+               (> (length buckets) count)
+               (= (logand (length buckets) (1- (length buckets))) 0))
+          ;; Cold-image caches already own their native bucket reservation.
+          ;; Extending metadata avoids a hot interpreted rehash on adoption.
+          (setcar table (vector 'hash-table count (or (aref marker 2) 'eql)
+                                (1- (length buckets)) nil count))
+        (let ((capacity (if (> (length marker) 3) (aref marker 3)
+                          (if (vectorp buckets) count (aref marker 1)))))
+          (if (= count 0)
+              (let ((new (nelisp--hash-new (or (aref marker 2) 'eql) capacity
+                                          (and (> (length marker) 4) (aref marker 4)))))
+                (setcar table (car new))
+                (setcdr table (cdr new)))
+            (nelisp--hash-resize table capacity))))))
+  (aref (car table) 3))
+
+(defun hash-table-size (table)
+  (nelisp--hash-capacity table))
+
+(defun internal--hash-table-index-size (table)
+  (nelisp--hash-capacity table)
+  (length (cdr table)))
+
 (defun make-hash-table (&rest keys)
-  ;; The validation loop below runs interpreted, and on the standalone that
-  ;; is ~0.5 ms per call -- three times the raw constructor -- paid by every
-  ;; JSON object parsed and every per-reading cache built.  Nearly every
-  ;; caller passes no keys or exactly (:test TEST), so those two shapes are
-  ;; answered here and only the rest go through the loop; a misspelled or
-  ;; dangling keyword still lands in it and still signals.
+  ;; Preserve the common no-key / test-only fast paths during bootstrap.
   (if (or (null keys)
           (and (eq (car keys) :test)
                (memq (cadr keys) '(eq eql equal))
                (null (cddr keys))))
-      (let ((h (nelisp--hash-table-make-raw)))
-        (aset (car h) 2 (if keys (cadr keys) 'eql))
-        h)
-  (let ((ks keys))
-    (while ks
-      (let ((k (car ks)) (rest (cdr ks)))
-        (unless (and (consp rest)
-                     (memq k '(:test :size :rehash-size :rehash-threshold
-                               :weakness :purecopy)))
-          (nelisp--signal-invalid "Invalid argument list" k))
-        (let ((v (car rest)))
-          (cond
-           ((eq k :test)
-            (unless (memq v '(eq eql equal))
-              (nelisp--signal-invalid "Invalid hash table test" v)))
-           ((eq k :size)
-            (unless (natnump v)
-              (nelisp--signal-invalid "Invalid hash table size" v)))
-           ((eq k :weakness)
-            (unless (memq v '(nil key value key-or-value key-and-value t))
-              (nelisp--signal-invalid "Invalid hash table weakness" v)))))
-        (setq ks (cdr rest)))))
-  (let ((h (nelisp--hash-table-make-raw))
-        (test (or (plist-get keys :test) 'eql)))
-    (aset (car h) 2 test)
-    h)))
+      (cons (vector 'hash-table 0 (if keys (cadr keys) 'eql) 0 nil 0)
+            (vector nil))
+    (let ((ks keys))
+      (while ks
+        (let ((k (car ks)) (rest (cdr ks)))
+          (unless (and (consp rest)
+                       (memq k '(:test :size :rehash-size :rehash-threshold
+                                 :weakness :purecopy)))
+            (nelisp--signal-invalid "Invalid argument list" k))
+          (let ((v (car rest)))
+            (cond
+             ((eq k :test)
+              (unless (memq v '(eq eql equal))
+                (nelisp--signal-invalid "Invalid hash table test" v)))
+             ((eq k :size)
+              (unless (natnump v)
+                (nelisp--signal-invalid "Invalid hash table size" v)))
+             ((eq k :weakness)
+              (unless (memq v '(nil key value key-or-value key-and-value t))
+                (nelisp--signal-invalid "Invalid hash table weakness" v)))))
+          (setq ks (cdr rest)))))
+    (nelisp--hash-new (or (plist-get keys :test) 'eql)
+                      (or (plist-get keys :size) 0)
+                      (let ((weakness (plist-get keys :weakness)))
+                        (if (eq weakness t) 'key-and-value weakness)))))
+
+(defun puthash (key value table)
+  ;; Below the reservation limit, insertion attempts bound the real count.
+  ;; Let the native leaf validate TABLE before changing policy metadata,
+  ;; avoiding redundant interpreted type checks on every hot insertion.
+  (condition-case nil
+      (let* ((marker (car table))
+             (budget (aref marker 5))
+             (capacity (aref marker 3)))
+          (if (< budget capacity)
+              (prog1 (nelisp--hash-put-leaf key value table)
+                (aset marker 5 (1+ budget)))
+            (when (eq (nelisp--hash-get-leaf key table nelisp--hash-absent)
+                      nelisp--hash-absent)
+              (let ((count (nelisp--hash-count-leaf table)))
+                (when (>= count capacity)
+                  ;; Zero grows to 6; <=64 grows fourfold (minimum 24);
+                  ;; larger reservations double.  Buckets never have size 0.
+                  (if (= capacity 0)
+                      (progn (aset marker 3 6) (setcdr table (make-vector 8 nil)))
+                    (nelisp--hash-resize table
+                     (* (max capacity 6) (if (<= capacity 64) 4 2)))
+                    (setq marker (car table))))
+                (aset marker 1 count)
+                (aset marker 5 (1+ count))))
+            (nelisp--hash-put-leaf key value table)))
+    ;; A short reader/cold-image marker takes the one-time adoption path.
+    (args-out-of-range
+     (nelisp--hash-capacity table)
+     (puthash key value table))
+    ;; Invalid metadata reads must report the primitive's hash-table-p
+    ;; error, including nil, non-conses and malformed legacy markers.
+    (wrong-type-argument (nelisp--hash-put-leaf key value table))))
+
+(defun hash-table-count (table)
+  (nelisp--hash-capacity table)
+  (let ((count (nelisp--hash-count-leaf table)))
+    (aset (car table) 1 count)
+    count))
+
+(defun remhash (key table)
+  (nelisp--hash-capacity table)
+  (unless (eq (nelisp--hash-get-leaf key table nelisp--hash-absent)
+              nelisp--hash-absent)
+    (aset (car table) 5 (max 0 (1- (aref (car table) 5)))))
+  (nelisp--hash-rem-leaf key table)
+  (aset (car table) 1 (nelisp--hash-count-leaf table))
+  nil)
+
+(defun clrhash (table)
+  (nelisp--hash-capacity table)
+  (setcdr table (make-vector (length (cdr table)) nil))
+  (aset (car table) 1 0)
+  (aset (car table) 5 0)
+  table)
+
+(defun hash-table-weakness (table)
+  (nelisp--hash-capacity table)
+  (and (> (length (car table)) 4) (aref (car table) 4)))
+
+(defun copy-hash-table (table)
+  (let ((new (nelisp--hash-new (hash-table-test table)
+                              (nelisp--hash-capacity table)
+                              (hash-table-weakness table))))
+    (maphash (lambda (k v) (puthash k v new)) table)
+    (aset (car new) 1 (nelisp--hash-count-leaf new))
+    new))
+
 (unless (fboundp 'byte-compile-file)
   (defun byte-compile-file (filename &optional _load)
     "Check FILENAME the way Emacs does and report a missing input file.
@@ -3478,8 +4129,13 @@ the only case this function exists for."
   (defun selected-frame () nil))
 (unless (fboundp 'window-system)
   (defun window-system (&optional frame)
-    (when frame (nelisp--check-live-frame frame))
-    nil))
+  "Return FRAME's window system, or nil for a terminal frame.
+FRAME defaults to the selected frame.  A frame need not be live."
+  (let* ((frame (or frame (selected-frame)))
+         (type (framep frame)))
+    (unless type
+      (signal 'wrong-type-argument (list 'framep frame)))
+    (if (eq type t) nil type))))
 
 ;; `framep' (src/frame.c) returns a frame's window-system type symbol, or
 ;; `t' specifically for a termcap/tty frame -- not merely non-nil the way
@@ -3515,26 +4171,320 @@ the only case this function exists for."
 ;; `random' via a 31-bit LCG (glibc constants).  Deterministic -- adequate for
 ;; tests / sampling, NOT for cryptography (use a getrandom syscall for that).
 (unless (boundp 'nelisp--random-state) (defvar nelisp--random-state 305419896))
+(defun nelisp--cc03-regexp-error (message)
+  "Signal a regexp compilation error with MESSAGE."
+  (signal 'invalid-regexp (list message)))
+
+(defun nelisp--cc03-regexp-set-end (regexp i)
+  "Validate a bracket expression in REGEXP, starting after its opening."
+  (let ((n (length regexp)) (done nil))
+    (when (and (< i n) (eq (aref regexp i) ?^)) (setq i (1+ i)))
+    (when (and (< i n) (eq (aref regexp i) ?\])) (setq i (1+ i)))
+    (while (and (< i n) (not done))
+      (cond
+       ((eq (aref regexp i) ?\]) (setq done t i (1+ i)))
+       ((and (eq (aref regexp i) ?\[) (< (1+ i) n)
+             (eq (aref regexp (1+ i)) ?:))
+        (let ((start (+ i 2)) (j (+ i 2)))
+          (while (and (< (1+ j) n)
+                      (not (and (eq (aref regexp j) ?:)
+                                (eq (aref regexp (1+ j)) ?\]))))
+            (setq j (1+ j)))
+          (unless (< (1+ j) n)
+            (nelisp--cc03-regexp-error "Unmatched [ or [^"))
+          (unless (member (substring regexp start j)
+                          '("alnum" "alpha" "ascii" "blank" "cntrl" "digit"
+                            "graph" "lower" "multibyte" "nonascii" "print"
+                            "punct" "space" "unibyte" "upper" "word" "xdigit"))
+            (nelisp--cc03-regexp-error "Invalid character class name"))
+          (setq i (+ j 2))))
+       (t (setq i (1+ i)))))
+    (unless done (nelisp--cc03-regexp-error "Unmatched [ or [^"))
+    i))
+
+(defun nelisp--cc03-validate-regexp (regexp)
+  "Validate REGEXP's structural syntax before invoking the Lisp matcher.
+The matcher accepts some incomplete expressions; searches must reject them."
+  (let ((i 0) (n (length regexp)) (groups nil) (closed nil) (number 0))
+    (while (< i n)
+      (let ((c (aref regexp i)))
+        (cond
+         ((eq c ?\[) (setq i (nelisp--cc03-regexp-set-end regexp (1+ i))))
+         ((eq c ?\\)
+          (when (= (1+ i) n) (nelisp--cc03-regexp-error "Trailing backslash"))
+          (let ((d (aref regexp (1+ i))))
+            (setq i (+ i 2))
+            (cond
+             ((eq d ?\()
+              (let ((group nil))
+                (if (and (< i n) (eq (aref regexp i) ??))
+                    (let ((j (1+ i)) (value 0) (digits nil))
+                      (while (and (< j n) (>= (aref regexp j) ?0)
+                                  (<= (aref regexp j) ?9))
+                        (setq digits t value (+ (* value 10) (- (aref regexp j) ?0))
+                              j (1+ j)))
+                      (unless (and (< j n) (eq (aref regexp j) ?:)
+                                   (or (not digits) (> value 0)))
+                        (nelisp--cc03-regexp-error "Invalid regular expression"))
+                      (when digits (setq group value number (max number value)))
+                      (setq i (1+ j)))
+                  (setq number (1+ number) group number))
+                (setq groups (cons group groups))))
+             ((eq d ?\))
+              (unless groups (nelisp--cc03-regexp-error "Unmatched ) or \\)"))
+              (when (car groups) (setq closed (cons (car groups) closed)))
+              (setq groups (cdr groups)))
+             ((and (>= d ?1) (<= d ?9))
+              (unless (or (memq (- d ?0) closed)
+                          ;; Explicit numbering may leave empty groups.
+                          (and (<= (- d ?0) number)
+                               (not (memq (- d ?0) groups))))
+                (nelisp--cc03-regexp-error "Invalid back reference")))
+             ((eq d ?{)
+              (let ((start i) (j i))
+                (while (and (< (1+ j) n)
+                            (not (and (eq (aref regexp j) ?\\)
+                                      (eq (aref regexp (1+ j)) ?}))))
+                  (setq j (1+ j)))
+                (unless (< (1+ j) n) (nelisp--cc03-regexp-error "Unmatched \\{"))
+                (let ((lo 0) (hi nil) (comma nil) (k start))
+                  (while (and (< k j) (>= (aref regexp k) ?0) (<= (aref regexp k) ?9))
+                    (setq lo (+ (* lo 10) (- (aref regexp k) ?0)) k (1+ k)))
+                  (when (and (< k j) (eq (aref regexp k) ?,))
+                    (setq comma t k (1+ k))
+                    (while (and (< k j) (>= (aref regexp k) ?0) (<= (aref regexp k) ?9))
+                      (setq hi (+ (* (or hi 0) 10) (- (aref regexp k) ?0)) k (1+ k))))
+                  (unless (and (= k j) (or (not comma) (null hi) (<= lo hi)))
+                    (nelisp--cc03-regexp-error "Invalid content of \\{\\}")))
+                (setq i (+ j 2))))
+             ((memq d '(?s ?S ?c ?C))
+              (when (= i n) (nelisp--cc03-regexp-error "Premature end of regular expression"))
+              (setq i (1+ i))))))
+         (t (setq i (1+ i))))))
+    (when groups (nelisp--cc03-regexp-error "Unmatched ( or \\("))))
+
+(defun nelisp--cc03-search-args (regexp bound count)
+  "Validate search arguments and return the normalized BOUND."
+  (unless (integerp count) (signal 'wrong-type-argument (list 'fixnump count)))
+  (unless (stringp regexp) (signal 'wrong-type-argument (list 'stringp regexp)))
+  (when (and bound (markerp bound)) (setq bound (marker-position bound)))
+  (when (and bound (not (integerp bound)))
+    (signal 'wrong-type-argument (list 'integer-or-marker-p bound)))
+  bound)
+
+(defun nelisp--cc03-match-slice (string group)
+  "Return the text matched by GROUP, or an empty string if unmatched."
+  (let ((b (match-beginning group)) (e (match-end group)))
+    (if (and b e)
+        (if string (substring string b e) (buffer-substring b e))
+      "")))
+
+(defun nelisp--cc03-replacement-case (text)
+  "Determine the case conversion requested by the matched TEXT."
+  (let ((i 0) (n (length text)) (lower nil) (upper nil)
+        (initial t) (capitalized t))
+    (while (< i n)
+      (let* ((c (aref text i)) (up (upcase c)) (down (downcase c))
+             (word (or (eq (char-syntax c) ?w)
+                       (and (boundp 'case-symbols-as-words) case-symbols-as-words
+                            (eq (char-syntax c) ?_)))))
+        (if word
+            (progn
+              (when (/= up down)
+                (if (= c down) (setq lower t) (setq upper t))
+                (when (and initial (/= c up)) (setq capitalized nil)))
+              (setq initial nil))
+          (setq initial t)))
+      (setq i (1+ i)))
+    (cond ((and upper (not lower)) 'upper)
+          ((and upper capitalized) 'capitalize))))
+
+(defun nelisp--cc03-expand-replacement (newtext literal string case-action)
+  "Expand NEWTEXT, preserving the case of backreference substitutions."
+  (let ((i 0) (start 0) (n (length newtext)) (initial t) pieces part)
+    (while (< i n)
+      (if (and (not literal) (eq (aref newtext i) ?\\))
+          (progn
+            (when (> i start)
+              (setq part (nelisp--cc03-case-text (substring newtext start i) case-action initial)
+                    pieces (cons (car part) pieces) initial (cdr part)))
+            (setq i (1+ i))
+            (when (= i n) (error "Invalid use of ‘\\’ in replacement text"))
+            (let ((c (aref newtext i)))
+              (cond
+               ((eq c ?&) (setq part (nelisp--cc03-match-slice string 0)))
+               ((and (>= c ?1) (<= c ?9))
+                (setq part (nelisp--cc03-match-slice string (- c ?0))))
+               ((eq c ?\\) (setq part "\\"))
+               ((eq c ??) (setq part "\\?"))
+               (t (error "Invalid use of ‘\\’ in replacement text")))
+              ;; Substitutions affect word boundaries but retain their case.
+              (setq part (nelisp--cc03-case-text part nil initial)
+                    pieces (cons (car part) pieces) initial (cdr part)))
+            (setq i (1+ i) start i))
+        (setq i (1+ i))))
+    (when (> n start)
+      (setq part (nelisp--cc03-case-text (substring newtext start n) case-action initial)
+            pieces (cons (car part) pieces)))
+    (apply #'concat (nreverse pieces))))
+
+(defun nelisp--cc03-case-text (text action initial)
+  "Return converted TEXT and the next word-initial state as a cons.
+ACTION applies only to literal text; INITIAL also crosses substitutions."
+  (let ((i 0) (n (length text)) chars)
+    (while (< i n)
+      (let* ((c (aref text i)) (syntax (char-syntax c))
+             (word (or (eq syntax ?w)
+                       (and (boundp 'case-symbols-as-words)
+                            case-symbols-as-words (eq syntax ?_)))))
+        (setq chars (cons (char-to-string
+                           (cond ((eq action 'upper) (upcase c))
+                                 ((eq action 'capitalize)
+                                  (if initial (upcase c) (downcase c)))
+                                 (t c))) chars)
+              initial (not word)))
+      (setq i (1+ i)))
+    (cons (apply #'concat (nreverse chars)) initial)))
+
+(defun nelisp--cc03-scan-args (from count &optional depth)
+  "Validate scan arguments and clamp FROM to the accessible buffer."
+  (dolist (value (list from count (or depth 0)))
+    (unless (integerp value) (signal 'wrong-type-argument (list 'fixnump value))))
+  (max (point-min) (min (point-max) from)))
+
+(defun nelisp--cc03-scan-lists-forward (from count depth)
+  "Scan COUNT lists forward with initial DEPTH, tracking error positions."
+  (let* ((v (nelisp--pps-decode nil)) (pos from) (start from)
+         (hi (point-max)) (text (nelisp-buffer-string nelisp--current-buffer))
+         (table (nelisp--syntax-current-table)) (minimum (min 0 depth))
+         (stopped nil))
+    (aset v 0 depth)
+    (while (and (> count 0) (not stopped))
+      (let ((found nil))
+        (while (and (< pos hi) (not found))
+          (let* ((blocked (or (aref v 3) (aref v 5) (aref v 6)))
+                 (class (unless blocked (nelisp--syntax-lookup table (aref text (1- pos))))))
+            (when (and (= (aref v 0) 0) (not blocked)
+                       (memq class '(?\( ?\")))
+              (setq start pos))
+            (nelisp--pps-advance v pos text table)
+            (setq pos (1+ pos))
+            (cond
+             ((and (eq class ?\)) (< (aref v 0) minimum))
+              (signal 'scan-error (list "Containing expression ends prematurely" (1- pos) pos)))
+             ((and (memq class '(?\( ?\))) (= (aref v 0) 0)) (setq found t)))))
+        (if found (setq count (1- count) start pos)
+          (if (or (/= (aref v 0) 0) (aref v 3))
+              (signal 'scan-error (list "Unbalanced parentheses" start pos))
+            (setq stopped t)))))
+    (unless stopped pos)))
+
+(defun nelisp--cc03-escaped-p (text pos lo table)
+  "Return non-nil if the character at POS is escaped in TEXT."
+  (let ((n 0) (p (1- pos)))
+    (while (and (>= p lo)
+                (memq (nelisp--syntax-lookup table (aref text (1- p))) '(?\\ ?/)))
+      (setq n (1+ n) p (1- p)))
+    (= (mod n 2) 1)))
+
+(defun nelisp--cc03-scan-lists-backward (from count depth)
+  "Scan COUNT lists backward with initial DEPTH."
+  (let* ((pos from) (start from) (level depth) (minimum (min 0 depth))
+         (lo (point-min)) (text (nelisp-buffer-string nelisp--current-buffer))
+         (table (nelisp--syntax-current-table)) (stopped nil))
+    (while (and (> count 0) (not stopped))
+      (let ((found nil))
+        (while (and (> pos lo) (not found))
+          (setq pos (1- pos))
+          (unless (nelisp--cc03-escaped-p text pos lo table)
+            (let ((class (nelisp--syntax-lookup table (aref text (1- pos)))))
+              (when (and (= level 0) (memq class '(?\) ?\"))) (setq start pos))
+              (cond
+               ((eq class ?\")
+                (let ((quote (aref text (1- pos))) (closed nil))
+                  (while (and (> pos lo) (not closed))
+                    (setq pos (1- pos))
+                    (when (and (= (aref text (1- pos)) quote)
+                               (not (nelisp--cc03-escaped-p text pos lo table)))
+                      (setq closed t)))
+                  (unless closed (signal 'scan-error (list "Unbalanced parentheses" start pos)))))
+               ((eq class ?\)) (setq level (1+ level)))
+               ((eq class ?\()
+                (setq level (1- level))
+                (when (< level minimum)
+                  (signal 'scan-error (list "Containing expression ends prematurely" pos pos)))))
+              (when (and (memq class '(?\( ?\))) (= level 0)) (setq found t)))))
+        (if found (setq count (1- count) start pos)
+          (if (/= level 0) (signal 'scan-error (list "Unbalanced parentheses" start pos))
+            (setq stopped t)))))
+    (unless stopped pos)))
+
+(defun nelisp--cc03-scan-sexp (pos direction text table lo hi)
+  "Scan one expression at POS in DIRECTION using TEXT and TABLE."
+  (let ((step direction) (done nil) result)
+    (while (and (not done) (if (> step 0) (< pos hi) (> pos lo)))
+      (let* ((at (if (> step 0) pos (1- pos)))
+             (class (nelisp--syntax-lookup table (aref text (1- at)))))
+        (when (and (< step 0) (nelisp--cc03-escaped-p text at lo table))
+          (setq class ?w))
+        (cond
+         ((memq class '(?\s ?\' ?.)) (setq pos (+ pos step)))
+         ((eq class (if (> step 0) ?\( ?\)))
+          (setq result (scan-lists pos step 0) done t))
+         ((eq class (if (> step 0) ?\) ?\())
+          (signal 'scan-error (list "Containing expression ends prematurely" at (if (> step 0) (1+ at) at))))
+         ((eq class ?\")
+          (let ((quote (aref text (1- at))) (start at) (closed nil))
+            (setq pos (+ pos step))
+            (while (and (not closed) (if (> step 0) (< pos hi) (> pos lo)))
+              (setq at (if (> step 0) pos (1- pos)))
+              (when (and (= (aref text (1- at)) quote)
+                         (not (nelisp--cc03-escaped-p text at lo table)))
+                (setq closed t))
+              (setq pos (+ pos step)))
+            (unless closed (signal 'scan-error (list "Unbalanced parentheses" start pos)))
+            (setq result pos done t)))
+         (t
+          (setq pos (+ pos step))
+          (when (and (> step 0) (memq class '(?\\ ?/)) (< pos hi))
+            (setq pos (1+ pos)))
+          (let ((more t))
+            (while (and more (if (> step 0) (< pos hi) (> pos lo)))
+              (setq at (if (> step 0) pos (1- pos))
+                    class (nelisp--syntax-lookup table (aref text (1- at))))
+              (cond
+               ((memq class '(?w ?_)) (setq pos (+ pos step)))
+               ((and (< step 0)
+                     (or (memq class '(?\\ ?/))
+                         (nelisp--cc03-escaped-p text at lo table)))
+                (setq pos (1- pos)))
+               ((and (> step 0) (memq class '(?\\ ?/))) (setq pos (min hi (+ pos 2))))
+               (t (setq more nil)))))
+          (setq result pos done t)))))
+    result))
+
+(provide 'prelude-overrides-w303)
+
 (unless (fboundp 'random)
   (defun random (&optional limit)
-    "Pseudo-random integer.  Integer LIMIT>0 -> 0..LIMIT-1; string LIMIT
-reseeds from its characters; nil -> a full LCG value."
-    (when (stringp limit)
-      (let ((i 0) (n (length limit)) (s 305419896))
-        (while (< i n)
-          (setq s (logand (+ (* s 31) (aref limit i)) 2147483647) i (1+ i)))
-        (setq nelisp--random-state (logand (+ s 1) 2147483647) limit nil)))
-    ;; Split multiply: one-step (* state 1103515245) leaves the fixnum
-    ;; range and `logand' has no bignum path.  Same stream; the why is in
-    ;; test/nelisp-prelude-random-fixnum-test.el.
-    (setq nelisp--random-state
-          (logand (+ (* (logand (* nelisp--random-state 16838) 32767) 65536)
-                     (* nelisp--random-state 20077)
-                     12345)
-                  2147483647))
-    (if (and (integerp limit) (> limit 0))
-        (mod nelisp--random-state limit)
-      nelisp--random-state)))
+  "Return a pseudo-random integer, bounded by positive integer LIMIT.
+A string LIMIT reseeds the generator from its contents."
+  (when (and (integerp limit) (<= limit 0))
+    (signal 'args-out-of-range (list limit)))
+  (when (stringp limit)
+    (let ((i 0) (n (length limit)) (s 305419896))
+      (while (< i n)
+        (setq s (logand (+ (* s 31) (aref limit i)) 2147483647)
+              i (1+ i)))
+      (setq nelisp--random-state (logand (+ s 1) 2147483647) limit nil)))
+  ;; Keep the prelude's split multiply, which stays within fixnum range.
+  (setq nelisp--random-state
+        (logand (+ (* (logand (* nelisp--random-state 16838) 32767) 65536)
+                   (* nelisp--random-state 20077) 12345)
+                2147483647))
+  (if (and (integerp limit) (> limit 0))
+      (mod nelisp--random-state limit)
+    nelisp--random-state)))
 ;; Headless timers: the standalone has no asynchronous event loop, so
 ;; `run-at-time' fires its FUNCTION synchronously (a single shot, REPEAT
 ;; ignored).  This suits code that drives its own scheduler from the timer
@@ -3775,17 +4725,372 @@ path, which asks for a NUMBER first and only then for an integer."
 ;; answered (1 2), so data handed to the last argument simply vanished --
 ;; and `(nconc 5)', which Emacs answers 5, came back nil.  nil arguments
 ;; are still skipped, which is what makes `(nconc (list 1) nil)' = (1).
+(defun nelisp--w302-json-options (args parse)
+  "Validate ARGS and return [OBJECT-TYPE ARRAY-TYPE NULL FALSE]."
+  (unless (= (mod (length args) 2) 0)
+    (signal 'wrong-type-argument (list 'plistp args)))
+  (let ((options (vector 'hash-table 'array :null :false)) (seen nil))
+    (while args
+      (let ((key (car args)) (value (cadr args)))
+        (cond
+         ((and parse (eq key :object-type))
+          (unless (memq value '(hash-table alist plist))
+            (signal 'error (list "One of hash-table, alist or plist should be specified" value)))
+          (unless (memq key seen) (aset options 0 value)))
+         ((and parse (eq key :array-type))
+          (unless (memq value '(array list))
+            (signal 'error (list "One of array or list should be specified" value)))
+          (unless (memq key seen) (aset options 1 value)))
+         ((eq key :null-object)
+          (unless (memq key seen) (aset options 2 value)))
+         ((eq key :false-object)
+          (unless (memq key seen) (aset options 3 value)))
+         (t (signal 'error
+                    (list (if parse
+                              "One of :object-type, :array-type, :null-object or :false-object should be specified"
+                            "One of :null-object or :false-object should be specified")
+                          value))))
+        (setq seen (cons key seen) args (cddr args))))
+    options))
+
+(defun nelisp--w302-json-peek (state)
+  "Return the next character in parser STATE, or nil at end."
+  (let ((pos (aref state 1)) (text (aref state 0)))
+    (and (< pos (length text)) (aref text pos))))
+
+(defun nelisp--w302-json-step (state)
+  "Advance parser STATE by one character."
+  (aset state 1 (1+ (aref state 1))))
+
+(defun nelisp--w302-json-space (state)
+  "Skip JSON whitespace in STATE."
+  (while (memq (nelisp--w302-json-peek state) '(32 9 10 13))
+    (nelisp--w302-json-step state)))
+
+(defun nelisp--w302-json-error (state symbol &optional position)
+  "Signal SYMBOL with GNU's line and character position for STATE."
+  (let ((pos (or position (aref state 1))) (line 1) (i 0)
+        (text (aref state 0)))
+    (while (< i pos)
+      (when (= (aref text i) 10) (setq line (1+ line)))
+      (setq i (1+ i)))
+    (signal symbol (list line nil pos))))
+
+(defun nelisp--w302-json-unexpected (state)
+  "Signal an unexpected token or end of input in STATE."
+  (if (nelisp--w302-json-peek state)
+      (progn (nelisp--w302-json-step state)
+             (nelisp--w302-json-error state 'json-parse-error))
+    (nelisp--w302-json-error state 'json-end-of-file)))
+
+(defun nelisp--w302-json-hex (state)
+  "Read four hexadecimal digits from STATE."
+  (let ((i 0) (value 0))
+    (while (< i 4)
+      (let* ((c (nelisp--w302-json-peek state))
+             (digit (cond ((and c (>= c 48) (<= c 57)) (- c 48))
+                          ((and c (>= c 65) (<= c 70)) (+ 10 (- c 65)))
+                          ((and c (>= c 97) (<= c 102)) (+ 10 (- c 97))))))
+        (unless digit
+          (when c (nelisp--w302-json-step state))
+          (nelisp--w302-json-error state 'json-escape-sequence-error))
+        (setq value (+ (* value 16) digit))
+        (nelisp--w302-json-step state))
+      (setq i (1+ i)))
+    value))
+
+(defun nelisp--w302-json-utf8 (state first)
+  "Decode a UTF-8 character beginning with FIRST in an unibyte input."
+  (let* ((count (cond ((and (>= first 194) (<= first 223)) 1)
+                      ((and (>= first 224) (<= first 239)) 2)
+                      ((and (>= first 240) (<= first 244)) 3)))
+         (code (and count (logand first (1- (ash 1 (- 6 count))))))
+         (i 0))
+    (unless count
+      (unless (nelisp--w302-json-peek state)
+        (nelisp--w302-json-error state 'json-end-of-file))
+      (nelisp--w302-json-step state)
+      (nelisp--w302-json-error state 'json-utf8-decode-error))
+    (while (< i count)
+      (let ((c (nelisp--w302-json-peek state)))
+        (unless c (nelisp--w302-json-error state 'json-end-of-file))
+        (nelisp--w302-json-step state)
+        (unless (and (>= c 128) (<= c 191)
+                     (or (> i 0)
+                         (and (or (/= first 224) (>= c 160))
+                              (or (/= first 237) (< c 160))
+                              (or (/= first 240) (>= c 144))
+                              (or (/= first 244) (< c 144)))))
+          (nelisp--w302-json-error state 'json-utf8-decode-error))
+        (setq code (+ (* code 64) (- c 128))))
+      (setq i (1+ i)))
+    code))
+
+(defun nelisp--w302-json-string (state)
+  "Read a JSON string from STATE, including Unicode surrogate pairs."
+  (nelisp--w302-json-step state)
+  (let ((pieces nil) (done nil))
+    (while (not done)
+      (let ((c (nelisp--w302-json-peek state)))
+        (unless c (nelisp--w302-json-error state 'json-end-of-file))
+        (nelisp--w302-json-step state)
+        (cond
+         ((= c 34) (setq done t))
+         ((< c 32) (nelisp--w302-json-error state 'json-parse-error))
+         ((or (> c 1114111)
+              (and (not (multibyte-string-p (aref state 0))) (>= c 128)))
+          (setq pieces (cons (char-to-string (nelisp--w302-json-utf8 state c)) pieces)))
+         ((= c 92)
+          (setq c (nelisp--w302-json-peek state))
+          (unless c (nelisp--w302-json-error state 'json-end-of-file))
+          (nelisp--w302-json-step state)
+          (setq c
+                (cond
+                 ((memq c '(34 92 47)) c)
+                 ((= c 98) 8) ((= c 102) 12) ((= c 110) 10)
+                 ((= c 114) 13) ((= c 116) 9)
+                 ((= c 117)
+                  (let ((code (nelisp--w302-json-hex state)))
+                    (cond
+                     ((and (>= code 55296) (<= code 56319))
+                      (unless (eq (nelisp--w302-json-peek state) 92)
+                        (when (nelisp--w302-json-peek state)
+                          (nelisp--w302-json-step state))
+                        (nelisp--w302-json-error state 'json-invalid-surrogate-error))
+                      (nelisp--w302-json-step state)
+                      (unless (eq (nelisp--w302-json-peek state) 117)
+                        (when (nelisp--w302-json-peek state)
+                          (nelisp--w302-json-step state))
+                        (nelisp--w302-json-error state 'json-invalid-surrogate-error))
+                      (nelisp--w302-json-step state)
+                      (let ((low (nelisp--w302-json-hex state)))
+                        (unless (and (>= low 56320) (<= low 57343))
+                          (nelisp--w302-json-error state 'json-invalid-surrogate-error))
+                        (+ 65536 (* (- code 55296) 1024) (- low 56320))))
+                     ((and (>= code 56320) (<= code 57343))
+                      (nelisp--w302-json-error state 'json-invalid-surrogate-error))
+                     (t code))))
+                 (t (nelisp--w302-json-error state 'json-escape-sequence-error))))
+          (setq pieces (cons (char-to-string c) pieces)))
+         (t (setq pieces (cons (char-to-string c) pieces))))))
+    (apply #'concat (nreverse pieces))))
+
+(defun nelisp--w302-json-digit-p (c)
+  "Return non-nil if C is an ASCII decimal digit."
+  (and c (>= c 48) (<= c 57)))
+
+(defun nelisp--w302-json-digits (state)
+  "Read a required, nonempty sequence of decimal digits from STATE."
+  (unless (nelisp--w302-json-digit-p (nelisp--w302-json-peek state))
+    (nelisp--w302-json-unexpected state))
+  (while (nelisp--w302-json-digit-p (nelisp--w302-json-peek state))
+    (nelisp--w302-json-step state)))
+
+(defun nelisp--w302-json-number (state)
+  "Read a JSON number from STATE."
+  (let ((start (aref state 1)))
+    (when (eq (nelisp--w302-json-peek state) 45)
+      (nelisp--w302-json-step state))
+    (if (eq (nelisp--w302-json-peek state) 48)
+        (nelisp--w302-json-step state)
+      (nelisp--w302-json-digits state))
+    (when (eq (nelisp--w302-json-peek state) 46)
+      (nelisp--w302-json-step state)
+      (nelisp--w302-json-digits state))
+    (when (memq (nelisp--w302-json-peek state) '(69 101))
+      (nelisp--w302-json-step state)
+      (when (memq (nelisp--w302-json-peek state) '(43 45))
+        (nelisp--w302-json-step state))
+      (nelisp--w302-json-digits state))
+    (let ((number (string-to-number (substring (aref state 0) start (aref state 1)))))
+      (when (nelisp--w302-json-nonfinite-p number)
+        (nelisp--w302-json-error state 'json-number-out-of-range-error))
+      number)))
+
+(defun nelisp--w302-json-nonfinite-p (number)
+  "Return non-nil for an infinite or NaN floating-point NUMBER."
+  (and (floatp number)
+       (or (not (= number number))
+           (and (/= number 0.0) (= number (/ number 2.0))))))
+
+(defun nelisp--w302-json-literal (state word value)
+  "Read literal WORD from STATE and return VALUE."
+  (let ((i 0))
+    (while (< i (length word))
+      (unless (eq (nelisp--w302-json-peek state) (aref word i))
+        (when (nelisp--w302-json-peek state) (nelisp--w302-json-step state))
+        (nelisp--w302-json-error state 'json-parse-error))
+      (nelisp--w302-json-step state)
+      (setq i (1+ i)))
+    (let ((c (nelisp--w302-json-peek state)))
+      (when (and c (or (and (>= c 48) (<= c 57))
+                       (and (>= c 65) (<= c 90))
+                       (and (>= c 97) (<= c 122)) (= c 95)))
+        (nelisp--w302-json-step state)
+        (nelisp--w302-json-error state 'json-parse-error)))
+    value))
+
+(defun nelisp--w302-json-container (state object)
+  "Read an object or array from STATE according to OBJECT."
+  (nelisp--w302-json-step state)
+  (nelisp--w302-json-space state)
+  (let ((end (if object 125 93)) (items nil) (done nil))
+    (if (eq (nelisp--w302-json-peek state) end)
+        (nelisp--w302-json-step state)
+      (while (not done)
+        (let ((key nil))
+          (when object
+            (unless (eq (nelisp--w302-json-peek state) 34)
+              (nelisp--w302-json-unexpected state))
+            (setq key (nelisp--w302-json-string state))
+            (nelisp--w302-json-space state)
+            (unless (eq (nelisp--w302-json-peek state) 58)
+              (nelisp--w302-json-unexpected state))
+            (nelisp--w302-json-step state))
+          (let ((value (nelisp--w302-json-value state)))
+            (setq items (cons (if object (cons key value) value) items))))
+        (nelisp--w302-json-space state)
+        (cond
+         ((eq (nelisp--w302-json-peek state) end)
+          (nelisp--w302-json-step state) (setq done t))
+         ((eq (nelisp--w302-json-peek state) 44)
+          (nelisp--w302-json-step state) (nelisp--w302-json-space state))
+         (t (nelisp--w302-json-unexpected state)))))
+    (setq items (nreverse items))
+    (let ((options (aref state 2)))
+      (if object
+          (cond
+           ((eq (aref options 0) 'hash-table)
+            (let ((table (make-hash-table :test 'equal)))
+              (dolist (pair items) (puthash (car pair) (cdr pair) table))
+              table))
+           ((eq (aref options 0) 'alist)
+            (mapcar (lambda (pair) (cons (intern (car pair)) (cdr pair))) items))
+           (t
+            (let ((plist nil))
+              (dolist (pair items)
+                (setq plist (cons (cdr pair) (cons (intern (concat ":" (car pair))) plist))))
+              (nreverse plist))))
+        (if (eq (aref options 1) 'list) items (vconcat items))))))
+
+(defun nelisp--w302-json-value (state)
+  "Read one JSON value from STATE."
+  (nelisp--w302-json-space state)
+  (let ((c (nelisp--w302-json-peek state)) (options (aref state 2)))
+    (cond
+     ((eq c 34) (nelisp--w302-json-string state))
+     ((eq c 123) (nelisp--w302-json-container state t))
+     ((eq c 91) (nelisp--w302-json-container state nil))
+     ((eq c 116) (nelisp--w302-json-literal state "true" t))
+     ((eq c 102) (nelisp--w302-json-literal state "false" (aref options 3)))
+     ((eq c 110) (nelisp--w302-json-literal state "null" (aref options 2)))
+     ((or (eq c 45) (nelisp--w302-json-digit-p c)) (nelisp--w302-json-number state))
+     (t (nelisp--w302-json-unexpected state)))))
+
+(defun nelisp--w302-json-quote (string)
+  "Quote STRING, escaping all JSON control characters."
+  (let ((pieces nil) (i 0))
+    (while (< i (length string))
+      (let ((c (aref string i)))
+        (when (or (> c 1114111)
+                  (and (not (multibyte-string-p string)) (>= c 128)))
+          (signal 'wrong-type-argument (list 'json-value-p string)))
+        (setq pieces
+              (cons (cond ((= c 34) "\\\"") ((= c 92) "\\\\")
+                          ((= c 8) "\\b") ((= c 12) "\\f")
+                          ((= c 10) "\\n") ((= c 13) "\\r") ((= c 9) "\\t")
+                          ((< c 32) (format "\\u%04x" c))
+                          (t (char-to-string c))) pieces)))
+      (setq i (1+ i)))
+    (concat "\"" (apply #'concat (nreverse pieces)) "\"")))
+
+(defun nelisp--w302-json-check-list (object)
+  "Require a proper OBJECT spine and report dotted or circular input."
+  (let ((fast object) (slow object))
+    (while (consp fast)
+      (setq fast (cdr fast))
+      (when (consp fast)
+        (setq fast (cdr fast) slow (cdr slow))
+        (when (eq fast slow) (signal 'circular-list (list object)))))
+    (when fast (signal 'wrong-type-argument (list 'listp object)))))
+
+(defun nelisp--w302-json-encode (object options parents)
+  "Encode OBJECT recursively with OPTIONS, detecting ancestor cycles."
+  (when (> (length parents) 50)
+    (signal 'error (list "Maximum JSON serialization depth exceeded")))
+  (cond
+   ((eq object (aref options 2)) "null")
+   ((eq object (aref options 3)) "false")
+   ((eq object t) "true")
+   ((numberp object)
+    (when (nelisp--w302-json-nonfinite-p object)
+      (signal 'error (list "JSON does not allow Inf or NaN" object)))
+    (number-to-string object))
+   ((stringp object) (nelisp--w302-json-quote object))
+   ((or (vectorp object) (listp object) (hash-table-p object))
+    (when (memq object parents)
+      (signal 'error (list "Maximum JSON serialization depth exceeded")))
+    (let ((parents (cons object parents)) (parts nil))
+      (cond
+       ((vectorp object)
+        (let ((i 0))
+          (while (< i (length object))
+            (setq parts (cons (nelisp--w302-json-encode (aref object i) options parents) parts))
+            (setq i (1+ i))))
+        (concat "[" (mapconcat #'identity (nreverse parts) ",") "]"))
+       ((hash-table-p object)
+        (maphash
+         (lambda (key value)
+           (unless (stringp key) (signal 'wrong-type-argument (list 'stringp key)))
+           (setq parts (cons (concat (nelisp--w302-json-quote key) ":"
+                                     (nelisp--w302-json-encode value options parents)) parts)))
+         object)
+        (concat "{" (mapconcat #'identity (nreverse parts) ",") "}"))
+       (t
+        ;; Validate the spine before encoding; dotted and circular lists are
+        ;; not JSON objects, even when their first members are valid.
+        (nelisp--w302-json-check-list object)
+        (let ((tail object) (alist (consp (car object)))
+              (seen (make-hash-table :test 'equal)))
+          (while tail
+            (let ((key nil) (value nil))
+              (if alist
+                  (progn
+                    (unless (consp (car tail))
+                      (signal 'wrong-type-argument (list 'consp (car tail))))
+                    (setq key (caar tail) value (cdar tail) tail (cdr tail)))
+                (setq key (car tail) tail (cdr tail))
+                (unless (consp tail) (signal 'wrong-type-argument (list 'consp tail)))
+                (setq value (car tail) tail (cdr tail)))
+              (unless (symbolp key) (signal 'wrong-type-argument (list 'symbolp key)))
+              (setq key (symbol-name key))
+              (when (and (not alist) (> (length key) 0) (= (aref key 0) 58))
+                (setq key (substring key 1)))
+              (unless (gethash key seen)
+                (puthash key t seen)
+                (setq parts (cons (concat (nelisp--w302-json-quote key) ":"
+                                          (nelisp--w302-json-encode value options parents)) parts)))))
+          (concat "{" (mapconcat #'identity (nreverse parts) ",") "}"))))))
+   (t (signal 'wrong-type-argument (list 'json-value-p object)))))
+
+(provide 'prelude-overrides-w302)
+
 (defun nconc (&rest lists)
+  "Concatenate LISTS destructively; only the final argument may be an atom."
   (let ((result nil) (tail nil))
     (while lists
-      (let ((l (car lists)))
-        (if (consp l)
-            (progn
-              (if tail (setcdr tail l) (setq result l))
-              (setq tail l)
-              (while (consp (cdr tail)) (setq tail (cdr tail))))
-          (when l
-            (if tail (setcdr tail l) (setq result l)))))
+      (let ((list (car lists)))
+        (when list
+          (if tail (setcdr tail list) (setq result list))
+          (unless (or (null (cdr lists)) (listp list))
+            (signal 'wrong-type-argument (list 'consp list)))
+          (when (cdr lists)
+            (let ((slow list) (fast list))
+              (while (and (consp fast) (consp (cdr fast)))
+                (setq slow (cdr slow) fast (cddr fast))
+                (when (eq slow fast) (signal 'circular-list (list list)))))
+            (setq tail list)
+            (while (consp (cdr tail)) (setq tail (cdr tail))))))
       (setq lists (cdr lists)))
     result))
 (defun princ (object &optional _stream)
@@ -3825,9 +5130,34 @@ path, which asks for a NUMBER first and only then for an integer."
                                     (t (char-to-string c))))))
       (setq i (1+ i)))
     out))
-(defun format-message (fmt &rest args)
-  (nelisp--check-string fmt)
-  (apply #'format (cons (nelisp--curve-quotes fmt) args)))
+(defun format-message (&rest arguments)
+  "Format TEMPLATE with OBJECTS, substituting the message quote style.
+Only literal grave accents and apostrophes in TEMPLATE are substituted;
+quotes in OBJECTS are preserved.
+
+(fn TEMPLATE &rest OBJECTS)"
+  (unless arguments
+    (signal 'wrong-number-of-arguments (list 'format-message 0)))
+  (let ((template (car arguments))
+        (objects (cdr arguments))
+        (style (nelisp--message-quoting-style)))
+    (unless (stringp template)
+      (signal 'wrong-type-argument (list 'stringp template)))
+    (condition-case err
+        (apply #'format (nelisp--message-quote-template template style) objects)
+      (error
+       ;; The prelude formatter uses a curved apostrophe in this diagnostic
+       ;; independently of the message style.  GNU formats that diagnostic
+       ;; with the same style as the surrounding message.
+       (if (and (eq (car err) 'error)
+                (member (cadr err)
+                        '("Format specifier doesn’t match argument type"
+                          "Format specifier doesn't match argument type")))
+           (signal 'error
+                   (list (if (eq style 'curve)
+                             "Format specifier doesn’t match argument type"
+                           "Format specifier doesn't match argument type")))
+         (signal (car err) (cdr err)))))))
 ;; CASE-FOLD was accepted and ignored -- the parameter was even named
 ;; `_case-fold' to say so -- so `(assoc-string "ABC" (list "abc") t)'
 ;; answered nil where Emacs answers "abc".  A caller that asked for a
@@ -3966,27 +5296,27 @@ path, which asks for a NUMBER first and only then for an integer."
 ;; trade.  Before this, a vector argument signalled and a string answered
 ;; (nil).
 (defun nreverse (seq)
+  "Reverse SEQ, reusing list cells and array slots where appropriate."
   (cond
    ((null seq) nil)
    ((consp seq)
     (let ((prev nil) (cur seq) next)
-      (while cur
+      (while (consp cur)
         (setq next (cdr cur))
         (setcdr cur prev)
-        (setq prev cur)
-        (setq cur next))
+        (setq prev cur cur next))
+      (when cur (signal 'wrong-type-argument (list 'listp seq)))
       prev))
-   ((vectorp seq)
-    (let* ((n (length seq)) (i 0) (j (- n 1)) tmp)
+   ((stringp seq) (reverse seq))
+   ((or (vectorp seq) (bool-vector-p seq))
+    (let ((i 0) (j (1- (length seq))) tmp)
       (while (< i j)
         (setq tmp (aref seq i))
         (aset seq i (aref seq j))
         (aset seq j tmp)
-        (setq i (1+ i))
-        (setq j (- j 1)))
+        (setq i (1+ i) j (1- j)))
       seq))
-   ((stringp seq) (reverse seq))
-   (t (signal 'wrong-type-argument (list 'sequencep seq)))))
+   (t (signal 'wrong-type-argument (list 'arrayp seq)))))
 
 
 (defun nelisp--append-collect (acc seq)
@@ -4037,29 +5367,6 @@ path, which asks for a NUMBER first and only then for an integer."
 	   acc))
 	(t (signal 'wrong-type-argument (list 'sequencep seq)))))
 
-(defun nelisp--doc200-raw-high-string-p (string)
-  "Non-nil when unibyte STRING contains a byte at least 128."
-  (and (unibyte-string-p string)
-       (let ((i 0) (n (length string)) (high nil))
-         (while (and (< i n) (not high))
-           (when (>= (aref string i) 128) (setq high t))
-           (setq i (1+ i)))
-         high)))
-
-(defun nelisp--doc200-check-string-mix (sequences)
-  "Signal when SEQUENCES require an unsupported multibyte raw-byte char."
-  (let ((raw-high nil) (multibyte nil) (tail sequences))
-    (while tail
-      (let ((value (car tail)))
-        (when (stringp value)
-          (when (nelisp--doc200-raw-high-string-p value)
-            (setq raw-high t))
-          (when (multibyte-string-p value)
-            (setq multibyte t))))
-      (setq tail (cdr tail)))
-    (when (and raw-high multibyte)
-      (signal 'nelisp-raw-byte-unrepresentable nil))))
-
 ;; Segment G1: `append' is now a reader builtin (`wf_append') for the
 ;; all-non-final-args-nil-or-cons fast path, matching the "Fast path"
 ;; comment just below -- the SAME split this function already made,
@@ -4076,14 +5383,9 @@ path, which asks for a NUMBER first and only then for an integer."
     ;; Fast path: every non-final arg is nil or a cons -- the shape
     ;; almost every hot caller uses (cl-lib, seq, pcase, regexp-opt,
     ;; keymaps).  One pass per arg, consing straight onto the shared
-    ;; tail: no separate properness pre-scan, no per-arg helper-
-    ;; function call, and no string-mix scan.  Skipping the mix scan
-    ;; is safe here because it only ever fires between TWO strings
-    ;; (`nelisp--doc200-check-string-mix' needs one raw-byte-unibyte
-    ;; string and one multibyte string among the arguments), and this
-    ;; branch requires every non-final arg to be list-shaped, so at
-    ;; most the final (tail) argument can be a string -- one string
-    ;; can never trigger a two-string mix.
+    ;; tail: no separate properness pre-scan or per-arg helper call.
+    ;; String arguments on the slow path contribute their existing character
+    ;; values; mixing unibyte and multibyte inputs needs no representation change.
     (let ((probe args) (fast t))
       (while (and fast (cdr probe))
         (unless (let ((a (car probe))) (or (null a) (consp a)))
@@ -4103,7 +5405,6 @@ path, which asks for a NUMBER first and only then for an integer."
                 (setq result (cons (car acc) result))
                 (setq acc (cdr acc)))
               result))
-        (nelisp--doc200-check-string-mix args)
         (let ((cur args) (acc nil) (tail nil))
           (while (cdr cur)
             (nelisp--check-seq-list (car cur))
@@ -4911,14 +6212,23 @@ turned a literal t into 1, matching the C function's own order."
         (setq i (1+ i)))
       empty)))
 
+(provide 'prelude-overrides-w401)
+
 (unless (fboundp 'internal-merge-in-global-face)
   (defun internal-merge-in-global-face (face frame)
-    "Elisp translation of GNU Emacs 31.1's `internal-merge-in-global-face'.
-  It copies the global face definition into a newly-created frame's local
-  face table; this runtime never creates a frame, so FRAME can never be
-  live and this always signals, matching `CHECK_LIVE_FRAME'."
-    (ignore face)
-    (nelisp--check-live-frame frame)))
+  "Copy specified new-frame defaults for FACE into its definition on FRAME."
+  (unless (frame-live-p frame)
+    (signal 'wrong-type-argument (list 'frame-live-p frame)))
+  (let* ((name (nelisp--resolve-face-name face t))
+         (defaults (nelisp--lface-from-face-name-no-resolve name t))
+         (local (or (internal-lisp-face-p name frame)
+                    (internal-make-lisp-face name frame)))
+         (i 1))
+    (while (< i (length defaults))
+      (unless (eq (aref defaults i) 'unspecified)
+        (aset local i (aref defaults i)))
+      (setq i (1+ i)))
+    nil)))
 
 (unless (fboundp 'face-attribute-relative-p)
   (defun face-attribute-relative-p (attribute value)
@@ -4936,13 +6246,26 @@ turned a literal t into 1, matching the C function's own order."
      ((eq attribute :height) (nelisp--merge-face-heights value1 value2 value1))
      (t value1))))
 
+(defun nelisp--w201-position (position predicate)
+  "Return POSITION as an integer, using PREDICATE for type errors."
+  (cond
+   ((integerp position) position)
+   ((markerp position)
+    (or (marker-position position)
+        (signal 'error '("Marker does not point anywhere"))))
+   (t (signal 'wrong-type-argument (list predicate position)))))
+
+(provide 'prelude-overrides-w201)
+
 (unless (fboundp 'internal-face-x-get-resource)
   (defun internal-face-x-get-resource (resource class &optional frame)
-    "No X resource database exists in this headless runtime, so this always
-  returns nil -- matching genuine GNU Emacs 31.1 batch semantics (there is no
-  X display connection to query even on a window-system-capable build)."
-    (ignore resource) (ignore class) (ignore frame)
-    nil))
+  "Return RESOURCE of CLASS on FRAME, or nil without an X display."
+  (unless (stringp resource)
+    (signal 'wrong-type-argument (list 'stringp resource)))
+  (unless (stringp class)
+    (signal 'wrong-type-argument (list 'stringp class)))
+  (when frame (nelisp--check-live-frame frame))
+  nil))
 
 (if (boundp 'nelisp-standalone--backquote-file)
     (load nelisp-standalone--backquote-file)
@@ -5222,8 +6545,8 @@ Returns (DEFS . FORMALS-WITHOUT-THE-MARKER); DEFS is nil when absent."
 (defmacro cl-defun (name formals &rest body)
   "Standalone `cl-defun' subset with positional, optional, rest and key args.
 Optional parameters may carry a default as (VAR DEFAULT) (Doc 22 A15): the
-core lambda binder accepts only plain &optional symbols, so the default is
-desugared into a body prelude (unless VAR (setq VAR DEFAULT)).
+core lambda binder accepts only plain optional symbols, so optional specs
+are captured as a rest list and bound with omission-aware left-to-right lets.
 `&cl-defs (DEF . ALIST)' gives the default of a &key parameter that has none,
 as in cl-macs.el (ALIST entries are (VAR DEFAULT))."
   (let* ((stripped (nelisp--cl-strip-defs formals))
@@ -5234,25 +6557,67 @@ as in cl-macs.el (ALIST entries are (VAR DEFAULT))."
          (optionals (car (cdr parsed)))
          (rest-sym (car (cdr (cdr parsed))))
          (keys (car (cdr (cdr (cdr parsed)))))
+         (complex-opts (let ((cur optionals) (found nil))
+                         (while cur
+                           (when (consp (car cur)) (setq found t))
+                           (setq cur (cdr cur)))
+                         found))
          (opt-vars (nelisp--cl-optional-vars optionals))
          (opt-defaults (nelisp--cl-optional-default-forms optionals))
-         (body2 (append opt-defaults body)))
+         (raw (make-symbol "--cl-optional-args"))
+         (cursor (make-symbol "--cl-optional-cursor"))
+         (opt-bindings nil)
+         (source-body body)
+         (body-head nil))
+    (when (and source-body (stringp (car source-body)))
+      (setq body-head (list (car source-body))
+            source-body (cdr source-body)))
+    (while (and source-body (consp (car source-body))
+                (eq (caar source-body) 'declare))
+      (setq body-head (append body-head (list (car source-body)))
+            source-body (cdr source-body)))
+    (when complex-opts
+      (let ((cur optionals))
+        (while cur
+          (let* ((spec (car cur))
+                 (var (if (consp spec) (car spec) spec))
+                 (default (if (consp spec) (car (cdr spec)) nil))
+                 (supplied (if (and (consp spec) (consp (cdr (cdr spec))))
+                               (car (cdr (cdr spec))) nil)))
+            (when supplied
+              (setq opt-bindings
+                    (append opt-bindings
+                            (list (list supplied (list 'if cursor t nil))))))
+            (setq opt-bindings
+                  (append opt-bindings
+                          (list (list var
+                                      (list 'if cursor (list 'car cursor) default))
+                                (list cursor (list 'if cursor (list 'cdr cursor) nil)))))
+            (setq cur (cdr cur))))))
     (if (null keys)
-        (if (null opt-defaults)
+        (if (not complex-opts)
             ;; No optional defaults: keep the exact raw passthrough (safe for
             ;; any arglist shape the core lambda already accepts).
             (cons 'defun (cons name (cons formals body)))
-          ;; Desugar optional defaults: plain &optional symbols + setup prelude.
-          (let ((new-formals
-                 (append positional
-                         (if opt-vars (cons '&optional opt-vars) nil)
-                         (if rest-sym (cons '&rest (cons rest-sym nil)) nil))))
-            (cons 'defun (cons name (cons new-formals body2)))))
+          (let* ((new-formals (append positional (list '&rest raw)))
+                 (bindings (append (list (list cursor raw)) opt-bindings
+                                   (if rest-sym (list (list rest-sym cursor)) nil)))
+                 (guard (if rest-sym nil
+                         (list 'when (list '> (list 'length raw) (length optionals))
+                                     (list 'signal (list 'quote 'wrong-number-of-arguments)
+                                           (list 'list (list 'quote name)
+                                                 (list '+ (length positional)
+                                                       (list 'length raw))))))))
+            (cons 'defun (cons name
+                  (cons new-formals (append body-head
+                        (if guard (list guard) nil)
+                        (list (cons 'let* (cons bindings source-body)))))))))
       (let* ((rest-name (or rest-sym '--cl-keys))
              (new-formals
-              (append positional
-                      (if opt-vars (cons '&optional opt-vars) nil)
-                      (cons '&rest (cons rest-name nil))))
+              (if complex-opts (append positional (list '&rest raw))
+                (append positional (if opt-vars (cons '&optional opt-vars) nil)
+                        (cons '&rest (cons rest-name nil)))))
+             (key-target (if complex-opts cursor rest-name))
              (bindings
               (mapcar
                (lambda (key-spec)
@@ -5265,20 +6630,24 @@ as in cl-macs.el (ALIST entries are (VAR DEFAULT))."
                                    default)))
                    (list param
                          (list 'if
-                               (list 'memq (list 'quote keyword) rest-name)
+                               (list 'memq (list 'quote keyword) key-target)
                                (list 'car
                                      (list 'cdr
                                            (list 'memq
                                                  (list 'quote keyword)
-                                                 rest-name)))
+                                                 key-target)))
                                default))))
                keys))
-             (let-form (cons 'let* (cons bindings body))))
+             (let-form (cons 'let* (cons bindings source-body)))
+             (prefix (if complex-opts
+                         (append (list (list cursor raw)) opt-bindings
+                                 (if rest-sym (list (list rest-sym cursor)) nil)) nil)))
         ;; Optional-default setup runs before the &key let* (Doc 22 A15).
         (cons 'defun
               (cons name
                     (cons new-formals
-                          (append opt-defaults (cons let-form nil)))))))))
+                          (append body-head
+                                  (list (cons 'let* (cons prefix (list let-form))))))))))))
 
 ;; `cl-defsubst' shares `cl-defun's arglist handling (we do not inline), so it
 ;; inherits the optional-default desugar (Doc 22 A15).  VOID on the bare reader.
@@ -7399,10 +8768,21 @@ which is what a caller asking for a range check wants."
       (and found list))))
 (unless (fboundp 'decode-char)
   (defun decode-char (charset code-point)
-    "Minimal `decode-char': return CODE-POINT unchanged (ucs identity)."
-    (unless (memq charset '(ucs unicode iso-10646-1 emacs eight-bit ascii))
-      (signal 'wrong-type-argument (list 'charsetp charset)))
-    code-point))
+  "Decode CODE-POINT in CHARSET into an Emacs character, or nil if unmapped.
+Handle the identity and offset charsets available in the standalone prelude."
+  (unless (memq charset '(ascii ucs unicode emacs eight-bit
+                         iso-8859-1 latin-iso8859-1))
+    (signal 'wrong-type-argument (list 'charsetp charset)))
+  (let ((code (nelisp--w101-charset-code code-point)))
+    (cond
+     ((eq charset 'ascii) (and (< code 128) code))
+     ((memq charset '(ucs unicode)) (and (< code 1114112) code))
+     ((eq charset 'emacs) (and (< code 4194176) code))
+     ((eq charset 'eight-bit)
+      (and (>= code 128) (< code 256) (+ code 4194048)))
+     ((eq charset 'iso-8859-1) (and (< code 256) code))
+     ((eq charset 'latin-iso8859-1)
+      (and (>= code 32) (< code 128) (+ code 128)))))))
 (unless (fboundp 'car-less-than-car)
   ;; Sort predicate over (KEY . _) cells; rx's `(any "abc")' sorts char
   ;; intervals with it (a void sort predicate is an uncatchable abort).
@@ -7782,19 +9162,38 @@ table entries.  The default global obarray remains unsupported by
           (apply #'string out)
         (apply #'vector out)))))
 (unless (fboundp 'single-key-description)
-  (defun single-key-description (key &optional _no-angles)
-    (let ((out ""))
-      (when (/= 0 (logand key 134217728))
-        (setq out "M-") (setq key (logand key (lognot 134217728))))
-      (cond
-       ((= key 32) (concat out "SPC"))
-       ((= key 13) (concat out "RET"))
-       ((= key 9) (concat out "TAB"))
-       ((= key 27) (concat out "ESC"))
-       ((= key 127) (concat out "DEL"))
-       ((< key 27) (concat out "C-" (char-to-string (+ key 96))))
-       ((< key 32) (concat out "C-" (char-to-string (+ key 64))))
-       (t (concat out (char-to-string key)))))))
+  (defun single-key-description (key &optional no-angles)
+  "Return a readable description of character event KEY.
+NO-ANGLES suppresses angle brackets around event symbols."
+  (when (consp key)
+    (setq key (if (integerp (cdr key))
+                  (concat (single-key-description (car key) no-angles)
+                          ".." (single-key-description (cdr key) no-angles))
+                (nelisp--key-list-event key))))
+  (cond
+   ((stringp key) key)
+   ((symbolp key)
+    (let ((name (symbol-name key)) (prefix ""))
+      ;; A single-letter symbol is a function key, including its prefix.
+      (while (and (> (length name) 3) (= (aref name 1) ?-)
+                  (memq (aref name 0) '(?A ?C ?H ?M ?S ?s)))
+        (setq prefix (concat prefix (substring name 0 2))
+              name (substring name 2)))
+      (concat prefix (if no-angles name (concat "<" name ">")))))
+   ((integerp key)
+    (let* ((char (logand key #x3fffff))
+           (mask (logand key #xfc00000))
+           (special (cdr (assq char '((9 . "TAB") (13 . "RET") (27 . "ESC")
+                                     (32 . "SPC") (127 . "DEL"))))))
+      (when (and (= char 9) (/= (logand mask 134217728) 0))
+        (setq special nil))
+      (unless special
+        (when (< char 32)
+          (setq mask (logior mask 67108864)
+                char (cond ((= char 0) ?@) ((< char 27) (+ char 96))
+                           (t (+ char 64))))))
+      (concat (nelisp--key-prefix mask) (or special (char-to-string char)))))
+   (t (error "KEY must be an integer, cons, symbol, or string")))))
 (unless (fboundp 'key-description)
   (defun key-description (keys &optional _prefix)
     (mapconcat #'single-key-description (append keys nil) " ")))
@@ -8463,30 +9862,16 @@ replacing the elements in the beginning of the constant-vector."
 ;; into a no-op when the body runs.
 (unless (fboundp 'make-interpreted-closure)
   (defun make-interpreted-closure (args body env &optional docstring iform)
-    "Make an interpreted closure.
-ARGS should be the list of formal arguments.
-BODY should be a non-empty list of forms.
-ENV should be a lexical environment, like the second argument of `eval'.
-IFORM if non-nil should be of the form (interactive ...)."
-    (unless (consp body) (signal 'wrong-type-argument (list 'consp body)))
-    (unless (listp args) (signal 'wrong-type-argument (list 'listp args)))
-    (unless (listp iform) (signal 'wrong-type-argument (list 'listp iform)))
-    (let ((lexenv nil))
-      (dolist (binding env)
-        (when (consp binding) (setq lexenv (cons binding lexenv))))
-      ;; A typed closure's slot-2 view is in capture order (see the native
-      ;; view), so its bindings stay in the order given.
-      (when (and docstring (not (stringp docstring)))
-        (setq lexenv (nreverse lexenv)))
-      (cons 'closure
-            (cons lexenv
-                  (cons args
-                        (append (cond ((stringp docstring) (list docstring))
-                                      (docstring
-                                       (list (list :documentation
-                                                   (list 'quote docstring)))))
-                                (and iform (list iform))
-                                body)))))))
+  "Make a closure with ARGS, BODY, ENV, DOCSTRING and interactive IFORM."
+  (unless (consp body) (signal 'wrong-type-argument (list 'consp body)))
+  (unless (listp args) (signal 'wrong-type-argument (list 'listp args)))
+  (unless (listp iform) (signal 'wrong-type-argument (list 'listp iform)))
+  (cons 'closure
+        (cons env
+              (cons args
+                    (append (cond ((stringp docstring) (list docstring))
+                                  (docstring (list (list :documentation (list 'quote docstring)))))
+                            (and iform (list iform)) body))))))
 ;; GNU Emacs 31.1 data.c `Finteractive_form', translated: the
 ;; `interactive-form' property along a symbol chain first, then the
 ;; function object itself.  An interpreted closure's slot 5 (see
@@ -9964,21 +11349,12 @@ never an error, for any integer argument."
 
 (unless (fboundp 'set-buffer-multibyte)
   (defun set-buffer-multibyte (flag)
-    "Declare the current buffer unibyte (FLAG nil) or multibyte (any
-other value) -- Emacs's own default for a fresh buffer is multibyte.
-
-Real Emacs additionally RE-ENCODES the buffer's existing text when the
-flag actually changes (each raw-8-bit pseudo-character becomes its one
-raw byte going multibyte->unibyte, and vice versa) and adjusts every
-marker/overlay position for the resulting byte-vs-character length
-change.  This runtime has no raw-8-bit pseudo-character scheme at all
-(see the table comment above), so its buffer content is already a
-plain sequence of integers whichever way this flag points, and no
-positions ever need adjusting; the only thing this function actually
-does is record the flag for `insert'/`insert-char'/`insert-before-
-markers'/`decode-coding-region' to consult."
-    (puthash nelisp--current-buffer (and flag t) nelisp--buffer-multibyte-table)
-    flag))
+  "Set the current buffer's multibyte flag and return FLAG."
+  (let ((old (nelisp--buffer-multibyte-p (current-buffer))))
+    (set (make-local-variable 'enable-multibyte-characters) (and flag t))
+    (unless (eq old (and flag t))
+      (set (make-local-variable 'buffer-undo-list) nil)))
+  flag))
 ;; Doc 200 string representation primitives are native standalone builtins.
 ;; Do not install Elisp fallbacks for them here: a fallback binding shadows
 ;; the native apply dispatch even though `fboundp' cannot see that dispatch.
@@ -10113,7 +11489,14 @@ headless runtime cannot answer Emacs's own confirmation prompt."
   (props nil))
 
 (defvar nelisp-buffer--registry
-  (make-hash-table :test 'equal)
+  ;; This private compatibility registry must retain its legacy bucket layout.
+  ;; `nelisp-buffer-list' enumerates buckets, and the library's kill-buffer
+  ;; fallback selects its first surviving entry.  Public constructor capacity
+  ;; changes must not reorder that fallback.  Policy adoption preserves the
+  ;; raw leaf's reservation; public make-hash-table still starts at size zero.
+  (let ((table (nelisp--hash-table-make-raw)))
+    (aset (car table) 2 'equal)
+    table)
   "Name -> `nelisp-buffer' map.  Ported from src/nelisp-buffer.el.")
 
 (defvar nelisp-buffer--current nil
@@ -10137,7 +11520,7 @@ explicitly instead, see the section header comment above); kept so
   "Return a fresh `nelisp-buffer', uniquifying NAME via `<N>' suffix."
   (let* ((base name)
          (final name)
-         (count 0))
+         (count 1))
     (while (gethash final nelisp-buffer--registry)
       (setq count (1+ count))
       (setq final (format "%s<%d>" base count)))
@@ -11121,12 +12504,11 @@ under `narrow-to-region' both answer the narrowed bound)."
        (nelisp-point-min nelisp--current-buffer))))
 (unless (fboundp 'buffer-name)
   (defun buffer-name (&optional buffer)
-    "Return the name of BUFFER, defaulting to the current one.
-Emacs answers nil for a killed buffer; `nelisp-kill-buffer' only drops the
-registry entry and the struct keeps its name, so ask the registry rather
-than the struct -- the same reasoning `buffer-live-p' above carries."
-    (let ((b (or buffer nelisp--current-buffer)))
-      (and b (buffer-live-p b) (nelisp-buffer-name b)))))
+  "Return BUFFER's name, or nil if it was killed; default to current buffer."
+  (when (and buffer (not (bufferp buffer)))
+    (signal 'wrong-type-argument (list 'bufferp buffer)))
+  (let ((b (or buffer nelisp--current-buffer)))
+    (and b (buffer-live-p b) (nelisp-buffer-name b)))))
 (unless (fboundp 'get-buffer-create)
   (defun get-buffer-create (buffer-or-name &optional _inhibit-buffer-hooks)
     (cond
@@ -11161,7 +12543,14 @@ than the struct -- the same reasoning `buffer-live-p' above carries."
       name)))
 (unless (fboundp 'narrow-to-region)
   (defun narrow-to-region (start end)
-    (nelisp-narrow-to-region start end nelisp--current-buffer)))
+  "Restrict the current buffer to the positions between START and END."
+  (let* ((first (nelisp--w201-position start 'integer-or-marker-p))
+         (last (nelisp--w201-position end 'integer-or-marker-p))
+         (limit (1+ (nelisp-buffer-size nelisp--current-buffer))))
+    (unless (and (>= first 1) (<= first limit)
+                 (>= last 1) (<= last limit))
+      (signal 'args-out-of-range (list start end)))
+    (nelisp-narrow-to-region first last nelisp--current-buffer))))
 (unless (fboundp 'widen)
   (defun widen ()
     (nelisp-widen nelisp--current-buffer)))
@@ -11319,10 +12708,12 @@ Unlike `line-beginning-position', which computes without moving, Emacs's
     nil))
 (unless (fboundp 'end-of-line)
   (defun end-of-line (&optional n)
-    "Move point to the end of the Nth line from point's line.
-Moves and returns nil, the counterpart of `line-end-position'."
-    (nelisp-goto-char (line-end-position n) nelisp--current-buffer)
-    nil))
+  "Move point to the end of the Nth line, defaulting to the current line."
+  (interactive "^p")
+  (when (and n (not (integerp n)))
+    (signal 'wrong-type-argument (list 'fixnump n)))
+  (nelisp-goto-char (line-end-position n) nelisp--current-buffer)
+  nil))
 ;; Doc 204 §1.4/P1: both macros below now let-bind `nelisp-buffer--
 ;; current' alongside `nelisp--current-buffer', to the SAME buffer, in
 ;; the SAME `let'/`let*' -- so the two trackers can never observe each
@@ -11738,22 +13129,23 @@ share this so the latter two can compute without moving anything."
 
 (unless (fboundp 'forward-char)
   (defun forward-char (&optional n)
-    "Move point N characters forward (backward if N negative; default 1).
+  "Move point N characters forward (backward if N negative; default 1).
 Probed against Emacs 30.1: point is clamped to the buffer bound even
 when the full move does not fit, and `end-of-buffer'/`beginning-of-
 buffer' is still signaled in that case (data nil, matching Emacs); a
 move that fits fully returns nil and signals nothing."
-    (when n (nelisp--check-integer n))
-    (let* ((b nelisp--current-buffer)
-           (count (or n 1))
-           (lo (nelisp-point-min b))
-           (hi (nelisp-point-max b))
-           (target (+ (nelisp-point b) count))
-           (clamped (max lo (min hi target))))
-      (nelisp-goto-char clamped b)
-      (cond
-       ((> target hi) (signal 'end-of-buffer nil))
-       ((< target lo) (signal 'beginning-of-buffer nil))))))
+  (interactive "^p")
+  (when n (nelisp--check-integer n))
+  (let* ((b nelisp--current-buffer)
+         (count (or n 1))
+         (lo (nelisp-point-min b))
+         (hi (nelisp-point-max b))
+         (target (+ (nelisp-point b) count))
+         (clamped (max lo (min hi target))))
+    (nelisp-goto-char clamped b)
+    (cond
+     ((> target hi) (signal 'end-of-buffer nil))
+     ((< target lo) (signal 'beginning-of-buffer nil))))))
 
 (unless (fboundp 'forward-line)
   (defun forward-line (&optional n)
@@ -12475,10 +13867,14 @@ above this section: does not skip parens inside strings/comments."
 
 (unless (fboundp 'scan-lists)
   (defun scan-lists (from count depth)
-    (nelisp--check-integer from) (nelisp--check-integer count) (nelisp--check-integer depth)
-    (cond ((> count 0) (nelisp--scan-lists-forward from count depth))
-          ((< count 0) (nelisp--scan-lists-backward from (- count) depth))
-          (t from))))
+  "Scan COUNT lists from FROM at initial nesting DEPTH."
+  (unless (integerp from) (signal 'wrong-type-argument (list 'fixnump from)))
+  (unless (integerp count) (signal 'wrong-type-argument (list 'fixnump count)))
+  (unless (integerp depth) (signal 'wrong-type-argument (list 'fixnump depth)))
+  (setq from (nelisp--cc03-scan-args from count depth))
+  (cond ((> count 0) (nelisp--cc03-scan-lists-forward from count depth))
+        ((< count 0) (nelisp--cc03-scan-lists-backward from (- count) depth))
+        (t from))))
 
 (defun nelisp--scan-string-forward (pos)
   "Position just after the string starting at POS (its opening quote),
@@ -12580,10 +13976,16 @@ block comment above this section on backward scanning's limitation."
 
 (unless (fboundp 'scan-sexps)
   (defun scan-sexps (from count)
-    (nelisp--check-integer from) (nelisp--check-integer count)
-    (cond ((> count 0) (nelisp--scan-sexps-forward from count))
-          ((< count 0) (nelisp--scan-sexps-backward from (- count)))
-          (t from))))
+  "Scan COUNT balanced expressions from FROM, returning nil at a boundary."
+  (setq from (nelisp--cc03-scan-args from count))
+  (let* ((pos from) (direction (if (< count 0) -1 1))
+         (left (abs count)) (lo (point-min)) (hi (point-max))
+         (text (nelisp-buffer-string nelisp--current-buffer))
+         (table (nelisp--syntax-current-table)))
+    (while (and pos (> left 0))
+      (setq pos (nelisp--cc03-scan-sexp pos direction text table lo hi)
+            left (1- left)))
+    pos)))
 
 (unless (fboundp 'forward-sexp)
   (defun forward-sexp (&optional n)
@@ -13425,13 +14827,18 @@ is line 2)."
 
 (unless (fboundp 'line-number-at-pos)
   (defun line-number-at-pos (&optional pos absolute)
-    "Emacs's own signature (POS default point).  ABSOLUTE is accepted
-but a no-op: with no narrowing concept in this substrate, the
-accessible portion already starts at the true beginning of the buffer,
-so the relative and absolute counts always agree."
-    (ignore absolute)
-    (nelisp--line-number-at (or pos (nelisp-point nelisp--current-buffer))
-                             nelisp--current-buffer)))
+  "Return the line number at POS, counting from the buffer start if ABSOLUTE."
+  (let* ((buf nelisp--current-buffer)
+         (position (if pos (nelisp--w201-position pos 'fixnump)
+                     (nelisp-point buf)))
+         (end (1+ (nelisp-buffer-size buf)))
+         (start (if absolute 1 (nelisp-point-min buf))))
+    (unless (and (>= position 1) (<= position end))
+      (signal 'args-out-of-range (list position 1 end)))
+    (if (<= position start)
+        1
+      (let ((text (nelisp-buffer-substring start position buf)))
+        (1+ (str-count-nl text (string-bytes text))))))))
 
 ;; A FIFTH name, not in Doc 204 §3 P5's own table: found the same way
 ;; that table's own four were found -- running `nl-parens-check-file'
@@ -13495,24 +14902,29 @@ signature: BOUND/NOERROR/COUNT all pass straight through)."
 ;; unexpanded, honestly the wrong answer rather than a silent one).
 ;; SUBEXP defaults to the whole match (group 0), same as Emacs.
 (unless (fboundp 'replace-match)
-  (defun replace-match (newtext &optional _fixedcase _literal string subexp)
-    "Replace the last match (`match-beginning'/`match-end') with NEWTEXT.
-See the block comment above for FIXEDCASE/LITERAL (accepted, not
-honored: no backreference expansion, no case-fixing).  With STRING,
-return the edited copy; without it, edit the current buffer in place
-and return nil, matching Emacs's own two-mode contract."
-    (let* ((n (or subexp 0))
-           (b (match-beginning n))
-           (e (match-end n)))
-      (unless (and b e) (signal 'error (list "No match data, or match data corrupted")))
-      (if string
-          (concat (substring string 0 b) newtext (substring string e))
-        (progn
+  (defun replace-match (newtext &optional fixedcase literal string subexp)
+  "Replace the last match with NEWTEXT, expanding references unless LITERAL.
+With STRING, return an edited copy; otherwise edit the current buffer."
+  (unless (stringp newtext) (signal 'wrong-type-argument (list 'stringp newtext)))
+  (when (and string (not (stringp string)))
+    (signal 'wrong-type-argument (list 'stringp string)))
+  (when (and subexp (not (integerp subexp)))
+    (signal 'wrong-type-argument (list 'integerp subexp)))
+  (let* ((data (match-data)) (size (length data)) (n (or subexp 0)))
+    (when (< n 0) (signal 'args-out-of-range (list n 0 (+ size 2))))
+    (when (>= (* n 2) size)
+      (signal 'error (list "replace-match subexpression does not exist" subexp)))
+    (let ((b (match-beginning n)) (e (match-end n)))
+      (unless (and b e) (error "No match data, or match data corrupted"))
+      (let* ((matched (nelisp--cc03-match-slice string n))
+             (action (unless fixedcase (nelisp--cc03-replacement-case matched)))
+             (replacement (nelisp--cc03-expand-replacement newtext literal string action)))
+        (if string
+            (concat (substring string 0 b) replacement (substring string e))
           (goto-char b)
           (delete-region b e)
-          (goto-char b)
-          (insert newtext)
-          nil)))))
+          (insert replacement)
+          nil))))))
 
 (unless (fboundp 'check-parens)
   (defun check-parens ()
@@ -14582,63 +15994,6 @@ nothing in this runtime's buffer/editing primitives reads it back to
 actually refuse a write."
     (setq buffer-read-only t)))
 
-;; Hash-table predicate + iteration for the reader's builtin hash table.
-;; The builtin `make-hash-table' returns the cons pair (MARKER . DATA) where
-;; MARKER is an integer metadata slot and DATA is a bucket vector.
-;; `make-hash-table'
-;; / `gethash' / `puthash' / `hash-table-count' ship as native builtins, but
-;; `maphash' ships only as a no-op stub and `hash-table-p' is absent -- an
-;; incomplete substrate, not a minimal one.  Complete it here in the core
-;; stdlib (these are the ops over the core-owned representation): the elisp
-;; `maphash' overrides the stub, and `hash-table-p' keys off the integer car
-;; (an alist has a cons car, a plist a keyword car, so the discrimination is
-;; clean for the shapes Elisp passes to `hash-table-p').
-;; Keyed off the NAMED marker, not "a cons whose car is an integer" -- under
-;; the old rule '(1) was a hash table, so (gethash K '(1 2 3)) answered nil
-;; instead of signalling, and nothing could tell a table from a pair well
-;; enough to print one.
-(defun hash-table-p (x)
-  (and (consp x)
-       (let ((m (car x)))
-         (and (vectorp m) (> (length m) 1) (eq (aref m 0) 'hash-table)))))
-(defun maphash (fn table)
-  (unless (hash-table-p table) (signal 'wrong-type-argument (list 'hash-table-p table)))
-  ;; The core `make-hash-table' returns (Int(0) . BUCKETS) where BUCKETS is a
-  ;; vector whose slots are node lists of (KEY . VALUE) pairs.  (A legacy shape
-  ;; stored a flat ((KEY . VALUE) ...) alist directly in the cdr.)  Walk both.
-  (let ((data (cdr table)))
-    (if (vectorp data)
-        (let ((i 0) (n (length data)))
-          (while (< i n)
-            (let ((node (aref data i)))
-              (while (consp node)
-                (let ((entry (car node)))
-                  (when (consp entry) (funcall fn (car entry) (cdr entry))))
-                (setq node (cdr node))))
-            (setq i (1+ i))))
-      (let ((node data))
-        (while (consp node)
-          (let ((entry (car node)))
-            (when (consp entry) (funcall fn (car entry) (cdr entry))))
-          (setq node (cdr node))))))
-  nil)
-
-;; Doc 22 C1: hash-table introspection over the core `(Int(0) . alist)' shape.
-;; The reader ignores `:test' -- every table uses the native key compare
-;; (wf_key_eq: ints by value, symbols by name, strings by bytes = `equal'
-;; semantics), so the effective and only honest test to report is `equal'.
-;; `copy-hash-table' therefore preserves behaviour with a plain entry copy and
-;; needs no test argument; the marker (car) MUST stay the integer 0 that
-;; `hash-table-p' keys off, so the requested `:test' cannot be stashed there.
-(unless (fboundp 'hash-table-test)
-  (defun hash-table-test (table)
-    ;; The requested test IS recorded now -- marker slot 2 -- so this reports
-    ;; what the caller asked for instead of a fixed answer.  Since Doc 201
-    ;; §6.17 the native lookup reads the same slot (`nl_ht_test_mode') and
-    ;; compares keys with `eq' / `eql' / `equal' accordingly.
-    (unless (hash-table-p table)
-      (signal 'wrong-type-argument (list 'hash-table-p table)))
-    (or (and (> (length (car table)) 2) (aref (car table) 2)) 'eql)))
 (unless (fboundp 'copy-hash-table)
   (defun copy-hash-table (table)
     (unless (hash-table-p table)
@@ -14778,9 +16133,10 @@ the stricter octal form GNU's flag would only opt into)."
         (cond
          ((= c 34) (setq need-nonhex nil) (nelisp--prn-chunks-add chunks "\\\"")) ; ?\"
          ((= c 92) (setq need-nonhex nil) (nelisp--prn-chunks-add chunks "\\\\")) ; ?\\
-         ((and unibyte (>= c 128))
+         ((or (and unibyte (>= c 128)) (>= c #x3fff80))
           (setq need-nonhex nil)
-          (nelisp--prn-chunks-add chunks (nelisp--prn-octal-escape c)))
+          (nelisp--prn-chunks-add chunks
+            (nelisp--prn-octal-escape (if unibyte c (- c #x3fff00)))))
          ((and print-escape-newlines (= c 10))
           (setq need-nonhex nil) (nelisp--prn-chunks-add chunks "\\n"))
          ((and print-escape-newlines (= c 12))
@@ -15257,79 +16613,210 @@ if any property was actually removed, nil otherwise."
          (nelisp--tp-rebuild intervals start end
                               (lambda (old) (nelisp--tp-plist-remove old keys)))))
       changed)))
+(defun nelisp--w202-position (position)
+  "Return POSITION as an integer, checking integer and marker arguments."
+  (cond
+   ((integerp position) position)
+   ((markerp position)
+    (or (marker-position position)
+        (signal 'error '("Marker does not point anywhere"))))
+   (t (signal 'wrong-type-argument
+              (list 'integer-or-marker-p position)))))
+
+(defun nelisp--w202-property-change (position object limit backward single prop)
+  "Find a property boundary after validating POSITION, OBJECT and LIMIT."
+  ;; GNU checks LIMIT before OBJECT and POSITION, even for an empty object.
+  (when limit (setq limit (nelisp--w202-position limit)))
+  (nelisp--tp-check-object object)
+  (setq position (nelisp--w202-position position))
+  (let* ((lo (nelisp--tp-lo object))
+         (hi (nelisp--tp-hi object)))
+    (when (or (< position lo) (> position hi))
+      (signal 'args-out-of-range (list position position)))
+    (let* ((intervals (nelisp--tp-get-intervals object))
+           (eff (if backward (if limit (max limit lo) lo)
+                  (if limit (min limit hi) hi))))
+      (if (if backward (<= position eff) (>= position eff))
+          limit
+        (let* ((initial (if backward (1- position) position))
+               (value (if single (nelisp--tp-value-at initial prop intervals)
+                        (nelisp--tp-plist-at initial intervals)))
+               (boundaries (if backward
+                               (sort (nelisp--tp-boundaries-between
+                                      intervals eff position) #'>)
+                             (nelisp--tp-boundaries-between
+                              intervals position eff))))
+          (catch 'nelisp--w202-boundary
+            (dolist (boundary boundaries)
+              (let ((pos (if backward (1- boundary) boundary)))
+                (unless (if single
+                            (eq value (nelisp--tp-value-at pos prop intervals))
+                          (nelisp--tp-plist-value-eq
+                           value (nelisp--tp-plist-at pos intervals)))
+                  (throw 'nelisp--w202-boundary boundary))))
+            limit))))))
+
+(defun nelisp--w202-property-find (start end prop value object different)
+  "Find a character in START to END whose PROP equals VALUE, or differs.
+DIFFERENT selects the inequality test.  Normalize reversed endpoints."
+  (nelisp--tp-check-object object)
+  (setq start (nelisp--w202-position start)
+        end (nelisp--w202-position end))
+  ;; Empty ranges have no characters to validate, including outside OBJECT.
+  (unless (= start end)
+    (let ((lo (min start end)) (hi (max start end)))
+      (when (or (< lo (nelisp--tp-lo object))
+                (> hi (nelisp--tp-hi object)))
+        (signal 'args-out-of-range (list start end)))
+      (let ((intervals (nelisp--tp-get-intervals object)))
+        (catch 'nelisp--w202-found
+          (dolist (pos (cons lo (nelisp--tp-boundaries-between intervals lo hi)))
+            (when (if different
+                      (not (eq (nelisp--tp-value-at pos prop intervals) value))
+                    (eq (nelisp--tp-value-at pos prop intervals) value))
+              (throw 'nelisp--w202-found pos)))
+          nil)))))
+
+(defun nelisp--w202-regexp-error (message)
+  "Signal an invalid regexp with MESSAGE as its error data."
+  (signal 'invalid-regexp (list message)))
+
+(defun nelisp--w202-regexp-set-end (regexp index)
+  "Validate a bracket expression and return the index after its closing ].
+INDEX is the index immediately after the opening bracket.  Backslashes
+inside bracket expressions are literal, as in GNU Emacs regexps."
+  (let ((n (length regexp)) (closed nil))
+    (when (and (< index n) (= (aref regexp index) ?^))
+      (setq index (1+ index)))
+    (when (and (< index n) (= (aref regexp index) ?\]))
+      (setq index (1+ index)))
+    (while (and (< index n) (not closed))
+      (cond
+       ((= (aref regexp index) ?\])
+        (setq closed t index (1+ index)))
+       ((and (= (aref regexp index) ?\[)
+             (< (1+ index) n) (= (aref regexp (1+ index)) ?:))
+        (let ((start (+ index 2)) (end (+ index 2)))
+          (while (and (< (1+ end) n)
+                      (not (and (= (aref regexp end) ?:)
+                                (= (aref regexp (1+ end)) ?\]))))
+            (setq end (1+ end)))
+          (if (< (1+ end) n)
+              (progn
+                (unless (member (substring regexp start end)
+                                '("alnum" "alpha" "ascii" "blank" "cntrl"
+                                  "digit" "graph" "lower" "multibyte" "nonascii"
+                                  "print" "punct" "space" "unibyte" "upper"
+                                  "word" "xdigit"))
+                  (nelisp--w202-regexp-error "Invalid character class name"))
+                (setq index (+ end 2)))
+            ;; Without a complete :], the inner [ is a literal character.
+            (setq index (1+ index)))))
+       (t (setq index (1+ index)))))
+    (unless closed (nelisp--w202-regexp-error "Unmatched [ or [^"))
+    index))
+
+(defun nelisp--w202-regexp-validate (regexp)
+  "Validate structural regexp syntax before invoking the Lisp matcher.
+The matcher accepts unterminated sets, groups and repetition intervals;
+GNU signals `invalid-regexp' for these, even when the buffer is empty."
+  (let ((i 0) (n (length regexp)) (depth 0))
+    (while (< i n)
+      (let ((c (aref regexp i)))
+        (cond
+         ((= c ?\[)
+          (setq i (nelisp--w202-regexp-set-end regexp (1+ i))))
+         ((= c ?\\)
+          (when (= (1+ i) n)
+            (nelisp--w202-regexp-error "Trailing backslash"))
+          (let ((d (aref regexp (1+ i))))
+            (setq i (+ i 2))
+            (cond
+             ((= d ?\()
+              (setq depth (1+ depth))
+              (when (and (< i n) (= (aref regexp i) ??))
+                (let ((k (1+ i)) (number nil))
+                  (while (and (< k n) (>= (aref regexp k) ?0)
+                              (<= (aref regexp k) ?9))
+                    (setq number (+ (* (or number 0) 10)
+                                    (- (aref regexp k) ?0))
+                          k (1+ k)))
+                  (unless (and (< k n) (= (aref regexp k) ?:)
+                               (or (null number) (> number 0)))
+                    (nelisp--w202-regexp-error "Invalid regular expression"))
+                  (setq i (1+ k)))))
+             ((memq d '(?s ?S ?c ?C))
+              ;; The next character designates a syntax or category class.
+              (when (= i n)
+                (nelisp--w202-regexp-error "Premature end of regular expression"))
+              (setq i (1+ i)))
+             ((= d ?\))
+              (when (= depth 0)
+                (nelisp--w202-regexp-error "Unmatched ) or \\)"))
+              (setq depth (1- depth)))
+             ((= d ?{)
+              (let ((start i) (end i))
+                (while (and (< (1+ end) n)
+                            (not (and (= (aref regexp end) ?\\)
+                                      (= (aref regexp (1+ end)) ?}))))
+                  (setq end (1+ end)))
+                (unless (< (1+ end) n)
+                  (nelisp--w202-regexp-error "Unmatched \\{"))
+                (let ((k start) (minval 0) (maxval nil))
+                  (while (and (< k end) (>= (aref regexp k) ?0)
+                              (<= (aref regexp k) ?9))
+                    (setq minval (+ (* minval 10) (- (aref regexp k) ?0))
+                          k (1+ k)))
+                  (if (and (< k end) (= (aref regexp k) ?,))
+                      (progn
+                        (setq k (1+ k))
+                        (when (< k end) (setq maxval 0))
+                        (while (and (< k end) (>= (aref regexp k) ?0)
+                                    (<= (aref regexp k) ?9))
+                          (setq maxval (+ (* maxval 10) (- (aref regexp k) ?0))
+                                k (1+ k))))
+                    (setq maxval minval))
+                  (when (or (/= k end) (and maxval (< maxval minval)))
+                    (nelisp--w202-regexp-error "Invalid content of \\{\\}")))
+                (setq i (+ end 2)))))))
+         (t (setq i (1+ i))))))
+    (unless (= depth 0)
+      (nelisp--w202-regexp-error "Unmatched ( or \\("))))
+
+(provide 'prelude-overrides-w202)
+
 (unless (fboundp 'next-single-property-change)
   (defun next-single-property-change (position prop &optional object limit)
-    (let* ((intervals (nelisp--tp-get-intervals object))
-           (hi (nelisp--tp-hi object))
-           (eff (if limit (min limit hi) hi)))
-      (if (>= position eff)
-          limit
-        (let ((v0 (nelisp--tp-value-at position prop intervals)))
-          (catch 'nelisp--tp-done
-            (dolist (b (nelisp--tp-boundaries-between intervals position eff))
-              (unless (eq (nelisp--tp-value-at b prop intervals) v0)
-                (throw 'nelisp--tp-done b)))
-            limit))))))
+  "Return the next change in PROP after POSITION in OBJECT.
+Compare property values with `eq'.  Return LIMIT if no change precedes it."
+  (nelisp--w202-property-change position object limit nil t prop)))
 (unless (fboundp 'previous-single-property-change)
   (defun previous-single-property-change (position prop &optional object limit)
-    (let* ((intervals (nelisp--tp-get-intervals object))
-           (lo (nelisp--tp-lo object))
-           (eff (if limit (max limit lo) lo)))
-      (if (<= position eff)
-          limit
-        (let ((v0 (nelisp--tp-value-at (1- position) prop intervals)))
-          (catch 'nelisp--tp-done
-            (dolist (b (sort (nelisp--tp-boundaries-between intervals eff position) #'>))
-              (unless (eq (nelisp--tp-value-at (1- b) prop intervals) v0)
-                (throw 'nelisp--tp-done b)))
-            limit))))))
+  "Return the previous change in PROP before POSITION in OBJECT.
+Compare property values with `eq'.  Return LIMIT if no change follows it."
+  (nelisp--w202-property-change position object limit t t prop)))
 (unless (fboundp 'next-property-change)
   (defun next-property-change (position &optional object limit)
-    (let* ((intervals (nelisp--tp-get-intervals object))
-           (hi (nelisp--tp-hi object))
-           (eff (if limit (min limit hi) hi)))
-      (if (>= position eff)
-          limit
-        (let ((v0 (nelisp--tp-plist-at position intervals)))
-          (catch 'nelisp--tp-done
-            (dolist (b (nelisp--tp-boundaries-between intervals position eff))
-              (unless (nelisp--tp-plist-value-eq (nelisp--tp-plist-at b intervals) v0)
-                (throw 'nelisp--tp-done b)))
-            limit))))))
+  "Return the next text property change after POSITION in OBJECT.
+OBJECT defaults to the current buffer.  Return LIMIT if no change precedes
+it, or nil if there is no LIMIT and no change before the end of OBJECT."
+  (nelisp--w202-property-change position object limit nil nil nil)))
 (unless (fboundp 'previous-property-change)
   (defun previous-property-change (position &optional object limit)
-    (let* ((intervals (nelisp--tp-get-intervals object))
-           (lo (nelisp--tp-lo object))
-           (eff (if limit (max limit lo) lo)))
-      (if (<= position eff)
-          limit
-        (let ((v0 (nelisp--tp-plist-at (1- position) intervals)))
-          (catch 'nelisp--tp-done
-            (dolist (b (sort (nelisp--tp-boundaries-between intervals eff position) #'>))
-              (unless (nelisp--tp-plist-value-eq
-                       (nelisp--tp-plist-at (1- b) intervals) v0)
-                (throw 'nelisp--tp-done b)))
-            limit))))))
+  "Return the previous text property change before POSITION in OBJECT.
+OBJECT defaults to the current buffer.  Return LIMIT if no change follows
+it, or nil if there is no LIMIT and no change before the start of OBJECT."
+  (nelisp--w202-property-change position object limit t nil nil)))
 (unless (fboundp 'text-property-any)
   (defun text-property-any (start end prop value &optional object)
-    "Return the first position in [START, END) of OBJECT whose PROP is
-`eq' to VALUE, or nil if none is."
-    (let ((intervals (nelisp--tp-get-intervals object)))
-      (catch 'nelisp--tp-found
-        (dolist (p (cons start (nelisp--tp-boundaries-between intervals start end)))
-          (when (and (< p end) (eq (nelisp--tp-value-at p prop intervals) value))
-            (throw 'nelisp--tp-found p)))
-        nil))))
+  "Return the first character from START to END whose PROP is `eq' to VALUE.
+OBJECT is a string or buffer and defaults to the current buffer."
+  (nelisp--w202-property-find start end prop value object nil)))
 (unless (fboundp 'text-property-not-all)
   (defun text-property-not-all (start end prop value &optional object)
-    "Return the first position in [START, END) of OBJECT whose PROP is
-NOT `eq' to VALUE, or nil if every position's is."
-    (let ((intervals (nelisp--tp-get-intervals object)))
-      (catch 'nelisp--tp-found
-        (dolist (p (cons start (nelisp--tp-boundaries-between intervals start end)))
-          (when (and (< p end) (not (eq (nelisp--tp-value-at p prop intervals) value)))
-            (throw 'nelisp--tp-found p)))
-        nil))))
+  "Return the first character from START to END whose PROP is not VALUE.
+Compare values with `eq'.  OBJECT defaults to the current buffer."
+  (nelisp--w202-property-find start end prop value object t)))
 ;; --- Doc 143: minimal read-from-string for the reader runtime -------------
 ;; Recursive-descent parser for the core sexp grammar (int/float/symbol/string/
 ;; list/dotted/vector/quote forms).  Records (#s) are out of scope (no record
@@ -17151,7 +18638,15 @@ processors not available."
   ;; as lisp/nelisp-stdlib-misc.el's own 5-parameter `directory-files'.
   (fset 'directory-files
         (lambda (directory &optional full match _nosort count)
+          (unless (stringp directory)
+            (signal 'wrong-type-argument (list 'stringp directory)))
+          (when (or match count)
+            (nelisp--w101-directory-arguments directory match count))
           (let ((raw (nelisp--syscall-readdir-names directory t)))
+            ;; GNU validates MATCH even when COUNT is zero.
+            (when match
+              (nelisp--cc03-validate-regexp match)
+              (string-match-p match ""))
             (if raw
                 (let ((names (nelisp--readdir-scan-raw raw t t))
                       (out nil))
@@ -17353,13 +18848,12 @@ processors not available."
             (or (nth 3 time) 0)))))
 (unless (fboundp 'time-less-p)
   (defun time-less-p (a b)
-    (let* ((pa (nelisp--time-parts a)) (pb (nelisp--time-parts b)))
-      (cond ((/= (nth 0 pa) (nth 0 pb)) (< (nth 0 pa) (nth 0 pb)))
-            ((/= (nth 1 pa) (nth 1 pb)) (< (nth 1 pa) (nth 1 pb)))
-            (t (< (nth 2 pa) (nth 2 pb)))))))
+  "Return t if GNU time value A precedes B."
+  (< (nelisp--time-compare a b) 0)))
 (unless (fboundp 'time-equal-p)
   (defun time-equal-p (a b)
-    (equal (nelisp--time-parts a) (nelisp--time-parts b))))
+  "Return t if GNU time values A and B represent the same instant."
+  (= (nelisp--time-compare a b) 0)))
 ;; feat/agent-json-cluster: `void-function' on 3 of the 4 nelisp-agent
 ;; host-only tests fixed by the `insert-file-contents' point-preservation
 ;; fix just above this segment's `json'/config cluster (see that fix's
@@ -17447,20 +18941,23 @@ See the Doc-comment above for the dropped file-name-handler dispatch."
 ;; path so relative directory listings still get real attributes.
 (unless (fboundp 'directory-files-and-attributes)
   (defun directory-files-and-attributes
-      (directory &optional full match nosort id-format count)
-    (when (and count (or (not (integerp count)) (< count 0)))
-      (signal 'wrong-type-argument (list 'wholenump count)))
-    (let ((names (directory-files directory full match nosort))
-          (remaining count)
-          (out nil))
-      (while (and names
-                  (or (null remaining) (> remaining 0)))
-        (let* ((name (car names))
-               (path (if full name (expand-file-name name directory))))
-          (setq out (cons (cons name (file-attributes path id-format)) out)))
-        (setq names (cdr names))
-        (when remaining (setq remaining (1- remaining))))
-      (nreverse out))))
+    (directory &optional full match nosort id-format count)
+  "Return DIRECTORY's entries paired with their file attributes."
+  (nelisp--w101-directory-arguments directory match count)
+  (let* ((path (expand-file-name directory))
+         (handler (find-file-name-handler path 'directory-files-and-attributes)))
+    (if handler
+        (funcall handler 'directory-files-and-attributes
+                 path full match nosort id-format count)
+      (let ((names (directory-files path full match nosort count)) (out nil))
+        (while names
+          (let ((name (car names)))
+            (setq out (cons (cons name (file-attributes
+                                       (if full name (expand-file-name name path))
+                                       id-format))
+                            out)))
+          (setq names (cdr names)))
+        (nreverse out))))))
 ;; `void-function' on the ~80-file census (5 hits: bulk-reader-test,
 ;; bulk-policy-eval-test, bulk-eval-test), each checking a path is not a
 ;; Tramp remote name before doing local file I/O on it.  This runtime has
@@ -17559,6 +19056,137 @@ See the Doc-comment above for the dropped file-name-handler dispatch."
 ;; files-match-p' below), the same contract this regexp assumes.
 (unless (boundp 'directory-files-no-dot-files-regexp)
   (defvar directory-files-no-dot-files-regexp "[^.]\\|\\.\\.\\."))
+(defun nelisp--w301-zone-offset (zone)
+  "Validate ZONE and return its fixed UTC offset in seconds."
+  (cond
+   ((integerp zone) zone)
+   ((eq zone t) 0)
+   ((or (null zone) (eq zone 'wall)) (nelisp--tm-zone-offset nil))
+   ((stringp zone)
+    (save-match-data
+      (if (string-match
+           "\\`\\(?:[A-Za-z]\\{3,\\}\\|<[^>]+>\\)\\([+-]?[0-9]+\\)\\(?::\\([0-9]+\\)\\)?\\(?::\\([0-9]+\\)\\)?"
+           zone)
+          (let* ((hstr (match-string 1 zone))
+                 (hours (string-to-number hstr))
+                 (minutes (string-to-number (or (match-string 2 zone) "0")))
+                 (seconds (string-to-number (or (match-string 3 zone) "0")))
+                 (offset (+ (* (abs hours) 3600) (* minutes 60) seconds)))
+            (if (= (aref hstr 0) ?-) offset (- offset)))
+        0)))
+   ((and (consp zone) (integerp (car zone)) (consp (cdr zone)))
+    (let ((name (car (cdr zone))))
+      (unless (stringp name)
+        (signal 'wrong-type-argument (list 'stringp name)))
+      ;; libc rejects TZ abbreviations shorter than three characters.
+      (if (< (length name) 3) 0 (car zone))))
+   (t (signal 'error (list "Invalid time zone specification" zone)))))
+
+(defun nelisp--w301-time-parts (time)
+  "Return (SECONDS SUBTICKS HZ) for TIME; nil HZ means whole seconds.
+Keep the original precision rather than reducing a timestamp's frequency."
+  (cond
+   ((null time) (nelisp--w301-time-parts (current-time)))
+   ((integerp time) (list time 0 nil))
+   ((floatp time)
+    (unless (= time time) (error "Invalid time specification"))
+    (when (and (/= time 0.0) (= time (/ time 2.0)))
+      (error "Specified time is not representable"))
+    (if (= time 0.0)
+        (list 0 0 nil)
+      (let ((magnitude (abs time)) (hz 4503599627370496))
+        (while (>= magnitude 2.0)
+          (setq magnitude (/ magnitude 2.0) hz (max 1 (/ hz 2))))
+        (while (< magnitude 1.0)
+          ;; Exact frequencies beyond fixnum range require native bignums.
+          (when (> hz (/ most-positive-fixnum 2))
+            (error "Specified time is not representable"))
+          (setq magnitude (* magnitude 2.0) hz (* hz 2)))
+        (let ((seconds (floor time)))
+          (list seconds (round (* (- time seconds) hz)) hz)))))
+   ((and (consp time) (integerp (car time))
+         (integerp (cdr time)) (> (cdr time) 0))
+    (let* ((hz (cdr time)) (seconds (floor (car time) hz)))
+      (list seconds (- (car time) (* seconds hz)) hz)))
+   ((and (consp time) (integerp (car time))
+         (consp (cdr time)) (integerp (car (cdr time))))
+    (let ((seconds (+ (* (car time) 65536) (car (cdr time))))
+          (tail (cdr (cdr time))))
+      (if (null tail)
+          (list seconds 0 nil)
+        (unless (and (consp tail) (integerp (car tail)))
+          (error "Invalid time specification"))
+        (let ((subticks (car tail)) (hz 1000000))
+          (setq tail (cdr tail))
+          (when tail
+            (unless (and (consp tail) (integerp (car tail)))
+              (error "Invalid time specification"))
+            (setq subticks (+ (* subticks 1000000) (car tail))
+                  hz 1000000000000))
+          (let ((carry (floor subticks hz)))
+            (list (+ seconds carry) (- subticks (* carry hz)) hz))))))
+   (t (error "Invalid time specification"))))
+
+(defun nelisp--w301-timestamp (seconds subticks hz)
+  "Construct a timestamp without wrapping when native bignums are needed."
+  (let ((limit (/ most-positive-fixnum hz)))
+    (when (or (> seconds limit) (< seconds (- limit)))
+      (error "Specified time is not representable"))
+    (let ((ticks (* seconds hz)))
+      (when (and (>= ticks 0) (> subticks (- most-positive-fixnum ticks)))
+        (error "Specified time is not representable"))
+      (cons (+ ticks subticks) hz))))
+
+(defun nelisp--w301-subsecond-nanoseconds (parts)
+  "Scale PARTS' remainder to nanoseconds without overflowing a fixnum."
+  (let ((ticks (nth 1 parts)) (hz (nth 2 parts)))
+    (cond
+     ((null hz) 0)
+     ((= (mod hz 1000000000) 0) (/ ticks (/ hz 1000000000)))
+     ((= (mod 1000000000 hz) 0) (* ticks (/ 1000000000 hz)))
+     (t
+      ;; Binary long division of TICKS * 10^9 by HZ.  All residues stay
+      ;; below HZ; compare before adding to avoid intermediate overflow.
+      (let ((bit 536870912) (result 0) (residue 0))
+        (while (> bit 0)
+          (setq result (* result 2))
+          (if (>= residue (- hz residue))
+              (setq residue (- residue (- hz residue)) result (1+ result))
+            (setq residue (+ residue residue)))
+          (when (/= (logand 1000000000 bit) 0)
+            (if (>= residue (- hz ticks))
+                (setq residue (- residue (- hz ticks)) result (1+ result))
+              (setq residue (+ residue ticks))))
+          (setq bit (/ bit 2)))
+        result)))))
+
+(defun nelisp--w301-civil-from-days (days)
+  "Return proleptic Gregorian (YEAR MONTH DAY) for epoch DAYS."
+  (let* ((z (+ days 719468))
+         (era (floor z 146097))
+         (doe (- z (* era 146097)))
+         (yoe (/ (- (+ doe (- (/ doe 1460)) (/ doe 36524))
+                    (/ doe 146096)) 365))
+         (year (+ yoe (* era 400)))
+         (doy (- doe (+ (* yoe 365) (/ yoe 4) (- (/ yoe 100)))))
+         (mp (/ (+ (* 5 doy) 2) 153))
+         (day (1+ (- doy (/ (+ (* 153 mp) 2) 5))))
+         (month (+ mp (if (< mp 10) 3 -9))))
+    (list (+ year (if (<= month 2) 1 0)) month day)))
+
+(defun nelisp--w301-days-from-civil (year month day)
+  "Return epoch days for YEAR, MONTH and DAY, normalizing overflow."
+  (let* ((months (1- month))
+         (year (+ year (floor months 12)))
+         (month (1+ (mod months 12)))
+         (year (if (<= month 2) (1- year) year))
+         (era (floor year 400))
+         (yoe (- year (* era 400)))
+         (mp (+ month (if (> month 2) -3 9)))
+         (doy (+ (/ (+ (* 153 mp) 2) 5) (1- day)))
+         (doe (+ (* yoe 365) (/ yoe 4) (- (/ yoe 100)) doy)))
+    (+ (* era 146097) doe -719468)))
+
 (unless (fboundp 'directory-files)
   (progn
     (defun nelisp--directory-files-match-p (name match)
@@ -17574,19 +19202,37 @@ See the Doc-comment above for the dropped file-name-handler dispatch."
     ;; missing here too; clip to the first COUNT entries via `seq-take' (a
     ;; no-op when COUNT >= the entry count), post-filter, same as
     ;; lisp/nelisp-stdlib-misc.el's own 5-parameter `directory-files'.
-    (defun directory-files (directory &optional full match _nosort count)
-      (let ((names (nelisp--split-on-char
-                    (or (nelisp--syscall-readdir-names directory) "") 10 t))
-            (out nil))
-        (dolist (name names)
-          (unless (or (equal name ".") (equal name ".."))
-            (when (nelisp--directory-files-match-p name match)
-              (setq out (cons (if full
-                                  (expand-file-name name directory)
-                                name)
-                              out)))))
-        (setq out (nreverse out))
-        (if count (seq-take out count) out)))))
+    (defun directory-files (directory &optional full match nosort count)
+  "Return entries in DIRECTORY, filtered by MATCH and limited by COUNT.
+Include dot entries.  FULL requests absolute names; NOSORT preserves the
+directory's enumeration order instead of sorting with `string-lessp'."
+  (nelisp--w101-directory-arguments directory match count)
+  (let* ((path (expand-file-name directory))
+         (handler (find-file-name-handler path 'directory-files)))
+    (if handler
+        (funcall handler 'directory-files path full match nosort count)
+      (let ((raw (nelisp--syscall-readdir-names path t)) (out nil))
+        (unless raw
+          (signal (if (file-exists-p path) 'file-error 'file-missing)
+                  (list "Opening directory"
+                        (cond ((file-directory-p path) "Permission denied")
+                              ((file-exists-p path) "Not a directory")
+                              (t "No such file or directory"))
+                        path)))
+        (when match
+          (nelisp--cc03-validate-regexp match)
+          (string-match-p match ""))
+        (let ((names (nelisp--readdir-scan-raw raw nil t))
+              (prefix (and full (file-name-as-directory path)))
+              (remaining count) (case-fold-search nil))
+          (while (and names (or (null remaining) (> remaining 0)))
+            (let ((name (car names)))
+              (when (or (null match) (string-match-p match name))
+                ;; Concatenate rather than expand so FULL preserves dot entries.
+                (setq out (cons (if full (concat prefix name) name) out))
+                (when remaining (setq remaining (1- remaining)))))
+            (setq names (cdr names))))
+        (if nosort (nreverse out) (sort out #'string-lessp))))))))
 (unless (fboundp 'make-directory)
   ;; Three defects fixed together (v1.2.0 parity gap 4), because the first
   ;; two hid the third:
@@ -18255,14 +19901,15 @@ the suggested string to use instead.  See
 ;; with the value quoted, which is exactly the documented equivalence.
 (unless (fboundp 'defvar-1)
   (defun defvar-1 (sym initvalue &optional docstring)
-    "Like `defvar' but as a function.
-More specifically behaves like (defvar SYM \='INITVALUE DOCSTRING)."
-    (eval (list 'defvar sym (list 'quote initvalue) docstring) t)))
+  "Declare SYM special, initialize it if void, and store DOCSTRING."
+  (prog1 (eval (list 'defvar sym (list 'quote initvalue)) t)
+    (when docstring (put sym 'variable-documentation docstring)))))
 (unless (fboundp 'defconst-1)
   (defun defconst-1 (sym initvalue &optional docstring)
-    "Like `defconst' but as a function.
-More specifically, behaves like (defconst SYM \='INITVALUE DOCSTRING)."
-    (eval (list 'defconst sym (list 'quote initvalue) docstring) t)))
+  "Declare SYM special, set its default value, and store DOCSTRING."
+  (prog1 (eval (list 'defconst sym (list 'quote initvalue)) t)
+    (when docstring (put sym 'variable-documentation docstring))
+    (put sym 'risky-local-variable t))))
 ;; C DEFVAR `locale-coding-system' (coding.c), which mule-cmds.el's
 ;; `set-locale-environment' sets from the locale at startup; this runtime
 ;; is UTF-8 throughout, which is what GNU derives for a UTF-8 locale.
@@ -18727,44 +20374,55 @@ when TIME is already a `(TICKS . HZ)' pair with HZ > 1000000."
           m)))
 
 (unless (fboundp 'decode-time)
-  (defun decode-time (&optional time zone _form)
-    "Decode TIME (default now) into (SEC MINUTE HOUR DAY MONTH YEAR DOW
-DST UTCOFF).  ZONE: t = UTC, an integer = that many seconds east of
-UTC, nil = local time (see `nelisp--tm-zone-offset').  DST is always
-nil (no DST database).  FORM is accepted and ignored: SEC is always an
-integer."
-    (let* ((ts (nelisp--tm-unpack time))
-           (secs (car ts))
-           (zoff (nelisp--tm-zone-offset zone))
-           (total (+ secs zoff))
-           (days (nelisp--tm-fdiv total 86400))
-           (sod (- total (* days 86400)))
-           (hh (/ sod 3600)) (mi (/ (mod sod 3600) 60)) (ss (mod sod 60))
-           (ymd (nelisp--tm-civil-from-days days))
-           (dow (mod (+ days 4) 7)))
-      (list ss mi hh (nth 2 ymd) (nth 1 ymd) (nth 0 ymd) dow nil zoff))))
+  (defun decode-time (&optional time zone form)
+  "Decode TIME into second, minute, hour, date, weekday, DST and UTC offset.
+FORM t preserves the precision of the seconds field."
+  (let* ((parts (if (eq form t) (nelisp--w301-time-parts time)
+                  (list (nelisp--w101-time-seconds time) 0 nil)))
+         (zoff (nelisp--w301-zone-offset zone))
+         (total (+ (car parts) zoff))
+         (days (floor total 86400))
+         (sod (mod total 86400))
+         (seconds (mod sod 60))
+         (ymd (nelisp--w301-civil-from-days days)))
+    (when (nth 2 parts)
+      (setq seconds (nelisp--w301-timestamp seconds (nth 1 parts) (nth 2 parts))))
+    (list seconds (/ (mod sod 3600) 60) (/ sod 3600)
+          (nth 2 ymd) (nth 1 ymd) (nth 0 ymd) (mod (+ days 4) 7) nil zoff))))
 
 (unless (fboundp 'encode-time)
   (defun encode-time (&rest args)
-    "Encode a decoded time back into an integer count of seconds since
-the epoch.  Two call shapes, matching Emacs: a single decoded-time list
-as `decode-time' returns (its ninth element, if non-nil, is used as
-the zone); or SEC MINUTE HOUR DAY MONTH YEAR &optional ZONE.  YEAR is
-always taken literally (the two-digit pivot-year shorthand is not
-supported)."
-    (let (sec minute hour day month year zone)
-      (if (and (= (length args) 1) (consp (car args)))
-          (let ((l (car args)))
-            (setq sec (nth 0 l) minute (nth 1 l) hour (nth 2 l)
-                  day (nth 3 l) month (nth 4 l) year (nth 5 l)
-                  zone (nth 8 l)))
-        (setq sec (nth 0 args) minute (nth 1 args) hour (nth 2 args)
-              day (nth 3 args) month (nth 4 args) year (nth 5 args)
-              zone (nth 6 args)))
-      (let* ((zoff (nelisp--tm-zone-offset zone))
-             (days (nelisp--tm-days-from-civil year month day))
-             (total (+ (* days 86400) (* hour 3600) (* minute 60) sec)))
-        (- total zoff)))))
+  "Encode a decoded time list or the obsolescent six component arguments.
+The last obsolescent argument is the zone.  Normalize calendar overflow
+and preserve subsecond precision; use `current-time-list' for integer times."
+  (let ((count (length args)) fields zone)
+    (cond
+     ((= count 1)
+      (let ((tail (car args)) (n 0))
+        (while (< n 6)
+          (unless (consp tail)
+            (signal 'wrong-type-argument (list 'consp tail)))
+          (setq fields (cons (car tail) fields) tail (cdr tail) n (1+ n)))
+        (setq fields (nreverse fields) zone (nth 2 tail))))
+     ((>= count 6)
+      (setq fields args zone (if (> count 6) (car (last args)) nil)))
+     (t (signal 'wrong-number-of-arguments (list 'encode-time count))))
+    (let ((parts (nelisp--w301-time-parts (car fields)))
+          (tail (cdr fields)) (n 0))
+      (while (< n 5)
+        (unless (integerp (car tail))
+          (signal 'wrong-type-argument (list 'fixnump (car tail))))
+        (setq n (1+ n) tail (cdr tail)))
+      (let* ((zoff (nelisp--w301-zone-offset zone))
+             (days (nelisp--w301-days-from-civil
+                    (nth 5 fields) (nth 4 fields) (nth 3 fields)))
+             (seconds (- (+ (* days 86400) (* (nth 2 fields) 3600)
+                            (* (nth 1 fields) 60) (car parts)) zoff))
+             (hz (nth 2 parts)))
+        (cond
+         (hz (nelisp--w301-timestamp seconds (nth 1 parts) hz))
+         (current-time-list (list (floor seconds 65536) (mod seconds 65536)))
+         (t seconds)))))))
 
 (unless (fboundp 'format-time-string)
   (defun format-time-string (format-string &optional time zone)
@@ -18774,14 +20432,21 @@ strftime.  ZONE is as in `decode-time'.  Supported directives: `%Y %m
 fixed English abbreviations (there is no locale database here).  `%z'
 assumes ZONE has no non-integer-minute remainder.  Any other directive
 signals an error rather than passing text through unexpanded."
-    (let* ((ts (nelisp--tm-unpack time))
+    (let* ((parts (if (floatp time)
+                       (let ((seconds (nelisp--w101-time-seconds time)))
+                         (list seconds (floor (* (- time seconds) 1000000000))
+                               1000000000))
+                     (nelisp--w301-time-parts time)))
+           (ts (cons (car parts) (nelisp--w301-subsecond-nanoseconds parts)))
+           (_ (unless (stringp format-string)
+                (signal 'wrong-type-argument (list 'stringp format-string))))
            (secs (car ts)) (nsec (cdr ts))
-           (zoff (nelisp--tm-zone-offset zone))
+           (zoff (nelisp--w301-zone-offset zone))
            (total (+ secs zoff))
            (days (nelisp--tm-fdiv total 86400))
            (sod (- total (* days 86400)))
            (hh (/ sod 3600)) (mi (/ (mod sod 3600) 60)) (ss (mod sod 60))
-           (ymd (nelisp--tm-civil-from-days days))
+           (ymd (nelisp--w301-civil-from-days days))
            (year (nth 0 ymd)) (month (nth 1 ymd)) (day (nth 2 ymd))
            (dow (mod (+ days 4) 7))
            (len (length format-string)) (i 0) (out nil))
@@ -18827,8 +20492,15 @@ signals an error rather than passing text through unexpanded."
 
 (unless (fboundp 'current-time-string)
   (defun current-time-string (&optional time zone)
-    "Return a string like \"Thu Jan  1 09:00:00 1970\" for TIME/ZONE."
-    (format-time-string "%a %b %e %H:%M:%S %Y" time zone)))
+  "Return TIME formatted as an English calendar date in ZONE."
+  (let ((seconds (nelisp--w101-time-seconds time)))
+    (unless (or (null zone) (eq zone t) (eq zone 'wall)
+                (integerp zone) (stringp zone)
+                (and (consp zone) (integerp (car zone)) (consp (cdr zone))))
+      (signal 'error (list "Invalid time zone specification" zone)))
+    (when (and (consp zone) (not (stringp (car (cdr zone)))))
+      (signal 'wrong-type-argument (list 'stringp (car (cdr zone)))))
+    (format-time-string "%a %b %e %H:%M:%S %Y" seconds zone))))
 (unless (fboundp 'replace-regexp-in-string)
   ;; This used to recognise ONE regexp -- "[^A-Za-z0-9_]" -- and answer STRING
   ;; unchanged for every other pattern.  A caller got its input back with no
@@ -19089,68 +20761,10 @@ signals an error rather than passing text through unexpanded."
         (setq i (1+ i)))
       out)))
 (unless (fboundp 'json-serialize)
-  (defun json-serialize (obj &rest _keys)
-    ;; The offender Emacs names is the whole KEYS list, not the element the
-    ;; walk stopped at.
-    (when (and _keys (not (and (listp _keys) (= 0 (mod (length _keys) 2)))))
-      (signal 'wrong-type-argument (list 'plistp _keys)))
-    (cond
-     ((null obj) "{}")
-     ((eq obj t) "true")
-     ((eq obj :null) "null")
-     ((eq obj :json-false) "false")
-     ((integerp obj) (number-to-string obj))
-     ((floatp obj) (number-to-string obj))
-     ((stringp obj) (concat "\"" (nelisp--json-escape obj) "\""))
-     ((hash-table-p obj)
-      (let ((parts "") (first t))
-        (maphash (lambda (k v)
-                   (setq parts (concat parts (if first "" ",")
-                                       "\"" (nelisp--json-escape (if (stringp k) k (format "%s" k))) "\":"
-                                       (json-serialize v))
-                         first nil))
-                 obj)
-        (concat "{" parts "}")))
-     ;; A LIST is an OBJECT in Emacs -- an alist or a plist, with symbol
-     ;; keys -- not an array.  Serialising it as [..] produced valid JSON of
-     ;; the wrong shape, which is the failure a caller finds last.  Only a
-     ;; vector is an array.
-     ((vectorp obj)
-      (let ((parts "") (first t) (i 0) (n (length obj)))
-        (while (< i n)
-          (setq parts (concat parts (if first "" ",") (json-serialize (aref obj i)))
-                first nil i (1+ i)))
-        (concat "[" parts "]")))
-     ((consp obj)
-      (if (consp (car obj))
-          (let ((parts "") (first t) (l obj))
-            (while (consp l)
-              (let ((e (car l)))
-                (unless (and (consp e) (symbolp (car e)))
-                  (signal 'wrong-type-argument
-                          (list 'symbolp (if (consp e) (car e) e))))
-                (setq parts (concat parts (if first "" ",")
-                                    "\"" (nelisp--json-escape
-                                           (nelisp--json-key (car e))) "\":"
-                                    (json-serialize (cdr e)))
-                      first nil l (cdr l))))
-            (concat "{" parts "}"))
-        (let ((parts "") (first t) (l obj))
-          (while (consp l)
-            (let ((k (car l)))
-              (unless (consp (cdr l))
-                (signal 'wrong-type-argument (list 'consp (cdr l))))
-              (unless (symbolp k) (signal 'wrong-type-argument (list 'symbolp k)))
-              (setq parts (concat parts (if first "" ",")
-                                  "\"" (nelisp--json-escape (nelisp--json-key k)) "\":"
-                                  (json-serialize (car (cdr l))))
-                    first nil l (cdr (cdr l)))))
-          (concat "{" parts "}"))))
-     ;; A bare symbol is not a JSON value: only nil/t and the two keyword
-     ;; sentinels are, and everything else names `json-value-p'.  Encoding
-     ;; the symbol NAME as a string produced valid JSON that said something
-     ;; the caller never wrote.
-     (t (signal 'wrong-type-argument (list 'json-value-p obj))))))
+  (defun json-serialize (object &rest args)
+  "Encode OBJECT as JSON with configurable null and false objects."
+  (let ((text (nelisp--w302-json-encode object (nelisp--w302-json-options args nil) nil)))
+    (encode-coding-string text 'utf-8 t))))
 
 ;; ---- Doc 22 reader-core gap fixes (A1/A2/A3/A5/A10/A12) ----
 ;;
@@ -19326,23 +20940,24 @@ comment above this definition for how that value was measured."))
 
 ;; A3: native `equal' never compared vectors element-wise.  Capture native
 ;; `equal' for the atom/string/number leaves and recurse over cons + vector.
-(unless (fboundp 'nelisp--native-equal) (fset 'nelisp--native-equal (symbol-function 'equal)))
-(defun equal (a b)
-  "Structural equality with vector support (Doc 22 A3).
-Only `cons' and `vector' are walked in elisp; every atom (number, string,
-symbol, nil, t) is delegated to the native `equal', which compares them
-correctly.  No `(eq a b)' fast path: it would save one native call on
-identical objects and cost one interpreted operation on every other pair
-(Doc 201 §6.15).  It is no longer a correctness hazard either -- `eq' on
-strings is identity since Doc 201 §6.17, not contents."
+(unless (fboundp 'nelisp--native-equal)
+  (fset 'nelisp--native-equal '(builtin nelisp--equal-leaf)))
+(defun nelisp--equal-reference (a b)
+  "Return t when A and B have equal structure and contents.
+Keep atomic comparisons on the native fast path.  Check identity before
+structural descent, including self-referential conses, vectors and records.
+Hash tables compare only by identity; markers compare buffer and position."
   (cond
    ;; Strings, symbols and integers can never be a cons, vector or marker
    ;; case below, so the native comparison decides them outright.  Testing
    ;; them first spares every string/symbol comparison (the bulk of `equal'
    ;; calls) the cons/vector/bool-vector/marker predicate chain.
    ((or (stringp a) (symbolp a) (integerp a)) (nelisp--native-equal a b))
+   ((eq a b) t)
    ((and (consp a) (consp b))
-    (and (equal (car a) (car b)) (equal (cdr a) (cdr b))))
+    ;; Native tables use cons storage, but GNU does not compare contents.
+    (and (not (hash-table-p a))
+         (equal (car a) (car b)) (equal (cdr a) (cdr b))))
    ((and (or (vectorp a) (and (fboundp 'bool-vector-p) (bool-vector-p a)))
          (or (vectorp b) (and (fboundp 'bool-vector-p) (bool-vector-p b))))
     (if (= (if (and (fboundp 'bool-vector-p) (bool-vector-p a)) 1 0)
@@ -19377,6 +20992,10 @@ strings is identity since Doc 201 §6.17, not contents."
          (or (null (nelisp-marker-buffer a))
              (= (nelisp-marker-position a) (nelisp-marker-position b)))))
    (t (nelisp--native-equal a b))))
+
+;; The public builtin dispatches to this Lisp reference after native arity
+;; checking; the saved leaf primitive remains private.
+(fset 'equal '(builtin equal))
 
 ;; A5: native `substring' returned garbage for vectors.  Slice vectors in
 ;; elisp via `aref'/`aset'; defer strings to the (correct) native path.
@@ -19721,7 +21340,9 @@ field-width layer."
                                                  (substring body k)))))
                            (t (setq body (concat (make-string pad 32) body))))))
                       (setq out (concat out body)))))))
-          (setq out (concat out (char-to-string ch)) i (1+ i)))))
+          ;; Preserve the template's byte representation until concat decides
+          ;; whether this literal fragment needs raw-byte promotion.
+          (setq out (concat out (substring template i (1+ i))) i (1+ i)))))
     out))
 
 ;; A13: `type-of' is VOID on the bare reader (returns nil for everything), and
@@ -19820,13 +21441,15 @@ any other -- to find the final function binding and return it."
 ;; native `(builtin NAME)' values use the small fixed-arity table below.  The
 ;; open range is deliberately represented by `many', matching Emacs.
 (defconst nelisp--builtin-fixed-arities
-  '((1 car cdr car-safe atom consp listp nlistp null not stringp
+  '((0 garbage-collect)
+    (1 nelisp--clear-string-bytes car cdr car-safe atom consp listp nlistp null not stringp
        symbolp integerp bignump natnump numberp floatp vectorp functionp
+       bool-vector-p char-table-p recordp
        length symbol-name symbol-value symbol-function fboundp boundp makunbound
        make-symbol type-of identity abs sin cos 1+ 1- number-to-string string-bytes
        char-to-string string-to-char lognot special-form-p
        nelisp--declare-local-special)
-    (2 cons eq eql equal setcar setcdr nth nthcdr elt aref rassoc string=
+    (2 nelisp--equal-leaf cons eq eql equal setcar setcdr nth nthcdr elt aref rassoc memq member assq string=
        nelisp--native-pin-eq-slots
        string< make-vector fset ash)
     (3 aset nelisp--native-pin-copy nelisp--native-unbox-reference)
@@ -20622,87 +22245,42 @@ output."
 
 (unless (fboundp 'secure-hash)
   (defun secure-hash (algorithm object &optional start end binary)
-    "Return ALGORITHM's digest of OBJECT, computed by an external helper.
-OBJECT is a string or a buffer.  ALGORITHM is one of `md5', `sha1',
-`sha224', `sha256', `sha384', or `sha512'.  START/END narrow a string or
-buffer the way Emacs does.  A multibyte OBJECT (or START/END substring)
-is hashed as its UTF-8 encoding, matching host Emacs.  When BINARY is
-non-nil the raw digest bytes are returned as a unibyte string instead of
-the lowercase hex form."
-    ;; sha256 of a string is answered in-process by the native
-    ;; `nelisp--sha256' (2.5ms for 20KB).  The external-helper path below
-    ;; costs ~130ms per call regardless of size (temp file + sha256sum
-    ;; process) and was paid twice per vendored `require' by the baked
-    ;; bytecode loader.  Buffers, other algorithms and any failure of the
-    ;; native primitive keep the helper path.
-    (if (and (eq algorithm 'sha256) (stringp object)
-             (fboundp 'nelisp--sha256))
-        (let ((digest (nelisp--sha256
-                       (if (or start end)
-                           (substring object (or start 0) end)
-                         object))))
-          (if binary (nelisp--secure-hash-hex-to-bytes digest) digest))
-    (let ((spec (nelisp--secure-hash-helper algorithm)))
-      (unless spec
-        (signal 'error (list "secure-hash: unsupported algorithm" algorithm)))
-      (let* ((program-and-args (car spec))
-             (width (cdr spec))
-             (text (cond
-                    ((stringp object)
-                     (if (or start end)
-                         (substring object (or start 0) end)
-                       object))
-                    ((bufferp object)
-                     (with-current-buffer object
-                       (if (or start end)
-                           (buffer-substring (or start (point-min))
-                                             (or end (point-max)))
-                         (buffer-string))))
-                    (t (signal 'wrong-type-argument
-                               (list 'stringp object)))))
-             (bytes (if (multibyte-string-p text)
-                        (encode-coding-string text 'utf-8-unix)
-                      text))
-             (tmp (make-temp-file "nelisp-secure-hash-"))
-             (digest nil))
-        (unwind-protect
-            (progn
-              (write-region bytes nil tmp nil 0)
-              (with-temp-buffer
-                ;; Doc 205 P3 follow-up (segment C1 item 6): TMP used to be
-                ;; passed as `call-process''s INFILE (stdin redirect).  The
-                ;; process backend on Windows ignores INFILE entirely
-                ;; (reported 2026-09-20; not reproducible on Linux, where
-                ;; INFILE already worked), so the helper read an empty
-                ;; stdin and answered the empty-input digest with rc 0 --
-                ;; wrong, but not an ERROR, so nothing here caught it.
-                ;; Passing TMP as a trailing ARGUMENT instead (`sha256sum
-                ;; FILE' / `shasum -a 256 FILE', exactly as run from a
-                ;; shell) does not depend on the backend wiring stdin at
-                ;; all, and still works on Linux (verified below).
-                (let ((rc (apply #'call-process (car program-and-args) nil t
-                                 nil
-                                 (append (cdr program-and-args) (list tmp)))))
-                  (unless (eq rc 0)
-                    (signal 'error
-                            (list "secure-hash: helper failed"
-                                  (car program-and-args) rc)))
-                  ;; Output is always "<hex, WIDTH chars>  FILE\n" -- TMP
-                  ;; is a real path here, never stdin's "-", so the hex
-                  ;; run is always exactly the first WIDTH characters.
-                  ;; A prior version parsed this with `split-string',
-                  ;; which measured 100-450 ms on this ~30-byte line --
-                  ;; independent of the hashed input's size -- and was
-                  ;; the actual cost this whole function used to pay
-                  ;; (segment C2, see the file header comment above).
-                  (let ((out (buffer-string)))
-                    (unless (>= (length out) width)
-                      (signal 'error
-                              (list "secure-hash: helper output too short"
-                                    (car program-and-args) out)))
-                    (setq digest (substring out 0 width))))))
-          (when (file-exists-p tmp) (delete-file tmp)))
-        (if binary (nelisp--secure-hash-hex-to-bytes digest) digest))))))
+  "Return ALGORITHM's digest of string or buffer OBJECT.
+START and END select the text.  BINARY requests a unibyte digest."
+  (unless (symbolp algorithm)
+    (signal 'wrong-type-argument (list 'symbolp algorithm)))
+  (let ((text (nelisp--hash-text object start end)))
+    (unless (memq algorithm '(md5 sha1 sha224 sha256 sha384 sha512
+                             sha3-224 sha3-256 sha3-384 sha3-512))
+      (error "Invalid algorithm arg: %s" algorithm))
+    (let ((digest
+           (if (and (eq algorithm 'sha256) (fboundp 'nelisp--sha256))
+               (nelisp--sha256 text)
+             (let ((spec (nelisp--hash-program algorithm)))
+               (unless spec (error "Hash helper unavailable: %s" algorithm))
+               (let* ((command (car spec)) (width (cdr spec))
+                      (bytes (if (multibyte-string-p text)
+                                 (encode-coding-string text 'utf-8-unix)
+                               text))
+                      (tmp (make-temp-file "nelisp-secure-hash-")) result)
+                 (unwind-protect
+                     (progn
+                       (write-region bytes nil tmp nil 0)
+                       (with-temp-buffer
+                         (let ((rc (apply #'call-process (car command) nil t nil
+                                          (append (cdr command) (list tmp)))))
+                           (unless (eq rc 0)
+                             (signal 'error (list "secure-hash: helper failed"
+                                                  (car command) rc)))
+                           (let ((out (buffer-string)))
+                             (unless (>= (length out) width)
+                               (signal 'error
+                                       (list "secure-hash: helper output too short"
+                                             (car command) out)))
+                             (setq result (substring out 0 width))))))
+                   (when (file-exists-p tmp) (delete-file tmp)))
+                 result)))))
+      (if binary (nelisp--secure-hash-hex-to-bytes digest) digest)))))
 
 ;; Reserve the native function-mirror identity before EvalCtx creation.  The
 ;; optional JIT module replaces this source-only fallback when required.
@@ -21129,15 +22707,18 @@ frame's display).
     nil))
 
 (unless (fboundp 'tty-display-color-p)
-  (defun tty-display-color-p (&optional _terminal)
-    "Return non-nil if the tty device TERMINAL can display colors.
-
-TERMINAL can be a terminal object, a frame, or nil (meaning the
-selected frame's terminal).  This function always returns nil if
-TERMINAL does not refer to a text terminal.
-
-(fn &optional TERMINAL)"
-    nil))
+  (defun tty-display-color-p (&optional terminal)
+  "Return non-nil if TERMINAL can display colors.
+TERMINAL is nil, a live frame or a live terminal.  This standalone runs
+in batch mode, whose terminal does not support colors."
+  (when (and terminal
+             (not (or (and (fboundp 'terminal-live-p)
+                           (terminal-live-p terminal))
+                      (and (framep terminal)
+                           (or (not (fboundp 'frame-live-p))
+                               (frame-live-p terminal))))))
+    (signal 'wrong-type-argument (list 'terminal-live-p terminal)))
+  nil))
 
 ;; `window-system' is a C-level `DEFVAR_KBOARD' in real Emacs's
 ;; dispnew.c ("nil for a termcap frame (a character-only terminal)"),
@@ -21980,3 +23561,143 @@ no-op function, without wiring a real menu-bar item into MAPS."
   (defmacro with-current-buffer (buffer &rest body)
     (declare (indent 1) (debug t))
     `(let ((nelisp-buffer--current ,buffer)) ,@body)))
+
+;;; C-core parity overrides for definitions made elsewhere in the baked
+;;; runtime (generator-embedded source or macro-generated definitions).
+;;; Appended last so they replace those definitions when the prelude loads.
+
+(defun json-parse-string (string &rest args)
+  "Parse JSON STRING using the representation and sentinel options in ARGS."
+  (unless (stringp string) (signal 'wrong-type-argument (list 'stringp string)))
+  (let* ((state (vector string 0 (nelisp--w302-json-options args t)))
+         (value (nelisp--w302-json-value state)))
+    (nelisp--w302-json-space state)
+    (when (nelisp--w302-json-peek state)
+      (nelisp--w302-json-step state)
+      (nelisp--w302-json-error state 'json-trailing-content))
+    value))
+
+(defun json-parse-buffer (&rest args)
+  "Parse one JSON value at point and advance point only on success."
+  (let* ((options (nelisp--w302-json-options args t))
+         (start (point))
+         (state (vector (buffer-substring start (point-max)) 0 options))
+         (value (nelisp--w302-json-value state)))
+    (goto-char (+ start (aref state 1)))
+    value))
+
+(defun process-contact (process &optional key _no-block)
+  "Return PROCESS's contact information, or the field specified by KEY."
+  (let ((pipe (and (vectorp process) (> (length process) 0)
+                   (eq (aref process 0) 'pipe-process))))
+    (unless (or pipe (processp process))
+      (signal 'wrong-type-argument (list 'processp process)))
+    (cond
+     (pipe
+      (cond ((null key) t)
+            ((eq key :name) (aref process 1))
+            ;; The pipe representation has no creation plist.  Only its
+            ;; name and filter survive construction.
+            ((eq key :filter) (aref process 5))
+            ((eq key t) (list :name (aref process 1)))
+            (t nil)))
+     ((nelisp--network-process-p process)
+      (cond ((null key) (list (process-get process :host)
+                             (process-get process :service)))
+            ((eq key t)
+             (let ((props (aref process 4)) out)
+               (while props
+                 (setq out (cons (cdar props) (cons (caar props) out))
+                       props (cdr props)))
+               (nreverse out)))
+            (t (process-get process key))))
+     (t t))))
+
+(defun re-search-backward (regexp &optional bound noerror count)
+  "Search backward for REGEXP, validating regexp syntax even on empty text."
+  (setq count (or count 1)
+        bound (nelisp--cc03-search-args regexp bound count))
+  (if (= count 0) (point)
+    (let ((origin (point)))
+      (when (and bound (if (> count 0) (> bound origin) (< bound origin)))
+        (error "Invalid search bound (wrong side of point)"))
+      (nelisp--cc03-validate-regexp regexp)
+      (nlre--re-search-backward regexp bound noerror count))))
+
+(defun search-forward-regexp (regexp &optional bound noerror count)
+  "Search forward for REGEXP; negative COUNT searches backward."
+  (setq count (or count 1)
+        bound (nelisp--cc03-search-args regexp bound count))
+  (if (= count 0) (point)
+    (when (and bound (if (> count 0) (< bound (point)) (> bound (point))))
+      (error "Invalid search bound (wrong side of point)"))
+    (nelisp--cc03-validate-regexp regexp)
+    (if (< count 0)
+        (nlre--re-search-backward regexp bound noerror (- count))
+      (nlre--re-search-forward regexp
+                              (and bound (max (point-min) (min (point-max) bound)))
+                              noerror count))))
+
+(defun terpri (&optional stream ensure)
+  "Output a newline to STREAM, returning t if one was printed.
+With ENSURE, print only when the stream is not at the start of a line."
+  (let ((s (or stream standard-output)))
+    (when (and s (not (nelisp--valid-print-stream-p s)))
+      (signal (if (symbolp s) 'void-function 'invalid-function) (list s)))
+    (when (and ensure (functionp s))
+      (signal 'error (list "Unsupported function argument" s)))
+    (if (and ensure
+             (cond
+              ((bufferp s) (with-current-buffer s (bolp)))
+              ((markerp s)
+               (let ((buffer (marker-buffer s)))
+                 (unless buffer
+                   (signal 'error (list "Marker does not point anywhere")))
+                 (with-current-buffer buffer
+                   (save-excursion (goto-char (marker-position s)) (bolp)))))
+              (t nil)))
+        nil
+      (if (or (null s) (eq s t))
+          (nelisp--native-terpri)
+        (nelisp--emit-to-stream "\n" s))
+      t)))
+
+
+;; N2 GC formatting reference. Sizes are this runtime's storage units, not
+;; GNU allocator sizes. Free blocks are untyped, so no typed free pool exists.
+;; Floats are inline numbers; intervals/buffers have no native allocation
+;; class (library objects are already counted as vectors/records).
+(defvar nelisp--gc-last-snapshot nil
+  "Typed logical-object census from the most recent explicit collection.")
+(defun nelisp--gc-statistics (snapshot)
+  (setq nelisp--gc-last-snapshot snapshot)
+  (list (list 'conses 24 (aref snapshot 0) 0)
+        (list 'symbols 32 (aref snapshot 1) 0)
+        (list 'strings 32 (aref snapshot 2) 0)
+        (list 'string-bytes 1 (aref snapshot 3))
+        (list 'vectors 32 (aref snapshot 4))
+        (list 'vector-slots 8 (aref snapshot 5) 0)
+        (list 'floats 0 0 0)
+        (list 'intervals 0 0 0)
+        (list 'buffers 0 0)))
+
+;; N2 clauses 1/3: byte erasure and representation mutation require tagged
+;; storage access. Public validation, property policy and the nil result are
+;; Lisp-owned. The GNU implementation is the observable Lisp reference;
+;; `aset' cannot express erasing all bytes of a multibyte object.
+(unless (fboundp 'clear-string)
+  (defun clear-string (string)
+    "Zero STRING's bytes in place and make the same object unibyte."
+    (nelisp--check-string string)
+    (remhash string nelisp--tp-string-properties)
+    (nelisp--clear-string-bytes string)
+    nil))
+
+
+(unless (fboundp 'garbage-collect-heapsize)
+  (defun garbage-collect-heapsize ()
+    "Return the last typed GC census without recursively collecting.
+The first query initializes the snapshot with one explicit collection."
+    (if nelisp--gc-last-snapshot
+        (nelisp--gc-statistics nelisp--gc-last-snapshot)
+      (garbage-collect))))

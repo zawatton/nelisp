@@ -1,0 +1,17 @@
+#+TITLE: Variable alias ordinary-call routing and symbol accessor semantics
+
+* S1 Lisp function-cell routing
+
+** S1.1 Native routing corpus respects installed function cells and retains bootstrap fallback
+#+REQUIRES: NELISP_BIN
+cmd: python3 test/nelisp-variable-alias-test.py --routing
+
+** S1.2 Retained predecessor rejects the installed-function-cell regression
+#+REQUIRES: NELISP_BEFORE_BIN
+cmd: python3 test/nelisp-variable-alias-verifier-test.py && python3 test/nelisp-variable-alias-test.py --routing --expect-defect "$NELISP_BEFORE_BIN"
+
+** S1.3 End to end: GNU aliases preserve accessor writes, identity and independent symbol cells
+#+REQUIRES: NELISP_BIN,NELISP_ALIAS_PROVIDER
+cmd: python3 test/nelisp-variable-alias-test.py --provider "$NELISP_ALIAS_PROVIDER"
+#+NOTE: External provider qualification pins SHA256 ceac89b1ec062ddbd840888f1476ac79e30cb84d91caa57e52eda43f2f791ccc; the runtime meter watermark alone does not cover sibling provider edits.
+#+NOTE: Existing evaluator boundary only, minimal-native clause 2; no new native entry or allocator/GC changes. Route direct defvaralias through its installed Lisp function cell, retaining native fallback only while no provider exists. Whole C-core retains its 24 criteria and known-red checks. Native setq/dynamic-binding alias semantics remain required whole-C-core work; accessor parity alone does not certify them.

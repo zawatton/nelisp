@@ -1,0 +1,13 @@
+#+TITLE: Shortest round-trip float printing parity
+
+* S1 Existing native float printer rounds from the true decimal tail
+** S1.1 number-to-string matches GNU 31.1 on a deterministic corpus of 6000 doubles
+#+REQUIRES: NELISP_BIN
+cmd: bash test/nelisp-float-print-parity-test.sh
+** S1.2 The predecessor binary reproduces the recorded double-rounding defect
+#+REQUIRES: NELISP_BEFORE_BIN
+cmd: NELISP_BIN="$NELISP_BEFORE_BIN" bash test/nelisp-float-print-parity-test.sh --expect-defect ffec301448d1449b804eb9cb483abd6989a3840b1190403290e6cdd5e97c8f9a
+** S1.3 End to end: the pgtkfns-1 unit, whose page-setup row prints such a float, passes through the C-core runner
+#+REQUIRES: NELISP_BIN,NELISP_LIBRARY_ROOT
+cmd: cd "$NELISP_LIBRARY_ROOT" && NELISP_BIN="$NELISP_BIN" bash test/nelisp-emacs-lib/c-core-parity-smoke.sh run --unit pgtkfns-1
+#+NOTE: Repairs the existing native printer in lisp/nelisp-cc-evalport-str-to-float.el and adds helper routines inside that unit only; no new native public entry. The predecessor rounded the value to 17 digits and rounded that again to P digits (61 of 6000 corpus values differed from GNU by one unit in the last place while denoting the same double). The repair rounds a floor extraction with its remainder information. When nl_lem_compute is inconclusive, nl_stf_finish uses the exact decimal converter only for exponents -27..55, which are the supported ranges of its tables; larger magnitudes retain the existing fallback to preserve its overflow and underflow behavior. Corpus values are exactly representable 53-bit mantissas times powers of two in 2^-60..2^60; subnormals, huge exponents and exact decimal ties outside that range are not covered by this check.

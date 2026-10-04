@@ -1,0 +1,13 @@
+#+TITLE: nth dotted-tail error operand parity
+
+* S1 Existing list-walk evaluator boundary
+** S1.1 Direct, funcall and apply nth and elt errors and values match GNU
+#+REQUIRES: NELISP_BIN
+cmd: python3 test/nelisp-nth-tail-parity-test.py
+** S1.2 The retained predecessor has the exact dotted-tail error operand defect
+#+REQUIRES: NELISP_BEFORE_BIN
+cmd: python3 test/nelisp-focused-parity-verifier-test.py && python3 test/nelisp-nth-tail-parity-test.py --expect-defect "$NELISP_BEFORE_BIN"
+** S1.3 End to end: canonical list-core-2 unit preserves list identity and failure data
+#+REQUIRES: NELISP_BIN,NELISP_LIBRARY_ROOT
+cmd: cd "$NELISP_LIBRARY_ROOT" && NELISP_BIN="$NELISP_BIN" bash test/nelisp-emacs-lib/c-core-parity-smoke.sh run --unit list-core-2
+#+NOTE: Repair an existing pointer-walk operation (minimal-native clauses 1 and 2), with no new native entry or allocator/GC changes. Native artifact builds are batched with the CL optional macro repair. Whole C-core remains 24 criteria and its known-red checks are retained.

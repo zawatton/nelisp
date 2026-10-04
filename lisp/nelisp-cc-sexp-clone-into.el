@@ -45,6 +45,7 @@
 ;; Inline String layout (Str/Symbol variants — payload is inline String):
 ;;   Sexp offset 0:  tag (u8)
 ;;   Sexp offset 8:  String.cap  (u64)
+;;                   Immutable tag-5 bit 62 preserves explicit multibyte state.
 ;;   Sexp offset 16: String.ptr  (u64 — *const u8 char data)
 ;;   Sexp offset 24: String.len  (u64)
 ;;
@@ -140,7 +141,12 @@
         (if (= tag 5)
           (if (= (ptr-read-u64 268435648 0) 1)
               (nl_sci_copy src dst)
-            (nl_alloc_str (ptr-read-u64 src 16) (ptr-read-u64 src 24) dst))
+            (seq (nl_alloc_str (ptr-read-u64 src 16) (ptr-read-u64 src 24) dst)
+                 ;; Preserve the standalone immutable-string multibyte flag.
+                 (ptr-write-u64 dst 8
+                   (logior (ptr-read-u64 dst 8)
+                           (logand (ptr-read-u64 src 8) 4611686018427387904)))
+                 dst))
         (if (= tag 4)
             (if (= (ptr-read-u64 268435648 0) 1)
                 (nl_sci_copy src dst)

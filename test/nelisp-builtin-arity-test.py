@@ -13,9 +13,16 @@ FIXED_VALUES = {
     'listp': ('(listp nil)', 't'), 'null': ('(null nil)', 't'),
     'not': ('(not t)', 'nil'), 'stringp': ('(stringp "a")', 't'),
     'symbolp': ("(symbolp 'a)", 't'), 'integerp': ('(integerp 1)', 't'),
-    'bignump': ('(bignump 1)', 'nil'), 'natnump': ('(natnump 0)', 't'),
+    'natnump': ('(natnump 0)', 't'),
     'numberp': ('(numberp 1)', 't'), 'floatp': ('(floatp 1.0)', 't'),
     'vectorp': ('(vectorp [1])', 't'), 'length': ('(length [1 2])', '2'),
+    'bool-vector-p': ('(bool-vector-p (make-bool-vector 9 t))', 't'),
+    'char-table-p': ("(char-table-p (make-char-table 'syntax-table))", 't'),
+    'recordp': ("(recordp (record 'arity-record 7))", 't'),
+    'nlistp': ('(nlistp 1)', 't'),
+    'special-form-p': ("(special-form-p 'quote)", 't'),
+    'sin': ('(sin 0.0)', '0.0'), 'cos': ('(cos 0.0)', '1.0'),
+    'symbol-function': ("(not (null (symbol-function 'car)))", 't'),
     'symbol-name': ("(symbol-name 'arity-value)", '"arity-value"'),
     'symbol-value': ("(progn (setq arity-value 7) (symbol-value 'arity-value))", '7'),
     'fboundp': ("(fboundp 'car)", 't'),
@@ -33,8 +40,23 @@ FIXED_VALUES = {
     'setcar': ('(setcar (list 1) 7)', '7'), 'setcdr': ('(setcdr (list 1) 7)', '7'),
     'elt': ('(elt [7] 0)', '7'), 'aref': ('(aref [7] 0)', '7'),
     'rassoc': ("(rassoc 7 '((a . 7)))", '(a . 7)'),
+    'memq': ("(memq 'b '(a b c))", '(b c)'),
+    'member': ("(member '(b) '((a) (b) (c)))", '((b) (c))'),
+    'assq': ("(assq 'b '((a . 1) (b . 2)))", '(b . 2)'),
     'string=': ('(string= "a" "a")', 't'), 'string<': ('(string< "a" "b")', 't'),
     'make-vector': ('(make-vector 2 nil)', '[nil nil]'), 'aset': ('(aset (vector 1) 0 7)', '7'),
+    'nth': ("(nth 1 '(3 7))", '7'), 'nthcdr': ("(nthcdr 1 '(3 7))", '(7)'),
+    'ash': ('(ash 3 2)', '12'),
+    # The native target is AMD64. A private executable page returns 42 and
+    # ignores its six SysV arguments, exercising ptr-call's real success path.
+    'ptr-call': (
+        '(let ((code (syscall-direct 9 0 4096 7 34 -1 0))) '
+        '(unwind-protect (progn '
+        '(ptr-write-u8 code 0 184) (ptr-write-u8 code 1 42) '
+        '(ptr-write-u8 code 2 0) (ptr-write-u8 code 3 0) '
+        '(ptr-write-u8 code 4 0) (ptr-write-u8 code 5 195) '
+        '(ptr-call code 1 2 3 4 5 6)) '
+        '(syscall-direct 11 code 4096 0 0 0 0)))', '42'),
 }
 
 
@@ -87,6 +109,21 @@ def cases():
 
 
 class BuiltinArity(unittest.TestCase):
+    def test_aggregate_native_contracts(self):
+        binary = Path(os.environ.get('NELISP_BIN', str(ROOT/'target/nelisp'))).resolve()
+        names = ('bool-vector-p', 'char-table-p', 'recordp')
+        contracts = fixed_contracts()
+        selected = {name: contracts[name] for name in names}
+        self.assertEqual(selected, dict.fromkeys(names, 1))
+        records = fixed_cases(selected) + [FIXED_VALUES[name] for name in names]
+        source = '\n'.join(f'(progn (prin1 {form}) (terpri))' for form, _ in records) + '\n(exit 0)\n'
+        run = subprocess.run([str(binary), '--repl', '--no-prompt', '--no-print'],
+                             input=source, text=True, capture_output=True, timeout=15)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stderr, '')
+        self.assertEqual(run.stdout.splitlines(), [expected for _, expected in records])
+        print(f'AGGREGATE-ARITY checked={len(records)} functions={len(selected)}')
+
     def test_all_fixed_native_contracts(self):
         binary = Path(os.environ.get('NELISP_BIN', str(ROOT/'target/nelisp'))).resolve()
         contracts = fixed_contracts()
@@ -96,8 +133,16 @@ class BuiltinArity(unittest.TestCase):
         source = '\n'.join(f'(progn (prin1 {form}) (terpri))' for form, _ in records) + '\n(exit 0)\n'
         run = subprocess.run([str(binary), '--repl', '--no-prompt', '--no-print'],
                              input=source, text=True, capture_output=True, timeout=15)
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(run.stderr, '')
+        self.assertEqual(run.returncode, 0,
+                         f"{run.stderr}\ncompleted={len(run.stdout.splitlines())} "
+                         f"last={run.stdout.splitlines()[-3:]!r}")
+        actual = run.stdout.splitlines()
+        mismatches = [(index, form[:100], actual[index] if index < len(actual) else None, expected)
+                      for index, (form, expected) in enumerate(records)
+                      if index >= len(actual) or actual[index] != expected]
+        self.assertEqual(run.stderr, '',
+                         f"{run.stderr}\nrows={len(actual)}/{len(records)} "
+                         f"first-mismatches={mismatches[:3]!r}")
         self.assertEqual(run.stdout.splitlines(), [expected for _, expected in records])
         print(f'FIXED-ARITY checked={len(records)} functions={len(contracts)}')
 

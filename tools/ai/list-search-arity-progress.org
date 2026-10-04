@@ -1,0 +1,19 @@
+#+TITLE: Native list-search argument validation
+
+* S1 Existing evaluator guard coverage
+
+** S1.1 Shared contracts and valid list-search results qualify with existing fixed natives
+#+REQUIRES: NELISP_BIN
+cmd: python3 test/nelisp-builtin-arity-test.py
+
+** S1.2 Normalized GNU list-search wrong-arity corpus fails on the retained predecessor
+#+REQUIRES: NELISP_BEFORE_BIN
+cmd: python3 test/nelisp-list-search-verifier-test.py && python3 test/nelisp-list-search-arity-test.py --expect-defect "$NELISP_BEFORE_BIN"
+
+** S1.3 End to end: direct, funcall, apply and raw builtin errors preserve process state
+#+REQUIRES: NELISP_BIN
+cmd: python3 test/nelisp-list-search-arity-test.py
+#+NOTE: Minimal-native clause 2: extend existing evaluator argument validation before raw operand access. No new native entry, allocator or GC change. Lisp reference semantics remain GNU-compatible named wrong-number-of-arguments signals. Whole C-core failures and its 24-criterion denominator remain unchanged.
+#+NOTE: GNU preserves a subr function object in error data while the current native guard reports its name symbol. The corpus compares normalized names and counts; exact error-object identity remains unqualified. This scope does not certify complete GNU equivalence.
+#+NOTE: Development efficiency: two healthy list-search forms took 7.319622 seconds in two predecessor startups versus 3.647219 seconds in one grouped startup, with identical two-row output. The regression driver batches its native corpus instead of starting one runtime per form; CLI controls must start zero runtimes.
+#+NOTE: GNU 31.1 checks exact error identity before normalization: direct calls identify the name symbol; funcall/apply identify the actual subr. The retained predecessor segfaults after exactly one healthy row. The repaired reader passes 47 grouped rows and 187 fixed-arity rows for 56 registered functions. Verifier controls reject healthy binaries, unrelated failures, missing output, unrelated conditions, truncation and empty GNU evidence.

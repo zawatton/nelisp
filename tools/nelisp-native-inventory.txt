@@ -29,7 +29,7 @@ special-form-p	native-review	No classification row; review against Doc 211 §6.
 nelisp--env-globals-op	native-review	No classification row; review against Doc 211 §6.
 make-hash-table	native-review	No classification row; review against Doc 211 §6.
 puthash	native-must-stay	hash-table core
-gethash	native-must-stay	hash-table core: address hashing + open-addressing bootstrap (obarray/globals use it)
+gethash	native-must-stay	Minimal native surface clause 1: tagged hash-table buckets; eq/eql string identity fallback after byte mutation (GNU reference test/nelisp-n2-reference.el)
 remhash	native-must-stay	hash-table core
 hash-table-count	native-must-stay	hash-table core
 maphash	native-review	No classification row; review against Doc 211 §6.
@@ -77,8 +77,10 @@ nelisp--sha256	native-review	No classification row; review against Doc 211 §6.
 nelisp--sha256-bytes	native-review	No classification row; review against Doc 211 §6.
 nelisp--string-search	native-review	No classification row; review against Doc 211 §6.
 nelisp--arena-stats	native-review	No classification row; review against Doc 211 §6.
-garbage-collect	native-must-stay	GC entry
+garbage-collect	native-must-stay	Minimal native surface clause 2: guarded GC entry and typed logical-object snapshot; Lisp row formatter nelisp--gc-statistics
 nelisp--fmt-float	native-review	No classification row; review against Doc 211 §6.
+nelisp--clear-string-bytes	native-must-stay	Minimal native surface clauses 1/3: in-place byte erasure and per-alias encoding header mutation; Lisp validation/property policy in clear-string; GNU reference test/nelisp-n2-reference.el
+nelisp--equal-leaf	native-must-stay	Minimal native surface clause 1: existing tagged-object comparison leaf; public equal delegates to Lisp nelisp--equal-reference after clause 2 arity validation
 nelisp--debug-switch	native-review	No classification row; review against Doc 211 §6.
 nelisp--gc-diag	native-review	No classification row; review against Doc 211 §6.
 nelisp--arena-force-grow-smoke	native-review	No classification row; review against Doc 211 §6.
@@ -144,7 +146,7 @@ integerp	native-must-stay	type predicate on tag bits
 natnump	native-review	No classification row; review against Doc 211 §6.
 numberp	native-must-stay	type predicate on tag bits
 floatp	native-must-stay	type predicate on tag bits
-sxhash-eq	native-must-stay	address identity hash
+sxhash-eq	native-must-stay	Minimal native surface clause 1: tagged address identity hash; empty-string encoding normalization preserves identity across clear-string
 nl--read-int	native-review	No classification row; review against Doc 211 §6.
 nl--int-token-p	native-review	No classification row; review against Doc 211 §6.
 nl--nthcdr	native-review	No classification row; review against Doc 211 §6.
@@ -202,7 +204,7 @@ set-char-table-range	native-demotable	trie store in Lisp (chartab.c char_table_s
 map-char-table	native-demotable	trie walk in Lisp (chartab.c map_char_table)
 signal	native-must-stay	evaluator core (eval/apply/funcall/signal/symbol cells)
 error	native-review	No classification row; review against Doc 211 §6.
-equal	native-review	No classification row; review against Doc 211 §6.
+equal	native-must-stay	Minimal native surface clause 2: evaluator builtin arity entry delegates behavior to Lisp nelisp--equal-reference; tagged atom leaf remains private
 setcar	native-must-stay	allocation/tagged-object primitive
 setcdr	native-must-stay	allocation/tagged-object primitive
 ash	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it)
@@ -242,7 +244,7 @@ nelisp-portable-syscall	native-review	No classification row; review against Doc 
 ptr-call	native-review	No classification row; review against Doc 211 §6.
 ptr-call-typed	native-review	No classification row; review against Doc 211 §6.
 thread-spawn	native-review	No classification row; review against Doc 211 §6.
-thread-join	native-must-stay	thread substrate (syscall futex)
+nelisp-spin-until	native-must-stay	thread substrate (spin until *ADDR >= TARGET; renamed from thread-join, which collided with the GNU primitive)
 fork-spawn	native-review	No classification row; review against Doc 211 §6.
 nelisp--target-os-code	native-review	No classification row; review against Doc 211 §6.
 nelisp--target-arch-code	native-review	No classification row; review against Doc 211 §6.

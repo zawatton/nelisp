@@ -53,6 +53,9 @@
 ;; Sexp header layout (inline String variants — Str/Symbol):
 ;;   offset 0:  tag (u8 via ptr-write-u8)
 ;;   offset 8:  String.cap  (u64)
+;;              Reader immutable tag-5 strings reserve bit 62 for an explicit
+;;              multibyte representation; low 62 bits are the allocated capacity.
+;;              Buffer GC uses pointer/length, not this representation bit.
 ;;   offset 16: String.ptr  (u64 — *const u8 char data)
 ;;   offset 24: String.len  (u64)
 ;;
