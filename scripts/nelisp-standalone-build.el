@@ -20935,6 +20935,18 @@ signalling arm -- never simply absent, so `fboundp' cannot go void again."
              (wf_write_t out)
            (wf_write_nil out))))
 
+(defun nelisp-standalone--n5-syscall-dispatch (form)
+  "Route the existing interpreted syscall bridge through child-exec setup."
+  (cond
+   ((equal form '(syscall-direct (wf_argval args 0) (wf_argval args 1)
+                                (wf_argval args 2) (wf_argval args 3)
+                                (wf_argval args 4) (wf_argval args 5)
+                                (wf_argval args 6)))
+    (cons 'nl_os_interpreted_syscall (cdr form)))
+   ((consp form) (cons (nelisp-standalone--n5-syscall-dispatch (car form))
+                      (nelisp-standalone--n5-syscall-dispatch (cdr form))))
+   (t form)))
+
 (defun nelisp-standalone--applyfn-assemble (helper-groups table &optional default-form)
   "Assemble an applyfn `(seq ...)' unit from HELPER-GROUPS (lists of defun forms,
 appended in order) and the dispatch TABLE, ending in nelisp_apply_function.
@@ -20942,6 +20954,11 @@ DEFAULT-FORM is the unknown-builtin fallthrough passed to
 `nelisp-standalone--applyfn-build-dispatch' (pass `1' for the baked eval link
 set, which lacks the reader-only `nl_os_write_stderr')."
   (let ((dispatch (nelisp-standalone--applyfn-build-dispatch table default-form)))
+    ;; N5 clauses 3/4: keep the bridge inventory and ordering unchanged.
+    ;; Only the reader's existing raw syscall implementation needs child-exec
+    ;; signal setup; baked arithmetic-only link sets have no OS helpers.
+    (unless default-form
+      (setq dispatch (nelisp-standalone--n5-syscall-dispatch dispatch)))
     (append
      '(seq)
      (apply #'append helper-groups)
@@ -21804,9 +21821,8 @@ POSIX-style child-fd setup step (see
 	            (let* ((fd (nl_bi_process_get_int proc 5))
 	                   (n (nl_os_write_file_handle
 	                       fd (nl_bi_strptr str) (nl_bi_strlen str))))
-	              (if (< n 0)
-	                  (nl_seq2 (wf_write_nil out) 0)
-	                (nl_seq2 (wf_write_int out n) 0)))
+	              ;; N5: Lisp owns GNU error/status policy; retain raw -errno.
+	              (nl_seq2 (wf_write_int out n) 0))
 	          (nl_seq2 (wf_write_nil out) 0))))
 	    (defun nl_bi_process_close_stdin (args out)
 	      (let* ((proc (wf_arg_ptr args 0)))
@@ -33009,10 +33025,51 @@ target the same installed names signal catchable
   (append
    (nelisp-standalone--os-syscall-xlat-forms)
    (nelisp-standalone--reader-os-base-forms)
+   (nelisp-standalone--n5-signal-forms)
    (nelisp-standalone--target-os-code-forms)
    (nelisp-standalone--socket-forms)
    (nelisp-standalone--tls-forms)
    (nelisp-standalone--thread-forms)))
+
+(defun nelisp-standalone--n5-signal-forms ()
+  "Private startup/exec OS plumbing, not additional Lisp native entries.
+N5 native-policy justification: clause 3 (raw OS signal disposition) and
+clause 4 (must run before the first Lisp form, including image startup).
+SIG_IGN is kernel process state, never a heap-image flag.  Forked Lisp
+workers keep it; only exec children restore SIG_DFL.  Failed exec restores
+SIG_IGN so a caller that handles the failure can continue safely."
+  (let* ((windows (memq nelisp-standalone--target
+                        '(windows-x86_64 windows-aarch64)))
+         (darwin (eq nelisp-standalone--target 'macos-aarch64))
+         (arm (eq nelisp-standalone--target 'linux-aarch64))
+         (exec-nr (if arm 221 59))
+         (sigaction-nr (cond (darwin 46) (arm 134) (t 13))))
+    (if windows
+        '((defun nl_os_sigpipe (handler) 0)
+          (defun nl_os_interpreted_syscall (nr a b c d e f)
+            (syscall-direct nr a b c d e f)))
+      `((defun nl_os_sigpipe (handler)
+          (let ((action (alloc-bytes 32 8)))
+            (seq
+             ;; Linux kernel sigaction: handler, flags, restorer, mask.
+             ;; Darwin user_sigaction: handler, trampoline, mask32, flags32.
+             ;; Zeroing both layouts is sufficient for SIG_IGN/SIG_DFL;
+             ;; no user handler runs, so no restorer/trampoline is required.
+             (ptr-write-u64 action 0 handler)
+             (ptr-write-u64 action 8 0)
+             (ptr-write-u64 action 16 0)
+             (ptr-write-u64 action 24 0)
+             (syscall-direct ,sigaction-nr 13 action 0 ,(if darwin 0 8) 0 0))))
+        (defun nl_os_execve (path argv envp)
+          (let ((setup (nl_os_sigpipe 0)))
+            (if (< setup 0) setup
+              (let ((rc (syscall-direct ,exec-nr path argv envp 0 0 0)))
+                (seq (nl_os_sigpipe 1) rc)))))
+        (defun nl_os_interpreted_syscall (nr a b c d e f)
+          ;; Covers Lisp PTY/pipe spawn paths using the existing raw bridge.
+          (if ,(if darwin '(or (= nr 59) (= nr 33554491)) `(= nr ,exec-nr))
+              (nl_os_execve a b c)
+            (syscall-direct nr a b c d e f)))))))
 
 (defun nelisp-standalone--reader-os-base-forms ()
   "Return the per-target base OS helper defuns (argv/file/process)."
@@ -33500,7 +33557,7 @@ target the same installed names signal catchable
            (if (< pid 0) pid
              (if (> (ptr-read-u64 childp 0) 0) 0 pid))))
 	       (defun nl_os_process_execve (path argv envp)
-	         (syscall-direct 59 path argv envp 0 0 0))
+	         (nl_os_execve path argv envp))
 	       (defun nl_os_process_wait4 (pid statusp options)
 	         (syscall-direct 7 pid statusp options 0 0 0))
 	       (defun nl_os_process_dup2 (oldfd newfd)
@@ -33574,7 +33631,7 @@ target the same installed names signal catchable
        (defun nl_os_process_fork ()
          (syscall-direct 220 17 0 0 0 0 0))   ; clone(SIGCHLD,...)
        (defun nl_os_process_execve (path argv envp)
-         (syscall-direct 221 path argv envp 0 0 0))
+         (nl_os_execve path argv envp))
        (defun nl_os_process_wait4 (pid statusp options)
          (syscall-direct 260 pid statusp options 0 0 0))
        (defun nl_os_process_dup2 (oldfd newfd)
@@ -33640,7 +33697,7 @@ target the same installed names signal catchable
        (defun nl_os_process_fork ()
          (syscall-direct 57 0 0 0 0 0 0))
 	       (defun nl_os_process_execve (path argv envp)
-	         (syscall-direct 59 path argv envp 0 0 0))
+	         (nl_os_execve path argv envp))
 	       (defun nl_os_process_wait4 (pid statusp options)
 	         (syscall-direct 61 pid statusp options 0 0 0))
 	       (defun nl_os_process_dup2 (oldfd newfd)
@@ -35231,6 +35288,9 @@ correctly."
                               pool out ctx builtin_sym clal_sym))))
     (defun driver (sp)
      (let* ((arena (nl_arena_init))
+            ;; N5: before prelude/file/image I/O, ignore SIGPIPE like GNU.
+            ;; Reinstall on every startup, independent of saved heap state.
+            (_sigpipe (nl_os_sigpipe 1))
             ;; Increment 2 (`--cold-load-from PATH'): argv parsing moved UP,
             ;; ahead of the cold-load gate below, so the gate can recognize an
             ;; explicit override path (previously this block ran AFTER the
@@ -35309,6 +35369,8 @@ correctly."
             ;; the arena + bump the cursor past it so every following alloc
             ;; lands after the image (no clobber).  -1 = no marker / no flag.
             (_cl (nl_cold_load_arena cold_override))
+            ;; A restored image must use this process's signal disposition.
+            (_sigpipe_image (nl_os_sigpipe 1))
             ;; Doc 152 §11.21 root-coverage fix (2026-07-04): capture
             ;; STACK_TOP here, AFTER `nl_cold_load_arena' has run, instead of
             ;; right after `nl_arena_init' (the original position).  When a

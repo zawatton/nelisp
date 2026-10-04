@@ -11400,6 +11400,8 @@ headless runtime cannot answer Emacs's own confirmation prompt."
            ;; The compiler writes its own object file through here, which is
            ;; how an ASCII source still lost native compilation.
            (expected (string-bytes bytes)))
+      (when (= rc -32)
+        (signal 'file-error (list "Write error" "Broken pipe" filename)))
       (unless (= rc expected)
         (signal 'error
                 (list (format "write-region: wrf returned %S (expected %S bytes) path=%s"
@@ -23940,3 +23942,85 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
      (princ ")\n"))
    'backtrace)
   nil)
+
+;; N5: GNU's EPIPE process policy belongs in Lisp.  The existing native
+;; bridge returns bytes written or negative errno; no new native entry.
+;; Keep the literal builtin delegate stable across prelude/image reloads.
+(fset 'nelisp--n5-process-write-os '(builtin nelisp-process-write))
+(defun nelisp--n5-check-broken-pipe (process)
+  "Reject further sends after the synthetic GNU EPIPE exit."
+  (when (and (vectorp process) (>= (length process) 6)
+             (eq (aref process 0) 1886547811)
+             (eq (aref process 3) 1) (eq (aref process 4) 256))
+    (error "Process %s not running: exited abnormally with code 256\n"
+           (if (fboundp 'process-name) (process-name process)
+             (number-to-string (aref process 1))))))
+(fset 'nelisp--n5-process-close-stdin-os '(builtin nelisp-process-close-stdin))
+(defun nelisp-process-close-stdin (process)
+  "Close PROCESS input, rejecting a previous EPIPE exit like GNU."
+  (nelisp--n5-check-broken-pipe process)
+  (nelisp--n5-process-close-stdin-os process))
+(defun nelisp-process-write (process string)
+  "Write STRING to PROCESS, reporting a closed reader like GNU Emacs."
+  (nelisp--n5-check-broken-pipe process)
+  (let ((result (nelisp--n5-process-write-os process string)))
+    (cond
+     ((eq result -32)
+      (nelisp-process-close-stdin process)
+      ;; GNU process.c send_process: broken pipe is synthetic exit 256.
+      (aset process 3 1)
+      (aset process 4 256)
+      (error "Process %s no longer connected to pipe; closed it"
+             (if (fboundp 'process-name) (process-name process)
+               (number-to-string (aref process 1)))))
+     ((and (integerp result) (< result 0)) nil)
+     (t result))))
+
+;; Lisp reference for the native clauses 3/4 startup helper.  It also covers
+;; the optional OS library's libc exec path, which bypasses raw exec syscalls.
+(defun nelisp--n5-sigpipe-disposition (handler)
+  "Set SIGPIPE to HANDLER (0 default, 1 ignore) through the existing OS bridge."
+  (if (eq system-type 'windows-nt) 0
+    (let ((action (alloc-bytes 32 8)))
+      (ptr-write-u64 action 0 handler)
+      (ptr-write-u64 action 8 0)
+      (ptr-write-u64 action 16 0)
+      (ptr-write-u64 action 24 0)
+      (syscall-direct
+       (cond ((eq system-type 'darwin) #x200002e)
+             ((= (nelisp--target-arch-code) 1) 134)
+             (t 13))
+       13 action 0 (if (eq system-type 'darwin) 0 8) 0 0))))
+(defun nelisp--n5-execve-with-default-sigpipe (function &rest arguments)
+  "Restore child SIG_DFL before libc exec, and SIG_IGN if exec returns."
+  (let ((rc (nelisp--n5-sigpipe-disposition 0)))
+    (unless (= rc 0) (signal 'file-error (list "Setting child SIGPIPE" rc)))
+    (unwind-protect (apply function arguments)
+      (nelisp--n5-sigpipe-disposition 1))))
+(defun nelisp--n5-install-os-exec-hook ()
+  "Install optional libc exec setup once its OS provider is loaded."
+  (unless (advice-member-p #'nelisp--n5-execve-with-default-sigpipe
+                          'nelisp-os-execve)
+    (advice-add 'nelisp-os-execve :around
+                #'nelisp--n5-execve-with-default-sigpipe)))
+;; GNU after-load functions are loaded AFTER this prelude during fresh boot.
+;; Register a named callback directly; no early eval-after-load dependency.
+(defvar after-load-alist nil)
+(if (featurep 'nelisp-stdlib-os)
+    (nelisp--n5-install-os-exec-hook)
+  (let ((entry (assq 'nelisp-stdlib-os after-load-alist)))
+    (if entry
+        (unless (memq #'nelisp--n5-install-os-exec-hook (cdr entry))
+          (setcdr entry (cons #'nelisp--n5-install-os-exec-hook (cdr entry))))
+      (setq after-load-alist
+            (cons (list 'nelisp-stdlib-os #'nelisp--n5-install-os-exec-hook)
+                  after-load-alist)))))
+
+;; The library's boolean file backend must not turn EPIPE into success/nil.
+;; Use the existing errno-preserving raw writer, keeping its success result.
+(defun nl-write-file (filename bytes)
+  "Write BYTES to FILENAME, returning t or reporting EPIPE as a file error."
+  (let ((result (wrf filename bytes)))
+    (when (= result -32)
+      (signal 'file-error (list "Write error" "Broken pipe" filename)))
+    (>= result 0)))
