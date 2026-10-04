@@ -89,6 +89,12 @@ Mirrors the positional slot order of `cl--class' and its `:include'
 child `eieio--class' as declared in eieio-core.el.")
 
 (when emacs-parity-eieio--standalone-p
+  ;; The bootstrap bundle must place genuine GNU macroexp.el and gv.el before
+  ;; this shim.  The foundation's `gv' feature placeholder intentionally does
+  ;; not register declarations; silently loading by feature or resolver here
+  ;; would occur too late for earlier API consumers such as timer.el.
+  (unless (assq 'gv-setter defun-declarations-alist)
+    (error "emacs-parity-eieio: GNU gv-setter provider missing before shim"))
   (dolist (entry emacs-parity-eieio--accessor-index)
     ;; Idempotent: only add if not already present with the same index.
     (let ((cur (assq (car entry) nelisp-cl-macros--accessor-info)))
@@ -129,9 +135,10 @@ child `eieio--class' as declared in eieio-core.el.")
   (when (and (fboundp 'cl--set-find-class)
              (not (get 'cl--find-class 'cl-simple-setter)))
     (put 'cl--find-class 'cl-simple-setter 'cl--set-find-class))
-  (message "emacs-parity-eieio: registered %d struct accessor setf places%s"
-           (length emacs-parity-eieio--accessor-index)
-           (if (get 'cl--find-class 'cl-simple-setter) " + cl--find-class" "")))
+  (when (and (fboundp 'getenv) (getenv "NELISP_DEBUG_EIEIO"))
+    (message "emacs-parity-eieio: registered %d struct accessor setf places%s"
+             (length emacs-parity-eieio--accessor-index)
+             (if (get 'cl--find-class 'cl-simple-setter) " + cl--find-class" ""))))
 
 ;; `cl--struct-name-p'/`cl--builtin-type-p'/`cl-struct-define' are real
 ;; Emacs's `cl-preloaded.el' functions (dumped before any Lisp loads, so no

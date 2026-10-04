@@ -43,23 +43,120 @@
       (not (boundp 'emacs-version))
       (not (fboundp symbol))))
 
+(defun emacs-process-builtins--check-string (value)
+  "Require VALUE to be a string, using the public Emacs error predicate."
+  (unless (stringp value)
+    (signal 'wrong-type-argument (list 'stringp value))))
+
+(defun emacs-process-builtins--check-call-arguments (program infile destination args)
+  "Validate the string arguments to synchronous program execution."
+  (emacs-process-builtins--check-string program)
+  (when infile
+    (emacs-process-builtins--check-string infile))
+  (dolist (arg args)
+    (emacs-process-builtins--check-string arg))
+  (let ((output (if (consp destination) (car destination) destination))
+        (stderr (and (consp destination) (consp (cdr destination))
+                     (car (cdr destination)))))
+    (unless (or (null output) (eq output t) (integerp output)
+                (bufferp output))
+      (emacs-process-builtins--check-string output))
+    (unless (or (null stderr) (eq stderr t))
+      (emacs-process-builtins--check-string stderr))))
+
+(defun emacs-process-builtins--region-position (position)
+  "Return POSITION as an integer, checking marker and integer arguments."
+  (cond ((integerp position) position)
+        ((markerp position)
+         (or (marker-position position)
+             (error "Marker does not point anywhere")))
+        (t (signal 'wrong-type-argument
+                   (list 'integer-or-marker-p position)))))
+
+(defun emacs-process-builtins--pipe-p (process)
+  "Recognize the standalone prelude's pipe connection representation."
+  (and (vectorp process) (= (length process) 7)
+       (eq (aref process 0) 'pipe-process)))
+
+(defun emacs-process-builtins--resolve-process (process)
+  "Resolve PROCESS as a process, process name, buffer, or buffer name."
+  (cond
+   ((or (processp process) (emacs-process-builtins--pipe-p process)) process)
+   ((or (null process) (bufferp process) (stringp process))
+    (or (and (stringp process) (get-process process))
+        (let ((buffer (cond ((null process) (current-buffer))
+                            ((bufferp process) process)
+                            (t (get-buffer process)))))
+          (unless buffer
+            (error "Process %s does not exist" process))
+          (or (catch 'found
+                (dolist (candidate (process-list))
+                  (when (eq (process-buffer candidate) buffer)
+                    (throw 'found candidate))))
+              (error "Buffer %s has no process" (buffer-name buffer))))))
+   (t (signal 'wrong-type-argument (list 'processp process)))))
+
+(defun emacs-process-builtins--initialize-command (process command)
+  "Retain the requested COMMAND and the initial output marker for PROCESS."
+  (when (emacs-process--process-object-p process)
+    (emacs-process--native-set-metadata process :command command)
+    (let ((marker (make-marker)) (buffer (process-buffer process)))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer (set-marker marker (point-max) buffer)))
+      (emacs-process--native-set-metadata process :output-marker marker)))
+  process)
+
 (when (emacs-process-builtins--install-function-p 'call-process)
-  (defalias 'call-process #'emacs-process-call-process))
+  (defun call-process (program &optional infile destination display &rest args)
+    "Run PROGRAM synchronously with INFILE, DESTINATION, DISPLAY and ARGS."
+    (emacs-process-builtins--check-call-arguments program infile destination args)
+    (apply #'emacs-process-call-process program infile destination display args)))
 
 (when (emacs-process-builtins--install-function-p 'call-process-region)
-  (defalias 'call-process-region #'emacs-process-call-process-region))
+  (defun call-process-region (start end program &optional delete buffer display
+                                   &rest args)
+    "Run PROGRAM with input from START..END, or the string START."
+    (let (size)
+      (cond
+       ((stringp start) (setq size (length start)))
+       ((null start) (setq size (- (point-max) (point-min))))
+       (t
+        (let ((begin (emacs-process-builtins--region-position start))
+              (finish (emacs-process-builtins--region-position end)))
+          (unless (and (<= (point-min) begin) (<= begin (point-max))
+                       (<= (point-min) finish) (<= finish (point-max)))
+            (signal 'args-out-of-range (list (current-buffer) begin finish)))
+          (setq size (abs (- finish begin))))))
+      ;; GNU's nonempty-input path validates PROGRAM before spawning the
+      ;; child; the empty-input path uses call-process's string predicate.
+      (when (and (> size 0) (not (stringp program)))
+        (error "Invalid argument 3 of operation ‘call-process-region’"))
+      (emacs-process-builtins--check-call-arguments program nil buffer args)
+      (apply #'emacs-process-call-process-region
+             start end program delete buffer display args))))
 
 (when (emacs-process-builtins--install-function-p 'process-file)
   (defalias 'process-file #'emacs-process-process-file))
 
 (when (emacs-process-builtins--install-function-p 'start-process)
-  (defalias 'start-process #'emacs-process-start-process))
+  (defun start-process (name buffer program &rest args)
+    "Start PROGRAM with ARGS and retain its original command spelling."
+    (emacs-process-builtins--initialize-command
+     (apply #'emacs-process-start-process name buffer program args)
+     (cons program args))))
 
 (when (emacs-process-builtins--install-function-p 'start-file-process)
-  (defalias 'start-file-process #'emacs-process-start-file-process))
+  (defun start-file-process (name buffer program &rest args)
+    "Start PROGRAM with ARGS, allowing file name handlers."
+    (emacs-process-builtins--initialize-command
+     (apply #'emacs-process-start-file-process name buffer program args)
+     (cons program args))))
 
 (when (emacs-process-builtins--install-function-p 'make-process)
-  (defalias 'make-process #'emacs-process-make-process))
+  (defun make-process (&rest args)
+    "Create a subprocess described by the keyword options in ARGS."
+    (emacs-process-builtins--initialize-command
+     (apply #'emacs-process-make-process args) (plist-get args :command))))
 
 (when (emacs-process-builtins--install-function-p 'processp)
   (defalias 'processp #'emacs-process-processp))
@@ -104,13 +201,36 @@
   (defalias 'signal-process #'emacs-process-signal-process))
 
 (when (emacs-process-builtins--install-function-p 'kill-process)
-  (defalias 'kill-process #'emacs-process-kill-process))
+  (defun kill-process (&optional process current-group)
+    "Send SIGKILL to PROCESS, optionally addressing CURRENT-GROUP."
+    (setq process (emacs-process-builtins--resolve-process process))
+    (when (or (emacs-process-builtins--pipe-p process)
+              (emacs-process--network-process-p process))
+      (error "Process %s is not a subprocess"
+             (if (emacs-process-builtins--pipe-p process)
+                 (aref process 1)
+               (process-name process))))
+    (unless (memq (process-status process) '(run stop))
+      (error "Process %s is not active" (process-name process)))
+    (if (and (emacs-process--native-process-p process)
+             (fboundp 'emacs-process-posix--available-p)
+             (emacs-process-posix--available-p))
+        (emacs-process-send-control-signal process 'KILL current-group)
+      (emacs-process-signal-process process 'KILL))
+    process))
 
 (when (emacs-process-builtins--install-function-p 'process-send-string)
   (defalias 'process-send-string #'emacs-process-process-send-string))
 
 (when (emacs-process-builtins--install-function-p 'process-send-eof)
-  (defalias 'process-send-eof #'emacs-process-process-send-eof))
+  (defun process-send-eof (&optional process)
+    "Close PROCESS's outgoing stream and return the process."
+    (setq process (emacs-process-builtins--resolve-process process))
+    (if (and (fboundp 'emacs-cc-pipe-process-1--pipe-p)
+             (emacs-cc-pipe-process-1--pipe-p process))
+        (emacs-cc-pipe-process-1--send-eof process)
+      (emacs-process-process-send-eof process)
+      process)))
 
 (when (emacs-process-builtins--install-function-p 'delete-process)
   (defalias 'delete-process #'emacs-process-delete-process))

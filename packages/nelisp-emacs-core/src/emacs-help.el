@@ -1170,10 +1170,44 @@ etc.) is silently re-shadowed before the binding step."
 
 (emacs-help--ensure-global-bindings)
 
+(defun emacs-help--resolve-function-doc (doc)
+  "Resolve a raw function documentation value DOC."
+  (cond
+   ((stringp doc) doc)
+   ((integerp doc)
+    (when (fboundp 'get-doc-string) (get-doc-string doc)))
+   ((and (consp doc) (integerp (cdr doc)))
+    (unless (stringp (car doc))
+      (signal 'wrong-type-argument (list 'stringp (car doc))))
+    (if (fboundp 'get-doc-string)
+        (get-doc-string doc)
+      (if (file-exists-p (car doc))
+          (error "External documentation requires get-doc-string")
+        (format "Cannot open doc string file \"%s\"\n" (car doc)))))
+   (t nil)))
+
 (unless (fboundp 'documentation)
-  (defun documentation (function &optional _raw)
-    (let ((f (if (symbolp function) (and (fboundp function) function) nil)))
-      (and f (get f 'function-documentation)))))
+  (defun documentation (function &optional raw)
+    "Return the documentation string of FUNCTION.
+Unless RAW is non-nil, pass the string through `substitute-command-keys'."
+    (if (and (symbolp function) (get function 'function-documentation))
+        (documentation-property function 'function-documentation raw)
+      (let ((original function)
+            seen doc)
+        ;; Only the requested symbol's property overrides the definition.
+        ;; Undefined aliases signal with the original symbol as their data.
+        (while (symbolp function)
+          (when (memq function seen)
+            (signal 'cyclic-function-indirection (list original)))
+          (push function seen)
+          (setq function (symbol-function function))
+          (unless function
+            (signal 'void-function (list original))))
+        (setq doc (emacs-help--resolve-function-doc
+                   (function-documentation function)))
+        (if (and (stringp doc) (not raw))
+            (substitute-command-keys doc)
+          doc)))))
 (unless (fboundp 'help-function-arglist)
   (defun help-function-arglist (def &optional _preserve-names)
     (let ((f (cond ((symbolp def) (and (fboundp def) (symbol-function def))) (t def))))

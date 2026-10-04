@@ -13,5 +13,10 @@ while IFS= read -r source_dir; do
   done < <(find "$root/$source_dir" -maxdepth 1 -type f -name '*.el' | sort)
 done < <(cd "$root" && DOC211_SOURCE_ROOTS_PRINT=1 emacs -Q --batch \
   -L packages/nelisp-pkg/src -l scripts/doc211-source-roots.el)
+owner="$root/packages/nl-ffi/src/nl-ffi-memory.el"
+if [[ -f "$owner" ]]; then
+  test ! -e "$out/src/nl-ffi-memory.el" || { echo "duplicate imported FFI memory owner source" >&2; exit 1; }
+  ln -s "$(realpath "$owner")" "$out/src/nl-ffi-memory.el"
+fi
 ln -sfn "$(realpath "$root/vendor")" "$out/vendor"
 printf '%s\n' "$out"

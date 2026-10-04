@@ -77,10 +77,75 @@
     "Return height in pixels of text line in the selected window."
     1))
 
+(defvar long-line-threshold 50000
+  "Minimum displayed line length that enables long-line optimizations.
+Nil disables detection, matching GNU Emacs.")
+
+(defun emacs-cc-xdisp-1--long-line-clip (buffer)
+  "Return BUFFER's current narrowing bounds when available."
+  (when (and (fboundp 'nelisp-ec-buffer-narrow-start)
+             (fboundp 'nelisp-ec-buffer-narrow-end))
+    (cons (nelisp-ec-buffer-narrow-start buffer)
+          (nelisp-ec-buffer-narrow-end buffer))))
+
+(defun emacs-cc-xdisp-1--long-line-found-p (text threshold)
+  "Return non-nil when TEXT has a line longer than THRESHOLD."
+  (let ((index 0)
+        (line-start 0)
+        (length (length text))
+        found)
+    (while (and (< index length) (not found))
+      (if (= (aref text index) ?\n)
+          (progn
+            (when (> (1+ (- index line-start)) threshold)
+              (setq found t))
+            (setq line-start (1+ index)))
+        (when (> (1+ (- index line-start)) threshold)
+          (setq found t)))
+      (setq index (1+ index)))
+    (or found (> (- length line-start) threshold))))
+
+(defun emacs-cc-xdisp-1--update-long-line-state (buffer text-tick text-function)
+  "Update BUFFER's long-line state during a redisplay pass.
+TEXT-FUNCTION is called only when GNU's change trigger requests a scan."
+  (when (and buffer
+             (fboundp 'emacs-buffer-buffer-local-variables)
+             (fboundp 'emacs-buffer-set-buffer-local-value))
+    (let* ((previous
+            (cdr (assq 'emacs-cc-xdisp-1--long-line-state
+                       (emacs-buffer-buffer-local-variables buffer))))
+           (clip (emacs-cc-xdisp-1--long-line-clip buffer))
+           (old-tick (car-safe previous))
+           (latched (nth 2 previous))
+           (scan-p (or (null previous)
+                       (not (equal clip (nth 1 previous)))
+                       (and text-tick old-tick
+                            (> (- text-tick old-tick) 8))))
+           (threshold long-line-threshold))
+      (when (and scan-p (not latched) threshold (integerp threshold))
+        (setq latched
+              (emacs-cc-xdisp-1--long-line-found-p
+               (funcall text-function) threshold)))
+      (emacs-buffer-set-buffer-local-value
+       'emacs-cc-xdisp-1--long-line-state buffer (list text-tick clip latched))
+      latched)))
+
 (unless (fboundp 'long-line-optimizations-p)
   (defun long-line-optimizations-p ()
     "Return non-nil if long-line optimizations are in effect in current buffer."
-    nil))
+    (let ((buffer (cond
+                   ((fboundp 'emacs-buffer--property-current-buffer)
+                    (emacs-buffer--property-current-buffer))
+                   ((and (boundp 'nelisp-ec--current-buffer)
+                         nelisp-ec--current-buffer)
+                    nelisp-ec--current-buffer)
+                   ((fboundp 'emacs-buffer--current)
+                    (emacs-buffer--current))
+                   (t nil))))
+      (and buffer
+           (fboundp 'emacs-buffer-buffer-local-variables)
+           (nth 2 (cdr (assq 'emacs-cc-xdisp-1--long-line-state
+                             (emacs-buffer-buffer-local-variables buffer))))))))
 
 (unless (fboundp 'lookup-image-map)
   (defun lookup-image-map (map x y)

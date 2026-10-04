@@ -1,0 +1,53 @@
+;;; nelisp-display-state-test.el --- Persistent display state regressions -*- lexical-binding: t; -*-
+
+(require 'ert)
+(require 'emacs-frame-builtins)
+(require 'emacs-window-builtins)
+
+(ert-deftest emacs-display-state/terminal-layout-and-event-reconciliation ()
+  ;; GNU batch separates text geometry from cached initial terminal size
+  ;; until a positive event wait.  Subsequent resizes update both.
+  (let* ((emacs-frame--registry nil)
+         (emacs-window--root nil)
+         (emacs-window--selected nil)
+         (emacs-minibuffer--window nil)
+         (frame (emacs-frame-make-frame '((width . 72) (height . 28)
+                                         (menu-bar-lines . 2)))))
+    (cl-letf (((symbol-function 'frame-parameter)
+               #'emacs-frame-frame-parameter))
+      (emacs-frame-builtins-layout-terminal frame 72 26)
+      (should (= (emacs-frame-height frame) 28))
+      (should (= (emacs-window-total-lines emacs-window--root) 25))
+      (should (equal (emacs-window-window-edges emacs-window--root)
+                     '(0 2 72 27)))
+      (emacs-frame-builtins-reconcile-terminal-sizes)
+      (should (= (emacs-frame-height frame) 26))
+      (emacs-frame-builtins-layout-terminal frame 43 17)
+      (should (= (emacs-frame-width frame) 43))
+      (should (= (emacs-frame-height frame) 17))
+      (should (= (emacs-frame-pixel-height frame)
+                 (* 19 emacs-frame--char-height)))
+      (emacs-frame-set-frame-parameter frame 'left 7)
+      (should (= (emacs-frame-pixel-height frame)
+                 (* 19 emacs-frame--char-height))))))
+
+(ert-deftest emacs-display-state/delete-split-preserves-root-origin ()
+  (let ((emacs-window--root nil) (emacs-window--selected nil)
+        (emacs-minibuffer--window nil))
+    (emacs-window-layout-frame 42 19 2)
+    (let ((new (emacs-window-split-window nil nil 'below)))
+      (should (= (cadr (emacs-window-window-edges new)) 11))
+      (emacs-window-delete-window new)
+      (should (equal (emacs-window-window-edges) '(0 2 42 20))))))
+
+(ert-deftest emacs-display-state/recorded-selection-advances-use-clock ()
+  (let ((emacs-window--root nil) (emacs-window--selected nil)
+        (emacs-window--use-time-counter 0))
+    (let ((window (emacs-window-selected-window)))
+      (should (= (emacs-window-use-time window) 1))
+      (emacs-window-select-window window)
+      (should (= (emacs-window-use-time window) 2))
+      (emacs-window-select-window window 'norecord)
+      (should (= (emacs-window-use-time window) 2)))))
+
+;;; nelisp-display-state-test.el ends here

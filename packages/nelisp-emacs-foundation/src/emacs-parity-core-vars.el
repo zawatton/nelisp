@@ -247,16 +247,36 @@ If INPUT-METHOD is nil, this function turns off the input method."
     default-input-method))
 
 ;; --- headless display-hint functions -----------------------------------
-;; The batch substrate has no frame/redisplay, so these C display primitives
-;; are correctly inert here: `force-window-update' only schedules a redisplay
-;; and `set-window-fringes' sets display-only geometry; both return nil like
-;; the C originals do for a non-interactive frame.  They surfaced as
-;; void-function in the full-init audit (mode/ui setup calling them at load).
+;; Redisplay requests report whether a target was found even in batch mode.
+;; Invalidate the substrate's cache when a redisplay handle is active.
 ;; Guarded with `fboundp' so a real GUI build keeps its native primitives.
 (unless (fboundp 'force-window-update)
-  (defun force-window-update (&optional _object)
-    "Headless no-op: no frame redisplay to force in the batch substrate."
-    nil))
+  (defun force-window-update (&optional object)
+    "Force windows displaying OBJECT to be updated on next redisplay.
+OBJECT may be a live window, a buffer, or a buffer name.  Nil requests
+an update of all windows.  Return t if an update was requested, and nil
+if OBJECT does not identify a displayed buffer or a live window."
+    (let ((handle (and (boundp 'emacs-redisplay--current-handle)
+                       emacs-redisplay--current-handle)))
+      (cond
+       ((null object)
+        (when handle
+          (emacs-redisplay-mark-frame-dirty handle))
+        t)
+       ((window-live-p object)
+        (when handle
+          (emacs-redisplay-mark-window-dirty handle object))
+        t)
+       ((or (bufferp object) (stringp object))
+        (let ((window (get-buffer-window object t)))
+          (when window
+            (when handle
+              (let ((buffer (window-buffer window)))
+                (dolist (target (window-list-1 nil t t))
+                  (when (eq (window-buffer target) buffer)
+                    (emacs-redisplay-mark-window-dirty handle target)))))
+            t)))
+       (t nil)))))
 (unless (fboundp 'set-window-fringes)
   (defun set-window-fringes (&rest _args)
     "Headless no-op: fringe geometry is display-only in the batch substrate."

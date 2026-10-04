@@ -105,6 +105,42 @@ libffi primitive is available).")
 
 ;;;; --- user / system identity stubs -----------------------------------
 
+(defun emacs-server-polyfills--uid (uid)
+  "Convert UID to an unsigned 32-bit user ID, or signal GNU's error."
+  (let ((value uid))
+    (when (consp value)
+      (let ((high (car value))
+            (low (if (consp (cdr value)) (cadr value) (cdr value)))
+            (tail (and (consp (cdr value)) (cddr value))))
+        ;; The obsolete (HIGH MIDDLE . LOW) representation appends a
+        ;; 16-bit LOW component.  A valid LOW selects that format; otherwise GNU
+        ;; treats the first two components as a pair of 16-bit integers.
+        (setq value
+              (and (integerp high) (integerp low)
+                   (<= 0 high 65535) (<= 0 low 65535)
+                   (if (and (integerp tail) (<= 0 tail 65535))
+                       ;; A nonzero HIGH cannot fit an unsigned 32-bit UID.
+                       (and (= high 0) (+ (* low 65536) tail))
+                     (+ (* high 65536) low))))))
+    (unless (and (numberp value) (<= 0 value #xffffffff)
+                 (or (integerp value) (= value (truncate value))))
+      (signal 'error
+              '("Not an in-range integer, integral float, or cons of integers")))
+    (truncate value)))
+
+(defun emacs-server-polyfills--passwd (key)
+  "Look up KEY in the operating system's user database.
+Return the colon-separated account fields, or nil for an unknown account."
+  (with-temp-buffer
+    (when (eq (call-process "getent" nil t nil "passwd"
+                            (if (stringp key) key (number-to-string key)))
+              0)
+      (let ((fields (split-string (buffer-string) ":")))
+        ;; getent also accepts numeric keys; a string key names a login.
+        (when (and (>= (length fields) 7)
+                   (or (not (stringp key)) (equal key (car fields))))
+          fields)))))
+
 (when emacs-server-polyfills--standalone-p
   (unless (fboundp 'user-uid)         (defun user-uid () 1000))
   (unless (fboundp 'user-real-uid)    (defun user-real-uid () (user-uid)))
@@ -115,29 +151,61 @@ libffi primitive is available).")
   (unless (fboundp 'selected-frame)   (defun selected-frame () t))
   (unless (and (fboundp 'user-login-name)
                (not (get 'user-login-name 'emacs-stub-bulk)))
-    (defun user-login-name (&optional _uid)
-      "Return the user's login name from the environment (standalone bridge)."
-      (or (and (fboundp 'getenv) (or (getenv "LOGNAME") (getenv "USER")))
-          "standalone"))
+    (defun user-login-name (&optional uid)
+      "Return the current login name, or the login name belonging to UID.
+An unknown numeric user ID returns nil."
+      (if (null uid)
+          (if (boundp 'user-login-name)
+              (symbol-value 'user-login-name)
+            (or (getenv "LOGNAME") (getenv "USER")
+                (car (emacs-server-polyfills--passwd (user-uid)))))
+        (car (emacs-server-polyfills--passwd
+              (emacs-server-polyfills--uid uid)))))
     (put 'user-login-name 'emacs-stub-bulk nil)))
 
 
 ;;;; --- featurep override for `:family local' -------------------------
 
+(defun emacs-server-polyfills--subfeature-p (sub subfeatures)
+  "Return t if SUB is `equal' to an element of SUBFEATURES.
+Signal list errors with the original list as their data."
+  (let ((tail subfeatures)
+        (slow subfeatures)
+        (advance nil)
+        (found nil))
+    (while (and (consp tail) (not found))
+      (if (equal sub (car tail))
+          (setq found t)
+        (setq tail (cdr tail))
+        (when advance
+          (setq slow (cdr slow)))
+        (setq advance (not advance))
+        (when (and (consp tail) (eq tail slow))
+          (signal 'circular-list (list subfeatures)))))
+    (unless (or found (null tail))
+      (signal 'wrong-type-argument (list 'listp subfeatures)))
+    found))
+
 (when emacs-server-polyfills--standalone-p
-  (let ((old (and (fboundp 'featurep) (symbol-function 'featurep))))
-    (defun featurep (feat &optional sub)
-      "Polyfill: 2-arg `featurep' that recognises the `:family local'
-sub-feature query vendor server.el / make-network-process callers use.
-Delegates other queries to the underlying stub (which returns nil)."
-      (cond
-       ((and (eq feat 'make-network-process)
-             (consp sub) (memq 'local sub))
-        t)
-       ((and (functionp old)
-             (condition-case _ (progn (funcall old feat) t) (error nil)))
-        (funcall old feat))
-       (t nil)))))
+  ;; GNU starts with the `emacs' feature.  K1 supplies local sockets;
+  ;; record that capability using the ordinary subfeature registry.
+  (provide 'emacs)
+  (provide 'make-network-process)
+  (unless (member '(:family local) (get 'make-network-process 'subfeatures))
+    (put 'make-network-process 'subfeatures
+         (cons '(:family local) (get 'make-network-process 'subfeatures))))
+
+  (defun featurep (feat &optional sub)
+    "Return t if FEAT is present in `features'.
+FEAT must be a symbol.  If SUB is non-nil, it must also occur, using
+`equal', in FEAT's `subfeatures' property."
+    (unless (symbolp feat)
+      (signal 'wrong-type-argument (list 'symbolp feat)))
+    (and (memq feat features)
+         (or (null sub)
+             (emacs-server-polyfills--subfeature-p
+              sub (get feat 'subfeatures)))
+         t)))
 
 
 ;;;; --- file primitives via libc -----------------------------------------

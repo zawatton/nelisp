@@ -16,18 +16,25 @@ If CLEANUP is non-nil, remove this error form from history."
     (when cleanup nil)))
 
 (unless (fboundp 'thread-live-p)
-  (defun thread-live-p (thread)
+  (defun thread-live-p (&rest arguments)
     "Return t if THREAD is alive, or nil if it has exited."
-    (emacs-cc-thread-2--check-thread thread)
-    ;; Runtimes without native thread handles have no live thread objects.
-    nil))
+    (unless (= (length arguments) 1)
+      (signal 'wrong-number-of-arguments
+              (list 'thread-live-p (length arguments))))
+    (let ((thread (emacs-cc-thread-2--check-thread (car arguments))))
+      ;; The fallback constructor runs to completion before returning.
+      ;; Its current execution context remains live.
+      (eq thread (current-thread)))))
 
 (unless (fboundp 'thread-name)
-  (defun thread-name (thread)
+  (defun thread-name (&rest arguments)
     "Return the name of the THREAD.
 The name is the same object that was passed to `make-thread'."
-    (emacs-cc-thread-2--check-thread thread)
-    nil))
+    (unless (= (length arguments) 1)
+      (signal 'wrong-number-of-arguments
+              (list 'thread-name (length arguments))))
+    (let ((thread (emacs-cc-thread-2--check-thread (car arguments))))
+      (aref thread 1))))
 
 (unless (fboundp 'thread-set-buffer-disposition)
   (defun thread-set-buffer-disposition (thread value)

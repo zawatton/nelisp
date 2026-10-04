@@ -1,0 +1,15 @@
+#+TITLE: Network-local FFI adapter prerequisite integration
+#+NOTE: Four criteria are defined before prerequisite integration. This ledger qualifies only the existing network FFI adapter, not public pipe-process completion. Whole C-core retains 24 criteria; the public pipe ledger retains six. Preserve both the native fixed-table and absent-native wrapper modes, external legacy call/errno semantics, mmap ownership and existing timing caps. No compiler or native build changes are included.
+
+* S1 Integrate the reviewed adapter prerequisites without backend regressions
+** S1.1 Integrated providers, Lisp builder and source-root script parse completely
+cmd: emacs -Q --batch --eval '(dolist (p (quote ("packages/nelisp-emacs-io/src/emacs-network-syscall-shim.el" "packages/nelisp-emacs-io/src/emacs-network-ffi.el" "scripts/build-nelisp-bootstrap.el"))) (with-temp-buffer (insert-file-contents p) (emacs-lisp-mode) (check-parens) (goto-char (point-min)) (while (progn (forward-comment (point-max)) (< (point) (point-max))) (read (current-buffer)))))' && bash -n scripts/doc211-bootstrap-source-root.sh
+** S1.2 Real minimal-source I/O passes in both runtime modes with retained backend and ownership controls
+evidence: target/progress/batch36/network-adapter/minimal-source-evidence.json sha256=4d8bedebb3872bfe60d47bac5c9409e406aeb852c6412634e555a25d7b36738d
+** S1.3 Identical real-I/O input rejects the retained old provider
+evidence: target/progress/batch36/network-adapter/negative-old.out sha256=7218d283868dccf1a030660a78567658068084ad6af97fe7120e5494f87033a6
+** S1.4 End to end: integrated full bootstrap performs real pipe allocation, GC-safe I/O, EOF and resource cleanup without reloading the adapter
+#+REQUIRES: NELISP_BIN
+cmd: NELISP_LIBRARY_ROOT="$PWD" python3 -c 'import json,os,subprocess,sys,time; from pathlib import Path; p=Path("target/progress/batch36/network-adapter"); start=time.monotonic_ns(); result=subprocess.run([os.environ["NELISP_BIN"],"--batch","-l",str((p/"bootstrap-real-io-driver.el").resolve())],stdout=(p/"formal-native.out").open("w"),stderr=(p/"formal-native.err").open("w")); (p/"formal-native-timing.json").write_text(json.dumps({"duration_ns":time.monotonic_ns()-start,"returncode":result.returncode})+"\n"); sys.exit(result.returncode)'
+#+NOTE: The first formal criterion returned exit 1. It remains red. The rerun records native stdout, complete stderr and elapsed time because the meter retains status but does not retain command diagnostics. No passing runtime check is repeated.
+#+NOTE: The retained diagnostic failed in 47793597322 ns because the generated bundle omits nl-ffi-memory-allocate and does not activate the adapter. Dependency delivery is repaired in the actual Lisp builder, staged source-root link and Make prerequisites; the formal driver must not reload providers after bootstrap. S1.1 now also parses this bounded delivery scope; the denominator remains four.

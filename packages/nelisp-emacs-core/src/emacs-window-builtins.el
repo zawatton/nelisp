@@ -97,6 +97,161 @@ fix already applied to `emacs-font-lock-builtins.el' /
       (not (stringp emacs-version))
       (not (emacs-window-builtins--function-cell-live-p symbol))))
 
+;;;; --- argument decoding and native buffer support --------------------
+
+(defun emacs-window-builtins--window (window &optional any-window)
+  "Decode WINDOW, requiring a live leaf unless ANY-WINDOW is non-nil."
+  (let ((w (or window (selected-window))))
+    (unless (if any-window (emacs-window-p w) (window-live-p w))
+      (signal 'wrong-type-argument
+              (list (if any-window 'windowp 'window-live-p) w)))
+    w))
+
+(defun emacs-window-builtins--frame (frame &optional allow-window)
+  "Validate FRAME, optionally accepting a valid window."
+  (unless (or (null frame)
+              (and allow-window (window-valid-p frame))
+              (frame-live-p frame))
+    (signal 'wrong-type-argument (list 'frame-live-p frame)))
+  (or frame (selected-frame)))
+
+(defun emacs-window-builtins--position (position)
+  "Decode an integer or marker POSITION."
+  (unless (or (integerp position) (markerp position))
+    (signal 'wrong-type-argument (list 'integer-or-marker-p position)))
+  (if (markerp position) (or (marker-position position) 0) position))
+
+(defun emacs-window-builtins--frame-windows (frame minibuf)
+  "Return FRAME's leaves, including its minibuffer as MINIBUF requests."
+  (let* ((root (and (emacs-frame-p frame) (emacs-frame-root-window frame)))
+         (windows (if root (emacs-window--leaves-of root)
+                    (and (eq frame (selected-frame))
+                         (emacs-window--all-leaves))))
+         (include-mini (or (eq minibuf t)
+                           (and (null minibuf) (active-minibuffer-window))))
+         (mini (minibuffer-window frame)))
+    ;; Allocate only when requested, just as the cyclic window bridge does.
+    (when (and include-mini (null mini) (eq frame (selected-frame)))
+      (setq mini (emacs-window--make
+                  :id (emacs-window--next-id)
+                  :buffer (get-buffer-create " *Minibuf-0*")
+                  :total-cols (emacs-window-total-cols (selected-window))
+                  :total-lines 1
+                  :top-line (+ (emacs-window-top-line emacs-window--root)
+                               (emacs-window-total-lines emacs-window--root))
+                  :parameters (list (cons 'minibuffer t))))
+      (setq emacs-minibuffer--window mini))
+    (setq windows (delq mini windows))
+    (if (and include-mini (window-live-p mini))
+        (append windows (list mini))
+      windows)))
+
+(defun emacs-window-builtins--rotate (windows window)
+  "Rotate WINDOWS to begin with WINDOW, if WINDOW occurs in it."
+  (let ((tail windows) prefix)
+    (while (and tail (not (eq (car tail) window)))
+      (setq prefix (cons (car tail) prefix)
+            tail (cdr tail)))
+    (if tail (append tail (nreverse prefix)) windows)))
+
+(defun emacs-window-builtins--cycle (window minibuf backwards)
+  "Find WINDOW's successor or predecessor in the implicit frame."
+  (let* ((w (emacs-window-builtins--window window))
+         (windows (emacs-window--all-leaves))
+         (include-mini (or (eq minibuf t)
+                           (and (null minibuf) (active-minibuffer-window))))
+         (mini (minibuffer-window)))
+    ;; The frame model allocates the minibuffer lazily.  Keep its dedicated
+    ;; leaf outside the ordinary window tree, as GNU's cyclic ordering does.
+    (when (and include-mini (null mini))
+      (setq mini (emacs-window--make
+                  :id (emacs-window--next-id)
+                  :buffer (get-buffer-create " *Minibuf-0*")
+                  :total-cols (emacs-window-total-cols w)
+                  :total-lines 1
+                  :top-line (+ (emacs-window-top-line emacs-window--root)
+                               (emacs-window-total-lines emacs-window--root))
+                  :parameters (list (cons 'minibuffer t))))
+      (setq emacs-minibuffer--window mini))
+    ;; Older minibuffer allocations can be ordinary tree leaves.  Include
+    ;; that leaf exactly once, and only when MINIBUF permits it.
+    (setq windows (delq mini windows))
+    (when (and (window-live-p mini)
+               include-mini)
+      (setq windows (append windows (list mini))))
+    (if backwards
+        (let ((previous (car (last windows))) (tail windows))
+          (while (and tail (not (eq (car tail) w)))
+            (setq previous (car tail) tail (cdr tail)))
+          previous)
+      (or (cadr (memq w windows)) (car windows)))))
+
+(defun emacs-window-builtins--snapshot (node parent)
+  "Copy NODE for a configuration, retaining its original identity."
+  (let ((copy (emacs-window--copy-shallow node)))
+    (setf (emacs-window-parent copy) parent
+          (emacs-window-parameters copy)
+          (cons (cons 'emacs-window-builtins--original node)
+                (copy-alist (emacs-window-parameters node))))
+    (unless (emacs-window-leaf-p node)
+      (setf (emacs-window-children copy)
+            (mapcar (lambda (child)
+                      (emacs-window-builtins--snapshot child copy))
+                    (emacs-window-children node))))
+    copy))
+
+(defun emacs-window-builtins--restore (copy parent)
+  "Restore COPY into its original window with PARENT."
+  (let ((node (cdr (assq 'emacs-window-builtins--original
+                         (emacs-window-parameters copy)))))
+    (if (not node)
+        (emacs-window--copy-tree copy parent)
+      (setf (emacs-window-buffer node) (emacs-window-buffer copy)
+            (emacs-window-point node) (emacs-window-point copy)
+            (emacs-window-start node) (emacs-window-start copy)
+            (emacs-window-total-cols node) (emacs-window-total-cols copy)
+            (emacs-window-total-lines node) (emacs-window-total-lines copy)
+            (emacs-window-top-line node) (emacs-window-top-line copy)
+            (emacs-window-leaf-p node) (emacs-window-leaf-p copy)
+            (emacs-window-direction node) (emacs-window-direction copy)
+            (emacs-window-deleted-p node) nil
+            (emacs-window-parent node) parent
+            (emacs-window-parameters node)
+            (copy-alist (cdr (emacs-window-parameters copy)))
+            (emacs-window-children node)
+            (mapcar (lambda (child)
+                      (emacs-window-builtins--restore child node))
+                    (emacs-window-children copy)))
+      node)))
+
+(defun emacs-window-builtins--scroll (arg direction)
+  "Scroll the selected window by ARG lines in DIRECTION."
+  (let* ((w (emacs-window-builtins--window nil))
+         (buffer (window-buffer w)))
+    (if (nelisp-ec-buffer-p buffer)
+        (emacs-window--scroll w arg direction)
+      (with-current-buffer buffer
+        (let* ((height (window-body-height w))
+               (page (max 1 (- height
+                              (if (boundp 'next-screen-context-lines)
+                                  next-screen-context-lines 2))))
+               (amount (* direction
+                          (cond ((null arg) page)
+                                ((eq arg '-) (- page))
+                                (t (prefix-numeric-value arg)))))
+               (start (max (point-min) (min (point-max)
+                                          (emacs-window-start w))))
+               (new-start (save-excursion
+                            (goto-char start)
+                            (forward-line amount)
+                            (point))))
+          (when (and (/= amount 0) (= new-start start))
+            (signal (if (> amount 0) 'end-of-buffer 'beginning-of-buffer) nil))
+          (setf (emacs-window-start w) new-start)
+          (when (< (point) new-start) (goto-char new-start))
+          (setf (emacs-window-point w) (point))
+          nil)))))
+
 ;;;; --- predicates ------------------------------------------------------
 
 (when (emacs-window-builtins--install-function-p 'windowp)
@@ -106,7 +261,18 @@ fix already applied to `emacs-font-lock-builtins.el' /
   (defalias 'window-live-p #'emacs-window-window-live-p))
 
 (when (emacs-window-builtins--install-function-p 'window-valid-p)
-  (defalias 'window-valid-p #'emacs-window-window-valid-p))
+  (defun window-valid-p (window)
+    "Return non-nil if WINDOW is a live or internal model window."
+    (and (emacs-window-p window)
+         (not (emacs-window-deleted-p window)))))
+
+(when (emacs-window-builtins--install-function-p 'window-parent)
+  (defun window-parent (&optional window)
+    "Return WINDOW's parent window, or nil for a root window."
+    (let ((w (or window (selected-window))))
+      (unless (window-valid-p w)
+        (signal 'wrong-type-argument (list 'window-valid-p w)))
+      (emacs-window-parent w))))
 
 ;;;; --- accessors -------------------------------------------------------
 
@@ -114,28 +280,93 @@ fix already applied to `emacs-font-lock-builtins.el' /
   (defalias 'selected-window #'emacs-window-selected-window))
 
 (when (emacs-window-builtins--install-function-p 'frame-selected-window)
-  (defalias 'frame-selected-window #'emacs-window-frame-selected-window))
+  (defun frame-selected-window (&optional frame-or-window)
+    "Return the selected window of FRAME-OR-WINDOW's frame."
+    (let* ((target (or frame-or-window (selected-frame)))
+           (frame (if (window-valid-p target)
+                      (window-frame target)
+                    (emacs-window-builtins--frame target))))
+      (or (and (emacs-frame-p frame)
+               (cdr (assq 'selected-window (emacs-frame-parameters frame))))
+          (if (eq frame (selected-frame))
+              (emacs-window-selected-window)
+            (frame-first-window frame))))))
 
 (when (emacs-window-builtins--install-function-p 'window-list)
-  (defalias 'window-list #'emacs-window-window-list))
+  (defun window-list (&optional frame minibuf window)
+    "Return FRAME's live windows in cyclic order starting with WINDOW."
+    (let* ((frame (or frame (selected-frame)))
+           (w (emacs-window-builtins--window
+               (or window (and (frame-live-p frame)
+                               (frame-selected-window frame))) t)))
+      (unless (eq frame (window-frame w))
+        (error "Window is on a different frame"))
+      (emacs-window-builtins--window w)
+      (emacs-window-builtins--rotate
+       (emacs-window-builtins--frame-windows frame minibuf) w))))
 
 (when (emacs-window-builtins--install-function-p 'window-list-1)
-  (defalias 'window-list-1 #'emacs-window-window-list-1))
+  (defun window-list-1 (&optional window minibuf all-frames)
+    "Return live windows selected by ALL-FRAMES, starting with WINDOW."
+    (let* ((w (emacs-window-builtins--window window))
+           (frame (window-frame w))
+           (frames (cond ((or (eq all-frames t)
+                              (eq all-frames 'visible)
+                              (eq all-frames 0)) (frame-list))
+                         ((framep all-frames) (list all-frames))
+                         (t (list frame))))
+           windows minibuffers)
+      (dolist (f frames)
+        (when (and (frame-live-p f)
+                   (or (not (memq all-frames '(visible 0)))
+                       (if (eq all-frames 'visible)
+                           (eq (frame-visible-p f) t)
+                         (frame-visible-p f))))
+          (let* ((leaves (emacs-window-builtins--frame-windows f minibuf))
+                 (mini (minibuffer-window f)))
+            (dolist (leaf leaves)
+              (unless (and (eq leaf mini) (memq leaf minibuffers))
+                (when (eq leaf mini)
+                  (setq minibuffers (cons leaf minibuffers)))
+                (setq windows (cons leaf windows)))))))
+      (emacs-window-builtins--rotate (nreverse windows) w))))
 
 (when (emacs-window-builtins--install-function-p 'next-window)
-  (defalias 'next-window #'emacs-window-next-window))
+  (defun next-window (&optional window minibuf _all-frames)
+    "Return the next live window in cyclic order."
+    (emacs-window-builtins--cycle window minibuf nil)))
 
 (when (emacs-window-builtins--install-function-p 'previous-window)
-  (defalias 'previous-window #'emacs-window-previous-window))
+  (defun previous-window (&optional window minibuf _all-frames)
+    "Return the previous live window in cyclic order."
+    (emacs-window-builtins--cycle window minibuf t)))
 
 (when (emacs-window-builtins--install-function-p 'window-buffer)
-  (defalias 'window-buffer #'emacs-window-window-buffer))
+  (defun window-buffer (&optional window)
+    "Return WINDOW's buffer, or nil for an internal or deleted window."
+    (let ((w (emacs-window-builtins--window window t)))
+      (when (window-live-p w)
+        (emacs-window-window-buffer w)))))
 
 (when (emacs-window-builtins--install-function-p 'one-window-p)
   (defalias 'one-window-p #'emacs-window-one-window-p))
 
 (when (emacs-window-builtins--install-function-p 'get-buffer-window)
-  (defalias 'get-buffer-window #'emacs-window-get-buffer-window))
+  (defun get-buffer-window (&optional buffer-or-name _all-frames)
+    "Return a window displaying BUFFER-OR-NAME, or nil."
+    (let ((buffer (cond
+                   ((null buffer-or-name) (current-buffer))
+                   ((nelisp-ec-buffer-p buffer-or-name) buffer-or-name)
+                   (t (or (get-buffer buffer-or-name)
+                          (and (stringp buffer-or-name)
+                               (cdr (assoc buffer-or-name nelisp-ec--buffers)))))))
+          (windows (emacs-window--all-leaves))
+          found)
+      (while (and buffer windows (not found))
+        (when (eq buffer (emacs-window-buffer (car windows)))
+          (setq found (car windows)))
+        (setq windows (cdr windows)))
+      found)))
 
 (when (emacs-window-builtins--install-function-p 'get-buffer-window-list)
   (defalias 'get-buffer-window-list #'emacs-window-get-buffer-window-list))
@@ -147,16 +378,22 @@ fix already applied to `emacs-font-lock-builtins.el' /
   (defalias 'window-width #'emacs-window-window-width))
 
 (when (emacs-window-builtins--install-function-p 'window-body-height)
-  (defun window-body-height (&optional window _pixelwise)
-    "Phase 11 polyfill: body height, excluding the mode-line row."
-    (max 1 (1- (emacs-window-window-height window)))))
+  (defun window-body-height (&optional window pixelwise)
+    "Return live WINDOW's body height in lines or pixels."
+    (let* ((w (emacs-window-builtins--window window))
+           (height (max 1 (- (emacs-window-total-lines w)
+                             (if (eq w (minibuffer-window)) 0 1)))))
+      (if (and pixelwise (not (eq pixelwise 'remap)))
+          (* height (frame-char-height (window-frame w)))
+        height))))
 
 (when (emacs-window-builtins--install-function-p 'window-body-width)
   (defun window-body-width (&optional window pixelwise)
-    "Phase 11 polyfill: body width in columns or pseudo pixels."
-    (let ((cols (emacs-window-window-width window)))
-      (if pixelwise
-          (* cols emacs-window--pixel-col-px)
+    "Return live WINDOW's body width in columns or pixels."
+    (let* ((w (emacs-window-builtins--window window))
+           (cols (emacs-window-window-width w)))
+      (if (and pixelwise (not (eq pixelwise 'remap)))
+          (* cols (frame-char-width (window-frame w)))
         cols))))
 
 (when (emacs-window-builtins--install-function-p 'window-max-chars-per-line)
@@ -165,75 +402,202 @@ fix already applied to `emacs-font-lock-builtins.el' /
     (max 1 (window-body-width window))))
 
 (when (emacs-window-builtins--install-function-p 'window-start)
-  (defalias 'window-start #'emacs-window-window-start))
+  (defun window-start (&optional window)
+    "Return live WINDOW's cached first displayed buffer position."
+    (emacs-window-start (emacs-window-builtins--window window))))
 
 (when (emacs-window-builtins--install-function-p 'window-end)
-  (defalias 'window-end #'emacs-window-window-end))
+  (defun window-end (&optional window update)
+    "Return the position at which display ends in live WINDOW.
+Batch windows have an initial end distance of zero from the buffer end."
+    (let* ((w (emacs-window-builtins--window window))
+           (buffer (window-buffer w)))
+      (if noninteractive
+          (1+ (if (nelisp-ec-buffer-p buffer)
+                  (nelisp-ec-buffer-size buffer)
+                (buffer-size buffer)))
+        (emacs-window-window-end w update)))))
 
 (when (emacs-window-builtins--install-function-p 'window-point)
-  (defalias 'window-point #'emacs-window-window-point))
+  (defun window-point (&optional window)
+    "Return live WINDOW's point, using buffer point for the selected window."
+    (let ((w (emacs-window-builtins--window window)))
+      (if (and (eq w (selected-window))
+               (eq (window-buffer w) (current-buffer)))
+          (point)
+        (emacs-window-point w)))))
 
 (when (emacs-window-builtins--install-function-p 'window-parameter)
-  (defalias 'window-parameter #'emacs-window-window-parameter))
+  (defun window-parameter (window parameter)
+    "Return WINDOW's PARAMETER, including for internal or deleted windows."
+    (cdr (assq parameter
+               (emacs-window-parameters
+                (emacs-window-builtins--window window t))))))
 
 (when (emacs-window-builtins--install-function-p 'window-prev-buffers)
-  (defalias 'window-prev-buffers #'emacs-window-window-prev-buffers))
+  (defun window-prev-buffers (&optional window)
+    "Return live WINDOW's previous buffer history."
+    (window-parameter (emacs-window-builtins--window window) 'prev-buffers)))
 
 (when (emacs-window-builtins--install-function-p 'window-next-buffers)
-  (defalias 'window-next-buffers #'emacs-window-window-next-buffers))
+  (defun window-next-buffers (&optional window)
+    "Return live WINDOW's next buffer history."
+    (window-parameter (emacs-window-builtins--window window) 'next-buffers)))
 
 ;;;; --- mutation --------------------------------------------------------
 
 (when (emacs-window-builtins--install-function-p 'set-window-buffer)
-  (defalias 'set-window-buffer #'emacs-window-set-window-buffer))
+  (defun set-window-buffer (window buffer-or-name &optional keep-margins)
+    "Make live WINDOW display BUFFER-OR-NAME and return nil."
+    (let* ((w (emacs-window-builtins--window window))
+           (buffer (if (nelisp-ec-buffer-p buffer-or-name) buffer-or-name
+                     (or (get-buffer buffer-or-name)
+                         (and (stringp buffer-or-name)
+                              (cdr (assoc buffer-or-name nelisp-ec--buffers)))))))
+      (if (nelisp-ec-buffer-p buffer)
+          (emacs-window-set-window-buffer w buffer keep-margins)
+        (unless (buffer-live-p buffer)
+          (signal 'wrong-type-argument (list 'bufferp buffer)))
+        (let ((old (emacs-window-buffer w)))
+          (when (and (eq (window-dedicated-p w) t)
+                     (not (eq old buffer)))
+            (error "Window is dedicated to %s"
+                   (emacs-window--dedicated-buffer-quote
+                    (buffer-name old))))
+          (unless (eq old buffer)
+            (when (window-dedicated-p w)
+              (set-window-dedicated-p w nil))
+            (when (buffer-live-p old)
+              (set-window-prev-buffers
+               w (cons (list old (emacs-window-start w) (emacs-window-point w))
+                       (assq-delete-all old (window-prev-buffers w)))))
+            (set-window-next-buffers w nil)
+            (setf (emacs-window-buffer w) buffer
+                  (emacs-window-point w) (with-current-buffer buffer (point))
+                  (emacs-window-start w) (with-current-buffer buffer (point-min)))))
+        nil))))
 
 (when (emacs-window-builtins--install-function-p 'set-window-point)
-  (defalias 'set-window-point #'emacs-window-set-window-point))
+  (defun set-window-point (window pos)
+    "Set WINDOW's point to POS, returning POS before clamping."
+    (let* ((w (emacs-window-builtins--window window))
+           (position (emacs-window-builtins--position pos))
+           (buffer (window-buffer w)))
+      (if (nelisp-ec-buffer-p buffer)
+          (emacs-window-set-window-point w position)
+        (with-current-buffer buffer
+          (let ((clamped (max (point-min) (min (point-max) position))))
+            (setf (emacs-window-point w) clamped)
+            (when (eq w (selected-window)) (goto-char clamped)))))
+      pos)))
 
 (when (emacs-window-builtins--install-function-p 'set-window-start)
   (defalias 'set-window-start #'emacs-window-set-window-start))
 
 (when (emacs-window-builtins--install-function-p 'set-window-parameter)
-  (defalias 'set-window-parameter #'emacs-window-set-window-parameter))
+  (defun set-window-parameter (window parameter value)
+    "Set WINDOW's PARAMETER to VALUE and return VALUE."
+    (let* ((w (emacs-window-builtins--window window t))
+           (entry (assq parameter (emacs-window-parameters w))))
+      (if entry (setcdr entry value)
+        (setf (emacs-window-parameters w)
+              (cons (cons parameter value) (emacs-window-parameters w))))
+      value)))
 
 (when (emacs-window-builtins--install-function-p 'window-configuration-p)
   (defalias 'window-configuration-p #'emacs-window-configuration-p))
 
 (when (emacs-window-builtins--install-function-p 'current-window-configuration)
-  (defalias 'current-window-configuration
-    #'emacs-window-current-window-configuration))
+  (defun current-window-configuration (&optional frame)
+    "Return a snapshot of FRAME's current window configuration."
+    (emacs-window-builtins--frame frame)
+    (emacs-window--ensure-root)
+    (emacs-window-configuration--make
+     :root (emacs-window-builtins--snapshot emacs-window--root nil)
+     :selected (emacs-window-id emacs-window--selected))))
 
 (when (emacs-window-builtins--install-function-p 'set-window-configuration)
-  (defalias 'set-window-configuration
-    #'emacs-window-set-window-configuration))
+  (defun set-window-configuration (configuration &optional _dont-set-frame
+                                                   _dont-set-miniwindow)
+    "Restore windows from CONFIGURATION and return t for a live frame."
+    (unless (window-configuration-p configuration)
+      (signal 'wrong-type-argument (list 'window-configuration-p configuration)))
+    (setq emacs-window--root
+          (emacs-window-builtins--restore
+           (emacs-window-configuration-root configuration) nil))
+    (setq emacs-window--selected
+          (or (emacs-window--find-by-id
+               emacs-window--root
+               (emacs-window-configuration-selected configuration))
+              (car (emacs-window--all-leaves))))
+    ;; Restoring a configuration realizes terminal decorations even when
+    ;; the saved tree is unchanged.  Its text height excludes the menu bar.
+    (let ((frame (selected-frame)))
+      (when (and noninteractive (emacs-frame-p frame)
+                 (emacs-frame-builtins--terminal-p frame))
+        (emacs-frame-builtins-layout-terminal
+         frame (emacs-frame-builtins--frame-pixel-width frame)
+         (- (emacs-frame-builtins--frame-pixel-height frame)
+            (max 0 (or (frame-parameter frame 'menu-bar-lines) 1))))))
+    (emacs-window-select-window emacs-window--selected)
+    t))
 
 (when (emacs-window-builtins--install-function-p 'set-window-prev-buffers)
-  (defalias 'set-window-prev-buffers #'emacs-window-set-window-prev-buffers))
+  (defun set-window-prev-buffers (window prev-buffers)
+    "Set live WINDOW's previous buffer history to PREV-BUFFERS."
+    (set-window-parameter (emacs-window-builtins--window window)
+                          'prev-buffers prev-buffers)))
 
 (when (emacs-window-builtins--install-function-p 'set-window-next-buffers)
-  (defalias 'set-window-next-buffers #'emacs-window-set-window-next-buffers))
+  (defun set-window-next-buffers (window next-buffers)
+    "Set live WINDOW's next buffer history to NEXT-BUFFERS."
+    (set-window-parameter (emacs-window-builtins--window window)
+                          'next-buffers next-buffers)))
 
 (when (emacs-window-builtins--install-function-p 'select-window)
-  (defalias 'select-window #'emacs-window-select-window))
+  (defun select-window (window &optional norecord)
+    "Select live WINDOW and make its buffer current, returning WINDOW."
+    (let* ((w (emacs-window-builtins--window window))
+           (old (selected-window))
+           (buffer (window-buffer w)))
+      (when (and (bufferp (emacs-window-buffer old))
+                 (eq (current-buffer) (emacs-window-buffer old)))
+        (setf (emacs-window-point old) (point)))
+      (emacs-window-select-window w norecord)
+      (when (buffer-live-p buffer)
+        (set-buffer buffer)
+        (goto-char (emacs-window-point w)))
+      w)))
 
 ;;;; --- split / delete (Track V, 2026-05-04) ----------------------------
 
 (when (emacs-window-builtins--install-function-p 'split-window)
-  (defalias 'split-window #'emacs-window-split-window))
+  (defun split-window (&optional window size side)
+    "Split live WINDOW, respecting the Emacs minimum window dimensions."
+    (let* ((w (emacs-window-builtins--window window))
+           (horizontal (memq side '(left right)))
+           (total (if horizontal (window-width w) (window-height w)))
+           (minimum (if horizontal
+                        (if (boundp 'window-min-width) window-min-width 10)
+                      (if (boundp 'window-min-height) window-min-height 4))))
+      (when (< total (* 2 minimum))
+        (error "Window #<window %d on %s> too small for splitting"
+               (emacs-window-id w) (buffer-name (window-buffer w))))
+      (emacs-window-split-window w size side))))
 
 (when (emacs-window-builtins--install-function-p 'split-window-below)
   (defun split-window-below (&optional size)
     "Phase 11 polyfill: split selected window into two stacked windows.
 Bound to C-x 2 in `nemacs-main-keymap'."
     (interactive "P")
-    (emacs-window-split-window-vertically size)))
+    (split-window nil size 'below)))
 
 (when (emacs-window-builtins--install-function-p 'split-window-right)
   (defun split-window-right (&optional size)
     "Phase 11 polyfill: split selected window into two side-by-side windows.
 Bound to C-x 3 in `nemacs-main-keymap'."
     (interactive "P")
-    (emacs-window-split-window-horizontally size)))
+    (split-window nil size 'right)))
 
 (when (emacs-window-builtins--install-function-p 'split-window-vertically)
   (defalias 'split-window-vertically #'emacs-window-split-window-vertically))
@@ -399,24 +763,33 @@ simplification.)"
 
 (when (emacs-window-builtins--install-function-p 'recenter)
   (defun recenter (&optional arg _redisplay)
-    "Phase 11 polyfill: real line-based recenter.
-See `emacs-window-recenter'."
+    "Put point on screen line ARG of the selected window."
     (interactive "P")
-    (emacs-window-recenter nil arg)))
+    (let* ((w (emacs-window-builtins--window nil))
+           (buffer (window-buffer w)))
+      (if (nelisp-ec-buffer-p buffer)
+          (emacs-window-recenter w arg)
+        (with-current-buffer buffer
+          (let* ((height (window-body-height w))
+                 (line (if (integerp arg) arg (/ height 2)))
+                 (row (max 0 (min (1- height)
+                                  (if (< line 0) (+ height line) line)))))
+            (setf (emacs-window-point w) (point)
+                  (emacs-window-start w)
+                  (save-excursion (forward-line (- row)) (point)))))))
+    nil))
 
 (when (emacs-window-builtins--install-function-p 'scroll-up)
-  (defun scroll-up (&optional n)
-    "Phase 11 polyfill: real line-based scroll-up.
-See `emacs-window-scroll-up'."
+  (defun scroll-up (&optional arg)
+    "Scroll the selected window upward ARG lines."
     (interactive "P")
-    (emacs-window-scroll-up nil n)))
+    (emacs-window-builtins--scroll arg 1)))
 
 (when (emacs-window-builtins--install-function-p 'scroll-down)
-  (defun scroll-down (&optional n)
-    "Phase 11 polyfill: real line-based scroll-down.
-See `emacs-window-scroll-down'."
+  (defun scroll-down (&optional arg)
+    "Scroll the selected window downward ARG lines."
     (interactive "P")
-    (emacs-window-scroll-down nil n)))
+    (emacs-window-builtins--scroll arg -1)))
 
 (when (emacs-window-builtins--install-function-p 'scroll-up-command)
   (defalias 'scroll-up-command #'scroll-up))
@@ -425,7 +798,14 @@ See `emacs-window-scroll-down'."
   (defalias 'scroll-down-command #'scroll-down))
 
 (when (emacs-window-builtins--install-function-p 'pos-visible-in-window-p)
-  (defalias 'pos-visible-in-window-p #'emacs-window-pos-visible-in-window-p))
+  (defun pos-visible-in-window-p (&optional pos window partially)
+    "Return whether POS is displayed in live WINDOW."
+    (let ((w (emacs-window-builtins--window window)))
+      (unless (or (null pos) (eq pos t))
+        (emacs-window-builtins--position pos))
+      ;; A batch frame has no displayed glyph rows.
+      (unless noninteractive
+        (emacs-window-pos-visible-in-window-p pos w partially)))))
 
 (provide 'emacs-window-builtins)
 

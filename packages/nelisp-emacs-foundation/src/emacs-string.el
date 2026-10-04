@@ -215,9 +215,12 @@ when it sorts before it.  IGNORE-CASE non-nil compares folded strings."
              ((< len1 len2) (- (1+ i)))
              ((> len1 len2) (1+ i))
              (t t)))))))
-(unless (fboundp 'substring-no-properties)
+(unless (and (fboundp 'substring-no-properties) (not (fboundp 'nelisp--repr)))
   (defun substring-no-properties (s &optional from to)
-    (substring s (or from 0) (or to (length s)))))
+    "Copy the selected part of S, removing all text properties."
+    (let ((copy (substring s (or from 0) (or to (length s)))))
+      (set-text-properties 0 (length copy) nil copy)
+      copy)))
 (unless (fboundp 'truncate-string-to-width)
   (defun truncate-string-to-width (str width &rest _)
     (if (<= (length str) width) str (substring str 0 (max 0 width)))))
@@ -328,6 +331,8 @@ TAB resolves to `tab-width' (matching host `char-width')."
 (unless (and (fboundp 'char-width) (not (get 'char-width 'emacs-stub-bulk)))
   (defun char-width (char)
     "Return the column width of CHAR (default policy, ASCII + rough EAW)."
+    (unless (characterp char)
+      (signal 'wrong-type-argument (list 'characterp char)))
     (emacs-string--char-width char))
   (put 'char-width 'emacs-stub-bulk nil))
 
@@ -345,14 +350,10 @@ TAB resolves to `tab-width' (matching host `char-width')."
 ;; character" (a plain `error', not a signal); anything that is not even a
 ;; valid character signals `wrong-type-argument' via `characterp'.
 ;;
-;; Doc 200 (`docs/design/200-unibyte-string-representation.org' section
-;; 8.3) explicitly does NOT give NeLisp a live representation for the
-;; eight-bit character range -- mixing one into an actual multibyte string
-;; signals `nelisp-raw-byte-unrepresentable'.  That is a distinct, already
-;; SHIPPED decision about *string* construction; it does not block these
-;; two functions, which only compute and return a plain integer (rx.el's
-;; caller uses the result solely for numeric interval-boundary comparison,
-;; never re-embeds it into a string).
+;; The C-core continuation now represents this range using GNU's internal
+;; two-byte byte8 encoding (Doc 200 section 8.7).  These numeric conversions
+;; are also used by interval-boundary callers such as rx.el; their integer
+;; result does not depend on constructing or decoding a string.
 (defconst emacs-string--raw-byte-char-base #x3FFF00
   "Base added to a raw byte 128..255 to form its \"eight-bit\" character.
 Matches Emacs's `RAW_BYTE_CHAR_BASE' (character.h): the eight-bit range is
@@ -529,12 +530,19 @@ Inverse of `combine-and-quote-strings'."
                                                   sep))))))))
 
 (unless (and (fboundp 'propertize) (not (get 'propertize 'emacs-stub-bulk)))
-  (defun propertize (string &rest _properties)
-    "Return a copy of STRING.
-Standalone MVP: text PROPERTIES are accepted for call compatibility but are
-not retained, matching the no-op string text-property substrate.  Callers that
-only need the string content are unaffected."
-    (copy-sequence string))
+  (defun propertize (string &rest properties)
+    "Return a copy of STRING with PROPERTIES applied across its contents."
+    (unless (stringp string)
+      (signal 'wrong-type-argument (list 'stringp string)))
+    (let ((copy (copy-sequence string)))
+      (when (fboundp 'emacs-buffer-string-text-property)
+        (emacs-buffer-string-text-property 'copy string copy))
+      (when properties
+        (unless (fboundp 'emacs-buffer-string-text-property)
+          (signal 'void-function (list 'emacs-buffer-string-text-property)))
+        (emacs-buffer-string-text-property
+         'add copy 0 (length copy) properties))
+      copy))
   (put 'propertize 'emacs-stub-bulk nil))
 
 (unless (fboundp 'string-glyph-split)

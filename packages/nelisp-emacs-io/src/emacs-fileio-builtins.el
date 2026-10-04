@@ -60,6 +60,7 @@
     expand-file-name
     buffer-file-name
     set-visited-file-name
+    get-file-buffer
     locate-library
     executable-find
     substitute-in-file-name
@@ -247,6 +248,172 @@ FILE and NEWNAME; real Emacs also checks NEWNAME's handler for
 cross-filesystem renames, but the ssh-only lane's approved scope
 excludes cross-host operations, so only FILE is dispatched here.")
 
+(defun emacs-fileio-insert-file-contents-direct
+    (filename &optional visit beg end replace)
+  "Insert local FILENAME through the public buffer API using `rdf'.
+BEG and END select byte offsets.  This backend is used only by the
+standalone reader; handler dispatch remains in `emacs-fnh-wrap'."
+  (if (not (and (fboundp 'bufferp) (bufferp (current-buffer))))
+      (nelisp-ec-insert-file-contents filename visit beg end replace)
+    (progn
+      (unless (stringp filename)
+	(signal 'wrong-type-argument (list 'stringp filename)))
+      (dolist (offset (list beg end))
+	(when (and offset (not (integerp offset)))
+	  (signal 'wrong-type-argument (list 'file-offset offset)))
+	(when (and offset (< offset 0))
+	  (signal 'wrong-type-argument (list 'file-offset offset))))
+      (when (and buffer-read-only (not inhibit-read-only))
+	(signal 'buffer-read-only (list (current-buffer))))
+      (when (and visit (or beg end))
+	(signal 'error '("Attempt to visit less than an entire file")))
+      (when (and visit (/= (point-min) (point-max)))
+	(signal 'error '("Cannot do file visiting in a non-empty buffer")))
+      (let* ((path (expand-file-name filename))
+             (attributes (file-attributes path 'integer)))
+	(unless attributes
+	  (when visit
+            (emacs-fileio-record-buffer-file (current-buffer) path)
+            (set-buffer-modified-p nil))
+	  (signal 'file-missing
+		  (list "Opening input file" "No such file or directory" path)))
+	(when (or (eq t (car attributes))
+		  (and (stringp (car attributes)) (file-directory-p path)))
+	  (signal 'file-error (list "Read error" "Is a directory" path)))
+	(let* ((raw (condition-case nil (rdf path)
+                      (error
+                       (signal 'file-error
+                               (list "Opening input file" "Input/output error" path))))))
+	  (unless (stringp raw)
+            (signal 'file-error
+                    (list "Opening input file" "Input/output error" path)))
+	  (let* ((bytes (string-as-unibyte raw))
+		 (byte-count (length bytes))
+		 (size (nth 7 attributes)))
+            (when (and (null (car attributes)) (integerp size)
+                       (/= size byte-count))
+              (signal 'file-error
+                      (list "Reading file" "File size changed or read was truncated" path)))
+            (let* ((start (min (or beg 0) byte-count))
+		   (finish (min (or end byte-count) byte-count)))
+              (when (> finish start)
+		(setq raw (string-as-multibyte (substring bytes start finish))))
+              (when (<= finish start) (setq raw ""))
+              (when (and visit (or (> start 0) (< finish byte-count)))
+		(signal 'error '("Attempt to visit less than an entire file")))
+              (let ((inserted (length raw)))
+		(if replace
+                    (let* ((lo (point-min)) (hi (point-max))
+			   (old (buffer-substring-no-properties lo hi))
+			   (old-length (length old)) (prefix 0)
+			   (limit (min old-length inserted)))
+                      (while (and (< prefix limit)
+				  (eq (aref old prefix) (aref raw prefix)))
+			(setq prefix (1+ prefix)))
+                      (let ((suffix 0))
+			(while (and (< suffix (- limit prefix))
+                                    (eq (aref old (- old-length suffix 1))
+					(aref raw (- inserted suffix 1))))
+			  (setq suffix (1+ suffix)))
+			(let* ((old-end (- old-length suffix))
+                               (new-end (- inserted suffix))
+                               (new-middle (- new-end prefix))
+                               (relative (- (point) lo))
+                               (new-point
+				(cond ((<= relative prefix) (point))
+                                      ((>= relative old-end)
+                                       (+ lo prefix new-middle (- relative old-end)))
+                                      ((= (- old-end prefix) new-middle) (point))
+                                      (t (+ lo prefix)))))
+			  (unless (and (= old-end prefix) (= new-end prefix))
+                            (delete-region (+ lo prefix) (+ lo old-end))
+                            (goto-char (+ lo prefix))
+                            (insert (substring raw prefix new-end)))
+			  (goto-char (min (point-max) (max (point-min) new-point)))
+			  (setq inserted new-middle))))
+		  (unless (= inserted 0) (save-excursion (insert raw))))
+		(when visit
+		  (emacs-fileio-record-buffer-file (current-buffer) path)
+		  (set-buffer-modified-p nil))
+		(list path inserted)))))))))
+
+(defun emacs-fileio--substitution-shadow (name)
+  "Discard prefixes shadowed by `//' or a bare tilde component in NAME."
+  (let ((i 0) (len (length name)) (start 0))
+    (while (< (1+ i) len)
+      (when (and (eq (aref name i) ?/)
+                 (or (eq (aref name (1+ i)) ?/)
+                     (and (eq (aref name (1+ i)) ?~)
+                          (or (= (+ i 2) len)
+                              (memq (aref name (+ i 2)) '(?/ 0))))))
+        (setq start (1+ i)))
+      (setq i (1+ i)))
+    (if (= start 0) name (substring-no-properties name start))))
+
+(defun emacs-fileio--environment-name-char-p (char)
+  "Return non-nil if CHAR can occur in an unbraced environment name."
+  (or (and (>= char ?a) (<= char ?z))
+      (and (>= char ?A) (<= char ?Z))
+      (and (>= char ?0) (<= char ?9))
+      (eq char ?_)
+      (and (> char 127)
+           (string-match-p "\\`[[:alnum:]]\\'" (string char)))))
+
+(defun emacs-fileio-substitute-in-file-name-direct (filename)
+  "Substitute environment references and shadowed prefixes in FILENAME.
+Unknown variables remain unchanged.  A pair of dollar signs becomes one
+literal dollar sign; substituted values are never expanded recursively."
+  (unless (stringp filename)
+    (signal 'wrong-type-argument (list 'stringp filename)))
+  (if (and (>= (length filename) 2)
+           (eq (aref filename 0) ?/) (eq (aref filename 1) ?:))
+      filename
+    (let* ((name (emacs-fileio--substitution-shadow filename))
+           (len (length name)) (i 0) (start 0) pieces)
+      (while (< i len)
+        (if (not (eq (aref name i) ?$))
+            (setq i (1+ i))
+          (let ((end (1+ i)) variable value)
+            (cond
+             ((and (< end len) (eq (aref name end) ?$))
+              (setq end (1+ end) value "$"))
+             ((and (< end len) (eq (aref name end) ?{))
+              (let ((beg (1+ end)))
+                (setq end beg)
+                (while (and (< end len)
+                            (not (memq (aref name end) '(?{ ?}))))
+                  (setq end (1+ end)))
+                (if (and (< end len) (eq (aref name end) ?}))
+                    (setq variable (substring name beg end)
+                          end (1+ end))
+                  (setq end (1+ i)))))
+             (t
+              (while (and (< end len)
+                          (emacs-fileio--environment-name-char-p
+                           (aref name end)))
+                (setq end (1+ end)))
+              (when (> end (1+ i))
+                (setq variable (substring name (1+ i) end)))))
+            (when (and variable (> (length variable) 0))
+              (setq value (getenv variable)))
+            (when value
+              (push (substring name start i) pieces)
+              (push value pieces)
+              (setq start end))
+            (setq i end))))
+      (let* ((expanded
+              (if pieces
+                  (apply #'concat
+                         (nreverse (cons (substring name start) pieces)))
+                name))
+             (shadowed (emacs-fileio--substitution-shadow expanded)))
+        ;; Shadow removal retains the original filename's byte encoding,
+        ;; even when the discarded prefix included a multibyte value.
+        (if (and (not (eq expanded shadowed))
+                 (not (multibyte-string-p name)))
+            (string-as-unibyte shadowed)
+          shadowed)))))
+
 (dolist (--name-- emacs-fileio-builtins--handler-passthrough-ops)
   (when (and (emacs-fileio-builtins--install-function-p --name--)
              (not (memq --name-- emacs-fileio--verified-runtime-predicates)))
@@ -257,7 +424,13 @@ excludes cross-host operations, so only FILE is dispatched here.")
   (when (emacs-fileio-builtins--install-function-p --name--)
     (fset --name--
           (emacs-fnh-wrap --name--
-                          (intern (concat "nelisp-ec-" (symbol-name --name--)))))))
+                          (cond
+                           ((eq --name-- 'insert-file-contents)
+                            #'emacs-fileio-insert-file-contents-direct)
+                           ((eq --name-- 'substitute-in-file-name)
+                            #'emacs-fileio-substitute-in-file-name-direct)
+                           (t
+                            (intern (concat "nelisp-ec-" (symbol-name --name--)))))))))
 
 ;; --- access(2)-backed predicates for the standalone reader ----------
 ;; The `emacs-fileio-builtins--install-function-p' standalone clause keys
@@ -710,9 +883,8 @@ substrate has no file-locking subsystem yet."
      ((and append (fboundp 'nl-append-file))
       (nl-append-file filename start)
       (length start))
-     ((and (fboundp 'nl-write-file) (not append))
-      (nl-write-file filename start)
-      (length start))
+     ((and (not append) (fboundp 'nelisp-ec-write-region))
+      (nelisp-ec-write-region start nil filename append visit))
      (t
       ;; One behaviour, one owner: `nelisp-ec-write-region' now handles
       ;; string START itself (and reaches the captured host writer through
@@ -952,32 +1124,53 @@ are cleaned up by `find-file-noselect' on next visit.")
 
 (when (emacs-fileio-builtins--install-function-p 'buffer-file-name)
   (defun buffer-file-name (&optional buffer)
-    "Phase D polyfill: read the visited filename of BUFFER (default = current).
+    "Return the visited filename of BUFFER (default = current).
 Returns nil when the buffer is not visiting a file."
-    (let ((b (or buffer (nelisp-ec-current-buffer))))
-      (when (and b (nelisp-ec-buffer-p b)
-                 (not (nelisp-ec-buffer-killed-p b)))
-        (or (cdr (assq b emacs-fileio--buffer-files))
-            (let ((base (and (fboundp 'buffer-base-buffer)
-                             (buffer-base-buffer b))))
-              (and base (buffer-file-name base))))))))
+    (let ((target (or buffer (current-buffer))))
+      (unless (bufferp target)
+        (signal 'wrong-type-argument (list 'bufferp target)))
+      (when (buffer-live-p target)
+        (buffer-local-value 'buffer-file-name target)))))
+
+(defun emacs-fileio-native-public-buffer-p (&optional buffer)
+  "Return non-nil when BUFFER is a native public NeLisp buffer."
+  (let ((target (or buffer (and (fboundp 'current-buffer) (current-buffer)))))
+    (and (fboundp 'nelisp--buffer-multibyte-p)
+         target (fboundp 'bufferp) (bufferp target))))
+
+(defun emacs-fileio-set-visited-file-name-direct
+    (filename &optional no-query along-with-file)
+  "Set the current buffer's visited filename through its owning substrate.
+NO-QUERY and ALONG-WITH-FILE are accepted for API parity."
+  (ignore no-query along-with-file)
+  (let ((b (current-buffer)))
+    (if (bufferp b)
+        (let* ((old (emacs-fileio--direct-buffer-file-name b))
+               (path (cond ((or (null filename) (equal filename "")) nil)
+                           ((not (stringp filename))
+                            (signal 'wrong-type-argument (list 'stringp filename)))
+                           (t (with-current-buffer b
+                                (expand-file-name filename))))))
+          (unless (equal old path)
+            (emacs-fileio-record-buffer-file b path)
+            (set-buffer-modified-p t)))
+      (when (and (fboundp 'nelisp-ec-buffer-p) (nelisp-ec-buffer-p b))
+        (setq emacs-fileio--buffer-files
+              (cons (cons b (and (stringp filename) filename))
+                    (assq-delete-all b emacs-fileio--buffer-files)))
+        filename))))
 
 (when (emacs-fileio-builtins--install-function-p 'set-visited-file-name)
   (defun set-visited-file-name (filename &optional no-query along-with-file)
-    "Phase D polyfill: associate the current buffer with FILENAME.
-NO-QUERY / ALONG-WITH-FILE are accepted for API parity but ignored —
-the substrate has no rename-on-visit / lockfile interaction yet."
-    (ignore no-query along-with-file)
-    (let ((b (nelisp-ec-current-buffer)))
-      (when (and b (nelisp-ec-buffer-p b))
-        (setq emacs-fileio--buffer-files
-              (cons (cons b filename)
-                    (assq-delete-all b emacs-fileio--buffer-files)))
-        filename))))
+    "Phase D polyfill for file-visiting buffers."
+    (emacs-fileio-set-visited-file-name-direct
+     filename no-query along-with-file)))
 
 (when (emacs-fileio-builtins--install-function-p 'get-file-buffer)
   (defun get-file-buffer (filename)
     "Return a live buffer already visiting FILENAME, or nil."
+    (unless (stringp filename)
+      (signal 'wrong-type-argument (list 'stringp filename)))
     (let ((abs (and (stringp filename)
                     (if (fboundp 'expand-file-name)
                         (expand-file-name filename)
@@ -1005,15 +1198,17 @@ the substrate has no rename-on-visit / lockfile interaction yet."
   "Return BUFFER's visited file name, or nil."
   (and buffer
        (condition-case nil
-           (let ((registered (and (boundp 'emacs-fileio--buffer-files)
-                                  (cdr (assq buffer emacs-fileio--buffer-files)))))
-             (or registered
-                 (and (not (and (fboundp 'nelisp-ec-buffer-p)
-                                (nelisp-ec-buffer-p buffer)))
-                      (fboundp 'buffer-file-name)
-                      (buffer-file-name buffer))))
+           (if (and (fboundp 'bufferp) (bufferp buffer))
+               (if (and (fboundp 'nelisp--repr)
+                        (fboundp 'emacs-buffer-buffer-local-value))
+                   (emacs-buffer-buffer-local-value 'buffer-file-name buffer)
+                 (buffer-local-value 'buffer-file-name buffer))
+             (and (fboundp 'nelisp-ec-buffer-p)
+                  (nelisp-ec-buffer-p buffer)
+                  (cdr (assq buffer emacs-fileio--buffer-files))))
          (error
-          (and (boundp 'emacs-fileio--buffer-files)
+          (and (not (and (fboundp 'bufferp) (bufferp buffer)))
+               (boundp 'emacs-fileio--buffer-files)
                (cdr (assq buffer emacs-fileio--buffer-files)))))))
 
 ;; Public entry point for other ownership groups (FEAT org-capture uses it).
@@ -1025,6 +1220,13 @@ Public name for `emacs-fileio--direct-buffer-file-name'.")
 (defun emacs-fileio--direct-buffer-string (buffer)
   "Return BUFFER contents as a string."
   (cond
+   ((and buffer (fboundp 'bufferp) (bufferp buffer)
+         (fboundp 'with-current-buffer) (fboundp 'buffer-substring-no-properties))
+    (with-current-buffer buffer
+      (save-excursion
+        (save-restriction
+          (widen)
+          (buffer-substring-no-properties (point-min) (point-max))))))
    ((and buffer
          (fboundp 'nelisp-ec-with-current-buffer)
          (fboundp 'nelisp-ec-buffer-string))
@@ -1090,10 +1292,24 @@ Public name for `emacs-fileio--direct-buffer-file-name'.")
 
 (defun emacs-fileio-record-buffer-file (buffer path)
   "Record BUFFER as visiting PATH when the core file table is available."
-  (when (boundp 'emacs-fileio--buffer-files)
+  (cond
+   ((and (fboundp 'bufferp) (bufferp buffer))
+    (if (fboundp 'nelisp--repr)
+        (progn
+          (when (fboundp 'emacs-buffer-set-buffer-local-value)
+            (emacs-buffer-set-buffer-local-value 'buffer-file-name buffer path))
+          (when (eq buffer (current-buffer))
+            (setq buffer-file-name path)))
+      (with-current-buffer buffer
+        (setq buffer-file-name path)))
+    (when (boundp 'emacs-fileio--buffer-files)
+      (setq emacs-fileio--buffer-files
+            (assq-delete-all buffer emacs-fileio--buffer-files))))
+   ((and (fboundp 'nelisp-ec-buffer-p) (nelisp-ec-buffer-p buffer)
+         (boundp 'emacs-fileio--buffer-files))
     (setq emacs-fileio--buffer-files
           (cons (cons buffer path)
-                (assq-delete-all buffer emacs-fileio--buffer-files))))
+                (assq-delete-all buffer emacs-fileio--buffer-files)))))
   path)
 
 (defun emacs-fileio-buffer-file-direct (&optional buffer)
@@ -1102,8 +1318,11 @@ Public name for `emacs-fileio--direct-buffer-file-name'.")
                  (and (fboundp 'nelisp-ec-current-buffer)
                       (nelisp-ec-current-buffer))
                  (and (fboundp 'current-buffer)
-                      (current-buffer)))))
+                      (current-buffer))
+                 )))
     (cond
+     ((and (fboundp 'bufferp) (bufferp buf))
+      (emacs-fileio--direct-buffer-file-name buf))
      ((and (boundp 'emacs-fileio--buffer-files)
            (cdr (assq buf emacs-fileio--buffer-files))))
      ((and (fboundp 'nelisp-ec-buffer-p)
@@ -1190,8 +1409,8 @@ PLIST accepts:
 
 - `:buffer': buffer to save, defaulting to the current NeLisp buffer.
 - `:file-function': function called with the buffer to return its path.
-- `:string-function': function called with the buffer to return contents.
-- `:write-function': function called with path and contents."
+  - `:string-function': function called with the buffer to return contents.
+  - `:write-function': function called with path and contents."
   (let* ((buffer (or (plist-get plist :buffer)
                      (and (fboundp 'nelisp-ec-current-buffer)
                           (nelisp-ec-current-buffer))
@@ -1207,14 +1426,11 @@ PLIST accepts:
     (unless path
       (signal 'error '("save-buffer: buffer is not visiting a file")))
     (funcall write-function path (funcall string-function buffer))
-    (when (fboundp 'emacs-buffer-set-buffer-modified-p)
-      (emacs-buffer-set-buffer-modified-p nil buffer))
-    (when (and (not (fboundp 'emacs-buffer-set-buffer-modified-p))
-               (fboundp 'set-buffer-modified-p))
-      (if (and buffer (fboundp 'with-current-buffer))
-          (with-current-buffer buffer
-            (set-buffer-modified-p nil))
-        (set-buffer-modified-p nil)))
+    (if (and (fboundp 'bufferp) (bufferp buffer))
+        (with-current-buffer buffer (set-buffer-modified-p nil))
+      (when (and (fboundp 'nelisp-ec-buffer-p) (nelisp-ec-buffer-p buffer)
+                 (fboundp 'emacs-buffer-set-buffer-modified-p))
+        (emacs-buffer-set-buffer-modified-p nil buffer)))
     path))
 
 (defun emacs-fileio-run-find-file-command (&rest plist)
@@ -1478,12 +1694,21 @@ Clears `(buffer-modified-p)' on success so the GUI mode-line `**'
 indicator drops back to `--' after a save."
     (interactive "P")
     (ignore arg)
-    (emacs-fileio-save-buffer-direct
-     :string-function
-     (lambda (_buffer)
-       (nelisp-ec-buffer-substring
-        (nelisp-ec-point-min)
-        (nelisp-ec-point-max))))))
+    (let ((buffer (current-buffer)))
+      (if (and (emacs-fileio-native-public-buffer-p buffer)
+               (not (buffer-modified-p buffer)))
+          nil
+        (progn
+        (if (bufferp buffer)
+            (emacs-fileio-save-buffer-direct :buffer buffer)
+          (emacs-fileio-save-buffer-direct
+           :buffer buffer
+           :string-function
+           (lambda (_buffer)
+             (nelisp-ec-buffer-substring
+              (nelisp-ec-point-min)
+              (nelisp-ec-point-max)))))
+        nil)))))
 
 (when (emacs-fileio-builtins--install-function-p 'write-file)
   (defun write-file (filename &optional confirm)
@@ -1519,7 +1744,7 @@ but ignored (= no auto-save subsystem, no confirm prompt, no major
 mode rerun yet)."
     (ignore ignore-auto noconfirm preserve-modes)
     (let* ((b (nelisp-ec-current-buffer))
-           (f (and b (buffer-file-name b))))
+           (f (and b (emacs-fileio--direct-buffer-file-name b))))
       (when f
         (nelisp-ec-erase-buffer)
         (nelisp-ec-insert-file-contents f)

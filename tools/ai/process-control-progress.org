@@ -1,0 +1,34 @@
+#+TITLE: Process control, callback and coding integration
+
+User scope: immediate continue notifications and sentinel reentry/errors;
+child process groups and current-group control; shared child/event coding.
+Each criterion is standalone/GNU end-to-end parity, not binding presence.
+The whole C-core ledger retains its existing denominator and failing checks.
+
+* P1 Process control integration
+** P1.1 End-to-end immediate notification, reentry and callback errors
+#+REQUIRES: NELISP_BIN
+cmd: bash test/nelisp-emacs-lib/c-core-parity-smoke.sh check-unit process-control-callback-1
+
+** P1.2 End-to-end default stop and group signals
+#+REQUIRES: NELISP_BIN
+cmd: bash test/nelisp-emacs-lib/c-core-parity-smoke.sh check-unit process-control-group-1
+
+** P1.3 End-to-end child/event coding fields and converted I/O
+#+REQUIRES: NELISP_BIN
+cmd: bash test/nelisp-emacs-lib/c-core-parity-smoke.sh check-unit process-control-coding-1
+
+#+NOTE: The parity harness retains its precheck/host/native limits of
+120/120/300 seconds. Batch29 removes the incorrect outer timeout overrides.
+Runs create separate unit transcripts and an input-identity receipt;
+check-unit verifies identity, transcript hashes, counts and equality within
+the generic meter's 55-second limit. The first batch28 matrix was killed
+between bootstrap and transcript normalization. The whole
+C-core bootstrap criterion keeps its original 50-second timeout unchanged.
+Original timed-out checks remain in batch28 diagnostics; no criterion was
+removed or downgraded. Linux pipe session and controlling-PTY spawn are Lisp
+references using existing raw OS primitives, so the final matrix also checks
+the preceding native binary rather than depending on new native entries.
+The three unchanged acceptance contracts now form one integration stage
+with three criteria, as required by the progress-ledger format. P2.1 and
+P3.1 are renamed P1.2 and P1.3; the denominator remains three.

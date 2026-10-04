@@ -1,0 +1,19 @@
+#+TITLE: C-core evidence inventory for AI consumers
+#+NOTE: This supporting inventory objective does not replace or narrow the complete 1,460-primitive C-core objective. Its initial variable subset is buffer-file-name, default-directory and buffer-read-only. Artifact indexing does not constitute fresh runtime qualification. Six criteria are defined before generator implementation.
+
+* I1 Preserve scope and evidence in the consumer inventory
+** I1.1 Exact census function set and separate variable identities
+pending
+** I1.2 Independent definition, probe, execution, compatibility and freshness fields
+pending
+** I1.3 Whole and partial observations preserve timestamps and source/binary/profile provenance
+pending
+** I1.4 Variable dimensions and shared-cause groups retain unknown or unresolved evidence
+pending
+** I1.5 Negative controls reject incomplete receipts, altered hashes and scope promotion
+cmd: python3 target/progress/batch52/verify-inventory.py ../state-inventory-lane-b52/tools/ai/ccore-state-inventory.py
+#+NOTE: The first candidate failed root and Astra negative controls. Keep this command failing until the evidence-derived verifier rejects those defects; do not remove or downgrade it. The prior source and root failure report remain in target/progress/batch52/generator-first.py and root-controls-first.json. Syntactic catalog generation is not runtime qualification.
+#+NOTE: At the user-requested stopping point, repaired isolated candidate 0cc1545d8f7525c5f9930445d7ceb17b07248dd14305afca2f21e725bed25b9f passes the root-owned command, exact 1,460-function/three-variable reconciliation, determinism and 14 negative controls. The final repair has not received independent Astra integration review and remains unintegrated. The supporting meter has not been rerun; no inventory percentage is claimed. Resume through handoff/nelisp-ccore_batch52-handoff-to-claude_2026-10-03.md in the Notes root.
+#+NOTE: 2026-10-03 B54: the gpt-6-astra/ultra integration audit (target/progress/batch52/astra-final-review/verdict.md, sha256 b241e24e...) REJECTED candidate 0cc1545d. Its 14 controls had passed vacuously: every mutated snapshot failed on "generated_at is required" before reaching its defect (old harness kept as verify-inventory.vacuous.py, old report root-controls-vacuous.json). The corrected harness restores the stamp, verifies an unmutated calibration snapshot first, records each rejection reason and fails any control rejected only for the stamp; all 14 now reject for their intended defect, and removing the stamp restoration makes the command exit 1 with 0/14. Astra's remaining blocking defects are outside these controls and keep I1.3 and I1.6 open: invented per-function observation dates (header date copied into observed_at), collision evidence orphaned on the non-census target generate-new-buffer, the 13-row formal timeout labelled as single-function buffer-file-name although three rows are get-file-buffer, and the omitted B49 continue-process mismatch observation. Serialized type tampering (true->1) is accepted (non-blocking). This was the second failed revision of the generator, so it stays unintegrated and paused pending an evidence-model redesign; the C-core repairs continue from the parity and coverage tools instead.
+** I1.6 End to end: generate from actual repository inputs and query passing, failing, stale and unknown evidence
+pending

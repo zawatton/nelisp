@@ -1001,6 +1001,26 @@ that merely defines or references something literally named `backquote',
               (standalone-source-normalize--backquote-datum (cdr datum)))))))
    (t datum)))
 
+(defun standalone-source-normalize--constant-regexp-opt-p (form)
+  "Return non-nil when FORM is `regexp-opt' applied to literal arguments.
+The first argument must be a quoted proper list of strings; each optional
+argument must be nil, t or a quoted symbol."
+  (and (eq (car-safe form) 'regexp-opt)
+       (proper-list-p form)
+       (<= 2 (length form) 4)
+       (eq (car-safe (cadr form)) 'quote)
+       (proper-list-p (cadr (cadr form)))
+       (cadr (cadr form))
+       (not (memq nil (mapcar #'stringp (cadr (cadr form)))))
+       (not (memq nil
+                  (mapcar (lambda (arg)
+                            (and (or (memq arg '(nil t))
+                                     (and (eq (car-safe arg) 'quote)
+                                          (symbolp (car-safe (cdr arg)))
+                                          (null (cddr arg))))
+                                 t))
+                          (cddr form))))))
+
 (defun standalone-source-normalize-form (form)
   "Return FORM rewritten for standalone NeLisp evaluation.
 Quoted data is preserved.  Code positions are walked recursively."
@@ -1016,6 +1036,12 @@ Quoted data is preserved.  Code positions are walked recursively."
             (standalone-source-normalize--backquote-datum (cadr form))))
      ((eq (car form) 'setq-local)
       (standalone-source-normalize--setq-local (cdr form)))
+     ((standalone-source-normalize--constant-regexp-opt-p form)
+      ;; `regexp-opt' is pure, so a call on literal arguments is folded to
+      ;; its string on the bundling host.  Interpreting it at every
+      ;; bootstrap cost 9.8 s for comint.el's password prompt list alone.
+      (apply #'regexp-opt (cadr (cadr form))
+             (mapcar (lambda (arg) (if (consp arg) (cadr arg) arg)) (cddr form))))
      (t
       (cons (standalone-source-normalize-form (car form))
             (standalone-source-normalize-form (cdr form))))))

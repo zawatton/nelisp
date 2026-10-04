@@ -1,0 +1,16 @@
+#+TITLE: Buffer-local top-level cells with short development feedback
+#+NOTE: Four criteria are defined before implementation. The whole C-core ledger remains at 24 criteria. Development evidence uses the unchanged b34b binary, minimal explicit providers, identical GNU inputs and complete condition data. It does not certify bootstrap ownership or initialization. No native build is required for this scope.
+
+* S1 Preserve top-level local cells across dynamic bindings
+** S1.1 Provider source and supplemental probes parse completely
+cmd: emacs -Q --batch --eval '(dolist (p (quote ("packages/nelisp-emacs-foundation/src/emacs-cc-buffer-toplevel-1.el" "packages/nelisp-emacs-foundation/src/emacs-cc-census-buffer-w101.el" "test/nelisp-emacs-lib/c-core-probes/buffer-toplevel-1.el"))) (with-temp-buffer (insert-file-contents p) (emacs-lisp-mode) (check-parens) (goto-char (point-min)) (while (progn (forward-comment (point-max)) (< (point) (point-max))) (read (current-buffer)))))'
+** S1.2 Minimal provider checks match GNU for local, default, dynamic and constant behavior
+#+REQUIRES: NELISP_BIN
+cmd: NELISP_LIBRARY_ROOT="$PWD" "$NELISP_BIN" --load target/progress/batch35/buffer-toplevel/feasibility-calibrated.el && python3 test/nelisp-emacs-lib/c-core-unit-smoke.py --unit buffer-toplevel-1 --dependency packages/nelisp-emacs-buffer-core/src/nelisp-emacs-compat.el --dependency packages/nelisp-emacs-buffer-core/src/emacs-buffer.el --dependency packages/nelisp-emacs-foundation/src/emacs-cc-buffer-local-owner-1.el --dependency packages/nelisp-emacs-foundation/src/emacs-cc-census-buffer-w101.el
+** S1.3 Identical inputs reject the retained incomplete provider
+pending
+** S1.4 End to end: all supplemental top-level cell probes match GNU after the full integrated bootstrap
+#+REQUIRES: NELISP_BIN
+cmd: bash test/nelisp-emacs-lib/c-core-parity-smoke.sh run --unit buffer-toplevel-1
+
+#+NOTE: The proposed raw-global setter mechanism is blocked. A GNU-calibrated 11-check sequence passes on GNU 31.1 but fails five independent-buffer ownership checks on b34b: writing buffer B while buffer A has an active local let changes A's top-level value instead of B's. The original expectation that the active value also appears in B was incorrect; its proof is preserved as superseded. Corrected result SHA256 ecd27e00784957ac2c2e047b9bf05cb00a95514a5804504853b9bb0c3f20ae60, under target/progress/batch35/buffer-toplevel. The real failing command replaces S1.2's pending marker; all four criteria remain defined. No setter, getter correction, native build or w301 deferral removal was implemented. Constant and public setter cases remain untested until this feasibility requirement passes.

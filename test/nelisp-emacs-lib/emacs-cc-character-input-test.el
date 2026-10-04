@@ -1,0 +1,52 @@
+;;; emacs-cc-character-input-test.el --- Live character input regression -*- lexical-binding: t; -*-
+(require 'ert)
+(require 'emacs-command-loop)
+(require 'emacs-cc-read-character-1)
+
+(ert-deftest emacs-cc-character-live-poll-skips-symbols ()
+  (let ((unread-command-events nil) (unread-post-input-method-events nil)
+        (emacs-command-loop--unread-events nil)
+        (events '(f1 66)) (calls 0) timeouts)
+    (let ((emacs-command-loop-input-poll-function
+           (lambda (milliseconds)
+             (setq calls (1+ calls))
+             (push milliseconds timeouts)
+             (pop events))))
+      (should (= (emacs-cc-read-character-1--read-exclusive '(nil nil 0.1)) 66))
+      (should (= calls 2))
+      (should (cl-every (lambda (ms) (and (>= ms 0) (<= ms 100))) timeouts)))))
+
+(ert-deftest emacs-cc-character-live-poll-timeout ()
+  (let ((unread-command-events nil) (unread-post-input-method-events nil)
+        (emacs-command-loop--unread-events nil)
+        (emacs-command-loop-input-poll-function
+         (lambda (_milliseconds) (sleep-for 0.02) nil)))
+    (should-not (emacs-cc-read-character-1--read-exclusive '(nil nil 0.01)))))
+
+(ert-deftest emacs-cc-character-input-method-results-cross-readers ()
+  (let ((unread-command-events '(97 98)) (unread-post-input-method-events nil)
+        (emacs-command-loop--unread-events nil)
+        (input-method-function (lambda (key) (list (+ key 1) (+ key 2)))))
+    (should (= (emacs-cc-read-character-1--read-exclusive '(nil t 0)) 98))
+    (should (= (emacs-command-loop-read-char nil t 0) 99))
+    (should (= (emacs-command-loop-read-event nil t 0) 99))
+    (should (= (emacs-command-loop-read-char nil t 0) 100))
+    (should-not unread-post-input-method-events)
+    (should-not unread-command-events)))
+
+(ert-deftest emacs-cc-character-queued-input-does-not-poll ()
+  (let ((unread-command-events '(65)) (unread-post-input-method-events nil)
+        (emacs-command-loop--unread-events nil)
+        (emacs-command-loop-input-poll-function
+         (lambda (_milliseconds) (ert-fail "Queued input called the backend"))))
+    (should (= (emacs-cc-read-character-1--read-exclusive '(nil nil 0)) 65))))
+
+(ert-deftest emacs-cc-character-switch-frame-is-delayed ()
+  (let* ((frame-event (list 'switch-frame (selected-frame)))
+         (unread-command-events (list frame-event 65))
+         (unread-post-input-method-events nil)
+         (emacs-command-loop--unread-events nil))
+    (should (= (emacs-cc-read-character-1--read-exclusive '(nil nil 0)) 65))
+    (should (eq (emacs-command-loop-read-event nil nil 0) frame-event))))
+
+(provide 'emacs-cc-character-input-test)

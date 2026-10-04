@@ -14,6 +14,8 @@
 ;;; Code:
 
 (require 'emacs-window)
+(require 'emacs-buffer)
+(require 'emacs-cc-xdisp-1)
 (require 'emacs-tui-backend)
 
 (defvar emacs-redisplay-core--handle-counter 0
@@ -497,6 +499,11 @@ Return non-nil when the hint was applied without reading buffer text."
          (point (and w (emacs-window-window-point w)))
          (state (emacs-redisplay-core--render-state
                  buffer width height window-start point))
+         (_long-line-state
+          (and buffer (not (stringp buffer))
+               (emacs-cc-xdisp-1--update-long-line-state
+                buffer (emacs-redisplay-core--buffer-text-tick buffer)
+                (lambda () (emacs-redisplay-core--buffer-string buffer)))))
          (old (emacs-redisplay-core--get-matrix handle w))
          (text nil)
          (rows (make-vector height ""))
@@ -746,6 +753,178 @@ cursor-addressed row write when the current row changed."
 (defun emacs-redisplay-force-mode-line-update (&rest _args)
   "Compatibility no-op for the lightweight redisplay core."
   t)
+
+(unless (fboundp 'md5)
+  (defun md5 (object &optional start end coding-system noerror)
+    "Return the MD5 digest of OBJECT, a string or buffer.
+START and END delimit characters.  CODING-SYSTEM specifies the encoding;
+NOERROR permits falling back to raw text for an invalid coding system."
+    (unless (or (stringp object) (bufferp object))
+      (signal 'error (list "Invalid object argument" object)))
+    (let* ((buffer (bufferp object))
+           (text
+            (if buffer
+                (with-current-buffer object
+                  (let ((from (or start (point-min)))
+                        (to (or end (point-max))))
+                    (dolist (position (list from to))
+                      (unless (or (integerp position) (markerp position))
+                        (signal 'wrong-type-argument
+                                (list 'integer-or-marker-p position))))
+                    (when (markerp from) (setq from (marker-position from)))
+                    (when (markerp to) (setq to (marker-position to)))
+                    (unless (and from to)
+                      (signal 'error '("Marker does not point anywhere")))
+                    (unless (and (<= (point-min) from (point-max))
+                                 (<= (point-min) to (point-max)))
+                      (signal 'args-out-of-range (list from to)))
+                    (when (> from to)
+                      (let ((swap from)) (setq from to to swap)))
+                    (buffer-substring-no-properties from to)))
+              (substring object (or start 0) end)))
+           (coding
+            (or coding-system
+                (and buffer
+                     (with-current-buffer object
+                       (or (and (boundp 'coding-system-for-write)
+                                coding-system-for-write)
+                           (and (boundp 'buffer-file-coding-system)
+                                buffer-file-coding-system))))
+                (if (multibyte-string-p text)
+                    (coding-system-priority-list t)
+                  'raw-text))))
+      (unless (coding-system-p coding)
+        (if noerror
+            (setq coding 'raw-text)
+          (signal 'coding-system-error (list coding))))
+      ;; GNU validates the coding system but hashes unibyte text unchanged.
+      ;; Raw text preserves the internal byte representation of multibyte text.
+      (secure-hash 'md5
+                   (cond
+                    ((not (multibyte-string-p text)) text)
+                    ((eq coding 'raw-text) (string-as-unibyte text))
+                    (t (encode-coding-string text coding)))))))
+
+(defun emacs-redisplay-core--character-width (char)
+  "Return CHAR's width under the current buffer's control display policy."
+  (cond
+   ((= char ?\t)
+    (if (and (boundp 'tab-width) (integerp tab-width)
+             (> tab-width 0) (<= tab-width 1000))
+        tab-width
+      8))
+   ((or (< char 32) (= char 127))
+    (if (= char ?\n) 0
+      (if (and (boundp 'ctl-arrow) (not ctl-arrow)) 4 2)))
+   ((or (and (<= 128 char) (< char 160))
+        (and (<= #x3fff80 char) (<= char #x3fffff)))
+    4)
+   (t (char-width char))))
+
+(when (or (not (fboundp 'string-width))
+          (fboundp 'nelisp--repr))
+  (defun string-width (&rest args)
+    "Return STRING's display width in the current buffer.
+FROM and TO delimit a substring, including negative substring indices.
+Each tab occupies `tab-width' columns, independently of its position.
+
+(fn STRING &optional FROM TO)"
+    (unless (<= 1 (length args) 3)
+      (signal 'wrong-number-of-arguments (list 'string-width (length args))))
+    (let ((string (car args))
+          (from (cadr args))
+          (to (nth 2 args)))
+      (unless (stringp string)
+        (signal 'wrong-type-argument (list 'stringp string)))
+      (let* ((text (substring string (or from 0) to))
+             (table (or (and (boundp 'buffer-display-table)
+                             buffer-display-table)
+                        (and (boundp 'standard-display-table)
+                             standard-display-table)))
+             (width 0)
+             (i 0))
+        (while (< i (length text))
+          (let* ((char (aref text i))
+                 (glyphs (and (char-table-p table) (aref table char))))
+            (if (vectorp glyphs)
+                (let ((j 0))
+                  (while (< j (length glyphs))
+                    (setq width
+                          (+ width (emacs-redisplay-core--character-width
+                                    (logand (aref glyphs j) #x3fffff)))
+                          j (1+ j))))
+              (setq width (+ width
+                             (emacs-redisplay-core--character-width char)))))
+          (setq i (1+ i)))
+        width))))
+
+(defun emacs-redisplay-core--uid (uid)
+  "Convert UID to an unsigned 32-bit user ID, or signal GNU's error."
+  (let ((value uid))
+    (when (consp value)
+      (let ((high (car value))
+            (low (if (consp (cdr value)) (cadr value) (cdr value)))
+            (tail (and (consp (cdr value)) (cddr value))))
+        ;; The obsolete (HIGH MIDDLE . LOW) representation appends a
+        ;; 16-bit LOW component.  A valid LOW selects that format; otherwise GNU
+        ;; treats the first two components as a pair of 16-bit integers.
+        (setq value
+              (and (integerp high) (integerp low)
+                   (<= 0 high 65535) (<= 0 low 65535)
+                   (if (and (integerp tail) (<= 0 tail 65535))
+                       ;; A nonzero HIGH cannot fit an unsigned 32-bit UID.
+                       (and (= high 0) (+ (* low 65536) tail))
+                     (+ (* high 65536) low))))))
+    (unless (and (numberp value) (<= 0 value #xffffffff)
+                 (or (integerp value) (= value (truncate value))))
+      (signal 'error
+              '("Not an in-range integer, integral float, or cons of integers")))
+    (truncate value)))
+
+(defun emacs-redisplay-core--passwd (key)
+  "Look up KEY in the operating system's user database.
+Return the colon-separated account fields, or nil for an unknown account."
+  (with-temp-buffer
+    (when (eq (call-process "getent" nil t nil "passwd"
+                            (if (stringp key) key (number-to-string key)))
+              0)
+      (let ((fields (split-string (buffer-string) ":")))
+        ;; getent also accepts numeric keys; a string key names a login.
+        (when (and (>= (length fields) 7)
+                   (or (not (stringp key)) (equal key (car fields))))
+          fields)))))
+
+(unless (fboundp 'user-login-name)
+  (defun user-login-name (&optional uid)
+    "Return the current login name, or the login name belonging to UID.
+An unknown numeric user ID returns nil."
+    (if (null uid)
+        (if (boundp 'user-login-name)
+            (symbol-value 'user-login-name)
+          (or (getenv "LOGNAME") (getenv "USER")
+              (car (emacs-redisplay-core--passwd (user-uid)))))
+      (car (emacs-redisplay-core--passwd
+            (emacs-redisplay-core--uid uid))))))
+
+(unless (fboundp 'user-full-name)
+  (defun user-full-name (&optional uid)
+    "Return the current full name, or the full name of UID.
+UID may be a numeric user ID or a login name.  Unknown users return nil."
+    (if (and (null uid) (boundp 'user-full-name))
+        (symbol-value 'user-full-name)
+      (unless (or (null uid) (stringp uid) (numberp uid))
+        (signal 'error '("Invalid UID specification")))
+      (let* ((key (if (stringp uid) uid
+                    (emacs-redisplay-core--uid (or uid (user-uid)))))
+             (fields (emacs-redisplay-core--passwd key)))
+        (if fields
+            (let* ((name (car (split-string (nth 4 fields) ",")))
+                   (login (car fields))
+                   (capitalized (if (= (length login) 0) login
+                                  (concat (upcase (substring login 0 1))
+                                          (substring login 1)))))
+              (replace-regexp-in-string "&" capitalized (or name "") t t))
+          (and (null uid) "unknown"))))))
 
 (provide 'emacs-redisplay-core)
 

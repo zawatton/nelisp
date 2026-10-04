@@ -28,8 +28,8 @@
 ;;   - `lognot' = arithmetic two's-complement inversion (correct).
 ;;   - `ash' / `lsh' = positive-only repeated multiplication / division
 ;;     by 2 (correct for any sign of COUNT, but quadratic in |COUNT|).
-;;   - `atan' / `exp' are small interpreted approximations sufficient
-;;     for vendor load-time constants such as float-sup.el.
+;;   - `exp' is a bootstrap fallback for vendor load-time constants.
+;;     `atan' uses range reduction and a double-double power series.
 ;;
 ;; A future phase will replace these with bit-correct implementations
 ;; and real libm-backed math; until then the restriction is documented
@@ -153,17 +153,139 @@ Repeated multiplication / division by 2 — quadratic in |COUNT|."
 
 ;;;; --- elementary float math -------------------------------------------
 
+(defun emacs-numeric--negative-p (value)
+  "Return non-nil if floating-point VALUE has a negative sign."
+  (or (< value 0)
+      (and (= value 0) (< (/ 1.0 value) 0))))
+
+(defun emacs-numeric--atan-sum (a b)
+  "Return the rounded sum of A and B and its rounding error as a pair."
+  (let* ((sum (+ a b)) (part (- sum a)))
+    (cons sum (+ (- a (- sum part)) (- b part)))))
+
+(defun emacs-numeric--atan-add (a b)
+  "Add double-double pairs A and B."
+  (let ((sum (emacs-numeric--atan-sum (car a) (car b))))
+    (emacs-numeric--atan-sum
+     (car sum) (+ (cdr sum) (+ (cdr a) (cdr b))))))
+
+(defun emacs-numeric--atan-negate (a)
+  "Negate double-double pair A."
+  (cons (- (car a)) (- (cdr a))))
+
+(defun emacs-numeric--atan-multiply (a b)
+  "Multiply bounded double-double pairs A and B."
+  (let* ((ah (car a)) (bh (car b))
+         (ac (* 134217729.0 ah)) (bc (* 134217729.0 bh))
+         (ahi (- ac (- ac ah))) (bhi (- bc (- bc bh)))
+         (alo (- ah ahi)) (blo (- bh bhi))
+         (product (* ah bh))
+         (error (+ (+ (+ (- (* ahi bhi) product) (* ahi blo))
+                      (* alo bhi))
+                   (* alo blo))))
+    (emacs-numeric--atan-sum
+     product (+ error (+ (* ah (cdr b))
+                         (+ (* (cdr a) bh) (* (cdr a) (cdr b))))))))
+
+(defun emacs-numeric--atan-divide (a b)
+  "Divide bounded double-double pair A by nonzero pair B."
+  (let* ((quotient (/ (car a) (car b)))
+         (product (emacs-numeric--atan-multiply (cons quotient 0.0) b))
+         (residual (emacs-numeric--atan-add
+                    a (emacs-numeric--atan-negate product))))
+    (emacs-numeric--atan-sum
+     quotient (/ (+ (car residual) (cdr residual)) (car b)))))
+
+(defun emacs-numeric--atan-ratio (a b)
+  "Return A/B as a double-double pair, where 0 <= A <= B is finite."
+  (let ((quotient (/ a b)))
+    ;; A subnormal quotient has no representable low part.  Correcting
+    ;; its rounded product would introduce a second underflow rounding.
+    (if (< quotient 2.2250738585072014e-308)
+        (cons quotient 0.0)
+      ;; Scaling by an exact power of two keeps Dekker splitting finite
+      ;; and avoids underflow in products for tiny operands.
+      (cond
+       ((> b 1.0e+150)
+        (setq a (* a 7.458340731200207e-155)
+              b (* b 7.458340731200207e-155)))
+       ((< b 1.0e-150)
+        (setq a (* a 1.3407807929942597e+154)
+              b (* b 1.3407807929942597e+154))))
+      (emacs-numeric--atan-divide (cons a 0.0) (cons b 0.0)))))
+
+(defun emacs-numeric--atan-positive (value)
+  "Return the arctangent of double-double VALUE in [0, 1] as a pair."
+  (let* ((offset (> (car value) 0.41421356237309503))
+         (z (if offset
+                (emacs-numeric--atan-divide
+                 (emacs-numeric--atan-add value (cons -1.0 0.0))
+                 (emacs-numeric--atan-add value (cons 1.0 0.0)))
+              value))
+         (square (emacs-numeric--atan-negate
+                  (emacs-numeric--atan-multiply z z)))
+         (term z)
+         (sum z)
+         (n 3))
+    ;; After reduction |Z| <= sqrt(2)-1.  Forty terms put the
+    ;; truncation error well below double precision.  Keep the low parts
+    ;; of the ratio and all intermediate results until final rounding.
+    (while (< n 81)
+      (setq term (emacs-numeric--atan-multiply square term)
+            sum (emacs-numeric--atan-add
+                 sum (emacs-numeric--atan-divide term (cons (float n) 0.0))))
+      (setq n (+ n 2)))
+    (if offset
+        (emacs-numeric--atan-add
+         (cons 0.7853981633974483 3.061616997868383e-17) sum)
+      sum)))
+
 (unless (and (fboundp 'atan)
              (not (get 'atan 'emacs-stub-bulk)))
   (defun atan (y &optional x)
-    "Polyfill: approximate arctangent.
-One-argument form returns atan(Y).  Two-argument form approximates
-atan2(Y, X).  This is intended for vendor load-time constants, not
-numerical analysis."
-    ;; Keep this bootstrap fallback deliberately constant.  The older
-    ;; interpreted approximation used float literals in comparisons,
-    ;; which standalone-reader can segfault while installing.
-    (if x 0 0))
+    "Return the inverse tangent of Y, or the angle of the vector (X, Y).
+With nil or omitted X, return the inverse tangent of Y in radians.
+Otherwise return the angle in [-pi, pi], preserving signed zero."
+    (unless (numberp y)
+      (signal 'wrong-type-argument (list 'numberp y)))
+    (when (and x (not (numberp x)))
+      (signal 'wrong-type-argument (list 'numberp x)))
+    (let* ((yf (float y))
+           (xf (if x (float x) 1.0)))
+      (cond
+       ;; Addition propagates NaNs, including their sign, like atan2.
+       ((or (not (= yf yf)) (not (= xf xf))) (+ xf yf))
+       (t
+        (let* ((negative-y (emacs-numeric--negative-p yf))
+               (negative-x (emacs-numeric--negative-p xf))
+               (ay (if negative-y (- yf) yf))
+               (ax (if negative-x (- xf) xf))
+               (angle
+                (cond
+                 ((= ay 0.0) (if negative-x 3.141592653589793 0.0))
+                 ((= ax 0.0) 1.5707963267948966)
+                 ((and (= ay (* ay 0.5)) (= ax (* ax 0.5)))
+                  (if negative-x 2.356194490192345 0.7853981633974483))
+                 ((= ay (* ay 0.5)) 1.5707963267948966)
+                 ((= ax (* ax 0.5))
+                  (if negative-x 3.141592653589793 0.0))
+                 (t
+                  ;; Divide the smaller magnitude by the larger one so
+                  ;; extreme finite inputs never overflow their ratio.
+                  (let ((a (emacs-numeric--atan-positive
+                            (if (> ay ax)
+                                (emacs-numeric--atan-ratio ax ay)
+                              (emacs-numeric--atan-ratio ay ax)))))
+                    (when (> ay ax)
+                      (setq a (emacs-numeric--atan-add
+                               (cons 1.5707963267948966 6.123233995736766e-17)
+                               (emacs-numeric--atan-negate a))))
+                    (when negative-x
+                      (setq a (emacs-numeric--atan-add
+                               (cons 3.141592653589793 1.2246467991473532e-16)
+                               (emacs-numeric--atan-negate a))))
+                    (+ (car a) (cdr a)))))))
+          (if negative-y (- angle) angle))))))
   (put 'atan 'emacs-stub-bulk nil))
 
 (unless (and (fboundp 'exp)
@@ -172,8 +294,8 @@ numerical analysis."
     "Polyfill: approximate e raised to X.
 Implemented with range reduction plus a Taylor series; intended for
 vendor load-time constants such as `(exp 1)'."
-    ;; Same constraint as `atan': avoid float literals in the standalone
-    ;; bootstrap fallback and prefer load progress over precision here.
+    ;; Avoid float literals in this standalone bootstrap fallback and
+    ;; prefer load progress over precision here.
     (if x 1 1))
   (put 'exp 'emacs-stub-bulk nil))
 

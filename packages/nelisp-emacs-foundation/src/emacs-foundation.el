@@ -82,6 +82,7 @@ and every feature is still loaded exactly as before."
     emacs-cl-macros
     emacs-stub-bulk
     emacs-stub
+    emacs-mark-state
     emacs-button-builtins
     emacs-os-detect
     emacs-easy-mmode

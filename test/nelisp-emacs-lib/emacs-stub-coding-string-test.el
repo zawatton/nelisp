@@ -44,6 +44,49 @@
   (should (equal (decode-coding-string "{\"a\":1}" 'utf-8) "{\"a\":1}"))
   (should (equal (encode-coding-string "{\"a\":1}" 'utf-8) "{\"a\":1}")))
 
+(ert-deftest emacs-stub-coding-string-test/latin-1-bytes-and-substitution ()
+  (dolist (coding '(latin-1 iso-latin-1 iso-8859-1
+                    latin-1-unix iso-latin-1-unix iso-8859-1-unix))
+    (let ((encoded (encode-coding-string "éÿ€日" coding)))
+      (should-not (multibyte-string-p encoded))
+      (should (equal (append encoded nil) '(233 255 32 32)))
+      (should (equal (decode-coding-string encoded coding) "éÿ  ")))
+    ;; The UTF-8-looking pair must decode as two Latin-1 characters.
+    (should (equal (append (decode-coding-string
+                           (unibyte-string 195 169) coding) nil)
+                   '(195 169)))))
+
+(ert-deftest emacs-stub-coding-string-test/latin-1-newline-conversion ()
+  (dolist (coding '(latin-1-dos iso-latin-1-dos iso-8859-1-dos))
+    (should (equal (append (encode-coding-string "é\n" coding) nil)
+                   '(233 13 10)))
+    (should (equal (decode-coding-string (unibyte-string 233 13 10) coding)
+                   "é\n")))
+  (dolist (coding '(latin-1-mac iso-latin-1-mac iso-8859-1-mac))
+    (should (equal (append (encode-coding-string "é\n" coding) nil)
+                   '(233 13)))
+    (should (equal (decode-coding-string (unibyte-string 233 13) coding)
+                   "é\n")))
+  (should (equal (decode-coding-string "a\r\nb\r\n" 'latin-1) "a\nb\n"))
+  (should (equal (decode-coding-string "a\r\nb\n" 'latin-1) "a\r\nb\n")))
+
+(ert-deftest emacs-stub-coding-string-test/latin-1-hashes ()
+  (dolist (coding '(latin-1 iso-latin-1 iso-8859-1))
+    (let* ((bytes (unibyte-string 233 255 32))
+           (encoded (encode-coding-string "éÿ€" coding)))
+      (should (equal (md5 "éÿ€" nil nil coding) (secure-hash 'md5 bytes)))
+      (dolist (algorithm '(md5 sha1 sha256))
+        (should (equal (secure-hash algorithm encoded)
+                       (secure-hash algorithm bytes)))))))
+
+(ert-deftest emacs-stub-coding-string-test/latin-1-raw-bytes ()
+  (should (equal (append (encode-coding-string
+                         (string #x3fff80 #x3fffff) 'latin-1) nil)
+                 '(128 255)))
+  (should (equal (append (encode-coding-string
+                         (unibyte-string 128 233 255) 'latin-1) nil)
+                 '(128 233 255))))
+
 (provide 'emacs-stub-coding-string-test)
 
 ;;; emacs-stub-coding-string-test.el ends here

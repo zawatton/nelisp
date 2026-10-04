@@ -104,14 +104,32 @@ match before falling back to LOCAL-FUNCTION; see `emacs-fnh-dispatch'."
       file)))
 
 (defun emacs-fnh-unhandled-file-name-directory (filename)
-  "Standalone `unhandled-file-name-directory' for FILENAME."
-  (let ((handler (emacs-fnh-find-file-name-handler
+  "Return a directly usable directory name associated with FILENAME.
+Ask FILENAME's handler when present; a non-string answer means that no
+local directory is available.  Otherwise convert FILENAME to directory
+syntax, honoring `file-name-as-directory' handlers."
+  (unless (stringp filename)
+    (signal 'wrong-type-argument (list 'stringp filename)))
+  (let ((handler (find-file-name-handler
                   filename 'unhandled-file-name-directory)))
     (if handler
-        (funcall handler 'unhandled-file-name-directory filename)
-      (and (stringp filename)
-           (fboundp 'file-name-directory)
-           (file-name-directory filename)))))
+        (let ((directory
+               (funcall handler 'unhandled-file-name-directory filename)))
+          (and (stringp directory) directory))
+      (let ((directory-handler
+             (find-file-name-handler filename 'file-name-as-directory)))
+        (if directory-handler
+            (let ((directory
+                   (funcall directory-handler 'file-name-as-directory filename)))
+              (unless (stringp directory)
+                (error "Invalid handler in ‘file-name-handler-alist’"))
+              directory)
+          ;; Keep this local conversion independent of the file-I/O shim's
+          ;; handler lookup and empty-name behavior.
+          (cond
+           ((= (length filename) 0) "./")
+           ((eq (aref filename (1- (length filename))) ?/) filename)
+           (t (concat filename "/"))))))))
 
 (defun emacs-fnh--standalone-p ()
   "Return non-nil when running on the standalone NeLisp reader.

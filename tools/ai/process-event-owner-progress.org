@@ -1,0 +1,18 @@
+#+TITLE: Public process state dispatch through the actual event owner
+#+NOTE: Four criteria are defined before implementation. Whole C-core retains 24 criteria and all existing timing caps. Use the existing event-owner capture mechanism rather than routing real event processes into native metadata. Validate each GNU accessor's actual argument contract, setter return value, load order and aliases. Real constructor and descriptor ownership are preconditions; diagnostic vectors with fd=-1 cannot qualify this lane. No general native compiler, new native entry, public pipe ownership or generic harness work is included.
+
+* S1 Preserve public state semantics across facade and event provider ownership
+** S1.1 Changed process providers and supplemental probes parse completely
+cmd: emacs -Q --batch --eval '(dolist (p (quote ("packages/nelisp-emacs-io/src/emacs-process.el" "packages/nelisp-emacs-io/src/emacs-process-events.el" "packages/nelisp-emacs-io/src/emacs-process-builtins.el" "test/nelisp-emacs-lib/c-core-probes/process-event-owner-1.el"))) (with-temp-buffer (insert-file-contents p) (emacs-lisp-mode) (check-parens) (goto-char (point-min)) (while (progn (forward-comment (point-max)) (< (point) (point-max))) (read (current-buffer)))))'
+** S1.2 Minimal actual-provider public process state, setter returns and full errors match unchanged GNU inputs
+#+NOTE: The pre-fix failing comparison remains in target/progress/batch37/process-event-owner/pre-fix. The grouped fix now passes both opposite load order and reload against the same GNU probe; error information is materialized before cleanup on both runtimes. These are retained minimal-provider results, not full-bootstrap evidence.
+cmd: emacs -Q --batch -l target/progress/batch37/process-event-owner/compare-public-state.el -- target/progress/batch37/process-event-owner/after-fix/gnu-reference.log target/progress/batch37/process-event-owner/after-fix/new-events-first.log && emacs -Q --batch -l target/progress/batch37/process-event-owner/compare-public-state.el -- target/progress/batch37/process-event-owner/after-fix/gnu-reference.log target/progress/batch37/process-event-owner/after-fix/new-builtins-first-reload.log
+** S1.3 Identical real-constructor inputs reject the retained provider dispatch defect
+cmd: python3 -c 'import subprocess,sys; p="target/progress/batch37/process-event-owner/"; r=subprocess.run(["emacs","-Q","--batch","-l",p+"compare-public-state.el","--",p+"after-fix/gnu-reference.log",p+"after-fix/old-builtins-first.log"],capture_output=True,text=True); print(r.stdout,end=""); sys.exit(0 if r.returncode==1 and ":delete-buffer-name" in r.stdout else 1)'
+** S1.4 End to end: full integrated bootstrap matches GNU for the real process event-owner probe
+#+REQUIRES: NELISP_BIN
+cmd: bash test/nelisp-emacs-lib/c-core-parity-smoke.sh run --unit process-event-owner-1
+** S1.5 End to end: actual integrated bootstrap matches unchanged GNU input through the batch CLI
+#+NOTE: This fifth criterion was added after S1.4 reached the unchanged 55-second cap despite matching probe records and P-DONE plus an extra native t. S1.4 remains a failing cmd and was not removed or downgraded. This slice-specific check uses the same retained actual bootstrap driver and selected GNU input, requires successful exit, empty stderr, exactly one probe and completion, and byte-identical output within 55 seconds. The general smoke harness is unchanged.
+#+REQUIRES: NELISP_BIN
+cmd: python3 target/progress/batch37/process-event-owner/formal-batch-check.py

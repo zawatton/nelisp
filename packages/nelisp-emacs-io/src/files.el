@@ -50,10 +50,29 @@
     (fset public (files--lazy-nullary-wrapper target))))
 
 (defun files--buffer-file-name (&optional _buffer)
-  files--current-file-name)
+  (let ((target (or _buffer
+                    (and (fboundp 'current-buffer) (current-buffer)))))
+    (if (and target (fboundp 'bufferp) (bufferp target)
+             (fboundp 'nelisp--buffer-multibyte-p))
+        (progn
+          (require 'emacs-fileio-builtins)
+          (emacs-fileio--direct-buffer-file-name target))
+      files--current-file-name)))
+
+(defun files--public-buffer-file-name (&optional buffer)
+  (when (and buffer
+             (not (and (fboundp 'bufferp) (bufferp buffer))))
+    (signal 'wrong-type-argument (list 'bufferp buffer)))
+  (files--buffer-file-name buffer))
 
 (defun files--set-visited-file-name (filename &optional _no-query _along)
-  (setq files--current-file-name filename))
+  (let ((target (and (fboundp 'current-buffer) (current-buffer))))
+    (if (and target (fboundp 'bufferp) (bufferp target)
+             (fboundp 'nelisp--buffer-multibyte-p))
+        (progn
+          (require 'emacs-fileio-builtins)
+          (emacs-fileio-set-visited-file-name-direct filename))
+      (setq files--current-file-name filename))))
 
 (when files--standalone-p
   (defun make-sparse-keymap (&optional _prompt) (list 'keymap)))
@@ -62,18 +81,24 @@
   (defun keymapp (object) (and (consp object) (eq (car object) 'keymap))))
 
 (when files--standalone-p
-  (defun define-key (keymap key def &optional _remove)
-    (setcdr keymap (cons (cons key def) (cdr keymap))) def))
+  (defun define-key (keymap key def &optional remove)
+    "Define KEY as DEF in KEYMAP; REMOVE non-nil removes the binding."
+    (unless (fboundp 'emacs-keymap-builtins--define-key)
+      (require 'emacs-keymap-builtins))
+    (emacs-keymap-builtins--define-key keymap key def remove)))
 
 (when files--standalone-p
-  (defun lookup-key (keymap key &optional _accept-default)
-    (cdr (assoc key (cdr keymap)))))
+  (defun lookup-key (keymap key &optional accept-default)
+    "Return KEY's binding in KEYMAP, optionally recognizing defaults."
+    (unless (fboundp 'emacs-keymap-builtins--lookup-key)
+      (require 'emacs-keymap-builtins))
+    (emacs-keymap-builtins--lookup-key keymap key accept-default)))
 
 (when files--standalone-p (defvar ctl-x-map (make-sparse-keymap)))
 (when files--standalone-p (defvar ctl-x-4-map (make-sparse-keymap)))
 (when files--standalone-p (defvar ctl-x-5-map (make-sparse-keymap)))
 
-(files--install 'buffer-file-name 'files--buffer-file-name)
+(files--install 'buffer-file-name 'files--public-buffer-file-name)
 (files--install 'set-visited-file-name 'files--set-visited-file-name)
 (when files--standalone-p
   (fset 'find-file

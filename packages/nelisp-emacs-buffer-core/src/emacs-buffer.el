@@ -112,12 +112,66 @@ Slots:
   (base-buffer   nil)
   (overlays      nil))
 
+(defun emacs-buffer--set-ext-locals (ext value)
+  "Set EXT's locals without expanding a generalized place on each switch."
+  (if (fboundp 'nelisp--record-set)
+      (nelisp--record-set ext 0 value)
+    (setf (emacs-buffer--ext-locals ext) value)))
+
+(defun emacs-buffer--set-ext-text-props (ext value)
+  "Set EXT's property intervals through the current record substrate."
+  (if (fboundp 'nelisp--record-set)
+      (nelisp--record-set ext 3 value)
+    (setf (emacs-buffer--ext-text-props ext) value)))
+
+(defun emacs-buffer--increment-ext-modified-tick (ext)
+  "Increment EXT's property modification tick without generalized-place work."
+  (let ((value (1+ (emacs-buffer--ext-modified-tick ext))))
+    (if (fboundp 'nelisp--record-set)
+        (nelisp--record-set ext 4 value)
+      (setf (emacs-buffer--ext-modified-tick ext) value))))
+
 (defvar emacs-buffer--state (make-hash-table :test 'eq :weakness nil)
   "Hash table buffer-object -> `emacs-buffer--ext'.
 Populated lazily by `emacs-buffer--ensure-ext'.  We keep strong refs
 (non-weak) so a buffer's extended state outlives transient lookups —
 explicit `kill-buffer' callers should remove the entry via
 `emacs-buffer--forget'.")
+
+(defvar emacs-buffer--event-states nil
+  "Lazy buffer-to-event-state table, independent of the stable sidecar layout.")
+
+(defun emacs-buffer--event-state (buffer &optional create)
+  "Return BUFFER's label and notification state, allocating only on CREATE."
+  (when (and create (null emacs-buffer--event-states))
+    (setq emacs-buffer--event-states (make-hash-table :test 'eq :weakness 'key)))
+  (and emacs-buffer--event-states
+       (or (gethash buffer emacs-buffer--event-states)
+           (and create (puthash buffer (vector nil nil) emacs-buffer--event-states)))))
+
+(defun emacs-buffer--labeled-restrictions (buffer)
+  "Return BUFFER's persistent labeled restriction stack."
+  (let ((state (emacs-buffer--event-state buffer)))
+    (and state (aref state 0))))
+
+(defun emacs-buffer--set-labeled-restrictions (buffer value)
+  "Store VALUE as BUFFER's labeled restriction stack."
+  (aset (emacs-buffer--event-state buffer t) 0 value))
+
+(defun emacs-buffer--pending-after-change (buffer)
+  "Return BUFFER's deferred change aggregate."
+  (let ((state (emacs-buffer--event-state buffer)))
+    (and state (aref state 1))))
+
+(defun emacs-buffer--set-pending-after-change (buffer value)
+  "Store VALUE as BUFFER's deferred change aggregate."
+  (aset (emacs-buffer--event-state buffer t) 1 value))
+
+(defvar emacs-buffer--string-state
+  (make-hash-table :test 'eq :weakness 'key)
+  "Weak identity table from strings to `emacs-buffer--ext' property state.
+The interval representation is shared with buffers; string intervals use
+zero-based half-open ranges.")
 
 (defvar emacs-buffer--indirect-base-by-name (make-hash-table :test 'equal)
   "Hash indirect buffer name -> base buffer.
@@ -139,19 +193,81 @@ predicate returns the correct answer.")
 We cannot touch the host Emacs `default-value' machinery, so we shadow
 it for symbols that pass through this module's API.")
 
+(defvar emacs-buffer--local-indexes (make-hash-table :test 'eq :weakness 'key)
+  "Hash extended state -> (LOCALS . INDEX), where INDEX maps symbols to cells.
+The alist remains authoritative, including when a consumer replaces it.
+Value changes share the original cons cells and need no invalidation.")
+
+(defvar emacs-buffer--active-cache nil
+  "Most recent two ordered local-symbol unions, keyed by their source lists.
+Keeping only two entries covers switching back and forth without retaining
+an unbounded collection of buffers or buffer pairs.")
+
+(defun emacs-buffer--local-index (ext)
+  "Return EXT's symbol-to-cell index, rebuilding after alist replacement."
+  (let* ((locals (emacs-buffer--ext-locals ext))
+         (entry (gethash ext emacs-buffer--local-indexes)))
+    (unless (and entry (eq (car entry) locals))
+      (let ((index (make-hash-table :test 'eq)))
+        (dolist (cell locals)
+          ;; Preserve assq's first-cell semantics for externally supplied lists.
+          (unless (gethash (car cell) index)
+            (puthash (car cell) cell index)))
+        (setq entry (cons locals index))
+        (puthash ext entry emacs-buffer--local-indexes)))
+    (cdr entry)))
+
 (defvar inhibit-read-only nil
   "Non-nil means buffer and text read-only checks are ignored.")
 
 (defun emacs-buffer--ensure-ext (buf)
   "Return the `emacs-buffer--ext' record for BUF, creating it lazily."
-  (unless (nelisp-ec-buffer-p buf)
+  (unless (or (nelisp-ec-buffer-p buf)
+              (and (fboundp 'nelisp--repr)
+                   (fboundp 'buffer-live-p) (buffer-live-p buf)))
     (signal 'wrong-type-argument (list 'nelisp-ec-buffer-p buf)))
   (or (gethash buf emacs-buffer--state)
       (puthash buf (emacs-buffer--ext-make) emacs-buffer--state)))
 
+(defun emacs-buffer--ensure-text-property-ext (buf)
+  "Return BUF's property sidecar, including for standalone-native buffers."
+  (or (gethash buf emacs-buffer--state)
+      (if (nelisp-ec-buffer-p buf)
+          (emacs-buffer--ensure-ext buf)
+        (if (and (fboundp 'buffer-live-p) (buffer-live-p buf))
+            (puthash buf (emacs-buffer--ext-make) emacs-buffer--state)
+          (signal 'wrong-type-argument (list 'buffer-live-p buf))))))
+
+(defun emacs-buffer--native-buffer-text-property-mutation
+    (operation buf start end &rest payload)
+  "Mirror native-buffer text-property OPERATION into BUF's sidecar."
+  (setq start (emacs-buffer--pos-number start)
+        end (emacs-buffer--pos-number end))
+  (unless (and (integerp start) (integerp end) (<= start end))
+    (signal 'wrong-type-argument (list 'integerp start end)))
+  (let* ((ext (emacs-buffer--ensure-text-property-ext buf))
+         (intervals (emacs-buffer--ext-text-props ext))
+         (updated
+          (pcase operation
+            ('put (emacs-buffer--tp-add intervals start end
+                                         (list (car payload) (cadr payload))))
+            ('add (emacs-buffer--tp-add intervals start end (car payload)))
+            ('remove (emacs-buffer--tp-remove
+                      intervals start end
+                      (emacs-buffer--keys-from-arg (car payload))))
+            ('set (if (null (car payload))
+                      (emacs-buffer--tp-clip intervals start end)
+                    (emacs-buffer--tp-merge intervals start end (car payload))))
+            (_ intervals))))
+    (setf (emacs-buffer--ext-text-props ext) updated)
+    (cl-incf (emacs-buffer--ext-modified-tick ext))
+    nil))
+
 (defun emacs-buffer--current ()
   "Return the current buffer or signal `nelisp-ec-no-current-buffer'."
-  (or (nelisp-ec-current-buffer)
+  (or (if (and (fboundp 'nelisp--repr) (fboundp 'current-buffer))
+          (current-buffer)
+        (nelisp-ec-current-buffer))
       (signal 'nelisp-ec-no-current-buffer nil)))
 
 ;;;###autoload
@@ -162,6 +278,21 @@ it for symbols that pass through this module's API.")
 (defun emacs-buffer--forget (buf)
   "Drop the extended state for BUF.  Idempotent.
 Call from a kill-buffer hook (host integration job)."
+  (let ((ext (gethash buf emacs-buffer--state)))
+    (when ext
+      (remhash ext emacs-buffer--local-indexes)
+      (let ((locals (emacs-buffer--ext-locals ext)))
+        ;; Empty-list keys retain no buffer state and are reusable by the next
+        ;; temporary buffer.  Drop only entries retaining this buffer's cells.
+        (when locals
+          (setq emacs-buffer--active-cache
+                (delq nil
+                      (mapcar (lambda (entry)
+                                (unless (or (eq locals (aref entry 0))
+                                            (eq locals (aref entry 1)))
+                                  entry))
+                              emacs-buffer--active-cache)))))))
+  (when emacs-buffer--event-states (remhash buf emacs-buffer--event-states))
   (remhash buf emacs-buffer--state))
 
 ;;; A. buffer-local variables  (10 APIs)
@@ -190,17 +321,20 @@ default, leaking it into a buffer that never called `make-local-variable'
 at all."
   (unless (symbolp sym)
     (signal 'wrong-type-argument (list 'symbolp sym)))
-  (unless (gethash sym emacs-buffer--default-values)
-    (when (boundp sym)
-      (emacs-buffer-set-default sym (symbol-value sym))))
-  (let* ((b (or buf (emacs-buffer--current)))
-         (ext (emacs-buffer--ensure-ext b)))
-    (unless (assq sym (emacs-buffer--ext-locals ext))
-      (push (cons sym (if (emacs-buffer-default-boundp sym)
-                          (emacs-buffer-default-value sym)
-                        nil))
-            (emacs-buffer--ext-locals ext)))
-    sym))
+  (if (assq sym emacs-buffer--intrinsic-initial-values)
+      sym
+    (progn
+      (unless (gethash sym emacs-buffer--default-values)
+        (when (boundp sym)
+          (emacs-buffer-set-default sym (symbol-value sym))))
+      (let* ((b (or buf (emacs-buffer--current)))
+             (ext (emacs-buffer--ensure-ext b)))
+        (unless (assq sym (emacs-buffer--ext-locals ext))
+          (push (cons sym (if (emacs-buffer-default-boundp sym)
+                              (emacs-buffer-default-value sym)
+                            nil))
+                (emacs-buffer--ext-locals ext)))
+        sym))))
 
 ;;;###autoload
 (defun emacs-buffer-make-variable-buffer-local (sym)
@@ -236,11 +370,17 @@ every subsequently-created buffer.  Returns SYM."
 (defun emacs-buffer-buffer-local-variables (&optional buf)
   "Return alist (SYM . VALUE) of all buffer-local bindings in BUF."
   (let* ((b (or buf (emacs-buffer--current)))
-         (ext (gethash b emacs-buffer--state)))
-    (if ext
-        (mapcar (lambda (cell) (cons (car cell) (cdr cell)))
-                (emacs-buffer--ext-locals ext))
-      nil)))
+         (ext (gethash b emacs-buffer--state))
+         (locals (if ext
+                     (mapcar (lambda (cell) (cons (car cell) (cdr cell)))
+                             (emacs-buffer--ext-locals ext))
+                   nil)))
+    (let ((cell (assq 'buffer-file-name locals))
+          (value (emacs-buffer-buffer-local-value 'buffer-file-name b)))
+      (if cell
+          (setcdr cell value)
+        (push (cons 'buffer-file-name value) locals)))
+    locals))
 
 ;;;###autoload
 (defun emacs-buffer-buffer-local-value (sym buf)
@@ -259,12 +399,16 @@ inside a `with-current-buffer' body, before any subsequent switch has
 run a swap-out."
   (unless (symbolp sym)
     (signal 'wrong-type-argument (list 'symbolp sym)))
-  (if (and (eq buf (nelisp-ec-current-buffer)) (boundp sym))
+  (if (and (eq buf (if (fboundp 'nelisp--repr)
+                      (current-buffer)
+                    (nelisp-ec-current-buffer))) (boundp sym))
       (symbol-value sym)
     (let* ((ext (gethash buf emacs-buffer--state))
            (cell (and ext (assq sym (emacs-buffer--ext-locals ext)))))
       (cond
        (cell (cdr cell))
+       ((assq sym emacs-buffer--intrinsic-initial-values)
+        (cdr (assq sym emacs-buffer--intrinsic-initial-values)))
        ((emacs-buffer-default-boundp sym)
         (emacs-buffer-default-value sym))
        ;; Standalone `setq-local' still degrades to an ordinary `setq' in the
@@ -285,22 +429,51 @@ this helper (or `make-local-variable' + global `setq')."
   (unless (symbolp sym)
     (signal 'wrong-type-argument (list 'symbolp sym)))
   (let* ((ext (emacs-buffer--ensure-ext buf))
-         (cell (assq sym (emacs-buffer--ext-locals ext))))
+         (index (emacs-buffer--local-index ext))
+         (cell (gethash sym index)))
     (if cell
         (setcdr cell value)
-      (setf (emacs-buffer--ext-locals ext)
-            (cons (cons sym value)
-                  (emacs-buffer--ext-locals ext))))
+      (setq cell (cons sym value))
+      (push cell (emacs-buffer--ext-locals ext))
+      (puthash sym cell index)
+      (setcar (gethash ext emacs-buffer--local-indexes)
+              (emacs-buffer--ext-locals ext)))
     value))
+
+(defun emacs-buffer-set-buffer-local-toplevel-value (symbol value &optional buffer)
+  "Set SYMBOL's local value outside dynamic bindings in BUFFER."
+  (unless (symbolp symbol)
+    (signal 'wrong-type-argument (list 'symbolp symbol)))
+  (when (or (null symbol) (eq symbol t) (keywordp symbol)
+            (eq symbol 'enable-multibyte-characters))
+    (signal 'setting-constant (list symbol)))
+  (let ((requested buffer))
+    (setq buffer (if buffer (get-buffer buffer) (current-buffer)))
+    (unless buffer
+      (signal 'error (list (format "No buffer named %s" requested)))))
+  (unless (buffer-live-p buffer)
+    (signal 'error '("Selecting deleted buffer")))
+  (unless (gethash symbol emacs-buffer--default-values)
+    (puthash symbol (if (nelisp--env-globals-is-bound symbol)
+                        (cons t (nelisp--env-globals-get-value symbol))
+                      (cons nil nil))
+             emacs-buffer--default-values))
+  (emacs-buffer-set-buffer-local-value symbol buffer value)
+  (when (eq buffer (current-buffer))
+    (nelisp--env-globals-set-value symbol value)
+    (puthash symbol value emacs-buffer--swapped-in))
+  nil)
 
 ;;;###autoload
 (defun emacs-buffer-local-variable-p (sym &optional buf)
   "Return non-nil if SYM has a buffer-local binding in BUF."
   (unless (symbolp sym)
     (signal 'wrong-type-argument (list 'symbolp sym)))
-  (let* ((b (or buf (emacs-buffer--current)))
-         (ext (gethash b emacs-buffer--state)))
-    (and ext (assq sym (emacs-buffer--ext-locals ext)) t)))
+  (if (assq sym emacs-buffer--intrinsic-initial-values)
+      t
+    (let* ((b (or buf (emacs-buffer--current)))
+           (ext (gethash b emacs-buffer--state)))
+      (and ext (assq sym (emacs-buffer--ext-locals ext)) t))))
 
 ;;;###autoload
 (defun emacs-buffer-local-variable-if-set-p (sym &optional buf)
@@ -327,7 +500,8 @@ from `default-value', breaking `org-set-regexps-and-options'."
     (signal 'wrong-type-argument (list 'symbolp sym)))
   (let ((cell (gethash sym emacs-buffer--default-values)))
     (cond
-     ((and cell (car cell)) (cdr cell))
+     (cell (if (car cell) (cdr cell)
+             (signal 'void-variable (list sym))))
      ((boundp sym) (symbol-value sym))
      (t (signal 'void-variable (list sym))))))
 
@@ -339,8 +513,7 @@ binding counts as having a default (faithful Emacs semantics)."
   (unless (symbolp sym)
     (signal 'wrong-type-argument (list 'symbolp sym)))
   (let ((cell (gethash sym emacs-buffer--default-values)))
-    (or (and cell (car cell) t)
-        (boundp sym))))
+    (if cell (and (car cell) t) (boundp sym))))
 
 ;;;###autoload
 (defun emacs-buffer-set-default (sym value)
@@ -368,12 +541,17 @@ own local binding sees a new default right away) — see
   "Remove the buffer-local binding of SYM in BUF, if any.  Return SYM."
   (unless (symbolp sym)
     (signal 'wrong-type-argument (list 'symbolp sym)))
-  (let* ((b (or buf (emacs-buffer--current)))
-         (ext (gethash b emacs-buffer--state)))
-    (when ext
-      (setf (emacs-buffer--ext-locals ext)
-            (assq-delete-all sym (emacs-buffer--ext-locals ext))))
-    sym))
+  (if (assq sym emacs-buffer--intrinsic-initial-values)
+      sym
+    (let* ((b (or buf (emacs-buffer--current)))
+           (ext (gethash b emacs-buffer--state)))
+      (when ext
+        ;; assq-delete-all can splice the list without changing its head.
+        (remhash ext emacs-buffer--local-indexes)
+        (setq emacs-buffer--active-cache nil)
+        (setf (emacs-buffer--ext-locals ext)
+              (assq-delete-all sym (emacs-buffer--ext-locals ext))))
+      sym)))
 
 ;;;###autoload
 (defun emacs-buffer-kill-all-local-variables (&optional buf)
@@ -419,6 +597,25 @@ removed unconditionally."
 Every buffer switch swaps these symbols' global cells regardless of
 whether the buffer has an explicit local cell yet — the first observed
 value seeds one lazily.  Populated by `emacs-buffer-declare-per-buffer'.")
+
+(defvar emacs-buffer--per-buffer-index-source nil
+  "Declaration list used to build `emacs-buffer--per-buffer-index-table'.")
+
+(defvar emacs-buffer--per-buffer-index-table (make-hash-table :test 'eq)
+  "Identity set of the current always-per-buffer declarations.")
+
+(defun emacs-buffer--per-buffer-index ()
+  "Return the declaration membership index, honoring dynamically bound lists."
+  (unless (eq emacs-buffer--per-buffer-index-source emacs-buffer--per-buffer-symbols)
+    (setq emacs-buffer--per-buffer-index-source emacs-buffer--per-buffer-symbols
+          emacs-buffer--per-buffer-index-table (make-hash-table :test 'eq))
+    (dolist (sym emacs-buffer--per-buffer-symbols)
+      (puthash sym t emacs-buffer--per-buffer-index-table)))
+  emacs-buffer--per-buffer-index-table)
+
+(defconst emacs-buffer--intrinsic-initial-values
+  '((buffer-file-name . nil))
+  "Initial values for variables intrinsically local in every buffer.")
 
 (defvar emacs-buffer--swapped-in (make-hash-table :test 'eq)
   "Hash SYM -> the value last written into SYM's global cell by the swap
@@ -471,18 +668,104 @@ looks for a default, leaking it forward), seed one via
   "Return the de-duplicated list of symbols a switch from OLD to NEW must swap.
 Union of `emacs-buffer--per-buffer-symbols' with the symbols that have
 an explicit local cell in OLD or NEW (either may be nil)."
-  (let ((syms (copy-sequence emacs-buffer--per-buffer-symbols)))
-    (when old
-      (let ((ext (gethash old emacs-buffer--state)))
-        (when ext
-          (dolist (cell (emacs-buffer--ext-locals ext))
-            (push (car cell) syms)))))
-    (when new
-      (let ((ext (gethash new emacs-buffer--state)))
-        (when ext
-          (dolist (cell (emacs-buffer--ext-locals ext))
-            (push (car cell) syms)))))
-    (delete-dups syms)))
+  (let* ((old-ext (and old (gethash old emacs-buffer--state)))
+         (new-ext (and new (gethash new emacs-buffer--state)))
+         (old-locals (and old-ext (emacs-buffer--ext-locals old-ext)))
+         (new-locals (and new-ext (emacs-buffer--ext-locals new-ext)))
+         (entries emacs-buffer--active-cache)
+         (hit nil))
+    (while (and entries (not hit))
+      (let ((entry (car entries)))
+        (when (and (eq old-locals (aref entry 0))
+                   (eq new-locals (aref entry 1))
+                   (eq emacs-buffer--per-buffer-symbols (aref entry 2)))
+          (setq hit entry)))
+      (setq entries (cdr entries)))
+    (if hit
+        (aref hit 3)
+      (let ((seen (make-hash-table :test 'eq))
+            (syms nil))
+        ;; Seed order was reversed NEW, reversed OLD, then declared symbols.
+        (dolist (sym (append (reverse (mapcar #'car new-locals))
+                            (reverse (mapcar #'car old-locals))
+                            emacs-buffer--per-buffer-symbols))
+          (unless (gethash sym seen)
+            (puthash sym t seen)
+            (push sym syms)))
+        (setq syms (nreverse syms))
+        (setq emacs-buffer--active-cache
+              (cons (vector old-locals new-locals
+                            emacs-buffer--per-buffer-symbols syms)
+                    (when emacs-buffer--active-cache
+                      (list (car emacs-buffer--active-cache)))))
+        syms))))
+
+(defun emacs-buffer--swap-between (old new syms)
+  "Write back OLD and install NEW using their cell indexes for SYMS.
+Read each live symbol once.  Defer all global-cell changes until write-back
+has finished, and queue only values that need installing or recording."
+  (let* ((ext (and old (gethash old emacs-buffer--state)))
+         (new-ext (and new (gethash new emacs-buffer--state)))
+         (locals (and ext (emacs-buffer--ext-locals ext)))
+         (index (and ext (emacs-buffer--local-index ext)))
+         (new-index (and new-ext (emacs-buffer--local-index new-ext)))
+         (added nil)
+         (per-buffer (emacs-buffer--per-buffer-index))
+         (pending nil)
+         sym out-cell in-cell bound live last default value)
+    (while syms
+      ;; Reuse one lexical frame for the scan instead of allocating a frame
+      ;; for every symbol.  The live cells still have to be read on every
+      ;; switch: ordinary `setq' can change them without touching the sidecar.
+      (setq sym (car syms)
+            out-cell (and index (gethash sym index))
+            in-cell (and new-index (gethash sym new-index))
+            bound (boundp sym)
+            live (if bound (symbol-value sym) 'emacs-buffer--swap-unset)
+            last (gethash sym emacs-buffer--swapped-in
+                          'emacs-buffer--swap-unset))
+      (when (and old bound)
+        (if out-cell
+            (unless (eq live (cdr out-cell)) (setcdr out-cell live))
+          (when (or (not (eq live last))
+                    (gethash sym per-buffer))
+            (unless ext
+              (setq ext (emacs-buffer--ensure-ext old)))
+            (unless index (setq index (emacs-buffer--local-index ext)))
+            (setq out-cell (cons sym live))
+            (push out-cell locals)
+            (puthash sym out-cell index)
+            (setq added t))))
+      (when new
+        (setq default (and (not in-cell)
+                           (gethash sym emacs-buffer--default-values)))
+        (unless in-cell
+          (setq in-cell
+                (or (assq sym emacs-buffer--intrinsic-initial-values)
+                    (and default (car default) default))))
+        (if (and (not in-cell) default (not (car default)))
+            (unless (and (not bound) (eq last 'emacs-buffer--swap-unset))
+              (push (vector sym nil bound t) pending))
+          (when (or in-cell bound)
+            (setq value (if in-cell (cdr in-cell) live))
+            (unless (and bound (eq value live) (eq value last))
+              (push (vector sym value
+                            (or (not bound) (not (eq value live))) nil)
+                    pending)))))
+      (setq syms (cdr syms)))
+    (when added
+      (emacs-buffer--set-ext-locals ext locals)
+      (setcar (gethash ext emacs-buffer--local-indexes) locals))
+    (setq pending (nreverse pending))
+    (while pending
+      (let ((row (car pending)))
+        (when (aref row 2)
+          (if (aref row 3) (makunbound (aref row 0))
+            (set (aref row 0) (aref row 1))))
+        (puthash (aref row 0)
+                 (if (aref row 3) 'emacs-buffer--swap-unset (aref row 1))
+                 emacs-buffer--swapped-in))
+      (setq pending (cdr pending)))))
 
 (defun emacs-buffer--swap-out (old syms)
   "Persist the current global-cell values of SYMS into OLD's locals.
@@ -493,16 +776,31 @@ drifted from the value the swap engine itself last installed there (a
 plain `setq' bypassing `emacs-buffer-set-buffer-local-value').  No-op
 for symbols that are unbound."
   (when old
-    (dolist (sym syms)
-      (when (boundp sym)
-        (let* ((ext (gethash old emacs-buffer--state))
-               (has-cell (and ext (assq sym (emacs-buffer--ext-locals ext))))
-               (per-buffer (memq sym emacs-buffer--per-buffer-symbols))
-               (dirty (not (eq (symbol-value sym)
-                               (gethash sym emacs-buffer--swapped-in
-                                        'emacs-buffer--swap-unset)))))
-          (when (or has-cell per-buffer dirty)
-            (emacs-buffer-set-buffer-local-value sym old (symbol-value sym))))))))
+    (let* ((ext (gethash old emacs-buffer--state))
+           (index (and ext (emacs-buffer--local-index ext)))
+           (locals (and ext (emacs-buffer--ext-locals ext)))
+           (added nil)
+           (per-buffer (emacs-buffer--per-buffer-index)))
+      (unwind-protect
+          (dolist (sym syms)
+            (when (boundp sym)
+              (let* ((value (symbol-value sym))
+                     (cell (and index (gethash sym index))))
+                (if cell
+                    (unless (eq value (cdr cell)) (setcdr cell value))
+                  (when (or (not (eq value (gethash sym emacs-buffer--swapped-in
+                                                  'emacs-buffer--swap-unset)))
+                            (gethash sym per-buffer))
+                    (unless ext
+                      (setq ext (emacs-buffer--ensure-ext old)
+                            index (emacs-buffer--local-index ext)))
+                    (setq cell (cons sym value))
+                    (push cell locals)
+                    (puthash sym cell index)
+                    (setq added t))))))
+        (when added
+          (emacs-buffer--set-ext-locals ext locals)
+          (setcar (gethash ext emacs-buffer--local-indexes) locals))))))
 
 (defun emacs-buffer--swap-in (new syms)
   "Install NEW's per-symbol values from SYMS into the global cells.
@@ -513,17 +811,25 @@ via `emacs-buffer-default-boundp'/`emacs-buffer-default-value' (which
 already degrades to the ordinary global value for a plain `defvar'
 that was never buffer-local).  A symbol with neither is left alone."
   (when new
-    (let ((ext (gethash new emacs-buffer--state)))
+    (let* ((ext (gethash new emacs-buffer--state))
+           (index (and ext (emacs-buffer--local-index ext))))
       (dolist (sym syms)
-        (let ((cell (and ext (assq sym (emacs-buffer--ext-locals ext)))))
-          (cond
-           (cell
-            (set sym (cdr cell))
-            (puthash sym (cdr cell) emacs-buffer--swapped-in))
-           ((emacs-buffer-default-boundp sym)
-            (let ((value (emacs-buffer-default-value sym)))
-              (set sym value)
-              (puthash sym value emacs-buffer--swapped-in)))))))))
+        (let* ((local (or (and index (gethash sym index))
+                          (assq sym emacs-buffer--intrinsic-initial-values)))
+               (default (and (not local) (gethash sym emacs-buffer--default-values)))
+               (cell (or local (and default (car default) default)))
+               (bound (boundp sym)))
+          (if (and (not cell) default (not (car default)))
+              (progn
+                (when bound (makunbound sym))
+                (puthash sym 'emacs-buffer--swap-unset emacs-buffer--swapped-in))
+            (when (or cell bound)
+              (let ((value (if cell (cdr cell) (symbol-value sym))))
+                (unless (and bound (eq value (symbol-value sym)))
+                  (set sym value))
+                (unless (eq value (gethash sym emacs-buffer--swapped-in
+                                          'emacs-buffer--swap-unset))
+                  (puthash sym value emacs-buffer--swapped-in))))))))))
 
 ;;;###autoload
 (defun emacs-buffer-switch-current-buffer (old new)
@@ -534,9 +840,27 @@ The single choke point every buffer-selection path (`set-buffer',
 always reflects the current buffer's value\" holds.  No-op when OLD
 and NEW are `eq' (including both nil)."
   (unless (eq old new)
-    (let ((syms (emacs-buffer--swap-active-symbols old new)))
-      (emacs-buffer--swap-out old syms)
-      (emacs-buffer--swap-in new syms)))
+    (let* ((public (and (fboundp 'nelisp--repr)
+                        (fboundp 'current-buffer)
+                        (current-buffer)))
+           (ec-only (and (or (null old) (nelisp-ec-buffer-p old))
+                         (or (null new) (nelisp-ec-buffer-p new))))
+           (public-owns-live-cells
+            (and ec-only
+                 (bufferp public)
+                 (not (nelisp-ec-buffer-p public))
+                 (not (eq public old))
+                 (not (eq public new)))))
+      (unless public-owns-live-cells
+        (let ((syms (emacs-buffer--swap-active-symbols old new)))
+          (if (and old new (gethash old emacs-buffer--state)
+                   (eq (gethash old emacs-buffer--state)
+                       (gethash new emacs-buffer--state)))
+              ;; Consumers can explicitly share a sidecar.  In that case newly
+              ;; written cells must be visible to the incoming lookup too.
+              (progn (emacs-buffer--swap-out old syms)
+                     (emacs-buffer--swap-in new syms))
+            (emacs-buffer--swap-between old new syms))))))
   new)
 
 ;;;###autoload
@@ -549,7 +873,9 @@ is the function-call counterpart the unprefixed `setq-default' polyfill
 in `emacs-buffer-builtins.el' calls once per SYM/VALUE pair (macro
 expansion needs a plain function, not another macro, to call per pair)."
   (emacs-buffer-set-default sym value)
-  (let ((buf (nelisp-ec-current-buffer)))
+  (let ((buf (if (fboundp 'nelisp--repr)
+                 (current-buffer)
+               (nelisp-ec-current-buffer))))
     (when (and buf (not (emacs-buffer-local-variable-p sym buf)))
       (set sym value)
       (puthash sym value emacs-buffer--swapped-in)))
@@ -690,11 +1016,15 @@ list."
                    (emacs-buffer--tp-start b))))))
 
 (defun emacs-buffer--plist-merge (base extra)
-  "Return a fresh plist where keys in EXTRA override BASE."
+  "Return a fresh plist where keys in EXTRA override BASE.
+New keys precede the existing plist, matching Emacs text properties."
   (let ((out (copy-sequence base))
         (rest extra))
     (while rest
-      (setq out (plist-put out (car rest) (cadr rest)))
+      (let ((entry (plist-member out (car rest))))
+        (if entry
+            (setcar (cdr entry) (cadr rest))
+          (setq out (cons (car rest) (cons (cadr rest) out)))))
       (setq rest (cddr rest)))
     out))
 
@@ -976,6 +1306,101 @@ START/END may be markers."
                                       start end plist)))
       (cl-incf (emacs-buffer--ext-modified-tick ext))
       nil)))
+
+(defun emacs-buffer-string-text-property (operation string &rest args)
+  "Apply text-property OPERATION to STRING using zero-based positions.
+Supported operations are `get', `at', `runs', `copy', `put', `add',
+`remove', `set', `any', and `not-all'.  This reuses the buffer interval representation while
+keeping string property state weakly keyed by string identity."
+  (unless (stringp string)
+    (signal 'wrong-type-argument (list 'stringp string)))
+  (let* ((length (length string))
+         (ext (gethash string emacs-buffer--string-state))
+         (intervals (and ext (emacs-buffer--ext-text-props ext))))
+    (pcase operation
+      ('get
+       (let ((pos (car args)) (prop (cadr args)))
+         (unless (integerp pos)
+           (signal 'wrong-type-argument (list 'integerp pos)))
+         (unless (and (<= 0 pos) (<= pos length))
+           (signal 'args-out-of-range string pos))
+         (let ((cell (emacs-buffer--tp-cell-at intervals pos)))
+           (and cell (emacs-buffer--tp-resolve-prop
+                      (emacs-buffer--tp-plist cell) prop)))))
+      ('at
+       (let ((pos (car args)))
+         (unless (integerp pos)
+           (signal 'wrong-type-argument (list 'integerp pos)))
+         (unless (and (<= 0 pos) (<= pos length))
+           (signal 'args-out-of-range string pos))
+         (let ((cell (emacs-buffer--tp-cell-at intervals pos)))
+           (and cell (copy-sequence (emacs-buffer--tp-plist cell))))))
+      ('runs
+       (mapcar (lambda (cell)
+                 (list (emacs-buffer--tp-start cell)
+                       (emacs-buffer--tp-end cell)
+                       (copy-sequence (emacs-buffer--tp-plist cell))))
+               intervals))
+      ((or 'any 'not-all)
+       (let ((start (nth 0 args)) (end (nth 1 args))
+             (prop (nth 2 args)) (value (nth 3 args)) (pos nil))
+         (unless (and (integerp start) (integerp end))
+           (signal 'wrong-type-argument (list 'integerp start end)))
+         (unless (and (<= 0 start) (<= start end) (<= end length))
+           (signal 'args-out-of-range string start end))
+         (while (and (< start end) (null pos))
+           (let* ((cell (emacs-buffer--tp-cell-at intervals start))
+                  (actual (and cell (emacs-buffer--tp-resolve-prop
+                                     (emacs-buffer--tp-plist cell) prop)))
+                  (matches (eq actual value)))
+             (when (if (eq operation 'any) matches (not matches))
+               (setq pos start)))
+           (setq start (1+ start)))
+         pos))
+      ('copy
+       (let ((destination (car args)))
+         (unless (stringp destination)
+           (signal 'wrong-type-argument (list 'stringp destination)))
+         (when intervals
+           (let ((copy-ext (or (gethash destination emacs-buffer--string-state)
+                               (puthash destination (emacs-buffer--ext-make)
+                                        emacs-buffer--string-state))))
+             (setf (emacs-buffer--ext-text-props copy-ext)
+                   (mapcar (lambda (cell)
+                             (emacs-buffer--tp-cell
+                              (emacs-buffer--tp-start cell)
+                              (emacs-buffer--tp-end cell)
+                              (copy-sequence (emacs-buffer--tp-plist cell))))
+                           intervals))))
+         destination))
+      ((or 'put 'add 'remove 'set)
+       (let ((start (nth 0 args)) (end (nth 1 args))
+             (payload (nth 2 args)))
+         (unless (and (integerp start) (integerp end))
+           (signal 'wrong-type-argument (list 'integerp start end)))
+         (unless (and (<= 0 start) (<= start end) (<= end length))
+           (signal 'args-out-of-range string start end))
+         (when (eq operation 'put)
+           (setq payload (list payload (nth 3 args))))
+         (when (memq operation '(add set))
+           (unless (and (listp payload) (zerop (mod (length payload) 2)))
+             (signal 'wrong-type-argument (list 'plist payload))))
+         (unless (= start end)
+           (unless ext
+             (setq ext (emacs-buffer--ext-make))
+             (puthash string ext emacs-buffer--string-state))
+           (setf (emacs-buffer--ext-text-props ext)
+                 (pcase operation
+                   ('put (emacs-buffer--tp-add intervals start end payload))
+                   ('add (emacs-buffer--tp-add intervals start end payload))
+                   ('remove (emacs-buffer--tp-remove
+                             intervals start end
+                             (emacs-buffer--keys-from-arg payload)))
+                   ('set (if (null payload)
+                             (emacs-buffer--tp-clip intervals start end)
+                           (emacs-buffer--tp-merge intervals start end payload)))))
+         nil)))
+      (_ (signal 'wrong-type-argument (list 'text-property-operation operation))))))
 
 ;;;###autoload
 (defun emacs-buffer-next-property-change (pos &optional buf limit)
@@ -1421,6 +1846,41 @@ reflects every text-content mutation)."
       (min (1+ pos) (nelisp-ec-point-max))
     pos))
 
+(defun emacs-buffer--insert-string-properties (ext start strings)
+  "Copy text-property runs from inserted STRINGS into EXT at START."
+  (let ((offset start))
+    (dolist (string strings)
+      (when string
+        (let ((text (if (integerp string) (string string) string)))
+          (when (stringp string)
+            (let ((runs (and (fboundp 'emacs-buffer-string-text-property)
+                             (emacs-buffer-string-text-property
+                              'runs string))))
+              (unless runs
+                (when (fboundp 'text-properties-at)
+                  (let ((pos 0) (limit (length string))
+                        (run-start nil) (run-props nil))
+                    (while (< pos limit)
+                      (let ((props (text-properties-at pos string)))
+                        (cond
+                         ((equal props run-props)
+                          (unless run-start (setq run-start pos)))
+                         (t
+                          (when (and run-start run-props)
+                            (push (list run-start pos run-props) runs))
+                          (setq run-start pos run-props props)))
+                        (setq pos (1+ pos))))
+                    (when (and run-start run-props)
+                      (push (list run-start limit run-props) runs))
+                    (setq runs (nreverse runs)))))
+              (dolist (run runs)
+                (setf (emacs-buffer--ext-text-props ext)
+                      (emacs-buffer--tp-add
+                       (emacs-buffer--ext-text-props ext)
+                       (+ offset (nth 0 run)) (+ offset (nth 1 run))
+                       (nth 2 run))))))
+          (setq offset (+ offset (length text))))))))
+
 (defun emacs-buffer--insert-around-advice (orig &rest strings)
   "Around-advice for `nelisp-ec-insert'.
 Checks read-only text and shifts/expands text-property intervals."
@@ -1435,11 +1895,151 @@ Checks read-only text and shifts/expands text-property intervals."
         (setf (emacs-buffer--ext-text-props ext)
               (emacs-buffer--tp-after-insert
                (emacs-buffer--ext-text-props ext) pos length))
+        (emacs-buffer--insert-string-properties ext pos strings)
         (cl-incf (emacs-buffer--ext-modified-tick ext))))))
 
+(defun emacs-buffer--propertize-around-advice (orig string &rest properties)
+  "Mirror successful `propertize' calls into the string-property sidecar."
+  (when (= (% (length properties) 2) 1)
+    (signal 'wrong-number-of-arguments
+            (list 'propertize (1+ (length properties)))))
+  (unless (stringp string)
+    (signal 'wrong-type-argument (list 'stringp string)))
+  (let ((result (apply orig string properties)))
+    (when (and (stringp string) (stringp result)
+               (fboundp 'emacs-buffer-string-text-property))
+      (emacs-buffer-string-text-property 'copy string result)
+      (when properties
+        (emacs-buffer-string-text-property
+         'add result 0 (length result) properties)))
+    result))
+
+(defun emacs-buffer--native-insert-around-advice (orig &rest strings)
+  "Track sidecar properties for native INSERT in its current buffer."
+  (let ((buffer (current-buffer))
+        (start (point))
+        (length (emacs-buffer--insert-text-length strings)))
+    (prog1 (apply orig strings)
+      (when (> length 0)
+        (let ((ext (emacs-buffer--ensure-text-property-ext buffer)))
+          (emacs-buffer--set-ext-text-props ext
+                (emacs-buffer--tp-after-insert
+                 (emacs-buffer--ext-text-props ext) start length))
+          (emacs-buffer--insert-string-properties ext start strings)
+          (emacs-buffer--increment-ext-modified-tick ext))))))
+
+(defun emacs-buffer--property-current-buffer ()
+  "Return the active native buffer owner, falling back to the compat owner."
+  (let ((native (and (fboundp 'current-buffer)
+                     (ignore-errors (current-buffer)))))
+    (if (and native (fboundp 'buffer-live-p) (buffer-live-p native))
+        native
+      (emacs-buffer--current))))
+
+(defun emacs-buffer--copy-runs-to-string (string runs start end)
+  "Copy RUNS overlapping source interval [START, END) into STRING."
+  (dolist (run runs)
+    (let ((lo (max start (nth 0 run)))
+          (hi (min end (nth 1 run))))
+      (when (< lo hi)
+        (emacs-buffer-string-text-property
+         'add string (- lo start) (- hi start) (nth 2 run)))))
+  string)
+
+(defun emacs-buffer--copy-buffer-properties-to-string (buffer start end string)
+  "Copy BUF's sidecar properties over [START, END) into STRING."
+  (let* ((ext (gethash buffer emacs-buffer--state))
+         (intervals (and ext (emacs-buffer--ext-text-props ext)))
+         (runs (mapcar (lambda (cell)
+                         (list (emacs-buffer--tp-start cell)
+                               (emacs-buffer--tp-end cell)
+                               (emacs-buffer--tp-plist cell)))
+                       intervals)))
+    (emacs-buffer--copy-runs-to-string string runs start end)))
+
+(defun emacs-buffer--native-buffer-string-around (orig &rest args)
+  "Preserve sidecar text properties returned by native `buffer-string'."
+  (let* ((buffer (emacs-buffer--property-current-buffer))
+         (start (point-min))
+         (end (point-max))
+         (result (apply orig args)))
+    (when (stringp result)
+      (emacs-buffer--copy-buffer-properties-to-string buffer start end result))
+    result))
+
+(defun emacs-buffer--native-buffer-substring-around (orig start end &rest args)
+  "Preserve sidecar text properties returned by native `buffer-substring'."
+  ;; Validate each endpoint before examining the next one.
+  ;; Detached markers signal even when the other endpoint has a bad type.
+  (dolist (position (list start end))
+    (unless (or (integerp position) (markerp position))
+      (signal 'wrong-type-argument (list 'integer-or-marker-p position)))
+    (when (and (markerp position) (null (marker-position position)))
+      (error "Marker does not point anywhere")))
+  (let* ((buffer (emacs-buffer--property-current-buffer))
+         (s (emacs-buffer--pos-number start))
+         (e (emacs-buffer--pos-number end))
+         (lo (min s e))
+         (hi (max s e))
+         (result (apply orig s e args)))
+    (when (stringp result)
+      (emacs-buffer--copy-buffer-properties-to-string buffer lo hi result))
+    result))
+
+(defun emacs-buffer--copy-char-table (table)
+  "Copy TABLE's sparse storage, sharing its values and parent.
+Preserve the stored extra-slot count independently of subtype properties."
+  (let ((copy (make-vector 7 nil))
+        (i 0))
+    ;; Ordinary array access to a tagged table addresses characters, not slots.
+    (while (< i 7)
+      (emacs-char-table--raw-set copy i (emacs-char-table--raw-ref table i))
+      (setq i (1+ i)))
+    (dolist (slot (list emacs-char-table--i-ascii emacs-char-table--i-extra))
+      (emacs-char-table--raw-set
+       copy slot (copy-sequence (emacs-char-table--raw-ref table slot))))
+    (emacs-char-table--raw-set
+     copy emacs-char-table--i-ranges
+     (mapcar (lambda (entry) (cons (car entry) (cdr entry)))
+             (emacs-char-table--raw-ref table emacs-char-table--i-ranges)))
+    copy))
+
+(defun emacs-buffer--copy-sequence-around (orig sequence &rest args)
+  "Copy sparse char-tables and preserve copied strings' sidecar runs."
+  (let ((result (if (and (null args)
+                         (fboundp 'emacs-char-table-p)
+                         (emacs-char-table-p sequence))
+                    (emacs-buffer--copy-char-table sequence)
+                  (apply orig sequence args))))
+    (when (and (stringp sequence) (stringp result)
+               (gethash sequence emacs-buffer--string-state))
+      (emacs-buffer-string-text-property 'copy sequence result))
+    result))
+
+(defun emacs-buffer--substring-around (orig sequence start &optional end)
+  "Preserve clipped sidecar runs when native `substring' copies a string."
+  (setq start (or start 0))
+  (let ((result (funcall orig sequence start end)))
+    (when (and (stringp sequence) (stringp result)
+               (gethash sequence emacs-buffer--string-state))
+      (let* ((length (length sequence))
+             (lo (if (< start 0) (+ length start) start))
+             (raw-end (or end length))
+             (hi (if (< raw-end 0) (+ length raw-end) raw-end)))
+        (emacs-buffer--copy-runs-to-string
+         result (emacs-buffer-string-text-property 'runs sequence) lo hi)))
+    result))
+
 (defun emacs-buffer--delete-region-around-advice (orig start end)
-  "Around-advice for `nelisp-ec-delete-region'.
+  "Around-advice for compatibility and native region deletion.
 Checks read-only text and shifts/shrinks text-property intervals."
+  (dolist (position (list start end))
+    (unless (or (integerp position) (markerp position))
+      (signal 'wrong-type-argument (list 'integer-or-marker-p position)))
+    (when (and (markerp position) (null (marker-position position)))
+      (error "Marker does not point anywhere")))
+  (setq start (emacs-buffer--pos-number start)
+        end (emacs-buffer--pos-number end))
   (let* ((b (emacs-buffer--current))
          (s (min start end))
          (e (max start end))
@@ -1457,6 +2057,50 @@ Checks read-only text and shifts/shrinks text-property intervals."
 (advice-add 'nelisp-ec-erase-buffer  :after #'emacs-buffer--bump-text-tick-advice)
 (advice-add 'nelisp-ec-insert        :around #'emacs-buffer--insert-around-advice)
 (advice-add 'nelisp-ec-delete-region :around #'emacs-buffer--delete-region-around-advice)
+
+;; Native deletion needs the same interval adjustment as compatibility
+;; deletion. Avoid wrapping an alias twice, which would shift ranges twice.
+(when (and (fboundp 'nelisp--buffer-multibyte-p)
+           (fboundp 'delete-region)
+           (fboundp 'nelisp-ec-delete-region)
+           (not (eq (indirect-function 'delete-region)
+                    (indirect-function 'nelisp-ec-delete-region))))
+  (advice-add 'delete-region :around #'emacs-buffer--delete-region-around-advice))
+
+;; The standalone runtime may retain its native `insert' primitive while the
+;; compatibility implementation lives under `nelisp-ec-insert'.  In that
+;; configuration, advising only the compatibility function misses normal Lisp
+;; calls to `insert'.  Keep the native function cell intact and route its
+;; successful insertions through the same buffer-property bookkeeping.  When
+;; `insert' already resolves to the compatibility implementation, its advice
+;; above is sufficient and a second wrapper would apply the ranges twice.
+(when (and (fboundp 'nelisp--buffer-multibyte-p)
+           (fboundp 'insert)
+           (fboundp 'nelisp-ec-insert)
+           (not (eq (indirect-function 'insert)
+                    (indirect-function 'nelisp-ec-insert))))
+  (advice-add 'insert :around #'emacs-buffer--native-insert-around-advice))
+
+;; A native `propertize' can attach properties that the standalone sidecar
+;; cannot enumerate.  Mirror its explicit property arguments without replacing
+;; the native function cell, so later insertion can preserve the ranges.
+(when (and (fboundp 'nelisp--buffer-multibyte-p)
+           (fboundp 'propertize))
+  (advice-add 'propertize :around #'emacs-buffer--propertize-around-advice))
+
+(when (fboundp 'nelisp--buffer-multibyte-p)
+  (when (fboundp 'buffer-string)
+    (advice-add 'buffer-string :around
+                #'emacs-buffer--native-buffer-string-around))
+  (when (and (fboundp 'buffer-substring)
+             (not (eq (indirect-function 'buffer-substring)
+                      (indirect-function 'nelisp-ec-buffer-substring))))
+    (advice-add 'buffer-substring :around
+                #'emacs-buffer--native-buffer-substring-around))
+  (when (fboundp 'copy-sequence)
+    (advice-add 'copy-sequence :around #'emacs-buffer--copy-sequence-around))
+  (when (fboundp 'substring)
+    (advice-add 'substring :around #'emacs-buffer--substring-around)))
 
 ;;;###autoload
 (defun emacs-buffer-bump-modified-tick (&optional buf)
@@ -1620,7 +2264,7 @@ Slots:
   "Insert REC into BUF's overlay list, keeping ascending START order.
 Ties on START preserve insertion order (= REC goes after any existing
 record with equal START)."
-  (let* ((ext (emacs-buffer--ensure-ext buf))
+  (let* ((ext (emacs-buffer--ensure-text-property-ext buf))
          (lst (emacs-buffer--ext-overlays ext))
          (start (emacs-buffer--overlay-rec-start rec)))
     (cond
@@ -1806,7 +2450,9 @@ Order: by ascending START, ties broken by insertion order."
   "Return the next overlay boundary after POS in BUF."
   (let* ((buffer (or buf (emacs-buffer--current)))
          (ext (gethash buffer emacs-buffer--state))
-         (limit (1+ (nelisp-ec-buffer-size buffer)))
+         (limit (if (nelisp-ec-buffer-p buffer)
+                    (1+ (nelisp-ec-buffer-size buffer))
+                  (with-current-buffer buffer (point-max))))
          (next limit))
     (when ext
       (dolist (ov (emacs-buffer--ext-overlays ext))
@@ -1842,7 +2488,9 @@ BEFORE holds overlays starting at or before POINT, AFTER the rest."
   (let* ((buffer (or buf (emacs-buffer--current)))
          (ext (gethash buffer emacs-buffer--state)))
     (when ext
-      (let ((point (nelisp-ec-buffer-point buffer))
+      (let ((point (if (nelisp-ec-buffer-p buffer)
+                       (nelisp-ec-buffer-point buffer)
+                     (with-current-buffer buffer (point))))
             before after)
         (dolist (ov (emacs-buffer--ext-overlays ext))
           (if (<= (emacs-buffer--overlay-rec-start ov) point)

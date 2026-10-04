@@ -193,7 +193,7 @@ matchers (= e.g. a keyword that should only fire in code)."
 ;; hash-based Track R helpers above (different `emacs-syntax-table-' prefix).
 ;;
 ;; The current table is a dynamic value (default standard).  Full buffer-local
-;; syntax tables and class flag bits are not modeled.
+;; syntax tables are stored in the substrate's buffer-local variables.
 
 (defconst emacs-syntax-table--code-spec " .w_()'\"$\\/<>@!|"
   "Syntax class designator characters indexed by Emacs syntax class code.")
@@ -278,7 +278,9 @@ buffer-local table, then the standard table."
 
 (defun emacs-syntax-table-set-current (table)
   "Make TABLE the syntax char-table of the current buffer (buffer-local).
-Falls back to a global setting when there is no current buffer."
+Normalize bootstrap records to their shared sparse view so array access
+uses the native bridge.  Falls back to a global setting without a buffer."
+  (setq table (emacs-char-table--storage table))
   (let ((buf (emacs-syntax-table--buffer)))
     (if (and buf (fboundp 'emacs-buffer-set-buffer-local-value))
         (emacs-buffer-set-buffer-local-value emacs-syntax-table--local-key buf table)
@@ -292,49 +294,72 @@ Falls back to a global setting when there is no current buffer."
     tbl))
 
 (defun emacs-syntax-table--designator-code (designator)
-  "Return the syntax class code for a DESIGNATOR character.
-`-' and space both denote whitespace; unknown designators fall back to
-punctuation (1)."
-  (cond
-   ((or (eq designator ?-) (eq designator ?\s)) 0)
-   (t (let ((i 0) (n (length emacs-syntax-table--code-spec)) (res 1))
-        (while (< i n)
-          (when (eq (aref emacs-syntax-table--code-spec i) designator)
-            (setq res i i n))
-          (setq i (1+ i)))
-        res))))
+  "Return the syntax class code for DESIGNATOR, signaling invalid letters."
+  (if (eq designator ?-)
+      0
+    (let ((i 0) (n (length emacs-syntax-table--code-spec)) result)
+      (while (< i n)
+        (when (eq (aref emacs-syntax-table--code-spec i) designator)
+          (setq result i i n))
+        (setq i (1+ i)))
+      (or result (error "Invalid syntax description letter: %c" designator)))))
 
 (defun emacs-syntax-table-string-to-syntax (descriptor)
-  "Parse a syntax DESCRIPTOR string into a raw (CLASS-CODE . MATCH) cons.
-Only the class designator and the optional matching character are modeled;
-trailing flag characters are ignored."
-  (let* ((code (emacs-syntax-table--designator-code (aref descriptor 0)))
+  "Parse DESCRIPTOR's class, matching character and syntax flags."
+  (unless (stringp descriptor)
+    (signal 'wrong-type-argument (list 'stringp descriptor)))
+  (let* ((code (emacs-syntax-table--designator-code
+                (if (> (length descriptor) 0) (aref descriptor 0) 0)))
          (match (and (> (length descriptor) 1)
                      (not (eq (aref descriptor 1) ?\s))
-                     (aref descriptor 1))))
-    (cons code match)))
+                     (aref descriptor 1)))
+         (i 2))
+    (while (< i (length descriptor))
+      (let ((flag (cdr (assq (aref descriptor i)
+                            '((?1 . 65536) (?2 . 131072) (?3 . 262144)
+                              (?4 . 524288) (?p . 1048576) (?b . 2097152)
+                              (?n . 4194304) (?c . 8388608))))))
+        (when flag (setq code (logior code flag))))
+      (setq i (1+ i)))
+    ;; Inherit syntax is represented by a nil entry, rather than class 13.
+    (unless (= (logand code 255) 13) (cons code match))))
+
+(defun emacs-syntax-table--check-character (char)
+  "Signal a character type error for an invalid CHAR."
+  (unless (and (integerp char) (<= 0 char) (<= char #x3fffff))
+    (signal 'wrong-type-argument (list 'characterp char))))
+
+(defun emacs-syntax-table--check-table (table)
+  "Require a char-table with syntax-table subtype."
+  (unless (and (emacs-char-table-p table)
+               (eq (emacs-char-table-subtype table) 'syntax-table))
+    (signal 'wrong-type-argument (list 'syntax-table-p table))))
 
 (defun emacs-syntax-table-modify-entry (char descriptor &optional table)
-  "Set CHAR's raw syntax to DESCRIPTOR in TABLE (default current).
-CHAR may be a single character or a (MIN . MAX) range cons.  Returns nil."
-  (let ((tbl (or table (emacs-syntax-table-current)))
-        (syn (emacs-syntax-table-string-to-syntax descriptor)))
-    ;; Keep supra-ASCII ranges sparse.  Expanding XML's #x10000..#xEFFFF
-    ;; range one codepoint at a time made loading `xml.el' effectively hang.
-    (emacs-char-table-set-range tbl char syn)
+  "Set CHAR or its inclusive range to DESCRIPTOR in TABLE; return nil."
+  (if (consp char)
+      (progn (emacs-syntax-table--check-character (car char))
+             (emacs-syntax-table--check-character (cdr char)))
+    (emacs-syntax-table--check-character char))
+  (let ((tbl (or table (emacs-syntax-table-current))))
+    (emacs-syntax-table--check-table tbl)
+    ;; Keep large ranges sparse and ignore reversed ranges, as Emacs does.
+    (emacs-char-table-set-range
+     tbl char (emacs-syntax-table-string-to-syntax descriptor))
     nil))
 
 (defun emacs-syntax-table-char-syntax (char &optional table)
-  "Return CHAR's syntax class designator character via TABLE (default current)."
+  "Return CHAR's syntax class designator via TABLE (default current)."
+  (emacs-syntax-table--check-character char)
   (let* ((entry (emacs-char-table-ref (or table (emacs-syntax-table-current))
                                       char))
          (code (cond ((consp entry) (car entry))
                      ((integerp entry) entry)
                      (t 2))))
-    (aref emacs-syntax-table--code-spec code)))
+    (aref emacs-syntax-table--code-spec (logand code 255))))
 
 (defun emacs-syntax-table-parse-partial-sexp
-    (from to &optional buffer table state targetdepth stopbefore)
+    (from to &optional buffer table state targetdepth stopbefore commentstop)
   "Scan BUFFER from FROM to TO and return an Emacs parse-partial-sexp state.
 
 The returned list mirrors the upstream 11-element state: (DEPTH
@@ -345,59 +370,126 @@ first.  Classification uses TABLE (default the current syntax table).  When
 STATE (a value from a previous call) is given, parsing resumes from it.  When
 TARGETDEPTH is non-nil scanning stops once the paren depth becomes equal to it;
 when STOPBEFORE is non-nil scanning stops before the start of the next sexp.
-Point in BUFFER is moved to the stop position (TO when neither limit fires).
-Comment styles, generic comments/strings, two-character comment delimiters, and
-syntax flag bits are not modeled; the INTERNAL slot is nil."
+Point is moved to the stop position (TO when neither limit fires).
+Single and two-character comments, generic delimiters, comment styles,
+nesting, escapes and continuation states use the raw syntax flag bits."
+  (dolist (pos (list from to))
+    (unless (or (integerp pos) (markerp pos))
+      (signal 'wrong-type-argument (list 'integer-or-marker-p pos))))
+  (when (markerp from) (setq from (marker-position from)))
+  (when (markerp to) (setq to (marker-position to)))
+  (when (and targetdepth (not (integerp targetdepth)))
+    (signal 'wrong-type-argument (list 'fixnump targetdepth)))
+  (unless (listp state)
+    (signal 'wrong-type-argument (list 'listp state)))
+  (let ((lo (if buffer
+                (let ((nelisp-ec--current-buffer buffer)) (nelisp-ec-point-min))
+              (point-min)))
+        (hi (if buffer
+                (let ((nelisp-ec--current-buffer buffer)) (nelisp-ec-point-max))
+              (point-max))))
+    (when (or (< from lo) (> from hi) (< to lo) (> to hi))
+      (signal 'args-out-of-range (list (or buffer (current-buffer)) from to))))
   (let* ((tbl (or table (emacs-syntax-table-current)))
-         (buf (or buffer (and (boundp 'nelisp-ec--current-buffer)
-                              nelisp-ec--current-buffer)))
-         (region (let ((nelisp-ec--current-buffer buf))
-                   (condition-case _
-                       (nelisp-ec-buffer-substring from to)
-                     (error ""))))
+         (region (if buffer
+                     (let ((nelisp-ec--current-buffer buffer))
+                       (nelisp-ec-buffer-substring from (max from to)))
+                   (buffer-substring-no-properties from (max from to))))
          (n (length region))
          (i 0)
-         (depth (or (nth 0 state) 0))
-         (mindepth (or (nth 6 state) (or (nth 0 state) 0)))
+         (depth (if (integerp (nth 0 state)) (nth 0 state) 0))
+         (mindepth depth)
          (open (reverse (nth 9 state)))
          (instr (nth 3 state))
          (incomment (nth 4 state))
+         (comment-style (nth 7 state))
          (afterq (nth 5 state))
-         (last-sexp (nth 2 state))
+         (last-sexp nil)
          (scstart (nth 8 state))
-         (tok-start nil)
-         (stop-pos to)
+         (tok-start (and afterq (not instr) 'continuation))
+         (string-sexp-start nil)
+         (quoted-syntax (nth 10 state))
+         (stop-pos (max from to))
          (done nil))
     (while (and (< i n) (not done))
       (let* ((ch (aref region i))
              (abs (+ from i))
-             (syn (emacs-syntax-table-char-syntax ch tbl)))
+             (entry (emacs-char-table-ref tbl ch))
+             (raw (if (consp entry) (car entry) 2))
+             (code (logand raw 255))
+             (syn (aref emacs-syntax-table--code-spec code))
+             (pending quoted-syntax)
+             (style (if (/= (logand raw 2097152) 0) 1 nil))
+             (start-pair (and (integerp pending)
+                              (/= (logand pending 65536) 0)
+                              (/= (logand raw 131072) 0)))
+             (end-pair (and (integerp pending)
+                            (/= (logand pending 262144) 0)
+                            (/= (logand raw 524288) 0))))
+        (setq quoted-syntax nil)
         (cond
-         (afterq (setq afterq nil))
+         (afterq
+          (setq afterq nil quoted-syntax nil)
+          (unless (or instr incomment tok-start) (setq tok-start abs)))
          (instr
           (cond
-           ((eq syn ?\\) (setq afterq t))
-           ((and (eq syn ?\") (eq ch instr))
-            (setq instr nil last-sexp scstart scstart nil))))
+           ((memq syn '(?\\ ?/)) (setq afterq t quoted-syntax
+                                           (if (eq syn ?\\) 9 10)))
+           ((if (eq instr t) (= code 15) (and (= code 7) (eq ch instr)))
+            (setq instr nil scstart nil)
+            (if (eq commentstop 'syntax-table)
+                (setq stop-pos (1+ abs) done t)
+              (setq last-sexp string-sexp-start)))))
          (incomment
-          (when (eq syn ?>)
-            (setq incomment nil scstart nil)))
+          (cond
+           ((or (and (eq comment-style 'syntax-table) (= code 14))
+                (and (equal style comment-style)
+                     (or (= code 12) end-pair)))
+            (if (and (integerp incomment) (> incomment 1))
+                (setq incomment (1- incomment))
+              (setq incomment nil scstart nil comment-style nil)
+              (when (eq commentstop 'syntax-table)
+                (setq stop-pos (1+ abs) done t))))
+           ((and (integerp incomment) (equal style comment-style)
+                 (or (= code 11) start-pair))
+            (setq incomment (1+ incomment)))
+           ((or (/= (logand raw 262144) 0)
+                (and (integerp incomment) (/= (logand raw 65536) 0)))
+            (setq quoted-syntax raw))))
+         (start-pair
+          (when (integerp tok-start) (setq last-sexp tok-start))
+          (setq tok-start nil scstart (1- abs) comment-style style
+                incomment (if (/= (logand raw 4194304) 0) 1 t))
+          (when commentstop (setq stop-pos (1+ abs) done t)))
          ((and stopbefore
-               (or (eq syn ?\() (eq syn ?\") (eq syn ?<)
+               (or (eq syn ?\() (memq code '(7 15)) (memq syn '(?\\ ?/))
                    (and (or (eq syn ?w) (eq syn ?_)) (not tok-start))))
           (setq stop-pos abs done t))
          (t
           (cond
-           ((eq syn ?\\) (setq afterq t tok-start nil))
-           ((eq syn ?\") (setq instr ch scstart abs tok-start nil))
-           ((eq syn ?<) (setq incomment t scstart abs tok-start nil))
+           ((memq syn '(?\\ ?/))
+            (setq afterq t quoted-syntax (if (eq syn ?\\) 9 10))
+            (unless tok-start (setq tok-start abs)))
+           ((memq code '(7 15))
+            (when (integerp tok-start) (setq last-sexp tok-start))
+            (setq instr (if (= code 15) t ch)
+                  scstart abs string-sexp-start abs tok-start nil)
+            (when (eq commentstop 'syntax-table)
+              (setq stop-pos (1+ abs) done t)))
+           ((memq code '(11 14))
+            (when (integerp tok-start) (setq last-sexp tok-start))
+            (setq incomment (if (/= (logand raw 4194304) 0) 1 t)
+                  comment-style (if (= code 14) 'syntax-table style)
+                  scstart abs tok-start nil)
+            (when commentstop (setq stop-pos (1+ abs) done t)))
            ((eq syn ?\()
             (setq depth (1+ depth) open (cons abs open)
                   last-sexp nil tok-start nil)
             (when (and targetdepth (= depth targetdepth))
               (setq stop-pos (1+ abs) done t)))
            ((eq syn ?\))
-            (when tok-start (setq last-sexp tok-start tok-start nil))
+            (when (integerp tok-start) (setq last-sexp tok-start))
+            (setq tok-start nil)
             (setq depth (1- depth))
             (when (< depth mindepth) (setq mindepth depth))
             (setq last-sexp (car open) open (cdr open))
@@ -406,15 +498,160 @@ syntax flag bits are not modeled; the INTERNAL slot is nil."
            ((or (eq syn ?w) (eq syn ?_))
             (unless tok-start (setq tok-start abs)))
            (t
-            (when tok-start (setq last-sexp tok-start tok-start nil)))))))
+            (when (integerp tok-start) (setq last-sexp tok-start))
+            (setq tok-start nil)))))
+        (when (and (not instr) (not incomment) (not afterq) (not end-pair)
+                   (/= (logand raw 65536) 0))
+          (setq quoted-syntax raw)))
       (unless done (setq i (1+ i))))
-    (when (and tok-start (not instr) (not incomment) (not done))
+    (when (and (integerp tok-start) (not instr) (not incomment)
+               (not afterq) (not done))
       (setq last-sexp tok-start))
-    (when buf
-      (let ((nelisp-ec--current-buffer buf))
-        (ignore-errors (nelisp-ec-goto-char stop-pos))))
+    (if buffer
+        (let ((nelisp-ec--current-buffer buffer)) (nelisp-ec-goto-char stop-pos))
+      (goto-char stop-pos))
     (list depth (car open) last-sexp instr incomment afterq mindepth
-          nil scstart (reverse open) nil)))
+          comment-style scstart (reverse open) quoted-syntax)))
+
+(defun emacs-syntax-table--entry-at (pos)
+  "Return the raw syntax code at POS in the current buffer."
+  (let ((entry (emacs-char-table-ref (emacs-syntax-table-current)
+                                     (char-after pos))))
+    (if (consp entry) (car entry) 2)))
+
+(defun emacs-syntax-table--comment-start (pos limit)
+  "Return (WIDTH STYLE NESTED) for a comment beginning at POS, or nil."
+  (when (< pos limit)
+    (let* ((raw (emacs-syntax-table--entry-at pos))
+           (code (logand raw 255))
+           (second (and (< (1+ pos) limit)
+                        (emacs-syntax-table--entry-at (1+ pos))))
+           (width (cond ((memq code '(11 14)) 1)
+                        ((and (/= (logand raw 65536) 0) second
+                              (/= (logand second 131072) 0)) 2))))
+      (when width
+        (let ((flags (if (= width 2) second raw)))
+          (list width (if (= code 14) 'syntax-table
+                        (/= (logand flags 2097152) 0))
+                (/= (logand flags 4194304) 0)))))))
+
+(defun emacs-syntax-table--comment-end (pos limit style)
+  "Return the width of the comment terminator at POS for STYLE, or nil."
+  (when (< pos limit)
+    (let* ((raw (emacs-syntax-table--entry-at pos))
+           (code (logand raw 255))
+           (second (and (< (1+ pos) limit)
+                        (emacs-syntax-table--entry-at (1+ pos)))))
+      (if (eq style 'syntax-table)
+          (and (= code 14) 1)
+        (cond
+         ((and (= code 12) (eq style (/= (logand raw 2097152) 0))) 1)
+         ((and (/= (logand raw 262144) 0) second
+               (/= (logand second 524288) 0)
+               (eq style (/= (logand raw 2097152) 0))) 2))))))
+
+(defun emacs-syntax-table--quoted-at-p (pos)
+  "Return non-nil if POS follows an odd run of escape or character quotes."
+  (let ((cursor (1- pos)) (quoted nil))
+    (while (and (>= cursor (point-min))
+                (memq (logand (emacs-syntax-table--entry-at cursor) 255) '(9 10)))
+      (setq quoted (not quoted) cursor (1- cursor)))
+    quoted))
+
+(defun emacs-syntax-table--skip-comment (pos limit start &optional backward)
+  "Scan the comment START at POS; return (END . COMPLETE).
+BACKWARD supplies the target point for GNU's backward fence matching."
+  (let ((cursor (+ pos (car start))) (depth 1) (style (nth 1 start))
+        (nested (nth 2 start)))
+    (while (and (< cursor limit) (> depth 0))
+      (let* ((quoted-fence
+              (and backward (eq style 'syntax-table)
+                   (/= (1+ cursor) backward)
+                   (emacs-syntax-table--quoted-at-p cursor)))
+             (end (and (not quoted-fence)
+                       (emacs-syntax-table--comment-end cursor limit style)))
+             (inner (and nested
+                         (emacs-syntax-table--comment-start cursor limit))))
+        (cond
+         (end (setq depth (1- depth) cursor (+ cursor end)))
+         ((and inner (eq style (nth 1 inner)) (nth 2 inner))
+          (setq depth (1+ depth) cursor (+ cursor (car inner))))
+         (t (setq cursor (1+ cursor))))))
+    (cons cursor (= depth 0))))
+
+(defun emacs-syntax-table-forward-comment (count)
+  "Skip COUNT comments in the current buffer, returning t on completion.
+Use the current syntax table, including paired, fenced, styled and nested
+comments.  Whitespace is skipped only while looking for the next comment."
+  (unless (integerp count)
+    (signal 'wrong-type-argument (list 'fixnump count)))
+  (let ((remaining (abs count)) (pos (point)) (lo (point-min))
+        (hi (point-max)) (done nil))
+    (while (and (> remaining 0) (not done))
+      (if (>= count 0)
+          (progn
+            (while (and (< pos hi)
+                        (memq (logand (emacs-syntax-table--entry-at pos) 255)
+                              '(0 12)))
+              (setq pos (1+ pos)))
+            (let ((start (emacs-syntax-table--comment-start pos hi)))
+              (if (not start) (setq done t)
+                (let ((result (emacs-syntax-table--skip-comment pos hi start)))
+                  (setq pos (car result))
+                  (if (cdr result) (setq remaining (1- remaining))
+                    (setq done t))))))
+        ;; Find a completed comment ending at point or in its trailing
+        ;; whitespace.  GNU backward motion can begin inside a string or a
+        ;; nested comment, so do not exclude candidates based on outer parse
+        ;; state.  Quoted delimiters are skipped during the scan.
+        (let ((right pos) (cursor lo) candidate)
+          (while (and (> pos lo)
+                      (memq (logand (emacs-syntax-table--entry-at (1- pos)) 255)
+                            '(0 12))
+                      (or (= (logand (emacs-syntax-table--entry-at (1- pos)) 255) 12)
+                          (not (emacs-syntax-table--quoted-at-p (1- pos)))))
+            (setq pos (1- pos)))
+          (while (< cursor right)
+            (let ((start (emacs-syntax-table--comment-start cursor hi))
+                  (code (logand (emacs-syntax-table--entry-at cursor) 255)))
+              (cond
+               (start
+                (let ((result (emacs-syntax-table--skip-comment cursor hi start right)))
+                  (when (and (cdr result) (>= (car result) pos)
+                             (<= (car result) right)
+                             (not (and (>= (- (car result) 2) cursor)
+                                       (eq (emacs-syntax-table--comment-end
+                                            (- (car result) 2) hi (nth 1 start)) 2)
+                                       (emacs-syntax-table--quoted-at-p
+                                        (- (car result) 2)))))
+                    (setq candidate cursor))
+                  (setq cursor (if (or (not (cdr result)) (> (car result) right))
+                                   (1+ cursor) (car result)))))
+               ((memq code '(9 10)) (setq cursor (+ cursor 2)))
+               ((memq code '(7 15))
+                (let ((end (1+ cursor)) (fence (char-after cursor)))
+                  (while (and (< end right)
+                              (not (if (= code 15)
+                                       (= (logand (emacs-syntax-table--entry-at end) 255) 15)
+                                     (eq (char-after end) fence))))
+                    (setq end (+ end
+                                 (if (memq (logand (emacs-syntax-table--entry-at end) 255)
+                                           '(9 10)) 2 1))))
+                  (setq cursor (if (< end right) (1+ end) (1+ cursor)))))
+               (t (setq cursor (1+ cursor))))))
+          (if candidate (setq pos candidate remaining (1- remaining))
+            (setq done t)))))
+    (goto-char pos)
+    (= remaining 0)))
+
+(when (emacs-syntax-table--install-function-p 'forward-comment)
+  (defalias 'forward-comment #'emacs-syntax-table-forward-comment))
+
+(when (emacs-syntax-table--install-function-p 'syntax-table-p)
+  (defun syntax-table-p (object)
+    "Return t for a syntax char-table, including bootstrap syntax records."
+    (and (emacs-char-table-p object)
+         (eq (emacs-char-table-subtype object) 'syntax-table))))
 
 (when (emacs-syntax-table--install-function-p 'char-syntax)
   (defun char-syntax (char)
@@ -434,16 +671,9 @@ syntax flag bits are not modeled; the INTERNAL slot is nil."
 (when (emacs-syntax-table--install-function-p 'copy-syntax-table)
   (defun copy-syntax-table (&optional table)
     "Return a copy of TABLE, or of the standard syntax table."
-    ;; TABLE can be a core `nelisp--syntax-table' object (e.g. the
-    ;; `text-mode-syntax-table' that emacs-stub.el seeds from the core
-    ;; `standard-syntax-table' before this file installs the char-table
-    ;; implementation).  `emacs-char-table-copy' reads raw vector slots and
-    ;; SEGFAULTS on such a record (magit bundle part 4, info.el's
-    ;; `Info-mode-syntax-table'), so fall back to the standard char-table.
-    (emacs-char-table-copy
-     (if (and table (emacs-char-table-p table))
-         table
-       (emacs-syntax-table-standard)))))
+    (let ((source (or table (emacs-syntax-table-standard))))
+      (emacs-syntax-table--check-table source)
+      (emacs-char-table-copy source))))
 
 (unless (boundp 'emacs-lisp-mode-syntax-table)
   ;; Approximation sufficient for url.el consumers until a vendored
@@ -475,6 +705,13 @@ syntax flag bits are not modeled; the INTERNAL slot is nil."
       table)
     "Approximate syntax table for Emacs Lisp mode in standalone runtime."))
 
+(when (and (emacs-syntax-table--standalone-p)
+           (emacs-char-table--native-syntax-p emacs-lisp-mode-syntax-table))
+  ;; The mode retains a pre-bundle table.  Expose its sparse view so ordinary
+  ;; array access uses the native vector bridge, preserving all local entries.
+  (setq emacs-lisp-mode-syntax-table
+        (emacs-char-table--storage emacs-lisp-mode-syntax-table)))
+
 (when (emacs-syntax-table--install-function-p 'string-to-syntax)
   (defun string-to-syntax (descriptor)
     "Parse DESCRIPTOR into a raw (CLASS-CODE . MATCH) syntax cons."
@@ -492,7 +729,9 @@ syntax flag bits are not modeled; the INTERNAL slot is nil."
 
 (when (emacs-syntax-table--install-function-p 'set-syntax-table)
   (defun set-syntax-table (table)
-    "Make TABLE the current syntax char-table."
+    "Make TABLE the current buffer's syntax char-table and return TABLE.
+Signal `wrong-type-argument' unless TABLE has syntax-table subtype."
+    (emacs-syntax-table--check-table table)
     (emacs-syntax-table-set-current table)))
 
 (when (emacs-syntax-table--install-function-p 'with-syntax-table)
@@ -503,13 +742,13 @@ syntax flag bits are not modeled; the INTERNAL slot is nil."
 
 (when (emacs-syntax-table--install-function-p 'parse-partial-sexp)
   (defun parse-partial-sexp (from to &optional targetdepth stopbefore
-                                  state _commentstop)
+                                  state commentstop)
     "Parse the current buffer from FROM to TO, returning a syntactic state.
 STATE resumes from a previous call; TARGETDEPTH and STOPBEFORE bound the scan
 and move point to the stop position.  COMMENTSTOP is accepted for call
-compatibility but not yet honored."
+compatibility and stops at comment boundaries."
     (emacs-syntax-table-parse-partial-sexp
-     from to nil nil state targetdepth stopbefore)))
+     from to nil nil state targetdepth stopbefore commentstop)))
 
 (provide 'emacs-syntax-table)
 

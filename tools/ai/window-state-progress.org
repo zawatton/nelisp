@@ -1,0 +1,18 @@
+#+TITLE: Shared window state and GNU batch window semantics
+
+* S1 Getters, setters and minibuffer windows share real window state
+** S1.1 The display implementation host contracts remain valid
+cmd: timeout 50 emacs -Q --batch -L test -l test/nelisp-emacs-lib/c-core-units-test.el --eval '(c-core-units-run "display")'
+** S1.2 Canonical display setter and scrolling probes match GNU Emacs 31.1
+#+REQUIRES: NELISP_BIN
+cmd: bash test/nelisp-emacs-lib/c-core-parity-smoke.sh run --unit census-display-03
+** S1.3 End to end: canonical window getters and minibuffer behavior match GNU through the integrated bootstrap
+#+REQUIRES: NELISP_BIN
+cmd: bash test/nelisp-emacs-lib/c-core-parity-smoke.sh run --unit census-display-04,window-state-2
+** S1.4 End to end: minibuffer-first discovery passes in an independent fresh bootstrap
+#+REQUIRES: NELISP_BIN
+cmd: bash test/nelisp-emacs-lib/c-core-parity-smoke.sh run --unit window-first-demand-1
+#+NOTE: This window-state objective has four criteria; the whole C-core denominator stays at 24. The pinned b33f/post11 canonical probe results show 9/69 differences in census-display-03 and 14/80 in census-display-04. A generated 17-name feature lane merges measured live definers and validates shared state before integration. Full display parity remains separately required by the whole ledger.
+#+NOTE: On b34b and the final 335-file bundle, S1.2 reaches all 69 matching probe rows and P-DONE but exceeds the unchanged 55s meter cap. Separate diagnostics matched GNU exactly (transcript SHA256 5e7eb7621f3d342b9666213dc03f95af86c0b9f5b6262e8e0605f8534a4d7f2b, empty stderr): loop run 65.243s with bundle 41.107s and driver 20.265s; direct same-AST wrapper run 67.498s with bundle 43.203s and forms 20.434s. Fingerprinting measured about 0.218s. Neither fixture parsing nor loop overhead is supported as the cause; the generic harness remains unchanged. A per-form run measured 65.901s, bundle 41.381s, forms 20.629s; the two scroll-up forms inserting 100 lines took 5.211s and 4.564s. Artifacts remain under /tmp/window-canonical-phase. These diagnostics do not create canonical parity receipts or change any criterion or timeout. S1.2 remains a real failing command.
+#+NOTE: Criterion added after the first-demand probe showed that the earlier grouped window suite initialized a selected window before minibuffer-window was requested. The new unit runs alone in its own fresh bootstrap, so it measures first-demand behavior; window-state-2 now contains 30 probe rows, including nil/grave/straight/curve/invalid dedication quote styles with restored values. The whole C-core denominator remains 24.
+#+NOTE: S1.1 through S1.3 retain their existing commands, including the complete grouped cross-API and dedication checks in S1.3. S1.4 is the only added criterion. The final 30-row supplemental unit matched GNU under C and C.UTF-8; the independent first-demand unit matched two rows. The 46-row no-hotload check passed before the final locale-precedence-only adjustment, whose C behavior is covered by the final 30-row run. Caller queries and a targeted definition update timed out at 20 seconds; conditional aliases, macros, dynamic and external callers remain unresolved. A later small Anvil worklog request succeeded, so the bounded timeouts do not establish a connection failure. Batch probe behavior is qualified; graphical backend behavior is not established.

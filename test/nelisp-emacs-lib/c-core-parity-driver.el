@@ -35,12 +35,27 @@
   "Evaluate every probe entry and print one comparable line per form."
   (let* ((dir (expand-file-name "test/nelisp-emacs-lib/c-core-probes"))
          (unit (getenv "C_CORE_UNIT"))
+         (area (getenv "C_CORE_AREA"))
+         (area-names
+          (when (and area (not (equal area "")))
+            (with-temp-buffer
+              (insert-file-contents "tools/c-core-areas.tsv")
+              (let ((names nil))
+                (dolist (line (split-string (buffer-string) "\n" t))
+                  (let ((fields (split-string line "\t")))
+                    (when (equal (cadr fields) area)
+                      (setq names (cons (car fields) names)))))
+                names))))
          (files (if (and unit (not (equal unit "")))
-                    (list (expand-file-name (concat unit ".el") dir))
+                    (mapcar (lambda (name)
+                              (expand-file-name (concat name ".el") dir))
+                            (split-string unit "," t))
                   (sort (directory-files dir t "\\.el\\'") #'string<))))
-    (dolist (file files)
-      (dolist (entry (c-core-parity--read-entries file))
+    (dolist (entry (if (boundp 'c-core-parity--staged-entries)
+                      c-core-parity--staged-entries
+                    (apply #'append (mapcar #'c-core-parity--read-entries files))))
         (let ((name (car entry)))
+         (when (or (null area-names) (member (symbol-name name) area-names))
           (dolist (form (cdr entry))
             (princ (format "P| %s | %s\n" name
                            (condition-case err

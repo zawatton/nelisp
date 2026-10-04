@@ -116,6 +116,40 @@
           (get-text-property (1- position) prop object)
         nil))))
 
+(defun emacs-cc-editfns-1--group-line (text start end gid search)
+  "Return the group name on TEXT's START..END line when its GID matches.
+Compare the literal field spelling, retaining the seed's integral-float
+and leading-zero behavior instead of numerically coercing database IDs."
+  (let* ((first (funcall search ":" text start))
+         (second (and first (< first end)
+                      (funcall search ":" text (1+ first))))
+         (third (and second (< second end)
+                     (funcall search ":" text (1+ second)))))
+    (when (and first (> first start) second third (< third end)
+               (string= gid (substring text (1+ second) third)))
+      (substring text start first))))
+
+(defun emacs-cc-editfns-1--group-tail (text start gid search)
+  "Find GID from START with bounded stack usage for a large database."
+  (let (name)
+    (while (and (not name) (< start (length text)))
+      (let ((end (or (funcall search "\n" text start) (length text))))
+        (setq name (emacs-cc-editfns-1--group-line text start end gid search)
+              start (1+ end))))
+    name))
+
+(defun emacs-cc-editfns-1--group-small (text start gid search remaining)
+  "Find GID in TEXT, using at most REMAINING recursive line frames.
+Use native delimiter searches rather than the interpreted regexp engine's
+per-character loops. Large databases fall back to a bounded-stack loop."
+  (if (>= start (length text)) nil
+    (if (= remaining 0)
+        (emacs-cc-editfns-1--group-tail text start gid search)
+      (let ((end (or (funcall search "\n" text start) (length text))))
+        (or (emacs-cc-editfns-1--group-line text start end gid search)
+            (emacs-cc-editfns-1--group-small
+             text (1+ end) gid search (1- remaining)))))))
+
 (unless (fboundp 'group-name)
   (defun group-name (gid)
     "Return the name of the group with numeric ID GID, or nil."
@@ -123,11 +157,16 @@
     (let ((n (if (consp gid) (cdr gid) gid)))
       (when (and (numberp n) (= n (truncate n)))
         (when (< n 0) (signal 'error (list "Not an in-range integer, integral float, or cons of integers")))
-        (with-temp-buffer
-          (insert-file-contents "/etc/group")
-          (goto-char (point-min))
-          (when (re-search-forward (format "^[^:]+:[^:]*:%s:" (regexp-quote (number-to-string n))) nil t)
-            (beginning-of-line) (and (looking-at "\\([^:]+\\):") (match-string 1))))))))
+        (let ((text (if (fboundp 'nl-syscall-read-file)
+                        (nl-syscall-read-file "/etc/group")
+                      (with-temp-buffer
+                        (insert-file-contents "/etc/group")
+                        (buffer-string)))))
+          (emacs-cc-editfns-1--group-small
+           text 0 (number-to-string n)
+           (if (fboundp 'nelisp--string-search)
+               #'nelisp--string-search #'string-search)
+           100))))))
 
 (unless (fboundp 'group-real-gid)
   (defun group-real-gid ()

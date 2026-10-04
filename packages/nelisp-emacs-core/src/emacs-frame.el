@@ -151,7 +151,10 @@ Slots:
   (root-window  nil)
   (backend      'stub)
   (backend-obj  nil)
-  (dead-p       nil))
+  (dead-p       nil)
+  (menu-bar-lines 0)
+  (terminal-size-pending nil)
+  (terminal-size-ready nil))
 
 ;;; Module state
 
@@ -356,11 +359,14 @@ Resolution order:
       (setf (emacs-frame-parameters frame)
             (cons (cons k v)
                   (assq-delete-all k (emacs-frame-parameters frame))))))
-  ;; Recompute pixel size after width/height application.
-  (setf (emacs-frame-pixel-width  frame)
-        (* (emacs-frame-width  frame) emacs-frame--char-width))
-  (setf (emacs-frame-pixel-height frame)
-        (* (emacs-frame-height frame) emacs-frame--char-height))
+  ;; Position and other parameter changes must not discard realized geometry.
+  (when (assq 'width params)
+    (setf (emacs-frame-pixel-width frame)
+          (* (emacs-frame-width frame) emacs-frame--char-width)))
+  (when (assq 'height params)
+    (setf (emacs-frame-pixel-height frame)
+          (* (+ (emacs-frame-height frame) (emacs-frame-menu-bar-lines frame))
+             emacs-frame--char-height)))
   frame)
 
 (defun emacs-frame-make-frame (&optional params)
@@ -1032,10 +1038,37 @@ Returns t."
   "Registry of fringe bitmaps defined through `define-fringe-bitmap'.
 Maps the bitmap symbol to a plist of its declared geometry.")
 
+(defconst emacs-frame--standard-fringe-bitmaps
+  '(question-mark exclamation-mark left-arrow right-arrow up-arrow down-arrow
+    left-curly-arrow right-curly-arrow large-circle left-triangle right-triangle
+    top-left-angle top-right-angle bottom-left-angle bottom-right-angle
+    left-bracket right-bracket filled-rectangle hollow-rectangle filled-square
+    hollow-square vertical-bar horizontal-bar empty-line)
+  "Names of the standard fringe bitmaps supplied by Emacs.")
+
+(defvar emacs-frame--standard-fringe-faces (make-hash-table :test 'eq)
+  "Faces for standard fringe bitmaps when they have no custom definition.")
+
 (unless (fboundp 'define-fringe-bitmap)
   (defun define-fringe-bitmap (bitmap bits &optional height width align)
     "Register BITMAP as a fringe bitmap built from BITS and return BITMAP.
+BITS must be a string or vector.  HEIGHT defaults to the length of BITS.
+WIDTH defaults to 8 and must be an integer from 1 to 16.
+ALIGN is nil, `top', `center', `bottom', or a list (ALIGN PERIODIC).
 HEIGHT, WIDTH and ALIGN are recorded for the display backend."
+    (unless (symbolp bitmap)
+      (signal 'wrong-type-argument (list 'symbolp bitmap)))
+    (unless (or (stringp bits) (vectorp bits))
+      (signal 'wrong-type-argument (list 'arrayp bits)))
+    (unless (or (null height) (fixnump height))
+      (signal 'wrong-type-argument (list 'fixnump height)))
+    (unless (or (null width) (fixnump width))
+      (signal 'wrong-type-argument (list 'fixnump width)))
+    (when (and width (or (< width 1) (> width 16)))
+      (signal 'args-out-of-range (list width "Width must be from 1 to 16")))
+    (unless (memq (if (consp align) (car align) align)
+                  '(nil top center bottom))
+      (error "Bad align argument"))
     (puthash bitmap
              (list :bits bits :height height :width width :align align)
              emacs-frame--fringe-bitmaps)
@@ -1044,6 +1077,8 @@ HEIGHT, WIDTH and ALIGN are recorded for the display backend."
 (unless (fboundp 'destroy-fringe-bitmap)
   (defun destroy-fringe-bitmap (bitmap)
     "Forget the fringe bitmap BITMAP."
+    (unless (symbolp bitmap)
+      (signal 'wrong-type-argument (list 'symbolp bitmap)))
     (remhash bitmap emacs-frame--fringe-bitmaps)
     nil))
 
@@ -1057,10 +1092,16 @@ HEIGHT, WIDTH and ALIGN are recorded for the display backend."
 (unless (fboundp 'set-fringe-bitmap-face)
   (defun set-fringe-bitmap-face (bitmap &optional face)
     "Record FACE as the face used to draw the fringe bitmap BITMAP."
+    (unless (symbolp bitmap)
+      (signal 'wrong-type-argument (list 'symbolp bitmap)))
     (let ((entry (gethash bitmap emacs-frame--fringe-bitmaps)))
-      (when entry
+      (cond
+       (entry
         (puthash bitmap (plist-put entry :face face)
-                 emacs-frame--fringe-bitmaps)))
+                 emacs-frame--fringe-bitmaps))
+       ((memq bitmap emacs-frame--standard-fringe-bitmaps)
+        (puthash bitmap face emacs-frame--standard-fringe-faces))
+       (t (error "Undefined fringe bitmap"))))
     nil))
 
 (provide 'emacs-frame)

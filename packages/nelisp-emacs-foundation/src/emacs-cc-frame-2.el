@@ -68,28 +68,33 @@ This function is for internal use only."
     "Return width in columns of FRAME's text area."
     (setq frame (or frame (selected-frame)))
     (emacs-cc-frame-2--check-framep frame)
-    80))
+    (frame-text-width frame)))
 
 (unless (fboundp 'frame-text-height)
   (defun frame-text-height (&optional frame)
     "Return text area height of FRAME in pixels."
     (setq frame (or frame (selected-frame)))
     (emacs-cc-frame-2--check-framep frame)
-    25))
+    (* (frame-text-lines frame) (frame-char-height frame))))
 
 (unless (fboundp 'frame-text-lines)
   (defun frame-text-lines (&optional frame)
     "Return height in lines of FRAME's text area."
     (setq frame (or frame (selected-frame)))
     (emacs-cc-frame-2--check-framep frame)
-    25))
+    (if (and (fboundp 'emacs-frame-p) (emacs-frame-p frame))
+        (- (/ (emacs-frame-pixel-height frame) emacs-frame--char-height)
+           (emacs-frame-menu-bar-lines frame))
+      (frame-height frame))))
 
 (unless (fboundp 'frame-text-width)
   (defun frame-text-width (&optional frame)
     "Return text area width of FRAME in pixels."
     (setq frame (or frame (selected-frame)))
     (emacs-cc-frame-2--check-framep frame)
-    80))
+    (if (and (fboundp 'emacs-frame-p) (emacs-frame-p frame))
+        (/ (emacs-frame-pixel-width frame) emacs-frame--char-width)
+      (frame-width frame))))
 
 (unless (fboundp 'frame-total-cols)
   (defun frame-total-cols (&optional frame)

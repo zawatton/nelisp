@@ -348,13 +348,32 @@ packages rather than bootstrap dependencies. Keeping them out of eager replay
 preserves the boot budget without changing their source or feature code.")
 
 (defun nelisp-bootstrap--eager-runtime-files (files)
-  "Return FILES without the vendor sources reserved for first-use loading."
-  (cl-remove-if
-   (lambda (file)
-     (and (stringp file)
-          (member (file-relative-name file (nelisp-bootstrap--vendor-dir))
-                  nelisp-bootstrap-runtime-lazy-vendor-files)))
-   files))
+  "Return FILES with bootstrap-critical GNU declarations loaded first.
+
+Vendor sources reserved for first-use loading are omitted.  GNU `gv.el'
+registers the `gv-setter' defun declaration used by API sources such as
+`timer.el'; its provider and `macroexp.el' prerequisite must precede every
+bundled source that may evaluate a declaration."
+  (let* ((eager
+          (cl-remove-if
+           (lambda (file)
+             (and (stringp file)
+                  (member (file-relative-name file (nelisp-bootstrap--vendor-dir))
+                          nelisp-bootstrap-runtime-lazy-vendor-files)))
+           files))
+         (macroexp (nelisp-bootstrap--vendor-source-file
+                    "emacs-lisp/emacs-lisp/macroexp.el"))
+         (gv (nelisp-bootstrap--vendor-source-file
+              "emacs-lisp/emacs-lisp/gv.el"))
+         (shim (expand-file-name "emacs-parity-eieio.el"
+                                 (nelisp-bootstrap--src-dir))))
+    (unless (and macroexp gv (member shim eager))
+      (error "Cannot place GNU macroexp/gv before bootstrap sources"))
+    ;; The declaration may be evaluated before the EIEIO shim itself, so
+    ;; prepend these genuine providers ahead of the entire source stream.
+    (setq eager (cons gv (delete gv eager)))
+    (setq eager (cons macroexp (delete macroexp eager)))
+    eager))
 
 ;; Local files re-appended AFTER the vendor tail.  GNU `dired.el' (vendor tail)
 ;; redefines `dired', `dired-mode', `dired-mark', ... over the lightweight
@@ -368,7 +387,8 @@ preserves the boot budget without changing their source or feature code.")
   "Local src files moved behind `nelisp-bootstrap-vendor-tail-extra-files'.")
 
 (defvar nelisp-bootstrap-tail-extra-files
-  '("emacs-load.el")
+  '("emacs-frame-focus-state-compat.el"
+    "emacs-load.el")
   "Local src files appended as the absolute tail of bootstrap replay.
 These files must not run during the self-healing replay phase itself.")
 
@@ -548,6 +568,18 @@ path recorded in `load-history'."
                  (member text-buffer out))
         (setq out (nelisp-bootstrap--insert-before
                    text-buffer compat (delete text-buffer out)))))
+    (let ((owner (expand-file-name "nl-ffi-memory.el" src))
+          (adapter (expand-file-name "emacs-network-syscall-shim.el" src))
+          (network-ffi (expand-file-name "emacs-network-ffi.el" src)))
+      (when (member network-ffi out)
+        (unless (file-readable-p adapter)
+          (error "Missing readable bootstrap network syscall shim: %s" adapter))
+        (unless (file-readable-p owner)
+          (error "Missing readable bootstrap FFI memory owner: %s" owner))
+        (setq out (nelisp-bootstrap--insert-before
+                   adapter network-ffi (delete adapter out)))
+        (setq out (nelisp-bootstrap--insert-before
+                   owner adapter (delete owner out)))))
     (let ((fileio (expand-file-name "emacs-fileio.el" src))
           (fileio-gui (expand-file-name "emacs-fileio-gui.el" src))
           (mode-builtins (expand-file-name "emacs-mode-builtins.el" src)))
@@ -1182,12 +1214,42 @@ normalization policy as their former `emacs-lisp/' paths."
                      (member (concat "vendor/emacs-lisp-31.1/" api-relative)
                              nelisp-bootstrap-normalized-bundle-files)))))))
 
+(defun nelisp-bootstrap--fold-constant-regexp-opt (start)
+  "Fold literal `regexp-opt' calls between START and point into strings.
+`regexp-opt' is pure, so a call whose arguments are all literals is
+replaced by the string this bundling host computes.  Interpreting such a
+call at every bootstrap is expensive: comint.el's password prompt list
+alone cost 9.8 s of a 46 s bundle load (measured 2026-10-03).  Calls inside
+strings or comments, and calls with any non-literal argument, are kept."
+  (let ((end (point-marker)))
+    (goto-char start)
+    (with-syntax-table emacs-lisp-mode-syntax-table
+      (while (search-forward "(regexp-opt (quote (" end t)
+        (let* ((form-start (match-beginning 0))
+               (state (save-excursion (parse-partial-sexp start form-start)))
+               (form (and (not (nth 3 state)) (not (nth 4 state))
+                          (save-excursion
+                            (goto-char form-start)
+                            (condition-case nil
+                                (cons (read (current-buffer)) (point))
+                              (error nil))))))
+          (when (and form
+                     (standalone-source-normalize--constant-regexp-opt-p (car form)))
+            (delete-region form-start (cdr form))
+            (goto-char form-start)
+            (insert (nelisp-bootstrap--one-line-string-literal
+                     (standalone-source-normalize-form (car form))))))))
+    (goto-char end)
+    (set-marker end nil)))
+
 (defun nelisp-bootstrap--insert-bundle-file-body (file rel)
   "Insert FILE's bundle body text for relative name REL at point."
-  (if (nelisp-bootstrap--normalized-bundle-file-p file rel)
-      (insert (standalone-source-normalize-file-to-string file))
-    (insert-file-contents file)
-    (goto-char (point-max))))
+  (let ((start (point)))
+    (if (nelisp-bootstrap--normalized-bundle-file-p file rel)
+        (insert (standalone-source-normalize-file-to-string file))
+      (insert-file-contents file)
+      (goto-char (point-max)))
+    (nelisp-bootstrap--fold-constant-regexp-opt start)))
 
 (defun nelisp-bootstrap--write-bundle (files output)
   "Write FILES into OUTPUT as one lexical-binding Elisp bundle."

@@ -139,7 +139,10 @@ Each value is the buffer position immediately after the prompt text.")
   "Dedicated minibuffer leaf window, allocated lazily on first read.")
 
 (defvar emacs-minibuffer--saved-window nil
-  "Window that was selected when the read started (restored on exit).")
+  "Window selected before the active minibuffer was entered.")
+
+(defvar emacs-minibuffer--window-selection-stack nil
+  "Stack of selection and saved-window state to restore after reads.")
 
 (defvar emacs-minibuffer--input-queue nil
   "FIFO of pending lines / events used by the built-in reader.
@@ -332,12 +335,47 @@ window exists, calls the thunk, and pops the frame on normal *or*
 abnormal exit.  Returns the BODY's value."
   (emacs-minibuffer--ensure-window)
   (let* ((buf       (emacs-minibuffer--allocate-buffer))
-         (prompt-end (emacs-minibuffer--insert-prompt buf prompt)))
+         (prompt-end (emacs-minibuffer--insert-prompt buf prompt))
+         (select-window-p
+          (and (fboundp 'emacs-window-selected-window)
+               (fboundp 'emacs-window-select-window)
+               (fboundp 'emacs-window-window-live-p)
+               (emacs-window-window-live-p emacs-minibuffer--window)))
+         (selected-window (and select-window-p
+                               (emacs-window-selected-window)))
+         (saved-window-state emacs-minibuffer--saved-window)
+         (update-saved-window-p
+          (and select-window-p selected-window
+               (or (= emacs-minibuffer--depth 0)
+                   (not (eq selected-window emacs-minibuffer--window))))))
     (emacs-minibuffer--insert-initial buf initial)
     (emacs-minibuffer--push buf prompt prompt-end)
+    (when select-window-p
+      (push (cons selected-window saved-window-state)
+            emacs-minibuffer--window-selection-stack)
+      (when update-saved-window-p
+        (setq emacs-minibuffer--saved-window selected-window)))
     (unwind-protect
-        (funcall body)
-      (emacs-minibuffer--pop))))
+        (progn
+          (when (and select-window-p
+                     (emacs-window-window-live-p selected-window))
+            (emacs-window-select-window emacs-minibuffer--window))
+          (funcall body))
+      (emacs-minibuffer--pop)
+      (when select-window-p
+        (setq emacs-minibuffer--window-selection-stack
+              (cdr-safe emacs-minibuffer--window-selection-stack)
+              emacs-minibuffer--saved-window saved-window-state)
+        (let ((restore (if (emacs-window-window-live-p selected-window)
+                           selected-window
+                         (cl-find-if
+                          (lambda (window)
+                            (and (emacs-window-window-live-p window)
+                                 (not (emacs-window-window-parameter
+                                       window 'minibuffer))))
+                          (emacs-window-window-list)))))
+          (when restore
+            (emacs-window-select-window restore)))))))
 
 ;;; GUI backend helpers
 
@@ -1950,6 +1988,7 @@ Test-only convenience; not part of the public Emacs API surface."
         emacs-minibuffer--prompt-ends nil
         emacs-minibuffer--window nil
         emacs-minibuffer--saved-window nil
+        emacs-minibuffer--window-selection-stack nil
         emacs-minibuffer--input-queue nil
         emacs-minibuffer--read-fn nil
         emacs-minibuffer--key-fn nil

@@ -9,14 +9,70 @@
         (nelisp-ec-rx-match-data-to-ec 0 m))
       (plist-get m :start))))
 
+(defvar cache-long-scans t)
+(defvar emacs-cc-search-1--newline-cache nil
+  "Buffer-local newline cache: t before its first diagnostic snapshot.
+A snapshot contains the modification tick, accessible bounds and positions.")
+(make-variable-buffer-local 'cache-long-scans)
+(make-variable-buffer-local 'emacs-cc-search-1--newline-cache)
+(put 'emacs-cc-search-1--newline-cache 'permanent-local t)
+
+(defun emacs-cc-search-1--cache-buffer ()
+  "Return the base buffer that owns the current buffer's newline cache."
+  (or (buffer-base-buffer) (current-buffer)))
+
+(defun emacs-cc-search-1--start-newline-scan (&rest _args)
+  "Record newline cache creation or removal after successful line motion."
+  (let ((enabled cache-long-scans)
+        (indirect (buffer-base-buffer)))
+    (with-current-buffer (emacs-cc-search-1--cache-buffer)
+      ;; An indirect buffer cannot toggle a cache against its base policy.
+      (when (or (not indirect) (eq (not enabled) (not cache-long-scans)))
+        (if enabled
+            (unless emacs-cc-search-1--newline-cache
+              (setq emacs-cc-search-1--newline-cache t))
+          (setq emacs-cc-search-1--newline-cache nil))))))
+
+(defun emacs-cc-search-1--newline-positions ()
+  "Scan accessible text for newline character positions without line motion."
+  (let* ((start (point-min))
+         (text (buffer-substring-no-properties start (point-max)))
+         (index 0) (positions nil))
+    (while (< index (length text))
+      (when (= (aref text index) 10)
+        (push (+ start index) positions))
+      (setq index (1+ index)))
+    (vconcat (nreverse positions))))
+
+;; The host keeps its C cache.  Standalone line primitives can be prebound,
+;; so attach to their public entry points after the buffer shims load.
+(when (fboundp 'nelisp--repr)
+  (dolist (function '(forward-line line-beginning-position line-end-position
+                     beginning-of-line end-of-line))
+    (advice-add function :after #'emacs-cc-search-1--start-newline-scan)))
+
 (unless (fboundp 'newline-cache-check)
   (defun newline-cache-check (&optional buffer)
-    "Check the newline cache of BUFFER against buffer contents.
+    "Return cached and scanned newline position vectors for BUFFER.
 
-BUFFER defaults to the current buffer.  Value is nil when no cache exists."
+BUFFER defaults to the current buffer.  Return nil if no cache exists
+or `cache-long-scans' is nil.  Line motion creates the cache lazily."
     (unless (or (null buffer) (bufferp buffer))
       (signal 'wrong-type-argument (list 'bufferp buffer)))
-    nil))
+    (when (buffer-live-p (or buffer (current-buffer)))
+      (with-current-buffer (or buffer (current-buffer))
+        (with-current-buffer (emacs-cc-search-1--cache-buffer)
+          (when (and cache-long-scans emacs-cc-search-1--newline-cache)
+            (let* ((tick (buffer-chars-modified-tick))
+                   (start (point-min)) (end (point-max))
+                   (cache emacs-cc-search-1--newline-cache))
+              (unless (and (consp cache) (equal (car cache) tick)
+                           (= (nth 1 cache) start) (= (nth 2 cache) end))
+                (setq cache (list tick start end
+                                  (emacs-cc-search-1--newline-positions))
+                      emacs-cc-search-1--newline-cache cache))
+              (vector (copy-sequence (nth 3 cache))
+                      (emacs-cc-search-1--newline-positions)))))))))
 
 (unless (fboundp 'posix-looking-at)
   (defun posix-looking-at (regexp &optional inhibit-modify)

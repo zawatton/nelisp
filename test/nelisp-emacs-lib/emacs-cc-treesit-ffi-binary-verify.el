@@ -1,0 +1,78 @@
+;;; emacs-cc-treesit-ffi-binary-verify.el --- Real library checks -*- lexical-binding: t; -*-
+
+;; Run from the library root with the dynamic reader's --load option.
+;; The grammar-independent transcript is also evaluated on GNU Emacs below.
+(add-to-list 'load-path (expand-file-name "packages/nl-ffi/src"))
+(add-to-list 'load-path (expand-file-name "packages/nelisp-emacs-foundation/src"))
+(defvar user-emacs-directory (expand-file-name "~/.emacs.d/"))
+(require 'emacs-cc-treesit-1)
+(require 'emacs-cc-treesit-3)
+(require 'emacs-cc-treesit-4)
+
+(defun emacs-cc-treesit-test--check (value description)
+  (unless value (error "Tree-sitter verification failed: %s" description)))
+
+;; A source load must neither open the library nor load its FFI dependency.
+(emacs-cc-treesit-test--check
+ (and (eq emacs-cc-treesit-1--library 'untried) (not (featurep 'nl-ffi)))
+ "source loading remains lazy")
+(emacs-cc-treesit-test--check (treesit-available-p) "real library is callable")
+(let ((emacs-cc-treesit-1--library 'untried)
+      (emacs-cc-treesit-1--symbols nil)
+      (emacs-cc-treesit-1--library-names '("libtree-sitter-nonexistent-verification.so")))
+  (emacs-cc-treesit-test--check (null (treesit-available-p)) "missing library is unavailable"))
+;; An openable unrelated library must not count as tree-sitter support.
+(let ((emacs-cc-treesit-1--library 'untried)
+      (emacs-cc-treesit-1--symbols nil)
+      (emacs-cc-treesit-1--library-names '("libm.so.6")))
+  (emacs-cc-treesit-test--check (null (treesit-available-p)) "required symbols must resolve"))
+(emacs-cc-treesit-test--check (treesit-available-p) "failed attempts preserve original handle")
+
+;; GNU is the oracle for complete error data, validation order and query state.
+;; A separate process prevents its native definitions from being overwritten.
+(defconst emacs-cc-treesit-test--forms
+  '((treesit-available-p)
+    (treesit-library-abi-version)
+    (treesit-library-abi-version t)
+    (treesit-language-available-p 'c t)
+    (treesit-language-available-p nil t)
+    (treesit-language-available-p "c" t)
+    (let ((treesit-extra-load-path '("/tmp"))) (treesit-language-available-p 'c t))
+    (let ((treesit-load-name-override-list '((c "libcustom-absent-grammar" "custom_c"))))
+      (treesit-language-available-p 'c t))
+    (let ((treesit-load-name-override-list '((c "libm.so.6" "no_such_tree_sitter_language"))))
+      (treesit-language-available-p 'c t))
+    (treesit-grammar-location 'c)
+    (treesit-language-abi-version 'c)
+    (treesit-language-abi-version)
+    (treesit-parser-create 'c)
+    (treesit-parser-create 'json)
+    (treesit-parser-create 'foo-bar)
+    (treesit-parser-create 'c 'bad)
+    (treesit-parser-create 'c nil nil t)
+    (treesit-parser-create 'c nil nil 4)
+    (treesit-parse-string "x" 'c)
+    (treesit-parse-string nil 'c)
+    (treesit-query-compile 'c "x" t)
+    (treesit-query-compile 4 nil)
+    (treesit-query-capture nil "x")
+    (treesit-query-capture 4 "x")
+    (treesit-query-capture 4 nil)
+    (let ((q (treesit-query-compile 'c "x"))) (treesit-query-capture nil q))
+    (let ((q (treesit-query-compile 'c "x"))) (treesit-query-compile 'json q t))
+    (treesit-query-p "x")
+    (treesit-query-p '(x . y))
+    (treesit-query-p [])
+    (let* ((q (treesit-query-compile 'c "(identifier)"))
+           (same (treesit-query-compile 'json q)))
+      (list (treesit-compiled-query-p q) (treesit-query-p q)
+            (treesit-query-language q) (treesit-query-source q)
+            (treesit-query-eagerly-compiled-p q) (eq q same)))
+    (let ((q (treesit-query-compile 'c '(identifier))))
+      (list (treesit-query-language q) (treesit-query-source q)
+            (treesit-query-eagerly-compiled-p q)))))
+
+(dolist (form emacs-cc-treesit-test--forms)
+  (prin1 (condition-case data (eval form t) (error data)))
+  (terpri))
+(princ "TREESIT-FFI-PASS\n")

@@ -193,7 +193,14 @@ standalone detection alone must not authorize replacing its public API."
   (put 'force-mode-line-update 'emacs-stub-bulk nil))
 
 (when (emacs-redisplay-builtins--install-function-p 'redraw-display)
-  (defalias 'redraw-display #'emacs-redisplay-redraw-display)
+  (defun redraw-display (&rest args)
+    "Clear and redisplay all visible frames."
+    ;; Validate here so the condition names the public primitive.
+    (when args
+      (signal 'wrong-number-of-arguments
+              (list 'redraw-display (length args))))
+    (emacs-redisplay-redraw-display)
+    nil)
   (put 'redraw-display 'emacs-stub-bulk nil))
 
 (when (emacs-redisplay-builtins--install-function-p 'redraw-frame)
@@ -206,7 +213,15 @@ standalone detection alone must not authorize replacing its public API."
 ;; prefixed `emacs-redisplay-trigger-redisplay' helper above is
 ;; reachable explicitly from standalone callers.
 (when (emacs-redisplay-builtins--install-function-p 'redisplay)
-  (defalias 'redisplay #'emacs-redisplay-trigger-redisplay)
+  (defun redisplay (&rest args)
+    "Perform redisplay, returning t unless executing a keyboard macro.
+The optional FORCE argument is accepted for historical reasons and ignored."
+    (when (cdr args)
+      (signal 'wrong-number-of-arguments
+              (list 'redisplay (length args))))
+    (unless (and (boundp 'executing-kbd-macro) executing-kbd-macro)
+      (emacs-redisplay-trigger-redisplay)
+      t))
   (put 'redisplay 'emacs-stub-bulk nil))
 
 (provide 'emacs-redisplay-builtins)

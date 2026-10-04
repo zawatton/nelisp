@@ -23,15 +23,25 @@
       (if inherit (insert-before-markers-and-inherit (make-string (max 0 count) char))
         (insert (make-string (max 0 count) char))))))
 
+(defun emacs-cc-editfns-2--message-or-box (format-string args)
+  "Format FORMAT-STRING with ARGS, echo it, and return the text.
+GNU Emacs 31.1 in batch mode shows no dialog and writes only an empty
+message line to stderr, whatever the text is."
+  (let ((text (and format-string
+                   (apply #'format-message format-string args))))
+    (if noninteractive (message "")
+      (if text (message "%s" text) (message nil)))
+    text))
+
 (unless (fboundp 'message-box)
   (defun message-box (format-string &rest args)
     "Display a message in a dialog box if possible, otherwise in the echo area."
-    (apply #'message format-string args)))
+    (emacs-cc-editfns-2--message-or-box format-string args)))
 
 (unless (fboundp 'message-or-box)
   (defun message-or-box (format-string &rest args)
     "Display a message in a dialog box or in the echo area."
-    (apply #'message format-string args)))
+    (emacs-cc-editfns-2--message-or-box format-string args)))
 
 (unless (fboundp 'position-bytes)
   (defun position-bytes (position)

@@ -1,5 +1,7 @@
 ;;; emacs-cc-treesit-5.el --- tree-sitter query primitives -*- lexical-binding: t; -*-
 
+(require 'emacs-cc-treesit-1)
+
 (defun emacs-cc-treesit-5--pattern (x)
   (cond
    ((null x) "")
@@ -37,17 +39,21 @@
 (unless (fboundp 'treesit-query-language)
   (defun treesit-query-language (query)
     "Return the language of QUERY. QUERY has to be a compiled query."
-    (signal 'wrong-type-argument (list 'treesit-compiled-query-p query))))
+    (unless (treesit-compiled-query-p query)
+      (signal 'wrong-type-argument (list 'treesit-compiled-query-p query)))
+    (aref query 1)))
 
 (unless (fboundp 'treesit-query-p)
   (defun treesit-query-p (object)
     "Return t if OBJECT is a generic tree-sitter query."
-    (and object (listp object))))
+    (or (stringp object) (consp object) (treesit-compiled-query-p object))))
 
 (unless (fboundp 'treesit-query-source)
   (defun treesit-query-source (query)
     "Return the (string or sexp) source of QUERY. QUERY has to be a compiled query."
-    (signal 'wrong-type-argument (list 'treesit-compiled-query-p query))))
+    (unless (treesit-compiled-query-p query)
+      (signal 'wrong-type-argument (list 'treesit-compiled-query-p query)))
+    (aref query 2)))
 
 (unless (fboundp 'treesit-search-forward)
   (defun treesit-search-forward (start predicate &optional backward all)

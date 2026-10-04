@@ -20,11 +20,10 @@
 ;;   nl-ffi-read-i16 / nl-ffi-read-i32 / nl-ffi-read-bytes
 ;;   nl-ffi-write-i16 / nl-ffi-write-i32
 ;;   nl-ffi-write-bytes / nl-ffi-write-bytes-at
-;;   nl-ffi-call  (libc-name -> syscall dispatch)
+;;   emacs-network-syscall-shim--call (network-local syscall dispatch)
 ;;
-;; Load this file BEFORE the K1 modules; after it loads,
-;; `(fboundp 'nl-ffi-call)' is true, so every existing
-;; standalone-detection gate in the K1 stack works unchanged.
+;; This is a network-local compatibility adapter.  The native
+;; `nl-ffi-call' fixed table remains authoritative for other callers.
 ;;
 ;; Scope and omissions (documented once):
 ;; - Linux x86_64 syscall numbers only (this is the only standalone
@@ -42,12 +41,88 @@
 
 ;;; Code:
 
-(when (and (not (fboundp 'nl-ffi-call))
+(let ((helpers '(nl-ffi-malloc nl-ffi-free nl-ffi-read-i16
+                 nl-ffi-read-i32 nl-ffi-read-bytes nl-ffi-write-i16
+                 nl-ffi-write-i32 nl-ffi-write-bytes nl-ffi-write-bytes-at))
+      (present 0))
+  (dolist (name helpers) (when (fboundp name) (setq present (1+ present))))
+  (when (and (eq system-type 'gnu/linux)
+             (boundp 'system-configuration)
+             (stringp system-configuration)
+             (string-match-p "\\`\\(x86_64\\|amd64\\)" system-configuration)
+             (fboundp 'syscall-direct) (fboundp 'alloc-bytes)
+             (fboundp 'ptr-read-u64) (fboundp 'ptr-write-u64)
+             (fboundp 'ptr-write-u8)
+             (or (featurep 'nl-ffi-memory)
+                 (require 'nl-ffi-memory nil t))
+             (or (not (fboundp 'nl-ffi-call))
+                 (eq (type-of (symbol-function 'nl-ffi-call)) 'subr))
+             (> present 0) (< present (length helpers)))
+    (error "nl-ffi shim: refusing partial buffer-helper ownership set (%d/%d)"
+           present (length helpers))))
+
+(when (and (eq system-type 'gnu/linux)
+           (boundp 'system-configuration)
+           (stringp system-configuration)
+           (string-match-p "\\`\\(x86_64\\|amd64\\)" system-configuration)
            (fboundp 'syscall-direct)
-           (fboundp 'alloc-bytes))
+           (fboundp 'alloc-bytes)
+           (fboundp 'ptr-read-u64) (fboundp 'ptr-write-u64)
+           (fboundp 'ptr-write-u8)
+           (or (featurep 'nl-ffi-memory)
+               (require 'nl-ffi-memory nil t))
+           (or (not (fboundp 'nl-ffi-call))
+               (eq (type-of (symbol-function 'nl-ffi-call)) 'subr)))
+
+  (defvar emacs-network-syscall-shim--active-p nil
+    "Non-nil only when the checked NeLisp Linux x86_64 adapter is active.")
+  (setq emacs-network-syscall-shim--active-p t)
+
+  (defvar nl-ffi-shim--delegate-buffer-helpers-p
+    (let ((names '(nl-ffi-malloc nl-ffi-free nl-ffi-read-i16 nl-ffi-read-i32
+                   nl-ffi-read-bytes nl-ffi-write-i16 nl-ffi-write-i32
+                   nl-ffi-write-bytes nl-ffi-write-bytes-at))
+          (count 0))
+      (dolist (name names) (when (fboundp name) (setq count (1+ count))))
+      (= count (length names)))
+    "Whether a complete preexisting buffer API owns compatibility memory.")
 
   (defvar nl-ffi-shim--errno-buf nil
     "4-byte buffer holding the last syscall errno (libc emulation).")
+
+  (defvar nl-ffi-shim--owners nil
+    "Private live mmap owners backing the network compatibility buffers.")
+
+  (defun nl-ffi-shim--owner-size (ptr)
+    (let ((entry (assoc ptr nl-ffi-shim--owners)))
+      (unless entry (error "nl-ffi shim: pointer is not a live owned buffer"))
+      (cadr entry)))
+
+  (unless (fboundp 'nl-ffi-malloc)
+    (defun nl-ffi-malloc (n)
+      "Allocate zeroed, externally owned network buffer with tail slack."
+      (unless (require 'nl-ffi-memory nil t)
+        (error "nl-ffi shim: nl-ffi-memory owner API is required"))
+      (unless (and (integerp n) (>= n 0))
+        (error "nl-ffi shim: invalid allocation size %S" n))
+      (let* ((size (+ n 8)) (owner (nl-ffi-memory-allocate size))
+             (ptr (nl-ffi-memory-address owner)))
+        (push (cons ptr (cons size owner)) nl-ffi-shim--owners)
+        ptr)))
+
+  (unless (fboundp 'nl-ffi-free)
+    (defun nl-ffi-free (ptr)
+      "Release a network buffer's matching mmap owner exactly once."
+      (let ((entry (assoc ptr nl-ffi-shim--owners)))
+        (unless entry (error "nl-ffi shim: free of unknown buffer"))
+        (nl-ffi-memory-release (cddr entry))
+        (setq nl-ffi-shim--owners (delq entry nl-ffi-shim--owners))
+        t)))
+
+  (defun nl-ffi-shim--check-range (ptr off width)
+    (let ((size (nl-ffi-shim--owner-size ptr)))
+      (unless (and (integerp off) (>= off 0) (<= (+ off width) size))
+        (error "nl-ffi shim: buffer access out of bounds"))))
 
   (defun nl-ffi-shim--zero (ptr bytes)
     "Zero BYTES bytes at PTR (alloc-bytes does not guarantee zero-init)."
@@ -56,59 +131,68 @@
         (ptr-write-u64 ptr i 0)
         (setq i (+ i 8)))))
 
-  (defun nl-ffi-malloc (n)
-    "Allocate N zeroed bytes (+8 slack for unaligned u64 tail access)."
-    (let ((ptr (alloc-bytes (+ n 8) 8)))
-      (nl-ffi-shim--zero ptr (+ n 8))
-      ptr))
-
-  (defun nl-ffi-free (_ptr)
-    "No-op: arena-owned memory."
-    nil)
-
   (defun nl-ffi-shim--peek-u8 (ptr off)
+    (cond ((assoc ptr nl-ffi-shim--owners)
+           (nl-ffi-shim--check-range ptr off 8))
+          (nl-ffi-shim--delegate-buffer-helpers-p nil)
+          (t (error "nl-ffi shim: pointer is not a live owned buffer")))
     (logand (ptr-read-u64 ptr off) 255))
 
   (defun nl-ffi-shim--poke-u8 (ptr off val)
+    (cond ((assoc ptr nl-ffi-shim--owners)
+           (nl-ffi-shim--check-range ptr off 8))
+          (nl-ffi-shim--delegate-buffer-helpers-p nil)
+          (t (error "nl-ffi shim: pointer is not a live owned buffer")))
     (ptr-write-u64 ptr off
                    (logior (logand (ptr-read-u64 ptr off) -256)
                            (logand val 255))))
 
-  (defun nl-ffi-read-i16 (ptr off)
-    (logand (ptr-read-u64 ptr off) 65535))
+  (unless (fboundp 'nl-ffi-read-i16)
+    (defun nl-ffi-read-i16 (ptr off)
+      (nl-ffi-shim--check-range ptr off 8)
+      (logand (ptr-read-u64 ptr off) 65535)))
 
-  (defun nl-ffi-read-i32 (ptr off)
-    (logand (ptr-read-u64 ptr off) 4294967295))
+  (unless (fboundp 'nl-ffi-read-i32)
+    (defun nl-ffi-read-i32 (ptr off)
+      (nl-ffi-shim--check-range ptr off 8)
+      (logand (ptr-read-u64 ptr off) 4294967295)))
 
-  (defun nl-ffi-write-i16 (ptr off val)
-    (ptr-write-u64 ptr off
-                   (logior (logand (ptr-read-u64 ptr off) -65536)
-                           (logand val 65535))))
+  (unless (fboundp 'nl-ffi-write-i16)
+    (defun nl-ffi-write-i16 (ptr off val)
+      (nl-ffi-shim--check-range ptr off 8)
+      (ptr-write-u64 ptr off
+                     (logior (logand (ptr-read-u64 ptr off) -65536)
+                             (logand val 65535)))))
 
-  (defun nl-ffi-write-i32 (ptr off val)
-    (ptr-write-u64 ptr off
-                   (logior (logand (ptr-read-u64 ptr off) -4294967296)
-                           (logand val 4294967295))))
+  (unless (fboundp 'nl-ffi-write-i32)
+    (defun nl-ffi-write-i32 (ptr off val)
+      (nl-ffi-shim--check-range ptr off 8)
+      (ptr-write-u64 ptr off
+                     (logior (logand (ptr-read-u64 ptr off) -4294967296)
+                             (logand val 4294967295)))))
 
-  (defun nl-ffi-write-bytes-at (ptr off str)
+  (unless (fboundp 'nl-ffi-write-bytes-at)
+    (defun nl-ffi-write-bytes-at (ptr off str)
     "Write STR's bytes at PTR+OFF (no trailing NUL; buffer pre-zeroed)."
     (let ((i 0)
           (n (length str)))
       (while (< i n)
         (nl-ffi-shim--poke-u8 ptr (+ off i) (aref str i))
-        (setq i (1+ i)))))
+        (setq i (1+ i))))))
 
-  (defun nl-ffi-write-bytes (ptr str)
-    (nl-ffi-write-bytes-at ptr 0 str))
+  (unless (fboundp 'nl-ffi-write-bytes)
+    (defun nl-ffi-write-bytes (ptr str)
+      (nl-ffi-write-bytes-at ptr 0 str)))
 
-  (defun nl-ffi-read-bytes (ptr n)
+  (unless (fboundp 'nl-ffi-read-bytes)
+    (defun nl-ffi-read-bytes (ptr n)
     "Read N bytes at PTR into a Lisp string."
     (let ((out "")
           (i 0))
       (while (< i n)
         (setq out (concat out (char-to-string (nl-ffi-shim--peek-u8 ptr i))))
         (setq i (1+ i)))
-      out))
+      out)))
 
   (defun nl-ffi-shim--cstr (str)
     "Marshal STR to a NUL-terminated C string buffer; return the pointer."
@@ -238,10 +322,15 @@ Doc 06 D2 added sendto/recvfrom/getsockname for datagram + IPv6.
 Doc 06 C1 added pipe/pipe2 for async pipe-subprocess fds.
 Doc 06 C2 added wait4 for SIGCHLD-fallback child reaping.")
 
-  (defun nl-ffi-call (_lib func _sig &rest args)
-    "Shim: dispatch libc FUNC to `syscall-direct' (x86_64).
-_LIB and _SIG are accepted for nl-ffi-call compatibility and ignored.
-String arguments are marshalled to NUL-terminated C buffers."
+  (defun emacs-network-syscall-shim--supports-p (func)
+    "Return non-nil when network adapter supports libc FUNC."
+    (or (assoc func nl-ffi-shim--syscalls)
+        (member func '("recv" "send" "unlink" "mkdir" "access"
+                       "inet_pton" "usleep" "__errno_location"
+                       "__error" "memcpy"))))
+
+  (defun emacs-network-syscall-shim--call (func &rest args)
+    "Dispatch supported libc FUNC to the Linux x86_64 syscall adapter."
     (cond
      ;; recv/send are not direct syscalls on x86_64 — route through
      ;; recvfrom(45) / sendto(44) with NULL peer address.
@@ -312,6 +401,10 @@ String arguments are marshalled to NUL-terminated C buffers."
                            (or (nth 0 a) 0) (or (nth 1 a) 0)
                            (or (nth 2 a) 0) (or (nth 3 a) 0)
                            (or (nth 4 a) 0) (or (nth 5 a) 0))))))))
+  (unless (fboundp 'nl-ffi-call)
+  (defun nl-ffi-call (_lib func _sig &rest args)
+      "Legacy ABI wrapper installed only when no native backend exists."
+      (apply #'emacs-network-syscall-shim--call func args)))
   nil)
 
 ;; Small numeric polyfills the K1 stack touches but the pure-elisp

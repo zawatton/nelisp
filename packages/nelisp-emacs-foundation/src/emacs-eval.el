@@ -327,12 +327,15 @@ Public name for `nelisp--defalias-late'.")
 
 ;; `internal-make-var-non-special' is an Emacs C-core helper used by a
 ;; few dump/bootstrap files to mark variables as lexically bindable.
-;; NeLisp does not model specialness separately yet, so this is a
-;; metadata-only no-op on the standalone path.
+;; The standalone declaration registry is shared with the evaluator.
 (unless (fboundp 'internal-make-var-non-special)
   (defun internal-make-var-non-special (symbol)
-    "Polyfill: accept SYMBOL and return nil."
-    (ignore symbol)
+    "Make SYMBOL lexically bindable by clearing its special declaration.
+Return nil without changing SYMBOL's value or properties."
+    (unless (symbolp symbol)
+      (signal 'wrong-type-argument (list 'symbolp symbol)))
+    (when (boundp 'nelisp--special-variables)
+      (remhash symbol nelisp--special-variables))
     nil))
 
 ;; `defsubst' — Emacs special form for an inline-hinted function.  The

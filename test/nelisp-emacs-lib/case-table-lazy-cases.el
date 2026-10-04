@@ -1,0 +1,21 @@
+;; Forms are evaluated unchanged by GNU Emacs 31.1 and standalone NeLisp.
+(let ((table (standard-case-table)))
+  (list (mapcar (lambda (char) (char-table-range table char))
+                '(65 90 97 122 223 937 969 7838))
+        (eq (current-case-table) table)))
+(let ((table (copy-case-table (standard-case-table))))
+  (set-case-syntax-pair ?Q ?q table)
+  (list (char-table-range table ?Q) (char-table-range table ?q)
+        (char-table-range (case-table-get-table table 'up) ?Q)
+        (char-table-range (case-table-get-table table 'up) ?q)))
+(let ((original-standard (standard-case-table))
+      (custom (copy-case-table (standard-case-table))))
+  (unwind-protect
+      (with-temp-buffer
+        (set-case-table custom)
+        (let ((local-before (eq (current-case-table) custom)))
+          (set-standard-case-table custom)
+          (list local-before (eq (current-case-table) custom)
+                (with-temp-buffer (eq (current-case-table) custom)))))
+    (set-standard-case-table original-standard)))
+(condition-case err (set-case-table 'not-a-case-table) (error err))

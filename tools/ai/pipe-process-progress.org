@@ -1,0 +1,23 @@
+#+TITLE: Real pipe-process construction and public provider ownership
+#+NOTE: Six criteria are defined before implementation. Whole C-core retains 24 criteria and all existing timing caps. The prelude's seven-slot diagnostic placeholder with fd=-1 is not a completed GNU pipe process. Use existing Lisp FFI pipe allocation and event-vector ownership; add no native entry or general compiler change. Minimal-source checks are diagnostic and cannot replace integrated bootstrap or untouched census checks.
+#+NOTE: The isolated network adapter prerequisite passed actual descriptor allocation, payload write/read, EOF, both closes, stable descriptor count and memory access after GC; the retained old adapter fails the same input at missing nl-ffi-malloc. This is not public pipe acceptance. Review found unresolved legacy foreign-call ABI and partial memory-backend ownership cases, which must be corrected before integration. Scope now includes only a pipe dispatch branch in emacs-process-process-send-eof in emacs-process.el so the real public EOF path reaches the event owner. EOF closes only the writer, preserving the reader until buffered data drains; deletion closes remaining owned descriptors exactly once. Six criteria and the 55-second formal cap are unchanged.
+
+* S1 Construct and operate real pipe processes through the existing event provider
+** S1.1 Provider sources and supplemental probes parse completely
+cmd: emacs -Q --batch --eval '(dolist (p (quote ("packages/nelisp-emacs-io/src/emacs-pipe-process.el" "packages/nelisp-emacs-io/src/emacs-process-events.el" "packages/nelisp-emacs-io/src/emacs-process.el" "packages/nelisp-emacs-io/src/emacs-network-syscall-shim.el" "packages/nelisp-emacs-io/src/emacs-network-ffi.el" "test/nelisp-emacs-lib/c-core-probes/pipe-process-1.el"))) (with-temp-buffer (insert-file-contents p) (emacs-lisp-mode) (check-parens) (goto-char (point-min)) (while (progn (forward-comment (point-max)) (< (point) (point-max))) (read (current-buffer)))))'
+
+#+NOTE: The first minimal-source precondition failed before FD allocation in 4.398 seconds because nl-ffi-malloc was unbound although nl-ffi-call was bound after provider loading. The existing syscall shim already defines the memory API but gates its entire body on nl-ffi-call being absent. Diagnose provider origin and memory ownership before changing that guard; preserve working foreign-call and allocator backends. The allowed scope now includes this existing shim prerequisite. No criterion or denominator was removed; real I/O, cleanup and public constructor behavior are still unverified.
+#+NOTE: A second focused precondition allocated through the existing mmap owner API, but the native fixed-table nl-ffi-call returned nil for the unlisted pipe name. The changed prerequisite design is a network-local adapter to the existing real syscall dispatcher; emacs-network-ffi.el is added to the allowed scope. Preserve the native dispatcher and working memory backends, route only known supported syscall names, track correct errno backend, avoid duplicate side-effect calls and silent unsupported results, and use explicitly owned external memory where needed. Public pipe behavior remains unverified until allocation, GC-safe I/O, EOF and closure pass. Six criteria and all timing caps remain unchanged.
+** S1.2 Minimal real-provider pipe behavior matches GNU, including real descriptor I/O and closure
+pending
+** S1.3 Identical inputs reject the retained placeholder constructor/provider
+pending
+** S1.4 End to end: supplemental real pipe-process probes match GNU after the full integrated bootstrap
+#+REQUIRES: NELISP_BIN
+cmd: bash test/nelisp-emacs-lib/c-core-parity-smoke.sh run --unit pipe-process-1
+** S1.5 End to end: unchanged process census 01 matches GNU after the full integrated bootstrap
+#+REQUIRES: NELISP_BIN
+cmd: bash test/nelisp-emacs-lib/c-core-parity-smoke.sh run --unit census-process-01
+** S1.6 End to end: unchanged process census 02 matches GNU after the full integrated bootstrap
+#+REQUIRES: NELISP_BIN
+cmd: bash test/nelisp-emacs-lib/c-core-parity-smoke.sh run --unit census-process-02

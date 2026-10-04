@@ -143,40 +143,51 @@ buffer becomes current via `find-file'.")
 
 (defun emacs-fileio--registry-buffer-name-in-use-p (name &optional except)
   "Return non-nil when NAME is used by a live buffer other than EXCEPT."
-  (catch 'found
-    (dolist (buffer (buffer-list))
-      (when (and (not (eq buffer except))
-                 (emacs-fileio--buffer-live-p buffer)
-                 (equal name (emacs-fileio--buffer-name buffer)))
-        (throw 'found t)))
-    nil))
+  (let ((buffer (if (and (fboundp 'nelisp-buffer-p)
+                         (nelisp-buffer-p except))
+                    (gethash name nelisp-buffer--registry)
+                  (get-buffer name))))
+    (and buffer
+         (not (eq buffer except))
+         (emacs-fileio--buffer-live-p buffer))))
 
 (defun emacs-fileio--generate-buffer-name (name &optional except)
   "Return a buffer name based on NAME that is not used, ignoring EXCEPT."
   (if (not (emacs-fileio--registry-buffer-name-in-use-p name except))
       name
-    (let ((n 2)
-          (candidate ""))
-      (setq candidate (format "%s<%d>" name n))
+    (let* ((base (if (and (> (length name) 0) (= (aref name 0) ?\s))
+                     (format "%s-%d" name (random 1000000))
+                   name))
+           (n 1)
+           (candidate base))
       (while (emacs-fileio--registry-buffer-name-in-use-p candidate except)
         (setq n (1+ n))
-        (setq candidate (format "%s<%d>" name n)))
+        (setq candidate (format "%s<%d>" base n)))
       candidate)))
 
 (defun emacs-fileio--rename-standalone-buffer (buffer name unique)
   "Rename standalone BUFFER to NAME, uniquifying when UNIQUE is non-nil."
-  (let* ((old-name (nelisp-ec-buffer-name buffer))
-         (new-name (if unique
-                       (emacs-fileio--generate-buffer-name name buffer)
-                     name)))
-    (when (and (not unique)
-               (emacs-fileio--registry-buffer-name-in-use-p new-name buffer))
-      (signal 'error (list "Buffer name is in use" new-name)))
-    (setq nelisp-ec--buffers
-          (cons (cons new-name buffer)
-                (assoc-delete-all old-name nelisp-ec--buffers)))
-    (nelisp-ec-buffer-name--setter buffer new-name)
-    new-name))
+  (let ((old-name (emacs-fileio--buffer-name buffer)))
+    (if (and (not unique) (equal name old-name))
+        old-name
+      (let ((new-name (if unique
+                          (emacs-fileio--generate-buffer-name name buffer)
+                        name)))
+        (when (and (not unique)
+                   (emacs-fileio--registry-buffer-name-in-use-p name buffer))
+          (signal 'error (list (format "Buffer name ‘%s’ is in use" name))))
+        (if (and (fboundp 'nelisp-buffer-p) (nelisp-buffer-p buffer))
+            (progn
+              (remhash old-name nelisp-buffer--registry)
+              (setf (nelisp-buffer-name buffer) new-name)
+              (puthash new-name buffer nelisp-buffer--registry))
+          (setq nelisp-ec--buffers
+                (cons (cons new-name buffer)
+                      (assoc-delete-all old-name nelisp-ec--buffers)))
+          (nelisp-ec-buffer-name--setter buffer new-name))
+        (force-mode-line-update)
+        (run-hooks 'buffer-list-update-hook)
+        new-name))))
 
 (defun emacs-fileio--buffer-default-directory (&optional buffer)
   "Return BUFFER's recorded default directory, or nil."
@@ -186,10 +197,13 @@ buffer becomes current via `find-file'.")
 (defun emacs-fileio--visited-file-name (&optional buffer)
   "Return BUFFER's visited filename across host and standalone modes."
   (let ((buf (or buffer (current-buffer))))
-    (or (cdr (assq buf emacs-fileio--buffer-files))
+    (if (and (fboundp 'emacs-fileio-native-public-buffer-p)
+             (emacs-fileio-native-public-buffer-p buf))
+        (emacs-fileio--direct-buffer-file-name buf)
+      (or (cdr (assq buf emacs-fileio--buffer-files))
         (condition-case nil
             (buffer-file-name buf)
-          (error nil)))))
+          (error nil))))))
 
 (defun emacs-fileio-buffer-file-name (&optional buffer)
   "Return BUFFER's visited filename.
@@ -260,7 +274,9 @@ Thin helper so callers do not need to know the builtins' state table."
   (or
    (catch 'found
      (dolist (cell emacs-fileio--buffer-files)
-       (when (and (equal filename (cdr cell))
+       (when (and (not (and (fboundp 'emacs-fileio-native-public-buffer-p)
+                            (emacs-fileio-native-public-buffer-p (car cell))))
+                  (equal filename (cdr cell))
                   (emacs-fileio--buffer-live-p (car cell)))
          (throw 'found (car cell))))
      nil)
@@ -308,14 +324,25 @@ Thin helper so callers do not need to know the builtins' state table."
 
 ;;;###autoload
 (defun rename-buffer (newname &optional unique)
-  "Rename the current buffer to NEWNAME and return NEWNAME.
+  "Rename the current buffer to NEWNAME and return the actual name.
 When UNIQUE is non-nil, append a numeric suffix if NEWNAME is already
-in use."
-  (interactive "sRename buffer: ")
+in use by another buffer.  Otherwise, signal an error for a name in use.
+For names starting with a space, try a random suffix before numbering.
+NEWNAME must be a nonempty string."
+  (interactive
+   (list (read-string "Rename buffer (to new name): " nil
+                      'buffer-name-history (buffer-name (current-buffer)))
+         current-prefix-arg))
+  (unless (stringp newname)
+    (signal 'wrong-type-argument (list 'stringp newname)))
+  (when (= (length newname) 0)
+    (signal 'error '("Empty string is invalid as a buffer name")))
   (let ((buffer (current-buffer)))
     (cond
-     ((and (fboundp 'nelisp-ec-buffer-p)
-           (nelisp-ec-buffer-p buffer))
+     ((or (and (fboundp 'nelisp-ec-buffer-p)
+               (nelisp-ec-buffer-p buffer))
+          (and (fboundp 'nelisp-buffer-p)
+               (nelisp-buffer-p buffer)))
       (emacs-fileio--rename-standalone-buffer buffer newname unique))
      (emacs-fileio--primitive-rename-buffer
       (funcall emacs-fileio--primitive-rename-buffer newname unique))
@@ -397,7 +424,9 @@ FILES-ONLY limits rows to buffers visiting files."
         (with-current-buffer buf
           (when (file-exists-p abs)
             (insert-file-contents abs))
-          (set-visited-file-name abs)
+          (if (emacs-fileio-native-public-buffer-p (current-buffer))
+              (emacs-fileio-set-visited-file-name-direct abs)
+            (set-visited-file-name abs))
           (emacs-fileio--remember-default-directory buf abs)
           (emacs-fileio--remember-major-mode
            buf
@@ -422,7 +451,11 @@ FILES-ONLY limits rows to buffers visiting files."
 When the buffer is unmodified, emit a message and do nothing."
   (interactive "P")
   (ignore arg)
-  (let ((filename (buffer-file-name)))
+  (let* ((buffer (current-buffer))
+         (native-p (emacs-fileio-native-public-buffer-p buffer))
+         (filename (if native-p
+                       (emacs-fileio--direct-buffer-file-name buffer)
+                     (buffer-file-name))))
     (cond
      ((null filename)
       (signal 'error '("save-buffer: buffer is not visiting a file")))
@@ -430,9 +463,13 @@ When the buffer is unmodified, emit a message and do nothing."
       (message "(No changes need to be saved)")
       nil)
      (t
-      (write-region (point-min) (point-max) filename nil nil)
-      (set-buffer-modified-p nil)
-      filename))))
+      (if native-p
+          (progn
+            (emacs-fileio-save-buffer-direct :buffer (current-buffer))
+            nil)
+        (write-region (point-min) (point-max) filename nil nil)
+        (set-buffer-modified-p nil)
+        filename)))))
 
 ;;;###autoload
 (defun write-file (filename &optional confirm)

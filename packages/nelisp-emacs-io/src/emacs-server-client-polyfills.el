@@ -33,7 +33,7 @@
 ;; via `prin1-to-string'.
 ;;
 ;; Out of scope (documented once): TCP servers (auth-key file,
-;; `with-temp-file', `format-network-address' real formatting), file
+;; `with-temp-file'), file
 ;; visiting (`-file' clients), tty / window-system frames.  Those
 ;; commands answer through the normal server.el error path instead of
 ;; crashing.
@@ -69,10 +69,20 @@
   (unless (fboundp 'length>)
     (defun length> (sequence n)
       (> (length sequence) n)))
-  (defun called-interactively-p (&optional _kind)
-    ;; Doc 06 A5: read the interactive-call flag (was always nil).
+  ;; These GNU variables must remain dynamic in the standalone closures.
+  (defvar noninteractive)
+  (defvar executing-kbd-macro)
+  (defun called-interactively-p (&optional kind)
+    "Return non-nil when the calling command was invoked interactively.
+When KIND is `interactive', exclude batch mode and keyboard macros.
+Other KIND values include all interactive calls.  The command loop's
+dynamic flag approximates call-stack inspection."
     (and (boundp 'emacs-command-loop--called-interactively)
-         emacs-command-loop--called-interactively))
+         emacs-command-loop--called-interactively
+         (or (not (eq kind 'interactive))
+             (not (or noninteractive
+                      (and (boundp 'executing-kbd-macro)
+                           executing-kbd-macro))))))
   (defun minibuffer-depth () 0)
   (defun pp (object &optional _stream)
     (prin1-to-string object))
@@ -82,11 +92,60 @@
   (defun command-line-normalize-file-name (file) file)
   (unless (fboundp 'substitute-key-definition)
     (defun substitute-key-definition (&rest _ignored) nil))
-  (defun format-network-address (_address &optional _omit-port) "")
+  (defun format-network-address (address &optional omit-port)
+    "Convert an IPv4, IPv6, local, or unknown-family ADDRESS to text.
+Return nil for an invalid address.  OMIT-PORT suppresses port formatting."
+    (cond
+     ((stringp address) address)
+     ((consp address) (format "<Family %d>" (car address)))
+     ((vectorp address)
+      (let* ((n (length address))
+             (ipv4 (or (= n 4) (= n 5)))
+             (count (if ipv4 4 8))
+             (valid (or ipv4 (= n 8) (= n 9)))
+             (i 0)
+             (out ""))
+        (while (and valid (< i count))
+          (let ((part (aref address i)))
+            (if (and (integerp part) (>= part 0)
+                     (<= part (if ipv4 255 65535)))
+                (setq out (concat out (if (= i 0) "" (if ipv4 "." ":"))
+                                  (format (if ipv4 "%d" "%x") part)))
+              (setq valid nil)))
+          (setq i (1+ i)))
+        (when (and valid (not omit-port) (> n count))
+          (let ((port (aref address count)))
+            (if (and (integerp port) (>= port 0) (<= port 65535))
+                (setq out (concat (if ipv4 out (concat "[" out "]"))
+                                  ":" (number-to-string port)))
+              (setq valid nil))))
+        (and valid out)))))
   (unless (fboundp 'set-buffer-multibyte)
     (defun set-buffer-multibyte (_flag) nil))
-  (defun getenv-internal (variable &optional _env)
-    (if (fboundp 'getenv) (getenv variable) nil))
+  (defun getenv-internal (variable &optional env)
+    "Find VARIABLE in ENV, or in `process-environment'.
+An explicit environment list returns t for a negative entry."
+    (unless (stringp variable)
+      (signal 'wrong-type-argument (list 'stringp variable)))
+    (let ((entries (if (listp env) env process-environment))
+          (negative (listp env))
+          (size (length variable))
+          (found nil)
+          (value nil))
+      ;; A nil ENV, like any non-list ENV, selects the process environment.
+      (unless env
+        (setq entries process-environment negative nil))
+      (while (and (consp entries) (not found))
+        (let ((entry (car entries)))
+          (when (and (stringp entry) (>= (length entry) size)
+                     (equal variable (substring entry 0 size)))
+            (cond
+             ((= (length entry) size)
+              (setq found t value (and negative t)))
+             ((= (aref entry size) ?=)
+              (setq found t value (substring entry (1+ size)))))))
+        (setq entries (cdr entries)))
+      value))
 
   ;; --- file ops over the raw syscall surface ----------------------------
   (unless (fboundp 'delete-file)
@@ -116,15 +175,64 @@
   (defvar coding-system-for-write nil)
   (defvar version-control nil)
   (defvar use-dialog-box-override nil)
-  (defun terminal-live-p (_terminal) nil)
-  (defun frame-terminal (&optional _frame) nil)
-  (defun delete-terminal (&rest _ignored) nil)
-  (defun suspend-tty (&rest _ignored) nil)
-  (defun resume-tty (&rest _ignored) nil)
-  (defun window-minibuffer-p (&optional _window) nil)
+  (defvar emacs-server-client-polyfills--terminal nil
+    "Opaque handle for the standalone's initial display terminal.")
+  (defun terminal-live-p (terminal)
+    "Return the output kind of a live TERMINAL or frame, or nil."
+    (cond
+     ((null terminal) (frame-live-p (selected-frame)))
+     ((and emacs-server-client-polyfills--terminal
+           (eq terminal emacs-server-client-polyfills--terminal))
+      (frame-live-p (selected-frame)))
+     (t (frame-live-p terminal))))
+  (defun frame-terminal (&optional frame)
+    "Return the display terminal of live FRAME, defaulting to the selected frame."
+    (let ((frame (or frame (selected-frame))))
+      (unless (frame-live-p frame)
+        (signal 'wrong-type-argument (list 'frame-live-p frame)))
+      ;; The headless frame model shares one initial display terminal.
+      (or emacs-server-client-polyfills--terminal
+          (setq emacs-server-client-polyfills--terminal
+                (vector 'emacs-server-client-polyfills-terminal)))))
+  (defun delete-terminal (&optional terminal force)
+    "Delete TERMINAL; FORCE permits deleting the sole active terminal."
+    (when (terminal-live-p terminal)
+      (if force
+          ;; GNU exits with status 70 when its last batch display disappears.
+          (kill-emacs 70)
+        (error "Attempt to delete the sole active display terminal"))))
+  (defun suspend-tty (&optional tty)
+    "Suspend the text terminal TTY, defaulting to the selected terminal."
+    (unless (terminal-live-p tty)
+      (signal 'wrong-type-argument (list 'terminal-live-p tty)))
+    ;; The initial batch display is not a text terminal device.
+    (error "Attempt to suspend a non-text terminal device"))
+  (defun resume-tty (&optional tty)
+    "Resume the text terminal TTY, defaulting to the selected terminal."
+    (unless (terminal-live-p tty)
+      (signal 'wrong-type-argument (list 'terminal-live-p tty)))
+    (error "Attempt to resume a non-text terminal device"))
+  (defun window-minibuffer-p (&optional window)
+    (emacs-cc-census-display-b34window01--window-minibuffer-p window))
   (defun one-window-p (&rest _ignored) t)
   (defun get-window-with-predicate (&rest _ignored) nil)
-  (defun frame-first-window (&optional _frame) nil)
+  (defun frame-first-window (&optional frame-or-window)
+    "Return the topmost leftmost live window of FRAME-OR-WINDOW's frame."
+    (let* ((frame (cond
+                   ((null frame-or-window) (selected-frame))
+                   ((window-valid-p frame-or-window)
+                    (window-frame frame-or-window))
+                   ((frame-live-p frame-or-window) frame-or-window)
+                   (t (signal 'wrong-type-argument
+                              (list 'frame-live-p frame-or-window)))))
+           (root (emacs-frame-root-window frame)))
+      (unless root
+        ;; The initial frame adopts the window module's implicit tree.
+        (selected-window)
+        (setq root emacs-window--root))
+      (while (and root (not (window-live-p root)))
+        (setq root (car (emacs-window-children root))))
+      root))
   (defun get-buffer-window (&rest _ignored) nil)
   (defun window-system-for-display (_display) nil)
   (defun make-frame-on-display (&rest _ignored) nil)
@@ -133,7 +241,8 @@
   (defun next-buffer (&rest _ignored) nil)
   (unless (fboundp 'pop-to-buffer)
     (defun pop-to-buffer (buffer &rest _ignored) buffer))
-  (defun get-file-buffer (_filename) nil)
+  (unless (fboundp 'get-file-buffer)
+    (defun get-file-buffer (_filename) nil))
   (defun find-file-noselect (filename &rest _ignored)
     (error "emacs-server-client-polyfills: file visiting not wired (%s)"
            filename))

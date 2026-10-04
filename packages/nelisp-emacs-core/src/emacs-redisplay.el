@@ -113,6 +113,7 @@
 ;; (Phase 1 / Phase 2 dependencies).
 (require 'emacs-buffer)
 (require 'emacs-window)
+(require 'emacs-cc-xdisp-1)
 (require 'emacs-tui-backend)
 
 ;;; Errors
@@ -2149,6 +2150,11 @@ text-properties / face registry) must invoke
          (buffer (emacs-window-buffer window))
          (new-fp (emacs-redisplay--snapshot-fingerprint
                   window buffer width height))
+         (_long-line-state
+          (and buffer (not (stringp buffer))
+               (emacs-cc-xdisp-1--update-long-line-state
+                buffer (emacs-buffer-buffer-text-tick buffer)
+                (lambda () (emacs-redisplay--buffer-string buffer)))))
          (short-circuit-p
           (and (not fresh-matrix-p)
                (eq matrix old-matrix)

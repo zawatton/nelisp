@@ -38,7 +38,7 @@
 ;;     3 PARENT    = parent char-table, or nil
 ;;     4 ASCII-VEC = 256 nil-sentinel slots, fast path for char < 256
 ;;     5 RANGES    = list of ((FROM . TO) . VAL), newest first, char >= 256
-;;     6 EXTRA     = (make-vector N nil) extra slots (subtype metadata)
+;;     6 EXTRA     = (make-vector N nil), with N fixed at construction
 ;;
 ;; Length is 7 so `(> (length x) 6)' holds, distinguishing a char-table
 ;; from incidental short vectors.
@@ -59,9 +59,8 @@
   "Number of fast direct-indexed slots (characters 0..255).")
 
 (defconst emacs-char-table--extra-slots 10
-  "Number of extra metadata slots carried by every char-table.
-Real Emacs derives this from each subtype's `char-table-extra-slots'
-property (0..10); we allocate the maximum so any subtype fits.")
+  "Legacy extra-slot capacity.
+New tables allocate the count specified by their subtype property.")
 
 (defconst emacs-char-table--category-set-size 128
   "Number of category slots in a character's category set.")
@@ -96,14 +95,75 @@ the shared table still gives vendor libraries real mutation semantics.")
   (and (fboundp 'nelisp--char-table-vector-bridge-p)
        (nelisp--char-table-vector-bridge-p)))
 
+(defun emacs-char-table--primitive-ref (array index)
+  "Read ARRAY's physical slot INDEX, without char-table dispatch."
+  (if (emacs-char-table--native-vector-bridge-p)
+      (nelisp--raw-aref array index)
+    (funcall emacs-char-table--raw-aref array index)))
+
+(defun emacs-char-table--native-syntax-p (object)
+  "Recognize the runtime's bootstrap syntax-table record."
+  (and (recordp object)
+       (= (length object) 3)
+       (eq (emacs-char-table--primitive-ref object 0) 'nelisp--syntax-table)
+       (hash-table-p (emacs-char-table--primitive-ref object 1))))
+
+(defvar emacs-char-table--native-syntax-storage
+  (make-hash-table :test 'eq :weakness 'key)
+  "Canonical sparse storage for retained bootstrap syntax-table records.")
+
+(defun emacs-char-table--syntax-entry (class char)
+  "Translate the bootstrap CLASS character for CHAR into a syntax entry."
+  (if (consp class) class
+    (let ((code 0) (spec " .w_()'\"$\\/<>@!|"))
+      (while (and (< code (length spec)) (/= class (aref spec code)))
+        (setq code (1+ code)))
+      (cons (if (< code (length spec)) code 2)
+            (cdr (assq char '((40 . 41) (41 . 40) (91 . 93) (93 . 91)
+                             (123 . 125) (125 . 123))))))))
+
+(defun emacs-char-table--storage (table)
+  "Return TABLE's sparse storage, retaining bootstrap record identity.
+Bootstrap entries are class characters; library entries include matching
+characters and flags.  A retained record gets one shared sparse view rather
+than being discarded in favor of the standard table."
+  (if (not (emacs-char-table--native-syntax-p table)) table
+    (or (gethash table emacs-char-table--native-syntax-storage)
+        (let* ((parent (emacs-char-table--primitive-ref table 2))
+               (view (emacs-char-table-make 'syntax-table
+                                            (unless parent (cons 2 nil)))))
+          (puthash table view emacs-char-table--native-syntax-storage)
+          (emacs-char-table--raw-set view emacs-char-table--i-parent parent)
+          ;; Preserve the bootstrap representation's implicit classes.  Its
+          ;; default is word outside ASCII, word for ASCII letters/digits,
+          ;; whitespace for these five characters, and symbol otherwise.
+          (unless parent
+            (let ((char 0))
+              (while (< char 128)
+                (emacs-char-table-set
+                 view char
+                 (emacs-char-table--syntax-entry
+                  (cond ((memq char '(9 10 12 13 32)) 32)
+                        ((or (<= 48 char 57) (<= 65 char 90)
+                             (<= 97 char 122)) 119)
+                        (t 95)) char))
+                (setq char (1+ char)))))
+          (maphash (lambda (char class)
+                     (emacs-char-table-set
+                      view char (emacs-char-table--syntax-entry class char)))
+                   (emacs-char-table--primitive-ref table 1))
+          view))))
+
 (defun emacs-char-table--raw-ref (array index)
-  "Call the captured primitive `aref' with ARRAY and INDEX."
+  "Read storage slot INDEX of ARRAY, including bootstrap syntax tables."
+  (when (recordp array) (setq array (emacs-char-table--storage array)))
   (if (emacs-char-table--native-vector-bridge-p)
       (nelisp--raw-aref array index)
     (funcall emacs-char-table--raw-aref array index)))
 
 (defun emacs-char-table--raw-set (array index value)
-  "Call the captured primitive `aset' with ARRAY, INDEX, and VALUE."
+  "Write storage slot INDEX of ARRAY, including bootstrap syntax tables."
+  (when (recordp array) (setq array (emacs-char-table--storage array)))
   (if (emacs-char-table--native-vector-bridge-p)
       (nelisp--raw-aset array index value)
     (funcall emacs-char-table--raw-aset array index value)))
@@ -125,27 +185,40 @@ the marker used in `emacs-keymap.el' / `emacs-fileio-builtins.el'."
 
 ;;;; --- constructor / predicate ----------------------------------------
 
-(defun emacs-char-table-make (&optional subtype init)
-  "Return a fresh char-table.
-SUBTYPE labels the table; INIT is the default value for every
-character (defaults to nil)."
-  (let ((ct (make-vector 7 nil))
-        (ascii (make-vector emacs-char-table--ascii-size nil)))
-    (emacs-char-table--raw-set ct 0 emacs-char-table--tag)
-    (emacs-char-table--raw-set ct emacs-char-table--i-subtype subtype)
-    (emacs-char-table--raw-set ct emacs-char-table--i-default init)
-    (emacs-char-table--raw-set ct emacs-char-table--i-parent nil)
-    (emacs-char-table--raw-set ct emacs-char-table--i-ascii ascii)
-    (emacs-char-table--raw-set ct emacs-char-table--i-ranges nil)
-    (emacs-char-table--raw-set ct emacs-char-table--i-extra
-                               (make-vector emacs-char-table--extra-slots nil))
-    ct))
+(defun emacs-char-table-make (subtype &optional init)
+  "Return a fresh char-table with symbol SUBTYPE and initial value INIT.
+The subtype's `char-table-extra-slots' property determines its extra
+slot count, which remains fixed for the lifetime of the table."
+  (unless (symbolp subtype)
+    (signal 'wrong-type-argument (list 'symbolp subtype)))
+  (let ((slots (or (get subtype 'char-table-extra-slots)
+                   ;; The standalone does not preload these symbol properties.
+                   (cdr (assq subtype '((case-table . 3) (category-table . 2))))
+                   0)))
+    (unless (and (integerp slots) (>= slots 0))
+      (signal 'wrong-type-argument (list 'wholenump slots)))
+    (let ((ct (make-vector 7 nil))
+          (ascii (make-vector emacs-char-table--ascii-size init)))
+      (emacs-char-table--raw-set ct 0 emacs-char-table--tag)
+      (emacs-char-table--raw-set ct emacs-char-table--i-subtype subtype)
+      (emacs-char-table--raw-set ct emacs-char-table--i-default init)
+      (emacs-char-table--raw-set ct emacs-char-table--i-parent nil)
+      (emacs-char-table--raw-set ct emacs-char-table--i-ascii ascii)
+      (emacs-char-table--raw-set
+       ct emacs-char-table--i-ranges
+       (when init
+         (list (cons (cons emacs-char-table--ascii-size
+                           emacs-char-table--max-char) init))))
+      (emacs-char-table--raw-set ct emacs-char-table--i-extra
+                                 (make-vector slots nil))
+      ct)))
 
 (defun emacs-char-table-p (object)
   "Return non-nil when OBJECT is a NeLisp char-table."
-  (and (vectorp object)
-       (> (length object) 6)
-       (eq (emacs-char-table--raw-ref object 0) emacs-char-table--tag)))
+  (or (emacs-char-table--native-syntax-p object)
+      (and (vectorp object)
+           (> (length object) 6)
+           (eq (emacs-char-table--raw-ref object 0) emacs-char-table--tag))))
 
 (defun emacs-char-table-ascii-vector (ct)
   "Return CT's raw 256-slot ASCII vector (characters 0..255)."
@@ -237,6 +310,8 @@ of host Emacs's bool-vector returned by `char-category-set'."
 (defun emacs-char-table-copy-category-table (&optional table)
   "Return a copy of category TABLE, defaulting to the standard table."
   (let* ((source (or table (emacs-char-table-standard-category-table)))
+         (_ (unless (emacs-char-table-category-table-p source)
+              (signal 'wrong-type-argument (list 'category-table-p source))))
          (copy (emacs-char-table-copy
                 source
                 (lambda (value)
@@ -251,6 +326,10 @@ of host Emacs's bool-vector returned by `char-category-set'."
      copy emacs-char-table--i-default
      (copy-sequence
       (emacs-char-table--raw-ref copy emacs-char-table--i-default)))
+    (when (and (boundp 'emacs-cc-category-1--docs)
+               (fboundp 'emacs-cc-category-1--docs-for))
+      (puthash copy (copy-sequence (emacs-cc-category-1--docs-for source))
+               emacs-cc-category-1--docs))
     copy))
 
 (defun emacs-char-table--category-set (table character)
@@ -275,22 +354,25 @@ of host Emacs's bool-vector returned by `char-category-set'."
     (character category &optional table reset)
   "Add CATEGORY to CHARACTER's category set in TABLE.
 CHARACTER may be one character or an inclusive (FROM . TO) range;
-RESET removes CATEGORY.  This is the subset needed by vendor Kinsoku."
-  (let ((table (or table (emacs-char-table-category-table))))
-    (unless (emacs-char-table-category-table-p table)
-      (signal 'wrong-type-argument (list 'category-table-p table)))
+RESET removes CATEGORY.  CATEGORY must be defined in TABLE."
+  (let (from to)
+    (if (integerp character)
+        (setq from character to character)
+      (unless (consp character)
+        (signal 'wrong-type-argument (list 'consp character)))
+      (setq from (car character) to (cdr character)))
+    (dolist (c (list from to))
+      (unless (and (integerp c) (<= 0 c) (<= c emacs-char-table--max-char))
+        (signal 'wrong-type-argument (list 'characterp c))))
     (unless (and (integerp category) (>= category #x20) (<= category #x7e))
-      (signal 'wrong-type-argument (list 'characterp category)))
-    (let ((from (if (consp character) (car character) character))
-          (to (if (consp character) (cdr character) character)))
-      (unless (and (integerp from) (integerp to)
-                   (<= 0 from) (<= from to)
-                   (<= to emacs-char-table--max-char))
-        (signal 'wrong-type-argument (list 'characterp character)))
+      (signal 'wrong-type-argument (list 'categoryp category)))
+    (let ((table (or table (emacs-char-table-category-table))))
+      (unless (emacs-char-table-category-table-p table)
+        (signal 'wrong-type-argument (list 'category-table-p table)))
+      (unless (category-docstring category table)
+        (error "Undefined category: %c" category))
       (while (<= from to)
-        ;; The default category set is shared by untouched characters.  Copy
-        ;; it before changing one character, matching the host's copy-on-write
-        ;; behavior for `modify-category-entry'.
+        ;; Copy the shared default before modifying an individual character.
         (let ((set (copy-sequence
                     (emacs-char-table--category-set table from))))
           (aset set category (not reset))
@@ -314,21 +396,27 @@ RESET removes CATEGORY.  This is the subset needed by vendor Kinsoku."
 RANGE is nil (the default value), t (the whole table), a character,
 or a cons (FROM . TO).  Large supra-ASCII ranges are stored sparsely
 rather than materialised."
+  (emacs-char-table--check-table ct)
   (cond
    ((null range)
     (emacs-char-table--raw-set ct emacs-char-table--i-default value))
    ((eq range t)
-    (emacs-char-table--raw-set ct emacs-char-table--i-default value)
     (emacs-char-table--fill-ascii ct 0 (1- emacs-char-table--ascii-size) value)
     (emacs-char-table--raw-set
      ct emacs-char-table--i-ranges
-     (list (cons (cons 0 emacs-char-table--max-char) value))))
-   ((integerp range)
+     (list (cons (cons emacs-char-table--ascii-size
+                       emacs-char-table--max-char) value))))
+   ((and (integerp range) (<= 0 range)
+         (<= range emacs-char-table--max-char))
     (emacs-char-table-set ct range value))
    ((consp range)
     (let ((from (car range))
           (to (cdr range)))
-      (when (and (integerp from) (integerp to) (<= from to))
+      (dolist (character (list from to))
+        (unless (and (integerp character) (<= 0 character)
+                     (<= character emacs-char-table--max-char))
+          (signal 'wrong-type-argument (list 'characterp character))))
+      (when (<= from to)
         (emacs-char-table--fill-ascii ct from to value)
         (when (>= to emacs-char-table--ascii-size)
           (emacs-char-table--raw-set
@@ -336,64 +424,149 @@ rather than materialised."
            (cons (cons (cons (max from emacs-char-table--ascii-size) to)
                        value)
                  (emacs-char-table--raw-ref
-                  ct emacs-char-table--i-ranges))))))))
+                  ct emacs-char-table--i-ranges)))))))
+   (t (error "Invalid RANGE argument to ‘set-char-table-range’")))
   value)
 
 (defun emacs-char-table-range (ct range)
-  "Return CT's value for RANGE.
-RANGE is nil (default), t (default), a character, or a cons whose CAR
-character is sampled."
+  "Return CT's default or its value at RANGE's first character."
+  (emacs-char-table--check-table ct)
   (cond
    ((null range) (emacs-char-table--raw-ref ct emacs-char-table--i-default))
-   ((eq range t) (emacs-char-table--raw-ref ct emacs-char-table--i-default))
-   ((integerp range) (emacs-char-table-ref ct range))
-   ((consp range) (emacs-char-table-ref ct (car range)))
-   (t nil)))
+   ((and (integerp range) (<= 0 range)
+         (<= range emacs-char-table--max-char))
+    (emacs-char-table-ref ct range))
+   ((consp range)
+    (dolist (c (list (car range) (cdr range)))
+      (unless (and (integerp c) (<= 0 c) (<= c emacs-char-table--max-char))
+        (signal 'wrong-type-argument (list 'characterp c))))
+    (emacs-char-table-ref ct (car range)))
+   (t (error "Invalid RANGE argument to ‘char-table-range’"))))
 
 ;;;; --- parent / subtype / extra slots ---------------------------------
 
+(defun emacs-char-table--check-table (ct)
+  "Signal a type error unless CT is a char-table."
+  (unless (emacs-char-table-p ct)
+    (signal 'wrong-type-argument (list 'char-table-p ct))))
+
 (defun emacs-char-table-parent (ct)
   "Return CT's parent char-table, or nil."
+  (emacs-char-table--check-table ct)
   (emacs-char-table--raw-ref ct emacs-char-table--i-parent))
 
 (defun emacs-char-table-set-parent (ct parent)
   "Set CT's parent to PARENT (a char-table or nil).  Returns PARENT."
+  (emacs-char-table--check-table ct)
+  (when parent
+    (unless (emacs-char-table-p parent)
+      (signal 'wrong-type-argument (list 'char-table-p parent)))
+    (let ((ancestor parent))
+      (while (and ancestor (emacs-char-table-p ancestor))
+        (when (eq ancestor ct)
+          (error "Attempt to make a chartable be its own parent"))
+        (setq ancestor (emacs-char-table--raw-ref
+                        ancestor emacs-char-table--i-parent)))))
   (emacs-char-table--raw-set ct emacs-char-table--i-parent parent)
   parent)
 
 (defun emacs-char-table-subtype (ct)
   "Return CT's subtype."
+  (emacs-char-table--check-table ct)
   (emacs-char-table--raw-ref ct emacs-char-table--i-subtype))
 
 (defun emacs-char-table-extra-slot (ct n)
   "Return CT's extra slot N."
+  (emacs-char-table--check-table ct)
+  (unless (integerp n)
+    (signal 'wrong-type-argument (list 'fixnump n)))
+  (let ((slots (length (emacs-char-table--raw-ref
+                        ct emacs-char-table--i-extra))))
+    (unless (and (<= 0 n) (< n slots))
+      (signal 'args-out-of-range (list ct n))))
   (emacs-char-table--raw-ref
    (emacs-char-table--raw-ref ct emacs-char-table--i-extra) n))
 
 (defun emacs-char-table-set-extra-slot (ct n value)
   "Set CT's extra slot N to VALUE."
+  (emacs-char-table--check-table ct)
+  (unless (integerp n)
+    (signal 'wrong-type-argument (list 'fixnump n)))
+  (let ((slots (emacs-char-table--raw-ref ct emacs-char-table--i-extra)))
+    (unless (and (<= 0 n) (< n (length slots)))
+      (signal 'args-out-of-range (list ct n))))
   (emacs-char-table--raw-set
    (emacs-char-table--raw-ref ct emacs-char-table--i-extra) n value))
 
 ;;;; --- iteration ------------------------------------------------------
 
+(defun emacs-char-table--map-boundaries (ct)
+  "Return sorted character boundaries of CT and its parent tables.
+Only ASCII slots and sparse range endpoints are examined; the full
+character space is never enumerated."
+  (let ((boundaries (list 0 (1+ emacs-char-table--max-char)))
+        (table ct))
+    (while table
+      (let ((vec (emacs-char-table--raw-ref table emacs-char-table--i-ascii))
+            (ranges (emacs-char-table--raw-ref table emacs-char-table--i-ranges))
+            (i 1))
+        (while (< i emacs-char-table--ascii-size)
+          (unless (eq (emacs-char-table--raw-ref vec (1- i))
+                      (emacs-char-table--raw-ref vec i))
+            (push i boundaries))
+          (setq i (1+ i)))
+        (push emacs-char-table--ascii-size boundaries)
+        (dolist (entry ranges)
+          (let ((from (max emacs-char-table--ascii-size (car (car entry))))
+                (to (min emacs-char-table--max-char (cdr (car entry)))))
+            (when (<= from to)
+              (push from boundaries)
+              (push (1+ to) boundaries)))))
+      ;; A non-nil local default masks every parent entry.
+      (setq table
+            (unless (emacs-char-table--raw-ref table emacs-char-table--i-default)
+              (emacs-char-table--raw-ref table emacs-char-table--i-parent))))
+    (sort boundaries #'<)))
+
+(defun emacs-char-table--map-run (function key from to value)
+  "Call FUNCTION for a non-nil run FROM..TO with VALUE.
+Reuse KEY for ranges, as GNU Emacs does; callers must copy retained keys."
+  (if (= from to)
+      (when value (funcall function from value))
+    (setcar key from)
+    (setcdr key to)
+    (when value (funcall function key value))))
+
 (defun emacs-char-table-map (function ct)
-  "Call FUNCTION with (KEY VALUE) for each non-nil entry of CT.
-KEY is a character for ASCII slots or a cons (FROM . TO) for a stored
-range.  Mirrors the `map-char-table' calling convention."
-  (let ((vec (emacs-char-table--raw-ref ct emacs-char-table--i-ascii))
-        (i 0))
-    (while (< i emacs-char-table--ascii-size)
-      (let ((v (emacs-char-table--raw-ref vec i)))
-        (when v (funcall function i v)))
-      (setq i (1+ i))))
-  (let ((ranges (reverse
-                 (emacs-char-table--raw-ref ct emacs-char-table--i-ranges))))
-    (while ranges
-      (let ((entry (car ranges)))
-        (when (cdr entry)
-          (funcall function (car entry) (cdr entry))))
-      (setq ranges (cdr ranges)))))
+  "Call FUNCTION with (KEY VALUE) for each non-nil effective run of CT.
+Adjacent characters with `eq' values form a range, including values
+inherited from defaults and parents.  Return nil."
+  (emacs-char-table--check-table ct)
+  (let ((boundaries (emacs-char-table--map-boundaries ct))
+        (key (cons nil nil))
+        (from 0)
+        ;; GNU seeds the pending run from the first stored slot or parent,
+        ;; before traversal applies the local default to nil slots.
+        (value (let ((first (emacs-char-table--raw-ref
+                             (emacs-char-table--raw-ref
+                              ct emacs-char-table--i-ascii) 0))
+                     (parent (emacs-char-table--raw-ref
+                              ct emacs-char-table--i-parent)))
+                 (or first
+                     (if parent
+                         (emacs-char-table-ref parent 0)
+                       (emacs-char-table--raw-ref
+                        ct emacs-char-table--i-default))))))
+    (while boundaries
+      (let ((next (car boundaries)))
+        (when (and (>= next from) (<= next emacs-char-table--max-char))
+          (let ((next-value (emacs-char-table-ref ct next)))
+            (unless (eq value next-value)
+              (emacs-char-table--map-run function key from (1- next) value)
+              (setq from next value next-value)))))
+      (setq boundaries (cdr boundaries)))
+    (emacs-char-table--map-run function key from emacs-char-table--max-char value))
+  nil)
 
 (defun emacs-char-table-copy (ct &optional valfn)
   "Return a copy of CT.
@@ -450,19 +623,31 @@ When VALFN is non-nil it transforms each non-nil value (used by
         (emacs-char-table-set array index value))
     (emacs-char-table--raw-set array index value)))
 
-(defun emacs-char-table-max-char (&optional _unicode)
-  "Return the largest character code (#x3FFFFF)."
-  emacs-char-table--max-char)
+(defun emacs-char-table-max-char (&optional unicode)
+  "Return the largest character code, or Unicode maximum when UNICODE is non-nil."
+  (if unicode #x10FFFF emacs-char-table--max-char))
+
+(defun emacs-char-table--bootstrap-syntax-lookup (table char)
+  "Return the class character for CHAR in either syntax-table representation."
+  (let ((entry (emacs-char-table-ref table char)))
+    (aref " .w_()'\"$\\/<>@!|" (logand (if entry (car entry) 2) 255))))
+
+(defun emacs-char-table--bootstrap-syntax-put (table char class)
+  "Store bootstrap CLASS in TABLE's canonical syntax storage."
+  (emacs-char-table-set table char (emacs-char-table--syntax-entry class char)))
 
 ;;;; --- install unprefixed names ---------------------------------------
 
 (when (emacs-char-table--standalone-p)
-  ;; Old runtimes need this compatibility fallback.  It routes every array
-  ;; access through interpreted Lisp and is intentionally avoided when the
-  ;; native tagged-vector bridge is available.
+  ;; Keep ordinary arrays on the native bridge.  Syntax-table installation
+  ;; normalizes retained records to their sparse views before exposing them
+  ;; as the active table; the prefixed accessors also accept legacy records.
   (unless (emacs-char-table--native-vector-bridge-p)
     (fset 'aref #'emacs-char-table-aref)
     (fset 'aset #'emacs-char-table-aset))
+  (when (fboundp 'nelisp--syntax-lookup)
+    (fset 'nelisp--syntax-lookup #'emacs-char-table--bootstrap-syntax-lookup)
+    (fset 'nelisp--syntax-put #'emacs-char-table--bootstrap-syntax-put))
   (fset 'char-table-p #'emacs-char-table-p)
   (fset 'make-char-table #'emacs-char-table-make)
   (fset 'char-table-range #'emacs-char-table-range)

@@ -1,0 +1,16 @@
+#+TITLE: String width provider and argument compatibility
+#+NOTE: Four criteria are defined before implementation. The whole C-core ledger remains at 24 criteria. Short checks load only the real target provider and required dependencies, preserve GNU inputs and complete error data, and remain diagnostic only. The final bootstrap criterion retains the existing 55s cap. Original census probes are unchanged.
+
+* S1 Install the complete width provider and preserve its argument contracts
+** S1.1 Width provider source and supplemental probes parse completely
+cmd: emacs -Q --batch --eval '(dolist (p (quote ("packages/nelisp-emacs-core/src/emacs-redisplay-core.el" "test/nelisp-emacs-lib/c-core-probes/string-width-1.el"))) (with-temp-buffer (insert-file-contents p) (emacs-lisp-mode) (check-parens) (goto-char (point-min)) (while (progn (forward-comment (point-max)) (< (point) (point-max))) (read (current-buffer)))))'
+** S1.2 Minimal real-provider checks match GNU for widths, ranges, display state and errors
+#+REQUIRES: NELISP_BIN,NELISP_WIDTH_DEV_ROOT
+cmd: test "$(realpath "$NELISP_WIDTH_DEV_ROOT")" != "$PWD" && rsync -a packages/ "$NELISP_WIDTH_DEV_ROOT/packages/" && rsync -a test/nelisp-emacs-lib/ "$NELISP_WIDTH_DEV_ROOT/test/nelisp-emacs-lib/" && cd "$NELISP_WIDTH_DEV_ROOT" && python3 test/nelisp-emacs-lib/c-core-unit-smoke.py --unit string-width-1 --artifact target/progress/string-width-replay.json "$NELISP_BIN"
+** S1.3 Identical inputs reject the retained provider-selection defect
+evidence: target/progress/batch35/string-width/string-width-comparison.json sha256=65a4f4471e25639b71f03b1043dfeb071a87a0a8d9d9b34b85d15ad69887b572
+** S1.4 End to end: supplemental width probes match GNU after the full integrated bootstrap
+#+REQUIRES: NELISP_BIN
+cmd: bash test/nelisp-emacs-lib/c-core-parity-smoke.sh run --unit string-width-1
+
+#+NOTE: Native Codex gpt-6-luna changed only the guard selecting the existing core provider. The same 12-form development corpus has eight differences before and two after; both retained differences are complete wrong-number-of-arguments data naming lambda instead of GNU's string-width. They remain red. The source-side caller query found no syntactic callers of the conditional definition; dynamic and external references remain unresolved. The isolated adapter loads the actual core provider and stays outside production. Edit to first post-edit result took 23.926 seconds, with two diagnostic smoke attempts and zero builds. This is a measured partial correction; the full integrated-bootstrap command is still required. The four-criterion denominator and all 55-second caps are unchanged.

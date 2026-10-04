@@ -2011,7 +2011,7 @@ real-init-audit: build-nelisp-bootstrap
 
 NELISP_BOOTSTRAP_VENDOR_ROOT = $(if $(NELISP_BOOTSTRAP_VENDOR_DIR),$(NELISP_BOOTSTRAP_VENDOR_DIR),vendor)
 NELISP_BOOTSTRAP_VENDOR_INPUTS = $(shell for d in emacs-lisp emacs-lisp-api emacs-lisp-31.1; do test ! -d "$(NELISP_BOOTSTRAP_VENDOR_ROOT)/$$d" || find -L "$(NELISP_BOOTSTRAP_VENDOR_ROOT)/$$d" -type f -name '*.el' -print; done)
-NELISP_EMACS_API_SRC_FILES = $(shell find packages/nelisp-emacs-*/src -type f -name '*.el' -print 2>/dev/null)
+NELISP_EMACS_API_SRC_FILES = $(shell find packages/nelisp-emacs-*/src -type f -name '*.el' -print 2>/dev/null) packages/nl-ffi/src/nl-ffi-memory.el
 NELISP_BOOTSTRAP_SOURCE_ROOT = build/doc211-bootstrap-root
 NELISP_CONSUMER_VENDOR_INPUTS = $(shell find vendor/compat vendor/cond-let vendor/dash.el vendor/llama vendor/magit vendor/transient vendor/with-editor vendor/emacs-etc -type f -print 2>/dev/null)
 

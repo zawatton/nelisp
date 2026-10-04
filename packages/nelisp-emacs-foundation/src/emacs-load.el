@@ -848,6 +848,26 @@ since it was produced by `string-as-multibyte' in the first place."
                          (cons (car probe) (+ pos byte-end)))))))))
       nil))
 
+  (defvar emacs-load--source-single-form-p nil
+    "Non-nil when the next source tail is already bounded to one form.")
+
+  (defun emacs-load--single-form-rewrite-inert-p (source)
+    "Return non-nil if SOURCE is one list with no eligible outer rewrite.
+The structural boundary must cover the entire source.  A non-wrapper head
+cannot contain load-time rewrites, even when its literal data mentions
+`defalias'.  Read only the head instead of reparsing and printing that data."
+    (let ((len (length source)))
+      (and (> len 0)
+           (= (aref source 0) ?\()
+           (or emacs-load--source-single-form-p
+               (and (fboundp 'nelisp--source-container-end)
+                    (let ((end (nelisp--source-container-end source 0)))
+                      (and (integerp end) (= end len)))))
+           (let ((head (car (read-from-string source 1 len))))
+             (and (symbolp head)
+                  (not (eq head 'defalias))
+                  (not (memq head nelisp--load-rewrite-wrapper-heads)))))))
+
   (defun nelisp--load-eval-source-tail (source pos len)
     "Evaluate the remainder of SOURCE from POS to LEN as one native unit.
 Escape hatch for `nelisp--load-eval-source-incremental': used only when
@@ -870,12 +890,18 @@ whose names are riddled with the letter `d'.  A form large enough to
 make the native reader decline is architecturally a literal, not
 handwritten code trying to dodge `defalias' detection, so only the
 plain substring check is applied here."
-    (let ((tail (emacs-load--reader-slice source pos len)))
+    (let ((tail (emacs-load--reader-slice source pos len))
+          (single-form-p emacs-load--source-single-form-p)
+          ;; This is a range hint, not an execution mode.  Nested loads must
+          ;; establish their own boundaries rather than inherit this one.
+          (emacs-load--source-single-form-p nil))
       (when (emacs-load--artifact-string-search "cc-provide" tail 0)
         (setq tail (string-replace "cc-provide" "provide" tail)))
       (nelisp--eval-source-string
        (concat "(progn\n"
-               (if (emacs-load--artifact-string-search "defalias" tail 0)
+               (if (and (emacs-load--artifact-string-search "defalias" tail 0)
+                        (not (let ((emacs-load--source-single-form-p single-form-p))
+                               (emacs-load--single-form-rewrite-inert-p tail))))
                    (nelisp--load-normalize-source-rewriting tail)
                  tail)
                "\n)"))))
@@ -888,8 +914,9 @@ scanner, so a reader limitation on one form does not send all remaining
 SOURCE through the slow fallback or lose the following forms.  Reuse the tail
 evaluator for the isolated range so its existing `cc-provide' and `defalias'
 normalization remains identical to the large-form path."
-    (cons (nelisp--load-eval-source-tail source pos form-end)
-          form-end))
+    (let ((emacs-load--source-single-form-p t))
+      (cons (nelisp--load-eval-source-tail source pos form-end)
+            form-end)))
 
   (defun emacs-load--artifact-source-decline-boundary (reader source pos)
     "Call READER for a declined form boundary, returning nil on scan failure.
@@ -3683,6 +3710,8 @@ optimization candidate; keep the normal load path on the fast reader."
 
   (defun load (file &optional noerror _nomessage nosuffix must-suffix)
     "Resolve FILE through `load-path' and execute it."
+    (unless (stringp file)
+      (signal 'wrong-type-argument (list 'stringp file)))
     (let* ((absolute-p
             (and (stringp file)
                  (> (length file) 0)

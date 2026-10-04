@@ -1,0 +1,11 @@
+(internal-make-lisp-face
+ (let ((face (make-symbol "c-core-frame-face")))
+   (vectorp (internal-make-lisp-face face (selected-frame))))
+ (let ((face (make-symbol "c-core-frame-face")))
+   (let ((first (internal-make-lisp-face face (selected-frame)))
+         (second (internal-make-lisp-face face (selected-frame))))
+     (eq first second)))
+ (condition-case err (internal-make-lisp-face 'default [invalid])
+   (error err))
+ (condition-case err (internal-make-lisp-face 'default 7)
+   (error err)))

@@ -226,9 +226,130 @@ not attempt real keymap lookup or face interpolation."
 (when (emacs-mode-builtins--install-function-p 'run-mode-hooks)
   (defalias 'run-mode-hooks #'emacs-mode-run-mode-hooks))
 
+(defun emacs-mode-builtins--buffer-locals-bridge-p ()
+  "Return non-nil when local bindings use the buffer swap bridge."
+  (and (fboundp 'emacs-buffer-kill-local-variable)
+       (eq (symbol-function 'kill-local-variable)
+           (symbol-function 'emacs-buffer-kill-local-variable))))
+
+(defun emacs-mode-builtins--reset-local-variable (symbol)
+  "Remove SYMBOL's local binding and restore its default value."
+  (if (emacs-mode-builtins--buffer-locals-bridge-p)
+      ;; The bridge removes the stored cell but does not restore the live
+      ;; value.  Read its default store directly: its default-boundp
+      ;; fallback mistakes a formerly void variable's local value for a
+      ;; default.  Updating the swap snapshot prevents resurrection on
+      ;; the next buffer switch.
+      (let ((cell (gethash symbol emacs-buffer--default-values)))
+        (kill-local-variable symbol)
+        (if (and cell (car cell))
+            (progn
+              (set symbol (cdr cell))
+              (puthash symbol (cdr cell) emacs-buffer--swapped-in))
+          (makunbound symbol)
+          (remhash symbol emacs-buffer--swapped-in)))
+    (kill-local-variable symbol)))
+
+(defun emacs-mode-builtins--set-local-value (symbol value)
+  "Set SYMBOL's current local binding to VALUE, including its stored cell."
+  (make-local-variable symbol)
+  (set symbol value)
+  (when (emacs-mode-builtins--buffer-locals-bridge-p)
+    (emacs-buffer-set-buffer-local-value symbol (current-buffer) value)
+    (puthash symbol value emacs-buffer--swapped-in)))
+
+(defun emacs-mode-builtins--permanent-hook-value (value)
+  "Keep permanent hook functions and the global-hook marker in VALUE."
+  (let ((kept nil))
+    (if (consp value)
+        (while (consp value)
+          (let ((function (car value)))
+            (when (or (eq function t)
+                      (and (symbolp function)
+                           (get function 'permanent-local-hook)))
+              (push function kept)))
+          (setq value (cdr value)))
+      (unless (or (null value) (stringp value) (vectorp value)
+                  (bool-vector-p value))
+        (signal 'wrong-type-argument (list 'arrayp value)))
+      (setq kept value))
+    ;; GNU also calls nreverse for non-list values, including its arrayp
+    ;; error for an invalid atomic hook value.
+    (nreverse kept)))
+
 (when (emacs-mode-builtins--install-function-p 'kill-all-local-variables)
-  (defalias 'kill-all-local-variables
-    #'emacs-mode-kill-all-local-variables))
+  (defun kill-all-local-variables (&optional kill-permanent &rest extra)
+    "Switch to Fundamental mode and remove current buffer local bindings.
+Run `change-major-mode-hook' first.  Preserve `permanent-local' bindings
+unless KILL-PERMANENT is non-nil; partially permanent hooks retain only
+functions marked with `permanent-local-hook' and the global-hook marker.
+Reset the local keymap, syntax and case tables, and mode-line display.
+
+(fn &optional KILL-PERMANENT)"
+    (when extra
+      (signal 'wrong-number-of-arguments
+              (list 'kill-all-local-variables (1+ (length extra)))))
+    (run-hooks 'change-major-mode-hook)
+    (emacs-mode-builtins--set-local-value 'major-mode 'fundamental-mode)
+    (emacs-mode-builtins--set-local-value 'mode-name "Fundamental")
+    (setq emacs-mode--current-major-mode 'fundamental-mode
+          emacs-mode--current-mode-name "Fundamental")
+    (use-local-map nil)
+    (dolist (binding (buffer-local-variables))
+      (let* ((symbol (if (consp binding) (car binding) binding))
+             (permanent (get symbol 'permanent-local)))
+        (cond
+         ;; These GNU buffer slots are always local and are not reset by
+         ;; a major-mode change, even with KILL-PERMANENT.  Mode state and
+         ;; invisibility are also always local but are reset explicitly.
+         ((memq symbol '(major-mode mode-name buffer-invisibility-spec
+                         buffer-file-name default-directory buffer-backed-up
+                         buffer-saved-size buffer-auto-save-file-name
+                         buffer-read-only buffer-undo-list local-minor-modes
+                         mark-active point-before-scroll buffer-file-truename
+                         buffer-file-format buffer-auto-save-file-format
+                         buffer-display-count buffer-display-time
+                         enable-multibyte-characters)))
+         ((and (not kill-permanent)
+               (memq symbol '(truncate-lines buffer-file-coding-system))))
+         ;; GNU's resettable builtin buffer slots use native permanence
+         ;; flags rather than the symbol's permanent-local property.
+         ((memq symbol '(mode-line-format abbrev-mode overwrite-mode
+                         auto-fill-function selective-display
+                         selective-display-ellipses tab-width truncate-lines
+                         word-wrap ctl-arrow fill-column left-margin
+                         local-abbrev-table buffer-display-table
+                         cache-long-scans bidi-display-reordering
+                         bidi-paragraph-direction bidi-paragraph-separate-re
+                         bidi-paragraph-start-re buffer-file-coding-system
+                         left-margin-width right-margin-width
+                         left-fringe-width right-fringe-width
+                         fringes-outside-margins scroll-bar-width
+                         scroll-bar-height vertical-scroll-bar
+                         horizontal-scroll-bar indicate-empty-lines
+                         indicate-buffer-boundaries fringe-indicator-alist
+                         fringe-cursor-alist scroll-up-aggressively
+                         scroll-down-aggressively header-line-format
+                         tab-line-format cursor-type line-spacing
+                         text-conversion-style cursor-in-non-selected-windows))
+          (emacs-mode-builtins--reset-local-variable symbol))
+         ((and (not kill-permanent) permanent)
+          (when (and (eq permanent 'permanent-local-hook) (boundp symbol))
+            (emacs-mode-builtins--set-local-value
+             symbol (emacs-mode-builtins--permanent-hook-value
+                     (symbol-value symbol)))))
+         (t (emacs-mode-builtins--reset-local-variable symbol)))))
+    (when (boundp 'buffer-invisibility-spec)
+      (emacs-mode-builtins--set-local-value 'buffer-invisibility-spec t))
+    (set-syntax-table (standard-syntax-table))
+    (when (and (fboundp 'standard-case-table) (fboundp 'set-case-table))
+      (set-case-table (standard-case-table)))
+    (when (and (fboundp 'standard-category-table) (fboundp 'set-category-table))
+      (set-category-table (standard-category-table)))
+    (when (boundp 'local-abbrev-table)
+      (setq local-abbrev-table (default-value 'local-abbrev-table)))
+    (force-mode-line-update)
+    nil))
 
 (when (emacs-mode-builtins--install-function-p 'set-auto-mode)
   (defalias 'set-auto-mode #'emacs-mode-set-auto-mode))

@@ -34,6 +34,12 @@
 (defvar files--buffer-modified-flags nil
   "Alist of (BUFFER . MODIFIED-P) for lightweight fallback buffers.")
 
+(defvar files--buffer-save-ticks nil
+  "Alist of (BUFFER . SAVE-TICK) for tick-based fallback modified state.")
+
+(defvar files--buffer-initial-tick nil
+  "Cached modification tick measured from a fresh temporary buffer.")
+
 (defvar files--current-file-name nil
   "Fallback visited file name for the lightweight files shim.")
 
@@ -250,7 +256,9 @@ done (relative, `~', or containing `.'/`..'/`//')."
   (setq files--buffer-points
         (files--live-buffer-cells files--buffer-points))
   (setq files--buffer-modified-flags
-        (files--live-buffer-cells files--buffer-modified-flags)))
+        (files--live-buffer-cells files--buffer-modified-flags))
+  (setq files--buffer-save-ticks
+        (files--live-buffer-cells files--buffer-save-ticks)))
 
 (defun files--set-buffer-state-cell (alist value &optional buffer)
   "Set BUFFER's ALIST cell to VALUE when buffer primitives exist."
@@ -296,6 +304,24 @@ done (relative, `~', or containing `.'/`..'/`//')."
     (setq files--point point)
     (files--set-buffer-state-cell 'files--buffer-points point buffer)))
 
+(defun files--buffer-tick-mode-p (&optional buffer)
+  "Return non-nil when BUFFER's fallback modified state uses native ticks."
+  (and (not files--native-buffer-modified-p)
+       (fboundp 'buffer-modified-tick)
+       (files--buffer-key buffer)))
+
+(defun files--buffer-initial-tick-value ()
+  "Return the cached modification tick of a newly created buffer."
+  (or files--buffer-initial-tick
+      (setq files--buffer-initial-tick
+            (with-temp-buffer (buffer-modified-tick)))))
+
+(defun files--buffer-save-tick (&optional buffer)
+  "Return BUFFER's saved modification tick, or nil outside tick mode."
+  (when (files--buffer-tick-mode-p buffer)
+    (let ((cell (files--buffer-state-cell 'files--buffer-save-ticks buffer)))
+      (if cell (cdr cell) (files--buffer-initial-tick-value)))))
+
 (defun files--buffer-modified-value (&optional buffer)
   "Return BUFFER's fallback modified flag."
   (if (and files--native-buffer-modified-p (files--host-buffer-available-p))
@@ -303,9 +329,12 @@ done (relative, `~', or containing `.'/`..'/`//')."
        buffer
        (lambda ()
          (funcall files--native-buffer-modified-p)))
-    (let ((cell (files--buffer-state-cell 'files--buffer-modified-flags
-                                          buffer)))
-      (if cell (cdr cell) files--buffer-modified-p))))
+    (if (files--buffer-tick-mode-p buffer)
+        (< (files--buffer-save-tick buffer)
+           (buffer-modified-tick (files--buffer-key buffer)))
+      (let ((cell (files--buffer-state-cell 'files--buffer-modified-flags
+                                            buffer)))
+        (if cell (cdr cell) files--buffer-modified-p)))))
 
 (defun files--set-buffer-modified-value (flag &optional buffer)
   "Set BUFFER's fallback modified flag to FLAG."
@@ -314,13 +343,28 @@ done (relative, `~', or containing `.'/`..'/`//')."
        buffer
        (lambda ()
          (funcall files--native-set-buffer-modified-p flag)))
+    (when (files--buffer-tick-mode-p buffer)
+      (let ((tick (buffer-modified-tick (files--buffer-key buffer))))
+        (cond
+         ((not flag)
+          (files--set-buffer-state-cell 'files--buffer-save-ticks tick buffer))
+         ((not (files--buffer-modified-value buffer))
+          (files--set-buffer-state-cell 'files--buffer-save-ticks
+                                        (1- tick) buffer)))))
     (setq files--buffer-modified-p flag)
     (files--set-buffer-state-cell 'files--buffer-modified-flags flag buffer)))
 
 (defun files--buffer-file-name (&optional buffer)
   "Return BUFFER's fallback visited file name."
   (files--prune-dead-buffer-state)
-  (cond
+  (let ((target (or buffer (and (fboundp 'current-buffer) (current-buffer)))))
+    (when (and target (fboundp 'bufferp) (bufferp target)
+               (fboundp 'nelisp--buffer-multibyte-p))
+      (require 'emacs-fileio-builtins))
+    (cond
+   ((and target (fboundp 'emacs-fileio-native-public-buffer-p)
+         (emacs-fileio-native-public-buffer-p target))
+    (emacs-fileio--direct-buffer-file-name target))
    ((and buffer (not (files--buffer-live-or-unknown-p buffer)))
     nil)
    (buffer
@@ -331,7 +375,7 @@ done (relative, `~', or containing `.'/`..'/`//')."
       (if key
           (let ((cell (files--buffer-file-cell key)))
             (and cell (cdr cell)))
-        files--current-file-name)))))
+        files--current-file-name))))))
 
 (defun files--set-buffer-file-name (buffer filename)
   "Record FILENAME as BUFFER's fallback visited file name."
@@ -345,9 +389,15 @@ done (relative, `~', or containing `.'/`..'/`//')."
 
 (defun files--set-visited-file-name (filename &optional _no-query _along)
   "Set the current fallback buffer's visited file name to FILENAME."
-  (setq files--current-file-name filename)
-  (files--set-buffer-file-name nil filename)
-  filename)
+  (let ((buffer (and (fboundp 'current-buffer) (current-buffer))))
+    (if (and buffer (fboundp 'bufferp) (bufferp buffer)
+             (fboundp 'nelisp--buffer-multibyte-p))
+        (progn
+          (require 'emacs-fileio-builtins)
+          (emacs-fileio-set-visited-file-name-direct filename))
+      (setq files--current-file-name filename)
+      (files--set-buffer-file-name nil filename)
+      filename)))
 
 (defun files--file-name-equal-p (left right)
   "Return non-nil when LEFT and RIGHT name the same expanded file."
@@ -358,11 +408,25 @@ done (relative, `~', or containing `.'/`..'/`//')."
   "Return a live fallback buffer already visiting FILENAME."
   (files--prune-dead-buffer-state)
   (let ((found nil))
-    (dolist (cell files--buffer-file-names found)
-      (when (and (not found)
-                 (cdr cell)
-                 (files--file-name-equal-p (cdr cell) filename))
-        (setq found (car cell))))))
+    (if (and (fboundp 'current-buffer) (fboundp 'bufferp)
+             (bufferp (current-buffer))
+             (fboundp 'nelisp--buffer-multibyte-p))
+        (progn
+          (require 'emacs-fileio-builtins)
+          (when (fboundp 'buffer-list)
+            (catch 'found
+              (dolist (buffer (buffer-list))
+                (let ((visited (emacs-fileio--direct-buffer-file-name buffer)))
+                  (when (and (stringp visited)
+                             (files--file-name-equal-p visited filename))
+                    (setq found buffer)
+                    (throw 'found buffer))))))
+          found)
+      (dolist (cell files--buffer-file-names found)
+        (when (and (not found)
+                   (cdr cell)
+                   (files--file-name-equal-p (cdr cell) filename))
+          (setq found (car cell)))))))
 
 (defun files--file-buffer-name (filename)
   "Return the preferred buffer name for FILENAME."
@@ -463,27 +527,29 @@ START and END may be integers or markers and are order-independent."
 
 (when (files--install-fallback-function-p 'buffer-string)
   (defun buffer-string ()
-    "Return the fallback current buffer contents."
-    (files--buffer-string-value)))
+    "Return the accessible current buffer contents, with properties."
+    (buffer-substring (point-min) (point-max))))
 
 (when (files--install-fallback-function-p 'erase-buffer)
   (defun erase-buffer ()
     "Erase the fallback current buffer."
-    (if (and files--native-erase-buffer (files--host-buffer-available-p))
-        (funcall files--native-erase-buffer)
-      (files--set-buffer-string-value "")
-      (files--set-buffer-point-value 1))
-    ;; `files--buffer-modified-value' (the read side) only skips this
-    ;; tracker when a NATIVE `buffer-modified-p' exists to read instead
-    ;; (`files--native-buffer-modified-p'); the standalone reader has no
-    ;; such primitive, so the write side must record the edit here too,
-    ;; even on the native-delegate branch above.  Before this fix, editing
-    ;; a native buffer through this wrapper left the tracker untouched,
-    ;; so `buffer-modified-p' kept reporting "unmodified" and `save-buffer'
-    ;; skipped writing ("(No changes need to be saved)") after a real
-    ;; edit (caught via the S6.4 usable-progress smoke).
-    (unless files--native-buffer-modified-p
-      (files--set-buffer-modified-value t))
+    (let* ((native-edit (and files--native-erase-buffer
+                             (files--host-buffer-available-p)))
+           (tick-mode (and native-edit (files--buffer-tick-mode-p)))
+           (non-empty (and tick-mode (> (buffer-size) 0))))
+      (if native-edit
+          (funcall files--native-erase-buffer)
+        (files--set-buffer-string-value "")
+        (files--set-buffer-point-value 1))
+      (unless files--native-buffer-modified-p
+        (if tick-mode
+            ;; Native erase does not advance the tick; record only real erases.
+            (when non-empty
+              (files--set-buffer-modified-value t))
+          ;; Without ticks or a native reader, delegated edits need this
+          ;; tracker too. Otherwise `save-buffer' reports "(No changes need
+          ;; to be saved)" after real edits (S6.4 usable-progress regression).
+          (files--set-buffer-modified-value t))))
     nil))
 
 (defun files--fallback-insert-strings (strings)
@@ -498,31 +564,77 @@ START and END may be integers or markers and are order-independent."
       (files--set-buffer-point-value (+ point (length text)))
       (files--set-buffer-modified-value t))))
 
+(defun files--insert-strings (strings)
+  "Insert STRINGS using the retained primitive or fallback text model."
+  (if (and files--native-insert (files--host-buffer-available-p))
+      (progn
+        (apply files--native-insert strings)
+        (unless (or files--native-buffer-modified-p
+                    (files--buffer-tick-mode-p))
+          (files--set-buffer-modified-value t)))
+    (files--fallback-insert-strings strings)))
+
+(defun files--record-insert (beg end unmodified)
+  "Record insertion from BEG to END, preserving UNMODIFIED state for undo."
+  (when (and (< beg end) (not (eq buffer-undo-list t)))
+    ;; Do not let one buffer's history become another buffer's default.
+    (unless (local-variable-p 'buffer-undo-list)
+      (make-local-variable 'buffer-undo-list))
+    (when unmodified
+      (setq buffer-undo-list
+            (cons (cons t (if (fboundp 'visited-file-modtime)
+                              (visited-file-modtime)
+                            0))
+                  buffer-undo-list)))
+    (let ((head (car-safe buffer-undo-list)))
+      (if (and (consp head) (integerp (car head))
+               (integerp (cdr head)) (= (cdr head) beg))
+          (setcdr head end)
+        (setq buffer-undo-list
+              (cons (cons beg end) buffer-undo-list))))))
+
 (when (files--install-fallback-function-p 'insert)
   (defun insert (&rest strings)
-    "Insert STRINGS at fallback point."
-    (if (and files--native-insert (files--host-buffer-available-p))
-        (progn
-          (apply files--native-insert strings)
-          ;; See the matching comment on `erase-buffer': the modified
-          ;; tracker's read side has no native `buffer-modified-p' to
-          ;; defer to here, so the native-delegate branch must record the
-          ;; edit itself instead of relying on `files--fallback-insert-
-          ;; strings' (which never runs on this branch).
-          (unless files--native-buffer-modified-p
-            (files--set-buffer-modified-value t)))
-      (files--fallback-insert-strings strings))
+    "Insert STRINGS at fallback point, recording enabled undo history."
+    (if (or (not (boundp 'buffer-undo-list)) (eq buffer-undo-list t))
+        ;; Keep the disabled path inline: no new call, position reads, or
+        ;; recording allocations are needed when buffer-undo-list is t.
+        (if (and files--native-insert (files--host-buffer-available-p))
+            (progn
+              (apply files--native-insert strings)
+              ;; Tick mode records real native edits without marking empty ones.
+              ;; Without ticks, track delegated edits explicitly as in `erase-buffer'
+              ;; so `save-buffer' does not skip them (S6.4 usable-progress smoke).
+              (unless (or files--native-buffer-modified-p
+                          (files--buffer-tick-mode-p))
+                (files--set-buffer-modified-value t)))
+          (files--fallback-insert-strings strings))
+      (let ((beg (point))
+            (unmodified (not (files--buffer-modified-value))))
+        ;; The retained primitive can insert earlier arguments before a later
+        ;; argument signals an error.  Those edits still need undo records.
+        (unwind-protect
+            (files--insert-strings strings)
+          (files--record-insert beg (point) unmodified))))
     nil))
 
 (when (files--install-fallback-function-p 'buffer-modified-p)
-  (defun buffer-modified-p (&optional _buffer)
-    "Return the fallback modified flag."
-    (files--buffer-modified-value)))
+  (defun buffer-modified-p (&optional buffer)
+    "Return BUFFER's fallback modified flag, defaulting to the current buffer."
+    (files--buffer-modified-value buffer)))
 
 (when (files--install-fallback-function-p 'set-buffer-modified-p)
   (defun set-buffer-modified-p (flag)
     "Set the fallback modified flag to FLAG."
-    (files--set-buffer-modified-value flag)))
+    (files--set-buffer-modified-value flag)
+    nil))
+
+(when (files--install-fallback-function-p 'restore-buffer-modified-p)
+  (defun restore-buffer-modified-p (flag)
+    "Restore the fallback modified flag to FLAG without modification hooks."
+    (files--set-buffer-modified-value flag)
+    flag)
+  (put 'restore-buffer-modified-p 'emacs-stub-bulk nil))
 
 (defun files--read-file-text (filename)
   "Return FILENAME contents as a string, or nil when no reader exists."
@@ -536,12 +648,42 @@ START and END may be integers or markers and are order-independent."
    (t nil)))
 
 (when (files--install-fallback-function-p 'insert-file-contents)
-  (defun insert-file-contents (filename &optional _visit _beg _end _replace)
-    "Insert FILENAME into the fallback current buffer."
-    (let ((text (files--read-file-text filename)))
+  (defun insert-file-contents (filename &optional visit beg end replace)
+    "Insert FILENAME at point, optionally selecting byte offsets BEG to END.
+Return the absolute file name and the number of characters inserted.
+REPLACE replaces the accessible contents; VISIT records the visited file."
+    (unless (stringp filename)
+      (signal 'wrong-type-argument (list 'stringp filename)))
+    (dolist (offset (list beg end))
+      (when (and offset
+                 (not (and (numberp offset) (>= offset 0)
+                           (= offset (truncate offset)))))
+        (signal 'wrong-type-argument (list 'file-offset offset))))
+    (when (and visit (or beg end))
+      (error "Attempt to visit less than an entire file"))
+    (setq filename (files--expand-file-name filename))
+    (when (file-directory-p filename)
+      (signal 'file-error (list "Read error" "Is a directory" filename)))
+    (let ((text (files--read-file-text filename))
+          (pos (point)))
       (unless text
-        (signal 'file-error (list "Cannot read file" filename)))
+        (when visit (set-visited-file-name filename))
+        (signal 'file-missing
+                (list "Opening input file" "No such file or directory" filename)))
+      (when (or beg end)
+        (let* ((bytes (encode-coding-string text 'utf-8-unix))
+               (size (length bytes))
+               (from (min (truncate (or beg 0)) size))
+               (to (max from (min (truncate (or end size)) size))))
+          (setq text (decode-coding-string (substring bytes from to)
+                                          'utf-8-unix))))
+      (when replace
+        (delete-region (point-min) (point-max)))
       (insert text)
+      (goto-char (min pos (point-max)))
+      (when visit
+        (set-visited-file-name filename)
+        (set-buffer-modified-p nil))
       (list filename (length text)))))
 
 (defun files--region-text (start end)
@@ -568,8 +710,15 @@ START and END may be integers or markers and are order-independent."
   (defun write-region
       (start end filename &optional append visit lockname mustbenew)
     "Write text between START and END to FILENAME."
-    (files--write-file-text filename (files--region-text start end)
-                            append visit lockname mustbenew)))
+    (let ((text (cond
+                 ((stringp start) start)
+                 ((null start) (buffer-substring (point-min) (point-max)))
+                 (t (buffer-substring start end)))))
+      (unless (stringp filename)
+        (signal 'wrong-type-argument (list 'stringp filename)))
+      (when (and lockname (not (stringp lockname)))
+        (signal 'wrong-type-argument (list 'stringp lockname)))
+      (files--write-file-text filename text append visit lockname mustbenew))))
 
 (defun files--current-buffer-if-available ()
   "Return the current buffer when buffer primitives exist."
@@ -600,18 +749,28 @@ START and END may be integers or markers and are order-independent."
     (erase-buffer)
     (files--insert-file-if-readable filename)))
 
-(defun files-standalone-find-file-noselect (filename)
+(defun files-standalone-find-file-noselect
+    (filename &optional nowarn rawfile wildcards)
   "Return a buffer visiting FILENAME, or the fallback current file name."
+  (ignore nowarn rawfile wildcards)
   (files--prune-dead-buffer-state)
   (let* ((abs (files--expand-file-name filename))
          (existing-buffer (files--visited-buffer-for-file abs))
          (buffer (or existing-buffer (files--buffer-for-file abs)))
          (old-buffer (files--current-buffer-if-available)))
     (unless existing-buffer
-      (files--load-file-into-buffer abs buffer)
-      (files--set-visited-file-name abs)
-      (set-buffer-modified-p nil)
-      (files--set-buffer-if-available old-buffer))
+      (if (and old-buffer (fboundp 'bufferp) (bufferp old-buffer)
+               (fboundp 'nelisp--buffer-multibyte-p))
+          (unwind-protect
+              (progn
+                (files--load-file-into-buffer abs buffer)
+                (files--set-visited-file-name abs)
+                (set-buffer-modified-p nil))
+            (files--set-buffer-if-available old-buffer))
+        (files--load-file-into-buffer abs buffer)
+        (files--set-visited-file-name abs)
+        (set-buffer-modified-p nil)
+        (files--set-buffer-if-available old-buffer)))
     (or buffer abs)))
 
 (defun files-standalone-find-file (filename)
@@ -623,7 +782,16 @@ START and END may be integers or markers and are order-independent."
 
 (defun files-standalone-save-buffer ()
   "Write the fallback current buffer to its visited file when possible."
-  (let ((filename (and (fboundp 'buffer-file-name)
+  (if (and (fboundp 'current-buffer)
+           (fboundp 'nelisp--buffer-multibyte-p)
+           (fboundp 'bufferp)
+           (bufferp (current-buffer)))
+      (progn
+        (require 'emacs-fileio-builtins)
+        (when (buffer-modified-p (current-buffer))
+          (emacs-fileio-save-buffer-direct :buffer (current-buffer)))
+        nil)
+    (let ((filename (and (fboundp 'buffer-file-name)
                        (buffer-file-name))))
     (if filename
         (progn
@@ -635,7 +803,7 @@ START and END may be integers or markers and are order-independent."
                                   nil nil nil nil)
           (set-buffer-modified-p nil)
           filename)
-      nil)))
+      nil))))
 
 (defun files--save-current-buffer-if-needed ()
   "Save the current fallback buffer when it visits a modified file."
@@ -782,6 +950,8 @@ Falls back to a read-based existence check when the reader exposes no
 (when (files--install-fallback-function-p 'file-accessible-directory-p)
   (defun file-accessible-directory-p (filename)
     "Return non-nil if FILENAME is a directory that can be searched."
+    (unless (stringp filename)
+      (signal 'wrong-type-argument (list 'stringp filename)))
     (and (file-directory-p filename) (file-executable-p filename))))
 (when (files--install-fallback-function-p 'file-regular-p)
   (defun file-regular-p (filename)
@@ -1073,7 +1243,7 @@ via utimes(2).  Signals `file-error' on kernel failure (rc < 0)."
       (signal 'file-error
               (list "set-file-times unavailable (no nelisp--syscall-utimes)"
                     filename)))
-    nil))
+    t))
 (when (files--install-fallback-function-p 'char-before)
   (defun char-before (&optional pos)
     "Character before POS (or point) in the fallback current buffer, or nil."
@@ -1153,6 +1323,8 @@ via utimes(2).  Signals `file-error' on kernel failure (rc < 0)."
   (defun move-to-column (column &optional force)
     "Move point to COLUMN on the current line; return the column reached.
 With FORCE t, pad a too-short line with spaces to reach COLUMN."
+    (unless (and (integerp column) (>= column 0))
+      (signal 'wrong-type-argument (list 'wholenump column)))
     (let* ((content (files--buffer-string-value))
            (len (files--string-length content))
            (tw (files--tab-width))
@@ -1206,8 +1378,9 @@ Return the column reached."
 Detected with access(2) on FILENAME with a `.' component appended -- only a
 directory has a `.' entry -- and falls back to the trailing-slash heuristic
 when access(2) is unavailable."
+    (unless (stringp filename)
+      (signal 'wrong-type-argument (list 'stringp filename)))
     (cond
-     ((not (stringp filename)) nil)
      (files--native-file-directory-p
       (funcall files--native-file-directory-p filename))
      ((fboundp 'nelisp--syscall-path-int)
@@ -1288,35 +1461,90 @@ non-empty directory)."
               (list "rename-file unavailable (no nelisp--syscall-path2)" file)))
     nil))
 
+(defun files--signal-file-error (operation rc names)
+  "Signal a file error for OPERATION, negative errno RC, and NAMES."
+  (let ((message (cond
+                  ((= rc -1) "Operation not permitted")
+                  ((= rc -2) "No such file or directory")
+                  ((= rc -5) "Input/output error")
+                  ((= rc -13) "Permission denied")
+                  ((= rc -17) "File exists")
+                  ((= rc -18) "Invalid cross-device link")
+                  ((= rc -20) "Not a directory")
+                  ((= rc -21) "Is a directory")
+                  ((= rc -22) "Invalid argument")
+                  ((= rc -28) "No space left on device")
+                  ((= rc -30) "Read-only file system")
+                  ((= rc -31) "Too many links")
+                  ((= rc -36) "File name too long")
+                  ((= rc -40) "Too many levels of symbolic links")
+                  (t (format "Unknown error %d" (- rc))))))
+    (signal (if (memq rc '(-2 -20)) 'file-missing 'file-error)
+            (append (list operation message) names))))
+
+(defun files--create-link (syscall target name overwrite operation action)
+  "Create a link using SYSCALL, replacing NAME only when OVERWRITE permits.
+TARGET is passed unchanged.  OPERATION and ACTION describe errors and prompts."
+  (let ((rc (nelisp--syscall-path2 syscall target name)))
+    (when (= rc -17)
+      (unless (and overwrite
+                   (or (not (integerp overwrite))
+                       (yes-or-no-p
+                        (format "File %s already exists; %s anyway? " name action))))
+        (signal 'file-already-exists (list "File already exists" name)))
+      (let ((removed (nelisp--syscall-path files--syscall-unlink name)))
+        (when (< removed 0)
+          (files--signal-file-error "Removing old name" removed (list name))))
+      (setq rc (nelisp--syscall-path2 syscall target name)))
+    (when (< rc 0)
+      (files--signal-file-error operation rc (list target name)))))
+
 (when (files--install-fallback-function-p 'add-name-to-file)
-  (defun add-name-to-file (oldname newname &optional _ok-if-already-exists)
+  (defun add-name-to-file (oldname newname &optional ok-if-already-exists)
     "Make a hard link NEWNAME to OLDNAME via the reader's `nelisp--syscall-path2'
-link(2).  Signals `file-error' on kernel failure (rc < 0).
-OK-IF-ALREADY-EXISTS is ignored."
+link(2).  OK-IF-ALREADY-EXISTS permits replacing an existing NEWNAME."
+    (unless (stringp oldname)
+      (signal 'wrong-type-argument (list 'stringp oldname)))
+    (unless (stringp newname)
+      (signal 'wrong-type-argument (list 'stringp newname)))
+    (setq oldname (files--expand-file-name oldname)
+          newname (files--expand-file-name newname))
+    (when (eq (aref newname (1- (length newname))) ?/)
+      (setq newname (concat newname (file-name-nondirectory oldname))))
     (if (fboundp 'nelisp--syscall-path2)
-        (let ((rc (nelisp--syscall-path2 files--syscall-link
-                                         (files--expand-file-name oldname)
-                                         (files--expand-file-name newname))))
-          (when (< rc 0)
-            (signal 'file-error (list "Adding new name" oldname newname rc))))
+        (files--create-link files--syscall-link oldname newname
+                            ok-if-already-exists "Adding new name"
+                            "make it a new name")
       (signal 'file-error
               (list "add-name-to-file unavailable (no nelisp--syscall-path2)"
                     oldname)))
     nil))
 
 (when (files--install-fallback-function-p 'make-symbolic-link)
-  (defun make-symbolic-link (target linkname &optional _ok-if-already-exists)
+  (defun make-symbolic-link (target linkname &optional ok-if-already-exists)
     "Make a symbolic link LINKNAME pointing at TARGET via the reader's
 `nelisp--syscall-path2' symlink(2).  TARGET is stored verbatim (not
 expanded -- a symlink target may legitimately be relative); LINKNAME is
 the path where the link is created.  Signals `file-error' on kernel
-failure (rc < 0).  OK-IF-ALREADY-EXISTS is ignored."
+failure (rc < 0).  OK-IF-ALREADY-EXISTS permits replacing an existing link."
+    (unless (stringp target)
+      (signal 'wrong-type-argument (list 'stringp target)))
+    (unless (stringp linkname)
+      (signal 'wrong-type-argument (list 'stringp linkname)))
+    (when (integerp ok-if-already-exists)
+      (cond
+       ((and (> (length target) 0) (eq (aref target 0) ?~))
+        (setq target (files--expand-file-name target)))
+       ((and (> (length target) 1) (equal (substring target 0 2) "/:"))
+        (setq target (substring target 2)))))
+    (setq linkname (files--expand-file-name linkname))
+    (when (eq (aref linkname (1- (length linkname))) ?/)
+      (setq linkname (concat linkname
+                             (file-name-nondirectory (directory-file-name target)))))
     (if (fboundp 'nelisp--syscall-path2)
-        (let ((rc (nelisp--syscall-path2 files--syscall-symlink
-                                         target
-                                         (files--expand-file-name linkname))))
-          (when (< rc 0)
-            (signal 'file-error (list "Making symbolic link" target linkname rc))))
+        (files--create-link files--syscall-symlink target linkname
+                            ok-if-already-exists "Making symbolic link"
+                            "make it a link")
       (signal 'file-error
               (list "make-symbolic-link unavailable (no nelisp--syscall-path2)"
                     linkname)))

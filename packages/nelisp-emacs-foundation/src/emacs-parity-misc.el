@@ -359,15 +359,11 @@ SEQUENCE should be a vector or list of strings."
 
 ;;;; --- tree-sitter font-lock rules (treesit.el) ----------------------
 
-;; When tree-sitter is not compiled into the runtime, `treesit-available-p'
-;; returns nil and `treesit-font-lock-rules' short-circuits to nil -- which is
-;; exactly stock behaviour (font-lock rules are only meaningful with a live
-;; tree-sitter parser).
 (unless (fboundp 'treesit-available-p)
   (defun treesit-available-p ()
-    "Return non-nil if tree-sitter support is built and available.
-This runtime is not built with tree-sitter, so this returns nil."
-    nil))
+    "Return t only when the external tree-sitter library is usable."
+    (require 'emacs-cc-treesit-1)
+    (emacs-cc-treesit-available-p)))
 
 (unless (fboundp 'treesit-font-lock-rules)
   (defun treesit-font-lock-rules (&rest query-specs)

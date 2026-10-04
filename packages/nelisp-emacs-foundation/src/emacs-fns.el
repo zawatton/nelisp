@@ -84,22 +84,36 @@ explicitly after such mutation."
                (eq emacs-fns--standalone-feature-index-source features))
     (emacs-fns--standalone-feature-index-build)))
 
-(defun emacs-fns--standalone-featurep (feature &optional _subfeature)
+(defun emacs-fns--standalone-featurep (feature &optional subfeature)
   "Pure-Elisp fallback for `featurep' used by standalone runtimes.
 
-`features' remains authoritative; this function mirrors `featurep'
-semantics with an O(1) hot-path using the eq-hash index."
-  (emacs-fns--standalone-feature-index-ensure)
-  (and (gethash feature emacs-fns--standalone-feature-index) t))
+FEATURE must be a symbol.  SUBFEATURE, when non-nil, must occur in
+FEATURE's `subfeatures' property as well as FEATURE in `features'."
+  (unless (symbolp feature)
+    (signal 'wrong-type-argument (list 'symbolp feature)))
+  ;; Like GNU, inspect the list itself: destructive changes to `features'
+  ;; must take effect even when its head is still the same cons cell.
+  (and (memq feature features)
+       (or (null subfeature)
+           (memq subfeature (get feature 'subfeatures)))
+       t))
 
-(defun emacs-fns--standalone-provide (feature &optional _subfeatures)
+(defun emacs-fns--standalone-provide (feature &optional subfeatures)
   "Pure-Elisp fallback for `provide' used by standalone runtimes.
 
-Adds FEATURE once to `features' and returns FEATURE."
+Adds FEATURE once to `features', records the load, and returns FEATURE.
+A non-nil SUBFEATURES list replaces FEATURE's `subfeatures' property.
+Functions registered for FEATURE in `after-load-alist' run each time."
+  (unless (symbolp feature)
+    (signal 'wrong-type-argument (list 'symbolp feature)))
+  (unless (listp subfeatures)
+    (signal 'wrong-type-argument (list 'listp subfeatures)))
   (unless (emacs-fns--standalone-featurep feature)
-    (setq features (cons feature features))
-    (puthash feature t emacs-fns--standalone-feature-index)
-    (setq emacs-fns--standalone-feature-index-source features))
+    (setq features (cons feature features)))
+  (when subfeatures
+    (put feature 'subfeatures subfeatures))
+  (setq current-load-list (cons (cons 'provide feature) current-load-list))
+  (mapc #'funcall (cdr (assq feature after-load-alist)))
   feature)
 
 (defun emacs-fns--load-and-check-required-feature (feature path noerror)
@@ -129,15 +143,15 @@ providing FEATURE signals an error, even when the loader returns nil."
   ;; selecting an `.elc' that will later be misread as source text.
   (setq load-suffixes (list ".el"))
 
-  (defun provide (feature &optional _subfeatures)
+  (defun provide (feature &optional subfeatures)
     "Mark FEATURE as available and return FEATURE.
-Optional SUBFEATURES are accepted for Emacs compatibility and ignored."
-    (emacs-fns--standalone-provide feature _subfeatures))
+Optional SUBFEATURES lists the subfeatures supported by FEATURE."
+    (emacs-fns--standalone-provide feature subfeatures))
 
-  (defun featurep (feature &optional _subfeature)
+  (defun featurep (feature &optional subfeature)
     "Return non-nil if FEATURE has been provided.
-Optional SUBFEATURE is accepted for Emacs compatibility and ignored."
-    (emacs-fns--standalone-featurep feature _subfeature))
+Optional SUBFEATURE must also occur in FEATURE's subfeatures."
+    (emacs-fns--standalone-featurep feature subfeature))
 
   (defun emacs-fns--file-name-has-directory-p (filename)
     "Return non-nil when FILENAME contains a directory separator."

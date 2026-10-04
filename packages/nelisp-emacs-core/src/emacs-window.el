@@ -134,12 +134,17 @@ Slots:
   (direction    nil)
   (children     nil)
   (parameters   nil)
-  (deleted-p    nil))
+  (deleted-p    nil)
+  (top-line     0)
+  (use-time     0))
 
 ;;; Module state
 
 (defvar emacs-window--id-counter 0
   "Monotonically increasing window-id counter.")
+
+(defvar emacs-window--use-time-counter 0
+  "Clock advanced by recorded window selections.")
 
 (defvar emacs-window--root nil
   "Root of the window tree for the implicit Phase 1 frame.")
@@ -168,7 +173,8 @@ existing selected window if a tree is already in place."
               :leaf-p      t
               :buffer      nil
               :total-cols  emacs-window--default-cols
-              :total-lines emacs-window--default-lines)))
+              :total-lines emacs-window--default-lines
+              :use-time (cl-incf emacs-window--use-time-counter))))
       (setq emacs-window--root     w
             emacs-window--selected w)))
   emacs-window--selected)
@@ -209,6 +215,38 @@ Test-only convenience; not part of the public Emacs API surface."
 (defun emacs-window--all-leaves ()
   (when emacs-window--root
     (emacs-window--leaves-of emacs-window--root)))
+
+(defun emacs-window--resize-tree (node cols lines)
+  "Resize NODE and its descendants, preserving their size proportions."
+  (let* ((vertical (eq (emacs-window-direction node) 'vertical))
+         (old-total (if vertical (emacs-window-total-lines node)
+                      (emacs-window-total-cols node)))
+         (total (if vertical lines cols))
+         (children (emacs-window-children node))
+         (remaining total))
+    (setf (emacs-window-total-cols node) cols
+          (emacs-window-total-lines node) lines)
+    (while children
+      (let* ((child (car children))
+             (old-size (if vertical (emacs-window-total-lines child)
+                         (emacs-window-total-cols child)))
+             (size (if (cdr children)
+                       (max 1 (/ (* total old-size) (max 1 old-total)))
+                     remaining)))
+        (emacs-window--resize-tree child (if vertical cols size)
+                                   (if vertical size lines))
+        (setq remaining (- remaining size)
+              children (cdr children))))))
+
+(defun emacs-window-layout-frame (cols lines top)
+  "Lay out the ordinary tree and detached minibuffer below TOP lines."
+  (emacs-window--ensure-root)
+  (setf (emacs-window-top-line emacs-window--root) top)
+  (emacs-window--resize-tree emacs-window--root cols (max 1 (1- lines)))
+  (when (and (boundp 'emacs-minibuffer--window)
+             (emacs-window-p emacs-minibuffer--window))
+    (setf (emacs-window-total-cols emacs-minibuffer--window) cols
+          (emacs-window-top-line emacs-minibuffer--window) (+ top (1- lines)))))
 
 ;;; A. window query
 
@@ -431,6 +469,7 @@ size of the *new* window."
                                      (emacs-window-total-lines new-leaf))
                                 (emacs-window-total-lines win))
                  :parent      old-parent
+                 :top-line    (emacs-window-top-line win)
                  :direction   dir
                  :children    (if (memq side '(above left))
                                   (list new-leaf win)
@@ -495,7 +534,8 @@ Errors with `emacs-window-only' if WINDOW is the sole window."
     (setf (emacs-window-parent only) gp)
     ;; carry SPLIT's outer dimensions into the child
     (setf (emacs-window-total-cols  only) (emacs-window-total-cols  split)
-          (emacs-window-total-lines only) (emacs-window-total-lines split))
+          (emacs-window-total-lines only) (emacs-window-total-lines split)
+          (emacs-window-top-line only) (emacs-window-top-line split))
     (if gp
         (setf (emacs-window-children gp)
               (mapcar (lambda (c) (if (eq c split) only c))
@@ -515,6 +555,7 @@ The surviving window inherits the full root dimensions."
         (unless (eq w keep)
           (setf (emacs-window-deleted-p w) t)))
       (setf (emacs-window-parent      keep) nil
+            (emacs-window-top-line keep) (emacs-window-top-line emacs-window--root)
             (emacs-window-total-cols  keep) root-cols
             (emacs-window-total-lines keep) root-lines)
       (setq emacs-window--root     keep
@@ -651,6 +692,7 @@ compatibility and ignored in Phase 1."
              (vertical (cl-incf top  (emacs-window-total-lines sib)))
              (t        (cl-incf left (emacs-window-total-cols  sib))))))
         (setq cur parent)))
+    (setq top (+ top (emacs-window-top-line cur)))
     (list left top
           (+ left (emacs-window-total-cols  win))
           (+ top  (emacs-window-total-lines win)))))
@@ -676,6 +718,36 @@ WINDOW (or its first sibling-donor) below its configured minimum."
 
 ;;; D. window-local config
 
+(defun emacs-window--dedicated-buffer-quote (name)
+  "Return NAME quoted with the active `text-quoting-style'."
+  (let* ((requested (and (boundp 'text-quoting-style)
+                         (symbol-value 'text-quoting-style)))
+         (locale (or (and (fboundp 'getenv)
+                          (let ((value (getenv "LC_ALL")))
+                            (and value (not (equal value "")) value)))
+                     (and (fboundp 'getenv)
+                          (let ((value (getenv "LC_CTYPE")))
+                            (and value (not (equal value "")) value)))
+                     (and (fboundp 'getenv) (getenv "LANG"))))
+         (codeset (and (fboundp 'locale-info)
+                       (locale-info 'codeset)))
+         (style (cond
+                 ((memq requested '(grave straight curve)) requested)
+                 ((and (null requested) (stringp codeset)
+                       (string-match-p
+                        "\\`\\(?:ANSI_X3\\.4-1968\\|US-ASCII\\|ASCII\\)\\'"
+                        codeset))
+                  'grave)
+                 ((and (null requested) (stringp locale)
+                       (string-match-p
+                        "\\`\\(?:C\\|POSIX\\)\\(?:\\'\\|\\.\\(?:ANSI_X3\\.4-1968\\|US-ASCII\\|ASCII\\)\\)"
+                        locale))
+                  'grave)
+                 (t (text-quoting-style))))
+         (open (pcase style ('straight "'") ('curve "‘") (_ "`")))
+         (close (pcase style ('curve "’") (_ "'"))))
+    (concat open name close)))
+
 (defun emacs-window-set-window-buffer (window buffer-or-name &optional
                                               _keep-margins)
   "Set WINDOW to display BUFFER-OR-NAME.
@@ -694,6 +766,20 @@ WINDOW may be nil = selected window.  BUFFER-OR-NAME must be a
     (emacs-window--check-leaf w)
     (nelisp-ec-check-live b)
     (let ((old (emacs-window-buffer w)))
+      (when (and (eq 't (cdr (assq 'ccore-dedicated
+                                   (emacs-window-parameters w))))
+                 (not (eq old b)))
+        (error "Window is dedicated to %s"
+               (emacs-window--dedicated-buffer-quote
+                (if (nelisp-ec-buffer-p old)
+                    (nelisp-ec-buffer-name old)
+                  (buffer-name old)))))
+      (when (and (cdr (assq 'ccore-dedicated
+                            (emacs-window-parameters w)))
+                 (not (eq old b)))
+        (setf (emacs-window-parameters w)
+              (assq-delete-all 'ccore-dedicated
+                               (emacs-window-parameters w))))
       (when (and (nelisp-ec-buffer-p old)
                  (not (eq old b)))
         (emacs-window-set-window-prev-buffers
@@ -1069,10 +1155,13 @@ for API compatibility and ignored in Phase 1."
 
 ;;; E. selection
 
-(defun emacs-window-select-window (window &optional _norecord)
+(defun emacs-window-select-window (window &optional norecord)
   "Select WINDOW, returning it.  Errors if WINDOW is not a live leaf."
   (emacs-window--check-leaf window)
   (setq emacs-window--selected window)
+  (unless norecord
+    (setf (emacs-window-use-time window)
+          (cl-incf emacs-window--use-time-counter)))
   window)
 
 (defmacro emacs-window-save-selected-window (&rest body)

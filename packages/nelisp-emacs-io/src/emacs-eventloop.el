@@ -198,12 +198,19 @@ Phase 7 only honours the timeout (= no input semantics)."
           (not (fboundp 'sleep-for)))
   (defun sleep-for (seconds &optional millisec)
     "Polyfill: sleep for SECONDS + MILLISEC, ignoring I/O during the wait.
+SECONDS must be a number; MILLISEC must be nil or a fixnum.
 Implemented as a `usleep' through libc — does NOT dispatch process
 events while sleeping.  Use `accept-process-output' or `sit-for'
 instead when filter callbacks may need to run."
-    (let ((total-us (truncate (+ (* (or seconds 0) 1000000)
+    (unless (numberp seconds)
+      (signal 'wrong-type-argument (list 'numberp seconds)))
+    (unless (or (null millisec) (fixnump millisec))
+      (signal 'wrong-type-argument (list 'fixnump millisec)))
+    (let ((total-us (truncate (+ (* seconds 1000000)
                                   (* (or millisec 0) 1000)))))
       (when (> total-us 0)
+        (when (fboundp 'emacs-frame-builtins-reconcile-terminal-sizes)
+          (emacs-frame-builtins-reconcile-terminal-sizes))
         (emacs-network-ffi--call
          "usleep" [:sint32 :sint32] total-us))
       nil)))

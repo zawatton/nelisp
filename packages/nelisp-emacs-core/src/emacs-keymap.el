@@ -420,7 +420,6 @@ sparse binding cons cell whose car matches K, or nil."
           (setq slot entry))
          ((and (not binding)
                (consp entry)
-               (not (eq (car entry) t))
                (emacs-keymap--key-equal-p (car entry) k))
           (setq binding entry))))
       (setq tail (cdr tail)))

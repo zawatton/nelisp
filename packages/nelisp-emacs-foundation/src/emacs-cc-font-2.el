@@ -13,15 +13,48 @@
           (plist-put tail prop val)
         (setcdr (cdr font) (cons prop (cons val tail))))
       val)))
+(defun emacs-cc-font-2--gstring-p (gstring)
+  "Return non-nil if GSTRING has the glyph-string structure."
+  (and (vectorp gstring) (>= (length gstring) 2)
+       (let ((header (aref gstring 0))
+             (id (aref gstring 1)))
+         (and (vectorp header) (>= (length header) 2)
+              (let ((font (aref header 0)))
+                (or (and (symbolp font) (coding-system-p font))
+                    (and (or (not (vectorp font)) (> (length font) 0))
+                         (fontp font 'font-object))))
+              (or (null id) (and (integerp id) (>= id 0)))
+              (let ((i 1) (valid t))
+                (while (and valid (< i (length header)))
+                  (let ((ch (aref header i)))
+                    (setq valid (and (integerp ch) (>= ch 0))))
+                  (setq i (1+ i)))
+                valid)
+              (let ((i 2) (valid t))
+                ;; A nil glyph terminates the used portion of the vector.
+                (while (and valid (< i (length gstring))
+                            (aref gstring i))
+                  (let ((glyph (aref gstring i)))
+                    (setq valid (and (vectorp glyph) (= (length glyph) 10))))
+                  (setq i (1+ i)))
+                valid)))))
+
 (unless (fboundp 'font-shape-gstring)
   (defun font-shape-gstring (gstring direction)
     "Shape the glyph-string GSTRING subject to bidi DIRECTION."
     (ignore direction)
-    (signal 'error (list "Invalid glyph-string: "
-                         (if (and (consp gstring) (null (cdr gstring))
-                                  (symbolp (car gstring)))
-                             (car gstring)
-                           (or gstring ""))))))
+    (unless (emacs-cc-font-2--gstring-p gstring)
+      (signal 'error (cons "Invalid glyph-string: "
+                           (if (proper-list-p gstring)
+                               gstring
+                             (list gstring)))))
+    (if (aref gstring 1)
+        gstring
+      (let ((font (aref (aref gstring 0) 0)))
+        (unless (fontp font 'font-object)
+          (signal 'wrong-type-argument (list 'font-object font)))
+        ;; The standalone font layer has no driver capable of shaping.
+        nil))))
 (unless (fboundp 'font-spec)
   (defun font-spec (&rest rest)
     "Return a newly created font-spec with arguments as properties."
@@ -38,9 +71,11 @@
 (unless (fboundp 'frame-font-cache)
   (defun frame-font-cache (&optional frame)
     "Return FRAME's font cache.  Mainly used for debugging."
-    (or frame
-        (and (fboundp 'selected-frame) (selected-frame))
-        (and (fboundp 'frame-list) (car (frame-list))))))
+    (setq frame (or frame (selected-frame)))
+    (unless (frame-live-p frame)
+      (signal 'wrong-type-argument (list 'frame-live-p frame)))
+    ;; Terminal frames have no font drivers and hence no font cache.
+    nil))
 (unless (fboundp 'internal-char-font)
   (defun internal-char-font (position &optional ch)
     "For internal use only."

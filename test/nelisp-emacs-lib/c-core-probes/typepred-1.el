@@ -1,0 +1,33 @@
+(integer-or-marker-p
+ (list (integer-or-marker-p 0)
+       (integer-or-marker-p -17)
+       (integer-or-marker-p 1208925819614629174706176)
+       (integer-or-marker-p ?x))
+ (with-temp-buffer
+   (let ((unset (make-marker)) (set (copy-marker 1 t)))
+     (list (integer-or-marker-p unset)
+           (integer-or-marker-p set)
+           (integer-or-marker-p 1.0)
+           (integer-or-marker-p nil)
+           (integer-or-marker-p 'symbol)
+           (integer-or-marker-p "1")))))
+(number-or-marker-p
+ (list (number-or-marker-p 0)
+       (number-or-marker-p 1.25)
+       (number-or-marker-p 1208925819614629174706176)
+       (number-or-marker-p ?x))
+ (with-temp-buffer
+   (let ((unset (make-marker)) (set (copy-marker 1 t)))
+     (list (number-or-marker-p unset)
+           (number-or-marker-p set)
+           (number-or-marker-p nil)
+           (number-or-marker-p 'symbol)
+           (number-or-marker-p "1")))))
+(vector-or-char-table-p
+ (list (vector-or-char-table-p [])
+       (vector-or-char-table-p [a 1])
+       (vector-or-char-table-p (make-char-table 'test-category)))
+ (list (vector-or-char-table-p (make-bool-vector 3 nil))
+       (vector-or-char-table-p "text")
+       (vector-or-char-table-p '(a b))
+       (vector-or-char-table-p (make-hash-table))))

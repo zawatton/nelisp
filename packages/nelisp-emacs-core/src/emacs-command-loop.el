@@ -2212,19 +2212,27 @@ First arg consumed first by `emacs-command-loop-read-event'."
 
 (defun emacs-command-loop-pending-p ()
   "Return non-nil when there is at least one queued event.
-Drains both the substrate queue and a bound `unread-command-events'
-defvar (= the standalone-Emacs convention)."
-  (or emacs-command-loop--unread-events
+Includes processed input-method events, the substrate queue and a bound
+`unread-command-events' defvar (= the standalone-Emacs convention)."
+  (or (and (boundp 'unread-post-input-method-events)
+           unread-post-input-method-events)
+      emacs-command-loop--unread-events
       (and (boundp 'unread-command-events)
            (symbol-value 'unread-command-events))))
 
 ;;;; --- readers --------------------------------------------------------
 
 (defun emacs-command-loop--pop-event ()
-  "Pop one event from the active queue.  Substrate first, then the
-bound `unread-command-events' if any.  Returns the event, or signals
+  "Pop one event from the active queue.  Processed input-method events
+come first, then substrate and bound `unread-command-events'.  Return the event, or signal
 `emacs-command-loop-no-input' on empty."
   (cond
+   ((and (boundp 'unread-post-input-method-events)
+         unread-post-input-method-events)
+    (setq emacs-command-loop--post-input-event-p t)
+    (let ((event (car unread-post-input-method-events)))
+      (setq unread-post-input-method-events (cdr unread-post-input-method-events))
+      event))
    (emacs-command-loop--unread-events
     (let ((ev (car emacs-command-loop--unread-events)))
       (setq emacs-command-loop--unread-events
@@ -2245,7 +2253,11 @@ standard command loop).  Called with one argument TIMEOUT-MS (nil = non-blocking
 poll) and must return an Emacs event (a character or a key symbol) or nil.  The
 TUI runtime (`nemacs-main') sets this to poll the `emacs-tui-event' handle.")
 
-(defun emacs-command-loop-read-event (&optional prompt _suppress seconds)
+(defvar emacs-command-loop--post-input-event-p nil)
+(defvar unread-post-input-method-events nil)
+(defvar input-method-function #'list)
+
+(defun emacs-command-loop--read-event-raw (&optional prompt _suppress seconds)
   "Read one event: from the queue, else via
 `emacs-command-loop-input-poll-function' (e.g. live TUI stdin) when the queue is
 empty.  PROMPT is ignored; SECONDS, when non-nil, is the maximum wait passed to
@@ -2254,6 +2266,7 @@ the poll function (converted to milliseconds).
 Side effect: updates `emacs-command-loop--last-input-event' (and the
 non-menu mirror)."
   (ignore prompt)
+  (setq emacs-command-loop--post-input-event-p nil)
   (when (and emacs-command-loop--quit-flag
              (not emacs-command-loop--inhibit-quit))
     (setq emacs-command-loop--quit-flag nil)
@@ -2262,9 +2275,10 @@ non-menu mirror)."
              ((emacs-command-loop-pending-p)
               (emacs-command-loop--pop-event))
              (emacs-command-loop-input-poll-function
-              (or (funcall emacs-command-loop-input-poll-function
-                           (and seconds (truncate (* seconds 1000))))
-                  (signal 'emacs-command-loop-no-input nil)))
+              (let ((emacs-command-loop--waiting-for-input t))
+                (or (funcall emacs-command-loop-input-poll-function
+                             (and seconds (truncate (* seconds 1000))))
+                    (signal 'emacs-command-loop-no-input nil))))
              (t (signal 'emacs-command-loop-no-input nil)))))
     (setq emacs-command-loop--last-input-event   ev
           emacs-command-loop--last-nonmenu-event ev)
@@ -2280,10 +2294,30 @@ non-menu mirror)."
       (set 'last-nonmenu-event ev))
     ev))
 
-(defun emacs-command-loop-read-char (&optional prompt _ihib seconds)
+(defun emacs-command-loop-read-event (&optional prompt inherit-input-method seconds)
+  "Read an event, optionally inheriting the current input method.
+Processed input-method events take priority and are not transformed again."
+  (let ((done nil) event)
+    (while (not done)
+      (setq event (emacs-command-loop--read-event-raw prompt nil seconds))
+      (if (and inherit-input-method
+               (not emacs-command-loop--post-input-event-p)
+               (integerp event) (>= event 32) (< event 256) (/= event 127)
+               (boundp 'input-method-function) input-method-function)
+          (setq unread-post-input-method-events
+                (append (funcall input-method-function event)
+                        unread-post-input-method-events))
+        (setq done t)))
+    (setq emacs-command-loop--last-input-event event
+          emacs-command-loop--last-nonmenu-event event)
+    (when (boundp 'last-input-event) (setq last-input-event event))
+    (when (boundp 'last-nonmenu-event) (setq last-nonmenu-event event))
+    event))
+
+(defun emacs-command-loop-read-char (&optional prompt inherit-input-method seconds)
   "Like `read-event' but require the result to be a character (integer).
 Symbols and lists signal `wrong-type-argument'."
-  (let ((ev (emacs-command-loop-read-event prompt nil seconds)))
+  (let ((ev (emacs-command-loop-read-event prompt inherit-input-method seconds)))
     (unless (integerp ev)
       (signal 'wrong-type-argument (list 'integerp ev)))
     ev))

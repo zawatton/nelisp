@@ -161,6 +161,9 @@
   '(no-conversion undecided prefer-utf-8 raw-text
     ascii us-ascii utf-8 utf-8-unix utf-8-dos utf-8-mac utf-8-emacs
     utf-16 utf-16le utf-16be utf-7 latin-1 iso-8859-1 iso-latin-1
+    latin-1-unix latin-1-dos latin-1-mac
+    iso-latin-1-unix iso-latin-1-dos iso-latin-1-mac
+    iso-8859-1-unix iso-8859-1-dos iso-8859-1-mac
     iso-2022-jp euc-jp shift_jis japanese-shift-jis cp932 sjis
     binary emacs-mule escape-quoted)
   "Fallback registry when full mule coding-system tables are unavailable.")
@@ -419,32 +422,57 @@ BODY."
 ;;;; --- make-char (ascii/unicode/8-bit/latin-1/JIS Roman subset) -----
 
 (unless (fboundp 'make-char)
-  (defun make-char (charset &optional c1 _c2)
-    "Return a character of CHARSET at position code C1 (reduced shim)."
+  (defun emacs-parity-shims--position-byte (code)
+    "Validate a non-nil charset position CODE and return it."
+    (unless (and (integerp code) (>= code 0))
+      (signal 'wrong-type-argument (list 'wholenump code)))
+    (when (> code #xff)
+      (signal 'args-out-of-range (list #xff code)))
+    code)
+
+  (defun make-char (charset &optional c1 c2 c3 _c4)
+    "Return a character of CHARSET at position codes C1 through C4.
+Omitted codes use the minimum position.  This shim supports ASCII,
+Unicode, raw bytes, Latin-1 and the JIS Roman subset."
+    (unless (memq charset '(ascii unicode ucs eight-bit eight-bit-graphic
+                           eight-bit-control latin-jisx0201
+                           latin-iso8859-1 iso-8859-1))
+      (signal 'wrong-type-argument (list 'charsetp charset)))
+    ;; GNU ignores every trailing coordinate when C1 is nil, and ignores
+    ;; coordinates beyond the charset's dimension even when non-nil.
+    (when c1
+      (emacs-parity-shims--position-byte c1)
+      (when (memq charset '(unicode ucs))
+        (when c2 (emacs-parity-shims--position-byte c2))
+        (when c3 (emacs-parity-shims--position-byte c3))))
     (cond
-     ((null charset) (or c1 0))
+     ((memq charset '(unicode ucs))
+      (if (null c1) 0
+        (when (> c1 #x10) (error "Invalid code(s)"))
+        (+ (lsh c1 16) (lsh (or c2 0) 8) (or c3 0))))
      ((eq charset 'ascii) (logand (or c1 0) #x7f))
-     ((memq charset '(unicode ucs iso-10646-1)) (or c1 0))
+     ((eq charset 'iso-8859-1) (or c1 0))
      ((memq charset '(eight-bit eight-bit-graphic eight-bit-control))
-      (+ #x3fff00 (logand (or c1 0) #xff)))
-     ;; Emacs's latin-jisx0201 charset accepts the printable JIS Roman
-     ;; range only.  Its two differing positions map to the Unicode yen
-     ;; sign and overline; C2 is ignored because this charset is one-byte.
-     ((eq charset 'latin-jisx0201)
-      (let ((code (or c1 #x21)))
-        (cond
-         ((not (integerp code))
-          (signal 'wrong-type-argument (list 'wholenump code)))
-         ((< code 0)
-          (signal 'wrong-type-argument (list 'wholenump code)))
-         ((or (< code #x21) (> code #x7e))
+      (let ((minimum (if (eq charset 'eight-bit-graphic) #xa0 #x80))
+            (maximum (if (eq charset 'eight-bit-control) #x9f #xff)))
+        (setq c1 (or c1 minimum))
+        (when (or (< c1 minimum) (> c1 maximum))
           (error "Invalid code(s)"))
+        (+ #x3fff00 c1)))
+     ;; Seven-bit charsets accept either half of the position byte.
+     ;; The JIS Roman yen sign and overline differ from ASCII.
+     (t
+      (let* ((roman (eq charset 'latin-jisx0201))
+             (minimum (if roman #x21 #x20))
+             (maximum (if roman #x7e #x7f))
+             (code (logand (or c1 minimum) #x7f)))
+        (when (or (< code minimum) (> code maximum))
+          (error "Invalid code(s)"))
+        (cond
+         ((not roman) (+ #x80 code))
          ((= code #x5c) #xa5)
          ((= code #x7e) #x203e)
-         (t code))))
-     ((memq charset '(latin-iso8859-1 iso-8859-1 iso-latin-1))
-      (+ #x80 (logand (or c1 0) #x7f)))
-     (t (error "make-char: unsupported charset %S in shim" charset)))))
+         (t code)))))))
 
 ;;;; --- org-release ---------------------------------------------------
 

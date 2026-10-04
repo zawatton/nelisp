@@ -1,0 +1,71 @@
+#+TITLE: C-core continuation with build-free focused unit integration
+
+The user explicitly moved priority from Doc211 cutover to C-core on 2026-10-01.
+Reuse existing binaries; do not rebuild for Lisp-only units. The original
+C-core area ledger remains authoritative for whole-area completion.
+
+* S1 Focused unit feedback without a full bootstrap bundle
+
+** S1.1 Focused runner rejects malformed input and missing completion markers
+cmd: python3 test/nelisp-emacs-lib/c-core-unit-runner-test.py
+
+** S1.2 Focused runner records binary identity, exact probe counts and timings
+cmd: python3 test/nelisp-emacs-lib/c-core-unit-runner-test.py --identity
+
+** S1.3 END-TO-END: an existing unit runs on GNU Emacs and the existing standalone without rebuilding, with identical transcripts
+#+REQUIRES: NELISP_BIN
+cmd: python3 test/nelisp-emacs-lib/c-core-unit-smoke.py --unit category-1 --dependency packages/nelisp-emacs-foundation/src/emacs-char-table.el
+
+** S1.4 END-TO-END: the same casetab probes used for the feedback-cost comparison pass on the existing standalone
+#+REQUIRES: NELISP_BIN
+cmd: python3 test/nelisp-emacs-lib/c-core-unit-smoke.py --unit casetab-1
+
+* S2 SQLite unit integration
+
+** S2.1 SQLite unit loads with the optional FFI provider absent and preserves existing bindings
+cmd: emacs -Q --batch -l test/nelisp-emacs-lib/emacs-cc-sqlite-1-test.el -f ert-run-tests-batch-and-exit
+
+** S2.2 SQLite implementation and all original probes exist and parse
+cmd: emacs -Q --batch --eval '(dolist (p (list "packages/nelisp-emacs-foundation/src/emacs-cc-sqlite-1.el" "test/nelisp-emacs-lib/c-core-probes/sqlite-1.el")) (with-temp-buffer (insert-file-contents p) (check-parens)))'
+
+** S2.3 END-TO-END: SQLite unit probes match GNU Emacs on the existing standalone
+#+REQUIRES: NELISP_BIN
+cmd: python3 test/nelisp-emacs-lib/c-core-unit-smoke.py --unit sqlite-1 --dependency packages/nelisp-emacs-io/src/emacs-sqlite-ffi.el
+
+* S3 Terminal face unit integration
+
+#+NOTE: The string-property providers preserve propertize, insertion, native buffer-to-string copies, copy-sequence and substring on the production native-buffer path. The unchanged xfaces probes still require exact transcripts. The public printer still omits properties in nested strings; that known difference must be resolved for the whole C-core goal and is not covered by this bounded unit criterion.
+
+** S3.1 Terminal face implementation and unchanged original probes exist and parse
+cmd: emacs -Q --batch --eval '(dolist (p (list "packages/nelisp-emacs-foundation/src/emacs-cc-xfaces-1.el" "test/nelisp-emacs-lib/c-core-probes/xfaces-1.el")) (with-temp-buffer (insert-file-contents p) (check-parens)))'
+
+** S3.2 Terminal bold suppression has a meaningful regression test and preserves existing bindings
+cmd: emacs -Q --batch -l test/nelisp-emacs-lib/emacs-cc-xfaces-1-test.el -f ert-run-tests-batch-and-exit
+
+** S3.3 END-TO-END: terminal face unit probes match GNU Emacs on the existing standalone
+#+REQUIRES: NELISP_BIN
+cmd: python3 test/nelisp-emacs-lib/c-core-unit-smoke.py --unit xfaces-1 --dependency packages/nelisp-emacs-foundation/src/emacs-stub.el --dependency packages/nelisp-emacs-core/src/emacs-frame.el --dependency packages/nelisp-emacs-core/src/emacs-frame-builtins.el --dependency packages/nelisp-emacs-core/src/emacs-window.el --dependency packages/nelisp-emacs-core/src/emacs-window-builtins.el --dependency packages/nelisp-emacs-foundation/src/emacs-string.el --dependency packages/nelisp-emacs-buffer-core/src/nelisp-emacs-compat.el --dependency packages/nelisp-emacs-buffer-core/src/emacs-buffer.el --dependency packages/nelisp-emacs-buffer-core/src/emacs-buffer-builtins.el
+
+* S4 Frame event unit integration
+
+** S4.1 Frame event implementation and unchanged original probes exist and parse
+cmd: emacs -Q --batch --eval '(dolist (p (list "packages/nelisp-emacs-foundation/src/emacs-cc-frame-3.el" "test/nelisp-emacs-lib/c-core-probes/frame-3.el")) (with-temp-buffer (insert-file-contents p) (check-parens)))'
+
+** S4.2 Frame switching preserves behavior and matches GNU return semantics
+cmd: emacs -Q --batch -l test/nelisp-emacs-lib/emacs-cc-frame-3-test.el -f ert-run-tests-batch-and-exit
+
+** S4.3 END-TO-END: frame event unit probes match GNU Emacs on the existing standalone
+#+REQUIRES: NELISP_BIN
+cmd: python3 test/nelisp-emacs-lib/c-core-unit-smoke.py --unit frame-3 --dependency packages/nelisp-emacs-foundation/src/emacs-stub.el --dependency packages/nelisp-emacs-core/src/emacs-frame.el --dependency packages/nelisp-emacs-core/src/emacs-frame-builtins.el --dependency packages/nelisp-emacs-core/src/emacs-window.el --dependency packages/nelisp-emacs-core/src/emacs-window-builtins.el
+
+* S5 Motion unit integration
+
+** S5.1 Motion implementation and unchanged original probes exist and parse
+cmd: emacs -Q --batch --eval '(dolist (p (list "packages/nelisp-emacs-foundation/src/emacs-cc-indent-1.el" "test/nelisp-emacs-lib/c-core-probes/indent-1.el")) (with-temp-buffer (insert-file-contents p) (check-parens)))'
+
+** S5.2 Vertical motion has forced-fallback regression tests for arguments, errors and cursor positions
+cmd: emacs -Q --batch -l test/nelisp-emacs-lib/emacs-cc-indent-1-test.el -f ert-run-tests-batch-and-exit
+
+** S5.3 END-TO-END: motion unit probes match GNU Emacs on the existing standalone
+#+REQUIRES: NELISP_BIN
+cmd: python3 test/nelisp-emacs-lib/c-core-unit-smoke.py --unit indent-1

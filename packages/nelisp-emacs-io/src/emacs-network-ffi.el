@@ -71,7 +71,40 @@ this file loads.")
 (defun emacs-network-ffi--call (func sig &rest args)
   "Dispatch libc FUNC with SIG (= [return-type arg-types]) + ARGS.
 Returns the FFI integer / pointer / etc. as a Lisp value."
-  (apply #'nl-ffi-call emacs-network-ffi-libc-path func sig args))
+  (if (and (boundp 'emacs-network-syscall-shim--active-p)
+           emacs-network-syscall-shim--active-p
+           (fboundp 'emacs-network-syscall-shim--supports-p)
+           (emacs-network-syscall-shim--supports-p func))
+      (progn
+        (setq emacs-network-ffi--last-backend 'syscall-shim)
+        (apply #'emacs-network-syscall-shim--call func args))
+    (setq emacs-network-ffi--last-backend
+          (if (emacs-network-ffi--fixed-table-backend-p)
+              'fixed-table 'legacy))
+    (unless (fboundp 'nl-ffi-call)
+      (error "Network FFI: no native nl-ffi-call backend for %s" func))
+    ;; This split is deliberately runtime-specific: outside the positively
+    ;; identified fixed-table reader, preserve the original legacy ABI and
+    ;; every result (including nil) exactly as provided.
+    (if (emacs-network-ffi--fixed-table-backend-p)
+        (let ((value (apply #'nl-ffi-call func args)))
+          (when (and (null value) (vectorp sig) (> (length sig) 0)
+                     (memq (aref sig 0) '(:sint32 :sint64 :pointer)))
+            (error "Network FFI: native symbol %s is unresolved" func))
+          value)
+      (apply #'nl-ffi-call emacs-network-ffi-libc-path func sig args))))
+
+(defun emacs-network-ffi--fixed-table-backend-p ()
+  "Recognize NeLisp's documented fixed-table native call ABI."
+  (and (fboundp 'nl-ffi-call)
+       (eq (type-of (symbol-function 'nl-ffi-call)) 'subr)
+       ;; These paired runtime primitives identify the standalone reader;
+       ;; a foreign subr named nl-ffi-call alone proves no ABI contract.
+       (fboundp 'syscall-direct) (fboundp 'alloc-bytes)
+       (fboundp 'ptr-read-u64) (fboundp 'ptr-write-u64)))
+
+(defvar emacs-network-ffi--last-backend nil
+  "Backend used by the most recent network FFI call.")
 
 
 ;;;; --- POSIX constants --------------------------------------------------
@@ -235,41 +268,37 @@ Layout (Linux x86_64 / arm64):
 ;;;; --- libc errno (read via __errno_location) ---------------------------
 
 (defun emacs-network-ffi--errno ()
-  "Return the current libc errno as an integer.
-
-Calls `__errno_location()' (glibc) which returns a pointer to the
-thread-local errno.  The returned pointer points at libc-internal
-memory, which `nl-ffi-read-i32' rejects (= safety check requires
-the pointer to come from `nl-ffi-malloc' so out-of-bounds reads
-are caught).  Side-step by `memcpy'-ing 4 bytes from the errno
-pointer into a tracked buffer, then reading from there.  On macOS
-the glibc-specific symbol does not exist; we fall back to
-`__error' (the Mach errno accessor).  Returns 0 if neither symbol
-resolves or copy fails."
-  (let ((ptr 0))
-    (condition-case nil
-        (setq ptr (emacs-network-ffi--call
-                   "__errno_location" [:sint64]))
-      (error nil))
-    (when (or (not (integerp ptr)) (zerop ptr))
+  "Return errno from the backend used by the most recent network call."
+  (cond
+   ((eq emacs-network-ffi--last-backend 'syscall-shim)
+    (if (and (boundp 'nl-ffi-shim--errno-buf) nl-ffi-shim--errno-buf)
+        (nl-ffi-read-i32 nl-ffi-shim--errno-buf 0)
+      0))
+   ((eq emacs-network-ffi--last-backend 'fixed-table)
+    (error "Network FFI: errno is unavailable for the fixed-table backend"))
+   ((eq emacs-network-ffi--last-backend 'legacy)
+    ;; Preserve the external provider's original __errno_location/memcpy
+    ;; contract, including its error-to-zero behavior.
+    (let ((ptr 0))
       (condition-case nil
-          (setq ptr (emacs-network-ffi--call "__error" [:sint64]))
-        (error nil)))
-    (cond
-     ((or (not (integerp ptr)) (zerop ptr)) 0)
-     (t
-      (let* ((buf (nl-ffi-malloc 4))
-             (errno
-              (condition-case nil
-                  (progn
-                    (emacs-network-ffi--call
-                     "memcpy"
-                     [:sint64 :pointer :pointer :sint64]
-                     buf ptr 4)
-                    (nl-ffi-read-i32 buf 0))
-                (error 0))))
-        (nl-ffi-free buf)
-        errno)))))
+          (setq ptr (emacs-network-ffi--call "__errno_location" [:sint64]))
+        (error nil))
+      (when (or (not (integerp ptr)) (zerop ptr))
+        (condition-case nil
+            (setq ptr (emacs-network-ffi--call "__error" [:sint64]))
+          (error nil)))
+      (if (or (not (integerp ptr)) (zerop ptr)) 0
+        (let* ((buf (nl-ffi-malloc 4))
+               (errno (condition-case nil
+                          (progn
+                            (emacs-network-ffi--call
+                             "memcpy" [:sint64 :pointer :pointer :sint64]
+                             buf ptr 4)
+                            (nl-ffi-read-i32 buf 0))
+                        (error 0))))
+          (nl-ffi-free buf)
+          errno))))
+   (t (error "Network FFI: errno requested before a call"))))
 
 
 ;;;; --- libc primitives --------------------------------------------------
@@ -462,6 +491,17 @@ fire `send' with the same number."
                  fd buf byte-len flags-val)))
       (nl-ffi-free buf)
       sent)))
+
+(defun emacs-network-ffi--write (fd data)
+  "Write DATA bytes to descriptor FD; return the write(2) result."
+  (let ((ptr (nl-ffi-malloc (max 1 (length data)))))
+    (unwind-protect
+        (progn
+          (nl-ffi-write-bytes-at ptr 0 data)
+          (emacs-network-ffi--call
+           "write" [:sint64 :sint32 :pointer :sint64]
+           fd ptr (length data)))
+      (nl-ffi-free ptr))))
 
 (defun emacs-network-ffi--set-nonblocking (fd)
   "Mark FD as non-blocking via fcntl(fd, F_SETFL, F_GETFL | O_NONBLOCK).

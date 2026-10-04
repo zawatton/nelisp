@@ -88,30 +88,55 @@ Non-string elements in LIST are ignored, matching `subr.el'."
     list))
 
 (unless (fboundp 'md5)
-  (defun md5 (object &optional start end _coding-system _noerror)
-    "Return a stable 32-character hexadecimal digest for OBJECT.
-This standalone fallback is non-cryptographic; it provides the Emacs `md5'
-shape needed by cache and equality callers when no primitive is present."
-    (let* ((string (cond
-                    ((stringp object) object)
-                    ((and (fboundp 'bufferp) (bufferp object))
-                     (with-current-buffer object (buffer-string)))
-                    (t (prin1-to-string object))))
-           (from (or start 0))
-           (to (or end (length string)))
-           (h1 2166136261)
-           (h2 2166136261)
-           (h3 2166136261)
-           (h4 2166136261)
-           (i from))
-      (while (< i to)
-        (let ((c (aref string i)))
-          (setq h1 (logand (* (logxor h1 c) 16777619) #xffffffff))
-          (setq h2 (logand (* (logxor h2 (+ c i)) 16777619) #xffffffff))
-          (setq h3 (logand (* (logxor h3 (+ c h1)) 16777619) #xffffffff))
-          (setq h4 (logand (* (logxor h4 (+ c h2)) 16777619) #xffffffff)))
-        (setq i (1+ i)))
-      (format "%08x%08x%08x%08x" h1 h2 h3 h4))))
+  (defun md5 (object &optional start end coding-system noerror)
+    "Return the MD5 digest of OBJECT, a string or buffer.
+START and END delimit characters.  CODING-SYSTEM specifies the encoding;
+NOERROR permits falling back to raw text for an invalid coding system."
+    (unless (or (stringp object) (bufferp object))
+      (signal 'error (list "Invalid object argument" object)))
+    (let* ((buffer (bufferp object))
+           (text
+            (if buffer
+                (with-current-buffer object
+                  (let ((from (or start (point-min)))
+                        (to (or end (point-max))))
+                    (dolist (position (list from to))
+                      (unless (or (integerp position) (markerp position))
+                        (signal 'wrong-type-argument
+                                (list 'integer-or-marker-p position))))
+                    (when (markerp from) (setq from (marker-position from)))
+                    (when (markerp to) (setq to (marker-position to)))
+                    (unless (and from to)
+                      (signal 'error '("Marker does not point anywhere")))
+                    (unless (and (<= (point-min) from (point-max))
+                                 (<= (point-min) to (point-max)))
+                      (signal 'args-out-of-range (list from to)))
+                    (when (> from to)
+                      (let ((swap from)) (setq from to to swap)))
+                    (buffer-substring-no-properties from to)))
+              (substring object (or start 0) end)))
+           (coding
+            (or coding-system
+                (and buffer
+                     (with-current-buffer object
+                       (or (and (boundp 'coding-system-for-write)
+                                coding-system-for-write)
+                           (and (boundp 'buffer-file-coding-system)
+                                buffer-file-coding-system))))
+                (if (multibyte-string-p text)
+                    (coding-system-priority-list t)
+                  'raw-text))))
+      (unless (coding-system-p coding)
+        (if noerror
+            (setq coding 'raw-text)
+          (signal 'coding-system-error (list coding))))
+      ;; GNU validates the coding system but hashes unibyte text unchanged.
+      ;; Raw text preserves the internal byte representation of multibyte text.
+      (secure-hash 'md5
+                   (cond
+                    ((not (multibyte-string-p text)) text)
+                    ((eq coding 'raw-text) (string-as-unibyte text))
+                    (t (encode-coding-string text coding)))))))
 
 (unless (fboundp 'user-uid)
   (defun user-uid ()
@@ -128,13 +153,54 @@ shape needed by cache and equality callers when no primitive is present."
     "Return the standalone user's numeric gid."
     1000))
 
+(defun emacs-subr-extras--uid (uid)
+  "Convert UID to an unsigned 32-bit user ID, or signal GNU's error."
+  (let ((value uid))
+    (when (consp value)
+      (let ((high (car value))
+            (low (if (consp (cdr value)) (cadr value) (cdr value)))
+            (tail (and (consp (cdr value)) (cddr value))))
+        ;; The obsolete (HIGH MIDDLE . LOW) representation appends a
+        ;; 16-bit LOW component.  A valid LOW selects that format; otherwise GNU
+        ;; treats the first two components as a pair of 16-bit integers.
+        (setq value
+              (and (integerp high) (integerp low)
+                   (<= 0 high 65535) (<= 0 low 65535)
+                   (if (and (integerp tail) (<= 0 tail 65535))
+                       ;; A nonzero HIGH cannot fit an unsigned 32-bit UID.
+                       (and (= high 0) (+ (* low 65536) tail))
+                     (+ (* high 65536) low))))))
+    (unless (and (numberp value) (<= 0 value #xffffffff)
+                 (or (integerp value) (= value (truncate value))))
+      (signal 'error
+              '("Not an in-range integer, integral float, or cons of integers")))
+    (truncate value)))
+
+(defun emacs-subr-extras--passwd (key)
+  "Look up KEY in the operating system's user database.
+Return the colon-separated account fields, or nil for an unknown account."
+  (with-temp-buffer
+    (when (eq (call-process "getent" nil t nil "passwd"
+                            (if (stringp key) key (number-to-string key)))
+              0)
+      (let ((fields (split-string (buffer-string) ":")))
+        ;; getent also accepts numeric keys; a string key names a login.
+        (when (and (>= (length fields) 7)
+                   (or (not (stringp key)) (equal key (car fields))))
+          fields)))))
+
 (when (or (not (fboundp 'user-login-name))
           (get 'user-login-name 'emacs-stub-bulk))
-  (defun user-login-name (&optional _uid)
-    "Return the current login name for standalone consumers."
-    (or (and (fboundp 'getenv)
-             (or (getenv "LOGNAME") (getenv "USER")))
-        "standalone"))
+  (defun user-login-name (&optional uid)
+    "Return the current login name, or the login name belonging to UID.
+An unknown numeric user ID returns nil."
+    (if (null uid)
+        (if (boundp 'user-login-name)
+            (symbol-value 'user-login-name)
+          (or (getenv "LOGNAME") (getenv "USER")
+              (car (emacs-subr-extras--passwd (user-uid)))))
+      (car (emacs-subr-extras--passwd
+            (emacs-subr-extras--uid uid)))))
   (put 'user-login-name 'emacs-stub-bulk nil))
 
 (unless (fboundp 'user-real-login-name)
@@ -144,12 +210,24 @@ shape needed by cache and equality callers when no primitive is present."
 
 (when (or (not (fboundp 'user-full-name))
           (eq (symbol-function 'user-full-name) 'nelisp--unbound-marker))
-  (defun user-full-name (&optional _uid)
-    "Return the current full user name for standalone consumers."
-    (or (and (boundp 'user-full-name)
-             (stringp (symbol-value 'user-full-name))
-             (symbol-value 'user-full-name))
-        (user-login-name))))
+  (defun user-full-name (&optional uid)
+    "Return the current full name, or the full name of UID.
+UID may be a numeric user ID or a login name.  Unknown users return nil."
+    (if (and (null uid) (boundp 'user-full-name))
+        (symbol-value 'user-full-name)
+      (unless (or (null uid) (stringp uid) (numberp uid))
+        (signal 'error '("Invalid UID specification")))
+      (let* ((key (if (stringp uid) uid
+                    (emacs-subr-extras--uid (or uid (user-uid)))))
+             (fields (emacs-subr-extras--passwd key)))
+        (if fields
+            (let* ((name (car (split-string (nth 4 fields) ",")))
+                   (login (car fields))
+                   (capitalized (if (= (length login) 0) login
+                                  (concat (upcase (substring login 0 1))
+                                          (substring login 1)))))
+              (replace-regexp-in-string "&" capitalized (or name "") t t))
+          (and (null uid) "unknown"))))))
 
 ;; ---- length comparison primitives (Emacs 29+ C builtins) ----
 ;; Vendor packages (and modern subr-x users) call `length<' / `length=' /
@@ -545,15 +623,11 @@ Per-type totals are not exposed by the standalone runtime:
 
 ;;;; --- tree-sitter font-lock rules (treesit.el) ----------------------
 
-;; When tree-sitter is not compiled into the runtime, `treesit-available-p'
-;; returns nil and `treesit-font-lock-rules' short-circuits to nil -- which is
-;; exactly stock behaviour (font-lock rules are only meaningful with a live
-;; tree-sitter parser).
 (unless (fboundp 'treesit-available-p)
   (defun treesit-available-p ()
-    "Return non-nil if tree-sitter support is built and available.
-This runtime is not built with tree-sitter, so this returns nil."
-    nil))
+    "Return t only when the external tree-sitter library is usable."
+    (require 'emacs-cc-treesit-1)
+    (emacs-cc-treesit-available-p)))
 
 (unless (fboundp 'treesit-font-lock-rules)
   (defun treesit-font-lock-rules (&rest query-specs)

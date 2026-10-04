@@ -1,0 +1,18 @@
+#+TITLE: Demand-driven standard case-table initialization
+#+NOTE: The canonical b34b S1.3 meter passed after direct same-AST driver integration, within its unchanged 55s cap, with all four GNU results and the completion marker. Other cached criteria were marked stale; fresh final-state meter results are required before claiming completion. Artifacts: target/progress/batch34/case-parity-b34b and case-meter-S1.3-b34b. The four-criterion denominator remains unchanged.
+
+* S1 Preserve case-table semantics while removing eager bootstrap work
+** S1.1 Standard mappings are initialized on first demand, with stable table identity
+#+REQUIRES: NELISP_BIN
+cmd: bash test/nelisp-emacs-lib/case-table-lazy-parity.sh --lifecycle
+** S1.2 The retained eager source fails the demand-driven lifecycle check
+#+REQUIRES: NELISP_BIN,NELISP_CASE_TABLE_BEFORE
+cmd: bash test/nelisp-emacs-lib/case-table-lazy-parity.sh --control "$NELISP_CASE_TABLE_BEFORE"
+** S1.3 Standard and buffer-local case-table behavior matches GNU Emacs 31.1
+#+REQUIRES: NELISP_BIN
+cmd: bash test/nelisp-emacs-lib/case-table-lazy-parity.sh --parity
+** S1.4 End to end: the integrated bootstrap and case-table use finish within the existing 50 second cap
+#+REQUIRES: NELISP_BIN
+cmd: bash test/nelisp-emacs-lib/case-table-lazy-parity.sh --bundle
+#+NOTE: Four criteria remain defined; no criterion changed. Whole C-core keeps 24 criteria and all known-red checks. No native entry is added. The lifecycle checker now requires a pristine identity mapping and nil initialization flag; it rejects an initialized table with a wrong mapping, and the eager control fails the identical assertion. The parent measured 44.402s before and 43.057s after the case-only change in separate processes on the same b33f binary (target/progress/batch34/load-profile-{before,after-case}.tsv); these are single-run profiles under changing machine load, not a general speed ratio. The earlier worker exact-50s bundle/use run exited124 during concurrent builds; a later parent run passed with the preceding integrated bundle. The current meter executions remain authoritative after source, bundle or binary changes. Source caller analysis used a bounded extracted slice, so generated/conditional accessors and external/dynamic callers are unresolved. Parity preserves complete error condition data.
+#+NOTE: The parity harness retains the full integrated bootstrap and all four unchanged source forms. GNU Emacs emits a direct quoted-AST eval driver for both runtimes and rereads it to verify complete wrappers, count and order. Real incomplete-source, reserved-sentinel/incomplete-source, dropped, duplicated and reordered controls are rejected; the error fixture preserves full condition data, and valid trailing comments preserve the driver bytes. The prior separate-process diagnostic matched all results but took 58.591s (bootstrap 40.9218s and form evaluation 9.1407s), exceeding the unchanged 55s meter cap. S1.3 remains a real failing command until its final meter execution passes; no fixture or cap was reduced. Control artifacts are in /tmp/case-table-emitter-controls2 and the prior phase profile in /tmp/case-parity-phase-diagnostic.

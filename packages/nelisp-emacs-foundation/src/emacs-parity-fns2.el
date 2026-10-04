@@ -250,18 +250,44 @@ so the whole buffer is replaced.  Returns t."
   "Side table: WINDOW -> (LEFT-WIDTH . RIGHT-WIDTH) for the margin shims.")
 
 (unless (fboundp 'set-window-margins)
-  (defun set-window-margins (window &optional left right)
+  (defun set-window-margins (window left &optional right)
     "Set WINDOW's left and right margins to LEFT and RIGHT columns.
-nil (the default) means no margin.  WINDOW nil means the selected window."
-    (let ((win (or window (and (fboundp 'selected-window) (selected-window)))))
-      (puthash win (cons left right) nemacs-parity--window-margins)
-      nil)))
+nil or zero means no margin.  WINDOW must be live and defaults to the
+selected window.  Widths must be nonnegative integers.  Leave the margins
+unchanged if they would leave fewer than two columns for text.
+Return t if either margin changed, and nil otherwise."
+    (let ((win (or window (selected-window))))
+      (unless (window-live-p win)
+        (signal 'wrong-type-argument (list 'window-live-p win)))
+      (dolist (width (list left right))
+        (when width
+          (unless (integerp width)
+            (signal 'wrong-type-argument (list 'integerp width)))
+          (when (or (< width 0) (> width 2147483647))
+            (signal 'args-out-of-range (list width 0 2147483647)))))
+      (let* ((margins (cons (and left (> left 0) left)
+                            (and right (> right 0) right)))
+             ;; The C-core window-total-width facade may use a fixed width;
+             ;; the window record carries the actual split/resize geometry.
+             (columns (if (and (fboundp 'emacs-window-p)
+                               (emacs-window-p win))
+                          (emacs-window-total-cols win)
+                        (window-total-width win))))
+        (when (and (<= (+ (or left 0) (or right 0)) (- columns 2))
+                   (not (equal margins
+                               (gethash win nemacs-parity--window-margins
+                                        '(nil . nil)))))
+          (puthash win margins nemacs-parity--window-margins)
+          t)))))
 
 (unless (fboundp 'window-margins)
   (defun window-margins (&optional window)
     "Return WINDOW's left and right margins as a cons (LEFT . RIGHT).
-A margin of nil means no margin.  WINDOW nil means the selected window."
-    (let ((win (or window (and (fboundp 'selected-window) (selected-window)))))
+A margin of nil means no margin.  WINDOW must be live and defaults to
+the selected window."
+    (let ((win (or window (selected-window))))
+      (unless (window-live-p win)
+        (signal 'wrong-type-argument (list 'window-live-p win)))
       (gethash win nemacs-parity--window-margins '(nil . nil)))))
 
 ;;;; --- custom.el: custom-current-group (verbatim, 1-liner) -----------

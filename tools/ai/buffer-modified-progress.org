@@ -1,0 +1,19 @@
+#+TITLE: Per-buffer modification state in the standalone fallback
+
+* S1 Tick-based modified flag, restore and auto-save marks
+** S1.1 Modified-flag rows match GNU 31.1 (case group 1)
+#+REQUIRES: NELISP_BIN
+cmd: bash test/nelisp-emacs-lib/buffer-modified-parity.sh
+** S1.2 Flag return values, erase, restore and silent-modification rows match GNU 31.1 (case group 2)
+#+REQUIRES: NELISP_BIN
+cmd: bash test/nelisp-emacs-lib/buffer-modified-parity.sh --cases test/nelisp-emacs-lib/buffer-modified-parity-cases-2.el
+** S1.3 Text-property and auto-save rows match GNU 31.1 (case group 3)
+#+REQUIRES: NELISP_BIN
+cmd: bash test/nelisp-emacs-lib/buffer-modified-parity.sh --cases test/nelisp-emacs-lib/buffer-modified-parity-cases-3.el
+** S1.4 The retained predecessor bundle reproduces the recorded defect (negative control)
+#+REQUIRES: NELISP_BIN
+cmd: bash test/nelisp-emacs-lib/buffer-modified-parity.sh --bundle target/progress/batch33-bundle-before.el --expect-defect f3bcaea0463a4592da6cefa0206b9050d2cb011242c6f80daf266ce35583bec1
+** S1.5 End to end: the canonical fileio-2 unit passes through the C-core runner
+#+REQUIRES: NELISP_BIN
+cmd: bash test/nelisp-emacs-lib/c-core-parity-smoke.sh run --unit fileio-2
+#+NOTE: Lisp fallback owners only (files-standalone-buffer.el, emacs-cc-fileio-2.el); no new native entry. Each parity run includes the roughly 41 second bundle load, so the cases are split in three groups to stay under the 55 second meter cap. Modification is derived from the native per-buffer modification tick; native tick values themselves (GNU starts at 1, standalone at 0) are outside this slice, and the native erase-buffer does not advance the tick, so the fallback marks a non-empty erase explicitly. Whole C-core remains 24 criteria with known-red checks retained.

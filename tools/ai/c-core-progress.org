@@ -13,13 +13,19 @@ end-to-end parity smoke that runs the standalone after the bundle loads and
 diffs against host `emacs --batch` (GNU 31.1).  Batch semantics are the
 reference for display/GUI functions (what GNU returns with no window system).
 
-Units: implementations live in src/emacs-cc-*.el (bundled automatically, in
-name order); probes in test/nelisp-emacs-lib/c-core-probes/*.el as (NAME FORM...) entries.
+Units: implementations live in packages/nelisp-emacs-*/src/emacs-cc-*.el;
+the Doc 211 bootstrap source-root flattens package sources and bundles the
+C-core units in name order.  Probes live in
+test/nelisp-emacs-lib/c-core-probes/*.el as (NAME FORM...) entries.
 C?.2 is the static unit contract (test/nelisp-emacs-lib/c-core-units-test.el: guarded, in the
 area table, not an empty stub).  C?.3 validates the recorded result of
 `sh test/nelisp-emacs-lib/c-core-parity-smoke.sh run` (host vs standalone after the bundle;
 every area name probed, no differing line) and fails when that result is
 older than the bundle, binary, driver, area table or any probe file.
+Every C?.3 and C8.3 also requires a complete 1460-name census, one area
+owner and at least one canonical probe per census name.  The currently
+incomplete inventory remains a failing check until those names and probes
+are actually provided; a bound function alone does not satisfy parity.
 
 * C1 X11/GUI primitives (x-*) with GNU batch semantics
 
@@ -101,6 +107,8 @@ cmd: sh test/nelisp-emacs-lib/c-core-parity-smoke.sh check files
 
 * C7 Remaining C primitives
 
+#+NOTE: json-insert is now included in the area table (675 names; the full objective remains the GNU census of 1460). Its source-loaded public API matches GNU on 12 probe forms, including explicit nil null/false sentinels, and focused ERT passes 11 cases. This does not certify the whole area or the integrated bundle; C7.1 and C7.3 remain real cmd checks. No criterion was added or removed.
+
 ** C7.1 No other C primitive is unbound after the bootstrap bundle loads
 #+REQUIRES: NELISP_BIN
 cmd: sh tools/c-core-coverage.sh check other
@@ -114,13 +122,256 @@ cmd: sh test/nelisp-emacs-lib/c-core-parity-smoke.sh check other
 
 * C8 Whole C core
 
+#+NOTE: 2026-10-04 evening (binary ../ccore-runtime-20261002/target/nelisp-ccore-n1, sha256 49d55d95..., b82 prelude plus the N1 dumper fix: bignum tag 13 relocation, char-table/bool-vector pointer edges, FFI state cleared and libraries reopened lazily after --cold-load-from): the certifying runner now starts every standalone area process from the heap image built by tools/c-core-image.sh (user decision; caps unchanged). Image and source runs were identical for all 7 areas in lane-n1 (process differed only by a PID in a sandbox-denied socket diagnostic). Meter: 70.8% of 24 (17 PASS); C4.3 newly PASS (buffer 325/325). Remaining failures are evaluator/native items now owned by the C-core session (user decision; native-compiler session declined): C2.1/C7.1/C8.1 (backtrace family and positioned symbols unbound), C2.3 (backtrace--frames-from-thread), C5.3 (clear-string), C7.3 (watchers, eval alist, garbage-collect, builtin arity data, symbol-function of special forms, backtrace, positioned symbols), C8.3.
+
+#+NOTE: 2026-10-04 measurement-method change (user-approved), no criterion added or removed: the certifying `c-core-parity-smoke.sh run` now evaluates each of the seven areas in its own fresh host and standalone process (bounded concurrency C_CORE_PARITY_JOBS, per-area output directories, same AREA.result format, same 120 s host / 300 s standalone caps per process). Reasons: GNU 31.1 itself aborts in the former single-process run (set-fontset-font, later posix-looking-at, then string-make-unibyte; delta-debugged and reproduced 3/3), and all 4,221 forms in one standalone process need about 470 s against the 300 s cap. Cross-area state interaction is no longer certified; per-unit and per-area evidence are unaffected. Runner tests: c-core-parity-area-test.sh 27/27; the older c-core-parity-runner-test.py is being adapted to the per-area layout (its alloc_unit_validates_both_xml_streams case already failed before the change). Baseline this session: 50.0% of 24 (12 PASS) on 2026-10-03 with b34b.
+#+NOTE: 2026-10-04 meter (binary ../ccore-runtime-20261002/target/nelisp-ccore-b61, sha256 d6ebc299..., built with NELISP_READER_DYNAMIC=1 from the permanent runtime path; bundle 4c56a277...): 62.5% of 24 (15 PASS). Newly passing: C1.3 (x-gui 31/31), C6.3 (files 97/97), C4.1. Still failing: C2.1/C7.1/C8.1 (7 unbound: backtrace family, position-symbol, read-positioning-symbols, symbol-with-pos-pos, internal-handle-focus-in -> evaluator hooks requested in Notes/handoff/nelisp-ccore_evaluator-hook-request_2026-10-04.md), C2.3 (window/frame rows that differ only when display probes share a process, plus native gaps), C3.3 (pipe unit called an unbundled emacs-eventloop--poll), C4.3 (buffer area times out at 747/931 rows under the 300 s cap), C5.3 (clear-string, native G6), C7.3 (native gaps plus md5/user-*/newline-cache-check/hash index size), C8.3.
+
+#+NOTE: Batch29 adds batch input controls, command-key replacement,
+variable alias inspection/deletion, circular reader substitution, region
+case conversion and builtin metadata. Canonical probes cover actual values,
+mutations and type errors. The separate direct defvaralias path on uninterned
+symbols aborts without signaling in the retained evaluator; it is a failing
+regression, not a qualified alias implementation. Region Unicode casing,
+interactive tty settings and full circular record/hash traversal remain
+unqualified at the first batch29 bundle. A second source batch corrects
+default Unicode title expansions and final sigma, preserves GNU marker
+positions, initializes buffer-owned mark state, and makes buffer-string
+respect narrowing. Its canonical region and accessible-text probes must
+qualify the integrated bundle. Custom case tables, full case-ignorable
+coverage, undo integration and noncontiguous expansion remain unqualified.
+The parity runner now groups units in one bootstrap, writes
+identity-bound transcript receipts and provides area audits that cannot
+create whole-area certification. The whole objective keeps 24 criteria;
+incomplete canonical inventory and all actual divergences stay failing.
+The final buffer follow-up initializes GNU mark-deactivation state and
+routes native deletion through the existing property-interval bookkeeping.
+Eight new delete-region probes exercise complete and partial deletion,
+reversed and marker bounds, read-only rejection, invalid arguments and
+detached markers, preserving GNU error identifiers before interval arithmetic.
+They add one canonically probed primitive; no acceptance criterion is removed.
+
+#+NOTE: Batch28 implements callback dynamic context/immediate continue,
+private POSIX child groups and shared child/event coding. The new three-stage
+process-control ledger adds separate end-to-end criteria; this whole-C-core
+denominator stays unchanged. Native spawn changes are raw OS access under
+minimal-native clause 3; setpgid is internal and adds no Lisp native entry.
+The retained Lisp reference uses syscall-direct/getpgid/kill to validate and
+address the child's private group. Linux x86_64 is the qualification target;
+PTY foreground groups, non-Linux branches and stream coding carry remain
+explicitly unqualified until their end-to-end checks pass.
+The following batch27 note is historical evidence.
+#+NOTE: Batch27 aligns TERM/INT/deletion sentinel text and terminal status
+with GNU, retaining exited state after descriptor cleanup. Signal messages
+come from libc strsignal; locale/core-dump suffix and reentrant callback
+contracts remain incomplete. Wait status memory is reused per child; the
+20-query allocation probe must show the measured reduction and fail before
+the change. Integrated terminal and prior lifecycle probes qualify this
+batch. No native arm or criterion is added; denominator unchanged.
+The following batch26 note is historical evidence.
+#+NOTE: Batch26 retains observed stop/continue wait transitions until the
+event loop dispatches lifecycle sentinels. Stops must not consume the terminal
+notification. Integrated transition parity and its calibrated negative are
+required before qualification. Full process criteria remain failing.
+The following batch25 note is historical evidence.
+#+NOTE: Batch25 adds a Lisp POSIX signal/wait reference, so signaling a live
+native child no longer deletes its object or closes its pipes. Stop/continue
+are observed separately from terminal exit. Deleting a stopped child uses
+SIGKILL before the existing native cleanup; executable lookup uses PATH.
+The old bundle fails the real-child negative control. Focused lifecycle
+parity covers signal zero, TSTP/STOP, CONT, USR1 and preserved stdin/filter
+output. Private/foreground process-group routing, lifecycle sentinels,
+network/serial/pipe traffic suppression, remote hooks and non-POSIX behavior
+remain incomplete, so area end-to-end criteria remain failing. Darwin
+syscall/status branches are not runtime-qualified. Denominator unchanged.
+Late event-owned public accessors masked native child accessors in the first
+integrated bundle. The event provider now dispatches child fields/I/O to the
+IO facade while retaining its own vectors and registry. A separate owner
+probe keeps the event-vector contract covered alongside real-child I/O.
+The following batch24 note is historical evidence.
+#+NOTE: Batch24 adds GNU eval-region endpoint parity (nil/low/reversed,
+markers and narrowing), and preserves visible reader movement on errors
+when START is nil. The preceding bundle fails the retained negative control.
+The new source candidate passes ten boundary forms; integrated results must
+qualify the bundle. No whole-area criterion or denominator is changed.
+The following batch23 note is historical evidence.
+#+NOTE: Batch23 routes save-excursion restoration through the shared public
+buffer setter, preserving marker-based point movement and local ownership.
+Canonical probes cover normal/nested switching, insertion before saved point,
+error unwinding and deleted buffers.  Full-area criteria and denominator
+remain unchanged; focused passes cannot complete the whole objective.
+The eval-region candidate uses a bounded buffer stream with independent
+reader movement, and probes custom reading, output and evaluation errors.
+Its focused checks must pass before the implementation is certified.
+The following batch22 note is historical evidence.
+Batch22 repairs symbol-function's evaluator fast-path arity and
+type signaling through the environment protocol.  Canonical probes retain
+its preceding abort and add nil/t and invalid-type cases.  Related active
+buffer-kill local restoration is tested against GNU.  No criterion changed.
+The corrected native candidate passes the complete 175-case fixed-arity
+corpus, aggregate arity nine cases and list/state recovery 36 cases.
+Symbol-function integrated parity passes seven forms.  The first native
+candidate crashed because the signal ABI received separate symbol/data
+instead of a full signal cons; that failure is retained.  Imported ABI
+validation now rejects the original wrong call and an empty scope.
+Active/inactive buffer-kill parity passes four forms.  Public live local
+reads and setq-default now use the shared owner/default cells; two forms
+match GNU.  The legacy setq-default alias is replaced only on standalone.
+These focused passes do not complete the remaining 45 bindings or full
+canonical inventory.  The full objective still has the same 24 criteria.
+The following batch21 note is historical evidence.
+Batch21 guards aggregate predicate public arity in Lisp and extends
+the existing native fixed-arity contract for three existing predicates.
+No native API or criterion was added.  Aggregate canonical parity and the
+expanded explicit-builtin arity corpus must both pass before completion.
+The three new native predicate contracts pass nine focused cases, while
+the expanded whole fixed-arity corpus remains failing at symbol-function's
+evaluator fast path.  Its named zero/two-argument probes are now canonical;
+do not suppress the broader failure.  Native candidate is built once.
+Public buffer ownership now supplies the local sidecar owner on standalone.
+The set-buffer and buffer-selection macros swap shared local cells through
+the preserved public setter; temporary-buffer cleanup removes the sidecar.
+The repaired binding-locus unit matches GNU on ten forms, including nested
+ownership, changed local values and error unwinding; host local/swap ERT
+passes 18 cases.  The preceding owner failures remain recorded controls.
+Other buffer routes, including save-excursion and killing the active owner,
+still need independent integrated parity; this is not whole-area completion.
+The following batch20 note is historical evidence.
+Batch20 adds obarray-clear and variable-binding-locus through the
+existing obarray table and buffer-local owner.  Public API parity probes
+cover state transitions, isolation, identity, type and arity errors.
+Obarray source parity passes seven forms.  Nested-buffer owner probes
+expose a native/public versus Lisp-model buffer-owner mismatch:
+current-buffer and nelisp-ec-current-buffer differ in nested temp buffers.
+An attempted rest-buffer binding repair did not fix it and was reverted.
+The existing host local/swap tests pass 18 cases; integrated owner parity
+remains failing and must be repaired through a shared buffer substrate.
+Aggregate predicate probes retain a real recordp zero-arity crash and
+lambda-vs-public-name arity mismatches; no native rebuild has occurred.
+The relative --extra loader path now resolves at invocation; the same
+obarray source command changes from load failure to seven matching rows.
+The same 24 cmd criteria remain authoritative; no denominator change.
+The following batch19 note is historical evidence.
+The 2026-10-02 batch19 implements byte8 conversions, explicit
+ASCII-multibyte metadata, mixed concat/format, and numeric append/vconcat.
+The native reader passes storage 23/23 and conversion 100/103; three
+conversion error positions remain red in the bare native test.  The Lisp
+package provider corrects those positions without another ELF build and
+passes 103/103 when preloaded.  It checks arity before captured native
+apply, whose zero-argument call crashes.  The obsolete string-make-unibyte
+operation truncates Unicode characters to eight bits rather than using
+string-to-unibyte's rejection semantics.  Canonical probes cover both
+behaviors, type errors, identity and wrong arity.
+Mixed raw-byte/Unicode reader literals
+and unverified string producers remain follow-up work.  No criterion or
+denominator changed; focused evidence does not certify whole-area parity.
+The following batch18 note is historical evidence.
+The 2026-10-02 batch18 adds caret text character descriptions
+and exclusive character reading through the shared queued/live input
+substrate.  It repairs the existing ASCII Shift/Control reflection and
+modifier bit positions.  Shared event readers prioritize post-input-method
+events and avoid transforming those events twice.  Integrated character
+input parity passes 15 forms; 5 host ERT cases cover live polling, timeout,
+cross-reader input-method output, queue priority and delayed frame events.
+The native storage repair now preserves GNU's byte8 two-byte representation
+and five-byte extended characters.  Full-range character storage, substring,
+concatenation and both printer paths pass 23 GNU parity cases; the preceding
+reader passes only 9/23.  All 22 integrated description/modifier forms pass,
+including the retained formerly red scalar/byte-count probes and new boundaries.
+Native throw/catch regression also retains GNU=26, worker=3, parent=1,
+uncaught=1.  The focused storage runner reduces runtime startups from 46
+to 2; the corrected batched negative control takes 3.764s and repaired run
+3.814s.  The earlier per-form diagnostic used an incorrect CLI output
+contract, so its elapsed time is not a comparable benchmark.
+Existing raw-byte multibyte conversion still signals
+nelisp-raw-byte-unrepresentable and remains a separate implementation gap.
+Genuine stdin without an installed input backend and physical tty quit
+configuration still require their substrate; set-quit-char is unimplemented.
+Coverage is 1413/1460, 47 missing: display 3, process 7, buffer 13,
+chars 1, files 3, other 20.  Inventory is 714 names/2014 forms with
+746 names unprobed.  One native ELF build batches the storage and printer
+repairs; no new public native entry was added (existing allocation/tagged
+string access, minimal-native clause 1).
+Full inventory and whole-area parity remain red with the same denominator.
+The following batch17 through batch14 notes are historical evidence.
+The 2026-10-02 batch17 repairs direct throw/catch operand-list
+validation before any operand is evaluated.  Wrong arity signals the
+special-form symbol and count; dotted tails signal wrong-type-argument
+listp.  All four previously red direct throw probes now pass in the
+27-form integrated throw unit.  Native GNU parity passes 26 cases, real
+workers 3, parent catch retention 1 and uncaught CLI signaling 1; the
+preceding reader fails the extended negative control.  Native reader
+target/nelisp-ccore-arity in the isolated runtime checkout has SHA256
+2825201b4a74abc23a22c0caf9749744e638ab397711817f54997b96ea341659,
+generator SHA256
+3135c6bcc7852bd085a14199efaf574ade842db07d1b34a270f46f9503650ff4.
+No public native entry was added.  New module object predicates reject
+records spoofing GNU's opaque type names; source-first parity passes 21
+forms.  Genuine opaque module constructors and module-loading support
+remain a separate runtime gap, so these predicates do not prove that
+support complete.  Coverage is 1411/1460 with 49 missing: display 3,
+process 7, buffer 13, chars 3, files 3, other 20.  Canonical inventory
+has 710 names and 1977 forms, leaving 750 names unprobed.  Full inventory
+and whole-area parity remain red, with the same 24-criterion denominator.
+The following batch16, batch15 and batch14 notes are historical evidence.
+The 2026-10-02 batch16 adds a callable throw bridge and repairs
+the existing native evaluator's catch-target ownership, no-catch signaling
+and GNU nil-tag rejection.  This is evaluator-internal work under
+minimal-native clause 2, with no new public native entry or inventory item.
+The isolated reader SHA256 is
+eeaacc1c52d84be3621ead72f41c4f28ef7b77d49a1cb4cfa635faed3623f105;
+its generator SHA256 is
+ac0c7bc505fda839ecf44237fae59d91548072dbb20a19d1dffdad6bc0ec2469.
+GNU parity passes 15 native catch-target cases, 3 real evaluator worker
+cases, parent catch retention and uncaught CLI signaling; the same harness
+fails on the pinned pre-change reader.  The first 23 integrated throw
+forms pass after fixing callable arity data to identify the called function.
+Four additional direct special-form arity probes remain red: throw with
+zero arguments aborts without signaling, and malformed operands must be
+rejected before evaluation.  That red probe is retained for the next native
+batch; throw semantics are not claimed complete.  Coverage is 1409/1460,
+with 51 missing (display 3, process 8, buffer 13, chars 3, files 3, other 21).
+Canonical inventory has 708 names and 1956 forms, leaving 752 names
+unprobed.  Complete inventory and whole-area parity still fail closed,
+and the 24-criterion denominator is unchanged.
+The following batch15 and batch14 notes are historical evidence.
+The 2026-10-02 batch15 bootstrap adopts the shared terminal frame
+owner, normalizes terminal geometry and visibility operations, and aligns
+the face validator with that owner.  It adds visible-frame-list and fixes
+thread-live-p and thread-name for the synchronous fallback constructor.
+Coverage is 1408/1460 bound: display 3, process 8, buffer 13, chars 3,
+files 3, other 22 remain unbound.  Canonical inventory has 708/1460 names
+and 1940 forms, with 752 names still unprobed and no unknown probe names.
+The callable throw prototype remains outside the bootstrap because an
+unmatched throw bypasses condition-case in the pinned native evaluator.
+Its canonical negative probe remains red; no workaround or waiver is used.
+The following batch14 results remain historical evidence.
+The 2026-10-02 batch14 bootstrap adds threadp, mutexp, and
+condition-variable-p, recognizing the existing constructors' fallback
+objects and native type tags.  Its 17 canonical forms match GNU for
+constructed objects, unrelated values, cross-type rejection, and arity.
+Batch13's 31 property/overlay forms also passed, including native buffer
+ownership and narrowed bounds.  Coverage is 1407/1460 bound, leaving 53
+unbound.  GNU help-C-file-name
+ownership now fills all 1460 area assignments, preserving the 750 curated
+rows and classifying the remaining 710 by source domain with mixed-source
+exceptions for buffer-local, string, loading, message, and identity APIs.
+Canonical probe coverage is 701/1460 names, leaving 759 unprobed; this
+remains a real failing inventory check.  The editfns-1 and composite-1 focused
+probes still have their independently reproduced batch9 divergences; neither
+is counted as complete.  The full parity runner validates the actual
+GNU and NeLisp malloc XML through c-core-stderr.py while keeping unrelated
+stderr strict.  Complete inventory and whole-area parity still fail closed;
+none of those failures is waived, and the 24-criterion denominator is unchanged.
+
 ** C8.1 All 1460 GNU 31.1 C primitives are bound after the bootstrap bundle loads
 #+REQUIRES: NELISP_BIN
 cmd: sh tools/c-core-coverage.sh summary | awk '{s+=$3} END{exit !(NR==7 && s==0)}'
 
-** C8.2 The bootstrap bundle still loads within its 50s cap with every area added
+** C8.2 The runtime starts from a heap image of the full bootstrap bundle within its 50s cap with every area added
 #+REQUIRES: NELISP_BIN
-cmd: timeout 50 "$NELISP_BIN" --eval "(progn (load (expand-file-name \"build/nemacs-bootstrap.el\") nil t) (princ \"BOOT-OK\"))" 2>&1 | grep -q BOOT-OK
+cmd: bash -c 'bash tools/c-core-image.sh build >/dev/null 2>&1 && bash tools/c-core-image.sh check'
+#+NOTE: 2026-10-04 measurement-method change (user decision: the finished system starts from a dumped image; cap unchanged at 50 s). tools/c-core-image.sh build loads build/nemacs-bootstrap.el, dumps the heap with nelisp--arena-dump-image-stream into build/c-core-image/<identity>.flat (identity = sha256 of binary, its .cold and the bundle; ~63 s, ~966 MB), and check starts the binary with --cold-load-from and requires a marker within 50 s (b82: 0.466 s; corrupted-image control rejected in lane-b83). The former source-load command took 62 s on 2026-10-04 (load-time work from B77/B78/B79/case-table). The per-area parity runner still loads the source bundle: the image path crashes (SIGSEGV) in display/process/other because the runtime dumper omits bignum tag 13, and zlib FFI handles differ after restore; requested from the builder owner in Notes/handoff/nelisp-ccore_evaluator-hook-request_2026-10-04.md. Lane-b83's image-based runner and tests are kept in target/progress/batch83 for adoption once the dumper is fixed.
 
 ** C8.3 End to end: every area parity smoke passes in one run against the same binary
 #+REQUIRES: NELISP_BIN

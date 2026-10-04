@@ -89,9 +89,9 @@ an `emacs-stub-bulk' placeholder."
     #'emacs-command-loop-this-command-keys-vector))
 
 (when (emacs-command-loop-builtins--install-function-p 'this-single-command-keys)
-  ;; MVP: no menu-event distinction; same as `this-command-keys'.
-  (defalias 'this-single-command-keys
-    #'emacs-command-loop-this-command-keys))
+  (defun this-single-command-keys ()
+    "Return the last command's key sequence as a vector of events."
+    (emacs-command-loop-this-command-keys-vector)))
 
 (when (emacs-command-loop-builtins--install-function-p 'this-single-command-raw-keys)
   (defalias 'this-single-command-raw-keys
@@ -105,15 +105,55 @@ an `emacs-stub-bulk' placeholder."
   (defalias 'recent-keys #'emacs-command-loop-recent-keys))
 
 (when (emacs-command-loop-builtins--install-function-p 'read-key-sequence)
-  (defalias 'read-key-sequence
-    #'emacs-command-loop-read-key-sequence))
+  (defun read-key-sequence (prompt &optional continue-echo dont-downcase-last
+                                  can-return-switch-frame cmd-loop
+                                  disable-text-conversion)
+    "Read a complete key sequence, displaying PROMPT when non-nil."
+    (unless (or (null prompt) (stringp prompt))
+      (signal 'wrong-type-argument (list 'stringp prompt)))
+    (emacs-command-loop-read-key-sequence
+     prompt continue-echo dont-downcase-last can-return-switch-frame cmd-loop)))
 
 (when (emacs-command-loop-builtins--install-function-p 'read-key-sequence-vector)
-  (defalias 'read-key-sequence-vector
-    #'emacs-command-loop-read-key-sequence-vector))
+  (defun read-key-sequence-vector (prompt &optional continue-echo
+                                         dont-downcase-last
+                                         can-return-switch-frame cmd-loop
+                                         disable-text-conversion)
+    "Read a complete key sequence and return it as a vector of events."
+    (unless (or (null prompt) (stringp prompt))
+      (signal 'wrong-type-argument (list 'stringp prompt)))
+    (emacs-command-loop-read-key-sequence-vector
+     prompt continue-echo dont-downcase-last can-return-switch-frame cmd-loop)))
 
 (when (emacs-command-loop-builtins--install-function-p 'call-interactively)
-  (defalias 'call-interactively #'emacs-command-loop-call-interactively))
+  (defun call-interactively (function &optional record-flag keys)
+    "Call FUNCTION using its interactive specification and current prefix.
+When RECORD-FLAG is non-nil, record the invocation in `command-history'.
+KEYS, when non-nil, must be a vector of invoking events."
+    (unless (or (null keys) (vectorp keys))
+      (signal 'wrong-type-argument (list 'vectorp keys)))
+    (unless (emacs-command-loop--commandp function)
+      (signal 'wrong-type-argument (list 'commandp function)))
+    (let* ((form (emacs-command-loop--interactive-form function))
+           (emacs-command-loop--current-prefix-arg current-prefix-arg)
+           (args (emacs-command-loop--build-args (cadr form))))
+      (unless (listp args)
+        (signal 'wrong-type-argument (list 'listp args)))
+      (when record-flag
+        (let ((entry (list function))
+              (rest args))
+          (while rest
+            (let ((arg (car rest)))
+              (setq entry
+                    (append entry
+                            (list (if (or (consp arg)
+                                          (and (symbolp arg) arg
+                                               (not (eq arg t))))
+                                      (list 'quote arg)
+                                    arg)))))
+            (setq rest (cdr rest)))
+          (setq command-history (cons entry command-history))))
+      (apply #'funcall-interactively function args))))
 
 (when (emacs-command-loop-builtins--install-function-p 'funcall-interactively)
   (defalias 'funcall-interactively #'emacs-command-loop-funcall-interactively))
@@ -154,8 +194,12 @@ an `emacs-stub-bulk' placeholder."
   (defalias 'keyboard-quit #'emacs-command-loop-keyboard-quit))
 
 (when (emacs-command-loop-builtins--install-function-p 'exit-recursive-edit)
-  (defalias 'exit-recursive-edit
-    #'emacs-command-loop-exit-recursive-edit))
+  (defun exit-recursive-edit ()
+    "Exit the innermost recursive edit, or signal a user error."
+    (interactive)
+    (if (zerop emacs-command-loop--recursion-depth)
+        (signal 'user-error '("No recursive edit is in progress"))
+      (emacs-command-loop-exit-recursive-edit))))
 
 (when (emacs-command-loop-builtins--install-function-p 'kill-emacs)
   (defalias 'kill-emacs #'emacs-command-loop-kill-emacs))

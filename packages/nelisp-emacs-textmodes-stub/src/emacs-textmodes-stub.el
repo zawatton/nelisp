@@ -180,7 +180,22 @@ nil means infer each paragraph's direction from its own content."))
 
 (unless (fboundp 'delete-and-extract-region)
   (defun delete-and-extract-region (beg end)
-    "Delete text between BEG and END and return it."
+    "Delete text between BEG and END and return it.
+BEG and END must be integers or markers pointing into a buffer.
+The bounds may be given in either order."
+    ;; Resolve each argument before checking the next, as GNU Emacs does.
+    (cond
+     ((markerp beg)
+      (setq beg (or (marker-position beg)
+                    (signal 'error (list "Marker does not point anywhere")))))
+     ((not (integerp beg))
+      (signal 'wrong-type-argument (list 'integer-or-marker-p beg))))
+    (cond
+     ((markerp end)
+      (setq end (or (marker-position end)
+                    (signal 'error (list "Marker does not point anywhere")))))
+     ((not (integerp end))
+      (signal 'wrong-type-argument (list 'integer-or-marker-p end))))
     (let ((text (buffer-substring beg end)))
       (delete-region beg end)
       text)))

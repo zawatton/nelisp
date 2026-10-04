@@ -1,5 +1,7 @@
 ;;; emacs-cc-treesit-4.el --- tree-sitter C primitive fallbacks -*- lexical-binding: t; -*-
 
+(require 'emacs-cc-treesit-5)
+
 (defun emacs-cc-treesit-4--parser-error (parser)
   (signal 'wrong-type-argument (list 'treesit-parser-p parser)))
 
@@ -38,7 +40,8 @@
       (signal 'wrong-type-argument (list 'stringp string)))
     (unless (symbolp language)
       (signal 'wrong-type-argument (list 'symbolp language)))
-    (signal 'treesit-error (list "Tree-sitter support is not available"))))
+    (emacs-cc-treesit-load-language language)
+    (signal 'treesit-error '("Parsing with installed grammars is not implemented"))))
 
 (unless (fboundp 'treesit-pattern-expand)
   (defun treesit-pattern-expand (pattern)
@@ -64,20 +67,31 @@
 (unless (fboundp 'treesit-query-capture)
   (defun treesit-query-capture (node query &optional beg end node-only grouped)
     "Query NODE with patterns in QUERY."
-    (unless (or (stringp query) (consp query))
+    (unless (treesit-query-p query)
       (signal 'wrong-type-argument (list 'treesit-query-p query)))
-    (signal 'treesit-query-error (list "Tree-sitter support is not available"))))
+    (unless (or (null node) (symbolp node))
+      (signal 'wrong-type-argument
+              (list '(or treesit-node-p treesit-parser-p symbolp) node)))
+    (emacs-cc-treesit-load-language node)
+    (signal 'treesit-error '("Parsing with installed grammars is not implemented"))))
 (unless (fboundp 'treesit-query-compile)
   (defun treesit-query-compile (language query &optional eager)
     "Compile QUERY to a compiled query."
-    (unless (or (stringp query) (consp query))
+    (unless (treesit-query-p query)
       (signal 'wrong-type-argument (list 'treesit-query-p query)))
     (unless (symbolp language)
       (signal 'wrong-type-argument (list 'symbolp language)))
-    (signal 'treesit-query-error (list "Tree-sitter support is not available"))))
+    (when eager
+      (emacs-cc-treesit-load-language
+       (if (treesit-compiled-query-p query) (treesit-query-language query) language))
+      (signal 'treesit-error '("Queries with installed grammars are not implemented")))
+    (if (treesit-compiled-query-p query) query
+      (emacs-cc-treesit-make-query language query))))
 (unless (fboundp 'treesit-query-eagerly-compiled-p)
   (defun treesit-query-eagerly-compiled-p (query)
     "Return non-nil if QUERY is eagerly compiled."
-    (signal 'wrong-type-argument (list 'treesit-compiled-query-p query))))
+    (unless (treesit-compiled-query-p query)
+      (signal 'wrong-type-argument (list 'treesit-compiled-query-p query)))
+    (and (aref query 3) t)))
 
 (provide 'emacs-cc-treesit-4)

@@ -1,0 +1,63 @@
+(add-face-text-property
+ (with-temp-buffer
+   (insert "abcdef")
+   (put-text-property 2 4 'face 'old)
+   (put-text-property 4 6 'face '(older oldest))
+   (list (add-face-text-property 1 7 'new)
+         (mapcar (lambda (p) (get-text-property p 'face)) '(1 2 3 4 5 6))))
+ (with-temp-buffer
+   (insert "abc")
+   (put-text-property 1 4 'face 'old)
+   (list (add-face-text-property 1 4 'new t)
+         (get-text-property 1 'face)))
+ (with-temp-buffer
+   (insert "a")
+   (put-text-property 1 2 'face nil)
+   (add-face-text-property 1 2 'new)
+   (list (get-text-property 1 'face)
+         (text-properties-at 1)))
+ (let ((s (copy-sequence "abcd")))
+   (put-text-property 1 3 'face 'old s)
+   (list (add-face-text-property 0 4 'new nil s)
+         (mapcar (lambda (p) (get-text-property p 'face s)) '(0 1 2 3))))
+ (with-temp-buffer
+   (insert "a")
+   (put-text-property 1 2 'face 'old)
+   (add-face-text-property 1 2 'old)
+   (get-text-property 1 'face))
+ (with-temp-buffer
+   (insert "abc")
+   (put-text-property 1 4 'help-echo "unchanged")
+   (add-face-text-property 2 3 'new)
+   (mapcar (lambda (p) (text-properties-at p)) '(1 2 3)))
+ (with-temp-buffer
+   (insert "abc")
+   (list (add-face-text-property 2 2 'new)
+         (add-face-text-property 3 1 'new)
+         (text-properties-at 2)))
+ (with-temp-buffer
+   (insert "a")
+   (set-text-properties 1 2 '(help-echo "h" face old keymap nil))
+   (add-face-text-property 1 2 'new)
+   (text-properties-at 1))
+ (let ((s (copy-sequence "abc")))
+   (add-face-text-property 3 1 'new nil s)
+   (mapcar (lambda (p) (text-properties-at p s)) '(0 1 2)))
+ (condition-case err
+     (with-temp-buffer (insert "abc")
+       (add-face-text-property nil 2 'new))
+   (error err))
+ (condition-case err
+     (with-temp-buffer (insert "abc")
+       (add-face-text-property 1 "x" 'new))
+   (error err))
+ (condition-case err (add-face-text-property 1 2 'new nil 17)
+   (error err))
+ (condition-case err
+     (with-temp-buffer (insert "abc")
+       (add-face-text-property 1 8 'new))
+   (error err))
+ (condition-case err (add-face-text-property)
+   (error (list (car err) (cadr err) (caddr err))))
+ (condition-case err (add-face-text-property 1 2 'new nil nil 'extra)
+   (error (list (car err) (cadr err) (caddr err)))))
