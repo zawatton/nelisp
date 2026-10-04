@@ -11,8 +11,13 @@
   },
   "dispatch_note": "BYTE_CODE_SAFE and BYTE_CODE_THREADED are compile-time details not exposed by system-configuration-options. GNU bytecode.c defaults BYTE_CODE_SAFE to false; GCC non-strict builds then select threaded dispatch. The fixture records observed behavior of this exact executable, not a universal GNU build contract.",
   "valid_control": {
-    "bytecode": [192, 135],
-    "constants": [42],
+    "bytecode": [
+      192,
+      135
+    ],
+    "constants": [
+      42
+    ],
     "declared_stack_depth": 1,
     "exit_code": 0,
     "stdout": "42"
@@ -54,6 +59,18 @@
       "opcode": 55,
       "exit_code": 255,
       "error": "Invalid byte opcode: op=55, ptr=0",
+      "timed_out": false
+    },
+    {
+      "opcode": 107,
+      "exit_code": 255,
+      "error": "Invalid byte opcode: op=107, ptr=0",
+      "timed_out": false
+    },
+    {
+      "opcode": 115,
+      "exit_code": 255,
+      "error": "Invalid byte opcode: op=115, ptr=0",
       "timed_out": false
     },
     {

@@ -87,7 +87,10 @@
                  :argument-max :rest-argument-p :initial-stack-depth :code
                  :constants :frame-result)))
     (and fresh
-         (eq (plist-get fresh :status) 'complete)
+         ;; A fresh input can retain non-fixnum/primitive diagnostics while
+         ;; its canonical rooted plan proves those operations through F1.
+         ;; Analyze still requires that independently admitted complete plan.
+         (memq (plist-get fresh :status) '(complete unsupported))
          (cl-every (lambda (key) (equal (plist-get input key)
                                         (plist-get fresh key)))
                    keys))))
@@ -100,7 +103,6 @@
          (topology (and (eq (plist-get plan :status) 'complete)
                         (nelisp-bytecode-native-rooted-cfg-topology-check frame))))
     (if (not (and canonical
-                  (eq (plist-get input :status) 'complete)
                   (eq (plist-get plan :status) 'complete)
                   (eq (plist-get topology :status) 'complete)))
         (list :status 'unsupported :reason "input lacks a fresh complete rooted CFG plan")

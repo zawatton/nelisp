@@ -2451,7 +2451,7 @@ The enclosing CFG admission must still authenticate the complete contract."
 (let ((cfg-validator-owner
        (symbol-function 'nelisp-bytecode-native-rooted-cfg-contract-valid-p)))
 (defun nelisp-native-load-raw-v2-compile-file
-    (source-path artifact-path &optional build-id binary-sha256 call1-template rooted-stack-spec conditional-spec rooted-branch-spec rooted-branch-join-spec rooted-cfg-spec safe-v3-spec validation-receiver)
+    (source-path artifact-path &optional build-id binary-sha256 call1-template rooted-stack-spec conditional-spec rooted-branch-spec rooted-branch-join-spec rooted-cfg-spec safe-v3-spec validation-receiver source-snapshot)
   "Compile a complete GC/arena SOURCE-PATH to v2 ARTIFACT-PATH.
 
 The source is a snapshot of ordinary raw `defun' forms.  The canonical
@@ -2467,7 +2467,9 @@ seven-argument entry points), and every external relocation must be one of
 the resolver names.  The generated manifest is a v2 raw artifact; v1 callers
 continue to use `nelisp-native-load-raw-compile-file'.
 VALIDATION-RECEIVER is internal: when supplied, receive the validated CFG
-object, its print digest and validator identity after output publication."
+object, its print digest and validator identity after output publication.
+SOURCE-SNAPSHOT is internal: (FORMS . SOURCE-BYTES) from the emitter, avoiding
+file reading and parsing while retaining identical source provenance."
   (cl-labels ((stage (label)
                 (let ((path (getenv "NELISP_ROOTED_CFG_STAGE_LOG")))
                   (when (and (stringp path) (> (length path) 0))
@@ -2497,11 +2499,13 @@ object, its print digest and validator identity after output publication."
   (unless (fboundp 'nelisp-aot-compile-to-link-unit)
     (error "nelisp-native-load: raw compiler is unavailable in this runtime"))
   (let* ((source
-          (with-temp-buffer
+          (if source-snapshot (cdr source-snapshot)
+           (with-temp-buffer
             (set-buffer-multibyte nil)
             (insert-file-contents-literally source-path)
-            (buffer-string)))
-         (forms (nelisp-native-load--raw-source-forms source-path source))
+            (buffer-string))))
+         (forms (if source-snapshot (car source-snapshot)
+                  (nelisp-native-load--raw-source-forms source-path source)))
          (contract (nelisp-native-load--raw-v2-contract))
          (resolver-symbols (nelisp-native-load--raw-v2-symbols))
          (layout nelisp-native-load-raw-layout-id-v2)
@@ -3141,7 +3145,7 @@ object, its print digest and validator identity after output publication."
 )
 
 (defun nelisp-native-load--raw-v2-compile-file-with-validation
-    (source-path artifact-path &optional build-id binary-sha256 call1-template rooted-stack-spec conditional-spec rooted-branch-spec rooted-branch-join-spec rooted-cfg-spec safe-v3-spec)
+    (source-path artifact-path &optional build-id binary-sha256 call1-template rooted-stack-spec conditional-spec rooted-branch-spec rooted-branch-join-spec rooted-cfg-spec safe-v3-spec source-snapshot)
   "Return the compiled manifest and its call-local CFG validation receipt."
   (let (validated-contract digest validator)
     (let ((manifest
@@ -3151,7 +3155,8 @@ object, its print digest and validator identity after output publication."
             rooted-branch-join-spec rooted-cfg-spec safe-v3-spec
             (lambda (contract print-digest owner)
               (setq validated-contract contract digest print-digest
-                    validator owner)))))
+                    validator owner))
+            source-snapshot)))
       (list :manifest manifest :validated-contract validated-contract
             :digest digest :validator validator))))
 

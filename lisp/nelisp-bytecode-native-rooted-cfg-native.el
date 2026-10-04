@@ -70,8 +70,9 @@
                        (symbol-function 'nelisp-native-load-compiler-f1-runtime-p)))
       (lookup (symbol-function 'symbol-function))
       (same (symbol-function 'eq)))
-(defun nelisp-bytecode-native-rooted-cfg-native--build (input artifact-path shared-v2 &optional guard-mode)
-  "Build verified INPUT using the v1 or shared-v2 rooted-CFG emitter."
+(defun nelisp-bytecode-native-rooted-cfg-native--build (input artifact-path shared-v2 &optional guard-mode skip-seal)
+  "Build verified INPUT using the v1 or shared-v2 rooted-CFG emitter.
+SKIP-SEAL is internal to cache compilation; its result cannot be admitted."
   (cl-labels ((stage (label &optional source)
                 (condition-case nil
                 (let ((path (getenv "NELISP_ROOTED_CFG_STAGE_LOG")))
@@ -104,7 +105,7 @@
                         (let ((path (make-temp-file "nelisp-rooted-cfg-" nil ".el")))
                           (stage "source-end" path)
                           path)))
-         (forms nil) (manifest nil) (result nil)
+         (forms nil) (source-snapshot nil) (manifest nil) (result nil)
          (result-contract
           (and (eq (plist-get emitted :status) 'complete)
                (progn
@@ -149,7 +150,13 @@
                         (list (plist-get emitted :form))))
           (with-temp-file source
             (let ((print-length nil) (print-level nil))
-              (dolist (form forms) (prin1 form (current-buffer)) (insert "\n"))))
+              (dolist (form forms) (prin1 form (current-buffer)) (insert "\n"))
+              (setq source-snapshot (cons forms (buffer-string)))))
+          ;; GNU Emacs records the encoding actually selected by write-region.
+          ;; The standalone raw writer sends buffer-string bytes unchanged.
+          (when (and (boundp 'last-coding-system-used) last-coding-system-used)
+            (setcdr source-snapshot
+                    (encode-coding-string (cdr source-snapshot) last-coding-system-used)))
           (stage "compile-start" source)
           (let* ((built-contract result-contract)
                  (cfg-spec (and built-contract
@@ -164,7 +171,7 @@
                  (nelisp-native-load--raw-v2-compile-file-with-validation
                   source artifact-path
                   (if shared-v2 "gnu31-rooted-cfg-shared-v2" "gnu31-rooted-cfg-v1") binary
-                  nil nil nil nil nil cfg-spec)))
+                  nil nil nil nil nil cfg-spec nil source-snapshot)))
             (setq manifest (plist-get compiled :manifest))
             (stage "compile-return" source)
             (let ((problems
@@ -174,7 +181,7 @@
               (when problems
                 (error "rooted-cfg: raw-v2 artifact refused: %S" problems))))
           (stage "manifest-accepted" source))
-          (stage "result-seal-start" source)
+          (unless skip-seal (stage "result-seal-start" source))
           (setq result
                 (list :status 'complete :input input :plan plan
                       :contract result-contract :form (plist-get emitted :form)
@@ -187,12 +194,14 @@
                       :immediate-initializers (plist-get emitted :immediate-initializers)
                       :artifact-path (expand-file-name artifact-path)
                       :artifact-file-sha256
-                      (nelisp-bytecode-native-rooted-cfg-native--file-sha256 artifact-path)
+                      (unless skip-seal
+                        (nelisp-bytecode-native-rooted-cfg-native--file-sha256 artifact-path))
                       :runtime-binary-sha256 binary :manifest manifest))
-          (push (cons result
-                      (nelisp-bytecode-native-rooted-cfg-native--fingerprint result))
-                nelisp-bytecode-native-rooted-cfg-native--registry)
-          (stage "result-seal-end" source)
+          (unless skip-seal
+            (push (cons result
+                        (nelisp-bytecode-native-rooted-cfg-native--fingerprint result))
+                  nelisp-bytecode-native-rooted-cfg-native--registry)
+            (stage "result-seal-end" source))
           result)
       (stage "cleanup-source-start" source)
       (when (file-exists-p source) (delete-file source))

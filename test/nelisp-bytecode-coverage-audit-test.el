@@ -35,7 +35,7 @@
                   (cdr (assq 'native-raw-i64-slice counts))
                   (cdr (assq 'legacy-jit-only counts)))))
     (should (= (cdr (assq 'gnu-reserved-invalid counts)) 1))
-    (should (= (cdr (assq 'gnu31.1-pinned-build-invalid counts)) 23))
+    (should (= (cdr (assq 'gnu31.1-pinned-build-invalid counts)) 25))
     (should (= (plist-get report :native-raw-i64-count)
                (cdr (assq 'native-raw-i64-slice counts))))
     (should (= (plist-get report :legacy-jit-only-count)

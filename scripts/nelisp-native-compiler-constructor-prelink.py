@@ -7,7 +7,7 @@ from pathlib import Path
 
 ROOTS = ("nl_root_pin_begin_v2", "nl_root_pin_reserve_v2", "nl_root_pin_end_v2",
          "nl_root_pin_slot_v2", "nl_gc_mark_pinned_roots", "nl_gc_mark_thread_roots",
-         "nl_gc_mark_recorded_env", "nl_native_cons_v2", "nl_alloc_symbol")
+         "nl_gc_mark_recorded_env", "nl_cold_grow_chunk0", "nl_gc_conserv_owner_slow", "nl_native_cons_v2", "nl_alloc_symbol")
 
 spec = importlib.util.spec_from_file_location(
     "rooted_prelink", Path(__file__).with_name("nelisp-native-rooted-prelink-closure.py"))

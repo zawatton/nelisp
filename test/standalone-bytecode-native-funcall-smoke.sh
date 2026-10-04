@@ -2,9 +2,15 @@
 set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
-if [[ ${1:-} == --both ]]; then
-  "$0" "${2:-target/nelisp-static}" in-house
-  "$0" "${3:-target/nelisp-dyn}" gccjit
+both=0 cold=0
+while [[ ${1:-} == --* ]]; do
+  case $1 in --both) both=1;; --cold) cold=1;; *) echo "Unknown option: $1" >&2; exit 2;; esac
+  shift
+done
+if (( both )); then
+  options=(); (( cold == 0 )) || options+=(--cold)
+  "$0" "${options[@]}" "${1:-target/nelisp-static}" in-house
+  "$0" "${options[@]}" "${2:-target/nelisp-dyn}" gccjit
   exit
 fi
 binary=${1:-target/nelisp}
@@ -18,25 +24,15 @@ cat > "$work/fixture.el" <<'EL'
 EL
 "${EMACS:-emacs}" -Q --batch --eval "(byte-compile-file \"$work/fixture.el\")" > "$work/host.out" 2>&1
 export F1_FIXTURE="$work/fixture.elc" F1_BACKEND="$backend" NELISP_NATIVE_CACHE="$work/cache"
+export F1B_COLD=$cold
+if [[ $backend != gccjit && -f $binary.cold ]]; then export F1B_COLD=1; fi
 for phase in compile load; do
   export F1_PHASE=$phase
-  python3 - "$binary" "$work" "$phase" <<'PYRUN'
-import os,subprocess,sys,time,json,resource
-from pathlib import Path
-binary,work,phase=sys.argv[1:]; directory=Path(work)
-start=time.monotonic()
-with directory.joinpath(phase+'.out').open('w') as stdout, directory.joinpath(phase+'.err').open('w') as stderr:
-    command=['timeout','120',binary]
-    # F1 proof issuance segfaults in the generated dynamic cold cohort.
-    # Normal boot is qualified for gccjit; both images are regenerated.
-    if os.environ['F1_BACKEND'] != 'gccjit' and Path(binary+'.cold').is_file(): command += ['--cold-load-from',str(Path(binary+'.cold').resolve())]
-    result=subprocess.run(command+['-L','lisp','-L','src','-L','scripts','-L','packages/nl-ffi/src','-L','packages/nl-prelude/src','--load','test/standalone-bytecode-native-funcall-driver.el'],stdout=stdout,stderr=stderr)
-directory.joinpath(phase+'.time').write_text(json.dumps(dict(seconds=time.monotonic()-start,rc=result.returncode,peak_rss_kib=resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)))
-if result.returncode:
-    print(directory.joinpath(phase+'.err').read_text()); print('F1 failed evidence='+work); sys.exit(result.returncode)
-PYRUN
+  python3 test/support/run-native-funcall-v2.py "$binary" "$work" "$phase" \
+    test/standalone-bytecode-native-funcall-driver.el
   cat "$work/$phase.out"
   test ! -s "$work/$phase.err"
   grep -q "F1-.*-PASS" "$work/$phase.out"
 done
+grep -qx 'F1-CORPUS-DIGEST=52c26b63098a83d62c044908b231afd5cce3a85da3b559147e6dc4810eeac2ef' "$work/load.out"
 printf 'F1-EVIDENCE=%s\n' "$work"

@@ -22,7 +22,7 @@ policies remain unchanged. All boundary bytes and relocations are verified."
             ((equal node "lisp/nelisp-native-compiler-runtime-capability.el") node)
             ((equal node "PRELINK_DIRECT_CLOSURE_PASS") "PRELINK_F1_BOUNDARY_PASS")
             ((equal node "scripts/nelisp-native-compiler-constructor-prelink.py") "scripts/nelisp-native-compiler-f1-prelink.py")
-            ((equal node '(= (length offsets) 13))
+            ((equal node '(= (length offsets) 14))
              '(and (= (length offsets) (length (plist-get nelisp-native-compiler-f1-runtime-proof--expected :bss-offsets)))
                    (< (length offsets) 128)))
             ;; Only the independently source/binary-bound evaluator entry is a

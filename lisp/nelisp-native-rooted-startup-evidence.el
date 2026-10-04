@@ -123,7 +123,7 @@
   "Authenticate a selected union certificate without granting numeric admission."
   (and (equal roots '("nl_root_pin_begin_v2" "nl_root_pin_reserve_v2" "nl_root_pin_end_v2"
                      "nl_root_pin_slot_v2" "nl_gc_mark_pinned_roots" "nl_gc_mark_thread_roots"
-                     "nl_gc_mark_recorded_env" "nl_native_cons_v2" "nl_alloc_symbol"))
+                     "nl_gc_mark_recorded_env" "nl_cold_grow_chunk0" "nl_gc_conserv_owner_slow" "nl_native_cons_v2" "nl_alloc_symbol"))
        (stringp binding) (string-match-p "\\`[0-9a-f]\\{64\\}\\'" binding)
        (equal binding (alist-get 'source_binding_sha256 closure))
        (= (or (alist-get 'helper_count_policy closure) 0) 192)
@@ -152,7 +152,7 @@ Return startup source and its manifest; constructor/numeric/call remain refused.
          (metadata (car metadata-input)) (data (car data-input)) (closure (car closure-input))
          (roots '("nl_root_pin_begin_v2" "nl_root_pin_reserve_v2" "nl_root_pin_end_v2"
                   "nl_root_pin_slot_v2" "nl_gc_mark_pinned_roots"
-                  "nl_gc_mark_thread_roots" "nl_gc_mark_recorded_env"))
+                  "nl_gc_mark_thread_roots" "nl_gc_mark_recorded_env" "nl_cold_grow_chunk0" "nl_gc_conserv_owner_slow"))
          (builder-hash (alist-get 'builder-sha256 manifest))
          (template-input (nelisp-native-rooted-startup-evidence--forms template))
          (template-hash (cdr template-input)) (forms (car template-input))
@@ -306,7 +306,7 @@ dependencies, subprocess result and source owners are checked before return."
            result startup)
       (dolist (name '("nl_root_pin_begin_v2" "nl_root_pin_reserve_v2" "nl_root_pin_end_v2"
                       "nl_root_pin_slot_v2" "nl_gc_mark_pinned_roots"
-                      "nl_gc_mark_thread_roots" "nl_gc_mark_recorded_env"))
+                      "nl_gc_mark_thread_roots" "nl_gc_mark_recorded_env" "nl_cold_grow_chunk0" "nl_gc_conserv_owner_slow"))
         (setq arguments (append arguments (list "--root" name))))
       (with-temp-buffer
         (unless (and (eq (apply #'call-process python nil (list (current-buffer) t) nil arguments) 0)

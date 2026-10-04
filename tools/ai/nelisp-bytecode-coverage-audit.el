@@ -19,20 +19,26 @@
 (defconst nelisp-bytecode-coverage-audit--inventory-sha256
   "147da590c9f5bdcf190b5b410c6af878c793ac89e07eafa4ae9f05a9b7aa7bcb")
 (defconst nelisp-bytecode-coverage-audit--reserved-manifest-sha256
-  "f5452dc4252d51ea8ad36be0127f983232ace4aebca6398d2b40c98d9179b653")
+  "0d1232d1411750ded03240b7d30daac2295b64951ba9cf394b4311591b1c3358")
 (defconst nelisp-bytecode-coverage-audit--gnu-bytecomp-sha256
   "094fa608bed9d9feffd4364b8df3288c1eb2bf1efd5dfa57fcd6d9bd13cdd099")
 (defconst nelisp-bytecode-coverage-audit--gnu-bytecode-c-sha256
   "97fb8f41758f88c02684da4f766d7694e3c3274077f4be46a3163949bb6431ab")
 (defconst nelisp-bytecode-coverage-audit--build-probe-sha256
-  "2a3385998e7fab75ae4d1d9fa224f4c03ed757c5f8f08a32f12ea82009359e39")
+  "d6955d16d6a28bc072113bc2764e0ecb57e2ebfae1fc8e8616cf49d9dd01c8b2")
+(defconst nelisp-bytecode-coverage-audit--valid-fixtures-sha256
+  "d9e7725d77fb4c61c69d84905fdc9f5b7f1bc1d7f9867c8fb9c4c92aef8f41c8")
 (defconst nelisp-bytecode-coverage-audit--build-emacs-sha256
   "7a73e7e5db25275f09753fba330b96ecd44c64b3af9c5298fe343a44084bf5d7")
 (defconst nelisp-bytecode-coverage-audit--gnu-reserved-invalid-opcodes
   '(0))
 (defconst nelisp-bytecode-coverage-audit--gnu-unused-unassigned-opcodes
-  '(51 52 53 54 55 128 146 169 170 171 172 173 174 180 181
+  '(51 52 53 54 55 107 115 128 146 169 170 171 172 173 174 180 181
     184 185 186 187 188 189 190 191))
+(defconst nelisp-bytecode-coverage-audit--malformed-diagnostic-opcodes
+  '(41 42 43 44 45 50 183))
+(defconst nelisp-bytecode-coverage-audit--backends '(in-house gccjit)
+  "Independent execution authorities; historical N/L labels are not these.")
 (defconst nelisp-bytecode-coverage-audit--raw-i64-cases
   '((1 "lowers-stack-ref-dup-and-discard" (192 193 1 135) (5 10))
     (130 "lowers-a-backedge-without-calling-it" (130 0 0) nil)
@@ -180,6 +186,85 @@
         (suffix (if (= opcode 135) nil '(135))))
     (apply #'unibyte-string (append (list opcode) operands suffix))))
 
+(defun nelisp-bytecode-coverage-audit--valid-fixtures (root)
+  "Read ROOT's VALID fixtures without replacing historical diagnostic probes."
+  (let* ((path (expand-file-name
+                "test/fixtures/native-bytecode/gnu-31.1-valid-fixtures.json" root))
+         (manifest (json-read-file path))
+         (rows (append (alist-get 'valid manifest) nil))
+         (excluded (append nelisp-bytecode-coverage-audit--gnu-reserved-invalid-opcodes
+                           nelisp-bytecode-coverage-audit--gnu-unused-unassigned-opcodes))
+         (expected (cl-loop for opcode below 256
+                            unless (memq opcode excluded) collect opcode)))
+    (unless (and (equal (nelisp-bytecode-coverage-audit--sha256-file path)
+                        nelisp-bytecode-coverage-audit--valid-fixtures-sha256)
+                 (= (alist-get 'schema manifest) 1)
+                 (equal (alist-get 'dialect manifest) "GNU Emacs 31.1")
+                 (equal (alist-get 'inventory_sha256 manifest)
+                        nelisp-bytecode-coverage-audit--inventory-sha256)
+                 (equal (mapcar (lambda (row) (alist-get 'opcode row)) rows) expected)
+                 (equal (append (alist-get 'malformed_opcodes
+                                           (alist-get 'diagnostic manifest)) nil)
+                        nelisp-bytecode-coverage-audit--malformed-diagnostic-opcodes))
+      (error "Pinned GNU 31.1 VALID fixture manifest changed"))
+    (dolist (row rows)
+      (unless (and (equal (alist-get 'id row)
+                          (format "gnu31-valid-%03d" (alist-get 'opcode row)))
+                   (= (alist-get 'initial_depth row) 0)
+                   (> (alist-get 'declared_stack_depth row) 0)
+                   (vectorp (alist-get 'constants row))
+                   (vectorp (alist-get 'bytecode row))
+                   (cl-every (lambda (byte) (and (integerp byte) (<= 0 byte 255)))
+                             (append (alist-get 'bytecode row) nil)))
+        (error "Invalid VALID fixture for opcode %s" (alist-get 'opcode row))))
+    rows))
+
+(defun nelisp-bytecode-coverage-audit--fixture-constants (fixture)
+  "Materialize FIXTURE's data literals and explicit object descriptors.
+No fixture expression is evaluated.  Buffers refer to the caller's current
+buffer, and mutable constants are freshly constructed for each proof."
+  (vconcat
+   (mapcar
+    (lambda (value)
+      (if (stringp value)
+          (let ((parsed (read-from-string value)))
+            (unless (string-match-p "\\`[ \t\n]*\\'" (substring value (cdr parsed)))
+              (error "Trailing fixture constant data"))
+            (car parsed))
+        (pcase (alist-get 'kind value)
+          ("current-buffer" (current-buffer))
+          ("marker" (make-marker))
+          ("hash-table"
+           (let ((test (alist-get 'test value)))
+             (unless (member test '("eq" "eql" "equal"))
+               (error "Unsupported fixture table test %S" test))
+             (let ((table (make-hash-table :test (intern test))))
+               (dolist (entry (append (alist-get 'entries value) nil))
+                 (puthash (aref entry 0) (aref entry 1) table))
+               table)))
+          (_ (error "Unknown fixture constant descriptor %S" value)))))
+    (append (alist-get 'constants fixture) nil))))
+
+(defun nelisp-bytecode-coverage-audit--fixture-proof (fixture)
+  "Return frame evidence for FIXTURE, without asserting native execution."
+  (let* ((code (apply #'unibyte-string (append (alist-get 'bytecode fixture) nil)))
+         (constants (nelisp-bytecode-coverage-audit--fixture-constants fixture))
+         (decoded (nelisp-bytecode-ir-decode-result code constants))
+         (frame (nelisp-bytecode-frame-ir-build code constants
+                                               (alist-get 'initial_depth fixture))))
+    (unless (cl-find (alist-get 'opcode fixture) (plist-get decoded :instructions)
+                     :key (lambda (row) (aref row 1)))
+      (error "VALID fixture does not decode its advertised opcode"))
+    (list :id (alist-get 'id fixture) :frame-status (plist-get frame :status)
+          :reason (plist-get frame :reason))))
+
+(defun nelisp-bytecode-coverage-audit--backend-proof (backend fixture)
+  "Return independent execution evidence for BACKEND and FIXTURE.
+U0 has no authenticated backend execution receipts.  Compilation, ERT source
+presence, frame verification and historical N/L labels cannot set executed."
+  (list :backend backend :fixture-id (plist-get fixture :id)
+        :executed-native nil :evidence nil))
+
 (defun nelisp-bytecode-coverage-audit--ert-test-present-p (root test-name)
   (let ((path (expand-file-name "test/nelisp-bytecode-native-cfg-test.el" root)))
     (and (file-readable-p path)
@@ -242,7 +327,7 @@
         (t "unnamed-or-reserved")))
 
 (defun nelisp-bytecode-coverage-audit--classify
-    (opcode name constants root source-dispositions build-dispositions)
+    (opcode name constants root source-dispositions build-dispositions fixture)
   "Classify OPCODE NAME using decoder, frame verifier, and native CFG proof."
   (let* ((code (nelisp-bytecode-coverage-audit--probe-code opcode))
            (decoded (nelisp-bytecode-ir-decode-result code constants))
@@ -257,6 +342,7 @@
                               :key #'car))
            (source-status (cdr (assq opcode source-dispositions)))
            (build-status (cdr (assq opcode build-dispositions)))
+           (valid-proof (and fixture (nelisp-bytecode-coverage-audit--fixture-proof fixture)))
            (status (cond
                     (build-status build-status)
                     (source-status source-status)
@@ -277,10 +363,16 @@
             :source-disposition source-status
             :decoder-status (plist-get decoded :status)
             :frame-status frame-status
+            :valid-fixture valid-proof
+            :backend-execution
+            (mapcar (lambda (backend)
+                      (cons backend (nelisp-bytecode-coverage-audit--backend-proof
+                                     backend valid-proof)))
+                    nelisp-bytecode-coverage-audit--backends)
             :reason (or (and (eq status 'gnu-reserved-invalid)
                              "GNU 31.1 explicitly reserves byte 0 and errors on it")
                         (and (eq status 'gnu31.1-pinned-build-invalid)
-                             (format "GNU bytecomp marks this slot unused; pinned Emacs binary sha256 %s rejected it in an isolated probe"
+                             (format "GNU BYTE_CODES leaves this slot unassigned; pinned Emacs binary sha256 %s rejected it in an isolated probe"
                                      nelisp-bytecode-coverage-audit--build-emacs-sha256))
                         (and (eq status 'decoder-rejected)
                              "decoder rejected audit probe; GNU validity not established")
@@ -330,7 +422,58 @@
           (when (and expected-status (not (eq expected-status status)))
             (error "Opcode %d disposition disagrees with pinned GNU source/build evidence" index)))
         (when (and name (eq status 'decoder-rejected))
-          (error "Named opcode %d (%s) cannot be marked decoder-rejected" index name))))
+          (error "Named opcode %d (%s) cannot be marked decoder-rejected" index name))
+        (let* ((excluded (assq index source-dispositions))
+               (fixture (plist-get row :valid-fixture))
+               (proofs (plist-get row :backend-execution)))
+          (unless (if excluded
+                      (null fixture)
+                    (and (equal (plist-get fixture :id) (format "gnu31-valid-%03d" index))
+                         (memq (plist-get fixture :frame-status) '(complete unsupported malformed))))
+            (error "Opcode %d has missing or ineligible VALID fixture evidence" index))
+          (unless (equal (mapcar #'car proofs) nelisp-bytecode-coverage-audit--backends)
+            (error "Opcode %d has missing or duplicate backend execution fields" index))
+          (dolist (entry proofs)
+            (let ((proof (cdr entry)))
+              (unless (and (eq (plist-get proof :backend) (car entry))
+                           (equal (plist-get proof :fixture-id) (plist-get fixture :id))
+                           (plist-member proof :executed-native)
+                           (null (plist-get proof :executed-native))
+                           (plist-member proof :evidence)
+                           (null (plist-get proof :evidence)))
+                (error "Opcode %d has unauthenticated backend execution evidence" index)))))))
+    (unless (and (= (plist-get report :excluded-opcode-count) (length source-dispositions))
+                 (= (plist-get report :valid-opcode-count) (- 256 (length source-dispositions)))
+                 (equal (plist-get report :executed-native-counts)
+                        (mapcar (lambda (backend) (cons backend 0))
+                                nelisp-bytecode-coverage-audit--backends)))
+      (error "Audit fixture/backend accounting disagrees with opcode rows"))
+    (unless (equal (mapcar #'car (plist-get report :counts))
+                   nelisp-bytecode-coverage-audit--statuses)
+      (error "Audit diagnostic counts have missing or duplicate classes"))
+    (dolist (entry (plist-get report :counts))
+      (unless (= (cdr entry) (cl-count (car entry) rows :key (lambda (row) (plist-get row :status))))
+        (error "Audit diagnostic count disagrees with opcode rows")))
+    (unless (equal (mapcar #'car (plist-get report :valid-fixture-frame-counts))
+                   '(complete unsupported malformed))
+      (error "Audit VALID frame counts have missing or duplicate classes"))
+    (dolist (entry (plist-get report :valid-fixture-frame-counts))
+      (unless (= (cdr entry)
+                 (cl-count (car entry) rows
+                           :key (lambda (row)
+                                  (plist-get (plist-get row :valid-fixture) :frame-status))))
+        (error "Audit VALID frame count disagrees with opcode rows")))
+    (let ((rebasing (append (plist-get report :malformed-probe-rebasing) nil)))
+      (unless (equal (mapcar (lambda (row) (plist-get row :opcode)) rebasing)
+                     nelisp-bytecode-coverage-audit--malformed-diagnostic-opcodes)
+        (error "Audit diagnostic rebasing omitted or duplicated probes"))
+      (dolist (entry rebasing)
+        (let ((row (aref rows (plist-get entry :opcode))))
+          (unless (and (eq (plist-get entry :diagnostic-status) (plist-get row :status))
+                       (eq (plist-get entry :diagnostic-frame-status) (plist-get row :frame-status))
+                       (eq (plist-get entry :valid-frame-status)
+                           (plist-get (plist-get row :valid-fixture) :frame-status)))
+            (error "Audit diagnostic rebasing disagrees with opcode rows")))))
     report))
 
 (defun nelisp-bytecode-coverage-audit-run (&optional root)
@@ -348,6 +491,7 @@ ROOT defaults to this tool's repository and permits auditing an integrated tree.
           (nelisp-bytecode-coverage-audit--gnu-source-dispositions root))
          (build-dispositions
           (nelisp-bytecode-coverage-audit--pinned-build-dispositions root))
+         (fixtures (nelisp-bytecode-coverage-audit--valid-fixtures root))
          (names (append (alist-get 'opcodes inventory) nil))
          (constants (make-vector 256 nil))
          (rows (vconcat
@@ -355,7 +499,10 @@ ROOT defaults to this tool's repository and permits auditing an integrated tree.
                          for name in names
                          collect (nelisp-bytecode-coverage-audit--classify
                                   opcode name constants root source-dispositions
-                                  build-dispositions))))
+                                  build-dispositions
+                                  (cl-find opcode fixtures
+                                           :key (lambda (fixture)
+                                                  (alist-get 'opcode fixture)))))))
          (counts (let ((result nil))
                    (dolist (status nelisp-bytecode-coverage-audit--statuses)
                      (push (cons status
@@ -379,12 +526,44 @@ ROOT defaults to this tool's repository and permits auditing an integrated tree.
                                 (setcdr entry (1+ (cdr entry)))
                               (push (cons class 1) result))))
                         (nreverse result)))
-         (report (list :schema 1 :dialect "GNU Emacs 31.1"
+         (valid-counts
+          (mapcar (lambda (status)
+                    (cons status
+                          (cl-count status rows
+                                    :key (lambda (row)
+                                           (plist-get (plist-get row :valid-fixture)
+                                                      :frame-status)))))
+                  '(complete unsupported malformed)))
+         (backend-counts
+          (mapcar
+           (lambda (backend)
+             (cons backend
+                   (cl-count-if
+                    (lambda (row)
+                      (plist-get (cdr (assq backend (plist-get row :backend-execution)))
+                                 :executed-native))
+                    rows)))
+           nelisp-bytecode-coverage-audit--backends))
+         (rebasing
+          (vconcat
+           (mapcar (lambda (opcode)
+                     (let ((row (aref rows opcode)))
+                       (list :opcode opcode :diagnostic-status (plist-get row :status)
+                             :diagnostic-frame-status (plist-get row :frame-status)
+                             :valid-frame-status
+                             (plist-get (plist-get row :valid-fixture) :frame-status))))
+                   nelisp-bytecode-coverage-audit--malformed-diagnostic-opcodes)))
+         (report (list :schema 2 :dialect "GNU Emacs 31.1"
                        :inventory-sha256
                        nelisp-bytecode-coverage-audit--inventory-sha256
                        :opcode-count 256 :named-opcode-count
                        (cl-count-if #'identity names)
                        :counts counts
+                       :excluded-opcode-count (length source-dispositions)
+                       :valid-opcode-count (length fixtures)
+                       :valid-fixture-frame-counts valid-counts
+                       :executed-native-counts backend-counts
+                       :malformed-probe-rebasing rebasing
                        :native-raw-i64-count
                        (cdr (assq 'native-raw-i64-slice counts))
                        :legacy-jit-only-count
@@ -398,25 +577,32 @@ ROOT defaults to this tool's repository and permits auditing an integrated tree.
   (let ((result (make-hash-table :test 'equal)))
     (dolist (key '(:schema :dialect :inventory-sha256 :opcode-count :named-opcode-count
                    :native-raw-i64-count :legacy-jit-only-count
-                   :s4-admitted-native-count))
+                   :s4-admitted-native-count :excluded-opcode-count :valid-opcode-count))
       (puthash (substring (symbol-name key) 1) (plist-get report key) result))
     (puthash "counts"
              (mapcar (lambda (entry)
                        (cons (symbol-name (car entry)) (cdr entry)))
                      (plist-get report :counts))
              result)
+    (dolist (field '(("valid-fixture-frame-counts" . :valid-fixture-frame-counts)
+                     ("executed-native-counts" . :executed-native-counts)))
+      (puthash (car field)
+               (mapcar (lambda (entry) (cons (symbol-name (car entry)) (cdr entry)))
+                       (plist-get report (cdr field))) result))
     (puthash "gap-classes"
              (mapcar (lambda (entry) (cons (car entry) (cdr entry)))
                      (plist-get report :gap-classes))
              result)
-    (dolist (field '(("gaps" . :gaps) ("opcodes" . :opcodes)))
+    (dolist (field '(("gaps" . :gaps) ("opcodes" . :opcodes)
+                     ("malformed-probe-rebasing" . :malformed-probe-rebasing)))
       (puthash
        (car field)
        (vconcat
         (mapcar (lambda (row)
                   (let ((object (make-hash-table :test 'equal)))
                     (dolist (key '(:opcode :name :pc-class :status :source-disposition :decoder-status
-                                   :frame-status :reason :evidence))
+                                   :frame-status :reason :evidence :diagnostic-status
+                                   :diagnostic-frame-status :valid-frame-status))
                       (when (plist-member row key)
                         (puthash (substring (symbol-name key) 1)
                                  (let ((value (plist-get row key)))
@@ -424,6 +610,25 @@ ROOT defaults to this tool's repository and permits auditing an integrated tree.
                                          ((symbolp value) (symbol-name value))
                                          (t value)))
                                  object)))
+                    (when (plist-member row :valid-fixture)
+                      (let* ((proof (plist-get row :valid-fixture))
+                             (valid (and proof (make-hash-table :test 'equal))))
+                        (when valid
+                          (puthash "id" (plist-get proof :id) valid)
+                          (puthash "frame-status" (symbol-name (plist-get proof :frame-status)) valid)
+                          (puthash "reason" (plist-get proof :reason) valid))
+                        (puthash "valid-fixture" valid object)))
+                    (when (plist-member row :backend-execution)
+                      (let ((backends (make-hash-table :test 'equal)))
+                        (dolist (entry (plist-get row :backend-execution))
+                          (let ((proof (cdr entry)) (backend (make-hash-table :test 'equal)))
+                            (puthash "backend" (symbol-name (plist-get proof :backend)) backend)
+                            (puthash "fixture-id" (plist-get proof :fixture-id) backend)
+                            (puthash "executed-native"
+                                     (if (plist-get proof :executed-native) t :json-false) backend)
+                            (puthash "evidence" (plist-get proof :evidence) backend)
+                            (puthash (symbol-name (car entry)) backend backends)))
+                        (puthash "backend-execution" backends object)))
                     object))
                 (append (plist-get report (cdr field)) nil)))
        result))
@@ -431,16 +636,23 @@ ROOT defaults to this tool's repository and permits auditing an integrated tree.
 
 (defun nelisp-bytecode-coverage-audit-main (&optional root)
   "Print bounded summary; pass `--json' and optional `--root PATH'."
-  (let* ((args command-line-args-left)
-         (root-option (cl-position "--root" args :test #'equal))
-         (_valid-root-option
-          (when (and root-option (not (nth (1+ root-option) args)))
-            (error "--root requires a repository path")))
-         (root (or root
-                   (and root-option (nth (1+ root-option) args))))
-         (report (nelisp-bytecode-coverage-audit-run root))
+  (let (cli-root jsonp)
+    ;; Emacs resumes parsing this list after -f returns.  Consume our options
+    ;; rather than merely inspecting them, or successful JSON ends in exit 255.
+    (while command-line-args-left
+      (pcase (pop command-line-args-left)
+        ("--" nil)
+        ("--json" (setq jsonp t))
+        ("--root"
+         (when cli-root (error "Duplicate --root option"))
+         (unless (and command-line-args-left
+                      (not (string-prefix-p "--" (car command-line-args-left))))
+           (error "--root requires a repository path"))
+         (setq cli-root (pop command-line-args-left)))
+        (arg (error "Unknown audit option: %s" arg))))
+    (let* ((report (nelisp-bytecode-coverage-audit-run (or root cli-root)))
          (counts (plist-get report :counts))
-         (jsonp (member "--json" command-line-args-left)))
+           (rebasing (plist-get report :malformed-probe-rebasing)))
     (if jsonp
         (princ (concat (json-encode (nelisp-bytecode-coverage-audit--json-object report)) "\n"))
       (princ (format "GNU Emacs 31.1 opcode audit: slots=%d named=%d counts=%S gaps=%d\n"
@@ -448,13 +660,26 @@ ROOT defaults to this tool's repository and permits auditing an integrated tree.
                      (plist-get report :named-opcode-count) counts
                      (length (plist-get report :gaps))))
       (princ (format "  gap-pc-classes=%S\n" (plist-get report :gap-classes)))
+      (princ (format "  exclusion accounting: R=89->%d excluded=24->%d VALID=%d (original diagnostics retained)\n"
+                     (cdr (assq 'runtime-op-pending counts))
+                     (plist-get report :excluded-opcode-count)
+                     (plist-get report :valid-opcode-count)))
+      (princ (format "  VALID frame counts=%S executed-native=%S\n"
+                     (plist-get report :valid-fixture-frame-counts)
+                     (plist-get report :executed-native-counts)))
+      (princ (format "  malformed-probe rebasing (separate): %S\n"
+                     (mapcar (lambda (row)
+                               (list (plist-get row :opcode)
+                                     (plist-get row :diagnostic-frame-status)
+                                     (plist-get row :valid-frame-status)))
+                             (append rebasing nil))))
       (cl-loop for row in (append (plist-get report :gaps) nil)
                for index from 0 below 20
                do (princ (format "  %d %-24s %s\n"
                                  (plist-get row :opcode) (plist-get row :name)
                                  (plist-get row :status))))
       (when (> (length (plist-get report :gaps)) 20)
-        (princ "  ... use --json for full gap list\n")))))
+        (princ "  ... use --json for full gap list\n"))))))
 
 (provide 'nelisp-bytecode-coverage-audit)
 ;;; nelisp-bytecode-coverage-audit.el ends here

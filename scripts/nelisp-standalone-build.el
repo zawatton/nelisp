@@ -529,7 +529,8 @@ GC, and mutation-epoch slots.  Windows cannot reliably reserve the historical
      nelisp-cc-eln-callback-context-bss-bytes
      112
      nelisp-cc-eln-callback7-total-bss-bytes
-     32))
+     32
+     16)) ; cold-loader-owned {base, reservation}, outside every heap image
 
 ;; Cold-image build digest.  The marker is assembled from bytes (never
 ;; written out as one literal) so no other copy of it can end up in a binary
@@ -844,6 +845,9 @@ storage — not an arena reservation."
                                  (* nelisp-standalone--root-pin-slots 32)
                                  nelisp-cc-eln-callback-context-bss-bytes 112
                                  nelisp-cc-eln-callback7-total-bss-bytes)
+                              :section 'bss :bind 'global :type 'object))
+    (list (nelisp-link-symbol "nl_cold_chunk0_domain"
+                              (- (nelisp-standalone--driver-bss-size) 16)
                               :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_gc_stats"
                               (+ 57616 4194304 96 176 64 56 40 1040
@@ -2441,6 +2445,29 @@ addressing by a runtime base, never by a fixed reservation."
     (defun nl_os_alloc_fail ()
       (syscall-direct 60 88 0 0 0 0 0))))
 
+(defun nelisp-standalone--cold-domain-forms ()
+  "Return cold reservation owners before protocol proof generation."
+  `((defun nl_cold_realloc_chunk0 (newbase newsize)
+      (seq
+       ,@(nelisp-standalone--arena-init-metadata-forms-dynamic 'newbase 'newsize)
+       0))
+    (defun nl_cold_grow_chunk0 (needed)
+      (let* ((oldbase (ptr-read-u64 (data-addr nl_arena_base) 0))
+             (oldib (ptr-read-u64 (+ oldbase 832) 0))
+             (oldie (ptr-read-u64 (+ oldbase 840) 0))
+             (newbase (nl_os_alloc_chunk needed)))
+        (if (= newbase 0)
+            (nl_os_alloc_fail)
+          (seq
+           (ptr-write-u64 (data-addr nl_arena_base) 0 newbase)
+           (nl_cold_realloc_chunk0 newbase needed)
+           (ptr-write-u64 (+ newbase 832) 0 oldib)
+           (ptr-write-u64 (+ newbase 840) 0 oldie)
+           ;; BSS is outside the image, published after a successful mmap.
+           (ptr-write-u64 (data-addr nl_cold_chunk0_domain) 0 newbase)
+           (ptr-write-u64 (data-addr nl_cold_chunk0_domain) 8 needed)
+           0))))))
+
 (defun nelisp-standalone--linux-aarch64-alloc-chunk-form ()
   "Return Linux arm64 chunk allocation forms.
 Same shape as `nelisp-standalone--linux-alloc-chunk-form' but with the
@@ -2769,6 +2796,8 @@ leaves the previous dispatch intact.  The final 32 bytes retain GC telemetry."
                          body)
                body))
        (cons 'seq (append (if commit-form (append body (list commit-form)) body)
+                          (when (eq (nelisp-standalone-arena-rewrite-target) 'linux-x86_64)
+                            (nelisp-standalone--cold-domain-forms))
                           (if (nelisp-standalone--runtime-reload-enabled-p)
                               (nelisp-standalone--runtime-reload-forms)
                             nil)))))
@@ -9348,6 +9377,40 @@ leave symbols unresolved at link time."
                             (if (= (ptr-read-u8 dw 0) 7)
                                 (nl_fa_cons dw ds span dest cin cout dir)
                               (nl_fa_slot dw ds span dest cin cout dir)))))))))))
+    ;; Heap-image edge inventory (Sexp ABI tags 0..18): 0..3 are scalars;
+    ;; 4/5/13/14/16 own inline buffers; 6/15 own NlStr boxes; 7 cons,
+    ;; 8 vector, 9 char-table, 10 bool-vector, 11 cell, 12/17/18 record.
+    ;; Char-table slots are inline Sexps, unlike vector/record WORD slots.
+    ;; Capture every source pointer before swizzling: dir 3 mutates the
+    ;; live arena while producing the streaming image's relocation table.
+    (defun nl_fa_char_table_slots (base len stride off ds span dest cin cout dir)
+      (if (= (nl_gc_in_arena base) 0) 0
+        (let* ((cap (nl_gc_block_elem_cap base stride))
+               (n (if (< len cap) len cap)) (i 0))
+          (while (< i n)
+            (nl_seq2
+             (nl_fa_slot (+ base (+ off (* i stride))) ds span dest cin cout dir)
+             (setq i (+ i 1))))
+          0)))
+    (defun nl_fa_char_table_box (box ds span dest cin cout dir)
+      (if (= (nl_gc_mark_block box) 0) 0
+        (if (< (nl_hdr_bt (- box 8)) 136) 0
+          (let* ((entries (ptr-read-u64 box 64))
+                 (entries_len (ptr-read-u64 box 80))
+                 (parent (ptr-read-u64 box 88))
+                 (extra (ptr-read-u64 box 96))
+                 (extra_len (ptr-read-u64 box 112)))
+            (seq
+             (nl_fa_slot box ds span dest cin cout dir)
+             (nl_fa_slot (+ box 32) ds span dest cin cout dir)
+             (nl_fa_field (+ box 64) entries ds span dest cin cout dir)
+             (nl_fa_char_table_slots entries entries_len 48 8 ds span dest cin cout dir)
+             (if (= parent 0) 0
+               (seq (nl_fa_field (+ box 88) parent ds span dest cin cout dir)
+                    (nl_fa_char_table_box parent ds span dest cin cout dir)))
+             (nl_fa_field (+ box 96) extra ds span dest cin cout dir)
+             (nl_fa_char_table_slots extra extra_len 32 0 ds span dest cin cout dir)
+             0)))))
     (defun nl_fa_slot (sp ds span dest cin cout dir)
       (let ((tag (ptr-read-u8 sp 0)))
         (if (= tag 7)
@@ -9381,14 +9444,20 @@ leave symbols unresolved at link time."
                       (nl_seq2 (nl_fa_field (+ sp 8) box ds span dest cin cout dir)
                         (if (= (nl_gc_mark_block box) 0) 0
                           (nl_fa_field (+ box 8) (ptr-read-u64 box 8) ds span dest cin cout dir))))
-                  (if (or (= tag 5) (= tag 14))
+                  (if (or (= tag 5) (= tag 14) (= tag 13))
                       (nl_fa_field (+ sp 16) (ptr-read-u64 sp 16) ds span dest cin cout dir)
                     (if (or (= tag 4) (= tag 16))
                         (nl_fa_field (+ sp 16) (ptr-read-u64 sp 16) ds span dest cin cout dir)
                       (if (= tag 9)
-                          (nl_fa_field (+ sp 8) (ptr-read-u64 sp 8) ds span dest cin cout dir)
+                          (let ((box (ptr-read-u64 sp 8)))
+                            (seq (nl_fa_field (+ sp 8) box ds span dest cin cout dir)
+                                 (nl_fa_char_table_box box ds span dest cin cout dir)))
                         (if (= tag 10)
-                            (nl_fa_field (+ sp 8) (ptr-read-u64 sp 8) ds span dest cin cout dir)
+                            (let ((box (ptr-read-u64 sp 8)))
+                              (seq (nl_fa_field (+ sp 8) box ds span dest cin cout dir)
+                                   (if (= (nl_gc_mark_block box) 0) 0
+                                     (nl_fa_field (+ box 8) (ptr-read-u64 box 8)
+                                                  ds span dest cin cout dir))))
                           0)))))))))))
     (defun nl_fa_pool_slots (base i cap ds span dest cin cout dir)
       (let* ((k i))
@@ -11458,7 +11527,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                       (seq (wf_write_nil kind) (wf_write_nil tag)
                            (wf_write_nil value) 0)
                     (if (= rc 1)
-                        (let* ((arena (data-addr nl_arena_base))
+                        (let* ((arena (ptr-read-u64 (data-addr nl_arena_base) 0))
                                (exit-kind (ptr-read-u64 arena 16)))
                           (if (or (= exit-kind 1) (= exit-kind 2))
                               (seq (wf_bytecode_copy tag (+ arena 24))
@@ -27186,7 +27255,7 @@ can use it."
          (ptr-write-u64 268436216 0 1))))))
 
 (defconst nelisp-standalone--cold-boot-reinit-source
-  "(condition-case nil
+  (concat "(condition-case nil
   (progn
     (if (boundp 'process-environment)
         (setq process-environment
@@ -27208,6 +27277,38 @@ can use it."
     nil)
   (error nil))
 "
+   ;; Foreign handles, function addresses, scratch allocations and TLS
+   ;; mappings belong to the dumping process.  Never close/unmap those
+   ;; stale addresses in the new process.  Keep declaration order, and
+   ;; let the existing resolver open each library on its first use.
+   ;; This runs outside the environment reinit's best-effort handler:
+   ;; invalidation must not silently leave a stale cache usable.
+   (prin1-to-string
+    '(progn
+       (when (boundp 'nl-ffi--libraries)
+         (let ((libraries (make-hash-table :test 'equal)))
+           (maphash (lambda (soname entry)
+                      (when (null (plist-get entry :handle))
+                        (puthash soname entry libraries)))
+                    nl-ffi--libraries)
+           (setq nl-ffi--libraries libraries))
+         (setq nl-ffi--dlsym-cache (make-hash-table :test 'equal))
+         (defun nl-ffi-library-handle (soname)
+           (when (and (member soname nl-ffi--library-order)
+                      (null (gethash soname nl-ffi--libraries)))
+             ;; Preserve the original resolution precedence; ffi:library
+             ;; normally pushes newly opened declarations onto this list.
+             (let ((nl-ffi--library-order nil)) (ffi:library soname)))
+           (plist-get (gethash soname nl-ffi--libraries) :handle)))
+       (dolist (name '(nl-ffi--pending-cstring-releases
+                      nl-ffi-loader--file-mappings nl-ffi-loader--reservations
+                      nl-ffi-loader--tls-tp nelisp-native-load-raw-mappings))
+         (when (boundp name) (set name nil)))
+       (when (boundp 'nl-ffi-loader--tls-used)
+         (setq nl-ffi-loader--tls-used 0))
+       (when (boundp 'nelisp-native-load--running-binary-sha256-cache)
+         (setq nelisp-native-load--running-binary-sha256-cache :unset))
+       nil)))
   "Source evaluated once after a `--cold-load-from' boot, before user code.
 The image froze the prelude's load-time values; the driver re-sets the
 per-process globals it owns (argv, `nelisp--environment',
@@ -27215,7 +27316,9 @@ per-process globals it owns (argv, `nelisp--environment',
 the prelude globals whose DEFVAR value was computed from the environment or
 the file system -- `process-environment', `temporary-file-directory' and
 `user-emacs-directory' -- with the same formulas as their defvars in
-scripts/nelisp-stdlib-prelude.el (keep in sync).")
+scripts/nelisp-stdlib-prelude.el (keep in sync).  Foreign library declarations
+survive, but their handles and dlsym caches are re-created lazily; raw
+mappings, pending foreign frees and loader TLS state are discarded.")
 
 (defun nelisp-standalone--reader-cold-reinit-forms (src cursor result pool
                                                         out ctx builtin-sym)
@@ -33504,23 +33607,10 @@ correctly."
     ;; it yet), so abandoning it just leaves an orphaned, never-walked mmap
     ;; (virtual address space only, demand-paged, no physical cost) -- far
     ;; simpler and safer than racing a free against the fresh reservation.
-    (defun nl_cold_realloc_chunk0 (newbase newsize)
-      (seq
-       ,@(nelisp-standalone--arena-init-metadata-forms-dynamic 'newbase 'newsize)
-       0))
-    (defun nl_cold_grow_chunk0 (needed)
-      (let* ((oldbase (ptr-read-u64 (data-addr nl_arena_base) 0))
-             (oldib (ptr-read-u64 (+ oldbase 832) 0))
-             (oldie (ptr-read-u64 (+ oldbase 840) 0))
-             (newbase (nl_os_alloc_chunk needed)))
-        (if (= newbase 0)
-            (nl_os_alloc_fail)
-          (seq
-           (ptr-write-u64 (data-addr nl_arena_base) 0 newbase)
-           (nl_cold_realloc_chunk0 newbase needed)
-           (ptr-write-u64 (+ newbase 832) 0 oldib)
-           (ptr-write-u64 (+ newbase 840) 0 oldie)
-           0))))
+    ;; Linux x86_64 supplies these in the prelink arena unit, so their
+    ;; ownership can be authenticated before compiling this driver.
+    ,@(unless (eq (nelisp-standalone-arena-rewrite-target) 'linux-x86_64)
+        (nelisp-standalone--cold-domain-forms))
     ;; Load the cold image into the LIVE arena.  Run BEFORE the driver allocates
     ;; globals/etc. (so they land after the image).  Reads {header|table|regions}
     ;; via the OS helpers directly into final/scratch arena locations (no

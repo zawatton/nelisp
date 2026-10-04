@@ -18,7 +18,7 @@
 
 (defconst nelisp-native-cache--format "nelisp-native-cache-v1")
 (defconst nelisp-native-cache--compiler-modules
-  '(nelisp-native-cache nelisp-native-gccjit nelisp-native-load nelisp-aot-compiler nelisp-standalone-arena-rewrite
+  '(nelisp-native-cache nelisp-native-gccjit nelisp-native-cfg-grammar nelisp-native-load nelisp-aot-compiler nelisp-standalone-arena-rewrite
     nelisp-bytecode-compiler-input nelisp-bytecode-ir nelisp-bytecode-frame-ir
     nelisp-bytecode-native-rooted-cfg nelisp-bytecode-native-rooted-cfg-plan
     nelisp-bytecode-native-rooted-cfg-emit nelisp-bytecode-native-rooted-cfg-shared-emit
@@ -231,8 +231,8 @@ The caller must inhibit mid-form collection until the syscall returns."
         (unwind-protect
             (let* ((input (nelisp-bytecode-compiler-input-build
                            (nelisp-native-cache--function function)))
-                   (result (nelisp-bytecode-native-rooted-cfg-native-build-shared-v2
-                            input artifact nelisp-native-cache-guard-mode))
+                   (result (nelisp-bytecode-native-rooted-cfg-native--build
+                            input artifact t nelisp-native-cache-guard-mode t))
                    (header
                     (list :nelisp-native-cache 1 :backend 'in-house :abi (nelisp-native-cache-abi-hash)
                           :input (nelisp-native-cache--input-hash function)

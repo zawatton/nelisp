@@ -314,7 +314,8 @@
          (equal (plist-get nelisp-native-rooted-abi-proof--expected :protocol-roots)
                 '("nl_root_pin_begin_v2" "nl_root_pin_reserve_v2" "nl_root_pin_end_v2"
                   "nl_root_pin_slot_v2" "nl_gc_mark_pinned_roots"
-                  "nl_gc_mark_thread_roots" "nl_gc_mark_recorded_env"))
+                  "nl_gc_mark_thread_roots" "nl_gc_mark_recorded_env" "nl_cold_grow_chunk0"
+                  "nl_gc_conserv_owner_slow"))
          (equal (plist-get arena :builder-sha256)
                 "NELISP_BUILD_SOURCE_PIN")
          (= (length functions) 0)
@@ -466,18 +467,28 @@ It saves ELF parsing; every actual memory window is still checked."
        (eq (plist-get (nelisp-bytecode-compiler-input-dialect) :runtime-evidence)
            'standalone-build-verified))))
 
-(defun nelisp-native-rooted-abi-proof--environment-domain-p (arena env)
+(defun nelisp-native-rooted-abi-proof--environment-domain-p (arena env &optional cold-domain cold-owner)
   "Recognize ENV in the authenticated initial chunk allocation chain.
 Uncertified additional chunks and exhausted walk budgets are refused."
   (let* ((protocol (plist-get nelisp-native-rooted-abi-proof--expected :arena-protocol))
          (size (plist-get protocol :initial-chunk-bytes))
          (descriptor (+ arena 768))
+         (cold-base (if cold-domain (ptr-read-u64 cold-domain 0) 0))
+         (cold-size (if cold-domain (ptr-read-u64 cold-domain 8) 0))
          cursor
          (header (+ arena 1024)) (steps 0) found)
     (unless (and (equal (plist-get protocol :header-domain) 'single-u64-low32-size-low3-mark)
                  (integerp size) (<= 1024 size 268435456)
                  (> arena 0) (> env 0))
       (error "Unauthenticated environment allocation evidence"))
+    ;; The verified nl_cold_grow_chunk0 closure alone publishes this BSS
+    ;; record after successful mmap. Normal boots require the fixed domain;
+    ;; accepting a larger descriptor by itself would forge allocation bounds.
+    (unless (or (and (= cold-base 0) (= cold-size 0))
+                (and (= cold-base arena) (> cold-size size)
+                     (<= cold-size 10745872384) (= (logand cold-size 65535) 0)))
+      (error "Unauthenticated cold allocation witness"))
+    (when (> cold-size 0) (setq size cold-size))
     ;; nl_chunk_cursor_addr/nl_gc_chunk_cursor use the legacy arena+0
     ;; cursor for the head descriptor.  Its descriptor+16 field stays at
     ;; the bootstrap value and is not the live allocation boundary.
@@ -491,6 +502,20 @@ Uncertified additional chunks and exhausted walk budgets are refused."
                  (integerp cursor) (<= 1024 cursor size)
                  (<= (+ header 8) env) (<= (+ env 120) (+ arena cursor)))
       (error "Unauthenticated environment allocation domain"))
+    ;; A coalesced cold image can contain millions of headers before the
+    ;; freshly allocated environment. Reuse the already existing GC block
+    ;; ownership walker, whose complete direct closure is verified with this
+    ;; proof. It must identify the exact payload start, never an interior word.
+    (when (> cold-size 0)
+      (unless (and (integerp cold-owner) (> cold-owner 0))
+        (error "Authenticated cold allocation walker unavailable"))
+      (when (= (ptr-call cold-owner env 0 0 0 0 0) env)
+        (let* ((word (ptr-read-u64 (- env 8) 0))
+               (total (logand word 4294967288)))
+          (setq found (and (memq (logand word 7) '(0 1)) (>= total 128)
+                           (<= (+ (- env 8) total) (+ arena cursor))))))
+      ;; A failed native ownership check is a refusal, not a Lisp retry.
+      (setq steps 65536))
     (while (and (not found) (< header (- env 7)) (< steps 65536))
       (let* ((word (ptr-read-u64 header 0))
              (total (logand word 4294967288))
@@ -515,7 +540,7 @@ Uncertified additional chunks and exhausted walk budgets are refused."
          (bss (and arena-symbol (aref sections (plist-get arena-symbol :section))))
          (offsets (plist-get nelisp-native-rooted-abi-proof--expected :bss-offsets)))
     (unless (and (equal layout (car contract)) base (= (plist-get bss :type) 8)
-                 (/= (logand (plist-get bss :flags) 1) 0) (= (length offsets) 12)
+                 (/= (logand (plist-get bss :flags) 1) 0) (= (length offsets) 13)
                  (<= (plist-get bss :address) base)
                  (<= (+ base (plist-get nelisp-native-rooted-abi-proof--expected :bss-size))
                      (+ (plist-get bss :address) (plist-get bss :size))))
@@ -543,7 +568,9 @@ Uncertified additional chunks and exhausted walk budgets are refused."
            (prior-mode (ptr-read-u64 control 48))
            (prior-env (ptr-read-u64 control 8)) ticket)
       (unless (and (> env 0) (> arena 0)
-                   (nelisp-native-rooted-abi-proof--environment-domain-p arena env)
+                   (nelisp-native-rooted-abi-proof--environment-domain-p
+                    arena env (plist-get (gethash "nl_cold_chunk0_domain" symbols) :address)
+                    (cdr (assoc "nl_gc_conserv_owner_slow" addresses)))
                    (= (ptr-read-u64 env 0) 12) (= (ptr-read-u64 env 32) 12))
         (error "Genuine environment domain rejected before native call"))
       (setq ticket (ptr-call begin env 0 0 0 0 0))

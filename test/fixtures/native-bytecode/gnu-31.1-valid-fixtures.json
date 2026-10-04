@@ -1,0 +1,6133 @@
+{
+  "schema": 1,
+  "dialect": "GNU Emacs 31.1",
+  "inventory_sha256": "147da590c9f5bdcf190b5b410c6af878c793ac89e07eafa4ae9f05a9b7aa7bcb",
+  "scope": "VALID fixtures are independent of original diagnostic probes; validity does not prove native execution.",
+  "valid": [
+    {
+      "id": "gnu31-valid-001",
+      "opcode": 1,
+      "bytecode": [
+        192,
+        193,
+        194,
+        195,
+        196,
+        197,
+        1,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-002",
+      "opcode": 2,
+      "bytecode": [
+        192,
+        193,
+        194,
+        195,
+        196,
+        197,
+        2,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-003",
+      "opcode": 3,
+      "bytecode": [
+        192,
+        193,
+        194,
+        195,
+        196,
+        197,
+        3,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-004",
+      "opcode": 4,
+      "bytecode": [
+        192,
+        193,
+        194,
+        195,
+        196,
+        197,
+        4,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-005",
+      "opcode": 5,
+      "bytecode": [
+        192,
+        193,
+        194,
+        195,
+        196,
+        197,
+        5,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-006",
+      "opcode": 6,
+      "bytecode": [
+        192,
+        193,
+        194,
+        195,
+        196,
+        197,
+        6,
+        1,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-007",
+      "opcode": 7,
+      "bytecode": [
+        192,
+        193,
+        194,
+        195,
+        196,
+        197,
+        7,
+        1,
+        0,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-008",
+      "opcode": 8,
+      "bytecode": [
+        8,
+        135
+      ],
+      "constants": [
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-009",
+      "opcode": 9,
+      "bytecode": [
+        9,
+        135
+      ],
+      "constants": [
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-010",
+      "opcode": 10,
+      "bytecode": [
+        10,
+        135
+      ],
+      "constants": [
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-011",
+      "opcode": 11,
+      "bytecode": [
+        11,
+        135
+      ],
+      "constants": [
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-012",
+      "opcode": 12,
+      "bytecode": [
+        12,
+        135
+      ],
+      "constants": [
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-013",
+      "opcode": 13,
+      "bytecode": [
+        13,
+        135
+      ],
+      "constants": [
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-014",
+      "opcode": 14,
+      "bytecode": [
+        14,
+        0,
+        135
+      ],
+      "constants": [
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-015",
+      "opcode": 15,
+      "bytecode": [
+        15,
+        0,
+        0,
+        135
+      ],
+      "constants": [
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-016",
+      "opcode": 16,
+      "bytecode": [
+        198,
+        16,
+        198,
+        135
+      ],
+      "constants": [
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-017",
+      "opcode": 17,
+      "bytecode": [
+        198,
+        17,
+        198,
+        135
+      ],
+      "constants": [
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-018",
+      "opcode": 18,
+      "bytecode": [
+        198,
+        18,
+        198,
+        135
+      ],
+      "constants": [
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-019",
+      "opcode": 19,
+      "bytecode": [
+        198,
+        19,
+        198,
+        135
+      ],
+      "constants": [
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-020",
+      "opcode": 20,
+      "bytecode": [
+        198,
+        20,
+        198,
+        135
+      ],
+      "constants": [
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-021",
+      "opcode": 21,
+      "bytecode": [
+        198,
+        21,
+        198,
+        135
+      ],
+      "constants": [
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-022",
+      "opcode": 22,
+      "bytecode": [
+        198,
+        22,
+        0,
+        198,
+        135
+      ],
+      "constants": [
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-023",
+      "opcode": 23,
+      "bytecode": [
+        198,
+        23,
+        0,
+        0,
+        198,
+        135
+      ],
+      "constants": [
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-024",
+      "opcode": 24,
+      "bytecode": [
+        198,
+        24,
+        198,
+        41,
+        135
+      ],
+      "constants": [
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-025",
+      "opcode": 25,
+      "bytecode": [
+        198,
+        25,
+        198,
+        41,
+        135
+      ],
+      "constants": [
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-026",
+      "opcode": 26,
+      "bytecode": [
+        198,
+        26,
+        198,
+        41,
+        135
+      ],
+      "constants": [
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-027",
+      "opcode": 27,
+      "bytecode": [
+        198,
+        27,
+        198,
+        41,
+        135
+      ],
+      "constants": [
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-028",
+      "opcode": 28,
+      "bytecode": [
+        198,
+        28,
+        198,
+        41,
+        135
+      ],
+      "constants": [
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-029",
+      "opcode": 29,
+      "bytecode": [
+        198,
+        29,
+        198,
+        41,
+        135
+      ],
+      "constants": [
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-030",
+      "opcode": 30,
+      "bytecode": [
+        198,
+        30,
+        0,
+        198,
+        41,
+        135
+      ],
+      "constants": [
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-031",
+      "opcode": 31,
+      "bytecode": [
+        198,
+        31,
+        0,
+        0,
+        198,
+        41,
+        135
+      ],
+      "constants": [
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "nelisp-bytecode-audit-u0-value",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-032",
+      "opcode": 32,
+      "bytecode": [
+        192,
+        32,
+        135
+      ],
+      "constants": [
+        "list"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "nil",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-033",
+      "opcode": 33,
+      "bytecode": [
+        192,
+        193,
+        33,
+        135
+      ],
+      "constants": [
+        "list",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "(42)",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-034",
+      "opcode": 34,
+      "bytecode": [
+        192,
+        193,
+        194,
+        34,
+        135
+      ],
+      "constants": [
+        "list",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "(42 42)",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-035",
+      "opcode": 35,
+      "bytecode": [
+        192,
+        193,
+        194,
+        195,
+        35,
+        135
+      ],
+      "constants": [
+        "list",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "(42 42 42)",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-036",
+      "opcode": 36,
+      "bytecode": [
+        192,
+        193,
+        194,
+        195,
+        196,
+        36,
+        135
+      ],
+      "constants": [
+        "list",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "(42 42 42 42)",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-037",
+      "opcode": 37,
+      "bytecode": [
+        192,
+        193,
+        194,
+        195,
+        196,
+        197,
+        37,
+        135
+      ],
+      "constants": [
+        "list",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "(42 42 42 42 42)",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-038",
+      "opcode": 38,
+      "bytecode": [
+        192,
+        38,
+        0,
+        135
+      ],
+      "constants": [
+        "list"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "nil",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-039",
+      "opcode": 39,
+      "bytecode": [
+        192,
+        39,
+        0,
+        0,
+        135
+      ],
+      "constants": [
+        "list"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "nil",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-040",
+      "opcode": 40,
+      "bytecode": [
+        40,
+        193,
+        135
+      ],
+      "constants": [
+        "nelisp-bytecode-audit-u0-value",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-041",
+      "opcode": 41,
+      "bytecode": [
+        193,
+        24,
+        41,
+        193,
+        135
+      ],
+      "constants": [
+        "nelisp-bytecode-audit-u0-value",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-042",
+      "opcode": 42,
+      "bytecode": [
+        193,
+        24,
+        193,
+        24,
+        42,
+        193,
+        135
+      ],
+      "constants": [
+        "nelisp-bytecode-audit-u0-value",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-043",
+      "opcode": 43,
+      "bytecode": [
+        193,
+        24,
+        193,
+        24,
+        193,
+        24,
+        43,
+        193,
+        135
+      ],
+      "constants": [
+        "nelisp-bytecode-audit-u0-value",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-044",
+      "opcode": 44,
+      "bytecode": [
+        193,
+        24,
+        193,
+        24,
+        193,
+        24,
+        193,
+        24,
+        44,
+        193,
+        135
+      ],
+      "constants": [
+        "nelisp-bytecode-audit-u0-value",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-045",
+      "opcode": 45,
+      "bytecode": [
+        193,
+        24,
+        193,
+        24,
+        193,
+        24,
+        193,
+        24,
+        193,
+        24,
+        45,
+        193,
+        135
+      ],
+      "constants": [
+        "nelisp-bytecode-audit-u0-value",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-046",
+      "opcode": 46,
+      "bytecode": [
+        46,
+        0,
+        193,
+        135
+      ],
+      "constants": [
+        "nelisp-bytecode-audit-u0-value",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-047",
+      "opcode": 47,
+      "bytecode": [
+        47,
+        0,
+        0,
+        193,
+        135
+      ],
+      "constants": [
+        "nelisp-bytecode-audit-u0-value",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-048",
+      "opcode": 48,
+      "bytecode": [
+        192,
+        50,
+        7,
+        0,
+        193,
+        48,
+        135,
+        135
+      ],
+      "constants": [
+        "audit-tag",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-049",
+      "opcode": 49,
+      "bytecode": [
+        192,
+        49,
+        7,
+        0,
+        193,
+        48,
+        135,
+        135
+      ],
+      "constants": [
+        "t",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-050",
+      "opcode": 50,
+      "bytecode": [
+        192,
+        50,
+        7,
+        0,
+        193,
+        48,
+        135,
+        135
+      ],
+      "constants": [
+        "audit-tag",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-056",
+      "opcode": 56,
+      "bytecode": [
+        192,
+        193,
+        56,
+        135
+      ],
+      "constants": [
+        "0",
+        "(x)"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "x",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-057",
+      "opcode": 57,
+      "bytecode": [
+        192,
+        57,
+        135
+      ],
+      "constants": [
+        "x"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "t",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-058",
+      "opcode": 58,
+      "bytecode": [
+        192,
+        58,
+        135
+      ],
+      "constants": [
+        "(x)"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "t",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-059",
+      "opcode": 59,
+      "bytecode": [
+        192,
+        59,
+        135
+      ],
+      "constants": [
+        "\"x\""
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "t",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-060",
+      "opcode": 60,
+      "bytecode": [
+        192,
+        60,
+        135
+      ],
+      "constants": [
+        "(x)"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "t",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-061",
+      "opcode": 61,
+      "bytecode": [
+        192,
+        193,
+        61,
+        135
+      ],
+      "constants": [
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "t",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-062",
+      "opcode": 62,
+      "bytecode": [
+        192,
+        193,
+        62,
+        135
+      ],
+      "constants": [
+        "x",
+        "(x)"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "(x)",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-063",
+      "opcode": 63,
+      "bytecode": [
+        192,
+        63,
+        135
+      ],
+      "constants": [
+        "nil"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "t",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-064",
+      "opcode": 64,
+      "bytecode": [
+        192,
+        64,
+        135
+      ],
+      "constants": [
+        "(42)"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-065",
+      "opcode": 65,
+      "bytecode": [
+        192,
+        65,
+        135
+      ],
+      "constants": [
+        "(42)"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "nil",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-066",
+      "opcode": 66,
+      "bytecode": [
+        192,
+        193,
+        66,
+        135
+      ],
+      "constants": [
+        "42",
+        "nil"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "(42)",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-067",
+      "opcode": 67,
+      "bytecode": [
+        192,
+        67,
+        135
+      ],
+      "constants": [
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "(42)",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-068",
+      "opcode": 68,
+      "bytecode": [
+        192,
+        193,
+        68,
+        135
+      ],
+      "constants": [
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "(42 42)",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-069",
+      "opcode": 69,
+      "bytecode": [
+        192,
+        193,
+        194,
+        69,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "(42 42 42)",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-070",
+      "opcode": 70,
+      "bytecode": [
+        192,
+        193,
+        194,
+        195,
+        70,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "(42 42 42 42)",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-071",
+      "opcode": 71,
+      "bytecode": [
+        192,
+        71,
+        135
+      ],
+      "constants": [
+        "(42)"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "1",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-072",
+      "opcode": 72,
+      "bytecode": [
+        192,
+        193,
+        72,
+        135
+      ],
+      "constants": [
+        "[42]",
+        "0"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-073",
+      "opcode": 73,
+      "bytecode": [
+        192,
+        193,
+        194,
+        73,
+        135
+      ],
+      "constants": [
+        "[0]",
+        "0",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-074",
+      "opcode": 74,
+      "bytecode": [
+        192,
+        74,
+        135
+      ],
+      "constants": [
+        "nelisp-bytecode-audit-u0-value"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-075",
+      "opcode": 75,
+      "bytecode": [
+        192,
+        75,
+        135
+      ],
+      "constants": [
+        "nelisp-bytecode-audit-u0-function"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "list",
+      "result_kind": "function"
+    },
+    {
+      "id": "gnu31-valid-076",
+      "opcode": 76,
+      "bytecode": [
+        192,
+        193,
+        76,
+        135
+      ],
+      "constants": [
+        "nelisp-bytecode-audit-u0-value",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-077",
+      "opcode": 77,
+      "bytecode": [
+        192,
+        193,
+        77,
+        135
+      ],
+      "constants": [
+        "nelisp-bytecode-audit-u0-function",
+        "list"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "list",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-078",
+      "opcode": 78,
+      "bytecode": [
+        192,
+        193,
+        78,
+        135
+      ],
+      "constants": [
+        "nelisp-bytecode-audit-u0-value",
+        "audit-property"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "nil",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-079",
+      "opcode": 79,
+      "bytecode": [
+        192,
+        193,
+        194,
+        79,
+        135
+      ],
+      "constants": [
+        "\"abc\"",
+        "0",
+        "1"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "\"a\"",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-080",
+      "opcode": 80,
+      "bytecode": [
+        192,
+        193,
+        80,
+        135
+      ],
+      "constants": [
+        "\"x\"",
+        "\"x\""
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "\"xx\"",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-081",
+      "opcode": 81,
+      "bytecode": [
+        192,
+        193,
+        194,
+        81,
+        135
+      ],
+      "constants": [
+        "\"x\"",
+        "\"x\"",
+        "\"x\""
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "\"xxx\"",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-082",
+      "opcode": 82,
+      "bytecode": [
+        192,
+        193,
+        194,
+        195,
+        82,
+        135
+      ],
+      "constants": [
+        "\"x\"",
+        "\"x\"",
+        "\"x\"",
+        "\"x\""
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "\"xxxx\"",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-083",
+      "opcode": 83,
+      "bytecode": [
+        192,
+        83,
+        135
+      ],
+      "constants": [
+        "2"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "1",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-084",
+      "opcode": 84,
+      "bytecode": [
+        192,
+        84,
+        135
+      ],
+      "constants": [
+        "2"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "3",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-085",
+      "opcode": 85,
+      "bytecode": [
+        192,
+        193,
+        85,
+        135
+      ],
+      "constants": [
+        "2",
+        "2"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "t",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-086",
+      "opcode": 86,
+      "bytecode": [
+        192,
+        193,
+        86,
+        135
+      ],
+      "constants": [
+        "2",
+        "2"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "nil",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-087",
+      "opcode": 87,
+      "bytecode": [
+        192,
+        193,
+        87,
+        135
+      ],
+      "constants": [
+        "2",
+        "2"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "nil",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-088",
+      "opcode": 88,
+      "bytecode": [
+        192,
+        193,
+        88,
+        135
+      ],
+      "constants": [
+        "2",
+        "2"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "t",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-089",
+      "opcode": 89,
+      "bytecode": [
+        192,
+        193,
+        89,
+        135
+      ],
+      "constants": [
+        "2",
+        "2"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "t",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-090",
+      "opcode": 90,
+      "bytecode": [
+        192,
+        193,
+        90,
+        135
+      ],
+      "constants": [
+        "6",
+        "2"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "4",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-091",
+      "opcode": 91,
+      "bytecode": [
+        192,
+        91,
+        135
+      ],
+      "constants": [
+        "2"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "-2",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-092",
+      "opcode": 92,
+      "bytecode": [
+        192,
+        193,
+        92,
+        135
+      ],
+      "constants": [
+        "6",
+        "2"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "8",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-093",
+      "opcode": 93,
+      "bytecode": [
+        192,
+        193,
+        93,
+        135
+      ],
+      "constants": [
+        "6",
+        "2"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "6",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-094",
+      "opcode": 94,
+      "bytecode": [
+        192,
+        193,
+        94,
+        135
+      ],
+      "constants": [
+        "6",
+        "2"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "2",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-095",
+      "opcode": 95,
+      "bytecode": [
+        192,
+        193,
+        95,
+        135
+      ],
+      "constants": [
+        "6",
+        "2"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "12",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-096",
+      "opcode": 96,
+      "bytecode": [
+        96,
+        135
+      ],
+      "constants": [],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "1",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-097",
+      "opcode": 97,
+      "bytecode": [
+        97,
+        192,
+        41,
+        135
+      ],
+      "constants": [
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-098",
+      "opcode": 98,
+      "bytecode": [
+        192,
+        98,
+        135
+      ],
+      "constants": [
+        "1"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "1",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-099",
+      "opcode": 99,
+      "bytecode": [
+        192,
+        99,
+        135
+      ],
+      "constants": [
+        "\"x\""
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "nil",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-100",
+      "opcode": 100,
+      "bytecode": [
+        100,
+        135
+      ],
+      "constants": [],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "4",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-101",
+      "opcode": 101,
+      "bytecode": [
+        101,
+        135
+      ],
+      "constants": [],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "1",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-102",
+      "opcode": 102,
+      "bytecode": [
+        192,
+        102,
+        135
+      ],
+      "constants": [
+        "1"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "97",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-103",
+      "opcode": 103,
+      "bytecode": [
+        103,
+        135
+      ],
+      "constants": [],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "97",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-104",
+      "opcode": 104,
+      "bytecode": [
+        104,
+        135
+      ],
+      "constants": [],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "0",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-105",
+      "opcode": 105,
+      "bytecode": [
+        105,
+        135
+      ],
+      "constants": [],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "0",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-106",
+      "opcode": 106,
+      "bytecode": [
+        192,
+        106,
+        135
+      ],
+      "constants": [
+        "0"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "0",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-108",
+      "opcode": 108,
+      "bytecode": [
+        108,
+        135
+      ],
+      "constants": [],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "nil",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-109",
+      "opcode": 109,
+      "bytecode": [
+        109,
+        135
+      ],
+      "constants": [],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "nil",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-110",
+      "opcode": 110,
+      "bytecode": [
+        110,
+        135
+      ],
+      "constants": [],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "t",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-111",
+      "opcode": 111,
+      "bytecode": [
+        111,
+        135
+      ],
+      "constants": [],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "t",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-112",
+      "opcode": 112,
+      "bytecode": [
+        112,
+        135
+      ],
+      "constants": [],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "nil",
+      "result_kind": "current-buffer"
+    },
+    {
+      "id": "gnu31-valid-113",
+      "opcode": 113,
+      "bytecode": [
+        192,
+        113,
+        135
+      ],
+      "constants": [
+        {
+          "kind": "current-buffer"
+        }
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "nil",
+      "result_kind": "current-buffer"
+    },
+    {
+      "id": "gnu31-valid-114",
+      "opcode": 114,
+      "bytecode": [
+        114,
+        192,
+        41,
+        135
+      ],
+      "constants": [
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-116",
+      "opcode": 116,
+      "bytecode": [
+        116,
+        135
+      ],
+      "constants": [],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "nil",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-117",
+      "opcode": 117,
+      "bytecode": [
+        192,
+        117,
+        135
+      ],
+      "constants": [
+        "0"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "nil",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-118",
+      "opcode": 118,
+      "bytecode": [
+        192,
+        118,
+        135
+      ],
+      "constants": [
+        "0"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "t",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-119",
+      "opcode": 119,
+      "bytecode": [
+        192,
+        193,
+        119,
+        135
+      ],
+      "constants": [
+        "\"a\"",
+        "nil"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "1",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-120",
+      "opcode": 120,
+      "bytecode": [
+        192,
+        193,
+        120,
+        135
+      ],
+      "constants": [
+        "\"a\"",
+        "nil"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "0",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-121",
+      "opcode": 121,
+      "bytecode": [
+        192,
+        121,
+        135
+      ],
+      "constants": [
+        "0"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "0",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-122",
+      "opcode": 122,
+      "bytecode": [
+        192,
+        122,
+        135
+      ],
+      "constants": [
+        "97"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "119",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-123",
+      "opcode": 123,
+      "bytecode": [
+        192,
+        193,
+        123,
+        135
+      ],
+      "constants": [
+        "1",
+        "2"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "\"a\"",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-124",
+      "opcode": 124,
+      "bytecode": [
+        192,
+        193,
+        124,
+        135
+      ],
+      "constants": [
+        "1",
+        "2"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "nil",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-125",
+      "opcode": 125,
+      "bytecode": [
+        192,
+        193,
+        125,
+        135
+      ],
+      "constants": [
+        "1",
+        "2"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "nil",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-126",
+      "opcode": 126,
+      "bytecode": [
+        126,
+        135
+      ],
+      "constants": [],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "nil",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-127",
+      "opcode": 127,
+      "bytecode": [
+        192,
+        127,
+        135
+      ],
+      "constants": [
+        "0"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "nil",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-129",
+      "opcode": 129,
+      "bytecode": [
+        129,
+        0,
+        0,
+        135
+      ],
+      "constants": [
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-130",
+      "opcode": 130,
+      "bytecode": [
+        130,
+        3,
+        0,
+        192,
+        135
+      ],
+      "constants": [
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-131",
+      "opcode": 131,
+      "bytecode": [
+        192,
+        131,
+        8,
+        0,
+        193,
+        130,
+        9,
+        0,
+        193,
+        135
+      ],
+      "constants": [
+        "nil",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-132",
+      "opcode": 132,
+      "bytecode": [
+        192,
+        132,
+        8,
+        0,
+        193,
+        130,
+        9,
+        0,
+        193,
+        135
+      ],
+      "constants": [
+        "t",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-133",
+      "opcode": 133,
+      "bytecode": [
+        192,
+        133,
+        5,
+        0,
+        193,
+        135
+      ],
+      "constants": [
+        "nil",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "nil",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-134",
+      "opcode": 134,
+      "bytecode": [
+        192,
+        134,
+        5,
+        0,
+        193,
+        135
+      ],
+      "constants": [
+        "t",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "t",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-135",
+      "opcode": 135,
+      "bytecode": [
+        192,
+        135,
+        135
+      ],
+      "constants": [
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-136",
+      "opcode": 136,
+      "bytecode": [
+        192,
+        192,
+        136,
+        135
+      ],
+      "constants": [
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-137",
+      "opcode": 137,
+      "bytecode": [
+        192,
+        137,
+        135
+      ],
+      "constants": [
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-138",
+      "opcode": 138,
+      "bytecode": [
+        138,
+        192,
+        41,
+        135
+      ],
+      "constants": [
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-139",
+      "opcode": 139,
+      "bytecode": [
+        192,
+        139,
+        135
+      ],
+      "constants": [
+        "(42)"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-140",
+      "opcode": 140,
+      "bytecode": [
+        140,
+        192,
+        41,
+        135
+      ],
+      "constants": [
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-141",
+      "opcode": 141,
+      "bytecode": [
+        192,
+        193,
+        141,
+        135
+      ],
+      "constants": [
+        "audit-tag",
+        "(quote 42)"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-142",
+      "opcode": 142,
+      "bytecode": [
+        192,
+        142,
+        193,
+        41,
+        135
+      ],
+      "constants": [
+        "nil",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-143",
+      "opcode": 143,
+      "bytecode": [
+        192,
+        193,
+        194,
+        143,
+        135
+      ],
+      "constants": [
+        "nil",
+        "42",
+        "nil"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-144",
+      "opcode": 144,
+      "bytecode": [
+        192,
+        144,
+        136,
+        193,
+        41,
+        135
+      ],
+      "constants": [
+        "\" *audit-output*\"",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-145",
+      "opcode": 145,
+      "bytecode": [
+        192,
+        144,
+        193,
+        145,
+        135
+      ],
+      "constants": [
+        "\" *audit-output*\"",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-147",
+      "opcode": 147,
+      "bytecode": [
+        192,
+        193,
+        194,
+        147,
+        135
+      ],
+      "constants": [
+        {
+          "kind": "marker"
+        },
+        "1",
+        {
+          "kind": "current-buffer"
+        }
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "nil",
+      "result_kind": "marker"
+    },
+    {
+      "id": "gnu31-valid-148",
+      "opcode": 148,
+      "bytecode": [
+        192,
+        148,
+        135
+      ],
+      "constants": [
+        "0"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "nil",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-149",
+      "opcode": 149,
+      "bytecode": [
+        192,
+        149,
+        135
+      ],
+      "constants": [
+        "0"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "nil",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-150",
+      "opcode": 150,
+      "bytecode": [
+        192,
+        150,
+        135
+      ],
+      "constants": [
+        "\"aB\""
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "\"AB\"",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-151",
+      "opcode": 151,
+      "bytecode": [
+        192,
+        151,
+        135
+      ],
+      "constants": [
+        "\"aB\""
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "\"ab\"",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-152",
+      "opcode": 152,
+      "bytecode": [
+        192,
+        193,
+        152,
+        135
+      ],
+      "constants": [
+        "\"a\"",
+        "\"a\""
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "t",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-153",
+      "opcode": 153,
+      "bytecode": [
+        192,
+        193,
+        153,
+        135
+      ],
+      "constants": [
+        "\"a\"",
+        "\"a\""
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "nil",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-154",
+      "opcode": 154,
+      "bytecode": [
+        192,
+        193,
+        154,
+        135
+      ],
+      "constants": [
+        "\"a\"",
+        "\"a\""
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "t",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-155",
+      "opcode": 155,
+      "bytecode": [
+        192,
+        193,
+        155,
+        135
+      ],
+      "constants": [
+        "0",
+        "(42)"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "(42)",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-156",
+      "opcode": 156,
+      "bytecode": [
+        192,
+        193,
+        156,
+        135
+      ],
+      "constants": [
+        "[42]",
+        "0"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-157",
+      "opcode": 157,
+      "bytecode": [
+        192,
+        193,
+        157,
+        135
+      ],
+      "constants": [
+        "42",
+        "(42)"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "(42)",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-158",
+      "opcode": 158,
+      "bytecode": [
+        192,
+        193,
+        158,
+        135
+      ],
+      "constants": [
+        "x",
+        "((x . 42))"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "(x . 42)",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-159",
+      "opcode": 159,
+      "bytecode": [
+        192,
+        159,
+        135
+      ],
+      "constants": [
+        "(42)"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "(42)",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-160",
+      "opcode": 160,
+      "bytecode": [
+        192,
+        193,
+        160,
+        135
+      ],
+      "constants": [
+        "(0)",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-161",
+      "opcode": 161,
+      "bytecode": [
+        192,
+        193,
+        161,
+        135
+      ],
+      "constants": [
+        "(0)",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-162",
+      "opcode": 162,
+      "bytecode": [
+        192,
+        162,
+        135
+      ],
+      "constants": [
+        "nil"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "nil",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-163",
+      "opcode": 163,
+      "bytecode": [
+        192,
+        163,
+        135
+      ],
+      "constants": [
+        "nil"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "nil",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-164",
+      "opcode": 164,
+      "bytecode": [
+        192,
+        193,
+        164,
+        135
+      ],
+      "constants": [
+        "(42)",
+        "nil"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "(42)",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-165",
+      "opcode": 165,
+      "bytecode": [
+        192,
+        193,
+        165,
+        135
+      ],
+      "constants": [
+        "6",
+        "2"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "3",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-166",
+      "opcode": 166,
+      "bytecode": [
+        192,
+        193,
+        166,
+        135
+      ],
+      "constants": [
+        "6",
+        "2"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "0",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-167",
+      "opcode": 167,
+      "bytecode": [
+        192,
+        167,
+        135
+      ],
+      "constants": [
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "t",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-168",
+      "opcode": 168,
+      "bytecode": [
+        192,
+        168,
+        135
+      ],
+      "constants": [
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "t",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-175",
+      "opcode": 175,
+      "bytecode": [
+        192,
+        175,
+        1,
+        135
+      ],
+      "constants": [
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "(42)",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-176",
+      "opcode": 176,
+      "bytecode": [
+        192,
+        176,
+        1,
+        135
+      ],
+      "constants": [
+        "\"x\""
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "\"x\"",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-177",
+      "opcode": 177,
+      "bytecode": [
+        192,
+        177,
+        1,
+        135
+      ],
+      "constants": [
+        "\"x\""
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "nil",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-178",
+      "opcode": 178,
+      "bytecode": [
+        192,
+        193,
+        178,
+        1,
+        135
+      ],
+      "constants": [
+        "0",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-179",
+      "opcode": 179,
+      "bytecode": [
+        192,
+        193,
+        179,
+        1,
+        0,
+        135
+      ],
+      "constants": [
+        "0",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-182",
+      "opcode": 182,
+      "bytecode": [
+        192,
+        193,
+        182,
+        129,
+        135
+      ],
+      "constants": [
+        "0",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-183",
+      "opcode": 183,
+      "bytecode": [
+        192,
+        193,
+        183,
+        194,
+        135
+      ],
+      "constants": [
+        "7",
+        {
+          "kind": "hash-table",
+          "test": "eql",
+          "entries": [
+            [
+              7,
+              3
+            ]
+          ]
+        },
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-192",
+      "opcode": 192,
+      "bytecode": [
+        192,
+        135
+      ],
+      "constants": [
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-193",
+      "opcode": 193,
+      "bytecode": [
+        193,
+        135
+      ],
+      "constants": [
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-194",
+      "opcode": 194,
+      "bytecode": [
+        194,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-195",
+      "opcode": 195,
+      "bytecode": [
+        195,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-196",
+      "opcode": 196,
+      "bytecode": [
+        196,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-197",
+      "opcode": 197,
+      "bytecode": [
+        197,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-198",
+      "opcode": 198,
+      "bytecode": [
+        198,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-199",
+      "opcode": 199,
+      "bytecode": [
+        199,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-200",
+      "opcode": 200,
+      "bytecode": [
+        200,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-201",
+      "opcode": 201,
+      "bytecode": [
+        201,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-202",
+      "opcode": 202,
+      "bytecode": [
+        202,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-203",
+      "opcode": 203,
+      "bytecode": [
+        203,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-204",
+      "opcode": 204,
+      "bytecode": [
+        204,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-205",
+      "opcode": 205,
+      "bytecode": [
+        205,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-206",
+      "opcode": 206,
+      "bytecode": [
+        206,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-207",
+      "opcode": 207,
+      "bytecode": [
+        207,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-208",
+      "opcode": 208,
+      "bytecode": [
+        208,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-209",
+      "opcode": 209,
+      "bytecode": [
+        209,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-210",
+      "opcode": 210,
+      "bytecode": [
+        210,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-211",
+      "opcode": 211,
+      "bytecode": [
+        211,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-212",
+      "opcode": 212,
+      "bytecode": [
+        212,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-213",
+      "opcode": 213,
+      "bytecode": [
+        213,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-214",
+      "opcode": 214,
+      "bytecode": [
+        214,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-215",
+      "opcode": 215,
+      "bytecode": [
+        215,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-216",
+      "opcode": 216,
+      "bytecode": [
+        216,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-217",
+      "opcode": 217,
+      "bytecode": [
+        217,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-218",
+      "opcode": 218,
+      "bytecode": [
+        218,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-219",
+      "opcode": 219,
+      "bytecode": [
+        219,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-220",
+      "opcode": 220,
+      "bytecode": [
+        220,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-221",
+      "opcode": 221,
+      "bytecode": [
+        221,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-222",
+      "opcode": 222,
+      "bytecode": [
+        222,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-223",
+      "opcode": 223,
+      "bytecode": [
+        223,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-224",
+      "opcode": 224,
+      "bytecode": [
+        224,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-225",
+      "opcode": 225,
+      "bytecode": [
+        225,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-226",
+      "opcode": 226,
+      "bytecode": [
+        226,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-227",
+      "opcode": 227,
+      "bytecode": [
+        227,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-228",
+      "opcode": 228,
+      "bytecode": [
+        228,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-229",
+      "opcode": 229,
+      "bytecode": [
+        229,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-230",
+      "opcode": 230,
+      "bytecode": [
+        230,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-231",
+      "opcode": 231,
+      "bytecode": [
+        231,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-232",
+      "opcode": 232,
+      "bytecode": [
+        232,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-233",
+      "opcode": 233,
+      "bytecode": [
+        233,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-234",
+      "opcode": 234,
+      "bytecode": [
+        234,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-235",
+      "opcode": 235,
+      "bytecode": [
+        235,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-236",
+      "opcode": 236,
+      "bytecode": [
+        236,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-237",
+      "opcode": 237,
+      "bytecode": [
+        237,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-238",
+      "opcode": 238,
+      "bytecode": [
+        238,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-239",
+      "opcode": 239,
+      "bytecode": [
+        239,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-240",
+      "opcode": 240,
+      "bytecode": [
+        240,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-241",
+      "opcode": 241,
+      "bytecode": [
+        241,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-242",
+      "opcode": 242,
+      "bytecode": [
+        242,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-243",
+      "opcode": 243,
+      "bytecode": [
+        243,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-244",
+      "opcode": 244,
+      "bytecode": [
+        244,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-245",
+      "opcode": 245,
+      "bytecode": [
+        245,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-246",
+      "opcode": 246,
+      "bytecode": [
+        246,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-247",
+      "opcode": 247,
+      "bytecode": [
+        247,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-248",
+      "opcode": 248,
+      "bytecode": [
+        248,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-249",
+      "opcode": 249,
+      "bytecode": [
+        249,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-250",
+      "opcode": 250,
+      "bytecode": [
+        250,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-251",
+      "opcode": 251,
+      "bytecode": [
+        251,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-252",
+      "opcode": 252,
+      "bytecode": [
+        252,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-253",
+      "opcode": 253,
+      "bytecode": [
+        253,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-254",
+      "opcode": 254,
+      "bytecode": [
+        254,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    },
+    {
+      "id": "gnu31-valid-255",
+      "opcode": 255,
+      "bytecode": [
+        255,
+        135
+      ],
+      "constants": [
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42",
+        "42"
+      ],
+      "initial_depth": 0,
+      "declared_stack_depth": 16,
+      "expected": "42",
+      "result_kind": "equal"
+    }
+  ],
+  "diagnostic": {
+    "recipe": "nelisp-bytecode-coverage-audit--probe-code with 256 nil constants and initial depth 32; unchanged",
+    "malformed_opcodes": [
+      41,
+      42,
+      43,
+      44,
+      45,
+      50,
+      183
+    ]
+  }
+}

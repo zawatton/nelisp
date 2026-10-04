@@ -4753,6 +4753,10 @@ the whole program."
    ;; existing `(t BODY)' sentinel handling.
    ((null sexp) 0)
    ((atom sexp) sexp)
+   ((eq (car sexp) 'cfg)
+    (require 'nelisp-native-cfg-grammar)
+    (nelisp-aot-compiler--preprocess-source
+     (nelisp-native-cfg-grammar-aot-form sexp)))
    ((eq (car sexp) 'quote) sexp)
    ((nelisp-aot-compiler--fresh-fat-pointer-source-form sexp)
     (nelisp-aot-compiler--preprocess-source

@@ -75,7 +75,10 @@
               ((symbol-function 'wf_write_nil) (lambda (slot) (puthash slot nil roots)))
               ((symbol-function 'wf_write_int) (lambda (slot value) (puthash slot value roots)))
               ((symbol-function 'wf_bytecode_copy) (lambda (to from) (puthash to (gethash from roots) roots)))
-              ((symbol-function 'ptr-read-u64) (lambda (_ offset) (if (= offset 16) stash (gethash offset words 0))))
+              ((symbol-function 'ptr-read-u64)
+               (lambda (address offset)
+                 (if (and (= address 8192) (= offset 0)) 8192
+                   (if (= offset 16) stash (gethash offset words 0)))))
               ((symbol-function 'ptr-write-u64) (lambda (_ offset value) (when (= offset 16) (setq stash value))))
               ((symbol-function 'seq) (lambda (&rest values) (car (last values))))
               ((symbol-function 'wf_bytecode_call_gateway)

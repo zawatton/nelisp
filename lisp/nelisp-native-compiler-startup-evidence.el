@@ -7,7 +7,7 @@
 (defconst nelisp-native-compiler-startup-evidence--roots
   '("nl_root_pin_begin_v2" "nl_root_pin_reserve_v2" "nl_root_pin_end_v2"
     "nl_root_pin_slot_v2" "nl_gc_mark_pinned_roots" "nl_gc_mark_thread_roots"
-    "nl_gc_mark_recorded_env" "nl_native_cons_v2" "nl_alloc_symbol"))
+    "nl_gc_mark_recorded_env" "nl_cold_grow_chunk0" "nl_gc_conserv_owner_slow" "nl_native_cons_v2" "nl_alloc_symbol"))
 (defconst nelisp-native-compiler-startup-evidence--exports
   '(("nl_arena_base" data 8) ("nl_alloc_symbol" func 3)
     ("nelisp_cons_construct" func 3) ("nl_native_cons_v2" func 5)
@@ -46,12 +46,12 @@
          (canonical (nelisp-native-compiler-startup-evidence--forms source))
          (derived (nelisp-native-compiler-startup-evidence--forms template)) found)
     (unless (and (equal (nelisp-native-rooted-build-evidence-source-hash source 4194304)
-                        "f1de7e5cbeb510e6fd09667e720f9d2a503111bdb49897b2f541db8bc9eaa0d8")
+                        "ae41de99e264db21ed6542e66f9de2c2fe6bccd984585c1f6bb6c6098b71fb60")
                  (equal (nelisp-native-rooted-build-evidence-source-hash template 4194304)
                         "838885b3171e95e1854de79bd03d936328880864f6d9f35ee22c26563b0d3863")
                  (equal (alist-get 'source declaration) "lisp/nelisp-native-load.el")
                  (equal (alist-get 'source_sha256 declaration)
-                        "f1de7e5cbeb510e6fd09667e720f9d2a503111bdb49897b2f541db8bc9eaa0d8")
+                        "ae41de99e264db21ed6542e66f9de2c2fe6bccd984585c1f6bb6c6098b71fb60")
                  (equal (alist-get 'output_sha256 declaration)
                         "838885b3171e95e1854de79bd03d936328880864f6d9f35ee22c26563b0d3863")
                  (equal (alist-get 'definitions declaration) (mapcar #'symbol-name names))
@@ -169,7 +169,7 @@
              (setq serializer-definitions (1+ serializer-definitions)) object)
             ((equal object '("nl_root_pin_begin_v2" "nl_root_pin_reserve_v2" "nl_root_pin_end_v2"
                              "nl_root_pin_slot_v2" "nl_gc_mark_pinned_roots"
-                             "nl_gc_mark_thread_roots" "nl_gc_mark_recorded_env"))
+                             "nl_gc_mark_thread_roots" "nl_gc_mark_recorded_env" "nl_cold_grow_chunk0" "nl_gc_conserv_owner_slow"))
              (setq roots (1+ roots)) (copy-sequence nelisp-native-compiler-startup-evidence--roots))
             ((equal object '(ticket gc)) (setq operations (1+ operations)) '(constructor))
             ((eq object 'ticket-gc-memory-v1)
@@ -188,8 +188,8 @@
              (setq bounds (1+ bounds)) '(<= 1 (length (alist-get 'records closure)) 192))
             ((equal object '(<= 15 (length functions) 128))
              (setq bounds (1+ bounds)) '(<= 15 (length functions) 192))
-            ((equal object '(= (length offsets) 12))
-             (setq offsets (1+ offsets)) '(= (length offsets) 13))
+            ((equal object '(= (length offsets) 13))
+             (setq offsets (1+ offsets)) '(= (length offsets) 14))
             ((and generator (consp object) (eq (car object) 'dolist)
                   (equal (cadr object)
                          '(relative '("lisp/nelisp-native-funcall-v2.el" "lisp/nelisp-runtime-reload-abi.el" "lisp/nelisp-native-load.el"

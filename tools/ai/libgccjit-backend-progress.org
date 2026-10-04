@@ -84,10 +84,12 @@ cmd: out=$(timeout 1500 target/progress/general-native-r9-codex-20261003/b1-cold
 * F1 Generic runtime call bridge for native code (comp.el freloc pattern)
 
 ** F1.1 Raw-v2 native code can call any Lisp function value held in a root with N rooted arguments and receive the result in a root (one import, both backends), with signal/throw from the callee propagating through the existing exit protocol
-pending
+#+NOTE: 2026-10-04 F1b (gpt-6.1-sol; Astra ultra audit): fixed the signal arena reference and the cold-boot allocation-domain authentication (restored heap above the initial 256 MiB). Native on both backends from cold images: GC inside callee, native->Lisp->native nesting, signal/throw/wrong-type/arity/void-function, N=0 and N>5, closures, redefinition, malformed and stale tickets, index/arity/ABI/exit-kind mutation refusals, cleanup depth 24; corpus digest ebe5cd12... identical. Readers rebuilt from the integrated tree (reader-f1: static 1167e249, dynamic 777c655d).
+#+TIMEOUT: 600
+cmd: test/standalone-native-funcall-v2-exits-smoke.sh --both --cold target/agent-worktrees/reader-f1-20261004/target/nelisp-static target/agent-worktrees/reader-f1-20261004/target/nelisp-dyn 2>&1 | grep -q '^F1B-BOTH-PASS digest=ebe5cd1249025f15a6245e00f493cf7a5a9f1765bb4e07a5295836ad5a5b67d0 cold=1'
 
 ** F1.2 End to end: a compiled function calling three different primitives and one user-defined Lisp function through the bridge matches the interpreter on a fixed corpus, on both backends
-#+NOTE: 2026-10-04 F1a (gpt-6.1-sol, design target/agent-worktrees/f1-bridge-sol-20261004/F1-DESIGN.md) added nl_native_funcall_v2 (six words, over wf_bytecode_call_gateway) appended to the bridge list, primitive-call/funcall plan kinds, both emitters, contracts, F1 startup proof and the gccjit binding. Readers rebuilt from the integrated tree (target/agent-worktrees/reader-f1-20261004: static 277256dd with cold image, dynamic 2e807c2d). Root run: in-house compile 98.9 s / cache load+corpus 9.1 s; gccjit 70.2 s / 12.1 s; identical corpus digest 52c26b63...; validations 1 at compile, 0 on load. Per-call native cost is about 6-7 ms versus about 0.08 ms interpreted (frame protocol plus four bridge calls): a known performance gap. Dynamic cold boot still segfaults while issuing the F1 proof (gccjit runs use normal boot).
+#+NOTE: 2026-10-04 F1a (gpt-6.1-sol, design target/agent-worktrees/f1-bridge-sol-20261004/F1-DESIGN.md) added nl_native_funcall_v2 (six words, over wf_bytecode_call_gateway) appended to the bridge list, primitive-call/funcall plan kinds, both emitters, contracts, F1 startup proof and the gccjit binding. Readers rebuilt from the integrated tree (target/agent-worktrees/reader-f1-20261004: static 277256dd with cold image, dynamic 2e807c2d; rebuilt after P1.1 as static 5837b974 / dynamic ded7b4fc, corpus digest unchanged). Root run: in-house compile 98.9 s / cache load+corpus 9.1 s; gccjit 70.2 s / 12.1 s; identical corpus digest 52c26b63...; validations 1 at compile, 0 on load. Per-call native cost is about 6-7 ms versus about 0.08 ms interpreted (frame protocol plus four bridge calls): a known performance gap. Dynamic cold boot still segfaults while issuing the F1 proof (gccjit runs use normal boot).
 #+TIMEOUT: 600
 cmd: test/standalone-bytecode-native-funcall-smoke.sh --both target/agent-worktrees/reader-f1-20261004/target/nelisp-static target/agent-worktrees/reader-f1-20261004/target/nelisp-dyn 2>&1 | grep -c 'F1-CORPUS-DIGEST=52c26b63098a83d62c044908b231afd5cce3a85da3b559147e6dc4810eeac2ef' | grep -qx 2
 
@@ -107,7 +109,8 @@ pending
 * P1 In-house generator compile speed (Emacs .eln artifact shape)
 
 ** P1.1 A cache compile skips the admission result seal and hands the emitted forms to the AOT compiler without a source-file round trip; the artifact is artifact-equal to before and the trust-path load still works
-pending
+#+NOTE: 2026-10-04 gpt-6.1-sol P1.1 (one attempt; Astra ultra audit 0 blocking): cache-path compile 57.0 -> 51.9 s, public build 46.5 -> 43.9 s, artifact EQUAL, registry insertions on cache compiles 1 -> 0, public build still seals. After integration (loader ae41de99) the F1 corpus still passes on both backends (in-house compile 97.6 -> 85.5 s on the F1 fixture).
+cmd: emacs -Q --batch -L lisp -L src -L scripts -L test -L packages/nl-ffi/src -l test/p1a-test.el -f ert-run-tests-batch-and-exit 2>&1 | grep -q '^Ran 5 tests, 5 results as expected, 0 unexpected' && test "$(sha256sum target/agent-worktrees/p1a-speed-sol-20261004/work/acceptance.json | cut -d ' ' -f 1)" = 7a273d9103feca8fc399053df7d73883b456ea9b2cde50e02f69da91eabe84eb
 
 ** P1.2 A cached in-house artifact contains only the user entry (no embedded GC-contract functions); GC contract entries resolve to runtime-owned functions by import, and a forced GC during and after calls keeps results exact
 pending
