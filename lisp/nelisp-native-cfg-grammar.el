@@ -36,7 +36,7 @@
 
 (defun nelisp-native-cfg-grammar-validate (form)
   "Validate FORM before either backend emits effects; return its blocks.
-This slice admits reachable acyclic graphs only.  Labels are non-nil symbols
+This slice admits reachable graphs, including irreducible and closed cycles.  Labels are non-nil symbols
 or nonnegative integers.  Bounds limit compilation resources, not execution."
   (unless (and (proper-list-p form) (>= (length form) 4)
                (eq (car form) 'cfg) (eql (cadr form) 1)
@@ -87,7 +87,7 @@ or nonnegative integers.  Bounds limit compilation resources, not execution."
           (let* ((event (pop pending)) (id (car event)))
             (cond
              ((cdr event) (setq active (delete id active)) (push id done))
-             ((member id active) (error "raw CFG: cycles require U1b"))
+             ((member id active) nil)
              ((member id done) nil)
              (t (push id active) (push (cons id t) pending)
                 (dolist (target (cdr (assoc id edges)))

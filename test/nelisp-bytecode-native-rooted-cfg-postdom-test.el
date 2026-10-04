@@ -28,7 +28,10 @@
     (dolist (block (append (plist-get copy :blocks) nil))
       (setf (plist-get block :start) (+ offset (plist-get block :start)))
       (dolist (edge (append (plist-get block :successors) nil))
-        (setf (plist-get edge :target) (+ offset (plist-get edge :target)))))
+        (setf (plist-get edge :target) (+ offset (plist-get edge :target)))
+        (dotimes (i (length (plist-get edge :target-slots)))
+          (let ((token (aref (plist-get edge :target-slots) i)))
+            (setcar (cdr token) (+ offset (cadr token)))))))
     copy))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-postdom/two-independent-diamonds-share-exit ()

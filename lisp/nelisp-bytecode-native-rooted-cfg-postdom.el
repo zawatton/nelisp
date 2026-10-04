@@ -27,19 +27,39 @@
     (and (= (length nearest) 1) (car nearest))))
 
 (defun nelisp-bytecode-native-rooted-cfg-postdom--sets (order by-id)
-  "Return postdominator sets for verified blocks BY-ID in reverse ORDER."
-  (let ((postdom (make-hash-table :test #'eql)))
-    (dolist (id (reverse order))
-      (let* ((block (gethash id by-id))
-             (successors (mapcar (lambda (edge) (plist-get edge :target))
-                                 (append (plist-get block :successors) nil)))
-             (common (if successors
-                         (copy-sequence (gethash (car successors) postdom))
-                       (list id))))
-        (dolist (successor (cdr successors))
-          (setq common (cl-intersection common (gethash successor postdom)
-                                        :test #'eql)))
-        (puthash id (if successors (cons id common) (list id)) postdom)))
+  "Compute bounded fixed-point postdominators with a synthetic exit.
+A closed SCC has no usable exit postdominator. Paths into such a component
+also prevent fabricating a join on a different terminating arm."
+  (let ((postdom (make-hash-table :test 'eql)) (exit -1)
+        (can-exit nil) (changed t) (steps 0))
+    (while changed
+      (setq changed nil)
+      (dolist (id order)
+        (let ((successors (append (plist-get (gethash id by-id) :successors) nil)))
+          (when (and (not (memq id can-exit))
+                     (or (null successors)
+                         (cl-some (lambda (e) (memq (plist-get e :target) can-exit)) successors)))
+            (push id can-exit) (setq changed t)))))
+    (puthash exit (list exit) postdom)
+    (dolist (id order)
+      (puthash id (if (memq id can-exit) (cons exit (copy-sequence can-exit)) (list id)) postdom))
+    (setq changed t)
+    (while changed
+      (setq changed nil)
+      (dolist (id order)
+        (setq steps (1+ steps))
+        (when (> steps nelisp-bytecode-native-rooted-cfg-max-analysis-steps)
+          (error "postdominator analysis budget exceeded"))
+        (when (memq id can-exit)
+          (let* ((successors (or (mapcar (lambda (e) (plist-get e :target))
+                                        (append (plist-get (gethash id by-id) :successors) nil))
+                                 (list exit)))
+                 (common (copy-sequence (gethash (car successors) postdom))))
+            (dolist (other (cdr successors))
+              (setq common (cl-intersection common (gethash other postdom))))
+            (let ((new (sort (delete-dups (cons id common)) #'<)))
+              (unless (equal new (gethash id postdom))
+                (puthash id new postdom) (setq changed t)))))))
     postdom))
 
 (defun nelisp-bytecode-native-rooted-cfg-postdom--joins (order by-id postdom)
@@ -55,7 +75,8 @@
                                           :test #'eql))
                  (nearest (nelisp-bytecode-native-rooted-cfg-postdom--nearest-common
                            common postdom)))
-            (cond (nearest (push (cons id nearest) joins))
+            (cond ((not (memq -1 (gethash id postdom))) (push (cons id nil) joins))
+                  (nearest (push (cons id (and (not (= nearest -1)) nearest)) joins))
                   ((null common) (push (cons id nil) joins))
                   (t (setq failure "conditional has ambiguous common postdominators")))))))
     (if failure
@@ -75,7 +96,7 @@
         (list :status 'complete :scope 'acyclic-multi-exit
               :block-order (copy-sequence order)
               :postdominators
-              (mapcar (lambda (id) (cons id (gethash id postdom))) order)
+              (mapcar (lambda (id) (cons id (delq -1 (copy-sequence (gethash id postdom))))) order)
               :nearest-joins (plist-get joins :joins))))))
 
 (defun nelisp-bytecode-native-rooted-cfg-postdom--canonical-input-p (input)

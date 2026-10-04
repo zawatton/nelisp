@@ -2,8 +2,37 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 (require 'nelisp-native-cache)
 (require 'nelisp-bytecode-native-consumer)
-(defun f1-user (x) x)
+(defun f1-user (x)
+  (when (equal (getenv "F1_FORCE_GC") "1") (garbage-collect))
+  x)
 (defun f1-assert (value label) (unless value (error "F1 assertion: %s" label)))
+(defun f1-check-runtime-gc-table (function)
+  "Check both raw mappers against the linked GC addresses across collection."
+  (when (eq nelisp-native-cache-backend 'in-house)
+    (let* ((file (nelisp-native-cache-file function)) header manifest)
+      (with-temp-buffer
+        (insert-file-contents file)
+        (goto-char (point-min))
+        (setq header (read (current-buffer)) manifest (read (current-buffer))))
+      (dolist (mapper '(checked trusted))
+        (let ((handle
+               (if (eq mapper 'checked)
+                   (nelisp-native-load-raw-v2-artifact
+                    manifest (plist-get header :entry)
+                    (nelisp-native-load-running-binary-sha256) file)
+                 (nelisp-native-load-raw-v2-artifact-trusted
+                  manifest (plist-get header :entry) file))))
+          (unwind-protect
+              (progn
+                (f1-assert (= (length (plist-get handle :exports)) 1) "one user export")
+                (garbage-collect)
+                (dolist (entry (plist-get manifest :gc-entries))
+                  (f1-assert
+                   (= (ptr-read-u64 (plist-get handle :gc-table)
+                                    (+ 16 (* 8 (plist-get entry :index))))
+                      (nelisp-native-load--symbol-addr (plist-get entry :name)))
+                   "GC table uses runtime addresses after collection")))
+            (nelisp-native-load-unload handle)))))))
 (let* ((function (cdr (assq 'f1-fixture (nelisp-bytecode-native-consumer-read-elc-functions (getenv "F1_FIXTURE")))))
        (phase (getenv "F1_PHASE"))
        (nelisp-native-cache-backend (if (equal (getenv "F1_BACKEND") "gccjit") 'gccjit 'in-house)))
@@ -36,13 +65,16 @@
         (f1-assert (equal (sort (copy-sequence names) #'string<) '("nl_native_funcall_v2" "nl_root_pin_slot_v2")) "one generic evaluator import"))
       (f1-assert (= before nelisp-bytecode-native-rooted-cfg-contract--validation-count) "zero cache validations")
       (dolist (input corpus)
+        (when (equal (getenv "F1_FORCE_GC") "1") (garbage-collect))
         (let ((expected (funcall function input)) (actual (funcall native input)))
+          (when (equal (getenv "F1_FORCE_GC") "1") (garbage-collect))
           (f1-assert (equal expected actual) "native/interpreter equality")
           (f1-assert (eq (car actual) (car expected)) "car identity")
           (f1-assert (eq (cdr actual) (cdr expected)) "cdr identity")
           (push (format "%S" actual) observations)
           (setq count (1+ count))))
-      (when (member phase '("load" "measure"))
+      (when (and (member phase '("load" "measure"))
+                 (not (equal (getenv "F1_FORCE_GC") "1")))
         (let ((rounds 5) (calls 0) (vm-start (float-time)) vm-seconds native-start)
           (dotimes (_ rounds)
             (dolist (input corpus) (funcall function input) (setq calls (1+ calls))))
@@ -60,6 +92,9 @@
       (f1-assert (equal (funcall native '(7 . 8)) '(redefined 7 . 8)) "function redefinition")
       (push (format "%S" (funcall native '(7 . 8))) observations)
       (princ (format "F1-CORPUS-DIGEST=%s\n" (secure-hash 'sha256 (prin1-to-string (nreverse observations)))))
+      (when (equal (getenv "F1_FORCE_GC") "1")
+        (f1-check-runtime-gc-table function)
+        (princ (format "F1-FORCED-GC-PASS backend=%S\n" nelisp-native-cache-backend)))
       (princ (format "F1-CACHE-PASS backend=%S corpus=%d seconds=%.3f validations=%d\n"
                      nelisp-native-cache-backend count (- (float-time) start)
                      (- nelisp-bytecode-native-rooted-cfg-contract--validation-count before))))))

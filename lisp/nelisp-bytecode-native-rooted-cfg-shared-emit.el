@@ -16,6 +16,7 @@
 (require 'nelisp-bytecode-native-arithmetic-lowering)
 (require 'nelisp-bytecode-native-guarded-lowering)
 (require 'nelisp-bytecode-native-rooted-cfg-postdom)
+(require 'nelisp-native-cfg-grammar)
 
 (defun nelisp-bytecode-native-rooted-cfg-shared-emit--fail (context reason)
   (unless (plist-get context :failure)
@@ -78,9 +79,11 @@
 
 (defun nelisp-bytecode-native-rooted-cfg-shared-emit--to
     (context from target stop path)
-  (if (and stop (= target stop))
+  (if (plist-get context :cyclic)
+      (list 'cfg-edge (cdr (assoc (cons from target) (plist-get context :edge-labels))))
+    (if (and stop (= target stop))
       (nelisp-bytecode-native-rooted-cfg-shared-emit--edge-assignments context from target)
-    (nelisp-bytecode-native-rooted-cfg-shared-emit--block context target stop path)))
+    (nelisp-bytecode-native-rooted-cfg-shared-emit--block context target stop path))))
 
 (defun nelisp-bytecode-native-rooted-cfg-shared-emit--block
     (context start stop path)
@@ -149,6 +152,22 @@
                     (nelisp-bytecode-native-rooted-cfg-shared-emit--materialize-inputs
                      inputs materialized id index body)
                   body)))))
+         ((eq opcode 'switch)
+          (let* ((output (plist-get operation :output-root))
+                 (edges (plist-get block :successors))
+                 (fall (cl-find 'fallthrough edges :key (lambda (e) (plist-get e :kind))))
+                 (cases (mapcar (lambda (edge)
+                                  (list (plist-get edge :target)
+                                        (cadr (nelisp-bytecode-native-rooted-cfg-shared-emit--to
+                                               context id (plist-get edge :target) nil nil))))
+                                (cl-remove-if-not (lambda (e) (eq (plist-get e :kind) 'switch)) edges)))
+                 (default (cadr (nelisp-bytecode-native-rooted-cfg-shared-emit--to
+                                context id (plist-get fall :target) nil nil))))
+            (nelisp-native-funcall-v2-emit
+             operation (plist-get operation :function-root) (plist-get operation :argument-roots)
+             `(let ((switch_slot (extern-call nl_root_pin_slot_v2 env ticket ,output 0 0 0)))
+                (if (= switch_slot 0) 2
+                  (cfg-dispatch (ptr-read-u64 switch_slot 8) ,cases ,default))))))
          ((memq opcode '(primitive-call funcall))
           (let ((function (nelisp-bytecode-native-rooted-cfg-shared-emit--resolve
                            context (plist-get operation :function-root)))
@@ -210,7 +229,7 @@
            context (format "unsupported operation %S" opcode))
           0))))))
 
-(defun nelisp-bytecode-native-rooted-cfg-shared-emit--branch
+(defun nelisp-bytecode-native-rooted-cfg-shared-emit--structured-branch
     (context block operation stop path)
   (let* ((id (plist-get block :start))
          (successors (plist-get block :successors))
@@ -249,6 +268,149 @@
         (setq context (plist-put context :join-count (1+ (plist-get context :join-count))))
         slot-call))))
 
+(defun nelisp-bytecode-native-rooted-cfg-shared-emit--branch (context block operation stop path)
+  (if (not (plist-get context :cyclic))
+      (nelisp-bytecode-native-rooted-cfg-shared-emit--structured-branch context block operation stop path)
+    (let* ((id (plist-get block :start))
+           (edges (plist-get block :successors))
+           (taken (cl-find 'taken edges :key (lambda (e) (plist-get e :kind))))
+           (fall (cl-find 'fallthrough edges :key (lambda (e) (plist-get e :kind))))
+           (root (car (plist-get operation :input-roots)))
+           (yes (nelisp-bytecode-native-rooted-cfg-shared-emit--to context id (plist-get taken :target) nil nil))
+           (no (nelisp-bytecode-native-rooted-cfg-shared-emit--to context id (plist-get fall :target) nil nil)))
+      `(let ((cycle_condition (extern-call nl_root_pin_slot_v2 env ticket ,root 0 0 0)))
+         (if (= cycle_condition 0) 2
+           (if (= (ptr-read-u64 cycle_condition 0) 0)
+               ,(if (eq (plist-get operation :taken-if) 'nil) yes no)
+             ,(if (eq (plist-get operation :taken-if) 'nil) no yes)))))))
+
+(defun nelisp-bytecode-native-rooted-cfg-shared-emit--compact (cfg)
+  "Fuse straight-line generated blocks without duplicating effects or loop heads."
+  (let ((blocks (copy-tree (cdddr cfg))) (changed t))
+    (while changed
+      (setq changed nil)
+      (let ((counts (make-hash-table :test 'equal)))
+        (puthash (nth 2 cfg) 1 counts)
+        (dolist (b blocks)
+          (let* ((term (nth 3 b))
+                 (targets (pcase (car term) ('jump (cdr term)) ('branch (cddr term))
+                                  ('dispatch (cons (nth 3 term) (mapcar #'cadr (nth 2 term)))))))
+            (dolist (id targets) (puthash id (1+ (gethash id counts 0)) counts))))
+        (dolist (b (copy-sequence blocks))
+          (when (memq b blocks)
+            (let* ((term (nth 3 b))
+                   (next (and (eq (car term) 'jump) (assq (cadr term) (mapcar (lambda (x) (cons (cadr x) x)) blocks)))))
+              (when (and next (= (gethash (car next) counts 0) 1) (not (eq b (cdr next))))
+                (setf (nth 2 b) (append (nth 2 b) (nth 2 (cdr next)))
+                      (nth 3 b) (nth 3 (cdr next)))
+                (setq blocks (delq (cdr next) blocks) changed t)))))))
+    (cons 'cfg (cons 1 (cons (nth 2 cfg) blocks)))))
+
+(defun nelisp-bytecode-native-rooted-cfg-shared-emit--cycles (plan entry-name)
+  "Emit each verified cyclic block once, with parallel physical root copies."
+  (let* ((planned (plist-get plan :blocks)) (serial 0) (raw-blocks nil) (locals nil)
+         (block-map (make-hash-table :test 'eql)) (edge-labels nil)
+         (context (list :cyclic t :plan plan :root-count (plist-get plan :required-root-count)
+                        :block-map block-map :edge-labels nil :failure nil)))
+    (cl-labels
+        ((fresh () (setq serial (1+ serial)) (intern (format "cycle_local_%d" serial)))
+         (local () (let ((name (fresh))) (push (list name 0) locals) name))
+         (block (forms term &optional id)
+           (let ((name (or id (fresh)))) (push (list 'block name forms term) raw-blocks) name))
+         (rename (node scope)
+           (cond ((symbolp node) (or (cdr (assq node scope)) node))
+                 ((atom node) node) ((eq (car node) 'quote) node)
+                 (t (mapcar (lambda (child) (rename child scope)) node))))
+         (sequence (forms scope out next)
+           (let ((entry next))
+             (dolist (node (reverse forms)) (setq entry (lower node scope out entry))) entry))
+         (lower (node scope out next)
+           (cond
+            ((and (consp node) (eq (car node) 'cfg-dispatch))
+             (block nil (list 'dispatch (rename (cadr node) scope) (nth 2 node) (nth 3 node))))
+            ((and (consp node) (eq (car node) 'cfg-edge))
+             (block nil (list 'jump (cadr node))))
+            ((and (consp node) (eq (car node) 'if))
+             (let ((yes (lower (nth 2 node) scope out next))
+                   (no (lower (nth 3 node) scope out next)))
+               (block nil `(branch ,(rename (cadr node) scope) ,yes ,no))))
+            ((and (consp node) (memq (car node) '(progn seq)))
+             (sequence (cdr node) scope out next))
+            ((and (consp node) (memq (car node) '(let let*)))
+             (let ((inner scope) (initializers nil))
+               (dolist (binding (cadr node))
+                 (let ((name (local)))
+                   (push (list name (rename (cadr binding) (if (eq (car node) 'let*) inner scope))) initializers)
+                   (push (cons (car binding) name) inner)))
+               (let ((entry (sequence (cddr node) inner out next)))
+                 (dolist (binding initializers)
+                   (setq entry (block (list `(setq ,(car binding) ,(cadr binding))) `(jump ,entry)))) entry)))
+            (t (block (list `(setq ,out ,(rename node scope))) `(jump ,next))))))
+      (dolist (b planned)
+        (puthash (plist-get b :start) b block-map)
+        (dolist (e (plist-get b :successors))
+          (let ((key (cons (plist-get b :start) (plist-get e :target))))
+            (unless (assoc key edge-labels) (push (cons key (fresh)) edge-labels)))))
+      (plist-put context :edge-labels edge-labels)
+      (let* ((out (local)) (finish (fresh)))
+        ;; Create the common status exit only if one generated path uses it.
+        (dolist (b planned)
+          (let* ((id (plist-get b :start))
+                 (body (nelisp-bytecode-native-rooted-cfg-shared-emit--operations context b 0 nil nil))
+                 (entry (lower body nil out finish)))
+            (block nil (list 'jump entry) id))
+          (dolist (e (cl-delete-duplicates (copy-sequence (plist-get b :successors))
+                                           :key (lambda (edge) (plist-get edge :target)) :test #'eql))
+            (let* ((from (plist-get b :start)) (to (plist-get e :target))
+                   (target (gethash to block-map))
+                   (phis (plist-get target :phis))
+                   (inputs (mapcar (lambda (phi) (cdr (assq from (plist-get phi :incoming)))) phis))
+                   (destinations (mapcar (lambda (phi) (plist-get phi :root)) phis))
+                   (scratch (cl-subseq (plist-get plan :copy-roots) 0 (length phis)))
+                   (body (list 'cfg-edge to)))
+              (when (memq to (plist-get b :poll-targets))
+                (let* ((result (plist-get plan :result-root))
+                       (exit (plist-get plan :exit-root-base))
+                       (quit-form (nelisp-native-funcall-v2-copy-form
+                                   (plist-get plan :poll-exit-roots)
+                                   (number-sequence exit (+ exit 2)) (+ 1024 exit))))
+                  (setq body
+                        (nelisp-native-funcall-v2-emit
+                         (list :pc (+ 100000 from) :staging-roots nil
+                               :result-root result :output-root result)
+                         (plist-get plan :poll-root) nil
+                         `(let ((cycle_poll_slot (extern-call nl_root_pin_slot_v2 env ticket ,result 0 0 0)))
+                            (if (= cycle_poll_slot 0) 2
+                              (if (= (ptr-read-u64 cycle_poll_slot 0) 0) ,body ,quit-form)))))))
+              (setq body (nelisp-native-funcall-v2-copy-form
+                          inputs scratch (nelisp-native-funcall-v2-copy-form scratch destinations body)))
+              (block nil (list 'jump (lower body nil out finish))
+                     (cdr (assoc (cons from to) edge-labels))))))
+        (let* ((copies (plist-get plan :entry-copies))
+               (body (nelisp-native-funcall-v2-copy-form
+                      (mapcar #'car copies) (mapcar #'cdr copies)
+                      (list 'cfg-edge (plist-get (car planned) :start))))
+               (entry (lower body nil out finish))
+               (guard (lower `(if (/= argument-count ,(plist-get plan :arity)) 3
+                               (if (/= root-count ,(plist-get plan :required-root-count)) 3
+                                 (cfg-edge ,entry))) nil out finish)))
+          (when (cl-some (lambda (b) (member finish (cdr (nth 3 b)))) raw-blocks)
+            (block nil (list 'return out) finish))
+          (let ((cfg (nelisp-bytecode-native-rooted-cfg-shared-emit--compact
+                      (cons 'cfg (cons 1 (cons guard (nreverse raw-blocks)))))))
+            (nelisp-native-cfg-grammar-validate cfg)
+            (append (list :status 'complete :entry-name entry-name
+                          :form `(defun ,(intern entry-name) (env ticket argument-count root-count)
+                                   (let ,(nreverse locals) ,cfg))
+                          :argument-count (plist-get plan :arity)
+                          :required-root-count (plist-get plan :required-root-count)
+                          :gateway-imports (plist-get plan :gateway-imports)
+                          :join-count 0 :selector-edge-count (length edge-labels)
+                          :expansion-count (length planned))
+                    (cl-loop for key in '(:exit-root-base :primitive-initializers :initial-roots
+                                         :constant-initializers :immediate-initializers)
+                             append (list key (plist-get plan key))))))))))
+
 (defun nelisp-bytecode-native-rooted-cfg-shared-emit-build (plan entry-name)
   "Emit a freshly verified rooted CFG with shared postdominator continuations."
   (let* ((input (plist-get plan :input))
@@ -264,6 +426,15 @@
                   (eq (plist-get analysis :status) 'complete)
                   (stringp entry-name) (> (length entry-name) 0)))
         (list :status 'unsupported :reason "shared emission needs an unchanged canonical rooted plan")
+      (if (or (plist-get plan :banked)
+              ;; A phi-free DAG can use immutable root selectors directly.
+              ;; Extended stack references therefore need no evaluator import.
+              (and (null (plist-get plan :phis))
+                   (cl-some (lambda (b)
+                              (cl-some (lambda (op) (memq (plist-get op :bytecode-opcode) '(6 7)))
+                                       (plist-get b :operations)))
+                            (plist-get plan :blocks))))
+          (nelisp-bytecode-native-rooted-cfg-shared-emit--cycles plan entry-name)
       (let* ((blocks (plist-get plan :blocks))
              (root-count (plist-get plan :required-root-count))
              (arity (plist-get plan :arity))
@@ -322,7 +493,7 @@
                   :argument-count arity :required-root-count root-count
                   :join-count (plist-get context :join-count)
                   :selector-edge-count (plist-get context :selector-edge-count)
-                  :expansion-count (plist-get context :expansion-count))))))))
+                  :expansion-count (plist-get context :expansion-count)))))))))
 
 (provide 'nelisp-bytecode-native-rooted-cfg-shared-emit)
 ;;; nelisp-bytecode-native-rooted-cfg-shared-emit.el ends here

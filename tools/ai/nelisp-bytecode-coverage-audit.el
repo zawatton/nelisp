@@ -184,7 +184,11 @@
                ((= opcode 179) '(0 0))
                (t nil)))
         (suffix (if (= opcode 135) nil '(135))))
-    (apply #'unibyte-string (append (list opcode) operands suffix))))
+    (if (= opcode 183)
+        ;; Diagnostic table operand is explicitly nil; dynamic tables now have
+        ;; a general runtime lane, so an unknown entry operand is no longer bad.
+        (unibyte-string 192 183 135)
+      (apply #'unibyte-string (append (list opcode) operands suffix)))))
 
 (defun nelisp-bytecode-coverage-audit--valid-fixtures (root)
   "Read ROOT's VALID fixtures without replacing historical diagnostic probes."
@@ -255,8 +259,17 @@ buffer, and mutable constants are freshly constructed for each proof."
     (unless (cl-find (alist-get 'opcode fixture) (plist-get decoded :instructions)
                      :key (lambda (row) (aref row 1)))
       (error "VALID fixture does not decode its advertised opcode"))
-    (list :id (alist-get 'id fixture) :frame-status (plist-get frame :status)
-          :reason (plist-get frame :reason))))
+    (append
+     (list :id (alist-get 'id fixture) :frame-status (plist-get frame :status)
+           :reason (plist-get frame :reason))
+     (when (= (alist-get 'opcode fixture) 183)
+       (require 'nelisp-bytecode-native-rooted-cfg-contract)
+       (let* ((fn (make-byte-code 0 code constants (alist-get 'declared_stack_depth fixture)))
+              (input (nelisp-bytecode-compiler-input-build fn))
+              (plan (nelisp-bytecode-native-rooted-cfg-plan input))
+              (emitted (nelisp-bytecode-native-rooted-cfg-shared-emit-build
+                        plan nelisp-bytecode-native-rooted-cfg-contract-shared-entry)))
+         (list :shared-form-status (if (eq (plist-get emitted :status) 'complete) 'proved 'pending)))))))
 
 (defun nelisp-bytecode-coverage-audit--backend-proof (backend fixture)
   "Return independent execution evidence for BACKEND and FIXTURE.
@@ -332,7 +345,7 @@ presence, frame verification and historical N/L labels cannot set executed."
   (let* ((code (nelisp-bytecode-coverage-audit--probe-code opcode))
            (decoded (nelisp-bytecode-ir-decode-result code constants))
            (rows (plist-get decoded :instructions))
-           (row (and (> (length rows) 0) (aref rows 0)))
+           (row (cl-find opcode rows :key (lambda (instruction) (aref instruction 1))))
            (structural (and row (= (aref row 1) opcode)))
            (frame (and structural
                        (nelisp-bytecode-frame-ir-build code constants 32)))
@@ -616,7 +629,10 @@ ROOT defaults to this tool's repository and permits auditing an integrated tree.
                         (when valid
                           (puthash "id" (plist-get proof :id) valid)
                           (puthash "frame-status" (symbol-name (plist-get proof :frame-status)) valid)
-                          (puthash "reason" (plist-get proof :reason) valid))
+                          (puthash "reason" (plist-get proof :reason) valid)
+                          (when (plist-get proof :shared-form-status)
+                            (puthash "shared-form-status"
+                                     (symbol-name (plist-get proof :shared-form-status)) valid)))
                         (puthash "valid-fixture" valid object)))
                     (when (plist-member row :backend-execution)
                       (let ((backends (make-hash-table :test 'equal)))

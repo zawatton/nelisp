@@ -265,25 +265,14 @@
 		    (let*
 			((entry (car rest))
 			 (addr
-			  (cdr
-			   (assoc (plist-get entry :name)
-				  (let ((xs nil) (es exports))
-				    (while es
-				      (push
-				       (cons
-					(plist-get (car es) :name)
-					(plist-get (car es) :value))
-				       xs)
-				      (setq es (cdr es)))
-				    xs)))))
-		      (unless (integerp addr)
-			(error
-			 "nelisp-native-load: v2 GC export missing: %s"
-			 (plist-get entry :name)))
+			  (nelisp-native-load--raw-v2-gc-address entry
+								 manifest
+								 exports
+								 codepage)))
 		      (ptr-write-u64 table
 				     (+ 16
 					(* 8 (plist-get entry :index)))
-				     (+ codepage addr)))
+				     addr))
 		    (setq rest (cdr rest))))
 		(unless
 		    (= 0

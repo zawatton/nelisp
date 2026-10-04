@@ -52,7 +52,7 @@
     (should (eq (plist-get lowered :execution) 'not-loaded))
     (should-not (plist-get lowered :vm-trampoline))))
 
-(ert-deftest nelisp-bytecode-native-cfg/lowers-gnu-bswitch-integer-table ()
+(ert-deftest nelisp-bytecode-native-cfg/refuses-snapshot-only-gnu-bswitch-integer-table ()
   ;; GNU Emacs 31.1 byte-compiles (pcase x (1 10) (2 20) (_ 30))
   ;; to this Bswitch stream and an eq table with the shown bytecode targets.
   (let* ((function (byte-compile '(lambda (x) (pcase x (1 10) (2 20) (_ 30)))))
@@ -66,8 +66,9 @@
     (should (= (funcall function 1) 10))
     (should (= (funcall function 2) 20))
     (should (= (funcall function 7) 30))
-    (should (eq (plist-get lowered :status) 'complete))
-    (should (> (length (plist-get lowered :machine-bytes)) 30))))
+    (should (eq (plist-get lowered :status) 'unsupported))
+    (should (string-match-p "runtime table lookup" (plist-get lowered :reason)))
+    (should-not (plist-get lowered :machine-bytes))))
 
 (ert-deftest nelisp-bytecode-native-cfg/gnu-bswitch-fixture-make-byte-code-abi ()
   (let* ((compiled (byte-compile '(lambda (x) (pcase x (1 10) (2 20) (_ 30)))))
@@ -92,19 +93,19 @@
     (aset constants 0 equal-table)
     (let ((lowered (nelisp-bytecode-native-cfg-lower code constants 1 '(raw-i64))))
       (should (eq (plist-get lowered :status) 'unsupported))
-      (should (string-match-p "eq/eql table" (plist-get lowered :reason)))
+      (should (string-match-p "runtime table lookup" (plist-get lowered :reason)))
       (should-not (plist-get lowered :machine-bytes)))
     (aset constants 0 boxed-table)
     (let ((lowered (nelisp-bytecode-native-cfg-lower code constants 1 '(raw-i64))))
       (should (eq (plist-get lowered :status) 'unsupported))
-      (should (string-match-p "signed-i32" (plist-get lowered :reason)))
+      (should (string-match-p "runtime table lookup" (plist-get lowered :reason)))
       (should-not (plist-get lowered :machine-bytes)))))
 
 (ert-deftest nelisp-bytecode-native-cfg/rejects-dynamic-bswitch-table ()
   (let ((lowered (nelisp-bytecode-native-cfg-lower
                   (unibyte-string 183 192 135) [7] 2 '(raw-i64 raw-i64))))
     (should (eq (plist-get lowered :status) 'unsupported))
-    (should (string-match-p "table provenance" (plist-get lowered :reason)))
+    (should (string-match-p "runtime table lookup" (plist-get lowered :reason)))
     (should-not (plist-get lowered :machine-bytes))))
 
 (ert-deftest nelisp-bytecode-native-cfg/lowers-explicit-raw-arguments ()

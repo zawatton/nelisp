@@ -63,6 +63,15 @@
               (equal (nelisp-native-load-manifest (plist-get result :artifact-path))
                      (plist-get result :manifest))))))
 
+(defun nelisp-bytecode-native-rooted-cfg-native--stage (artifact label &optional source)
+  "Append a producer stage without traversing the producer body as a macro."
+  (condition-case nil
+      (let ((path (getenv "NELISP_ROOTED_CFG_STAGE_LOG")))
+        (when (and (stringp path) (> (length path) 0))
+          (write-region (format "producer-%s source=%s artifact=%s\n" label source artifact)
+                        nil path t 'silent)))
+    ((error quit) nil)))
+
 (let ((constructor-checker
        (and (fboundp 'nelisp-native-load-compiler-constructor-contract-p)
             (symbol-function 'nelisp-native-load-compiler-constructor-contract-p)))
@@ -72,55 +81,49 @@
       (same (symbol-function 'eq)))
 (defun nelisp-bytecode-native-rooted-cfg-native--build (input artifact-path shared-v2 &optional guard-mode skip-seal)
   "Build verified INPUT using the v1 or shared-v2 rooted-CFG emitter.
-SKIP-SEAL is internal to cache compilation; its result cannot be admitted."
-  (cl-labels ((stage (label &optional source)
-                (condition-case nil
-                (let ((path (getenv "NELISP_ROOTED_CFG_STAGE_LOG")))
-                  (when (and (stringp path) (> (length path) 0))
-                    (write-region (format "producer-%s source=%s artifact=%s\n"
-                                          label source artifact-path)
-                                  nil path t 'silent)))
-                  ((error quit) nil))))
+SKIP-SEAL is internal to cache compilation; its result cannot be admitted.
+That path leaves file publication and memory-safety decoding to the cache."
   (let* ((plan (progn
-                 (stage "plan-start")
+                 (nelisp-bytecode-native-rooted-cfg-native--stage artifact-path "plan-start")
                  (prog1 (nelisp-bytecode-native-rooted-cfg-plan
                          input nil (if shared-v2 guard-mode 'off))
-                   (stage "plan-end"))))
+                   (nelisp-bytecode-native-rooted-cfg-native--stage artifact-path "plan-end"))))
          (emitted (and (eq (plist-get plan :status) 'complete)
                        (progn
-                        (stage "emit-start")
+                        (nelisp-bytecode-native-rooted-cfg-native--stage artifact-path "emit-start")
                         (prog1 (if shared-v2
                            (nelisp-bytecode-native-rooted-cfg-shared-emit-build
                             plan nelisp-bytecode-native-rooted-cfg-contract-shared-entry)
                          (nelisp-bytecode-native-rooted-cfg-emit
                           plan nelisp-bytecode-native-rooted-cfg-native-entry))
-                          (stage "emit-end")))))
+                          (nelisp-bytecode-native-rooted-cfg-native--stage artifact-path "emit-end")))))
          (entry-name (if shared-v2
                          nelisp-bytecode-native-rooted-cfg-contract-shared-entry
                        nelisp-bytecode-native-rooted-cfg-native-entry))
-         (binary (progn (stage "binary-start")
+         (binary (progn (nelisp-bytecode-native-rooted-cfg-native--stage artifact-path "binary-start")
                         (prog1 (nelisp-native-load-running-binary-sha256)
-                          (stage "binary-end"))))
-         (source (progn (stage "source-start")
-                        (let ((path (make-temp-file "nelisp-rooted-cfg-" nil ".el")))
-                          (stage "source-end" path)
+                          (nelisp-bytecode-native-rooted-cfg-native--stage artifact-path "binary-end"))))
+         (source (progn (nelisp-bytecode-native-rooted-cfg-native--stage artifact-path "source-start")
+                        (let ((path (if skip-seal (concat artifact-path ".el")
+                                      (make-temp-file "nelisp-rooted-cfg-" nil ".el"))))
+                          (nelisp-bytecode-native-rooted-cfg-native--stage artifact-path "source-end" path)
                           path)))
          (forms nil) (source-snapshot nil) (manifest nil) (result nil)
          (result-contract
           (and (eq (plist-get emitted :status) 'complete)
                (progn
-                (stage "contract-start" source)
+                (nelisp-bytecode-native-rooted-cfg-native--stage artifact-path "contract-start" source)
                 (prog1 (if shared-v2
                    (nelisp-bytecode-native-rooted-cfg-contract-create-shared-v2 input plan emitted)
                  (nelisp-bytecode-native-rooted-cfg-contract-create input plan emitted))
-                  (stage "contract-end" source))))))
+                  (nelisp-bytecode-native-rooted-cfg-native--stage artifact-path "contract-end" source))))))
     (unless (and (eq (plist-get emitted :status) 'complete)
                  (stringp artifact-path) (string-suffix-p ".nelr" artifact-path)
                  (stringp binary)
                  (or (progn
-                       (stage "runtime-match-start" source)
+                       (nelisp-bytecode-native-rooted-cfg-native--stage artifact-path "runtime-match-start" source)
                        (prog1 (nelisp-runtime-reload-contract-matches-p)
-                         (stage "runtime-match-end" source)))
+                         (nelisp-bytecode-native-rooted-cfg-native--stage artifact-path "runtime-match-end" source)))
                      (and shared-v2 f1-checker
                           (funcall same f1-checker (funcall lookup 'nelisp-native-load-compiler-f1-runtime-p))
                           (and (plist-get plan :funcall-version) (funcall f1-checker)))
@@ -129,10 +132,10 @@ SKIP-SEAL is internal to cache compilation; its result cannot be admitted."
                           (funcall same constructor-checker
                                    (funcall lookup 'nelisp-native-load-compiler-constructor-contract-p))
                           (progn
-                            (stage "constructor-check-start" source)
+                            (nelisp-bytecode-native-rooted-cfg-native--stage artifact-path "constructor-check-start" source)
                             (prog1 (funcall constructor-checker result-contract)
-                              (stage "constructor-check-end" source))))))
-      (when (file-exists-p source) (delete-file source))
+                              (nelisp-bytecode-native-rooted-cfg-native--stage artifact-path "constructor-check-end" source))))))
+      (when (and (not skip-seal) (file-exists-p source)) (delete-file source))
       (error "rooted-cfg: verified plan or runtime contract is unavailable"))
     (unwind-protect
         (progn
@@ -148,16 +151,20 @@ SKIP-SEAL is internal to cache compilation; its result cannot be admitted."
                                (if (eq (car additional) 'seq) (cdr additional)
                                  (list additional))))
                         (list (plist-get emitted :form))))
-          (with-temp-file source
+          (with-temp-buffer
             (let ((print-length nil) (print-level nil))
               (dolist (form forms) (prin1 form (current-buffer)) (insert "\n"))
-              (setq source-snapshot (cons forms (buffer-string)))))
+              (if skip-seal
+                  (setq source-snapshot
+                        (cons forms (encode-coding-string (buffer-string) 'utf-8-unix)))
+                (write-region (point-min) (point-max) source nil 'silent)
+                (setq source-snapshot (cons forms (buffer-string))))))
           ;; GNU Emacs records the encoding actually selected by write-region.
           ;; The standalone raw writer sends buffer-string bytes unchanged.
-          (when (and (boundp 'last-coding-system-used) last-coding-system-used)
+          (when (and (not skip-seal) (boundp 'last-coding-system-used) last-coding-system-used)
             (setcdr source-snapshot
                     (encode-coding-string (cdr source-snapshot) last-coding-system-used)))
-          (stage "compile-start" source)
+          (nelisp-bytecode-native-rooted-cfg-native--stage artifact-path "compile-start" source)
           (let* ((built-contract result-contract)
                  (cfg-spec (and built-contract
                                 (list :input input :plan plan :emitted emitted
@@ -168,20 +175,28 @@ SKIP-SEAL is internal to cache compilation; its result cannot be admitted."
           ;; Compile-file owns the single semantic reconstruction.  Carry its
           ;; receipt locally; the serialized artifact remains unchanged.
           (let ((compiled
-                 (nelisp-native-load--raw-v2-compile-file-with-validation
-                  source artifact-path
-                  (if shared-v2 "gnu31-rooted-cfg-shared-v2" "gnu31-rooted-cfg-v1") binary
-                  nil nil nil nil nil cfg-spec nil source-snapshot)))
-            (setq manifest (plist-get compiled :manifest))
-            (stage "compile-return" source)
+                 (if skip-seal
+                     ;; The cache neither consumes nor forwards an admission
+                     ;; receipt.  Compile-file retains its own AOT mutation check.
+                     (nelisp-native-load-raw-v2-compile-file
+                      source artifact-path
+                      (if shared-v2 "gnu31-rooted-cfg-shared-v2" "gnu31-rooted-cfg-v1") binary
+                      nil nil nil nil nil cfg-spec nil nil source-snapshot t)
+                   (nelisp-native-load--raw-v2-compile-file-with-validation
+                    source artifact-path
+                    (if shared-v2 "gnu31-rooted-cfg-shared-v2" "gnu31-rooted-cfg-v1") binary
+                    nil nil nil nil nil cfg-spec nil source-snapshot))))
+            (setq manifest (if skip-seal compiled (plist-get compiled :manifest)))
+            (nelisp-bytecode-native-rooted-cfg-native--stage artifact-path "compile-return" source)
+            (unless skip-seal
             (let ((problems
                    (nelisp-native-load--raw-v2-check-after-compile
                     manifest entry-name (plist-get compiled :validated-contract)
                     (plist-get compiled :digest) (plist-get compiled :validator))))
               (when problems
-                (error "rooted-cfg: raw-v2 artifact refused: %S" problems))))
-          (stage "manifest-accepted" source))
-          (unless skip-seal (stage "result-seal-start" source))
+                (error "rooted-cfg: raw-v2 artifact refused: %S" problems)))))
+          (nelisp-bytecode-native-rooted-cfg-native--stage artifact-path "manifest-accepted" source))
+          (unless skip-seal (nelisp-bytecode-native-rooted-cfg-native--stage artifact-path "result-seal-start" source))
           (setq result
                 (list :status 'complete :input input :plan plan
                       :contract result-contract :form (plist-get emitted :form)
@@ -201,11 +216,11 @@ SKIP-SEAL is internal to cache compilation; its result cannot be admitted."
             (push (cons result
                         (nelisp-bytecode-native-rooted-cfg-native--fingerprint result))
                   nelisp-bytecode-native-rooted-cfg-native--registry)
-            (stage "result-seal-end" source))
+            (nelisp-bytecode-native-rooted-cfg-native--stage artifact-path "result-seal-end" source))
           result)
-      (stage "cleanup-source-start" source)
-      (when (file-exists-p source) (delete-file source))
-      (stage "cleanup-source-end" source)))))
+      (nelisp-bytecode-native-rooted-cfg-native--stage artifact-path "cleanup-source-start" source)
+      (when (and (not skip-seal) (file-exists-p source)) (delete-file source))
+      (nelisp-bytecode-native-rooted-cfg-native--stage artifact-path "cleanup-source-end" source))))
 
 (defun nelisp-bytecode-native-rooted-cfg-native-build (input artifact-path)
   "Build verified INPUT as an authenticated v1 raw-CFG artifact."

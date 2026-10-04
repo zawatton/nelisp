@@ -284,8 +284,8 @@ This conservative guard can reject a genuine user literal named V0."
 
 The structural IR deliberately does not lower table-driven control flow or
 boxed constants.  The frame IR separately verifies Bswitch targets and table
-provenance; accept only those two markers when every table constant is a hash
-table.  The raw CFG backend performs the stricter eq/eql and integer-key proof."
+state; accept these markers for the runtime lookup lane. Dynamic tables
+are validated at execution, and boxed constants remain in protected roots."
   (let ((switch-pcs nil) (table-indices nil)
         (unsupported (plist-get ir :unsupported))
         (instructions (plist-get ir :instructions)))
@@ -314,9 +314,7 @@ table.  The raw CFG backend performs the stricter eq/eql and integer-key proof."
                 (and (integerp opcode) (= opcode 183) (memq pc switch-pcs)))
                ((eq reason 'non-fixnum-constant)
                 (and (integerp constant-index) (<= 0 constant-index)
-                     (memq constant-index table-indices)
-                     (< constant-index (length constants))
-                     (hash-table-p (aref constants constant-index))))
+                     (< constant-index (length constants))))
                (t nil))))
           unsupported))))
 

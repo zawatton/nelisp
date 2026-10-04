@@ -11292,6 +11292,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
                  (nl_root_release env mark)
                  1)))))
     (defun wf_bytecode_call_named (env slots sp argc name name_len)
+      (wf_bytecode_call_named_value env slots sp argc name name_len 0))
+    (defun wf_bytecode_call_named_value (env slots sp argc name name_len lisp_provider)
       ;; Bytecode opcodes that correspond directly to built-in primitives
       ;; resolve and call the native function through the same core path as
       ;; ordinary bytecode calls.  Keep the argument list and result rooted
@@ -11318,7 +11320,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (wf_write_nil nil-slot)
          (nelisp_cons_construct sym-slot nil-slot tail-slot)
          (nelisp_cons_construct builtin-slot tail-slot func-slot)
-         (let* ((rc (nelisp_apply_function func-slot arglist env call-result)))
+         ;; Apply a source-owned Lisp provider only when the opcode table
+         ;; explicitly requests one; ordinary names use builtin tokens.
+         (if (= lisp_provider 1)
+             (wf_bytecode_copy func-slot sym-slot) 0)
+         ;; Use the same evaluator boundary as the generic native gateway.
+         ;; Core symbol-cell operations (FSET and SYMBOL-FUNCTION, including
+         ;; nil/t) are not fully represented by the reader-only dispatcher.
+         (let* ((rc (nl_apply_function func-slot arglist env call-result)))
            (if (= rc 0)
                (seq (wf_bytecode_copy (wf_bytecode_slot slots first)
                                       call-result)
@@ -11326,7 +11335,25 @@ baked build's own `<'/`>'/`=' arms need it too.")
                     0)
              (seq (nl_root_release env mark) 1))))))
     (defun wf_bytecode_call_primitive (env slots sp opcode)
-      (let* ((name (alloc-bytes 16 8)))
+      (let* ((name (alloc-bytes 32 8)))
+        (if (= opcode 147)
+            (seq (ptr-write-u8 name 0 110) (ptr-write-u8 name 1 101) (ptr-write-u8 name 2 108) (ptr-write-u8 name 3 105) (ptr-write-u8 name 4 115) (ptr-write-u8 name 5 112) (ptr-write-u8 name 6 45) (ptr-write-u8 name 7 45) (ptr-write-u8 name 8 98) (ptr-write-u8 name 9 121) (ptr-write-u8 name 10 116) (ptr-write-u8 name 11 101) (ptr-write-u8 name 12 99) (ptr-write-u8 name 13 111) (ptr-write-u8 name 14 100) (ptr-write-u8 name 15 101) (ptr-write-u8 name 16 45) (ptr-write-u8 name 17 115) (ptr-write-u8 name 18 101) (ptr-write-u8 name 19 116) (ptr-write-u8 name 20 45) (ptr-write-u8 name 21 109) (ptr-write-u8 name 22 97) (ptr-write-u8 name 23 114) (ptr-write-u8 name 24 107) (ptr-write-u8 name 25 101) (ptr-write-u8 name 26 114)
+                 (wf_bytecode_call_named_value env slots sp 3 name 27 1))
+        (if (= opcode 148)
+            (seq (ptr-write-u8 name 0 110) (ptr-write-u8 name 1 101) (ptr-write-u8 name 2 108) (ptr-write-u8 name 3 105) (ptr-write-u8 name 4 115) (ptr-write-u8 name 5 112) (ptr-write-u8 name 6 45) (ptr-write-u8 name 7 45) (ptr-write-u8 name 8 98) (ptr-write-u8 name 9 121) (ptr-write-u8 name 10 116) (ptr-write-u8 name 11 101) (ptr-write-u8 name 12 99) (ptr-write-u8 name 13 111) (ptr-write-u8 name 14 100) (ptr-write-u8 name 15 101) (ptr-write-u8 name 16 45) (ptr-write-u8 name 17 109) (ptr-write-u8 name 18 97) (ptr-write-u8 name 19 116) (ptr-write-u8 name 20 99) (ptr-write-u8 name 21 104) (ptr-write-u8 name 22 45) (ptr-write-u8 name 23 98) (ptr-write-u8 name 24 101) (ptr-write-u8 name 25 103) (ptr-write-u8 name 26 105) (ptr-write-u8 name 27 110) (ptr-write-u8 name 28 110) (ptr-write-u8 name 29 105) (ptr-write-u8 name 30 110) (ptr-write-u8 name 31 103)
+                 (wf_bytecode_call_named_value env slots sp 1 name 32 1))
+        (if (= opcode 149)
+            (seq (ptr-write-u8 name 0 110) (ptr-write-u8 name 1 101) (ptr-write-u8 name 2 108) (ptr-write-u8 name 3 105) (ptr-write-u8 name 4 115) (ptr-write-u8 name 5 112) (ptr-write-u8 name 6 45) (ptr-write-u8 name 7 45) (ptr-write-u8 name 8 98) (ptr-write-u8 name 9 121) (ptr-write-u8 name 10 116) (ptr-write-u8 name 11 101) (ptr-write-u8 name 12 99) (ptr-write-u8 name 13 111) (ptr-write-u8 name 14 100) (ptr-write-u8 name 15 101) (ptr-write-u8 name 16 45) (ptr-write-u8 name 17 109) (ptr-write-u8 name 18 97) (ptr-write-u8 name 19 116) (ptr-write-u8 name 20 99) (ptr-write-u8 name 21 104) (ptr-write-u8 name 22 45) (ptr-write-u8 name 23 101) (ptr-write-u8 name 24 110) (ptr-write-u8 name 25 100)
+                 (wf_bytecode_call_named_value env slots sp 1 name 26 1))
+        (if (= opcode 150)
+            (seq (ptr-write-u8 name 0 110) (ptr-write-u8 name 1 101) (ptr-write-u8 name 2 108) (ptr-write-u8 name 3 105) (ptr-write-u8 name 4 115) (ptr-write-u8 name 5 112) (ptr-write-u8 name 6 45) (ptr-write-u8 name 7 45) (ptr-write-u8 name 8 98) (ptr-write-u8 name 9 121) (ptr-write-u8 name 10 116) (ptr-write-u8 name 11 101) (ptr-write-u8 name 12 99) (ptr-write-u8 name 13 111) (ptr-write-u8 name 14 100) (ptr-write-u8 name 15 101) (ptr-write-u8 name 16 45) (ptr-write-u8 name 17 117) (ptr-write-u8 name 18 112) (ptr-write-u8 name 19 99) (ptr-write-u8 name 20 97) (ptr-write-u8 name 21 115) (ptr-write-u8 name 22 101)
+                 (wf_bytecode_call_named_value env slots sp 1 name 23 1))
+        (if (= opcode 151)
+            (seq (ptr-write-u8 name 0 110) (ptr-write-u8 name 1 101) (ptr-write-u8 name 2 108) (ptr-write-u8 name 3 105) (ptr-write-u8 name 4 115) (ptr-write-u8 name 5 112) (ptr-write-u8 name 6 45) (ptr-write-u8 name 7 45) (ptr-write-u8 name 8 98) (ptr-write-u8 name 9 121) (ptr-write-u8 name 10 116) (ptr-write-u8 name 11 101) (ptr-write-u8 name 12 99) (ptr-write-u8 name 13 111) (ptr-write-u8 name 14 100) (ptr-write-u8 name 15 101) (ptr-write-u8 name 16 45) (ptr-write-u8 name 17 100) (ptr-write-u8 name 18 111) (ptr-write-u8 name 19 119) (ptr-write-u8 name 20 110) (ptr-write-u8 name 21 99) (ptr-write-u8 name 22 97) (ptr-write-u8 name 23 115) (ptr-write-u8 name 24 101)
+                 (wf_bytecode_call_named_value env slots sp 1 name 25 1))
+        (if (= opcode 156)
+            (seq (ptr-write-u8 name 0 101) (ptr-write-u8 name 1 108) (ptr-write-u8 name 2 116)
+                 (wf_bytecode_call_named env slots sp 2 name 3))
         (if (= opcode 84)
             (seq (ptr-write-u8 name 0 49) (ptr-write-u8 name 1 43)
                  (wf_bytecode_call_named env slots sp 1 name 2))
@@ -11366,7 +11393,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
                 (seq (ptr-write-u8 name 0 97) (ptr-write-u8 name 1 115)
                      (ptr-write-u8 name 2 101) (ptr-write-u8 name 3 116)
                      (wf_bytecode_call_named env slots sp 3 name 4))
-              (if (= opcode 75)
+              (if (= opcode 77)
+                  ;; Bfset shares the existing frozen evaluator primitive;
+                  ;; consume symbol/value and retain its returned definition.
+                  (seq (ptr-write-u8 name 0 102) (ptr-write-u8 name 1 115)
+                       (ptr-write-u8 name 2 101) (ptr-write-u8 name 3 116)
+                       (wf_bytecode_call_named env slots sp 2 name 4))
+                (if (= opcode 75)
                   ;; "symbol-function": (builtin symbol-function) reads
                   ;; ARGUMENT's raw function-cell value directly (nil if
                   ;; void, unresolved if an alias/autoload) -- OPCODE-
@@ -11387,7 +11420,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                        (wf_bytecode_call_named env slots sp 1 name 15))
                 (seq (ptr-write-u8 name 0 97) (ptr-write-u8 name 1 114)
                      (ptr-write-u8 name 2 101) (ptr-write-u8 name 3 102)
-                     (wf_bytecode_call_named env slots sp 2 name 4))))))))))))))
+                     (wf_bytecode_call_named env slots sp 2 name 4)))))))))))))))))))))
     (defun wf_bytecode_list_fixed (env slots sp count)
       ;; `list3' and `list4' preserve operand identity while replacing the
       ;; entire operand run with one freshly constructed proper list.
@@ -13080,7 +13113,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                      ;; the dynamic/global value (never a
                                      ;; lexical cell), leaving the value on
                                      ;; the stack.  nil/t signal
-                                     ;; setting-constant, as do keywords
+                                     ;; setting-constant, as do changed keyword values
                                      ;; (`bf_keyword_raw'; the dynamic-value
                                      ;; helper only refuses mirror constants),
                                      ;; any other
@@ -13093,8 +13126,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                              (tag (ptr-read-u64 symbol 0)))
                                         (if (or (= tag 4) (= tag 16))
                                             (if (= (bf_keyword_raw symbol) 1)
-                                                (seq (bf_setting_constant symbol)
-                                                     (setq done 4))
+                                                (if (= (bf_eq2 symbol value) 1)
+                                                    (seq (wf_bytecode_copy symbol value)
+                                                         (setq sp (- sp 1)))
+                                                  (seq (bf_setting_constant symbol)
+                                                       (setq done 4)))
                                               (if (= (bf_set_dynamic_value env symbol value) 0)
                                                   (seq (wf_bytecode_copy symbol value)
                                                        (setq sp (- sp 1)))
@@ -13134,10 +13170,15 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                            (if (= target -1)
                                                0
                                              (setq pc target))))))
-                                     ((or (= base 72) (= base 79) (= base 158)
+                                     ((or (= base 147) (= base 148) (= base 149)
+                                          (= base 150) (= base 151) (= base 156)
+                                          (= base 72) (= base 79) (= base 158)
                                           (= base 152) (= base 153) (= base 73)
-                                          (= base 75))
-                                      (let* ((argc (cond ((= base 79) 3)
+                                          (= base 75) (= base 77))
+                                      (let* ((argc (cond ((= base 147) 3)
+                                                          ((or (= base 148) (= base 149)
+                                                               (= base 150) (= base 151)) 1)
+                                                          ((= base 79) 3)
                                                           ((= base 73) 3)
                                                           ((= base 75) 1)
                                                           (t 2))))
@@ -17722,11 +17763,19 @@ baked build's own `<'/`>'/`=' arms need it too.")
         (bf_setting_constant sym)))
     (defun bf_set (args env out)
       (let* ((sym (wf_arg_ptr args 0))
-             (val (wf_arg_ptr args 1)))
-        (if (or (= (ptr-read-u64 sym 0) 4) (= (ptr-read-u64 sym 0) 16))
-            (let* ((rc (bf_set_dynamic_value env sym val)))
-              (if (= rc 0) (seq (wf_copy32 out val) 0) rc))
-          (bf_wrong_type_symbolp sym))))
+             (val (wf_arg_ptr args 1)) (tag (sexp-tag sym)))
+        ;; Nil/t reject assignments; a keyword accepts only its own value.
+        ;; Preserve Bset's canonical setting-constant condition and datum.
+        (if (or (= tag 0) (= tag 1))
+            (bf_setting_constant sym)
+          (if (or (= tag 4) (= tag 16))
+              (if (= (bf_keyword_raw sym) 1)
+                  (if (= (bf_eq2 sym val) 1)
+                      (seq (wf_copy32 out val) 0)
+                    (bf_setting_constant sym))
+                (let* ((rc (bf_set_dynamic_value env sym val)))
+                  (if (= rc 0) (seq (wf_copy32 out val) 0) rc)))
+            (bf_wrong_type_symbolp sym)))))
     (defun bf_makunbound (args env out)
       (let* ((sym (wf_arg_ptr args 0)) (tag (sexp-tag sym)))
         (if (or (= tag 0) (= tag 1))
@@ -20835,7 +20884,8 @@ extern arms in dynamic builds."
                                      (if (/= (logand (- src base) 31) 0) 1 0))))
                                (nl_reader_native_result_ref_error args)
                              (let ((tag (ptr-read-u64 src 0)))
-                               (if (or (= tag 5) (= tag 7) (= tag 14)
+                               (if (or (= tag 3) (= tag 13)
+                                       (= tag 5) (= tag 7) (= tag 14)
                                        (= tag 6) (= tag 8) (= tag 9) (= tag 10)
                                        (= tag 12) (= tag 15) (= tag 18))
                                    ;; Clause 1 tagged-object access: return the
@@ -27037,6 +27087,8 @@ top-level form defines NAME that way."
     (unless (= (length version-forms) 1)
       (error "Expected exactly one genuine runtime version declaration"))
     (dolist (relative '("lisp/nelisp-bytecode-ir.el"
+                        "lisp/nelisp-hash-custom.el"
+                        "lisp/nelisp-bytecode-native-switch.el"
                         "lisp/nelisp-bytecode-frame-ir.el"
                         "lisp/nelisp-bytecode-compiler-input.el"
                         "lisp/nelisp-stdlib-compat-metadata.el"))
@@ -29992,7 +30044,8 @@ the original chunk defuns, using CHUNK-BYTES (default 2048)."
     "nl_native_cdr_v2"
     "wf_bytecode_call_gateway_exit")
    (nelisp-cc-eln-callback7-port-symbol-names)
-   '("nl_native_funcall_v2"))
+   '("nl_native_funcall_v2")
+   (mapcar #'car nelisp-runtime-reload-gc-contract))
   "Runtime symbols the in-process loader can point a stub at.
 
 A stub is `movabs rax, ADDR; jmp rax', and ADDR comes from `data-addr',
@@ -36384,16 +36437,13 @@ This swaps `nl_bf_bind_rest' for the rc/lifetime-safe version and makes
      (let* ((arg0_ptr (nl_apply_list_nth args_list_ptr 0)))
        (if (= arg0_ptr 0)
            (nl_apply_stash_wta env args_list_ptr)
-         (let* ((mirror_ptr (+ env 0)) (unbound_ptr (+ env 64)))
-           (let* ((rc (nelisp_env_lookup_function mirror_ptr unbound_ptr arg0_ptr out)))
-             (if (= rc 0)
-                 0
-               ;; Emacs answers nil for a symbol with no function cell --
-               ;; `(symbol-function 'never-defined)' is nil, not an error.
-               ;; Signalling here was measured against Emacs and diverged.
-               (nl_apply_write_nil out)))))))
-  "Rc-correct `(symbol-function SYM)' handler: stashes `void-function' on an
-unbound-symbol miss instead of passing a bare, unstashed rc=1 through.")
+         (let* ((tag (sexp-tag arg0_ptr)))
+           (if (or (= tag 0) (= tag 1) (= tag 4) (= tag 16))
+               (let* ((mirror_ptr (+ env 0)) (unbound_ptr (+ env 64))
+                      (rc (nelisp_env_lookup_function mirror_ptr unbound_ptr arg0_ptr out)))
+                 (if (= rc 0) 0 (nl_apply_write_nil out)))
+             (bf_wrong_type_symbolp arg0_ptr))))))
+  "Validate the symbol argument; return nil for an absent function cell.")
 
 ;; M4 keyword self-eval.  Without this, evaluating a keyword symbol (e.g. the
 ;; `:test' in `(make-hash-table :test 'equal)') routes through nl_env_lookup_val
@@ -36806,9 +36856,15 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
   "Autoload-aware call-dispatch lookup helpers (see comment above).")
 
 (defun nelisp-standalone--autoload-mentions-apply-p (form)
-  (cond ((eq form 'nl_apply_function) t)
-        ((consp form) (or (nelisp-standalone--autoload-mentions-apply-p (car form))
-                          (nelisp-standalone--autoload-mentions-apply-p (cdr form))))))
+  "Find the evaluator reference without consuming Lisp nesting per tree edge."
+  (catch 'found
+    (let ((pending (list form)))
+      (while pending
+        (let ((node (pop pending)))
+          (cond ((eq node 'nl_apply_function) (throw 'found t))
+                ((consp node)
+                 (push (cdr node) pending)
+                 (push (car node) pending))))))))
 
 (defun nelisp-standalone--autoload-rewrite-lookups (form)
   (cond ((and (consp form) (eq (car form) 'nelisp_env_lookup_function)

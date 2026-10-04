@@ -62,7 +62,13 @@
   (let* ((fixture (nelisp-cfg-prefix-test--fixture))
          (result (nelisp-cfg-prefix-test--run fixture))
          (prepared (nelisp-native-load--raw-v2-chunk-rewrite (cadr fixture)))
-         (expected (cons 'seq (nelisp-native-load--raw-v2-rewrite-data-addr prepared))))
+         (expected
+          (cons 'seq
+                (cl-remove-if
+                 (lambda (form)
+                   (assoc (symbol-name (cadr form))
+                          (nelisp-native-load--raw-v2-contract)))
+                 (nelisp-native-load--raw-v2-rewrite-data-addr prepared)))))
     (should (= (nth 2 result) 1))
     (should (equal (car result) expected))))
 

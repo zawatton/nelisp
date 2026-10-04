@@ -112,7 +112,8 @@ equality test and the port-count test both check it.")
     "nl_native_cdr_v2"
     "wf_bytecode_call_gateway_exit")
    (nelisp-native-load--port-symbol-names)
-   '("nl_native_funcall_v2"))
+   '("nl_native_funcall_v2")
+   (mapcar #'car nelisp-runtime-reload-gc-contract))
   "Runtime symbols a stub can be pointed at, in `nelisp--native-symbol-addr' order.
 
 The index is the contract: the builtin selects from a chain of
@@ -181,8 +182,8 @@ supported because GC root and compaction entry points use the stack argument
 at position seven.  The runtime table, rather than a single GC function
 pointer, selects every externally reachable GC entry.")
 
-(defconst nelisp-native-load-raw-artifact-format-v2 'nelisp-private-nelr-v2
-  "Container format for full native runtime-unit artifacts.")
+(defconst nelisp-native-load-raw-artifact-format-v2 'nelisp-private-nelr-v3
+  "Container format with explicit runtime-owned or embedded GC addresses.")
 
 (defconst nelisp-native-load-raw-layout-id-v2
   "nelisp-runtime-reload-layout-v2:x86_64:sexp32:block16:bss-state96:gctable"
@@ -960,8 +961,9 @@ evaluator root markers do not."
 
 Symbols come back interned.  With ENV and PIN-FRAME, conses and strings are
 shallow-cloned into the evaluator result slot so their object identity is
-preserved; floats and bignums are decoded while their output slot remains
-rooted by the active pin frame. Without that rooted-frame context, strings
+preserved. Floats and bignums use the same authenticated copy when the reader
+provides it, preserving IEEE bits and bignum identity; otherwise they are
+decoded while rooted by the active pin frame. Without that context, strings
 retain the legacy byte conversion and conses, floats, and bignums are refused."
   (let ((tag (ptr-read-u64 addr 0)))
     (cond
@@ -984,6 +986,11 @@ retain the legacy byte conversion and conses, floats, and bignums are refused."
                (integerp pin-frame) (> pin-frame 0))
           (nelisp--native-unbox-reference addr env pin-frame)
           (error "nelisp-native-load: cons results require a pinned-root frame")))
+     ((and (memq tag (list nelisp-native-load-tag-float
+                          nelisp-native-load-tag-bignum))
+           (integerp env) (> env 0) (integerp pin-frame) (> pin-frame 0)
+           (fboundp 'nelisp--native-unbox-reference))
+      (nelisp--native-unbox-reference addr env pin-frame))
      ((= tag nelisp-native-load-tag-float)
       (unless (and (integerp env) (> env 0)
                    (integerp pin-frame) (> pin-frame 0))
@@ -1639,7 +1646,7 @@ classifies a data relocation so the loader can make a return stub instead of
 a jump stub; an unlisted data import is rejected during the pre-flight pass.")
 
 (defconst nelisp-native-load-raw-v2-import-contract-version
-  "nelisp-runtime-raw-v2-import-v2"
+  "nelisp-runtime-raw-v2-import-v3"
   "Version for the narrow authenticated v2 callable-import extension.")
 
 (defconst nelisp-native-load-raw-v2-call1-contract-version
@@ -1876,6 +1883,7 @@ ticket and slot indices and may call only the CAR gateway.")
   (cond
    ((member name nelisp-native-load-raw-v2-bridgeable-imports)
     'native-bridgeable-v1)
+   ((assoc name (nelisp-native-load--raw-v2-contract)) 'runtime-gc-bridge-v1)
    ((member name (nelisp-native-load--raw-v2-symbols)) 'resolver)
    (t nil)))
 
@@ -1891,8 +1899,8 @@ ticket and slot indices and may call only the CAR gateway.")
 
 (defun nelisp-native-load--raw-v2-import-index (name resolver-symbols)
   "Return NAME's index in its authenticated resolver table."
-  (if (eq (nelisp-native-load--raw-v2-import-mode name)
-          'native-bridgeable-v1)
+  (if (memq (nelisp-native-load--raw-v2-import-mode name)
+            '(native-bridgeable-v1 runtime-gc-bridge-v1))
       (let ((rest nelisp-native-load-bridgeable-symbols)
             (index 0) (found nil))
         (while (and rest (null found))
@@ -2447,11 +2455,18 @@ The enclosing CFG admission must still authenticate the complete contract."
         (setq tail (cddr tail) pairs (1+ pairs))))
     (cond (bad :malformed) ((and tail found) :oversized) (found t) (t nil))))
 
+(defun nelisp-native-load--raw-v2-compile-stage (source artifact label)
+  "Append one compiler stage without macro-expanding the compiler body."
+  (let ((path (getenv "NELISP_ROOTED_CFG_STAGE_LOG")))
+    (when (and (stringp path) (> (length path) 0))
+      (write-region (format "producer-raw-%s source=%s artifact=%s\n" label source artifact)
+                    nil path t 'silent))))
+
 (require 'nelisp-bytecode-native-rooted-cfg-contract)
 (let ((cfg-validator-owner
        (symbol-function 'nelisp-bytecode-native-rooted-cfg-contract-valid-p)))
 (defun nelisp-native-load-raw-v2-compile-file
-    (source-path artifact-path &optional build-id binary-sha256 call1-template rooted-stack-spec conditional-spec rooted-branch-spec rooted-branch-join-spec rooted-cfg-spec safe-v3-spec validation-receiver source-snapshot)
+    (source-path artifact-path &optional build-id binary-sha256 call1-template rooted-stack-spec conditional-spec rooted-branch-spec rooted-branch-join-spec rooted-cfg-spec safe-v3-spec validation-receiver source-snapshot cache-only)
   "Compile a complete GC/arena SOURCE-PATH to v2 ARTIFACT-PATH.
 
 The source is a snapshot of ordinary raw `defun' forms.  The canonical
@@ -2469,15 +2484,17 @@ continue to use `nelisp-native-load-raw-compile-file'.
 VALIDATION-RECEIVER is internal: when supplied, receive the validated CFG
 object, its print digest and validator identity after output publication.
 SOURCE-SNAPSHOT is internal: (FORMS . SOURCE-BYTES) from the emitter, avoiding
-file reading and parsing while retaining identical source provenance."
-  (cl-labels ((stage (label)
-                (let ((path (getenv "NELISP_ROOTED_CFG_STAGE_LOG")))
-                  (when (and (stringp path) (> (length path) 0))
-                    (write-region
-                     (format "producer-raw-%s source=%s artifact=%s\n"
-                             label source-path artifact-path)
-                     nil path t 'silent)))))
-  (unless (and (stringp source-path) (file-readable-p source-path))
+file reading and parsing while retaining identical source provenance.
+CACHE-ONLY is internal to the private rooted-CFG cache: return the manifest
+without publishing an intermediate artifact.  The cache owns publication."
+  (when (and cache-only
+             (not (and rooted-cfg-spec (consp source-snapshot)
+                       (listp (car source-snapshot)) (stringp (cdr source-snapshot))
+                       (not (or safe-v3-spec call1-template rooted-stack-spec
+                                conditional-spec rooted-branch-spec rooted-branch-join-spec)))))
+    (error "nelisp-native-load: cache compilation requires a rooted-CFG snapshot"))
+  (unless (and (stringp source-path)
+               (or cache-only (file-readable-p source-path)))
     (error "nelisp-native-load: v2 raw source is not readable: %S" source-path))
   (when safe-v3-spec
     (unless (and (nelisp-native-load--rooted-cfg-safe-v3-spec-shape-p safe-v3-spec)
@@ -2493,9 +2510,9 @@ file reading and parsing while retaining identical source provenance."
   (unless (fboundp 'nelisp-aot-compile-to-link-unit)
     (require 'nelisp-aot-compiler))
   (unless (fboundp 'nelisp-standalone--chunk-arena-rewrite)
-    ;; Host compilation normally arrives through the standalone build script;
-    ;; this fallback keeps the public API usable from a clean Emacs session.
-    (require 'nelisp-standalone-build nil t))
+    ;; The rewrite has its own source module; do not load the build driver
+    ;; merely to compile a runtime unit from a clean session.
+    (require 'nelisp-standalone-arena-rewrite))
   (unless (fboundp 'nelisp-aot-compile-to-link-unit)
     (error "nelisp-native-load: raw compiler is unavailable in this runtime"))
   (let* ((source
@@ -2507,6 +2524,7 @@ file reading and parsing while retaining identical source provenance."
          (forms (if source-snapshot (car source-snapshot)
                   (nelisp-native-load--raw-source-forms source-path source)))
          (contract (nelisp-native-load--raw-v2-contract))
+         (runtime-owned-gc (or rooted-cfg-spec safe-v3-spec))
          (resolver-symbols (nelisp-native-load--raw-v2-symbols))
          (layout nelisp-native-load-raw-layout-id-v2)
          (build (or build-id
@@ -2628,7 +2646,7 @@ file reading and parsing while retaining identical source provenance."
                             gc-forms contract)
                        :counts (list (length forms) (1+ (length contract))))))))
     (when rooted-cfg-spec
-      (stage "contract-validation-start")
+      (nelisp-native-load--raw-v2-compile-stage source-path artifact-path "contract-validation-start")
       (require 'nelisp-bytecode-native-rooted-cfg-contract)
       (let* ((input (plist-get rooted-cfg-spec :input))
              (plan (plist-get rooted-cfg-spec :plan))
@@ -2647,7 +2665,7 @@ file reading and parsing while retaining identical source provenance."
              (reconstruction
               (and (eq validator cfg-validator-owner)
                    (setq cfg-validation-result
-                         (funcall cfg-validator-owner cfg-contract :reconstruction))
+                         (funcall cfg-validator-owner cfg-contract :reconstruction input))
                    (progn
                      ;; Fingerprint immediately after validation, before AOT.
                      (setq cfg-validated-contract cfg-contract
@@ -2700,7 +2718,7 @@ file reading and parsing while retaining identical source provenance."
                      (nelisp-native-load--rooted-cfg-provider-forms-valid-p
                       forms entry contract (plist-get verified-emitted :additional-source) cfg-contract))
           (error "nelisp-native-load: generic rooted-CFG AST/plan mismatch"))))
-      (stage "contract-validation-end"))
+      (nelisp-native-load--raw-v2-compile-stage source-path artifact-path "contract-validation-end"))
     (when safe-v3-spec
       (let* ((input (plist-get safe-v3-spec :input))
              (plan (plist-get safe-v3-spec :plan))
@@ -2781,6 +2799,13 @@ file reading and parsing while retaining identical source provenance."
         (let ((name (car entry)))
           (unless (member name seen)
             (error "nelisp-native-load: v2 source lacks GC entry %s" name)))))
+    ;; Authenticate the complete generated source above before dropping its
+    ;; contract stubs. Runtime replacement units keep their actual GC bodies.
+    (when runtime-owned-gc
+      (setq rewritten
+            (cl-remove-if
+             (lambda (form)
+               (assoc (symbol-name (cadr form)) contract)) rewritten)))
     (let ((nelisp-native-load-raw-max-arity
            nelisp-native-load-raw-max-arity-v2)
           (nelisp-aot-compiler--runtime-entry-params nil))
@@ -2788,12 +2813,12 @@ file reading and parsing while retaining identical source provenance."
         (unless (nelisp-native-load--raw-compile-defun-p form)
           (error "nelisp-native-load: unsupported v2 raw defun: %S"
                  (nth 1 form))))
-      (stage "aot-start")
+      (nelisp-native-load--raw-v2-compile-stage source-path artifact-path "aot-start")
       (setq unit
             (nelisp-aot-compile-to-link-unit
              (cons 'seq rewritten) :arch 'x86_64 :format 'elf))
-      (stage "aot-end"))
-    (stage "manifest-materialization-start")
+      (nelisp-native-load--raw-v2-compile-stage source-path artifact-path "aot-end"))
+    (nelisp-native-load--raw-v2-compile-stage source-path artifact-path "manifest-materialization-start")
     (let* ((text (or (plist-get unit :text) ""))
            (rodata (or (plist-get unit :rodata) ""))
            (data (or (plist-get unit :data) ""))
@@ -2941,9 +2966,9 @@ file reading and parsing while retaining identical source provenance."
           (dolist (candidate exports)
             (when (and (null export) (equal (plist-get candidate :name) name))
               (setq export candidate)))
-          (unless export
+          (unless (or runtime-owned-gc export)
             (error "nelisp-native-load: v2 GC entry was not exported: %s" name))
-          (unless (= arity (plist-get export :arity))
+          (unless (or runtime-owned-gc (= arity (plist-get export :arity)))
             (error "nelisp-native-load: v2 arity mismatch for %s" name))
           (push (list :name name :arity arity :index index
                       :return 'u64 :abi nelisp-native-load-raw-runtime-abi-v2)
@@ -2964,6 +2989,7 @@ file reading and parsing while retaining identical source provenance."
                   :runtime-opt-in t
                   :gc-contract-hash
                   (nelisp-native-load--raw-v2-contract-hash contract)
+                  :gc-address-mode (if runtime-owned-gc 'runtime-bridge-v1 'artifact-export-v1)
                   :gc-entries gc-entries
                   :gc-table-magic nelisp-native-load-raw-gc-table-magic
                   :gc-table-count (length gc-entries)
@@ -3117,8 +3143,9 @@ file reading and parsing while retaining identical source provenance."
                     (list :artifact-sha256
                           (nelisp-native-load--sha256
                            (prin1-to-string manifest)))))
-      (stage "manifest-materialization-end")
-      (stage "atomic-output-start")
+      (nelisp-native-load--raw-v2-compile-stage source-path artifact-path "manifest-materialization-end")
+      (unless cache-only
+      (nelisp-native-load--raw-v2-compile-stage source-path artifact-path "atomic-output-start")
       (let* ((absolute (expand-file-name artifact-path))
              (parent (file-name-directory absolute))
              (temporary nil))
@@ -3137,11 +3164,11 @@ file reading and parsing while retaining identical source provenance."
               (setq temporary nil))
           (when (and temporary (file-exists-p temporary))
             (ignore-errors (delete-file temporary)))))
-      (stage "atomic-output-end")
+      (nelisp-native-load--raw-v2-compile-stage source-path artifact-path "atomic-output-end"))
       (when (and validation-receiver cfg-validation-result)
         (funcall validation-receiver cfg-validated-contract
                  cfg-validation-digest cfg-validator-owner))
-      manifest))))
+      manifest)))
 )
 
 (defun nelisp-native-load--raw-v2-compile-file-with-validation
@@ -3953,6 +3980,9 @@ candidate's self-described table order."
                          (eq (plist-get entry :return) 'u64))
               (funcall add (list :raw-export-abi entry))))
           (setq rest (cdr rest)))))
+    (unless (memq (plist-get manifest :gc-address-mode)
+                  '(nil artifact-export-v1 runtime-bridge-v1))
+      (funcall add (list :raw-gc-address-mode (plist-get manifest :gc-address-mode))))
     (when contract
       (let ((entries (plist-get manifest :gc-entries)) (i 0))
         (unless (= (length entries) (length contract))
@@ -3967,8 +3997,12 @@ candidate's self-described table order."
                               (nelisp-native-load--raw-export native name))))
             (unless (and entry (= index i) (= actual-arity arity))
               (funcall add (list :raw-gc-entry name index i actual-arity arity)))
-            (unless export
-              (funcall add (list :raw-gc-export-missing name)))
+            (if (eq (plist-get manifest :gc-address-mode) 'runtime-bridge-v1)
+                (when (or export
+                          (not (integerp (cl-position name nelisp-native-load-bridgeable-symbols :test #'equal))))
+                  (funcall add (list :raw-gc-runtime-entry name)))
+              (unless export
+                (funcall add (list :raw-gc-export-missing name))))
             (when (and export (/= (plist-get export :arity) arity))
               (funcall add (list :raw-gc-export-arity name
                                  (plist-get export :arity) arity)))
@@ -4124,18 +4158,10 @@ followed by the 24 contract entry addresses in ABI order."
             (let ((rest (plist-get manifest :gc-entries)))
               (while rest
                 (let* ((entry (car rest))
-                       (addr (cdr (assoc (plist-get entry :name)
-                                         (let ((xs nil) (es exports))
-                                           (while es
-                                             (push (cons (plist-get (car es) :name)
-                                                         (plist-get (car es) :value)) xs)
-                                             (setq es (cdr es)))
-                                           xs)))))
-                  (unless (integerp addr)
-                    (error "nelisp-native-load: v2 GC export missing: %s"
-                           (plist-get entry :name)))
+                       (addr (nelisp-native-load--raw-v2-gc-address
+                              entry manifest exports codepage)))
                   (ptr-write-u64 table (+ 16 (* 8 (plist-get entry :index)))
-                                 (+ codepage addr)))
+                                 addr))
                 (setq rest (cdr rest))))
             (unless (= 0 (syscall-direct
                           10 table (nelisp-native-load--page-round table-size)
@@ -4196,10 +4222,30 @@ followed by the 24 contract entry addresses in ABI order."
   (let ((n (proper-list-p value)))
     (and n (<= n nelisp-native-load--trusted-max-entries))))
 
+(defun nelisp-native-load--raw-v2-gc-address (entry manifest exports codepage)
+  "Resolve GC ENTRY from the authenticated runtime or embedded generation."
+  (let* ((name (plist-get entry :name))
+         (runtime (eq (plist-get manifest :gc-address-mode) 'runtime-bridge-v1))
+         (expected (nth (plist-get entry :index) (nelisp-native-load--raw-v2-contract)))
+         (export (cl-find name exports :key (lambda (item) (plist-get item :name)) :test #'equal))
+         (address
+          (if runtime
+              (progn
+                (unless (and (equal name (car expected))
+                             (eql (plist-get entry :arity) (cdr expected))
+                             (null export))
+                  (error "nelisp-native-load: runtime GC entry refused"))
+                (nelisp-native-load--symbol-addr name))
+            (and export (+ codepage (plist-get export :value))))))
+    (unless (and (integerp address) (> address nelisp-native-load-page-bytes))
+      (error "nelisp-native-load: GC address unavailable: %s" name))
+    address))
+
 (defun nelisp-native-load--raw-v2-symbol-addr-trusted (name &optional entry _manifest)
   "Resolve a compile-validated import without semantic contract validation."
   (let ((address
          (if (or (member name nelisp-native-load-raw-v2-bridgeable-imports)
+                 (assoc name (nelisp-native-load--raw-v2-contract))
                  (memq (plist-get entry :address-mode)
                        '(arithmetic-provider-v1 call1-typed-v1))
                  (nelisp-native-load--raw-v2-conditional-import-mode name))
@@ -4275,6 +4321,10 @@ followed by the 24 contract entry addresses in ABI order."
                  (eql (plist-get manifest :gc-table-magic)
                       nelisp-native-load-raw-gc-table-magic))
       (error "nelisp-native-load: trusted GC table count refused"))
+    (unless (and (eq (plist-get manifest :format) nelisp-native-load-raw-artifact-format-v2)
+                 (memq (plist-get manifest :gc-address-mode)
+                       '(nil artifact-export-v1 runtime-bridge-v1)))
+      (error "nelisp-native-load: trusted GC format refused"))
     (dolist (entry entries)
       (unless (nelisp-native-load--trusted-list-p entry)
         (error "nelisp-native-load: malformed trusted GC entry"))
@@ -4282,7 +4332,12 @@ followed by the 24 contract entry addresses in ABI order."
         (unless (and (nelisp-native-load--trusted-list-p entry)
                      (integerp index) (<= 0 index) (< index (length entries))
                      (not (memq index indices))
-                     (member (plist-get entry :name) export-names))
+                     (if (eq (plist-get manifest :gc-address-mode) 'runtime-bridge-v1)
+                         (let ((expected (nth index contract)))
+                           (and (equal (plist-get entry :name) (car expected))
+                                (eql (plist-get entry :arity) (cdr expected))
+                                (not (member (plist-get entry :name) export-names))))
+                       (member (plist-get entry :name) export-names)))
           (error "nelisp-native-load: trusted GC table index refused"))
         (push index indices)))
     text))
@@ -4353,18 +4408,10 @@ Only semantic validation is skipped; all memory boundaries remain checked."
             (let ((rest (plist-get manifest :gc-entries)))
               (while rest
                 (let* ((entry (car rest))
-                       (addr (cdr (assoc (plist-get entry :name)
-                                         (let ((xs nil) (es exports))
-                                           (while es
-                                             (push (cons (plist-get (car es) :name)
-                                                         (plist-get (car es) :value)) xs)
-                                             (setq es (cdr es)))
-                                           xs)))))
-                  (unless (integerp addr)
-                    (error "nelisp-native-load: v2 GC export missing: %s"
-                           (plist-get entry :name)))
+                       (addr (nelisp-native-load--raw-v2-gc-address
+                              entry manifest exports codepage)))
                   (ptr-write-u64 table (+ 16 (* 8 (plist-get entry :index)))
-                                 (+ codepage addr)))
+                                 addr))
                 (setq rest (cdr rest))))
             (unless (= 0 (syscall-direct
                           10 table (nelisp-native-load--page-round table-size)
@@ -4698,6 +4745,7 @@ bridgeable-symbol table.  All base imports retain the v2 runtime resolver."
                  (equal name (plist-get entry :name)))
       (error "nelisp-native-load: unauthenticated arithmetic provider import")))
   (if (or (member name nelisp-native-load-raw-v2-bridgeable-imports)
+          (assoc name (nelisp-native-load--raw-v2-contract))
           (eq (plist-get entry :address-mode) 'arithmetic-provider-v1)
           (and (equal name nelisp-native-load-raw-v2-call1-import)
                entry manifest

@@ -1,6 +1,8 @@
 ;;; nelisp-native-funcall-v2.el --- Generic rooted evaluator ABI -*- lexical-binding: t; -*-
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 (require 'cl-lib)
+(defvar nelisp-stdlib--symbol-plists)
+(defvar nelisp--bytecode-lisp-providers)
 (defconst nelisp-native-funcall-v2-version "nelisp-native-funcall-v2-1")
 (let ((descriptor
        '(:version "nelisp-native-funcall-v2-1" :name "nl_native_funcall_v2"
@@ -15,20 +17,209 @@
   "Bind all generic evaluator ABI semantics."
   (let ((print-length nil) (print-level nil))
     (secure-hash 'sha256 (prin1-to-string (nelisp-native-funcall-v2-descriptor)))))
-(let ((primitives '((64 car 1) (65 cdr 1) (66 cons 2))))
+(let ((primitives '((56 nth 2) (57 symbolp 1) (58 consp 1) (59 stringp 1) (60 listp 1)
+                    (61 eq 2) (62 memq 2) (63 not 1) (64 car 1) (65 cdr 1) (66 cons 2)
+                    (71 length 1) (72 aref 2) (73 aset 3) (74 symbol-value 1)
+                    (75 symbol-function 1) (76 set 2) (77 fset 2) (78 get 2)
+                    (79 substring 3)
+                    (83 1- 1) (84 1+ 1) (85 = 2) (86 > 2) (87 < 2) (88 <= 2) (89 >= 2)
+                    (90 - 2) (91 - 1) (92 + 2) (93 max 2) (94 min 2) (95 * 2)
+                    (164 nconc 2) (165 / 2) (166 % 2) (167 numberp 1) (168 integerp 1)
+                    (147 set-marker 3) (148 match-beginning 1) (149 match-end 1)
+                    (150 upcase 1) (151 downcase 1) (152 string-equal 2)
+                    (153 string-lessp 2) (154 equal 2) (155 nthcdr 2)
+                    (156 elt 2) (157 member 2) (158 assq 2)
+                    (159 nreverse 1) (160 setcar 2) (161 setcdr 2))))
 (defun nelisp-native-funcall-v2-primitive (opcode)
   "Return the canonical runtime primitive and arity for OPCODE."
   (copy-tree (assq opcode primitives))))
 (let ((lookup (symbol-function 'symbol-function))
       (same (symbol-function 'eq))
-      (originals (mapcar (lambda (name) (cons name (symbol-function name))) '(car cdr cons))))
+      (association (if (fboundp 'nelisp--eval-source-string)
+                       '(builtin assq) (symbol-function 'assq)))
+      (membership (symbol-function 'memq))
+      (originals (mapcar (lambda (name) (cons name (symbol-function name))) '(car cdr cons nth memq length aref aset
+                                                                            symbol-value symbol-function set fset get substring
+                                                                            set-marker match-beginning match-end upcase downcase
+                                                                            string-equal string-lessp equal nthcdr elt member assq
+                                                                            nreverse setcar setcdr
+                                                                            symbolp consp stringp listp eq not
+                                                                            1- 1+ = > < <= >= - + max min * nconc / % numberp integerp)))
+      ;; GNU Bnth's small-index path reports the reached dotted tail;
+      ;; Fnth instead reports the original list.  Keep the VM condition/data
+      ;; through a frozen Lisp provider, delegating the other cases to Fnth.
+      (nth-provider
+       (let ((nth-value '(builtin nth)) (car-value '(builtin car))
+             (cdr-value '(builtin cdr)) (consp-value '(builtin consp))
+             (integerp-value '(builtin integerp))
+             (less-equal-value '(builtin <=)) (greater-value '(builtin >))
+             (decrement-value '(builtin 1-)))
+         (lambda (n list)
+           (if (and (funcall integerp-value n)
+                    (funcall less-equal-value 0 n) (funcall less-equal-value n 127))
+               (let ((tail list))
+                 (while (and (funcall greater-value n 0) (funcall consp-value tail))
+                   (setq tail (funcall cdr-value tail) n (funcall decrement-value n)))
+                 (funcall car-value tail))
+             (funcall nth-value n list)))))
+      (nreverse-provider
+       (let ((null-value '(builtin null)) (consp-value '(builtin consp))
+             (cdr-value '(builtin cdr)) (setcdr-value '(builtin setcdr))
+             (eq-value '(builtin eq)) (signal-value '(builtin signal))
+             (vectorp-value '(builtin vectorp)) (bool-vector-p-value '(builtin bool-vector-p))
+             (stringp-value '(builtin stringp)) (length-value '(builtin length))
+             (aref-value '(builtin aref)) (aset-value '(builtin aset))
+             (substring-value '(builtin substring)) (concat-value '(builtin concat))
+             (apply-value '(builtin apply)) (cons-value '(builtin cons))
+             (list-value '(builtin list))
+             (less-value '(builtin <)) (decrement-value '(builtin 1-))
+             (increment-value '(builtin 1+)))
+         (lambda (seq)
+           (cond
+            ((funcall null-value seq) nil)
+            ((funcall consp-value seq)
+             (let ((prev nil) (cur seq) next)
+               (while (funcall consp-value cur)
+                 (setq next (funcall cdr-value cur))
+                 (when (funcall eq-value next seq)
+                   (funcall signal-value 'circular-list (list seq)))
+                 (funcall setcdr-value cur prev)
+                 (setq prev cur cur next))
+               (unless (funcall null-value cur)
+                 (funcall signal-value 'wrong-type-argument (list 'listp seq)))
+               prev))
+            ((or (funcall vectorp-value seq) (funcall bool-vector-p-value seq))
+             (let ((i 0) (j (funcall decrement-value (funcall length-value seq))) tmp)
+               (while (funcall less-value i j)
+                 (setq tmp (funcall aref-value seq i))
+                 (funcall aset-value seq i (funcall aref-value seq j))
+                 (funcall aset-value seq j tmp)
+                 (setq i (funcall increment-value i) j (funcall decrement-value j)))
+               seq))
+            ((funcall stringp-value seq)
+             (let ((n (funcall length-value seq)) (i 0)
+                   (parts (funcall list-value (funcall substring-value seq 0 0))))
+               ;; Reverse character slices, retaining the original byte mode.
+               ;; Concatenate once; multibyte strings cannot be rewritten with
+               ;; ASET, and repeated concatenation would copy quadratic data.
+               (while (funcall less-value i n)
+                 (setq parts (funcall cons-value
+                                      (funcall substring-value seq i (funcall increment-value i))
+                                      parts)
+                       i (funcall increment-value i)))
+               (funcall apply-value concat-value parts)))
+            (t (funcall signal-value 'wrong-type-argument (list 'arrayp seq)))))))
+      ;; VM MIN/MAX retain the selected object and reject mixed bignum/float
+      ;; pairs. The public prelude functions have different NaN semantics.
+      (max-provider
+       (let ((numberp-value '(builtin numberp)) (integerp-value '(builtin integerp))
+             (floatp-value '(builtin floatp)) (less-value '(builtin <))
+             (greater-value '(builtin >)) (compare-value '(builtin >))
+             (signal-value '(builtin signal)))
+         (lambda (left right)
+           (cond
+            ((not (funcall numberp-value left))
+             (funcall signal-value 'wrong-type-argument (list 'number-or-marker-p left)))
+            ((not (funcall numberp-value right))
+             (funcall signal-value 'wrong-type-argument (list 'number-or-marker-p right)))
+            ((and (funcall integerp-value left)
+                  (or (funcall less-value left -2305843009213693952)
+                      (funcall greater-value left 2305843009213693951))
+                  (funcall floatp-value right))
+             (funcall signal-value 'wrong-type-argument (list 'number-or-marker-p right)))
+            ((and (funcall integerp-value right)
+                  (or (funcall less-value right -2305843009213693952)
+                      (funcall greater-value right 2305843009213693951))
+                  (funcall floatp-value left))
+             (funcall signal-value 'wrong-type-argument (list 'number-or-marker-p left)))
+            ((funcall compare-value right left) right)
+            (t left)))))
+      (min-provider
+       (let ((numberp-value '(builtin numberp)) (integerp-value '(builtin integerp))
+             (floatp-value '(builtin floatp)) (less-value '(builtin <))
+             (greater-value '(builtin >)) (compare-value '(builtin <))
+             (signal-value '(builtin signal)))
+         (lambda (left right)
+           (cond
+            ((not (funcall numberp-value left))
+             (funcall signal-value 'wrong-type-argument (list 'number-or-marker-p left)))
+            ((not (funcall numberp-value right))
+             (funcall signal-value 'wrong-type-argument (list 'number-or-marker-p right)))
+            ((and (funcall integerp-value left)
+                  (or (funcall less-value left -2305843009213693952)
+                      (funcall greater-value left 2305843009213693951))
+                  (funcall floatp-value right))
+             (funcall signal-value 'wrong-type-argument (list 'number-or-marker-p right)))
+            ((and (funcall integerp-value right)
+                  (or (funcall less-value right -2305843009213693952)
+                      (funcall greater-value right 2305843009213693951))
+                  (funcall floatp-value left))
+             (funcall signal-value 'wrong-type-argument (list 'number-or-marker-p left)))
+            ((funcall compare-value right left) right)
+            (t left)))))
+      ;; The bytecode NCONC intrinsic overwrites a dotted tail and names
+      ;; CONSP for a non-list first operand, bypassing the public provider.
+      (nconc-provider
+       (let ((null-value '(builtin null)) (consp-value '(builtin consp))
+             (cdr-value '(builtin cdr)) (setcdr-value '(builtin setcdr))
+             (signal-value '(builtin signal)))
+         (lambda (first second)
+           (cond ((funcall null-value first) second)
+                 ((not (funcall consp-value first))
+                  (funcall signal-value 'wrong-type-argument (list 'consp first)))
+                 (t (let ((tail first))
+                      (while (funcall consp-value (funcall cdr-value tail))
+                        (setq tail (funcall cdr-value tail)))
+                      (funcall setcdr-value tail second)
+                      first))))))
+      ;; REM validates both integer operands before the VM's limited bignum
+      ;; divisor path. The ordinary % primitive only checks a wide dividend.
+      (rem-provider
+       (let ((integerp-value '(builtin integerp)) (less-value '(builtin <))
+             (greater-value '(builtin >)) (rem-value '(builtin %))
+             (signal-value '(builtin signal)))
+         (lambda (left right)
+           (cond
+            ((not (funcall integerp-value left))
+             (funcall signal-value 'wrong-type-argument (list 'integer-or-marker-p left)))
+            ((not (funcall integerp-value right))
+             (funcall signal-value 'wrong-type-argument (list 'integer-or-marker-p right)))
+            ((and (or (funcall less-value left -2305843009213693952)
+                      (funcall greater-value left 2305843009213693951)
+                      (funcall less-value right -2305843009213693952)
+                      (funcall greater-value right 2305843009213693951))
+                  (or (funcall less-value right -2147483648)
+                      (funcall greater-value right 2147483648)))
+             (funcall signal-value 'nelisp-bignum-division-unsupported nil))
+            (t (funcall rem-value left right))))))
+      ;; GET is a prelude provider over the same store used by BYTE-GET.
+      ;; Freeze its source-owned body and dependencies, never its public cell.
+      (get-provider
+       (let ((symbolp-value '(builtin symbolp)) (signal-value '(builtin signal))
+             (gethash-value '(builtin gethash)) (plist-get-value '(builtin plist-get)))
+         (lambda (symbol property)
+           (unless (funcall symbolp-value symbol)
+             (funcall signal-value 'wrong-type-argument (list 'symbolp symbol)))
+           (funcall plist-get-value
+                    (funcall gethash-value symbol nelisp-stdlib--symbol-plists) property)))))
 (defun nelisp-native-funcall-v2-initializer (name)
   "Materialize only a canonical frozen VM primitive, never a public function cell."
-  (unless (assq name originals) (error "Unknown funcall primitive initializer"))
+  (unless (funcall association name originals) (error "Unknown funcall primitive initializer"))
   (if (fboundp 'nelisp--eval-source-string)
       ;; Builtin values are runtime evaluator tokens, not a caller certificate.
-      (list 'builtin name)
-    (cdr (assq name originals)))))
+      (cond ((funcall same name 'nth) nth-provider)
+            ((funcall same name 'get) get-provider)
+            ((funcall same name 'nreverse) nreverse-provider)
+            ((funcall same name 'max) max-provider) ((funcall same name 'min) min-provider)
+            ((funcall same name 'nconc) nconc-provider) ((funcall same name '%) rem-provider)
+            ;; These VM operations are Lisp-owned. Their values were frozen
+            ;; by the prelude, before caller code can rebind a public cell.
+            ((funcall membership name '(set-marker match-beginning match-end upcase downcase))
+             (cdr (funcall association name nelisp--bytecode-lisp-providers)))
+            ((funcall same name 'string-equal) '(builtin string=))
+            ((funcall same name 'string-lessp) '(builtin string<))
+            (t (list 'builtin name)))
+    (cdr (funcall association name originals)))))
 (defun nelisp-native-funcall-v2-reference (function arguments)
   "Lisp reference for the evaluator entry; roots are an infrastructure concern."
   (apply function arguments))

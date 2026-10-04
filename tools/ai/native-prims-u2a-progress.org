@@ -1,0 +1,20 @@
+#+TITLE: F2 U2a primitive-family acceptance
+
+* S1 U2a lowering and execution
+** S1.1 Exact family host ERT and malformed controls
+cmd: test/standalone-native-prims-u2a-smoke.sh --host
+** S1.2 Runtime pending decreases from 87 to 76
+cmd: emacs -Q --batch -L lisp -L src -L scripts -L tools/ai -l nelisp-bytecode-coverage-audit --eval '(unless (= (cdr (assq (quote runtime-op-pending) (plist-get (nelisp-bytecode-coverage-audit-run) :counts))) 76) (kill-emacs 1))'
+** S1.3 Existing host ERT counts and failure set do not regress
+cmd: python3 -c 'import json; r=json.load(open("target/u2a-evidence/host-comparison.json")); assert r["files"] == 65 and r["tests"] == 449 and not r["new_regressions"] and r["negative_control"] == "PASS"'
+#+NOTE: All 65 original files retain 449 tests. Ten failing files are preexisting; two stale coverage-audit failures are fixed. A deliberate new failure is rejected by the comparison.
+** S1.4 Specified three standalone regression smokes and F1 digest on both backends
+cmd: python3 target/u2a-evidence/check-final.py regressions
+#+NOTE: Requires v4 binary hashes, successful markers, empty stderr, per-process timing under 300 s, and the exact F1 digest twice.
+** S1.5 Eleven opcodes have precise native/interpreter parity on both backends
+cmd: python3 target/u2a-evidence/check-final.py native
+#+NOTE: Requires all 22 opcode/backend pairs, cold-image and reader hashes, full condition/data parity, mutation/identity, initializer and machine-entry public-cell rebinding, zero unexpected stderr, and per-process timing under 300 s. Known-red while results are incomplete. Negative controls reject bad return code, time cap, and executable identity.
+#+NOTE: No new native primitive. Nth/get use source-owned frozen Lisp providers: Bnth's short-index dotted-tail datum differs from Fnth, and GET is prelude-owned. Other U2a roots are canonical builtin tokens. Native-load remains unchanged.
+#+NOTE: Final static reader build 117.739 s / 1,773,220 KiB; dynamic 118.446 s / 1,871,892 KiB. Bounded selector runs focus only changed opcodes while the full required --both run executes separately.
+
+#+NOTE: Focused dynamic boundary selector (75/76/77) completed in 270.237 s across three separately bounded runs (max 93.382 s), providing correction feedback before the full eleven-opcode backend run finished.

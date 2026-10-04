@@ -12,6 +12,7 @@
 
 (require 'cl-lib)
 (require 'nelisp-bytecode-ir)
+(require 'nelisp-bytecode-native-switch)
 
 (defun nelisp-bytecode-frame-ir--result (status reason &optional blocks max-depth)
   (list :status status :reason reason :blocks blocks :max-stack-depth max-depth))
@@ -50,10 +51,11 @@
   "Return explicit input count for ROW, or nil for unsupported semantics."
   (let ((op (aref row 1)) (metadata (aref row 4)))
     (cond
-     ((or (= op 129) (<= 192 op 255) (<= 1 op 5) (= op 130)) 0)
+     ((or (= op 129) (<= 192 op 255) (<= 1 op 7) (= op 130)) 0)
      ((memq op '(131 132 133 134 135 136 83 84 91 57 58 59 60 63 64 65
-                 162 163)) 1)
-     ((or (memq op '(61 66 85 86 87 88 89 90 92 95))) 2)
+                 71 74 75 148 149 150 151 159 162 163 167 168)) 1)
+     ((or (memq op '(56 62 72 76 77 78 61 66 85 86 87 88 89 90 92 93 94 95 164 165 166 152 153 154 155 156 157 158 160 161))) 2)
+     ((memq op '(73 79 147)) 3)
      ((and (<= 8 op 15) (eq (plist-get metadata :kind) 'variable-ref)) 0)
      ((and (<= 16 op 23) (eq (plist-get metadata :kind) 'variable-set)) 1)
      ((memq (plist-get metadata :kind) '(variable-bind unbind))
@@ -63,6 +65,10 @@
      ((and (<= 32 op 39) (eq (plist-get metadata :kind) 'call))
       (1+ (or (aref row 3) (logand op 7))))
      ((= op 137) 1)
+     ((memq op '(178 179)) (1+ (aref row 3)))
+     ((= op 182)
+      (+ (plist-get metadata :count)
+         (if (plist-get metadata :preserve-top) 1 0)))
      ((= op 183) 2)
      (t nil))))
 
@@ -81,10 +87,24 @@
      ((= op 135) 'return)
      ((= op 136) 'discard)
      ((= op 137) 'dup)
-     ((memq op '(57 58 59 60)) 'predicate)
-     ((memq op '(61 63 64 65 66 83 84 85 86 87 88 89 90 91 92 95
-                 162 163)) 'primitive)
+     ((memq op '(178 179)) 'stack-set)
+     ((= op 182) 'discard-n)
+     ((memq op '(56 57 58 59 60 62 71 72 73 74 75 76 77 78 79 61 63 64 65 66 83 84 85 86 87 88 89 90 91 92 93 94 95
+                 147 148 149 150 151 152 153 154 155 156 157 158 159 160 161
+                 162 163 164 165 166 167 168)) 'primitive)
      (t nil))))
+
+(defun nelisp-bytecode-frame-ir--stack-edit (row stack replacement)
+  "Apply ROW's validated stack edit to STACK using REPLACEMENT for old TOS.
+Copy the spine before replacing a slot: predecessor and fixed-point states
+must remain immutable. Offsets refer to the old depth, before dropping values."
+  (let* ((set-p (memq (aref row 1) '(178 179)))
+         (offset (if set-p (aref row 3) (plist-get (aref row 4) :count)))
+         (preserve (or set-p (plist-get (aref row 4) :preserve-top)))
+         (result (copy-sequence stack)))
+    (when preserve
+      (setcar (nthcdr (- (length stack) 1 offset) result) replacement))
+    (butlast result (if set-p 1 offset))))
 
 (defun nelisp-bytecode-frame-ir--block-successors (rows)
   (let* ((last-row (car (last rows)))
@@ -111,6 +131,9 @@ reported as unsupported; impossible stack states or table targets are invalid."
   (let* ((table (nelisp-bytecode-ir--instruction-table instructions))
          (initial-state (cl-loop repeat initial-depth collect :unknown))
          (states (list (cons 0 initial-state))) (depths nil) (switches nil)
+         (feasible (condition-case nil
+                       (nelisp-bytecode-native-switch-depths instructions initial-depth)
+                     (error nil)))
          (pending (list (cons 0 initial-state)))
          (maximum initial-depth) (failure nil) (unsupported nil) (steps 0)
          (limit (* 2 (max 1 (length instructions))
@@ -135,26 +158,21 @@ reported as unsupported; impossible stack states or table targets are invalid."
                  (unless (equal merged (cdr old))
                    (setcdr old merged)
                    (push (cons pc merged) pending)))))))
-         (switch-cases (pc table-index)
-           (let ((object (and (integerp table-index)
-                              (<= 0 table-index)
-                              (< table-index (length constants))
-                              (aref constants table-index)))
-                 (cases nil) (bad nil))
-             (if (not (hash-table-p object))
-                 (setq unsupported
-                       (format "Bswitch table provenance at %d is not a constant hash table" pc))
-               (maphash
-                (lambda (key target)
-                  (if (not (and (integerp target) (assq target table)))
-                      (setq bad (format "invalid switch target %S at %d" target pc))
-                    (let ((entry (assq target cases)))
-                      (if entry
-                          (setcdr entry (append (cdr entry) (list key)))
-                        (push (cons target (list key)) cases)))))
-                object)
-               (when bad (setq failure bad)))
-             (sort cases (lambda (left right) (< (car left) (car right)))))))
+         (switch-cases (pc table-index depth)
+           (let ((object (and (integerp table-index) (aref constants table-index)))
+                 (cases (mapcar (lambda (entry) (list (car entry)))
+                                (cl-remove-if-not (lambda (entry) (= (cdr entry) depth)) feasible))))
+             (cond
+              ((null feasible) (setq unsupported "switch depth constraints are not solvable"))
+              ((and (integerp table-index) (not (hash-table-p object)))
+               (setq unsupported (format "Bswitch table provenance at %d is not a hash table" pc)))
+              ((hash-table-p object)
+               (maphash (lambda (_key target)
+                          (unless (assq target cases)
+                            (setq failure (format "invalid switch target %S at %d" target pc))))
+                        object)))
+             (sort (cl-remove (aref (cdr (assq pc table)) 2) cases :key #'car)
+                   (lambda (left right) (< (car left) (car right)))))))
       (when (not (and (integerp initial-depth) (>= initial-depth 0)))
         (setq failure "initial stack depth must be a nonnegative integer"))
       (while (and pending (not failure) (not unsupported) (< steps limit))
@@ -190,24 +208,20 @@ reported as unsupported; impossible stack states or table targets are invalid."
                    (setq after (append state
                                        (list (nth (- depth 1 offset) state)))))))
               ('dup (setq after (append state (list (car (last state))))))
+              ((or 'stack-set 'discard-n)
+               (setq after (nelisp-bytecode-frame-ir--stack-edit
+                            row state (car (last state)))))
               ((or 'discard 'variable-set 'return)
                (setq after (butlast state need)))
               ((or 'call 'primitive)
                (setq after (append (butlast state need) (list :unknown))))
               ('predicate (setq after (append (butlast state) (list :unknown))))
               ('switch
-               (let* ((inputs (last state 2))
-                      (table-source (cadr inputs)))
-                 (if (not (and (consp table-source)
-                               (eq (car table-source) :constant)))
-                     (setq unsupported
-                           (format "Bswitch table provenance is unknown at %d" pc))
-                   (let ((table-index (cadr table-source)))
-                     (setq cases (switch-cases pc table-index))
-                     (unless failure
-                       (if unsupported nil
-                         (setq after (butlast state 2)
-                               switch-info (list pc table-index cases))))))))
+               (let* ((source (cadr (last state 2)))
+                      (table-index (and (consp source) (eq (car source) :constant) (cadr source))))
+                 (setq after (butlast state 2)
+                       cases (switch-cases pc table-index (length after))
+                       switch-info (list pc table-index cases))))
               ('branch
                (when (memq op '(133 134))
                  (setq outputs (list (cons 'taken state))))
@@ -274,6 +288,15 @@ reported as unsupported; impossible stack states or table targets are invalid."
                (setq inputs (list (car (last stack))) outputs (list out)
                      stack (append stack (list out))))
               ('discard (setq stack (butlast stack)))
+              ((or 'stack-set 'discard-n)
+               (let* ((set-p (eq kind 'stack-set))
+                      (preserve (or set-p (plist-get (aref row 4) :preserve-top)))
+                      (live-output (and preserve
+                                        (or (not set-p) (> (aref row 3) 0)))))
+                 (setq inputs (and preserve (list (car (last stack))))
+                       outputs (and live-output (list out))
+                       stack (nelisp-bytecode-frame-ir--stack-edit
+                              row stack (if live-output out (car (last stack)))))))
               ('variable-set (setq stack (butlast stack)))
               ('dynamic-bind (setq stack (butlast stack need)))
               ('dynamic-unbind nil)
@@ -571,10 +594,10 @@ unsupported until it guards or otherwise accounts for subsequent mutations."
                   (setq result
                         (plist-put result :nonlocal-exit-control-flow 'unresolved)))
                 (when switch-row
-                  (setq result (plist-put result :switch-edges 'constant-table-snapshot)
+                  (setq result (plist-put result :switch-edges 'validated-runtime-targets)
                         result (plist-put
                                 result :runtime-switch-lowering
-                                'unsupported-until-mutation-guard))))
+                                'runtime-gethash))))
               result))))))))
 
 (defun nelisp-bytecode-frame-ir-native-package-dependencies ()
@@ -584,7 +607,9 @@ unsupported until it guards or otherwise accounts for subsequent mutations."
     nelisp-bytecode-frame-ir--operation-effect
     nelisp-bytecode-frame-ir--min-inputs
     nelisp-bytecode-frame-ir--simple-kind
+    nelisp-bytecode-frame-ir--stack-edit
     nelisp-bytecode-frame-ir--block-successors
+    nelisp-bytecode-native-switch-depths
     nelisp-bytecode-frame-ir--analyze-switch-stack
     nelisp-bytecode-frame-ir--emit-block
     nelisp-bytecode-frame-ir--analyze-binding-depths

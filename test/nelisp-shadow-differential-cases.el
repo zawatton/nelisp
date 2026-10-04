@@ -45,6 +45,14 @@
 ;;; Code:
 
 (list
+ ;; Extended stack references preserve a full boxed slot, including identity.
+ (let ((value (vector 'rooted-cfg)))
+   (and (eq (funcall (make-byte-code 257 (unibyte-string 6 0 135) [] 2) value) value)
+        (eq (funcall (make-byte-code 257 (unibyte-string 7 0 0 135) [] 2) value) value)))
+ ;; The canonical entry-backedge bytecode terminates after consuming the list.
+ (null (funcall (make-byte-code 257
+                               (unibyte-string 137 131 8 0 65 130 0 0 135) [] 2)
+                '(one two three four)))
  ;; Generic evaluator arguments preserve nested mutable aliases.
  (let* ((shared (vector 11))
         (input (cons shared shared))
@@ -343,6 +351,11 @@
  (nreverse (list 1 2 3))
  (nreverse (vector 1 2 3))
  (nreverse (copy-sequence "abc"))
+ ;; F2 U2b: exercise the exact GNU opcode, including byte mode and identity.
+ (let ((f (make-byte-code 257 (unibyte-string 159 135) [] 1)))
+   (list (string-to-list (funcall f "αβ"))
+         (string-to-list (funcall f (unibyte-string 200 201)))
+         (let ((v (vector 1 2 3))) (list (eq (funcall f v) v) v))))
  ;; in place for a vector, as in Emacs: the caller's object changes
  (let ((v (vector 1 2 3))) (nreverse v) v)
  ;; and NOT in place for `reverse'
@@ -1894,6 +1907,23 @@
   (garbage-collect)
   (list (symbol-name a) (symbolp a) (eq a b)
         (keywordp a) (intern-soft a)))
+;; U2a primitive-family oracle: ordered stores and identity.
+(let ((xs (list 'first 'second)) (v (vector 'old 'tail)))
+  (set 'u2a-parity-value 41)
+  (fset 'u2a-parity-function '(lambda (x) x))
+  (put 'u2a-parity-value 'key 'property)
+  (aset v 0 'new)
+  (list (nth 1 xs) (eq (memq 'second xs) (cdr xs)) (length xs) (aref v 0)
+        (symbol-value 'u2a-parity-value) (symbol-function 'u2a-parity-function)
+        (get 'u2a-parity-value 'key) (substring "abcd" 1 3)))
+;; U5 VM parity: overwrite/pop, offset-zero discard and preserve-high-bit.
+(let* ((left (vector 'left)) (right (cons 'right 'tail))
+       (replace (make-byte-code 514 (unibyte-string 178 1 135) [] 2))
+       (drop (make-byte-code 514 (unibyte-string 178 0 135) [] 2))
+       (keep (make-byte-code 514 (unibyte-string 182 129 135) [] 2)))
+  (list (eq (funcall replace left right) right)
+        (eq (funcall drop left right) left)
+        (eq (funcall keep left right) right)))
 )
 
 ;;; nelisp-shadow-differential-cases.el ends here

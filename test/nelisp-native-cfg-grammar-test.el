@@ -84,7 +84,6 @@
                  (cfg 1 a (block a nil (return 0)) (block a nil (return 1)))
                  (cfg 1 a (block a nil (branch env a absent)))
                  (cfg 1 a (block a nil (dispatch env ((1 a) (1 a)) a)))
-                 (cfg 1 a (block a nil (jump a)))
                  (cfg 1 a (block a nil (return 0)) (block b nil (return 1)))
                  (cfg 1 a (block a nil (return 0 1)))
                  (cfg 1 a (block a nil (bogus 0)))))

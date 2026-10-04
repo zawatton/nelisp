@@ -31,7 +31,8 @@
         (mismatch (nelisp-bytecode-native-rooted-cfg-test--frame
                    '((0 . ((:target 1 :slots [a] :target-slots [])))
                      (1 . nil)))))
-    (dolist (frame (list cycle unknown mismatch))
+    (should (eq (plist-get (nelisp-bytecode-native-rooted-cfg-topology-check cycle) :status) 'complete))
+    (dolist (frame (list unknown mismatch))
       (should (eq (plist-get (nelisp-bytecode-native-rooted-cfg-topology-check frame)
                              :status)
                   'unsupported)))))
@@ -44,7 +45,7 @@
     (should (eq (plist-get (nelisp-bytecode-native-rooted-cfg-topology-check malformed)
                            :status)
                 'unsupported))
-    (let ((nelisp-bytecode-native-rooted-cfg-max-paths 1))
+    (let ((nelisp-bytecode-native-rooted-cfg-max-analysis-steps 0))
       (should (eq (plist-get (nelisp-bytecode-native-rooted-cfg-topology-check frame)
                              :status)
                   'unsupported)))))

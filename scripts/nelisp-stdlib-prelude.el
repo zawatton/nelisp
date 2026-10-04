@@ -22119,3 +22119,25 @@ no-op function, without wiring a real menu-bar item into MAPS."
   (defmacro with-current-buffer (buffer &rest body)
     (declare (indent 1) (debug t))
     `(let ((nelisp-buffer--current ,buffer)) ,@body)))
+
+;; F2 U2b: freeze existing source-owned Lisp providers before user code runs.
+;; Neither bytecode instructions nor native primitive initializers consult the
+;; corresponding public function cells after this point. No new native name.
+(defconst nelisp--bytecode-lisp-providers
+  (mapcar (lambda (name)
+            (cons name
+                  (cond
+                   ((eq name 'match-beginning)
+                    (lambda (n)
+                      (and nlre--last-caps (< n (length nlre--last-caps))
+                           (let ((span (aref nlre--last-caps n)))
+                             (and span (car span))))))
+                   ((eq name 'match-end)
+                    (lambda (n)
+                      (and nlre--last-caps (< n (length nlre--last-caps))
+                           (let ((span (aref nlre--last-caps n)))
+                             (and span (cdr span))))))
+                   (t (symbol-function name)))))
+          '(set-marker match-beginning match-end upcase downcase)))
+(dolist (entry nelisp--bytecode-lisp-providers)
+  (fset (intern (concat "nelisp--bytecode-" (symbol-name (car entry)))) (cdr entry)))

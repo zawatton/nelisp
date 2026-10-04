@@ -17,7 +17,8 @@
 (defvar nelisp-native-compiler-startup-evidence--source-root nil)
 (defvar nelisp-native-compiler-startup-evidence--boot-sources nil)
 (defconst nelisp-native-compiler-startup-evidence--boot-modules
-  '(nelisp-native-funcall-v2 nelisp-bytecode-ir nelisp-bytecode-frame-ir nelisp-bytecode-compiler-input
+  '(nelisp-native-funcall-v2 nelisp-bytecode-ir nelisp-hash-custom nelisp-bytecode-native-switch
+    nelisp-bytecode-frame-ir nelisp-bytecode-compiler-input
     nelisp-bytecode-native-rooted-cfg nelisp-native-arithmetic-v2
     nelisp-bytecode-native-arithmetic-lowering nelisp-native-optimization-guard-v1
     nelisp-bytecode-native-guarded-lowering nelisp-bytecode-native-rooted-cfg-plan
@@ -46,14 +47,14 @@
          (canonical (nelisp-native-compiler-startup-evidence--forms source))
          (derived (nelisp-native-compiler-startup-evidence--forms template)) found)
     (unless (and (equal (nelisp-native-rooted-build-evidence-source-hash source 4194304)
-                        "ae41de99e264db21ed6542e66f9de2c2fe6bccd984585c1f6bb6c6098b71fb60")
+                        "f64376debaa9900dc52dc2df6a2e673843447d2945066a6fb09f0524f41875c6")
                  (equal (nelisp-native-rooted-build-evidence-source-hash template 4194304)
-                        "838885b3171e95e1854de79bd03d936328880864f6d9f35ee22c26563b0d3863")
+                        "659f43ce014007270feddefaac27fbc023b4a4c5048fb58f4fb4392a17a37b64")
                  (equal (alist-get 'source declaration) "lisp/nelisp-native-load.el")
                  (equal (alist-get 'source_sha256 declaration)
-                        "ae41de99e264db21ed6542e66f9de2c2fe6bccd984585c1f6bb6c6098b71fb60")
+                        "f64376debaa9900dc52dc2df6a2e673843447d2945066a6fb09f0524f41875c6")
                  (equal (alist-get 'output_sha256 declaration)
-                        "838885b3171e95e1854de79bd03d936328880864f6d9f35ee22c26563b0d3863")
+                        "659f43ce014007270feddefaac27fbc023b4a4c5048fb58f4fb4392a17a37b64")
                  (equal (alist-get 'definitions declaration) (mapcar #'symbol-name names))
                  (= (alist-get 'exact_runtime_gate_transforms declaration) 3))
       (error "Canonical constructor loader template provenance rejected"))

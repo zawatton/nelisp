@@ -188,7 +188,7 @@
                        (if (equal name "probe") 8100 8200)))
                     ((symbol-function 'ptr-write-u64) (lambda (&rest args) (push args writes)))
                     ((symbol-function 'nelisp-native-cache--callable-from-entry)
-                     (lambda (entry h addresses)
+                     (lambda (entry h addresses &optional _constants)
                        (should (= entry 8100)) (should (equal h header))
                        (should (eq addresses nelisp-native-cache--addresses))
                        (lambda (&rest _) 'called)))

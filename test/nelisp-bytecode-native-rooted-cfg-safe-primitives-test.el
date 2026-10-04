@@ -95,7 +95,7 @@
          (bad-arity (copy-tree input))
          (malformed (copy-tree input))
          (other-op (nelisp-bytecode-native-rooted-cfg-safe-primitives-test--input
-                    '(lambda (flag) (car-safe (if flag nil "text")))))
+                    '(lambda (flag) (car-safe (progn (insert flag) (if flag nil "text"))))))
          (rows (copy-sequence (plist-get (plist-get input :ir-result) :instructions))))
     (setf (plist-get (plist-get mixed :ir-result) :unsupported)
           (append (plist-get (plist-get mixed :ir-result) :unsupported)

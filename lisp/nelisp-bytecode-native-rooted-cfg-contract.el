@@ -41,14 +41,34 @@
                                item (1+ depth))))
              (t nil))))
 
+(defun nelisp-bytecode-native-rooted-cfg-contract--recipe-constants (recipe)
+  "Reconstruct placeholder tables; runtime callers supply the live constants."
+  (let ((constants (copy-sequence (plist-get recipe :constants))) (seen nil))
+    (dolist (index (plist-get recipe :live-hash-constants))
+      (unless (and (integerp index) (<= 0 index) (< index (length constants))
+                   (not (memq index seen)) (null (aref constants index)))
+        (error "Invalid live switch constant index"))
+      (push index seen)
+      (aset constants index (make-hash-table :test 'eq)))
+    constants))
+
 (defun nelisp-bytecode-native-rooted-cfg-contract-input-recipe (input)
   "Return a safe reconstruction recipe for verified INPUT, or nil."
   (let* ((function (plist-get input :function))
          (code (plist-get input :code))
-         (constants (plist-get input :constants))
+         (original-constants (plist-get input :constants))
+         (constants (and (vectorp original-constants) (copy-sequence original-constants)))
+         (live-hashes nil)
+         (switch-p (and (stringp code) (vectorp constants)
+                        (cl-find 183 (plist-get (nelisp-bytecode-ir-decode-result code constants) :instructions)
+                                 :key (lambda (row) (aref row 1)))))
          (descriptor (plist-get input :argument-descriptor))
          (metadata (and (> (length function) 4) (aref function 4)))
          (depth (plist-get input :declared-stack-depth)))
+    (when switch-p
+      (dotimes (index (length constants))
+        (when (hash-table-p (aref constants index))
+          (push index live-hashes) (aset constants index nil))))
     (when (and (byte-code-function-p function)
                (stringp code) (not (multibyte-string-p code))
                (vectorp constants) (integerp depth) (>= depth 0)
@@ -62,10 +82,11 @@
                (or (< (length function) 6)
                    (nelisp-bytecode-native-rooted-cfg-contract--safe-data-p
                     (aref function 5) 0)))
-      (list :descriptor descriptor :code code :constants constants
+      (append (and live-hashes (list :live-hash-constants (nreverse live-hashes)))
+              (list :descriptor descriptor :code code :constants constants
             :stack-depth depth :function-length (length function)
             :metadata metadata
-            :interactive (and (> (length function) 5) (aref function 5))))))
+            :interactive (and (> (length function) 5) (aref function 5)))))))
 
 (defun nelisp-bytecode-native-rooted-cfg-contract--digest (contract)
   (let ((rest contract) (canonical nil))
@@ -261,7 +282,7 @@ Preserve sharing and refuse cycles without a flat-list depth limit."
       (let* ((event (pop pending)) (item (cdr event)))
         (cond
          ((car event) (puthash item 'done states))
-         ((or (byte-code-function-p item) (functionp item)) nil)
+         ((or (hash-table-p item) (byte-code-function-p item) (functionp item)) nil)
          ((or (consp item) (vectorp item))
           (pcase (gethash item states)
             ('active (error "Cyclic contract snapshot"))
@@ -276,7 +297,7 @@ Preserve sharing and refuse cycles without a flat-list depth limit."
   (let ((copies (make-hash-table :test #'eq)) work)
     (cl-labels ((allocate (item)
                   (cond
-                   ((or (byte-code-function-p item) (functionp item)) item)
+                   ((or (hash-table-p item) (byte-code-function-p item) (functionp item)) item)
                    ((stringp item) (or (gethash item copies)
                                       (let ((copy (substring item 0)))
                                         (puthash item copy copies) copy)))
@@ -298,10 +319,12 @@ Preserve sharing and refuse cycles without a flat-list depth limit."
 
 (let ((snapshot-owner (symbol-function 'nelisp-bytecode-native-rooted-cfg-contract--snapshot-data))
       (lookup (symbol-function 'symbol-function)) (same (symbol-function 'eq)))
-(defun nelisp-bytecode-native-rooted-cfg-contract-valid-p (contract &optional result-mode)
+(defun nelisp-bytecode-native-rooted-cfg-contract-valid-p (contract &optional result-mode live-input)
   "Recompute and validate a serialized generic rooted-CFG CONTRACT.
 Nil RESULT-MODE preserves the boolean API.  Exact `:reconstruction' returns
 fresh full input, plan, emission and expected contract after every check passes.
+LIVE-INPUT binds opaque table constants only after its canonical recipe matches;
+all code, frame, plan and artifact checks are still reconstructed.
 The result is data for comparison, never a certificate or cached authority."
   (setq nelisp-bytecode-native-rooted-cfg-contract--validation-count
         (1+ nelisp-bytecode-native-rooted-cfg-contract--validation-count))
@@ -322,16 +345,22 @@ The result is data for comparison, never a certificate or cached authority."
                               (nelisp-bytecode-native-rooted-cfg-contract--safe-data-p
                                (plist-get recipe key) 0))
                             '(:descriptor :constants :metadata :interactive))))
+             (live-function
+              (and live-input recipe-safe
+                   (let ((canonical (nelisp-bytecode-compiler-input-build (plist-get live-input :function))))
+                     (and (equal canonical live-input)
+                          (equal recipe (nelisp-bytecode-native-rooted-cfg-contract-input-recipe canonical))
+                          (plist-get canonical :function)))))
              (function
-              (and recipe-safe (apply #'make-byte-code
+              (or live-function (and recipe-safe (apply #'make-byte-code
                      (append (list descriptor (plist-get recipe :code)
-                                   (plist-get recipe :constants)
+                                   (nelisp-bytecode-native-rooted-cfg-contract--recipe-constants recipe)
                                    (plist-get recipe :stack-depth))
                              (pcase (plist-get recipe :function-length)
                                (4 nil)
                                (5 (list (plist-get recipe :metadata)))
                                (6 (list (plist-get recipe :metadata)
-                                        (plist-get recipe :interactive))))))))
+                                        (plist-get recipe :interactive)))))))))
              (input (nelisp-bytecode-compiler-input-build function))
              (plan (nelisp-bytecode-native-rooted-cfg-plan
                     input (plist-get (plist-get copy :plan) :lowering-mode)
@@ -360,7 +389,7 @@ The result is data for comparison, never a certificate or cached authority."
                                    (nelisp-bytecode-native-rooted-cfg-contract-create
                                     input plan emitted)))))
              (without-digest copy))
-        (and expected
+        (and (or (null live-input) live-function) expected
              (equal digest
                     (nelisp-bytecode-native-rooted-cfg-contract--digest without-digest))
              (equal contract expected)

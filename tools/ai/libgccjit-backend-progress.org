@@ -96,6 +96,7 @@ cmd: test/standalone-bytecode-native-funcall-smoke.sh --both target/agent-worktr
 * F2 Full opcode lowering (inline or runtime call)
 
 ** F2.1 The coverage audit reports every valid GNU 31.1 opcode as lowered (inline or bridge call) except the documented non-local-exit group, with an independent semantic test per opcode family
+#+NOTE: 2026-10-05 progress (design target/agent-worktrees/f2-design-sol-20261004/F2-DESIGN.md, slices U0-U10): U0 audit CLI and valid 230-slot fixtures; U1a versioned raw CFG grammar on both backends; U1b cyclic CFG (back edges, irreducible and closed SCCs, parallel phi copies, quit/GC polls, stack-ref 6/7: frame-represented 116->118, structural 8->6); U2a primitives {56,62,71-79} via the funcall bridge (runtime-op-pending 87->76, 124 native cases on both backends). Integrated tree regression on readers a38dea8f/21757d7a: cycles, grammar, U2a, F1, F1b and GC-import smokes all pass. Running: U2b {147-161}, U5 stack-set/discardN.
 pending
 
 ** F2.2 Variable access (varref/varset/varbind/unbind) and non-local exits (catch, condition-case, unwind-protect, handlers) are lowered with tests that restore bindings and roots
@@ -113,7 +114,9 @@ pending
 cmd: emacs -Q --batch -L lisp -L src -L scripts -L test -L packages/nl-ffi/src -l test/p1a-test.el -f ert-run-tests-batch-and-exit 2>&1 | grep -q '^Ran 5 tests, 5 results as expected, 0 unexpected' && test "$(sha256sum target/agent-worktrees/p1a-speed-sol-20261004/work/acceptance.json | cut -d ' ' -f 1)" = 7a273d9103feca8fc399053df7d73883b456ea9b2cde50e02f69da91eabe84eb
 
 ** P1.2 A cached in-house artifact contains only the user entry (no embedded GC-contract functions); GC contract entries resolve to runtime-owned functions by import, and a forced GC during and after calls keeps results exact
-pending
+#+NOTE: 2026-10-04 gpt-6.1-sol P1.2 (Astra ultra final audit, no further fixes): exports 25 -> 1 on compiler-r3-cons (14,730 -> 7,744 bytes) and the F1 fixture (30,058 -> 23,070 bytes); the 24 GC-table entries resolve to runtime functions; artifact format and cache ABI versioned; F1/F1b digests, CFG grammar and forced-GC checks pass on both backends. Cache-path compile 51.9 -> 39.3 s (P1.3 target 27 s not yet met).
+cmd: emacs -Q --batch -L lisp -L src -L scripts -L test -L test/support -L packages/nl-ffi/src -l test/p1b-test.el -f ert-run-tests-batch-and-exit 2>&1 | grep -q '^Ran 11 tests, 11 results as expected, 0 unexpected' && test "$(sha256sum target/agent-worktrees/p1b-sol-20261004/repo/target/p1b/acceptance.json | cut -d ' ' -f 1)" = 1b9dfcff6fe161091ea5de094477abfd06ca18e62bb72b63ec6002d1d97393a7
 
 ** P1.3 End to end: the native in-house compile of compiler-r3-cons takes at most 27 seconds (libgccjit parity, D1.3 receipt) on the same runner
+#+NOTE: 2026-10-05 P1.3 attempt 1 (gpt-6.1-sol): cache-path compile 40.0 -> 32.9 s (static cold reader) by removing the intermediate artifact output and the producer's structural re-check of its own output; remaining: semantic validation 12.0 s, front end 5.0 s, compile prelude 3.7 s, AOT/manifest 3.1 s. Target not met; one attempt left.
 pending
