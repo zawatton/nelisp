@@ -226,7 +226,7 @@ ptr-write-u64	native-review	No classification row; review against Doc 211 §6.
 alloc-bytes	native-review	No classification row; review against Doc 211 §6.
 ptr-read-bytes	native-review	No classification row; review against Doc 211 §6.
 ptr-write-bytes	native-review	No classification row; review against Doc 211 §6.
-nelisp--exit-process	native-review	No classification row; review against Doc 211 §6.
+nelisp--exit-process	native-must-stay	Minimal native surface clauses 3/4: raw OS process termination needed before Lisp can run; Linux exit_group (x86_64 231, aarch64 94), Windows ExitProcess. Lisp kill-emacs policy stays in the prelude; thread-only exits retain SYS_exit.
 nelisp-process-call-process	native-review	No classification row; review against Doc 211 §6.
 nelisp-process-start	native-review	No classification row; review against Doc 211 §6.
 nelisp-process-start-process	native-review	No classification row; review against Doc 211 §6.
@@ -321,3 +321,4 @@ nl_n4_rewrite_env	native-must-stay	Minimal native surface clause 2: evaluator ac
 nl_n4_snapshot	native-must-stay	Minimal native surface clause 2: evaluator activation access, precise GC roots and live binding restoration. Original lowered bodies retained; GNU/Lisp reference: test/nelisp-n4b-reference.el; per-context GC/isolation reference: test/nelisp-n4b-worker-reference.el. Transient stacks rebuild after heap restore; policy and public selection remain Lisp.
 nl_n4_state	native-must-stay	Minimal native surface clause 2: evaluator activation access, precise GC roots and live binding restoration. Original lowered bodies retained; GNU/Lisp reference: test/nelisp-n4b-reference.el; per-context GC/isolation reference: test/nelisp-n4b-worker-reference.el. Transient stacks rebuild after heap restore; policy and public selection remain Lisp.
 nl_n4_veneer_p	native-must-stay	Minimal native surface clause 2: evaluator activation access, precise GC roots and live binding restoration. Original lowered bodies retained; GNU/Lisp reference: test/nelisp-n4b-reference.el; per-context GC/isolation reference: test/nelisp-n4b-worker-reference.el. Transient stacks rebuild after heap restore; policy and public selection remain Lisp.
+nelisp_frame_stack_ensure_capacity_bad_needed	native-must-stay	Minimal native surface clauses 3/4: existing fatal frame-stack guard delegates raw OS process termination to nl_os_exit_process (status 87); platform policy shared with kill-emacs, no new primitive.

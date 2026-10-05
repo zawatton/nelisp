@@ -732,6 +732,85 @@ Without the check a failed mmap became rsp = -errno + SIZE - 16 and the
     (should (string-search nelisp-standalone--native-stack-mmap-fail-message
                            text))))
 
+(ert-deftest nelisp-standalone-target-linux-start-exits-whole-process ()
+  "Both the driver return and stack mapping failure use SYS_exit_group."
+  (let* ((nelisp-standalone--target 'linux-x86_64)
+         (unit (nelisp-standalone--target-start-unit t))
+         (text (cdr (assq 'text (plist-get unit :sections))))
+         (exit-group (unibyte-string #xb8 #xe7 0 0 0 #x0f #x05))
+         (task-exit (unibyte-string #xb8 #x3c 0 0 0 #x0f #x05))
+         (pos 0) (count 0))
+    (while (string-match (regexp-quote exit-group) text pos)
+      (setq count (1+ count) pos (match-end 0)))
+    (should (= count 2))
+    (should-not (string-search task-exit text))))
+
+(ert-deftest nelisp-standalone-target-process-exit-platform-boundaries ()
+  "Process helpers terminate Linux thread groups; Windows keeps ExitProcess."
+  (dolist (pair '((linux-x86_64 . 231) (linux-aarch64 . 94)))
+    (let* ((nelisp-standalone--target (car pair))
+           (nr (cdr pair))
+           (forms (nelisp-standalone--reader-os-source-forms))
+           (find (lambda (name) (cl-find name forms :key #'cadr)))
+           (allocation (if (eq (car pair) 'linux-x86_64)
+                           (nelisp-standalone--linux-alloc-chunk-form)
+                         (nelisp-standalone--linux-aarch64-alloc-chunk-form))))
+      (should (equal (funcall find 'nl_os_exit_process)
+                     `(defun nl_os_exit_process (code)
+                        (syscall-direct ,nr code 0 0 0 0 0))))
+      (should (equal (funcall find 'nl_os_process_exit127)
+                     `(defun nl_os_process_exit127 ()
+                        (syscall-direct ,nr 127 0 0 0 0 0))))
+      (should (equal (funcall find 'nl_os_syscall_nr_exit)
+                     `(defun nl_os_syscall_nr_exit () ,nr)))
+      (should (equal (cl-find 'nl_os_alloc_fail allocation :key #'cadr)
+                     `(defun nl_os_alloc_fail ()
+                        (syscall-direct ,nr 88 0 0 0 0 0))))))
+  (dolist (target '(windows-x86_64 windows-aarch64))
+    (let ((nelisp-standalone--target target))
+      (should (member '(defun nl_os_exit_process (code)
+                         (extern-call ExitProcess code))
+                      (nelisp-standalone--reader-os-source-forms))))))
+
+(ert-deftest nelisp-standalone-target-thread-exit-stays-task-local ()
+  "The native worker returns through SYS_exit, preserving its parent process."
+  (let* ((nelisp-standalone--target 'linux-x86_64)
+         (worker (cl-find 'nl_thread_worker_start
+                          (nelisp-standalone--thread-forms) :key #'cadr)))
+    (should worker)
+    (should (equal (car (last (car (last worker))))
+                   '(syscall-direct 60 0 0 0 0 0 0)))
+    (should (equal (car (last (car (last
+                                   (cl-find 'nl_thread_run
+                                            (cdr nelisp-standalone--applyfn-bf-helpers)
+                                            :key #'cadr)))))
+                   '(let ((out_slot (alloc-bytes 32 8)))
+                      (seq (extern-call nelisp_eval_call (ptr-read-u64 box 0)
+                                        (ptr-read-u64 box 8) out_slot)
+                           (syscall-direct 60 0 0 0 0 0 0)))))))
+
+(ert-deftest nelisp-standalone-target-fatal-frame-guard-exits-process ()
+  "The fatal frame-capacity guard uses the same process exit boundary."
+  (require 'nelisp-cc-frame-ensure-capacity)
+  (let ((guard (cl-find 'nelisp_frame_stack_ensure_capacity_bad_needed
+                        (cdr nelisp-cc-frame-ensure-capacity--source)
+                        :key #'cadr))
+        operations)
+    ;; Execute the generated guard body with memory/I/O fixtures; a raw
+    ;; task-local syscall is deliberately absent and would fail this test.
+    (cl-letf (((symbol-function 'alloc-bytes) (lambda (&rest _) 4096))
+              ((symbol-function 'nelisp_frame_stack_ensure_capacity_bad_needed_msg)
+               (lambda (buf) (push (list 'message buf) operations)))
+              ((symbol-function 'nl_os_write_stderr)
+               (lambda (buf size) (push (list 'stderr buf size) operations)))
+              ((symbol-function 'nl_os_exit_process)
+               (lambda (code) (push (list 'exit-process code) operations)))
+              ((symbol-function 'seq) (symbol-function 'progn)))
+      (should guard)
+      (eval (cons 'progn (cdddr guard)) t))
+    (should (equal (nreverse operations)
+                   '((message 4096) (stderr 4096 42) (exit-process 87))))))
+
 ;; Little-endian instruction word I of the arm64 TEXT.
 (defun nelisp-standalone-target-test--word (text i)
   (logior (aref text (* 4 i)) (ash (aref text (+ (* 4 i) 1)) 8)
@@ -759,12 +838,17 @@ with the failure block reporting the errno and exiting 88."
              (target-word (+ j 2 imm26)))
         ;; The failure block starts with `sub x9, xzr, x0' (errno = -x0).
         (should (= (funcall w target-word) #xcb0003e9))
-        ;; It ends with exit(88): svc after mov x8,#93 preceded by mov x0,#88.
+        ;; It ends with exit_group(88): svc after mov x8,#94 and mov x0,#88.
         (should (string-search nelisp-standalone--native-stack-mmap-fail-message
                                text))))
     ;; Exactly one exit-88 path plus the normal exit: x0 = 88 is loaded once.
     (should (= 1 (cl-loop for k below (/ (length text) 4)
-                          count (= (funcall w k) #xd2800b00))))))
+                          count (= (funcall w k) #xd2800b00))))
+    ;; Normal driver return and mmap failure both use exit_group (94).
+    (should (= 2 (cl-loop for k below (/ (length text) 4)
+                          count (= (funcall w k) #xd2800bc8))))
+    (should-not (cl-loop for k below (/ (length text) 4)
+                         thereis (= (funcall w k) #xd2800ba8)))))
 
 (ert-deftest nelisp-standalone-target-macos-aarch64-start-checks-stack-mmap ()
   "The macOS arm64 reader start unit branches away when the mmap fails.
@@ -1247,7 +1331,7 @@ report its size as a Unix timestamp.  Pin the reads at the Darwin offsets
                                forms))
         (should (tree-member-p '(syscall-direct 62 pid sig 0 0 0 0)
                                forms))
-        (should (tree-member-p '(syscall-direct 60 127 0 0 0 0 0)
+        (should (tree-member-p '(syscall-direct 231 127 0 0 0 0 0)
                                forms))))
     (let ((nelisp-standalone--target 'macos-aarch64))
       (let ((forms (nelisp-standalone--reader-os-source-forms)))
@@ -1592,7 +1676,7 @@ reservation at 0x10000000 left in the normal runtime path."
         ;; `nl_os_alloc_chunk' uses MAP_PRIVATE|MAP_ANONYMOUS mmap at NULL.
         (should (tree-member-p '(syscall-direct 9 0 size 3 34 -1 0) arena))
         ;; the OOM path still exits cleanly.
-        (should (tree-member-p '(syscall-direct 60 88 0 0 0 0 0) arena))
+        (should (tree-member-p '(syscall-direct 231 88 0 0 0 0 0) arena))
         ;; NO fixed-base reservation remains in the normal runtime path.
         (should-not (tree-member-p
                      '(syscall-direct 9 #x10000000 #x10000000 3 #x100022 -1 0)

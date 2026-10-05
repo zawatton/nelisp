@@ -2416,9 +2416,11 @@ addressing by a runtime base, never by a fixed reservation."
           (nl_os_free_chunk base size))))
     ;; mmap demand-pages on first touch, so explicit range commit is a no-op.
     (defun nl_os_commit_range (base old new) 1)
+    ;; Minimal native surface clauses 3/4: raw OS process exit, required
+    ;; before Lisp can run.  Terminate every task, including native workers.
     ;; Exit code 88 = standalone arena allocation failure.
     (defun nl_os_alloc_fail ()
-      (syscall-direct 60 88 0 0 0 0 0))))
+      (syscall-direct 231 88 0 0 0 0 0))))
 
 (defun nelisp-standalone--linux-aarch64-alloc-chunk-form ()
   "Return Linux arm64 chunk allocation forms.
@@ -19538,7 +19540,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
         (if (= (syscall-direct 57 0 0 0 0 0 0) 0)
             (let ((out_slot (alloc-bytes 32 8)))
               (seq (extern-call nelisp_eval_call form env out_slot)
-                   (syscall-direct 60 0 0 0 0 0 0)))
+                   (syscall-direct 231 0 0 0 0 0 0)))
           (wf_write_int out 1)))))
   "B-foundation breadth helpers (Wave-1 (B), reader-only): predicates, vector /
 symbol ops, setcar/setcdr, structural equal, vector-aware length, plus the
@@ -24628,7 +24630,7 @@ relies on for `nelisp-cc-evalport-combiner-cons--source' and its siblings).")
 ;;   4c 89 ff                   mov  rdi, r15     ; driver arg0 = entry argv ptr
 ;;   e8 00 00 00 00             call driver       ; reloc pc32 @ offset 53
 ;;   89 c7                      mov  edi, eax      ; exit code = driver()
-;;   b8 3c 00 00 00             mov  eax, 60       ; SYS_exit
+;;   b8 e7 00 00 00             mov  eax, 231      ; SYS_exit_group
 ;;   0f 05                      syscall
 ;;   fail: (still on the kernel entry stack)
 ;;     write(2, "nelisp: cannot mmap the native stack: errno=")
@@ -24689,7 +24691,7 @@ The decimal errno and a newline follow; the process then exits 88.")
          (exit-seq (append
                     (list 0 0 0 0)                         ; rel32 placeholder
                     (list #x89 #xc7)                       ; mov edi, eax
-                    (cons #xb8 (nelisp-standalone--le32 60)) ; mov eax, 60
+                    (cons #xb8 (nelisp-standalone--le32 231)) ; mov eax, 231 (SYS_exit_group)
                     (list #x0f #x05)))                     ; syscall
          ;; Failure path, still on the kernel entry stack: report and exit 88.
          (fail-a (append
@@ -24720,7 +24722,7 @@ The decimal errno and a newline follow; the process then exits 88.")
                   (cons #xbf (nelisp-standalone--le32 2))  ; mov edi, 2
                   (list #x0f #x05)                         ; syscall
                   (cons #xbf (nelisp-standalone--le32 88)) ; mov edi, 88
-                  (cons #xb8 (nelisp-standalone--le32 60)) ; mov eax, 60 (SYS_exit)
+                  (cons #xb8 (nelisp-standalone--le32 231)) ; mov eax, 231 (SYS_exit_group)
                   (list #x0f #x05)))                       ; syscall
          (check-end (+ (length mmap-seq) check-len))
          (fail-off (+ check-end (length switch-seq) (length exit-seq)))
@@ -24950,7 +24952,7 @@ The kernel enters `_start' with argc at [sp] and argv inline after it —
 exactly the entry-stack shape the reader driver consumes, so unlike the
 macOS trampoline no argv re-packing is needed.  Mirrors the x86_64 unit:
 mmap a large anonymous native stack, switch onto it, call `driver' with
-the ORIGINAL sp as arg0, then exit(driver-return) via SVC #0 (x8=93)."
+the ORIGINAL sp as arg0, then exit(driver-return) via exit_group, SVC #0 (x8=94)."
   (require 'nelisp-asm-arm64)
   (let* ((size nelisp-standalone--native-stack-size)
          (buf (nelisp-asm-arm64-make-buffer))
@@ -24974,9 +24976,9 @@ the ORIGINAL sp as arg0, then exit(driver-return) via SVC #0 (x8=93)."
     (setq reloc-off (nelisp-asm-arm64-buffer-pos buf))
     (nelisp-asm-arm64-emit-reloc buf 'b26-pc "driver")
     (nelisp-asm-arm64--emit-word buf #x94000000) ; bl driver
-    (nelisp-asm-arm64-mov-imm64 buf 'x8 93)      ; exit (arm64 Linux)
+    (nelisp-asm-arm64-mov-imm64 buf 'x8 94)      ; exit_group (arm64 Linux)
     (nelisp-asm-arm64-svc buf 0)
-    (nelisp-standalone--arm64-emit-mmap-fail buf 'x8 64 93 0 t)
+    (nelisp-standalone--arm64-emit-mmap-fail buf 'x8 64 94 0 t)
     (nelisp-asm-arm64-resolve-fixups buf)
     (nelisp-link-unit-make
      (nelisp-standalone--target-object-name "start.o")
@@ -30670,7 +30672,8 @@ boundary (Doc 151 Phase B):
        (defun nl_os_nanosleep (ts)
          (syscall-direct 101 ts 0 0 0 0 0))))
     ('linux-x86_64
-     `((defun nl_os_exit_process (code) (syscall-direct 60 code 0 0 0 0 0))
+     `(;; Process termination uses exit_group; worker entries keep SYS_exit.
+       (defun nl_os_exit_process (code) (syscall-direct 231 code 0 0 0 0 0))
        (defun nl_os_syscall_path (nr cpath) (syscall-direct nr cpath 0 0 0 0 0))
        (defun nl_os_syscall_path_int (nr cpath iarg) (syscall-direct nr cpath iarg 0 0 0 0))
        (defun nl_os_syscall_path2 (nr c1 c2) (syscall-direct nr c1 c2 0 0 0 0))
@@ -33656,7 +33659,7 @@ SIG_IGN so a caller that handles the failure can continue safely."
        (defun nl_os_process_kill (pid sig)
          (syscall-direct 129 pid sig 0 0 0 0))
        (defun nl_os_process_exit127 ()
-         (syscall-direct 93 127 0 0 0 0 0))
+         (syscall-direct 94 127 0 0 0 0 0))
        (defun nl_os_syscall_nr_getpid () 172)
        (defun nl_os_syscall_nr_fork () 220)
        (defun nl_os_syscall_nr_wait4 () 260)
@@ -33668,7 +33671,7 @@ SIG_IGN so a caller that handles the failure can continue safely."
        (defun nl_os_syscall_nr_dup2 () 24)
        (defun nl_os_syscall_nr_poll () 73)         ; ppoll — caller must pass a timespec, not ms
        (defun nl_os_syscall_nr_fcntl () 25)
-       (defun nl_os_syscall_nr_exit () 93)))
+       (defun nl_os_syscall_nr_exit () 94)))
     (_
      `(,@(nelisp-standalone--reader-posix-env-forms)
        (defun nl_os_argv_init (sp) sp)
@@ -33719,7 +33722,7 @@ SIG_IGN so a caller that handles the failure can continue safely."
 	       (defun nl_os_process_kill (pid sig)
 	         (syscall-direct 62 pid sig 0 0 0 0))
 	       (defun nl_os_process_exit127 ()
-	         (syscall-direct 60 127 0 0 0 0 0))
+	         (syscall-direct 231 127 0 0 0 0 0))
 	       (defun nl_os_syscall_nr_getpid () 39)
 	       (defun nl_os_syscall_nr_fork () 57)
 	       (defun nl_os_syscall_nr_wait4 () 61)
@@ -33731,7 +33734,7 @@ SIG_IGN so a caller that handles the failure can continue safely."
 	       (defun nl_os_syscall_nr_dup2 () 33)
 	       (defun nl_os_syscall_nr_poll () 7)
 	       (defun nl_os_syscall_nr_fcntl () 72)
-	       (defun nl_os_syscall_nr_exit () 60)))))
+	       (defun nl_os_syscall_nr_exit () 231)))))
 
 (defun nelisp-standalone--reader-driver-source ()
   "DUAL-MODE reader driver (M7 file-load + M8 multi-form loop).

@@ -165,8 +165,10 @@
         (seq
          (nelisp_frame_stack_ensure_capacity_bad_needed_msg buf)
          (nl_os_write_stderr buf 42)
-         ;; Exit code 87 = frame-stack capacity guard.
-         (syscall-direct 60 87 0 0 0 0 0))))
+         ;; Minimal native surface clauses 3/4: fatal OS process exit.
+         ;; Exit code 87 = frame-stack capacity guard.  The per-target
+         ;; helper terminates every task, including native library workers.
+         (nl_os_exit_process 87))))
     (defun nelisp_frame_stack_ensure_capacity (frames-ptr needed scratch-slot)
       ;; frames-ptr:   *const Sexp pointing at Env::frames_record (=
       ;;               Sexp::Record(`nelisp-lexframe-stack')).
