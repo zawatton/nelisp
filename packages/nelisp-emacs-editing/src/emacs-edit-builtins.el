@@ -53,13 +53,24 @@
   ;; did nothing there.  Only nil-returning bulk stubs and absent names are
   ;; installed.
   (or (get symbol 'emacs-stub-bulk)
-      ;; The TUI's editing model is an ec-buffer.  GNU's retained Lisp
-      ;; `newline' delegates to native buffer primitives, so it must use
-      ;; this module's ec-buffer command just like direct self insertion.
+      ;; GNU's retained Lisp `newline' delegates to native primitives.
+      ;; This shared command also supports the explicit ec-buffer adapter
+      ;; while ordinary native commands keep their current buffer.
       (and (eq symbol 'newline)
            (fboundp 'nelisp--write-stdout-bytes))
       (not (boundp 'emacs-version))
       (not (fboundp symbol))))
+
+(defvar emacs-edit--pure-buffer-context nil
+  "Non-nil while the shared dispatcher edits its explicit ec-buffer.
+Ordinary native commands always use `current-buffer', even when an unrelated
+ec-buffer exists.  The shared key-dispatch adapter binds this context.")
+
+(defun emacs-edit--pure-buffer-p ()
+  "Return non-nil when the selected editing owner is an ec-buffer."
+  (and (nelisp-ec-current-buffer)
+       (or emacs-edit--pure-buffer-context
+           (nelisp-ec-buffer-p (current-buffer)))))
 
 ;;;; --- last-command-event placeholder ---------------------------------
 
@@ -70,6 +81,16 @@
 (unless (boundp 'last-command-event)
   (defvar last-command-event nil
     "Phase E placeholder for the command-loop-set last input event."))
+
+;; GNU's retained auto-save-mode reads this editing slot before the first
+;; save (SKK disables auto-save on its dictionary buffers).  Native buffers
+;; need the same zero default and per-buffer assignment behavior as GNU.
+(unless (boundp 'buffer-saved-size)
+  (defvar-local buffer-saved-size 0
+    "Buffer size recorded by the last save; negative values suspend auto-save."))
+;; The standalone reader does not implement defvar-local registration.
+(when (fboundp 'nelisp--write-stdout-bytes)
+  (emacs-buffer-declare-per-buffer 'buffer-saved-size 0))
 
 ;;;; --- character insertion --------------------------------------------
 
@@ -107,7 +128,7 @@ used for non-overwrite integer insertion."
          (single-integer (and (integerp char) char)))
     (cond
      ((and (fboundp 'nelisp-buffer-p) (nelisp-buffer-p (current-buffer))
-           (null (nelisp-ec-current-buffer)))
+           (not (emacs-edit--pure-buffer-p)))
       (let ((beg (point)))
         (emacs-edit--self-insert-command 1 char)
         (list :beg beg :end (point) :text text :overwrote nil)))
@@ -199,62 +220,68 @@ The result contains `:status', `:message', and `:edit'."
   (let ((c (or char last-command-event)))
     (if (not (characterp c))
         (ding)
-      (when (and (> n 0) (not inhibit-read-only))
-        (barf-if-buffer-read-only))
-      (when (and (boundp 'abbrev-mode) abbrev-mode
-                 (not (eq (char-syntax c) ?w))
-                 (eq (char-syntax (preceding-char)) ?w))
-        (expand-abbrev))
-      (let ((beg (point)))
-        (when (and (emacs-edit-overwrite-mode-active-p) (> n 0))
-          (let ((end beg)
-                (padding 0))
-            (if (eq overwrite-mode 'overwrite-mode-binary)
-                (setq end (min (+ beg n) (point-max)))
-              ;; Text overwrite preserves newlines and tabs extending past
-              ;; the insertion's target column.  A partially covered wide
-              ;; character is replaced by spaces for its remaining columns.
-              (unless (eq c ?\n)
-                (let* ((column (current-column))
-                       (target (+ column
-                                  (if (eq c ?\t)
-                                      (+ (- tab-width (% column tab-width))
-                                         (* (1- n) tab-width))
-                                    (* n (char-width c)))))
-                       (scanning t))
-                  (while (and scanning (< end (point-max))
-                              (< column target))
-                    (let* ((next (char-after end))
-                           (width (if (eq next ?\t)
-                                      (- tab-width (% column tab-width))
-                                    (char-width next))))
-                      (cond
-                       ((or (eq next ?\n)
-                            (and (eq next ?\t) (> (+ column width) target)))
-                        (setq scanning nil))
-                       (t
-                        (setq end (1+ end)
-                              column (+ column width))
-                        (when (> column target)
-                          (setq padding (- column target))))))))))
-            (let ((deleted (buffer-substring beg end)))
-              (delete-region beg end)
-              (when (fboundp 'emacs-undo-record-delete)
-                (emacs-undo-record-delete deleted beg)))
-            (when (> padding 0)
-              (insert-char ?\s padding t)
-              (when (fboundp 'emacs-undo-record-insert)
-                (emacs-undo-record-insert beg (point)))
-              (goto-char beg))))
-        (insert-char c n t)
-        (when (fboundp 'emacs-undo-record-insert)
-          (emacs-undo-record-insert beg (point)))
-        (when (and (boundp 'auto-fill-function) auto-fill-function
-                   (boundp 'auto-fill-chars)
-                   (aref auto-fill-chars c))
-          (internal-auto-fill))
-        (when (fboundp 'emacs-font-lock-mark-dirty-region)
-          (emacs-font-lock-mark-dirty-region beg (point))))
+      (if (emacs-edit--pure-buffer-p)
+          (let ((remaining n))
+            (while (> remaining 0)
+              (emacs-edit-self-insert-direct c)
+              (setq remaining (1- remaining))))
+        (progn
+	  (when (and (> n 0) (not inhibit-read-only))
+            (barf-if-buffer-read-only))
+	  (when (and (boundp 'abbrev-mode) abbrev-mode
+                     (not (eq (char-syntax c) ?w))
+                     (eq (char-syntax (preceding-char)) ?w))
+            (expand-abbrev))
+	  (let ((beg (point)))
+            (when (and (emacs-edit-overwrite-mode-active-p) (> n 0))
+              (let ((end beg)
+                    (padding 0))
+		(if (eq overwrite-mode 'overwrite-mode-binary)
+                    (setq end (min (+ beg n) (point-max)))
+		  ;; Text overwrite preserves newlines and tabs extending past
+		  ;; the insertion's target column.  A partially covered wide
+		  ;; character is replaced by spaces for its remaining columns.
+		  (unless (eq c ?\n)
+                    (let* ((column (current-column))
+			   (target (+ column
+                                      (if (eq c ?\t)
+					  (+ (- tab-width (% column tab-width))
+                                             (* (1- n) tab-width))
+					(* n (char-width c)))))
+			   (scanning t))
+                      (while (and scanning (< end (point-max))
+				  (< column target))
+			(let* ((next (char-after end))
+                               (width (if (eq next ?\t)
+					  (- tab-width (% column tab-width))
+					(char-width next))))
+			  (cond
+			   ((or (eq next ?\n)
+				(and (eq next ?\t) (> (+ column width) target)))
+                            (setq scanning nil))
+			   (t
+                            (setq end (1+ end)
+				  column (+ column width))
+                            (when (> column target)
+                              (setq padding (- column target))))))))))
+		(let ((deleted (buffer-substring beg end)))
+		  (delete-region beg end)
+		  (when (fboundp 'emacs-undo-record-delete)
+                    (emacs-undo-record-delete deleted beg)))
+		(when (> padding 0)
+		  (insert-char ?\s padding t)
+		  (when (fboundp 'emacs-undo-record-insert)
+                    (emacs-undo-record-insert beg (point)))
+		  (goto-char beg))))
+            (insert-char c n t)
+            (when (fboundp 'emacs-undo-record-insert)
+              (emacs-undo-record-insert beg (point)))
+            (when (and (boundp 'auto-fill-function) auto-fill-function
+                       (boundp 'auto-fill-chars)
+                       (aref auto-fill-chars c))
+              (internal-auto-fill))
+            (when (fboundp 'emacs-font-lock-mark-dirty-region)
+              (emacs-font-lock-mark-dirty-region beg (point))))))
       (run-hooks 'post-self-insert-hook)))
   nil)
 
@@ -269,23 +296,21 @@ Run `post-self-insert-hook' once after the insertion, even when N is zero."
 
 (when (emacs-edit-builtins--install-function-p 'newline)
   (defun newline (&optional n interactive)
-    "Phase E polyfill: insert N newlines (default 1).
-Track E.2: records the inserted span on `buffer-undo-list'.
-Bound to RET (= byte 13) in `nemacs-main-keymap'."
-    (interactive "p")
+    "Insert N newlines in the selected editing buffer (default one).
+Native commands use `current-buffer' and its change hooks/undo.  The shared
+pure-buffer adapter records changes in its ec-buffer undo history."
+    (interactive "*P\np")
     (ignore interactive)
-    (let ((c (or n 1)) (i 0))
-      (while (< i c)
-        (if (null (nelisp-ec-current-buffer))
-            (insert "\n")
-          (let ((beg (nelisp-ec-point)))
-          (nelisp-ec-insert "\n")
+    (let ((count (prefix-numeric-value n)))
+      (when (< count 0) (error "Negative repetition argument %d" count))
+      (if (not (emacs-edit--pure-buffer-p))
+          (when (> count 0) (insert (make-string count ?\n)))
+        (let ((beg (nelisp-ec-point)))
+          (nelisp-ec-insert (make-string count ?\n))
           (when (fboundp 'emacs-undo-record-insert)
             (emacs-undo-record-insert beg (nelisp-ec-point)))
-          ;; Doc 51 Track S — mark dirty for jit-lock.
           (when (fboundp 'emacs-font-lock-mark-dirty-region)
-            (emacs-font-lock-mark-dirty-region beg (nelisp-ec-point)))))
-        (setq i (+ i 1))))
+            (emacs-font-lock-mark-dirty-region beg (nelisp-ec-point))))))
     nil))
 
 (when (emacs-edit-builtins--install-function-p 'ensure-empty-lines)

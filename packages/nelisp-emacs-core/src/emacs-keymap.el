@@ -83,8 +83,46 @@
 ;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- keymap constructors use the nemacs keymap representation.
 ;;; Code:
 
+(defun emacs-keymap-event-modifiers (event)
+  "Return GNU modifier symbols for canonical EVENT, including bit events."
+  (when (consp event) (setq event (car event)))
+  (cond
+   ((integerp event)
+    (let ((base (logand event #x3fffff)) (mods nil))
+      (dolist (cell '((alt . #x400000) (super . #x800000)
+                      (hyper . #x1000000) (shift . #x2000000)
+                      (control . #x4000000) (meta . #x8000000)))
+        (when (/= 0 (logand event (cdr cell))) (push (car cell) mods)))
+      (when (and (<= 0 base) (< base 32))
+        (unless (memq 'control mods) (push 'control mods)))
+      (when (and (<= ?A base) (<= base ?Z))
+        (unless (memq 'shift mods) (push 'shift mods)))
+      (let ((ordered nil))
+        (dolist (mod '(alt super hyper shift control meta))
+          (when (memq mod mods) (push mod ordered)))
+        (nreverse ordered))))
+   ((symbolp event)
+    (emacs-subr-extras-event-modifiers event))))
+
+(defun emacs-keymap-event-basic-type (event)
+  "Return EVENT's base type, removing modifier bits and prefixes."
+  (when (consp event) (setq event (car event)))
+  (cond
+   ((integerp event)
+    (let ((base (logand event #x3fffff)))
+      (cond ((= base 0) ?@)
+            ((<= base 26) (+ base 96))
+            ((< base 32) (+ base 64))
+            ((and (<= ?A base) (<= base ?Z)) (+ base 32))
+            (t base))))
+   ((symbolp event)
+    (emacs-subr-extras-event-basic-type event))
+   (t event)))
+
+
 (require 'cl-lib)
 (require 'emacs-char-table)
+(require 'emacs-subr-extras)
 
 ;;; Errors
 
@@ -212,24 +250,32 @@ strings, integers) are returned as-is (= shared)."
 
 ;;; key sequence normalization
 
+(defun emacs-keymap-expand-meta-events (events)
+  "Expand Meta-modified integer EVENTS to GNU's ESC prefix representation."
+  (let (expanded)
+    (dolist (event events)
+      (when (and (integerp event) (/= 0 (logand event #x8000000)))
+        (push 27 expanded)
+        (setq event (logand event (lognot #x8000000))))
+      (push event expanded))
+    (nreverse expanded)))
+
 (defun emacs-keymap--key-seq->list (key)
-  "Normalize KEY (string / vector / list) into a list of key elements.
-Each element is a character (integer) or a symbol (function key).
-Modifier-bearing characters are passed through as-is."
-  (cond
-   ((null key)
-    (signal 'emacs-keymap-bad-key (list key)))
-   ((vectorp key)
-    (mapcar #'emacs-keymap-event-type (append key nil)))
-   ((stringp key)
-    (append key nil))
-   ((listp key)
-    key)
-   ((integerp key)
-    (list key))
-   ((symbolp key)
-    (list key))
-   (t (signal 'emacs-keymap-bad-key (list key)))))
+  "Normalize KEY for storage and lookup, including GNU Meta/ESC equivalence."
+  (let ((events
+         (cond
+          ((null key) (signal 'emacs-keymap-bad-key (list key)))
+          ((vectorp key) (mapcar #'emacs-keymap-event-type (append key nil)))
+          ((stringp key)
+           (mapcar (lambda (event)
+                     (if (and (not (multibyte-string-p key)) (>= event 128))
+                         (logior (- event 128) #x8000000)
+                       event))
+                   (append key nil)))
+          ((listp key) key)
+          ((or (integerp key) (symbolp key)) (list key))
+          (t (signal 'emacs-keymap-bad-key (list key))))))
+    (emacs-keymap-expand-meta-events events)))
 
 (defun emacs-keymap-event-type (event)
   "Return the keymap lookup type of a standard positioned EVENT.

@@ -65,6 +65,11 @@ keymap builtins (`make-keymap', `define-key', ...) silently stay as the
       (not (boundp 'emacs-version))
       (not (fboundp symbol))))
 
+(when (emacs-keymap-builtins--install-function-p 'event-modifiers)
+  (defalias 'event-modifiers #'emacs-keymap-event-modifiers))
+(when (emacs-keymap-builtins--install-function-p 'event-basic-type)
+  (defalias 'event-basic-type #'emacs-keymap-event-basic-type))
+
 (unless (boundp 'overriding-local-map)
   (defvar overriding-local-map emacs-keymap-overriding-local-map))
 
@@ -101,11 +106,8 @@ keymap builtins (`make-keymap', `define-key', ...) silently stay as the
       (when (consp event) (setq event (car event)))
       (unless (or (integerp event) (symbolp event) (stringp event))
         (signal 'wrong-type-argument (list 'stringp event)))
-      (when (and (integerp event) (/= 0 (logand event 134217728)))
-        (push 27 events)
-        (setq event (logand event (lognot 134217728))))
       (push event events))
-    (nreverse events)))
+    (emacs-keymap-expand-meta-events (nreverse events))))
 
 (defun emacs-keymap-builtins--own-binding (keymap event)
   "Return KEYMAP's own binding cell for EVENT, preserving explicit nil."

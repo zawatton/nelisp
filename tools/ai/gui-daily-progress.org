@@ -37,6 +37,8 @@ change to the criteria list is recorded in a NOTE.
 
 #+NOTE: 2026-10-06 lane X3 integrated: shared emacs-select.el (gui-set/get-selection, select-enable-clipboard/primary, interprogram cut/paste) and XCB selection transport (owner and requester, UTF8_STRING/STRING/TEXT/TARGETS/TIMESTAMP, INCR); S4.3 gate with xclip both directions for PRIMARY and CLIPBOARD including 1 MiB, negative controls and production quit, 252 s in the lane.  S4.3 wired.
 
+#+NOTE: 2026-10-06 lane C1 integrated (X2 NEEDS-SHARED items 2, 3, 4, 7): this-command/last-command bookkeeping before pre-command-hook, nadvice keeps interactive forms, modifier-bit events are not characters (Meta/ESC equivalence), native edits and undo target the current buffer.  In the lane S4.1 PASS: real ddskk + evil, xdotool "nihon SPC RET" -> 日本, saved bytes identical to GNU; GNU probes 62/62.
+
 * S1 Shared interactive foundation
 
 ** S1.1 One event wait drives read-event: keys, timers, idle timers and process output (sit-for, sleep-for, input-pending-p behave as GNU)

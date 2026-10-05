@@ -156,6 +156,22 @@ Host Emacs keeps its native `kill-emacs'.  This helper is installed as
     (emacs-command-loop-read-key-sequence-vector
      prompt continue-echo dont-downcase-last can-return-switch-frame cmd-loop)))
 
+;; The fixed reader does not expose GNU 31 nadvice oclosure metadata.
+;; Keep its ordinary recognition, adding the shared advice composition path.
+(defvar emacs-command-loop-builtins--native-commandp nil)
+(when (fboundp 'nelisp--write-stdout-bytes)
+  (unless emacs-command-loop--native-interactive-form
+    (setq emacs-command-loop--native-interactive-form
+          (symbol-function 'interactive-form)))
+  (unless emacs-command-loop-builtins--native-commandp
+    (setq emacs-command-loop-builtins--native-commandp (symbol-function 'commandp)))
+  (defalias 'interactive-form #'emacs-command-loop--interactive-form)
+  (defun commandp (object &optional for-call-interactively)
+    "Recognize commands, including GNU nadvice's composed interactive spec."
+    (or (funcall emacs-command-loop-builtins--native-commandp
+                 object for-call-interactively)
+        (emacs-command-loop--commandp object))))
+
 (when (emacs-command-loop-builtins--install-function-p 'call-interactively)
   (defun call-interactively (function &optional record-flag keys)
     "Call FUNCTION using its interactive specification and current prefix.
@@ -283,18 +299,12 @@ idempotent success value expected by `nemacs-main'."
 
 ;;;; --- variable bridges ----------------------------------------------
 
-(unless (boundp 'this-command)
-  (defvar this-command nil
-    "Phase B.1 bridge: the command being executed.  See
-`emacs-command-loop--this-command'."))
-
-(unless (boundp 'last-command)
-  (defvar last-command nil
-    "Phase B.1 bridge: the previously executed command."))
-
-(unless (boundp 'real-this-command)
-  (defvar real-this-command nil
-    "Phase B.1 bridge: the command actually dispatched (= pre-remap)."))
+(defvar this-command nil
+  "Command being dispatched; hooks may replace it for command history.")
+(defvar last-command nil
+  "Command completed by the preceding command-loop iteration.")
+(defvar real-this-command nil
+  "Selected command, preserved when hooks replace `this-command'.")
 
 (unless (boundp 'last-command-event)
   (defvar last-command-event nil

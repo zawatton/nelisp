@@ -190,8 +190,8 @@ install-function guard."
   "Doc 51 Track X (2026-05-04) audit regression: every command bound
 in `nemacs-main-keymap' must carry an `(interactive ...)' form so
 `call-interactively' supplies a non-empty arg list, and must accept
-0 required args so the lambda dispatch never raises
-`wrong-number-of-arguments' under no-prefix-arg keymap routing.
+the arguments supplied by their interactive spec, including the mandatory
+repeat count for `self-insert-command'.
 
 This audit covers the polyfills shipped from `emacs-edit-builtins.el'
 (self-insert-command / newline / kill-line; delete-backward-char is
@@ -204,13 +204,15 @@ checked by its dedicated shape test above)."
     (let ((s (emacs-edit-builtins-test--read-defun
               file "(when (emacs-edit-builtins--install-function-p 'self-insert-command)")))
       (should s)
-      (should (string-match-p "self-insert-command (&optional n char)" s))
+      (should (string-match-p "self-insert-command (n &optional char)" s))
       (should (string-match-p "(interactive \"p\")" s)))
     (let ((s (emacs-edit-builtins-test--read-defun
               file "(when (emacs-edit-builtins--install-function-p 'newline)")))
       (should s)
-      (should (string-match-p "newline (&optional n interactive)" s))
-      (should (string-match-p "(interactive \"p\")" s)))
+      (let ((definition (caddr (read s))))
+        (should (equal '(newline (&optional n interactive))
+                       (list (nth 1 definition) (nth 2 definition))))
+        (should (equal '(interactive "*P\np") (nth 4 definition)))))
     (let ((s (emacs-edit-builtins-test--read-defun
               file "(when (emacs-edit-builtins--install-function-p 'kill-line)")))
       (should s)
@@ -1511,7 +1513,8 @@ checked by its dedicated shape test above)."
 ;; Phase 2.AI — overwrite-mode toggles self-insert from insert→replace.
 (ert-deftest emacs-edit-builtins-test/overwrite-mode-replaces ()
   (emacs-edit-builtins-test--with-fresh-buffer "ABCDE"
-    (let ((overwrite-mode t)
+    (let ((emacs-edit--pure-buffer-context t)
+          (overwrite-mode t)
           (last-command-event ?X))
       (nelisp-ec-goto-char 2)            ; before B
       (emacs-edit--self-insert-command 1 nil)
@@ -1522,7 +1525,8 @@ checked by its dedicated shape test above)."
 ;; Phase 2.AI — overwrite-mode does NOT eat the line terminator.
 (ert-deftest emacs-edit-builtins-test/overwrite-mode-skips-newline ()
   (emacs-edit-builtins-test--with-fresh-buffer "AB\nCD"
-    (let ((overwrite-mode t)
+    (let ((emacs-edit--pure-buffer-context t)
+          (overwrite-mode t)
           (last-command-event ?X))
       (nelisp-ec-goto-char 3)            ; on the \n
       (emacs-edit--self-insert-command 1 nil)

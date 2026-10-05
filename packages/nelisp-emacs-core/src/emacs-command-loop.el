@@ -55,6 +55,9 @@
   "Command actually dispatched, even if `this-command' was overwritten
 mid-execution by a remap.")
 
+(defvar emacs-command-loop--this-command-key-events []
+  "Canonical events that invoked the current command, including modifiers.")
+
 (defvar emacs-command-loop--this-command-keys ""
   "String of raw key events that triggered the current command.
 Cleared on every fresh read-key-sequence iteration.")
@@ -82,6 +85,13 @@ Cleared on every fresh read-key-sequence iteration.")
 Read by `called-interactively-p'.  This approximates the host's call-stack
 inspection: nested *programmatic* calls inside an interactive command are not
 distinguished without frame-level introspection.")
+
+(defvar noninteractive)
+
+(defvar emacs-command-loop--dispatching-p nil
+  "Non-nil while step owns hook ordering and command completion.")
+
+(defvar emacs-edit--pure-buffer-context nil)
 
 ;;;; --- GUI bridge command context ------------------------------------
 
@@ -116,6 +126,7 @@ owns transport-specific state changes.")
         emacs-command-loop--this-command        nil
         emacs-command-loop--last-command        nil
         emacs-command-loop--real-this-command   nil
+        emacs-command-loop--this-command-key-events []
         emacs-command-loop--this-command-keys   ""
         emacs-command-loop--last-command-event  nil
         emacs-command-loop--last-input-event    nil
@@ -1715,7 +1726,10 @@ dispatch.
 receive exceptional or failed direct-dispatch state.
 
 Return a plist describing the dispatch status."
-  (let* ((kind (plist-get plan :kind))
+  (let* ((emacs-edit--pure-buffer-context
+          (and (fboundp 'nelisp-ec-current-buffer)
+               (nelisp-ec-current-buffer)))
+         (kind (plist-get plan :kind))
          (binding (plist-get plan :binding))
          (event (plist-get plan :event))
          (set-prefix (plist-get plist :set-prefix))
@@ -2497,19 +2511,22 @@ read input is empty."
   "Reset the per-command key accumulator.  KEEP-RECORD reserved for
 parity; the substrate has no recent-keys ring yet."
   (ignore keep-record)
-  (setq emacs-command-loop--this-command-keys ""))
+  (setq emacs-command-loop--this-command-keys ""
+        emacs-command-loop--this-command-key-events []))
 
 (defun emacs-command-loop-record-key (event)
   "Append EVENT to the current command-keys accumulator.
 Integer events are appended as their character; other events are
 appended as their `format'-printed representation (= MVP)."
   (let ((s (cond
-            ((integerp event) (string event))
+            ((characterp event) (string event))
             ((stringp event)  event)
             ((symbolp event)  (symbol-name event))
             (t (format "%s" event)))))
     (setq emacs-command-loop--this-command-keys
           (concat emacs-command-loop--this-command-keys s))
+    (setq emacs-command-loop--this-command-key-events
+          (vconcat emacs-command-loop--this-command-key-events (vector event)))
     (setq emacs-command-loop--last-command-event event)
     ;; Track X follow-up (2026-05-05): mirror to the public unprefixed
     ;; `last-command-event' so `self-insert-command' (= reads it for the
@@ -2521,19 +2538,13 @@ appended as their `format'-printed representation (= MVP)."
 
 (defun emacs-command-loop-this-command-keys ()
   "Return the accumulated key string for the current command."
-  emacs-command-loop--this-command-keys)
+  (if (emacs-command-loop--keys-stringable-p emacs-command-loop--this-command-key-events)
+      (emacs-command-loop--vec->string emacs-command-loop--this-command-key-events)
+    (copy-sequence emacs-command-loop--this-command-key-events)))
 
 (defun emacs-command-loop-this-command-keys-vector ()
-  "Return the accumulated keys as a vector of events.
-MVP: each char of the string accumulator becomes one element."
-  (let* ((s emacs-command-loop--this-command-keys)
-         (n (length s))
-         (v (make-vector n 0))
-         (i 0))
-    (while (< i n)
-      (aset v i (aref s i))
-      (setq i (+ i 1)))
-    v))
+  "Return the canonical invoking events, preserving modifier bits."
+  (copy-sequence emacs-command-loop--this-command-key-events))
 
 (defun emacs-command-loop-recent-keys (&optional _include-cmds)
   "Return recent command input as a vector.
@@ -2547,43 +2558,44 @@ the current command key accumulator in the same vector shape."
   "Set the command currently being dispatched to CMD."
   (setq emacs-command-loop--this-command      cmd
         emacs-command-loop--real-this-command cmd)
-  (when (boundp 'this-command) (setq this-command cmd))
-  (when (boundp 'real-this-command) (setq real-this-command cmd)))
+  (when (boundp 'this-command) (set 'this-command cmd))
+  (when (boundp 'real-this-command) (set 'real-this-command cmd)))
 
 (defun emacs-command-loop-mark-command-finished ()
   "Promote `this-command' → `last-command' and clear the key buffer.
 Called by `command-loop-1' (B.4) at the end of each iteration."
-  (setq emacs-command-loop--last-command emacs-command-loop--this-command
+  (setq emacs-command-loop--last-command
+        (if (boundp 'this-command) (symbol-value 'this-command)
+          emacs-command-loop--this-command)
         emacs-command-loop--this-command nil
         emacs-command-loop--real-this-command nil)
+  (when (boundp 'last-command)
+    (set 'last-command emacs-command-loop--last-command))
   (emacs-command-loop-clear-this-command-keys))
 
 ;;;; --- read-key-sequence (Phase B.2) ---------------------------------
 
 (defun emacs-command-loop--keys-stringable-p (vec)
-  "Return non-nil when every element of VEC is a plain ASCII char.
-Used to decide whether `read-key-sequence' returns a string or a
-vector — matches Emacs' contract that a sequence of unmodified
-chars folds to a string."
-  (let ((i 0) (n (length vec)) (ok t))
-    (while (and ok (< i n))
+  "Return non-nil when VEC can be represented as a GNU key string."
+  (let ((i 0) (ok t))
+    (while (and ok (< i (length vec)))
       (let ((e (aref vec i)))
-        (unless (and (integerp e)
-                     (>= e 0)
-                     (< e #x80))
+        (unless (or (and (integerp e) (<= 0 e) (< e 128))
+                    (and (integerp e) (<= #x8000000 e) (< e #x8000080)))
           (setq ok nil)))
       (setq i (1+ i)))
     ok))
 
 (defun emacs-command-loop--vec->string (vec)
-  "Concatenate VEC of chars into a string."
-  (let* ((n (length vec))
-         (s (make-string n 0))
-         (i 0))
-    (while (< i n)
-      (aset s i (aref vec i))
+  "Return a key string, encoding ASCII meta events as unibyte high bytes."
+  (let ((i 0) (meta nil) (chars nil))
+    (while (< i (length vec))
+      (let ((e (aref vec i)))
+        (when (>= e #x8000000)
+          (setq e (+ (- e #x8000000) 128) meta t))
+        (push e chars))
       (setq i (1+ i)))
-    s))
+    (apply (if meta #'unibyte-string #'string) (nreverse chars))))
 
 (defun emacs-command-loop--ensure-translation-maps ()
   "Ensure the three key-translation keymaps exist as sparse keymaps (Doc 06 A3).
@@ -2786,14 +2798,25 @@ SPEC is the body of `(interactive ...)':
     (eval spec t))
    (t nil)))
 
+(defvar emacs-command-loop--native-interactive-form nil
+  "Original standalone interactive-form reader, before the advice bridge.")
+
 (defun emacs-command-loop--interactive-form (function)
   "Return FUNCTION's interactive form, or nil.
 This mirrors the subset of Emacs `interactive-form' needed by the
 command-loop substrate without requiring the full evaluator bridge to be
 loaded first."
   (cond
-   ((and (fboundp 'interactive-form)
-         (interactive-form function)))
+   ((if emacs-command-loop--native-interactive-form
+        (funcall emacs-command-loop--native-interactive-form function)
+      (and (fboundp 'interactive-form) (interactive-form function))))
+   ((and (fboundp 'advice--p) (advice--p function))
+    ;; GNU nadvice's oclosure metadata is not visible to the fixed reader.
+    ;; Compose the advice-selected spec, recursively through nested advice.
+    (let ((ifa (advice--interactive-form (advice--car function)))
+          (ifd (advice--interactive-form (advice--cdr function))))
+      (when (or ifa ifd)
+        (list 'interactive (advice--make-interactive-form ifa ifd)))))
    ((symbolp function)
     (or (get function 'interactive-form)
         (let ((def (and (fboundp function)
@@ -2830,13 +2853,16 @@ the call, then promotes `this-command' to `last-command'."
          (spec (and (consp form) (cadr form)))
          (emacs-command-loop--current-prefix-arg
           emacs-command-loop--prefix-arg)
+         (current-prefix-arg emacs-command-loop--current-prefix-arg)
          (args (emacs-command-loop--build-args spec)))
     (setq emacs-command-loop--prefix-arg nil)
-    (emacs-command-loop-set-this-command function)
-    (let ((result (let ((emacs-command-loop--called-interactively t))
-                    (apply function args))))
-      (emacs-command-loop-mark-command-finished)
-      result)))
+    (unless emacs-command-loop--dispatching-p
+      (emacs-command-loop-set-this-command function))
+    (prog1
+        (let ((emacs-command-loop--called-interactively t))
+          (apply function args))
+      (unless emacs-command-loop--dispatching-p
+        (emacs-command-loop-mark-command-finished)))))
 
 (defun emacs-command-loop-funcall-interactively (function &rest args)
   "Like `funcall' but mark the call interactive for `called-interactively-p'
@@ -2915,6 +2941,20 @@ consume input) when `special-event-map' is nil / not a keymap."
         (push ev emacs-command-loop--unread-events)
         nil))))
 
+(defun emacs-command-loop--recover-command-error (err)
+  "Report a recoverable live command error ERR and discard pending input.
+The live consumer continues through post-command hooks and completion, as
+GNU's interactive command loop does.  Batch callers retain signal propagation."
+  (setq emacs-command-loop--unread-events nil
+        emacs-command-loop--quit-flag nil
+        emacs-command-loop--prefix-arg nil)
+  (when (boundp 'quit-flag) (set 'quit-flag nil))
+  (when (boundp 'unread-command-events) (set 'unread-command-events nil))
+  (when (fboundp 'message)
+    (message "%s" (if (memq (car err) '(quit emacs-command-loop-quit))
+                       "Quit" (error-message-string err))))
+  nil)
+
 (defun emacs-command-loop-step ()
   "Run one command-loop iteration:
 1. read-key-sequence to consume events from the queue,
@@ -2922,28 +2962,44 @@ consume input) when `special-event-map' is nil / not a keymap."
 3. run `pre-command-hook',
 4. dispatch via `command-execute' (= which calls `call-interactively'),
 5. run `post-command-hook'.
-Returns the binding (= function or nil), or `special-event' when a
-`special-event-map' binding was handled (Doc 06 B4)."
-  (if (emacs-command-loop--maybe-run-special-event)
-      'special-event
-  (let* ((vec (emacs-command-loop--read-keys-vec nil))
-         (binding (emacs-command-loop--lookup-command vec)))
-    (cond
-     ((or (and (fboundp 'emacs-keymap-keymapp)
-               (emacs-keymap-keymapp binding))
-          (and (fboundp 'keymapp) (keymapp binding)))
-      ;; Should not happen — read-keys-vec stops on non-keymap.
-      nil)
-     ((null binding)
-      (when emacs-command-loop--undefined-key-handler
-        (funcall emacs-command-loop--undefined-key-handler vec))
-      nil)
-     (t
-      (when (boundp 'pre-command-hook)
-        (run-hooks 'pre-command-hook))
-      (prog1 (emacs-command-loop-command-execute binding)
-        (when (boundp 'post-command-hook)
-          (run-hooks 'post-command-hook))))))))
+Live standalone consumers recover from command errors and quits; queue-only
+batch callers propagate them.  Returns the command result, or `special-event'
+when a `special-event-map' binding was handled (Doc 06 B4)."
+  ;; A standalone live input provider belongs to an interactive consumer.
+  ;; Keep its messages in the shared echo/log owner, restoring batch mode
+  ;; after this iteration.  Queue-only batch probes keep their batch value.
+  (let* ((live (and (fboundp 'nelisp--write-stdout-bytes)
+                    emacs-command-loop-input-poll-function))
+         (noninteractive (if live nil noninteractive)))
+    (if (emacs-command-loop--maybe-run-special-event)
+        'special-event
+      (let* ((emacs-command-loop--dispatching-p t)
+             (vec (emacs-command-loop--read-keys-vec nil))
+             (binding (emacs-command-loop--lookup-command vec)))
+        (cond
+         ((or (and (fboundp 'emacs-keymap-keymapp)
+                   (emacs-keymap-keymapp binding))
+              (and (fboundp 'keymapp) (keymapp binding)))
+          ;; Should not happen — read-keys-vec stops on non-keymap.
+          nil)
+         ((null binding)
+          (when emacs-command-loop--undefined-key-handler
+            (funcall emacs-command-loop--undefined-key-handler vec))
+          nil)
+         (t
+          (emacs-command-loop-set-this-command binding)
+          (when (boundp 'pre-command-hook)
+            (run-hooks 'pre-command-hook))
+          (prog1
+              (if live
+                  (condition-case err
+                      (emacs-command-loop-command-execute binding)
+                    ((error quit)
+                     (emacs-command-loop--recover-command-error err)))
+                (emacs-command-loop-command-execute binding))
+            (when (boundp 'post-command-hook)
+              (run-hooks 'post-command-hook))
+            (emacs-command-loop-mark-command-finished))))))))
 
 (defun emacs-command-loop-drain ()
   "Run `emacs-command-loop-step' until the unread queue is empty.
