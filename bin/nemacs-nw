@@ -1,0 +1,193 @@
+#!/usr/bin/env bash
+# Image-first -Q TTY driver.  The existing GUI/host launchers remain independent.
+set -euo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+# Preserve the caller's stdin while Python reads its embedded script.
+exec 3<&0
+exec python3 - "$root" "$@" <<'PY'
+import json
+import hashlib
+import fcntl
+import tempfile
+import time
+import signal
+import termios
+import os
+from pathlib import Path
+import resource
+import subprocess
+import sys
+
+os.dup2(3, 0)
+os.close(3)
+
+root = Path(sys.argv[1])
+args = sys.argv[2:]
+binary = Path(os.environ.get('NELISP_BIN', os.environ.get('NEMACS_NELISP', str(root / 'target/nelisp')))).resolve()
+bundle = root / 'build/nemacs-bootstrap.el'
+cache = root / 'build/c-core-image'
+helper = root / 'tools/c-core-image.sh'
+
+
+def fail(message):
+    print('nemacs-nw: ' + message, file=sys.stderr)
+    raise SystemExit(1)
+
+
+options = dict(driver='nelisp', **{'no-banner': True, 'init-file-user': None,
+                                  'inhibit-startup-screen': True})
+build = False
+files = []
+index = 0
+while index < len(args):
+    arg = args[index]
+    if arg in ('--help', '-h'):
+        print('Usage: nemacs-nw [-Q] [--build-image] [-l FILE] [--eval FORM] [FILE ...]\n'
+              'Starts the NeLisp TTY driver from the C-core heap image with -Q semantics.\n'
+              'A missing image is built from the existing bundle; stale images are rejected.\n'
+              '--build-image prepares the TTY snapshot and exits without entering raw mode.\n'
+              'Rebuild the bundle separately with EMACS=emacs make build-nelisp-bootstrap,\n'
+              'then use --build-image. Set NELISP_BIN to select the runtime.')
+        raise SystemExit(0)
+    elif arg in ('-Q', '--quick', '-q', '--no-init-file', '-nw', '--no-window-system'):
+        pass
+    elif arg == '--build-image':
+        build = True
+    elif arg in ('-l', '--load', '--eval'):
+        index += 1
+        if index == len(args):
+            fail('missing argument for ' + arg)
+        key = 'eval-forms' if arg == '--eval' else 'load'
+        value = args[index] if key == 'eval-forms' else str(Path(args[index]).resolve())
+        options.setdefault(key, []).append(value)
+    elif arg == '--':
+        files.extend(str(Path(path).resolve()) for path in args[index + 1:])
+        break
+    elif arg.startswith('-'):
+        fail('unsupported option: ' + arg + '; use --help')
+    else:
+        files.append(str(Path(arg).resolve()))
+    index += 1
+
+if not binary.is_file() or not os.access(binary, os.X_OK):
+    fail('runtime is missing or not executable: ' + str(binary))
+if not bundle.is_file():
+    fail('bootstrap bundle is missing; run EMACS=emacs make build-nelisp-bootstrap first')
+# The helper keys images on the exact binary, .cold and bundle bytes.  Also
+# reject source edits that have not reached that bundle (no host build here).
+sources = [root / 'scripts/build-nelisp-bootstrap.el',
+           root / 'scripts/doc211-bootstrap-source-root.sh',
+           root / 'packages/nl-ffi/src/nl-ffi-memory.el']
+sources += sorted(root.glob('packages/nelisp-emacs-*/src/*.el'))
+if any(path.stat().st_mtime_ns > bundle.stat().st_mtime_ns for path in sources if path.is_file()):
+    fail('bootstrap bundle is stale; rebuild with EMACS=emacs make build-nelisp-bootstrap, then --build-image')
+env = os.environ.copy()
+env['NELISP_BIN'] = str(binary)
+# This entry point always uses the certified C-core bundle/cache.
+env.pop('C_CORE_IMAGE_BUNDLE', None)
+result = subprocess.run(['bash', str(helper), 'path'], env=env,
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+if build or (result.returncode and not any(cache.glob('*.flat'))):
+    result = subprocess.run(['bash', str(helper), 'build'], env=env,
+                            stdout=subprocess.PIPE, text=True)
+if result.returncode:
+    fail('heap image is stale or unavailable; run NELISP_BIN=' + str(binary) + ' bin/nemacs-nw --build-image')
+image = result.stdout.strip()
+key = Path(image).stem
+# Prepare application startup in the heap, through the application's own API.
+# No terminal, user init, host Emacs or native compilation enters this step.
+# Ordinary starts then restore fresh scratch/bootstrap state, rather than
+# paying initialization/first-collection latency before the first redisplay.
+driver_key = hashlib.sha256((key + '\n').encode() + (root / 'bin/nemacs-nw').read_bytes()).hexdigest()
+driver_cache = cache / 'tty'
+driver_image = driver_cache / (driver_key + '.flat')
+if driver_image.is_symlink():
+    fail('TTY heap image must be a regular cache file')
+if not driver_image.is_file() and any(driver_cache.glob('*.flat')) and not build:
+    fail('TTY heap image is stale; run bin/nemacs-nw --build-image')
+if build or not driver_image.is_file():
+    driver_cache.mkdir(parents=True, exist_ok=True)
+    with (driver_cache / '.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if not driver_image.is_file():
+            fd, temporary = tempfile.mkstemp(prefix='.tty-', dir=driver_cache)
+            os.close(fd)
+            marker = 'NEMACS-TTY-IMAGE|' + driver_key
+            form = ('(progn (setq noninteractive t init-file-user nil '
+                    'inhibit-startup-screen t nemacs-main-options nil) '
+                    '(unless nemacs-initialized (nemacs-init t)) '
+                    '(setq nemacs-nw-image--identity ' + json.dumps(driver_key) + ') '
+                    '(unless (> (nelisp--arena-dump-image-stream ' + json.dumps(temporary) + ') 0) '
+                    '(error "TTY heap dump failed")) (princ ' + json.dumps(marker + '\n') + ') t)')
+            started = time.monotonic()
+            resource.setrlimit(resource.RLIMIT_STACK, (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
+            env.setdefault('NELISP_HOME', str(binary.parent.parent))
+            try:
+                built = subprocess.run([str(binary), '--cold-load-from', image, '--eval', form],
+                                       env=env, cwd=root, capture_output=True, timeout=180)
+                if built.returncode or built.stderr or built.stdout != (marker + '\nt\n').encode():
+                    fail('TTY image preparation failed: ' + built.stderr.decode(errors='replace'))
+                if Path(temporary).stat().st_size == 0:
+                    fail('TTY image preparation produced an empty file')
+                os.replace(temporary, driver_image)
+                (driver_cache / 'build.json').write_text(json.dumps(dict(
+                    identity=key, driver_identity=driver_key, seconds=time.monotonic() - started,
+                    bytes=driver_image.stat().st_size)) + '\n')
+            except subprocess.TimeoutExpired:
+                fail('TTY image preparation timed out after 180s')
+            finally:
+                Path(temporary).unlink(missing_ok=True)
+        for stale in driver_cache.glob('*.flat'):
+            if stale != driver_image:
+                stale.unlink()
+if build:
+    print(driver_image)
+    raise SystemExit(0)
+image = str(driver_image)
+if files:
+    options['args'] = files
+    options.setdefault('eval-forms', []).extend('(find-file ' + json.dumps(path) + ')' for path in files)
+
+
+def elisp(value):
+    if value is True:
+        return 't'
+    if value is None:
+        return 'nil'
+    if isinstance(value, list):
+        return '(' + ' '.join(elisp(item) for item in value) + ')'
+    return json.dumps(value)
+
+
+plist = '(' + ' '.join(':' + key + ' ' + ('nelisp' if key == 'driver' else elisp(value))
+                       for key, value in options.items()) + ')'
+form = ('(progn (unless (equal c-core-image--identity ' + elisp(key) + ') '
+        '(error "C-core image identity mismatch")) '
+        '(unless (equal nemacs-nw-image--identity ' + elisp(driver_key) + ') '
+        '(error "TTY image identity mismatch")) '
+        '(setq noninteractive nil emacs-command-loop-input-file-descriptor 0 '
+        "nemacs-main-options '" + plist + ') (nemacs-main))')
+resource.setrlimit(resource.RLIMIT_STACK, (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
+env.setdefault('NELISP_HOME', str(binary.parent.parent))
+env['NEMACS_DISABLE_COLD_CACHE'] = '1'
+argv = [str(binary), '--cold-load-from', image, '--eval', form]
+if not os.isatty(0):
+    os.execve(str(binary), argv, env)
+# A restored runtime may retain native terminal bookkeeping from snapshot
+# creation.  The launcher owns an independent copy of this session's termios
+# and restores it after both normal quit and signal termination.
+saved_tty = termios.tcgetattr(0)
+child = subprocess.Popen(argv, env=env)
+
+def forward(signum, _frame):
+    if child.poll() is None:
+        child.send_signal(signum)
+
+for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
+    signal.signal(sig, forward)
+try:
+    status = child.wait()
+finally:
+    termios.tcsetattr(0, termios.TCSANOW, saved_tty)
+raise SystemExit(status if status >= 0 else 128 - status)
+PY

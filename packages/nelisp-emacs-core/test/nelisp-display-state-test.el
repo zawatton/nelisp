@@ -3,6 +3,7 @@
 (require 'ert)
 (require 'emacs-frame-builtins)
 (require 'emacs-window-builtins)
+(require 'emacs-command-loop)
 
 (ert-deftest emacs-display-state/terminal-layout-and-event-reconciliation ()
   ;; GNU batch separates text geometry from cached initial terminal size
@@ -30,6 +31,21 @@
       (emacs-frame-set-frame-parameter frame 'left 7)
       (should (= (emacs-frame-pixel-height frame)
                  (* 19 emacs-frame--char-height))))))
+
+(ert-deftest emacs-display-state/shared-wait-reconciles-cached-geometry ()
+  (let* ((emacs-frame--registry nil)
+         (emacs-window--root nil) (emacs-window--selected nil)
+         (emacs-minibuffer--window nil)
+         (frame (emacs-frame-make-frame '((width . 72) (height . 28)
+                                         (menu-bar-lines . 2)))))
+    (cl-letf (((symbol-function 'frame-parameter) #'emacs-frame-frame-parameter))
+      (emacs-frame-builtins-layout-terminal frame 72 26)
+      (emacs-command-loop-sleep-for 0)
+      (should (= (emacs-frame-height frame) 28))
+      (emacs-command-loop-sleep-for 0.001)
+      (should (= (emacs-frame-width frame) 72))
+      (should (= (emacs-frame-height frame) 26))
+      (should-not (emacs-frame-terminal-size-pending frame)))))
 
 (ert-deftest emacs-display-state/delete-split-preserves-root-origin ()
   (let ((emacs-window--root nil) (emacs-window--selected nil)

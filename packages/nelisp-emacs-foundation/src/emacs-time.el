@@ -652,6 +652,15 @@ picosecond-exact comparison is not modeled."
 (unless (boundp 'timer-idle-list) (defvar timer-idle-list nil
   "List of active idle timers."))
 
+(defvar emacs-timer--idle-since nil
+  "Beginning of the current shared idle period; reset only by input.")
+
+(defun emacs-timer-idle-seconds ()
+  "Return elapsed idle time, starting a period on the first wait."
+  (let ((now (emacs-timer--now)))
+    (unless emacs-timer--idle-since (setq emacs-timer--idle-since now))
+    (max 0 (- now emacs-timer--idle-since))))
+
 (defun emacs-timer--now ()
   (if (fboundp 'float-time) (float-time) 0))
 
@@ -693,10 +702,12 @@ misreading its slots."
     (dolist (tm (copy-sequence timer-list))
       (when (and (emacs-timer-p tm) (aref tm 1) (<= (aref tm 1) now))
         (setq fired (1+ fired))
-        (condition-case _ (apply (aref tm 3) (aref tm 4)) (error nil))
+        ;; Retire/reschedule before calling Lisp: callbacks can wait again or
+        ;; cancel themselves without recursively firing this due timer.
         (if (aref tm 2)
             (aset tm 1 (+ now (aref tm 2)))
-          (setq timer-list (delq tm timer-list)))))
+          (setq timer-list (delq tm timer-list)))
+        (condition-case _ (apply (aref tm 3) (aref tm 4)) (error nil))))
     fired))
 
 (defun emacs-timer-run-idle (idle-seconds)
@@ -718,30 +729,36 @@ skipped rather than indexed with our private vector layout."
 
 (defun emacs-timer-reset-idle ()
   "Clear the per-idle-period fired flag (call when input resets idle time)."
+  (setq emacs-timer--idle-since nil)
   (dolist (tm timer-idle-list) (when (emacs-timer-p tm) (aset tm 6 nil))))
 
-(unless (and (fboundp 'timerp)
+(unless (and (not (fboundp 'nelisp--write-stdout-bytes))
+             (fboundp 'timerp)
              (not (get 'timerp 'emacs-stub-bulk)))
   (defun timerp (obj) (emacs-timer-p obj))
   (put 'timerp 'emacs-stub-bulk nil))
-(unless (and (fboundp 'run-with-timer)
+(unless (and (not (fboundp 'nelisp--write-stdout-bytes))
+             (fboundp 'run-with-timer)
              (not (get 'run-with-timer 'emacs-stub-bulk)))
   (defun run-with-timer (secs repeat fn &rest args)
     (apply #'emacs-timer-run-with-timer secs repeat fn args))
   (put 'run-with-timer 'emacs-stub-bulk nil))
-(unless (and (fboundp 'run-at-time)
+(unless (and (not (fboundp 'nelisp--write-stdout-bytes))
+             (fboundp 'run-at-time)
              (not (get 'run-at-time 'emacs-stub-bulk)))
   (defun run-at-time (time repeat fn &rest args)
     "MVP: TIME is treated as a number of seconds (or nil = now); string time
 specifications are not parsed."
     (apply #'emacs-timer-run-with-timer (if (numberp time) time 0) repeat fn args))
   (put 'run-at-time 'emacs-stub-bulk nil))
-(unless (and (fboundp 'run-with-idle-timer)
+(unless (and (not (fboundp 'nelisp--write-stdout-bytes))
+             (fboundp 'run-with-idle-timer)
              (not (get 'run-with-idle-timer 'emacs-stub-bulk)))
   (defun run-with-idle-timer (secs repeat fn &rest args)
     (apply #'emacs-timer-run-with-idle-timer secs repeat fn args))
   (put 'run-with-idle-timer 'emacs-stub-bulk nil))
-(unless (and (fboundp 'cancel-timer)
+(unless (and (not (fboundp 'nelisp--write-stdout-bytes))
+             (fboundp 'cancel-timer)
              (not (get 'cancel-timer 'emacs-stub-bulk)))
   (defun cancel-timer (timer) (emacs-timer-cancel timer))
   (put 'cancel-timer 'emacs-stub-bulk nil))

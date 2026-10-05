@@ -25,13 +25,19 @@ change to the criteria list is recorded in a NOTE.
 
 #+NOTE: 2026-10-05 lane S2b integrated: layout parity 122/122 (original 64/64 plus 29 new cases x 2 sizes: mode line default format, header-line :eval, line numbers, tabs, wrapped Japanese, scrolling, region/isearch faces, completions), erase-buffer now drops display properties; layout run 397 s at 4 jobs; pty 3/3; C-core parity 7/7.  The S3.2 gate asserted the old engine's inverse-default mode-line band, which ignored the fixture's mode-line face; it now requires the fixture colors (#344454) and rejects the inverse band (the old engine is the negative control).  S3.2 8/8 again.
 
+#+NOTE: 2026-10-05 lanes F1/F1b/F1c integrated.  F1: one wait for keys, timers, idle timers, process output/filters/sentinels (pty group "wait" 8/8 and the same script on GNU emacs -nw 8/8; pristine 6/8) and bin/nemacs-nw (image-first -Q start, no host emacs on PATH, first redisplay 0.98 s).  F1 broke two C-core areas (display: batch frame geometry 25/80 vs GNU 10; chars: read-char-exclusive hang); F1b fixed both (C-core 7/7 twice).  F1c fixed a process-exit drain race in accept-process-output (predates F1b).  A launcher tty snapshot built during the F1b check died with void-variable pfd in read-stdin-byte-available on every start; not reproducible in lane F1c and gone after deleting build/c-core-image/tty and rebuilding (pty 10/10 three runs, C-core 7/7) -- cause unknown, watch for recurrence (snapshot freshness check did not catch it).
+
 * S1 Shared interactive foundation
 
 ** S1.1 One event wait drives read-event: keys, timers, idle timers and process output (sit-for, sleep-for, input-pending-p behave as GNU)
-pending
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 400
+cmd: bash -c 'bash tools/c-core-image.sh check >/dev/null 2>&1 || bash tools/c-core-image.sh build >/dev/null 2>&1; EMACS=emacs timeout 150 python3 tools/nemacs-pty-smoke.py --group wait --output build/nemacs-pty-smoke/ledger-wait && EMACS=emacs timeout 150 python3 tools/nemacs-pty-smoke.py --host-reference --group wait --output build/nemacs-pty-smoke/ledger-wait-gnu'
 
 ** S1.2 The NeLisp driver starts from the dumped heap image by default (no host Emacs needed at startup)
-pending
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 400
+cmd: bash -c 'timeout 200 bin/nemacs-nw --build-image >/dev/null 2>&1 && timeout 150 python3 tools/nemacs-pty-smoke.py --group launcher --output build/nemacs-pty-smoke/ledger-launcher'
 
 ** S1.3 The user's real init.el (~/.emacs.d) loads under the image without errors in a bounded time
 pending

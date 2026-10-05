@@ -129,92 +129,21 @@ Returns a list of (FD . REVENTS) cons cells whose REVENTS is non-zero."
         ready)))))
 
 
-;;;; --- public API: accept-process-output ------------------------------
+;;;; --- public compatibility surface ----------------------------------
 
-(when (or emacs-eventloop--standalone-p
-          (not (fboundp 'accept-process-output)))
-  (defun accept-process-output (&optional process seconds millisec
-                                          _just-this-one)
-    "Polyfill: poll all live processes for I/O, fire filters / sentinels.
-Returns t when at least one filter or sentinel fired, nil on timeout.
+;; This optional adapter can be loaded after the bootstrap shims.  Keep it
+;; on the same shared wait instead of replacing them with separate loops.
+(require 'emacs-process)
+(require 'emacs-command-loop)
 
-PROCESS is currently ignored — we always poll every registered fd.
-SECONDS + MILLISEC combine into the poll timeout (each defaults to 0).
-JUST-THIS-ONE is accepted for API parity but ignored.
+(when (or emacs-eventloop--standalone-p (not (fboundp 'accept-process-output)))
+  (defalias 'accept-process-output #'emacs-process-accept-process-output))
 
-Children that the listener fd accepts during this call are added to
-the registry; `accept-process-output' is the only place new server
-children become observable."
-    (let* ((s (or seconds 0))
-           (ms (or millisec 0))
-           (timeout-ms
-            (cond
-             ((null process) (truncate (+ (* s 1000) ms)))
-             ((and (numberp s) (zerop s) (numberp ms) (zerop ms)) 0)
-             (t (truncate (+ (* s 1000) ms)))))
-           (fds (emacs-process-events--all-fds))
-           (events (emacs-eventloop--poll fds timeout-ms))
-           (any nil))
-      ;; C2: reap any exited children (SIGCHLD polling fallback) and count a
-      ;; fired sentinel as activity.
-      (when (fboundp 'emacs-process-events--reap-children)
-        (when (emacs-process-events--reap-children) (setq any t)))
-      (dolist (entry events)
-        (let* ((fd (car entry))
-               (proc (emacs-process-events--lookup-by-fd fd)))
-          (when proc
-            (cond
-             ((eq (emacs-process-events--get proc 3) 'network-server)
-              ;; Listening fd — accept everything currently pending.
-              (let ((child t))
-                (while child
-                  (setq child
-                        (emacs-process-events--accept-child proc))
-                  (when child (setq any t)))))
-             ((memq (emacs-process-events--get proc 3)
-                    '(network-connection pipe-process))
-              (when (emacs-process-events--read-and-dispatch proc)
-                (setq any t)))))))
-      (when (and (not any) process)
-        ;; PROCESS-specific wait: re-poll once more with the remaining
-        ;; budget.  Phase 7 keeps this simple — host Emacs spins on
-        ;; just_this_one with deadline tracking; we approximate.
-        nil)
-      any)))
+(when (or emacs-eventloop--standalone-p (not (fboundp 'sit-for)))
+  (defalias 'sit-for #'emacs-command-loop-sit-for))
 
-
-;;;; --- public API: sit-for / sleep-for --------------------------------
-
-(when (or emacs-eventloop--standalone-p
-          (not (fboundp 'sit-for)))
-  (defun sit-for (seconds &optional _nodisp)
-    "Polyfill: yield for SECONDS, dispatching any I/O that arrives meanwhile.
-Returns nil if input would have arrived during the wait, t otherwise.
-Phase 7 only honours the timeout (= no input semantics)."
-    (let ((ms (truncate (* seconds 1000))))
-      (accept-process-output nil 0 ms))))
-
-(when (or emacs-eventloop--standalone-p
-          (not (fboundp 'sleep-for)))
-  (defun sleep-for (seconds &optional millisec)
-    "Polyfill: sleep for SECONDS + MILLISEC, ignoring I/O during the wait.
-SECONDS must be a number; MILLISEC must be nil or a fixnum.
-Implemented as a `usleep' through libc — does NOT dispatch process
-events while sleeping.  Use `accept-process-output' or `sit-for'
-instead when filter callbacks may need to run."
-    (unless (numberp seconds)
-      (signal 'wrong-type-argument (list 'numberp seconds)))
-    (unless (or (null millisec) (fixnump millisec))
-      (signal 'wrong-type-argument (list 'fixnump millisec)))
-    (let ((total-us (truncate (+ (* seconds 1000000)
-                                  (* (or millisec 0) 1000)))))
-      (when (> total-us 0)
-        (when (fboundp 'emacs-frame-builtins-reconcile-terminal-sizes)
-          (emacs-frame-builtins-reconcile-terminal-sizes))
-        (emacs-network-ffi--call
-         "usleep" [:sint32 :sint32] total-us))
-      nil)))
-
+(when (or emacs-eventloop--standalone-p (not (fboundp 'sleep-for)))
+  (defalias 'sleep-for #'emacs-command-loop-sleep-for))
 
 (provide 'emacs-eventloop)
 

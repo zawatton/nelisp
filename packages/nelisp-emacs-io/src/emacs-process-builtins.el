@@ -197,6 +197,23 @@
 (when (emacs-process-builtins--install-function-p 'accept-process-output)
   (defalias 'accept-process-output #'emacs-process-accept-process-output))
 
+(defun emacs-process-builtins-install-shared-wait ()
+  "Keep the standalone process wait shim after late C-core pipe setup."
+  (when (fboundp 'nelisp--write-stdout-bytes)
+    (defalias 'accept-process-output #'emacs-process-accept-process-output)))
+
+;; The pipe unit owns object/contact APIs and loads late in the C-core bundle.
+;; Its provide hook preserves that ownership while selecting the shared wait.
+(when (fboundp 'nelisp--write-stdout-bytes)
+  (let ((entry (assq 'emacs-cc-pipe-process-1 after-load-alist)))
+    (if entry
+        (unless (memq #'emacs-process-builtins-install-shared-wait (cdr entry))
+          (setcdr entry (cons #'emacs-process-builtins-install-shared-wait (cdr entry))))
+      (push (list 'emacs-cc-pipe-process-1 #'emacs-process-builtins-install-shared-wait)
+            after-load-alist)))
+  (when (featurep 'emacs-cc-pipe-process-1)
+    (emacs-process-builtins-install-shared-wait)))
+
 (when (emacs-process-builtins--install-function-p 'signal-process)
   (defalias 'signal-process #'emacs-process-signal-process))
 

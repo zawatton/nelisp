@@ -2250,48 +2250,120 @@ come first, then substrate and bound `unread-command-events'.  Return the event,
    (t (signal 'emacs-command-loop-no-input nil))))
 
 (defvar emacs-command-loop-input-poll-function nil
-  "Function consulted by `emacs-command-loop-read-event' when the event queue
-is empty, to obtain a live input event (Doc 06 A1: bridges TUI stdin into the
-standard command loop).  Called with one argument TIMEOUT-MS (nil = non-blocking
-poll) and must return an Emacs event (a character or a key symbol) or nil.  The
-TUI runtime (`nemacs-main') sets this to poll the `emacs-tui-event' handle.")
+  "Frontend callback taking TIMEOUT-MS and returning one Emacs event or nil.
+Nil TIMEOUT-MS means nonblocking; a nonnegative integer is a maximum wait.
+The shared wait calls it nonblocking between timer/process dispatches.  GUI
+and TTY adapters keep ownership of transport and event decoding; callbacks
+must not dispatch commands.  Events obtained here are queued exactly once.")
 
 (defvar emacs-command-loop-input-pending-function nil
-  "Optional zero-argument input provider query, which must not consume input.
-Frontends install this alongside `emacs-command-loop-input-poll-function'.")
+  "Optional non-consuming, zero-argument frontend input query.
+When absent, the shared wait polls and queues an event for later reading.")
+
+(defvar emacs-command-loop-input-file-descriptor nil
+  "Optional frontend input fd for the shared OS wait (TTY stdin is 0).
+The poll callback still decodes events.  Frontends without an fd are checked
+at bounded intervals; the callback contract does not change.")
+
+(defvar emacs-command-loop--original-sleep-function
+  (and (fboundp 'sleep-for) (symbol-function 'sleep-for))
+  "Raw delay captured before the standalone sleep shim is installed.")
+
+(defun emacs-command-loop--delay (seconds)
+  "Delay without recursing through the shared wait.  Host Emacs stays native."
+  (if (eq (indirect-function 'sleep-for)
+          (symbol-function 'emacs-command-loop-sleep-for))
+      (funcall emacs-command-loop--original-sleep-function seconds)
+    (sleep-for seconds)))
+
+(defun emacs-command-loop--observe-input (read)
+  "Return pending-input state; READ allows polling into the shared queue."
+  (or (emacs-command-loop-pending-p)
+      (and (boundp 'unread-input-method-events) unread-input-method-events)
+      (and (not read) emacs-command-loop-input-pending-function
+           (funcall emacs-command-loop-input-pending-function))
+      (and emacs-command-loop-input-poll-function
+           (or read (null emacs-command-loop-input-pending-function))
+           (let ((event (funcall emacs-command-loop-input-poll-function nil)))
+             (when event
+               (emacs-command-loop-feed-events event)
+               t)))))
+
+(defun emacs-command-loop-wait (seconds input-mode &optional process just-this-one no-timers)
+  "Service input, timers and processes through one deadline-based wait.
+SECONDS is a timeout, or nil for an indefinite key wait.  INPUT-MODE is
+`read' (queue decoded input and return), `peek' (return without consuming),
+`sleep' (ignore input and wait the full timeout), or `process' (return on
+selected process activity).  Return (INPUT-PENDING . PROCESS-ACTIVITY).
+PROCESS selects the activity that ends a process wait; other processes are
+still serviced unless JUST-THIS-ONE is non-nil.  Callback-only frontends and
+child status transitions are checked at most 10 milliseconds apart."
+  ;; The former sleep provider reconciled cached terminal geometry before a
+  ;; positive wait.  Keep that state transition even when poll handles the
+  ;; delay, while zero-time input queries leave the cached geometry alone.
+  (when (and (or (null seconds) (> seconds 0))
+             (fboundp 'emacs-frame-builtins-reconcile-terminal-sizes))
+    (emacs-frame-builtins-reconcile-terminal-sizes))
+  (let* ((deadline (and seconds (+ (float-time) (max 0 seconds))))
+         (emacs-command-loop--waiting-for-input (memq input-mode '(read peek)))
+         (done nil) (pending nil) (activity nil))
+    (while (not done)
+      (when (fboundp 'emacs-process-dispatch-pending)
+        (when (emacs-process-dispatch-pending process just-this-one)
+          (setq activity t)))
+      (when (memq input-mode '(read peek))
+        (setq pending (emacs-command-loop--observe-input (eq input-mode 'read))))
+      (when (and (not no-timers) (fboundp 'emacs-timer-run-pending))
+        (emacs-timer-run-pending))
+      (when (and (not no-timers) (fboundp 'emacs-timer-idle-seconds))
+        (when (and (not pending) (fboundp 'emacs-timer-run-idle))
+          (emacs-timer-run-idle (emacs-timer-idle-seconds))))
+      ;; Timer/filter callbacks may have queued input.
+      (when (and (memq input-mode '(read peek)) (emacs-command-loop-pending-p))
+        (setq pending t))
+      ;; A source query may reap a child that exited after the dispatch above.
+      ;; Drain its final output and queued status before ending the wait.
+      (when (and (eq input-mode 'process) (not activity)
+                 (or process (null deadline))
+                 (fboundp 'emacs-process-wait-source-p)
+                 (not (emacs-process-wait-source-p process)))
+        (when (and (fboundp 'emacs-process-dispatch-pending)
+                   (emacs-process-dispatch-pending process just-this-one))
+          (setq activity t))
+        (setq done t))
+      (setq done (or done pending
+                     (and (eq input-mode 'process) activity)
+                     (and deadline (>= (float-time) deadline))))
+      (unless done
+        (let ((slice (if deadline (min 0.01 (max 0 (- deadline (float-time)))) 0.01)))
+          (if (and (fboundp 'emacs-process-wait-fds)
+                   (emacs-process-wait-fds
+                    slice (and (memq input-mode '(read peek))
+                               emacs-command-loop-input-file-descriptor)
+                    process just-this-one))
+              nil
+            (emacs-command-loop--delay slice)))))
+    (cons (and pending t) activity)))
 
 (defun emacs-command-loop-input-pending-p (&optional check-timers)
-  "Return non-nil when queued or live input is pending without consuming it.
-When CHECK-TIMERS is non-nil, service due library timers before the query."
-  (when (and check-timers (fboundp 'emacs-timer-run-pending))
-    (emacs-timer-run-pending))
-  (and (or (emacs-command-loop-pending-p)
-           (and (boundp 'unread-input-method-events)
-                unread-input-method-events)
-           (and emacs-command-loop-input-pending-function
-                (funcall emacs-command-loop-input-pending-function)))
-       t))
+  "Query input without consuming a key.  CHECK-TIMERS services due timers."
+  (car (emacs-command-loop-wait 0 'peek nil nil (not check-timers))))
 
 (defun emacs-command-loop-sit-for (seconds &optional nodisp)
-  "Wait SECONDS, servicing timers and stopping when input is pending.
-Return t on timeout, nil on input.  Pending input stays with its provider
-so the next command sees the key that interrupted this wait."
+  "Wait SECONDS with dispatch; return nil on input, t on timeout."
   (unless (numberp seconds)
     (signal 'wrong-type-argument (list 'numberp seconds)))
-  (unless nodisp
-    (when (fboundp 'redisplay) (redisplay)))
-  (let* ((start (float-time))
-         (deadline (+ start (max 0 seconds)))
-         (pending (emacs-command-loop-input-pending-p t)))
-    (while (and (not pending) (< (float-time) deadline))
-      ;; sleep-for services the standalone runtime's regular timer queue;
-      ;; the library's own timer queues also need explicit pumping here.
-      (sleep-for (min 0.01 (max 0 (- deadline (float-time)))))
-      (when (fboundp 'emacs-timer-run-pending) (emacs-timer-run-pending))
-      (when (fboundp 'emacs-timer-run-idle)
-        (emacs-timer-run-idle (- (float-time) start)))
-      (setq pending (emacs-command-loop-input-pending-p)))
-    (not pending)))
+  (unless nodisp (when (fboundp 'redisplay) (redisplay)))
+  (not (car (emacs-command-loop-wait seconds 'peek))))
+
+(defun emacs-command-loop-sleep-for (seconds &optional millisec)
+  "Wait the full duration, dispatching timers/processes and preserving input."
+  (unless (numberp seconds)
+    (signal 'wrong-type-argument (list 'numberp seconds)))
+  (unless (or (null millisec) (integerp millisec))
+    (signal 'wrong-type-argument (list 'integerp millisec)))
+  (emacs-command-loop-wait (+ seconds (/ (or millisec 0) 1000.0)) 'sleep)
+  nil)
 
 (defvar emacs-command-loop--post-input-event-p nil)
 (defvar unread-post-input-method-events nil)
@@ -2311,15 +2383,15 @@ non-menu mirror)."
              (not emacs-command-loop--inhibit-quit))
     (setq emacs-command-loop--quit-flag nil)
     (signal 'emacs-command-loop-quit nil))
-  (let ((ev (cond
-             ((emacs-command-loop-pending-p)
-              (emacs-command-loop--pop-event))
-             (emacs-command-loop-input-poll-function
-              (let ((emacs-command-loop--waiting-for-input t))
-                (or (funcall emacs-command-loop-input-poll-function
-                             (and seconds (truncate (* seconds 1000))))
-                    (signal 'emacs-command-loop-no-input nil))))
-             (t (signal 'emacs-command-loop-no-input nil)))))
+  (unless (emacs-command-loop-pending-p)
+    (when emacs-command-loop-input-poll-function
+      (emacs-command-loop-wait seconds 'read)))
+  (let ((ev (if (emacs-command-loop-pending-p)
+                (emacs-command-loop--pop-event)
+              ;; Internal readers use this condition to finish timed reads
+              ;; or signal EOF.  Public bridges translate timeouts to nil.
+              (signal 'emacs-command-loop-no-input nil))))
+    (when (and ev (fboundp 'emacs-timer-reset-idle)) (emacs-timer-reset-idle))
     (setq emacs-command-loop--last-input-event   ev
           emacs-command-loop--last-nonmenu-event ev)
     ;; Track X follow-up (2026-05-05): also publish the event to the

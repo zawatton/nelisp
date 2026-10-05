@@ -57,7 +57,7 @@
 
 (defun emacs-command-loop-builtins--install-function-p (symbol)
   "Return non-nil when SYMBOL should be installed as an unprefixed bridge."
-  (or (and (memq symbol '(sit-for input-pending-p kill-emacs))
+  (or (and (memq symbol '(sit-for sleep-for input-pending-p kill-emacs))
            (fboundp 'nelisp--write-stdout-bytes))
       (not (boundp 'emacs-version))
       (get symbol 'emacs-stub-bulk)
@@ -84,14 +84,30 @@ Host Emacs keeps its native `kill-emacs'.  This helper is installed as
 (when (emacs-command-loop-builtins--install-function-p 'sit-for)
   (defalias 'sit-for #'emacs-command-loop-sit-for))
 
+(when (emacs-command-loop-builtins--install-function-p 'sleep-for)
+  (defalias 'sleep-for #'emacs-command-loop-sleep-for))
+
 (when (emacs-command-loop-builtins--install-function-p 'input-pending-p)
   (defalias 'input-pending-p #'emacs-command-loop-input-pending-p))
 
+(defun emacs-command-loop-builtins--read-input (reader prompt inherit seconds)
+  "Call READER, returning nil on timeout while preserving its no-input signal."
+  (condition-case err
+      (funcall reader prompt inherit seconds)
+    (emacs-command-loop-no-input
+     (unless seconds (signal (car err) (cdr err))))))
+
 (when (emacs-command-loop-builtins--install-function-p 'read-event)
-  (defalias 'read-event #'emacs-command-loop-read-event))
+  (defun read-event (&optional prompt inherit-input-method seconds)
+    "Read an event, returning nil when SECONDS expires."
+    (emacs-command-loop-builtins--read-input
+     #'emacs-command-loop-read-event prompt inherit-input-method seconds)))
 
 (when (emacs-command-loop-builtins--install-function-p 'read-char)
-  (defalias 'read-char #'emacs-command-loop-read-char))
+  (defun read-char (&optional prompt inherit-input-method seconds)
+    "Read a character, returning nil when SECONDS expires."
+    (emacs-command-loop-builtins--read-input
+     #'emacs-command-loop-read-char prompt inherit-input-method seconds)))
 
 (when (emacs-command-loop-builtins--install-function-p 'read-command)
   (defalias 'read-command #'emacs-command-loop-read-command))

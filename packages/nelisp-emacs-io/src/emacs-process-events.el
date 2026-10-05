@@ -47,6 +47,22 @@
 (require 'emacs-network-ffi)
 
 
+(defun emacs-process-events--signal-network-error (failure)
+  "Signal a network FAILURE using GNU's server-bind error data.
+The FFI adapter returns (:error STRING); preserve other diagnostics."
+  (let ((diagnostic (cadr failure)) reason)
+    (save-match-data
+      (when (string-match "\\`bind(.*) failed: errno=\\([0-9]+\\)\\'" diagnostic)
+        (setq reason
+              (cdr (assq (string-to-number (match-string 1 diagnostic))
+                         '((1 . "Operation not permitted")
+                           (2 . "No such file or directory")
+                           (13 . "Permission denied")
+                           (20 . "Not a directory")
+                           (22 . "Invalid argument")))))))
+    (signal 'file-error (if reason (list "Cannot bind server socket" reason)
+                         (list diagnostic)))))
+
 ;;;; --- registry ---------------------------------------------------------
 
 (defvar emacs-process-events--by-fd (make-hash-table :test #'eql)
@@ -383,10 +399,53 @@ async filters never fire (Doc 06 C1)."
     (dolist (proc emacs-process-events--all)
       (let ((fd (process-id-fd proc)))
         (when (and (integerp fd) (>= fd 0)
-                   (not (memq (emacs-process-events--get proc 4) '(closed stop)))
+                   (not (memq (emacs-process-events--get proc 4) '(closed stop exit signal)))
                    (not (eq (process-filter proc) t)))
           (push fd fds))))
     fds))
+
+(defun emacs-process-events-dispatch-pending (&optional process just-this-one)
+  "Poll registered network/pipe fds without waiting; dispatch ready callbacks.
+Return activity for PROCESS, or any activity when nil.  Native subprocess
+reaping belongs to emacs-process; this registry never reaps unrelated PIDs."
+  (let* ((fds (if (and process just-this-one)
+                  (list (process-id-fd process))
+                (emacs-process-events--all-fds)))
+         (count (length fds)) (any nil))
+    (when (> count 0)
+      (let ((buf (nl-ffi-malloc (* count 8))) (index 0))
+        (unwind-protect
+            (progn
+              (dolist (fd fds)
+                (nl-ffi-write-i32 buf (* index 8) fd)
+                (nl-ffi-write-i16 buf (+ (* index 8) 4) 1)
+                (nl-ffi-write-i16 buf (+ (* index 8) 6) 0)
+                (setq index (1+ index)))
+              (when (> (emacs-network-ffi--call
+                        "poll" [:sint32 :pointer :sint32 :sint32] buf count 0) 0)
+                (setq index 0)
+                (dolist (fd fds)
+                  (let ((target (emacs-process-events--lookup-by-fd fd)))
+                    (when (and target (/= 0 (nl-ffi-read-i16 buf (+ (* index 8) 6))))
+                      (let ((activity nil))
+                        (if (eq (emacs-process-events--get target 3) 'network-server)
+                            (let ((child t))
+                              (while child
+                                (setq child (emacs-process-events--accept-child target))
+                                (when child (setq activity t))))
+                          (setq activity (emacs-process-events--read-and-dispatch target)))
+                        (when (and activity (or (null process) (eq process target)))
+                          (setq any t)))))
+                  (setq index (1+ index)))))
+          (nl-ffi-free buf))))
+    (let ((reaped (emacs-process-events--reap-children)))
+      (when (and reaped
+                 (or (null process)
+                     (and (vectorp process) (> (length process) 8)
+                          (eq (aref process 0) :emacs-process-events)
+                          (assoc (plist-get (aref process 8) :pid) reaped))))
+        (setq any t)))
+    any))
 
 ;;;; --- SIGCHLD-fallback child reaping (Doc 06 C2) ----------------------
 ;;
@@ -421,36 +480,29 @@ iterate; see `emacs-process-events--all-fds')."
     found))
 
 (defun emacs-process-events--reap-children ()
-  "Reap exited children via non-blocking `wait4(-1, WNOHANG)' in a loop.
-For each reaped pid matched to a process (by plist `:pid') set its status to
-`exit' / `signal' and fire its sentinel.  Untracked children are still reaped
-\(no zombies).  Returns the list of reaped (PID . EXIT-CODE) pairs (Doc 06 C2)."
-  (let ((reaped nil) (loop t))
-    (while loop
-      (let* ((stbuf (nl-ffi-malloc 8))
-             (pid (emacs-network-ffi--call
-                   "wait4" [:sint32 :sint32 :pointer :sint32 :sint32]
-                   -1 stbuf 1 0)))           ; WNOHANG = 1, rusage = NULL
-        (cond
-         ((and (integerp pid) (> pid 0))
-          (let* ((status (nl-ffi-read-i32 stbuf 0))
-                 (exited (emacs-process-events--wait-exited-p status))
-                 (code (emacs-process-events--wait-exit-code status))
-                 (sig (emacs-process-events--wait-signal status))
-                 (proc (emacs-process-events--lookup-by-pid pid)))
-            (push (cons pid code) reaped)
-            (when proc
-              (emacs-process-events--set proc 4 (if exited 'exit 'signal))
-              (let ((sent (process-sentinel proc)))
-                (when (functionp sent)
-                  (condition-case _err
-                      (funcall sent proc
-                               (if exited
-                                   (format "finished with code %d\n" code)
-                                 (format "terminated by signal %d\n" sig)))
-                    (error nil)))))))
-         (t (setq loop nil)))
-        (nl-ffi-free stbuf)))
+  "Reap only tracked pipe children; leave other process owners' PIDs alone."
+  (let ((reaped nil))
+    (dolist (proc (copy-sequence emacs-process-events--all))
+      (let ((pid (plist-get (emacs-process-events--get proc 8) :pid)))
+        (when (and (integerp pid) (> pid 0)
+                   (not (memq (emacs-process-events--get proc 4) '(exit signal))))
+          (let ((buf (nl-ffi-malloc 8)))
+            (unwind-protect
+                (when (= pid (emacs-network-ffi--call
+                              "wait4" [:sint32 :sint32 :pointer :sint32 :sint32]
+                              pid buf 1 0))
+                  (let* ((status (nl-ffi-read-i32 buf 0))
+                         (exited (emacs-process-events--wait-exited-p status))
+                         (code (emacs-process-events--wait-exit-code status)))
+                    (push (cons pid code) reaped)
+                    (emacs-process-events--set proc 4 (if exited 'exit 'signal))
+                    (let ((sent (process-sentinel proc)))
+                      (when (functionp sent)
+                        (funcall sent proc (if exited
+                                               (format "finished with code %d\n" code)
+                                             (format "terminated by signal %d\n"
+                                                     (emacs-process-events--wait-signal status))))))))
+              (nl-ffi-free buf))))))
     (nreverse reaped)))
 
 (defun emacs-process-events--accept-child (server)
@@ -531,20 +583,18 @@ Returns t if dispatch happened, nil if peer closed."
      ((eq chunk :would-block) nil)
      ((eq chunk :interrupted) nil)
      ((or (null chunk) (and (stringp chunk) (= 0 (length chunk))))
-      (let ((sent (process-sentinel proc)))
-        (when (functionp sent)
-          (condition-case err
-              (funcall sent proc "connection broken by remote peer\n")
-            (error
-             (when (fboundp 'nelisp--write-stderr-line)
-               (nelisp--write-stderr-line
-                (format "[emacs-process-events] sentinel ERR on close: %S"
-                        err)))))))
       (emacs-network-ffi--close fd)
       (remhash fd emacs-process-events--by-fd)
-      (emacs-process-events--set proc 4 'closed)
       (emacs-process-events--set proc 2 -1)
-      nil)
+      (unless (and (memq (emacs-process-events--get proc 3) '(pipe pipe-process))
+                   (integerp (plist-get (emacs-process-events--get proc 8) :pid)))
+        (emacs-process-events--set proc 4 'closed)
+        (let ((sent (process-sentinel proc)))
+          (when (functionp sent)
+            (save-current-buffer
+              (save-match-data
+                (funcall sent proc "connection broken by remote peer\n"))))))
+      t)
      ((stringp chunk)
       (let ((filt (process-filter proc))
             ;; C4: decode the raw bytes per the process's decoding
@@ -635,7 +685,7 @@ Returns the process vector on success, signals `file-error' on failure."
                   (t
                    (emacs-network-ffi-client-unix service)))))
         (when (and (consp fd) (eq (car fd) :error))
-          (signal 'file-error (list (cadr fd))))
+          (emacs-process-events--signal-network-error fd))
         (let ((proc (emacs-process-events--make-vec
                      name fd
                      (if server 'network-server 'network-connection)

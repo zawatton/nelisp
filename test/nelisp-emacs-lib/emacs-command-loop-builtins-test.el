@@ -313,6 +313,7 @@
                (lambda (seconds &optional _) (setq now (+ now seconds))))
               ((symbol-function 'emacs-timer-run-pending)
                (lambda (&optional _) (setq regular (1+ regular))))
+              ((symbol-function 'emacs-timer-idle-seconds) (lambda () now))
               ((symbol-function 'emacs-timer-run-idle)
                (lambda (_) (setq idle (1+ idle)))))
       (should (emacs-command-loop-sit-for 0.05 t))
@@ -322,6 +323,22 @@
       (should (emacs-command-loop-sit-for 0 t))
       (should-error (emacs-command-loop-sit-for "bad" t)
                     :type 'wrong-type-argument))))
+
+(ert-deftest emacs-command-loop-builtins-test/process-exit-between-dispatch-and-source-query ()
+  ;; POSIX status access can reap a child after the first output poll.
+  ;; Its last output must still be dispatched before the wait returns.
+  (let ((exited nil) output)
+    (cl-letf (((symbol-function 'emacs-process-dispatch-pending)
+               (lambda (process just-this-one)
+                 (should (eq process 'child))
+                 (should just-this-one)
+                 (when exited (setq output "last output\n") t)))
+              ((symbol-function 'emacs-process-wait-source-p)
+               (lambda (_) (setq exited t) nil))
+              ((symbol-function 'emacs-frame-builtins-reconcile-terminal-sizes)
+               #'ignore))
+      (should (cdr (emacs-command-loop-wait 1 'process 'child t t)))
+      (should (equal output "last output\n")))))
 
 ;;;; M. Phase B.2 — read-key-sequence
 
@@ -2871,7 +2888,8 @@ and a queued event still takes precedence (Doc 06 A1)."
     (emacs-command-loop-feed-events ?q)
     (should (= ?q (emacs-command-loop-read-event)))
     (let ((emacs-command-loop-input-poll-function (lambda (_ms) nil)))
-      (should-error (emacs-command-loop-read-event)
+      ;; A live input provider returning nil means no key yet, not EOF.
+      (should-error (emacs-command-loop-read-event nil nil 0)
                     :type 'emacs-command-loop-no-input))))
 
 (ert-deftest emacs-command-loop-builtins-test/called-interactively-flag ()

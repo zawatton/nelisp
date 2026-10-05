@@ -341,24 +341,27 @@ or nil); all other event operations require an event-owned process object."
     process))
 
 (defun emacs-process--native-drain-output (process)
-  "Drain native PROCESS output into buffer/filter."
-  (let ((observed nil)
-        (chunk t)
+  "Drain native PROCESS output through its filter, or into its buffer."
+  (let ((observed nil) (chunk t)
         (buffer (emacs-process--native-metadata process :buffer))
         (filter (emacs-process--native-metadata process :filter)))
-    (while (and (fboundp 'nelisp-process-read-output) chunk)
-      (setq chunk (nelisp-process-read-output process 4096))
-      (when (and (stringp chunk) (> (length chunk) 0))
-        (when (fboundp 'emacs-process-coding-get)
-          (setq chunk (emacs-process-coding-convert
-                       chunk (car (emacs-process-coding-get process)) nil)))
-        (setq observed t)
-        (when buffer
-          (with-current-buffer buffer
-            (goto-char (point-max))
-            (insert chunk)))
-        (when (functionp filter)
-          (funcall filter process chunk))))
+    (unless (eq filter t)
+      (while (and (fboundp 'nelisp-process-read-output) chunk)
+        (setq chunk (nelisp-process-read-output process 4096))
+        (when (and (stringp chunk) (> (length chunk) 0))
+          (when (fboundp 'emacs-process-coding-get)
+            (setq chunk (emacs-process-coding-convert
+                         chunk (car (emacs-process-coding-get process)) nil)))
+          (setq observed t)
+          (save-current-buffer
+            (save-match-data
+              (if (functionp filter)
+                  (let ((inhibit-quit t) (last-nonmenu-event t))
+                    (funcall filter process chunk))
+                (when (and buffer (buffer-live-p buffer))
+                  (with-current-buffer buffer
+                    (goto-char (point-max))
+                    (insert chunk)))))))))
     observed))
 
 (defun emacs-process--native-invoke-sentinel (process event)
@@ -1240,44 +1243,105 @@ matches the `files.el' convention of dispatching `start-file-process' on
    (t (emacs-process--delegate 'set-process-sentinel
                                (list process sentinel)))))
 
+(defun emacs-process-dispatch-pending (&optional process just-this-one)
+  "Dispatch pending process/network output and status without waiting.
+Return activity for PROCESS, or any activity if nil.  Other processes are
+serviced as well unless JUST-THIS-ONE requests isolated dispatch."
+  (let ((any nil))
+    (dolist (target (if (and process just-this-one)
+                        (list process)
+                      (emacs-process--native-live-processes)))
+      (when (emacs-process--native-accept (list target))
+        (when (or (null process) (eq process target)) (setq any t))))
+    (when (and (fboundp 'emacs-process-events-dispatch-pending)
+               (or (not just-this-one)
+                   (and (vectorp process) (> (length process) 0)
+                        (eq (aref process 0) :emacs-process-events))))
+      (when (emacs-process-events-dispatch-pending process just-this-one)
+        (setq any t)))
+    any))
+
+(defun emacs-process-wait-source-p (&optional process)
+  "Return non-nil while PROCESS (or any process) can produce output/status."
+  (let ((sources (if process (list process)
+                   (append (emacs-process--native-live-processes)
+                           (and (boundp 'emacs-process-events--all)
+                                emacs-process-events--all))))
+        (live nil))
+    (dolist (target sources)
+      (when (cond
+             ((emacs-process--native-process-p target)
+              (memq (emacs-process--native-status-symbol target) '(run stop)))
+             ((and (vectorp target) (> (length target) 4)
+                   (eq (aref target 0) :emacs-process-events))
+              (memq (aref target 4) '(run open listen connect stop))))
+        (setq live t)))
+    live))
+
+(defun emacs-process-wait-fds (seconds input-fd &optional process just-this-one)
+  "Wait on live process/network fds and optional INPUT-FD for SECONDS.
+Return t when an OS wait was performed, including a timeout.  A nil result
+asks the shared wait to use its raw delay on hosts without this syscall ABI.
+Linux x86-64 poll(2) storage is freed even when interrupted or unwound."
+  (when (and (eq system-type 'gnu/linux) (fboundp 'syscall-direct)
+             (fboundp 'alloc-bytes) (fboundp 'dealloc-bytes))
+    (let ((fds (and (integerp input-fd) (list input-fd))))
+      (dolist (target (if (and process just-this-one) (list process)
+                       (emacs-process--native-live-processes)))
+        (when (and (emacs-process--native-process-p target)
+                   (memq (emacs-process--native-status-symbol target) '(run stop))
+                   (not (eq (emacs-process--native-metadata target :filter) t))
+                   (integerp (aref target 2)) (>= (aref target 2) 0))
+          (push (aref target 2) fds)))
+      (when (and just-this-one (vectorp process) (> (length process) 2)
+                 (eq (aref process 0) :emacs-process-events)
+                 (integerp (aref process 2)) (>= (aref process 2) 0))
+        (push (aref process 2) fds))
+      (when (and (fboundp 'emacs-process-events--all-fds) (not just-this-one))
+        (setq fds (append (emacs-process-events--all-fds) fds)))
+      (let* ((count (length fds)) (size (max 8 (* count 8)))
+             (buf (alloc-bytes size 8)) (index 0))
+        (unwind-protect
+            (progn
+              (dolist (fd fds)
+                (ptr-write-u32 buf (* index 8) fd)
+                ;; events=POLLIN in the low short, revents=0 in the high short.
+                (ptr-write-u32 buf (+ (* index 8) 4) 1)
+                (setq index (1+ index)))
+              (syscall-direct 7 buf count (max 0 (ceiling (* seconds 1000))) 0 0 0))
+          (dealloc-bytes buf size 8)))
+      t)))
+
 (defun emacs-process--native-accept-until (processes budget-ms)
-  "Poll PROCESSES for output/status changes for up to BUDGET-MS.
-Returns non-nil as soon as `emacs-process--native-accept' observes
-something; otherwise sleeps in 10ms slices and retries until BUDGET-MS
-elapses.  Doc 37 risk #1 (insurance): Tramp's synchronous connection
-setup blocks on `accept-process-output' for multi-second stretches, so a
-single non-blocking poll (the previous behaviour here) is not enough --
-the bidirectional process layer in
-`scripts/nemacs-runtime-process-preload.el' already honours SECONDS this
-way; this mirrors that for the `nelisp-process' native-object path."
-  (let ((slice-ms 10)
-        (waited 0)
-        (observed (emacs-process--native-accept processes)))
-    (while (and (not observed)
-               (< waited budget-ms)
-               (fboundp 'sleep-for))
-      (sleep-for 0 slice-ms)
-      (setq waited (+ waited slice-ms))
-      (setq observed (emacs-process--native-accept processes)))
-    observed))
+  "Compatibility helper: service PROCESSES through the shared wait."
+  (if (fboundp 'emacs-command-loop-wait)
+      (cdr (emacs-command-loop-wait (/ budget-ms 1000.0) 'process
+                                    (and (= (length processes) 1) (car processes))))
+    (emacs-process--native-accept processes)))
 
 (defun emacs-process-accept-process-output (&optional process seconds millisec just-this-one)
-  "Block until PROCESS produces output or SECONDS pass.
-
-Same calling convention as Emacs's `accept-process-output'.  When
-the host primitive is available, delegate.  Otherwise the
-substrate returns nil when only synchronous fallback processes exist."
+  "Wait with timer/input/process dispatch; host Emacs keeps its native wait."
+  (when (and process (not (processp process)))
+    (signal 'wrong-type-argument (list 'processp process)))
+  (unless (or (null seconds) (numberp seconds))
+    (signal 'wrong-type-argument (list 'numberp seconds)))
+  (unless (or (null millisec) (integerp millisec))
+    (signal 'wrong-type-argument (list 'fixnump millisec)))
   (condition-case nil
-      (if (or (emacs-process--native-process-p process)
-              (and (null process)
-                   emacs-process--native-process-metadata))
-          (emacs-process--native-accept-until
-           (if process
-               (list process)
-             (emacs-process--native-live-processes))
-           (+ (* (or seconds 0) 1000) (or millisec 0)))
-        (emacs-process--delegate 'accept-process-output
-                                 (list process seconds millisec just-this-one)))
+      (if (and (emacs-standalone-mode-p) (fboundp 'emacs-command-loop-wait))
+          (let ((budget (and (or seconds millisec)
+                             (+ (or seconds 0) (/ (or millisec 0) 1000.0)))))
+            (when (or budget process (emacs-process--native-live-processes)
+                      (and (fboundp 'emacs-process-events--all-fds)
+                           (emacs-process-events--all-fds)))
+              (cdr (emacs-command-loop-wait budget 'process process just-this-one))))
+        (if (or (emacs-process--native-process-p process)
+                (and (null process) emacs-process--native-process-metadata))
+            (emacs-process--native-accept-until
+             (if process (list process) (emacs-process--native-live-processes))
+             (+ (* (or seconds 0) 1000) (or millisec 0)))
+          (emacs-process--delegate 'accept-process-output
+                                   (list process seconds millisec just-this-one))))
     (emacs-process-not-implemented nil)))
 
 (defun emacs-process-signal-process (process-or-pid signum &optional remote)

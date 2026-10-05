@@ -1,6 +1,7 @@
 ;;; emacs-cc-character-input-test.el --- Live character input regression -*- lexical-binding: t; -*-
 (require 'ert)
 (require 'emacs-command-loop)
+(require 'emacs-command-loop-builtins)
 (require 'emacs-cc-read-character-1)
 
 (ert-deftest emacs-cc-character-live-poll-skips-symbols ()
@@ -14,7 +15,19 @@
              (pop events))))
       (should (= (emacs-cc-read-character-1--read-exclusive '(nil nil 0.1)) 66))
       (should (= calls 2))
-      (should (cl-every (lambda (ms) (and (>= ms 0) (<= ms 100))) timeouts)))))
+      (should (cl-every (lambda (ms) (or (null ms) (and (>= ms 0) (<= ms 100))))
+                        timeouts)))))
+
+(ert-deftest emacs-cc-character-batch-timeout-and-eof ()
+  (let ((unread-command-events nil) (unread-post-input-method-events nil)
+        (emacs-command-loop--unread-events nil)
+        (emacs-command-loop-input-poll-function nil))
+    (should-not (emacs-cc-read-character-1--read-exclusive '(nil nil 0)))
+    (let ((unread-command-events '(f1)))
+      (should-not (emacs-cc-read-character-1--read-exclusive '(nil nil 0)))
+      (should-not unread-command-events))
+    (should-error (emacs-cc-read-character-1--read-exclusive '(nil nil nil))
+                  :type 'end-of-file)))
 
 (ert-deftest emacs-cc-character-live-poll-timeout ()
   (let ((unread-command-events nil) (unread-post-input-method-events nil)
@@ -22,6 +35,14 @@
         (emacs-command-loop-input-poll-function
          (lambda (_milliseconds) (sleep-for 0.02) nil)))
     (should-not (emacs-cc-read-character-1--read-exclusive '(nil nil 0.01)))))
+
+(ert-deftest emacs-cc-character-public-timeout-keeps-internal-no-input ()
+  (let ((unread-command-events nil) (unread-post-input-method-events nil)
+        (emacs-command-loop--unread-events nil)
+        (emacs-command-loop-input-poll-function (lambda (_ms) nil)))
+    (dolist (reader '(emacs-command-loop-read-event emacs-command-loop-read-char))
+      (should-error (funcall reader nil nil 0) :type 'emacs-command-loop-no-input)
+      (should-not (emacs-command-loop-builtins--read-input reader nil nil 0)))))
 
 (ert-deftest emacs-cc-character-input-method-results-cross-readers ()
   (let ((unread-command-events '(97 98)) (unread-post-input-method-events nil)
