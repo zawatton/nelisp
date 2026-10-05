@@ -223,6 +223,9 @@ not attempt real keymap lookup or face interpolation."
 (when (emacs-mode-builtins--install-function-p 'emacs-lisp-mode)
   (defalias 'emacs-lisp-mode #'emacs-mode-emacs-lisp-mode))
 
+(when (emacs-mode-builtins--install-function-p 'lisp-interaction-mode)
+  (defalias 'lisp-interaction-mode #'emacs-mode-lisp-interaction-mode))
+
 (when (emacs-mode-builtins--install-function-p 'run-mode-hooks)
   (defalias 'run-mode-hooks #'emacs-mode-run-mode-hooks))
 

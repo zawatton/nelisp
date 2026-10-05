@@ -13,6 +13,17 @@
 (require 'cl-lib)
 (require 'emacs-time)
 
+(ert-deftest emacs-time-test/next-frontend-wait-deadline ()
+  (let ((timer-list nil) (timer-idle-list nil) (emacs-timer--idle-since nil))
+    (cl-letf (((symbol-function 'emacs-timer--now) (lambda () 100.0)))
+      (should (= (emacs-timer-next-delay 1.0) 1.0))
+      (emacs-timer-run-with-timer 0.2 nil #'ignore)
+      (should (< (abs (- (emacs-timer-next-delay 1.0) 0.2)) 0.0001))
+      (emacs-timer-run-with-idle-timer 0.1 t #'ignore)
+      (should (= (emacs-timer-next-delay 1.0) 0.1))
+      (emacs-timer-run-idle 0.1)
+      (should (< (abs (- (emacs-timer-next-delay 1.0) 0.2)) 0.0001)))))
+
 (defconst emacs-time-test--module-file
   (expand-file-name "../src/emacs-time.el"
                     (file-name-directory (or load-file-name buffer-file-name))))

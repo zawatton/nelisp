@@ -281,9 +281,11 @@ just-bootstrapped single-window session semantically shows anyway."
   (let ((w (emacs-window-get-window window)))
     (emacs-window--check-leaf w)
     (or (emacs-window-buffer w)
-        (let ((fallback (and (fboundp 'current-buffer) (current-buffer))))
+        (let ((fallback (or (and (fboundp 'nelisp-ec-current-buffer)
+                                 (nelisp-ec-current-buffer))
+                            (and (fboundp 'current-buffer) (current-buffer)))))
           (when fallback
-            (setf (emacs-window-buffer w) fallback))
+            (emacs-window-set-window-buffer w fallback))
           fallback))))
 
 (defun emacs-window-window-frame (&optional window)

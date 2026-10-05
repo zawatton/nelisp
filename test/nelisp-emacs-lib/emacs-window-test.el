@@ -51,6 +51,17 @@ item 9 helpers in `emacs-window.el')."
 
 ;;;; A. window query (8 tests)
 
+(ert-deftest emacs-window-unbound-leaf-adopts-current-shared-buffer ()
+  (emacs-window-test--with-fresh-world
+    (let ((buffer (nelisp-ec-generate-new-buffer "*plain*")))
+      (nelisp-ec-set-buffer buffer)
+      (nelisp-ec-insert "scratch\n")
+      (let ((window (emacs-window-selected-window)))
+        (should (eq (emacs-window-window-buffer window) buffer))
+        (should (= (emacs-window-window-point window) (nelisp-ec-point)))
+        (nelisp-ec-set-buffer (nelisp-ec-generate-new-buffer "*other*"))
+        (should (eq (emacs-window-window-buffer window) buffer))))))
+
 (ert-deftest emacs-window-windowp-true-and-false ()
   (emacs-window-test--with-fresh-world
     (let ((w (emacs-window-selected-window)))

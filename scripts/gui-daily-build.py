@@ -62,6 +62,12 @@ def main():
                          'packages/nelisp-emacs-core/src/emacs-keymap-builtins.el',
                          'scripts/gui-daily-fixtures.py',
                          'packages/nelisp-emacs-app-gui/src/nemacs-main.el',
+                         'packages/nelisp-emacs-app-gui/src/nemacs-loadup.el',
+                         'packages/nelisp-emacs-core/src/emacs-window.el',
+                         'packages/nelisp-emacs-core/src/emacs-redisplay-core.el',
+                         'packages/nelisp-emacs-core/src/emacs-mode.el',
+                         'packages/nelisp-emacs-core/src/emacs-mode-builtins.el',
+                         'packages/nelisp-emacs-foundation/src/emacs-time.el',
                          'scripts/gui-daily-build.py', 'bin/nemacs-xcb',
                          'packages/nelisp-gui-xcb/fixtures/SKK-JISYO.gui']
     (ROOT / 'build/gui-daily-inputs.json').write_text(json.dumps(

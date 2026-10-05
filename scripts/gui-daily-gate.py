@@ -174,7 +174,7 @@ def terminate(proc):
 def main():
     global LAUNCHER
     parser = argparse.ArgumentParser()
-    parser.add_argument('stage', choices=['S3.2', 'S3.3', 'S4.1', 'S4.2', 'S4.3'])
+    parser.add_argument('stage', choices=['S3.2', 'S3.3', 'S4.1', 'S4.2', 'S4.3', 'S5.0'])
     parser.add_argument('--launcher',type=Path,default=LAUNCHER)
     parser.add_argument('--init', default='-Q', choices=['-Q'])
     parser.add_argument('--fixture', choices=['render', 'metrics', 'skk-evil', 'keyboard', 'mouse-menu', 'selections'])
@@ -189,7 +189,11 @@ def main():
     args = parser.parse_args()
     LAUNCHER = args.launcher.resolve()
     args.out = args.out or ROOT / 'build/gui-daily' / args.stage
-    args.fixture = args.fixture or {'S3.2': 'render', 'S3.3': 'metrics', 'S4.1': 'skk-evil', 'S4.2': 'mouse-menu', 'S4.3': 'selections'}[args.stage]
+    if args.stage == 'S5.0':
+        if args.fixture:
+            parser.error('S5.0 must use no fixture')
+    else:
+        args.fixture = args.fixture or {'S3.2': 'render', 'S3.3': 'metrics', 'S4.1': 'skk-evil', 'S4.2': 'mouse-menu', 'S4.3': 'selections'}[args.stage]
     if args.stage != 'S3.2':
         import importlib.util
         spec = importlib.util.spec_from_file_location('gui_daily_stages', ROOT / 'scripts/gui-daily-stages.py')

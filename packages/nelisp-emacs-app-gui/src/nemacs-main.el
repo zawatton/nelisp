@@ -1780,7 +1780,10 @@ not typing."
     (if activity
         (progn
           ;; input resets the idle clock + idle-timer fired flags.
-          (setq nemacs-main--idle-since nil)
+          ;; Redisplay is part of waiting for the next input.  Start the
+          ;; idle period after dispatch, so repaint time counts toward an
+          ;; idle timer instead of postponing its deadline by another delay.
+          (setq nemacs-main--idle-since (float-time))
           (when (fboundp 'emacs-timer-reset-idle) (emacs-timer-reset-idle))
           (nemacs-main--repaint-tui))
       ;; Doc 06 B2: idle — fire idle timers based on elapsed idle time.
@@ -2052,6 +2055,9 @@ takes over and dispatches TUI events directly."
       (nemacs-init))
     (nemacs-main--apply-options)
     (nemacs-main--init-keymap)
+    ;; GUI and TUI share editor state; the transport must not choose a
+    ;; different native scratch buffer merely because its window is unbound.
+    (nemacs-main--sync-selected-window-buffer)
     (require 'nelisp-gui-frontend)
     (nelisp-gui-frontend-run))
    (t
@@ -2095,6 +2101,9 @@ takes over and dispatches TUI events directly."
               ;; corner before the first SIGWINCH catches up).
               (nemacs-main--enter-fullscreen)
               (nemacs-main--initial-paint)
+              ;; Complete the initial buffer view after terminal takeover,
+              ;; so the first command reuses the body and mode-line caches.
+              (nemacs-main--repaint-tui)
               (nemacs-main--event-loop)
               'ok)))
            (t

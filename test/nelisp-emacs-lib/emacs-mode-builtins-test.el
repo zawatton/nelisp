@@ -13,6 +13,26 @@
 
 (require 'ert)
 (require 'emacs-mode-builtins)
+
+(ert-deftest emacs-mode-builtins/shared-lisp-interaction-state ()
+  (require 'emacs-buffer)
+  (let ((buffer (nelisp-ec-generate-new-buffer "*interaction*"))
+        (major-mode 'fundamental-mode) (mode-name "Fundamental")
+        (emacs-mode--current-major-mode 'fundamental-mode)
+        (emacs-mode--current-mode-name "Fundamental"))
+    (unwind-protect
+        (nelisp-ec-with-current-buffer buffer
+          (emacs-mode-lisp-interaction-mode)
+          (should (eq (emacs-mode-major-mode) 'lisp-interaction-mode))
+          (should (equal (emacs-mode-mode-name) "Lisp Interaction"))
+          (should (eq (emacs-buffer-buffer-local-value 'major-mode buffer)
+                      'lisp-interaction-mode))
+          (should (equal (emacs-buffer-buffer-local-value 'mode-name buffer)
+                         "Lisp Interaction")))
+      (nelisp-ec-kill-buffer buffer))))
+
+(require 'ert)
+(require 'emacs-mode-builtins)
 (require 'cl-lib)
 
 (defmacro emacs-mode-builtins-test--with-fresh-mode (&rest body)

@@ -31,6 +31,101 @@ def rect(data, stride, x, y, w, h):
     return [p for row in range(y, y+h) for p in data[row*stride+x:row*stride+x+w]]
 
 
+def process_cpu(pid):
+    """Read process CPU seconds, independent of its startup lifetime average."""
+    fields = Path(f'/proc/{pid}/stat').read_text().split(') ', 1)[1].split()
+    return (int(fields[11]) + int(fields[12])) / os.sysconf('SC_CLK_TCK')
+
+
+def plain_pixels(path, command, text=None, second_line=None):
+    """Check the ordinary -Q scratch cells, status row and insertion cursor."""
+    width, height, data = screenshot(path, command)
+    assert (width, height) == (960, 700), ('plain frame geometry', width, height)
+    cw, ch = 12, 28
+    def ink_cell(col, row):
+        return sum(p not in ((24, 32, 40), (128, 255, 128))
+                   for p in rect(data, width, col*cw, row*ch, cw, ch))
+    # GNU -Q starts with two comment lines and a blank line, point at end.
+    for row, line in enumerate((
+            ';; This buffer is for text that is not saved, and for Lisp evaluation.',
+            ';; To create a file, visit it with ‘C-x C-f’ and enter text in its buffer.')):
+        for col, char in enumerate(line):
+            if char != ' ': assert ink_cell(col, row) > 8, ('scratch message cell', row, col)
+    mode = rect(data, width, 0, 23*ch, width, ch)
+    band = Counter(mode).most_common(1)[0][0]
+    ink = sum(p != band for p in mode)
+    assert ink > 300, ('empty mode line', ink)
+    if text:
+        for col, char in enumerate(text):
+            if char != ' ': assert ink_cell(col, 3) > 8, ('typed text cell', col, char)
+        if second_line:
+            for col, char in enumerate(second_line):
+                if char != ' ': assert ink_cell(col, 4) > 8, ('newline text cell', col, char)
+        row, col = (4, len(second_line)) if second_line else (3, len(text))
+        cursor = [(i % width, i // width) for i, p in enumerate(data) if p == (128, 255, 128)]
+        expected = [(x, y) for y in range(row*ch, (row+1)*ch)
+                    for x in range(col*cw, col*cw+2)]
+        assert cursor == expected, ('plain cursor at insertion point', cursor[:4])
+    return dict(geometry=[width, height], mode_line_ink=ink, text_row=3)
+
+
+def plain(args, api, out, env, report, sessions):
+    for name in ('NELISP_GUI_FIXTURE', 'NELISP_GUI_DPI', 'NELISP_GUI_FAULT'):
+        env.pop(name, None)
+    api['command'](['setxkbmap', '-layout', 'us'], env)
+    s = api['Session'](out, 'plain', env, fixture=False); sessions.append(s)
+    s.ready(timeout=180)
+    time.sleep(.5)
+    cpu, started = process_cpu(s.proc.pid), time.monotonic()
+    time.sleep(3)
+    report['idle_cpu_percent'] = 100*(process_cpu(s.proc.pid)-cpu)/(time.monotonic()-started)
+    # Keep a screenshot and the CPU measurement even when the baseline fails.
+    before = s.shot('plain-before')
+    report['pixels'] = plain_pixels(before, api['command'])
+    assert 'GUI-STARTUP|buffer="*scratch*"|major=lisp-interaction-mode|mode="Lisp Interaction"|' in s.log(), s.log()[-1500:]
+    report['checks'].append('no-fixture/-Q/scratch-message/Lisp-Interaction/mode-line-pixels')
+    text = 'Hello from NeLisp GUI'
+    start = len(s.log())
+    api['command'](['xdotool', 'windowfocus', '--sync', s.window], env)
+    api['command'](['xdotool', 'type', '--clearmodifiers', '--delay', '80', text], env)
+    s.events.append(['type', text])
+    live_wait(s, api, lambda: text in s.log()[start:] and '|cursor=(3 . 21)|' in s.log()[start:],
+              60, 'plain typed text repaint')
+    def painted():
+        # X requests and screenshot capture use different connections.  Wait
+        # for the actual pixels, retaining the failed image on timeout.
+        try:
+            result = plain_pixels(s.shot('plain-typed'), api['command'], text)
+        except AssertionError:
+            return False
+        report['typed_pixels'] = result
+        return True
+    live_wait(s, api, painted, 10, 'plain screenshot cells')
+    # The initial image must not satisfy the typed-cell check.
+    try: plain_pixels(before, api['command'], text)
+    except AssertionError: pass
+    else: raise AssertionError('untyped negative screenshot accepted')
+    report['checks'].append('xdotool/typed-text-at-expected-cells/cursor/untyped-negative')
+    s.key('Return')
+    api['command'](['xdotool', 'type', '--clearmodifiers', '--delay', '80', '(+ 1 2)'], env)
+    s.events.append(['type', '(+ 1 2)'])
+    live_wait(s, api, lambda: text+'\n(+ 1 2)' in s.log() and '|cursor=(4 . 7)|' in s.log(),
+              60, 'plain Return and second line')
+    def newline_painted():
+        try:
+            result = plain_pixels(s.shot('plain-newline'), api['command'], text, '(+ 1 2)')
+        except AssertionError:
+            return False
+        report['newline_pixels'] = result
+        return True
+    live_wait(s, api, newline_painted, 10, 'plain newline screenshot cells')
+    report['checks'].append('Return/newline/second-line-at-expected-cells')
+    assert report['idle_cpu_percent'] < 10, ('idle CPU >= 10%', report['idle_cpu_percent'])
+    report['checks'].append('idle-CPU/3-seconds/below-10-percent')
+    s.key('ctrl+x', 'ctrl+c'); s.finish()
+    report['checks'].append('production-quit')
+
+
 def private_input(args, api, out, report):
     argv=['xvfb-run','-a','-e',str(out/'xvfb.log'),'-s',
           '-screen 0 1600x1000x24 -dpi 96 -nolisten tcp -noreset -extension GLX',
@@ -452,6 +547,9 @@ def run(args, api):
                 report['status']='PASS'
             elif args.stage=='S4.2':
                 mouse(args,api,out,env,report,sessions)
+                report['status']='PASS'
+            elif args.stage=='S5.0':
+                plain(args,api,out,env,report,sessions)
                 report['status']='PASS'
     except Exception as e:
         report.update(status='FAIL',error=str(e))

@@ -732,6 +732,20 @@ skipped rather than indexed with our private vector layout."
   (setq emacs-timer--idle-since nil)
   (dolist (tm timer-idle-list) (when (emacs-timer-p tm) (aset tm 6 nil))))
 
+(defun emacs-timer-next-delay (maximum)
+  "Return seconds until the next regular or unfired idle timer, capped at MAXIMUM.
+Frontends use this deadline to block on their input fd without delaying
+callbacks or waking continuously when no timer is scheduled."
+  (let ((delay maximum) (now (emacs-timer--now))
+        (idle (emacs-timer-idle-seconds)))
+    (dolist (tm timer-list)
+      (when (and (emacs-timer-p tm) (aref tm 1))
+        (setq delay (min delay (max 0 (- (aref tm 1) now))))))
+    (dolist (tm timer-idle-list)
+      (when (and (emacs-timer-p tm) (not (aref tm 6)))
+        (setq delay (min delay (max 0 (- (aref tm 5) idle))))))
+    delay))
+
 (unless (and (not (fboundp 'nelisp--write-stdout-bytes))
              (fboundp 'timerp)
              (not (get 'timerp 'emacs-stub-bulk)))

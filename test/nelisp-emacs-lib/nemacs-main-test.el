@@ -472,6 +472,24 @@ not the fatal `-l' error handler's 255."
         (should (= 1 redisplays))
         (should (= 1 flushes))))))
 
+(ert-deftest nemacs-main-test/idle-deadline-includes-repaint-time ()
+  (nemacs-main-test--fresh-runner
+    (let ((clock 100.0) (activity t) (elapsed nil)
+          (nemacs-main--idle-since nil))
+      (cl-letf (((symbol-function 'float-time) (lambda (&rest _) clock))
+                ((symbol-function 'nemacs-main--handle-sigcont) (lambda () nil))
+                ((symbol-function 'nemacs-main--handle-winsize) (lambda () nil))
+                ((symbol-function 'nemacs-main--drain-input-burst) (lambda (_) activity))
+                ((symbol-function 'emacs-timer-run-pending) (lambda () nil))
+                ((symbol-function 'emacs-timer-reset-idle) (lambda () nil))
+                ((symbol-function 'nemacs-main--repaint-tui) (lambda () (setq clock 100.4)))
+                ((symbol-function 'emacs-timer-run-idle) (lambda (seconds) (setq elapsed seconds))))
+        (nemacs-main--event-loop-tick 0)
+        (setq activity nil)
+        (nemacs-main--event-loop-tick 0)
+        ;; A .2-second idle timer is already due after a .4-second repaint.
+        (should (> elapsed .2))))))
+
 (ert-deftest nemacs-main-test/event-loop-tick-burst-repaints-once ()
   "Queued input should drain in one tick and repaint once."
   (nemacs-main-test--fresh-runner

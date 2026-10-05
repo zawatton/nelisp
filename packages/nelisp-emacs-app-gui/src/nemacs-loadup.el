@@ -98,7 +98,7 @@ then from real Emacs ~/.emacs.d versus XDG precedence.")
 
 (unless (boundp 'initial-scratch-message)
   (defvar initial-scratch-message
-    ";; This buffer is for text that is not saved, and for Lisp evaluation.\n;; To create a file, visit it with C-x C-f and enter text in its buffer.\n\n"
+    ";; This buffer is for text that is not saved, and for Lisp evaluation.\n;; To create a file, visit it with ‘C-x C-f’ and enter text in its buffer.\n\n"
     "Initial contents inserted into a newly-created *scratch* buffer."))
 
 (unless (boundp 'inhibit-startup-screen)
@@ -161,7 +161,9 @@ standalone evaluator aborts on flagless)."
                  (equal (nelisp-ec-buffer-string) "")
                  (stringp initial-scratch-message)
                  (> (length initial-scratch-message) 0))
-        (nelisp-ec-insert initial-scratch-message)))
+        (nelisp-ec-insert initial-scratch-message)
+        ;; Initial contents are startup state, not an unsaved user edit.
+        (setf (nelisp-ec-buffer-modified-p buf) nil)))
     buf))
 
 (defun nemacs--home-directory ()

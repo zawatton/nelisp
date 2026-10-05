@@ -15,7 +15,7 @@
 (defvar nelisp-gui-frontend--prefix [])
 
 (defun nelisp-gui-frontend--pure-buffer-p ()
-  (nelisp-ec-buffer-p (emacs-window-buffer (emacs-window-selected-window))))
+  (nelisp-ec-buffer-p (emacs-window-window-buffer (emacs-window-selected-window))))
 (defun nelisp-gui-frontend--point ()
   (if (nelisp-gui-frontend--pure-buffer-p) (nelisp-ec-point) (point)))
 (defun nelisp-gui-frontend--text ()
@@ -68,21 +68,43 @@ Only adaptation is done here; bounds, motion and edits stay in libraries.")
   (emacs-command-loop-pending-p))
 
 (defun nelisp-gui-frontend--input (timeout-ms)
-  "Supply a canonical event; retain input in the shared unread queue."
+  "Supply a canonical event; nil TIMEOUT-MS means nonblocking."
   (let ((deadline (and timeout-ms (+ (float-time) (/ timeout-ms 1000.0)))))
     (nelisp-gui-frontend--pump)
-    (while (and (not (emacs-command-loop-pending-p))
-                (or (null deadline) (< (float-time) deadline)))
-      (when (fboundp 'emacs-timer-run-pending) (emacs-timer-run-pending))
-      (sleep-for 0.005) (nelisp-gui-frontend--pump))
+    (while (and deadline (not (emacs-command-loop-pending-p))
+                (< (float-time) deadline))
+      (nelisp-gui-frontend--service)
+      (unless (emacs-command-loop-pending-p)
+        (nelisp-gui-xcb-wait nelisp-gui-frontend--xcb
+                             (min (nelisp-gui-frontend--wait-ms)
+                                  (* 1000 (max 0 (- deadline (float-time)))))))
+      (nelisp-gui-frontend--pump))
     ;; The shared reader rechecks the queue only before calling its provider.
     ;; read-event here drains that queue using the shared reader, not transport.
     (when (emacs-command-loop-pending-p)
       (let ((emacs-command-loop-input-poll-function nil))
         (emacs-command-loop-read-event)))))
 
+(defun nelisp-gui-frontend--service ()
+  "Service shared callbacks between bounded OS waits, without dispatching keys."
+  (let ((changed nil))
+    (when (fboundp 'emacs-process-dispatch-pending)
+      (when (emacs-process-dispatch-pending) (setq changed t)))
+    (when (fboundp 'emacs-timer-run-pending)
+      (when (> (emacs-timer-run-pending) 0) (setq changed t)))
+    (when (and (fboundp 'emacs-timer-run-idle) (fboundp 'emacs-timer-idle-seconds))
+      (when (> (emacs-timer-run-idle (emacs-timer-idle-seconds)) 0) (setq changed t)))
+    (when changed (setq nelisp-gui-frontend--paint-needed t))))
+
+(defun nelisp-gui-frontend--wait-ms ()
+  "Use the shared timer deadline; periodically service active process callbacks."
+  (let ((maximum (if (and (fboundp 'emacs-process-wait-source-p)
+                          (emacs-process-wait-source-p)) 0.05 1.0)))
+    (* 1000 (if (fboundp 'emacs-timer-next-delay)
+                (emacs-timer-next-delay maximum) maximum))))
+
 (defun nelisp-gui-frontend--paint ()
-  (let* ((w (emacs-window-selected-window)) (buf (emacs-window-buffer w)))
+  (let* ((w (emacs-window-selected-window)) (buf (emacs-window-window-buffer w)))
     ;; Public window API synchronizes its cached point with the shared buffer.
     (when (eq buf (nelisp-ec-current-buffer))
       (emacs-window-set-window-point w (nelisp-ec-point)))
@@ -154,6 +176,7 @@ Command lookup, execution, hooks, buffer editing and point stay in libraries."
          (cols (emacs-frame-width frame)) (lines (emacs-frame-height frame))
          (old-poll emacs-command-loop-input-poll-function)
          (old-pending emacs-command-loop-input-pending-function)
+         (old-fd emacs-command-loop-input-file-descriptor)
          (failure nil))
     (unwind-protect
         (condition-case err
@@ -170,6 +193,8 @@ Command lookup, execution, hooks, buffer editing and point stay in libraries."
                     nelisp-gui-frontend--redisplay (emacs-redisplay-init)
                     emacs-command-loop-input-poll-function #'nelisp-gui-frontend--input
                     emacs-command-loop-input-pending-function #'nelisp-gui-frontend--pending
+                    emacs-command-loop-input-file-descriptor
+                    (nelisp-gui-xcb-file-descriptor nelisp-gui-frontend--xcb)
                     nelisp-gui-frontend--paint-needed t)
               (emacs-keymap-use-global-map nemacs-main--global-keymap)
               (setf (emacs-frame-backend frame) 'xcb)
@@ -193,6 +218,11 @@ Command lookup, execution, hooks, buffer editing and point stay in libraries."
               (nelisp-gui-frontend--pump)
               (while (emacs-command-loop-pending-p) (nelisp-gui-frontend--dispatch))
               (nelisp-gui-frontend--paint)
+              (let ((buffer (emacs-window-window-buffer (emacs-window-selected-window))))
+                (princ (format "GUI-STARTUP|buffer=%S|major=%S|mode=%S|\n"
+                               (if (nelisp-ec-buffer-p buffer) (nelisp-ec-buffer-name buffer)
+                                 (buffer-name buffer))
+                               major-mode mode-name)))
               ;; Exercise external pointer lifetimes while fonts/layouts are active.
               (garbage-collect)
               (nelisp-gui-frontend--paint)
@@ -203,6 +233,7 @@ Command lookup, execution, hooks, buffer editing and point stay in libraries."
               (while (not (symbol-value 'nemacs-main--quit-flag))
                 (nelisp-gui-frontend--pump)
                 (when (emacs-command-loop-pending-p)
+                  (when (fboundp 'emacs-timer-reset-idle) (emacs-timer-reset-idle))
                   (nelisp-gui-frontend--dispatch)
                   (unless (memq last-input-event '(focus-in focus-out))
                     (setq nelisp-gui-frontend--paint-needed t)))
@@ -210,11 +241,16 @@ Command lookup, execution, hooks, buffer editing and point stay in libraries."
                            (not (emacs-command-loop-pending-p))
                            (not (symbol-value 'nemacs-main--quit-flag)))
                   (nelisp-gui-frontend--paint))
-                (when (fboundp 'emacs-timer-run-pending) (emacs-timer-run-pending))
-                (sleep-for 0.01)))
+                (nelisp-gui-frontend--service)
+                (unless (or (emacs-command-loop-pending-p)
+                            nelisp-gui-frontend--paint-needed
+                            (symbol-value 'nemacs-main--quit-flag))
+                  (nelisp-gui-xcb-wait nelisp-gui-frontend--xcb
+                                       (nelisp-gui-frontend--wait-ms)))))
           (error (setq failure err) (princ (format "GUI-ERROR|%S\n" err))))
       (setq emacs-command-loop-input-poll-function old-poll
-            emacs-command-loop-input-pending-function old-pending)
+            emacs-command-loop-input-pending-function old-pending
+            emacs-command-loop-input-file-descriptor old-fd)
       (when nelisp-gui-frontend--renderer (nelisp-gui-pango-close nelisp-gui-frontend--renderer))
       (when (nelisp-gui-selection-active-p) (nelisp-gui-selection-close))
       (when nelisp-gui-frontend--xcb (nelisp-gui-xcb-close nelisp-gui-frontend--xcb))

@@ -280,16 +280,29 @@ entire buffer object under standalone NeLisp."
     printable))
 
 (defun emacs-redisplay-core--row-width (text)
-  "Measure rendered TEXT in terminal columns, with a plain ASCII fast path."
-  (if (emacs-redisplay-core--printable-ascii-p text)
-      (length text)
-    (string-width text)))
+  "Measure rendered TEXT without table lookup for each printable ASCII cell."
+  (cond
+   ((emacs-redisplay-core--printable-ascii-p text) (length text))
+   ((or (and (boundp 'buffer-display-table) buffer-display-table)
+          (and (boundp 'standard-display-table) standard-display-table))
+    (string-width text))
+   (t
+    (let ((i 0) (width 0) (n (length text)))
+      (while (< i n)
+        (let ((char (aref text i)))
+          (setq width (+ width (if (and (<= 32 char) (<= char 126))
+                                  1 (string-width (string char))))))
+        (setq i (1+ i)))
+      width))))
 
 (defun emacs-redisplay-core--fit (text width)
   "Return rendered TEXT clipped to WIDTH terminal columns."
   (if (emacs-redisplay-core--printable-ascii-p text)
       (if (> (length text) width) (substring text 0 width) text)
-    (truncate-string-to-width text width)))
+    ;; A single curly quote must not send every ASCII cell in an otherwise
+    ;; fitting row through the slower Unicode truncation path.
+    (if (<= (emacs-redisplay-core--row-width text) width) text
+      (truncate-string-to-width text width))))
 
 (defun emacs-redisplay-core--blank-row-p (text)
   "Return non-nil when TEXT is all spaces."

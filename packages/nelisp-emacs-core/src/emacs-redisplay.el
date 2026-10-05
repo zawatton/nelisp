@@ -1587,7 +1587,10 @@ line, Doc 06 E6)."
     (if (and (fboundp 'emacs-buffer-local-variable-p)
            (emacs-buffer-local-variable-p sym buffer))
       (emacs-buffer-buffer-local-value sym buffer)
-    default)))
+      ;; A buffer without an explicit local value inherits the default cell,
+      ;; not nil.  This also resolves symbols in the default mode-line format
+      ;; while formatting a buffer other than the current one.
+      (if (boundp sym) (default-value sym) default))))
 
 (defvar emacs-redisplay--mode-line-window nil
   "Window whose mode/header line is being formatted.")
@@ -1606,6 +1609,7 @@ line, Doc 06 E6)."
              (mode-line-buffer-identification . ((:propertize "%12b" face mode-line-buffer-id)))
              (mode-line-position . ((-3 "%p") (line-number-mode (6 " L%l"))))
              (mode-line-modes-delimiters . ("(" . ")"))
+             (mode-line-modes . ("(" mode-name mode-line-process minor-mode-alist ")"))
              (mode-line-minor-modes . (:eval (emacs-redisplay--minor-modes)))
              (mode-line-end-spaces . ("-%-"))))
     (unless (boundp (car entry)) (set (car entry) (cdr entry))))
@@ -1653,7 +1657,11 @@ line, Doc 06 E6)."
     (if (integerp mnemonic) (string mnemonic)
       (cond ((memq coding '(undecided undecided-unix)) "-")
             ((memq coding '(no-conversion raw-text raw-text-unix)) "=")
-            ((string-match "utf" (format "%s" coding)) "U")
+            ((let ((name (format "%s" coding)))
+               ;; This is a literal substring, not a regexp.  Avoid loading
+               ;; and running the regexp engine on the first status repaint.
+               (string-search "utf" (if (and (boundp 'case-fold-search) case-fold-search)
+                                         (downcase name) name))) "U")
             (t "-")))))
 
 (defun emacs-redisplay--coding-eol (coding)
@@ -1717,10 +1725,10 @@ line, Doc 06 E6)."
           (setq i (1+ i))
           (let ((minimum 0))
             (while (and (< i n) (>= (aref text i) ?0) (<= (aref text i) ?9))
-              (setq minimum (+ (* minimum 10) (- (aref text i) ?0)) i (1+ i)))
+	      (setq minimum (+ (* minimum 10) (- (aref text i) ?0)) i (1+ i)))
             (setq piece (if (< i n) (emacs-redisplay--ml-escape (aref text i) buffer width) ""))
-            (when (< (string-width piece) minimum)
-              (setq piece (concat piece (make-string (- minimum (string-width piece)) ?\s))))))
+            (when (and (> minimum 0) (< (string-width piece) minimum))
+	      (setq piece (concat piece (make-string (- minimum (string-width piece)) ?\s))))))
         (push (cons piece effective) out))
       (setq i (1+ i)))
     (nreverse out)))
@@ -1786,7 +1794,7 @@ The lightweight TTY painter shares the full renderer's format semantics
 without allocating one glyph structure for each terminal cell."
   (let* ((emacs-redisplay--mode-line-window window)
          (emacs-redisplay--mode-line-end end)
-         (buffer (emacs-window-buffer window))
+         (buffer (emacs-window-window-buffer window))
          (face (if (eq window (emacs-window-selected-window))
                    'mode-line 'mode-line-inactive))
          (format (emacs-redisplay--mode-line-format buffer)))
@@ -1795,10 +1803,18 @@ without allocating one glyph structure for each terminal cell."
         ;; Avoid parsing three spans on every key in that common case.
         (list (cons (concat " " (emacs-redisplay--buffer-name buffer) " ")
                     (emacs-redisplay-realize-face face)))
-      (mapcar (lambda (span)
-              (cons (car span) (emacs-redisplay-realize-face (cdr span))))
-            (emacs-redisplay--ml-spans
-             format buffer face width 0)))))
+      ;; Escape expansion can produce a span per character.  Paint a whole
+      ;; run with the same face in one backend operation, including runs
+      ;; crossing format fields.  Keep distinct faces as separate runs.
+      (let (runs)
+        (dolist (span (emacs-redisplay--ml-spans format buffer face width 0))
+          (unless (equal (car span) "")
+            (if (and runs (equal (cdr span) (cdar runs)))
+                (setcar (car runs) (concat (caar runs) (car span)))
+              (push (cons (car span) (cdr span)) runs))))
+        (mapcar (lambda (span)
+                  (cons (car span) (emacs-redisplay-realize-face (cdr span))))
+                (nreverse runs))))))
 
 (defun emacs-redisplay--format-line-glyphs (format buffer width face)
   "Render a fixed WIDTH mode/header line with base FACE and styled fields."
@@ -2435,7 +2451,7 @@ face registry) must invoke
   (emacs-redisplay--check-handle handle)
   (unless (emacs-window-p window)
     (signal 'wrong-type-argument (list 'emacs-window-p window)))
-  (let* ((buffer (emacs-window-buffer window))
+  (let* ((buffer (emacs-window-window-buffer window))
          (standard (emacs-redisplay--standard-buffer-p buffer))
          (emacs-redisplay-truncate-lines
           (if standard (buffer-local-value 'truncate-lines buffer)
@@ -2857,7 +2873,14 @@ replacement ranges render once, and overlay strings contribute to row width."
         (let* ((row (aref rows r))
                (s (emacs-redisplay-glyph-row-start-pos row))
                (e (emacs-redisplay-glyph-row-end-pos row)))
-          (when (and s e (<= s point) (<= point e))
+          ;; Visual row ranges are half-open.  A newline/wrap boundary
+          ;; belongs to the next row; the final EOF row alone includes END.
+          (when (and s e (<= s point)
+                     (or (< point e)
+                         (and (= point e)
+                              (not (and (< (1+ r) h)
+                                        (equal point (emacs-redisplay-glyph-row-start-pos
+                                                      (aref rows (1+ r)))))))))
             (let* ((vec (emacs-redisplay-glyph-row-glyphs row))
                    (used (emacs-redisplay-glyph-row-used row))
                    (dir (emacs-redisplay-glyph-row-direction row)))

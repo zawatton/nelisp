@@ -5,7 +5,7 @@
 (define-error 'nelisp-gui-xcb-error "XCB transport error")
 (defconst nelisp-gui-xcb-cookie-type '(:struct :uint32))
 ;; State: connection, window, visual, screen, xkb context/keymap/state, alive,
-;; negotiated XKB event base.
+;; negotiated XKB event base, input fd, owned pollfd storage.
 ;; No live native pointer is installed while loading/baking this file.
 
 (defun nelisp-gui-xcb-call (name signature &rest args)
@@ -124,7 +124,7 @@
                   (nl-ffi-memory-release o)))
             (nelisp-gui-xcb-call "unsetenv" [:sint32 :pointer] (nl-ffi-memory-address key)))
         (nl-ffi-memory-release key))))
-  (let ((state (vector 0 0 0 0 0 0 0 t 0)) (complete nil)
+  (let ((state (vector 0 0 0 0 0 0 0 t 0 nil nil)) (complete nil)
         (screen-o (nl-ffi-memory-allocate 4)) (params (nl-ffi-memory-allocate 8)))
     (unwind-protect
         (progn
@@ -177,6 +177,9 @@
                                                      (aref state 5) (aref state 0) device))
                     (unless (> (aref state 6) 0) (error "XKB state unavailable"))))
               (nl-ffi-memory-release o)))
+          (aset state 9 (nelisp-gui-xcb-call "xcb_get_file_descriptor"
+                                           [:sint32 :pointer] (aref state 0)))
+          (aset state 10 (nl-ffi-memory-allocate 8))
           (setq complete t) state)
       (nl-ffi-memory-release screen-o) (nl-ffi-memory-release params)
       (unless complete (nelisp-gui-xcb-close state)))))
@@ -247,6 +250,23 @@
 (defun nelisp-gui-xcb--signed16 (p offset)
   (let ((n (nl-ffi-libffi-u16 p offset))) (if (>= n 32768) (- n 65536) n)))
 
+(defun nelisp-gui-xcb-file-descriptor (state)
+  "Return the X connection fd used by the frontend's blocking wait."
+  (aref state 9))
+
+(defun nelisp-gui-xcb-wait (state timeout-ms)
+  "Block in poll(2) on STATE for at most TIMEOUT-MS milliseconds.
+Call only after draining XCB's userspace event queue.  A finite timeout
+lets the frontend service timers and process callbacks; fd readiness,
+including server death, wakes it immediately.  No Lisp sleep shim is used."
+  ;; nl-ffi-memory already requires the Linux x86-64 syscall ABI.  Reuse
+  ;; that raw OS seam and one process-local pollfd, avoiding scalar FFI
+  ;; resolution and a fresh mmap on every idle iteration.
+  (let ((p (nl-ffi-memory-address (aref state 10))))
+    (ptr-write-u32 p 0 (nelisp-gui-xcb-file-descriptor state))
+    (ptr-write-u32 p 4 1)
+    (syscall-direct 7 p 1 (max 0 (ceiling timeout-ms)) 0 0 0)))
+
 (defun nelisp-gui-xcb-poll (state)
   "Return one transport event, freeing its native event exactly once."
   (nelisp-gui-xcb-check state)
@@ -298,6 +318,9 @@
 
 (defun nelisp-gui-xcb-close (state)
   "Destroy native owners; disconnect also works on a dead X server."
+  (when (aref state 10)
+    (nl-ffi-memory-release (aref state 10))
+    (aset state 10 nil))
   (dolist (entry '((6 . "xkb_state_unref") (5 . "xkb_keymap_unref") (4 . "xkb_context_unref")))
     (when (> (aref state (car entry)) 0)
       (nelisp-gui-xcb-call (cdr entry) [:void :pointer] (aref state (car entry)))
