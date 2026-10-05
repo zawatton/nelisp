@@ -51,6 +51,8 @@
   '((keymap . "host-feature")
     (pp . "host-feature")
     (nelisp-process . "vendor-package")
+    ;; Explicit memory owners come from the repository nl-ffi package.
+    (nl-ffi-memory . "vendor-package")
     ;; `emacs-org-outline.el' requires `org-element' at runtime with
     ;; `load-path' pointing at `vendor/emacs-lisp/org', which is in this
     ;; repository -- both `org-element.el' and `org-element-ast.el' are

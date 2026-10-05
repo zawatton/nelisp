@@ -51,6 +51,23 @@ item 9 helpers in `emacs-window.el')."
 
 ;;;; A. window query (8 tests)
 
+(ert-deftest emacs-window-unbound-leaf-adopts-native-buffer-owner ()
+  (emacs-window-test--with-fresh-world
+    (let ((unrelated (nelisp-ec-generate-new-buffer "*unrelated*")))
+      (nelisp-ec-set-buffer unrelated)
+      (with-temp-buffer
+        (insert "native\n")
+        (goto-char 4)
+        ;; Model the standalone reader's complete native buffer family.
+        (cl-letf (((symbol-function 'nelisp-buffer-p) #'bufferp))
+          (let ((window (emacs-window-selected-window)))
+            (should (eq (emacs-window-window-buffer window) (current-buffer)))
+            (should (= (emacs-window-point window) 4))
+            (should (eq (nelisp-ec-current-buffer) unrelated))
+            ;; An explicit shared-buffer consumer still owns its window.
+            (emacs-window-set-window-buffer window unrelated)
+            (should (eq (emacs-window-window-buffer window) unrelated))))))))
+
 (ert-deftest emacs-window-unbound-leaf-adopts-current-shared-buffer ()
   (emacs-window-test--with-fresh-world
     (let ((buffer (nelisp-ec-generate-new-buffer "*plain*")))

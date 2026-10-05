@@ -57,7 +57,8 @@
     "Replace the command loop's accumulated key string with KEYS."
     (unless (stringp keys)
       (signal 'wrong-type-argument (list 'stringp keys)))
-    (setq emacs-command-loop--this-command-keys (copy-sequence keys))
+    (setq emacs-command-loop--this-command-keys (copy-sequence keys)
+          emacs-command-loop--this-command-key-events (vconcat keys))
     nil))
 
 (unless (fboundp 'insert-special-event)

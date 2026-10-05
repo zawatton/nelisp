@@ -112,6 +112,14 @@
       (let ((last-command-event e)) (self-insert-command 1)))
     (c1-row "self-insert" (buffer-string))
     (c1-row "newline-type" (c1-error (lambda () (newline "bad"))))))
+;; Replacing the key string must replace the canonical event vector too.
+(dolist (keys (list "xy" "日本" (unibyte-string 225)))
+  (set--this-command-keys keys)
+  (c1-row "replaced-command-keys"
+          (list (this-command-keys) (this-command-keys-vector))))
+(c1-row "replaced-command-keys-type"
+        (c1-error (lambda () (set--this-command-keys [1 2]))))
+(clear-this-command-keys)
 (c1-row "DONE" t)
 (let ((transcript (apply #'concat (nreverse c1-rows))))
   (when (getenv "C1_TRANSCRIPT")

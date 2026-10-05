@@ -281,9 +281,15 @@ just-bootstrapped single-window session semantically shows anyway."
   (let ((w (emacs-window-get-window window)))
     (emacs-window--check-leaf w)
     (or (emacs-window-buffer w)
-        (let ((fallback (or (and (fboundp 'nelisp-ec-current-buffer)
-                                 (nelisp-ec-current-buffer))
-                            (and (fboundp 'current-buffer) (current-buffer)))))
+        (let* ((current (and (fboundp 'current-buffer) (current-buffer)))
+               ;; A reader with native buffers must keep that buffer family.
+               ;; An unrelated ec-buffer cannot be selected by its native API.
+               ;; Shared consumers can still assign their ec-buffer explicitly.
+               (fallback (or (and (fboundp 'nelisp-buffer-p)
+                                  (nelisp-buffer-p current) current)
+                             (and (fboundp 'nelisp-ec-current-buffer)
+                                  (nelisp-ec-current-buffer))
+                             current)))
           (when fallback
             (emacs-window-set-window-buffer w fallback))
           fallback))))
