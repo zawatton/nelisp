@@ -407,15 +407,10 @@
          (t 0))))
 
     (defun nelisp_reader_p_decode_char (payload-slot)
-      (if (>= (str-len payload-slot) 1)
-          (if (= (str-byte-at payload-slot 0) 92)
-              ;; Escape body starts at byte 1.
-              (if (>= (str-len payload-slot) 2)
-                  (nelisp_reader_p_decode_char_modifier payload-slot 1 0 1)
-                0)
-            ;; Plain `?X' — payload is one UTF-8 codepoint.
-            (nelisp_reader_p_decode_utf8_char payload-slot))
-        0))
+      (let* ((n (str-len payload-slot))
+             (escaped (if (and (> n 0) (= (str-byte-at payload-slot 0) 92)) 1 0))
+             (packed (nelisp_reader_escape_scan payload-slot escaped n escaped 0 0 0)))
+        (if (< packed 0) 0 (logand packed 2147483647))))
 
     (defun nelisp_reader_p_decode_char_escape (payload-slot start esc-byte)
       ;; START points at the escape selector byte (= byte AFTER `\\').

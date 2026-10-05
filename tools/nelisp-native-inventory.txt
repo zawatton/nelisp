@@ -1,23 +1,23 @@
 # name	verdict	reason
-+	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it)
--	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it)
-*	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it)
-/	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it)
++	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it); R2 clauses 1/5: existing marker record position coercion, Lisp reference nelisp--number-marker-value and test/nelisp-r2-reference.el
+-	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it); R2 clauses 1/5: existing marker record position coercion, Lisp reference nelisp--number-marker-value and test/nelisp-r2-reference.el
+*	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it); R2 clauses 1/5: existing marker record position coercion, Lisp reference nelisp--number-marker-value and test/nelisp-r2-reference.el
+/	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it); R2 clauses 1/5: existing marker record position coercion, Lisp reference nelisp--number-marker-value and test/nelisp-r2-reference.el
 mod	native-review	No classification row; review against Doc 211 §6.
 %	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it)
-/=	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it)
-1+	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it)
-1-	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it)
+/=	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it); R2 clauses 1/5: existing marker record position coercion, Lisp reference nelisp--number-marker-value and test/nelisp-r2-reference.el
+1+	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it); R2 clauses 1/5: existing marker record position coercion, Lisp reference nelisp--number-marker-value and test/nelisp-r2-reference.el
+1-	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it); R2 clauses 1/5: existing marker record position coercion, Lisp reference nelisp--number-marker-value and test/nelisp-r2-reference.el
 floor	native-review	No classification row; review against Doc 211 §6.
 truncate	native-review	No classification row; review against Doc 211 §6.
 ceiling	native-review	No classification row; review against Doc 211 §6.
 sin	native-demotable	Lisp range reduction + polynomial (fdlibm __kernel_sin port, GNU calls libm)
 cos	native-demotable	as sin
-=	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it)
-<	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it)
->	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it)
-<=	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it)
->=	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it)
+=	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it); R2 clauses 1/5: existing marker record position coercion, Lisp reference nelisp--number-marker-value and test/nelisp-r2-reference.el
+<	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it); R2 clauses 1/5: existing marker record position coercion, Lisp reference nelisp--number-marker-value and test/nelisp-r2-reference.el
+>	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it); R2 clauses 1/5: existing marker record position coercion, Lisp reference nelisp--number-marker-value and test/nelisp-r2-reference.el
+<=	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it); R2 clauses 1/5: existing marker record position coercion, Lisp reference nelisp--number-marker-value and test/nelisp-r2-reference.el
+>=	native-must-stay	fixnum/float arithmetic core (inlined by JIT later; keep until compiler owns it); R2 clauses 1/5: existing marker record position coercion, Lisp reference nelisp--number-marker-value and test/nelisp-r2-reference.el
 car	native-must-stay	allocation/tagged-object primitive
 cdr	native-must-stay	allocation/tagged-object primitive
 cons	native-must-stay	allocation/tagged-object primitive
@@ -131,7 +131,7 @@ nelisp--syscall-mount	native-review	No classification row; review against Doc 21
 nelisp--syscall-pivot-root	native-review	No classification row; review against Doc 211 §6.
 nelisp--write-stdout-bytes	native-review	No classification row; review against Doc 211 §6.
 nelisp--write-stderr-line	native-review	No classification row; review against Doc 211 §6.
-nelisp--read-all-from-string-native	native-review	No classification row; review against Doc 211 §6.
+nelisp--read-all-from-string-native	native-review	R2 existing reader escape fix: Minimal native surface clause 4, reader needed before the first Lisp form; Lisp fallback/reference in scripts/nelisp-stdlib-prelude.el. No new builtin entry.
 nl-current-unix-time	native-review	No classification row; review against Doc 211 §6.
 nl-unix-time-usec	native-review	No classification row; review against Doc 211 §6.
 float-time	native-must-stay	clock syscall

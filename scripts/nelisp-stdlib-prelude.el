@@ -1712,6 +1712,13 @@ from `(defvar X nil)'."
    (t 0)))
 
 ;; Doc 143 arithmetic.
+(defun nelisp--number-marker-value (value)
+  "Lisp reference for arithmetic's marker-to-position conversion."
+  (if (numberp value) value
+    (if (and (fboundp 'markerp) (markerp value))
+        (or (marker-position value) (error "Marker does not point anywhere"))
+      (signal 'wrong-type-argument (list 'number-or-marker-p value)))))
+
 (defun max (&rest args)
   ;; Name the FIRST bad argument.  The fold reported whichever one it was
   ;; holding when the comparison failed, which for (min '(1 2) '(1)) is the
@@ -1724,10 +1731,8 @@ from `(defvar X nil)'."
   ;; one itself, because from here the two calls look the same.
   (unless args
     (signal 'wrong-number-of-arguments (list 'max 0)))
-  (let ((x (car args)) (rest (cdr args)))
-    (unless (numberp x) (signal 'wrong-type-argument (list 'number-or-marker-p x)))
-    (dolist (a rest) (unless (numberp a)
-                       (signal 'wrong-type-argument (list 'number-or-marker-p a))))
+  (let ((x (nelisp--number-marker-value (car args)))
+        (rest (mapcar #'nelisp--number-marker-value (cdr args))))
     (let ((acc x))
       (while rest
         (let ((candidate (car rest)))
@@ -1750,10 +1755,8 @@ from `(defvar X nil)'."
   ;; one itself, because from here the two calls look the same.
   (unless args
     (signal 'wrong-number-of-arguments (list 'min 0)))
-  (let ((x (car args)) (rest (cdr args)))
-    (unless (numberp x) (signal 'wrong-type-argument (list 'number-or-marker-p x)))
-    (dolist (a rest) (unless (numberp a)
-                       (signal 'wrong-type-argument (list 'number-or-marker-p a))))
+  (let ((x (nelisp--number-marker-value (car args)))
+        (rest (mapcar #'nelisp--number-marker-value (cdr args))))
     (let ((acc x))
       (while rest
         (let ((candidate (car rest)))
@@ -17032,14 +17035,16 @@ in the final position (`1.' is the integer 1)."
   "Decode exactly DIGITS hexadecimal characters in BODY at POS.
 Return (CODE . NEXT-POS)."
   (when (< (- n pos) digits)
-    (signal 'invalid-read-syntax (list "Short Unicode escape")))
+    (signal 'error (list "Short Unicode escape")))
   (let ((end (+ pos digits)) (i pos) (valid t))
     (while (< i end)
       (unless (nelisp--rd-hex-digit-value (aref body i)) (setq valid nil))
       (setq i (1+ i)))
     (unless valid
-      (signal 'invalid-read-syntax (list "Invalid Unicode escape")))
-    (cons (string-to-number (substring body pos end) 16) end)))
+      (signal 'error (list "Invalid Unicode escape")))
+    (let ((code (string-to-number (substring body pos end) 16)))
+      (when (> code #x10FFFF) (error "Invalid Unicode escape"))
+      (cons code end))))
 
 (defun nelisp--rd-named-unicode-escape (body pos n)
   "Decode GNU's numeric `\\N{U+HEX}' form in BODY at POS.
@@ -17187,7 +17192,7 @@ pending modifier resolves in `nelisp--rd-string-escape' below."
                     i (1+ i) digits (1+ digits))
               (when (< cnt 3) (setq cnt (1+ cnt))))
             (when (= digits 0)
-              (signal 'invalid-read-syntax (list "Empty hex escape")))
+              (signal 'error (list "Empty hex escape")))
             (setq chr val byte8 (and (< cnt 3) (>= val 128) (< val 256)) done t)))
          ((= c 117) (let ((r (nelisp--rd-unicode-escape body i n 4)))
                       (setq chr (car r) i (cdr r) done t)))
@@ -17267,7 +17272,10 @@ line-continuation escapes, which generate nothing)."
     (while (< i n)
       (let ((c (aref body i)))
         (if (and (= c 92) (< (1+ i) n))
-            (let ((r (nelisp--rd-string-escape body (1+ i) n)))
+            (let ((r (condition-case nil
+                         (nelisp--rd-string-escape body (1+ i) n)
+                       (end-of-file
+                        (signal 'invalid-read-syntax (list "Invalid modifier in string"))))))
               (setq out (concat out (car r)) i (cdr r)))
           (setq out (concat out (char-to-string c)) i (1+ i)))))
     out))
@@ -17395,61 +17403,17 @@ from the top-level empty read that callers turn into `end-of-file' or nil."
         (if (and (< (1+ i) n) (= (aref s (1+ i)) 64))
             (let ((r (nelisp--rd-one s (+ i 2) n))) (cons (list (intern ",@") (car r)) (cdr r)))
           (let ((r (nelisp--rd-one s (1+ i) n))) (cons (list (intern ",") (car r)) (cdr r)))))
-        ((= c 63) ; ?  -- character literal
-        ;; This arm did not exist, so `?x' fell through to the atom path
-        ;; and `read-from-string' answered the SYMBOL `?x' where Emacs
-        ;; answers the integer 120.  Found by routing `read' through the
-        ;; native parser (Doc 201 §6.9 item 5) and comparing the two
-        ;; readers on the same input: the native one was right.  Every
-        ;; expected value in the corpus this was written against was read
-        ;; out of stock Emacs 30.1, not derived from the manual.
-        ;;
-        ;; Covers `?C' and the single-character escapes, plus (below) the
-        ;; modifier syntaxes `?\C-x' / `?\M-x' / `?\^x' / `?\S-x' / `?\H-x'
-        ;; / `?\A-x' / `?\s-x', by way of `nelisp--rd-modified-string-
-        ;; escape' -- the same GNU `read_char_escape' mirror the string
-        ;; reader uses.  A stacked modifier used to control-fold the
-        ;; ESCAPING BACKSLASH BYTE of its target when that target was
-        ;; itself an escape (`?\C-\[' gave 28, Control-backslash, instead
-        ;; of 27/ESC, Control-`[' -- the correct char never got resolved
-        ;; before the fold ran).  The numeric escapes (octal/hex/Unicode)
-        ;; as bare, unmodified character-literal targets are still NOT
-        ;; covered and fall through to the atom path exactly as before.
-        (if (>= (1+ i) n)
-            (let* ((e (nelisp--rd-atom-end s i n)))
-              (cons (intern (substring s i e)) e))
-          (let ((c1 (aref s (1+ i))))
-            (if (= c1 92) ; backslash
-                (if (>= (+ i 2) n)
-                    (cons (intern (substring s i (nelisp--rd-atom-end s i n)))
-                          (nelisp--rd-atom-end s i n))
-                  (let ((c2 (aref s (+ i 2))))
-                    (if (= c2 78) ; N -- ?\N{U+XXXX} (names need a database)
-                        (let ((r (nelisp--rd-named-unicode-escape s (+ i 2) n)))
-                          r)
-                    (if (memq c2 '(77 83 72 65 115 67 94)) ; M S H A s C ^
-                        ;; GNU's `read_char_literal' simply ORs any modifier
-                        ;; bits `read_char_escape' leaves pending onto the
-                        ;; resolved base character -- unlike a string, there
-                        ;; is no shift-fold, no meta high-bit move, and no
-                        ;; "Invalid modifier" validation.
-                        (let* ((r (nelisp--rd-modified-string-escape s (+ i 2) n))
-                               (chr (nth 0 r)) (modifiers (nth 1 r))
-                               (next (nth 3 r)))
-                          (cons (logior chr modifiers) next))
-                      (let ((v (cond ((= c2 110) 10)   ; n
-                                     ((= c2 116) 9)    ; t
-                                     ((= c2 114) 13)   ; r
-                                     ((= c2 102) 12)   ; f
-                                     ((= c2 101) 27)   ; e
-                                     ((= c2 97) 7)     ; a
-                                     ((= c2 98) 8)     ; b
-                                     ((= c2 100) 127)  ; d
-                                     ((= c2 118) 11)   ; v
-                                     ((= c2 48) 0)     ; 0
-                                     (t c2))))         ; \ \" \? \( ...
-                        (cons v (+ i 3)))))))
-              (cons c1 (+ i 2))))))
+       ((= c 63) ; ? -- shared escape policy, without string modifier folding.
+        (when (>= (1+ i) n) (signal 'end-of-file nil))
+        (let* ((escaped (= (aref s (1+ i)) 92))
+               (r (if escaped
+                      (nelisp--rd-modified-string-escape s (+ i 2) n)
+                    (list (aref s (1+ i)) 0 nil (+ i 2))))
+               (next (nth 3 r)))
+          (when (and (< next n)
+                     (not (memq (aref s next) '(9 10 13 32 40 41 91 93 34 39 59 96 44))))
+            (signal 'invalid-read-syntax (list "Invalid character literal")))
+          (cons (logior (nth 0 r) (nth 1 r)) next)))
        ((= c 35) ; #
          (cond
           ;; `#[...]' byte-code closure.  Validate the GNU reader's six-slot

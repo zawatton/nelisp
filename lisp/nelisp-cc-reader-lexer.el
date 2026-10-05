@@ -453,26 +453,181 @@
            (nelisp_reader_push_plain_char_bytes
             str-ptr cursor n scratch width (+ pushed 1))))))
 
-    (defun nelisp_reader_char_body (str-ptr cursor n scratch)
-      (if (>= cursor n)
-          -1
-        (if (= (str-byte-at str-ptr cursor) 92)
-            ;; `?\\X...' — push the `\\' + the next byte unconditionally
-            ;; (handles `?\\)' / `?\\\"' which would otherwise terminate),
-            ;; then continue with the tail scanner.
-            (if (>= (+ cursor 1) n)
-                -1
-              (nelisp_reader_prog2
-               (mut-str-push-byte scratch 92)
-               (nelisp_reader_prog2
-                (mut-str-push-byte scratch (str-byte-at str-ptr (+ cursor 1)))
-                (nelisp_reader_char_body_tail
-                 str-ptr (+ cursor 2) n scratch))))
-          ;; `?X' — push the complete UTF-8 codepoint byte sequence.
-          (nelisp_reader_push_plain_char_bytes
-           str-ptr cursor n scratch
-           (nelisp_reader_utf8_width (str-byte-at str-ptr cursor))
+    ;; R2: one byte-cursor escape scanner for the load reader's character and
+    ;; string paths. Packed result = NEXT*2^32 + CODE, bit 31 marks a raw byte.
+    ;; Negative results decline malformed syntax; read-from-string then uses
+    ;; its Lisp reference reader, retaining GNU's precise condition family.
+    (defun nelisp_reader_escape_pack (next code raw)
+      (+ (* next 4294967296) (+ code (* raw 2147483648))))
+    (defun nelisp_reader_escape_digits (src at n radix cap exact value count)
+      (if (or (>= at n) (>= count cap)
+              (< (nelisp_reader_hex_digit_value (str-byte-at src at)) 0)
+              (>= (nelisp_reader_hex_digit_value (str-byte-at src at)) radix))
+          (if (or (= count 0) (and (= exact 1) (< count cap))) -1
+            (nelisp_reader_escape_pack at value 0))
+        (let ((next (+ (* value radix)
+                       (nelisp_reader_hex_digit_value (str-byte-at src at)))))
+          (if (> next 4194303) -1
+            (nelisp_reader_escape_digits
+             src (+ at 1) n radix cap exact next (+ count 1))))))
+    (defun nelisp_reader_escape_numeric (src at n selector)
+      (let* ((start (if (and (>= selector 48) (<= selector 55)) at (+ at 1)))
+             (packed
+              (cond
+               ((and (>= selector 48) (<= selector 55))
+                (nelisp_reader_escape_digits src start n 8 3 0 0 0))
+               ((= selector 120)
+                (nelisp_reader_escape_digits src start n 16 n 0 0 0))
+               ((or (= selector 117) (= selector 85))
+                (nelisp_reader_escape_digits
+                 src start n 16 (if (= selector 117) 4 8) 1 0 0))
+               ((= selector 78)
+                (if (and (< (+ at 4) n)
+                         (= (str-byte-at src (+ at 1)) 123)
+                         (= (str-byte-at src (+ at 2)) 85)
+                         (= (str-byte-at src (+ at 3)) 43))
+                    (nelisp_reader_escape_digits src (+ at 4) n 16 n 0 0 0)
+                  -1))
+               (t -1))))
+        (if (< packed 0) -1
+          (let* ((next (/ packed 4294967296))
+                 (code (logand packed 2147483647)))
+            (if (and (or (= selector 117) (= selector 85) (= selector 78))
+                     (> code 1114111)) -1
+              (if (= selector 78)
+                  (if (and (< next n) (= (str-byte-at src next) 125))
+                      (nelisp_reader_escape_pack (+ next 1) code 0)
+                    -1)
+                (nelisp_reader_escape_pack
+                 next code
+                 (if (and (>= code 128) (<= code 255)
+                          (or (and (>= selector 48) (<= selector 55))
+                              (and (= selector 120) (< (- next start) 3))))
+                     1 0))))))))
+    (defun nelisp_reader_escape_plain (src at n)
+      (let* ((b (str-byte-at src at)) (width (nelisp_reader_utf8_width b)))
+        (if (> (+ at width) n) -1
+          (nelisp_reader_escape_pack
+           (+ at width)
+           (cond
+            ((= width 1) b)
+            ((= width 2)
+             (+ (* (logand b 31) 64) (logand (str-byte-at src (+ at 1)) 63)))
+            ((= width 3)
+             (+ (* (logand b 15) 4096)
+                (+ (* (logand (str-byte-at src (+ at 1)) 63) 64)
+                   (logand (str-byte-at src (+ at 2)) 63))))
+            (t (+ (* (logand b 7) 262144)
+                  (+ (* (logand (str-byte-at src (+ at 1)) 63) 4096)
+                     (+ (* (logand (str-byte-at src (+ at 2)) 63) 64)
+                        (logand (str-byte-at src (+ at 3)) 63))))))
            0))))
+    (defun nelisp_reader_escape_base (src at n escaped)
+      (let ((b (str-byte-at src at)))
+        (if (= escaped 0) (nelisp_reader_escape_plain src at n)
+          (if (or (and (>= b 48) (<= b 55))
+                  (= b 120) (= b 117) (= b 85) (= b 78))
+              (nelisp_reader_escape_numeric src at n b)
+            (nelisp_reader_escape_pack
+             (+ at 1)
+             (cond ((= b 97) 7) ((= b 98) 8) ((= b 100) 127)
+                   ((= b 101) 27) ((= b 102) 12) ((= b 110) 10)
+                   ((= b 114) 13) ((= b 115) 32) ((= b 116) 9)
+                   ((= b 118) 11) (t b)) 0)))))
+    (defun nelisp_reader_escape_resolve (packed mods control mode)
+      (if (< packed 0) -1
+        (let* ((next (/ packed 4294967296))
+               (chr (logand packed 2147483647))
+               (raw (if (= (logand packed 2147483648) 0) 0 1)))
+          (seq
+           (while (> control 0)
+             (seq
+              (cond
+               ((= chr 63) (setq chr 127))
+               ((or (and (>= chr 64) (<= chr 95))
+                    (and (>= chr 97) (<= chr 122)))
+                (setq chr (logand chr 31)))
+               (t (setq mods (logior mods 67108864))))
+              (setq control (- control 1))))
+           (if (= mode 0)
+               (nelisp_reader_escape_pack next (logior chr mods) 0)
+             (if (and (or (= raw 1) (>= chr 128)) (> mods 0)) -1
+               (seq
+                (if (and (= mods 67108864) (= chr 32))
+                    (seq (setq chr 0) (setq mods 0)) 0)
+                (if (= (logand mods 33554432) 0) 0
+                  (cond
+                   ((and (>= chr 65) (<= chr 90))
+                    (setq mods (- mods 33554432)))
+                   ((and (>= chr 97) (<= chr 122))
+                    (seq (setq chr (- chr 32)) (setq mods (- mods 33554432))))))
+                (if (= (logand mods 134217728) 0) 0
+                  (seq (setq mods (- mods 134217728))
+                       (setq chr (logior chr 128)) (setq raw 1)))
+                (if (> mods 0) -1
+                  (nelisp_reader_escape_pack next chr raw)))))))))
+    (defun nelisp_reader_escape_scan (src at n escaped mods control mode)
+      (if (>= at n) -1
+        (let ((b (str-byte-at src at)))
+          (if (and (= escaped 1)
+                   (or (= b 77) (= b 83) (= b 72) (= b 65) (= b 67)
+                       (= b 94)
+                       (and (= b 115) (< (+ at 1) n)
+                            (= (str-byte-at src (+ at 1)) 45))))
+              (if (and (/= b 94)
+                       (or (>= (+ at 1) n) (/= (str-byte-at src (+ at 1)) 45)))
+                  -1
+                (let* ((next (+ at (if (= b 94) 1 2)))
+                       (ctrl (if (or (= b 67) (= b 94)) 1 0))
+                       (bit (cond ((= b 77) 134217728) ((= b 83) 33554432)
+                                  ((= b 72) 16777216) ((= b 65) 4194304)
+                                  ((= b 115) 8388608) (t 0))))
+                  (if (>= next n) -1
+                    (if (= (str-byte-at src next) 92)
+                        (nelisp_reader_escape_scan
+                         src (+ next 1) n 1 (logior mods bit) (+ control ctrl) mode)
+                      (nelisp_reader_escape_scan
+                       src next n 0 (logior mods bit) (+ control ctrl) mode)))))
+            (nelisp_reader_escape_resolve
+             (nelisp_reader_escape_base src at n escaped) mods control mode)))))
+
+    (defun nelisp_reader_string_push_code (src next n scratch code raw)
+      (if (= raw 1)
+          (nelisp_reader_string_push_raw_byte src next n scratch code)
+        (if (< code 128)
+            (nelisp_reader_prog2 (mut-str-push-byte scratch code)
+                                (nelisp_reader_string_body src next n scratch))
+          (if (= (sexp-tag scratch) 15) -2
+            (seq
+             (cond
+              ((< code 2048)
+               (seq (mut-str-push-byte scratch (+ 192 (/ code 64)))
+                    (mut-str-push-byte scratch (+ 128 (logand code 63)))))
+              ((< code 65536)
+               (seq (mut-str-push-byte scratch (+ 224 (/ code 4096)))
+                    (mut-str-push-byte scratch (+ 128 (logand (/ code 64) 63)))
+                    (mut-str-push-byte scratch (+ 128 (logand code 63)))))
+              (t (seq (mut-str-push-byte scratch (+ 240 (/ code 262144)))
+                      (mut-str-push-byte scratch (+ 128 (logand (/ code 4096) 63)))
+                      (mut-str-push-byte scratch (+ 128 (logand (/ code 64) 63)))
+                      (mut-str-push-byte scratch (+ 128 (logand code 63))))))
+             (nelisp_reader_string_body src next n scratch))))))
+
+    (defun nelisp_reader_char_body (str-ptr cursor n scratch)
+      (if (>= cursor n) -1
+        (let* ((escaped (if (= (str-byte-at str-ptr cursor) 92) 1 0))
+               (packed (nelisp_reader_escape_scan
+                        str-ptr (+ cursor escaped) n escaped 0 0 0)))
+          (if (< packed 0) -1
+            (let ((end (/ packed 4294967296)) (at cursor))
+              (if (and (< end n)
+                       (= (nelisp_reader_is_atom_term (str-byte-at str-ptr end)) 0))
+                  -1
+                (seq
+                 (while (< at end)
+                   (seq (mut-str-push-byte scratch (str-byte-at str-ptr at))
+                        (setq at (+ at 1))))
+                 end)))))))
 
     (defun nelisp_reader_lex_char_finalize
         (end-or-err payload-slot cursor-out-slot scratch)
@@ -791,96 +946,20 @@
              (nelisp_reader_string_modifier_char selector escaped)))))))
 
     (defun nelisp_reader_string_escape (str-ptr cursor n scratch)
-      ;; CURSOR points at the byte AFTER `\\'.
-      (cond
-       ;; One to three octal digits.  Values 128..255 are raw bytes and
-       ;; values 256..511 are ordinary multibyte characters.
-       ((= (nelisp_reader_is_oct_digit
-            (str-byte-at str-ptr cursor)) 1)
-        (nelisp_reader_string_octal str-ptr cursor n scratch))
-       ;; Exactly two hex digits, yielding one byte.
-       ((= (str-byte-at str-ptr cursor) 120)
-        (nelisp_reader_string_hex str-ptr cursor n scratch))
-       ;; `\\a' -> BEL
-       ((= (str-byte-at str-ptr cursor) 97)
-        (nelisp_reader_prog2
-         (mut-str-push-byte scratch 7)
-         (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch)))
-       ;; `\\b' -> BS
-       ((= (str-byte-at str-ptr cursor) 98)
-        (nelisp_reader_prog2
-         (mut-str-push-byte scratch 8)
-         (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch)))
-       ;; `\\d' -> DEL
-       ((= (str-byte-at str-ptr cursor) 100)
-        (nelisp_reader_prog2
-         (mut-str-push-byte scratch 127)
-         (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch)))
-       ;; `\\e' -> ESC
-       ((= (str-byte-at str-ptr cursor) 101)
-        (nelisp_reader_prog2
-         (mut-str-push-byte scratch 27)
-         (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch)))
-       ;; `\\f' -> FF
-       ((= (str-byte-at str-ptr cursor) 102)
-        (nelisp_reader_prog2
-         (mut-str-push-byte scratch 12)
-         (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch)))
-       ;; `\\n' -> LF
-       ((= (str-byte-at str-ptr cursor) 110)
-        (nelisp_reader_prog2
-         (mut-str-push-byte scratch 10)
-         (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch)))
-       ;; `\\r' -> CR
-       ((= (str-byte-at str-ptr cursor) 114)
-        (nelisp_reader_prog2
-         (mut-str-push-byte scratch 13)
-         (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch)))
-       ;; `\\s' -> SP
-       ((= (str-byte-at str-ptr cursor) 115)
-        (nelisp_reader_prog2
-         (mut-str-push-byte scratch 32)
-         (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch)))
-       ;; `\\t' -> TAB
-       ((= (str-byte-at str-ptr cursor) 116)
-        (nelisp_reader_prog2
-         (mut-str-push-byte scratch 9)
-         (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch)))
-       ;; `\\v' -> VT
-       ((= (str-byte-at str-ptr cursor) 118)
-        (nelisp_reader_prog2
-         (mut-str-push-byte scratch 11)
-         (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch)))
-       ;; `\\\\' -> backslash
-       ((= (str-byte-at str-ptr cursor) 92)
-        (nelisp_reader_prog2
-         (mut-str-push-byte scratch 92)
-         (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch)))
-       ;; `\\"' -> double quote
-       ((= (str-byte-at str-ptr cursor) 34)
-        (nelisp_reader_prog2
-         (mut-str-push-byte scratch 34)
-         (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch)))
-       ;; `\\<SP>' -> line continuation (drop both bytes).
-       ((= (str-byte-at str-ptr cursor) 32)
-        (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch))
-       ;; `\\<LF>' -> line continuation (drop both bytes).
-       ((= (str-byte-at str-ptr cursor) 10)
-        (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch))
-       ;; Modifier chains.  One decoder handles both orders of `\M-\C-x',
-       ;; escaped targets such as `\M-\C-\\', and `\S-a'.
-       ((or (= (str-byte-at str-ptr cursor) 67)
-            (= (str-byte-at str-ptr cursor) 94)
-            (= (str-byte-at str-ptr cursor) 77)
-            (= (str-byte-at str-ptr cursor) 83)
-            (= (str-byte-at str-ptr cursor) 72)
-            (= (str-byte-at str-ptr cursor) 65))
-        (nelisp_reader_string_modifier str-ptr cursor n scratch 0 1))
-       ;; Unknown escape: drop backslash, push the byte literal.
-       (t
-        (nelisp_reader_prog2
-         (mut-str-push-byte scratch (str-byte-at str-ptr cursor))
-         (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch)))))
+      (let ((selector (str-byte-at str-ptr cursor)))
+        (cond
+         ((or (= selector 32) (= selector 10))
+          (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch))
+         ;; GNU treats a top-level string \s as space, even before `-'.
+         ((= selector 115)
+          (nelisp_reader_string_push_code str-ptr (+ cursor 1) n scratch 32 0))
+         (t (let ((packed (nelisp_reader_escape_scan
+                          str-ptr cursor n 1 0 0 1)))
+              (if (< packed 0) -1
+                (nelisp_reader_string_push_code
+                 str-ptr (/ packed 4294967296) n scratch
+                 (logand packed 2147483647)
+                 (if (= (logand packed 2147483648) 0) 0 1))))))))
 
     ;; ===========================================================
     ;; Lone-`.' detector by scanning source bytes (no
