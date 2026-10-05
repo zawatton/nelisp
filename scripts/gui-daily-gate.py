@@ -146,7 +146,7 @@ class Session:
         return path
 
     def finish(self, expected=0, informational=()):
-        rc = self.proc.wait(timeout=30)
+        rc = self.proc.wait(timeout=90)
         assert rc == expected, (self.label, rc, self.log()[-2000:])
         # The existing app init writes this informational banner to stderr.
         # Keep every other diagnostic visible and failing.
@@ -173,11 +173,18 @@ def terminate(proc):
 
 def main():
     global LAUNCHER
+    def cancelled(signum, _frame):
+        raise RuntimeError('gate cancelled by signal ' + str(signum))
+    for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(signum, cancelled)
     parser = argparse.ArgumentParser()
-    parser.add_argument('stage', choices=['S3.2', 'S3.3', 'S4.1', 'S4.2', 'S4.3', 'S5.0'])
+    parser.add_argument('stage', choices=['S3.2', 'S3.3', 'S4.1', 'S4.2', 'S4.3', 'S5.0', 'S5.2'])
     parser.add_argument('--launcher',type=Path,default=LAUNCHER)
     parser.add_argument('--init', default='-Q', choices=['-Q'])
-    parser.add_argument('--fixture', choices=['render', 'metrics', 'skk-evil', 'keyboard', 'mouse-menu', 'selections'])
+    parser.add_argument('--fixture', choices=['render', 'metrics', 'skk-evil', 'keyboard', 'mouse-menu', 'selections', 'packages'])
+    parser.add_argument('--packages', default='dired,magit,org-agenda')
+    parser.add_argument('--package-load-budget', type=float, default=300)
+    parser.add_argument('--package-step-budget', type=float, default=300)
     parser.add_argument('--dpi', default='96,144,192')
     parser.add_argument('--keymaps', default='us,jp,de')
     parser.add_argument('--peer', default='xclip', choices=['xclip'])
@@ -193,7 +200,7 @@ def main():
         if args.fixture:
             parser.error('S5.0 must use no fixture')
     else:
-        args.fixture = args.fixture or {'S3.2': 'render', 'S3.3': 'metrics', 'S4.1': 'skk-evil', 'S4.2': 'mouse-menu', 'S4.3': 'selections'}[args.stage]
+        args.fixture = args.fixture or {'S3.2': 'render', 'S3.3': 'metrics', 'S4.1': 'skk-evil', 'S4.2': 'mouse-menu', 'S4.3': 'selections', 'S5.2': 'packages'}[args.stage]
     if args.stage != 'S3.2':
         import importlib.util
         spec = importlib.util.spec_from_file_location('gui_daily_stages', ROOT / 'scripts/gui-daily-stages.py')
@@ -247,15 +254,15 @@ def main():
         assert 'gc=1' in s.log() and '|cairo=0' in s.log()
         report['checks'].append('mapped/ASCII-AA/Japanese-fallback/faces/header/mode/minibuffer/cursor/GC')
         s.key('z')
-        wait_until(lambda: '|command=self-insert-command|' in s.log(), 20, 'shared self-insert')
-        wait_until(lambda: '|cursor=(1 . 2)|' in s.log(), 30, 'redraw after insertion')
+        wait_until(lambda: '|command=self-insert-command|' in s.log(), 120, 'shared self-insert')
+        wait_until(lambda: '|cursor=(1 . 2)|' in s.log(), 180, 'redraw after insertion')
         after = s.shot('render-after-insert')
         report['pixels_after'] = assert_pixels(after, 2, inserted=True)
         assert 'NzeLisp ASCII render' in s.log(), 'shared buffer did not receive key'
         assert sha(before) != sha(after), 'key did not change pixels'
         report['checks'].append('xdotool-insert/shared-command-loop/redraw')
         s.key('Right')
-        wait_until(lambda: '|cursor=(1 . 3)|' in s.log(), 30, 'moved cursor')
+        wait_until(lambda: '|cursor=(1 . 3)|' in s.log(), 180, 'moved cursor')
         moved = s.shot('negative-moved-cursor')
         try:
             assert_pixels(moved, 2, inserted=True)

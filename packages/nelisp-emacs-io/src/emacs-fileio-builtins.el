@@ -483,6 +483,10 @@ literal dollar sign; substituted values are never expanded recursively."
   (defvar default-buffer-file-coding-system 'utf-8-unix
     "Standalone default coding system for visited files."))
 
+(unless (boundp 'default-file-name-coding-system)
+  (defvar default-file-name-coding-system 'utf-8-unix
+    "Default filename coding system for the UTF-8 standalone substrate."))
+
 (unless (boundp 'default-process-coding-system)
   (defvar default-process-coding-system '(utf-8-unix . utf-8-unix)
     "Standalone default coding systems for subprocess I/O."))
@@ -1111,7 +1115,7 @@ Emacs' `make-temp-name'; it does NOT create the file."
          (name nil)
          (n 0))
     (while (and (or (null name)
-                    (nelisp-ec-file-exists-p name))
+                    (nelisp-ec-file-exists-p (expand-file-name name)))
                 (< n 100000))
       (setq emacs-fileio--temp-counter (1+ emacs-fileio--temp-counter)
             n (1+ n)
@@ -1134,29 +1138,46 @@ Emacs' `make-temp-name'; it does NOT create the file."
       (setq candidates (cdr candidates)))
     (or found "/tmp/")))
 
-(defun emacs-fileio-make-temp-file (prefix &optional dir-flag suffix text)
-  "Standalone `make-temp-file': create a unique temp file, return its name.
-PREFIX is taken relative to `temporary-file-directory'.  SUFFIX, when a
-string, is appended.  TEXT, when a string, is written as the initial
-contents.  DIR-FLAG creates a directory instead (needs `make-directory')."
-  (let* ((dir (file-name-as-directory
-               (emacs-fileio-builtins--usable-temp-dir)))
-         (name (emacs-fileio-make-temp-name (concat dir prefix))))
+(defun emacs-fileio--create-temp-file (prefix dir-flag suffix text)
+  "Create a unique file from PREFIX without calling `make-temp-file'."
+  (let ((name (emacs-fileio-make-temp-name prefix)))
     ;; A suffix can re-introduce a collision; bump until the full name is free.
     (when (stringp suffix)
       (setq name (concat name suffix))
-      (while (nelisp-ec-file-exists-p name)
-        (setq name (concat (emacs-fileio-make-temp-name (concat dir prefix))
+      (while (nelisp-ec-file-exists-p (expand-file-name name))
+        (setq name (concat (emacs-fileio-make-temp-name prefix)
                            suffix))))
-    (cond
-     (dir-flag
-      (if (fboundp 'make-directory)
-          (progn (make-directory name t) name)
-        (signal 'file-error
-                (list "make-temp-file: directory creation unsupported" name))))
-     (t
-      (write-region (if (stringp text) text "") nil name)
-      name))))
+    (let ((path (expand-file-name name)))
+      (cond
+       (dir-flag
+        (if (fboundp 'make-directory)
+            (make-directory path)
+          (signal 'file-error
+                  (list "make-temp-file: directory creation unsupported" path))))
+       (t
+        (write-region (if (stringp text) text "") nil path)))
+      (set-file-modes path (if dir-flag #o700 #o600)))
+    name))
+
+(defun emacs-fileio-make-temp-file (prefix &optional dir-flag suffix text)
+  "Create a unique private file, using PREFIX relative to the temp directory.
+Absolute PREFIX is honored.  SUFFIX is appended and TEXT is the initial
+contents.  DIR-FLAG creates a private directory instead."
+  (emacs-fileio--create-temp-file
+   (expand-file-name prefix (emacs-fileio-builtins--usable-temp-dir))
+   dir-flag suffix text))
+
+(defun emacs-fileio-make-temp-file-internal (prefix dir-flag suffix text)
+  "Implement GNU's primitive without recursing through its Lisp entry point.
+PREFIX is absolute or relative to `default-directory', not the temp directory."
+  (unless (stringp prefix) (signal 'wrong-type-argument (list 'stringp prefix)))
+  (unless (stringp suffix) (signal 'wrong-type-argument (list 'stringp suffix)))
+  (emacs-fileio--create-temp-file prefix dir-flag suffix text))
+
+(when (or (not (emacs-fileio-builtins--function-cell-live-p 'make-temp-file-internal))
+          (get 'make-temp-file-internal 'emacs-cc-fileio-fallback))
+  (defalias 'make-temp-file-internal #'emacs-fileio-make-temp-file-internal)
+  (put 'make-temp-file-internal 'emacs-cc-fileio-fallback nil))
 
 (defun emacs-fileio-builtins-make-temp-file (prefix &optional dir-flag suffix text)
   "Sentinel-safe wrapper for `make-temp-file'."

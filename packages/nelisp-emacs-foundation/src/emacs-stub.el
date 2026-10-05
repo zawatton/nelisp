@@ -307,6 +307,12 @@ is accepted for API parity but ignored."
 this; for now we follow `display-graphic-p'."
   (emacs-display-graphic-p display))
 
+(defun emacs-display-images-p (&optional display)
+  "Return non-nil if DISPLAY is graphical and has GNU image primitives."
+  (and (display-graphic-p display)
+       (fboundp 'image-mask-p)
+       (fboundp 'image-size)))
+
 (defun emacs-display-multi-frame-p (&optional display)
   "MVP: any non-nil backend can host multiple frames.  Refined when
 single-frame backends (= some bare-minimum TUIs) ship."
@@ -346,6 +352,9 @@ conservatively reports nil, matching stock Emacs's own tty default."
 
 (when (emacs-stub--install-function-p 'display-color-p)
   (defalias 'display-color-p #'emacs-display-color-p))
+
+(when (emacs-stub--install-function-p 'display-images-p)
+  (defalias 'display-images-p #'emacs-display-images-p))
 
 (when (emacs-stub--install-function-p 'display-multi-frame-p)
   (defalias 'display-multi-frame-p #'emacs-display-multi-frame-p))
@@ -477,10 +486,24 @@ font/charset capability query."
 (unless (fboundp 'subrp)
   (defun subrp (object) (ignore object) nil))
 
+(defvar emacs-subr-metadata--buffer-constructor
+  (and (fboundp 'nelisp-get-buffer-create)
+       (fboundp 'get-buffer-create)
+       (symbol-function 'get-buffer-create))
+  "Exact standalone buffer constructor installed by the runtime prelude.
+It replaces a GNU C primitive with Lisp, while retaining its calling contract.
+Keep the callable itself, so later user redefinitions are not classified as
+primitive replacements just because they use the same symbol name.")
+
 (unless (fboundp 'subr-arity)
   (defun subr-arity (subr)
-    "Return the minimum and maximum argument counts of built-in SUBR."
-    (unless (subrp subr)
+    "Return argument counts of SUBR or the registered buffer primitive.
+The standalone buffer constructor is Lisp; GNU packages such as org-compat
+introspect this primitive to select its optional-argument calling convention.
+Unregistered Lisp functions still fail the ordinary subr type check."
+    (unless (or (subrp subr)
+                (and emacs-subr-metadata--buffer-constructor
+                     (eq subr emacs-subr-metadata--buffer-constructor)))
       (signal 'wrong-type-argument (list 'subrp subr)))
     (func-arity subr)))
 
@@ -3968,6 +3991,13 @@ release that package version targets."))
     (when (fboundp 'nelisp--defvaralias-resync)
       (nelisp--defvaralias-resync symbol))
     symbol))
+
+;; The standalone Custom fallback initializes values immediately.  If GNU
+;; custom.el is loaded later, it must also initialize :initialize-delay values
+;; in this running editor instead of queueing them for a host startup that will
+;; never run.  Keep an existing host startup queue untouched.
+(defvar custom-delayed-init-variables t
+  "Standalone Custom initialization is complete; GNU may initialize normally.")
 
 (unless (fboundp 'custom-declare-face)
   (defun custom-declare-face (face spec doc &rest args)

@@ -115,4 +115,8 @@ pending
 pending
 
 ** S5.2 Real packages in the GUI: dired, magit status, org agenda open and render without errors
-pending
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 600
+cmd: bash -c 'timeout 240 python3 scripts/gui-daily-build.py >/dev/null 2>&1 && EMACS=emacs xvfb-run -a -s "-screen 0 1600x1000x24 -dpi 96 -nolisten tcp" timeout 340 python3 scripts/gui-daily-gate.py S5.2 --init=-Q --fixture=packages --packages=dired,magit,org-agenda'
+
+#+NOTE: 2026-10-06 lane S52b wires the real-package criterion on the current G2/C1/X3 base. Build its GUI image first with python3 scripts/gui-daily-build.py. Genuine GNU and installed package sources are copied read-only into an isolated HOME; source hashes, load steps, settled key waits, screenshots, and disposable Git state are retained under build/gui-daily/S5.2/. Missing sources and Lisp errors fail. No package stubs or native builds. Shared keymap/editing requests remain unapplied in NEEDS-SHARED.md; loading a named fixture buffer does not satisfy this criterion.

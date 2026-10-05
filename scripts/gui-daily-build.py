@@ -30,6 +30,7 @@ MEMBERS = [
     'packages/nelisp-gui-xcb/fixtures/keyboard.el',
     'packages/nelisp-gui-xcb/fixtures/mouse-menu.el',
     'packages/nelisp-gui-xcb/fixtures/selections.el',
+    'packages/nelisp-gui-xcb/fixtures/packages.el',
 ]
 # The GUI image gets its own bundle so the certified C-core bundle stays untouched.
 GUI_BUNDLE = ROOT / 'build/nemacs-gui-bootstrap.el'
@@ -60,7 +61,7 @@ def main():
     sources = MEMBERS + ['vendor/staged-emacs-lisp/subr.el', 'packages/nelisp-emacs-core/src/emacs-frame.el',
                          'packages/nelisp-emacs-core/src/emacs-keymap.el',
                          'packages/nelisp-emacs-core/src/emacs-keymap-builtins.el',
-                         'scripts/gui-daily-fixtures.py',
+                         'scripts/gui-daily-fixtures.py', 'scripts/gui-daily-packages.py',
                          'packages/nelisp-emacs-app-gui/src/nemacs-main.el',
                          'packages/nelisp-emacs-app-gui/src/nemacs-loadup.el',
                          'packages/nelisp-emacs-core/src/emacs-window.el',

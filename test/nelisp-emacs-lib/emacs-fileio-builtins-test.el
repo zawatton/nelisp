@@ -1418,3 +1418,34 @@ lambda over the same fileio substrate (parity pattern)."
           (should (progn (funcall cp src dst t) t)))
       (ignore-errors (delete-file src))
       (ignore-errors (delete-file dst)))))
+
+(ert-deftest emacs-fileio-builtins-test/internal-temp-does-not-call-high-level ()
+  "GNU files.el can own make-temp-file without re-entering the primitive."
+  (let* ((root (make-temp-file "s52-internal-" t))
+         (default-directory (file-name-as-directory root))
+         (temporary-file-directory (concat root "/other/"))
+         paths)
+    (unwind-protect
+        (cl-letf (((symbol-function 'make-temp-file)
+                   (lambda (&rest _args) (error "recursive high-level temp call"))))
+          (dolist (directory '(nil t))
+            (let ((path (emacs-fileio-make-temp-file-internal
+                         "fixture-" directory ".tmp" (unless directory "GUI α"))))
+              (push path paths)
+              (should-not (file-name-absolute-p path))
+              (should (equal (file-name-directory (expand-file-name path)) default-directory))
+              (should (string-suffix-p ".tmp" path))
+              (should (= (logand (file-modes path) #o777)
+                         (if directory #o700 #o600)))
+              (if directory
+                  (should (file-directory-p path))
+                (should (equal "GUI α" (with-temp-buffer
+                                        (insert-file-contents path) (buffer-string))))))))
+      (dolist (path paths)
+        (if (file-directory-p path) (delete-directory path) (delete-file path)))
+      (delete-directory root t))))
+
+(ert-deftest emacs-fileio-builtins-test/internal-temp-gnu-argument-errors ()
+  (dolist (args '((7 nil "" nil) (nil nil "" nil) ("prefix" nil 7 nil) ("prefix" nil nil nil)))
+    (should (equal (condition-case e (apply #'make-temp-file-internal args) (error e))
+                   (condition-case e (apply #'emacs-fileio-make-temp-file-internal args) (error e))))))

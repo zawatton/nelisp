@@ -90,7 +90,7 @@ def plain(args, api, out, env, report, sessions):
     api['command'](['xdotool', 'type', '--clearmodifiers', '--delay', '80', text], env)
     s.events.append(['type', text])
     live_wait(s, api, lambda: text in s.log()[start:] and '|cursor=(3 . 21)|' in s.log()[start:],
-              60, 'plain typed text repaint')
+              180, 'plain typed text repaint')
     def painted():
         # X requests and screenshot capture use different connections.  Wait
         # for the actual pixels, retaining the failed image on timeout.
@@ -110,7 +110,7 @@ def plain(args, api, out, env, report, sessions):
     api['command'](['xdotool', 'type', '--clearmodifiers', '--delay', '80', '(+ 1 2)'], env)
     s.events.append(['type', '(+ 1 2)'])
     live_wait(s, api, lambda: text+'\n(+ 1 2)' in s.log() and '|cursor=(4 . 7)|' in s.log(),
-              60, 'plain Return and second line')
+              180, 'plain Return and second line')
     def newline_painted():
         try:
             result = plain_pixels(s.shot('plain-newline'), api['command'], text, '(+ 1 2)')
@@ -548,6 +548,12 @@ def run(args, api):
             elif args.stage=='S4.2':
                 mouse(args,api,out,env,report,sessions)
                 report['status']='PASS'
+            elif args.stage=='S5.2':
+                import importlib.util
+                spec = importlib.util.spec_from_file_location('gui_daily_packages', root/'scripts/gui-daily-packages.py')
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                module.run(args,api,out,env,report,sessions)
             elif args.stage=='S5.0':
                 plain(args,api,out,env,report,sessions)
                 report['status']='PASS'

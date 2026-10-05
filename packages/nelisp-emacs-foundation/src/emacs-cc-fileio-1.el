@@ -16,15 +16,21 @@
       (setq auto-save-failure nil))))
 
 (unless (fboundp 'delete-directory-internal)
+  (defvar emacs-cc-fileio--delete-directory-primitive
+    (symbol-function 'delete-directory)
+    "Original directory-removal leaf before GNU files.el replaces its facade.")
   (defun delete-directory-internal (directory)
     "Delete the directory named DIRECTORY.  Does not follow symlinks."
-    (delete-directory directory)))
+    (funcall emacs-cc-fileio--delete-directory-primitive directory)))
 
 (unless (fboundp 'delete-file-internal)
+  (defvar emacs-cc-fileio--delete-file-primitive
+    (symbol-function 'delete-file)
+    "Original file-removal leaf before GNU files.el replaces its facade.")
   (defun delete-file-internal (filename)
     "Delete file named FILENAME; internal use only."
     (unless (stringp filename) (signal 'wrong-type-argument (list 'stringp filename)))
-    (delete-file filename)))
+    (funcall emacs-cc-fileio--delete-file-primitive filename)))
 
 (unless (fboundp 'directory-name-p)
   (defun directory-name-p (name)
@@ -73,7 +79,10 @@
           (rename-file base name)))
       (when (stringp text)
         (with-temp-buffer (insert text) (write-region (point-min) (point-max) name)))
-      name)))
+      name))
+  ;; The I/O owner replaces this compatibility fallback when it is loaded.
+  ;; Never use this marker for a native/host primitive.
+  (put 'make-temp-file-internal 'emacs-cc-fileio-fallback t))
 
 (unless (fboundp 'next-read-file-uses-dialog-p)
   (defun next-read-file-uses-dialog-p ()

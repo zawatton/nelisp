@@ -11,7 +11,7 @@ import subprocess
 root = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser()
 parser.add_argument('--init', default='-Q', choices=['-Q'])
-parser.add_argument('--fixture', choices=['render', 'metrics', 'skk-evil', 'keyboard', 'mouse-menu'])
+parser.add_argument('--fixture', choices=['render', 'metrics', 'skk-evil', 'keyboard', 'mouse-menu', 'selections', 'packages'])
 args = parser.parse_args()
 inputs = json.loads((root / 'build/gui-daily-inputs.json').read_text())
 for name, expected in {**inputs['sources'], 'build/nemacs-gui-bootstrap.el': inputs['bundle']}.items():

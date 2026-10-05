@@ -1,0 +1,91 @@
+;;; gui-package-loader-test.el --- Source literal preservation -*- lexical-binding: t; -*-
+(require 'ert)
+(require 'cl-lib)
+(let ((original-load (symbol-function 'load))
+      (original-load-file (symbol-function 'load-file)))
+  (unwind-protect
+      (let ((emacs-version 1))
+        (funcall original-load-file
+                 "packages/nelisp-emacs-foundation/src/emacs-load.el"))
+    (fset 'load original-load)
+    (fset 'load-file original-load-file)))
+
+(ert-deftest gui-package-loader/escaped-unicode-value-and-boundaries ()
+  (dolist (literal '("?\\‘" "?\\’" "?\\“" "?\\”" "?\\©" "?\\😀"))
+    (let* ((source (concat "(list " literal " ?a)\n(setq following t)"))
+           (rewritten (emacs-load--rewrite-escaped-unicode-character-literals source)))
+      (should (equal (car (read-from-string source))
+                     (car (read-from-string (string-as-multibyte rewritten)))))
+      (should (string-suffix-p "\n(setq following t)" rewritten))
+      (should-not (string-match-p (regexp-quote literal) rewritten)))))
+
+(ert-deftest gui-package-loader/preserve-strings-comments-and-symbols ()
+  (let* ((source "\"?\\‘\" ; ?\\’\nfoo?\\“\n(list ?\\\" ?\\‘)")
+         (rewritten (string-as-multibyte
+                     (emacs-load--rewrite-escaped-unicode-character-literals source))))
+    (should (string-prefix-p "\"?\\‘\" ; ?\\’\nfoo?\\“\n" rewritten))
+    (should (string-suffix-p "(list ?\\\" 8216)" rewritten))))
+
+(ert-deftest gui-package-loader/ascii-fast-path-preserves-source ()
+  (let ((source "(list ?\\n ?\\\" ?a)"))
+    (should (equal source (emacs-load--rewrite-escaped-unicode-character-literals source)))))
+
+(ert-deftest gui-package-display/images-require-graphic-and-both-primitives ()
+  (let* ((source (with-temp-buffer
+                   (insert-file-contents "packages/nelisp-emacs-foundation/src/emacs-stub.el")
+                   (goto-char (point-min))
+                   (search-forward "(defun emacs-display-images-p")
+                   (goto-char (match-beginning 0)) (read (current-buffer))))
+         (implementation (eval (cons 'lambda (cddr source)) t)))
+    (dolist (graphic '(nil t))
+      (dolist (mask '(nil t))
+        (dolist (size '(nil t))
+          (let ((original-fboundp (symbol-function 'fboundp)))
+            (cl-letf (((symbol-function 'display-graphic-p) (lambda (&optional _display) graphic))
+                      ((symbol-function 'fboundp)
+                       (lambda (symbol)
+                         (cond ((eq symbol 'image-mask-p) mask)
+                               ((eq symbol 'image-size) size)
+                               (t (funcall original-fboundp symbol))))))
+              (should (eq (and graphic mask size)
+                          (funcall implementation))))))))))
+
+(ert-deftest gui-package-loader/modifier-character-before-unicode ()
+  "An ASCII control character's quote/semicolon must not start a string/comment."
+  (dolist (suffix '("\"" ";"))
+    (let* ((source (concat "(list ?\\C-" suffix " ?\\‘)"))
+           (rewritten (emacs-load--rewrite-escaped-unicode-character-literals source)))
+      (should (equal (car (read-from-string source))
+                     (car (read-from-string (string-as-multibyte rewritten)))))
+      (should (string-suffix-p "8216)" rewritten)))))
+
+(ert-deftest gui-package-fileio/deletion-primitives-survive-gnu-facades ()
+  "Loading GNU files.el must not make an internal deletion re-enter its facade."
+  (let ((file (make-temp-file "s52b-leaf-file-"))
+        (directory (make-temp-file "s52b-leaf-dir-" t))
+        (file-function (symbol-function 'delete-file-internal))
+        (directory-function (symbol-function 'delete-directory-internal))
+        (loader (symbol-function 'load-file)))
+    (unwind-protect
+        (progn
+          (fmakunbound 'delete-file-internal)
+          (fmakunbound 'delete-directory-internal)
+          ;; GNU 31's public names already call the internals.  Seed the
+          ;; initial standalone leaf using the saved genuine host primitives.
+          (cl-letf (((symbol-function 'delete-file)
+                     (lambda (name) (funcall file-function name)))
+                    ((symbol-function 'delete-directory)
+                     (lambda (name) (funcall directory-function name))))
+            (funcall loader "packages/nelisp-emacs-foundation/src/emacs-cc-fileio-1.el"))
+          (cl-letf (((symbol-function 'delete-file)
+                     (lambda (&rest _) (error "file facade reentry")))
+                    ((symbol-function 'delete-directory)
+                     (lambda (&rest _) (error "directory facade reentry"))))
+            (should-not (delete-file-internal file))
+            (should-not (delete-directory-internal directory)))
+          (should-not (file-exists-p file))
+          (should-not (file-exists-p directory)))
+      (fset 'delete-file-internal file-function)
+      (fset 'delete-directory-internal directory-function)
+      (when (file-exists-p file) (delete-file file))
+      (when (file-exists-p directory) (delete-directory directory)))))

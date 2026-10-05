@@ -106,8 +106,12 @@ Mirrors host Emacs `completion-ignore-case'.  Honoured by
 (defvar emacs-minibuffer--read-fn nil
   "Function used to read a line from the minibuffer.
 Signature: (PROMPT INITIAL DEFAULT HIST KEYMAP READ) -> STRING.
-nil = use the built-in line reader (drains
-`emacs-minibuffer--input-queue').  ERT plugs in deterministic fns.")
+nil = use the queued-input reader, or the shared live event provider
+when the queue is empty.  ERT plugs in deterministic fns.")
+
+(defvar emacs-minibuffer-redisplay-function nil
+  "Optional transport callback invoked after a live minibuffer edit.
+Input and editing semantics remain in this module; the callback only paints.")
 
 (defvar emacs-minibuffer--key-fn nil
   "Function used by `emacs-minibuffer-read-key'.
@@ -229,6 +233,8 @@ minibuffer layer while storage stays transport-specific.")
   (let* ((depth (1+ emacs-minibuffer--depth))
          (name  (format " *Minibuf-%d*" depth))
          (buf   (nelisp-ec-generate-new-buffer name)))
+    (emacs-buffer-set-buffer-local-value 'mode-line-format buf nil)
+    (emacs-buffer-set-buffer-local-value 'header-line-format buf nil)
     buf))
 
 (defun emacs-minibuffer--push (buf prompt prompt-end)
@@ -301,20 +307,68 @@ informational.  Empty VALUE strings are NOT added (= matches Emacs)."
       (unless (boundp sym) (set sym nil))
       (set sym (cons value (symbol-value sym))))))
 
+(defun emacs-minibuffer--read-line-events (prompt initial)
+  "Read a line from the shared command loop's installed event provider."
+  (let* ((text (cond ((stringp initial) initial)
+                     ((consp initial) (car initial)) (t "")))
+         (cursor (if (consp initial)
+                     (max 0 (min (length text) (1- (cdr initial))))
+                   (length text)))
+         (done nil))
+    (when emacs-minibuffer-redisplay-function
+      (funcall emacs-minibuffer-redisplay-function))
+    (while (not done)
+      (let ((event (emacs-command-loop-read-event prompt t)))
+        (cond
+         ((memq event '(13 10 return)) (setq done t))
+         ((eq event 7) (signal 'quit nil))
+         ((memq event '(1 home)) (setq cursor 0))
+         ((memq event '(5 end)) (setq cursor (length text)))
+         ((memq event '(2 left)) (setq cursor (max 0 (1- cursor))))
+         ((memq event '(6 right)) (setq cursor (min (length text) (1+ cursor))))
+         ((eq event 11) (setq text (substring text 0 cursor)))
+         ((memq event '(8 127 backspace))
+          (when (> cursor 0)
+            (setq text (concat (substring text 0 (1- cursor))
+                               (substring text cursor)) cursor (1- cursor))))
+         ((memq event '(4 delete))
+          (when (< cursor (length text))
+            (setq text (concat (substring text 0 cursor) (substring text (1+ cursor))))))
+         ((memq event '(focus-in focus-out)) nil)
+         ((and (integerp event) (>= event 32) (< event #x110000))
+          (setq text (concat (substring text 0 cursor) (string event)
+                             (substring text cursor)) cursor (1+ cursor)))
+         (t (signal 'emacs-minibuffer-error (list "Unsupported minibuffer event" event)))))
+      (when emacs-minibuffer--buffers
+        (let ((buf (car emacs-minibuffer--buffers))
+              (start (car emacs-minibuffer--prompt-ends)))
+          (nelisp-ec-with-current-buffer buf
+            (nelisp-ec-delete-region start (nelisp-ec-point-max))
+            (nelisp-ec-goto-char start)
+            (nelisp-ec-insert text)
+            (nelisp-ec-goto-char (+ start cursor)))))
+      (when emacs-minibuffer-redisplay-function
+        (funcall emacs-minibuffer-redisplay-function)))
+    text))
+
 (defun emacs-minibuffer--read-line-default
     (prompt initial _default _hist _keymap _read)
   "Built-in line reader — pops one entry from the input queue.
 Returns the line as a string.  Accepts optional `:abort' / `:exit'
 sentinels for control-flow tests."
-  (ignore prompt initial)
-  (when (null emacs-minibuffer--input-queue)
-    (signal 'emacs-minibuffer-no-input (list prompt)))
-  (let ((next (pop emacs-minibuffer--input-queue)))
+  (if (and (null emacs-minibuffer--input-queue)
+           (boundp 'emacs-command-loop-input-poll-function)
+           emacs-command-loop-input-poll-function
+           (fboundp 'emacs-command-loop-read-event))
+      (emacs-minibuffer--read-line-events prompt initial)
+    (when (null emacs-minibuffer--input-queue)
+      (signal 'emacs-minibuffer-no-input (list prompt)))
+    (let ((next (pop emacs-minibuffer--input-queue)))
     (cond
      ((eq next :abort) (signal 'quit nil))
      ((eq next :exit)  "")
      ((stringp next)   next)
-     (t (signal 'emacs-minibuffer-error (list "unrecognized input" next))))))
+     (t (signal 'emacs-minibuffer-error (list "unrecognized input" next)))))))
 
 (defun emacs-minibuffer--read-line (prompt initial default hist keymap read)
   (let ((fn (or emacs-minibuffer--read-fn
@@ -336,6 +390,8 @@ abnormal exit.  Returns the BODY's value."
                (emacs-window-window-live-p emacs-minibuffer--window)))
          (selected-window (and select-window-p
                                (emacs-window-selected-window)))
+         (saved-mini-buffer (and select-window-p
+                                 (emacs-window-window-buffer emacs-minibuffer--window)))
          (saved-window-state emacs-minibuffer--saved-window)
          (update-saved-window-p
           (and select-window-p selected-window
@@ -352,8 +408,11 @@ abnormal exit.  Returns the BODY's value."
         (progn
           (when (and select-window-p
                      (emacs-window-window-live-p selected-window))
+            (emacs-window-set-window-buffer emacs-minibuffer--window buf)
             (emacs-window-select-window emacs-minibuffer--window))
           (funcall body))
+      (when saved-mini-buffer
+        (emacs-window-set-window-buffer emacs-minibuffer--window saved-mini-buffer))
       (emacs-minibuffer--pop)
       (when select-window-p
         (setq emacs-minibuffer--window-selection-stack

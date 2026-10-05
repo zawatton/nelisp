@@ -542,7 +542,7 @@ when already byte-indexed): see
 `aref'-based scanner must never run on a still-multibyte string on this
 runtime."
     (setq source (emacs-load--byte-indexed-source source))
-    (if (not (emacs-load--artifact-string-search "?\\" source 0))
+    (if (not (string-match-p "?\\\\[\300-\377]" source))
         source
       (let ((len (length source))
             (out nil)
@@ -602,6 +602,64 @@ runtime."
                             (setq start end)
                             (setq i end)))))))
                  (t (setq i (1+ i))))))))
+        (push (substring source start len) out)
+        (apply #'concat (nreverse out)))))
+
+  (defvar emacs-load--escaped-unicode-source-reader-native-p
+    (and (fboundp 'nelisp--eval-source-string)
+         (condition-case nil
+             (= 8216 (nelisp--eval-source-string "(+ 0 ?\\‘)"))
+           (error nil)))
+    "Non-nil when the source evaluator accepts escaped Unicode characters.
+The ordinary reader accepts these literals even on runtimes whose fast
+source evaluator rejects them; probe that evaluator separately.")
+
+  (defun emacs-load--rewrite-escaped-unicode-character-literals (source)
+    "Replace escaped Unicode character literals with their integer values.
+Leave strings, comments and escaped symbol names untouched.  This preserves
+GNU Info's literal data on source evaluators that reject forms like ?\\‘."
+    (when (multibyte-string-p source)
+      (setq source (string-as-unibyte source)))
+    (if (not (emacs-load--artifact-string-search "?\\" source 0))
+        source
+      (let ((len (length source)) (i 0) (start 0) out
+            in-string escaped
+            (markers (emacs-load--marker-search-state source 0 '("\"" ";" "\\" "?"))))
+        (while (< i len)
+          (if in-string
+              (progn
+                (cond (escaped (setq escaped nil))
+                      ((= (aref source i) ?\\) (setq escaped t))
+                      ((= (aref source i) ?\") (setq in-string nil)))
+                (setq i (1+ i)))
+            (setq i (emacs-load--next-marker-position source i len markers))
+            (when (< i len)
+              (cond
+               ((= (aref source i) ?\") (setq in-string t i (1+ i)))
+               ((= (aref source i) ?\;)
+                (let ((newline (emacs-load--artifact-string-search "\n" source i)))
+                  (setq i (if newline (1+ newline) len))))
+               ((= (aref source i) ?\\) (setq i (min len (+ i 2))))
+               ((and (= (aref source i) ??) (< (+ i 2) len)
+                     (= (aref source (1+ i)) ?\\)
+                     (>= (aref source (+ i 2)) #xc0)
+                     (or (= i 0) (memq (aref source (1- i))
+                                        '(32 9 10 13 12 40 91 39 96 44))))
+                (let* ((lead (aref source (+ i 2)))
+                       (bytes (cond ((< lead #xe0) 2) ((< lead #xf0) 3) (t 4)))
+                       (end (min len (+ i 2 bytes)))
+                       (value (car (read-from-string (string-as-multibyte (substring source i end))))))
+                  (push (substring source start i) out)
+                  (push (number-to-string value) out)
+                  (setq i end start end)))
+               ((and (= (aref source i) ??)
+                     (or (= i 0) (memq (aref source (1- i))
+                                        '(32 9 10 13 12 40 91 39 96 44))))
+                ;; The ordinary reader understands modifier chains too.
+                ;; Consume the complete ASCII literal so a quote/semicolon
+                ;; in ?\\C-" or ?\\C-; cannot change our string/comment state.
+                (setq i (cdr (read-from-string source i))))
+               (t (setq i (1+ i)))))))
         (push (substring source start len) out)
         (apply #'concat (nreverse out)))))
 
@@ -3630,6 +3688,10 @@ optimization candidate; keep the normal load path on the fast reader."
                                (not emacs-load--escaped-modifier-char-literal-reader-native-p))
                          (emacs-load--rewrite-escaped-modifier-char-literals
                           source)
+                       source))
+             (source (if (and (stringp source)
+                              (not emacs-load--escaped-unicode-source-reader-native-p))
+                         (emacs-load--rewrite-escaped-unicode-character-literals source)
                        source))
              (artifact (and emacs-load-auto-native-compile
                             (not (string-prefix-p "cc-" base))
