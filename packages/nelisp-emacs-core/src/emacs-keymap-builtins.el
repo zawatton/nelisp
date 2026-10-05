@@ -315,24 +315,16 @@ prompt carried by the created keymap."
 
 (when (emacs-keymap-builtins--install-function-p 'suppress-keymap)
   (defun suppress-keymap (keymap &optional nodigits)
-    "Make printable characters in KEYMAP undefined.
-When NODIGITS is nil, digits and `-' remain argument keys, matching
-the conventional shape expected by `defvar-keymap :suppress'."
-    (let ((slot (emacs-keymap--full-slot keymap)))
-      (unless slot
-        (setq slot (emacs-char-table-make 'keymap))
-        (setcdr keymap (cons slot (cdr keymap))))
-      (let ((i 32))
-        (while (<= i 126)
-          (emacs-keymap--slot-set slot i 'undefined)
-          (setq i (1+ i)))
-        (unless nodigits
-          (let ((digit ?0))
-            (while (<= digit ?9)
-              (emacs-keymap--slot-set slot digit 'digit-argument)
-              (setq digit (1+ digit))))
-          (emacs-keymap--slot-set slot ?- 'negative-argument))))
-    keymap))
+    "Suppress insertion by remapping, keeping unbound keys available as prefixes."
+    (emacs-keymap-builtins--define-key
+     keymap [remap self-insert-command] #'undefined)
+    (or nodigits
+        (let ((digit ?0))
+          (emacs-keymap-builtins--define-key keymap "-" #'negative-argument)
+          (while (<= digit ?9)
+            (emacs-keymap-builtins--define-key
+             keymap (char-to-string digit) #'digit-argument)
+            (setq digit (1+ digit)))))))
 
 (when (emacs-keymap-builtins--install-function-p 'set-keymap-parent)
   (defun set-keymap-parent (keymap parent)
@@ -390,7 +382,15 @@ Resolve keymap-valued function symbols and reject cyclic inheritance."
   (defalias 'key-valid-p #'emacs-keymap-key-valid-p))
 
 (when (emacs-keymap-builtins--install-function-p 'keymap-set)
-  (defalias 'keymap-set #'emacs-keymap-keymap-set))
+  (defun keymap-set (keymap key definition)
+    "Bind KEY's description to DEFINITION using GNU prefix validation."
+    (unless (key-valid-p key)
+      (signal 'emacs-keymap-bad-key (list key)))
+    (when (stringp definition)
+      (unless (key-valid-p definition)
+        (signal 'emacs-keymap-bad-key (list definition)))
+      (setq definition (key-parse definition)))
+    (emacs-keymap-builtins--define-key keymap (key-parse key) definition)))
 
 (when (emacs-keymap-builtins--install-function-p 'keymap-lookup)
   (defalias 'keymap-lookup #'emacs-keymap-keymap-lookup))
@@ -481,11 +481,31 @@ Resolve keymap-valued function symbols and reject cyclic inheritance."
 (unless (emacs-keymap-keymapp minibuffer-local-map)
   (setq minibuffer-local-map (emacs-keymap-make-sparse-keymap)))
 
+(defun emacs-keymap-builtins--migrate-bootstrap-events (keymap)
+  "Canonicalize legacy one-event vector cells in bootstrap KEYMAP.
+Keep an existing event binding, including an explicit nil, in preference
+to its legacy spelling.  This handoff is idempotent."
+  ;; Early bootstrap maps stored single-event sequences as sparse keys.
+  ;; GNU map-keymap consumers require event keys rather than vectors.
+  (dolist (cell (copy-sequence (cdr keymap)))
+    (when (and (consp cell) (vectorp (car cell))
+               (= (length (car cell)) 1)
+               (or (integerp (aref (car cell) 0))
+                   (symbolp (aref (car cell) 0))))
+      (let ((event (aref (car cell) 0))
+            (binding (cdr cell)))
+        (setcdr keymap (delq cell (cdr keymap)))
+        (unless (emacs-keymap-builtins--own-binding keymap event)
+          (emacs-keymap-builtins--store-binding
+           keymap event binding nil)))))
+  keymap)
+
 (when (and (or (fboundp 'nl-write-file)
                (fboundp 'nelisp--write-stdout-bytes)
                (not (boundp 'emacs-version)))
            (emacs-keymap-keymapp global-map))
   (setq emacs-keymap-global-map global-map)
+  (emacs-keymap-builtins--migrate-bootstrap-events global-map)
   (emacs-keymap-define-key global-map "\C-x" ctl-x-map)
   (emacs-keymap-define-key global-map "\e" esc-map)
   (emacs-keymap-define-key global-map "\C-h" help-map)

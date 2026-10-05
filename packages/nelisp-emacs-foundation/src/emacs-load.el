@@ -35,6 +35,27 @@ top-level form reachable until the end of the load.")
 Nil or a non-positive value disables the size-based routing and preserves
 the historical hybrid path for all source loads that can use it.")
 
+  (defvar emacs-load--alias-candidates nil
+    "Symbolic aliases encountered by the standalone source loader.
+Only currently active macro aliases affect source routing.  Ordinary
+aliases and names subsequently redefined as functions remain unchanged.")
+
+  (defun emacs-load--symbolic-macro-alias-p (name)
+    "Return non-nil when NAME currently aliases a macro by symbol."
+    (and (symbolp name) (fboundp name) (macrop name)
+         (symbolp (symbol-function name))))
+
+  (defun emacs-load--macro-alias-source-p (source)
+    "Return non-nil when SOURCE may call a loaded symbolic macro alias."
+    (let ((names emacs-load--alias-candidates) found)
+      (while (and names (not found))
+        (let ((name (pop names)))
+          (when (and (emacs-load--artifact-string-search
+                      (symbol-name name) source 0)
+                     (emacs-load--symbolic-macro-alias-p name))
+            (setq found t))))
+      found))
+
   (defvar nelisp--cc-replay-file nil
     "Base name (sans extension) of the CC Mode file currently being loaded.
 The outer `(setq load-file-name RESOLVED)' in `nelisp--load-resolved-file'
@@ -841,6 +862,13 @@ marker even when `cc-provide' is callable.  At interpreted load time
 its semantics are exactly `provide'."
     (when (and (consp form) (eq (car form) 'cc-provide))
       (setcar form 'provide))
+    ;; Native eval recognizes direct macros but evaluates symbolic macro
+    ;; aliases as ordinary calls.  Its macroexpander follows those aliases
+    ;; correctly.  Expand at the load boundary without copying the target's
+    ;; macro object, so later target redefinitions still follow GNU aliases.
+    (when (and (consp form)
+               (emacs-load--symbolic-macro-alias-p (car form)))
+      (setq form (macroexpand form)))
     (eval form))
 
   (defconst emacs-load--native-read-probe-window-sizes '(512 2048 8192 32768)
@@ -1185,6 +1213,7 @@ work belong elsewhere."
     ;; regexp-opt.el take 1.5s instead of 0.09s.
     (if (or (not (fboundp 'nelisp--eval-source-string))
             (nelisp--load-source-large-p source)
+            (emacs-load--macro-alias-source-p source)
             (nelisp--load-rewrite-target-present-p source))
         #'nelisp--load-eval-source-incremental
       #'nelisp--load-eval-source-hybrid))
@@ -3636,6 +3665,11 @@ subtrees are left untouched."
            ((memq nelisp--load-rw-head '(quote function))
             nelisp--load-rw-form)
            ((eq nelisp--load-rw-head 'defalias)
+            (let ((name (cadr nelisp--load-rw-form)))
+              (when (and (consp name) (memq (car name) '(quote function))
+                         (symbolp (cadr name))
+                         (not (memq (cadr name) emacs-load--alias-candidates)))
+                (push (cadr name) emacs-load--alias-candidates)))
             (setcar nelisp--load-rw-form 'nelisp-defalias-late)
             nelisp--load-rw-form)
            ((memq nelisp--load-rw-head nelisp--load-rewrite-wrapper-heads)

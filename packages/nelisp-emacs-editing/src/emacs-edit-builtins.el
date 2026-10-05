@@ -2947,6 +2947,23 @@ if all requested words were traversed, nil at a buffer or field edge."
     "Phase E polyfill: equivalent to `(forward-word (- ARG))'."
     (forward-word (- (or arg 1)))))
 
+(defvar word-move-empty-char-table nil
+  "Char table used to suppress language-specific word boundary callbacks.")
+
+(when (emacs-edit-builtins--install-function-p 'forward-word-strictly)
+  (defun forward-word-strictly (&optional arg)
+    "Move by ARG words, ignoring find-word-boundary-function-table."
+    (let ((find-word-boundary-function-table
+           (if (char-table-p word-move-empty-char-table)
+               word-move-empty-char-table
+             (setq word-move-empty-char-table (make-char-table nil)))))
+      (forward-word (or arg 1)))))
+
+(when (emacs-edit-builtins--install-function-p 'backward-word-strictly)
+  (defun backward-word-strictly (&optional arg)
+    "Move backward by ARG words without language-specific word callbacks."
+    (forward-word-strictly (- (or arg 1)))))
+
 ;;;; --- skip-chars set scanning --------------------------------------
 
 ;; Reusable core for `skip-chars-forward' / `skip-chars-backward'

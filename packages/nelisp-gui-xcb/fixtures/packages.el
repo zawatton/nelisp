@@ -1,4 +1,4 @@
-;;; packages.el --- Unmodified GNU/Magit package consumers -*- lexical-binding: t; -*-
+;;; packages.el --- Genuine GNU/Magit consumers -*- lexical-binding: t; -*-
 (defvar nelisp-gui-packages-state-file nil)
 (defvar nelisp-gui-packages-sequence 0)
 (defvar nelisp-gui-packages-load-steps nil)
@@ -71,6 +71,8 @@
     (princ (format "GUI-PACKAGE-LOAD-BEGIN|package=%s|time=%.6f|\n" package start))
     (condition-case err
         (progn
+          (nelisp-gui-packages-load-step
+           "gnu-preloaded" (lambda () (load (concat root "/vendor/gnu-preloaded.el") nil t t)))
           ;; These are preloaded by GNU Emacs, but the daily-driver image has
           ;; a smaller file facade.  Load the genuine GNU dependency as well.
           (nelisp-gui-packages-load-step
@@ -84,6 +86,12 @@
          ((equal package "magit")
           (nelisp-gui-packages-load-step
            "gnu-minibuffer" (lambda () (load (concat root "/vendor/gnu/minibuffer.el") nil t t)))
+          ;; GNU loadup preloads this parent mode before Magit defines its
+          ;; repository-list keymap.  Keep the genuine mode, not an empty map.
+          (nelisp-gui-packages-load-step
+           "gnu-tabulated-list" (lambda () (require 'tabulated-list)))
+          (nelisp-gui-packages-load-step
+           "gnu-isearch" (lambda () (load (concat root "/vendor/gnu/isearch.el") nil t t)))
           (nelisp-gui-packages-load-step "magit" (lambda ()
                      ;; Packages are being loaded by the startup fixture.  GNU
                      ;; 31 defers global-mode Custom initialization until the

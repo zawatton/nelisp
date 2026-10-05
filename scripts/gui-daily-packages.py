@@ -13,10 +13,67 @@ import subprocess
 import time
 
 PACKAGES = ('dired', 'magit', 'org-agenda')
+ROOT = Path(__file__).resolve().parents[1]
 LISP_ERROR = re.compile(
     r'(?:Lisp error|void-function|void-variable|wrong-type-argument|GUI-ERROR|'
-    r'Debugger entered|Symbol[’\']s (?:function definition|value) is void|'
+    r'args-out-of-range|Args out of range|Debugger entered|Symbol[’\']s (?:function definition|value) is void|'
     r'Wrong type argument|Key sequence .* starts with non-prefix key)', re.I)
+
+
+def prepare_preloads(gnu, output, env):
+    """Retain exact GNU preloaded definitions missing from the small image.
+
+    mule-cmds has unrelated charset initialization that the fixed UTF-8
+    reader cannot load. Extract its real EOL helper without evaluating the
+    rest of that file, as the SKK fixture does for register-input-method.
+    Capture stock -Q variables expected by the packages as well.
+    """
+    source = gnu/'international/mule-cmds.el'
+    form = '''(let ((forms nil))
+      (dolist (name '(etags-program-name mode-line-misc-info))
+        (push `(unless (boundp ',name)
+                 (defvar ,name ',(symbol-value name))) forms))
+      (with-temp-buffer
+        (insert-file-contents %s)
+        (goto-char (point-min))
+        (re-search-forward "^(defun coding-system-change-eol-conversion ")
+        (beginning-of-line)
+        (push (read (current-buffer)) forms))
+      (with-temp-file %s
+        (insert ";;; Exact GNU preload definitions. -*- lexical-binding: t; -*-\n")
+        (dolist (definition (nreverse forms))
+          (prin1 definition (current-buffer))
+          (terpri (current-buffer)))))''' % (json.dumps(str(source)), json.dumps(str(output)))
+    subprocess.run([os.environ.get('EMACS','emacs'), '-Q', '--batch', '--eval', form],
+                   env=env, check=True, capture_output=True, timeout=30)
+    return dict(source=str(source), names=['etags-program-name', 'mode-line-misc-info',
+                                          'coding-system-change-eol-conversion'],
+                sha256=hashlib.sha256(output.read_bytes()).hexdigest())
+
+
+def prepare_shorthands(vendor, env):
+    """Expand only declared GNU reader shorthands; retain both byte hashes."""
+    candidates = [p for p in sorted(vendor.rglob('*.el'))
+                  if b'read-symbol-shorthands:' in p.read_bytes()]
+    before = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in candidates}
+    expression = '''(let (result)
+      (dolist (file '(%s))
+        (let ((entry (gui-daily-expand-shorthands file)))
+          (when entry (push entry result))))
+      (princ (json-encode (vconcat (nreverse result)))))''' % ' '.join(
+          json.dumps(str(p)) for p in candidates)
+    result = subprocess.run([os.environ.get('EMACS','emacs'), '-Q', '--batch',
+                             '-l', str(ROOT/'scripts/gui-daily-expand-shorthands.el'),
+                             '--eval', expression], env=env, check=True,
+                            capture_output=True, text=True, timeout=120)
+    expanded = json.loads(result.stdout)
+    for entry in expanded:
+        entry['original_sha256'] = before[entry['file']]
+        entry['expanded_sha256'] = hashlib.sha256(Path(entry['file']).read_bytes()).hexdigest()
+    manifest = vendor.parent/'shorthand-expansions.json'
+    manifest.write_text(json.dumps(expanded,indent=2)+'\n')
+    return dict(manifest=str(manifest), files=len(expanded),
+                adapter_sha256=hashlib.sha256((ROOT/'scripts/gui-daily-expand-shorthands.el').read_bytes()).hexdigest())
 
 
 def prepare(out, env):
@@ -82,7 +139,6 @@ def prepare(out, env):
     paths += [target/Path(p).relative_to(gnu) for p in gnu_paths
               if Path(p).is_relative_to(gnu)]
     (root/'load-path.json').write_text(json.dumps([str(p) for p in paths])+'\n')
-    (root/'sources.json').write_text(json.dumps(hashes, indent=2)+'\n')
     tree = root/'tree'
     tree.mkdir(exist_ok=True)
     (tree/'subdir').mkdir(exist_ok=True)
@@ -91,6 +147,10 @@ def prepare(out, env):
     (tree/'subdir/nested.txt').write_text('Nested fixture\n')
     today = datetime.date.today().isoformat()
     (root/'agenda.org').write_text(f'#+TITLE: GUI agenda fixture\n* TODO S52 scheduled inspection\nSCHEDULED: <{today}>\n* TODO S52 scheduled report\nSCHEDULED: <{today}>\n')
+    preloads = prepare_preloads(target, vendor/'gnu-preloaded.el', env)
+    shorthands = prepare_shorthands(vendor, env)
+    hashes['extracted-GNU-definitions:'+str(vendor/'gnu-preloaded.el')] = preloads['sha256']
+    (root/'sources.json').write_text(json.dumps(hashes, indent=2)+'\n')
     # These are the only Git writes: the disposable repo requested by S5.2.
     repo = root/'repo'
     if repo.exists():
@@ -110,7 +170,8 @@ def prepare(out, env):
     git('add','staged.txt')
     (root/'git-before.txt').write_bytes(git('status','--porcelain'))
     return root, env, dict(sources=str(root/'sources.json'), source_count=len(hashes),
-                           missing_sources=missing, date=today, git_before=git('status','--porcelain').decode())
+                           missing_sources=missing, preloads=preloads, reader_shorthands=shorthands,
+                           date=today, git_before=git('status','--porcelain').decode())
 
 
 def state(path):

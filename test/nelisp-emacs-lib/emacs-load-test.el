@@ -11,7 +11,8 @@
   (expand-file-name ".." (file-name-directory (or load-file-name buffer-file-name))))
 
 (defconst emacs-load-test--source-file
-  (expand-file-name "src/emacs-load.el" emacs-load-test--root))
+  (expand-file-name "packages/nelisp-emacs-foundation/src/emacs-load.el"
+                    (expand-file-name ".." emacs-load-test--root)))
 
 (defvar emacs-load-test--stream-order nil)
 
@@ -3183,6 +3184,50 @@ pathology itself, which host Emacs cannot reproduce."
     (should (eq (car (car (read-from-string source))) 'defalias))
     (should (= normalize-calls 1))
     (should (equal one-shot (concat "(progn\n" normalized "\n)")))))
+
+
+(ert-deftest emacs-load-test/symbolic-macro-alias-follows-target ()
+  (let ((emacs-load--alias-candidates '(emacs-load-test--alias)))
+    (unwind-protect
+        (progn
+          (fset 'emacs-load-test--target '(macro lambda (name) (list 'quote name)))
+          (fset 'emacs-load-test--alias 'emacs-load-test--target)
+          (should (emacs-load--symbolic-macro-alias-p 'emacs-load-test--alias))
+          (should (eq (nelisp--load-eval-one-form '(emacs-load-test--alias missing)) 'missing))
+          (fset 'emacs-load-test--target '(macro lambda (name) (list 'quote (list 'changed name))))
+          (should (equal (nelisp--load-eval-one-form '(emacs-load-test--alias missing)) '(changed missing)))
+          (should (eq (symbol-function 'emacs-load-test--alias) 'emacs-load-test--target))
+          (fset 'emacs-load-test--target (lambda (name) (list 'ordinary name)))
+          (should-not (emacs-load--symbolic-macro-alias-p 'emacs-load-test--alias))
+          (should (equal (nelisp--load-eval-one-form '(emacs-load-test--alias 'argument)) '(ordinary argument))))
+      (fmakunbound 'emacs-load-test--alias)
+      (fmakunbound 'emacs-load-test--target))))
+
+(ert-deftest emacs-load-test/active-alias-forces-incremental-small-source ()
+  (let ((emacs-load--alias-candidates '(emacs-load-test--alias))
+        (emacs-load-large-source-threshold 32768))
+    (unwind-protect
+        (progn
+          (fset 'emacs-load-test--target '(macro lambda (name) (list 'quote name)))
+          (fset 'emacs-load-test--alias 'emacs-load-test--target)
+          (cl-letf (((symbol-function 'nelisp--eval-source-string) #'ignore))
+            (should (eq (nelisp--load-source-loader "(emacs-load-test--alias unbound)")
+                        'nelisp--load-eval-source-incremental))
+            (should (eq (nelisp--load-source-loader "(ordinary-call nil)")
+                        'nelisp--load-eval-source-hybrid))
+            (fset 'emacs-load-test--target #'ignore)
+            (should (eq (nelisp--load-source-loader "(emacs-load-test--alias nil)")
+                        'nelisp--load-eval-source-hybrid))))
+      (fmakunbound 'emacs-load-test--alias)
+      (fmakunbound 'emacs-load-test--target))))
+
+(ert-deftest emacs-load-test/alias-registration-respects-quoted-data ()
+  (let ((emacs-load--alias-candidates nil))
+    (nelisp--load-rewrite-defalias-form
+     '(progn (defalias 'registered #'target) (defalias 'registered #'target)
+             '(defalias 'data #'target)))
+    (should (equal emacs-load--alias-candidates '(registered)))
+    (should-not (emacs-load--symbolic-macro-alias-p 's52c-never-defined))))
 
 (provide 'emacs-load-test)
 
