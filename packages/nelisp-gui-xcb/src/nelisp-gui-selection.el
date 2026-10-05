@@ -41,23 +41,26 @@
     (unwind-protect
         (let ((p (nl-ffi-memory-address o)))
           (nelisp-gui-selection--flush)
-          (while (and (not done) (< (float-time) deadline))
+          ;; Observe an already available reply before consulting the clock.
+          ;; A descheduled consumer must still validate its property metadata,
+          ;; including the running byte cap, before reporting a reply timeout.
+          (while (not done)
             (nelisp-gui-xcb-check nelisp-gui-selection--state)
             (setq done (= 1 (nelisp-gui-xcb-call
                              "xcb_poll_for_reply" [:sint32 :pointer :uint32 :pointer :pointer]
                              (aref nelisp-gui-selection--state 0) sequence p (+ p 8))))
-            (unless done (sleep-for 0.002)))
-          (if (not done)
-              (progn
+            (unless done
+              (when (>= (float-time) deadline)
                 (nelisp-gui-xcb-call "xcb_discard_reply" [:void :pointer :uint32]
                                      (aref nelisp-gui-selection--state 0) sequence)
                 (error "Selection reply timeout"))
-            (let ((r (ptr-read-u64 p 0)) (e (ptr-read-u64 p 8)))
-              (when (> e 0)
-                (nelisp-gui-xcb-call "free" [:void :pointer] e)
-                (when (> r 0) (nelisp-gui-xcb-call "free" [:void :pointer] r))
-                (error "Selection X error"))
-              (unless (> r 0) (error "Selection missing reply")) r)))
+              (sleep-for 0.002)))
+          (let ((r (ptr-read-u64 p 0)) (e (ptr-read-u64 p 8)))
+            (when (> e 0)
+              (nelisp-gui-xcb-call "free" [:void :pointer] e)
+              (when (> r 0) (nelisp-gui-xcb-call "free" [:void :pointer] r))
+              (error "Selection X error"))
+            (unless (> r 0) (error "Selection missing reply")) r))
       (nl-ffi-memory-release o))))
 (defun nelisp-gui-selection--atom (name)
   (or (cdr (assq name nelisp-gui-selection--atoms))
@@ -86,7 +89,15 @@
   (let ((event (nelisp-gui-xcb-poll nelisp-gui-selection--state)))
     (when (and event (not (plist-get event :ignored)))
       (setq nelisp-gui-selection--events
-            (nconc nelisp-gui-selection--events (list event))))))
+            (nconc nelisp-gui-selection--events (list event))))
+    event))
+(defun nelisp-gui-selection--wait-ready (deadline)
+  "Process queued events before expiring an otherwise idle wait.
+Return non-nil while progress or time remains. Selection events validate
+their byte cap synchronously in the pump, even after a scheduling pause."
+  (or (nelisp-gui-selection--pump)
+      (when (< (float-time) deadline)
+        (sleep-for 0.002) t)))
 (defun nelisp-gui-selection--timestamp ()
   "Obtain a fresh server timestamp via PropertyNotify, never use wall time."
   (setq nelisp-gui-selection--clock nil)
@@ -98,8 +109,8 @@
             (nelisp-gui-selection--atom '_NELISP_TIME) (nelisp-gui-selection--atom 'INTEGER)
             32 1 (nl-ffi-memory-address o))
           (nelisp-gui-selection--flush)
-          (while (and (not nelisp-gui-selection--clock) (< (float-time) deadline))
-            (nelisp-gui-selection--pump) (sleep-for 0.002))
+          (while (and (not nelisp-gui-selection--clock)
+                      (nelisp-gui-selection--wait-ready deadline)))
           (or nelisp-gui-selection--clock (error "Selection timestamp timeout")))
       (nl-ffi-memory-release o))))
 (defun nelisp-gui-selection--property (window property type format count pointer)
@@ -246,6 +257,15 @@
                        (= 0 (nl-ffi-libffi-u32 r 12))
                        (<= size (* 4 (nl-ffi-libffi-u32 r 4))))
             (error "Selection transfer cap or malformed property"))
+          ;; Check the running INCR cap from the reply header, before copying
+          ;; a potentially multi-megabyte native payload into Lisp.  The header
+          ;; is enough to reject an overrun even if copying would exhaust the
+          ;; idle or total deadline on a slow/descheduled machine.
+          (when (and nelisp-gui-selection--receive
+                     (eq (aref nelisp-gui-selection--receive 3) 'incr)
+                     (> (+ (aref nelisp-gui-selection--receive 5) size)
+                        nelisp-gui-selection-max-bytes))
+            (error "Selection INCR transfer cap"))
           (list type format (ptr-read-bytes (+ r 32) size)))
       (nelisp-gui-xcb-call "free" [:void :pointer] r))))
 (defun nelisp-gui-selection--receive-property ()
@@ -373,8 +393,8 @@
                     (nelisp-gui-selection--flush)
                     (let ((r nelisp-gui-selection--receive))
                       (while (and (memq (aref r 3) '(notify incr))
-                                  (< (float-time) (min (aref r 6) (aref r 7))))
-                        (nelisp-gui-selection--pump) (sleep-for 0.002))
+                                  (nelisp-gui-selection--wait-ready
+                                   (min (aref r 6) (aref r 7)))))
                       (if (eq (aref r 3) 'done)
                           (let ((bytes (apply #'concat (nreverse (aref r 4)))))
                             (setq result

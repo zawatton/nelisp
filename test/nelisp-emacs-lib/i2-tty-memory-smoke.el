@@ -1,0 +1,67 @@
+;;; i2-tty-memory-smoke.el --- TTY scratch must survive collection -*- lexical-binding: t; -*-
+
+(require 'nl-ffi-memory)
+
+(defun i2-tty-check (value label)
+  (unless value (error "TTY memory regression: %s" label))
+  (princ (format "TTY-MEMORY|PASS|%s|\n" label)))
+
+(let ((terminal-raw-mode--memory nil)
+      (terminal-raw-mode--active nil)
+      (terminal-raw-mode--fd nil)
+      (terminal-raw-mode--pollfd nil)
+      (terminal-raw-mode--byte nil)
+      (terminal-raw-mode--saved-termios nil)
+      (terminal-raw-mode--scratch-termios nil)
+      (terminal-raw-mode--winsize nil)
+      (terminal-raw-mode--dev-tty nil)
+      (pipe-owner nil) (payload-owner nil) (input nil) (output nil))
+  (unwind-protect
+      (progn
+        (let ((pointer (terminal-raw-mode--ensure-buf
+                        'terminal-raw-mode--scratch-termios 60 4)))
+          (ptr-write-u64 pointer 0 123456789)
+          (garbage-collect)
+          (i2-tty-check (= (ptr-read-u64 pointer 0) 123456789)
+                        "scratch-survives-GC")
+          (i2-tty-check (= pointer (terminal-raw-mode--ensure-buf
+                                   'terminal-raw-mode--scratch-termios 60 4))
+                        "scratch-reused")
+          (i2-tty-check (= (length terminal-raw-mode--memory) 1)
+                        "one-owner-per-buffer"))
+        (setq pipe-owner (nl-ffi-memory-allocate 8)
+              payload-owner (nl-ffi-memory-allocate 1))
+        (i2-tty-check (= 0 (syscall-direct 293 (nl-ffi-memory-address pipe-owner)
+                                          2048 0 0 0 0))
+                      "nonblocking-pipe")
+        (setq input (ptr-read-u32 (nl-ffi-memory-address pipe-owner) 0)
+              output (ptr-read-u32 (nl-ffi-memory-address pipe-owner) 4)
+              terminal-raw-mode--fd input)
+        ;; Allocate both cached input buffers before collecting.  Poll writes
+        ;; native revents and read writes its byte through these retained addresses.
+        (i2-tty-check (null (read-stdin-byte-available 0)) "empty-poll")
+        (dotimes (i 3)
+          (garbage-collect)
+          (ptr-write-u8 (nl-ffi-memory-address payload-owner) 0 (+ 65 i))
+          (i2-tty-check (= 1 (syscall-direct 1 output
+                                            (nl-ffi-memory-address payload-owner)
+                                            1 0 0 0))
+                        "pipe-write")
+          (i2-tty-check (= (+ 65 i) (read-stdin-byte-available 0))
+                        "input-survives-GC")
+          (i2-tty-check (null (read-stdin-byte-available 0)) "drained-poll"))
+        (terminal-raw-mode-leave)
+        (i2-tty-check (and (null terminal-raw-mode--memory)
+                          (null terminal-raw-mode--scratch-termios)
+                          (null terminal-raw-mode--pollfd)
+                          (null terminal-raw-mode--byte))
+                      "leave-releases-and-clears")
+        (terminal-raw-mode-leave)
+        (i2-tty-check (null terminal-raw-mode--memory) "leave-idempotent"))
+    (terminal-raw-mode-leave)
+    (when input (syscall-direct 3 input 0 0 0 0 0))
+    (when output (syscall-direct 3 output 0 0 0 0 0))
+    (when payload-owner (nl-ffi-memory-release payload-owner))
+    (when pipe-owner (nl-ffi-memory-release pipe-owner))))
+
+(princ "TTY-MEMORY|PASS|complete|\n")

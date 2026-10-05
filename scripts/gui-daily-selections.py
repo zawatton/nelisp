@@ -150,9 +150,14 @@ class Peer:
             elif e.type == 28 and e.property.state == 1 and self.mode == 'stream-cap':
                 key = (e.property.window, e.property.atom)
                 if key in self.transfers:
-                    # A small INCR announcement must not bypass the running cap.
+                    # A small announcement must not bypass the running cap.
+                    # Cross it in two handshakes: one byte, then a cap-sized
+                    # property. Each property fits the direct cap; only their
+                    # sum exceeds it. The receiver can reject the second from
+                    # metadata, without copying 4 MiB or racing 33 handshakes
+                    # against the idle/total transfer deadlines under load.
                     offset = self.transfers[key]
-                    chunk = min(131072, 4194305 - offset)
+                    chunk = 1 if offset == 0 else 4194304 if offset == 1 else 0
                     self.property(*key, 'UTF8_STRING', b'x' * chunk)
                     self.transfers[key] += chunk
         return True
@@ -273,6 +278,9 @@ def run(args, api, out, env, report, sessions):
                       'stream-cap': 'Selection INCR transfer cap',
                       'wrong-type': 'Selection property type mismatch'}[mode]
             assert reason in s.log()[offset:], (mode, 'wrong rejection reason', s.log()[offset:])
+            if mode == 'stream-cap':
+                assert list(peer.transfers.values())[-1] == 4194305, 'running cap not crossed'
+                assert 'timeout' not in s.log()[offset:], 'timeout won over running cap'
             measured = stages.fields(s.log()[offset:], 'GUI-SELECTION-FIXTURE')
             measured = [r for r in measured if 'transfer-seconds' in r]
             assert len(measured) == 1, ('transfer timing missing', mode, measured)

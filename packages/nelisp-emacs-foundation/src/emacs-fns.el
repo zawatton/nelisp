@@ -630,14 +630,37 @@ on identity should re-bind the variable holding PLIST."
   (defvar terminal-raw-mode--dev-tty nil)
   (defvar terminal-raw-mode--active nil)
   (defvar terminal-raw-mode--winsize-changed nil)
+  (defvar terminal-raw-mode--memory nil
+    "Named external memory owners for the current terminal session.")
 
   (defun terminal-raw-mode--ensure-buf (name size align)
-    (let ((ptr (and (boundp name) (symbol-value name))))
-      (if ptr
-          ptr
-        (let ((fresh (alloc-bytes size align)))
-          (set name fresh)
-          fresh))))
+    ;; An integer address does not keep alloc-bytes storage alive across GC.
+    ;; Page-aligned external mappings satisfy the termios/poll byte alignment
+    ;; and must remain owned until raw mode has restored the terminal.
+    (ignore align)
+    (let ((owner (cdr (assq name terminal-raw-mode--memory))))
+      (unless owner
+        (require 'nl-ffi-memory)
+        (setq owner (nl-ffi-memory-allocate size))
+        (push (cons name owner) terminal-raw-mode--memory))
+      (let ((pointer (nl-ffi-memory-address owner)))
+        (set name pointer)
+        pointer)))
+
+  (defun terminal-raw-mode--release-bufs ()
+    "Release terminal scratch after its final native use.
+Keep failed releases owned so a later leave can retry them."
+    (let ((pending nil) (failure nil))
+      (dolist (cell terminal-raw-mode--memory)
+        (condition-case err
+            (progn
+              (nl-ffi-memory-release (cdr cell))
+              (set (car cell) nil))
+          (error
+           (push cell pending)
+           (unless failure (setq failure err)))))
+      (setq terminal-raw-mode--memory (nreverse pending))
+      (when failure (signal (car failure) (cdr failure)))))
 
   (defun terminal-raw-mode--dev-tty-path ()
     (let ((buf (terminal-raw-mode--ensure-buf
@@ -699,17 +722,18 @@ on identity should re-bind the variable holding PLIST."
               t))))))
 
   (defun terminal-raw-mode-leave ()
-    (if (not terminal-raw-mode--active)
-        nil
-      (let ((fd terminal-raw-mode--fd)
-            (saved terminal-raw-mode--saved-termios))
-        (when (and fd saved)
-          (syscall-direct 16 fd 21506 saved 0 0 0)
-          (when (> fd 2)
-            (syscall-direct 3 fd 0 0 0 0 0)))
+    (let ((active terminal-raw-mode--active)
+          (fd terminal-raw-mode--fd)
+          (saved terminal-raw-mode--saved-termios))
+      (unwind-protect
+          (when (and active fd saved)
+            (syscall-direct 16 fd 21506 saved 0 0 0)
+            (when (> fd 2)
+              (syscall-direct 3 fd 0 0 0 0 0)))
         (setq terminal-raw-mode--active nil)
         (setq terminal-raw-mode--fd nil)
-        t)))
+        (terminal-raw-mode--release-bufs))
+      active))
 
   (defun read-stdin-byte-available (timeout-ms)
     (let ((fd (or terminal-raw-mode--fd 0))
