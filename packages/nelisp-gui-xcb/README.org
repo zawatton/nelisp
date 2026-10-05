@@ -1,37 +1,55 @@
 #+TITLE: nelisp-gui-xcb — XCB transport and Cairo/Pango frontend
 
-S3.2 implements a mapped XCB window consuming the shared full redisplay glyph
-matrices, realized faces, window edges and cursor. XKB negotiates the server
-device keymap. Canonical events pass through the shared GUI key dispatch APIs; the
-frontend does not implement editing, command lookup, wrapping or point movement.
-The existing shared =emacs-edit-self-insert-direct= adapter edits the pure buffer
-shown by the matrix; native reader commands otherwise target a separate buffer.
-Pango shapes/falls back inside supplied cell runs. Cell metrics are explicit
-initial constants; measured geometry/resize is S3.3 work, not certified here.
+The frontend owns XCB/XKB transport, Cairo/Pango drawing and popup presentation.
+Shared frame, keymap, mouse and command-loop modules own editor geometry,
+canonical event interpretation, bindings, selection, scrolling and commands.
+Pure-buffer fixtures use the shared edit adapter; native SKK/Evil buffers use
+=emacs-command-loop-step= so package command hooks run normally.
 
-Build from this private library copy (no native build):
+Build from this private library copy with the supplied fixed runtime:
 
 #+begin_src sh
-export NELISP_BIN=/path/to/existing/nelisp-ccore-final
+export NELISP_BIN=/path/to/existing/nelisp-gui1
+export EMACS=emacs DISPLAY=:91
 python3 scripts/gui-daily-build.py
-DISPLAY=:91 python3 scripts/gui-daily-gate.py S3.2 --init=-Q --fixture=render
+xvfb-run -a -s '-screen 0 1600x1000x24 -dpi 96 -nolisten tcp -noreset -extension GLX' python3 scripts/gui-daily-gate.py S3.2 --init=-Q --fixture=render --require-production-quit
+python3 scripts/gui-daily-gate.py S3.3 --init=-Q --fixture=metrics
+python3 scripts/gui-daily-gate.py S4.1 --init=-Q --fixture=skk-evil --keymaps=us,jp,de
+python3 scripts/gui-daily-gate.py S4.2 --init=-Q --fixture=mouse-menu
 #+end_src
 
-=bin/nemacs-xcb= refuses stale bundle/source inputs, cold-loads the current heap
-image and selects =nemacs-main-options :frontend xcb=. The fixed render fixture
-sets up shared buffers/faces/window data; it has no drawing code. Native state
-is acquired only after cold-load and destroyed in dependent-first order.
-The gate records commands, identities, real key events, stdout/stderr and
-screenshots. It checks real pixels after active-layout GC and an actual insert,
-rejects blank/two-tone/moved-cursor controls, matches a real BadWindow cookie,
-and kills only its private Xvfb child for server-death recovery.
+No native compilation is involved. =bin/nemacs-xcb= rejects stale source/bundle
+inputs and cold-loads the GUI-specific heap image. Native resources are acquired
+after cold-load and destroyed in dependent-first order. The supplied runtime
+supports production quit; acceptance waits for the complete process to exit.
 
-The existing runtime's SYS_exit/native-Pango-worker quit defect belongs to R1.
-Gate teardown alone opts into a clearly marked temporary SYS_exit_group helper
-via =NELISP_GUI_TEST_EXIT_GROUP=; production =C-x C-c= is tested without it.
-=--require-production-quit= exposes the known-red assertion as a failing command.
-S4 keyboard/map refresh, selection, mouse/menu and desktop integration remain
-later work. No fractional-scaling, performance or daily-driver claim is made.
-Known shared substrate debt: native/pure buffer state is distinct, and inserting
-after the fixture's CJK text hits a character/byte-position defect. S3.2's key
-insert is in the initial ASCII run; Japanese rendering/fallback is still checked.
+S3.2 checks real shared glyph matrices, face rendering, AA/CJK fallback, cursor
+movement and insertion, active-layout GC, BadWindow and private-server death.
+S3.3 starts separate 96/144/192-DPI X servers. Pango measures font cells and
+shapes runs, aligned to the shared fixed-cell grid. Public pixel queries and
+position lists use those realized boxes. Gates inspect screenshot ink, cell
+advances, fringes/margins, cursor movement and physical resize remainder pixels.
+
+S4.1 uses installed ddskk/Evil sources and pinned GNU dependency sources copied
+and byte-compiled only inside the gate's private fixture directory. Its tiny
+UTF-8 dictionary and empty private dictionary are isolated from personal files.
+The gate requires actual SKK/Evil activation, types romaji with XTest, checks
+candidate cycling/kana and compares UTF-8 output against GNU with the same
+fixture/script. It also checks server US/JIS/AltGr maps, group changes,
+C/M/S/s modifiers, repeat, focus and quit. See =NEEDS-SHARED.md= for the shared
+Custom/default-binding, command bookkeeping/advice, and native marker blockers.
+The fixture pins the standard SPC conversion option explicitly; a focused probe
+records the fixed reader's octal-character defect. A =--launcher= diagnostic override is recorded
+in session metadata; an overlay run does not certify the production launcher.
+
+S4.2 checks standard positioned button/drag/wheel events, live region selection,
+point and CJK hits against cursor pixels, scrolling, resize, and commands from
+the shared menu-bar/context keymaps. Menus are painted inside the window.
+
+Each stage rejects explicit broken inputs or incorrect expected state. Result
+JSON, source/runtime hashes, raw event/command logs and screenshots are retained
+under =build/gui-daily/STAGE/=; the gates never stop the existing DISPLAY.
+This is bounded stage acceptance, not a daily-driver or fractional-scaling claim.
+The pixel-size helper covers the tested fixed-cell corpus; full GNU wrapping,
+image/stretch glyphs and arbitrary window-text-pixel-size options remain outside
+this fixture's coverage.

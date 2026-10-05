@@ -27,6 +27,8 @@ change to the criteria list is recorded in a NOTE.
 
 #+NOTE: 2026-10-05 lanes F1/F1b/F1c integrated.  F1: one wait for keys, timers, idle timers, process output/filters/sentinels (pty group "wait" 8/8 and the same script on GNU emacs -nw 8/8; pristine 6/8) and bin/nemacs-nw (image-first -Q start, no host emacs on PATH, first redisplay 0.98 s).  F1 broke two C-core areas (display: batch frame geometry 25/80 vs GNU 10; chars: read-char-exclusive hang); F1b fixed both (C-core 7/7 twice).  F1c fixed a process-exit drain race in accept-process-output (predates F1b).  A launcher tty snapshot built during the F1b check died with void-variable pfd in read-stdin-byte-available on every start; not reproducible in lane F1c and gone after deleting build/c-core-image/tty and rebuilding (pty 10/10 three runs, C-core 7/7) -- cause unknown, watch for recurrence (snapshot freshness check did not catch it).
 
+#+NOTE: 2026-10-05 lane X2 integrated (frame pixel metrics, xkb keyboard, mouse, in-window menu, gate stages).  On nelisp-gui1: S3.2 PASS (199 s), S3.3 PASS (DPI cases now concurrent: 728 s -> 239 s), S4.2 PASS (406 s), S4.1 FAIL (known red: keyboard transport, map negative control and the GNU SKK oracle pass; native evil/Custom init fails with evil-toggle-key unbound).  X2's seven shared-module requests are in target/progress/gui/x2-NEEDS-SHARED.md: lane R2 takes the runtime items (set-default on unbound symbols, character-literal escapes such as ?\040 read as 0, marker coercion in arithmetic and ranges); command-loop items (this-command bookkeeping, advised interactive forms, modifier-bit events, newline target) wait for lane S22 to finish because it owns those files.  gui-daily-fixtures.py no longer hard-codes the user's home (NEMACS_EXTERNAL_PACKAGES or the passwd home).
+
 * S1 Shared interactive foundation
 
 ** S1.1 One event wait drives read-event: keys, timers, idle timers and process output (sit-for, sleep-for, input-pending-p behave as GNU)
@@ -68,15 +70,21 @@ cmd: python3 -c "import hashlib,json;d=json.load(open('docs/design/gui-daily/pro
 cmd: bash -c 'timeout 240 python3 scripts/gui-daily-build.py >/dev/null 2>&1 && xvfb-run -a -s "-screen 0 1600x1000x24 -dpi 96 -nolisten tcp" timeout 340 python3 scripts/gui-daily-gate.py S3.2 --init=-Q --fixture=render --require-production-quit'
 
 ** S3.3 Pixel metrics: window-text-pixel-size, line height, char width, fringes and margins consistent with the renderer
-pending
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 600
+cmd: bash -c 'timeout 240 python3 scripts/gui-daily-build.py >/dev/null 2>&1 && EMACS=emacs timeout 340 python3 scripts/gui-daily-gate.py S3.3 --init=-Q --fixture=metrics --dpi=96,144,192'
 
 * S4 GUI input and desktop integration
 
 ** S4.1 Keyboard: modifiers, key repeat and Japanese input through the user's SKK (ddskk running inside nemacs; text lands in the buffer) reach the command loop
-pending
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 600
+cmd: bash -c 'timeout 240 python3 scripts/gui-daily-build.py >/dev/null 2>&1 && EMACS=emacs timeout 340 python3 scripts/gui-daily-gate.py S4.1 --init=-Q --fixture=skk-evil --keymaps=us,jp,de'
 
 ** S4.2 Mouse: clicks, drag, wheel, hit testing to buffer positions; menu bar and context menus
-pending
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 600
+cmd: bash -c 'timeout 240 python3 scripts/gui-daily-build.py >/dev/null 2>&1 && EMACS=emacs timeout 340 python3 scripts/gui-daily-gate.py S4.2 --init=-Q --fixture=mouse-menu'
 
 ** S4.3 Clipboard and primary selection interoperate with other applications
 pending

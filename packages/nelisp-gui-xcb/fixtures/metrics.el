@@ -1,0 +1,43 @@
+;;; metrics.el --- Pixel corpus shared by GUI measurement and screenshots -*- lexical-binding: t; -*-
+(defconst nelisp-gui-metrics-text "Metrics ASCII\né 日本語\nTab:\tX\nUTF-8 café Ω\n")
+(defun nelisp-gui-metrics-fixture ()
+  (nelisp-gui-render-fixture)
+  (nelisp-ec-erase-buffer)
+  (nelisp-ec-insert nelisp-gui-metrics-text)
+  (nelisp-ec-goto-char 2)
+  (setq nelisp-gui-pango-font "VL Gothic"
+        nelisp-gui-pango-fringe 8 nelisp-gui-pango-margin 2)
+  (emacs-frame-set-frame-size (emacs-frame-selected-frame) 64 20)
+  (emacs-window-layout-frame 64 20 0))
+
+(defun nelisp-gui-metrics-snapshot ()
+  "Publish assertions from public APIs and visible rendered glyph boxes."
+  (let* ((window (emacs-window-selected-window))
+         (point (nelisp-ec-point)) (posn (posn-at-point point window)))
+    (princ (format "GUI-METRICS|dpi=%d|cw=%d|ch=%d|font-width=%d|font-height=%d|line=%d|baseline=%S|size=%S|string=%d|posn=%S|pixel-width=%d|pixel-height=%d|\n"
+                   nelisp-gui-pango-dpi (frame-char-width) (frame-char-height)
+                   (default-font-width) (default-font-height) (line-pixel-height)
+                   nelisp-gui-pango-baseline (window-text-pixel-size window)
+                   (string-pixel-width "Metrics ASCII") (and posn (nth 2 posn)) (frame-pixel-width) (frame-pixel-height)))
+    (let ((row 1) (inset (+ nelisp-gui-pango-fringe (* nelisp-gui-pango-margin nelisp-gui-pango-cell-width))))
+      (dolist (line (split-string nelisp-gui-metrics-text "\n" nil))
+        (let ((right inset))
+          (dolist (cell nelisp-gui-pango--cells)
+            (when (and (eq (car cell) window) (= (nth 7 cell) row))
+              (setq right (max right (+ (nth 2 cell) (nth 4 cell))))))
+          (princ (format "GUI-RUN|row=%d|text=%S|width=%d|actual=%d|natural=%S|\n"
+                         row line (string-pixel-width line) (- right inset)
+                         (nelisp-gui-pango-natural-size nelisp-gui-frontend--renderer line))))
+        (setq row (1+ row))))
+    (dolist (cell nelisp-gui-pango--cells)
+      (when (eq (car cell) window)
+      (when (or (= (nth 1 cell) 2) (> (nth 4 cell) nelisp-gui-pango-cell-width)
+                (> (length (nth 8 cell)) 1) (member (nth 8 cell) '("X" "é" "Ω")))
+      (let* ((p (posn-at-point (nth 1 cell) window))
+             (hit (posn-at-x-y (+ (nth 2 cell) 1) (+ (nth 3 cell) 1)
+                               (emacs-frame-selected-frame) t)))
+        (unless (and p hit (= (nth 1 hit) (nth 1 cell)))
+          (error "Pixel hit/point mismatch %S" cell))))
+        (princ (format "GUI-CELL|pos=%d|x=%d|y=%d|w=%d|h=%d|text=%S|\n"
+                       (nth 1 cell) (nth 2 cell) (nth 3 cell) (nth 4 cell) (nth 5 cell) (nth 8 cell)))))))
+(provide 'nelisp-gui-metrics-fixture)

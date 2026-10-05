@@ -4,7 +4,8 @@
 (require 'emacs-command-loop)
 (define-error 'nelisp-gui-xcb-error "XCB transport error")
 (defconst nelisp-gui-xcb-cookie-type '(:struct :uint32))
-;; State: connection, window, visual, screen, xkb context/keymap/state, alive.
+;; State: connection, window, visual, screen, xkb context/keymap/state, alive,
+;; negotiated XKB event base.
 ;; No live native pointer is installed while loading/baking this file.
 
 (defun nelisp-gui-xcb-call (name signature &rest args)
@@ -24,7 +25,8 @@
 (defun nelisp-gui-xcb-cookie (state name types &rest args)
   "Send a generated XCB request with an actual cookie struct result."
   (nelisp-gui-xcb-check state)
-  (let* ((bytes (apply #'nl-ffi-libffi-call "libxcb.so.1" name
+  (let* ((library (if (string-prefix-p "xcb_xkb_" name) "libxcb-xkb.so.1" "libxcb.so.1"))
+         (bytes (apply #'nl-ffi-libffi-call library name
                        nelisp-gui-xcb-cookie-type (cons :pointer types)
                        (aref state 0) args))
          (sequence (nelisp-gui-xcb--bytes-number bytes 0 4)))
@@ -107,8 +109,22 @@
 (defun nelisp-gui-xcb-open (title width height)
   "Create an authenticated, checked, mapped XCB window with server XKB state."
   (dolist (lib '("libxcb.so.1" "libcairo.so.2" "libxkbcommon.so.0"
-                 "libxkbcommon-x11.so.0" "libc.so.6")) (ffi:library lib))
-  (let ((state (vector 0 0 0 0 0 0 0 t)) (complete nil)
+                 "libxkbcommon-x11.so.0" "libxcb-xkb.so.1" "libc.so.6")) (ffi:library lib))
+  ;; Cold images may have been baked under another DISPLAY.  The reader's
+  ;; environment is authoritative; synchronize libc's lazy-loaded environment
+  ;; before XCB performs authentication or consults its default display.
+  (dolist (name '("DISPLAY" "XAUTHORITY" "HOME"))
+    (let ((value (getenv name)) (key (nl-ffi-memory-cstring name)))
+      (unwind-protect
+          (if value
+              (let ((o (nl-ffi-memory-cstring value)))
+                (unwind-protect
+                    (nelisp-gui-xcb-call "setenv" [:sint32 :pointer :pointer :sint32]
+                                         (nl-ffi-memory-address key) (nl-ffi-memory-address o) 1)
+                  (nl-ffi-memory-release o)))
+            (nelisp-gui-xcb-call "unsetenv" [:sint32 :pointer] (nl-ffi-memory-address key)))
+        (nl-ffi-memory-release key))))
+  (let ((state (vector 0 0 0 0 0 0 0 t 0)) (complete nil)
         (screen-o (nl-ffi-memory-allocate 4)) (params (nl-ffi-memory-allocate 8)))
     (unwind-protect
         (progn
@@ -123,7 +139,7 @@
             (aset state 1 wid) (aset state 2 visual) (aset state 3 screen)
             (ptr-write-u32 p 0 (nl-ffi-libffi-u32 screen 12))
             ;; Key press/release, exposure, structure and focus notifications.
-            (ptr-write-u32 p 4 (+ 1 2 32768 131072 2097152))
+            (ptr-write-u32 p 4 (+ 1 2 4 8 64 32768 131072 2097152))
             (nelisp-gui-xcb-checked
              state "xcb_create_window_checked"
              '(:uint8 :uint32 :uint32 :sint16 :sint16 :uint16 :uint16 :uint16 :uint16 :uint32 :uint32 :pointer)
@@ -146,9 +162,11 @@
                                 '(:pointer :uint16 :uint16 :sint32 :pointer :pointer :pointer :pointer)
                                 (aref state 0) 1 0 0 p (+ p 2) (+ p 4) (+ p 5)))
                     (error "XKB negotiation failed"))
+                  (aset state 8 (ptr-read-u8 p 4))
                   (let ((device (nelisp-gui-xcb-call "xkb_x11_get_core_keyboard_device_id"
                                                    [:sint32 :pointer] (aref state 0))))
                     (unless (< device 2147483648) (error "XKB device unavailable"))
+                    (nelisp-gui-xcb-select-keyboard-events state device)
                     (aset state 4 (nelisp-gui-xcb-call "xkb_context_new" [:pointer :uint32] 0))
                     (aset state 5 (nelisp-gui-xcb-call "xkb_x11_keymap_new_from_device"
                                                      [:pointer :pointer :pointer :sint32 :uint32]
@@ -163,21 +181,71 @@
       (nl-ffi-memory-release screen-o) (nl-ffi-memory-release params)
       (unless complete (nelisp-gui-xcb-close state)))))
 
+(defun nelisp-gui-xcb-select-keyboard-events (state device)
+  "Select checked XKB map/device/state notifications for DEVICE."
+  ;; https://xkbcommon.org/doc/current/group__x11.html
+  ;; selectAll=7 needs no variable details; all eight map parts are selected.
+  (unless (equal (getenv "NELISP_GUI_FAULT") "stale-keymap")
+    (nelisp-gui-xcb-checked state "xcb_xkb_select_events_checked"
+                           '(:uint16 :uint16 :uint16 :uint16 :uint16 :uint16 :pointer)
+                           device 7 0 7 255 255 0)))
+
+(defun nelisp-gui-xcb-refresh-keymap (state)
+  "Refresh the server device keymap after MappingNotify or focus restoration."
+  (let* ((device (nelisp-gui-xcb-call "xkb_x11_get_core_keyboard_device_id"
+                                    [:sint32 :pointer] (aref state 0)))
+         (map (nelisp-gui-xcb-call "xkb_x11_keymap_new_from_device"
+                                 [:pointer :pointer :pointer :sint32 :uint32]
+                                 (aref state 4) (aref state 0) device 0))
+         (xkb (and (> map 0) (nelisp-gui-xcb-call "xkb_x11_state_new_from_device"
+                                               [:pointer :pointer :pointer :sint32]
+                                               map (aref state 0) device))))
+    (unless (and xkb (> xkb 0))
+      (when (> map 0) (nelisp-gui-xcb-call "xkb_keymap_unref" [:void :pointer] map))
+      (error "XKB refresh failed"))
+    (nelisp-gui-xcb-call "xkb_state_unref" [:void :pointer] (aref state 6))
+    (nelisp-gui-xcb-call "xkb_keymap_unref" [:void :pointer] (aref state 5))
+    (aset state 5 map) (aset state 6 xkb)
+    (nelisp-gui-xcb-select-keyboard-events state device)
+    (princ "GUI-XKB|refresh=1|\n")))
+
 (defun nelisp-gui-xcb-key (state event)
-  "Translate core X events via the negotiated server keymap into shared events."
+  "Translate server XKB keysyms and unconsumed modifiers to Emacs events."
   (let* ((code (ptr-read-u8 event 1)) (mods (nl-ffi-libffi-u16 event 28))
          (xkb (aref state 6)))
-    (nl-ffi-libffi-call "libxkbcommon.so.0" "xkb_state_update_mask" :uint32
-                       '(:pointer :uint32 :uint32 :uint32 :uint32 :uint32 :uint32)
-                       xkb (logand mods 255) 0 0 0 0 (logand (ash mods -13) 3))
+    ;; StateNotify is authoritative for latched/locked modifiers and groups.
+    ;; Core events do not always encode the active group; replacing it here
+    ;; loses a real Alt+Shift layout switch.
     (let* ((sym (nelisp-gui-xcb-call "xkb_state_key_get_one_sym" [:uint32 :pointer :uint32] xkb code))
-           (unicode (nelisp-gui-xcb-call "xkb_state_key_get_utf32" [:uint32 :pointer :uint32] xkb code))
-           (ev (emacs-command-loop-normalize-key-event
-                sym mods unicode :control-mask 4
-                :named-events '((65293 . 13) (65288 . 127) (65307 . 27)
-                                (65361 . left) (65363 . right) (65362 . up) (65364 . down)
-                                (65481 . f12)))))
-      (when ev (if (and (integerp ev) (= (logand mods 8) 8)) (logior ev 134217728) ev)))))
+           (group (nelisp-gui-xcb-call "xkb_state_serialize_layout" [:uint32 :pointer :uint32] xkb 128))
+           (unicode (nelisp-gui-xcb-call "xkb_keysym_to_utf32" [:uint32 :uint32] sym))
+           (consumed (nelisp-gui-xcb-call "xkb_state_key_get_consumed_mods" [:uint32 :pointer :uint32] xkb code))
+           (named (cdr (assq sym '((65293 . 13) (65288 . 127) (65289 . 9) (65307 . 27)
+                                  (65361 . left) (65363 . right) (65362 . up) (65364 . down)
+                                  (65360 . home) (65367 . end) (65365 . prior) (65366 . next)
+                                  (65535 . delete) (65421 . kp-enter)))))
+           (base (or named (and (>= sym 65470) (<= sym 65504)
+                                (intern (format "f%d" (1+ (- sym 65470)))))
+                     (and (> unicode 0) unicode)))
+           (active nil) ev)
+      (when base
+        (when (/= 0 (logand mods 4)) (push 'control active))
+        (when (and (/= 0 (logand mods 8)) (= 0 (logand consumed 8))) (push 'meta active))
+        (when (and (/= 0 (logand mods 64)) (= 0 (logand consumed 64))) (push 'super active))
+        (when (and (/= 0 (logand mods 1))
+                   (or (symbolp base) (= 0 (logand consumed 1))
+                       (and (memq 'control active) (integerp base)
+                            (>= base ?A) (<= base ?Z)))) (push 'shift active))
+        (setq ev (event-convert-list (append (nreverse active) (list base))))
+        ;; C-SPC and C punctuation have Emacs's compact control encoding.
+        (when (and (integerp base) (memq 'control active) (memq base '(32 64)))
+          (setq ev (logand ev (lognot (+ 67108864 255)))))
+        (princ (format "GUI-KEY|code=%d|sym=%d|mods=%d|consumed=%d|event=%S|group=%d|\n"
+                       code sym mods consumed ev group)))
+      ev)))
+
+(defun nelisp-gui-xcb--signed16 (p offset)
+  (let ((n (nl-ffi-libffi-u16 p offset))) (if (>= n 32768) (- n 65536) n)))
 
 (defun nelisp-gui-xcb-poll (state)
   "Return one transport event, freeing its native event exactly once."
@@ -189,7 +257,30 @@
             (cond
              ((= type 0) (signal 'nelisp-gui-xcb-error
                                 (list 'asynchronous (ptr-read-u8 p 1) (nl-ffi-libffi-u32 p 4))))
+             ((= type (aref state 8))
+              (let ((subtype (ptr-read-u8 p 1)))
+                (cond ((memq subtype '(0 1)) (nelisp-gui-xcb-refresh-keymap state))
+                      ((= subtype 2)
+                       (nl-ffi-libffi-call "libxkbcommon.so.0" "xkb_state_update_mask" :uint32
+                                            '(:pointer :uint32 :uint32 :uint32 :uint32 :uint32 :uint32)
+                                            (aref state 6) (ptr-read-u8 p 10) (ptr-read-u8 p 11)
+                                            (ptr-read-u8 p 12)
+                                            (logand (nelisp-gui-xcb--signed16 p 14) 4294967295)
+                                            (logand (nelisp-gui-xcb--signed16 p 16) 4294967295)
+                                            (ptr-read-u8 p 18))))
+                (princ (format "GUI-XKB|notify=%d|\n" subtype)))
+              '(:ignored t))
              ((= type 2) (list :key (nelisp-gui-xcb-key state p)))
+             ((memq type '(4 5 6))
+              (list :pointer (list type (ptr-read-u8 p 1)
+                                   (nelisp-gui-xcb--signed16 p 24) (nelisp-gui-xcb--signed16 p 26)
+                                   (nl-ffi-libffi-u32 p 4) (nl-ffi-libffi-u16 p 28))))
+             ((memq type '(9 10))
+              (when (= type 9) (nelisp-gui-xcb-refresh-keymap state))
+              (list :focus (if (= type 9) 'focus-in 'focus-out)))
+             ((= type 34) (nelisp-gui-xcb-refresh-keymap state) '(:ignored t))
+             ((= type 22)
+              (list :resize (cons (nl-ffi-libffi-u16 p 20) (nl-ffi-libffi-u16 p 22))))
              ((= type 12) '(:expose t))
              ((= type 17) (signal 'nelisp-gui-xcb-error (list 'window-destroyed)))
              (t '(:ignored t))))

@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""S3.2 live heap-image GUI acceptance; no native build or screenshot injection.
+"""Live GUI stage acceptance; no native build or screenshot injection.
 
 The existing DISPLAY is never stopped. Server-death uses a private Xvfb only.
-R1's production SYS_exit/native-thread defect is reported separately as XFAIL;
---require-production-quit keeps the known-red assertion available as a command.
+Use --require-production-quit to require the complete production process exit.
 """
 import argparse
 from collections import Counter
@@ -17,6 +16,7 @@ import sys
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
+LAUNCHER = ROOT / 'bin/nemacs-xcb'
 BG, FG, CURSOR = (24, 32, 40), (232, 232, 232), (128, 255, 128)
 CHILDREN = []
 
@@ -107,9 +107,9 @@ class Session:
         self.label = label
         self.stdout = out / (label + '.out')
         self.stderr = out / (label + '.err')
-        self.argv = [str(ROOT / 'bin/nemacs-xcb'), '--init=-Q']
+        self.argv = [str(LAUNCHER), '--init=-Q']
         if fixture:
-            self.argv += ['--fixture=render']
+            self.argv += ['--fixture=' + ('render' if fixture is True else fixture)]
         self.streams = [self.stdout.open('wb'), self.stderr.open('wb')]
         self.started = time.monotonic()
         self.proc = subprocess.Popen(self.argv, cwd=ROOT, env=env, stdin=subprocess.DEVNULL,
@@ -121,13 +121,13 @@ class Session:
     def log(self):
         return self.stdout.read_text(errors='replace')
 
-    def ready(self):
+    def ready(self, timeout=60):
         def check():
             log = self.log()
             assert 'GUI-ERROR|' not in log, log[-3000:]
             assert self.proc.poll() is None, 'GUI exited before ready: ' + log[-3000:]
             return 'GUI-READY|' in log
-        wait_until(check, 60, self.label + ' GUI ready')
+        wait_until(check, timeout, self.label + ' GUI ready')
         windows = command(['xdotool', 'search', '--onlyvisible', '--name', '^NeLisp XCB$'], self.env).decode().split()
         # XCB WM_PID is optional; identify by unique title when absent, then
         # cross-check XID from the in-process paint diagnostic.
@@ -137,7 +137,8 @@ class Session:
 
     def key(self, *keys):
         self.events.append(list(keys))
-        command(['xdotool', 'key', '--window', self.window, '--clearmodifiers', '--delay', '0', *keys], self.env)
+        command(['xdotool', 'windowfocus', '--sync', self.window], self.env)
+        command(['xdotool', 'key', '--clearmodifiers', '--delay', '0', *keys], self.env)
 
     def shot(self, name):
         path = self.out / (name + '.png')
@@ -150,7 +151,7 @@ class Session:
         # The existing app init writes this informational banner to stderr.
         # Keep every other diagnostic visible and failing.
         stderr = self.stderr.read_text()
-        assert stderr in ('', 'nemacs 0.1.0-mvp ready (Layer 2 / Doc 51)\n'), stderr
+        assert stderr.strip() in ('', 'nemacs 0.1.0-mvp ready (Layer 2 / Doc 51)'), stderr
 
     def metadata(self):
         return dict(command=self.argv, display=self.env['DISPLAY'], events=self.events,
@@ -169,14 +170,28 @@ def terminate(proc):
 
 
 def main():
+    global LAUNCHER
     parser = argparse.ArgumentParser()
-    parser.add_argument('stage', choices=['S3.2'])
+    parser.add_argument('stage', choices=['S3.2', 'S3.3', 'S4.1', 'S4.2'])
+    parser.add_argument('--launcher',type=Path,default=LAUNCHER)
     parser.add_argument('--init', default='-Q', choices=['-Q'])
-    parser.add_argument('--fixture', default='render', choices=['render'])
+    parser.add_argument('--fixture', choices=['render', 'metrics', 'skk-evil', 'keyboard', 'mouse-menu'])
+    parser.add_argument('--dpi', default='96,144,192')
+    parser.add_argument('--keymaps', default='us,jp,de')
+    parser.add_argument('--one-display', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--faults', default='bad-window,server-death,quit')
-    parser.add_argument('--out', type=Path, default=ROOT / 'build/gui-daily/S3.2')
+    parser.add_argument('--out', type=Path)
     parser.add_argument('--require-production-quit', action='store_true')
     args = parser.parse_args()
+    LAUNCHER = args.launcher.resolve()
+    args.out = args.out or ROOT / 'build/gui-daily' / args.stage
+    args.fixture = args.fixture or {'S3.2': 'render', 'S3.3': 'metrics', 'S4.1': 'skk-evil', 'S4.2': 'mouse-menu'}[args.stage]
+    if args.stage != 'S3.2':
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('gui_daily_stages', ROOT / 'scripts/gui-daily-stages.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.run(args, globals())
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()

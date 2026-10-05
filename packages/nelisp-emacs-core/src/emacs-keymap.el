@@ -220,7 +220,7 @@ Modifier-bearing characters are passed through as-is."
    ((null key)
     (signal 'emacs-keymap-bad-key (list key)))
    ((vectorp key)
-    (append key nil))
+    (mapcar #'emacs-keymap-event-type (append key nil)))
    ((stringp key)
     (append key nil))
    ((listp key)
@@ -230,6 +230,41 @@ Modifier-bearing characters are passed through as-is."
    ((symbolp key)
     (list key))
    (t (signal 'emacs-keymap-bad-key (list key)))))
+
+(defun emacs-keymap-event-type (event)
+  "Return the keymap lookup type of a standard positioned EVENT.
+Mouse events retain their position lists in the shared input queue and in
+`last-command-event'; only lookup strips the payload."
+  (if (and (consp event) (symbolp (car event))) (car event) event))
+
+(defun emacs-keymap-menu-items (keymap &optional prefix)
+  "Return visible menu items as (LABEL EVENT-SEQUENCE DEFINITION).
+Read normal shared keymaps, including menu-item enable/visible expressions.
+The caller renders these items; command lookup remains ordinary key lookup."
+  (let (items)
+    (emacs-keymap-map-keymap
+     (lambda (event binding)
+       (let (label definition props)
+         (cond ((and (consp binding) (eq (car binding) 'menu-item))
+                (setq label (nth 1 binding) definition (nth 2 binding) props (nthcdr 3 binding)))
+               ((and (consp binding) (stringp (car binding)))
+                (setq label (car binding) definition (cdr binding))))
+         (when (and label (not (string-prefix-p "--" label))
+                    (or (not (plist-member props :visible)) (eval (plist-get props :visible)))
+                    (or (not (plist-member props :enable)) (eval (plist-get props :enable))))
+           (push (list label (vconcat prefix (vector event)) definition) items))))
+     keymap)
+    (nreverse items)))
+
+(defun emacs-keymap-menu-binding (sequence)
+  "Resolve menu SEQUENCE through the active shared keymaps."
+  (if (memq (aref sequence 0) '(menu-bar context-menu))
+      (let ((binding (emacs-keymap-key-binding (vector (aref sequence 0)))) (i 1))
+        (while (< i (length sequence))
+          (when (and (consp binding) (eq (car binding) 'menu-item)) (setq binding (nth 2 binding)))
+          (setq binding (emacs-keymap-lookup-key binding (vector (aref sequence i))) i (1+ i)))
+        (if (and (consp binding) (eq (car binding) 'menu-item)) (nth 2 binding) binding))
+    (emacs-keymap-key-binding sequence)))
 
 ;;; B. mutators / accessors
 
@@ -884,7 +919,7 @@ text-property / overlay slot resolution when
           (when (and b (not (numberp b)))
             (setq result b)
             (throw 'found t)))))
-    result))
+    (if (and (consp result) (eq (car result) 'menu-item)) (nth 2 result) result)))
 
 ;;;###autoload
 (defun emacs-keymap-map-keymap (function keymap)

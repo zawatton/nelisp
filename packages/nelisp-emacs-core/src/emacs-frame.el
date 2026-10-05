@@ -443,14 +443,14 @@ Doc 34 §2.11 LOCKED invariant: stub-mode default = 24."
   (emacs-frame-height (emacs-frame--get frame)))
 
 (defun emacs-frame-frame-char-width (&optional frame)
-  "Return the width in pseudo pixels of one character cell on FRAME."
-  (ignore (emacs-frame--get frame))
-  emacs-frame--char-width)
+  "Return the realized character width, or the headless pseudo width."
+  (or (emacs-frame-frame-parameter (emacs-frame--get frame) 'char-width)
+      emacs-frame--char-width))
 
 (defun emacs-frame-frame-char-height (&optional frame)
-  "Return the height in pseudo pixels of one character cell on FRAME."
-  (ignore (emacs-frame--get frame))
-  emacs-frame--char-height)
+  "Return the realized line height, or the headless pseudo height."
+  (or (emacs-frame-frame-parameter (emacs-frame--get frame) 'char-height)
+      emacs-frame--char-height))
 
 (defun emacs-frame-frame-pixel-width (&optional frame)
   "Return the width in pseudo pixels of FRAME."
@@ -472,8 +472,8 @@ configured minimum."
       (signal 'emacs-frame-bad-size (list 'lines lines)))
     (setf (emacs-frame-width        f) cols
           (emacs-frame-height       f) lines
-          (emacs-frame-pixel-width  f) (* cols  emacs-frame--char-width)
-          (emacs-frame-pixel-height f) (* lines emacs-frame--char-height))
+          (emacs-frame-pixel-width  f) (* cols (emacs-frame-frame-char-width f))
+          (emacs-frame-pixel-height f) (* lines (emacs-frame-frame-char-height f)))
     (emacs-frame--call-backend :frame-resize f cols lines)
     nil))
 

@@ -15,11 +15,18 @@ MEMBERS = [
     'packages/nl-ffi/src/nl-ffi-loader.el',
     'packages/nl-ffi/src/nl-ffi.el',
     'packages/nelisp-emacs-core/src/emacs-redisplay.el',
+    'packages/nelisp-emacs-core/src/emacs-frame-pixels.el',
+    'packages/nelisp-emacs-core/src/emacs-mouse.el',
     'packages/nl-libffi/src/nl-ffi-libffi.el',
     'packages/nelisp-gui-xcb/src/nelisp-gui-xcb.el',
     'packages/nelisp-gui-xcb/src/nelisp-gui-pango.el',
+    'packages/nelisp-gui-xcb/src/nelisp-gui-menu.el',
     'packages/nelisp-gui-xcb/src/nelisp-gui-frontend.el',
     'packages/nelisp-gui-xcb/fixtures/render.el',
+    'packages/nelisp-gui-xcb/fixtures/metrics.el',
+    'packages/nelisp-gui-xcb/fixtures/skk-evil.el',
+    'packages/nelisp-gui-xcb/fixtures/keyboard.el',
+    'packages/nelisp-gui-xcb/fixtures/mouse-menu.el',
 ]
 # The GUI image gets its own bundle so the certified C-core bundle stays untouched.
 GUI_BUNDLE = ROOT / 'build/nemacs-gui-bootstrap.el'
@@ -41,8 +48,13 @@ def main():
     data = base + extension
     if not bundle.exists() or bundle.read_bytes() != data:
         bundle.write_bytes(data)
-    sources = MEMBERS + ['packages/nelisp-emacs-app-gui/src/nemacs-main.el',
-                         'scripts/gui-daily-build.py', 'bin/nemacs-xcb']
+    sources = MEMBERS + ['packages/nelisp-emacs-core/src/emacs-frame.el',
+                         'packages/nelisp-emacs-core/src/emacs-keymap.el',
+                         'packages/nelisp-emacs-core/src/emacs-keymap-builtins.el',
+                         'scripts/gui-daily-fixtures.py',
+                         'packages/nelisp-emacs-app-gui/src/nemacs-main.el',
+                         'scripts/gui-daily-build.py', 'bin/nemacs-xcb',
+                         'packages/nelisp-gui-xcb/fixtures/SKK-JISYO.gui']
     (ROOT / 'build/gui-daily-inputs.json').write_text(json.dumps(
         dict(bundle=digest(bundle), sources={s: digest(ROOT / s) for s in sources}), indent=2) + '\n')
     subprocess.run(['bash', 'tools/c-core-image.sh', 'build'], cwd=ROOT,

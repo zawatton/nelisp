@@ -162,11 +162,14 @@ keymap builtins (`make-keymap', `define-key', ...) silently stay as the
     (when keys
       (while (cdr keys)
         (let* ((event (car keys))
-               (cell (emacs-keymap-builtins--binding keymap event))
+               (own (emacs-keymap-builtins--own-binding keymap event))
+               (cell (or own (emacs-keymap-builtins--binding keymap event)))
                (binding (emacs-keymap-builtins--key-definition (cdr cell)))
                (submap (emacs-keymap--get-keymap binding)))
           (push event prefix)
-          (when (and binding (not submap))
+          ;; A child may shadow an inherited command with a new prefix.
+          ;; Only its own non-prefix binding makes the sequence invalid.
+          (when (and own binding (not submap))
             (error "Key sequence %s starts with non-prefix key %s"
                    (key-description key)
                    (key-description (vconcat (reverse prefix)))))
