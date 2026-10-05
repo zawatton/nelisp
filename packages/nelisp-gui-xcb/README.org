@@ -1,0 +1,37 @@
+#+TITLE: nelisp-gui-xcb — XCB transport and Cairo/Pango frontend
+
+S3.2 implements a mapped XCB window consuming the shared full redisplay glyph
+matrices, realized faces, window edges and cursor. XKB negotiates the server
+device keymap. Canonical events pass through the shared GUI key dispatch APIs; the
+frontend does not implement editing, command lookup, wrapping or point movement.
+The existing shared =emacs-edit-self-insert-direct= adapter edits the pure buffer
+shown by the matrix; native reader commands otherwise target a separate buffer.
+Pango shapes/falls back inside supplied cell runs. Cell metrics are explicit
+initial constants; measured geometry/resize is S3.3 work, not certified here.
+
+Build from this private library copy (no native build):
+
+#+begin_src sh
+export NELISP_BIN=/path/to/existing/nelisp-ccore-final
+python3 scripts/gui-daily-build.py
+DISPLAY=:91 python3 scripts/gui-daily-gate.py S3.2 --init=-Q --fixture=render
+#+end_src
+
+=bin/nemacs-xcb= refuses stale bundle/source inputs, cold-loads the current heap
+image and selects =nemacs-main-options :frontend xcb=. The fixed render fixture
+sets up shared buffers/faces/window data; it has no drawing code. Native state
+is acquired only after cold-load and destroyed in dependent-first order.
+The gate records commands, identities, real key events, stdout/stderr and
+screenshots. It checks real pixels after active-layout GC and an actual insert,
+rejects blank/two-tone/moved-cursor controls, matches a real BadWindow cookie,
+and kills only its private Xvfb child for server-death recovery.
+
+The existing runtime's SYS_exit/native-Pango-worker quit defect belongs to R1.
+Gate teardown alone opts into a clearly marked temporary SYS_exit_group helper
+via =NELISP_GUI_TEST_EXIT_GROUP=; production =C-x C-c= is tested without it.
+=--require-production-quit= exposes the known-red assertion as a failing command.
+S4 keyboard/map refresh, selection, mouse/menu and desktop integration remain
+later work. No fractional-scaling, performance or daily-driver claim is made.
+Known shared substrate debt: native/pure buffer state is distinct, and inserting
+after the fixture's CJK text hits a character/byte-position defect. S3.2's key
+insert is in the initial ASCII run; Japanese rendering/fallback is still checked.

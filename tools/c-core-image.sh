@@ -20,8 +20,10 @@ import time
 root = Path(sys.argv[1])
 binary = Path(sys.argv[2]).resolve()
 action = sys.argv[3]
-cache = root / 'build/c-core-image'
-bundle = root / 'build/nemacs-bootstrap.el'
+bundle = Path(os.environ['C_CORE_IMAGE_BUNDLE']).resolve() if os.environ.get('C_CORE_IMAGE_BUNDLE') else root / 'build/nemacs-bootstrap.el'
+# A non-default bundle gets its own cache: building prunes stale images in
+# the cache directory, so sharing one would evict the C-core image.
+cache = root / ('build/c-core-image-' + bundle.stem if os.environ.get('C_CORE_IMAGE_BUNDLE') else 'build/c-core-image')
 child = None
 temporary = None
 

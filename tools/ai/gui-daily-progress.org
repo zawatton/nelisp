@@ -19,6 +19,10 @@ change to the criteria list is recorded in a NOTE.
 
 #+NOTE: 2026-10-05 runtime nelisp-gui1 (sha256 7ffa22d5...; lane R1 exit_group fix, RT commit after a363948b): exit smoke 10/10, pty smoke 3/3, image start 0.8 s; C-core parity on gui1: one run had a GNU host segfault (exit 139, in the other area near time-convert/malloc-info, a host-side crash), the area alone matched 1151/1151, then two consecutive full runs 7/7.
 
+#+NOTE: 2026-10-05 S2.1 wired as a known-red cmd (lane S2a: GNU emacs -nw on a pty with a VT emulator vs the NeLisp glyph matrix, 32 cases x 80x24/40x12; 0/64 -> 62/64; the default mode line still differs; lane S2b continues).  S3.2 wired (lane X1, backend B): packages nl-libffi and nelisp-gui-xcb, bin/nemacs-xcb, scripts/gui-daily-build.py (separate GUI bundle build/nemacs-gui-bootstrap.el and image via C_CORE_IMAGE_BUNDLE so the certified C-core bundle is untouched) and scripts/gui-daily-gate.py; on nelisp-gui1 all 8 checks pass including the strict production quit.
+
+#+NOTE: 2026-10-05 timeouts: the meter's 55 s default killed S1.4/S2.1/S3.2, so each got #+TIMEOUT (400/600/600) with inner limits below it; tools/redisplay-layout-parity.py runs cases concurrently (--jobs, default 4; sequential 962 s -> 263 s, same 62/64); tools/c-core-image.sh gives a C_CORE_IMAGE_BUNDLE build its own cache directory because building prunes other images (the GUI and C-core images were evicting each other).  Measured 20.0% of 15 (S1.4, S3.1, S3.2 pass; S2.1 known red).
+
 * S1 Shared interactive foundation
 
 ** S1.1 One event wait drives read-event: keys, timers, idle timers and process output (sit-for, sleep-for, input-pending-p behave as GNU)
@@ -32,12 +36,15 @@ pending
 
 ** S1.4 End to end: a pty session starts nemacs -nw, runs a scripted key sequence through the real command loop and exits cleanly
 #+REQUIRES: NELISP_BIN
+#+TIMEOUT: 400
 cmd: bash -c 'bash tools/c-core-image.sh check >/dev/null 2>&1 || bash tools/c-core-image.sh build >/dev/null 2>&1; timeout 300 python3 tools/nemacs-pty-smoke.py --output build/nemacs-pty-smoke/ledger'
 
 * S2 Shared redisplay layout
 
 ** S2.1 Line layout parity (frontend independent): wrap/truncation, invisible, display/overlay strings, mode line, header line, minibuffer, compared with GNU on a fixed corpus
-pending
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 600
+cmd: bash -c 'bash tools/c-core-image.sh check >/dev/null 2>&1 || bash tools/c-core-image.sh build >/dev/null 2>&1; EMACS=emacs timeout 590 python3 tools/redisplay-layout-parity.py run --output build/redisplay-layout/ledger'
 
 ** S2.2 End to end: pty scenario (open file, edit, search, split windows, save, quit) produces the same final file and screen as GNU emacs -nw
 pending
@@ -48,7 +55,9 @@ pending
 cmd: python3 -c "import hashlib,json;d=json.load(open('docs/design/gui-daily/probes/results/audit.json'));h=hashlib.sha256(open('docs/design/gui-daily/G1-backend-decision.md','rb').read()).hexdigest();raise SystemExit(0 if d['status']=='approved' and d['document_sha256']==h else 1)"
 
 ** S3.2 A GUI frame opens, renders text with faces through a real font rasterizer, cursor and mode line
-pending
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 600
+cmd: bash -c 'timeout 240 python3 scripts/gui-daily-build.py >/dev/null 2>&1 && xvfb-run -a -s "-screen 0 1600x1000x24 -dpi 96 -nolisten tcp" timeout 340 python3 scripts/gui-daily-gate.py S3.2 --init=-Q --fixture=render --require-production-quit'
 
 ** S3.3 Pixel metrics: window-text-pixel-size, line height, char width, fringes and margins consistent with the renderer
 pending

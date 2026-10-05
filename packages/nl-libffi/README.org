@@ -1,0 +1,21 @@
+#+TITLE: nl-libffi — shared fixed-signature foreign call adapter
+
+The =nl-ffi-libffi= feature extends the existing =nl-ffi= provider through
+installed =libffi.so.8=. It has no editor or display dependencies. Consumers
+declare scalar types or =(:struct TYPE...)= aggregates; cookie structs remain
+structs both as return values and as arguments. No callback or varargs support.
+
+This version targets Linux x86-64 SysV (FFI_UNIX64=2, CIF32, ffi_type24).
+Prepared CIFs retain their argument arrays, aggregate descriptors and library
+handles. Per-call native argument/result buffers are released on unwind.
+Signed small results are normalized; doubles are packed with u32 halves to
+avoid the runtime's tagged-u64 packing defect. Nonfinite/subnormal doubles and
+full-width unsigned integers outside the fixnum range are refused.
+
+Load definitions into heap images, then acquire native libraries/CIFs after
+cold-load. Destroy native consumers before =nl-ffi-libffi-release=.
+Native libraries remain open in the shared =nl-ffi= registry for process life.
+
+Validation: =test/standalone.el= exercises signed results, aggregate returns,
+retained owners after GC and double packing against installed native libraries.
+The GUI gate additionally exercises 13 arguments and aggregate cookie arguments.

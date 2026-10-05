@@ -751,35 +751,46 @@ backend reads them off the glyph's `display-spec' (Doc 06 E3)."
       result))))
 
 (defun emacs-redisplay--overlays-in (beg end &optional buffer)
-  "Return overlays touching [BEG, END) in BUFFER, or nil if API absent."
-  (cond
-   ((fboundp 'nelisp-ovly-overlays-in)
-    (condition-case _err
-        (let ((nelisp-ec--current-buffer (or buffer
-                                             (and (boundp 'nelisp-ec--current-buffer)
-                                                  nelisp-ec--current-buffer))))
-          (nelisp-ovly-overlays-in beg end))
-      (error nil)))
-   (t nil)))
+  "Return rendering overlays through the owning buffer/overlay APIs."
+  (if (emacs-redisplay--standard-buffer-p buffer)
+      (with-current-buffer buffer (overlays-in beg end))
+    (append (and (fboundp 'emacs-buffer-overlays-in)
+                 (emacs-buffer-overlays-in beg end buffer))
+            (and (fboundp 'nelisp-ovly-overlays-in)
+                 (let ((nelisp-ec--current-buffer buffer))
+                   (nelisp-ovly-overlays-in beg end))))))
 
 (defun emacs-redisplay--ovly-prop (overlay prop)
-  "Return PROP of OVERLAY via `nelisp-ovly-get', or nil."
-  (when (and overlay (fboundp 'nelisp-ovly-get))
-    (condition-case _err
-        (nelisp-ovly-get overlay prop)
-      (error nil))))
+  "Return PROP from OVERLAY using its public owner API."
+  (cond
+   ((and (fboundp 'overlayp) (overlayp overlay)) (overlay-get overlay prop))
+   ((and (fboundp 'emacs-buffer-overlayp) (emacs-buffer-overlayp overlay))
+    (emacs-buffer-overlay-get overlay prop))
+   ((fboundp 'nelisp-ovly-get) (nelisp-ovly-get overlay prop))))
 
 (defun emacs-redisplay--ovly-bounds (overlay)
-  "Return (START . END) of OVERLAY, or nil if accessors absent."
-  (when (and overlay
-             (fboundp 'nelisp-ovly-start)
-             (fboundp 'nelisp-ovly-end))
-    (condition-case _err
-        (cons (nelisp-ovly-start overlay) (nelisp-ovly-end overlay))
-      (error nil))))
+  "Return OVERLAY's public (START . END) bounds."
+  (cond
+   ((and (fboundp 'overlayp) (overlayp overlay))
+    (let ((start (overlay-start overlay)) (end (overlay-end overlay)))
+      (and start end (cons start end))))
+   ((and (fboundp 'emacs-buffer-overlayp) (emacs-buffer-overlayp overlay))
+    (let ((start (emacs-buffer-overlay-start overlay))
+          (end (emacs-buffer-overlay-end overlay)))
+      (and start end (cons start end))))
+   ((fboundp 'nelisp-ovly-start)
+    (let ((start (nelisp-ovly-start overlay)) (end (nelisp-ovly-end overlay)))
+      (and start end (cons start end))))))
 
 ;;; Buffer text + text-property access (works against emacs-buffer or
 ;;; nelisp-ec depending on which is wired in the host).
+
+(defun emacs-redisplay--standard-buffer-p (buffer)
+  "Non-nil for buffers owned by the host or the standalone buffer API.
+Legacy `nelisp-ec-buffer' objects continue through their prefixed API."
+  (and (fboundp 'bufferp) (bufferp buffer)
+       (or (not (fboundp 'nelisp--repr))
+           (and (fboundp 'nelisp-buffer-p) (nelisp-buffer-p buffer)))))
 
 (defun emacs-redisplay--buffer-string (buffer)
   "Return the full text of BUFFER as a string (current narrowing OK).
@@ -788,6 +799,8 @@ made-current via the emacs-buffer compatibility layer.  Returns the
 empty string when no text is reachable (= safe MVP default)."
   (cond
    ((null buffer) "")
+   ((emacs-redisplay--standard-buffer-p buffer)
+    (with-current-buffer buffer (buffer-substring-no-properties (point-min) (point-max))))
    ((and (fboundp 'nelisp-ec-buffer-p)
          (nelisp-ec-buffer-p buffer))
     (condition-case _err
@@ -802,7 +815,8 @@ empty string when no text is reachable (= safe MVP default)."
 
 (defun emacs-redisplay--cached-buffer-string (handle buffer)
   "Return BUFFER's text via HANDLE's text-cache (Phase 3.B.7).
-Cache key = (BUFFER + TEXT-TICK).  When BUFFER is a string or nil,
+Cache key = (BUFFER + TEXT-TICK + accessible bounds for native buffers).
+When BUFFER is a string or nil,
 falls back to the uncached path because there is no tick to gate on.
 Cache holds at most `emacs-redisplay--text-cache-size' entries with
 LRU ordering — the head is most-recent."
@@ -810,8 +824,11 @@ LRU ordering — the head is most-recent."
    ((or (null buffer) (stringp buffer))
     (emacs-redisplay--buffer-string buffer))
    (t
-    (let* ((tick (and (fboundp 'emacs-buffer-buffer-text-tick)
-                      (emacs-buffer-buffer-text-tick buffer)))
+    (let* ((tick (if (emacs-redisplay--standard-buffer-p buffer)
+                     (with-current-buffer buffer
+                       (list (buffer-chars-modified-tick) (point-min) (point-max)))
+                   (and (fboundp 'emacs-buffer-buffer-text-tick)
+                        (emacs-buffer-buffer-text-tick buffer))))
            (cache (emacs-redisplay-handle-text-cache handle))
            (hit (and tick
                      (cl-loop for entry in cache
@@ -840,6 +857,8 @@ LRU ordering — the head is most-recent."
   "Return BUFFER text in 1-based [START, END), with safe fallbacks."
   (cond
    ((null buffer) "")
+   ((emacs-redisplay--standard-buffer-p buffer)
+    (with-current-buffer buffer (buffer-substring-no-properties start end)))
    ((stringp buffer)
     (let* ((s0 (max 0 (min (length buffer) (1- start))))
            (e0 (max s0 (min (length buffer) (1- end)))))
@@ -858,28 +877,37 @@ Routes to `emacs-buffer-get-text-property' when available; otherwise
 returns nil (= MVP face = default, display = no override)."
   (cond
    ((or (null pos) (null buffer)) nil)
+   ((emacs-redisplay--standard-buffer-p buffer)
+    (get-text-property pos prop buffer))
    ((fboundp 'emacs-buffer-get-text-property)
     (condition-case _err
         (emacs-buffer-get-text-property pos prop buffer)
       (error nil)))
    (t nil)))
 
+(defun emacs-redisplay--invisibility-value (value spec)
+  "Resolve invisible VALUE against SPEC, returning nil, t, or 2 (ellipsis)."
+  (cond
+   ((null value) nil)
+   ((eq spec t) t)
+   ((null spec) nil)
+   (t
+    (let ((result nil) (tags (if (listp value) value (list value))))
+      (dolist (entry spec)
+        (when (memq (if (consp entry) (car entry) entry) tags)
+          (setq result (if (and (consp entry) (cdr entry)) 2 (or result t)))))
+      result))))
+
 (defun emacs-redisplay--invisible-at-p (pos buffer &optional overlays)
-  "Return non-nil when POS should be suppressed by `invisible'.
-This covers the Phase 3 MVP `invisible' text property, and also
-honors overlay `invisible' when overlay accessors are available.  The
-MVP treats any non-nil value as invisible; selective-display list
-semantics are deferred to a later compatibility pass."
-  (or (emacs-redisplay--text-property-at pos 'invisible buffer)
-      (catch 'hidden
-        (dolist (ov overlays)
-          (let ((bounds (emacs-redisplay--ovly-bounds ov)))
-            (when (and bounds
-                       (<= (car bounds) pos)
-                       (< pos (cdr bounds))
-                       (emacs-redisplay--ovly-prop ov 'invisible))
-              (throw 'hidden t))))
-        nil)))
+  "Return the visibility state at POS: nil, hidden t, or ellipsis 2."
+  (let ((value (emacs-redisplay--text-property-at pos 'invisible buffer))
+        (spec (emacs-redisplay--ml-local 'buffer-invisibility-spec buffer t)))
+    (dolist (ov overlays)
+      (let ((bounds (emacs-redisplay--ovly-bounds ov)))
+        (when (and bounds (<= (car bounds) pos) (< pos (cdr bounds))
+                   (emacs-redisplay--ovly-prop ov 'invisible))
+          (setq value (emacs-redisplay--ovly-prop ov 'invisible)))))
+    (emacs-redisplay--invisibility-value value spec)))
 
 ;;; Hash helper for diff propagation
 
@@ -910,9 +938,8 @@ mutation under the same face name)."
 (defun emacs-redisplay--make-empty-row (width)
   "Allocate an empty row of WIDTH spaces (face nil)."
   (let ((vec (make-vector width nil)))
-    (dotimes (i width)
-      (aset vec i (emacs-redisplay--make-glyph
-                   :char ?\s :face nil :width 1)))
+    ;; Nil cells are blank cells, as for the tail of a wide glyph.  Avoid
+    ;; allocating thousands of unused glyph objects before the first layout.
     (emacs-redisplay--make-glyph-row
      :glyphs vec :used 0 :hash 0
      :start-pos nil :end-pos nil
@@ -1445,21 +1472,26 @@ exceeds) WIDTH it is returned unchanged."
 (defun emacs-redisplay--buffer-name (buffer)
   "Return BUFFER's display name for the MVP mode-line."
   (cond
+   ((emacs-redisplay--standard-buffer-p buffer) (buffer-name buffer))
    ((and buffer (nelisp-ec-buffer-p buffer))
     (nelisp-ec-buffer-name buffer))
    ((stringp buffer) "*string*")
    (t "")))
 (defun emacs-redisplay--mode-line-modified-indicator (buffer)
   "Return \"*\" when BUFFER is modified, else \"-\" (mode-line `%*' / `%+')."
-  (if (and buffer (nelisp-ec-buffer-p buffer)
-           (fboundp 'nelisp-ec-buffer-modified-p)
-           (nelisp-ec-buffer-modified-p buffer))
+  (if (if (emacs-redisplay--standard-buffer-p buffer)
+          (buffer-modified-p buffer)
+        (and buffer (nelisp-ec-buffer-p buffer)
+             (fboundp 'nelisp-ec-buffer-modified-p)
+             (nelisp-ec-buffer-modified-p buffer)))
       "*" "-"))
 
 
 (defun emacs-redisplay--mode-line-format (buffer)
   "Return BUFFER's mode-line format or the Phase 3 MVP fallback."
   (cond
+   ((emacs-redisplay--standard-buffer-p buffer)
+    (buffer-local-value 'mode-line-format buffer))
    ((and buffer (nelisp-ec-buffer-p buffer))
     (emacs-redisplay--ml-local
      'mode-line-format buffer emacs-redisplay-default-mode-line-format))
@@ -1469,6 +1501,8 @@ exceeds) WIDTH it is returned unchanged."
   "Return BUFFER's `header-line-format', or the default (nil = no header line).
 Doc 06 E6 — header lines reuse the mode-line %-spec machinery."
   (cond
+   ((emacs-redisplay--standard-buffer-p buffer)
+    (buffer-local-value 'header-line-format buffer))
    ((and buffer (nelisp-ec-buffer-p buffer))
     (emacs-redisplay--ml-local
      'header-line-format buffer emacs-redisplay-default-header-line-format))
@@ -1487,6 +1521,8 @@ line, Doc 06 E6)."
 (defun emacs-redisplay--cursor-type (buffer)
   "Return BUFFER's `cursor-type', or the default shape (Doc 06 E6)."
   (cond
+   ((emacs-redisplay--standard-buffer-p buffer)
+    (buffer-local-value 'cursor-type buffer))
    ((and buffer (nelisp-ec-buffer-p buffer))
     (emacs-redisplay--ml-local
      'cursor-type buffer emacs-redisplay-default-cursor-type))
@@ -1494,12 +1530,15 @@ line, Doc 06 E6)."
 
 (defun emacs-redisplay--ml-text-before-point (buffer)
   "Return BUFFER's text from point-min up to point, or nil."
-  (let ((nelisp-ec--current-buffer buffer))
+  (if (emacs-redisplay--standard-buffer-p buffer)
+      (with-current-buffer buffer
+        (buffer-substring-no-properties (point-min) (point)))
+    (let ((nelisp-ec--current-buffer buffer))
     (and (fboundp 'nelisp-ec-point) (fboundp 'nelisp-ec-buffer-substring)
          (ignore-errors
            (nelisp-ec-buffer-substring (if (fboundp 'nelisp-ec-point-min)
                                            (nelisp-ec-point-min) 1)
-                                       (nelisp-ec-point))))))
+                                       (nelisp-ec-point)))))))
 
 (defun emacs-redisplay--ml-line (buffer)
   "Line number at point in BUFFER (Doc 06 E2, %l)."
@@ -1520,29 +1559,38 @@ line, Doc 06 E6)."
 
 (defun emacs-redisplay--ml-narrowed-p (buffer)
   "Return non-nil when BUFFER is narrowed (Doc 06 E2, %n)."
-  (let ((nelisp-ec--current-buffer buffer))
+  (if (emacs-redisplay--standard-buffer-p buffer)
+      (with-current-buffer buffer
+        (or (> (point-min) 1) (< (point-max) (1+ (buffer-size)))))
+    (let ((nelisp-ec--current-buffer buffer))
     (and (fboundp 'nelisp-ec-point-min) (fboundp 'nelisp-ec-buffer-size)
          (or (> (nelisp-ec-point-min) 1)
              (and (fboundp 'nelisp-ec-point-max)
-                  (<= (nelisp-ec-point-max) (nelisp-ec-buffer-size)))))))
+                  (<= (nelisp-ec-point-max) (nelisp-ec-buffer-size))))))))
 
 (defun emacs-redisplay--ml-local (sym buffer default)
   "Return BUFFER's buffer-local value of SYM, or DEFAULT."
-  (if (and (fboundp 'emacs-buffer-local-variable-p)
+  (if (emacs-redisplay--standard-buffer-p buffer)
+      (if (with-current-buffer buffer (boundp sym))
+          (buffer-local-value sym buffer) default)
+    (if (and (fboundp 'emacs-buffer-local-variable-p)
            (emacs-buffer-local-variable-p sym buffer))
       (emacs-buffer-buffer-local-value sym buffer)
-    default))
+    default)))
 
 (defun emacs-redisplay--ml-percent (buffer)
   "A point-relative buffer percentage string (Doc 06 E2, %p; MVP)."
-  (let ((nelisp-ec--current-buffer buffer))
-    (if (not (and (fboundp 'nelisp-ec-point) (fboundp 'nelisp-ec-buffer-size)))
-        "All"
-      (let ((pt (nelisp-ec-point)) (sz (nelisp-ec-buffer-size)))
+  (let* ((standard (emacs-redisplay--standard-buffer-p buffer))
+         (nelisp-ec--current-buffer buffer)
+         (pt (if standard (with-current-buffer buffer (point))
+               (and (fboundp 'nelisp-ec-point) (nelisp-ec-point))))
+         (sz (if standard (with-current-buffer buffer (buffer-size))
+               (and (fboundp 'nelisp-ec-buffer-size) (nelisp-ec-buffer-size)))))
+    (if (not (and pt sz)) "All"
         (cond ((<= sz 0) "All")
               ((<= pt 1) "Top")
               ((>= pt sz) "Bot")
-              (t (format "%d%%" (/ (* 100 (1- pt)) sz))))))))
+              (t (format "%d%%" (/ (* 100 (1- pt)) sz)))))))
 
 (defun emacs-redisplay--mode-line-format-to-string (format buffer)
   "Render MVP mode-line FORMAT for BUFFER."
@@ -1805,167 +1853,226 @@ text-property `mouse-face' by the same priority rule."
           (setf (emacs-redisplay-glyph-realized-face glyph)
                 (emacs-redisplay-realize-face merged)))))))
 
-(defun emacs-redisplay--lay-out-line (line buffer-pos buffer overlays width)
-  "Return a vector of `used' glyphs for LINE starting at BUFFER-POS.
-LINE is a string (single logical line, no embedded newline).  WIDTH is
-the maximum number of cells to occupy.  TABs are expanded.  When the
-line exceeds WIDTH and `emacs-redisplay-truncate-lines' is non-nil,
-the line is clipped (= MVP behaviour, no continuation glyph).  Returns
-a cons (USED-VEC . NEXT-POS) where NEXT-POS is the buffer position
-just past the consumed text (excluding any newline).
+(defun emacs-redisplay--make-text-glyph (char pos face display buffer overlays)
+  "Make a rendering glyph at POS, honoring text and overlay FACE."
+  (let ((g (emacs-redisplay--make-glyph
+            :char char :buf-pos pos :face (emacs-redisplay--resolve-face face)
+            :realized-face (emacs-redisplay-realize-face face)
+            :width (max 1 (emacs-redisplay--char-width char))
+            :display-spec display
+            :mouse-face (emacs-redisplay--text-property-at pos 'mouse-face buffer))))
+    (emacs-redisplay--apply-overlay-face g overlays pos)
+    g))
 
-Phase 3.B.2: overlays whose `:before-string' starts at the current
-buffer position are emitted *before* that position's buffer char;
-overlays whose `:after-string' end equals the next position are
-emitted *after* the buffer char.  Multiple overlays at the same
-position emit in priority order (lower priority first → higher
-priority closest to the buffer text), matching Emacs convention.
-The injected glyphs carry the overlay's `face' (or the string's
-own `face' text-property when present), and their `buf-pos' is
-the overlay anchor position."
-  (let* ((tab-width (max 1 emacs-redisplay-default-tab-width))
-         (pos buffer-pos)
-         (col 0)
-         (used (make-vector width nil))
-         (i 0)
-         (n (length line))
-         (last-glyph nil)
-         (overflow nil))
-    ;; Before-strings anchored at the line's first buffer position.
-    (setq col (emacs-redisplay--emit-before-strings
-               overlays pos used col width))
-    (while (and (< i n) (not overflow))
-      (let* ((ch (aref line i))
-             (cw (emacs-redisplay--char-width ch)))
+(defun emacs-redisplay--string-tokens (string pos face display buffer overlays col)
+  "Return (REVERSED-TOKENS . COLUMN) for a display STRING anchored at POS."
+  (let ((out nil) (previous nil) (i 0)
+        (tab-width (max 1 emacs-redisplay-default-tab-width)))
+    (while (< i (length string))
+      (let* ((ch (aref string i))
+             (own-face (emacs-redisplay--string-face-at string i face)))
         (cond
-         ;; TAB → expand to next tab stop within window width.
-         ((eq cw -1)
-          (unless (emacs-redisplay--invisible-at-p pos buffer overlays)
-            (let* ((target (* (1+ (/ col tab-width)) tab-width))
-                   (k (max 1 (- target col))))
-              (dotimes (_ k)
-                (when (< col width)
-                  (let ((g (emacs-redisplay--make-glyph
-                            :char ?\s :face nil :face-id 0
-                            :width 1 :buf-pos pos)))
-                    (when overlays
-                      (emacs-redisplay--apply-overlay-face g overlays pos))
-                    (aset used col g)
-                    (setq col (1+ col)))))))
-          (setq pos (1+ pos))
-          (setq col (emacs-redisplay--emit-after-strings
-                     overlays pos used col width))
-          (when (< i (1- n))
-            (setq col (emacs-redisplay--emit-before-strings
-                       overlays pos used col width))))
-         ;; Normal character (incl. CJK width 2).
-         ((emacs-redisplay--invisible-at-p pos buffer overlays)
-          (setq pos (1+ pos))
-          (setq col (emacs-redisplay--emit-after-strings
-                     overlays pos used col width))
-          (when (< i (1- n))
-            (setq col (emacs-redisplay--emit-before-strings
-                       overlays pos used col width))))
-         ;; Zero-width combining mark: merge into the previous glyph's
-         ;; composition (one grapheme cluster, no extra column) instead of
-         ;; emitting its own cell.  A leading combining mark (no previous
-         ;; glyph) falls through to the normal branch and takes width 1.
-         ((and (emacs-redisplay--combining-mark-p ch) last-glyph)
-          (setf (emacs-redisplay-glyph-composition last-glyph)
-                (append (emacs-redisplay-glyph-composition last-glyph)
-                        (list ch)))
-          (setq pos (1+ pos)))
+         ((= ch ?\n)
+          (push (cons 'newline pos) out)
+          (setq col 0 previous nil))
+         ((and previous (emacs-redisplay--combining-mark-p ch))
+          (setf (emacs-redisplay-glyph-composition previous)
+                (append (emacs-redisplay-glyph-composition previous) (list ch))))
+         ((= ch ?\t)
+          (let ((spaces (- tab-width (% col tab-width))))
+            (dotimes (_ spaces)
+              (push (emacs-redisplay--make-text-glyph
+                     ?\s pos own-face display buffer overlays) out))
+            (setq col (+ col spaces))))
          (t
-          (let* ((face (emacs-redisplay--text-property-at pos 'face buffer))
+          (setq previous (emacs-redisplay--make-text-glyph
+                          ch pos own-face display buffer overlays))
+          (push previous out)
+          (setq col (+ col (emacs-redisplay-glyph-width previous))))))
+      (setq i (1+ i)))
+    (cons out col)))
+
+(defun emacs-redisplay--display-tokens (text start buffer overlays)
+  "Convert TEXT to glyph/newline tokens before choosing visual row breaks.
+Visibility, replacement ranges, tabs and overlay boundary strings all affect
+row length.  Source positions remain absolute even when display text shrinks."
+  (let ((out nil) (i 0) (col 0) (hidden-before nil) (previous nil)
+        (n (length text)))
+    (while (<= i n)
+      (let ((pos (+ start i)))
+        ;; Nonempty after-strings precede before-strings at a shared boundary.
+        ;; An empty overlay's own before-string precedes its after-string.
+        (let ((strings (append
+                        (cl-remove-if
+                         (lambda (entry)
+                           (let ((bounds (emacs-redisplay--ovly-bounds (car entry))))
+                             (= (car bounds) (cdr bounds))))
+                         (emacs-redisplay--overlays-with-after-string-ending-at overlays pos))
+                        (emacs-redisplay--overlays-with-before-string-at overlays pos)
+                        (cl-remove-if-not
+                         (lambda (entry)
+                           (let ((bounds (emacs-redisplay--ovly-bounds (car entry))))
+                             (= (car bounds) (cdr bounds))))
+                         (emacs-redisplay--overlays-with-after-string-ending-at overlays pos)))))
+          (dolist (entry strings)
+            (let ((laid (emacs-redisplay--string-tokens
+                         (cdr entry) pos (emacs-redisplay--ovly-prop (car entry) 'face)
+                         nil buffer nil col)))
+              (setq out (append (car laid) out) col (cdr laid)))))
+        (when (< i n)
+          (let* ((ch (aref text i))
+                 (hidden (emacs-redisplay--invisible-at-p pos buffer overlays))
+                 (face (emacs-redisplay--text-property-at pos 'face buffer))
                  (display (emacs-redisplay--text-property-at pos 'display buffer))
-                 (mouse-face (emacs-redisplay--text-property-at
-                              pos 'mouse-face buffer))
-                 (display-spec (emacs-redisplay--resolve-display display nil))
-                 ;; A `(space :width/:align-to ...)' display spec overrides the
-                 ;; cell width and renders blank; other specs keep the char.
-                 (space-w (emacs-redisplay--space-display-width
-                           display-spec col))
-                 ;; E3: a string / image-:string `display' spec replaces the
-                 ;; buffer char with its own glyphs.
-                 (repl (and (not space-w)
-                            (emacs-redisplay--display-replacement-string
-                             display-spec)))
-                 (rface (emacs-redisplay--resolve-face face))
-                 (realized (emacs-redisplay-realize-face face)))
+                 (spec (emacs-redisplay--resolve-display display nil))
+                 (space (emacs-redisplay--space-display-width spec col))
+                 (replacement (and (not space)
+                                   (emacs-redisplay--display-replacement-string spec))))
             (cond
-             ;; E3: emit each char of the replacement string, all anchored at
-             ;; POS so cursor/navigation maps back to the single buffer char.
-             ((and (stringp repl) (> (length repl) 0))
-              (let ((j 0) (m (length repl)))
-                (while (and (< j m) (not overflow))
-                  (let* ((rc (aref repl j))
-                         (rw (max 1 (emacs-redisplay--char-width rc)))
-                         (rg (emacs-redisplay--make-glyph
-                              :char rc :face rface :realized-face realized
-                              :face-id 0 :width rw :composition nil
-                              :display-spec display-spec :mouse-face mouse-face
-                              :buf-pos pos)))
-                    (when overlays
-                      (emacs-redisplay--apply-overlay-face rg overlays pos))
-                    (if (>= (+ col rw) (1+ width))
-                        (setq overflow t)
-                      (aset used col rg)
-                      (setq last-glyph rg col (+ col rw))))
-                  (setq j (1+ j)))
-                (unless overflow
-                  (setq pos (1+ pos))
-                  (setq col (emacs-redisplay--emit-after-strings
-                             overlays pos used col width))
-                  (when (< i (1- n))
-                    (setq col (emacs-redisplay--emit-before-strings
-                               overlays pos used col width))))))
+             (hidden
+              (when (and (eq hidden 2) (not hidden-before))
+                (let ((laid (emacs-redisplay--string-tokens
+                             "..." pos face nil buffer overlays col)))
+                  (setq out (append (car laid) out) col (cdr laid))))
+              (setq hidden-before hidden))
+             ((or space (stringp replacement))
+              ;; One replacement per contiguous property value, including an
+              ;; empty replacement and a replacement covering a newline.
+              (let* ((end (1+ i))
+                     (laid (if space
+                               (let ((g (emacs-redisplay--make-text-glyph
+                                         ?\s pos face spec buffer overlays)))
+                                 (setf (emacs-redisplay-glyph-width g) space)
+                                 (cons (list g) (+ col space)))
+                             (emacs-redisplay--string-tokens
+                              replacement pos face spec buffer overlays col))))
+                (while (and (< end n)
+                            (eq display (emacs-redisplay--text-property-at
+                                         (+ start end) 'display buffer)))
+                  (setq end (1+ end)))
+                (setq out (append (car laid) out) col (cdr laid)
+                      i (1- end) hidden-before nil previous nil)))
+             ((= ch ?\n)
+              (push (cons 'newline (1+ pos)) out)
+              (setq col 0 hidden-before nil previous nil))
+             ((and previous (emacs-redisplay--combining-mark-p ch))
+              (setf (emacs-redisplay-glyph-composition previous)
+                    (append (emacs-redisplay-glyph-composition previous) (list ch)))
+              (setq hidden-before nil))
              (t
-              (let* ((ew (or space-w (max 1 cw)))
-                     (g (emacs-redisplay--make-glyph
-                         :char (if space-w ?\s ch)
-                         :face rface
-                         :realized-face realized
-                         :face-id 0
-                         :width ew
-                         :composition nil
-                         :display-spec display-spec
-                         :mouse-face mouse-face
-                         :buf-pos pos)))
-                (when overlays
-                  (emacs-redisplay--apply-overlay-face g overlays pos))
-                (cond
-                 ((>= (+ col ew) (1+ width))
-                  (setq overflow t))
-                 (t
-                  (aset used col g)
-                  (setq last-glyph g)
-                  (setq col (+ col ew)
-                        pos (1+ pos))
-                  (setq col (emacs-redisplay--emit-after-strings
-                             overlays pos used col width))
-                  (when (< i (1- n))
-                    (setq col (emacs-redisplay--emit-before-strings
-                               overlays pos used col width)))))))))))
-        (setq i (1+ i))))
-    ;; Doc 06 E6: under `truncate-lines', a clipped line shows `$' in
-    ;; the window's last column (Emacs terminal convention).  Gated on
-    ;; the variable so continuation-mode rows are not stamped.
-    (when (and overflow emacs-redisplay-truncate-lines (> width 0))
-      (while (< col (1- width))
-        (aset used col (emacs-redisplay--make-glyph
-                        :char ?\s :face nil :face-id 0
-                        :width 1 :buf-pos nil))
-        (setq col (1+ col)))
-      (aset used (1- width) (emacs-redisplay--make-glyph
-                             :char ?$ :face 'escape-glyph
-                             :realized-face (emacs-redisplay-realize-face
-                                             'escape-glyph)
-                             :face-id 0 :width 1 :buf-pos nil))
-      (setq col width))
-    (cons (let ((trimmed (make-vector col nil)))
-            (dotimes (k col) (aset trimmed k (aref used k)))
-            trimmed)
-          pos)))
+              (let ((laid (emacs-redisplay--string-tokens
+                           (string ch) pos face spec buffer overlays col)))
+                (setq out (append (car laid) out) col (cdr laid)
+                      previous (car (car laid)) hidden-before nil)))))))
+      (setq i (1+ i)))
+    (nreverse out)))
+
+(defun emacs-redisplay--token-newline-p (token)
+  "Non-nil for a source newline boundary TOKEN."
+  (and (consp token) (eq (car token) 'newline)))
+
+(defun emacs-redisplay--glyph-list-vector (glyphs width &optional indicator)
+  "Pack GLYPHS into cells, adding INDICATOR through any wrap-edge gap."
+  (let ((vec (make-vector width nil)) (col 0))
+    (dolist (g glyphs)
+      (let ((w (emacs-redisplay-glyph-width g)))
+        (when (<= (+ col w) width)
+          (aset vec col g)
+          (setq col (+ col w)))))
+    (when indicator
+      (while (< col width)
+        (aset vec col (emacs-redisplay--make-glyph
+                       :char indicator :width 1 :face 'escape-glyph
+                       :realized-face (emacs-redisplay-realize-face 'escape-glyph)))
+        (setq col (1+ col))))
+    ;; Keep `used' as occupied cells; nil wide-glyph tails remain in the vector.
+    (if (= col width) vec
+      (let ((out (make-vector col nil)))
+        (dotimes (i col) (aset out i (aref vec i)))
+        out))))
+
+(defun emacs-redisplay--token-rows (tokens start end width)
+  "Wrap TOKENS into (GLYPHS START END CONTINUATION-P) visual rows.
+Terminal continuation marks occupy the final column; an unfit wide glyph
+leaves continuation marks in both edge cells, as GNU terminal redisplay does."
+  (let ((rows nil) (glyphs nil) (col 0) (row-start start)
+        (continuation nil) (truncated nil)
+        (capacity (if emacs-redisplay-truncate-lines width (max 1 (1- width)))))
+    (dolist (token tokens)
+      (cond
+       ((emacs-redisplay--token-newline-p token)
+        (push (list (emacs-redisplay--glyph-list-vector
+                     (nreverse glyphs) width (and truncated ?$))
+                    row-start (cdr token) continuation) rows)
+        (setq glyphs nil col 0 row-start (cdr token) continuation nil truncated nil))
+       (truncated nil)
+       (t
+        (let ((advance (emacs-redisplay-glyph-width token))
+              (pos (or (emacs-redisplay-glyph-buf-pos token) row-start)))
+          (when (> (+ col advance) capacity)
+            (if emacs-redisplay-truncate-lines
+                (progn
+                  ;; Remove a glyph occupying the final column, including the
+                  ;; first half of a wide glyph that spans that column.
+                  (when (>= col width)
+                    (setq col (- col (emacs-redisplay-glyph-width (car glyphs)))
+                          glyphs (cdr glyphs)))
+                  (setq truncated t))
+              (let ((break-tail (and emacs-redisplay-word-wrap glyphs))
+                    (carry nil))
+                ;; The latest whitespace ends a word-wrapped row.  Move the
+                ;; following word's glyphs intact; no terminal continuation
+                ;; mark is needed at an ordinary word boundary.
+                (while (and break-tail
+                            (not (memq (emacs-redisplay-glyph-char
+                                        (car break-tail)) '(?\s ?\t))))
+                  (push (car break-tail) carry)
+                  (setq break-tail (cdr break-tail)))
+                (if break-tail
+                    (progn
+                      (push (list (emacs-redisplay--glyph-list-vector
+                                   (nreverse break-tail) width)
+                                  row-start
+                                  (if carry (emacs-redisplay-glyph-buf-pos
+                                             (car carry)) pos)
+                                  continuation) rows)
+                      (setq row-start (if carry
+                                          (emacs-redisplay-glyph-buf-pos (car carry))
+                                        pos)
+                            col 0)
+                      (dolist (g carry)
+                        (setq col (+ col (emacs-redisplay-glyph-width g))))
+                      (setq glyphs (nreverse carry) continuation t))
+                  (push (list (emacs-redisplay--glyph-list-vector
+                               (nreverse glyphs) width ?\\)
+                              row-start pos continuation) rows)
+                  (setq glyphs nil col 0 row-start pos continuation t)))))
+          (unless truncated
+            (push token glyphs)
+            (setq col (+ col advance)))))))
+    (push (list (emacs-redisplay--glyph-list-vector
+                 (nreverse glyphs) width (and truncated ?$))
+                row-start end continuation) rows)
+    (nreverse rows)))
+
+(defun emacs-redisplay--lay-out-line (line buffer-pos buffer overlays width)
+  "Lay out LINE into cells, returning (GLYPHS . NEXT-SOURCE-POS).
+This single-row query shares visibility and replacement-range semantics with
+the window renderer.  Window wrapping happens after display-token creation."
+  (let* ((tokens (emacs-redisplay--display-tokens line buffer-pos buffer overlays))
+         (glyphs nil) (col 0) (overflow nil) (next (+ buffer-pos (length line))))
+    (while (and tokens (not overflow))
+      (let ((g (pop tokens)))
+        (unless (emacs-redisplay--token-newline-p g)
+          (if (> (+ col (emacs-redisplay-glyph-width g)) width)
+              (setq overflow t next (emacs-redisplay-glyph-buf-pos g))
+            (push g glyphs)
+            (setq col (+ col (emacs-redisplay-glyph-width g)))))))
+    (when (and overflow emacs-redisplay-truncate-lines (>= col width))
+      (setq glyphs (cdr glyphs)))
+    (cons (emacs-redisplay--glyph-list-vector
+           (nreverse glyphs) width (and overflow emacs-redisplay-truncate-lines ?$))
+          next)))
 
 (defun emacs-redisplay--fill-row (row glyph-vec width buffer-pos end-pos)
   "Place GLYPH-VEC into ROW, padding to WIDTH with empty glyphs.
@@ -1976,8 +2083,7 @@ Updates ROW's used / hash / start-pos / end-pos and resets pos-delta."
       (aset vec i
             (if (< i n)
                 (aref glyph-vec i)
-              (emacs-redisplay--make-glyph
-               :char ?\s :face nil :face-id 0 :width 1))))
+              nil)))
     (setf (emacs-redisplay-glyph-row-used row) n
           (emacs-redisplay-glyph-row-start-pos row) buffer-pos
           (emacs-redisplay-glyph-row-end-pos row) end-pos
@@ -1989,8 +2095,7 @@ Updates ROW's used / hash / start-pos / end-pos and resets pos-delta."
   "Reset ROW to empty (all spaces, used = 0)."
   (let ((vec (emacs-redisplay-glyph-row-glyphs row)))
     (dotimes (i (length vec))
-      (aset vec i (emacs-redisplay--make-glyph
-                   :char ?\s :face nil :face-id 0 :width 1)))
+      (aset vec i nil))
     (setf (emacs-redisplay-glyph-row-used row) 0
           (emacs-redisplay-glyph-row-start-pos row) nil
           (emacs-redisplay-glyph-row-end-pos row) nil
@@ -2098,8 +2203,8 @@ previous row of the same logical line (Doc 06 E1)."
   "Cheap fingerprint of inputs that affect WINDOW's glyph-matrix output.
 Two consecutive redisplays with `equal' fingerprints can reuse the
 cached matrix and skip the rebuild (= Phase 3.B.5 short-circuit).
-Captures: buffer identity + size + point + narrow bounds + chars-
-modified-tick (Phase 3.C.1 = covers text-property face change),
+Captures: buffer identity + size + point + narrow bounds + modification
+tick (including property changes for native buffers),
 plus window start/point/width/height.  Does NOT cover overlay set
 or face-registry mutations — callers that mutate those must invoke
 `emacs-redisplay-mark-window-dirty' (or the family of force-*
@@ -2113,6 +2218,13 @@ helpers) so the matrix is dropped and a fresh rebuild is forced."
      ((null buffer))
      ((stringp buffer)
       (setq buf-size (length buffer)))
+     ((emacs-redisplay--standard-buffer-p buffer)
+      (with-current-buffer buffer
+        (setq buf-size (buffer-size) buf-point (point)
+              buf-narrow-start (point-min) buf-narrow-end (point-max)
+              ;; Property changes affect layout even when character text is
+              ;; unchanged.  Keep the text cache's chars-only tick separate.
+              buf-tick (buffer-modified-tick))))
      (t
       (setq buf-size  (nelisp-ec-buffer-size  buffer)
             buf-point (nelisp-ec-buffer-point buffer)
@@ -2123,7 +2235,11 @@ helpers) so the matrix is dropped and a fresh rebuild is forced."
             buf-tick
             (or (emacs-window-start window) 1)
             (or (emacs-window-point window) buf-point)
-            width height)))
+            width height emacs-redisplay-truncate-lines
+            emacs-redisplay-word-wrap emacs-redisplay-default-tab-width
+            (emacs-redisplay--ml-local 'buffer-invisibility-spec buffer t)
+            (emacs-redisplay--mode-line-format buffer)
+            (emacs-redisplay--header-line-format buffer))))
 
 ;;;###autoload
 (defun emacs-redisplay-redisplay-window (handle window)
@@ -2136,22 +2252,35 @@ its `fingerprint' (buffer size/point/narrow + window start/point/
 dim) is `equal' to the current snapshot, the rebuild is skipped and
 the cached matrix is returned with its current dirty bits intact.
 Callers that mutate state outside the fingerprint (overlays /
-text-properties / face registry) must invoke
+face registry) must invoke
 `emacs-redisplay-mark-window-dirty' or
 `emacs-redisplay-force-mode-line-update' to drop the cache."
   (emacs-redisplay--check-handle handle)
   (unless (emacs-window-p window)
     (signal 'wrong-type-argument (list 'emacs-window-p window)))
-  (let* ((width  (emacs-window-window-width  window))
+  (let* ((buffer (emacs-window-buffer window))
+         (standard (emacs-redisplay--standard-buffer-p buffer))
+         (emacs-redisplay-truncate-lines
+          (if standard (buffer-local-value 'truncate-lines buffer)
+            emacs-redisplay-truncate-lines))
+         (emacs-redisplay-word-wrap
+          (if standard (buffer-local-value 'word-wrap buffer)
+            emacs-redisplay-word-wrap))
+         (emacs-redisplay-default-tab-width
+          (if standard (buffer-local-value 'tab-width buffer)
+            emacs-redisplay-default-tab-width))
+         (width  (emacs-window-window-width  window))
          (height (emacs-window-window-height window))
          (old-matrix (emacs-redisplay--get-matrix handle window))
          (matrix (emacs-redisplay--ensure-matrix handle window))
          (fresh-matrix-p (null old-matrix))
-         (buffer (emacs-window-buffer window))
          (new-fp (emacs-redisplay--snapshot-fingerprint
                   window buffer width height))
          (_long-line-state
           (and buffer (not (stringp buffer))
+               ;; The legacy long-line observer reads nelisp-ec slots; native
+               ;; buffers own their clipping state through the buffer API.
+               (not (emacs-redisplay--standard-buffer-p buffer))
                (emacs-cc-xdisp-1--update-long-line-state
                 buffer (emacs-buffer-buffer-text-tick buffer)
                 (lambda () (emacs-redisplay--buffer-string buffer)))))
@@ -2240,166 +2369,125 @@ or padding glyphs)."
   (let ((bp (emacs-redisplay-glyph-buf-pos glyph)))
     (and bp (+ bp (emacs-redisplay-glyph-row-pos-delta row)))))
 
+(defun emacs-redisplay--row-input-key (vec start)
+  "Return a rendering and relative-position key for VEC at START."
+  (mapcar (lambda (g)
+            (and g (list (emacs-redisplay-glyph-char g)
+                         (emacs-redisplay-glyph-width g)
+                         (emacs-redisplay-glyph-realized-face g)
+                         (emacs-redisplay-glyph-composition g)
+                         (emacs-redisplay-glyph-display-spec g)
+                         (emacs-redisplay-glyph-mouse-face g)
+                         (and (emacs-redisplay-glyph-buf-pos g)
+                              (- (emacs-redisplay-glyph-buf-pos g) start)))))
+          (append vec nil)))
+
+(defun emacs-redisplay--right-divider-p (window)
+  "Whether WINDOW has another leaf to its right in the same frame tree."
+  (let ((right (nth 2 (emacs-window-window-edges window))) (found nil))
+    (dolist (w (emacs-window-window-list))
+      (when (> (nth 2 (emacs-window-window-edges w)) right) (setq found t)))
+    found))
+
 (defun emacs-redisplay--redisplay-window-rebuild
     (handle window matrix _old-matrix fresh-matrix-p buffer width height new-fp)
-  "Rebuild path of `emacs-redisplay-redisplay-window' (slow path).
-
-Phase 3.B.6 row-incremental: walks the line list and per-row decides
-whether to reuse the cached glyphs (= line content + overlay
-fingerprint match) or to do a full layout.  The cache lives in
-`emacs-redisplay-glyph-matrix-line-cache' as a vector parallel to
-rows, each entry a cons (LINE-STRING . OVERLAY-FP) or nil."
-  (let* ((old-hashes
-          (and (not fresh-matrix-p)
-               (let* ((old-rows (emacs-redisplay-glyph-matrix-rows matrix))
-                      (v (make-vector height 0)))
-                 (dotimes (r height)
-                   (aset v r (emacs-redisplay-glyph-row-hash
-                              (aref old-rows r))))
-                 v)))
-         (start  (or (emacs-window-start window) 1))
-         (text   (cond
-                  ((null buffer) "")
-                  ((stringp buffer) buffer)
-                  (t (emacs-redisplay--cached-buffer-string handle buffer))))
-         (visible
-          (cond
-           ((stringp text)
-            (substring text (min (max 0 (1- start)) (length text))))
-           (t "")))
-         (lines (emacs-redisplay--split-into-visual-lines visible width))
-         (visible-end (+ start (length visible)))
-         (overlays (and (not (stringp buffer))
-                        (emacs-redisplay--overlays-in
-                         start visible-end buffer)))
-         (pos start)
-         (row-idx 0)
-         (rows (emacs-redisplay-glyph-matrix-rows matrix))
-         ;; E6: reserve row 0 for a header line when the buffer requests one and
-         ;; there is room for it plus at least one content row (and mode line).
-         (header-p (and buffer (not (stringp buffer))
-                        (emacs-redisplay--header-line-enabled-p buffer)
-                        (> height (if (> height 1) 2 1))))
+  "Rebuild WINDOW from displayed tokens, preserving unchanged row glyphs.
+Raw source lines cannot determine visual breaks: hidden newlines join lines,
+replacement ranges render once, and overlay strings contribute to row width."
+  (let* ((rows (emacs-redisplay-glyph-matrix-rows matrix))
+         (old-hashes (mapcar #'emacs-redisplay-glyph-row-hash (append rows nil)))
+         (start (or (emacs-window-start window) 1))
+         (text (emacs-redisplay--cached-buffer-string handle buffer))
+         (minimum (if (emacs-redisplay--standard-buffer-p buffer)
+                      (with-current-buffer buffer (point-min))
+                    (if (and buffer (not (stringp buffer)))
+                        (or (nelisp-ec-buffer-narrow-start buffer) 1) 1)))
+         (visible (substring text (min (max 0 (- start minimum)) (length text))))
+         (end (+ start (length visible)))
+         (overlays (and buffer (not (stringp buffer))
+                        (emacs-redisplay--overlays-in start end buffer)))
+         (divider (emacs-redisplay--right-divider-p window))
+         (body-width (max 1 (- width (if divider 1 0))))
+         (mode-p (and emacs-redisplay-paint-mode-line-p (> height 1)
+                      (emacs-redisplay--mode-line-format buffer)))
+         (header-p (and (> height (if mode-p 2 1))
+                        (emacs-redisplay--header-line-enabled-p buffer)))
          (header-rows (if header-p 1 0))
-         (content-height (if (> height 1) (- height 1 header-rows)
-                           (- height header-rows)))
-         (dirty (emacs-redisplay-glyph-matrix-dirty-set matrix))
-         (cache (or (emacs-redisplay-glyph-matrix-line-cache matrix)
-                    (let ((v (make-vector height nil)))
-                      (setf (emacs-redisplay-glyph-matrix-line-cache matrix) v)
-                      v))))
-    ;; Walk lines per-row.  Skip lay-out + fill when (line, ovly-fp,
-    ;; tp-fp) all match the cached input.  Otherwise clear + lay-out
-    ;; + fill the row and refresh the cache entry.
-    (while (and (< row-idx content-height) lines)
-      (let* ((entry (pop lines))
-             (line  (car entry))
-             (nl-consumed (nth 1 entry))
-             (cont-p (nth 2 entry))
-             (line-len (length line))
-             (line-end-pos (+ pos line-len))
-             (next-pos-est (+ line-end-pos nl-consumed))
-             (ovly-fp (emacs-redisplay--overlay-row-fingerprint
-                       overlays pos line-end-pos))
-             (tp-fp (emacs-redisplay--textprop-row-fingerprint
-                     buffer pos line-end-pos))
-             (cached (aref cache (+ header-rows row-idx)))
-             (row (aref rows (+ header-rows row-idx))))
-        (cond
-         ((and (not fresh-matrix-p)
-               cached
-               (equal (car cached) line)
-               (equal (cadr cached) ovly-fp)
-               (equal (cddr cached) tp-fp))
-          (let* ((old-start (or (emacs-redisplay-glyph-row-start-pos row) pos))
-                 (delta (- pos old-start)))
-            (emacs-redisplay--shift-row-positions
-             row delta pos next-pos-est)))
-         (t
-          (emacs-redisplay--clear-row row)
-          (let* ((laid (emacs-redisplay--lay-out-line
-                        line pos buffer overlays width))
-                 (dir (emacs-redisplay--base-direction line))
-                 ;; Reorder the laid-out glyphs into visual order (UAX #9 L2)
-                 ;; before they enter the row, so the row hash covers the final
-                 ;; order.  LTR-only rows come back in logical order; embedded
-                 ;; opposite-direction runs keep their own internal order.
-                 (gvec (emacs-redisplay--bidi-reorder-glyphs
-                        (car laid) (if (eq dir 'right-to-left) 1 0)))
-                 ;; RTL paragraphs sit flush against the window's right edge
-                 (gvec (if (eq dir 'right-to-left)
-                           (emacs-redisplay--right-align-glyphs gvec width)
-                         gvec))
-                 (next-pos (+ (cdr laid) nl-consumed)))
-            (emacs-redisplay--fill-row row gvec width pos next-pos)
-            (setf (emacs-redisplay-glyph-row-direction row) dir)
-            (aset cache (+ header-rows row-idx)
-                  (cons line (cons ovly-fp tp-fp))))))
-        ;; E1: mark visual rows that continue the previous logical line so the
-        ;; backend can render a continuation indicator / suppress a fringe.
-        (setf (emacs-redisplay-glyph-row-continuation-p row) cont-p)
-        (setq pos next-pos-est
-              row-idx (1+ row-idx))))
-    ;; Pad remaining content rows (= buffer shorter than window).
-    (while (< row-idx content-height)
-      (let ((row (aref rows (+ header-rows row-idx))))
-        (unless (and (zerop (emacs-redisplay-glyph-row-used row))
-                     (null (aref cache (+ header-rows row-idx))))
-          (emacs-redisplay--clear-row row)
-          (aset cache (+ header-rows row-idx) nil)))
-      (setq row-idx (1+ row-idx)))
-    ;; Mode-line row (Phase 3.B.6 cache: cons (TEXT . nil)).
-    (when (> height 1)
-      (let* ((row (aref rows (1- height)))
-             (format (and buffer (not (stringp buffer))
-                          (emacs-redisplay--mode-line-format buffer)))
-             (text (and buffer (not (stringp buffer))
-                        (emacs-redisplay--mode-line-format-to-string
-                         format buffer)))
-             (cached (aref cache (1- height))))
-        (cond
-         ((and (not fresh-matrix-p) cached
-               (equal (car cached) text)
-               (null (cdr cached)))
-          ;; Skip — mode-line text unchanged.
-          nil)
-         (t
-          (emacs-redisplay--clear-row row)
-          (emacs-redisplay--fill-row
-           row (emacs-redisplay--mode-line-glyphs buffer width)
-           width nil nil)
-          (aset cache (1- height) (cons text nil))))))
-    ;; E6: Header-line row (row 0), cached as (TEXT . :header).
+         (content-height (- height header-rows (if mode-p 1 0)))
+         (entries (emacs-redisplay--token-rows
+                   (emacs-redisplay--display-tokens visible start buffer overlays)
+                   start end body-width))
+         (point (or (emacs-window-point window) start))
+         (point-row 0) (index 0)
+         (cache (emacs-redisplay-glyph-matrix-line-cache matrix))
+         (dirty (emacs-redisplay-glyph-matrix-dirty-set matrix)))
+    ;; A point beyond the visible body recenters, using display rows rather
+    ;; than a byte-count estimate.  Explicit starts that already show point
+    ;; remain untouched.
+    (dolist (entry entries)
+      (when (<= (nth 1 entry) point) (setq point-row index))
+      (setq index (1+ index)))
+    (when (>= point-row content-height)
+      (setq entries (nthcdr (max 0 (- point-row (/ content-height 2))) entries)
+            start (nth 1 (car entries)))
+      (emacs-window-set-window-start window start)
+      (setq new-fp (emacs-redisplay--snapshot-fingerprint window buffer width height)))
+    (dotimes (r content-height)
+      (let* ((entry (pop entries)) (vec (or (car entry) []))
+             (row (aref rows (+ header-rows r)))
+             (row-start (nth 1 entry)) (row-end (nth 2 entry))
+             (chars (mapconcat (lambda (g) (if g (string (emacs-redisplay-glyph-char g)) ""))
+                               (append vec nil) ""))
+             (dir (emacs-redisplay--base-direction chars))
+             (key (and entry (emacs-redisplay--row-input-key vec row-start))))
+        (if (and (not fresh-matrix-p) (equal key (aref cache (+ header-rows r))))
+            (when row-start
+              (emacs-redisplay--shift-row-positions
+               row (- row-start (or (emacs-redisplay-glyph-row-start-pos row) row-start))
+               row-start row-end))
+          ;; Fresh rows already contain nil cells.  A populated row is filled
+          ;; completely below; only a formerly populated, now empty row needs
+          ;; a separate clear pass.
+          (unless (or entry fresh-matrix-p)
+            (emacs-redisplay--clear-row row))
+          (when entry
+            (setq vec (emacs-redisplay--bidi-reorder-glyphs
+                       vec (if (eq dir 'right-to-left) 1 0)))
+            (when (eq dir 'right-to-left)
+              (setq vec (emacs-redisplay--right-align-glyphs vec body-width)))
+            (emacs-redisplay--fill-row row vec width row-start row-end))
+          (aset cache (+ header-rows r) key))
+        (setf (emacs-redisplay-glyph-row-continuation-p row) (nth 3 entry)
+              (emacs-redisplay-glyph-row-direction row) dir)))
+    (when mode-p
+      (let* ((r (1- height)) (row (aref rows r))
+             (vec (emacs-redisplay--mode-line-glyphs buffer body-width))
+             (key (cons :mode (emacs-redisplay--row-input-key vec 0))))
+        (unless (and (not fresh-matrix-p) (equal key (aref cache r)))
+          (emacs-redisplay--fill-row row vec width nil nil)
+          (aset cache r key))))
     (when header-p
       (let* ((row (aref rows 0))
-             (text (emacs-redisplay--header-line-format-to-string
-                    (emacs-redisplay--header-line-format buffer) buffer))
-             (cached (aref cache 0)))
-        (cond
-         ((and (not fresh-matrix-p) cached
-               (equal (car cached) text)
-               (eq (cdr cached) :header))
-          nil)
-         (t
-          (emacs-redisplay--clear-row row)
-          (emacs-redisplay--fill-row
-           row (emacs-redisplay--header-line-glyphs buffer width)
-           width nil nil)
-          (aset cache 0 (cons text :header))))))
-    ;; Diff dirty bits against captured old hashes.
+             (vec (emacs-redisplay--header-line-glyphs buffer body-width))
+             (key (cons :header (emacs-redisplay--row-input-key vec 0))))
+        (unless (and (not fresh-matrix-p) (equal key (aref cache 0)))
+          (emacs-redisplay--fill-row row vec width nil nil)
+          (aset cache 0 key))))
     (dotimes (r height)
-      (aset dirty r
-            (or fresh-matrix-p
-                (/= (aref old-hashes r)
-                    (emacs-redisplay-glyph-row-hash (aref rows r))))))
-    (let* ((point (or (emacs-window-point window) start))
-           (cursor (emacs-redisplay--cursor-for-point matrix point)))
-      (setf (emacs-redisplay-glyph-matrix-cursor matrix) cursor))
-    (setf (emacs-redisplay-glyph-matrix-fingerprint matrix) new-fp)
-    (emacs-redisplay--log "redisplay-window handle=%S w=%S %dx%d rows-painted=%d"
-                          (emacs-redisplay-handle-id handle)
-                          (emacs-redisplay--cache-key window)
-                          width height row-idx)
+      (let ((row (aref rows r)))
+        (when divider
+          (aset (emacs-redisplay-glyph-row-glyphs row) (1- width)
+                (emacs-redisplay--make-glyph
+                 :char ?| :width 1 :face 'vertical-border
+                 :realized-face (emacs-redisplay-realize-face 'vertical-border)))
+          (setf (emacs-redisplay-glyph-row-used row) width
+                (emacs-redisplay-glyph-row-hash row)
+                (emacs-redisplay--row-hash (emacs-redisplay-glyph-row-glyphs row))))
+        (aset dirty r (or fresh-matrix-p
+                         (/= (nth r old-hashes) (emacs-redisplay-glyph-row-hash row))))))
+    (setf (emacs-redisplay-glyph-matrix-cursor matrix)
+          (emacs-redisplay--cursor-for-point matrix point)
+          (emacs-redisplay-glyph-matrix-fingerprint matrix) new-fp)
     matrix))
 
 (defun emacs-redisplay--cursor-for-point (matrix point)

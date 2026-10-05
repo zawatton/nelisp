@@ -82,7 +82,8 @@ this file.  Recognised keys:
   :funcall     a list of command/function symbols to call after `:eval-forms'
   :no-banner   t to suppress the ready banner
   :driver      symbol describing the driver (= host or nelisp);
-               purely informational, used by `nemacs-status-banner'.")
+               purely informational, used by `nemacs-status-banner'.
+  :frontend    xcb selects the shared-loop XCB/Cairo/Pango consumer.")
 
 (defun nemacs-main-option (key &optional default)
   "Return the value of KEY in `nemacs-main-options', or DEFAULT."
@@ -2013,6 +2014,14 @@ takes over and dispatches TUI events directly."
   (cond
    ((nemacs-main-option :batch)
     (nemacs-batch-main))
+   ((eq (nemacs-main-option :frontend) 'xcb)
+    (unless nemacs-initialized
+      (nemacs-main--apply-startup-gate)
+      (nemacs-init))
+    (nemacs-main--apply-options)
+    (nemacs-main--init-keymap)
+    (require 'nelisp-gui-frontend)
+    (nelisp-gui-frontend-run))
    (t
     (unless nemacs-initialized
       (nemacs-main--apply-startup-gate)
