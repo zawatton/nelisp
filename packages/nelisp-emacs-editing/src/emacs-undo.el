@@ -113,7 +113,10 @@ collapse)."
   "Record an inserted span [BEG, END) on the current buffer's undo list.
 Adjacent insertion records are coalesced by extending the list head.
 The inverse operation is `delete-region BEG END'."
-  (unless (or (emacs-undo-disabled-p) (= beg end))
+  (unless (or (and (fboundp 'nelisp-buffer-p)
+                   (nelisp-buffer-p (current-buffer))
+                   (null (nelisp-ec-current-buffer)))
+              (emacs-undo-disabled-p) (= beg end))
     (let* ((lst (emacs-undo-buffer-undo-list))
            (head (and (consp lst) (car lst))))
       (if (and (consp head)
@@ -129,7 +132,10 @@ The inverse operation is `delete-region BEG END'."
   "Push (STRING . POS) onto the current buffer's undo list.
 Recording the fact that STRING was just deleted from POS; the
 inverse operation is `goto-char POS' + `insert STRING'."
-  (unless (or (emacs-undo-disabled-p) (zerop (length string)))
+  (unless (or (and (fboundp 'nelisp-buffer-p)
+                   (nelisp-buffer-p (current-buffer))
+                   (null (nelisp-ec-current-buffer)))
+              (emacs-undo-disabled-p) (zerop (length string)))
     (emacs-undo-set-buffer-undo-list
      (cons (cons string pos) (emacs-undo-buffer-undo-list))))
   nil)

@@ -31,6 +31,7 @@
          (nemacs-main--event-handle nil)
          (nemacs-main--tui-features-loaded-p nil)
          (nemacs-main--tui-state-prepared-p nil)
+         (nemacs-main--tui-heap-prepared-p nil)
          (nemacs-main--quit-flag nil))
      ,@body))
 
@@ -374,8 +375,8 @@ not the fatal `-l' error handler's 255."
       (nemacs-main--shutdown-tui)
       (nemacs-uninit))))
 
-(ert-deftest nemacs-main-test/realise-tui-reuses-prepared-image-state ()
-  "Runtime images can bake pure-Elisp TUI state before realisation."
+(ert-deftest nemacs-main-test/realise-tui-reuses-prepared-process-state ()
+  "Repeated realisation reuses in-process pure-Elisp TUI state."
   (let ((nemacs-initialized nil)
         (nemacs--initial-buffer nil))
     (unwind-protect
@@ -502,7 +503,7 @@ not the fatal `-l' error handler's 255."
   (nemacs-main-test--fresh-runner
     (let ((nemacs-main--backend 'backend)
           (nemacs-main--frame 'frame)
-          (nemacs-main--redisplay 'redisplay)
+          (nemacs-main--redisplay (list :core t))
           (nemacs-main--repaint-hint nil)
           (nemacs-main--insert-repaint-hint (vector 'insert-char 0 1 1))
           (nemacs-main--insert-text-repaint-hint (vector 'insert-text "" 1 1))
@@ -2642,6 +2643,20 @@ realised, and tolerates the absence of `terminal-current-winsize'."
         (nemacs-main--frame nil))
     (should-not (nemacs-main--enter-fullscreen))
     (should-not (nemacs-main--leave-fullscreen))))
+
+(ert-deftest nemacs-main-test/s22-image-preload-creates-no-terminal-handles ()
+  (nemacs-main-test--fresh-runner
+    (cl-letf (((symbol-function 'emacs-init-load-tui-core-features)
+               (lambda () nil))
+              ((symbol-function 'emacs-tui-backend-init)
+               (lambda (&rest _) (error "Image preload created terminal state"))))
+      (nemacs-main--prepare-tui-features)
+      (should nemacs-main--tui-features-loaded-p)
+      (should-not nemacs-main--backend)
+      (should-not nemacs-main--frame)
+      (should-not nemacs-main--redisplay)
+      (should-not nemacs-main--event-handle)
+      (should-not nemacs-main--tui-state-prepared-p))))
 
 (provide 'nemacs-main-test)
 

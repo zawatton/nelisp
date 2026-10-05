@@ -925,6 +925,20 @@ a load under host Emacs never clobbers the real subr/Lisp definition."
                  (format "(when (emacs-window--install-function-p '%s)" sym)
                  nil t))))))
 
+(ert-deftest emacs-window-test/s22-prefixed-setter-accepts-native-buffer ()
+  (with-temp-buffer
+    (insert "native buffer")
+    (goto-char 4)
+    (let ((emacs-window--root nil) (emacs-window--selected nil)
+          (emacs-window--id-counter 0))
+      (let ((window (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer window (current-buffer))
+        (should (eq (emacs-window-buffer window) (current-buffer)))
+        (should (= (emacs-window-point window) 4))
+        (should (= (emacs-window-start window) 1))
+        (emacs-window-set-window-buffer window (buffer-name))
+        (should (eq (emacs-window-buffer window) (current-buffer)))))))
+
 (provide 'emacs-window-test)
 
 ;;; emacs-window-test.el ends here

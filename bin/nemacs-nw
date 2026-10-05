@@ -116,6 +116,9 @@ if build or not driver_image.is_file():
             form = ('(progn (setq noninteractive t init-file-user nil '
                     'inhibit-startup-screen t nemacs-main-options nil) '
                     '(unless nemacs-initialized (nemacs-init t)) '
+                    '(nemacs-main--prepare-tui-state) '
+                    '(let ((emacs-tui-backend-output-fn (lambda (_text) nil))) '
+                    '(nemacs-main--shutdown-tui)) '
                     '(setq nemacs-nw-image--identity ' + json.dumps(driver_key) + ') '
                     '(unless (> (nelisp--arena-dump-image-stream ' + json.dumps(temporary) + ') 0) '
                     '(error "TTY heap dump failed")) (princ ' + json.dumps(marker + '\n') + ') t)')
@@ -144,6 +147,10 @@ if build:
     print(driver_image)
     raise SystemExit(0)
 image = str(driver_image)
+# Heap snapshots contain cached dimensions.  Read this session's live PTY.
+if os.isatty(0):
+    size = os.get_terminal_size(0)
+    options['terminal-size'] = [size.columns, size.lines]
 if files:
     options['args'] = files
     options.setdefault('eval-forms', []).extend('(find-file ' + json.dumps(path) + ')' for path in files)

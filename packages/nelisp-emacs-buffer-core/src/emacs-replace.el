@@ -214,6 +214,7 @@ number of replacements made."
               (setq continue nil)
             (let* ((beg (car m)) (end (cdr m))
                    (matched (buffer-substring-no-properties beg end))
+                   (_point (goto-char end))
                    (decision (if replace-all 'act
                                (funcall decide matched beg end)))
                    ;; ensure forward progress even on a zero-width match
@@ -234,7 +235,11 @@ number of replacements made."
 (defun emacs-query-replace (from-string to-string &optional decide buffer)
   "Query-replace literal FROM-STRING with TO-STRING.  Return the count."
   (interactive "sQuery replace: \nsQuery replace %s with: ")
-  (emacs-query-replace-region (regexp-quote from-string) to-string decide buffer))
+  (let ((count (emacs-query-replace-region
+                (regexp-quote from-string) to-string decide buffer)))
+    (when (called-interactively-p 'interactive)
+      (message "Replaced %d occurrence%s" count (if (= count 1) "" "s")))
+    count))
 
 (defun emacs-query-replace-regexp (regexp to-string &optional decide buffer)
   "Query-replace REGEXP with TO-STRING (backrefs honoured).  Return the count."

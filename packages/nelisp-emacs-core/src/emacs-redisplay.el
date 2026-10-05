@@ -1532,7 +1532,10 @@ line, Doc 06 E6)."
   "Return BUFFER's text from point-min up to point, or nil."
   (if (emacs-redisplay--standard-buffer-p buffer)
       (with-current-buffer buffer
-        (buffer-substring-no-properties (point-min) (point)))
+        (buffer-substring-no-properties
+         (point-min) (if emacs-redisplay--mode-line-window
+                         (emacs-window-point emacs-redisplay--mode-line-window)
+                       (point))))
     (let ((nelisp-ec--current-buffer buffer))
     (and (fboundp 'nelisp-ec-point) (fboundp 'nelisp-ec-buffer-substring)
          (ignore-errors
@@ -1636,7 +1639,7 @@ line, Doc 06 E6)."
     (cond ((and (<= start minimum) (>= end maximum)) "All")
           ((<= start minimum) "Top")
           ((>= end maximum) "Bot")
-          (t (format "%d%%" (min 99 (/ (+ (* 100 (- start minimum))
+          (t (format "%2d%%" (min 99 (/ (+ (* 100 (- start minimum))
                                           (max 0 (1- (- maximum minimum))))
                                        (max 1 (- maximum minimum)))))))))
 
@@ -1772,6 +1775,27 @@ line, Doc 06 E6)."
 (defun emacs-redisplay--mode-line-format-to-string (format buffer)
   "Render mode/header line FORMAT for BUFFER using shared GNU constructs."
   (mapconcat #'car (emacs-redisplay--ml-spans format buffer nil 80 0) ""))
+
+(defun emacs-redisplay-mode-line-spans (window width end)
+  "Return WINDOW's mode line as (TEXT . REALIZED-FACE) spans.
+WIDTH is its display width; END is the exclusive visible buffer position.
+The lightweight TTY painter shares the full renderer's format semantics
+without allocating one glyph structure for each terminal cell."
+  (let* ((emacs-redisplay--mode-line-window window)
+         (emacs-redisplay--mode-line-end end)
+         (buffer (emacs-window-buffer window))
+         (face (if (eq window (emacs-window-selected-window))
+                   'mode-line 'mode-line-inactive))
+         (format (emacs-redisplay--mode-line-format buffer)))
+    (if (equal format " %b ")
+        ;; The legacy buffer default has one face and no dynamic fields.
+        ;; Avoid parsing three spans on every key in that common case.
+        (list (cons (concat " " (emacs-redisplay--buffer-name buffer) " ")
+                    (emacs-redisplay-realize-face face)))
+      (mapcar (lambda (span)
+              (cons (car span) (emacs-redisplay-realize-face (cdr span))))
+            (emacs-redisplay--ml-spans
+             format buffer face width 0)))))
 
 (defun emacs-redisplay--format-line-glyphs (format buffer width face)
   "Render a fixed WIDTH mode/header line with base FACE and styled fields."
@@ -3045,6 +3069,14 @@ is a no-op returning 0.  Returns the total segment count emitted."
                         (aset flush-hashes r
                               (emacs-redisplay-glyph-row-hash row)))
                       (aset dirty r nil))))))))
+        ;; The detached echo area belongs to shared redisplay as well.
+        (when (and (not noninteractive)
+                   (boundp 'emacs-special-buffers-echo-message))
+          (let* ((width (emacs-tui-backend-frame-width frame))
+                 (text (truncate-string-to-width
+                        (or emacs-special-buffers-echo-message "") width nil ?\s)))
+            (emacs-tui-backend-canvas-draw-text
+             backend frame (1- (emacs-tui-backend-frame-height frame)) 0 text nil)))
         ;; Drive the backend's own batching pass.
         (emacs-tui-backend-canvas-flush backend frame))
       emitted))))

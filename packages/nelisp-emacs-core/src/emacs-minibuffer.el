@@ -215,19 +215,12 @@ minibuffer layer while storage stays transport-specific.")
 ;;; Internal helpers
 
 (defun emacs-minibuffer--ensure-window ()
-  "Ensure the dedicated minibuffer window exists.
-Phase 1 — we just stash a leaf created via `emacs-window-split-window'
-on the implicit root.  When the host environment is not running with
-`emacs-window' tree initialized this returns the symbol :stub which
-satisfies `windowp'-checks via `emacs-minibuffer-active-minibuffer-window'."
-  (unless emacs-minibuffer--window
+  "Ensure a detached minibuffer exists below the ordinary window tree."
+  (unless (and (emacs-window-p emacs-minibuffer--window)
+               (emacs-window-window-live-p emacs-minibuffer--window))
     (setq emacs-minibuffer--window
           (condition-case _err
-              (let* ((root (emacs-window-selected-window))
-                     (mini (emacs-window-split-window root 1 'below)))
-                ;; Mark with a parameter so `minibufferp' on its buffer works.
-                (emacs-window-set-window-parameter mini 'minibuffer t)
-                mini)
+              (emacs-window-create-minibuffer-window)
             (error :stub))))
   emacs-minibuffer--window)
 

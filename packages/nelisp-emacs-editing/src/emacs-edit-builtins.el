@@ -106,6 +106,11 @@ used for non-overwrite integer insertion."
                            (list 'character-or-string char)))))
          (single-integer (and (integerp char) char)))
     (cond
+     ((and (fboundp 'nelisp-buffer-p) (nelisp-buffer-p (current-buffer))
+           (null (nelisp-ec-current-buffer)))
+      (let ((beg (point)))
+        (emacs-edit--self-insert-command 1 char)
+        (list :beg beg :end (point) :text text :overwrote nil)))
      ((and prefer-fast
            single-integer
            (not (emacs-edit-overwrite-mode-active-p))
@@ -271,13 +276,15 @@ Bound to RET (= byte 13) in `nemacs-main-keymap'."
     (ignore interactive)
     (let ((c (or n 1)) (i 0))
       (while (< i c)
-        (let ((beg (nelisp-ec-point)))
+        (if (null (nelisp-ec-current-buffer))
+            (insert "\n")
+          (let ((beg (nelisp-ec-point)))
           (nelisp-ec-insert "\n")
           (when (fboundp 'emacs-undo-record-insert)
             (emacs-undo-record-insert beg (nelisp-ec-point)))
           ;; Doc 51 Track S — mark dirty for jit-lock.
           (when (fboundp 'emacs-font-lock-mark-dirty-region)
-            (emacs-font-lock-mark-dirty-region beg (nelisp-ec-point))))
+            (emacs-font-lock-mark-dirty-region beg (nelisp-ec-point)))))
         (setq i (+ i 1))))
     nil))
 
@@ -1920,6 +1927,13 @@ ARG selects the kill-ring entry using the same MVP rules as `yank'."
     (setq entry (and cell (car cell)))
     (setq kill-ring-yank-pointer (or cell kill-ring))
     (cond
+     ((and entry (fboundp 'nelisp-buffer-p)
+           (nelisp-buffer-p (current-buffer)) (null (nelisp-ec-current-buffer)))
+      (let ((beg (point)))
+        (push-mark beg nil t)
+        (insert entry)
+        (setq emacs-edit--last-yank-bounds (cons beg (point)))
+        (list :beg beg :end (point) :text entry :deleted-newline nil)))
      (entry
       (let ((beg (nelisp-ec-point)))
         (nelisp-ec-insert entry)
@@ -1990,6 +2004,7 @@ first so the GUI clipboard wins over the local kill-ring head
 (= matches Emacs' `current-kill' behaviour).
 
 Track E.2: records the inserted span on `buffer-undo-list'."
+    (interactive "*P")
     (emacs-edit--yank arg)))
 
 (defun emacs-edit-yank-pop-direct (&optional arg)
@@ -3286,6 +3301,7 @@ With REGION non-nil, ignore BEG and END and save the current region."
 With numeric ARG N, put point N/10 of the way from the beginning.
 Pushes the mark at the previous position unless ARG is a raw prefix or the
 region is active."
+  (interactive "P")
   (or (consp arg)
       (and (fboundp 'region-active-p) (region-active-p))
       (push-mark))
@@ -3302,6 +3318,7 @@ region is active."
 With numeric ARG N, put point N/10 of the way from the end.
 Pushes the mark at the previous position unless ARG is a raw prefix or the
 region is active."
+  (interactive "P")
   (or (consp arg)
       (and (fboundp 'region-active-p) (region-active-p))
       (push-mark))
@@ -3425,6 +3442,59 @@ With ARG zero, exchange the object at point with the one at the mark."
            (when (> n 0) (newline n)))
        (forward-line n)))
    arg))
+
+(defvar emacs-edit--line-goal-column nil
+  "Display column retained across consecutive vertical motion commands.")
+
+(defun emacs-edit-next-line (&optional n)
+  "Move N display lines while preserving the current or explicit goal column.
+The standalone `vertical-motion' primitive owns display-line traversal."
+  (interactive "^p")
+  (let* ((n (or n 1))
+         (continuing (memq last-command '(next-line previous-line
+                                          emacs-edit-next-line emacs-edit-previous-line)))
+         (column (or goal-column
+                     (and continuing emacs-edit--line-goal-column)
+                     (current-column)))
+         (moved (if noninteractive
+                    (let ((left (forward-line n)))
+                      (move-to-column column) (- n left))
+                  (vertical-motion (cons column n)))))
+    (setq emacs-edit--line-goal-column column)
+    (unless (= moved n)
+      (signal (if (< n 0) 'beginning-of-buffer 'end-of-buffer) nil)))
+  nil)
+
+(defun emacs-edit-previous-line (&optional n)
+  "Move N display lines backward, retaining the vertical goal column."
+  (interactive "^p")
+  (emacs-edit-next-line (- (or n 1))))
+
+(defun emacs-edit-native-kill-line (&optional arg)
+  "Kill from point through the line end, or ARG buffer lines.
+The newline is included when point starts at the line end."
+  (interactive "P")
+  (let* ((beg (point))
+         (end (if arg
+                  (save-excursion (forward-line (prefix-numeric-value arg)) (point))
+                (let ((eol (line-end-position)))
+                  (if (= beg eol) (min (point-max) (1+ eol)) eol))))
+         (text (buffer-substring beg end))
+         (append-p (and (memq last-command '(kill-line kill-region)) kill-ring)))
+    (emacs-edit--kill-new
+     (if append-p (if (< end beg) (concat text (car kill-ring))
+                    (concat (car kill-ring) text)) text) append-p)
+    (delete-region beg end)
+    (setq this-command 'kill-line))
+  nil)
+
+(defun emacs-edit-install-native-command-shims ()
+  "Install native-buffer editing commands explicitly for standalone consumers.
+Host Emacs keeps its own commands.  Editor semantics remain in this module."
+  (when (fboundp 'nelisp-buffer-p)
+    (defalias 'next-line #'emacs-edit-next-line)
+    (defalias 'previous-line #'emacs-edit-previous-line)
+    (defalias 'kill-line #'emacs-edit-native-kill-line)))
 
 (provide 'emacs-edit-builtins)
 

@@ -141,18 +141,20 @@
       (let ((text (aref rows r)))
         (when (if old-rows
                   (not (emacs-redisplay-core--same-row-p old-rows r text))
-                (not (emacs-redisplay-core--blank-row-p text)))
+                t)
           (aset dirty r t)))
       (setq r (1+ r)))
     dirty))
 
 (defun emacs-redisplay-core--pad-row (text width)
-  "Return TEXT clipped or right-padded to WIDTH."
-  (let ((n (length text)))
-    (cond
-     ((> n width) (substring text 0 width))
-     ((< n width) (concat text (make-string (- width n) ?\s)))
-     (t text))))
+  "Return TEXT clipped or padded to WIDTH terminal columns."
+  (if (emacs-redisplay-core--printable-ascii-p text)
+      (let ((size (length text)))
+        (if (> size width) (substring text 0 width)
+          (concat text (make-string (- width size) ?\s))))
+    (let* ((clipped (truncate-string-to-width text width))
+           (padding (max 0 (- width (string-width clipped)))))
+      (concat clipped (make-string padding ?\s)))))
 
 (defun emacs-redisplay-core--check-handle (handle)
   "Signal unless HANDLE is a live redisplay handle."
@@ -212,44 +214,24 @@
   emacs-redisplay--current-handle)
 
 (defun emacs-redisplay-core--buffer-string (buffer)
-  "Return BUFFER's text as a plain string."
-  (cond
-   ((and buffer (fboundp 'nelisp-ec-with-current-buffer)
-         (fboundp 'nelisp-ec-buffer-string))
-    (nelisp-ec-with-current-buffer buffer
-      (nelisp-ec-buffer-string)))
-   ((and (fboundp 'buffer-string)
-         (or (null buffer) (eq buffer (current-buffer))))
-    (buffer-string))
-   (t "")))
+  "Return BUFFER's accessible text without properties."
+  (if (bufferp buffer)
+      (with-current-buffer buffer (buffer-substring-no-properties (point-min) (point-max)))
+    (nelisp-ec-with-current-buffer buffer (nelisp-ec-buffer-string))))
 
 (defun emacs-redisplay-core--buffer-name (buffer)
   "Return BUFFER's display name."
-  (cond
-   ((and buffer (fboundp 'nelisp-ec-buffer-name))
-    (nelisp-ec-buffer-name buffer))
-   ((fboundp 'buffer-name)
-    (or (buffer-name buffer) ""))
-   (t "")))
+  (if (bufferp buffer) (buffer-name buffer) (nelisp-ec-buffer-name buffer)))
 
 (defun emacs-redisplay-core--buffer-size (buffer)
-  "Return BUFFER's character count without copying its full text."
-  (cond
-   ((and buffer (fboundp 'nelisp-ec-buffer-size))
-    (condition-case _ (nelisp-ec-buffer-size buffer) (error nil)))
-   ((and (fboundp 'buffer-size)
-         (or (null buffer) (eq buffer (current-buffer))))
-    (buffer-size))
-   (t nil)))
+  "Return BUFFER's accessible character count."
+  (if (bufferp buffer) (with-current-buffer buffer (buffer-size))
+    (nelisp-ec-buffer-size buffer)))
 
 (defun emacs-redisplay-core--buffer-text-tick (buffer)
-  "Return BUFFER's text-content tick when available."
-  (cond
-   ((and buffer (fboundp 'nelisp-ec-buffer-text-tick))
-    (condition-case _ (nelisp-ec-buffer-text-tick buffer) (error nil)))
-   ((fboundp 'emacs-buffer-buffer-text-tick)
-    (condition-case _ (emacs-buffer-buffer-text-tick buffer) (error nil)))
-   (t nil)))
+  "Return BUFFER's character modification tick."
+  (if (bufferp buffer) (with-current-buffer buffer (buffer-chars-modified-tick))
+    (nelisp-ec-buffer-text-tick buffer)))
 
 (defun emacs-redisplay-core--render-state (buffer width height start point)
   "Return the cheap state key for BUFFER in a lightweight WINDOW."
@@ -287,14 +269,27 @@ entire buffer object under standalone NeLisp."
         (setq i (1+ i))))
     (or found n)))
 
+(defun emacs-redisplay-core--printable-ascii-p (text)
+  "Return non-nil when rendered TEXT consists of single-column ASCII."
+  (let ((i 0) (n (length text)) (printable t))
+    (while (and printable (< i n))
+      (let ((char (aref text i)))
+        (unless (and (<= 32 char) (<= char 126))
+          (setq printable nil)))
+      (setq i (1+ i)))
+    printable))
+
+(defun emacs-redisplay-core--row-width (text)
+  "Measure rendered TEXT in terminal columns, with a plain ASCII fast path."
+  (if (emacs-redisplay-core--printable-ascii-p text)
+      (length text)
+    (string-width text)))
+
 (defun emacs-redisplay-core--fit (text width)
-  "Return TEXT clipped to WIDTH.
-The lightweight core intentionally does not right-pad rows: the TUI
-backend already starts with a blank canvas, and sending only visible
-text avoids an expensive full-width first paint under standalone
-NeLisp."
-  (let ((n (length text)))
-    (if (> n width) (substring text 0 width) text)))
+  "Return rendered TEXT clipped to WIDTH terminal columns."
+  (if (emacs-redisplay-core--printable-ascii-p text)
+      (if (> (length text) width) (substring text 0 width) text)
+    (truncate-string-to-width text width)))
 
 (defun emacs-redisplay-core--blank-row-p (text)
   "Return non-nil when TEXT is all spaces."
@@ -324,7 +319,9 @@ NeLisp."
     (while (and (< pos limit) (< pos idx) (< row body-height))
       (if (= (aref text pos) ?\n)
           (setq row (1+ row) col 0)
-        (setq col (1+ col))
+        (let ((char (aref text pos)))
+          (setq col (+ col (if (and (<= 32 char) (<= char 126))
+                              1 (char-width char)))))
         (when (>= col width)
           (setq row (1+ row) col 0)))
       (setq pos (1+ pos)))
@@ -345,7 +342,7 @@ the visible body dimensions."
           (setq row (1+ row)
                 col 0
                 row-start (1+ pos))
-        (setq col (1+ col))
+        (setq col (+ col (char-width (aref text pos))))
         (when (>= col width)
           (setq row (1+ row)
                 col 0
@@ -485,61 +482,60 @@ Return non-nil when the hint was applied without reading buffer text."
 
 ;;;###autoload
 (defun emacs-redisplay-redisplay-window (handle window)
-  "Render WINDOW into HANDLE's lightweight row cache."
+  "Render WINDOW's body and shared mode line into the row cache."
   (emacs-redisplay-core--check-handle handle)
   (let* ((w (or window (emacs-window-selected-window)))
-         (buffer (and w (emacs-window-window-buffer w)))
+         (buffer (emacs-window-window-buffer w))
          (width (max 1 (emacs-window-window-width w)))
          (height (max 1 (emacs-window-window-height w)))
-         (body-height (if (and emacs-redisplay-paint-mode-line-p (> height 1))
-                          (1- height)
-                        height))
+         (body-height (if (and emacs-redisplay-paint-mode-line-p (> height 1)) (1- height) height))
+         (text (emacs-redisplay-core--buffer-string buffer))
+         (point (or (emacs-window-window-point w) 1))
          (window-start (or (emacs-window-window-start w) 1))
-         (start (max 0 (1- window-start)))
-         (point (and w (emacs-window-window-point w)))
-         (state (emacs-redisplay-core--render-state
-                 buffer width height window-start point))
-         (_long-line-state
-          (and buffer (not (stringp buffer))
-               (emacs-cc-xdisp-1--update-long-line-state
-                buffer (emacs-redisplay-core--buffer-text-tick buffer)
-                (lambda () (emacs-redisplay-core--buffer-string buffer)))))
-         (old (emacs-redisplay-core--get-matrix handle w))
-         (text nil)
+         (starts (list 0)) (i 0) (line 0) (start-line 0) (point-line 0)
          (rows (make-vector height ""))
-         (pos start)
-         (r 0))
-    (if (and old
-             (emacs-redisplay-core--render-state-cacheable-p state)
-             (emacs-redisplay-core--same-render-state-p
-              (emacs-redisplay-core--matrix-state old) state))
-        old
-      (setq text (emacs-redisplay-core--buffer-string buffer))
-    (unless (= (length text) 0)
-      (while (< r body-height)
-        (let* ((end (emacs-redisplay-core--line-end text pos))
-               (line (if (<= pos (length text))
-                         (substring text pos end)
-                       "")))
-          (aset rows r (emacs-redisplay-core--fit line width))
-          (setq pos (if (< end (length text)) (1+ end) end))
-          (setq r (1+ r)))))
-    (when (< r height)
-      (aset rows r (emacs-redisplay-core--mode-line buffer width))
-      (setq r (1+ r)))
-    (while (< r height)
-      (aset rows r (make-string width ?\s))
-      (setq r (1+ r)))
-      (emacs-redisplay-core--put-matrix
-       handle w
-       (emacs-redisplay-core--make-matrix
-        w width height rows
-        (emacs-redisplay-core--cursor-for text window-start
-                                          point width body-height)
-        (emacs-redisplay-core--dirty-rows old rows height)
-        state)))))
+         (old (emacs-redisplay-core--get-matrix handle w)))
+    (while (< i (length text))
+      (when (= (aref text i) ?\n) (push (1+ i) starts))
+      (setq i (1+ i)))
+    (setq starts (nreverse starts))
+    (dolist (pos starts)
+      (when (< pos window-start) (setq start-line line))
+      (when (< pos point) (setq point-line line))
+      (setq line (1+ line)))
+    (unless (and (<= start-line point-line) (< point-line (+ start-line body-height)))
+      (setq start-line (max 0 (- point-line (/ body-height 2)))
+            window-start (1+ (nth start-line starts)))
+      (emacs-window-set-window-start w window-start))
+    (setq i 0)
+    (while (< i body-height)
+      (let ((beg (nth (+ start-line i) starts))
+            (end (nth (+ start-line i 1) starts)))
+        (aset rows i (if beg (emacs-redisplay-core--fit
+                             (substring text beg (if end (1- end) (length text))) width) "")))
+      (setq i (1+ i)))
+    (let* ((end (or (nth (+ start-line body-height) starts) (length text)))
+           (spans (and (< body-height height)
+                       (emacs-redisplay-mode-line-spans w width (1+ end))))
+           (mode (mapconcat #'car spans ""))
+           (state (list spans (emacs-window-window-edges w)))
+           (matrix (emacs-redisplay-core--make-matrix
+                    w width height rows
+                    (emacs-redisplay-core--cursor-for text window-start point width body-height)
+                    (emacs-redisplay-core--dirty-rows old rows height) state)))
+      (when spans
+        (aset rows body-height (emacs-redisplay-core--pad-row mode width))
+        (aset (emacs-redisplay-glyph-matrix-dirty-rows matrix) body-height
+              (not (and old
+                        (equal spans (car (emacs-redisplay-core--matrix-state old)))
+                        (emacs-redisplay-core--same-row-p
+                         (emacs-redisplay-glyph-matrix-rows old) body-height
+                         (aref rows body-height))))))
+      (when (and old (not (equal (nth 1 (emacs-redisplay-core--matrix-state old))
+                                 (nth 1 state))))
+        (dotimes (r height) (aset (emacs-redisplay-glyph-matrix-dirty-rows matrix) r t)))
+      (emacs-redisplay-core--put-matrix handle w matrix))))
 
-;;;###autoload
 (defun emacs-redisplay-redisplay (handle &optional _frame)
   "Render all live leaf windows into HANDLE."
   (emacs-redisplay-core--check-handle handle)
@@ -554,36 +550,48 @@ Return non-nil when the hint was applied without reading buffer text."
   (emacs-redisplay-core--get-matrix handle window))
 
 ;;;###autoload
+(defun emacs-redisplay-core--paint-text (backend frame row col text face)
+  "Paint TEXT at its terminal column with already realized FACE."
+  (if (fboundp 'emacs-tui-backend--emit)
+      (emacs-tui-backend--emit
+       (concat (emacs-tui-backend--cup row col) "\e[0m"
+               (emacs-tui-backend--sgr-from-face face) text "\e[0m"))
+    (emacs-tui-backend-canvas-draw-text backend frame row col text face)))
+
 (defun emacs-redisplay-flush-frame (handle frame)
-  "Flush HANDLE's cached rows to FRAME through the TUI backend."
-  (emacs-redisplay-core--check-handle handle)
-  (let ((backend (emacs-redisplay-handle-backend handle))
-        (count 0))
+  "Flush live window rows, styled mode lines and the echo area."
+  (let ((backend (emacs-redisplay-handle-backend handle)) (count 0))
     (when backend
-      (dolist (entry (emacs-redisplay-handle-window-cache handle))
-        (let* ((matrix (cdr entry))
-               (window (emacs-redisplay-glyph-matrix-window matrix))
-               (edges (emacs-window-window-edges window))
-               (left (nth 0 edges))
-               (top (nth 1 edges))
-               (rows (emacs-redisplay-glyph-matrix-rows matrix))
-               (dirty (emacs-redisplay-glyph-matrix-dirty-rows matrix))
-               (width (emacs-redisplay-glyph-matrix-width matrix))
-               (height (emacs-redisplay-glyph-matrix-height matrix))
-               (r 0))
-          (while (< r height)
-            (when (and dirty (aref dirty r))
-              (let ((text (emacs-redisplay-core--pad-row
-                           (aref rows r) width)))
-                (emacs-tui-backend-canvas-draw-text
-                 backend frame (+ top r) left text nil)
-                (aset dirty r nil)
-                (setq count (1+ count))))
-            (setq r (1+ r)))))
-      (emacs-tui-backend-canvas-flush backend frame))
+      (dolist (w (emacs-window-window-list))
+        (let ((matrix (emacs-redisplay-core--get-matrix handle w)))
+          (when matrix
+            (let* ((edges (emacs-window-window-edges w)) (left (nth 0 edges)) (top (nth 1 edges))
+                   (rows (emacs-redisplay-glyph-matrix-rows matrix))
+                   (dirty (emacs-redisplay-glyph-matrix-dirty-rows matrix))
+                   (width (emacs-redisplay-glyph-matrix-width matrix))
+                   (height (emacs-redisplay-glyph-matrix-height matrix))
+                   (spans (car (emacs-redisplay-core--matrix-state matrix))))
+              (dotimes (r height)
+                (when (aref dirty r)
+                  (if (and spans (= r (1- height)))
+                      (let ((col 0))
+                        (dolist (span (append spans (list (cons (make-string width ?\s) '((:reverse . t))))))
+                          (when (< col width)
+                            (let ((text (emacs-redisplay-core--fit (car span) (- width col))))
+                              (emacs-redisplay-core--paint-text backend frame (+ top r) (+ left col) text (cdr span))
+                              (setq col (+ col (emacs-redisplay-core--row-width text)))))))
+                    (emacs-redisplay-core--paint-text backend frame (+ top r) left
+                     (emacs-redisplay-core--pad-row (aref rows r) width) nil))
+                  (aset dirty r nil) (setq count (1+ count))))))))
+      (when (boundp 'emacs-special-buffers-echo-message)
+        (emacs-redisplay-core--paint-text backend frame
+         (1- (emacs-tui-backend-frame-height frame)) 0
+         (emacs-redisplay-core--pad-row (or emacs-special-buffers-echo-message "")
+                                      (emacs-tui-backend-frame-width frame)) nil))
+      (unless (fboundp 'emacs-tui-backend--emit)
+        (emacs-tui-backend-canvas-flush backend frame)))
     count))
 
-;;;###autoload
 (defun emacs-redisplay-set-cursor (handle frame &optional window)
   "Show the cursor for WINDOW on FRAME."
   (emacs-redisplay-core--check-handle handle)
@@ -651,7 +659,10 @@ NeLisp."
                (emacs-tui-backend-canvas-flush backend frame))
              t)
             (t nil))))
-      (when (and window (= (or (emacs-redisplay-core--buffer-size buffer) -1) 0))
+      ;; Alternate-screen entry cleared the body.  Cache that painted blank
+      ;; state even for nonempty buffers, so the first input need only paint
+      ;; their text rows.  Newly split windows still clear every covered row.
+      (when window
         (let* ((body-height (if (and emacs-redisplay-paint-mode-line-p
                                      (> height 1))
                                 (1- height)
@@ -668,81 +679,19 @@ NeLisp."
            (emacs-redisplay-core--make-matrix
             window width height rows
             (cons 0 0) dirty
-            (emacs-redisplay-core--render-state
-             buffer width height window-start point)))))
+            (list nil (emacs-window-window-edges window))))))
       painted)))
 
 (defun emacs-redisplay-core-repaint (handle frame)
-  "Fast repaint for the selected TUI window under the lightweight core.
-This path is used by the standalone NeLisp event loop after key input.
-It updates only the selected window's lightweight matrix and flushes
-dirty rows, keeping the full redisplay engine lazy while avoiding a
-whole-frame rebuild on every input event."
-  (emacs-redisplay-core--check-handle handle)
-  (let ((window (and (fboundp 'emacs-window-selected-window)
-                     (emacs-window-selected-window))))
-    (when window
-      (let* ((old (emacs-redisplay-core--get-matrix handle window))
-             (matrix (emacs-redisplay-redisplay-window handle window)))
-        (unless (eq matrix old)
-          (emacs-redisplay-flush-frame handle frame)))
-      (emacs-redisplay-core--set-cursor-if-changed handle frame window)
-      t)))
+  "Repaint all leaf windows and then restore the selected cursor."
+  (emacs-redisplay-redisplay handle)
+  (emacs-redisplay-flush-frame handle frame)
+  (emacs-redisplay-set-cursor handle frame (emacs-window-selected-window))
+  t)
 
-(defun emacs-redisplay-core-repaint-current-line (handle frame &optional hint)
-  "Repaint only the selected window's current display row.
-This is the event-loop path for simple printable self-insert commands.
-It avoids rebuilding the whole selected-window matrix and emits a single
-cursor-addressed row write when the current row changed."
-  (emacs-redisplay-core--check-handle handle)
-  (let* ((window (and (fboundp 'emacs-window-selected-window)
-                      (emacs-window-selected-window)))
-         (backend (emacs-redisplay-handle-backend handle))
-         (buffer (and window (emacs-window-window-buffer window)))
-         (edges (and window (emacs-window-window-edges window))))
-    (when (and window edges)
-      (let* ((width (max 1 (emacs-window-window-width window)))
-             (height (max 1 (emacs-window-window-height window)))
-             (body-height (if (and emacs-redisplay-paint-mode-line-p
-                                   (> height 1))
-                              (1- height)
-                            height))
-             (window-start (or (emacs-window-window-start window) 1))
-             (point (or (emacs-window-window-point window) 1)))
-        (if (and (emacs-redisplay-core--insert-hint-p hint)
-                 (emacs-redisplay-core--apply-insert-hint
-                  handle frame window backend edges width height body-height
-                  hint))
-            t
-          (let* ((text (emacs-redisplay-core--buffer-string buffer))
-                 (row-info (emacs-redisplay-core--row-at-point
-                            text window-start point width body-height)))
-            (if (not row-info)
-                (emacs-redisplay-core-repaint handle frame)
-              (let* ((row (nth 0 row-info))
-                     (col (nth 1 row-info))
-                     (line (substring text (nth 2 row-info) (nth 3 row-info)))
-                     (padded (emacs-redisplay-core--pad-row line width))
-                     (matrix (emacs-redisplay-core--ensure-matrix
-                              handle window width height))
-                     (rows (emacs-redisplay-glyph-matrix-rows matrix))
-                     (abs-row (+ (nth 1 edges) row))
-                     (abs-col (nth 0 edges))
-                     (old-cursor (emacs-redisplay-glyph-matrix-cursor matrix))
-                     (changed (not (and rows
-                                        (< row (length rows))
-                                        (string= (aref rows row) line)))))
-                (when changed
-                  (emacs-redisplay-core--direct-draw-row-and-cursor
-                   backend frame abs-row abs-col padded abs-row (+ abs-col col))
-                  (when (and rows (< row (length rows)))
-                    (aset rows row line)))
-                (emacs-redisplay-core--set matrix :cursor (cons row col))
-                (when (and (not changed)
-                           (not (equal old-cursor (cons row col))))
-                  (emacs-redisplay-core--direct-cursor-if-changed
-                   frame abs-row (+ abs-col col)))
-                t))))))))
+(defun emacs-redisplay-core-repaint-current-line (handle frame &optional _hint)
+  "Repaint body, mode lines and echo area after an insertion."
+  (emacs-redisplay-core-repaint handle frame))
 
 (defun emacs-redisplay-redraw-display (handle &optional frame)
   "Render and optionally flush HANDLE."

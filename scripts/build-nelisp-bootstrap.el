@@ -68,7 +68,6 @@ final `.el' suffix with `.repl'.")
     ;; Re-evaluate the corrected pcase-based translator only after rx helpers.
     "emacs-parity-rx.el"
     "emacs-tui-backend.el"
-    "emacs-redisplay-core.el"
     "emacs-tui-event.el")
   "Local src files that host Emacs may not load but standalone NeLisp needs.")
 
@@ -162,7 +161,10 @@ final `.el' suffix with `.repl'.")
     "emacs-parity-subdirs.el"
     ;; GNU C-core coverage (tools/ai/c-core-progress.org): every
     ;; src/emacs-cc-*.el unit, in name order.
-    ,@(nelisp-bootstrap--c-core-unit-files))
+    ,@(nelisp-bootstrap--c-core-unit-files)
+    ;; Interactive TTY glyph rendering must follow the mode/default variables.
+    "emacs-redisplay.el"
+    "emacs-redisplay-core.el")
   "Local src files inserted after buffer/face substrates are available.")
 
 (defvar nelisp-bootstrap-vendor-extra-files

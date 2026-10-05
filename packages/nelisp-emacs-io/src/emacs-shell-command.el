@@ -639,12 +639,15 @@ MVP because the host process bridge does not yet split stderr."
   "Execute COMMAND synchronously and display its output.
 
 Output is written to `*Shell Output*' unless OUTPUT-BUFFER names a
-different target.  Return the exit status integer from
+different target.  A non-nil non-buffer designator inserts at point in the
+current buffer, leaving point before the output and mark after it.
+For a separate output buffer, return the exit status integer from
 `call-process'.  When the exit status is non-zero, emit a message and
 leave the output in the destination buffer."
   (interactive
    (list (emacs-shell-command--read-command "Shell command: ")))
-  (if (and (eq output-buffer t) emacs-shell-command--orig-shell-command)
+  (cond
+   ((and (eq output-buffer t) emacs-shell-command--orig-shell-command)
       ;; Host C `shell-command-to-string' passes `t' to mean "insert
       ;; output at point in the current buffer," which our polyfill
       ;; cannot honour without reproducing the C subr's narrowing.
@@ -652,7 +655,17 @@ leave the output in the destination buffer."
       ;; `shell-command-to-string' keeps working when our polyfill
       ;; shadows the public symbol.
       (funcall emacs-shell-command--orig-shell-command
-               command output-buffer error-buffer)
+               command output-buffer error-buffer))
+   ((and output-buffer (not (or (bufferp output-buffer) (stringp output-buffer))))
+    ;; GNU simple.el's `shell-command-to-string' uses this insertion shape.
+    ;; Do not erase or move to point-max: surrounding text must survive.
+    (barf-if-buffer-read-only)
+    (let ((start (point)))
+      (push-mark start t)
+      (emacs-shell-command--call-shell command (current-buffer) error-buffer)
+      (set-marker (mark-marker) (point) (current-buffer))
+      (goto-char start)))
+   (t
     (let* ((buffer (emacs-shell-command--prepare-buffer
                     (emacs-shell-command--get-buffer
                      output-buffer
@@ -665,7 +678,7 @@ leave the output in the destination buffer."
                                        command status)))
       (when (called-interactively-p 'interactive)
         (display-buffer buffer))
-      status)))
+      status))))
 
 ;;;###autoload
 (defun shell-command-on-region (start end command

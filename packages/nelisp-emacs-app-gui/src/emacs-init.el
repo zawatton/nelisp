@@ -122,10 +122,13 @@ TUI event parser, so they stay lazy until `nemacs-main' actually
 realises an interactive frame.  Keep this core loader smaller than
 `emacs-init-load-editor-features' so interactive startup does not pay
 font-lock / mode setup before the first frame exists."
-  ;; Use the fast first-frame core unless the full redisplay engine has
-  ;; already been loaded by tests or an editor feature.
-  (unless (featurep 'emacs-redisplay)
-    (require 'emacs-redisplay-core))
+  ;; Share mode-line formatting while retaining the fast row painter.
+  (require 'emacs-redisplay-core)
+  (when (fboundp 'nelisp--repr)
+    (require 'emacs-edit-builtins)
+    (require 'emacs-replace)
+    (emacs-edit-install-native-command-shims)
+    (emacs-replace-install))
   (require 'emacs-tui-backend)
   ;; `emacs-tui-event' provides the byte-stream -> key event parser
   ;; that nemacs-main's event loop drains under the nelisp driver.

@@ -31,6 +31,8 @@ change to the criteria list is recorded in a NOTE.
 
 #+NOTE: 2026-10-05 runtime nelisp-gui2 (RT 0fb4a022, sha256 cbe63a91...; lane R2): reader character/string escapes match GNU (170 records + 122 source literals), set-default binds unbound symbols, markers coerce in arithmetic and text ranges.  exit smoke 10/10, pty 10/10, S4.2 PASS; S4.1 still red but now reaches evil insert state with SKK active and the kana marker; the remaining blockers are the command-loop items.  C-core parity on gui2: one run differed in the process area (stop-process "Group transition timed out", 1 of 4 process-only runs under load average ~20; lane P1), other runs 7/7.
 
+#+NOTE: 2026-10-05 lanes S22 and S13 integrated.  S22: pty scenario (C-x C-f, motion, typing, isearch, query-replace, kill/yank, undo, split, scroll, save, quit) vs GNU emacs -nw at 80x24: 3/3 milestone screens and saved bytes identical (79 s); S2.2 wired.  It regressed C-core display (window-combination-limit probes no longer signal "too small for splitting" in the 10x10 batch frame) and GUI S3.2 ('ASCII cell', 6); lane S22b fixes both.  S13: tools/user-init-audit.py loads the user's early-init/init.el form by form under the image with a read-only fixture home and a GNU reference: NeLisp-only failures 18 -> 12 over the observed forms, but only 294 of 949 forms completed within the 7200 s cap (GNU loads all 949 in ~20 s; treemacs alone > 3195 s, doom-modeline 545 s), so S1.3/S5.3 are bound by interpreter speed owned by the compiler session.  The set-default fix was made by both R2 and S13 (identical code; conflict resolved to one copy).
+
 * S1 Shared interactive foundation
 
 ** S1.1 One event wait drives read-event: keys, timers, idle timers and process output (sit-for, sleep-for, input-pending-p behave as GNU)
@@ -59,7 +61,9 @@ cmd: bash -c 'bash tools/c-core-image.sh check >/dev/null 2>&1 || bash tools/c-c
 cmd: bash -c 'bash tools/c-core-image.sh check >/dev/null 2>&1 || bash tools/c-core-image.sh build >/dev/null 2>&1; EMACS=emacs timeout 590 python3 tools/redisplay-layout-parity.py run --output build/redisplay-layout/ledger'
 
 ** S2.2 End to end: pty scenario (open file, edit, search, split windows, save, quit) produces the same final file and screen as GNU emacs -nw
-pending
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 600
+cmd: bash -c 'timeout 200 bin/nemacs-nw --build-image >/dev/null 2>&1 && EMACS=emacs timeout 380 python3 tools/nemacs-pty-smoke.py --group scenario --output build/nemacs-pty-smoke/scenario-ledger'
 
 * S3 GUI backend and rendering
 

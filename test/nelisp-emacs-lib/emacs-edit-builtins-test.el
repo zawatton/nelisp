@@ -2041,6 +2041,50 @@ clipboard — `arg' explicitly chose a kill-ring entry."
     (should (eq before-yank (symbol-function 'yank)))
     (should (eq before-kill (symbol-function 'kill-new)))))
 
+
+(ert-deftest emacs-edit-builtins-test/s22-native-goal-column ()
+  (with-temp-buffer
+    (insert "abcdefghij\nx\n日本語abcdef\n")
+    (goto-char 8)
+    (let ((goal-column nil) (last-command nil)
+          (emacs-edit--line-goal-column nil))
+      (emacs-edit-next-line 1)
+      (should (= (current-column) 1))
+      (setq last-command 'next-line)
+      (emacs-edit-next-line 1)
+      (should (= (current-column) 7))
+      (emacs-edit-previous-line 2)
+      (should (= (point) 8)))))
+
+(ert-deftest emacs-edit-builtins-test/s22-native-kill-append ()
+  (with-temp-buffer
+    (insert "日本語\nsecond\n")
+    (goto-char 1)
+    (let ((kill-ring nil) (kill-ring-yank-pointer nil)
+          (last-command nil) (this-command nil))
+      (emacs-edit-native-kill-line)
+      (should (equal (buffer-string) "\nsecond\n"))
+      (should (equal (car kill-ring) "日本語"))
+      (setq last-command this-command)
+      (emacs-edit-native-kill-line)
+      (should (equal (buffer-string) "second\n"))
+      (should (equal kill-ring '("日本語\n"))))))
+
+(ert-deftest emacs-edit-builtins-test/s22-native-insert-undo-once ()
+  (require 'emacs-undo)
+  (with-temp-buffer
+    (buffer-enable-undo)
+    (let ((nelisp-ec--current-buffer nil)
+          (post-self-insert-hook nil))
+      (cl-letf (((symbol-function 'nelisp-buffer-p) #'bufferp))
+        (emacs-edit-self-insert-direct ?x)
+        (should (equal (buffer-string) "x"))
+        (emacs-undo-record-insert 1 2)
+        (should (= (cl-count '(1 . 2) buffer-undo-list :test #'equal) 1))
+        (undo-boundary)
+        (primitive-undo 1 (cdr buffer-undo-list))
+        (should (equal (buffer-string) ""))))))
+
 (provide 'emacs-edit-builtins-test)
 
 ;;; emacs-edit-builtins-test.el ends here

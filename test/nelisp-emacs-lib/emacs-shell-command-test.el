@@ -37,6 +37,22 @@
               (should (equal (buffer-string) "hello\n"))))
         (kill-buffer buffer)))))
 
+(ert-deftest shell-command-prefix-inserts-at-point-and-preserves-text ()
+  (emacs-shell-command-test--skip-unless-shell
+    (let ((emacs-shell-command--orig-shell-command nil))
+      (with-temp-buffer
+        (insert "beforeafter")
+        (goto-char 7)
+        (shell-command "printf middle" t)
+        (should (equal (buffer-string) "beforemiddleafter"))
+        (should (= (point) 7))
+        (should (= (mark t) 13))))))
+
+(ert-deftest shell-command-to-string-works-through-prefix-insertion ()
+  (emacs-shell-command-test--skip-unless-shell
+    (let ((emacs-shell-command--orig-shell-command nil))
+      (should (equal (shell-command-to-string "printf s13") "s13")))))
+
 (ert-deftest shell-command-handles-non-zero-exit ()
   (emacs-shell-command-test--skip-unless-shell
     (let ((buffer (get-buffer-create " *shell-command-test-fail*"))

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Heap-backed nemacs acceptance: real 80x24 PTY, file edits and waits.
 
-No host Emacs, protocol frontend, third-party module or native build is used.
+The scenario group compares the production launcher with GNU emacs -Q -nw.
+No protocol frontend, third-party module or native build is used.
 The image must already match build/nemacs-bootstrap.el; rebuild it after
 library edits. Raw screen captures and JSON verdicts are retained in --output.
 """
 import argparse
+import copy
 import errno
 import fcntl
 import json
@@ -358,6 +360,235 @@ def run_case(args, image, case, fixture):
     return result['passed']
 
 
+# S2.2 uses the layout harness's streaming emulator, including attributes.
+# TERM=vt100 deliberately removes palette differences, as in S2.1.  The
+# menu bar is disabled on both sides: menu UI is outside this editing scenario.
+# No cells, mode-line fields, echo text, cursor positions or buffers are masked.
+SCENARIO_INIT = r''';;; -*- lexical-binding: t; -*-
+(setq inhibit-startup-screen t inhibit-startup-message t initial-scratch-message nil
+      require-final-newline nil mode-require-final-newline nil
+      echo-keystrokes 0 use-dialog-box nil make-backup-files nil auto-save-default nil)
+(when (fboundp 'menu-bar-mode) (menu-bar-mode -1))
+'''
+SCENARIO_TEXT = ('Header alpha beta\n'
+                 'Movement alpha beta\n'
+                 '日本語の行です。\n'
+                 'Fourth line\nFifth line\nSixth line\nSeventh line\n'
+                 'Find the needle here\n'
+                 'target first occurrence\n'
+                 'target second occurrence\n'
+                 + ''.join('Line %02d: terminal scenario 日本語\n' % i for i in range(11, 61)))
+
+
+def scenario_steps(target):
+    """Exactly the same terminal bytes go to both editors; no M-x substitutes."""
+    return [
+        ('open', b'\x18\x06' + os.fsencode(target) + b'\r'),
+        ('C-n', b'\x0e'), ('C-f', b'\x06'), ('M-f', b'\x1bf'),
+        ('C-e', b'\x05'), ('type', b' EDIT'), ('M-<', b'\x1b<'),
+        ('search', b'\x13needle\r'),
+        ('replace-from', b'\x1b%target\r'), ('replace-to', b'swapped\r'),
+        ('replace-one', b'y'), ('replace-stop', b'q'),
+        ('line-next', b'\x0e'), ('line-start', b'\x01'),
+        ('kill', b'\x0b'), ('yank', b'\x19'), ('undo', b'\x1f'),
+        ('split', b'\x182'), ('other-window', b'\x18o'),
+        ('scroll', b'\x16'), ('before-save', b'\x181'),
+        ('save', b'\x18\x13'), ('quit', b'\x18\x03')]
+
+
+def scenario_capture(args, name, target, init, Screen):
+    target.write_text(SCENARIO_TEXT, encoding='utf-8')
+    argv = ([args.emacs, '-Q', '-nw'] if name == 'gnu' else
+            [str(args.lib / 'bin/nemacs-nw'), '-Q']) + ['-l', str(init)]
+    pid, master = pty.fork()
+    if pid == 0:
+        fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 80, 0, 0))
+        resource.setrlimit(resource.RLIMIT_STACK, (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
+        os.chdir(args.lib)
+        os.environ.update(TERM='vt100', LC_ALL='C.UTF-8', COLUMNS='80', LINES='24',
+                          NELISP_BIN=args.binary, NEMACS_DISABLE_COLD_CACHE='1')
+        os.execvp(argv[0], argv)
+    os.set_blocking(master, False)
+    terminal, raw, snapshots, sent = Screen(80, 24), bytearray(), {}, []
+    status = None
+    settled = []
+    timings = []
+    deadline = time.monotonic() + args.timeout
+    original_tty = termios.tcgetattr(master)
+
+    def drain(minimum=1.5, quiet=0.7, maximum=60, require_paint=False):
+        nonlocal status
+        start = last = time.monotonic()
+        offset = len(raw)
+        while time.monotonic() < min(deadline, start + maximum):
+            if select.select([master], [], [], 0.02)[0]:
+                try:
+                    chunk = os.read(master, 65536)
+                except OSError as error:
+                    if error.errno != errno.EIO:
+                        raise
+                    chunk = b''
+                if chunk:
+                    raw.extend(chunk)
+                    terminal.feed(chunk)
+                    (args.output / ('scenario.' + name + '.raw')).write_bytes(raw)
+                    last = time.monotonic()
+            if status is None:
+                done, value = os.waitpid(pid, os.WNOHANG)
+                if done:
+                    status = value
+            now = time.monotonic()
+            # The shared row painter restores the visible cursor only after
+            # body, mode lines and echo have flushed.  Waiting for that real
+            # terminal sequence prevents snapshots between row writes; no
+            # injected Lisp, oracle positions or synthetic markers are used.
+            painted = (not require_paint or
+                       re.search(rb'\x1b\[\?25h\x1b\[[0-9]+;[0-9]+H$', raw[offset:]))
+            if status is not None or (now - start >= minimum and now - last >= quiet and painted):
+                return True
+
+        return False
+
+    try:
+        # A quiet initial screen plus raw termios establishes readiness without
+        # injecting Lisp commands or diagnostic text into either editor.
+        startup_deadline = min(deadline, time.monotonic() + max(args.timeout, 20))
+        while time.monotonic() < startup_deadline:
+            drain(maximum=5)
+            if status is not None or (b'*scratch*' in raw and
+                    not (termios.tcgetattr(master)[3] & (termios.ICANON | termios.ECHO))):
+                break
+        ready = (status is None and b'*scratch*' in raw and
+                 not (termios.tcgetattr(master)[3] & (termios.ICANON | termios.ECHO)))
+        for label, keys in scenario_steps(target) if ready else []:
+            if status is not None or time.monotonic() >= deadline:
+                break
+            os.write(master, keys)
+            sent.append(label)
+            phase_start = time.monotonic()
+            settled.append(drain(minimum=2 if label == 'open' else 1.5,
+                  require_paint=name == 'nelisp' and label not in
+                  ('replace-from', 'replace-to', 'replace-one', 'quit')))
+            timings.append(dict(step=label, seconds=time.monotonic() - phase_start,
+                                settled=settled[-1]))
+            if args.diagnostic:
+                print('%s: %s cursor=%r seconds=%.3f settled=%s' %
+                      (name, label, [terminal.row, terminal.col], timings[-1]['seconds'], settled[-1]), flush=True)
+            if label != 'quit':
+                snapshots[label] = dict(grid=[[cell[:] for cell in row] for row in terminal.grid],
+                                        cursor=[terminal.row, terminal.col],
+                                        unknown=sorted(terminal.unknown), pending=terminal.pending)
+        if status is None:
+            drain(minimum=0.5, maximum=5)
+        hung = status is None
+        if hung:
+            os.killpg(pid, signal.SIGKILL)
+            _, status = os.waitpid(pid, 0)
+        checks = dict(ready=ready, no_hang=not hung,
+                      exit_zero=os.waitstatus_to_exitcode(status) == 0,
+                      scripted_keys_sent=sent == [label for label, _ in scenario_steps(target)],
+                      tty_restored=termios.tcgetattr(master) == original_tty,
+                      milestones_settled=all(settled),
+                      emulator_supported=not terminal.unknown and not terminal.pending)
+    finally:
+        os.close(master)
+        if status is None:
+            os.killpg(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
+    (args.output / ('scenario.' + name + '.raw')).write_bytes(raw)
+    saved = target.read_bytes()
+    (args.output / ('scenario.' + name + '.saved')).write_bytes(saved)
+    result = dict(command=argv, checks=checks, exit=os.waitstatus_to_exitcode(status), sent=sent,
+                  snapshots=snapshots, timings=timings)
+    (args.output / ('scenario.' + name + '.json')).write_text(json.dumps(result, ensure_ascii=False, indent=2) + '\n')
+    return result, saved
+
+
+def scenario_expected_bytes():
+    # Independent content assertion: motion/type, one replacement, undo yank.
+    return (SCENARIO_TEXT.replace('Movement alpha beta', 'Movement alpha beta EDIT')
+            .replace('target first', 'swapped first')
+            .replace('Line 11: terminal scenario 日本語', '').encode('utf-8'))
+
+
+def compare_scenario(gnu, gnu_saved, nelisp, nelisp_saved, layout):
+    checks = {name + '_' + key: value
+              for name, capture in [('gnu', gnu), ('nelisp', nelisp)]
+              for key, value in capture['checks'].items()}
+    checks['saved_bytes_identical'] = gnu_saved == nelisp_saved
+    checks['gnu_saved_expected'] = gnu_saved == scenario_expected_bytes()
+    milestones = {}
+    for label in ('search', 'split', 'before-save'):
+        oracle, actual = gnu['snapshots'].get(label), nelisp['snapshots'].get(label)
+        comparison = (layout.compare_grids(oracle['grid'], actual['grid'])
+                      if oracle and actual else dict(passed=False, error='missing milestone'))
+        comparison['cursor_identical'] = bool(oracle and actual and oracle['cursor'] == actual['cursor'])
+        milestones[label] = comparison
+        checks[label + '_grid'] = comparison['passed']
+        checks[label + '_cursor'] = comparison['cursor_identical']
+    return dict(case='scenario', checks=checks, milestones=milestones,
+                passed=all(checks.values()),
+                exclusions=['Menu bar disabled on both sides: menu UI is outside the editing scenario.',
+                            'TERM=vt100 on both sides: compare monochrome attributes, without terminal palette differences.'])
+
+
+def scenario_verifier_controls(gnu, saved, layout):
+    """Require this exact comparator to reject corrupted real GNU captures.
+
+    Every milestone has body/mode/echo character and attribute controls,
+    plus a cursor control.  File bytes and process checks also fail closed.
+    This checks the verifier without altering either editor's key script.
+    """
+    controls = {'healthy': compare_scenario(gnu, saved, gnu, saved, layout)['passed']}
+    for label in ('search', 'split', 'before-save'):
+        for region, row in [('body', 2), ('mode', 22), ('echo', 23)]:
+            for field in (0, 1):
+                broken = copy.deepcopy(gnu)
+                cell = broken['snapshots'][label]['grid'][row][0]
+                cell[field] = ('!' if cell[0] != '!' else '?') if field == 0 else cell[1] ^ 8
+                verdict = compare_scenario(gnu, saved, broken, saved, layout)
+                controls['%s_%s_%s' % (label, region, 'char' if field == 0 else 'face')] = (
+                    not verdict['passed'] and not verdict['checks'][label + '_grid'])
+        broken = copy.deepcopy(gnu)
+        broken['snapshots'][label]['cursor'][1] ^= 1
+        verdict = compare_scenario(gnu, saved, broken, saved, layout)
+        controls[label + '_cursor'] = not verdict['passed'] and not verdict['checks'][label + '_cursor']
+        broken['snapshots'].pop(label)
+        controls[label + '_missing'] = not compare_scenario(gnu, saved, broken, saved, layout)['passed']
+    controls['saved_byte'] = not compare_scenario(gnu, saved, gnu, saved + b'!', layout)['passed']
+    for key in gnu['checks']:
+        broken = copy.deepcopy(gnu)
+        broken['checks'][key] = False
+        controls[key] = not compare_scenario(gnu, saved, broken, saved, layout)['passed']
+    return controls
+
+
+def run_scenario(args):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('redisplay_layout', args.lib / 'tools/redisplay-layout-parity.py')
+    layout = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(layout)
+    init = args.output / 'scenario-init.el'
+    init.write_text(SCENARIO_INIT)
+    target = args.output / 'scenario.fixture'
+    gnu, gnu_saved = scenario_capture(args, 'gnu', target, init, layout.Screen)
+    if args.host_reference:
+        checks = dict(gnu['checks'], saved_expected=gnu_saved == scenario_expected_bytes())
+        result = dict(case='scenario', reference='gnu', checks=checks)
+    else:
+        nelisp, nelisp_saved = scenario_capture(args, 'nelisp', target, init, layout.Screen)
+        result = compare_scenario(gnu, gnu_saved, nelisp, nelisp_saved, layout)
+        if all(gnu['checks'].values()) and gnu_saved == scenario_expected_bytes():
+            controls = scenario_verifier_controls(gnu, gnu_saved, layout)
+            result['verifier_controls'] = controls
+            result['checks']['verifier_controls'] = all(controls.values())
+    result['passed'] = all(result['checks'].values())
+    (args.output / 'scenario.json').write_text(json.dumps(result, ensure_ascii=False, indent=2) + '\n')
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True), flush=True)
+    print('nemacs-pty-smoke: %s (scenario)' % ('PASS' if result['passed'] else 'FAIL'))
+    return 0 if result['passed'] else 1
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--lib', type=Path, default=ROOT)
@@ -365,16 +596,21 @@ def main():
                         required='NELISP_BIN' not in os.environ)
     parser.add_argument('--image', type=Path)
     parser.add_argument('--output', type=Path, default=ROOT / 'build/nemacs-pty-smoke')
-    parser.add_argument('--timeout', type=float, default=20)
+    parser.add_argument('--timeout', type=float,
+                        help='Per-editor deadline (default: 20 seconds, 180 for scenario).')
     parser.add_argument('--host-reference', action='store_true')
     parser.add_argument('--emacs', default=os.environ.get('EMACS', 'emacs'))
-    parser.add_argument('--group', choices=['wait', 'launcher'])
+    parser.add_argument('--group', choices=['wait', 'launcher', 'scenario'])
     parser.add_argument('--diagnostic', action='store_true')
     parser.add_argument('--case', choices=['all', 'edit-save-quit', 'timers', 'sit-for', 'process-wait', 'idle-repeat', 'sleep-pending', 'accept-timer', 'read-event', 'launcher-no-emacs', 'launcher-stale'], default='all')
     args = parser.parse_args()
+    if args.timeout is None:
+        args.timeout = 180 if args.group == 'scenario' else 20
     args.lib, args.output = args.lib.resolve(), args.output.resolve()
     args.binary = str(Path(args.binary).resolve())
     args.output.mkdir(parents=True, exist_ok=True)
+    if args.group == 'scenario':
+        return run_scenario(args)
     image = args.image
     if args.host_reference:
         image = args.lib / 'unused-host-image'
@@ -387,7 +623,7 @@ def main():
     fixture.write_text(PROBES + (r'''
 (defalias 'nemacs-pty-original-message (symbol-function 'message))
 (defun message (format-string &rest args)
-  (nelisp--write-stdout-bytes (concat "\r\nPTY-MESSAGE|" (apply #'format format-string args) "\r\n"))
+  (nelisp--write-stdout-bytes (concat "\r\nPTY-MESSAGE|" (if format-string (apply #'format format-string args) "") "\r\n"))
   (apply #'nemacs-pty-original-message format-string args))
 ''' if args.diagnostic else ''))
     cases = ['edit-save-quit', 'timers', 'sit-for', 'process-wait', 'idle-repeat', 'sleep-pending', 'accept-timer', 'read-event', 'launcher-no-emacs', 'launcher-stale'] if args.case == 'all' else [args.case]

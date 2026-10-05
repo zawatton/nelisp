@@ -1466,5 +1466,19 @@
         (quit (setq caught t)))
       (should caught))))
 
+(ert-deftest emacs-minibuffer-s22-detached-window-preserves-layout ()
+  (let ((emacs-window--root nil) (emacs-window--selected nil)
+        (emacs-window--id-counter 0) (emacs-minibuffer--window nil))
+    (emacs-window-layout-frame 80 24 0)
+    (let* ((root (emacs-window-selected-window))
+           (mini (emacs-minibuffer--ensure-window)))
+      (should (= (emacs-window-window-height root) 23))
+      (should (equal (emacs-window-window-edges mini) '(0 23 80 24)))
+      (should (equal (emacs-window-window-list) (list root)))
+      (should (eq mini (emacs-minibuffer--ensure-window)))
+      (emacs-window-split-window root)
+      (should (= (length (emacs-window-window-list)) 2))
+      (should (= (emacs-window-window-height root) 12)))))
+
 (provide 'emacs-minibuffer-test)
 ;;; emacs-minibuffer-test.el ends here

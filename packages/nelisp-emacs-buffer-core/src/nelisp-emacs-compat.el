@@ -526,6 +526,14 @@ selected)."
   buf)
 
 ;;;###autoload
+(defun nelisp-ec-clear-current-buffer ()
+  "Deselect the compatibility buffer before a native-buffer handoff.
+Route through the local-cell swap engine, leaving the compatibility
+buffer live and its point intact.  This does not select or kill a native
+buffer.  Return nil."
+  (nelisp-ec--restore-current-buffer nil))
+
+;;;###autoload
 (defmacro nelisp-ec-with-current-buffer (buf &rest body)
   "Execute BODY with BUF as the current buffer, restoring afterwards.
 Equivalent shape to Emacs `with-current-buffer'.  BUF is evaluated

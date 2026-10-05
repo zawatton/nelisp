@@ -1243,7 +1243,18 @@ and `:message', the echo/status text."
     (,(string-to-char "\C-n") . next-line)
     (,(string-to-char "\C-p") . previous-line)
     (,(string-to-char "\C-d") . delete-char)
-    (,(string-to-char "\C-k") . kill-line))
+    (,(string-to-char "\C-k") . kill-line)
+    (,(string-to-char "\C-y") . yank)
+    (31 . undo)
+    (,(string-to-char "\C-s") . isearch-forward)
+    (,(string-to-char "\C-r") . isearch-backward)
+    (,(string-to-char "\C-v") . scroll-up)
+    (,(logior 134217728 ?v) . scroll-down)
+    (,(logior 134217728 ?f) . forward-word)
+    (,(logior 134217728 ?b) . backward-word)
+    (,(logior 134217728 ?<) . beginning-of-buffer)
+    (,(logior 134217728 ?>) . end-of-buffer)
+    (,(logior 134217728 ?%) . query-replace))
   "Frontend-neutral key bindings for basic editing and motion.")
 
 (defun emacs-command-loop--define-key (keymap key def &optional define-key-fn)
@@ -1725,7 +1736,15 @@ Return a plist describing the dispatch status."
          (inline-edit-commands (plist-get plist :inline-edit-commands))
          (direct-command-p (plist-get plist :direct-command-p))
          (source-event (plist-get plist :source-event)))
-    (cond
+    (when (memq kind '(self-insert command))
+      (emacs-command-loop-set-this-command binding)
+      (when (fboundp 'message) (message nil))
+      (when (boundp 'pre-command-hook) (run-hooks 'pre-command-hook))
+      (when (and (not (eq binding 'self-insert-command))
+                 (fboundp 'undo-boundary))
+        (undo-boundary)))
+    (prog1
+        (cond
      ((eq kind 'self-insert)
       (when set-prefix
         (funcall set-prefix []))
@@ -1832,7 +1851,11 @@ Return a plist describing the dispatch status."
       (list :status 'unbound
             :kind kind
             :binding binding
-            :plan plan)))))
+            :plan plan)))
+      (when (memq kind '(self-insert command))
+        (setq emacs-command-loop--last-command binding)
+        (when (boundp 'last-command) (setq last-command binding))
+        (when (boundp 'post-command-hook) (run-hooks 'post-command-hook))))))
 
 (defun emacs-command-loop-menu-action-command (action command-alist)
   "Return the command symbol mapped from menu ACTION.
@@ -2523,7 +2546,9 @@ the current command key accumulator in the same vector shape."
 (defun emacs-command-loop-set-this-command (cmd)
   "Set the command currently being dispatched to CMD."
   (setq emacs-command-loop--this-command      cmd
-        emacs-command-loop--real-this-command cmd))
+        emacs-command-loop--real-this-command cmd)
+  (when (boundp 'this-command) (setq this-command cmd))
+  (when (boundp 'real-this-command) (setq real-this-command cmd)))
 
 (defun emacs-command-loop-mark-command-finished ()
   "Promote `this-command' → `last-command' and clear the key buffer.

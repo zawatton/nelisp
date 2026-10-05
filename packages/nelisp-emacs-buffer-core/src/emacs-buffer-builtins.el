@@ -647,6 +647,8 @@ Reset the local keymap, syntax and case tables, and mode-line display.
          (local-variable-p          . emacs-buffer-local-variable-p)
          (default-value             . emacs-buffer-default-value)
          (default-boundp            . emacs-buffer-default-boundp)
+         ;; Public set-default must update the live cell as setq-default does.
+         ;; A table-only write leaves Custom :set callbacks' variables unbound.
          (set-default               . emacs-buffer-setq-default-1)
          (kill-local-variable       . emacs-buffer-kill-local-variable)
          (kill-all-local-variables  . emacs-buffer-builtins--kill-all-local-variables))))

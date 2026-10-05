@@ -379,6 +379,19 @@ Wraps around at the beginning."
    :total-cols  total-cols
    :total-lines total-lines))
 
+(defun emacs-window-create-minibuffer-window ()
+  "Create a detached one-line minibuffer below the ordinary window tree.
+The ordinary tree already excludes its reserved echo line.  A minibuffer
+must not split that tree or reduce editing windows a second time."
+  (emacs-window--ensure-root)
+  (let ((mini (emacs-window--make-leaf
+               nil (emacs-window-total-cols emacs-window--root) 1)))
+    (setf (emacs-window-top-line mini)
+          (+ (emacs-window-top-line emacs-window--root)
+             (emacs-window-total-lines emacs-window--root)))
+    (emacs-window-set-window-parameter mini 'minibuffer t)
+    mini))
+
 (defun emacs-window--split-sizes (total size new-side)
   "Compute (NEW-SIZE . OLD-SIZE) for splitting a window of TOTAL into two.
 
@@ -424,6 +437,10 @@ size of the *new* window."
                       (emacs-window-buffer win)
                       (if vertical (emacs-window-total-cols win) new-sz)
                       (if vertical new-sz (emacs-window-total-lines win)))))
+      ;; Both leaves initially show the same buffer position.  Redisplay can
+      ;; then recenter each at its own body height, including inactive leaves.
+      (setf (emacs-window-point new-leaf) (emacs-window-point win)
+            (emacs-window-start new-leaf) (emacs-window-start win))
       ;; resize the original
       (if vertical
           (setf (emacs-window-total-lines win) old-sz)
@@ -550,8 +567,20 @@ Errors with `emacs-window-only' if WINDOW is the sole window."
 The surviving window inherits the full root dimensions."
   (let* ((keep (or window (emacs-window-selected-window))))
     (emacs-window--check-leaf keep)
-    (let ((root-cols  (emacs-window-total-cols  emacs-window--root))
-          (root-lines (emacs-window-total-lines emacs-window--root)))
+    (let* ((root-cols (emacs-window-total-cols emacs-window--root))
+           (root-lines (emacs-window-total-lines emacs-window--root))
+           (offset (- (nth 1 (emacs-window-window-edges keep))
+                      (emacs-window-top-line emacs-window--root)))
+           (buffer (emacs-window-buffer keep))
+           (start (emacs-window-start keep)))
+      ;; Keep point at the same screen row when the surviving leaf expands.
+      (when (and buffer (> offset 0))
+        (setf (emacs-window-start keep)
+            (if (nelisp-ec-buffer-p buffer)
+                (emacs-window--line-offset buffer start (- offset))
+              (with-current-buffer buffer
+                (save-excursion
+                  (goto-char start) (forward-line (- offset)) (point))))))
       (dolist (w (emacs-window--all-leaves))
         (unless (eq w keep)
           (setf (emacs-window-deleted-p w) t)))
@@ -756,19 +785,23 @@ WINDOW (or its first sibling-donor) below its configured minimum."
                                               _keep-margins)
   "Set WINDOW to display BUFFER-OR-NAME.
 
-WINDOW may be nil = selected window.  BUFFER-OR-NAME must be a
-`nelisp-ec-buffer' for now (string lookup is best-effort by name)."
+WINDOW may be nil = selected window.  BUFFER-OR-NAME may be a live
+compatibility buffer, a native buffer, or the name of either."
   (let ((w (emacs-window-get-window window))
         (b (cond
             ((nelisp-ec-buffer-p buffer-or-name) buffer-or-name)
+            ((bufferp buffer-or-name) buffer-or-name)
             ((stringp buffer-or-name)
              (or (cdr (assoc buffer-or-name nelisp-ec--buffers))
+                 (get-buffer buffer-or-name)
                  (signal 'emacs-window-error
                          (list "no such buffer" buffer-or-name))))
             (t (signal 'wrong-type-argument
                        (list 'nelisp-ec-buffer-p buffer-or-name))))))
     (emacs-window--check-leaf w)
-    (nelisp-ec-check-live b)
+    (if (nelisp-ec-buffer-p b) (nelisp-ec-check-live b)
+      (unless (buffer-live-p b)
+        (signal 'wrong-type-argument (list 'buffer-live-p b))))
     (let ((old (emacs-window-buffer w)))
       (when (and (eq 't (cdr (assq 'ccore-dedicated
                                    (emacs-window-parameters w))))
@@ -794,7 +827,9 @@ WINDOW may be nil = selected window.  BUFFER-OR-NAME must be a
                (assq-delete-all old (emacs-window-window-prev-buffers w))))
         (emacs-window-set-window-next-buffers w nil)))
     (setf (emacs-window-buffer w) b
-          (emacs-window-point  w) (nelisp-ec-buffer-point b)
+          (emacs-window-point  w) (if (nelisp-ec-buffer-p b)
+                                     (nelisp-ec-buffer-point b)
+                                   (with-current-buffer b (point)))
           (emacs-window-start  w) 1)
     nil))
 

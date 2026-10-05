@@ -245,8 +245,13 @@ The result contains `:status', `:buffer', `:buffer-name',
       (unless (equal text trimmed)
         (emacs-special-buffers--replace-buffer-text buffer trimmed)))))
 
+(defvar emacs-special-buffers-echo-message nil
+  "Current interactive echo-area text; nil means the area is clear.")
+
 (defun emacs-special-buffers--set-echo-message (text)
   "Publish TEXT to known echo-area state holders."
+  (setq emacs-special-buffers-echo-message
+        (and text (> (length text) 0) text))
   (when (boundp 'nemacs-next-session-echo-message)
     (setq nemacs-next-session-echo-message (or text ""))))
 

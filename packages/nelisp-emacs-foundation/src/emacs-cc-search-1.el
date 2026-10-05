@@ -49,7 +49,10 @@ A snapshot contains the modification tick, accessible bounds and positions.")
 (when (fboundp 'nelisp--repr)
   (dolist (function '(forward-line line-beginning-position line-end-position
                      beginning-of-line end-of-line))
-    (advice-add function :after #'emacs-cc-search-1--start-newline-scan)))
+    (advice-add function :after #'emacs-cc-search-1--start-newline-scan)
+    ;; The advice bridge must retain the primitive's interactive contract.
+    (when (memq function '(beginning-of-line end-of-line))
+      (put function 'interactive-form '(interactive "^p")))))
 
 (unless (fboundp 'newline-cache-check)
   (defun newline-cache-check (&optional buffer)

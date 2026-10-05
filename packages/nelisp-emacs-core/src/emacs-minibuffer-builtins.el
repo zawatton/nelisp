@@ -383,6 +383,43 @@ The standalone substrate currently keeps this disabled by default."))
 The standalone substrate does not yet install the upstream navigation
 bindings here, but vendor code can safely compose this map."))
 
+(unless (fboundp 'add-to-history)
+(defun add-to-history (history-var newelt &optional maxelt keep-all)
+  "Add NEWELT to the history list stored in the variable HISTORY-VAR.
+Return the new history list.
+If MAXELT is non-nil, it specifies the maximum length of the history.
+Otherwise, the maximum history length is the value of the `history-length'
+property on symbol HISTORY-VAR, if set, or the value of the `history-length'
+variable.  The possible values of maximum length have the same meaning as
+the values of `history-length'.
+Remove duplicates of NEWELT if `history-delete-duplicates' is non-nil.
+If optional fourth arg KEEP-ALL is non-nil, add NEWELT to history even
+if it is empty or duplicates the most recent entry in the history.
+HISTORY-VAR cannot refer to a lexical variable."
+  (unless maxelt
+    (setq maxelt (or (get history-var 'history-length)
+		     history-length)))
+  (let ((history (symbol-value history-var))
+	tail)
+    (when (and (listp history)
+	       (or keep-all
+		   (not (stringp newelt))
+		   (> (length newelt) 0))
+	       (or keep-all
+		   (not (equal (car history) newelt))))
+      (if history-delete-duplicates
+	  (setq history (delete newelt history)))
+      (setq history (cons newelt history))
+      (when (integerp maxelt)
+        (if (>= 0 maxelt)
+	    (setq history nil)
+	  (setq tail (nthcdr (1- maxelt) history))
+	  (when (consp tail)
+            (setcdr tail nil))))
+      (set history-var history))))
+
+)
+
 (provide 'emacs-minibuffer-builtins)
 
 ;;; emacs-minibuffer-builtins.el ends here

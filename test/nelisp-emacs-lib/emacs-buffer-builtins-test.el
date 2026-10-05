@@ -66,7 +66,7 @@
       (insert-file-contents file)
       (dolist (needle '("(default-value             . emacs-buffer-default-value)"
                         "(default-boundp            . emacs-buffer-default-boundp)"
-                        "(set-default               . emacs-buffer-set-default)"
+                        "(set-default               . emacs-buffer-setq-default-1)"
                         "(buffer-local-value        . emacs-buffer-buffer-local-value)"
                         "(defun get-char-property"
                         "(defalias 'text-properties-at"

@@ -30,5 +30,29 @@
                    (emacs-redisplay--mode-line-format-to-string "%p" b))))
       (when (fboundp 'nelisp-ec-kill-buffer) (nelisp-ec-kill-buffer b)))))
 
+(ert-deftest emacs-redisplay-mode-line-test/s22-single-digit-percent ()
+  (with-temp-buffer
+    (insert (make-string 100 ?x))
+    (let ((emacs-window--root nil) (emacs-window--selected nil)
+          (emacs-window--id-counter 0))
+      (let* ((win (emacs-window-selected-window))
+             (emacs-redisplay--mode-line-window win)
+             (emacs-redisplay--mode-line-end 50))
+        (setf (emacs-window-buffer win) (current-buffer))
+        (emacs-window-set-window-start win 2)
+        (should (equal (emacs-redisplay--mode-line-format-to-string "%p" (current-buffer)) " 1%"))))))
+
+(ert-deftest emacs-redisplay-mode-line-test/s22-simple-format-keeps-face ()
+  (with-temp-buffer
+    (setq-local mode-line-format " %b ")
+    (let ((emacs-window--root nil) (emacs-window--selected nil)
+          (emacs-window--id-counter 0))
+      (let ((win (emacs-window-selected-window)))
+        (setf (emacs-window-buffer win) (current-buffer))
+        (let ((spans (emacs-redisplay-mode-line-spans win 80 (point-max))))
+          (should (equal (mapconcat #'car spans "")
+                         (concat " " (buffer-name) " ")))
+          (should (equal (cdar spans) (emacs-redisplay-realize-face 'mode-line))))))))
+
 (provide 'emacs-redisplay-mode-line-test)
 ;;; emacs-redisplay-mode-line-test.el ends here

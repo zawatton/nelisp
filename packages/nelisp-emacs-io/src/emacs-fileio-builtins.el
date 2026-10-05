@@ -697,6 +697,154 @@ of a primitive's name."
 
 ;; insert-file-contents batched into the dolist near the top.
 
+;; GNU-compatible wildcard expansion, adapted from GNU Emacs 31.1 files.el
+;; (Free Software Foundation, GPL-3.0-or-later). Keep this in the shared IO
+;; owner: real init load-path setup uses globbed ELPA package directories.
+(defun emacs-fileio-wildcard-to-regexp (wildcard)
+  "Given a shell file name pattern WILDCARD, return an equivalent regexp.
+The generated regexp will match a file name only if the file name
+matches that wildcard according to shell rules.  Only wildcards known
+by `sh' are supported."
+  (let* ((i (string-match "[[.*+\\^$?]" wildcard))
+	 ;; Copy the initial run of non-special characters.
+	 (result (substring wildcard 0 i))
+	 (len (length wildcard)))
+    ;; If no special characters, we're almost done.
+    (if i
+	(while (< i len)
+	  (let ((ch (aref wildcard i))
+		j)
+	    (setq
+	     result
+	     (concat result
+		     (cond
+		      ((and (eq ch ?\[)
+			    (< (1+ i) len)
+			    (eq (aref wildcard (1+ i)) ?\]))
+		       "\\[")
+		      ((eq ch ?\[)	; [...] maps to regexp char class
+		       (progn
+			 (setq i (1+ i))
+			 (concat
+			  (cond
+			   ((eq (aref wildcard i) ?!) ; [!...] -> [^...]
+			    (progn
+			      (setq i (1+ i))
+			      (if (eq (aref wildcard i) ?\])
+				  (progn
+				    (setq i (1+ i))
+				    "[^]")
+				"[^")))
+			   ((eq (aref wildcard i) ?^)
+			    ;; Found "[^".  Insert a `\0' character
+			    ;; (which cannot happen in a filename)
+			    ;; into the character class, so that `^'
+			    ;; is not the first character after `[',
+			    ;; and thus non-special in a regexp.
+			    (progn
+			      (setq i (1+ i))
+			      "[\000^"))
+			   ((eq (aref wildcard i) ?\])
+			    ;; I don't think `]' can appear in a
+			    ;; character class in a wildcard, but
+			    ;; let's be general here.
+			    (progn
+			      (setq i (1+ i))
+			      "[]"))
+			   (t "["))
+			  (prog1	; copy everything up to next `]'.
+			      (substring wildcard
+					 i
+					 (setq j (string-search
+						  "]" wildcard i)))
+			    (setq i (if j (1- j) (1- len)))))))
+		      ((eq ch ?.)  "\\.")
+		      ((eq ch ?*)  "[^\000]*")
+		      ((eq ch ?+)  "\\+")
+		      ((eq ch ?^)  "\\^")
+		      ((eq ch ?$)  "\\$")
+		      ((eq ch ?\\) "\\\\") ; probably cannot happen...
+		      ((eq ch ??)  "[^\000]")
+		      (t (char-to-string ch)))))
+	    (setq i (1+ i)))))
+    ;; Shell wildcards should match the entire filename,
+    ;; not its part.  Make the regexp say so.
+    (concat "\\`" result "\\'")))
+
+(defun emacs-fileio-expand-wildcards (pattern &optional full regexp)
+  "Expand (a.k.a. \"glob\") file-name wildcard pattern PATTERN.
+This returns a list of file names that match PATTERN.
+The returned list of file names is sorted in the `string<' order.
+
+PATTERN is, by default, a \"glob\"/wildcard string, e.g.,
+\"/tmp/*.png\" or \"/*/*/foo.png\", but can also be a regular
+expression if the optional REGEXP parameter is non-nil.  In any
+case, the matches are applied per sub-directory, so a match can't
+span a parent/sub directory, which means that a regexp bit can't
+contain the \"/\" character.
+
+The returned list of file names is sorted in the `string<' order.
+
+If PATTERN is written as an absolute file name, the expansions in
+the returned list are also absolute.
+
+If PATTERN is written as a relative file name, it is interpreted
+relative to the current `default-directory'.
+The file names returned are normally also relative to the current
+default directory.  However, if FULL is non-nil, they are absolute."
+  (save-match-data
+    (let* ((nondir (file-name-nondirectory pattern))
+	   (dirpart (file-name-directory pattern))
+	   ;; A list of all dirs that DIRPART specifies.
+	   ;; This can be more than one dir
+	   ;; if DIRPART contains wildcards.
+	   (dirs (if (and dirpart
+			  (string-match "[[*?]" (file-local-name dirpart)))
+		     (mapcar #'file-name-as-directory
+			     (emacs-fileio-expand-wildcards
+                              (directory-file-name dirpart) nil regexp))
+		   (list dirpart)))
+	   contents)
+      (dolist (dir (nreverse dirs))
+	(when (or (null dir)	; Possible if DIRPART is not wild.
+          (file-accessible-directory-p (expand-file-name dir)))
+          (if (equal "" nondir)
+              ;; `nondir' is "" when the pattern ends in "/".  Basically ""
+              ;; refers to the directory itself, like ".", but it's not
+              ;; among the names returned by `directory-files', so we have
+              ;; to special-case it.
+              (push (or dir nondir) contents)
+	    (let ((this-dir-contents
+		   ;; Filter out "." and ".."
+		   (delq nil
+                         (mapcar (lambda (name)
+                                   (unless (string-match "\\`\\.\\.?\\'"
+                                                         (file-name-nondirectory
+                                                          name))
+                                     name))
+			         (directory-files
+                                  (expand-file-name (or dir ".")) full
+                                  (if regexp
+                                      ;; We're matching each file name
+                                      ;; element separately.
+                                      (concat "\\`" nondir "\\'")
+				   (emacs-fileio-wildcard-to-regexp nondir)))))))
+	      (setq contents
+		    (nconc
+		     (if (and dir (not full))
+			 (mapcar (lambda (name) (concat dir name))
+			         this-dir-contents)
+		       this-dir-contents)
+		     contents))))))
+      ;; The standalone directory primitive can return raw readdir order.
+      ;; Glob results have their own documented ordering contract.
+      (sort contents #'string-lessp))))
+
+(unless (fboundp 'wildcard-to-regexp)
+  (defalias 'wildcard-to-regexp #'emacs-fileio-wildcard-to-regexp))
+(unless (fboundp 'file-expand-wildcards)
+  (defalias 'file-expand-wildcards #'emacs-fileio-expand-wildcards))
+
 (defun emacs-fileio-builtins-load-file (file)
   "Load exactly FILE, propagating read and evaluation errors."
   (unless (stringp file)
@@ -1371,7 +1519,27 @@ shapes leave leading `~/' paths literal instead of expanding `$HOME'."
   "Visit PATH using direct NeLisp buffers and return the buffer.
 This path is intended for frontends that need a small file visit surface
 before the full interactive file I/O runtime is available."
-  (let* ((abs (emacs-fileio--expand-direct-path path))
+  (if (fboundp 'nelisp-buffer-p)
+      (let* ((abs (emacs-fileio--expand-direct-path path))
+             (existing (get-file-buffer abs))
+             (buffer (or existing
+                         (generate-new-buffer
+                          (emacs-fileio-buffer-name-for-file abs)))))
+        (nelisp-ec-clear-current-buffer)
+        (set-buffer buffer)
+        (unless existing
+          (let ((buffer-undo-list t)
+                (text (emacs-fileio-read-file-text-direct abs)))
+            (when text (insert text)))
+          (goto-char (point-min))
+          (setq buffer-file-name abs
+                buffer-file-coding-system 'utf-8-unix)
+          (buffer-enable-undo)
+          (setq buffer-undo-list nil)
+          (set-buffer-modified-p nil))
+        (emacs-fileio-record-buffer-file buffer abs)
+        buffer)
+    (let* ((abs (emacs-fileio--expand-direct-path path))
          (existing nil))
     (when (boundp 'emacs-fileio--buffer-files)
       (catch 'found
@@ -1391,6 +1559,11 @@ before the full interactive file I/O runtime is available."
           (let ((text (emacs-fileio-read-file-text-direct abs)))
             (when (stringp text)
               (emacs-fileio--replace-direct-buffer-text buffer text)))
+          ;; File insertion leaves point at EOF.  A new visit starts at BOB,
+          ;; with no undo history for the initial disk contents.
+          (nelisp-ec-goto-char 1)
+          (when (fboundp 'buffer-enable-undo) (buffer-enable-undo))
+          (when (boundp 'buffer-undo-list) (setq buffer-undo-list nil))
           (cond
            ((fboundp 'nelisp-ec-clear-buffer-modified-flag)
             (nelisp-ec-clear-buffer-modified-flag buffer))
@@ -1401,7 +1574,7 @@ before the full interactive file I/O runtime is available."
       (emacs-fileio-record-buffer-file buffer abs)
       (when (fboundp 'nelisp-ec-set-buffer)
         (nelisp-ec-set-buffer buffer))
-      buffer)))
+      buffer))))
 
 (defun emacs-fileio-save-buffer-direct (&rest plist)
   "Save a buffer to its visited file and return the path.
@@ -1428,8 +1601,7 @@ PLIST accepts:
     (funcall write-function path (funcall string-function buffer))
     (if (and (fboundp 'bufferp) (bufferp buffer))
         (with-current-buffer buffer (set-buffer-modified-p nil))
-      (when (and (fboundp 'nelisp-ec-buffer-p) (nelisp-ec-buffer-p buffer)
-                 (fboundp 'emacs-buffer-set-buffer-modified-p))
+      (when (fboundp 'emacs-buffer-set-buffer-modified-p)
         (emacs-buffer-set-buffer-modified-p nil buffer)))
     path))
 

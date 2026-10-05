@@ -421,6 +421,37 @@ TEST defaults to `equal'."
           (push cell out)))
       (nreverse out))))
 
+;;;; --- symbol-backed history lists ---------------------------------------
+
+(defvar history-length 100
+  "Default maximum length of symbol-backed history lists; t means unlimited.")
+(defvar history-delete-duplicates nil
+  "Non-nil means adding a history element removes its older duplicates.")
+
+(defun emacs-list-add-to-history (history-var newelt &optional maxelt keep-all)
+  "Add NEWELT to HISTORY-VAR, respecting GNU subr.el history list policy.
+MAXELT overrides the symbol's `history-length' property and `history-length'.
+KEEP-ALL permits empty strings and consecutive duplicates. This operates on
+symbol value cells and has no dependency on a minibuffer or command loop."
+  (unless maxelt
+    (setq maxelt (or (get history-var 'history-length) history-length)))
+  (let ((history (symbol-value history-var)) tail)
+    (when (and (listp history)
+               (or keep-all (not (stringp newelt)) (> (length newelt) 0))
+               (or keep-all (not (equal (car history) newelt))))
+      (when history-delete-duplicates
+        (setq history (delete newelt history)))
+      (setq history (cons newelt history))
+      (when (integerp maxelt)
+        (if (>= 0 maxelt)
+            (setq history nil)
+          (setq tail (nthcdr (1- maxelt) history))
+          (when (consp tail) (setcdr tail nil))))
+      (set history-var history))))
+
+(unless (fboundp 'add-to-history)
+  (defalias 'add-to-history #'emacs-list-add-to-history))
+
 (provide 'emacs-list)
 
 ;;; emacs-list.el ends here

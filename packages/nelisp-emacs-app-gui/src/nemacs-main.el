@@ -175,21 +175,34 @@ can run without a host Emacs."
     (nelisp-ec-generate-new-buffer "*scratch*"))
   nemacs-main--redisplay)
 
+(defvar nemacs-main--tui-heap-prepared-p nil
+  "Non-nil after bootstrap temporaries have been collected for the TUI.")
+
+(defun nemacs-main--prepare-tui-features ()
+  "Preload shared TUI libraries without creating terminal state.
+Safe to bake in a runtime image; terminal handles must be created in the
+process that owns the live terminal.  Pure keymaps can be retained."
+  (unless nemacs-main--tui-features-loaded-p
+    (cond
+     ((fboundp 'emacs-init-load-tui-core-features)
+      (emacs-init-load-tui-core-features))
+     ((fboundp 'emacs-init-load-editor-features)
+      (emacs-init-load-editor-features))))
+  (setq nemacs-main--tui-features-loaded-p t)
+  (when (and (fboundp 'nelisp--repr) (not nemacs-main--tui-heap-prepared-p))
+    ;; Keep the first collection out of timer, key-wait and process callbacks.
+    (garbage-collect)
+    (setq nemacs-main--tui-heap-prepared-p t)))
+
 (defun nemacs-main--prepare-tui-state ()
   "Ensure the pure-Elisp TUI state objects exist and return redisplay.
-This performs only in-memory setup: backend handle, default frame,
-redisplay handle, and event parser handle.  It is safe to call while
-baking an interactive NeLisp runtime image, before runtime-specific TTY
-state such as raw mode or terminal resize has been touched."
+This creates the current process's backend, frame, redisplay and event
+parser handles after image restore.  Image builders may warm constructors
+but must release terminal state before dumping.  The
+restored process then creates its own live terminal handles."
   (if (nemacs-main--standalone-batch-tui-fallback-p)
       (nemacs-main--prepare-standalone-batch-tui-state)
-    (when (not nemacs-main--tui-features-loaded-p)
-      (cond
-       ((fboundp 'emacs-init-load-tui-core-features)
-        (emacs-init-load-tui-core-features))
-       ((fboundp 'emacs-init-load-editor-features)
-        (emacs-init-load-editor-features))))
-    (setq nemacs-main--tui-features-loaded-p t)
+    (nemacs-main--prepare-tui-features)
     (nemacs-main--ensure-keymap-after-feature-load)
     (if (and nemacs-main--tui-state-prepared-p
              nemacs-main--backend
@@ -221,6 +234,15 @@ state such as raw mode or terminal resize has been touched."
                 emacs-command-loop-input-pending-function
                 (lambda ()
                   (emacs-tui-event-pending-event-p nemacs-main--event-handle))))
+        ;; Adapt shared minibuffer readers to this terminal's input/output.
+        ;; Search/replace semantics remain in their reusable library owners.
+        (setq emacs-minibuffer--read-fn
+              (lambda (prompt initial _default _hist _keymap _read)
+                (nemacs-main--read-line-blocking prompt initial))
+              emacs-minibuffer--key-fn
+              (lambda (prompt)
+                (nemacs-main--read-line-repaint (or prompt "") "")
+                (read-event)))
         (setq nemacs-main--tui-state-prepared-p t)
         nemacs-main--redisplay))))
 
@@ -283,16 +305,26 @@ isn't available (= test fixtures, host driver in batch mode)."
   (when (and nemacs-main--backend nemacs-main--frame
              (fboundp 'emacs-tui-backend-frame-resize))
     (condition-case _
-        (when (fboundp 'terminal-current-winsize)
-          (let ((sz (terminal-current-winsize)))
+        (when (or (nemacs-main-option :terminal-size)
+                  (fboundp 'terminal-current-winsize))
+          (let* ((live (nemacs-main-option :terminal-size))
+                 (sz (if live (cons (car live) (cadr live))
+                       (terminal-current-winsize))))
             (when (and sz (consp sz)
                        (integerp (car sz)) (integerp (cdr sz))
                        (> (car sz) 0) (> (cdr sz) 0))
               (emacs-tui-backend-frame-resize nemacs-main--backend
                                               nemacs-main--frame
                                               (car sz) (cdr sz))
+              (emacs-window-layout-frame (car sz) (cdr sz) 0)
               (nemacs-main--mark-tui-frame-clean))))
       (error nil)))
+  ;; Cached terminal bookkeeping can omit the native winsize query.  The
+  ;; backend still has valid dimensions; always lay out the shared tree.
+  (when (and nemacs-main--frame (fboundp 'emacs-window-layout-frame))
+    (emacs-window-layout-frame
+     (emacs-tui-backend-frame-width nemacs-main--frame)
+     (emacs-tui-backend-frame-height nemacs-main--frame) 0))
   (when (and nemacs-main--backend
              (fboundp 'emacs-tui-backend-enter-alt-screen))
     (condition-case _
@@ -813,12 +845,9 @@ Return non-nil when the selected window's buffer changed."
              (fboundp 'emacs-window-set-window-buffer)
              (or buffer (fboundp 'nelisp-ec-current-buffer)))
     (let* ((w (emacs-window-selected-window))
-           (cb (or buffer (nelisp-ec-current-buffer)))
+           (cb (or buffer (nelisp-ec-current-buffer) (current-buffer)))
            (wb (and w (emacs-window-window-buffer w))))
-      (when (and w cb
-                 (or (not (fboundp 'nelisp-ec-buffer-p))
-                     (nelisp-ec-buffer-p cb))
-                 (not (eq wb cb)))
+      (when (and w cb (not (eq wb cb)))
         (emacs-window-set-window-buffer w cb))
       (when (and cb
                  (fboundp 'nelisp-ec-set-buffer)
@@ -899,10 +928,11 @@ printable-byte fast path."
              (or known-point (fboundp 'nelisp-ec-point)))
     (let* ((w (emacs-window-selected-window))
            (wb (and w (emacs-window-window-buffer w)))
-           (cb (nelisp-ec-current-buffer)))
+           (cb (or (nelisp-ec-current-buffer) (current-buffer))))
       (when (and w cb (eq wb cb))
-        (emacs-window-set-window-point w (or known-point
-                                             (nelisp-ec-point)))))))
+        (emacs-window-set-window-point
+         w (or known-point (if (nelisp-ec-current-buffer)
+                               (nelisp-ec-point) (point))))))))
 
 (defun nemacs-main--handle-winsize ()
   "Doc 51 Track P — react to a pending SIGWINCH.
@@ -1022,7 +1052,7 @@ handle."
         (emacs-tui-backend-emit out)
       (princ out))))
 
-(defun nemacs-main--read-line-blocking (prompt)
+(defun nemacs-main--read-line-blocking (prompt &optional initial)
   "Doc 51 Track C (2026-05-04) — block-read a line via TUI canvas.
 
 Paints PROMPT at the bottom row of `nemacs-main--frame', echoes
@@ -1038,8 +1068,8 @@ Used by `nemacs-main-find-file-interactive'."
            (not noninteractive)
            (fboundp 'read-string))
       (let ((overriding-terminal-local-map nil))
-        (read-string prompt))
-    (let ((input  "")
+        (read-string prompt initial))
+    (let ((input (or initial ""))
           (done   nil)
           (cancel nil))
       (nemacs-main--read-line-repaint prompt input)
@@ -1108,7 +1138,8 @@ Used by `nemacs-main-find-file-interactive'."
               (fboundp 'current-buffer)
               (current-buffer))
          (and (fboundp 'nelisp-ec-current-buffer)
-              (nelisp-ec-current-buffer))))
+              (nelisp-ec-current-buffer))
+         (current-buffer)))
    :file-function #'emacs-fileio-buffer-file-direct
    :message-function #'message))
 
@@ -1666,12 +1697,11 @@ Returns non-nil when a repaint was attempted.  The event loop calls
   does not continuously rebuild and flush the canvas."
   (when (and nemacs-main--redisplay nemacs-main--frame)
     (cond
-     ;; Standalone NeLisp uses the lightweight core before full
-     ;; redisplay is loaded.  The full row-cache rebuild is still too
-     ;; expensive for per-key repaint, so keep the daily-driver path on
-     ;; the direct selected-window painter.
+     ;; A core handle keeps the standalone painter even when the full
+     ;; formatter library is loaded.  Shared rendering visits every leaf
+     ;; without building the full engine's glyph matrix per input burst.
      ((and (fboundp 'emacs-redisplay-core-repaint)
-           (not (featurep 'emacs-redisplay)))
+           (consp nemacs-main--redisplay))
 	      (unwind-protect
 	          (condition-case _
 	              (if (and (or (eq nemacs-main--repaint-hint 'current-line)
@@ -1718,6 +1748,8 @@ Returns non-nil when a repaint was attempted.  The event loop calls
       (when (fboundp 'emacs-redisplay-flush-frame)
         (condition-case _
             (emacs-redisplay-flush-frame nemacs-main--redisplay
+                                         nemacs-main--frame)
+            (emacs-redisplay-set-cursor nemacs-main--redisplay
                                          nemacs-main--frame)
           (error nil)))))
     t))
