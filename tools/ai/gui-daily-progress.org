@@ -17,6 +17,8 @@ change to the criteria list is recorded in a NOTE.
 
 #+NOTE: 2026-10-05 S1.4 wired to tools/nemacs-pty-smoke.py (lane S1a): the standalone runtime starts from the heap image in tty mode on a python pty at 80x24, opens a temp file with C-x C-f, types two lines, saves, quits; asserts exact file contents, exit 0, restored termios/alternate screen; plus timer/idle-timer and sit-for cases.  S1.1 stays pending: timers and sit-for work, process output during the wait is not yet covered.
 
+#+NOTE: 2026-10-05 runtime nelisp-gui1 (sha256 7ffa22d5...; lane R1 exit_group fix, RT commit after a363948b): exit smoke 10/10, pty smoke 3/3, image start 0.8 s; C-core parity on gui1: one run had a GNU host segfault (exit 139, in the other area near time-convert/malloc-info, a host-side crash), the area alone matched 1151/1151, then two consecutive full runs 7/7.
+
 * S1 Shared interactive foundation
 
 ** S1.1 One event wait drives read-event: keys, timers, idle timers and process output (sit-for, sleep-for, input-pending-p behave as GNU)
