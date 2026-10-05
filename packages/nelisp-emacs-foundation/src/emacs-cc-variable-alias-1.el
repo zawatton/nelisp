@@ -38,7 +38,14 @@
   (let ((nelisp--alias-raw-set (symbol-function 'set))
         (nelisp--alias-raw-symbol-value (symbol-function 'symbol-value))
         (nelisp--alias-raw-boundp (symbol-function 'boundp))
-        (nelisp--alias-raw-makunbound (symbol-function 'makunbound)))
+        (nelisp--alias-raw-makunbound (symbol-function 'makunbound))
+        ;; Canonical-cache keys are proper symbol lists, a shape supported
+        ;; by the native comparator.  The general compatibility `equal'
+        ;; walks conses in the interpreter to add vector/marker semantics.
+        (nelisp--alias-name-equal
+         (symbol-function (if (fboundp 'nelisp--native-equal)
+                              'nelisp--native-equal 'equal)))
+        (nelisp--alias-values-cache nil))
     (defun nelisp--alias-canonical (symbol)
       (let ((seen nil) (next symbol))
         (while (and (symbolp next)
@@ -48,7 +55,8 @@
           (setq seen (cons next seen) next (cdr symbol)))
         next))
     (defun set (symbol value)
-      (let ((target (nelisp--alias-canonical symbol)))
+      (let ((target (if (assq symbol nelisp--defvaralias-registry)
+                        (nelisp--alias-canonical symbol) symbol)))
         (funcall nelisp--alias-raw-set target value)
         (when nelisp--defvaralias-reverse
           (let ((emacs-parity-misc--inhibit-watchers t))
@@ -57,10 +65,51 @@
         value))
     (defun symbol-value (symbol)
       (funcall nelisp--alias-raw-symbol-value
-               (nelisp--alias-canonical symbol)))
+               (if (assq symbol nelisp--defvaralias-registry)
+                   (nelisp--alias-canonical symbol) symbol)))
     (defun boundp (symbol)
       (funcall nelisp--alias-raw-boundp
-               (nelisp--alias-canonical symbol)))
+               (if (assq symbol nelisp--defvaralias-registry)
+                   (nelisp--alias-canonical symbol) symbol)))
+    (defun emacs-variable-alias-values (symbols unbound)
+      "Snapshot SYMBOLS' live values in order, using UNBOUND for void cells.
+Resolve aliases through this provider and respect dynamic bindings.  Cache
+only canonical names, never values.  Native mapping reads ordinary bound
+cells without an interpreted accessor frame for every symbol."
+      (let ((entries nelisp--alias-values-cache) entry targets)
+        (while (and entries (not entry))
+          (when (and (eq nelisp--defvaralias-registry (aref (car entries) 1))
+                     (funcall nelisp--alias-name-equal symbols (aref (car entries) 0)))
+            (setq entry (car entries)))
+          (setq entries (cdr entries)))
+        (unless entry
+          (setq targets
+                (mapcar (lambda (symbol)
+                          (unless (symbolp symbol)
+                            (signal 'wrong-type-argument (list 'symbolp symbol)))
+                          (if (assq symbol nelisp--defvaralias-registry)
+                              (nelisp--alias-canonical symbol) symbol)) symbols)
+                entry (vector (copy-sequence symbols)
+                              nelisp--defvaralias-registry targets)
+                nelisp--alias-values-cache
+                (cons entry (when nelisp--alias-values-cache
+                              (list (car nelisp--alias-values-cache))))))
+        (setq targets (aref entry 2))
+        (let ((flags (mapcar nelisp--alias-raw-boundp targets)))
+          (if (not (memq nil flags))
+              (apply #'vector (mapcar nelisp--alias-raw-symbol-value targets))
+            ;; Mixed bound/void sets are normal during library bootstrap.
+            ;; Avoid signalling once per switch just to discover a void cell.
+            ;; The native pass already queried every cell's bound status.
+            (let ((values (apply #'vector flags)) (index 0) symbol)
+              (while targets
+                (setq symbol (car targets))
+                (aset values index
+                      (if (aref values index)
+                          (funcall nelisp--alias-raw-symbol-value symbol)
+                        unbound))
+                (setq targets (cdr targets) index (1+ index)))
+              values)))))
     (defun makunbound (symbol)
       (let* ((entry (assq symbol nelisp--defvaralias-registry))
              (target (if entry symbol (nelisp--alias-canonical symbol))))
@@ -111,7 +160,8 @@
           (emacs-parity-misc--watcher-flag))
         base-variable))
     (defun nelisp--alias-rebuild-reverse ()
-        (setq nelisp--defvaralias-reverse nil)
+        (setq nelisp--alias-values-cache nil
+              nelisp--defvaralias-reverse nil)
         (dolist (entry nelisp--defvaralias-registry)
           (let* ((canonical (nelisp--alias-canonical (car entry)))
                  (group (assq canonical nelisp--defvaralias-reverse)))
