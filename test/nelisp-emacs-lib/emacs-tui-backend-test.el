@@ -598,6 +598,19 @@ positioned at the run start (1-based)."
 
 ;;; Track X (2026-05-04) — alt-screen takeover
 
+(ert-deftest emacs-tui-backend-test-exit-hook-restores-alt-screen ()
+  (let ((kill-emacs-hook nil)
+        (emacs-tui-backend--alt-screen-handles nil))
+    (emacs-tui-backend-test--with-capture
+      (let ((handle (emacs-tui-backend-init)))
+        (emacs-tui-backend-enter-alt-screen handle)
+        (setq emacs-tui-backend-test--captured "")
+        (run-hooks 'kill-emacs-hook)
+        (should-not (emacs-tui-backend-handle-alt-screen-p handle))
+        (should (string-suffix-p "\e[?1049l" emacs-tui-backend-test--captured))
+        (should-not emacs-tui-backend--alt-screen-handles)
+        (should-not kill-emacs-hook)))))
+
 (ert-deftest emacs-tui-backend-test-enter-alt-screen-emits-sequence ()
   "enter-alt-screen emits `\\e[?1049h' + clear + cursor-home in order."
   (emacs-tui-backend-test--with-capture

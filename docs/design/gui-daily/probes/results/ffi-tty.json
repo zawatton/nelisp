@@ -1,0 +1,16 @@
+{
+  "command": [
+    "/home/madblack-21/Cowork/Notes/dev/nelisp-emacs-lib/.worktrees/ccore-runtime-20261002/target/nelisp-ccore-final",
+    "--cold-load-from",
+    "/home/madblack-21/Cowork/Notes/dev/nelisp-emacs-lib/.worktrees/ccore-resume-20261002/build/c-core-image/4062311c8d9f4e182a0c758d19d53ebdecaa57e67b92208db8f3afc1966d1d19.flat",
+    "--load",
+    "/home/madblack-21/Cowork/Notes/dev/nelisp-emacs-lib/.worktrees/lane-g1/probes/ffi.el"
+  ],
+  "rc": 0,
+  "seconds": 11.084467302003759,
+  "binary_sha256": "2bf3128d186f87f04a07403fb97d8aa723b327e55b317d117634daa31e13642c",
+  "image": "/home/madblack-21/Cowork/Notes/dev/nelisp-emacs-lib/.worktrees/ccore-resume-20261002/build/c-core-image/4062311c8d9f4e182a0c758d19d53ebdecaa57e67b92208db8f3afc1966d1d19.flat",
+  "image_identity": "4062311c8d9f4e182a0c758d19d53ebdecaa57e67b92208db8f3afc1966d1d19",
+  "display": null,
+  "ffi_source_sha256": "46b8248353575d3a83d26431e5e33097f290f69a2a8edde49dcd5d60051028b0"
+}

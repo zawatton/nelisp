@@ -1,0 +1,7 @@
+nelisp: uncaught error: in /home/madblack-21/Cowork/Notes/dev/nelisp-emacs-lib/.worktrees/lane-g1/probes/xcb.el, top-level form #5 (byte 269, line 5): error: ("nl-ffi-memory: expected a byte string, got nil")
+backtrace (innermost first):
+  4: error
+  3: unless
+  2: nl-ffi-memory-cstring
+  1: let*
+  0: let*

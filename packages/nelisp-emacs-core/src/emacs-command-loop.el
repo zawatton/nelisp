@@ -1227,6 +1227,9 @@ and `:message', the echo/status text."
 
 (defconst emacs-command-loop-basic-edit-key-bindings
   `((13 . newline)
+    (return . newline)
+    (10 . newline)
+    (linefeed . newline)
     (backspace . delete-backward-char)
     (127 . delete-backward-char)
     (left . backward-char)
@@ -2252,6 +2255,43 @@ is empty, to obtain a live input event (Doc 06 A1: bridges TUI stdin into the
 standard command loop).  Called with one argument TIMEOUT-MS (nil = non-blocking
 poll) and must return an Emacs event (a character or a key symbol) or nil.  The
 TUI runtime (`nemacs-main') sets this to poll the `emacs-tui-event' handle.")
+
+(defvar emacs-command-loop-input-pending-function nil
+  "Optional zero-argument input provider query, which must not consume input.
+Frontends install this alongside `emacs-command-loop-input-poll-function'.")
+
+(defun emacs-command-loop-input-pending-p (&optional check-timers)
+  "Return non-nil when queued or live input is pending without consuming it.
+When CHECK-TIMERS is non-nil, service due library timers before the query."
+  (when (and check-timers (fboundp 'emacs-timer-run-pending))
+    (emacs-timer-run-pending))
+  (and (or (emacs-command-loop-pending-p)
+           (and (boundp 'unread-input-method-events)
+                unread-input-method-events)
+           (and emacs-command-loop-input-pending-function
+                (funcall emacs-command-loop-input-pending-function)))
+       t))
+
+(defun emacs-command-loop-sit-for (seconds &optional nodisp)
+  "Wait SECONDS, servicing timers and stopping when input is pending.
+Return t on timeout, nil on input.  Pending input stays with its provider
+so the next command sees the key that interrupted this wait."
+  (unless (numberp seconds)
+    (signal 'wrong-type-argument (list 'numberp seconds)))
+  (unless nodisp
+    (when (fboundp 'redisplay) (redisplay)))
+  (let* ((start (float-time))
+         (deadline (+ start (max 0 seconds)))
+         (pending (emacs-command-loop-input-pending-p t)))
+    (while (and (not pending) (< (float-time) deadline))
+      ;; sleep-for services the standalone runtime's regular timer queue;
+      ;; the library's own timer queues also need explicit pumping here.
+      (sleep-for (min 0.01 (max 0 (- deadline (float-time)))))
+      (when (fboundp 'emacs-timer-run-pending) (emacs-timer-run-pending))
+      (when (fboundp 'emacs-timer-run-idle)
+        (emacs-timer-run-idle (- (float-time) start)))
+      (setq pending (emacs-command-loop-input-pending-p)))
+    (not pending)))
 
 (defvar emacs-command-loop--post-input-event-p nil)
 (defvar unread-post-input-method-events nil)

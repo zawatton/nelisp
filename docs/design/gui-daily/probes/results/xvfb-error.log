@@ -1,0 +1,102 @@
+_XSERVTransSocketCreateListener: failed to bind listener
+_XSERVTransSocketUNIXCreateListener: ...SocketCreateListener() failed
+_XSERVTransMakeAllCOTSServerListeners: failed to create listener for local
+_XSERVTransmkdir: Owner of /tmp/.X11-unix should be set to root
+_XSERVTransSocketCreateListener: failed to bind listener
+_XSERVTransSocketUNIXCreateListener: ...SocketCreateListener() failed
+_XSERVTransMakeAllCOTSServerListeners: failed to create listener for unix
+(EE) 
+Fatal server error:
+(EE) Cannot establish any listening sockets - Make sure an X server isn't already running(EE) 
+_XSERVTransSocketCreateListener: failed to bind listener
+_XSERVTransSocketUNIXCreateListener: ...SocketCreateListener() failed
+_XSERVTransMakeAllCOTSServerListeners: failed to create listener for local
+_XSERVTransmkdir: Owner of /tmp/.X11-unix should be set to root
+_XSERVTransSocketCreateListener: failed to bind listener
+_XSERVTransSocketUNIXCreateListener: ...SocketCreateListener() failed
+_XSERVTransMakeAllCOTSServerListeners: failed to create listener for unix
+(EE) 
+Fatal server error:
+(EE) Cannot establish any listening sockets - Make sure an X server isn't already running(EE) 
+_XSERVTransSocketCreateListener: failed to bind listener
+_XSERVTransSocketUNIXCreateListener: ...SocketCreateListener() failed
+_XSERVTransMakeAllCOTSServerListeners: failed to create listener for local
+_XSERVTransmkdir: Owner of /tmp/.X11-unix should be set to root
+_XSERVTransSocketCreateListener: failed to bind listener
+_XSERVTransSocketUNIXCreateListener: ...SocketCreateListener() failed
+_XSERVTransMakeAllCOTSServerListeners: failed to create listener for unix
+(EE) 
+Fatal server error:
+(EE) Cannot establish any listening sockets - Make sure an X server isn't already running(EE) 
+_XSERVTransSocketCreateListener: failed to bind listener
+_XSERVTransSocketUNIXCreateListener: ...SocketCreateListener() failed
+_XSERVTransMakeAllCOTSServerListeners: failed to create listener for local
+_XSERVTransmkdir: Owner of /tmp/.X11-unix should be set to root
+_XSERVTransSocketCreateListener: failed to bind listener
+_XSERVTransSocketUNIXCreateListener: ...SocketCreateListener() failed
+_XSERVTransMakeAllCOTSServerListeners: failed to create listener for unix
+(EE) 
+Fatal server error:
+(EE) Cannot establish any listening sockets - Make sure an X server isn't already running(EE) 
+_XSERVTransSocketCreateListener: failed to bind listener
+_XSERVTransSocketUNIXCreateListener: ...SocketCreateListener() failed
+_XSERVTransMakeAllCOTSServerListeners: failed to create listener for local
+_XSERVTransmkdir: Owner of /tmp/.X11-unix should be set to root
+_XSERVTransSocketCreateListener: failed to bind listener
+_XSERVTransSocketUNIXCreateListener: ...SocketCreateListener() failed
+_XSERVTransMakeAllCOTSServerListeners: failed to create listener for unix
+(EE) 
+Fatal server error:
+(EE) Cannot establish any listening sockets - Make sure an X server isn't already running(EE) 
+_XSERVTransSocketCreateListener: failed to bind listener
+_XSERVTransSocketUNIXCreateListener: ...SocketCreateListener() failed
+_XSERVTransMakeAllCOTSServerListeners: failed to create listener for local
+_XSERVTransmkdir: Owner of /tmp/.X11-unix should be set to root
+_XSERVTransSocketCreateListener: failed to bind listener
+_XSERVTransSocketUNIXCreateListener: ...SocketCreateListener() failed
+_XSERVTransMakeAllCOTSServerListeners: failed to create listener for unix
+(EE) 
+Fatal server error:
+(EE) Cannot establish any listening sockets - Make sure an X server isn't already running(EE) 
+_XSERVTransSocketCreateListener: failed to bind listener
+_XSERVTransSocketUNIXCreateListener: ...SocketCreateListener() failed
+_XSERVTransMakeAllCOTSServerListeners: failed to create listener for local
+_XSERVTransmkdir: Owner of /tmp/.X11-unix should be set to root
+_XSERVTransSocketCreateListener: failed to bind listener
+_XSERVTransSocketUNIXCreateListener: ...SocketCreateListener() failed
+_XSERVTransMakeAllCOTSServerListeners: failed to create listener for unix
+(EE) 
+Fatal server error:
+(EE) Cannot establish any listening sockets - Make sure an X server isn't already running(EE) 
+_XSERVTransSocketCreateListener: failed to bind listener
+_XSERVTransSocketUNIXCreateListener: ...SocketCreateListener() failed
+_XSERVTransMakeAllCOTSServerListeners: failed to create listener for local
+_XSERVTransmkdir: Owner of /tmp/.X11-unix should be set to root
+_XSERVTransSocketCreateListener: failed to bind listener
+_XSERVTransSocketUNIXCreateListener: ...SocketCreateListener() failed
+_XSERVTransMakeAllCOTSServerListeners: failed to create listener for unix
+(EE) 
+Fatal server error:
+(EE) Cannot establish any listening sockets - Make sure an X server isn't already running(EE) 
+_XSERVTransSocketCreateListener: failed to bind listener
+_XSERVTransSocketUNIXCreateListener: ...SocketCreateListener() failed
+_XSERVTransMakeAllCOTSServerListeners: failed to create listener for local
+_XSERVTransmkdir: Owner of /tmp/.X11-unix should be set to root
+_XSERVTransSocketCreateListener: failed to bind listener
+_XSERVTransSocketUNIXCreateListener: ...SocketCreateListener() failed
+_XSERVTransMakeAllCOTSServerListeners: failed to create listener for unix
+(EE) 
+Fatal server error:
+(EE) Cannot establish any listening sockets - Make sure an X server isn't already running(EE) 
+_XSERVTransSocketCreateListener: failed to bind listener
+_XSERVTransSocketUNIXCreateListener: ...SocketCreateListener() failed
+_XSERVTransMakeAllCOTSServerListeners: failed to create listener for local
+_XSERVTransmkdir: Owner of /tmp/.X11-unix should be set to root
+_XSERVTransSocketCreateListener: failed to bind listener
+_XSERVTransSocketUNIXCreateListener: ...SocketCreateListener() failed
+_XSERVTransMakeAllCOTSServerListeners: failed to create listener for unix
+(EE) 
+Fatal server error:
+(EE) Cannot establish any listening sockets - Make sure an X server isn't already running(EE) 
+/usr/bin/xvfb-run: 91: kill: No such process
+

@@ -1,0 +1,10 @@
+symbol-xcb_send_request=22837705846944
+symbol-xcb_poll_for_reply=22837705853872
+symbol-xcb_request_check=22837705850048
+symbol-xcb_get_setup=22837705840688
+symbol-cairo_xcb_surface_create=22837705281616
+symbol-xkb_x11_setup_xkb_extension=22837701776928
+symbol-xkb_x11_state_new_from_device=22837701776736
+dead-connection-send-request=error:1 sequence:0
+XCB-GENERIC-DONE
+t

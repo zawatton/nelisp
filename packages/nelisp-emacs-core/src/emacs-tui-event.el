@@ -564,8 +564,9 @@ Returns a list of event plists in order."
     (nreverse events)))
 
 (defun emacs-tui-event-pending-event-p (handle)
-  "Return non-nil if HANDLE has at least one parsed event ready."
+  "Return non-nil if HANDLE has a queued or live event, without consuming it."
   (emacs-tui-event--check-handle handle)
+  (emacs-tui-event--pump-input handle)
   (and (emacs-tui-event-handle-event-queue handle) t))
 
 ;;; E. test / bridge helpers

@@ -67,6 +67,17 @@ Also resets kill-ring + kill-ring-yank-pointer."
 
 ;;;; B. self-insert-command body — inserts char N times
 
+(ert-deftest emacs-edit-builtins-test/newline-shim-is-standalone-only ()
+  "A retained GNU newline must use the ec-buffer shim only in standalone."
+  (let ((marker (get 'newline 'emacs-stub-bulk)))
+    (unwind-protect
+        (progn
+          (put 'newline 'emacs-stub-bulk nil)
+          (should-not (emacs-edit-builtins--install-function-p 'newline))
+          (cl-letf (((symbol-function 'nelisp--write-stdout-bytes) #'ignore))
+            (should (emacs-edit-builtins--install-function-p 'newline))))
+      (put 'newline 'emacs-stub-bulk marker))))
+
 (defun emacs-edit-builtins-test--self-insert (char &optional n)
   (let* ((count (or n 1))
          (s (cond ((stringp char) char)

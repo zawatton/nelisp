@@ -1,0 +1,9 @@
+nelisp: uncaught error: in /home/madblack-21/Cowork/Notes/dev/nelisp-emacs-lib/.worktrees/lane-g1/probes/transport.el, top-level form #4 (byte 368, line 5): error: ("Socket I/O mismatch")
+backtrace (innermost first):
+  6: error
+  5: unless
+  4: let
+  3: let*
+  2: when
+  1: let*
+  0: let*

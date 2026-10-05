@@ -53,6 +53,11 @@
   ;; did nothing there.  Only nil-returning bulk stubs and absent names are
   ;; installed.
   (or (get symbol 'emacs-stub-bulk)
+      ;; The TUI's editing model is an ec-buffer.  GNU's retained Lisp
+      ;; `newline' delegates to native buffer primitives, so it must use
+      ;; this module's ec-buffer command just like direct self insertion.
+      (and (eq symbol 'newline)
+           (fboundp 'nelisp--write-stdout-bytes))
       (not (boundp 'emacs-version))
       (not (fboundp symbol))))
 

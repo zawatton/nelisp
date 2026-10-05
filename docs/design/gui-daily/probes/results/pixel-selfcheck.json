@@ -1,0 +1,40 @@
+{
+  "blank": {
+    "rejected": true,
+    "reason": "('ascii', 0)"
+  },
+  "two-tone": {
+    "rejected": true,
+    "reason": "('ascii', 0)"
+  },
+  "wrong-size": {
+    "rejected": true,
+    "reason": "200 200"
+  },
+  "fonts": {
+    "accepted": true,
+    "measurements": {
+      "ascii": {
+        "gray_levels": 164,
+        "intermediate_levels": 162
+      },
+      "japanese": {
+        "gray_levels": 131,
+        "intermediate_levels": 129
+      }
+    }
+  },
+  "pango": {
+    "accepted": true,
+    "measurements": {
+      "ascii": {
+        "gray_levels": 156,
+        "intermediate_levels": 154
+      },
+      "japanese": {
+        "gray_levels": 119,
+        "intermediate_levels": 117
+      }
+    }
+  }
+}

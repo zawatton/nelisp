@@ -1,0 +1,28 @@
+libX11.so.6=(handle 315783632 elf-fallback nil)
+libxcb.so.1=(handle 315784992 elf-fallback nil)
+libcairo.so.2=(handle 315792800 elf-fallback nil)
+libfreetype.so.6=(handle nil elf-fallback nil)
+libharfbuzz.so.0=(handle 315821280 elf-fallback nil)
+libfontconfig.so.1=(handle 315794176 elf-fallback nil)
+libgtk-4.so.1=(handle 315846880 elf-fallback nil)
+libpangocairo-1.0.so.0=(handle 315852432 elf-fallback nil)
+libm.so.6=(handle nil elf-fallback nil)
+type-vocabulary=(:uint8 :uint16 :uint32 :uint64 :sint8 :sint16 :sint32 :sint64 :float :double :pointer :void)
+direct-dlopen-freetype=(23140026413696 23140020514944)
+FT_Init_FreeType=(0 316025360)
+FT_Done_FreeType=0
+FcInitLoadConfigAndFonts=315887120
+xcb_connect=(23137633190260 5 4294967295)
+double-cos=1.0
+double-hypot=5.0
+hb-version="10.2.0"
+cairo-version=11804
+gtk-major-version=4
+integer-abs=7
+sint32-return-minus1=4294967295
+float-refused=(nl-ffi-dlsym-float-unsupported "cosf" "cosf" :float return)
+struct-refused=(nl-ffi-unknown-type "xcb_get_input_focus" :struct)
+double-position5-refused=(nl-ffi-dlsym-float-unsupported "nonexistent_g1" "nonexistent_g1" :double 5)
+XCreateSimpleWindow-9args-refused=(nl-ffi-too-many-arguments "XCreateSimpleWindow" "XCreateSimpleWindow" 9 6)
+FFI-DONE
+t

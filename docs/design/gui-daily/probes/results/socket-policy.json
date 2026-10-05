@@ -1,0 +1,4 @@
+{
+  "socketpair": "PermissionError(1, 'Operation not permitted')",
+  "connect": "PermissionError(1, 'Operation not permitted')"
+}

@@ -1,0 +1,3 @@
+AF_UNIX-socketpair-syscall=0
+network-adapter-socketpair-fds=(3 4) sent=-1
+network-adapter-socketpair-send=-1 recv=:would-block

@@ -1,0 +1,12 @@
+AF_UNIX-socketpair-syscall=0
+network-adapter-socketpair-fds=(3 4) sent=-1
+network-adapter-send-errno=1
+network-adapter-socketpair-send=-1 recv=:would-block
+NETWORK-ADAPTER-IO-BLOCKED
+raw-socket-write=6
+raw-socket-read=6 bytes="raw-g1"
+wire-adapter-connect=(error . "connect failed")
+network-image-providers=((make-network-process t) (accept-process-output t) (emacs-network-ffi-client-unix t) (emacs-network-ffi--send t) (emacs-network-ffi--recv t))
+network-adapter-client=(:error "connect(/home/madblack-21/Cowork/Notes/dev/nelisp-emacs-lib/.worktrees/lane-g1/probes/results/nonexistent.sock) failed: errno=1")
+TRANSPORT-DONE
+t

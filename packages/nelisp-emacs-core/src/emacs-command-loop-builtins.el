@@ -57,20 +57,35 @@
 
 (defun emacs-command-loop-builtins--install-function-p (symbol)
   "Return non-nil when SYMBOL should be installed as an unprefixed bridge."
-  (or (not (boundp 'emacs-version))
+  (or (and (memq symbol '(sit-for input-pending-p kill-emacs))
+           (fboundp 'nelisp--write-stdout-bytes))
+      (not (boundp 'emacs-version))
       (get symbol 'emacs-stub-bulk)
       (not (fboundp symbol))))
 
 (defun emacs-command-loop-kill-emacs (&optional exit-code)
-  "Terminate standalone NeLisp through its `exit' primitive.
+  "Restore terminal input and terminate standalone NeLisp.
 
 Host Emacs keeps its native `kill-emacs'.  This helper is installed as
-`kill-emacs' only when the unprefixed name is absent or still points at
-an `emacs-stub-bulk' placeholder."
+`kill-emacs' in standalone, or when the name is absent or a bulk stub."
   (let ((code (or exit-code 0)))
     (unless (and (integerp code) (<= 0 code) (<= code 255))
       (setq code 1))
-    (exit code)))
+    (unwind-protect
+        (when (boundp 'kill-emacs-hook) (run-hooks 'kill-emacs-hook))
+      (when (fboundp 'terminal-raw-mode-leave) (terminal-raw-mode-leave)))
+    (if (fboundp 'nelisp--exit-process)
+        (nelisp--exit-process code)
+      (exit code))))
+
+;; The headless prelude provides these names but cannot see frontend input
+;; or restore the library's raw-mode state before its immediate process exit.
+;; These are deliberate standalone compatibility shims; host Emacs wins.
+(when (emacs-command-loop-builtins--install-function-p 'sit-for)
+  (defalias 'sit-for #'emacs-command-loop-sit-for))
+
+(when (emacs-command-loop-builtins--install-function-p 'input-pending-p)
+  (defalias 'input-pending-p #'emacs-command-loop-input-pending-p))
 
 (when (emacs-command-loop-builtins--install-function-p 'read-event)
   (defalias 'read-event #'emacs-command-loop-read-event))

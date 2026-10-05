@@ -1,0 +1,992 @@
+{
+  "tty": {
+    "DISPLAY": null,
+    "WAYLAND_DISPLAY": null,
+    "XDG_SESSION_TYPE": "tty",
+    "XDG_CURRENT_DESKTOP": null
+  },
+  "tools": {
+    "Xvfb": "/usr/bin/Xvfb",
+    "xvfb-run": "/usr/bin/xvfb-run",
+    "Xwayland": "/usr/bin/Xwayland",
+    "xdotool": "/usr/bin/xdotool",
+    "xclip": "/usr/bin/xclip",
+    "import": "/usr/bin/import",
+    "xwd": "/usr/bin/xwd",
+    "fc-match": "/usr/bin/fc-match"
+  },
+  "gnome_session_files": [
+    "/usr/share/wayland-sessions/gnome-classic.desktop",
+    "/usr/share/wayland-sessions/gnome-wayland.desktop",
+    "/usr/share/wayland-sessions/gnome.desktop",
+    "/usr/share/wayland-sessions/gnome-classic-wayland.desktop"
+  ],
+  "gnome_default_scope": "GNOME Wayland is the specified deployment target; this tty does not prove the active desktop or actual compositor behavior.",
+  "system_libraries": [
+    "\tlibxcb.so.1 (libc6,x86-64) => /lib/x86_64-linux-gnu/libxcb.so.1",
+    "\tlibxcb.so (libc6,x86-64) => /lib/x86_64-linux-gnu/libxcb.so",
+    "\tlibharfbuzz.so.0 (libc6,x86-64) => /lib/x86_64-linux-gnu/libharfbuzz.so.0",
+    "\tlibharfbuzz.so (libc6,x86-64) => /lib/x86_64-linux-gnu/libharfbuzz.so",
+    "\tlibgtk-4.so.1 (libc6,x86-64) => /lib/x86_64-linux-gnu/libgtk-4.so.1",
+    "\tlibgtk-4.so (libc6,x86-64) => /lib/x86_64-linux-gnu/libgtk-4.so",
+    "\tlibfreetype.so.6 (libc6,x86-64) => /lib/x86_64-linux-gnu/libfreetype.so.6",
+    "\tlibfreetype.so (libc6,x86-64) => /lib/x86_64-linux-gnu/libfreetype.so",
+    "\tlibfontconfig.so.1 (libc6,x86-64) => /lib/x86_64-linux-gnu/libfontconfig.so.1",
+    "\tlibfontconfig.so (libc6,x86-64) => /lib/x86_64-linux-gnu/libfontconfig.so",
+    "\tlibcairo.so.2 (libc6,x86-64) => /lib/x86_64-linux-gnu/libcairo.so.2",
+    "\tlibcairo.so (libc6,x86-64) => /lib/x86_64-linux-gnu/libcairo.so",
+    "\tlibX11.so.6 (libc6,x86-64) => /lib/x86_64-linux-gnu/libX11.so.6",
+    "\tlibX11.so (libc6,x86-64) => /lib/x86_64-linux-gnu/libX11.so"
+  ],
+  "binary_dynamic": "\nDynamic section at offset 0x2285200 contains 14 entries:\n  Tag        Type                         Name/Value\n 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]\n 0x0000000000000001 (NEEDED)             Shared library: [libgnutls.so.30]\n 0x0000000000000001 (NEEDED)             Shared library: [libfreetype.so.6]\n 0x0000000000000001 (NEEDED)             Shared library: [libm.so.6]\n 0x0000000000000001 (NEEDED)             Shared library: [libsqlite3.so.0]\n 0x0000000000000004 (HASH)               0x400178\n 0x0000000000000005 (STRTAB)             0x4009a0\n 0x0000000000000006 (SYMTAB)             0x400388\n 0x000000000000000a (STRSZ)              1141 (bytes)\n 0x000000000000000b (SYMENT)             24 (bytes)\n 0x0000000000000007 (RELA)               0x400e18\n 0x0000000000000008 (RELASZ)             1536 (bytes)\n 0x0000000000000009 (RELAENT)            24 (bytes)\n 0x0000000000000000 (NULL)               0x0\n",
+  "ffi": {
+    "path": "/home/madblack-21/Cowork/Notes/dev/nelisp-emacs-lib/.worktrees/ccore-runtime-20261002/packages/nl-ffi/src/nl-ffi.el",
+    "lines": 900,
+    "sha256": "46b8248353575d3a83d26431e5e33097f290f69a2a8edde49dcd5d60051028b0",
+    "matches": [
+      {
+        "line": 99,
+        "text": ";;      scripts/nelisp-standalone-build.el).  A signature naming `:float'"
+      },
+      {
+        "line": 104,
+        "text": ";;      limit -- and more than six arguments still signals"
+      },
+      {
+        "line": 112,
+        "text": ";;      it to dynamic linking is not the plan.  `:float' and argument"
+      },
+      {
+        "line": 181,
+        "text": "  \"a dlsym-resolved FFI call cannot use :float anywhere, nor :double in \\"
+      },
+      {
+        "line": 192,
+        "text": "(defconst nl-ffi-types"
+      },
+      {
+        "line": 195,
+        "text": "    :float :double :pointer :void)"
+      },
+      {
+        "line": 293,
+        "text": "  - `:float'/`:double' pass a float through unchanged and promote an"
+      },
+      {
+        "line": 307,
+        "text": "   ((memq type '(:float :double))"
+      },
+      {
+        "line": 487,
+        "text": "(defconst nl-ffi--ptr-call-max-args 6"
+      },
+      {
+        "line": 494,
+        "text": "for the same contract (\\\"ptr-call reads six arguments after the address"
+      },
+      {
+        "line": 535,
+        "text": "(defun nl-ffi--dlopen (soname)"
+      },
+      {
+        "line": 554,
+        "text": "(defun nl-ffi--dlsym (handle symbol)"
+      },
+      {
+        "line": 617,
+        "text": "(defconst nl-ffi--ptr-call-typed-max-f64-position 4"
+      },
+      {
+        "line": 629,
+        "text": "(defun nl-ffi--ptr-call-typed-sig (fn-name c-symbol arg-types ret-type)"
+      },
+      {
+        "line": 636,
+        "text": "`ptr-call-typed' cannot carry: `:float' anywhere (single precision --"
+      },
+      {
+        "line": 639,
+        "text": "  (when (eq ret-type :float)"
+      },
+      {
+        "line": 640,
+        "text": "    (signal 'nl-ffi-dlsym-float-unsupported (list fn-name c-symbol :float 'return)))"
+      },
+      {
+        "line": 646,
+        "text": "       ((eq ty :float)"
+      },
+      {
+        "line": 647,
+        "text": "        (signal 'nl-ffi-dlsym-float-unsupported (list fn-name c-symbol :float index)))"
+      },
+      {
+        "line": 654,
+        "text": "(defun nl-ffi--ptr-call-invoke (fn-name c-symbol arg-types ret-type raw-args)"
+      },
+      {
+        "line": 659,
+        "text": "straight to `nl-ffi-call' (see `nl-ffi--convert-arg'): a `:float'/"
+      },
+      {
+        "line": 667,
+        "text": "     when ARG-TYPES/RET-TYPE name `:float' anywhere, or `:double' past"
+      },
+      {
+        "line": 688,
+        "text": "does -- see `nelisp-native-load-raw-call').  A call naming no `:float'/"
+      },
+      {
+        "line": 696,
+        "text": "  (let ((sig (and (or (eq ret-type :float) (eq ret-type :double)"
+      },
+      {
+        "line": 697,
+        "text": "                       (memq :float arg-types) (memq :double arg-types))"
+      },
+      {
+        "line": 754,
+        "text": "(defun ffi:library (soname)"
+      },
+      {
+        "line": 876,
+        "text": "(defun nl-ffi-compat-call (library symbol signature &rest args)"
+      }
+    ],
+    "total_matches": 27
+  },
+  "ffi_callbacks": {
+    "path": "/home/madblack-21/Cowork/Notes/dev/nelisp-emacs-lib/.worktrees/ccore-runtime-20261002/packages/nl-ffi/README.org",
+    "lines": 613,
+    "sha256": "8869bac441bbf89ff2c737fab8ed6a7453e312a7b3d66c7c3af0e3aa09d1fbf4",
+    "matches": [
+      {
+        "line": 24,
+        "text": "(ffi:defun nl-ffi-example-sqlite-version \"sqlite3_libversion\" [:pointer]"
+      },
+      {
+        "line": 33,
+        "text": "(ffi:defun nl-ffi-example-zlib-version \"zlibVersion\" [:pointer]"
+      },
+      {
+        "line": 158,
+        "text": ": :float :double :pointer :void"
+      },
+      {
+        "line": 174,
+        "text": "- =:pointer= accepts an address (an integer), ~nil~ (-> address 0), or a"
+      },
+      {
+        "line": 252,
+        "text": "- Closures/callbacks (a C function calling back into Lisp)."
+      },
+      {
+        "line": 253,
+        "text": "- Struct layout (arguments/results are scalars and pointers; read/write a"
+      },
+      {
+        "line": 254,
+        "text": "  struct's fields yourself with =ptr-read-*=/=ptr-write-*= at known"
+      },
+      {
+        "line": 270,
+        "text": "  it does and does not cover (a real, integer/pointer-only,"
+      },
+      {
+        "line": 275,
+        "text": "Making a new integer/pointer, or =double=-in-position-1-4/return, C"
+      },
+      {
+        "line": 279,
+        "text": "=float=, a =double= in argument position 5 or 6, a callback, a struct, or"
+      },
+      {
+        "line": 327,
+        "text": "integer/pointer-only foreign functions (most of libc) are unaffected."
+      },
+      {
+        "line": 331,
+        "text": "a real integer, including *0* for \"failed\" (a C NULL pointer) -- nil"
+      },
+      {
+        "line": 342,
+        "text": "Lifts step 2's integer/pointer-only limit for the common shapes."
+      },
+      {
+        "line": 360,
+        "text": "constructed and, in the generated dispatch itself, writes nil and"
+      },
+      {
+        "line": 541,
+        "text": "substring of =Elf64_= (the ELF64 struct family), not a C =float=/=double="
+      },
+      {
+        "line": 551,
+        "text": "*The thread-pointer question.* Before writing any of this: does the"
+      },
+      {
+        "line": 570,
+        "text": "once at load time, relative to a thread pointer this loader already"
+      }
+    ],
+    "total_matches": 17
+  },
+  "ffi_src_callback_hits": [],
+  "eln_callback_exception": {
+    "path": "/home/madblack-21/Cowork/Notes/dev/nelisp-emacs-lib/.worktrees/ccore-runtime-20261002/lisp/nelisp-cc-eln-callback.el",
+    "lines": 304,
+    "sha256": "77c320ad5a75ac48648c3981e7e9a26e50f612833b89f9f4bc0c182b658e60a4",
+    "matches": [
+      {
+        "line": 1,
+        "text": ";;; nelisp-cc-eln-callback.el --- scoped GNU .eln callback helpers -*- lexical-binding: t; -*-"
+      },
+      {
+        "line": 49,
+        "text": "                 (= argc-value 1)"
+      },
+      {
+        "line": 136,
+        "text": "    (defun nelisp_eln_fixnum1_callback (raw_value)"
+      },
+      {
+        "line": 138,
+        "text": "      ;; Failure is side-channel state for this probe only; general GNU"
+      },
+      {
+        "line": 139,
+        "text": "      ;; nonlocal exits need a distinct handler/unwind compatibility bridge."
+      },
+      {
+        "line": 295,
+        "text": "  \"AOT forms for a bounded, single-thread GNU fixnum callback probe."
+      },
+      {
+        "line": 299,
+        "text": "argc, status, and a raw fallback word. This is not a general GNU callback or"
+      },
+      {
+        "line": 300,
+        "text": "nonlocal-exit bridge.\")"
+      }
+    ],
+    "total_matches": 8
+  },
+  "loader_limits": {
+    "path": "/home/madblack-21/Cowork/Notes/dev/nelisp-emacs-lib/.worktrees/ccore-runtime-20261002/packages/nl-ffi/src/nl-ffi-loader.el",
+    "lines": 2114,
+    "sha256": "5ab2afa290333693de83a7a45d6d5999383266b7216abb9b80e367ca31d00e43",
+    "matches": [
+      {
+        "line": 9,
+        "text": ";; relocations whose symbols resolve inside that same object, and refused"
+      },
+      {
+        "line": 13,
+        "text": ";; increment lifts three of those refusals: `DT_NEEDED' dependency"
+      },
+      {
+        "line": 16,
+        "text": ";; `DT_RELR', `PT_GNU_RELRO' re-protection, unloading, and symbol"
+      },
+      {
+        "line": 18,
+        "text": ";; refused -- see \"Out of scope\" below."
+      },
+      {
+        "line": 20,
+        "text": ";; FFI step 3, increment 3 (this commit) lifts ONE more refusal: a `PT_TLS'"
+      },
+      {
+        "line": 22,
+        "text": ";; assigned real storage, and relocated correctly instead of refused outright"
+      },
+      {
+        "line": 23,
+        "text": ";; -- see \"TLS\" below.  General-Dynamic/Local-Dynamic (need `__tls_get_addr'"
+      },
+      {
+        "line": 25,
+        "text": ";; (`R_X86_64_{GOTTPOFF,TPOFF32,TLSDESC,...}'), `DT_RELR', `PT_GNU_RELRO'"
+      },
+      {
+        "line": 27,
+        "text": ";; order this file documents all stay refused -- see \"TLS\" and \"Out of"
+      },
+      {
+        "line": 86,
+        "text": ";; refused the object outright (`:tls-segment'), checked before a single"
+      },
+      {
+        "line": 94,
+        "text": ";; needs-dep.so' (a real `DT_NEEDED' on `libm.so.6') was refused two hops"
+      },
+      {
+        "line": 98,
+        "text": ";; Increment 3 (this commit) replaces the blanket per-segment refusal with"
+      },
+      {
+        "line": 103,
+        "text": ";; it: the practical conclusion is unchanged (neither `libc.so.6' nor"
+      },
+      {
+        "line": 105,
+        "text": ";; already-existing refusal -- see \"TLS\", \"The real-system-library"
+      },
+      {
+        "line": 114,
+        "text": ";; reaches real glibc, or an object using General-Dynamic TLS, bottoms out"
+      },
+      {
+        "line": 122,
+        "text": ";; initializer runs) or proven it needs an access model this file refuses by"
+      },
+      {
+        "line": 170,
+        "text": ";; can actually LOAD (as opposed to refuse via TLS, per the safety"
+      },
+      {
+        "line": 175,
+        "text": ";; on a normal Linux host is glibc-provided and TLS-bearing, refused"
+      },
+      {
+        "line": 220,
+        "text": ";; UNDEFINED and is found NOWHERE in the graph is refused"
+      },
+      {
+        "line": 225,
+        "text": ";; a \"this loader could not supply what was needed\" refusal."
+      }
+    ],
+    "total_matches": 72
+  },
+  "x11": {
+    "path": "/home/madblack-21/Cowork/Notes/dev/nelisp-emacs-lib/.worktrees/ccore-resume-20261002/packages/nelisp-x11/src/nelisp-x11.el",
+    "lines": 323,
+    "sha256": "00090d3eb53a5d0ce6fd574588a7fb883b78a03dbee5cd283c9f19787a259076",
+    "matches": [
+      {
+        "line": 37,
+        "text": "(defun nelisp-x11--u16 (buf off)"
+      },
+      {
+        "line": 40,
+        "text": "(defun nelisp-x11--u32 (buf off)"
+      },
+      {
+        "line": 46,
+        "text": "(defun nelisp-x11--put16 (buf off v)"
+      },
+      {
+        "line": 50,
+        "text": "(defun nelisp-x11--put32 (buf off v)"
+      },
+      {
+        "line": 56,
+        "text": "(defun nelisp-x11--pad4 (n) (* (/ (+ n 3) 4) 4))"
+      },
+      {
+        "line": 60,
+        "text": "(defun nelisp-x11--write (fd buf n)"
+      },
+      {
+        "line": 68,
+        "text": "(defun nelisp-x11--read-n (fd buf n)"
+      },
+      {
+        "line": 78,
+        "text": "(defun nelisp-x11--connect-socket (display-num)"
+      },
+      {
+        "line": 90,
+        "text": "(defun nelisp-x11-connect (&optional display-num)"
+      },
+      {
+        "line": 95,
+        "text": "      ;; Connection setup request (little-endian, empty authorization)."
+      },
+      {
+        "line": 114,
+        "text": "(defun nelisp-x11--parse-setup (fd buf)"
+      },
+      {
+        "line": 139,
+        "text": "(defun nelisp-x11-gen-id (dpy)"
+      },
+      {
+        "line": 146,
+        "text": "(defun nelisp-x11-close (dpy)"
+      },
+      {
+        "line": 152,
+        "text": "(defun nelisp-x11-create-window (dpy x y w h)"
+      },
+      {
+        "line": 154,
+        "text": "The window selects Exposure + KeyPress events.  Return the new window id.\""
+      },
+      {
+        "line": 170,
+        "text": "    (nelisp-x11--put32 r 36 32769)            ; event-mask Exposure|KeyPress"
+      },
+      {
+        "line": 174,
+        "text": "(defun nelisp-x11-map-window (dpy wid)"
+      },
+      {
+        "line": 180,
+        "text": "(defun nelisp-x11-open-font (dpy name)"
+      },
+      {
+        "line": 191,
+        "text": "(defun nelisp-x11-create-gc (dpy drawable fg bg font)"
+      },
+      {
+        "line": 202,
+        "text": "(defun nelisp-x11-image-text8 (dpy drawable gc x y str)"
+      },
+      {
+        "line": 213,
+        "text": "(defun nelisp-x11-poll-event (dpy timeout-ms)"
+      },
+      {
+        "line": 223,
+        "text": "(defun nelisp-x11-clear-area (dpy wid x y w h)"
+      },
+      {
+        "line": 232,
+        "text": "(defun nelisp-x11-fill-rect (dpy drawable gc x y w h)"
+      },
+      {
+        "line": 244,
+        "text": "(defun nelisp-x11-get-keyboard-mapping (dpy)"
+      },
+      {
+        "line": 263,
+        "text": "(defun nelisp-x11-keysym (kbd keycode col)"
+      },
+      {
+        "line": 269,
+        "text": "(defun nelisp-x11-decode-key (kbd keycode state)"
+      },
+      {
+        "line": 271,
+        "text": "or nil.  STATE bit0 = Shift, bit2 = Control.\""
+      },
+      {
+        "line": 276,
+        "text": "    ;; server leaves 0 (rare); keeps Control+<letter> working regardless."
+      },
+      {
+        "line": 287,
+        "text": "      (if ctrl (logand ks 31) ks))   ; Control+key -> control code"
+      },
+      {
+        "line": 292,
+        "text": "(defun nelisp-x11-hello (&optional max-events)"
+      }
+    ],
+    "total_matches": 30
+  },
+  "spikes": {
+    "spike-x11.el": "b12d032d61337d4d0624bc8a10b80d6a979cbdc4559c170301ad1c6350934e90",
+    "spike-x11-editor.el": "3a7fb0b9e86134978bb4d271c134561da351b5bf8c84b5d8446ee9ef60733894",
+    "spike-x11-text.el": "e48c08a8348d32e5b10ab23677d80fbce5fbee30ecec0811478151c2697ad56b"
+  },
+  "legacy_transport": {
+    "path": "/home/madblack-21/Cowork/Notes/dev/nelisp-emacs-lib/.worktrees/ccore-resume-20261002/gui/bin/nemacs",
+    "lines": 572,
+    "sha256": "326fcd0928dc09304f5fbbceca47078cddd2ed4b1cde97d1f4afa464519cdab8",
+    "matches": [
+      {
+        "line": 12,
+        "text": "NELISP_SNAP=${NELISP_SNAP:-/tmp/nelisp-snap}"
+      },
+      {
+        "line": 14,
+        "text": "NEMACS_TRANSPORT_DIR=${NEMACS_TRANSPORT_DIR:-/tmp}"
+      },
+      {
+        "line": 32,
+        "text": "  --doctor           check workspace, dependencies, transport, and install state"
+      },
+      {
+        "line": 38,
+        "text": "  NELISP_SNAP             runtime snapshot, default /tmp/nelisp-snap"
+      },
+      {
+        "line": 40,
+        "text": "  NEMACS_TRANSPORT_DIR    nemacs-* transport directory, default /tmp"
+      },
+      {
+        "line": 70,
+        "text": "NEMACS_DEFAULT_TMP=${TMPDIR:-/tmp}"
+      },
+      {
+        "line": 86,
+        "text": "WIN_TRANSPORT_FILE=${NEMACS_NATIVE_TRANSPORT_FILE:-$NEMACS_ARTIFACT_DIR/nemacs-win.transport-dir}"
+      },
+      {
+        "line": 91,
+        "text": "# Retire any bridge session left over from a previous launch on this transport"
+      },
+      {
+        "line": 92,
+        "text": "# dir.  The GUI's bridge runs detached (setsid), so closing the window (or"
+      },
+      {
+        "line": 95,
+        "text": "# prepended to the file you just opened).  Match the bridge image + this exact"
+      },
+      {
+        "line": 96,
+        "text": "# transport dir so an unrelated nelisp (other transport, or a non-bridge tool)"
+      },
+      {
+        "line": 98,
+        "text": "for _bpid in $(pgrep -f nemacs-gui-file-bridge 2>/dev/null); do"
+      },
+      {
+        "line": 100,
+        "text": "       | grep -qF \"files--transport-dir \\\"$NEMACS_TRANSPORT_DIR\\\"\"; then"
+      },
+      {
+        "line": 118,
+        "text": "  NELISP_SRC_BIN=\"${NELISP_ROOT:-$GUI_ROOT/../nelisp}/target/nelisp\""
+      },
+      {
+        "line": 179,
+        "text": "# by the bridge runtime (Emacs semantics live in nelisp-emacs; this"
+      },
+      {
+        "line": 180,
+        "text": "# launcher only transports).  The bridge writes nemacs-init-report."
+      },
+      {
+        "line": 188,
+        "text": "# (src/nemacs-gui-file-bridge-runtime.el) already consumes the real"
+      },
+      {
+        "line": 224,
+        "text": "# M19-3: romaji->kana table for the bridge IME (kana bytes cannot live"
+      },
+      {
+        "line": 225,
+        "text": "# inside the source-v1 image, so the table travels as a transport copy)"
+      },
+      {
+        "line": 230,
+        "text": "# org-agenda file set: the bridge's org-agenda scans the absolute paths listed"
+      }
+    ],
+    "total_matches": 40
+  },
+  "gtk_frontend": {
+    "path": "/home/madblack-21/Cowork/Notes/dev/nelisp-emacs-lib/.worktrees/ccore-resume-20261002/packages/nelisp-emacs-app-gui/src/nemacs-gtk-frontend.el",
+    "lines": 5589,
+    "sha256": "2626b572b873a7f93a0956662295d137c6c4cf7487cb94d228d74d1977e73880",
+    "matches": [
+      {
+        "line": 8,
+        "text": ";; (= `nelisp-emacs-gtk' Rust binary).  All display policy lives here:"
+      },
+      {
+        "line": 10,
+        "text": ";; key dispatch through `emacs-command-loop'.  The Rust side"
+      },
+      {
+        "line": 11,
+        "text": ";; (`nelisp-gtk-*' builtins) only provides GTK plumbing primitives."
+      },
+      {
+        "line": 13,
+        "text": ";; Boot sequence (driven by the Rust `main()'):"
+      },
+      {
+        "line": 15,
+        "text": ";;   1. Rust loads Layer 2 substrate via `(require 'emacs-init)'."
+      },
+      {
+        "line": 16,
+        "text": ";;   2. Rust flips `emacs-display-system' to `'gtk'."
+      },
+      {
+        "line": 17,
+        "text": ";;   3. Rust registers `nelisp-gtk-*' builtins on the Env."
+      },
+      {
+        "line": 18,
+        "text": ";;   4. Rust evals `(require 'nemacs-gtk-frontend)' (= this file)."
+      },
+      {
+        "line": 19,
+        "text": ";;   5. Rust evals `(nemacs-gtk-main)' which:"
+      },
+      {
+        "line": 2532,
+        "text": "Mirrors the Rust side's `font' field via"
+      },
+      {
+        "line": 2540,
+        "text": "  \"Upper bound for `--font-size' \u2014 capped well below the Rust extern's"
+      },
+      {
+        "line": 2544,
+        "text": "  \"Push `--font-size' into the Rust backend.  Errors from the Rust"
+      },
+      {
+        "line": 2550,
+        "text": "          \"font-zoom: Rust extern not loaded\"))"
+      },
+      {
+        "line": 2565,
+        "text": "`--font-size-max').  Triggers a re-measure + redraw on the Rust"
+      }
+    ],
+    "total_matches": 33
+  },
+  "gtk_binary_search": [],
+  "rust_sources": {
+    "/home/madblack-21/Cowork/Notes/dev/nelisp-emacs-lib/.worktrees/ccore-resume-20261002": 0,
+    "/home/madblack-21/Cowork/Notes/dev/nelisp-emacs-lib/.worktrees/ccore-runtime-20261002": 0
+  },
+  "xterm_shim": {
+    "path": "/home/madblack-21/Cowork/Notes/dev/nelisp-emacs-lib/.worktrees/ccore-resume-20261002/apps/nemacs-next/frontends/gui/nemacs-next-gui",
+    "lines": 80,
+    "sha256": "af201b82e2eba3c827a440dc5fc5c1de2cf1fea2febbc7157ebbf39e997a9dc6",
+    "matches": [
+      {
+        "line": 5,
+        "text": "TUI=${NEMACS_NEXT_GUI_TUI:-$ROOT/apps/nemacs-next/frontends/tui/nemacs-next-tui}"
+      },
+      {
+        "line": 22,
+        "text": "  NEMACS_NEXT_GUI_FONT     X core font name for xterm, default fixed"
+      },
+      {
+        "line": 23,
+        "text": "  NEMACS_NEXT_GUI_XTERM    xterm executable, default xterm"
+      },
+      {
+        "line": 56,
+        "text": "  echo \"nemacs-next-gui: TUI frontend is not executable: $TUI\" >&2"
+      },
+      {
+        "line": 60,
+        "text": "XTERM=${NEMACS_NEXT_GUI_XTERM:-xterm}"
+      },
+      {
+        "line": 62,
+        "text": "  echo \"nemacs-next-gui: xterm is required for the current GUI v1 shim\" >&2"
+      },
+      {
+        "line": 74,
+        "text": "exec \"$XTERM\" \\"
+      }
+    ],
+    "total_matches": 7
+  },
+  "redisplay": {
+    "path": "/home/madblack-21/Cowork/Notes/dev/nelisp-emacs-lib/.worktrees/ccore-resume-20261002/packages/nelisp-emacs-core/src/emacs-redisplay.el",
+    "lines": 2694,
+    "sha256": "76c42b2422335a04c6f84e2311f0c7e950a8639d4b9c235de8251de0d6965fd1",
+    "matches": [
+      {
+        "line": 7,
+        "text": ";; face spec \u2192 backend-ready normalized SGR attribute alist"
+      },
+      {
+        "line": 21,
+        "text": ";; by the realize layer + the SGR emit layer to include 256-color and"
+      },
+      {
+        "line": 29,
+        "text": ";; the realized SGR alist (= `(palette N)' / `(rgb R G B)') and are"
+      },
+      {
+        "line": 90,
+        "text": ";;      emacs-redisplay-realize-face       \u2014 face spec \u2192 SGR-ready alist"
+      },
+      {
+        "line": 100,
+        "text": ";;   - proportional font / variable glyph width."
+      },
+      {
+        "line": 146,
+        "text": "       composition/display-spec/buf-pos."
+      },
+      {
+        "line": 147,
+        "text": "  v2 \u2014 Phase 3.B.1: glyph slot `realized-face' added (= SGR-ready"
+      },
+      {
+        "line": 155,
+        "text": "output shape (= SGR attribute alist canonical form)."
+      },
+      {
+        "line": 214,
+        "text": "(cl-defstruct (emacs-redisplay-glyph"
+      },
+      {
+        "line": 217,
+        "text": "  \"A single glyph (= one displayed cell) per Doc 43 \u00a72.3 / \u00a72.4."
+      },
+      {
+        "line": 221,
+        "text": "SGR-ready attribute alist consumable by `emacs-tui-backend' (= Phase"
+      },
+      {
+        "line": 225,
+        "text": "  (realized-face nil)        ;; SGR-ready attribute alist (Phase 3.B.1)"
+      },
+      {
+        "line": 227,
+        "text": "  (width         1)          ;; glyph width in cells (1 ASCII / 2 CJK)"
+      },
+      {
+        "line": 231,
+        "text": "  (buf-pos       nil))       ;; source buffer position (for tooltips, etc.)"
+      },
+      {
+        "line": 233,
+        "text": "(cl-defstruct (emacs-redisplay-glyph-row"
+      },
+      {
+        "line": 240,
+        "text": "  (pos-delta 0)             ;; Phase 3.B.6 lazy buf-pos shift (skip path)"
+      },
+      {
+        "line": 246,
+        "text": "(cl-defstruct (emacs-redisplay-glyph-matrix"
+      },
+      {
+        "line": 251,
+        "text": "  (width     0)             ;; column count"
+      },
+      {
+        "line": 290,
+        "text": ";; `emacs-redisplay-realize-face' is a SGR-oriented normalizer: it"
+      },
+      {
+        "line": 333,
+        "text": "Unknown strings are passed through as `default' (= no SGR emitted).\")"
+      },
+      {
+        "line": 344,
+        "text": "(callers degrade to `default' = no SGR emitted for that channel)."
+      },
+      {
+        "line": 357,
+        "text": "the SGR pipeline robust against bad face data (= MVP graceful"
+      },
+      {
+        "line": 360,
+        "text": "`emacs-tui-backend--color-code' (= SGR emit layer).\""
+      },
+      {
+        "line": 419,
+        "text": "Returns nil when COLOR resolves to no SGR override (= unspecified)."
+      },
+      {
+        "line": 430,
+        "text": "The backend SGR layer dispatches on the descriptor shape.\""
+      },
+      {
+        "line": 435,
+        "text": "      ;; `default' so the SGR pass simply skips the channel; for"
+      },
+      {
+        "line": 517,
+        "text": "  \"Translate Emacs-vocab attribute PLIST to backend SGR alist."
+      },
+      {
+        "line": 522,
+        "text": "  :slant (italic / oblique)  \u2192 (:italic . t)  -- not yet emitted by SGR"
+      }
+    ],
+    "total_matches": 56
+  },
+  "redisplay_pixel_declarations": [],
+  "boundary": {
+    "path": "/home/madblack-21/Cowork/Notes/dev/nelisp-emacs-lib/.worktrees/ccore-resume-20261002/nelisp-emacs-lib/CLAUDE.md",
+    "lines": 253,
+    "sha256": "d8d334df8f481c4735342cdde642b5d4c91843f1295a2809295370289f6c588c",
+    "matches": [
+      {
+        "line": 60,
+        "text": "Do not implement Emacs command semantics directly in `nemacs-main.el`,"
+      },
+      {
+        "line": 201,
+        "text": "## GUI Reintegration Rule"
+      },
+      {
+        "line": 204,
+        "text": "consumer test for the libraries.  GUI owns transport and rendering.  It"
+      },
+      {
+        "line": 205,
+        "text": "does not own buffer state, command dispatch, keymap lookup, minibuffer"
+      },
+      {
+        "line": 206,
+        "text": "semantics, undo, file command behavior, or window layout semantics."
+      },
+      {
+        "line": 208,
+        "text": "Missing GUI behavior should usually be added to the shared runtime first,"
+      }
+    ],
+    "total_matches": 6
+  },
+  "native_policy": {
+    "path": "/home/madblack-21/Cowork/Notes/dev/nelisp-emacs-lib/.worktrees/ccore-runtime-20261002/AGENTS.md",
+    "lines": 133,
+    "sha256": "808694b44a5f8f92e782cef6df408629d49f0fca48e942a420e0f409b5b3141a",
+    "matches": [
+      {
+        "line": 3,
+        "text": "## Minimal native surface"
+      },
+      {
+        "line": 10,
+        "text": " 3. Raw OS or memory access (`syscall-direct`, `ptr-*`, `alloc-bytes`, thread/fork, atomics)."
+      },
+      {
+        "line": 15,
+        "text": "Everything else is Lisp, in a package or the core prelude. \"Faster\" is NOT a qualifying reason."
+      },
+      {
+        "line": 22,
+        "text": "entry in `tools/nelisp-native-inventory.txt`."
+      },
+      {
+        "line": 28,
+        "text": "## Minimal native surface"
+      },
+      {
+        "line": 35,
+        "text": " 3. Raw OS or memory access (`syscall-direct`, `ptr-*`, `alloc-bytes`, thread/fork, atomics)."
+      },
+      {
+        "line": 40,
+        "text": "Everything else is Lisp, in a package or the core prelude. \"Faster\" is NOT a qualifying reason."
+      },
+      {
+        "line": 47,
+        "text": "entry in `tools/nelisp-native-inventory.txt`."
+      }
+    ],
+    "total_matches": 8
+  },
+  "desktop_skk": {
+    "path": "/home/madblack-21/Cowork/Notes/dev/nelisp-emacs-lib/.worktrees/ccore-resume-20261002/gui/docs/design/13-real-machine-daily-driver.org",
+    "lines": 117,
+    "sha256": "1bc73893962f7473ae3cf7f3e0deccf227d4b6242be8c536373f4656f2c085e6",
+    "matches": [
+      {
+        "line": 7,
+        "text": "\u5b9f\u6a5f GNOME/HiDPI \u3067\u306f Xft.dpi\u3001font fallback\u3001window manager\u3001keyboard layout\u3001"
+      },
+      {
+        "line": 18,
+        "text": "| desktop | GNOME |"
+      },
+      {
+        "line": 20,
+        "text": "| scaling | 100%, 150%, 200% \u306e\u3046\u3061\u6700\u4f4e 150% |"
+      },
+      {
+        "line": 23,
+        "text": "| IME | SKK runtime path |"
+      },
+      {
+        "line": 47,
+        "text": "| SKK | romaji -> kana/kanji path | kana \u5165\u529b\u304c live |"
+      },
+      {
+        "line": 73,
+        "text": "* HiDPI / font checks"
+      },
+      {
+        "line": 103,
+        "text": "| real 150% | GNOME 150% scaling \u3067 cursor drift \u306a\u3057 |"
+      },
+      {
+        "line": 114,
+        "text": "| \u30b9\u30af\u30b7\u30e7\u89e3\u91c8\u304c scaling \u3067\u305a\u308c\u308b | xprop/xdpyinfo \u3068 transport state \u3092\u540c\u6642\u4fdd\u5b58 |"
+      }
+    ],
+    "total_matches": 8
+  },
+  "user_init": {
+    "path": "/home/madblack-21/.emacs.d/init.el",
+    "sha256": "ce41dea1b833c717faba4903435487ddefc29687d3f19ed3b8ee076d8119723b",
+    "ddskk_lines": [
+      4206,
+      8917,
+      8997,
+      9055,
+      9792,
+      9870,
+      9877,
+      9882,
+      10351
+    ],
+    "evil_mode_lines": [
+      1803
+    ]
+  },
+  "ledger": {
+    "path": "/home/madblack-21/Cowork/Notes/dev/nelisp-emacs-lib/.worktrees/ccore-resume-20261002/tools/ai/gui-daily-progress.org",
+    "lines": 71,
+    "sha256": "96fb5a3ff80bc4259a650eb2567f31349b96144c5d4fee1ad14cb2c974fd3689",
+    "matches": [
+      {
+        "line": 16,
+        "text": "#+NOTE: 2026-10-05 criteria revised before any implementation (advisor review): the terminal stage was reduced to the shared-foundation harness because the user's target is GUI daily use; S4.1 names SKK as the Japanese input path (the user's init.el uses ddskk with evil, and gui/docs/design/13 sets \"IME | SKK runtime path\"), so an OS IME bridge is not required; S5.1 is -Q and the user's init.el moved to S5.3.  S1.3 and S5.3 depend on interpreter speed for a large init (undo-tree alone took ~25 min in the Doc 40 audit); compilation is owned by another session, so those two may stay red on that dependency and must not be weakened.  Count 14 -> 15."
+      },
+      {
+        "line": 26,
+        "text": "** S1.3 The user's real init.el (~/.emacs.d) loads under the image without errors in a bounded time"
+      },
+      {
+        "line": 42,
+        "text": "** S3.1 GUI backend chosen and recorded (design doc with an independent audit)"
+      },
+      {
+        "line": 45,
+        "text": "** S3.2 A GUI frame opens, renders text with faces through a real font rasterizer, cursor and mode line"
+      },
+      {
+        "line": 48,
+        "text": "** S3.3 Pixel metrics: window-text-pixel-size, line height, char width, fringes and margins consistent with the renderer"
+      },
+      {
+        "line": 53,
+        "text": "** S4.1 Keyboard: modifiers, key repeat and Japanese input through the user's SKK (ddskk running inside nemacs; text lands in the buffer) reach the command loop"
+      },
+      {
+        "line": 56,
+        "text": "** S4.2 Mouse: clicks, drag, wheel, hit testing to buffer positions; menu bar and context menus"
+      },
+      {
+        "line": 59,
+        "text": "** S4.3 Clipboard and primary selection interoperate with other applications"
+      },
+      {
+        "line": 64,
+        "text": "** S5.1 End to end under Xvfb with -Q: open, edit, search, split, mouse select, copy/paste, save, quit"
+      },
+      {
+        "line": 67,
+        "text": "** S5.3 End to end under Xvfb with the user's init.el (evil, SKK): the S5.1 scenario plus Japanese input via SKK"
+      },
+      {
+        "line": 70,
+        "text": "** S5.2 Real packages in the GUI: dired, magit status, org agenda open and render without errors"
+      }
+    ],
+    "total_matches": 11
+  }
+}

@@ -216,7 +216,10 @@ state such as raw mode or terminal resize has been touched."
         ;; Doc 06 A1: route Elisp `read-event' through live TUI stdin.
         (when (boundp 'emacs-command-loop-input-poll-function)
           (setq emacs-command-loop-input-poll-function
-                #'nemacs-main--poll-input-event))
+                #'nemacs-main--poll-input-event
+                emacs-command-loop-input-pending-function
+                (lambda ()
+                  (emacs-tui-event-pending-event-p nemacs-main--event-handle))))
         (setq nemacs-main--tui-state-prepared-p t)
         nemacs-main--redisplay))))
 

@@ -1,0 +1,30 @@
+{
+  "binary": "/home/madblack-21/Cowork/Notes/dev/nelisp-emacs-lib/.worktrees/ccore-runtime-20261002/target/nelisp-ccore-final",
+  "sha256": "2bf3128d186f87f04a07403fb97d8aa723b327e55b317d117634daa31e13642c",
+  "entry": "0x401820",
+  "entry_file_offset": "0x1820",
+  "epilogue_offset": 65,
+  "bytes": "89c7b83c0000000f05",
+  "instructions": [
+    "mov edi,eax",
+    "mov eax,60",
+    "syscall"
+  ],
+  "interpretation": "Linux SYS_exit is thread-only, not process-wide SYS_exit_group231",
+  "source": "/home/madblack-21/Cowork/Notes/dev/nelisp-emacs-lib/.worktrees/ccore-runtime-20261002/scripts/nelisp-standalone-build.el",
+  "source_sha256": "f5ef1a7c8ca35cbb2c020255748308014a0d6be931531fb20b637e85963decc5",
+  "matches": [
+    {
+      "line": 24692,
+      "text": "(cons #xb8 (nelisp-standalone--le32 60)) ; mov eax, 60"
+    },
+    {
+      "line": 24723,
+      "text": "(cons #xb8 (nelisp-standalone--le32 60)) ; mov eax, 60 (SYS_exit)"
+    },
+    {
+      "line": 30673,
+      "text": "`((defun nl_os_exit_process (code) (syscall-direct 60 code 0 0 0 0 0))"
+    }
+  ]
+}

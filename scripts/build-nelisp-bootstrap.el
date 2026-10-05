@@ -382,7 +382,11 @@ bundled source that may evaluate a declaration."
 ;; Replaying the minimal browser afterwards keeps the working commands while
 ;; every name only GNU defines stays bound to the real GNU definition.
 (defvar nelisp-bootstrap-post-vendor-tail-files
-  '("emacs-dired-min.el"
+  '(;; GNU simple.el in the vendor tail redefines `newline' after the
+    ;; ec-buffer editing shim.  Restore the shared editing owner last;
+    ;; its install gates still preserve all unselected native commands.
+    "emacs-edit-builtins.el"
+    "emacs-dired-min.el"
     "dired.el")
   "Local src files moved behind `nelisp-bootstrap-vendor-tail-extra-files'.")
 

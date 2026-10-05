@@ -1,0 +1,74 @@
+#+TITLE: nelisp-emacs-lib -- GUI daily driver (with a terminal stage first)
+
+Objective (user, 2026-10-05): use NeLisp (nemacs) as a daily-driver GUI editor in
+place of GNU Emacs.  The user chose a staged plan and then stated the target is
+GUI daily use, so the terminal is kept only as the cheapest end-to-end harness
+for the shared foundation (S1, S2), not as a product of its own.  Byte compilation and native-comp
+are owned by another session and are out of scope here.
+
+Rules: progress is reported only from bin/progress-meter.sh on this file.
+Every stage ends with an end-to-end criterion driven like a user (pty for the
+terminal, Xvfb for the GUI), compared with GNU Emacs 31.1 where the behaviour is
+observable.  Pending criteria count as not done; known-red checks stay failing
+commands.  Criteria are refined (pending -> cmd) as the harnesses land; every
+change to the criteria list is recorded in a NOTE.
+
+#+NOTE: 2026-10-05 criteria revised before any implementation (advisor review): the terminal stage was reduced to the shared-foundation harness because the user's target is GUI daily use; S4.1 names SKK as the Japanese input path (the user's init.el uses ddskk with evil, and gui/docs/design/13 sets "IME | SKK runtime path"), so an OS IME bridge is not required; S5.1 is -Q and the user's init.el moved to S5.3.  S1.3 and S5.3 depend on interpreter speed for a large init (undo-tree alone took ~25 min in the Doc 40 audit); compilation is owned by another session, so those two may stay red on that dependency and must not be weakened.  Count 14 -> 15.
+
+#+NOTE: 2026-10-05 S1.4 wired to tools/nemacs-pty-smoke.py (lane S1a): the standalone runtime starts from the heap image in tty mode on a python pty at 80x24, opens a temp file with C-x C-f, types two lines, saves, quits; asserts exact file contents, exit 0, restored termios/alternate screen; plus timer/idle-timer and sit-for cases.  S1.1 stays pending: timers and sit-for work, process output during the wait is not yet covered.
+
+* S1 Shared interactive foundation
+
+** S1.1 One event wait drives read-event: keys, timers, idle timers and process output (sit-for, sleep-for, input-pending-p behave as GNU)
+pending
+
+** S1.2 The NeLisp driver starts from the dumped heap image by default (no host Emacs needed at startup)
+pending
+
+** S1.3 The user's real init.el (~/.emacs.d) loads under the image without errors in a bounded time
+pending
+
+** S1.4 End to end: a pty session starts nemacs -nw, runs a scripted key sequence through the real command loop and exits cleanly
+#+REQUIRES: NELISP_BIN
+cmd: bash -c 'bash tools/c-core-image.sh check >/dev/null 2>&1 || bash tools/c-core-image.sh build >/dev/null 2>&1; timeout 300 python3 tools/nemacs-pty-smoke.py --output build/nemacs-pty-smoke/ledger'
+
+* S2 Shared redisplay layout
+
+** S2.1 Line layout parity (frontend independent): wrap/truncation, invisible, display/overlay strings, mode line, header line, minibuffer, compared with GNU on a fixed corpus
+pending
+
+** S2.2 End to end: pty scenario (open file, edit, search, split windows, save, quit) produces the same final file and screen as GNU emacs -nw
+pending
+
+* S3 GUI backend and rendering
+
+** S3.1 GUI backend chosen and recorded (design doc with an independent audit)
+cmd: python3 -c "import hashlib,json;d=json.load(open('docs/design/gui-daily/probes/results/audit.json'));h=hashlib.sha256(open('docs/design/gui-daily/G1-backend-decision.md','rb').read()).hexdigest();raise SystemExit(0 if d['status']=='approved' and d['document_sha256']==h else 1)"
+
+** S3.2 A GUI frame opens, renders text with faces through a real font rasterizer, cursor and mode line
+pending
+
+** S3.3 Pixel metrics: window-text-pixel-size, line height, char width, fringes and margins consistent with the renderer
+pending
+
+* S4 GUI input and desktop integration
+
+** S4.1 Keyboard: modifiers, key repeat and Japanese input through the user's SKK (ddskk running inside nemacs; text lands in the buffer) reach the command loop
+pending
+
+** S4.2 Mouse: clicks, drag, wheel, hit testing to buffer positions; menu bar and context menus
+pending
+
+** S4.3 Clipboard and primary selection interoperate with other applications
+pending
+
+* S5 GUI daily use
+
+** S5.1 End to end under Xvfb with -Q: open, edit, search, split, mouse select, copy/paste, save, quit
+pending
+
+** S5.3 End to end under Xvfb with the user's init.el (evil, SKK): the S5.1 scenario plus Japanese input via SKK
+pending
+
+** S5.2 Real packages in the GUI: dired, magit status, org agenda open and render without errors
+pending

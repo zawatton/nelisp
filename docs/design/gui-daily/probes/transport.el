@@ -1,0 +1,41 @@
+;;; Kernel policy and existing network/X11 adapters, no external service.
+(load "/home/madblack-21/Cowork/Notes/dev/nelisp-emacs-lib/.worktrees/ccore-runtime-20261002/packages/nl-ffi/src/nl-ffi.el" nil t)
+(require 'nl-ffi-memory)
+(load "/home/madblack-21/Cowork/Notes/dev/nelisp-emacs-lib/.worktrees/ccore-resume-20261002/packages/nelisp-x11/src/nelisp-x11.el" nil t)
+(let* ((owner (nl-ffi-memory-allocate 8)) (pair (nl-ffi-memory-address owner))
+       (rc (syscall-direct 53 1 1 0 pair 0 0)))
+  (princ (format "AF_UNIX-socketpair-syscall=%d\n" rc))
+  (when (= rc 0)
+    (let* ((a (nelisp-x11--u32 pair 0)) (b (nelisp-x11--u32 pair 4))
+           (n (emacs-network-ffi--send a "g1-socket")))
+      (princ (format "network-adapter-socketpair-fds=%S sent=%S\n" (list a b) n))
+      (princ (format "network-adapter-send-errno=%S\n" (emacs-network-ffi--errno)))
+      (let ((received (emacs-network-ffi--recv b 9 64)))
+      (princ (format "network-adapter-socketpair-send=%S recv=%S\n" n received))
+      (unless (and (= n 9) (equal received "g1-socket")) (princ "NETWORK-ADAPTER-IO-BLOCKED\n"))
+      )
+      ;; Check raw socket write/read separately. Never claim the adapter passed.
+      (let* ((bytes-o (nl-ffi-memory-cstring "raw-g1"))
+             (bytes (nl-ffi-memory-address bytes-o))
+             (r-o (nl-ffi-memory-allocate 7)) (r (nl-ffi-memory-address r-o))
+             (sent (syscall-direct 1 a bytes 6 0 0 0)))
+        (princ (format "raw-socket-write=%d\n" sent))
+        (when (= sent 6)
+          (let ((got (syscall-direct 0 b r 6 0 0 0)))
+            (princ (format "raw-socket-read=%d bytes=%S\n" got (nl-ffi-get-string r)))
+            (unless (and (= got 6) (equal (nl-ffi-get-string r) "raw-g1")) (error "Raw I/O mismatch"))))
+        (nl-ffi-memory-release bytes-o) (nl-ffi-memory-release r-o))
+      (syscall-direct 3 a 0 0 0 0 0)
+      (syscall-direct 3 b 0 0 0 0 0)))
+  (nl-ffi-memory-release owner))
+(princ (format "wire-adapter-connect=%S\n" (nelisp-x11-connect 9876)))
+(princ (format "network-image-providers=%S\n"
+               (mapcar (lambda (s) (list s (fboundp s)))
+                       '(make-network-process accept-process-output emacs-network-ffi-client-unix
+                         emacs-network-ffi--send emacs-network-ffi--recv))))
+(condition-case e
+    (princ (format "network-adapter-client=%S\n"
+                   (emacs-network-ffi-client-unix (expand-file-name "probes/results/nonexistent.sock"))))
+  (error (princ (format "network-adapter-client-error=%S\n" e))))
+(princ "TRANSPORT-DONE\n")
+t

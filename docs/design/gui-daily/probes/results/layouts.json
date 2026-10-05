@@ -1,0 +1,53 @@
+{
+  "Iovec": {
+    "size": 16,
+    "offsets": {
+      "base": 0,
+      "length": 8
+    }
+  },
+  "Request": {
+    "size": 24,
+    "offsets": {
+      "count": 0,
+      "extension": 8,
+      "opcode": 16,
+      "isvoid": 17
+    }
+  },
+  "Glyph": {
+    "size": 24,
+    "offsets": {
+      "index": 0,
+      "x": 8,
+      "y": 16
+    }
+  },
+  "FfiType": {
+    "size": 24,
+    "offsets": {
+      "size": 0,
+      "alignment": 8,
+      "type": 10,
+      "elements": 16
+    }
+  },
+  "FfiCif": {
+    "size": 32,
+    "offsets": {
+      "abi": 0,
+      "nargs": 4,
+      "argtypes": 8,
+      "rtype": 16,
+      "bytes": 24,
+      "flags": 28
+    }
+  },
+  "20.0_binary64": {
+    "bits": 4626322717216342016,
+    "halves": [
+      0,
+      1077149696
+    ]
+  }
+}

@@ -1,0 +1,24 @@
+ASCII-font-Japanese-glyph=0
+Fontconfig-file="/usr/share/fonts/truetype/vlgothic/VL-Gothic-Regular.ttf"
+hb-shaped=20
+glyph=51 bitmap=12x21 gray-levels=45 advance=14
+glyph=74 bitmap=12x16 gray-levels=62 advance=14
+glyph=49 bitmap=10x21 gray-levels=11 advance=14
+glyph=78 bitmap=10x22 gray-levels=21 advance=14
+glyph=88 bitmap=11x16 gray-levels=73 advance=14
+glyph=85 bitmap=12x22 gray-levels=74 advance=14
+glyph=5 bitmap=0x0 gray-levels=0 advance=14
+glyph=7270 bitmap=20x25 gray-levels=17 advance=28
+glyph=7496 bitmap=28x26 gray-levels=80 advance=28
+glyph=12835 bitmap=26x25 gray-levels=82 advance=28
+glyph=56 bitmap=12x22 gray-levels=81 advance=14
+glyph=48 bitmap=12x21 gray-levels=59 advance=14
+glyph=2766 bitmap=24x25 gray-levels=113 advance=28
+glyph=2768 bitmap=23x21 gray-levels=99 advance=28
+glyph=2770 bitmap=22x24 gray-levels=99 advance=28
+glyph=2772 bitmap=24x24 gray-levels=101 advance=28
+glyph=2774 bitmap=25x25 gray-levels=104 advance=28
+cold-raster-and-cache-seconds=2.695974 unique-glyphs=17
+offscreen-12row-frame-ms=1170.183
+FONTS-DONE
+t
