@@ -7,6 +7,7 @@
 (require 'emacs-edit-builtins)
 (require 'emacs-mouse)
 (require 'nelisp-gui-menu)
+(require 'nelisp-gui-selection)
 (defvar nelisp-gui-frontend--xcb nil)
 (defvar nelisp-gui-frontend--renderer nil)
 (defvar nelisp-gui-frontend--redisplay nil)
@@ -31,9 +32,10 @@ Only adaptation is done here; bounds, motion and edits stay in libraries.")
 
 (defun nelisp-gui-frontend--pump ()
   "Drain a bounded transport batch and feed canonical events to the shared loop."
+  (nelisp-gui-selection-expire)
   (let ((n 0) (go t))
     (while (and go (< n 64))
-      (let ((event (nelisp-gui-xcb-poll nelisp-gui-frontend--xcb)))
+      (let ((event (nelisp-gui-selection-poll)))
         (cond
          ((null event) (setq go nil))
          ((plist-get event :key) (emacs-command-loop-feed-events (plist-get event :key)))
@@ -162,6 +164,8 @@ Command lookup, execution, hooks, buffer editing and point stay in libraries."
               (setq nelisp-gui-frontend--xcb
                     (nelisp-gui-xcb-open "NeLisp XCB" (* cols nelisp-gui-pango-cell-width)
                                          (* lines nelisp-gui-pango-line-height)))
+              (nelisp-gui-selection-open nelisp-gui-frontend--xcb)
+              (when (getenv "NELISP_GUI_SELECTION_FIXTURE") (nelisp-gui-selections-fixture))
               (setq nelisp-gui-frontend--renderer (nelisp-gui-pango-open nelisp-gui-frontend--xcb cols lines)
                     nelisp-gui-frontend--redisplay (emacs-redisplay-init)
                     emacs-command-loop-input-poll-function #'nelisp-gui-frontend--input
@@ -212,6 +216,7 @@ Command lookup, execution, hooks, buffer editing and point stay in libraries."
       (setq emacs-command-loop-input-poll-function old-poll
             emacs-command-loop-input-pending-function old-pending)
       (when nelisp-gui-frontend--renderer (nelisp-gui-pango-close nelisp-gui-frontend--renderer))
+      (when (nelisp-gui-selection-active-p) (nelisp-gui-selection-close))
       (when nelisp-gui-frontend--xcb (nelisp-gui-xcb-close nelisp-gui-frontend--xcb))
       (nl-ffi-libffi-release)
       (setq nelisp-gui-frontend--xcb nil nelisp-gui-frontend--renderer nil))

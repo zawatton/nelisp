@@ -11,7 +11,7 @@
 (defun nelisp-gui-xcb-call (name signature &rest args)
   (apply #'nl-ffi-libffi-scalar name signature args))
 
-(defun nelisp-gui-xcb--bytes-number (bytes offset count)
+(defun nelisp-gui-xcb-bytes-number (bytes offset count)
   (let ((n 0))
     (dotimes (i count) (setq n (+ n (ash (aref bytes (+ offset i)) (* 8 i))))) n))
 
@@ -29,7 +29,7 @@
          (bytes (apply #'nl-ffi-libffi-call library name
                        nelisp-gui-xcb-cookie-type (cons :pointer types)
                        (aref state 0) args))
-         (sequence (nelisp-gui-xcb--bytes-number bytes 0 4)))
+         (sequence (nelisp-gui-xcb-bytes-number bytes 0 4)))
     (unless (> sequence 0) (signal 'nelisp-gui-xcb-error (list 'zero-cookie name)))
     sequence))
 
@@ -81,8 +81,8 @@
   (let* ((setup (nelisp-gui-xcb-call "xcb_get_setup" [:pointer :pointer] connection))
          (bytes (nl-ffi-libffi-call "libxcb.so.1" "xcb_setup_roots_iterator"
                                   '(:struct :pointer :sint32 :sint32) '(:pointer) setup))
-         (screen (nelisp-gui-xcb--bytes-number bytes 0 8))
-         (count (nelisp-gui-xcb--bytes-number bytes 8 4))
+         (screen (nelisp-gui-xcb-bytes-number bytes 0 8))
+         (count (nelisp-gui-xcb-bytes-number bytes 8 4))
          (end (+ setup 8 (* 4 (nl-ffi-libffi-u16 setup 6))))
          (index 0) (visual nil))
     (unless (and (> setup 0) (> screen 0) (< screen-number count) (<= count 16))
@@ -139,7 +139,7 @@
             (aset state 1 wid) (aset state 2 visual) (aset state 3 screen)
             (ptr-write-u32 p 0 (nl-ffi-libffi-u32 screen 12))
             ;; Key press/release, exposure, structure and focus notifications.
-            (ptr-write-u32 p 4 (+ 1 2 4 8 64 32768 131072 2097152))
+            (ptr-write-u32 p 4 (+ 1 2 4 8 64 32768 131072 2097152 4194304))
             (nelisp-gui-xcb-checked
              state "xcb_create_window_checked"
              '(:uint8 :uint32 :uint32 :sint16 :sint16 :uint16 :uint16 :uint16 :uint16 :uint32 :uint32 :pointer)
@@ -255,6 +255,8 @@
       (unwind-protect
           (let ((type (logand (ptr-read-u8 p 0) 127)))
             (cond
+             ((and (fboundp 'nelisp-gui-selection-active-p) (nelisp-gui-selection-active-p)
+                   (nelisp-gui-selection-event type p)) '(:ignored t))
              ((= type 0) (signal 'nelisp-gui-xcb-error
                                 (list 'asynchronous (ptr-read-u8 p 1) (nl-ffi-libffi-u32 p 4))))
              ((= type (aref state 8))

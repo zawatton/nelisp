@@ -145,13 +145,15 @@ class Session:
         command(['import', '-window', self.window, str(path)], self.env)
         return path
 
-    def finish(self, expected=0):
+    def finish(self, expected=0, informational=()):
         rc = self.proc.wait(timeout=30)
         assert rc == expected, (self.label, rc, self.log()[-2000:])
         # The existing app init writes this informational banner to stderr.
         # Keep every other diagnostic visible and failing.
         stderr = self.stderr.read_text()
-        assert stderr.strip() in ('', 'nemacs 0.1.0-mvp ready (Layer 2 / Doc 51)'), stderr
+        remaining = '\n'.join(line.strip() for line in stderr.splitlines()
+                              if line.strip() and line.strip() not in informational)
+        assert remaining in ('', 'nemacs 0.1.0-mvp ready (Layer 2 / Doc 51)'), stderr
 
     def metadata(self):
         return dict(command=self.argv, display=self.env['DISPLAY'], events=self.events,
@@ -172,12 +174,14 @@ def terminate(proc):
 def main():
     global LAUNCHER
     parser = argparse.ArgumentParser()
-    parser.add_argument('stage', choices=['S3.2', 'S3.3', 'S4.1', 'S4.2'])
+    parser.add_argument('stage', choices=['S3.2', 'S3.3', 'S4.1', 'S4.2', 'S4.3'])
     parser.add_argument('--launcher',type=Path,default=LAUNCHER)
     parser.add_argument('--init', default='-Q', choices=['-Q'])
-    parser.add_argument('--fixture', choices=['render', 'metrics', 'skk-evil', 'keyboard', 'mouse-menu'])
+    parser.add_argument('--fixture', choices=['render', 'metrics', 'skk-evil', 'keyboard', 'mouse-menu', 'selections'])
     parser.add_argument('--dpi', default='96,144,192')
     parser.add_argument('--keymaps', default='us,jp,de')
+    parser.add_argument('--peer', default='xclip', choices=['xclip'])
+    parser.add_argument('--bytes', type=int, default=1048576)
     parser.add_argument('--one-display', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--faults', default='bad-window,server-death,quit')
     parser.add_argument('--out', type=Path)
@@ -185,7 +189,7 @@ def main():
     args = parser.parse_args()
     LAUNCHER = args.launcher.resolve()
     args.out = args.out or ROOT / 'build/gui-daily' / args.stage
-    args.fixture = args.fixture or {'S3.2': 'render', 'S3.3': 'metrics', 'S4.1': 'skk-evil', 'S4.2': 'mouse-menu'}[args.stage]
+    args.fixture = args.fixture or {'S3.2': 'render', 'S3.3': 'metrics', 'S4.1': 'skk-evil', 'S4.2': 'mouse-menu', 'S4.3': 'selections'}[args.stage]
     if args.stage != 'S3.2':
         import importlib.util
         spec = importlib.util.spec_from_file_location('gui_daily_stages', ROOT / 'scripts/gui-daily-stages.py')

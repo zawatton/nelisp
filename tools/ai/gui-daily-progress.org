@@ -35,6 +35,8 @@ change to the criteria list is recorded in a NOTE.
 
 #+NOTE: 2026-10-05 criterion added (15 -> 16): launching bin/nemacs-xcb on the user's real GNOME X11 display showed the plain -Q path unusable even though S3.2/S3.3/S4.2 pass: typed text reached the buffer but never rendered, Return inserted nothing, the mode line was empty and the idle process used ~97% CPU.  The passing gates drive fixtures that build buffers directly, so they did not cover the plain path.  S5.0 measures that path (lane G2).
 
+#+NOTE: 2026-10-06 lane X3 integrated: shared emacs-select.el (gui-set/get-selection, select-enable-clipboard/primary, interprogram cut/paste) and XCB selection transport (owner and requester, UTF8_STRING/STRING/TEXT/TARGETS/TIMESTAMP, INCR); S4.3 gate with xclip both directions for PRIMARY and CLIPBOARD including 1 MiB, negative controls and production quit, 252 s in the lane.  S4.3 wired.
+
 * S1 Shared interactive foundation
 
 ** S1.1 One event wait drives read-event: keys, timers, idle timers and process output (sit-for, sleep-for, input-pending-p behave as GNU)
@@ -95,7 +97,9 @@ cmd: bash -c 'timeout 240 python3 scripts/gui-daily-build.py >/dev/null 2>&1 && 
 cmd: bash -c 'timeout 240 python3 scripts/gui-daily-build.py >/dev/null 2>&1 && EMACS=emacs timeout 340 python3 scripts/gui-daily-gate.py S4.2 --init=-Q --fixture=mouse-menu'
 
 ** S4.3 Clipboard and primary selection interoperate with other applications
-pending
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 600
+cmd: bash -c 'timeout 240 python3 scripts/gui-daily-build.py >/dev/null 2>&1 && EMACS=emacs timeout 340 python3 scripts/gui-daily-gate.py S4.3 --init=-Q --fixture=selections --peer=xclip --bytes=1048576'
 
 * S5 GUI daily use
 

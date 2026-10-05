@@ -19,6 +19,8 @@ MEMBERS = [
     'packages/nelisp-emacs-core/src/emacs-mouse.el',
     'packages/nl-libffi/src/nl-ffi-libffi.el',
     'packages/nelisp-gui-xcb/src/nelisp-gui-xcb.el',
+    'packages/nelisp-emacs-core/src/emacs-select.el',
+    'packages/nelisp-gui-xcb/src/nelisp-gui-selection.el',
     'packages/nelisp-gui-xcb/src/nelisp-gui-pango.el',
     'packages/nelisp-gui-xcb/src/nelisp-gui-menu.el',
     'packages/nelisp-gui-xcb/src/nelisp-gui-frontend.el',
@@ -27,6 +29,7 @@ MEMBERS = [
     'packages/nelisp-gui-xcb/fixtures/skk-evil.el',
     'packages/nelisp-gui-xcb/fixtures/keyboard.el',
     'packages/nelisp-gui-xcb/fixtures/mouse-menu.el',
+    'packages/nelisp-gui-xcb/fixtures/selections.el',
 ]
 # The GUI image gets its own bundle so the certified C-core bundle stays untouched.
 GUI_BUNDLE = ROOT / 'build/nemacs-gui-bootstrap.el'
@@ -42,13 +45,19 @@ def main():
     subprocess.run(['make', 'build-nelisp-bootstrap', 'EMACS=emacs --batch'], cwd=ROOT, env=env, check=True)
     base = (ROOT / 'build/nemacs-bootstrap.el').read_bytes().split(MARKER)[0]
     bundle = GUI_BUNDLE
-    extension = MARKER
+    # GNU simple.el retains this lazy macro call in buffer-substring--filter.
+    # Include the exact vendor dependency, without loading unrelated subr code
+    # or replacing editing commands owned by another lane.
+    source = ROOT / 'vendor/staged-emacs-lisp/subr.el'
+    form = '(with-temp-buffer (insert-file-contents "' + str(source) + '") (goto-char (point-min)) (re-search-forward "^(defmacro subr--with-wrapper-hook-no-warnings ") (beginning-of-line) (prin1 (read (current-buffer))))'
+    wrapper = subprocess.check_output(['emacs', '-Q', '--batch', '--eval', form], env=env)
+    extension = MARKER + wrapper + b'\n'
     for member in MEMBERS:
         extension += ('\n;;; >>> ' + member + '\n').encode() + (ROOT / member).read_bytes() + b'\n'
     data = base + extension
     if not bundle.exists() or bundle.read_bytes() != data:
         bundle.write_bytes(data)
-    sources = MEMBERS + ['packages/nelisp-emacs-core/src/emacs-frame.el',
+    sources = MEMBERS + ['vendor/staged-emacs-lisp/subr.el', 'packages/nelisp-emacs-core/src/emacs-frame.el',
                          'packages/nelisp-emacs-core/src/emacs-keymap.el',
                          'packages/nelisp-emacs-core/src/emacs-keymap-builtins.el',
                          'scripts/gui-daily-fixtures.py',

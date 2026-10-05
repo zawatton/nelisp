@@ -9,7 +9,7 @@ Pure-buffer fixtures use the shared edit adapter; native SKK/Evil buffers use
 Build from this private library copy with the supplied fixed runtime:
 
 #+begin_src sh
-export NELISP_BIN=/path/to/existing/nelisp-gui1
+export NELISP_BIN=/path/to/existing/nelisp-gui2
 export EMACS=emacs DISPLAY=:91
 python3 scripts/gui-daily-build.py
 xvfb-run -a -s '-screen 0 1600x1000x24 -dpi 96 -nolisten tcp -noreset -extension GLX' python3 scripts/gui-daily-gate.py S3.2 --init=-Q --fixture=render --require-production-quit
@@ -53,3 +53,35 @@ This is bounded stage acceptance, not a daily-driver or fractional-scaling claim
 The pixel-size helper covers the tested fixed-cell corpus; full GNU wrapping,
 image/stretch glyphs and arbitrary window-text-pixel-size options remain outside
 this fixture's coverage.
+
+S4.3 selection acceptance:
+#+begin_src sh
+python3 scripts/gui-daily-gate.py S4.3 --init=-Q --fixture=selections --peer=xclip --bytes=1048576
+emacs -Q --batch -L packages/nelisp-emacs-core/src -l packages/nelisp-gui-xcb/test/selection-policy.el
+#+end_src
+
+=emacs-select.el= owns GNU-style selection flags, clipboard preference,
+per-selection text/timestamp tracking, and interprogram cut/paste hooks. Its
+prefixed APIs work with an injected backend without application bootstrap;
+=emacs-select-install= installs unprefixed shims only in standalone NeLisp.
+The XCB frontend owns atoms, timestamp acquisition, ownership events and bounded
+property transfers. It supports UTF8_STRING, Latin-1 STRING, polymorphic TEXT,
+TARGETS and INTEGER/32 TIMESTAMP, plus INCR in both directions. Each conversion
+uses a fresh unmapped requestor window, preserving unrelated input for the shared
+loop. Limits: 4 MiB per value, eight concurrent sends, 3 s idle and 15 s total
+transfer deadlines; native INCR buffers are released on completion, timeout,
+requestor death and teardown. Server timestamps come from PropertyNotify.
+
+The gate uses xclip for exact UTF-8 and 1 MiB PRIMARY/CLIPBOARD round trips,
+ordinary kill-ring-save/yank, ownership predicates, SelectionClear and owner
+death. Independent malformed/stalled peers exercise conversion/INCR timeouts,
+announced/direct/running byte caps and type rejection. It retains screenshots,
+bytes, hashes and complete production quit evidence. The launcher stays the
+production =bin/nemacs-xcb=; the selections fixture is configured through an
+isolated environment path, using a native buffer with the existing GNU copy
+and shared yank command implementations.
+
+The native-buffer fixture retires the otherwise unused pure bootstrap scratch
+through =nelisp-ec-kill-buffer=. The existing native yank branch requires an
+unambiguous current buffer substrate; mixed native/pure yank routing remains
+owned by lane C1 and is not changed by this selection implementation.

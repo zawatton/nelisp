@@ -36,11 +36,16 @@ def private_input(args, api, out, report):
           '-screen 0 1600x1000x24 -dpi 96 -nolisten tcp -noreset -extension GLX',
           sys.executable,str(api['ROOT']/'scripts/gui-daily-gate.py'),args.stage,
           '--init=-Q','--launcher='+str(args.launcher),'--fixture='+args.fixture,'--one-display','--keymaps='+args.keymaps,
-          '--out',str(out/'live')]
-    result=subprocess.run(argv,timeout=1800)
+          '--out',str(out/'live'),'--peer='+args.peer,'--bytes='+str(args.bytes)]
+    process=subprocess.Popen(argv,start_new_session=True); api['CHILDREN'].append(process)
+    try:
+        returncode=process.wait(timeout=335 if args.stage=='S4.3' else 1800)
+    except subprocess.TimeoutExpired:
+        api['terminate'](process)
+        raise
     child=json.loads((out/'live/result.json').read_text())
     report.update(command=argv,live=child,status=child['status'])
-    if result.returncode or child['status']!='PASS': raise AssertionError(child.get('error','child gate failed'))
+    if returncode or child['status']!='PASS': raise AssertionError(child.get('error','child gate failed'))
     report['checks'].extend(child['checks'])
 
 
@@ -347,6 +352,7 @@ def metrics_pixels(path, log, command, expected_dpi, moved=False, shape=(64,20),
 
 
 def run(args, api):
+    started = time.monotonic()
     root, command, Session = api['ROOT'], api['command'], api['Session']
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -355,7 +361,7 @@ def run(args, api):
                   production_launcher=args.launcher.resolve() == root/'bin/nemacs-xcb')
     sessions = []
     try:
-        if args.stage in ('S4.1','S4.2') and not args.one_display:
+        if args.stage in ('S4.1','S4.2','S4.3') and not args.one_display:
             private_input(args,api,out,report)
         elif args.stage == 'S3.3' and not args.one_display:
             # Each DPI case has its own fresh Xvfb and process, so run them
@@ -388,6 +394,7 @@ def run(args, api):
             image = command(['bash',str(root/'tools/c-core-image.sh'),'path'],
                             dict(env,C_CORE_IMAGE_BUNDLE=str(bundle))).decode().strip()
             report.update(binary=env['NELISP_BIN'], binary_sha256=api['sha'](env['NELISP_BIN']),
+                          cold_binary_sha256=api['sha'](env['NELISP_BIN']+'.cold'),
                           image=image, image_sha256=api['sha'](image), bundle_sha256=api['sha'](bundle),
                           gate_sha256=api['sha'](__file__), display=env['DISPLAY'], fixture=args.fixture)
             if args.stage == 'S3.3':
@@ -437,12 +444,21 @@ def run(args, api):
             elif args.stage=='S4.1':
                 keyboard(args,api,out,env,report,sessions)
                 report['status']='PASS'
+            elif args.stage=='S4.3':
+                import importlib.util
+                spec=importlib.util.spec_from_file_location('selections',root/'scripts/gui-daily-selections.py')
+                module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+                module.run(args,api,out,env,report,sessions)
+                report['status']='PASS'
             elif args.stage=='S4.2':
                 mouse(args,api,out,env,report,sessions)
                 report['status']='PASS'
     except Exception as e:
         report.update(status='FAIL',error=str(e))
     finally:
+        report['seconds']=time.monotonic()-started
+        if args.stage=='S4.3' and report['seconds']>=340:
+            report.update(status='FAIL',error='S4.3 exceeded 340 s')
         report['sessions']=[s.metadata() for s in sessions]
         for s in sessions:
             if s.proc.poll() is None: api['terminate'](s.proc)
