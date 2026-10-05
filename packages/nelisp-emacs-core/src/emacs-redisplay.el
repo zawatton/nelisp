@@ -815,7 +815,7 @@ empty string when no text is reachable (= safe MVP default)."
 
 (defun emacs-redisplay--cached-buffer-string (handle buffer)
   "Return BUFFER's text via HANDLE's text-cache (Phase 3.B.7).
-Cache key = (BUFFER + TEXT-TICK + accessible bounds for native buffers).
+Cache key = (BUFFER + TEXT-TICK + accessible bounds).
 When BUFFER is a string or nil,
 falls back to the uncached path because there is no tick to gate on.
 Cache holds at most `emacs-redisplay--text-cache-size' entries with
@@ -827,8 +827,11 @@ LRU ordering — the head is most-recent."
     (let* ((tick (if (emacs-redisplay--standard-buffer-p buffer)
                      (with-current-buffer buffer
                        (list (buffer-chars-modified-tick) (point-min) (point-max)))
-                   (and (fboundp 'emacs-buffer-buffer-text-tick)
-                        (emacs-buffer-buffer-text-tick buffer))))
+                   ;; The buffer owns this tick, including fast insertion
+                   ;; paths that do not run advice on `nelisp-ec-insert'.
+                   (list (nelisp-ec-buffer-text-tick buffer)
+                         (nelisp-ec-buffer-narrow-start buffer)
+                         (nelisp-ec-buffer-narrow-end buffer))))
            (cache (emacs-redisplay-handle-text-cache handle))
            (hit (and tick
                      (cl-loop for entry in cache
@@ -2390,7 +2393,8 @@ helpers) so the matrix is dropped and a fresh rebuild is forced."
             buf-point (nelisp-ec-buffer-point buffer)
             buf-narrow-start (nelisp-ec-buffer-narrow-start buffer)
             buf-narrow-end   (nelisp-ec-buffer-narrow-end   buffer)
-            buf-tick (or (emacs-buffer-buffer-chars-modified-tick buffer) 0))))
+            buf-tick (list (nelisp-ec-buffer-text-tick buffer)
+                           (or (emacs-buffer-buffer-chars-modified-tick buffer) 0)))))
     (vector buffer buf-size buf-point buf-narrow-start buf-narrow-end
             buf-tick
             (or (emacs-window-start window) 1)

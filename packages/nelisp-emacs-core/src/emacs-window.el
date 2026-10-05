@@ -1122,15 +1122,19 @@ bind `emacs-version' to a non-string sentinel (so `boundp' is true but
 the value is not a version string) rather than leaving it unbound.
 Check the NeLisp-only markers `nl-write-file' / `nelisp--write-stdout-bytes'
 first, matching `emacs-window-builtins--install-function-p' /
-the char-table standalone predicate, so standalone always installs these
-five names regardless of load order, while host Emacs -- where SYMBOL
+the char-table standalone predicate.  Once the builtin bridge is loaded,
+keep its split commands: they enforce `window-min-height' and
+`window-min-width', whereas the prefixed tree API permits smaller leaves
+for minibuffers and internal layout.  Host Emacs -- where SYMBOL
 is already bound to a real subr or dumped Lisp function from
 `window.el' -- never has that definition replaced."
-  (or (fboundp 'nl-write-file)
-      (fboundp 'nelisp--write-stdout-bytes)
-      (not (boundp 'emacs-version))
-      (not (stringp emacs-version))
-      (not (fboundp symbol))))
+  (and (not (and (memq symbol '(split-window-below split-window-right))
+                 (featurep 'emacs-window-builtins)))
+       (or (fboundp 'nl-write-file)
+           (fboundp 'nelisp--write-stdout-bytes)
+           (not (boundp 'emacs-version))
+           (not (stringp emacs-version))
+           (not (fboundp symbol)))))
 
 ;;;###autoload
 (when (emacs-window--install-function-p 'split-window-below)
