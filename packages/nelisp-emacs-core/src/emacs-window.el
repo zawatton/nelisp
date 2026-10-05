@@ -238,17 +238,18 @@ Test-only convenience; not part of the public Emacs API surface."
         (setq remaining (- remaining size)
               children (cdr children))))))
 
-(defun emacs-window-layout-frame (cols lines top)
-  "Lay out the ordinary tree and detached minibuffer below TOP lines."
+(defun emacs-window-layout-frame (cols lines top &optional minibuffer-lines)
+  "Lay out the ordinary tree and detached minibuffer below TOP lines.
+MINIBUFFER-LINES reserves its requested height, defaulting to one line."
   (emacs-window--ensure-root)
-  (setf (emacs-window-top-line emacs-window--root) top)
-  (emacs-window--resize-tree emacs-window--root cols (max 1 (1- lines)))
-  (when (and (boundp 'emacs-minibuffer--window)
-             (emacs-window-p emacs-minibuffer--window))
-    (setf (emacs-window-total-cols emacs-minibuffer--window) cols
-          (emacs-window-top-line emacs-minibuffer--window) (+ top (1- lines)))))
-
-;;; A. window query
+  (let ((mini-height (max 1 (min (1- lines) (or minibuffer-lines 1)))))
+    (setf (emacs-window-top-line emacs-window--root) top)
+    (emacs-window--resize-tree emacs-window--root cols (max 1 (- lines mini-height)))
+    (when (and (boundp 'emacs-minibuffer--window)
+               (emacs-window-p emacs-minibuffer--window))
+      (setf (emacs-window-total-cols emacs-minibuffer--window) cols
+            (emacs-window-total-lines emacs-minibuffer--window) mini-height
+            (emacs-window-top-line emacs-minibuffer--window) (+ top (- lines mini-height))))))
 
 (defun emacs-window-windowp (object)
   "Return t if OBJECT is a (live) window, nil otherwise.
@@ -643,21 +644,24 @@ runtime's fixed pseudo-pixel column width."
     (emacs-window--check-leaf w)
     (emacs-window-start w)))
 
-(defun emacs-window-window-end (&optional window _update)
-  "Return a coarse window-end approximation for WINDOW.
-
-Phase 1: returns (start + width*height), clamped to buffer-size when the
-buffer is non-nil.  Real geometry-aware end requires Phase 11 redisplay."
-  (let* ((w     (emacs-window-get-window window))
-         (start (emacs-window-window-start w))
-         (cols  (emacs-window-window-width  w))
-         (lines (emacs-window-window-height w))
-         (cap   (* cols lines))
-         (end   (+ start cap))
-         (buf   (emacs-window-buffer w)))
-    (if (and buf (nelisp-ec-buffer-p buf))
-        (min end (1+ (nelisp-ec-buffer-size buf)))
-      end)))
+(defun emacs-window-window-end (&optional window update)
+  "Return WINDOW's exclusive displayed end, as recorded by redisplay.
+Before its first layout, retain the initial bounded capacity estimate.
+UPDATE asks the active renderer to refresh the cached end when available."
+  (let* ((w (emacs-window-get-window window))
+         (handle (and update (fboundp 'emacs-redisplay-current-handle)
+                      (emacs-redisplay-current-handle))))
+    (emacs-window--check-leaf w)
+    (when handle (emacs-redisplay-redisplay-window handle w))
+    (or (emacs-window-window-parameter w 'emacs-redisplay-window-end)
+        (let* ((end (+ (emacs-window-window-start w)
+                       (* (emacs-window-window-width w) (emacs-window-window-height w))))
+               (buf (emacs-window-buffer w)))
+          (cond ((and (fboundp 'bufferp) (bufferp buf))
+                 (with-current-buffer buf (min end (point-max))))
+                ((and buf (nelisp-ec-buffer-p buf))
+                 (min end (1+ (nelisp-ec-buffer-size buf))))
+                (t end))))))
 
 (defun emacs-window-window-point (&optional window)
   "Return cached window-point for WINDOW (selected if nil)."

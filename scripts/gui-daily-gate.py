@@ -86,9 +86,12 @@ def assert_pixels(path, cursor_col=1, inserted=False):
     assert counts[(16, 40, 56)] > 1000, 'colored background'
     assert counts[(38, 55, 71)] > 15000, 'header face background'
     assert ink(data, 12, 0, 348, 28, (38, 55, 71)) > 300, 'header line absent'
-    # The shared mode-line engine supplies an inverse-default full-width row.
-    assert region(data, 500, 616, 400, 28).count(FG) > 10000, 'mode line band absent'
-    assert ink(data, 12, 616, 360, 28, FG) > 300, 'mode line text absent'
+    # The fixture defines mode-line as #ffffff on #344454; the shared engine
+    # must honor that face for the full-width row (it once ignored it and
+    # drew an inverse-default band, which this check used to accept).
+    assert region(data, 500, 616, 400, 28).count((52, 68, 84)) > 10000, 'mode line band absent'
+    assert ink(data, 12, 616, 360, 28, (52, 68, 84)) > 300, 'mode line text absent'
+    assert region(data, 500, 616, 400, 28).count(FG) == 0, 'mode line face ignored'
     assert ink(data, 0, 644, 192, 28) > 300, 'minibuffer row absent'
     actual_cursor = [(i % 960, i // 960) for i, p in enumerate(data) if p == CURSOR]
     expected_cursor = [(x, y) for y in range(28, 56) for x in range(cursor_col*12, cursor_col*12+2)]

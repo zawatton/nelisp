@@ -412,7 +412,8 @@ fix already applied to `emacs-font-lock-builtins.el' /
 Batch windows have an initial end distance of zero from the buffer end."
     (let* ((w (emacs-window-builtins--window window))
            (buffer (window-buffer w)))
-      (if noninteractive
+      (if (and noninteractive
+               (null (emacs-window-window-parameter w 'emacs-redisplay-window-end)))
           (1+ (if (nelisp-ec-buffer-p buffer)
                   (nelisp-ec-buffer-size buffer)
                 (buffer-size buffer)))

@@ -193,12 +193,12 @@ def corpus():
         ('empty-buffer', '', ''),
         ('short-lines', 'alpha\nbeta\ngamma\n', ''),
         ('wrap-long', long+'\nEND\n', ''),
-        ('truncate-long', long+'\nEND\n', '(setq-local truncate-lines t)'),
+        ('truncate-long', long+'\nEND\n', '(parity-local truncate-lines t)'),
         ('wrap-exact-edge', 'x'*79+'\nEND', ''),
         ('wrap-multiple', 'x'*160+'\nEND', ''),
         ('invisible-text', 'abHIDDENcd\n', "(put-text-property 3 9 'invisible t)"),
-        ('invisible-inactive', 'abVISIBLEcd\n', "(setq-local buffer-invisibility-spec nil) (put-text-property 3 10 'invisible 'hide)"),
-        ('invisible-ellipsis', 'abHIDDENcd\n', "(setq-local buffer-invisibility-spec '((hide . t))) (put-text-property 3 9 'invisible 'hide)"),
+        ('invisible-inactive', 'abVISIBLEcd\n', "(parity-local buffer-invisibility-spec nil) (put-text-property 3 10 'invisible 'hide)"),
+        ('invisible-ellipsis', 'abHIDDENcd\n', "(parity-local buffer-invisibility-spec '((hide . t))) (put-text-property 3 9 'invisible 'hide)"),
         ('invisible-newline', 'abHIDDEN\ncd\n', "(put-text-property 3 10 'invisible t)"),
         ('display-string', 'abXcd\n', "(put-text-property 3 4 'display \"REPLACED\")"),
         ('display-range', 'abXXXXcd\n', "(put-text-property 3 7 'display \"R\")"),
@@ -210,34 +210,85 @@ def corpus():
         ('overlay-empty', 'abcd\n', '(let ((o (make-overlay 3 3))) (overlay-put o \'before-string "<") (overlay-put o \'after-string ">"))'),
         ('overlay-invisible', 'abHIDDENcd\n', "(let ((o (make-overlay 3 9))) (overlay-put o 'invisible t))"),
         ('tabs', 'a\tb\tcc\n\tEND\n', ''),
-        ('tabs-local-width', 'a\tb\tcc\n', '(setq-local tab-width 4)'),
+        ('tabs-local-width', 'a\tb\tcc\n', '(parity-local tab-width 4)'),
         ('wide-japanese', '日本語の表示\nA日本B\n', ''),
         ('wide-wrap', '日'*45+'\nEND', ''),
         ('faces', 'bold under reverse plain\n', "(put-text-property 1 5 'face 'bold) (put-text-property 6 11 'face 'underline) (put-text-property 12 19 'face 'parity-inverse)"),
         ('face-tabs', 'a\tB\n', "(put-text-property 2 3 'face 'underline)"),
-        ('header-line', 'body\nnext\n', '(setq-local header-line-format \'(" HEADER %b "))'),
-        ('mode-line-default', 'body\n', '(setq-local mode-line-format parity-default-mode-line)'),
+        ('header-line', 'body\nnext\n', '(parity-local header-line-format \'(" HEADER %b "))'),
+        ('mode-line-default', 'body\n', '(parity-local mode-line-format parity-default-mode-line)'),
         ('split-right', 'left\nbody\n', '(parity-split \'right)'),
         ('split-below', 'top\nbody\n', '(parity-split \'below)'),
         ('minibuffer-prompt', 'body\n', '(setq parity-prompt "Prompt: value")'),
         ('point-scroll', lines, '(goto-char (point-max))'),
         ('window-start', lines, '(goto-char 161) (set-window-start (selected-window) 161)'),
+        ('header-eval', 'body\nnext\n', '(parity-local header-line-format \'("Header " (:eval (buffer-name)) " %l"))'),
+        ('header-styled-eval', 'body\n', '(parity-local header-line-format \'("plain " (:propertize (:eval "bold") face bold) " tail"))'),
+        ('line-numbers', lines, '(display-line-numbers-mode 1)'),
+        ('line-numbers-relative', lines, '(display-line-numbers-mode 1) (parity-local display-line-numbers \'relative) (goto-char 41)'),
+        ('line-numbers-split', 'first\nsecond\nthird\n', "(display-line-numbers-mode 1) (parity-split 'right)"),
+        ('line-numbers-wrap', long+'\nEND\n', '(display-line-numbers-mode 1)'),
+        ('tabs-width-two', 'a\tb\t  c\n\tEND\n', '(parity-local tab-width 2)'),
+        ('tabs-width-sixteen', 'a\tb\t c\n', '(parity-local tab-width 16)'),
+        ('whitespace-mixed', '  leading\twords  \n\t\tindented\nend  ', '(parity-local tab-width 3)'),
+        ('japanese-long-wrap', '日常の作業と編集'*18+'\n終わり\n', ''),
+        ('japanese-mixed-wrap', ('日本 abc 語 XYZ '*14)+'\nEND', '(parity-local word-wrap t)'),
+        ('scroll-many-bottom', ''.join('row %03d\n'%i for i in range(1,301)), '(goto-char (point-max))'),
+        ('scroll-many-middle', ''.join('row %03d\n'%i for i in range(1,301)), '(goto-char 1601) (set-window-start (selected-window) 1601)'),
+        ('fill-column-indicator-off', 'x'*100+'\nEND', '(parity-local display-fill-column-indicator nil) (parity-local fill-column 20)'),
+        ('selective-display-indent', 'top\n  hidden one\n    hidden two\nnext\n', '(parity-local selective-display 2) (parity-local selective-display-ellipses t)'),
+        ('selective-display-cr', 'visible\rhidden suffix\nnext\n', '(parity-local selective-display t) (parity-local selective-display-ellipses t)'),
+        ('overlay-face-priority', 'abcdefghijk\n', "(let ((a (make-overlay 2 9)) (b (make-overlay 4 7))) (overlay-put a 'face 'bold) (overlay-put a 'priority 1) (overlay-put b 'face 'underline) (overlay-put b 'priority 10))"),
+        ('overlay-face-cons-priority', 'abcdefghijk\n', "(let ((a (make-overlay 2 9)) (b (make-overlay 4 7))) (overlay-put a 'face 'bold) (overlay-put a 'priority '(nil . 2)) (overlay-put b 'face 'underline) (overlay-put b 'priority '(nil . 5)))"),
+        ('region-highlight', 'alpha beta\ngamma delta\n', '(setq transient-mark-mode t) (set-mark 18) (goto-char 4) (setq mark-active t deactivate-mark nil)'),
+        ('isearch-lazy-highlight', 'find match and match again\n', "(let ((a (make-overlay 6 11)) (b (make-overlay 16 21))) (overlay-put a 'face 'lazy-highlight) (overlay-put b 'face 'lazy-highlight))"),
+        ('minibuffer-long-prompt', 'body\n', '(setq parity-prompt "A long prompt for a daily editing command with several descriptive words and a file name to complete: value")'),
+        ('completions-buffer', 'Click on a completion to select it.\nIn this buffer, type RET to select the completion near point.\n\nPossible completions are:\nalpha      beta       gamma      delta\nepsilon    zeta       eta        theta\n', '(rename-buffer "*Completions*" t)'),
+        ('completions-wide', 'Possible completions are:\n日本語候補    alpha-long-name    beta-long-name\n別の候補      gamma-long-name    delta-long-name\n', '(rename-buffer "*Completions*" t)'),
+        ('mode-line-fields', lines, '(parity-local mode-line-format \'("%*%+ %12b %p L%l C%c (%m) %-")) (goto-char 41)'),
+        ('mode-line-scroll-middle', lines, '(parity-local mode-line-format parity-default-mode-line) (goto-char 201) (set-window-start (selected-window) 201)'),
+        ('mode-line-scroll-bottom', lines, '(parity-local mode-line-format parity-default-mode-line) (goto-char (point-max))'),
+        ('mode-line-minor-modes', 'body\n', '(parity-local mode-line-format parity-default-mode-line) (parity-local mode-name "Text" major-mode \'text-mode) (parity-local minor-mode-alist \'((parity-minor " Minor"))) (parity-local parity-minor t)'),
+        ('mode-line-inactive-face', 'body\n', '(parity-split \'below) (parity-face \'mode-line-inactive :inverse-video nil :underline t) (parity-local mode-line-format parity-default-mode-line)'),
+        ('erase-display-properties', 'ab', "(put-text-property 1 3 'display \"X\") (erase-buffer) (insert \"abcdefghijkl\") (goto-char 1)"),
     ]
 
 
 COMMON = r'''
 (defvar parity-nelisp nil)
+;; The standalone prelude's setq-local is a placeholder.  Establish real
+;; local cells through the public buffer owner before writing their values.
+(defmacro parity-local (&rest pairs)
+  (let (forms)
+    (while pairs
+      (let ((sym (pop pairs)) (value (pop pairs)))
+        (push `(if parity-nelisp
+                   (emacs-buffer-set-buffer-local-toplevel-value ',sym ,value)
+                 (set (make-local-variable ',sym) ,value)) forms)))
+    (cons 'progn (nreverse forms))))
 (defvar parity-prompt nil)
+(defvar parity-state-path nil)
+(defun parity-face (face &rest properties)
+  (if parity-nelisp (emacs-redisplay-defface face properties)
+    (apply #'set-face-attribute face nil properties)))
+(defun parity-window-state ()
+  (mapcar (lambda (w) (list (window-start w) (window-end w) (window-point w)
+                            (window-total-width w) (window-total-height w)))
+          (window-list nil 'nomini)))
+(defun parity-save-state ()
+  (let ((state (parity-window-state)))
+    (when parity-state-path
+      (with-temp-file parity-state-path (prin1 state (current-buffer))))))
 (defvar parity-default-mode-line (default-value 'mode-line-format))
 (defun parity-buffer (name text)
   (let ((b (get-buffer-create name)))
     (set-buffer b) (erase-buffer) (insert text) (goto-char 1)
-    (setq-local truncate-lines nil)
-    (setq-local word-wrap nil)
-    (setq-local tab-width 8)
-    (setq-local buffer-invisibility-spec t)
-    (setq-local mode-line-format '(" %b "))
-    (setq-local header-line-format nil)
+    (parity-local truncate-lines nil)
+    (parity-local word-wrap nil)
+    (parity-local tab-width 8)
+    (parity-local buffer-invisibility-spec t)
+    (parity-local mode-line-format '(" %b "))
+    (parity-local header-line-format nil)
     b))
 (defun parity-split (side)
   (let ((w (selected-window)) (b (current-buffer))
@@ -254,10 +305,13 @@ GNU_INIT = r'''
 (dolist (entry '((mode-line :inverse-video t) (mode-line-inactive :inverse-video t)
                  (header-line :inverse-video t) (bold :weight bold)
                  (underline :underline t) (parity-inverse :inverse-video t)
-                 (escape-glyph :weight normal) (vertical-border :weight normal)))
+                 (escape-glyph :weight normal) (vertical-border :weight normal) (region :underline t)
+                 (lazy-highlight :weight bold) (line-number :weight normal)
+                 (line-number-current-line :weight bold)))
   (unless (facep (car entry)) (make-face (car entry))))
 (dolist (face '(mode-line mode-line-inactive header-line bold underline
-                         parity-inverse escape-glyph vertical-border))
+                         parity-inverse escape-glyph vertical-border region lazy-highlight
+                         line-number line-number-current-line))
   (set-face-attribute face nil :inherit nil :foreground 'unspecified
                       :background 'unspecified :weight 'normal :slant 'normal
                       :underline nil :inverse-video nil))
@@ -267,6 +321,9 @@ GNU_INIT = r'''
 (set-face-attribute 'bold nil :weight 'bold)
 (set-face-attribute 'underline nil :underline t)
 (set-face-attribute 'parity-inverse nil :inverse-video t)
+(set-face-attribute 'region nil :underline t)
+(set-face-attribute 'lazy-highlight nil :weight 'bold)
+(set-face-attribute 'line-number-current-line nil :weight 'bold)
 '''
 
 NELISP_RENDER = r'''
@@ -281,9 +338,12 @@ NELISP_RENDER = r'''
     (when parity-prompt
       (let* ((saved (current-buffer))
              (b (parity-buffer " *Minibuf*" parity-prompt))
+             (height (min (max 1 (/ lines 4))
+                          (1+ (/ (max 0 (1- (string-width parity-prompt))) (1- cols)))))
              (mini (emacs-window--make :id -1 :leaf-p t :buffer b
-                    :point 1 :start 1 :total-cols cols :total-lines 1
-                    :top-line (1- lines))))
+                    :point (1+ (length parity-prompt)) :start 1 :total-cols cols :total-lines height
+                    :top-line (- lines height) :parameters '((minibuffer . t)))))
+        (emacs-window-layout-frame cols lines 0 height)
         (setq windows (append windows (list mini)))
         (set-buffer saved)))
     (dotimes (r lines) (aset grid r (make-vector cols nil)))
@@ -314,14 +374,15 @@ NELISP_RENDER = r'''
       (princ "ROW|")
       (prin1 (aref grid r))
       (princ "\n"))
-    (princ "PARITY-GRID-END\n")))
+    (princ "PARITY-GRID-END\n")
+    (princ "STATE|") (prin1 (parity-window-state)) (princ "\n")))
 '''
 
 
 def setup_case(name, text, form):
     return '\n'.join([
         '(delete-other-windows)',
-        '(switch-to-buffer (parity-buffer "parity" %s))' % lisp_string(text),
+        '(set-window-buffer (selected-window) (parity-buffer "parity" %s))' % lisp_string(text),
         '(setq parity-prompt nil)', form,
         # Set window point after property/setup forms.  This avoids an unrelated
         # difference in selected-window bookkeeping leaking into the renderer.
@@ -388,9 +449,18 @@ def image_path(lib, binary):
     return Path(result.stdout.strip())
 
 
+def engine_identity(base, engine):
+    # The full engine loads its explicit shim after the reduced bootstrap.
+    shim = engine.with_name('emacs-redisplay-builtins.el')
+    pieces = [base.name, hashlib.sha256(engine.read_bytes()).hexdigest()]
+    if shim.is_file():
+        pieces.append(hashlib.sha256(shim.read_bytes()).hexdigest())
+    return hashlib.sha256('\n'.join(pieces).encode()).hexdigest()
+
+
 def engine_image(lib, binary, base, engine, cache, timeout):
     cache.mkdir(parents=True, exist_ok=True)
-    key = hashlib.sha256((base.name + hashlib.sha256(engine.read_bytes()).hexdigest()).encode()).hexdigest()
+    key = engine_identity(base, engine)
     # Independent invocations may share a cache, including negative controls.
     with (cache/(key+'.lock')).open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -401,7 +471,7 @@ def _engine_image_unlocked(lib, binary, base, engine, cache, timeout):
     """Snapshot the unchanged full engine once; no compilation or native build."""
     cache.mkdir(parents=True, exist_ok=True)
     source_hash = hashlib.sha256(engine.read_bytes()).hexdigest()
-    key = hashlib.sha256((base.name + source_hash).encode()).hexdigest()
+    key = engine_identity(base, engine)
     image = cache/(key+'.flat')
     if image.is_file() and image.stat().st_size:
         return image, key
@@ -456,7 +526,17 @@ def nelisp_capture(lib, binary, image, file, timeout):
             char, attr = (32, 0) if token[0] == 'nil' else (int(token[1]), int(token[2]))
             cells.append([chr(char) if char else '', attr])
         grid.append(cells)
-    return grid
+    state_lines = [line[6:] for line in output.splitlines() if line.startswith('STATE|')]
+    if len(state_lines) != 1:
+        raise RuntimeError('NeLisp window state missing')
+    return grid, parse_window_state(state_lines[0])
+
+
+def parse_window_state(text):
+    if not re.fullmatch(r'\(\s*(?:\(\d+(?: \d+){4}\)\s*)+\)', text.strip()):
+        raise RuntimeError('Malformed window state: '+text[:200])
+    numbers = [int(n) for n in re.findall(r'\d+', text)]
+    return [numbers[i:i+5] for i in range(0, len(numbers), 5)]
 
 
 def self_test():
@@ -476,6 +556,12 @@ def self_test():
     assert not face['passed'] and (face['characters'], face['faces']) == (0, 1)
     assert char['first_differences'][0]['col'] == 0
     assert face['first_differences'][0]['nelisp'] == ['x',1]
+    assert parse_window_state('((1 8 1 80 23) (1 3 2 40 11))') == [[1,8,1,80,23],[1,3,2,40,11]]
+    try:
+        parse_window_state('((1 2 3))')
+        raise AssertionError('bad state accepted')
+    except RuntimeError:
+        pass
     print('emulator self-test: PASS (streaming, wide cells, wrap, SGR, erase)')
 
 
@@ -505,6 +591,7 @@ def run(args):
     source_hash = hashlib.sha256(engine.read_bytes()).hexdigest()
     out = args.output.resolve(); out.mkdir(parents=True, exist_ok=True)
     base_image = image
+    bundle_hash = hashlib.sha256((lib/'build/nemacs-bootstrap.el').read_bytes()).hexdigest()
     image, engine_key = engine_image(lib, binary, image, engine, out.parent/'redisplay-engine-images', args.timeout)
     if source_hash != hashlib.sha256(engine.read_bytes()).hexdigest():
         raise RuntimeError('engine changed before measurement; retry with a stable source')
@@ -519,30 +606,34 @@ def run(args):
             gnu_file, nelisp_file = out/(label+'.gnu.el'), out/(label+'.nelisp.el')
             setup = setup_case(name, text, form)
             gnu_file.write_text(';;; -*- lexical-binding: t; -*-\n'+COMMON+GNU_INIT+
+                '(setq parity-state-path %s)\n' % lisp_string(str(gnu_file.with_suffix('.state')))+
                 # Startup echo text can grow the 40-column minibuffer before
                 # split-window runs.  Restore fixed geometry before setup.
                 '\n(run-with-timer 0.1 nil (lambda ()\n(message nil)\n(redisplay t)\n'+setup+
                 '\n(message nil)\n(redisplay t)\n'+
-                '(if parity-prompt\n (minibuffer-with-setup-hook\n  (lambda () (insert "value") (redisplay t)\n   (send-string-to-terminal "\\e]777;REDISPLAY-PARITY-DONE\\a"))\n  (read-from-minibuffer "Prompt: "))\n (send-string-to-terminal "\\e]777;REDISPLAY-PARITY-DONE\\a"))))\n')
+                '(if parity-prompt\n (minibuffer-with-setup-hook\n  (lambda () (insert "value") (redisplay t)\n   (parity-save-state) (send-string-to-terminal "\\e]777;REDISPLAY-PARITY-DONE\\a"))\n  (read-from-minibuffer (substring parity-prompt 0 (- (length parity-prompt) 5))))\n (progn (parity-save-state) (send-string-to-terminal "\\e]777;REDISPLAY-PARITY-DONE\\a")))))\n')
             # The same corpus forms run against the library's standard shim.
             nelisp_file.write_text(';;; -*- lexical-binding: t; -*-\n(progn\n'+
                 '(unless (equal redisplay-parity--engine-key %s) (error \"Engine image identity mismatch\"))\n' % lisp_string(engine_key)+
                 COMMON+NELISP_RENDER+
                 '(setq parity-nelisp t)\n'+
-                '(dolist (entry \'((bold :weight bold) (underline :underline t) (parity-inverse :inverse-video t) (header-line :inverse-video t))) (emacs-redisplay-defface (car entry) (cdr entry)))\n'+
+                '(dolist (entry \'((bold :weight bold :inverse-video nil :underline nil) (underline :underline t :weight normal :inverse-video nil) (parity-inverse :inverse-video t) (header-line :inverse-video t) (region :underline t) (lazy-highlight :weight bold) (line-number :weight normal) (line-number-current-line :weight bold))) (emacs-redisplay-defface (car entry) (cdr entry)))\n'+
                 '(emacs-window-layout-frame %d %d 0)\n' % (width, height)+setup+
                 '\n(parity-render %d %d)\nt)\n' % (width, height))
             try:
                 gnu, raw = gnu_capture(args.emacs, gnu_file, width, height, args.timeout)
                 gnu_file.with_suffix('.raw').write_bytes(raw)
                 save_grid(out/(label+'.gnu.json'), gnu)
-                nelisp = nelisp_capture(lib, binary, image, nelisp_file, args.timeout)
+                nelisp, nelisp_state = nelisp_capture(lib, binary, image, nelisp_file, args.timeout)
+                gnu_state = parse_window_state(gnu_file.with_suffix('.state').read_text())
                 if len(nelisp) != height or any(len(row) != width for row in nelisp): raise RuntimeError('wrong grid dimensions')
                 save_grid(out/(label+'.nelisp.json'), nelisp)
-                row = dict(case=label, **compare_grids(gnu, nelisp))
+                row = dict(case=label, **compare_grids(gnu, nelisp), gnu_windows=gnu_state, nelisp_windows=nelisp_state)
+                row['window_state_passed'] = gnu_state == nelisp_state
+                row['passed'] = row['passed'] and row['window_state_passed']
                 chars, faces, diff = row['characters'], row['faces'], row['first_differences']
                 print('%s %s chars=%d faces=%d%s' % ('PASS' if row['passed'] else 'FAIL', label, chars, faces,
-                      (' first='+str(diff[0])) if diff else ''), flush=True)
+                      ((' first='+str(diff[0])) if diff else '') + (' windows='+str((gnu_state, nelisp_state)) if gnu_state != nelisp_state else '')), flush=True)
             except (RuntimeError, OSError, subprocess.SubprocessError) as error:
                 row = dict(case=label, passed=False, error=str(error))
                 print('ERROR %s %s' % (label, error), flush=True)
@@ -557,7 +648,7 @@ def run(args):
                   engine_sha256=source_hash,
                   harness_sha256=harness_hash, elapsed_seconds=time.monotonic()-started,
                   binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
-                  bundle_sha256=hashlib.sha256((lib/'build/nemacs-bootstrap.el').read_bytes()).hexdigest(),
+                  bundle_sha256=bundle_hash,
                   cases=result_rows)
     (out/'report.json').write_text(json.dumps(report, indent=2)+'\n')
     print('S2.1: %d/%d case-size pairs identical; report=%s' % (report['passed'], report['total'], out/'report.json'))

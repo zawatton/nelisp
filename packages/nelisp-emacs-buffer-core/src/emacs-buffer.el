@@ -2124,6 +2124,23 @@ Checks read-only text and shifts/shrinks text-property intervals."
                     (indirect-function 'nelisp-ec-delete-region))))
   (advice-add 'delete-region :around #'emacs-buffer--delete-region-around-advice))
 
+(defun emacs-buffer--native-erase-around-advice (orig &rest args)
+  "Clear the native buffer's property sidecar after successful erasure.
+Erasure removes all text, including hidden narrowed text.  Keeping the empty
+sidecar authoritative also prevents obsolete native properties from being
+read back after a subsequent insertion.  Failed erasures retain their state."
+  (let ((buffer (current-buffer)))
+    (prog1 (apply orig args)
+      (let ((ext (gethash buffer emacs-buffer--state)))
+        (when ext
+          (emacs-buffer--set-ext-text-props ext nil)
+          (emacs-buffer--increment-ext-modified-tick ext)
+          (cl-incf (emacs-buffer--ext-text-tick ext)))))))
+
+(when (and (fboundp 'nelisp--buffer-multibyte-p)
+           (fboundp 'erase-buffer))
+  (advice-add 'erase-buffer :around #'emacs-buffer--native-erase-around-advice))
+
 ;; The standalone runtime may retain its native `insert' primitive while the
 ;; compatibility implementation lives under `nelisp-ec-insert'.  In that
 ;; configuration, advising only the compatibility function misses normal Lisp

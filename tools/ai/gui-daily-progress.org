@@ -23,6 +23,8 @@ change to the criteria list is recorded in a NOTE.
 
 #+NOTE: 2026-10-05 timeouts: the meter's 55 s default killed S1.4/S2.1/S3.2, so each got #+TIMEOUT (400/600/600) with inner limits below it; tools/redisplay-layout-parity.py runs cases concurrently (--jobs, default 4; sequential 962 s -> 263 s, same 62/64); tools/c-core-image.sh gives a C_CORE_IMAGE_BUNDLE build its own cache directory because building prunes other images (the GUI and C-core images were evicting each other).  Measured 20.0% of 15 (S1.4, S3.1, S3.2 pass; S2.1 known red).
 
+#+NOTE: 2026-10-05 lane S2b integrated: layout parity 122/122 (original 64/64 plus 29 new cases x 2 sizes: mode line default format, header-line :eval, line numbers, tabs, wrapped Japanese, scrolling, region/isearch faces, completions), erase-buffer now drops display properties; layout run 397 s at 4 jobs; pty 3/3; C-core parity 7/7.  The S3.2 gate asserted the old engine's inverse-default mode-line band, which ignored the fixture's mode-line face; it now requires the fixture colors (#344454) and rejects the inverse band (the old engine is the negative control).  S3.2 8/8 again.
+
 * S1 Shared interactive foundation
 
 ** S1.1 One event wait drives read-event: keys, timers, idle timers and process output (sit-for, sleep-for, input-pending-p behave as GNU)

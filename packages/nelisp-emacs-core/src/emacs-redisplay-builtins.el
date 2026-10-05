@@ -45,6 +45,18 @@
 
 (require 'emacs-redisplay)
 
+(defvar display-line-numbers nil
+  "Whether the current buffer displays line numbers.")
+(defvar display-line-numbers-mode nil
+  "Whether the current buffer's line-number mode is enabled.")
+(defvar display-line-numbers-type t
+  "Kind of numbers enabled by `display-line-numbers-mode'.")
+
+(when (or (not (fboundp 'display-line-numbers-mode))
+          (get 'display-line-numbers-mode 'emacs-stub-bulk))
+  (defalias 'display-line-numbers-mode #'emacs-redisplay-display-line-numbers-mode)
+  (put 'display-line-numbers-mode 'emacs-stub-bulk nil))
+
 ;;;; --- current-handle slot -------------------------------------------
 
 (defvar emacs-redisplay--current-handle nil
