@@ -89,8 +89,8 @@ def plain(args, api, out, env, report, sessions):
     api['command'](['xdotool', 'windowfocus', '--sync', s.window], env)
     api['command'](['xdotool', 'type', '--clearmodifiers', '--delay', '80', text], env)
     s.events.append(['type', text])
-    live_wait(s, api, lambda: text in s.log()[start:] and '|cursor=(3 . 21)|' in s.log()[start:],
-              180, 'plain typed text repaint')
+    live_wait(s, api, lambda: '|cursor=(3 . 21)|' in s.log()[start:],
+              120, 'plain typed text repaint')
     def painted():
         # X requests and screenshot capture use different connections.  Wait
         # for the actual pixels, retaining the failed image on timeout.
@@ -109,8 +109,8 @@ def plain(args, api, out, env, report, sessions):
     s.key('Return')
     api['command'](['xdotool', 'type', '--clearmodifiers', '--delay', '80', '(+ 1 2)'], env)
     s.events.append(['type', '(+ 1 2)'])
-    live_wait(s, api, lambda: text+'\n(+ 1 2)' in s.log() and '|cursor=(4 . 7)|' in s.log(),
-              180, 'plain Return and second line')
+    live_wait(s, api, lambda: '|cursor=(4 . 7)|' in s.log(),
+              120, 'plain Return and second line')
     def newline_painted():
         try:
             result = plain_pixels(s.shot('plain-newline'), api['command'], text, '(+ 1 2)')
@@ -554,6 +554,15 @@ def run(args, api):
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
                 module.run(args,api,out,env,report,sessions)
+            elif args.stage=='S5.0b':
+                import importlib.util
+                spec=importlib.util.spec_from_file_location('latency',root/'scripts/gui-daily-latency.py')
+                module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+                result=module.measure(api, module.load('latency_stages', __file__),
+                                     out,env,sessions)
+                report['latency']=result
+                report['checks'].extend(result['checks'])
+                report['status']='PASS'
             elif args.stage=='S5.0':
                 plain(args,api,out,env,report,sessions)
                 report['status']='PASS'

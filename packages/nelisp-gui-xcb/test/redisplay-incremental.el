@@ -1,0 +1,176 @@
+;;; redisplay-incremental.el --- Shared row reuse and GUI damage regressions -*- lexical-binding: t; -*-
+(require 'ert)
+(require 'cl-lib)
+(require 'emacs-redisplay)
+(require 'nelisp-gui-pango)
+
+(defmacro gui-incremental--world (&rest body)
+  `(let ((nelisp-ec--buffers nil) (nelisp-ec--current-buffer nil)
+         (emacs-window--id-counter 0) (emacs-window--root nil) (emacs-window--selected nil)
+         (emacs-redisplay-paint-mode-line-p nil))
+     ,@body))
+
+(ert-deftest gui-incremental/source-lines-reuse-and-lazy-positions ()
+  (gui-incremental--world
+   (let* ((b (nelisp-ec-generate-new-buffer "incremental"))
+          (nelisp-ec--current-buffer b)
+          (_ (nelisp-ec-insert "alpha\nbeta\ngamma\n"))
+          (w (emacs-window-selected-window)) (h (emacs-redisplay-init)))
+     (emacs-window-set-window-buffer w b)
+     (emacs-window-set-window-point w 1)
+     (let* ((m (emacs-redisplay-redisplay-window h w))
+            (rows (emacs-redisplay-glyph-matrix-rows m))
+            (beta (emacs-redisplay-glyph-row-glyphs (aref rows 1)))
+            (tokens (symbol-function 'emacs-redisplay--display-tokens)) (calls 0))
+       (nelisp-ec-goto-char 1) (nelisp-ec-insert "X")
+       (emacs-window-set-window-point w 2)
+       (cl-letf (((symbol-function 'emacs-redisplay--display-tokens)
+                  (lambda (&rest args) (setq calls (1+ calls)) (apply tokens args))))
+         (emacs-redisplay-redisplay-window h w))
+       (should (= calls 1))
+       (should (eq beta (emacs-redisplay-glyph-row-glyphs (aref rows 1))))
+       (should (= 8 (emacs-redisplay--effective-buf-pos (aref rows 1) (aref beta 0))))
+       (should-not (aref (emacs-redisplay-glyph-matrix-dirty-set m) 1))
+       (should (equal '(0 . 1) (emacs-redisplay-glyph-matrix-cursor m)))))))
+
+(ert-deftest gui-incremental/large-viewport-does-not-read-full-buffer ()
+  (gui-incremental--world
+   (let* ((b (generate-new-buffer " *incremental-native*"))
+          (w (emacs-window-selected-window)) (h (emacs-redisplay-init))
+          (emacs-redisplay-truncate-lines nil))
+     (unwind-protect
+         (progn
+           (with-current-buffer b
+             (insert (make-string 100000 ?a))
+             (setq truncate-lines nil word-wrap nil mode-line-format nil)
+             (goto-char 2))
+           (emacs-window-set-window-buffer w b)
+           (emacs-window-set-window-point w 2)
+           (cl-letf (((symbol-function 'emacs-redisplay--buffer-string)
+                      (lambda (&rest _) (ert-fail "full-buffer read"))))
+             (let ((m (emacs-redisplay-redisplay-window h w)))
+               (should (equal '(0 . 1) (emacs-redisplay-glyph-matrix-cursor m)))
+               (should (= (emacs-window-window-height w) (length (emacs-redisplay-glyph-matrix-rows m)))))))
+       (kill-buffer b)))))
+
+(ert-deftest gui-incremental/paint-restores-cursor-and-reuses-cell-rows ()
+  (gui-incremental--world
+   (let* ((b (nelisp-ec-generate-new-buffer "damage"))
+          (nelisp-ec--current-buffer b) (_ (nelisp-ec-insert "alpha\nbeta\n"))
+          (w (emacs-window-selected-window)) (h (emacs-redisplay-init))
+          (r (vector 0 0 0 0 nil 80 25 (vector 0)
+                     nil nil nil (make-vector 4 nil)))
+          (nelisp-gui-pango-force-paint t) (mark-active nil) (draws nil))
+     (emacs-window-set-window-buffer w b)
+     (emacs-window-set-window-point w 1)
+     (cl-letf (((symbol-function 'nelisp-gui-xcb-check) (lambda (&rest _) t))
+               ((symbol-function 'nelisp-gui-xcb-call) (lambda (&rest _) 0))
+               ((symbol-function 'nelisp-gui-pango--source) (lambda (&rest _) nil))
+               ((symbol-function 'nelisp-gui-pango--rect) (lambda (&rest _) nil))
+               ((symbol-function 'nelisp-gui-menu-paint) (lambda (&rest _) nil))
+               ((symbol-function 'nelisp-gui-pango-row)
+                (lambda (_r _row _left top _width) (push top draws))))
+       (nelisp-gui-pango-paint r h)
+       (should (= (length draws) (emacs-window-window-height w)))
+       (let ((cells (aref (aref (cdr (assq (emacs-window-id w) (aref r 8))) 1) 1)))
+         (setq draws nil)
+         (nelisp-gui-pango-paint r h)
+         (should (equal draws '(0)))
+         (should (eq cells (aref (aref (cdr (assq (emacs-window-id w) (aref r 8))) 1) 1))))
+       (setq draws nil)
+       (emacs-window-set-window-point w 7)
+       (nelisp-gui-pango-paint r h)
+       (should (equal (sort draws #'<) '(0 1)))
+       (setq draws nil nelisp-gui-pango-force-paint t)
+       (nelisp-gui-pango-paint r h)
+       (should (= (length draws) (emacs-window-window-height w)))))))
+
+(ert-deftest gui-incremental/face-spans-reuse-with-shift-and-invalidate-on-change ()
+  (gui-incremental--world
+   (let* ((b (generate-new-buffer " *incremental-faces*"))
+          (w (emacs-window-selected-window)) (h (emacs-redisplay-init)))
+     (unwind-protect
+         (progn
+           (with-current-buffer b
+             (insert "alpha\nbeta\ngamma\n")
+             (put-text-property 7 11 'face '(:underline t))
+             (setq mode-line-format nil)
+             (goto-char 1))
+           (emacs-window-set-window-buffer w b)
+           (emacs-window-set-window-point w 1)
+           (let* ((m (emacs-redisplay-redisplay-window h w))
+                  (rows (emacs-redisplay-glyph-matrix-rows m))
+                  (beta (emacs-redisplay-glyph-row-glyphs (aref rows 1)))
+                  (glyph (aref beta 0)))
+             (should (cdr (assq :underline (emacs-redisplay-glyph-realized-face glyph))))
+             (with-current-buffer b (insert "X"))
+             (emacs-window-set-window-point w 2)
+             (emacs-redisplay-redisplay-window h w)
+             (should (eq beta (emacs-redisplay-glyph-row-glyphs (aref rows 1))))
+             (should (eq glyph (aref (emacs-redisplay-glyph-row-glyphs (aref rows 1)) 0)))
+             (should (= 8 (emacs-redisplay--effective-buf-pos (aref rows 1) (aref beta 0))))
+             (with-current-buffer b (remove-text-properties 8 12 '(face nil)))
+             (emacs-redisplay-redisplay-window h w)
+             (should-not (eq glyph (aref (emacs-redisplay-glyph-row-glyphs (aref rows 1)) 0)))
+             (should-not (cdr (assq :underline
+                                   (emacs-redisplay-glyph-realized-face
+                                    (aref (emacs-redisplay-glyph-row-glyphs (aref rows 1)) 0)))))))
+       (kill-buffer b)))))
+
+(ert-deftest gui-incremental/region-movement-invalidates-shared-glyphs ()
+  (gui-incremental--world
+   (let* ((b (generate-new-buffer " *incremental-region*"))
+          (w (emacs-window-selected-window)) (h (emacs-redisplay-init)))
+     (unwind-protect
+         (progn
+           (emacs-redisplay-defface 'region '(:underline t))
+           (with-current-buffer b
+             (insert "alpha\nbeta\n")
+             (setq mode-line-format nil transient-mark-mode t)
+             (set-mark 1) (goto-char 4) (setq mark-active t))
+           (emacs-window-set-window-buffer w b)
+           (emacs-window-set-window-point w 4)
+           (let* ((m (emacs-redisplay-redisplay-window h w))
+                  (row (aref (emacs-redisplay-glyph-matrix-rows m) 0)))
+             (should (cdr (assq :underline (emacs-redisplay-glyph-realized-face
+                                           (aref (emacs-redisplay-glyph-row-glyphs row) 2)))))
+             (with-current-buffer b (goto-char 2) (setq mark-active t))
+             (emacs-window-set-window-point w 2)
+             (emacs-redisplay-redisplay-window h w)
+             (should-not (cdr (assq :underline (emacs-redisplay-glyph-realized-face
+                                               (aref (emacs-redisplay-glyph-row-glyphs row) 2)))))))
+       (kill-buffer b)))))
+
+(ert-deftest gui-incremental/cached-propertized-mode-line-keeps-base-face ()
+  (gui-incremental--world
+   (let* ((b (generate-new-buffer " *incremental-mode*"))
+          (w (emacs-window-selected-window)) (h (emacs-redisplay-init))
+          (emacs-redisplay-paint-mode-line-p t))
+     (unwind-protect
+         (progn
+           (emacs-redisplay-defface 'mode-line '(:inverse-video t))
+           (emacs-redisplay-defface 'header-line '(:underline t))
+           (emacs-redisplay-defface 'bold '(:weight bold))
+           (with-current-buffer b
+             (setq mode-line-format '((:propertize "mode" face bold))
+                   header-line-format '((:propertize "head" face bold))))
+           (emacs-window-set-window-buffer w b)
+           (let* ((m (emacs-redisplay-redisplay-window h w))
+                  (rows (emacs-redisplay-glyph-matrix-rows m))
+                  (mode (aref (emacs-redisplay-glyph-row-glyphs
+                               (aref rows (1- (length rows)))) 0))
+                  (header (aref (emacs-redisplay-glyph-row-glyphs (aref rows 0)) 0)))
+             (should (eq (plist-get (emacs-redisplay-glyph-face mode) :weight) 'bold))
+             (should (eq (plist-get (emacs-redisplay-glyph-face header) :weight) 'bold))
+             (should (cdr (assq :reverse (emacs-redisplay-glyph-realized-face mode))))
+             (should (cdr (assq :underline (emacs-redisplay-glyph-realized-face header))))))
+       (kill-buffer b)))))
+
+(ert-deftest gui-incremental/tty-mode-line-custom-format-has-no-unbound-cache ()
+  (gui-incremental--world
+   (let* ((b (nelisp-ec-generate-new-buffer "tty-mode"))
+          (w (emacs-window-selected-window)))
+     (emacs-window-set-window-buffer w b)
+     (emacs-buffer-set-buffer-local-value 'mode-line-format b '(" " "%b" " custom"))
+     (should (equal " tty-mode custom"
+                    (mapconcat #'car (emacs-redisplay-mode-line-spans w 80 1) ""))))))

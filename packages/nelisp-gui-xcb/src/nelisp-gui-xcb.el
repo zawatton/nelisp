@@ -8,8 +8,56 @@
 ;; negotiated XKB event base, input fd, owned pollfd storage.
 ;; No live native pointer is installed while loading/baking this file.
 
+(defvar nelisp-gui-xcb--calls (make-hash-table :test 'eq)
+  "Process-local prepared scalar calls; never populated at image build time.")
+
+(defun nelisp-gui-xcb--scalar-address (name signature)
+  "Retain a scalar address through the public owned libffi descriptor API."
+  (unless (eq (aref signature 0) :double)
+    (let ((library
+           (cond ((string-prefix-p "xcb_xkb_" name) "libxcb-xkb.so.1")
+                 ((string-prefix-p "xcb_" name) "libxcb.so.1")
+                 ((string-prefix-p "xkb_x11_" name) "libxkbcommon-x11.so.0")
+                 ((string-prefix-p "xkb_" name) "libxkbcommon.so.0")
+                 ((string-prefix-p "cairo_" name) "libcairo.so.2")
+                 ((string-prefix-p "pango_" name) "libpangocairo-1.0.so.0")
+                 ((string-prefix-p "g_" name) "libgobject-2.0.so.0")
+                 (t "libc.so.6"))))
+      (aref (nl-ffi-libffi-prepare library name (aref signature 0)
+                                   (cdr (append signature nil))) 1))))
+
 (defun nelisp-gui-xcb-call (name signature &rest args)
-  (apply #'nl-ffi-libffi-scalar name signature args))
+  "Call a fixed GUI scalar ABI, caching resolution and argument classification.
+The existing scalar provider validates the first call.  Later numeric calls
+use the same public ptr-call ABI with six padded arguments.  Aggregate calls
+and doubles beyond position four continue through the libffi adapter."
+  (let* ((key (intern name)) (cached (gethash key nelisp-gui-xcb--calls))
+         (entry (and cached (equal signature (aref cached 3)) cached)))
+    (if (not entry)
+        (let ((result (apply #'nl-ffi-libffi-scalar name signature args))
+              (address (nelisp-gui-xcb--scalar-address name signature)) (mask 0))
+          (when (and address (> address 0))
+            (dotimes (i (length signature))
+              (when (eq (aref signature i) :double)
+                (setq mask (logior mask (if (= i 0) 16 (ash 1 (1- i)))))))
+            (puthash key (vector address mask (1- (length signature)) signature) nelisp-gui-xcb--calls))
+          result)
+      (unless (= (length args) (aref entry 2))
+        (signal 'nl-ffi-wrong-arity (list name (aref entry 2) (length args))))
+      ;; This adapter receives already-owned addresses, never Lisp strings.
+      ;; Retain scalar argument checks before crossing the ABI seam.
+      (let ((i 1) (rest args))
+        (while rest
+          (unless (if (eq (aref signature i) :double) (numberp (car rest))
+                    (integerp (car rest)))
+            (signal 'wrong-type-argument (list 'numberp (car rest))))
+          (when (eq (aref signature i) :double) (setcar rest (float (car rest))))
+          (setq i (1+ i) rest (cdr rest))))
+      (let* ((padded (append args (make-list (- 6 (length args)) 0)))
+             (result (if (= 0 (aref entry 1))
+                         (apply #'ptr-call (aref entry 0) padded)
+                       (apply #'ptr-call-typed (aref entry 0) (aref entry 1) padded))))
+        (if (eq (aref signature 0) :void) nil result)))))
 
 (defun nelisp-gui-xcb-bytes-number (bytes offset count)
   (let ((n 0))
@@ -18,7 +66,7 @@
 (defun nelisp-gui-xcb-check (state)
   "Signal a controlled condition on dead connections, never enter a blocking wait."
   (unless (and (aref state 7) (= 0 (nelisp-gui-xcb-call
-                                 "xcb_connection_has_error" [:sint32 :pointer] (aref state 0))))
+                                    "xcb_connection_has_error" [:sint32 :pointer] (aref state 0))))
     (signal 'nelisp-gui-xcb-error (list 'server-death)))
   t)
 
@@ -63,7 +111,7 @@
         (let ((p (nl-ffi-memory-address o)))
           (ptr-write-u32 p 0 sequence)
           (let ((err (nl-ffi-libffi-call "libxcb.so.1" "xcb_request_check" :pointer
-                                       (list :pointer nelisp-gui-xcb-cookie-type) (aref state 0) p)))
+                                         (list :pointer nelisp-gui-xcb-cookie-type) (aref state 0) p)))
             (when (> err 0)
               (unwind-protect
                   (list (ptr-read-u8 err 1) (nl-ffi-libffi-u32 err 4)
@@ -80,7 +128,7 @@
   "Parse setup only inside its advertised byte bounds; select matching visual."
   (let* ((setup (nelisp-gui-xcb-call "xcb_get_setup" [:pointer :pointer] connection))
          (bytes (nl-ffi-libffi-call "libxcb.so.1" "xcb_setup_roots_iterator"
-                                  '(:struct :pointer :sint32 :sint32) '(:pointer) setup))
+                                    '(:struct :pointer :sint32 :sint32) '(:pointer) setup))
          (screen (nelisp-gui-xcb-bytes-number bytes 0 8))
          (count (nelisp-gui-xcb-bytes-number bytes 8 4))
          (end (+ setup 8 (* 4 (nl-ffi-libffi-u16 setup 6))))
@@ -108,6 +156,7 @@
 
 (defun nelisp-gui-xcb-open (title width height)
   "Create an authenticated, checked, mapped XCB window with server XKB state."
+  (clrhash nelisp-gui-xcb--calls)
   (dolist (lib '("libxcb.so.1" "libcairo.so.2" "libxkbcommon.so.0"
                  "libxkbcommon-x11.so.0" "libxcb-xkb.so.1" "libc.so.6")) (ffi:library lib))
   ;; Cold images may have been baked under another DISPLAY.  The reader's
@@ -129,10 +178,10 @@
     (unwind-protect
         (progn
           (aset state 0 (nelisp-gui-xcb-call "xcb_connect" [:pointer :pointer :pointer]
-                                           0 (nl-ffi-memory-address screen-o)))
+                                             0 (nl-ffi-memory-address screen-o)))
           (nelisp-gui-xcb-check state)
           (let* ((pair (nelisp-gui-xcb--screen (aref state 0)
-                                            (nl-ffi-libffi-u32 (nl-ffi-memory-address screen-o) 0)))
+                                               (nl-ffi-libffi-u32 (nl-ffi-memory-address screen-o) 0)))
                  (screen (car pair)) (visual (cadr pair))
                  (wid (nelisp-gui-xcb-call "xcb_generate_id" [:uint32 :pointer] (aref state 0)))
                  (p (nl-ffi-memory-address params)))
@@ -164,21 +213,21 @@
                     (error "XKB negotiation failed"))
                   (aset state 8 (ptr-read-u8 p 4))
                   (let ((device (nelisp-gui-xcb-call "xkb_x11_get_core_keyboard_device_id"
-                                                   [:sint32 :pointer] (aref state 0))))
+                                                     [:sint32 :pointer] (aref state 0))))
                     (unless (< device 2147483648) (error "XKB device unavailable"))
                     (nelisp-gui-xcb-select-keyboard-events state device)
                     (aset state 4 (nelisp-gui-xcb-call "xkb_context_new" [:pointer :uint32] 0))
                     (aset state 5 (nelisp-gui-xcb-call "xkb_x11_keymap_new_from_device"
-                                                     [:pointer :pointer :pointer :sint32 :uint32]
-                                                     (aref state 4) (aref state 0) device 0))
+                                                       [:pointer :pointer :pointer :sint32 :uint32]
+                                                       (aref state 4) (aref state 0) device 0))
                     (unless (> (aref state 5) 0) (error "XKB server keymap unavailable"))
                     (aset state 6 (nelisp-gui-xcb-call "xkb_x11_state_new_from_device"
-                                                     [:pointer :pointer :pointer :sint32]
-                                                     (aref state 5) (aref state 0) device))
+                                                       [:pointer :pointer :pointer :sint32]
+                                                       (aref state 5) (aref state 0) device))
                     (unless (> (aref state 6) 0) (error "XKB state unavailable"))))
               (nl-ffi-memory-release o)))
           (aset state 9 (nelisp-gui-xcb-call "xcb_get_file_descriptor"
-                                           [:sint32 :pointer] (aref state 0)))
+                                             [:sint32 :pointer] (aref state 0)))
           (aset state 10 (nl-ffi-memory-allocate 8))
           (setq complete t) state)
       (nl-ffi-memory-release screen-o) (nl-ffi-memory-release params)
@@ -190,19 +239,19 @@
   ;; selectAll=7 needs no variable details; all eight map parts are selected.
   (unless (equal (getenv "NELISP_GUI_FAULT") "stale-keymap")
     (nelisp-gui-xcb-checked state "xcb_xkb_select_events_checked"
-                           '(:uint16 :uint16 :uint16 :uint16 :uint16 :uint16 :pointer)
-                           device 7 0 7 255 255 0)))
+                            '(:uint16 :uint16 :uint16 :uint16 :uint16 :uint16 :pointer)
+                            device 7 0 7 255 255 0)))
 
 (defun nelisp-gui-xcb-refresh-keymap (state)
   "Refresh the server device keymap after MappingNotify or focus restoration."
   (let* ((device (nelisp-gui-xcb-call "xkb_x11_get_core_keyboard_device_id"
-                                    [:sint32 :pointer] (aref state 0)))
+                                      [:sint32 :pointer] (aref state 0)))
          (map (nelisp-gui-xcb-call "xkb_x11_keymap_new_from_device"
-                                 [:pointer :pointer :pointer :sint32 :uint32]
-                                 (aref state 4) (aref state 0) device 0))
+                                   [:pointer :pointer :pointer :sint32 :uint32]
+                                   (aref state 4) (aref state 0) device 0))
          (xkb (and (> map 0) (nelisp-gui-xcb-call "xkb_x11_state_new_from_device"
-                                               [:pointer :pointer :pointer :sint32]
-                                               map (aref state 0) device))))
+                                                  [:pointer :pointer :pointer :sint32]
+                                                  map (aref state 0) device))))
     (unless (and xkb (> xkb 0))
       (when (> map 0) (nelisp-gui-xcb-call "xkb_keymap_unref" [:void :pointer] map))
       (error "XKB refresh failed"))
@@ -214,7 +263,8 @@
 
 (defun nelisp-gui-xcb-key (state event)
   "Translate server XKB keysyms and unconsumed modifiers to Emacs events."
-  (let* ((code (ptr-read-u8 event 1)) (mods (nl-ffi-libffi-u16 event 28))
+  (let* ((start (and (boundp 'nelisp-gui-frontend--timing) nelisp-gui-frontend--timing (float-time)))
+         (code (ptr-read-u8 event 1)) (mods (nl-ffi-libffi-u16 event 28))
          (xkb (aref state 6)))
     ;; StateNotify is authoritative for latched/locked modifiers and groups.
     ;; Core events do not always encode the active group; replacing it here
@@ -224,9 +274,9 @@
            (unicode (nelisp-gui-xcb-call "xkb_keysym_to_utf32" [:uint32 :uint32] sym))
            (consumed (nelisp-gui-xcb-call "xkb_state_key_get_consumed_mods" [:uint32 :pointer :uint32] xkb code))
            (named (cdr (assq sym '((65293 . 13) (65288 . 127) (65289 . 9) (65307 . 27)
-                                  (65361 . left) (65363 . right) (65362 . up) (65364 . down)
-                                  (65360 . home) (65367 . end) (65365 . prior) (65366 . next)
-                                  (65535 . delete) (65421 . kp-enter)))))
+                                   (65361 . left) (65363 . right) (65362 . up) (65364 . down)
+                                   (65360 . home) (65367 . end) (65365 . prior) (65366 . next)
+                                   (65535 . delete) (65421 . kp-enter)))))
            (base (or named (and (>= sym 65470) (<= sym 65504)
                                 (intern (format "f%d" (1+ (- sym 65470)))))
                      (and (> unicode 0) unicode)))
@@ -245,6 +295,7 @@
           (setq ev (logand ev (lognot (+ 67108864 255)))))
         (princ (format "GUI-KEY|code=%d|sym=%d|mods=%d|consumed=%d|event=%S|group=%d|\n"
                        code sym mods consumed ev group)))
+      (when start (princ (format "GUI-DECODE-TIME|event=%S|seconds=%.6f|\n" ev (- (float-time) start))))
       ev)))
 
 (defun nelisp-gui-xcb--signed16 (p offset)
@@ -278,18 +329,18 @@ including server death, wakes it immediately.  No Lisp sleep shim is used."
              ((and (fboundp 'nelisp-gui-selection-active-p) (nelisp-gui-selection-active-p)
                    (nelisp-gui-selection-event type p)) '(:ignored t))
              ((= type 0) (signal 'nelisp-gui-xcb-error
-                                (list 'asynchronous (ptr-read-u8 p 1) (nl-ffi-libffi-u32 p 4))))
+                                 (list 'asynchronous (ptr-read-u8 p 1) (nl-ffi-libffi-u32 p 4))))
              ((= type (aref state 8))
               (let ((subtype (ptr-read-u8 p 1)))
                 (cond ((memq subtype '(0 1)) (nelisp-gui-xcb-refresh-keymap state))
                       ((= subtype 2)
                        (nl-ffi-libffi-call "libxkbcommon.so.0" "xkb_state_update_mask" :uint32
-                                            '(:pointer :uint32 :uint32 :uint32 :uint32 :uint32 :uint32)
-                                            (aref state 6) (ptr-read-u8 p 10) (ptr-read-u8 p 11)
-                                            (ptr-read-u8 p 12)
-                                            (logand (nelisp-gui-xcb--signed16 p 14) 4294967295)
-                                            (logand (nelisp-gui-xcb--signed16 p 16) 4294967295)
-                                            (ptr-read-u8 p 18))))
+                                           '(:pointer :uint32 :uint32 :uint32 :uint32 :uint32 :uint32)
+                                           (aref state 6) (ptr-read-u8 p 10) (ptr-read-u8 p 11)
+                                           (ptr-read-u8 p 12)
+                                           (logand (nelisp-gui-xcb--signed16 p 14) 4294967295)
+                                           (logand (nelisp-gui-xcb--signed16 p 16) 4294967295)
+                                           (ptr-read-u8 p 18))))
                 (princ (format "GUI-XKB|notify=%d|\n" subtype)))
               '(:ignored t))
              ((= type 2) (list :key (nelisp-gui-xcb-key state p)))
@@ -328,6 +379,7 @@ including server death, wakes it immediately.  No Lisp sleep shim is used."
   (when (> (aref state 0) 0)
     (nelisp-gui-xcb-call "xcb_disconnect" [:void :pointer] (aref state 0))
     (aset state 0 0))
-  (aset state 7 nil))
+  (aset state 7 nil)
+  (clrhash nelisp-gui-xcb--calls))
 
 (provide 'nelisp-gui-xcb)

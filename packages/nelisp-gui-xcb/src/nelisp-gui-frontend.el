@@ -13,6 +13,33 @@
 (defvar nelisp-gui-frontend--redisplay nil)
 (defvar nelisp-gui-frontend--paint-needed t)
 (defvar nelisp-gui-frontend--prefix [])
+(defvar nelisp-gui-frontend--timing nil)
+(defvar nelisp-gui-frontend--timing-keys 0)
+(defvar nelisp-gui-frontend--timing-decode 0.0)
+(defvar nelisp-gui-frontend--timing-command 0.0)
+(defvar nelisp-gui-frontend--timing-redisplay 0.0)
+(defvar nelisp-gui-frontend--timing-gc-start nil)
+(defvar nelisp-gui-frontend--timing-collections 0)
+(defvar nelisp-gui-frontend--trace-text nil)
+(defvar nelisp-gui-frontend--latency-check nil)
+
+(defun nelisp-gui-frontend--gc-counter ()
+  "Read the existing reader collection counter without changing the collector."
+  (when (fboundp 'nelisp--debug-switch) (nth 7 (nelisp--debug-switch 0))))
+
+(defun nelisp-gui-frontend--timing-dispatch ()
+  "Dispatch one shared command, optionally recording execution and hooks."
+  (let ((collections (and nelisp-gui-frontend--timing (nelisp-gui-frontend--gc-counter)))
+        (start (and nelisp-gui-frontend--timing (float-time))))
+    (nelisp-gui-frontend--dispatch)
+    (when start
+      (let ((elapsed (- (float-time) start))
+            (collected (and collections (- (nelisp-gui-frontend--gc-counter) collections))))
+        (when collected (setq nelisp-gui-frontend--timing-collections
+                              (+ nelisp-gui-frontend--timing-collections collected)))
+        (setq nelisp-gui-frontend--timing-keys (1+ nelisp-gui-frontend--timing-keys)
+              nelisp-gui-frontend--timing-command (+ nelisp-gui-frontend--timing-command elapsed))
+        (princ (format "GUI-KEY-TIME|event=%S|command=%.6f|collections=%S|\n" last-input-event elapsed collected))))))
 
 (defun nelisp-gui-frontend--pure-buffer-p ()
   (nelisp-ec-buffer-p (emacs-window-window-buffer (emacs-window-selected-window))))
@@ -33,7 +60,9 @@ Only adaptation is done here; bounds, motion and edits stay in libraries.")
 (defun nelisp-gui-frontend--pump ()
   "Drain a bounded transport batch and feed canonical events to the shared loop."
   (nelisp-gui-selection-expire)
-  (let ((n 0) (go t))
+  (let ((n 0) (go t)
+        (collections (and nelisp-gui-frontend--timing (nelisp-gui-frontend--gc-counter)))
+        (start (and nelisp-gui-frontend--timing (float-time))))
     (while (and go (< n 64))
       (let ((event (nelisp-gui-selection-poll)))
         (cond
@@ -44,8 +73,8 @@ Only adaptation is done here; bounds, motion and edits stay in libraries.")
           (let* ((raw (plist-get event :pointer))
                  (ev (unless (nelisp-gui-menu-pointer raw)
                        (apply #'emacs-mouse-transport-event
-                            (append (list (cdr (assq (car raw) '((4 . press) (5 . release) (6 . motion)))))
-                                    (cdr raw))))))
+                              (append (list (cdr (assq (car raw) '((4 . press) (5 . release) (6 . motion)))))
+                                      (cdr raw))))))
             (when ev
               (princ (format "GUI-MOUSE|type=%S|pos=%S|xy=%S|\n" (car ev) (nth 1 (nth 1 ev))
                              (nth 2 (nth 1 ev))))
@@ -57,11 +86,18 @@ Only adaptation is done here; bounds, motion and edits stay in libraries.")
               (let ((shape (emacs-frame-pixels-resize frame (car size) (cdr size))))
                 (nelisp-gui-xcb-call "cairo_xcb_surface_set_size" [:void :pointer :sint32 :sint32]
                                      (aref nelisp-gui-frontend--renderer 0) (car size) (cdr size))
-                (setq nelisp-gui-frontend--paint-needed t)
+                (setq nelisp-gui-frontend--paint-needed t nelisp-gui-pango-force-paint t)
                 (princ (format "GUI-RESIZE|width=%d|height=%d|cols=%d|lines=%d|\n"
                                (car size) (cdr size) (car shape) (cdr shape)))))))
-         ((plist-get event :expose) (setq nelisp-gui-frontend--paint-needed t))))
-      (setq n (1+ n)))))
+         ((plist-get event :expose)
+          (setq nelisp-gui-frontend--paint-needed t nelisp-gui-pango-force-paint t))))
+      (setq n (1+ n)))
+    (when start
+      (setq nelisp-gui-frontend--timing-decode
+            (+ nelisp-gui-frontend--timing-decode (- (float-time) start)))
+      (when collections (setq nelisp-gui-frontend--timing-collections
+                              (+ nelisp-gui-frontend--timing-collections
+                                 (- (nelisp-gui-frontend--gc-counter) collections)))))))
 
 (defun nelisp-gui-frontend--pending ()
   (nelisp-gui-frontend--pump)
@@ -104,20 +140,46 @@ Only adaptation is done here; bounds, motion and edits stay in libraries.")
                 (emacs-timer-next-delay maximum) maximum))))
 
 (defun nelisp-gui-frontend--paint ()
-  (let* ((w (emacs-window-selected-window)) (buf (emacs-window-window-buffer w)))
-    ;; Public window API synchronizes its cached point with the shared buffer.
-    (when (eq buf (nelisp-ec-current-buffer))
-      (emacs-window-set-window-point w (nelisp-ec-point)))
-    (when (eq buf (current-buffer)) (set-window-point w (point)))
-    (let ((families (nelisp-gui-pango-paint nelisp-gui-frontend--renderer
-                                         nelisp-gui-frontend--redisplay))
-          (m (emacs-redisplay-glyph-matrix nelisp-gui-frontend--redisplay w)))
-      (when (equal (getenv "NELISP_GUI_FIXTURE") "metrics") (nelisp-gui-metrics-snapshot))
-      (princ (format "GUI-PAINT|window=%d|point=%d|cursor=%S|families=%S|cairo=0|start=%d|popup=%S|\n"
-                     (aref nelisp-gui-frontend--xcb 1) (nelisp-gui-frontend--point)
-                     (emacs-redisplay-glyph-matrix-cursor m) families
-                     (emacs-window-window-start w) (and nelisp-gui-menu--popup t))))
-    (setq nelisp-gui-frontend--paint-needed nil)))
+  (let ((collections (and nelisp-gui-frontend--timing (nelisp-gui-frontend--gc-counter)))
+        (start (and nelisp-gui-frontend--timing (float-time)))
+        (redisplay-before nelisp-gui-frontend--timing-redisplay))
+    (let* ((w (emacs-window-selected-window)) (buf (emacs-window-window-buffer w)))
+      ;; Public window API synchronizes its cached point with the shared buffer.
+      (when (eq buf (nelisp-ec-current-buffer))
+        (emacs-window-set-window-point w (nelisp-ec-point)))
+      (when (eq buf (current-buffer)) (set-window-point w (point)))
+      (let ((families (nelisp-gui-pango-paint nelisp-gui-frontend--renderer
+                                              nelisp-gui-frontend--redisplay))
+            (m (emacs-redisplay-glyph-matrix nelisp-gui-frontend--redisplay w)))
+        (when nelisp-gui-frontend--latency-check
+          (let ((cursor (emacs-redisplay-glyph-matrix-cursor m)))
+            (when cursor
+              (princ (format "GUI-MATRIX-TEXT|row=%d|text=%S|\n" (car cursor)
+                             (emacs-redisplay-glyph-row-text
+                              (aref (emacs-redisplay-glyph-matrix-rows m) (car cursor))))))))
+        (when (equal (getenv "NELISP_GUI_FIXTURE") "metrics") (nelisp-gui-metrics-snapshot))
+        (princ (format "GUI-PAINT|window=%d|point=%d|cursor=%S|families=%S|cairo=0|start=%d|popup=%S|\n"
+                       (aref nelisp-gui-frontend--xcb 1) (nelisp-gui-frontend--point)
+                       (emacs-redisplay-glyph-matrix-cursor m) families
+                       (emacs-window-window-start w) (and nelisp-gui-menu--popup t))))
+      (setq nelisp-gui-frontend--paint-needed nil))
+    (when start
+      (when collections (setq nelisp-gui-frontend--timing-collections
+                              (+ nelisp-gui-frontend--timing-collections
+                                 (- (nelisp-gui-frontend--gc-counter) collections))))
+      (princ (format "GUI-BATCH-TIME|keys=%d|decode=%.6f|command=%.6f|redisplay=%.6f|paint=%.6f|gc=%S|collections=%S|\n"
+                     nelisp-gui-frontend--timing-keys nelisp-gui-frontend--timing-decode
+                     nelisp-gui-frontend--timing-command
+                     (- nelisp-gui-frontend--timing-redisplay redisplay-before)
+                     (- (- (float-time) start) (- nelisp-gui-frontend--timing-redisplay redisplay-before))
+                     (if (and (boundp 'gc-elapsed) nelisp-gui-frontend--timing-gc-start)
+                         (- gc-elapsed nelisp-gui-frontend--timing-gc-start)
+                       (if (and collections (= nelisp-gui-frontend--timing-collections 0)) 0.0 'unavailable))
+                     (and collections nelisp-gui-frontend--timing-collections)))
+      (setq nelisp-gui-frontend--timing-keys 0 nelisp-gui-frontend--timing-collections 0
+            nelisp-gui-frontend--timing-decode 0.0
+            nelisp-gui-frontend--timing-command 0.0
+            nelisp-gui-frontend--timing-gc-start (and (boundp 'gc-elapsed) gc-elapsed)))))
 
 (defun nelisp-gui-frontend--dispatch-pure ()
   "Run the existing shared GUI dispatcher with shared pure-buffer adapters.
@@ -135,7 +197,7 @@ The native reader's unprefixed editing commands target its separate scratch
            plan
            :set-prefix (lambda (prefix) (setq nelisp-gui-frontend--prefix prefix))
            :set-last-command-event (lambda (value) (set 'last-command-event value)
-                                                  (set 'last-input-event value))
+                                     (set 'last-input-event value))
            :source-event event
            :run-self-insert
            (lambda (ev _plan)
@@ -158,7 +220,7 @@ The native reader's unprefixed editing commands target its separate scratch
     (princ (format "GUI-COMMAND|command=%S|status=%S|point=%d|mark=%S|start=%d|focus=%S|text=%S\n"
                    (plist-get plan :binding) (plist-get result :status)
                    (nelisp-gui-frontend--point) (emacs-mouse-mark) (emacs-window-window-start) (and (emacs-frame-frame-focus) t)
-                   (nelisp-gui-frontend--text)))))
+                   (if nelisp-gui-frontend--trace-text (nelisp-gui-frontend--text) "")))))
 
 (defun nelisp-gui-frontend--dispatch ()
   "Use the ordinary shared loop for native buffer consumers such as ddskk."
@@ -167,7 +229,7 @@ The native reader's unprefixed editing commands target its separate scratch
     (emacs-command-loop-step)
     (princ (format "GUI-COMMAND|command=%S|status=command|point=%d|mark=%S|start=%d|focus=%S|text=%S\n"
                    emacs-command-loop--last-command (point) (mark t) (emacs-window-window-start)
-                   (and (emacs-frame-frame-focus) t) (buffer-string)))))
+                   (and (emacs-frame-frame-focus) t) (if nelisp-gui-frontend--trace-text (buffer-string) "")))))
 
 (defun nelisp-gui-frontend-run ()
   "Run XCB input/painting around the existing shared GUI command dispatcher.
@@ -181,9 +243,15 @@ Command lookup, execution, hooks, buffer editing and point stay in libraries."
     (unwind-protect
         (condition-case err
             (progn
+              (setq nelisp-gui-frontend--timing (equal (getenv "NELISP_GUI_TIMING") "1")
+                    nelisp-gui-frontend--timing-gc-start (and (boundp 'gc-elapsed) gc-elapsed)
+                    nelisp-gui-frontend--latency-check (equal (getenv "NELISP_GUI_LATENCY_CHECK") "1")
+                    nelisp-gui-frontend--trace-text
+                    (or (getenv "NELISP_GUI_FIXTURE") (equal (getenv "NELISP_GUI_TRACE_TEXT") "1")))
               (when (getenv "NELISP_GUI_DPI")
                 (nelisp-gui-pango-configure (string-to-number (getenv "NELISP_GUI_DPI")))
                 (setq nelisp-gui-pango-fringe (round (* 8 (/ nelisp-gui-pango-dpi 96.0)))))
+              (setq nelisp-gui-pango-force-paint t)
               (setq nelisp-gui-frontend--xcb
                     (nelisp-gui-xcb-open "NeLisp XCB" (* cols nelisp-gui-pango-cell-width)
                                          (* lines nelisp-gui-pango-line-height)))
@@ -201,7 +269,7 @@ Command lookup, execution, hooks, buffer editing and point stay in libraries."
               (emacs-frame-set-frame-parameter frame 'display-depth
                                                (ptr-read-u8 (aref nelisp-gui-frontend--xcb 3) 38))
               (emacs-frame-pixels-install frame nelisp-gui-pango-cell-width nelisp-gui-pango-line-height
-                                         #'nelisp-gui-pango-provider)
+                                          #'nelisp-gui-pango-provider)
               (emacs-frame-pixels-install-builtins)
               (emacs-mouse-install-bindings nemacs-main--global-keymap)
               (emacs-keymap-define-key nemacs-main--global-keymap [focus-in] 'emacs-frame-input-focus-in)
@@ -209,14 +277,14 @@ Command lookup, execution, hooks, buffer editing and point stay in libraries."
               ;; Test-only lifecycle hook. Real C-x C-c still uses production quit.
               (when (getenv "NELISP_GUI_TEST_EXIT_GROUP")
                 (emacs-keymap-define-key nemacs-main--global-keymap [f12]
-                                        'nelisp-gui-frontend-request-close))
+                                         'nelisp-gui-frontend-request-close))
               (when (equal (getenv "NELISP_GUI_FAULT") "bad-window")
                 (nelisp-gui-xcb-bad-window nelisp-gui-frontend--xcb))
               ;; Mapping has already generated Expose/Focus events. Consume
               ;; those before the first complete paint, so READY does not
               ;; announce a frame with an obsolete full repaint queued.
               (nelisp-gui-frontend--pump)
-              (while (emacs-command-loop-pending-p) (nelisp-gui-frontend--dispatch))
+              (while (emacs-command-loop-pending-p) (nelisp-gui-frontend--timing-dispatch))
               (nelisp-gui-frontend--paint)
               (let ((buffer (emacs-window-window-buffer (emacs-window-selected-window))))
                 (princ (format "GUI-STARTUP|buffer=%S|major=%S|mode=%S|\n"
@@ -224,7 +292,9 @@ Command lookup, execution, hooks, buffer editing and point stay in libraries."
                                  (buffer-name buffer))
                                major-mode mode-name)))
               ;; Exercise external pointer lifetimes while fonts/layouts are active.
-              (garbage-collect)
+              (let ((start (and nelisp-gui-frontend--timing (float-time))))
+                (garbage-collect)
+                (when start (princ (format "GUI-GC-TIME|explicit=%.6f|\n" (- (float-time) start)))))
               (nelisp-gui-frontend--paint)
               (princ (format "GUI-READY|backend=xcb|shared-loop=%S|gc=1\n"
                              (if (nelisp-gui-frontend--pure-buffer-p)
@@ -232,11 +302,16 @@ Command lookup, execution, hooks, buffer editing and point stay in libraries."
                                'emacs-command-loop-step)))
               (while (not (symbol-value 'nemacs-main--quit-flag))
                 (nelisp-gui-frontend--pump)
-                (when (emacs-command-loop-pending-p)
+                ;; Drain queued commands in order, with their normal hooks.
+                ;; Poll again before redisplay so an XCB batch boundary never
+                ;; creates a frame between keys already waiting on the socket.
+                (while (and (emacs-command-loop-pending-p)
+                            (not (symbol-value 'nemacs-main--quit-flag)))
                   (when (fboundp 'emacs-timer-reset-idle) (emacs-timer-reset-idle))
-                  (nelisp-gui-frontend--dispatch)
+                  (nelisp-gui-frontend--timing-dispatch)
                   (unless (memq last-input-event '(focus-in focus-out))
                     (setq nelisp-gui-frontend--paint-needed t)))
+                (nelisp-gui-frontend--pump)
                 (when (and nelisp-gui-frontend--paint-needed
                            (not (emacs-command-loop-pending-p))
                            (not (symbol-value 'nemacs-main--quit-flag)))

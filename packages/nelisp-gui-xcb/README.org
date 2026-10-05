@@ -85,3 +85,39 @@ The native-buffer fixture retires the otherwise unused pure bootstrap scratch
 through =nelisp-ec-kill-buffer=. The existing native yank branch requires an
 unambiguous current buffer substrate; mixed native/pure yank routing remains
 owned by lane C1 and is not changed by this selection implementation.
+
+S5.0b production typing latency:
+#+begin_src sh
+python3 scripts/gui-daily-gate.py S5.0b --init=-Q
+NELISP_GUI_TIMING=1 python3 scripts/gui-daily-gate.py S5.0b --init=-Q
+#+end_src
+
+The gate injects 40 characters into the ordinary 960x700 =-Q= scratch frame,
+and requires the exact final shared glyph-row text, insertion cursor and
+visible cells within 20 seconds, including screenshot capture/verification.
+It rejects the initial untyped screenshot. =scripts/gui-daily-latency.py= also
+accepts an explicit =--budget= for baseline investigation; acceptance uses 20.
+
+=NELISP_GUI_TIMING=1= enables per-key decode/command wall times and per-frame
+polling, command/hook, shared matrix and Pango/Cairo/XCB paint times. Frame
+costs are amortized over the coalesced keys, never charged to every key again.
+Automatic collections are counted through the reader's existing debug tuple.
+A zero collection count means zero GC pause; if collections occurred without
+an exposed =gc-elapsed= clock, pause time is explicitly unavailable and remains
+included in the enclosing wall-time spans. Startup's explicit GC is timed
+separately. Timing is disabled by default; =NELISP_GUI_TRACE_TEXT=1= enables
+full command-buffer diagnostics, otherwise ordinary typing does not dump the
+whole buffer for every key. Fixtures retain their diagnostic text.
+
+Shared redisplay caches independent source lines and their rendering property
+spans, shifts reused glyph positions lazily, and reuses mode/header glyphs when
+the evaluated spans agree. Plain ASCII viewports avoid full-buffer reads and
+extra glyph construction during clipping checks. Hidden/replaced newlines,
+overlays, folding and offscreen recentering retain the general semantic path.
+The frontend keeps four font descriptions and bounded row/run layouts, paints
+damaged rows plus old/new cursor rows, and retains unchanged hit maps. Expose,
+resize and changed menus invalidate the scene. Queued commands keep their normal
+hooks and order and are drained before another transport poll/redisplay.
+Scalar GUI call descriptors use interned symbol keys and retain their native
+owners through the public libffi descriptor API. Row vectors/association lists
+avoid depending on structural hash keys in the supplied reader.
