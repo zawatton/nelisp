@@ -19,11 +19,22 @@
     (secure-hash 'sha256 (prin1-to-string (nelisp-native-funcall-v2-descriptor)))))
 (let ((primitives '((56 nth 2) (57 symbolp 1) (58 consp 1) (59 stringp 1) (60 listp 1)
                     (61 eq 2) (62 memq 2) (63 not 1) (64 car 1) (65 cdr 1) (66 cons 2)
+                    (67 list 1) (68 list 2) (69 list 3) (70 list 4) (175 list operand)
                     (71 length 1) (72 aref 2) (73 aset 3) (74 symbol-value 1)
                     (75 symbol-function 1) (76 set 2) (77 fset 2) (78 get 2)
-                    (79 substring 3)
+                    (79 substring 3) (80 concat 2) (81 concat 3) (82 concat 4)
+                    (176 concat operand) (177 insert operand)
                     (83 1- 1) (84 1+ 1) (85 = 2) (86 > 2) (87 < 2) (88 <= 2) (89 >= 2)
                     (90 - 2) (91 - 1) (92 + 2) (93 max 2) (94 min 2) (95 * 2)
+                    (96 point 0) (98 goto-char 1) (99 insert 1) (100 point-max 0)
+                    (101 point-min 0) (102 char-after 1) (103 following-char 0)
+                    (104 previous-char 0) (105 current-column 0) (106 indent-to 1)
+                    (108 eolp 0) (109 eobp 0) (110 bolp 0) (111 bobp 0)
+                    (112 current-buffer 0) (113 set-buffer 1)
+                    (116 interactive-p 0 dynamic) (117 forward-char 1) (118 forward-word 1)
+                    (119 skip-chars-forward 2) (120 skip-chars-backward 2)
+                    (121 forward-line 1) (122 char-syntax 1) (123 buffer-substring 2)
+                    (124 delete-region 2) (125 narrow-to-region 2) (126 widen 0) (127 end-of-line 1)
                     (164 nconc 2) (165 / 2) (166 % 2) (167 numberp 1) (168 integerp 1)
                     (147 set-marker 3) (148 match-beginning 1) (149 match-end 1)
                     (150 upcase 1) (151 downcase 1) (152 string-equal 2)
@@ -38,11 +49,16 @@
       (association (if (fboundp 'nelisp--eval-source-string)
                        '(builtin assq) (symbol-function 'assq)))
       (membership (symbol-function 'memq))
-      (originals (mapcar (lambda (name) (cons name (symbol-function name))) '(car cdr cons nth memq length aref aset
-                                                                            symbol-value symbol-function set fset get substring
+      (originals (mapcar (lambda (name) (cons name (symbol-function (if (eq name 'previous-char) 'preceding-char name)))) '(car cdr cons list nth memq length aref aset
+                                                                            symbol-value symbol-function set fset get substring concat insert apply
                                                                             set-marker match-beginning match-end upcase downcase
                                                                             string-equal string-lessp equal nthcdr elt member assq
                                                                             nreverse setcar setcdr
+                                                                            point goto-char insert point-max point-min char-after
+                                                                            following-char previous-char current-column indent-to
+                                                       eolp eobp bolp bobp current-buffer set-buffer forward-char forward-word
+                                                       skip-chars-forward skip-chars-backward forward-line char-syntax
+                                                       buffer-substring delete-region narrow-to-region widen end-of-line
                                                                             symbolp consp stringp listp eq not
                                                                             1- 1+ = > < <= >= - + max min * nconc / % numberp integerp)))
       ;; GNU Bnth's small-index path reports the reached dotted tail;
@@ -214,7 +230,12 @@
             ((funcall same name 'nconc) nconc-provider) ((funcall same name '%) rem-provider)
             ;; These VM operations are Lisp-owned. Their values were frozen
             ;; by the prelude, before caller code can rebind a public cell.
-            ((funcall membership name '(set-marker match-beginning match-end upcase downcase))
+            ((funcall membership name '(set-marker match-beginning match-end upcase downcase
+                                                       point goto-char insert point-max point-min char-after
+                                                       following-char previous-char current-column indent-to
+                                                       eolp eobp bolp bobp current-buffer set-buffer forward-char forward-word
+                                                       skip-chars-forward skip-chars-backward forward-line char-syntax
+                                                       buffer-substring delete-region narrow-to-region widen end-of-line))
              (cdr (funcall association name nelisp--bytecode-lisp-providers)))
             ((funcall same name 'string-equal) '(builtin string=))
             ((funcall same name 'string-lessp) '(builtin string<))
@@ -251,4 +272,34 @@
      `(let ((,status (extern-call nl_native_funcall_v2 env ticket ,function
                                  ,(or (car roots) 1) ,(length inputs) ,result)))
         (if (= ,status 0) ,success ,status)))))
+(defun nelisp-native-funcall-v2-emit-list (operation function inputs continuation &optional compact)
+  "Build a long list through frozen CONS using two reusable argument roots.
+All source values remain rooted, and the accumulator is published after each
+allocation.  Flat status guards bound form depth independently of list length."
+  (let* ((status (intern (format "f1_list_status_%d" (plist-get operation :pc))))
+         (output (plist-get operation :output-root))
+         (runs nil) (calls nil)
+         (finish (if (plist-get operation :apply-function-root)
+                     (nelisp-native-funcall-v2-emit
+                      operation (plist-get operation :apply-function-root)
+                      (list (plist-get operation :target-function-root) output) continuation)
+                   continuation)))
+    ;; Consecutive aliases have identical operands but distinct allocations.
+    ;; The shared CFG emitter can keep their bounded repetitions as real loops;
+    ;; the older structured emitter retains an equivalent flat expansion.
+    (dolist (input (reverse inputs))
+      (if (and compact runs (equal input (caar runs)))
+          (setcdr (car runs) (1+ (cdar runs)))
+        (push (cons input 1) runs)))
+    (dolist (run (nreverse runs))
+      (let ((body `(if (= ,status 0)
+                       (setq ,status
+                             ,(nelisp-native-funcall-v2-emit
+                               operation function (list (car run) output) 0))
+                     ,status)))
+        (push (if (> (cdr run) 1) `(cfg-repeat ,(cdr run) ,status ,body) body) calls)))
+    (nelisp-native-funcall-v2-copy-form
+     (list (plist-get operation :nil-root)) (list output)
+     `(let ((,status 0))
+        (progn ,@(nreverse calls) (if (= ,status 0) ,finish ,status))))))
 (provide 'nelisp-native-funcall-v2)

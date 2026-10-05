@@ -202,7 +202,7 @@
                          input plan emitted)))
                (cl-every (lambda (name)
                            (or (member name '("nl_native_car_v2" "nl_native_cdr_v2"
-                                              "nl_native_cons_v2" "nl_native_funcall_v2" "nl_root_pin_slot_v2"))
+                                              "nl_native_cons_v2" "nl_native_funcall_v2" "nl_native_frame_v2" "nl_root_pin_slot_v2"))
                                (and arithmetic
                                     (equal name (if (eq (plist-get plan :arithmetic-guard-mode) 'on)
                                                     "nl_native_add_guard_v1" "nl_native_add_v2")))))
@@ -224,6 +224,10 @@
                                    :funcall-hash (nelisp-native-funcall-v2-hash)
                                    :exit-root-base (plist-get plan :exit-root-base) :exit-base 1024)))
       (setq contract (plist-put contract :version nelisp-bytecode-native-rooted-cfg-contract-f1-version)))
+    (when (and contract (plist-get plan :frame-descriptor))
+      (setq contract (append contract
+                             (list :frame-descriptor (nelisp-native-frame-v2-descriptor)
+                                   :frame-hash (nelisp-native-frame-v2-hash)))))
     (when (and contract arithmetic)
       (let* ((source (nelisp-native-optimization-guard-v1-source
                       (plist-get plan :arithmetic-guard-mode)))

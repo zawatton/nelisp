@@ -114,8 +114,10 @@ does not write an artifact or invoke a backend."
                                                 phi-roots path))))
                 (cond
                  ((memq opcode '(const stack-ref dup discard)) (funcall next))
-                 ((memq opcode '(primitive-call funcall))
-                  (nelisp-native-funcall-v2-emit
+                 ((memq opcode '(primitive-call list-build funcall))
+                  (funcall (if (eq opcode 'list-build)
+                               #'nelisp-native-funcall-v2-emit-list
+                             #'nelisp-native-funcall-v2-emit)
                    operation
                    (nelisp-bytecode-native-rooted-cfg-emit--resolve-root plan (plist-get operation :function-root) phi-roots)
                    (mapcar (lambda (root) (nelisp-bytecode-native-rooted-cfg-emit--resolve-root plan root phi-roots))

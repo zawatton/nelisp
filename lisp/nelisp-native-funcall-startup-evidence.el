@@ -1,6 +1,7 @@
 ;;; nelisp-native-funcall-startup-evidence.el --- Separate F1 proof specialization -*- lexical-binding: t; -*-
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 (require 'nelisp-native-compiler-startup-evidence)
+(require 'nelisp-native-frame-v2)
 (defun nelisp-native-funcall-startup-evidence-build (units builder root directory)
   "Derive an independent evaluator-boundary proof; preserve constructor issuance.
 The evaluator itself is a source/binary-bound terminal, since its arbitrary
@@ -8,14 +9,20 @@ Lisp callees cannot form a finite static direct closure. Ticket and GC proof
 policies remain unchanged. All boundary bytes and relocations are verified."
   (let* ((rewrite (symbol-function 'nelisp-native-compiler-startup-evidence--rewrite))
          (api (symbol-function 'nelisp-native-compiler-startup-evidence--proof-api))
-         (roots (append nelisp-native-compiler-startup-evidence--roots '("nl_native_funcall_v2")))
-         (exports (append nelisp-native-compiler-startup-evidence--exports '(("nl_native_funcall_v2" func 6))))
+         (roots (append nelisp-native-compiler-startup-evidence--roots '("nl_native_funcall_v2" "nl_native_frame_v2")))
+         (exports (append nelisp-native-compiler-startup-evidence--exports '(("nl_native_funcall_v2" func 6) ("nl_native_frame_v2" func 6))))
          (nelisp-native-compiler-startup-evidence--roots roots)
          (nelisp-native-compiler-startup-evidence--exports exports))
     (cl-labels
         ((specialize (node generator)
            (cond
             ((equal node '(constructor)) '(f1))
+            ;; F1 alone has 190 helpers; the frame adapter adds five. The
+            ;; separate frame root admits at most 200, with every edge proved.
+            ((equal node '(<= 1 (length (alist-get 'records closure)) 192))
+             '(<= 1 (length (alist-get 'records closure)) 200))
+            ((equal node '(<= 15 (length functions) 192))
+             '(<= 15 (length functions) 200))
             ((eq node 'compiler-runtime-v1) 'compiler-f1-runtime-v1)
             ((eq node 'compiler-constructor-memory-v1) 'compiler-f1-memory-v1)
             ((equal node "nelisp-compiler-constructor-prelink-v1") "nelisp-compiler-f1-prelink-v1")
@@ -38,20 +45,24 @@ policies remain unchanged. All boundary bytes and relocations are verified."
                   (equal (cl-subseq node 0 (min 5 (length node))) '(list :version 1 :layout layout)))
              (append (mapcar (lambda (item) (specialize item t)) node)
                      '(:funcall-descriptor (nelisp-native-funcall-v2-descriptor)
-                       :funcall-hash (nelisp-native-funcall-v2-hash))))
+                       :funcall-hash (nelisp-native-funcall-v2-hash)
+                       :frame-descriptor (nelisp-native-frame-v2-descriptor)
+                       :frame-hash (nelisp-native-frame-v2-hash))))
             ((and (consp node) (eq (car node) 'quote)
                   (listp (cadr node))
                   (member "scripts/nelisp-native-compiler-constructor-prelink.py" (cadr node)))
              (list 'quote (append (mapcar (lambda (item) (specialize item generator)) (cadr node))
                                   '("lisp/nelisp-native-funcall-startup-evidence.el"
-                                    "lisp/nelisp-native-funcall-v2.el"))))
+                                    "lisp/nelisp-native-funcall-v2.el" "lisp/nelisp-native-frame-v2.el"))))
             ((and (not generator) (consp node) (eq (car node) 'list)
                   (equal (cl-subseq node 0 (min 5 (length node))) '(list :version 1 :domain 'compiler-runtime-v1)))
              (let ((record (mapcar (lambda (item) (specialize item nil)) node)))
                (setcar (nthcdr 2 record) 2)
                (append record
                        '(:funcall-descriptor (copy-tree (plist-get expected :funcall-descriptor))
-                         :funcall-hash (substring (plist-get expected :funcall-hash) 0)))))
+                         :funcall-hash (substring (plist-get expected :funcall-hash) 0)
+                         :frame-descriptor (copy-tree (plist-get expected :frame-descriptor))
+                         :frame-hash (substring (plist-get expected :frame-hash) 0)))))
             ((and (not generator)
                   (equal node '(cl-every (lambda (edge) (member (cdr (assq 'target edge)) names))
                                         (plist-get record :direct))))

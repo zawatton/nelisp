@@ -22138,6 +22138,200 @@ no-op function, without wiring a real menu-bar item into MAPS."
                            (let ((span (aref nlre--last-caps n)))
                              (and span (cdr span))))))
                    (t (symbol-function name)))))
-          '(set-marker match-beginning match-end upcase downcase)))
+          '(set-marker match-beginning match-end upcase downcase insert)))
+(unless (boundp 'indent-tabs-mode) (defvar indent-tabs-mode t))
+
+;; F2 U4a: these buffer operations are already Lisp-owned, not native
+;; builtin tokens. Freeze values and VM-specific adapters before user code.
+(let ((point-value (symbol-function 'point))
+      (min-value (symbol-function 'point-min)) (max-value (symbol-function 'point-max))
+      (goto-value (symbol-function 'goto-char)) (insert-value (symbol-function 'insert))
+      (after-value (symbol-function 'nelisp-char-after))
+      (column-value (symbol-function 'current-column))
+      (marker-value (symbol-function 'markerp)) (position-value (symbol-function 'marker-position)))
+  (setq nelisp--bytecode-lisp-providers
+        (append nelisp--bytecode-lisp-providers
+                (list
+                 (cons 'point point-value) (cons 'point-min min-value) (cons 'point-max max-value)
+                 (cons 'insert insert-value)
+                 (cons 'goto-char
+                       (lambda (pos)
+                         ;; Bgoto_char accepts fixnums or markers; its bignum
+                         ;; error differs from the general public function.
+                         (unless (or (and (integerp pos) (<= -2305843009213693952 pos)
+                                          (< pos 2305843009213693952))
+                                     (funcall marker-value pos))
+                           (signal 'wrong-type-argument (list 'integer-or-marker-p pos)))
+                         (funcall goto-value pos)))
+                 (cons 'char-after
+                       (lambda (pos)
+                         (let ((p (cond ((null pos) (funcall point-value))
+                                        ((integerp pos) pos)
+                                        ((funcall marker-value pos)
+                                         (or (funcall position-value pos)
+                                             (error "Marker does not point anywhere")))
+                                        (t (signal 'wrong-type-argument
+                                                   (list 'integer-or-marker-p pos))))))
+                           (and (<= (funcall min-value) p) (< p (funcall max-value))
+                                (funcall after-value p nelisp--current-buffer)))))
+                 (cons 'following-char (symbol-function 'following-char))
+                 (cons 'previous-char (symbol-function 'preceding-char))
+                 (cons 'current-column column-value)
+                 (cons 'indent-to
+                       (lambda (column minimum)
+                         ;; GNU Bindent_to supplies nil for MINIMUM.
+                         (unless (and (integerp column) (<= -2305843009213693952 column)
+                                      (< column 2305843009213693952))
+                           (signal 'wrong-type-argument (list 'fixnump column)))
+                         (let* ((current (funcall column-value))
+                                (target (max column (+ current (or minimum 0))))
+                                (width (if (and (integerp tab-width) (> tab-width 0)) tab-width 8))
+                                (tabs (if indent-tabs-mode (- (/ target width) (/ current width)) 0))
+                                (spaces (- target (if (> tabs 0) (* (/ target width) width) current))))
+                           (when (> tabs 0) (funcall insert-value (make-string tabs ?\t)))
+                           (when (> spaces 0) (funcall insert-value (make-string spaces ?\s)))
+                           target)))))))
+;; The standalone reader has no interactive command loop. GNU Binteractive_p
+;; still calls the current cell, so users may replace this batch default.
+(unless (fboundp 'interactive-p) (defun interactive-p () nil))
+
+;; F2 U4b: Lisp-owned motion provider and frozen buffer values. No native entry.
+(unless (fboundp 'forward-word)
+  (defun forward-word (&optional n)
+    "Move N words, returning t if all requested words were traversed."
+    (unless (or (null n) (and (integerp n) (<= -2305843009213693952 n)
+                             (< n 2305843009213693952)))
+      (signal 'wrong-type-argument (list 'fixnump n)))
+    (let* ((count (or n 1)) (remaining (abs count))
+           (b nelisp--current-buffer) (p (nelisp-point b))
+           (lo (nelisp-point-min b)) (hi (nelisp-point-max b))
+           (text (nelisp-buffer-string b)) (direction (if (< count 0) -1 1)))
+      (while (> remaining 0)
+        (let ((found nil) (class nil) (scanning t))
+          (while (and scanning (if (> direction 0) (< p hi) (> p lo)))
+            (let* ((ch (aref text (if (> direction 0) (1- p) (- p 2))))
+                   (word (= (char-syntax ch) ?w))
+                   ;; GNU separates Latin, Katakana and Han/Hiragana words.
+                   (next-class (cond ((and (<= #x30a0 ch) (<= ch #x30ff)) 'katakana)
+                                     ((or (and (<= #x3040 ch) (<= ch #x309f))
+                                          (and (<= #x3400 ch) (<= ch #x9fff))) 'han)
+                                     (t 'other))))
+              (if (and found (or (not word) (not (eq class next-class))))
+                  (setq scanning nil)
+                (setq p (+ p direction))
+                (when word (setq found t class next-class)))))
+          (if found (setq remaining (1- remaining))
+            (setq scanning nil)
+            (nelisp-goto-char p b)
+            (setq remaining (- remaining)))))
+      (nelisp-goto-char p b)
+      (>= remaining 0))))
+(let ((get-value (symbol-function 'get-buffer))
+      (char-value (symbol-function 'forward-char))
+      (live-value (symbol-function 'buffer-live-p)))
+  (setq nelisp--bytecode-lisp-providers
+        (append nelisp--bytecode-lisp-providers
+                (mapcar (lambda (name) (cons name (symbol-function name)))
+                        '(eolp eobp bolp bobp current-buffer forward-word))
+                (list (cons 'forward-char
+                            (lambda (n)
+                              (unless (or (null n)
+                                          (and (integerp n) (<= -2305843009213693952 n)
+                                               (< n 2305843009213693952)))
+                                (signal 'wrong-type-argument (list 'fixnump n)))
+                              (funcall char-value n)))
+                      (cons 'set-buffer
+                            (lambda (buffer-or-name)
+                              (let ((b (funcall get-value buffer-or-name)))
+                                (cond ((null b) (signal 'error (list (format "No buffer named %s" buffer-or-name))))
+                                      ((not (funcall live-value b)) (signal 'error '("Selecting deleted buffer")))
+                                      (t (setq nelisp--current-buffer b nelisp-buffer--current b)
+                                         (nelisp--env-globals-set-value 'enable-multibyte-characters
+                                                                       (nelisp--buffer-multibyte-p b))
+                                         b)))))))))
+
+;; F2 U4c: the nine VM buffer operations have no evaluator builtin token.
+;; Freeze their Lisp values and adapt GNU's position/type/range error data.
+(let* ((marker-value (symbol-function 'markerp))
+       (marker-position-value (symbol-function 'marker-position))
+       (position-value
+        (lambda (value)
+          (cond ((integerp value) value)
+                ((funcall marker-value value)
+                 (or (funcall marker-position-value value)
+                     (error "Marker does not point anywhere")))
+                (t (signal 'wrong-type-argument (list 'integer-or-marker-p value))))))
+       (min-value (symbol-function 'point-min)) (max-value (symbol-function 'point-max))
+       (goto-value (symbol-function 'goto-char))
+       (size-value (symbol-function 'nelisp-buffer-size))
+       (point-value (symbol-function 'point))
+       (motion-value (symbol-function 'nelisp--motion-forward-line))
+       (eol-value (symbol-function 'nelisp--motion-eol))
+       (substring-value (symbol-function 'buffer-substring))
+       (delete-value (symbol-function 'delete-region))
+       (narrow-value (symbol-function 'narrow-to-region))
+       (widen-value (symbol-function 'widen))
+       (forward-line-value (symbol-function 'forward-line))
+       (syntax-value (symbol-function 'char-syntax))
+       (skip-forward-value (symbol-function 'skip-chars-forward))
+       (skip-backward-value (symbol-function 'skip-chars-backward)))
+  (setq nelisp--bytecode-lisp-providers
+        (append nelisp--bytecode-lisp-providers
+                (list
+                 (cons 'skip-chars-forward
+                       (lambda (spec limit)
+                         (nelisp--check-string spec)
+                         (funcall skip-forward-value spec (and limit (funcall position-value limit)))))
+                 (cons 'skip-chars-backward
+                       (lambda (spec limit)
+                         (nelisp--check-string spec)
+                         (funcall skip-backward-value spec (and limit (funcall position-value limit)))))
+                 (cons 'forward-line
+                       (lambda (n)
+                         (when n (nelisp--check-integer n))
+                         ;; Starting at the accessible end consumes no line,
+                         ;; even when the underlying last line is nonempty.
+                         (if (and (> (or n 1) 0) (= (funcall point-value) (funcall max-value)))
+                             (or n 1)
+                           (funcall forward-line-value n))))
+                 (cons 'char-syntax
+                       (lambda (character)
+                         (unless (and (integerp character) (<= 0 character) (<= character 4194303))
+                           (signal 'wrong-type-argument (list 'characterp character)))
+                         (funcall syntax-value character)))
+                 (cons 'buffer-substring
+                       (lambda (start end)
+                         (funcall substring-value (funcall position-value start) (funcall position-value end))))
+                 (cons 'delete-region
+                       (lambda (start end)
+                         (let ((s (funcall position-value start)) (e (funcall position-value end)))
+                           (unless (and (<= (funcall min-value) (min s e))
+                                        (<= (max s e) (funcall max-value)))
+                             (signal 'args-out-of-range (list nelisp--current-buffer s e)))
+                           (when (and (boundp 'buffer-read-only) buffer-read-only
+                                      (not (and (boundp 'inhibit-read-only) inhibit-read-only)) (/= s e))
+                             (signal 'buffer-read-only (list nelisp--current-buffer)))
+                           (funcall delete-value s e))))
+                 (cons 'narrow-to-region
+                       (lambda (start end)
+                         (let ((s (funcall position-value start)) (e (funcall position-value end)))
+                           ;; Narrowing is checked against the whole buffer,
+                           ;; unlike substring/deletion's accessible bounds.
+                           (unless (and (<= 1 (min s e)) (<= (max s e) (1+ (funcall size-value nelisp--current-buffer))))
+                             (signal 'args-out-of-range (list s e)))
+                           (funcall narrow-value s e))))
+                 (cons 'widen widen-value)
+                 (cons 'end-of-line
+                       (lambda (n)
+                         (unless (or (null n) (and (integerp n) (<= -2305843009213693952 n)
+                                                  (< n 2305843009213693952)))
+                           (signal 'wrong-type-argument (list 'fixnump n)))
+                         (let ((motion (funcall motion-value nelisp--current-buffer
+                                               (funcall point-value) (1- (or n 1)))))
+                           ;; A backward shortfall lands at the beginning,
+                           ;; not the end of the earliest accessible line.
+                           (funcall goto-value (if (< (cdr motion) 0) (car motion)
+                                                 (funcall eol-value (car motion) nelisp--current-buffer))))
+                         nil))))))
 (dolist (entry nelisp--bytecode-lisp-providers)
   (fset (intern (concat "nelisp--bytecode-" (symbol-name (car entry)))) (cdr entry)))

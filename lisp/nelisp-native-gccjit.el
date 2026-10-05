@@ -22,6 +22,8 @@
 (defvar nelisp-native-gccjit--jit nil)
 (defvar nelisp-native-gccjit--ffi nil)
 (defvar nelisp-native-gccjit--contexts nil)
+(defvar nelisp-native-gccjit--symbol-cache nil
+  "Dynamically bound C API addresses for one lowering, never dumped or reused.")
 (defvar nelisp-native-gccjit--results nil
   "Retain gcc_jit_result owners for published in-memory entry addresses.")
 (defconst nelisp-native-gccjit--binary-ops
@@ -56,9 +58,14 @@
     (setq nelisp-native-gccjit--ffi (nl-ffi--dlopen "libffi.so.8"))))
 
 (defun nelisp-native-gccjit--symbol (handle name)
-  (let ((address (nl-ffi--dlsym handle name)))
+  (let* ((key (cons handle name))
+         (address (or (and nelisp-native-gccjit--symbol-cache
+                           (gethash key nelisp-native-gccjit--symbol-cache))
+                      (nl-ffi--dlsym handle name))))
     (unless (and (integerp address) (> address 0))
       (error "gccjit: unresolved C API %s" name))
+    (when nelisp-native-gccjit--symbol-cache
+      (puthash key address nelisp-native-gccjit--symbol-cache))
     address))
 
 (defun nelisp-native-gccjit--direct (handle name args)
@@ -103,7 +110,9 @@
                (equal (nth 2 form) '(env ticket argument-count root-count)))
     (error "gccjit: unsupported raw-v2 function %S" form))
   (nelisp-native-cfg-grammar-validate-tree form)
-  (let* ((ctx (nelisp-native-gccjit--call "gcc_jit_context_acquire"))
+  (let* ((nelisp-native-gccjit--symbol-cache (make-hash-table :test #'equal))
+         (constants (make-hash-table :test #'eql))
+         (ctx (nelisp-native-gccjit--call "gcc_jit_context_acquire"))
          (int (nelisp-native-gccjit--call "gcc_jit_context_get_int_type" ctx 8 1))
          (uint (nelisp-native-gccjit--call "gcc_jit_context_get_int_type" ctx 8 0))
          (params (mapcar (lambda (name)
@@ -122,7 +131,12 @@
     (unwind-protect
         (cl-labels
             ((call (name &rest args) (apply #'nelisp-native-gccjit--call name args))
-             (constant (n) (call "gcc_jit_context_new_rvalue_from_long" ctx int n))
+             ;; Context-owned integer rvalues are immutable. Reuse only within
+             ;; this context; publishing or dumping these pointers is unsafe.
+             (constant (n)
+               (or (gethash n constants)
+                   (puthash n (call "gcc_jit_context_new_rvalue_from_long" ctx int n)
+                            constants)))
              (rv (lv) (call "gcc_jit_lvalue_as_rvalue" lv))
              (cast (value type) (call "gcc_jit_context_new_cast" ctx 0 value type))
              (local ()

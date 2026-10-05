@@ -30,7 +30,7 @@
     nelisp-runtime-reload-abi nelisp-asm-x86_64 nelisp-asm-arm64
     nelisp-elf-write nelisp-sexp-layout
     ;; These compile-path dependencies also affect the generated artifact.
-    nelisp-hash-custom nelisp-bytecode-native-switch nelisp-native-funcall-v2 nelisp-bytecode-native-rooted-cfg-constructor-contract))
+    nelisp-hash-custom nelisp-bytecode-native-switch nelisp-native-frame-v2 nelisp-native-funcall-v2 nelisp-bytecode-native-rooted-cfg-constructor-contract))
 (defvar nelisp-native-cache--abi :unset)
 (defvar nelisp-native-cache--compiler-revision :unset)
 (defvar nelisp-native-cache--addresses nil)
@@ -418,6 +418,7 @@ The caller must inhibit mid-form collection until the syscall returns."
                                                      (funcall primitive-initializer (plist-get init :primitive))
                                                    (cond ((plist-get init :poll) poll-function)
                                                          ((plist-get init :switch) switch-function)
+                                                         ((plist-get init :frame) (nelisp-native-frame-v2-initializer))
                                                          ((plist-member init :constant-index)
                                                           (aref constants (plist-get init :constant-index)))
                                                          (t (plist-get init :value)))))

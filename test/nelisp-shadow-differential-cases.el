@@ -45,6 +45,14 @@
 ;;; Code:
 
 (list
+ ;; U7a: aliases bind the canonical dynamic cell, including a void target.
+ (let ((target (intern "u7a-shadow-target"))
+       (alias (intern "u7a-shadow-alias")))
+   (set target nil)
+   (makunbound target)
+   (defvaralias alias target)
+   (let ((fn (make-byte-code 257 (unibyte-string 24 8 41 135) (vector alias) 1)))
+     (list (funcall fn 'inside) (boundp target))))
  ;; Extended stack references preserve a full boxed slot, including identity.
  (let ((value (vector 'rooted-cfg)))
    (and (eq (funcall (make-byte-code 257 (unibyte-string 6 0 135) [] 2) value) value)
@@ -1924,6 +1932,38 @@
   (list (eq (funcall replace left right) right)
         (eq (funcall drop left right) left)
         (eq (funcall keep left right) right)))
+;; U4b oracle: multibyte motion under narrowing and ordered motion errors.
+(with-temp-buffer
+  (insert "aé中\n\tb")
+  (narrow-to-region 2 6)
+  (goto-char 2)
+  (let ((start (list (bobp) (bolp) (eobp) (eolp)
+                     (eq (current-buffer) (set-buffer (current-buffer))))))
+    (forward-char 1)
+    (let ((word (forward-word 1)))
+      (list start word (point)
+            (condition-case e (forward-char 100) (error e))
+            (point) (eobp) (eolp)))))
+;; U4c: exact bytecodes preserve multibyte indices, narrowing and marker effects.
+(with-temp-buffer
+  (insert "aé中\nzb")
+  (goto-char 2)
+  (let ((skip (make-byte-code 514 (unibyte-string 119 135) [] 2))
+        (slice (make-byte-code 514 (unibyte-string 123 135) [] 2))
+        (narrow (make-byte-code 514 (unibyte-string 125 135) [] 2))
+        (wide (make-byte-code 0 (unibyte-string 126 135) [] 1))
+        (marker (copy-marker 3)))
+    (list (funcall skip "é中" nil) (point) (funcall slice 2 marker)
+          (funcall narrow 2 5) (point-min) (point-max)
+          (funcall wide) (point-max))))
+(with-temp-buffer
+  (insert "aé中")
+  (let ((remove (make-byte-code 514 (unibyte-string 124 135) [] 2))
+        (marker (copy-marker 4)))
+    (list (funcall remove 2 3) (buffer-string) (marker-position marker)
+          (condition-case err (funcall remove 0 9)
+            (error (list (car err) (eq (cadr err) (current-buffer)) (cddr err)))))))
+
 )
 
 ;;; nelisp-shadow-differential-cases.el ends here

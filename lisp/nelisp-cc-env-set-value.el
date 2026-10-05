@@ -124,18 +124,20 @@
                 (nelisp_env_setv_mirror_lazy mirror-ptr name-ptr val-ptr unbound-ptr)
               (nelisp_env_setv_mirror mirror-ptr name-ptr scratch-ptr 0))
           (let ((candidate (nelisp_env_alias_slot_candidate entry 0)))
-            (if (= candidate 3)
+            (if (and (= candidate 3)
+                     (if (> (record-slot-count entry) 5)
+                         (= (sexp-tag (record-slot-ref-ptr entry 5)) 0) 1))
                 (if (= scratch-ptr 0)
                     (nelisp_env_setv_mirror_lazy
                      mirror-ptr name-ptr val-ptr unbound-ptr)
                   (nelisp_env_setv_mirror mirror-ptr name-ptr scratch-ptr 0))
-              (if (/= candidate 0)
+              (if (and (/= candidate 0) (/= candidate 3))
                   1
                 (let ((canonical-address (alloc-bytes 8 8))
                       (status 1))
                   (setq status
-                        (nelisp_env_alias_canonicalize
-                         mirror-ptr entry name-ptr canonical-address))
+                        (nelisp_env_variable_canonicalize
+                         mirror-ptr frames-ptr entry name-ptr canonical-address 0))
                   (if (= status 0)
                       (let* ((canonical-ptr (ptr-read-u64 canonical-address 0))
                              (cell-ptr
@@ -176,7 +178,13 @@
           1
         (if (= (extern-call nelisp_mirror_is_constant mirror-ptr name-ptr) 1)
             1
-          (let ((cell-ptr (extern-call nelisp_frame_stack_find frames-ptr name-ptr)))
+          (let* ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr))
+                 (local-p (if (= entry 0) 0
+                            (if (> (record-slot-count entry) 5)
+                                (= (sexp-tag (record-slot-ref-ptr entry 5)) 8) 0)))
+                 (cell-ptr (if (= local-p 1)
+                               (extern-call nelisp_frame_stack_find_kind frames-ptr name-ptr 0 0)
+                             (extern-call nelisp_frame_stack_find frames-ptr name-ptr))))
             (if (= cell-ptr 0)
                 (nelisp_env_setv_alias_or_mirror
                  mirror-ptr frames-ptr name-ptr val-ptr 0 unbound-ptr 0 0)
@@ -239,7 +247,13 @@
           1
         (if (= (extern-call nelisp_mirror_is_constant mirror-ptr name-ptr) 1)
             1
-          (let ((cell-ptr (extern-call nelisp_frame_stack_find frames-ptr name-ptr)))
+          (let* ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr))
+                 (local-p (if (= entry 0) 0
+                            (if (> (record-slot-count entry) 5)
+                                (= (sexp-tag (record-slot-ref-ptr entry 5)) 8) 0)))
+                 (cell-ptr (if (= local-p 1)
+                               (extern-call nelisp_frame_stack_find_kind frames-ptr name-ptr 0 0)
+                             (extern-call nelisp_frame_stack_find frames-ptr name-ptr))))
             (if (= cell-ptr 0)
                 ;; Frame miss: write to mirror.
                 (nelisp_env_setv_alias_or_mirror

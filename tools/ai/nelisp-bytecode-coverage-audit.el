@@ -262,7 +262,7 @@ buffer, and mutable constants are freshly constructed for each proof."
     (append
      (list :id (alist-get 'id fixture) :frame-status (plist-get frame :status)
            :reason (plist-get frame :reason))
-     (when (= (alist-get 'opcode fixture) 183)
+     (when (or (= (alist-get 'opcode fixture) 183) (<= 40 (alist-get 'opcode fixture) 47))
        (require 'nelisp-bytecode-native-rooted-cfg-contract)
        (let* ((fn (make-byte-code 0 code constants (alist-get 'declared_stack_depth fixture)))
               (input (nelisp-bytecode-compiler-input-build fn))

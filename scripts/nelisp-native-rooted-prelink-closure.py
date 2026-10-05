@@ -73,8 +73,10 @@ def prove(metadata, directory, roots, data_owner, claimed=None, max_functions=12
     """Reject unresolved edges; this source certificate grants no runtime capability."""
     if evaluator_boundary not in (None, "nl_apply_function"):
         raise ValueError("Unknown evaluator boundary")
-    if max_functions not in (128, 192):
+    if max_functions not in (128, 192, 200):
         raise ValueError("Unknown direct helper count policy")
+    if max_functions == 200 and "nl_native_frame_v2" not in roots:
+        raise ValueError("Frame closure bound requires the authenticated frame root")
     owners = _owner.unit_owners(metadata, directory)
     units = json.loads(_owner.bounded_read(metadata, 4 * 1024 * 1024))
     data_bytes = _owner.bounded_read(data_owner, 1024 * 1024)
@@ -117,7 +119,9 @@ def prove(metadata, directory, roots, data_owner, claimed=None, max_functions=12
                     or not 0 <= position <= size - 4
                     or relocation["symbol"] not in known
                     or position in relocations):
-                raise ValueError("Unknown, overlapping or crossing prelink relocation")
+                raise ValueError(f"Unknown, overlapping or crossing prelink relocation: owner={name} "
+                                 f"offset={position} size={size} type={relocation['type']} "
+                                 f"symbol={relocation['symbol']} known={relocation['symbol'] in known}")
             relocations[position] = relocation
             normalized[position:position + 4] = bytes(4)
         direct, decoded = [], 0

@@ -119,7 +119,7 @@ accepted."
                                  (79 substring -2) (80 concat2 -1)
                                  (81 concat3 -2) (82 concat4 -3)))))
               (setq kind (nth 1 entry) delta (nth 2 entry)
-                    lowerable (memq op '(56 61 62 63 64 65 71 72 73 74 75 76 77 78 79))
+                    lowerable (memq op '(56 61 62 63 64 65 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82))
                     metadata (list :width 1))
               (when (memq op '(74 76 78))
                 (setq metadata
@@ -162,9 +162,13 @@ accepted."
                                  (124 delete-region -1) (125 narrow-to-region -1)
                                  (126 widen 1) (127 end-of-line 0)))))
               (setq kind (nth 1 entry) delta (nth 2 entry)
-                    lowerable nil metadata (list :width 1))
+                    lowerable (memq op '(96 98 99 100 101 102 103 104 105 106
+                                         108 109 110 111 112 113 116 117 118
+                                         119 120 121 122 123 124 125 126 127))
+                    metadata (list :width 1))
               (when (nth 3 entry) (setq metadata (append metadata '(:obsolete t))))
-              (push (cons pc 'unsupported-semantics) unsupported)))
+              (unless lowerable
+                (push (cons pc 'unsupported-semantics) unsupported))))
            ((and (<= 138 op) (<= op 145))
             (let ((entry (assq op
                                '((138 save-excursion 0)
@@ -198,7 +202,7 @@ accepted."
                                        :stack-offset offset)))
                 (push (cons pc 'unsupported-semantics) unsupported))))
            ((memq op '(175 176 177))
-            (setq width 2 delta nil lowerable nil)
+            (setq width 2 delta nil lowerable t)
             (if (> (+ pc width) (length code))
                 (setq failure (format "truncated 8-bit count operand at %d" pc))
               (setq operand (aref code (1+ pc))
@@ -207,7 +211,8 @@ accepted."
                     delta (- 1 operand)
                     metadata (list :width width :operand-width 1
                                    :count operand))
-              (push (cons pc 'unsupported-semantics) unsupported)))
+              (unless lowerable
+                (push (cons pc 'unsupported-semantics) unsupported))))
            ((= op 182)
             (setq width 2 kind 'discard-n lowerable nil)
             (if (> (+ pc width) (length code))

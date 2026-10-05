@@ -371,6 +371,15 @@
                             (funcall remainder -7 2) (funcall numeric 2.0)
                             (funcall integer 2.0)) '(9 7 -3 3.5 -1 t nil))
                (eq (funcall join left right) left) (eq (cdr left) right))) 1 0))
+    ;; U7a: the VM resolves a varbind alias before creating its dynamic cell.
+    (58 shared (if
+        (let ((target (intern "u7a-parity-target"))
+              (alias (intern "u7a-parity-alias")))
+          (set target nil)
+          (makunbound target)
+          (defvaralias alias target)
+          (let ((fn (make-byte-code 257 (unibyte-string 24 8 41 135) (vector alias) 1)))
+            (and (eq (funcall fn 'inside) 'inside) (not (boundp target))))) 1 0))
     ))
 
 (provide 'nelisp-substrate-parity-corpus)

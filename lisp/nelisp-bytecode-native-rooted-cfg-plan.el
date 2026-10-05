@@ -18,6 +18,7 @@
 (require 'nelisp-bytecode-native-guarded-lowering)
 (require 'nelisp-bytecode-native-call1-layout)
 (require 'nelisp-native-funcall-v2)
+(require 'nelisp-native-frame-v2)
 
 (let* ((gc (symbol-function 'garbage-collect))
        (remaining 0)
@@ -148,7 +149,7 @@
     ((or 'cdr 'cdr-safe) "nl_native_cdr_v2")
     ('cons "nl_native_cons_v2")
     ('add "nl_native_add_v2")
-    ((or 'primitive-call 'funcall 'switch) "nl_native_funcall_v2")))
+    ((or 'primitive-call 'list-build 'funcall 'switch) "nl_native_funcall_v2")))
 
 (defun nelisp-bytecode-native-rooted-cfg--unsupported (reason)
   (list :status 'unsupported :reason reason))
@@ -267,12 +268,23 @@ phis at joins.  It refuses before any backend or artifact side effect."
          (switch-p (cl-some (lambda (b)
                               (cl-some (lambda (i) (eq (plist-get i :kind) 'switch))
                                        (append (plist-get b :instructions) nil))) blocks))
-         (banked (or cyclic switch-p))
+         (frame-p (cl-some (lambda (b)
+                             (cl-some (lambda (i) (memq (plist-get i :kind)
+                                                       '(dynamic-bind dynamic-unbind)))
+                                      (append (plist-get b :instructions) nil))) blocks))
+         (banked (or cyclic switch-p frame-p))
+         (frame-state-root nil) (frame-staging-roots nil) (frame-result-root nil)
+         (frame-enter-roots nil)
          (switch-root nil)
          (stack-edit-p
           (cl-some (lambda (block)
                      (cl-some (lambda (instruction)
                                 (memq (plist-get instruction :kind) '(stack-set discard-n)))
+                              (append (plist-get block :instructions) nil))) blocks))
+         (list-p
+          (cl-some (lambda (block)
+                     (cl-some (lambda (instruction)
+                                (memq (plist-get instruction :opcode) '(175 176 177)))
                               (append (plist-get block :instructions) nil))) blocks))
          (cycle-entries nil) (cycle-phis nil) (copy-roots nil) (poll-root nil) (poll-exit-roots nil)
          (constant-roots nil) (immediate-roots nil)
@@ -283,9 +295,12 @@ phis at joins.  It refuses before any backend or artifact side effect."
                    (cl-some (lambda (block)
                               (cl-some (lambda (instruction)
                                          (memq (plist-get instruction :opcode)
-                                               '(56 57 58 59 60 61 62 63 71 72 73 74 75 76 77 78 79
+                                               '(56 57 58 59 60 61 62 63 67 68 69 70 175 71 72 73 74 75 76 77 78 79 80 81 82 176 177
                                                  83 84 85 86 87 88 89 90 91 93 94 95
                                                  164 165 166 167 168
+                                                 96 98 99 100 101 102 103 104 105 106
+                                                 108 109 110 111 112 113 116 117 118
+                                                 119 120 121 122 123 124 125 126 127
                                                  147 148 149 150 151 152 153 154 155
                                                  156 157 158 159 160 161)))
                                        (append (plist-get block :instructions) nil))) blocks)
@@ -310,7 +325,7 @@ phis at joins.  It refuses before any backend or artifact side effect."
                                             (and (eq (cdr item) 'unsupported-semantics)
                                                  (cl-some (lambda (row)
                                                             (and (= (aref row 0) (car item))
-                                                                 (or (memq (aref row 1) '(64 65 66 136 178 179 182 183))
+                                                                 (or (memq (aref row 1) '(64 65 66 136 178 179 182 183 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 40 41 42 43 44 45 46 47))
                                                                      (<= 32 (aref row 1) 39))))
                                                           (append (plist-get (plist-get input :ir-result) :instructions) nil)))))
                                       (plist-get (plist-get input :ir-result) :unsupported)))))
@@ -358,16 +373,36 @@ phis at joins.  It refuses before any backend or artifact side effect."
     (when f1-p
       ;; Preserve F1's established root layout; add only used family values.
       ;; This avoids reserving eleven hidden roots in every existing caller.
-      (let ((names '(car cdr cons)))
+      (let ((names (if frame-p '(car cdr cons symbol-value set) '(car cdr cons))))
         (dolist (block blocks)
           (dolist (instruction (append (plist-get block :instructions) nil))
             (let ((primitive (nelisp-native-funcall-v2-primitive
                               (plist-get instruction :opcode))))
               (when (and primitive (not (memq (nth 1 primitive) names)))
                 (setq names (append names (list (nth 1 primitive))))))))
+        ;; Long sequence calls pack operands exactly like U3a LISTN, then
+        ;; apply the frozen target once. No partial concat or insert chunks.
+        (when (cl-some (lambda (block)
+                        (cl-some (lambda (instruction)
+                                   (and (memq (plist-get instruction :opcode) '(176 177))
+                                        (> (plist-get instruction :operand) 32)))
+                                 (append (plist-get block :instructions) nil))) blocks)
+          (setq names (append names '(apply))))
         (dolist (name names)
-          (push (cons name root-next) primitive-roots)
+          (if (eq name 'interactive-p)
+              ;; GNU Binteractive_p deliberately observes the current cell.
+              (push (cons name root-next) immediate-roots)
+            (push (cons name root-next) primitive-roots))
           (setq root-next (1+ root-next)))))
+    (when frame-p
+      (setq frame-state-root root-next root-next (1+ root-next)
+            frame-staging-roots (list root-next (1+ root-next)) root-next (+ root-next 2)
+            frame-result-root root-next root-next (+ root-next 4))
+      (dolist (value (list 1 arity))
+        (push root-next frame-enter-roots)
+        (push (cons value root-next) immediate-roots)
+        (setq root-next (1+ root-next)))
+      (setq frame-enter-roots (nreverse frame-enter-roots)))
     (when switch-p
       (setq switch-root root-next root-next (1+ root-next)))
     (when banked
@@ -490,6 +525,11 @@ phis at joins.  It refuses before any backend or artifact side effect."
                                             (push (cons key root) immediate-roots)
                                             root)))))
                 (unless output-root (setq failure "constant has no protected root")))
+               ((and frame-p (memq kind '(dynamic-bind dynamic-unbind variable-ref variable-set)))
+                (setq op (pcase kind ('dynamic-bind 'frame-specbind) ('dynamic-unbind 'frame-unbind)
+                                ('variable-ref 'frame-varref) ('variable-set 'frame-varset)))
+                (when (memq kind '(variable-ref variable-set))
+                  (setq output-root root-next root-next (1+ root-next))))
                ((eq kind 'branch)
                 (cond ((and (= opcode 130) (null inputs)) (setq op 'goto))
                       ((and (memq opcode '(131 132 133 134)) (= (length inputs) 1))
@@ -537,8 +577,13 @@ phis at joins.  It refuses before any backend or artifact side effect."
                ((and f1-p (eq kind 'primitive)
                      (nelisp-native-funcall-v2-primitive opcode))
                 (let ((primitive (nelisp-native-funcall-v2-primitive opcode)))
-                  (if (and (= (length inputs) (nth 2 primitive)) (= (length outputs) 1))
-                      (setq op 'primitive-call output-root root-next root-next (1+ root-next))
+                  (if (and (= (length inputs) (if (eq (nth 2 primitive) 'operand)
+                                                 (plist-get instruction :operand)
+                                               (nth 2 primitive)))
+                           (= (length outputs) 1))
+                      (setq op (if (and (memq opcode '(175 176 177)) (> (length inputs) 32))
+                                   'list-build (if (= opcode 116) 'funcall 'primitive-call))
+                            output-root root-next root-next (1+ root-next))
                     (setq failure "Malformed generic primitive call"))))
                ((eq kind 'primitive)
                 (setq op (cdr (assq opcode
@@ -568,6 +613,23 @@ phis at joins.  It refuses before any backend or artifact side effect."
                                             (if (memq opcode '(131 133)) 'nil 'not-nil))
                              :type-error-input (and (memq op '(car cdr)) (car inputs))
                              :pc (plist-get instruction :pc))))
+                  (when (memq op '(frame-specbind frame-unbind frame-varref frame-varset))
+                    (let* ((symbol-root (cdr (assq (plist-get instruction :operand) constant-roots)))
+                           (arguments (if (eq op 'frame-unbind)
+                                          (let ((root root-next))
+                                            (push (cons (plist-get instruction :operand) root) immediate-roots)
+                                            (setq root-next (1+ root-next)) (list root))
+                                        (cons symbol-root inputs))))
+                      (setq operation (append operation
+                                              (list :argument-roots arguments
+                                                    :argument-count (length arguments))))
+                      (when (memq op '(frame-varref frame-varset))
+                        (setq operation (append operation
+                                                (list :function-root (cdr (assq (if (eq op 'frame-varref)
+                                                                                    'symbol-value 'set) primitive-roots))
+                                                      :staging-roots (number-sequence root-next
+                                                                                     (+ root-next (length arguments) -1)))))
+                        (setq root-next (+ root-next (length arguments))))))
                   (when (eq op 'switch)
                     (let* ((targets (delete-dups (mapcar (lambda (edge) (plist-get edge :target))
                                                        (append (plist-get block :successors) nil))))
@@ -580,29 +642,45 @@ phis at joins.  It refuses before any backend or artifact side effect."
                                                     :argument-count 3
                                                     :staging-roots (number-sequence root-next (+ root-next 2)))))
                       (setq root-next (+ root-next 3))))
-                  (when (memq op '(primitive-call funcall))
-                    (let* ((primitive (and (eq op 'primitive-call)
+                  (when (memq op '(primitive-call list-build funcall))
+                    (let* ((primitive (and (or (= opcode 116) (memq op '(primitive-call list-build)))
                                            (nelisp-native-funcall-v2-primitive opcode)))
+                           ;; Bindent_to consumes one VM operand but calls
+                           ;; Findent_to(column, nil). Keep nil authenticated.
                            (arguments (if primitive inputs (cdr inputs)))
-                           (count (length arguments)))
+                           (_indent (when (= opcode 106)
+                                      (push (cons nil root-next) immediate-roots)
+                                      (setq arguments (append arguments (list root-next))
+                                            root-next (1+ root-next))))
+                           (count (length arguments))
+                           (staged-count (if (eq op 'list-build) 2 count)))
                       (setq operation
                             (append operation
-                                    (list :function-root (if primitive (cdr (assq (nth 1 primitive) primitive-roots)) (car inputs))
+                                    (list :function-root (if (= opcode 116) (cdr (assq 'interactive-p immediate-roots))
+                                                              (if primitive (cdr (assq (if (eq op 'list-build) 'cons (nth 1 primitive)) primitive-roots)) (car inputs)))
                                           :argument-roots arguments :argument-count count
-                                          :staging-roots (number-sequence root-next (+ root-next count -1))
+                                          :staging-roots (number-sequence root-next (+ root-next staged-count -1))
                                           :provider 'nl_native_funcall_v2)))
-                      (setq root-next (+ root-next count))))
+                      (setq root-next (+ root-next staged-count))
+                      (when (eq op 'list-build)
+                        (when (memq opcode '(176 177))
+                          (plist-put operation :apply-function-root (cdr (assq 'apply primitive-roots)))
+                          (plist-put operation :target-function-root (cdr (assq (nth 1 primitive) primitive-roots))))
+                        (plist-put operation :nil-root root-next)
+                        (push (cons nil root-next) immediate-roots)
+                        (setq root-next (1+ root-next)))))
                   (when (eq op 'call1)
                     (setq operation
                           (append operation
                                   (list :argument-count 1 :call-base 1
                                         :provider 'nl_native_call_v2
                                         :exit-root-base 4))))
-                  ;; Deep stack edits can have hundreds of DUP aliases. Their
+                  ;; Deep stack edits and LISTN can have hundreds of DUP aliases. Their
                   ;; SSA mappings above and full frame trace remain canonical;
                   ;; they generate no code. Avoid duplicating their records in
                   ;; the serialized plan and every authenticated reconstruction.
-                  (unless (and stack-edit-p (eq op 'dup))
+                  (unless (and (or stack-edit-p list-p)
+                               (eq op 'dup))
                     (push operation ops)))))))
         (unless failure
           (let ((successors (append (plist-get block :successors) nil))
@@ -651,7 +729,7 @@ phis at joins.  It refuses before any backend or artifact side effect."
       (setq scratch-root root-next exit-root-base (1+ root-next) root-next (+ root-next 4))
       (dolist (block planned-blocks)
         (dolist (operation (plist-get block :operations))
-          (when (memq (plist-get operation :opcode) '(primitive-call funcall switch))
+          (when (memq (plist-get operation :opcode) '(primitive-call list-build funcall switch frame-varref frame-varset))
             (plist-put operation :result-root scratch-root)
             (plist-put operation :exit-root-base exit-root-base)))))
     (when (and f1-p arithmetic-p) (setq failure "F1 numeric coexistence is not qualified"))
@@ -683,10 +761,13 @@ phis at joins.  It refuses before any backend or artifact side effect."
                            (cl-loop for block in planned-blocks append
                                     (cl-remove-if-not
                                      (lambda (op) (memq (plist-get op :opcode)
-                                                       '(car cdr cons add car-safe cdr-safe primitive-call funcall)))
+                                                       '(car cdr cons add car-safe cdr-safe primitive-call list-build funcall)))
                                      (plist-get block :operations)))))
                   #'string<))
-           (gateway-imports (if banked (sort (delete-dups (append gateway-imports '("nl_native_funcall_v2" "nl_root_pin_slot_v2"))) #'string<) gateway-imports))
+           (gateway-imports (if banked (sort (delete-dups (append gateway-imports (list "nl_native_funcall_v2" "nl_root_pin_slot_v2"))) #'string<) gateway-imports))
+           (gateway-imports (if frame-p
+                                (sort (delete-dups (append gateway-imports (list "nl_native_frame_v2"))) #'string<)
+                              gateway-imports))
            (ordered-blocks (nreverse planned-blocks))
            (ordered-phis (nreverse (copy-sequence phis)))
            (ordered-returns (nreverse returns))
@@ -746,6 +827,11 @@ phis at joins.  It refuses before any backend or artifact side effect."
                   :entry-copies (cl-loop for pair in (cdr (assq (plist-get (car blocks) :start) cycle-entries))
                                          for source from 1 collect (cons source (cdr pair)))
                   :poll-root poll-root :poll-exit-roots poll-exit-roots))
+       (and frame-p
+            (list :frame-descriptor (nelisp-native-frame-v2-descriptor)
+                  :frame-hash (nelisp-native-frame-v2-hash)
+                  :frame-state-root frame-state-root :frame-staging-roots frame-staging-roots
+                  :frame-result-root frame-result-root :frame-enter-roots frame-enter-roots))
        (and f1-p
             (list :funcall-version nelisp-native-funcall-v2-version
                   :funcall-descriptor (nelisp-native-funcall-v2-descriptor)
@@ -754,6 +840,7 @@ phis at joins.  It refuses before any backend or artifact side effect."
                   (append (mapcar (lambda (pair) (list :root (cdr pair) :primitive (car pair)))
                                   (nreverse primitive-roots))
                           (and banked (list (list :root poll-root :poll t)))
+                          (and frame-p (list (list :root frame-state-root :frame t)))
                           (and switch-p (list (list :root switch-root :switch t))))
                   :result-root scratch-root :exit-root-base exit-root-base))
        (and arithmetic-p
@@ -773,7 +860,9 @@ phis at joins.  It refuses before any backend or artifact side effect."
 
   (setq guard-owners
         (mapcar (lambda (name) (cons name (funcall lookup name)))
-                '(nelisp-bytecode-native-guarded-lowering-build
+                '(nelisp-native-frame-v2-source nelisp-native-frame-v2-descriptor
+                  nelisp-native-frame-v2-hash nelisp-native-frame-v2-initializer
+                  nelisp-bytecode-native-guarded-lowering-build
                   nelisp-bytecode-native-guarded-lowering-owner-valid-p
                   nelisp-bytecode-native-guarded-lowering-select
                   nelisp-bytecode-native-guarded-lowering-dependency-context

@@ -12,6 +12,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'nelisp-native-frame-v2)
 (require 'nelisp-runtime-reload-abi)
 (require 'nelisp-native-compiler-runtime-proof nil t)
 (require 'nelisp-native-compiler-f1-runtime-proof nil t)
@@ -41,17 +42,24 @@
 This shape check cannot issue or install a runtime capability."
   (let* ((exports (plist-get metadata :exports))
          (f1 (eq (plist-get metadata :domain) 'compiler-f1-runtime-v1))
-         (expected-exports (if f1 (append expected-exports '(("nl_native_funcall_v2" func 6))) expected-exports)))
+         (frame (and f1 (plist-get metadata :frame-descriptor)))
+         (expected-exports (if f1
+                               (append expected-exports '(("nl_native_funcall_v2" func 6))
+                                       (and frame '(("nl_native_frame_v2" func 6))))
+                             expected-exports)))
     (and (eq (plist-get metadata :version) (if f1 2 1))
          (or (not f1)
              (and (equal (plist-get metadata :funcall-descriptor) (nelisp-native-funcall-v2-descriptor))
                   (equal (plist-get metadata :funcall-hash) (nelisp-native-funcall-v2-hash))))
+         (or (not frame)
+             (and (equal frame (nelisp-native-frame-v2-descriptor))
+                  (equal (plist-get metadata :frame-hash) (nelisp-native-frame-v2-hash))))
          (memq (plist-get metadata :domain) '(compiler-runtime-v1 compiler-f1-runtime-v1))
          (equal (plist-get metadata :operation-eligibility) (if f1 '(f1) '(constructor)))
          (cl-every #'nelisp-native-compiler-runtime-capability--digest-p
                    (mapcar (lambda (key) (plist-get metadata key))
                            '(:abi-sha256 :binary-sha256 :active-manifest-sha256)))
-         (listp exports) (= (length exports) (if f1 9 8))
+         (listp exports) (= (length exports) (if frame 10 (if f1 9 8)))
          (cl-every
           (lambda (expected)
             (let ((matches (cl-remove-if-not

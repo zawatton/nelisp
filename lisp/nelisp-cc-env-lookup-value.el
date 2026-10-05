@@ -143,51 +143,59 @@
                   (dealloc-bytes env-tag 32 8)
                   status)))))))
 
+    (defun nelisp_env_variable_canonicalize
+        (mirror-ptr frames-ptr entry-ptr name-ptr address _pad)
+      ;; Alias resolution precedes the buffer-local redirect. Slot 5, when
+      ;; present, is [CURRENT-BUFFER-SYMBOL ((BUFFER . CELL-SYMBOL) ...)].
+      ;; Only borrowed object access occurs here; Lisp owns registration.
+      (let ((status (nelisp_env_alias_canonicalize
+                     mirror-ptr entry-ptr name-ptr address)))
+        (if (or (= status 0) (= status 3))
+            (let* ((canonical (ptr-read-u64 address 0))
+                   (entry (extern-call nelisp_mirror_lookup_entry mirror-ptr canonical)))
+              (if (and (/= entry 0) (> (record-slot-count entry) 5))
+                  (let ((redirect (record-slot-ref-ptr entry 5)))
+                    (if (and (= (sexp-tag redirect) 8) (= (vector-len redirect) 2))
+                        (let ((buffer (alloc-bytes 32 8))
+                              (locals (vector-ref-ptr redirect 1)) (found 0))
+                          (sexp-write-nil buffer)
+                          (if (= (nelisp_env_lookup_value
+                                  mirror-ptr frames-ptr (vector-ref-ptr redirect 0) buffer) 0)
+                              (while (and (= (sexp-tag locals) 7) (= found 0))
+                                (let* ((pair (nl_cons_car_ptr locals))
+                                       (key (nl_cons_car_ptr pair)))
+                                  (if (and (= (sexp-tag key) (sexp-tag buffer))
+                                           (= (ptr-read-u64 key 8) (ptr-read-u64 buffer 8)))
+                                      (seq (ptr-write-u64 address 0 (nl_cons_cdr_ptr pair))
+                                           (setq found 1))
+                                    (setq locals (nl_cons_cdr_ptr locals))))) 0)
+                          (dealloc-bytes buffer 32 8)) 0)) 0)
+              0)
+          status)))
+
     (defun nelisp_env_lkv_mirror_with_frames
         (mirror-ptr frames-ptr name-ptr out-ptr frame-mode _pad _pad2 _pad3)
       (let ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr)))
-        (if (= entry 0)
-            1
-          (if (/= (sexp-tag entry) 12)
-              1
-            (if (<= (record-slot-count entry) 4)
-                (and (record-slot-ref entry 0 out-ptr) 0)
-              (let ((target-ptr (record-slot-ref-ptr entry 4)))
-                (if (= (sexp-tag target-ptr) 0)
-                    (and (record-slot-ref entry 0 out-ptr) 0)
-                  (if (/= (sexp-tag target-ptr) 4)
-                      1
-                    (let ((canonical-address (alloc-bytes 8 8))
-                          (status 1))
-                      (setq status
-                            (nelisp_env_alias_canonicalize
-                             mirror-ptr entry name-ptr canonical-address))
-                      (if (= status 0)
-                          (let* ((canonical-ptr
-                                  (ptr-read-u64 canonical-address 0))
-                                 (cell-ptr
-                                  (if (= frames-ptr 0) 0
-                                    (if (= frame-mode 1)
-                                        (extern-call nelisp_frame_stack_find_kind
-                                                     frames-ptr canonical-ptr 1 0)
-                                      (extern-call nelisp_frame_stack_find
-                                                   frames-ptr canonical-ptr)))))
-                            (if (= cell-ptr 0)
-                                (let ((canonical-entry
-                                       (extern-call nelisp_mirror_lookup_entry
-                                                    mirror-ptr canonical-ptr)))
-                                  (if (= canonical-entry 0)
-                                      (setq status 1)
-                                    (setq status
-                                          (and (record-slot-ref canonical-entry 0 out-ptr)
-                                               0))))
-                              (setq status
-                                    (extern-call nl_cell_get_value
-                                                 cell-ptr out-ptr))))
-                        ;; Invalid metadata and cycles are lookup failures, never nil.
-                        (setq status 1))
-                      (dealloc-bytes canonical-address 8 8)
-                      status)))))))))
+        (if (= entry 0) 1
+          (if (and (= (nelisp_env_alias_slot_candidate entry 0) 3)
+                   (if (> (record-slot-count entry) 5)
+                       (= (sexp-tag (record-slot-ref-ptr entry 5)) 0) 1))
+              (and (record-slot-ref entry 0 out-ptr) 0)
+          (let ((address (alloc-bytes 8 8)) (status 1))
+            (setq status (nelisp_env_variable_canonicalize
+                          mirror-ptr frames-ptr entry name-ptr address 0))
+            (if (= status 0)
+                (let* ((canonical (ptr-read-u64 address 0))
+                       (cell (if (= frames-ptr 0) 0
+                               (if (= frame-mode 1)
+                                   (extern-call nelisp_frame_stack_find_kind frames-ptr canonical 1 0)
+                                 (extern-call nelisp_frame_stack_find frames-ptr canonical)))))
+                  (if (= cell 0)
+                      (let ((terminal (extern-call nelisp_mirror_lookup_entry mirror-ptr canonical)))
+                        (if (= terminal 0) (setq status 1)
+                          (setq status (and (record-slot-ref terminal 0 out-ptr) 0))))
+                    (setq status (extern-call nl_cell_get_value cell out-ptr)))) 0)
+            (dealloc-bytes address 8 8) status)))))
 
     ;; Preserve the established four-argument global-mirror ABI. It cannot
     ;; inspect frames, so frame-aware callers use the eight-argument entry.
@@ -206,7 +214,15 @@
     ;; once for the cell-hit dispatch).  On frame-hit: 1 hash instead
     ;; of 2.  On frame-miss + mirror-hit: 2 hashes instead of 3.
     (defun nelisp_env_lookup_value (mirror-ptr frames-ptr name-ptr out-ptr)
-      (let ((cell-ptr (extern-call nelisp_frame_stack_find frames-ptr name-ptr)))
+      (let* ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr))
+             (local-p (if (= entry 0) 0
+                        (if (> (record-slot-count entry) 5)
+                            (= (sexp-tag (record-slot-ref-ptr entry 5)) 8) 0)))
+             ;; Lexical cells shadow locals. A default dynamic binding does
+             ;; not shadow an existing local cell in another buffer.
+             (cell-ptr (if (= local-p 1)
+                           (extern-call nelisp_frame_stack_find_kind frames-ptr name-ptr 0 0)
+                         (extern-call nelisp_frame_stack_find frames-ptr name-ptr))))
         (if (= cell-ptr 0)
             ;; Frame miss: check mirror.
             (nelisp_env_lkv_mirror_with_frames

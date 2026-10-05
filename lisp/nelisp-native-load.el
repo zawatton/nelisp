@@ -43,6 +43,7 @@
 (require 'cl-lib)
 (require 'nelisp-runtime-reload-abi)
 (require 'nelisp-native-funcall-v2)
+(require 'nelisp-native-frame-v2)
 
 (defvar nelisp-native-load--active-calls (make-hash-table :test 'eq)
   "Per-handle native call depth, including nested calls.")
@@ -113,7 +114,8 @@ equality test and the port-count test both check it.")
     "wf_bytecode_call_gateway_exit")
    (nelisp-native-load--port-symbol-names)
    '("nl_native_funcall_v2")
-   (mapcar #'car nelisp-runtime-reload-gc-contract))
+   (mapcar #'car nelisp-runtime-reload-gc-contract)
+   '("nl_native_frame_v2"))
   "Runtime symbols a stub can be pointed at, in `nelisp--native-symbol-addr' order.
 
 The index is the contract: the builtin selects from a chain of
@@ -1831,7 +1833,7 @@ The returned plist has :environment, :begin, :reserve, :end, and :slot fields."
           '(0 success 1 wrong-type 2 malformed 3 unsupported-opcode)))))
 
 (defconst nelisp-native-load-raw-v2-bridgeable-imports
-  '("nl_native_car_v2" "nl_native_cdr_v2" "nl_native_cons_v2" "nl_native_funcall_v2")
+  '("nl_native_car_v2" "nl_native_cdr_v2" "nl_native_cons_v2" "nl_native_funcall_v2" "nl_native_frame_v2")
   "Exact v2 native bridge imports backed by the binary symbol-address table.
 
 Root-pin operations remain host-controlled; raw units receive an authenticated
@@ -1916,7 +1918,8 @@ ticket and slot indices and may call only the CAR gateway.")
     (list nelisp-native-load-raw-v2-import-contract-version
           resolver-symbols
           nelisp-native-load-raw-v2-bridgeable-imports
-          (nelisp-native-funcall-v2-descriptor)))))
+          (nelisp-native-funcall-v2-descriptor)
+          (nelisp-native-frame-v2-descriptor) (nelisp-native-frame-v2-hash)))))
 
 (defun nelisp-native-load--raw-v2-contract-hash (&optional contract)
   "Return the digest of CONTRACT's canonical printed representation."
@@ -2645,6 +2648,9 @@ without publishing an intermediate artifact.  The cache owns publication."
                        :gc (nelisp-native-load--rooted-stack-gc-forms-valid-p
                             gc-forms contract)
                        :counts (list (length forms) (1+ (length contract))))))))
+    ;; The producer and artifact admission authenticate the F1 capability,
+    ;; including the frame descriptor/hash.  Raw compilation creates no
+    ;; executable permission and must not repeat that full memory proof.
     (when rooted-cfg-spec
       (nelisp-native-load--raw-v2-compile-stage source-path artifact-path "contract-validation-start")
       (require 'nelisp-bytecode-native-rooted-cfg-contract)

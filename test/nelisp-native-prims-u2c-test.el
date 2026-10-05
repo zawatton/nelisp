@@ -38,7 +38,7 @@
   (dolist (row native-prims-u2c-family)
     (let ((fn (make-byte-code 0 (unibyte-string (car row) 135) [] 0)))
       (should-not (eq (plist-get (nelisp-bytecode-compiler-input-build fn) :status) 'complete))))
-  (should-not (nelisp-native-funcall-v2-primitive 80)))
+  (should-not (nelisp-native-funcall-v2-primitive 114)))
 (ert-deftest u2c/safe-contract-and-exit-layout-reconstruct ()
   (dolist (row native-prims-u2c-family)
     (let* ((input (nelisp-bytecode-compiler-input-build (native-prims-u2c-function row)))
