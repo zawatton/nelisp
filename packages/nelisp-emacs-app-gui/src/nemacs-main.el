@@ -2055,9 +2055,10 @@ takes over and dispatches TUI events directly."
       (nemacs-init))
     (nemacs-main--apply-options)
     (nemacs-main--init-keymap)
-    ;; GUI and TUI share editor state; the transport must not choose a
-    ;; different native scratch buffer merely because its window is unbound.
-    (nemacs-main--sync-selected-window-buffer)
+    ;; Startup functions may already have selected a native editing buffer.
+    ;; Preserve that view; use the shared scratch only for an unbound window.
+    (nemacs-main--sync-selected-window-buffer
+     (emacs-window-buffer (emacs-window-selected-window)))
     (require 'nelisp-gui-frontend)
     (nelisp-gui-frontend-run))
    (t

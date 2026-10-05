@@ -63,6 +63,31 @@
 
 ;;;; B. nemacs-main-option
 
+(ert-deftest nemacs-main-test/xcb-startup-preserves-native-buffer-selection ()
+  "A startup function's selected buffer wins over the unused pure scratch."
+  (let ((nemacs-initialized t)
+        (nemacs-main-options '(:frontend xcb))
+        (emacs-window--root nil)
+        (emacs-window--selected nil)
+        (nelisp-ec--current-buffer nil)
+        (nelisp-ec--buffers nil)
+        (native (generate-new-buffer " *xcb-startup*")))
+    (unwind-protect
+        (progn
+          (nelisp-ec-set-buffer (nelisp-ec-generate-new-buffer "*scratch*"))
+          (cl-letf (((symbol-function 'nemacs-main--apply-options)
+                     (lambda ()
+                       (emacs-window-set-window-buffer
+                        (emacs-window-selected-window) native)))
+                    ((symbol-function 'nemacs-main--init-keymap) #'ignore)
+                    ((symbol-function 'require) (lambda (&rest _) t))
+                    ((symbol-function 'nelisp-gui-frontend-run)
+                     (lambda ()
+                       (should (eq (emacs-window-window-buffer
+                                    (emacs-window-selected-window)) native)))))
+            (nemacs-main)))
+      (kill-buffer native))))
+
 (ert-deftest nemacs-main-test/option-returns-default ()
   (nemacs-main-test--with-options nil
     (should (null (nemacs-main-option :batch)))

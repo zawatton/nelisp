@@ -827,6 +827,9 @@ under the live Magit bridge even when the actual current buffer is valid."
   (defvar buffer-read-only nil)
   (emacs-buffer-declare-per-buffer 'buffer-read-only nil)
   (emacs-buffer-declare-per-buffer 'major-mode 'fundamental-mode)
+  ;; Like major-mode, the display name starts fresh in every new buffer.
+  ;; Scratch's Lisp Interaction name must not become the global default.
+  (emacs-buffer-declare-per-buffer 'mode-name "Fundamental")
   ;; Preserve any live value/default established before this reload.  The
   ;; core intrinsic-initial-value table supplies nil per buffer independently
   ;; of the variable's mutable default.
