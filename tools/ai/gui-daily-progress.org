@@ -33,6 +33,8 @@ change to the criteria list is recorded in a NOTE.
 
 #+NOTE: 2026-10-05 lanes S22 and S13 integrated.  S22: pty scenario (C-x C-f, motion, typing, isearch, query-replace, kill/yank, undo, split, scroll, save, quit) vs GNU emacs -nw at 80x24: 3/3 milestone screens and saved bytes identical (79 s); S2.2 wired.  It regressed C-core display (window-combination-limit probes no longer signal "too small for splitting" in the 10x10 batch frame) and GUI S3.2 ('ASCII cell', 6); lane S22b fixes both.  S13: tools/user-init-audit.py loads the user's early-init/init.el form by form under the image with a read-only fixture home and a GNU reference: NeLisp-only failures 18 -> 12 over the observed forms, but only 294 of 949 forms completed within the 7200 s cap (GNU loads all 949 in ~20 s; treemacs alone > 3195 s, doom-modeline 545 s), so S1.3/S5.3 are bound by interpreter speed owned by the compiler session.  The set-default fix was made by both R2 and S13 (identical code; conflict resolved to one copy).
 
+#+NOTE: 2026-10-05 criterion added (15 -> 16): launching bin/nemacs-xcb on the user's real GNOME X11 display showed the plain -Q path unusable even though S3.2/S3.3/S4.2 pass: typed text reached the buffer but never rendered, Return inserted nothing, the mode line was empty and the idle process used ~97% CPU.  The passing gates drive fixtures that build buffers directly, so they did not cover the plain path.  S5.0 measures that path (lane G2).
+
 * S1 Shared interactive foundation
 
 ** S1.1 One event wait drives read-event: keys, timers, idle timers and process output (sit-for, sleep-for, input-pending-p behave as GNU)
@@ -96,6 +98,9 @@ cmd: bash -c 'timeout 240 python3 scripts/gui-daily-build.py >/dev/null 2>&1 && 
 pending
 
 * S5 GUI daily use
+
+** S5.0 The plain launcher (bin/nemacs-xcb, no fixture) shows typed text, a filled mode line, and idles below 10% CPU
+pending
 
 ** S5.1 End to end under Xvfb with -Q: open, edit, search, split, mouse select, copy/paste, save, quit
 pending
