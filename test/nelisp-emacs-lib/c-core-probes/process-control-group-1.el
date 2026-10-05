@@ -8,7 +8,11 @@
                                   :filter (lambda (_p text) (setq output (concat output text)))
                                   :sentinel #'ignore :noquery t))
            (wait (lambda (predicate)
-                   (let ((deadline (+ (float-time) 2)))
+                   ;; Fixture readiness wait, not product behaviour: the loop
+                   ;; returns as soon as PREDICATE holds, so a generous bound
+                   ;; only matters on a loaded machine (2 s failed ~1 in 4
+                   ;; runs at load average ~20).
+                   (let ((deadline (+ (float-time) 15)))
                      (while (and (not (funcall predicate)) (< (float-time) deadline))
                        (accept-process-output process 0.02))
                      (unless (funcall predicate) (error "Group transition timed out"))))))
