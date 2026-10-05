@@ -29,6 +29,8 @@ change to the criteria list is recorded in a NOTE.
 
 #+NOTE: 2026-10-05 lane X2 integrated (frame pixel metrics, xkb keyboard, mouse, in-window menu, gate stages).  On nelisp-gui1: S3.2 PASS (199 s), S3.3 PASS (DPI cases now concurrent: 728 s -> 239 s), S4.2 PASS (406 s), S4.1 FAIL (known red: keyboard transport, map negative control and the GNU SKK oracle pass; native evil/Custom init fails with evil-toggle-key unbound).  X2's seven shared-module requests are in target/progress/gui/x2-NEEDS-SHARED.md: lane R2 takes the runtime items (set-default on unbound symbols, character-literal escapes such as ?\040 read as 0, marker coercion in arithmetic and ranges); command-loop items (this-command bookkeeping, advised interactive forms, modifier-bit events, newline target) wait for lane S22 to finish because it owns those files.  gui-daily-fixtures.py no longer hard-codes the user's home (NEMACS_EXTERNAL_PACKAGES or the passwd home).
 
+#+NOTE: 2026-10-05 runtime nelisp-gui2 (RT 0fb4a022, sha256 cbe63a91...; lane R2): reader character/string escapes match GNU (170 records + 122 source literals), set-default binds unbound symbols, markers coerce in arithmetic and text ranges.  exit smoke 10/10, pty 10/10, S4.2 PASS; S4.1 still red but now reaches evil insert state with SKK active and the kana marker; the remaining blockers are the command-loop items.  C-core parity on gui2: one run differed in the process area (stop-process "Group transition timed out", 1 of 4 process-only runs under load average ~20; lane P1), other runs 7/7.
+
 * S1 Shared interactive foundation
 
 ** S1.1 One event wait drives read-event: keys, timers, idle timers and process output (sit-for, sleep-for, input-pending-p behave as GNU)

@@ -647,7 +647,7 @@ Reset the local keymap, syntax and case tables, and mode-line display.
          (local-variable-p          . emacs-buffer-local-variable-p)
          (default-value             . emacs-buffer-default-value)
          (default-boundp            . emacs-buffer-default-boundp)
-         (set-default               . emacs-buffer-set-default)
+         (set-default               . emacs-buffer-setq-default-1)
          (kill-local-variable       . emacs-buffer-kill-local-variable)
          (kill-all-local-variables  . emacs-buffer-builtins--kill-all-local-variables))))
   (if (emacs-buffer-builtins--standalone-p)
@@ -1693,7 +1693,7 @@ buffers are returned regardless."
   (defalias 'default-boundp #'emacs-buffer-default-boundp))
 
 (when (emacs-buffer-builtins--install-function-p 'set-default)
-  (defalias 'set-default #'emacs-buffer-set-default))
+  (defalias 'set-default #'emacs-buffer-setq-default-1))
 
 (defun emacs-buffer-builtins-buffer-modified-tick (&optional buffer)
   "Return BUFFER's standalone modified tick."
@@ -2292,6 +2292,71 @@ Ignores narrowing (hashes the whole buffer)."
 (when (and (emacs-buffer-builtins--standalone-p)
            (fboundp 'nelisp-narrow-to-region))
   (emacs-buffer-builtins--install-restriction-bridge))
+
+
+;;;; --- native marker position arguments --------------------------------
+
+(defvar emacs-buffer-builtins--native-substring-no-properties nil)
+(defun emacs-buffer-builtins--marker-position-argument (position)
+  "Resolve marker POSITION and retain the native validation of other types."
+  (if (markerp position)
+      (or (marker-position position) (error "Marker does not point anywhere"))
+    position))
+(defun emacs-buffer-builtins-buffer-substring-no-properties (start end)
+  "Return native text between integer or marker bounds START and END."
+  (funcall emacs-buffer-builtins--native-substring-no-properties
+           (emacs-buffer-builtins--marker-position-argument start)
+           (emacs-buffer-builtins--marker-position-argument end)))
+(when (and (emacs-buffer-builtins--standalone-p)
+           (fboundp 'buffer-substring-no-properties))
+  (unless emacs-buffer-builtins--native-substring-no-properties
+    (setq emacs-buffer-builtins--native-substring-no-properties
+          (symbol-function 'buffer-substring-no-properties)))
+  (defalias 'buffer-substring-no-properties
+    #'emacs-buffer-builtins-buffer-substring-no-properties))
+
+(defvar emacs-buffer-builtins--native-goto-char nil)
+(defun emacs-buffer-builtins-goto-char (position)
+  "Move native point to integer or marker POSITION, returning POSITION."
+  (funcall emacs-buffer-builtins--native-goto-char
+           (emacs-buffer-builtins--checked-position position))
+  position)
+(defvar emacs-buffer-builtins--native-char-after nil)
+(defvar emacs-buffer-builtins--native-char-before nil)
+(defun emacs-buffer-builtins-char-after (&optional position)
+  "Return the native character at optional integer or marker POSITION."
+  (funcall emacs-buffer-builtins--native-char-after
+           (and position (emacs-buffer-builtins--checked-position position))))
+(defun emacs-buffer-builtins-char-before (&optional position)
+  "Return the native character preceding integer or marker POSITION."
+  (funcall emacs-buffer-builtins--native-char-before
+           (and position (emacs-buffer-builtins--checked-position position))))
+(defun emacs-buffer-builtins--install-native-marker-position-bridges ()
+  "Keep marker validation at the shared buffer boundary after IO loads."
+  ;; Capture once: the IO adapter may itself capture this bridge, so capturing
+  ;; its replacement later would form a cycle through that adapter.
+  (unless emacs-buffer-builtins--native-goto-char
+    (setq emacs-buffer-builtins--native-goto-char (symbol-function 'goto-char)))
+  (unless emacs-buffer-builtins--native-char-after
+    (setq emacs-buffer-builtins--native-char-after (symbol-function 'char-after)))
+  (unless emacs-buffer-builtins--native-char-before
+    (setq emacs-buffer-builtins--native-char-before (symbol-function 'char-before)))
+  (defalias 'goto-char #'emacs-buffer-builtins-goto-char)
+  (defalias 'char-after #'emacs-buffer-builtins-char-after)
+  (defalias 'char-before #'emacs-buffer-builtins-char-before))
+(when (emacs-buffer-builtins--standalone-p)
+  (emacs-buffer-builtins--install-native-marker-position-bridges)
+  ;; Standalone provide executes named feature callbacks. This also handles
+  ;; concatenated bootstrap source, where the IO adapter is evaluated later.
+  (let ((entry (assq 'files-standalone-buffer after-load-alist)))
+    (if entry
+        (unless (memq 'emacs-buffer-builtins--install-native-marker-position-bridges (cdr entry))
+          (setcdr entry
+                  (cons 'emacs-buffer-builtins--install-native-marker-position-bridges (cdr entry))))
+      (setq after-load-alist
+            (cons (list 'files-standalone-buffer
+                        'emacs-buffer-builtins--install-native-marker-position-bridges)
+                  after-load-alist)))))
 
 (provide 'emacs-buffer-builtins)
 
