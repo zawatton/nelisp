@@ -201,8 +201,16 @@ and doubles beyond position four continue through the libffi adapter."
                                           0 wid 39 31 8 (length title) (nl-ffi-memory-address text))
                 (nl-ffi-memory-release text)))
             (nelisp-gui-xcb-checked state "xcb_map_window_checked" '(:uint32) wid)
-            (nelisp-gui-xcb-checked state "xcb_set_input_focus_checked" '(:uint8 :uint32 :uint32)
-                                    1 wid 0))
+            ;; Under a window manager the map request is redirected, so the
+            ;; window is not viewable yet and SetInputFocus fails with
+            ;; BadMatch (8).  The WM gives focus on map, as for GNU Emacs;
+            ;; only a bare server (Xvfb) needs this request.
+            (condition-case err
+                (nelisp-gui-xcb-checked state "xcb_set_input_focus_checked" '(:uint8 :uint32 :uint32)
+                                        1 wid 0)
+              (nelisp-gui-xcb-error
+               (unless (eq 8 (car-safe (nth 2 err)))
+                 (signal (car err) (cdr err))))))
           (let ((o (nl-ffi-memory-allocate 16)))
             (unwind-protect
                 (let ((p (nl-ffi-memory-address o)))
