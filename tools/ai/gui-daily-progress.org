@@ -64,7 +64,7 @@ cmd: bash -c 'bash tools/c-core-image.sh check >/dev/null 2>&1 || bash tools/c-c
 ** S2.1 Line layout parity (frontend independent): wrap/truncation, invisible, display/overlay strings, mode line, header line, minibuffer, compared with GNU on a fixed corpus
 #+REQUIRES: NELISP_BIN
 #+TIMEOUT: 600
-cmd: bash -c 'bash tools/c-core-image.sh check >/dev/null 2>&1 || bash tools/c-core-image.sh build >/dev/null 2>&1; EMACS=emacs timeout 590 python3 tools/redisplay-layout-parity.py run --output build/redisplay-layout/ledger'
+cmd: bash -c 'bash tools/c-core-image.sh check >/dev/null 2>&1 || bash tools/c-core-image.sh build >/dev/null 2>&1; EMACS=emacs REDISPLAY_PARITY_JOBS=6 timeout 590 python3 tools/redisplay-layout-parity.py run --timeout 180 --output build/redisplay-layout/ledger'
 
 ** S2.2 End to end: pty scenario (open file, edit, search, split windows, save, quit) produces the same final file and screen as GNU emacs -nw
 #+REQUIRES: NELISP_BIN
