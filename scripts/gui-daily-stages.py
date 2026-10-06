@@ -554,6 +554,16 @@ def run(args, api):
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
                 module.run(args,api,out,env,report,sessions)
+            elif args.stage=='S5.0c':
+                import importlib.util
+                spec=importlib.util.spec_from_file_location('paced',root/'scripts/gui-daily-paced.py')
+                module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+                result=module.measure(api, module.load('paced_stages', __file__),
+                                      out,env,sessions)
+                report['latency']=result
+                module.assert_budget(result)
+                report['checks'].extend(result['checks'])
+                report['status']='PASS'
             elif args.stage=='S5.0b':
                 import importlib.util
                 spec=importlib.util.spec_from_file_location('latency',root/'scripts/gui-daily-latency.py')

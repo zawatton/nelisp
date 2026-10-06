@@ -12,6 +12,14 @@
 (defvar nelisp-gui-frontend--renderer nil)
 (defvar nelisp-gui-frontend--redisplay nil)
 (defvar nelisp-gui-frontend--paint-needed t)
+(defvar nelisp-gui-frontend--paint-deadline nil)
+(defvar nelisp-gui-frontend--transport-pending nil)
+(defvar nelisp-gui-frontend-maximum-pump-time 0.025
+  "Maximum time to decode one X transport batch before returning to commands.")
+(defvar nelisp-gui-frontend-maximum-frame-delay 0.5
+  "Maximum time to defer a dirty frame while more input is queued.
+Commands and their hooks still run in order; a continuous input stream
+must not starve screen updates indefinitely.")
 (defvar nelisp-gui-frontend--prefix [])
 (defvar nelisp-gui-frontend--timing nil)
 (defvar nelisp-gui-frontend--timing-keys 0)
@@ -22,6 +30,37 @@
 (defvar nelisp-gui-frontend--timing-collections 0)
 (defvar nelisp-gui-frontend--trace-text nil)
 (defvar nelisp-gui-frontend--latency-check nil)
+(defvar nelisp-gui-frontend--profile nil)
+(defvar nelisp-gui-frontend--profile-saved nil)
+(defvar nelisp-gui-frontend--profile-spans nil)
+
+(defun nelisp-gui-frontend--profile-install ()
+  "Opt-in inclusive phase timings; never alter the evaluator or collector."
+  (dolist (name '(emacs-redisplay--snapshot-fingerprint emacs-redisplay--snapshot-line-spans
+                 emacs-redisplay--viewport-text emacs-redisplay--source-entries
+                 emacs-redisplay--display-tokens emacs-redisplay--token-rows
+                 emacs-redisplay--fill-row emacs-redisplay--cursor-for-point
+                 emacs-redisplay--redisplay-window-rebuild
+                 nelisp-gui-pango-row nelisp-gui-pango--layout
+                 nelisp-gui-pango--families nelisp-gui-menu-paint
+                 nelisp-gui-xcb-call nelisp-gui-frontend--service))
+    (let ((original (symbol-function name)) (phase name))
+      (push (cons name original) nelisp-gui-frontend--profile-saved)
+      (fset name
+            (lambda (&rest args)
+              (let ((start (float-time)))
+                (prog1 (apply original args)
+                  (let* ((elapsed (- (float-time) start))
+                         (cell (assq phase nelisp-gui-frontend--profile-spans)))
+                    (if cell
+                        (setcdr cell (cons (1+ (cadr cell)) (+ elapsed (cddr cell))))
+                      (push (cons phase (cons 1 elapsed)) nelisp-gui-frontend--profile-spans))))))))))
+
+(defun nelisp-gui-frontend--profile-report ()
+  (dolist (span nelisp-gui-frontend--profile-spans)
+    (princ (format "GUI-PROFILE|phase=%S|calls=%d|seconds=%.6f|\n"
+                   (car span) (cadr span) (cddr span))))
+  (setq nelisp-gui-frontend--profile-spans nil))
 
 (defun nelisp-gui-frontend--gc-counter ()
   "Read the existing reader collection counter without changing the collector."
@@ -60,10 +99,10 @@ Only adaptation is done here; bounds, motion and edits stay in libraries.")
 (defun nelisp-gui-frontend--pump ()
   "Drain a bounded transport batch and feed canonical events to the shared loop."
   (nelisp-gui-selection-expire)
-  (let ((n 0) (go t)
+  (let ((n 0) (go t) (deadline (+ (float-time) nelisp-gui-frontend-maximum-pump-time))
         (collections (and nelisp-gui-frontend--timing (nelisp-gui-frontend--gc-counter)))
         (start (and nelisp-gui-frontend--timing (float-time))))
-    (while (and go (< n 64))
+    (while (and go (< n 64) (< (float-time) deadline))
       (let ((event (nelisp-gui-selection-poll)))
         (cond
          ((null event) (setq go nil))
@@ -92,6 +131,9 @@ Only adaptation is done here; bounds, motion and edits stay in libraries.")
          ((plist-get event :expose)
           (setq nelisp-gui-frontend--paint-needed t nelisp-gui-pango-force-paint t))))
       (setq n (1+ n)))
+    ;; XCB can already hold unread events even when the socket is quiet.
+    ;; A truncated batch must return here again before entering poll(2).
+    (setq nelisp-gui-frontend--transport-pending go)
     (when start
       (setq nelisp-gui-frontend--timing-decode
             (+ nelisp-gui-frontend--timing-decode (- (float-time) start)))
@@ -126,9 +168,11 @@ Only adaptation is done here; bounds, motion and edits stay in libraries.")
   (let ((changed nil))
     (when (fboundp 'emacs-process-dispatch-pending)
       (when (emacs-process-dispatch-pending) (setq changed t)))
-    (when (fboundp 'emacs-timer-run-pending)
+    (when (and (fboundp 'emacs-timer-run-pending)
+               (or (not (boundp 'timer-list)) timer-list))
       (when (> (emacs-timer-run-pending) 0) (setq changed t)))
-    (when (and (fboundp 'emacs-timer-run-idle) (fboundp 'emacs-timer-idle-seconds))
+    (when (and (fboundp 'emacs-timer-run-idle) (fboundp 'emacs-timer-idle-seconds)
+               (or (not (boundp 'timer-idle-list)) timer-idle-list))
       (when (> (emacs-timer-run-idle (emacs-timer-idle-seconds)) 0) (setq changed t)))
     (when changed (setq nelisp-gui-frontend--paint-needed t))))
 
@@ -136,6 +180,8 @@ Only adaptation is done here; bounds, motion and edits stay in libraries.")
   "Use the shared timer deadline; periodically service active process callbacks."
   (let ((maximum (if (and (fboundp 'emacs-process-wait-source-p)
                           (emacs-process-wait-source-p)) 0.05 1.0)))
+    (when (fboundp 'nelisp-gui-selection-next-delay)
+      (setq maximum (nelisp-gui-selection-next-delay maximum)))
     (* 1000 (if (fboundp 'emacs-timer-next-delay)
                 (emacs-timer-next-delay maximum) maximum))))
 
@@ -157,12 +203,15 @@ Only adaptation is done here; bounds, motion and edits stay in libraries.")
               (princ (format "GUI-MATRIX-TEXT|row=%d|text=%S|\n" (car cursor)
                              (emacs-redisplay-glyph-row-text
                               (aref (emacs-redisplay-glyph-matrix-rows m) (car cursor))))))))
-        (when (equal (getenv "NELISP_GUI_FIXTURE") "metrics") (nelisp-gui-metrics-snapshot))
+        (when (equal (getenv "NELISP_GUI_FIXTURE") "metrics")
+          (nelisp-gui-pango--ensure-cells nelisp-gui-frontend--renderer)
+          (nelisp-gui-metrics-snapshot))
         (princ (format "GUI-PAINT|window=%d|point=%d|cursor=%S|families=%S|cairo=0|start=%d|popup=%S|\n"
                        (aref nelisp-gui-frontend--xcb 1) (nelisp-gui-frontend--point)
                        (emacs-redisplay-glyph-matrix-cursor m) families
                        (emacs-window-window-start w) (and nelisp-gui-menu--popup t))))
-      (setq nelisp-gui-frontend--paint-needed nil))
+      (setq nelisp-gui-frontend--paint-needed nil
+            nelisp-gui-frontend--paint-deadline nil))
     (when start
       (when collections (setq nelisp-gui-frontend--timing-collections
                               (+ nelisp-gui-frontend--timing-collections
@@ -179,8 +228,39 @@ Only adaptation is done here; bounds, motion and edits stay in libraries.")
       (setq nelisp-gui-frontend--timing-keys 0 nelisp-gui-frontend--timing-collections 0
             nelisp-gui-frontend--timing-decode 0.0
             nelisp-gui-frontend--timing-command 0.0
-            nelisp-gui-frontend--timing-gc-start (and (boundp 'gc-elapsed) gc-elapsed)))))
+            nelisp-gui-frontend--timing-gc-start (and (boundp 'gc-elapsed) gc-elapsed))))
+  (when nelisp-gui-frontend--profile (nelisp-gui-frontend--profile-report))
+  (when (or nelisp-gui-frontend--timing nelisp-gui-frontend--latency-check)
+    (princ (format "GUI-FRAME-DONE|point=%d|\n" (nelisp-gui-frontend--point)))))
 
+(defvar nelisp-gui-frontend--self-insert-event nil)
+(defun nelisp-gui-frontend--set-prefix (prefix)
+  (setq nelisp-gui-frontend--prefix prefix))
+(defun nelisp-gui-frontend--set-command-event (value)
+  (set 'last-command-event value) (set 'last-input-event value))
+(defun nelisp-gui-frontend--self-insert-edit ()
+  (if (nelisp-gui-frontend--pure-buffer-p)
+      (emacs-edit-self-insert-direct nelisp-gui-frontend--self-insert-event)
+    (emacs-command-loop-command-execute 'self-insert-command)))
+(defun nelisp-gui-frontend--self-insert-point (_edit)
+  (nelisp-gui-frontend--point))
+(defun nelisp-gui-frontend--run-self-insert (event _plan)
+  (let ((nelisp-gui-frontend--self-insert-event event))
+    (emacs-command-loop-key-dispatch-run-self-insert
+     event #'nelisp-gui-frontend--self-insert-edit #'nelisp-gui-frontend--self-insert-point)))
+(defun nelisp-gui-frontend--direct-command-p (command)
+  (and (nelisp-gui-frontend--pure-buffer-p)
+       (assq command nelisp-gui-frontend--motion-adapters)))
+(defun nelisp-gui-frontend--run-direct-command (command _plan)
+  (emacs-command-loop-key-dispatch-direct-funcall
+   (cdr (assq command nelisp-gui-frontend--motion-adapters))))
+(defconst nelisp-gui-frontend--dispatch-adapters
+  '(:set-prefix nelisp-gui-frontend--set-prefix
+    :set-last-command-event nelisp-gui-frontend--set-command-event
+    :run-self-insert nelisp-gui-frontend--run-self-insert
+    :direct-command-p nelisp-gui-frontend--direct-command-p
+    :run-direct-command nelisp-gui-frontend--run-direct-command
+    :command-execute emacs-command-loop-command-execute))
 (defun nelisp-gui-frontend--dispatch-pure ()
   "Run the existing shared GUI dispatcher with shared pure-buffer adapters.
 The native reader's unprefixed editing commands target its separate scratch
@@ -193,34 +273,16 @@ The native reader's unprefixed editing commands target its separate scratch
                 :events (vector event) :prefix nelisp-gui-frontend--prefix
                 :lookup-sequence #'emacs-keymap-menu-binding))
          (result
-          (emacs-command-loop-key-dispatch-run-plan
+          (apply #'emacs-command-loop-key-dispatch-run-plan
            plan
-           :set-prefix (lambda (prefix) (setq nelisp-gui-frontend--prefix prefix))
-           :set-last-command-event (lambda (value) (set 'last-command-event value)
-                                     (set 'last-input-event value))
-           :source-event event
-           :run-self-insert
-           (lambda (ev _plan)
-             (emacs-command-loop-key-dispatch-run-self-insert
-              ev (lambda ()
-                   (if (nelisp-gui-frontend--pure-buffer-p)
-                       (emacs-edit-self-insert-direct ev)
-                     (emacs-command-loop-command-execute 'self-insert-command)))
-              (lambda (_edit) (nelisp-gui-frontend--point))))
-           :direct-command-p
-           (lambda (cmd) (and (nelisp-gui-frontend--pure-buffer-p)
-                              (assq cmd nelisp-gui-frontend--motion-adapters)))
-           :run-direct-command
-           (lambda (cmd _plan)
-             (emacs-command-loop-key-dispatch-direct-funcall
-              (cdr (assq cmd nelisp-gui-frontend--motion-adapters))))
-           :command-execute #'emacs-command-loop-command-execute)))
+           :source-event event nelisp-gui-frontend--dispatch-adapters)))
     (unless (memq (plist-get result :status) '(prefix self-insert command))
       (error "Shared GUI dispatch failed: %S" result))
     (princ (format "GUI-COMMAND|command=%S|status=%S|point=%d|mark=%S|start=%d|focus=%S|text=%S\n"
                    (plist-get plan :binding) (plist-get result :status)
                    (nelisp-gui-frontend--point) (emacs-mouse-mark) (emacs-window-window-start) (and (emacs-frame-frame-focus) t)
                    (if nelisp-gui-frontend--trace-text (nelisp-gui-frontend--text) "")))))
+
 
 (defun nelisp-gui-frontend--dispatch ()
   "Use the ordinary shared loop for native buffer consumers such as ddskk."
@@ -244,6 +306,8 @@ Command lookup, execution, hooks, buffer editing and point stay in libraries."
         (condition-case err
             (progn
               (setq nelisp-gui-frontend--timing (equal (getenv "NELISP_GUI_TIMING") "1")
+                    nelisp-gui-frontend--profile (equal (getenv "NELISP_GUI_PROFILE") "1")
+                    nelisp-gui-xcb-trace-events (equal (getenv "NELISP_GUI_XEVENTS") "1")
                     nelisp-gui-frontend--timing-gc-start (and (boundp 'gc-elapsed) gc-elapsed)
                     nelisp-gui-frontend--latency-check (equal (getenv "NELISP_GUI_LATENCY_CHECK") "1")
                     nelisp-gui-frontend--trace-text
@@ -251,6 +315,7 @@ Command lookup, execution, hooks, buffer editing and point stay in libraries."
               (when (getenv "NELISP_GUI_DPI")
                 (nelisp-gui-pango-configure (string-to-number (getenv "NELISP_GUI_DPI")))
                 (setq nelisp-gui-pango-fringe (round (* 8 (/ nelisp-gui-pango-dpi 96.0)))))
+              (when nelisp-gui-frontend--profile (nelisp-gui-frontend--profile-install))
               (setq nelisp-gui-pango-force-paint t)
               (setq nelisp-gui-frontend--xcb
                     (nelisp-gui-xcb-open "NeLisp XCB" (* cols nelisp-gui-pango-cell-width)
@@ -283,7 +348,10 @@ Command lookup, execution, hooks, buffer editing and point stay in libraries."
               ;; Mapping has already generated Expose/Focus events. Consume
               ;; those before the first complete paint, so READY does not
               ;; announce a frame with an obsolete full repaint queued.
-              (nelisp-gui-frontend--pump)
+              ;; Startup notifications are a finite setup batch, not paced
+              ;; keyboard input. Let map/expose/focus reach the first paint.
+              (let ((nelisp-gui-frontend-maximum-pump-time 1.0))
+                (nelisp-gui-frontend--pump))
               (while (emacs-command-loop-pending-p) (nelisp-gui-frontend--timing-dispatch))
               (nelisp-gui-frontend--paint)
               (let ((buffer (emacs-window-window-buffer (emacs-window-selected-window))))
@@ -301,23 +369,36 @@ Command lookup, execution, hooks, buffer editing and point stay in libraries."
                                  'emacs-command-loop-key-dispatch-run-plan
                                'emacs-command-loop-step)))
               (while (not (symbol-value 'nemacs-main--quit-flag))
+                (when (and nelisp-gui-frontend--paint-needed
+                           (not nelisp-gui-frontend--paint-deadline))
+                  (setq nelisp-gui-frontend--paint-deadline
+                        (+ (float-time) nelisp-gui-frontend-maximum-frame-delay)))
                 (nelisp-gui-frontend--pump)
-                ;; Drain queued commands in order, with their normal hooks.
-                ;; Poll again before redisplay so an XCB batch boundary never
-                ;; creates a frame between keys already waiting on the socket.
+                ;; Coalesce queued commands, but bound frame starvation at
+                ;; human typing pace. A burst keeps its normal command/hook
+                ;; order and continuous input still gets completed frames.
                 (while (and (emacs-command-loop-pending-p)
+                            (or (not nelisp-gui-frontend--paint-deadline)
+                                (< (float-time) nelisp-gui-frontend--paint-deadline))
                             (not (symbol-value 'nemacs-main--quit-flag)))
-                  (when (fboundp 'emacs-timer-reset-idle) (emacs-timer-reset-idle))
-                  (nelisp-gui-frontend--timing-dispatch)
-                  (unless (memq last-input-event '(focus-in focus-out))
-                    (setq nelisp-gui-frontend--paint-needed t)))
+                  (let ((start (float-time)))
+                    (when (fboundp 'emacs-timer-reset-idle) (emacs-timer-reset-idle))
+                    (nelisp-gui-frontend--timing-dispatch)
+                    (unless (memq last-input-event '(focus-in focus-out))
+                      (unless nelisp-gui-frontend--paint-needed
+                        (setq nelisp-gui-frontend--paint-deadline
+                              (+ start nelisp-gui-frontend-maximum-frame-delay)))
+                      (setq nelisp-gui-frontend--paint-needed t))))
                 (nelisp-gui-frontend--pump)
                 (when (and nelisp-gui-frontend--paint-needed
-                           (not (emacs-command-loop-pending-p))
+                           (or (not (emacs-command-loop-pending-p))
+                               (and nelisp-gui-frontend--paint-deadline
+                                    (>= (float-time) nelisp-gui-frontend--paint-deadline)))
                            (not (symbol-value 'nemacs-main--quit-flag)))
                   (nelisp-gui-frontend--paint))
                 (nelisp-gui-frontend--service)
                 (unless (or (emacs-command-loop-pending-p)
+                            nelisp-gui-frontend--transport-pending
                             nelisp-gui-frontend--paint-needed
                             (symbol-value 'nemacs-main--quit-flag))
                   (nelisp-gui-xcb-wait nelisp-gui-frontend--xcb
@@ -326,6 +407,8 @@ Command lookup, execution, hooks, buffer editing and point stay in libraries."
       (setq emacs-command-loop-input-poll-function old-poll
             emacs-command-loop-input-pending-function old-pending
             emacs-command-loop-input-file-descriptor old-fd)
+      (dolist (entry nelisp-gui-frontend--profile-saved) (fset (car entry) (cdr entry)))
+      (setq nelisp-gui-frontend--profile-saved nil)
       (when nelisp-gui-frontend--renderer (nelisp-gui-pango-close nelisp-gui-frontend--renderer))
       (when (nelisp-gui-selection-active-p) (nelisp-gui-selection-close))
       (when nelisp-gui-frontend--xcb (nelisp-gui-xcb-close nelisp-gui-frontend--xcb))

@@ -117,7 +117,46 @@ overlays, folding and offscreen recentering retain the general semantic path.
 The frontend keeps four font descriptions and bounded row/run layouts, paints
 damaged rows plus old/new cursor rows, and retains unchanged hit maps. Expose,
 resize and changed menus invalidate the scene. Queued commands keep their normal
-hooks and order and are drained before another transport poll/redisplay.
+hooks and order; a 500 ms frame deadline bounds deferral while input is queued.
 Scalar GUI call descriptors use interned symbol keys and retain their native
-owners through the public libffi descriptor API. Row vectors/association lists
+owners through the public libffi descriptor API. Only supported six-argument
+scalar signatures are cached; mutable signatures retain a snapshot. Other
+signatures stay with the original provider. Row vectors/association lists
 avoid depending on structural hash keys in the supplied reader.
+
+S5.0c measures human-paced typing independently of burst throughput:
+#+begin_src sh
+xvfb-run -a -s '-screen 0 1600x1000x24 -dpi 96 -nolisten tcp -extension GLX' python3 scripts/gui-daily-gate.py S5.0c --init=-Q
+# Separately rendered keys and optional inclusive phase profiling:
+NELISP_GUI_TIMING=1 NELISP_GUI_PROFILE=1 xvfb-run -a -s '-screen 0 1600x1000x24 -dpi 96 -nolisten tcp -extension GLX' python3 scripts/gui-daily-paced.py --separate --out build/gui-daily/key-profile
+#+end_src
+
+Twenty XTest press/release pairs are sent at intervals of at least 120 ms.
+Acceptance requires all 19 measured intervals to stay within 120–150 ms;
+a slow observer invalidates the run rather than weakening the typing pace.
+Each key retains its send timestamp even when several characters share a frame.
+The observer reads actual X server pixels, verifies preceding character ink,
+and timestamps the completed green insertion cursor. Its synchronous pixel
+read gives an upper bound on visible-frame latency. Final matrix text and a
+separate screenshot reject missing text and the initial untyped frame.
+The stage asserts median below 500 ms and nearest-rank p95 below one second;
+=paced-measurement.json= preserves all samples even when these assertions fail.
+=NELISP_GUI_XEVENTS=1= logs every received X event, including ignored events;
+the result includes separate typing-interval and whole-session event censuses.
+Internal phase instrumentation is off unless =NELISP_GUI_TIMING=1= is explicitly
+set; the pixel observer and X-event census remain active for acceptance.
+
+Hit maps are materialized on pixel-query demand. Existing layouts are reset for
+changed text, printable ASCII family diagnostics reuse DejaVu Sans Mono, and
+StateNotify uses an owned reusable seven-argument libffi frame. Cairo rectangle
+paths use the existing scalar ABI. These changes retain the general property,
+Unicode, region, shaping, field-fitting, and dynamic =:eval= paths.
+
+Pango text and metric output storage are owned by the renderer and reused;
+text storage grows when needed and both mappings are released at close.
+A dirty frame is painted immediately when the input queue empties. Continuous
+queued input gets a paint after at most 500 ms of command processing; paint
+and evaluator/collection time can extend the actual visible-frame interval.
+
+OS waits also honor active outgoing selection deadlines; an idle INCR peer
+is expired on time even when there are no keyboard events or shared timers.

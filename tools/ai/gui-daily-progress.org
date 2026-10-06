@@ -41,6 +41,8 @@ change to the criteria list is recorded in a NOTE.
 
 #+NOTE: 2026-10-06 integration round after G2, C1, X3, S52b/c, G3, I1, CC1, I2, W1 and P2: tools/gui-daily-verify.sh (fresh bundle and images, every gate sequentially) is 0 failing on nelisp-gui2: C-core 7/7, pty 10/10, wait 8/8, scenario, launcher 2/2, layout 122/122 (227 s at 6 jobs), S3.2, S3.3, S4.1 (536 s), S4.2, S4.3, S5.0, S5.0b.  Regressions found and fixed in that round: C-core 4/7 (CC1), scenario mode-name leak and SKK deleted buffer (I1), scenario hang from GC of native I/O storage and the S4.3 cap race (I2), wait-group hangs from startup GC and early readiness (W1), GNU reference crash from (Snarf-documentation "") reading a directory (doc-1 probe now uses a malformed DOC file), S52b loader allocation (P2: 2.7 GB per package load).  S4.1 inner limit 340 -> 580 s (the GUI image is built by S3.2 earlier in the meter order); S5.0 wired to the S5.0 and S5.0b stages (plain path, idle CPU, 40-char latency).
 
+#+NOTE: 2026-10-06 criterion added (16 -> 17): S5.0c human-pace typing latency.  On the user's GNOME desktop 16 keys typed 120 ms apart took 61 s to render (~3.8 s per key; S5.0b sends keys back to back and coalescing hid it).  Lane G4: separately rendered keys median 927 -> 467 ms, human pace median 2.5 -> 1.15 s, p95 7.0 -> 1.5 s under Xvfb; per key redisplay 212 ms and paint 125 ms remain.  The same mode-line computation costs 38.2 ms in NeLisp vs 0.033 ms in GNU (evaluator speed, owned by the compiler session).  S5.0c is a known-red cmd.  Also fixed: the frontend closed on GNOME at startup (BadMatch from SetInputFocus before the WM mapped the window).
+
 * S1 Shared interactive foundation
 
 ** S1.1 One event wait drives read-event: keys, timers, idle timers and process output (sit-for, sleep-for, input-pending-p behave as GNU)
@@ -111,6 +113,11 @@ cmd: bash -c 'timeout 240 python3 scripts/gui-daily-build.py >/dev/null 2>&1 && 
 #+REQUIRES: NELISP_BIN
 #+TIMEOUT: 600
 cmd: bash -c 'timeout 240 python3 scripts/gui-daily-build.py >/dev/null 2>&1 && EMACS=emacs xvfb-run -a -s "-screen 0 1600x1000x24 -dpi 96 -nolisten tcp" timeout 150 python3 scripts/gui-daily-gate.py S5.0 --init=-Q && EMACS=emacs xvfb-run -a -s "-screen 0 1600x1000x24 -dpi 96 -nolisten tcp" timeout 150 python3 scripts/gui-daily-gate.py S5.0b --init=-Q'
+
+** S5.0c Typing at human pace (20 keys, 120 ms apart) renders each key with median latency < 500 ms and p95 < 1 s
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 600
+cmd: bash -c 'timeout 240 python3 scripts/gui-daily-build.py >/dev/null 2>&1 && EMACS=emacs xvfb-run -a -s "-screen 0 1600x1000x24 -dpi 96 -nolisten tcp" timeout 300 python3 scripts/gui-daily-gate.py S5.0c --init=-Q'
 
 ** S5.1 End to end under Xvfb with -Q: open, edit, search, split, mouse select, copy/paste, save, quit
 pending

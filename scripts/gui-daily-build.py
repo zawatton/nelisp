@@ -64,6 +64,7 @@ def main():
                          'packages/nelisp-emacs-editing/src/emacs-edit-builtins.el',
                          'packages/nelisp-emacs-foundation/src/emacs-load.el',
                          'scripts/gui-daily-fixtures.py', 'scripts/gui-daily-packages.py', 'scripts/gui-daily-latency.py',
+                         'scripts/gui-daily-paced.py',
                          'scripts/gui-daily-expand-shorthands.el',
                          'scripts/gui-daily-gate.py', 'scripts/gui-daily-stages.py',
                          'packages/nelisp-emacs-app-gui/src/nemacs-main.el',

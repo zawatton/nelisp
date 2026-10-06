@@ -1015,10 +1015,11 @@ non-goals)."
 (defun emacs-window-set-window-parameter (window parameter value)
   "Set PARAMETER to VALUE for WINDOW.  Returns VALUE."
   (let* ((w     (emacs-window-get-window window))
-         (alist (emacs-window-parameters w)))
+         (alist (emacs-window-parameters w))
+         (cell (assq parameter alist)))
     (emacs-window--check-live w)
-    (setf (alist-get parameter alist) value)
-    (setf (emacs-window-parameters w) alist)
+    (if cell (setcdr cell value)
+      (setf (emacs-window-parameters w) (cons (cons parameter value) alist)))
     value))
 
 (defun emacs-window-window-prev-buffers (&optional window)

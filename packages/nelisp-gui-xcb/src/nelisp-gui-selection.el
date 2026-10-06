@@ -177,6 +177,15 @@ their byte cap synchronously in the pump, even after a scheduling pause."
   (dolist (send (copy-sequence nelisp-gui-selection--sends))
     (when (> (float-time) (aref send 6))
       (nelisp-gui-selection--send-drop send 'timeout))))
+(defun nelisp-gui-selection-next-delay (maximum)
+  "Cap MAXIMUM by the nearest asynchronous outgoing transfer deadline.
+The send deadline already includes its total lifetime cap.  Incoming
+transfers use their own synchronous bounded wait, rather than this idle wait."
+  (if (null nelisp-gui-selection--sends) maximum
+    (let ((now (float-time)) (delay maximum))
+      (dolist (send nelisp-gui-selection--sends)
+        (setq delay (min delay (max 0.0 (- (aref send 6) now)))))
+      delay)))
 (defun nelisp-gui-selection--serve (event)
   (let* ((window (nl-ffi-libffi-u32 event 12))
          (selection (nelisp-gui-selection--symbol (nl-ffi-libffi-u32 event 16)))

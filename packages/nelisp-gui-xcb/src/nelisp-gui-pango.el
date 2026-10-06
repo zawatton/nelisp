@@ -17,26 +17,57 @@
 (defvar nelisp-gui-pango-fringe 0)
 (defvar nelisp-gui-pango-margin 0)
 (defvar nelisp-gui-pango--cells nil)
+(defvar nelisp-gui-pango--cells-dirty t)
 (defvar nelisp-gui-pango--row-inset 0)
 (defvar nelisp-gui-pango--region nil)
 (defvar nelisp-gui-pango--row-pos-delta 0)
+(defvar nelisp-gui-pango--row-input nil)
+(defvar nelisp-gui-pango--row-cleared nil)
 (defvar nelisp-gui-pango-force-paint t)
 
-(defun nelisp-gui-pango--text (layout text)
-  (let* ((bytes (encode-coding-string text 'utf-8)) (o (nl-ffi-memory-cstring bytes)))
-    (unwind-protect
-        (nelisp-gui-xcb-call "pango_layout_set_text" [:void :pointer :pointer :sint32]
-                             layout (nl-ffi-memory-address o) (length bytes))
-      (nl-ffi-memory-release o))))
+(defun nelisp-gui-pango--text (layout text &optional renderer)
+  "Set LAYOUT's copied UTF-8 text, reusing RENDERER's owned scratch mapping."
+  (let* ((bytes (encode-coding-string text 'utf-8)) (n (length bytes))
+         (cache (and renderer (aref renderer 12)))
+         (owner (and cache (aref cache 0))))
+    (if (not renderer)
+        ;; Configuration precedes renderer creation; retain transient ownership.
+        (let ((o (nl-ffi-memory-cstring bytes)))
+          (unwind-protect
+              (nelisp-gui-xcb-call "pango_layout_set_text" [:void :pointer :pointer :sint32]
+                                   layout (nl-ffi-memory-address o) n)
+            (nl-ffi-memory-release o)))
+      (when (or (null owner) (< (aref cache 1) (1+ n)))
+        (let* ((capacity (max 256 (1+ n) (if cache (* 2 (aref cache 1)) 0)))
+               (new (nl-ffi-memory-allocate capacity)) (complete nil))
+          (unwind-protect
+              (progn
+                (when owner (nl-ffi-memory-release owner))
+                (setq owner new)
+                (aset renderer 12 (vector owner capacity))
+                (setq complete t))
+            (unless complete (nl-ffi-memory-release new)))))
+      (let ((p (nl-ffi-memory-address owner)) (i 0))
+        ;; Validate and copy in one pass, retaining the byte-string contract.
+        (while (< i n)
+          (let ((byte (aref bytes i)))
+            (unless (and (integerp byte) (<= 0 byte) (< byte 256))
+              (error "Pango: UTF-8 encoder returned a non-byte at %d" i))
+            (ptr-write-u8 p i byte))
+          (setq i (1+ i)))
+        (ptr-write-u8 p n 0)
+        (nelisp-gui-xcb-call "pango_layout_set_text" [:void :pointer :pointer :sint32] layout p n)))))
 
-(defun nelisp-gui-pango--size (layout)
-  (let ((o (nl-ffi-memory-allocate 8)))
+(defun nelisp-gui-pango--size (layout &optional renderer)
+  "Read LAYOUT size into reusable renderer storage, or a transient owner."
+  (let ((o (or (and renderer (aref renderer 13)) (nl-ffi-memory-allocate 8))))
+    (when renderer (aset renderer 13 o))
     (unwind-protect
         (let ((p (nl-ffi-memory-address o)))
           (nelisp-gui-xcb-call "pango_layout_get_pixel_size" [:void :pointer :pointer :pointer]
                                layout p (+ p 4))
           (cons (nl-ffi-libffi-u32 p 0) (nl-ffi-libffi-u32 p 4)))
-      (nl-ffi-memory-release o))))
+      (unless renderer (nl-ffi-memory-release o)))))
 
 (defun nelisp-gui-pango-configure (dpi)
   "Realize a fresh Pango context at resource DPI before creating the window."
@@ -73,8 +104,8 @@
     (nelisp-gui-xcb-call "pango_font_description_set_weight" [:void :pointer :sint32] desc 400)
     (nelisp-gui-xcb-call "pango_font_description_set_style" [:void :pointer :sint32] desc 0)
     (nelisp-gui-xcb-call "pango_layout_set_font_description" [:void :pointer :pointer] layout desc)
-    (nelisp-gui-pango--text layout text)
-    (nelisp-gui-pango--size layout)))
+    (nelisp-gui-pango--text layout text r)
+    (nelisp-gui-pango--size layout r)))
 
 (defun nelisp-gui-pango-measure (r text)
   "Measure the realized grid-aligned Pango run, including fallback and tabs."
@@ -85,7 +116,7 @@
 
 (defun nelisp-gui-pango-provider (operation &rest args)
   (cond ((eq operation :measure) (nelisp-gui-pango-measure nelisp-gui-frontend--renderer (car args)))
-        ((eq operation :cells) nelisp-gui-pango--cells)
+        ((eq operation :cells) (nelisp-gui-pango--ensure-cells nelisp-gui-frontend--renderer))
         (t (error "Unknown pixel query %S" operation))))
 
 (defun nelisp-gui-pango-open (xcb cols lines)
@@ -93,7 +124,7 @@
   (dolist (lib '("libcairo.so.2" "libpangocairo-1.0.so.0" "libgobject-2.0.so.0"))
     (ffi:library lib))
   (let ((r (vector 0 0 0 0 nil cols lines xcb
-                   nil nil nil (make-vector 4 nil))) (complete nil))
+                   nil nil nil (make-vector 4 nil) nil nil)) (complete nil))
     (unwind-protect
         (progn
           (aset r 0 (nl-ffi-libffi-call "libcairo.so.2" "cairo_xcb_surface_create" :pointer
@@ -147,9 +178,16 @@
                        (aref r 1) (/ (nth 0 color) 255.0) (/ (nth 1 color) 255.0) (/ (nth 2 color) 255.0)))
 
 (defun nelisp-gui-pango--rect (r x y width height)
-  (nl-ffi-libffi-call "libcairo.so.2" "cairo_rectangle" :void
-                      '(:pointer :double :double :double :double)
-                      (aref r 1) (float x) (float y) (float width) (float height)))
+  "Append Cairo's equivalent closed rectangle using scalar double calls.
+The scalar ABI carries these two-double calls without allocating libffi
+argument mappings and encoding four doubles for every row/cursor rectangle."
+  (let ((cr (aref r 1)) (left (float x)) (top (float y))
+        (right (float (+ x width))) (bottom (float (+ y height))))
+    (nelisp-gui-xcb-call "cairo_move_to" [:void :pointer :double :double] cr left top)
+    (nelisp-gui-xcb-call "cairo_line_to" [:void :pointer :double :double] cr right top)
+    (nelisp-gui-xcb-call "cairo_line_to" [:void :pointer :double :double] cr right bottom)
+    (nelisp-gui-xcb-call "cairo_line_to" [:void :pointer :double :double] cr left bottom)
+    (nelisp-gui-xcb-call "cairo_close_path" [:void :pointer] cr)))
 
 (defun nelisp-gui-pango--families (r &optional layout)
   "Record actual Pango font runs, including fallback, for diagnostics."
@@ -183,35 +221,43 @@
           (aset cache index desc) desc))))
 
 (defun nelisp-gui-pango--layout (r text face x row)
-  "Keep one shaped layout per row/run origin, replacing changed runs only."
+  "Keep one owned layout per run origin; reset text without recreating its context."
   (let* ((origin (cons row x))
          (key (list text (and (cdr (assq :bold face)) t) (and (cdr (assq :italic face)) t)
                     nelisp-gui-pango-font nelisp-gui-pango-font-size nelisp-gui-pango-dpi))
          (cell (assoc origin (aref r 10))) (old (cdr cell)))
     (if (and old (equal key (aref old 0))) old
-      (when old
-        (nelisp-gui-xcb-call "g_object_unref" [:void :pointer] (aref old 1))
-        (aset r 10 (delq cell (aref r 10)))
-        (setq cell nil))
-      (let ((layout (nelisp-gui-xcb-call "pango_layout_copy" [:pointer :pointer] (aref r 2)))
+      (let ((layout (if old (aref old 1)
+                      (nelisp-gui-xcb-call "pango_layout_copy" [:pointer :pointer] (aref r 2))))
             (complete nil))
         (unwind-protect
             (progn
-              (nelisp-gui-xcb-call "pango_layout_set_font_description" [:void :pointer :pointer]
-                                   layout (nelisp-gui-pango--font r face))
-              (nelisp-gui-pango--text layout text)
+              (unless (and old (equal (cdr key) (cdr (aref old 0))))
+                (nelisp-gui-xcb-call "pango_layout_set_font_description" [:void :pointer :pointer]
+                                     layout (nelisp-gui-pango--font r face)))
+              (nelisp-gui-pango--text layout text r)
               (unless (= 0 (nelisp-gui-xcb-call "pango_layout_get_unknown_glyphs_count" [:sint32 :pointer] layout))
                 (error "Pango: missing glyphs"))
-              (nelisp-gui-pango--families r layout)
+              ;; DejaVu Sans Mono covers printable ASCII. Custom fonts may
+              ;; fall back even within ASCII, so inspect their changed runs.
+              (unless (and old (equal nelisp-gui-pango-font "DejaVu Sans Mono")
+                           (equal (cdr key) (cdr (aref old 0)))
+                           (not (string-match "[^ -~]" text))
+                           (not (string-match "[^ -~]" (car (aref old 0)))))
+                (nelisp-gui-pango--families r layout))
               (let ((entry (vector key layout
                                    (/ (nelisp-gui-xcb-call "pango_layout_get_baseline" [:sint32 :pointer] layout) 1024.0)
-                                   (car (nelisp-gui-pango--size layout))
+                                   (car (nelisp-gui-pango--size layout r))
                                    (* nelisp-gui-pango-cell-width
-                                      (emacs-frame-pixels-string-columns text emacs-redisplay-default-tab-width)))))
+                                      (if (string-match "[^ -~]" text)
+                                          (emacs-frame-pixels-string-columns text emacs-redisplay-default-tab-width)
+                                        (length text))))))
                 (if cell (setcdr cell entry)
                   (aset r 10 (cons (cons origin entry) (aref r 10))))
                 (setq complete t) entry))
-          (unless complete (nelisp-gui-xcb-call "g_object_unref" [:void :pointer] layout)))))))
+          ;; An old layout remains owned by its cache cell even on failure.
+          (unless (or complete old)
+            (nelisp-gui-xcb-call "g_object_unref" [:void :pointer] layout)))))))
 
 (defun nelisp-gui-pango--clear-layouts (r)
   "Release row layouts before clearing their process-local cache."
@@ -234,8 +280,10 @@
       (nelisp-gui-xcb-call "cairo_save" [:void :pointer] cr)
       (nelisp-gui-pango--rect r x y width nelisp-gui-pango-line-height)
       (nelisp-gui-xcb-call "cairo_clip" [:void :pointer] cr)
-      (nelisp-gui-pango--source r bg)
-      (nelisp-gui-xcb-call "cairo_paint" [:void :pointer] cr)
+      ;; The row painter already cleared this background.
+      (unless (and nelisp-gui-pango--row-cleared (equal bg nelisp-gui-pango-background))
+        (nelisp-gui-pango--source r bg)
+        (nelisp-gui-xcb-call "cairo_paint" [:void :pointer] cr))
       (nelisp-gui-pango--source r fg)
       ;; Baseline is aligned across fonts, rather than each fallback top edge.
       (let* ((baseline (aref entry 2))
@@ -272,6 +320,12 @@
 
 (defun nelisp-gui-pango-row (r glyph-row left top width)
   "Consume the full shared matrix's cell/face/width data without editor layout."
+  (let* ((input nelisp-gui-pango--row-input)
+         (source (and (eq (car-safe input) :source) (= (nth 2 input) 0) (nth 1 input)))
+         (text (and source (null (nth 6 source)) (null (nth 7 source))
+                    (null nelisp-gui-pango--region) (car source))))
+    (if (and text (= (length text) width) (not (string-match "[^ -~]" text)))
+        (when (> width 0) (nelisp-gui-pango-run r text nil left top width))
   (let ((glyphs (emacs-redisplay-glyph-row-glyphs glyph-row)) (i 0))
     (while (< i width)
       (let* ((g (aref glyphs i))
@@ -292,7 +346,40 @@
               (push (if next (emacs-redisplay-glyph-char next) ?\s) chars))
             (setq i (1+ i)))
           (when (> i start)
-            (nelisp-gui-pango-run r (apply #'string (nreverse chars)) face (+ left start) top (- i start))))))))
+            (nelisp-gui-pango-run r (apply #'string (nreverse chars)) face (+ left start) top (- i start))))))))))
+
+(defun nelisp-gui-pango--ensure-cells (r)
+  "Materialize pending hit-map rows only when a pixel consumer requests them."
+  (when nelisp-gui-pango--cells-dirty
+    (let (cell-rows)
+      (dolist (w (emacs-window-window-list))
+        (let ((cache (cdr (assq (emacs-window-id w) (aref r 8)))))
+          (dotimes (i (length cache))
+            (let* ((entry (aref cache i)) (pending (and entry (aref entry 3))))
+              (when pending
+                (let* ((row (nth 0 pending)) (edges (nth 1 pending)) (inset (nth 2 pending))
+                       (glyphs (emacs-redisplay-glyph-row-glyphs row))
+                       (used (emacs-redisplay-glyph-row-used row))
+                       (delta (emacs-redisplay-glyph-row-pos-delta row))
+                       (start (emacs-redisplay-glyph-row-start-pos row))
+                       (y (* (+ (nth 1 edges) i) nelisp-gui-pango-line-height))
+                       (col 0) cells)
+                  (while (< col used)
+                    (let* ((g (aref glyphs col))
+                           (advance (if g (max 1 (emacs-redisplay-glyph-width g)) 1))
+                           (pos (and g (emacs-redisplay-glyph-buf-pos g)))
+                           (x (+ inset (* (+ (nth 0 edges) col) nelisp-gui-pango-cell-width))))
+                      (when (and pos (< (+ x (* advance nelisp-gui-pango-cell-width))
+                                        (* (nth 2 edges) nelisp-gui-pango-cell-width)))
+                        (push (list w (+ pos delta) x y (* advance nelisp-gui-pango-cell-width)
+                                    nelisp-gui-pango-line-height col i (nelisp-gui-pango-glyph-text g)
+                                    (- (+ pos delta) start)) cells))
+                      (setq col (+ col advance))))
+                  (aset entry 1 (nreverse cells)) (aset entry 3 nil)))
+              (when (and entry (aref entry 1)) (push (aref entry 1) cell-rows))))))
+      (setq nelisp-gui-pango--cells (apply #'append (nreverse cell-rows))
+            nelisp-gui-pango--cells-dirty nil)))
+  nelisp-gui-pango--cells)
 
 (defun nelisp-gui-pango-paint (r handle)
   "Paint only damaged matrix rows, restoring old and new cursor rows.
@@ -311,8 +398,9 @@ lazily with shared glyph rows.  Expose/resize and menu changes force repaint."
          (full (or nelisp-gui-pango-force-paint (not (equal scene (car previous)))))
          (old-cursor (cadr previous))
          (selected (emacs-window-selected-window))
-         (cell-rows nil) (painted 0) (total 0) (new-cursor nil))
+         (painted 0) (total 0) (new-cursor nil))
     (when full
+      (setq nelisp-gui-pango--cells-dirty t)
       (aset r 8 nil)
       (nelisp-gui-pango--clear-layouts r)
       (nelisp-gui-pango--source r nelisp-gui-pango-background)
@@ -327,6 +415,10 @@ lazily with shared glyph rows.  Expose/resize and menu changes force repaint."
                               (+ nelisp-gui-frontend--timing-redisplay (- (float-time) start)))))))
                (edges (emacs-window-window-edges w))
                (rows (emacs-redisplay-glyph-matrix-rows m))
+               (height (emacs-redisplay-glyph-matrix-height m))
+               (width (emacs-redisplay-glyph-matrix-width m))
+               (inputs (emacs-redisplay-glyph-matrix-line-cache m))
+               (dirty (emacs-redisplay-glyph-matrix-dirty-set m))
                (cursor (and (eq w selected) (emacs-redisplay-glyph-matrix-cursor m)))
                (cached-window (assq (emacs-window-id w) (aref r 8)))
                (cache (or (cdr cached-window)
@@ -339,67 +431,66 @@ lazily with shared glyph rows.  Expose/resize and menu changes force repaint."
             (aset r 8 (cons (cons (emacs-window-id w) cache) (aref r 8))))
           (when cursor (setq new-cursor (cons w cursor)))
           (emacs-window-set-window-parameter w 'text-pixel-inset inset)
-          (dotimes (i (emacs-redisplay-glyph-matrix-height m))
-            (let* ((row (aref rows i)) (glyphs (emacs-redisplay-glyph-row-glyphs row))
-                   (text-row (or (emacs-redisplay-glyph-row-start-pos row)
-                                 (= (emacs-redisplay-glyph-row-used row) 0)))
-                   (nelisp-gui-pango--row-inset (if text-row inset 0))
-                   (nelisp-gui-pango--row-pos-delta (emacs-redisplay-glyph-row-pos-delta row))
-                   (nelisp-gui-pango--region region)
-                   (width (emacs-redisplay-glyph-matrix-width m))
-                   (y (* (+ (nth 1 edges) i) nelisp-gui-pango-line-height))
-                   (key (list (aref (emacs-redisplay-glyph-matrix-line-cache m) i)
-                              (emacs-redisplay-glyph-row-hash row) region))
-                   (old (aref cache i))
-                   (changed (not (and old (equal key (aref old 0)))))
-                   (damage (or full changed
-                               (and old-cursor (eq w (car old-cursor)) (= i (cadr old-cursor)))
-                               (and cursor (= i (car cursor)))))
-                   (cells (and old (aref old 1))))
-              (setq total (1+ total))
-              (when damage
-                (setq painted (1+ painted))
-                ;; Clear the complete row to erase removed text and cursor.
-                (nelisp-gui-pango--source r nelisp-gui-pango-background)
-                (nelisp-gui-pango--rect r (* (nth 0 edges) nelisp-gui-pango-cell-width) y
-                                        (* width nelisp-gui-pango-cell-width) nelisp-gui-pango-line-height)
-                (nelisp-gui-xcb-call "cairo_fill" [:void :pointer] (aref r 1))
-                (nelisp-gui-pango-row r row (nth 0 edges) (+ (nth 1 edges) i)
-                                      (min width (emacs-redisplay-glyph-row-used row)))
-                (when text-row
-                  (when (> inset 0)
-                    (let ((left (* (nth 0 edges) nelisp-gui-pango-cell-width))
-                          (right (* (nth 2 edges) nelisp-gui-pango-cell-width)))
-                      (nelisp-gui-pango--source r '(40 52 64))
-                      (nelisp-gui-pango--rect r left y inset nelisp-gui-pango-line-height)
-                      (nelisp-gui-pango--rect r (- right inset) y inset nelisp-gui-pango-line-height)
-                      (nelisp-gui-xcb-call "cairo_fill" [:void :pointer] (aref r 1))
-                      (nelisp-gui-pango--source r '(70 88 105))
-                      (nelisp-gui-pango--rect r left y nelisp-gui-pango-fringe nelisp-gui-pango-line-height)
-                      (nelisp-gui-pango--rect r (- right nelisp-gui-pango-fringe) y nelisp-gui-pango-fringe nelisp-gui-pango-line-height)
-                      (nelisp-gui-xcb-call "cairo_fill" [:void :pointer] (aref r 1))))))
-              (when (or changed (not old)
-                        (/= (aref old 2) nelisp-gui-pango--row-pos-delta))
-                (setq cells nil)
-                (when text-row
-                  (let ((col 0))
-                    (while (< col (emacs-redisplay-glyph-row-used row))
-                      (let* ((g (aref glyphs col))
-                             (advance (if g (max 1 (emacs-redisplay-glyph-width g)) 1))
-                             (pos (and g (emacs-redisplay-glyph-buf-pos g)))
-                             (x (+ inset (* (+ (nth 0 edges) col) nelisp-gui-pango-cell-width))))
-                        (when (and pos (< (+ x (* advance nelisp-gui-pango-cell-width))
-                                          (* (nth 2 edges) nelisp-gui-pango-cell-width)))
-                          (push (list w (+ pos (emacs-redisplay-glyph-row-pos-delta row)) x y
-                                      (* advance nelisp-gui-pango-cell-width) nelisp-gui-pango-line-height
-                                      col i (nelisp-gui-pango-glyph-text g)
-                                      (- (+ pos (emacs-redisplay-glyph-row-pos-delta row))
-                                         (emacs-redisplay-glyph-row-start-pos row))) cells))
-                        (setq col (+ col advance))))))
-                (setq cells (nreverse cells))
-                (aset cache i (vector key cells nelisp-gui-pango--row-pos-delta)))
-              (push cells cell-rows))))))
-    (setq nelisp-gui-pango--cells (apply #'append (nreverse cell-rows)))
+          (setq total (+ total height))
+          (dotimes (i height)
+            (let ((row (aref rows i)) (old (aref cache i)))
+              ;; A matrix damage bit plus the semantic input/region/position
+              ;; proves that neither pixels nor the hit map changed. Avoid
+              ;; reconstructing run keys and cell maps for every unchanged row.
+              (if (and (not full) old (not (aref dirty i))
+                       (equal (aref inputs i) (car (aref old 0)))
+                       (or (null (aref inputs i))
+                           (and (equal region (nth 2 (aref old 0)))
+                                (= (emacs-redisplay-glyph-row-pos-delta row) (aref old 2))))
+                       (not (and old-cursor (eq w (car old-cursor)) (= i (cadr old-cursor))))
+                       (not (and cursor (= i (car cursor)))))
+                  nil
+		(let* ((row (aref rows i)) (glyphs (emacs-redisplay-glyph-row-glyphs row))
+                       (text-row (or (emacs-redisplay-glyph-row-start-pos row)
+                                     (= (emacs-redisplay-glyph-row-used row) 0)))
+                       (nelisp-gui-pango--row-inset (if text-row inset 0))
+                       (nelisp-gui-pango--row-pos-delta (emacs-redisplay-glyph-row-pos-delta row))
+                       (nelisp-gui-pango--region region)
+                       (nelisp-gui-pango--row-input (aref inputs i))
+                       (nelisp-gui-pango--row-cleared t)
+                       (y (* (+ (nth 1 edges) i) nelisp-gui-pango-line-height))
+                       (key (list (aref (emacs-redisplay-glyph-matrix-line-cache m) i)
+				  (emacs-redisplay-glyph-row-hash row) region))
+                       (old (aref cache i))
+                       (changed (not (and old (equal key (aref old 0)))))
+                       (damage (or full changed
+				   (and old-cursor (eq w (car old-cursor)) (= i (cadr old-cursor)))
+				   (and cursor (= i (car cursor)))))
+                       )
+		  (when damage
+                    (setq painted (1+ painted))
+                    ;; Clear the complete row to erase removed text and cursor.
+                    (nelisp-gui-pango--source r nelisp-gui-pango-background)
+                    (nelisp-gui-pango--rect r (* (nth 0 edges) nelisp-gui-pango-cell-width) y
+                                            (* width nelisp-gui-pango-cell-width) nelisp-gui-pango-line-height)
+                    (nelisp-gui-xcb-call "cairo_fill" [:void :pointer] (aref r 1))
+                    (nelisp-gui-pango-row r row (nth 0 edges) (+ (nth 1 edges) i)
+					  (min width (emacs-redisplay-glyph-row-used row)))
+                    (when text-row
+                      (when (> inset 0)
+			(let ((left (* (nth 0 edges) nelisp-gui-pango-cell-width))
+                              (right (* (nth 2 edges) nelisp-gui-pango-cell-width)))
+			  (nelisp-gui-pango--source r '(40 52 64))
+			  (nelisp-gui-pango--rect r left y inset nelisp-gui-pango-line-height)
+			  (nelisp-gui-pango--rect r (- right inset) y inset nelisp-gui-pango-line-height)
+			  (nelisp-gui-xcb-call "cairo_fill" [:void :pointer] (aref r 1))
+			  (nelisp-gui-pango--source r '(70 88 105))
+			  (nelisp-gui-pango--rect r left y nelisp-gui-pango-fringe nelisp-gui-pango-line-height)
+			  (nelisp-gui-pango--rect r (- right nelisp-gui-pango-fringe) y nelisp-gui-pango-fringe nelisp-gui-pango-line-height)
+			  (nelisp-gui-xcb-call "cairo_fill" [:void :pointer] (aref r 1))))))
+		  (when (or changed (not old)
+                            (/= (aref old 2) nelisp-gui-pango--row-pos-delta))
+                    ;; Hit testing needs current glyph positions, but typing does
+                    ;; not query pixels. Keep the latest row until :cells requests
+                    ;; it, rather than building every character's hit box per key.
+                    (aset cache i (vector key nil nelisp-gui-pango--row-pos-delta
+					  (and text-row (list row edges inset))))
+                    (setq nelisp-gui-pango--cells-dirty t)))))))))
     (when new-cursor
       (let* ((w (car new-cursor)) (cursor (cdr new-cursor)) (edges (emacs-window-window-edges w)))
         (nelisp-gui-pango--source r nelisp-gui-pango-cursor-color)
@@ -423,6 +514,10 @@ lazily with shared glyph rows.  Expose/resize and menu changes force repaint."
 (defun nelisp-gui-pango-close (r)
   "Free dependents before their native font/surface/connection owners."
   (nelisp-gui-pango--clear-layouts r)
+  (dolist (slot '(12 13))
+    (when (and (< slot (length r)) (aref r slot))
+      (nl-ffi-memory-release (if (= slot 12) (aref (aref r slot) 0) (aref r slot)))
+      (aset r slot nil)))
   (dotimes (i 4)
     (when (aref (aref r 11) i)
       (nelisp-gui-xcb-call "pango_font_description_free" [:void :pointer] (aref (aref r 11) i))
