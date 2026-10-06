@@ -563,7 +563,7 @@ when already byte-indexed): see
 `aref'-based scanner must never run on a still-multibyte string on this
 runtime."
     (setq source (emacs-load--byte-indexed-source source))
-    (if (not (string-match-p "?\\\\[\300-\377]" source))
+    (if (not (emacs-load--artifact-string-search "?\\" source 0))
         source
       (let ((len (length source))
             (out nil)
@@ -635,13 +635,25 @@ runtime."
 The ordinary reader accepts these literals even on runtimes whose fast
 source evaluator rejects them; probe that evaluator separately.")
 
+  (defun emacs-load--escaped-unicode-literal-trigger-p (source)
+    "Return non-nil for a possible escaped Unicode literal in byte-indexed SOURCE.
+Use native substring search to skip ASCII escapes.  The full scanner still
+checks strings, comments and symbol names before rewriting a candidate."
+    (let ((pos 0) (len (length source)) found)
+      (while (and (not found)
+                  (setq pos (emacs-load--artifact-string-search "?\\" source pos)))
+        (if (and (< (+ pos 2) len) (>= (aref source (+ pos 2)) #xc0))
+            (setq found t)
+          (setq pos (+ pos 2))))
+      found))
+
   (defun emacs-load--rewrite-escaped-unicode-character-literals (source)
     "Replace escaped Unicode character literals with their integer values.
 Leave strings, comments and escaped symbol names untouched.  This preserves
 GNU Info's literal data on source evaluators that reject forms like ?\\‘."
     (when (multibyte-string-p source)
       (setq source (string-as-unibyte source)))
-    (if (not (emacs-load--artifact-string-search "?\\" source 0))
+    (if (not (emacs-load--escaped-unicode-literal-trigger-p source))
         source
       (let ((len (length source)) (i 0) (start 0) out
             in-string escaped

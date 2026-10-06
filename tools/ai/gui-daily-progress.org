@@ -39,6 +39,8 @@ change to the criteria list is recorded in a NOTE.
 
 #+NOTE: 2026-10-06 lane C1 integrated (X2 NEEDS-SHARED items 2, 3, 4, 7): this-command/last-command bookkeeping before pre-command-hook, nadvice keeps interactive forms, modifier-bit events are not characters (Meta/ESC equivalence), native edits and undo target the current buffer.  In the lane S4.1 PASS: real ddskk + evil, xdotool "nihon SPC RET" -> 日本, saved bytes identical to GNU; GNU probes 62/62.
 
+#+NOTE: 2026-10-06 integration round after G2, C1, X3, S52b/c, G3, I1, CC1, I2, W1 and P2: tools/gui-daily-verify.sh (fresh bundle and images, every gate sequentially) is 0 failing on nelisp-gui2: C-core 7/7, pty 10/10, wait 8/8, scenario, launcher 2/2, layout 122/122 (227 s at 6 jobs), S3.2, S3.3, S4.1 (536 s), S4.2, S4.3, S5.0, S5.0b.  Regressions found and fixed in that round: C-core 4/7 (CC1), scenario mode-name leak and SKK deleted buffer (I1), scenario hang from GC of native I/O storage and the S4.3 cap race (I2), wait-group hangs from startup GC and early readiness (W1), GNU reference crash from (Snarf-documentation "") reading a directory (doc-1 probe now uses a malformed DOC file), S52b loader allocation (P2: 2.7 GB per package load).  S4.1 inner limit 340 -> 580 s (the GUI image is built by S3.2 earlier in the meter order); S5.0 wired to the S5.0 and S5.0b stages (plain path, idle CPU, 40-char latency).
+
 * S1 Shared interactive foundation
 
 ** S1.1 One event wait drives read-event: keys, timers, idle timers and process output (sit-for, sleep-for, input-pending-p behave as GNU)
@@ -91,7 +93,7 @@ cmd: bash -c 'timeout 240 python3 scripts/gui-daily-build.py >/dev/null 2>&1 && 
 ** S4.1 Keyboard: modifiers, key repeat and Japanese input through the user's SKK (ddskk running inside nemacs; text lands in the buffer) reach the command loop
 #+REQUIRES: NELISP_BIN
 #+TIMEOUT: 600
-cmd: bash -c 'timeout 240 python3 scripts/gui-daily-build.py >/dev/null 2>&1 && EMACS=emacs timeout 340 python3 scripts/gui-daily-gate.py S4.1 --init=-Q --fixture=skk-evil --keymaps=us,jp,de'
+cmd: bash -c 'timeout 240 python3 scripts/gui-daily-build.py >/dev/null 2>&1 && EMACS=emacs timeout 580 python3 scripts/gui-daily-gate.py S4.1 --init=-Q --fixture=skk-evil --keymaps=us,jp,de'
 
 ** S4.2 Mouse: clicks, drag, wheel, hit testing to buffer positions; menu bar and context menus
 #+REQUIRES: NELISP_BIN
@@ -106,7 +108,9 @@ cmd: bash -c 'timeout 240 python3 scripts/gui-daily-build.py >/dev/null 2>&1 && 
 * S5 GUI daily use
 
 ** S5.0 The plain launcher (bin/nemacs-xcb, no fixture) shows typed text, a filled mode line, and idles below 10% CPU
-pending
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 600
+cmd: bash -c 'timeout 240 python3 scripts/gui-daily-build.py >/dev/null 2>&1 && EMACS=emacs xvfb-run -a -s "-screen 0 1600x1000x24 -dpi 96 -nolisten tcp" timeout 150 python3 scripts/gui-daily-gate.py S5.0 --init=-Q && EMACS=emacs xvfb-run -a -s "-screen 0 1600x1000x24 -dpi 96 -nolisten tcp" timeout 150 python3 scripts/gui-daily-gate.py S5.0b --init=-Q'
 
 ** S5.1 End to end under Xvfb with -Q: open, edit, search, split, mouse select, copy/paste, save, quit
 pending
