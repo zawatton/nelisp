@@ -28,7 +28,8 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 TEXT = b'Hello from the real nemacs PTY.\nSecond line.\n'
-PROBES = r''';;; PTY fixture: exercise waits; callbacks record markers and process output.
+PROBES = r''';;; -*- lexical-binding: nil; -*-
+;;; PTY fixture: exercise waits; callbacks record markers and process output.
 (unless (fboundp 'nelisp--write-stdout-bytes)
   (defalias 'nelisp--write-stdout-bytes #'send-string-to-terminal))
 (setq require-final-newline nil mode-require-final-newline nil)
@@ -59,9 +60,10 @@ PROBES = r''';;; PTY fixture: exercise waits; callbacks record markers and proce
    (format "\r\nPTY-SENTINEL|%S|%s\r\n" (process-status process) event)))
 (defun nemacs-pty-process-wait ()
   (interactive)
-  (setq nemacs-pty-process-start (float-time)
-        nemacs-pty-process-buffer (get-buffer-create " *pty-process*"))
+  (setq nemacs-pty-process-buffer (get-buffer-create " *pty-process*"))
   (with-current-buffer nemacs-pty-process-buffer (erase-buffer))
+  ;; Measure spawning and output service, after fixture buffer preparation.
+  (setq nemacs-pty-process-start (float-time))
   (let ((process (start-process "pty-output" nemacs-pty-process-buffer
                                 "/bin/sh" "-c" "sleep 0.3; echo hi")))
     (set-process-filter process #'nemacs-pty-filter)
@@ -200,12 +202,11 @@ def run_case(args, image, case, fixture):
     os.set_blocking(master, False)
     original_tty = termios.tcgetattr(master)
     screen, sent = bytearray(), []
-    status, ready, sit_begin = None, None, None
+    status, ready, startup_ready = None, None, None
     triggers = set()
     checks = {'host_emacs_absent': True} if launcher else {}
     if case == 'timers':
-        steps = [(0.15, b'\x1b[15~', 'F5: start timers'),
-                 (1.5, b'\x18\x03', 'C-x C-c')]
+        steps = [(0.15, b'\x1b[15~', 'F5: start timers')]
         expected = None
     elif case in ('process-wait', 'idle-repeat', 'accept-timer', 'read-event'):
         key = {'process-wait': b'\x1b[18~', 'idle-repeat': b'\x1b[19~',
@@ -236,7 +237,18 @@ def run_case(args, image, case, fixture):
                     chunk = os.read(master, 65536)
                     if chunk:
                         screen.extend(chunk)
-                        if ready is None and b'\x1b[?1049h' in screen and (b'*scratch*' in screen if reference else screen.count(b' *scratch* ') >= 2):
+                        # Scratch labels precede the full initial repaint.  The
+                        # row painter restores the cursor only after its body,
+                        # mode line and echo writes have all flushed.  Start
+                        # input timing at that boundary, as the scenario does.
+                        painted = re.search(rb'\x1b\[\?25h\x1b\[[0-9]+;[0-9]+H', screen)
+                        labels_ready = b'\x1b[?1049h' in screen and (b'*scratch*' in screen if reference else screen.count(b' *scratch* ') >= 2)
+                        # Preserve the launcher's existing startup metric at
+                        # its first alt-screen/scratch-label boundary.  Input
+                        # scheduling separately waits for the completed paint.
+                        if startup_ready is None and labels_ready:
+                            startup_ready = time.monotonic() - start
+                        if ready is None and labels_ready and (reference or painted):
                             ready = time.monotonic() - start
                             raw = termios.tcgetattr(master)
                             checks['raw_input'] = not (raw[3] & (termios.ICANON | termios.ECHO))
@@ -247,6 +259,9 @@ def run_case(args, image, case, fixture):
                                 return [(offset + delay, keys, label) for delay, keys, label in events]
                             return None
                         followups = {
+                            # Measure timer deadlines from the actual command,
+                            # independent of startup or input dispatch latency.
+                            'timers': ('PTY-TIMERS-ARMED|', [(1.5, b'\x18\x03', 'C-x C-c')]),
                             'sit-for': ('PTY-SIT-BEGIN|', [(0.2, b'!', 'interrupt sit-for'),
                                 (0.8, b'\x18\x13', 'C-x C-s'), (1.1, b'\x18\x03', 'C-x C-c')]),
                             'sleep-pending': ('PTY-SLEEP-BEGIN|', [(0.2, b'!', 'queue during sleep'),
@@ -306,7 +321,8 @@ def run_case(args, image, case, fixture):
         observations['tty_before'] = tty_json(original_tty)
         observations['tty_after'] = tty_json(restored)
     if launcher:
-        checks['startup_under_2s'] = ready is not None and ready < 2
+        observations['startup_ready_seconds'] = startup_ready
+        checks['startup_under_2s'] = startup_ready is not None and startup_ready < 2
     if expected is not None:
         checks['file_contents'] = actual == expected
     if case == 'timers':

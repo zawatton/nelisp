@@ -2701,6 +2701,28 @@ realised, and tolerates the absence of `terminal-current-winsize'."
       (should-not nemacs-main--event-handle)
       (should-not nemacs-main--tui-state-prepared-p))))
 
+(ert-deftest nemacs-main-test/image-heap-collection-is-retained-without-terminal-state ()
+  "Image preparation must settle GC without installing live terminal objects."
+  (nemacs-main-test--fresh-runner
+    (let ((collections 0))
+      (cl-letf (((symbol-function 'nelisp--repr) (lambda (_object) nil))
+                ((symbol-function 'garbage-collect)
+                 (lambda (&rest _) (setq collections (1+ collections))))
+                ((symbol-function 'emacs-init-load-tui-core-features)
+                 (lambda () (error "Heap cleanup loaded TUI features")))
+                ((symbol-function 'emacs-tui-backend-init)
+                 (lambda (&rest _) (error "Heap cleanup created terminal state"))))
+        (nemacs-main--prepare-image-heap)
+        (should nemacs-main--tui-heap-prepared-p)
+        ;; Restoring this flag avoids paying bootstrap GC again at startup.
+        (nemacs-main--prepare-image-heap)
+        (should (= collections 1))
+        (should-not nemacs-main--tui-features-loaded-p)
+        (should-not nemacs-main--backend)
+        (should-not nemacs-main--frame)
+        (should-not nemacs-main--redisplay)
+        (should-not nemacs-main--event-handle)))))
+
 (provide 'nemacs-main-test)
 
 ;;; nemacs-main-test.el ends here

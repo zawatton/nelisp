@@ -295,7 +295,8 @@ if target and case == 'pass': print('t')
         image.unlink()
         image_command("build")
         for label, path in (("binary", fake), ("cold", root / "fake-cli.cold"),
-                            ("bundle", root / "build/nemacs-bootstrap.el")):
+                            ("bundle", root / "build/nemacs-bootstrap.el"),
+                            ("recipe", image_tool)):
             old = Path(image_command("path").stdout.strip())
             path.write_text(path.read_text() + "\n# identity change\n")
             cases[label + "_change_rejects_stale_image"] = image_command("path").returncode != 0

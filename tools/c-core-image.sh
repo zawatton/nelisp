@@ -34,7 +34,9 @@ def fail(message):
 
 def identity():
     hashes = []
-    for path in (binary, Path(str(binary) + '.cold'), bundle):
+    # Snapshot preparation is part of the cache contract, including GC.
+    for path in (binary, Path(str(binary) + '.cold'), bundle,
+                 root / 'tools/c-core-image.sh'):
         digest = hashlib.sha256()
         with path.open('rb') as stream:
             for chunk in iter(lambda: stream.read(1024 * 1024), b''):
@@ -132,6 +134,8 @@ try:
                     temporary = Path(name)
                     marker = 'C-CORE-IMAGE-BUILT|' + key
                     form = ('(progn (load ' + json.dumps(str(bundle)) + ' nil t) '
+                            '(if (fboundp \'nemacs-main--prepare-image-heap) '
+                            '(nemacs-main--prepare-image-heap) (garbage-collect)) '
                             '(setq c-core-image--identity ' + json.dumps(key) + ') '
                             '(unless (> (nelisp--arena-dump-image-stream ' + json.dumps(name) + ') 0) '
                             '(error "C-core heap dump failed")) '

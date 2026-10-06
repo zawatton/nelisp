@@ -176,7 +176,16 @@ can run without a host Emacs."
   nemacs-main--redisplay)
 
 (defvar nemacs-main--tui-heap-prepared-p nil
-  "Non-nil after bootstrap temporaries have been collected for the TUI.")
+  "Non-nil after bootstrap temporaries have been collected for this heap.")
+
+(defun nemacs-main--prepare-image-heap ()
+  "Collect bootstrap temporaries once, before dumping or starting the TUI.
+Image builders may call this without loading editor features or creating
+terminal state.  Retain the flag in the snapshot so each restored session
+does not repeat a full bootstrap collection before its first input."
+  (when (and (fboundp 'nelisp--repr) (not nemacs-main--tui-heap-prepared-p))
+    (garbage-collect)
+    (setq nemacs-main--tui-heap-prepared-p t)))
 
 (defun nemacs-main--prepare-tui-features ()
   "Preload shared TUI libraries without creating terminal state.
@@ -189,10 +198,9 @@ process that owns the live terminal.  Pure keymaps can be retained."
      ((fboundp 'emacs-init-load-editor-features)
       (emacs-init-load-editor-features))))
   (setq nemacs-main--tui-features-loaded-p t)
-  (when (and (fboundp 'nelisp--repr) (not nemacs-main--tui-heap-prepared-p))
-    ;; Keep the first collection out of timer, key-wait and process callbacks.
-    (garbage-collect)
-    (setq nemacs-main--tui-heap-prepared-p t)))
+  ;; Source-loaded sessions still collect before live callbacks.  Heap images
+  ;; already did this before dumping, without installing terminal handles.
+  (nemacs-main--prepare-image-heap))
 
 (defun nemacs-main--prepare-tui-state ()
   "Ensure the pure-Elisp TUI state objects exist and return redisplay.
