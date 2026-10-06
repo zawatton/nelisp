@@ -168,9 +168,9 @@
              `(let ((switch_slot (extern-call nl_root_pin_slot_v2 env ticket ,output 0 0 0)))
                 (if (= switch_slot 0) 2
                   (cfg-dispatch (ptr-read-u64 switch_slot 8) ,cases ,default))))))
-         ((memq opcode '(frame-specbind frame-unbind))
+         ((memq opcode '(frame-specbind frame-unbind frame-save frame-cleanup handler-catch handler-condition handler-pop))
           (nelisp-native-frame-v2-copy-emit
-           (plist-get context :plan) (if (eq opcode 'frame-specbind) 1 2)
+           (plist-get context :plan) (plist-get operation :frame-action)
            (mapcar (lambda (root) (nelisp-bytecode-native-rooted-cfg-shared-emit--resolve context root))
                    (plist-get operation :argument-roots))
            (nelisp-bytecode-native-rooted-cfg-shared-emit--operations context block (1+ index) stop path)))
@@ -183,10 +183,19 @@
             (if (and function (cl-every #'identity inputs))
                 (let ((next (nelisp-bytecode-native-rooted-cfg-shared-emit--operations
                              context block (1+ index) stop path)))
+                  (when (memq (plist-get operation :bytecode-opcode) '(144 145))
+                    (setq next (nelisp-native-frame-v2-copy-emit
+                                (plist-get context :plan)
+                                (if (= (plist-get operation :bytecode-opcode) 144) 1 2)
+                                (if (= (plist-get operation :bytecode-opcode) 144)
+                                    (list (plist-get operation :legacy-binding-root) (plist-get operation :output-root))
+                                  (list (plist-get operation :legacy-binding-root))) next)))
                   (if (eq opcode 'list-build)
                       (nelisp-native-funcall-v2-emit-list
                        operation function inputs next (plist-get context :cyclic))
-                    (nelisp-native-funcall-v2-emit operation function inputs next)))
+                    (nelisp-native-funcall-v2-emit operation function inputs next
+                                                     (and (plist-get (plist-get context :plan) :handler-bank)
+                                                          (plist-get context :plan)))))
               (nelisp-bytecode-native-rooted-cfg-shared-emit--fail context "Unresolved F1 function/argument") 0)))
          ((memq opcode '(car cdr cons))
           (let* ((inputs (mapcar (lambda (root)
@@ -412,12 +421,30 @@
                    (scratch (and (plist-get plan :banked)
                                  (cl-subseq (plist-get plan :copy-roots) 0 (length phis))))
                    (body (list 'cfg-edge to)))
+              (when (plist-get plan :handler-bank)
+                (let* ((sources (cdr (assq to (plist-get b :bank-edge-copies))))
+                       (pairs (cl-remove-if (lambda (pair) (= (car pair) (cdr pair)))
+                                            (cl-mapcar #'cons sources
+                                                       (cl-subseq (plist-get plan :handler-bank) 0 (length sources)))))
+                       (scratch (cl-subseq (plist-get plan :copy-roots) 0 (length pairs))))
+                  ;; Identity copies publish nothing. One changed cell needs no
+                  ;; parallel staging; multiple cells still snapshot all inputs.
+                  (setq body (if (= (length pairs) 1)
+                                 (nelisp-native-frame-v2-bank-copy-emit
+                                  plan                                   (mapcar #'car pairs) (mapcar #'cdr pairs) body)
+                               (nelisp-native-frame-v2-bank-copy-emit
+                                  plan                                 (mapcar #'car pairs) scratch
+                                (nelisp-native-frame-v2-bank-copy-emit plan scratch (mapcar #'cdr pairs) body))))))
               (when (memq to (plist-get b :poll-targets))
                 (let* ((result (plist-get plan :result-root))
                        (exit (plist-get plan :exit-root-base))
-                       (quit-form (nelisp-native-funcall-v2-copy-form
-                                   (plist-get plan :poll-exit-roots)
-                                   (number-sequence exit (+ exit 2)) (+ 1024 exit))))
+                       (quit-form (if (plist-get plan :handler-bank)
+                                      (nelisp-native-frame-v2-bank-copy-emit
+                                       plan (plist-get plan :poll-exit-roots)
+                                       (number-sequence exit (+ exit 2)) (+ 1024 exit))
+                                    (nelisp-native-funcall-v2-copy-form
+                                     (plist-get plan :poll-exit-roots)
+                                     (number-sequence exit (+ exit 2)) (+ 1024 exit)))))
                   (setq body
                         (nelisp-native-funcall-v2-emit
                          (list :pc (+ 100000 from) :staging-roots nil
@@ -425,7 +452,8 @@
                          (plist-get plan :poll-root) nil
                          `(let ((cycle_poll_slot (extern-call nl_root_pin_slot_v2 env ticket ,result 0 0 0)))
                             (if (= cycle_poll_slot 0) 2
-                              (if (= (ptr-read-u64 cycle_poll_slot 0) 0) ,body ,quit-form)))))))
+                              (if (= (ptr-read-u64 cycle_poll_slot 0) 0) ,body ,quit-form)))
+                         (and (plist-get plan :handler-bank) plan)))))
               (setq body
                     (if (plist-get plan :banked)
                         (nelisp-native-funcall-v2-copy-form
@@ -435,9 +463,13 @@
               (block nil (list 'jump (lower body nil out finish))
                      (cdr (assoc (cons from to) edge-labels))))))
         (let* ((copies (plist-get plan :entry-copies))
-               (body (nelisp-native-funcall-v2-copy-form
-                      (mapcar #'car copies) (mapcar #'cdr copies)
-                      (list 'cfg-edge (plist-get (car planned) :start))))
+               (body (if (plist-get plan :handler-bank)
+                         (nelisp-native-frame-v2-bank-copy-emit
+                          plan (mapcar #'car copies) (mapcar #'cdr copies)
+                          (list 'cfg-edge (plist-get (car planned) :start)))
+                       (nelisp-native-funcall-v2-copy-form
+                        (mapcar #'car copies) (mapcar #'cdr copies)
+                        (list 'cfg-edge (plist-get (car planned) :start)))))
                (body (if (plist-get plan :frame-state-root)
                          (nelisp-native-frame-v2-copy-emit plan 0 (plist-get plan :frame-enter-roots) `(progn (setq ,entered 1) ,body))
                        body))
@@ -457,7 +489,26 @@
                                        ,(nelisp-native-frame-v2-copy-emit plan 3 nil out))
                                    ,out)
                                         nil leave-out returned)))
-                  (block nil (list 'jump epilogue) finish))
+                  (if (plist-get plan :handler-bank)
+                      (let* ((status (local)) (target (local))
+                             (result (plist-get plan :frame-result-root))
+                             (exit (plist-get plan :exit-root-base))
+                             (landing
+                              (lower
+                               `(if (and (= ,entered 1) (= ,out ,(+ 1024 exit)))
+                                    (let ((,status (extern-call nl_native_frame_v2 env ticket
+                                                               ,(plist-get plan :frame-state-root) 11 ,exit ,result)))
+                                      (if (= ,status 0)
+                                          (let ((,target (extern-call nl_root_pin_slot_v2 env ticket ,result 0 0 0)))
+                                            (if (= ,target 0) 2
+                                              (cfg-dispatch (ptr-read-u64 ,target 8)
+                                                            ,(mapcar (lambda (pc) (list pc pc)) (plist-get plan :handler-targets))
+                                                            ,epilogue)))
+                                        (progn (setq ,out ,status) (cfg-edge ,epilogue))))
+                                  (cfg-edge ,epilogue))
+                               nil leave-out returned)))
+                        (block nil (list 'jump landing) finish))
+                    (block nil (list 'jump epilogue) finish)))
               (block nil (list 'return out) finish)))
           (let ((cfg (nelisp-bytecode-native-rooted-cfg-shared-emit--compact
                       (cons 'cfg (cons 1 (cons guard (nreverse raw-blocks)))))))
@@ -482,7 +533,10 @@
          (verified (and input (nelisp-bytecode-native-rooted-cfg-plan
                                input (plist-get plan :lowering-mode)
                                (plist-get plan :arithmetic-guard-mode))))
-         (analysis (and input (nelisp-bytecode-native-rooted-cfg-postdom-analyze input))))
+         ;; Handler plans always use the shared raw CFG. Their freshly
+         ;; authenticated topology/bank has no structured postdominator use.
+         (analysis (if (plist-get verified :handler-bank) verified
+                     (and input (nelisp-bytecode-native-rooted-cfg-postdom-analyze input)))))
     (if (not (and (eq (plist-get plan :status) 'complete)
                   (or (null (plist-get plan :exit-root-base))
                       (plist-get plan :funcall-version)
@@ -491,7 +545,8 @@
                   (eq (plist-get analysis :status) 'complete)
                   (stringp entry-name) (> (length entry-name) 0)))
         (list :status 'unsupported :reason "shared emission needs an unchanged canonical rooted plan")
-      (if (or (and (plist-get plan :banked)
+      (if (or (plist-get plan :handler-bank)
+              (and (plist-get plan :banked)
                    ;; An acyclic frame activation needs one shared epilogue.
                    ;; Single-block entry phis are already materialized in the
                    ;; physical bank by entry copies; they need no CFG labels.

@@ -253,6 +253,8 @@ The result maps values to protected root indexes and records scalar root-index
 phis at joins.  It refuses before any backend or artifact side effect."
   (cl-block nelisp-bytecode-native-rooted-cfg-plan
   (let* ((frame (plist-get input :frame-result))
+         (handler-p (eq (plist-get frame :version) 'handler-frame-u8a-1))
+         (handler-bank nil) (handler-pairs nil)
          (blocks (and (vectorp (plist-get frame :blocks))
                       (append (plist-get frame :blocks) nil)))
          (arity (plist-get input :argument-count))
@@ -268,10 +270,11 @@ phis at joins.  It refuses before any backend or artifact side effect."
          (switch-p (cl-some (lambda (b)
                               (cl-some (lambda (i) (eq (plist-get i :kind) 'switch))
                                        (append (plist-get b :instructions) nil))) blocks))
-         (frame-p (cl-some (lambda (b)
-                             (cl-some (lambda (i) (memq (plist-get i :kind)
-                                                       '(dynamic-bind dynamic-unbind)))
-                                      (append (plist-get b :instructions) nil))) blocks))
+         (frame-p (or handler-p (cl-some (lambda (b)
+                             (cl-some (lambda (i) (or (memq (plist-get i :kind)
+                                                       '(dynamic-bind dynamic-unbind frame-save frame-cleanup))
+                                                   (memq (plist-get i :opcode) '(144 145))))
+                                      (append (plist-get b :instructions) nil))) blocks)))
          (banked (or cyclic switch-p frame-p))
          (frame-state-root nil) (frame-staging-roots nil) (frame-result-root nil)
          (frame-enter-roots nil)
@@ -300,7 +303,7 @@ phis at joins.  It refuses before any backend or artifact side effect."
                                                  164 165 166 167 168
                                                  96 98 99 100 101 102 103 104 105 106
                                                  108 109 110 111 112 113 116 117 118
-                                                 119 120 121 122 123 124 125 126 127
+                                                 119 120 121 122 123 124 125 126 127 139 141 143 144 145
                                                  147 148 149 150 151 152 153 154 155
                                                  156 157 158 159 160 161)))
                                        (append (plist-get block :instructions) nil))) blocks)
@@ -321,7 +324,10 @@ phis at joins.  It refuses before any backend or artifact side effect."
                        (and (or f1-p stack-edit-p)
                             (nelisp-bytecode-native-rooted-cfg--canonical-input-p input)
                             (cl-every (lambda (item)
-                                        (or (and (eq (cdr item) 'non-fixnum-constant))
+                                        (or (and handler-p (eq (cdr item) 'handler-semantics)
+                                                 (cl-some (lambda (row) (and (= (aref row 0) (car item)) (memq (aref row 1) '(48 49 50))))
+                                                          (append (plist-get (plist-get input :ir-result) :instructions) nil)))
+                                            (and (eq (cdr item) 'non-fixnum-constant))
                                             (and (eq (cdr item) 'unsupported-semantics)
                                                  (cl-some (lambda (row)
                                                             (and (= (aref row 0) (car item))
@@ -397,12 +403,18 @@ phis at joins.  It refuses before any backend or artifact side effect."
     (when frame-p
       (setq frame-state-root root-next root-next (1+ root-next)
             frame-staging-roots (list root-next (1+ root-next)) root-next (+ root-next 2)
-            frame-result-root root-next root-next (+ root-next 4))
+            frame-result-root root-next root-next (+ root-next (if handler-p 6 4)))
       (dolist (value (list 1 arity))
         (push root-next frame-enter-roots)
         (push (cons value root-next) immediate-roots)
         (setq root-next (1+ root-next)))
       (setq frame-enter-roots (nreverse frame-enter-roots)))
+    ;; Catch compares object identity. Handler constant initializers therefore
+    ;; read the live function vector; serialized recipe values only prove shape.
+    (when handler-p
+      (setq handler-bank (number-sequence root-next (+ root-next (plist-get frame :max-stack-depth) -1)))
+      (setq root-next (+ root-next (plist-get frame :max-stack-depth)))
+      (setq handler-pairs root-next root-next (+ root-next (* 2 (plist-get frame :max-handler-depth)))))
     (when switch-p
       (setq switch-root root-next root-next (1+ root-next)))
     (when banked
@@ -410,9 +422,9 @@ phis at joins.  It refuses before any backend or artifact side effect."
       (dolist (block order)
         (let ((start (plist-get block :start)) (entry nil) (block-phis nil))
           (dotimes (slot (plist-get block :entry-stack-depth))
-            (push (cons (list :entry start slot) root-next) entry)
-            (push (list :id phi-next :block start :slot slot :root root-next :incoming nil) block-phis)
-            (setq root-next (1+ root-next) phi-next (1+ phi-next)))
+            (push (cons (list :entry start slot) (if handler-p (nth slot handler-bank) root-next)) entry)
+            (unless handler-p (push (list :id phi-next :block start :slot slot :root root-next :incoming nil) block-phis)
+            (setq root-next (1+ root-next) phi-next (1+ phi-next))))
           (push (cons start (nreverse entry)) cycle-entries)
           (push (cons start (nreverse block-phis)) cycle-phis)))
       (dotimes (_ (apply #'max (mapcar (lambda (b) (plist-get b :entry-stack-depth)) order)))
@@ -525,9 +537,12 @@ phis at joins.  It refuses before any backend or artifact side effect."
                                             (push (cons key root) immediate-roots)
                                             root)))))
                 (unless output-root (setq failure "constant has no protected root")))
-               ((and frame-p (memq kind '(dynamic-bind dynamic-unbind variable-ref variable-set)))
+               ((memq kind '(handler-catch handler-condition handler-pop))
+                (setq op kind))
+               ((and frame-p (memq kind '(dynamic-bind dynamic-unbind variable-ref variable-set frame-save frame-cleanup)))
                 (setq op (pcase kind ('dynamic-bind 'frame-specbind) ('dynamic-unbind 'frame-unbind)
-                                ('variable-ref 'frame-varref) ('variable-set 'frame-varset)))
+                                ('variable-ref 'frame-varref) ('variable-set 'frame-varset)
+                                ('frame-save 'frame-save) ('frame-cleanup 'frame-cleanup)))
                 (when (memq kind '(variable-ref variable-set))
                   (setq output-root root-next root-next (1+ root-next))))
                ((eq kind 'branch)
@@ -613,15 +628,32 @@ phis at joins.  It refuses before any backend or artifact side effect."
                                             (if (memq opcode '(131 133)) 'nil 'not-nil))
                              :type-error-input (and (memq op '(car cdr)) (car inputs))
                              :pc (plist-get instruction :pc))))
-                  (when (memq op '(frame-specbind frame-unbind frame-varref frame-varset))
+                  (when (memq op '(handler-catch handler-condition handler-pop))
+                    (let ((arguments nil))
+                      (unless (eq op 'handler-pop)
+                        (push (cons (vector (if (eq op 'handler-catch) 2 1)
+                                            (plist-get instruction :operand)
+                                            (1- (plist-get block :entry-stack-depth))
+                                            handler-pairs (plist-get frame :max-handler-depth)
+                                            (car handler-bank)) root-next) immediate-roots)
+                        (setq arguments (list (car inputs) root-next) root-next (1+ root-next)))
+                      (setq operation (append operation (list :argument-roots arguments
+                                                               :frame-action (if (eq op 'handler-pop) 9 8))))))
+                  (when (memq op '(frame-specbind frame-unbind frame-varref frame-varset frame-save frame-cleanup))
                     (let* ((symbol-root (cdr (assq (plist-get instruction :operand) constant-roots)))
-                           (arguments (if (eq op 'frame-unbind)
+                           (arguments (cond ((eq op 'frame-save) nil)
+                                            ((eq op 'frame-cleanup) inputs)
+                                            ((eq op 'frame-unbind)
                                           (let ((root root-next))
                                             (push (cons (plist-get instruction :operand) root) immediate-roots)
-                                            (setq root-next (1+ root-next)) (list root))
-                                        (cons symbol-root inputs))))
+                                            (setq root-next (1+ root-next)) (list root)))
+                                            (t (cons symbol-root inputs)))))
                       (setq operation (append operation
                                               (list :argument-roots arguments
+                                                    :frame-action (pcase op
+                                                                    ('frame-specbind 1) ('frame-unbind 2)
+                                                                    ('frame-cleanup 4)
+                                                                    ('frame-save (pcase opcode ((or 97 114) 5) (138 6) (140 7))))
                                                     :argument-count (length arguments))))
                       (when (memq op '(frame-varref frame-varset))
                         (setq operation (append operation
@@ -662,6 +694,10 @@ phis at joins.  It refuses before any backend or artifact side effect."
                                           :staging-roots (number-sequence root-next (+ root-next staged-count -1))
                                           :provider 'nl_native_funcall_v2)))
                       (setq root-next (+ root-next staged-count))
+                      (when (memq opcode '(144 145))
+                        (plist-put operation :legacy-binding-root root-next)
+                        (push (cons (if (= opcode 144) 'standard-output 1) root-next) immediate-roots)
+                        (setq root-next (1+ root-next)))
                       (when (eq op 'list-build)
                         (when (memq opcode '(176 177))
                           (plist-put operation :apply-function-root (cdr (assq 'apply primitive-roots)))
@@ -705,7 +741,12 @@ phis at joins.  It refuses before any backend or artifact side effect."
             (setq phis (append phis phis-here))
             (push (cons start entry-state) states)
             (push (list :start start :phis phis-here
-                        :operations (nreverse ops) :successors successors)
+                        :operations (nreverse ops) :successors successors
+                        :bank-edge-copies (and handler-p
+                                              (mapcar (lambda (edge)
+                                                        (cons (plist-get edge :target)
+                                                              (mapcar (lambda (token) (nelisp-bytecode-native-rooted-cfg--input-root token entry-state))
+                                                                      (append (plist-get edge :slots) nil)))) successors)))
                   planned-blocks)))))
     (when banked
       ;; Resolve all incoming banks only after every block has a stable state.
@@ -783,7 +824,7 @@ phis at joins.  It refuses before any backend or artifact side effect."
                   :constant-roots constant-roots
                   :constant-initializers
                   (cl-loop for (index . root) in constant-roots
-                           collect (if (hash-table-p (aref constants index))
+                           collect (if (or handler-p (hash-table-p (aref constants index)))
                                        (list :root root :constant-index index :value nil)
                                      (list :root root :value (aref constants index))))
                   :immediate-initializers
@@ -811,7 +852,7 @@ phis at joins.  It refuses before any backend or artifact side effect."
             :constant-roots constant-roots :phis ordered-phis
             :constant-initializers
             (cl-loop for (index . root) in constant-roots
-                     collect (if (hash-table-p (aref constants index))
+                     collect (if (or handler-p (hash-table-p (aref constants index)))
                                        (list :root root :constant-index index :value nil)
                                      (list :root root :value (aref constants index))))
             :immediate-initializers
@@ -827,6 +868,12 @@ phis at joins.  It refuses before any backend or artifact side effect."
                   :entry-copies (cl-loop for pair in (cdr (assq (plist-get (car blocks) :start) cycle-entries))
                                          for source from 1 collect (cons source (cdr pair)))
                   :poll-root poll-root :poll-exit-roots poll-exit-roots))
+       (and handler-p (list :handler-bank handler-bank :handler-pairs handler-pairs
+                            :handler-targets
+                            (cl-remove-if-not
+                             (lambda (pc) (cl-find pc ordered-blocks :key (lambda (b) (plist-get b :start))))
+                             (delete-dups (mapcar (lambda (h) (plist-get h :target))
+                                                  (append (plist-get frame :pushes) nil))))))
        (and frame-p
             (list :frame-descriptor (nelisp-native-frame-v2-descriptor)
                   :frame-hash (nelisp-native-frame-v2-hash)

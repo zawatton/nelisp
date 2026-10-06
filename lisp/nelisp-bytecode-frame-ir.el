@@ -24,7 +24,19 @@
   '((variable-bind :operation dynamic-bind :stack-inputs 1 :stack-delta -1
                    :binding-kind bind :may-nonlocal-exit t)
     (unbind :operation dynamic-unbind :stack-inputs 0 :stack-delta 0
-            :binding-kind unbind :may-nonlocal-exit t))
+            :binding-kind unbind :may-nonlocal-exit t)
+    (save-current-buffer :operation frame-save :stack-inputs 0 :stack-delta 0
+                         :binding-kind cleanup :may-nonlocal-exit t)
+    (save-excursion :operation frame-save :stack-inputs 0 :stack-delta 0
+                    :binding-kind cleanup :may-nonlocal-exit t)
+    (save-restriction :operation frame-save :stack-inputs 0 :stack-delta 0
+                      :binding-kind cleanup :may-nonlocal-exit t)
+    (temp-output-buffer-setup :operation primitive :stack-inputs 1 :stack-delta 0
+                              :binding-kind bind :may-nonlocal-exit t)
+    (temp-output-buffer-show :operation primitive :stack-inputs 2 :stack-delta -1
+                             :binding-kind unbind :may-nonlocal-exit t)
+    (unwind-protect :operation frame-cleanup :stack-inputs 1 :stack-delta -1
+                    :binding-kind cleanup :may-nonlocal-exit t))
   "Frame effects for byte-code operations that alter dynamic binding depth.")
 
 (defun nelisp-bytecode-frame-ir--operation-effect (kind row)
@@ -39,12 +51,13 @@
               effect (plist-put effect :exceptional-edge
                                 (list :kind 'possible-nonlocal-exit
                                       :target 'unresolved :pc pc)))
-        (if (eq kind 'variable-bind)
+        (if (not (memq kind '(unbind temp-output-buffer-show)))
             (setq effect (plist-put effect :constant-index
                                     (plist-get metadata :constant-index))
                   effect (plist-put effect :binding-delta 1))
-          (setq effect (plist-put effect :binding-count operand)
-                effect (plist-put effect :binding-delta (- operand))))
+          (let ((count (if (eq kind 'temp-output-buffer-show) 1 operand)))
+            (setq effect (plist-put effect :binding-count count)
+                  effect (plist-put effect :binding-delta (- count)))))
         effect))))
 
 (defun nelisp-bytecode-frame-ir--min-inputs (row)
@@ -53,6 +66,10 @@
     (cond
      ((or (= op 129) (<= 192 op 255) (<= 1 op 7) (= op 130)) 0)
      ((memq op '(96 100 101 103 104 105 108 109 110 111 112 116 126)) 0)
+     ((memq op '(97 114 138 140)) 0)
+     ((memq op '(139 142 144)) 1)
+     ((memq op '(141 145)) 2)
+     ((= op 143) 3)
      ((memq op '(131 132 133 134 135 136 83 84 91 57 58 59 60 63 64 65
                  98 99 102 106 113 117 118 121 122 127 71 74 75 148 149 150 151 159 162 163 167 168)) 1)
      ((or (memq op '(119 120 123 124 125 56 62 72 76 77 78 61 66 85 86 87 88 89 90 92 93 94 95 164 165 166 152 153 154 155 156 157 158 160 161))) 2)
@@ -85,6 +102,8 @@
      ((eq kind 'variable-set) 'variable-set)
      ((eq kind 'variable-bind) 'dynamic-bind)
      ((eq kind 'unbind) 'dynamic-unbind)
+     ((memq op '(97 114 138 140)) 'frame-save)
+     ((= op 142) 'frame-cleanup)
      ((eq kind 'call) 'call)
      ((= op 183) 'switch)
      ((memq op '(130 131 132 133 134)) 'branch)
@@ -98,7 +117,7 @@
                  162 163 164 165 166 167 168 67 68 69 70 175 80 81 82 176 177
                  96 98 99 100 101 102 103 104 105 106
                  108 109 110 111 112 113 116 117 118
-                 119 120 121 122 123 124 125 126 127)) 'primitive)
+                 119 120 121 122 123 124 125 126 127 139 141 143 144 145)) 'primitive)
      (t nil))))
 
 (defun nelisp-bytecode-frame-ir--stack-edit (row stack replacement)
@@ -220,6 +239,8 @@ reported as unsupported; impossible stack states or table targets are invalid."
                             row state (car (last state)))))
               ((or 'discard 'variable-set 'return)
                (setq after (butlast state need)))
+              ((or 'dynamic-bind 'frame-cleanup) (setq after (butlast state need)))
+              ((or 'dynamic-unbind 'frame-save) nil)
               ((or 'call 'primitive)
                (setq after (append (butlast state need) (list :unknown))))
               ('predicate (setq after (append (butlast state) (list :unknown))))
@@ -305,8 +326,8 @@ reported as unsupported; impossible stack states or table targets are invalid."
                        stack (nelisp-bytecode-frame-ir--stack-edit
                               row stack (if live-output out (car (last stack)))))))
               ('variable-set (setq stack (butlast stack)))
-              ('dynamic-bind (setq stack (butlast stack need)))
-              ('dynamic-unbind nil)
+              ((or 'dynamic-bind 'frame-cleanup) (setq stack (butlast stack need)))
+              ((or 'dynamic-unbind 'frame-save) nil)
               ('call
                (setq outputs (list out)
                      stack (append (butlast stack need) (list out))))
@@ -329,7 +350,8 @@ reported as unsupported; impossible stack states or table targets are invalid."
                               (and (memq kind '(variable-ref variable-set))
                                    (aref row 3)))
                           :operation-effect
-                          (and (memq kind '(dynamic-bind dynamic-unbind))
+                          (and (or (memq kind '(dynamic-bind dynamic-unbind frame-save frame-cleanup))
+                                   (memq op '(144 145)))
                                (nelisp-bytecode-frame-ir--operation-effect
                                 (plist-get (aref row 4) :kind) row))
                           :inputs inputs :outputs outputs

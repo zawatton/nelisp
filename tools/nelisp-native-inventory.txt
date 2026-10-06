@@ -269,4 +269,4 @@ nelisp--symbol-global-cell-p	native-review	No classification row; review against
 nelisp--native-runtime-contract-word	native-must-stay	Build-embedded ABI identity word of the running binary; no Lisp form can read it (clause 3). Raw artifact admission compares it in every build (ledger S3.3).
 
 nl_native_funcall_v2	native-must-stay	Evaluator entry (clause 2), authenticated rooted funcall and exit publication; Lisp reference nelisp-native-funcall-v2-reference; measurements in F1.1/F1.2.
-nl_native_frame_v2	native-must-stay	Evaluator entry (clause 2), authenticated activation watermark and rooted frame installation/removal; Lisp reference nelisp-native-frame-v2-source; measurements and limitations in F2.2.
+nl_native_frame_v2	native-must-stay	Evaluator entry (clause 2), authenticated activation watermark, rooted frame installation/removal and ordered cleanup callbacks and U8 status-return handler landing (clause 2), authenticated operand-bank full-slot copies (clause 1); Lisp references nelisp-native-frame-v2-source and nelisp-bytecode-cleanup-source; measurements and limitations in F2.2 and native-handlers-u8-progress.org.

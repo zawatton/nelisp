@@ -380,6 +380,12 @@
           (defvaralias alias target)
           (let ((fn (make-byte-code 257 (unibyte-string 24 8 41 135) (vector alias) 1)))
             (and (eq (funcall fn 'inside) 'inside) (not (boundp target))))) 1 0))
+    ;; U8r: unmatched and nil-tag throws signal at the throw site.
+    (59 shared (if (equal
+        (list (condition-case e (throw 'missing 5) (no-catch e))
+              (condition-case e (catch nil (throw nil 5)) (no-catch e))
+              (catch 'outer (catch 'inner (throw 'outer 7))))
+        '((no-catch missing 5) (no-catch nil 5) 7)) 1 0))
     ))
 
 (provide 'nelisp-substrate-parity-corpus)

@@ -45,6 +45,16 @@
 ;;; Code:
 
 (list
+ ;; U8n: VM handlers share catch identity and raise-time no-catch with Lisp.
+ (let* ((tag (vector 'u8n-shadow))
+        (fn (make-byte-code
+             0 (unibyte-string 192 50 8 0 193 32 48 135 135)
+             (vector tag (lambda () (garbage-collect) (throw tag 'caught))) 1)))
+   (eq (funcall fn) 'caught))
+ (let ((fn (make-byte-code
+            0 (unibyte-string 192 49 8 0 193 32 48 135 135)
+            (vector 'no-catch (lambda () (throw nil 'missing))) 1)))
+   (equal (funcall fn) '(no-catch nil missing)))
  ;; U7a: aliases bind the canonical dynamic cell, including a void target.
  (let ((target (intern "u7a-shadow-target"))
        (alias (intern "u7a-shadow-alias")))

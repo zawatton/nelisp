@@ -17,12 +17,13 @@ policies remain unchanged. All boundary bytes and relocations are verified."
         ((specialize (node generator)
            (cond
             ((equal node '(constructor)) '(f1))
-            ;; F1 alone has 190 helpers; the frame adapter adds five. The
-            ;; separate frame root admits at most 200, with every edge proved.
+            ;; The shared catch registry and throw-site signal construction
+            ;; extend F1's closed runtime helpers. The separate authenticated
+            ;; frame root admits at most 280, with every edge still proved.
             ((equal node '(<= 1 (length (alist-get 'records closure)) 192))
-             '(<= 1 (length (alist-get 'records closure)) 200))
+             '(<= 1 (length (alist-get 'records closure)) 280))
             ((equal node '(<= 15 (length functions) 192))
-             '(<= 15 (length functions) 200))
+             '(<= 15 (length functions) 280))
             ((eq node 'compiler-runtime-v1) 'compiler-f1-runtime-v1)
             ((eq node 'compiler-constructor-memory-v1) 'compiler-f1-memory-v1)
             ((equal node "nelisp-compiler-constructor-prelink-v1") "nelisp-compiler-f1-prelink-v1")

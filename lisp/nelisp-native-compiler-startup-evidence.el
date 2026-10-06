@@ -19,7 +19,7 @@
 (defconst nelisp-native-compiler-startup-evidence--boot-modules
   '(nelisp-stdlib-fast-hash nelisp-env nelisp-lexframe nelisp-native-frame-v2
     nelisp-native-funcall-v2 nelisp-bytecode-ir nelisp-hash-custom nelisp-bytecode-native-switch
-    nelisp-bytecode-frame-ir nelisp-bytecode-compiler-input
+    nelisp-bytecode-frame-ir nelisp-bytecode-handlers-u8 nelisp-bytecode-compiler-input
     nelisp-bytecode-native-rooted-cfg nelisp-native-arithmetic-v2
     nelisp-bytecode-native-arithmetic-lowering nelisp-native-optimization-guard-v1
     nelisp-bytecode-native-guarded-lowering nelisp-bytecode-native-rooted-cfg-plan

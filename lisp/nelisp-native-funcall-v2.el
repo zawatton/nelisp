@@ -1,6 +1,8 @@
 ;;; nelisp-native-funcall-v2.el --- Generic rooted evaluator ABI -*- lexical-binding: t; -*-
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 (require 'cl-lib)
+(require 'nelisp-bytecode-cleanup)
+(declare-function nelisp-native-frame-v2-bank-copy-emit "nelisp-native-frame-v2" (plan inputs roots body))
 (defvar nelisp-stdlib--symbol-plists)
 (defvar nelisp--bytecode-lisp-providers)
 (defconst nelisp-native-funcall-v2-version "nelisp-native-funcall-v2-1")
@@ -16,7 +18,7 @@
 (defun nelisp-native-funcall-v2-hash ()
   "Bind all generic evaluator ABI semantics."
   (let ((print-length nil) (print-level nil))
-    (secure-hash 'sha256 (prin1-to-string (nelisp-native-funcall-v2-descriptor)))))
+    (secure-hash 'sha256 (prin1-to-string (list (nelisp-native-funcall-v2-descriptor) (nelisp-bytecode-legacy-source))))))
 (let ((primitives '((56 nth 2) (57 symbolp 1) (58 consp 1) (59 stringp 1) (60 listp 1)
                     (61 eq 2) (62 memq 2) (63 not 1) (64 car 1) (65 cdr 1) (66 cons 2)
                     (67 list 1) (68 list 2) (69 list 3) (70 list 4) (175 list operand)
@@ -35,6 +37,11 @@
                     (119 skip-chars-forward 2) (120 skip-chars-backward 2)
                     (121 forward-line 1) (122 char-syntax 1) (123 buffer-substring 2)
                     (124 delete-region 2) (125 narrow-to-region 2) (126 widen 0) (127 end-of-line 1)
+                    (139 nelisp--bytecode-legacy-window 1)
+                    (141 nelisp--bytecode-legacy-catch 2)
+                    (143 nelisp--bytecode-legacy-condition 3)
+                    (144 nelisp--bytecode-legacy-setup 1)
+                    (145 nelisp--bytecode-legacy-show 2)
                     (164 nconc 2) (165 / 2) (166 % 2) (167 numberp 1) (168 integerp 1)
                     (147 set-marker 3) (148 match-beginning 1) (149 match-end 1)
                     (150 upcase 1) (151 downcase 1) (152 string-equal 2)
@@ -49,7 +56,10 @@
       (association (if (fboundp 'nelisp--eval-source-string)
                        '(builtin assq) (symbol-function 'assq)))
       (membership (symbol-function 'memq))
-      (originals (mapcar (lambda (name) (cons name (symbol-function (if (eq name 'previous-char) 'preceding-char name)))) '(car cdr cons list nth memq length aref aset
+      (legacy-providers nelisp-bytecode-legacy-providers)
+      (originals (mapcar (lambda (name) (cons name (symbol-function (if (eq name 'previous-char) 'preceding-char name)))) '(nelisp--bytecode-legacy-window nelisp--bytecode-legacy-catch
+                                                                            nelisp--bytecode-legacy-condition nelisp--bytecode-legacy-setup nelisp--bytecode-legacy-show
+                                                                            car cdr cons list nth memq length aref aset
                                                                             symbol-value symbol-function set fset get substring concat insert apply
                                                                             set-marker match-beginning match-end upcase downcase
                                                                             string-equal string-lessp equal nthcdr elt member assq
@@ -221,7 +231,9 @@
 (defun nelisp-native-funcall-v2-initializer (name)
   "Materialize only a canonical frozen VM primitive, never a public function cell."
   (unless (funcall association name originals) (error "Unknown funcall primitive initializer"))
-  (if (fboundp 'nelisp--eval-source-string)
+  (if (funcall association name legacy-providers)
+      (cdr (funcall association name legacy-providers))
+    (if (fboundp 'nelisp--eval-source-string)
       ;; Builtin values are runtime evaluator tokens, not a caller certificate.
       (cond ((funcall same name 'nth) nth-provider)
             ((funcall same name 'get) get-provider)
@@ -240,7 +252,7 @@
             ((funcall same name 'string-equal) '(builtin string=))
             ((funcall same name 'string-lessp) '(builtin string<))
             (t (list 'builtin name)))
-    (cdr (funcall association name originals)))))
+    (cdr (funcall association name originals))))))
 (defun nelisp-native-funcall-v2-reference (function arguments)
   "Lisp reference for the evaluator entry; roots are an infrastructure concern."
   (apply function arguments))
@@ -260,14 +272,18 @@
                                  `(ptr-write-u64 ,destination ,offset (ptr-read-u64 ,source ,offset)))
                                '(0 8 16 24))
                      ,result)))))) result))
-(defun nelisp-native-funcall-v2-emit (operation function inputs continuation)
+(defun nelisp-native-funcall-v2-emit (operation function inputs continuation &optional copy-plan)
   "Stage canonical OPERATION operands, call once and preserve its SSA result."
-  (let* ((roots (plist-get operation :staging-roots))
+  (let* ((copy (if copy-plan
+                   (lambda (sources destinations body)
+                     (nelisp-native-frame-v2-bank-copy-emit copy-plan sources destinations body))
+                 #'nelisp-native-funcall-v2-copy-form))
+         (roots (plist-get operation :staging-roots))
          (result (plist-get operation :result-root))
          (status (intern (format "f1_status_%d" (plist-get operation :pc))))
-         (success (nelisp-native-funcall-v2-copy-form
+         (success (funcall copy
                    (list result) (list (plist-get operation :output-root)) continuation)))
-    (nelisp-native-funcall-v2-copy-form
+    (funcall copy
      inputs roots
      `(let ((,status (extern-call nl_native_funcall_v2 env ticket ,function
                                  ,(or (car roots) 1) ,(length inputs) ,result)))

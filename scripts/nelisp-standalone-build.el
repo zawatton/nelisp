@@ -522,15 +522,18 @@ GC, and mutation-epoch slots.  Windows cannot reliably reserve the historical
   "Return the aligned pinned-root offset after the extended pin control."
   (logand (+ (nelisp-standalone--driver-bss-base-size) 64 31) -32))
 
-(defun nelisp-standalone--driver-bss-size ()
-  "Return driver BSS size including pinned roots and symbol-name state."
+(defun nelisp-standalone--catch-head-offset ()
+  "Return the dedicated main evaluator catch-head offset in driver BSS."
   (+ (nelisp-standalone--root-pin-region-offset)
      (* nelisp-standalone--root-pin-slots 32)
      nelisp-cc-eln-callback-context-bss-bytes
      112
      nelisp-cc-eln-callback7-total-bss-bytes
-     32
-     16)) ; cold-loader-owned {base, reservation}, outside every heap image
+     32))
+
+(defun nelisp-standalone--driver-bss-size ()
+  "Return driver BSS size including roots, loader state and catch head."
+  (+ (nelisp-standalone--catch-head-offset) 8 16))
 
 ;; Cold-image build digest.  The marker is assembled from bytes (never
 ;; written out as one literal) so no other copy of it can end up in a binary
@@ -845,6 +848,9 @@ storage — not an arena reservation."
                                  (* nelisp-standalone--root-pin-slots 32)
                                  nelisp-cc-eln-callback-context-bss-bytes 112
                                  nelisp-cc-eln-callback7-total-bss-bytes)
+                              :section 'bss :bind 'global :type 'object))
+    (list (nelisp-link-symbol "nl_catch_head"
+                              (nelisp-standalone--catch-head-offset)
                               :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_cold_chunk0_domain"
                               (- (nelisp-standalone--driver-bss-size) 16)
@@ -11202,18 +11208,18 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (setq i (+ i 1)))))
     (defun wf_bytecode_frame_slots (env depth)
       ;; Reserve one contiguous frame for VM slots, the saved result, and all
-      ;; seven handler/unwind roots. Checked reservations must be adjacent
+      ;; eight handler/unwind/pool roots. Checked reservations must be adjacent
       ;; because every slot is addressed as base + index*32. No heap
       ;; allocation occurs between reservations.
       ;; The main root region holds 131072 slots. Keep depth arithmetic
-      ;; bounded before adding the eight non-operand roots; workers have a
+      ;; bounded before adding the nine non-operand roots; workers have a
       ;; smaller registered region and are rejected by checked reserve.
-      (if (or (< depth 0) (> depth 131064))
+      (if (or (< depth 0) (> depth 131063))
           0
         (let* ((base (nl_root_reserve_checked env))
                (i 1)
                (valid (if (= base 0) 0 1)))
-          (while (and (= valid 1) (< i (+ depth 8)))
+          (while (and (= valid 1) (< i (+ depth 9)))
             (let* ((slot (nl_root_reserve_checked env)))
               (if (= slot (+ base (* i 32)))
                   (setq i (+ i 1))
@@ -11499,17 +11505,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (wf_bytecode_copy (wf_bytecode_slot slots first) result)
          (nl_root_release env mark)
          0)))
-    (defun wf_bytecode_call_throw (slots arg-first argc)
-      ;; Bytecode Bcall2 has already evaluated both operands.  Preserve that
-      ;; contract while publishing the existing non-local-exit stash.
+    (defun wf_bytecode_call_throw (env slots arg-first argc)
+      ;; Operands are evaluated already; share GNU throw-site target checking.
       (if (= argc 2)
-          (seq
-           (wf_bytecode_copy 268435480
-                             (wf_bytecode_slot slots arg-first))
-           (wf_bytecode_copy 268435512
-                             (wf_bytecode_slot slots (+ arg-first 1)))
-           (ptr-write-u64 268435472 0 2)
-           1)
+          (nl_ct_throw_after_val
+           0 (wf_bytecode_slot slots (+ arg-first 1))
+           (wf_bytecode_slot slots arg-first) env)
         2))
     (defun wf_bytecode_call_root_frame (env argc)
       ;; Reserve function + argc operands + argument list + result + function
@@ -11568,7 +11569,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                      1 0))
                   (rc (if (= builtin-throw 1)
                           (if (= argc 2)
-                              (wf_bytecode_call_throw roots 1 argc)
+                              (wf_bytecode_call_throw env roots 1 argc)
                             (bf_wrong_number_of_args function argc))
                         ;; A rebound function cell follows ordinary call
                         ;; semantics, including its own arity checks.
@@ -11636,14 +11637,134 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                    (+ 1024 (+ r 1)))
                             2))
                       2)))))))))
+    ;; Private evaluator/GC adapters (clause 2), reached only through the
+    ;; authenticated U7 frame gateway. Matching policy remains Lisp.
+    ;; Tagged-object access (clause 1): exactly the full-slot Lisp bank copy,
+    ;; with both indexes and the activation ticket checked before any write.
+    (defun nl_native_handlers_copy_v2 (env ticket s a r)
+      (let* ((state (nl_root_pin_slot_v2 env ticket s))
+             (source (nl_root_pin_slot_v2 env ticket a))
+             (destination (nl_root_pin_slot_v2 env ticket r)))
+        (if (or (= state 0) (= source 0) (= destination 0) (<= a 0) (<= r 0)
+                (= s r) (/= (sexp-tag state) 8) (/= (vector-len state) 7)
+                (= (sexp-tag (vector-ref-ptr state 1)) 0)
+                (/= (sexp-tag (vector-ref-ptr state 6)) 2)
+                (/= (sexp-int-unwrap (vector-ref-ptr state 6)) ticket)) 2
+          (seq (wf_bytecode_copy destination source) 0))))
+    (defun nl_native_handlers_retire (env ticket entry)
+      (if (and (= (sexp-tag entry) 8) (= (vector-len entry) 8))
+          (if (= (sexp-int-unwrap (vector-ref-ptr entry 1)) 2)
+              (let* ((node (nl_root_pin_slot_v2 env ticket (sexp-int-unwrap (vector-ref-ptr entry 5))))
+                     (tag (nl_root_pin_slot_v2 env ticket (sexp-int-unwrap (vector-ref-ptr entry 6)))))
+                (if (or (= node 0) (= tag 0) (/= node (ptr-read-u64 (nl_ct_head_slot env) 0))) 2
+                  (seq (nl_ct_active_pop env node) (wf_write_nil node) (wf_write_nil tag) 0)))
+            0)
+        2))
+    (defun nl_native_handlers_pop (env ticket state)
+      (let* ((mark (nl_root_mark env)) (entry (nl_root_reserve env))
+             (tail (nl_root_reserve env)) (rc 2))
+        (if (= (sexp-tag (vector-ref-ptr state 4)) 7)
+            (seq (wf_bytecode_copy entry (nl_cons_car_ptr (vector-ref-ptr state 4)))
+                 (wf_bytecode_copy tail (nl_cons_cdr_ptr (vector-ref-ptr state 4)))
+                 (setq rc (nl_native_handlers_retire env ticket entry))
+                 (if (= rc 0) (vector-slot-set state 4 tail) 0)) 0)
+        (seq (nl_root_release env mark) rc)))
+    (defun nl_native_handlers_cross (env ticket state all)
+      (let* ((mark (nl_root_mark env)) (entry (nl_root_reserve env)) (go 1) (rc 0))
+        (seq
+         (while (and (= go 1) (= rc 0) (= (sexp-tag (vector-ref-ptr state 4)) 7))
+           (seq (wf_bytecode_copy entry (nl_cons_car_ptr (vector-ref-ptr state 4)))
+                (if (or (= all 1) (= (bf_eq2 (vector-ref-ptr entry 4) (vector-ref-ptr state 3)) 1))
+                    (setq rc (nl_native_handlers_pop env ticket state))
+                  (setq go 0))))
+         (nl_root_release env mark) rc)))
+    (defun nl_native_handlers_land_v2 (env ticket s a r)
+      (let* ((marker (nl_root_pin_slot_v2 env ticket 0))
+             (state (nl_root_pin_slot_v2 env ticket s))
+             (kind (nl_root_pin_slot_v2 env ticket a))
+             (tag (nl_root_pin_slot_v2 env ticket (+ a 1)))
+             (value (nl_root_pin_slot_v2 env ticket (+ a 2)))
+             (result (nl_root_pin_slot_v2 env ticket r))
+             (arg1 (nl_root_pin_slot_v2 env ticket (+ r 4)))
+             (arg2 (nl_root_pin_slot_v2 env ticket (+ r 5))))
+        (if (or (= marker 0) (= state 0) (= kind 0) (= tag 0) (= value 0)
+                (= result 0) (= arg1 0) (= arg2 0)
+                (/= (sexp-tag state) 8) (/= (vector-len state) 7)
+                (/= (sexp-tag (vector-ref-ptr state 6)) 2)
+                (/= (sexp-int-unwrap (vector-ref-ptr state 6)) ticket)
+                (<= a 0) (<= r 0) (and (< a (+ r 6)) (< r (+ a 3)))) 2
+          (let* ((mark (nl_root_mark env)) (roots (wf_bytecode_call_root_frame env 2))
+                 (selected roots) (saved-tail (+ roots 32)) (pair (+ roots 64))
+                 (nil-slot (+ roots 96)) (caught (+ roots 128))
+                 (rc 0) (again 1) (status 0) (bank 0) (depth 0))
+            (if (= roots 0) (seq (nl_root_release env mark) 2)
+              (seq
+               (while (and (= again 1) (= rc 0))
+                 (seq
+                  (setq again 0)
+                  (wf_bytecode_copy arg1 kind)
+                  (nelisp_cons_construct tag value pair)
+                  (wf_bytecode_copy arg2 pair)
+                  (setq status (nl_native_frame_v2 env ticket s 10 (+ r 4) r))
+                  (if (/= status 0) (setq rc status)
+                    (seq
+                     (wf_bytecode_copy selected result)
+                     (wf_write_nil saved-tail)
+                     (if (= (sexp-tag selected) 8)
+                         (seq
+                          (wf_bytecode_copy saved-tail (vector-ref-ptr selected 4))
+                          ;; Selected/crossed handlers are no longer active when
+                          ;; cleanup runs. Enclosing handlers remain registered.
+                          (while (and (= rc 0) (= (sexp-tag (vector-ref-ptr state 4)) 7)
+                                      (= (bf_eq2 (nl_cons_car_ptr (vector-ref-ptr state 4)) selected) 0))
+                            (setq rc (nl_native_handlers_pop env ticket state)))
+                          (if (= rc 0) (setq rc (nl_native_handlers_pop env ticket state)) 0)) 0)
+                     ;; Retire inner catches BEFORE their cleanup. A replacement
+                     ;; exit restarts selection with the remaining active chain.
+                     (while (and (= rc 0) (= again 0)
+                                 (= (bf_eq2 (vector-ref-ptr state 3) saved-tail) 0))
+                       (seq
+                        (setq rc (nl_native_handlers_cross env ticket state 0))
+                        (if (= rc 0)
+                            (seq (wf_write_int arg1 1)
+                                 (setq status (nl_native_frame_v2 env ticket s 2 (+ r 4) r))
+                                 (if (= status 0) 0
+                                   (if (= status (+ 1024 (+ r 1)))
+                                       (seq (wf_bytecode_copy kind (+ result 32))
+                                            (wf_bytecode_copy tag (+ result 64))
+                                            (wf_bytecode_copy value (+ result 96))
+                                            (setq again 1))
+                                     (setq rc status)))) 0)))
+                     (if (or (/= rc 0) (= again 1)) 0
+                       (if (= (sexp-tag selected) 8)
+                           (seq
+                            (if (= rc 0)
+                                (seq
+                                 (setq depth (sexp-int-unwrap (vector-ref-ptr selected 3)))
+                                 (setq bank (nl_root_pin_slot_v2 env ticket
+                                              (+ (sexp-int-unwrap (vector-ref-ptr selected 7)) depth)))
+                                 (if (= bank 0) (setq rc 2)
+                                   (seq
+                                    (if (= (sexp-int-unwrap kind) 1)
+                                        (nelisp_cons_construct tag value caught)
+                                      (wf_bytecode_copy caught value))
+                                    (wf_bytecode_copy bank caught)
+                                    (wf_bytecode_copy result (vector-ref-ptr selected 2))))) 0))
+                         (seq (setq rc (nl_native_handlers_cross env ticket state 1))
+                              (if (= rc 0) (setq rc (+ 1024 a)) 0))))))))
+               (nl_root_release env mark) rc))))))
     ;; Evaluator/GC entry, minimal-native clause 2. The policy is Lisp; this
     ;; adapter authenticates slots, allocates the evaluator cell and installs
     ;; the prepared record only after the callback's own frames are gone.
     (defun nl_native_frame_v2 (env ticket s action a r)
+      (if (= action 12) (nl_native_handlers_copy_v2 env ticket s a r)
+      (if (= action 11) (nl_native_handlers_land_v2 env ticket s a r)
       (let* ((marker (nl_root_pin_slot_v2 env ticket 0))
              (top (atomic-fetch-add (+ (data-addr nl_root_pin_control) 24) 0))
              (count (if (> marker 0) (/ (- top marker) 32) 0))
-             (n (if (or (= action 0) (= action 1)) 2 (if (= action 2) 1 (if (= action 3) 0 -1)))))
+             (n (if (or (= action 0) (= action 1) (= action 8) (= action 10)) 2
+                  (if (or (= action 2) (= action 4)) 1
+                    (if (or (and (>= action 3) (<= action 7)) (= action 9)) 0 -1)))))
         (if (or (= marker 0) (>= count 256) (< count 5) (< n 0)
                 (<= s 0) (>= s count) (<= a 0) (> a count) (> n (- count a))
                 (<= r 0) (> r (- count 4))
@@ -11663,13 +11784,16 @@ baked build's own `<'/`>'/`=' arms need it too.")
               (if (/= (nl_root_pin_slot_v2 env ticket (+ r i)) (+ output (* i 32)))
                   (setq valid 0) (setq i (+ i 1))))
             (if (= valid 0) 2
-              (let* ((mark (nl_root_mark env)) (roots (wf_bytecode_call_root_frame env 12)))
+              (let* ((mark (nl_root_mark env)) (roots (wf_bytecode_call_root_frame env 16)))
                 (if (= roots 0) (seq (nl_root_release env mark) 2)
                   (let* ((function roots) (self (+ roots 32)) (saved-state (+ roots 64))
                          (action-slot (+ roots 96)) (operands (+ roots 128))
                          (mirror (+ roots 160)) (depth (+ roots 192)) (cell (+ roots 224))
                          (frames (+ roots 256)) (result (+ roots 288))
-                         (arg1 (+ roots 320)) (arg2 (+ roots 352)) (scratch (+ roots 384)) (rc 2))
+                         (arg1 (+ roots 320)) (arg2 (+ roots 352)) (scratch (+ roots 384))
+                         (event (+ roots 416)) (payload (+ roots 448))
+                         (saved-tag (+ roots 480)) (saved-value (+ roots 512))
+                         (saved-kind 0) (cleanup-rc 0) (rc 2))
                     (seq
                      (if (= action 0) (wf_bytecode_copy function state)
                        (if (and (= (sexp-tag state) 8) (= (vector-len state) 7))
@@ -11712,18 +11836,52 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                  (vector-slot-set (record-slot-ref-ptr (+ env 32) 0) (sexp-int-unwrap scratch) result)
                                  (wf_write_int scratch (+ (sexp-int-unwrap scratch) 1))
                                  (record-slot-set (+ env 32) 1 scratch))
-                              (seq
+                              (if (or (= action 2) (= action 3)) (seq
                                 (setq i (sexp-int-unwrap result))
-                                (wf_write_nil cell)
+                                (wf_write_nil cell) (ptr-write-u64 268435472 0 0)
                                 (while (> i 0)
                                   (seq
-                                   (wf_write_int scratch (- (sexp-int-unwrap (record-slot-ref-ptr (+ env 32) 1)) 1))
-                                   (vector-slot-set (record-slot-ref-ptr (+ env 32) 0) (sexp-int-unwrap scratch) cell)
-                                   (record-slot-set (+ env 32) 1 scratch)
-                                   (setq i (- i 1)))))))
+                                   ;; State, entry and payload are full roots;
+                                   ;; no cons/vector interior survives a call.
+                                   (if (= (nl_native_handlers_cross env ticket state 0) 0) 0 (setq rc 2))
+                                   (wf_bytecode_copy event (nl_cons_car_ptr (vector-ref-ptr state 3)))
+                                   (wf_bytecode_copy scratch (nl_cons_cdr_ptr (vector-ref-ptr state 3)))
+                                   (vector-slot-set state 3 scratch)
+                                   (if (= (sexp-tag event) 7)
+                                       (seq
+                                        (wf_bytecode_copy payload (nl_cons_car_ptr (nl_cons_cdr_ptr event)))
+                                        (setq saved-kind (ptr-read-u64 268435472 0))
+                                        (wf_bytecode_copy saved-tag 268435480)
+                                        (wf_bytecode_copy saved-value 268435512)
+                                        (ptr-write-u64 268435472 0 0)
+                                        ;; Payloads are Lisp wrappers, so the
+                                        ;; sole native boundary stays APPLY;
+                                        ;; forms evaluation belongs to Lisp.
+                                        (setq cleanup-rc (wf_bytecode_call_gateway env payload roots 1 0 scratch))
+                                        (if (= cleanup-rc 0)
+                                            (seq (wf_bytecode_copy 268435480 saved-tag)
+                                                 (wf_bytecode_copy 268435512 saved-value)
+                                                 (ptr-write-u64 268435472 0 saved-kind))
+                                          (setq rc 1)))
+                                     (seq
+                                      (wf_write_int scratch (- (sexp-int-unwrap (record-slot-ref-ptr (+ env 32) 1)) 1))
+                                      (vector-slot-set (record-slot-ref-ptr (+ env 32) 0) (sexp-int-unwrap scratch) cell)
+                                      (record-slot-set (+ env 32) 1 scratch)))
+                                   (setq i (- i 1))))
+                                (if (= action 3) (seq (if (= (nl_native_handlers_cross env ticket state 1) 0) 0 (setq rc 2))
+                                                        (vector-slot-set state 1 cell)) 0)) 0)))
+                          (if (= action 8)
+                              (let* ((node (nl_root_pin_slot_v2 env ticket (sexp-int-unwrap (vector-ref-ptr result 5))))
+                                     (tag (nl_root_pin_slot_v2 env ticket (sexp-int-unwrap (vector-ref-ptr result 6)))))
+                                (if (or (= node 0) (= tag 0)) (setq rc 2)
+                                  (if (= (sexp-int-unwrap (vector-ref-ptr result 1)) 2)
+                                      (seq (wf_bytecode_copy tag (vector-ref-ptr result 0))
+                                           (nl_ct_active_push env tag node)) 0)))
+                            (if (= action 9) (setq rc (nl_native_handlers_retire env ticket result)) 0))
                           (wf_bytecode_copy output result)
                           (wf_write_nil (+ output 32)) (wf_write_nil (+ output 64)) (wf_write_nil (+ output 96)))
-                       (if (= rc 1)
+                       0)
+                     (if (= rc 1)
                            (let* ((arena (ptr-read-u64 (data-addr nl_arena_base) 0))
                                   (kind (ptr-read-u64 arena 16)))
                              (if (or (= kind 1) (= kind 2))
@@ -11731,8 +11889,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                       (wf_bytecode_copy (+ output 96) (+ arena 56))
                                       (wf_write_int (+ output 32) kind)
                                       (ptr-write-u64 arena 16 0) (setq rc (+ 1024 (+ r 1))))
-                               (setq rc 2))) 0))
-                     (nl_root_release env mark) rc)))))))))
+                               (setq rc 2))) 0)
+                     (nl_root_release env mark) rc)))))))))))
     (defun wf_bytecode_call_gateway_exit
         (env ticket function-index argument-index output-index reserved)
       ;; CALL1 handoff over the v2 frame layout. The entry ABI carries a
@@ -11975,7 +12133,42 @@ baked build's own `<'/`>'/`=' arms need it too.")
            0)
          (nl_root_release env mark)
          rc)))
-    (defun wf_bytecode_unwind_step (env unwinds target remaining out-bindings)
+    (defun wf_bytecode_legacy (env slots sp opcode argc)
+      ;; Evaluator entry only: all legacy semantics live in frozen Lisp.
+      ;; The rooted registry precedes user code; never use a public cell.
+      (let* ((mark (nl_root_mark env))
+             (registry (nl_root_reserve env))
+             (function (nl_root_reserve env))
+             (result (nl_root_reserve env))
+             (index (if (= opcode 139) 0 (if (= opcode 141) 1
+                       (if (= opcode 143) 2 (if (= opcode 144) 3 4)))))
+             (rc (bf_dynamic_lookup env 'nelisp-bytecode-legacy-providers registry)))
+        (seq
+         (if (= rc 0)
+             (seq
+              (while (> index 0)
+                (seq (wf_bytecode_copy registry (nl_cons_cdr_ptr registry))
+                     (setq index (- index 1))))
+              (wf_bytecode_copy function (nl_cons_cdr_ptr (nl_cons_car_ptr registry)))
+              (setq rc (wf_bytecode_call_gateway env function slots (- sp argc) argc result))
+              (if (= rc 0)
+                  (wf_bytecode_copy (wf_bytecode_slot slots (- sp argc)) result) 0)) 0)
+         (nl_root_release env mark) rc)))
+    (defun wf_bytecode_save_state (env unwinds opcode)
+      ;; The interpreter and native frame policy use the SAME Lisp factory.
+      ;; No buffer, marker or narrowing semantics are implemented here.
+      (let* ((mark (nl_root_mark env)) (roots (wf_bytecode_call_root_frame env 1))
+             (rc 2))
+        (if (= roots 0) (seq (nl_root_release env mark) 2)
+          (seq
+           (setq rc (bf_dynamic_lookup env 'nelisp-bytecode-cleanup-factory roots))
+           (if (= rc 0)
+               (seq
+                (wf_write_int (+ roots 32) opcode)
+                (setq rc (wf_bytecode_call_gateway env roots roots 1 1 (+ roots 64)))
+                (if (= rc 0) (wf_bytecode_unwind_push env unwinds 1 (+ roots 64)) 0)) 0)
+           (nl_root_release env mark) rc))))
+    (defun wf_bytecode_unwind_step (env unwinds target remaining out-bindings handlers pool)
       ;; Re-enter after every callback rather than relying on AOT loop state:
       ;; callbacks can allocate, move roots, and initiate another exit.
       (let* ((mark (nl_root_mark env))
@@ -11992,6 +12185,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                  0)
           (if (= (ptr-read-u64 unwinds 0) 7)
               (seq
+               (wf_bytecode_handlers_cross_unwind env handlers unwinds pool)
                ;; Copy both fields to roots before changing UNWINDS or calling
                ;; a cleanup; the cons interior pointers are transient.
                (wf_bytecode_copy event (nl_cons_car_ptr unwinds))
@@ -12010,29 +12204,51 @@ baked build's own `<'/`>'/`=' arms need it too.")
                          0
                        (setq current-failed 1))
                    (setq current-failed 1)))
-               (setq next-failed
-                     (wf_bytecode_unwind_step env unwinds target
-                                              next-remaining out-bindings))
+               ;; A replacement exit must search still-active handlers before
+               ;; consuming any enclosing cleanup event.
+               (if (= current-failed 0)
+                   (setq next-failed
+                         (wf_bytecode_unwind_step env unwinds target
+                                                  next-remaining out-bindings
+                                                  handlers pool))
+                 (wf_write_int out-bindings next-remaining))
                (nl_root_release env mark)
                (if (= next-failed 0) current-failed 1))
             (seq (wf_bytecode_copy unwinds target)
                  (wf_write_int out-bindings remaining)
                  (nl_root_release env mark)
                  1)))))
-    (defun wf_bytecode_unwind_to (env unwinds target bindings out-bindings)
-      (wf_bytecode_unwind_step env unwinds target bindings out-bindings))
-    (defun wf_bytecode_handlers_push (env handlers tag destination sp bindings unwinds)
+    (defun wf_bytecode_unwind_to (env unwinds target bindings out-bindings handlers pool)
+      (wf_bytecode_unwind_step env unwinds target bindings out-bindings handlers pool))
+    (defun wf_bytecode_handlers_push (env handlers tag destination sp bindings unwinds pool)
       ;; Keep the handler chain in a rooted Lisp list: `handlers' is a root
       ;; slot, and each frame retains TAG across collections.  The frame is
       ;; (TAG DESTINATION SP BINDINGS UNWINDS . PREVIOUS-HANDLERS).
-      (let* ((mark (nl_root_mark env))
-             (dest-slot (nl_root_reserve env))
-             (sp-slot (nl_root_reserve env))
-             (bindings-slot (nl_root_reserve env))
-             (unwinds-slot (nl_root_reserve env))
-             (tail (nl_root_reserve env))
-             (frame (nl_root_reserve env)))
-        (seq
+      ;; Reuse popped pairs; root consumption follows maximum nesting, never
+      ;; loop iterations. Checked reservation cannot fall back to GC scratch.
+      (let* ((allocation-mark (nl_root_mark env))
+             (free-node (ptr-read-u64 pool 8))
+             (catch-node (if (< destination 0) 0
+                           (if (= free-node 0) (nl_root_reserve_checked env)
+                             free-node)))
+             (catch-tag (if (< destination 0) 0
+                          (if (= free-node 0) (nl_root_reserve_checked env)
+                            (ptr-read-u64 free-node 16))))
+             (mark (nl_root_mark env))
+             (roots (if (and (>= destination 0)
+                             (or (= catch-node 0) (= catch-tag 0))) 0
+                      (wf_bytecode_call_root_frame env 2)))
+             (dest-slot roots)
+             (sp-slot (+ roots 32))
+             (bindings-slot (+ roots 64))
+             (unwinds-slot (+ roots 96))
+             (tail (+ roots 128))
+             (frame (+ roots 160)))
+        (if (= roots 0)
+            (seq (nl_root_release env allocation-mark) 1)
+          (seq
+         (if (and (>= destination 0) (/= free-node 0))
+             (wf_write_int pool (ptr-read-u64 free-node 8)) 0)
          (wf_write_int dest-slot destination)
          (wf_write_int sp-slot sp)
          (wf_write_int bindings-slot bindings)
@@ -12043,18 +12259,58 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (nelisp_cons_construct dest-slot frame tail)
          (nelisp_cons_construct tag tail frame)
          (wf_bytecode_copy handlers frame)
+         (if (>= destination 0)
+             (seq (wf_bytecode_copy catch-tag (nl_cons_car_ptr handlers))
+                  (nl_ct_active_push env catch-tag catch-node)) 0)
          (nl_root_release env mark)
-         0)))
-    (defun wf_bytecode_handlers_pop (handlers)
-      ;; Skip the five saved fields and publish the previous handler chain.
-      (if (= (ptr-read-u64 handlers 0) 7)
-          (let* ((dest (nl_cons_cdr_ptr handlers))
-                 (saved-sp (nl_cons_cdr_ptr dest))
-                 (saved-bindings (nl_cons_cdr_ptr saved-sp))
-                 (saved-unwinds (nl_cons_cdr_ptr saved-bindings))
-                 (previous (nl_cons_cdr_ptr saved-unwinds)))
-            (seq (wf_bytecode_copy handlers previous) 0))
+         0))))
+    (defun wf_bytecode_handlers_pop (env handlers pool)
+      ;; Every accessor view is immediately copied into a stable root before
+      ;; the next accessor can allocate. Keep the encoded destination as a word.
+      (if (= (sexp-tag handlers) 7)
+          (let* ((mark (nl_root_mark env))
+                 (cursor (nl_root_reserve env))
+                 (destination 0))
+            (seq
+             (wf_bytecode_copy cursor (nl_cons_cdr_ptr handlers))
+             (setq destination (sexp-int-unwrap (nl_cons_car_ptr cursor)))
+             (wf_bytecode_copy cursor (nl_cons_cdr_ptr cursor))
+             (wf_bytecode_copy cursor (nl_cons_cdr_ptr cursor))
+             (wf_bytecode_copy cursor (nl_cons_cdr_ptr cursor))
+             (wf_bytecode_copy cursor (nl_cons_cdr_ptr cursor))
+             (if (>= destination 0)
+                 (let* ((node (ptr-read-u64 (nl_ct_head_slot env) 0)))
+                   (seq (nl_ct_active_pop env node)
+                        (wf_write_nil (ptr-read-u64 node 16))
+                        (ptr-write-u64 node 8 (ptr-read-u64 pool 8))
+                        (wf_write_int pool node))) 0)
+             (wf_bytecode_copy handlers cursor)
+             (nl_root_release env mark) 0))
         1))
+    (defun wf_bytecode_handlers_drop_to (env handlers previous pool)
+      ;; Remove every crossed catch after reaching its unwind tail. PREVIOUS
+      ;; is a rooted list value, retained across allocating frame accessors.
+      (seq
+       (while (and (= (sexp-tag handlers) 7)
+                   (= (bf_eq2 handlers previous) 0))
+         (wf_bytecode_handlers_pop env handlers pool))
+       0))
+    (defun wf_bytecode_handlers_cross_unwind (env handlers unwinds pool)
+      ;; Retire handlers established inside this event before its cleanup.
+      ;; Enclosing catches (earlier unwind tails) stay visible to cleanup throw.
+      (let* ((mark (nl_root_mark env))
+             (cursor (nl_root_reserve env)) (go 1))
+        (seq
+         (while (and (= go 1) (= (sexp-tag handlers) 7))
+           (seq
+            (wf_bytecode_copy cursor (nl_cons_cdr_ptr handlers))
+            (wf_bytecode_copy cursor (nl_cons_cdr_ptr cursor))
+            (wf_bytecode_copy cursor (nl_cons_cdr_ptr cursor))
+            (wf_bytecode_copy cursor (nl_cons_cdr_ptr cursor))
+            (if (= (bf_eq2 (nl_cons_car_ptr cursor) unwinds) 1)
+                (wf_bytecode_handlers_pop env handlers pool)
+              (setq go 0))))
+         (nl_root_release env mark) 0)))
     (defun wf_bytecode_condition_matches (env slots sp symbol spec)
       ;; Ask the same symbol-plist table used by `get' for the signal's
       ;; condition hierarchy, then match symbols or a list of symbols.
@@ -12099,7 +12355,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (nl_root_release env mark)
          matched))))
     (defun wf_bytecode_try_throw (env handlers current-bindings unwinds
-                                      resume-dest resume-sp resume-bindings)
+                                      resume-dest resume-sp resume-bindings pool)
       ;; Search from the innermost frame.  CURSOR and PREVIOUS are root slots;
       ;; PREVIOUS is copied before dynamic unbinding, which can allocate and
       ;; trigger a compacting collection.
@@ -12149,27 +12405,24 @@ baked build's own `<'/`>'/`=' arms need it too.")
                (wf_bytecode_copy cursor previous-cell))))
          (if (= found 1)
              (seq
-              (wf_bytecode_copy handlers previous)
               (setq unwind-rc
                     (wf_bytecode_unwind_to env unwinds saved-unwinds
-                                           current-bindings out-bindings))
+                                           current-bindings out-bindings handlers pool))
               (setq new-bindings (sexp-int-unwrap out-bindings))
               (if (= unwind-rc 0)
-                  (seq (wf_write_int resume-dest destination)
+                  (seq (wf_bytecode_handlers_drop_to env handlers previous pool)
+                       (wf_write_int resume-dest destination)
                        (wf_write_int resume-sp saved-sp)
                        (wf_write_int resume-bindings new-bindings)
                        (setq result 1))
-                (if (= (ptr-read-u64 268435472 0) 2)
-                    (setq result
-                          (wf_bytecode_try_throw env handlers new-bindings
-                                                 unwinds resume-dest
-                                                 resume-sp resume-bindings))
-                  (setq result 0))))
+                (seq (wf_write_int resume-dest -2)
+                     (wf_write_int resume-bindings new-bindings)
+                     (setq result 0))))
            (setq result 0))
          (nl_root_release env mark)
          result)))
     (defun wf_bytecode_try_signal (env slots handlers current-bindings unwinds
-                                      resume-dest resume-sp resume-bindings)
+                                      resume-dest resume-sp resume-bindings pool)
       ;; A signal searches condition-case frames and deliberately steps over
       ;; catch frames. The signal stash carries its condition symbol and data.
       (let* ((mark (nl_root_mark env))
@@ -12219,13 +12472,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
                 (wf_bytecode_copy cursor previous)))))
          (if (= found 1)
              (seq
-              (wf_bytecode_copy handlers previous)
               (setq unwind-rc
                     (wf_bytecode_unwind_to env unwinds saved-unwinds
-                                           current-bindings out-bindings))
+                                           current-bindings out-bindings handlers pool))
               (setq new-bindings (sexp-int-unwrap out-bindings))
               (if (= unwind-rc 0)
                   (seq
+                   (wf_bytecode_handlers_drop_to env handlers previous pool)
                    (wf_write_int resume-dest destination)
                    (wf_write_int resume-sp saved-sp)
                    (wf_write_int resume-bindings new-bindings)
@@ -12234,15 +12487,46 @@ baked build's own `<'/`>'/`=' arms need it too.")
                    (wf_bytecode_copy (wf_bytecode_slot slots saved-sp)
                                      error-object)
                    0)
-                (if (= (ptr-read-u64 268435472 0) 1)
-                    (wf_bytecode_try_signal env slots handlers
-                                            new-bindings unwinds
-                                            resume-dest resume-sp
-                                            resume-bindings)
-                  0)))
+                (seq (wf_write_int resume-dest -2)
+                     (wf_write_int resume-bindings new-bindings))))
            0)
          (nl_root_release env mark)
          0)))
+    (defun wf_bytecode_pending_exit (env slots handlers unwinds nil-unwinds
+                                        bindings resume-dest resume-sp
+                                        resume-bindings pool)
+      ;; One dispatcher owns throw/signal selection and cleanup replacement.
+      ;; -2 requests reselection after a cleanup exits; never drain an outer
+      ;; cleanup before an applicable inner handler has seen the new exit.
+      (let* ((go 1) (kind 0) (caught 0) (rc 0))
+        (while (= go 1)
+          (seq
+           (wf_write_int resume-dest -1)
+           (setq kind (ptr-read-u64 268435472 0))
+           (if (= kind 2)
+               (seq (setq caught
+                          (wf_bytecode_try_throw env handlers bindings unwinds
+                                                 resume-dest resume-sp
+                                                 resume-bindings pool))
+                    (if (= caught 1)
+                        (wf_bytecode_copy
+                         (wf_bytecode_slot slots (sexp-int-unwrap resume-sp))
+                         268435512) 0))
+             (if (= kind 1)
+                 (wf_bytecode_try_signal env slots handlers bindings unwinds
+                                         resume-dest resume-sp resume-bindings pool)
+               0))
+           (if (>= (sexp-int-unwrap resume-dest) 0)
+               (setq go 0)
+             (if (= (sexp-int-unwrap resume-dest) -2)
+                 (setq bindings (sexp-int-unwrap resume-bindings))
+               (seq
+                (setq rc (wf_bytecode_unwind_to env unwinds nil-unwinds
+                                               bindings resume-bindings
+                                               handlers pool))
+                (setq bindings (sexp-int-unwrap resume-bindings))
+                (if (= rc 0) (setq go 0) 0))))))
+        0))
     (defun wf_bytecode_car (value out safe)
       (let* ((tag (ptr-read-u64 value 0)))
         (if (= tag 7)
@@ -12838,6 +13122,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (resume-sp (if (= slots 0) 0 (wf_bytecode_slot slots (+ depth 6))))
              (resume-bindings
               (if (= slots 0) 0 (wf_bytecode_slot slots (+ depth 7))))
+             (catch-pool (if (= slots 0) 0 (wf_bytecode_slot slots (+ depth 8))))
              (initial-slots (+ initial-maxargs initial-rest))
              (arg-cursor initial-args) (arg-index 0)
              (pc 0) (sp initial-slots) (done (if (= slots 0) 5 0)) (bindings 0)
@@ -12850,6 +13135,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (if (and (= done 0) (> initial-slots depth))
              (seq (setq done 2) (setq bad-op 255)))
          (wf_write_nil handlers)
+         (wf_write_int catch-pool 0)
          (wf_write_nil unwinds)
          (wf_write_nil nil-unwinds)
          (wf_write_int unwind-bindings 0)
@@ -12880,114 +13166,36 @@ baked build's own `<'/`>'/`=' arms need it too.")
          ;; pending exit and must get the same bytecode-handler search as a
          ;; throw raised by an instruction.  Drain cleanup before searching;
          ;; a matching handler restores the VM state and resumes this loop.
-         (while (if (= done 4)
+         (while (seq
+                  ;; Terminal and malformed exits may still own cleanup events.
+                  ;; A cleanup replacement uses the same dispatcher and can
+                  ;; resume a surviving handler in this activation.
+                  (if (and (= done 0) (>= pc code-len)) (setq done 2) 0)
+                  (if (and (/= done 0) (/= done 4))
+                      (seq
+                       (setq unwind-rc
+                             (wf_bytecode_unwind_to
+                              env unwinds nil-unwinds bindings unwind-bindings
+                              handlers catch-pool))
+                       (setq bindings (sexp-int-unwrap unwind-bindings))
+                       (if (/= unwind-rc 0) (setq done 4) 0)) 0)
+                  (if (= done 4)
                     (seq
-                     ;; Doc 207: like GNU, find the handler before unwinding.
-                     ;; A handler in this function whose protected region
-                     ;; lies inside an `unwind-protect' must run only the
-                     ;; cleanups pushed after it, and the enclosing cleanup
-                     ;; must run once, when control finally leaves it.
-                     ;; `wf_bytecode_try_throw'/`_try_signal' unwind exactly
-                     ;; to the matching frame's saved unwinds.  Only when no
-                     ;; handler here matches is every cleanup drained below.
-                     (if (= (ptr-read-u64 268435472 0) 2)
-                         (let* ((caught
-                                 (wf_bytecode_try_throw
-                                  env handlers bindings unwinds
-                                  resume-dest resume-sp resume-bindings)))
-                           (if (= caught 1)
-                               (let* ((target (sexp-int-unwrap resume-dest))
-                                      (saved-sp (sexp-int-unwrap resume-sp))
-                                      (saved-bindings
-                                       (sexp-int-unwrap resume-bindings)))
-                                 (seq
-                                  (wf_bytecode_copy
-                                   (wf_bytecode_slot slots saved-sp)
-                                   268435512)
-                                  (setq pc target)
-                                  (setq sp (+ saved-sp 1))
-                                  (setq bindings saved-bindings)
-                                  (setq unwind-rc 0)
-                                  (ptr-write-u64 268435472 0 0) (ptr-write-u64 (data-addr nl_bt_snapshot) 0 0)
-                                  (atomic-fetch-add 268435544 1)
-                                  (setq done 0)))
-                             0))
-                       (if (= (ptr-read-u64 268435472 0) 1)
-                           (seq
-                            (wf_write_int resume-dest -1)
-                            (wf_bytecode_try_signal
-                             env slots handlers bindings unwinds
-                             resume-dest resume-sp resume-bindings)
-                            (if (>= (sexp-int-unwrap resume-dest) 0)
-                                (let* ((target (sexp-int-unwrap resume-dest))
-                                       (saved-sp (sexp-int-unwrap resume-sp))
-                                       (saved-bindings
-                                        (sexp-int-unwrap resume-bindings)))
-                                  (seq
-                                   (setq pc target)
-                                   (setq sp (+ saved-sp 1))
-                                   (setq bindings saved-bindings)
-                                   (setq unwind-rc 0)
-                                   (ptr-write-u64 268435472 0 0) (ptr-write-u64 (data-addr nl_bt_snapshot) 0 0)
-                                   (atomic-fetch-add 268435544 1)
-                                   (setq done 0)))
-                              0))
-                         0))
-                     (if (= done 4)
+                     (wf_bytecode_pending_exit
+                      env slots handlers unwinds nil-unwinds bindings
+                      resume-dest resume-sp resume-bindings catch-pool)
+                     (setq bindings (sexp-int-unwrap resume-bindings))
+                     (if (>= (sexp-int-unwrap resume-dest) 0)
                          (seq
-                     (setq unwind-rc
-                           (wf_bytecode_unwind_to env unwinds nil-unwinds
-                                                  bindings unwind-bindings))
-                     (setq bindings (sexp-int-unwrap unwind-bindings))
-                     (if (= (ptr-read-u64 268435472 0) 2)
-                         (let* ((caught
-                                 (wf_bytecode_try_throw
-                                  env handlers bindings unwinds
-                                  resume-dest resume-sp resume-bindings)))
-                           (if (= caught 1)
-                               (let* ((target (sexp-int-unwrap resume-dest))
-                                      (saved-sp (sexp-int-unwrap resume-sp))
-                                      (saved-bindings
-                                       (sexp-int-unwrap resume-bindings)))
-                                 (seq
-                                  (wf_bytecode_copy
-                                   (wf_bytecode_slot slots saved-sp)
-                                   268435512)
-                                  (setq pc target)
-                                  (setq sp (+ saved-sp 1))
-                                  (setq bindings saved-bindings)
-                                  (setq unwind-rc 0)
-                                  (ptr-write-u64 268435472 0 0) (ptr-write-u64 (data-addr nl_bt_snapshot) 0 0)
-                                  (atomic-fetch-add 268435544 1)
-                                  (setq done 0)))
-                             0))
-                       (if (= (ptr-read-u64 268435472 0) 1)
-                           (seq
-                            ;; The native helper reports matches through
-                            ;; RESUME-DEST: its return value is not preserved
-                            ;; reliably across this pending-signal path.
-                            (wf_write_int resume-dest -1)
-                            (wf_bytecode_try_signal
-                             env slots handlers bindings unwinds
-                             resume-dest resume-sp resume-bindings)
-                            (if (>= (sexp-int-unwrap resume-dest) 0)
-                                (let* ((target (sexp-int-unwrap resume-dest))
-                                       (saved-sp (sexp-int-unwrap resume-sp))
-                                       (saved-bindings
-                                        (sexp-int-unwrap resume-bindings)))
-                                  (seq
-                                   (setq pc target)
-                                   (setq sp (+ saved-sp 1))
-                                   (setq bindings saved-bindings)
-                                   (setq unwind-rc 0)
-                                   (ptr-write-u64 268435472 0 0) (ptr-write-u64 (data-addr nl_bt_snapshot) 0 0)
-                                   (atomic-fetch-add 268435544 1)
-                                   (setq done 0)))
-                              0))
-                         0)))
-                       0)
-                     (if (= done 0) (< pc code-len) 0))
-                  (if (= done 0) (< pc code-len) 0))
+                          (setq pc (sexp-int-unwrap resume-dest))
+                          (setq sp (+ (sexp-int-unwrap resume-sp) 1))
+                          (setq unwind-rc 0)
+                          (ptr-write-u64 268435472 0 0)
+                          (ptr-write-u64 (data-addr nl_bt_snapshot) 0 0)
+                          (atomic-fetch-add 268435544 1)
+                          (setq done 0)) 0)
+                     (and (= done 0) (< pc code-len)))
+                  (and (= done 0) (< pc code-len))))
            (let* ((offset pc) (raw (ptr-read-u8 code-data pc))
                   (base raw) (operand 0) (width 0))
              (seq
@@ -13098,10 +13306,37 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                    (+ sp (if (= base 106) 1 0)) base) 0)
                                                (setq sp (+ sp (- 1 argc)))
                                              (setq done 4))))))
+                                     ((or (= base 139) (= base 141) (= base 143)
+                                          (= base 144) (= base 145))
+                                      (let* ((argc (if (= base 143) 3
+                                                      (if (or (= base 141) (= base 145)) 2 1))))
+                                        (if (or (< sp argc)
+                                                (and (= base 145) (= (ptr-read-u64 unwinds 0) 0)))
+                                            (seq (setq bad-op raw) (setq done 2))
+                                          (if (= (wf_bytecode_legacy env slots sp base argc) 0)
+                                              (seq
+                                               (setq sp (+ sp (- 1 argc)))
+                                               (if (= base 144)
+                                                   (if (= (wf_bytecode_varbind env 'standard-output
+                                                           (wf_bytecode_slot slots (- sp 1))) 0)
+                                                       (seq (wf_bytecode_unwind_push env unwinds 0 nil-unwinds)
+                                                            (setq bindings (+ bindings 1)))
+                                                     (setq done 4))
+                                                 (if (= base 145)
+                                                     (seq
+                                                      (if (= (wf_bytecode_unwind_to env unwinds
+                                                              (nl_cons_cdr_ptr unwinds) bindings unwind-bindings
+                                                              handlers catch-pool) 0)
+                                                          (setq bindings (sexp-int-unwrap unwind-bindings))
+                                                        (setq done 4))) 0)))
+                                            (setq done 4)))))
                                      ((= base 78)
                                       (if (= (wf_bytecode_get env slots sp) 0)
                                           (setq sp (- sp 1))
                                         (setq done 4)))
+                                     ((or (= base 97) (= base 114) (= base 138) (= base 140))
+                                      (if (= (wf_bytecode_save_state env unwinds base) 0)
+                                          0 (setq done 4)))
                                      ((= base 142)
                                       (if (<= sp 0)
                                           (seq (setq bad-op raw) (setq done 2))
@@ -13116,10 +13351,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                               (if (< operand code-len) 0 1)))
                                           (seq (setq bad-op raw) (setq done 2))
                                         (seq
-                                         (wf_bytecode_handlers_push
-                                          env handlers
-                                          (wf_bytecode_slot slots (- sp 1))
-                                          operand (- sp 1) bindings unwinds)
+                                         (if (= (wf_bytecode_handlers_push
+                                                 env handlers
+                                                 (wf_bytecode_slot slots (- sp 1))
+                                                 operand (- sp 1) bindings unwinds
+                                                 catch-pool) 0)
+                                             0 (setq done 5))
                                          (setq sp (- sp 1)))))
                                      ((= base 49)
                                       (if (if (<= sp 0) 1
@@ -13127,14 +13364,15 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                               (if (< operand code-len) 0 1)))
                                           (seq (setq bad-op raw) (setq done 2))
                                         (seq
-                                         (wf_bytecode_handlers_push
-                                          env handlers
-                                          (wf_bytecode_slot slots (- sp 1))
-                                          (- 0 (+ operand 1)) (- sp 1)
-                                          bindings unwinds)
+                                         (if (= (wf_bytecode_handlers_push
+                                                 env handlers
+                                                 (wf_bytecode_slot slots (- sp 1))
+                                                 (- 0 (+ operand 1)) (- sp 1)
+                                                 bindings unwinds catch-pool) 0)
+                                             0 (setq done 5))
                                          (setq sp (- sp 1)))))
                                      ((= base 48)
-                                      (if (= (wf_bytecode_handlers_pop handlers) 0)
+                                      (if (= (wf_bytecode_handlers_pop env handlers catch-pool) 0)
                                           0
                                         (seq (setq bad-op raw) (setq done 2))))
                                      ((= base 32)
@@ -13143,34 +13381,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                             (setq sp (- sp operand))
                                           (if (= rc 2)
                                               (seq (setq bad-op raw) (setq done 2))
-                                            (if (= (ptr-read-u64 268435472 0) 2)
-                                                (let* ((caught
-                                                        (wf_bytecode_try_throw
-                                                         env handlers bindings
-                                                         unwinds
-                                                         resume-dest resume-sp
-                                                         resume-bindings)))
-                                                  (if (= caught 1)
-                                                      (let* ((target
-                                                              (sexp-int-unwrap
-                                                               resume-dest))
-                                                             (saved-sp
-                                                              (sexp-int-unwrap
-                                                               resume-sp))
-                                                             (saved-bindings
-                                                              (sexp-int-unwrap
-                                                               resume-bindings)))
-                                                        (seq
-                                                         (wf_bytecode_copy
-                                                          (wf_bytecode_slot slots saved-sp)
-                                                          268435512)
-                                                         (setq pc target)
-                                                         (setq sp (+ saved-sp 1))
-                                                         (setq bindings saved-bindings)
-                                                         (ptr-write-u64 268435472 0 0) (ptr-write-u64 (data-addr nl_bt_snapshot) 0 0)
-                                                         (atomic-fetch-add 268435544 1)))
-                                                    (setq done 4)))
-                                              (setq done 4))))))
+                                            (setq done 4)))))
                                      ((= base 64)
                                       (if (= (wf_bytecode_car
                                               (wf_bytecode_slot slots (- sp 1))
@@ -13463,30 +13674,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                            (seq
                                             (if (= (wf_bytecode_unwind_to
                                                     env unwinds target bindings
-                                                    unwind-bindings) 0)
+                                                    unwind-bindings handlers catch-pool) 0)
                                                 (setq bindings
                                                       (sexp-int-unwrap unwind-bindings))
-                                              (if (= (ptr-read-u64 268435472 0) 2)
-                                                  (let* ((caught
-                                                          (wf_bytecode_try_throw
-                                                           env handlers bindings unwinds
-                                                           resume-dest resume-sp
-                                                           resume-bindings)))
-                                                    (if (= caught 1)
-                                                        (let* ((new-pc
-                                                                (sexp-int-unwrap resume-dest))
-                                                               (new-sp
-                                                                (sexp-int-unwrap resume-sp)))
-                                                          (seq (wf_bytecode_copy
-                                                                (wf_bytecode_slot slots new-sp)
-                                                                268435512)
-                                                               (setq pc new-pc)
-                                                               (setq sp (+ new-sp 1))
-                                                               (setq bindings
-                                                                     (sexp-int-unwrap resume-bindings))
-                                                               (ptr-write-u64 268435472 0 0) (ptr-write-u64 (data-addr nl_bt_snapshot) 0 0)))
-                                                      (setq done 4))
-                                                (setq done 4))))))
+                                              (seq (setq bindings
+                                                         (sexp-int-unwrap unwind-bindings))
+                                                   (setq done 4)))))
                                          (nl_root_release env mark2))))
                                      ((= base 85)
                                       (let* ((mark2 (nl_root_mark env))
@@ -13679,10 +13872,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                             (setq sp (- sp 1))
                                           (setq done 4))))
                                      (t (seq (setq bad-op raw) (setq done 2))))))))))))))))))
-         (setq unwind-rc
-               (wf_bytecode_unwind_to env unwinds nil-unwinds bindings
-                                      unwind-bindings))
-         (setq bindings (sexp-int-unwrap unwind-bindings))
+         (wf_bytecode_handlers_drop_to env handlers nil-unwinds catch-pool)
          (if (= done 5)
              (seq (nl_root_release env mark) (wf_bytecode_root_exhausted))
            (if (= done 1)
@@ -22811,9 +23001,131 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
            (ptr-write-u64 dst 16 (ptr-read-u64 src 16))
            (ptr-write-u64 dst 24 (ptr-read-u64 src 24))
            0))
+    ;; Evaluator-internal state (minimal-native clause 2), not a new public
+    ;; primitive.  A registered worker owns env+160; its mmap metadata page
+    ;; leaves that word free after the result at +128..159.  Main evaluation
+    ;; uses a dedicated zero-filled BSS word, outside the GC arena.
+    (defun nl_ct_head_slot (env)
+      (if (= (nl_thread_registry_find env) 0)
+          (data-addr nl_catch_head)
+        (+ env 160)))
+    ;; Each link is a registered root slot tagged as an integer: payload +8
+    ;; is the previous link, unused +16 is the rooted tag-slot address.  The
+    ;; collector ignores those integer metadata words, while the separately
+    ;; registered tag remains live.  No arena scratch link survives a GC.
+    (defun nl_ct_target_p (node tag_slot)
+      ;; GNU deliberately forbids throwing to nil, including catch nil.
+      (if (if (= (sexp-tag tag_slot) 0) 1 (= node 0)) 0
+        (if (= (nl_ct_tag_eq (ptr-read-u64 node 16) tag_slot) 1) 1
+          (nl_ct_target_p (ptr-read-u64 node 8) tag_slot))))
+    ;; Shared raw-v1 handler ABI for evaluator, VM and U8b native code.
+    ;; Push: ENV, rooted TAG_SLOT, integer metadata root NODE (32 bytes).
+    ;; Pop: ENV, NODE in strict LIFO order, before releasing either root.
+    ;; Neither operation allocates or changes the exit stash. NODE+8 retains
+    ;; the old head; NODE+16 points to TAG_SLOT. No public Lisp native is added.
+    (defun nl_ct_active_push (env tag_slot node)
+      (let* ((head_slot (nl_ct_head_slot env)))
+        (seq (sexp-int-make node (ptr-read-u64 head_slot 0))
+             (ptr-write-u64 node 16 tag_slot)
+             (ptr-write-u64 head_slot 0 node)
+             node)))
+    (defun nl_ct_active_pop (env node)
+      (nl_ct_active_finish 0 (nl_ct_head_slot env) (ptr-read-u64 node 8)))
+    (defun nl_ct_active_finish (rc head_slot previous)
+      (seq (ptr-write-u64 head_slot 0 previous) rc))
+    (defun nl_ct_active_prepare (body tag_slot env out head_slot node)
+      (seq
+       (sexp-int-make node (ptr-read-u64 head_slot 0))
+       (ptr-write-u64 node 16 tag_slot)
+       (ptr-write-u64 head_slot 0 node)
+       (nl_ct_active_finish
+        (nl_ct_catch_body body tag_slot env out 0 0)
+        head_slot (ptr-read-u64 node 8))))
+    (defun nl_ct_active_body (body tag_slot env out)
+      (nl_ct_active_prepare body tag_slot env out
+                            (nl_ct_head_slot env) (nl_root_reserve env)))
+    (defun nl_ct_no_catch_publish (env data error_slot name_buf)
+      (seq
+       (ptr-write-u64 name_buf 0 7521983764263432046)
+       (nl_alloc_symbol name_buf 8 error_slot)
+       (cons-make-with-clone error_slot data data)
+       (nl_env_stash_signal env data)))
+    (defun nl_ct_no_catch_build (env tag_slot val_slot nil_slot data error_slot)
+      (seq
+       (cons-make-with-clone val_slot nil_slot data)
+       (cons-make-with-clone tag_slot data data)
+       (nl_ct_no_catch_publish env data error_slot (alloc-bytes 8 1))))
+    (defun nl_ct_no_catch_rooted (env tag_slot val_slot rooted_val)
+      (seq
+       (nl_ct_copy32 rooted_val val_slot 0 0)
+       (nl_ct_no_catch_build env tag_slot rooted_val
+                             (nl_root_reserve env) (nl_root_reserve env)
+                             (nl_root_reserve env))))
+    (defun nl_ct_no_catch (env tag_slot val_slot)
+      (nl_ct_no_catch_rooted env tag_slot val_slot (nl_root_reserve env)))
+    ;; Validate the complete operand list before evaluating any operand.
+    ;; Errors use rooted data and the same signal publication as no-catch.
+    ;; KIND 0 is arity (DATUM is a count); KIND 1 is a dotted-tail type error
+    ;; (DATUM is a Sexp slot). Runtime values travel in helper arguments.
+    (defun nl_ct_arg_error_name (env name_word kind data symbol_slot buffer)
+      (seq
+       (ptr-write-u64 buffer 0 name_word)
+       (nl_alloc_symbol buffer 5 symbol_slot)
+       (cons-make-with-clone symbol_slot data data)
+       (if (= kind 0)
+           (seq
+            (ptr-write-u64 buffer 0 8461750672133419639)
+            (ptr-write-u64 buffer 8 3271424420314702445)
+            (ptr-write-u64 buffer 16 8389754676633367137)
+            (ptr-write-u64 buffer 24 115))
+         (seq
+          (ptr-write-u64 buffer 0 8751669898145395319)
+          (ptr-write-u64 buffer 8 7887324063363589488)
+          (ptr-write-u64 buffer 16 7630437)))
+       (nl_alloc_symbol buffer (if (= kind 0) 25 19) symbol_slot)
+       (cons-make-with-clone symbol_slot data data)
+       (nl_env_stash_signal env data)))
+    (defun nl_ct_arg_error_build (env name_word kind value nil_slot data)
+      (seq
+       (cons-make-with-clone value nil_slot data)
+       (nl_ct_arg_error_name env name_word kind data
+                             (nl_root_reserve env) (alloc-bytes 32 8))))
+    (defun nl_ct_arg_error_value (env datum name_word kind marker value)
+      (seq
+       (if (= kind 0) (sexp-int-make value datum)
+         (nl_ct_copy32 value datum 0 0))
+       (nl_ct_root_finish
+        env marker
+        (nl_ct_arg_error_build env name_word kind value
+                              (nl_root_reserve env) (nl_root_reserve env)))))
+    (defun nl_ct_arg_error_mark (env datum name_word kind marker)
+      (nl_ct_arg_error_value env datum name_word kind
+                            marker (nl_root_reserve env)))
+    (defun nl_ct_arg_error (env datum name_word kind)
+      (nl_ct_arg_error_mark env datum name_word kind (nl_root_mark env)))
+    (defun nl_ct_args_done (count args env out mode)
+      (if (= mode 0)
+          (if (= count 2)
+              (nl_sf_throw_mark args env out (nl_root_mark env))
+            (nl_ct_arg_error env count 512970877044 0))
+        (if (> count 0)
+            (nl_sf_catch_mark args env out (nl_root_mark env))
+          (nl_ct_arg_error env count 448345170275 0))))
+    (defun nl_ct_args_check (tail count args env out mode)
+      (if (= (sexp-tag tail) 0)
+          (nl_ct_args_done count args env out mode)
+        (if (= (sexp-tag tail) 7)
+            (nl_ct_args_check (nl_cons_cdr_ptr tail) (+ count 1)
+                              args env out mode)
+          (nl_ct_arg_error env tail 482990057836 1))))
     ;;================= THROW =================
-    (defun nl_ct_throw_after_val (rc val_slot tag_slot _p3)
+    (defun nl_ct_throw_after_val (rc val_slot tag_slot env)
       (if (= rc 0)
+          ;; Detect missing targets before unwinding, so a condition-case
+          ;; surrounding this throw can catch no-catch in the same scope.
+          (if (= (nl_ct_target_p
+                  (ptr-read-u64 (nl_ct_head_slot env) 0) tag_slot) 0)
+              (nl_ct_no_catch env tag_slot val_slot)
           (seq
            (nl_ct_copy32 268435480 tag_slot 0 0)
            (nl_ct_copy32 268435512 val_slot 0 0)
@@ -22824,13 +23136,13 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
            ;; `error'/`t' condition-case handler.
            (ptr-write-u64 268435472 0 2)
            (atomic-fetch-add 268435544 1)
-           1)
+           1))
         1))
     (defun nl_ct_throw_after_tag (rc val_form env out tag_slot val_slot)
       (if (= rc 0)
           (nl_ct_throw_after_val
            (extern-call nelisp_eval_call val_form env val_slot)
-           val_slot tag_slot 0)
+           val_slot tag_slot env)
         1))
     (defun nl_ct_throw_eval_tag (tag_form val_form env out tag_slot val_slot)
       (nl_ct_throw_after_tag
@@ -22860,9 +23172,7 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
       (nl_sf_throw_run args env out (nl_root_reserve env)
                        (alloc-bytes 32 8) root_mark))
     (defun nl_sf_throw (args env out _pad)
-      (if (= (sexp-tag args) 7)
-          (nl_sf_throw_mark args env out (nl_root_mark env))
-        1))
+      (nl_ct_args_check args 0 args env out 0))
     ;;================= CATCH =================
     ;; Generic `eq' tag-match helper.  `nl_ct_catch_check_tag' used to reuse
     ;; `nelisp_eq_symbol' for the tag comparison, but that primitive
@@ -22907,9 +23217,11 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
                       1
                     (if (= (sexp-tag a) 1)
                         1
-                      (if (= (sexp-payload-ptr a) (sexp-payload-ptr b))
-                          1
-                        0))))))))
+                      ;; sexp-payload-ptr is Cons-only; other boxed tags
+                      ;; must use the same identity words as VM bf_eq2.
+                      (if (= (sexp-tag a) 13)
+                          (if (= (ptr-read-u64 a 16) (ptr-read-u64 b 16)) 1 0)
+                        (if (= (ptr-read-u64 a 8) (ptr-read-u64 b 8)) 1 0)))))))))
         0))
     (defun nl_ct_catch_on_match (eqres tag_slot env out _p4 _p5)
       (if (= eqres 1)
@@ -22953,7 +23265,7 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
           ;; the previous sibling form's value in the shared result slot.
           (seq
            (nl_cons_write_nil out)
-           (nl_ct_catch_body body tag_slot env out eqres_slot 0))
+           (nl_ct_active_body body tag_slot env out))
         1))
     (defun nl_ct_catch_got_body (body tag_form env out tag_slot eqres_slot)
       (nl_ct_catch_after_tag
@@ -22980,9 +23292,7 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
     (defun nl_sf_catch_mark (args env out root_mark)
       (nl_sf_catch_slots args env out root_mark (nl_root_reserve env)))
     (defun nl_sf_catch (args env out _pad)
-      (if (= (sexp-tag args) 7)
-          (nl_sf_catch_mark args env out (nl_root_mark env))
-        1)))
+      (nl_ct_args_check args 0 args env out 1)))
   "M6 catch/throw special-form impls.  nl_sf_catch/nl_sf_throw are dispatched
 from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
 
@@ -26189,6 +26499,11 @@ keeps this slice independent of caller-scope dynamic-variable semantics."
                    (insert-file-contents
                     (expand-file-name "lisp/nelisp-buffer-local.el"
                                       nelisp-standalone--repo-root))
+                   (goto-char (point-max))
+                   (insert "\n")
+                   (insert-file-contents
+                    (expand-file-name "lisp/nelisp-bytecode-cleanup.el"
+                                      nelisp-standalone--repo-root))
                    (buffer-string)))
          (position (nelisp-standalone--prelude-source-boundary source))
          (source-only
@@ -27329,6 +27644,7 @@ top-level form defines NAME that way."
                         "lisp/nelisp-hash-custom.el"
                         "lisp/nelisp-bytecode-native-switch.el"
                         "lisp/nelisp-bytecode-frame-ir.el"
+                        "lisp/nelisp-bytecode-handlers-u8.el"
                         "lisp/nelisp-bytecode-compiler-input.el"
                         "lisp/nelisp-stdlib-compat-metadata.el"))
       (let ((source (with-temp-buffer

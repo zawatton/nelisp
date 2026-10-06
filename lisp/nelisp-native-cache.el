@@ -19,7 +19,7 @@
 (defconst nelisp-native-cache--format "nelisp-native-cache-v1")
 (defconst nelisp-native-cache--compiler-modules
   '(nelisp-native-cache nelisp-native-gccjit nelisp-native-cfg-grammar nelisp-native-load nelisp-aot-compiler nelisp-standalone-arena-rewrite
-    nelisp-bytecode-compiler-input nelisp-bytecode-ir nelisp-bytecode-frame-ir
+    nelisp-bytecode-compiler-input nelisp-bytecode-ir nelisp-bytecode-frame-ir nelisp-bytecode-handlers-u8
     nelisp-bytecode-native-rooted-cfg nelisp-bytecode-native-rooted-cfg-plan
     nelisp-bytecode-native-rooted-cfg-emit nelisp-bytecode-native-rooted-cfg-shared-emit
     nelisp-bytecode-native-rooted-cfg-postdom nelisp-bytecode-native-rooted-cfg-contract
@@ -30,7 +30,7 @@
     nelisp-runtime-reload-abi nelisp-asm-x86_64 nelisp-asm-arm64
     nelisp-elf-write nelisp-sexp-layout
     ;; These compile-path dependencies also affect the generated artifact.
-    nelisp-hash-custom nelisp-bytecode-native-switch nelisp-native-frame-v2 nelisp-native-funcall-v2 nelisp-bytecode-native-rooted-cfg-constructor-contract))
+    nelisp-hash-custom nelisp-bytecode-native-switch nelisp-bytecode-cleanup nelisp-native-frame-v2 nelisp-native-funcall-v2 nelisp-bytecode-native-rooted-cfg-constructor-contract))
 (defvar nelisp-native-cache--abi :unset)
 (defvar nelisp-native-cache--compiler-revision :unset)
 (defvar nelisp-native-cache--addresses nil)
@@ -105,6 +105,13 @@ A missing source disables caching rather than creating an incomplete key."
         nelisp-native-cache--format
         nelisp-native-load-raw-artifact-format-v2))
 
+(defun nelisp-native-cache--stage (label)
+  "Append bounded cache identity phases to the existing opt-in compiler trace."
+  (let ((path (getenv "NELISP_ROOTED_CFG_STAGE_LOG")))
+    (when (and (stringp path) (> (length path) 0))
+      (write-region (format "cache-%s seconds=%.3f\n" label (float-time))
+                    nil path t 'silent))))
+
 (defun nelisp-native-cache-abi-hash ()
   "Return the once-per-process runtime and compiler cache identity, or nil.
 Root address resolution itself checks raw support and the reload contract
@@ -112,13 +119,19 @@ exactly once.  Failure permanently disables this process's cache."
   (when (eq nelisp-native-cache--abi :unset)
     (setq nelisp-native-cache--abi
           (condition-case err
-              (let ((revision (nelisp-native-cache-compiler-revision-hash)))
+              (let ((revision (progn (nelisp-native-cache--stage "revision-start")
+                                      (prog1 (nelisp-native-cache-compiler-revision-hash)
+                                        (nelisp-native-cache--stage "revision-end")))))
                 (unless revision (error "Compiler fingerprint unavailable"))
                 (setq nelisp-native-cache--addresses
-                      (nelisp-native-load-root-v2-addresses))
+                      (progn (nelisp-native-cache--stage "addresses-start")
+                             (prog1 (nelisp-native-load-root-v2-addresses)
+                               (nelisp-native-cache--stage "addresses-end"))))
                 (unless (fboundp 'nelisp--native-pin-copy-v2)
                   (error "Native pin-copy unavailable"))
-                (let ((components (nelisp-native-cache--abi-components)))
+                (let ((components (progn (nelisp-native-cache--stage "components-start")
+                                       (prog1 (nelisp-native-cache--abi-components)
+                                         (nelisp-native-cache--stage "components-end")))))
                   (unless (and (stringp (car components))
                                (= (length (car components)) 64))
                     (error "Running binary identity unavailable"))

@@ -278,47 +278,49 @@
         contract))))
 
 (defun nelisp-bytecode-native-rooted-cfg-contract--snapshot-data (value _depth)
-  "Copy mutable VALUE iteratively, preserving opaque function owners.
-Preserve sharing and refuse cycles without a flat-list depth limit."
-  (let ((states (make-hash-table :test #'eq))
-        (pending (list (cons nil value))))
-    (while pending
-      (let* ((event (pop pending)) (item (cdr event)))
-        (cond
-         ((car event) (puthash item 'done states))
-         ((or (hash-table-p item) (byte-code-function-p item) (functionp item)) nil)
-         ((or (consp item) (vectorp item))
-          (pcase (gethash item states)
-            ('active (error "Cyclic contract snapshot"))
-            ('done nil)
-            (_ (puthash item 'active states)
-               (push (cons t item) pending)
-               (if (consp item)
-                   (progn (push (cons nil (cdr item)) pending)
-                          (push (cons nil (car item)) pending))
-                 (dotimes (index (length item))
-                   (push (cons nil (aref item index)) pending))))))))))
-  (let ((copies (make-hash-table :test #'eq)) work)
-    (cl-labels ((allocate (item)
-                  (cond
-                   ((or (hash-table-p item) (byte-code-function-p item) (functionp item)) item)
-                   ((stringp item) (or (gethash item copies)
-                                      (let ((copy (substring item 0)))
-                                        (puthash item copy copies) copy)))
-                   ((or (consp item) (vectorp item))
-                    (or (gethash item copies)
-                        (let ((copy (if (consp item) (cons nil nil) (make-vector (length item) nil))))
-                          (puthash item copy copies) (push (cons item copy) work) copy)))
-                   ((or (null item) (symbolp item) (numberp item)) item)
-                   (t (error "Unsupported contract snapshot value")))))
+  "Copy mutable VALUE iteratively, preserving sharing and opaque owners.
+Visit and copy each container in one DFS, rejecting an active ancestor."
+  (let ((copies (make-hash-table :test #'eq)) pending)
+    ;; Integer buckets avoid the reader's mutable-key fallback scans.
+    ;; Hash collisions still resolve through the original object's eq identity.
+    (cl-labels
+        ((identity-get (item)
+           (cdr (assq item (gethash (sxhash-eq item) copies))))
+         (identity-put (item value)
+           (let* ((key (sxhash-eq item)) (bucket (gethash key copies)))
+             (puthash key (cons (cons item value) bucket) copies))
+           value)
+         (allocate (item)
+           (cond
+            ((or (hash-table-p item) (byte-code-function-p item) (functionp item)) item)
+            ((stringp item)
+             (or (identity-get item)
+                 (let ((copy (substring item 0))) (identity-put item copy) copy)))
+            ((or (consp item) (vectorp item))
+             (let ((record (identity-get item)))
+               (if record
+                   (if (eq (car record) 'active) (error "Cyclic contract snapshot") (cdr record))
+                 (let* ((copy (if (consp item) (cons nil nil) (make-vector (length item) nil)))
+                        (record (cons 'active copy)))
+                   (identity-put item record)
+                   (push (vector item copy 0 record) pending)
+                   copy))))
+            ((or (null item) (symbolp item) (numberp item)) item)
+            (t (error "Unsupported contract snapshot value")))))
       (let ((root (allocate value)))
-        (while work
-          (let* ((pair (pop work)) (old (car pair)) (new (cdr pair)))
-            (if (consp old)
-                (progn (setcar new (allocate (car old))) (setcdr new (allocate (cdr old))))
-              (dotimes (index (length old)) (aset new index (allocate (aref old index)))))))
+        (while pending
+          (let* ((frame (car pending)) (old (aref frame 0)) (new (aref frame 1))
+                 (index (aref frame 2)) (count (if (consp old) 2 (length old))))
+            (if (= index count)
+                (progn (setcar (aref frame 3) 'done) (pop pending))
+              (aset frame 2 (1+ index))
+              ;; ALLOCATE pushes a child frame, so it finishes before the
+              ;; next sibling. An active record is therefore an ancestor.
+              (let ((child (allocate (if (consp old) (if (= index 0) (car old) (cdr old)) (aref old index)))))
+                (if (consp old)
+                    (if (= index 0) (setcar new child) (setcdr new child))
+                  (aset new index child))))))
         root))))
-
 (defvar nelisp-bytecode-native-rooted-cfg-contract--validation-count 0)
 
 (let ((snapshot-owner (symbol-function 'nelisp-bytecode-native-rooted-cfg-contract--snapshot-data))

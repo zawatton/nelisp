@@ -254,15 +254,20 @@ buffer, and mutable constants are freshly constructed for each proof."
   (let* ((code (apply #'unibyte-string (append (alist-get 'bytecode fixture) nil)))
          (constants (nelisp-bytecode-coverage-audit--fixture-constants fixture))
          (decoded (nelisp-bytecode-ir-decode-result code constants))
-         (frame (nelisp-bytecode-frame-ir-build code constants
-                                               (alist-get 'initial_depth fixture))))
+         (frame (if (<= 48 (alist-get 'opcode fixture) 50)
+                    (progn
+                      (require 'nelisp-bytecode-handlers-u8)
+                      (nelisp-bytecode-handlers-u8-build code constants
+                                                       (alist-get 'initial_depth fixture)))
+                  (nelisp-bytecode-frame-ir-build code constants
+                                                 (alist-get 'initial_depth fixture)))))
     (unless (cl-find (alist-get 'opcode fixture) (plist-get decoded :instructions)
                      :key (lambda (row) (aref row 1)))
       (error "VALID fixture does not decode its advertised opcode"))
     (append
      (list :id (alist-get 'id fixture) :frame-status (plist-get frame :status)
            :reason (plist-get frame :reason))
-     (when (or (= (alist-get 'opcode fixture) 183) (<= 40 (alist-get 'opcode fixture) 47))
+     (when (or (= (alist-get 'opcode fixture) 183) (<= 40 (alist-get 'opcode fixture) 50))
        (require 'nelisp-bytecode-native-rooted-cfg-contract)
        (let* ((fn (make-byte-code 0 code constants (alist-get 'declared_stack_depth fixture)))
               (input (nelisp-bytecode-compiler-input-build fn))
@@ -368,7 +373,11 @@ presence, frame verification and historical N/L labels cannot set executed."
                     ((and (memq opcode nelisp-bytecode-coverage-audit--legacy-jit-opcodes)
                           (eq frame-status 'complete))
                      'legacy-jit-only)
-                    ((eq frame-status 'complete) 'frame-represented)
+                    ((or (eq frame-status 'complete)
+                         (and (<= 48 opcode 49)
+                              (eq (plist-get valid-proof :frame-status) 'complete)
+                              (eq (plist-get valid-proof :shared-form-status) 'proved)))
+                     'frame-represented)
                     ((eq frame-status 'unsupported) 'runtime-op-pending)
                     (t 'structurally-decoded))))
       (list :opcode opcode :name name :pc-class

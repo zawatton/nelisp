@@ -31,7 +31,7 @@ identity=dict(binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
 cases=selection.split()
 if not cases or len(set(cases)) != len(cases) or any(c not in {'callback','alias','constant','nested','implicit','set','zero','1','2','3','4','5','buffer-local','watcher'} for c in cases):
     raise SystemExit('Invalid U7a fixture selection')
-jobs=int(os.environ.get('U7A_JOBS','1'))
+jobs=int(os.environ.get('U7A_JOBS','4'))
 if not 1 <= jobs <= 4: raise SystemExit('U7A_JOBS must be 1..4')
 def run(case):
     cache=directory/('cache-'+case); cache.mkdir(mode=0o700)

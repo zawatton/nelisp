@@ -54,7 +54,12 @@
 ;; The ordered-effect control is a separate selectable cohort. Each body
 ;; compiles once, preserving a strict per-process deadline for all backends.
 (when (getenv "U4C_ERRORS")
-  (dolist (opcode '(123 124 125))
+  (let ((opcodes (if (getenv "U4C_ERROR_CASES")
+                     (mapcar #'string-to-number (split-string (getenv "U4C_ERROR_CASES")))
+                   '(123 124 125))))
+    (u4c-assert (and opcodes (= (length opcodes) (length (delete-dups (copy-sequence opcodes))))
+                     (cl-every (lambda (op) (memq op '(123 124 125))) opcodes)) "error selection")
+  (dolist (opcode opcodes)
     (let* ((nelisp-native-cache-backend (intern (getenv "U4C_BACKEND")))
            (fn (native-buffer-u4c-error-function opcode))
            (pointer (symbol-function 'ptr-call)) (entries 0))
@@ -76,5 +81,5 @@
               (setq actual (native-buffer-u4c-observe #'u4c-errors args 3 nil)))
             (u4c-assert (equal expected actual) "exact error data retains prior insertion and stops later insertion")))
         (u4c-assert (= entries 2) "both error cases execute native code")
-        (princ (format "U4C-ERROR-PASS opcode=%d native=2 prior-insertion=1 later-insertion=0\n" opcode))))))
+        (princ (format "U4C-ERROR-PASS opcode=%d native=2 prior-insertion=1 later-insertion=0\n" opcode)))))))
 (princ "U4C-DONE\n")

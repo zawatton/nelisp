@@ -15,6 +15,7 @@
 (require 'json)
 (require 'nelisp-bytecode-ir)
 (require 'nelisp-bytecode-frame-ir)
+(require 'nelisp-bytecode-handlers-u8)
 
 (defconst nelisp-bytecode-compiler-input--inventory-sha256
   "147da590c9f5bdcf190b5b410c6af878c793ac89e07eafa4ae9f05a9b7aa7bcb")
@@ -529,7 +530,10 @@ runtime captures.  Source forms and .elc loading are not part of this API."
              (ir (nelisp-bytecode-ir-validate code constants initial-depth))
              (frame
               (if (integerp initial-depth)
-                  (nelisp-bytecode-frame-ir-build
+                  (funcall (if (cl-some (lambda (row) (memq (aref row 1) '(48 49 50)))
+                                        (append (plist-get ir :instructions) nil))
+                               #'nelisp-bytecode-handlers-u8-build
+                             #'nelisp-bytecode-frame-ir-build)
                    (or rest-native-code code)
                    (if rest-native-code [] constants) initial-depth)
                 (list :status 'unsupported

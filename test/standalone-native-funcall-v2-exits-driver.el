@@ -52,8 +52,13 @@
   (mapcar (lambda (offset) (ptr-read-u64 f1b-control offset)) '(0 8 16 24 48)))
 (let* ((fixtures (nelisp-bytecode-native-consumer-read-elc-functions (getenv "F1B_FIXTURE")))
        (functions (mapcar (lambda (name) (cdr (assq name fixtures))) '(f1b-one f1b-zero f1b-six)))
+       (compile-unit (getenv "F1B_COMPILE_UNIT"))
        (nelisp-native-cache-backend (if (equal (getenv "F1B_BACKEND") "gccjit") 'gccjit 'in-house)))
   (f1b-assert (not (memq nil functions)) "GNU bytecode fixtures")
+  (when compile-unit
+    (f1b-assert (and (equal (getenv "F1B_PHASE") "compile")
+                     (member compile-unit '("f1b-one" "f1b-zero" "f1b-six"))) "compile selection")
+    (setq functions (list (nth (cl-position (intern compile-unit) '(f1b-one f1b-zero f1b-six)) functions))))
   (dolist (function functions)
     (let ((plan (nelisp-bytecode-native-rooted-cfg-plan (nelisp-bytecode-compiler-input-build function))))
       (f1b-assert (plist-get plan :funcall-version) "generic F1 plan, including unary corpus")
@@ -62,7 +67,7 @@
   (if (equal (getenv "F1B_PHASE") "compile")
       (progn
         (dolist (function functions) (nelisp-native-cache-compile function))
-        (princ "F1B-COMPILE-PASS units=3\n"))
+        (princ (format "F1B-COMPILE-PASS units=%d unit=%s\n" (length functions) (or compile-unit "all"))))
     (load "test/standalone-native-funcall-v2-controls-driver.el" nil t)
     (load "test/standalone-native-funcall-v2-domain-driver.el" nil t)
     (setq f1b-control (plist-get (gethash "nl_root_pin_control"

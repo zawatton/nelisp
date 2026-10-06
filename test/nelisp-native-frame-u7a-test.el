@@ -49,7 +49,9 @@
       (should (= (nelisp-lexframe-lookup frame 'u7a-special) 42)))
     (should-error (funcall provider provider state 3 nil mirror 10 nil))
     (should (= (funcall provider provider state 3 nil mirror 11 nil) 1))
-    (should-not (aref state 1))))
+    ;; Validation leaves entries attached until the adapter pops each one.
+    (should (aref state 1))
+    (should (= (length (aref state 3)) 1))))
 
 (ert-deftest u7a/variable-access-and-all-exits-admitted ()
   (dolist (name '(callback nested implicit set zero))

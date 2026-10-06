@@ -162,7 +162,7 @@ accepted."
                                  (124 delete-region -1) (125 narrow-to-region -1)
                                  (126 widen 1) (127 end-of-line 0)))))
               (setq kind (nth 1 entry) delta (nth 2 entry)
-                    lowerable (memq op '(96 98 99 100 101 102 103 104 105 106
+                    lowerable (memq op '(96 97 114 98 99 100 101 102 103 104 105 106
                                          108 109 110 111 112 113 116 117 118
                                          119 120 121 122 123 124 125 126 127))
                     metadata (list :width 1))
@@ -179,9 +179,9 @@ accepted."
                                  (144 temp-output-buffer-setup 0 obsolete)
                                  (145 temp-output-buffer-show -1 obsolete)))))
               (setq kind (nth 1 entry) delta (nth 2 entry)
-                    lowerable nil metadata (list :width 1))
+                    lowerable (memq op '(138 139 140 141 142 143 144 145)) metadata (list :width 1))
               (when (nth 3 entry) (setq metadata (append metadata '(:obsolete t))))
-              (push (cons pc 'unsupported-semantics) unsupported)))
+              (unless lowerable (push (cons pc 'unsupported-semantics) unsupported))))
            ((= op 136)
             (setq kind 'discard delta -1 lowerable nil
                   metadata (list :width 1))

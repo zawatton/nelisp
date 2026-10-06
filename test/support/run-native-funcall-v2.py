@@ -10,7 +10,7 @@ import time
 
 binary, work, phase, driver = sys.argv[1:]
 directory = Path(work)
-command = ["timeout", "-k", "5", "300", binary]
+command = ["timeout", "-k", "5", "290", binary]
 if os.environ.get("F1B_COLD") == "1":
     cold = Path(binary + ".cold").resolve(strict=True)
     command += ["--cold-load-from", str(cold)]

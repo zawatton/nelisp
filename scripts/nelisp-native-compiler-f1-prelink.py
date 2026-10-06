@@ -20,7 +20,7 @@ def prove(manifest, metadata, directory, data_owner, source_root, roots=ROOTS):
     if tuple(roots) != ROOTS:
         raise ValueError("Constructor operation root policy differs")
     digest = prelink.verify_manifest(manifest, metadata, directory, data_owner, source_root)
-    result = prelink.prove(metadata, directory, roots, data_owner, max_functions=200, evaluator_boundary="nl_apply_function")
+    result = prelink.prove(metadata, directory, roots, data_owner, max_functions=280, evaluator_boundary="nl_apply_function")
     if digest != prelink.verify_manifest(manifest, metadata, directory, data_owner, source_root):
         raise ValueError("Constructor active build changed during proof")
     result.update(domain="nelisp-compiler-f1-prelink-v1",

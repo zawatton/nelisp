@@ -44,11 +44,25 @@ fi
 export F1B_FIXTURE="$fixture" F1B_BACKEND="$backend" F1B_COLD="$cold" NELISP_NATIVE_CACHE="$cache"
 for phase in "${phases[@]}"; do
   export F1B_PHASE=$phase
-  python3 test/support/run-native-funcall-v2.py "$binary" "$work" "$phase" \
-    test/standalone-native-funcall-v2-exits-driver.el
-  cat "$work/$phase.out"
-  test ! -s "$work/$phase.err"
-  grep -q "F1B-${phase^^}-PASS" "$work/$phase.out"
+  if [[ $phase == compile ]]; then
+    # One compiler unit per bounded process. No cases are removed: the
+    # fresh load process still runs the complete digest and mutation corpus.
+    for unit in f1b-one f1b-zero f1b-six; do
+      export F1B_COMPILE_UNIT=$unit
+      python3 test/support/run-native-funcall-v2.py "$binary" "$work" "compile-$unit" \
+        test/standalone-native-funcall-v2-exits-driver.el
+      cat "$work/compile-$unit.out"
+      test ! -s "$work/compile-$unit.err"
+      grep -q "^F1B-COMPILE-PASS units=1 unit=$unit$" "$work/compile-$unit.out"
+    done
+    unset F1B_COMPILE_UNIT
+  else
+    python3 test/support/run-native-funcall-v2.py "$binary" "$work" "$phase" \
+      test/standalone-native-funcall-v2-exits-driver.el
+    cat "$work/$phase.out"
+    test ! -s "$work/$phase.err"
+    grep -q "F1B-${phase^^}-PASS" "$work/$phase.out"
+  fi
 done
 test "$(sed -n 's/^F1B-CORPUS-DIGEST=//p' "$work/load.out")" = "$digest"
 printf 'F1B-EVIDENCE=%s\n' "$work"
