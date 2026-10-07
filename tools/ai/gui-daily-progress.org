@@ -45,6 +45,8 @@ change to the criteria list is recorded in a NOTE.
 
 #+NOTE: 2026-10-07 lanes S51 and K1 integrated.  S5.1: identical xdotool gestures on the plain launcher and GNU emacs -Q (each under its own Xvfb), 16 milestones (motion, edit, isearch, split/switch, mouse select, clipboard both ways, save) with equal semantic state, clipboard and saved bytes, 383 s; wired with the meter maximum of 600 s (the GUI image is built earlier by S3.2, so the build step only checks freshness).  K1: alias/custom, match-data, vector, directory and loader fixes plus vendored GNU color/dired-aux/rect/thingatpt/url/... sources; 32 GNU comparison cases; org now loads (704.6 s), magit stops after 810 s at void-variable magit:--gpg-sign, dired hits a buffer-boundary error; user init: 215 of the first 294 forms observed with zero NeLisp-only failures (was 12) before the 6100 s cap.
 
+#+NOTE: 2026-10-07 lanes K2, B1 and fix-ups integrated.  S4.1 now starts from a dumped SKK/evil image variant (lane B1; 746 keymap/hook/Custom variables and the feature list equal a runtime load): 223 s instead of 527-924 s.  Building that variant takes ~15 min when its inputs change, so every GUI criterion builds with --skip-skk and only S4.1 builds the variant; the S4.1 cmd passes only when the variant is fresh (tools/gui-daily-verify.sh builds it), otherwise its build step times out -- run the verify script before the meter after source changes.  The package image accepts load-time "Warning" lines on stderr (C_CORE_IMAGE_ALLOW_WARNINGS) as GNU prints them for third-party files; the C-core image stays strict.  Open GNU divergence: NeLisp prints "Use of gv-ref probably requires lexical-binding" while loading skk.el (GNU does not).
+
 * S1 Shared interactive foundation
 
 ** S1.1 One event wait drives read-event: keys, timers, idle timers and process output (sit-for, sleep-for, input-pending-p behave as GNU)
@@ -85,46 +87,46 @@ cmd: python3 -c "import hashlib,json;d=json.load(open('docs/design/gui-daily/pro
 ** S3.2 A GUI frame opens, renders text with faces through a real font rasterizer, cursor and mode line
 #+REQUIRES: NELISP_BIN
 #+TIMEOUT: 600
-cmd: bash -c 'timeout 240 python3 scripts/gui-daily-build.py >/dev/null 2>&1 && xvfb-run -a -s "-screen 0 1600x1000x24 -dpi 96 -nolisten tcp" timeout 340 python3 scripts/gui-daily-gate.py S3.2 --init=-Q --fixture=render --require-production-quit'
+cmd: bash -c 'timeout 240 python3 scripts/gui-daily-build.py --skip-skk >/dev/null 2>&1 && xvfb-run -a -s "-screen 0 1600x1000x24 -dpi 96 -nolisten tcp" timeout 340 python3 scripts/gui-daily-gate.py S3.2 --init=-Q --fixture=render --require-production-quit'
 
 ** S3.3 Pixel metrics: window-text-pixel-size, line height, char width, fringes and margins consistent with the renderer
 #+REQUIRES: NELISP_BIN
 #+TIMEOUT: 600
-cmd: bash -c 'timeout 240 python3 scripts/gui-daily-build.py >/dev/null 2>&1 && EMACS=emacs timeout 340 python3 scripts/gui-daily-gate.py S3.3 --init=-Q --fixture=metrics --dpi=96,144,192'
+cmd: bash -c 'timeout 240 python3 scripts/gui-daily-build.py --skip-skk >/dev/null 2>&1 && EMACS=emacs timeout 340 python3 scripts/gui-daily-gate.py S3.3 --init=-Q --fixture=metrics --dpi=96,144,192'
 
 * S4 GUI input and desktop integration
 
 ** S4.1 Keyboard: modifiers, key repeat and Japanese input through the user's SKK (ddskk running inside nemacs; text lands in the buffer) reach the command loop
 #+REQUIRES: NELISP_BIN
 #+TIMEOUT: 600
-cmd: bash -c 'timeout 240 python3 scripts/gui-daily-build.py >/dev/null 2>&1 && EMACS=emacs timeout 580 python3 scripts/gui-daily-gate.py S4.1 --init=-Q --fixture=skk-evil --keymaps=us,jp,de'
+cmd: bash -c 'timeout 250 python3 scripts/gui-daily-build.py >/dev/null 2>&1 && EMACS=emacs timeout 340 python3 scripts/gui-daily-gate.py S4.1 --init=-Q --fixture=skk-evil --keymaps=us,jp,de'
 
 ** S4.2 Mouse: clicks, drag, wheel, hit testing to buffer positions; menu bar and context menus
 #+REQUIRES: NELISP_BIN
 #+TIMEOUT: 600
-cmd: bash -c 'timeout 240 python3 scripts/gui-daily-build.py >/dev/null 2>&1 && EMACS=emacs timeout 340 python3 scripts/gui-daily-gate.py S4.2 --init=-Q --fixture=mouse-menu'
+cmd: bash -c 'timeout 240 python3 scripts/gui-daily-build.py --skip-skk >/dev/null 2>&1 && EMACS=emacs timeout 340 python3 scripts/gui-daily-gate.py S4.2 --init=-Q --fixture=mouse-menu'
 
 ** S4.3 Clipboard and primary selection interoperate with other applications
 #+REQUIRES: NELISP_BIN
 #+TIMEOUT: 600
-cmd: bash -c 'timeout 240 python3 scripts/gui-daily-build.py >/dev/null 2>&1 && EMACS=emacs timeout 340 python3 scripts/gui-daily-gate.py S4.3 --init=-Q --fixture=selections --peer=xclip --bytes=1048576'
+cmd: bash -c 'timeout 240 python3 scripts/gui-daily-build.py --skip-skk >/dev/null 2>&1 && EMACS=emacs timeout 340 python3 scripts/gui-daily-gate.py S4.3 --init=-Q --fixture=selections --peer=xclip --bytes=1048576'
 
 * S5 GUI daily use
 
 ** S5.0 The plain launcher (bin/nemacs-xcb, no fixture) shows typed text, a filled mode line, and idles below 10% CPU
 #+REQUIRES: NELISP_BIN
 #+TIMEOUT: 600
-cmd: bash -c 'timeout 240 python3 scripts/gui-daily-build.py >/dev/null 2>&1 && EMACS=emacs xvfb-run -a -s "-screen 0 1600x1000x24 -dpi 96 -nolisten tcp" timeout 150 python3 scripts/gui-daily-gate.py S5.0 --init=-Q && EMACS=emacs xvfb-run -a -s "-screen 0 1600x1000x24 -dpi 96 -nolisten tcp" timeout 150 python3 scripts/gui-daily-gate.py S5.0b --init=-Q'
+cmd: bash -c 'timeout 240 python3 scripts/gui-daily-build.py --skip-skk >/dev/null 2>&1 && EMACS=emacs xvfb-run -a -s "-screen 0 1600x1000x24 -dpi 96 -nolisten tcp" timeout 150 python3 scripts/gui-daily-gate.py S5.0 --init=-Q && EMACS=emacs xvfb-run -a -s "-screen 0 1600x1000x24 -dpi 96 -nolisten tcp" timeout 150 python3 scripts/gui-daily-gate.py S5.0b --init=-Q'
 
 ** S5.0c Typing at human pace (20 keys, 120 ms apart) renders each key with median latency < 500 ms and p95 < 1 s
 #+REQUIRES: NELISP_BIN
 #+TIMEOUT: 600
-cmd: bash -c 'timeout 240 python3 scripts/gui-daily-build.py >/dev/null 2>&1 && EMACS=emacs xvfb-run -a -s "-screen 0 1600x1000x24 -dpi 96 -nolisten tcp" timeout 300 python3 scripts/gui-daily-gate.py S5.0c --init=-Q'
+cmd: bash -c 'timeout 240 python3 scripts/gui-daily-build.py --skip-skk >/dev/null 2>&1 && EMACS=emacs xvfb-run -a -s "-screen 0 1600x1000x24 -dpi 96 -nolisten tcp" timeout 300 python3 scripts/gui-daily-gate.py S5.0c --init=-Q'
 
 ** S5.1 End to end under Xvfb with -Q: open, edit, search, split, mouse select, copy/paste, save, quit
 #+REQUIRES: NELISP_BIN
 #+TIMEOUT: 600
-cmd: bash -c 'timeout 50 python3 scripts/gui-daily-build.py >/dev/null 2>&1 && EMACS=emacs timeout 540 python3 scripts/gui-daily-gate.py S5.1 --init=-Q --fixture=daily --compare=gnu'
+cmd: bash -c 'timeout 50 python3 scripts/gui-daily-build.py --skip-skk >/dev/null 2>&1 && EMACS=emacs timeout 540 python3 scripts/gui-daily-gate.py S5.1 --init=-Q --fixture=daily --compare=gnu'
 
 #+NOTE: 2026-10-06 lane S51 wires identical real xdotool gestures on the plain bin/nemacs-xcb --init=-Q and GNU emacs -Q, each on its own xvfb-run display. The daily fixture contains multiple lines and Japanese; read-only observations compare point, mark/region, buffer text/names, window points/count/selection, clipboard at every milestone, and exact saved bytes. Real xclip peers exercise both clipboard directions. Screenshots check ASCII/Japanese glyph cells; Lisp conditions and abnormal shutdown fail. Stage timeout is 540 s; source/image identities, gestures, milestones and screenshots are retained under build/gui-daily/S5.1/. No native builds or startup fixture injection.
 
@@ -134,6 +136,6 @@ pending
 ** S5.2 Real packages in the GUI: dired, magit status, org agenda open and render without errors
 #+REQUIRES: NELISP_BIN
 #+TIMEOUT: 600
-cmd: bash -c 'timeout 240 python3 scripts/gui-daily-build.py >/dev/null 2>&1 && EMACS=emacs xvfb-run -a -s "-screen 0 1600x1000x24 -dpi 96 -nolisten tcp" timeout 340 python3 scripts/gui-daily-gate.py S5.2 --init=-Q --fixture=packages --packages=dired,magit,org-agenda'
+cmd: bash -c 'timeout 240 python3 scripts/gui-daily-build.py --skip-skk >/dev/null 2>&1 && EMACS=emacs xvfb-run -a -s "-screen 0 1600x1000x24 -dpi 96 -nolisten tcp" timeout 340 python3 scripts/gui-daily-gate.py S5.2 --init=-Q --fixture=packages --packages=dired,magit,org-agenda'
 
 #+NOTE: 2026-10-06 lane S52b wires the real-package criterion on the current G2/C1/X3 base. Build its GUI image first with python3 scripts/gui-daily-build.py. Genuine GNU and installed package sources are copied read-only into an isolated HOME; source hashes, load steps, settled key waits, screenshots, and disposable Git state are retained under build/gui-daily/S5.2/. Missing sources and Lisp errors fail. No package stubs or native builds. Shared keymap/editing requests remain unapplied in NEEDS-SHARED.md; loading a named fixture buffer does not satisfy this criterion.

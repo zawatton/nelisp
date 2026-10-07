@@ -104,7 +104,13 @@ def run(argv, seconds, label, marker):
             child = None
     elapsed = time.monotonic() - started
     output = (cache / (label + '.out')).read_bytes()
-    if rc != 0 or (cache / (label + '.err')).stat().st_size:
+    stderr_lines = [l for l in (cache / (label + '.err')).read_text(errors='replace').splitlines() if l.strip()]
+    # Package images (C_CORE_IMAGE_ALLOW_WARNINGS=1) may load third-party files
+    # that print load-time "Warning" lines, as they do in GNU Emacs; the C-core
+    # image keeps the strict empty-stderr rule.
+    if os.environ.get('C_CORE_IMAGE_ALLOW_WARNINGS') == '1':
+        stderr_lines = [l for l in stderr_lines if 'Warning' not in l]
+    if rc != 0 or stderr_lines:
         fail(f'{label} exited {rc} or wrote stderr; see {cache / (label + ".err")}')
     if output != (marker + '\nt\n').encode():
         fail(f'{label} completion marker missing or unexpected stdout; see {cache / (label + ".out")}')

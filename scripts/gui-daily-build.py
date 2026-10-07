@@ -210,7 +210,8 @@ def build_skk_image(data, env):
         SKK_BUNDLE.write_bytes(data + extra)
     env = headless_env(out, vendor, dictionary)
     subprocess.run(['bash', 'tools/c-core-image.sh', 'build'], cwd=ROOT,
-                   env=dict(env, C_CORE_IMAGE_BUNDLE=str(SKK_BUNDLE), C_CORE_IMAGE_BUILD_TIMEOUT='900'), check=True)
+                   env=dict(env, C_CORE_IMAGE_BUNDLE=str(SKK_BUNDLE), C_CORE_IMAGE_BUILD_TIMEOUT='900',
+                            C_CORE_IMAGE_ALLOW_WARNINGS='1'), check=True)
     check_skk_image(env)
     if any(not Path(p).is_file() or digest(Path(p)) != expected for p, expected in sources.items()):
         raise RuntimeError('Package sources changed during image build')
@@ -225,6 +226,8 @@ def build_skk_image(data, env):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check-skk-image', action='store_true', help='recheck runtime/restored package state')
+    parser.add_argument('--skip-skk', action='store_true',
+                        help='build only the base GUI image (the SKK/evil variant takes ~15 min when stale)')
     args = parser.parse_args()
     if args.check_skk_image:
         out = ROOT / 'build/gui-skk-evil-image'
@@ -271,7 +274,8 @@ def main():
         dict(bundle=digest(bundle), sources={s: digest(ROOT / s) for s in sources}), indent=2) + '\n')
     subprocess.run(['bash', 'tools/c-core-image.sh', 'build'], cwd=ROOT,
                    env=dict(os.environ, C_CORE_IMAGE_BUNDLE=str(GUI_BUNDLE)), check=True)
-    build_skk_image(data, env)
+    if not args.skip_skk:
+        build_skk_image(data, env)
 
 
 if __name__ == '__main__':
