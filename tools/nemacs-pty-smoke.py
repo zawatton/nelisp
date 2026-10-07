@@ -432,7 +432,8 @@ def scenario_capture(args, name, target, init, Screen):
     deadline = time.monotonic() + args.timeout
     original_tty = termios.tcgetattr(master)
 
-    def drain(minimum=1.5, quiet=0.7, maximum=60, require_paint=False):
+    def drain(minimum=1.5, quiet=0.7, maximum=60, require_paint=False,
+              require_exit=False):
         nonlocal status
         start = last = time.monotonic()
         offset = len(raw)
@@ -460,7 +461,8 @@ def scenario_capture(args, name, target, init, Screen):
             # injected Lisp, oracle positions or synthetic markers are used.
             painted = (not require_paint or
                        re.search(rb'\x1b\[\?25h\x1b\[[0-9]+;[0-9]+H$', raw[offset:]))
-            if status is not None or (now - start >= minimum and now - last >= quiet and painted):
+            if status is not None or (not require_exit and now - start >= minimum
+                                      and now - last >= quiet and painted):
                 return True
 
         return False
@@ -495,7 +497,9 @@ def scenario_capture(args, name, target, init, Screen):
                                         cursor=[terminal.row, terminal.col],
                                         unknown=sorted(terminal.unknown), pending=terminal.pending)
         if status is None:
-            drain(minimum=0.5, maximum=5)
+            # Quiet output is not evidence of process exit.  Give shutdown the
+            # full existing grace period before classifying it as a hang.
+            drain(minimum=0.5, maximum=5, require_exit=True)
         hung = status is None
         if hung:
             os.killpg(pid, signal.SIGKILL)

@@ -697,6 +697,8 @@ returns nil (no asynchronous compilation is scheduled)."
 
 (defvar emacs-parity-misc--variable-watchers (make-hash-table :test 'eq)
   "SYMBOL -> watch functions, most recently added first.")
+(defvar nelisp--defvaralias-notifications (make-hash-table :test 'eq)
+  "Alias/base names mapped to their canonical copied-cell variable.")
 (defvar emacs-parity-misc--watching nil
   "Variables whose callbacks are currently running.")
 (defvar emacs-parity-misc--inhibit-watchers nil
@@ -726,7 +728,14 @@ returns nil (no asynchronous compilation is scheduled)."
   "Notify consumers before mirroring a pending dynamic variable write.
 Callbacks see the old values, and a signal/throw cancels the write.
 Private lexical names avoid collisions with a consumer's dynamic bindings."
-  (unless emacs-parity-misc--inhibit-watchers
+  ;; Most writes are unrelated to either registry. Do not resolve variable
+  ;; aliases or scan the registry for those writes: this callback is also on
+  ;; the evaluator's hot dynamic-binding path during real package loading.
+  (when (and (not emacs-parity-misc--inhibit-watchers)
+             ;; Canonical names are symbols, including nil.  A numeric missing
+             ;; value distinguishes an alias to nil from an unrelated write.
+             (or (symbolp (gethash emacs-watch--symbol nelisp--defvaralias-notifications 0))
+                 (gethash emacs-watch--symbol emacs-parity-misc--variable-watchers)))
     (let ((emacs-watch--written-symbol emacs-watch--symbol))
       (setq emacs-watch--symbol
             (if (eq emacs-watch--operation 'defvaralias) emacs-watch--symbol
@@ -751,8 +760,7 @@ Private lexical names avoid collisions with a consumer's dynamic bindings."
       ;; visibility, and a callback that signals still cancels the write.
       (when (and (fboundp 'nelisp--alias-write-mirrors)
                  (not (memq emacs-watch--operation '(defvaralias makunbound)))
-                 (or (assq emacs-watch--written-symbol nelisp--defvaralias-registry)
-                     (assq emacs-watch--written-symbol nelisp--defvaralias-reverse)))
+                 (symbolp (gethash emacs-watch--written-symbol nelisp--defvaralias-notifications 0)))
         ;; An unlet notification can carry the runtime's void-cell sentinel.
         ;; Reading that argument signals, including for unrelated variables;
         ;; consume it only for aliases, and preserve a void restoration.

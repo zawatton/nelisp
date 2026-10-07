@@ -1,5 +1,8 @@
 ;;; emacs-cc-variable-alias-1.el --- Variable alias inspection -*- lexical-binding: t; -*-
 
+(defvar nelisp--defvaralias-notifications (make-hash-table :test 'eq)
+  "Alias/base names mapped to their canonical copied-cell variable.")
+
 (unless (fboundp 'indirect-variable)
   (defun indirect-variable (object)
     "Follow OBJECT's variable alias chain, preserving non-symbols."
@@ -75,9 +78,10 @@ The notification boundary covers defvar, setq and let/unlet."
                 (if (eq emacs-alias--operation 'unlet-void)
                     (funcall nelisp--alias-raw-makunbound emacs-alias--alias)
                   (funcall nelisp--alias-raw-set emacs-alias--alias emacs-alias--value))))))))
+    ;; The notification index also resolves ordinary symbol access in O(1).
+    ;; Retargeting/removal rebuilds it together with the reverse mirror groups.
     (defun set (symbol value)
-      (let ((target (if (assq symbol nelisp--defvaralias-registry)
-                        (nelisp--alias-canonical symbol) symbol)))
+      (let ((target (gethash symbol nelisp--defvaralias-notifications symbol)))
         (funcall nelisp--alias-raw-set target value)
         (when nelisp--defvaralias-reverse
           (let ((emacs-parity-misc--inhibit-watchers t))
@@ -86,12 +90,10 @@ The notification boundary covers defvar, setq and let/unlet."
         value))
     (defun symbol-value (symbol)
       (funcall nelisp--alias-raw-symbol-value
-               (if (assq symbol nelisp--defvaralias-registry)
-                   (nelisp--alias-canonical symbol) symbol)))
+               (gethash symbol nelisp--defvaralias-notifications symbol)))
     (defun boundp (symbol)
       (funcall nelisp--alias-raw-boundp
-               (if (assq symbol nelisp--defvaralias-registry)
-                   (nelisp--alias-canonical symbol) symbol)))
+               (gethash symbol nelisp--defvaralias-notifications symbol)))
     (defun emacs-variable-alias-values (symbols unbound)
       "Snapshot SYMBOLS' live values in order, using UNBOUND for void cells.
 Resolve aliases through this provider and respect dynamic bindings.  Cache
@@ -188,9 +190,12 @@ cells without an interpreted accessor frame for every symbol."
     (defun nelisp--alias-rebuild-reverse ()
         (setq nelisp--alias-values-cache nil
               nelisp--defvaralias-reverse nil)
+        (clrhash nelisp--defvaralias-notifications)
         (dolist (entry nelisp--defvaralias-registry)
           (let* ((canonical (nelisp--alias-canonical (car entry)))
                  (group (assq canonical nelisp--defvaralias-reverse)))
+            (puthash (car entry) canonical nelisp--defvaralias-notifications)
+            (puthash canonical canonical nelisp--defvaralias-notifications)
             (if group
                 (setcdr group (cons (car entry) (cdr group)))
               (setq nelisp--defvaralias-reverse
