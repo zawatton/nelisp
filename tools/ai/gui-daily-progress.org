@@ -47,6 +47,8 @@ change to the criteria list is recorded in a NOTE.
 
 #+NOTE: 2026-10-07 lanes K2, B1 and fix-ups integrated.  S4.1 now starts from a dumped SKK/evil image variant (lane B1; 746 keymap/hook/Custom variables and the feature list equal a runtime load): 223 s instead of 527-924 s.  Building that variant takes ~15 min when its inputs change, so every GUI criterion builds with --skip-skk and only S4.1 builds the variant; the S4.1 cmd passes only when the variant is fresh (tools/gui-daily-verify.sh builds it), otherwise its build step times out -- run the verify script before the meter after source changes.  The package image accepts load-time "Warning" lines on stderr (C_CORE_IMAGE_ALLOW_WARNINGS) as GNU prints them for third-party files; the C-core image stays strict.  Open GNU divergence: NeLisp prints "Use of gv-ref probably requires lexical-binding" while loading skk.el (GNU does not).
 
+#+NOTE: 2026-10-08 meter 76.5% of 17 on nelisp-gui2 at d157472e after lanes I3 (alias lookup cost), B1 (dumped SKK/evil image), K2/K3 (eieio/setf/macroexpand parity, dired in the GUI, fit-window-to-buffer) and I4 (INCR acknowledgement race).  Failing: S5.0c (human-pace latency, evaluator-bound) and S5.2 (magit-status still > budget; org GUI agenda pending).  Pending: S1.3, S5.3 (user init.el; evaluator-bound).
+
 * S1 Shared interactive foundation
 
 ** S1.1 One event wait drives read-event: keys, timers, idle timers and process output (sit-for, sleep-for, input-pending-p behave as GNU)
