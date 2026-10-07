@@ -98,14 +98,18 @@ Only adaptation is done here; bounds, motion and edits stay in libraries.")
 
 (defun nelisp-gui-frontend--pump ()
   "Drain a bounded transport batch and feed canonical events to the shared loop."
-  (nelisp-gui-selection-expire)
+  ;; Ready INCR acknowledgements beat idle expiry after a scheduling/GC
+  ;; pause.  Enforce the independent total cap even under continuous input.
+  (nelisp-gui-selection-expire t)
   (let ((n 0) (go t) (deadline (+ (float-time) nelisp-gui-frontend-maximum-pump-time))
         (collections (and nelisp-gui-frontend--timing (nelisp-gui-frontend--gc-counter)))
         (start (and nelisp-gui-frontend--timing (float-time))))
     (while (and go (< n 64) (< (float-time) deadline))
       (let ((event (nelisp-gui-selection-poll)))
         (cond
-         ((null event) (setq go nil))
+         ((null event)
+          (nelisp-gui-selection-expire)
+          (setq go nil))
          ((plist-get event :key) (emacs-command-loop-feed-events (plist-get event :key)))
          ((plist-get event :focus) (emacs-command-loop-feed-events (plist-get event :focus)))
          ((plist-get event :pointer)

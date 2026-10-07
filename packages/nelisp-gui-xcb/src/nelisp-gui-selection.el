@@ -173,9 +173,12 @@ their byte cap synchronously in the pump, even after a scheduling pause."
         (nl-ffi-memory-release o)))
     (nelisp-gui-selection--flush))
   (princ (format "GUI-SELECTION|send-end=%S|bytes=%d|\n" reason (aref send 5))))
-(defun nelisp-gui-selection-expire ()
+(defun nelisp-gui-selection-expire (&optional total-only)
+  "Release expired sends; with TOTAL-ONLY, check only the lifetime cap.
+The frontend checks idle deadlines after draining ready transport events,
+so an acknowledgement queued during a scheduling pause can make progress."
   (dolist (send (copy-sequence nelisp-gui-selection--sends))
-    (when (> (float-time) (aref send 6))
+    (when (> (float-time) (aref send (if total-only 7 6)))
       (nelisp-gui-selection--send-drop send 'timeout))))
 (defun nelisp-gui-selection-next-delay (maximum)
   "Cap MAXIMUM by the nearest asynchronous outgoing transfer deadline.

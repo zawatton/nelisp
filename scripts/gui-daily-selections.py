@@ -6,6 +6,7 @@ import ctypes as C
 import hashlib
 import os
 from pathlib import Path
+import signal
 import struct
 import subprocess
 import time
@@ -191,6 +192,9 @@ def run(args, api, out, env, report, sessions):
                   peer_sha256=api['sha'](api['command'](['which', 'xclip']).decode().strip()),
                   inputs_sha256=api['sha'](api['ROOT'] / 'build/gui-daily-inputs.json'),
                   fixture_sha256=api['sha'](api['ROOT'] / 'packages/nelisp-gui-xcb/fixtures/selections.el'))
+    report['selection_environment'] = dict(cwd=str(Path.cwd()), **{
+        name: env.get(name) for name in
+        ('HOME', 'DISPLAY', 'EMACS', 'C_CORE_PARITY_JOBS', 'REDISPLAY_PARITY_JOBS')})
     peer = Peer(env)
     owners = []
     def wait(test, description, timeout=25):
@@ -222,6 +226,41 @@ def run(args, api, out, env, report, sessions):
     def status(expected):
         path = out / 'status.txt'; path.unlink(missing_ok=True)
         s.key('F7'); wait(path.exists, 'selection predicates'); exact(path, expected)
+    def paused_send(selection):
+        # An acknowledgement already queued on X must survive an owner-side
+        # scheduling pause longer than the idle timeout.  Do not extend the
+        # total transfer cap or alter the production event loop for this probe.
+        prop = peer.atom('X3_PEER')
+        peer.received.clear(); peer.request(selection)
+        wait(lambda: peer.received, 'paused owner INCR announcement')
+        typ, fmt, data = peer.read_property(peer.window, prop)
+        assert typ == peer.atom('INCR') and fmt == 32
+        assert struct.unpack('<I', data)[0] == len(big)
+        start = len(s.log())
+        try:
+            os.kill(s.proc.pid, signal.SIGSTOP)
+            pid, state = os.waitpid(s.proc.pid, os.WUNTRACED)
+            assert pid == s.proc.pid and os.WIFSTOPPED(state), ('owner did not stop', state)
+            # Synchronize the deletion on the independent connection while
+            # the GUI cannot process it, then exceed its 3 s idle deadline.
+            peer.x.XDeleteProperty(peer.d, peer.window, prop)
+            peer.x.XSync(peer.d, 0)
+            time.sleep(3.25)
+        finally:
+            os.kill(s.proc.pid, signal.SIGCONT)
+        chunks = []
+        def receive():
+            typ, fmt, data = peer.read_property(peer.window, prop, delete=True)
+            if not typ: return False
+            assert typ == peer.atom('UTF8_STRING') and fmt == 8, (typ, fmt)
+            chunks.append(data)
+            return not data
+        wait(receive, 'queued acknowledgement after owner scheduling pause', timeout=12)
+        received = b''.join(chunks)
+        assert received == big, ('paused owner transfer bytes', len(received))
+        (out / (selection + '-paused-send.bin')).write_bytes(received)
+        wait(lambda: '|send-end=complete|' in s.log()[start:], 'paused owner completion')
+        report['checks'].append(selection + '/queued-INCR-ack/owner-pause/exact-bytes')
     try:
         for selection, key in [('PRIMARY', 'F1'), ('CLIPBOARD', 'F2')]:
             key_wait(key, 'type=' + selection)
@@ -245,6 +284,7 @@ def run(args, api, out, env, report, sessions):
             result = xclip_get(selection); assert result == big
             (out / (selection + '-to-xclip.bin')).write_bytes(result)
             report['checks'].append(selection + '/kill-ring-save/UTF8-TEXT-STRING/TARGETS/TIMESTAMP/1MiB-INCR-send')
+            if selection == 'PRIMARY': paused_send(selection)
             owner = xclip_own(selection, big)
             wait(lambda: '|clear=1|' in s.log(), 'SelectionClear')
             status(b'nil t')
