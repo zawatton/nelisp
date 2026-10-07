@@ -221,7 +221,7 @@ def keyboard(args,api,out,env,report,sessions):
     api['command'](['setxkbmap','-layout','us'],env)
     api['command'](['xset','r','rate','200','30'],env)
     gnu_bytes=gnu_skk(out,env,api,report)
-    gui_env=dict(env,NELISP_GUI_FIXTURE_OUT=str(out/'gui'))
+    gui_env=dict(env,NELISP_GUI_FIXTURE_OUT=str(out/'gui'),NELISP_GUI_IMAGE='skk-evil')
     s=api['Session'](out,'skk',gui_env,fixture='skk-evil');sessions.append(s);s.ready(timeout=480)
     assert 'GUI-SKK|skk=t|evil=t|state=insert|' in s.log(), 'real ddskk/Evil fixture did not initialize: '+s.stderr.read_text()+s.log()[-3000:]
     type_romaji(s.window,s.env,api)
@@ -490,7 +490,8 @@ def run(args, api):
             env.pop('NELISP_GUI_TEST_EXIT_GROUP', None)
             home = out/'home'; home.mkdir(exist_ok=True)
             env.update(HOME=str(home), GSETTINGS_BACKEND='memory')
-            bundle = root/'build/nemacs-gui-bootstrap.el'
+            bundle = root/('build/nemacs-gui-skk-evil-bootstrap.el' if args.stage == 'S4.1'
+                           else 'build/nemacs-gui-bootstrap.el')
             image = command(['bash',str(root/'tools/c-core-image.sh'),'path'],
                             dict(env,C_CORE_IMAGE_BUNDLE=str(bundle))).decode().strip()
             report.update(binary=env['NELISP_BIN'], binary_sha256=api['sha'](env['NELISP_BIN']),

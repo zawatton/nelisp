@@ -8,13 +8,14 @@
   (push last-command-event nelisp-gui-fixture-captured-events)
   (princ (format "GUI-CAPTURE|event=%S|\n" last-command-event)))
 
-(defun nelisp-gui-skk-evil-fixture ()
-  (let* ((fixture (getenv "NELISP_GUI_VENDOR_FIXTURE"))
-         (out (getenv "NELISP_GUI_FIXTURE_OUT"))
-         (buffer (generate-new-buffer "*SKK GUI*")))
+(defun nelisp-gui-skk-evil-configure ()
+  "Apply isolated paths and Custom values before loading or using packages."
+  (let ((fixture (getenv "NELISP_GUI_VENDOR_FIXTURE"))
+        (out (getenv "NELISP_GUI_FIXTURE_OUT")))
     (unless (and fixture out) (error "Missing pinned SKK fixture paths"))
-    (setq load-path (append (list (concat fixture "/gnu") (concat fixture "/ddskk-test")
-                                 (concat fixture "/evil")) load-path))
+    (dolist (directory (list (concat fixture "/evil") (concat fixture "/ddskk-test")
+                             (concat fixture "/gnu")))
+      (setq load-path (cons directory (remove directory load-path))))
     (setq skk-user-directory (concat out "/skk/")
           skk-init-file (concat out "/skk/empty-init.el")
           skk-jisyo (cons (concat out "/skk/private-fixture-jisyo") 'utf-8-unix)
@@ -29,7 +30,12 @@
           skk-use-look nil skk-use-search-web nil skk-use-gtk nil
           skk-use-viper nil
           skk-kakutei-jisyo nil skk-aux-large-jisyo nil
-          evil-want-integration nil evil-want-keybinding nil)
+          evil-want-integration nil evil-want-keybinding nil)))
+
+(defun nelisp-gui-skk-evil-load ()
+  "Load the genuine fixture packages without opening X or activating modes."
+  (nelisp-gui-skk-evil-configure)
+  (let ((fixture (getenv "NELISP_GUI_VENDOR_FIXTURE")))
     (require 'term/tty-colors "tty-colors")
     ;; The standalone image omits GNU's lazy minibuffer library. Use its
     ;; pinned source: the reader cannot yet skip this release's .elc doc blocks.
@@ -40,7 +46,72 @@
     (unless (fboundp 'register-input-method)
       (load (concat fixture "/gnu/register-input-method.el") nil t t))
     (require 'skk)
-    (require 'evil)
+    (require 'evil)))
+
+(defun nelisp-gui-skk-evil-assert-headless ()
+  "Reject live transport/foreign objects before dumping and after restoring."
+  (dolist (symbol '(nelisp-gui-frontend--xcb nelisp-gui-frontend--renderer
+                    nelisp-gui-selection--state nelisp-gui-selection--owners
+                    nl-ffi-libffi--cache nl-ffi-libffi--types
+                    nl-ffi-loader--file-mappings nl-ffi-loader--reservations
+                    nl-ffi-loader--tls-tp nl-ffi--library-order
+                    nl-ffi--pending-cstring-releases))
+    (when (and (boundp symbol) (symbol-value symbol))
+      (error "Live image state: %s" symbol)))
+  (dolist (symbol '(nelisp-gui-xcb--calls nl-ffi--dlsym-cache))
+    (when (and (boundp symbol) (> (hash-table-count (symbol-value symbol)) 0))
+      (error "Live foreign cache: %s" symbol)))
+  (when (boundp 'nl-ffi--libraries)
+    (maphash (lambda (name entry)
+               (when (plist-get entry :handle) (error "Live library: %s" name)))
+             nl-ffi--libraries))
+  t)
+
+(defvar nelisp-gui-skk-evil-fingerprint-symbols nil)
+
+(defun nelisp-gui-skk-evil-fingerprint (file)
+  "Write deterministic features, keymaps, hooks and package Custom values.
+Render complete values with circular references enabled.  Include
+all named keymaps/hooks, including shared maps modified by package loading."
+  (let ((symbols nil) (state nil) (print-circle t) (print-length nil) (print-level nil)
+        (trace (getenv "NELISP_GUI_FINGERPRINT_TRACE")))
+    ;; The fixed reader cannot enumerate its global obarray.  The probe
+    ;; inventory comes from GNU package loading plus the exact bundle sources.
+    (unless nelisp-gui-skk-evil-fingerprint-symbols (error "Missing fingerprint inventory"))
+    (dolist (symbol nelisp-gui-skk-evil-fingerprint-symbols)
+       (when (boundp symbol)
+         (let ((name (symbol-name symbol)))
+           (when (or (keymapp (symbol-value symbol))
+                     (string-suffix-p "-hook" name)
+                     (string-suffix-p "-functions" name)
+                     (and (or (string-prefix-p "skk-" name)
+                              (string-prefix-p "evil-" name))
+                          (get symbol 'custom-type)))
+             (push symbol symbols)))))
+    (dolist (symbol '(minor-mode-map-alist minor-mode-overriding-map-alist
+                      emulation-mode-map-alists overriding-local-map
+                      overriding-terminal-local-map input-method-alist load-path))
+      (when (and (boundp symbol) (not (memq symbol symbols))) (push symbol symbols)))
+    (when trace (princ (format "GUI-FINGERPRINT|scanned=%d|\n" (length symbols))))
+    (setq symbols (sort symbols (lambda (a b) (string< (symbol-name a) (symbol-name b)))))
+    (when trace (princ "GUI-FINGERPRINT|sorted|\n"))
+    (dolist (symbol symbols)
+      (push (list symbol (default-value symbol)) state))
+    (setq state (cons (cons 'features (sort (copy-sequence features)
+                                          (lambda (a b) (string< (symbol-name a) (symbol-name b)))))
+                      (nreverse state)))
+    ;; The fixed reader's strings already hold UTF-8 bytes.  Write the
+    ;; complete graph directly rather than editing a temporary buffer.
+    (let ((text (concat (prin1-to-string state) "\n")))
+      (if (fboundp 'nl-write-file)
+          (nl-write-file file (string-as-unibyte text))
+        (write-region text nil file nil 'silent)))
+    (princ (format "GUI-PACKAGE-FINGERPRINT|variables=%d|\n" (length symbols)))))
+
+(defun nelisp-gui-skk-evil-fixture ()
+  (nelisp-gui-skk-evil-load)
+  (let* ((out (getenv "NELISP_GUI_FIXTURE_OUT"))
+         (buffer (generate-new-buffer "*SKK GUI*")))
     (set-buffer buffer)
     (set-window-buffer (selected-window) buffer)
     (select-window (selected-window))

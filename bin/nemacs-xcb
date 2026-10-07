@@ -12,13 +12,29 @@ root = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser()
 parser.add_argument('--init', default='-Q', choices=['-Q'])
 parser.add_argument('--fixture', choices=['render', 'metrics', 'skk-evil', 'keyboard', 'mouse-menu', 'selections', 'packages'])
+parser.add_argument('--image', choices=['base', 'skk-evil'],
+                    default=os.environ.get('NELISP_GUI_IMAGE', 'base'),
+                    help='select the base or headless package-preloaded heap')
 args = parser.parse_args()
+if args.image == 'skk-evil' and args.fixture != 'skk-evil':
+    parser.error('the skk-evil image requires --fixture=skk-evil')
 inputs = json.loads((root / 'build/gui-daily-inputs.json').read_text())
 for name, expected in {**inputs['sources'], 'build/nemacs-gui-bootstrap.el': inputs['bundle']}.items():
     if hashlib.sha256((root / name).read_bytes()).hexdigest() != expected:
         parser.error('stale GUI image inputs; run python3 scripts/gui-daily-build.py')
+bundle = root / 'build/nemacs-gui-bootstrap.el'
+if args.image == 'skk-evil':
+    package_inputs = json.loads((root / 'build/gui-skk-evil-inputs.json').read_text())
+    bundle = root / 'build/nemacs-gui-skk-evil-bootstrap.el'
+    for name, expected in {**package_inputs['sources'], str(bundle): package_inputs['bundle']}.items():
+        path = Path(name)
+        if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+            parser.error('stale SKK/Evil image inputs; run python3 scripts/gui-daily-build.py')
+    for directory, expected in package_inputs['membership'].items():
+        if sorted(str(p) for p in Path(directory).glob('*.el') if not p.name.startswith('.')) != expected:
+            parser.error('stale SKK/Evil package membership; run python3 scripts/gui-daily-build.py')
 image = subprocess.check_output(['bash', str(root / 'tools/c-core-image.sh'), 'path'], text=True,
-                                env=dict(os.environ, C_CORE_IMAGE_BUNDLE=str(root / 'build/nemacs-gui-bootstrap.el'))).strip()
+                                env=dict(os.environ, C_CORE_IMAGE_BUNDLE=str(bundle))).strip()
 binary = os.environ.get('NELISP_BIN')
 if not binary:
     parser.error('NELISP_BIN must identify the existing standalone reader')
