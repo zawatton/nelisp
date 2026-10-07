@@ -299,6 +299,7 @@ The buffer is set as current via `nelisp-ec--current-buffer'."
       (let ((res (emacs-font-lock-mode 1)))
         (should res))
       (should (emacs-font-lock-mode-enabled-p b))
+      (should (emacs-buffer-buffer-local-value 'font-lock-mode b))
       (should (eq 'font-lock-keyword-face
                   (emacs-buffer-get-text-property 1 'face b))))))
 
@@ -311,6 +312,7 @@ The buffer is set as current via `nelisp-ec--current-buffer'."
                   (emacs-buffer-get-text-property 1 'face b)))
       (emacs-font-lock-mode 0)
       (should-not (emacs-font-lock-mode-enabled-p b))
+      (should-not (emacs-buffer-buffer-local-value 'font-lock-mode b))
       (should (null (emacs-buffer-get-text-property 1 'face b))))))
 
 (ert-deftest emacs-font-lock-builtins-test/mode-toggle ()

@@ -867,6 +867,21 @@ Return the last CALLBACK result."
           (emacs-load--periodic-gc count)))
       last))
 
+  (defun emacs-load--macro-alias-form-p (form)
+    "Return non-nil when executable FORM contains a symbolic macro alias.
+Quoted data and bare function references are not executable subforms."
+    (and (consp form)
+         (not (eq (car form) 'quote))
+         (or (and (symbolp (car form))
+                  (emacs-load--symbolic-macro-alias-p (car form)))
+             (and (not (and (eq (car form) 'function)
+                            (not (eq (car-safe (cadr form)) 'lambda))))
+                  (let ((tail form) found)
+                    (while (and (consp tail) (not found))
+                      (setq found (emacs-load--macro-alias-form-p (car tail))
+                            tail (cdr tail)))
+                    found)))))
+
   (defun nelisp--load-eval-one-form (form)
     "Evaluate FORM, treating a top-level `cc-provide' as `provide'.
 NeLisp's source evaluator bare-aborts on the CC Mode compile-time
@@ -878,10 +893,11 @@ its semantics are exactly `provide'."
     ;; aliases as ordinary calls.  Its macroexpander follows those aliases
     ;; correctly.  Expand at the load boundary without copying the target's
     ;; macro object, so later target redefinitions still follow GNU aliases.
-    (when (and (consp form)
-               (emacs-load--symbolic-macro-alias-p (car form)))
-      (setq form (macroexpand form)))
-    (eval form))
+    ;; Function bodies need this too: the native function compiler otherwise
+    ;; retains nested aliases such as `cl-flet*' as ordinary calls.
+    (when (emacs-load--macro-alias-form-p form)
+      (setq form (macroexpand-all form)))
+    (eval form (and (boundp 'lexical-binding) lexical-binding)))
 
   (defconst emacs-load--native-read-probe-window-sizes '(512 2048 8192 32768)
     "Progressively larger byte windows `emacs-load--native-read-one' tries
@@ -1217,6 +1233,27 @@ work belong elsewhere."
            (> threshold 0)
            (> (emacs-load--artifact-byte-length source) threshold))))
 
+  (defun emacs-load--dependency-source-p (source)
+    "Return non-nil when SOURCE may call a dependency loader.
+An isolated token also covers whitespace and comments after the opening
+parenthesis.  Tokens in quoted data or comments conservatively select the
+per-form evaluator; names containing `load' are not dependency tokens."
+    (let ((names '("require" "load" "load-file")) found)
+      (while (and names (not found))
+        (let ((name (pop names)) (start 0) position)
+          (while (and (not found)
+                      (setq position (emacs-load--artifact-string-search name source start)))
+            (let ((end (+ position (length name))))
+              (when (and (or (= position 0)
+                             (memq (aref source (1- position))
+                                   '(32 9 10 13 40 41 34 39 96 44 59)))
+                         (or (= end (length source))
+                             (memq (aref source end)
+                                   '(32 9 10 13 40 41 34 39 96 44 59))))
+                (setq found t))
+              (setq start end)))))
+      found))
+
   (defun nelisp--load-source-loader (source)
     "Return the preferred source evaluator for SOURCE."
     ;; A source with a `defalias' rewrite target goes through the incremental
@@ -1226,6 +1263,12 @@ work belong elsewhere."
     (if (or (not (fboundp 'nelisp--eval-source-string))
             (nelisp--load-source-large-p source)
             (emacs-load--macro-alias-source-p source)
+            ;; Dependencies may install symbolic macro aliases after this
+            ;; decision.  Native whole-source eval does not recognize those
+            ;; aliases; per-form evaluation expands them at their call site.
+            ;; Match conservatively, including quoted/comment occurrences:
+            ;; those merely select the same evaluator used for large files.
+            (emacs-load--dependency-source-p source)
             (nelisp--load-rewrite-target-present-p source))
         #'nelisp--load-eval-source-incremental
       #'nelisp--load-eval-source-hybrid))
@@ -3788,6 +3831,24 @@ optimization candidate; keep the normal load path on the fast reader."
       (and (file-exists-p resolved)
            (not (file-directory-p resolved)))))
 
+  (defun emacs-load--source-lexical-binding-p (source)
+    "Read SOURCE's first-line lexical-binding option, including a shebang."
+    (let* ((start (if (string-prefix-p "#!" source)
+                      (1+ (or (emacs-load--artifact-string-search "\n" source 0)
+                              (1- (length source))))
+                    0))
+           (end (or (emacs-load--artifact-string-search "\n" source start)
+                    (length source)))
+           (line (substring source start end))
+           (open (emacs-load--artifact-string-search "-*-" line 0))
+           (close (and open (emacs-load--artifact-string-search "-*-" line (+ open 3)))))
+      (when close
+        (let ((options (substring line (+ open 3) close)))
+          (and (string-match
+                "\\(?:\\`\\|;\\)[ \t]*lexical-binding:[ \t]*\\([^; \t]+\\)"
+                options)
+               (not (equal (match-string 1 options) "nil")))))))
+
   (defun nelisp--load-resolved-file (resolved noerror)
     "Load exact absolute RESOLVED path, honoring NOERROR for open failures."
     (cond
@@ -3797,6 +3858,8 @@ optimization candidate; keep the normal load path on the fast reader."
      (t
       (let* ((base (file-name-nondirectory resolved))
              (source (emacs-load--read-file-string resolved))
+             (lexical-binding (and (stringp source)
+                                   (emacs-load--source-lexical-binding-p source)))
              (source (if (stringp source)
                          (emacs-load--rewrite-named-unicode-escapes source)
                        source))

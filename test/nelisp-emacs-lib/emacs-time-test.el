@@ -371,6 +371,25 @@ explicitly unbound clock cell remains unbound after the same reload."
       (should-not (memq tm timer-list)))
     (should (emacs-timer-p (emacs-timer-run-with-timer 1 nil #'ignore)))))
 
+(ert-deftest emacs-time-test/exact-bignum-divmod ()
+  (let ((values '((4033789913025355663293582149459 . 2251799813685248000000)
+                  (-4033789913025355663293582149459 . 2251799813685248000000)
+                  (0 . 2251799813685248000000))))
+    (dolist (value values)
+      (let ((result (emacs-time--divmod (car value) (cdr value))))
+        (should (= (car result) (floor (car value) (cdr value))))
+        (should (= (cdr result) (mod (car value) (cdr value))))))))
+
+(ert-deftest emacs-time-test/exact-float-timestamp-combination ()
+  ;; GNU results retain the exact binary64 frequency, including mixed
+  ;; microsecond list timestamps used by Org's cache deadline.
+  (should (equal (emacs-time--combine '(27334 1551 136583 0) 0.04 nil)
+                 '(4033789913025355663293582149459 . 2251799813685248000000)))
+  (should (equal (emacs-time--combine '(1 . 3) 0.1 nil)
+                 '(46837436124653159 . 108086391056891904)))
+  (should (equal (emacs-time--combine '(-1 . 3) 0.1 t)
+                 '(-46837436124653159 . 108086391056891904))))
+
 (provide 'emacs-time-test)
 
 ;;; emacs-time-test.el ends here

@@ -34,6 +34,9 @@
 ;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- line/point motion must operate on the ec-buffer layer.
 ;;; Code:
 
+(defvar auto-window-vscroll t
+  "Non-nil means line motion can vertically scroll unusually tall lines.")
+
 (require 'nelisp-emacs-compat)
 (require 'emacs-buffer-builtins)
 

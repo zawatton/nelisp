@@ -412,5 +412,128 @@ port must too, or `(get VECTOR 'cl--class)' aborts with
                 (let ((p (emacs-parity-eieio--class-parent-name tag)))
                   (and p (funcall 'nelisp-cl-macros--struct-isa p target))))))))
 
+(defun emacs-parity-eieio--generic-function-name (name)
+  "Resolve GNU's (setf ACCESSOR) generic names through the real GV setter."
+  (if (and (consp name) (eq (car name) 'setf)
+           (symbolp (cadr name)) (null (cddr name)))
+      (progn
+        (require 'gv)
+        (gv-setter (cadr name)))
+    name))
+
+(when (and emacs-parity-eieio--standalone-p
+           (not (boundp 'emacs-parity-eieio--generic-name-macros-installed)))
+  (defvar emacs-parity-eieio--original-defgeneric
+    (cdr (symbol-function 'cl-defgeneric)))
+  (defvar emacs-parity-eieio--original-defmethod
+    (cdr (symbol-function 'cl-defmethod)))
+  (defmacro cl-defgeneric (name arglist &rest body)
+    (apply emacs-parity-eieio--original-defgeneric
+           (emacs-parity-eieio--generic-function-name name) arglist body))
+  (defmacro cl-defmethod (name &rest arguments)
+    (apply emacs-parity-eieio--original-defmethod
+           (emacs-parity-eieio--generic-function-name name) arguments))
+  (defvar emacs-parity-eieio--generic-name-macros-installed t))
+
+;; GNU cl-generic has a priority-90 major-mode generalizer.  The native
+;; dispatcher already supports contextual and multiple argument dispatch;
+;; extend that real dispatcher without replacing package methods.
+(defun emacs-parity-eieio--mode-parents (mode)
+  "Return MODE's ordered ancestry, including MODE itself."
+  (if (fboundp 'derived-mode-all-parents)
+      (derived-mode-all-parents mode)
+    (let ((pending (list mode)) seen)
+      (while pending
+        (let ((current (pop pending)))
+          (unless (memq current seen)
+            (push current seen)
+            (setq pending
+                  (append (and (get current 'derived-mode-parent)
+                               (list (get current 'derived-mode-parent)))
+                          (get current 'derived-mode-extra-parents) pending)))))
+      (nreverse seen))))
+
+(defun emacs-parity-eieio--parse-mode-specializer (original argument)
+  "Parse a GNU derived-mode specializer or delegate to ORIGINAL."
+  (let ((specializer (and (consp argument) (consp (cdr argument)) (cadr argument))))
+    (if (and (consp argument) (symbolp (car argument))
+             (null (cddr argument)) (consp specializer)
+             (eq (car specializer) 'derived-mode)
+             (consp (cdr specializer))
+             (symbolp (cadr specializer)) (null (cddr specializer)))
+        (list :kind 'derived-mode :type-name (cadr specializer))
+      (funcall original argument))))
+
+(defun emacs-parity-eieio--parse-mode-context (original arguments name)
+  "Rewrite GNU major-mode context entries before ORIGINAL parses them."
+  (let (context rewritten)
+    (dolist (argument arguments)
+      (when (eq argument '&context) (setq context t))
+      (push (if (and context (consp argument)
+                     (eq (car argument) 'major-mode)
+                     (symbolp (cadr argument)) (null (cddr argument)))
+                (list 'major-mode (list 'derived-mode (cadr argument)))
+              argument)
+            rewritten))
+    (funcall original (nreverse rewritten) name)))
+
+(defvar emacs-parity-eieio--mode-dispatch-values nil
+  "Argument values captured while matching one generic dispatch.")
+
+(defun emacs-parity-eieio--match-mode-specializer (original specializer value)
+  "Match mode ancestry for SPECIALIZER; delegate other kinds to ORIGINAL."
+  (if (eq (plist-get specializer :kind) 'derived-mode)
+      (progn
+        (when emacs-parity-eieio--mode-dispatch-values
+          (puthash specializer value emacs-parity-eieio--mode-dispatch-values))
+        (and (symbolp value) (functionp value)
+             (memq (plist-get specializer :type-name)
+                   (emacs-parity-eieio--mode-parents value))))
+    (funcall original specializer value)))
+
+(defun emacs-parity-eieio--rank-mode-specializer (original specializer)
+  "Rank modes below eql in the actual argument's GNU ancestry order."
+  (if (eq (plist-get specializer :kind) 'derived-mode)
+      (let* ((value (and emacs-parity-eieio--mode-dispatch-values
+                         (gethash specializer emacs-parity-eieio--mode-dispatch-values)))
+             (parents (and value (emacs-parity-eieio--mode-parents value)))
+             (target (plist-get specializer :type-name))
+             (distance 0))
+        (while (and parents (not (eq (car parents) target)))
+          (setq parents (cdr parents) distance (1+ distance)))
+        ;; A fraction preserves the priority-90 tier while ordering ancestry.
+        (+ 90 (if parents (/ 1.0 (1+ distance)) 0)))
+    (funcall original specializer)))
+
+(defun emacs-parity-eieio--mode-applicable-methods (original name arguments)
+  "Keep match values local to one call when ORIGINAL orders methods."
+  (let ((emacs-parity-eieio--mode-dispatch-values (make-hash-table :test 'eq)))
+    (funcall original name arguments)))
+
+(defun emacs-parity-eieio--mode-multi-dispatch-p (original name)
+  "Use the extensible dispatcher when NAME has a mode specializer."
+  (or (funcall original name)
+      (let (found)
+        (dolist (method (get name 'nelisp-cl-generic--methods))
+          (dolist (entry (nelisp-cl-generic--method-specializers method))
+            (when (eq (plist-get (cdr entry) :kind) 'derived-mode)
+              (setq found t))))
+        found)))
+
+(when (and emacs-parity-eieio--standalone-p
+           (fboundp 'nelisp-cl-generic--parse-specializer))
+  (advice-add 'nelisp-cl-generic--parse-specializer :around
+              #'emacs-parity-eieio--parse-mode-specializer)
+  (advice-add 'nelisp-cl-generic--parse-arglist :around
+              #'emacs-parity-eieio--parse-mode-context)
+  (advice-add 'nelisp-cl-generic--dispatch-specializer-match-p :around
+              #'emacs-parity-eieio--match-mode-specializer)
+  (advice-add 'nelisp-cl-generic--dispatch-specializer-rank :around
+              #'emacs-parity-eieio--rank-mode-specializer)
+  (advice-add 'nelisp-cl-generic--multi-applicable-methods :around
+              #'emacs-parity-eieio--mode-applicable-methods)
+  (advice-add 'nelisp-cl-generic--multi-dispatch-p :around
+              #'emacs-parity-eieio--mode-multi-dispatch-p))
+
 (provide 'emacs-parity-eieio)
 ;;; emacs-parity-eieio.el ends here

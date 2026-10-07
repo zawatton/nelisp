@@ -28,6 +28,16 @@
   (should (boundp 'cl-lib-version))
   (should (equal "1.0-nemacs-shim" cl-lib-version)))
 
+(ert-deftest emacs-cl-macros-test/untagged-list-structure ()
+  (eval (emacs-cl-macros--expand-defstruct
+         '(emacs-cl-macros-test--list (:type list)) '((a 11) (b 22))) t)
+  (let* ((object (make-emacs-cl-macros-test--list :b 9))
+         (copy (copy-emacs-cl-macros-test--list object)))
+    (emacs-cl-macros-test--list-a--setter copy 5)
+    (should (equal object '(11 9)))
+    (should (equal copy '(5 9)))
+    (should (= (emacs-cl-macros-test--list-b object) 9))))
+
 ;;;; Arglist helpers
 
 (ert-deftest emacs-cl-macros-test/split-arglist-positional-only ()
@@ -457,6 +467,20 @@ The batch host autoloads the real cl-lib versions, pinning the contract."
   (let ((p (make-emacs-cl-macros-test--pt :x 9 :y 11)))
     (should (= 9 (cl-struct-slot-value 'emacs-cl-macros-test--pt 'x p)))
     (should (= 11 (cl-struct-slot-value 'emacs-cl-macros-test--pt 'y p)))))
+
+(ert-deftest emacs-cl-macros-generic-setter-command-name ()
+  (require 'cl-generic)
+  (require 'gv)
+  (defun emacs-cl-macros-test--generic-slot (object) (aref object 0))
+  (cl-defgeneric (setf emacs-cl-macros-test--generic-slot) (value object))
+  (cl-defmethod (setf emacs-cl-macros-test--generic-slot)
+      (value (object vector))
+    (aset object 0 value))
+  (let ((object (vector 1)) (calls 0))
+    (setf (emacs-cl-macros-test--generic-slot
+           (progn (setq calls (1+ calls)) object)) 7)
+    (should (equal object [7]))
+    (should (= calls 1))))
 
 (provide 'emacs-cl-macros-test)
 

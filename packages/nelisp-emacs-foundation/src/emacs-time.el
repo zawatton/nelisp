@@ -291,10 +291,41 @@ not route through the standalone `float-time', which ignores its argument."
   "Signal the error for a malformed Lisp timestamp."
   (signal 'error '("Invalid time specification")))
 
+(defun emacs-time--divmod (dividend divisor)
+  "Return (FLOOR-QUOTIENT . REMAINDER) for integers and positive DIVISOR.
+The standalone integer division primitive cannot yet divide bignums.
+Use exact doubling and subtraction for those values; never round a
+binary64 timestamp or its tick frequency through floating point."
+  (if (and (<= (abs dividend) most-positive-fixnum)
+           (<= divisor most-positive-fixnum))
+      (cons (floor dividend divisor) (mod dividend divisor))
+    (let ((remainder (abs dividend)) (quotient 0)
+          (multiple divisor) (weight 1) (powers nil))
+      (while (<= multiple remainder)
+        (push (cons multiple weight) powers)
+        (setq multiple (* multiple 2) weight (* weight 2)))
+      (while powers
+        (when (>= remainder (caar powers))
+          (setq remainder (- remainder (caar powers))
+                quotient (+ quotient (cdar powers))))
+        (setq powers (cdr powers)))
+      (if (< dividend 0)
+          (if (= remainder 0) (cons (- quotient) 0)
+            (cons (- -1 quotient) (- divisor remainder)))
+        (cons quotient remainder)))))
+
+(defun emacs-time--quotient (dividend divisor)
+  "Return the exact floor quotient for a positive DIVISOR."
+  (car (emacs-time--divmod dividend divisor)))
+
+(defun emacs-time--remainder (dividend divisor)
+  "Return the exact nonnegative remainder for a positive DIVISOR."
+  (cdr (emacs-time--divmod dividend divisor)))
+
 (defun emacs-time--gcd (a b)
   "Return the greatest common divisor of nonnegative integers A and B."
   (while (/= b 0)
-    (let ((remainder (% a b)))
+    (let ((remainder (emacs-time--remainder a b)))
       (setq a b b remainder)))
   a)
 
@@ -324,12 +355,12 @@ The remainder is nonnegative and strictly less than the frequency."
    ((floatp time)
     (let ((ticks (emacs-time--float-ticks time)))
       (if (= (cdr ticks) 1) (list (car ticks) 0 1)
-        (list (floor (car ticks) (cdr ticks))
-              (mod (car ticks) (cdr ticks)) (cdr ticks)))))
+        (list (emacs-time--quotient (car ticks) (cdr ticks))
+              (emacs-time--remainder (car ticks) (cdr ticks)) (cdr ticks)))))
    ((and (consp time) (integerp (car time))
          (integerp (cdr time)) (> (cdr time) 0))
-    (list (floor (car time) (cdr time))
-          (mod (car time) (cdr time)) (cdr time)))
+    (list (emacs-time--quotient (car time) (cdr time))
+          (emacs-time--remainder (car time) (cdr time)) (cdr time)))
    ((and (consp time) (integerp (car time))
          (consp (cdr time)) (integerp (car (cdr time))))
     (let* ((tail (cdr (cdr time)))
@@ -345,28 +376,28 @@ The remainder is nonnegative and strictly less than the frequency."
         (emacs-time--invalid-time))
       ;; Normalize each field before multiplying to avoid large products
       ;; for ordinary contemporary timestamps.
-      (let* ((fraction (+ (* (mod micro 1000000)
+      (let* ((fraction (+ (* (emacs-time--remainder micro 1000000)
                             (if (= frequency 1000000000000) 1000000 1))
                          pico))
              (seconds (+ (* (car time) 65536) (car (cdr time))
-                         (floor micro 1000000) (floor fraction frequency))))
-        (list seconds (mod fraction frequency) frequency))))
+                         (emacs-time--quotient micro 1000000) (emacs-time--quotient fraction frequency))))
+        (list seconds (emacs-time--remainder fraction frequency) frequency))))
    (t (emacs-time--invalid-time))))
 
 (defun emacs-time--scale (remainder rate frequency)
   "Return floor(REMAINDER * RATE / FREQUENCY) without a large product."
-  (if (or (= remainder 0) (<= rate (/ most-positive-fixnum remainder)))
-      (/ (* remainder rate) frequency)
+  (if (or (= remainder 0) (<= rate (emacs-time--quotient most-positive-fixnum remainder)))
+      (emacs-time--quotient (* remainder rate) frequency)
     (let ((quotient 0) (residue 0)
           (part-quotient 0) (part-residue remainder))
       (while (> rate 0)
-        (when (= (% rate 2) 1)
+        (when (= (emacs-time--remainder rate 2) 1)
           (setq quotient (+ quotient part-quotient))
           (if (>= residue (- frequency part-residue))
               (setq residue (- residue (- frequency part-residue))
                     quotient (1+ quotient))
             (setq residue (+ residue part-residue))))
-        (setq rate (/ rate 2))
+        (setq rate (emacs-time--quotient rate 2))
         (when (> rate 0)
           (setq part-quotient (* part-quotient 2))
           (if (>= part-residue (- frequency part-residue))
@@ -379,8 +410,8 @@ The remainder is nonnegative and strictly less than the frequency."
   "Return the four-field timestamp represented by PARTS."
   (let* ((seconds (car parts))
          (picos (emacs-time--scale (nth 1 parts) 1000000000000 (nth 2 parts))))
-    (list (floor seconds 65536) (mod seconds 65536)
-          (/ picos 1000000) (% picos 1000000))))
+    (list (emacs-time--quotient seconds 65536) (emacs-time--remainder seconds 65536)
+          (emacs-time--quotient picos 1000000) (emacs-time--remainder picos 1000000))))
 
 (defun emacs-time--as-ticks (parts frequency)
   "Return PARTS as a timestamp with the specified FREQUENCY."
@@ -425,23 +456,23 @@ integer frequency.  A nil FORM follows `current-time-list'."
     ;; the operands and take the least common multiple.
     (unless (= lhz rhz)
       (cond
-       ((and (< lhz rhz) (= (% rhz lhz) 0)
-             (= (% rr (/ rhz lhz)) 0))
-        (setq rr (/ rr (/ rhz lhz)) rhz lhz))
-       ((and (< rhz lhz) (= (% lhz rhz) 0)
-             (= (% lr (/ lhz rhz)) 0))
-        (setq lr (/ lr (/ lhz rhz)) lhz rhz))
+       ((and (< lhz rhz) (= (emacs-time--remainder rhz lhz) 0)
+             (= (emacs-time--remainder rr (emacs-time--quotient rhz lhz)) 0))
+        (setq rr (emacs-time--quotient rr (emacs-time--quotient rhz lhz)) rhz lhz))
+       ((and (< rhz lhz) (= (emacs-time--remainder lhz rhz) 0)
+             (= (emacs-time--remainder lr (emacs-time--quotient lhz rhz)) 0))
+        (setq lr (emacs-time--quotient lr (emacs-time--quotient lhz rhz)) lhz rhz))
        (t
         (let ((lgcd (emacs-time--gcd lr lhz))
               (rgcd (emacs-time--gcd rr rhz)))
-          (setq lhz (/ lhz lgcd) lr (/ lr lgcd)
-                rhz (/ rhz rgcd) rr (/ rr rgcd))))))
-    (let* ((frequency (* (/ lhz (emacs-time--gcd lhz rhz)) rhz))
-           (fraction (+ (* lr (/ frequency lhz))
-                        (* (if subtract (- rr) rr) (/ frequency rhz))))
+          (setq lhz (emacs-time--quotient lhz lgcd) lr (emacs-time--quotient lr lgcd)
+                rhz (emacs-time--quotient rhz rgcd) rr (emacs-time--quotient rr rgcd))))))
+    (let* ((frequency (* (emacs-time--quotient lhz (emacs-time--gcd lhz rhz)) rhz))
+           (fraction (+ (* lr (emacs-time--quotient frequency lhz))
+                        (* (if subtract (- rr) rr) (emacs-time--quotient frequency rhz))))
            (seconds (+ (car left) (if subtract (- (car right)) (car right))
-                       (floor fraction frequency)))
-           (parts (list seconds (mod fraction frequency) frequency)))
+                       (emacs-time--quotient fraction frequency)))
+           (parts (list seconds (emacs-time--remainder fraction frequency) frequency)))
       (cond
        ((and subtract (integerp a) (integerp b) (= a b))
         (if (and (boundp 'current-time-list) (not current-time-list))
@@ -451,7 +482,7 @@ integer frequency.  A nil FORM follows `current-time-list'."
        ((or (and (consp a) (integerp (cdr a)))
             (and (consp b) (integerp (cdr b)))
             (and (floatp a) (floatp b))
-            (/= (% 1000000000000 frequency) 0)
+            (/= (emacs-time--remainder 1000000000000 frequency) 0)
             (and (boundp 'current-time-list) (not current-time-list)))
         (emacs-time--as-ticks parts frequency))
        (t (emacs-time--as-list parts))))))

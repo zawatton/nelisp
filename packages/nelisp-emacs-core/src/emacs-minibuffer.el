@@ -167,6 +167,13 @@ Set by `emacs-minibuffer-completing-read', restored on exit.")
 (defvar minibuffer-completion-confirm nil
   "When non-nil, `emacs-minibuffer-completing-read' insists on a hit.")
 
+(defvar emacs-minibuffer--functional-exact-input nil
+  "Dynamically scoped input being tested by a functional completion table.")
+(defvar emacs-minibuffer--functional-global-exact nil
+  "Whether the active functional table accepted an exact global command test.
+Standalone's global obarray is nil and cannot be enumerated.  This records
+only an actual delegated global test, including its original predicate.")
+
 ;;; GUI backend state
 
 (defvar emacs-minibuffer-gui-backend nil
@@ -1493,14 +1500,16 @@ The runtime owns key policy; the backend owns mutable bridge state."
     result))
 
 (defun emacs-minibuffer-gui-completing-read
-    (prompt collection &optional _predicate require-match initial-input
+    (prompt collection &optional predicate require-match initial-input
             _hist def _inherit-input-method)
   "GUI backend implementation for `emacs-minibuffer-completing-read'."
   (setq emacs-minibuffer-default def
         emacs-minibuffer-gui-prompt prompt
         emacs-minibuffer-gui-collection collection
         emacs-minibuffer-gui-completion-table
-        (emacs-minibuffer-gui-collection-lines collection)
+        (emacs-minibuffer-gui-collection-lines
+         (if (or (null collection) (stringp collection)) collection
+           (emacs-minibuffer--collection->list collection predicate)))
         emacs-minibuffer-gui-require-match (and require-match t)
         emacs-minibuffer-gui-initial-input
         (emacs-minibuffer-gui--initial-string initial-input))
@@ -1751,19 +1760,22 @@ Same plug-in as `emacs-minibuffer-y-or-n-p'; built-in reader requires
 
 ;;; D. completion
 
-(defun emacs-minibuffer--collection->list (collection)
+(defun emacs-minibuffer--collection->list (collection &optional predicate)
   "Return COLLECTION as a list of strings.
 Accepts list of strings, list of (STRING . _) pairs, an obarray
 (=vector of symbols), or a function (= called with \"\" and
-predicate nil to enumerate)."
+PREDICATE to enumerate).  Apply predicates to original symbols or alist
+entries before converting names to strings, as GNU completion does."
   (cond
    ((null collection) nil)
    ((vectorp collection)
     (let (acc)
-      (mapatoms (lambda (s) (push (symbol-name s) acc)) collection)
+      (mapatoms (lambda (s)
+                  (when (or (null predicate) (funcall predicate s))
+                    (push (symbol-name s) acc))) collection)
       acc))
    ((functionp collection)
-    (let ((res (funcall collection "" nil t)))
+    (let ((res (funcall collection "" predicate t)))
       (cond
        ((listp res)
         (mapcar (lambda (e) (if (consp e) (car e) e)) res))
@@ -1773,7 +1785,7 @@ predicate nil to enumerate)."
                               ((consp e) (car e))
                               ((symbolp e) (symbol-name e))
                               (t (format "%S" e))))
-            collection))
+            (if predicate (cl-remove-if-not predicate collection) collection)))
    (t (signal 'emacs-minibuffer-error
               (list "Bad collection" collection)))))
 
@@ -1832,6 +1844,23 @@ filters candidates after the prefix match.  Honours
       t)
      (t (emacs-minibuffer--common-prefix cands)))))
 
+(defun emacs-minibuffer--native-command-match-p
+    (string collection predicate &optional global-test-accepted)
+  "Validate an exact command when standalone cannot enumerate global symbols.
+Recognize the command predicate or a functional table's explicit command
+category.  Respect its predicate on the original symbol; generic empty tables
+and managed obarrays retain their ordinary completion semantics."
+  (and (fboundp 'nelisp--write-stdout-bytes)
+       (boundp 'obarray) (null obarray)
+       (or (and (null collection) (eq predicate 'commandp))
+           (and global-test-accepted (functionp collection)
+                (eq (cdr-safe (assq 'category
+                               (cdr (funcall collection string predicate 'metadata))))
+                    'command)))
+       (let ((symbol (intern-soft string)))
+         (and symbol (commandp symbol)
+              (or global-test-accepted (null predicate) (funcall predicate symbol))))))
+
 ;;;###autoload
 (defun emacs-minibuffer-completing-read
     (prompt collection &optional predicate require-match initial-input
@@ -1845,20 +1874,15 @@ INITIAL-INPUT, HIST, DEF behave as in `read-from-minibuffer'."
       (emacs-minibuffer-gui-completing-read
        prompt collection predicate require-match initial-input hist def
        _inherit-input-method)
-    (let* ((table (emacs-minibuffer--collection->list collection))
-           (table (if predicate
-                      (cl-remove-if-not predicate table)
-                    table))
+    (let* ((table (emacs-minibuffer--collection->list collection predicate))
            (default-str (emacs-minibuffer--default-as-string def))
            (minibuffer-completion-table table)
            (minibuffer-completion-confirm require-match))
       (let ((s (emacs-minibuffer-read-from-minibuffer
                 prompt initial-input nil nil hist default-str)))
-        (when require-match
-          (unless (cl-some (lambda (c) (emacs-minibuffer--string-equal-cf c s))
-                           table)
-            (signal 'emacs-minibuffer-error
-                    (list "Match required" s))))
+        (when (and require-match
+                   (not (emacs-minibuffer-test-completion s collection predicate)))
+          (signal 'emacs-minibuffer-error (list "Match required" s)))
         s))))
 
 ;;;###autoload
@@ -1878,8 +1902,7 @@ or t when STRING is the unique exact match, or nil when nothing matches.
 Honours `emacs-minibuffer-completion-ignore-case'."
   (emacs-minibuffer--try-completion
    string
-   (emacs-minibuffer--collection->list collection)
-   predicate))
+   (emacs-minibuffer--collection->list collection predicate)))
 
 ;;;###autoload
 (defun emacs-minibuffer-all-completions (string collection &optional predicate)
@@ -1888,19 +1911,34 @@ Return a list of every entry in COLLECTION that begins with STRING and
 satisfies PREDICATE (when non-nil).  Order follows COLLECTION traversal
 order (= post-`--collection->list').  Honours
 `emacs-minibuffer-completion-ignore-case'."
-  (let ((table (emacs-minibuffer--collection->list collection)))
-    (emacs-minibuffer--filter-candidates string table predicate)))
+  (let ((table (emacs-minibuffer--collection->list collection predicate)))
+    (emacs-minibuffer--filter-candidates string table nil)))
 
 ;;;###autoload
 (defun emacs-minibuffer-test-completion (string collection &optional predicate)
-  "Public Phase 1 port of `test-completion'.
-Return t iff STRING is an exact element of (filtered) COLLECTION.
+  "Return non-nil iff STRING is an exact completion in COLLECTION.
+Functional tables receive STRING, PREDICATE and the exact-test action
+`lambda', rather than an enumeration request for an unrelated empty input.
 Honours `emacs-minibuffer-completion-ignore-case'."
-  (let* ((table (emacs-minibuffer--collection->list collection))
-         (table (if predicate (cl-remove-if-not predicate table) table)))
-    (and (cl-some (lambda (c) (emacs-minibuffer--string-equal-cf c string))
-                  table)
-         t)))
+  (if (functionp collection)
+      (let ((emacs-minibuffer--functional-exact-input string)
+            (emacs-minibuffer--functional-global-exact nil))
+        (or (and (funcall collection string predicate 'lambda) t)
+            (emacs-minibuffer--native-command-match-p
+             string collection predicate emacs-minibuffer--functional-global-exact)))
+    (when (and emacs-minibuffer--functional-exact-input
+               (equal string emacs-minibuffer--functional-exact-input)
+               (null collection) (fboundp 'nelisp--write-stdout-bytes)
+               (boundp 'obarray) (null obarray))
+      (let ((symbol (intern-soft string)))
+        (when (and symbol (commandp symbol)
+                   (or (null predicate) (funcall predicate symbol)))
+          (setq emacs-minibuffer--functional-global-exact t))))
+    (or (let ((table (emacs-minibuffer--collection->list collection predicate)))
+          (and (cl-some (lambda (c) (emacs-minibuffer--string-equal-cf c string))
+                        table)
+               t))
+        (emacs-minibuffer--native-command-match-p string collection predicate))))
 
 ;;; E. minibuffer state / control
 

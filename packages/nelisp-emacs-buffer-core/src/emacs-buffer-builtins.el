@@ -836,6 +836,10 @@ under the live Magit bridge even when the actual current buffer is valid."
   (unless (boundp 'buffer-file-name)
     (setq buffer-file-name nil))
   (emacs-buffer-declare-per-buffer 'buffer-file-name nil)
+  ;; GNU files.el reads this intrinsic slot before assigning a visited name.
+  (defvar buffer-auto-save-file-name nil
+    "Name of the current buffer's auto-save file, or nil.")
+  (emacs-buffer-declare-per-buffer 'buffer-auto-save-file-name nil)
   (if (boundp 'default-directory)
       (emacs-buffer-declare-per-buffer 'default-directory default-directory)
     (emacs-buffer-declare-per-buffer 'default-directory)))
@@ -1646,6 +1650,24 @@ of that buffer then hit their `(t (signal \\='wrong-type-argument
            (nelisp-ec-buffer-name buffer-or-name))
           (t " *unnamed*"))))))
 
+;; The native constructor owns buffer identity, while this shared boundary
+;; supplies GNU's caller-directory inheritance for fresh buffers only.
+(when (and (fboundp 'nelisp--write-stdout-bytes)
+           (fboundp 'nelisp-get-buffer-create))
+  (defun emacs-buffer-builtins--inherit-native-buffer-directory
+      (original buffer-or-name &rest args)
+    "Copy the caller's directory when ORIGINAL creates a new buffer."
+    (let ((existing (get-buffer buffer-or-name))
+          (directory (and (boundp 'default-directory) default-directory)))
+      (let ((buffer (apply original buffer-or-name args)))
+        (when (and (not existing) (stringp directory))
+          (emacs-buffer-builtins--call-emacs-buffer
+           #'emacs-buffer-set-buffer-local-value
+           (list 'default-directory buffer directory)))
+        buffer)))
+  (advice-add 'nelisp-get-buffer-create :around
+              #'emacs-buffer-builtins--inherit-native-buffer-directory))
+
 (when (emacs-buffer-builtins--install-function-p 'buffer-list)
   (defun buffer-list (&optional frame)
     "Phase L1 polyfill: return a list of every live buffer in the registry.
@@ -1663,22 +1685,12 @@ buffers are returned regardless."
         (while acc
           (setq rev (cons (car acc) rev))
           (setq acc (cdr acc)))
-        ;; S2 coverage batch 6: a standalone whose core ships the native
-        ;; buffer family (`nelisp-buffer-list') owns the real buffers, and its
-        ;; `with-current-buffer' only accepts those (it calls `nelisp-point'
-        ;; on the object).  Return them, followed by any bridge-registry
-        ;; buffer the native list does not already cover by name, so that
-        ;; `(dolist (b (buffer-list)) (with-current-buffer b ...))' -- which
-        ;; dired.el's `dired-mouse-drag-files' :set callback runs at load
-        ;; time -- works on such a core.
+        ;; A native runtime owns one coherent public buffer family.  Legacy
+        ;; compatibility objects cannot be passed to its current-buffer,
+        ;; bufferp or indirect-buffer APIs.  Their private registry remains
+        ;; available to explicit nelisp-ec consumers, not GNU buffer-list.
         (if (fboundp 'nelisp-buffer-list)
-            (let* ((native (nelisp-buffer-list))
-                   (names (mapcar #'buffer-name native))
-                   (extra nil))
-              (dolist (b rev)
-                (unless (member (nelisp-ec-buffer-name b) names)
-                  (setq extra (cons b extra))))
-              (append native (nreverse extra)))
+            (nelisp-buffer-list)
           rev)))))
 
 ;;;; --- current buffer ---------------------------------------------------

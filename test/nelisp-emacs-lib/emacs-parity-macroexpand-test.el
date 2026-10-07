@@ -89,5 +89,12 @@ not just the first one."
                     (emacs-parity-macroexpand-test--probe x)
                     (emacs-parity-macroexpand-test--probe y))))))))
 
+(ert-deftest emacs-parity-macroexpand-test/bindings-and-clauses-are-syntax ()
+  (emacs-parity-macroexpand-test--with-standalone-defs
+    (let ((expanded (macroexpand-all
+                     '(let* ((do 7) (when (emacs-parity-macroexpand-test--probe do)))
+                        (cond (when (list do when)))))))
+      (should (equal (eval expanded t) '(7 8))))))
+
 (provide 'emacs-parity-macroexpand-test)
 ;;; emacs-parity-macroexpand-test.el ends here

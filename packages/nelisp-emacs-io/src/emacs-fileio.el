@@ -57,6 +57,10 @@ buffer becomes current via `find-file'.")
 (defvar emacs-fileio--buffer-mode-names nil
   "Alist mapping live buffers to their `mode-name' string.")
 
+(defvar switch-to-buffer-preserve-window-point t
+  "Whether switching buffers preserves their previous window point.
+GNU file commands bind this option while entering and reverting Dired.")
+
 (defvar emacs-fileio-auto-mode-alist
   '(("\\.el\\'" . emacs-lisp-mode)
     ("\\.org\\'" . org-mode))
@@ -321,6 +325,101 @@ Thin helper so callers do not need to know the builtins' state table."
       (signal 'error (list "No buffer selected")))
     (emacs-fileio--apply-buffer-state buffer)
     buffer))
+
+;; The legacy window shim aliases this entry point to `pop-to-buffer',
+;; which both splits windows and accepts only compatibility buffers.  The
+;; file/buffer boundary already resolves both buffer families.  Use the
+;; public window handoff without reactivating an existing major mode.
+(when (fboundp 'nelisp--write-stdout-bytes)
+  (defvar emacs-fileio--legacy-display-buffer (symbol-function 'display-buffer))
+  (defvar emacs-fileio--legacy-pop-to-buffer (symbol-function 'pop-to-buffer))
+
+  (defun display-buffer-same-window (buffer alist)
+    "Display BUFFER in the selected window when ALIST permits it."
+    (let ((window (selected-window)))
+      (unless (or (cdr (assq 'inhibit-same-window alist))
+                  (and (window-dedicated-p window)
+                       (not (eq buffer (window-buffer window)))))
+        (set-window-buffer window buffer)
+        window)))
+
+  (defun display-buffer-in-direction (buffer alist)
+    "Try to display BUFFER on ALIST's specified side of a reference window."
+    (let ((direction (cdr (assq 'direction alist))))
+      (when direction
+        (let* ((reference (cdr (assq 'window alist)))
+               (reference (if (window-live-p reference) reference (selected-window)))
+               (side (cond ((memq direction '(left leftmost)) 'left)
+                           ((memq direction '(right rightmost)) 'right)
+                           ((memq direction '(above up top)) 'above)
+                           (t 'below)))
+               (edges (emacs-window-window-edges reference)) window)
+          (dolist (candidate (window-list))
+            (let ((other (emacs-window-window-edges candidate)))
+              (when (and (not window) (not (eq reference candidate))
+                         (not (window-dedicated-p candidate))
+                         (cond
+                          ((eq side 'left) (= (nth 2 other) (nth 0 edges)))
+                          ((eq side 'right) (= (nth 0 other) (nth 2 edges)))
+                          ((eq side 'above) (= (nth 3 other) (nth 1 edges)))
+                          (t (= (nth 1 other) (nth 3 edges)))))
+                (setq window candidate))))
+          (setq window (or window (condition-case nil
+                                     (split-window reference nil side)
+                                   (error nil))))
+          (when window (set-window-buffer window buffer) window)))))
+
+  (defun display-buffer-pop-up-window (buffer alist)
+    "Display BUFFER by splitting a window below."
+    (display-buffer-in-direction buffer (cons '(direction . below) alist)))
+
+  (defun emacs-fileio--native-display-buffer (buffer action)
+    "Run ACTION's display functions for native BUFFER without selecting it.
+With no successful action, use the library's existing reuse/other/split
+policy through public window operations.  Buffer objects stay native."
+    (let* ((functions (car-safe action))
+           (alist (cdr-safe action))
+           (functions (if (functionp functions) (list functions) functions))
+           (selected (selected-window))
+           window)
+      (while (and functions (not window))
+        (setq window (funcall (pop functions) buffer alist)))
+      (unless window
+        (dolist (candidate (window-list))
+          (when (and (not window) (eq buffer (window-buffer candidate))
+                     (not (and (eq candidate selected)
+                               (cdr (assq 'inhibit-same-window alist)))))
+            (setq window candidate)))
+        (unless window
+          (dolist (candidate (window-list))
+            (when (and (not window) (not (eq candidate selected))
+                       (not (window-dedicated-p candidate)))
+              (setq window candidate)))
+          (setq window (or window (split-window selected nil 'below)))
+          (set-window-buffer window buffer)))
+      window))
+
+  (defun display-buffer (buffer-or-name &optional action frame)
+    "Display BUFFER-OR-NAME, honoring ACTION for native buffers."
+    (let ((buffer (emacs-fileio--buffer-object buffer-or-name)))
+      (if (and (fboundp 'nelisp-buffer-p) (nelisp-buffer-p buffer))
+          (emacs-fileio--native-display-buffer buffer action)
+        (funcall emacs-fileio--legacy-display-buffer buffer-or-name action frame))))
+
+  (defun pop-to-buffer (buffer-or-name &optional action norecord)
+    "Display BUFFER-OR-NAME using ACTION and select its window."
+    (let ((buffer (emacs-fileio--get-buffer-create buffer-or-name)))
+      (if (and (fboundp 'nelisp-buffer-p) (nelisp-buffer-p buffer))
+          (progn (select-window (display-buffer buffer action) norecord) buffer)
+        (funcall emacs-fileio--legacy-pop-to-buffer buffer-or-name action norecord))))
+
+  (defun pop-to-buffer-same-window (buffer-or-name &optional norecord)
+    "Display BUFFER-OR-NAME in the selected window and return its buffer."
+    (let ((buffer (emacs-fileio--get-buffer-create buffer-or-name))
+          (window (selected-window)))
+      (set-window-buffer window buffer)
+      (select-window window norecord)
+      buffer)))
 
 ;;;###autoload
 (defun rename-buffer (newname &optional unique)

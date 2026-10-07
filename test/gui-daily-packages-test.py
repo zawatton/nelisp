@@ -32,9 +32,28 @@ class Evidence(unittest.TestCase):
             self.assertEqual(actual, root.resolve())
             self.assertFalse(receipt['git_writes'])
             self.assertEqual(prepared['GIT_OPTIONAL_LOCKS'], '0')
+            self.assertEqual(prepared['GIT_CEILING_DIRECTORIES'], str(root.resolve()))
             (root/'repo/.git/HEAD').unlink()
             with self.assertRaises(RuntimeError):
                 gate.prepare(Path(directory)/'out', env)
+
+    def test_production_quit_and_negative_controls(self):
+        good = dict(rc=0, test_exit_group=False, fault=None,
+                    events=[['n'], ['ctrl+x', 'ctrl+c']])
+        keys = ('GUI-KEY|code=53|event=24|group=0|\n'
+                'GUI-KEY|code=54|event=3|group=0|\n')
+        # Ordinary production exit has no GUI-CLOSED test teardown marker.
+        gate.validate_production_quit(good, keys)
+        for changed, log in [
+                (dict(rc=1), keys), (dict(rc=None), keys),
+                (dict(test_exit_group=True), keys),
+                (dict(fault='quit'), keys), (dict(events=[['f12']]), keys),
+                ({}, keys.replace('|event=24|', '|event=25|')),
+                ({}, keys.replace('|event=3|', '|event=4|')),
+                ({}, keys+'GUI-ERROR|condition=(void-function missing)\n'),
+                ({}, keys+'Lisp error: (void-variable missing)\n')]:
+            with self.subTest(changed=changed, log=log), self.assertRaises(AssertionError):
+                gate.validate_production_quit(dict(good, **changed), log)
 
     def test_wrong_mode_name_text_and_lisp_errors(self):
         good = dict(mode='dired-mode', buffer='tree', window_buffer='tree',
@@ -46,6 +65,7 @@ class Evidence(unittest.TestCase):
                       dict(messages='Lisp error: (void-function foo)'),
                       dict(messages='Symbol’s function definition is void: forward-word-strictly'),
                       dict(messages="Symbol's value is void: missing-variable"),
+                      dict(messages="Symbol’s value as variable is void: auto-window-vscroll"),
                       dict(messages='Wrong type argument: stringp, [24]'),
                       dict(messages='Args out of range: #("m" 0 1 (dired-filename t)), 2, nil'),
                       dict(messages=good['messages']+'Args out of range: #("o" 0 1 (dired-filename t)), 2, nil\n'),
@@ -64,16 +84,26 @@ class Evidence(unittest.TestCase):
             (root/'international').mkdir()
             copy = root/'international/mule-cmds.el'
             copy.write_bytes(raw)
+            tab = gnu/'tab-bar.el'
+            (root/'tab-bar.el').write_bytes(tab.read_bytes() if tab.exists() else
+                                          gzip.decompress(tab.with_suffix('.el.gz').read_bytes()))
+            window = gnu/'window.el'
+            (root/'window.el').write_bytes(window.read_bytes() if window.exists() else
+                                          gzip.decompress(window.with_suffix('.el.gz').read_bytes()))
             output = root/'preloaded.el'
             evidence = gate.prepare_preloads(root,output,dict(os.environ))
             self.assertIn('coding-system-change-eol-conversion',evidence['names'])
             # Loading the extracted file must install the stock variable and
             # real GNU function. Unrelated mule-cmds initialization stays out.
             output.write_text(output.read_text().replace('etags-program-name','s52c-test-etags-program-name'))
-            expression = '(progn (fmakunbound (quote coding-system-change-eol-conversion)) (load '+json.dumps(str(output))+' nil t t) (prin1 (list s52c-test-etags-program-name (coding-system-change-eol-conversion (quote utf-8) (quote unix)))))'
+            expression = '(progn (mapc (quote fmakunbound) (quote (coding-system-change-eol-conversion window-full-width-p window-full-height-p window-normalize-window))) (load '+json.dumps(str(output))+' nil t t) (prin1 (list s52c-test-etags-program-name (coding-system-change-eol-conversion (quote utf-8) (quote unix)) (window-full-width-p) (window-full-height-p))))'
             result = subprocess.check_output(['emacs','-Q','--batch','--eval',expression],text=True)
-            self.assertEqual(result,'("etags" utf-8-unix)')
+            self.assertEqual(result,'("etags" utf-8-unix t t)')
             copy.write_text('(error "No requested GNU definition")')
+            with self.assertRaises(subprocess.CalledProcessError):
+                gate.prepare_preloads(root,output,dict(os.environ))
+            copy.write_bytes(raw)
+            (root/'window.el').write_text('(error "Missing genuine window functions")')
             with self.assertRaises(subprocess.CalledProcessError):
                 gate.prepare_preloads(root,output,dict(os.environ))
 

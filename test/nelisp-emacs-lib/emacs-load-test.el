@@ -3229,6 +3229,61 @@ pathology itself, which host Emacs cannot reproduce."
     (should (equal emacs-load--alias-candidates '(registered)))
     (should-not (emacs-load--symbolic-macro-alias-p 's52c-never-defined))))
 
+(ert-deftest emacs-load-test/dependency-can-introduce-a-macro-alias ()
+  ;; Select the evaluator BEFORE the dependency supplies its macro, as a
+  ;; small real package such as magit.el does.  No active alias exists yet.
+  (let ((emacs-load--alias-candidates nil)
+        (emacs-load-large-source-threshold 32768))
+    (cl-letf (((symbol-function 'nelisp--eval-source-string) #'ignore))
+      (dolist (dependency '("(require 'provider)" "(load \"provider\")"
+                            "(load-file \"provider.el\")"))
+        (let ((loader (nelisp--load-source-loader
+                       (concat dependency "\n(example:--argument unbound)"))))
+          (should (eq loader 'nelisp--load-eval-source-incremental))))
+      (should (eq (nelisp--load-source-loader "(+ 2 3)")
+                  'nelisp--load-eval-source-hybrid)))))
+
 (provide 'emacs-load-test)
 
 ;;; emacs-load-test.el ends here
+
+(ert-deftest emacs-load-test/nested-symbolic-macro-alias-is-expanded ()
+  (unwind-protect
+      (progn
+        (fset 'emacs-load-test--target '(macro lambda (name) (list 'quote name)))
+        (fset 'emacs-load-test--alias 'emacs-load-test--target)
+        (let ((form '(defun emacs-load-test--nested ()
+                       (let ((value (emacs-load-test--alias unbound))) value))))
+          (should (emacs-load--macro-alias-form-p form))
+          (should-not (emacs-load--macro-alias-form-p
+                       '(quote (emacs-load-test--alias unbound))))
+          ;; GNU eval can follow the alias itself, so assert the expansion
+          ;; boundary as well as the installed function's behavior.
+          (let ((calls 0) (expand (symbol-function 'macroexpand-all)))
+            (cl-letf (((symbol-function 'macroexpand-all)
+                       (lambda (value &optional env)
+                         (setq calls (1+ calls))
+                         (funcall expand value env))))
+              (nelisp--load-eval-one-form form))
+            (should (= calls 1)))
+          (should (eq (emacs-load-test--nested) 'unbound))))
+    (fmakunbound 'emacs-load-test--alias)
+    (fmakunbound 'emacs-load-test--target)
+    (fmakunbound 'emacs-load-test--nested)))
+
+(ert-deftest emacs-load-test/source-lexical-binding-header ()
+  (should (emacs-load--source-lexical-binding-p ";;; -*- lexical-binding: t; -*-\n"))
+  (should (emacs-load--source-lexical-binding-p "#!/bin/emacs\n;;; -*- mode: emacs-lisp; lexical-binding: t; -*-\n"))
+  (should-not (emacs-load--source-lexical-binding-p ";;; -*- lexical-binding: nil; -*-\n"))
+  (should-not (emacs-load--source-lexical-binding-p ";;; no modeline\n;; lexical-binding: t\n")))
+
+(ert-deftest emacs-load-test/incremental-eval-preserves-lexical-environment ()
+  (let ((lexical-binding t))
+    (nelisp--load-eval-one-form
+     '(defun emacs-load-test--make-closure (captured)
+        (lambda (argument) (eq captured argument)))))
+  (unwind-protect
+      (let ((predicate (emacs-load-test--make-closure 'value)))
+        (should (funcall predicate 'value))
+        (should-not (funcall predicate 'other)))
+    (fmakunbound 'emacs-load-test--make-closure)))

@@ -141,9 +141,16 @@
                   (fboundp 'gv-get) (get (car place) 'gv-expander))
              (gv-get place (lambda (_getter setter) (funcall setter val))))
             (t
-             (signal 'error
-                     (list "setf: unsupported place"
-                           (and (consp place) (car place))))))
+             ;; A macro accessor is itself a generalized place when it
+             ;; expands to one (Org's request accessors expand to `aref').
+             ;; Expand syntax only, preserving a single evaluation of the
+             ;; target arguments in the resulting setter.
+             (let ((expanded (macroexpand place)))
+               (if (equal expanded place)
+                   (signal 'error
+                           (list "setf: unsupported place"
+                                 (and (consp place) (car place))))
+                 (macroexpand (list 'setf expanded val))))))
            forms)))
       (if (cdr forms)
           (cons 'progn (nreverse forms))

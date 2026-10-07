@@ -16,7 +16,7 @@ PACKAGES = ('dired', 'magit', 'org-agenda')
 ROOT = Path(__file__).resolve().parents[1]
 LISP_ERROR = re.compile(
     r'(?:Lisp error|void-function|void-variable|wrong-type-argument|GUI-ERROR|'
-    r'args-out-of-range|Args out of range|Debugger entered|Symbol[’\']s (?:function definition|value) is void|'
+    r'args-out-of-range|Args out of range|Debugger entered|Symbol[’\']s (?:function definition|value(?: as variable)?) is void|'
     r'Wrong type argument|Key sequence .* starts with non-prefix key)', re.I)
 
 
@@ -26,28 +26,91 @@ def prepare_preloads(gnu, output, env):
     mule-cmds has unrelated charset initialization that the fixed UTF-8
     reader cannot load. Extract its real EOL helper without evaluating the
     rest of that file, as the SKK fixture does for register-input-method.
-    Capture stock -Q variables expected by the packages as well.
+    Capture stock -Q variables and the genuine lazy function declarations
+    expected by the packages as well.
     """
     source = gnu/'international/mule-cmds.el'
-    form = '''(let ((forms nil))
-      (dolist (name '(etags-program-name mode-line-misc-info))
+    tab_source = gnu/'tab-bar.el'
+    window_source = gnu/'window.el'
+    # GNU normally installs these lazy declarations during loadup.  Keep
+    # declarations referenced by the genuine consumers and their preloaded
+    # parents; quoted/comment occurrences are safe conservative inclusions.
+    consumers = [gnu/name for name in ('dired.el', 'files.el', 'files-x.el',
+                                       'minibuffer.el', 'isearch.el',
+                                       'emacs-lisp/tabulated-list.el')]
+    consumers += sorted((gnu/'org').glob('*.el'))
+    consumers += [p for name in ('magit', 'transient', 'with-editor', 'compat',
+                                 'cond-let', 'llama', 'dash')
+                  for p in (gnu.parent/name).rglob('*.el')]
+    referenced = sorted(set(token for path in consumers if path.is_file()
+                            for token in re.findall(r'[A-Za-z0-9_:+*/<>=!?$%&~^.-]+',
+                                                     path.read_text())))
+    references = output.with_suffix('.references.json')
+    references.write_text(json.dumps(referenced)+'\n')
+    form = '''(let ((forms nil) (references (make-hash-table :test 'equal)))
+      (require 'json)
+      (mapc (lambda (name) (puthash name t references)) (json-read-file %s))
+      (dolist (name '(etags-program-name mode-line-misc-info rcs2log-program-name other-window-scroll-buffer))
         (push `(unless (boundp ',name)
                  (defvar ,name ',(symbol-value name))) forms))
+      ;; characters.el normally defines these before packages load.  Keep
+      ;; GNU's exact category descriptions for copied tables (kinsoku/shr).
+      (dotimes (offset 95)
+        (let* ((category (+ 32 offset))
+               (doc (category-docstring category (standard-category-table))))
+          (when doc
+            (push `(unless (category-docstring ,category (standard-category-table))
+                     (define-category ,category ,doc (standard-category-table)))
+                  forms))))
+      ;; files.el's defcustom preserves the small image's bound nil table.
+      ;; Supply GNU's genuine loadup table while preserving configured tables.
+      (push `(unless auto-mode-alist
+               (setq auto-mode-alist ',auto-mode-alist)) forms)
+      ;; Retain GNU's real lazy definitions instead of replacing package
+      ;; calls with implementations or adding one-off missing-name shims.
+      (mapatoms
+       (lambda (name)
+         (when (fboundp name)
+           (let ((definition (symbol-function name)))
+             (when (and (autoloadp definition)
+                        (gethash (symbol-name name) references))
+               (push `(unless (fboundp ',name)
+                        (fset ',name ',definition)) forms))))))
       (with-temp-buffer
         (insert-file-contents %s)
         (goto-char (point-min))
         (re-search-forward "^(defun coding-system-change-eol-conversion ")
         (beginning-of-line)
         (push (read (current-buffer)) forms))
+      (with-temp-buffer
+        (insert-file-contents %s)
+        (goto-char (point-min))
+        (re-search-forward "^(defcustom tab-bar-new-tab-choice ")
+        (beginning-of-line)
+        (push (read (current-buffer)) forms))
+      ;; Org's interactive dispatcher calls these GNU loadup functions.
+      ;; Preserve their real definitions and native window primitives.
+      (with-temp-buffer
+        (insert-file-contents %s)
+        (dolist (name '(window-normalize-window window-full-width-p window-full-height-p))
+          (goto-char (point-min))
+          (re-search-forward (concat "^(defun " (symbol-name name) " "))
+          (beginning-of-line)
+          (let ((definition (read (current-buffer))))
+            (push `(unless (fboundp ',name) ,definition) forms))))
       (with-temp-file %s
         (insert ";;; Exact GNU preload definitions. -*- lexical-binding: t; -*-\n")
         (dolist (definition (nreverse forms))
           (prin1 definition (current-buffer))
-          (terpri (current-buffer)))))''' % (json.dumps(str(source)), json.dumps(str(output)))
+          (terpri (current-buffer)))))''' % (json.dumps(str(references)), json.dumps(str(source)), json.dumps(str(tab_source)), json.dumps(str(window_source)), json.dumps(str(output)))
     subprocess.run([os.environ.get('EMACS','emacs'), '-Q', '--batch', '--eval', form],
                    env=env, check=True, capture_output=True, timeout=30)
-    return dict(source=str(source), names=['etags-program-name', 'mode-line-misc-info',
-                                          'coding-system-change-eol-conversion'],
+    return dict(reference_symbols=len(referenced), reference_manifest=str(references),
+                source=str(source), additional_sources=[str(tab_source), str(window_source)], names=['etags-program-name', 'mode-line-misc-info',
+                                          'rcs2log-program-name', 'other-window-scroll-buffer', 'auto-mode-alist',
+                                          'coding-system-change-eol-conversion', 'tab-bar-new-tab-choice',
+                                          'GNU -Q autoload table', 'window-normalize-window',
+                                          'window-full-width-p', 'window-full-height-p'],
                 sha256=hashlib.sha256(output.read_bytes()).hexdigest())
 
 
@@ -91,7 +154,8 @@ def prepare(out, env):
             raise RuntimeError('package fixture load paths are unavailable')
         env = dict(env, HOME=str(root/'home'), TMPDIR=str(root/'tmp'),
                    GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull,
-                   GIT_TERMINAL_PROMPT='0', GIT_OPTIONAL_LOCKS='0')
+                   GIT_TERMINAL_PROMPT='0', GIT_OPTIONAL_LOCKS='0',
+                   GIT_CEILING_DIRECTORIES=str(root))
         return root, env, dict(sources=str(root/'sources.json'),
                                reused_fixture=str(root), git_writes=False)
     root = out/'fixture'
@@ -104,6 +168,7 @@ def prepare(out, env):
     temporary = root/'tmp'
     temporary.mkdir(exist_ok=True)
     env = dict(env, HOME=str(home), GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull,
+               GIT_OPTIONAL_LOCKS='0', GIT_CEILING_DIRECTORIES=str(root.resolve()),
                TMPDIR=str(temporary), GIT_TERMINAL_PROMPT='0', GIT_AUTHOR_NAME='GUI fixture',
                GIT_AUTHOR_EMAIL='fixture@example.invalid', GIT_COMMITTER_NAME='GUI fixture',
                GIT_COMMITTER_EMAIL='fixture@example.invalid')
@@ -214,6 +279,21 @@ def validate(data, mode, needles):
     assert not LISP_ERROR.search(data.get('messages','')), 'Lisp error in *Messages*: '+data['messages']
 
 
+
+def validate_production_quit(metadata, quit_log):
+    """Accept the ordinary process exit, with evidence of the real quit keys.
+
+    Production kill-emacs exits directly. GUI-CLOSED is emitted by the
+    frontend's test teardown route and cannot be required here.
+    """
+    assert metadata.get('rc') == 0, 'production quit did not exit successfully'
+    assert metadata.get('test_exit_group') is False, 'test exit route used'
+    assert not metadata.get('fault'), 'fault injection cannot prove production quit'
+    assert metadata.get('events', [])[-1:] == [['ctrl+x', 'ctrl+c']], 'quit keys absent'
+    assert '|event=24|' in quit_log and '|event=3|' in quit_log, 'quit keys not received'
+    assert not lisp_failure(quit_log) and not LISP_ERROR.search(quit_log), 'Lisp error during quit'
+
+
 def screenshot(path, api):
     dims = api['command'](['identify','-format','%w %h',str(path)]).decode()
     width,height = map(int,dims.split())
@@ -314,8 +394,15 @@ def run(args, api, out, env, report, sessions):
                 validate(data,mode,needles)
                 # post-command-hook runs before the frontend's paint.  A
                 # previous fixture screenshot cannot certify package rendering.
-                marker = s.log().rfind('GUI-PACKAGE-STATE|')
-                wait(lambda d: 'GUI-PAINT|' in s.log()[marker:], 'rendered '+label)
+                # State-file publication precedes the observer's log write.
+                # Tie this capture to its exact sequence; an earlier prompt
+                # paint cannot certify the newly published package buffer.
+                anchor = 'GUI-PACKAGE-STATE|sequence='+str(data['sequence'])+'|'
+                def painted(_):
+                    log = s.log()
+                    marker = log.rfind(anchor)
+                    return marker >= 0 and 'GUI-PAINT|' in log[marker:]
+                wait(painted, 'rendered '+label)
                 (out/(label+'.json')).write_text(json.dumps(data,indent=2)+'\n')
                 result.setdefault('screenshots',{})[label] = screenshot(s.shot(label),api)
                 result['checks'].append(label)
@@ -367,9 +454,11 @@ def run(args, api, out, env, report, sessions):
                 wait(lambda d: d.get('mode')=='org-agenda-mode','Org agenda a')
                 capture('org-agenda','org-agenda-mode',['S52 scheduled inspection','S52 scheduled report'])
                 key('n');result['checks'].append('agenda-a/responsive-n')
+            quit_start = len(s.log())
             s.key('ctrl+x','ctrl+c')
             s.finish()
-            assert 'GUI-CLOSED|error=nil' in s.log(),'production quit did not close frontend'
+            validate_production_quit(s.metadata(), s.log()[quit_start:])
+            result['production_quit'] = True
             result['checks'].append('no-Lisp-errors/production-quit')
             result['status']='PASS'
         except Exception as error:

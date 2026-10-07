@@ -72,6 +72,10 @@
 
 ;;;; --- per-buffer state ----------------------------------------------
 
+(defvar font-lock-mode nil
+  "Non-nil when Font Lock is enabled in the current buffer.")
+(emacs-buffer-declare-per-buffer 'font-lock-mode nil)
+
 (defvar emacs-font-lock--state (make-hash-table :test 'eq :weakness 'key)
   "Per-buffer font-lock state, keyed by `nelisp-ec-buffer' object.
 Value is a plist with keys
@@ -527,6 +531,10 @@ With ARG > 0 enables; ARG ≤ 0 disables; nil toggles."
                    (arg t)
                    (t nil))))
         (emacs-font-lock--state-set b :enabled new)
+        (emacs-buffer-set-buffer-local-value 'font-lock-mode b new)
+        ;; The legacy buffer bridge mirrors current locals in variable cells.
+        ;; Keep that cell aligned before fontification temporarily switches.
+        (setq font-lock-mode new)
         (cond
          (new
           ;; Pull defaults from font-lock-defaults if not yet set.

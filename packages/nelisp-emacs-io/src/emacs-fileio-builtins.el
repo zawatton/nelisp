@@ -46,6 +46,10 @@
 (require 'files-runtime)
 (require 'emacs-file-name-handler)
 
+(defvar auto-save-visited-file-name nil
+  "Non-nil means auto-saving writes the visited file itself.
+This GNU C-core option is also read by genuine files.el before auto-save.")
+
 ;; `file-attributes' is deliberately absent (audit 2026-09-29): the native one is
 ;; GNU-correct while `nelisp-ec-file-attributes' returned nil uid/modes and size 0.
 (defconst emacs-fileio-builtins--standalone-overrides
@@ -1345,10 +1349,9 @@ NO-QUERY and ALONG-WITH-FILE are accepted for API parity."
                         (expand-file-name filename)
                       filename)))
           (found nil))
-      (cond
-       ((and abs (fboundp 'find-buffer-visiting))
-        (setq found (find-buffer-visiting abs)))
-       ((and abs (fboundp 'buffer-list))
+      ;; GNU `find-buffer-visiting' calls this primitive before checking
+      ;; truenames.  Delegating back to it recurses once files.el is loaded.
+      (when (and abs (fboundp 'buffer-list))
         (catch 'done
           (dolist (buffer (buffer-list))
             (let ((visited (emacs-fileio--direct-buffer-file-name buffer)))
@@ -1358,7 +1361,7 @@ NO-QUERY and ALONG-WITH-FILE are accepted for API parity."
                                   visited)
                                 abs))
                 (setq found buffer)
-                (throw 'done found)))))))
+                (throw 'done found))))))
       found)))
 
 ;;;; --- find-file / save-buffer / write-file / revert-buffer ----------

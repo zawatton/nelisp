@@ -983,13 +983,13 @@ cycles."
          hit)))
 
 (defun emacs-cl-macros--expand-defstruct (name slots)
-    "Expand alist or untagged vector structure definitions.
+    "Expand alist or untagged sequence structure definitions.
 
 Skips a leading docstring among SLOTS (= host `cl-defstruct'
 accepts an optional docstring before the slot list).  For the
 NAME-options shape `(NAME (:constructor X) (:copier nil) ...)'
 supports default, disabled, renamed, and positional constructors.
-Also supports the `(:type vector)' shape used by `avl-tree.el'."
+Also supports untagged `(:type vector)' and `(:type list)' structures."
     (let* ((sname (if (consp name) (car name) name))
            (opts (and (consp name) (cdr name)))
            (ctor-opts nil)
@@ -1082,11 +1082,11 @@ Also supports the `(:type vector)' shape used by `avl-tree.el'."
                  (ctor-aux-bindings (cadr ctor-parts))
                  (ctor-value-syms (caddr ctor-parts)))
             (push
-             (if (eq type-from-opts 'vector)
+             (if (memq type-from-opts '(vector list))
                  (if ctor-boa-p
                      (list 'defun ctor-name ctor-formals
                            (let ((body
-                                  (cons 'vector
+                                  (cons type-from-opts
                                         (mapcar
                                          (lambda (slot)
                                            (if (memq slot ctor-value-syms)
@@ -1099,7 +1099,7 @@ Also supports the `(:type vector)' shape used by `avl-tree.el'."
                    (list 'defun ctor-name '(&rest args)
                          (list 'let
                                (list (list 'values
-                                           (cons 'vector
+                                           (cons type-from-opts
                                                  (mapcar #'cdr slot-defaults)))
                                      '(cur args))
                                (list 'while 'cur
@@ -1113,7 +1113,11 @@ Also supports the `(:type vector)' shape used by `avl-tree.el'."
                                                                         (cons (intern (concat ":" (symbol-name slot)))
                                                                               (setq index (1+ index))))
                                                                       slot-names))))))
-                                           '(when cell (aset values (cdr cell) (cadr cur))))
+                                           (if (eq type-from-opts 'vector)
+                                               '(when cell (aset values (cdr cell) (cadr cur)))
+                                             '(when cell
+                                                (setcar (nthcdr (cdr cell) values)
+                                                        (cadr cur)))))
                                      '(setq cur (cddr cur)))
                                'values)))
                (if ctor-boa-p
@@ -1167,13 +1171,14 @@ Also supports the `(:type vector)' shape used by `avl-tree.el'."
         ;; NAME-p predicate (or whatever (:predicate X) renamed it to).
         (let ((pred-name (if pred-saw
                              pred-from-opts
-                           (unless (eq type-from-opts 'vector)
+                           (unless (memq type-from-opts '(vector list))
                              (intern (concat (symbol-name sname) "-p"))))))
           (when pred-name
             (push (list 'defun pred-name
                         '(obj)
-                        (if (eq type-from-opts 'vector)
-                            (list 'and '(vectorp obj)
+                        (if (memq type-from-opts '(vector list))
+                            (list 'and (list (if (eq type-from-opts 'vector)
+                                                'vectorp 'listp) 'obj)
                                   (list '= '(length obj) (length slot-names)))
                           (list 'and '(consp obj)
                                 (list 'emacs-cl-macros--struct-isa
@@ -1198,15 +1203,22 @@ Also supports the `(:type vector)' shape used by `avl-tree.el'."
                  (acc (intern (concat conc-name (symbol-name slot))))
                  (setter (intern (concat conc-name (symbol-name slot) "--setter")))
                  (gv-setter (intern (format "(setf %s)" acc))))
-            (push (if (eq type-from-opts 'vector)
-                      (list 'defun acc '(obj) (list 'aref 'obj index))
+            (push (if (memq type-from-opts '(vector list))
+                      (list 'defun acc '(obj)
+                            (if (eq type-from-opts 'vector)
+                                (list 'aref 'obj index)
+                              (list 'nth index 'obj)))
                     (list 'defun acc
                           '(obj)
                           (list 'cdr (list 'assoc kw '(cdr obj)))))
                   forms)
-            (push (if (eq type-from-opts 'vector)
+            (push (if (memq type-from-opts '(vector list))
                       (list 'defun setter '(obj val)
-                            (list 'aset 'obj index 'val))
+                            (if (eq type-from-opts 'vector)
+                                (list 'aset 'obj index 'val)
+                              (list 'progn
+                                    (list 'setcar (list 'nthcdr index 'obj) 'val)
+                                    'val)))
                     (list 'defun setter
                           '(obj val)
                           (list 'let
@@ -1237,7 +1249,7 @@ Also supports the `(:type vector)' shape used by `avl-tree.el'."
                              (intern (concat "copy-" (symbol-name sname))))))
           (when copier-name
             (push (list 'defun copier-name '(obj)
-                        (if (eq type-from-opts 'vector)
+                        (if (memq type-from-opts '(vector list))
                             '(copy-sequence obj)
                           '(cons (car obj)
                                  (mapcar (lambda (--c--)
@@ -1251,20 +1263,21 @@ Also supports the `(:type vector)' shape used by `avl-tree.el'."
     "Expand a library-owned structure declaration."
     (emacs-cl-macros--expand-defstruct name slots)))
 
-;; The standalone prelude's record constructor ignores `:type vector'.
-;; Keep its existing record/inheritance path, but route untagged vector
-;; declarations through the shared vector implementation.  In particular,
-;; GNU timer.el must create a ten-slot vector accepted by its own `timerp'.
+;; The standalone prelude's record constructor ignores explicit sequence
+;; types.  Keep its record/inheritance path and route untagged sequences
+;; through the shared implementation: GNU timers are vectors and decoded
+;; times are lists, including after genuine simple.el redefines accessors.
 (when (and (fboundp 'nelisp--repr)
-           (not (get 'cl-defstruct 'emacs-cl-macros-vector-provider)))
+           (not (eq (get 'cl-defstruct 'emacs-cl-macros-vector-provider)
+                    'sequence-v2)))
   (let ((emacs-cl-macros--record-expander (cdr (symbol-function 'cl-defstruct))))
     (defmacro cl-defstruct (name &rest slots)
       (if (and (consp name)
-               (equal (assq :type (cdr name)) '(:type vector))
+               (memq (cadr (assq :type (cdr name))) '(vector list))
                (not (memq :named (cdr name))))
           (emacs-cl-macros--expand-defstruct name slots)
         (apply emacs-cl-macros--record-expander name slots)))
-    (put 'cl-defstruct 'emacs-cl-macros-vector-provider t)))
+    (put 'cl-defstruct 'emacs-cl-macros-vector-provider 'sequence-v2)))
 
 ;; `cl--class' :include seed (magit bridge cl-defstruct inheritance fix).
 ;;

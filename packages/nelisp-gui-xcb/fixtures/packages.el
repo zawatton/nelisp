@@ -34,7 +34,8 @@
                  (buffer . ,name) (window_buffer . ,visible) (mode . ,mode)
                  (point . ,pos) (file . ,file) (text . ,text)
                  (messages . ,messages) (section_hidden . ,(and hidden t))))))
-    (princ (format "GUI-PACKAGE-STATE|buffer=%S|mode=%S|point=%d|\n" name mode pos))))
+    (princ (format "GUI-PACKAGE-STATE|sequence=%d|buffer=%S|mode=%S|point=%d|\n"
+                   nelisp-gui-packages-sequence name mode pos))))
 
 (defun nelisp-gui-packages-trace (name original &rest args)
   "Record package call progress without changing arguments or results."
@@ -44,15 +45,22 @@
       (princ (format "GUI-PACKAGE-CALL-END|name=%S|seconds=%.6f|\n"
                      name (- (float-time) start))))))
 
-(defun nelisp-gui-packages-observe-minibuffer ()
+(defun nelisp-gui-packages-observe-minibuffer (&rest _ignored)
   "Observe the shared live reader without replacing package commands."
-  (let* ((buffer (car emacs-minibuffer--buffers))
+  ;; Full text is already captured in state JSON.  The frontend's optional
+  ;; %S dump also traverses text-property values, including Magit's circular
+  ;; section graph; the native circular-object printer cannot finish it.
+  ;; Disable that duplicate diagnostic before input, keeping buffer properties
+  ;; and the ordinary dispatcher/paint callback intact.
+  (setq nelisp-gui-frontend--trace-text nil)
+  (when (and (> emacs-minibuffer--depth 0) emacs-minibuffer--buffers)
+   (let* ((buffer (car emacs-minibuffer--buffers))
          (text (nelisp-ec-with-current-buffer buffer (nelisp-ec-buffer-string))))
     (setq nelisp-gui-packages-sequence (1+ nelisp-gui-packages-sequence))
     (with-temp-file nelisp-gui-packages-state-file
       (insert (json-encode `((sequence . ,nelisp-gui-packages-sequence)
                              (minibuffer . t) (text . ,text)))))
-    (princ (format "GUI-PACKAGE-MINIBUFFER|text=%S|\n" text))))
+    (princ (format "GUI-PACKAGE-MINIBUFFER|text=%S|\n" text)))))
 
 (defun nelisp-gui-packages-fixture ()
   "Load genuine packages into the ordinary image, then await real keys."
@@ -79,13 +87,19 @@
            "gnu-files" (lambda () (load (concat root "/vendor/gnu/files.el") nil t t)))
           (nelisp-gui-packages-load-step "gnu-uniquify" (lambda () (require 'uniquify)))
           (nelisp-gui-packages-load-step "gnu-files-x" (lambda () (require 'files-x)))
+          ;; GNU file/completion commands share this preloaded dependency.
+          ;; The real M-x reader needs it for every package, including Org.
+          (nelisp-gui-packages-load-step
+           "gnu-minibuffer" (lambda () (load (concat root "/vendor/gnu/minibuffer.el") nil t t)))
+          (nelisp-gui-packages-load-step
+           "gnu-epa-hook" (lambda () (load (concat root "/vendor/gnu/epa-hook.el") nil t t)))
+          (nelisp-gui-packages-load-step
+           "gnu-map-ynp" (lambda () (load (concat root "/vendor/gnu/emacs-lisp/map-ynp.el") nil t t)))
           (cond
          ((equal package "dired")
           (nelisp-gui-packages-load-step
            "dired" (lambda () (load (concat root "/vendor/gnu/dired.el") nil t t))))
          ((equal package "magit")
-          (nelisp-gui-packages-load-step
-           "gnu-minibuffer" (lambda () (load (concat root "/vendor/gnu/minibuffer.el") nil t t)))
           ;; GNU loadup preloads this parent mode before Magit defines its
           ;; repository-list keymap.  Keep the genuine mode, not an empty map.
           (nelisp-gui-packages-load-step
@@ -98,6 +112,10 @@
                      ;; source file finishes; preserve that startup ordering.
                      (let ((after-init-time nil)) (require 'magit)))))
          ((equal package "org-agenda")
+          ;; Org's genuine link/widget companions use GNU's preloaded TTY
+          ;; color definitions even when no network request is made.
+          (nelisp-gui-packages-load-step
+           "gnu-tty-colors" (lambda () (load (concat root "/vendor/gnu/term/tty-colors.el") nil t t)))
           (nelisp-gui-packages-load-step "org-agenda" (lambda () (require 'org-agenda))))
          (t (error "Unknown real package: %s" package))))
       (error (setq failure err)))
@@ -123,7 +141,10 @@
           enable-local-variables nil enable-dir-local-variables nil
           org-agenda-span 'day org-agenda-start-day nil
           org-agenda-window-setup 'current-window
-          magit-display-buffer-function 'magit-display-buffer-same-window-except-diff-v1)
+          magit-display-buffer-function 'magit-display-buffer-same-window-except-diff-v1
+          ;; Use with-editor's real shell transport.  Package Git commands
+          ;; must not start a TCP Emacsclient server in this local fixture.
+          with-editor-emacsclient-executable nil)
     (when (getenv "NELISP_GUI_PACKAGE_TRACE")
       (dolist (function '(dired dired-noselect dired-internal-noselect
                           dired-readin dired-mode dired-insert-directory
@@ -141,7 +162,11 @@
       (nemacs-main--init-keymap)
       (emacs-keymap-define-key nemacs-main--global-keymap (kbd "C-x d") 'dired)
       (emacs-keymap-define-key nemacs-main--global-keymap (kbd "M-x") 'execute-extended-command))
-    (setq emacs-minibuffer-redisplay-function #'nelisp-gui-packages-observe-minibuffer)
+    ;; The frontend installs its paint callback after this fixture returns.
+    ;; Observe the live reader before it waits for each event, preserving that
+    ;; callback and the real recursive command-loop dispatch.
+    (advice-add 'emacs-command-loop-read-event :before
+                #'nelisp-gui-packages-observe-minibuffer)
     ;; Record the completed real dispatcher before the shared reader waits.
     ;; The gate then sends `a'; it never calls agenda commands itself.
     (when (equal package "org-agenda")
