@@ -43,6 +43,8 @@ change to the criteria list is recorded in a NOTE.
 
 #+NOTE: 2026-10-06 criterion added (16 -> 17): S5.0c human-pace typing latency.  On the user's GNOME desktop 16 keys typed 120 ms apart took 61 s to render (~3.8 s per key; S5.0b sends keys back to back and coalescing hid it).  Lane G4: separately rendered keys median 927 -> 467 ms, human pace median 2.5 -> 1.15 s, p95 7.0 -> 1.5 s under Xvfb; per key redisplay 212 ms and paint 125 ms remain.  The same mode-line computation costs 38.2 ms in NeLisp vs 0.033 ms in GNU (evaluator speed, owned by the compiler session).  S5.0c is a known-red cmd.  Also fixed: the frontend closed on GNOME at startup (BadMatch from SetInputFocus before the WM mapped the window).
 
+#+NOTE: 2026-10-07 lanes S51 and K1 integrated.  S5.1: identical xdotool gestures on the plain launcher and GNU emacs -Q (each under its own Xvfb), 16 milestones (motion, edit, isearch, split/switch, mouse select, clipboard both ways, save) with equal semantic state, clipboard and saved bytes, 383 s; wired with the meter maximum of 600 s (the GUI image is built earlier by S3.2, so the build step only checks freshness).  K1: alias/custom, match-data, vector, directory and loader fixes plus vendored GNU color/dired-aux/rect/thingatpt/url/... sources; 32 GNU comparison cases; org now loads (704.6 s), magit stops after 810 s at void-variable magit:--gpg-sign, dired hits a buffer-boundary error; user init: 215 of the first 294 forms observed with zero NeLisp-only failures (was 12) before the 6100 s cap.
+
 * S1 Shared interactive foundation
 
 ** S1.1 One event wait drives read-event: keys, timers, idle timers and process output (sit-for, sleep-for, input-pending-p behave as GNU)
@@ -120,7 +122,11 @@ cmd: bash -c 'timeout 240 python3 scripts/gui-daily-build.py >/dev/null 2>&1 && 
 cmd: bash -c 'timeout 240 python3 scripts/gui-daily-build.py >/dev/null 2>&1 && EMACS=emacs xvfb-run -a -s "-screen 0 1600x1000x24 -dpi 96 -nolisten tcp" timeout 300 python3 scripts/gui-daily-gate.py S5.0c --init=-Q'
 
 ** S5.1 End to end under Xvfb with -Q: open, edit, search, split, mouse select, copy/paste, save, quit
-pending
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 600
+cmd: bash -c 'timeout 50 python3 scripts/gui-daily-build.py >/dev/null 2>&1 && EMACS=emacs timeout 540 python3 scripts/gui-daily-gate.py S5.1 --init=-Q --fixture=daily --compare=gnu'
+
+#+NOTE: 2026-10-06 lane S51 wires identical real xdotool gestures on the plain bin/nemacs-xcb --init=-Q and GNU emacs -Q, each on its own xvfb-run display. The daily fixture contains multiple lines and Japanese; read-only observations compare point, mark/region, buffer text/names, window points/count/selection, clipboard at every milestone, and exact saved bytes. Real xclip peers exercise both clipboard directions. Screenshots check ASCII/Japanese glyph cells; Lisp conditions and abnormal shutdown fail. Stage timeout is 540 s; source/image identities, gestures, milestones and screenshots are retained under build/gui-daily/S5.1/. No native builds or startup fixture injection.
 
 ** S5.3 End to end under Xvfb with the user's init.el (evil, SKK): the S5.1 scenario plus Japanese input via SKK
 pending

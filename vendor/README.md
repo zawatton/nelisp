@@ -420,3 +420,15 @@ prelude before local definitions are loaded.
    still load and behave the same way; a newer upstream Emacs can
    introduce a new missing primitive this runtime does not have.
 4. Record the new nelisp-emacs-lib commit hash and date in this file.
+
+## K1 user-init source dependencies
+
+The local GNU Emacs 31.1 sources for `color`, `rect`, `image`, `thingatpt`,
+`dired-aux`, and `url-http`, plus the HTTP source dependencies `nsm`, `rmc`,
+`url-gw`, `url-parse`, and `url-auth`, and the `dom` dependency reached by
+`nelisp-http` in the real init, plus `shortdoc` and `shortdoc-doc` for the
+GNU macro autoload used by tree-sitter/Org, are shipped verbatim under
+`emacs-lisp/`. They remain lazy source libraries on the ordinary vendor load
+path. No package feature is provided without loading its implementation.
+`SHA256SUMS` pins the decompressed bytes; the private K1 evidence manifest
+records the installed source paths and both compressed/decompressed hashes.

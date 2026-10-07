@@ -51,6 +51,10 @@
 (defvar emacs-command-loop--last-command nil
   "Command executed by the most recent complete command-loop iteration.")
 
+(defvar emacs-command-loop--last-error nil
+  "Original most recent recovered condition, for internal diagnostics.
+Retained until explicit loop reset; echo text alone loses the condition type.")
+
 (defvar emacs-command-loop--real-this-command nil
   "Command actually dispatched, even if `this-command' was overwritten
 mid-execution by a remap.")
@@ -125,6 +129,7 @@ owns transport-specific state changes.")
   (setq emacs-command-loop--unread-events       nil
         emacs-command-loop--this-command        nil
         emacs-command-loop--last-command        nil
+        emacs-command-loop--last-error          nil
         emacs-command-loop--real-this-command   nil
         emacs-command-loop--this-command-key-events []
         emacs-command-loop--this-command-keys   ""
@@ -1263,6 +1268,7 @@ and `:message', the echo/status text."
     (,(logior 134217728 ?v) . scroll-down)
     (,(logior 134217728 ?f) . forward-word)
     (,(logior 134217728 ?b) . backward-word)
+    (,(logior 134217728 ?w) . kill-ring-save)
     (,(logior 134217728 ?<) . beginning-of-buffer)
     (,(logior 134217728 ?>) . end-of-buffer)
     (,(logior 134217728 ?%) . query-replace))
@@ -2945,7 +2951,8 @@ consume input) when `special-event-map' is nil / not a keymap."
   "Report a recoverable live command error ERR and discard pending input.
 The live consumer continues through post-command hooks and completion, as
 GNU's interactive command loop does.  Batch callers retain signal propagation."
-  (setq emacs-command-loop--unread-events nil
+  (setq emacs-command-loop--last-error err
+        emacs-command-loop--unread-events nil
         emacs-command-loop--quit-flag nil
         emacs-command-loop--prefix-arg nil)
   (when (boundp 'quit-flag) (set 'quit-flag nil))

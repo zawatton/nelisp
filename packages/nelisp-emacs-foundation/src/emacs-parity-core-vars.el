@@ -24,6 +24,19 @@
 (unless (boundp 'emacs-minor-version) (defvar emacs-minor-version 1))
 (unless (boundp 'emacs-build-time) (defvar emacs-build-time nil))
 (unless (boundp 'emacs-build-system) (defvar emacs-build-system "nemacs"))
+;; GNU consumers (including treesit, loaded by Org) inspect this string for
+;; configure switches.  The standalone runtime is built without GNU's
+;; configure script, so it has no such switches; do not copy the host build's
+;; optional-capability flags into this runtime.
+(unless (boundp 'system-configuration-options)
+  (defvar system-configuration-options ""
+    "GNU configure options used to build this runtime; none for standalone."))
+;; treesit.c supplies the registry before Lisp mode autoloads populate it.
+;; The library bootstrap has no mode registrations yet.  GNU treesit.el's
+;; Custom type reads this registry whenever the real parser is available.
+(unless (boundp 'treesit-major-mode-remap-alist)
+  (defvar treesit-major-mode-remap-alist nil
+    "Alist of ordinary modes and tree-sitter alternatives registered by modes."))
 
 ;; --- batch/display context ---
 (unless (boundp 'window-system) (defvar window-system nil))
@@ -62,6 +75,12 @@
 ;; above).  `global-mode-string' is read by mode-line construction in many
 ;; packages and signalled void-variable in the full-init audit. ---
 (unless (boundp 'global-mode-string) (defvar global-mode-string nil))
+
+;; GNU bindings.el's standard construct.  Preserve user/customized values;
+;; mode-line packages append to this even in a headless library consumer.
+(unless (boundp 'mode-line-misc-info)
+  (defvar mode-line-misc-info '((global-mode-string ("" global-mode-string)))))
+(put 'mode-line-misc-info 'risky-local-variable t)
 
 ;; --- password prompt words (stock international/mule-conf default) ---
 ;; `comint', `eshell' and `tramp' build their password prompt regexps from

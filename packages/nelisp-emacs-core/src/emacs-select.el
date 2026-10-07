@@ -12,6 +12,15 @@
 (defvar gui-last-cut-in-clipboard nil)
 (defvar gui-last-cut-in-primary nil)
 
+(defun emacs-select-display-selections-p (&optional _display)
+  "Whether the installed display transport supports selections.
+The current backend is the implicit display.  Headless and incomplete
+transports do not advertise selection support; no transport call is needed."
+  (and (plist-get emacs-select-backend :set)
+       (plist-get emacs-select-backend :get)
+       (plist-get emacs-select-backend :owner)
+       (plist-get emacs-select-backend :exists) t))
+
 (defun emacs-select--type (type)
   (cond ((null type) 'PRIMARY) ((eq type t) 'SECONDARY) (t type)))
 (defun emacs-select--call (operation &rest args)
@@ -30,16 +39,24 @@
   (and (emacs-select--call :owner (emacs-select--type type)) t))
 (defun emacs-select-exists-p (&optional type)
   (and (emacs-select--call :exists (emacs-select--type type)) t))
-(defun emacs-select--remember (type text)
-  (let ((value (list text (emacs-select-get type 'TIMESTAMP)))
+(defun emacs-select--timestamp (type)
+  "Get TYPE's timestamp only when its owner advertises that target.
+Owners such as xclip serve text for unknown targets.  Requesting TIMESTAMP
+without capability discovery would then produce an invalid INTEGER reply."
+  (let ((targets (emacs-select-get type 'TARGETS)))
+    (when (and (or (listp targets) (vectorp targets))
+               (memq 'TIMESTAMP (append targets nil)))
+      (emacs-select-get type 'TIMESTAMP))))
+(defun emacs-select--remember (type text timestamp)
+  (let ((value (list text timestamp))
         (cell (assq type emacs-select--last)))
     (if cell (setcdr cell value) (push (cons type value) emacs-select--last))))
 (defun emacs-select-text (text)
   "Publish TEXT to enabled selections, as GNU gui-select-text does."
   (when select-enable-primary
-    (emacs-select-set 'PRIMARY text) (emacs-select--remember 'PRIMARY text))
+    (emacs-select-set 'PRIMARY text) (emacs-select--remember 'PRIMARY text (emacs-select--timestamp 'PRIMARY)))
   (when select-enable-clipboard
-    (emacs-select-set 'CLIPBOARD text) (emacs-select--remember 'CLIPBOARD text))
+    (emacs-select-set 'CLIPBOARD text) (emacs-select--remember 'CLIPBOARD text (emacs-select--timestamp 'CLIPBOARD)))
   (setq gui-last-cut-in-clipboard select-enable-clipboard
         gui-last-cut-in-primary select-enable-primary))
 (defun emacs-select--text (type)
@@ -53,10 +70,10 @@
 (defun emacs-select--new-text (type cut)
   (unless (and (eq type 'CLIPBOARD) cut (emacs-select-owner-p type))
     (let* ((text (emacs-select--text type))
-           (timestamp (and text (emacs-select-get type 'TIMESTAMP)))
+           (timestamp (and text (emacs-select--timestamp type)))
            (old (cdr (assq type emacs-select--last))))
       (when (and (stringp text) (> (length text) 0))
-        (emacs-select--remember type text)
+        (emacs-select--remember type text timestamp)
         (unless (and cut (equal old (list text timestamp))) text)))))
 (defun emacs-select-value ()
   "Return changed external text, preferring CLIPBOARD over PRIMARY.
@@ -72,7 +89,8 @@ Remember both independently; a timestamp change permits identical new text."
   "Install BACKEND and explicit select.el shims in standalone NeLisp only."
   (setq emacs-select-backend backend)
   (when (fboundp 'nelisp--write-stdout-bytes)
-    (dolist (entry '((gui-set-selection . emacs-select-set)
+    (dolist (entry '((display-selections-p . emacs-select-display-selections-p)
+                     (gui-set-selection . emacs-select-set)
                      (gui-get-selection . emacs-select-get)
                      (gui-selection-owner-p . emacs-select-owner-p)
                      (gui-selection-exists-p . emacs-select-exists-p)

@@ -1955,7 +1955,8 @@ ARG selects the kill-ring entry using the same MVP rules as `yank'."
      ((and entry (fboundp 'nelisp-buffer-p)
            (nelisp-buffer-p (current-buffer)) (null (nelisp-ec-current-buffer)))
       (let ((beg (point)))
-        (push-mark beg nil t)
+        ;; GNU yank remembers the inserted span without activating it.
+        (push-mark beg nil)
         (insert entry)
         (setq emacs-edit--last-yank-bounds (cons beg (point)))
         (list :beg beg :end (point) :text entry :deleted-newline nil)))
@@ -3297,6 +3298,7 @@ If BEFORE-P is non-nil, prepend it instead."
 (defun kill-ring-save (beg end &optional region)
   "Save BEG..END as if killed, without killing it.
 With REGION non-nil, ignore BEG and END and save the current region."
+  (interactive "r")
   (if region
       (copy-region-as-kill (region-beginning) (region-end))
     (copy-region-as-kill beg end))

@@ -37,6 +37,28 @@ class AuditTests(unittest.TestCase):
             self.assertTrue(summary['metrics']['host']['timeout'])
             self.assertTrue(summary['metrics']['nelisp']['timeout'])
 
+    def test_relative_image_is_loaded_inside_fixture_home(self):
+        image = Path(subprocess.check_output(
+            ['bash', str(ROOT / 'tools/c-core-image.sh'), 'path'],
+            cwd=ROOT, text=True).strip())
+        with tempfile.TemporaryDirectory(dir=ROOT / 'build/user-init') as name:
+            root = Path(name)
+            source = root / 'source'
+            source.mkdir()
+            (source / 'early-init.el').write_text('nil\n')
+            (source / 'init.el').write_text(
+                "(when (fboundp 'rdf) (unless (boundp 'c-core-image--identity) "
+                '(error "base heap used instead of explicit image")))\n')
+            output = root / 'output'
+            command = [os.sys.executable, str(ROOT / 'tools/user-init-audit.py'),
+                       '--source', str(source), '--output', str(output), '--cap', '30',
+                       '--image', os.path.relpath(image, ROOT)]
+            result = subprocess.run(command, cwd=ROOT, capture_output=True,
+                                    text=True, timeout=70)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            summary = json.loads((output / 'summary.json').read_text())
+            self.assertEqual(summary['classifications'], {'pass': 2})
+
     def test_filesystem_and_network_are_enforced_by_os(self):
         with tempfile.TemporaryDirectory(dir=ROOT / 'build/user-init') as name:
             root = Path(name)

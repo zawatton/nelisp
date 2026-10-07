@@ -54,6 +54,27 @@
             (signal 'cyclic-variable-indirection (list next)))
           (setq seen (cons next seen) next (cdr symbol)))
         next))
+    (defun nelisp--alias-write-mirrors (emacs-alias--name emacs-alias--value emacs-alias--operation)
+      "Mirror pending alias writes after user callbacks have run.
+Use private lexical argument names: native dynamic bind callbacks can run
+while a consumer's ordinary argument named symbol/value is being bound.
+The notification boundary covers defvar, setq and let/unlet."
+      (when (and (not (memq emacs-alias--operation '(defvaralias makunbound)))
+                 (or (assq emacs-alias--name nelisp--defvaralias-registry)
+                     (assq emacs-alias--name nelisp--defvaralias-reverse)))
+        (let* ((emacs-alias--target (nelisp--alias-canonical emacs-alias--name))
+               (emacs-alias--aliases (cdr (assq emacs-alias--target nelisp--defvaralias-reverse)))
+               (emacs-parity-misc--inhibit-watchers t))
+          (when emacs-alias--aliases
+            (unless (eq emacs-alias--name emacs-alias--target)
+              (if (eq emacs-alias--operation 'unlet-void)
+                  (funcall nelisp--alias-raw-makunbound emacs-alias--target)
+                (funcall nelisp--alias-raw-set emacs-alias--target emacs-alias--value)))
+            (dolist (emacs-alias--alias emacs-alias--aliases)
+              (unless (eq emacs-alias--alias emacs-alias--name)
+                (if (eq emacs-alias--operation 'unlet-void)
+                    (funcall nelisp--alias-raw-makunbound emacs-alias--alias)
+                  (funcall nelisp--alias-raw-set emacs-alias--alias emacs-alias--value))))))))
     (defun set (symbol value)
       (let ((target (if (assq symbol nelisp--defvaralias-registry)
                         (nelisp--alias-canonical symbol) symbol)))
@@ -147,6 +168,11 @@ cells without an interpreted accessor frame for every symbol."
         (setq nelisp--defvaralias-registry
               (cons (cons new-alias base-variable)
                     (assq-delete-all new-alias nelisp--defvaralias-registry)))
+        ;; Both names become dynamic variables even when the base is still
+        ;; void.  In particular, `let' on an alias must bind its base.
+        (when (boundp 'nelisp--special-variables)
+          (puthash new-alias t nelisp--special-variables)
+          (puthash base-variable t nelisp--special-variables))
         (nelisp--alias-rebuild-reverse)
         (when (funcall nelisp--alias-raw-boundp target)
           (funcall nelisp--alias-raw-set new-alias
@@ -169,7 +195,9 @@ cells without an interpreted accessor frame for every symbol."
                 (setcdr group (cons (car entry) (cdr group)))
               (setq nelisp--defvaralias-reverse
                     (cons (cons canonical (list (car entry)))
-                          nelisp--defvaralias-reverse))))))
+                          nelisp--defvaralias-reverse)))))
+        (when (fboundp 'emacs-parity-misc--watcher-flag)
+          (emacs-parity-misc--watcher-flag)))
     (setq nelisp--alias-provider-installed t)))
 
 (provide 'emacs-cc-variable-alias-1)

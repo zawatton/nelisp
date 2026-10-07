@@ -14,6 +14,14 @@
 (require 'emacs-command-loop-builtins)
 (require 'cl-lib)
 
+(ert-deftest emacs-command-loop-retains-recovered-condition-for-observers ()
+  (let ((emacs-command-loop--last-error nil))
+    (cl-letf (((symbol-function 'message) #'ignore))
+      (emacs-command-loop--recover-command-error '(error "observer negative")))
+    (should (equal emacs-command-loop--last-error '(error "observer negative")))
+    (emacs-command-loop-reset)
+    (should-not emacs-command-loop--last-error)))
+
 (defmacro emacs-command-loop-builtins-test--with-fresh-state (&rest body)
   "Run BODY with a clean substrate state."
   (declare (indent 0) (debug (body)))
@@ -3048,3 +3056,7 @@ keymap needs to override a frontend's default handling for that key."
         (should (eq 'emacs-command-loop-builtins-test--dispatch-fixture
                     (emacs-command-loop-dispatch-key ?n)))
         (should emacs-command-loop-builtins-test--dispatch-ran)))))
+
+(ert-deftest emacs-command-loop-standard-keymap-includes-copy-region ()
+  (let ((map (emacs-command-loop-build-standard-keymap)))
+    (should (eq (lookup-key map (kbd "M-w")) 'kill-ring-save))))

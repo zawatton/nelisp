@@ -302,16 +302,22 @@ Phase 2 (`emacs-frame.el') will promote this to a real frame object."
   (emacs-window--check-live (emacs-window-get-window window))
   emacs-window--frame)
 
-(defun emacs-window-window-list (&optional frame _minibuf window)
-  "Return the live windows on FRAME starting from WINDOW.
-
-In this Phase-1 implementation FRAME is ignored (single implicit frame),
-MINIBUF is ignored (no minibuffer yet), and the result starts at WINDOW
-if non-nil and rotates to keep tree order."
+(defun emacs-window-window-list (&optional frame minibuf window)
+  "Return live FRAME windows, starting from WINDOW or the selected window.
+FRAME is implicit.  MINIBUF t includes the detached minibuffer, nil includes
+it only while active, and other values exclude it.  Redisplay consumers need
+this same view to render recursive readers without adding frontend layout."
   (ignore frame)
   (emacs-window--ensure-root)
-  (let* ((leaves (emacs-window--all-leaves))
-         (start  (or window emacs-window--selected)))
+  (let* ((mini (and (boundp 'emacs-minibuffer--window) emacs-minibuffer--window))
+         (leaves (delq mini (emacs-window--all-leaves)))
+         (include-mini (or (eq minibuf t)
+                           (and (null minibuf)
+                                (boundp 'emacs-minibuffer--depth)
+                                (> emacs-minibuffer--depth 0))))
+         (start (or window emacs-window--selected)))
+    (when (and include-mini (emacs-window-window-live-p mini))
+      (setq leaves (append leaves (list mini))))
     (if (or (null start) (not (memq start leaves)))
         leaves
       (let ((tail (memq start leaves)))
@@ -1210,7 +1216,26 @@ for API compatibility and ignored in Phase 1."
 (defun emacs-window-select-window (window &optional norecord)
   "Select WINDOW, returning it.  Errors if WINDOW is not a live leaf."
   (emacs-window--check-leaf window)
-  (setq emacs-window--selected window)
+  ;; Window selection owns the buffer/point handoff for all consumers,
+  ;; including positioned mouse events and recursive minibuffer readers.
+  (let* ((old emacs-window--selected)
+         (old-buffer (and old (emacs-window-buffer old)))
+         (buffer (emacs-window-window-buffer window)))
+    (cond
+     ((and (nelisp-ec-buffer-p old-buffer)
+           (eq old-buffer (nelisp-ec-current-buffer)))
+      (setf (emacs-window-point old) (nelisp-ec-point)))
+     ((and (bufferp old-buffer) (eq old-buffer (current-buffer)))
+      (setf (emacs-window-point old) (point))))
+    (setq emacs-window--selected window)
+    (cond
+     ((nelisp-ec-buffer-p buffer)
+      (nelisp-ec-set-buffer buffer)
+      (nelisp-ec-goto-char (emacs-window-point window)))
+     ((and (bufferp buffer) (buffer-live-p buffer))
+      (nelisp-ec-clear-current-buffer)
+      (set-buffer buffer)
+      (goto-char (emacs-window-point window)))))
   (unless norecord
     (setf (emacs-window-use-time window)
           (cl-incf emacs-window--use-time-counter)))
@@ -1220,12 +1245,14 @@ for API compatibility and ignored in Phase 1."
   "Run BODY without permanently changing the selected window."
   (declare (indent 0) (debug (body)))
   (let ((saved (gensym "saved-")))
-    `(let ((,saved (emacs-window-selected-window)))
-       (unwind-protect
-           (progn ,@body)
-         (when (and (emacs-window-p ,saved)
-                    (not (emacs-window-deleted-p ,saved)))
-           (setq emacs-window--selected ,saved))))))
+    `(save-current-buffer
+       (nelisp-ec-save-current-buffer
+         (let ((,saved (emacs-window-selected-window)))
+           (unwind-protect
+               (progn ,@body)
+             (when (and (emacs-window-p ,saved)
+                        (not (emacs-window-deleted-p ,saved)))
+               (emacs-window-select-window ,saved t))))))))
 
 (defmacro emacs-window-with-selected-window (window &rest body)
   "Select WINDOW, run BODY, restore previous selection."

@@ -1,5 +1,16 @@
 ;;; emacs-mark-state.el --- Buffer-owned mark state -*- lexical-binding: t; -*-
 
+(defvar transient-mark-mode (not (and (boundp 'noninteractive) noninteractive))
+  "Whether commands use and deactivate an active region.
+GNU simple.el expects this C-core variable before defining its global mode.
+Preserve any host or consumer setting that already exists.")
+
+(defun emacs-mark-state-initialize-interactive ()
+  "Apply GNU's interactive mark default before consumer customization.
+Heap images are prepared in batch mode.  Interactive consumers explicitly
+apply this shared default at startup; buffer-local overrides remain intact."
+  (setq-default transient-mark-mode t))
+
 (defvar emacs-cc-mark--markers (make-hash-table :test 'eq))
 (defvar select-active-regions t
   "Whether activating a region also owns the primary selection.")

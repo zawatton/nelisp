@@ -307,6 +307,16 @@ is accepted for API parity but ignored."
 this; for now we follow `display-graphic-p'."
   (emacs-display-graphic-p display))
 
+(defun emacs-display-color-cells (&optional display)
+  "Return DISPLAY's color capacity through its active shared provider.
+Like GNU frame.el, use terminal color capacity for a non-graphic display.
+The GUI provider owns the visual's depth and may load after this shim."
+  (if (and (fboundp 'emacs-frame-display-color-cells)
+           (fboundp 'emacs-frame-frame-parameter)
+           (integerp (emacs-frame-frame-parameter nil 'display-depth)))
+      (emacs-frame-display-color-cells display)
+    (tty-display-color-cells display)))
+
 (defun emacs-display-images-p (&optional display)
   "Return non-nil if DISPLAY is graphical and has GNU image primitives."
   (and (display-graphic-p display)
@@ -352,6 +362,9 @@ conservatively reports nil, matching stock Emacs's own tty default."
 
 (when (emacs-stub--install-function-p 'display-color-p)
   (defalias 'display-color-p #'emacs-display-color-p))
+
+(when (emacs-stub--install-function-p 'display-color-cells)
+  (defalias 'display-color-cells #'emacs-display-color-cells))
 
 (when (emacs-stub--install-function-p 'display-images-p)
   (defalias 'display-images-p #'emacs-display-images-p))
@@ -537,7 +550,14 @@ Unregistered Lisp functions still fail the ordinary subr type check."
       (signal 'wrong-type-argument (list 'symbolp symbol)))
     (when (or (null symbol) (eq symbol t) (keywordp symbol))
       (signal 'setting-constant (list symbol)))
-    (nelisp--env-globals-set-value symbol value)
+    (let ((target (if (fboundp 'indirect-variable)
+                      (indirect-variable symbol) symbol)))
+      (nelisp--env-globals-set-value target value)
+      ;; GNU Custom initializes through this global-cell primitive rather
+      ;; than `set'.  Keep already declared obsolete/variable aliases live.
+      (when (boundp 'nelisp--defvaralias-reverse)
+        (dolist (alias (cdr (assq target nelisp--defvaralias-reverse)))
+          (nelisp--env-globals-set-value alias value))))
     nil))
 
 (when (or (not (boundp 'emacs-version))

@@ -178,10 +178,12 @@ def main():
     for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(signum, cancelled)
     parser = argparse.ArgumentParser()
-    parser.add_argument('stage', choices=['S3.2', 'S3.3', 'S4.1', 'S4.2', 'S4.3', 'S5.0', 'S5.0b', 'S5.0c', 'S5.2'])
+    parser.add_argument('stage', choices=['S3.2', 'S3.3', 'S4.1', 'S4.2', 'S4.3', 'S5.0', 'S5.0b', 'S5.0c', 'S5.1', 'S5.2'])
     parser.add_argument('--launcher',type=Path,default=LAUNCHER)
     parser.add_argument('--init', default='-Q', choices=['-Q'])
-    parser.add_argument('--fixture', choices=['render', 'metrics', 'skk-evil', 'keyboard', 'mouse-menu', 'selections', 'packages'])
+    parser.add_argument('--fixture', choices=['render', 'metrics', 'skk-evil', 'keyboard', 'mouse-menu', 'selections', 'daily', 'packages'])
+    parser.add_argument('--compare', choices=['gnu'], default='gnu')
+    parser.add_argument('--engine', choices=['gnu', 'nelisp'], help=argparse.SUPPRESS)
     parser.add_argument('--packages', default='dired,magit,org-agenda')
     parser.add_argument('--package-load-budget', type=float, default=300)
     parser.add_argument('--package-step-budget', type=float, default=300)
@@ -200,7 +202,7 @@ def main():
         if args.fixture:
             parser.error(args.stage+' must use no fixture')
     else:
-        args.fixture = args.fixture or {'S3.2': 'render', 'S3.3': 'metrics', 'S4.1': 'skk-evil', 'S4.2': 'mouse-menu', 'S4.3': 'selections', 'S5.2': 'packages'}[args.stage]
+        args.fixture = args.fixture or {'S3.2': 'render', 'S3.3': 'metrics', 'S4.1': 'skk-evil', 'S4.2': 'mouse-menu', 'S4.3': 'selections', 'S5.1': 'daily', 'S5.2': 'packages'}[args.stage]
     if args.stage != 'S3.2':
         import importlib.util
         spec = importlib.util.spec_from_file_location('gui_daily_stages', ROOT / 'scripts/gui-daily-stages.py')

@@ -1071,7 +1071,9 @@ Blocks the event loop while reading — no other commands fire.
 This is intentionally a minimal `read-from-minibuffer'-replacement
 (= the full minibuffer machinery is too heavy for the boot path).
 Used by `nemacs-main-find-file-interactive'."
-  (if (and (eq (or (nemacs-main-option :driver) 'host) 'host)
+  (if (eq (nemacs-main-option :frontend) 'xcb)
+      (emacs-minibuffer-read-string prompt initial)
+    (if (and (eq (or (nemacs-main-option :driver) 'host) 'host)
            (boundp 'noninteractive)
            (not noninteractive)
            (fboundp 'read-string))
@@ -1118,7 +1120,7 @@ Used by `nemacs-main-find-file-interactive'."
                      (t
                       (setq more nil))))))
               (nemacs-main--read-line-repaint prompt input))))))
-      (if cancel nil input))))
+      (if cancel nil input)))))
 
 (defun nemacs-main--run-file-visit ()
   "Run the TUI find-file command through the shared IO helper."
@@ -2054,6 +2056,10 @@ takes over and dispatches TUI events directly."
     (install-winsize-handler))
   (when (fboundp 'install-jobctrl-handlers)
     (install-jobctrl-handlers))
+  (when (and (eq (or (nemacs-main-option :driver) 'host) 'nelisp)
+             (not (nemacs-main-option :batch)))
+    (require 'emacs-mark-state)
+    (emacs-mark-state-initialize-interactive))
   (cond
    ((nemacs-main-option :batch)
     (nemacs-batch-main))
@@ -2061,6 +2067,7 @@ takes over and dispatches TUI events directly."
     (unless nemacs-initialized
       (nemacs-main--apply-startup-gate)
       (nemacs-init))
+    (emacs-init-load-command-features)
     (nemacs-main--apply-options)
     (nemacs-main--init-keymap)
     ;; Startup functions may already have selected a native editing buffer.

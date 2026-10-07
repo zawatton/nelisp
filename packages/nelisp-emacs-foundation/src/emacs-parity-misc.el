@@ -709,33 +709,57 @@ returns nil (no asynchronous compilation is scheduled)."
     (nreverse out)))
 
 (defun emacs-parity-misc--watcher-flag ()
-  "Enable the evaluator's single flag check while any watcher exists."
+  "Enable write notifications for user watchers or copied variable aliases."
   (when (fboundp 'nelisp--env-globals-op)
     (nelisp--env-globals-op 'variable-watchers nil
-                           (> (hash-table-count emacs-parity-misc--variable-watchers) 0))))
+                           (or (> (hash-table-count emacs-parity-misc--variable-watchers) 0)
+                               (and (boundp 'nelisp--defvaralias-registry)
+                                    nelisp--defvaralias-registry t)))))
 
 (defun emacs-parity-misc--watcher-symbol (symbol)
   (unless (symbolp symbol)
     (signal 'wrong-type-argument (list 'symbolp symbol)))
   (if (fboundp 'indirect-variable) (indirect-variable symbol) symbol))
 
-(defun emacs-parity-misc--notify (symbol value operation where)
-  "Call watchers before a semantic write, with GNU's old-value visibility.
-Suppress recursion for this variable only; callbacks may write other watched
-variables. Signals and throws prevent the pending write. Lexical writes do
-not enter this function. WHERE is a buffer for a local binding, nil otherwise."
+(defun emacs-parity-misc--notify
+    (emacs-watch--symbol emacs-watch--value emacs-watch--operation emacs-watch--where)
+  "Notify consumers before mirroring a pending dynamic variable write.
+Callbacks see the old values, and a signal/throw cancels the write.
+Private lexical names avoid collisions with a consumer's dynamic bindings."
   (unless emacs-parity-misc--inhibit-watchers
-    (setq symbol (if (eq operation 'defvaralias) symbol
-                   (emacs-parity-misc--watcher-symbol symbol)))
-    (let ((watchers (gethash symbol emacs-parity-misc--variable-watchers)))
-      (when (and watchers (not (memq symbol emacs-parity-misc--watching)))
-        (unless (or where (memq operation '(defvaralias makunbound)))
-          (when (and (fboundp 'local-variable-p) (local-variable-p symbol))
-            (setq where (current-buffer))))
-        (when (eq where 'default) (setq where nil))
-        (let ((emacs-parity-misc--watching (cons symbol emacs-parity-misc--watching)))
-          (dolist (watcher watchers)
-            (funcall watcher symbol value operation where))))))
+    (let ((emacs-watch--written-symbol emacs-watch--symbol))
+      (setq emacs-watch--symbol
+            (if (eq emacs-watch--operation 'defvaralias) emacs-watch--symbol
+              (emacs-parity-misc--watcher-symbol emacs-watch--symbol)))
+      (let ((emacs-watch--watchers
+             (gethash emacs-watch--symbol emacs-parity-misc--variable-watchers)))
+        (when (and emacs-watch--watchers
+                   (not (memq emacs-watch--symbol emacs-parity-misc--watching)))
+          (unless (or emacs-watch--where
+                      (memq emacs-watch--operation '(defvaralias makunbound)))
+            (when (and (fboundp 'local-variable-p)
+                       (local-variable-p emacs-watch--symbol))
+              (setq emacs-watch--where (current-buffer))))
+          (when (eq emacs-watch--where 'default) (setq emacs-watch--where nil))
+          (let ((emacs-parity-misc--watching
+                 (cons emacs-watch--symbol emacs-parity-misc--watching)))
+            (dolist (emacs-watch--watcher emacs-watch--watchers)
+              (funcall emacs-watch--watcher emacs-watch--symbol
+                       (condition-case nil emacs-watch--value (void-variable nil))
+                       emacs-watch--operation emacs-watch--where)))))
+      ;; Alias mirroring follows callbacks so they retain GNU's old-value
+      ;; visibility, and a callback that signals still cancels the write.
+      (when (and (fboundp 'nelisp--alias-write-mirrors)
+                 (not (memq emacs-watch--operation '(defvaralias makunbound)))
+                 (or (assq emacs-watch--written-symbol nelisp--defvaralias-registry)
+                     (assq emacs-watch--written-symbol nelisp--defvaralias-reverse)))
+        ;; An unlet notification can carry the runtime's void-cell sentinel.
+        ;; Reading that argument signals, including for unrelated variables;
+        ;; consume it only for aliases, and preserve a void restoration.
+        (if (condition-case nil (progn emacs-watch--value t) (void-variable nil))
+            (nelisp--alias-write-mirrors emacs-watch--written-symbol
+                                       emacs-watch--value emacs-watch--operation)
+          (nelisp--alias-write-mirrors emacs-watch--written-symbol nil 'unlet-void)))))
   nil)
 
 (unless (fboundp 'add-variable-watcher)

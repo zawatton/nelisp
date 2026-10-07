@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('packages_gate', ROOT/'scripts/gui-daily-packages.py')
@@ -16,9 +17,29 @@ spec.loader.exec_module(gate)
 
 
 class Evidence(unittest.TestCase):
+    def test_reused_fixture_never_invokes_git(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)/'fixture'
+            for relative in ('load-path.json', 'sources.json', 'vendor/gnu-preloaded.el',
+                             'agenda.org', 'tree/alpha.txt', 'repo/.git/HEAD'):
+                path = root/relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('fixture')
+            (root/'load-path.json').write_text(json.dumps([str(root/'vendor')]))
+            env = dict(os.environ, NELISP_GUI_PACKAGES_REUSE_FIXTURE=str(root))
+            with patch.object(gate.subprocess, 'check_output', side_effect=AssertionError('Git forbidden')):
+                actual, prepared, receipt = gate.prepare(Path(directory)/'out', env)
+            self.assertEqual(actual, root.resolve())
+            self.assertFalse(receipt['git_writes'])
+            self.assertEqual(prepared['GIT_OPTIONAL_LOCKS'], '0')
+            (root/'repo/.git/HEAD').unlink()
+            with self.assertRaises(RuntimeError):
+                gate.prepare(Path(directory)/'out', env)
+
     def test_wrong_mode_name_text_and_lisp_errors(self):
         good = dict(mode='dired-mode', buffer='tree', window_buffer='tree',
-                    text='alpha.txt\nbeta.txt\n', messages='')
+                    text='alpha.txt\nbeta.txt\n',
+                    messages='nemacs 0.1.0-mvp ready (Layer 2 / Doc 51)\n')
         gate.validate(good, 'dired-mode', ['alpha.txt','beta.txt'])
         for patch in [dict(mode='fundamental-mode'), dict(window_buffer='*scratch*'),
                       dict(buffer=''),dict(text=''),dict(text='alpha.txt'),
@@ -27,6 +48,7 @@ class Evidence(unittest.TestCase):
                       dict(messages="Symbol's value is void: missing-variable"),
                       dict(messages='Wrong type argument: stringp, [24]'),
                       dict(messages='Args out of range: #("m" 0 1 (dired-filename t)), 2, nil'),
+                      dict(messages=good['messages']+'Args out of range: #("o" 0 1 (dired-filename t)), 2, nil\n'),
                       dict(messages='Key sequence g d starts with non-prefix key g')]:
             with self.subTest(patch=patch), self.assertRaises(AssertionError):
                 gate.validate(dict(good, **patch),'dired-mode',['alpha.txt','beta.txt'])

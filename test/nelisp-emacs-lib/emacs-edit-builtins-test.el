@@ -1472,6 +1472,20 @@ checked by its dedicated shape test above)."
         (should (equal "XYZ" (plist-get edit :text)))
         (should-not (plist-get edit :deleted-newline))))))
 
+(ert-deftest emacs-edit-native-yank-sets-mark-without-activating-region ()
+  (with-temp-buffer
+    (insert "Alpha beta gamma\n")
+    (goto-char 11)
+    (let ((nelisp-ec--current-buffer nil)
+          (kill-ring '("外\n")) (interprogram-paste-function nil)
+          (transient-mark-mode t) (mark-active nil))
+      (cl-letf (((symbol-function 'nelisp-buffer-p) #'bufferp))
+        (emacs-edit-yank-direct))
+      (should (equal (buffer-string) "Alpha beta外\n gamma\n"))
+      (should (= (point) 13))
+      (should (= (mark t) 11))
+      (should-not mark-active))))
+
 (ert-deftest emacs-edit-builtins-test/mouse-yank-primary-direct-moves-and-yanks ()
   (emacs-edit-builtins-test--with-fresh-buffer "ABCD"
     (let ((kill-ring '("X"))
@@ -2092,3 +2106,22 @@ clipboard — `arg' explicitly chose a kill-ring entry."
 (provide 'emacs-edit-builtins-test)
 
 ;;; emacs-edit-builtins-test.el ends here
+
+(ert-deftest emacs-edit-kill-ring-save-is-an-interactive-region-command ()
+  (let* ((kill-ring nil) (exported nil) (transient-mark-mode t)
+        (interprogram-cut-function (lambda (text) (setq exported text))))
+    (with-temp-buffer
+      (insert "Alpha beta gamma\n")
+      (set-mark 7) (goto-char 11) (setq mark-active t)
+      (should (commandp 'kill-ring-save))
+      (call-interactively #'kill-ring-save)
+      (should (equal (car kill-ring) "beta"))
+      (should (equal exported "beta"))
+      (should (= (point) 11))
+      (should (= (mark) 7))
+      (should-not mark-active))))
+
+(ert-deftest emacs-edit-mark-preload-preserves-consumer-default ()
+  (let ((transient-mark-mode nil))
+    (load (locate-library "emacs-mark-state") nil t)
+    (should-not transient-mark-mode)))

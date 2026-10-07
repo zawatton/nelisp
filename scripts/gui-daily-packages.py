@@ -77,6 +77,23 @@ def prepare_shorthands(vendor, env):
 
 
 def prepare(out, env):
+    # Read-only package investigations can reuse the already prepared sources
+    # and repository without invoking Git or creating repository metadata.
+    reused = env.get('NELISP_GUI_PACKAGES_REUSE_FIXTURE')
+    if reused:
+        root = Path(reused).resolve()
+        for relative in ('load-path.json', 'sources.json', 'vendor/gnu-preloaded.el',
+                         'agenda.org', 'tree/alpha.txt', 'repo/.git/HEAD'):
+            if not (root/relative).is_file():
+                raise RuntimeError('incomplete package fixture: '+relative)
+        paths = json.loads((root/'load-path.json').read_text())
+        if not paths or any(not Path(path).is_dir() for path in paths):
+            raise RuntimeError('package fixture load paths are unavailable')
+        env = dict(env, HOME=str(root/'home'), TMPDIR=str(root/'tmp'),
+                   GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull,
+                   GIT_TERMINAL_PROMPT='0', GIT_OPTIONAL_LOCKS='0')
+        return root, env, dict(sources=str(root/'sources.json'),
+                               reused_fixture=str(root), git_writes=False)
     root = out/'fixture'
     root.mkdir(parents=True, exist_ok=True)
     vendor = root/'vendor'
@@ -323,6 +340,8 @@ def run(args, api, out, env, report, sessions):
                 capture('dired-file','text-mode',['S52 opened real file'])
                 result['checks'].append('n/p/RET')
             elif package=='magit':
+                assert not env.get('NELISP_GUI_PACKAGES_REUSE_FIXTURE'), (
+                    'read-only reused fixture: Magit staging would write the Git index')
                 mx('magit-status')
                 wait(lambda d: d.get('mode')=='magit-status-mode','Magit status')
                 capture('magit-status','magit-status-mode',['Unstaged changes','Staged changes','Recent commits','Fixture commit'])

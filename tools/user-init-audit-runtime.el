@@ -76,6 +76,7 @@
           package-check-signature nil
           native-comp-eln-load-path (list (concat state "eln/"))
           native-comp-jit-compilation nil native-comp-deferred-compilation nil
+          native-comp-enable-subr-trampolines nil
           emacs-load-auto-native-compile nil emacs-load-artifact-max-source-size 0
           no-littering-var-directory (concat state "var/")
           no-littering-etc-directory (concat state "etc/")

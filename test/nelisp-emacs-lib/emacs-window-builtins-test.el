@@ -165,8 +165,8 @@ overridden on standalone (see the override test above)."
   (emacs-window-builtins-test--with-fresh-world
     (let* ((w (emacs-window-selected-window))
            (b (emacs-window-window-buffer w)))
-      ;; Substrate root either has a real buffer or nil — both legal.
-      (should (or (null b)
+      ;; Both native and compatibility buffers are valid window owners.
+      (should (or (bufferp b) (null b)
                   (recordp b)
                   (vectorp b))))))
 

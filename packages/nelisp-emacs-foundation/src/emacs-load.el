@@ -1467,10 +1467,87 @@ that threshold is disabled."
                (and attributes mtime))
            (list :path path :size size :mtime mtime))))
 
+  (defvar emacs-load--unicode-name-cache (make-hash-table :test 'equal))
+
+  (defun emacs-load--unicode-name-code (name)
+    "Resolve NAME through the host Python Unicode database.
+The standalone reader carries numeric Unicode escapes but no name database.
+Python is already a launcher prerequisite; keep this source-loader adapter
+out of the evaluator.  Unknown names and named sequences are reader errors."
+    (or (gethash name emacs-load--unicode-name-cache)
+        (let ((code
+               (with-temp-buffer
+                 (unless (equal
+                          (call-process
+                           "python3" nil t nil "-c"
+                           "import sys,unicodedata; c=unicodedata.lookup(sys.argv[1]); assert len(c)==1; print(ord(c))"
+                           name)
+                          0)
+                   (signal 'invalid-read-syntax '("Unknown character name")))
+                 (string-to-number (buffer-string)))))
+          (puthash name code emacs-load--unicode-name-cache)
+          code)))
+
+  (defun emacs-load--rewrite-named-unicode-escapes (source)
+    "Lower named Unicode escapes in character and string literals.
+Comments, escaped backslashes and symbol names remain literal source text."
+    (if (not (emacs-load--artifact-string-search "\\N{" source 0))
+        source
+      (let ((i 0) (start 0) (len (length source)) in-string out)
+        (while (< i len)
+          (let ((ch (aref source i)))
+            (cond
+             ((and (not in-string) (= ch ??)
+                   (or (= i 0) (memq (aref source (1- i))
+                                     '(32 9 10 13 12 40 91 39 96 44))))
+              (if (and (< (+ i 3) len)
+                       (= (aref source (1+ i)) ?\\)
+                       (= (aref source (+ i 2)) ?N)
+                       (= (aref source (+ i 3)) ?{))
+                  (setq i (1+ i))
+                (setq i (cdr (read-from-string source i)))))
+             ((and (not in-string) (= ch ?\;))
+              (setq i (or (emacs-load--artifact-string-search "\n" source i) len)))
+             ((= ch ?\") (setq in-string (not in-string) i (1+ i)))
+             ((= ch ?\\)
+              (if (and (< (+ i 2) len)
+                       (= (aref source (1+ i)) ?N)
+                       (= (aref source (+ i 2)) ?{)
+                       (or in-string
+                           (and (> i 0) (= (aref source (1- i)) ??)
+                                (or (= i 1)
+                                    (memq (aref source (- i 2))
+                                          '(32 9 10 13 12 40 91 39 96 44))))))
+                  (let ((end (emacs-load--artifact-string-search "}" source (+ i 3))))
+                    (unless end
+                      (signal 'invalid-read-syntax '("Unterminated \\N escape")))
+                    (let ((name (substring source (+ i 3) end)))
+                      (unless (string-prefix-p "U+" name)
+                        (let ((code (emacs-load--unicode-name-code name)))
+                          (push (substring source start i) out)
+                          (push (if (<= code #xffff)
+                                    (format "\\u%04X" code)
+                                  (format "\\U%08X" code)) out)
+                          (setq start (1+ end)))))
+                    (setq i (1+ end)))
+                (setq i (min len (+ i 2)))))
+             (t (setq i (1+ i))))))
+        (push (substring source start len) out)
+        (apply #'concat (nreverse out)))))
+
   (defun emacs-load--read-file-string (path)
-    "Return PATH contents as a string, or nil when unreadable."
+    "Return PATH source as a string, decoding gzip load representations.
+Return nil when unreadable.  The direct file reader bypasses GNU file
+handlers, so a selected .gz representation must be decoded explicitly."
     (let ((source
            (cond
+            ((and (string-suffix-p ".gz" path) (file-readable-p path))
+             (with-temp-buffer
+               (unless (equal (call-process "gzip" nil t nil "-cd" "--" path) 0)
+                 (unless (get 'compression-error 'error-conditions)
+                   (define-error 'compression-error nil 'file-error))
+                 (signal 'compression-error (list "Cannot decompress load file" path)))
+               (buffer-string)))
             ((fboundp 'nelisp--syscall-read-file)
              (nelisp--syscall-read-file path))
             ((file-readable-p path)
@@ -3720,6 +3797,9 @@ optimization candidate; keep the normal load path on the fast reader."
      (t
       (let* ((base (file-name-nondirectory resolved))
              (source (emacs-load--read-file-string resolved))
+             (source (if (stringp source)
+                         (emacs-load--rewrite-named-unicode-escapes source)
+                       source))
              (source (if (and (stringp source)
                                (not emacs-load--propertized-string-reader-native-p))
                          (emacs-load--rewrite-propertized-string-literals
@@ -3843,6 +3923,12 @@ Unlike `load', this never searches `load-path' or adds a suffix."
     (nelisp--load-resolved-file resolved nil)))
 
 )
+
+;; GNU loaddefs installs this macro autoload before packages such as
+;; treesit.el use it.  Keep the implementation lazy and require the genuine
+;; vendored shortdoc library when expansion is first requested.
+(unless (fboundp 'define-short-documentation-group)
+  (autoload 'define-short-documentation-group "shortdoc" nil nil 'macro))
 
 (provide 'emacs-load)
 

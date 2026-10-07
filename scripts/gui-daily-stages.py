@@ -456,7 +456,12 @@ def run(args, api):
                   production_launcher=args.launcher.resolve() == root/'bin/nemacs-xcb')
     sessions = []
     try:
-        if args.stage in ('S4.1','S4.2','S4.3') and not args.one_display:
+        if args.stage == 'S5.1':
+            import importlib.util
+            spec = importlib.util.spec_from_file_location('scenario', root/'scripts/gui-daily-scenario.py')
+            module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+            module.run(args, api, out, report, sessions)
+        elif args.stage in ('S4.1','S4.2','S4.3') and not args.one_display:
             private_input(args,api,out,report)
         elif args.stage == 'S3.3' and not args.one_display:
             # Each DPI case has its own fresh Xvfb and process, so run them

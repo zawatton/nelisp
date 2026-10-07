@@ -63,9 +63,14 @@
     nil))
 
 (unless (fboundp 'make-directory-internal)
+  (defvar emacs-cc-fileio--make-directory-primitive
+    (symbol-function 'make-directory)
+    "Directory-creation leaf before GNU files.el replaces its facade.")
   (defun make-directory-internal (directory)
-    "Create a new directory named DIRECTORY."
-    (make-directory directory)))
+    "Create a new directory named DIRECTORY through the captured leaf."
+    ;; GNU make-directory calls this primitive.  Looking up its public name
+    ;; here would recurse back through the newly loaded Lisp facade.
+    (funcall emacs-cc-fileio--make-directory-primitive directory)))
 
 (unless (fboundp 'make-temp-file-internal)
   (defun make-temp-file-internal (prefix dir-flag suffix text)

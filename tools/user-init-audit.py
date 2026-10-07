@@ -219,8 +219,12 @@ def main():
                          (row['id'], json.dumps(row['file']), row['line'], row['start'],
                           row['end'], 't' if row['lexical'] else 'nil'))
         stream.write('(user-init-audit--emit "DONE")\n')
-    image = args.image or Path(subprocess.check_output(
-        ['bash', str(ROOT / 'tools/c-core-image.sh'), 'path'], env=env, cwd=ROOT, text=True).strip())
+    # The sandbox changes cwd to fixture HOME. Resolve CLI paths before
+    # passing them to the runtime; a relative missing image can otherwise
+    # silently select its base heap and produce a misleading failure count.
+    image = (args.image or Path(subprocess.check_output(
+        ['bash', str(ROOT / 'tools/c-core-image.sh'), 'path'], env=env, cwd=ROOT, text=True).strip())).resolve()
+    args.bundle = args.bundle.resolve()
     identity = dict(binary_sha256=digest(Path(args.binary)), image_sha256=digest(image),
                     bundle_sha256=digest(args.bundle),
                     inputs={n: digest(source / n) for n in ('early-init.el', 'init.el')},

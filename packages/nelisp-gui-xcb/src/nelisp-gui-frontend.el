@@ -229,6 +229,8 @@ Only adaptation is done here; bounds, motion and edits stay in libraries.")
             nelisp-gui-frontend--timing-decode 0.0
             nelisp-gui-frontend--timing-command 0.0
             nelisp-gui-frontend--timing-gc-start (and (boundp 'gc-elapsed) gc-elapsed))))
+  (when (equal (getenv "NELISP_GUI_STATE_LOG") "1")
+    (princ (concat "GUI-DAILY-STATE|" (json-encode (gui-daily-state-snapshot)) "\n")))
   (when nelisp-gui-frontend--profile (nelisp-gui-frontend--profile-report))
   (when (or nelisp-gui-frontend--timing nelisp-gui-frontend--latency-check)
     (princ (format "GUI-FRAME-DONE|point=%d|\n" (nelisp-gui-frontend--point)))))
@@ -254,13 +256,17 @@ Only adaptation is done here; bounds, motion and edits stay in libraries.")
 (defun nelisp-gui-frontend--run-direct-command (command _plan)
   (emacs-command-loop-key-dispatch-direct-funcall
    (cdr (assq command nelisp-gui-frontend--motion-adapters))))
+(defun nelisp-gui-frontend--command-error (command condition)
+  "Keep the original shared-command condition visible in diagnostics."
+  (princ (format "GUI-COMMAND-ERROR|command=%S|error=%S\n" command condition)))
 (defconst nelisp-gui-frontend--dispatch-adapters
   '(:set-prefix nelisp-gui-frontend--set-prefix
     :set-last-command-event nelisp-gui-frontend--set-command-event
     :run-self-insert nelisp-gui-frontend--run-self-insert
     :direct-command-p nelisp-gui-frontend--direct-command-p
     :run-direct-command nelisp-gui-frontend--run-direct-command
-    :command-execute emacs-command-loop-command-execute))
+    :command-execute emacs-command-loop-command-execute
+    :on-error nelisp-gui-frontend--command-error))
 (defun nelisp-gui-frontend--dispatch-pure ()
   "Run the existing shared GUI dispatcher with shared pure-buffer adapters.
 The native reader's unprefixed editing commands target its separate scratch
@@ -301,6 +307,8 @@ Command lookup, execution, hooks, buffer editing and point stay in libraries."
          (old-poll emacs-command-loop-input-poll-function)
          (old-pending emacs-command-loop-input-pending-function)
          (old-fd emacs-command-loop-input-file-descriptor)
+         (old-mini-paint emacs-minibuffer-redisplay-function)
+         (old-mini-key emacs-minibuffer--key-fn)
          (failure nil))
     (unwind-protect
         (condition-case err
@@ -328,7 +336,12 @@ Command lookup, execution, hooks, buffer editing and point stay in libraries."
                     emacs-command-loop-input-pending-function #'nelisp-gui-frontend--pending
                     emacs-command-loop-input-file-descriptor
                     (nelisp-gui-xcb-file-descriptor nelisp-gui-frontend--xcb)
-                    nelisp-gui-frontend--paint-needed t)
+                    nelisp-gui-frontend--paint-needed t
+                    emacs-minibuffer-redisplay-function #'nelisp-gui-frontend--paint
+                    emacs-minibuffer--key-fn
+                    (lambda (prompt)
+                      (nelisp-gui-frontend--paint)
+                      (emacs-command-loop-read-event prompt t)))
               (emacs-keymap-use-global-map nemacs-main--global-keymap)
               (setf (emacs-frame-backend frame) 'xcb)
               (emacs-frame-set-frame-parameter frame 'display-depth
@@ -404,7 +417,9 @@ Command lookup, execution, hooks, buffer editing and point stay in libraries."
                   (nelisp-gui-xcb-wait nelisp-gui-frontend--xcb
                                        (nelisp-gui-frontend--wait-ms)))))
           (error (setq failure err) (princ (format "GUI-ERROR|%S\n" err))))
-      (setq emacs-command-loop-input-poll-function old-poll
+      (setq emacs-minibuffer-redisplay-function old-mini-paint
+            emacs-minibuffer--key-fn old-mini-key
+            emacs-command-loop-input-poll-function old-poll
             emacs-command-loop-input-pending-function old-pending
             emacs-command-loop-input-file-descriptor old-fd)
       (dolist (entry nelisp-gui-frontend--profile-saved) (fset (car entry) (cdr entry)))

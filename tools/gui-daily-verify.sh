@@ -7,7 +7,7 @@
 # Exit status is 0 only when every selected gate passes.
 #
 # Usage: NELISP_BIN=/path/to/nelisp tools/gui-daily-verify.sh [GATE...]
-# Gates: ccore pty wait scenario launcher layout S3.2 S3.3 S4.1 S4.2 S4.3 S5.0 S5.0b S5.0c
+# Gates: ccore pty wait scenario launcher layout S3.2 S3.3 S4.1 S4.2 S4.3 S5.0 S5.0b S5.0c S5.1
 # With no arguments every gate runs (about 1.5 h on a quiet machine).
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -20,7 +20,7 @@ log="$root/build/gui-daily-verify"
 mkdir -p "$log"
 
 gates=("$@")
-[ ${#gates[@]} -gt 0 ] || gates=(ccore pty wait scenario launcher layout S3.2 S3.3 S4.1 S4.2 S4.3 S5.0 S5.0b S5.0c)
+[ ${#gates[@]} -gt 0 ] || gates=(ccore pty wait scenario launcher layout S3.2 S3.3 S4.1 S4.2 S4.3 S5.0 S5.0b S5.0c S5.1)
 xvfb=(xvfb-run -a -s "-screen 0 1600x1000x24 -dpi 96 -nolisten tcp -extension GLX")
 
 step() { # name command...
@@ -57,6 +57,7 @@ for gate in "${gates[@]}"; do
     S5.0)     step S5.0 "${xvfb[@]}" python3 scripts/gui-daily-gate.py S5.0 --init=-Q ;;
     S5.0b)    step S5.0b "${xvfb[@]}" python3 scripts/gui-daily-gate.py S5.0b --init=-Q ;;
     S5.0c)    step S5.0c "${xvfb[@]}" python3 scripts/gui-daily-gate.py S5.0c --init=-Q ;;
+    S5.1)     step S5.1 python3 scripts/gui-daily-gate.py S5.1 --init=-Q --fixture=daily --compare=gnu ;;
     *) echo "unknown gate: $gate" >&2; exit 2 ;;
   esac || failed=$((failed + 1))
 done

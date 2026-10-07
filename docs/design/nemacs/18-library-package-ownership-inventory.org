@@ -74,6 +74,8 @@ avoiding broad renames, mass moves, or formatting-only changes.
 | =emacs-hash.el= | FND | hash helpers | keep reusable |
 | =emacs-weak-table.el= | FND | explicit-prune weak-table approximation (Doc 06 B5) | replace with native weak GC when available |
 | =emacs-list.el= | FND | list primitives | keep reusable |
+| =emacs-mark-state.el= | FND/BUF | native buffer mark markers and GNU region defaults | keep host-safe guarded compatibility |
+| =emacs-frame-focus-state-compat.el= | FND/CORE | native frame focus-state compatibility | keep shared and host-safe |
 | =emacs-numeric.el= | FND | numeric/bitwise primitives | keep reusable |
 | =emacs-os-detect.el= | FND/IO | runtime OS detection | keep adapter-gated |
 | =emacs-parity-addtolist.el= | FND | O(1) `add-to-list' membership-hash override (list primitive perf fix) | keep reusable |
@@ -182,6 +184,9 @@ avoiding broad renames, mass moves, or formatting-only changes.
 | =emacs-faces.el= | CORE/DSP | face model | avoid concrete backend deps |
 | =emacs-frame-builtins.el= | CORE | unprefixed frame shim | keep explicit shim |
 | =emacs-frame.el= | CORE/DSP | frame model | split model/backend hooks later |
+| =emacs-frame-pixels.el= | CORE/DSP | shared frame metrics and display capability queries | transport supplies metrics; libraries own queries |
+| =emacs-mouse.el= | CORE/BUF | positioned mouse input, point and region commands | keep editor semantics shared |
+| =emacs-select.el= | CORE | selection policy, capability and explicit compatibility shims | transport callbacks own selection exchange |
 | =emacs-help.el= | CORE/FEAT | help runtime semantics | keep shared |
 | =emacs-ielm.el= | CORE/FEAT | IELM behavior | keep feature package |
 | =emacs-imenu.el= | CORE/FEAT | imenu behavior | keep feature package |
@@ -222,6 +227,9 @@ avoiding broad renames, mass moves, or formatting-only changes.
 | =emacs-network-syscall-shim.el= | IO | syscall network shim | keep adapter-gated |
 | =emacs-process-builtins.el= | IO | unprefixed process shim | keep explicit shim |
 | =emacs-process-events.el= | IO | process event helpers | keep adapter-gated |
+| =emacs-process-coding.el= | IO/TXT | shared directional process coding state | keep process coding outside frontends |
+| =emacs-process-posix-signals.el= | IO | POSIX signal transport for process commands | keep runtime adapter-gated |
+| =emacs-process-posix-spawn.el= | IO | POSIX subprocess creation transport | keep runtime adapter-gated |
 | =emacs-pipe-process.el= | IO | pipe-subprocess async filter adapter (Doc 06 C1) | keep adapter-gated |
 | =emacs-pty-ffi.el= | IO | PTY FFI adapter (Doc 06 C3) | keep adapter-gated |
 | =emacs-process.el= | IO | process model/adapters | split model vs runtime backend |
