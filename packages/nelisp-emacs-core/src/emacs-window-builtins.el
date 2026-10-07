@@ -803,10 +803,95 @@ simplification.)"
     "Return whether POS is displayed in live WINDOW."
     (let ((w (emacs-window-builtins--window window)))
       (unless (or (null pos) (eq pos t))
-        (emacs-window-builtins--position pos))
+        (setq pos (emacs-window-builtins--position pos)))
       ;; A batch frame has no displayed glyph rows.
       (unless noninteractive
         (emacs-window-pos-visible-in-window-p pos w partially)))))
+
+(when (emacs-window-builtins--install-function-p 'frame-root-window)
+  (defun frame-root-window (&optional frame-or-window)
+    "Return the internal root of FRAME-OR-WINDOW's live window tree."
+    (let ((root (if (window-valid-p frame-or-window) frame-or-window
+                  (let ((frame (emacs-window-builtins--frame frame-or-window)))
+                    (or (emacs-frame-root-window frame)
+                        (and (eq frame (selected-frame)) (emacs-window-selected-window)))))))
+      (while (emacs-window-parent root) (setq root (emacs-window-parent root)))
+      root)))
+
+(when (emacs-window-builtins--install-function-p 'fit-window-to-buffer)
+  (defun fit-window-to-buffer (&optional window max-height min-height max-width min-width preserve-size)
+    (interactive)
+    (emacs-window-fit-window-to-buffer (emacs-window-builtins--window window)
+                                      max-height min-height max-width min-width preserve-size)))
+(when (emacs-window-builtins--install-function-p 'window-resize)
+  (defun window-resize (window delta &optional horizontal ignore pixelwise)
+    (setq window (or window (selected-window)))
+    (unless (window-valid-p window)
+      (signal 'wrong-type-argument (list 'window-valid-p window)))
+    (emacs-window-window-resize window delta horizontal ignore pixelwise)))
+(when (emacs-window-builtins--install-function-p 'shrink-window-if-larger-than-buffer)
+  (defun shrink-window-if-larger-than-buffer (&optional window)
+    (interactive)
+    (emacs-window-shrink-window-if-larger-than-buffer (emacs-window-builtins--window window))))
+(when (emacs-window-builtins--install-function-p 'window-text-pixel-size)
+  (defun window-text-pixel-size (&optional window from to x-limit y-limit mode-lines ignore-line-at-end)
+    (emacs-window-text-pixel-size (emacs-window-builtins--window window)
+                                 from to x-limit y-limit mode-lines ignore-line-at-end)))
+
+(defvar emacs-window-builtins--legacy-pixel-measurement nil)
+
+(defun emacs-window-builtins--pixel-measurement
+    (&optional window from to x-limit y-limit mode-lines ignore-line-at-end)
+  "Measure native buffers with shared window semantics.
+The transitional ec-buffer renderer includes its final empty glyph row;
+retain its existing shaping provider for that buffer family."
+  (let ((window (emacs-window-builtins--window window)))
+    (if (and emacs-window-builtins--legacy-pixel-measurement
+             (nelisp-ec-buffer-p (emacs-window-window-buffer window)))
+        (funcall emacs-window-builtins--legacy-pixel-measurement
+                 window from to x-limit y-limit mode-lines ignore-line-at-end)
+      (emacs-window-text-pixel-size
+       window from to x-limit y-limit mode-lines ignore-line-at-end))))
+
+;; The pixel adapter retains its installation entry point. Preserve host
+;; Emacs primitives and the existing legacy renderer's measurement contract.
+(defun emacs-window-builtins--install-pixel-measurement ()
+  "Route the realized pixel adapter through the owning buffer family."
+  (when (fboundp 'nelisp--write-stdout-bytes)
+    (unless (eq (symbol-function 'emacs-frame-pixels-window-text-size)
+                (symbol-function 'emacs-window-builtins--pixel-measurement))
+      (setq emacs-window-builtins--legacy-pixel-measurement
+            (symbol-function 'emacs-frame-pixels-window-text-size)))
+    (fset 'emacs-frame-pixels-window-text-size
+          (symbol-function 'emacs-window-builtins--pixel-measurement))))
+(if (featurep 'emacs-frame-pixels)
+    (emacs-window-builtins--install-pixel-measurement)
+  (eval-after-load 'emacs-frame-pixels #'emacs-window-builtins--install-pixel-measurement))
+
+(defun emacs-window-builtins--pos-property-window
+    (original position property &optional object)
+  "Decode a shared window OBJECT at the position-property boundary.
+The buffer property owner handles stickiness; the window shim supplies the
+displayed buffer. GNU position properties use buffer-wide overlays even
+when OBJECT is a window. Host Emacs already implements this variant."
+  (if (emacs-window-p object)
+      (let* ((window (progn (emacs-window--check-leaf object) object))
+             (position (emacs-window-builtins--position position))
+             (buffer (emacs-window-window-buffer window))
+             (overlay (and (fboundp 'nelisp--write-stdout-bytes)
+                           (get-char-property-and-overlay position property buffer))))
+        (if (cdr overlay) (car overlay)
+          (funcall original position property buffer)))
+    (funcall original position property object)))
+
+(defun emacs-window-builtins--install-pos-property-window ()
+  "Install the native window-object bridge after its property provider."
+  (when (and (fboundp 'nelisp--write-stdout-bytes) (fboundp 'get-pos-property))
+    (advice-remove 'get-pos-property #'emacs-window-builtins--pos-property-window)
+    (advice-add 'get-pos-property :around #'emacs-window-builtins--pos-property-window)))
+(if (featurep 'emacs-cc-editfns-1)
+    (emacs-window-builtins--install-pos-property-window)
+  (eval-after-load 'emacs-cc-editfns-1 #'emacs-window-builtins--install-pos-property-window))
 
 (provide 'emacs-window-builtins)
 

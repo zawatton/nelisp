@@ -2,6 +2,7 @@
 (defvar nelisp-gui-packages-state-file nil)
 (defvar nelisp-gui-packages-sequence 0)
 (defvar nelisp-gui-packages-load-steps nil)
+(defvar nelisp-gui-packages-trace-id 0)
 
 (defun nelisp-gui-packages-load-step (name function)
   "Time a genuine source dependency or package, retaining failed-step timing."
@@ -39,11 +40,20 @@
 
 (defun nelisp-gui-packages-trace (name original &rest args)
   "Record package call progress without changing arguments or results."
-  (let ((start (float-time)))
-    (princ (format "GUI-PACKAGE-CALL-BEGIN|name=%S|\n" name))
-    (unwind-protect (apply original args)
-      (princ (format "GUI-PACKAGE-CALL-END|name=%S|seconds=%.6f|\n"
-                     name (- (float-time) start))))))
+  (let ((start (float-time))
+        (id (setq nelisp-gui-packages-trace-id (1+ nelisp-gui-packages-trace-id))))
+    (princ (format "GUI-PACKAGE-CALL-BEGIN|id=%d|name=%S|time=%.6f|%s\n"
+                   id name start
+                   (if (memq name '(process-file call-process))
+                       (format "program=%S|argv=%S|" (car args) (nthcdr 4 args)) "")))
+    (unwind-protect
+        (condition-case failure
+            (apply original args)
+          (error
+           (princ (format "K3-CALL-ERROR|name=%S|condition=%S|\n" name (car failure)))
+           (signal (car failure) (cdr failure))))
+      (princ (format "GUI-PACKAGE-CALL-END|id=%d|name=%S|seconds=%.6f|\n"
+                     id name (- (float-time) start))))))
 
 (defun nelisp-gui-packages-observe-minibuffer (&rest _ignored)
   "Observe the shared live reader without replacing package commands."
@@ -76,6 +86,10 @@
           nelisp-gui-packages-state-file (getenv "NELISP_GUI_PACKAGE_STATE")
           default-directory (concat root (if (equal package "magit") "/repo/" "/tree/")))
     (setq temporary-file-directory (concat root "/tmp/"))
+    ;; Opt-in profiling transport executes genuine Git and preserves its
+    ;; argv/stdio/status; normal fixtures keep their ordinary executable.
+    (when (getenv "NELISP_GUI_PACKAGE_GIT_BIN")
+      (setq exec-path (cons (getenv "NELISP_GUI_PACKAGE_GIT_BIN") exec-path)))
     (princ (format "GUI-PACKAGE-LOAD-BEGIN|package=%s|time=%.6f|\n" package start))
     (condition-case err
         (progn
@@ -106,6 +120,13 @@
            "gnu-tabulated-list" (lambda () (require 'tabulated-list)))
           (nelisp-gui-packages-load-step
            "gnu-isearch" (lambda () (load (concat root "/vendor/gnu/isearch.el") nil t t)))
+          ;; The native backquote expander drops GNU derived.el's map setup.
+          ;; Use the shared mode provider's explicit-list expansion before
+          ;; evaluating genuine package definitions.  Their commands, maps,
+          ;; bodies, parent modes and hooks remain the package's own.
+          (when (fboundp 'nelisp--write-stdout-bytes)
+            (defalias 'define-derived-mode
+              (symbol-function 'emacs-mode-define-derived-mode)))
           (nelisp-gui-packages-load-step "magit" (lambda ()
                      ;; Packages are being loaded by the startup fixture.  GNU
                      ;; 31 defers global-mode Custom initialization until the
@@ -116,7 +137,13 @@
           ;; color definitions even when no network request is made.
           (nelisp-gui-packages-load-step
            "gnu-tty-colors" (lambda () (load (concat root "/vendor/gnu/term/tty-colors.el") nil t t)))
-          (nelisp-gui-packages-load-step "org-agenda" (lambda () (require 'org-agenda))))
+          (nelisp-gui-packages-load-step "org-agenda" (lambda () (require 'org-agenda)))
+          ;; The minimal bootstrap loop checks UNTIL before a preceding DO.
+          ;; Org's real dispatcher must run its key reader before that test.
+          ;; Load the genuine GNU macro provider, retaining the already loaded
+          ;; package's structure definitions and every real package command.
+          (nelisp-gui-packages-load-step
+           "gnu-cl-macs" (lambda () (load (concat root "/vendor/gnu/emacs-lisp/cl-macs.el") nil t t))))
          (t (error "Unknown real package: %s" package))))
       (error (setq failure err)))
     (setq elapsed (- (float-time) start))
@@ -139,20 +166,35 @@
       (setq header-line-format nil mode-line-format '(" %b ")))
     (setq org-agenda-files (list (concat root "/agenda.org"))
           enable-local-variables nil enable-dir-local-variables nil
-          org-agenda-span 'day org-agenda-start-day nil
+          org-agenda-span 'day org-agenda-start-day (getenv "NELISP_GUI_PACKAGE_DATE")
           org-agenda-window-setup 'current-window
           magit-display-buffer-function 'magit-display-buffer-same-window-except-diff-v1
           ;; Use with-editor's real shell transport.  Package Git commands
           ;; must not start a TCP Emacsclient server in this local fixture.
           with-editor-emacsclient-executable nil)
     (when (getenv "NELISP_GUI_PACKAGE_TRACE")
-      (dolist (function '(dired dired-noselect dired-internal-noselect
+      (dolist (function (append
+                         (and (equal package "magit")
+                              (append magit-status-sections-hook magit-status-headers-hook
+                                      '(magit-status magit-status-setup-buffer magit-setup-buffer-internal
+                                        magit-refresh-buffer magit-status-refresh-buffer magit-mode
+                                        magit-status-mode magit-git-insert magit-git-string
+                                        magit-insert-section--create magit-insert-section--finish
+                                        process-file emacs-process--standalone-run
+                                        nelisp-gui-packages-observe json-encode
+                                        nelisp-gui-frontend--dispatch nelisp-gui-frontend--paint
+                                        nelisp-gui-pango-paint emacs-redisplay-redisplay-window
+                                        emacs-redisplay--snapshot-fingerprint emacs-redisplay--snapshot-line-spans
+                                        emacs-redisplay--viewport-text emacs-redisplay--source-entries
+                                        emacs-redisplay--display-tokens emacs-redisplay--token-rows
+                                        emacs-redisplay--redisplay-window-rebuild)))
+                         '(dired dired-noselect dired-internal-noselect
                           dired-readin dired-mode dired-insert-directory
                           insert-directory call-process file-attributes
                           file-attribute-size delete-file insert-directory-clean
                           dired-insert-set-properties
                           dired-build-subdir-alist dired-get-buffer-create
-                          dired-sort-other dired-readin-insert))
+                          dired-sort-other dired-readin-insert)))
         (when (fboundp function)
           (advice-add function :around
                       (apply-partially #'nelisp-gui-packages-trace function)))))
@@ -174,5 +216,10 @@
                   (lambda (&rest _args) (nelisp-gui-packages-observe))))
     (add-hook 'post-command-hook #'nelisp-gui-packages-observe)
     (nelisp-gui-packages-observe)
+    (when (getenv "NELISP_GUI_PACKAGE_SNAPSHOT")
+      (garbage-collect)
+      (unless (> (nelisp--arena-dump-image-stream (getenv "NELISP_GUI_PACKAGE_SNAPSHOT")) 0)
+        (error "Package profiling snapshot failed"))
+      (princ "GUI-PACKAGE-SNAPSHOT-READY|\n"))
     (princ "GUI-PACKAGE-FIXTURE-READY|\n")))
 (provide 'nelisp-gui-packages-fixture)

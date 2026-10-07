@@ -13,6 +13,12 @@ import subprocess
 import time
 
 PACKAGES = ('dired', 'magit', 'org-agenda')
+# Genuine GNU source load diagnostics; keep all other stderr fatal.
+PACKAGE_INFORMATIONAL = (
+    '../vendor/gnu/emacs-lisp/cl-macs.el: Warning: Unknown defun property ‘debug’',
+    '../vendor/gnu/emacs-lisp/eieio.el: Warning: Unknown defun property ‘debug’',
+    'Local sockets unsupported, using TCP sockets',
+)
 ROOT = Path(__file__).resolve().parents[1]
 LISP_ERROR = re.compile(
     r'(?:Lisp error|void-function|void-variable|wrong-type-argument|GUI-ERROR|'
@@ -32,6 +38,7 @@ def prepare_preloads(gnu, output, env):
     source = gnu/'international/mule-cmds.el'
     tab_source = gnu/'tab-bar.el'
     window_source = gnu/'window.el'
+    binding_source = gnu/'emacs-lisp/cl-macs.el'
     # GNU normally installs these lazy declarations during loadup.  Keep
     # declarations referenced by the genuine consumers and their preloaded
     # parents; quoted/comment occurrences are safe conservative inclusions.
@@ -98,19 +105,30 @@ def prepare_preloads(gnu, output, env):
           (beginning-of-line)
           (let ((definition (read (current-buffer))))
             (push `(unless (fboundp ',name) ,definition) forms))))
+      ;; Load only GNU's place-binding provider, preserving the image's type
+      ;; checker and already established native structure metadata.
+      (with-temp-buffer
+        (insert-file-contents %s)
+        (dolist (definition '((defun . cl--letf) (defmacro . cl-letf) (defmacro . cl-letf*)))
+          (goto-char (point-min))
+          (re-search-forward (concat "^(" (symbol-name (car definition)) " "
+                                     (regexp-quote (symbol-name (cdr definition))) " "))
+          (beginning-of-line)
+          (push (read (current-buffer)) forms)))
       (with-temp-file %s
         (insert ";;; Exact GNU preload definitions. -*- lexical-binding: t; -*-\n")
         (dolist (definition (nreverse forms))
           (prin1 definition (current-buffer))
-          (terpri (current-buffer)))))''' % (json.dumps(str(references)), json.dumps(str(source)), json.dumps(str(tab_source)), json.dumps(str(window_source)), json.dumps(str(output)))
+          (terpri (current-buffer)))))''' % (json.dumps(str(references)), json.dumps(str(source)), json.dumps(str(tab_source)), json.dumps(str(window_source)), json.dumps(str(binding_source)), json.dumps(str(output)))
     subprocess.run([os.environ.get('EMACS','emacs'), '-Q', '--batch', '--eval', form],
                    env=env, check=True, capture_output=True, timeout=30)
     return dict(reference_symbols=len(referenced), reference_manifest=str(references),
-                source=str(source), additional_sources=[str(tab_source), str(window_source)], names=['etags-program-name', 'mode-line-misc-info',
+                source=str(source), additional_sources=[str(tab_source), str(window_source), str(binding_source)], names=['etags-program-name', 'mode-line-misc-info',
                                           'rcs2log-program-name', 'other-window-scroll-buffer', 'auto-mode-alist',
                                           'coding-system-change-eol-conversion', 'tab-bar-new-tab-choice',
                                           'GNU -Q autoload table', 'window-normalize-window',
-                                          'window-full-width-p', 'window-full-height-p'],
+                                          'window-full-width-p', 'window-full-height-p',
+                                          'cl--letf', 'cl-letf', 'cl-letf*'],
                 sha256=hashlib.sha256(output.read_bytes()).hexdigest())
 
 
@@ -227,7 +245,13 @@ def prepare(out, env):
     (tree/'alpha.txt').write_text('S52 opened real file\n')
     (tree/'beta.txt').write_text('Second directory entry\n')
     (tree/'subdir/nested.txt').write_text('Nested fixture\n')
-    today = datetime.date.today().isoformat()
+    # Python runs in the coordinator's timezone; use the consumer environment
+    # for the fixture date, and retain it across long runs and midnight.
+    today = subprocess.check_output(
+        [os.environ.get('EMACS','emacs'), '-Q', '--batch', '--eval',
+         '(princ (format-time-string "%Y-%m-%d"))'], env=env, text=True).strip()
+    datetime.date.fromisoformat(today)
+    env['NELISP_GUI_PACKAGE_DATE'] = today
     (root/'agenda.org').write_text(f'#+TITLE: GUI agenda fixture\n* TODO S52 scheduled inspection\nSCHEDULED: <{today}>\n* TODO S52 scheduled report\nSCHEDULED: <{today}>\n')
     preloads = prepare_preloads(target, vendor/'gnu-preloaded.el', env)
     shorthands = prepare_shorthands(vendor, env)
@@ -440,6 +464,24 @@ def run(args, api, out, env, report, sessions):
                 hidden=state(state_file).get('section_hidden');key('Tab')
                 assert state(state_file).get('section_hidden')!=hidden,'TAB did not toggle real Magit section'
                 key('Tab');key('s')
+                # The genuine mode-map stage-file command may request its
+                # selected-file default through the ordinary live reader.
+                if state(state_file).get('minibuffer'):
+                    # Supply the fixture filename through the ordinary shared
+                    # clipboard/yank path, then await the reader's real return.
+                    peer = subprocess.Popen(['xclip', '-quiet', '-i', '-selection', 'clipboard'],
+                                            env=package_env, stdin=subprocess.PIPE,
+                                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                    api['CHILDREN'].append(peer)
+                    peer.stdin.write(b'unstaged.txt'); peer.stdin.close()
+                    api['wait_until'](lambda: api['command'](
+                        ['xclip', '-o', '-selection', 'clipboard'], package_env).decode()
+                        == 'unstaged.txt', 10, 'Magit filename clipboard ownership')
+                    key('ctrl+y')
+                    key('Return')
+                    wait(lambda d: not d.get('minibuffer') and
+                         d.get('mode') == 'magit-status-mode',
+                         'Magit stage reader/command completed')
                 diff=subprocess.check_output(['git','-C',str(root/'repo'),'diff','--cached','--name-only'],env=env).decode()
                 assert 'unstaged.txt' in diff,'real s did not change Git index'
                 result['git_after']=subprocess.check_output(['git','-C',str(root/'repo'),'status','--porcelain'],env=env).decode()
@@ -456,7 +498,7 @@ def run(args, api, out, env, report, sessions):
                 key('n');result['checks'].append('agenda-a/responsive-n')
             quit_start = len(s.log())
             s.key('ctrl+x','ctrl+c')
-            s.finish()
+            s.finish(informational=PACKAGE_INFORMATIONAL)
             validate_production_quit(s.metadata(), s.log()[quit_start:])
             result['production_quit'] = True
             result['checks'].append('no-Lisp-errors/production-quit')

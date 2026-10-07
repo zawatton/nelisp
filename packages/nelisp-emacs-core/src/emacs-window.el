@@ -987,19 +987,17 @@ means \"almost a full window\" in the opposite direction."
   "Real line-based `scroll-down' over WINDOW (selected window if nil)."
   (emacs-window--scroll window n -1))
 
-(defun emacs-window-pos-visible-in-window-p (&optional pos window _partially)
-  "Real line-range `pos-visible-in-window-p' over WINDOW (selected
-window if nil).  Returns non-nil when POS (default: WINDOW's live
-buffer point) falls within the buffer-line range currently shown,
-computed from `window-start' and `window-height'.  PARTIALLY is
-accepted for signature compatibility; partial-row pixel visibility is
-out of scope for this line-based substrate (see module header
-non-goals)."
+(defun emacs-window-pos-visible-in-window-p (&optional pos window partially)
+  "Return whether POS is visible in live WINDOW's canonical cell viewport.
+Support both buffer families. Native buffer rows include wrapping and tabs,
+and exclude enabled decorations. PARTIALLY returns realized coordinates."
   (let ((w (emacs-window-get-window window)))
     (emacs-window--check-leaf w)
-    (let* ((buf   (emacs-window-buffer w))
+    (if (nelisp-ec-buffer-p (emacs-window-window-buffer w))
+    (let* ((buf   (emacs-window-window-buffer w))
            (start (emacs-window-start w))
-           (p     (or pos (nelisp-ec-with-current-buffer buf (nelisp-ec-point))))
+           (p     (if (eq pos t) (emacs-window-start w)
+                    (or pos (nelisp-ec-with-current-buffer buf (nelisp-ec-point)))))
            (h     (max 1 (emacs-window-window-height w)))
            (end   (emacs-window--line-offset buf start h))
            ;; When the buffer ends within the window (END clamped to
@@ -1010,7 +1008,33 @@ non-goals)."
            ;; (exclusive) start of the first non-visible line.
            (bufmax (nelisp-ec-with-current-buffer buf (nelisp-ec-point-max))))
       (and (>= p start)
-           (if (= end bufmax) (<= p end) (< p end))))))
+           (if (= end bufmax) (<= p end) (< p end))))
+      (with-current-buffer (emacs-window-window-buffer w)
+        (let* ((low (point-min)) (high (point-max))
+               (start (max low (min high (emacs-window-start w))))
+               (p (if (eq pos t) high
+                    (or pos (if (eq w (emacs-window-selected-window)) (point)
+                              (emacs-window-point w)))))
+               (text (buffer-substring-no-properties start high))
+               (width (max 1 (emacs-window-total-cols w)))
+               (height (max 1 (- (emacs-window-total-lines w)
+                                 (emacs-window--decoration-lines w t))))
+               (row 0) (column 0) (index 0)
+               (tabs (max 1 tab-width)))
+          (when (and (>= p start) (<= p high))
+            (while (and (< index (- p start)) (< row height)
+                        (not (and (eq pos t) (= row (1- height)))))
+              (let ((char (aref text index)))
+                (if (= char ?\n) (setq row (1+ row) column 0)
+                  (setq column (+ column (if (= char ?\t) (- tabs (% column tabs))
+                                            (max 0 (char-width char)))))
+                  (when (and (not truncate-lines) (>= column width))
+                    (setq row (+ row (/ column width)) column (% column width)))))
+              (setq index (1+ index)))
+            (when (< row height)
+              (if partially (list (* column (emacs-window--cell-size w t))
+                                  (* row (emacs-window--cell-size w nil)))
+                t))))))))
 
 (defun emacs-window-window-parameter (window parameter)
   "Return the value of PARAMETER for WINDOW, or nil."
@@ -1469,6 +1493,390 @@ help/completion/popup workflow."
                (not (emacs-window-get-buffer-window buf)))
       (nelisp-ec-kill-buffer buf))
     nil))
+
+;;; Buffer fitting and tree-preserving resizing.
+;; Sizes remain in the shared renderer's canonical cells. Pixel requests are
+;; converted with the owning frame's realized metrics, never the old 8x16
+;; pseudo-pixel constants. No app/frontend command owns this behavior.
+(defvar window-min-height 4)
+(defvar window-min-width 10)
+(defvar window-safe-min-height 2)
+(defvar window-safe-min-width 2)
+(defvar window-resize-pixelwise nil)
+(defvar window-combination-resize nil)
+(defvar fit-window-to-buffer-horizontally nil)
+(defvar fit-frame-to-buffer nil)
+
+(defun emacs-window--buffer-value (buffer variable)
+  "Read VARIABLE in either supported buffer family."
+  (if (nelisp-ec-buffer-p buffer)
+      (nelisp-ec-with-current-buffer buffer (symbol-value variable))
+    (with-current-buffer buffer (symbol-value variable))))
+
+(defun emacs-window--axis-size (window horizontal)
+  (if horizontal (emacs-window-total-cols window)
+    (emacs-window-total-lines window)))
+
+(defun emacs-window--sizing-frame (window)
+  "Resolve the shared frame owner, including the initial window sentinel."
+  (let ((frame (emacs-window-window-frame window)))
+    (if (fboundp 'emacs-frame-window-frame)
+        (emacs-frame-window-frame frame)
+      frame)))
+
+(defun emacs-window--cell-size (window horizontal)
+  (let ((frame (emacs-window--sizing-frame window)))
+    (cond
+     ((or (fboundp 'nl-write-file) (fboundp 'nelisp--write-stdout-bytes))
+      (if horizontal (frame-char-width frame) (frame-char-height frame)))
+     ((fboundp 'emacs-frame-frame-char-width)
+      (if horizontal (emacs-frame-frame-char-width frame)
+        (emacs-frame-frame-char-height frame)))
+     (t (if horizontal emacs-window--pixel-col-px emacs-window--pixel-line-px)))))
+
+(defun emacs-window--decoration-lines (window &optional which)
+  "Count WINDOW's enabled mode/header/tab lines as requested by WHICH."
+  (let ((buffer (emacs-window-window-buffer window)) (count 0))
+    (dolist (entry '((mode-line . mode-line-format)
+                     (header-line . header-line-format)
+                     (tab-line . tab-line-format)))
+      (when (and (or (eq which t) (eq which (car entry)))
+                 (boundp (cdr entry))
+                 (emacs-window--buffer-value buffer (cdr entry)))
+        (setq count (1+ count))))
+    count))
+
+(defun emacs-window--size-bounds (window horizontal ignore)
+  "Return the minimum and maximum cell sizes permitted for WINDOW."
+  (let* ((size (emacs-window--axis-size window horizontal))
+         (children (emacs-window-children window))
+         (safe (if horizontal window-safe-min-width window-safe-min-height))
+         (minimum (if horizontal window-min-width window-min-height))
+         (unlimited 1000000))
+    (if (null children)
+        (let* ((buffer (emacs-window-window-buffer window))
+               (fixed (and (boundp 'window-size-fixed)
+                           (emacs-window--buffer-value buffer 'window-size-fixed)))
+               (preserved (emacs-window-window-parameter window 'window-preserved-size))
+               (ignored (or (eq ignore window)
+                            (and ignore (not (emacs-window-p ignore))
+                                 (not (eq ignore 'preserved))))))
+          (if (and (not ignored)
+                   (or (eq fixed t) (eq fixed (if horizontal 'width 'height))
+                       (and (not (eq ignore 'preserved))
+                            (eq (car preserved) buffer)
+                            (numberp (nth (if horizontal 1 2) preserved))
+                            (= (nth (if horizontal 1 2) preserved)
+                               (* (emacs-window--cell-size window horizontal)
+                                  (if horizontal size
+                                    (max 1 (- size (emacs-window--decoration-lines window t)))))))))
+              (cons size size)
+            (cons (max safe (if ignored 0 minimum)
+                       (if horizontal 0 (1+ (emacs-window--decoration-lines window t))))
+                  unlimited)))
+      (let ((parallel (eq (emacs-window-direction window)
+                          (if horizontal 'horizontal 'vertical)))
+            (low 0) (high (if (eq (emacs-window-direction window)
+                                  (if horizontal 'horizontal 'vertical)) 0 unlimited)))
+        (dolist (child children)
+          (let ((bounds (emacs-window--size-bounds child horizontal ignore)))
+            (setq low (if parallel (+ low (car bounds)) (max low (car bounds)))
+                  high (if parallel (+ high (cdr bounds)) (min high (cdr bounds))))))
+        (cons low high)))))
+
+(defun emacs-window--resize-branch (window horizontal)
+  "Find WINDOW's branch in the nearest combination on HORIZONTAL's axis."
+  (let ((branch window) (axis (if horizontal 'horizontal 'vertical)))
+    (while (and (emacs-window-parent branch)
+                (not (eq (emacs-window-direction (emacs-window-parent branch)) axis)))
+      (setq branch (emacs-window-parent branch)))
+    branch))
+
+(defun emacs-window--resize-bounds (window horizontal ignore)
+  "Return the feasible delta interval without changing any window."
+  (let* ((branch (emacs-window--resize-branch window horizontal))
+         (parent (emacs-window-parent branch)))
+    (if (null parent) (cons 0 0)
+      (let* ((bounds (emacs-window--size-bounds branch horizontal ignore))
+             (size (emacs-window--axis-size branch horizontal))
+             (low (- (car bounds) size)) (high (- (cdr bounds) size))
+             (shrink 0) (grow 0))
+        (dolist (sibling (emacs-window-children parent))
+          (unless (eq sibling branch)
+            (let ((b (emacs-window--size-bounds sibling horizontal ignore))
+                  (s (emacs-window--axis-size sibling horizontal)))
+              (setq shrink (+ shrink (- s (car b)))
+                    grow (+ grow (- (cdr b) s))))))
+        (cons (max low (- grow)) (min high shrink))))))
+
+(defun emacs-window--distribute-sizes (nodes total horizontal ignore)
+  "Allocate TOTAL cells proportionally, respecting every NODE's limits."
+  (let ((sizes (mapcar (lambda (node) (emacs-window--axis-size node horizontal)) nodes))
+        (remaining (- total (apply #'+ (mapcar (lambda (node) (emacs-window--axis-size node horizontal)) nodes)))))
+    (while (/= remaining 0)
+      (let ((available nil) (weight 0) (before remaining) (tail nodes) (values sizes))
+        (while tail
+          (let* ((bounds (emacs-window--size-bounds (car tail) horizontal ignore))
+                 (capacity (if (> remaining 0) (- (cdr bounds) (car values))
+                             (- (car values) (car bounds)))))
+            (when (> capacity 0)
+              (push (list values capacity (max 1 (car values))) available)
+              (setq weight (+ weight (max 1 (car values))))))
+          (setq tail (cdr tail) values (cdr values)))
+        (unless available (error "Cannot resize window combination"))
+        (dolist (entry (nreverse available))
+          (when (/= remaining 0)
+            (let* ((amount (min (abs remaining) (nth 1 entry)
+                                (max 1 (/ (* (abs before) (nth 2 entry)) weight))))
+                   (delta (if (> remaining 0) amount (- amount))))
+              (setcar (car entry) (+ (caar entry) delta))
+              (setq remaining (- remaining delta)))))
+        (when (= remaining before) (error "Cannot resize window combination"))))
+    sizes))
+
+(defun emacs-window--size-plan (window size horizontal ignore)
+  "Build an atomic resize plan; no geometry is changed while validating."
+  (let ((bounds (emacs-window--size-bounds window horizontal ignore))
+        (children (emacs-window-children window)) (plan (list (cons window size))))
+    (unless (and (>= size (car bounds)) (<= size (cdr bounds)))
+      (error "Cannot resize window"))
+    (when children
+      (let ((sizes (if (eq (emacs-window-direction window)
+                          (if horizontal 'horizontal 'vertical))
+                       (emacs-window--distribute-sizes children size horizontal ignore)
+                     (mapcar (lambda (_) size) children))))
+        (while children
+          (setq plan (append plan (emacs-window--size-plan (car children) (car sizes) horizontal ignore))
+                children (cdr children) sizes (cdr sizes)))))
+    plan))
+
+(defun emacs-window-window-resize (window delta &optional horizontal ignore pixelwise)
+  "Resize WINDOW by DELTA without deleting windows, as GNU `window-resize'.
+Respect minimum/fixed sizes unless IGNORE requests otherwise. Resize the
+neighbor when possible, otherwise distribute the change across siblings.
+PIXELWISE uses the owning frame's cell metrics; fractional cells are rounded
+by the grid renderer. Return t after applying an atomic geometry plan."
+  (let* ((window (emacs-window-get-window window))
+         (branch (emacs-window--resize-branch window horizontal))
+         (parent (emacs-window-parent branch)))
+    (emacs-window--check-live window)
+    (unless (numberp delta) (signal 'wrong-type-argument (list 'numberp delta)))
+    (unless (emacs-window-parent window) (error "Cannot resize the root window of a frame"))
+    (unless parent (error "Cannot resize window"))
+    (when pixelwise (setq delta (round (/ (float delta) (emacs-window--cell-size window horizontal)))))
+    (let* ((bounds (emacs-window--resize-bounds window horizontal ignore))
+           (siblings (delq branch (copy-sequence (emacs-window-children parent))))
+           (neighbors (cdr (memq branch (emacs-window-children parent))))
+           (neighbor (or (car neighbors) (car (last siblings))))
+           (nsize (emacs-window--axis-size neighbor horizontal))
+           (nbounds (emacs-window--size-bounds neighbor horizontal ignore))
+           (plan nil))
+      ;; GNU retries without soft preservation constraints before failing;
+      ;; fixed buffer dimensions remain hard constraints.
+      (when (and (not ignore) (or (< delta (car bounds)) (> delta (cdr bounds))))
+        (setq ignore 'preserved bounds (emacs-window--resize-bounds window horizontal ignore)
+              nbounds (emacs-window--size-bounds neighbor horizontal ignore)))
+      (unless (and (>= delta (car bounds)) (<= delta (cdr bounds))) (error "Cannot resize window"))
+      (setq plan (emacs-window--size-plan branch (+ (emacs-window--axis-size branch horizontal) delta) horizontal ignore))
+      (if (and (not (eq window-combination-resize t))
+               (<= (car nbounds) (- nsize delta)) (<= (- nsize delta) (cdr nbounds)))
+          (setq plan (append plan (emacs-window--size-plan neighbor (- nsize delta) horizontal ignore)))
+        (let ((sizes (emacs-window--distribute-sizes siblings
+                       (- (apply #'+ (mapcar (lambda (node) (emacs-window--axis-size node horizontal)) siblings)) delta)
+                       horizontal ignore)))
+          (while siblings
+            (setq plan (append plan (emacs-window--size-plan (car siblings) (car sizes) horizontal ignore))
+                  siblings (cdr siblings) sizes (cdr sizes)))))
+      (dolist (entry plan)
+        (if horizontal (setf (emacs-window-total-cols (car entry)) (cdr entry))
+          (setf (emacs-window-total-lines (car entry)) (cdr entry))))
+      t)))
+
+(defun emacs-window-fit-window-to-buffer (&optional window max-height min-height max-width min-width preserve-size)
+  "Fit a live WINDOW to its accessible buffer, respecting GNU sizing policy.
+Fit height in vertical combinations, and width in horizontal combinations
+when `fit-window-to-buffer-horizontally' enables it. Bounds include the
+window's decorations. A root window is left alone unless frame fitting was
+explicitly requested. Return nil, as the ordinary GNU fitting path does."
+  (let* ((window (emacs-window-get-window window))
+         (parent (emacs-window-parent window))
+         (horizontal (and parent (eq (emacs-window-direction parent) 'horizontal))))
+    (emacs-window--check-leaf window)
+    (cond
+     ((null parent)
+      (when fit-frame-to-buffer
+        (fit-frame-to-buffer (emacs-window--sizing-frame window)
+                             max-height min-height max-width min-width
+                             (and (memq fit-frame-to-buffer '(vertically horizontally)) fit-frame-to-buffer))))
+     ((and (if horizontal fit-window-to-buffer-horizontally
+             (not (eq fit-window-to-buffer-horizontally 'only)))
+           (let ((bounds (emacs-window--size-bounds window horizontal 'preserved)))
+             (/= (car bounds) (cdr bounds))))
+      (let* ((size (emacs-window--axis-size window horizontal))
+             (cell (emacs-window--cell-size window horizontal))
+             (bounds (emacs-window--resize-bounds window horizontal window))
+             (minimum (if horizontal min-width min-height))
+             (maximum (if horizontal max-width max-height))
+             (measured (emacs-window-text-pixel-size
+                        window (and horizontal (emacs-window-start window))
+                        (if horizontal nil t)
+                        (and horizontal (* (emacs-window-total-cols emacs-window--root) cell))
+                        (and horizontal (* (max 1 (- (emacs-window-total-lines window)
+                                                    (emacs-window--decoration-lines window t)))
+                                           (emacs-window--cell-size window nil)))
+                        (not horizontal)))
+             (wanted (/ (+ (if horizontal (car measured) (cdr measured)) cell -1) cell))
+             (low (max (if horizontal window-safe-min-width window-safe-min-height)
+                       (if (numberp minimum) minimum
+                         (if horizontal window-min-width window-min-height))))
+             (high (min (+ size (cdr bounds)) (if (numberp maximum) maximum 1000000)))
+             (new (max low (min high wanted))))
+        (unless (= new size)
+          (condition-case nil
+              (progn
+                (let ((previous (emacs-window-window-parameter window 'window-preserved-size)))
+                  (emacs-window-set-window-parameter
+                   window 'window-preserved-size
+                   (list (emacs-window-window-buffer window)
+                         (and (not horizontal) (nth 1 previous))
+                         (and horizontal (nth 2 previous)))))
+                (emacs-window-window-resize window (- new size) horizontal window)
+                (when preserve-size
+                  (let* ((previous (emacs-window-window-parameter window 'window-preserved-size))
+                         (width (if horizontal (* new cell) (nth 1 previous)))
+                         (height (if horizontal (nth 2 previous)
+                                   (* (max 1 (- new (emacs-window--decoration-lines window t))) cell))))
+                    (emacs-window-set-window-parameter window 'window-preserved-size
+                     (list (emacs-window-window-buffer window) width height)))))
+            (error nil))))))))
+
+(defun emacs-window-shrink-window-if-larger-than-buffer (&optional window)
+  "Shrink a vertically combined, unscrolled WINDOW to its buffer's height."
+  (let* ((window (emacs-window-get-window window))
+         (buffer (emacs-window-window-buffer window))
+         (minimum (if (nelisp-ec-buffer-p buffer)
+                      (nelisp-ec-with-current-buffer buffer (nelisp-ec-point-min))
+                    (with-current-buffer buffer (point-min)))))
+    (emacs-window--check-leaf window)
+    (when (and (emacs-window-parent window)
+               (eq (emacs-window-direction (emacs-window-parent window)) 'vertical)
+               (not noninteractive)
+               (<= (emacs-window-start window) minimum))
+      (emacs-window-fit-window-to-buffer window (emacs-window-total-lines window)))))
+
+(defun emacs-window-text-pixel-size (&optional window from to x-limit y-limit mode-lines ignore-line-at-end)
+  "Measure accessible text in WINDOW using its frame's canonical grid.
+FROM/TO accept positions or t, X-LIMIT defaults to the body width, t means
+unbounded; Y-LIMIT caps text height. Include requested MODE-LINES only when
+present. A terminating newline has no additional text row. This uses the
+same fixed cell layout as shared redisplay; variable-height faces and image
+replacement glyphs are outside that renderer's current contract."
+  (let* ((window (emacs-window-get-window window))
+         (buffer (emacs-window-window-buffer window))
+         (frame (emacs-window-window-frame window))
+         (cw (emacs-window--cell-size window t))
+         (ch (emacs-window--cell-size window nil))
+         (pure (nelisp-ec-buffer-p buffer))
+         (low (if pure (nelisp-ec-with-current-buffer buffer (nelisp-ec-point-min))
+                (with-current-buffer buffer (point-min))))
+         (high (if pure (nelisp-ec-with-current-buffer buffer (nelisp-ec-point-max))
+                 (with-current-buffer buffer (point-max))))
+         (offset (and (consp from) (cdr from)))
+         (start (if (consp from) (car from) from))
+         (end to)
+         (text nil) (width 0) (height 0) (initial-columns 0) (text-rows 0) (first-line t)
+         (truncate (and (boundp 'truncate-lines) (emacs-window--buffer-value buffer 'truncate-lines)))
+         (tabs (if (boundp 'tab-width) (emacs-window--buffer-value buffer 'tab-width) 8))
+         (limit (cond ((eq x-limit t) 1000000000)
+                      ((numberp x-limit) (max 1 x-limit))
+                      (t (* (max 1 (1- (emacs-window-total-cols window))) cw)))))
+    (emacs-window--check-leaf window)
+    (setq start (cond ((or (null start) (eq start t)) low)
+                      ((markerp start) (marker-position start))
+                      ((integerp start) start)
+                      (t (signal 'wrong-type-argument (list 'integer-or-marker-p start))))
+          end (cond ((or (null end) (eq end t)) high)
+                    ((markerp end) (marker-position end))
+                    ((integerp end) end)
+                    (t (signal 'wrong-type-argument (list 'integer-or-marker-p end)))))
+    (setq start (max low (min high start)) end (max low (min high end)))
+    (when (and (numberp offset) (> offset 0))
+      (let* ((rest (if pure (nelisp-ec-with-current-buffer buffer (nelisp-ec-buffer-substring start high))
+                     (with-current-buffer buffer (buffer-substring start high))))
+             (rows (/ offset ch)) (index 0) (last-start start))
+        (while (and (> rows 0) (< index (length rest)))
+          (if (= (aref rest index) ?\n)
+              (progn
+                (when (< (1+ index) (length rest)) (setq last-start (+ start index 1)))
+                (setq rows (1- rows))))
+          (setq index (1+ index)))
+        (setq start last-start)))
+    ;; FROM starts at its display column, not at a fresh line.  GNU reports
+    ;; absolute line extents across rows, but subtracts that starting column
+    ;; when both endpoints occupy the same display row.
+    (let ((prefix (if pure
+                      (nelisp-ec-with-current-buffer buffer (nelisp-ec-buffer-substring low start))
+                    (with-current-buffer buffer (buffer-substring low start))))
+          (index 0))
+      (while (< index (length prefix))
+        (let ((char (aref prefix index)))
+          (setq initial-columns
+                (cond ((= char ?\n) 0)
+                      ((= char ?\t) (+ initial-columns (- (max 1 tabs) (% initial-columns (max 1 tabs)))))
+                      (t (+ initial-columns (max 0 (char-width char)))))))
+        (setq index (1+ index))))
+    (unless truncate
+      (setq initial-columns (% initial-columns (max 1 (/ limit cw)))))
+    (setq text (if pure (nelisp-ec-with-current-buffer buffer (nelisp-ec-buffer-substring start (max start end)))
+                 (with-current-buffer buffer (buffer-substring start (max start end)))))
+    ;; GNU FROM=t excludes the first empty row; TO=t excludes final empty
+    ;; rows, whereas nil keeps empty rows before the terminating newline.
+    (when (and (eq from t) (> (length text) 0) (= (aref text 0) ?\n))
+      (setq text (substring text 1)))
+    (when (eq to t)
+      (while (and (> (length text) 0) (= (aref text (1- (length text))) ?\n))
+        (setq text (substring text 0 -1))))
+    (let ((lines (split-string text "\n" nil)))
+      (when (or (and (= (length text) 0) (= low high))
+                (and (> (length text) 0) (= (aref text (1- (length text))) ?\n)))
+        (setq lines (butlast lines)))
+      (dolist (line lines)
+        (let ((columns (if first-line initial-columns 0)) (index 0))
+          (while (< index (length line))
+            (let ((char (aref line index)))
+              (setq columns (+ columns (if (= char ?\t)
+                                           (- (max 1 tabs) (% columns (max 1 tabs)))
+                                         (max 0 (char-width char))))))
+            (setq index (1+ index)))
+          (let* ((pixels (* columns cw))
+                 (rows (if truncate 1 (max 1 (ceiling (/ (float pixels) limit)))))
+                 (shown (if y-limit (max 0 (min rows (ceiling (/ (float (- y-limit height)) ch)))) rows)))
+            (setq text-rows (+ text-rows rows))
+            (when (> shown 0)
+              (setq width (max width (min limit pixels))
+                    height (+ height (* shown ch)))))
+          ;; Later lines begin at column zero.
+          (setq first-line nil))))
+    (when (and (= text-rows 1) (not (string-match-p "\n" text))
+               ;; TO exactly at a continuation boundary belongs to the next
+               ;; display row; retain the completed row's absolute extent.
+               (or truncate (< width limit)))
+      ;; At an empty interval on a newline GNU's iterator resets the end
+      ;; coordinate before subtracting the starting column (even if negative).
+      (when (and (= start end)
+                 (eq (if pure
+                         (when (< start high)
+                           (aref (nelisp-ec-with-current-buffer buffer
+                                   (nelisp-ec-buffer-substring start (1+ start))) 0))
+                       (with-current-buffer buffer (char-after start))) ?\n))
+        (setq width 0))
+      (setq width (- width (* initial-columns cw)))
+      (when (and (= start end) (= initial-columns 0)) (setq height 0)))
+    (when ignore-line-at-end (setq height (max 0 (- height ch))))
+    (setq height (+ (if y-limit (min y-limit height) height)
+                    (* ch (emacs-window--decoration-lines window mode-lines))))
+    (if (and (consp from) offset (/= offset 0))
+        (list width height start) (cons width height))))
 
 (provide 'emacs-window)
 
