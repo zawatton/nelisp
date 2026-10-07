@@ -71,6 +71,7 @@
               nelisp-bytecode-native-joined-add-test--calls)))))
 
 (ert-deftest nelisp-bytecode-native-joined-add-genuine-oracle-and-materialization ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((fixture (nelisp-bytecode-native-joined-add-test--fixture))
          (input (nelisp-bytecode-compiler-input-build fixture))
          (plan (nelisp-bytecode-native-rooted-cfg-plan input))
@@ -106,6 +107,7 @@
                            forged "joined_add") :status) 'unsupported))))
 
 (ert-deftest nelisp-bytecode-native-joined-add-signal-retains-object ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((fixture (nelisp-bytecode-native-joined-add-test--fixture))
          (input (nelisp-bytecode-compiler-input-build fixture))
          (plan (nelisp-bytecode-native-rooted-cfg-plan input))
@@ -125,6 +127,7 @@
     (should (eq (nth 1 (aref (aref roots (+ exit-base 2)) 1)) bad))))
 
 (ert-deftest nelisp-bytecode-native-joined-add-wrong-edge-oracle-detects ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((fixture (nelisp-bytecode-native-joined-add-test--fixture))
          (input (nelisp-bytecode-compiler-input-build fixture))
          (plan (nelisp-bytecode-native-rooted-cfg-plan input))

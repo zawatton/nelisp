@@ -91,6 +91,7 @@
     (should-not command-line-args-left)))
 
 (ert-deftest nelisp-bytecode-coverage-audit-u0/source-exclusions-preserve-inventory-and-historical-classes ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((report (nelisp-bytecode-coverage-audit-run))
          (counts (plist-get report :counts)) (rows (plist-get report :opcodes)))
     (should (= (plist-get report :excluded-opcode-count) 26))
@@ -112,6 +113,7 @@
       (should-not (plist-get (aref rows op) :valid-fixture)))))
 
 (ert-deftest nelisp-bytecode-coverage-audit-u0/valid-fixtures-execute-all-230-slots-on-gnu ()
+  (skip-unless (equal emacs-version "31.1"))
   (should (string-prefix-p "31.1" emacs-version))
   (let (failures (executed 0))
     (dolist (fixture (nelisp-bytecode-coverage-audit--valid-fixtures

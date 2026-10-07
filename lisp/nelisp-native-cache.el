@@ -35,6 +35,8 @@
 (defvar nelisp-native-cache--compiler-revision :unset)
 (defvar nelisp-native-cache--addresses nil)
 (defvar nelisp-native-cache--disabled-reason nil)
+(defvar nelisp-native-cache--cold-source-check nil
+  "Opaque source-identity fence installed only by compiler cold preparation.")
 (defvar nelisp-native-cache-backend 'in-house
   "Native code generator: in-house (default) or gccjit.")
 (defvar nelisp-native-cache-mode 'shared-v2
@@ -58,6 +60,8 @@ A missing source disables caching rather than creating an incomplete key."
   (when (eq nelisp-native-cache--compiler-revision :unset)
     (setq nelisp-native-cache--compiler-revision
           (condition-case err
+              (if nelisp-native-cache--cold-source-check
+                  (funcall nelisp-native-cache--cold-source-check :source-check)
               (let ((sources nil))
                 (dolist (module nelisp-native-cache--compiler-modules)
                   (let ((path (locate-library (concat (symbol-name module) ".el") t)))
@@ -75,7 +79,7 @@ A missing source disables caching rather than creating an incomplete key."
                        (if (boundp 'nelisp-bytecode-runtime-opcode-inventory)
                            nelisp-bytecode-runtime-opcode-inventory
                          (nelisp-bytecode-compiler-input-inventory-sha256))
-                       (nreverse sources))))
+                       (nreverse sources)))))
             (error (setq nelisp-native-cache--disabled-reason err) nil))))
   nelisp-native-cache--compiler-revision)
 
@@ -105,6 +109,78 @@ A missing source disables caching rather than creating an incomplete key."
         nelisp-native-cache--format
         nelisp-native-load-raw-artifact-format-v2))
 
+(defun nelisp-native-cache-prepare-cold-compiler ()
+  "Preload compiler Lisp, fencing its source closure before a cold dump.
+No import addresses or native artifacts are resolved. A later process must
+compare every source byte before reusing the ordinary compiler fingerprint;
+a changed source closure refuses the cache instead of running stale code."
+  (when (or nelisp-native-cache--cold-source-check
+            (featurep 'nelisp-aot-compiler))
+    (error "Native compiler cold preparation requires a fresh source loader"))
+  (let ((before (nelisp-native-cache-compiler-revision-hash)))
+    (unless before (error "Native compiler cold source fingerprint unavailable"))
+    ;; The reader advertises the producer feature before loading the complete
+    ;; source implementation. Load its actual source, not that feature marker.
+    (load (locate-library "nelisp-bytecode-native-rooted-cfg-native.el" t) nil t t)
+    (require 'nelisp-aot-compiler)
+    (require 'nelisp-standalone-arena-rewrite)
+    ;; Materialize the private structural indexes without emitting code or
+    ;; adopting any runtime addresses. The dialect gate pins this recipe.
+    (unless (eq (plist-get
+                 (nelisp-bytecode-native-rooted-cfg-plan
+                  (nelisp-bytecode-compiler-input-build
+                   (make-byte-code 257 (unibyte-string 135) [] 1)) nil 'off)
+                 :status) 'complete)
+      (error "Native compiler cold structural preparation failed"))
+    (setq nelisp-native-cache--compiler-revision :unset)
+    (unless (equal before (nelisp-native-cache-compiler-revision-hash))
+      (error "Native compiler sources changed during cold preparation"))
+    (let* ((frozen (copy-sequence before)) (same (symbol-function 'equal))
+           (dialect (copy-sequence nelisp-bytecode-runtime-dialect-id))
+           (inventory (copy-sequence nelisp-bytecode-runtime-opcode-inventory))
+           (files
+            (mapcar (lambda (module)
+                      (cons module
+                            (with-temp-buffer
+                              (set-buffer-multibyte nil)
+                              (insert-file-contents-literally
+                               (locate-library (concat (symbol-name module) ".el") t))
+                              (buffer-string))))
+                    nelisp-native-cache--compiler-modules)))
+      ;; Prove the private bytes correspond to the already verified revision.
+      ;; The consumer compares complete bytes, not mtime, size or public data.
+      (unless (equal frozen
+                     (nelisp-native-cache--hash
+                      (list dialect inventory
+                            (mapcar (lambda (file)
+                                      (list (car file) (secure-hash 'sha256 (cdr file))))
+                                    files))))
+        (error "Native compiler sources changed while freezing their bytes"))
+      (setq nelisp-native-cache--cold-source-check
+            (lambda (current)
+              (if (eq current :source-check)
+                  (progn
+                    (unless (and (funcall same dialect nelisp-bytecode-runtime-dialect-id)
+                                 (funcall same inventory nelisp-bytecode-runtime-opcode-inventory)
+                                 (funcall same (mapcar #'car files) nelisp-native-cache--compiler-modules)
+                                 (cl-every
+                                  (lambda (file)
+                                    (with-temp-buffer
+                                      (set-buffer-multibyte nil)
+                                      (insert-file-contents-literally
+                                       (locate-library (concat (symbol-name (car file)) ".el") t))
+                                      (funcall same (cdr file) (buffer-string))))
+                                  files))
+                      (error "Native compiler cold source identity changed; rebuild the cold image"))
+                    (copy-sequence frozen))
+                (funcall same frozen current)))))
+    ;; Process identities must always be computed in the consuming process.
+    (setq nelisp-native-cache--compiler-revision :unset
+          nelisp-native-cache--abi :unset
+          nelisp-native-cache--addresses nil
+          nelisp-native-cache--disabled-reason nil)
+    t))
+
 (defun nelisp-native-cache--stage (label)
   "Append bounded cache identity phases to the existing opt-in compiler trace."
   (let ((path (getenv "NELISP_ROOTED_CFG_STAGE_LOG")))
@@ -123,6 +199,9 @@ exactly once.  Failure permanently disables this process's cache."
                                       (prog1 (nelisp-native-cache-compiler-revision-hash)
                                         (nelisp-native-cache--stage "revision-end")))))
                 (unless revision (error "Compiler fingerprint unavailable"))
+                (when (and nelisp-native-cache--cold-source-check
+                           (not (funcall nelisp-native-cache--cold-source-check revision)))
+                  (error "Native compiler cold source identity changed; rebuild the cold image"))
                 (setq nelisp-native-cache--addresses
                       (progn (nelisp-native-cache--stage "addresses-start")
                              (prog1 (nelisp-native-load-root-v2-addresses)

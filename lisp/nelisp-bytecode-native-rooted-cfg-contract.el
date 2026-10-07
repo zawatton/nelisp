@@ -292,6 +292,9 @@ Visit and copy each container in one DFS, rejecting an active ancestor."
            value)
          (allocate (item)
            (cond
+            ;; Most recipe and plan nodes are scalar metadata. Classify them
+            ;; before inspecting callable/opaque containers.
+            ((or (null item) (symbolp item) (numberp item)) item)
             ((or (hash-table-p item) (byte-code-function-p item) (functionp item)) item)
             ((stringp item)
              (or (identity-get item)
@@ -305,7 +308,6 @@ Visit and copy each container in one DFS, rejecting an active ancestor."
                    (identity-put item record)
                    (push (vector item copy 0 record) pending)
                    copy))))
-            ((or (null item) (symbolp item) (numberp item)) item)
             (t (error "Unsupported contract snapshot value")))))
       (let ((root (allocate value)))
         (while pending
@@ -351,12 +353,15 @@ The result is data for comparison, never a certificate or cached authority."
                               (nelisp-bytecode-native-rooted-cfg-contract--safe-data-p
                                (plist-get recipe key) 0))
                             '(:descriptor :constants :metadata :interactive))))
+             (live-canonical nil)
              (live-function
               (and live-input recipe-safe
-                   (let ((canonical (nelisp-bytecode-compiler-input-build (plist-get live-input :function))))
-                     (and (equal canonical live-input)
-                          (equal recipe (nelisp-bytecode-native-rooted-cfg-contract-input-recipe canonical))
-                          (plist-get canonical :function)))))
+                   (progn
+                     (setq live-canonical
+                           (nelisp-bytecode-compiler-input-build (plist-get live-input :function)))
+                     (and (equal live-canonical live-input)
+                          (equal recipe (nelisp-bytecode-native-rooted-cfg-contract-input-recipe live-canonical))
+                          (plist-get live-canonical :function)))))
              (function
               (or live-function (and recipe-safe (apply #'make-byte-code
                      (append (list descriptor (plist-get recipe :code)
@@ -367,7 +372,10 @@ The result is data for comparison, never a certificate or cached authority."
                                (5 (list (plist-get recipe :metadata)))
                                (6 (list (plist-get recipe :metadata)
                                         (plist-get recipe :interactive)))))))))
-             (input (nelisp-bytecode-compiler-input-build function))
+             ;; The live object has just passed a complete canonical rebuild
+             ;; and recipe comparison. Reuse that fresh result, not caller data.
+             (input (or (and live-function live-canonical)
+                        (nelisp-bytecode-compiler-input-build function)))
              (plan (nelisp-bytecode-native-rooted-cfg-plan
                     input (plist-get (plist-get copy :plan) :lowering-mode)
                     (if (member (plist-get copy :version)

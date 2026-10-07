@@ -183,6 +183,7 @@
     (should (= mapcar-calls 0))))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-shared-emit/two-diamonds-share-two-continuations-aot-smaller ()
+  (skip-unless (equal emacs-version "31.1"))
   (unless (equal emacs-version "31.1") (ert-skip "Requires GNU Emacs 31.1"))
   (let* ((input (nelisp-bytecode-native-rooted-cfg-shared-emit-test--two-diamonds))
          (plan (nelisp-bytecode-native-rooted-cfg-plan input))
@@ -212,6 +213,7 @@
              (length (plist-get shared-unit :text)))))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-shared-emit/multi-phi-and-carried-phi-aot-parity-shape ()
+  (skip-unless (equal emacs-version "31.1"))
   (unless (equal emacs-version "31.1") (ert-skip "Requires GNU Emacs 31.1"))
   (dolist (case (list (list (nelisp-bytecode-native-rooted-cfg-shared-emit-test--two-phis)
                             (byte-compile (lambda (a x y b z w)
@@ -296,6 +298,7 @@
         (should mismatch))))))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-shared-emit/preserves-car-cdr-error-root-statuses ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((input (nelisp-bytecode-native-rooted-cfg-shared-emit-test--two-diamonds))
          (plan (nelisp-bytecode-native-rooted-cfg-plan input))
          (reference (plist-get (nelisp-bytecode-native-rooted-cfg-emit
@@ -313,6 +316,7 @@
       (should (cl-some (lambda (node) (eq (nth 2 node) 'rooted_cfg_phi_1)) error-forms)))))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-shared-emit/evaluates-shared-continuations-and-errors ()
+  (skip-unless (equal emacs-version "31.1"))
   (unless (equal emacs-version "31.1") (ert-skip "Requires GNU Emacs 31.1"))
   (let* ((input (nelisp-bytecode-native-rooted-cfg-shared-emit-test--two-diamonds))
          (plan (nelisp-bytecode-native-rooted-cfg-plan input))
@@ -365,6 +369,7 @@
       (should (eq (cadr reference-cdr) (cadr cdr-result))))))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-shared-emit/nil-car-cdr-match-gnu-and-reference ()
+  (skip-unless (equal emacs-version "31.1"))
   (unless (equal emacs-version "31.1") (ert-skip "Requires GNU Emacs 31.1"))
   (let* ((input (nelisp-bytecode-native-rooted-cfg-shared-emit-test--two-diamonds))
          (plan (nelisp-bytecode-native-rooted-cfg-plan input))
@@ -388,6 +393,7 @@
     (should (equal (cadr reference-result) expected))))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-shared-emit/refuses-when-analysis-disabled-or-plan-mutated ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((input (nelisp-bytecode-native-rooted-cfg-shared-emit-test--two-diamonds))
          (plan (nelisp-bytecode-native-rooted-cfg-plan input))
          (copy (copy-tree plan t)))
@@ -402,6 +408,7 @@
                 'unsupported))))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-shared-emit/no-join-refuses-only-optimization-mode ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((input (nelisp-bytecode-native-rooted-cfg-shared-emit-test--two-diamonds))
          (plan (nelisp-bytecode-native-rooted-cfg-plan input)))
     (cl-letf (((symbol-function 'nelisp-bytecode-native-rooted-cfg-postdom-analyze)

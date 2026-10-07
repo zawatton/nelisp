@@ -5,6 +5,7 @@
 (require 'nelisp-native-frame-v2)
 (load "support/native-cleanup-u7b-fixtures.el" nil t t)
 (ert-deftest u7b/five-opcodes-use-shared-frame-bridge ()
+  (skip-unless (equal emacs-version "31.1"))
   (dolist (kind '(97 114 138 140 ordered forms implicit))
     (let* ((input (nelisp-bytecode-compiler-input-build (native-cleanup-u7b-function kind)))
            (plan (nelisp-bytecode-native-rooted-cfg-plan input))

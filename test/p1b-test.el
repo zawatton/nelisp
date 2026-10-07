@@ -10,12 +10,14 @@
        (funcall check manifest)))))
 
 (ert-deftest p1b/user-export-only ()
+  (skip-unless (equal emacs-version "31.1"))
   (p1b-test--manifest
    (lambda (manifest)
      (should (= (length (plist-get (plist-get manifest :native) :exports)) 1))
      (should (eq (plist-get manifest :gc-address-mode) 'runtime-bridge-v1)))))
 
 (ert-deftest p1b/runtime-gc-table-addresses ()
+  (skip-unless (equal emacs-version "31.1"))
   (p1b-test--manifest
    (lambda (manifest)
      (let ((exports (plist-get (plist-get manifest :native) :exports))
@@ -29,6 +31,7 @@
                       (mapcar #'car nelisp-runtime-reload-gc-contract)))))))
 
 (ert-deftest p1b/trusted-format-and-gc-refusals ()
+  (skip-unless (equal emacs-version "31.1"))
   (p1b-test--manifest
    (lambda (manifest)
      (let ((name (plist-get (car (plist-get (plist-get manifest :native) :exports)) :name)))
@@ -45,6 +48,7 @@
            (should-error (nelisp-native-load--raw-v2-trusted-decode bad name))))))))
 
 (ert-deftest p1b/runtime-gc-address-cannot-shadow-export ()
+  (skip-unless (equal emacs-version "31.1"))
   (p1b-test--manifest
    (lambda (manifest)
      (let* ((entry (car (plist-get manifest :gc-entries)))

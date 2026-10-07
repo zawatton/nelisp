@@ -38126,17 +38126,27 @@ The dump runs in a scrubbed environment and a neutral directory: every
 per-process global the driver sets (argv, environment alist,
 `default-directory', invocation names) is re-set on each cold boot anyway, and
 nothing from the build's own environment should leak into the image.
-A failed dump is reported and leaves no image; it does not fail the build."
+A failed dump is reported and leaves no image. It fails the build when
+NELISP_STANDALONE_NATIVE_COMPILER_COLD=1 explicitly requests compiler preparation."
   (let ((image (nelisp-standalone--cold-image-path binary)))
     (when (file-exists-p image) (delete-file image))
     (if (or (equal (getenv "NELISP_STANDALONE_COLD_IMAGE") "0")
             (not (nelisp-standalone--target-runnable-on-host-p)))
         (message "[standalone-reader] cold image skipped")
       (let* ((default-directory temporary-file-directory)
+             (native-compiler-cold
+              (equal (getenv "NELISP_STANDALONE_NATIVE_COMPILER_COLD") "1"))
              (process-environment
               (list "PATH=/usr/bin:/bin" "LANG=C.UTF-8" "HOME=/nonexistent"))
-             (form (format "(nelisp--arena-dump-image-stream %S)"
-                           (expand-file-name image)))
+             (form
+              (if native-compiler-cold
+                  (format
+                   "(progn (add-to-list 'load-path %S) (add-to-list 'load-path %S) (require 'nelisp-native-cache) (nelisp-native-cache-prepare-cold-compiler) (garbage-collect) (nelisp--arena-dump-image-stream %S))"
+                   (expand-file-name "lisp" nelisp-standalone--repo-root)
+                   (expand-file-name "src" nelisp-standalone--repo-root)
+                   (expand-file-name image))
+                (format "(nelisp--arena-dump-image-stream %S)"
+                        (expand-file-name image))))
              (status nil) (output nil))
         (with-temp-buffer
           (setq status (call-process (expand-file-name binary) nil t nil
@@ -38152,7 +38162,9 @@ A failed dump is reported and leaves no image; it does not fail the build."
                      image (string-to-number output))
           (when (file-exists-p image) (delete-file image))
           (message "[standalone-reader] WARNING: cold image dump failed (%S): %s"
-                   status output))))))
+                   status output)
+          (when native-compiler-cold
+            (error "Requested native compiler cold image is unavailable")))))))
 
 ;;;###autoload
 (defun nelisp-standalone--reader-run-command (binary &rest argv)

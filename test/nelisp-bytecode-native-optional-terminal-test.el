@@ -3,6 +3,7 @@
 (require 'nelisp-bytecode-native-compiler)
 
 (ert-deftest nelisp-optional-terminal-general-bounds-and-refusal ()
+  (skip-unless (equal emacs-version "31.1"))
   (let ((lexical-binding t))
     (dolist (source '((lambda (&optional value) value)
                       (lambda (first second &optional third) third)

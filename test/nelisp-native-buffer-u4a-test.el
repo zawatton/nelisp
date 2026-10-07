@@ -7,6 +7,7 @@
 (require 'nelisp-native-load)
 (load "support/native-buffer-u4a-fixtures.el" nil t t)
 (ert-deftest u4a/exact-ten-opcodes-and-both-contracts ()
+  (skip-unless (equal emacs-version "31.1"))
   (dolist (row native-buffer-u4a-family)
     (should (equal row (nelisp-native-funcall-v2-primitive (car row))))
     (let* ((input (nelisp-bytecode-compiler-input-build (native-buffer-u4a-function row)))

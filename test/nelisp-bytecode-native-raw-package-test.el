@@ -72,6 +72,7 @@
     (funcall thunk)))
 
 (ert-deftest nelisp-bytecode-native-raw-package-rejects-before-effects-and-red-control-reaches-backend ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((root (make-temp-file "nelisp-raw-preflight-" t))
          (elc (nelisp-bytecode-native-raw-package-test--fixture root '(+ value 1)))
          (out (expand-file-name "unsupported" root)) (backend 0) (mkdirs 0)
@@ -110,6 +111,7 @@
       (delete-directory root t))))
 
 (ert-deftest nelisp-bytecode-native-raw-package-import-export-tampering-refuses-before-eval-or-mapping ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((root (make-temp-file "nelisp-raw-tamper-" t))
          (elc (nelisp-bytecode-native-raw-package-test--fixture root '(car value))))
     (unwind-protect
@@ -144,6 +146,7 @@
       (delete-directory root t)))))
 
 (ert-deftest nelisp-bytecode-native-raw-package-preexisting-feature-is-vm-only ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((root (make-temp-file "nelisp-raw-hijack-" t))
          (elc (nelisp-bytecode-native-raw-package-test--fixture root '(car value)))
          (dir (expand-file-name "package" root)) (result nil)
@@ -173,6 +176,7 @@
       (delete-directory root t)))))
 
 (ert-deftest nelisp-bytecode-native-raw-package-second-open-changed-cell-stays-vm-only ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((root (make-temp-file "nelisp-raw-provenance-" t))
          (elc (nelisp-bytecode-native-raw-package-test--fixture root '(car value)))
          (dir (expand-file-name "package" root)) (result nil)
@@ -239,6 +243,7 @@
       (should (= unloads 1)))))
 
 (ert-deftest nelisp-bytecode-native-raw-package-different-template-same-feature-stays-vm-only ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((root (make-temp-file "nelisp-raw-provenance-" t))
          (nelisp-bytecode-native-raw-package--verified-features
           (make-hash-table :test 'eq))
@@ -285,6 +290,7 @@
       (delete-directory root t))))
 
 (ert-deftest nelisp-bytecode-native-raw-package-refuses-artifact-change-before-first-map ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((root (make-temp-file "nelisp-raw-artifact-race-" t))
          (nelisp-bytecode-native-raw-package--verified-features
           (make-hash-table :test 'eq))
@@ -327,6 +333,7 @@
       (delete-directory root t))))
 
 (ert-deftest nelisp-bytecode-native-package-rejects-raw-unary-chain-before-effects ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((root (make-temp-file "nelisp-boxed-raw-chain-" t))
          (elc (nelisp-bytecode-native-raw-package-test--fixture
                root '(car (cdr value))))

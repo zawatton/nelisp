@@ -11,6 +11,7 @@
 (require 'nelisp-bytecode-native-rooted-stack)
 
 (ert-deftest nelisp-bytecode-native-compiler/compiles-materialized-user-argument ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((artifact (make-temp-name
                     (expand-file-name "nelisp-bytecode-entry-"
                                       temporary-file-directory)))
@@ -34,6 +35,7 @@
       (when (file-exists-p artifact) (delete-file artifact)))))
 
 (ert-deftest nelisp-bytecode-native-compiler/routes-real-gnu-rooted-plan-to-raw-entry ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((functions (mapcar (lambda (form) (byte-compile form))
                             '((lambda (x) (car x)) (lambda (x) (cdr x))
                               (lambda (x) (cons nil x))
@@ -68,6 +70,7 @@
     (should-not (file-exists-p artifact))))
 
 (ert-deftest nelisp-bytecode-native-compiler/rejects-packed-descriptor-without-names ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((artifact (make-temp-name
                     (expand-file-name "nelisp-bytecode-packed-"
                                       temporary-file-directory)))
@@ -82,6 +85,7 @@
     (should-not (file-exists-p artifact))))
 
 (ert-deftest nelisp-bytecode-native-compiler/rejects-unproven-variable-reference ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((artifact (make-temp-name
                     (expand-file-name "nelisp-bytecode-unknown-"
                                       temporary-file-directory)))
@@ -102,6 +106,7 @@
     (should (eq (plist-get result :status) 'malformed))))
 
 (ert-deftest nelisp-bytecode-native-compiler/routes-cons-to-authenticated-raw-v2-abi ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((artifact (concat (make-temp-name
                             (expand-file-name "nelisp-bytecode-cons-"
                                               temporary-file-directory))
@@ -140,6 +145,7 @@
       (when (file-exists-p artifact) (delete-file artifact)))))
 
 (ert-deftest nelisp-bytecode-native-compiler/dispatches-rooted-operations-with-admitted-plan-to-raw-target ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((directory (make-temp-file "compiler-rooted-stack-" t))
          (source (expand-file-name "fixture.el" directory))
          (elc (concat source "c")) captured result (build-count 0)
@@ -195,6 +201,7 @@
       (delete-directory directory t))))
 
 (ert-deftest nelisp-bytecode-native-compiler-cons-refuses-nearby-shapes ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((artifact (concat (make-temp-name
                             (expand-file-name "nelisp-bytecode-cons-nearby-"
                                               temporary-file-directory))
@@ -209,6 +216,7 @@
     (should-not (file-exists-p artifact))))
 
 (ert-deftest nelisp-bytecode-native-compiler-preserves-malformed-cons-diagnostic ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((artifact (concat (make-temp-name
                             (expand-file-name "nelisp-bytecode-cons-malformed-"
                                               temporary-file-directory))
@@ -223,6 +231,7 @@
     (should-not (file-exists-p artifact))))
 
 (ert-deftest nelisp-bytecode-native-compiler/compiles-packed-terminal-branch ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((code (unibyte-string 137 134 6 0 192 135 135))
          (constants [chosen-value])
          (function (make-byte-code 257 code constants 2))
@@ -240,6 +249,7 @@
       (when (file-exists-p artifact) (delete-file artifact)))))
 
 (ert-deftest nelisp-bytecode-native-compiler/compiles-packed-two-arm-join ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((code (unibyte-string 137 131 8 0 192 130 12 0 193 130 12 0 135))
          (constants [left-value right-value])
          (function (make-byte-code 257 code constants 2))
@@ -257,6 +267,7 @@
       (when (file-exists-p artifact) (delete-file artifact)))))
 
 (ert-deftest nelisp-bytecode-native-compiler/rejects-packed-effects-and-keeps-malformed-distinct ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((artifact (make-temp-name
                     (expand-file-name "nelisp-public-branch-negative-"
                                       temporary-file-directory)))
@@ -287,6 +298,7 @@
 
 (ert-deftest nelisp-bytecode-native-compiler/admits-exact-rest-slot-return-only ()
   "Compile only the authenticated GNU required-plus-REST return template."
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((function (make-byte-code '(required &rest values)
                                    (unibyte-string 8 135) [values] 1))
          (artifact (make-temp-name "nelisp-rest-template-"))

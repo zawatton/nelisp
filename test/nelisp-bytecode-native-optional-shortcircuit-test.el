@@ -4,6 +4,7 @@
 (require 'nelisp-bytecode-native-compiler)
 
 (ert-deftest nelisp-bytecode-native-optional-shortcircuit/exact-or-and-only ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((base (make-temp-name
                 (expand-file-name "nelisp-optional-shortcircuit-"
                                   temporary-file-directory)))

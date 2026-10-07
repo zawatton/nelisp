@@ -7,6 +7,7 @@
                   [nil] (or depth 3)))
 
 (ert-deftest nelisp-input-mixed/genuine-source-free-cons-discard ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((function (nelisp-input-mixed-test--function))
          (value (list 'identity))
          (result (nelisp-bytecode-compiler-input-build function)))

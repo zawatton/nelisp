@@ -25,6 +25,7 @@
       (delete-directory directory t))))
 
 (ert-deftest nelisp-captured-cons/genuine-cold-factory-frame-and-identity ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((marker (cons 'capture 'tail))
          (closure (nelisp-captured-cons-test--cold-closure marker))
          (input (nelisp-bytecode-compiler-input-build closure)))
@@ -41,6 +42,7 @@
     (should (eq (car (funcall closure)) 'changed))))
 
 (ert-deftest nelisp-captured-cons/public-compilation-must-reach-hidden-root-backend ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((marker (cons 'capture 'tail))
          (closure (nelisp-captured-cons-test--cold-closure marker))
          (directory (make-temp-file "nelisp-captured-cons-" t))
@@ -56,6 +58,7 @@
       (delete-directory directory t))))
 
 (ert-deftest nelisp-captured-cons/multiple-genuine-captures-and-slot-witness ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((byte-optimize nil)
          (factory (byte-compile '(lambda (left right) (lambda () (progn left right)))))
          (left (cons 'left nil)) (right (cons 'right nil))
@@ -81,6 +84,7 @@
       (delete-directory directory t))))
 
 (ert-deftest nelisp-captured-cons/refuses-effects-rest-template-and-malformed-code ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((marker (cons 'capture nil))
          (closure (nelisp-captured-cons-test--cold-closure marker))
          (input (nelisp-bytecode-compiler-input-build closure)))
@@ -100,4 +104,3 @@
                       (make-byte-code 0 (unibyte-string 193 135) [nil] 1))))
       (should (eq (plist-get malformed :status) 'malformed))
       (should-not (nelisp-bytecode-native-compiler--boxed-constant-return-input-p malformed)))))
-

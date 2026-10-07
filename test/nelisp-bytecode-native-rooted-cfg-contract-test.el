@@ -51,6 +51,7 @@
     (secure-hash 'sha256 (prin1-to-string canonical))))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-contract/recomputes-genuine-two-diamond-contract ()
+  (skip-unless (equal emacs-version "31.1"))
   (unless (equal emacs-version "31.1") (ert-skip "Requires pinned GNU byte-code 31.1"))
   (let* ((input (nelisp-bytecode-native-rooted-cfg-contract-test--fixture))
          (plan (nelisp-bytecode-native-rooted-cfg-plan input))
@@ -102,6 +103,7 @@
       (should-not (nelisp-native-load-raw-v2-rooted-cfg-contract-valid-p manifest)))))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-contract/imports-follow-emitted-calls ()
+  (skip-unless (equal emacs-version "31.1"))
   (unless (equal emacs-version "31.1") (ert-skip "Requires pinned GNU byte-code 31.1"))
   (let* ((input (nelisp-bytecode-compiler-input-build
                  (byte-compile (lambda (value) (car value)))))
@@ -129,6 +131,7 @@
       (should-not (nelisp-bytecode-native-rooted-cfg-contract-valid-p overclaimed)))))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-contract/recomputes-shared-v2-and-rejects-resigned-mutations ()
+  (skip-unless (equal emacs-version "31.1"))
   (unless (equal emacs-version "31.1") (ert-skip "Requires pinned GNU byte-code 31.1"))
   (let* ((input (nelisp-bytecode-native-rooted-cfg-contract-test--fixture))
          (plan (nelisp-bytecode-native-rooted-cfg-plan input))
@@ -172,6 +175,7 @@
       (should-not (nelisp-native-load-raw-v2-rooted-cfg-contract-valid-p wrong-version)))))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-contract/cache-keys-copy-runtime-and-mutations ()
+  (skip-unless (equal emacs-version "31.1"))
   (unless (equal emacs-version "31.1") (ert-skip "Requires pinned GNU byte-code 31.1"))
   (let* ((input (nelisp-bytecode-native-rooted-cfg-contract-test--fixture))
          (plan (nelisp-bytecode-native-rooted-cfg-plan input))
@@ -243,6 +247,7 @@
     (should-not (nelisp-native-load-raw-v2-rooted-cfg-contract-valid-p '(:kind raw-runtime)))))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-contract/runtime-key-snapshot-reuses-and-invalidates ()
+  (skip-unless (equal emacs-version "31.1"))
   (unless (equal emacs-version "31.1") (ert-skip "Requires pinned GNU byte-code 31.1"))
   (let* ((input (nelisp-bytecode-native-rooted-cfg-contract-test--fixture))
          (plan (nelisp-bytecode-native-rooted-cfg-plan input))

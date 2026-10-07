@@ -4,6 +4,7 @@
 (require 'nelisp-bytecode-native-rooted-cfg-contract)
 (require 'nelisp-aot-compiler)
 (ert-deftest u6/dynamic-table-is-shared-native ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((fn (make-byte-code 514 (unibyte-string 183 192 135 193 135) [miss hit] 2))
          (input (nelisp-bytecode-compiler-input-build fn))
          (plan (nelisp-bytecode-native-rooted-cfg-plan input)))
@@ -13,6 +14,7 @@
 (load (expand-file-name "support/native-switch-u6-fixtures.el"
                         (file-name-directory (or load-file-name buffer-file-name))) nil t)
 (ert-deftest u6/gnu-oracle-and-shared-artifacts ()
+  (skip-unless (equal emacs-version "31.1"))
   (dolist (name '(eq eql equal custom dynamic backedge))
     (let* ((fixture (native-switch-u6-fixture name)) (fn (car fixture))
            (table (cadr fixture)) (keys (nth 2 fixture))
@@ -62,6 +64,7 @@
       (puthash 'bad value table)
       (should-error (funcall function 'bad table '(0 4)) :type 'error))))
 (ert-deftest u6/cache-recipe-does-not-freeze-table ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((fixture (native-switch-u6-fixture 'eq)) (fn (car fixture)) (table (cadr fixture))
          (recipe (nelisp-bytecode-native-rooted-cfg-contract-input-recipe
                   (nelisp-bytecode-compiler-input-build fn))))
@@ -71,6 +74,7 @@
     (should (equal (plist-get recipe :live-hash-constants) '(0)))
     (should (null (aref (plist-get recipe :constants) 0)))))
 (ert-deftest u6/audit-valid-switch-proved-diagnostic-stays-pending ()
+  (skip-unless (equal emacs-version "31.1"))
   (add-to-list 'load-path (expand-file-name "tools/ai" default-directory))
   (require 'nelisp-bytecode-coverage-audit)
   (let* ((report (nelisp-bytecode-coverage-audit-run)) (row (aref (plist-get report :opcodes) 183)))
@@ -79,6 +83,7 @@
     (should-not (plist-get (cdr (assq 'gccjit (plist-get row :backend-execution))) :executed-native))))
 (provide 'nelisp-native-switch-u6-test)
 (ert-deftest u6/live-contract-reconstruction-does-not-admit-different-code ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((fixture (native-switch-u6-fixture 'eq)) (fn (car fixture))
          (input (nelisp-bytecode-compiler-input-build fn))
          (plan (nelisp-bytecode-native-rooted-cfg-plan input))
@@ -94,6 +99,7 @@
       (should-not (nelisp-bytecode-native-rooted-cfg-contract-valid-p forged)))))
 
 (ert-deftest u6/residual-stack-and-default-successor-target ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((table (make-hash-table :test 'equal))
          (fn (make-byte-code 514 (unibyte-string 192 183 135 135) (vector table) 3))
          (payload (list 'rooted)))

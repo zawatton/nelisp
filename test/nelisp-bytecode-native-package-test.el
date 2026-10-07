@@ -7,6 +7,7 @@
 
 (ert-deftest nelisp-bytecode-native-package-rejects-fingerprint-before-effects ()
   "A dialect/ABI mismatch is rejected before reading artifacts or evaluating .elc."
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((root (make-temp-file "nelisp-package-fingerprint-" t))
          (elc (expand-file-name "module.elc" root))
          (manifest-path (expand-file-name "package.npkg" root))
@@ -152,6 +153,7 @@
 
 (ert-deftest nelisp-bytecode-native-package-sealed-preflight-refuses-mutation ()
   "Package tokens reject function and compiler-result mutation before backend work."
+  (skip-unless (equal emacs-version "31.1"))
   (let ((api nelisp-bytecode-native-compiler-package-preflight-api))
     (dolist (mutation '(code constants descriptor input-code input-constants
                         ir cyclic-ir frame dialect helper helper-input-accessor
@@ -227,6 +229,7 @@
 
 (ert-deftest nelisp-bytecode-native-package-sealed-preflight-valid-token-builds ()
   "A genuine unchanged sealed token reaches the backend once and is consumed."
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((api nelisp-bytecode-native-compiler-package-preflight-api)
          (function (byte-compile '(lambda () 'sealed-value)))
          (sealed (funcall (plist-get api :preflight) function))
@@ -251,6 +254,7 @@
 
 (ert-deftest nelisp-bytecode-native-package-sealed-preflight-large-input-is-uncacheable ()
   "Oversized genuine analysis uses the ordinary compiler path instead of refusing."
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((api nelisp-bytecode-native-compiler-package-preflight-api)
          (function (byte-compile '(lambda () 'sealed-value)))
          (input-builder (symbol-function 'nelisp-bytecode-compiler-input-build))
@@ -278,6 +282,7 @@
    (nelisp-bytecode-native-package--safe-entry-name 'unsafe/name)))
 
 (ert-deftest nelisp-bytecode-native-package-refuses-raw-v2-cons-before-publication ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((root (make-temp-file "nelisp-package-raw-cons-" t))
          (elc (expand-file-name "module.elc" root))
          (output (expand-file-name "package" root))
@@ -498,6 +503,7 @@
       (when (file-exists-p root) (delete-directory root t)))))
 
 (ert-deftest nelisp-bytecode-native-package-source-free-33-entry-unit ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((root (make-temp-file "nelisp-package-many-host-" t))
          (source (expand-file-name "many.el" root))
          (elc (concat source "c"))
@@ -546,6 +552,7 @@
       (delete-directory root t))))
 
 (ert-deftest nelisp-bytecode-native-package-stale-artifact-before-cold-effects ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((root (make-temp-file "nelisp-package-stale-host-" t))
          (source (expand-file-name "stale.el" root))
          (elc (concat source "c"))

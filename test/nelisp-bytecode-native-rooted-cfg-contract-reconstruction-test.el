@@ -17,6 +17,7 @@
     (list input plan emitted contract)))
 
 (ert-deftest nelisp-contract-reconstruction/atomic-result ()
+  (skip-unless (equal emacs-version "31.1"))
   (dolist (shared '(nil t))
     (let* ((fixture (nelisp-contract-reconstruction-test--fixture shared))
            (contract (nth 3 fixture))
@@ -35,6 +36,7 @@
       (should-not (nelisp-bytecode-native-rooted-cfg-contract-valid-p contract :forged-mode)))))
 
 (ert-deftest nelisp-contract-reconstruction/fresh-data-and-full-function ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((base (byte-compile (lambda (a b) (cons a b))))
          (input (nelisp-bytecode-compiler-input-build
                  (make-byte-code (aref base 0) (aref base 1) (aref base 2) (aref base 3) "mutable")))
@@ -68,6 +70,7 @@
       (should (equal (plist-get fresh :expected-contract) contract)))))
 
 (ert-deftest nelisp-contract-reconstruction/resigned-mutations-refused ()
+  (skip-unless (equal emacs-version "31.1"))
   (let ((contract (nth 3 (nelisp-contract-reconstruction-test--fixture t))))
     (dolist (mutation '((:entry "counterfeit") (:root-count 255)
                         (:entry-ast (defun counterfeit () 0))
@@ -85,6 +88,7 @@
       (should-not (nelisp-bytecode-native-rooted-cfg-contract-valid-p contract mode)))))
 
 (ert-deftest nelisp-contract-reconstruction/guard-mode-preserved ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((fixture (nelisp-contract-reconstruction-test--fixture t 'on))
          (contract (nth 3 fixture))
          (record (nelisp-bytecode-native-rooted-cfg-contract-valid-p contract :reconstruction)))
@@ -97,6 +101,7 @@
       (should-not (nelisp-bytecode-native-rooted-cfg-contract-valid-p changed :reconstruction)))))
 
 (ert-deftest nelisp-contract-reconstruction/one-rebuild-and-no-cache ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((contract (nth 3 (nelisp-contract-reconstruction-test--fixture t)))
          (original (symbol-function 'nelisp-bytecode-compiler-input-build)) (calls 0))
     (cl-letf (((symbol-function 'nelisp-bytecode-compiler-input-build)
@@ -108,6 +113,7 @@
       (should (= calls 4)))))
 
 (ert-deftest nelisp-contract-reconstruction/snapshot-owner-replacement-refused ()
+  (skip-unless (equal emacs-version "31.1"))
   (let ((contract (nth 3 (nelisp-contract-reconstruction-test--fixture t))))
     (cl-letf (((symbol-function 'nelisp-bytecode-native-rooted-cfg-contract--snapshot-data)
                (lambda (value _depth) value)))
@@ -128,6 +134,7 @@
     (should (equal (car shared) "shared"))))
 
 (ert-deftest nelisp-contract-reconstruction/cyclic-nonrecipe-refused ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((contract (nth 3 (nelisp-contract-reconstruction-test--fixture t)))
          (cycle (list 'operation)))
     (setcdr cycle cycle)
@@ -138,6 +145,7 @@
       (should-error (nelisp-bytecode-native-rooted-cfg-contract--snapshot-data vector 0)))))
 
 (ert-deftest nelisp-contract-reconstruction/cyclic-recipe-refused ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((contract (nth 3 (nelisp-contract-reconstruction-test--fixture t)))
          (cycle (list 'cycle)))
     (setcdr cycle cycle)

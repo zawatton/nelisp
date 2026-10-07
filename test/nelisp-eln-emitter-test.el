@@ -39,6 +39,7 @@
   (load path nil t t))
 
 (ert-deftest nelisp-eln-emitter-produces-loadable-gnu-unit ()
+  (skip-unless (equal emacs-version "31.1"))
   (should (equal emacs-version "31.1"))
   (should (equal comp-abi-hash "ba35c031"))
   (should (eq system-type 'gnu/linux))
@@ -62,6 +63,7 @@
         (delete-directory dir t)))))
 
 (ert-deftest nelisp-eln-emitter-lowers-one-argument-identity-leaf ()
+  (skip-unless (equal emacs-version "31.1"))
   (should (equal emacs-version "31.1"))
   (should (equal comp-abi-hash "ba35c031"))
   (should (eq system-type 'gnu/linux))
@@ -92,6 +94,7 @@
         (delete-directory dir t)))))
 
 (ert-deftest nelisp-eln-emitter-lowers-bounded-conditional-ir ()
+  (skip-unless (equal emacs-version "31.1"))
   (should (equal emacs-version "31.1"))
   (should (equal comp-abi-hash "ba35c031"))
   (let* ((dir (make-temp-file "nelisp-eln-emitter-if-" t))
@@ -184,6 +187,7 @@
         (delete-directory dir t)))))
 
 (ert-deftest nelisp-eln-emitter-rejects-corrupt-profile-hash-before-registration ()
+  (skip-unless (equal emacs-version "31.1"))
   (should (equal emacs-version "31.1"))
   (should (equal comp-abi-hash "ba35c031"))
   (should (eq system-type 'gnu/linux))

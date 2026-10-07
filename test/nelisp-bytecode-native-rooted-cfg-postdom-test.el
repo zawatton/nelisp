@@ -35,6 +35,7 @@
     copy))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-postdom/two-independent-diamonds-share-exit ()
+  (skip-unless (equal emacs-version "31.1"))
   (unless (equal emacs-version "31.1") (ert-skip "Requires GNU Emacs 31.1"))
   (let* ((input (nelisp-bytecode-native-rooted-cfg-postdom-test--two-diamonds))
          (frame (plist-get input :frame-result))
@@ -48,6 +49,7 @@
     (should (= (cdr (cadr joins)) (car (last (plist-get topology :block-order)))))))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-postdom/carried-phi-uses-verified-cfg ()
+  (skip-unless (equal emacs-version "31.1"))
   (unless (equal emacs-version "31.1") (ert-skip "Requires GNU Emacs 31.1"))
   (let* ((input (nelisp-bytecode-native-rooted-cfg-postdom-test--carried-phi))
          (plan (nelisp-bytecode-native-rooted-cfg-plan input))
@@ -57,6 +59,7 @@
     (should (>= (length (plist-get analysis :nearest-joins)) 2))))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-postdom/is-stable-under-edge-order-and-id-renaming ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((input (nelisp-bytecode-native-rooted-cfg-postdom-test--two-diamonds))
          (frame (plist-get input :frame-result))
          (blocks (append (plist-get frame :blocks) nil))
@@ -88,6 +91,7 @@
                      (mapcar #'cdr (plist-get renumbered-result :nearest-joins)))))))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-postdom/supports-multiple-exits-and-refuses-bad-canonical-input ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((multi-exit-frame
           '(:status complete
             :blocks [(:start 0 :instructions [(:opcode 131)]
@@ -117,6 +121,7 @@
                   'unsupported)))))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-postdom/disabled-analysis-does-not-pass-real-input ()
+  (skip-unless (equal emacs-version "31.1"))
   (let ((input (nelisp-bytecode-native-rooted-cfg-postdom-test--two-diamonds)))
     (cl-letf (((symbol-function 'nelisp-bytecode-native-rooted-cfg-postdom--compute)
                (lambda (_blocks _order) (list :status 'unsupported :reason "disabled"))))

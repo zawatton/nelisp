@@ -79,7 +79,10 @@
 (ert-deftest nelisp-applyfn-bytecode-finalizes-after-the-instruction-loop ()
   "The byte-code VM finalizes once, after its instruction loop exits.
 Keeping the finalizer in the `while' body makes the general VM report an
-error immediately after its first otherwise-successful instruction."
+error immediately after its first otherwise-successful instruction.
+Since native handler landing (U8n) the frame setup is guarded by a
+slots check, and the unwind that may resume at a handler is part of the
+loop condition, so the loop body stays a single `let*'."
   (let* ((definition
           (cl-find-if
            (lambda (form)
@@ -87,13 +90,16 @@ error immediately after its first otherwise-successful instruction."
                   (eq (cadr form) 'wf_bytecode)))
            nelisp-standalone--applyfn-bytecode-helpers))
          (outer-let (nth 3 definition))
-         (body-seq (nth 2 outer-let))
-         (forms (cdr body-seq))
-         (instruction-loop (nth 1 forms)))
-    (should (equal (mapcar #'car-safe forms) '(if while if)))
-    (should (eq (car instruction-loop) 'while))
+         (guard (nth 2 outer-let))
+         (forms (cdr (nth 3 guard)))
+         (loops (cl-remove-if-not (lambda (form) (eq (car-safe form) 'while)) forms))
+         (instruction-loop (car (last loops)))
+         (after (cdr (memq instruction-loop forms))))
+    (should (eq (car-safe guard) 'if))
+    (should (= (length loops) 2))
     (should (= (length instruction-loop) 3))
-    (should (eq (car-safe (nth 2 instruction-loop)) 'let*))))
+    (should (eq (car-safe (nth 2 instruction-loop)) 'let*))
+    (should (equal (mapcar #'car-safe after) '(wf_bytecode_handlers_drop_to if)))))
 
 (provide 'nelisp-applyfn-length-dispatch-test)
 ;;; nelisp-applyfn-length-dispatch-test.el ends here

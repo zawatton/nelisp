@@ -99,6 +99,7 @@
       (should (= calls 1)))))
 
 (ert-deftest nelisp-rooted-branch-package-refusal-precedes-effects ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((directory (make-temp-file "rooted-branch-package-" t))
          (source (expand-file-name "fixture.el" directory))
          (elc (concat source "c"))

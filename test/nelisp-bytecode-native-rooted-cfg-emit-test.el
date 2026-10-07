@@ -47,6 +47,7 @@
     (equal tree value)))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-emit/expands-genuine-diamonds-and-compiles-aot ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((input (nelisp-bytecode-native-rooted-cfg-emit-test--two-diamonds))
          (plan (nelisp-bytecode-native-rooted-cfg-plan input))
          (emitted (nelisp-bytecode-native-rooted-cfg-emit
@@ -89,6 +90,7 @@
     (should (equal (plist-get emitted :required-root-count) 10))))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-emit/resolves-multiple-phi-roots-per-predecessor ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((input (nelisp-bytecode-native-rooted-cfg-emit-test--two-phis-at-one-join))
          (plan (nelisp-bytecode-native-rooted-cfg-plan input))
          (emitted (nelisp-bytecode-native-rooted-cfg-emit
@@ -111,6 +113,7 @@
     (should (member "nl_native_cons_v2" (plist-get unit :extern-symbols)))))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-emit/resolves-carried-phi-through-later-join ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((input (nelisp-bytecode-native-rooted-cfg-emit-test--carried-phi))
          (plan (nelisp-bytecode-native-rooted-cfg-plan input))
          (emitted (nelisp-bytecode-native-rooted-cfg-emit
@@ -146,6 +149,7 @@
                     cons-calls))))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-emit/refuses-mutated-root-phi-and-limit-before-output ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((input (nelisp-bytecode-native-rooted-cfg-emit-test--two-phis-at-one-join))
          (plan (nelisp-bytecode-native-rooted-cfg-plan input))
          (bad-root (copy-tree plan t))

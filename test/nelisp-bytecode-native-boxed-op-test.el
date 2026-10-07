@@ -26,6 +26,7 @@
     (should (eq (plist-get contract :caller-on-exit) 'vm-unwinder-required))))
 
 (ert-deftest nelisp-bytecode-native-boxed-op/car-is-planned-but-not-emitted ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((function (make-byte-code 257 (unibyte-string 64 135) [] 2))
          (input (nelisp-bytecode-compiler-input-build function))
          (plan (nelisp-bytecode-native-boxed-op-plan input))

@@ -23,6 +23,7 @@
                  "nl_root_pin_reserve_v2"))))
 
 (ert-deftest nelisp-rooted-conditional/plans-genuine-three-argument-gnu-frame ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((code (unibyte-string 2 131 6 0 1 135 135))
          (function (make-byte-code 771 code [] 4))
          (input (nelisp-bytecode-compiler-input-build function))

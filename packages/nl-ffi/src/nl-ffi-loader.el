@@ -614,6 +614,10 @@
 
 ;;; Code:
 
+(declare-function nl-ffi-memory-address "nl-ffi-memory" (owner))
+(declare-function nl-ffi-memory-cstring "nl-ffi-memory" (bytes))
+(declare-function nl-ffi-memory-release "nl-ffi-memory" (owner))
+
 (unless (featurep 'nl-ffi-memory)
   (load (expand-file-name
          "nl-ffi-memory.el"
@@ -626,6 +630,7 @@
 (declare-function ptr-write-u8 "ext:nelisp-runtime" (ptr offset value))
 (declare-function ptr-read-u32 "ext:nelisp-runtime" (ptr offset))
 (declare-function ptr-write-u32 "ext:nelisp-runtime" (ptr offset value))
+(declare-function ptr-read-bytes "ext:nelisp-runtime" (address length))
 (declare-function ptr-read-u64 "ext:nelisp-runtime" (ptr offset))
 (declare-function ptr-write-u64 "ext:nelisp-runtime" (ptr offset value))
 (declare-function ptr-call "ext:nelisp-runtime" (address a b c d e f))
@@ -826,7 +831,9 @@ misclassified as \"a small errno\" and vice versa."
   "Return an external-memory owner for a NUL-terminated copy of STRING.
 The caller must obtain its address with `nl-ffi-memory-address' and
 release the owner after the native call, including on nonlocal exit."
-  (nl-ffi-memory-cstring (string-as-unibyte string)))
+  ;; Keep the raw-byte conversion; `encode-coding-string' differs on
+  ;; eight-bit characters.
+  (nl-ffi-memory-cstring (with-no-warnings (string-as-unibyte string))))
 
 (defun nl-ffi-loader--open-ro (path)
   "openat(AT_FDCWD, PATH, O_RDONLY); return the fd, or signal.

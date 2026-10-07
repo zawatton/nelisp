@@ -5,6 +5,8 @@
 ;; debugger policy for explicit Lisp signal calls in the standalone reader.
 ;; Primitive errors raised directly by the runtime retain their own behavior.
 (defvar signal-hook-function nil)
+(declare-function nelisp-eln-handler-port--debugger-decision "nelisp-eln-handler-port"
+                  (clause conditions failure))
 (when (and (fboundp 'nelisp--eval-source-string) (not (featurep 'nl-signal)))
   (require 'nelisp-eln-handler-port)
   (let ((raise (symbol-function 'signal)))

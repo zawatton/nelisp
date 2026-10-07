@@ -45,6 +45,7 @@
 (cl-every #'identity nil)
 
 (let ((guard-owners nil) (guard-context nil) (arithmetic-context nil)
+      (source-shapes (make-hash-table :test #'eql))
       (guard-owner-checker (symbol-function 'nelisp-bytecode-native-guarded-lowering-owner-valid-p))
       (lookup (symbol-function 'symbol-function))
       (same (symbol-function 'eq))
@@ -79,6 +80,30 @@
                            (and (consp owners)
                                 (funcall same (funcall head owners)
                                          (funcall lookup 'nelisp-native-optimization-guard-v1-dependency-context)))))))))
+       (source-shape (value)
+         ;; Index the private finite syntax once. Equality against this shape
+         ;; can only follow that finite tree before a mismatch; a cyclic or
+         ;; larger supplied tree cannot extend the comparison beyond it.
+         (let* ((key (sxhash-eq value))
+                (found (assq value (gethash key source-shapes))))
+           (or (cdr found)
+               (let ((nodes 0) (maximum 0))
+                 (cl-labels ((scan (item depth)
+                               (setq nodes (1+ nodes) maximum (max maximum depth))
+                               (when (or (> nodes 8192) (> depth 64))
+                                 (error "rooted-cfg: source context bound exceeded"))
+                               (cond ((consp item)
+                                      (scan (car item) (1+ depth))
+                                      (scan (cdr item) depth))
+                                     ((vectorp item)
+                                      (when (> (length item) 256)
+                                        (error "rooted-cfg: source vector bound exceeded"))
+                                      (dotimes (i (length item))
+                                        (scan (aref item i) (1+ depth)))))))
+                   (scan value 0))
+                 (let ((shape (cons nodes maximum)))
+                   (puthash key (cons (cons value shape) (gethash key source-shapes)) source-shapes)
+                   shape)))))
        (guard-valid-p (&optional supplied-context supplied-arithmetic)
          (let ((owners guard-owners) (valid t))
            (while owners
@@ -94,6 +119,12 @@
                                 (setq budget (1- budget))
                                 (and (>= budget 0) (<= depth 64)
                                      (cond
+                                      (source-data-p
+                                       (let ((shape (source-shape left)))
+                                         ;; WALK has already charged the root.
+                                         (setq budget (- budget (1- (car shape))))
+                                         (and (>= budget 0) (<= (+ depth (cdr shape)) 64)
+                                              (equal left right))))
                                       ((and (not source-data-p)
                                             (or (functionp left) (functionp right)))
                                        (funcall same left right))
@@ -934,12 +965,17 @@ phis at joins.  It refuses before any backend or artifact side effect."
                   nelisp-bytecode-native-call1-layout--token-p
                   nelisp-bytecode-native-rooted-cfg-plan-guard-context-p
                   symbol-function eq car cdr functionp consp vectorp integerp
+                  sxhash-eq gethash puthash make-hash-table assq max -
                   equal length aref >= <= < = 1- 1+ and or cond cl-labels
                   cons stringp copy-sequence vconcat mapcar append list cl-every))
         guard-context (progn (funcall guard-owner-checker)
                              (nelisp-bytecode-native-guarded-lowering-dependency-context))
         arithmetic-context (progn (funcall guard-owner-checker)
-                                  (nelisp-bytecode-native-arithmetic-lowering-dependency-context)))))
+                                  (nelisp-bytecode-native-arithmetic-lowering-dependency-context)))
+  ;; Build source-shape indexes once at owner initialization, before admitting
+  ;; any compiler input. Later plans still compare the complete current data.
+  (unless (guard-valid-p)
+    (error "rooted-cfg: initial source context is unavailable"))))
 
 (provide 'nelisp-bytecode-native-rooted-cfg-plan)
 ;;; nelisp-bytecode-native-rooted-cfg-plan.el ends here

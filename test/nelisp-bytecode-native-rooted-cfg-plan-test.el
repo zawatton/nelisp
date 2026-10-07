@@ -39,6 +39,7 @@
     copy))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg/admit-genuine-two-diamond-gnu31-frame ()
+  (skip-unless (equal emacs-version "31.1"))
   (unless (equal emacs-version "31.1") (ert-skip "Requires GNU Emacs 31.1"))
   (let* ((input (nelisp-bytecode-native-rooted-cfg-test--two-diamonds))
          (plan (nelisp-bytecode-native-rooted-cfg-plan input))
@@ -83,6 +84,7 @@
                 'propagate-unchanged))))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg/plans-constants-stack-aliases-dup-discard ()
+  (skip-unless (equal emacs-version "31.1"))
   (unless (equal emacs-version "31.1") (ert-skip "Requires GNU Emacs 31.1"))
   ;; These are genuine GNU 31.1 byte-code instructions materialized as a
   ;; byte-code function and then admitted through the public input verifier.
@@ -102,6 +104,7 @@
     (should (= (plist-get plan :required-root-count) 3))))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg/preserves-all-phis-at-one-join ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((input (nelisp-bytecode-native-rooted-cfg-test--two-phis-at-one-join))
          (plan (nelisp-bytecode-native-rooted-cfg-plan input))
          (join (assq 11 (mapcar (lambda (block)
@@ -117,6 +120,7 @@
                    '(((4 . 7) (9 . 9)) ((4 . 8) (9 . 10)))))))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg/records-constant-root-values ()
+  (skip-unless (equal emacs-version "31.1"))
   (dolist (value '(nil t 37))
     (let* ((function (byte-compile (eval `(lambda () ',value))))
            (input (nelisp-bytecode-compiler-input-build function))
@@ -128,6 +132,7 @@
       (should (integerp (plist-get initializer :root))))))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg/rejects-cycle-bad-edge-and-stack-shape ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((input (nelisp-bytecode-native-rooted-cfg-test--two-diamonds))
          (cycle (nelisp-bytecode-native-rooted-cfg-test--replace-edge
                  input 1 0 :target 0))
@@ -142,6 +147,7 @@
         (should-not (plist-get plan :entry-ast))))))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg/refuses-variable-arity-and-captures-but-admits-variable-access ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((optional (nelisp-bytecode-compiler-input-build
                     (byte-compile (lambda (&optional value) value))))
          (dynamic (nelisp-bytecode-compiler-input-build

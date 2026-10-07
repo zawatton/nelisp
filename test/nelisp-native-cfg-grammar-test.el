@@ -66,6 +66,7 @@
                         :key #'car :test #'equal) 2))))
 
 (ert-deftest native-cfg/boxed-constant-canonical-plan ()
+  (skip-unless (equal emacs-version "31.1"))
   (require 'nelisp-bytecode-native-rooted-cfg-shared-emit)
   (let* ((byte-compile-warnings nil)
          (input (nelisp-bytecode-compiler-input-build

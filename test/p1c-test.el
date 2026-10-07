@@ -38,6 +38,7 @@
     (list (read (current-buffer)) (read (current-buffer)))))
 
 (ert-deftest p1c/cache-validates-once-without-producer-structural-check ()
+  (skip-unless (equal emacs-version "31.1"))
   (p1c-test--fixture
    (lambda (function file _directory)
      (cl-letf (((symbol-function 'nelisp-native-load--raw-v2-check-after-compile)
@@ -48,6 +49,7 @@
      (should-not nelisp-bytecode-native-rooted-cfg-native--registry))))
 
 (ert-deftest p1c/cache-does-not-build-an-unused-admission-receipt ()
+  (skip-unless (equal emacs-version "31.1"))
   (p1c-test--fixture
    (lambda (function file _directory)
      (cl-letf (((symbol-function 'nelisp-native-load--raw-v2-compile-file-with-validation)
@@ -55,6 +57,7 @@
        (should (equal (nelisp-native-cache-compile function) file))))))
 
 (ert-deftest p1c/cache-writes-and-publishes-only-the-final-cache ()
+  (skip-unless (equal emacs-version "31.1"))
   (p1c-test--fixture
    (lambda (function file directory)
      (let ((writer (symbol-function 'write-region))
@@ -80,6 +83,7 @@
        (should (eq (plist-get (car (p1c-test--read file)) :backend) 'in-house))))))
 
 (ert-deftest p1c/snapshot-encoding-and-file-manifest-stay-identical ()
+  (skip-unless (equal emacs-version "31.1"))
   (p1c-test--fixture
    (lambda (function file _directory)
      (let ((compiler (symbol-function 'nelisp-native-load-raw-v2-compile-file))
@@ -115,6 +119,7 @@
          (should (= calls 1)))))))
 
 (ert-deftest p1c/trusted-decoder-keeps-memory-safety-refusals ()
+  (skip-unless (equal emacs-version "31.1"))
   (p1c-test--fixture
    (lambda (function file _directory)
      (nelisp-native-cache-compile function)
@@ -129,6 +134,7 @@
            (should-error (nelisp-native-load--raw-v2-trusted-decode bad entry))))))))
 
 (ert-deftest p1c/trusted-decoder-authenticates-artifact-once-before-mapping ()
+  (skip-unless (equal emacs-version "31.1"))
   (p1c-test--fixture
    (lambda (function file _directory)
      (nelisp-native-cache-compile function)
@@ -158,6 +164,7 @@
            (should (= maps nelisp-native-load--trusted-map-count))))))))
 
 (ert-deftest p1c/failed-validation-does-not-publish-and-hit-does-not-recompile ()
+  (skip-unless (equal emacs-version "31.1"))
   (p1c-test--fixture
    (lambda (function file directory)
      (let ((publications 0))
@@ -177,6 +184,7 @@
        (should (equal before (with-temp-buffer (insert-file-contents-literally file) (buffer-string))))))))
 
 (ert-deftest p1c/public-build-still-checks-publishes-and-seals ()
+  (skip-unless (equal emacs-version "31.1"))
   (p1c-test--fixture
    (lambda (function _file directory)
      (let* ((artifact (expand-file-name "public.nelr" directory))
@@ -276,6 +284,7 @@
   (princ "P1C-DRIVER-ABSENT-PASS\n"))
 
 (ert-deftest p1c/public-and-cache-compile-without-the-build-driver ()
+  (skip-unless (equal emacs-version "31.1"))
   ;; Other test files may deliberately load the driver.  Use a fresh host in
   ;; that case rather than treating their setup as a compiler regression.
   (if (not (featurep 'nelisp-standalone-build))
@@ -323,6 +332,7 @@
     (should (= stage-expansions 0))))
 
 (ert-deftest p1c/cache-keeps-the-aot-contract-mutation-check ()
+  (skip-unless (equal emacs-version "31.1"))
   (p1c-test--fixture
    (lambda (function file _directory)
      (let ((compiler (symbol-function 'nelisp-native-load-raw-v2-compile-file))

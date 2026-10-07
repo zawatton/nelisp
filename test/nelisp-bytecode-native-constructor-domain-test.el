@@ -11,12 +11,14 @@
     (nelisp-bytecode-native-rooted-cfg-contract-create-shared-v2 input plan emitted)))
 
 (ert-deftest nelisp-constructor-domain/admits-constant-argument-and-cons ()
+  (skip-unless (equal emacs-version "31.1"))
   (dolist (form '((lambda () 7) (lambda (value) value)
                   (lambda (left right) (cons left right))))
     (should (nelisp-bytecode-native-rooted-cfg-contract-constructor-p
              (nelisp-constructor-domain-test--contract form)))))
 
 (ert-deftest nelisp-constructor-domain/admit-source-free-genuine-gnu-cons-elc ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((directory (make-temp-file "nelisp-constructor-elc-" t))
          (source (expand-file-name "constructor.el" directory))
          (elc (concat source "c")))
@@ -43,6 +45,7 @@
       (delete-directory directory t))))
 
 (ert-deftest nelisp-constructor-domain/refuses-arithmetic-accessors-and-branches ()
+  (skip-unless (equal emacs-version "31.1"))
   (dolist (form '((lambda (left right) (+ left right))
                   (lambda (value) (car value))
                   (lambda (value) (cdr value))
@@ -56,6 +59,7 @@
       (should-not (nelisp-bytecode-native-rooted-cfg-contract-constructor-p contract)))))
 
 (ert-deftest nelisp-constructor-domain/refuses-tampered-imports-or-operations ()
+  (skip-unless (equal emacs-version "31.1"))
   (let ((contract (nelisp-constructor-domain-test--contract
                    '(lambda (left right) (cons left right)))))
     (should (nelisp-bytecode-native-rooted-cfg-contract-constructor-p contract))
@@ -69,6 +73,7 @@
       (should-not (nelisp-bytecode-native-rooted-cfg-contract-constructor-p copy)))))
 
 (ert-deftest nelisp-constructor-domain/refuses-branch-mutant-with-constructor-imports ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((contract (nelisp-constructor-domain-test--contract
                     '(lambda (left right) (cons left right))))
          (copy (copy-tree contract t))
@@ -85,6 +90,7 @@
       (should-not (nelisp-bytecode-native-rooted-cfg-contract-constructor-p copy)))))
 
 (ert-deftest nelisp-constructor-domain/refuses-replaced-validator-before-invocation ()
+  (skip-unless (equal emacs-version "31.1"))
   (let ((contract (nelisp-constructor-domain-test--contract
                    '(lambda (left right) (cons left right))))
         (calls 0))

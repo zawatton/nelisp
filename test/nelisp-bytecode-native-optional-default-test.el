@@ -4,6 +4,7 @@
 (require 'nelisp-bytecode-native-compiler)
 
 (ert-deftest nelisp-bytecode-native-optional-default/exact-shape-only ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((path (make-temp-name
                 (expand-file-name "nelisp-optional-default-"
                                   temporary-file-directory)))

@@ -9,6 +9,7 @@
    (make-byte-code 257 code [] (or depth 2))))
 
 (ert-deftest nelisp-bytecode-native-unary-chain-admits-sequences-and-refuses-nearby-code ()
+  (skip-unless (equal emacs-version "31.1"))
   (should (equal (nelisp-bytecode-native-unary-chain-operations
                   (nelisp-bytecode-native-unary-chain-test--input
                    (unibyte-string 65 64 135)))
@@ -55,6 +56,7 @@
   (should (= (nelisp-bytecode-native-unary-chain-result-root-index '(cdr car cdr)) 2)))
 
 (ert-deftest nelisp-bytecode-native-compiler-dispatches-chains-and-preserves-unary-route ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((chain (make-byte-code 257 (unibyte-string 137 65 64 135) [] 2))
          (single (make-byte-code 257 (unibyte-string 64 135) [] 2))
          (chain-called nil) (unary-called nil) result)

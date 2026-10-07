@@ -359,7 +359,7 @@ test-nojit:
 	  EMACS_PRELOAD="-l scripts/nelisp-jit-disable.el"
 
 compile: nl-check-gate
-	$(EMACS) --batch -Q -L src \
+	$(EMACS) --batch -Q -L src -L lisp \
 	  $(PACKAGE_SRC_LOADS) \
 	  --eval '(setq byte-compile-error-on-warn t)' \
 	  -f batch-byte-compile $(SRCS) $(PACKAGE_SRCS)

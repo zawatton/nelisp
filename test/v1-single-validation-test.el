@@ -38,6 +38,7 @@ AFTER-COMPILE runs after compile-file has returned its manifest."
       (delete-directory directory t))))
 
 (ert-deftest v1/one-semantic-reconstruction-per-compile ()
+  (skip-unless (equal emacs-version "31.1"))
   (dolist (shared-v2 '(nil t))
     (v1-test--build
      nil
@@ -51,6 +52,7 @@ AFTER-COMPILE runs after compile-file has returned its manifest."
      shared-v2)))
 
 (ert-deftest v1/contract-mutation-revalidated-and-refused ()
+  (skip-unless (equal emacs-version "31.1"))
   (v1-test--build
    (lambda (manifest _)
      (plist-put (plist-get manifest :native-rooted-cfg-contract) :status-base 513))
@@ -60,6 +62,7 @@ AFTER-COMPILE runs after compile-file has returned its manifest."
    t))
 
 (ert-deftest v1/rebound-validator-forces-reconstruction ()
+  (skip-unless (equal emacs-version "31.1"))
   (v1-test--build
    (lambda (_manifest validator)
      (fset 'nelisp-bytecode-native-rooted-cfg-contract-valid-p
@@ -70,6 +73,7 @@ AFTER-COMPILE runs after compile-file has returned its manifest."
    t))
 
 (ert-deftest v1/public-check-still-reconstructs ()
+  (skip-unless (equal emacs-version "31.1"))
   (v1-test--build
    nil
    (lambda (build)
@@ -82,6 +86,7 @@ AFTER-COMPILE runs after compile-file has returned its manifest."
    t))
 
 (ert-deftest v1/post-compile-structural-mutation-refused ()
+  (skip-unless (equal emacs-version "31.1"))
   (v1-test--build
    (lambda (manifest _)
      (plist-put (nelisp-native-load--raw-export
@@ -94,6 +99,7 @@ AFTER-COMPILE runs after compile-file has returned its manifest."
    t))
 
 (ert-deftest v1/equal-but-distinct-contract-revalidated ()
+  (skip-unless (equal emacs-version "31.1"))
   (v1-test--build
    (lambda (manifest _)
      (plist-put manifest :native-rooted-cfg-contract

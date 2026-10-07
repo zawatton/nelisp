@@ -22,6 +22,7 @@
     copy))
 
 (ert-deftest nelisp-bytecode-native-call1-layout/genuine-four-row-layout-is-pure ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((input (nelisp-bytecode-native-call1-layout-test--input))
          (before (copy-tree input t))
          (rows (plist-get (aref (plist-get (plist-get input :frame-result) :blocks) 0)
@@ -50,12 +51,14 @@
                 'unsupported))))
 
 (ert-deftest nelisp-bytecode-native-call1-layout/rejects-wrong-call-operand ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((input (nelisp-bytecode-native-call1-layout-test--mutate
                  (nelisp-bytecode-native-call1-layout-test--input) 2 :operand 2))
          (layout (nelisp-bytecode-native-call1-layout input)))
     (should (eq (plist-get layout :status) 'unsupported))))
 
 (ert-deftest nelisp-bytecode-native-call1-layout/rejects-extra-instruction ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((input (copy-tree (nelisp-bytecode-native-call1-layout-test--input) t))
          (block (aref (plist-get (plist-get input :frame-result) :blocks) 0))
          (rows (plist-get block :instructions)))
@@ -64,12 +67,14 @@
                 'unsupported))))
 
 (ert-deftest nelisp-bytecode-native-call1-layout/rejects-missing-call-output ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((input (nelisp-bytecode-native-call1-layout-test--mutate
                  (nelisp-bytecode-native-call1-layout-test--input) 2 :outputs nil)))
     (should (eq (plist-get (nelisp-bytecode-native-call1-layout input) :status)
                 'unsupported))))
 
 (ert-deftest nelisp-bytecode-native-call1-layout/rejects-unresolved-call-operands ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((input (nelisp-bytecode-native-call1-layout-test--mutate
                  (nelisp-bytecode-native-call1-layout-test--input) 2 :inputs
                  '((:value 999 0) (:value 1000 0)))))
@@ -83,6 +88,7 @@
                 'unsupported))))
 
 (ert-deftest nelisp-bytecode-native-call1-layout/source-mutant-fails-same-positive-oracle ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((input (nelisp-bytecode-native-call1-layout-test--input))
          (source (with-temp-buffer
                    (insert-file-contents "lisp/nelisp-bytecode-native-call1-layout.el")

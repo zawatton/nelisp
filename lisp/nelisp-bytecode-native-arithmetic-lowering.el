@@ -70,13 +70,20 @@ and root origins before accepting this result as executable evidence. Status
           :source (nelisp-native-arithmetic-v2-source))))
 
 (defun nelisp-bytecode-native-arithmetic-lowering-dependency-context ()
-  "Return actual lowering and provider owners for authenticated emitter seals."
+  "Return fresh public provider evidence for compiler sealing."
+  (funcall owner-checker)
+  (nelisp-bytecode-native-arithmetic-lowering--dependency-context
+   (nelisp-native-arithmetic-v2-dependency-context)))
+
+(defun nelisp-bytecode-native-arithmetic-lowering--dependency-context (provider)
+  "Assemble context data around the caller's freshly copied PROVIDER.
+This is data assembly, never a provider authentication or admission path."
   (funcall owner-checker)
   (vector (symbol-function 'nelisp-bytecode-native-arithmetic-lowering-build)
           (symbol-function 'nelisp-bytecode-native-arithmetic-lowering--operation-p)
           (symbol-function 'nelisp-bytecode-native-arithmetic-lowering--variable-p)
           (symbol-function 'nelisp-bytecode-native-arithmetic-lowering-dependency-context)
-          (nelisp-native-arithmetic-v2-dependency-context)
+          provider
           (mapcar #'symbol-function
                   '(symbolp keywordp eq not consp car cdr memq cons null integerp
                     = < > <= >= + 1+ plist-get list vector mapcar symbol-function))))
@@ -87,6 +94,7 @@ and root origins before accepting this result as executable evidence. Status
                       nelisp-bytecode-native-arithmetic-lowering--operation-p
                       nelisp-bytecode-native-arithmetic-lowering--variable-p
                       nelisp-bytecode-native-arithmetic-lowering-dependency-context
+                      nelisp-bytecode-native-arithmetic-lowering--dependency-context
                       nelisp-native-arithmetic-v2-owner-valid-p
                       symbolp keywordp eq not consp car cdr memq cons null integerp
                       = < > <= >= + 1+ plist-get list vector mapcar symbol-function

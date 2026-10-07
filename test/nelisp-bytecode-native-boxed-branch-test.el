@@ -128,6 +128,7 @@
       (when (file-exists-p artifact) (delete-file artifact)))))
 
 (ert-deftest nelisp-bytecode-native-compiler-routes-packed-two-argument-branch ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((function (make-byte-code 514 (unibyte-string 137 134 6 0 192 135 135)
                                    [hidden] 3))
          (artifact (make-temp-file "nelisp-boxed-compiler-two-arg-" nil ".neln"))
@@ -209,6 +210,7 @@
       (when (file-exists-p artifact) (delete-file artifact)))))
 
 (ert-deftest nelisp-bytecode-native-boxed-branch-admits-named-optional-dataflow ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((fixture (expand-file-name
                    "fixtures/native-bytecode/optional-truthiness.el"
                    nelisp-bytecode-native-boxed-branch-test--directory))

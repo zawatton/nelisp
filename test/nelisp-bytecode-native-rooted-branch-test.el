@@ -10,6 +10,7 @@
   (expand-file-name ".." (file-name-directory (or load-file-name buffer-file-name))))
 
 (ert-deftest nelisp-rooted-branch/admit-only-genuine-gnu31-car-cdr-diamond ()
+  (skip-unless (equal emacs-version "31.1"))
   (unless (equal emacs-version "31.1")
     (ert-skip "Requires pinned GNU Emacs 31.1"))
   (let* ((dir (make-temp-file "gnu-rooted-branch-" t))
@@ -109,6 +110,7 @@
     (should (= end-calls 0))))
 
 (ert-deftest nelisp-rooted-branch/source-body-mutation-stops-before-backend ()
+  (skip-unless (equal emacs-version "31.1"))
   (require 'nelisp-runtime-reload-abi)
   (let* ((dir (make-temp-file "rooted-branch-source-" t))
          (source (expand-file-name "mutated.el" dir))

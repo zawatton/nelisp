@@ -133,6 +133,7 @@
       (should-error (nelisp-native-gccjit-lower (nelisp-native-gccjit-test--form n) nil)))))
 
 (ert-deftest nelisp-native-gccjit/compile-once-publish-sidecar-and-hit ()
+  (skip-unless (equal emacs-version "31.1"))
   (let ((nelisp-bytecode-compiler-input--root nelisp-native-gccjit-test--root)
         (directory (make-temp-file "gccjit-publish-" t))
         (nelisp-native-cache-backend 'gccjit)

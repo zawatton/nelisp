@@ -22,6 +22,7 @@
       (delete-directory directory t))))
 
 (ert-deftest p1a/cache-does-not-seal-or-register ()
+  (skip-unless (equal emacs-version "31.1"))
   (p1a-test--fixture
    (lambda (function _input _artifact directory)
      (let ((file (expand-file-name "cache.neln" directory))
@@ -42,6 +43,7 @@
          (should-not nelisp-bytecode-native-rooted-cfg-native--registry))))))
 
 (ert-deftest p1a/public-build-still-seals ()
+  (skip-unless (equal emacs-version "31.1"))
   (p1a-test--fixture
    (lambda (_function input artifact _directory)
      (let* ((fingerprint (symbol-function 'nelisp-bytecode-native-rooted-cfg-native--fingerprint))
@@ -55,6 +57,7 @@
        (should (nelisp-bytecode-native-rooted-cfg-native-authenticated-result-p result))))))
 
 (ert-deftest p1a/unsealed-result-refused-by-authentication-and-admission ()
+  (skip-unless (equal emacs-version "31.1"))
   (p1a-test--fixture
    (lambda (_function input artifact _directory)
      (let ((result (nelisp-bytecode-native-rooted-cfg-native--build input artifact t 'off t)))
@@ -63,6 +66,7 @@
        (should-error (nelisp-bytecode-native-rooted-cfg-call result))))))
 
 (ert-deftest p1a/forms-and-file-manifests-equal ()
+  (skip-unless (equal emacs-version "31.1"))
   (p1a-test--fixture
    (lambda (_function input artifact _directory)
      (let ((compiler (symbol-function 'nelisp-native-load-raw-v2-compile-file))

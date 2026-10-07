@@ -56,6 +56,7 @@
             (substring text (+ position (length old))))))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-call1-plan/allocates-seven-roots-and-keeps-aliases ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((input (nelisp-bytecode-native-rooted-cfg-call1-plan-test--input
                  '(lambda (f x) (funcall f x))))
          (before (copy-tree input t))
@@ -87,6 +88,7 @@
     (should (equal input before))))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-call1-plan/routes-wider-shapes-through-f1 ()
+  (skip-unless (equal emacs-version "31.1"))
   (dolist (form '((lambda (f) (funcall f))
                   (lambda (f x) (funcall f x x))
                   (lambda (f x) (funcall f 17))
@@ -98,6 +100,7 @@
       (should (equal (plist-get plan :gateway-imports) '("nl_native_funcall_v2"))))))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-call1-plan/refuses-rebound-layout-functions ()
+  (skip-unless (equal emacs-version "31.1"))
   (let ((input (nelisp-bytecode-native-rooted-cfg-call1-plan-test--input
                 '(lambda (f x) (funcall f x)))))
     (dolist (name '(nelisp-bytecode-native-call1-layout
@@ -108,6 +111,7 @@
                     'unsupported))))))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-call1-plan/matches-pristine-non-call-plans-in-fresh-processes ()
+  (skip-unless (equal emacs-version "31.1"))
   (let ((baseline "target/progress/r9-call1-plan-integration/before/nelisp-bytecode-native-rooted-cfg-plan.el")
         (candidate "lisp/nelisp-bytecode-native-rooted-cfg-plan.el"))
     (dolist (form '("(lambda (x) (car x))" "(lambda (x) (1+ x))"))
@@ -119,6 +123,7 @@
           (should (equal (cdr old) (cdr new))))))))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-call1-plan/source-mutant-fails-positive-oracle ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((source (with-temp-buffer
                    (insert-file-contents "lisp/nelisp-bytecode-native-rooted-cfg-plan.el")
                    (buffer-string)))
@@ -140,6 +145,7 @@
       (delete-directory (car fixture) t))))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-call1-plan/emitter-explicitly-refuses-call1 ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((input (nelisp-bytecode-native-rooted-cfg-call1-plan-test--input
                  '(lambda (f x) (funcall f x))))
          (plan (nelisp-bytecode-native-rooted-cfg-plan input))

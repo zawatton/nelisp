@@ -97,6 +97,12 @@ artifact proof and retain the resolved function as a live root."
             :requires-artifact-owner-proof t))))
 
 (defun nelisp-native-optimization-guard-v1-dependency-context ()
+  "Return copied provider, source and numeric facts for compiler sealing."
+  (funcall owner-checker)
+  (nelisp-native-optimization-guard-v1--dependency-context
+   (nelisp-native-arithmetic-v2-dependency-context)))
+
+(defun nelisp-native-optimization-guard-v1--dependency-context (provider)
   "Bind module helpers, interpreted macro owners, source and numeric facts."
   (funcall owner-checker)
   (vector
@@ -109,8 +115,12 @@ artifact proof and retain the resolved function as a live root."
              nelisp-native-optimization-guard-v1-owner-valid-p
              setcar 1- car cdr cons memq symbolp integerp error 1+ < >
              eq append list symbol-function functionp keywordp not and unless cond mapcar vector))
-   (nelisp-native-arithmetic-v2-dependency-context)
-   (nelisp-native-optimization-guard-v1-source 'on)
+   provider
+   ;; PROVIDER is an owned copy. Reuse its slow source rather than asking
+   ;; the provider to validate and copy that identical source again.
+   (append (aref provider 7)
+           (list (nelisp-native-optimization-guard-v1--copy
+                  nelisp-native-optimization-guard-v1--arithmetic nil (list 2048) 0)))
    (nelisp-native-optimization-guard-v1-descriptor 'on)))
 
 (setq owner-checker (funcall lookup 'nelisp-native-optimization-guard-v1-owner-valid-p)
@@ -122,10 +132,11 @@ artifact proof and retain the resolved function as a live root."
                 nelisp-native-optimization-guard-v1-descriptor
                 nelisp-native-optimization-guard-v1-call-select
                 nelisp-native-optimization-guard-v1-dependency-context
+                nelisp-native-optimization-guard-v1--dependency-context
                 nelisp-native-arithmetic-v2-owner-valid-p
                 symbol-function eq car cdr cons setcar list 1- 1+ memq
                 symbolp integerp error < > and or cond unless not
-                append mapcar vector functionp keywordp)))
+                append mapcar vector functionp keywordp aref)))
 )
 
 (provide 'nelisp-native-optimization-guard-v1)

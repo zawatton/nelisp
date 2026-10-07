@@ -5,6 +5,7 @@
 (require 'nelisp-bytecode-native-rooted-cfg-native)
 
 (ert-deftest nelisp-root-guard-mode-plan-seals-options-and-distinct-source ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((fixture (byte-compile '(lambda (left right) (+ left right))))
          (input (nelisp-bytecode-compiler-input-build fixture))
          (off (nelisp-bytecode-native-rooted-cfg-plan input))
@@ -50,6 +51,7 @@
       (fset 'nelisp-bytecode-native-guarded-lowering-build owner))))
 
 (ert-deftest nelisp-native-source-context/mutation-does-not-alias-private-snapshot ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((input (nelisp-bytecode-compiler-input-build
                  (byte-compile '(lambda (left right) (+ left right)))))
          (plan (nelisp-bytecode-native-rooted-cfg-plan input nil 'on))
@@ -63,6 +65,7 @@
              (nelisp-bytecode-native-rooted-cfg-plan input nil 'on)))))
 
 (ert-deftest nelisp-native-source-context/cyclic-source-refused-with-fresh-plan-intact ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((input (nelisp-bytecode-compiler-input-build
                  (byte-compile '(lambda (left right) (+ left right)))))
          (plan (nelisp-bytecode-native-rooted-cfg-plan input nil 'on))
@@ -127,6 +130,7 @@
       (fset 'nelisp-native-optimization-guard-v1--copy owner))))
 
 (ert-deftest nelisp-root-guard-mode-contract-distinguishes-local-source-and-runtime-imports ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((fixture (byte-compile '(lambda (left right) (+ left right))))
          (input (nelisp-bytecode-compiler-input-build fixture)))
     (dolist (mode '(off on))
@@ -150,6 +154,7 @@
           (should-not (nelisp-bytecode-native-rooted-cfg-contract-valid-p wrong)))))))
 
 (ert-deftest nelisp-root-guard-mode-legacy-v1-default-shape-and-opaque-clone-refusal ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((fixture (byte-compile '(lambda (value) (car value))))
          (input (nelisp-bytecode-compiler-input-build fixture))
          (plan (nelisp-bytecode-native-rooted-cfg-plan input))
@@ -175,6 +180,7 @@
                            plan "mode_entry") :status) 'unsupported))))
 
 (ert-deftest nelisp-root-guard-mode-arithmetic-context-clone-refusal ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((fixture (byte-compile '(lambda (left right) (+ left right))))
          (input (nelisp-bytecode-compiler-input-build fixture))
          (plan (nelisp-bytecode-native-rooted-cfg-plan input nil 'on))

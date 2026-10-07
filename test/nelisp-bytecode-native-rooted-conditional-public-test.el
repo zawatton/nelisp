@@ -10,6 +10,7 @@
                   (or constants []) 4))
 
 (ert-deftest nelisp-bytecode-native-rooted-conditional-public-predicate-is-pinned-and-capture-free ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((function (nelisp-bytecode-native-rooted-conditional-public-test--function))
          (input (nelisp-bytecode-compiler-input-build function)))
     (should (nelisp-bytecode-native-rooted-conditional-input-p input))
@@ -24,6 +25,7 @@
         (should-not (nelisp-bytecode-native-rooted-conditional-input-p bad))))))
 
 (ert-deftest nelisp-bytecode-native-rooted-conditional-public-dispatch-is-explicit ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((function (nelisp-bytecode-native-rooted-conditional-public-test--function))
          (valid (nelisp-bytecode-compiler-input-build function))
          (calls 0) result)
@@ -55,6 +57,7 @@
         (should (= calls 1))))))
 
 (ert-deftest nelisp-bytecode-native-rooted-conditional-package-preflight-precedes-effects ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((root (make-temp-file "rooted-conditional-package-" t))
          (elc (expand-file-name "module.elc" root))
          (function (nelisp-bytecode-native-rooted-conditional-public-test--function))

@@ -8,6 +8,7 @@
                   (or constants []) (or depth 2)))
 
 (ert-deftest nelisp-bytecode-native-unary-admits-only-exact-car-cdr-templates ()
+  (skip-unless (equal emacs-version "31.1"))
   (dolist (operation '(car cdr))
     (let* ((function (nelisp-bytecode-native-unary-test--function operation))
            (input (nelisp-bytecode-compiler-input-build function))
@@ -42,6 +43,7 @@
           (nelisp-bytecode-compiler-input-build function)))))))
 
 (ert-deftest nelisp-bytecode-native-unary-package-preflight-is-before-effects ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((root (make-temp-file "nelisp-package-raw-unary-" t))
          (elc (expand-file-name "module.elc" root))
          (function (nelisp-bytecode-native-unary-test--function 'cdr))

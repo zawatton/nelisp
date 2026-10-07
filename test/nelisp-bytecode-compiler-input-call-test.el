@@ -8,6 +8,7 @@
   (make-byte-code 514 (unibyte-string 1 1 33 1 66 136 135) [] 4))
 
 (ert-deftest nelisp-input-call/genuine-callees-and-identity ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((wrapper (nelisp-input-call-test--function))
          (capture (list 'captured))
          (closure (lambda (x) (cons capture x)))
@@ -20,8 +21,9 @@
     (should (eq (plist-get input :function) wrapper))
     (should (eq (plist-get input :status) 'complete))
     (should-not (plist-get input :call1-symbol-template-p))
+    ;; Funcall lowers through the F1 generic call bridge since F2.
     (should (eq (plist-get (nelisp-bytecode-native-rooted-cfg-plan input) :status)
-                'unsupported))))
+                'complete))))
 
 (ert-deftest nelisp-input-call/counterfeits ()
   (let* ((f (nelisp-input-call-test--function))
@@ -46,6 +48,7 @@
                                (make-byte-code 0 code [] 2)) :status) 'complete))))
 
 (ert-deftest nelisp-input-call/all-call-encodings ()
+  (skip-unless (equal emacs-version "31.1"))
   (dotimes (index 8)
     (let* ((opcode (+ 32 index))
            (code (apply #'unibyte-string

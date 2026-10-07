@@ -7,6 +7,7 @@
   (nelisp-bytecode-compiler-input-build
    (byte-compile '(lambda (left right) (+ left right)))))
 (ert-deftest nelisp-bytecode-native-add-authentic-roots-and-exit ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((input (nelisp-bytecode-native-add-test--input))
          (plan (nelisp-bytecode-native-rooted-cfg-plan input))
          (operation (cl-find-if
@@ -37,6 +38,7 @@
                    :status) 'unsupported)))))
 
 (ert-deftest nelisp-bytecode-native-add-serialized-provider-mutation-refused ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((input (nelisp-bytecode-native-add-test--input))
          (plan (nelisp-bytecode-native-rooted-cfg-plan input))
          (emitted (nelisp-bytecode-native-rooted-cfg-shared-emit-build

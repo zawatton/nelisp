@@ -527,6 +527,7 @@
                                          :constant-initializers :immediate-initializers)
                              append (list key (plist-get plan key)))))))))))
 
+(let ((postdom-owner (symbol-function 'nelisp-bytecode-native-rooted-cfg-postdom-analyze)))
 (defun nelisp-bytecode-native-rooted-cfg-shared-emit-build (plan entry-name)
   "Emit a freshly verified rooted CFG with shared postdominator continuations."
   (let* ((input (plist-get plan :input))
@@ -535,8 +536,22 @@
                                (plist-get plan :arithmetic-guard-mode))))
          ;; Handler plans always use the shared raw CFG. Their freshly
          ;; authenticated topology/bank has no structured postdominator use.
-         (analysis (if (plist-get verified :handler-bank) verified
-                     (and input (nelisp-bytecode-native-rooted-cfg-postdom-analyze input)))))
+         ;; The public postdominator entry point admits another plan. This
+         ;; entry point already has that fresh plan; retain its independent
+         ;; input check, then analyze the same verified topology directly.
+         (analysis
+          (if (plist-get verified :handler-bank) verified
+            (and input
+                 (eq postdom-owner
+                     (symbol-function 'nelisp-bytecode-native-rooted-cfg-postdom-analyze))
+                 (eq (plist-get verified :status) 'complete)
+                 (nelisp-bytecode-native-rooted-cfg-postdom--canonical-input-p input)
+                 (let ((topology (nelisp-bytecode-native-rooted-cfg-topology-check
+                                  (plist-get input :frame-result))))
+                   (and (eq (plist-get topology :status) 'complete)
+                        (nelisp-bytecode-native-rooted-cfg-postdom--compute
+                         (append (plist-get (plist-get input :frame-result) :blocks) nil)
+                         (plist-get topology :block-order))))))))
     (if (not (and (eq (plist-get plan :status) 'complete)
                   (or (null (plist-get plan :exit-root-base))
                       (plist-get plan :funcall-version)
@@ -654,7 +669,7 @@
                   :argument-count arity :required-root-count root-count
                   :join-count (plist-get context :join-count)
                   :selector-edge-count (plist-get context :selector-edge-count)
-                  :expansion-count (plist-get context :expansion-count)))))))))
+                  :expansion-count (plist-get context :expansion-count))))))))))
 
 (provide 'nelisp-bytecode-native-rooted-cfg-shared-emit)
 ;;; nelisp-bytecode-native-rooted-cfg-shared-emit.el ends here

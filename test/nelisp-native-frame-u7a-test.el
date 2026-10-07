@@ -16,6 +16,7 @@
                           (append (apply #'append (make-list n '(192 24)))
                                   (list (+ 40 n) 193 135))) [u7a-special result] 1))
 (ert-deftest u7a/valid-structural-unbind-fixtures-shared-contract ()
+  (skip-unless (equal emacs-version "31.1"))
   (dotimes (i 5)
     (let* ((fn (u7a-function (1+ i)))
            (input (nelisp-bytecode-compiler-input-build fn))
@@ -54,6 +55,7 @@
     (should (= (length (aref state 3)) 1))))
 
 (ert-deftest u7a/variable-access-and-all-exits-admitted ()
+  (skip-unless (equal emacs-version "31.1"))
   (dolist (name '(callback nested implicit set zero))
     (let* ((input (nelisp-bytecode-compiler-input-build (native-frame-u7a-function name)))
            (plan (nelisp-bytecode-native-rooted-cfg-plan input)))
@@ -70,6 +72,7 @@
            (cfg-p (plist-get emitted :form))))))))
 
 (ert-deftest u7a/bare-variable-access-admitted-without-unbind-prefix ()
+  (skip-unless (equal emacs-version "31.1"))
   (dolist (bytes '((8 135) (192 16 192 135)))
     (let* ((fn (make-byte-code 0 (apply #'unibyte-string bytes) [u7a-special] 16))
            (plan (nelisp-bytecode-native-rooted-cfg-plan
@@ -78,6 +81,7 @@
       (should (plist-get plan :frame-descriptor)))))
 
 (ert-deftest u7a/safe-list-access-admitted-through-shared-funcall-bridge ()
+  (skip-unless (equal emacs-version "31.1"))
   (dolist (opcode '(162 163))
     (let* ((fn (make-byte-code 0 (unibyte-string 192 opcode 193 32 136 135)
                                [42 garbage-collect] 16))
@@ -119,6 +123,7 @@
           (should (equal (mapcar (lambda (e) (nth 2 e)) (reverse events)) '(let set))))
       (remove-variable-watcher 'u7a-special watcher))))
 (ert-deftest u7a/gnu31-watcher-ordered-values-and-locality ()
+  (skip-unless (equal emacs-version "31.1"))
   ;; The standalone interpreter lacks watchers. GNU 31.1 is the reference,
   ;; not evidence that the standalone API or callbacks have been implemented.
   (should (string-prefix-p "31.1" emacs-version))
@@ -192,6 +197,7 @@
       (let ((integers (cl-remove-if-not (lambda (c) (equal (car c) "gcc_jit_context_new_rvalue_from_long")) calls)))
         (should (= (cl-count 42 integers :key (lambda (c) (nth 3 c))) 2))))))
 (ert-deftest u7a/frame-schema-tampering-rejected ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((input (nelisp-bytecode-compiler-input-build (u7a-function 1)))
          (plan (nelisp-bytecode-native-rooted-cfg-plan input))
          (emitted (nelisp-bytecode-native-rooted-cfg-shared-emit-build

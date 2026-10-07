@@ -4,6 +4,7 @@
 (require 'nelisp-bytecode-native-compiler)
 
 (ert-deftest dialect-attestation-native-helper-changes-invalidate-package-seals ()
+  (skip-unless (equal emacs-version "31.1"))
   (dolist (name (append '(nelisp-bytecode-compiler-input--standalone-runtime-p)
                        (when nelisp-bytecode-compiler-input--runtime-source-evaluator
                          '(nelisp--eval-source-string))))

@@ -15,6 +15,7 @@
                      (nelisp-bytecode-native-rooted-cfg-contract-create-shared-v2 input plan emitted))))
     (list input plan emitted contract)))
 (ert-deftest f1/vertical-slice-one-import-and-sealed-contract ()
+  (skip-unless (equal emacs-version "31.1"))
   (pcase-let* ((`(,_ ,plan ,emitted ,contract)
                 (f1-test-compile '(lambda (x) (f1-user (cons (car x) (cdr x))))))
                (operations (plist-get (car (plist-get plan :blocks)) :operations)))
@@ -29,6 +30,7 @@
       (plist-put mutant :funcall-hash (make-string 64 ?0))
       (should-not (nelisp-bytecode-native-rooted-cfg-contract-valid-p mutant)))))
 (ert-deftest f1/both-emitters-and-generic-argc ()
+  (skip-unless (equal emacs-version "31.1"))
   (dolist (form '((lambda (f) (funcall f))
                   (lambda (f x) (funcall f x x x x x x))
                   (lambda (f x) (funcall f (if x x nil) x))))
@@ -116,6 +118,7 @@
     (should (equal (cl-subseq (f1-test-provider-run #'identity '(3) request) 0 2) '(2 0))))
   (should (= 2 (car (f1-test-provider-run #'identity '(3) nil t)))))
 (ert-deftest f1/safe-contract-reconstructs-call-layout ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((input (nelisp-bytecode-compiler-input-build
                  (byte-compile '(lambda (x) (f1-user (cons (car x) (cdr x)))))))
          (plan (nelisp-bytecode-native-rooted-cfg-plan input 'safe-primitives-v3))

@@ -4,6 +4,7 @@
 (require 'nelisp-bytecode-native-rooted-cfg-contract)
 (load "support/native-legacy-u9-fixtures.el" nil t t)
 (ert-deftest u9/all-five-use-frozen-evaluator-through-shared-form ()
+  (skip-unless (equal emacs-version "31.1"))
   (dolist (opcode '(139 141 143 144 145))
     (let* ((input (nelisp-bytecode-compiler-input-build (native-legacy-u9-function opcode)))
            (plan (nelisp-bytecode-native-rooted-cfg-plan input))

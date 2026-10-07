@@ -132,6 +132,7 @@
                   'unsupported)))))
 
 (ert-deftest nelisp-bytecode-native-rooted-stack/refuses-noop-before-effects ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((input (nelisp-bytecode-native-rooted-stack-test--source-input
                  '(defun nelisp-bytecode-native-rooted-stack-fixture (x) 42)))
          (plan (nelisp-bytecode-native-rooted-stack-plan input))

@@ -100,20 +100,21 @@ admission proofs. No caller-supplied predicate or option overrides the plan."
 (defun nelisp-bytecode-native-guarded-lowering-dependency-context ()
   "Return complete public lowering/guard dependencies for compiler sealing."
   (funcall owner-checker)
-  (vector (symbol-function 'nelisp-bytecode-native-guarded-lowering-build)
+  (let ((provider (nelisp-native-arithmetic-v2-dependency-context)))
+    (vector (symbol-function 'nelisp-bytecode-native-guarded-lowering-build)
           (symbol-function 'nelisp-bytecode-native-guarded-lowering-owner-valid-p)
           (symbol-function 'nelisp-bytecode-native-guarded-lowering-select)
           (symbol-function 'nelisp-bytecode-native-guarded-lowering--bounded-p)
           (and (fboundp 'nelisp-bytecode-native-rooted-cfg-plan)
                (symbol-function 'nelisp-bytecode-native-rooted-cfg-plan))
           (symbol-function 'nelisp-bytecode-native-guarded-lowering-dependency-context)
-          (nelisp-bytecode-native-arithmetic-lowering-dependency-context)
-          (nelisp-native-optimization-guard-v1-dependency-context)
+          (nelisp-bytecode-native-arithmetic-lowering--dependency-context provider)
+          (nelisp-native-optimization-guard-v1--dependency-context provider)
           (mapcar #'symbol-function '(memq not eq plist-get cons car cdr list vector mapcar
                                      symbol-function and cond >= <= + setcar 1- 1+
                                      vectorp byte-code-function-p symbolp integerp floatp subrp
                                      stringp length < aref text-properties-at
-                                     next-property-change null or = equal require fboundp))))
+                                     next-property-change null or = equal require fboundp)))))
 
 (setq owner-checker (funcall lookup 'nelisp-bytecode-native-guarded-lowering-owner-valid-p)
       owners
@@ -127,6 +128,8 @@ admission proofs. No caller-supplied predicate or option overrides the plan."
                 nelisp-bytecode-native-arithmetic-lowering-build
                 nelisp-bytecode-native-arithmetic-lowering-owner-valid-p
                 nelisp-bytecode-native-arithmetic-lowering-dependency-context
+                nelisp-bytecode-native-arithmetic-lowering--dependency-context
+                nelisp-native-optimization-guard-v1--dependency-context
                 nelisp-native-arithmetic-v2-runtime-imports
                 symbol-function eq car cdr memq not plist-get cons list vector
                 mapcar and or cond unless >= <= + < > setcar 1- 1+ vectorp

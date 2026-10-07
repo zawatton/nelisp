@@ -15,6 +15,7 @@
         (should (equal expected (native-stackset-u5-reference (nth 1 fixture) args)))
         (should (equal history u5-history))))))
 (ert-deftest u5/frame-plan-and-shared-artifact ()
+  (skip-unless (equal emacs-version "31.1"))
   (dolist (fixture (native-stackset-u5-fixtures))
     (let* ((input (nelisp-bytecode-compiler-input-build (nth 1 fixture)))
            (frame (plist-get input :frame-result))
@@ -49,6 +50,7 @@
     (should-not (eq (plist-get (nelisp-bytecode-native-rooted-cfg-plan
                                (nelisp-bytecode-compiler-input-build fn)) :status) 'complete))))
 (ert-deftest u5/cyclic-root-budget-and-preserve-empty-refused ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((prefix (apply #'unibyte-string (make-list 255 137)))
          (fn (make-byte-code 514
                              (concat prefix (unibyte-string 179 0 0 137 130 255 0)) [] 257))

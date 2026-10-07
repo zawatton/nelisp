@@ -87,6 +87,7 @@
 
 (ert-deftest nelisp-bytecode-compiler-input/records-static-closure-template-metadata ()
   "Record only GNU 31.1's template descriptor, never runtime capture values."
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((functions
           (nelisp-bytecode-compiler-input-test--closure-template-functions))
          (function
@@ -124,6 +125,7 @@
       (should-not (file-exists-p artifact-path)))))
 
 (ert-deftest nelisp-bytecode-compiler-input/classifies-elc-lazy-docrefs-without-stripping-them ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((directory (make-temp-file "gnu-docref-plan-" t))
          (source (expand-file-name "docref.el" directory))
          (elc (concat source "c"))
@@ -161,6 +163,7 @@
       (delete-directory directory t))))
 
 (ert-deftest nelisp-bytecode-compiler-input/conservatively-refuses-literal-v0-prefix-collision ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((function (byte-compile '(lambda (x) (cons 'V0 x))))
          (input (nelisp-bytecode-compiler-input-build function)))
     (should (eq (plist-get input :status) 'complete))
@@ -172,6 +175,7 @@
 
 (ert-deftest nelisp-bytecode-compiler-input/rejects-malformed-closure-template-descriptor ()
   "A malformed template marker is rejected rather than treated as doc data."
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((function
           (cl-find-if
            (lambda (candidate)
@@ -190,6 +194,7 @@
                 'malformed))))
 
 (ert-deftest nelisp-bytecode-compiler-input/inspects-function-fields-without-calling-it ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((nelisp-bytecode-compiler-input-test--calls 0)
          (function
           (byte-compile
@@ -220,6 +225,7 @@
 
 (ert-deftest nelisp-bytecode-compiler-input/records-materialized-rest-frame-slots ()
   "Record required and rest slots without retaining source lambda forms."
+  (skip-unless (equal emacs-version "31.1"))
   (should-not (fboundp 'dialect-fixture-rest-only))
   (should-not (fboundp 'dialect-fixture-rest-required))
   (dolist (case '((128 0) (385 1)))
@@ -254,6 +260,7 @@
 
 (ert-deftest nelisp-bytecode-compiler-input/rejects-malformed-rest-descriptors ()
   "Reject out-of-range descriptors and fixed descriptors with min over max."
+  (skip-unless (equal emacs-version "31.1"))
   (dolist (descriptor '(258 65536))
     (let ((function (make-byte-code descriptor (unibyte-string 135) [] 2)))
       (should-not
@@ -264,6 +271,7 @@
 
 (ert-deftest nelisp-bytecode-compiler-input/does-not-misclassify-optional-rest ()
   "A valid descriptor with optional slots remains unsupported, not malformed."
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((function (byte-compile
                     '(lambda (required &optional optional &rest rest) nil)))
          (result (nelisp-bytecode-compiler-input-build function)))
@@ -278,6 +286,7 @@
 
 (ert-deftest nelisp-bytecode-compiler-input/admit-only-exact-rest-slot-return-template ()
   "Admit only the exact GNU variable-ref REST return byte-code shape."
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((function (make-byte-code '(required &rest values)
                                    (unibyte-string 8 135) [values] 1))
          (result (nelisp-bytecode-compiler-input-build function))
@@ -296,6 +305,7 @@
 
 (ert-deftest nelisp-bytecode-compiler-input/verifier-rejects-rest-slot-mutation ()
   "A mutated rest binding slot must fail the layout verifier."
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((function
           (cl-find-if (lambda (candidate) (= (aref candidate 0) 128))
                       (nelisp-bytecode-compiler-input-test--rest-fixture-functions)))
@@ -311,6 +321,7 @@
       (plist-get result :initial-stack-depth) layout))))
 
 (ert-deftest nelisp-bytecode-compiler-input/decodes-packed-min-max-arity-514 ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((code (unibyte-string 1 135))
          (packed (make-byte-code 514 code [] 3))
          (list-descriptor (make-byte-code '(x y) code [] 3))
@@ -337,6 +348,7 @@
                    "computed stack depth exceeds declared depth"))))
 
 (ert-deftest nelisp-bytecode-compiler-input/packed-optional-uses-maximum-depth ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((function (make-byte-code 513 (unibyte-string 1 135) [] 3))
          (result (nelisp-bytecode-compiler-input-build function)))
     (should (eq (plist-get result :status) 'complete))
@@ -346,6 +358,7 @@
     (should (= (plist-get result :initial-stack-depth) 2))))
 
 (ert-deftest nelisp-bytecode-compiler-input/reads-real-elc-function-as-data ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((defined-before (fboundp 'dialect-fixture-branch))
          (path (expand-file-name "test/fixtures/native-bytecode/gnu-31.1-mini.elc"
                                  nelisp-bytecode-compiler-input-test--root))
@@ -369,6 +382,7 @@
     (should (eq (plist-get (plist-get result :frame-result) :status) 'complete))))
 
 (ert-deftest nelisp-bytecode-compiler-input/reports-malformed-object-and-constant ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((bad-constant (make-byte-code 0 (unibyte-string 192 135) [] 1))
          (constant-result (nelisp-bytecode-compiler-input-build bad-constant))
          (object-result (nelisp-bytecode-compiler-input-build '(lambda () nil))))
@@ -453,6 +467,7 @@
                             (plist-get result :reason)))))
 
 (ert-deftest nelisp-bytecode-compiler-input/argument-values-do-not-seed-operand-stack ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((first (cons 'first nil))
          (second (cons 'second nil))
          (function (make-byte-code '(x y) (unibyte-string 1 135) [] 2))
@@ -464,6 +479,7 @@
     (should (= (plist-get result :initial-stack-depth) 0))))
 
 (ert-deftest nelisp-bytecode-compiler-input/pins-only-verified-cons-template ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((function (make-byte-code 514 (unibyte-string 1 1 66 135) [] 4))
          (input (nelisp-bytecode-compiler-input-build function))
          (nearby (nelisp-bytecode-compiler-input-build

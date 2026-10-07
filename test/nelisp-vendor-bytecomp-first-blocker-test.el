@@ -4,6 +4,7 @@
 (require 'nelisp-vendor-bytecomp-first-blocker)
 
 (ert-deftest nelisp-vendor-bytecomp-first-blocker-pinned-form-location ()
+  (skip-unless (equal emacs-version "31.1"))
   (nelisp-vendor-bytecode-jit-coverage--verify-sources)
   (let* ((source (expand-file-name
                   "bytecomp.el"

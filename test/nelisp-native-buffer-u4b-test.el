@@ -7,6 +7,7 @@
 (require 'nelisp-native-load)
 (load "support/native-buffer-u4b-fixtures.el" nil t t)
 (ert-deftest u4b/exact-nine-opcodes-both-contracts-and-dynamic-exception ()
+  (skip-unless (equal emacs-version "31.1"))
   (dolist (row native-buffer-u4b-family)
     (should (equal row (nelisp-native-funcall-v2-primitive (car row))))
     (let* ((input (nelisp-bytecode-compiler-input-build (native-buffer-u4b-function row)))

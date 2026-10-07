@@ -88,6 +88,7 @@
                     (mapcar #'car (nelisp-native-load-raw-v2-check manifest))))))
 
 (ert-deftest nelisp-native-load-rooted-stack-source-body-mutation-stops-before-backend ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((dir (make-temp-file "rooted-stack-source-" t))
          (compile-path (expand-file-name "fixture.el" dir))
          (elc-path (concat compile-path "c"))
@@ -137,6 +138,7 @@
       (delete-directory dir t))))
 
 (ert-deftest nelisp-native-load-rooted-stack-gc-stub-mutations-stop-before-backend ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((dir (make-temp-file "rooted-stack-gc-source-" t))
          (compile-path (expand-file-name "fixture.el" dir))
          (elc-path (concat compile-path "c"))

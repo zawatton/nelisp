@@ -4,6 +4,7 @@
 (require 'nelisp-bytecode-native-compiler)
 
 (ert-deftest nelisp-bytecode-native-optional-arg/packed-descriptor-only ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((packed (make-byte-code 513 (unibyte-string 135) [] 3))
          (list-descriptor (make-byte-code '(x &optional y)
                                           (unibyte-string 135) [] 3))

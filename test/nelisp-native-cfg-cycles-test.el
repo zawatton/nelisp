@@ -9,6 +9,7 @@
                         (file-name-directory (or load-file-name buffer-file-name))) nil t)
 
 (ert-deftest native-cfg-cycles/genuine-fixtures ()
+  (skip-unless (equal emacs-version "31.1"))
   (dolist (fixture (native-cfg-cycles-fixtures))
     (let* ((fn (nth 1 fixture)) (input (nelisp-bytecode-compiler-input-build fn))
            (plan (nelisp-bytecode-native-rooted-cfg-plan input))
@@ -37,6 +38,7 @@
       (should (plist-get (nelisp-aot-compile-to-link-unit (plist-get emitted :form)) :text)))))
 
 (ert-deftest native-cfg-cycles/closed-has-no-join ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((input (nelisp-bytecode-compiler-input-build
                  (nth 1 (assq 'closed (native-cfg-cycles-fixtures)))))
          (analysis (nelisp-bytecode-native-rooted-cfg-postdom-analyze input)))
@@ -45,6 +47,7 @@
     (should-not (plist-get analysis :nearest-joins))))
 
 (ert-deftest native-cfg-cycles/budget-and-malformed-edge ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((input (nelisp-bytecode-compiler-input-build
                  (nth 1 (assq 'entry (native-cfg-cycles-fixtures)))))
          (frame (plist-get input :frame-result)))
@@ -73,6 +76,7 @@
     (should-not (equal (native-cfg-cycles--copy-result nil) expected))))
 
 (ert-deftest native-cfg-cycles/coincident-branch-edges ()
+  (skip-unless (equal emacs-version "31.1"))
   ;; Both branch arms enter the same loop body; one edge block must suffice.
   (let* ((fn (make-byte-code 257 (unibyte-string 137 131 4 0 137 131 12 0 65 130 0 0 135) [] 2))
          (plan (nelisp-bytecode-native-rooted-cfg-plan (nelisp-bytecode-compiler-input-build fn)))

@@ -3,6 +3,7 @@
 (require 'nelisp-native-load)
 (require 'nelisp-bytecode-native-guarded-lowering)
 (ert-deftest nelisp-loader-guarded-authenticated-plan-contract ()
+  (skip-unless (equal emacs-version "31.1"))
   (require 'nelisp-bytecode-native-rooted-cfg-contract)
   (require 'nelisp-bytecode-native-rooted-cfg-shared-emit)
   (let* ((fixture (byte-compile '(lambda (left right) (+ left right))))

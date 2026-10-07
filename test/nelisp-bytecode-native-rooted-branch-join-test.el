@@ -11,6 +11,7 @@
   (expand-file-name ".." (file-name-directory (or load-file-name buffer-file-name))))
 
 (ert-deftest nelisp-rooted-branch-join/admit-genuine-gnu31-four-block-car-cdr-frames ()
+  (skip-unless (equal emacs-version "31.1"))
   (unless (equal emacs-version "31.1") (ert-skip "Requires GNU Emacs 31.1"))
   (let* ((dir (make-temp-file "gnu-rooted-branch-join-" t))
          (source (expand-file-name "fixture.el" dir))
@@ -43,6 +44,7 @@
       (delete-directory dir t))))
 
 (ert-deftest nelisp-rooted-branch-join/reject-wrong-gateway-and-nearby-control-flow ()
+  (skip-unless (equal emacs-version "31.1"))
   (unless (equal emacs-version "31.1") (ert-skip "Requires GNU Emacs 31.1"))
   (let* ((dir (make-temp-file "gnu-rooted-branch-join-negative-" t))
          (source (expand-file-name "fixture.el" dir)) (elc (concat source "c"))
@@ -70,6 +72,7 @@
       (delete-directory dir t))))
 
 (ert-deftest nelisp-rooted-branch-join/public-route-and-boxed-package-pre-effect-refusal ()
+  (skip-unless (equal emacs-version "31.1"))
   (unless (equal emacs-version "31.1") (ert-skip "Requires GNU Emacs 31.1"))
   (let* ((dir (make-temp-file "gnu-rooted-branch-join-public-" t))
          (source (expand-file-name "fixture.el" dir))

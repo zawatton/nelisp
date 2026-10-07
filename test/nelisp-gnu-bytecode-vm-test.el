@@ -139,6 +139,7 @@
 
 (ert-deftest nelisp-gnu-bytecode-vm/source-free-shared-stores-and-functions ()
   "GNU ELC top-level mutation and functions run in NeLisp's BCL stores."
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((dir (make-temp-file "nelisp-gnu-vm" t))
          (source (expand-file-name "fixture.el" dir))
          (elc (concat source "c"))
@@ -238,6 +239,7 @@
 
 (ert-deftest nelisp-gnu-bytecode-vm/forward-call3-refused-before-effects ()
   "A later CALL3 target cannot bypass whole-file preflight."
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((dir (make-temp-file "nelisp-gnu-vm-forward3" t))
          (source (expand-file-name "forward3.el" dir))
          (elc (concat source "c"))

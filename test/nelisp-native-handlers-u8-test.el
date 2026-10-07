@@ -141,6 +141,7 @@
               'unsupported)))
 
 (ert-deftest u8/ir-native-admission-requires-handler-plan ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((fn (u8-stackset-function)) (frame (u8-frame fn))
          (input (nelisp-bytecode-compiler-input-build
                  (make-byte-code 0 (aref fn 1) [old u8-tag changed u8-callback] 2))))

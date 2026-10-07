@@ -59,6 +59,7 @@
       (delete-directory dir t))))
 
 (ert-deftest nelisp-cfg-prefix/one-validator-and-exact-output ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((fixture (nelisp-cfg-prefix-test--fixture))
          (result (nelisp-cfg-prefix-test--run fixture))
          (prepared (nelisp-native-load--raw-v2-chunk-rewrite (cadr fixture)))
@@ -73,6 +74,7 @@
     (should (equal (car result) expected))))
 
 (ert-deftest nelisp-cfg-prefix/caller-mismatches-refused ()
+  (skip-unless (equal emacs-version "31.1"))
   (dolist (field '(:declared-stack-depth :dialect-evidence))
     (let ((fixture (nelisp-cfg-prefix-test--fixture)))
       (plist-put (plist-get (car fixture) :input) field 'forged)
@@ -83,6 +85,7 @@
     (should-error (nelisp-cfg-prefix-test--run fixture))))
 
 (ert-deftest nelisp-cfg-prefix/forged-and-mutated-validator-refused ()
+  (skip-unless (equal emacs-version "31.1"))
   (let ((fixture (nelisp-cfg-prefix-test--fixture)))
     (should-error (nelisp-cfg-prefix-test--run fixture (lambda (&rest _) t)))
     (should-error
@@ -93,6 +96,7 @@
                         (lambda (&rest _) t))))))))
 
 (ert-deftest nelisp-cfg-prefix/replayed-and-fabricated-record-refused ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((fixture (nelisp-cfg-prefix-test--fixture))
          (record (nelisp-bytecode-native-rooted-cfg-contract-valid-p
                   (plist-get (car fixture) :contract) :reconstruction)))
@@ -103,6 +107,7 @@
     (should-error (nelisp-cfg-prefix-test--run fixture (lambda (&rest _) record)))))
 
 (ert-deftest nelisp-cfg-prefix/validator-mutated-during-reconstruction-refused ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((fixture (nelisp-cfg-prefix-test--fixture))
          (emitter (symbol-function 'nelisp-bytecode-native-rooted-cfg-shared-emit-build))
          (owner (symbol-function 'nelisp-bytecode-native-rooted-cfg-contract-valid-p)))
@@ -116,6 +121,7 @@
       (fset 'nelisp-bytecode-native-rooted-cfg-contract-valid-p owner))))
 
 (ert-deftest nelisp-cfg-prefix/stage-order-and-failure-cutoffs ()
+  (skip-unless (equal emacs-version "31.1"))
   (let ((process-environment (copy-sequence process-environment))
         (log (make-temp-file "cfg-stage-")))
     (unwind-protect

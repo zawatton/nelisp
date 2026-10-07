@@ -46,6 +46,7 @@
         (end-of-file (nreverse forms))))))
 
 (ert-deftest nelisp-native-bytecode-dialect/inventory-matches-pinned-gnu-source ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((inventory-file (nelisp-native-bytecode-dialect-test--fixture
                           "gnu-31.1-opcodes.json"))
          (inventory (json-read-file inventory-file))

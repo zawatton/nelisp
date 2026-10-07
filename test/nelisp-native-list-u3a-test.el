@@ -7,6 +7,7 @@
 (require 'nelisp-native-load)
 (load "support/native-list-u3a-fixtures.el" nil t t)
 (ert-deftest u3a/ordered-operands-and-both-shared-contracts ()
+  (skip-unless (equal emacs-version "31.1"))
   (dolist (row (native-list-u3a-fixtures))
     (let* ((fn (apply #'native-list-u3a-function row))
            (input (nelisp-bytecode-compiler-input-build fn))

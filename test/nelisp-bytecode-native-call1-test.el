@@ -27,6 +27,7 @@
       manifest (plist-put (copy-sequence entry) :params '(u64 u64))))))
 
 (ert-deftest nelisp-bytecode-native-call1/exact-template-and-nearby-refusals ()
+  (skip-unless (equal emacs-version "31.1"))
   (let ((function (make-byte-code 257 (unibyte-string 192 1 33 135)
                                 [call1-probe-callee] 3 "probe")))
     (should (plist-get (nelisp-bytecode-compiler-input-build function)

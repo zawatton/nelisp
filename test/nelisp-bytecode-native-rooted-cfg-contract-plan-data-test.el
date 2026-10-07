@@ -20,6 +20,7 @@
     (copy-tree copy)))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-contract-plan-data/genuine-gnu-off-on ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((directory (make-temp-file "nelisp-plan-data-" t))
          (source (expand-file-name "fixture.el" directory))
          (elc (concat source "c")))

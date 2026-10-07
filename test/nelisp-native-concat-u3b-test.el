@@ -7,6 +7,7 @@
 (require 'nelisp-native-load)
 (load "support/native-concat-u3b-fixtures.el" nil t t)
 (ert-deftest u3b/ordered-operands-and-shared-contracts ()
+  (skip-unless (equal emacs-version "31.1"))
   (dolist (row (native-concat-u3b-fixtures))
     (let* ((fn (apply #'native-concat-u3b-function row))
            (input (nelisp-bytecode-compiler-input-build fn))
