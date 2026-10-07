@@ -128,6 +128,35 @@
            (funcall mutate bad)
            (should-error (nelisp-native-load--raw-v2-trusted-decode bad entry))))))))
 
+(ert-deftest p1c/trusted-decoder-authenticates-artifact-once-before-mapping ()
+  (p1c-test--fixture
+   (lambda (function file _directory)
+     (nelisp-native-cache-compile function)
+     (let* ((data (p1c-test--read file)) (manifest (cadr data))
+            (entry (plist-get (car data) :entry))
+            (hash (symbol-function 'nelisp-native-load--sha256)) (hashes 0)
+            (checks nelisp-native-load--raw-v2-check-count))
+       (cl-letf (((symbol-function 'nelisp-native-load--sha256)
+                  (lambda (value) (setq hashes (1+ hashes)) (funcall hash value))))
+         (should (stringp (nelisp-native-load--raw-v2-trusted-decode manifest entry))))
+       (should (= hashes 1))
+       (should (= checks nelisp-native-load--raw-v2-check-count))
+       (dolist (limits '((1 nil) (nil 1) (1 1)))
+         (let ((print-length (car limits)) (print-level (cadr limits)))
+           (should (stringp (nelisp-native-load--raw-v2-trusted-decode manifest entry)))))
+       (dolist (control '(body digest missing))
+         (let* ((bad (copy-tree manifest)) (native (plist-get bad :native))
+                (maps nelisp-native-load--trusted-map-count))
+           (pcase control
+             ('body
+              (let ((bytes (base64-decode-string (plist-get native :text-base64))))
+                (aset bytes 0 (logxor (aref bytes 0) 1))
+                (plist-put native :text-base64 (base64-encode-string bytes t))))
+             ('digest (plist-put bad :artifact-sha256 (make-string 64 ?0)))
+             ('missing (plist-put bad :artifact-sha256 nil)))
+           (should-error (nelisp-native-load-raw-v2-artifact-trusted bad entry "u10-control"))
+           (should (= maps nelisp-native-load--trusted-map-count))))))))
+
 (ert-deftest p1c/failed-validation-does-not-publish-and-hit-does-not-recompile ()
   (p1c-test--fixture
    (lambda (function file directory)

@@ -188,3 +188,39 @@ the U8a operand bank. A cleanup replacement exit repeats selection with
 the remaining handlers. Unmatched exits use the existing raw-v2 exit triple.
 Handler constants are initialized from the live bytecode constant vector,
 preserving object identity across private cache serialization and GC.
+
+Native cache recipes refuse unreadable buffer and marker constants, including
+objects nested in constant data. They cannot be relocated from a serialized
+artifact, matching GNU native-comp's refusal to spill such objects into .eln
+files. Compilation reports `Cache relocation refused`; the original function
+remains byte code and can still run. U10 checks this refusal on the original
+fixtures, then tests their opcode lowering with source-owned live variables.
+
+The standalone bytecode VM does not decode 16-bit `stack-set` (179). U10's
+single straight-line offset-1 fixture uses the equivalent 8-bit encoding only
+for the VM comparison; its original GNU oracle and both native compilations
+retain opcode 179. This does not qualify the VM's 16-bit instruction support.
+
+`nl-signal` is an opt-in Lisp frontend for explicit `signal` calls: it invokes
+`signal-hook-function` and reuses the existing .eln debugger decision. U10
+loads it for its four exceptional-ordering cases. Errors raised directly by
+runtime primitives do not acquire this frontend's hook behavior. Loading the
+feature again preserves the installed function. The supplemental handler and
+cleanup use named Lisp callbacks because nested executable bytecode constants
+are outside the data-only cache recipe; all four original GNU observations
+remain unchanged.
+
+The standalone reader's `buffer-string` currently returns the whole buffer
+when narrowed. U10 captures accessible text with `buffer-substring` between
+`point-min` and `point-max`, preserving the GNU observation and separately
+checking both restriction bounds.
+
+U10 retains its first GNU-matching VM observation across compile/load and
+rejects changes to the original function, code, constant-vector identity,
+nested data and metadata before invoking native code. The former duplicate
+VM invocation after mapping (and its incidental pre-entry GC stress) is
+removed. GC inside every native invocation remains mandatory. Worker fixtures
+are exact projections of the complete GNU master, authenticated by host
+readback and generator-issued byte hashes. Every selected fixture still runs
+in both compile and fresh-load phases; the loader's actual mapped header is
+used for ABI checks instead of rereading the artifact in the harness.

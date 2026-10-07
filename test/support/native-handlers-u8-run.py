@@ -114,8 +114,10 @@ def main():
         cold = Path(str(reader) + ".cold")
         if cold_source.is_file():
             shutil.copyfile(cold_source, cold)
-        cache = directory / ("cache-" + backend)
-        cache.mkdir(mode=0o700)
+        cache_base = Path(env.get("U8B_NATIVE_CACHE_BASE", str(directory))).resolve()
+        cache = cache_base / ("cache-" + backend)
+        cache.mkdir(mode=0o700, exist_ok=True)
+        os.chmod(cache, 0o700)
         for index, group in enumerate(groups):
             env.update(U8B_FIXTURE=str(fixture), U8B_PHASE=phase, U8B_BACKEND=backend,
                        U8B_CASES=" ".join(group), NELISP_NATIVE_CACHE=str(cache),

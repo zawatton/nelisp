@@ -49,14 +49,16 @@ def main():
     parser.add_argument('--names', nargs='+', help='Focused development selection; never qualifies F3.')
     parser.add_argument('--batch-size', type=int, default=3)
     parser.add_argument('--load-batch-size', type=int, default=8)
-    parser.add_argument('--jobs', type=int, default=4, help='Compile workers per backend; reload uses one additional worker.')
+    parser.add_argument('--jobs', type=int, default=4, help='Compile workers per backend.')
+    parser.add_argument('--load-jobs', type=int, default=2,
+                        help='Independent reload workers per backend (1..2).')
     parser.add_argument('static', nargs='?', default='target/nelisp-static')
     parser.add_argument('dynamic', nargs='?', default='target/nelisp-dyn')
     args = parser.parse_args()
     if args.fresh and args.seed_cache:
         parser.error('--fresh cannot reuse a seed cache')
-    if not 1 <= args.batch_size <= 8 or not 1 <= args.jobs <= 8 or not 1 <= args.load_batch_size <= 16:
-        parser.error('batch size and jobs must be 1..8; load batch size must be 1..16')
+    if not 1 <= args.batch_size <= 8 or not 1 <= args.jobs <= 8 or not 1 <= args.load_batch_size <= 16 or not 1 <= args.load_jobs <= 2:
+        parser.error('batch size/jobs must be 1..8; load batch size 1..16; load jobs 1..2')
     os.chdir(ROOT)
     (ROOT / 'target').mkdir(exist_ok=True)
     import tempfile
@@ -267,7 +269,7 @@ def main():
         # Reload an ordered prefix as soon as all its artifacts are published.
         # A loader never observes a partial copy or a still-compiling cohort;
         # unrelated later files can be added without changing those snapshots.
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as loaders:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.load_jobs) as loaders:
             def submit_load(group):
                 load_futures.append(loaders.submit(phase_run, len(load_futures), group, 'load', load_cache))
             with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as compilers:

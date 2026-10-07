@@ -1,7 +1,7 @@
 ;;; native-real-corpus-exclusions.el --- Reviewed F3 findings -*- lexical-binding: t; -*-
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 ;; Each excluded function retains its exact byte code and GNU inputs in the
-;; fixture. Use --reproduce NAME to replay that minimal failing witness.
+;; fixture. Use --reproduce NAME to replay that retained candidate.
 (defconst f3-real-corpus-exclusions
   (append
    (mapcar (lambda (name)

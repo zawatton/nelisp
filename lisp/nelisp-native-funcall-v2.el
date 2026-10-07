@@ -47,7 +47,8 @@
                     (150 upcase 1) (151 downcase 1) (152 string-equal 2)
                     (153 string-lessp 2) (154 equal 2) (155 nthcdr 2)
                     (156 elt 2) (157 member 2) (158 assq 2)
-                    (159 nreverse 1) (160 setcar 2) (161 setcdr 2))))
+                    (159 nreverse 1) (160 setcar 2) (161 setcdr 2)
+                    (162 car-safe 1) (163 cdr-safe 1))))
 (defun nelisp-native-funcall-v2-primitive (opcode)
   "Return the canonical runtime primitive and arity for OPCODE."
   (copy-tree (assq opcode primitives))))
@@ -59,7 +60,7 @@
       (legacy-providers nelisp-bytecode-legacy-providers)
       (originals (mapcar (lambda (name) (cons name (symbol-function (if (eq name 'previous-char) 'preceding-char name)))) '(nelisp--bytecode-legacy-window nelisp--bytecode-legacy-catch
                                                                             nelisp--bytecode-legacy-condition nelisp--bytecode-legacy-setup nelisp--bytecode-legacy-show
-                                                                            car cdr cons list nth memq length aref aset
+                                                                            car cdr car-safe cdr-safe cons list nth memq length aref aset
                                                                             symbol-value symbol-function set fset get substring concat insert apply
                                                                             set-marker match-beginning match-end upcase downcase
                                                                             string-equal string-lessp equal nthcdr elt member assq
@@ -71,6 +72,14 @@
                                                        buffer-substring delete-region narrow-to-region widen end-of-line
                                                                             symbolp consp stringp listp eq not
                                                                             1- 1+ = > < <= >= - + max min * nconc / % numberp integerp)))
+      (car-safe-provider
+       (let ((consp-value '(builtin consp)) (car-value '(builtin car)))
+         (lambda (object)
+           (if (funcall consp-value object) (funcall car-value object) nil))))
+      (cdr-safe-provider
+       (let ((consp-value '(builtin consp)) (cdr-value '(builtin cdr)))
+         (lambda (object)
+           (if (funcall consp-value object) (funcall cdr-value object) nil))))
       ;; GNU Bnth's small-index path reports the reached dotted tail;
       ;; Fnth instead reports the original list.  Keep the VM condition/data
       ;; through a frozen Lisp provider, delegating the other cases to Fnth.
@@ -235,7 +244,9 @@
       (cdr (funcall association name legacy-providers))
     (if (fboundp 'nelisp--eval-source-string)
       ;; Builtin values are runtime evaluator tokens, not a caller certificate.
-      (cond ((funcall same name 'nth) nth-provider)
+      (cond ((funcall same name 'car-safe) car-safe-provider)
+            ((funcall same name 'cdr-safe) cdr-safe-provider)
+            ((funcall same name 'nth) nth-provider)
             ((funcall same name 'get) get-provider)
             ((funcall same name 'nreverse) nreverse-provider)
             ((funcall same name 'max) max-provider) ((funcall same name 'min) min-provider)

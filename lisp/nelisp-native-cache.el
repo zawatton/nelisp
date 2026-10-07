@@ -177,7 +177,7 @@ exactly once.  Failure permanently disables this process's cache."
          (list :function fn :argument-descriptor (aref fn 0)
                :code (aref fn 1) :constants (aref fn 2)
                :declared-stack-depth (aref fn 3)))
-        (error "Cache input cannot be serialized"))))
+        (error "Cache relocation refused: unreadable or unsupported constant/metadata (buffer and marker objects cannot be serialized); function remains byte code"))))
 
 (defun nelisp-native-cache--input-hash (function)
   (nelisp-native-cache--hash

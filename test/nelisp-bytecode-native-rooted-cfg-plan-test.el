@@ -141,7 +141,7 @@
         (should (eq (plist-get plan :status) 'unsupported))
         (should-not (plist-get plan :entry-ast))))))
 
-(ert-deftest nelisp-bytecode-native-rooted-cfg/refuses-variable-arity-captures-and-effects ()
+(ert-deftest nelisp-bytecode-native-rooted-cfg/refuses-variable-arity-and-captures-but-admits-variable-access ()
   (let* ((optional (nelisp-bytecode-compiler-input-build
                     (byte-compile (lambda (&optional value) value))))
          (dynamic (nelisp-bytecode-compiler-input-build
@@ -151,7 +151,8 @@
     (should (eq (plist-get (nelisp-bytecode-native-rooted-cfg-plan optional) :status)
                 'unsupported))
     (should (eq (plist-get (nelisp-bytecode-native-rooted-cfg-plan dynamic) :status)
-                'unsupported))
+                'complete))
+    (should (plist-get (nelisp-bytecode-native-rooted-cfg-plan dynamic) :frame-descriptor))
     (plist-put capture :capture-values-available t)
     (should (eq (plist-get (nelisp-bytecode-native-rooted-cfg-plan capture) :status)
                 'unsupported))

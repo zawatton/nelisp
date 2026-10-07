@@ -69,6 +69,28 @@
                                 (cfg-p (cdr node))))))
            (cfg-p (plist-get emitted :form))))))))
 
+(ert-deftest u7a/bare-variable-access-admitted-without-unbind-prefix ()
+  (dolist (bytes '((8 135) (192 16 192 135)))
+    (let* ((fn (make-byte-code 0 (apply #'unibyte-string bytes) [u7a-special] 16))
+           (plan (nelisp-bytecode-native-rooted-cfg-plan
+                  (nelisp-bytecode-compiler-input-build fn))))
+      (should (eq (plist-get plan :status) 'complete))
+      (should (plist-get plan :frame-descriptor)))))
+
+(ert-deftest u7a/safe-list-access-admitted-through-shared-funcall-bridge ()
+  (dolist (opcode '(162 163))
+    (let* ((fn (make-byte-code 0 (unibyte-string 192 opcode 193 32 136 135)
+                               [42 garbage-collect] 16))
+           (input (nelisp-bytecode-compiler-input-build fn))
+           (plan (nelisp-bytecode-native-rooted-cfg-plan input))
+           (emitted (nelisp-bytecode-native-rooted-cfg-shared-emit-build
+                     plan nelisp-bytecode-native-rooted-cfg-contract-shared-entry)))
+      (should (eq (plist-get plan :status) 'complete))
+      (should (eq (plist-get emitted :status) 'complete))
+      (should (nelisp-bytecode-native-rooted-cfg-contract-valid-p
+               (nelisp-bytecode-native-rooted-cfg-contract-create-shared-v2
+                input plan emitted))))))
+
 (ert-deftest u7a/alias-target-cell-and-void-target ()
   (let* ((provider (nelisp-native-frame-v2-initializer))
          (mirror (nelisp-env-make))

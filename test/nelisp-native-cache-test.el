@@ -499,6 +499,14 @@ compiler input refuse host bytecode, so the genuine contract is derived first."
         (plist-put native :relocs
                    (list (list :offset 0 :type 'pc32 :symbol "nl_native_cons_v2"
                                :addend (expt 2 31)))))
+      ;; This producer-authenticated fixture must reach relocation and exercise
+      ;; mapping cleanup, rather than fail the preceding byte-integrity check.
+      (plist-put manifest :object-sha256
+                 (nelisp-native-load--sha256 (make-string 8 0)))
+      (plist-put manifest :artifact-sha256
+                 (nelisp-native-load--sha256
+                  (prin1-to-string
+                   (nelisp-native-load--raw-plist-without manifest :artifact-sha256))))
       (should-error (nelisp-native-load-raw-v2-artifact-trusted
                      manifest (plist-get header :entry) "fixture"))
       (should (= unmaps 1)))))

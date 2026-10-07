@@ -4286,6 +4286,17 @@ followed by the 24 contract entry addresses in ABI order."
                            (list imports exports relocs entries))
                  exports contract)
       (error "nelisp-native-load: trusted structural decode refused"))
+    ;; Authenticate the complete stored artifact once, before executable mapping.
+    ;; This covers the encoded object and its metadata without replanning code.
+    (let ((print-length nil) (print-level nil)
+          (declared (plist-get manifest :artifact-sha256)))
+      (unless (and (stringp declared)
+                   (equal declared
+                          (nelisp-native-load--sha256
+                           (prin1-to-string
+                            (nelisp-native-load--raw-plist-without
+                             manifest :artifact-sha256)))))
+        (error "nelisp-native-load: trusted artifact hash refused")))
     (setq text (nelisp-native-load--raw-bytes native :text-base64))
     (unless (and (stringp text) (> (string-bytes text) 0)
                  (<= (string-bytes text) nelisp-native-load--trusted-max-text-bytes)
