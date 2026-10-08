@@ -3144,11 +3144,12 @@ without publishing an intermediate artifact.  The cache owns publication."
                               :native-rooted-cfg-safe-v3-import-descriptors import-descriptors
                               :native-rooted-cfg-safe-v3-contract-hash
                               (plist-get safe-contract :digest))))))
-      (setq manifest
-            (append manifest
-                    (list :artifact-sha256
-                          (nelisp-native-load--sha256
-                           (prin1-to-string manifest)))))
+      (let* ((unsigned (prin1-to-string manifest))
+             (digest (nelisp-native-load--sha256 unsigned)))
+        (setq manifest (append manifest (list :artifact-sha256 digest)))
+        (when nelisp-native-load--serialization-receiver
+          (funcall nelisp-native-load--serialization-receiver manifest
+                   (nelisp-native-load--signed-manifest unsigned digest))))
       (nelisp-native-load--raw-v2-compile-stage source-path artifact-path "manifest-materialization-end")
       (unless cache-only
       (nelisp-native-load--raw-v2-compile-stage source-path artifact-path "atomic-output-start")
@@ -4261,6 +4262,17 @@ followed by the 24 contract entry addresses in ABI order."
       (error "nelisp-native-load: trusted import resolution failed"))
     address))
 
+(defvar nelisp-native-load--serialization-receiver nil
+  "Call-local receiver of the producer's signed manifest and prebuilt bytes.")
+(defvar nelisp-native-load--trusted-serialization nil
+  "Call-local pair of parsed manifest and its unsigned canonical snapshot.")
+
+(defun nelisp-native-load--signed-manifest (unsigned digest)
+  "Append DIGEST to the already printed UNSIGNED manifest.
+The wire representation and authenticated bytes remain unchanged."
+  (concat (substring unsigned 0 -1) " :artifact-sha256 "
+          (prin1-to-string digest) ")"))
+
 (defun nelisp-native-load--raw-v2-trusted-decode (manifest name)
   "Decode MANIFEST, checking memory safety independently of semantic admission."
   (unless (and (nelisp-native-load--trusted-list-p manifest)
@@ -4293,9 +4305,11 @@ followed by the 24 contract entry addresses in ABI order."
       (unless (and (stringp declared)
                    (equal declared
                           (nelisp-native-load--sha256
-                           (prin1-to-string
-                            (nelisp-native-load--raw-plist-without
-                             manifest :artifact-sha256)))))
+                           (if (eq (car nelisp-native-load--trusted-serialization) manifest)
+                               (cdr nelisp-native-load--trusted-serialization)
+                             (prin1-to-string
+                              (nelisp-native-load--raw-plist-without
+                               manifest :artifact-sha256))))))
         (error "nelisp-native-load: trusted artifact hash refused")))
     (setq text (nelisp-native-load--raw-bytes native :text-base64))
     (unless (and (stringp text) (> (string-bytes text) 0)

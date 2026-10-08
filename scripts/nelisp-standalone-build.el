@@ -27659,6 +27659,23 @@ top-level form defines NAME that way."
             (car version-forms)
             "\n(nelisp-stdlib-compat-metadata-install)\nt\n")))
 
+(defvar nelisp-standalone--native-cache-source-receipt nil
+  "Source fingerprint captured while constructing the reader prelude.")
+
+(defun nelisp-standalone--native-cache-source-identity ()
+  "Hash runtime and compiler sources once on the build host.
+Relative names and complete bytes are covered; timestamps are irrelevant."
+  (let ((root nelisp-standalone--repo-root) (sources nil))
+    (dolist (directory '("src" "lisp" "scripts"))
+      (dolist (path (sort (directory-files
+                          (expand-file-name directory root) t "\\.el\\'") #'string<))
+        (push (list (file-relative-name path root)
+                    (with-temp-buffer
+                      (set-buffer-multibyte nil)
+                      (insert-file-contents-literally path)
+                      (secure-hash 'sha256 (current-buffer)))) sources)))
+    (secure-hash 'sha256 (prin1-to-string (nreverse sources)))))
+
 (defun nelisp-standalone--reader-repl-prelude-source ()
   "Return source evaluated once before the standalone reader REPL loop.
 Concatenates the stdlib prelude, installs the pure-elisp regexp matcher
@@ -27669,6 +27686,9 @@ can use it."
                     (expand-file-name
                      "vendor/emacs-lisp/emacs-lisp/backquote.el"
                      nelisp-standalone--repo-root)))
+    (insert (format "(defvar nelisp-native-cache--build-source-identity %S)\n"
+                    (setq nelisp-standalone--native-cache-source-receipt
+                          (nelisp-standalone--native-cache-source-identity))))
     (insert (nelisp-standalone--prelude-source-with-list-accessors))
     (goto-char (point-max))
     (insert (nelisp-standalone--load-path-src t))
@@ -38128,6 +38148,10 @@ per-process global the driver sets (argv, environment alist,
 nothing from the build's own environment should leak into the image.
 A failed dump is reported and leaves no image. It fails the build when
 NELISP_STANDALONE_NATIVE_COMPILER_COLD=1 explicitly requests compiler preparation."
+  (when (and nelisp-standalone--native-cache-source-receipt
+             (not (equal nelisp-standalone--native-cache-source-receipt
+                         (nelisp-standalone--native-cache-source-identity))))
+    (error "Runtime/compiler sources changed during the reader build; rebuild"))
   (let ((image (nelisp-standalone--cold-image-path binary)))
     (when (file-exists-p image) (delete-file image))
     (if (or (equal (getenv "NELISP_STANDALONE_COLD_IMAGE") "0")

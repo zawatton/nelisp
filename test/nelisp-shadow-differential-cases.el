@@ -562,6 +562,16 @@
  ;; 12, which reads back as the integer.  A print-then-read round trip
  ;; silently changed the type, which is what the round-trip cases below are
  ;; really testing.
+ ;; P2.0b: the long-string fast path must preserve canonical escapes.
+ (let* ((print-escape-newlines t) (print-escape-control-characters nil)
+        (print-escape-multibyte t) (print-escape-nonascii t)
+        (s (concat (make-string 80 97) "\"\\\n")))
+   (list (prin1-to-string s)
+         (equal s (car (read-from-string (prin1-to-string s))))))
+ (let* ((print-escape-newlines nil) (print-escape-control-characters t)
+        (s (concat (make-string 80 97) "\t\r\f")))
+   (list (prin1-to-string s)
+         (equal s (car (read-from-string (prin1-to-string s))))))
  (let ((print-length 2)) (prin1-to-string '(1 2 3 4)))
  (let ((print-length 2)) (prin1-to-string [1 2 3 4]))
  (let ((print-length 2)) (prin1-to-string '((1 2 3) (4 5 6) (7 8 9))))

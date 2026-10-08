@@ -14875,7 +14875,16 @@ UTF-8 -- that rule is unconditional and independent of
 `print-escape-nonascii' (which this runtime binds for `boundp' parity but
 does not yet gate any behavior on, since the Doc 200 rule already forces
 the stricter octal form GNU's flag would only opt into)."
-  (let ((chunks (cons nil nil))
+  (if (and (>= (length s) 64) (fboundp 'nelisp--repr)
+           (not print-escape-control-characters)
+           (or (unibyte-string-p s) (= (length s) (string-bytes s)))
+           (not (string-search "\r" s)) (not (string-search "\t" s))
+           (not (string-search "\f" s))
+           (or print-escape-newlines (not (string-search "\n" s))))
+      ;; The existing tagged-string printer copies long runs without allocating
+      ;; one Lisp string/cons per byte. Its restricted domain is byte-identical.
+      (substring (nelisp--repr s) 1 -1)
+    (let ((chunks (cons nil nil))
         (i 0)
         (n (length s))
         (need-nonhex nil)
@@ -14910,7 +14919,7 @@ the stricter octal form GNU's flag would only opt into)."
           (setq need-nonhex nil)
           (nelisp--prn-chunks-add chunks (char-to-string c)))))
       (setq i (1+ i)))
-    (nelisp--prn-chunks-string chunks)))
+    (nelisp--prn-chunks-string chunks))))
 
 (defun nelisp--prn-symbol-char-needs-escape-p (c)
   "Return non-nil when C terminates or escapes a reader symbol atom.

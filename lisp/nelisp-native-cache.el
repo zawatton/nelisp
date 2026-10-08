@@ -31,6 +31,10 @@
     nelisp-elf-write nelisp-sexp-layout
     ;; These compile-path dependencies also affect the generated artifact.
     nelisp-hash-custom nelisp-bytecode-native-switch nelisp-bytecode-cleanup nelisp-native-frame-v2 nelisp-native-funcall-v2 nelisp-bytecode-native-rooted-cfg-constructor-contract))
+(defvar nelisp-native-cache--build-source-identity nil
+  "Runtime/compiler source identity embedded by the reader build host.")
+(defvar nelisp-native-cache--build-identities nil
+  "Address-free ABI and backend identities computed before the cold dump.")
 (defvar nelisp-native-cache--abi :unset)
 (defvar nelisp-native-cache--compiler-revision :unset)
 (defvar nelisp-native-cache--addresses nil)
@@ -62,6 +66,8 @@ A missing source disables caching rather than creating an incomplete key."
           (condition-case err
               (if nelisp-native-cache--cold-source-check
                   (funcall nelisp-native-cache--cold-source-check :source-check)
+                (if nelisp-native-cache--build-source-identity
+                    (copy-sequence nelisp-native-cache--build-source-identity)
               (let ((sources nil))
                 (dolist (module nelisp-native-cache--compiler-modules)
                   (let ((path (locate-library (concat (symbol-name module) ".el") t)))
@@ -79,7 +85,7 @@ A missing source disables caching rather than creating an incomplete key."
                        (if (boundp 'nelisp-bytecode-runtime-opcode-inventory)
                            nelisp-bytecode-runtime-opcode-inventory
                          (nelisp-bytecode-compiler-input-inventory-sha256))
-                       (nreverse sources)))))
+                       (nreverse sources))))))
             (error (setq nelisp-native-cache--disabled-reason err) nil))))
   nelisp-native-cache--compiler-revision)
 
@@ -111,9 +117,9 @@ A missing source disables caching rather than creating an incomplete key."
 
 (defun nelisp-native-cache-prepare-cold-compiler ()
   "Preload compiler Lisp, fencing its source closure before a cold dump.
-No import addresses or native artifacts are resolved. A later process must
-compare every source byte before reusing the ordinary compiler fingerprint;
-a changed source closure refuses the cache instead of running stale code."
+Native artifacts are not loaded. Built readers freeze address-free identities
+for their authenticated cold image; restored processes resolve fresh addresses.
+Source-loaded compilers compare source bytes before using their fingerprint."
   (when (or nelisp-native-cache--cold-source-check
             (featurep 'nelisp-aot-compiler))
     (error "Native compiler cold preparation requires a fresh source loader"))
@@ -138,7 +144,9 @@ a changed source closure refuses the cache instead of running stale code."
     (let* ((frozen (copy-sequence before)) (same (symbol-function 'equal))
            (dialect (copy-sequence nelisp-bytecode-runtime-dialect-id))
            (inventory (copy-sequence nelisp-bytecode-runtime-opcode-inventory))
+           (modules (copy-sequence nelisp-native-cache--compiler-modules))
            (files
+            (unless nelisp-native-cache--build-source-identity
             (mapcar (lambda (module)
                       (cons module
                             (with-temp-buffer
@@ -146,35 +154,51 @@ a changed source closure refuses the cache instead of running stale code."
                               (insert-file-contents-literally
                                (locate-library (concat (symbol-name module) ".el") t))
                               (buffer-string))))
-                    nelisp-native-cache--compiler-modules)))
+                    modules))))
       ;; Prove the private bytes correspond to the already verified revision.
       ;; The consumer compares complete bytes, not mtime, size or public data.
-      (unless (equal frozen
+      (unless (or nelisp-native-cache--build-source-identity
+                  (equal frozen
                      (nelisp-native-cache--hash
                       (list dialect inventory
                             (mapcar (lambda (file)
                                       (list (car file) (secure-hash 'sha256 (cdr file))))
-                                    files))))
+                                    files)))))
         (error "Native compiler sources changed while freezing their bytes"))
       (setq nelisp-native-cache--cold-source-check
             (lambda (current)
               (if (eq current :source-check)
                   (progn
-                    (unless (and (funcall same dialect nelisp-bytecode-runtime-dialect-id)
+                    (unless (and (or (null nelisp-native-cache--build-source-identity)
+                                     (funcall same frozen nelisp-native-cache--build-source-identity))
+                                 (funcall same dialect nelisp-bytecode-runtime-dialect-id)
                                  (funcall same inventory nelisp-bytecode-runtime-opcode-inventory)
-                                 (funcall same (mapcar #'car files) nelisp-native-cache--compiler-modules)
-                                 (cl-every
+                                 (funcall same modules nelisp-native-cache--compiler-modules)
+                                 ;; A built reader executes its immutable source
+                                 ;; closure. Disk edits take effect at rebuild;
+                                 ;; hosted/source-loaded compilers retain the fence.
+                                 (or nelisp-native-cache--build-source-identity
+                                     (cl-every
                                   (lambda (file)
                                     (with-temp-buffer
                                       (set-buffer-multibyte nil)
                                       (insert-file-contents-literally
                                        (locate-library (concat (symbol-name (car file)) ".el") t))
                                       (funcall same (cdr file) (buffer-string))))
-                                  files))
+                                  files)))
                       (error "Native compiler cold source identity changed; rebuild the cold image"))
                     (copy-sequence frozen))
                 (funcall same frozen current)))))
-    ;; Process identities must always be computed in the consuming process.
+    ;; The image trailer already authenticates the exact reader. Freeze only
+    ;; address-free identities; resolve process-local addresses after restore.
+    (when nelisp-native-cache--build-source-identity
+      (setq nelisp-native-cache--abi :unset)
+      (let ((in-house (nelisp-native-cache-abi-hash))
+            (gccjit (let ((nelisp-native-cache-backend 'gccjit))
+                      (nelisp-native-cache-abi-hash))))
+        (unless (and in-house gccjit) (error "Build ABI identity unavailable"))
+        (setq nelisp-native-cache--build-identities
+              (list nelisp-native-cache--abi before in-house gccjit))))
     (setq nelisp-native-cache--compiler-revision :unset
           nelisp-native-cache--abi :unset
           nelisp-native-cache--addresses nil
@@ -208,19 +232,30 @@ exactly once.  Failure permanently disables this process's cache."
                                (nelisp-native-cache--stage "addresses-end"))))
                 (unless (fboundp 'nelisp--native-pin-copy-v2)
                   (error "Native pin-copy unavailable"))
+                (if nelisp-native-cache--build-identities
+                    (progn
+                      (unless (equal revision (nth 1 nelisp-native-cache--build-identities))
+                        (error "Build compiler identity changed"))
+                      (copy-sequence (car nelisp-native-cache--build-identities)))
                 (let ((components (progn (nelisp-native-cache--stage "components-start")
                                        (prog1 (nelisp-native-cache--abi-components)
                                          (nelisp-native-cache--stage "components-end")))))
                   (unless (and (stringp (car components))
                                (= (length (car components)) 64))
                     (error "Running binary identity unavailable"))
-                  (nelisp-native-cache--hash (list components revision))))
+                  (nelisp-native-cache--hash (list components revision)))))
             (error (setq nelisp-native-cache--disabled-reason err) nil))))
   (unless (memq nelisp-native-cache-backend '(in-house gccjit))
     (error "Unsupported native cache backend: %S" nelisp-native-cache-backend))
   (and nelisp-native-cache--abi
-       (nelisp-native-cache--hash
-        (list nelisp-native-cache--abi nelisp-native-cache-backend))))
+       (if (and nelisp-native-cache--build-identities
+                (equal nelisp-native-cache--abi
+                       (car nelisp-native-cache--build-identities)))
+           (copy-sequence
+            (nth (if (eq nelisp-native-cache-backend 'gccjit) 3 2)
+                 nelisp-native-cache--build-identities))
+         (nelisp-native-cache--hash
+          (list nelisp-native-cache--abi nelisp-native-cache-backend)))))
 
 (defun nelisp-native-cache--private-directory (directory)
   "Create DIRECTORY privately, refusing symlinks, foreign owners and non-0700 modes."
@@ -318,7 +353,9 @@ The caller must inhibit mid-form collection until the syscall returns."
       (error "Unsupported native cache compilation mode"))
     (unless (file-exists-p file)
       (require 'nelisp-bytecode-native-rooted-cfg-native)
-      (let ((temporary nil))
+      (let* ((temporary nil) (serialized nil)
+             (nelisp-native-load--serialization-receiver
+              (lambda (manifest bytes) (setq serialized (cons manifest bytes)))))
         (unwind-protect
             (let* ((input (nelisp-bytecode-compiler-input-build
                            (nelisp-native-cache--function function)))
@@ -326,7 +363,7 @@ The caller must inhibit mid-form collection until the syscall returns."
                             input (concat file ".compile.nelr")
                             t nelisp-native-cache-guard-mode t))
                    (header
-                    (list :nelisp-native-cache 1 :backend 'in-house :abi (nelisp-native-cache-abi-hash)
+                    (list :nelisp-native-cache 1 :canonical-manifest 'prebuilt-v1 :backend 'in-house :abi (nelisp-native-cache-abi-hash)
                           :input (nelisp-native-cache--input-hash function)
                           :entry (plist-get result :entry-name)
                           :arity (plist-get result :argument-count)
@@ -342,7 +379,9 @@ The caller must inhibit mid-form collection until the syscall returns."
               (let ((coding-system-for-write 'utf-8-unix))
                 (write-region
                  (concat (nelisp-native-cache--print header) "\n"
-                         (nelisp-native-cache--print (plist-get result :manifest)) "\n")
+                         (if (eq (car serialized) (plist-get result :manifest))
+                             (cdr serialized)
+                           (nelisp-native-cache--print (plist-get result :manifest))) "\n")
                  nil temporary nil 'silent))
               (nelisp-native-cache--publish temporary file))
           (when (and temporary (file-exists-p temporary)) (delete-file temporary)))))
@@ -540,6 +579,20 @@ The caller must inhibit mid-form collection until the syscall returns."
                   (error "Native cache root frame ownership lost"))
               (error (setq broken t) (signal (car err) (cdr err))))))))))
 
+(defun nelisp-native-cache--unsigned-snapshot (snapshot start end manifest)
+  "Recover the producer's unsigned bytes from one bounded SNAPSHOT.
+Return nil for legacy layouts, preserving their ordinary canonical check."
+  (let* ((digest (plist-get manifest :artifact-sha256))
+         (suffix (and (stringp digest)
+                      (= (length digest) 64)
+                      (concat " :artifact-sha256 " (prin1-to-string digest) ")")))
+         (cut (and suffix (- end (length suffix)))))
+    (while (and (< start end) (memq (aref snapshot start) '(32 9 10 13)))
+      (setq start (1+ start)))
+    (when (and cut (> cut start) (= (aref snapshot start) 40)
+               (equal (substring snapshot cut end) suffix))
+      (concat (substring snapshot start cut) ")"))))
+
 (defun nelisp-native-cache-load (function)
   "Load FUNCTION from one private-file snapshot, without semantic revalidation."
   (let* ((file (nelisp-native-cache-file function))
@@ -582,9 +635,14 @@ The caller must inhibit mid-form collection until the syscall returns."
                (manifest (car second)))
           (unless (string-match-p "\\`[ \t\r\n]*\\'" (substring snapshot (cdr second)))
             (error "Trailing native cache data"))
-          (nelisp-native-cache--callable
-           (nelisp-native-load-raw-v2-artifact-trusted manifest (plist-get header :entry) file)
-           header nelisp-native-cache--addresses (nelisp-native-cache--constants function))))))))
+          (let* ((unsigned (and (eq (plist-get header :canonical-manifest) 'prebuilt-v1)
+                           (nelisp-native-cache--unsigned-snapshot
+                            snapshot (cdr first) (cdr second) manifest)))
+                 (nelisp-native-load--trusted-serialization
+                  (and unsigned (cons manifest unsigned))))
+            (nelisp-native-cache--callable
+             (nelisp-native-load-raw-v2-artifact-trusted manifest (plist-get header :entry) file)
+             header nelisp-native-cache--addresses (nelisp-native-cache--constants function)))))))))
 
 ;;;###autoload
 (defun nelisp-native-cache-install (symbol function)
