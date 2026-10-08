@@ -488,7 +488,8 @@ def build_packages_image(data, env):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check-skk-image', action='store_true', help='recheck runtime/restored package state')
-    parser.add_argument('--skip-packages', action='store_true')
+    parser.add_argument('--with-packages', action='store_true',
+                        help='also build the S5.2 package image variant (unfinished: org ol-eww load diagnostic)')
     parser.add_argument('--check-packages-image', action='store_true')
     parser.add_argument('--prepare-packages-runtime-state', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--skip-skk', action='store_true',
@@ -555,7 +556,7 @@ def main():
                    env=dict(os.environ, C_CORE_IMAGE_BUNDLE=str(GUI_BUNDLE)), check=True)
     if not args.skip_skk:
         build_skk_image(data, env)
-    if not args.skip_packages:
+    if args.with_packages:
         build_packages_image(data, env)
 
 

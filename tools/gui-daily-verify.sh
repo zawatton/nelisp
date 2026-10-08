@@ -40,7 +40,7 @@ step image bash tools/c-core-image.sh build || exit 1
 step nw-image bin/nemacs-nw --build-image || exit 1
 # The selected daily gates consume the base and SKK images.  S5.2 certifies
 # its optional package image separately; do not bake it for unrelated gates.
-case " ${gates[*]} " in *" S"*) step gui-image python3 scripts/gui-daily-build.py --skip-packages || exit 1 ;; esac
+case " ${gates[*]} " in *" S"*) step gui-image python3 scripts/gui-daily-build.py || exit 1 ;; esac
 
 failed=0
 for gate in "${gates[@]}"; do
