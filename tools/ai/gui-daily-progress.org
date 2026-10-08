@@ -49,6 +49,8 @@ change to the criteria list is recorded in a NOTE.
 
 #+NOTE: 2026-10-08 meter 76.5% of 17 on nelisp-gui2 at d157472e after lanes I3 (alias lookup cost), B1 (dumped SKK/evil image), K2/K3 (eieio/setf/macroexpand parity, dired in the GUI, fit-window-to-buffer) and I4 (INCR acknowledgement race).  Failing: S5.0c (human-pace latency, evaluator-bound) and S5.2 (magit-status still > budget; org GUI agenda pending).  Pending: S1.3, S5.3 (user init.el; evaluator-bound).
 
+#+NOTE: 2026-10-08 meter 76.5% of 17 at 5b52997b after lanes I4, K4 (partial), I5 and G5.  G5 drained XCB-buffered events before blocking (1 s -> 2 ms per buffered wait); on the user's GNOME desktop 16 keys typed 120 ms apart were all on screen 6.4 s after the first key (62 s before).  S5.0c under Xvfb: median 0.90-1.01 s, p95 1.33 s (limits 0.5 s / 1 s).  Open: RSS growth (0.95 -> 3.16 GiB over 500 keys), quit spends ~8 s in GC, S4.1's skk-evil launch timed out once at 90 s under load in the verify run while passing in the meter run (flaky under load), S5.2 package image blocked on org ol-eww.  K5 (GNU two-stage load macroexpansion) was not integrated: it pushes package image builds past their limits.
+
 * S1 Shared interactive foundation
 
 ** S1.1 One event wait drives read-event: keys, timers, idle timers and process output (sit-for, sleep-for, input-pending-p behave as GNU)
