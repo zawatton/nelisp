@@ -223,9 +223,24 @@ not survive the trip."
 (defun nelisp-m365-graph-download (path dest)
   "Download Graph PATH to the local file DEST and return its HTTP status.
 Used for driveItem content, which answers with a redirect to pre-signed
-storage."
-  (nelisp-m365-curl-download (nelisp-m365-graph--url path) dest
-                             :bearer (nelisp-m365-auth-access-token)))
+storage. Retry one transient curl transport failure or one expired token."
+  (let ((refreshed nil) (retried nil) (done nil) (status nil))
+    (while (not done)
+      (condition-case failure
+          (progn
+            (setq status (nelisp-m365-curl-download
+                          (nelisp-m365-graph--url path) dest
+                          :bearer (nelisp-m365-auth-access-token refreshed)))
+            (if (and (equal status 401) (not refreshed))
+                (setq refreshed t)
+              (setq done t)))
+        (nelisp-m365-http-error
+         (if (and (not retried)
+                  (string-match-p "curl download failed (exit \\(6\\|7\\|18\\|28\\|35\\|52\\|55\\|56\\))"
+                                  (format "%s" (cadr failure))))
+             (setq retried t)
+           (signal (car failure) (cdr failure))))))
+    status))
 
 ;;; Shaping helpers -----------------------------------------------------
 

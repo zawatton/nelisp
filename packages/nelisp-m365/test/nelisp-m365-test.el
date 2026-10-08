@@ -291,7 +291,7 @@ input, so the tag name is now normalised one tag at a time."
           (should (equal (cdr (assoc "type" schema)) "object"))
           (should (assoc "properties" schema))
           (should (vectorp (cdr (assoc "required" schema)))))))
-    (should (= (length names) 31))))
+    (should (= (length names) 34))))
 
 (ert-deftest nelisp-m365-test-write-tools-are-off-by-default ()
   "The write tools are absent until they are switched on.
@@ -300,13 +300,13 @@ sitting in the registry of a session that only meant to read."
   (let ((nelisp-m365-write-enabled nil))
     (let ((names (mapcar (lambda (tool) (plist-get tool :name))
                          (nelisp-m365-tools-registry))))
-      (should (= (length names) 31))
+      (should (= (length names) 34))
       (should-not (member "m365_send_mail" names))
       (should-not (member "m365_create_draft" names))))
   (let ((nelisp-m365-write-enabled t))
     (let ((names (mapcar (lambda (tool) (plist-get tool :name))
                          (nelisp-m365-tools-registry))))
-      (should (= (length names) 43))
+      (should (= (length names) 47))
       (should (member "m365_send_mail" names))
       (should (member "m365_create_draft" names)))))
 
@@ -334,6 +334,51 @@ sitting in the registry of a session that only meant to read."
                     "m365_create_todo_task" "m365_complete_todo_task"))
       (should-not (plist-get (nelisp-m365-mcp--find-tool name)
                              :destructive)))))
+
+(ert-deftest nelisp-m365-test-create-folder-request ()
+  "Create exactly one named folder and fail on server name conflicts."
+  (cl-letf (((symbol-function 'nelisp-m365-tools-onedrive-metadata)
+             (lambda (args)
+               (should (equal args '(("itemId" . "parent"))))
+               '(("id" . "parent") ("folder" . nil))))
+            ((symbol-function 'nelisp-m365-graph-post)
+             (lambda (path body)
+               (should (equal path "/me/drive/items/parent/children"))
+               (should (equal (cdr (assoc "name" body)) "Customers"))
+               (should (hash-table-p (cdr (assoc "folder" body))))
+               (should (equal (cdr (assoc "@microsoft.graph.conflictBehavior" body)) "fail"))
+               '(("id" . "child") ("name" . "Customers") ("folder" . nil)))))
+    (should (equal (cdr (assoc "id" (nelisp-m365-tools-create-onedrive-folder
+                                    '(("parentId" . "parent") ("name" . "Customers")))))
+                   "child"))))
+
+(ert-deftest nelisp-m365-test-create-folder-invalid-name ()
+  "Reject path traversal and invalid components before any request."
+  (cl-letf (((symbol-function 'nelisp-m365-tools-onedrive-metadata)
+             (lambda (&rest _) (ert-fail "Unexpected network request"))))
+    (dolist (name '("" "." ".." "a/b" "a\\b" "a:b" "a?b" "a\nb" "tail." "tail "))
+      (should-error (nelisp-m365-tools-create-onedrive-folder
+                     (list (cons "parentId" "parent") (cons "name" name)))))))
+
+(ert-deftest nelisp-m365-test-create-folder-file-parent ()
+  "A file parent cannot reach the write request."
+  (cl-letf (((symbol-function 'nelisp-m365-tools-onedrive-metadata)
+             (lambda (_) '(("id" . "parent") ("file" . nil))))
+            ((symbol-function 'nelisp-m365-graph-post)
+             (lambda (&rest _) (ert-fail "Unexpected write request"))))
+    (should-error (nelisp-m365-tools-create-onedrive-folder
+                   '(("parentId" . "parent") ("name" . "Customers"))))))
+
+(ert-deftest nelisp-m365-test-create-folder-conflict ()
+  "An existing name fails once; it is never replaced or renamed."
+  (let ((writes 0))
+    (cl-letf (((symbol-function 'nelisp-m365-tools-onedrive-metadata)
+               (lambda (_) '(("id" . "parent") ("folder" . nil))))
+              ((symbol-function 'nelisp-m365-graph-post)
+               (lambda (&rest _) (setq writes (1+ writes)) (error "409 nameAlreadyExists"))))
+      (should-error (nelisp-m365-tools-create-onedrive-folder
+                     '(("parentId" . "parent") ("name" . "Customers"))))
+      (should (= writes 1)))))
 
 (ert-deftest nelisp-m365-test-recipient-shapes ()
   "A recipient argument accepts one address or several."
@@ -457,7 +502,7 @@ to be stripped rather than trusted."
                 '(("jsonrpc" . "2.0") ("id" . 2) ("method" . "tools/list"))))
          (tools (cdr (assoc "tools" (cdr (assoc "result" resp))))))
     (should (vectorp tools))
-    (should (= (length tools) 31))
+    (should (= (length tools) 34))
     (should (equal (cdr (assoc "name" (aref tools 0))) "m365_authenticate"))))
 
 (ert-deftest nelisp-m365-test-mcp-notification-has-no-reply ()
@@ -547,6 +592,155 @@ values are written straight into the token cache."
     (should (equal (cdr (assoc "access_token" token)) "new"))
     (should (equal (cdr (assoc "refresh_token" token)) "keep"))
     (should (numberp (cdr (assoc "expires_at" token))))))
+
+(ert-deftest nelisp-m365-test-conditional-upload ()
+  "An exact version reaches Graph; absent/wildcard conditions never upload."
+  (let (calls)
+    (cl-letf (((symbol-function 'nelisp-m365-compat-file-size) (lambda (_) 12))
+              ((symbol-function 'nelisp-m365-graph-upload)
+               (lambda (path source &rest options)
+                 (push (list path source options) calls)
+                 '(("id" . "file-id") ("eTag" . "new-tag")))))
+      (dolist (args '((("path" . "fixture.org") ("itemId" . "file-id"))
+                      (("path" . "fixture.org") ("destination" . "fixture.org") ("expectedETag" . "tag"))
+                      (("path" . "fixture.org") ("itemId" . "file-id") ("expectedETag" . "*"))
+                      (("path" . "fixture.org") ("itemId" . "file-id") ("expectedETag" . " * "))
+                      (("path" . "fixture.org") ("itemId" . "file-id") ("expectedETag" . "\"tag\r\n\""))))
+        (should-error (nelisp-m365-tools-upload-onedrive args)))
+      (should-not calls)
+      (let ((result (nelisp-m365-tools-upload-onedrive
+                     '(("path" . "fixture.org") ("itemId" . "file-id") ("expectedETag" . "\"old-tag\"")))))
+        (should (equal (cdr (assoc "eTag" result)) "new-tag"))
+        (should (equal (caar calls) "/me/drive/items/file-id/content"))
+        (should (equal (plist-get (nth 2 (car calls)) :headers) '(("If-Match" . "\"old-tag\""))))))))
+
+(ert-deftest nelisp-m365-test-stale-upload-propagates ()
+  "A Graph precondition failure remains an error, with no fallback upload."
+  (let ((calls 0))
+    (cl-letf (((symbol-function 'nelisp-m365-compat-file-size) (lambda (_) 12))
+              ((symbol-function 'nelisp-m365-graph-upload)
+               (lambda (&rest _)
+                 (setq calls (1+ calls))
+                 (error "HTTP 412 Precondition Failed"))))
+      (should-error (nelisp-m365-tools-upload-onedrive
+                     '(("path" . "fixture.org") ("itemId" . "file-id") ("expectedETag" . "\"stale-tag\""))))
+      (should (= calls 1)))))
+
+(ert-deftest nelisp-m365-test-text-version-stability ()
+  "Text reads expose a stable version and reject concurrent modifications."
+  (dolist (changed '(nil t))
+    (let ((calls 0))
+      (cl-letf (((symbol-function 'nelisp-m365-graph-get)
+                 (lambda (&rest _)
+                   (setq calls (1+ calls))
+                   (if (= calls 1)
+                       '(("id" . "file-id") ("name" . "fixture.org") ("size" . 12)
+                         ("file" . (("mimeType" . "text/plain"))) ("eTag" . "tag"))
+                     (list (cons "eTag" (if changed "changed-tag" "tag"))))))
+                ((symbol-function 'nelisp-m365-graph-download) (lambda (&rest _) 200))
+                ((symbol-function 'nelisp-m365-compat-read-file) (lambda (_) "fixture text")))
+        (if changed
+            (should-error (nelisp-m365-tools-get-onedrive-text '(("itemId" . "file-id"))))
+          (let ((result (nelisp-m365-tools-get-onedrive-text '(("itemId" . "file-id")))))
+            (should (equal (cdr (assoc "text" result)) "fixture text"))
+            (should (equal (cdr (assoc "eTag" (cdr (assoc "metadata" result)))) "tag"))))))))
+
+(ert-deftest nelisp-m365-test-create-only-upload ()
+  "Creation forwards an absence condition and cannot masquerade as an update."
+  (let (headers upload-path)
+    (cl-letf (((symbol-function 'nelisp-m365-compat-file-size) (lambda (_) 12))
+              ((symbol-function 'nelisp-m365-graph-upload)
+               (lambda (path _source &rest options)
+                 (setq upload-path path)
+                 (setq headers (plist-get options :headers))
+                 '(("id" . "new-file")))))
+      (nelisp-m365-tools-upload-onedrive '(("path" . "fixture.org") ("destination" . "fixture.org") ("createOnly" . t)))
+      (should (equal headers '(("If-None-Match" . "*"))))
+      (should (string-match-p "conflictBehavior=fail" upload-path))
+      (should-error (nelisp-m365-tools-upload-onedrive
+                     '(("path" . "fixture.org") ("itemId" . "file-id") ("expectedETag" . "\"tag\"") ("createOnly" . t)))))))
+
+(ert-deftest nelisp-m365-test-text-preserves-windows-bytes ()
+  "UTF-8 BOM and CRLF survive text reading for byte-exact publication checks."
+  (let ((text "\ufeff* TODO Fixture\r\nSCHEDULED: <2026-10-02 Fri>\r\n"))
+    (cl-letf (((symbol-function 'nelisp-m365-graph-get)
+               (lambda (&rest _)
+                 '(("id" . "file-id") ("name" . "fixture.org") ("size" . 100)
+                   ("file" . (("mimeType" . "text/plain"))) ("eTag" . "\"tag\""))))
+              ((symbol-function 'nelisp-m365-graph-download)
+               (lambda (_path dest)
+                 (let ((coding-system-for-write 'utf-8-unix))
+                   (write-region text nil dest nil 'silent))
+                 200)))
+      (should (equal (cdr (assoc "text" (nelisp-m365-tools-get-onedrive-text '(("itemId" . "file-id"))))) text)))))
+
+(ert-deftest nelisp-m365-test-stable-file-download ()
+  "The temporary download keeps raw bytes and removes a failed snapshot."
+  (dolist (changed '(nil t))
+    (let ((calls 0) path (bytes "line one\r\nline two\r\n"))
+      (cl-letf (((symbol-function 'nelisp-m365-tools-onedrive-metadata)
+                 (lambda (&rest _)
+                   (setq calls (1+ calls))
+                   (list (cons "id" "file-id") (cons "size" (length bytes))
+                         (cons "file" '(("mimeType" . "text/plain")))
+                         (cons "eTag" (if (and changed (> calls 1)) "\"changed\"" "\"tag\"")))))
+                ((symbol-function 'nelisp-m365-graph-download)
+                 (lambda (_target dest)
+                   (setq path dest)
+                   (let ((coding-system-for-write 'no-conversion))
+                     (write-region bytes nil dest nil 'silent))
+                   200)))
+        (if changed
+            (progn
+              (should-error (nelisp-m365-tools-download-onedrive '(("itemId" . "file-id"))))
+              (should-not (file-exists-p path)))
+          (let ((result (nelisp-m365-tools-download-onedrive '(("itemId" . "file-id")))))
+            (unwind-protect
+                (progn
+                  (should (equal (cdr (assoc "localPath" result)) path))
+                  (let ((coding-system-for-read 'no-conversion))
+                    (should (equal (nelisp-m365-compat-read-file path) bytes))))
+              (delete-file path))))))))
+
+(ert-deftest nelisp-m365-test-compact-paged-folder-list ()
+  "Compact listings expose versions and keep each HTTP page bounded."
+  (let (path requested)
+    (cl-letf (((symbol-function 'nelisp-m365-graph-collection)
+               (lambda (query limit &rest _)
+                 (setq path query requested limit)
+                 '(:items nil :truncated nil))))
+      (nelisp-m365-tools-list-onedrive '(("path" . "Documents/Notes-AI/capture/web") ("maxResults" . 10000) ("compact" . t)))
+      (should (= requested 10000))
+      (should (string-match-p "top=200" path))
+      (should (string-match-p "eTag" path))
+      (should-not (string-match-p "webUrl" path)))))
+
+(ert-deftest nelisp-m365-test-listing-snapshot-guards ()
+  "Reject foreign endpoints before transport and remove failed snapshots."
+  (let ((calls 0) path)
+    (cl-letf (((symbol-function 'nelisp-m365-graph-download)
+               (lambda (_target dest)
+                 (setq calls (1+ calls) path dest)
+                 (write-region "{}" nil dest nil 'silent)
+                 200)))
+      (dolist (cursor '("https://evil.example/me/drive/root/children?$top=200"
+                        "https://graph.microsoft.com/v1.0/users/x/messages?$top=200"
+                        "https://graph.microsoft.com/v1.0/me/drive/items/../children?$top=200"
+                        "https://graph.microsoft.com/v1.0/me/drive/?$top=200"))
+        (should-error (nelisp-m365-tools-download-listing (list (cons "nextLink" cursor)))))
+      (should (= calls 0))
+      (let ((result (nelisp-m365-tools-download-listing '(("path" . "Documents/Notes-AI")))))
+        (unwind-protect
+            (should (= (cdr (assoc "size" result)) 2))
+          (delete-file path))))
+    (dolist (status '(503 200))
+      (cl-letf (((symbol-function 'nelisp-m365-graph-download)
+                 (lambda (_target dest)
+                   (setq path dest)
+                   (write-region (make-string 1025 ?x) nil dest nil 'silent)
+                   status)))
+        (should-error (nelisp-m365-tools-download-listing '(("maxBytes" . 1024))))
+        (should-not (file-exists-p path))))))
 
 (provide 'nelisp-m365-test)
 

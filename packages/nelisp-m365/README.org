@@ -21,13 +21,56 @@ them.
 
 * Status
 
-- Package status: active.  31 read tools always; 12 write tools when
+- Package status: active.  33 read tools always; 12 write tools when
   =M365_ENABLE_WRITE= is set
 - Transports: stdio, and Streamable HTTP with OAuth 2.1 through
   =bin/nelisp-m365-http= (see /Remote transport/)
 - Verified platform: Linux build of the standalone runtime.  The Windows
   PE build is *not usable* today (see /Runtime substrate/)
-- All 43 tools verified against a live personal Microsoft account
+- The original 43 tools were verified against a live personal Microsoft account.
+  The new metadata tool and guarded publication were verified on 2026-10-02.
+
+* Conditional text editing
+
+Read an existing small text/org file with =m365_get_onedrive_text=. Its
+=metadata.eTag= is returned only when the version remains stable across the
+content download; a concurrent change requires another read. Never edit a
+truncated result.
+
+For an existing-file update call =m365_upload_onedrive_file= with =path=,
+=itemId= and the exact quoted =expectedETag= from that read. This addresses
+the existing item by identity and sends =If-Match= with the upload. A stale
+version fails with HTTP 412; do not retry against a new version without
+reading and reconciling its content. Read the result back after success.
+The returned upload metadata includes the new eTag. Wildcards and malformed
+version strings are rejected before upload. The tool count is now 45, including
+=m365_get_onedrive_metadata= for body-free version inspection by id or path.
+
+=m365_download_onedrive_snapshot= downloads raw bytes to an owned temporary
+file and verifies matching metadata before and after download. Its default
+limit is 8 MiB, with an explicit maximum of 64 MiB. The caller consumes and
+removes the returned temporary file. The original download tool is unchanged.
+=m365_list_onedrive= supports =compact=true= for identity, size, version,
+and folder metadata only; paginated listings accept up to 10,000 results.
+
+For an absent destination use =createOnly=true=. This adds the
+~@microsoft.graph.conflictBehavior=fail~ query condition. The live consumer
+service ignored =If-None-Match=* on the content PUT alone; the query condition
+was verified to reject an existing filename without changing its content.
+Text reads accept an explicit =maxBytes= budget up to 8 MiB for bounded local
+publication; the ordinary client default remains 256 KiB. UTF-8 BOM and CRLF
+are preserved for byte comparisons.
+
+Destination-only uploads retain the older unguarded creation/replacement
+behavior. Use conditional item updates for org editing. Conditional uploads
+protect cloud concurrency only; they do not reconcile a separate local file
+or protect against another program publishing an unconditional replacement.
+
+Verified on 2026-10-02 with a disposable org using the registered WSL/NeLisp
+launcher: fresh-version update succeeded, a stale update returned 412, and
+readback retained the fresh content and the original repeating schedule.
+Offline tests cover missing/malformed conditions, header propagation,
+precondition errors without fallback, and changes during content download.
 
 * Layout
 

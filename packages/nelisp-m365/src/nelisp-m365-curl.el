@@ -172,7 +172,7 @@ the redirect target."
            (res (nelisp-m365-compat-run-program argv)))
       (unless (and res (equal (car res) 0))
         (signal 'nelisp-m365-http-error
-                (list (format "curl download failed for %s" url))))
+                (list (format "curl download failed (exit %s) for %s" (car res) url))))
       (string-to-number (string-trim (cdr res))))))
 
 (provide 'nelisp-m365-curl)

@@ -363,7 +363,7 @@ rather than \"find me something about X\" belongs here."
 ;;; OneDrive ---------------------------------------------------------------
 
 (defconst nelisp-m365-tools--item-fields
-  "id,name,size,lastModifiedDateTime,webUrl,file,folder,parentReference"
+  "id,name,size,eTag,lastModifiedDateTime,webUrl,file,folder,parentReference"
   "Fields returned for a driveItem.")
 
 (defun nelisp-m365-tools-search-onedrive (args)
@@ -382,7 +382,7 @@ rather than \"find me something about X\" belongs here."
 
 (defun nelisp-m365-tools-list-onedrive (args)
   "List the children of a OneDrive folder, defaulting to the drive root."
-  (let* ((limit (nelisp-m365-tools--int-arg args "maxResults" 50 1 200))
+  (let* ((limit (nelisp-m365-tools--int-arg args "maxResults" 50 1 10000))
          (item-id (nelisp-m365-tools--arg args "itemId"))
          (folder-path (nelisp-m365-tools--arg args "path"))
          (base (cond
@@ -395,10 +395,48 @@ rather than \"find me something about X\" belongs here."
                 (t "/me/drive/root/children")))
          (path (concat base
                        (nelisp-m365-graph-query
-                        (list (cons "$select" nelisp-m365-tools--item-fields)
-                              (cons "$top" limit)))))
+                        (list (cons "$select" (if (eq (nelisp-m365-tools--arg args "compact") t)
+                                                   "id,name,size,eTag,folder"
+                                                 nelisp-m365-tools--item-fields))
+                              (cons "$top" (min limit 200))))))
          (collected (nelisp-m365-graph-collection path limit)))
     (nelisp-m365-tools--collection-result "items" collected)))
+
+(defun nelisp-m365-tools-download-listing (args)
+  "Download one compact directory page without parsing its JSON body."
+  (let* ((cursor (nelisp-m365-tools--arg args "nextLink"))
+         (folder (nelisp-m365-tools--arg args "path"))
+         (limit (nelisp-m365-tools--int-arg args "maxBytes" 2097152 1024 2097152))
+         (prefix (concat nelisp-m365-graph-root "/me/drive/"))
+         (target nil) (dest nil))
+    (when (and cursor folder)
+      (error "nelisp-m365: path and nextLink are mutually exclusive"))
+    (if cursor
+        (progn
+          (unless (and (stringp cursor) (string-prefix-p prefix cursor)
+                       (string-match-p
+                        "\\`\\(?:root:/[^?#]+:/children\\|root/children\\|items/[A-Za-z0-9!_-]+/children\\)[?][^#]+\\'"
+                        (substring cursor (length prefix)))
+                       (not (string-match-p "\\.\\.\\|%2[eE]\\|%5[cC]" cursor)))
+            (error "nelisp-m365: invalid directory pagination URL"))
+          (setq target cursor))
+      (setq target
+            (concat (if folder
+                        (concat "/me/drive/root:/" (nelisp-m365-compat-url-encode folder) ":/children")
+                      "/me/drive/root/children")
+                    (nelisp-m365-graph-query
+                     '(("$select" . "id,name,size,eTag,folder") ("$top" . 200))))))
+    (setq dest (make-temp-file "nelisp-m365-dl-"))
+    (condition-case failure
+        (let ((status (nelisp-m365-graph-download target dest)))
+          (unless (and (>= status 200) (< status 300))
+            (error "nelisp-m365: listing download failed with HTTP %s" status))
+          (let ((size (nelisp-m365-compat-file-size dest)))
+            (unless (and (> size 0) (<= size limit))
+              (error "nelisp-m365: listing response exceeds maxBytes or is empty"))
+            (list (cons "localPath" dest) (cons "size" size))))
+      (error (condition-case nil (delete-file dest) (error nil))
+             (signal (car failure) (cdr failure))))))
 
 (defconst nelisp-m365-tools--text-mime-prefixes
   '("text/" "application/json" "application/xml" "application/javascript"
@@ -421,14 +459,53 @@ rather than \"find me something about X\" belongs here."
       (when (string-suffix-p e lower) (setq hit t)))
     hit))
 
+(defun nelisp-m365-tools-onedrive-metadata (args)
+  "Read one item's identity and version without downloading its body."
+  (let* ((id (nelisp-m365-tools--arg args "itemId"))
+         (path (nelisp-m365-tools--arg args "path"))
+         (base (cond (id (concat "/me/drive/items/" (nelisp-m365-compat-url-encode id)))
+                     (path (concat "/me/drive/root:/" (nelisp-m365-compat-url-encode path)))
+                     (t "/me/drive/root")))
+         (meta (nelisp-m365-graph-get
+                (concat base (nelisp-m365-graph-query
+                              '(("$select" . "id,name,size,eTag,file,folder,parentReference")))))))
+    (nelisp-m365-graph-pick meta '("id" "name" "size" "eTag" "file" "folder" "parentReference"))))
+
+(defun nelisp-m365-tools-download-onedrive (args)
+  "Download a stable item version to an owned temporary file, without a JSON body."
+  (let* ((id (nelisp-m365-tools--require-arg args "itemId"))
+         (limit (nelisp-m365-tools--int-arg args "maxBytes" 8388608 1024 67108864))
+         (meta (nelisp-m365-tools-onedrive-metadata (list (cons "itemId" id))))
+         (etag (cdr (assoc "eTag" meta)))
+         (size (cdr (assoc "size" meta)))
+         (dest nil))
+    (unless (and (cdr (assoc "file" meta)) (numberp size) (<= size limit)
+                 (stringp etag) (> (length etag) 0))
+      (error "nelisp-m365: download requires a file with a version and size within maxBytes"))
+    (setq dest (make-temp-file "nelisp-m365-dl-"))
+    (condition-case failure
+        (let ((status (nelisp-m365-graph-download
+                       (concat "/me/drive/items/" (nelisp-m365-compat-url-encode id) "/content") dest)))
+          (unless (and (>= status 200) (< status 300))
+            (error "nelisp-m365: download failed with HTTP %s" status))
+          (let ((after (nelisp-m365-tools-onedrive-metadata (list (cons "itemId" id)))))
+            (unless (and (equal etag (cdr (assoc "eTag" after)))
+                         (equal size (nelisp-m365-compat-file-size dest)))
+              (error "nelisp-m365: file changed during download")))
+          (list (cons "metadata" meta) (cons "localPath" dest)))
+      (error (condition-case nil (delete-file dest) (error nil))
+             (signal (car failure) (cdr failure))))))
+
 (defun nelisp-m365-tools-get-onedrive-text (args)
   "Return the text content of a small OneDrive file."
-  (let* ((id (nelisp-m365-tools--require-arg args "itemId"))
+  (let* ((nelisp-m365-tools-max-text-bytes
+          (nelisp-m365-tools--int-arg args "maxBytes" nelisp-m365-tools-max-text-bytes 1024 8388608))
+         (id (nelisp-m365-tools--require-arg args "itemId"))
          (encoded (nelisp-m365-compat-url-encode id))
          (meta (nelisp-m365-graph-get
                 (concat "/me/drive/items/" encoded
                         (nelisp-m365-graph-query
-                         '(("$select" . "id,name,size,file,webUrl,lastModifiedDateTime"))))))
+                         '(("$select" . "id,name,size,file,webUrl,lastModifiedDateTime,eTag"))))))
          (file (cdr (assoc "file" meta)))
          (size (or (cdr (assoc "size" meta)) 0))
          (name (cdr (assoc "name" meta)))
@@ -444,14 +521,23 @@ rather than \"find me something about X\" belongs here."
     (let* ((dest (make-temp-file "nelisp-m365-dl-"))
            (status (nelisp-m365-graph-download
                     (concat "/me/drive/items/" encoded "/content") dest))
-           (text (or (nelisp-m365-compat-read-file dest) "")))
+           (text (or (let ((coding-system-for-read 'utf-8-unix))
+                       (nelisp-m365-compat-read-file dest)) "")))
       (condition-case nil (delete-file dest) (error nil))
       (unless (and (>= status 200) (< status 300))
         (error "nelisp-m365: content download failed with HTTP %s" status))
+      ;; Bind the returned content to a stable version across the download.
+      (let* ((after (nelisp-m365-graph-get
+                     (concat "/me/drive/items/" encoded
+                             (nelisp-m365-graph-query '(("$select" . "id,eTag"))))))
+             (etag (cdr (assoc "eTag" meta))))
+        (unless (and (stringp etag) (> (length etag) 0)
+                     (equal etag (cdr (assoc "eTag" after))))
+          (error "nelisp-m365: file changed during download; read it again")))
       (let ((clipped (nelisp-m365-tools--truncate text)))
         (list (cons "metadata" (nelisp-m365-graph-pick
                                 meta '("id" "name" "size" "webUrl"
-                                       "lastModifiedDateTime")))
+                                       "lastModifiedDateTime" "eTag")))
               (cons "text" (car clipped))
               (cons "truncated" (nelisp-m365-compat-json-bool (cdr clipped))))))))
 
@@ -1012,11 +1098,49 @@ has to handle both the attached and unattached cases."
      (concat "/me/events/" (nelisp-m365-compat-url-encode id)))
     (list (cons "deleted" t) (cons "eventId" id))))
 
+(defun nelisp-m365-tools-create-onedrive-folder (args)
+  "Create one folder below an existing folder, rejecting name conflicts."
+  (let* ((parent (nelisp-m365-tools--require-arg args "parentId"))
+         (name (nelisp-m365-tools--require-arg args "name")))
+    (unless (and (stringp name) (> (length name) 0)
+                 (not (member name '("." "..")))
+                 (not (string-match-p "[/\\\\:*?\"<>|\r\n]" name))
+                 (not (string-match-p "[ .]\\'" name)))
+      (error "nelisp-m365: name must be one valid folder component"))
+    (let ((meta (nelisp-m365-tools-onedrive-metadata
+                 (list (cons "itemId" parent)))))
+      (unless (and (equal (cdr (assoc "id" meta)) parent)
+                   (assoc "folder" meta))
+        (error "nelisp-m365: parent must be an existing folder")))
+    (let ((created
+           (nelisp-m365-graph-post
+            (concat "/me/drive/items/"
+                    (nelisp-m365-compat-url-encode parent) "/children")
+            (list (cons "name" name)
+                  (cons "folder" (make-hash-table :test 'equal))
+                  (cons "@microsoft.graph.conflictBehavior" "fail")))))
+      (unless (and (assoc "folder" created)
+                   (cdr (assoc "id" created))
+                   (equal (cdr (assoc "name" created)) name))
+        (error "nelisp-m365: folder creation returned an unexpected item"))
+      (nelisp-m365-graph-pick created
+                              '("id" "name" "eTag" "folder" "parentReference")))))
+
 (defun nelisp-m365-tools-upload-onedrive (args)
-  "Upload a local file to OneDrive."
+  "Upload a local file, optionally requiring an existing item version."
   (let* ((source (nelisp-m365-tools--require-arg args "path"))
-         (target (nelisp-m365-tools--require-arg args "destination"))
+         (id (nelisp-m365-tools--arg args "itemId"))
+         (etag (nelisp-m365-tools--arg args "expectedETag"))
+         (create-only (eq (nelisp-m365-tools--arg args "createOnly") t))
+         (target (unless id (nelisp-m365-tools--require-arg args "destination")))
          (size (nelisp-m365-compat-file-size source)))
+    (when (and create-only (or id etag))
+      (error "nelisp-m365: createOnly cannot be combined with an existing item version"))
+    (when (or id etag)
+      (unless (and (stringp id) (> (length id) 0)
+                   (stringp etag) (> (length etag) 0)
+                   (string-match-p "\\`\"[^\"\r\n]+\"\\'" etag))
+        (error "nelisp-m365: conditional updates require itemId and an exact quoted expectedETag")))
     (unless size
       (error "nelisp-m365: cannot read %s" source))
     ;; A simple PUT is documented up to 250 MB, but this is the plain
@@ -1026,11 +1150,15 @@ has to handle both the attached and unattached cases."
       (error "nelisp-m365: %s is %s bytes; this uploads at most 60 MB in one request"
              source size))
     (let ((item (nelisp-m365-graph-upload
-                 (concat "/me/drive/root:/"
-                         (nelisp-m365-compat-url-encode target)
-                         ":/content")
-                 source)))
-      (append (nelisp-m365-graph-pick item '("id" "name" "size" "webUrl"))
+                 (if id
+                     (concat "/me/drive/items/" (nelisp-m365-compat-url-encode id) "/content")
+                   (concat "/me/drive/root:/"
+                           (nelisp-m365-compat-url-encode target) ":/content"
+                           (when create-only
+                             (nelisp-m365-graph-query '(("@microsoft.graph.conflictBehavior" . "fail"))))))
+                 source :headers (cond (id (list (cons "If-Match" etag)))
+                                       (create-only '(("If-None-Match" . "*")))))))
+      (append (nelisp-m365-graph-pick item '("id" "name" "size" "webUrl" "eTag"))
               (list (cons "uploaded" t))))))
 
 (defun nelisp-m365-tools-create-todo-task (args)
@@ -1304,9 +1432,43 @@ return a value the MCP layer encodes as structured content."
                         (cons "path"
                               (nelisp-m365-tools--prop
                                "string" "Folder path relative to the drive root, e.g. Documents/2026."))
-                        (cons "maxResults" (nelisp-m365-tools--max-results 50 200)))
+                        (cons "maxResults" (nelisp-m365-tools--max-results 50 10000))
+                        (cons "compact" (nelisp-m365-tools--prop
+                                         "boolean" "Return only identity, name, size, eTag and folder marker for bounded local publication.")))
                   nil)
          :handler #'nelisp-m365-tools-list-onedrive)
+
+   (list :name "m365_download_onedrive_listing"
+         :title "Download a compact OneDrive directory page"
+         :description "Read one directory page into an owned temporary file, capped at 2 MiB. Give path for the first page or its Graph nextLink for a later page. Caller reads and removes the file."
+         :read-only t
+         :untrusted t
+         :schema (nelisp-m365-tools--schema
+                  (list (cons "path" (nelisp-m365-tools--prop "string" "Folder path relative to the drive root."))
+                        (cons "nextLink" (nelisp-m365-tools--prop "string" "Graph directory pagination URL."))
+                        (cons "maxBytes" (nelisp-m365-tools--prop "integer" "Response limit, 1024 to 2097152 bytes."))) nil)
+         :handler #'nelisp-m365-tools-download-listing)
+
+   (list :name "m365_get_onedrive_metadata"
+         :title "Read OneDrive item identity and version"
+         :description "Get a file or folder identity, eTag, size and hashes without its body. Give itemId or path; neither reads the drive root."
+         :read-only t
+         :untrusted t
+         :schema (nelisp-m365-tools--schema
+                  (list (cons "itemId" (nelisp-m365-tools--prop "string" "Existing item id."))
+                        (cons "path" (nelisp-m365-tools--prop "string" "Path relative to the drive root."))) nil)
+         :handler #'nelisp-m365-tools-onedrive-metadata)
+
+   (list :name "m365_download_onedrive_snapshot"
+         :title "Download a stable OneDrive file to a temporary file"
+         :description "Read a stable file version into an owned local temporary file. Returns metadata and localPath, not content in JSON. Caller must read and remove that temporary file. Default 8 MiB, explicit maximum 64 MiB."
+         :read-only t
+         :untrusted t
+         :schema (nelisp-m365-tools--schema
+                  (list (cons "itemId" (nelisp-m365-tools--prop "string" "Existing file id."))
+                        (cons "maxBytes" (nelisp-m365-tools--prop "integer" "Bounded download size, 1024 to 67108864 bytes.")))
+                  '("itemId"))
+         :handler #'nelisp-m365-tools-download-onedrive)
 
    (list :name "m365_get_onedrive_text"
          :title "Read a OneDrive text file"
@@ -1316,7 +1478,9 @@ return a value the MCP layer encodes as structured content."
          :schema (nelisp-m365-tools--schema
                   (list (cons "itemId"
                               (nelisp-m365-tools--prop
-                               "string" "Item id from m365_search_onedrive or m365_list_onedrive.")))
+                               "string" "Item id from m365_search_onedrive or m365_list_onedrive."))
+                        (cons "maxBytes" (nelisp-m365-tools--prop
+                                          "integer" "Explicit text budget, 1024 to 8388608 bytes; default 262144.")))
                   '("itemId"))
          :handler #'nelisp-m365-tools-get-onedrive-text)
 
@@ -1686,9 +1850,22 @@ a sent message cannot be recalled."
                   '("eventId"))
          :handler #'nelisp-m365-tools-delete-event)
 
+   (list :name "m365_create_onedrive_folder"
+         :title "Create a OneDrive folder"
+         :description "Create one folder below an existing parentId. Name conflicts fail without renaming or replacing. Read metadata first when resuming after an uncertain result."
+         :read-only nil
+         :untrusted nil
+         :schema (nelisp-m365-tools--schema
+                  (list (cons "parentId"
+                              (nelisp-m365-tools--prop "string" "Existing parent folder item id."))
+                        (cons "name"
+                              (nelisp-m365-tools--prop "string" "Single folder name, not a path.")))
+                  '("parentId" "name"))
+         :handler #'nelisp-m365-tools-create-onedrive-folder)
+
    (list :name "m365_upload_onedrive_file"
          :title "Upload a file to OneDrive"
-         :description "Upload a local file to a path in OneDrive, creating or replacing it. Up to 60 MB."
+         :description "Upload up to 60 MB. For an existing org/text edit, use itemId and expectedETag from a fresh text read; stale versions fail. Destination-only uploads create or replace without a version guard."
          :read-only nil
          :untrusted nil
          :schema (nelisp-m365-tools--schema
@@ -1697,8 +1874,17 @@ a sent message cannot be recalled."
                                "string" "Local file to upload."))
                         (cons "destination"
                               (nelisp-m365-tools--prop
-                               "string" "Target path in OneDrive relative to the drive root, e.g. Documents/2026/report.pdf.")))
-                  '("path" "destination"))
+                               "string" "Target path for unguarded creation/replacement. Omit for conditional item updates."))
+                        (cons "itemId"
+                              (nelisp-m365-tools--prop
+                               "string" "Existing file id; requires expectedETag."))
+                        (cons "expectedETag"
+                              (nelisp-m365-tools--prop
+                               "string" "Exact eTag from metadata. Requires itemId. Never use a wildcard."))
+                        (cons "createOnly"
+                              (nelisp-m365-tools--prop
+                               "boolean" "Require destination to be absent. Existing files fail rather than being replaced.")))
+                  '("path"))
          :handler #'nelisp-m365-tools-upload-onedrive)
 
    (list :name "m365_create_todo_task"
