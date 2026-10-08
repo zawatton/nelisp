@@ -24,6 +24,10 @@
 (defvar nelisp-gui-pango--row-input nil)
 (defvar nelisp-gui-pango--row-cleared nil)
 (defvar nelisp-gui-pango-force-paint t)
+(defvar nelisp-gui-pango-maximum-layouts 256
+  "Maximum retained native run layouts for one renderer.
+Run origins can disappear as faces, regions and popup contents change.
+Clear the owned cache on capacity pressure; plain typing reuses its layouts.")
 
 (defun nelisp-gui-pango--text (layout text &optional renderer)
   "Set LAYOUT's copied UTF-8 text, reusing RENDERER's owned scratch mapping."
@@ -226,6 +230,10 @@ argument mappings and encoding four doubles for every row/cursor rectangle."
          (key (list text (and (cdr (assq :bold face)) t) (and (cdr (assq :italic face)) t)
                     nelisp-gui-pango-font nelisp-gui-pango-font-size nelisp-gui-pango-dpi))
          (cell (assoc origin (aref r 10))) (old (cdr cell)))
+    (when (and (not cell) (>= (length (aref r 10)) nelisp-gui-pango-maximum-layouts))
+      (unless (> nelisp-gui-pango-maximum-layouts 0)
+        (error "Pango layout capacity must be positive"))
+      (nelisp-gui-pango--clear-layouts r))
     (if (and old (equal key (aref old 0))) old
       (let ((layout (if old (aref old 1)
                       (nelisp-gui-xcb-call "pango_layout_copy" [:pointer :pointer] (aref r 2))))

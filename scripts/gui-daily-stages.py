@@ -253,7 +253,10 @@ def keyboard(args,api,out,env,report,sessions):
     shot=s.shot('skk-日本')
     _,_,data=screenshot(shot,api['command']); assert sum(p==(232,232,232) for p in data)>20, 'Japanese screenshot lacks ink'
     keyboard_events(s,args,api,out,env,report)
-    s.key('ctrl+x','ctrl+c');s.finish()
+    # Clean lexical contexts expose ddskk's genuine dictionary-load progress.
+    s.key('ctrl+x','ctrl+c')
+    s.finish(informational=('Inserting contents of SKK-JISYO.gui ...',
+                            'Inserting contents of SKK-JISYO.gui ...done'))
     assert gui_bytes==gnu_bytes,'GUI/GNU saved bytes differ'
     corrupt=out/'negative-saved.txt';corrupt.write_bytes(b'nihon\n')
     try: saved_file(corrupt,expected)
@@ -268,7 +271,10 @@ def keyboard(args,api,out,env,report,sessions):
     start=len(bad.log());type_romaji(bad.window,missing,api)
     live_wait(bad,api,lambda: 'にほん' in bad.log()[start:],120,'negative dictionary lookup executed')
     assert '日本' not in bad.log(), 'missing dictionary produced fixture candidate'
-    bad.key('ctrl+g','ctrl+x','ctrl+c');bad.finish()
+    bad.key('ctrl+g','ctrl+x','ctrl+c')
+    missing_diagnostic = f"Cannot load `{out/'absent-dictionary'}'."
+    assert missing_diagnostic in bad.stderr.read_text(), 'missing dictionary diagnostic not observed'
+    bad.finish(informational=('Inserting contents of absent-dictionary ...', missing_diagnostic))
     report['checks'].append('GNU-identical-UTF8/corrupt-saved/missing-dictionary-negatives/production-quit')
 
 
@@ -401,7 +407,9 @@ def mouse(args,api,out,env,report,sessions):
     report['checks'].extend(['standard-mouse-events/click/drag-region/wheel/shared-commands',
                              'menu-bar/context-map/render/ordinary-command-activation',
                              'CJK-hit/cursor-pixels/resize/wrong-point-negative'])
-    s.key('ctrl+x','ctrl+c');s.finish();report['checks'].append('production-quit')
+    s.key('ctrl+x','ctrl+c')
+    s.finish(informational=('Mark set',))
+    report['checks'].append('production-quit')
 
 
 def metrics_pixels(path, log, command, expected_dpi, moved=False, shape=(64,20), extra=(0,0)):
@@ -560,6 +568,15 @@ def run(args, api):
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
                 module.run(args,api,out,env,report,sessions)
+            elif args.stage=='S5.0d':
+                import importlib.util
+                spec=importlib.util.spec_from_file_location('burst',root/'scripts/gui-daily-burst.py')
+                module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+                result=module.measure(api, module.load('burst_stages', __file__), out,env,sessions)
+                report['soak']=result
+                module.assert_budget(result)
+                report['checks'].extend(result['checks'])
+                report['status']='PASS'
             elif args.stage=='S5.0c':
                 import importlib.util
                 spec=importlib.util.spec_from_file_location('paced',root/'scripts/gui-daily-paced.py')

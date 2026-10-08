@@ -33,6 +33,31 @@ must not starve screen updates indefinitely.")
 (defvar nelisp-gui-frontend--profile nil)
 (defvar nelisp-gui-frontend--profile-saved nil)
 (defvar nelisp-gui-frontend--profile-spans nil)
+(defvar nelisp-gui-frontend--soak-interval nil)
+(defvar nelisp-gui-frontend--soak-keys 0)
+(defvar nelisp-gui-frontend--soak-next nil)
+
+(defun nelisp-gui-frontend--soak-collect ()
+  "Opt-in collection census after a completed, drained soak batch.
+The ordinary latency/production run never enables this diagnostic: explicit
+collection pauses must not be hidden in send-to-visible measurements."
+  (when (and nelisp-gui-frontend--soak-next
+             (>= nelisp-gui-frontend--soak-keys nelisp-gui-frontend--soak-next)
+             (not (emacs-command-loop-pending-p))
+             (not nelisp-gui-frontend--transport-pending)
+             (not (nelisp-gui-selection-input-pending-p))
+             (not nelisp-gui-frontend--paint-needed))
+    (let ((start (float-time))
+          (before (and (fboundp 'nelisp--arena-stats) (nelisp--arena-stats))))
+      (princ (format "GUI-SOAK-GC-BEGIN|keys=%d|\n" nelisp-gui-frontend--soak-keys))
+      (let ((stats (garbage-collect)))
+        (princ (format "GUI-SOAK-GC|keys=%d|point=%d|seconds=%.6f|stats=%S|before=%S|after=%S|layouts=%d|\n"
+                       nelisp-gui-frontend--soak-keys (nelisp-gui-frontend--point)
+                       (- (float-time) start) stats before
+                       (and before (nelisp--arena-stats))
+                       (length (aref nelisp-gui-frontend--renderer 10)))))
+      (setq nelisp-gui-frontend--soak-next
+            (+ nelisp-gui-frontend--soak-keys nelisp-gui-frontend--soak-interval)))))
 
 (defun nelisp-gui-frontend--profile-install ()
   "Opt-in inclusive phase timings; never alter the evaluator or collector."
@@ -71,6 +96,9 @@ must not starve screen updates indefinitely.")
   (let ((collections (and nelisp-gui-frontend--timing (nelisp-gui-frontend--gc-counter)))
         (start (and nelisp-gui-frontend--timing (float-time))))
     (nelisp-gui-frontend--dispatch)
+    (when (and nelisp-gui-frontend--soak-interval
+               (not (memq last-input-event '(focus-in focus-out))))
+      (setq nelisp-gui-frontend--soak-keys (1+ nelisp-gui-frontend--soak-keys)))
     (when start
       (let ((elapsed (- (float-time) start))
             (collected (and collections (- (nelisp-gui-frontend--gc-counter) collections))))
@@ -156,7 +184,9 @@ Only adaptation is done here; bounds, motion and edits stay in libraries.")
     (while (and deadline (not (emacs-command-loop-pending-p))
                 (< (float-time) deadline))
       (nelisp-gui-frontend--service)
-      (unless (emacs-command-loop-pending-p)
+      (unless (or (emacs-command-loop-pending-p)
+                  (nelisp-gui-selection-input-pending-p)
+                  nelisp-gui-frontend--transport-pending)
         (nelisp-gui-xcb-wait nelisp-gui-frontend--xcb
                              (min (nelisp-gui-frontend--wait-ms)
                                   (* 1000 (max 0 (- deadline (float-time)))))))
@@ -324,6 +354,14 @@ Command lookup, execution, hooks, buffer editing and point stay in libraries."
                     nelisp-gui-frontend--latency-check (equal (getenv "NELISP_GUI_LATENCY_CHECK") "1")
                     nelisp-gui-frontend--trace-text
                     (or (getenv "NELISP_GUI_FIXTURE") (equal (getenv "NELISP_GUI_TRACE_TEXT") "1")))
+              (setq nelisp-gui-frontend--soak-interval
+                    (and (getenv "NELISP_GUI_SOAK_GC")
+                         (string-to-number (getenv "NELISP_GUI_SOAK_GC")))
+                    nelisp-gui-frontend--soak-keys 0
+                    nelisp-gui-frontend--soak-next nelisp-gui-frontend--soak-interval)
+              (when (and nelisp-gui-frontend--soak-interval
+                         (<= nelisp-gui-frontend--soak-interval 0))
+                (error "GUI soak collection interval must be positive"))
               (when (getenv "NELISP_GUI_DPI")
                 (nelisp-gui-pango-configure (string-to-number (getenv "NELISP_GUI_DPI")))
                 (setq nelisp-gui-pango-fringe (round (* 8 (/ nelisp-gui-pango-dpi 96.0)))))
@@ -414,7 +452,11 @@ Command lookup, execution, hooks, buffer editing and point stay in libraries."
                            (not (symbol-value 'nemacs-main--quit-flag)))
                   (nelisp-gui-frontend--paint))
                 (nelisp-gui-frontend--service)
+                (when (and nelisp-gui-frontend--soak-interval
+                           (not (symbol-value 'nemacs-main--quit-flag)))
+                  (nelisp-gui-frontend--soak-collect))
                 (unless (or (emacs-command-loop-pending-p)
+                            (nelisp-gui-selection-input-pending-p)
                             nelisp-gui-frontend--transport-pending
                             nelisp-gui-frontend--paint-needed
                             (symbol-value 'nemacs-main--quit-flag))

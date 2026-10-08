@@ -79,6 +79,10 @@
 (defun nelisp-gui-selection-active-p ()
   "Return non-nil when this transport is attached to a live frontend."
   (and nelisp-gui-selection--state t))
+(defun nelisp-gui-selection-input-pending-p ()
+  "Return non-nil for input deferred by a synchronous selection callback.
+The frontend must drain this queue before blocking on the X socket."
+  (and nelisp-gui-selection--events t))
 (defun nelisp-gui-selection-poll ()
   "Return deferred input first, otherwise poll the XCB transport."
   (if nelisp-gui-selection--events (pop nelisp-gui-selection--events)

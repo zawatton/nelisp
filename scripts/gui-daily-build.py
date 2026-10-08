@@ -19,6 +19,36 @@ import sys
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def isolate_lexical_forms(data):
+    """Evaluate each top-level form with the file's empty lexical environment.
+
+    The fixed reader can retain a bootstrap let frame between top-level
+    forms. A concatenated GUI image then captures unrelated startup locals
+    in every subsequent defun. Use genuine eval's lexical argument to give
+    each form the same environment as an independent lexical source load.
+    Nested lets/lambdas retain their intentional captures.
+    """
+    source = ROOT / 'build/gui-daily-unisolated.el'
+    target = ROOT / 'build/gui-daily-lexical.el'
+    source.write_bytes(data)
+    form = '''(let ((forms nil) (print-circle t) (print-level nil) (print-length nil))
+      (with-temp-buffer
+        (let ((coding-system-for-read 'utf-8-unix)) (insert-file-contents SOURCE))
+        (emacs-lisp-mode)
+        (goto-char (point-min))
+        (while (progn (forward-comment (point-max)) (< (point) (point-max)))
+          (push (read (current-buffer)) forms)))
+      (with-temp-file TARGET
+        (insert ";;; GUI image: independent lexical top-level forms. -*- lexical-binding: t; -*-\\n")
+        (dolist (definition (nreverse forms))
+          (prin1 (list 'eval (list 'quote definition) t) (current-buffer))
+          (insert "\\n"))))'''.replace('SOURCE', json.dumps(str(source))).replace('TARGET', json.dumps(str(target)))
+    subprocess.run(['emacs', '-Q', '--batch', '--eval', form], check=True, timeout=120)
+    return target.read_bytes()
+
+
 MEMBERS = [
     'packages/nl-ffi/src/nl-ffi-loader.el',
     'packages/nl-ffi/src/nl-ffi.el',
@@ -488,7 +518,7 @@ def main():
     extension = MARKER + wrapper + b'\n'
     for member in MEMBERS:
         extension += ('\n;;; >>> ' + member + '\n').encode() + (ROOT / member).read_bytes() + b'\n'
-    data = base + extension
+    data = isolate_lexical_forms(base + extension)
     if not bundle.exists() or bundle.read_bytes() != data:
         bundle.write_bytes(data)
     sources = MEMBERS + ['vendor/staged-emacs-lisp/subr.el', 'packages/nelisp-emacs-core/src/emacs-frame.el',
@@ -498,7 +528,7 @@ def main():
                          'packages/nelisp-emacs-editing/src/emacs-edit-builtins.el',
                          'packages/nelisp-emacs-foundation/src/emacs-load.el',
                          'scripts/gui-daily-fixtures.py', 'scripts/gui-daily-packages.py', 'scripts/gui-daily-latency.py',
-                         'scripts/gui-daily-paced.py', 'scripts/gui-daily-scenario.py',
+                         'scripts/gui-daily-paced.py', 'scripts/gui-daily-burst.py', 'scripts/gui-daily-scenario.py',
                          'scripts/gui-daily-magit-profile.el',
                          'packages/nelisp-emacs-io/src/emacs-process.el',
                          'packages/nelisp-emacs-io/src/emacs-process-builtins.el',

@@ -178,7 +178,7 @@ def main():
     for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(signum, cancelled)
     parser = argparse.ArgumentParser()
-    parser.add_argument('stage', choices=['S3.2', 'S3.3', 'S4.1', 'S4.2', 'S4.3', 'S5.0', 'S5.0b', 'S5.0c', 'S5.1', 'S5.2'])
+    parser.add_argument('stage', choices=['S3.2', 'S3.3', 'S4.1', 'S4.2', 'S4.3', 'S5.0', 'S5.0b', 'S5.0c', 'S5.0d', 'S5.1', 'S5.2'])
     parser.add_argument('--launcher',type=Path,default=LAUNCHER)
     parser.add_argument('--init', default='-Q', choices=['-Q'])
     parser.add_argument('--fixture', choices=['render', 'metrics', 'skk-evil', 'keyboard', 'mouse-menu', 'selections', 'daily', 'packages'])
@@ -198,7 +198,7 @@ def main():
     args = parser.parse_args()
     LAUNCHER = args.launcher.resolve()
     args.out = args.out or ROOT / 'build/gui-daily' / args.stage
-    if args.stage in ('S5.0', 'S5.0b', 'S5.0c'):
+    if args.stage in ('S5.0', 'S5.0b', 'S5.0c', 'S5.0d'):
         if args.fixture:
             parser.error(args.stage+' must use no fixture')
     else:

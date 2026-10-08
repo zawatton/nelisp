@@ -6,7 +6,7 @@
 (defconst nelisp-gui-xcb-cookie-type '(:struct :uint32))
 ;; State: connection, window, visual, screen, xkb context/keymap/state, alive,
 ;; negotiated XKB event base, input fd, owned pollfd storage, selected device,
-;; serialized effective keyboard group.
+;; serialized effective keyboard group, prefetched owned native event.
 ;; No live native pointer is installed while loading/baking this file.
 
 (defvar nelisp-gui-xcb--calls (make-hash-table :test 'eq)
@@ -17,8 +17,9 @@
 (defvar nelisp-gui-xcb--mask-frame nil
   "Process-local owned argument storage for the seven-argument XKB mask ABI.")
 
-(defun nelisp-gui-xcb--update-mask (state event)
-  "Apply authoritative StateNotify without allocating three FFI buffers per event."
+(defun nelisp-gui-xcb--update-mask (state event &optional core-mods)
+  "Apply StateNotify, or the effective CORE-MODS snapshot of a key event.
+Reuse owned argument storage; a key snapshot preserves the ordered XKB group."
   (unless nelisp-gui-xcb--mask-frame
     (let* ((cif (nl-ffi-libffi-prepare "libxkbcommon.so.0" "xkb_state_update_mask" :uint32
                                      '(:pointer :uint32 :uint32 :uint32 :uint32 :uint32 :uint32)))
@@ -28,16 +29,17 @@
   (let* ((frame nelisp-gui-xcb--mask-frame) (cif (aref frame 0))
          (p (aref frame 2)) (cells (+ p 56)))
     (ptr-write-u64 cells 0 (aref state 6))
-    (ptr-write-u32 cells 8 (ptr-read-u8 event 10))
-    (ptr-write-u32 cells 16 (ptr-read-u8 event 11))
-    (ptr-write-u32 cells 24 (ptr-read-u8 event 12))
-    (ptr-write-u32 cells 32 (logand (nelisp-gui-xcb--signed16 event 14) 4294967295))
-    (ptr-write-u32 cells 40 (logand (nelisp-gui-xcb--signed16 event 16) 4294967295))
-    (ptr-write-u32 cells 48 (ptr-read-u8 event 18))
+    (ptr-write-u32 cells 8 (if core-mods (logand core-mods 255) (ptr-read-u8 event 10)))
+    (ptr-write-u32 cells 16 (if core-mods 0 (ptr-read-u8 event 11)))
+    (ptr-write-u32 cells 24 (if core-mods 0 (ptr-read-u8 event 12)))
+    (ptr-write-u32 cells 32 (if core-mods 0 (logand (nelisp-gui-xcb--signed16 event 14) 4294967295)))
+    (ptr-write-u32 cells 40 (if core-mods 0 (logand (nelisp-gui-xcb--signed16 event 16) 4294967295)))
+    (ptr-write-u32 cells 48 (if core-mods (aref state 12) (ptr-read-u8 event 18)))
     (nelisp-gui-xcb-call "ffi_call" [:void :pointer :pointer :pointer :pointer]
                          (aref cif 0) (aref cif 1) (+ p 112) p)
-    (aset state 12 (nelisp-gui-xcb-call "xkb_state_serialize_layout" [:uint32 :pointer :uint32]
-                                       (aref state 6) 128))))
+    (unless core-mods
+      (aset state 12 (nelisp-gui-xcb-call "xkb_state_serialize_layout" [:uint32 :pointer :uint32]
+                                         (aref state 6) 128)))))
 
 (defun nelisp-gui-xcb--scalar-address (name signature)
   "Retain a scalar address through the public owned libffi descriptor API."
@@ -221,7 +223,7 @@ and unsupported scalar signatures continue through the original provider."
                   (nl-ffi-memory-release o)))
             (nelisp-gui-xcb-call "unsetenv" [:sint32 :pointer] (nl-ffi-memory-address key)))
         (nl-ffi-memory-release key))))
-  (let ((state (vector 0 0 0 0 0 0 0 t 0 nil nil nil 0)) (complete nil)
+  (let ((state (vector 0 0 0 0 0 0 0 t 0 nil nil nil 0 0)) (complete nil)
         (screen-o (nl-ffi-memory-allocate 4)) (params (nl-ffi-memory-allocate 8)))
     (unwind-protect
         (progn
@@ -327,9 +329,9 @@ and unsupported scalar signatures continue through the original provider."
   (let* ((start (and (boundp 'nelisp-gui-frontend--timing) nelisp-gui-frontend--timing (float-time)))
          (code (ptr-read-u8 event 1)) (mods (nl-ffi-libffi-u16 event 28))
          (xkb (aref state 6)))
-    ;; StateNotify is authoritative for latched/locked modifiers and groups.
-    ;; Core events do not always encode the active group; replacing it here
-    ;; loses a real Alt+Shift layout switch.
+    ;; A refresh reply can describe a later server state than queued keys.
+    ;; Decode modifiers from this event, retaining the ordered XKB group.
+    (nelisp-gui-xcb--update-mask state event mods)
     (let* ((sym (nelisp-gui-xcb-call "xkb_state_key_get_one_sym" [:uint32 :pointer :uint32] xkb code))
            (group (aref state 12))
            (unicode (nelisp-gui-xcb-call "xkb_keysym_to_utf32" [:uint32 :uint32] sym))
@@ -367,22 +369,34 @@ and unsupported scalar signatures continue through the original provider."
   (aref state 9))
 
 (defun nelisp-gui-xcb-wait (state timeout-ms)
-  "Block in poll(2) on STATE for at most TIMEOUT-MS milliseconds.
-Call only after draining XCB's userspace event queue.  A finite timeout
-lets the frontend service timers and process callbacks; fd readiness,
-including server death, wakes it immediately.  No Lisp sleep shim is used."
+  "Wait at most TIMEOUT-MS milliseconds, preserving already buffered input.
+XCB reply reads can queue events after a frontend's last drain.  Flush
+requests and check XCB itself before poll(2); a prefetched event remains
+owned by STATE until `nelisp-gui-xcb-poll' consumes it or close frees it.
+Return nonzero for pending input or fd readiness, zero for a timeout."
   ;; nl-ffi-memory already requires the Linux x86-64 syscall ABI.  Reuse
   ;; that raw OS seam and one process-local pollfd, avoiding scalar FFI
   ;; resolution and a fresh mmap on every idle iteration.
-  (let ((p (nl-ffi-memory-address (aref state 10))))
-    (ptr-write-u32 p 0 (nelisp-gui-xcb-file-descriptor state))
-    (ptr-write-u32 p 4 1)
-    (syscall-direct 7 p 1 (max 0 (ceiling timeout-ms)) 0 0 0)))
+  (nelisp-gui-xcb-check state)
+  (unless (> (aref state 13) 0)
+    (nelisp-gui-xcb-call "xcb_flush" [:sint32 :pointer] (aref state 0))
+    ;; poll_for_event checks the userspace queue before reading the socket.
+    ;; Do not decode here: waiting must not run commands or selection handlers.
+    (aset state 13 (nelisp-gui-xcb-call "xcb_poll_for_event" [:pointer :pointer]
+                                     (aref state 0))))
+  (if (> (aref state 13) 0) 1
+    (nelisp-gui-xcb-check state)
+    (let ((p (nl-ffi-memory-address (aref state 10))))
+      (ptr-write-u32 p 0 (nelisp-gui-xcb-file-descriptor state))
+      (ptr-write-u32 p 4 1)
+      (syscall-direct 7 p 1 (max 0 (ceiling timeout-ms)) 0 0 0))))
 
 (defun nelisp-gui-xcb-poll (state)
   "Return one transport event, freeing its native event exactly once."
   (nelisp-gui-xcb-check state)
-  (let ((p (nelisp-gui-xcb-call "xcb_poll_for_event" [:pointer :pointer] (aref state 0))))
+  (let ((p (if (> (aref state 13) 0)
+               (prog1 (aref state 13) (aset state 13 0))
+             (nelisp-gui-xcb-call "xcb_poll_for_event" [:pointer :pointer] (aref state 0)))))
     (if (= p 0) (progn (nelisp-gui-xcb-check state) nil)
       (unwind-protect
           (let ((type (logand (ptr-read-u8 p 0) 127)))
@@ -432,6 +446,9 @@ including server death, wakes it immediately.  No Lisp sleep shim is used."
 
 (defun nelisp-gui-xcb-close (state)
   "Destroy native owners; disconnect also works on a dead X server."
+  (when (> (aref state 13) 0)
+    (nelisp-gui-xcb-call "free" [:void :pointer] (aref state 13))
+    (aset state 13 0))
   (when nelisp-gui-xcb--mask-frame
     (nl-ffi-memory-release (aref nelisp-gui-xcb--mask-frame 1))
     (setq nelisp-gui-xcb--mask-frame nil))

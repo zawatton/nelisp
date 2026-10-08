@@ -22,7 +22,7 @@ def prepare(out):
     # A lane's private lib/ copy remains source-only, including build/.
     if not bytecode_root and root.name == 'lib':
         bytecode_root = str(root.parent/'gui-bytecode-fixtures')
-    dest = (Path(bytecode_root)/hashlib.sha256(str(out.resolve()).encode()).hexdigest()[:16]/'vendor'
+    dest = (Path(bytecode_root).resolve()/hashlib.sha256(str(out.resolve()).encode()).hexdigest()[:16]/'vendor'
             if bytecode_root else out/'vendor')
     if bytecode_root:
         shutil.rmtree(dest, ignore_errors=True)

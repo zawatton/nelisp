@@ -246,7 +246,15 @@ def scenario(args, api, out, report, sessions):
         report['clipboard_import']=api['command'](['xclip','-o','-selection','clipboard'],env).decode()
         state=step(['ctrl+x','1'], lambda r: len(r['windows'])==1,'delete-other-windows'); milestone('single',state)
         state=step(['ctrl+x','ctrl+s'], lambda r: path.read_text()==r['text'],'save'); milestone('save',state)
-        s.key('ctrl+x','ctrl+c'); s.finish()
+        s.key('ctrl+x','ctrl+c')
+        if engine == 'gnu':
+            s.finish()
+        else:
+            # Exact progress messages from this case's real mark/search commands.
+            # All other stderr and the Lisp-error checks remain fatal.
+            s.finish(informational=('Mark set', 'Mark saved where search started',
+                                    'I-search:', 'I-search: b', 'I-search: be',
+                                    'I-search: bet', 'I-search: beta'))
         assert not ERROR.search(s.log()+s.stderr.read_text()), 'Lisp/selection error before production exit'
         # Production kill-emacs exits directly; GUI-CLOSED is emitted by
         # frontend unwinding, not by that normal application command.
