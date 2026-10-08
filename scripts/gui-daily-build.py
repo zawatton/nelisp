@@ -155,9 +155,9 @@ def check_skk_image(env, force=False):
         path.unlink(missing_ok=True)
         # Restored side must already contain packages.  Configure the live
         # session paths, but do not require/load anything to hide dump losses.
-        setup = ('(nelisp-gui-skk-evil-load)' if label == 'runtime' else
+        setup = ('(nelisp-gui-skk-evil-prepare-image)' if label == 'runtime' else
                  "(unless (and (featurep 'skk) (featurep 'evil)) (error \"Packages missing from image\")) "
-                 '(nelisp-gui-skk-evil-configure)')
+                 '(nelisp-gui-skk-evil-configure) (nelisp-gui-skk-evil-assert-preloaded)')
         form = ('(progn ' + setup + ' (princ "GUI-PACKAGE-STATE|loaded\\n") ' + load_inventory + '(nelisp-gui-skk-evil-assert-headless) '
                 '(nelisp-gui-skk-evil-fingerprint ' + json.dumps(str(path)) + ') t)')
         with (out / (label + '.out')).open('wb') as stdout, (out / (label + '.err')).open('wb') as stderr:
@@ -394,7 +394,7 @@ def build_skk_image(data, env):
     package_identity = hashlib.sha256(json.dumps(dict(sources=sources, membership=membership),
                                                  sort_keys=True).encode()).hexdigest()
     extra = ('\n;;; SKK-EVIL-PACKAGE-INPUTS ' + package_identity +
-             '\n(nelisp-gui-skk-evil-load)\n(nelisp-gui-skk-evil-assert-headless)\n').encode()
+             '\n(nelisp-gui-skk-evil-prepare-image)\n').encode()
     if not SKK_BUNDLE.exists() or SKK_BUNDLE.read_bytes() != data + extra:
         SKK_BUNDLE.write_bytes(data + extra)
     env = headless_env(out, vendor, dictionary)
@@ -409,7 +409,7 @@ def build_skk_image(data, env):
         raise RuntimeError('Package membership changed during image build')
     (ROOT / 'build/gui-skk-evil-inputs.json').write_text(json.dumps(
         dict(bundle=digest(SKK_BUNDLE), sources=sources, membership=membership,
-             vendor=str(vendor)), indent=2) + '\n')
+             vendor=str(vendor), dictionary_sha256=digest(dictionary)), indent=2) + '\n')
 
 
 def packages_env(out, env):

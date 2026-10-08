@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import resource
 import subprocess
+import time
 
 root = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser()
@@ -41,12 +42,42 @@ image = subprocess.check_output(['bash', str(root / 'tools/c-core-image.sh'), 'p
 binary = os.environ.get('NELISP_BIN')
 if not binary:
     parser.error('NELISP_BIN must identify the existing standalone reader')
+# A caller cannot claim that a replacement dictionary is in the saved heap.
+os.environ.pop('NELISP_GUI_SKK_DICTIONARY_PRELOADED', None)
+if args.image == 'skk-evil':
+    dictionary = Path(os.environ.get('NELISP_GUI_SKK_DICTIONARY', ''))
+    if (dictionary.is_file() and package_inputs.get('dictionary_sha256') and
+            hashlib.sha256(dictionary.read_bytes()).hexdigest() == package_inputs['dictionary_sha256']):
+        os.environ['NELISP_GUI_SKK_DICTIONARY_PRELOADED'] = '1'
 options = "'(:frontend xcb :driver nelisp :no-banner t :init-file-user nil :inhibit-startup-screen t"
 if args.fixture:
     options += ' :funcall (nelisp-gui-' + args.fixture + '-fixture)'
     os.environ['NELISP_GUI_FIXTURE'] = args.fixture
 options += ')'
 form = '(progn (setq nemacs-main-options ' + options + ') (nemacs-main))'
+if os.environ.get('NELISP_GUI_STARTUP_TRACE') == '1':
+    # Timings include restore before the first Lisp form, then inclusive phases.
+    # Keep wrappers opt-in and process-local; no foreign state enters the image.
+    trace = """(princ (format "GUI-LAUNCH|phase=restored|time=%.6f|\\n" (float-time)))
+      (dolist (name '(nelisp-gui-skk-evil-fixture nelisp-gui-skk-evil-load
+                     evil-local-mode evil-insert-state skk-mode skk-mode-invoke
+                     skk-setup-keymap skk-compile-rule-list skk-get-jisyo-buffer
+                     nelisp-gui-xcb-open nelisp-gui-pango-open
+                     nelisp-gui-frontend--paint garbage-collect))
+        (when (fboundp name)
+          (let ((original (symbol-function name)) (phase name)
+                (command-form (interactive-form name)))
+            ;; fset of a plain lambda loses bytecode's interactive metadata.
+            ;; Keep the named command's genuine spec, including prefix args.
+            (when command-form (put name 'interactive-form command-form))
+            (fset name (lambda (&rest arguments)
+              (let ((started (float-time)))
+                (princ (format "GUI-LAUNCH|phase=%s|state=start|time=%.6f|\\n" phase started))
+                (prog1 (apply original arguments)
+                  (princ (format "GUI-LAUNCH|phase=%s|state=end|time=%.6f|seconds=%.6f|\\n"
+                                 phase (float-time) (- (float-time) started)))))))))) """
+    form = '(progn ' + trace + form + ')'
+    print(f'GUI-LAUNCH|phase=exec|time={time.time():.6f}|', flush=True)
 resource.setrlimit(resource.RLIMIT_STACK, (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
 os.chdir(root)
 startup = []

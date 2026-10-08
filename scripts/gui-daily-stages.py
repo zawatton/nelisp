@@ -193,13 +193,75 @@ def live_wait(session,api,test,timeout,description):
     return api['wait_until'](check,timeout,description)
 
 
+# Five acceptance runs peaked at 56s; a later phase probe with eight busy
+# workers on four CPUs reached 67s.  90s retains 23s scheduling headroom;
+# it is a total launch budget, not a separate wait per phase.
+SKK_LAUNCH_BUDGET = 90
+
+
+def skk_ready(session, api, report):
+    "Poll fixture + completed frontend state, diagnosing exits/errors/stalls."
+    deadline = session.started + SKK_LAUNCH_BUDGET
+    def diagnostic(reason):
+        phases = fields(session.log(), 'GUI-LAUNCH')
+        last = phases[-1] if phases else {'phase': 'launcher-validation/restore'}
+        return (f'{session.label}: {reason}; elapsed={time.monotonic()-session.started:.1f}s '
+                f'budget={SKK_LAUNCH_BUDGET}s pid={session.proc.pid} '
+                f'rc={session.proc.poll()} last_phase={last}; '
+                f'stdout={session.stdout} stderr={session.stderr}\n' +
+                session.stderr.read_text(errors='replace')[-3000:] + '\n' + session.log()[-3000:])
+    while True:
+        log = session.log()
+        if session.proc.poll() is not None:
+            raise AssertionError(diagnostic('exited before readiness'))
+        if 'GUI-ERROR|' in log:
+            raise AssertionError(diagnostic('frontend error before readiness'))
+        if 'GUI-READY|' in log:
+            if ('GUI-PAINT|' not in log or
+                    'GUI-SKK|skk=t|evil=t|state=insert|' not in log):
+                raise AssertionError(diagnostic('frontend ready without completed SKK fixture/paint'))
+            break
+        if time.monotonic() >= deadline:
+            raise AssertionError(diagnostic('startup state stalled'))
+        time.sleep(.1)
+    # Preserve the existing mapped-window count and in-process XID assertions.
+    session.ready(timeout=1)
+    rows = fields(log.split('GUI-READY|', 1)[0], 'GUI-LAUNCH')
+    timings = {}
+    for row in rows:
+        if 'seconds' in row:
+            timings[row['phase']] = timings.get(row['phase'], 0) + float(row['seconds'])
+    paints = [float(r['seconds']) for r in rows
+              if r['phase'] == 'nelisp-gui-frontend--paint' and 'seconds' in r]
+    if paints:
+        timings['first-redisplay'] = paints[0]
+    stamps = {r['phase']: float(r['time']) for r in rows if r['phase'] in ('exec','restored')}
+    if len(stamps) == 2:
+        timings['image-restore'] = stamps['restored'] - stamps['exec']
+    report.setdefault('startup', []).append(dict(label=session.label,
+        seconds=time.monotonic()-session.started, budget=SKK_LAUNCH_BUDGET, phases=timings))
+
+
+def s4_finish(session, **kwargs):
+    "Preserve quit assertions/budget and distinguish exit timeout from launch."
+    started = time.monotonic()
+    try:
+        session.finish(**kwargs)
+    except subprocess.TimeoutExpired as error:
+        raise AssertionError(
+            f'{session.label}: production quit timed out after {time.monotonic()-started:.1f}s; '
+            f'launch readiness already completed; pid={session.proc.pid}; '
+            f'stdout={session.stdout} stderr={session.stderr}\n' +
+            session.stderr.read_text(errors='replace')[-3000:] + '\n' + session.log()[-3000:]) from error
+
+
 def keyboard(args,api,out,env,report,sessions):
     api['command'](['setxkbmap','-layout','us'],env)
     api['command'](['xset','r','rate','200','30'],env)
     transport=api['Session'](out,'keyboard',env,fixture='keyboard');sessions.append(transport)
     transport.ready(timeout=180)
     keyboard_events(transport,args,api,out,env,report)
-    transport.key('ctrl+x','ctrl+c');transport.finish()
+    transport.key('ctrl+x','ctrl+c');s4_finish(transport)
     report['checks'].append('keyboard-transport/shared-loop/production-quit')
     api['command'](['setxkbmap','-layout','us'],env)
     stale=api['Session'](out,'negative-keymap',dict(env,NELISP_GUI_FAULT='stale-keymap'),fixture='keyboard')
@@ -209,7 +271,7 @@ def keyboard(args,api,out,env,report,sessions):
     live_wait(stale,api,lambda: 'GUI-CAPTURE|' in stale.log()[start:],40,'negative stale-map input')
     observed=fields(stale.log()[start:],'GUI-CAPTURE')
     assert observed[-1]['event']=='91' and observed[-1]['event']!='64', ('stale-map negative accepted',observed)
-    stale.key('ctrl+x','ctrl+c');stale.finish()
+    stale.key('ctrl+x','ctrl+c');s4_finish(stale)
     report['checks'].append('disabled-XKB-map-notification-negative-rejected')
     import importlib.util
     spec=importlib.util.spec_from_file_location('gui_daily_fixtures',api['ROOT']/'scripts/gui-daily-fixtures.py')
@@ -221,8 +283,9 @@ def keyboard(args,api,out,env,report,sessions):
     api['command'](['setxkbmap','-layout','us'],env)
     api['command'](['xset','r','rate','200','30'],env)
     gnu_bytes=gnu_skk(out,env,api,report)
-    gui_env=dict(env,NELISP_GUI_FIXTURE_OUT=str(out/'gui'),NELISP_GUI_IMAGE='skk-evil')
-    s=api['Session'](out,'skk',gui_env,fixture='skk-evil');sessions.append(s);s.ready(timeout=480)
+    gui_env=dict(env,NELISP_GUI_FIXTURE_OUT=str(out/'gui'),NELISP_GUI_IMAGE='skk-evil',
+                 NELISP_GUI_STARTUP_TRACE='1')
+    s=api['Session'](out,'skk',gui_env,fixture='skk-evil');sessions.append(s);skk_ready(s,api,report)
     assert 'GUI-SKK|skk=t|evil=t|state=insert|' in s.log(), 'real ddskk/Evil fixture did not initialize: '+s.stderr.read_text()+s.log()[-3000:]
     type_romaji(s.window,s.env,api)
     s.events.append(['type','nihon','space','Return'])
@@ -255,7 +318,7 @@ def keyboard(args,api,out,env,report,sessions):
     keyboard_events(s,args,api,out,env,report)
     # Clean lexical contexts expose ddskk's genuine dictionary-load progress.
     s.key('ctrl+x','ctrl+c')
-    s.finish(informational=('Inserting contents of SKK-JISYO.gui ...',
+    s4_finish(s,informational=('Inserting contents of SKK-JISYO.gui ...',
                             'Inserting contents of SKK-JISYO.gui ...done'))
     assert gui_bytes==gnu_bytes,'GUI/GNU saved bytes differ'
     corrupt=out/'negative-saved.txt';corrupt.write_bytes(b'nihon\n')
@@ -267,14 +330,14 @@ def keyboard(args,api,out,env,report,sessions):
     (isolated/'skk/empty-init.el').write_text(';;; Isolated negative init. -*- lexical-binding: t; -*-\n')
     (isolated/'skk/private-fixture-jisyo').write_text(';; okuri-ari entries.\n;; okuri-nasi entries.\n')
     missing=dict(gui_env,NELISP_GUI_FIXTURE_OUT=str(isolated),NELISP_GUI_SKK_DICTIONARY=str(out/'absent-dictionary'))
-    bad=api['Session'](out,'negative-dictionary',missing,fixture='skk-evil');sessions.append(bad);bad.ready(timeout=480)
+    bad=api['Session'](out,'negative-dictionary',missing,fixture='skk-evil');sessions.append(bad);skk_ready(bad,api,report)
     start=len(bad.log());type_romaji(bad.window,missing,api)
     live_wait(bad,api,lambda: 'にほん' in bad.log()[start:],120,'negative dictionary lookup executed')
     assert '日本' not in bad.log(), 'missing dictionary produced fixture candidate'
     bad.key('ctrl+g','ctrl+x','ctrl+c')
     missing_diagnostic = f"Cannot load `{out/'absent-dictionary'}'."
     assert missing_diagnostic in bad.stderr.read_text(), 'missing dictionary diagnostic not observed'
-    bad.finish(informational=('Inserting contents of absent-dictionary ...', missing_diagnostic))
+    s4_finish(bad,informational=('Inserting contents of absent-dictionary ...', missing_diagnostic))
     report['checks'].append('GNU-identical-UTF8/corrupt-saved/missing-dictionary-negatives/production-quit')
 
 
