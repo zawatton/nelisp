@@ -28,6 +28,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 TEXT = b'Hello from the real nemacs PTY.\nSecond line.\n'
+SCENARIO_SHUTDOWN_TIMEOUT = 30
 PROBES = r''';;; -*- lexical-binding: nil; -*-
 ;;; PTY fixture: exercise waits; callbacks record markers and process output.
 (unless (fboundp 'nelisp--write-stdout-bytes)
@@ -429,6 +430,7 @@ def scenario_capture(args, name, target, init, Screen):
     status = None
     settled = []
     timings = []
+    shutdown_started = None
     deadline = time.monotonic() + args.timeout
     original_tty = termios.tcgetattr(master)
 
@@ -481,6 +483,8 @@ def scenario_capture(args, name, target, init, Screen):
         for label, keys in scenario_steps(target) if ready else []:
             if status is not None or time.monotonic() >= deadline:
                 break
+            if label == 'quit':
+                shutdown_started = time.monotonic()
             os.write(master, keys)
             sent.append(label)
             phase_start = time.monotonic()
@@ -497,9 +501,12 @@ def scenario_capture(args, name, target, init, Screen):
                                         cursor=[terminal.row, terminal.col],
                                         unknown=sorted(terminal.unknown), pending=terminal.pending)
         if status is None:
-            # Quiet output is not evidence of process exit.  Give shutdown the
-            # full existing grace period before classifying it as a hang.
-            drain(minimum=0.5, maximum=5, require_exit=True)
+            # Heap GC can pause the interpreter for 8-10 seconds after the
+            # quit keys arrive.  Wait for actual exit, allowing that pause;
+            # drain still enforces the per-editor deadline on a stuck child.
+            drain(minimum=0.5, maximum=SCENARIO_SHUTDOWN_TIMEOUT, require_exit=True)
+        shutdown_seconds = (time.monotonic() - shutdown_started
+                            if shutdown_started is not None else None)
         hung = status is None
         if hung:
             os.killpg(pid, signal.SIGKILL)
@@ -519,7 +526,7 @@ def scenario_capture(args, name, target, init, Screen):
     saved = target.read_bytes()
     (args.output / ('scenario.' + name + '.saved')).write_bytes(saved)
     result = dict(command=argv, checks=checks, exit=os.waitstatus_to_exitcode(status), sent=sent,
-                  snapshots=snapshots, timings=timings)
+                  snapshots=snapshots, timings=timings, shutdown_seconds=shutdown_seconds)
     (args.output / ('scenario.' + name + '.json')).write_text(json.dumps(result, ensure_ascii=False, indent=2) + '\n')
     return result, saved
 
