@@ -48,6 +48,40 @@
     (require 'skk)
     (require 'evil)))
 
+(defvar nelisp-gui-skk-evil-image-dictionary-buffer nil)
+
+(defun nelisp-gui-skk-evil-prepare-image ()
+  "Prepare genuine SKK one-time state and the public dictionary headlessly.
+Only the isolated empty init and pinned public dictionary are read.  Local
+mode state is disposable; each live fixture still activates real modes."
+  (nelisp-gui-skk-evil-load)
+  (with-temp-buffer (skk-mode 1))
+  (setq nelisp-gui-skk-evil-image-dictionary-buffer
+        (skk-get-jisyo-buffer skk-large-jisyo t))
+  (nelisp-gui-skk-evil-assert-preloaded)
+  (nelisp-gui-skk-evil-assert-headless))
+
+(defun nelisp-gui-skk-evil-assert-preloaded ()
+  "Reject a dump that lost reusable SKK setup or dictionary buffer state."
+  (unless (and (featurep 'skk) (featurep 'evil) skk-mode-invoked
+               skk-rule-tree (keymapp skk-j-mode-map)
+               (buffer-live-p nelisp-gui-skk-evil-image-dictionary-buffer))
+    (error "SKK image missing initialized rules/maps/dictionary"))
+  (with-current-buffer nelisp-gui-skk-evil-image-dictionary-buffer
+    (unless (and (> (buffer-size) 0) skk-okuri-ari-min
+                 skk-okuri-ari-max skk-okuri-nasi-min)
+      (error "SKK image missing parsed dictionary boundaries")))
+  t)
+
+(defun nelisp-gui-skk-evil-restore-dictionary ()
+  "Reuse the dumped dictionary only after the launcher verifies its bytes.
+Invalidate the saved buffer for a missing or changed dictionary, including
+a replacement with the same basename (ddskk's buffer cache key)."
+  (when (buffer-live-p nelisp-gui-skk-evil-image-dictionary-buffer)
+    (unless (equal (getenv "NELISP_GUI_SKK_DICTIONARY_PRELOADED") "1")
+      (kill-buffer nelisp-gui-skk-evil-image-dictionary-buffer)
+      (setq nelisp-gui-skk-evil-image-dictionary-buffer nil))))
+
 (defun nelisp-gui-skk-evil-assert-headless ()
   "Reject live transport/foreign objects before dumping and after restoring."
   (dolist (symbol '(nelisp-gui-frontend--xcb nelisp-gui-frontend--renderer
@@ -109,7 +143,12 @@ all named keymaps/hooks, including shared maps modified by package loading."
     (princ (format "GUI-PACKAGE-FINGERPRINT|variables=%d|\n" (length symbols)))))
 
 (defun nelisp-gui-skk-evil-fixture ()
-  (nelisp-gui-skk-evil-load)
+  ;; A restored heap already owns package definitions and initialized rules.
+  ;; Always rebind live paths; ordinary GNU/base-image fixtures still load.
+  (if (and (featurep 'skk) (featurep 'evil))
+      (nelisp-gui-skk-evil-configure)
+    (nelisp-gui-skk-evil-load))
+  (nelisp-gui-skk-evil-restore-dictionary)
   (let* ((out (getenv "NELISP_GUI_FIXTURE_OUT"))
          (buffer (generate-new-buffer "*SKK GUI*")))
     (set-buffer buffer)
