@@ -326,8 +326,12 @@ The cache remains plaintext; this does not use DPAPI or a keychain.
 The generated UTF-8 bootstrap and subprocess request/output files live
 in a unique directory under =%TEMP%= whose ACL is restricted before
 creation. Windows paths are escaped as Lisp literals. The launcher
-copies stdin/stdout/stderr as bytes, preserving UTF-8 and LF framing,
-closes NeLisp stdin at EOF, and removes the bootstrap directory on normal
+copies stdin/stdout/stderr with dedicated byte pumps that flush each
+available chunk, preserving UTF-8 and LF framing without waiting for EOF.
+Before creating the child process it selects BOM-free UTF-8 for the
+.NET stdin writer, so an inherited console encoding cannot inject a
+preamble ahead of the first request. The launcher closes NeLisp stdin at
+EOF, and removes the bootstrap directory on normal
 exit or a handled failure. NeLisp's raw stdout writer emits MCP frames;
 =kill-emacs= prevents the final =--load= return value from polluting stdout.
 Forced termination of PowerShell itself can prevent its cleanup handler.
@@ -359,7 +363,13 @@ downloads, log and temp paths; they never load the user's config/cache.
 The suite runs all existing package tests plus Windows regressions via
 the repository's ERT shim on NeLisp, verifies curl exit 23, and drives
 initialize, tools/list, profile and To Do creation through the real
-Windows launcher. It checks environment precedence, spaces/apostrophes
+Windows launcher over an interactive pipe: initialize must reply before
+tools/list is sent, and each later request waits for its reply while
+stdin remains open. Each reply has a bounded timeout. Four BOM-free file
+cases test initialize or ping first under default or UTF-8-preamble
+console input encoding; an additional interactive case uses the latter.
+Every case requires the first response to match the first request's id.
+It checks environment precedence, spaces/apostrophes
 in paths, Japanese/emoji/quoted request text, current-user-only token ACLs,
 exact UTF-8/LF stdout, and cleanup. No mail or note is sent anywhere.
 

@@ -8,9 +8,11 @@ import base64
 import hashlib
 import json
 import os
+import queue
 from pathlib import Path
 import subprocess
 import tempfile
+import threading
 import time
 
 PKG = Path(__file__).resolve().parents[1]
@@ -22,8 +24,8 @@ def lisp(value):
     return json.dumps(str(value), ensure_ascii=False)
 
 
-def run(argv, env, timeout, data=None):
-    proc = subprocess.Popen(argv, env=env, stdin=subprocess.PIPE,
+def run(argv, env, timeout, data=None, stdin_file=None):
+    proc = subprocess.Popen(argv, env=env, stdin=stdin_file or subprocess.PIPE,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
         out, err = proc.communicate(data, timeout=timeout)
@@ -38,6 +40,57 @@ def run(argv, env, timeout, data=None):
                            + out.decode('utf-8', 'replace'))
     COMPLETED.append(proc.pid)
     return out, err
+
+
+def interactive(argv, env, requests, first_timeout, reply_timeout=20):
+    """Send each request only after its response, keeping stdin open."""
+    proc = subprocess.Popen(argv, env=env, stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    lines, errors, pending = [], [], queue.Queue()
+
+    def read_stdout():
+        for line in iter(proc.stdout.readline, b''):
+            lines.append(line)
+            pending.put(line)
+        pending.put(None)
+
+    def read_stderr():
+        errors.append(proc.stderr.read())
+
+    readers = [threading.Thread(target=read_stdout), threading.Thread(target=read_stderr)]
+    for reader in readers:
+        reader.start()
+    try:
+        for index, request in enumerate(requests):
+            started = time.monotonic()
+            proc.stdin.write((json.dumps(request, ensure_ascii=False) + '\n').encode('utf-8'))
+            proc.stdin.flush()
+            deadline = first_timeout if index == 0 else reply_timeout
+            try:
+                line = pending.get(timeout=deadline)
+            except queue.Empty:
+                raise AssertionError(f'{request["method"]} timed out after {deadline}s with stdin still open')
+            assert line is not None, (request, b''.join(errors))
+            response = json.loads(line.decode('utf-8'))
+            assert response.get('id') == request['id'] and 'error' not in response, response
+            assert not proc.stdin.closed, 'Reply observed only after EOF'
+            print(f'Interactive {request["method"]}: id={response["id"]}, '
+                  f'{time.monotonic() - started:.2f}s before EOF', flush=True)
+        proc.stdin.close()
+        proc.wait(timeout=reply_timeout)
+        assert proc.returncode == 0, proc.returncode
+    finally:
+        if proc.poll() is None:
+            subprocess.run(['taskkill', '/PID', str(proc.pid), '/T', '/F'], capture_output=True)
+            proc.kill()
+            proc.wait()
+        for reader in readers:
+            reader.join(timeout=5)
+            assert not reader.is_alive(), 'Pipe reader did not exit'
+        for stream in (proc.stdin, proc.stdout, proc.stderr):
+            stream.close()
+        COMPLETED.append(proc.pid)
+    return b''.join(lines), b''.join(errors)
 
 
 def main():
@@ -100,10 +153,10 @@ def main():
             {'jsonrpc': '2.0', 'id': 3, 'method': 'tools/call', 'params': {'name': 'm365_profile', 'arguments': {}}},
             {'jsonrpc': '2.0', 'id': 4, 'method': 'tools/call', 'params': {'name': 'm365_create_todo_task', 'arguments': {'listId': 'offline-list', 'title': '年次 😀 "quoted"\\tail'}}},
         ]
-        wire = ('\n'.join(json.dumps(r, ensure_ascii=False) for r in requests) + '\n').encode('utf-8')
         started = time.monotonic()
-        out, err = run(['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-                        '-File', str(PKG / 'bin/nelisp-m365-mcp.ps1')], env, timeout, wire)
+        launcher = ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+                    '-File', str(PKG / 'bin/nelisp-m365-mcp.ps1')]
+        out, err = interactive(launcher, env, requests, opts.cold_load_sleep_sec + 15)
         assert b'\r' not in out, ('CRLF translation on MCP stdout', out[-600:], err[-600:])
         replies = [json.loads(line) for line in out.decode('utf-8').splitlines()]
         assert [r['id'] for r in replies] == [1, 2, 3, 4], (out, err)
@@ -122,6 +175,31 @@ def main():
         assert 'client_id=environment-value' in bodies[0], bodies
         assert json.loads(bodies[2])['title'] == '年次 😀 "quoted"\\tail', bodies
         assert json.loads(token.read_text())['access_token'] == 'offline-access'
+        # .NET Framework used to inject its stdin StreamWriter's BOM whenever
+        # the inherited Console.InputEncoding included a UTF-8 preamble.
+        bom_command = ("[Console]::InputEncoding=New-Object Text.UTF8Encoding($true); & '"
+                       + str(PKG / 'bin/nelisp-m365-mcp.ps1').replace("'", "''") + "'")
+        bom_launcher = launcher[:5] + ['-Command', bom_command]
+        framing_requests = [requests[0], {'jsonrpc': '2.0', 'id': 5, 'method': 'ping'}]
+
+        def check_framing(raw, expected):
+            assert b'\r' not in raw and not raw.startswith(b'\xef\xbb\xbf'), raw
+            frames = [json.loads(line.decode('utf-8')) for line in raw.splitlines()]
+            assert [r.get('id') for r in frames] == [r['id'] for r in expected], frames
+            assert all('result' in r and 'error' not in r for r in frames), frames
+
+        raw, _ = interactive(bom_launcher, env, framing_requests, opts.cold_load_sleep_sec + 15)
+        check_framing(raw, framing_requests)
+        for argv in (launcher, bom_launcher):
+            for first_ping in (False, True):
+                expected = list(reversed(framing_requests)) if first_ping else framing_requests
+                input_path = tmp / 'no-bom-requests.jsonl'
+                input_path.write_bytes(('\n'.join(json.dumps(r) for r in expected) + '\n').encode('utf-8'))
+                assert not input_path.read_bytes().startswith(b'\xef\xbb\xbf')
+                with input_path.open('rb') as source:
+                    raw, _ = run(argv, env, timeout, stdin_file=source)
+                check_framing(raw, expected)
+        print('First-line framing: 4 file cases + UTF-8-preamble interactive case: PASS', flush=True)
         acl = " $a=[IO.File]::GetAccessControl('" + str(token).replace("'", "''") + "'); $s=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; if (!$a.AreAccessRulesProtected -or @($a.Access).Count -ne 1 -or $a.Access[0].IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -ne $s) {throw 'Bad token ACL'}; 'ACL current-user-only: PASS'"
         acl_out, _ = run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', acl], env, timeout)
         print(acl_out.decode().strip(), flush=True)
