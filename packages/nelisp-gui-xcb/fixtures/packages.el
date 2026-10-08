@@ -3,18 +3,58 @@
 (defvar nelisp-gui-packages-sequence 0)
 (defvar nelisp-gui-packages-load-steps nil)
 (defvar nelisp-gui-packages-trace-id 0)
+(defvar nelisp-gui-packages-image-ready nil)
+(defvar nelisp-gui-packages-profile-functions nil)
+(defvar nelisp-gui-packages-loading-image nil)
+(defvar nelisp-gui-packages-common-ready nil)
+(defun nelisp-gui-packages-capture-library-provider (name)
+  "Copy a shared provider's definition, excluding runtime function objects."
+  (let* ((function (symbol-function name))
+         (macro (and (consp function) (eq (car function) 'macro)))
+         (definition (if macro (cdr function) function))
+         (closure (eq (car definition) 'closure)))
+    (unless (memq (car definition) '(lambda closure))
+      (error "Library provider has no source definition: %S" name))
+    (when (and closure (not (member (cadr definition) '(nil (t)))))
+      (error "Library provider captures lexical state: %S" name))
+    (list name nil (get name 'compiler-macro)
+          (cons (if macro 'defmacro 'defun)
+                (cons name (copy-tree (if closure (cddr definition) (cdr definition))))))))
+(defvar nelisp-gui-packages-library-providers
+  (when (fboundp 'nelisp--write-stdout-bytes)
+    (mapcar #'nelisp-gui-packages-capture-library-provider '(cl-typep cl-symbol-macrolet)))
+  "Exact shared source forms and their current restored definitions.")
+(defun nelisp-gui-packages-restore-library-providers ()
+  "Re-evaluate the exact shared type and symbol-place definitions.
+GNU cl-typep passes unsupported &cl-defs arguments to deftype expanders;
+GNU cl-symbol-macrolet requires the host macroexpand-all environment.
+Source forms avoid retaining function objects across GNU redefinitions."
+  (dolist (entry nelisp-gui-packages-library-providers)
+    (eval (nth 3 entry) t)
+    (setcar (cdr entry) (symbol-function (car entry)))
+    (put (car entry) 'compiler-macro (nth 2 entry))))
+
+(defun nelisp-gui-packages-load-note (text)
+  "Keep image source-load progress off the strict completion-marker stream."
+  (if nelisp-gui-packages-loading-image
+      (let ((file (getenv "NELISP_GUI_PACKAGE_LOAD_LOG")))
+        (when file (write-region text nil file t 'silent)))
+    (princ text)))
 
 (defun nelisp-gui-packages-load-step (name function)
   "Time a genuine source dependency or package, retaining failed-step timing."
   (let ((start (float-time)))
-    (princ (format "GUI-PACKAGE-STEP-BEGIN|name=%s|\n" name))
+    (nelisp-gui-packages-load-note
+     (format "GUI-PACKAGE-STEP-BEGIN|name=%s|\n" name))
     (unwind-protect
-        (funcall function)
+        ;; Match GNU loadup: nested source evaluation is a live load.
+        (let ((load-in-progress t)) (funcall function))
       (let ((elapsed (- (float-time) start)))
         (push `((name . ,name) (seconds . ,elapsed))
               nelisp-gui-packages-load-steps)
-        (princ (format "GUI-PACKAGE-STEP-END|name=%s|seconds=%.6f|\n"
-                       name elapsed))))))
+        (nelisp-gui-packages-load-note
+         (format "GUI-PACKAGE-STEP-END|name=%s|seconds=%.6f|\n"
+                 name elapsed))))))
 
 (defun nelisp-gui-packages-observe ()
   "Write observations with buffer identity captured before temporary output."
@@ -50,7 +90,7 @@
         (condition-case failure
             (apply original args)
           (error
-           (princ (format "K3-CALL-ERROR|name=%S|condition=%S|\n" name (car failure)))
+           (princ (format "GUI-PACKAGE-CALL-ERROR|name=%S|condition=%S|\n" name (car failure)))
            (signal (car failure) (cdr failure))))
       (princ (format "GUI-PACKAGE-CALL-END|id=%d|name=%S|seconds=%.6f|\n"
                      id name (- (float-time) start))))))
@@ -72,27 +112,22 @@
                              (minibuffer . t) (text . ,text)))))
     (princ (format "GUI-PACKAGE-MINIBUFFER|text=%S|\n" text)))))
 
-(defun nelisp-gui-packages-fixture ()
-  "Load genuine packages into the ordinary image, then await real keys."
-  (let* ((root (getenv "NELISP_GUI_PACKAGES_ROOT"))
-         (package (getenv "NELISP_GUI_PACKAGE"))
-         (paths (with-temp-buffer
-                  (insert-file-contents (concat root "/load-path.json"))
-                  (let ((json-array-type 'list)) (json-read))))
-         (start (float-time))
-         (elapsed nil)
-         (failure nil))
-    (setq load-path (append paths load-path)
-          nelisp-gui-packages-state-file (getenv "NELISP_GUI_PACKAGE_STATE")
-          default-directory (concat root (if (equal package "magit") "/repo/" "/tree/")))
-    (setq temporary-file-directory (concat root "/tmp/"))
-    ;; Opt-in profiling transport executes genuine Git and preserves its
-    ;; argv/stdio/status; normal fixtures keep their ordinary executable.
-    (when (getenv "NELISP_GUI_PACKAGE_GIT_BIN")
-      (setq exec-path (cons (getenv "NELISP_GUI_PACKAGE_GIT_BIN") exec-path)))
-    (princ (format "GUI-PACKAGE-LOAD-BEGIN|package=%s|time=%.6f|\n" package start))
-    (condition-case err
-        (progn
+(defun nelisp-gui-packages-configure (root)
+  "Configure live paths without reloading dumped package definitions."
+  (let ((paths (with-temp-buffer
+                 (insert-file-contents (concat root "/load-path.json"))
+                 (let ((json-array-type 'list)) (json-read)))))
+    ;; Remove the image's private vendor paths before adding this session's.
+    (setq load-path (append paths
+                           (cl-remove-if
+                            (lambda (path) (string-match-p "/gui-packages-image/fixture/vendor/" path))
+                            load-path))))
+  (setq temporary-file-directory (concat root "/tmp/")))
+
+(defun nelisp-gui-packages-load (root package)
+  "Load genuine sources headlessly, keeping package commands unchanged."
+  (nelisp-gui-packages-configure root)
+  (unless (and nelisp-gui-packages-loading-image nelisp-gui-packages-common-ready)
           (nelisp-gui-packages-load-step
            "gnu-preloaded" (lambda () (load (concat root "/vendor/gnu-preloaded.el") nil t t)))
           ;; These are preloaded by GNU Emacs, but the daily-driver image has
@@ -109,6 +144,7 @@
            "gnu-epa-hook" (lambda () (load (concat root "/vendor/gnu/epa-hook.el") nil t t)))
           (nelisp-gui-packages-load-step
            "gnu-map-ynp" (lambda () (load (concat root "/vendor/gnu/emacs-lisp/map-ynp.el") nil t t)))
+    (setq nelisp-gui-packages-common-ready t))
           (cond
          ((equal package "dired")
           (nelisp-gui-packages-load-step
@@ -143,8 +179,69 @@
           ;; Load the genuine GNU macro provider, retaining the already loaded
           ;; package's structure definitions and every real package command.
           (nelisp-gui-packages-load-step
-           "gnu-cl-macs" (lambda () (load (concat root "/vendor/gnu/emacs-lisp/cl-macs.el") nil t t))))
-         (t (error "Unknown real package: %s" package))))
+           "gnu-cl-macs" (lambda () (load (concat root "/vendor/gnu/emacs-lisp/cl-macs.el") nil t t)))
+          ;; Org loads its default modules lazily on the first real org-mode.
+          ;; They belong in the package heap too; do not run a mode or open
+          ;; the session's agenda file while building the headless image.
+          (when nelisp-gui-packages-loading-image
+            (nelisp-gui-packages-load-step "org-modules" #'org-load-modules-maybe)
+            ;; First-file initialization and sexp agenda scanning otherwise
+            ;; require these genuine GNU dependencies in the GUI.  Keep
+            ;; their source interpretation in the headless package preload.
+            (dolist (feature '(font-lock jit-lock diary-lib))
+              (nelisp-gui-packages-load-step
+               (concat "org-dependency-" (symbol-name feature))
+               (apply-partially #'require feature)))
+            ;; The default citation activation processor is otherwise first
+            ;; required by org-set-font-lock-defaults in a live org-mode.
+            (when org-cite-activate-processor
+              (nelisp-gui-packages-load-step
+               "org-cite-processor"
+               (lambda () (org-cite-try-load-processor org-cite-activate-processor))))))
+         (t (error "Unknown real package: %s" package)))
+  (unless nelisp-gui-packages-loading-image
+    (nelisp-gui-packages-restore-library-providers))
+  t)
+
+(defun nelisp-gui-packages-preload ()
+  "Preload all S5.2 packages without modes, fixture buffers or transport."
+  (let ((nelisp-gui-packages-loading-image t)
+        (root (getenv "NELISP_GUI_PACKAGES_ROOT")))
+    (dolist (package '("dired" "magit" "org-agenda"))
+      (nelisp-gui-packages-load root package)))
+  ;; Finish GNU source loading before replacing compatibility providers.
+  (nelisp-gui-packages-restore-library-providers)
+  (setq nelisp-gui-packages-load-steps nil
+        nelisp-gui-packages-image-ready t)
+  (nelisp-gui-skk-evil-assert-headless))
+
+(defun nelisp-gui-packages-assert-image ()
+  "Require the dumped packages without repairing missing image state."
+  (unless (and nelisp-gui-packages-image-ready
+               (featurep 'dired) (featurep 'magit) (featurep 'org-agenda))
+    (error "S5.2 packages missing from image"))
+  (nelisp-gui-skk-evil-assert-headless))
+
+(defun nelisp-gui-packages-fixture ()
+  "Configure dumped genuine packages, then await real keys."
+  (let* ((root (getenv "NELISP_GUI_PACKAGES_ROOT"))
+         (package (getenv "NELISP_GUI_PACKAGE"))
+         (start (float-time))
+         (elapsed nil)
+         (failure nil))
+    (setq nelisp-gui-packages-state-file (getenv "NELISP_GUI_PACKAGE_STATE")
+          default-directory (concat root (if (equal package "magit") "/repo/" "/tree/")))
+    (nelisp-gui-packages-configure root)
+    ;; Opt-in profiling transport executes genuine Git and preserves its
+    ;; argv/stdio/status; normal fixtures keep their ordinary executable.
+    (when (getenv "NELISP_GUI_PACKAGE_GIT_BIN")
+      (setq exec-path (cons (getenv "NELISP_GUI_PACKAGE_GIT_BIN") exec-path)))
+    (princ (format "GUI-PACKAGE-LOAD-BEGIN|package=%s|time=%.6f|\n" package start))
+    (condition-case err
+        (progn
+          (if nelisp-gui-packages-image-ready
+              (nelisp-gui-packages-assert-image)
+            (nelisp-gui-packages-load root package)))
       (error (setq failure err)))
     (setq elapsed (- (float-time) start))
     (with-temp-file (concat nelisp-gui-packages-state-file ".load.json")
@@ -173,13 +270,18 @@
           ;; must not start a TCP Emacsclient server in this local fixture.
           with-editor-emacsclient-executable nil)
     (when (getenv "NELISP_GUI_PACKAGE_TRACE")
-      (dolist (function (append
+      (dolist (function (delete-dups (append
                          (and (equal package "magit")
-                              (append magit-status-sections-hook magit-status-headers-hook
+                              (append nelisp-gui-packages-profile-functions
+                                      magit-status-sections-hook magit-status-headers-hook
                                       '(magit-status magit-status-setup-buffer magit-setup-buffer-internal
                                         magit-refresh-buffer magit-status-refresh-buffer magit-mode
                                         magit-status-mode magit-git-insert magit-git-string
                                         magit-insert-section--create magit-insert-section--finish
+                                        magit-process-file magit-git-wash magit-start-process
+                                        magit-process-sentinel magit-refresh
+                                        accept-process-output emacs-process-dispatch-pending
+                                        emacs-process--native-maybe-fire-sentinel
                                         process-file emacs-process--standalone-run
                                         nelisp-gui-packages-observe json-encode
                                         nelisp-gui-frontend--dispatch nelisp-gui-frontend--paint
@@ -194,7 +296,7 @@
                           file-attribute-size delete-file insert-directory-clean
                           dired-insert-set-properties
                           dired-build-subdir-alist dired-get-buffer-create
-                          dired-sort-other dired-readin-insert)))
+                          dired-sort-other dired-readin-insert))))
         (when (fboundp function)
           (advice-add function :around
                       (apply-partially #'nelisp-gui-packages-trace function)))))
@@ -222,4 +324,43 @@
         (error "Package profiling snapshot failed"))
       (princ "GUI-PACKAGE-SNAPSHOT-READY|\n"))
     (princ "GUI-PACKAGE-FIXTURE-READY|\n")))
+(defvar nelisp-gui-packages-fingerprint-symbols nil)
+
+(defun nelisp-gui-packages-fingerprint (file)
+  "Write deterministic features, keymaps, hooks and package Custom values.
+Render complete values with circular references enabled.  Include
+all named keymaps/hooks, including shared maps modified by package loading."
+  (let ((symbols nil) (state nil) (print-circle t) (print-length nil) (print-level nil)
+        (trace (getenv "NELISP_GUI_FINGERPRINT_TRACE")))
+    ;; The fixed reader cannot enumerate its global obarray.  The probe
+    ;; inventory comes from GNU package loading plus the exact bundle sources.
+    (unless nelisp-gui-packages-fingerprint-symbols (error "Missing fingerprint inventory"))
+    (dolist (symbol nelisp-gui-packages-fingerprint-symbols)
+       (when (boundp symbol)
+         (let ((name (symbol-name symbol)))
+           (when (or (keymapp (symbol-value symbol))
+                     (string-suffix-p "-hook" name)
+                     (string-suffix-p "-functions" name)
+                     (get symbol 'custom-type))
+             (push symbol symbols)))))
+    (dolist (symbol '(minor-mode-map-alist minor-mode-overriding-map-alist
+                      emulation-mode-map-alists overriding-local-map
+                      overriding-terminal-local-map input-method-alist load-path))
+      (when (and (boundp symbol) (not (memq symbol symbols))) (push symbol symbols)))
+    (when trace (princ (format "GUI-FINGERPRINT|scanned=%d|\n" (length symbols))))
+    (setq symbols (sort symbols (lambda (a b) (string< (symbol-name a) (symbol-name b)))))
+    (when trace (princ "GUI-FINGERPRINT|sorted|\n"))
+    (dolist (symbol symbols)
+      (push (list symbol (default-value symbol)) state))
+    (setq state (cons (cons 'features (sort (copy-sequence features)
+                                          (lambda (a b) (string< (symbol-name a) (symbol-name b)))))
+                      (nreverse state)))
+    ;; The fixed reader's strings already hold UTF-8 bytes.  Write the
+    ;; complete graph directly rather than editing a temporary buffer.
+    (let ((text (concat (prin1-to-string state) "\n")))
+      (if (fboundp 'nl-write-file)
+          (nl-write-file file (string-as-unibyte text))
+        (write-region text nil file nil 'silent)))
+    (princ (format "GUI-PACKAGE-FINGERPRINT|variables=%d|\n" (length symbols)))))
+
 (provide 'nelisp-gui-packages-fixture)

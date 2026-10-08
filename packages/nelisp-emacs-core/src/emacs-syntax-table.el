@@ -261,8 +261,12 @@ syntax table."
   "Buffer-local variable key holding a buffer's syntax char-table.")
 
 (defun emacs-syntax-table--buffer ()
-  "Return the current nelisp-ec buffer, or nil."
-  (and (boundp 'nelisp-ec--current-buffer) nelisp-ec--current-buffer))
+  "Return the coherent current buffer owner, or nil.
+Standalone may retain native buffers while library buffer state supplies
+its local-variable sidecar.  Do not turn their syntax tables into globals."
+  (if (and (fboundp 'nelisp--repr) (fboundp 'current-buffer))
+      (current-buffer)
+    (and (boundp 'nelisp-ec--current-buffer) nelisp-ec--current-buffer)))
 
 (defun emacs-syntax-table-current ()
   "Return the active syntax char-table.
@@ -283,7 +287,12 @@ uses the native bridge.  Falls back to a global setting without a buffer."
   (setq table (emacs-char-table--storage table))
   (let ((buf (emacs-syntax-table--buffer)))
     (if (and buf (fboundp 'emacs-buffer-set-buffer-local-value))
-        (emacs-buffer-set-buffer-local-value emacs-syntax-table--local-key buf table)
+        (progn
+          (emacs-buffer-set-buffer-local-value emacs-syntax-table--local-key buf table)
+          ;; Keep the native current buffer's live binding coherent with the
+          ;; explicit sidecar write, including repeated writes before a switch.
+          (when (fboundp 'nelisp--repr)
+            (set (make-local-variable emacs-syntax-table--local-key) table)))
       (setq emacs-syntax-table--current table)))
   table)
 

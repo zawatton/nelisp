@@ -1,0 +1,21 @@
+#+TITLE: Shared runtime support for real GUI packages
+
+* Char-table identity
+
+emacs-char-table-same-p is a foundation query for logical table identity.
+A bootstrap syntax record and its canonical sparse view identify the same
+table; host tables retain ordinary =eq= identity.  Derived modes use this
+query when a child deliberately shares its parent's syntax table, as GNU
+Outline does with Text mode.  The query does not expose table storage.
+It is a public candidate API, not an addition to the stable facade contract.
+The char-table and derived-mode ERTs cover both native-view aliases and
+separate tables, and reject cyclic parent assignment.
+
+* Process streams
+
+On the Linux runtime, =make-process :stderr BUFFER= uses a separate pipe
+for stderr, including when stdout uses a PTY.  The shared process wait
+polls that pipe independently of stdout and drains it before the terminal
+sentinel.  EOF and explicit deletion close the descriptor.  The native
+probes cover NUL bytes, PTY line endings, stderr-only wakeup, and one
+terminal sentinel; these semantics belong to process support, not GUI glue.

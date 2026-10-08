@@ -28,6 +28,25 @@ The buffer is the prefixed substrate's `nelisp-ec-generate-new-buffer'
        (when (fboundp 'nelisp-ec-kill-buffer)
          (nelisp-ec-kill-buffer b)))))
 
+(ert-deftest emacs-syntax-table-test/native-buffer-table-isolation ()
+  ;; Exercise the native-owner branch using host buffers, leaving the
+  ;; prefixed compatibility-buffer tests independent of that representation.
+  (cl-letf (((symbol-function 'nelisp--repr) #'ignore))
+    (let ((emacs-syntax-table--current nil)
+          (nelisp-ec--current-buffer nil)
+          (first (emacs-syntax-table-make))
+          (second (emacs-syntax-table-make)))
+      (with-temp-buffer
+        (emacs-syntax-table-set-current first)
+        (should (eq first (emacs-syntax-table-current)))
+        (with-temp-buffer
+          (should (eq (emacs-syntax-table-standard) (emacs-syntax-table-current)))
+          (emacs-syntax-table-set-current second)
+          (should (eq second (emacs-syntax-table-current))))
+        (should (eq first (emacs-syntax-table-current)))
+        (emacs-syntax-table-set-current second)
+        (should (eq second (emacs-syntax-table-current)))))))
+
 ;;;; --- syntax-class lookup ---------------------------------------------------
 
 (ert-deftest emacs-syntax-table-test/standard-classes ()

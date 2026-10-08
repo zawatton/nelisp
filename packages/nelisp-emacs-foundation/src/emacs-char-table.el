@@ -220,6 +220,13 @@ slot count, which remains fixed for the lifetime of the table."
            (> (length object) 6)
            (eq (emacs-char-table--raw-ref object 0) emacs-char-table--tag))))
 
+(defun emacs-char-table-same-p (first second)
+  "Compare FIRST and SECOND by their logical char-table identity.
+A retained bootstrap syntax record and its canonical sparse view name the
+same table.  Host char-tables and other designators retain ordinary `eq'
+identity.  This query does not modify either table."
+  (eq (emacs-char-table--storage first) (emacs-char-table--storage second)))
+
 (defun emacs-char-table-ascii-vector (ct)
   "Return CT's raw 256-slot ASCII vector (characters 0..255)."
   (emacs-char-table--raw-ref ct emacs-char-table--i-ascii))
@@ -461,10 +468,18 @@ rather than materialised."
   (when parent
     (unless (emacs-char-table-p parent)
       (signal 'wrong-type-argument (list 'char-table-p parent)))
-    (let ((ancestor parent))
+    ;; Bootstrap records and their sparse views have one logical identity.
+    ;; Compare that identity, and reject a previously corrupted parent chain
+    ;; rather than looping while attaching a new child.
+    (let ((target (emacs-char-table--storage ct))
+          (ancestor parent) (seen nil))
       (while (and ancestor (emacs-char-table-p ancestor))
-        (when (eq ancestor ct)
+        (setq ancestor (emacs-char-table--storage ancestor))
+        (when (eq ancestor target)
           (error "Attempt to make a chartable be its own parent"))
+        (when (memq ancestor seen)
+          (error "Cyclic char-table parent chain"))
+        (push ancestor seen)
         (setq ancestor (emacs-char-table--raw-ref
                         ancestor emacs-char-table--i-parent)))))
   (emacs-char-table--raw-set ct emacs-char-table--i-parent parent)

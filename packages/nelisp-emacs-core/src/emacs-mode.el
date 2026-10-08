@@ -334,8 +334,16 @@ the isolation that pinned this down to backquote specifically, not
                                       (list 'not
                                             (list 'eq 'emacs-mode--dd-parent-syntax
                                                   (list 'standard-syntax-table))))
-                                (list 'set-char-table-parent syntax-var
-                                      (list 'syntax-table)))))))
+                                ;; An existing mode table can deliberately be
+                                ;; its parent's table (GNU outline-mode does
+                                ;; this).  Reuse it without making it its own
+                                ;; parent on first activation.
+                                (list 'unless
+                                      (list 'if (list 'fboundp ''emacs-char-table-same-p)
+                                            (list 'emacs-char-table-same-p syntax-var (list 'syntax-table))
+                                            (list 'eq syntax-var (list 'syntax-table)))
+                                      (list 'set-char-table-parent syntax-var
+                                            (list 'syntax-table))))))))
            (abbrev-parent-fixup-form
             (when declare-abbrev
               (list 'when (list 'and (list 'fboundp (list 'quote 'abbrev-table-get))

@@ -132,6 +132,55 @@ def prepare_preloads(gnu, output, env):
                 sha256=hashlib.sha256(output.read_bytes()).hexdigest())
 
 
+def prepare_reader_sources(vendor, env):
+    """Normalize isearch reader syntax, proving all GNU forms are unchanged.
+
+    The native source loader spends minutes rewriting this file's escaped
+    reader syntax.  GNU read/print preserves its forms without compilation.
+    Keep the license header and both byte hashes for review and stale checks.
+    """
+    path = vendor/'gnu/isearch.el'
+    before = hashlib.sha256(path.read_bytes()).hexdigest()
+    form = '''(let ((file %s) forms header)
+      (with-temp-buffer
+        (insert-file-contents file)
+        (emacs-lisp-mode)
+        (unless (save-excursion (goto-char (point-min))
+                  (looking-at ".*lexical-binding: t"))
+          (error "Unexpected isearch lexical-binding declaration"))
+        (goto-char (point-min)) (forward-line 1)
+        (let ((start (point)))
+          (forward-comment (buffer-size))
+          (setq header (buffer-substring-no-properties start (point))))
+        (goto-char (point-min))
+        (forward-comment (buffer-size))
+        (while (not (eobp))
+          (push (read (current-buffer)) forms)
+          (forward-comment (buffer-size))))
+      (setq forms (nreverse forms))
+      (let ((print-length nil) (print-level nil) (print-circle t))
+        (with-temp-file file
+          (insert ";;; GNU reader-normalized fixture. -*- lexical-binding: t; -*-\\n")
+          (insert header)
+          (dolist (entry forms) (prin1 entry (current-buffer)) (insert "\\n"))))
+      (let (after)
+        (with-temp-buffer
+          (insert-file-contents file) (emacs-lisp-mode) (goto-char (point-min))
+          (forward-comment (buffer-size))
+          (while (not (eobp))
+            (push (read (current-buffer)) after)
+            (forward-comment (buffer-size))))
+        (unless (equal forms (nreverse after))
+          (error "GNU reader normalization changed source forms")))
+      (princ (length forms)))''' % json.dumps(str(path))
+    result = subprocess.run([env.get('EMACS', 'emacs'), '-Q', '--batch', '--eval', form],
+                            env=env, check=True, capture_output=True, text=True, timeout=60)
+    record = dict(file=str(path), forms=int(result.stdout), forms_equal=True,
+                  original_sha256=before, normalized_sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+    (vendor.parent/'reader-normalizations.json').write_text(json.dumps([record], indent=2)+'\n')
+    return [record]
+
+
 def prepare_shorthands(vendor, env):
     """Expand only declared GNU reader shorthands; retain both byte hashes."""
     candidates = [p for p in sorted(vendor.rglob('*.el'))
@@ -157,7 +206,41 @@ def prepare_shorthands(vendor, env):
                 adapter_sha256=hashlib.sha256((ROOT/'scripts/gui-daily-expand-shorthands.el').read_bytes()).hexdigest())
 
 
+def prepare_magit_version(checkout, vendor, hashes, env):
+    """Retain Magit's own installation metadata without building its sources."""
+    if list((vendor/'magit').rglob('magit-version.el')) or not (checkout/'.git').exists():
+        return None
+    recipe = checkout/'lisp/Makefile'
+    defaults = checkout/'default.mk'
+    template = recipe.read_text().split('define VERSIONLIB_TMPL\n', 1)[1].split('\nendef', 1)[0]
+    # This is the VERSION expression in Magit's default.mk, including cut -c2-.
+    git_env = dict(env, GIT_OPTIONAL_LOCKS='0')
+    describe = subprocess.check_output(
+        ['git', '-C', str(checkout), 'describe', '--tags', '--abbrev=0', '--always'],
+        env=git_env, text=True).strip()
+    version = describe[1:]
+    destination = vendor/'magit/lisp/magit-version.el'
+    destination.write_text(template.replace('$(PKG)', 'magit').replace('$(VERSION)', version)+'\n')
+    for source in (recipe, defaults):
+        hashes[str(source)] = hashlib.sha256(source.read_bytes()).hexdigest()
+    # Track both symbolic HEAD and the loose/packed references resolving it.
+    # Git is read-only here; only the requested disposable fixture receives writes.
+    for name in ('HEAD', 'packed-refs', 'refs/heads', 'refs/tags'):
+        raw = subprocess.check_output(
+            ['git', '-C', str(checkout), 'rev-parse', '--git-path', name],
+            env=git_env, text=True).strip()
+        path = Path(raw)
+        if not path.is_absolute(): path = checkout/path
+        for source in ([path] if path.is_file() else sorted(path.rglob('*'))):
+            if source.is_file(): hashes[str(source)] = hashlib.sha256(source.read_bytes()).hexdigest()
+    return dict(version=version, describe=describe, recipe=str(recipe),
+                generated=str(destination), sha256=hashlib.sha256(destination.read_bytes()).hexdigest())
+
+
 def prepare(out, env):
+    env = dict(env, NEMACS_DISABLE_COLD_CACHE='1')
+    if env.get('NELISP_BIN'):
+        env.setdefault('NELISP_HOME', str(Path(env['NELISP_BIN']).resolve().parent.parent))
     # Read-only package investigations can reuse the already prepared sources
     # and repository without invoking Git or creating repository metadata.
     reused = env.get('NELISP_GUI_PACKAGES_REUSE_FIXTURE')
@@ -233,6 +316,7 @@ def prepare(out, env):
             hashes[str(source)] = hashlib.sha256(source.read_bytes()).hexdigest()
             dirs.add(dest.parent)
         paths += sorted(dirs, key=lambda p: (p.name != 'lisp', str(p)))
+    magit_version = prepare_magit_version(external/'magit', vendor, hashes, env)
     gnu_paths = json.loads(subprocess.check_output(
         [os.environ.get('EMACS','emacs'), '-Q', '--batch', '--eval',
          '(progn (require (quote json)) (princ (json-encode load-path)))'], env=env, text=True))
@@ -254,6 +338,7 @@ def prepare(out, env):
     env['NELISP_GUI_PACKAGE_DATE'] = today
     (root/'agenda.org').write_text(f'#+TITLE: GUI agenda fixture\n* TODO S52 scheduled inspection\nSCHEDULED: <{today}>\n* TODO S52 scheduled report\nSCHEDULED: <{today}>\n')
     preloads = prepare_preloads(target, vendor/'gnu-preloaded.el', env)
+    reader_sources = prepare_reader_sources(vendor, env)
     shorthands = prepare_shorthands(vendor, env)
     hashes['extracted-GNU-definitions:'+str(vendor/'gnu-preloaded.el')] = preloads['sha256']
     (root/'sources.json').write_text(json.dumps(hashes, indent=2)+'\n')
@@ -277,7 +362,9 @@ def prepare(out, env):
     (root/'git-before.txt').write_bytes(git('status','--porcelain'))
     return root, env, dict(sources=str(root/'sources.json'), source_count=len(hashes),
                            missing_sources=missing, preloads=preloads, reader_shorthands=shorthands,
-                           date=today, git_before=git('status','--porcelain').decode())
+                           reader_normalizations=reader_sources,
+                           date=today, magit_version=magit_version,
+                           git_before=git('status','--porcelain').decode())
 
 
 def state(path):
@@ -331,12 +418,89 @@ def screenshot(path, api):
     return dict(geometry=[width,height],ink=ink,sha256=api['sha'](path))
 
 
+def run_parallel(args, api, out, env, report, selected):
+    "Run independent real-package scenarios on private X servers within 540 s."
+    import concurrent.futures
+    import signal
+    import sys
+    started = time.monotonic()
+    children = []
+    def one(package):
+        destination = out/package
+        destination.mkdir(parents=True, exist_ok=True)
+        argv = ['xvfb-run', '-a', '-e', str(destination/'xvfb.log'), '-s',
+                '-screen 0 1600x1000x24 -dpi 96 -nolisten tcp -noreset -extension GLX',
+                sys.executable, str(ROOT/'scripts/gui-daily-gate.py'), 'S5.2', '--init=-Q',
+                '--fixture=packages', '--one-display', '--packages='+package,
+                '--launcher='+str(args.launcher.resolve()), '--out', str(destination),
+                '--package-load-budget='+str(args.package_load_budget),
+                '--package-step-budget='+str(args.package_step_budget)]
+        with (destination/'gate.out').open('wb') as stdout, (destination/'gate.err').open('wb') as stderr:
+            child = subprocess.Popen(argv, cwd=ROOT, env=env, stdin=subprocess.DEVNULL,
+                                     stdout=stdout, stderr=stderr, start_new_session=True)
+            children.append(child)
+            api['CHILDREN'].append(child)
+            try:
+                rc = child.wait(timeout=max(1, 540-(time.monotonic()-started)))
+            except subprocess.TimeoutExpired:
+                # Let the inner gate's signal handler clean up GUI sessions,
+                # which deliberately have their own process groups.
+                try:
+                    os.killpg(child.pid, signal.SIGTERM)
+                    child.wait(timeout=10)
+                except (ProcessLookupError, subprocess.TimeoutExpired):
+                    api['terminate'](child)
+                return dict(status='FAIL', error='inner S5.2 exceeded 540 s', command=argv,
+                            progress=state(destination/'packages-progress.json'))
+        result = state(destination/'result.json')
+        if not result:
+            return dict(status='FAIL', error='inner gate produced no result', rc=rc, command=argv)
+        if rc or result.get('status')!='PASS':
+            result['status']='FAIL'
+        result.update(command=argv, rc=rc)
+        return result
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=len(selected))
+    try:
+        cases = dict(zip(selected, pool.map(one, selected)))
+    finally:
+        for child in children:
+            if child.poll() is None: api['terminate'](child)
+        pool.shutdown(wait=True, cancel_futures=True)
+    report['package_cases'] = cases
+    report['packages'] = {package: case.get('packages', {}).get(package,
+                           dict(status='FAIL', error=case.get('error', 'inner gate failed')))
+                           for package, case in cases.items()}
+    report['checks'] += [package+': '+check for package, case in cases.items()
+                        for check in case.get('packages', {}).get(package, {}).get('checks', [])]
+    report['checks'].append('private-Xvfb/disposable-state-per-package/540s-inner-budget')
+    report['seconds'] = time.monotonic()-started
+    report['status'] = 'PASS' if all(case.get('status')=='PASS' for case in cases.values()) else 'FAIL'
+    if report['status']=='FAIL':
+        report['error'] = '; '.join(package+': '+case.get('error', 'inner gate failed')
+                                    for package, case in cases.items() if case.get('status')!='PASS')
+    identities = {case.get('image_sha256') for case in cases.values()}
+    if report['status']=='PASS' and (len(identities)!=1 or None in identities):
+        raise AssertionError('package cases did not use the same image')
+    first = next(iter(cases.values()))
+    for key in ('image', 'image_sha256', 'bundle_sha256'):
+        if key in first: report[key] = first[key]
+
+
 def run(args, api, out, env, report, sessions):
     selected = args.packages.split(',')
     assert selected and len(selected)==len(set(selected)) and set(selected)<=set(PACKAGES), 'invalid package selection'
     assert args.fixture=='packages' and args.package_load_budget > 0 and args.package_step_budget > 0
+    if len(selected)>1 and not args.one_display:
+        return run_parallel(args, api, out, env, report, selected)
     started = time.monotonic()
     root, env, report['fixture_sources'] = prepare(out, env)
+    env['NELISP_GUI_IMAGE'] = 'packages'
+    package_bundle = ROOT/'build/nemacs-gui-packages-bootstrap.el'
+    package_image = api['command'](['bash', str(ROOT/'tools/c-core-image.sh'), 'path'],
+                                    dict(env, C_CORE_IMAGE_BUNDLE=str(package_bundle))).decode().strip()
+    report.update(image=package_image, image_sha256=api['sha'](package_image),
+                  bundle_sha256=api['sha'](package_bundle),
+                  package_image='build/nemacs-gui-packages-bootstrap.el')
     report['packages'] = {}
     report['package_load_budget_seconds'] = args.package_load_budget
     for package in selected:
@@ -514,3 +678,159 @@ def run(args, api, out, env, report, sessions):
     report['checks'] += [p+': '+c for p,r in report['packages'].items() for c in r['checks']]
     if report['status']=='FAIL':
         report['error']='; '.join(p+': '+r.get('error','failed') for p,r in report['packages'].items() if r['status']!='PASS')
+
+
+def profile_magit(out, timeout=540, engine='nelisp', archived_image=None, setup=None):
+    """Profile genuine Magit from the package heap in a disposable repository.
+
+    Git timings are child wall time. Lisp advice timings are inclusive and
+    overlap: only the top-level elapsed minus Git child time estimates
+    interpretation/setup cost. Retain unmatched calls on timeout, rather than
+    calling a slow interpreter a process hang without supporting evidence.
+    """
+    import resource
+    import signal
+    out = out.resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    root, env, metadata = prepare(out, dict(os.environ))
+    for name in ('magit.state.json', 'magit.state.json.profile.json'):
+        (out/name).unlink(missing_ok=True)
+    functions = sorted({name for path in (root/'vendor/magit').rglob('*.el')
+                        for name in re.findall(r'\(defun\s+(magit-insert-[^\s()]+)', path.read_text())})
+    (out/'profile-functions.el').write_text("(setq nelisp-gui-packages-profile-functions '("+
+                                            ' '.join(functions)+"))\n")
+    wrapper_dir = out/'git-bin'
+    wrapper_dir.mkdir(exist_ok=True)
+    real_git = shutil.which('git')
+    wrapper = wrapper_dir/'git'
+    git_log = out/'git.jsonl'
+    git_log.unlink(missing_ok=True)
+    wrapper.write_text('#!/usr/bin/env python3\n'
+                       'import json, os, subprocess, sys, time\n'
+                       'start=time.monotonic()\n'
+                       'with open('+repr(str(git_log))+', "a") as f:\n'
+                       ' f.write(json.dumps(dict(event="begin", pid=os.getpid(), argv=sys.argv[1:], start=start))+"\\n")\n'
+                       'rc=subprocess.call(['+repr(real_git)+', *sys.argv[1:]])\n'
+                       'with open('+repr(str(git_log))+', "a") as f:\n'
+                       ' f.write(json.dumps(dict(event="end", pid=os.getpid(), rc=rc, seconds=time.monotonic()-start))+"\\n")\n'
+                       'sys.exit(rc)\n')
+    wrapper.chmod(0o755)
+    env.update(NELISP_GUI_PACKAGES_ROOT=str(root), NELISP_GUI_PACKAGE='magit',
+               NELISP_GUI_PACKAGE_STATE=str(out/'magit.state.json'),
+               NELISP_GUI_PACKAGE_GIT_BIN=str(wrapper_dir), NELISP_GUI_PACKAGE_TRACE='1',
+               NELISP_GUI_PACKAGE_PROFILE_FUNCTIONS=str(out/'profile-functions.el'))
+    for name in ('DISPLAY', 'WAYLAND_DISPLAY', 'NELISP_GUI_FIXTURE'):
+        env.pop(name, None)
+    image = None
+    if archived_image:
+        if engine != 'nelisp':
+            raise ValueError('an archived heap requires the nelisp engine')
+        image = str(archived_image.resolve())
+        if not Path(image).is_file() or not Path(image).stat().st_size:
+            raise RuntimeError('archived image is unavailable: '+image)
+    elif engine == 'nelisp':
+        bundle = ROOT/'build/nemacs-gui-packages-bootstrap.el'
+        base_inputs = json.loads((ROOT/'build/gui-daily-inputs.json').read_text())
+        for name, expected in {**base_inputs['sources'], 'build/nemacs-gui-bootstrap.el': base_inputs['bundle']}.items():
+            if hashlib.sha256((ROOT/name).read_bytes()).hexdigest() != expected:
+                raise RuntimeError('stale GUI image: '+name)
+        inputs = json.loads((ROOT/'build/gui-packages-inputs.json').read_text())
+        for name, expected in {**inputs['sources'], str(bundle): inputs['bundle']}.items():
+            if not Path(name).is_file() or hashlib.sha256(Path(name).read_bytes()).hexdigest() != expected:
+                raise RuntimeError('stale package image: '+name)
+        for directory, expected in inputs['membership'].items():
+            if sorted(str(p) for p in Path(directory).rglob('*.el*') if not p.name.startswith('.')) != expected:
+                raise RuntimeError('stale package membership: '+directory)
+        image = subprocess.check_output(['bash', str(ROOT/'tools/c-core-image.sh'), 'path'],
+                                        env=dict(env, C_CORE_IMAGE_BUNDLE=str(bundle)), text=True).strip()
+    resource.setrlimit(resource.RLIMIT_STACK, (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
+    started = time.monotonic()
+    timed_out = False
+    with (out/'profile.out').open('wb') as stdout, (out/'profile.err').open('wb') as stderr:
+        argv = ([env['NELISP_BIN'], '--cold-load-from', image] if engine == 'nelisp' else
+                [env.get('EMACS', 'emacs'), '-Q', '--batch'])
+        if engine == 'nelisp':
+            argv += [argument for directory in json.loads((root/'load-path.json').read_text())
+                     for argument in ('-L', directory)]
+        if setup:
+            argv += ['--load', str(setup.resolve())]
+        argv += ['--load', str(ROOT/'scripts/gui-daily-magit-profile.el')]
+        proc = subprocess.Popen(argv, cwd=ROOT, env=env,
+                                stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, start_new_session=True)
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait()
+    elapsed = time.monotonic()-started
+    log = (out/'profile.out').read_text(errors='replace')
+    calls = {}
+    sections = {}
+    for line in log.splitlines():
+        begin = re.search(r'GUI-PACKAGE-CALL-BEGIN\|id=(\d+)\|name=([^|]+)\|time=([\d.]+)', line)
+        end = re.search(r'GUI-PACKAGE-CALL-END\|id=(\d+)\|name=([^|]+)\|seconds=([\d.]+)', line)
+        if begin:
+            calls[begin[1]] = dict(name=begin[2], start=float(begin[3]), diagnostic=line)
+        if end:
+            calls.pop(end[1], None)
+            row = sections.setdefault(end[2], dict(calls=0, seconds=0, maximum=0))
+            row['calls'] += 1
+            row['seconds'] += float(end[3])
+            row['maximum'] = max(row['maximum'], float(end[3]))
+    git_events = [json.loads(line) for line in git_log.read_text().splitlines()] if git_log.exists() else []
+    pending = {}
+    repeated = {}
+    git_seconds = 0
+    git_count = 0
+    for event in git_events:
+        if event['event']=='begin':
+            pending[event['pid']] = event
+            git_argv = json.dumps(event['argv'])
+            repeated[git_argv] = repeated.get(git_argv, 0)+1
+        else:
+            pending.pop(event['pid'], None)
+            git_count += 1
+            git_seconds += event['seconds']
+    completed = state(out/'magit.state.json.profile.json')
+    for call in calls.values():
+        call['seconds_lower_bound'] = max(0, time.time()-call['start'])
+    validation_error = None
+    try:
+        validate(state(out/'magit.state.json'), 'magit-status-mode',
+                 ['Unstaged changes', 'Staged changes', 'Recent commits', 'Fixture commit'])
+    except AssertionError as error:
+        validation_error = str(error)
+    marker_count = log.count('GUI-MAGIT-PROFILE|')
+    pending_seconds = sum(max(0, started+elapsed-event['start']) for event in pending.values())
+    result = dict(status='PASS' if not timed_out and proc.returncode==0 and completed.get('error')=='nil'
+                  and not validation_error and marker_count==1 else 'FAIL',
+                  validation_error=validation_error, completion_markers=marker_count,
+                  seconds=elapsed, timeout=timed_out, rc=proc.returncode, completion=completed,
+                  git_calls=git_count, git_seconds=git_seconds, pending_git=list(pending.values()),
+                  repeated_git=sorted(repeated.items(), key=lambda x: -x[1]),
+                  maximum_repeated_git_calls=max(repeated.values(), default=0),
+                  inclusive_calls=sections, unmatched_calls=list(calls.values()),
+                  pending_git_seconds=pending_seconds,
+                  non_git_wall_seconds=max(0, elapsed-git_seconds-pending_seconds),
+                  interpretation_note='Residual includes interpreter, Lisp IO, spawn overhead, tracing, GC and scheduling; inclusive call timings overlap.',
+                  command=argv, setup=str(setup.resolve()) if setup else None,
+                  setup_sha256=hashlib.sha256(setup.read_bytes()).hexdigest() if setup else None,
+                  image=image, engine=engine, inputs_verified=engine=='nelisp' and not archived_image, image_sha256=hashlib.sha256(Path(image).read_bytes()).hexdigest() if image else None,
+                  binary_sha256=hashlib.sha256(Path(shutil.which(argv[0])).read_bytes()).hexdigest(), fixture=metadata)
+    (out/'result.json').write_text(json.dumps(result, indent=2)+'\n')
+    print(json.dumps({k: result[k] for k in ('status','seconds','timeout','git_calls','git_seconds','pending_git')}))
+    return result
+
+
+if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--profile-magit', action='store_true', required=True)
+    parser.add_argument('--engine', choices=['gnu','nelisp'], default='nelisp')
+    parser.add_argument('--setup', type=Path, help='load and hash a diagnostic provider overlay before profiling')
+    parser.add_argument('--archived-image', type=Path, help='diagnose an explicitly named older heap; record that inputs are unverified')
+    parser.add_argument('--timeout', type=float, default=540)
+    parser.add_argument('--out', type=Path, default=ROOT/'build/gui-magit-profile')
+    args = parser.parse_args()
+    raise SystemExit(0 if profile_magit(args.out, args.timeout, args.engine, args.archived_image, args.setup)['status']=='PASS' else 1)

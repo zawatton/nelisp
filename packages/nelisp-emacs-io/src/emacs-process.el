@@ -307,7 +307,7 @@ or nil); all other event operations require an event-owned process object."
                             (nelisp-process-exit-status process) 0)))
                (if (and (= status 2) (>= code 128)) (- code 128) code))))))
 
-(defun emacs-process--native-start (name buffer command filter sentinel &optional pty)
+(defun emacs-process--native-start (name buffer command filter sentinel &optional pty stderr)
   "Start native NeLisp COMMAND and attach Emacs metadata."
   (let* ((command (and command
                        (cons (or (executable-find (car command)) (car command))
@@ -319,11 +319,13 @@ or nil); all other event operations require an event-owned process object."
                      'nelisp-process-start)
                     (t nil)))
          (process (and launcher command
-                       (cond (pty (emacs-process-posix-spawn-pty command))
+                       (cond (pty (emacs-process-posix-spawn-pty command stderr))
                              ((and (eq system-type 'gnu/linux)
+                                   (fboundp 'syscall-direct)
                                    (fboundp 'emacs-process-posix-spawn-pipe))
-                              (emacs-process-posix-spawn-pipe command))
+                              (emacs-process-posix-spawn-pipe command stderr))
                              (t (apply launcher command)))))
+         (stderr-fd (and process (emacs-process--native-metadata process :stderr-fd)))
          (pty-master (and process (emacs-process--native-metadata process :pty-master)))
          (tty-name (and process (emacs-process--native-metadata process :tty-name))))
     (when process
@@ -336,6 +338,8 @@ or nil); all other event operations require an event-owned process object."
              :sentinel sentinel
              :pty-master pty-master
              :tty-name tty-name
+             :stderr-fd stderr-fd
+             :stderr-buffer (emacs-process--fallback-buffer stderr)
              :sentinel-fired nil
              :deleted nil)))
     process))
@@ -362,6 +366,39 @@ or nil); all other event operations require an event-owned process object."
                   (with-current-buffer buffer
                     (goto-char (point-max))
                     (insert chunk)))))))))
+    observed))
+
+(defun emacs-process--native-drain-stderr (process)
+  "Drain a separate nonblocking stderr pipe before the terminal sentinel.
+The descriptor is independent of stdout readiness.  Close it at EOF or
+explicit deletion, retaining NUL bytes and the requested buffer boundary."
+  (let ((fd (emacs-process--native-metadata process :stderr-fd))
+        (buffer (emacs-process--native-metadata process :stderr-buffer))
+        (observed nil))
+    (when (integerp fd)
+      (let* ((owner (nl-ffi-memory-allocate 4096))
+             (pointer (nl-ffi-memory-address owner)) (count 1))
+        (unwind-protect
+            (while (> count 0)
+              (setq count (syscall-direct 0 fd pointer 4096 0 0 0))
+              (cond
+               ((> count 0)
+                (setq observed t)
+                (let ((chunk (ptr-read-bytes pointer count)))
+                  (when (fboundp 'emacs-process-coding-get)
+                    (setq chunk (emacs-process-coding-convert
+                                 chunk (car (emacs-process-coding-get process)) nil)))
+                  (when (and buffer (buffer-live-p buffer))
+                    (with-current-buffer buffer
+                      (let ((inhibit-read-only t))
+                        (goto-char (point-max)) (insert chunk))))))
+               ((= count -4) (setq count 1)) ; EINTR
+               ((= count -11))              ; EAGAIN: try at the next pump
+               (t
+                (syscall-direct 3 fd 0 0 0 0 0)
+                (emacs-process--native-set-metadata process :stderr-fd nil)
+                (when (< count 0) (error "Cannot read process stderr: %s" count)))))
+          (nl-ffi-memory-release owner))))
     observed))
 
 (defun emacs-process--native-invoke-sentinel (process event)
@@ -412,7 +449,9 @@ or nil); all other event operations require an event-owned process object."
                           ((and (eq state 'exit) (= code 0)) "finished\n")
                           (t (format "exited abnormally with code %s\n" code)))))
         (when (memq state '(exit signal))
-          (emacs-process--native-set-metadata process :sentinel-fired t))
+          (emacs-process--native-set-metadata process :sentinel-fired t)
+          (emacs-process--native-drain-output process)
+          (emacs-process--native-drain-stderr process))
         (setq observed t)
         (emacs-process--native-invoke-sentinel process event)))
     observed))
@@ -454,12 +493,18 @@ or nil); all other event operations require an event-owned process object."
                                   'run))))
             (when (emacs-process--native-drain-output process)
               (setq observed t)))
+          (when (emacs-process--native-drain-stderr process)
+            (setq observed t))
           (when (emacs-process--native-maybe-fire-sentinel process)
             (setq observed t)))))
     observed))
 
 (defun emacs-process--native-delete (process)
   "Delete native PROCESS and mark metadata deleted."
+  (let ((fd (emacs-process--native-metadata process :stderr-fd)))
+    (when (integerp fd)
+      (syscall-direct 3 fd 0 0 0 0 0)
+      (emacs-process--native-set-metadata process :stderr-fd nil)))
   (let ((status (emacs-process--native-status-code process)))
     (emacs-process--native-set-metadata process :delete-status status)
     (emacs-process--native-set-metadata process :delete-exit-code (aref process 4)))
@@ -1107,7 +1152,8 @@ matches the `files.el' convention of dispatching `start-file-process' on
               (let ((type (plist-get plist :connection-type)))
                 (if (eq type 'pipe) nil
                   (or (eq type 'pty)
-                      (and (boundp 'process-connection-type) process-connection-type)))))))
+                      (and (boundp 'process-connection-type) process-connection-type))))
+              (plist-get plist :stderr))))
                (when (and process (plist-member plist :coding))
                  (let ((coding (plist-get plist :coding)))
                    (emacs-process-coding-set
@@ -1289,10 +1335,14 @@ Linux x86-64 poll(2) storage is freed even when interrupted or unwound."
       (dolist (target (if (and process just-this-one) (list process)
                        (emacs-process--native-live-processes)))
         (when (and (emacs-process--native-process-p target)
-                   (memq (emacs-process--native-status-symbol target) '(run stop))
-                   (not (eq (emacs-process--native-metadata target :filter) t))
-                   (integerp (aref target 2)) (>= (aref target 2) 0))
-          (push (aref target 2) fds)))
+                   (memq (emacs-process--native-status-symbol target) '(run stop)))
+          (when (and (not (eq (emacs-process--native-metadata target :filter) t))
+                     (integerp (aref target 2)) (>= (aref target 2) 0))
+            (push (aref target 2) fds))
+          ;; Stderr can become ready without stdout.  It must wake the same
+          ;; shared wait even when the caller deliberately discards stdout.
+          (let ((fd (emacs-process--native-metadata target :stderr-fd)))
+            (when (and (integerp fd) (>= fd 0)) (push fd fds)))))
       (when (and just-this-one (vectorp process) (> (length process) 2)
                  (eq (aref process 0) :emacs-process-events)
                  (integerp (aref process 2)) (>= (aref process 2) 0))
@@ -1321,7 +1371,7 @@ Linux x86-64 poll(2) storage is freed even when interrupted or unwound."
 
 (defun emacs-process-accept-process-output (&optional process seconds millisec just-this-one)
   "Wait with timer/input/process dispatch; host Emacs keeps its native wait."
-  (when (and process (not (processp process)))
+  (when (and process (not (emacs-process-processp process)))
     (signal 'wrong-type-argument (list 'processp process)))
   (unless (or (null seconds) (numberp seconds))
     (signal 'wrong-type-argument (list 'numberp seconds)))

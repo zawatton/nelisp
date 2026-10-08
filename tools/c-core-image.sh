@@ -26,16 +26,22 @@ bundle = Path(os.environ['C_CORE_IMAGE_BUNDLE']).resolve() if os.environ.get('C_
 cache = root / ('build/c-core-image-' + bundle.stem if os.environ.get('C_CORE_IMAGE_BUNDLE') else 'build/c-core-image')
 child = None
 temporary = None
+metadata_prefix = b';;; C-CORE-IMAGE-PARENT '
+metadata_lines = [line[len(metadata_prefix):] for line in bundle.read_bytes().splitlines()
+                  if line.startswith(metadata_prefix)]
+if len(metadata_lines) > 1:
+    raise RuntimeError('multiple parent image declarations')
+parent_metadata = json.loads(metadata_lines[0]) if metadata_lines else None
 
 
 def fail(message):
     raise RuntimeError(message)
 
 
-def identity():
+def identity(input_bundle=None):
     hashes = []
     # Snapshot preparation is part of the cache contract, including GC.
-    for path in (binary, Path(str(binary) + '.cold'), bundle,
+    for path in (binary, Path(str(binary) + '.cold'), input_bundle or bundle,
                  root / 'tools/c-core-image.sh'):
         digest = hashlib.sha256()
         with path.open('rb') as stream:
@@ -82,13 +88,20 @@ def run(argv, seconds, label, marker):
     env.setdefault('NELISP_HOME', str(binary.parent.parent))
     env.update(XDG_CACHE_HOME=str(cache), NEMACS_COLD_CACHE_ROOT=str(cache),
                NEMACS_DISABLE_COLD_CACHE='1')
+    # Native nested loads need the startup path as well as the bundle's Lisp
+    # load-path.  Otherwise they can select the runtime checkout's older
+    # library providers instead of this private checkout's source tree.
+    library_root = root / 'build/doc211-bootstrap-root/src'
+    # The runtime recognizes --cold-load-from only as its first argument.
+    startup = (['-L', str(library_root)]
+               if library_root.is_dir() and '--cold-load-from' not in argv else [])
     resource.setrlimit(resource.RLIMIT_STACK, (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
     started = time.monotonic()
     with (cache / (label + '.out')).open('wb') as out, (cache / (label + '.err')).open('wb') as err:
         blocked = signal.pthread_sigmask(signal.SIG_BLOCK,
                                         {signal.SIGINT, signal.SIGTERM, signal.SIGHUP})
         try:
-            child = subprocess.Popen([str(binary), *argv], cwd=root, env=env,
+            child = subprocess.Popen([str(binary), *startup, *argv], cwd=root, env=env,
                                      stdout=out, stderr=err, stdin=subprocess.DEVNULL,
                                      start_new_session=True,
                                      preexec_fn=lambda: signal.pthread_sigmask(
@@ -139,14 +152,27 @@ try:
                     os.close(fd)
                     temporary = Path(name)
                     marker = 'C-CORE-IMAGE-BUILT|' + key
-                    form = ('(progn (load ' + json.dumps(str(bundle)) + ' nil t) '
+                    argv_prefix = []
+                    preload = '(load ' + json.dumps(str(bundle)) + ' nil t) '
+                    if parent_metadata:
+                        parent_bundle = Path(parent_metadata['bundle'])
+                        if hashlib.sha256(parent_bundle.read_bytes()).hexdigest() != parent_metadata['bundle_sha256']:
+                            fail('parent bundle changed; regenerate this variant')
+                        parent = root / ('build/c-core-image-' + parent_bundle.stem) / (identity(parent_bundle) + '.flat')
+                        if parent.is_symlink() or not parent.is_file() or not parent.stat().st_size:
+                            fail('current parent image missing; build it first')
+                        argv_prefix = ['--cold-load-from', str(parent)]
+                        for directory in parent_metadata['load_paths']:
+                            argv_prefix += ['-L', directory]
+                        preload = parent_metadata['preload'] + ' '
+                    form = ('(progn ' + preload +
                             '(if (fboundp \'nemacs-main--prepare-image-heap) '
                             '(nemacs-main--prepare-image-heap) (garbage-collect)) '
                             '(setq c-core-image--identity ' + json.dumps(key) + ') '
                             '(unless (> (nelisp--arena-dump-image-stream ' + json.dumps(name) + ') 0) '
                             '(error "C-core heap dump failed")) '
                             '(princ ' + json.dumps(marker + '\n') + ') t)')
-                    elapsed = run(['--eval', form], seconds, 'build', marker)
+                    elapsed = run([*argv_prefix, '--eval', form], seconds, 'build', marker)
                     if not temporary.stat().st_size:
                         fail('build produced an empty image')
                     if identity() != key:

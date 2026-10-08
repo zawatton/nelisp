@@ -17,7 +17,16 @@ import subprocess
 def prepare(out):
     root = Path(__file__).resolve().parents[1]
     source_root = Path(os.environ.get('NEMACS_EXTERNAL_PACKAGES', str(Path(pwd.getpwuid(os.getuid()).pw_dir) / '.emacs.d/external-packages')))
-    dest = out/'vendor'; dest.mkdir(parents=True,exist_ok=True)
+    # Optional relocation keeps private bytecode outside a source-only tree.
+    bytecode_root = os.environ.get('NELISP_GUI_BYTECODE_ROOT')
+    # A lane's private lib/ copy remains source-only, including build/.
+    if not bytecode_root and root.name == 'lib':
+        bytecode_root = str(root.parent/'gui-bytecode-fixtures')
+    dest = (Path(bytecode_root)/hashlib.sha256(str(out.resolve()).encode()).hexdigest()[:16]/'vendor'
+            if bytecode_root else out/'vendor')
+    if bytecode_root:
+        shutil.rmtree(dest, ignore_errors=True)
+    dest.mkdir(parents=True,exist_ok=True)
     hashes = {}
     compile_home = out/'compile-home'; compile_home.mkdir(parents=True,exist_ok=True)
     compile_env = dict(os.environ, HOME=str(compile_home), GSETTINGS_BACKEND='memory')
