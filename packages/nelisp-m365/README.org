@@ -25,8 +25,8 @@ them.
   =M365_ENABLE_WRITE= is set
 - Transports: stdio, and Streamable HTTP with OAuth 2.1 through
   =bin/nelisp-m365-http= (see /Remote transport/)
-- Verified platform: Linux build of the standalone runtime.  The Windows
-  PE build is *not usable* today (see /Runtime substrate/)
+- Platforms: Linux bash launcher and native Windows PowerShell launcher.
+  Windows is verified offline with the PE runtime (see /Native Windows/).
 - The original 43 tools were verified against a live personal Microsoft account.
   The new metadata tool and guarded publication were verified on 2026-10-02.
 
@@ -273,6 +273,100 @@ code in a browser, and call =m365_authenticate_finish=.
 Point an MCP server entry at =bin/nelisp-m365-mcp=; it speaks plain
 stdio JSON-RPC with no client-specific behaviour.
 
+** Native Windows
+
+No WSL or bash is needed. Use Windows PowerShell 5.1, a Windows NeLisp
+standalone executable, and the system =curl.exe=. From the repository root:
+
+#+begin_src powershell
+claude mcp add --scope user --transport stdio m365-personal-nelisp -- powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PWD\packages\nelisp-m365\bin\nelisp-m365-mcp.ps1"
+#+end_src
+
+The default runtime is =../nelisp/target/nelisp.exe= relative to this
+repository. Set =NELISP= in config or the MCP command's environment to
+select another build. The launcher never invokes a shell for curl: the
+runtime passes individual arguments to the Windows subprocess API.
+
+Create =%APPDATA%\nelisp-m365\config= as UTF-8 plain text. It is a simple
+=KEY=value= file, not a PowerShell script. Blank lines and lines starting
+with =#= are ignored. Values are literal, trimmed, and unquoted; spaces,
+backslashes and additional equals signs are allowed. Environment values
+override config values; =M365_CONFIG_FILE= selects a different config.
+Unknown keys and malformed lines fail startup. Example:
+
+#+begin_src conf
+M365_CLIENT_ID=your-public-client-application-id
+# Optional; enables write tools and their delegated scopes:
+M365_ENABLE_WRITE=1
+# Optional runtime override; use your own absolute path:
+# NELISP=C:\path with spaces\nelisp.exe
+#+end_src
+
+The supported keys are =NELISP=, =M365_CLIENT_ID=, =M365_TENANT=,
+=M365_TOKEN_CACHE=, =M365_SCOPES=, =M365_DOWNLOAD_DIR=,
+=M365_ENABLE_WRITE=, =M365_LOG_FILE= and =M365_CURL=. Tenant defaults to
+=consumers=. Only =M365_ENABLE_WRITE=1= enables writes. Read scopes match
+the Linux launcher; enabling writes adds its write scopes unless an
+explicit =M365_SCOPES= overrides them. Reauthenticate after changing scopes.
+Paths may be absolute or relative to the launcher's working directory.
+
+Defaults under =%LOCALAPPDATA%\nelisp-m365\= are =token.json=,
+=downloads\= and =mcp.log=. An empty =M365_LOG_FILE== disables diagnostics.
+=M365_CURL= defaults to =%SystemRoot%\System32\curl.exe= and can select an
+offline test executable. Do not put tokens in the config file.
+
+The launcher gives an existing token cache an NTFS ACL for only the
+current Windows user's SID before starting NeLisp. Token and pending-grant
+writes replace inherited and explicit permissions using .NET
+=FileSecurity= (the equivalent of a current-user-only =icacls= ACL),
+before writing secrets; an ACL failure prevents the write. Unix still
+uses mode 0600. Use NTFS or another filesystem supporting Windows ACLs.
+The cache remains plaintext; this does not use DPAPI or a keychain.
+
+The generated UTF-8 bootstrap and subprocess request/output files live
+in a unique directory under =%TEMP%= whose ACL is restricted before
+creation. Windows paths are escaped as Lisp literals. The launcher
+copies stdin/stdout/stderr as bytes, preserving UTF-8 and LF framing,
+closes NeLisp stdin at EOF, and removes the bootstrap directory on normal
+exit or a handled failure. NeLisp's raw stdout writer emits MCP frames;
+=kill-emacs= prevents the final =--load= return value from polluting stdout.
+Forced termination of PowerShell itself can prevent its cleanup handler.
+
+*** Migrating a WSL token cache
+
+Stop the old WSL MCP server first. Copy its existing token JSON from
+the configured WSL token-cache path to the Windows =M365_TOKEN_CACHE=
+path, without printing its contents. Keep the same client id, tenant and
+scopes: the cache JSON format is unchanged. Start the native launcher,
+which restricts the copied file's ACL before loading it, then call
+=m365_status=. If refresh fails or scopes changed, use
+=m365_authenticate= followed by =m365_authenticate_finish=. Remove the
+old copy when migration succeeds. No migration reads a token automatically
+from WSL; the launcher uses only its configured Windows path.
+
+*** Offline Windows gates
+
+Run from the repository root, passing the desired Windows runtime:
+
+#+begin_src powershell
+python packages/nelisp-m365/test/run-windows-tests.py --runtime $env:NELISP --cold-load-sleep-sec 45
+#+end_src
+
+Python 3 and Windows PowerShell compile =test/fake-curl.cs= into a private
+temporary executable. That fixture has no networking code and rejects
+unknown requests. Tests isolate APPDATA, LOCALAPPDATA, config, token,
+downloads, log and temp paths; they never load the user's config/cache.
+The suite runs all existing package tests plus Windows regressions via
+the repository's ERT shim on NeLisp, verifies curl exit 23, and drives
+initialize, tools/list, profile and To Do creation through the real
+Windows launcher. It checks environment precedence, spaces/apostrophes
+in paths, Japanese/emoji/quoted request text, current-user-only token ACLs,
+exact UTF-8/LF stdout, and cleanup. No mail or note is sent anywhere.
+
+=--gate unit= or =--gate native= selects one gate for a focused rerun;
+the default =all= always runs both. Process timeouts include the cold-load
+allowance; timeout cleanup kills only the process tree started by the test.
+
 ** Remote transport
 
 =bin/nelisp-m365-http= serves the same 30 tools over the Streamable HTTP
@@ -400,8 +494,11 @@ Three consequences worth restating:
   =ptr-read-u64= take SIGSEGV and kill the process outright, even with
   valid arguments.  Nothing here calls those.
 
-The Windows PE build cannot run this package: every filesystem predicate
-returns nil and there is no clock.  Run it under WSL, or on Linux.
+The table above records the historical builds, not current capability.
+The tested Windows runtime supports file attributes and the clock.
+The native launcher supplies a Windows temporary directory, avoiding the
+runtime's POSIX =/tmp= default, and pins the platform and curl path rather
+than probing Linux paths. See /Native Windows/ for setup and offline gates.
 
 * Allocation
 
@@ -483,10 +580,9 @@ paging only mean anything against a live endpoint.
   Use =m365_list_mail= or =m365_list_onedrive= to answer "is it there?".
 - Paging stops at =nelisp-m365-graph-max-pages=; results say so through
   the =truncated= flag rather than implying completeness.
-- =--load= prints its return value, so a stray =nil= reaches stdout
-  after the client closes stdin.  The runtime has no working
-  =kill-emacs= or =exit= to suppress it; it lands after the session is
-  over and no client sees it.
+- The Linux launcher still uses =--load= directly, so a stray =nil= reaches
+  stdout after the client closes stdin on the historical Linux build.
+  Native Windows explicitly exits before the runtime prints that result.
 - Thread retrieval sorts on the client: Exchange answers
   =InefficientFilter= when =$orderby= is combined with a
   =conversationId= filter.

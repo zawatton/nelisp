@@ -102,8 +102,11 @@ follows.")
 
 (defun nelisp-m365-mcp--write (object)
   "Encode OBJECT as JSON and write it to stdout as one framed message."
-  (princ (nelisp-m365-compat-json-encode object))
-  (princ "\n"))
+  (let ((frame (concat (nelisp-m365-compat-json-encode object) "\n")))
+    (if (fboundp 'nelisp--write-stdout-bytes)
+        (nelisp--write-stdout-bytes frame)
+      (let ((coding-system-for-write 'utf-8-unix))
+        (princ frame)))))
 
 (defun nelisp-m365-mcp--result (id result)
   "Return a JSON-RPC success envelope for ID carrying RESULT."

@@ -110,7 +110,9 @@ ARGV is empty."
       ;; A missing program yields exit 1 on the standalone runtime but
       ;; signals under a regular Emacs; normalise both to a non-zero
       ;; exit so callers can probe candidates uniformly.
-      (let ((code (condition-case nil
+      (let* ((coding-system-for-read 'utf-8-unix)
+            (coding-system-for-write 'utf-8-unix)
+            (code (condition-case nil
                       (apply #'call-process
                              (car argv) nil
                              (if stderr-file (list t stderr-file) t)
@@ -139,17 +141,41 @@ treated the same.  Every caller here stores non-empty content."
                 (error nil))))
     (and text (not (equal text "")) text)))
 
+(defun nelisp-m365-compat--powershell-string (text)
+  "Quote TEXT as a literal PowerShell string."
+  (concat "'" (string-join (nelisp-m365-compat-split-all text "'") "''") "'"))
+
+(defun nelisp-m365-compat--protect-file (path)
+  "Replace PATH's Windows ACL with access for only the current user.
+Fail closed: a token must never be written when protection fails."
+  (let ((res (nelisp-m365-compat-run-program
+              (list "powershell.exe" "-NoProfile" "-NonInteractive" "-Command"
+                    (concat
+                     "$ErrorActionPreference='Stop';"
+                     "$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User;"
+                     "$acl=New-Object Security.AccessControl.FileSecurity;"
+                     "$acl.SetOwner($sid);$acl.SetAccessRuleProtection($true,$false);"
+                     "$acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid,'FullControl','Allow')));"
+                     "[IO.File]::SetAccessControl("
+                     (nelisp-m365-compat--powershell-string path) ",$acl)")))))
+    (unless (and res (equal (car res) 0))
+      (error "Cannot restrict token cache ACL"))))
+
 (defun nelisp-m365-compat-write-file (path text &optional private)
   "Write TEXT to PATH, creating parent directories as needed.
-With PRIVATE non-nil, restrict the file to the owner.  The chmod is
-best-effort: `set-file-modes' signals errno -38 on the Windows build,
-where NTFS inheritance governs access instead."
+With PRIVATE non-nil, restrict the file to the current user before
+writing secrets, using a Windows ACL or Unix mode 0600."
   (let ((dir (file-name-directory path)))
     (when (and dir (not (nelisp-m365-compat-directory-p dir)))
-      (condition-case nil (make-directory dir t) (error nil))))
-  (write-region text nil path)
+      (make-directory dir t)))
   (when private
-    (condition-case nil (set-file-modes path 384) (error nil)))
+    (unless (nelisp-m365-compat-exists-p path)
+      (write-region "" nil path))
+    (if (nelisp-m365-compat-windows-p)
+        (nelisp-m365-compat--protect-file path)
+      (set-file-modes path 384)))
+  (let ((coding-system-for-write 'utf-8-unix))
+    (write-region text nil path))
   path)
 
 ;;; Clock -------------------------------------------------------------
@@ -159,9 +185,8 @@ where NTFS inheritance governs access instead."
 Fallback for builds where `float-time' returns nil."
   (let ((out (nelisp-m365-compat-run-program-to-string
               (if (nelisp-m365-compat-windows-p)
-                  (list "cmd.exe" "/c"
-                        (concat "powershell -NoProfile -Command "
-                                "\"[int][double]::Parse((Get-Date -UFormat %s))\""))
+                  (list "powershell.exe" "-NoProfile" "-NonInteractive"
+                        "-Command" "[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()")
                 (list "/bin/sh" "-c" "date +%s")))))
     (and out
          (let ((n (string-to-number (string-trim out))))
@@ -221,9 +246,8 @@ calendar conversion is done here."
 the OS."
   (if (nelisp-m365-compat-windows-p)
       (nelisp-m365-compat-run-program
-       (list "cmd.exe" "/c"
-             (format (concat "powershell -NoProfile -Command "
-                             "\"Start-Sleep -Milliseconds %d\"")
+       (list "powershell.exe" "-NoProfile" "-NonInteractive" "-Command"
+             (format "Start-Sleep -Milliseconds %d"
                      (truncate (* 1000 seconds)))))
     (nelisp-m365-compat-run-program
      (list "/bin/sleep" (format "%s" seconds))))
@@ -237,10 +261,9 @@ UTF-8, so reading a binary file into one corrupts any byte above 127.
 The base64 that comes back is ASCII and therefore safe to carry."
   (let ((res (nelisp-m365-compat-run-program
               (if (nelisp-m365-compat-windows-p)
-                  (list "cmd.exe" "/c"
-                        (concat "powershell -NoProfile -Command "
-                                "\"[Convert]::ToBase64String("
-                                "[IO.File]::ReadAllBytes('" path "'))\""))
+                  (list "powershell.exe" "-NoProfile" "-NonInteractive" "-Command"
+                        (concat "[Convert]::ToBase64String([IO.File]::ReadAllBytes("
+                                (nelisp-m365-compat--powershell-string path) "))"))
                 (list "/bin/sh" "-c"
                       (concat "base64 -w0 -- '" path "'"))))))
     (and res (equal (car res) 0)

@@ -29,6 +29,53 @@
 
 ;;; Substrate shims -----------------------------------------------------
 
+(ert-deftest nelisp-m365-test-curl-lf-headers-preserve-body ()
+  (should (equal (nelisp-m365-curl--split-response
+                  "HTTP/1.1 200 OK\nX-Test: value\n\na\r\nb")
+                 '(200 (("x-test" . "value")) "a\r\nb"))))
+
+(ert-deftest nelisp-m365-test-curl-body-file-cleanup ()
+  (let ((file nil))
+    (cl-letf (((symbol-function 'nelisp-m365-compat-curl-program) (lambda () "fake"))
+              ((symbol-function 'nelisp-m365-compat-write-file)
+               (lambda (path text private)
+                 (should private)
+                 (should (equal text "a=quoted&b=tail"))
+                 (write-region text nil path)))
+              ((symbol-function 'nelisp-m365-compat-run-program)
+               (lambda (argv &optional _stderr)
+                 (setq file (substring (cadr (member "--data-binary" argv)) 1))
+                 (should (equal (nelisp-m365-compat-read-file file) "a=quoted&b=tail"))
+                 '(0 . "HTTP/1.1 200 OK\r\n\r\n{}"))))
+      (should (= (plist-get (nelisp-m365-curl-request
+                            "POST" "https://offline.invalid" :body "a=quoted&b=tail") :status) 200)))
+    (should-not (nelisp-m365-compat-read-file file))))
+
+(ert-deftest nelisp-m365-test-curl-failure-cleans-body ()
+  (let ((file nil))
+    (cl-letf (((symbol-function 'nelisp-m365-compat-curl-program) (lambda () "fake"))
+              ((symbol-function 'nelisp-m365-compat-write-file)
+               (lambda (path text _private) (write-region text nil path)))
+              ((symbol-function 'nelisp-m365-compat-run-program)
+               (lambda (argv &optional _stderr)
+                 (setq file (substring (cadr (member "--data-binary" argv)) 1))
+                 '(23 . ""))))
+      (should-error (nelisp-m365-curl-request "POST" "https://offline.invalid" :body "body")
+                    :type 'nelisp-m365-http-error))
+    (should-not (nelisp-m365-compat-read-file file))))
+
+(ert-deftest nelisp-m365-test-private-write-fails-closed ()
+  (let ((file (make-temp-file "m365-private-")))
+    (unwind-protect
+        (progn
+          (write-region "old" nil file)
+          (cl-letf (((symbol-function 'nelisp-m365-compat-windows-p) (lambda () t))
+                    ((symbol-function 'nelisp-m365-compat--protect-file)
+                     (lambda (_) (error "ACL failure"))))
+            (should-error (nelisp-m365-compat-write-file file "secret" t)))
+          (should (equal (nelisp-m365-compat-read-file file) "old")))
+      (delete-file file))))
+
 (ert-deftest nelisp-m365-test-iso8601-known-epochs ()
   "ISO 8601 rendering matches known instants."
   (should (equal (nelisp-m365-compat-iso8601-utc 0) "1970-01-01T00:00:00Z"))
@@ -55,7 +102,7 @@ naive conversion drifts."
   (should (equal (nelisp-m365-compat-string-to-utf8-bytes "é") '(195 169)))
   (should (equal (nelisp-m365-compat-string-to-utf8-bytes "年")
                  '(229 185 180)))
-  (should (equal (nelisp-m365-compat-string-to-utf8-bytes "\U0001F600")
+  (should (equal (nelisp-m365-compat-string-to-utf8-bytes "😀")
                  '(240 159 152 128))))
 
 (ert-deftest nelisp-m365-test-url-encode ()
@@ -95,7 +142,7 @@ Japanese cannot reach a file unescaped."
                  "a\\u5E74b"))
   (should (equal (nelisp-m365-compat-escape-non-ascii "é") "\\u00E9"))
   ;; Outside the BMP JSON has no \U, so a surrogate pair is required.
-  (should (equal (nelisp-m365-compat-escape-non-ascii "\U0001F600")
+  (should (equal (nelisp-m365-compat-escape-non-ascii "😀")
                  "\\uD83D\\uDE00"))
   ;; The escaped form must parse back to the original text.
   (let* ((value (list (cons "subject" "年次点検 ✓")))

@@ -14,15 +14,12 @@
 ;; owns TLS, which keeps a certificate stack out of the runtime.
 ;;
 ;; Responses are read back through `-D -' plus `-o -', which puts the
-;; header block and the body on the same stdout stream.  No temporary
-;; files are involved: `make-temp-file' returns a POSIX-shaped path even
-;; on the Windows build, and the Windows build cannot check whether that
-;; path is writable.
+;; header block and the body on the same stdout stream.  Both CRLF and LF
+;; headers are accepted without normalizing the response body.
 ;;
-;; Request bodies are passed inline through `--data-binary'.  Every body
-;; this package sends is percent-encoded OAuth form data, so it is pure
-;; ASCII with no spaces or quoting hazards.  A future write-capable
-;; version sending JSON bodies should switch to `--data-binary @FILE'.
+;; Request bodies use `--data-binary @FILE' to avoid command-line quoting
+;; and size limits.  The Windows launcher supplies a private native temp
+;; directory; inline bodies are removed on both success and failure.
 
 ;;; Code:
 
@@ -57,7 +54,8 @@ unreadable on the standalone runtime, so this splits on spaces."
 (defun nelisp-m365-curl--parse-header-block (block)
   "Parse a raw header BLOCK into (STATUS . HEADERS-ALIST).
 Header names are downcased.  Returns nil when BLOCK has no status line."
-  (let* ((lines (nelisp-m365-compat-split-all block "\r\n"))
+  (let* ((lines (nelisp-m365-compat-split-all
+                 (string-join (nelisp-m365-compat-split-all block "\r\n") "\n") "\n"))
          (status (and lines (nelisp-m365-curl--status-of (car lines))))
          (headers nil))
     (when status
@@ -80,7 +78,8 @@ wins."
         (done nil))
     (while (not done)
       (let ((split (and (string-prefix-p "HTTP/" rest)
-                        (nelisp-m365-compat-split-once rest "\r\n\r\n"))))
+                        (or (nelisp-m365-compat-split-once rest "\r\n\r\n")
+                            (nelisp-m365-compat-split-once rest "\n\n")))))
         (if (not split)
             (setq done t)
           (let ((parsed (nelisp-m365-curl--parse-header-block (car split))))
@@ -122,30 +121,38 @@ is returned normally so the caller can read the error payload."
     (when bearer
       (setq headers (cons (cons "Authorization" (concat "Bearer " bearer))
                           headers)))
-    (let* ((body-file (plist-get options :body-file))
+    (when (and body (plist-get options :body-file))
+      (error "Specify either :body or :body-file"))
+    (let* ((temp-body (and body (make-temp-file "nelisp-m365-request-")))
+           (body-file (or temp-body (plist-get options :body-file)))
            (upload-file (plist-get options :upload-file))
            (argv (append
                   (list curl "-sS" "-D" "-" "-o" "-"
                         "--max-time" (number-to-string timeout)
                         "-X" (upcase method))
                   (nelisp-m365-curl--header-args headers)
-                  (when body (list "--data-binary" body))
                   (when body-file (list "--data-binary" (concat "@" body-file)))
                   (when upload-file (list "--upload-file" upload-file))
                   (list url)))
-           (res (nelisp-m365-compat-run-program argv)))
-      (unless res
-        (signal 'nelisp-m365-http-error (list "curl produced no result")))
-      (unless (equal (car res) 0)
-        (signal 'nelisp-m365-http-error
-                (list (format "curl exited %s for %s" (car res) url))))
-      (let ((parts (nelisp-m365-curl--split-response (cdr res))))
-        (unless (nth 0 parts)
-          (signal 'nelisp-m365-http-error
-                  (list (format "malformed HTTP response from %s" url))))
-        (list :status (nth 0 parts)
-              :headers (nth 1 parts)
-              :body (nth 2 parts))))))
+           (res nil))
+      (unwind-protect
+          (progn
+            (when temp-body
+              (nelisp-m365-compat-write-file temp-body body t))
+            (setq res (nelisp-m365-compat-run-program argv))
+            (unless res
+              (signal 'nelisp-m365-http-error (list "curl produced no result")))
+            (unless (equal (car res) 0)
+              (signal 'nelisp-m365-http-error
+                      (list (format "curl exited %s for %s" (car res) url))))
+            (let ((parts (nelisp-m365-curl--split-response (cdr res))))
+              (unless (nth 0 parts)
+                (signal 'nelisp-m365-http-error
+                        (list (format "malformed HTTP response from %s" url))))
+              (list :status (nth 0 parts)
+                    :headers (nth 1 parts)
+                    :body (nth 2 parts))))
+        (when temp-body (delete-file temp-body))))))
 
 (defun nelisp-m365-curl-download (url dest &rest options)
   "Download URL to the file DEST, following redirects.
