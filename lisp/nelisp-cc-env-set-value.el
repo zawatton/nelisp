@@ -44,7 +44,10 @@
 ;;
 ;; ABI:
 ;;   All defun arities are even (2, 4, or 6) — rsp ≡ 0 mod 16 ✓.
-;;   Each defun has at most one extern-call per execution path.
+;;   Base frame/constant paths preserve the established extern-call order.
+;;   Mirror-miss alias routing performs an entry lookup, a candidate check,
+;;   and (only for a real alias) bounded resolution plus canonical frame and
+;;   constant checks before writing the terminal entry.
 ;;
 ;; ABI deps:
 ;;   §111.E #6  nelisp_mirror_is_constant        — constant flag check
@@ -108,6 +111,58 @@
         (and (extern-call nl_env_build_scratch val-ptr unbound-ptr scratch)
              (nelisp_env_setv_mirror mirror-ptr name-ptr scratch 0))))
 
+    ;; On a frame miss, route an existing alias to its canonical variable.
+    ;; SCRATCH-PTR=0 selects the lazy mirror writer; nonzero preserves the
+    ;; caller's already-built write scratch. Nonaliases are routed without
+    ;; allocating resolver scratch or a value scratch on the lazy path.
+    (defun nelisp_env_setv_alias_or_mirror
+        (mirror-ptr frames-ptr name-ptr val-ptr scratch-ptr unbound-ptr
+                    dynamic-only-p _pad)
+      (let ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr)))
+        (if (= entry 0)
+            (if (= scratch-ptr 0)
+                (nelisp_env_setv_mirror_lazy mirror-ptr name-ptr val-ptr unbound-ptr)
+              (nelisp_env_setv_mirror mirror-ptr name-ptr scratch-ptr 0))
+          (let ((candidate (nelisp_env_alias_slot_candidate entry 0)))
+            (if (and (= candidate 3)
+                     (if (> (record-slot-count entry) 5)
+                         (= (sexp-tag (record-slot-ref-ptr entry 5)) 0) 1))
+                (if (= scratch-ptr 0)
+                    (nelisp_env_setv_mirror_lazy
+                     mirror-ptr name-ptr val-ptr unbound-ptr)
+                  (nelisp_env_setv_mirror mirror-ptr name-ptr scratch-ptr 0))
+              (if (and (/= candidate 0) (/= candidate 3))
+                  1
+                (let ((canonical-address (alloc-bytes 8 8))
+                      (status 1))
+                  (setq status
+                        (nelisp_env_variable_canonicalize
+                         mirror-ptr frames-ptr entry name-ptr canonical-address 0))
+                  (if (= status 0)
+                      (let* ((canonical-ptr (ptr-read-u64 canonical-address 0))
+                             (cell-ptr
+                              (if (= dynamic-only-p 1)
+                                  (extern-call nelisp_frame_stack_find_kind
+                                               frames-ptr canonical-ptr 1 0)
+                                (extern-call nelisp_frame_stack_find
+                                             frames-ptr canonical-ptr))))
+                        (if (= (extern-call nelisp_mirror_is_constant
+                                            mirror-ptr canonical-ptr) 1)
+                            (setq status 1)
+                          (if (= cell-ptr 0)
+                              (if (= scratch-ptr 0)
+                                  (setq status
+                                        (nelisp_env_setv_mirror_lazy
+                                         mirror-ptr canonical-ptr val-ptr unbound-ptr))
+                                (setq status
+                                      (nelisp_env_setv_mirror
+                                       mirror-ptr canonical-ptr scratch-ptr 0)))
+                            (setq status
+                                  (nelisp_env_setv_cell_hit cell-ptr val-ptr)))))
+                    (setq status 1))
+                  (dealloc-bytes canonical-address 8 8)
+                  status)))))))
+
     ;; perf/call-overhead: `nelisp_env_set_value' minus the pre-built
     ;; scratch argument.  Same guard order and same results as
     ;; `nelisp_env_set_value' below (name check -> constant refusal ->
@@ -123,9 +178,16 @@
           1
         (if (= (extern-call nelisp_mirror_is_constant mirror-ptr name-ptr) 1)
             1
-          (let ((cell-ptr (extern-call nelisp_frame_stack_find frames-ptr name-ptr)))
+          (let* ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr))
+                 (local-p (if (= entry 0) 0
+                            (if (> (record-slot-count entry) 5)
+                                (= (sexp-tag (record-slot-ref-ptr entry 5)) 8) 0)))
+                 (cell-ptr (if (= local-p 1)
+                               (extern-call nelisp_frame_stack_find_kind frames-ptr name-ptr 0 0)
+                             (extern-call nelisp_frame_stack_find frames-ptr name-ptr))))
             (if (= cell-ptr 0)
-                (nelisp_env_setv_mirror_lazy mirror-ptr name-ptr val-ptr unbound-ptr)
+                (nelisp_env_setv_alias_or_mirror
+                 mirror-ptr frames-ptr name-ptr val-ptr 0 unbound-ptr 0 0)
               (nelisp_env_setv_cell_hit cell-ptr val-ptr))))))
 
     ;; nelisp_env_set_value
@@ -185,10 +247,17 @@
           1
         (if (= (extern-call nelisp_mirror_is_constant mirror-ptr name-ptr) 1)
             1
-          (let ((cell-ptr (extern-call nelisp_frame_stack_find frames-ptr name-ptr)))
+          (let* ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr))
+                 (local-p (if (= entry 0) 0
+                            (if (> (record-slot-count entry) 5)
+                                (= (sexp-tag (record-slot-ref-ptr entry 5)) 8) 0)))
+                 (cell-ptr (if (= local-p 1)
+                               (extern-call nelisp_frame_stack_find_kind frames-ptr name-ptr 0 0)
+                             (extern-call nelisp_frame_stack_find frames-ptr name-ptr))))
             (if (= cell-ptr 0)
                 ;; Frame miss: write to mirror.
-                (nelisp_env_setv_mirror mirror-ptr name-ptr scratch-ptr 0)
+                (nelisp_env_setv_alias_or_mirror
+                 mirror-ptr frames-ptr name-ptr val-ptr scratch-ptr 0 0 0)
               ;; Frame hit: overwrite lexical cell (refcount-safe).
               (nelisp_env_setv_cell_hit cell-ptr val-ptr)))))))
   "AOT source for Wave a-2 `Env::set_value' body.

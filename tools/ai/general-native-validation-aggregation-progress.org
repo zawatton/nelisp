@@ -1,0 +1,40 @@
+#+TITLE: General native validation aggregation performance acceptance
+#+PROJECT: General native validation aggregation
+
+#+NOTE: This is an independent performance objective added on 2026-10-03. The general native compiler's 21 acceptance criteria are unchanged. Pure helper qualification alone does not complete this objective. Existing known-red lifecycle and compiler checks remain in their original ledgers.
+#+NOTE: Reuse the genuine source-free compiler-r3-cons GNU fixture and the qualified normal-reader runtime. Record binary, related sources and input hashes; rerun invalidated checks rather than unrelated passing checks. The production image remains unchanged until coherent acceptance.
+#+NOTE: On 2026-10-03 the independent performance denominator changed from 8 to 9 by adding S1.3. Shadow equivalence alone does not prove that repeated boundaries stopped projecting or cloning result/source data. The main compiler's 21 criteria remain unchanged.
+#+NOTE: 2026-10-04 paused by user decision: native compilation is to use libgccjit instead of continuing this compiler; no new units are dispatched. Criteria, checks and evidence are kept unchanged as the record of where development stopped.
+
+* S1 Remove repeated result cloning
+
+** S1.1 Direct result comparison agrees with the unchanged projection oracle on genuine and mutated inputs
+evidence: target/progress/general-native-r9-codex-20261003/retained-shadow-native/qualified-receipt.json sha256=df425fc7f605ad58a9168dcc4c26c26d9d94c9dee58463a8055f1beb5022c3c1
+
+** S1.2 End to end: normal-reader retained constructor validation agrees with the old oracle and detects a disabled comparator
+evidence: target/progress/general-native-r9-codex-20261003/retained-shadow-native/qualified-receipt.json sha256=df425fc7f605ad58a9168dcc4c26c26d9d94c9dee58463a8055f1beb5022c3c1
+
+** S1.3 End to end: after one issuance, repeated genuine admission boundaries perform zero result projections and zero result/source snapshot clones with equivalent mutation refusals
+evidence: target/progress/general-native-r9-codex-20261003/retained-integration-native/zero-projection-qualified-receipt.json sha256=cf6b56f722595a6c42f10764c353f9ff6bba43c99c15e717dc311dfcd937e001
+
+* S2 Match validation to resource lifetimes
+
+** S2.1 Process binary, ABI and bridge checks execute once per process with equivalent replacement refusals
+pending
+
+** S2.2 Artifact contract, content and dependencies are fully validated once per retained load; calls check live owners, generation, frames and slots
+pending
+
+** S2.3 Result, manifest, provider, file, binary, stale-token and frame mutations preserve old accept/refuse decisions
+pending
+
+** S2.4 End to end: repeated calls of one retained artifact do not repeat full validation and measured repeat time decreases
+pending
+
+* S3 Public performance acceptance
+
+** S3.1 Cold and repeated compile/load/run measurements record phase time, validation counts, peak RSS and source pins
+pending
+
+** S3.2 End to end: genuine public compile/load/run completes within the unchanged 90-second limit with native required execution and release
+pending

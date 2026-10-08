@@ -995,6 +995,91 @@ linker pins as `__got_<sym>' symbols before reloc resolution (Phase 47.D P3)."
   (let ((l (nelisp-elf--dynamic-layout text-size imports interp)))
     (cons (plist-get l :text-vaddr) (plist-get l :got-va-map))))
 
+(defun nelisp-elf--dynamic-proof-sections (file layout symbols text-size)
+  "Append unmapped section/symbol records without changing dynamic load segments.
+Rooted native proof issuance needs actual defined ELF symbol provenance on the
+shared-library reader as well as the static reader. Import GOT contents remain
+owned by ld.so and are absent from this defined-symbol table."
+  (let* ((section-names '("" ".text" ".rodata" ".data" ".bss" ".symtab" ".strtab" ".shstrtab"))
+         (section-strings (nelisp-elf-build-dynstr section-names))
+         (names (nelisp-elf-build-dynstr (mapcar (lambda (symbol) (plist-get symbol :name)) symbols)))
+         (ordered (append (cl-remove-if-not (lambda (symbol) (eq (plist-get symbol :bind) 'local)) symbols)
+                          (cl-remove-if (lambda (symbol) (eq (plist-get symbol :bind) 'local)) symbols)))
+         (local-count (1+ (cl-count-if (lambda (symbol) (eq (plist-get symbol :bind) 'local)) symbols)))
+         (symbuf (nelisp-elf-make-buffer))
+         (shbuf (nelisp-elf-make-buffer))
+         (symoff (nelisp-elf--align-up (length file) 8))
+         (sections '(text rodata data bss))
+         (stringoff (+ symoff (* 24 (1+ (length symbols)))))
+         (shstringoff (+ stringoff (length (car names))))
+         (shoff (nelisp-elf--align-up (+ shstringoff (length (car section-strings))) 8)))
+    (nelisp-elf-write-sym symbuf nil)
+    (dolist (symbol ordered)
+      (let* ((section (plist-get symbol :section))
+             (index (1+ (or (cl-position section sections) (error "Unknown dynamic proof section"))))
+             (base (plist-get layout (intern (format ":%s-vaddr" section)))))
+        (nelisp-elf-write-sym
+         symbuf (list :name (cdr (assoc (plist-get symbol :name) (cdr names)))
+                      :info (nelisp-elf-sym-info
+                             (nelisp-elf--sym-bind-code (plist-get symbol :bind))
+                             (nelisp-elf--sym-type-code (plist-get symbol :type)))
+                      :shndx index :value (+ base (plist-get symbol :value))
+                      :size (plist-get symbol :size)))))
+    (nelisp-elf-write-shdr shbuf nil)
+    (cl-loop for section in sections for index from 1 do
+             (nelisp-elf-write-shdr
+              shbuf (list :name (cdr (assoc (nth index section-names) (cdr section-strings)))
+                           :type (if (eq section 'bss) 8 1)
+                           :flags (if (eq section 'text) 6 (if (eq section 'rodata) 2 3))
+                           :addr (plist-get layout (intern (format ":%s-vaddr" section)))
+                           :offset (plist-get layout (intern (format ":%s-off" section)))
+                           :size (if (eq section 'text) text-size
+                                   (plist-get layout (intern (format ":%s-size" section))))
+                           :addralign 16)))
+    (nelisp-elf-write-shdr shbuf (list :name (cdr (assoc ".symtab" (cdr section-strings)))
+                                     :type 2 :offset symoff :size (* 24 (1+ (length symbols)))
+                                     :link 6 :info local-count :addralign 8 :entsize 24))
+    (nelisp-elf-write-shdr shbuf (list :name (cdr (assoc ".strtab" (cdr section-strings)))
+                                     :type 3 :offset stringoff :size (length (car names)) :addralign 1))
+    (nelisp-elf-write-shdr shbuf (list :name (cdr (assoc ".shstrtab" (cdr section-strings)))
+                                     :type 3 :offset shstringoff :size (length (car section-strings)) :addralign 1))
+    ;; Describe existing dynamic metadata too, so section-aware ELF tools
+    ;; agree with PT_DYNAMIC. These records add no mapped bytes or segments.
+    (let* ((base (plist-get layout :base))
+           (extra '(".dynamic" ".dynstr" ".dynsym" ".hash" ".rela.dyn" ".got" ".plt" ".interp")))
+      (dolist (name extra)
+        (let ((offset (length (car section-strings))))
+          (setcar section-strings (concat (car section-strings) name (unibyte-string 0)))
+          (setcdr section-strings (append (cdr section-strings) (list (cons name offset))))))
+      (cl-loop for name in extra
+               for type in '(6 3 11 5 4 1 1 1)
+               for key in '(dyn dynstr dynsym hash rela got plt interp)
+               for flags in '(3 2 2 2 2 3 6 2)
+               for link in '(9 0 9 10 10 0 0 0)
+               for entsize in '(16 0 24 4 24 8 16 0) do
+               (let* ((offset (plist-get layout (intern (format ":%s-off" key))))
+                      (size (plist-get layout (intern (format ":%s-sz" key)))))
+                 (nelisp-elf-write-shdr
+                  shbuf (list :name (cdr (assoc name (cdr section-strings))) :type type :flags flags
+                               :addr (+ base offset) :offset offset :size size
+                               :link link :addralign (if (eq key 'interp) 1 8) :entsize entsize))))
+      ;; The .shstrtab record precedes the newly appended records.
+      (let ((bytes (nelisp-elf-buffer-bytes shbuf)))
+        (cl-loop for byte across (nelisp-elf--u64le (length (car section-strings)))
+                 for offset from (+ (* 7 64) 32) do (aset bytes offset byte))
+        (setq shbuf (nelisp-elf-make-buffer))
+        (nelisp-elf--cbuf-push shbuf bytes))
+      (setq shoff (nelisp-elf--align-up (+ shstringoff (length (car section-strings))) 8)))
+    (setq file (concat (nelisp-elf--pad-to file symoff) (nelisp-elf-buffer-bytes symbuf)
+                       (car names) (car section-strings)))
+    (setq file (concat (nelisp-elf--pad-to file shoff) (nelisp-elf-buffer-bytes shbuf)))
+    ;; Patch only e_shoff/e_shentsize/e_shnum/e_shstrndx. Program headers and
+    ;; every mapped byte/address stay exactly as emitted by the dynamic writer.
+    (cl-loop for byte across (nelisp-elf--u64le shoff) for offset from 40 do (aset file offset byte))
+    (cl-loop for byte across (concat (nelisp-elf--u16le 64) (nelisp-elf--u16le 16) (nelisp-elf--u16le 7))
+             for offset from 58 do (aset file offset byte))
+    file))
+
 (defun nelisp-elf-build-dynamic-binary (plist)
   "Build a dynamically-linked ET_EXEC ELF64 (Phase 47.D, P1 + P2).
 PLIST:
@@ -1147,7 +1232,10 @@ RW segment: .got / .dynamic."
     (when (> data-size 0)
       (setq file (nelisp-elf--pad-to file data-off))
       (setq file (concat file data)))
-    file))
+    (if (plist-get plist :symbols)
+        (nelisp-elf--dynamic-proof-sections file l (plist-get plist :symbols) (length text))
+      file)))
+
 
 ;; ---- §91.b reloc-type symbol → ELF constant mapping ----
 

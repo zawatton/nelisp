@@ -48,6 +48,7 @@
                                 nelisp-vendor-bytecode-jit-coverage--functions)))))
 
 (ert-deftest nelisp-vendor-bytecode-jit-coverage/small-tier-is-source-pinned-and-separate ()
+  (skip-unless (equal emacs-version "31.1"))
   (let ((expected
          '((zerop . "6683de2c492f3752bd51b517569fc85085c6faabd98e8ec9efbfc331cc7aeafb")
            (caar . "54657f49c4d902c5a7c19d4a30e977cb6c49f11c8add17ae6ab0166f845f2643")

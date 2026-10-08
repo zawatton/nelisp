@@ -125,6 +125,14 @@
   "NeLisp: symbol's value is void"
   'nelisp-eval-error)
 
+(define-error 'nelisp-variable-alias-error
+  "NeLisp: invalid or cyclic variable alias"
+  'nelisp-eval-error)
+
+(unless (get 'cyclic-variable-indirection 'error-conditions)
+  (define-error 'cyclic-variable-indirection
+    "Cyclic variable indirection" 'nelisp-eval-error))
+
 (define-error 'nelisp-void-function
   "NeLisp: symbol's function is void"
   'nelisp-eval-error)
@@ -137,6 +145,9 @@ Populated by `defun' and by `nelisp--install-primitives'.")
 
 (defvar nelisp--globals (make-hash-table :test 'eq)
   "Symbol -> value for top-level definitions (defvar, global setq).")
+
+(defvar nelisp--variable-aliases (make-hash-table :test 'eq)
+  "Variable alias symbol -> target symbol, separate from value/function cells.")
 
 (defvar nelisp--specials (make-hash-table :test 'eq)
   "Set of symbols declared special via `defvar'.
@@ -156,6 +167,110 @@ never both.")
 
 (defconst nelisp--unbound (make-symbol "nelisp-unbound")
   "Sentinel returned from hash-table lookups when a key is missing.")
+
+(defun nelisp-variable-canonical-symbol (sym)
+  "Return SYM's terminal variable alias target.
+Signal `nelisp-variable-alias-error' for malformed or cyclic metadata."
+  (unless (symbolp sym)
+    (signal 'wrong-type-argument (list 'symbolp sym)))
+  (let ((target (gethash sym nelisp--variable-aliases nelisp--unbound)))
+    (if (eq target nelisp--unbound)
+        sym
+      (let ((seen (make-hash-table :test 'eq))
+            (current sym))
+        (while (not (eq target nelisp--unbound))
+          (when (gethash current seen)
+            (signal 'cyclic-variable-indirection (list sym)))
+          (puthash current t seen)
+          (unless (symbolp target)
+            (signal 'nelisp-variable-alias-error
+                    (list 'invalid-target current target)))
+          (setq current target
+                target (gethash current nelisp--variable-aliases
+                                nelisp--unbound)))
+        (when (gethash current seen)
+          (signal 'cyclic-variable-indirection (list sym)))
+        current))))
+
+(defun nelisp-variable-get (sym &rest defaults)
+  "Read SYM's global value via its canonical alias target.
+Optional DEFAULT (or `nelisp--unbound' when omitted) is returned on a miss."
+  (when (> (length defaults) 1)
+    (signal 'wrong-number-of-arguments
+            (list 'nelisp-variable-get (1+ (length defaults)))))
+  (let ((canonical (nelisp-variable-canonical-symbol sym)))
+    (if (or (null canonical) (eq canonical t) (keywordp canonical))
+        canonical
+      (gethash canonical nelisp--globals
+               (if defaults (car defaults) nelisp--unbound)))))
+
+(defun nelisp-variable-put (sym value)
+  "Set SYM's global value at its canonical alias target; return VALUE."
+  (let ((canonical (nelisp-variable-canonical-symbol sym)))
+    (when (or (null canonical) (eq canonical t) (keywordp canonical))
+      (signal 'setting-constant (list sym)))
+    (puthash canonical value nelisp--globals)))
+
+(defun nelisp-variable-install-alias (alias target)
+  "Install ALIAS -> TARGET atomically and return TARGET.
+An already-bound target wins; otherwise ALIAS's prior effective value is
+transferred to TARGET.  Function cells and plists are not changed."
+  (unless (symbolp alias)
+    (signal 'wrong-type-argument (list 'symbolp alias)))
+  (when (or (null alias) (eq alias t) (keywordp alias))
+    (signal 'error
+            (list (format "Cannot make a constant an alias: %s" alias))))
+  (unless (symbolp target)
+    (signal 'wrong-type-argument (list 'symbolp target)))
+  ;; Validate the prospective edge before changing either table.  This
+  ;; preserves an existing alias if retargeting would introduce a cycle.
+  (let ((seen (make-hash-table :test 'eq))
+        (current target)
+        (next (gethash target nelisp--variable-aliases nelisp--unbound)))
+    (while (not (eq next nelisp--unbound))
+      (when (or (eq current alias) (gethash current seen))
+        (signal 'cyclic-variable-indirection (list target)))
+      (puthash current t seen)
+      (unless (symbolp next)
+        (signal 'nelisp-variable-alias-error
+                (list 'invalid-target current next)))
+      (setq current next
+            next (gethash current nelisp--variable-aliases nelisp--unbound)))
+    (when (or (eq current alias) (gethash current seen))
+      (signal 'cyclic-variable-indirection (list target)))
+    (let* ((prior (nelisp-variable-get alias nelisp--unbound))
+           (target-value (nelisp-variable-get target nelisp--unbound))
+           (target-name (nelisp-variable-canonical-symbol target)))
+      (when (and (eq target-value nelisp--unbound)
+                 (not (eq prior nelisp--unbound)))
+        (puthash target-name prior nelisp--globals))
+      (puthash alias target nelisp--variable-aliases)
+      (remhash alias nelisp--globals)
+      (puthash alias t nelisp--specials)
+      (puthash target t nelisp--specials)
+      target)))
+
+(defun nelisp-variable-makunbound (sym)
+  "Unbind SYM; if it is an alias, detach only that alias."
+  (unless (symbolp sym)
+    (signal 'wrong-type-argument (list 'symbolp sym)))
+  (when (or (null sym) (eq sym t) (keywordp sym))
+    (signal 'setting-constant (list sym)))
+  (if (not (eq (gethash sym nelisp--variable-aliases nelisp--unbound)
+               nelisp--unbound))
+      (progn
+        (remhash sym nelisp--variable-aliases)
+        (remhash sym nelisp--globals))
+    (remhash (nelisp-variable-canonical-symbol sym) nelisp--globals))
+  sym)
+
+(defun nelisp-variable-boundp (sym)
+  "Return non-nil if SYM or its variable alias target has a value."
+  (cond
+   ((memq sym '(nil t)) t)
+   ((keywordp sym) t)
+   (t (not (eq (nelisp-variable-get sym nelisp--unbound)
+               nelisp--unbound)))))
 
 ;;; Closure representation --------------------------------------------
 
@@ -215,7 +330,7 @@ Special (dynamic) variables bypass ENV and read directly from
    ((eq sym t) t)
    ((keywordp sym) sym)
    ((gethash sym nelisp--specials)
-    (let ((g (gethash sym nelisp--globals nelisp--unbound)))
+    (let ((g (nelisp-variable-get sym nelisp--unbound)))
       (if (eq g nelisp--unbound)
           (signal 'nelisp-unbound-variable (list sym))
         g)))
@@ -223,7 +338,7 @@ Special (dynamic) variables bypass ENV and read directly from
     (let ((cell (assq sym env)))
       (if cell
           (cdr cell)
-        (let ((g (gethash sym nelisp--globals nelisp--unbound)))
+        (let ((g (nelisp-variable-get sym nelisp--unbound)))
           (if (eq g nelisp--unbound)
               (signal 'nelisp-unbound-variable (list sym))
             g)))))))
@@ -408,12 +523,13 @@ on every exit path from BODY (normal, throw, or error)."
              (sym (car p))
              (val (cdr p)))
         (if (gethash sym nelisp--specials)
-            (push (list sym val
-                        (gethash sym nelisp--globals nelisp--unbound))
-                  dyn-saves)
+            (let ((global-sym (nelisp-variable-canonical-symbol sym)))
+              (push (list global-sym val
+                        (gethash global-sym nelisp--globals nelisp--unbound))
+                    dyn-saves))
           (push (cons sym val) lex-pairs))))
     (dolist (d dyn-saves)
-      (puthash (car d) (nth 1 d) nelisp--globals))
+      (nelisp-variable-put (car d) (nth 1 d)))
     (unwind-protect
         (nelisp--eval-body body (append (nreverse lex-pairs) env))
       (nelisp--restore-dynamic dyn-saves))))
@@ -434,12 +550,12 @@ has just mutated."
                    (sym (car p))
                    (val (cdr p)))
               (if (gethash sym nelisp--specials)
-                  (progn
-                    (push (list sym val
-                                (gethash sym nelisp--globals
+                  (let ((global-sym (nelisp-variable-canonical-symbol sym)))
+                    (push (list global-sym val
+                                (gethash global-sym nelisp--globals
                                          nelisp--unbound))
                           dyn-saves)
-                    (puthash sym val nelisp--globals))
+                    (nelisp-variable-put global-sym val))
                 (setq new-env (cons (cons sym val) new-env)))))
           (nelisp--eval-body body new-env))
       (nelisp--restore-dynamic dyn-saves))))
@@ -476,9 +592,9 @@ required args, `&optional' entries as symbols or `(VAR DEFAULT
       (signal 'nelisp-eval-error (list "defvar needs a symbol" name)))
     (puthash name t nelisp--specials)
     (when (and (cdr args)
-               (eq (gethash name nelisp--globals nelisp--unbound)
+               (eq (nelisp-variable-get name nelisp--unbound)
                    nelisp--unbound))
-      (puthash name (nelisp-eval-form (cadr args) env) nelisp--globals))
+      (nelisp-variable-put name (nelisp-eval-form (cadr args) env)))
     name))
 
 (defun nelisp--eval-defvar-local (args env)
@@ -497,7 +613,7 @@ metadata."
     (unless (cdr args)
       (signal 'nelisp-eval-error (list "defconst needs a value" name)))
     (puthash name t nelisp--specials)
-    (puthash name (nelisp-eval-form (cadr args) env) nelisp--globals)
+    (nelisp-variable-put name (nelisp-eval-form (cadr args) env))
     name))
 
 (defun nelisp--eval-setq (args env)
@@ -511,9 +627,9 @@ metadata."
              (cell (assq sym env)))
         (unless (symbolp sym)
           (signal 'nelisp-eval-error (list "setq non-symbol" sym)))
-        (if cell
+        (if (and cell (not (gethash sym nelisp--specials)))
             (setcdr cell val)
-          (puthash sym val nelisp--globals))
+          (nelisp-variable-put sym val))
         (setq last val)
         (setq args (cddr args))))
     last))
@@ -573,7 +689,7 @@ the first match wins.  Unmatched errors propagate to the caller."
               (list "condition-case VAR must be symbol or nil" var)))
     (condition-case err
         (nelisp-eval-form bodyform env)
-      (error
+      (t
        (let* ((conditions (get (car err) 'error-conditions))
               (matched nil))
          (catch 'nelisp--cc-done
@@ -936,11 +1052,7 @@ the host `maphash'."
 (defun nelisp--builtin-boundp (sym)
   "Non-nil if SYM has a value in the NeLisp global table.
 Self-evaluating atoms (nil, t, keywords) are always bound."
-  (cond
-   ((memq sym '(nil t)) t)
-   ((keywordp sym) t)
-   (t (not (eq (gethash sym nelisp--globals nelisp--unbound)
-               nelisp--unbound)))))
+  (nelisp-variable-boundp sym))
 
 (defun nelisp--builtin-fboundp (sym)
   "Non-nil if SYM has a function (or macro) in the NeLisp tables."
@@ -952,7 +1064,10 @@ Self-evaluating atoms (nil, t, keywords) are always bound."
 (defun nelisp--builtin-symbol-value (sym)
   "Return SYM's NeLisp value — dynamic / global only, not lexical.
 Matches Elisp `symbol-value' which never sees lexical bindings."
-  (nelisp--lookup sym nil))
+  (let ((value (nelisp-variable-get sym nelisp--unbound)))
+    (if (eq value nelisp--unbound)
+        (signal 'nelisp-unbound-variable (list sym))
+      value)))
 
 (defun nelisp--builtin-defalias (symbol definition &optional _docstring)
   "Set SYMBOL's function cell in the NeLisp runtime to DEFINITION.
@@ -963,6 +1078,87 @@ accepted by `nelisp--apply'."
     (signal 'wrong-type-argument (list 'symbolp symbol)))
   (puthash symbol definition nelisp--functions)
   symbol)
+
+(defun nelisp-eval-function-store-ready-p ()
+  "Return non-nil when the NeLisp function-cell store is available."
+  (and (boundp 'nelisp--functions)
+       (hash-table-p nelisp--functions)))
+
+(defun nelisp-eval-function-cell-ref (symbol absent)
+  "Return SYMBOL's function cell, or ABSENT when the cell is not present.
+ABSENT is supplied by the caller so a stored nil remains distinguishable."
+  (unless (symbolp symbol)
+    (signal 'wrong-type-argument (list 'symbolp symbol)))
+  (unless (nelisp-eval-function-store-ready-p)
+    (signal 'nelisp-eval-error (list :function-store-unavailable)))
+  (gethash symbol nelisp--functions absent))
+
+(defun nelisp-eval-function-cell-present-p (symbol)
+  "Return non-nil when SYMBOL has a function-cell entry."
+  (let ((absent (make-symbol "nelisp-eval-function-absent")))
+    (not (eq (nelisp-eval-function-cell-ref symbol absent) absent))))
+
+(defun nelisp-eval-function-cell-put (symbol value)
+  "Set SYMBOL's function cell to VALUE and return VALUE."
+  (unless (symbolp symbol)
+    (signal 'wrong-type-argument (list 'symbolp symbol)))
+  (unless (nelisp-eval-function-store-ready-p)
+    (signal 'nelisp-eval-error (list :function-store-unavailable)))
+  (puthash symbol value nelisp--functions)
+  value)
+
+(defun nelisp-eval-function-cell-delete (symbol)
+  "Remove SYMBOL's function-cell entry.
+
+Return nil, matching `remhash', whether or not SYMBOL had an entry."
+  (unless (symbolp symbol)
+    (signal 'wrong-type-argument (list 'symbolp symbol)))
+  (unless (nelisp-eval-function-store-ready-p)
+    (signal 'nelisp-eval-error (list :function-store-unavailable)))
+  (remhash symbol nelisp--functions))
+
+(defun nelisp-eval-function-cell-snapshot (symbols)
+  "Return copied (SYMBOL PRESENT VALUE) records for SYMBOLS."
+  (unless (and (proper-list-p symbols) (cl-every #'symbolp symbols))
+    (signal 'wrong-type-argument (list 'list-of-symbols-p symbols)))
+  (let ((absent (make-symbol "nelisp-eval-function-absent")))
+    (mapcar (lambda (symbol)
+              (let ((value (nelisp-eval-function-cell-ref symbol absent)))
+                (if (eq value absent)
+                    (list symbol nil nil)
+                  (list symbol t value))))
+            symbols)))
+
+(defun nelisp-eval-function-cell-snapshot-all ()
+  "Return a copied alist of present function-cell names and values."
+  (unless (nelisp-eval-function-store-ready-p)
+    (signal 'nelisp-eval-error (list :function-store-unavailable)))
+  (let (entries)
+    (maphash (lambda (symbol value) (push (cons symbol value) entries))
+             nelisp--functions)
+    entries))
+
+(defun nelisp-eval-function-cell-restore (snapshot)
+  "Restore function-cell presence and values from SNAPSHOT records."
+  (unless (and (proper-list-p snapshot)
+               (cl-every (lambda (record)
+                           (and (proper-list-p record)
+                                (= (length record) 3)
+                                (symbolp (nth 0 record))
+                                (memq (nth 1 record) '(nil t))))
+                         snapshot))
+    (signal 'wrong-type-argument (list 'function-cell-snapshot-p snapshot)))
+  (unless (nelisp-eval-function-store-ready-p)
+    (signal 'nelisp-eval-error (list :function-store-unavailable)))
+  (dolist (record snapshot)
+    (if (nth 1 record)
+        (puthash (nth 0 record) (nth 2 record) nelisp--functions)
+      (remhash (nth 0 record) nelisp--functions)))
+  t)
+
+(defun nelisp-eval-function-defalias (symbol definition &optional docstring)
+  "Install DEFINITION in SYMBOL's NeLisp function cell and return SYMBOL."
+  (nelisp--builtin-defalias symbol definition docstring))
 
 ;; `nelisp-load.el' owns the real one -- circular detection, NOERROR,
 ;; a provide check.  This is the Phase 2 placeholder from before that
@@ -1021,6 +1217,22 @@ primitive installation for entries nothing in a given run needs."
   (puthash 'boundp       #'nelisp--builtin-boundp       nelisp--functions)
   (puthash 'fboundp      #'nelisp--builtin-fboundp      nelisp--functions)
   (puthash 'symbol-value #'nelisp--builtin-symbol-value nelisp--functions)
+  (puthash 'nelisp-variable-canonical-symbol
+           (symbol-function 'nelisp-variable-canonical-symbol)
+           nelisp--functions)
+  (puthash 'nelisp-variable-get (symbol-function 'nelisp-variable-get)
+           nelisp--functions)
+  (puthash 'nelisp-variable-put (symbol-function 'nelisp-variable-put)
+           nelisp--functions)
+  (puthash 'nelisp-variable-install-alias
+           (symbol-function 'nelisp-variable-install-alias)
+           nelisp--functions)
+  (puthash 'nelisp-variable-makunbound
+           (symbol-function 'nelisp-variable-makunbound)
+           nelisp--functions)
+  (puthash 'nelisp-variable-boundp
+           (symbol-function 'nelisp-variable-boundp)
+           nelisp--functions)
   (puthash 'defalias     #'nelisp--builtin-defalias     nelisp--functions)
   (puthash 'require      #'nelisp--builtin-require      nelisp--functions)
   (puthash 'provide      #'nelisp--builtin-provide      nelisp--functions)
@@ -1241,6 +1453,7 @@ Intended for test hygiene; callers should expect to re-run every
 `defun' / `defvar' from scratch afterwards."
   (clrhash nelisp--functions)
   (clrhash nelisp--globals)
+  (clrhash nelisp--variable-aliases)
   (clrhash nelisp--specials)
   (clrhash nelisp--macros)
   (nelisp--install-primitives)

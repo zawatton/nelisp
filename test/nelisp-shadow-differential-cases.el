@@ -58,9 +58,62 @@
  (condition-case err (memq) (wrong-number-of-arguments err))
  (condition-case err (member nil) (wrong-number-of-arguments err))
  (condition-case err (assq nil nil nil) (wrong-number-of-arguments err))
+ ;; U8n: VM handlers share catch identity and raise-time no-catch with Lisp.
+ (let* ((tag (vector 'u8n-shadow))
+        (fn (make-byte-code
+             0 (unibyte-string 192 50 8 0 193 32 48 135 135)
+             (vector tag (lambda () (garbage-collect) (throw tag 'caught))) 1)))
+   (eq (funcall fn) 'caught))
+ (let ((fn (make-byte-code
+            0 (unibyte-string 192 49 8 0 193 32 48 135 135)
+            (vector 'no-catch (lambda () (throw nil 'missing))) 1)))
+   (equal (funcall fn) '(no-catch nil missing)))
+ ;; U7a: aliases bind the canonical dynamic cell, including a void target.
+ (let ((target (intern "u7a-shadow-target"))
+       (alias (intern "u7a-shadow-alias")))
+   (set target nil)
+   (makunbound target)
+   (defvaralias alias target)
+   (let ((fn (make-byte-code 257 (unibyte-string 24 8 41 135) (vector alias) 1)))
+     (list (funcall fn 'inside) (boundp target))))
+ ;; Extended stack references preserve a full boxed slot, including identity.
+ (let ((value (vector 'rooted-cfg)))
+   (and (eq (funcall (make-byte-code 257 (unibyte-string 6 0 135) [] 2) value) value)
+        (eq (funcall (make-byte-code 257 (unibyte-string 7 0 0 135) [] 2) value) value)))
+ ;; The canonical entry-backedge bytecode terminates after consuming the list.
+ (null (funcall (make-byte-code 257
+                               (unibyte-string 137 131 8 0 65 130 0 0 135) [] 2)
+                '(one two three four)))
+ ;; Generic evaluator arguments preserve nested mutable aliases.
+ (let* ((shared (vector 11))
+        (input (cons shared shared))
+        (result (funcall (lambda (x) (cons (car x) (cdr x))) input)))
+   (aset shared 0 19)
+   (and (eq (car result) (cdr result)) (= (aref (car result) 0) 19)))
  ;; Directory existence must use the target's access operation.  Darwin's
  ;; former ENOSYS stub made both checks false and hid host helper executables.
  (list (file-exists-p ".") (file-directory-p "."))
+ ;; A symbolic `fset' definition is the raw function cell and must follow a
+ ;; later redefinition of its target when called indirectly.
+ (let* ((suffix (number-to-string (random 1000000000)))
+        (target (intern (concat "shadow-fset-target-" suffix)))
+        (alias (intern (concat "shadow-fset-alias-" suffix)))
+        (old-target-bound (fboundp target))
+        (old-alias-bound (fboundp alias))
+        (old-target (and old-target-bound (symbol-function target)))
+        (old-alias (and old-alias-bound (symbol-function alias)))
+        (returned nil) (stored nil) (before nil) (after nil))
+   (unwind-protect
+       (progn
+         (fset target 'identity)
+         (setq returned (fset alias target)
+               stored (symbol-function alias)
+               before (funcall alias 42))
+         (fset target 'ignore)
+         (setq after (funcall alias 42))
+         (list (eq returned target) (eq stored target) before after))
+     (if old-target-bound (fset target old-target) (fmakunbound target))
+     (if old-alias-bound (fset alias old-alias) (fmakunbound alias))))
  ;; The rest of Darwin's path/stat layer was ENOSYS too until v1.3.1 -- stat,
  ;; lstat, rename, readlink, opendir/getdents and utimes all answered -38, so
  ;; `file-attribute-size' returned a negative errno as a SIZE and
@@ -208,6 +261,39 @@
  ;; equal: structure, not identity, and 1 is not 1.0
  (equal '(1 (2 3)) '(1 (2 3))) (equal "a" "a") (equal [1 2] [1 2]) (equal 1 1.0)
  (equal nil nil) (equal '(1 . 2) '(1 . 2))
+ ;; Byte-code objects compare every slot, including constants nested in lists.
+ (let ((a (make-byte-code 514 (unibyte-string 1 135) [] 3))
+       (b (make-byte-code 514 (unibyte-string 1 135) [] 3))
+       (c (make-byte-code 514 (unibyte-string 1 135) [] 4)))
+   (list (equal a b) (equal a c) (equal (list a) (list b))
+         (equal (vector a) (vector b))
+         (equal a (vector 514 (unibyte-string 1 135) [] 3))))
+ ;; A native negative must still reach the Lisp array and marker rules.
+ (list (equal (list [1 [2]]) (list [1 [2]]))
+       (equal (list (bool-vector t nil)) (list (bool-vector t nil)))
+       (equal (bool-vector t nil) (bool-vector nil t))
+       (equal (bool-vector t nil) [t nil]))
+ (with-temp-buffer
+   (insert "abc")
+   (let ((a (copy-marker 2)) (b (copy-marker 2 t)) (different (copy-marker 1)))
+     (list (equal a b) (equal (list a) (list b)) (equal a different)
+           (progn (set-marker a nil) (set-marker b nil) (equal a b)))))
+ ;; Preserve record identity and different-content answers too; the fresh
+ ;; same-content pair also exposes the existing standalone record divergence.
+ (let ((same (record 'shadow-equal 7)))
+   (list (equal same same) (equal (list same) (list same))
+         (equal (record 'shadow-equal 7) (record 'shadow-equal 8))
+         (equal (record 'shadow-equal 7) (record 'shadow-equal 7))))
+ (let ((a (string-to-number "0.0e+NaN")) (b (string-to-number "0.0e+NaN")))
+   (list (equal 1.5 1.5) (equal a b) (equal a a) (equal (list a) (list b))
+         (equal 0.0 -0.0) (equal -0.0 -0.0) (equal 1.0 1)))
+ (list (equal (string-as-unibyte "ab") (concat "ab" ""))
+       (equal (unibyte-string 233) (string 233))
+       (equal (propertize "ab" 'face 'bold) (propertize "ab" 'face 'italic)))
+ (let ((a (make-interpreted-closure '(x) '((+ x y)) '((y . 7))))
+       (b (make-interpreted-closure '(x) '((+ x y)) '((y . 7))))
+       (c (make-interpreted-closure '(x) '((- x y)) '((y . 7)))))
+   (list (equal a b) (equal a c) (equal (list a) (list b))))
  ;; Bool-vectors: packed literals use low-bit-first bytes, constructors are
  ;; mutable, and the type survives the sequence/printer surface.  These
  ;; values are intentionally derived through ordinary operations so the
@@ -296,6 +382,11 @@
  (nreverse (list 1 2 3))
  (nreverse (vector 1 2 3))
  (nreverse (copy-sequence "abc"))
+ ;; F2 U2b: exercise the exact GNU opcode, including byte mode and identity.
+ (let ((f (make-byte-code 257 (unibyte-string 159 135) [] 1)))
+   (list (string-to-list (funcall f "αβ"))
+         (string-to-list (funcall f (unibyte-string 200 201)))
+         (let ((v (vector 1 2 3))) (list (eq (funcall f v) v) v))))
  ;; in place for a vector, as in Emacs: the caller's object changes
  (let ((v (vector 1 2 3))) (nreverse v) v)
  ;; and NOT in place for `reverse'
@@ -484,6 +575,16 @@
  ;; 12, which reads back as the integer.  A print-then-read round trip
  ;; silently changed the type, which is what the round-trip cases below are
  ;; really testing.
+ ;; P2.0b: the long-string fast path must preserve canonical escapes.
+ (let* ((print-escape-newlines t) (print-escape-control-characters nil)
+        (print-escape-multibyte t) (print-escape-nonascii t)
+        (s (concat (make-string 80 97) "\"\\\n")))
+   (list (prin1-to-string s)
+         (equal s (car (read-from-string (prin1-to-string s))))))
+ (let* ((print-escape-newlines nil) (print-escape-control-characters t)
+        (s (concat (make-string 80 97) "\t\r\f")))
+   (list (prin1-to-string s)
+         (equal s (car (read-from-string (prin1-to-string s))))))
  (let ((print-length 2)) (prin1-to-string '(1 2 3 4)))
  (let ((print-length 2)) (prin1-to-string [1 2 3 4]))
  (let ((print-length 2)) (prin1-to-string '((1 2 3) (4 5 6) (7 8 9))))
@@ -1847,6 +1948,80 @@
   (garbage-collect)
   (list (symbol-name a) (symbolp a) (eq a b)
         (keywordp a) (intern-soft a)))
+;; U2a primitive-family oracle: ordered stores and identity.
+(let ((xs (list 'first 'second)) (v (vector 'old 'tail)))
+  (set 'u2a-parity-value 41)
+  (fset 'u2a-parity-function '(lambda (x) x))
+  (put 'u2a-parity-value 'key 'property)
+  (aset v 0 'new)
+  (list (nth 1 xs) (eq (memq 'second xs) (cdr xs)) (length xs) (aref v 0)
+        (symbol-value 'u2a-parity-value) (symbol-function 'u2a-parity-function)
+        (get 'u2a-parity-value 'key) (substring "abcd" 1 3)))
+;; U5 VM parity: overwrite/pop, offset-zero discard and preserve-high-bit.
+(let* ((left (vector 'left)) (right (cons 'right 'tail))
+       (replace (make-byte-code 514 (unibyte-string 178 1 135) [] 2))
+       (drop (make-byte-code 514 (unibyte-string 178 0 135) [] 2))
+       (keep (make-byte-code 514 (unibyte-string 182 129 135) [] 2)))
+  (list (eq (funcall replace left right) right)
+        (eq (funcall drop left right) left)
+        (eq (funcall keep left right) right)))
+;; U4b oracle: multibyte motion under narrowing and ordered motion errors.
+(with-temp-buffer
+  (insert "aé中\n\tb")
+  (narrow-to-region 2 6)
+  (goto-char 2)
+  (let ((start (list (bobp) (bolp) (eobp) (eolp)
+                     (eq (current-buffer) (set-buffer (current-buffer))))))
+    (forward-char 1)
+    (let ((word (forward-word 1)))
+      (list start word (point)
+            (condition-case e (forward-char 100) (error e))
+            (point) (eobp) (eolp)))))
+;; U4c: exact bytecodes preserve multibyte indices, narrowing and marker effects.
+(with-temp-buffer
+  (insert "aé中\nzb")
+  (goto-char 2)
+  (let ((skip (make-byte-code 514 (unibyte-string 119 135) [] 2))
+        (slice (make-byte-code 514 (unibyte-string 123 135) [] 2))
+        (narrow (make-byte-code 514 (unibyte-string 125 135) [] 2))
+        (wide (make-byte-code 0 (unibyte-string 126 135) [] 1))
+        (marker (copy-marker 3)))
+    (list (funcall skip "é中" nil) (point) (funcall slice 2 marker)
+          (funcall narrow 2 5) (point-min) (point-max)
+          (funcall wide) (point-max))))
+(with-temp-buffer
+  (insert "aé中")
+  (let ((remove (make-byte-code 514 (unibyte-string 124 135) [] 2))
+        (marker (copy-marker 4)))
+    (list (funcall remove 2 3) (buffer-string) (marker-position marker)
+          (condition-case err (funcall remove 0 9)
+            (error (list (car err) (eq (cadr err) (current-buffer)) (cddr err)))))))
+
+;; C-core capacity metadata must not be mistaken for custom-test callbacks.
+(let ((ordinary (make-hash-table :test 'equal :size 1)))
+  (puthash "key" 42 ordinary)
+  (list (gethash (copy-sequence "key") ordinary)
+        (progn (remhash "key" ordinary) (gethash "key" ordinary 'absent))))
+(progn
+  (define-hash-table-test 'nelisp-shadow-case-fold
+    (lambda (a b) (string-equal (downcase a) (downcase b)))
+    (lambda (a) (sxhash-equal (downcase a))))
+  (let ((custom (make-hash-table :test 'nelisp-shadow-case-fold))
+        (ordinary (make-hash-table :test 'equal :size 1)))
+    (puthash "KEY" 99 custom)
+    (puthash "key" 42 ordinary)
+    (list (gethash "key" custom) (gethash "key" ordinary))))
+(let ((ordinary (make-hash-table)))
+  (puthash 'key 42 ordinary)
+  (list (hash-table-size ordinary)
+        (condition-case err (puthash) (error err))
+        (condition-case err (remhash 'key) (error err))
+        (condition-case err (define-hash-table-test 1 #'eq #'sxhash) (error err))))
+(let ((custom (make-hash-table :test 'nelisp-shadow-case-fold)))
+  (dotimes (i 12) (puthash (format "KEY%d" i) i custom))
+  (let ((copy (copy-hash-table custom)))
+    (list (gethash "key11" custom) (gethash "key11" copy)
+          (hash-table-test copy) (hash-table-count copy))))
 )
 
 ;;; nelisp-shadow-differential-cases.el ends here

@@ -129,6 +129,10 @@
 
 ;;; Code:
 
+(declare-function nl-ffi-memory-address "nl-ffi-memory" (owner))
+(declare-function nl-ffi-memory-cstring "nl-ffi-memory" (bytes))
+(declare-function nl-ffi-memory-release "nl-ffi-memory" (owner))
+
 (declare-function nl-ffi-call "ext:nelisp-runtime" (name &rest args))
 (declare-function alloc-bytes "ext:nelisp-runtime" (nbytes align))
 (declare-function ptr-read-u8 "ext:nelisp-runtime" (ptr offset))

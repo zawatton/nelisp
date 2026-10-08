@@ -12,16 +12,27 @@
   (with-temp-buffer
     (insert-file-contents nn-source)
     (goto-char (point-min))
-    (let (found form)
+    (let (found form bridge)
       (while (and (not found) (condition-case nil (progn (setq form (read (current-buffer))) t)
                                 (end-of-file nil)))
+        ;; The generic evaluator entry is a root ABI export, not a Lisp
+        ;; reader builtin. Audit its actual six-word source definition too.
+        (cl-labels ((walk (node)
+                      (when (consp node)
+                        (if (and (eq (car node) 'defun) (eq (cadr node) 'nl_native_funcall_v2))
+                            (progn
+                              (when bridge (error "Duplicate F1 evaluator entry"))
+                              (unless (= (length (nth 2 node)) 6) (error "F1 evaluator arity drift"))
+                              (setq bridge "nl_native_funcall_v2"))
+                          (walk (car node)) (walk (cdr node))))))
+          (walk form))
         (when (and (consp form) (eq (car form) 'defconst)
                    (eq (cadr form) 'nelisp-standalone--reader-builtins))
           (setq found (cl-letf (((symbol-function 'nelisp-standalone--runtime-reload-enabled-p)
                                  (lambda () nil)))
                         (eval (nth 2 form) t)))))
       (unless found (error "reader-builtins defconst not found in %s" nn-source))
-      found)))
+      (append found (and bridge (list bridge))))))
 
 (defun nn-classifications ()
   (let ((result (make-hash-table :test 'equal)))
@@ -43,7 +54,9 @@
 
 (defun nn-lines (&optional classes)
   (mapcar (lambda (name)
-            (let* ((entry (and classes (gethash name classes)))
+            (let* ((entry (if (equal name "nl_native_funcall_v2")
+                              '("native-must-stay" . "Evaluator entry (clause 2), authenticated rooted funcall and exit publication; Lisp reference nelisp-native-funcall-v2-reference; measurements in F1.1/F1.2.")
+                            (and classes (gethash name classes))))
                    (verdict (or (car-safe entry) "native-review"))
                    (reason (or (cdr-safe entry) "No classification row; review against Doc 211 §6.")))
               (format "%s\t%s\t%s" name verdict

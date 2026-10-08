@@ -1,0 +1,425 @@
+;;; nelisp-bytecode-native-rooted-cfg-shared-emit-test.el --- shared CFG AST emission -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2026
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
+;;; Code:
+
+(require 'ert)
+(require 'cl-lib)
+(require 'nelisp-aot-compiler)
+(require 'nelisp-bytecode-native-rooted-cfg-emit)
+(require 'nelisp-bytecode-native-rooted-cfg-shared-emit)
+
+(defun nelisp-bytecode-native-rooted-cfg-shared-emit-test--gateway
+    (name roots arguments)
+  (pcase name
+    ('nl_root_pin_slot_v2
+     (let ((index (nth 2 arguments)))
+       (if (and (integerp index) (<= 0 index) (< index (length roots)))
+           (list :slot index)
+         (error "Bad root pin index %S in %S" index arguments))))
+    ('nl_native_car_v2
+     (let ((value (aref roots (nth 2 arguments)))
+           (output (nth 3 arguments)))
+       (cond ((null value) (aset roots output nil) 0)
+             ((consp value) (aset roots output (car value)) 0)
+             (t 1))))
+    ('nl_native_cdr_v2
+     (let ((value (aref roots (nth 2 arguments)))
+           (output (nth 3 arguments)))
+       (cond ((null value) (aset roots output nil) 0)
+             ((consp value) (aset roots output (cdr value)) 0)
+             (t 1))))
+    ('nl_native_cons_v2
+     (aset roots (nth 4 arguments)
+           (cons (aref roots (nth 2 arguments))
+                 (aref roots (nth 3 arguments))))
+     0)
+    (_ (error "Unexpected rooted-CFG gateway: %S" name))))
+
+(defun nelisp-bytecode-native-rooted-cfg-shared-emit-test--run
+    (emission arguments)
+  (let* ((arity (length arguments))
+         (form (plist-get emission :form))
+         (roots (make-vector (max 1 (plist-get emission :required-root-count)) nil))
+         (bindings (list (cons 'env roots) (cons 'ticket 1)
+                         (cons 'argument-count arity)
+                         (cons 'root-count (plist-get emission :required-root-count)))))
+    (cl-loop for value in arguments for index from 1 do (aset roots index value))
+    (dolist (initializer (append (plist-get emission :constant-initializers)
+                                 (plist-get emission :immediate-initializers)))
+      (unless (and (integerp (plist-get initializer :root))
+                   (<= 0 (plist-get initializer :root))
+                   (< (plist-get initializer :root) (length roots))
+                   (plist-member initializer :value))
+        (error "Unsupported emitted root initializer: %S" initializer))
+      (aset roots (plist-get initializer :root) (plist-get initializer :value)))
+    (cl-labels
+        ((lookup (symbol env-bindings)
+           (cdr (assq symbol env-bindings)))
+         (run-form (node env-bindings)
+           (cond
+            ((symbolp node) (if (memq node '(nil t)) node (lookup node env-bindings)))
+            ((atom node) node)
+            ((eq (car node) 'let)
+             (let* ((values (mapcar (lambda (binding)
+                                      (cons (car binding) (run-form (cadr binding) env-bindings)))
+                                    (cadr node)))
+                    (inner (append values env-bindings)))
+               (run-form (caddr node) inner)))
+            ((eq (car node) 'if)
+             (run-form (if (run-form (cadr node) env-bindings)
+                           (nth 2 node) (nth 3 node)) env-bindings))
+            ((eq (car node) 'progn)
+             (let (value) (dolist (form (cdr node)) (setq value (run-form form env-bindings))) value))
+            ((eq (car node) 'setq)
+             (let ((value (run-form (nth 2 node) env-bindings))
+                   (cell (assq (cadr node) env-bindings)))
+               (if cell (setcdr cell value) (error "Unbound selector %S" (cadr node)))
+               value))
+            ((eq (car node) '=)
+             (let ((left (run-form (cadr node) env-bindings))
+                   (right (run-form (nth 2 node) env-bindings)))
+               (when (and (consp left) (eq (car left) :slot))
+                 (setq left 1))
+               (= left right)))
+            ((eq (car node) '/=) (/= (run-form (cadr node) env-bindings)
+                                     (run-form (nth 2 node) env-bindings)))
+            ((eq (car node) '+) (+ (run-form (cadr node) env-bindings)
+                                   (run-form (nth 2 node) env-bindings)))
+            ((eq (car node) 'ptr-read-u64)
+             (if (null (aref roots (cadr (run-form (cadr node) env-bindings)))) 0 1))
+            ((eq (car node) 'extern-call)
+             (nelisp-bytecode-native-rooted-cfg-shared-emit-test--gateway
+              (cadr node) roots (mapcar (lambda (arg) (run-form arg env-bindings)) (cddr node))))
+            (t (error "Unsupported emitted test form: %S" (car node))))))
+      (let ((status (run-form (nth 3 form) bindings)))
+      (if (>= status 512)
+          (list status (aref roots (- status 512)))
+        (if (and (>= status 256) (< status 512))
+            (list status (aref roots (- status 256)))
+          (list status nil)))))))
+
+(defun nelisp-bytecode-native-rooted-cfg-shared-emit-test--two-diamonds ()
+  (nelisp-bytecode-compiler-input-build
+   (byte-compile
+    (lambda (condition-a left-a right-a condition-b left-b right-b)
+      (cons (car (if condition-a left-a right-a))
+            (cdr (if condition-b left-b right-b)))))))
+
+(defun nelisp-bytecode-native-rooted-cfg-shared-emit-test--carried-phi ()
+  (nelisp-bytecode-compiler-input-build
+   (byte-compile
+    (lambda (a x y b z)
+      (cons (if a x y) (if b z (if a x y)))))))
+
+(defun nelisp-bytecode-native-rooted-cfg-shared-emit-test--carried-oracle ()
+  (byte-compile (lambda (a x y b z) (cons (if a x y) (if b z (if a x y))))))
+
+(defun nelisp-bytecode-native-rooted-cfg-shared-emit-test--two-phis ()
+  (nelisp-bytecode-compiler-input-build
+   (byte-compile
+    (lambda (a x y b z w)
+      (cons (if a x y) (if b z w))))))
+
+(defun nelisp-bytecode-native-rooted-cfg-shared-emit-test--walk (form predicate)
+  (let (matches)
+    (dolist (node (list form))
+      (let ((stack (list node)))
+        (while stack
+          (let ((item (pop stack)))
+            (when (consp item)
+              (when (funcall predicate item) (push item matches))
+              (push (cdr item) stack)
+              (push (car item) stack))))))
+    (nreverse matches)))
+
+(defun nelisp-bytecode-native-rooted-cfg-shared-emit-test--size (form)
+  (if (consp form)
+      (+ 1
+         (nelisp-bytecode-native-rooted-cfg-shared-emit-test--size (car form))
+         (nelisp-bytecode-native-rooted-cfg-shared-emit-test--size (cdr form)))
+    0))
+
+(defun nelisp-bytecode-native-rooted-cfg-shared-emit-test--assert-value
+    (emission arguments expected)
+  (let ((result (nelisp-bytecode-native-rooted-cfg-shared-emit-test--run
+                 emission arguments)))
+    (should (>= (car result) 512))
+    (should (eq (car expected) (car (cadr result))))
+    (should (eq (cdr expected) (cdr (cadr result))))
+    result))
+
+(ert-deftest nelisp-bytecode-native-rooted-cfg-shared-emit/phi-membership-is-precomputed-and-bounded ()
+  (let* ((phi-a (intern "rooted_cfg_phi_probe_a"))
+         (phi-b (intern "rooted_cfg_phi_probe_b"))
+         (phi-vars `((8 . ,phi-a) (9 . ,phi-b)))
+         (phi-var-set (make-hash-table :test #'eq :size 2))
+         (context (list :root-count 4 :phi-vars phi-vars :phi-var-set phi-var-set))
+         (original-mapcar (symbol-function 'mapcar))
+         (mapcar-calls 0)
+         (resolved-a nil)
+         (resolved-b nil)
+         (resolved-root nil)
+         (resolved-unknown nil))
+    (puthash phi-a t phi-var-set)
+    (puthash phi-b t phi-var-set)
+    (cl-letf (((symbol-function 'mapcar)
+               (lambda (function sequence)
+                 (setq mapcar-calls (1+ mapcar-calls))
+                 (funcall original-mapcar function sequence))))
+      (setq resolved-a (nelisp-bytecode-native-rooted-cfg-shared-emit--resolve
+                        context 'rooted_cfg_phi_probe_a)
+            resolved-b (nelisp-bytecode-native-rooted-cfg-shared-emit--resolve
+                        context 'rooted_cfg_phi_probe_b)
+            resolved-root (nelisp-bytecode-native-rooted-cfg-shared-emit--resolve context 3)
+            resolved-unknown (nelisp-bytecode-native-rooted-cfg-shared-emit--resolve
+                              context 'unrelated-symbol)))
+    (should (eq resolved-a phi-a))
+    (should (eq resolved-b phi-b))
+    (should (= resolved-root 3))
+    (should-not resolved-unknown)
+    (should (= mapcar-calls 0))))
+
+(ert-deftest nelisp-bytecode-native-rooted-cfg-shared-emit/two-diamonds-share-two-continuations-aot-smaller ()
+  (skip-unless (equal emacs-version "31.1"))
+  (unless (equal emacs-version "31.1") (ert-skip "Requires GNU Emacs 31.1"))
+  (let* ((input (nelisp-bytecode-native-rooted-cfg-shared-emit-test--two-diamonds))
+         (plan (nelisp-bytecode-native-rooted-cfg-plan input))
+         (reference (nelisp-bytecode-native-rooted-cfg-emit plan "shared_reference"))
+         (shared (nelisp-bytecode-native-rooted-cfg-shared-emit-build plan "shared_once"))
+         (reference-form (plist-get reference :form))
+         (shared-form (plist-get shared :form))
+         (reference-unit (nelisp-aot-compile-to-link-unit reference-form))
+         (shared-unit (nelisp-aot-compile-to-link-unit shared-form))
+         (reference-cons (nelisp-bytecode-native-rooted-cfg-shared-emit-test--walk
+                          reference-form (lambda (node) (eq (cadr node) 'nl_native_cons_v2))))
+         (shared-cons (nelisp-bytecode-native-rooted-cfg-shared-emit-test--walk
+                       shared-form (lambda (node) (eq (cadr node) 'nl_native_cons_v2)))))
+    (should (eq (plist-get plan :status) 'complete))
+    (should (eq (plist-get shared :status) 'complete))
+    (should (= (plist-get shared :join-count) 2))
+    (should (> (plist-get shared :selector-edge-count) 0))
+    (should (= (length shared-cons) 1))
+    (should (> (length reference-cons) (length shared-cons)))
+    (should (< (nelisp-bytecode-native-rooted-cfg-shared-emit-test--size shared-form)
+               (nelisp-bytecode-native-rooted-cfg-shared-emit-test--size reference-form)))
+    (should (< (length (plist-get shared-unit :text))
+               (length (plist-get reference-unit :text))))
+    (should (member "nl_native_cons_v2" (plist-get shared-unit :extern-symbols)))
+    (message "shared CFG AOT text bytes reference=%d shared=%d"
+             (length (plist-get reference-unit :text))
+             (length (plist-get shared-unit :text)))))
+
+(ert-deftest nelisp-bytecode-native-rooted-cfg-shared-emit/multi-phi-and-carried-phi-aot-parity-shape ()
+  (skip-unless (equal emacs-version "31.1"))
+  (unless (equal emacs-version "31.1") (ert-skip "Requires GNU Emacs 31.1"))
+  (dolist (case (list (list (nelisp-bytecode-native-rooted-cfg-shared-emit-test--two-phis)
+                            (byte-compile (lambda (a x y b z w)
+                                            (cons (if a x y) (if b z w)))) 6)
+                      (list (nelisp-bytecode-native-rooted-cfg-shared-emit-test--carried-phi)
+                            (nelisp-bytecode-native-rooted-cfg-shared-emit-test--carried-oracle) 5)))
+    (let* ((input (nth 0 case))
+           (oracle (nth 1 case))
+           (arity (nth 2 case))
+           (plan (nelisp-bytecode-native-rooted-cfg-plan input))
+           (reference (nelisp-bytecode-native-rooted-cfg-emit plan "shared_phi_ref"))
+           (shared (nelisp-bytecode-native-rooted-cfg-shared-emit-build plan "shared_phi"))
+           (form (plist-get shared :form))
+           (unit (nelisp-aot-compile-to-link-unit form))
+           (reference-form (plist-get reference :form))
+           (reference-unit (nelisp-aot-compile-to-link-unit reference-form))
+           (cons-calls (nelisp-bytecode-native-rooted-cfg-shared-emit-test--walk
+                        form (lambda (node) (eq (cadr node) 'nl_native_cons_v2)))))
+      (should (eq (plist-get shared :status) 'complete))
+      (should (plist-get unit :defuns))
+      (should (= (length cons-calls) 1))
+      (should-not (equal form reference-form))
+      (should (plist-get reference-unit :text))
+      (should (plist-get unit :text))
+      (dolist (a '(nil t))
+        (dolist (b '(nil t))
+          (let* ((x (cons (list 'x) 'x-tail))
+                 (y (cons (list 'y) 'y-tail))
+                 (z (cons 'z-head (list 'z-tail)))
+                 (w (cons 'w-head (list 'w-tail)))
+                 (arguments (if (= arity 6) (list a x y b z w) (list a x y b z)))
+                 (expected (apply oracle arguments))
+                 (shared-result
+                  (nelisp-bytecode-native-rooted-cfg-shared-emit-test--run shared arguments))
+                 (reference-result
+                  (nelisp-bytecode-native-rooted-cfg-shared-emit-test--run reference arguments))
+                 (selected (if a x y)))
+            (should (>= (car shared-result) 512))
+            (should (>= (car reference-result) 512))
+            (should (eq (car expected) (car (cadr shared-result))))
+            (should (eq (cdr expected) (cdr (cadr shared-result))))
+            (should (eq (car (cadr shared-result)) (car (cadr reference-result))))
+            (should (eq (cdr (cadr shared-result)) (cdr (cadr reference-result))))
+            ;; Carried phi must keep the physical z argument distinct from x/y.
+            (when (< arity 6)
+              (should (eq (cdr (cadr shared-result)) (if b z selected))))
+            (setcar selected 'mutated-after-return)
+            (should (eq (car (cadr shared-result)) selected))
+            (should (eq (caar (cadr shared-result)) 'mutated-after-return)))))
+    (let* ((form (copy-tree (plist-get shared :form) t))
+           (assignments (nelisp-bytecode-native-rooted-cfg-shared-emit-test--walk
+                         form (lambda (node) (and (consp node) (eq (car node) 'setq)
+                                                  (symbolp (cadr node))
+                                                  (string-prefix-p "rooted_cfg_phi_"
+                                                                   (symbol-name (cadr node)))))))
+           (assignment (car assignments)))
+      (should assignment)
+      (let ((mismatch nil)
+            (physical-roots (number-sequence 1 arity)))
+        (dolist (edge-assign (cl-remove-if-not
+                              (lambda (node) (and (consp node) (eq (car node) 'setq)
+                                                  (symbolp (cadr node))
+                                                  (string-prefix-p "rooted_cfg_phi_"
+                                                                   (symbol-name (cadr node)))
+                                                  (integerp (nth 2 node))))
+                              assignments))
+          (let ((original (nth 2 edge-assign)))
+            (dolist (replacement (delq original (copy-sequence physical-roots)))
+              (setcar (cddr edge-assign) replacement)
+              (dolist (a '(nil t))
+                (dolist (b '(nil t))
+                  (let* ((args (if (= arity 6)
+                                   (list a (cons 'x 'xt) (cons 'y 'yt) b
+                                         (cons 'z 'zt) (cons 'w 'wt))
+                                 (list a (cons 'x 'xt) (cons 'y 'yt) b (cons 'z 'zt))))
+                         (expected (apply oracle args)))
+                    (condition-case error-data
+                        (nelisp-bytecode-native-rooted-cfg-shared-emit-test--assert-value
+                         (plist-put (copy-sequence shared) :form form) args expected)
+                      (ert-test-failed (setq mismatch t)))))))
+            (setcar (cddr edge-assign) original)))
+        (should mismatch))))))
+
+(ert-deftest nelisp-bytecode-native-rooted-cfg-shared-emit/preserves-car-cdr-error-root-statuses ()
+  (skip-unless (equal emacs-version "31.1"))
+  (let* ((input (nelisp-bytecode-native-rooted-cfg-shared-emit-test--two-diamonds))
+         (plan (nelisp-bytecode-native-rooted-cfg-plan input))
+         (reference (plist-get (nelisp-bytecode-native-rooted-cfg-emit
+                                plan "shared_error_ref") :form))
+         (shared (plist-get (nelisp-bytecode-native-rooted-cfg-shared-emit-build
+                             plan "shared_error") :form))
+         (errors (lambda (form)
+                   (nelisp-bytecode-native-rooted-cfg-shared-emit-test--walk
+                    form (lambda (node) (and (consp node) (eq (car node) '+)
+                                             (equal (cadr node) 256)))))))
+    (should (= (length (funcall errors reference)) 6))
+    (should (= (length (funcall errors shared)) 2))
+    (let ((error-forms (funcall errors shared)))
+      (should (cl-some (lambda (node) (eq (nth 2 node) 'rooted_cfg_phi_0)) error-forms))
+      (should (cl-some (lambda (node) (eq (nth 2 node) 'rooted_cfg_phi_1)) error-forms)))))
+
+(ert-deftest nelisp-bytecode-native-rooted-cfg-shared-emit/evaluates-shared-continuations-and-errors ()
+  (skip-unless (equal emacs-version "31.1"))
+  (unless (equal emacs-version "31.1") (ert-skip "Requires GNU Emacs 31.1"))
+  (let* ((input (nelisp-bytecode-native-rooted-cfg-shared-emit-test--two-diamonds))
+         (plan (nelisp-bytecode-native-rooted-cfg-plan input))
+         (reference (nelisp-bytecode-native-rooted-cfg-emit plan "reference_eval"))
+         (emission (nelisp-bytecode-native-rooted-cfg-shared-emit-build plan "shared_eval"))
+         (oracle (byte-compile
+                  (lambda (condition-a left-a right-a condition-b left-b right-b)
+                    (cons (car (if condition-a left-a right-a))
+                          (cdr (if condition-b left-b right-b)))))))
+    (dolist (a '(nil t))
+      (dolist (b '(nil t))
+        (let* ((left-a (cons (list 'left-a) 'tail-a))
+               (right-a (cons (list 'right-a) 'tail-b))
+               (left-b (cons 'head-a (list 'left-tail)))
+               (right-b (cons 'head-b (list 'right-tail)))
+               (arguments (list a left-a right-a b left-b right-b))
+               (expected (funcall oracle a left-a right-a b left-b right-b))
+               (reference-result
+                (nelisp-bytecode-native-rooted-cfg-shared-emit-test--run
+                 reference arguments))
+               (result (nelisp-bytecode-native-rooted-cfg-shared-emit-test--run
+                        emission arguments)))
+          (should (>= (car result) 512))
+          (should (>= (car reference-result) 512))
+          (should (eq (car expected) (car (cadr result))))
+          (should (eq (cdr expected) (cdr (cadr result))))
+          (should (eq (car (cadr reference-result)) (car (cadr result))))
+          (should (eq (cdr (cadr reference-result)) (cdr (cadr result)))))))
+    (let* ((bad-car 'bad-car)
+           (bad-cdr 'bad-cdr)
+           (car-result
+            (nelisp-bytecode-native-rooted-cfg-shared-emit-test--run
+             emission (list t bad-car '(good . tail) nil '(h . t) '(r . s))))
+           (cdr-result
+            (nelisp-bytecode-native-rooted-cfg-shared-emit-test--run
+             emission (list nil '(good . tail) '(also . good) t bad-cdr '(r . s))))
+           (reference-car
+            (nelisp-bytecode-native-rooted-cfg-shared-emit-test--run
+             reference (list t bad-car '(good . tail) nil '(h . t) '(r . s))))
+           (reference-cdr
+            (nelisp-bytecode-native-rooted-cfg-shared-emit-test--run
+             reference (list nil '(good . tail) '(also . good) t bad-cdr '(r . s)))))
+      (should (= (car car-result) 258))
+      (should (eq (cadr car-result) bad-car))
+      (should (= (car reference-car) (car car-result)))
+      (should (eq (cadr reference-car) (cadr car-result)))
+      (should (= (car cdr-result) 261))
+      (should (eq (cadr cdr-result) bad-cdr))
+      (should (= (car reference-cdr) (car cdr-result)))
+      (should (eq (cadr reference-cdr) (cadr cdr-result))))))
+
+(ert-deftest nelisp-bytecode-native-rooted-cfg-shared-emit/nil-car-cdr-match-gnu-and-reference ()
+  (skip-unless (equal emacs-version "31.1"))
+  (unless (equal emacs-version "31.1") (ert-skip "Requires GNU Emacs 31.1"))
+  (let* ((input (nelisp-bytecode-native-rooted-cfg-shared-emit-test--two-diamonds))
+         (plan (nelisp-bytecode-native-rooted-cfg-plan input))
+         (shared (nelisp-bytecode-native-rooted-cfg-shared-emit-build plan "nil_shared"))
+         (reference (nelisp-bytecode-native-rooted-cfg-emit plan "nil_reference"))
+         (oracle (byte-compile
+                  (lambda (condition-a left-a right-a condition-b left-b right-b)
+                    (cons (car (if condition-a left-a right-a))
+                          (cdr (if condition-b left-b right-b))))))
+         (args (list t nil '(right-a . tail) t nil '(right-b . tail)))
+         (expected (apply oracle args))
+         (shared-result
+          (nelisp-bytecode-native-rooted-cfg-shared-emit-test--run shared args))
+         (reference-result
+          (nelisp-bytecode-native-rooted-cfg-shared-emit-test--run reference args)))
+    (should (>= (car shared-result) 512))
+    (should (>= (car reference-result) 512))
+    (should (null (car (cadr shared-result))))
+    (should (null (cdr (cadr shared-result))))
+    (should (equal (cadr shared-result) expected))
+    (should (equal (cadr reference-result) expected))))
+
+(ert-deftest nelisp-bytecode-native-rooted-cfg-shared-emit/refuses-when-analysis-disabled-or-plan-mutated ()
+  (skip-unless (equal emacs-version "31.1"))
+  (let* ((input (nelisp-bytecode-native-rooted-cfg-shared-emit-test--two-diamonds))
+         (plan (nelisp-bytecode-native-rooted-cfg-plan input))
+         (copy (copy-tree plan t)))
+    (cl-letf (((symbol-function 'nelisp-bytecode-native-rooted-cfg-postdom-analyze)
+               (lambda (_input) (list :status 'unsupported :reason "disabled"))))
+      (should (eq (plist-get (nelisp-bytecode-native-rooted-cfg-shared-emit-build
+                              plan "shared_disabled") :status)
+                  'unsupported)))
+    (setf (plist-get (car (plist-get copy :blocks)) :start) 9999)
+    (should (eq (plist-get (nelisp-bytecode-native-rooted-cfg-shared-emit-build
+                            copy "shared_mutated") :status)
+                'unsupported))))
+
+(ert-deftest nelisp-bytecode-native-rooted-cfg-shared-emit/no-join-refuses-only-optimization-mode ()
+  (skip-unless (equal emacs-version "31.1"))
+  (let* ((input (nelisp-bytecode-native-rooted-cfg-shared-emit-test--two-diamonds))
+         (plan (nelisp-bytecode-native-rooted-cfg-plan input)))
+    (cl-letf (((symbol-function 'nelisp-bytecode-native-rooted-cfg-postdom-analyze)
+               (lambda (_input)
+                 (list :status 'complete :nearest-joins '((0 . nil))))))
+      (should (eq (plist-get (nelisp-bytecode-native-rooted-cfg-shared-emit-build
+                              plan "no_join_shared") :status)
+                  'unsupported))
+      (should (eq (plist-get (nelisp-bytecode-native-rooted-cfg-emit
+                              plan "no_join_reference") :status)
+                  'complete)))))
+
+(provide 'nelisp-bytecode-native-rooted-cfg-shared-emit-test)
+;;; nelisp-bytecode-native-rooted-cfg-shared-emit-test.el ends here

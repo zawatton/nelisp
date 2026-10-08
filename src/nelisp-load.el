@@ -114,6 +114,17 @@ See `nelisp-artifact-default-native-policy'.")
   (and (fboundp 'do-after-load-evaluation)
        (symbol-function 'do-after-load-evaluation)))
 
+;; GNU byte-compiled files contain reader literals (`#[...]') and
+;; top-level `(byte-code ...)' forms that the NeLisp source reader and
+;; evaluator do not represent as source forms.  Capture the host reader
+;; and evaluator before NeLisp installs names with the same spelling.
+(defvar nelisp-load--host-read-from-string
+  (and (fboundp 'read-from-string) (symbol-function 'read-from-string)))
+(defvar nelisp-load--host-eval
+  (and (fboundp 'eval) (symbol-function 'eval)))
+(defvar nelisp-load--host-check-parens
+  (and (fboundp 'check-parens) (symbol-function 'check-parens)))
+
 (defvar nelisp-load--current-file nil
   "Canonical source path currently evaluated by `nelisp-load-string'.")
 
@@ -206,6 +217,117 @@ load, PHASE is `read' or `eval'."
                   :phase phase
                   :cause cause))))
 
+(defun nelisp-load--gnu-elc-p (contents)
+  "Return non-nil when CONTENTS begins with GNU Emacs's ELC marker."
+  (and (stringp contents)
+       (>= (length contents) 5)
+       (= (aref contents 0) ?\;)
+       (= (aref contents 1) ?E)
+       (= (aref contents 2) ?L)
+       (= (aref contents 3) ?C)
+       (= (aref contents 4) 31)))
+
+(defun nelisp-load-gnu-elc-p (contents)
+  "Return non-nil when CONTENTS has the supported GNU ELC marker."
+  (nelisp-load--gnu-elc-p contents))
+
+(defun nelisp-load--gnu-elc-skip-comments (contents pos)
+  "Skip whitespace and line comments in CONTENTS starting at POS."
+  (let ((len (length contents)) done)
+    (while (not done)
+      (while (and (< pos len)
+                  (memq (aref contents pos) '(?\s ?\t ?\n ?\r ?\f)))
+        (setq pos (1+ pos)))
+      (if (and (< pos len) (= (aref contents pos) ?\;))
+          (progn
+            (while (and (< pos len) (/= (aref contents pos) ?\n))
+              (setq pos (1+ pos)))
+            (when (< pos len) (setq pos (1+ pos))))
+        (setq done t)))
+    pos))
+
+(defun nelisp-load--read-gnu-elc (contents source-file)
+  "Read all forms from GNU ELC CONTENTS before allowing evaluation.
+SOURCE-FILE is attached to any read error.  Parsing the complete file
+first ensures a truncated final form cannot leave earlier side effects."
+  (unless (functionp nelisp-load--host-read-from-string)
+    (signal 'nelisp-load-error (list :phase 'read :cause 'host-reader-unavailable)))
+  ;; The embedded NeLisp reader accepts an unterminated final list by
+  ;; inserting its closing delimiter.  GNU's reader instead rejects it.
+  ;; Check structural completeness in the host syntax parser before the
+  ;; permissive reader can turn a truncated file into a complete form.
+  (unless (functionp nelisp-load--host-check-parens)
+    (signal 'nelisp-load-error (list :phase 'read :cause 'host-paren-checker-unavailable)))
+  (let ((original (current-buffer))
+        (buffer (generate-new-buffer " *nelisp-gnu-elc-check*")))
+    (unwind-protect
+        (progn
+          (set-buffer buffer)
+          (insert contents)
+          (condition-case err
+              (funcall nelisp-load--host-check-parens)
+            (error
+             (nelisp-load--signal source-file 0 contents 0 'read err))))
+      (set-buffer original)
+      (kill-buffer buffer)))
+  (let ((pos 0) (index 0) (len (length contents)) forms)
+    (while (< (setq pos (nelisp-load--gnu-elc-skip-comments contents pos)) len)
+      (let ((start pos)
+            parsed)
+        (condition-case err
+            (setq parsed (funcall nelisp-load--host-read-from-string
+                                  contents pos))
+          (error
+           (nelisp-load--signal source-file start contents index 'read err)))
+        (unless (and (consp parsed) (> (cdr parsed) start))
+          (nelisp-load--signal source-file start contents index 'read
+                               '(invalid-reader-progress)))
+        (push (cons start (car parsed)) forms)
+        (setq pos (cdr parsed)
+              index (1+ index))))
+    (nreverse forms)))
+
+(defun nelisp-load--eval-gnu-elc (contents source-file)
+  "Evaluate GNU byte-compiled CONTENTS in the host namespace."
+  (unless (functionp nelisp-load--host-eval)
+    (signal 'nelisp-load-error (list :phase 'eval :cause 'host-evaluator-unavailable)))
+  (let* ((true-file (file-truename source-file))
+         (load-file-name true-file)
+         (nelisp-load--current-file true-file)
+         (nelisp-load--current-features nil)
+         (forms (nelisp-load--read-gnu-elc contents source-file))
+         (index 0) (last nil))
+    (dolist (record forms)
+      (let ((pos (car record))
+            (form (cdr record)))
+        (condition-case err
+            (setq last (funcall nelisp-load--host-eval form))
+          (error
+           (nelisp-load--signal source-file pos contents index 'eval err)))
+        ;; Keep load-history/after-load bookkeeping in step with ordinary
+        ;; source loading for direct top-level `provide' forms.
+        (when (and (consp form) (eq (car form) 'provide)
+                   (consp (cdr form)) (consp (cadr form))
+                   (eq (caadr form) 'quote) (symbolp (cadadr form)))
+          (push (cadadr form) nelisp-load--current-features))
+        (setq index (1+ index))))
+    (nelisp-load--source-complete true-file nelisp-load--current-features)
+    last))
+
+(defun nelisp-load-gnu-elc-host (path)
+  "Diagnostic opt-in: load GNU ELC PATH using GNU's host evaluator.
+The effects and function cells belong to the host namespace and are
+not mirrored into NeLisp's `nelisp--globals' or `nelisp--functions'.
+Ordinary `nelisp-load-file' deliberately refuses GNU ELC until the
+runtime has a shared byte-code execution environment."
+  (unless (nelisp-core-file-readable-p path)
+    (signal 'file-error (list "Cannot read GNU ELC file" path)))
+  (let ((contents (nelisp-core-read-file-as-string path)))
+    (unless (nelisp-load--gnu-elc-p contents)
+      (signal 'nelisp-load-error (list :source path :phase 'read
+                                       :cause 'not-gnu-elc)))
+    (nelisp-load--eval-gnu-elc contents path)))
+
 ;;;###autoload
 (defun nelisp-load--eval-string (str source-file)
   "Read and evaluate STR, attaching SOURCE-FILE to read/eval errors."
@@ -287,6 +409,16 @@ Doc 141 Stage 2: disk read goes through `nelisp-core-fileio', so
 the loader no longer depends on Emacs compatibility buffers or
 editor-style file APIs.  UTF-8 decoding is handled by
 `nelisp-coding' inside `nelisp-core-read-file-as-string'."
+  ;; Never silently execute GNU ELC in the host's distinct variable and
+  ;; function namespace.  Reject this exact artifact dialect before an
+  ;; adjacent generated artifact or any top-level form can run.
+  (when (and (stringp path)
+             (>= (length path) 4)
+             (equal (substring path (- (length path) 4)) ".elc")
+             (nelisp-core-file-readable-p path))
+    (let ((contents (nelisp-core-read-file-as-string path)))
+      (when (nelisp-load--gnu-elc-p contents)
+        (nelisp-load--signal path 0 contents 0 'read '(unsupported-gnu-elc)))))
   (let ((artifact (nelisp-load--try-artifact path)))
     (if artifact
         (plist-get artifact :value)

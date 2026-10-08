@@ -42,6 +42,66 @@
 
 ;;; Code:
 
+;; Only these two genuine provider forms may be evaluated.  Replaying the
+;; whole prelude here would replace bootstrap owners such as `equal' after
+;; compiler-input attestation has captured their identities.
+(defconst nelisp-bc--logb-provider-spec
+  '((nelisp--check-number 154 7188
+     "5b7dcfd2418083cbe7cae277c912b35bfc50db10984c1e96d2e94792964c9f89")
+    (logb 1157 7343
+     "38c1225b1b0f8c9e59e635cff112b670cb24735c09e49809710d77d93d92b455")))
+
+(defun nelisp-bc-logb-provider-forms (provider)
+  "Authenticate exact retained logb forms before evaluating any source."
+  (let* ((attributes (file-attributes provider))
+         (size (and attributes (nth 7 attributes))))
+    (unless (and (integerp size) (<= 0 size 2097152))
+      (error "logb provider source size rejected")))
+  (let ((forms nil))
+    (dolist (spec nelisp-bc--logb-provider-spec)
+      (let* ((name (car spec)) (size (nth 1 spec)) (start (nth 2 spec)))
+        (let* ((fragment (with-temp-buffer
+                           (insert-file-contents provider nil start (+ start size))
+                           (buffer-string)))
+               (digest (secure-hash 'sha256 fragment)))
+          (unless (and (= (length fragment) size)
+                       (equal digest (nth 3 spec)))
+            (error "logb provider source pin differs"))
+          (let* ((parsed (read-from-string fragment)) (form (car parsed)))
+            (unless (and (= (cdr parsed) size)
+                         (eq (car form) 'unless)
+                         (equal (nth 1 form) (list 'fboundp (list 'quote name)))
+                         (eq (car (nth 2 form)) 'defun)
+                         (eq (nth 1 (nth 2 form)) name)
+                         (null (nthcdr 3 form)))
+              (error "logb provider parsed declaration differs"))
+            (push form forms)))))
+    (nreverse forms)))
+
+;; The standalone cl-lib artifact may evaluate advice setup while this
+;; module is first required.  Install only the authenticated prerequisites.
+(unless (fboundp 'logb)
+  (let* ((module-dir (and (stringp load-file-name)
+                          (file-name-directory load-file-name)))
+         (source-provider (and module-dir
+                               (expand-file-name
+                                "../scripts/nelisp-stdlib-prelude.el"
+                                module-dir)))
+         (repo-root (getenv "NELISP_REPO_ROOT"))
+         (env-provider (and (stringp repo-root)
+                            (> (length repo-root) 0)
+                            (expand-file-name
+                             "scripts/nelisp-stdlib-prelude.el" repo-root)))
+         (provider (cond ((and source-provider
+                               (file-readable-p source-provider))
+                          source-provider)
+                         ((and env-provider (file-readable-p env-provider))
+                          env-provider))))
+    (unless provider
+      (error "nelisp-bytecode requires the stdlib prelude provider for logb"))
+    (let ((forms (nelisp-bc-logb-provider-forms provider)))
+      (dolist (form forms) (eval form nil)))))
+
 (require 'cl-lib)
 ;; Wave A21: `nelisp-eval' is only available under host Emacs (the
 ;; build path that bootstraps NeLisp).  Standalone NeLisp doesn't
@@ -87,6 +147,8 @@
   (and (fboundp 'symbol-plist) (symbol-function 'symbol-plist)))
 (defconst nelisp-bc--byte-plist-get-function
   (and (fboundp 'plist-get) (symbol-function 'plist-get)))
+(defconst nelisp-bc--byte-nconc-function
+  (and (fboundp 'nconc) (symbol-function 'nconc)))
 
 (defun nelisp-bc--byte-get (symbol property)
   "Read SYMBOL's PROPERTY through function objects captured at load time."
@@ -235,6 +297,7 @@
     (BOX-TOP         41 0)
     (CELL-REF        42 0)
     (CELL-SET        43 1)
+    (BYTE-NCONC     164 0)
     (BYTE-GET        78 0))
   "Ordered list of (NAME BYTE ARG-BYTES) triples.
 Source of truth; the plist, reverse-name, and arg-bytes caches are
@@ -1752,8 +1815,10 @@ recursing and reload from VM afterwards."
                      (sym (aref consts idx))
                      (val (cond
                            ((boundp 'nelisp--globals)
-                            (let ((g (gethash sym nelisp--globals
-                                              nelisp--unbound)))
+                            (let ((g (if (fboundp 'nelisp-variable-get)
+                                         (nelisp-variable-get sym nelisp--unbound)
+                                       (gethash sym nelisp--globals
+                                                nelisp--unbound))))
                               (if (eq g nelisp--unbound)
                                   (signal 'nelisp-unbound-variable
                                           (list sym))
@@ -1773,7 +1838,9 @@ recursing and reload from VM afterwards."
                 (setq pc (1+ pc))
                 (cond
                  ((boundp 'nelisp--globals)
-                  (puthash sym val nelisp--globals))
+                  (if (fboundp 'nelisp-variable-put)
+                      (nelisp-variable-put sym val)
+                    (puthash sym val nelisp--globals)))
                  (t
                   (set sym val)))
                 (setq sp (1- sp))))
@@ -1786,9 +1853,14 @@ recursing and reload from VM afterwards."
                 (setq pc (1+ pc))
                 (cond
                  ((boundp 'nelisp--globals)
-                  (let ((old (gethash sym nelisp--globals nelisp--unbound)))
-                    (push (cons sym old) specpdl)
-                    (puthash sym val nelisp--globals)))
+                  (let* ((key (if (fboundp 'nelisp-variable-canonical-symbol)
+                                  (nelisp-variable-canonical-symbol sym)
+                                sym))
+                         (old (gethash key nelisp--globals nelisp--unbound)))
+                    (push (cons key old) specpdl)
+                    (if (fboundp 'nelisp-variable-put)
+                        (nelisp-variable-put sym val)
+                      (puthash key val nelisp--globals))))
                  (t
                   ;; Standalone fallback: record old binding sentinel
                   ;; using a private cookie (`:nelisp-bc--unbound') so
@@ -2175,7 +2247,19 @@ recursing and reload from VM afterwards."
                     (sym (aref stack (- sp 2))))
                 (aset stack (- sp 2) (nelisp-bc--byte-get sym prop))
                 (setq sp (1- sp))))
-                 (_ (signal 'nelisp-bc-error (list "unknown opcode"
+             (164
+              ;; GNU Emacs 31.1 BYTE-NCONC consumes two values and leaves
+              ;; their destructive concatenation, matching (nconc LEFT RIGHT).
+              (when (< sp 2)
+                (signal 'nelisp-bc-error (list "BYTE-NCONC stack underflow" sp)))
+              (let ((right (aref stack (1- sp)))
+                    (left (aref stack (- sp 2))))
+                (unless nelisp-bc--byte-nconc-function
+                  (signal 'nelisp-bc-error '("BYTE-NCONC operation unavailable")))
+                (aset stack (- sp 2)
+                      (funcall nelisp-bc--byte-nconc-function left right))
+                (setq sp (1- sp))))
+             (_ (signal 'nelisp-bc-error (list "unknown opcode"
                                 (aref nelisp-bc--opcode-names op)
                                 op (1- pc)))))))
             (unless nested

@@ -1,0 +1,40 @@
+;;; standalone-bytecode-frame-ir-handler-diagnostic-driver.el --- handler diagnostic smoke -*- lexical-binding: t; -*-
+
+(load (expand-file-name "lisp/nelisp-bytecode-frame-ir.el"
+                        (getenv "NELISP_REPO_ROOT")) nil nil t)
+
+(defun nelisp-test-handler-diagnostic ()
+  "Check literal GNU 31.1 handler bytes and malformed target refusal."
+  (let* ((code (unibyte-string 1 50 12 0 137 24 193 2 8 34 41 48 135))
+         (constants [nelisp-bytecode-frame-ir-handler-special throw])
+         (frame (nelisp-bytecode-frame-ir-build code constants 2))
+         (control (plist-get frame :handler-control-flow))
+         (pushes (plist-get control :pushes))
+         (transfers (plist-get control :possible-nonlocal-transfers))
+         (push (and pushes (aref pushes 0)))
+         (transfer (and transfers (aref transfers 0)))
+         (bad-code (copy-sequence code)))
+    (unless (and (eq (plist-get frame :status) 'unsupported)
+                 (null (plist-get frame :blocks))
+                 (eq (plist-get control :status) 'unsupported)
+                 (= (plist-get push :target) 12)
+                 (= (plist-get push :handler-depth) 1)
+                 (= (plist-get push :binding-depth) 0)
+                 (= (plist-get push :stack-depth) 2)
+                 (= (plist-get transfer :from-pc) 9)
+                 (= (plist-get transfer :target) 12)
+                 (= (plist-get transfer :handler-depth) 1)
+                 (= (plist-get transfer :binding-depth) 1)
+                 (= (plist-get transfer :saved-binding-depth) 0)
+                 (eq (plist-get transfer :stack-transfer) 'unresolved)
+                 (eq (plist-get transfer :binding-transfer) 'unresolved))
+      (error "handler diagnostic mismatch: %S" frame))
+    (aset bad-code 2 2)
+    (let ((bad (nelisp-bytecode-frame-ir-build bad-code constants 2)))
+      (unless (and (eq (plist-get bad :status) 'malformed)
+                   (null (plist-get bad :blocks)))
+        (error "malformed handler target accepted: %S" bad)))
+    t))
+
+(provide 'standalone-bytecode-frame-ir-handler-diagnostic-driver)
+;;; standalone-bytecode-frame-ir-handler-diagnostic-driver.el ends here

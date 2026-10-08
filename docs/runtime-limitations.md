@@ -155,3 +155,68 @@ calls (B), avoid `double` across `extern`/`va_arg` (C), avoid the syscall/mmap
 edges (D), and stay within the supported argument/ABI shapes (E).  Curated
 showcases pick functions that satisfy all of the above and then verify their
 output byte-for-byte against a native build.
+
+### Shared active catches (U8r)
+
+The evaluator and GNU bytecode VM share a thread-local active-catch registry.
+A throw searches it before publishing an exit. An unmatched tag or a nil tag
+signals `(no-catch TAG VALUE)` at the throw site, so a local `condition-case`
+can handle it. Cleanup keeps enclosing catches active and retires catches
+when their saved unwind tail is crossed. A cleanup exit restarts handler
+selection before any enclosing cleanup runs. VM registration root pairs are
+reused after popping, so root use follows nesting depth rather than loop count.
+
+U8b native registration uses the raw entry pair
+`nl_ct_active_push(env, tag_slot, node)` / `nl_ct_active_pop(env, node)`.
+The caller supplies a stable, registered 32-byte tag root and a separate
+registered 32-byte integer metadata root. Push returns `node`; pop returns
+zero. Pop in strict LIFO order before releasing either root, on normal and
+non-local exits. Neither entry allocates nor alters the pending-exit stash.
+`node+8` holds the preceding link, and `node+16` holds the tag-slot address.
+Main evaluation uses `nl_catch_head` in driver BSS; a registered worker uses
+`env+160`. These are evaluator-internal entries, with no new public Lisp
+builtin. Registry entries do not perform native landing themselves.
+
+U8n lowers GNU bytecode opcodes 48–50 through `nl_native_frame_v2`.
+After a callback reports an exit, the active native handler chain selects
+the landing block, retires crossed catches, runs U7 cleanup and restores
+the U8a operand bank. A cleanup replacement exit repeats selection with
+the remaining handlers. Unmatched exits use the existing raw-v2 exit triple.
+Handler constants are initialized from the live bytecode constant vector,
+preserving object identity across private cache serialization and GC.
+
+Native cache recipes refuse unreadable buffer and marker constants, including
+objects nested in constant data. They cannot be relocated from a serialized
+artifact, matching GNU native-comp's refusal to spill such objects into .eln
+files. Compilation reports `Cache relocation refused`; the original function
+remains byte code and can still run. U10 checks this refusal on the original
+fixtures, then tests their opcode lowering with source-owned live variables.
+
+The standalone bytecode VM does not decode 16-bit `stack-set` (179). U10's
+single straight-line offset-1 fixture uses the equivalent 8-bit encoding only
+for the VM comparison; its original GNU oracle and both native compilations
+retain opcode 179. This does not qualify the VM's 16-bit instruction support.
+
+`nl-signal` is an opt-in Lisp frontend for explicit `signal` calls: it invokes
+`signal-hook-function` and reuses the existing .eln debugger decision. U10
+loads it for its four exceptional-ordering cases. Errors raised directly by
+runtime primitives do not acquire this frontend's hook behavior. Loading the
+feature again preserves the installed function. The supplemental handler and
+cleanup use named Lisp callbacks because nested executable bytecode constants
+are outside the data-only cache recipe; all four original GNU observations
+remain unchanged.
+
+The standalone reader's `buffer-string` currently returns the whole buffer
+when narrowed. U10 captures accessible text with `buffer-substring` between
+`point-min` and `point-max`, preserving the GNU observation and separately
+checking both restriction bounds.
+
+U10 retains its first GNU-matching VM observation across compile/load and
+rejects changes to the original function, code, constant-vector identity,
+nested data and metadata before invoking native code. The former duplicate
+VM invocation after mapping (and its incidental pre-entry GC stress) is
+removed. GC inside every native invocation remains mandatory. Worker fixtures
+are exact projections of the complete GNU master, authenticated by host
+readback and generator-issued byte hashes. Every selected fixture still runs
+in both compile and fresh-load phases; the loader's actual mapped header is
+used for ABI checks instead of rereading the artifact in the harness.

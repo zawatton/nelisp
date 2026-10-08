@@ -1,0 +1,31 @@
+;;; nelisp-native-corpus-u10-state-test.el --- Mutation guard controls -*- lexical-binding: t; -*-
+;; SPDX-License-Identifier: GPL-3.0-or-later
+(require 'ert)
+(let ((load-path (cons (expand-file-name "support" (file-name-directory load-file-name)) load-path)))
+  (require 'native-corpus-u10-state))
+(ert-deftest u10-state/identity-and-content-mutations ()
+  (dotimes (mutation 9)
+    (let* ((table (make-hash-table :test 'eql))
+           (_ (puthash 7 3 table))
+           ;; GNU's compiled-function cells are immutable; the standalone
+           ;; representation is a mutable vector with these same fields.
+           (function (vector 0 (unibyte-string 192 135)
+                             (vector (list (copy-sequence "abc")) table) 2))
+           (state (u10-function-state function)))
+      (should (u10-function-state-check function state))
+      (pcase mutation
+        (0 (aset (aref function 1) 1 136))
+        (1 (aset function 1 (copy-sequence (aref function 1))))
+        (2 (aset function 2 (copy-sequence (aref function 2))))
+        (3 (aset (car (aref (aref function 2) 0)) 0 ?z))
+        (4 (puthash 7 4 table))
+        (5 (puthash 8 3 table))
+        (6 (aset function 3 3))
+        (7 (setq function (vector 0 (aref function 1) (aref function 2) 2)))
+        (8 (aset (aref function 2) 1 '(hash-table eql 1 ((7 3))))))
+      (should-error (u10-function-state-check function state))))
+  (let* ((function (make-byte-code 0 (unibyte-string 192 135) (vector 42) 1))
+         (state (u10-function-state function)))
+    (should (u10-function-state-check function state))
+    (aset (aref function 2) 0 43)
+    (should-error (u10-function-state-check function state))))

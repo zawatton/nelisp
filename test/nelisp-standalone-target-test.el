@@ -3041,6 +3041,23 @@ without the async core and process adapter that define the standard names."
       (should (eq (nelisp-native-frame-kind-test-build) 'fixture))
       (should (eq nelisp-standalone--reader-builtins builtins)))))
 
+(ert-deftest nelisp-standalone-target/n5-deep-dispatch-walk ()
+  (let* ((pattern '(syscall-direct (wf_argval args 0) (wf_argval args 1)
+                                  (wf_argval args 2) (wf_argval args 3)
+                                  (wf_argval args 4) (wf_argval args 5)
+                                  (wf_argval args 6)))
+         (source (make-list 1800 pattern))
+         (actual (nelisp-standalone--n5-syscall-dispatch source)))
+    (should (= (length actual) 1800))
+    (dolist (node actual)
+      (should (eq (car node) 'nl_os_interpreted_syscall))
+      (should (eq (cdr node) (cdr pattern))))
+    (should (eq (caar source) 'syscall-direct))
+    (should (equal (nelisp-standalone--n5-syscall-dispatch
+                    (cons pattern '(syscall-direct different)))
+                   (cons (cons 'nl_os_interpreted_syscall (cdr pattern))
+                         '(syscall-direct different))))))
+
 (provide 'nelisp-standalone-target-test)
 
 ;;; nelisp-standalone-target-test.el ends here

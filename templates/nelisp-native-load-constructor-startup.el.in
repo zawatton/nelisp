@@ -1,0 +1,347 @@
+;;; nelisp-native-compiler-constructor-loader.el --- Trusted startup publication -*- lexical-binding: t; -*-
+(require 'cl-lib)
+(require 'nelisp-native-load)
+(require 'nelisp-native-compiler-runtime-capability)
+(require 'nelisp-bytecode-native-rooted-cfg-contract)
+(let*
+    ((names
+      '(nelisp-native-compiler-runtime-capability-p
+	nelisp-native-compiler-runtime-capability-owner-p
+	nelisp-native-compiler-runtime-proof-owners-valid-p
+	nelisp-bytecode-native-rooted-cfg-contract-constructor-p
+	nelisp-native-load-raw-v2-rooted-cfg-contract-valid-p
+	nelisp-bytecode-native-rooted-cfg-contract-f1-p))
+     (lookup (symbol-function 'symbol-function))
+     (same (symbol-function 'eq))
+     (available (cl-every #'fboundp names))
+     (capability (and available (funcall lookup (nth 0 names))))
+     (owner-predicate (and available (funcall lookup (nth 1 names))))
+     (constructor (and available (funcall lookup (nth 3 names))))
+     (f1 (and available (funcall lookup (nth 5 names))))
+     (manifest-validator
+      (and available (funcall lookup (nth 4 names))))
+     (owners
+      (and available
+	   (mapcar (lambda (name) (cons name (funcall lookup name)))
+		   names))))
+  (setq available (and available (funcall owner-predicate capability)))
+  (cl-labels
+      ((owners-valid-p nil
+	 (and available
+	      (cl-every
+	       (lambda (entry)
+		 (funcall same (cdr entry)
+			  (funcall lookup (car entry))))
+	       owners)))
+       (constructor-runtime-p (contract)
+	 (and (owners-valid-p) (funcall constructor contract)
+	      (funcall capability '(constructor))))
+       (f1-runtime-p (contract)
+	 (and (owners-valid-p) (funcall f1 contract)
+	      (funcall capability '(f1))))
+       (manifest-runtime-p (manifest)
+	 (and (owners-valid-p)
+	      (if (null manifest) (funcall capability '(constructor))
+		(and
+		 (or
+		  (plist-get manifest
+			     :native-rooted-cfg-contract-version)
+		  (plist-get manifest
+			     :native-rooted-cfg-safe-v3-contract-version))
+		 (funcall manifest-validator manifest)
+		 (or
+		  (constructor-runtime-p
+		   (plist-get manifest :native-rooted-cfg-contract))
+		  (f1-runtime-p
+		   (or
+		    (plist-get manifest :native-rooted-cfg-contract)
+		    (plist-get manifest
+			       :native-rooted-cfg-safe-v3-contract)))))))))
+    (defun nelisp-native-load-compiler-capability-bind nil
+      "Refuse runtime binding; only source-pinned trusted startup publishes owners."
+      (error
+       "nelisp-native-load: compiler binding has no runtime authority"))
+    (defun nelisp-native-load-compiler-constructor-contract-p
+	(contract)
+      "Check CONTRACT using originals sealed by trusted startup source publication."
+      (constructor-runtime-p contract))
+    (defun nelisp-native-load-compiler-f1-runtime-p nil
+      "Check the sealed F1 provider before compilation; semantics validate at compile-file."
+      (and (owners-valid-p) (funcall capability '(f1))))
+    (defun nelisp-native-load-compiler-f1-contract-p (contract)
+      "Check only the source-pinned F1 evaluator capability and canonical plan."
+      (f1-runtime-p contract))
+    (defun nelisp-native-load--compiler-constructor-runtime-p
+	(manifest)
+      "Inspect constructor MANIFEST without exposing the private startup seal."
+      (manifest-runtime-p manifest))
+    (defun nelisp-native-load-root-v2-addresses (&optional manifest)
+      "Return the environment and authenticated fixed root-v2 runtime addresses.\nThe returned plist has :environment, :begin, :reserve, :end, and :slot fields."
+      (require 'nelisp-runtime-reload-abi)
+      (when
+	  (and manifest
+	       (or
+		(nelisp-native-load--rooted-cfg-safe-v3-manifest-p
+		 manifest)
+		(plist-get manifest
+			   :native-rooted-cfg-contract-version))
+	       (not
+		(nelisp-native-load-raw-v2-rooted-cfg-contract-valid-p
+		 manifest)))
+	(error
+	 "nelisp-native-load: generic rooted-CFG contract rejected before root address use"))
+      (let
+	  ((contract (nelisp-native-load--raw-v2-contract))
+	   (names
+	    '("nl_root_pin_begin_v2" "nl_root_pin_reserve_v2"
+	      "nl_root_pin_end_v2" "nl_root_pin_slot_v2")))
+	(unless
+	    (and contract (nelisp-native-load--raw-supported-p)
+		 (fboundp 'nelisp--native-env)
+		 (or (nelisp-runtime-reload-contract-matches-p)
+		     (manifest-runtime-p manifest)))
+	  (error
+	   "nelisp-native-load: root-v2 runtime contract unavailable"))
+	(let
+	    ((env (nelisp--native-env))
+	     (addresses
+	      (mapcar #'nelisp-native-load--symbol-addr names)))
+	  (unless
+	      (and (integerp env) (> env 0)
+		   (cl-every
+		    (lambda (address)
+		      (and (integerp address) (> address 0)))
+		    addresses))
+	    (error
+	     "nelisp-native-load: invalid root-v2 runtime address"))
+	  (list :environment env :begin (nth 0 addresses) :reserve
+		(nth 1 addresses) :end (nth 2 addresses) :slot
+		(nth 3 addresses)))))
+    (defun nelisp-native-load-root-v2-copy
+	(env ticket index value &optional manifest)
+      "Copy VALUE into authenticated root INDEX for ENV and TICKET."
+      (when
+	  (and manifest
+	       (or
+		(nelisp-native-load--rooted-cfg-safe-v3-manifest-p
+		 manifest)
+		(plist-get manifest
+			   :native-rooted-cfg-contract-version))
+	       (not
+		(nelisp-native-load-raw-v2-rooted-cfg-contract-valid-p
+		 manifest)))
+	(error
+	 "nelisp-native-load: generic rooted-CFG contract rejected before root copy"))
+      (unless
+	  (and (nelisp-native-load--raw-supported-p)
+	       (fboundp 'nelisp--native-pin-copy-v2)
+	       (or (nelisp-runtime-reload-contract-matches-p)
+		   (manifest-runtime-p manifest))
+	       (integerp env) (> env 0) (integerp ticket) (> ticket 0)
+	       (integerp index) (>= index 0))
+	(error "nelisp-native-load: root-v2 copy boundary unavailable"))
+      (let
+	  ((addr (nelisp--native-pin-copy-v2 env ticket index value)))
+	(unless (and (integerp addr) (> addr 0))
+	  (error
+	   "nelisp-native-load: root-v2 copy failed authentication"))
+	addr))
+    (defun nelisp-native-load-raw-v2-artifact
+	(path &optional name expected-binary-sha256 origin)
+      "Map v2 raw runtime artifact PATH and return its handle.\n\nFunction imports receive the usual absolute jump stub.  Shared data imports\nreceive a `movabs rax, ADDRESS; ret' getter, so the mapped text never embeds\na private copy of runtime BSS.  The GC contract table is allocated beside the\ncode and retained by the handle; its first two words are the count and magic,\nfollowed by the 24 contract entry addresses in ABI order."
+      (let*
+	  ((manifest
+	    (if (stringp path) (nelisp-native-load-manifest path)
+	      path))
+	   (origin (if (stringp path) path origin))
+	   (native (nelisp-native-load--raw-native manifest))
+	   (exports
+	    (and native (nelisp-native-load--raw-exports native)))
+	   (chosen
+	    (or name (and exports (plist-get (car exports) :name))))
+	   (problems (nelisp-native-load-raw-v2-check manifest chosen))
+	   (declared-binary (plist-get manifest :binary-sha256)))
+	(when problems
+	  (error
+	   "nelisp-native-load: cannot load v2 raw %s from %s: %S"
+	   chosen origin problems))
+	(when (fboundp 'nelisp--native-runtime-symbol-addr)
+	  (unless
+	      (and (stringp expected-binary-sha256)
+		   (equal declared-binary expected-binary-sha256))
+	    (error
+	     "nelisp-native-load: v2 binary identity mismatch for %s"
+	     origin)))
+	(let ((running (nelisp-native-load--running-binary-sha256)))
+	  (unless
+	      (and (stringp expected-binary-sha256) (stringp running)
+		   (equal declared-binary running)
+		   (equal expected-binary-sha256 running))
+	    (error
+	     "nelisp-native-load: v2 running binary identity unavailable or mismatched")))
+	(unless
+	    (or (nelisp-runtime-reload-contract-matches-p)
+		(manifest-runtime-p manifest))
+	  (error
+	   "nelisp-native-load: running native runtime contract mismatch"))
+	(unless (nelisp-native-load--raw-supported-p)
+	  (error
+	   "nelisp-native-load: v2 raw units require Linux x86_64 primitives"))
+	(let*
+	    ((text (nelisp-native-load--raw-bytes native :text-base64))
+	     (text-length (string-bytes text))
+	     (imports0 (plist-get native :imports))
+	     (stub-base (* 16 (/ (+ text-length 15) 16)))
+	     (code-size
+	      (nelisp-native-load--page-round
+	       (+ stub-base
+		  (* nelisp-native-load-stub-bytes (length imports0)))))
+	     (codepage nil) (table nil) (table-size nil)
+	     (stub-offsets nil) (success nil))
+	  (unwind-protect
+	      (progn
+		(setq codepage
+		      (nelisp-native-load--mmap code-size nil))
+		(nelisp-native-load--poke-string codepage 0 text)
+		(let ((rest imports0) (idx 0))
+		  (while rest
+		    (let*
+			((entry (car rest))
+			 (import
+			  (nelisp-native-load--raw-import-name entry))
+			 (kind
+			  (nelisp-native-load--raw-import-kind entry))
+			 (offset
+			  (+ stub-base
+			     (* nelisp-native-load-stub-bytes idx)))
+			 (addr
+			  (nelisp-native-load--raw-v2-symbol-addr
+			   import entry manifest)))
+		      (setq stub-offsets
+			    (cons (cons import offset) stub-offsets))
+		      (if (eq kind 'data)
+			  (nelisp-native-load--poke-bytes codepage
+							  offset
+							  '(72 184 0 0
+							       0 0 0 0
+							       0 0 195))
+			(nelisp-native-load--poke-bytes codepage
+							offset
+							'(72 184 0 0 0
+							     0 0 0 0 0
+							     255 224)))
+		      (ptr-write-u64 codepage (+ offset 2) addr))
+		    (setq idx (1+ idx) rest (cdr rest))))
+		(let ((rest (plist-get native :relocs)))
+		  (while rest
+		    (let*
+			((reloc (car rest))
+			 (offset (plist-get reloc :offset))
+			 (symbol (plist-get reloc :symbol))
+			 (addend (or (plist-get reloc :addend) 0))
+			 (stub (assoc symbol stub-offsets)))
+		      (unless stub
+			(error
+			 "nelisp-native-load: v2 relocation has no stub: %s"
+			 symbol))
+		      (ptr-write-u32 codepage offset
+				     (- (+ codepage (cdr stub) addend)
+					(+ codepage offset))))
+		    (setq rest (cdr rest))))
+		(setq table-size
+		      (+ 16
+			 (* 8
+			    (length (plist-get manifest :gc-entries)))))
+		(setq table
+		      (nelisp-native-load--mmap
+		       (nelisp-native-load--page-round table-size) nil))
+		(ptr-write-u64 table 0
+			       (length
+				(plist-get manifest :gc-entries)))
+		(ptr-write-u64 table 8
+			       nelisp-native-load-raw-gc-table-magic)
+		(let ((rest (plist-get manifest :gc-entries)))
+		  (while rest
+		    (let*
+			((entry (car rest))
+			 (addr
+			  (nelisp-native-load--raw-v2-gc-address entry
+								 manifest
+								 exports
+								 codepage)))
+		      (ptr-write-u64 table
+				     (+ 16
+					(* 8 (plist-get entry :index)))
+				     addr))
+		    (setq rest (cdr rest))))
+		(unless
+		    (= 0
+		       (syscall-direct 10 table
+				       (nelisp-native-load--page-round
+					table-size)
+				       1 0 0 0))
+		  (error
+		   "nelisp-native-load: mprotect read-only GC table failed"))
+		(nelisp-native-load--mprotect-rx codepage code-size)
+		(let ((addresses nil) (rest exports))
+		  (while rest
+		    (let ((entry (car rest)))
+		      (push
+		       (cons (plist-get entry :name)
+			     (+ codepage (plist-get entry :value)))
+		       addresses))
+		    (setq rest (cdr rest)))
+		  (setq addresses (nreverse addresses))
+		  (let
+		      ((handle
+			(list :kind 'raw-runtime-v2 :path origin
+			      :entry (cdr (assoc chosen addresses))
+			      :entry-name chosen :exports addresses
+			      :codepage codepage :code-size code-size
+			      :gc-table table :gc-table-size
+			      table-size :runtime-abi
+			      (plist-get manifest :runtime-abi)
+			      :raw-abi (plist-get native :raw-abi)
+			      :layout-id
+			      (plist-get manifest :layout-id)
+			      :build-id (plist-get manifest :build-id)
+			      :binary-sha256 declared-binary :imports
+			      (mapcar
+			       #'nelisp-native-load--raw-import-name
+			       imports0)
+			      :native-object-op-contract-version
+			      (plist-get manifest
+					 :native-object-op-contract-version)
+			      :native-object-op-gateway-imports
+			      (plist-get manifest
+					 :native-object-op-gateway-imports)
+			      :native-object-opcodes
+			      (plist-get manifest
+					 :native-object-opcodes)
+			      :native-object-op-contract-hash
+			      (plist-get manifest
+					 :native-object-op-contract-hash)
+			      :source-sha256
+			      (plist-get manifest :source-sha256)
+			      :artifact-sha256
+			      (plist-get manifest :artifact-sha256)
+			      :object-sha256
+			      (plist-get native :object-sha256) :arity
+			      (plist-get
+			       (nelisp-native-load--raw-export native
+							       chosen)
+			       :arity)
+			      :retained t)))
+		    (push handle nelisp-native-load-raw-mappings)
+		    (setq success t) handle)))
+	    (unless success
+	      (when (and (integerp codepage) (> codepage 0))
+		(ignore-errors
+		  (syscall-direct 11 codepage code-size 0 0 0 0)))
+	      (when (and (integerp table) (> table 0))
+		(ignore-errors
+		  (syscall-direct 11 table
+				  (nelisp-native-load--page-round
+				   table-size)
+				  0 0 0 0))))))))))
+(provide 'nelisp-native-compiler-constructor-loader)

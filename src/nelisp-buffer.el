@@ -150,6 +150,10 @@ actually at point, rather than on every `goto-char' that got it there."
         (setf (nelisp-buffer-after-gap buf) (substring total idx)))
       (remhash buf nelisp-buffer--pending-point))))
 
+;; Defined with their initial values below; declared here for the reset.
+(defvar nelisp-buffer--blen-cache)
+(defvar nelisp-buffer--size-cache)
+
 (defun nelisp-buffer--reset-registry ()
   "Clear the NeLisp buffer registry.  Test hygiene only."
   (clrhash nelisp-buffer--registry)

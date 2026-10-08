@@ -1,0 +1,21 @@
+#+TITLE: F2 U3a list opcode acceptance
+
+* S1 Host lowering and coverage
+** S1.1 Five new host tests pass
+cmd: test/standalone-native-list-u3a-smoke.sh --host
+** S1.2 Runtime pending decreases by five
+cmd: emacs -Q --batch -L lisp -L src -L tools/ai -l nelisp-bytecode-coverage-audit --eval '(unless (= (cdr (assq (quote runtime-op-pending) (plist-get (nelisp-bytecode-coverage-audit-run) :counts))) 46) (kill-emacs 1))'
+** S1.3 Original host counts and known failure set are unchanged
+cmd: python3 test/support/native-list-u3a-evidence.py host
+** S1.4 Evidence checks reject broken controls
+cmd: python3 test/support/native-list-u3a-evidence.py controls
+
+* S2 Native execution
+** S2.1 Five opcodes execute independently on both backends
+cmd: python3 test/support/native-list-u3a-evidence.py native
+#+NOTE: No new native primitive or runtime descriptor. Fixed lists and small LISTN use frozen LIST through nl_native_funcall_v2. Large LISTN uses frozen CONS through the same gateway, two staging roots and a rooted accumulator. Both backends consume the same raw CFG. GNU LISTN has an eight-bit count, so 255 is its encoded maximum; 256 and 65535 are refused by fixture construction rather than invented as bytecode encodings. Root-budget refusal remains an explicit compiler admission limit.
+** S2.2 Four requested regression suites pass on both backends
+cmd: python3 test/support/native-list-u3a-evidence.py regressions
+#+NOTE: Requires the exact F1 digest twice, nonzero executed counts, empty stderr, binary identities and every native process below 300 s. Nine original failing host files remain excluded from passing claims.
+#+NOTE: Efficiency measurement for the same 255-element repeated-root plan: flat shared emission 454372 bytes / 0.279099 s; compact repeated-root CFG 5275 bytes / 0.055851 s. The initial unrolled gccjit native probe hit its 290 s deadline. Bounded repetition preserves distinct allocations and checks F1 status before every subsequent allocation; it changes no root or backend admission limit.
+#+NOTE: A diamond followed by LISTN 33 also exceeded the 290 s deadline in the structured expansion. The compact CFG now retains unbanked phi selectors in scalar locals and assigns them on predecessor edges; banked cyclic plans retain parallel root copies. The corrected diamond form is 4199 bytes with 16 roots. Native acceptance still requires both arms to execute on both backends, plus the independent allocation/GC case.

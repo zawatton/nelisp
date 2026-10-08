@@ -332,6 +332,60 @@
                    (eq (nelisp--raw-aset table 2 'new) 'new)
                    (eq (nelisp--raw-aref table 2) 'new))
               1 0)))
+    ;; F1 interpreter oracle: boxed function calls preserve object identity.
+    (54 shared (if (let* ((shared (vector 11))
+        (input (cons shared shared))
+        (result (funcall (lambda (x) (cons (car x) (cdr x))) input)))
+   (aset shared 0 19)
+   (and (eq (car result) (cdr result)) (= (aref (car result) 0) 19))) 1 0))
+    ;; U2a fixed-arity primitives share the VM object/value stores.
+    (55 shared (if (equal (let ((xs (list 'first 'second)) (v (vector 'old 'tail)))
+  (set 'u2a-parity-value 41)
+  (fset 'u2a-parity-function '(lambda (x) x))
+  (put 'u2a-parity-value 'key 'property)
+  (aset v 0 'new)
+  (list (nth 1 xs) (eq (memq 'second xs) (cdr xs)) (length xs) (aref v 0)
+        (symbol-value 'u2a-parity-value) (symbol-function 'u2a-parity-function)
+        (get 'u2a-parity-value 'key) (substring "abcd" 1 3))) '(second t 2 new 41 (lambda (x) x) property "bc")) 1 0))
+    ;; U5 stack cell edits preserve boxed identity in the existing VM.
+    (56 shared (if (let* ((left (vector 'left)) (right (cons 'right 'tail))
+        (replace (make-byte-code 514 (unibyte-string 178 1 135) [] 2))
+        (drop (make-byte-code 514 (unibyte-string 178 0 135) [] 2))
+        (keep (make-byte-code 514 (unibyte-string 182 129 135) [] 2)))
+      (and (eq (funcall replace left right) right)
+           (eq (funcall drop left right) left)
+           (eq (funcall keep left right) right))) 1 0))
+    ;; U2c pins the exact opcode values, truncating division/remainder,
+    ;; predicate booleans and destructive dotted-tail identity.
+    (57 shared (if
+        (let ((maximum (make-byte-code 514 (unibyte-string 93 135) [] 2))
+              (minimum (make-byte-code 514 (unibyte-string 94 135) [] 2))
+              (quotient (make-byte-code 514 (unibyte-string 165 135) [] 2))
+              (remainder (make-byte-code 514 (unibyte-string 166 135) [] 2))
+              (numeric (make-byte-code 257 (unibyte-string 167 135) [] 1))
+              (integer (make-byte-code 257 (unibyte-string 168 135) [] 1))
+              (join (make-byte-code 514 (unibyte-string 164 135) [] 2))
+              (left (cons 'head 'dotted)) (right (list 'tail)))
+          (and (equal (list (funcall maximum 7 9) (funcall minimum 7 9)
+                            (funcall quotient -7 2) (funcall quotient 7 2.0)
+                            (funcall remainder -7 2) (funcall numeric 2.0)
+                            (funcall integer 2.0)) '(9 7 -3 3.5 -1 t nil))
+               (eq (funcall join left right) left) (eq (cdr left) right))) 1 0))
+    ;; U7a: the VM resolves a varbind alias before creating its dynamic cell.
+    (58 shared (if
+        (let ((target (intern "u7a-parity-target"))
+              (alias (intern "u7a-parity-alias")))
+          (set target nil)
+          (makunbound target)
+          (defvaralias alias target)
+          (let ((fn (make-byte-code 257 (unibyte-string 24 8 41 135) (vector alias) 1)))
+            (and (eq (funcall fn 'inside) 'inside) (not (boundp target))))) 1 0))
+    ;; U8r: unmatched and nil-tag throws signal at the throw site.
+    (59 shared (if (equal
+        (list (condition-case e (throw 'missing 5) (no-catch e))
+              (condition-case e (catch nil (throw nil 5)) (no-catch e))
+              (catch 'outer (catch 'inner (throw 'outer 7))))
+        '((no-catch missing 5) (no-catch nil 5) 7)) 1 0))
     ))
 
 (provide 'nelisp-substrate-parity-corpus)

@@ -558,6 +558,7 @@ inside BASE's mapped page."
 
 (ert-deftest nelisp-doc200-unibyte-repr/production-and-consumers-use-unibyte-tags ()
   "Production alloc/finalize and hand-built tags survive every representation path."
+  (skip-unless (equal emacs-version "31.1"))
   (unless (and (eq system-type 'gnu/linux)
                (string-match-p "x86_64\\|amd64" system-configuration))
     (ert-skip "Requires x86_64 Linux for the freestanding AOT executable"))

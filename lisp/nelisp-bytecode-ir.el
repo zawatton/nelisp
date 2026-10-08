@@ -26,8 +26,10 @@ Return a result plist with :status `valid', `unsupported', or `malformed',
 :reason for non-valid results. Branch operands are absolute byte offsets.
 GNU byte-code 31.1 stack-ref opcodes 1 through 5 encode their index in the
 opcode; opcode 6 consumes one index byte and opcode 7 consumes a little-endian
-16-bit index. Opcode 0 is reserved and rejected. Only instruction widths and
-semantics explicitly listed here are accepted."
+16-bit index. Opcode 0 is reserved and rejected as malformed: bytecomp.el
+marks it unused/invalid and src/bytecode.c routes Bstack_ref through
+CASE_ABORT. Only instruction widths and semantics explicitly listed here are
+accepted."
   (cond
    ((not (stringp code)) (nelisp-bytecode-ir--fail 'malformed "code is not a string"))
    ((not (vectorp constants)) (nelisp-bytecode-ir--fail 'malformed "constants is not a vector"))
@@ -43,20 +45,20 @@ semantics explicitly listed here are accepted."
            ((<= 1 op 5)
             (setq kind 'stack-ref delta 1 operand op lowerable t))
            ((= op 6)
-            (setq kind 'stack-ref delta 1 width 2 lowerable nil)
+            (setq kind 'stack-ref delta 1 width 2 lowerable t)
             (if (> (+ pc width) (length code))
                 (setq failure (format "truncated 8-bit stack-ref index at %d" pc))
               (setq operand (aref code (1+ pc))
                     metadata (list :stack-offset operand))
-              (push (cons pc 'extended-stack-ref) unsupported)))
+              ))
            ((= op 7)
-            (setq kind 'stack-ref delta 1 width 3 lowerable nil)
+            (setq kind 'stack-ref delta 1 width 3 lowerable t)
             (if (> (+ pc width) (length code))
                 (setq failure (format "truncated 16-bit stack-ref index at %d" pc))
               (setq operand (+ (aref code (1+ pc))
                                (ash (aref code (+ pc 2)) 8))
                     metadata (list :stack-offset operand))
-              (push (cons pc 'extended-stack-ref) unsupported)))
+              ))
            ((<= 8 op 47)
             (let* ((family (* 8 (/ op 8))) (immediate (logand op 7))
                    (operand-width (if (= immediate 6) 1
@@ -75,17 +77,28 @@ semantics explicitly listed here are accepted."
                              0)))
                       metadata (list :compact-index immediate
                                      :operand-width operand-width)))
-              (cond
-               ((= family 8)
-                (setq kind 'variable-ref delta 1
-                      lowerable (and (< operand (length constants))
-                                     (symbolp (aref constants operand)))))
-               ((= family 16) (setq kind 'variable-set delta -1))
-               ((= family 24) (setq kind 'variable-bind delta 0))
-               ((= family 32) (setq kind 'call delta (- (or operand immediate)))
-                )
-               ((= family 40) (setq kind 'unbind delta 0))
-               (t (setq failure (format "unknown compact opcode %d at %d" op pc))))
+              (unless failure
+                (cond
+                 ((= family 8)
+                  (setq kind 'variable-ref delta 1
+                        lowerable (and (< operand (length constants))
+                                       (symbolp (aref constants operand)))))
+                 ((= family 16) (setq kind 'variable-set delta -1))
+                 ((= family 24)
+                  (setq metadata (plist-put metadata :constant-index operand)
+                        metadata (plist-put metadata :minimum-inputs 1))
+                  (if (and (integerp operand) (<= 0 operand)
+                           (< operand (length constants))
+                           (symbolp (aref constants operand)))
+                      (setq kind 'variable-bind delta -1)
+                    (setq failure
+                          (format "invalid variable-bind constant index %S at %d"
+                                  operand pc))))
+                 ((= family 32) (setq kind 'call delta (- (or operand immediate))))
+                 ((= family 40)
+                  (setq kind 'unbind delta 0
+                        metadata (plist-put metadata :binding-count operand)))
+                 (t (setq failure (format "unknown compact opcode %d at %d" op pc)))))
               (unless (or failure lowerable)
                 (push (cons pc 'unsupported-semantics) unsupported))))
            ((memq op '(57 58 59 60))
@@ -106,8 +119,13 @@ semantics explicitly listed here are accepted."
                                  (79 substring -2) (80 concat2 -1)
                                  (81 concat3 -2) (82 concat4 -3)))))
               (setq kind (nth 1 entry) delta (nth 2 entry)
-                    lowerable (memq op '(61 64 65))
+                    lowerable (memq op '(56 61 62 63 64 65 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82))
                     metadata (list :width 1))
+              (when (memq op '(74 76 78))
+                (setq metadata
+                      (append metadata
+                              (list :minimum-inputs (if (= op 74) 1 2)
+                                    :runtime-op kind :may-signal t))))
               (unless lowerable
                 (push (cons pc 'unsupported-semantics) unsupported))))
            ((and (<= 147 op) (<= op 168))
@@ -122,7 +140,7 @@ semantics explicitly listed here are accepted."
                                  (164 nconc -1) (165 quo -1) (166 rem -1)
                                  (167 numberp 0) (168 integerp 0)))))
               (setq kind (nth 1 entry) delta (nth 2 entry)
-                    lowerable (= op 168) metadata (list :width 1))
+                    lowerable (or (<= 147 op 161) (<= 164 op 168)) metadata (list :width 1))
               (unless lowerable
                 (push (cons pc 'unsupported-semantics) unsupported))))
            ((and (<= 96 op) (<= op 127))
@@ -144,9 +162,13 @@ semantics explicitly listed here are accepted."
                                  (124 delete-region -1) (125 narrow-to-region -1)
                                  (126 widen 1) (127 end-of-line 0)))))
               (setq kind (nth 1 entry) delta (nth 2 entry)
-                    lowerable nil metadata (list :width 1))
+                    lowerable (memq op '(96 97 114 98 99 100 101 102 103 104 105 106
+                                         108 109 110 111 112 113 116 117 118
+                                         119 120 121 122 123 124 125 126 127))
+                    metadata (list :width 1))
               (when (nth 3 entry) (setq metadata (append metadata '(:obsolete t))))
-              (push (cons pc 'unsupported-semantics) unsupported)))
+              (unless lowerable
+                (push (cons pc 'unsupported-semantics) unsupported))))
            ((and (<= 138 op) (<= op 145))
             (let ((entry (assq op
                                '((138 save-excursion 0)
@@ -157,9 +179,9 @@ semantics explicitly listed here are accepted."
                                  (144 temp-output-buffer-setup 0 obsolete)
                                  (145 temp-output-buffer-show -1 obsolete)))))
               (setq kind (nth 1 entry) delta (nth 2 entry)
-                    lowerable nil metadata (list :width 1))
+                    lowerable (memq op '(138 139 140 141 142 143 144 145)) metadata (list :width 1))
               (when (nth 3 entry) (setq metadata (append metadata '(:obsolete t))))
-              (push (cons pc 'unsupported-semantics) unsupported)))
+              (unless lowerable (push (cons pc 'unsupported-semantics) unsupported))))
            ((= op 136)
             (setq kind 'discard delta -1 lowerable nil
                   metadata (list :width 1))
@@ -180,7 +202,7 @@ semantics explicitly listed here are accepted."
                                        :stack-offset offset)))
                 (push (cons pc 'unsupported-semantics) unsupported))))
            ((memq op '(175 176 177))
-            (setq width 2 delta nil lowerable nil)
+            (setq width 2 delta nil lowerable t)
             (if (> (+ pc width) (length code))
                 (setq failure (format "truncated 8-bit count operand at %d" pc))
               (setq operand (aref code (1+ pc))
@@ -189,7 +211,8 @@ semantics explicitly listed here are accepted."
                     delta (- 1 operand)
                     metadata (list :width width :operand-width 1
                                    :count operand))
-              (push (cons pc 'unsupported-semantics) unsupported)))
+              (unless lowerable
+                (push (cons pc 'unsupported-semantics) unsupported))))
            ((= op 182)
             (setq width 2 kind 'discard-n lowerable nil)
             (if (> (+ pc width) (length code))
@@ -249,7 +272,7 @@ semantics explicitly listed here are accepted."
            ((memq op '(83 84 85 86 87 88 89 90 91 92 93 94 95))
             (setq kind 'arithmetic
                   delta (if (memq op '(83 84 91)) 0 -1)
-                  lowerable (memq op '(83 84 85 86 87 88 89 90 92 95)))
+                  lowerable t)
             (unless lowerable (push (cons pc 'unsupported-arithmetic) unsupported)))
            ((= op 135) (setq kind 'return delta -1 lowerable t))
            ((= op 137) (setq kind 'dup delta 1 lowerable t))
@@ -438,6 +461,7 @@ their value restoration makes stack depth unknown without VM handler rules."
           (let* ((old (assq pc depths)) (op (aref insn 1))
                  (next (aref insn 2)) (operand (aref insn 3))
                  (delta (plist-get (aref insn 4) :stack-delta))
+                 (minimum-inputs (plist-get (aref insn 4) :minimum-inputs))
                  (after (and (numberp delta) (+ depth delta))))
             (cond
              ((and old (/= (cdr old) depth))
@@ -453,6 +477,10 @@ their value restoration makes stack depth unknown without VM handler rules."
                             depth))
                 (setq failure (format "stack reference outside depth %d at %d"
                                       depth pc)))
+              (when (and minimum-inputs (< depth minimum-inputs))
+                (setq failure
+                      (format "stack requires minimum input %d at %d"
+                              minimum-inputs pc)))
               (when (or (null after) (< after 0))
                 (setq failure (format "stack underflow/unknown effect at %d" pc)))
               (when (and after (> after maximum)) (setq maximum after))
@@ -501,6 +529,18 @@ as `unsupported'; this function never executes byte-code."
                 (setq result (plist-put result :status 'malformed)
                       result (plist-put result :reason (plist-get stack :reason)))))))))
     result))
+
+(defun nelisp-bytecode-ir-native-package-dependencies ()
+  "Return decoder and validator identities guarded by native packages."
+  '(nelisp-bytecode-ir--fail
+    nelisp-bytecode-ir-decode-result
+    nelisp-bytecode-ir-decode-instructions
+    nelisp-bytecode-ir--instruction-table
+    nelisp-bytecode-ir-validate-targets
+    nelisp-bytecode-ir-cfg-valid-p
+    nelisp-bytecode-ir-single-backedge-loop
+    nelisp-bytecode-ir-analyze-stack
+    nelisp-bytecode-ir-validate))
 
 (provide 'nelisp-bytecode-ir)
 ;;; nelisp-bytecode-ir.el ends here

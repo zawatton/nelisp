@@ -497,9 +497,19 @@ a negative, and signalling there turned a limit into a failure."
 ;; this file, not "only if my own earlier stub hasn't already claimed it".
 (unless (fboundp 'locate-library)
   (defun locate-library (library &optional _nosuffix _path _interactive-call)
-    "Find LIBRARY on `load-path', trying .el; nil when not found."
+    "Find LIBRARY on `load-path', preferring compiled Elisp files."
     (nelisp--check-string library)
-    (locate-file library load-path '(".el" ""))))
+    (let ((dirs load-path) (hit nil))
+      (while (and dirs (null hit))
+        (let ((dir (car dirs)))
+          (when (stringp dir)
+            (dolist (suffix '(".elc" ".el" ""))
+              (let ((candidate
+                     (concat (expand-file-name library dir) suffix)))
+                (when (and (null hit) (file-regular-p candidate))
+                  (setq hit candidate))))))
+        (setq dirs (cdr dirs)))
+      hit)))
 (unless (fboundp 'exp)
   (defun nelisp--two-sum (a b)
     "A+B as an exact pair (SUM . ERR)."
@@ -679,7 +689,8 @@ times, so `(exp -1.0e6)' took ~1.44e6 iterations and `(exp -1.0e9)' ~1.44e9
           (dolist (suf (or suffixes '("")))
             (let ((cand (and (stringp suf)
                              (concat (file-name-as-directory (or dir ".")) filename suf))))
-              (when (and cand (not hit) (file-exists-p cand)) (setq hit cand)))))
+              (when (and cand (not hit) (file-regular-p cand))
+                (setq hit cand)))))
         (setq dirs (cdr dirs)))
       hit)))
 (unless (fboundp 'sequencep)
@@ -2778,10 +2789,31 @@ Lisp argument list ARGS (see `cl-destructuring-bind').
         `(defmacro ,name (&rest ,whole)
            ,@(and docstring (list docstring))
            (cl-destructuring-bind ,args ,whole ,@body))))))
+;; Exact GNU Emacs 31.1 cl-lib/cl-macs generalized-place closure.
+(unless (boundp 'cl--simple-funcs)
+  (defconst cl--simple-funcs '(car cdr nth aref elt if and or + - 1+ 1- min max car-safe cdr-safe progn prog1 prog2)))
+(unless (boundp 'cl--safe-funcs)
+  (defconst cl--safe-funcs '(* / % length memq list vector vectorp < > <= >= = error)))
+(unless (fboundp 'cl--simple-expr-p)
+  (defun cl--simple-expr-p (x &optional size) "Check if no side effects, and executes quickly." (or size (setq size 10)) (if (and (consp x) (not (memq (car x) '(quote function cl-function)))) (and (symbolp (car x)) (or (memq (car x) cl--simple-funcs) (get (car x) 'side-effect-free)) (progn (setq size (1- size)) (while (and (setq x (cdr x)) (setq size (cl--simple-expr-p (car x) size)))) (and (null x) (>= size 0) size))) (and (> size 0) (1- size)))))
+(unless (fboundp 'cl--safe-expr-p)
+  (defun cl--safe-expr-p (x) "Check if no side effects." (or (not (and (consp x) (not (memq (car x) '(quote function cl-function))))) (and (symbolp (car x)) (or (memq (car x) cl--simple-funcs) (memq (car x) cl--safe-funcs) (get (car x) 'side-effect-free)) (progn (while (and (setq x (cdr x)) (cl--safe-expr-p (car x)))) (null x))))))
+(unless (fboundp 'cl-callf2)
+  (defmacro cl-callf2 (func arg1 place &rest args) "Set PLACE to (FUNC ARG1 PLACE ARGS...).
+Like `cl-callf', but PLACE is the second argument of FUNC, not the first.
+
+(fn FUNC ARG1 PLACE ARGS...)" (declare (indent 3) (debug (cl-function form place &rest form))) (if (and (cl--safe-expr-p arg1) (cl--simple-expr-p place) (symbolp func)) `(setf ,place (,func ,arg1 ,place ,@args)) (macroexp-let2 nil a1 arg1 (gv-letplace (getter setter) place (let* ((rargs (cl-list* a1 getter args))) (funcall setter (if (symbolp func) (cons func rargs) `(funcall #',func ,@rargs)))))))))
 (unless (fboundp 'cl-pushnew)
-  (defmacro cl-pushnew (item place &rest _keys)
-    `(let ((cl--x ,item))
-       (if (member cl--x ,place) ,place (setq ,place (cons cl--x ,place))))))
+  (defmacro cl-pushnew (x place &rest keys) "Add X to the list stored in PLACE unless X is already in the list.
+PLACE is a generalized variable that stores a list.
+
+Like (push X PLACE), except that PLACE is unmodified if X is `eql'
+to an element already in the list stored in PLACE.
+
+
+Keywords supported:  :test :test-not :key
+
+(fn X PLACE [KEYWORD VALUE]...)" (declare (debug (form place &rest &or [[&or ":test" ":test-not" ":key"] form] [keywordp form]))) (if (symbolp place) (if (null keys) (macroexp-let2 nil var x `(if (memql ,var ,place) (with-no-warnings ,place) (setq ,place (cons ,var ,place)))) `(setq ,place (cl-adjoin ,x ,place ,@keys))) `(cl-callf2 cl-adjoin ,x ,place ,@keys))))
 ;; Doc 160 breadth round 2: cl-lib predicates / accessors / seq / string.
 (unless (fboundp 'cl-evenp) (defun cl-evenp (n) (= 0 (mod n 2))))
 (unless (fboundp 'cl-oddp) (defun cl-oddp (n) (not (= 0 (mod n 2)))))
@@ -7429,7 +7461,9 @@ parent's accessor indices remain valid for the child record.  The
 parent's predicate continues to satisfy child records via the
 runtime chain walk in `nelisp-cl-macros--struct-isa'.
 
-Limitations: no `:type', no `setf' integration.  A leading docstring IS
+Accessors publish compiler-macro metadata for their exact record slot,
+so GNU GV can lower generalized places through its ordinary `aref' owner.
+Limitations: no `:type'.  A leading docstring IS
 accepted (and discarded), which it previously was not -- it was taken for a
 slot name.  That only worked because `symbol-name' used to answer for a
 string; once it signalled `symbolp', as Emacs does, every `cl-defstruct'
@@ -7611,6 +7645,19 @@ bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
         (let ((acc (intern (concat conc-name (symbol-name s)))))
           (push (list 'defun acc (list rec-sym)
                       (list 'nelisp--record-ref rec-sym i))
+                forms)
+          ;; GNU cl-defstruct exposes slot access through define-inline's
+          ;; compiler-macro metadata.  Retain the same GV route and the
+          ;; existing getter's aref semantics, including the record tag.
+          ;; Emit metadata after its definition as a real load-time form.
+          (push (list 'put (list 'quote acc) (list 'quote 'compiler-macro)
+                      (list 'quote
+                            (list 'lambda (list '_form rec-sym)
+                                  (list 'list (list 'quote 'aref)
+                                        rec-sym (1+ i)))))
+                forms)
+          (push (list 'put (list 'quote acc)
+                      (list 'quote 'document-generalized-variable) t)
                 forms))
         (setq i (1+ i)))
       ;; Result form: (progn DEFUN ... 'NAME).
@@ -7825,8 +7872,7 @@ a loud `error' naming NAME and the position."
   (memq type-name '(integer number float string symbol cons list vector null t)))
 
 (defun nelisp-cl-generic--type-match (val type)
-  "Doc 185 §3.2, verbatim: `cl-typep' for the ten builtins, struct
-ancestry via `nelisp-cl-macros--struct-isa' for anything `recordp'."
+  "Match builtin types, CL struct ancestry, or genuine class precedence."
   (cond
    ;; `funcall' with a QUOTED symbol, matching the identical fix (and its
    ;; full explanation) at the same line in this block's mirror copy,
@@ -7839,6 +7885,12 @@ ancestry via `nelisp-cl-macros--struct-isa' for anything `recordp'."
    ((and (recordp val)
          (nelisp-cl-macros--struct-isa (nelisp--record-type val) type))
     t)
+   ;; GNU EIEIO's type generalizer uses the genuine class precedence list.
+   ((and (recordp val)
+         (recordp (nelisp--record-type val))
+         (fboundp 'cl--class-p)
+         (cl--class-p (nelisp--record-type val)))
+    (memq type (cl--class-allparents (nelisp--record-type val))))
    (t nil)))
 
 (defun nelisp-cl-generic--struct-parent (tag)
@@ -7847,7 +7899,9 @@ ancestry via `nelisp-cl-macros--struct-isa' for anything `recordp'."
     (and info (car (cdr (memq :parent info))))))
 
 (defun nelisp-cl-generic--struct-depth (tag target)
-  "Number of `:include' hops from TAG up to TARGET.  Callers only call
+  "Return TARGET's class precedence position or CL struct include depth.
+For a genuine class descriptor, use its authoritative precedence list.
+For a symbolic CL struct TAG, callers only call
 this once `nelisp-cl-macros--struct-isa' has already confirmed TAG isa
 TARGET, so the walk is expected to terminate at TARGET -- but the walk
 is bounded defensively at the registry's own size rather than trusting
@@ -7857,7 +7911,14 @@ lies (this session's own `s/(nelisp-cl-macros--struct-isa ...)/t)/'
 through nil forever otherwise, hanging the whole dispatch instead of
 signalling -- exactly the silent-vs-loud failure shape §3.5 exists to
 avoid, just one level lower than a dispatch decision."
-  (let ((n 0) (cur tag)
+  (if (and (recordp tag) (fboundp 'cl--class-p) (cl--class-p tag))
+      (let ((parents (cl--class-allparents tag)) (depth 0))
+        (while (and parents (not (eq (car parents) target)))
+          (setq parents (cdr parents) depth (1+ depth)))
+        (unless parents
+          (error "Class precedence does not contain specializer %S" target))
+        depth)
+    (let ((n 0) (cur tag)
         (bound (1+ (length nelisp-cl-macros--struct-info))))
     (while (and (not (eq cur target)) (> bound 0))
       (setq cur (nelisp-cl-generic--struct-parent cur))
@@ -7866,7 +7927,7 @@ avoid, just one level lower than a dispatch decision."
     (unless (eq cur target)
       (error "nelisp-cl-generic--struct-depth: %S never reaches %S via :include ancestry (nelisp-cl-macros--struct-isa said it would)"
              tag target))
-    n))
+    n)))
 
 (defun nelisp-cl-generic--same-specializer-p (a b)
   "Non-nil iff method entries A and B are the SAME method identity --
@@ -8620,6 +8681,10 @@ function's docstring for the full per-option grammar (`(declare ...)',
 cases (a doc string or `declare' given twice).  A non-docstring,
 non-option BODY form used to be an unconditional loud `error' before
 this addendum; it is now the start of the default method body instead."
+  ;; GNU cl-generic.el uses the actual GV setter symbol for a setf name.
+  (when (eq 'setf (car-safe name))
+    (require 'gv)
+    (setq name (gv-setter (cadr name))))
   (let ((precedence
          (nelisp-cl-generic--parse-argument-precedence-order arglist body)))
     `(prog1 ',name
@@ -8657,6 +8722,10 @@ addendum), or a `(subclass CLASS)' form.  Specializers at more than one
 argument position are supported and are jointly applicable; a bare symbol
 is unspecialized (§2.1/§3.1).  The method body can call
 `cl-call-next-method'/`cl-next-method-p' (§2.2)."
+  ;; Lower generalized function names before symbol metadata registration.
+  (when (eq 'setf (car-safe name))
+    (require 'gv)
+    (setq name (gv-setter (cadr name))))
   (let (extra combinator)
     (when (and args (eq (car args) :extra))
       (unless (and (cdr args) (stringp (cadr args)))
@@ -9378,6 +9447,8 @@ binding and lookup boundaries so those public forms address the same entry."
     key))
 (unless (fboundp 'define-key)
   (defun define-key (keymap key def &optional _remove)
+    (unless (or (stringp key) (vectorp key))
+      (signal 'wrong-type-argument (list 'arrayp key)))
     (setq key (nelisp--keymap-normalize-sequence key))
     (setcdr keymap (cons (cons key def) (cdr keymap)))
     def))
@@ -14482,6 +14553,8 @@ does not build prefix maps or return the number of matching leading
 events for an unbound prefix.
 
 (fn KEYMAP KEY &optional ACCEPT-DEFAULT)"
+    (unless (or (stringp key) (vectorp key))
+      (signal 'wrong-type-argument (list 'arrayp key)))
     (let ((tail (cdr keymap)) (result nil) (done nil)
           (normalized-key (nelisp--keymap-normalize-sequence key)))
       (while (and tail (consp tail) (not done))
@@ -14805,8 +14878,7 @@ an integer, and why this is unconditional rather than `unless (fboundp
        (unwind-protect
            (progn ,@body)
          (when (buffer-live-p ,buf)
-           (setq nelisp--current-buffer ,buf)
-           (setq nelisp-buffer--current ,buf)
+           (set-buffer ,buf)
            (goto-char (marker-position ,m)))
          (set-marker ,m nil)))))
 
@@ -16130,7 +16202,16 @@ UTF-8 -- that rule is unconditional and independent of
 `print-escape-nonascii' (which this runtime binds for `boundp' parity but
 does not yet gate any behavior on, since the Doc 200 rule already forces
 the stricter octal form GNU's flag would only opt into)."
-  (let ((chunks (cons nil nil))
+  (if (and (>= (length s) 64) (fboundp 'nelisp--repr)
+           (not print-escape-control-characters)
+           (or (unibyte-string-p s) (= (length s) (string-bytes s)))
+           (not (string-search "\r" s)) (not (string-search "\t" s))
+           (not (string-search "\f" s))
+           (or print-escape-newlines (not (string-search "\n" s))))
+      ;; The existing tagged-string printer copies long runs without allocating
+      ;; one Lisp string/cons per byte. Its restricted domain is byte-identical.
+      (substring (nelisp--repr s) 1 -1)
+    (let ((chunks (cons nil nil))
         (i 0)
         (n (length s))
         (need-nonhex nil)
@@ -16166,7 +16247,7 @@ the stricter octal form GNU's flag would only opt into)."
           (setq need-nonhex nil)
           (nelisp--prn-chunks-add chunks (char-to-string c)))))
       (setq i (1+ i)))
-    (nelisp--prn-chunks-string chunks)))
+    (nelisp--prn-chunks-string chunks))))
 
 (defun nelisp--prn-symbol-char-needs-escape-p (c)
   "Return non-nil when C terminates or escapes a reader symbol atom.
@@ -17295,6 +17376,17 @@ line-continuation escapes, which generate nothing)."
       (setq tail (cdr tail)))
     number))
 
+(defun nelisp--rd-resolve-completed-label-shallow (object)
+  "Resolve a completed label proxy in OBJECT without descending into it."
+  (let ((number (nelisp--rd-label-proxy-number object)))
+    (if number
+        (let ((entry (assq number nelisp--rd-labels)))
+          (if (and entry (eq (nth 1 entry) 'done))
+              (let ((target (nth 2 entry)))
+                (if (nelisp--rd-label-proxy-number target) object target))
+            object))
+      object)))
+
 (defun nelisp--rd-resolve-labels (object seen)
   "Replace `#N#' proxies in OBJECT, preserving sharing and cycles."
   (let ((number (nelisp--rd-label-proxy-number object)))
@@ -17438,6 +17530,11 @@ from the top-level empty read that callers turn into `end-of-file' or nil."
                                    (<= -2305843009213693952 arglist)
                                    (<= arglist 2305843009213693951))))
                (signal 'invalid-read-syntax (list "#[")))
+             (setq code (nelisp--rd-resolve-completed-label-shallow code)
+                   constants
+                   (nelisp--rd-resolve-completed-label-shallow constants))
+             (setcar (cdr fields) code)
+             (setcar (cdr (cdr fields)) constants)
              (cond
               ((and (stringp code) (vectorp constants) (>= count 4)
                     (integerp depth) (<= 0 depth 2305843009213693951))
@@ -21509,6 +21606,7 @@ any other -- to find the final function binding and return it."
        nelisp--native-pin-eq-slots
        string< make-vector fset ash)
     (3 nelisp--symbol-position-op aset nelisp--native-pin-copy nelisp--native-unbox-reference)
+    (4 nelisp--native-pin-copy-v2)
     (7 ptr-call))
   "Fixed argument counts shared by introspection and native reader dispatch.
 The build driver reads this literal as data without evaluating the prelude.")
@@ -23988,3 +24086,209 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
     (when (= result -32)
       (signal 'file-error (list "Write error" "Broken pipe" filename)))
     (>= result 0)))
+;; F2 U2b: freeze existing source-owned Lisp providers before user code runs.
+;; Neither bytecode instructions nor native primitive initializers consult the
+;; corresponding public function cells after this point. No new native name.
+(defconst nelisp--bytecode-lisp-providers
+  (mapcar (lambda (name)
+            (cons name
+                  (cond
+                   ((eq name 'match-beginning)
+                    (lambda (n)
+                      (and nlre--last-caps (< n (length nlre--last-caps))
+                           (let ((span (aref nlre--last-caps n)))
+                             (and span (car span))))))
+                   ((eq name 'match-end)
+                    (lambda (n)
+                      (and nlre--last-caps (< n (length nlre--last-caps))
+                           (let ((span (aref nlre--last-caps n)))
+                             (and span (cdr span))))))
+                   (t (symbol-function name)))))
+          '(set-marker match-beginning match-end upcase downcase insert)))
+(unless (boundp 'indent-tabs-mode) (defvar indent-tabs-mode t))
+
+;; F2 U4a: these buffer operations are already Lisp-owned, not native
+;; builtin tokens. Freeze values and VM-specific adapters before user code.
+(let ((point-value (symbol-function 'point))
+      (min-value (symbol-function 'point-min)) (max-value (symbol-function 'point-max))
+      (goto-value (symbol-function 'goto-char)) (insert-value (symbol-function 'insert))
+      (after-value (symbol-function 'nelisp-char-after))
+      (column-value (symbol-function 'current-column))
+      (marker-value (symbol-function 'markerp)) (position-value (symbol-function 'marker-position)))
+  (setq nelisp--bytecode-lisp-providers
+        (append nelisp--bytecode-lisp-providers
+                (list
+                 (cons 'point point-value) (cons 'point-min min-value) (cons 'point-max max-value)
+                 (cons 'insert insert-value)
+                 (cons 'goto-char
+                       (lambda (pos)
+                         ;; Bgoto_char accepts fixnums or markers; its bignum
+                         ;; error differs from the general public function.
+                         (unless (or (and (integerp pos) (<= -2305843009213693952 pos)
+                                          (< pos 2305843009213693952))
+                                     (funcall marker-value pos))
+                           (signal 'wrong-type-argument (list 'integer-or-marker-p pos)))
+                         (funcall goto-value pos)))
+                 (cons 'char-after
+                       (lambda (pos)
+                         (let ((p (cond ((null pos) (funcall point-value))
+                                        ((integerp pos) pos)
+                                        ((funcall marker-value pos)
+                                         (or (funcall position-value pos)
+                                             (error "Marker does not point anywhere")))
+                                        (t (signal 'wrong-type-argument
+                                                   (list 'integer-or-marker-p pos))))))
+                           (and (<= (funcall min-value) p) (< p (funcall max-value))
+                                (funcall after-value p nelisp--current-buffer)))))
+                 (cons 'following-char (symbol-function 'following-char))
+                 (cons 'previous-char (symbol-function 'preceding-char))
+                 (cons 'current-column column-value)
+                 (cons 'indent-to
+                       (lambda (column minimum)
+                         ;; GNU Bindent_to supplies nil for MINIMUM.
+                         (unless (and (integerp column) (<= -2305843009213693952 column)
+                                      (< column 2305843009213693952))
+                           (signal 'wrong-type-argument (list 'fixnump column)))
+                         (let* ((current (funcall column-value))
+                                (target (max column (+ current (or minimum 0))))
+                                (width (if (and (integerp tab-width) (> tab-width 0)) tab-width 8))
+                                (tabs (if indent-tabs-mode (- (/ target width) (/ current width)) 0))
+                                (spaces (- target (if (> tabs 0) (* (/ target width) width) current))))
+                           (when (> tabs 0) (funcall insert-value (make-string tabs ?\t)))
+                           (when (> spaces 0) (funcall insert-value (make-string spaces ?\s)))
+                           target)))))))
+;; The standalone reader has no interactive command loop. GNU Binteractive_p
+;; still calls the current cell, so users may replace this batch default.
+(unless (fboundp 'interactive-p) (defun interactive-p () nil))
+
+;; F2 U4b: Lisp-owned motion provider and frozen buffer values. No native entry.
+(unless (fboundp 'forward-word)
+  (defun forward-word (&optional n)
+    "Move N words, returning t if all requested words were traversed."
+    (unless (or (null n) (and (integerp n) (<= -2305843009213693952 n)
+                             (< n 2305843009213693952)))
+      (signal 'wrong-type-argument (list 'fixnump n)))
+    (let* ((count (or n 1)) (remaining (abs count))
+           (b nelisp--current-buffer) (p (nelisp-point b))
+           (lo (nelisp-point-min b)) (hi (nelisp-point-max b))
+           (text (nelisp-buffer-string b)) (direction (if (< count 0) -1 1)))
+      (while (> remaining 0)
+        (let ((found nil) (class nil) (scanning t))
+          (while (and scanning (if (> direction 0) (< p hi) (> p lo)))
+            (let* ((ch (aref text (if (> direction 0) (1- p) (- p 2))))
+                   (word (= (char-syntax ch) ?w))
+                   ;; GNU separates Latin, Katakana and Han/Hiragana words.
+                   (next-class (cond ((and (<= #x30a0 ch) (<= ch #x30ff)) 'katakana)
+                                     ((or (and (<= #x3040 ch) (<= ch #x309f))
+                                          (and (<= #x3400 ch) (<= ch #x9fff))) 'han)
+                                     (t 'other))))
+              (if (and found (or (not word) (not (eq class next-class))))
+                  (setq scanning nil)
+                (setq p (+ p direction))
+                (when word (setq found t class next-class)))))
+          (if found (setq remaining (1- remaining))
+            (setq scanning nil)
+            (nelisp-goto-char p b)
+            (setq remaining (- remaining)))))
+      (nelisp-goto-char p b)
+      (>= remaining 0))))
+(let ((set-value (symbol-function 'set-buffer))
+      (char-value (symbol-function 'forward-char)))
+  (setq nelisp--bytecode-lisp-providers
+        (append nelisp--bytecode-lisp-providers
+                (mapcar (lambda (name) (cons name (symbol-function name)))
+                        '(eolp eobp bolp bobp current-buffer forward-word))
+                (list (cons 'forward-char
+                            (lambda (n)
+                              (unless (or (null n)
+                                          (and (integerp n) (<= -2305843009213693952 n)
+                                               (< n 2305843009213693952)))
+                                (signal 'wrong-type-argument (list 'fixnump n)))
+                              (funcall char-value n)))
+                      (cons 'set-buffer set-value)))))
+
+;; F2 U4c: the nine VM buffer operations have no evaluator builtin token.
+;; Freeze their Lisp values and adapt GNU's position/type/range error data.
+(let* ((marker-value (symbol-function 'markerp))
+       (marker-position-value (symbol-function 'marker-position))
+       (position-value
+        (lambda (value)
+          (cond ((integerp value) value)
+                ((funcall marker-value value)
+                 (or (funcall marker-position-value value)
+                     (error "Marker does not point anywhere")))
+                (t (signal 'wrong-type-argument (list 'integer-or-marker-p value))))))
+       (min-value (symbol-function 'point-min)) (max-value (symbol-function 'point-max))
+       (goto-value (symbol-function 'goto-char))
+       (size-value (symbol-function 'nelisp-buffer-size))
+       (point-value (symbol-function 'point))
+       (motion-value (symbol-function 'nelisp--motion-forward-line))
+       (eol-value (symbol-function 'nelisp--motion-eol))
+       (substring-value (symbol-function 'buffer-substring))
+       (delete-value (symbol-function 'delete-region))
+       (narrow-value (symbol-function 'narrow-to-region))
+       (widen-value (symbol-function 'widen))
+       (forward-line-value (symbol-function 'forward-line))
+       (syntax-value (symbol-function 'char-syntax))
+       (skip-forward-value (symbol-function 'skip-chars-forward))
+       (skip-backward-value (symbol-function 'skip-chars-backward)))
+  (setq nelisp--bytecode-lisp-providers
+        (append nelisp--bytecode-lisp-providers
+                (list
+                 (cons 'skip-chars-forward
+                       (lambda (spec limit)
+                         (nelisp--check-string spec)
+                         (funcall skip-forward-value spec (and limit (funcall position-value limit)))))
+                 (cons 'skip-chars-backward
+                       (lambda (spec limit)
+                         (nelisp--check-string spec)
+                         (funcall skip-backward-value spec (and limit (funcall position-value limit)))))
+                 (cons 'forward-line
+                       (lambda (n)
+                         (when n (nelisp--check-integer n))
+                         ;; Starting at the accessible end consumes no line,
+                         ;; even when the underlying last line is nonempty.
+                         (if (and (> (or n 1) 0) (= (funcall point-value) (funcall max-value)))
+                             (or n 1)
+                           (funcall forward-line-value n))))
+                 (cons 'char-syntax
+                       (lambda (character)
+                         (unless (and (integerp character) (<= 0 character) (<= character 4194303))
+                           (signal 'wrong-type-argument (list 'characterp character)))
+                         (funcall syntax-value character)))
+                 (cons 'buffer-substring
+                       (lambda (start end)
+                         (funcall substring-value (funcall position-value start) (funcall position-value end))))
+                 (cons 'delete-region
+                       (lambda (start end)
+                         (let ((s (funcall position-value start)) (e (funcall position-value end)))
+                           (unless (and (<= (funcall min-value) (min s e))
+                                        (<= (max s e) (funcall max-value)))
+                             (signal 'args-out-of-range (list nelisp--current-buffer s e)))
+                           (when (and (boundp 'buffer-read-only) buffer-read-only
+                                      (not (and (boundp 'inhibit-read-only) inhibit-read-only)) (/= s e))
+                             (signal 'buffer-read-only (list nelisp--current-buffer)))
+                           (funcall delete-value s e))))
+                 (cons 'narrow-to-region
+                       (lambda (start end)
+                         (let ((s (funcall position-value start)) (e (funcall position-value end)))
+                           ;; Narrowing is checked against the whole buffer,
+                           ;; unlike substring/deletion's accessible bounds.
+                           (unless (and (<= 1 (min s e)) (<= (max s e) (1+ (funcall size-value nelisp--current-buffer))))
+                             (signal 'args-out-of-range (list s e)))
+                           (funcall narrow-value s e))))
+                 (cons 'widen widen-value)
+                 (cons 'end-of-line
+                       (lambda (n)
+                         (unless (or (null n) (and (integerp n) (<= -2305843009213693952 n)
+                                                  (< n 2305843009213693952)))
+                           (signal 'wrong-type-argument (list 'fixnump n)))
+                         (let ((motion (funcall motion-value nelisp--current-buffer
+                                               (funcall point-value) (1- (or n 1)))))
+                           ;; A backward shortfall lands at the beginning,
+                           ;; not the end of the earliest accessible line.
+                           (funcall goto-value (if (< (cdr motion) 0) (car motion)
+                                                 (funcall eol-value (car motion) nelisp--current-buffer))))
+                         nil))))))
+(dolist (entry nelisp--bytecode-lisp-providers)
+  (fset (intern (concat "nelisp--bytecode-" (symbol-name (car entry)))) (cdr entry)))

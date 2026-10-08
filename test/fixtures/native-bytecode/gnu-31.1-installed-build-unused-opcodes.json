@@ -1,0 +1,185 @@
+{
+  "schema": 1,
+  "dialect": "GNU Emacs 31.1",
+  "scope": "installed-build-only; does not generalize to all GNU builds",
+  "executable": {
+    "command": "emacs",
+    "resolved_basename": "emacs-31.1",
+    "sha256": "7a73e7e5db25275f09753fba330b96ecd44c64b3af9c5298fe343a44084bf5d7",
+    "version": "GNU Emacs 31.1",
+    "configuration": "x86_64-pc-linux-gnu|--with-zlib --with-native-compilation --with-modules --with-tree-sitter --with-dbus --with-rsvg --with-mailutils --with-xml2 --with-xft --with-libotf --with-gnutls --with-x --without-cairo --without-xwidgets --with-x-toolkit=gtk3 --with-file-notification=inotify --with-harfbuzz --with-webp=yes --with-jpeg=yes --with-png=yes --with-gif=yes --with-pgtk CC=gcc-14"
+  },
+  "dispatch_note": "BYTE_CODE_SAFE and BYTE_CODE_THREADED are compile-time details not exposed by system-configuration-options. GNU bytecode.c defaults BYTE_CODE_SAFE to false; GCC non-strict builds then select threaded dispatch. The fixture records observed behavior of this exact executable, not a universal GNU build contract.",
+  "valid_control": {
+    "bytecode": [
+      192,
+      135
+    ],
+    "constants": [
+      42
+    ],
+    "declared_stack_depth": 1,
+    "exit_code": 0,
+    "stdout": "42"
+  },
+  "probe": {
+    "isolation": "one independent GNU subprocess per opcode",
+    "timeout_seconds": 2,
+    "bytecode_pattern": "[opcode, 135]",
+    "constants": "256 slots, each symbol x",
+    "declared_stack_depth": 1,
+    "expected": "Invalid byte opcode at ptr 0"
+  },
+  "results": [
+    {
+      "opcode": 51,
+      "exit_code": 255,
+      "error": "Invalid byte opcode: op=51, ptr=0",
+      "timed_out": false
+    },
+    {
+      "opcode": 52,
+      "exit_code": 255,
+      "error": "Invalid byte opcode: op=52, ptr=0",
+      "timed_out": false
+    },
+    {
+      "opcode": 53,
+      "exit_code": 255,
+      "error": "Invalid byte opcode: op=53, ptr=0",
+      "timed_out": false
+    },
+    {
+      "opcode": 54,
+      "exit_code": 255,
+      "error": "Invalid byte opcode: op=54, ptr=0",
+      "timed_out": false
+    },
+    {
+      "opcode": 55,
+      "exit_code": 255,
+      "error": "Invalid byte opcode: op=55, ptr=0",
+      "timed_out": false
+    },
+    {
+      "opcode": 107,
+      "exit_code": 255,
+      "error": "Invalid byte opcode: op=107, ptr=0",
+      "timed_out": false
+    },
+    {
+      "opcode": 115,
+      "exit_code": 255,
+      "error": "Invalid byte opcode: op=115, ptr=0",
+      "timed_out": false
+    },
+    {
+      "opcode": 128,
+      "exit_code": 255,
+      "error": "Invalid byte opcode: op=128, ptr=0",
+      "timed_out": false
+    },
+    {
+      "opcode": 146,
+      "exit_code": 255,
+      "error": "Invalid byte opcode: op=146, ptr=0",
+      "timed_out": false
+    },
+    {
+      "opcode": 169,
+      "exit_code": 255,
+      "error": "Invalid byte opcode: op=169, ptr=0",
+      "timed_out": false
+    },
+    {
+      "opcode": 170,
+      "exit_code": 255,
+      "error": "Invalid byte opcode: op=170, ptr=0",
+      "timed_out": false
+    },
+    {
+      "opcode": 171,
+      "exit_code": 255,
+      "error": "Invalid byte opcode: op=171, ptr=0",
+      "timed_out": false
+    },
+    {
+      "opcode": 172,
+      "exit_code": 255,
+      "error": "Invalid byte opcode: op=172, ptr=0",
+      "timed_out": false
+    },
+    {
+      "opcode": 173,
+      "exit_code": 255,
+      "error": "Invalid byte opcode: op=173, ptr=0",
+      "timed_out": false
+    },
+    {
+      "opcode": 174,
+      "exit_code": 255,
+      "error": "Invalid byte opcode: op=174, ptr=0",
+      "timed_out": false
+    },
+    {
+      "opcode": 180,
+      "exit_code": 255,
+      "error": "Invalid byte opcode: op=180, ptr=0",
+      "timed_out": false
+    },
+    {
+      "opcode": 181,
+      "exit_code": 255,
+      "error": "Invalid byte opcode: op=181, ptr=0",
+      "timed_out": false
+    },
+    {
+      "opcode": 184,
+      "exit_code": 255,
+      "error": "Invalid byte opcode: op=184, ptr=0",
+      "timed_out": false
+    },
+    {
+      "opcode": 185,
+      "exit_code": 255,
+      "error": "Invalid byte opcode: op=185, ptr=0",
+      "timed_out": false
+    },
+    {
+      "opcode": 186,
+      "exit_code": 255,
+      "error": "Invalid byte opcode: op=186, ptr=0",
+      "timed_out": false
+    },
+    {
+      "opcode": 187,
+      "exit_code": 255,
+      "error": "Invalid byte opcode: op=187, ptr=0",
+      "timed_out": false
+    },
+    {
+      "opcode": 188,
+      "exit_code": 255,
+      "error": "Invalid byte opcode: op=188, ptr=0",
+      "timed_out": false
+    },
+    {
+      "opcode": 189,
+      "exit_code": 255,
+      "error": "Invalid byte opcode: op=189, ptr=0",
+      "timed_out": false
+    },
+    {
+      "opcode": 190,
+      "exit_code": 255,
+      "error": "Invalid byte opcode: op=190, ptr=0",
+      "timed_out": false
+    },
+    {
+      "opcode": 191,
+      "exit_code": 255,
+      "error": "Invalid byte opcode: op=191, ptr=0",
+      "timed_out": false
+    }
+  ]
+}

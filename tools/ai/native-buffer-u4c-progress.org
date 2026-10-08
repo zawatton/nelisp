@@ -1,0 +1,15 @@
+#+TITLE: F2 U4c acceptance
+#+NOTE: No new native builtin names. Existing evaluator/GC boundary (native clause 2) is reused; buffer providers remain Lisp. Shared hunks: primitive table/originals/initializer in lisp/nelisp-native-funcall-v2.el; buffer lowerable list in lisp/nelisp-bytecode-ir.el; min-inputs/simple-kind lists in lisp/nelisp-bytecode-frame-ir.el; F1 opcode list in lisp/nelisp-bytecode-native-rooted-cfg-plan.el; independent U4c provider block before provider publication in scripts/nelisp-stdlib-prelude.el; separate wf_bytecode_buffer_u4c and 119..127 dispatch branch in scripts/nelisp-standalone-build.el; counts 31/174->22/183 in U0 audit test; appended U4c differential forms. No loader or descriptor changes.
+#+NOTE: GNU/VM oracle initially caught narrowed whole-size, end-boundary forward-line, end-of-line backward shortfall and an unbound read-only flag; repaired oracle318/318. The standalone REPL retained state73 while a missing initializer was replaced in the same process; ordinary source load returned t, not a native publication claim. Audit model gpt-6-astra/ultra independently verified final runtime records and found and closed an error-observation ambiguity with return/signal tags and returned-condition-list controls. Native stress forces one authenticated staged-root GC per opcode; per-case GC repeated full-heap collections and timed out at290.049s. Deadline unchanged. Inherited skip POSIX/general escaping and full syntax-class semantics remain substrate limits; this slice does not claim arbitrary GNU buffer API equivalence.
+#+NOTE: Cohort measurement (same72 parity cases and two staged-root collections, identical executable/cache/source hashes): process startups2->1; elapsed204.680s individual vs209.902s batched under concurrent background suites. This establishes startup amortization, not a wall-time speedup. U4a first --both had one gccjit INSERT cohort expire at290.062s; the complete unchanged --both suite passed on retry with the same deadline after the other large suites completed (maximum158.846s). Final reader builds: static130.175s/1746220KiB maximum child RSS; dynamic143.651s/1748912KiB. Full unrelated ERT/CI tiers were not run; the55 baseline files plus the new5-test file and the requested native suites are the acceptance scope.
+* S1 Acceptance
+** S1.1 Against-defect and oracle controls
+cmd: python3 test/support/native-buffer-u4c-evidence.py controls && python3 -c 'import re; s=open("target/u4c-red-host.log").read(); assert re.search(r"Ran 5 tests, 2 results as expected, 3 unexpected",s)'
+** S1.2 Host counts and nine known failures unchanged; audit pending 31 to 22
+cmd: python3 test/support/native-buffer-u4c-evidence.py host
+** S1.3 Bounded cohort efficiency measurement
+cmd: python3 test/support/native-buffer-u4c-evidence.py efficiency
+** S1.4 Five unchanged native regression suites and exact F1 digest twice
+cmd: python3 test/support/native-buffer-u4c-evidence.py regressions
+** S1.5 GNU/interpreter/native parity and actual execution on both backends
+cmd: python3 test/support/native-buffer-u4c-evidence.py native

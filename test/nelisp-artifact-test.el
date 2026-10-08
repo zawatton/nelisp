@@ -14,6 +14,64 @@
 (defvar nelisp--cli-version)
 (declare-function nelisp-cli-main "nelisp-cli" (argv))
 
+(ert-deftest nelisp-artifact/write-pair-post-commit-cleanup-failure-is-success ()
+  "A failed backup cleanup must not report a committed pair as failed."
+  (let* ((dir (make-temp-file "nelisp-artifact-pair-" t))
+         (artifact (expand-file-name "unit.nelc" dir))
+         (manifest (expand-file-name "unit.nelc.manifest.el" dir))
+         (delete-file-function (symbol-function 'delete-file)))
+    (unwind-protect
+        (progn
+          (write-region "old artifact" nil artifact nil 'silent)
+          (write-region "old manifest" nil manifest nil 'silent)
+          (cl-letf (((symbol-function 'delete-file)
+                     (lambda (path &optional trash)
+                       (if (string-match-p "\\.bak\\." path)
+                           (error "injected backup cleanup failure")
+                         (funcall delete-file-function path trash)))))
+            (should
+             (nelisp-artifact--write-pair-atomically
+              artifact "new artifact" manifest "new manifest")))
+          (should (equal (with-temp-buffer
+                           (insert-file-contents artifact) (buffer-string))
+                         "new artifact"))
+          (should (equal (with-temp-buffer
+                           (insert-file-contents manifest) (buffer-string))
+                         "new manifest")))
+      (delete-directory dir t))))
+
+(ert-deftest nelisp-artifact/write-pair-pre-commit-failure-restores-old-pair ()
+  "A manifest rename failure before commit must restore both old files."
+  (let* ((dir (make-temp-file "nelisp-artifact-pair-" t))
+         (artifact (expand-file-name "unit.nelc" dir))
+         (manifest (expand-file-name "unit.nelc.manifest.el" dir))
+         (rename-file-function (symbol-function 'rename-file))
+         (injected nil))
+    (unwind-protect
+        (progn
+          (write-region "old artifact" nil artifact nil 'silent)
+          (write-region "old manifest" nil manifest nil 'silent)
+          (cl-letf (((symbol-function 'rename-file)
+                     (lambda (source target &optional ok-if-exists)
+                       (if (and (not injected)
+                                (equal target manifest)
+                                (string-match-p "\\.tmp\\." source))
+                           (progn (setq injected t)
+                                  (error "injected manifest publication failure"))
+                         (funcall rename-file-function source target
+                                  ok-if-exists)))))
+            (should-error
+             (nelisp-artifact--write-pair-atomically
+              artifact "new artifact" manifest "new manifest")))
+          (should injected)
+          (should (equal (with-temp-buffer
+                           (insert-file-contents artifact) (buffer-string))
+                         "old artifact"))
+          (should (equal (with-temp-buffer
+                           (insert-file-contents manifest) (buffer-string))
+                         "old manifest")))
+      (delete-directory dir t))))
+
 (ert-deftest nelisp-artifact/gate-1-loads-without-source ()
   "Doc 142 gate 1-3: compile a module, then load the `.nelc' in a fresh
 NeLisp runtime WITHOUT its source, and verify the function cell (now a

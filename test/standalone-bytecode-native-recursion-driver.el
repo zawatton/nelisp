@@ -1,0 +1,148 @@
+;;; CALL1 to VM recursion and raw CONS proof driver -*- lexical-binding: t; -*-
+(require 'nelisp-runtime-reload-abi)
+(require 'nelisp-bytecode-native-package)
+(require 'nelisp-bytecode-native-compiler)
+(require 'nelisp-native-load)
+
+(defvar nelisp-recursion-token nil)
+(defvar nelisp-recursion-cons nil)
+(defvar nelisp-recursion-depth 0)
+(defvar nelisp-recursion-mode 'normal)
+(defvar nelisp-recursion-payload nil)
+(defvar nelisp-recursion-cons-count 0)
+(defvar nelisp-recursion-cons-body-count 0)
+(defvar nelisp-recursion-disable-cons nil)
+
+(defun nelisp-recursive-vm-callback (value)
+  "Explicit VM callback recursively re-enters the CALL1 token."
+  (let ((nelisp-recursion-depth (1+ nelisp-recursion-depth)))
+    (cond
+     ((and (eq nelisp-recursion-mode 'signal) (= nelisp-recursion-depth 5))
+      (signal 'wrong-type-argument (list value)))
+     ((and (eq nelisp-recursion-mode 'throw) (= nelisp-recursion-depth 5))
+      (throw 'recursive-call1-tag value))
+     (t
+      (when (= nelisp-recursion-depth 5)
+        (let ((scratch nil))
+          (dotimes (i 300) (setq scratch (cons i scratch)))
+          (garbage-collect)))
+      (let* ((next (if (< nelisp-recursion-depth 5)
+                       (nelisp-bytecode-native-compiler-call1
+                        nelisp-recursion-token value)
+                     value))
+             (cell (nelisp-native-load-raw-v2-cons-call
+                    nelisp-recursion-cons value next)))
+        (setq nelisp-recursion-cons-count (1+ nelisp-recursion-cons-count))
+        (unless (eq (car cell) value)
+          (error "native CONS lost payload identity"))
+        (when (= (% nelisp-recursion-cons-count 2) 0) (garbage-collect))
+        value)))))
+
+(let* ((elc (getenv "RECURSION_ELC"))
+       (expected (with-temp-buffer (insert (getenv "RECURSION_ORACLE"))
+                   (goto-char (point-min)) (read (current-buffer))))
+       (wrapper (nelisp-bytecode-native-package-read-elc-function
+                 elc 'nelisp-recursive-call1-wrapper))
+       (cons-function (nelisp-bytecode-native-package-read-elc-function
+                       elc 'nelisp-recursive-cons-template))
+       (call1-path (getenv "RECURSION_CALL1_ARTIFACT"))
+       (cons-path (getenv "RECURSION_CONS_ARTIFACT"))
+       (call1-built (nelisp-bytecode-native-compiler-build
+                     wrapper call1-path "nl_native_bytecode_call1_exit"))
+       (cons-built (nelisp-bytecode-native-compiler-build
+                    cons-function cons-path "nl_native_cons_probe"))
+       (token (plist-get call1-built :token))
+       (cons-handle (nelisp-native-load-raw-v2-artifact
+                     cons-path "nl_native_cons_probe"
+                     (nelisp-native-load-running-binary-sha256)))
+       (call1-handle (plist-get (gethash token
+                                      nelisp-bytecode-native-compiler--call1-tokens)
+                               :handle))
+       (call1-entry (plist-get call1-handle :entry))
+       (cons-entry (plist-get cons-handle :entry))
+       (call1-entry-dispatch-count 0) (cons-entry-dispatch-count 0)
+       (callback-tap-count 0) (frame-end-count 0)
+       (original-ptr-call (symbol-function 'ptr-call))
+       (original-frame-end (symbol-function 'nelisp-native-load-call-exit-frame-end))
+       (original-callback (symbol-function 'nelisp-recursive-vm-callback))
+       (payload (list 'root (list 'mutable)))
+       (signal-data nil) (throw-result nil)
+       (result nil))
+  (unless (and (eq (plist-get call1-built :status) 'complete)
+               (eq (plist-get cons-built :status) 'complete)
+               (= (aref wrapper 0) 257)
+               (equal (aref wrapper 1) (unibyte-string 192 1 33 135))
+               (= (aref cons-function 0) 514)
+               (equal (aref cons-function 1) (unibyte-string 1 1 66 135)))
+    (error "GNU recursion fixture descriptors/templates mismatch"))
+  (unless (and (not (file-exists-p (getenv "RECURSION_SOURCE")))
+               (equal (getenv "RECURSION_BINARY_SHA")
+                      (nelisp-native-load-running-binary-sha256)))
+    (error "source or runtime identity gate failed"))
+  (setq nelisp-recursion-token token nelisp-recursion-cons cons-handle
+        nelisp-recursion-payload payload)
+  (cl-letf (((symbol-function 'ptr-call)
+             (lambda (address &rest args)
+               (if (and nelisp-recursion-disable-cons (= address cons-entry))
+                   2
+                 (cond ((= address call1-entry)
+                        (setq call1-entry-dispatch-count
+                              (1+ call1-entry-dispatch-count)))
+                       ((= address cons-entry)
+                        (setq cons-entry-dispatch-count
+                              (1+ cons-entry-dispatch-count))))
+                 (apply original-ptr-call address args))))
+            ((symbol-function 'nelisp-native-load-call-exit-frame-end)
+             (lambda (frame)
+               (prog1 (funcall original-frame-end frame)
+                 (setq frame-end-count (1+ frame-end-count)))))
+            ((symbol-function 'nelisp-recursive-vm-callback)
+             (lambda (value)
+               (setq callback-tap-count (1+ callback-tap-count))
+               (funcall original-callback value))))
+    (setq result (nelisp-bytecode-native-compiler-call1 token payload))
+    (unless (> callback-tap-count 0)
+      (error "VM callback fset tap did not run"))
+    (unless (and (eq result payload) (equal result expected)
+                 (= call1-entry-dispatch-count 5)
+                 (= cons-entry-dispatch-count 5)
+                 (= frame-end-count 5) (= nelisp-recursion-cons-count 5))
+      (error "recursive dispatch/identity/parity failed: %S"
+             (list result expected call1-entry-dispatch-count
+                   cons-entry-dispatch-count
+                   frame-end-count nelisp-recursion-cons-count)))
+    (setcar payload 'mutated)
+    (let ((mutated-expected (copy-tree expected)))
+      (setcar mutated-expected 'mutated)
+      (unless (and (eq (nelisp-bytecode-native-compiler-call1 token payload) payload)
+                   (equal payload mutated-expected))
+        (error "payload mutation changed recursive result")))
+    (setq nelisp-recursion-mode 'signal)
+    (setq signal-data
+          (condition-case data
+              (progn (nelisp-bytecode-native-compiler-call1 token payload) nil)
+            (wrong-type-argument data)))
+    (unless (and (eq (cadr signal-data) payload)
+                 (= call1-entry-dispatch-count 15) (= frame-end-count 15)
+                 (= cons-entry-dispatch-count 10))
+      (error "signal identity or CALL1 cleanup failed: %S" signal-data))
+    (setq nelisp-recursion-mode 'throw)
+    (setq throw-result
+          (catch 'recursive-call1-tag
+            (nelisp-bytecode-native-compiler-call1 token payload)))
+    (unless (and (eq throw-result payload)
+                 (= call1-entry-dispatch-count 20) (= frame-end-count 20)
+                 (= cons-entry-dispatch-count 10))
+      (error "throw identity or CALL1 cleanup failed"))
+    (setq nelisp-recursion-mode 'normal)
+    (let ((before-cons cons-entry-dispatch-count)
+          (before-frame frame-end-count)
+          (nelisp-recursion-disable-cons t))
+      (unless (condition-case nil
+                  (progn (nelisp-bytecode-native-compiler-call1 token payload) nil)
+                (error t))
+        (error "CONS-disabled negative control unexpectedly passed"))
+      (unless (and (= cons-entry-dispatch-count before-cons)
+                   (= frame-end-count (+ before-frame 5)))
+        (error "CONS-disabled control dispatched native CONS or leaked CALL1 frames"))))
+  (princ "CALL1-VM-RECURSIVE-CONS-GC-PASS\n"))

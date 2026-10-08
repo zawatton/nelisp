@@ -1,0 +1,14 @@
+#+TITLE: Existing build-time bytecode execution compatibility gate
+#+PROJECT: Existing build-time bytecode execution compatibility gate
+#+NOTE: Defined before disposable fixture implementation. This qualifies availability only; it neither changes the compiler21/performance9 denominators nor authorizes runtime compilation, new loaders, caching or post-seal replacement. A failing normal-reader execution gate stops this route.
+
+* S1 Qualify the existing build-time artifact route
+
+** S1.1 Clean GNU Emacs build-time compilation and fresh host execution establish artifact provenance and lexical, identity, GC, error and unwind behavior
+evidence: target/progress/general-native-r9-codex-20261003/bytecode-route-frozen/host-qualified-receipt.json sha256=a949e0d6974ba42acc13ebac6bd6c37e5439ea205bc63900806b8d204ee83b05
+
+** S1.2 End to end: the same compiled artifact actually loads through the qualified normal reader and preserves compiled closure representation and behavior
+cmd: python3 target/progress/general-native-r9-codex-20261003/check-bytecode-route-native.py
+
+** S1.3 End to end: the captured-value source control compiled through the same route fails the exact expected-value gate in the real runtime
+pending

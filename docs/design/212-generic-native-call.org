@@ -1,0 +1,410 @@
+#+TITLE: Generic Native CALL on the Shared-v2 Rooted CFG Path
+#+STATUS: DRAFT (2026-10-03)
+
+* 1. Decision and evidence boundary
+
+Propose an artifact-local =nl_native_call_v2= provider over the existing VM gateway, followed by a separate,
+operation-specific CALL permission proof. Do not make constructor eligibility imply CALL eligibility. Slice 1 is
+a provider diagnostic, not public compiler admission; slice 2 must qualify the permission boundary before
+emitting an admissible CALL artifact.
+
+Source references below are repository-relative =file:line= anchors inspected in this worktree. Statements
+headed "proposed" are requirements, not claims of implementation. No native executable or build was run for this
+document. The host audit was executed with =emacs -Q --batch -L lisp -l
+tools/ai/nelisp-bytecode-coverage-audit.el= and =(nelisp-bytecode-coverage-audit-run)=; its classifier and
+category definitions are at tools/ai/nelisp-bytecode-coverage-audit.el:244 and :227 respectively.
+
+Eight ledger bodies remain literal =pending=, including S3.2 and S4.1
+(tools/ai/general-native-compiler-progress.org:56, :68, :72, :76, :103, :107, :111, :156). None of the bounded
+slices below closes those criteria. The planner admits fixed caller arity, an acyclic reachable topology, at
+most 12 blocks, at most 256 paths, and fewer than 256 roots (lisp/nelisp-bytecode-native-rooted-cfg-plan.el:244,
+:273, :457). Its ordinary opcode set totals 82: constants 129/192..255, stack 1..5/136/137, branches 130..134,
+return 135, primitives 64/65/66/92; safe CAR/CDR 162/163 require the separate safe-v3 mode (same file:113, :361,
+:376, :389). This is planning coverage, not public permission or execution coverage. CALL input verification
+exists for 32..39, including mixed CONS/discard, but grants no native capability
+(lisp/nelisp-bytecode-compiler-input.el:406). The planner's final instruction arm rejects CALL
+(lisp/nelisp-bytecode-native-rooted-cfg-plan.el:402).
+
+* 2. First three slices: accepted and refused inputs
+
+All proposed slices target Linux x86_64, SysV, the pinned GNU 31.1 dialect, single-thread v2 tickets, and
+allocation/mark-sweep GC. Refuse worker mode, moving/debug compaction, native tail calls, and new caller-owned
+cleanup or handler state, and nil/t as callees. A callee's existing VM/Lisp cleanup remains owned by that runtime.
+
+| Slice | Accepted | Refused |
+|-------+----------+---------|
+| 1: provider diagnostic | Checked root window containing an interned non-nil symbol, 0..5 supplied arguments; fixture callees are builtin primitives and fixed-arity source-free VM functions | Public CALL artifacts; direct function objects, uninterned symbols, malformed/overlapping windows, >5 arguments; no re-entry qualification |
+| 2: one public CALL | One reachable block, one CALL32..37, terminal RETURN; caller arity 0..5; function provenance is one constants-vector interned symbol; resolved cell is a builtin wrapper or capture-free, required-only VM function | Aliases, autoloads, macro/special forms, interpreted lambdas, captured functions, opaque/tag-18 native function records, computed callees; branches, bindings, handlers, optional/rest caller or callee layouts |
+| 3: composed CALLs | Multiple CALLs and existing acyclic branches/joins within 12 blocks/256 paths/255 roots; CALL38/39 with decoded counts <=16; fixed caller/callee arity <=16; plain required-only Lisp lambdas, finite symbol aliases, checked native re-entry through a Lisp wrapper | Unknown callee provenance, direct closures/function-valued arguments, autoloads, macros, cyclic aliases, optional/rest layouts; caller bindings/handlers, switch/backedges, native direct pointers or tail calls |
+
+Slice 1's fixture restriction limits demonstrated behavior; it is not an authorization predicate. For slices
+2/3, propose a policy-checked sibling gateway, with the same six-word raw signature, fixed policy in its source,
+and a rooted callee preflight after argument-list construction. Resolve aliases only when that slice permits
+them, classify the final cell, and check its argument/capture descriptor. Refuse unsupported shapes with status
+2 before executing the callee; leave undefined-symbol and wrong-number errors to the ordinary gateway. Stage the
+inspection cell in a gateway root. Resolve once at dispatch, then apply that rooted final cell; no Lisp
+evaluation, autoload, allocation or worker interleaving may separate classification from application. Preserve
+the gateway's special builtin-throw case. Interned-symbol provenance must survive copying and joins; a join is
+admitted only if every incoming callee is the same admitted symbol in slice 3. Arguments may use arbitrary
+supported boxed values; supplying a closure as data does not admit calling it. The exact native cell/descriptor
+classifier is unverified and is a slice-2 deliverable, with no broad =functionp= shortcut. Slice 3's increased
+count/lambda/alias policy needs a new exact provider/policy version and proof, preserving acceptance/refusal of
+previously published versions.
+
+* 3. Provider ABI and implementation recipe for slice 1
+
+Proposed exported local descriptor: name =nl_native_call_v2=, kind =func=, arity 6, params =(u64 u64 u64 u64 u64
+u64)=, return =u64=, SysV AMD64. Signature: =(env ticket call-base argc result-index exit-base)=. All indices
+name reserved 32-byte Sexp slots in the caller's active ticket; none is an object address. =call-base= names the
+function and the next =argc= slots name arguments in source order. Index 0 remains the frame marker.
+
+| Caller roots | Contents / lifetime |
+|--------------+---------------------|
+| 0 | Existing checked-caller marker, never overwritten |
+| 1..caller-arity | Entry arguments |
+| following roots | Constants, ordinary results, CALL windows in deterministic plan order |
+| call-base | Function symbol copied from its live source root |
+| call-base+1 .. call-base+argc | Contiguous argument copies, even if source selectors are phis |
+| result-index | Dedicated normal result; distinct from window and exit triple |
+| exit-base .. exit-base+2 | KIND, TAG, VALUE; one shared triple for this invocation |
+
+Reserve every CALL window and result separately in slice 2/3; do not reuse them before liveness is proven.
+Reserve the shared triple last, including when arithmetic and CALL coexist. Multiple calls execute sequentially;
+the first escaping call immediately terminates the native entry. A recursive invocation receives a different
+ticket/triple, so one triple per call site wastes roots without adding isolation. Clear the triple to nil before
+each call and on normal success. Its contents are authoritative only for status 1.
+
+Proposed local provider statuses: 0 = result written; 1 = captured exit triple; 2 = structural/policy refusal or
+infrastructure failure. Refusal before execution leaves caller output/triple unchanged. A post-execution
+ownership failure returns 2 and must never cause retry: effects may already have happened. KIND is tagged
+integer 1 for signal (including explicit quit), 2 for throw; TAG and VALUE remain full Lisp objects. No new
+integer status encodes a value. The emitter maps 1 to =1024+exit-base=, propagates 2, continues on 0, and uses
+=512+result-root= only at RETURN. Entry arity/root-count mismatch remains 3; existing CAR/CDR type errors remain
+=256+input-root=. These ranges and four-word entry are present at
+lisp/nelisp-bytecode-native-rooted-cfg-shared-emit.el:143, :170, :180, :288; the caller decodes
+exits/results/type errors at lisp/nelisp-bytecode-native-rooted-cfg-call.el:119. With roots <256 the ranges are
+disjoint; require =exit-base+2 < root-count= and exact planned exit status.
+
+Implement the slice-1 provider as source-owned DSL in new =lisp/nelisp-native-call-v2.el=, with private copy,
+exit-capture and inner helpers, a canonical descriptor/import API, bounded fresh source snapshots, and original
+owner identity checks. Keep a host Lisp reference implementing =apply= and exit capture for differential tests.
+No new reader builtin is needed: the runtime gateway is already bridgeable
+(scripts/nelisp-standalone-build.el:29799) and an arithmetic provider import
+(lisp/nelisp-native-arithmetic-v2.el:222). If an implementation instead adds a native surface name, AGENTS.md:18
+requires clause 2 justification, inventory, Lisp reference and census/S1.4/55-second measurements in its
+criterion NOTE. Exact slice-1 runtime imports: =nl_arena_base= (data, 8 bytes), =nl_root_pin_begin_v2= (func,
+1), =nl_root_pin_end_v2= (func, 2), =nl_root_pin_reserve_v2= (func, 2), =nl_root_pin_slot_v2= (func, 3),
+=wf_bytecode_call_gateway= (func, 6); all function parameters/returns are u64. The copy/exit/inner helpers are
+artifact-local, never runtime imports.
+
+Proposed provider algorithm (also the normative test model):
+1. Bound unsigned inputs before addition; require positive nonzero indices, =0<=argc<=5= in slice 1,
+   window/result/triple disjoint, and every index <256. Resolve marker, function, every argument, result and
+   triple with =nl_root_pin_slot_v2=; require adjacent window addresses spaced by 32. Require function tag 4;
+   tag 16 is the separate uninterned identity (scripts/nelisp-standalone-build.el:15207). Do not call a mutable
+   Lisp predicate.
+2. Begin a nested v2 ticket; on begin=0 return 2 without ending an unissued ticket. Reserve function, argc arguments, nil, result, inspection cell, and three exit
+   roots: argc+7 slots, initially nil. Require contiguity of its function/arguments. On reserve failure end the
+   nested frame once and return 2. Copy full 32-byte operands before allocation.
+3. Call =wf_bytecode_call_gateway(env, nested-function-address, nested-function-address, 1, argc,
+   nested-result-address)=. The gateway arguments are addresses into checked roots, not ticket indices. Slices
+   2/3 import a separately proved policy-checked sibling instead; it retains staging and runs the dispatch-time
+   preflight above. Append its bridge name without changing existing indices; never overwrite the original
+   gateway.
+4. Authenticate nested ticket/slots again after return. At nested-function-address minus 32, require the
+   four link words (2, saved-outer-marker, outer-ticket, nested-function-address), matching
+   lisp/nelisp-cc-rootstack.el:555. For rc=0, copy nested result and clear the caller triple. For rc=1, read the authenticated arena stash,
+   accept only flags 1/2, copy TAG/VALUE into nested exit roots, write tagged KIND, then copy all three into the
+   still-live outer roots; clear stash flag only after this ownership transfer. No allocation or Lisp callback
+   occurs during handoff.
+5. End the nested ticket exactly once on every branch. Re-resolve all borrowed outer slots using the original
+   ticket and compare their saved addresses. Return the status only after end=1 and all checks pass; otherwise
+   return 2. Do not resume a Lisp exit or unwind a machine frame inside this provider.
+
+The gateway copies function/arguments, owns its proper list/result roots, and releases its root mark on return
+(scripts/nelisp-standalone-build.el:11359). Root exhaustion can produce a =memory-full= signal, not just refusal
+(same file:11373, :11153). Its raw signature does not authenticate arbitrary pointers: the provider must do so.
+The arithmetic precedent copies the arena stash and clears its flag before ending a nested frame
+(lisp/nelisp-native-arithmetic-v2.el:91, :138); reuse the protocol, not its mutable public source object or an
+assumed permission grant.
+
+* 4. Planner, emitter, contract and reconstruction
+
+Proposed frame IR stays =:kind call=, whose inputs are function followed by arguments, in stack order, with one
+output; this transfer already exists (lisp/nelisp-bytecode-frame-ir.el:263, :280). Add planned =:opcode call=
+with =:bytecode-opcode=, =:pc=, =:argc=, =:callee-constant-index=, =:callee-policy=, =:input-roots=,
+=:call-base=, =:window-roots=, =:output-root= and =:exit-root-base=. Reject disagreement between decoded count
+and verified input count. Maintain provenance alongside root selectors: CONST introduces its index;
+DUP/stack-ref copy it; CALL outputs lose it; phis preserve it only when every incoming constant identity agrees.
+
+At each CALL, emit full-word copies of function then arguments into its fresh window, resolving each source
+selector through the active ticket. Then emit one six-word extern call and status branch. Do not evaluate
+argument Lisp again, reorder effects, hoist across calls or cache a callee cell. Generalize the existing
+two-operand materializer without weakening its slot checks
+(lisp/nelisp-bytecode-native-rooted-cfg-shared-emit.el:37). Keep ordinary callee invocation in the VM/Lisp
+runtime; a native entry may return only after this gateway returns. No direct native tail transfer is proposed.
+
+Use a new contract version =gnu31-rooted-cfg-shared-call-v1= and emitter mode =postdom-shared-call-v1=; retain
+the existing four-word shared entry. Keep old serialized versions and arithmetic-only behavior exact. Add
+ordered =:providers= records, each with kind/version, canonical forms, local names, runtime import descriptors,
+policy and source digest. Hash the entire input recipe, plan, copied constants, windows, counts, provenance,
+exit layout, entry AST, ordered providers, exact imports and encodings; exclude process addresses/owner objects.
+Owner seals stay process-local, separately checked. Live mutable argument objects are roots, not serialized
+snapshots.
+
+The current digest excludes only =:digest=; recipe rebuilding and exact expected-contract equality follow
+independent input/plan/emitter reconstruction (lisp/nelisp-bytecode-native-rooted-cfg-contract.el:42, :68,
+:288). Extend that pipeline for the new version; re-derive windows/provenance/providers from the recipe, never
+accept a supplied call plan by checksum alone. Preserve independent caller input/recipe/payload checks in the
+loader (lisp/nelisp-native-load.el:2631, :2650). Rehashing a forged window, callee index, count, provider or
+exit base must still fail reconstruction. Replace the inference "exit triple implies arithmetic" with explicit
+provider requirements; that inference currently appears in shared emission and plan serialization
+(lisp/nelisp-bytecode-native-rooted-cfg-shared-emit.el:249, :298;
+lisp/nelisp-bytecode-native-rooted-cfg-contract.el:82).
+
+* 5. Roots, collector safety, re-entry and non-local exits
+
+Rely on nested ticket restoration and stale/index/owner checks (lisp/nelisp-cc-rootstack.el:524, :586, :628),
+checked gateway reserves (scripts/nelisp-standalone-build.el:11346), and precise scans of both normal and pinned
+root regions (lisp/nelisp-cc-rootstack.el:754, :760). The pin region is BSS
+(scripts/nelisp-standalone-build.el:891); the provider may retain checked slot addresses, never cached object
+interior pointers. Callee-created objects first enter the gateway's result root, then nested provider result,
+then caller result before either temporary frame is released. Every live native value remains in its original
+outer root throughout calls.
+
+Collector movement is NOT generally proven by those marking functions. Explicit GC uses mark/sweep
+(scripts/nelisp-standalone-build.el:5612), while debug compaction has a separate branch (same file:5739).
+Pinned-region rewriting is unverified; the displayed swizzle root walker covers the normal rootstack only (same
+file:9467). Qualify and enforce a no-moving-collector operation domain first; do not switch collector behavior
+or disable a check. If that domain cannot be authenticated, slice 2 stays refused until relocation coverage is
+proved. v2 begin already refuses a nonempty thread registry (lisp/nelisp-cc-rootstack.el:529); do not widen it
+for this design.
+
+For re-entry, propose outer native ticket A -> provider ticket B -> existing VM roots -> checked native entry
+ticket C, then restore C/B/A in LIFO order. Objects created in C become B/VM roots before C ends. Same-entry
+recursion has separate mappings/tickets/windows; never share a global exit triple. After each gateway return,
+authenticate B and its saved parent link; after ending B authenticate A. No full evidence hash is needed at
+these safepoints. Re-entry is slice-3 acceptance, not inferred from ticket nesting alone. Protect each shared
+entry mapping for the whole machine call: the existing active-call depth/unload guard is reusable
+(lisp/nelisp-native-load.el:49, :5493), but the current CFG entry bridge calls =ptr-call= directly
+(lisp/nelisp-bytecode-native-rooted-cfg-call.el:19). Add a public sealed protected-entry wrapper; do not expose
+a private namespace escape.
+
+On status =1024+exit-base=, the checked caller must unbox/resume while its ticket is live, then end roots and
+unload exactly once through unwind-protect. The existing caller and resumer already have that order
+(lisp/nelisp-bytecode-native-rooted-cfg-call.el:119, :131; lisp/nelisp-native-load.el:1663). A signal carries
+its exact condition/data; throw carries tag/value. Explicit =(signal 'quit nil)= uses the signal stash
+(scripts/nelisp-standalone-build.el:16489), so KIND=1 suffices. Asynchronous quit delivery and the distinct quit
+flag (same file:1602) are unverified; do not claim interrupt polling until a separate semantic probe qualifies
+it. No generated cleanup is added. Callee-owned cleanup/replacement signals must finish in the runtime before
+capture; test exactly-once side effects. Keep Doc 209's prohibition on generalizing the admitted-chain protocol
+and its unresolved handler/cleanup search order (docs/design/209-bytecode-native-compiler-abi.org:140). Native
+caller handlers, binding restoration and cancellation remain refused until slice 6.
+
+* 6. Callee identity and primitive identity
+
+Ordinary CALL passes the rooted symbol and resolves its current function cell on each execution. The gateway
+calls =nl_apply_function= and handles a rebound =throw= cell separately
+(scripts/nelisp-standalone-build.el:11391). Symbol-cell dispatch is visible in
+lisp/nelisp-cc-evalport-combiner-apply.el:3 (the quoted =nl_apply_function= was read and pretty-printed on the
+host). Do not seal a callee's function cell into machine code. Replacing a supported cell changes the next call;
+replacing it with a refused kind returns 2 before callee effects. Proposed constant-slot replacement must invalidate the
+caller witness. Aliases need bounded cycle detection and rooted final cell; autoload effects are deliberately
+deferred although a runtime rewrite exists (scripts/nelisp-standalone-build.el:36599).
+
+For bytecode primitive lowering, ordinary symbol dispatch is NOT faithful: rebinding =+= or =symbol-function=
+must not change an opcode. The runtime constructs =(builtin NAME)= for named primitives
+(scripts/nelisp-standalone-build.el:11225); arithmetic uses =(builtin +)= explicitly for this reason
+(lisp/nelisp-native-arithmetic-v2.el:124). Propose slice-4 =runtime-primitive= operations routed through the
+same six-word provider ABI with a separately authenticated immutable primitive policy. Use canonical builtin
+wrappers where available; otherwise use a sealed Lisp reference implementation and compile it generally, rather
+than adding a hand-written native for speed. Provider policy is contract-selected, never a caller-controlled
+function-valued escape from symbol-only admission.
+
+* 7. Runtime-op-pending lowering census
+
+Host result: 89 runtime-op-pending, 8 structurally-decoded, 116 frame-represented, 13 native-raw-i64-slice, 6
+legacy-jit-only, 1 reserved and 23 pinned-build-invalid. These are audit dispositions, not shared-v2 coverage;
+classification is at tools/ai/nelisp-bytecode-coverage-audit.el:260 and counts at :362. Use its own categories.
+"Yes" below proposes semantic equivalence only with immutable primitive identity, exact arity/order and GNU
+error/effect parity; availability of every corresponding standalone primitive is unverified.
+
+| Audit category | Pending count | Gateway lowering proposal / exceptions | Source anchor for names/shapes |
+|----------------+---------------+-----------------------------------------+-------------------------------|
+| handler-control | 2: 48/49 | No: pophandler/pushconditioncase change saved handler state and transfer edges; pushcatch50 is outside this pending count | vendor/emacs-lisp/emacs-lisp/bytecomp.el:760 |
+| object-operation | 18: 56,62,67..82 | Yes: nth(2), memq(2), list(1..4), length(1), aref(2), aset(3), symbol-value(1), symbol-function(1), set/fset/get(2), substring(3), concat(2..4); preserve live symbol cells/plists and mutation | lisp/nelisp-bytecode-ir.el:113 |
+| arithmetic | 2: 93/94 | Yes: max/min, two operands, exact number/type semantics | vendor/emacs-lisp/emacs-lisp/bytecomp.el:803 |
+| buffer-operation | 32: 96..127 | 27 ordinary operations are candidates for same-name primitives with verified implicit buffer/point state; 114 needs saved-state cleanup; 97/107/115/116 are obsolete, semantics unverified and kept refused pending GNU probes | lisp/nelisp-bytecode-ir.el:149; vendor/emacs-lisp/emacs-lisp/bytecomp.el:824 |
+| unwind-control | 8: 138..145 | No uniform result call: saved excursion/restriction/window state, catch, unwind action, condition-case, temporary output setup/show need cleanup records and sometimes expression evaluation; obsolete variants require separate probes | vendor/emacs-lisp/emacs-lisp/bytecomp.el:861 |
+| extended-object-operation | 20: 147..161,164..168 | Yes: set-marker(3); match-beginning/end, upcase/downcase, nreverse, numberp/integerp(1); string=/string<, equal, nthcdr/elt/member/assq, setcar/setcdr, nconc, /(byte-quo), %(byte-rem)(2) | lisp/nelisp-bytecode-ir.el:134; vendor/emacs-lisp/emacs-lisp/bytecomp.el:903 |
+| count-switch-stack-set | 7: 175..179,182/183 | Yes candidates: listN/concatN/insertN (3), decode count and root variadic operands; no: stack-set/stack-set2/discardN (3) need slot moves/preserve-top, switch (1) needs live table lookup plus verified target dispatch | lisp/nelisp-bytecode-ir.el:201; vendor/emacs-lisp/emacs-lisp/bytecomp.el:913 |
+
+Candidate sum is 72 (18+2+27+20+3), not 89 new admissible lowerings. The other 17 need state/control work or
+obsolete semantics; any candidate with different GNU error/return behavior also stays refused. Buffer arities
+must come from the pinned transfers (vendor/emacs-lisp/emacs-lisp/bytecomp.el:806), including zero-argument
+point/widen and two-argument skip-chars, not name heuristics. The audit's compact-variable-call category has
+zero runtime-op-pending rows; dynamic bind/unbind are already frame-represented, yet native emission remains
+unresolved (lisp/nelisp-bytecode-frame-ir.el:415; docs/design/209-bytecode-native-compiler-abi.org:479).
+Backedges need cyclic root dataflow, optional/rest callers need rooted entry expansion, and direct closures need
+a function-value/capture ABI; none follows from this census. Switch must read the live mutable table, as the VM
+does (scripts/nelisp-standalone-build.el:11498), rather than freeze CFG edge keys.
+
+* 8. Permission: smallest sound extension and authentication cost
+
+Option A (recommended): independent =compiler-call-memory-v1= proof and boot-owned capability accepting exactly
+=(call)= plus policy =call-symbol-fixed-v1=. Retain the constructor proof, schema and predicate. Option B:
+versioned union compiler proof with exact =(constructor call)= eligibility; easier provider composition but a
+larger authenticated closure and mutation surface for every constructor user. Neither grants numeric or
+handler/closure eligibility merely because CALL transports boxed objects.
+
+Proposed CALL evidence must bind active source/unit manifests twice, source hashes and helper owners, normalized
+text/relocations and actual mapped text, running binary/ABI, bridge indices and exact import arities,
+arena/stash offsets, root control/region, collector domain, dispatcher/callee-shape policy, and result/exit
+handoff. Include gateway, apply dispatcher, lookup/alias classifier, argument construction, policy-checked
+sibling gateway, signal/throw producers, GC/root helpers and every reachable machine helper/data dependency.
+Lisp function-cell contents are dynamic language data; authenticate dispatcher implementation, not a frozen user
+function. Registered native callback targets require their own genuine admission and active mapping lifetime,
+not mere =functionp= or a raw address.
+
+Every blocking gate below needs an adjacent CALL path or exact versioned extension; its old-domain test remains unchanged:
+
+| Gate / inspected anchor | Required extension |
+|-------------------------+--------------------|
+| scripts/nelisp-native-compiler-constructor-prelink.py:8, :20 | New CALL root list/domain; retain exact constructor roots and twice-checked active manifest |
+| lisp/nelisp-native-load.el:73, :5526; scripts/nelisp-standalone-build.el:29776 | Versioned CALL layout/export arities and append-only matching bridge tables, after the existing port suffix too; regenerate source/binary pins |
+| scripts/nelisp-native-rooted-prelink-closure.py:103, :126 | Complete CALL helper ownership graph within current count/text bounds; unknown indirect control flow still refuses |
+| templates/nelisp-native-rooted-abi-proof.el.in:288, :316, :489 | Separate CALL protocol predicate, text/relocation/memory and BSS/bridge verification; retain ticket-gc domain |
+| lisp/nelisp-native-compiler-startup-evidence.el:8, :170, :345, :375 | Separate CALL roots/exports, exact derivation counts, proof-owner/metadata schema; no editing generated lists to claim eligibility |
+| lisp/nelisp-native-compiler-startup-evidence.el:38, :453; scripts/nelisp-standalone-build.el:26831, :26857 | Source-pin a CALL startup loader/template and modules, derive reviewed canonical transforms and include build/cache dependencies |
+| lisp/nelisp-native-compiler-runtime-capability.el:38, :66, :101 | Adjacent boot-only CALL capability with exact metadata/export set, genuine registry token, owner EQ, binary and ABI checks; missing startup stays unavailable |
+| lisp/nelisp-bytecode-native-rooted-cfg-constructor-contract.el:20, :42 | Adjacent CALL predicate checks new reconstructed version/policy/windows/triple; constructor still rejects CALL/exit triples |
+| templates/nelisp-native-load-constructor-startup.el.in:7, :28, :64, :86, :124; lisp/nelisp-native-load.el:1710, :1731, :3973 | Separate sealed manifest-runtime branch at address/copy/artifact gates; binder remains permanent refusal |
+| lisp/nelisp-bytecode-native-rooted-cfg-native.el:120 | Capture/check the original CALL predicate before backend entry, alongside unchanged full-runtime/constructor routes |
+| lisp/nelisp-bytecode-native-rooted-cfg-contract.el:165, :180, :321; lisp/nelisp-bytecode-native-rooted-cfg-shared-emit.el:249 | Reconstruct explicit CALL provider requirements; no arithmetic-context proxy for CALL authority |
+
+There is a real proof conflict: the existing prelink walker rejects all indirect machine edges and caps 128/192
+functions/512 KiB; tag-18 application can contain =call-ptr=
+(scripts/nelisp-native-rooted-prelink-closure.py:74, :108, :126; scripts/nelisp-standalone-build.el:36575). CALL
+closure size and every indirect edge are unverified. First run the new graph against frozen units. If it fails,
+keep public admission red. Options are a genuinely smaller dispatcher entry with an equally complete proof, or a
+separate reviewed graph certificate with typed target/lifetime checks at each indirect boundary. Do not drop an
+edge, trust a symbol's presence, raise a bound, or relax the existing direct-only proof. The coordinator must
+approve that new proof contract before implementation; it is not a mechanical allowlist addition.
+
+Cost budget: zero additional full authentications per generated CALL, including after return; one CALL-domain
+issuance per process and one full validation per new artifact admission, with existing outer
+compiler/loader/caller checks preserved. Re-entry runs the checked entry's normal boundary checks, not a fresh
+gateway-specific proof. Bind provider code/imports at admission; tickets, slot extents and parent links are
+checked on every call. Do not memoize mutable cells. Existing manifest caching checks copied
+data/runtime/provider context (lisp/nelisp-native-load.el:3529); a future cache must preserve equivalent checks
+and invalidate on every owner/source/runtime/mapping change. Brief-supplied r8c costs (3.5 us/form, 2.8 s/hash,
+~6 s/capability, 213 s public CONS of which ~13 s compilation) are unverified here; use as planning context, not
+acceptance evidence. Measure all four boundaries separately before/after.
+This is a budget to prove: the current startup facade requests capability at every manifest-runtime check
+(templates/nelisp-native-load-constructor-startup.el.in:28). A CALL admission record needs bounded copied
+manifest/provider data, original owner EQ, current runtime identity/domain and protected mapping lifetime at
+each boundary, with mutation-equivalent tests against the full validator. Until that fast path is proved,
+retain full validation and report a budget failure; never advertise the proposed authentication count as measured.
+
+* 9. Loader changes for the second provider kind
+
+Propose dispatch on an exact provider kind/version, not on presence of =additional-source= or arithmetic guard
+mode. Compare ordered canonical provider definitions and descriptors, reject duplicate/conflicting local names,
+require exact AST-derived runtime imports, and validate the remaining GC forms unchanged. Mixed arithmetic+CALL
+shares the exit triple but has distinct local helper prefixes and a union of exactly required imports. Initially
+refuse mixed providers until slice 4 verifies this union. Preserve legacy arithmetic contracts byte-for-byte;
+unknown kinds, extra forms/imports and policy mismatches refuse before AOT or mapping. No generic "provider
+trusted" flag.
+
+Inspected loader sites to extend: owner/source/forms partition at lisp/nelisp-native-load.el:2242, :2263;
+descriptor/import equality and bridge mode at :2281, :2299; copied provider cache context at :2311, :2366;
+pre-AOT import validation at :2391; reconstructed contract/AST at :2622; emitted import mode/index/descriptors
+at :2855; loaded contract descriptor checks at :3267; raw diagnostic mode/ABI checks at :3778; final
+authenticated symbol resolution at :4367. Introduce =call-provider-v1= mode with the same exact arity/type/index
+checks. Resolve only through the immutable native bridge after CALL contract and permission validation; never
+fall through to the raw resolver for this mode.
+
+* 10. Ordered slice plan (proposed checks; none run natively here)
+
+Launch estimates count separate native processes, including substantive mutant controls, exclude host ERT and
+builds; batch related cases per process and keep original ledger time/memory caps. Record executable/source
+hashes and case counts.
+
+1. Provider + diagnostic model: new =lisp/nelisp-native-call-v2.el= and =test/nelisp-native-call-v2-test.el=,
+   new =test/standalone-native-call-v2-smoke.sh= and source-pinned probe fixture. Host: exact six-word ABI,
+   bounded snapshot/owners, 0..5 arguments, status model and unchanged-output refusals. Native: frozen-source
+   provider with builtin/VM callees, GC object identity, signal/throw/explicit quit, nil, root
+   exhaustion/stale/foreign/unreserved/overlap checks and ticket recovery. Negative: omit gateway staging or
+   exit-root copy; GC/exit assertions must fail, not merely time out. Estimated 3 launches; public CALL remains
+   refused. Use a statically linked dedicated diagnostic image, or an already genuinely authenticated
+   full-runtime raw-v2 image. Never admit it through constructor permission, substitute proof owners, or weaken
+   a loader check for the probe.
+2. Permission + one public CALL: new CALL prelink/proof/capability/startup sources, policy-checked sibling
+   gateway in =scripts/nelisp-standalone-build.el= and call-contract predicate; change the gates in §8/9,
+   compiler input/planner/shared emitter/contract/native producer/caller, public protected-entry API, build dependency pins and new
+   ERT/public probe. Host: genuine GNU source-free one-call recipes, independent reconstruction, preflight
+   refusals, absent/late/forged owners. Native: actual public compile/load/call CALL0..5, changed supported
+   callee, result/exit/GC parity and active-unload refusal. Reject native re-entry with a sealed active-entry
+   extent guard in this slice; slice 3 qualifies lifting that refusal. Negative: changed mapped gateway byte/bridge target, rehashed
+   argc/window/provider, disabled CALL emission each goes red. Estimated 4 launches; graph failure blocks public
+   admission, not its checks.
+3. Joins, multiple calls and re-entry: planner/shared emitter/postdom/contract, protected-entry
+   API/caller, classifier and host/native tests. Host: phi-to-window copies, identical-symbol provenance,
+   CALL38/39 <=16, alias cycles and exact effect order. Native: same/other-entry recursion via Lisp, GC between
+   calls, redefinition between two calls, second-call exit, attempted active unload and restoration of all
+   tickets/mappings. Negative: swapped arguments, cached cell, omitted active protection or wrong child end each
+   fails its semantic assertion. Estimated 4 launches.
+4. Stateless runtime-op lowering: IR/frame transfers, canonical primitive registry/reference Lisp sources,
+   provider/permission schema, mixed-provider loader validation and opcode corpus/audit tests. Host: every
+   candidate's exact transfer/import identity; native: implemented families against GNU, fset of primitive
+   names, allocation/mutation/type errors, OFF/ON equivalence. Negative: mutable-name dispatch or dropped
+   operand/effect goes red. Estimated 4 launches; unimplemented/obsolete candidates remain pending.
+5. Function values and argument layouts: compiler input/plan/contract/provider, rooted entry expansion and VM
+   function/capture admission, package witnesses. Host: required/optional/rest layout and capture
+   identity/lifetime rejection; native: direct closures, mutation/GC of captures, recursive closures, missing
+   optional nil/rest order and replacement. Negative: stale capture/constant witness or unrooted rest list goes
+   red. Estimated 4 launches. This requires a new reviewed function-value policy, not widening symbol-only
+   metadata.
+6. Stateful control: IR/frame/CFG, root dataflow, VM/native handler and binding records, switch runtime
+   dispatch, permission/loader schema and exit caller. Host: depth/edge/root maps, loop fixed points, live
+   switch table mutations; native: binding restoration, nested handlers/cleanup replacement/quit, mixed
+   VM/native unwind and loops. Negative: skip cleanup, retain binding, freeze switch table or omit loop root
+   goes red. Estimated >=6 launches; subdivide implementation internally and qualify obsolete opcodes
+   separately.
+
+* 11. Positions on Doc 209 §6 and coordinator decisions
+
+Doc 209's seven decision bullets are at docs/design/209-bytecode-native-compiler-abi.org:392. Positions, in that
+order:
+1. Choose ticket-indexed stable root slots and full Sexp copies; main-thread mark/sweep only. Moving collector
+   coverage and other object classes stay open.
+2. Use the existing 32-byte rooted representation locally; =sexp32= tagging, fixnum portability and
+   non-x86_64/Linux remain open; no ABI-wide claim.
+3. Choose explicit reserved roots, per-call windows and gateway safepoints; general stack maps, cyclic
+   allocation reuse and moving GC handshake stay open.
+4. Choose status/triple capture and Lisp resumption after machine return; generated handler search, mixed
+   cleanup replacement and async quit stay open until slice 6. Doc 207's admitted-chain restriction remains
+   mandatory.
+5. Choose runtime symbol-cell lookup/redefinition and nested checked re-entry; direct closures/captures and
+   optional/rest rooting stay open until slice 5.
+6. Retain argument/constant object identity in roots and guard caller recipe replacement; primitive identity is
+   immutable. Live switch-table dispatch is required; its general target/CFG policy stays open until slice 6.
+7. Choose a new CALL contract/provider schema and binary/ABI/source binding; concurrent
+   publication/retired-generation reclamation remain open. Active mappings must be protected even before the
+   broader lifecycle is settled.
+
+Coordinator decisions: approve diagnostic-first slice 1, N=5 then 16, one triple per invocation, separate CALL
+capability (Option A), refusal of moving GC, and a new typed-indirect proof only if the measured graph requires
+it. Main risks are proof closure size/indirect edges, descriptor classifier fidelity, GC movement, runtime exit
+stash reuse, active mapping lifetime and excessive outer authentication cost. Treat ownership failures after
+effects as fatal infrastructure errors for that invocation, never interpreter fallback/retry.
+
+Audit-lead corrections: "only native call today" is too broad: arithmetic already calls the gateway
+(lisp/nelisp-native-arithmetic-v2.el:133), and native subr dispatch exists
+(scripts/nelisp-standalone-build.el:36554). CALL1 really does retain its callee in Lisp and passes it to the
+loader (lisp/nelisp-bytecode-native-compiler.el:104, :134, :159). The unrendered proof template permits =(ticket
+gc)=, not =(constructor)=; constructor eligibility comes from derivation
+(templates/nelisp-native-rooted-abi-proof.el.in:295; lisp/nelisp-native-compiler-startup-evidence.el:174). The
+other source leads were confirmed in their scoped meanings above. Runtime timings, every callee kind's behavior,
+full re-entry/async quit/moving GC safety, and the complete CALL proof graph remain unverified; no native
+qualification is claimed.
