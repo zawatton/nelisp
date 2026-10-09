@@ -7059,7 +7059,7 @@ argument (reachability + in-arena bounds checks).")
     ((:lit "nelisp--alloc-check-report") . (bf_alloc_check_report out))
     ;; --- M7 file I/O (impls in m7b-fileio.o glue unit) ---
     ((:u8 "wrf")  . (seq (nl_bi_write_file args out) 0))
-    ((:u8 "rdf")  . (seq (nl_bi_read_file args out) 0))
+    ((:u8 "rdf")  . (seq (nl_bi_read_file_maybe_raw args out) 0))
     ((:u8 "slen") . (seq (nl_bi_slen args out) 0))
     ;; Native buffer-scan helpers (Doc 142 Gate 5 OOM fix): an interpreted
     ;; per-char while over a ~500KB buffer string churns ~1MB of arena PER
@@ -21014,7 +21014,7 @@ into that constant unconditionally is what broke every aarch64 build."
     ;; paths and use a post-load proof form to verify the file actually ran.
     ((:lit "load")        . (bf_load args env out))
     ((:lit "nelisp--eval-source-string") . (bf_eval_source_string args env out))
-    ((:lit "nelisp--syscall-read-file") . (seq (nl_bi_read_file args out) 0))
+    ((:lit "nelisp--syscall-read-file") . (seq (nl_bi_read_file_maybe_raw args out) 0))
     ((:lit "nl-write-file") . (nl_bi_write_file_t args out))
     ((:lit "nelisp--syscall-path") . (nl_bi_syscall_path args out))
     ((:lit "nelisp--syscall-path2") . (nl_bi_syscall_path2 args out))
@@ -22292,6 +22292,19 @@ extern arms in dynamic builds."
                (buf (alloc-bytes 4096 1))
                (fd (nl_os_open_read cpath)))
           (nl_bi_rf_withfd fd buf out))))
+    ;; Optional RAW tags the unchanged OS bytes as unibyte.  Both public
+    ;; names use this entry: the prelude aliases syscall-read-file to rdf.
+    ;; Source loaders still use nl_bi_read_file's default text result.
+    ;; string-as-unibyte cannot recover arbitrary bytes from a text tag:
+    ;; C0/C1 are internal byte8 escapes and consume the next file byte.
+    (defun nl_bi_read_file_maybe_raw (args out)
+      (seq (nl_bi_read_file args out)
+           (if (= (sexp-tag (nl_cons_cdr_ptr args)) 7)
+               (if (/= (sexp-tag (wf_arg_ptr args 1)) 0)
+                   (if (= (sexp-tag out) 5) (ptr-write-u8 out 0 14) 0)
+                 0)
+             0)
+           0))
     (defun nl_bi_slen (args out)
       (wf_write_int out (nl_bi_strlen (wf_arg_ptr args 0))))
     ;; str-count-nl STRING END -> number of \n bytes in STRING[0, min(END,len)).

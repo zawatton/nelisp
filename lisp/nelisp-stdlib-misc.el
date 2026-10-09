@@ -1851,10 +1851,7 @@ process from `void-variable'ing on a host that has not bound it yet."))
       (signal 'file-missing
               (list "Opening input file" "No such file or directory"
                     (expand-file-name filename))))
-    (let* ((decoded (or (nelisp--syscall-read-file filename) ""))
-           (bytes (if (fboundp 'string-as-unibyte)
-                      (string-as-unibyte decoded)
-                    decoded))
+    (let* ((bytes (or (nelisp--syscall-read-file filename t) ""))
            (total (length bytes))
            (b (if beg (max 0 (min beg total)) 0))
            (e (if end (max b (min end total)) total))

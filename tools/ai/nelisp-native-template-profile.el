@@ -1,13 +1,17 @@
 ;;; nelisp-native-template-profile.el --- In-process template phase/callee profile -*- lexical-binding: t; -*-
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 ;; Run with PROFILE_FIXTURE (genuine GNU elc), PROFILE_CALLS, and a private
-;; NELISP_NATIVE_CACHE. Profiling wraps live owners without reloading sources;
+;; NELISP_NATIVE_CACHE. PROFILE_PHASE=load reuses the same cached function
+;; in a fresh process without compilation; missing mappings fail immediately.
+;; Slow poll markers attribute pauses before a long call loop can time out.
+;; Profiling wraps live owners without reloading sources;
 ;; its timings include wrapper overhead and never qualify latency acceptance.
 (require 'nelisp-native-cache)
 (require 'nelisp-bytecode-native-consumer)
 (require 'nelisp-native-template)
 (defvar nelisp-native-template-profile--stack nil)
-(let ((records (make-hash-table :test 'eq)) (owners nil) (decode-start nil))
+(let ((records (make-hash-table :test 'eq)) (owners nil) (decode-start nil)
+      (slow-polls 0) (maximum-poll 0.0))
   (setq nelisp-native-template--phase-trace
         (lambda (phase)
           (if (eq phase 'decode-begin) (setq decode-start (float-time))
@@ -81,22 +85,37 @@
                           (aset row 0 (1+ (aref row 0)))
                           (aset row 1 (+ (aref row 1) elapsed))
                           (aset row 2 (+ (aref row 2) elapsed))
-                          (puthash 'actual-frozen-poll row records))))))))
+                          (puthash 'actual-frozen-poll row records)
+                          (setq maximum-poll (max maximum-poll elapsed))
+                          (when (> elapsed 0.05)
+                            (setq slow-polls (1+ slow-polls))
+                            (when (<= slow-polls 5)
+                              (princ (format "TEMPLATE-SLOW-POLL index=%d seconds=%.6f\n"
+                                             (aref row 0) elapsed)))))))))))
       (let* ((nelisp-native-cache-backend 'template)
              (function (cdr (assq 'compiler-r3-cons
                                   (nelisp-bytecode-native-consumer-read-elc-functions
                                    (getenv "PROFILE_FIXTURE")))))
+             (phase (or (getenv "PROFILE_PHASE") "compile"))
+             (_phase (unless (member phase '("compile" "load"))
+                       (error "PROFILE_PHASE must be compile or load")))
              (start (float-time))
-             (file (nelisp-native-cache-compile function))
+             (file (if (equal phase "load") (nelisp-native-cache-file function)
+                     (nelisp-native-cache-compile function)))
              (compiled (float-time)) (native (nelisp-native-cache-load function))
+             (_mapping (unless native (error "Profile fresh mapping unavailable: %s" file)))
              (loaded (float-time)) (result (funcall native 40 2)) (called (float-time))
              (calls (string-to-number (or (getenv "PROFILE_CALLS") "100"))))
         (unless (equal result '(40 . 2)) (error "Profile exact result failed"))
         (dotimes (i calls)
           (unless (equal (funcall native i i) (cons i i)) (error "Profile repeated call failed")))
         (princ (format "TEMPLATE-PROFILE compile=%.6f load=%.6f call=%.6f repeated=%d seconds=%.6f validations=%d file=%s\n"
-                       (- compiled start) (- loaded compiled) (- called loaded) calls
+                       (if (equal phase "compile") (- compiled start) 0.0)
+                       (- loaded compiled) (- called loaded) calls
                        (- (float-time) called) nelisp-native-template--validation-count file))
+        (princ (format "TEMPLATE-PROFILE-PHASE phase=%s cache-lookup=%.6f\n"
+                       phase (if (equal phase "load") (- compiled start) 0.0)))
+        (princ (format "TEMPLATE-POLL-SUMMARY slow=%d maximum=%.6f\n" slow-polls maximum-poll))
         (maphash (lambda (name row)
                    (princ (format "TEMPLATE-CALLEE %s calls=%d inclusive=%.6f exclusive=%.6f\n"
                                   name (aref row 0) (aref row 1) (aref row 2)))) records)))

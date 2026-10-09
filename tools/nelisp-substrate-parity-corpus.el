@@ -386,6 +386,26 @@
               (condition-case e (catch nil (throw nil 5)) (no-catch e))
               (catch 'outer (catch 'inner (throw 'outer 7))))
         '((no-catch missing 5) (no-catch nil 5) 7)) 1 0))
+    ;; File bytes C0/C1 must not be interpreted as internal byte8 escapes.
+    ;; Use explicit ambient function cells for file/buffer primitives that
+    ;; source-fallback has not imported into its own function table.
+    (60 shared (let* ((file (funcall (symbol-function 'make-temp-file) "literal-parity-"))
+                      (bytes (funcall (symbol-function 'unibyte-string) 0 13 10 192 193 128 255 192))
+                      (previous (funcall (symbol-function 'current-buffer)))
+                      (coding (funcall (symbol-function 'symbol-value) 'coding-system-for-write))
+                      (buffer (generate-new-buffer " *literal-parity*")))
+                 (unwind-protect
+                     (progn
+                       (funcall (symbol-function 'set) 'coding-system-for-write 'no-conversion)
+                       (funcall (symbol-function 'write-region) bytes nil file nil 'silent)
+                       (funcall (symbol-function 'set-buffer) buffer)
+                       (funcall (symbol-function 'set-buffer-multibyte) nil)
+                       (funcall (symbol-function 'insert-file-contents-literally) file)
+                       (if (equal (buffer-string) bytes) 1 0))
+                   (funcall (symbol-function 'set-buffer) previous)
+                   (funcall (symbol-function 'set) 'coding-system-for-write coding)
+                   (kill-buffer buffer)
+                   (delete-file file))))
     ))
 
 (provide 'nelisp-substrate-parity-corpus)

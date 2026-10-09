@@ -1584,12 +1584,12 @@ ignored."
 ;; `file-exists-p' does not depend on reading any bytes, so it still tells
 ;; the two cases apart when `rdf' cannot.
 (when (and (fboundp 'rdf) (fboundp 'nelisp--write-stderr-line))
-  ;; The reader's baked nelisp--syscall-read-file throws uncatchably when
-  ;; called with a path; redefine it on top of rdf (the working file-read
-  ;; primitive).  Gated on the standalone marker so host Emacs is untouched.
-  (defun nelisp--syscall-read-file (filename)
+  ;; Keep path expansion and empty-file compatibility on top of rdf.
+  ;; RAW preserves literal file bytes at the native boundary.  The
+  ;; standalone marker leaves the host Emacs reader untouched.
+  (defun nelisp--syscall-read-file (filename &optional raw)
     (let* ((expanded (expand-file-name filename))
-           (s (rdf expanded)))
+           (s (if raw (rdf expanded raw) (rdf expanded))))
       (cond
        ((and (stringp s) (> (length s) 0)) s)
        ((file-exists-p expanded) "")
