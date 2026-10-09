@@ -95,11 +95,14 @@ field and string. This is serialization checking, not semantic validation."
     (error "Template backend requires Linux x86_64 SysV"))
   (require 'nelisp-native-template-pin)
   (unless nelisp-native-template--snapshot
+    ;; The bytes are authenticated by the pinned sha256 of a private snapshot,
+    ;; so only world-writable files are refused here: a git checkout under the
+    ;; common umask 002 leaves the library group-writable.
     (let* ((attrs (file-attributes nelisp-native-template--library-path 'integer))
            (mode (file-modes nelisp-native-template--library-path))
            (bytes (and attrs (nth 7 attrs))))
       (unless (and attrs (not (car attrs)) (not (file-symlink-p nelisp-native-template--library-path))
-                   mode (= 0 (logand mode #o022)) (integerp bytes) (< 0 bytes 65536)
+                   mode (= 0 (logand mode #o002)) (integerp bytes) (< 0 bytes 65536)
                    (eql (nth 2 attrs) (if (fboundp 'user-uid) (user-uid)
                                          (syscall-direct 102 0 0 0 0 0 0))))
         (error "Stencil library ownership, permissions or bound refused"))
