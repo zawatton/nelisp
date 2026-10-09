@@ -57,9 +57,20 @@ def prepare_preloads(gnu, output, env):
     form = '''(let ((forms nil) (references (make-hash-table :test 'equal)))
       (require 'json)
       (mapc (lambda (name) (puthash name t references)) (json-read-file %s))
-      (dolist (name '(etags-program-name mode-line-misc-info rcs2log-program-name other-window-scroll-buffer))
+      (dolist (name '(etags-program-name mode-line-misc-info rcs2log-program-name other-window-scroll-buffer
+                      movemail-program-name))
         (push `(unless (boundp ',name)
                  (defvar ,name ',(symbol-value name))) forms))
+      ;; cus-start initializes this C-core option during GNU loadup.
+      ;; Tramp evaluates its standard expression when no usable XDG cache
+      ;; exists; the small image's defvar supplies only the current value.
+      ;; Export the genuine expression, preserving getenv at evaluation time.
+      (let ((standard (get 'temporary-file-directory 'standard-value)))
+        (unless (and (consp standard) (consp (car standard)))
+          (error "GNU temporary-file-directory standard expression missing"))
+        (push `(unless (get 'temporary-file-directory 'standard-value)
+                 (put 'temporary-file-directory 'standard-value ',standard))
+              forms))
       ;; characters.el normally defines these before packages load.  Keep
       ;; GNU's exact category descriptions for copied tables (kinsoku/shr).
       (dotimes (offset 95)
@@ -124,11 +135,12 @@ def prepare_preloads(gnu, output, env):
                    env=env, check=True, capture_output=True, timeout=30)
     return dict(reference_symbols=len(referenced), reference_manifest=str(references),
                 source=str(source), additional_sources=[str(tab_source), str(window_source), str(binding_source)], names=['etags-program-name', 'mode-line-misc-info',
-                                          'rcs2log-program-name', 'other-window-scroll-buffer', 'auto-mode-alist',
+                                          'rcs2log-program-name', 'other-window-scroll-buffer', 'movemail-program-name', 'auto-mode-alist',
                                           'coding-system-change-eol-conversion', 'tab-bar-new-tab-choice',
                                           'GNU -Q autoload table', 'window-normalize-window',
                                           'window-full-width-p', 'window-full-height-p',
-                                          'cl--letf', 'cl-letf', 'cl-letf*'],
+                                          'cl--letf', 'cl-letf', 'cl-letf*',
+                                          'temporary-file-directory standard-value'],
                 sha256=hashlib.sha256(output.read_bytes()).hexdigest())
 
 

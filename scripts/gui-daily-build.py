@@ -29,21 +29,44 @@ def isolate_lexical_forms(data):
     in every subsequent defun. Use genuine eval's lexical argument to give
     each form the same environment as an independent lexical source load.
     Nested lets/lambdas retain their intentional captures.
+
+    GNU load also keeps a file's initializer-free `(defvar SYM)' in that
+    environment until the file ends, so later forms bind SYM dynamically
+    (custom.el's recursive sorter relies on this).  The bundle's
+    `;;; >>> FILE' / `;;; <<< FILE' markers delimit each member, and every
+    form receives its member's declarations as eval's lexical argument.
     """
     source = ROOT / 'build/gui-daily-unisolated.el'
     target = ROOT / 'build/gui-daily-lexical.el'
     source.write_bytes(data)
-    form = '''(let ((forms nil) (print-circle t) (print-level nil) (print-length nil))
+    form = '''(let ((forms nil) (specials nil) (print-circle t) (print-level nil) (print-length nil))
       (with-temp-buffer
         (let ((coding-system-for-read 'utf-8-unix)) (insert-file-contents SOURCE))
         (emacs-lisp-mode)
         (goto-char (point-min))
-        (while (progn (forward-comment (point-max)) (< (point) (point-max)))
-          (push (read (current-buffer)) forms)))
+        (while (let ((start (point)) (end nil))
+                 (forward-comment (point-max))
+                 (setq end (point))
+                 (save-excursion
+                   (goto-char start)
+                   (when (re-search-forward "^;;; \\\\(>>>\\\\|<<<\\\\) " end t)
+                     (setq specials nil)))
+                 (< end (point-max)))
+          (let ((definition (read (current-buffer))))
+            (push (list 'eval (list 'quote definition)
+                        (if specials (list 'quote (append specials '(t))) t))
+                  forms)
+            (dolist (candidate (if (eq (car-safe definition) 'progn)
+                                   (cdr definition) (list definition)))
+              (when (and (eq (car-safe candidate) 'defvar)
+                         (consp (cdr candidate)) (null (cddr candidate))
+                         (symbolp (cadr candidate))
+                         (not (memq (cadr candidate) specials)))
+                (push (cadr candidate) specials))))))
       (with-temp-file TARGET
         (insert ";;; GUI image: independent lexical top-level forms. -*- lexical-binding: t; -*-\\n")
-        (dolist (definition (nreverse forms))
-          (prin1 (list 'eval (list 'quote definition) t) (current-buffer))
+        (dolist (wrapped (nreverse forms))
+          (prin1 wrapped (current-buffer))
           (insert "\\n"))))'''.replace('SOURCE', json.dumps(str(source))).replace('TARGET', json.dumps(str(target)))
     subprocess.run(['emacs', '-Q', '--batch', '--eval', form], check=True, timeout=120)
     return target.read_bytes()
@@ -456,24 +479,18 @@ def build_packages_image(data, env):
     env = packages_env(out, env)
     load_log = out / 'preload.log'
     load_log.unlink(missing_ok=True)
-    # The independent cold source load and dump construction may overlap.
-    # The restored proof waits for the complete, hashed source-load result.
-    with (out / 'runtime-check.out').open('wb') as stdout, (out / 'runtime-check.err').open('wb') as stderr:
-        worker = subprocess.Popen([sys.executable, str(Path(__file__).resolve()),
-                                   '--prepare-packages-runtime-state'], cwd=ROOT,
-                                  env=dict(env, NELISP_GUI_PACKAGE_LOAD_LOG=str(out / 'runtime-preload.log')),
-                                  stdout=stdout, stderr=stderr, start_new_session=True)
-        try:
-            subprocess.run(['bash', 'tools/c-core-image.sh', 'build'], cwd=ROOT,
-                           env=dict(env, C_CORE_IMAGE_BUNDLE=str(PACKAGES_BUNDLE),
-                                    NELISP_GUI_PACKAGE_LOAD_LOG=str(load_log),
-                                    C_CORE_IMAGE_BUILD_TIMEOUT='3600', C_CORE_IMAGE_ALLOW_WARNINGS='1'), check=True)
-            if worker.wait(timeout=3600) != 0:
-                raise RuntimeError('Fresh package state preparation failed; see runtime-check.err')
-        finally:
-            if worker.poll() is None:
-                os.killpg(worker.pid, signal.SIGKILL)
-                worker.wait()
+    # Keep the two source interpretations sequential.  Concurrent cold loads
+    # left the dump in isearch even though an isolated loader probe passed.
+    # The fresh-load proof is independently hashed and reused only when all
+    # source, bundle and checker identities still agree.
+    runtime_load_log = out / 'runtime-preload.log'
+    runtime_load_log.unlink(missing_ok=True)
+    check_packages_image(dict(env, NELISP_GUI_PACKAGE_LOAD_LOG=str(runtime_load_log)),
+                         runtime_only=True)
+    subprocess.run(['bash', 'tools/c-core-image.sh', 'build'], cwd=ROOT,
+                   env=dict(env, C_CORE_IMAGE_BUNDLE=str(PACKAGES_BUNDLE),
+                            NELISP_GUI_PACKAGE_LOAD_LOG=str(load_log),
+                            C_CORE_IMAGE_BUILD_TIMEOUT='3600', C_CORE_IMAGE_ALLOW_WARNINGS='1'), check=True)
     check_packages_image(env)
     if any(not Path(p).is_file() or digest(Path(p)) != value for p, value in sources.items()):
         raise RuntimeError('Package inputs changed during image build')
@@ -489,7 +506,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check-skk-image', action='store_true', help='recheck runtime/restored package state')
     parser.add_argument('--with-packages', action='store_true',
-                        help='also build the S5.2 package image variant (unfinished: org ol-eww load diagnostic)')
+                        help='also build and certify the S5.2 package image variant')
     parser.add_argument('--check-packages-image', action='store_true')
     parser.add_argument('--prepare-packages-runtime-state', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--skip-skk', action='store_true',
