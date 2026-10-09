@@ -12,6 +12,8 @@
 (defvar nelisp-gui-frontend--renderer nil)
 (defvar nelisp-gui-frontend--redisplay nil)
 (defvar nelisp-gui-frontend--paint-needed t)
+(defvar nelisp-gui-frontend--logged-echo nil
+  "Echo-area text last reported on the GUI diagnostic stream.")
 (defvar nelisp-gui-frontend--paint-deadline nil)
 (defvar nelisp-gui-frontend--transport-pending nil)
 (defvar nelisp-gui-frontend-maximum-pump-time 0.025
@@ -243,7 +245,14 @@ Only adaptation is done here; bounds, motion and edits stay in libraries.")
         (princ (format "GUI-PAINT|window=%d|point=%d|cursor=%S|families=%S|cairo=0|start=%d|popup=%S|\n"
                        (aref nelisp-gui-frontend--xcb 1) (nelisp-gui-frontend--point)
                        (emacs-redisplay-glyph-matrix-cursor m) families
-                       (emacs-window-window-start w) (and nelisp-gui-menu--popup t))))
+                       (emacs-window-window-start w) (and nelisp-gui-menu--popup t)))
+        ;; A live session shows `message' text in the echo area, not on
+        ;; stderr (as GNU's GUI does).  Report each painted change.
+        (let ((echo (and (boundp 'emacs-special-buffers-echo-message)
+                         emacs-special-buffers-echo-message)))
+          (unless (equal echo nelisp-gui-frontend--logged-echo)
+            (setq nelisp-gui-frontend--logged-echo echo)
+            (princ (format "GUI-ECHO|text=%S|\n" (or echo ""))))))
       (setq nelisp-gui-frontend--paint-needed nil
             nelisp-gui-frontend--paint-deadline nil))
     (when start

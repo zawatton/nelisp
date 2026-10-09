@@ -3277,6 +3277,37 @@ pathology itself, which host Emacs cannot reproduce."
   (should-not (emacs-load--source-lexical-binding-p ";;; -*- lexical-binding: nil; -*-\n"))
   (should-not (emacs-load--source-lexical-binding-p ";;; no modeline\n;; lexical-binding: t\n")))
 
+(ert-deftest emacs-load-test/incremental-eval-keeps-file-local-defvar ()
+  "An initializer-free `defvar' stays in effect for later forms of the file.
+GNU custom.el's recursive sorter relies on this (lane K6, org ol-eww)."
+  (let ((source (concat ";;; -*- lexical-binding: t; -*-\n"
+                        "(defvar emacs-load-test--local-special)\n"
+                        "(progn (defvar emacs-load-test--local-special-2))\n"
+                        "(defun emacs-load-test--read-special ()\n"
+                        "  (list emacs-load-test--local-special\n"
+                        "        emacs-load-test--local-special-2))\n"
+                        "(defun emacs-load-test--bind-special ()\n"
+                        "  (let ((emacs-load-test--local-special 42)\n"
+                        "        (emacs-load-test--local-special-2 17))\n"
+                        "    (emacs-load-test--read-special)))\n"
+                        "(defun emacs-load-test--bind-unrelated ()\n"
+                        "  (let ((emacs-load-test--unrelated 1))\n"
+                        "    (lambda () emacs-load-test--unrelated)))\n")))
+    (unwind-protect
+        (let ((lexical-binding t))
+          (nelisp--load-eval-source-incremental source)
+          (should (equal (emacs-load-test--bind-special) '(42 17)))
+          ;; Undeclared variables remain lexical.
+          (should (= (funcall (emacs-load-test--bind-unrelated)) 1))
+          ;; The declaration is file-local: the value cell stays unbound and
+          ;; the symbol does not become globally special.
+          (should-not (boundp 'emacs-load-test--local-special))
+          (should-not (special-variable-p 'emacs-load-test--local-special))
+          (should-not nelisp--load-file-local-specials))
+      (dolist (f '(emacs-load-test--read-special emacs-load-test--bind-special
+                   emacs-load-test--bind-unrelated))
+        (fmakunbound f)))))
+
 (ert-deftest emacs-load-test/incremental-eval-preserves-lexical-environment ()
   (let ((lexical-binding t))
     (nelisp--load-eval-one-form

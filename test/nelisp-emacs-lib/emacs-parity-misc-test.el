@@ -106,6 +106,32 @@ leaves (w2); removing w2 leaves nil."
                  #'emacs-parity-misc-test--w1)))
   (should (null (get-variable-watchers 'emacs-parity-misc-test--var-1))))
 
+(ert-deftest emacs-parity-misc-test/connection-profiles-custom-registration ()
+  "GNU files-x must register profiles through the genuine Custom sorter."
+  (require 'files-x)
+  (let ((connection-local-profile-alist nil)
+        (connection-local-criteria-alist nil)
+        (symbols '(connection-local-profile-alist connection-local-criteria-alist))
+        (properties nil))
+    (dolist (symbol (cons 'user symbols))
+      (push (cons symbol (copy-tree (symbol-plist symbol))) properties))
+    (unwind-protect
+        (progn
+          (dolist (symbol symbols) (put symbol 'saved-value nil))
+          (connection-local-set-profile-variables 'test-profile '((test-variable . 42)))
+          (should (equal connection-local-profile-alist
+                         '((test-profile (test-variable . 42)))))
+          (should-not (get 'connection-local-profile-alist 'saved-value))
+          (connection-local-set-profiles '(:machine "localhost" :application test)
+                                         'test-profile 'test-profile)
+          (should (equal connection-local-criteria-alist
+                         '(((:application test :machine "localhost") test-profile))))
+          (should-not (get 'connection-local-criteria-alist 'saved-value))
+          (connection-local-set-profile-variables 'test-profile '((test-variable . 17)))
+          (should (equal (connection-local-get-profile-variables 'test-profile)
+                         '((test-variable . 17)))))
+      (dolist (entry properties) (setplist (car entry) (cdr entry))))))
+
 (provide 'emacs-parity-misc-test)
 
 ;;; emacs-parity-misc-test.el ends here

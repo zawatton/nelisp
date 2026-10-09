@@ -316,10 +316,10 @@ def keyboard(args,api,out,env,report,sessions):
     shot=s.shot('skk-日本')
     _,_,data=screenshot(shot,api['command']); assert sum(p==(232,232,232) for p in data)>20, 'Japanese screenshot lacks ink'
     keyboard_events(s,args,api,out,env,report)
-    # Clean lexical contexts expose ddskk's genuine dictionary-load progress.
+    # The present dictionary must never produce the load diagnostic.
+    assert 'GUI-ECHO|text="Cannot load' not in s.log(), 'present dictionary reported a load failure'
     s.key('ctrl+x','ctrl+c')
-    s4_finish(s,informational=('Inserting contents of SKK-JISYO.gui ...',
-                            'Inserting contents of SKK-JISYO.gui ...done'))
+    s4_finish(s)
     assert gui_bytes==gnu_bytes,'GUI/GNU saved bytes differ'
     corrupt=out/'negative-saved.txt';corrupt.write_bytes(b'nihon\n')
     try: saved_file(corrupt,expected)
@@ -334,10 +334,12 @@ def keyboard(args,api,out,env,report,sessions):
     start=len(bad.log());type_romaji(bad.window,missing,api)
     live_wait(bad,api,lambda: 'にほん' in bad.log()[start:],120,'negative dictionary lookup executed')
     assert '日本' not in bad.log(), 'missing dictionary produced fixture candidate'
+    # A live session shows the command error in the echo area (as GNU's GUI
+    # does), not on stderr; the frontend reports each painted echo change.
+    missing_diagnostic = f"GUI-ECHO|text=\"Cannot load `{out/'absent-dictionary'}'.\"|"
+    live_wait(bad,api,lambda: missing_diagnostic in bad.log()[start:],60,'missing dictionary diagnostic in the echo area')
     bad.key('ctrl+g','ctrl+x','ctrl+c')
-    missing_diagnostic = f"Cannot load `{out/'absent-dictionary'}'."
-    assert missing_diagnostic in bad.stderr.read_text(), 'missing dictionary diagnostic not observed'
-    s4_finish(bad,informational=('Inserting contents of absent-dictionary ...', missing_diagnostic))
+    s4_finish(bad)
     report['checks'].append('GNU-identical-UTF8/corrupt-saved/missing-dictionary-negatives/production-quit')
 
 

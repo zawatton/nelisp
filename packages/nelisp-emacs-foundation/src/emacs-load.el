@@ -882,11 +882,33 @@ Quoted data and bare function references are not executable subforms."
                             tail (cdr tail)))
                     found)))))
 
+  (defvar nelisp--load-file-local-specials nil
+    "Symbols declared by initializer-free top-level `defvar' in this file.
+GNU `load' evaluates a whole lexical file in one interpreter environment,
+and `(defvar SYM)' adds SYM to it, so later forms of the same file bind
+SYM dynamically.  Each form here is evaluated separately, so the loader
+carries these declarations forward in the environment it passes to `eval'.
+`nelisp--load-eval-source-incremental' rebinds this to nil per file.")
+
+  (defun nelisp--load-note-local-specials (form)
+    "Record initializer-free `defvar' declarations in top-level FORM."
+    (cond
+     ((and (eq (car-safe form) 'defvar)
+           (consp (cdr form))
+           (null (cddr form))
+           (symbolp (cadr form)))
+      (unless (memq (cadr form) nelisp--load-file-local-specials)
+        (push (cadr form) nelisp--load-file-local-specials)))
+     ((eq (car-safe form) 'progn)
+      (mapc #'nelisp--load-note-local-specials (cdr form)))))
+
   (defun nelisp--load-eval-one-form (form)
     "Evaluate FORM, treating a top-level `cc-provide' as `provide'.
 NeLisp's source evaluator bare-aborts on the CC Mode compile-time
 marker even when `cc-provide' is callable.  At interpreted load time
-its semantics are exactly `provide'."
+its semantics are exactly `provide'.
+In a lexical file, FORM sees the file's earlier initializer-free
+`defvar' declarations (see `nelisp--load-file-local-specials')."
     (when (and (consp form) (eq (car form) 'cc-provide))
       (setcar form 'provide))
     ;; Native eval recognizes direct macros but evaluates symbolic macro
@@ -897,7 +919,12 @@ its semantics are exactly `provide'."
     ;; retains nested aliases such as `cl-flet*' as ordinary calls.
     (when (emacs-load--macro-alias-form-p form)
       (setq form (macroexpand-all form)))
-    (eval form (and (boundp 'lexical-binding) lexical-binding)))
+    (let ((lexical (and (boundp 'lexical-binding) lexical-binding)))
+      (prog1 (eval form (if (and lexical nelisp--load-file-local-specials)
+                            (append nelisp--load-file-local-specials '(t))
+                          lexical))
+        (when lexical
+          (nelisp--load-note-local-specials form)))))
 
   (defconst emacs-load--native-read-probe-window-sizes '(512 2048 8192 32768)
     "Progressively larger byte windows `emacs-load--native-read-one' tries
@@ -1071,6 +1098,7 @@ scan unchanged."
           (len (length source))
           (last nil)
           (count 0)
+          (nelisp--load-file-local-specials nil)
           (native-probe-available (fboundp 'nelisp--read-all-from-string-native)))
       (while (progn
                (setq pos (nelisp--load-skip-space-and-comments source pos))

@@ -90,6 +90,11 @@ class Evidence(unittest.TestCase):
             window = gnu/'window.el'
             (root/'window.el').write_bytes(window.read_bytes() if window.exists() else
                                           gzip.decompress(window.with_suffix('.el.gz').read_bytes()))
+            bindings = gnu/'emacs-lisp/cl-macs.el'
+            (root/'emacs-lisp').mkdir()
+            (root/'emacs-lisp/cl-macs.el').write_bytes(
+                bindings.read_bytes() if bindings.exists() else
+                gzip.decompress(bindings.with_suffix('.el.gz').read_bytes()))
             output = root/'preloaded.el'
             evidence = gate.prepare_preloads(root,output,dict(os.environ))
             self.assertIn('coding-system-change-eol-conversion',evidence['names'])
@@ -99,6 +104,29 @@ class Evidence(unittest.TestCase):
             expression = '(progn (mapc (quote fmakunbound) (quote (coding-system-change-eol-conversion window-full-width-p window-full-height-p window-normalize-window))) (load '+json.dumps(str(output))+' nil t t) (prin1 (list s52c-test-etags-program-name (coding-system-change-eol-conversion (quote utf-8) (quote unix)) (window-full-width-p) (window-full-height-p))))'
             result = subprocess.check_output(['emacs','-Q','--batch','--eval',expression],text=True)
             self.assertEqual(result,'("etags" utf-8-unix t t)')
+            # A core defvar alone does not supply Custom's standard expression.
+            # Tramp must see GNU's expression, following the live environment
+            # while leaving configured values and existing metadata intact.
+            expression = '''(let ((stock (get 'temporary-file-directory 'standard-value))
+                                  (temporary-file-directory "/configured-current/"))
+              (put 'temporary-file-directory 'standard-value nil)
+              (load OUTPUT nil t t)
+              (unless (equal stock (get 'temporary-file-directory 'standard-value))
+                (error "GNU standard expression was not restored exactly"))
+              (unless (equal temporary-file-directory "/configured-current/")
+                (error "Configured current directory changed"))
+              (dolist (directory '("/live-default-a/" "/live-default-b/"))
+                (setenv "TMPDIR" directory)
+                (unless (equal directory (eval (car (get 'temporary-file-directory 'standard-value)) t))
+                  (error "Standard expression froze the environment")))
+              (put 'temporary-file-directory 'standard-value '("/existing-standard/"))
+              (load OUTPUT nil t t)
+              (unless (equal (get 'temporary-file-directory 'standard-value) '("/existing-standard/"))
+                (error "Existing standard metadata was replaced"))
+              (princ "metadata PASS"))'''.replace('OUTPUT', json.dumps(str(output)))
+            result = subprocess.check_output(
+                ['emacs','-Q','--batch','--eval',expression], text=True)
+            self.assertEqual(result, 'metadata PASS')
             copy.write_text('(error "No requested GNU definition")')
             with self.assertRaises(subprocess.CalledProcessError):
                 gate.prepare_preloads(root,output,dict(os.environ))
