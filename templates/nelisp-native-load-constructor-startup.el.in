@@ -198,6 +198,10 @@
 		  (* nelisp-native-load-stub-bytes (length imports0)))))
 	     (codepage nil) (table nil) (table-size nil)
 	     (stub-offsets nil) (success nil))
+	  (nelisp-native-budget-reserve
+	   (+ code-size
+	      (nelisp-native-load--page-round
+	       (+ 16 (* 8 (length (plist-get manifest :gc-entries)))))))
 	  (unwind-protect
 	      (progn
 		(setq codepage

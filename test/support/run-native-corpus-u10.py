@@ -168,7 +168,10 @@ def main():
                         help='Small cache-miss units per process (1..2); complex frames remain isolated.')
     parser.add_argument('static', nargs='?', default='target/nelisp-static')
     parser.add_argument('dynamic', nargs='?', default='target/nelisp-dyn')
+    parser.add_argument('--backend', choices=('in-house', 'gccjit', 'template'), default=None)
     args = parser.parse_args()
+    if args.both and args.backend:
+        parser.error('--backend and --both are exclusive')
     if args.self_test:
         self_test()
         return 0
@@ -226,7 +229,7 @@ def main():
     identities = {}
     readers = {}
     caches = {}
-    backends = [('in-house', args.static)] + ([('gccjit', args.dynamic)] if args.both else [])
+    backends = [(args.backend or 'in-house', args.static)] + ([('gccjit', args.dynamic)] if args.both else [])
     for backend, binary in backends:
         binary = Path(binary).resolve()
         work = directory / backend

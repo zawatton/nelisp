@@ -53,7 +53,7 @@
 (let* ((fixtures (nelisp-bytecode-native-consumer-read-elc-functions (getenv "F1B_FIXTURE")))
        (functions (mapcar (lambda (name) (cdr (assq name fixtures))) '(f1b-one f1b-zero f1b-six)))
        (compile-unit (getenv "F1B_COMPILE_UNIT"))
-       (nelisp-native-cache-backend (if (equal (getenv "F1B_BACKEND") "gccjit") 'gccjit 'in-house)))
+       (nelisp-native-cache-backend (intern (or (getenv "F1B_BACKEND") "in-house"))))
   (f1b-assert (not (memq nil functions)) "GNU bytecode fixtures")
   (when compile-unit
     (f1b-assert (and (equal (getenv "F1B_PHASE") "compile")

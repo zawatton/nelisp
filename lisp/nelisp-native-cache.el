@@ -11,15 +11,17 @@
 ;;; Code:
 (require 'cl-lib)
 (require 'nelisp-native-load)
-(require 'nelisp-bytecode-compiler-input)
+(require 'nelisp-native-poll)
+(require 'nelisp-bytecode-native-switch)
 (require 'nelisp-bytecode-native-rooted-cfg-contract)
 (require 'nelisp-bytecode-native-rooted-cfg-safe-contract)
 (require 'nelisp-runtime-reload-abi)
+(require 'nelisp-native-template)
 
 (defconst nelisp-native-cache--format "nelisp-native-cache-v1")
 (defconst nelisp-native-cache--compiler-modules
-  '(nelisp-native-cache nelisp-native-gccjit nelisp-native-cfg-grammar nelisp-native-load nelisp-aot-compiler nelisp-standalone-arena-rewrite
-    nelisp-bytecode-compiler-input nelisp-bytecode-ir nelisp-bytecode-frame-ir nelisp-bytecode-handlers-u8
+  '(nelisp-native-cache nelisp-native-poll nelisp-native-budget nelisp-native-gccjit nelisp-native-cfg-grammar nelisp-native-load nelisp-aot-compiler nelisp-standalone-arena-rewrite
+    nelisp-bytecode-compiler-input nelisp-bytecode-compiler-input-dialect nelisp-bytecode-ir nelisp-bytecode-frame-ir nelisp-bytecode-handlers-u8
     nelisp-bytecode-native-rooted-cfg nelisp-bytecode-native-rooted-cfg-plan
     nelisp-bytecode-native-rooted-cfg-emit nelisp-bytecode-native-rooted-cfg-shared-emit
     nelisp-bytecode-native-rooted-cfg-postdom nelisp-bytecode-native-rooted-cfg-contract
@@ -38,11 +40,13 @@
 (defvar nelisp-native-cache--abi :unset)
 (defvar nelisp-native-cache--compiler-revision :unset)
 (defvar nelisp-native-cache--addresses nil)
+(defvar nelisp-native-cache--unit-observer nil
+  "Optional owner-thread observer of a reusable authenticated callable factory.")
 (defvar nelisp-native-cache--disabled-reason nil)
 (defvar nelisp-native-cache--cold-source-check nil
   "Opaque source-identity fence installed only by compiler cold preparation.")
 (defvar nelisp-native-cache-backend 'in-house
-  "Native code generator: in-house (default) or gccjit.")
+  "Native code generator: in-house (default), gccjit or template.")
 (defvar nelisp-native-cache-mode 'shared-v2
   "The cache artifact mode.  Only shared-v2 is currently executable.")
 (defvar nelisp-native-cache-guard-mode 'off
@@ -115,6 +119,18 @@ A missing source disables caching rather than creating an incomplete key."
         nelisp-native-cache--format
         nelisp-native-load-raw-artifact-format-v2))
 
+(defun nelisp-native-cache-prepare-cold-template ()
+  "Prepare Tier 0 identities without loading any optimizing compiler module."
+  (when (cl-some #'featurep '(nelisp-aot-compiler nelisp-bytecode-ir
+                              nelisp-bytecode-native-rooted-cfg-plan
+                              nelisp-bytecode-native-rooted-cfg-emit))
+    (error "Lean template image already contains Tier 1 modules"))
+  (let ((nelisp-native-cache-backend 'template))
+    (setq nelisp-native-template--build-abi (nelisp-native-template-abi-hash)))
+  (setq nelisp-native-template--abi :unset
+        nelisp-native-cache--addresses nil)
+  t)
+
 (defun nelisp-native-cache-prepare-cold-compiler ()
   "Preload compiler Lisp, fencing its source closure before a cold dump.
 Native artifacts are not loaded. Built readers freeze address-free identities
@@ -123,6 +139,7 @@ Source-loaded compilers compare source bytes before using their fingerprint."
   (when (or nelisp-native-cache--cold-source-check
             (featurep 'nelisp-aot-compiler))
     (error "Native compiler cold preparation requires a fresh source loader"))
+  (require 'nelisp-bytecode-compiler-input)
   (let ((before (nelisp-native-cache-compiler-revision-hash)))
     (unless before (error "Native compiler cold source fingerprint unavailable"))
     ;; The reader advertises the producer feature before loading the complete
@@ -199,6 +216,10 @@ Source-loaded compilers compare source bytes before using their fingerprint."
         (unless (and in-house gccjit) (error "Build ABI identity unavailable"))
         (setq nelisp-native-cache--build-identities
               (list nelisp-native-cache--abi before in-house gccjit))))
+    (when nelisp-native-cache--build-source-identity
+      (let ((nelisp-native-cache-backend 'template))
+        (setq nelisp-native-template--build-abi (nelisp-native-template-abi-hash))))
+    (setq nelisp-native-template--abi :unset)
     (setq nelisp-native-cache--compiler-revision :unset
           nelisp-native-cache--abi :unset
           nelisp-native-cache--addresses nil
@@ -216,6 +237,8 @@ Source-loaded compilers compare source bytes before using their fingerprint."
   "Return the once-per-process runtime and compiler cache identity, or nil.
 Root address resolution itself checks raw support and the reload contract
 exactly once.  Failure permanently disables this process's cache."
+  (if (eq nelisp-native-cache-backend 'template)
+      (nelisp-native-template-abi-hash)
   (when (eq nelisp-native-cache--abi :unset)
     (setq nelisp-native-cache--abi
           (condition-case err
@@ -245,7 +268,7 @@ exactly once.  Failure permanently disables this process's cache."
                     (error "Running binary identity unavailable"))
                   (nelisp-native-cache--hash (list components revision)))))
             (error (setq nelisp-native-cache--disabled-reason err) nil))))
-  (unless (memq nelisp-native-cache-backend '(in-house gccjit))
+  (unless (memq nelisp-native-cache-backend '(in-house gccjit template))
     (error "Unsupported native cache backend: %S" nelisp-native-cache-backend))
   (and nelisp-native-cache--abi
        (if (and nelisp-native-cache--build-identities
@@ -255,7 +278,7 @@ exactly once.  Failure permanently disables this process's cache."
             (nth (if (eq nelisp-native-cache-backend 'gccjit) 3 2)
                  nelisp-native-cache--build-identities))
          (nelisp-native-cache--hash
-          (list nelisp-native-cache--abi nelisp-native-cache-backend)))))
+          (list nelisp-native-cache--abi nelisp-native-cache-backend))))))
 
 (defun nelisp-native-cache--private-directory (directory)
   "Create DIRECTORY privately, refusing symlinks, foreign owners and non-0700 modes."
@@ -286,17 +309,19 @@ exactly once.  Failure permanently disables this process's cache."
 (defun nelisp-native-cache--recipe (function)
   "Snapshot only canonical byte-code fields, without compiling or planning."
   (let ((fn (nelisp-native-cache--function function)))
+    (if (eq nelisp-native-cache-backend 'template) (nelisp-native-template-recipe fn)
     (unless (byte-code-function-p fn) (error "Cache requires materialized byte-code"))
     (or (nelisp-bytecode-native-rooted-cfg-contract-input-recipe
          (list :function fn :argument-descriptor (aref fn 0)
                :code (aref fn 1) :constants (aref fn 2)
                :declared-stack-depth (aref fn 3)))
-        (error "Cache relocation refused: unreadable or unsupported constant/metadata (buffer and marker objects cannot be serialized); function remains byte code"))))
+        (error "Cache relocation refused: unreadable or unsupported constant/metadata (buffer and marker objects cannot be serialized); function remains byte code")))))
 
 (defun nelisp-native-cache--input-hash (function)
-  (nelisp-native-cache--hash
-   (list (nelisp-native-cache--recipe function)
-         nelisp-native-cache-mode nelisp-native-cache-guard-mode)))
+  (funcall (if (eq nelisp-native-cache-backend 'template)
+               #'nelisp-native-template--hash #'nelisp-native-cache--hash)
+           (list (nelisp-native-cache--recipe function)
+                 nelisp-native-cache-mode nelisp-native-cache-guard-mode)))
 
 (defun nelisp-native-cache-file (function)
   "Return the content-addressed private cache file for FUNCTION, or nil if disabled."
@@ -456,15 +481,18 @@ The caller must inhibit mid-form collection until the syscall returns."
 ;;;###autoload
 (defun nelisp-native-cache-compile (function)
   "Compile FUNCTION once with the selected backend, publishing without clobber."
+  (nelisp-native-budget-check (if (eq nelisp-native-cache-backend 'gccjit) 4096 8192))
   (pcase nelisp-native-cache-backend
     ('in-house (nelisp-native-cache--compile-in-house function))
     ('gccjit (nelisp-native-cache--compile-gccjit function))
+    ('template (nelisp-native-template-compile function))
     (_ (error "Unsupported native cache backend: %S" nelisp-native-cache-backend))))
 
 (defun nelisp-native-cache--load-gccjit (file header &optional constants)
   "Bind runtime address cells and share the T1 frame callable, without validation."
   (require 'nelisp-native-gccjit)
   (require 'nl-ffi)
+  (nelisp-native-budget-reserve (nelisp-native-budget-elf-bytes file))
   (nelisp-native-load--without-midform-collect
    (lambda ()
      (let* ((imports (nelisp-native-cache--gccjit-imports (plist-get header :imports)))
@@ -475,10 +503,16 @@ The caller must inhibit mid-form collection until the syscall returns."
                         handle (nelisp-native-gccjit-import-cell-name (car import)))
                         0 (cdr import)))
        (push handle nelisp-native-cache--gccjit-handles)
-       (let ((callable (nelisp-native-cache--callable-from-entry entry header nelisp-native-cache--addresses constants)))
-         (lambda (&rest arguments)
-           (unless handle (error "Native cache library unavailable"))
-           (apply callable arguments)))))))
+       (let* ((addresses nelisp-native-cache--addresses)
+              (factory (lambda (live-constants)
+                         (let ((callable (nelisp-native-cache--callable-from-entry
+                                          entry header addresses live-constants)))
+                           (lambda (&rest arguments)
+                             (unless handle (error "Native cache library unavailable"))
+                             (apply callable arguments))))))
+         (when nelisp-native-cache--unit-observer
+           (funcall nelisp-native-cache--unit-observer factory))
+         (funcall factory constants))))))
 
 (defun nelisp-native-cache--resume-exit (addresses env ticket base)
   "Resume the public caller's signal/throw protocol using cached ADDRESSES."
@@ -515,29 +549,47 @@ The caller must inhibit mid-form collection until the syscall returns."
   (let ((env (plist-get addresses :environment))
         (arity (plist-get header :arity)) (count (plist-get header :root-count))
         (initializers (plist-get header :initializers))
+        (begin (plist-get addresses :begin)) (reserve (plist-get addresses :reserve))
+        (slot-address (plist-get addresses :slot)) (end (plist-get addresses :end))
+        (entry-name (plist-get header :entry))
+        (template-p (eq (plist-get header :backend) 'template))
         (primitive-initializer (symbol-function 'nelisp-native-funcall-v2-initializer))
         (poll-function (nelisp-bytecode-native-rooted-cfg-poll-function))
         (switch-function (nelisp-bytecode-native-switch-function))
         (exit-base (plist-get header :exit-root-base))
         (broken nil))
+    ;; Resolve immutable providers once. Constant roots remain live on EACH
+    ;; invocation, and frame policy creates a fresh activation in the gateway.
+    (setq initializers
+          (mapcar (lambda (init)
+                    (if (plist-member init :constant-index) init
+                      (list :root (plist-get init :root) :value
+                            (cond ((plist-get init :primitive)
+                                   (funcall primitive-initializer (plist-get init :primitive)))
+                                  ((plist-get init :poll) poll-function)
+                                  ((plist-get init :switch) switch-function)
+                                  ((plist-get init :frame) (nelisp-native-frame-v2-initializer))
+                                  (t (plist-get init :value)))))) initializers))
     (lambda (&rest arguments)
       ;; Keep the entire mapping reachable for the lifetime of the closure.
       (unless (and entry (not broken)) (error "Native cache unit is broken"))
       (unless (= (length arguments) arity)
-        (signal 'wrong-number-of-arguments (list (plist-get header :entry) (length arguments))))
+        (signal 'wrong-number-of-arguments (list entry-name (length arguments))))
       (let ((ticket nil) (slots nil))
         (unwind-protect
             (progn
-              (setq ticket (ptr-call (plist-get addresses :begin) env 0 0 0 0 0))
+              (setq ticket (ptr-call begin env 0 0 0 0 0))
               (unless (and (integerp ticket) (> ticket 0))
                 (error "Native cache root frame begin failed"))
               (dotimes (_ count)
-                (let ((slot (ptr-call (plist-get addresses :reserve) env ticket 0 0 0 0)))
+                (let ((slot (ptr-call reserve env ticket 0 0 0 0)))
                   (unless (and (integerp slot) (> slot 0))
                     (error "Native cache root reservation failed"))
                   (push slot slots)))
               (setq slots (nreverse slots))
-              (dolist (slot slots) (nelisp-native-load-box slot nil env (car slots)))
+              ;; nl_root_pin_reserve_v2 initializes all four words to nil.
+              ;; Clearing again through Lisp boxing is redundant and allocates.
+
               (cl-loop for arg in arguments for index from 1 do
                        (unless (eql (nelisp--native-pin-copy-v2 env ticket index arg)
                                     (nth index slots))
@@ -545,23 +597,20 @@ The caller must inhibit mid-form collection until the syscall returns."
               (dolist (init initializers)
                 (let ((index (plist-get init :root)))
                   (unless (eql (nelisp--native-pin-copy-v2
-                                env ticket index (if (plist-get init :primitive)
-                                                     (funcall primitive-initializer (plist-get init :primitive))
-                                                   (cond ((plist-get init :poll) poll-function)
-                                                         ((plist-get init :switch) switch-function)
-                                                         ((plist-get init :frame) (nelisp-native-frame-v2-initializer))
-                                                         ((plist-member init :constant-index)
-                                                          (aref constants (plist-get init :constant-index)))
-                                                         (t (plist-get init :value)))))
+                                env ticket index (if (plist-member init :constant-index)
+                                   (aref constants (plist-get init :constant-index))
+                                 (plist-get init :value)))
                                (nth index slots))
                     (error "Native cache initializer root mismatch"))))
               (cl-loop for slot in slots for index from 0 do
-                       (unless (eql slot (ptr-call (plist-get addresses :slot)
+                       (unless (eql slot (ptr-call slot-address
                                                   env ticket index 0 0 0))
                          (error "Native cache roots changed before entry")))
+              (when template-p
+                (setq nelisp-native-template--entry-count (1+ nelisp-native-template--entry-count)))
               (let ((status (ptr-call entry env ticket arity count 0 0)))
                 (cl-loop for slot in slots for index from 0 do
-                         (unless (eql slot (ptr-call (plist-get addresses :slot)
+                         (unless (eql slot (ptr-call slot-address
                                                     env ticket index 0 0 0))
                            (error "Native cache roots changed across entry")))
                 (cond ((and exit-base (eql status (+ 1024 exit-base)))
@@ -575,7 +624,7 @@ The caller must inhibit mid-form collection until the syscall returns."
                       (t (error "Native cache infrastructure status: %S" status)))))
           (when (and (integerp ticket) (> ticket 0))
             (condition-case err
-                (unless (eql (ptr-call (plist-get addresses :end) env ticket 0 0 0 0) 1)
+                (unless (eql (ptr-call end env ticket 0 0 0 0) 1)
                   (error "Native cache root frame ownership lost"))
               (error (setq broken t) (signal (car err) (cdr err))))))))))
 
@@ -635,14 +684,26 @@ Return nil for legacy layouts, preserving their ordinary canonical check."
                (manifest (car second)))
           (unless (string-match-p "\\`[ \t\r\n]*\\'" (substring snapshot (cdr second)))
             (error "Trailing native cache data"))
+          (when (eq nelisp-native-cache-backend 'template)
+            (let ((certificate (plist-get (plist-get manifest :native-template-proof) :certificate)))
+              (unless (and (equal (plist-get header :entry) nelisp-native-template-entry)
+                           (eql arity (plist-get certificate :arity))
+                           (eql count (plist-get certificate :root-count))
+                           (eql base (plist-get certificate :exit-root-base))
+                           (equal (plist-get header :initializers) (plist-get certificate :initializers)))
+                (error "Template header/root certificate mismatch"))))
           (let* ((unsigned (and (eq (plist-get header :canonical-manifest) 'prebuilt-v1)
                            (nelisp-native-cache--unsigned-snapshot
                             snapshot (cdr first) (cdr second) manifest)))
                  (nelisp-native-load--trusted-serialization
                   (and unsigned (cons manifest unsigned))))
-            (nelisp-native-cache--callable
-             (nelisp-native-load-raw-v2-artifact-trusted manifest (plist-get header :entry) file)
-             header nelisp-native-cache--addresses (nelisp-native-cache--constants function)))))))))
+            (let* ((handle (nelisp-native-load-raw-v2-artifact-trusted manifest (plist-get header :entry) file))
+                   (addresses nelisp-native-cache--addresses)
+                   (factory (lambda (live-constants)
+                              (nelisp-native-cache--callable handle header addresses live-constants))))
+              (when nelisp-native-cache--unit-observer
+                (funcall nelisp-native-cache--unit-observer factory))
+              (funcall factory (nelisp-native-cache--constants function))))))))))
 
 ;;;###autoload
 (defun nelisp-native-cache-install (symbol function)

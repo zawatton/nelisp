@@ -64,7 +64,8 @@
          (dynamic (symbol-function 'nelisp-native-cache--load-gccjit)))
     (aset (aref changed 2) 0 43)
     (u10-assert (not (equal file (nelisp-native-cache-file changed))) "input changes key")
-    (let ((nelisp-native-cache--abi (make-string 64 ?0)))
+    (let ((nelisp-native-cache--abi (make-string 64 ?0))
+          (nelisp-native-template--abi (make-string 64 ?0)))
       (u10-assert (not (equal file (nelisp-native-cache-file fn))) "ABI changes key"))
     (unwind-protect
         (progn
@@ -89,7 +90,9 @@
           (dolist (control '(input abi artifact))
             (let ((maps 0) refused
                   (nelisp-native-cache--abi (if (eq control 'abi) (make-string 64 ?0)
-                                             nelisp-native-cache--abi)))
+                                             nelisp-native-cache--abi))
+                  (nelisp-native-template--abi (if (eq control 'abi) (make-string 64 ?0)
+                                                 nelisp-native-template--abi)))
               (cl-letf (((symbol-function 'nelisp-native-cache-file)
                          (lambda (_) (if (eq control 'artifact) corrupt file)))
                         ((symbol-function 'nelisp-native-load-raw-v2-artifact-trusted)
@@ -106,7 +109,7 @@
                                control nelisp-native-cache-backend maps)))
               (u10-assert refused (format "stale %s refused" control))
               (u10-assert (or (= maps 0) (and (eq control 'artifact)
-                                              (eq nelisp-native-cache-backend 'in-house) (= maps 1)))
+                                              (memq nelisp-native-cache-backend '(in-house template)) (= maps 1)))
                           "stale input/ABI did not reach mapper")
               (princ (format "U10-STALE-PASS control=%s\n" control)))))
       (delete-directory directory t))))
@@ -148,7 +151,11 @@
                  (code (aref original 1)) (constants (aref original 2)) refused)
             (condition-case condition
                 (nelisp-native-cache-compile original)
-              (error (setq refused (string-match-p "Cache relocation refused" (error-message-string condition)))))
+              (error (setq refused
+                           (string-match-p (if (eq nelisp-native-cache-backend 'template)
+                                               "\\`Template relocation refused:"
+                                             "Cache relocation refused")
+                                           (error-message-string condition)))))
             (u10-assert (and refused (byte-code-function-p original)
                              (eq code (aref original 1)) (eq constants (aref original 2)))
                         "unreadable relocation refused; original byte code retained")

@@ -13,8 +13,13 @@ if [[ ${1:-} == --both ]]; then
   "$0" "${3:-target/nelisp-dyn}" gccjit "${U7B_SELECTION:-97 114 138 140 ordered implicit forms}" || status=1
   exit "$status"
 fi
+if [[ ${1:-} == --backend ]]; then
+  selected_backend=${2:?missing backend}; shift 2
+  selected_binary=${1:-target/nelisp-static}; shift "$(( $# > 0 ? 1 : 0 ))"
+  set -- "$selected_binary" "$selected_backend" "$@"
+fi
 binary=${1:-target/nelisp-static} backend=${2:-in-house}
-case "$backend" in in-house|gccjit) ;; *) exit 2;; esac
+case "$backend" in in-house|gccjit|template) ;; *) exit 2;; esac
 work=$(mktemp -d "$root/target/cleanup-u7b-XXXXXX")
 chmod 700 "$work"
 cp -- "$binary" "$work/reader"

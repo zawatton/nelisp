@@ -238,7 +238,13 @@ run_gate() {
         lisp/nelisp-aot-compiler.el|lisp/nelisp-cc-jit-type-of.el|lisp/nelisp-cc-sexp-clone-into.el|scripts/nelisp-standalone-build.el)
           scoped_test=test/nelisp-doc200-unibyte-repr-test.el ;;
       esac
-      NELISP_GATE_DIR="$mutation_gate_dir" \
+      # Doc 200 probes the production GNU-31.1 compiler dialect.  Keep all
+      # other ERT and make gates on the host, including Emacs parity.
+      local scoped_emacs="${EMACS:-emacs}"
+      if [ "$scoped_test" = test/nelisp-doc200-unibyte-repr-test.el ]; then
+        scoped_emacs="${NELISP_BUILD_EMACS:-$scoped_emacs}"
+      fi
+      EMACS="$scoped_emacs" NELISP_GATE_DIR="$mutation_gate_dir" \
         NELISP_GATE_MUTATION_TEST_FILES="$scoped_test" \
         tools/ai/nelisp-ai.sh test >"$log" 2>&1
     fi

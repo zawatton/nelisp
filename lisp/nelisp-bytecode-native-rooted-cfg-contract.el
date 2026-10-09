@@ -12,10 +12,14 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'nelisp-bytecode-compiler-input)
-(require 'nelisp-bytecode-native-rooted-cfg-plan)
-(require 'nelisp-bytecode-native-rooted-cfg-emit)
-(require 'nelisp-bytecode-native-rooted-cfg-shared-emit)
+;; Optimizer dependencies are loaded only when their public API is called.
+(autoload 'nelisp-bytecode-compiler-input-build "nelisp-bytecode-compiler-input")
+(autoload 'nelisp-bytecode-compiler-input-dialect "nelisp-bytecode-compiler-input")
+(autoload 'nelisp-bytecode-compiler-input-inventory-sha256 "nelisp-bytecode-compiler-input")
+(autoload 'nelisp-bytecode-native-rooted-cfg-plan "nelisp-bytecode-native-rooted-cfg-plan")
+(autoload 'nelisp-bytecode-native-rooted-cfg-emit "nelisp-bytecode-native-rooted-cfg-emit")
+(autoload 'nelisp-bytecode-native-rooted-cfg-shared-emit-build "nelisp-bytecode-native-rooted-cfg-shared-emit")
+(autoload 'nelisp-bytecode-ir-decode-result "nelisp-bytecode-ir")
 
 (defconst nelisp-bytecode-native-rooted-cfg-contract-version
   "nelisp-native-rooted-cfg-v1")

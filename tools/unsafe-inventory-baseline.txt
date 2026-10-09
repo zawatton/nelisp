@@ -331,7 +331,7 @@
 # scripts/nelisp-standalone-build.el above (851 -> 875), all in the new
 # `nl_cli_action_*'/`nl_cla_list_from'/`nl_cli_set_clal' helpers, none
 # elsewhere -- gate's own before/after totals agree exactly.
-unsafe-call 997
+unsafe-call 1143
 
 # `pinned-kernel-call FILE COUNT' pins the per-file unquoted `unsafe-call'
 # count behind `total' above -- the kernel files that actually carry
@@ -350,7 +350,7 @@ pinned-kernel-call lisp/nelisp-stdlib-os-int-helpers.el 18
 # The 2026-09-11 +20 are the runtime-reload raw symbol/state/install address
 # probes and SHA256 file/binary probes.  They are explicit ABI validation and
 # diagnostics around the opt-in loader, not a new unbounded raw-memory path.
-pinned-kernel-call lisp/nelisp-native-load.el 48
+pinned-kernel-call lisp/nelisp-native-load.el 56
 # Generation table reads/writes and the CAS publisher account for six
 # scanned primitive call sites in the new native unit kernel.
 # 2026-09-12, 6 -> 7: candidate reclamation adds one `syscall-direct' call,
@@ -589,7 +589,32 @@ pinned-kernel-call scripts/nelisp-gc-pause-growth.el 2
 #     `default-directory'/`noninteractive' above.
 # Taken from the scanner (875) and cross-checked against `git diff', not
 # summed on paper.
-pinned-kernel-call scripts/nelisp-standalone-build.el 875
+pinned-kernel-call scripts/nelisp-standalone-build.el 989
 # 2026-09-11: one GC snapshot raw-address probe, bounded by the named table
 # contract and used only for structured diagnostics.
 pinned-kernel-call lisp/nelisp-repl-gc.el 1
+
+pinned-kernel-call lisp/nelisp-buffer-local.el 2
+
+pinned-kernel-call lisp/nelisp-bytecode-native-rooted-cfg-shared-emit.el 4
+
+pinned-kernel-call lisp/nelisp-native-cache.el 6
+
+pinned-kernel-call lisp/nelisp-native-funcall-v2.el 2
+
+pinned-kernel-call lisp/nelisp-native-gccjit.el 9
+
+pinned-kernel-call lisp/nelisp-standalone-arena-rewrite.el 1
+
+# 997 -> 1143 on 2026-10-08: measured native-compiler interval only,
+# 27a4991a -> 3170a82b2, not a wholesale reset over pre-existing violations.
+# +114 standalone build: rooted call/exit/specbind bridges and their raw
+# tagged slots; +8 native loader: digest and cache publication raw reads;
+# +9 gccjit C ABI, +6 native cache mmap/protection, +2 native funcall ABI,
+# +2 dynamic buffer slots, +1 arena base read, +4 rooted CFG join slots.
+# Existing per-file deficits remain: loader 18, build 15, rooted CFG 3.
+# Regenerate this delta by running nl-check-file (unsafe-call findings) and
+# nl-check-file-quoted-unsafe across lisp/ and scripts/ at both commits;
+# add each positive per-file delta to its old pin, and sum to unsafe-call.
+# New quoted-only kernel generators resolve/write alias cells and manage
+# native roots. Their identities are pinned in tools/unsafe-kernel.txt.

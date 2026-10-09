@@ -146,7 +146,7 @@ expect_out() {
 }
 
 run_timed dump_sources \
-  "$EMACS" -Q --batch -L lisp -L src -L scripts \
+  "${NELISP_BUILD_EMACS:-$EMACS}" -Q --batch -L lisp -L src -L scripts \
   --eval "(progn (require 'nelisp-standalone-build) (with-temp-file \"$FULL_SRC\" (insert (nelisp-standalone--artifact-source-command-cache-src))) (with-temp-file \"$SUBSTRATE_SRC\" (insert (nelisp-standalone--artifact-source-command-substrate-src))))"
 
 full_bytes="$(wc -c <"$FULL_SRC" | tr -d ' ')"

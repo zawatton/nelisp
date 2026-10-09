@@ -26819,6 +26819,12 @@ which reach this non-inline prelude variant with INLINE nil)."
    "          (nelisp--core-bytecode-reinstall-pieces source (nth 3 entry)))))))\n"
    "(nelisp--core-bytecode-reinstall-loaded)\n")))
 
+(defvar nelisp-standalone--native-startup-lazy nil
+  "Non-nil only while generating the standalone reader's lazy native boot.")
+
+(defvar nelisp-standalone--native-startup-bytecode-source nil
+  "Build-pinned loader bytecode deferred with the native startup companion.")
+
 (defvar nelisp-standalone--core-bytecode-build-cache nil
   "Successful core generations in the current reader build, or nil to disable.")
 (defun nelisp-standalone--core-bytecode-src ()
@@ -26915,6 +26921,14 @@ on every invocation. Keep this generator self-contained for source-only tools."
 		      (make-directory (file-name-directory report-path) t)
 		      (nelisp-prelude-bytecode-write-report report-path reports))
 		    (setq generated-reports reports)
+                    ;; Parsing the large loader map is itself compiler startup.
+                    ;; Keep its original bytecode and hash checks, but install
+                    ;; this entry only when native compilation/loading starts.
+                    (let ((native (and (bound-and-true-p nelisp-standalone--native-startup-lazy)
+                                       (assoc "nelisp-native-load.el" entries))))
+                      (setq nelisp-standalone--native-startup-bytecode-source
+                            (and native (format "(push '%S nelisp--core-bytecode-source-map)\n" native)))
+                      (setq entries (delete native entries)))
 		    (concat
 		     ;; A plain `setq', not `defvar': a binary or cold image built from an
 		     ;; older tree already binds this map, and `defvar' would keep that
@@ -27594,10 +27608,55 @@ top-level form defines NAME that way."
         (error "Missing rooted protocol decoder dependency")))
     t))
 
+(defun nelisp-standalone--native-startup-autoload-src (source)
+  "Defer build-pinned native SOURCE until the first compiler/loader request.
+The companion is authenticated by its build-pinned hash on first use.
+No proof or compiler runs at ordinary boot; cold compiler preparation still
+publishes the same providers before dumping."
+  (nelisp-standalone--core-bytecode-src)
+  (setq source (concat nelisp-standalone--native-startup-bytecode-source source))
+  (let* ((features (append '(nelisp-native-load nelisp-native-raw-file
+                            nelisp-native-rooted-abi-proof
+                            nelisp-native-compiler-runtime-proof
+                            nelisp-native-compiler-f1-runtime-proof
+                            nelisp-native-compiler-runtime-capability)
+                          nelisp-native-compiler-startup-evidence--boot-modules
+                          nelisp-native-compiler-startup-evidence--post-modules))
+         (loader (expand-file-name "lisp/nelisp-native-load.el"
+                                   nelisp-standalone--repo-root))
+         (forms (nelisp-native-compiler-startup-evidence--forms loader))
+         (names (delq nil (mapcar (lambda (form)
+                                  (and (eq (car-safe form) 'defun) (cadr form)))
+                                forms))))
+    (with-temp-file (concat (nelisp-standalone--output-path t) ".native-startup.el")
+      (insert source))
+    (concat
+     (format "\n(let ((state 'pending) (expected-hash %S) (base-require (symbol-function 'require)) (base-load (symbol-function 'load)))\n" (secure-hash 'sha256 source))
+     "(defun nelisp-native-startup-ensure ()\n"
+     "  (cond ((eq state 'ready) t) ((eq state 'loading) nil)\n"
+     "        ((eq state 'failed) (error \"Native startup previously failed\"))\n"
+     "        (t (setq state 'loading)\n"
+     "           (condition-case err\n"
+     "               (let* ((path (expand-file-name (concat invocation-name \".native-startup.el\") invocation-directory))\n"
+     "                      (source (with-temp-buffer (insert-file-contents path) (buffer-string))))\n"
+     "                 (unless (equal expected-hash (secure-hash 'sha256 source))\n"
+     "                   (error \"Native startup companion hash mismatch\"))\n"
+     "                 (nelisp--eval-source-string source)\n"
+     "                      (unless (and (featurep 'nelisp-native-compiler-runtime-capability)\n"
+     "                                   (featurep 'nelisp-native-compiler-f1-runtime-proof))\n"
+     "                        (error \"Native startup incomplete\"))\n"
+     "                      (setq state 'ready) t)\n"
+     "             (error (setq state 'failed) (signal (car err) (cdr err)))))))\n"
+     (format "(fset 'require (lambda (feature &optional filename noerror)\n  (when (and (memq state '(pending failed)) (or (memq feature '%S)\n              (memq feature '(nelisp-native-cache nelisp-native-template nelisp-bytecode-native-compiler))))\n    (nelisp-native-startup-ensure))\n  (if (featurep feature) feature (funcall base-require feature filename noerror))))\n" features)
+     (format "(fset 'load (lambda (file &rest arguments)\n  (let ((first (and (memq state '(pending failed)) (stringp file)\n                    (member (file-name-sans-extension (file-name-nondirectory file)) '%S))))\n    (when first (nelisp-native-startup-ensure))\n    (if (and first (featurep (intern (file-name-sans-extension (file-name-nondirectory file))))) t\n      (apply base-load file arguments)))))\n)\n" (mapcar #'symbol-name features))
+     (mapconcat (lambda (name) (format "(autoload '%S \"nelisp-native-load\")" name)) names "\n")
+     "\n(autoload 'nelisp-native-cache-compile \"nelisp-native-cache\")\n"
+     "(autoload 'nelisp-native-cache-load \"nelisp-native-cache\")\n")))
+
 (defun nelisp-standalone--rooted-protocol-startup-src (units)
   "Generate source-bound memory protocol startup from the active helper UNITS."
   (when (eq (nelisp-standalone-arena-rewrite-target) 'linux-x86_64)
-    (concat (nelisp-native-rooted-startup-evidence-build
+    (let ((source (concat (nelisp-native-rooted-startup-evidence-build
      units nelisp-standalone--this-file nelisp-standalone--repo-root
      (make-temp-file (expand-file-name "target/standalone-rooted-protocol-"
                                        nelisp-standalone--repo-root) t))
@@ -27609,6 +27668,7 @@ top-level form defines NAME that way."
              units nelisp-standalone--this-file nelisp-standalone--repo-root
              (make-temp-file (expand-file-name "target/standalone-compiler-f1-"
                                                nelisp-standalone--repo-root) t)))))
+      (nelisp-standalone--native-startup-autoload-src source))))
 
 (defun nelisp-standalone--compat-metadata-src ()
   "Return verified dialect owners and genuine runtime version metadata."
@@ -27640,12 +27700,7 @@ top-level form defines NAME that way."
         (end-of-file nil)))
     (unless (= (length version-forms) 1)
       (error "Expected exactly one genuine runtime version declaration"))
-    (dolist (relative '("lisp/nelisp-bytecode-ir.el"
-                        "lisp/nelisp-hash-custom.el"
-                        "lisp/nelisp-bytecode-native-switch.el"
-                        "lisp/nelisp-bytecode-frame-ir.el"
-                        "lisp/nelisp-bytecode-handlers-u8.el"
-                        "lisp/nelisp-bytecode-compiler-input.el"
+    (dolist (relative '("lisp/nelisp-bytecode-compiler-input-dialect.el"
                         "lisp/nelisp-stdlib-compat-metadata.el"))
       (let ((source (with-temp-buffer
                       (insert-file-contents
@@ -38069,11 +38124,17 @@ The trace parent directory must exist; tracing never skips a build stage."
          (let ((path (getenv "NELISP_STANDALONE_BUILD_TRACE")))
            (and path (not (string-empty-p path)) (expand-file-name path))))
         (nelisp-standalone--build-trace-unit nil)
+        (nelisp-standalone--native-startup-lazy
+         (eq (nelisp-standalone-arena-rewrite-target) 'linux-x86_64))
         (nelisp-standalone--core-bytecode-build-cache (make-hash-table :test #'equal))
         (nelisp-standalone--build-trace-hits 0)
         (nelisp-standalone--build-trace-misses 0))
     (nelisp-standalone--build-trace-phase "overall"
       (nelisp-standalone--validate-reader-registrations)
+      ;; This identity is already required by the embedded metadata. Reject
+      ;; an incompatible build host before baking/compiling the prelude.
+      (unless nelisp-standalone--verified-bytecode-dialect-id
+        (error "standalone: reader build requires the pinned GNU Emacs 31.1 toolchain"))
       (setq nelisp-standalone--recompiled nil)
   (let* ((units (nelisp-standalone--build-trace-phase "prepare"
                   (nelisp-standalone--reader-units)))
@@ -38147,7 +38208,8 @@ per-process global the driver sets (argv, environment alist,
 `default-directory', invocation names) is re-set on each cold boot anyway, and
 nothing from the build's own environment should leak into the image.
 A failed dump is reported and leaves no image. It fails the build when
-NELISP_STANDALONE_NATIVE_COMPILER_COLD=1 explicitly requests compiler preparation."
+NELISP_STANDALONE_NATIVE_COMPILER_COLD=1 requests Tier 1 preparation;
+the value template requests Tier 0 only. Both include GNU-compiled Tier 0 Lisp."
   (when (and nelisp-standalone--native-cache-source-receipt
              (not (equal nelisp-standalone--native-cache-source-receipt
                          (nelisp-standalone--native-cache-source-identity))))
@@ -38159,15 +38221,26 @@ NELISP_STANDALONE_NATIVE_COMPILER_COLD=1 explicitly requests compiler preparatio
         (message "[standalone-reader] cold image skipped")
       (let* ((default-directory temporary-file-directory)
              (native-compiler-cold
-              (equal (getenv "NELISP_STANDALONE_NATIVE_COMPILER_COLD") "1"))
+              (member (getenv "NELISP_STANDALONE_NATIVE_COMPILER_COLD") '("1" "template")))
+             (template-cold
+              (equal (getenv "NELISP_STANDALONE_NATIVE_COMPILER_COLD") "template"))
+             (template-bytecode
+              (when native-compiler-cold
+                (load (expand-file-name "scripts/nelisp-native-template-bytecode.el"
+                                        nelisp-standalone--repo-root) nil t t)
+                (expand-file-name "target/nelisp-template-bytecode.el"
+                                  nelisp-standalone--repo-root)))
              (process-environment
               (list "PATH=/usr/bin:/bin" "LANG=C.UTF-8" "HOME=/nonexistent"))
              (form
               (if native-compiler-cold
                   (format
-                   "(progn (add-to-list 'load-path %S) (add-to-list 'load-path %S) (require 'nelisp-native-cache) (nelisp-native-cache-prepare-cold-compiler) (garbage-collect) (nelisp--arena-dump-image-stream %S))"
+                   "(progn (add-to-list 'load-path %S) (add-to-list 'load-path %S) (require 'nelisp-native-cache) (load %S nil t t) (%s) (garbage-collect) (nelisp--arena-dump-image-stream %S))"
                    (expand-file-name "lisp" nelisp-standalone--repo-root)
                    (expand-file-name "src" nelisp-standalone--repo-root)
+                   template-bytecode
+                   (if template-cold "nelisp-native-cache-prepare-cold-template"
+                     "nelisp-native-cache-prepare-cold-compiler")
                    (expand-file-name image))
                 (format "(nelisp--arena-dump-image-stream %S)"
                         (expand-file-name image))))
