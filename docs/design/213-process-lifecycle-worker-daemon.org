@@ -1,0 +1,308 @@
+#+TITLE: Doc 213 — Process lifecycle, worker pool, and daemon as a shared NeLisp substrate
+#+AUTHOR: NeLisp
+#+STATUS: IN PROGRESS (2026-10-10) — P0 measured; the worker pool and the daemon
+#+STATUS2: landed as packages/nelisp-service on branch feat/nelisp-service with two
+#+STATUS3: substrate fixes (§8).  Product adoption (§4.4) has not started.  Not SHIPPED:
+#+STATUS4: no gate in tools/ai/gates.expected runs the smokes yet.
+#+PROGRESS-LEDGER: tools/ai/213-process-lifecycle-progress.org
+
+* §0 TL;DR
+
+Every product built on NeLisp (anvil-standalone, the m365 MCP server, the
+nelisp-ime engine and its test harness) spawns its own =nelisp= processes and
+manages their lifetime on its own.  On 2026-10-09 that produced a measurably
+slow Windows host: one 400-460 MB anvil-standalone server per open Claude
+session (~2 GB across the open sessions), and an IME test harness
+relaunching engine hosts in a loop at 34 CPU-seconds per engine start.
+(Orphans and an idle-spinning engine were suspected first; P0 disproved
+both, §7.)
+
+This document moves process lifetime into NeLisp itself, as one optional
+package, =packages/nelisp-service= — elisp only, zero new Rust, standard
+Emacs process primitives only, so it runs on host Emacs and on the
+standalone reader:
+
+| module | job | first consumer |
+|---|---|---|
+| =nelisp-service-worker= | bounded pool of NeLisp workers: ceiling, queue, recycle after N requests, crash replacement, version replacement; workers exit at stdin EOF | IME test harness, anvil |
+| =nelisp-service-daemon= + =nelisp-service-client= | one resident server per user and name on loopback TCP: exclusive lock, auto-start by the first client, token + version handshake, idle exit, MCP stdio proxy | anvil-standalone + m365 |
+
+The separate =nelisp-lifecycle= module of the first draft was dropped
+(§4.1): P0 found no orphans to kill, and the standalone reader has neither
+a process-liveness query nor Win32 FFI for a watchdog or a Job Object.
+What lifecycle remains is built into the two modules above.
+
+Building it exposed two Windows substrate defects that made /every/
+waiting NeLisp program burn a core; both are fixed (§8).
+
+* §1 Problem, as measured (2026-10-09, Windows 11, 20 logical CPUs)
+
+| observation | measurement | consequence |
+|---|---|---|
+| one anvil-standalone per Claude session | 4-6 concurrent sessions, each with its own =nelisp.exe= (=mcp-bootstrap.el=), 409-464 MB each; cold start 23-36 s on Windows | ~2 GB of duplicated memory and a start-up wait per session |
+| m365 MCP per session | one =nelisp.exe= per Claude session via =nelisp-m365-mcp.ps1= | same pattern as anvil |
+| IME test harness relaunching hosts | =run-engine-host-s4.ps1= (Codex session) started 2 =ddskk-engine-host.exe= + 2-4 =nelisp.exe= within 60 s | unbounded concurrent test stacks |
+| IME engine start-up cost | 34 CPU-seconds per engine start (§7) | every relaunch by a test harness or host burns ~1 core for ~35 s |
+
+Two first impressions were wrong and are corrected by P0 (§7): the anvil
+servers were /not/ orphans, and the IME engine does /not/ spin while idle.
+
+* §2 What already exists
+
+- =src/nelisp-worker.el= (666 lines, Doc 15, SHIPPED 2026-04-24): a
+  lane-aware pool (read / write / batch), classifier, health check, warm-up,
+  latency histogram.  It spawns *GNU Emacs* children
+  (=nelisp-worker-emacs-bin=, =--batch -Q=), not NeLisp, and its classifier
+  patterns are anvil-specific.  No consumer was found in =anvil.el= or the
+  IME engine.
+- =examples/nelisp-daemon/main.el= + =test/nelisp-daemon-test.el= (Doc 14
+  §3.4): a demo stdio JSON-RPC daemon; its own commentary says it is not a
+  real MCP server.
+- Doc 184 (SHIPPED): standard-name process API and one event loop.
+- Doc 194 (SHIPPED on linux-x86_64 only): =make-network-process= including
+  =:server t=.  P6 (Windows) is designed but not built, blocked on PE import
+  table emission.  So *there is no listening IPC endpoint on Windows today*.
+
+* §3 Goals and non-goals
+
+Goals:
+
+1. A NeLisp process started by another process never outlives it, on
+   Windows and Linux, without cooperation from the launcher.
+2. A product can ask for "at most N NeLisp workers" and get reuse, recycling
+   and crash restart without writing its own supervisor.
+3. A product can ask for "one shared server per user" and get auto-start,
+   single-instance locking, idle exit and version matching.
+4. The modules are generic: no anvil, IME or MCP policy inside NeLisp.
+
+Non-goals:
+
+- Changing the core evaluator.  Everything here is Layer 2 (see the
+  core vs. Layer 2 boundary rule).
+- Adding Rust.  Any new OS call goes through the existing elisp
+  =extern-call= path and the build-time extern table.
+- Sharing the *live* IME engine with tests.  The live engine stays one
+  dedicated process; only tests use a pool.
+- Multithreading.  Concurrency comes from processes; each NeLisp process
+  stays single-threaded and cooperative.
+
+* §4 Design (as built)
+
+** §4.1 Lifecycle, folded into the two modules
+
+The first draft's =nelisp-lifecycle= (Job Object, parent-PID watchdog,
+idle reader) was dropped after P0:
+
+- No orphan was reproduced (§7); a stdio server already exits at EOF.
+- The standalone reader exposes no Win32 call surface to Lisp
+  (=nelisp-os--libc-call= is void; measured 2026-10-10), so a Job Object
+  or =OpenProcess= watchdog cannot be written in Lisp, and =emacs-pid=
+  answers 0 on Windows.
+- The idle reader was a fix for an idle spin that P0 showed does not exist
+  for =read-stdin-bytes=.  The spin that /does/ exist is in the event-loop
+  wait (§8).
+
+What lifecycle remains lives where it is needed: workers exit at stdin EOF;
+daemons exit when idle, on =(shutdown)=, or on a version mismatch, and
+always remove their lock and state files; a crashed daemon's leftovers are
+reclaimed by the next client or daemon after =:stale-after= seconds.
+
+** §4.2 Worker pool — =nelisp-service-worker=
+
+Built new rather than generalising =src/nelisp-worker.el=: that module
+spawns GNU Emacs children through the host-only =nelisp-process= actor
+layer and carries anvil's lane classifier.  The new pool uses
+=make-process= directly.
+
+- Protocol: one printed object per line.  =(ready)=, =(req ID FORM)=,
+  =(res ID ok|error VALUE)=, =(quit)=.  A value that does not read back
+  =equal= is returned as its printed string.
+- =:command= defaults to the running executable: NeLisp children on the
+  standalone reader, Emacs children on host Emacs.
+- =:max-workers= is a hard ceiling that also counts workers still exiting;
+  requests beyond it queue.
+- =:recycle-after= N requests retires a worker.  RSS-based recycling is not
+  offered: the standalone reader has no =process-attributes=.
+- A worker that dies fails only its in-flight request (=crashed=); three
+  workers in a row dying before =(ready)= fail the queue (=spawn-failed=)
+  instead of respawning forever.
+- =:init-forms= run in every new worker before it serves.
+- =nelisp-service-pool-set-version= retires idle workers now and busy ones
+  after their request.
+
+** §4.3 Daemon and client — =nelisp-service-daemon=, =nelisp-service-client=
+
+- *Transport: loopback TCP* (decision in §7).  The daemon picks a port in
+  =nelisp-service-daemon-port-range= after a connect probe finds it free,
+  because =:service 0= does not report the chosen port and a second
+  listener on a busy port succeeds on Windows.
+- *Single instance:* =NAME.lock= created with =excl= before binding;
+  =NAME.state= =(:port :token :version :started)= written after.  A lock
+  older than =:stale-after= with nothing answering is reclaimed.
+- *Handshake:* =(hello TOKEN VERSION)= -> =(welcome V)= or
+  =(reject token|version|unauthenticated V)=.  The token keeps other local
+  programs out by accident only; see the package README for why it is not
+  stronger.
+- *Version:* a mismatching client makes the daemon exit (default
+  =:replace-on-mismatch t=); the client waits for the lock to disappear and
+  starts its own version.  Connected clients of the old version see their
+  connection close.
+- *Requests:* =(req ID PAYLOAD)= -> handler =(CONN PAYLOAD REPLY)= ->
+  =(res ID PAYLOAD)= or =(err ID MESSAGE)=; also =(ping)= and =(shutdown)=.
+- *Auto-start:* =nelisp-service-client-connect :start-command= spawns the
+  daemon with =make-process=; on the standalone reader the child outlives
+  the client (measured).  Settings reach the daemon through a bootstrap
+  file (=nelisp-service-script-command=) because neither =setenv= nor
+  =command-line-args= reach a child script there.
+- *Exit:* =nelisp-service-daemon-run= returns =stopped= or =idle= instead of
+  calling =kill-emacs=, which does not end a standalone process.
+- *MCP proxy:* =nelisp-service-client-stdio-proxy= reads one NDJSON line or
+  =Content-Length= frame, forwards the JSON text, writes the reply in the
+  same framing, and resends a message once over a fresh connection if the
+  daemon went away.
+- Not built yet: per-request isolation of global state and routing long
+  requests to a worker pool inside the daemon.  Both belong to the first
+  product adoption, which will show what isolation it needs.
+
+** §4.4 Product adoption (not started)
+
+| product | uses | change on the product side |
+|---|---|---|
+| anvil-standalone | daemon + client proxy | the MCP command runs =nelisp-service-client-stdio-proxy=; the daemon script loads anvil once and answers with =anvil-server-process-jsonrpc= |
+| m365 MCP | daemon + client proxy | same shape, own daemon name |
+| IME test harness | worker pool, =:max-workers 1= | reuse one engine per run instead of one per case |
+
+* §5 Phases
+
+| phase | content | state |
+|---|---|---|
+| P0 | measurements, transport decision | done (§7) |
+| P1 | lifecycle | folded into P2/P3 (§4.1) |
+| P2 | worker pool | built; host ERT + standalone smoke pass |
+| P3 | daemon + client + MCP proxy | built; host ERT + standalone smoke pass |
+| P3a | substrate: Windows sleep, idle back-off | built; idle daemon 0.99 -> ~0.1 cores (§8) |
+| P4 | product adoption (§4.4) | not started |
+
+* §6 Risks
+
+- *Single point of failure (P3).*  A daemon crash drops every session.
+  Mitigation: work runs in recyclable workers; the client auto-restarts the
+  daemon on reconnect.
+- *Serialisation.*  One cooperative loop serves all connections.
+  Mitigation: the daemon only routes; workers do the work.
+- *Hidden shared state.*  Global variables leak across sessions.
+  Mitigation: per-request binding in §4.3 and a test that two clients
+  cannot observe each other's =default-directory=.
+- *Extern-table limits.*  If Job Object or named-pipe calls cannot be
+  added, P1 falls back to watchdog + EOF, and P3 to option C.
+- *Version skew between NeLisp and products.*  Products pin NeLisp; bumps
+  go through =nelisp-vendor-sync=.
+
+* §7 Results
+
+All probes ran on 2026-10-09 on the Windows host with
+=D:/Cowork/Notes/dev/nelisp-ime/target/ime-runtime-build/nelisp.exe=.  The
+probe scripts are throwaway (session scratchpad); their logic is restated
+here so the measurement can be repeated.
+
+** P0 idle CPU root cause
+
+- *Bare read.*  A loop of =(read-stdin-bytes 8192)= under a .NET parent
+  with a redirected, open, idle stdin: 0.000 cores over 12 s; closing stdin
+  makes it return nil and the process exits 0.  So =read-stdin-bytes=
+  blocks correctly on an idle Windows pipe and reports EOF as nil.
+- *Real engine, no host.*  =engine/ddskk-engine-stdio.el= with
+  =read-stdin-bytes= wrapped to log each call: CPU rises ~5 s per 5 s for
+  34 s, the first read is issued at 34.1 s, after which CPU stays flat;
+  closing stdin returns nil and the engine exits 0.
+- *Live engine.*  The respawned engine (PID 39904) measured 0.00 cores
+  idle an hour later.  The 0.64-0.69 cores measured right after its
+  respawn were the 34 s load.  The 0.81 cores of the original engine were
+  not reproduced; they coincided with the user typing, so they are
+  attributed to input processing, not to idle spinning.
+
+Conclusion: there is no idle spin.  The cost is start-up (34 CPU-seconds
+per engine) multiplied by how often engines are started, which makes the
+P2 worker pool (reuse engines in tests) the fix, and engine start-up time
+a separate optimisation target.  =nelisp-lifecycle='s idle-read primitive
+(§4.1) is not needed for this problem.
+
+** P0 orphan root cause
+
+- *Misdiagnosis.*  The four "orphaned" anvil servers were judged orphaned
+  because their grandparent PID did not exist.  That test is invalid on
+  this host: =C:\Program Files\Git\bin\bash.exe= (the MCP command) starts
+  =usr\bin\bash.exe=, whose Windows parent link points at a process that
+  no longer exists even while the session is alive — the live server of
+  the session running this probe shows the same shape.  Their start times
+  (22:01, 22:06, 00:34, 00:44) match four Claude sessions that were still
+  running, so they were live servers and were killed in error.
+- *Host killed after load.*  Git bash -> =exec nelisp.exe= with a probe
+  that only reads stdin: after the host process was killed, both bash and
+  nelisp were gone within 2 s.
+- *Host killed during load.*  The real =anvil-standalone-mcp.sh= under the
+  same harness, host killed 45 s after start: the server stayed alive for
+  at least 20 s more, then exited on its own once it reached its first
+  stdin read and saw EOF.  The anvil serve loop already stops on nil
+  (=anvil-server-run-batch-stdio=).
+
+Conclusion: no permanent orphan was reproduced.  A server whose host dies
+during start-up lingers until its load finishes (≤ ~60 s), then exits.
+The measured memory problem is one 400-460 MB server per open session,
+which lifecycle handling cannot fix; only sharing (P3) can.  P1 shrinks to
+"exit promptly even during load" plus a correct ownership check that
+follows the session's own process, not Windows parent PIDs.
+
+** P0 transport decision
+
+Probes on the Windows standalone reader (=target/nelisp.exe=, built
+2026-09-20), 2026-10-10:
+
+- =nelisp-os--libc-call= and =nelisp-os--windows-alloc-utf16le-z= are void:
+  Lisp cannot call arbitrary Win32 functions, so named pipes (option A)
+  and Job Objects are out of reach without new native work.
+- =make-network-process :server t= on 127.0.0.1 listens, a client in the
+  same process connects, and a request/echo round trip completes: Doc
+  194's "Windows not built" note is out of date for loopback TCP.
+- =:service 0= listens but reports port 0; a second =:server t= on the
+  same port also succeeds.
+- =make-process= runs a child, delivers its output and its exit, and a
+  child outlives the process that started it.
+- =write-region= with =excl= fails with =file-already-exists= on an
+  existing file, which gives an atomic lock.
+
+Decision: loopback TCP (127.0.0.1) with a per-daemon token, an exclusive lock file for single instance, and a state file for discovery; no named pipes, no native broker.
+
+* §8 Substrate defects found and fixed while building
+
+Both measured on Windows with a 30 s loop of
+=(accept-process-output nil 0.5)=, CPU sampled by the parent over 5 s.
+
+1. *=nl_os_nanosleep= was an ENOSYS stub on windows-x86_64*
+   (=scripts/nelisp-standalone-build.el=), so the process adapter's
+   poll-and-sleep loop never slept: 0.98-0.99 cores for any program
+   waiting on =accept-process-output= or =sit-for=, including an idle
+   daemon.  Fix: import =Sleep= from KERNEL32 and sleep the requested
+   milliseconds (at least 1).  After: 0.18 cores.
+2. *The poll quantum stayed at 20 ms while idle*
+   (=packages/nelisp-process-adapter=).  Each pass runs interpreted Lisp,
+   so 50 passes a second cost ~0.18 cores.  Fix: the quantum doubles per
+   empty pass up to 100 ms, across calls, and resets on output; with
+   nothing to poll the wait sleeps to its deadline.  After: a listening
+   daemon with no client at 0.10-0.14 cores; the loop alone at 0.07.
+
+Red/green evidence: =tools/nelisp-service-smoke.sh BIN idle= reports
+1.006 cores (IDLE-FAIL) on the 2026-09-20 =target/nelisp.exe= and
+0.109-0.144 cores (IDLE-PASS, threshold 0.25) on the rebuilt reader.
+
+Still open: polling, even at 100 ms, keeps ~0.1 core per waiting process.
+A blocking wait on the sockets themselves (=WSAPoll= with the remaining
+timeout, which the Windows socket layer already imports) would bring an
+idle daemon to ~0; that is a change to the adapter's wait design, not to
+this package.
+
+Found but not fixed here: =setenv= does not reach children started with
+=make-process= (=process-environment= is not updated), and
+=command-line-args= is empty under =nelisp --load FILE=.  The package works
+around both with bootstrap files; products that spawn NeLisp children with
+settings will hit the same gap.

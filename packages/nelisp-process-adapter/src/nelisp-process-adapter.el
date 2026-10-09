@@ -532,11 +532,37 @@ pending process unconditionally; this is the fix)."
           (when stop-after-first (throw 'nelisp-process-adapter--pump-done nil)))))
     any))
 
-(defun nelisp-process-adapter--sleep-gap (next-timer-deadline wait-deadline)
-  "Bound this pass's sleep by the poll quantum, the next timer deadline,
-and the caller's own wait deadline -- whichever is soonest."
+(defconst nelisp-process-adapter--idle-quantum-max 0.1
+  "Longest sleep (seconds) between polls once nothing has arrived for a
+while.  Doc 213: every poll pass runs interpreted Lisp, so a fixed 20 ms
+quantum alone cost ~0.18 of a core on an idle Windows daemon (measured
+2026-10-10, after `nl_os_nanosleep' started sleeping at all).  The
+quantum doubles per empty pass up to this cap and drops back to
+`nelisp-process-adapter--poll-quantum' as soon as output arrives, so a
+busy exchange keeps its 20 ms latency and an idle loop wakes ~10 times
+a second.")
+
+(defvar nelisp-process-adapter--idle-passes 0
+  "Consecutive poll passes without output, across wait calls.
+Kept global so a caller that waits in short slices (a daemon calling
+`accept-process-output' with 0.5 s in a loop) still backs off.")
+
+(defun nelisp-process-adapter--quantum (targets)
+  "Return this pass's poll quantum for TARGETS.
+With nothing to poll, only timers and the caller's deadline can end
+the wait, so the quantum does not bound the sleep at all."
+  (if (null targets)
+      3600.0
+    (min nelisp-process-adapter--idle-quantum-max
+         (* nelisp-process-adapter--poll-quantum
+            (expt 2 (min nelisp-process-adapter--idle-passes 4))))))
+
+(defun nelisp-process-adapter--sleep-gap (next-timer-deadline wait-deadline
+                                                              &optional targets)
+  "Bound this pass's sleep by the poll quantum for TARGETS, the next timer
+deadline, and the caller's own wait deadline -- whichever is soonest."
   (let ((now (nelisp-async-core--now))
-        (gap nelisp-process-adapter--poll-quantum))
+        (gap (nelisp-process-adapter--quantum targets)))
     (when next-timer-deadline (setq gap (min gap (max 0.0 (- next-timer-deadline now)))))
     (when wait-deadline (setq gap (min gap (max 0.0 (- wait-deadline now)))))
     (max gap 0.0)))
@@ -569,7 +595,10 @@ received before the deadline."
       (while t
         (when (nelisp-process-adapter--pump-once targets t)
           (setq got t)
+          (setq nelisp-process-adapter--idle-passes 0)
           (throw 'nelisp-process-adapter--wait-done nil))
+        (setq nelisp-process-adapter--idle-passes
+              (1+ nelisp-process-adapter--idle-passes))
         (when (and deadline (>= (nelisp-async-core--now) deadline))
           (throw 'nelisp-process-adapter--wait-done nil))
         (when (and process
@@ -585,7 +614,8 @@ received before the deadline."
             ;; longer can never produce anything.  Stop instead of hanging
             ;; forever.
             (throw 'nelisp-process-adapter--wait-done nil))
-          (nelisp-async-core--nanosleep (nelisp-process-adapter--sleep-gap nd deadline)))))
+          (nelisp-async-core--nanosleep
+           (nelisp-process-adapter--sleep-gap nd deadline targets)))))
     got))
 
 (defun accept-process-output (&optional process seconds millisec just-this-one)

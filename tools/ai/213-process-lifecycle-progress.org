@@ -1,0 +1,72 @@
+#+TITLE: Doc 213 process lifecycle, worker pool, daemon
+
+* S0 Design
+
+** S0.1 Doc 213 exists with phases and a results section
+cmd: grep -q '^#+STATUS: ' docs/design/213-process-lifecycle-worker-daemon.org && grep -q '^\* §5 Phases' docs/design/213-process-lifecycle-worker-daemon.org && grep -q '^\* §7 Results' docs/design/213-process-lifecycle-worker-daemon.org
+
+* S1 P0 measurements
+
+** S1.1 Orphan root cause is recorded with its probe
+cmd: grep -q '^\*\* P0 orphan root cause' docs/design/213-process-lifecycle-worker-daemon.org
+
+** S1.2 IME idle-CPU root cause is recorded with its probe
+cmd: grep -q '^\*\* P0 idle CPU root cause' docs/design/213-process-lifecycle-worker-daemon.org
+
+** S1.3 Windows transport decision is recorded
+cmd: grep -q '^Decision: ' docs/design/213-process-lifecycle-worker-daemon.org
+
+* S2 Worker pool
+
+** S2.1 Package with pool, worker child and manifest exists
+cmd: test -f packages/nelisp-service/manifest.el && test -f packages/nelisp-service/src/nelisp-service-worker.el && test -f packages/nelisp-service/src/nelisp-service-worker-child.el
+
+** S2.2 Package byte-compiles with warnings as errors and has no namespace findings
+#+TIMEOUT: 300
+cmd: emacs --batch -Q -L packages/nelisp-service/src --eval '(setq byte-compile-error-on-warn t)' -f batch-byte-compile packages/nelisp-service/src/*.el && tools/ai/nelisp-ai.sh ns packages/nelisp-service/src/*.el | grep -q 'no findings'
+
+** S2.3 Host ERT suite passes (framing, pool, daemon, client)
+#+TIMEOUT: 300
+cmd: emacs --batch -Q -l cl-lib -L packages/nelisp-service/src -l packages/nelisp-service/test/nelisp-service-test.el -f ert-run-tests-batch-and-exit
+
+** S2.4 End to end: NeLisp worker pool smoke passes on the standalone reader
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 600
+cmd: sh tools/nelisp-service-smoke.sh "$NELISP_BIN" pool
+
+* S3 Daemon and client
+
+** S3.1 Daemon and client modules and example daemon exist
+cmd: test -f packages/nelisp-service/src/nelisp-service-daemon.el && test -f packages/nelisp-service/src/nelisp-service-client.el && test -f packages/nelisp-service/bin/nelisp-service-echo-daemon.el
+
+** S3.2 End to end: client-started daemon smoke passes on the standalone reader
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 600
+cmd: sh tools/nelisp-service-smoke.sh "$NELISP_BIN" daemon
+
+* S4 Substrate fixes
+
+** S4.1 Windows nl_os_nanosleep sleeps through kernel32 Sleep
+cmd: grep -q '"Sleep"))' scripts/nelisp-standalone-build.el && grep -q '(extern-call Sleep' scripts/nelisp-standalone-build.el
+
+** S4.2 Process adapter backs off its poll quantum while idle
+cmd: grep -q 'nelisp-process-adapter--idle-quantum-max' packages/nelisp-process-adapter/src/nelisp-process-adapter.el
+
+** S4.3 End to end: an idle listening daemon stays under 0.25 of a core
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 120
+cmd: sh tools/nelisp-service-smoke.sh "$NELISP_BIN" idle
+
+* S5 Product adoption
+
+** S5.1 anvil-standalone serves MCP through the shared-daemon proxy
+#+REQUIRES: ANVIL_EL_DIR
+cmd: grep -rq 'nelisp-service-client-stdio-proxy' "$ANVIL_EL_DIR/scripts" "$ANVIL_EL_DIR/tools" "$ANVIL_EL_DIR/bin"
+
+** S5.2 IME test harness runs engines through a nelisp-service pool
+cmd: grep -rqs 'nelisp-service-pool' ../nelisp-skk-ime/windows ../nelisp-skk-ime/engine ../nelisp-skk-ime/tools
+
+** S5.3 End to end: two MCP sessions share one anvil daemon
+#+REQUIRES: NELISP_BIN,ANVIL_SMOKE
+#+TIMEOUT: 600
+cmd: sh tools/anvil-shared-daemon-smoke.sh "$NELISP_BIN"

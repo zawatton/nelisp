@@ -21141,7 +21141,12 @@ dispatch arm in `nelisp-standalone--applyfn-dispatch-table'.")
                     ;; `delete-directory' and `delete-file'.  All three answered
                     ;; -ENOSYS on this target, and `make-directory' silently
                     ;; created nothing (v1.2.0 parity gap 4).
-                    "CreateDirectoryW" "RemoveDirectoryW" "DeleteFileW"))
+                    "CreateDirectoryW" "RemoveDirectoryW" "DeleteFileW"
+                    ;; Doc 213: `nl_os_nanosleep' (windows os-base-forms).
+                    ;; Without it the target answered -ENOSYS, so every
+                    ;; `accept-process-output'/`sit-for' wait spun a full
+                    ;; core instead of sleeping.
+                    "Sleep"))
         (cons "SHELL32.dll" (list "CommandLineToArgvW"))
         ;; Doc 138 socket slices 1-2: Winsock startup plus the connected-client,
         ;; listening, readiness and connect-status operations implemented by
@@ -24611,7 +24616,13 @@ boundary (Doc 151 Phase B):
          (if (< st 0) 0 (nl_seq2 (extern-call FindClose (ptr-read-u64 st 0)) 0)))
        (defun nl_os_utimes_path (_cpath _buf) (- 0 38))
        (defun nl_os_statx_path (_cpath _flags _buf) (- 0 38))
-       (defun nl_os_nanosleep (_ts) (- 0 38))))
+       ;; Doc 213: kernel32 Sleep takes milliseconds.  A positive request
+       ;; below 1 ms sleeps 1 ms rather than Sleep(0), which only yields
+       ;; and would let a short poll gap spin.
+       (defun nl_os_nanosleep (ts)
+         (let* ((ms (+ (* (ptr-read-u64 ts 0) 1000)
+                       (/ (ptr-read-u64 ts 8) 1000000))))
+           (seq (extern-call Sleep (if (< ms 1) 1 ms)) 0)))))
     ('macos-aarch64
      ;; Darwin path/stat/dir layer.  The portable fileio layer above this
      ;; addresses syscalls by the LINUX x86_64 vocabulary number and reads
