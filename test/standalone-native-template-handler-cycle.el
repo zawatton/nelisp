@@ -42,8 +42,8 @@
               (unless (and (eq result 'done) (= (- nelisp-native-template--entry-count entries-before) 1)
                            (= validations nelisp-native-template--validation-count)
                            (= template-cycle-calls (if (eq mode 'throw) 3 2))
-                           (> (- polls polls-before) template-cycle-calls)
-                           (or (eq mode 'throw) (= (- requests requests-before) 1)))
+                           (= (- polls polls-before) (if (eq mode 'throw) 0 1))
+                           (= (- requests requests-before) (if (eq mode 'throw) 0 1)))
                 (error "Exceptional poll cycle failed mode=%S calls=%d polls=%d requests=%d result=%S"
                        mode template-cycle-calls (- polls polls-before) (- requests requests-before) result))
               (princ (format "TEMPLATE-HANDLER-CYCLE-PASS mode=%S calls=%d polls=%d requests=%d entries=1 gc=forced\n"

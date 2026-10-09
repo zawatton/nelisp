@@ -199,14 +199,14 @@
                         (cl-some (lambda (name)
                                    (member name (plist-get emitted :gateway-imports)))
                                  '("nl_native_car_v2" "nl_native_cdr_v2"
-                                   "nl_native_cons_v2" "nl_native_funcall_v2")))
+                                   "nl_native_cons_v2" "nl_native_funcall_v2" "nl_native_poll_v2")))
                    arithmetic
                    (and (null imports)
                         (nelisp-bytecode-native-rooted-cfg-contract--canonical-empty-imports-p
                          input plan emitted)))
                (cl-every (lambda (name)
                            (or (member name '("nl_native_car_v2" "nl_native_cdr_v2"
-                                              "nl_native_cons_v2" "nl_native_funcall_v2" "nl_native_frame_v2" "nl_root_pin_slot_v2"))
+                                              "nl_native_cons_v2" "nl_native_funcall_v2" "nl_native_poll_v2" "nl_native_frame_v2" "nl_root_pin_slot_v2"))
                                (and arithmetic
                                     (equal name (if (eq (plist-get plan :arithmetic-guard-mode) 'on)
                                                     "nl_native_add_guard_v1" "nl_native_add_v2")))))

@@ -819,7 +819,7 @@ phis at joins.  It refuses before any backend or artifact side effect."
                                                        '(car cdr cons add car-safe cdr-safe primitive-call list-build funcall)))
                                      (plist-get block :operations)))))
                   #'string<))
-           (gateway-imports (if banked (sort (delete-dups (append gateway-imports (list "nl_native_funcall_v2" "nl_root_pin_slot_v2"))) #'string<) gateway-imports))
+           (gateway-imports (if banked (sort (delete-dups (append gateway-imports (list "nl_native_funcall_v2" "nl_native_poll_v2" "nl_root_pin_slot_v2"))) #'string<) gateway-imports))
            (gateway-imports (if frame-p
                                 (sort (delete-dups (append gateway-imports (list "nl_native_frame_v2"))) #'string<)
                               gateway-imports))

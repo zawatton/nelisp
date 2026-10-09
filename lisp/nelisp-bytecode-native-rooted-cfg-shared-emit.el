@@ -142,16 +142,17 @@
                 (progn
                   (nelisp-bytecode-native-rooted-cfg-shared-emit--fail
                    context "authenticated arithmetic roots were refused") 2)
-              (let ((body
-                     `(let ((,status (extern-call ,@(plist-get lowered :call))))
-                        (if (= ,status 0)
-                            ,(nelisp-bytecode-native-rooted-cfg-shared-emit--operations
-                              context block (1+ index) stop path)
-                          (if (= ,status 1) ,(+ 1024 (plist-get record :exit-root-base)) 2)))))
-                (if materialized
-                    (nelisp-bytecode-native-rooted-cfg-shared-emit--materialize-inputs
-                     inputs materialized id index body)
-                  body)))))
+              (let* ((body `(let ((,status (extern-call ,@(plist-get lowered :call))))
+                             (if (= ,status 0) 0
+                               (if (= ,status 1) ,(+ 1024 (plist-get record :exit-root-base)) 2))))
+                     (slow (if materialized
+                               (nelisp-bytecode-native-rooted-cfg-shared-emit--materialize-inputs
+                                inputs materialized id index body) body)))
+                `(let ((,status ,(nelisp-native-funcall-v2-fixnum-form
+                                  92 inputs (plist-get operation :output-root) 0 slow)))
+                   (if (= ,status 0)
+                       ,(nelisp-bytecode-native-rooted-cfg-shared-emit--operations
+                         context block (1+ index) stop path) ,status))))))
          ((eq opcode 'switch)
           (let* ((output (plist-get operation :output-root))
                  (edges (plist-get block :successors))
@@ -447,7 +448,7 @@
                                      (number-sequence exit (+ exit 2)) (+ 1024 exit)))))
                   (setq body
                         (nelisp-native-funcall-v2-emit
-                         (list :pc (+ 100000 from) :staging-roots nil
+                         (list :poll t :pc (+ 100000 from) :staging-roots nil
                                :result-root result :output-root result)
                          (plist-get plan :poll-root) nil
                          `(let ((cycle_poll_slot (extern-call nl_root_pin_slot_v2 env ticket ,result 0 0 0)))

@@ -63,7 +63,12 @@
                         (if (eq nelisp-native-cache-backend 'gccjit) (plist-get header :imports)
                           (mapcar #'nelisp-native-load--raw-import-name
                                   (plist-get (plist-get (read (current-buffer)) :native) :imports)))))))
-        (f1-assert (equal (sort (copy-sequence names) #'string<) '("nl_native_funcall_v2" "nl_root_pin_slot_v2")) "one generic evaluator import"))
+        (f1-assert
+         (equal (sort (copy-sequence names) #'string<)
+                (if (eq nelisp-native-cache-backend 'template)
+                    '("nl_native_funcall_v2" "nl_native_poll_v2" "nl_root_pin_slot_v2")
+                  '("nl_native_funcall_v2" "nl_root_pin_slot_v2")))
+         "one generic evaluator import plus template poll gate"))
       (f1-assert (= before nelisp-bytecode-native-rooted-cfg-contract--validation-count) "zero cache validations")
       (dolist (input corpus)
         (when (equal (getenv "F1_FORCE_GC") "1") (garbage-collect))

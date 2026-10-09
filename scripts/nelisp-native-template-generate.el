@@ -6,7 +6,7 @@
 (defun nelisp-native-template-generate ()
   "Generate bounded protocol fragments, with positions recorded during emission."
   (let ((fragments nil) (root (expand-file-name ".." (file-name-directory load-file-name))))
-    (dolist (family '(prologue copy call frame status-save status-restore status-branch nil-branch nonnull-branch jump switch return bad epilogue))
+    (dolist (family '(prologue copy call poll fixnum-add fixnum-sub fixnum-mul fixnum-inc fixnum-dec fixnum-neg fixnum-eq fixnum-lt fixnum-gt fixnum-le fixnum-ge frame status-save status-restore status-branch nil-branch nonnull-branch jump switch return bad epilogue))
       (let ((buf (nelisp-asm-x86_64-make-buffer)) (holes nil))
         (cl-labels
             ((hole (name kind offset)
@@ -23,6 +23,10 @@
                  (if zero (nelisp-asm-x86_64-jz-rel32 buf target)
                    (nelisp-asm-x86_64-jnz-rel32 buf target))
                  (hole target 'rel32 (+ start 2))))
+             (cc (code target)
+               (nelisp-asm-x86_64-emit-bytes buf (unibyte-string 15 code))
+               (hole target 'rel32 (nelisp-asm-x86_64-buffer-pos buf))
+               (nelisp-asm-x86_64-emit-bytes buf (unibyte-string 0 0 0 0)))
              (slot (name reg)
                ;; The authenticated root bank is nonmoving native storage.
                ;; Certificate bounds and the wrapper's complete slot checks
@@ -54,12 +58,53 @@
              (dotimes (i 4)
                (memory 139 'rax 'r14 (intern (format "read%d" i)))
                (memory 137 'rax 'r14 (intern (format "write%d" i)))))
-            ('call
+            ((or 'call 'poll)
              (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'r12)
              (nelisp-asm-x86_64-mov-reg-reg buf 'rsi 'r13)
              (imm 'rdx 'function) (imm 'rcx 'arguments) (imm 'r8 'argc) (imm 'r9 'result)
-             (external 'nl_native_funcall_v2)
+             (external (if (eq family 'poll) 'nl_native_poll_v2 'nl_native_funcall_v2))
              (nelisp-asm-x86_64-cmp-imm32 buf 'rax 0) (jump nil 'epilogue))
+            ((or 'fixnum-add 'fixnum-sub 'fixnum-mul 'fixnum-inc 'fixnum-dec 'fixnum-neg
+                 'fixnum-eq 'fixnum-lt 'fixnum-gt 'fixnum-le 'fixnum-ge)
+             (let* ((binary (not (memq family '(fixnum-inc fixnum-dec fixnum-neg))))
+                    (compare (memq family '(fixnum-eq fixnum-lt fixnum-gt fixnum-le fixnum-ge))))
+               (memory 139 'rax 'r14 'left-tag)
+               (nelisp-asm-x86_64-cmp-imm32 buf 'rax 2) (cc #x85 'slow)
+               (memory 139 'rax 'r14 'left-value)
+               (if binary
+                   (progn (memory 139 'rcx 'r14 'right-tag)
+                          (nelisp-asm-x86_64-cmp-imm32 buf 'rcx 2) (cc #x85 'slow)
+                          (memory 139 'rcx 'r14 'right-value))
+                 (nelisp-asm-x86_64-mov-imm32 buf 'rcx 1))
+               (dolist (r (if binary '(rax rcx) '(rax)))
+                 (nelisp-asm-x86_64-mov-imm64 buf 'rdx (if (eq family 'fixnum-mul) -1073741824 -2305843009213693952))
+                 (nelisp-asm-x86_64-cmp-reg-reg buf r 'rdx) (cc #x8c 'slow)
+                 (nelisp-asm-x86_64-mov-imm64 buf 'rdx (if (eq family 'fixnum-mul) 1073741824 2305843009213693951))
+                 (nelisp-asm-x86_64-cmp-reg-reg buf r 'rdx) (cc #x8f 'slow))
+               (pcase family
+                 ((or 'fixnum-add 'fixnum-inc) (nelisp-asm-x86_64-add-reg-reg buf 'rax 'rcx))
+                 ((or 'fixnum-sub 'fixnum-dec) (nelisp-asm-x86_64-sub-reg-reg buf 'rax 'rcx))
+                 ('fixnum-neg (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #xf7 #xd8)))
+                 ('fixnum-mul (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x0f #xaf #xc1)))
+                 (_ (nelisp-asm-x86_64-cmp-reg-reg buf 'rax 'rcx)))
+               (if compare
+                   (progn
+                     ;; SETcc is a raw 0/1, matching the Nil/T Sexp tags.
+                     (nelisp-asm-x86_64-emit-bytes buf
+                       (unibyte-string 15 (pcase family ('fixnum-eq #x94) ('fixnum-lt #x9c)
+                                            ('fixnum-gt #x9f) ('fixnum-le #x9e) (_ #x9d)) #xc2
+                                       #x48 #x0f #xb6 #xd2))
+                     (nelisp-asm-x86_64-mov-imm32 buf 'rax 0))
+                 (nelisp-asm-x86_64-mov-imm64 buf 'rdx -2305843009213693952)
+                 (nelisp-asm-x86_64-cmp-reg-reg buf 'rax 'rdx) (cc #x8c 'slow)
+                 (nelisp-asm-x86_64-mov-imm64 buf 'rdx 2305843009213693951)
+                 (nelisp-asm-x86_64-cmp-reg-reg buf 'rax 'rdx) (cc #x8f 'slow)
+                 (nelisp-asm-x86_64-mov-imm32 buf 'rdx 2))
+               (memory 137 'rdx 'r14 'output-tag) (memory 137 'rax 'r14 'output-value)
+               (nelisp-asm-x86_64-mov-imm32 buf 'rdx 0)
+               (memory 137 'rdx 'r14 'output-pad1) (memory 137 'rdx 'r14 'output-pad2)
+               (let ((start (nelisp-asm-x86_64-buffer-pos buf)))
+                 (nelisp-asm-x86_64-jmp-rel32 buf 'done) (hole 'done 'rel32 (1+ start)))))
             ('frame
              (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'r12)
              (nelisp-asm-x86_64-mov-reg-reg buf 'rsi 'r13)

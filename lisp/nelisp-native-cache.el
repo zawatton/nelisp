@@ -554,7 +554,7 @@ The caller must inhibit mid-form collection until the syscall returns."
         (entry-name (plist-get header :entry))
         (template-p (eq (plist-get header :backend) 'template))
         (primitive-initializer (symbol-function 'nelisp-native-funcall-v2-initializer))
-        (poll-function (nelisp-bytecode-native-rooted-cfg-poll-function))
+        (poll-function (nelisp-native-poll-state))
         (switch-function (nelisp-bytecode-native-switch-function))
         (exit-base (plist-get header :exit-root-base))
         (broken nil))
@@ -563,7 +563,7 @@ The caller must inhibit mid-form collection until the syscall returns."
     (setq initializers
           (mapcar (lambda (init)
                     (if (plist-member init :constant-index) init
-                      (list :root (plist-get init :root) :value
+                      (list :root (plist-get init :root) :poll-state (plist-get init :poll) :value
                             (cond ((plist-get init :primitive)
                                    (funcall primitive-initializer (plist-get init :primitive)))
                                   ((plist-get init :poll) poll-function)
@@ -599,7 +599,9 @@ The caller must inhibit mid-form collection until the syscall returns."
                   (unless (eql (nelisp--native-pin-copy-v2
                                 env ticket index (if (plist-member init :constant-index)
                                    (aref constants (plist-get init :constant-index))
-                                 (plist-get init :value)))
+                                 (if (plist-get init :poll-state)
+                                     (copy-sequence (plist-get init :value))
+                                   (plist-get init :value))))
                                (nth index slots))
                     (error "Native cache initializer root mismatch"))))
               (cl-loop for slot in slots for index from 0 do

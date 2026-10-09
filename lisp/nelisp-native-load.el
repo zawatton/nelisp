@@ -114,7 +114,7 @@ equality test and the port-count test both check it.")
     "nl_native_cdr_v2"
     "wf_bytecode_call_gateway_exit")
    (nelisp-native-load--port-symbol-names)
-   '("nl_native_funcall_v2")
+   '("nl_native_funcall_v2" "nl_native_poll_v2")
    (mapcar #'car nelisp-runtime-reload-gc-contract)
    '("nl_native_frame_v2"))
   "Runtime symbols a stub can be pointed at, in `nelisp--native-symbol-addr' order.
@@ -1834,7 +1834,7 @@ The returned plist has :environment, :begin, :reserve, :end, and :slot fields."
           '(0 success 1 wrong-type 2 malformed 3 unsupported-opcode)))))
 
 (defconst nelisp-native-load-raw-v2-bridgeable-imports
-  '("nl_native_car_v2" "nl_native_cdr_v2" "nl_native_cons_v2" "nl_native_funcall_v2" "nl_native_frame_v2")
+  '("nl_native_car_v2" "nl_native_cdr_v2" "nl_native_cons_v2" "nl_native_funcall_v2" "nl_native_poll_v2" "nl_native_frame_v2")
   "Exact v2 native bridge imports backed by the binary symbol-address table.
 
 Root-pin operations remain host-controlled; raw units receive an authenticated
@@ -2766,12 +2766,12 @@ without publishing an intermediate artifact.  The cache owns publication."
                             (cl-some
                              (lambda (name) (member name safe-imports))
                              '("nl_native_car_v2" "nl_native_cdr_v2"
-                               "nl_native_cons_v2" "nl_native_funcall_v2"))
+                               "nl_native_cons_v2" "nl_native_funcall_v2" "nl_native_poll_v2"))
                             (cl-every
                              (lambda (name)
                                (member name
                                        '("nl_native_car_v2" "nl_native_cdr_v2"
-                                         "nl_native_cons_v2" "nl_native_funcall_v2"
+                                         "nl_native_cons_v2" "nl_native_funcall_v2" "nl_native_poll_v2"
                                          "nl_root_pin_slot_v2")))
                              safe-imports)))
                      (< (plist-get safe-contract :root-count) 256)
@@ -2923,7 +2923,7 @@ without publishing an intermediate artifact.  The cache owns publication."
                                           (member import
                                                   '("nl_native_car_v2"
                                                     "nl_native_cdr_v2"
-                                                    "nl_native_cons_v2" "nl_native_funcall_v2"
+                                                    "nl_native_cons_v2" "nl_native_funcall_v2" "nl_native_poll_v2"
                                                     "nl_root_pin_slot_v2"))))
                (mode (cond (provider 'arithmetic-provider-v1)
                            (typed-call1 'call1-typed-v1)
@@ -3414,7 +3414,7 @@ only semantic reconstruction is omitted, never the manifest structure."
                                          :test #'equal))))
               (or (nelisp-native-load--rooted-cfg-provider-import-valid-p descriptor contract)
               (and (member name '("nl_native_car_v2" "nl_native_cdr_v2"
-                                  "nl_native_cons_v2" "nl_native_funcall_v2" "nl_root_pin_slot_v2"))
+                                  "nl_native_cons_v2" "nl_native_funcall_v2" "nl_native_poll_v2" "nl_root_pin_slot_v2"))
                    (eq (nelisp-native-load--raw-import-kind descriptor) 'func)
                    (equal (plist-get descriptor :abi) nelisp-native-load-raw-runtime-abi-v2)
                    (eq (plist-get descriptor :address-mode)
@@ -3431,7 +3431,7 @@ only semantic reconstruction is omitted, never the manifest structure."
                                      (plist-get contract :runtime-imports)))
                   (cl-some (lambda (name) (member name actual-names))
                            '("nl_native_car_v2" "nl_native_cdr_v2"
-                             "nl_native_cons_v2" "nl_native_funcall_v2")))
+                             "nl_native_cons_v2" "nl_native_funcall_v2" "nl_native_poll_v2")))
            (and (null actual-names)
                 (null expected-names)
                 (null descriptors))))))
@@ -3560,11 +3560,11 @@ only semantic reconstruction is omitted, never the manifest structure."
                      (sort (delete-dups (copy-sequence expected)) #'string<))
               (cl-some (lambda (name) (member name expected))
                        '("nl_native_car_v2" "nl_native_cdr_v2"
-                         "nl_native_cons_v2" "nl_native_funcall_v2"))
+                         "nl_native_cons_v2" "nl_native_funcall_v2" "nl_native_poll_v2"))
               (cl-every
                (lambda (name)
                  (member name '("nl_native_car_v2" "nl_native_cdr_v2"
-                                "nl_native_cons_v2" "nl_native_funcall_v2" "nl_root_pin_slot_v2")))
+                                "nl_native_cons_v2" "nl_native_funcall_v2" "nl_native_poll_v2" "nl_root_pin_slot_v2")))
                expected))
          (equal (plist-get manifest :native-rooted-cfg-safe-v3-imports) expected)
          (equal names expected)
@@ -3579,7 +3579,7 @@ only semantic reconstruction is omitted, never the manifest structure."
                             (cl-position name nelisp-native-load-bridgeable-symbols
                                          :test #'equal))))
               (and (member name '("nl_native_car_v2" "nl_native_cdr_v2"
-                                  "nl_native_cons_v2" "nl_native_funcall_v2" "nl_root_pin_slot_v2"))
+                                  "nl_native_cons_v2" "nl_native_funcall_v2" "nl_native_poll_v2" "nl_root_pin_slot_v2"))
                    (eq (nelisp-native-load--raw-import-kind descriptor) 'func)
                    (equal (plist-get descriptor :abi)
                           nelisp-native-load-raw-runtime-abi-v2)
@@ -5966,7 +5966,7 @@ in this file needs that."
               ("nelisp_cons_construct" text 3) ("nl_arena_base" data 8)
               ("nl_gc_mark_pinned_roots" text 0) ("nl_gc_mark_thread_roots" text 0)
               ("nl_gc_mark_recorded_env" text 1)
-              ("nl_native_funcall_v2" text 6)))
+              ("nl_native_funcall_v2" text 6) ("nl_native_poll_v2" text 6)))
   "Immutable production root layout, independently domain separated from reload.")
 
 (defun nelisp-native-load--rooted-contract-copy-node (item ancestors depth budget)

@@ -5,13 +5,13 @@
 (declare-function nelisp-native-frame-v2-bank-copy-emit "nelisp-native-frame-v2" (plan inputs roots body))
 (defvar nelisp-stdlib--symbol-plists)
 (defvar nelisp--bytecode-lisp-providers)
-(defconst nelisp-native-funcall-v2-version "nelisp-native-funcall-v2-1")
+(defconst nelisp-native-funcall-v2-version "nelisp-native-funcall-v2-2")
 (let ((descriptor
-       '(:version "nelisp-native-funcall-v2-1" :name "nl_native_funcall_v2"
+       '(:version "nelisp-native-funcall-v2-2" :name "nl_native_funcall_v2"
          :kind func :arity 6 :params (u64 u64 u64 u64 u64 u64) :return u64
          :root-limit 256 :arguments contiguous :scratch-count 4
          :exit-offset 1 :exit-base 1024 :exit-kinds (1 2)
-         :ownership reauthenticate :stash publish-before-clear)))
+         :poll-entry nl_native_poll_v2 :poll-state vector-9 :ownership reauthenticate :stash publish-before-clear)))
 (defun nelisp-native-funcall-v2-descriptor ()
   "Return fresh source-owned bounds, signature and exit semantics."
   (copy-tree descriptor)))
@@ -283,8 +283,46 @@
                                  `(ptr-write-u64 ,destination ,offset (ptr-read-u64 ,source ,offset)))
                                '(0 8 16 24))
                      ,result)))))) result))
+(defun nelisp-native-funcall-v2-fixnum-form (opcode inputs output success fallback)
+  "Emit allocation-free fixnum arithmetic around the unchanged FALLBACK.
+Full operands are read before output writes, including aliased root banks.
+The multiplication guard conservatively bounds both inputs to 30 bits;
+larger fixnums use the existing exact numeric operation, never wrapped math."
+  (if (not (memq opcode '(83 84 85 86 87 88 89 90 91 92 95))) fallback
+    (let* ((binary (not (memq opcode '(83 84 91))))
+           (expression (pcase opcode
+                         (83 '(- fast_a 1)) (84 '(+ fast_a 1))
+                         (91 '(- 0 fast_a)) (90 '(- fast_a fast_b))
+                         (92 '(+ fast_a fast_b)) (95 '(* fast_a fast_b))
+                         (85 '(= fast_a fast_b)) (86 '(> fast_a fast_b))
+                         (87 '(< fast_a fast_b)) (88 '(<= fast_a fast_b))
+                         (89 '(>= fast_a fast_b))))
+           (comparison (memq opcode '(85 86 87 88 89)))
+           (bounds (if (= opcode 95) 1073741824 2305843009213693951))
+           (lower (if (= opcode 95) -1073741824 -2305843009213693952))
+           (store `(progn (ptr-write-u64 fast_out 0 ,(if comparison '(if fast_value 1 0) 2))
+                          (ptr-write-u64 fast_out 8 ,(if comparison 0 'fast_value))
+                          (ptr-write-u64 fast_out 16 0) (ptr-write-u64 fast_out 24 0) ,success)))
+      `(let* ((fast_left (extern-call nl_root_pin_slot_v2 env ticket ,(car inputs) 0 0 0))
+              (fast_right ,(if binary `(extern-call nl_root_pin_slot_v2 env ticket ,(cadr inputs) 0 0 0) 'fast_left))
+              (fast_out (extern-call nl_root_pin_slot_v2 env ticket ,output 0 0 0)))
+         (if (or (= fast_left 0) (or (= fast_right 0) (= fast_out 0))) 2
+           ;; Payload reads are safe for any authenticated full Sexp slot.
+           ;; Only tagged, bounded inputs can evaluate the arithmetic itself.
+           (let* ((fast_a (ptr-read-u64 fast_left 8)) (fast_b (ptr-read-u64 fast_right 8))
+                  (fast_valid (and (= (ptr-read-u64 fast_left 0) 2)
+                                   (and (= (ptr-read-u64 fast_right 0) 2)
+                                        (and (>= fast_a ,lower)
+                                             (and (<= fast_a ,bounds)
+                                                  (and (>= fast_b ,lower) (<= fast_b ,bounds)))))))
+                  (fast_value (if fast_valid ,expression 0)))
+             (if ,(if comparison 'fast_valid
+                    '(and fast_valid (and (>= fast_value -2305843009213693952)
+                               (<= fast_value 2305843009213693951))))
+                 ,store ,fallback)))))))
+
 (defun nelisp-native-funcall-v2-emit (operation function inputs continuation &optional copy-plan)
-  "Stage canonical OPERATION operands, call once and preserve its SSA result."
+  "Stage canonical operands with one shared continuation for fast/slow paths."
   (let* ((copy (if copy-plan
                    (lambda (sources destinations body)
                      (nelisp-native-frame-v2-bank-copy-emit copy-plan sources destinations body))
@@ -292,13 +330,16 @@
          (roots (plist-get operation :staging-roots))
          (result (plist-get operation :result-root))
          (status (intern (format "f1_status_%d" (plist-get operation :pc))))
-         (success (funcall copy
-                   (list result) (list (plist-get operation :output-root)) continuation)))
-    (funcall copy
-     inputs roots
-     `(let ((,status (extern-call nl_native_funcall_v2 env ticket ,function
-                                 ,(or (car roots) 1) ,(length inputs) ,result)))
-        (if (= ,status 0) ,success ,status)))))
+         (slow (funcall copy inputs roots
+                `(let ((,status (extern-call ,(if (plist-get operation :poll) 'nl_native_poll_v2 'nl_native_funcall_v2)
+                                             env ticket ,function ,(or (car roots) 1) ,(length inputs) ,result)))
+                   (if (= ,status 0)
+                       ,(funcall copy (list result) (list (plist-get operation :output-root)) 0)
+                     ,status)))))
+    `(let ((,status ,(nelisp-native-funcall-v2-fixnum-form
+                     (plist-get operation :bytecode-opcode) inputs
+                     (plist-get operation :output-root) 0 slow)))
+       (if (= ,status 0) ,continuation ,status))))
 (defun nelisp-native-funcall-v2-emit-list (operation function inputs continuation &optional compact)
   "Build a long list through frozen CONS using two reusable argument roots.
 All source values remain rooted, and the accumulator is published after each
