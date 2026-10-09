@@ -1,9 +1,9 @@
 #+TITLE: Doc 213 — Process lifecycle, worker pool, and daemon as a shared NeLisp substrate
 #+AUTHOR: NeLisp
 #+STATUS: IN PROGRESS (2026-10-10) — P0 measured; the worker pool and the daemon
-#+STATUS2: landed as packages/nelisp-service on branch feat/nelisp-service with two
-#+STATUS3: substrate fixes (§8).  Product adoption (§4.4) has not started.  Not SHIPPED:
-#+STATUS4: no gate in tools/ai/gates.expected runs the smokes yet.
+#+STATUS2: landed as packages/nelisp-service with two substrate fixes (§8) and are
+#+STATUS3: adopted by anvil (shared MCP daemon) and the IME engine tests (§4.4).  Not
+#+STATUS4: SHIPPED: no gate in tools/ai/gates.expected runs the smokes yet.
 #+PROGRESS-LEDGER: tools/ai/213-process-lifecycle-progress.org
 
 * §0 TL;DR
@@ -164,13 +164,26 @@ layer and carries anvil's lane classifier.  The new pool uses
   requests to a worker pool inside the daemon.  Both belong to the first
   product adoption, which will show what isolation it needs.
 
-** §4.4 Product adoption (not started)
+** §4.4 Product adoption
 
-| product | uses | change on the product side |
+| product | uses | state (2026-10-10) |
 |---|---|---|
-| anvil-standalone | daemon + client proxy | the MCP command runs =nelisp-service-client-stdio-proxy=; the daemon script loads anvil once and answers with =anvil-server-process-jsonrpc= |
-| m365 MCP | daemon + client proxy | same shape, own daemon name |
-| IME test harness | worker pool, =:max-workers 1= | reuse one engine per run instead of one per case |
+| anvil-standalone | daemon + client proxy | done: =anvil-runtime mcp shared= / =mcp daemon= (anvil.el ac0dddd); the MCP launcher defaults to shared mode, =ANVIL_RUNTIME_MCP_MODE=serve= restores one server per session.  Needed nelisp-emacs 5e5e0e6: its process bridges replaced the substrate's primitives with delegates that do nothing in standalone mode |
+| m365 MCP | daemon + client proxy | not started; same shape as anvil |
+| IME engine tests | worker pool, =:max-workers 1= | done on nelisp-skk-ime branch feat/engine-pool (cc69a52): =engine/engine-pool-run.el= + =windows/test-host/test-engine-pool.ps1= |
+
+Measured (Windows, rebuilt reader): anvil handshake through the proxy 4-5 s
+with the daemon warm, a cold daemon answers tools/list after ~55 s (served
+from the fast-handshake cache meanwhile); proxy 126 MB working set and 0
+idle CPU, daemon 591 MB and 0.07 cores idle, where each session used to
+hold ~450 MB.  IME: six corpus cases in one engine 16.5 s vs six fresh
+engines 73.9 s with identical replies; skipping RESET between cases is
+rejected by the fresh check.
+
+The IME's process-lifecycle tests (=run-engine-host-s4.ps1= and friends)
+stay one-process-per-case on purpose: they test the native host's
+restart, publication and malformed-input handling, which reuse would
+remove.
 
 * §5 Phases
 
@@ -181,7 +194,7 @@ layer and carries anvil's lane classifier.  The new pool uses
 | P2 | worker pool | built; host ERT + standalone smoke pass |
 | P3 | daemon + client + MCP proxy | built; host ERT + standalone smoke pass |
 | P3a | substrate: Windows sleep, idle back-off | built; idle daemon 0.99 -> ~0.1 cores (§8) |
-| P4 | product adoption (§4.4) | not started |
+| P4 | product adoption (§4.4) | anvil and IME tests done; m365 open |
 
 * §6 Risks
 

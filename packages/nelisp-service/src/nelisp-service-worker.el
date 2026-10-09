@@ -149,8 +149,17 @@ Workers start lazily, on the first request that needs one."
         (nelisp-service-put worker :busy nil)
         (if (eq (nth 2 message) 'ok)
             (nelisp-service-put worker :ready t)
+          ;; A worker that cannot initialise is a failed start, not a
+          ;; recycled one: count it, keep the reason for the caller.
           (nelisp-service-put worker :init-error (nth 3 message))
-          (nelisp-service-pool--retire pool worker)))
+          (nelisp-service-put pool :last-start-error (nth 3 message))
+          (nelisp-service-incf pool :spawn-failures)
+          (nelisp-service-put worker :retiring t)
+          (let ((proc (nelisp-service-get worker :process)))
+            (condition-case nil
+                (progn (nelisp-service-pool--send worker '(quit))
+                       (process-send-eof proc))
+              (error nil)))))
        ((and (consp message) (eq (car message) 'res))
         (let* ((id (nth 1 message))
                (requests (nelisp-service-get pool :requests))
@@ -172,11 +181,17 @@ Workers start lazily, on the first request that needs one."
       (nelisp-service-put pool :workers
                           (delq worker (nelisp-service-get pool :workers)))
       (cond
+       ((nelisp-service-get worker :init-error))
        ((nelisp-service-get worker :retiring)
         (nelisp-service-put pool :spawn-failures 0))
        ((not (nelisp-service-get worker :ready))
         (nelisp-service-incf pool :spawn-failures))
        (t (nelisp-service-put pool :spawn-failures 0)))
+      (unless (or (nelisp-service-get worker :retiring)
+                  (nelisp-service-get worker :ready))
+        (nelisp-service-put pool :last-start-error
+                            (or (nelisp-service-get pool :last-start-error)
+                                "worker exited before becoming ready")))
       (unless (nelisp-service-get worker :retiring)
         (nelisp-service-incf pool :crashed))
       (let ((busy (nelisp-service-get worker :busy)))
@@ -242,7 +257,10 @@ Workers start lazily, on the first request that needs one."
         (progn
           (nelisp-service-put pool :spawn-failures 0)
           (nelisp-service-pool--fail-queue
-           pool 'spawn-failed "workers exit before becoming ready"))
+           pool 'spawn-failed
+           (format "workers failed to start: %s"
+                   (or (nelisp-service-get pool :last-start-error) "unknown")))
+          (nelisp-service-put pool :last-start-error nil))
       (let ((starting (nelisp-service-pool--count
                        pool (lambda (w) (not (nelisp-service-get w :ready)))))
             ;; Retiring workers still hold memory until they exit, so the

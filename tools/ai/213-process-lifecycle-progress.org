@@ -59,14 +59,22 @@ cmd: sh tools/nelisp-service-smoke.sh "$NELISP_BIN" idle
 
 * S5 Product adoption
 
-** S5.1 anvil-standalone serves MCP through the shared-daemon proxy
+** S5.1 anvil-runtime has a shared-daemon proxy built on nelisp-service
 #+REQUIRES: ANVIL_EL_DIR
-cmd: grep -rq 'nelisp-service-client-stdio-proxy' "$ANVIL_EL_DIR/scripts" "$ANVIL_EL_DIR/tools" "$ANVIL_EL_DIR/bin"
+cmd: grep -q 'nelisp-service-client-stdio-proxy' "$ANVIL_EL_DIR/scripts/anvil-runtime-shared-proxy.el" && grep -q 'mcp daemon' "$ANVIL_EL_DIR/bin/anvil-runtime"
 
-** S5.2 IME test harness runs engines through a nelisp-service pool
-cmd: grep -rqs 'nelisp-service-pool' ../nelisp-skk-ime/windows ../nelisp-skk-ime/engine ../nelisp-skk-ime/tools
+** S5.2 nelisp-emacs bridges keep the substrate's process primitives reachable
+cmd: grep -q 'emacs-process--substrate-primitives' ../nelisp-emacs/src/emacs-process.el && grep -q 'emacs-process-remember-substrate-primitive' ../nelisp-emacs/src/emacs-process-builtins.el
 
-** S5.3 End to end: two MCP sessions share one anvil daemon
-#+REQUIRES: NELISP_BIN,ANVIL_SMOKE
+** S5.3 End to end: two MCP sessions are served by one shared anvil daemon
+#+REQUIRES: ANVIL_EL_DIR
 #+TIMEOUT: 600
-cmd: sh tools/anvil-shared-daemon-smoke.sh "$NELISP_BIN"
+cmd: sh tools/anvil-shared-daemon-smoke.sh
+
+** S5.4 IME engine tests reuse one engine through a nelisp-service pool
+cmd: git -C ../nelisp-skk-ime show feat/engine-pool:engine/engine-pool-run.el | grep -q 'nelisp-service-pool-create'
+
+** S5.5 End to end: pooled engine replies equal fresh-engine replies, negative control rejected
+#+REQUIRES: NELISP_BIN,IME_ENGINE_POOL_DIR
+#+TIMEOUT: 600
+cmd: pwsh -NoProfile -File "$IME_ENGINE_POOL_DIR/windows/test-host/test-engine-pool.ps1" -Runtime "$NELISP_BIN" -FreshCheck && pwsh -NoProfile -File "$IME_ENGINE_POOL_DIR/windows/test-host/test-engine-pool.ps1" -Runtime "$NELISP_BIN" -NegativeControl

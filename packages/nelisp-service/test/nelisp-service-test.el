@@ -150,6 +150,19 @@
           (should (eq result 'spawn-failed)))
       (nelisp-service-pool-shutdown pool))))
 
+(ert-deftest nelisp-service-test-pool-init-error-fails-with-reason ()
+  (let ((pool (nelisp-service-test--pool
+               :max-workers 1 :init-forms '((error "No dictionary here"))))
+        (result nil))
+    (unwind-protect
+        (progn
+          (nelisp-service-pool-submit pool 1 (lambda (s v) (setq result (list s v))))
+          (should (nelisp-service-wait-until (lambda () result) 120))
+          (should (eq (car result) 'spawn-failed))
+          (should (string-match-p "No dictionary here" (cadr result)))
+          (should (= 3 (plist-get (nelisp-service-pool-stats pool) :spawned))))
+      (nelisp-service-pool-shutdown pool))))
+
 (ert-deftest nelisp-service-test-worker-exits-on-stdin-eof ()
   (let ((pool (nelisp-service-test--pool :max-workers 1)))
     (nelisp-service-pool-call pool 1 60)
