@@ -258,28 +258,56 @@ Return (FRAMING . JSON) with FRAMING `line' or `framed', or nil at EOF."
                (nelisp-service-utf8-length json) json)
      (concat json "\n"))))
 
+(defun nelisp-service-client-ensure-started (name &rest args)
+  "Start daemon NAME with ARGS' :start-command unless one exists or is starting.
+Return immediately; this only spawns.  Use it to overlap a daemon's
+cold start with work the caller can do without the daemon."
+  (let ((command (plist-get args :start-command)))
+    (when (and command
+               (not (file-exists-p (nelisp-service-state-file name "state")))
+               (not (file-exists-p (nelisp-service-state-file name "lock"))))
+      (funcall nelisp-service-client-spawn-function name command)
+      t)))
+
 (defun nelisp-service-client-stdio-proxy (name &rest args)
   "Serve MCP on stdin/stdout by forwarding every message to daemon NAME.
-ARGS are passed to `nelisp-service-client-connect', plus
-:request-timeout (seconds, default 3600).  A message whose connection
+ARGS are passed to `nelisp-service-client-connect', plus:
+:request-timeout  seconds per forwarded message (default 3600)
+:local-handler    function of (JSON CONNECTED) returning a reply string
+                  to answer the message without the daemon (\"\" means
+                  answer nothing), or nil to forward it.  CONNECTED is
+                  non-nil once a daemon connection exists, so a handler
+                  can serve cached answers only while the daemon is
+                  still starting.
+The daemon is started at once but connected to lazily, on the first
+message the local handler does not answer.  A message whose connection
 drops is resent once over a fresh connection.  Return 0 at end of input."
   (nelisp-service-setup-stdio)
-  (let ((client (apply #'nelisp-service-client-connect name args))
+  (apply #'nelisp-service-client-ensure-started name args)
+  (let ((client nil)
+        (local (plist-get args :local-handler))
         (timeout (or (plist-get args :request-timeout) 3600))
         (message nil))
     (while (setq message (nelisp-service-client-read-mcp-message))
-      (let ((reply
-             (condition-case err
-                 (nelisp-service-client-request client (cdr message) timeout)
-               (error
-                (if (eq (nth 2 err) 'disconnected)
-                    (progn
-                      (setq client (apply #'nelisp-service-client-connect name args))
-                      (nelisp-service-client-request client (cdr message) timeout))
-                  (signal (car err) (cdr err)))))))
+      (let ((reply (and local (funcall local (cdr message)
+                                       (nelisp-service-client-live-p client)))))
+        (unless reply
+          (unless (nelisp-service-client-live-p client)
+            (setq client (apply #'nelisp-service-client-connect name args)))
+          (setq reply
+                (condition-case err
+                    (nelisp-service-client-request client (cdr message) timeout)
+                  (error
+                   (if (eq (nth 2 err) 'disconnected)
+                       (progn
+                         (setq client (apply #'nelisp-service-client-connect
+                                             name args))
+                         (nelisp-service-client-request client (cdr message)
+                                                        timeout))
+                     (signal (car err) (cdr err)))))))
         (when (and (stringp reply) (> (length reply) 0))
           (nelisp-service-client-write-mcp-message (car message) reply))))
-    (nelisp-service-client-close client)
+    (when client (nelisp-service-client-close client))
     0))
 
 (provide 'nelisp-service-client)

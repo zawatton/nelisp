@@ -260,6 +260,30 @@
                                 (nelisp-service-state-file "auto" "lock"))))
                20)))))
 
+(ert-deftest nelisp-service-test-early-lock-and-lock-held ()
+  (nelisp-service-test--with-state-dir
+    (should (nelisp-service-daemon-acquire-lock "t8"))
+    ;; A second starter loses while the first is still loading.
+    (should-not (nelisp-service-daemon-acquire-lock "t8"))
+    (should-not (nelisp-service-daemon-start "t8" :handler #'ignore))
+    (let ((daemon (nelisp-service-daemon-start "t8" :handler #'ignore
+                                               :lock-held t)))
+      (should daemon)
+      (nelisp-service-daemon-close daemon)
+      (should-not (file-exists-p (nelisp-service-state-file "t8" "lock"))))))
+
+(ert-deftest nelisp-service-test-ensure-started-spawns-once ()
+  (nelisp-service-test--with-state-dir
+    (let* ((spawned 0)
+           (nelisp-service-client-spawn-function
+            (lambda (_name _command) (setq spawned (1+ spawned)))))
+      (should (nelisp-service-client-ensure-started "t9" :start-command '("x")))
+      (should (= 1 spawned))
+      ;; A lock means a daemon is starting: do not spawn another.
+      (nelisp-service-daemon-acquire-lock "t9")
+      (should-not (nelisp-service-client-ensure-started "t9" :start-command '("x")))
+      (should (= 1 spawned)))))
+
 (ert-deftest nelisp-service-test-mcp-framing-parse ()
   (should (= 12 (nelisp-service-client--content-length "Content-Length: 12")))
   (should (= 7 (nelisp-service-client--content-length "content-length:7")))

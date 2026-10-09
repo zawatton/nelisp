@@ -68,10 +68,13 @@
                   (* attempt 7919))))
     (+ lo (mod (abs seed) span))))
 
-(defun nelisp-service-daemon--lock (name stale-after)
+(defun nelisp-service-daemon-acquire-lock (name &optional stale-after)
   "Create NAME's lock file, clearing a stale one.  Return non-nil on success.
 A lock is stale when no daemon answers on its state file and the lock
-is older than STALE-AFTER seconds."
+is older than STALE-AFTER seconds (default 120).  A daemon whose start-up
+is slow calls this first, before loading anything, so concurrent starters
+lose fast, then passes :lock-held to `nelisp-service-daemon-start'."
+  (setq stale-after (or stale-after 120))
   (let ((lock (nelisp-service-state-file name "lock"))
         (record (list :started (float-time))))
     (or (nelisp-service-write-plist lock record t)
@@ -98,10 +101,13 @@ ARGS is a plist:
                 its own
 :stale-after    seconds after which a lock without a live daemon is
                 reclaimed (default 120)
+:lock-held      non-nil when the caller already holds the lock through
+                `nelisp-service-daemon-acquire-lock'
 Call `nelisp-service-daemon-run' to serve."
   (unless (plist-get args :handler)
     (error "nelisp-service-daemon-start: :handler is required"))
-  (when (nelisp-service-daemon--lock name (or (plist-get args :stale-after) 120))
+  (when (or (plist-get args :lock-held)
+            (nelisp-service-daemon-acquire-lock name (plist-get args :stale-after)))
     (let ((daemon (nelisp-service-record
                    'nelisp-service-daemon
                    :name name
