@@ -122,7 +122,25 @@ Source forms avoid retaining function objects across GNU redefinitions."
                            (cl-remove-if
                             (lambda (path) (string-match-p "/gui-packages-image/fixture/vendor/" path))
                             load-path))))
-  (setq temporary-file-directory (concat root "/tmp/")))
+  (setq temporary-file-directory (concat root "/tmp/"))
+  ;; GNU org-persist gives each -Q session its own temporary directory at
+  ;; load time.  A dumped Org still holds the image build's directory,
+  ;; which that process removed on exit; repeat the per-session step.
+  (when (and (featurep 'org-persist)
+             (bound-and-true-p org-persist--disable-when-emacs-Q)
+             (not user-init-file))
+    (setq org-persist-directory (make-temp-file "org-persist-" 'dir))))
+
+(defun nelisp-gui-packages-fingerprint-value (symbol)
+  "Return SYMBOL's default value with per-session temporary paths named.
+Two processes never share org-persist's -Q directory, so compare its role."
+  (let ((value (default-value symbol)))
+    (if (and (eq symbol 'org-persist-directory)
+             (stringp value)
+             (string-prefix-p (expand-file-name "org-persist-" temporary-file-directory)
+                              (expand-file-name value)))
+        'per-session-temporary-directory
+      value)))
 
 (defun nelisp-gui-packages-load (root package)
   "Load genuine sources headlessly, keeping package commands unchanged."
@@ -180,6 +198,12 @@ Source forms avoid retaining function objects across GNU redefinitions."
           ;; package's structure definitions and every real package command.
           (nelisp-gui-packages-load-step
            "gnu-cl-macs" (lambda () (load (concat root "/vendor/gnu/emacs-lisp/cl-macs.el") nil t t)))
+          ;; GNU cl-macs.el just replaced the shared cl-typep provider.  Org's
+          ;; modules define EIEIO classes next (ol-eww -> eww -> vtable), and
+          ;; GNU cl-typep calls deftype expanders with unsupported arguments:
+          ;; (wrong-number-of-arguments lambda 0) in eieio-defclass-internal.
+          (when nelisp-gui-packages-loading-image
+            (nelisp-gui-packages-restore-library-providers))
           ;; Org loads its default modules lazily on the first real org-mode.
           ;; They belong in the package heap too; do not run a mode or open
           ;; the session's agenda file while building the headless image.
@@ -351,7 +375,7 @@ all named keymaps/hooks, including shared maps modified by package loading."
     (setq symbols (sort symbols (lambda (a b) (string< (symbol-name a) (symbol-name b)))))
     (when trace (princ "GUI-FINGERPRINT|sorted|\n"))
     (dolist (symbol symbols)
-      (push (list symbol (default-value symbol)) state))
+      (push (list symbol (nelisp-gui-packages-fingerprint-value symbol)) state))
     (setq state (cons (cons 'features (sort (copy-sequence features)
                                           (lambda (a b) (string< (symbol-name a) (symbol-name b)))))
                       (nreverse state)))
