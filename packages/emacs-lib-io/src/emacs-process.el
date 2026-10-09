@@ -83,6 +83,30 @@
 The `nelisp-process-*' names are the current package-shaped primitive
 surface; the legacy `nelisp-*' names remain as compatibility fallbacks.")
 
+;; NeLisp Doc 213: the standalone reader ships its own process layer
+;; (packages/nelisp-process-adapter: `make-network-process',
+;; `accept-process-output', `process-send-string', ...).  In standalone
+;; mode `emacs-process-builtins' installs this file's bridges over those
+;; names unconditionally, and the bridges then delegate to "the host
+;; primitive", which standalone mode does not have -- so a network
+;; process the substrate created could not be waited on, written to or
+;; deleted, and `accept-process-output' returned nil at once, spinning any
+;; loop around it (measured 2026-10-10 in anvil's shared daemon).  The
+;; definition each bridge replaces is remembered here and used as the
+;; delegate of last resort.
+(defvar emacs-process--substrate-primitives nil
+  "Alist (SYMBOL . FUNCTION) of process primitives a bridge replaced.")
+
+(defun emacs-process-remember-substrate-primitive (symbol)
+  "Remember SYMBOL's current definition before a bridge replaces it.
+Definitions that are already this layer's bridges are not remembered."
+  (when (and (fboundp symbol)
+             (not (assq symbol emacs-process--substrate-primitives)))
+    (let ((def (symbol-function symbol)))
+      (unless (and (symbolp def)
+                   (string-prefix-p "emacs-process-" (symbol-name def)))
+        (push (cons symbol def) emacs-process--substrate-primitives)))))
+
 (defvar emacs-process--native-primitives
   (let (alist)
     (dolist (sym '(call-process call-process-region make-process start-process
@@ -458,6 +482,8 @@ keeping this file as the Emacs-shaped compatibility boundary."
     (emacs-standalone-call-primitive sym args))
    ((emacs-process--nelisp-delegate sym)
     (apply (emacs-process--nelisp-delegate sym) args))
+   ((assq sym emacs-process--substrate-primitives)
+    (apply (cdr (assq sym emacs-process--substrate-primitives)) args))
    (t (signal 'emacs-process-not-implemented (list sym)))))
 
 ;;;###autoload
@@ -928,11 +954,19 @@ substrate returns nil when only synchronous fallback processes exist."
       (if (or (emacs-process--native-process-p process)
               (and (null process)
                    emacs-process--native-process-metadata))
-          (emacs-process--native-accept-until
-           (if process
-               (list process)
-             (emacs-process--native-live-processes))
-           (+ (* (or seconds 0) 1000) (or millisec 0)))
+          (let ((got (emacs-process--native-accept-until
+                      (if process
+                          (list process)
+                        (emacs-process--native-live-processes))
+                      (+ (* (or seconds 0) 1000) (or millisec 0))))
+                (substrate (cdr (assq 'accept-process-output
+                                      emacs-process--substrate-primitives))))
+            ;; Doc 213: with no PROCESS, also pump the substrate's own
+            ;; processes (sockets from its `make-network-process'), which
+            ;; the native loop above does not see.
+            (when (and (null process) substrate)
+              (when (funcall substrate nil 0) (setq got t)))
+            got)
         (emacs-process--delegate 'accept-process-output
                                  (list process seconds millisec just-this-one)))
     (emacs-process-not-implemented nil)))
