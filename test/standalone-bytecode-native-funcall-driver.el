@@ -8,7 +8,7 @@
 (defun f1-assert (value label) (unless value (error "F1 assertion: %s" label)))
 (defun f1-check-runtime-gc-table (function)
   "Check both raw mappers against the linked GC addresses across collection."
-  (when (eq nelisp-native-cache-backend 'in-house)
+  (when (memq nelisp-native-cache-backend '(in-house template))
     (let* ((file (nelisp-native-cache-file function)) header manifest)
       (with-temp-buffer
         (insert-file-contents file)
@@ -35,8 +35,9 @@
             (nelisp-native-load-unload handle)))))))
 (let* ((function (cdr (assq 'f1-fixture (nelisp-bytecode-native-consumer-read-elc-functions (getenv "F1_FIXTURE")))))
        (phase (getenv "F1_PHASE"))
-       (nelisp-native-cache-backend (if (equal (getenv "F1_BACKEND") "gccjit") 'gccjit 'in-house)))
+       (nelisp-native-cache-backend (intern (or (getenv "F1_BACKEND") "in-house"))))
   (f1-assert function "genuine GNU fixture")
+  (unless (memq nelisp-native-cache-backend '(in-house gccjit template)) (error "Unknown backend"))
   (if (equal phase "compile")
       (let* ((start (float-time)) (before nelisp-bytecode-native-rooted-cfg-contract--validation-count)
              (file (nelisp-native-cache-install 'f1-native function)))
@@ -98,3 +99,9 @@
       (princ (format "F1-CACHE-PASS backend=%S corpus=%d seconds=%.3f validations=%d\n"
                      nelisp-native-cache-backend count (- (float-time) start)
                      (- nelisp-bytecode-native-rooted-cfg-contract--validation-count before))))))
+(when (equal (getenv "F1_BACKEND") "template")
+  (f1-assert (> nelisp-native-template--entry-count 0) "template native entry")
+  (f1-assert (= nelisp-native-template--fallback-count 0) "no template fallback")
+  (f1-assert (= nelisp-native-template--compile-count (if (equal (getenv "F1_PHASE") "compile") 1 0)) "actual template compiler")
+  (princ (format "F1-TEMPLATE-COUNTERS compiles=%d entries=%d fallback=%d\n"
+                 nelisp-native-template--compile-count nelisp-native-template--entry-count nelisp-native-template--fallback-count)))

@@ -4,6 +4,10 @@ set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
 case "${1:-}" in
+  --backend)
+    case "${2:-}" in in-house|gccjit|template) ;; *) echo 'Unknown backend' >&2; exit 2;; esac
+    exec python3 test/support/native-handlers-u8-run.py native --backend "$2" "${3:-target/nelisp-static}"
+    ;;
   --host)
     export U8_ERT_SELECTOR="${2:-}"
     exec timeout -k 5 290 "${EMACS:-emacs}" -Q --batch -L lisp -L src -L test \

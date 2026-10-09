@@ -25,6 +25,8 @@
         nelisp-prognleak-standalone-smoke
 
 EMACS ?= emacs
+# Standalone builds verify the GNU 31.1 dialect; host gates may use 30.2.
+NELISP_BUILD_EMACS ?= $(EMACS)
 
 # make on MSYS strips TEMP/TMP from the environment, which makes
 # `make-temp-file' in the subprocess fall back to `c:/' (unwritable)
@@ -477,7 +479,7 @@ STANDALONE_ULIMIT = $(if $(filter windows%,$(STANDALONE_GATE_TARGET)),:,ulimit -
 # without deciding the verdict for a run that merely takes a while.
 STANDALONE_SMOKE_TIMEOUT = $(if $(filter windows%,$(STANDALONE_GATE_TARGET)),180,30)
 standalone-eval:
-	NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts \
+	NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-build
 
@@ -508,14 +510,14 @@ standalone-eval-clean:
 #   make standalone-reader-test   # build, run, assert exit == eval(NELISP_SRC)
 # Embedded source via NELISP_SRC (default "(+ 40 2)" -> 42; + - * only for now).
 standalone-reader:
-	NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts \
+	NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-build-reader
 
 # Opt-in native allocator/collector development, Linux x86_64 only.
 .PHONY: runtime-reload-reader runtime-reload-test
 runtime-reload-reader:
-	$(EMACS) --batch -Q -L lisp -L src -L scripts \
+	$(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-runtime-reload-build -f nelisp-runtime-reload-build
 
@@ -589,7 +591,7 @@ native-symbol-test:
 	  exit 0; \
 	fi; \
 	NELISP_STANDALONE_READER_OUTPUT=$(NATIVE_SYMBOL_BIN) NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) \
-	  $(EMACS) --batch -Q -L lisp -L src -L scripts -L test \
+	  $(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts -L test \
 	    --eval '(setq load-prefer-newer t)' \
 	    -l nelisp-native-symbol-build -f nelisp-native-symbol-test-build; \
 	NELISP_SYMBOL_TEST_BIN=$(NATIVE_SYMBOL_BIN) EMACS=$(EMACS) python3 test/nelisp-native-symbol-test.py
@@ -1467,7 +1469,7 @@ standalone-reader-smokes:
 # have trusted it.  Measured 2026-09-12 on macos 26.6.2 arm64.  Read the
 # GATE-COUNT line, not just the exit code.
 standalone-reader-test:
-	NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts \
+	NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-reader-test
 
@@ -2144,7 +2146,7 @@ prelude-toplevel-check:
 # artifact command dispatch inside an `unless' that never runs, and
 # `compile-elisp-artifact' silently did nothing for two days.
 generated-source-parse:
-	@$(EMACS) --batch -Q -L lisp -L src -L scripts \
+	@$(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l tools/nelisp-generated-source-parse.el \
 	  -f nelisp-generated-source-parse-run
@@ -3257,11 +3259,11 @@ standalone-reader-current-time-smoke: standalone-reader
 standalone-reader-ffi-smoke:
 	@mkdir -p target
 ifeq ($(STANDALONE_GATE_TARGET),windows-x86_64)
-	@$(EMACS) --batch -Q -L lisp -L src -L scripts \
+	@$(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-build-reader
 else
-	@NELISP_READER_DYNAMIC=1 $(EMACS) --batch -Q -L lisp -L src -L scripts \
+	@NELISP_READER_DYNAMIC=1 $(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-build-reader
 endif
@@ -3387,7 +3389,7 @@ ifeq ($(STANDALONE_GATE_TARGET),windows-x86_64)
 	@echo "[standalone-reader-ffi-unsupported-smoke] PASS: not applicable; windows-x86_64 has an unconditional PE-import-backed FFI subset (covered by ffi-smoke)"
 else
 	@mkdir -p target
-	@env -u NELISP_READER_DYNAMIC NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts \
+	@env -u NELISP_READER_DYNAMIC NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-build-reader
 	@chmod +x $(STANDALONE_BIN)
@@ -3459,7 +3461,7 @@ endif
 .PHONY: ffi-dsl
 ffi-dsl:
 	@mkdir -p target
-	@NELISP_READER_DYNAMIC=1 $(EMACS) --batch -Q -L lisp -L src -L scripts \
+	@NELISP_READER_DYNAMIC=1 $(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-build-reader
 	@chmod +x target/nelisp
@@ -3536,7 +3538,7 @@ ifneq ($(NL_FFI_LOADER_CC),)
 	  -Wl,-rpath,$(NL_FFI_LOADER_TARGET_ABS)
 	@cc -shared -fPIC -nostdlib -o target/nl-ffi-loader-fixture-ifunc.so \
 	  packages/nl-ffi/test/fixtures/nl-ffi-loader-fixture-ifunc.c
-	@NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts \
+	@NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-build-reader
 	@chmod +x $(STANDALONE_BIN)
@@ -3573,7 +3575,7 @@ standalone-reader-tls-smoke-linux:
 	@if ! timeout 6 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' 2>/dev/null; then \
 	  echo "[tls-smoke D2] SKIP: no egress to 1.1.1.1:443"; exit 0; \
 	fi; \
-	NELISP_READER_DYNAMIC=1 $(EMACS) --batch -Q -L lisp -L src -L scripts \
+	NELISP_READER_DYNAMIC=1 $(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-build-reader; \
 	chmod +x target/nelisp; \
@@ -3598,7 +3600,7 @@ standalone-reader-tls-smoke-windows:
 	@if ! timeout 6 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' 2>/dev/null; then \
 	  echo "[tls-smoke D2] SKIP: no egress to 1.1.1.1:443"; exit 0; \
 	fi; \
-	NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts \
+	NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-build-reader; \
 	printf '%s\n' '(let* ((fd (nelisp-socket-connect "1.1.1.1" 443)) (ctx (nelisp-tls-connect fd "one.one.one.one")) (req "GET / HTTP/1.1\r\nHost: one.one.one.one\r\nConnection: close\r\n\r\n") (sent (nelisp-tls-send ctx req)) (resp (nelisp-tls-recv ctx 512)) (st (if (>= (length resp) 4) (unibyte-string (aref resp 0) (aref resp 1) (aref resp 2) (aref resp 3)) "?")) (proto (nelisp-tls-protocol ctx))) (nelisp-tls-close ctx) (nelisp-socket-close fd) (list 0 proto sent st))' > target/standalone-reader-tls-smoke.el; \
@@ -4380,7 +4382,7 @@ aot-differential: standalone-reader
 # incremental unit cache, then runs only the REPL smoke used by the full reader
 # test.
 standalone-reader-repl-smoke:
-	$(EMACS) --batch -Q -L lisp -L src -L scripts \
+	$(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-reader-repl-test
 
@@ -4389,7 +4391,7 @@ standalone-reader-repl-smoke:
 # incremental unit cache, then runs only the table-driven malformed-input
 # smoke used by the full reader test.
 standalone-reader-malformed-input-smoke:
-	$(EMACS) --batch -Q -L lisp -L src -L scripts \
+	$(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-reader-malformed-input-test
 
@@ -4398,7 +4400,7 @@ standalone-reader-malformed-input-smoke:
 # offset.  Builds/relinks target/nelisp with the incremental unit cache,
 # then runs only the against-the-bug smoke used by the full reader test.
 standalone-reader-form-location-smoke:
-	$(EMACS) --batch -Q -L lisp -L src -L scripts \
+	$(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-reader-form-location-test
 
@@ -4407,7 +4409,7 @@ standalone-reader-form-location-smoke:
 # unit cache, then runs only the against-the-bug smoke used by the full
 # reader test.
 standalone-reader-frame-stack-pop-desync-smoke:
-	$(EMACS) --batch -Q -L lisp -L src -L scripts \
+	$(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-reader-frame-stack-pop-desync-test
 
@@ -4416,7 +4418,7 @@ standalone-reader-frame-stack-pop-desync-smoke:
 # cache, then runs only the against-the-bug smoke used by the full reader
 # test.
 standalone-reader-bounded-backtrace-smoke:
-	$(EMACS) --batch -Q -L lisp -L src -L scripts \
+	$(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-reader-bounded-backtrace-test
 # Fast focused loop for the socket primitives (Doc 184 follow-on) and Task A's
@@ -4424,7 +4426,7 @@ standalone-reader-bounded-backtrace-smoke:
 # incremental unit cache, then runs only the loopback round-trip + two
 # catchable-error negatives used by the full reader test.
 standalone-reader-socket-smoke:
-	$(EMACS) --batch -Q -L lisp -L src -L scripts \
+	$(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-reader-socket-test
 
@@ -4439,7 +4441,7 @@ standalone-reader-socket-smoke:
 # own precedent, not the shell-heredoc pattern the network-process-*
 # smokes further down this file use).
 standalone-reader-ipv6-socket-smoke:
-	$(EMACS) --batch -Q -L lisp -L src -L scripts \
+	$(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-reader-ipv6-socket-test
 
@@ -4451,13 +4453,13 @@ standalone-reader-ipv6-socket-smoke:
 #   cat scripts/nelisp-stdlib-prelude.el yourfile.el > /tmp/prog.el
 #   target/nelisp /tmp/prog.el   # exit = last form's value
 standalone-reader-prelude-test:
-	NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts \
+	NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-reader-prelude-test
 
 .PHONY: standalone-reader-func-arity-test
 standalone-reader-func-arity-test:
-	NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts \
+	NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-reader-func-arity-test
 

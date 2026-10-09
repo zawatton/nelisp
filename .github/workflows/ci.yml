@@ -41,6 +41,32 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # The vendor whole-file compiler emits the pinned GNU 31.1 dialect.
+      # Keep the host at 30.2 for its existing parity and compatibility gates.
+      - name: Set up GNU bytecode compiler (Linux / macOS)
+        uses: purcell/setup-emacs@v8.0
+        with:
+          version: '31.1'
+      - name: Record GNU bytecode compiler executable
+        shell: bash
+        run: |
+          emacs --batch -Q --eval '(unless (equal emacs-version "31.1") (error "GNU bytecode compiler must be 31.1"))'
+          compiler=$(command -v emacs)
+          if [ "$RUNNER_OS" = Windows ]; then
+            # setup-emacs-windows installs both versions under the same root.
+            # Preserve the whole 31.1 distribution before installing the host.
+            cp -a "$(dirname "$(dirname "$compiler")")" "$RUNNER_TEMP/nelisp-gnu31"
+            compiler=$(cygpath -m "$RUNNER_TEMP/nelisp-gnu31/bin/emacs.exe")
+          else
+            # A Nix profile link can be retargeted by the host setup below.
+            compiler=$(NELISP_CI_COMPILER="$compiler" emacs --batch -Q \
+              --eval '(princ (file-truename (getenv "NELISP_CI_COMPILER")))')
+          fi
+          # Version alone does not establish the pinned bytecode identity.
+          "$compiler" --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+            --eval '(unless nelisp-standalone--verified-bytecode-dialect-id (error "GNU bytecode compiler source/opcode identity does not match the pinned dialect"))'
+          echo "NELISP_BUILD_EMACS=$compiler" >> "$GITHUB_ENV"
+
       - name: Set up Emacs
         uses: purcell/setup-emacs@v8.0
         with:
@@ -89,6 +115,38 @@ jobs:
           # gate-mutation's changed-only mode diffs against the merge base,
           # which a shallow clone does not have.
           fetch-depth: 0
+
+      # The vendor whole-file compiler emits the pinned GNU 31.1 dialect.
+      # Keep the host at 30.2 for its existing parity and compatibility gates.
+      - name: Set up GNU bytecode compiler (Linux / macOS)
+        if: runner.os != 'Windows'
+        uses: purcell/setup-emacs@v8.0
+        with:
+          version: '31.1'
+      - name: Set up GNU bytecode compiler (Windows)
+        if: runner.os == 'Windows'
+        uses: jcs090218/setup-emacs-windows@master
+        with:
+          version: '31.1'
+      - name: Record GNU bytecode compiler executable
+        shell: bash
+        run: |
+          emacs --batch -Q --eval '(unless (equal emacs-version "31.1") (error "GNU bytecode compiler must be 31.1"))'
+          compiler=$(command -v emacs)
+          if [ "$RUNNER_OS" = Windows ]; then
+            # setup-emacs-windows installs both versions under the same root.
+            # Preserve the whole 31.1 distribution before installing the host.
+            cp -a "$(dirname "$(dirname "$compiler")")" "$RUNNER_TEMP/nelisp-gnu31"
+            compiler=$(cygpath -m "$RUNNER_TEMP/nelisp-gnu31/bin/emacs.exe")
+          else
+            # A Nix profile link can be retargeted by the host setup below.
+            compiler=$(NELISP_CI_COMPILER="$compiler" emacs --batch -Q \
+              --eval '(princ (file-truename (getenv "NELISP_CI_COMPILER")))')
+          fi
+          # Version alone does not establish the pinned bytecode identity.
+          "$compiler" --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+            --eval '(unless nelisp-standalone--verified-bytecode-dialect-id (error "GNU bytecode compiler source/opcode identity does not match the pinned dialect"))'
+          echo "NELISP_BUILD_EMACS=$compiler" >> "$GITHUB_ENV"
 
       - name: Set up Emacs (Linux / macOS)
         if: runner.os != 'Windows'
@@ -174,7 +232,7 @@ jobs:
       - name: "Standalone NeLisp CHECKED allocator smoke (Doc 170 Stage 2 redzone/generation/leak report; Windows x86_64)"
         if: runner.os == 'Windows'
         shell: bash
-        run: make standalone-reader-checked NELISP_STANDALONE_TARGET=windows-x86_64
+        run: make standalone-reader-checked NELISP_STANDALONE_TARGET=windows-x86_64 NELISP_BUILD_EMACS="$NELISP_BUILD_EMACS"
       # Windows was the only lane that could run this, because arming the
       # redzone verifier needs the boot env probe and `nl_os_environ_init'
       # was a no-op off Windows.  It reads envp off the Linux entry stack
@@ -183,7 +241,7 @@ jobs:
       - name: "Standalone NeLisp CHECKED allocator smoke (Doc 170 Stage 2; Linux x86_64)"
         if: runner.os == 'Linux'
         shell: bash
-        run: make standalone-reader-checked
+        run: make standalone-reader-checked NELISP_BUILD_EMACS="$NELISP_BUILD_EMACS"
       # Informational only, never gates (native-comp probe, 2026-09-19):
       # records whether this runner's Emacs supports native compilation
       # at all, and whether loading one of the reader's own hot
@@ -632,6 +690,38 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The vendor whole-file compiler emits the pinned GNU 31.1 dialect.
+      # Keep the host at 30.2 for its existing parity and compatibility gates.
+      - name: Set up GNU bytecode compiler (Linux / macOS)
+        if: runner.os != 'Windows'
+        uses: purcell/setup-emacs@v8.0
+        with:
+          version: '31.1'
+      - name: Set up GNU bytecode compiler (Windows)
+        if: runner.os == 'Windows'
+        uses: jcs090218/setup-emacs-windows@master
+        with:
+          version: '31.1'
+      - name: Record GNU bytecode compiler executable
+        shell: bash
+        run: |
+          emacs --batch -Q --eval '(unless (equal emacs-version "31.1") (error "GNU bytecode compiler must be 31.1"))'
+          compiler=$(command -v emacs)
+          if [ "$RUNNER_OS" = Windows ]; then
+            # setup-emacs-windows installs both versions under the same root.
+            # Preserve the whole 31.1 distribution before installing the host.
+            cp -a "$(dirname "$(dirname "$compiler")")" "$RUNNER_TEMP/nelisp-gnu31"
+            compiler=$(cygpath -m "$RUNNER_TEMP/nelisp-gnu31/bin/emacs.exe")
+          else
+            # A Nix profile link can be retargeted by the host setup below.
+            compiler=$(NELISP_CI_COMPILER="$compiler" emacs --batch -Q \
+              --eval '(princ (file-truename (getenv "NELISP_CI_COMPILER")))')
+          fi
+          # Version alone does not establish the pinned bytecode identity.
+          "$compiler" --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+            --eval '(unless nelisp-standalone--verified-bytecode-dialect-id (error "GNU bytecode compiler source/opcode identity does not match the pinned dialect"))'
+          echo "NELISP_BUILD_EMACS=$compiler" >> "$GITHUB_ENV"
+
       - name: Set up Emacs (Linux / macOS)
         if: runner.os != 'Windows'
         uses: purcell/setup-emacs@v8.0
@@ -661,11 +751,11 @@ jobs:
       - name: "Standalone NeLisp CHECKED allocator smoke (Doc 170 Stage 2; Linux x86_64)"
         if: runner.os == 'Linux'
         shell: bash
-        run: make standalone-reader-checked
+        run: make standalone-reader-checked NELISP_BUILD_EMACS="$NELISP_BUILD_EMACS"
       - name: "Standalone NeLisp CHECKED allocator smoke (Doc 170 Stage 2 redzone/generation/leak report; Windows x86_64)"
         if: runner.os == 'Windows'
         shell: bash
-        run: make standalone-reader-checked NELISP_STANDALONE_TARGET=windows-x86_64
+        run: make standalone-reader-checked NELISP_STANDALONE_TARGET=windows-x86_64 NELISP_BUILD_EMACS="$NELISP_BUILD_EMACS"
 
       # `make test' alone (as this ran before) never writes a gate report;
       # only `nelisp-ai.sh test' does, as gate "ert-full" -- a required
@@ -752,6 +842,32 @@ jobs:
           # changed-only diffs against the merge base, which a shallow
           # clone does not have.
           fetch-depth: 0
+      # The vendor whole-file compiler emits the pinned GNU 31.1 dialect.
+      # Keep the host at 30.2 for its existing parity and compatibility gates.
+      - name: Set up GNU bytecode compiler (Linux / macOS)
+        uses: purcell/setup-emacs@v8.0
+        with:
+          version: '31.1'
+      - name: Record GNU bytecode compiler executable
+        shell: bash
+        run: |
+          emacs --batch -Q --eval '(unless (equal emacs-version "31.1") (error "GNU bytecode compiler must be 31.1"))'
+          compiler=$(command -v emacs)
+          if [ "$RUNNER_OS" = Windows ]; then
+            # setup-emacs-windows installs both versions under the same root.
+            # Preserve the whole 31.1 distribution before installing the host.
+            cp -a "$(dirname "$(dirname "$compiler")")" "$RUNNER_TEMP/nelisp-gnu31"
+            compiler=$(cygpath -m "$RUNNER_TEMP/nelisp-gnu31/bin/emacs.exe")
+          else
+            # A Nix profile link can be retargeted by the host setup below.
+            compiler=$(NELISP_CI_COMPILER="$compiler" emacs --batch -Q \
+              --eval '(princ (file-truename (getenv "NELISP_CI_COMPILER")))')
+          fi
+          # Version alone does not establish the pinned bytecode identity.
+          "$compiler" --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+            --eval '(unless nelisp-standalone--verified-bytecode-dialect-id (error "GNU bytecode compiler source/opcode identity does not match the pinned dialect"))'
+          echo "NELISP_BUILD_EMACS=$compiler" >> "$GITHUB_ENV"
+
       - name: Set up Emacs
         uses: purcell/setup-emacs@v8.0
         with:
@@ -812,6 +928,32 @@ jobs:
       fail-fast: false
     steps:
       - uses: actions/checkout@v4
+      # The vendor whole-file compiler emits the pinned GNU 31.1 dialect.
+      # Keep the host at 30.2 for its existing parity and compatibility gates.
+      - name: Set up GNU bytecode compiler (Linux / macOS)
+        uses: purcell/setup-emacs@v8.0
+        with:
+          version: '31.1'
+      - name: Record GNU bytecode compiler executable
+        shell: bash
+        run: |
+          emacs --batch -Q --eval '(unless (equal emacs-version "31.1") (error "GNU bytecode compiler must be 31.1"))'
+          compiler=$(command -v emacs)
+          if [ "$RUNNER_OS" = Windows ]; then
+            # setup-emacs-windows installs both versions under the same root.
+            # Preserve the whole 31.1 distribution before installing the host.
+            cp -a "$(dirname "$(dirname "$compiler")")" "$RUNNER_TEMP/nelisp-gnu31"
+            compiler=$(cygpath -m "$RUNNER_TEMP/nelisp-gnu31/bin/emacs.exe")
+          else
+            # A Nix profile link can be retargeted by the host setup below.
+            compiler=$(NELISP_CI_COMPILER="$compiler" emacs --batch -Q \
+              --eval '(princ (file-truename (getenv "NELISP_CI_COMPILER")))')
+          fi
+          # Version alone does not establish the pinned bytecode identity.
+          "$compiler" --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+            --eval '(unless nelisp-standalone--verified-bytecode-dialect-id (error "GNU bytecode compiler source/opcode identity does not match the pinned dialect"))'
+          echo "NELISP_BUILD_EMACS=$compiler" >> "$GITHUB_ENV"
+
       - name: Set up Emacs
         uses: purcell/setup-emacs@v8.0
         with:

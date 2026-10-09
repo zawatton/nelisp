@@ -84,6 +84,13 @@
  (null (funcall (make-byte-code 257
                                (unibyte-string 137 131 8 0 65 130 0 0 135) [] 2)
                 '(one two three four)))
+ ;; Template's minimal copy/Cons protocol consumes the same GNU stack bank.
+ (let* ((shared (vector 11))
+        (fn (make-byte-code 514 (unibyte-string 1 1 66 135) [] 4))
+        (result (funcall fn shared shared)))
+   (aset shared 0 19)
+   (and (eq (car result) shared) (eq (cdr result) shared)
+        (= (aref (car result) 0) 19)))
  ;; Generic evaluator arguments preserve nested mutable aliases.
  (let* ((shared (vector 11))
         (input (cons shared shared))
@@ -2022,6 +2029,19 @@
   (let ((copy (copy-hash-table custom)))
     (list (gethash "key11" custom) (gethash "key11" copy)
           (hash-table-test copy) (hash-table-count copy))))
+
+;; P2.4: an exceptional-only cycle has no ordinary branch instruction.
+(let ((p24-parity-calls 0))
+  (fset 'p24-parity-callback
+        (lambda ()
+          (setq p24-parity-calls (1+ p24-parity-calls))
+          (if (< p24-parity-calls 3) (throw 'p24-tag 'p24-tag) 'done)))
+  (unwind-protect
+      (list (funcall (make-byte-code 0 (unibyte-string 192 50 1 0 193 32 48 135)
+                                     [p24-tag p24-parity-callback] 2))
+            p24-parity-calls)
+    (fmakunbound 'p24-parity-callback)))
+
 )
 
 ;;; nelisp-shadow-differential-cases.el ends here

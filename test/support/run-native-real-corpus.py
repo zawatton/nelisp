@@ -54,7 +54,10 @@ def main():
                         help='Independent reload workers per backend (1..2).')
     parser.add_argument('static', nargs='?', default='target/nelisp-static')
     parser.add_argument('dynamic', nargs='?', default='target/nelisp-dyn')
+    parser.add_argument('--backend', choices=('in-house', 'gccjit', 'template'), default=None)
     args = parser.parse_args()
+    if args.both and args.backend:
+        parser.error('--backend and --both are exclusive')
     if args.fresh and args.seed_cache:
         parser.error('--fresh cannot reuse a seed cache')
     if not 1 <= args.batch_size <= 8 or not 1 <= args.jobs <= 8 or not 1 <= args.load_batch_size <= 16 or not 1 <= args.load_jobs <= 2:
@@ -159,7 +162,7 @@ def main():
                                              {row['name']: row['cases'] for row in old_rows})
                     if not ok or parsed_names != receipt['passed_names']:
                         raise RuntimeError('Seed transcript does not substantiate receipt')
-    backends = [('in-house', args.static)]
+    backends = [(args.backend or 'in-house', args.static)]
     if args.both: backends.append(('gccjit', args.dynamic))
     all_receipts = []
     start_all = time.monotonic()

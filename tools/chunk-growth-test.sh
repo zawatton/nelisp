@@ -48,7 +48,7 @@ build_reader() {  # $1 = NELISP_LINUX_ARENA_SIZE (empty = default 256 MiB)
   # The first-chunk size is baked into compiled units, and the env var is
   # not a source change, so the unit cache must be dropped to re-bake it.
   rm -rf target/standalone-units >/dev/null 2>&1 || true
-  NELISP_LINUX_ARENA_SIZE="${1:-}" "$EMACS" --batch -Q -L lisp -L src -L scripts \
+  NELISP_LINUX_ARENA_SIZE="${1:-}" "${NELISP_BUILD_EMACS:-$EMACS}" --batch -Q -L lisp -L src -L scripts \
     --eval '(setq load-prefer-newer t)' \
     -l nelisp-standalone-build -f nelisp-standalone-build-reader >/dev/null 2>&1
 }

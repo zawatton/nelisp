@@ -47,6 +47,12 @@ def sha(path):
 
 def main():
     phase, *binaries = sys.argv[1:]
+    selected = None
+    if binaries and binaries[0] == '--backend':
+        _, selected, *binaries = binaries
+        if selected not in ('in-house', 'gccjit', 'template') or len(binaries) != 1:
+            raise SystemExit('Invalid backend/binary selection')
+        binaries *= 2
     if phase not in ("native", "vm") or len(binaries) != 2:
         raise SystemExit("Expected native|vm STATIC DYNAMIC")
     directory = Path(tempfile.mkdtemp(prefix="handlers-u8-", dir=ROOT / "target"))
@@ -96,8 +102,8 @@ def main():
                     ROOT / "lisp/nelisp-bytecode-native-rooted-cfg-contract.el",
                     ROOT / "lisp/nelisp-native-funcall-v2.el",
                     ROOT / "lisp/nelisp-native-cache.el"]}
-    backends = env.get("U8B_BACKEND_FILTER", "in-house gccjit").split()
-    if not backends or len(set(backends)) != len(backends) or any(backend not in ("in-house", "gccjit") for backend in backends):
+    backends = [selected] if selected else env.get("U8B_BACKEND_FILTER", "in-house gccjit").split()
+    if not backends or len(set(backends)) != len(backends) or any(backend not in ("in-house", "gccjit", "template") for backend in backends):
         raise SystemExit("U8B_BACKEND_FILTER must contain distinct known backends")
     base_env = env.copy()
 
@@ -164,7 +170,7 @@ def main():
     jobs = int(base_env.get("U8B_BACKEND_JOBS", "1"))
     if jobs not in (1, 2):
         raise SystemExit("U8B_BACKEND_JOBS must be 1 or 2")
-    pairs = list(zip(("in-house", "gccjit"), binaries))
+    pairs = [(selected, binaries[0])] if selected else list(zip(("in-house", "gccjit"), binaries))
     # Each backend owns its environment, process, reader and private cache.
     # Parallelism changes elapsed wall time, never a reader's deadline/verdict.
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:

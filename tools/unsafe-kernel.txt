@@ -248,3 +248,36 @@ pinned-kernel-touch lisp/nelisp-cc-frame-pop.el
 # 104 -> 106 on 2026-09-21: the two kernel units documented immediately
 # above joined the raw-memory surface.
 kernel-files 106
+
+# Native-compiler growth since 27a4991a (8d0869208~1), measured with
+# nl-check-file and nl-check-file-quoted-unsafe on both committed trees.
+# Only this interval is admitted: its pre-existing 23 escapes and three
+# excess kernel files remain failures, pending a separate baseline repair.
+# Buffer-local copies environment words into a reserved native root slot.
+lisp/nelisp-buffer-local.el
+# Cache uses UID/link syscalls, C strings, and raw native root/publication slots.
+lisp/nelisp-native-cache.el
+# Funcall-v2 emits raw slot copies for the existing native call ABI.
+lisp/nelisp-native-funcall-v2.el
+# GCC JIT allocates C strings/arrays and calls the libgccjit C ABI.
+lisp/nelisp-native-gccjit.el
+# Process buffer bridge queries the raw nl-ffi-call transport capability.
+# The quoted-name inventory counts this guard; the wrappers retain no pointer.
+lisp/nelisp-process-buffer.el
+# Arena rewrite reads the published arena base for generated address rebasing.
+lisp/nelisp-standalone-arena-rewrite.el
+# Six new raw-memory code generators plus the six named kernel members above.
+# 106 + 12 = 118; the old-tree excess is deliberately not absorbed.
+kernel-files 118
+pinned-kernel-touch lisp/nelisp-buffer-local.el
+pinned-kernel-touch lisp/nelisp-cc-env-lookup-value.el
+pinned-kernel-touch lisp/nelisp-cc-env-makunbound-alias.el
+pinned-kernel-touch lisp/nelisp-cc-mirror-alias-install.el
+pinned-kernel-touch lisp/nelisp-cc-mirror-alias-resolve.el
+pinned-kernel-touch lisp/nelisp-cc-mirror-alias-slot.el
+pinned-kernel-touch lisp/nelisp-cc-mirror-alias-stage.el
+pinned-kernel-touch lisp/nelisp-native-cache.el
+pinned-kernel-touch lisp/nelisp-native-funcall-v2.el
+pinned-kernel-touch lisp/nelisp-native-gccjit.el
+pinned-kernel-touch lisp/nelisp-process-buffer.el
+pinned-kernel-touch lisp/nelisp-standalone-arena-rewrite.el

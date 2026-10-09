@@ -20,26 +20,7 @@
 (require 'nelisp-native-funcall-v2)
 (require 'nelisp-native-frame-v2)
 
-(let* ((gc (symbol-function 'garbage-collect))
-       (remaining 0)
-       (poll (lambda ()
-               ;; Return a request to the native status edge. Raising inside
-               ;; the evaluator callback can expose the caller's handler early.
-               (let ((pending (and (boundp 'quit-flag) (symbol-value 'quit-flag)
-                                   (not (and (boundp 'inhibit-quit) (symbol-value 'inhibit-quit))))))
-                 (when pending (setq quit-flag nil))
-                 ;; Quit is tested on every poll. Collect at the first poll
-                 ;; and every 64 polls; allocator safepoints remain active.
-                 ;; Unconditional full collection walked the retained compiler
-                 ;; heap on each edge and exceeded the native 300-second cap.
-                 (setq remaining (1- remaining))
-                 (when (or pending (<= remaining 0))
-                   (setq remaining 64)
-                   (funcall gc))
-                 (and pending t)))))
-  (defun nelisp-bytecode-native-rooted-cfg-poll-function ()
-    "Return the frozen evaluator callable for rooted cyclic edge polls."
-    poll))
+(require 'nelisp-native-poll)
 
 ;; Resolve cl-every's autoload before the planner seals its function cell.
 (cl-every #'identity nil)

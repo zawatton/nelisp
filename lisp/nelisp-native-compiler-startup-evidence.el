@@ -19,7 +19,7 @@
 (defconst nelisp-native-compiler-startup-evidence--boot-modules
   '(nelisp-stdlib-fast-hash nelisp-env nelisp-lexframe nelisp-native-frame-v2
     nelisp-native-funcall-v2 nelisp-bytecode-ir nelisp-hash-custom nelisp-bytecode-native-switch
-    nelisp-bytecode-frame-ir nelisp-bytecode-handlers-u8 nelisp-bytecode-compiler-input
+    nelisp-bytecode-frame-ir nelisp-bytecode-handlers-u8 nelisp-bytecode-compiler-input-dialect nelisp-native-poll nelisp-bytecode-compiler-input
     nelisp-bytecode-native-rooted-cfg nelisp-native-arithmetic-v2
     nelisp-bytecode-native-arithmetic-lowering nelisp-native-optimization-guard-v1
     nelisp-bytecode-native-guarded-lowering nelisp-bytecode-native-rooted-cfg-plan
@@ -30,6 +30,16 @@
 (defconst nelisp-native-compiler-startup-evidence--post-modules
   '(nelisp-native-compiler-constructor-loader
     nelisp-bytecode-native-rooted-cfg-native))
+
+(defconst nelisp-native-compiler-startup-evidence--tier1-modules
+  '(nelisp-bytecode-ir nelisp-bytecode-frame-ir nelisp-bytecode-handlers-u8
+    nelisp-bytecode-compiler-input nelisp-bytecode-native-rooted-cfg
+    nelisp-native-arithmetic-v2 nelisp-bytecode-native-arithmetic-lowering
+    nelisp-native-optimization-guard-v1 nelisp-bytecode-native-guarded-lowering
+    nelisp-bytecode-native-rooted-cfg-plan nelisp-bytecode-native-rooted-cfg-emit
+    nelisp-bytecode-native-rooted-cfg-postdom nelisp-bytecode-native-rooted-cfg-shared-emit
+    nelisp-bytecode-native-rooted-cfg-native)
+  "Pinned source dependencies loaded on demand, absent from Tier 0 startup.")
 
 (defun nelisp-native-compiler-startup-evidence--source-path (feature)
   "Resolve the canonical loader's derived startup template separately."
@@ -48,14 +58,14 @@
          (canonical (nelisp-native-compiler-startup-evidence--forms source))
          (derived (nelisp-native-compiler-startup-evidence--forms template)) found)
     (unless (and (equal (nelisp-native-rooted-build-evidence-source-hash source 4194304)
-                        "95d530e875be0cd748d77c5239c5875d3f6ecb40d21673c0489f4fa3dd919e0c")
+                        "e3b44a3c8212759bb2dcf7dc326bcd2bc1bd182b7845d6d71c9f6e0aa268ea57")
                  (equal (nelisp-native-rooted-build-evidence-source-hash template 4194304)
-                        "659f43ce014007270feddefaac27fbc023b4a4c5048fb58f4fb4392a17a37b64")
+                        "a8449a1867585a0f388b9ba963ebffc9591309456ee8411cfa4f091e4ef67563")
                  (equal (alist-get 'source declaration) "lisp/nelisp-native-load.el")
                  (equal (alist-get 'source_sha256 declaration)
-                        "95d530e875be0cd748d77c5239c5875d3f6ecb40d21673c0489f4fa3dd919e0c")
+                        "e3b44a3c8212759bb2dcf7dc326bcd2bc1bd182b7845d6d71c9f6e0aa268ea57")
                  (equal (alist-get 'output_sha256 declaration)
-                        "659f43ce014007270feddefaac27fbc023b4a4c5048fb58f4fb4392a17a37b64")
+                        "a8449a1867585a0f388b9ba963ebffc9591309456ee8411cfa4f091e4ef67563")
                  (equal (alist-get 'definitions declaration) (mapcar #'symbol-name names))
                  (= (alist-get 'exact_runtime_gate_transforms declaration) 3))
       (error "Canonical constructor loader template provenance rejected"))
@@ -502,7 +512,8 @@
                   (set-buffer-multibyte nil) (insert-file-contents-literally path)
                   (unless (equal (plist-get record :sha256) (secure-hash 'sha256 (current-buffer)))
                     (error "Compiler boot source changed during derivation: %s" relative))
-                  (unless (or (equal relative "templates/nelisp-native-load-constructor-startup.el.in")
+                  (unless (or (memq feature nelisp-native-compiler-startup-evidence--tier1-modules)
+                              (equal relative "templates/nelisp-native-load-constructor-startup.el.in")
                               (string-suffix-p ".json" relative)
                               (memq feature (cons 'nelisp-native-compiler-runtime-capability
                                                   nelisp-native-compiler-startup-evidence--post-modules)))
@@ -521,7 +532,8 @@
                          (nelisp-native-compiler-startup-evidence--emit
                           feature nelisp-native-compiler-startup-evidence--boot-sources root
                           (eq feature 'nelisp-bytecode-native-rooted-cfg-safe-contract)))
-                       nelisp-native-compiler-startup-evidence--post-modules "")))))
+                       (cl-remove-if (lambda (feature) (memq feature nelisp-native-compiler-startup-evidence--tier1-modules))
+                                     nelisp-native-compiler-startup-evidence--post-modules) "")))))
       (delete-file temporary))))
 
 (provide 'nelisp-native-compiler-startup-evidence)

@@ -2,6 +2,7 @@
 (require 'ert)
 (require 'nelisp-native-gccjit)
 (require 'nelisp-native-cache)
+(require 'nelisp-bytecode-compiler-input-dialect)
 (defconst nelisp-native-gccjit-test--root
   (expand-file-name ".." (file-name-directory (or load-file-name buffer-file-name))))
 (add-to-list 'load-path (expand-file-name "packages/nl-ffi/src" nelisp-native-gccjit-test--root))
@@ -173,7 +174,17 @@
                    :imports ("nl_native_cons_v2"))))
     (unwind-protect
         (progn
-          (write-region "library" nil file nil 'silent)
+          ;; dlopen is stubbed below; the reservation still consumes a real
+          ;; bounded ELF64 program-header shape (one two-page PT_LOAD).
+          (let ((bytes (make-string 120 0)) (coding-system-for-write 'binary))
+            (dotimes (index 6) (aset bytes index (aref "\177ELF\2\1" index)))
+            (aset bytes 32 64) ; program-header offset
+            (aset bytes 54 56) ; program-header width
+            (aset bytes 56 1)  ; program-header count
+            (aset bytes 64 1)  ; PT_LOAD
+            (aset bytes 80 255) (aset bytes 81 15) ; vaddr page offset 4095
+            (aset bytes 104 2) ; memsz=2 crosses a page
+            (write-region bytes nil file nil 'silent))
           (setq header (plist-put header :library-sha256 (nelisp-native-cache--file-hash file)))
           (write-region (concat (prin1-to-string header) "\n") nil (concat file ".nelh") nil 'silent)
           ;; Load the real package; only runtime OS/pointer primitives are stubbed.

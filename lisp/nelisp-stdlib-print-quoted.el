@@ -1,6 +1,6 @@
 ;;; nelisp-stdlib-print-quoted.el --- GNU quoted-printing startup declaration -*- lexical-binding: t; -*-
 ;; SPDX-License-Identifier: GPL-3.0-or-later
-(require 'nelisp-bytecode-compiler-input)
+(require 'nelisp-bytecode-compiler-input-dialect)
 (defvar nelisp-stdlib-print-quoted--owners
   (mapcar (lambda (name) (cons name (symbol-function name)))
           '(nelisp-bytecode-compiler-input-dialect eval boundp symbol-function)))

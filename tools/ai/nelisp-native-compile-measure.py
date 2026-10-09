@@ -14,8 +14,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", default="target/nelisp-static")
     parser.add_argument("--work", type=Path, help="New evidence directory; existing paths are refused.")
+    parser.add_argument("--backend", choices=("in-house", "gccjit", "template"), default=None)
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[2]
+    if args.backend:
+        command = [sys.executable, "test/support/run-native-template-trust.py",
+                   "--backend", args.backend, "--samples", "3"]
+        if args.work is not None:
+            command += ["--work", str(args.work)]
+        command += [args.binary]
+        return subprocess.run(command, cwd=root).returncode
     if args.work is None:
         work = Path(tempfile.mkdtemp(prefix="p13-meter-", dir=root / "target/p1c"))
     else:

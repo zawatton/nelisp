@@ -13,20 +13,27 @@ if [[ ${1:-} == --both ]]; then
   "$0" "${3:-target/nelisp-dyn}" gccjit || status=1
   exit "$status"
 fi
+if [[ ${1:-} == --backend ]]; then
+  selected_backend=${2:?missing backend}; shift 2
+  selected_binary=${1:-target/nelisp-static}; shift "$(( $# > 0 ? 1 : 0 ))"
+  set -- "$selected_binary" "$selected_backend" "$@"
+fi
 binary=${1:-target/nelisp-static}
 backend=${2:-in-house}
-case "$backend" in in-house|gccjit) ;; *) exit 2;; esac
+case "$backend" in in-house|gccjit|template) ;; *) exit 2;; esac
 work=$(mktemp -d "$root/target/frame-u7a-XXXXXX")
 chmod 700 "$work"
 cp -- "$binary" "$work/reader"
 chmod 500 "$work/reader"
 if [[ -f $binary.cold ]]; then cp -- "$binary.cold" "$work/reader.cold"; fi
+if [[ -f $binary.native-startup.el ]]; then cp -- "$binary.native-startup.el" "$work/reader.native-startup.el"; fi
 export U7A_BACKEND="$backend"
 python3 - "$work" "${3:-callback alias constant nested implicit set zero 1 2 3 4 5 buffer-local watcher}" <<'PY'
 import concurrent.futures,hashlib,json,os,subprocess,sys,time
 from pathlib import Path
 work,selection=sys.argv[1:]; directory=Path(work); binary=directory/'reader'; cold=directory/'reader.cold'
 identity=dict(binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
+              startup_sha256=hashlib.sha256(Path(str(binary)+'.native-startup.el').read_bytes()).hexdigest() if Path(str(binary)+'.native-startup.el').is_file() else None,
               cold_sha256=hashlib.sha256(cold.read_bytes()).hexdigest() if cold.is_file() else None)
 cases=selection.split()
 if not cases or len(set(cases)) != len(cases) or any(c not in {'callback','alias','constant','nested','implicit','set','zero','1','2','3','4','5','buffer-local','watcher'} for c in cases):

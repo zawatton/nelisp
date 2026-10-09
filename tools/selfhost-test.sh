@@ -166,7 +166,7 @@ esac
 
 if reader_needs_build; then
   echo "[selfhost] building reader binary..."
-  "$EMACS" --batch -Q -L lisp -L src -L scripts \
+  "${NELISP_BUILD_EMACS:-$EMACS}" --batch -Q -L lisp -L src -L scripts \
         --eval '(setq load-prefer-newer t)' \
         -l nelisp-standalone-build -f nelisp-standalone-build-reader >/dev/null 2>&1
 fi

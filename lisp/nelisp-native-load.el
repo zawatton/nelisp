@@ -41,6 +41,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'nelisp-native-budget)
 (require 'nelisp-runtime-reload-abi)
 (require 'nelisp-native-funcall-v2)
 (require 'nelisp-native-frame-v2)
@@ -3689,6 +3690,13 @@ This check is deliberately complete before mmap: it validates the executable
 identity, the shared resolver index, every GC table entry and every import
 relocation.  An absent ABI module is a refusal, never a reason to trust the
 candidate's self-described table order."
+  (if (eq (nelisp-native-load--raw-v2-rooted-import-family manifest) 'template)
+      (progn
+        (setq nelisp-native-load--raw-v2-check-count (1+ nelisp-native-load--raw-v2-check-count))
+        (require 'nelisp-native-template)
+        (append (when (and name (not (equal name nelisp-native-template-entry)))
+                  (list (list :raw-no-such-export name)))
+                (nelisp-native-template-check manifest)))
   (setq nelisp-native-load--raw-v2-check-count
         (1+ nelisp-native-load--raw-v2-check-count))
   (let ((safe-marker (nelisp-native-load--rooted-cfg-safe-v3-manifest-p manifest)))
@@ -4076,7 +4084,7 @@ candidate's self-described table order."
           (funcall add (list :raw-call1-entry entry)))
         (when (and name (not (equal name nelisp-native-load-raw-v2-call1-entry)))
           (funcall add (list :raw-call1-selected-entry name)))))
-    (nreverse problems)))
+    (nreverse problems))))
 
 (defun nelisp-native-load-raw-v2-artifact
     (path &optional name expected-binary-sha256 origin)
@@ -4120,6 +4128,9 @@ followed by the 24 contract entry addresses in ABI order."
                                        (length imports0)))))
            (codepage nil) (table nil) (table-size nil)
            (stub-offsets nil) (success nil))
+      (nelisp-native-budget-reserve
+       (+ code-size (nelisp-native-load--page-round
+                     (+ 16 (* 8 (length (plist-get manifest :gc-entries)))))))
       (unwind-protect
           (progn
             (setq codepage (nelisp-native-load--mmap code-size nil))
@@ -4392,6 +4403,9 @@ Only semantic validation is skipped; all memory boundaries remain checked."
                                        (length imports0)))))
            (codepage nil) (table nil) (table-size nil)
            (stub-offsets nil) (success nil))
+      (nelisp-native-budget-reserve
+       (+ code-size (nelisp-native-load--page-round
+                     (+ 16 (* 8 (length (plist-get manifest :gc-entries)))))))
       (unwind-protect
           (progn
             (setq codepage (nelisp-native-load--mmap code-size nil))
@@ -4740,7 +4754,8 @@ Conflicting or duplicate family markers refuse before any family validator."
                           ((eq key :native-rooted-branch-contract-version) 'branch)
                           ((eq key :native-rooted-branch-join-contract-version) 'join)
                           ((eq key :native-rooted-cfg-contract-version) 'cfg)
-                          ((eq key :native-rooted-cfg-safe-v3-contract-version) 'safe))))
+                          ((eq key :native-rooted-cfg-safe-v3-contract-version) 'safe)
+                          ((eq key :native-template-proof-version) 'template))))
           (if selected
               (if (or family (not (stringp (cadr tail))))
                   (setq bad t)
@@ -4751,7 +4766,10 @@ Conflicting or duplicate family markers refuse before any family validator."
 (defun nelisp-native-load--raw-v2-rooted-import-contract-valid-p (manifest)
   "Run the complete validator for exactly one declared rooted family."
   (let ((family (nelisp-native-load--raw-v2-rooted-import-family manifest)))
-    (cond ((eq family 'conditional)
+    (cond ((eq family 'template)
+           (require 'nelisp-native-template)
+           (null (nelisp-native-template-check manifest)))
+          ((eq family 'conditional)
            (nelisp-native-load--raw-v2-conditional-contract-valid-p manifest))
           ((eq family 'branch)
            (nelisp-native-load--raw-v2-rooted-branch-contract-valid-p manifest))

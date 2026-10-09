@@ -4,11 +4,13 @@ root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
 both=0 cold=0 reuse=""
 digest=ebe5cd1249025f15a6245e00f493cf7a5a9f1765bb4e07a5295836ad5a5b67d0
+backend_option=""
 while [[ ${1:-} == --* ]]; do
-  case $1 in --both) both=1;; --cold) cold=1;; --reuse) reuse=${2:?missing retained work directory}; shift;; *) echo "Unknown option: $1" >&2; exit 2;; esac
+  case $1 in --backend) backend_option=${2:?missing backend}; shift;; --both) both=1;; --cold) cold=1;; --reuse) reuse=${2:?missing retained work directory}; shift;; *) echo "Unknown option: $1" >&2; exit 2;; esac
   shift
 done
 if (( both )); then
+  [[ -z $backend_option ]] || { echo "--backend and --both are exclusive" >&2; exit 2; }
   [[ -z $reuse ]] || { echo '--reuse selects one retained backend cohort' >&2; exit 2; }
   options=(); (( cold == 0 )) || options+=(--cold)
   work=$(mktemp -d "$root/target/f1b-both-XXXXXX")
@@ -20,7 +22,8 @@ if (( both )); then
   printf 'F1B-BOTH-PASS digest=%s cold=%s evidence=%s\n' "$first" "$cold" "$work"
   exit
 fi
-binary=${1:-target/nelisp-static} backend=${2:-in-house}
+binary=${1:-target/nelisp-static} backend=${backend_option:-${2:-in-house}}
+case "$backend" in in-house|gccjit|template) ;; *) echo "Unknown backend: $backend" >&2; exit 2;; esac
 work=$(mktemp -d "$root/target/f1b-XXXXXX")
 chmod 700 "$work"
 mkdir -m 700 "$work/cache"

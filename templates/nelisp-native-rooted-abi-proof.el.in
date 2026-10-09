@@ -4,7 +4,7 @@
 ;; Expected evidence is generated from prelink unit objects.  It has no image
 ;; digest or addresses.  An opaque proof requires actual ELF and memory checks.
 (require 'cl-lib)
-(require 'nelisp-bytecode-compiler-input)
+(require 'nelisp-bytecode-compiler-input-dialect)
 (require 'nelisp-native-load)
 (require 'nelisp-native-rooted-abi-evidence)
 (require 'nelisp-native-raw-file)
