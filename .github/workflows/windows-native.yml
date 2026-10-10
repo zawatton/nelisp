@@ -14,7 +14,7 @@ permissions:
 jobs:
   native-f1:
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       # setup-emacs-windows returns 404 for 31.1; install the official GNU zip.
@@ -46,6 +46,7 @@ jobs:
       - name: Windows native F1 (fresh load, GC, registers, nested throws, trust controls)
         shell: pwsh
         run: |
+          $env:NELISP_WINDOWS_NATIVE_DEADLINE = '900'
           python test/support/run-windows-native-f1.py target/nelisp.exe --work target/windows-native-ci
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Preserve acceptance evidence even on native refusal

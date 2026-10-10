@@ -63,8 +63,15 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def run(command, env, work, phase, deadline=290):
+# Without a Windows cold image the reader loads the native compiler from
+# source, so a Windows compile takes 3-5 minutes on windows-latest (Linux
+# with a cold image: ~20 s). NELISP_WINDOWS_NATIVE_DEADLINE overrides 290 s.
+DEFAULT_DEADLINE = int(os.environ.get('NELISP_WINDOWS_NATIVE_DEADLINE', '290'))
+
+
+def run(command, env, work, phase, deadline=None):
     """Save output and terminate the process tree on a deadline, including on POSIX."""
+    deadline = deadline or DEFAULT_DEADLINE
     start = time.monotonic()
     options = ({'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP}
                if os.name == 'nt' else {'start_new_session': True})
