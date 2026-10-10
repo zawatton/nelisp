@@ -1,4 +1,4 @@
-name: Windows native F1 (manual acceptance)
+name: Windows native acceptance
 
 # Manual acceptance of Doc 214 W1.2. Host proofs cannot qualify Windows execution.
 # workflow_dispatch needs this file on the default branch, so pushes to the
@@ -12,26 +12,12 @@ permissions:
   contents: read
 
 jobs:
-  native-f1:
+  build-reader:
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      # setup-emacs-windows returns 404 for 31.1; install the official GNU zip.
-      - name: Install GNU Emacs 31.1
-        shell: pwsh
-        run: |
-          $zip = "$env:RUNNER_TEMP\emacs-31.1.zip"
-          Invoke-WebRequest https://ftp.gnu.org/gnu/emacs/windows/emacs-31/emacs-31.1.zip -OutFile $zip
-          Expand-Archive $zip -DestinationPath "$env:RUNNER_TEMP\emacs-31.1"
-          $bin = Get-ChildItem "$env:RUNNER_TEMP\emacs-31.1" -Recurse -Filter emacs.exe | Select-Object -First 1
-          $bin.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-      - name: Check GNU Emacs version
-        shell: bash
-        run: emacs --batch -Q --eval '(unless (equal emacs-version "31.1") (error "need GNU 31.1, got %s" emacs-version))'
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
+      - uses: ./.github/actions/windows-native-tools
       - name: Install proof decoder dependencies
         run: python -m pip install capstone pyelftools
       - name: Host Win64 emitter and receipt negative controls
@@ -41,21 +27,54 @@ jobs:
           timeout 1800 python test/support/check-windows-native-host.py
           timeout 1800 emacs -Q --batch -L lisp -L src -L scripts -l test/support/check-windows-cold.el
           python test/support/run-windows-native-f1-test.py
+          python test/support/native-corpus-platform-test.py
+          python test/support/run-native-corpus-u10.py --self-test
       - name: Build the Windows PE and full compiler cold image
         env:
           NELISP_NATIVE_CACHE: nelisp-cold2-user-override-canary
         timeout-minutes: 30
         shell: bash
         run: NELISP_STANDALONE_NATIVE_COMPILER_COLD=1 timeout 1800 make standalone-reader NELISP_STANDALONE_TARGET=windows-x86_64
+      - name: Share the exact PE and cold image with every acceptance job
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-native-reader
+          path: |
+            target/nelisp.exe
+            target/nelisp.exe.cold
+            target/nelisp.exe.native-startup.el
+            target/nelisp-artifact-runtime.el*
+          if-no-files-found: error
+      - name: Preserve host proof evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-native-host
+          path: |
+            target/windows-loaddefs-*/
+            target/windows-native/
+          if-no-files-found: warn
+
+  native-f1:
+    needs: build-reader
+    runs-on: windows-latest
+    timeout-minutes: 160
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/windows-native-tools
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-native-reader
+          path: target
       - name: Windows native F1 (fresh load, GC, registers, nested throws, trust controls)
-        timeout-minutes: 30
+        timeout-minutes: 75
         shell: pwsh
         run: |
           $env:NELISP_WINDOWS_NATIVE_DEADLINE = '900'
           python test/support/run-windows-native-f1.py target/nelisp.exe --work target/windows-native-ci
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Windows native F1 cold restore (image refusals, refreshed globals, GC)
-        timeout-minutes: 30
+        timeout-minutes: 75
         shell: pwsh
         run: |
           $env:NELISP_WINDOWS_NATIVE_DEADLINE = '900'
@@ -75,3 +94,127 @@ jobs:
             target/nelisp.exe
             target/nelisp.exe.native-startup.el
           if-no-files-found: warn
+
+  # The observed source-load F1 compile/load is 295/232 s. Conservatively
+  # budget 527 s per compiler unit even with cold restore (Wine: 0.71 s).
+  # Eight U10 shards keep 21-22 units/shard at ~3.2 h serial; two workers add
+  # headroom. F3's 52 functions at two workers budget ~3.8 h plus setup.
+  # Each corpus gets 5.5 h wall, with a 5 h 50 min job cap (<6 h).
+  native-u10:
+    if: github.event_name == 'workflow_dispatch'
+    needs: build-reader
+    runs-on: windows-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/windows-native-tools
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-native-reader
+          path: target
+      - name: Windows U10 compiler-unit shard
+        shell: pwsh
+        env:
+          NELISP_WINDOWS_NATIVE_DEADLINE: '1800'
+        run: |
+          python test/support/run-native-corpus-u10.py target/nelisp.exe --windows --cold --backend in-house --require-complete --jobs 2 --cold-jobs 2 --cold-batch-size 2 --load-batch-size 4 --shard ${{ matrix.shard }}/8 --run-deadline 19800
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Preserve shard receipts and transcripts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-native-u10-${{ matrix.shard }}
+          path: |
+            target/u10-corpus-*/**/*.json
+            target/u10-corpus-*/**/*.out
+            target/u10-corpus-*/**/*.err
+            target/u10-corpus-*/**/*-fixtures.el
+          if-no-files-found: error
+
+  native-u10-verdict:
+    if: github.event_name == 'workflow_dispatch'
+    needs: native-u10
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: windows-native-u10-*
+          path: target/u10-shards
+      - name: Require all 230 slots and protected observations in both phases
+        shell: pwsh
+        run: |
+          python test/support/merge-native-u10-receipts.py target/u10-shards --output target/windows-u10-verdict.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-native-u10-verdict
+          path: target/windows-u10-verdict.json
+
+  native-f3:
+    if: github.event_name == 'workflow_dispatch'
+    needs: build-reader
+    runs-on: windows-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/windows-native-tools
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-native-reader
+          path: target
+      - name: Windows F3 52 real functions
+        shell: pwsh
+        env:
+          NELISP_WINDOWS_NATIVE_DEADLINE: '1800'
+        run: |
+          python test/support/run-native-real-corpus.py target/nelisp.exe --windows --cold --backend in-house --fresh --jobs 2 --load-jobs 1 --batch-size 3 --load-batch-size 4 --run-deadline 19800
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Preserve F3 receipts and transcripts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-native-f3
+          path: |
+            target/f3-corpus-*/**/*.json
+            target/f3-corpus-*/**/*.out
+            target/f3-corpus-*/**/*.err
+            target/f3-corpus-*/fixture.el
+          if-no-files-found: error
+
+  native-template:
+    # W2 is still unsupported: an actual backend refusal is a red job, never
+    # a skipped case or an in-house fallback that could qualify W1.3.
+    if: github.event_name == 'workflow_dispatch'
+    needs: build-reader
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/windows-native-tools
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-native-reader
+          path: target
+      - name: Windows template Cons trust smoke (W2 acceptance probe)
+        shell: pwsh
+        env:
+          NELISP_WINDOWS_NATIVE_DEADLINE: '900'
+        run: |
+          python test/support/run-native-template-trust.py target/nelisp.exe --windows --cold --backend template --samples 1 --work target/windows-template-ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Preserve template refusal or acceptance
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-native-template
+          path: target/windows-template-ci/
+          if-no-files-found: error

@@ -1,0 +1,19 @@
+name: Windows native tools
+description: Pinned GNU bytecode oracle and Python corpus runner
+runs:
+  using: composite
+  steps:
+    - name: Install GNU Emacs 31.1
+      shell: pwsh
+      run: |
+        $zip = "$env:RUNNER_TEMP\emacs-31.1.zip"
+        Invoke-WebRequest https://ftp.gnu.org/gnu/emacs/windows/emacs-31/emacs-31.1.zip -OutFile $zip
+        Expand-Archive $zip -DestinationPath "$env:RUNNER_TEMP\emacs-31.1"
+        $bin = Get-ChildItem "$env:RUNNER_TEMP\emacs-31.1" -Recurse -Filter emacs.exe | Select-Object -First 1
+        $bin.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.13'
+    - name: Check GNU Emacs version
+      shell: bash
+      run: emacs --batch -Q --eval '(unless (equal emacs-version "31.1") (error "need GNU 31.1, got %s" emacs-version))'

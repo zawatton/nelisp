@@ -7,8 +7,8 @@ import os
 from pathlib import Path
 import re
 import shutil
-import subprocess
 import time
+import native_corpus_platform as platform
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / 'test/support/native-real-corpus-fixtures.el'
@@ -20,22 +20,16 @@ def digest(path):
 
 
 def run_process(command, environment, directory, prefix):
-    start = time.monotonic()
-    with (directory / (prefix + '.out')).open('w') as out, (directory / (prefix + '.err')).open('w') as err:
-        result = subprocess.run(['timeout', '-k', '5', '290', *command], cwd=ROOT, env=environment, stdout=out, stderr=err)
-    seconds = time.monotonic() - start
-    output = (directory / (prefix + '.out')).read_text()
-    errors = (directory / (prefix + '.err')).read_text()
-    return result.returncode, seconds, output, errors
+    return platform.run_process(command, environment, directory, prefix)
 
 
-def phase_verdict(backend, phase, group, rc, seconds, output, errors, expected_cases):
+def phase_verdict(backend, phase, group, rc, seconds, output, errors, expected_cases, deadline=300):
     """Require every selected name exactly once, a complete batch and clean exit."""
     records = re.findall(r'^F3-FUNCTION-PASS backend=' + re.escape(backend) + r' name=(\S+) phase=' + re.escape(phase) + r' cases=([1-9][0-9]*) native-entries=([1-9][0-9]*) validations=0 seconds=', output, re.M)
     passed = [name for name, _, _ in records]
     failures = re.findall(r'^F3-FUNCTION-FAIL .*', output, re.M)
     marker = 'F3-BATCH-DONE backend={} phase={} functions={} failed=0'.format(backend, phase, len(group))
-    ok = bool(group) and rc == 0 and seconds < 300 and not errors and not failures and passed == group and marker in output.splitlines() and all(int(cases) == int(entries) == expected_cases[name] for name, cases, entries in records)
+    ok = bool(group) and rc == 0 and seconds < deadline and not errors and not failures and passed == group and output.splitlines().count(marker) == 1 and all(int(cases) == int(entries) == expected_cases[name] for name, cases, entries in records)
     return ok, passed, failures
 
 
@@ -55,6 +49,7 @@ def main():
     parser.add_argument('static', nargs='?', default='target/nelisp-static')
     parser.add_argument('dynamic', nargs='?', default='target/nelisp-dyn')
     parser.add_argument('--backend', choices=('in-house', 'gccjit', 'template'), default=None)
+    platform.add_arguments(parser)
     args = parser.parse_args()
     if args.both and args.backend:
         parser.error('--backend and --both are exclusive')
@@ -62,6 +57,9 @@ def main():
         parser.error('--fresh cannot reuse a seed cache')
     if not 1 <= args.batch_size <= 8 or not 1 <= args.jobs <= 8 or not 1 <= args.load_batch_size <= 16 or not 1 <= args.load_jobs <= 2:
         parser.error('batch size/jobs must be 1..8; load batch size 1..16; load jobs 1..2')
+    platform.configure(args, parser)
+    if platform.WINDOWS and args.seed_cache:
+        parser.error('Windows seed copy is unsupported: host copies do not preserve protected artifact DACLs')
     os.chdir(ROOT)
     (ROOT / 'target').mkdir(exist_ok=True)
     import tempfile
@@ -142,13 +140,13 @@ def main():
     if args.names:
         if not set(args.names) <= set(names): parser.error('Selection must contain admitted names')
         names = args.names
-    if not args.names and not args.reproduce and not args.discover and len(names) < 50:
-        raise SystemExit('F3 needs at least 50 admitted functions')
-    identity = {'fixture_sha256': digest(snapshot), 'driver_sha256': digest(ROOT / DRIVER),
+    if not args.names and not args.reproduce and not args.discover and len(names) != 52:
+        raise SystemExit('F3 requires exactly 52 admitted functions')
+    identity = {**platform.identity(), 'fixture_sha256': digest(snapshot), 'driver_sha256': digest(ROOT / DRIVER),
                 'input_protocol_sha256': digest(ROOT / 'test/support/native-real-corpus-inputs.el'),
                 'runner_sha256': digest(__file__), 'host_seconds': elapsed, 'regenerate_seconds': generated_seconds}
     seed_receipts = json.loads((seed / 'receipts.json').read_text()) if seed else []
-    if seed and (not seed_receipts or not all(r['passed'] and r['rc'] == 0 and r['seconds'] < 300 for r in seed_receipts)):
+    if seed and (not seed_receipts or not all(r['passed'] and r['rc'] == 0 and r['seconds'] < r.get('process_deadline', 300) for r in seed_receipts)):
         raise SystemExit('Seed must be a completed successful qualification')
     if seed:
         old_rows = json.loads((seed / 'corpus.json').read_text())
@@ -159,7 +157,7 @@ def main():
                     work = seed / backend / (phase + '-' + str(index))
                     ok, parsed_names, _ = phase_verdict(backend, phase, receipt['names'], receipt['rc'], receipt['seconds'],
                                              (work / (phase + '.out')).read_text(), (work / (phase + '.err')).read_text(),
-                                             {row['name']: row['cases'] for row in old_rows})
+                                             {row['name']: row['cases'] for row in old_rows}, receipt.get('process_deadline', 300))
                     if not ok or parsed_names != receipt['passed_names']:
                         raise RuntimeError('Seed transcript does not substantiate receipt')
     backends = [(args.backend or 'in-house', args.static)]
@@ -170,15 +168,17 @@ def main():
         backend, path = item
         source = (ROOT / path).resolve(strict=True)
         reader_dir = directory / backend; reader_dir.mkdir(mode=0o700)
-        binary = reader_dir / 'reader'
+        binary = reader_dir / ('reader.exe' if platform.WINDOWS else 'reader')
         shutil.copyfile(source, binary); binary.chmod(0o500)
+        startup = Path(str(source) + '.native-startup.el')
+        if startup.is_file(): shutil.copyfile(startup, Path(str(binary) + '.native-startup.el'))
         cold = Path(str(source) + '.cold')
-        if cold.is_file(): shutil.copyfile(cold, reader_dir / 'reader.cold')
+        if cold.is_file(): shutil.copyfile(cold, Path(str(binary) + '.cold'))
         backend_identity = {**identity, 'binary_sha256': digest(binary),
                             'cold_sha256': digest(cold) if cold.is_file() else None}
         durable = ROOT / 'target/f3-native-real-cache' / (backend + '-' + backend_identity['binary_sha256'][:16] + '-' + str(backend_identity['cold_sha256'])[:16])
-        durable.mkdir(mode=0o700, parents=True, exist_ok=True)
-        if durable.is_symlink() or durable.stat().st_mode & 0o077:
+        platform.create_cache(durable)
+        if durable.is_symlink() or (not platform.WINDOWS and durable.stat().st_mode & 0o077):
             raise RuntimeError('Durable native cache must be a private directory')
         if seed:
             previous = [r for r in seed_receipts if r['backend'] == backend]
@@ -219,12 +219,10 @@ def main():
             current.update(F3_NAMES=' '.join(group), F3_BACKEND=backend, NELISP_NATIVE_CACHE=str(cache))
             current['F3_PHASE'] = phase
             current['F3_FRESH'] = '1' if args.fresh else '0'
-            command = [str(binary)]
-            # Each reader uses its own source-pinned image, including GCC JIT.
-            if cold.is_file(): command += ['--cold-load-from', str(reader_dir / 'reader.cold')]
-            command += ['-L', 'lisp', '-L', 'src', '-L', 'scripts', '-L', 'packages/nl-ffi/src', '--load', DRIVER]
+            command = platform.reader_command(binary, Path(str(binary) + '.cold'), DRIVER)
+            current = platform.reader_environment(current, ('F3_FIXTURE', 'NELISP_NATIVE_CACHE'))
             rc, elapsed, output, errors = run_process(command, current, work, phase)
-            ok, passed_names, failed = phase_verdict(backend, phase, group, rc, elapsed, output, errors, {name: by_name[name]['cases'] for name in group})
+            ok, passed_names, failed = phase_verdict(backend, phase, group, rc, elapsed, output, errors, {name: by_name[name]['cases'] for name in group}, platform.PROCESS_DEADLINE)
             cache_records = re.findall(r'^F3-CACHE backend=' + re.escape(backend) + r' name=(\S+) status=(hit|miss)$', output, re.M)
             cache_files = re.findall(r'^F3-CACHE-FILE name=(\S+) file=(.+)$', output, re.M)
             if phase == 'compile':
@@ -232,7 +230,7 @@ def main():
             receipt = dict(backend=backend, names=group, phase=phase, rc=rc, seconds=elapsed,
                            passed=ok, passed_names=passed_names, failures=failed,
                            cache_mode='fresh' if args.fresh else 'durable',
-                           cache_files=[file for _, file in cache_files],
+                           cache_files=[str(platform.cache_file(file, cache)) for _, file in cache_files],
                            cache_hits=len(re.findall(r'^F3-CACHE .* status=hit$', output, re.M)),
                            cache_misses=len(re.findall(r'^F3-CACHE .* status=miss$', output, re.M)), **backend_identity)
             (work / (phase + '.json')).write_text(json.dumps(receipt, indent=2))
@@ -241,14 +239,15 @@ def main():
         def compile_cohort(item):
             index, group = item
             cache = reader_dir / ('cache-' + str(index)) if args.fresh else durable
-            if args.fresh: cache.mkdir(mode=0o700)
+            if args.fresh: platform.create_cache(cache)
             return phase_run(index, group, 'compile', cache)
         backend_start = time.monotonic()
         # Public compilation uses its ordinary durable cache unless --fresh.
         # Consolidating
         # only successfully published immutable files amortizes reload setup;
         # every reload is still a new process with compilation forbidden.
-        load_cache = reader_dir / 'load-cache'; load_cache.mkdir(mode=0o700)
+        load_cache = reader_dir / 'load-cache'
+        if not platform.WINDOWS: platform.create_cache(load_cache)
         load_names = []
         def merge_cache(index):
             cache = reader_dir / ('cache-' + str(index)) if args.fresh else durable
@@ -273,8 +272,8 @@ def main():
         # A loader never observes a partial copy or a still-compiling cohort;
         # unrelated later files can be added without changing those snapshots.
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.load_jobs) as loaders:
-            def submit_load(group):
-                load_futures.append(loaders.submit(phase_run, len(load_futures), group, 'load', load_cache))
+            def submit_load(group, cache=load_cache):
+                load_futures.append(loaders.submit(phase_run, len(load_futures), group, 'load', cache))
             with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as compilers:
                 futures = {compilers.submit(compile_cohort, item): item[0] for item in enumerate(groups)}
                 for future in concurrent.futures.as_completed(futures):
@@ -282,9 +281,15 @@ def main():
                     while next_compile < len(groups) and receipts[next_compile] is not None:
                         receipt = receipts[next_compile]
                         if receipt['passed']:
-                            merge_cache(next_compile)
                             load_names.extend(receipt['names'])
-                            pending_load.extend(receipt['names'])
+                            if platform.WINDOWS:
+                                # Reopen the reader-published files in place. Python
+                                # copies would discard their protected TokenUser DACLs.
+                                cache = reader_dir / ('cache-' + str(next_compile)) if args.fresh else durable
+                                submit_load(receipt['names'], cache)
+                            else:
+                                merge_cache(next_compile)
+                                pending_load.extend(receipt['names'])
                         next_compile += 1
                         while len(pending_load) >= args.load_batch_size:
                             submit_load(pending_load[:args.load_batch_size])

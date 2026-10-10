@@ -261,3 +261,53 @@ python test/support/run-windows-native-f1.py target/nelisp.exe --work target/win
 For coordinator Wine evidence, add =--wine=; this cannot qualify real Windows
 acceptance. Each runner has an overall 1800-second budget. The windows-latest
 workflow builds the full image and executes both paths, preserving all receipts.
+
+* W1.3 corpus runner preparation
+The U10 and F3 runners accept =--windows --cold= on real Windows, or
+=--wine --cold= for coordinator evidence. Windows always requires the full
+compiler =BINARY.cold= image. GNU fixture generation uses host paths; only
+reader load paths and reader environment paths are converted by =winepath=.
+Native processes use the F1 process-tree deadline implementation rather than
+the Linux =timeout= utility. =NELISP_WINDOWS_NATIVE_DEADLINE= bounds each
+process at at most 1800 seconds. The overall =--run-deadline= defaults to
+1800 seconds locally; only CI extends it to 19800 seconds (5.5 hours).
+
+#+begin_src sh
+# Real Windows (GNU Emacs 31.1 and Python on PATH):
+python test/support/run-native-corpus-u10.py target/nelisp.exe --windows --cold --backend in-house --require-complete --jobs 2
+python test/support/run-native-real-corpus.py target/nelisp.exe --windows --cold --backend in-house --fresh --jobs 2
+# Coordinator only: replace --windows with --wine. No Windows qualification.
+#+end_src
+
+U10 batches compiler units and weighted reload groups. CI splits the 174
+compiler units over eight =--shard INDEX/8= jobs, keeping each artifact cohort
+together; shard zero owns the protected-order supplement. Shard receipts do
+not print a full U10 PASS. =merge-native-u10-receipts.py= requires exact
+230-slot compile/load coverage, protected observations in both phases,
+matching binary/image/source identities and substantiating transcripts.
+Missing, duplicate, focused, Wine, timed-out or mismatched evidence fails.
+
+F3 batches several functions per compiler process and reloads each successful
+Windows cohort from its original cache in a new process. The reader creates
+protected cache DACLs; Python must not precreate these caches or copy their
+published files into a reload cache. Windows seed-cache copying is explicitly
+unsupported. The existing POSIX cache consolidation remains available.
+
+=windows-native.yml= builds one PE/full cold image and shares that exact
+artifact with F1, U10, F3 and template jobs. U10/F3/template are manual dispatch
+jobs. Source-load F1 receipts measured compile/load at 295/232 seconds;
+budgeting 527 seconds per compiler unit estimates about 3.2 hours per U10
+shard serially (21-22 units), and 3.8 hours for 52 F3 functions with two workers.
+Cold-image startup should reduce overhead, but these are estimates, not real
+Windows U10/F3 timings. Corpus jobs stop at 5.5 hours and have a 350-minute job
+cap, leaving setup/evidence-upload headroom below the six-hour runner limit.
+
+W2 remains unimplemented. SysV stencil/library/pin bytes are unchanged.
+The current stencil opener, manifest ABI and native cache backend admission
+are all SysV/in-house restricted; their sources are included in the existing
+SysV compiler pin. A Win64 implementation therefore needs an independently
+authenticated target-specific compiler closure as well as Win64 prologue,
+shadow space, stacked arguments, callee-saved register handling and stencils.
+The Windows template job runs the real smoke and records unsupported-backend
+refusal as failure. It neither skips the case nor substitutes in-house;
+W1.3 remains unqualified until all real Windows acceptance jobs pass.
