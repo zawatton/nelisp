@@ -690,7 +690,7 @@ This does not grant constructor, numeric or call operation eligibility."
               nelisp-native-load--page-round nelisp-native-load--mmap nelisp-native-load--unmap
               nelisp-native-load--protect nelisp-native-load--poke-string nelisp-native-load--byte
               nelisp-native-load--without-midform-collect
-              nelisp--sha256 nelisp--sha256-bytes alloc-bytes nelisp--debug-switch ptr-write-bytes string-byte
+              nelisp--build-digest nelisp--sha256 nelisp--sha256-bytes alloc-bytes nelisp--debug-switch ptr-write-bytes string-byte
               nelisp-native-load--running-binary-sha256 nelisp-native-load--windows-p
               nelisp-native-load--runtime-abi-v2 nelisp-native-load--target-v2
               nelisp--target-os-code nelisp--target-arch-code

@@ -368,7 +368,8 @@ on host Emacs."
 (defun nelisp-native-load--digest (bytes)
   "Return the sha256 of BYTES as a lowercase hex string, or nil.
 
-Goes through a raw buffer and `nelisp--sha256-bytes' rather than handing
+Copies and compresses bytes iteratively, with stack usage independent of
+input length. Goes through a raw buffer and `nelisp--sha256-bytes' rather than handing
 the string to `nelisp--sha256'.  Strings are UTF-8 internally here, so
 the string entry point digests the encoded form: it matches other
 sha256 implementations on ASCII and diverges on any byte over 127, which
@@ -554,9 +555,10 @@ why every failure here is swallowed rather than signalled."
               digest)
           (ignore-errors (delete-file output)))))))
 
-(let ((windows-digest :unset))
 (defun nelisp-native-load--running-binary-sha256 ()
-  "Return the SHA-256 of this process's executable, or nil when unavailable.
+  "Return this process's executable identity, or nil when unavailable.
+Windows returns the linked file's SHA-256 with its stamp field zeroed.
+Linux retains the whole-file SHA-256; its cache digest semantics do not change.
 
 Linux exposes the running image through `/proc/self/exe'.  The path is an OS
 interface, not a repository or machine-specific build path.  The loader does
@@ -564,17 +566,18 @@ not accept a caller-selected path here: accepting one would let an artifact
 claim the digest of a different executable and defeat the same-binary ABI
 check."
   (if (nelisp-native-load--windows-p)
-      (progn
-        ;; Private lexical identity: public cache writes and returned-string
-        ;; mutation cannot substitute another executable before proof issuance.
-        (when (eq windows-digest :unset)
-          (setq windows-digest
-                (condition-case nil
-                    (progn (require 'nelisp-native-windows)
-                           (nelisp-native-load--sha256
-                            (nelisp-native-windows-file-bytes (nelisp-native-windows-module-path))))
-                  (error nil))))
-        (and windows-digest (copy-sequence windows-digest)))
+      ;; Windows uses the linker-stamped SHA-256 (digest field zeroed),
+      ;; already trusted by cold-image loading. The fixed rodata accessor is
+      ;; O(1), returns a fresh string, and accepts no path or mutable cache.
+      ;; Refuse older/unstamped readers; never fall back to hashing the PE.
+      (condition-case nil
+          (let ((digest (and (fboundp 'nelisp--build-digest)
+                             (nelisp--build-digest))))
+            (and (stringp digest)
+                 (string-match-p "\\`[0-9a-f]\\{64\\}\\'" digest)
+                 (not (equal digest (make-string 64 ?0)))
+                 (copy-sequence digest)))
+        (error nil))
     (if (not (eq nelisp-native-load--running-binary-sha256-cache :unset))
         nelisp-native-load--running-binary-sha256-cache
     (let* ((proc-self (and (eq system-type 'gnu/linux)
@@ -613,10 +616,12 @@ check."
                             (> (string-bytes bytes) 0)
                             (nelisp-native-load--sha256 bytes)))))
       (setq nelisp-native-load--running-binary-sha256-cache digest)
-      digest)))))
+      digest))))
 
 (defun nelisp-native-load-running-binary-sha256 ()
-  "Return the SHA-256 identity of the currently running NeLisp executable."
+  "Return the SHA-256 identity of the currently running NeLisp executable.
+On Windows this is the in-memory build stamp (digest field zeroed at link
+time); on Linux it remains the whole-file digest."
   (nelisp-native-load--running-binary-sha256))
 
 (defun nelisp-native-load--read-file (path)

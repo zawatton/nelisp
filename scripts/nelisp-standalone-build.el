@@ -6729,6 +6729,18 @@ argument (reachability + in-arena bounds checks).")
                                       (seq (mut-str-make-empty ms 64)
                                            (m5_json ms (wf_arg_ptr args 0))
                                            (mut-str-finalize ms out) 0)))
+    ;; Clause 3: read-only access to the linked image's raw rodata identity.
+    ;; No pointer or caller-selected pathname escapes. Lisp reference:
+    ;; `nelisp-build-digest-reference' in the identity test.
+    ((:lit "nelisp--build-digest") .
+     (if (= (nl_build_digest_stamped_p) 0)
+         (wf_write_nil out)
+       (let* ((ms (alloc-bytes 32 8)) (p (nl_build_digest_ptr)) (i 0))
+         (seq (mut-str-make-empty ms 64)
+              (while (< i 32)
+                (seq (m5_sha_hexword ms (m5_sha_word p i))
+                     (setq i (+ i 4))))
+              (mut-str-finalize ms out) 0))))
     ((:lit "nelisp--sha256") . (let* ((ms (alloc-bytes 32 8)))
                                  (seq (mut-str-make-empty ms 64)
                                       (m5_sha256 ms (wf_arg_ptr args 0))
@@ -14632,9 +14644,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
           (ptr-write-u64 (+ hbuf 48) 0 (m5_sha_add (ptr-read-u64 (+ hbuf 48) 0) g))
           (ptr-write-u64 (+ hbuf 56) 0 (m5_sha_add (ptr-read-u64 (+ hbuf 56) 0) h))))))
     (defun m5_sha_zero (msg i n)
-      (if (>= i n) 0 (seq (ptr-write-u8 msg i 0) (m5_sha_zero msg (+ i 1) n))))
+      (seq (while (< i n)
+             (seq (ptr-write-u8 msg i 0) (setq i (+ i 1)))) 0))
     (defun m5_sha_copy (msg hay i n)
-      (if (>= i n) 0 (seq (ptr-write-u8 msg i (m5_byte_at hay i)) (m5_sha_copy msg hay (+ i 1) n))))
+      ;; The string secure-hash path also receives source files and manifests,
+      ;; not just short names. Never grow the stack with the input length.
+      (seq (while (< i n)
+             (seq (ptr-write-u8 msg i (m5_byte_at hay i))
+                  (setq i (+ i 1)))) 0))
     (defun m5_sha_hexnib (ms v)
       (mut-str-push-byte ms (if (< v 10) (+ 48 v) (+ 97 (- v 10)))))
     (defun m5_sha_hexword (ms w)
@@ -14646,8 +14663,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; `m5_sha_copy' reads through `str-byte-at', which walks the string's
     ;; internal UTF-8 -- so hashing a decoded binary through it digests the
     ;; encoded form and disagrees with every other sha256 on any byte over
-    ;; 127.  Iterative, not recursive like its string sibling: an artifact
-    ;; is not bounded the way a short name is.
+    ;; 127. Both copy paths are iterative: artifacts and source files are
+    ;; not bounded the way a short name is.
     (defun m5_sha_copy_ptr (msg src n)
       (let* ((i 0))
         (seq (while (< i n)
@@ -26186,7 +26203,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "string-as-unibyte" "string-to-unibyte" "string-make-unibyte"
     "string-as-multibyte" "string-to-multibyte" "string-make-multibyte"
     "char-to-string" "string-to-char" "number-to-string" "string-to-number" "format"
-    "nelisp--repr" "nelisp--json-encode" "nelisp--sha256" "nelisp--sha256-bytes" "nelisp--string-search" "nelisp--arena-stats" "garbage-collect"
+    "nelisp--repr" "nelisp--json-encode" "nelisp--build-digest" "nelisp--sha256" "nelisp--sha256-bytes" "nelisp--string-search" "nelisp--arena-stats" "garbage-collect"
     "nelisp--fmt-float"
     "nelisp--debug-switch" "nelisp--gc-diag" "nelisp--arena-force-grow-smoke" "nelisp--size-census" "nelisp--arena-walk-verify"
     "nelisp--alloc-check-report"

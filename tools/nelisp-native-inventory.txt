@@ -73,6 +73,7 @@ string-to-number	native-review	No classification row; review against Doc 211 §6
 format	native-review	No classification row; review against Doc 211 §6.
 nelisp--repr	native-review	No classification row; review against Doc 211 §6.
 nelisp--json-encode	native-review	No classification row; review against Doc 211 §6.
+nelisp--build-digest	native-must-stay	Raw read-only linked rodata access (clause 3); no path/pointer input, nil if unstamped; Lisp reference nelisp-build-digest-reference in test/nelisp-build-digest-test.el.
 nelisp--sha256	native-review	No classification row; review against Doc 211 §6.
 nelisp--sha256-bytes	native-review	No classification row; review against Doc 211 §6.
 nelisp--string-search	native-review	No classification row; review against Doc 211 §6.

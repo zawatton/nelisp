@@ -64,7 +64,7 @@
                    nelisp--target-os-code nl-ffi-call max require fboundp copy-tree plist-put
                    nelisp-native-load--sha256 nelisp-native-load--digest
                    nelisp-native-load--mmap nelisp-native-load--unmap nelisp-native-load--protect
-                   ptr-write-bytes string-byte nelisp--sha256))
+                   ptr-write-bytes string-byte nelisp--sha256 nelisp--build-digest))
       (let ((old (symbol-function name)))
         (unwind-protect
             (progn (fset name (lambda (&rest args) (apply old args)))
@@ -85,4 +85,4 @@
         (unwind-protect (progn (fset 'ash (lambda (&rest args) (apply old args))) (check 1 "MAP_REACHED"))
           (fset 'ash old))))
     (install owner-form) (check 1 "MAP_REACHED")
-    (princ "WINDOWS-OWNER-SEAL-PASS mutations=27 maps=0 calibration=1\n")))
+    (princ "WINDOWS-OWNER-SEAL-PASS mutations=28 maps=0 calibration=1\n")))

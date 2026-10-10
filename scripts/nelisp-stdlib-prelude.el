@@ -20781,14 +20781,23 @@ the lowercase hex form."
     ;; `nelisp--sha256' (2.5ms for 20KB).  The external-helper path below
     ;; costs ~130ms per call regardless of size (temp file + sha256sum
     ;; process) and was paid twice per vendored `require' by the baked
-    ;; bytecode loader.  Buffers, other algorithms and any failure of the
-    ;; native primitive keep the helper path.
-    (if (and (eq algorithm 'sha256) (stringp object)
+    ;; bytecode loader. Windows also hashes file buffers in process: its
+    ;; source/proof/package checks must not depend on a helper under /tmp.
+    ;; The native string copy is iterative even for multi-megabyte inputs.
+    ;; Unix buffer hashing and other algorithms retain their existing path.
+    (if (and (eq algorithm 'sha256)
+             (or (stringp object)
+                 (and (fboundp 'nelisp--target-os-code)
+                      (= (nelisp--target-os-code) 2) (bufferp object)))
              (fboundp 'nelisp--sha256))
         (let ((digest (nelisp--sha256
-                       (if (or start end)
-                           (substring object (or start 0) end)
-                         object))))
+                       (if (bufferp object)
+                           (with-current-buffer object
+                             (buffer-substring (or start (point-min))
+                                               (or end (point-max))))
+                         (if (or start end)
+                             (substring object (or start 0) end)
+                           object)))))
           (if binary (nelisp--secure-hash-hex-to-bytes digest) digest))
     (let ((spec (nelisp--secure-hash-helper algorithm)))
       (unless spec

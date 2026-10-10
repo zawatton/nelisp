@@ -119,9 +119,9 @@ def main():
     owners = subprocess.run(owner_command, cwd=ROOT, capture_output=True, timeout=60)
     (args.output.parent / 'owner-check.out').write_bytes(owners.stdout)
     (args.output.parent / 'owner-check.err').write_bytes(owners.stderr)
-    if owners.returncode or owners.stderr or owners.stdout.splitlines() != [b'WINDOWS-OWNER-SEAL-PASS mutations=27 maps=0 calibration=1']:
+    if owners.returncode or owners.stderr or owners.stdout.splitlines() != [b'WINDOWS-OWNER-SEAL-PASS mutations=28 maps=0 calibration=1']:
         raise SystemExit('Windows startup owner negative controls failed')
-    report = dict(status='HOST_CHECKS_PASS', owner_mutations=27, seconds=time.monotonic() - start)
+    report = dict(status='HOST_CHECKS_PASS', owner_mutations=28, seconds=time.monotonic() - start)
     if args.pe:
         report['pe'] = validate_pe(args.pe.resolve(), args.proof.resolve())
     args.output.write_text(json.dumps(report, indent=2) + '\n')
