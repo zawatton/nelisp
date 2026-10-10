@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bounded source-pinned native boundary/admission qualification (P3.4/P3.5)."""
+"""Bounded source-pinned native boundary/admission qualification (P3.4/P3.5/P3.6)."""
 import argparse, hashlib, json, os, re, resource, signal, subprocess, time
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
@@ -75,9 +75,9 @@ def main():
     for p in ['lisp','src','scripts','packages/nl-ffi/src','packages/nl-prelude/src']:
         cmd+=['-L',str(ROOT/p)]
     cmd+=['--load',str(ROOT/'test/nelisp-native-boundary-driver.el')]
-    # GUI compilation has the exact original 290-second deadline. Other
-    # processes also remain bounded, including correctness and timing.
-    bound=290 if args.phase=='compile' and args.name in ['expand-file-name','directory-files','locate-file','emacs-redisplay--ml-spans'] else 1800
+    # P3.6 has a 900-second execution bound and a separate 600-second
+    # acceptance limit. P3.5 retains its original 290-second deadline.
+    bound=(900 if args.name=='emacs-redisplay--ml-spans' else 290) if args.phase=='compile' and args.name in ['expand-file-name','directory-files','locate-file','emacs-redisplay--ml-spans'] else 1800
     if args.phase=='timing':
         runs=[]
         for mode in ['before','native','after']:

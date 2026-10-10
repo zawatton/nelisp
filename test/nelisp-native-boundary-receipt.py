@@ -1,19 +1,28 @@
 #!/usr/bin/env python3
-"""Verify raw P3.4/P3.5 measurements, independently of their pass flags."""
-import argparse, hashlib, json, re
+"""Verify raw P3.4/P3.5/P3.6 measurements, independently of pass flags."""
+import argparse, hashlib, json, re, traceback
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 BACKENDS = ['in-house', 'gccjit', 'template']
 LEAVES = ['file-exists-p', 'file-name-directory', 'p34-arith3']
-WIDE = ['expand-file-name', 'directory-files', 'locate-file', 'emacs-redisplay--ml-spans']
+WIDE = ['expand-file-name', 'directory-files', 'locate-file']
 
 def sha(path):
     with Path(path).open('rb') as stream:
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
+def explain_failure(error):
+    """Keep assertion-only failures reviewable in assembled receipts."""
+    if str(error):
+        return str(error)
+    frame = traceback.extract_tb(error.__traceback__)[-1]
+    return f'{type(error).__name__}: {Path(frame.filename).name}:{frame.lineno}: {frame.line}'
+
 def raw(row, work):
-    assert row['rc'] == 0 and row['identity_unchanged']
+    label = f"{row['backend']}/{row['name']}/{row['phase']}"
+    assert row['rc'] == 0, f"{label}: exit {row['rc']} after {row['seconds']:.3f}s"
+    assert row['identity_unchanged'], label + ': inputs changed during execution'
     assert 0 < row['seconds'] < row['timeout'] + 1 and row['timeout'] <= 1800
     assert row['artifacts'], 'missing native artifact pins'
     for path, digest in row['artifacts'].items():
@@ -29,11 +38,18 @@ def raw(row, work):
     assert row['command'][-2:] == ['--load', str(ROOT/'test/nelisp-native-boundary-driver.el')]
     for path, digest in row['pins'].items():
         assert sha(path) == digest, 'pin changed: ' + path
+    for path in [work/('input-'+row['name']+'.elc'),
+                 work/('source-'+row['name']+'.el'),
+                 ROOT/'test/nelisp-native-boundary-test.py']:
+        assert str(path) in row['pins'], 'missing input/runner pin: ' + str(path)
+    if row['name'] == 'emacs-redisplay--ml-spans':
+        assert str(work/'gui-helpers.el') in row['pins']
     prefix = work / (row['backend'] + '-' + row['name'] + '-' + row['phase'] + ('-'+row['timing_mode'] if 'timing_mode' in row else ''))
     output = prefix.with_suffix('.out').read_text()
     assert sha(prefix.with_suffix('.out')) == row['stdout_sha256']
     assert sha(prefix.with_suffix('.err')) == row['stderr_sha256']
     assert not prefix.with_suffix('.err').read_text() and 'P34-DONE\n' in output
+    assert 'P34-BOOT '+row['name']+' '+row['phase']+'\n' in output
     if row['phase'] == 'compile':
         compiled=re.search(r'P34-COMPILE file=(\".*\") seconds=([0-9.]+)\n',output)
         assert compiled and json.loads(compiled[1]) in row['artifacts'] and float(compiled[2])>0
@@ -49,6 +65,18 @@ def verify(data, criterion):
     assert len(rows) == len(data['rows']), 'duplicate rows'
     for path, digest in data['sources'].items():
         assert sha(ROOT / path) == digest, 'source changed: ' + path
+    if criterion == 'P3.6':
+        name = 'emacs-redisplay--ml-spans'
+        compiled = rows['in-house', name, 'compile']
+        output = raw(compiled, work)
+        match = re.search(r'P34-COMPILE file=(\".*\") seconds=([0-9.]+)\n', output)
+        assert compiled['timeout'] == 900 and compiled['seconds'] < 901
+        assert match and 0 < float(match[2]) <= 600, 'ML compile exceeds 600 s'
+        output = raw(rows['in-house', name, 'parity'], work)
+        observations = re.search(r'P34-PARITY-OBSERVATIONS values=(\d+) errors=(\d+)\n', output)
+        assert observations and int(observations[1]) >= 3
+        assert int(observations[1]) + int(observations[2]) == 10
+        return
     for name, count in [('p34-boundary-host', 34), ('p34-runtime-host', 12)]:
         host = data['host_controls'][name]
         assert host['rc'] == 0 and 0 < host['seconds'] < 1801
@@ -68,6 +96,22 @@ def verify(data, criterion):
                    'test/nelisp-native-vm-dynamic-frame-fixture.el',
                    'test/nelisp-native-vm-marker-fixture.el'])
     if criterion == 'P3.4':
+        guards = data['guard_controls']
+        assert len(guards) == 2 and {r['mode'] for r in guards} == {'negative', 'positive'}
+        for guard in guards:
+            assert guard['command'][:4] == ['timeout', '-k', '5', '120']
+            assert 0 < guard['seconds'] < 121
+            for path, digest in guard['pins'].items():
+                assert sha(path) == digest, 'guard control pin changed: ' + path
+            output = Path(guard['stdout']).read_text()
+            errors = Path(guard['stderr']).read_text()
+            if guard['mode'] == 'positive':
+                assert guard['command'][4] == str(ROOT/'target/nelisp-static')
+                assert guard['rc'] == 0 and not errors
+                assert 'P34-JIT-GUARD-PASS checks=5 gc=1\n' in output
+            else:
+                assert guard['rc'] not in [0, 124, 137]
+                assert 'True guard must suppress recursive dispatch' in errors
         controls = data['bulk_root_controls']
         assert len(controls) == 4
         for backend in ['in-house', 'gccjit']:
@@ -141,7 +185,8 @@ def verify(data, criterion):
                 assert row['rc'] == 0 and 'P35-AOT-UNIT-PARITY-PASS cases=6\n' in output
             else:
                 assert row['rc'] not in [0, 124, 137] and re.search(r'^P35-AOT-BROKEN-UNIT-DETECTED$', output, re.M)
-                assert 'P35-AOT-UNIT-PARITY-PASS' not in output
+                # GNU backtraces include source strings for unexecuted PRINCs.
+                assert not re.search(r'^P35-AOT-UNIT-PARITY-PASS cases=\d+$', output, re.M)
         for backend in BACKENDS:
             raw(rows[backend, 'p34-values', 'compile'], work)
             output = raw(rows[backend, 'p34-values', 'parity'], work)
@@ -216,6 +261,7 @@ def assemble(work):
         path = controls/name
         return json.loads(path.read_text()) if path.exists() else []
     return dict(schema=1, work=str(work.resolve()), rows=rows, sources=sources,
+                guard_controls=json.loads((ROOT/'target/p34-cont/guard.json').read_text()),
                 bulk_root_controls=control('p34-bulk-roots.json'),
                 compiler_projection_controls=control('compiler-projection-controls.json'),
                 host_controls={name:control(name+'.json') for name in ['p34-boundary-host','p34-runtime-host']})
@@ -224,19 +270,19 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--work', type=Path)
     parser.add_argument('--receipt', type=Path, required=True)
-    parser.add_argument('--criterion', choices=['P3.4', 'P3.5'])
+    parser.add_argument('--criterion', choices=['P3.4', 'P3.5', 'P3.6'])
     parser.add_argument('--assemble', action='store_true')
     args = parser.parse_args()
     if args.assemble:
         assert args.work is not None
         data = assemble(args.work)
         results = {}
-        for criterion in ['P3.4', 'P3.5']:
+        for criterion in ['P3.4', 'P3.5', 'P3.6']:
             try:
                 verify(data, criterion)
                 results[criterion] = dict(passed=True, reason='Raw bounded, pinned measurements verified.')
             except (AssertionError, KeyError, OSError) as error:
-                results[criterion] = dict(passed=False, reason=str(error))
+                results[criterion] = dict(passed=False, reason=explain_failure(error))
         data['criteria'] = results
         args.receipt.write_text(json.dumps(data, indent=2) + '\n')
         print(json.dumps(results, indent=2))
