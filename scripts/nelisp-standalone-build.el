@@ -34971,7 +34971,7 @@ correctly."
                (nl_cli_expand_load_path dir_ptr dd_value expanded)
                (nl_cli_ldir_write_dirs
                 sp0 (+ idx 2) limit dd_value tbuf
-                (nl_cli_put_string_value tbuf toff2 expanded 1))))
+                (nl_cli_put_ldir_string tbuf toff2 expanded))))
           (nl_cli_ldir_write_dirs sp0 (+ idx 1) limit dd_value tbuf toff))))
     (defun nl_cli_bare_legacy_command_p (ptr)
       (if (= (nl_cstr_eq_bare_eval ptr) 1)
@@ -35201,6 +35201,24 @@ correctly."
                          (+ 48 (/ b 64)))
         (+ 48 (logand (/ b 8) 7)))
        (+ 48 (logand b 7))))
+    ;; `-L DIR' is spliced into Lisp source, so a Windows directory such as
+    ;; C:\\a\\b must keep its backslashes (and any double quote) escaped;
+    ;; otherwise the reader sees `\\a' escapes and invalid read syntax.
+    (defun nl_cli_put_escaped_bytes (src fbuf i n off)
+      (if (= i n)
+          off
+        (let* ((b (ptr-read-u8 src i)))
+          (nl_cli_put_escaped_bytes
+           src fbuf (+ i 1) n
+           (if (if (= b 92) 1 (= b 34))
+               (nl_cli_put_byte fbuf (nl_cli_put_byte fbuf off 92) b)
+             (nl_cli_put_byte fbuf off b))))))
+    (defun nl_cli_put_ldir_string (fbuf off sx)
+      (nl_cli_put_byte
+       fbuf
+       (nl_cli_put_escaped_bytes (nl_bi_strptr sx) fbuf 0 (nl_bi_strlen sx)
+                                 (nl_cli_put_byte fbuf off 34))
+       34))
     (defun nl_cli_put_string_value (fbuf off sx quoted)
       (let* ((off2 (if (= quoted 1) (nl_cli_put_byte fbuf off 34) off))
              (off3 (nl_cli_put_raw_bytes (nl_bi_strptr sx) fbuf 0

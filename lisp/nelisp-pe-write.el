@@ -872,7 +872,9 @@ Section numbers (1-based, per COFF spec §4):
         (import-size (or (plist-get fields :import-size) 0))
         (iat-rva (or (plist-get fields :iat-rva) 0))
         (iat-size (or (plist-get fields :iat-size) 0))
-        (stack-reserve (or (plist-get fields :stack-reserve) #x100000))
+        ;; Reserve 8 MiB like the Linux default RLIMIT_STACK; the 1 MiB PE
+        ;; default overflowed (0xC00000FD) while the native compiler ran.
+        (stack-reserve (or (plist-get fields :stack-reserve) #x800000))
         (stack-commit (or (plist-get fields :stack-commit) #x1000))
         (heap-reserve (or (plist-get fields :heap-reserve) #x100000))
         (heap-commit (or (plist-get fields :heap-commit) #x1000)))
