@@ -100,7 +100,7 @@ def run(command, env, work, phase, deadline=None):
 
 def phase_passed(phase, receipt, output, errors):
     """Require native backend, exact completion, validation count and load digest."""
-    if receipt['rc'] != 0 or receipt['seconds'] >= 300 or errors:
+    if receipt['rc'] != 0 or receipt['seconds'] >= DEFAULT_DEADLINE or errors:
         return False
     marker = 'F1-COMPILE-PASS' if phase == 'compile' else 'F1-CACHE-PASS'
     lines = [line for line in output.splitlines() if line.startswith(marker)]
