@@ -26,6 +26,7 @@
 (declare-function nelisp-native-cache-abi-hash "nelisp-native-cache" ())
 (declare-function nelisp-native-cache--input-hash "nelisp-native-cache" (function))
 (declare-function nelisp-native-cache--publish "nelisp-native-cache" (temporary final))
+(declare-function nelisp-native-windows-temporary "nelisp-native-windows" (prefix))
 (defun nelisp-native-template-recipe (function)
   "Freeze readable input, retaining live switch tables only as constant roots."
   (unless (byte-code-function-p function) (error "Template requires materialized bytecode"))
@@ -657,9 +658,14 @@ its validator once. Explicit checked loads reconstruct the proof."
                            :entry nelisp-native-template-entry :arity (plist-get certificate :arity)
                            :root-count (plist-get certificate :root-count) :exit-root-base (plist-get certificate :exit-root-base)
                            :initializers (plist-get certificate :initializers)))
-             (temporary (make-temp-file (expand-file-name ".publish-" (file-name-directory file)))))
+             ;; As in-house: a Windows temporary carries the owner and
+             ;; protected DACL from creation; a plain file inherits an
+             ;; Administrators owner on elevated tokens and is refused.
+             (temporary (funcall (if (nelisp-native-load--windows-p)
+                                     #'nelisp-native-windows-temporary #'make-temp-file)
+                                 (expand-file-name ".publish-" (file-name-directory file)))))
         (unwind-protect
-            (progn
+            (let ((coding-system-for-write 'utf-8-unix))
               (write-region (concat (nelisp-native-template--print header) "\n"
                                     (if (eq manifest (car serialized)) (cdr serialized)
                                       (nelisp-native-template--print manifest)) "\n") nil temporary nil 'silent)

@@ -225,7 +225,8 @@ jobs:
   native-template:
     # W2 acceptance uses the pinned Win64 stencil set and full cold image.
     # Backend refusal or register corruption fails; no fallback qualifies W1.3.
-    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[windows-corpus]')
+    # [windows-template] reruns this job alone with the reader and F1.
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[windows-corpus]') || contains(github.event.head_commit.message, '[windows-template]')
     needs: build-reader
     runs-on: windows-latest
     timeout-minutes: 40
