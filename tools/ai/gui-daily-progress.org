@@ -68,7 +68,11 @@ cmd: bash -c 'bash tools/c-core-image.sh check >/dev/null 2>&1 || bash tools/c-c
 cmd: bash -c 'timeout 200 bin/nemacs-nw --build-image >/dev/null 2>&1 && timeout 150 python3 tools/nemacs-pty-smoke.py --group launcher --output build/nemacs-pty-smoke/ledger-launcher'
 
 ** S1.3 The user's real init.el (~/.emacs.d) loads under the image without errors in a bounded time
-pending
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 1000
+cmd: bash tools/s13-init-probe.sh 300
+
+#+NOTE: 2026-10-10 converted from pending to a red cmd (denominator unchanged).  tools/s13-init-probe.sh loads ~/.emacs.d through nemacs-load-user-init-files under the C-core image inside bwrap (real filesystem read-only, private ~/.emacs.d copy linking the package dirs, no network); GNU Emacs must load the same init there first (else exit 2).  PASS = no init error within 300 s (GNU: 8.5 s).  Validated with three fake inits: clean -> PASS, NeLisp-only error -> FAIL, GNU error -> UNKNOWN.
 
 ** S1.4 End to end: a pty session starts nemacs -nw, runs a scripted key sequence through the real command loop and exits cleanly
 #+REQUIRES: NELISP_BIN

@@ -3333,6 +3333,33 @@ GNU custom.el's recursive sorter relies on this (lane K6, org ol-eww)."
       (fmakunbound 'emacs-load-test--member-first)
       (fmakunbound 'emacs-load-test--member-second))))
 
+(ert-deftest emacs-load-test/periodic-gc-starts-clock-per-process ()
+  "A last-GC time inherited from another process (a heap image) is not due.
+The first check in a process starts its clock; later checks keep the
+cost-ratio policy."
+  (let* ((clock 1000.0)
+         (collections 0)
+         (load-garbage-collect-interval 1)
+         (emacs-load--gc-cost-ratio 10)
+         (emacs-load--gc-last-end 10.0)      ; recorded by an image builder
+         (emacs-load--gc-last-cost 4.0)
+         (emacs-load--gc-pid (1+ (emacs-pid))))
+    (cl-letf (((symbol-function 'float-time) (lambda (&rest _) clock))
+              ((symbol-function 'garbage-collect)
+               (lambda () (setq collections (1+ collections)))))
+      (emacs-load--periodic-gc 1)
+      (should (= collections 0))
+      (should (eql emacs-load--gc-pid (emacs-pid)))
+      (should (= emacs-load--gc-last-end 1000.0))
+      ;; Not yet 10x the last cost since this process started its clock.
+      (setq clock 1030.0)
+      (emacs-load--periodic-gc 1)
+      (should (= collections 0))
+      ;; Due again under the ordinary policy.
+      (setq clock 1041.0)
+      (emacs-load--periodic-gc 1)
+      (should (= collections 1)))))
+
 (ert-deftest emacs-load-test/incremental-eval-preserves-lexical-environment ()
   (let ((lexical-binding t))
     (nelisp--load-eval-one-form
