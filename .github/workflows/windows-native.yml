@@ -37,6 +37,7 @@ jobs:
       - name: Host Win64 emitter and receipt negative controls
         shell: bash
         run: |
+          python test/support/check-windows-loaddefs.py "$RUNNER_TEMP/emacs-31.1.zip"
           python test/support/check-windows-native-host.py
           python test/support/run-windows-native-f1-test.py
       - name: Build the Windows PE reader
@@ -53,6 +54,7 @@ jobs:
         with:
           name: windows-native-f1
           path: |
+            target/windows-loaddefs-*/
             target/windows-native/
             target/windows-native-ci/
             target/nelisp.exe
