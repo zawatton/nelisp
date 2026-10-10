@@ -144,6 +144,10 @@ public static class NelispM365Shared {
 }
 '@
     }
+    # Sent in the handshake: a daemon only lets a client that started after
+    # it replace it, so sessions left running across an update are served
+    # by the newer daemon instead of restarting it.
+    $proxyStarted = ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() / 1000.0).ToString([Globalization.CultureInfo]::InvariantCulture)
     $svcState = Join-Path $state 'service'
     $svcTemp = Join-Path $svcState 'tmp'
     foreach ($dir in @($svcState, $svcTemp, (Split-Path $token -Parent), $download)) {
@@ -225,7 +229,7 @@ public static class NelispM365Shared {
             $stream = $client.GetStream()
             $stream.ReadTimeout = 10000
             $wire = [NelispM365Conn]::new($stream)
-            $wire.WriteLine('(hello ' + (LispString $tok) + ' ' + (LispString $version) + ')')
+            $wire.WriteLine('(hello ' + (LispString $tok) + ' ' + (LispString $version) + ' ' + $proxyStarted + ')')
             $reply = $wire.ReadLine()
             if ($reply -and $reply.StartsWith('(welcome')) {
                 $stream.ReadTimeout = [Threading.Timeout]::Infinite
