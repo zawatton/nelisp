@@ -71,11 +71,12 @@
   (unless (= 1 (nelisp-native-windows-call "CloseHandle" handle))
     (error "Windows handle close failed")))
 
-(defun nelisp-native-windows-open (path access disposition flags &optional security)
-  "Open PATH without following a final reparse point, with no delete sharing."
+(defun nelisp-native-windows-open (path access disposition flags &optional security share)
+  "Open PATH without following a final reparse point, with no delete sharing.
+SHARE defaults to FILE_SHARE_READ (1)."
   (let ((wide (nelisp-native-windows-wide path)))
     (unwind-protect
-        (let ((handle (nelisp-native-windows-call "CreateFileW" wide access 1
+        (let ((handle (nelisp-native-windows-call "CreateFileW" wide access (or share 1)
                                                 (or security 0) disposition
                                                 (logior flags #x200000) 0)))
           (unless (and (> handle 0) (/= handle #xffffffffffffffff) (/= handle -1))
@@ -254,7 +255,11 @@ the cache directory itself must have the current owner's protected DACL."
                                  (= 183 (nelisp-native-windows-call "GetLastError")))
                        (error "Private directory creation failed"))
                    (nelisp-native-windows-free wide))))))
-          (let ((handle (nelisp-native-windows-open prefix #x20001 3 #x2000000)))
+          ;; Pin the ancestor against rename or deletion (no FILE_SHARE_DELETE),
+          ;; but share writes: NTFS opens the parent directory for write when a
+          ;; child is renamed into it, and a read-only share mode made every
+          ;; MoveFileExW publication fail with ERROR_SHARING_VIOLATION (32).
+          (let ((handle (nelisp-native-windows-open prefix #x20001 3 #x2000000 nil 3)))
             (condition-case err
                 (progn
                   (unless (= #x10 (logand (nelisp-native-windows-attributes handle) #x410))
