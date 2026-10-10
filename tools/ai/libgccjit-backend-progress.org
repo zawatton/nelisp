@@ -279,4 +279,5 @@ evidence: target/windows-native/ci-run15/receipt.json sha256=f40b5ea8b26e17a0aa7
 ** W1.3 On a real Windows x86_64 host (CI windows-latest or the user's machine), U10 230/230 and F3 52/52 pass with the in-house backend, and the template backend passes its smoke
 pending
 ** W1.4 End to end: on Windows, the 1e6 hot loop runs natively in at most 1/5 of the interpreted time, and the Linux ledger stays green
+#+NOTE: 2026-10-10 Windows half met: CI run 38056525157 (36ede9f05) native 1.589 s vs interpreted 78.43 s, ratio 0.020 (best of 3, compile 567 s); receipt target/windows-native/ci-hot-loop-38056525157/receipt.json sha256=0088c7827e559b0c1c35bf21ce6934b0f6984d25d0e847e45b0597c2533dcd7c. Stays pending until the Linux ledger is requalified on the integrated tree.
 pending
