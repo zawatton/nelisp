@@ -295,12 +295,31 @@ only after this check succeeds, and subsequent opens require the private DACL."
   (nelisp-native-windows-protect-file temporary)
   (let ((from (nelisp-native-windows-wide temporary)) (to (nelisp-native-windows-wide final)))
     (unwind-protect
-        (if (= 1 (nelisp-native-windows-call "MoveFileExW" from to 8)) t
-          (unless (member (nelisp-native-windows-call "GetLastError") '(80 183))
-            (error "Atomic Windows cache publication failed"))
-          ;; Racing winner must satisfy precisely the same trust predicate.
-          (nelisp-native-windows-file-bytes final t)
-          nil)
+        (let ((attempt 0) (code nil) (done nil))
+          ;; A virus scanner or the indexer may briefly hold the new
+          ;; temporary open; retry sharing-violation and access-denied
+          ;; failures for up to about 5 s before giving up.
+          (while (not done)
+            (if (= 1 (nelisp-native-windows-call "MoveFileExW" from to 8))
+                (setq done t code 0)
+              (setq code (nelisp-native-windows-call "GetLastError")
+                    attempt (1+ attempt))
+              (if (and (memq code '(5 32 33)) (< attempt 50))
+                  (sleep-for 0.1)
+                (setq done t))))
+          (cond
+           ((eql code 0) t)
+           ((memq code '(80 183))
+            ;; Racing winner must satisfy precisely the same trust predicate.
+            (nelisp-native-windows-file-bytes final t)
+            nil)
+           ((and (file-exists-p final) (not (file-exists-p temporary)))
+            ;; The move happened although the error read back afterwards was
+            ;; not MoveFileExW's own; verify the published file the same way.
+            (nelisp-native-windows-file-bytes final t)
+            t)
+           (t (error "Atomic Windows cache publication failed (error %s after %d attempts)"
+                     code attempt))))
       (nelisp-native-windows-free from) (nelisp-native-windows-free to))))
 
 (provide 'nelisp-native-windows)
