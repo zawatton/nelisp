@@ -392,6 +392,9 @@ The caller must inhibit mid-form collection until the syscall returns."
                           :input (nelisp-native-cache--input-hash function)
                           :entry (plist-get result :entry-name)
                           :arity (plist-get result :argument-count)
+                          :argument-min (plist-get input :argument-min)
+                          :argument-max (plist-get input :argument-max)
+                          :rest-argument-p (plist-get input :rest-argument-p)
                           :root-count (plist-get result :required-root-count)
                           :exit-root-base (plist-get (plist-get result :plan) :exit-root-base)
                           :initializers (append (plist-get result :primitive-initializers)
@@ -442,14 +445,28 @@ The caller must inhibit mid-form collection until the syscall returns."
             (temporary nil))
         (unwind-protect
             (let* ((input (nelisp-bytecode-compiler-input-build (nelisp-native-cache--function function)))
-                   (plan (nelisp-bytecode-native-rooted-cfg-plan input nil nelisp-native-cache-guard-mode))
-                   (emitted (and (eq (plist-get plan :status) 'complete)
-                                 (nelisp-bytecode-native-rooted-cfg-shared-emit-build
-                                  plan nelisp-bytecode-native-rooted-cfg-contract-shared-entry)))
+                   (paired (nelisp-bytecode-native-rooted-cfg-shared-emit-build-from-input
+                            input nelisp-bytecode-native-rooted-cfg-contract-shared-entry nil nelisp-native-cache-guard-mode))
+                   (plan (plist-get paired :plan))
+                   (emitted (plist-get paired :emitted))
                    (contract (and (eq (plist-get emitted :status) 'complete)
                                   (nelisp-bytecode-native-rooted-cfg-contract-create-shared-v2 input plan emitted))))
-              (unless (and contract (nelisp-bytecode-native-rooted-cfg-contract-valid-p contract))
-                (error "gccjit: shared-v2 compile contract refused"))
+              ;; Authenticate all returned metadata, including fields omitted
+              ;; from the serialized contract, before using it in the header.
+              (let ((verified (and contract
+                                   (nelisp-bytecode-native-rooted-cfg-contract-valid-p
+                                    contract :reconstruction input))))
+                (unless (and verified
+                             (equal input (plist-get verified :input))
+                             (equal plan (plist-get verified :plan))
+                             (equal emitted (plist-get verified :emitted)))
+                  (error "gccjit: shared-v2 compile contract refused"))
+                ;; Compilation consumes the independent snapshot, not values
+                ;; that the producer can mutate after the comparisons.
+                (setq input (plist-get verified :input)
+                      plan (plist-get verified :plan)
+                      emitted (plist-get verified :emitted)
+                      contract (plist-get verified :expected-contract)))
               (when (plist-get plan :funcall-version)
                 (unless (and (fboundp 'nelisp-native-load-compiler-f1-runtime-p)
                              (nelisp-native-load-compiler-f1-runtime-p))
@@ -464,6 +481,9 @@ The caller must inhibit mid-form collection until the syscall returns."
                                     :input (nelisp-native-cache--input-hash function)
                                     :entry (plist-get emitted :entry-name)
                                     :arity (plist-get emitted :argument-count)
+                          :argument-min (plist-get input :argument-min)
+                          :argument-max (plist-get input :argument-max)
+                          :rest-argument-p (plist-get input :rest-argument-p)
                                     :root-count (plist-get emitted :required-root-count)
                                     :exit-root-base (plist-get plan :exit-root-base)
                                     :initializers (append (plist-get emitted :primitive-initializers)
@@ -506,10 +526,8 @@ The caller must inhibit mid-form collection until the syscall returns."
        (let* ((addresses nelisp-native-cache--addresses)
               (factory (lambda (live-constants)
                          (let ((callable (nelisp-native-cache--callable-from-entry
-                                          entry header addresses live-constants)))
-                           (lambda (&rest arguments)
-                             (unless handle (error "Native cache library unavailable"))
-                             (apply callable arguments))))))
+                                          entry header addresses live-constants handle)))
+                           (nelisp-native-cache--retain-callable callable handle)))))
          (when nelisp-native-cache--unit-observer
            (funcall nelisp-native-cache--unit-observer factory))
          (funcall factory constants))))))
@@ -534,9 +552,14 @@ The caller must inhibit mid-form collection until the syscall returns."
   "Construct a callable retaining HANDLE and its cached frame protocol."
   (let ((callable (nelisp-native-cache--callable-from-entry
                    (nelisp-native-load-raw-export-address handle (plist-get header :entry))
-                   header addresses constants)))
+                   header addresses constants handle)))
+    (nelisp-native-cache--retain-callable callable handle)))
+
+(defun nelisp-native-cache--retain-callable (callable owner)
+  "Retain OWNER for CALLABLE without an interpreted dispatch wrapper."
+  (if (and (fboundp 'subrp) (subrp callable)) callable
     (lambda (&rest arguments)
-      (unless handle (error "Native cache mapping unavailable"))
+      (unless owner (error "Native cache mapping unavailable"))
       (apply callable arguments))))
 
 ;; Constant vector of FUNCTION's byte code, or nil for non-byte-code input.
@@ -544,8 +567,9 @@ The caller must inhibit mid-form collection until the syscall returns."
   (let ((code (nelisp-native-cache--function function)))
     (and (byte-code-function-p code) (aref code 2))))
 
-(defun nelisp-native-cache--callable-from-entry (entry header addresses &optional constants)
+(defun nelisp-native-cache--callable-from-entry (entry header addresses &optional constants owner)
   "Construct the shared raw-v2 frame callable from ENTRY, HEADER and ADDRESSES."
+  (catch 'nelisp-native-cache-callable
   (let ((env (plist-get addresses :environment))
         (arity (plist-get header :arity)) (count (plist-get header :root-count))
         (initializers (plist-get header :initializers))
@@ -570,11 +594,45 @@ The caller must inhibit mid-form collection until the syscall returns."
                                   ((plist-get init :switch) switch-function)
                                   ((plist-get init :frame) (nelisp-native-frame-v2-initializer))
                                   (t (plist-get init :value)))))) initializers))
+    ;; The private tag-18 descriptor is constructed only after authentication.
+    ;; Runtime checks below protect activation ownership, not artifact trust.
+    (when (fboundp 'nelisp--native-subr-create)
+      (let ((descriptor
+             (vector entry (or (plist-get header :argument-min) arity)
+                     (if (plist-get header :rest-argument-p) -1
+                       (or (plist-get header :argument-max) arity))
+                     arity count
+                     (vconcat (mapcar
+                               (lambda (init)
+                                 (vector (plist-get init :root)
+                                         (cond ((plist-member init :constant-index) 1)
+                                               ((plist-get init :poll-state) 2) (t 0))
+                                         (if (plist-member init :constant-index)
+                                             (plist-get init :constant-index)
+                                           (plist-get init :value)))) initializers))
+                     constants (or exit-base -1) (list owner addresses header))))
+        (throw 'nelisp-native-cache-callable
+          (let ((native (nelisp--native-subr-create descriptor (intern entry-name) 0 t)))
+            (if template-p
+                (lambda (&rest arguments)
+                  (setq nelisp-native-template--entry-count (1+ nelisp-native-template--entry-count))
+                  (apply native arguments))
+              native)))))
     (lambda (&rest arguments)
       ;; Keep the entire mapping reachable for the lifetime of the closure.
       (unless (and entry (not broken)) (error "Native cache unit is broken"))
-      (unless (= (length arguments) arity)
-        (signal 'wrong-number-of-arguments (list entry-name (length arguments))))
+      (let ((minimum (or (plist-get header :argument-min) arity))
+            (maximum (if (plist-get header :rest-argument-p) nil
+                       (or (plist-get header :argument-max) arity)))
+            (argc (length arguments)))
+        (unless (and (>= argc minimum) (or (null maximum) (<= argc maximum)))
+          (signal 'wrong-number-of-arguments (list entry-name argc)))
+        (let ((normalized nil) (tail arguments) (index 0))
+          (while (< index arity)
+            (push (if (and (null maximum) (= index (1- arity))) (copy-sequence tail)
+                    (prog1 (car tail) (setq tail (cdr tail)))) normalized)
+            (setq index (1+ index)))
+          (setq arguments (nreverse normalized))))
       (let ((ticket nil) (slots nil))
         (unwind-protect
             (progn
@@ -628,7 +686,7 @@ The caller must inhibit mid-form collection until the syscall returns."
             (condition-case err
                 (unless (eql (ptr-call end env ticket 0 0 0 0) 1)
                   (error "Native cache root frame ownership lost"))
-              (error (setq broken t) (signal (car err) (cdr err))))))))))
+              (error (setq broken t) (signal (car err) (cdr err)))))))))))
 
 (defun nelisp-native-cache--unsigned-snapshot (snapshot start end manifest)
   "Recover the producer's unsigned bytes from one bounded SNAPSHOT.
@@ -656,6 +714,11 @@ Return nil for legacy layouts, preserving their ordinary canonical check."
              (read-eval nil) (read-circle nil)
              (first (read-from-string snapshot))
              (header (car first))
+             (code (nelisp-native-cache--function function))
+             (descriptor (and (byte-code-function-p code) (aref code 0)))
+             (minimum (if (integerp descriptor) (logand descriptor 127) 0))
+             (restp (and (integerp descriptor) (/= (logand descriptor 128) 0)))
+             (maximum (if (integerp descriptor) (ash descriptor -8) 0))
              (arity (plist-get header :arity)) (count (plist-get header :root-count))
              (base (plist-get header :exit-root-base)))
         (unless (and (nelisp-native-load--trusted-list-p header)
@@ -665,6 +728,11 @@ Return nil for legacy layouts, preserving their ordinary canonical check."
                      (equal (plist-get header :input) (nelisp-native-cache--input-hash function))
                      (stringp (plist-get header :entry))
                      (integerp arity) (<= 0 arity)
+                     (= arity (+ maximum (if restp 1 0)))
+                     (= minimum (or (plist-get header :argument-min) arity))
+                     (eq (not (null restp)) (not (null (plist-get header :rest-argument-p))))
+                     (if restp (null (plist-get header :argument-max))
+                       (eql maximum (or (plist-get header :argument-max) arity)))
                      (integerp count) (< arity count) (< 0 count 256)
                      (or (null base) (and (integerp base) (> base 0) (< (+ base 2) count)))
                      (nelisp-native-load--trusted-list-p (plist-get header :initializers))

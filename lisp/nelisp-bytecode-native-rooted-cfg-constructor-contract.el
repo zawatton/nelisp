@@ -24,8 +24,8 @@ roots and CONS. Arithmetic, calls, accessors and branches remain outside it."
   (and valid-owner
        (funcall same valid-owner
                 (funcall lookup 'nelisp-bytecode-native-rooted-cfg-contract-valid-p))
-       (funcall valid-owner contract)
-       (let* ((plan (plist-get contract :plan))
+       (let* ((reconstruction (funcall valid-owner contract :reconstruction))
+              (plan (plist-get reconstruction :plan))
               (blocks (plist-get plan :blocks))
               (operations (and (consp blocks)
                                (cl-loop for block in blocks append
@@ -34,7 +34,10 @@ roots and CONS. Arithmetic, calls, accessors and branches remain outside it."
                                    (eq (plist-get operation :opcode) 'cons))
                                  operations))
               (imports (and has-cons '("nl_native_cons_v2"))))
-         (and (eq (plist-get plan :status) 'complete)
+         (and reconstruction
+              (funcall same valid-owner
+                       (funcall lookup 'nelisp-bytecode-native-rooted-cfg-contract-valid-p))
+              (eq (plist-get plan :status) 'complete)
               (= (length blocks) 1)
               (null (plist-get (car blocks) :successors))
               (null (plist-get plan :phis))

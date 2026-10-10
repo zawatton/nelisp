@@ -14953,7 +14953,7 @@ needs escaping because the reader consumes it as an escape prefix."
           (setq i (1+ i)))
         (and ok seen-digit))))))
 
-(defun nelisp--prn-symbol-escaped (s)
+(defun nelisp--prn-symbol-escaped-uncached (s)
   "Return S with reader atom terminators escaped for readable printing."
   (if (= (length s) 0)
       "##"
@@ -14967,6 +14967,21 @@ needs escaping because the reader consumes it as an escape prefix."
           (nelisp--prn-chunks-add chunks (char-to-string c)))
         (setq i (1+ i)))
       (nelisp--prn-chunks-string chunks))))
+
+(defvar nelisp--prn-symbol-cache nil
+  "Optional bounded atom cache owned by one canonical contract digest.")
+(defun nelisp--prn-symbol-escaped (s)
+  ;; Ordinary printing retains its reference path. The digest's private cache
+  ;; copies both keys and values, so mutable symbol-name/result strings cannot
+  ;; poison a later hit. Escaping has no print-mode-dependent input.
+  (if (not nelisp--prn-symbol-cache)
+      (nelisp--prn-symbol-escaped-uncached s)
+    (let ((cached (gethash s nelisp--prn-symbol-cache)))
+      (if cached (copy-sequence cached)
+        (let ((result (nelisp--prn-symbol-escaped-uncached s)))
+          (when (< (hash-table-count nelisp--prn-symbol-cache) 1024)
+            (puthash (copy-sequence s) (copy-sequence result) nelisp--prn-symbol-cache))
+          result)))))
 
 (defun nelisp--prn-float (x)
   "Return the printed representation of float X.
@@ -17308,9 +17323,15 @@ processors not available."
                     (if count (seq-take names count) names)))
               nil)))))
 (unless (fboundp 'file-exists-p)
-  (defun file-exists-p (filename)
-    (let ((s (nelisp--syscall-stat filename)))
-      (or (eq s 'file) (eq s 'directory)))))
+  ;; The stat classifier first performs this same F_OK test. Existence does
+  ;; not require its second syscall or its file/directory classification.
+  ;; Keep the Lisp reference for hosts without the existing raw OS primitive.
+  (if (fboundp 'nelisp--syscall-path-int)
+      (defun file-exists-p (filename)
+        (= 0 (nelisp--syscall-path-int 21 filename 0)))
+    (defun file-exists-p (filename)
+      (let ((s (nelisp--syscall-stat filename)))
+        (or (eq s 'file) (eq s 'directory))))))
 (unless (fboundp 'file-directory-p)
   (defun file-directory-p (filename)
     (eq (nelisp--syscall-stat filename) 'directory)))
@@ -20044,13 +20065,15 @@ unlisted OS-specific entry point."
 
   (defun func-arity (function)
     "Return (MIN . MAX), the number of arguments accepted by FUNCTION."
-    (let ((fn (if (symbolp function)
+    (let* ((fn (if (symbolp function)
                   (indirect-function function)
-                function)))
+                function))
+           (native-arity (and (fboundp 'nelisp--native-subr-arity)
+                              (nelisp--native-subr-arity fn))))
       (cond
-       ((and (fboundp 'nelisp--native-subr-arity)
-             (integerp (nelisp--native-subr-arity fn)))
-        (let ((arity (nelisp--native-subr-arity fn)))
+       ((consp native-arity) native-arity)
+       ((integerp native-arity)
+        (let ((arity native-arity))
           ;; 3 encodes a native subr with `&optional' arity (1 . 2), 4 one
           ;; with `&optional' arity (4 . 5).
           (cond ((eql arity 3) (cons 1 2))

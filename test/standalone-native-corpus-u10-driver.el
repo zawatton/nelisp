@@ -39,9 +39,9 @@
         (cl-letf (((symbol-function 'nelisp-native-cache-compile)
                    (lambda (&rest _) (error "U10 warm load attempted compilation")))
                   ((symbol-function 'nelisp-native-cache--callable-from-entry)
-                   (lambda (address header addresses &optional constants)
+                   (lambda (address header addresses &optional constants owner)
                      (setq maps (1+ maps) entry address loaded-header header)
-                     (funcall constructor address header addresses constants))))
+                     (funcall constructor address header addresses constants owner))))
           (setq native (nelisp-native-cache-load fn)))
         (u10-assert (and native entry (= maps 1)) "one mapped native entry")
         (u10-assert (equal checks (list nelisp-native-load--raw-v2-check-count

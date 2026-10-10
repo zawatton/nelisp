@@ -269,11 +269,22 @@ phis at joins.  It refuses before any backend or artifact side effect."
          (handler-bank nil) (handler-pairs nil)
          (blocks (and (vectorp (plist-get frame :blocks))
                       (append (plist-get frame :blocks) nil)))
-         (arity (plist-get input :argument-count))
+         (arity (if (and (integerp (plist-get input :argument-descriptor))
+                         (null (plist-get input :argument-count)))
+                    (plist-get input :initial-stack-depth)
+                  (plist-get input :argument-count)))
          (initial-depth (plist-get input :initial-stack-depth))
          (descriptor (plist-get input :argument-descriptor))
          (constants (plist-get input :constants))
          (block-map (and blocks (nelisp-bytecode-native-rooted-cfg--block-map blocks)))
+         (incoming-by-target
+          (let ((table (make-hash-table :test 'eql)))
+            (dolist (block blocks)
+              (dolist (edge (append (plist-get block :successors) nil))
+                (let ((target (plist-get edge :target)))
+                  (puthash target (cons (cons block edge) (gethash target table)) table))))
+            (maphash (lambda (target edges) (puthash target (nreverse edges) table)) table)
+            table))
          (topology (and frame (nelisp-bytecode-native-rooted-cfg-topology-check frame)))
          (order (and block-map (eq (plist-get topology :status) 'complete)
                      (mapcar (lambda (start) (gethash start block-map))
@@ -302,6 +313,7 @@ phis at joins.  It refuses before any backend or artifact side effect."
                                 (memq (plist-get instruction :opcode) '(175 176 177)))
                               (append (plist-get block :instructions) nil))) blocks))
          (cycle-entries nil) (cycle-phis nil) (copy-roots nil) (poll-root nil) (poll-exit-roots nil)
+         (entry-bank nil) (staging-size 0)
          (constant-roots nil) (immediate-roots nil)
          (root-next 0) (phi-next 0) (states nil)
          (phis nil) (planned-blocks nil) (returns nil) (failure nil)
@@ -323,6 +335,13 @@ phis at joins.  It refuses before any backend or artifact side effect."
                     (cl-some (lambda (block)
                                (cl-some (lambda (instruction) (eq (plist-get instruction :kind) 'call))
                                         (append (plist-get block :instructions) nil))) blocks))))
+         ;; Index the same IR rows once. Retain a list per PC so even duplicate
+         ;; rows have exactly the old `cl-some' admission semantics.
+         (ir-rows-by-pc
+          (let ((table (make-hash-table :test 'eql)))
+            (dolist (row (append (plist-get (plist-get input :ir-result) :instructions) nil))
+              (puthash (aref row 0) (cons row (gethash (aref row 0) table)) table))
+            table))
          (primitive-roots nil) (scratch-root nil)
          (guard-mode (or arithmetic-guard-mode 'off)))
     (unless (and (guard-valid-p)
@@ -338,14 +357,14 @@ phis at joins.  It refuses before any backend or artifact side effect."
                             (cl-every (lambda (item)
                                         (or (and handler-p (eq (cdr item) 'handler-semantics)
                                                  (cl-some (lambda (row) (and (= (aref row 0) (car item)) (memq (aref row 1) '(48 49 50))))
-                                                          (append (plist-get (plist-get input :ir-result) :instructions) nil)))
+                                                          (gethash (car item) ir-rows-by-pc)))
                                             (and (eq (cdr item) 'non-fixnum-constant))
                                             (and (eq (cdr item) 'unsupported-semantics)
                                                  (cl-some (lambda (row)
                                                             (and (= (aref row 0) (car item))
                                                                  (or (memq (aref row 1) '(64 65 66 162 163 136 178 179 182 183 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 40 41 42 43 44 45 46 47))
                                                                      (<= 32 (aref row 1) 39))))
-                                                          (append (plist-get (plist-get input :ir-result) :instructions) nil)))))
+                                                          (gethash (car item) ir-rows-by-pc)))))
                                       (plist-get (plist-get input :ir-result) :unsupported)))))
                  (eq (plist-get frame :status) 'complete)
                  ;; Unsupported decoder markers precede this check in the
@@ -357,16 +376,14 @@ phis at joins.  It refuses before any backend or artifact side effect."
                  (integerp arity) (>= arity 0)
                  (integerp initial-depth) (= initial-depth arity)
                  (integerp (plist-get input :argument-min))
-                 (integerp (plist-get input :argument-max))
+                 (= (plist-get input :argument-min)
+                    (if (integerp descriptor) (logand descriptor 127) 0))
                  (or (and (= arity 0) (null descriptor))
                      (and (integerp descriptor) (<= 0 descriptor 65535)
-                          (= (logand descriptor 128) 0)
-                          (= (logand descriptor 127) arity)
-                          (= (ash descriptor -8) arity)))
+                          (<= (logand descriptor 127) (ash descriptor -8))
+                          (= arity (+ (ash descriptor -8)
+                                      (if (= (logand descriptor 128) 0) 0 1)))))
                  (vectorp constants)
-                 (not (plist-get input :rest-argument-p))
-                 (= (or (plist-get input :argument-min) -1) arity)
-                 (= (or (plist-get input :argument-max) -1) arity)
                  (not (plist-get input :potential-capture-placeholder-p))
                  (not (plist-get input :capture-values-available))
                  (or (null (plist-get input :closure-template-descriptor))
@@ -377,7 +394,7 @@ phis at joins.  It refuses before any backend or artifact side effect."
                  (<= (length blocks) nelisp-bytecode-native-rooted-cfg-max-blocks))
       (cl-return-from nelisp-bytecode-native-rooted-cfg-plan
         (nelisp-bytecode-native-rooted-cfg--unsupported
-         "input must be complete, fixed-arity lexical code with a reachable verified frame")))
+         "input must be complete lexical code with a bounded argument layout and reachable verified frame")))
     ;; The helper is consulted only after the existing owner seal and input
     ;; admission pass.  Its result is layout evidence, not runtime permission.
     (setq call1-layout (nelisp-bytecode-native-call1-layout input))
@@ -430,13 +447,19 @@ phis at joins.  It refuses before any backend or artifact side effect."
     (when switch-p
       (setq switch-root root-next root-next (1+ root-next)))
     (when banked
-      ;; Allocate the bank before reading any predecessor, including entry loops.
+      ;; Only one block executes at a time. Edges already snapshot all inputs
+      ;; through COPY-ROOTS before publishing the destination bank, so entry
+      ;; stack positions can share a bank across blocks, including backedges.
+      (unless handler-p
+        (let ((depth (apply #'max (mapcar (lambda (b) (plist-get b :entry-stack-depth)) order))))
+          (setq entry-bank (number-sequence root-next (+ root-next depth -1))
+                root-next (+ root-next depth))))
       (dolist (block order)
         (let ((start (plist-get block :start)) (entry nil) (block-phis nil))
           (dotimes (slot (plist-get block :entry-stack-depth))
-            (push (cons (list :entry start slot) (if handler-p (nth slot handler-bank) root-next)) entry)
-            (unless handler-p (push (list :id phi-next :block start :slot slot :root root-next :incoming nil) block-phis)
-            (setq root-next (1+ root-next) phi-next (1+ phi-next))))
+            (push (cons (list :entry start slot) (nth slot (if handler-p handler-bank entry-bank))) entry)
+            (unless handler-p (push (list :id phi-next :block start :slot slot :root (nth slot entry-bank) :incoming nil) block-phis))
+            (setq phi-next (1+ phi-next)))
           (push (cons start (nreverse entry)) cycle-entries)
           (push (cons start (nreverse block-phis)) cycle-phis)))
       (dotimes (_ (apply #'max (mapcar (lambda (b) (plist-get b :entry-stack-depth)) order)))
@@ -453,7 +476,7 @@ phis at joins.  It refuses before any backend or artifact side effect."
     (dolist (block order)
       (let* ((start (plist-get block :start))
              (entry-depth (plist-get block :entry-stack-depth))
-             (incoming (nelisp-bytecode-native-rooted-cfg--incoming-edges blocks start))
+             (incoming (gethash start incoming-by-target))
              (entry-state nil) (phis-here nil) (ops nil))
         (if banked
             (setq entry-state (reverse (copy-tree (cdr (assq start cycle-entries))))
@@ -675,7 +698,8 @@ phis at joins.  It refuses before any backend or artifact side effect."
                                                                                     'symbol-value 'set) primitive-roots))
                                                       :staging-roots (number-sequence root-next
                                                                                      (+ root-next (length arguments) -1)))))
-                        (setq root-next (+ root-next (length arguments))))))
+                        (if banked (setq staging-size (max staging-size (length arguments)))
+                          (setq root-next (+ root-next (length arguments)))))))
                   (when (eq op 'switch)
                     (let* ((targets (delete-dups (mapcar (lambda (edge) (plist-get edge :target))
                                                        (append (plist-get block :successors) nil))))
@@ -687,7 +711,8 @@ phis at joins.  It refuses before any backend or artifact side effect."
                                                     :argument-roots (append inputs (list target-root))
                                                     :argument-count 3
                                                     :staging-roots (number-sequence root-next (+ root-next 2)))))
-                      (setq root-next (+ root-next 3))))
+                      (if banked (setq staging-size (max staging-size 3))
+                        (setq root-next (+ root-next 3)))))
                   (when (memq op '(primitive-call list-build funcall))
                     (let* ((primitive (and (or (= opcode 116) (memq op '(primitive-call list-build)))
                                            (nelisp-native-funcall-v2-primitive opcode)))
@@ -707,7 +732,8 @@ phis at joins.  It refuses before any backend or artifact side effect."
                                           :argument-roots arguments :argument-count count
                                           :staging-roots (number-sequence root-next (+ root-next staged-count -1))
                                           :provider 'nl_native_funcall_v2)))
-                      (setq root-next (+ root-next staged-count))
+                      (if banked (setq staging-size (max staging-size staged-count))
+                        (setq root-next (+ root-next staged-count)))
                       (when (memq opcode '(144 145))
                         (plist-put operation :legacy-binding-root root-next)
                         (push (cons (if (= opcode 144) 'standard-output 1) root-next) immediate-roots)
@@ -767,7 +793,7 @@ phis at joins.  It refuses before any backend or artifact side effect."
       (dolist (pair cycle-phis)
         (dolist (phi (cdr pair))
           (let ((incoming nil) (start (car pair)) (slot (plist-get phi :slot)))
-            (dolist (source (nelisp-bytecode-native-rooted-cfg--incoming-edges blocks start))
+            (dolist (source (gethash start incoming-by-target))
               (let* ((from (plist-get (car source) :start))
                      (token (aref (plist-get (cdr source) :slots) slot))
                      (root (nelisp-bytecode-native-rooted-cfg--input-root token (cdr (assq from states)))))
@@ -780,6 +806,16 @@ phis at joins.  It refuses before any backend or artifact side effect."
                    (mapcar #'cdr (cl-remove-if-not
                                   (lambda (pair) (= (car pair) (plist-get block :start)))
                                   (plist-get topology :poll-edges))))))
+    (when (and banked (> staging-size 0))
+      ;; Call staging has no lifetime beyond its operation. Keep it separate
+      ;; from every live SSA value and initializer, and share it across calls.
+      (dolist (block planned-blocks)
+        (dolist (operation (plist-get block :operations))
+          (when (plist-get operation :staging-roots)
+            (plist-put operation :staging-roots
+                       (number-sequence root-next
+                                        (+ root-next (length (plist-get operation :staging-roots)) -1))))))
+      (setq root-next (+ root-next staging-size)))
     (when f1-p
       (setq scratch-root root-next exit-root-base (1+ root-next) root-next (+ root-next 4))
       (dolist (block planned-blocks)

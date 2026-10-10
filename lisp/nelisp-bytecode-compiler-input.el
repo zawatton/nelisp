@@ -96,7 +96,7 @@ This conservative guard can reject a genuine user literal named V0."
       (if (/= 0 (logand descriptor 128))
           (let ((minimum (logand descriptor 127))
                 (maximum (ash descriptor -8)))
-            (and (= minimum maximum) (1+ maximum)))
+            (and (<= minimum maximum) (1+ maximum)))
         (ash descriptor -8))
     (unless (memq '&rest descriptor)
       (unless (eq (plist-get
@@ -137,14 +137,14 @@ This conservative guard can reject a genuine user literal named V0."
          (layout-index (plist-get layout :rest-binding-stack-index)))
     (and (nelisp-bytecode-compiler-input--rest-argument-p descriptor)
          (integerp required)
-         (or (and (integerp maximum) (= maximum required))
+         (or (and (integerp maximum) (>= maximum required))
              (and (null maximum) (consp descriptor)))
          (integerp initial-depth)
          (integerp layout-required)
          (integerp layout-index)
-         (= initial-depth (1+ required))
+         (= initial-depth (1+ (or maximum required)))
          (= layout-required required)
-         (= layout-index required))))
+         (= layout-index (or maximum required)))))
 
 (defun nelisp-bytecode-compiler-input--switch-ir-supported-p (ir frame constants)
   "Whether IR's unsupported markers are exactly frame-verified Bswitch data.
@@ -372,11 +372,13 @@ runtime captures.  Source forms and .elc loading are not part of this API."
                argument-descriptor code constants declared-depth))
              (rest-layout-supported-p
               (or (and rest-argument-p (integerp argument-descriptor)
-                       (= required-argument-count
-                          (ash argument-descriptor -8)))
+                       (<= required-argument-count
+                           (ash argument-descriptor -8)))
                   rest-slot-return-p))
              (rest-binding-stack-index
-              (and rest-layout-supported-p required-argument-count))
+              (and rest-layout-supported-p
+                   (if (integerp argument-descriptor)
+                       (ash argument-descriptor -8) required-argument-count)))
              (argument-layout
               (and rest-layout-supported-p
                    (list :required-argument-count required-argument-count

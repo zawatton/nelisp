@@ -2463,7 +2463,7 @@ The enclosing CFG admission must still authenticate the complete contract."
   "Append one compiler stage without macro-expanding the compiler body."
   (let ((path (getenv "NELISP_ROOTED_CFG_STAGE_LOG")))
     (when (and (stringp path) (> (length path) 0))
-      (write-region (format "producer-raw-%s source=%s artifact=%s\n" label source artifact)
+      (write-region (format "producer-raw-%s seconds=%.3f source=%s artifact=%s\n" label (float-time) source artifact)
                     nil path t 'silent))))
 
 (require 'nelisp-bytecode-native-rooted-cfg-contract)
@@ -2678,7 +2678,8 @@ without publishing an intermediate artifact.  The cache owns publication."
                      (setq cfg-validated-contract cfg-contract
                            cfg-validation-digest
                            (let ((print-length nil) (print-level nil)
-                                 (print-circle t) (print-escape-newlines t))
+                                 (print-circle t) (print-escape-newlines t)
+                                 (nelisp--prn-symbol-cache (make-hash-table :test 'equal)))
                              (secure-hash 'sha256 (prin1-to-string cfg-contract))))
                      cfg-validation-result)))
              (verified-input (plist-get reconstruction :input))
@@ -2719,9 +2720,13 @@ without publishing an intermediate artifact.  The cache owns publication."
                       (plist-get cfg-contract :imports) cfg-contract)
                      (< (plist-get cfg-contract :root-count) 256)
                      entry (= (length (nth 2 entry)) 4)
-                     (equal (nelisp-native-load--rooted-stack-normalize-ast entry)
-                            (nelisp-native-load--rooted-stack-normalize-ast
-                             (plist-get emitted :form)))
+                     ;; Equal objects have equal pure normalizations. The
+                     ;; independent full emission comparison above still
+                     ;; authenticates this shared producer/source subtree.
+                     (or (eq entry (plist-get emitted :form))
+                         (equal (nelisp-native-load--rooted-stack-normalize-ast entry)
+                                (nelisp-native-load--rooted-stack-normalize-ast
+                                 (plist-get emitted :form))))
                      (nelisp-native-load--rooted-cfg-provider-forms-valid-p
                       forms entry contract (plist-get verified-emitted :additional-source) cfg-contract))
           (error "nelisp-native-load: generic rooted-CFG AST/plan mismatch"))))
@@ -3115,7 +3120,8 @@ without publishing an intermediate artifact.  The cache owns publication."
                                     (symbol-function 'nelisp-bytecode-native-rooted-cfg-contract-valid-p))
                                 (equal cfg-validation-digest
                                        (let ((print-length nil) (print-level nil)
-                                             (print-circle t) (print-escape-newlines t))
+                                             (print-circle t) (print-escape-newlines t)
+                                 (nelisp--prn-symbol-cache (make-hash-table :test 'equal)))
                                          (secure-hash 'sha256 (prin1-to-string cfg-contract)))))
                            (nelisp-bytecode-native-rooted-cfg-contract-valid-p cfg-contract))
                        (equal (sort (copy-sequence imports) #'string<) expected))
@@ -3674,7 +3680,8 @@ only semantic reconstruction is omitted, never the manifest structure."
                (symbol-function 'nelisp-bytecode-native-rooted-cfg-contract-valid-p))
            (equal digest
                   (let ((print-length nil) (print-level nil)
-                        (print-circle t) (print-escape-newlines t))
+                        (print-circle t) (print-escape-newlines t)
+                                 (nelisp--prn-symbol-cache (make-hash-table :test 'equal)))
                     (secure-hash 'sha256 (prin1-to-string validated-contract)))))
       (nelisp-native-load--raw-v2-check manifest name t)
     (nelisp-native-load-raw-v2-check manifest name)))

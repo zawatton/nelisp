@@ -583,6 +583,32 @@
            (if (= (atomic-compare-exchange (+ control 24) top (+ top 32)) 1)
                top
              0)))))
+    ;; Clause 1 root storage. Reserve and publish one contiguous, zeroed bank
+    ;; with the same ownership, ticket, alignment and capacity checks as the
+    ;; single-slot API. No allocation/evaluator/GC call occurs before publish.
+    (defun nl_root_pin_reserve_many_v2 (env token count)
+      (let* ((control (data-addr nl_root_pin_control))
+             (base (data-addr nl_root_pin_region))
+             (end (+ base 524288))
+             (top (atomic-fetch-add (+ control 24) 0))
+             (next (+ top (* count 32))) (i 0))
+        (if (or (< count 1) (> count 255)
+                (/= (atomic-fetch-add control 0) 1)
+                (/= (ptr-read-u64 control 48) 2)
+                (/= (ptr-read-u64 control 8) env)
+                (/= (ptr-read-u64 control 32) token)
+                (< top base) (> next end)
+                (/= (logand (- top base) 31) 0))
+            0
+          (seq
+           (while (< i count)
+             (let ((slot (+ top (* i 32))))
+               (ptr-write-u64 slot 0 0)
+               (ptr-write-u64 slot 8 0)
+               (ptr-write-u64 slot 16 0)
+               (ptr-write-u64 slot 24 0))
+             (setq i (+ i 1)))
+           (if (= (atomic-compare-exchange (+ control 24) top next) 1) top 0)))))
     (defun nl_root_pin_end_v2 (env token)
       (let* ((control (data-addr nl_root_pin_control))
              (base (data-addr nl_root_pin_region))

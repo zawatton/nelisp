@@ -173,7 +173,7 @@ make-symbol	native-must-stay	allocation/tagged-object primitive
 nelisp--intern-lookup	native-review	No classification row; review against Doc 211 §6.
 nelisp--format-simple	native-review	No classification row; review against Doc 211 §6.
 unibyte-string	native-must-stay	allocation/tagged-object primitive
-nelisp--native-subr-create	native-review	No classification row; review against Doc 211 §6.
+nelisp--native-subr-create	native-must-stay	Clauses 1/2: tagged callable allocation and generic evaluator/GC entry; Lisp reference nelisp-native-cache--callable-from-entry.
 nelisp--native-subr-live-count	native-review	No classification row; review against Doc 211 §6.
 nelisp--native-subr-arity	native-review	No classification row; review against Doc 211 §6.
 make-vector	native-must-stay	allocation/tagged-object primitive

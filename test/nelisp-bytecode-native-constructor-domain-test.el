@@ -67,6 +67,8 @@
       (setq copy (plist-put copy :imports nil))
       (should-not (nelisp-bytecode-native-rooted-cfg-contract-constructor-p copy)))
     (let* ((copy (copy-tree contract t))
+           (_ (plist-put (plist-get copy :plan) :blocks
+                         (plist-get (plist-get (nelisp-bytecode-native-rooted-cfg-contract-valid-p contract :reconstruction) :plan) :blocks)))
            (operation (car (plist-get (car (plist-get (plist-get copy :plan) :blocks))
                                       :operations))))
       (plist-put operation :opcode 'call)
@@ -78,6 +80,8 @@
                     '(lambda (left right) (cons left right))))
          (copy (copy-tree contract t))
          (plan (plist-get copy :plan))
+         (_ (plist-put plan :blocks
+                       (plist-get (plist-get (nelisp-bytecode-native-rooted-cfg-contract-valid-p contract :reconstruction) :plan) :blocks)))
          (block (car (plist-get plan :blocks))))
     (should (equal (plist-get copy :imports) '("nl_native_cons_v2")))
     (plist-put block :successors '((:kind taken :target 1)))

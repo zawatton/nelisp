@@ -259,5 +259,10 @@ cmd: python3 target/evidence-final/check-acceptance.py --sha f1ca58339adad3ec8fb
 ** P3.2 Cyclic-edge polls take a native fast path (quit flag and allocator debt tested in machine code) and call the evaluator only on the slow path, on all three backends, with the U10/F3/F1/F1b/frame/cleanup/handler qualifications passing
 #+NOTE: 2026-10-10 P3 qualification: Native authenticated poll gate plus fresh quiet/quit/inhibit/changed-flag/forced-GC tests; allocator debt/growth/root re-arming and all U10/F3/F1/F1b/frame/cleanup/handler regressions. Receipt target/evidence-final/acceptance.json; uncommitted sources based on bcbaf9712, exact source pins and rebuilt static/dynamic readers, full/lean images and authenticated companions.
 cmd: python3 target/evidence-final/check-acceptance.py --sha f1ca58339adad3ec8fb9ccb6e5ebaf0dd473b9368b6c451a2706ebacff2d5f86 --criterion P3.2
+** P3.4 Calling a natively compiled leaf function from interpreted code is cheaper than calling its interpreted definition: file-exists-p, file-name-directory and a 3-argument arithmetic function, each called 1e5 times from an interpreted loop, take at most 1/2 of the interpreted-definition time on in-house and gccjit
+#+NOTE: 2026-10-10 added; denominator 29 -> 31 (33 with W1). A file-primitive probe found natively compiled file-exists-p/file-name-directory 60-123x slower per call than interpreted, and the C-core GUI g4 benchmark 3-15x slower with native hot functions, although the in-native 1e6 loop is 19x faster: the interpreter-to-native call boundary dominates.
+pending
+** P3.5 Native admission covers &optional/&rest arglists and the GUI hot set: expand-file-name, directory-files, locate-file and emacs-redisplay--ml-spans compile natively on in-house (and gccjit where available) within 290 s and match the interpreter
+pending
 ** P3.3 End to end: on the C-core merged dynamic binary, natively compiling the GUI hot functions makes the g4-interpretation benchmark faster than interpreted, with identical output
 pending

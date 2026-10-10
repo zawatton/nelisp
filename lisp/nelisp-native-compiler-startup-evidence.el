@@ -58,12 +58,12 @@
          (canonical (nelisp-native-compiler-startup-evidence--forms source))
          (derived (nelisp-native-compiler-startup-evidence--forms template)) found)
     (unless (and (equal (nelisp-native-rooted-build-evidence-source-hash source 4194304)
-                        "e20ce939df219bf5d898b2cba7dc6ee21581c6773fb0a4f595ea01e95fa69656")
+                        "15f03e43723758043414e8778e28ff5813f0d75857c97e3b966e6d0e34877d32")
                  (equal (nelisp-native-rooted-build-evidence-source-hash template 4194304)
                         "a8449a1867585a0f388b9ba963ebffc9591309456ee8411cfa4f091e4ef67563")
                  (equal (alist-get 'source declaration) "lisp/nelisp-native-load.el")
                  (equal (alist-get 'source_sha256 declaration)
-                        "e20ce939df219bf5d898b2cba7dc6ee21581c6773fb0a4f595ea01e95fa69656")
+                        "15f03e43723758043414e8778e28ff5813f0d75857c97e3b966e6d0e34877d32")
                  (equal (alist-get 'output_sha256 declaration)
                         "a8449a1867585a0f388b9ba963ebffc9591309456ee8411cfa4f091e4ef67563")
                  (equal (alist-get 'definitions declaration) (mapcar #'symbol-name names))
@@ -96,8 +96,35 @@
       (unless (and (<= (buffer-size) 4194304)
                    (equal (plist-get record :sha256) (secure-hash 'sha256 (current-buffer))))
         (error "Compiler boot source changed during derivation: %s" relative))
-      (let ((source (format "(let ((load-file-name %S) (buffer-file-name nil))\n (nelisp--eval-source-string %S))"
-                            relative (decode-coding-string (buffer-string) 'utf-8))))
+      (let* ((original (decode-coding-string (buffer-string) 'utf-8))
+             ;; Cold compiler builds derive each genuine initializer here,
+             ;; before the proof and capability factories capture its owner.
+             ;; Read canonical authenticated source, never adopt a generated
+             ;; file's contents or a caller-supplied compiled representation.
+             (derived
+              (if (and (equal (getenv "NELISP_STANDALONE_NATIVE_COMPILER_COLD") "1")
+                       (fboundp 'nelisp-native-optimizer-bytecode--project-form)
+                       (memq feature nelisp-native-cache--compiler-modules))
+                  (with-temp-buffer
+                    (insert original) (goto-char (point-min))
+                    (let (forms)
+                      (condition-case nil
+                          (while t
+                            (push (car (nelisp-native-optimizer-bytecode--project-form
+                                        (read (current-buffer)))) forms))
+                        (end-of-file nil))
+                      (erase-buffer)
+                      (insert (substring original 0
+                                         (or (string-match "\n" original)
+                                             (length original))) "\n")
+                      (let ((print-length nil) (print-level nil) (print-circle t) (print-gensym t)
+                            (print-escape-newlines t) (print-escape-nonascii t))
+                        (dolist (form (nreverse forms))
+                          (prin1 form (current-buffer)) (insert "\n")))
+                      (buffer-string)))
+                original))
+             (source (format "(let ((load-file-name %S) (buffer-file-name nil))\n (nelisp--eval-source-string %S))"
+                             relative derived)))
         (if skip-feature (format "\n(unless (featurep '%S)\n %s)\n" feature source)
           (concat "\n" source "\n"))))))
 
@@ -115,6 +142,26 @@
         (push (read (current-buffer)) forms)
         (forward-comment (point-max)))
       (nreverse forms))))
+
+(defun nelisp-native-compiler-startup-evidence--tier-emit (feature snapshot root)
+  "Emit the authenticated owner before sealing; choose the tier once at startup."
+  (let ((source (nelisp-native-compiler-startup-evidence--emit feature snapshot root t)))
+    (if (memq feature nelisp-native-compiler-startup-evidence--tier1-modules)
+        (format "\n(unless nelisp-startup-template-only %s)\n" source)
+      source)))
+
+(defun nelisp-native-compiler-startup-evidence--early-boot (root)
+  "Derive the closed canonical boot list, never adopt caller source text."
+  (let ((snapshot
+         (mapcar (lambda (feature)
+                   (let ((relative (nelisp-native-compiler-startup-evidence--source-path feature)))
+                     (list :path relative :sha256
+                           (nelisp-native-rooted-build-evidence-source-hash
+                            (expand-file-name relative root) 4194304))))
+                 nelisp-native-compiler-startup-evidence--boot-modules)))
+    (mapconcat (lambda (feature)
+                 (nelisp-native-compiler-startup-evidence--tier-emit feature snapshot root))
+               nelisp-native-compiler-startup-evidence--boot-modules "")))
 
 (defun nelisp-native-compiler-startup-evidence--rename (value)
   "Derive a separate namespace without borrowing the ticket issuance registry."
@@ -512,13 +559,15 @@
                   (set-buffer-multibyte nil) (insert-file-contents-literally path)
                   (unless (equal (plist-get record :sha256) (secure-hash 'sha256 (current-buffer)))
                     (error "Compiler boot source changed during derivation: %s" relative))
-                  (unless (or (memq feature nelisp-native-compiler-startup-evidence--tier1-modules)
+                  (unless (or (and (not (equal (getenv "NELISP_STANDALONE_NATIVE_COMPILER_COLD") "1"))
+                                   (memq feature nelisp-native-compiler-startup-evidence--tier1-modules))
                               (equal relative "templates/nelisp-native-load-constructor-startup.el.in")
                               (string-suffix-p ".json" relative)
                               (memq feature (cons 'nelisp-native-compiler-runtime-capability
                                                   nelisp-native-compiler-startup-evidence--post-modules)))
-                    (push (format "\n(unless (featurep '%S)\n (let ((load-file-name %S) (buffer-file-name nil))\n (nelisp--eval-source-string %S)))\n"
-                                  feature relative (decode-coding-string (buffer-string) 'utf-8)) boot)))))
+                    (push (nelisp-native-compiler-startup-evidence--tier-emit
+                           feature nelisp-native-compiler-startup-evidence--boot-sources root)
+                          boot)))))
             (with-temp-buffer
               (set-buffer-multibyte nil) (insert-file-contents-literally wrapper)
               (unless (equal wrapper-hash (secure-hash 'sha256 (current-buffer)))

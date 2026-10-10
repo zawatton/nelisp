@@ -205,14 +205,14 @@
          (result (nelisp-bytecode-compiler-input-build function)))
     (should (byte-code-function-p function))
     (should (eq (plist-get result :function) function))
-    (should (eq (plist-get result :status) 'unsupported))
+    (should (eq (plist-get result :status) 'complete))
     (should-not (plist-get result :argument-list))
     (should-not (plist-get result :argument-count))
     (should (= (plist-get result :argument-min) 1))
     (should-not (plist-get result :argument-max))
-    (should-not (plist-get result :initial-stack-depth))
-    (should (string-match-p "unbounded argument descriptor"
-                            (plist-get result :reason)))
+    (should (= (plist-get result :initial-stack-depth) 3))
+    (should (= (plist-get result :rest-binding-stack-index) 2))
+    (should-not (plist-get result :reason))
     (should (integerp (plist-get result :argument-descriptor)))
     (should (stringp (plist-get result :code)))
     (should (vectorp (plist-get result :constants)))
@@ -270,19 +270,19 @@
                   'malformed)))))
 
 (ert-deftest nelisp-bytecode-compiler-input/does-not-misclassify-optional-rest ()
-  "A valid descriptor with optional slots remains unsupported, not malformed."
+  "A materialized optional/rest descriptor has a bounded entry stack."
   (skip-unless (equal emacs-version "31.1"))
   (let* ((function (byte-compile
                     '(lambda (required &optional optional &rest rest) nil)))
          (result (nelisp-bytecode-compiler-input-build function)))
     (should (nelisp-bytecode-compiler-input--argument-descriptor-p
              (plist-get result :argument-descriptor)))
-    (should (eq (plist-get result :status) 'unsupported))
+    (should (eq (plist-get result :status) 'complete))
     (should (plist-get result :rest-argument-p))
     (should (= (plist-get result :argument-min) 1))
     (should-not (plist-get result :argument-max))
-    (should-not (plist-get result :initial-stack-depth))
-    (should-not (plist-get result :argument-layout))))
+    (should (= (plist-get result :initial-stack-depth) 3))
+    (should (= (plist-get (plist-get result :argument-layout) :rest-binding-stack-index) 2))))
 
 (ert-deftest nelisp-bytecode-compiler-input/admit-only-exact-rest-slot-return-template ()
   "Admit only the exact GNU variable-ref REST return byte-code shape."

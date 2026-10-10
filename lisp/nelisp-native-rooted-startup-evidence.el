@@ -6,6 +6,7 @@
 (require 'json)
 (require 'nelisp-native-rooted-build-evidence)
 (require 'nelisp-native-load)
+(require 'nelisp-native-compiler-startup-evidence)
 
 (let ((original-owners nil) (original-checker nil)
       (lookup (symbol-function 'symbol-function))
@@ -268,7 +269,7 @@ Return startup source and its manifest; constructor/numeric/call remain refused.
               (dolist (form forms) (prin1 form (current-buffer)) (insert "\n")))
             (buffer-string)))))
 
-(defun nelisp-native-rooted-startup-evidence-build (units builder root directory)
+(defun nelisp-native-rooted-startup-evidence-build (units builder root directory &optional compiler-boot)
   "Generate startup source from actual UNITS before compiling their driver.
 The loader supplies the genuine public layout and owner context. Source
 dependencies, subprocess result and source owners are checked before return."
@@ -277,6 +278,10 @@ dependencies, subprocess result and source owners are checked before return."
   (unless (and (fboundp 'nelisp-native-load-rooted-production-contract)
                (fboundp 'nelisp-native-load-rooted-runtime-dependency-context))
     (error "Missing genuine rooted production layout owner"))
+
+  (when (and compiler-boot
+             (not (assq 'nelisp-native-optimizer-bytecode--project-form original-owners)))
+    (error "Compiler projection must precede generation owner capture"))
   (let* ((layout-owner (symbol-function 'nelisp-native-load-rooted-production-contract))
          (context-owner (symbol-function 'nelisp-native-load-rooted-runtime-dependency-context))
          (context (funcall context-owner))
@@ -317,11 +322,23 @@ dependencies, subprocess result and source owners are checked before return."
                       capture closure (substring (buffer-string) 0 64) template layout)))
       (dolist (relative '("lisp/nelisp-native-funcall-v2.el" "lisp/nelisp-runtime-reload-abi.el" "lisp/nelisp-native-load.el"
                           "lisp/nelisp-native-raw-file.el"))
+        (when (and compiler-boot (equal relative "lisp/nelisp-native-load.el"))
+          ;; This closed source list is derived and hash-checked by the build
+          ;; owner; no caller-supplied prefix or generated file is adopted.
+          (push (nelisp-native-compiler-startup-evidence--early-boot root) startup))
         (let* ((path (expand-file-name relative root))
-               (source (nelisp-native-rooted-startup-evidence--source
-                        path (cdr (assoc path sources)))))
-          (push (format "\n(let ((load-file-name %S) (buffer-file-name nil))\n (nelisp--eval-source-string %S))\n"
-                        relative source) startup)))
+               (expected (cdr (assoc path sources))))
+          (push
+           (if (and compiler-boot (equal relative "lisp/nelisp-native-load.el"))
+               ;; Derive the genuine initializer at its original load slot,
+               ;; before any proof captures its owner.  Never replace a sealed
+               ;; owner later or adopt a generated projection's source text.
+               (nelisp-native-compiler-startup-evidence--emit
+                'nelisp-native-load (list (list :path relative :sha256 expected)) root)
+             (let ((source (nelisp-native-rooted-startup-evidence--source path expected)))
+               (format "\n(let ((load-file-name %S) (buffer-file-name nil))\n (nelisp--eval-source-string %S))\n"
+                       relative source)))
+           startup)))
       (setq startup (concat (mapconcat #'identity (nreverse startup) "")
                             (format "\n(let ((load-file-name %S) (buffer-file-name nil))\n (nelisp--eval-source-string %S))\n"
                                     "lisp/nelisp-native-rooted-abi-proof.el"
@@ -349,7 +366,17 @@ dependencies, subprocess result and source owners are checked before return."
   (setq original-checker (funcall lookup 'nelisp-native-rooted-startup-evidence--owners-valid-p)
         original-owners
         (mapcar (lambda (name) (cons name (funcall lookup name)))
-                '(nelisp-native-rooted-startup-evidence--owners-valid-p
+                (append
+                 (when (fboundp 'nelisp-native-optimizer-bytecode--project-form)
+                   '(nelisp-native-optimizer-bytecode--project-form
+                     nelisp-native-optimizer-bytecode--compile
+                     nelisp-native-optimizer-bytecode--source
+                     nelisp-native-optimizer-bytecode--normalize))
+                 '(nelisp-native-compiler-startup-evidence--source-path
+                  nelisp-native-compiler-startup-evidence--early-boot
+                  nelisp-native-compiler-startup-evidence--tier-emit
+                  nelisp-native-compiler-startup-evidence--emit
+                  nelisp-native-rooted-startup-evidence--owners-valid-p
                   nelisp-native-rooted-startup-evidence--context-equal-p
                   nelisp-native-rooted-startup-evidence--json
                   nelisp-native-rooted-startup-evidence--forms
@@ -372,10 +399,10 @@ dependencies, subprocess result and source owners are checked before return."
                   aref length integerp stringp symbolp string-bytes
                   make-hash-table gethash puthash cons list nreverse push
                   cl-labels cond and or when unless pop dolist cl-find cl-pushnew
-                  read check-parens forward-comment json-encode
+                  read check-parens forward-comment json-encode assq
                   insert-file-contents decode-coding-region emacs-lisp-mode
                   file-truename symbol-file executable-find
                   file-relative-name expand-file-name substring string-match-p
-                  prin1-to-string prin1 sort string< mapconcat identity format concat))))
+                  prin1-to-string prin1 sort string< mapconcat identity format concat)))))
 
 (provide 'nelisp-native-rooted-startup-evidence)

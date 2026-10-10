@@ -19,6 +19,7 @@
 (autoload 'nelisp-bytecode-native-rooted-cfg-plan "nelisp-bytecode-native-rooted-cfg-plan")
 (autoload 'nelisp-bytecode-native-rooted-cfg-emit "nelisp-bytecode-native-rooted-cfg-emit")
 (autoload 'nelisp-bytecode-native-rooted-cfg-shared-emit-build "nelisp-bytecode-native-rooted-cfg-shared-emit")
+(autoload 'nelisp-bytecode-native-rooted-cfg-shared-emit-build-from-input "nelisp-bytecode-native-rooted-cfg-shared-emit")
 (autoload 'nelisp-bytecode-ir-decode-result "nelisp-bytecode-ir")
 
 (defconst nelisp-bytecode-native-rooted-cfg-contract-version
@@ -92,15 +93,18 @@
             :metadata metadata
             :interactive (and (> (length function) 5) (aref function 5)))))))
 
+(defvar nelisp--prn-symbol-cache nil)
+
 (defun nelisp-bytecode-native-rooted-cfg-contract--digest (contract)
   (let ((rest contract) (canonical nil))
     (while rest
       (let ((key (pop rest)) (value (pop rest)))
         (unless (eq key :digest)
           (setq canonical (append canonical (list key value))))))
-    (secure-hash 'sha256 (prin1-to-string canonical))))
+    (let ((nelisp--prn-symbol-cache (make-hash-table :test 'equal)))
+      (secure-hash 'sha256 (prin1-to-string canonical)))))
 
-(defun nelisp-bytecode-native-rooted-cfg-contract--plan-data (plan)
+(defun nelisp-bytecode-native-rooted-cfg-contract--plan-data (plan &optional shared-flat)
   "Return PLAN without its process-local compiler INPUT object."
   (let ((copy (copy-sequence plan)))
     (setq copy (plist-put copy :input nil))
@@ -114,13 +118,15 @@
                   (let ((rest value) (data nil))
                     (while rest
                       (let ((key (car rest)) (item (cadr rest)))
-                        (unless (or (eq key :arithmetic-guard-context)
+                        (unless (or (and shared-flat (memq key '(:entry-ast :blocks)))
+                                    (eq key :arithmetic-guard-context)
                                     (and (eq key :arithmetic-guard-mode) (eq item 'off)))
                           (setq data (append data (list key item)))))
                       (setq rest (cddr rest)))
                     data)))
       (setq copy (data-plist copy))
-      (setq copy (plist-put copy :entry-ast (data-plist (plist-get copy :entry-ast)))))
+      (unless shared-flat
+        (setq copy (plist-put copy :entry-ast (data-plist (plist-get copy :entry-ast))))))
     (copy-tree copy)))
 
 (defun nelisp-bytecode-native-rooted-cfg-contract-arithmetic-source-p
@@ -183,8 +189,8 @@
          (null (nelisp-bytecode-native-rooted-cfg-contract--ast-imports
                 (plist-get verified-emitted :form))))))
 
-(defun nelisp-bytecode-native-rooted-cfg-contract-create (input plan emitted)
-  "Create a serializable contract from independently verified INPUT/PLAN/EMITTED."
+(defun nelisp-bytecode-native-rooted-cfg-contract--create-data (input plan emitted &optional shared-flat)
+  "Build validated contract data before choosing its final version and digest."
   (let* ((recipe (nelisp-bytecode-native-rooted-cfg-contract-input-recipe input))
          (entry-ast (plist-get emitted :form))
          (imports (nelisp-bytecode-native-rooted-cfg-contract--ast-imports
@@ -216,7 +222,7 @@
                      :argument-count (plist-get plan :arity)
                      :root-count (plist-get plan :required-root-count)
                      :input-recipe recipe
-                     :plan (nelisp-bytecode-native-rooted-cfg-contract--plan-data plan)
+                     :plan (nelisp-bytecode-native-rooted-cfg-contract--plan-data plan shared-flat)
                      :entry-ast entry-ast
                      :initializers (append (plist-get emitted :primitive-initializers)
                                            (plist-get emitted :constant-initializers)
@@ -255,6 +261,12 @@
                                      :runtime-imports runtime-imports
                                      :exit-root-base (plist-get plan :exit-root-base)
                                      :exit-base 1024)))))
+    contract))
+
+(defun nelisp-bytecode-native-rooted-cfg-contract-create (input plan emitted)
+  "Create a serializable contract from independently verified INPUT/PLAN/EMITTED."
+  (let ((contract (nelisp-bytecode-native-rooted-cfg-contract--create-data
+                   input plan emitted)))
     (when contract
       (plist-put contract :digest
                  (nelisp-bytecode-native-rooted-cfg-contract--digest contract))
@@ -266,14 +278,18 @@
   (when (and (eq (plist-get emitted :status) 'complete)
              (equal (plist-get emitted :entry-name)
                     nelisp-bytecode-native-rooted-cfg-contract-shared-entry))
-    (let ((contract (nelisp-bytecode-native-rooted-cfg-contract-create
-                     input plan emitted)))
+    (let ((contract (nelisp-bytecode-native-rooted-cfg-contract--create-data
+                     input plan emitted t)))
       (when contract
         (setq contract
               (plist-put contract :version
                          (if (plist-get plan :funcall-version)
                              nelisp-bytecode-native-rooted-cfg-contract-f1-shared-version
                            nelisp-bytecode-native-rooted-cfg-contract-shared-version)))
+        ;; The recipe reconstructs blocks and the top-level AST is executable.
+        ;; Keep full plans in process-owned comparisons; serialize each tree once.
+        ;; A fresh expected contract fixes this schema, so old shared caches refuse.
+        (setq contract (plist-put contract :plan-schema-version "shared-flat-v1"))
         (setq contract (plist-put contract :emitter-mode "postdom-shared-v2"))
         (setq contract (plist-put contract :entry
                                   nelisp-bytecode-native-rooted-cfg-contract-shared-entry))
@@ -284,15 +300,15 @@
 (defun nelisp-bytecode-native-rooted-cfg-contract--snapshot-data (value _depth)
   "Copy mutable VALUE iteratively, preserving sharing and opaque owners.
 Visit and copy each container in one DFS, rejecting an active ancestor."
-  (let ((copies (make-hash-table :test #'eq)) pending)
-    ;; Integer buckets avoid the reader's mutable-key fallback scans.
-    ;; Hash collisions still resolve through the original object's eq identity.
+  (let ((copies (make-vector 4096 nil)) pending)
+    ;; Fixed identity buckets avoid general hash-table work for every node.
+    ;; Collisions still resolve through the original object's eq identity.
     (cl-labels
         ((identity-get (item)
-           (cdr (assq item (gethash (sxhash-eq item) copies))))
+           (cdr (assq item (aref copies (logand (sxhash-eq item) 4095)))))
          (identity-put (item value)
-           (let* ((key (sxhash-eq item)) (bucket (gethash key copies)))
-             (puthash key (cons (cons item value) bucket) copies))
+           (let* ((key (logand (sxhash-eq item) 4095)) (bucket (aref copies key)))
+             (aset copies key (cons (cons item value) bucket)))
            value)
          (allocate (item)
            (cond
@@ -327,9 +343,21 @@ Visit and copy each container in one DFS, rejecting an active ancestor."
                     (if (= index 0) (setcar new child) (setcdr new child))
                   (aset new index child))))))
         root))))
+(defun nelisp-bytecode-native-rooted-cfg-contract--stage (label)
+  "Append optional compile diagnostics without changing validation decisions."
+  (let ((path (getenv "NELISP_ROOTED_CFG_STAGE_LOG")))
+    (when path
+      (write-region (format "contract-%s seconds=%.3f\n" label (float-time))
+                    nil path t 'silent))))
+
 (defvar nelisp-bytecode-native-rooted-cfg-contract--validation-count 0)
 
 (let ((snapshot-owner (symbol-function 'nelisp-bytecode-native-rooted-cfg-contract--snapshot-data))
+      ;; Lean images retain the original independent public reconstruction.
+      ;; Optimizing cold preparation loads the shared emitter before this
+      ;; factory, so the input-only entry is sealed here, never on first use.
+      (pair-owner (and (featurep 'nelisp-bytecode-native-rooted-cfg-shared-emit)
+                       (symbol-function 'nelisp-bytecode-native-rooted-cfg-shared-emit-build-from-input)))
       (lookup (symbol-function 'symbol-function)) (same (symbol-function 'eq)))
 (defun nelisp-bytecode-native-rooted-cfg-contract-valid-p (contract &optional result-mode live-input)
   "Recompute and validate a serialized generic rooted-CFG CONTRACT.
@@ -345,9 +373,11 @@ The result is data for comparison, never a certificate or cached authority."
            (funcall same snapshot-owner
                     (funcall lookup 'nelisp-bytecode-native-rooted-cfg-contract--snapshot-data)))
   (condition-case nil
-      (let* ((copy (if result-mode
+      (let* ((_copy-start (nelisp-bytecode-native-rooted-cfg-contract--stage "copy-start"))
+             (copy (if result-mode
                        (funcall snapshot-owner contract 0)
                      (copy-tree contract)))
+             (_copy-end (nelisp-bytecode-native-rooted-cfg-contract--stage "copy-end"))
              (digest (plist-get copy :digest))
              (recipe (plist-get copy :input-recipe))
              (descriptor (plist-get recipe :descriptor))
@@ -380,25 +410,32 @@ The result is data for comparison, never a certificate or cached authority."
              ;; and recipe comparison. Reuse that fresh result, not caller data.
              (input (or (and live-function live-canonical)
                         (nelisp-bytecode-compiler-input-build function)))
-             (plan (nelisp-bytecode-native-rooted-cfg-plan
-                    input (plist-get (plist-get copy :plan) :lowering-mode)
-                    (if (member (plist-get copy :version)
-                                (list nelisp-bytecode-native-rooted-cfg-contract-shared-version
-                                      nelisp-bytecode-native-rooted-cfg-contract-f1-shared-version))
-                        (plist-get (plist-get copy :plan) :arithmetic-guard-mode) 'off)))
              (shared-v2 (member (plist-get copy :version)
                                 (list nelisp-bytecode-native-rooted-cfg-contract-shared-version
                                       nelisp-bytecode-native-rooted-cfg-contract-f1-shared-version)))
+             (_plan-start (nelisp-bytecode-native-rooted-cfg-contract--stage "plan-start"))
+             (paired (and shared-v2 pair-owner
+                          (funcall same pair-owner
+                                   (funcall lookup 'nelisp-bytecode-native-rooted-cfg-shared-emit-build-from-input))
+                          (funcall pair-owner input nelisp-bytecode-native-rooted-cfg-contract-shared-entry
+                           (plist-get (plist-get copy :plan) :lowering-mode)
+                           (plist-get (plist-get copy :plan) :arithmetic-guard-mode))))
+             (plan (if (and shared-v2 pair-owner) (plist-get paired :plan)
+                     (nelisp-bytecode-native-rooted-cfg-plan
+                      input (plist-get (plist-get copy :plan) :lowering-mode)
+                      (if shared-v2 (plist-get (plist-get copy :plan) :arithmetic-guard-mode) 'off))))
              (v1 (member (plist-get copy :version)
                          (list nelisp-bytecode-native-rooted-cfg-contract-version
                                nelisp-bytecode-native-rooted-cfg-contract-f1-version)))
              (emitted (and (eq (plist-get plan :status) 'complete)
                            (if shared-v2
-                               (nelisp-bytecode-native-rooted-cfg-shared-emit-build
-                                plan nelisp-bytecode-native-rooted-cfg-contract-shared-entry)
+                               (if pair-owner (plist-get paired :emitted)
+                                 (nelisp-bytecode-native-rooted-cfg-shared-emit-build
+                                  plan nelisp-bytecode-native-rooted-cfg-contract-shared-entry))
                              (and v1
                                   (nelisp-bytecode-native-rooted-cfg-emit
                                    plan "nl_native_rooted_cfg_probe_v1")))))
+             (_emit-end (nelisp-bytecode-native-rooted-cfg-contract--stage "emit-end"))
              (expected (and (eq (plist-get emitted :status) 'complete)
                             (if shared-v2
                                 (nelisp-bytecode-native-rooted-cfg-contract-create-shared-v2
@@ -406,17 +443,27 @@ The result is data for comparison, never a certificate or cached authority."
                               (and v1
                                    (nelisp-bytecode-native-rooted-cfg-contract-create
                                     input plan emitted)))))
+             (_expected-end (nelisp-bytecode-native-rooted-cfg-contract--stage "expected-end"))
              (without-digest copy))
-        (and (or (null live-input) live-function) expected
+        (and (or (null pair-owner)
+                 (funcall same pair-owner
+                          (funcall lookup 'nelisp-bytecode-native-rooted-cfg-shared-emit-build-from-input)))
+             (or (null live-input) live-function) expected
              (equal digest
-                    (nelisp-bytecode-native-rooted-cfg-contract--digest without-digest))
+                    (progn
+                      (nelisp-bytecode-native-rooted-cfg-contract--stage "digest-start")
+                      (prog1 (nelisp-bytecode-native-rooted-cfg-contract--digest without-digest)
+                        (nelisp-bytecode-native-rooted-cfg-contract--stage "digest-end"))))
              (equal contract expected)
              (or (null result-mode)
                  (funcall same snapshot-owner
                           (funcall lookup 'nelisp-bytecode-native-rooted-cfg-contract--snapshot-data)))
              (if result-mode
-                 (funcall snapshot-owner
-                          (list :input input :plan plan :emitted emitted :expected-contract expected) 0)
+                 (progn
+                   (nelisp-bytecode-native-rooted-cfg-contract--stage "result-copy-start")
+                   (prog1 (funcall snapshot-owner
+                                  (list :input input :plan plan :emitted emitted :expected-contract expected) 0)
+                     (nelisp-bytecode-native-rooted-cfg-contract--stage "result-copy-end")))
                t)))
     (error nil)))))
 

@@ -321,6 +321,44 @@ larger fixnums use the existing exact numeric operation, never wrapped math."
                                (<= fast_value 2305843009213693951))))
                  ,store ,fallback)))))))
 
+(defun nelisp-native-funcall-v2-value-form (opcode inputs output success fallback)
+  "Lower frozen VM predicates on tagged values, with the genuine fallback.
+This is general compiler lowering, not a new evaluator primitive. EQ's
+special boxed/string cases remain with the existing runtime implementation."
+  (if (not (memq opcode '(57 58 59 60 61 63 167 168))) fallback
+    (let* ((binary (= opcode 61))
+           (test (pcase opcode
+                   (57 '(or (= value_tag 0) (or (= value_tag 1) (or (= value_tag 4) (= value_tag 16)))))
+                   (58 '(= value_tag 7))
+                   (59 '(or (= value_tag 5) (or (= value_tag 6) (or (= value_tag 14) (= value_tag 15)))))
+                   (60 '(or (= value_tag 0) (= value_tag 7)))
+                   (63 '(= value_tag 0))
+                   (167 '(or (= value_tag 2) (or (= value_tag 3) (= value_tag 13))))
+                   (168 '(or (= value_tag 2) (= value_tag 13)))
+                   (61 '(and (= value_tag other_tag)
+                             (= (ptr-read-u64 value_left 8) (ptr-read-u64 value_right 8))))))
+           (safe (if binary
+                     '(or (/= value_tag other_tag)
+                          (or (<= value_tag 2)
+                              (or (= value_tag 4)
+                                  (or (= value_tag 7)
+                                      (or (= value_tag 8)
+                                          (or (= value_tag 12)
+                                              (or (= value_tag 16)
+                                                  (or (= value_tag 17) (= value_tag 18)))))))))
+                   '(= value_tag value_tag))))
+      `(let* ((value_left (extern-call nl_root_pin_slot_v2 env ticket ,(car inputs) 0 0 0))
+              (value_right ,(if binary `(extern-call nl_root_pin_slot_v2 env ticket ,(cadr inputs) 0 0 0) 'value_left))
+              (value_out (extern-call nl_root_pin_slot_v2 env ticket ,output 0 0 0)))
+         (if (or (= value_left 0) (or (= value_right 0) (= value_out 0))) 2
+           (let ((value_tag (ptr-read-u64 value_left 0))
+                 (other_tag (ptr-read-u64 value_right 0)))
+             (if ,safe
+                 (progn (ptr-write-u64 value_out 0 (if ,test 1 0))
+                        (ptr-write-u64 value_out 8 0) (ptr-write-u64 value_out 16 0)
+                        (ptr-write-u64 value_out 24 0) ,success)
+               ,fallback)))))))
+
 (defun nelisp-native-funcall-v2-emit (operation function inputs continuation &optional copy-plan)
   "Stage canonical operands with one shared continuation for fast/slow paths."
   (let* ((copy (if copy-plan
@@ -336,9 +374,12 @@ larger fixnums use the existing exact numeric operation, never wrapped math."
                    (if (= ,status 0)
                        ,(funcall copy (list result) (list (plist-get operation :output-root)) 0)
                      ,status)))))
-    `(let ((,status ,(nelisp-native-funcall-v2-fixnum-form
+    `(let ((,status ,(nelisp-native-funcall-v2-value-form
                      (plist-get operation :bytecode-opcode) inputs
-                     (plist-get operation :output-root) 0 slow)))
+                     (plist-get operation :output-root) 0
+                     (nelisp-native-funcall-v2-fixnum-form
+                     (plist-get operation :bytecode-opcode) inputs
+                     (plist-get operation :output-root) 0 slow))))
        (if (= ,status 0) ,continuation ,status))))
 (defun nelisp-native-funcall-v2-emit-list (operation function inputs continuation &optional compact)
   "Build a long list through frozen CONS using two reusable argument roots.
