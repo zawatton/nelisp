@@ -52,7 +52,7 @@ cat > "$out/io/gnu.el" <<'EOF'
 (condition-case e (load "~/.emacs.d/init.el" nil t) (error (message "S13-GNU-ERROR %S" e)))
 (message "S13-GNU-DONE")
 EOF
-sandbox timeout 600 emacs --batch -l /tmp/io/gnu.el >"$out/gnu.out" 2>"$out/gnu.err"
+sandbox timeout 120 emacs --batch -l /tmp/io/gnu.el >"$out/gnu.out" 2>"$out/gnu.err"
 if grep -q S13-GNU-ERROR "$out/gnu.err" || ! grep -q S13-GNU-DONE "$out/gnu.err"; then
   echo "S1.3 UNKNOWN: GNU Emacs cannot load this init in the sandbox; see $out/gnu.err"
   exit 2
