@@ -1,9 +1,12 @@
 name: Windows native F1 (manual acceptance)
 
-# This is an opt-in acceptance probe. Until Doc 213's PE proof and cache ACL
-# prerequisites are implemented, native refusal must fail this job visibly.
+# Manual acceptance of Doc 213 W1.2. Host proofs cannot qualify Windows execution.
+# workflow_dispatch needs this file on the default branch, so pushes to the
+# native-windows branch also run it until the port is merged.
 on:
   workflow_dispatch:
+  push:
+    branches: [native-windows]
 
 permissions:
   contents: read
@@ -20,15 +23,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
+      - name: Install proof decoder dependencies
+        run: python -m pip install capstone pyelftools
       - name: Host Win64 emitter and receipt negative controls
         shell: bash
         run: |
-          emacs -Q --batch -L lisp -L src -L scripts -l test/nelisp-native-windows-test.el -f ert-run-tests-batch-and-exit
+          python test/support/check-windows-native-host.py
           python test/support/run-windows-native-f1-test.py
       - name: Build the Windows PE reader
         shell: bash
         run: make standalone-reader NELISP_STANDALONE_TARGET=windows-x86_64
-      - name: Windows native F1 (compile, fresh load, forced GC)
+      - name: Windows native F1 (fresh load, GC, registers, nested throws, trust controls)
         shell: pwsh
         run: |
           python test/support/run-windows-native-f1.py target/nelisp.exe --work target/windows-native-ci
@@ -39,6 +44,7 @@ jobs:
         with:
           name: windows-native-f1
           path: |
+            target/windows-native/
             target/windows-native-ci/
             target/nelisp.exe
             target/nelisp.exe.native-startup.el

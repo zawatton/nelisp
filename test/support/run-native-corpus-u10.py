@@ -237,10 +237,13 @@ def main():
         reader = work / 'reader'
         shutil.copy2(binary, reader)
         reader.chmod(0o500)
+        startup = Path(str(binary) + '.native-startup.el')
+        if startup.exists():
+            shutil.copy2(startup, Path(str(reader) + '.native-startup.el'))
         cold = Path(str(binary) + '.cold')
         if cold.exists():
             shutil.copy2(cold, Path(str(reader) + '.cold'))
-        identity = dict(binary_sha256=digest(binary), cold_sha256=digest(cold) if cold.exists() else None,
+        identity = dict(binary_sha256=digest(binary), startup_sha256=digest(startup) if startup.exists() else None, cold_sha256=digest(cold) if cold.exists() else None,
                         fixture_sha256=digest(directory / 'fixtures.el'),
                         sources_sha256={source: digest(ROOT / source) for source in sources})
         identities[backend] = identity

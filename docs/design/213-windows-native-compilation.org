@@ -1,5 +1,5 @@
 #+TITLE: Windows x86_64 native compilation
-#+STATUS: DRAFT — W1.1 design; W1.2 execution deferred
+#+STATUS: DRAFT — W1.2 implemented; real Windows acceptance pending
 #+DATE: 2026-10-10
 
 * Decision and scope
@@ -9,13 +9,19 @@ The first Windows backend is in-house only, synchronous, explicit opt-in.
 No new native builtin is needed for code generation or memory mapping.
 Do not enable Windows by merely broadening the loader's platform predicate.
 
-The brief's conditional W1.2 does not fit as a complete trusted F1 port yet:
-the production rooted/constructor/F1 proof generation and issuance are
-Linux-only, and the private cache trusts POSIX ownership/mode bits.
-Both are prerequisites for the requested unchanged trust checks. A working
-Win64 AOT emitter and VirtualAlloc wrapper do not supply these prerequisites.
-This slice exercises the existing Win64 emitter on F1 source and prepares a
-manual Windows acceptance job. Windows mapping/execution remains refused.
+The W1.2a/b implementation now derives the rooted/constructor/F1 proof from
+active Win64 units and checks actual PE sections, COFF symbols, normalized
+helper bytes and kernel import thunks/IAT addresses. Windows executable identity
+comes from GetModuleFileNameW and raw handle reads. The cache requires TokenUser
+ownership, a protected non-null DACL without foreign write grants, and no reparse
+components; ancestor handles include FILE_LIST_DIRECTORY and deny delete sharing.
+Raw-v2 carries a Win64 target and ABI discriminator, emits COFF and publishes RW
+pages as R/RX through the existing kernel32 FFI, flushing instructions before use.
+No new reader builtin has been added. Windows admits the synchronous in-house
+backend only. The manual acceptance job includes fresh-process GNU F1 bytecode,
+GC, preserved-register sentinels, nested throws and real cache handle controls.
+Linux host proofs and a cross-built PE are prerequisites, not Windows execution
+qualification. W1.2 remains pending until that job produces its exact-ref receipt.
 
 * Dependency inventory and replacements
 References below are paths relative to the repository root, followed by

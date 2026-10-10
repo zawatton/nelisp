@@ -52,7 +52,7 @@ must not exist.  Only a verified unary raw-v2 entry is admitted."
                  (equal (plist-get input :argument-min) 1)
                  (equal (plist-get input :argument-max) 1)
                  (stringp binary) (equal (plist-get dialect :status) 'pinned)
-                 (stringp nelisp-native-load-raw-runtime-abi-v2)
+                 (stringp (nelisp-native-load--runtime-abi-v2))
                  (nelisp-native-load-raw-v2-contract)
                  (fboundp 'nelisp-runtime-reload-contract-matches-p)
                  (nelisp-runtime-reload-contract-matches-p))
@@ -78,7 +78,7 @@ must not exist.  Only a verified unary raw-v2 entry is admitted."
           (let* ((manifest
                  (list :format nelisp-bytecode-native-raw-package--format
                        :abi abi :runtime-binary-sha256 binary
-                       :raw-runtime-abi nelisp-native-load-raw-runtime-abi-v2
+                       :raw-runtime-abi (nelisp-native-load--runtime-abi-v2)
                        :dialect (plist-get dialect :dialect)
                        :input-fingerprint
                        (secure-hash 'sha256 (prin1-to-string input))
@@ -125,7 +125,7 @@ must not exist.  Only a verified unary raw-v2 entry is admitted."
                  (equal (plist-get m :runtime-binary-sha256)
                         (nelisp-native-load-running-binary-sha256))
                  (equal (plist-get m :raw-runtime-abi)
-                        nelisp-native-load-raw-runtime-abi-v2)
+                        (nelisp-native-load--runtime-abi-v2))
                  (fboundp 'nelisp-runtime-reload-contract-matches-p)
                  (nelisp-runtime-reload-contract-matches-p)
                  (equal (plist-get m :dialect) (plist-get dialect :dialect))

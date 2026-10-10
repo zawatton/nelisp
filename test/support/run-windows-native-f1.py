@@ -85,7 +85,7 @@ def main():
     if args.work:
         work.mkdir(parents=True, exist_ok=False)
     cache = work / 'cache'
-    cache.mkdir()
+    # The reader creates the cache with its protected TokenUser DACL.
     source = work / 'fixture.el'
     source.write_text(';;; -*- lexical-binding: t; -*-\n'
                       '(defun f1-fixture (x) (f1-user (cons (car x) (cdr x))))\n', encoding='utf-8')
@@ -121,6 +121,67 @@ def main():
             print(errors[-4000:])
             print('WINDOWS-F1-FAIL evidence=' + str(work))
             return 1
+    # Independent raw six-word bridge and preserved-register probes.
+    def execute(label, driver, extra, markers):
+        command = [str(binary)]
+        if cold:
+            command += ['--cold-load-from', str(cold)]
+        for path in ('lisp', 'src', 'scripts', 'packages/nl-ffi/src', 'packages/nl-prelude/src'):
+            command += ['-L', str(ROOT / path)]
+        command += ['--load', str(ROOT / driver)]
+        receipt = run(command, dict(env, **extra), work, label)
+        output = (work / (label + '.out')).read_text(encoding='utf-8', errors='replace')
+        errors = (work / (label + '.err')).read_text(encoding='utf-8', errors='replace')
+        receipt.update(phase=label, passed=receipt['rc'] == 0 and not errors and
+                       all(output.splitlines().count(marker) == 1 for marker in markers),
+                       driver_sha256=digest(ROOT / driver))
+        rows.append(receipt)
+        (work / 'receipt.json').write_text(json.dumps(report, indent=2) + '\n')
+        print(output, end='', flush=True)
+        if not receipt['passed']:
+            print(errors[-4000:])
+        return receipt['passed']
+    if not execute('abi', 'test/standalone-windows-native-abi-driver.el', {},
+                   ['F1-ROOTS-PASS cases=6', 'WINDOWS-REGISTER-SENTINEL-PASS N=0 N=6 GP=8 XMM=10']):
+        return 1
+    exits = work / 'exits.el'
+    exits.write_text(';;; -*- lexical-binding: t; -*-\n'
+                     '(defun f1b-one (f x) (f1b-tick) (funcall f x))\n'
+                     '(defun f1b-zero (f) (funcall f))\n'
+                     '(defun f1b-six (f x) (funcall f x x x x x x))\n', encoding='utf-8')
+    host = run([env.get('EMACS', 'emacs'), '-Q', '--batch', '--eval',
+                '(progn (require (quote bytecomp)) (unless (byte-compile-file (getenv "F1B_SOURCE")) (error "GNU exit fixture failed")))'],
+               dict(env, F1B_SOURCE=str(exits)), work, 'exit-host', deadline=60)
+    if host['rc'] != 0 or not exits.with_suffix('.elc').is_file():
+        return 1
+    extra = dict(F1B_FIXTURE=str(exits.with_suffix('.elc')), F1B_BACKEND='in-house',
+                 F1B_COLD='1' if cold else '0', NELISP_NATIVE_CACHE=str(work / 'exit-cache'))
+    for unit in ('f1b-one', 'f1b-zero', 'f1b-six'):
+        if not execute('exit-compile-' + unit, 'test/standalone-native-funcall-v2-exits-driver.el',
+                       dict(extra, F1B_PHASE='compile', F1B_COMPILE_UNIT=unit),
+                       ['F1B-COMPILE-PASS units=1 unit=' + unit]):
+            return 1
+    if not execute('exit-load', 'test/standalone-native-funcall-v2-exits-driver.el',
+                   dict(extra, F1B_PHASE='load'),
+                   ['F1B-CORPUS-DIGEST=ebe5cd1249025f15a6245e00f493cf7a5a9f1765bb4e07a5295836ad5a5b67d0',
+                    'F1B-LOAD-PASS backend=in-house cleanup=24']):
+        return 1
+    if not execute('ancestor-pin', 'test/standalone-windows-native-trust-driver.el',
+                   dict(WINDOWS_TRUST_ROOT=str(work), WINDOWS_TRUST_MODE='pin'),
+                   ['WINDOWS-ANCESTOR-PIN-PASS unpinned=1 pinned=0 sharing=32']):
+        return 1
+    junction = work / 'cache-junction'
+    control = subprocess.run(['cmd', '/c', 'mklink', '/J', str(junction), str(cache)],
+                             capture_output=True, timeout=30)
+    (work / 'junction-create.out').write_bytes(control.stdout)
+    (work / 'junction-create.err').write_bytes(control.stderr)
+    if control.returncode != 0 or not junction.is_dir():
+        print('WINDOWS-F1-FAIL junction negative-control setup')
+        return 1
+    if not execute('reparse', 'test/standalone-windows-native-trust-driver.el',
+                   dict(WINDOWS_TRUST_ROOT=str(junction), WINDOWS_TRUST_MODE='reparse'),
+                   ['WINDOWS-REPARSE-REFUSED maps=0']):
+        return 1
     print('WINDOWS-F1-PASS evidence=' + str(work))
     return 0
 

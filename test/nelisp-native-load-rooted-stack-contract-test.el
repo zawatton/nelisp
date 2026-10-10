@@ -288,11 +288,15 @@
     (with-temp-buffer
       (insert-file-contents source)
       (goto-char (point-min))
-      (while (and (< (point) (point-max)) (not function-form))
-        (let ((form (read (current-buffer))))
-          (when (and (consp form) (eq (car form) 'defun)
-                     (eq (cadr form) 'nelisp-native-load-raw-v2-compile-file))
-            (setq function-form form)))))
+      (cl-labels ((find-definition (node)
+                    (when (consp node)
+                      (when (and (eq (car node) 'defun)
+                                 (eq (cadr node) 'nelisp-native-load-raw-v2-compile-file))
+                        (setq function-form node))
+                      (find-definition (car node)) (find-definition (cdr node)))))
+        (condition-case nil
+            (while (not function-form) (find-definition (read (current-buffer))))
+          (end-of-file nil))))
     (should function-form)
     (setq mapcar-calls
           (nelisp-native-load-rooted-stack-contract-test--find-import-mapcars

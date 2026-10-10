@@ -36,7 +36,7 @@
                        (equal (plist-get mapping :entry-name) entry)
                        (= (or (plist-get mapping :arity) -1) 4)
                        (equal (plist-get mapping :runtime-abi)
-                              nelisp-native-load-raw-runtime-abi-v2)
+                              (nelisp-native-load--runtime-abi-v2))
                        (equal (sort (copy-sequence (plist-get mapping :imports)) #'string<)
                               (plist-get result :gateway-imports)))
             (error "rooted-branch-call: mapped contract mismatch"))

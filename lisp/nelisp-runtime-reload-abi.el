@@ -54,8 +54,10 @@
                (setq nelisp-runtime-reload--snapshot-plain-p nil)
                value)
               (t (throw 'invalid :uncacheable)))))
-        (walk (list nelisp-runtime-reload-gc-contract
-                    nelisp-runtime-reload-symbols) 0 nil)))))
+        (walk (append (when (and (fboundp 'nelisp-native-load--windows-p)
+                                 (nelisp-native-load--windows-p))
+                        '("win64-v1"))
+                      (list nelisp-runtime-reload-gc-contract nelisp-runtime-reload-symbols)) 0 nil)))))
 
 (defun nelisp-runtime-reload--digest-context ()
   "Return identities of every helper used to snapshot and hash ABI data."
@@ -154,12 +156,14 @@ Changing public entries, resolver order, or the layout version requires a
 new process.  Editing private function bodies does not change this digest."
   (let* ((print-length nil) (print-level nil)
          (bytes (prin1-to-string
-                 (list 'nelisp-runtime-contract-v2
+                 (append (when (and (fboundp 'nelisp-native-load--windows-p)
+                                    (nelisp-native-load--windows-p)) '("win64-v1"))
+                  (list 'nelisp-runtime-contract-v2
                        '(:sexp-bytes 32 :block-header-bytes 8
                          :reload-state-bytes 96 :gc-table-header-bytes 16
                          :gc-conservative-state-bytes 64)
                        nelisp-runtime-reload-gc-contract
-                       nelisp-runtime-reload-symbols))))
+                       nelisp-runtime-reload-symbols)))))
     (if (fboundp 'nelisp-native-load-sha256)
         (nelisp-native-load-sha256 bytes)
       (secure-hash 'sha256 bytes))))

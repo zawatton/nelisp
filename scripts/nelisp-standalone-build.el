@@ -2802,7 +2802,7 @@ leaves the previous dispatch intact.  The final 32 bytes retain GC telemetry."
                          body)
                body))
        (cons 'seq (append (if commit-form (append body (list commit-form)) body)
-                          (when (eq (nelisp-standalone-arena-rewrite-target) 'linux-x86_64)
+                          (when (memq (nelisp-standalone-arena-rewrite-target) '(linux-x86_64 windows-x86_64))
                             (nelisp-standalone--cold-domain-forms))
                           (if (nelisp-standalone--runtime-reload-enabled-p)
                               (nelisp-standalone--runtime-reload-forms)
@@ -20776,7 +20776,9 @@ siblings (toupper/tolower on libc.so.6) but is not itself one, such as the
 dlopen/dlsym/dlerror/dlclose rows below.")
 
 (defconst nelisp-standalone--windows-reader-extern-dll-map
-  '(("libc.so.6" . "ucrtbase.dll")
+  '(("kernel32.dll" . "kernel32.dll")
+    ("advapi32.dll" . "advapi32.dll")
+    ("libc.so.6" . "ucrtbase.dll")
     ("libm.so.6" . "ucrtbase.dll")
     ;; SQLite ships in the Windows inbox as System32\\winsqlite3.dll
     ;; (Windows 10 1607+ / Server 2016+; 3.51.1 measured 2026-09-04), with
@@ -20792,6 +20794,38 @@ library is unsupported on Windows.  This deliberately maps only libc/libm to
 the inbox Universal CRT.  GnuTLS and FreeType remain external-dependency policy
 decisions, not accidental loader requirements of every Windows reader.")
 
+(defconst nelisp-standalone--native-windows-extern-table
+  '(("VirtualAlloc" "kernel32.dll" 4)
+    ("VirtualProtect" "kernel32.dll" 4)
+    ("VirtualFree" "kernel32.dll" 3)
+    ("FlushInstructionCache" "kernel32.dll" 3)
+    ("GetModuleFileNameW" "kernel32.dll" 3)
+    ("GetModuleHandleW" "kernel32.dll" 1)
+    ("GetProcAddress" "kernel32.dll" 2)
+    ("GetCurrentProcess" "kernel32.dll" 0)
+    ("CloseHandle" "kernel32.dll" 1)
+    ("CreateFileW" "kernel32.dll" 7)
+    ("GetFileInformationByHandle" "kernel32.dll" 2)
+    ("SetFilePointerEx" "kernel32.dll" 4)
+    ("ReadFile" "kernel32.dll" 5)
+    ("GetFileSizeEx" "kernel32.dll" 2)
+    ("LocalFree" "kernel32.dll" 1)
+    ("CreateDirectoryW" "kernel32.dll" 2)
+    ("MoveFileExW" "kernel32.dll" 3)
+    ("GetLastError" "kernel32.dll" 0)
+    ("VirtualQuery" "kernel32.dll" 3)
+    ("OpenProcessToken" "advapi32.dll" 3)
+    ("GetTokenInformation" "advapi32.dll" 5)
+    ("ConvertSidToStringSidW" "advapi32.dll" 2)
+    ("GetKernelObjectSecurity" "advapi32.dll" 5)
+    ("GetSecurityDescriptorOwner" "advapi32.dll" 3)
+    ("GetSecurityDescriptorDacl" "advapi32.dll" 4)
+    ("GetSecurityDescriptorControl" "advapi32.dll" 3)
+    ("GetAce" "advapi32.dll" 3)
+    ("ConvertStringSecurityDescriptorToSecurityDescriptorW" "advapi32.dll" 4)
+    ("SetSecurityInfo" "advapi32.dll" 7))
+  "Raw OS FFI through the existing dispatcher; no new Lisp builtin entries.")
+
 (defun nelisp-standalone--windows-reader-extern-table ()
   "Return TABLE rows whose SONAME has a Windows DLL mapping.
 Also excludes any row whose SIG plist carries `:posix-only' -- a row can
@@ -20800,11 +20834,12 @@ dlclose rows share `libc.so.6' with toupper/tolower) while having no
 same-named Windows equivalent at all; `:posix-only' is how such a row
 opts out of the Windows subset without having to invent an unmapped
 SONAME just to hide from this filter."
-  (seq-filter
+  (append nelisp-standalone--native-windows-extern-table
+   (seq-filter
    (lambda (row)
      (and (assoc (nth 1 row) nelisp-standalone--windows-reader-extern-dll-map)
           (not (plist-get (nth 3 row) :posix-only))))
-   nelisp-standalone--reader-extern-table))
+   nelisp-standalone--reader-extern-table)))
 
 (defun nelisp-standalone--build-ffi-dispatch (table &optional target)
   "Build the `nl-ffi-call' dispatch IR (a nested-if over the NAME arg) from
@@ -26293,7 +26328,11 @@ dispatch arm in `nelisp-standalone--applyfn-dispatch-table'.")
    nelisp-standalone--windows-reader-imports
    (when (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
      (let (groups)
-       (dolist (row (nelisp-standalone--windows-reader-extern-table))
+       (dolist (row (cl-remove-if
+                     (lambda (entry)
+                       (cl-some (lambda (group) (member (car entry) (cdr group)))
+                                nelisp-standalone--windows-reader-imports))
+                     (nelisp-standalone--windows-reader-extern-table)))
          (let* ((dll (cdr (assoc (nth 1 row)
                                  nelisp-standalone--windows-reader-extern-dll-map)))
                 (group (assoc dll groups)))
@@ -27680,7 +27719,7 @@ top-level form defines NAME that way."
 
 (defun nelisp-standalone--rooted-protocol-preflight ()
   "Refuse missing protocol generation inputs before any reader unit is compiled."
-  (when (eq (nelisp-standalone-arena-rewrite-target) 'linux-x86_64)
+  (when (memq (nelisp-standalone-arena-rewrite-target) '(linux-x86_64 windows-x86_64))
     (dolist (relative '("lisp/nelisp-native-rooted-build-evidence.el"
                         "lisp/nelisp-native-rooted-startup-evidence.el"
                         "lisp/nelisp-native-load.el" "lisp/nelisp-runtime-reload-abi.el"
@@ -27699,10 +27738,10 @@ top-level form defines NAME that way."
     (require 'nelisp-native-funcall-startup-evidence)
     (unless (and (fboundp 'nelisp-native-load-rooted-production-contract)
                  (fboundp 'nelisp-native-load-rooted-runtime-dependency-context)
-                 (executable-find "python3"))
+                 (executable-find (if (eq system-type 'windows-nt) "python" "python3")))
       (error "Missing rooted protocol layout owner or generation tool"))
     (with-temp-buffer
-      (unless (eq (call-process (executable-find "python3") nil (list (current-buffer) t) nil
+      (unless (eq (call-process (executable-find (if (eq system-type 'windows-nt) "python" "python3")) nil (list (current-buffer) t) nil
                                 "-c" "import capstone; import elftools") 0)
         (error "Missing rooted protocol decoder dependency")))
     t))
@@ -27754,8 +27793,9 @@ publishes the same providers before dumping."
 
 (defun nelisp-standalone--rooted-protocol-startup-src (units)
   "Generate source-bound memory protocol startup from the active helper UNITS."
-  (when (eq (nelisp-standalone-arena-rewrite-target) 'linux-x86_64)
-    (let ((source (concat (nelisp-native-rooted-startup-evidence-build
+  (when (memq (nelisp-standalone-arena-rewrite-target) '(linux-x86_64 windows-x86_64))
+    (let* ((nelisp-native-load--build-target (nelisp-standalone-arena-rewrite-target))
+           (source (concat (nelisp-native-rooted-startup-evidence-build
      units nelisp-standalone--this-file nelisp-standalone--repo-root
      (make-temp-file (expand-file-name "target/standalone-rooted-protocol-"
                                        nelisp-standalone--repo-root) t))
@@ -34392,7 +34432,7 @@ correctly."
     ;; simpler and safer than racing a free against the fresh reservation.
     ;; Linux x86_64 supplies these in the prelink arena unit, so their
     ;; ownership can be authenticated before compiling this driver.
-    ,@(unless (eq (nelisp-standalone-arena-rewrite-target) 'linux-x86_64)
+    ,@(unless (memq (nelisp-standalone-arena-rewrite-target) '(linux-x86_64 windows-x86_64))
         (nelisp-standalone--cold-domain-forms))
     ;; Load the cold image into the LIVE arena.  Run BEFORE the driver allocates
     ;; globals/etc. (so they land after the image).  Reads {header|table|regions}

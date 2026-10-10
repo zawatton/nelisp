@@ -928,6 +928,9 @@ Phase47 `extern-call' direct rel32 calls can target Windows IAT entries."
            :stack-commit (plist-get options :stack-commit)
            :heap-reserve (plist-get options :heap-reserve)
            :heap-commit (plist-get options :heap-commit)))
+    (when (eq machine 'x86_64)
+      (require 'nelisp-native-pe-symbols)
+      (nelisp-native-pe-symbols-append file-path symtab))
     file-path))
 
 (defun nelisp-link--macho-exec-layout (combined &optional machine)

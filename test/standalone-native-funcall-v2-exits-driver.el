@@ -20,7 +20,7 @@
                    plan nelisp-bytecode-native-rooted-cfg-contract-shared-entry))
          (contract (nelisp-bytecode-native-rooted-cfg-contract-create-shared-v2 input plan emitted))
          (imports (mapcar (lambda (name)
-                            (list :name name :kind 'func :abi nelisp-native-load-raw-runtime-abi-v2
+                            (list :name name :kind 'func :abi (nelisp-native-load--runtime-abi-v2)
                                   :address-mode (if (equal name "nl_root_pin_slot_v2")
                                                     'conditional-root-slot-v1 'native-bridgeable-v1)
                                   :index (cl-position name nelisp-native-load-bridgeable-symbols :test #'equal)
@@ -30,7 +30,7 @@
                          :native-rooted-cfg-contract contract :native-rooted-cfg-import-descriptors imports
                          :native (list :imports imports :exports
                                        (list (list :name (plist-get contract :entry) :type 'func
-                                                   :abi nelisp-native-load-raw-runtime-abi-v2
+                                                   :abi (nelisp-native-load--runtime-abi-v2)
                                                    :arity 4 :params '(u64 u64 u64 u64) :return 'u64))))))
     (f1b-assert (nelisp-native-load--raw-v2-rooted-cfg-contract-valid-slow-p manifest) "genuine typed manifest")
     (dolist (pair (list (cons :index (1- (cl-position "nl_native_funcall_v2"

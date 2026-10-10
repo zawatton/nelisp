@@ -280,10 +280,10 @@
 		    (setq rest (cdr rest))))
 		(unless
 		    (= 0
-		       (syscall-direct 10 table
-				       (nelisp-native-load--page-round
-					table-size)
-				       1 0 0 0))
+		       (nelisp-native-load--protect table
+						    (nelisp-native-load--page-round
+						     table-size)
+						    1))
 		  (error
 		   "nelisp-native-load: mprotect read-only GC table failed"))
 		(nelisp-native-load--mprotect-rx codepage code-size)
@@ -341,11 +341,10 @@
 	    (unless success
 	      (when (and (integerp codepage) (> codepage 0))
 		(ignore-errors
-		  (syscall-direct 11 codepage code-size 0 0 0 0)))
+		  (nelisp-native-load--unmap codepage code-size)))
 	      (when (and (integerp table) (> table 0))
 		(ignore-errors
-		  (syscall-direct 11 table
-				  (nelisp-native-load--page-round
-				   table-size)
-				  0 0 0 0))))))))))
+		  (nelisp-native-load--unmap table
+					     (nelisp-native-load--page-round
+					      table-size)))))))))))
 (provide 'nelisp-native-compiler-constructor-loader)
