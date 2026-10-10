@@ -40,6 +40,12 @@
 ;;; Code:
 
 (require 'cl-lib)
+
+;; The build hashes and reads pinned UTF-8/LF sources. A Windows host Emacs
+;; would otherwise decode them with the ANSI code page (cp1252), so match
+;; the UTF-8 locale that Unix build hosts use.
+(when (eq system-type 'windows-nt)
+  (prefer-coding-system 'utf-8-unix))
 (require 'nelisp-native-arithmetic-v2)
 (require 'nelisp-standalone-arena-rewrite)
 (require 'bytecomp)
@@ -27157,7 +27163,11 @@ source."
                                          relative nelisp-standalone--repo-root)))
                               (list relative path
                                     (with-temp-buffer
-                                      (insert-file-contents path)
+                                      ;; Pinned GNU sources are UTF-8/LF; do not
+                                      ;; decode them with the host locale (cp1252
+                                      ;; on Windows), which changes the pinned hash.
+                                      (let ((coding-system-for-read 'utf-8-unix))
+                                        (insert-file-contents path))
                                       (buffer-string)))))
                           nelisp-standalone--vendor-bytecode-files))
          (byte-opt-source
