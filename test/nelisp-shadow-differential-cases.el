@@ -45,6 +45,11 @@
 ;;; Code:
 
 (list
+ ;; AOT operand sequencing: later mutation must not precede an earlier read.
+ (let ((x 7) trace)
+   (list (+ x (progn (setq x 5) x))
+         (+ (progn (push 7 trace) 7) (progn (push 5 trace) 5))
+         trace))
  ;; P3: the guarded numeric lowering retains float and fixnum-overflow results.
  (let ((add (make-byte-code 514 (unibyte-string 1 1 92 135) [] 4)))
    (and (= (funcall add 3 2) 5)

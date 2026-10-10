@@ -12935,30 +12935,51 @@ must be in 0..7 (= f64 ABI arity cap)."
     (let ((disp (- (* 8 (1+ slot)))))
       (nelisp-asm-x86_64-movsd-xmm-mem-disp8 buf fp-dst 'rbp disp))))
 
+(defun nelisp-aot-compiler--f64-order-independent-p (node)
+  "Return non-nil when float leaf NODE has no observable effects."
+  (let ((kind (nelisp-aot-compiler--ir-kind node)))
+    (or (memq kind '(imm ref))
+        (and (memq kind '(bits-to-f64 i64-to-f64))
+             (nelisp-aot-compiler--order-independent-p
+              (nelisp-aot-compiler--ir-get node :int-expr))))))
+
+(defun nelisp-aot-compiler--emit-f64-binary-operands (a b buf)
+  "Place A in xmm0/d0 and B in xmm1/d1 in observable source order.
+Preserve the old bytes for independent leaves; otherwise spill A's bits
+across B's conversion, which may call arbitrary integer expressions."
+  (let* ((arm64 (eq nelisp-aot-compiler--arch 'aarch64))
+         (fp0 (if arm64 'd0 'xmm0))
+         (fp1 (if arm64 'd1 'xmm1)))
+    (if (and (nelisp-aot-compiler--f64-order-independent-p a)
+             (nelisp-aot-compiler--f64-order-independent-p b))
+        (progn
+          (nelisp-aot-compiler--emit-f64-leaf-into b buf fp1)
+          (nelisp-aot-compiler--emit-f64-leaf-into a buf fp0))
+      (nelisp-aot-compiler--emit-f64-leaf-into a buf fp0)
+      (if arm64
+          (progn
+            (nelisp-asm-arm64-fmov-x-from-d buf 'x0 'd0)
+            (nelisp-asm-arm64-str-pre-sp-16 buf 'x0))
+        (nelisp-asm-x86_64-movq-r64-xmm buf 'rax 'xmm0)
+        (nelisp-aot-compiler--emit-temp-push buf 'rax))
+      (nelisp-aot-compiler--emit-f64-leaf-into b buf fp1)
+      (if arm64
+          (progn
+            (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)
+            (nelisp-asm-arm64-fmov-d-from-x buf 'd0 'x0))
+        (nelisp-aot-compiler--emit-temp-pop buf 'rax)
+        (nelisp-asm-x86_64-movq-xmm-r64 buf 'xmm0 'rax)))))
+
 (defun nelisp-aot-compiler--emit-f64-binop (node buf)
-  "Emit a flat f64-class binop NODE (Doc 110 §110.E.1).
-Result lands in xmm0 — bypassing the rax convention used by the
-GP `--emit-value' contract.  Strategy at MVP scope is `flat-only':
-
-  1. Evaluate B into xmm1 directly (= MUST be a leaf ref or
-     literal; nested binops would clobber xmm0 mid-flight and
-     are rejected with a clear signal).
-  2. Evaluate A into xmm0 directly (= same constraint).
-  3. ADDSD/SUBSD/MULSD/DIVSD xmm0, xmm1 → result in xmm0.
-
-This avoids the xmm spill / fill dance the GP path uses
-(`push rax; ...; pop r10') because xmm has no single-byte push
-opcode + would force a 16-byte stack alignment per call.  Doc
-112 (= xmm spill) re-enables nested binops; until then the
-parser must reject anything that would force xmm spill."
+  "Emit a flat f64-class binop NODE, result in xmm0/d0.
+Leaf conversions can run integer expressions with effects.  The shared
+operand emitter preserves their source order and spills across the second
+conversion when necessary.  Nested float binops remain unsupported."
   (let* ((op (nelisp-aot-compiler--ir-get node :op))
          (a (nelisp-aot-compiler--ir-get node :a))
          (b (nelisp-aot-compiler--ir-get node :b))
-         (aarch64-p (eq nelisp-aot-compiler--arch 'aarch64))
-         (xmm0 (if aarch64-p 'd0 'xmm0))
-         (xmm1 (if aarch64-p 'd1 'xmm1)))
-    (nelisp-aot-compiler--emit-f64-leaf-into b buf xmm1)
-    (nelisp-aot-compiler--emit-f64-leaf-into a buf xmm0)
+         (aarch64-p (eq nelisp-aot-compiler--arch 'aarch64)))
+    (nelisp-aot-compiler--emit-f64-binary-operands a b buf)
     (if aarch64-p
         (cond
          ((eq op 'f64-add)
@@ -13141,8 +13162,7 @@ ships in §110.C.2.b."
     ;; `--emit-f64-binop').  Comparison ops then swap operand order
     ;; for LT / LE (= the AArch64 / x86_64 trick that makes SETA /
     ;; CSET-GT inherently NaN-correct).
-    (nelisp-aot-compiler--emit-f64-leaf-into b buf fp1)
-    (nelisp-aot-compiler--emit-f64-leaf-into a buf fp0)
+    (nelisp-aot-compiler--emit-f64-binary-operands a b buf)
     (cond
      ((eq op 'f64-eq-eps)
       (nelisp-aot-compiler--emit-f64-eq-eps buf))
@@ -14016,13 +14036,50 @@ the node's class to consume the result correctly."
          (signal 'nelisp-aot-compiler-error
                  (list :unknown-value-kind kind))))))))
 
+(defun nelisp-aot-compiler--order-independent-p (node)
+  "Return non-nil for IR NODE with no effects or mutable memory reads.
+Local references are safe only when BOTH operands satisfy this predicate.
+Unknown forms, calls, loads and potentially trapping division are conservative
+barriers.  Checked arithmetic can exit, so it is also a barrier."
+  (let ((kind (nelisp-aot-compiler--ir-kind node)))
+    (or (memq kind '(imm ref))
+        (and (memq kind '(arith shift cmp))
+             (not (and (eq kind 'arith)
+                       (or nelisp-aot-compiler--checked-arith
+                           (memq (nelisp-aot-compiler--ir-get node :op) '(/ mod)))))
+             (nelisp-aot-compiler--order-independent-p
+              (nelisp-aot-compiler--ir-get node :a))
+             (nelisp-aot-compiler--order-independent-p
+              (nelisp-aot-compiler--ir-get node :b))))))
+
+(defun nelisp-aot-compiler--emit-binary-operands (a b buf)
+  "Emit A and B into rax/r10 or x0/x9, preserving observable source order.
+Keep the historical B-first bytes when either operand is an immediate or
+both are effect-free.  Otherwise save A, evaluate B, and restore the operand
+register convention without changing the operation's meaning."
+  (let ((reverse-safe
+         (or (eq (nelisp-aot-compiler--ir-kind a) 'imm)
+             (eq (nelisp-aot-compiler--ir-kind b) 'imm)
+             (and (nelisp-aot-compiler--order-independent-p a)
+                  (nelisp-aot-compiler--order-independent-p b)))))
+    (nelisp-aot-compiler--emit-value (if reverse-safe b a) buf)
+    (if (eq nelisp-aot-compiler--arch 'aarch64)
+        (progn
+          (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+          (nelisp-aot-compiler--emit-value (if reverse-safe a b) buf)
+          (unless reverse-safe
+            (nelisp-asm-arm64-mov-reg-reg buf 'x9 'x0))
+          (nelisp-asm-arm64-ldr-post-sp-16 buf (if reverse-safe 'x9 'x0)))
+      (nelisp-aot-compiler--emit-temp-push buf 'rax)
+      (nelisp-aot-compiler--emit-value (if reverse-safe a b) buf)
+      (unless reverse-safe
+        (nelisp-asm-x86_64-mov-reg-reg buf 'r10 'rax))
+      (nelisp-aot-compiler--emit-temp-pop buf (if reverse-safe 'r10 'rax)))))
+
 (defun nelisp-aot-compiler--emit-arith (node buf)
-  "Emit a runtime arithmetic op, result in rax.
-Strategy: evaluate B into rax, push, evaluate A into rax, pop into
-r10, then OP rax, r10.  Push/pop are byte-fixed so pass invariance
-holds.  r10 is caller-saved per SysV AND not in the arg-reg list so
-  the scratch never aliases a parameter register (= the bug seen in
-chained calls where rcx held both `d' param and a scratch value)."
+  "Emit runtime arithmetic, with A in rax/x0 and B in r10/x9.
+Operand sequencing is shared with shifts and comparisons; observable effects
+run left to right.  The saved operand uses the stack across nested calls."
   (let ((op (nelisp-aot-compiler--ir-get node :op))
         (a (nelisp-aot-compiler--ir-get node :a))
         (b (nelisp-aot-compiler--ir-get node :b)))
@@ -14036,10 +14093,7 @@ chained calls where rcx held both `d' param and a scratch value)."
             (signal 'nelisp-aot-compiler-error
                     (list :checked-arith-unsupported-arch
                           nelisp-aot-compiler--arch)))
-          (nelisp-aot-compiler--emit-value b buf)
-          (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-          (nelisp-aot-compiler--emit-value a buf)
-          (nelisp-asm-arm64-ldr-post-sp-16 buf 'x9)
+          (nelisp-aot-compiler--emit-binary-operands a b buf)
           (cond
            ((eq op '+) (nelisp-asm-arm64-add-reg-reg buf 'x0 'x0 'x9))
            ((eq op '-) (nelisp-asm-arm64-sub-reg-reg buf 'x0 'x0 'x9))
@@ -14054,14 +14108,7 @@ chained calls where rcx held both `d' param and a scratch value)."
            (t
             (signal 'nelisp-aot-compiler-error
                     (list :unknown-arith-op op)))))
-      ;; Compute B -> rax.
-      (nelisp-aot-compiler--emit-value b buf)
-      ;; push rax (save B on stack).
-      (nelisp-aot-compiler--emit-temp-push buf 'rax)
-      ;; Compute A -> rax.
-      (nelisp-aot-compiler--emit-value a buf)
-      ;; pop r10 (= recover B into r10; r10 not in arg-regs).
-      (nelisp-aot-compiler--emit-temp-pop buf 'r10)
+      (nelisp-aot-compiler--emit-binary-operands a b buf)
       (cond
        ((eq op '+)
         (nelisp-asm-x86_64-add-reg-reg buf 'rax 'r10)
@@ -14158,30 +14205,15 @@ rather than claimed as parity with it."
     (nelisp-asm-x86_64-syscall buf)))
 
 (defun nelisp-aot-compiler--emit-shift (node buf)
-  "Emit a variable-count shift NODE; result in rax (Doc 100 §100.D).
-Strategy mirrors `--emit-arith' for the operand evaluation but
-diverges at the final op: x86_64 SHL / SAR by a variable count
-require the count to live in CL (= low 8 bits of RCX).  Sequence:
-
-  <emit B>            -> rax           (= count)
-  push rax            (save count on stack)
-  <emit A>            -> rax           (= value)
-  pop r10             (count into r10)
-  mov rcx, r10        (count into rcx so cl carries the low byte)
-  shl/sar rax, cl
-
-RCX is caller-saved per SysV and not in the arg-reg list (= same
-property `--emit-arith' relies on for r10), so it cannot alias a
-live parameter register in the surrounding defun."
+  "Emit a variable-count shift NODE, preserving observable operand order.
+The shared operand emitter leaves A in rax/x0 and B in r10/x9.
+x86_64 moves B into RCX because SHL/SAR require the count in CL."
   (let ((op (nelisp-aot-compiler--ir-get node :op))
         (a (nelisp-aot-compiler--ir-get node :a))
         (b (nelisp-aot-compiler--ir-get node :b)))
     (if (eq nelisp-aot-compiler--arch 'aarch64)
         (progn
-          (nelisp-aot-compiler--emit-value b buf)
-          (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-          (nelisp-aot-compiler--emit-value a buf)
-          (nelisp-asm-arm64-ldr-post-sp-16 buf 'x9)
+          (nelisp-aot-compiler--emit-binary-operands a b buf)
           (cond
            ((eq op 'shl) (nelisp-asm-arm64-lslv buf 'x0 'x0 'x9))
            ((eq op 'sar) (nelisp-asm-arm64-asrv buf 'x0 'x0 'x9))
@@ -14189,14 +14221,7 @@ live parameter register in the surrounding defun."
            (t
             (signal 'nelisp-aot-compiler-error
                     (list :unknown-shift-op op)))))
-      ;; Compute B -> rax.
-      (nelisp-aot-compiler--emit-value b buf)
-      ;; push rax (save B on stack).
-      (nelisp-aot-compiler--emit-temp-push buf 'rax)
-      ;; Compute A -> rax.
-      (nelisp-aot-compiler--emit-value a buf)
-      ;; pop r10 (= recover B into r10).
-      (nelisp-aot-compiler--emit-temp-pop buf 'r10)
+      (nelisp-aot-compiler--emit-binary-operands a b buf)
       ;; mov rcx, r10 (= count into rcx; cl = rcx[0:8]).
       (nelisp-asm-x86_64-mov-reg-reg buf 'rcx 'r10)
       (cond
@@ -18309,12 +18334,9 @@ underlying `cmp' instruction sets SF/OF/ZF and the setCC
 opcode reads the right combination.")
 
 (defun nelisp-aot-compiler--emit-cmp (node buf)
-  "Emit signed comparison NODE; result (0 or 1) in rax.
-Strategy: compute B -> rax -> push, compute A -> rax, pop r10 (=
-B), cmp rax, r10 (= computes A - B flag set), then setCC al +
-movzx eax, al to materialise the boolean into rax.  Uses r10 to
-  avoid arg-reg aliasing inside chained calls, mirroring the
-  Doc 97.b arith convention."
+  "Emit signed comparison NODE, preserving observable operand order.
+The shared operand emitter leaves A in rax/x0 and B in r10/x9;
+compare A against B and materialize the boolean result."
   (let* ((op (nelisp-aot-compiler--ir-get node :op))
          (a (nelisp-aot-compiler--ir-get node :a))
          (b (nelisp-aot-compiler--ir-get node :b))
@@ -18330,19 +18352,10 @@ movzx eax, al to materialise the boolean into rax.  Uses r10 to
                  ('> 'gt)
                  ('<= 'le)
                  ('>= 'ge))))
-          (nelisp-aot-compiler--emit-value b buf)
-          (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-          (nelisp-aot-compiler--emit-value a buf)
-          (nelisp-asm-arm64-ldr-post-sp-16 buf 'x9)
+          (nelisp-aot-compiler--emit-binary-operands a b buf)
           (nelisp-asm-arm64-cmp-reg-reg buf 'x0 'x9)
           (nelisp-asm-arm64-cset buf 'x0 arm64-cc))
-      ;; Compute B -> rax, save on stack.
-      (nelisp-aot-compiler--emit-value b buf)
-      (nelisp-aot-compiler--emit-temp-push buf 'rax)
-      ;; Compute A -> rax.
-      (nelisp-aot-compiler--emit-value a buf)
-      ;; Recover B into r10.
-      (nelisp-aot-compiler--emit-temp-pop buf 'r10)
+      (nelisp-aot-compiler--emit-binary-operands a b buf)
       ;; cmp rax, r10                          (= A - B sets flags)
       (nelisp-asm-x86_64-cmp-reg-reg buf 'rax 'r10)
       ;; setCC al
