@@ -113,6 +113,12 @@ Return (replacement selected unsupported); unsupported forms retain source."
         (unless bad (setq result (list 'funcall compiled)))))
     (list result selected bad)))
 
+(defun nelisp-native-optimizer-bytecode--target-path (path)
+  "Resolve generated loader PATH for the cold-image target host."
+  (if (fboundp 'nelisp-standalone--cold-target-path)
+      (nelisp-standalone--cold-target-path path)
+    path))
+
 (let* ((root (expand-file-name ".." (file-name-directory load-file-name)))
        (directory (expand-file-name "target/nelisp-compiler-bytecode" root))
        (modules (delq 'nelisp-native-cache (copy-sequence nelisp-native-cache--compiler-modules)))
@@ -139,7 +145,9 @@ Return (replacement selected unsupported); unsupported forms retain source."
            (setq count (1+ count))))
       (let ((print-length nil) (print-level nil) (print-gensym t) (print-circle t)
             (print-escape-newlines t) (print-escape-nonascii t))
-       (prin1 (list 'let (list (list 'load-file-name source)) result) (current-buffer)) (insert "\n")))))
+       (prin1 (list 'let (list (list 'load-file-name
+                                   (nelisp-native-optimizer-bytecode--target-path source)))
+                    result) (current-buffer)) (insert "\n")))))
    (push (list :module module :source (file-relative-name source root)
                :source-sha256 (with-temp-buffer (set-buffer-multibyte nil) (insert-file-contents-literally source) (secure-hash 'sha256 (current-buffer)))
                :output (file-relative-name output root)
@@ -149,12 +157,14 @@ Return (replacement selected unsupported); unsupported forms retain source."
   (prin1 `(progn
             (when nelisp-native-cache--cold-source-check (error "Compiler already sealed"))
             (unless (featurep 'nelisp-native-structural-bytecode)
-              (load ,(expand-file-name "target/nelisp-structural-bytecode.el" root) nil t t))
-            (add-to-list 'load-path ,directory)
+              (load ,(nelisp-native-optimizer-bytecode--target-path
+                      (expand-file-name "target/nelisp-structural-bytecode.el" root)) nil t t))
+            (add-to-list 'load-path ,(nelisp-native-optimizer-bytecode--target-path directory))
             (require 'nelisp-bytecode-native-rooted-cfg-shared-emit)
             (require 'nelisp-native-load)
             (nelisp-native-cache-prepare-cold-compiler)
-            (setq load-path (delete ,directory load-path))) (current-buffer)))
+            (setq load-path (delete ,(nelisp-native-optimizer-bytecode--target-path directory)
+                                    load-path))) (current-buffer)))
  (with-temp-file (expand-file-name "target/nelisp-compiler-bytecode-manifest.el" root)
   (let ((print-length nil) (print-level nil) (print-gensym t) (print-circle t))
    (prin1 (list :format 1 :gnu-version emacs-version :compiled count :source-fallbacks (nreverse skipped) :modules (nreverse manifest)) (current-buffer)) (insert "\n")))

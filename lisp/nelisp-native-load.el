@@ -177,6 +177,23 @@ descriptor says so.")
 ;; Full development-runtime units use a separate ABI.  The v1 allocator/GC
 ;; pair remains loadable for old probes; v2 publishes the whole GC contract
 ;; through a checked table whose address occupies state+8.
+(defvar nelisp-native-load--build-target nil
+  "Host generator target; execution derives its target from the running reader.")
+(defun nelisp-native-load--windows-p ()
+  (if (fboundp 'nelisp--target-os-code)
+      (= (nelisp--target-os-code) 2)
+    (or (eq system-type 'windows-nt)
+        (eq nelisp-native-load--build-target 'windows-x86_64)
+        (and (fboundp 'nelisp-standalone-arena-rewrite-target)
+             (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)))))
+(defun nelisp-native-load--runtime-abi-v2 ()
+  (if (nelisp-native-load--windows-p) "nelisp-runtime-raw-v2:win64:v1"
+    nelisp-native-load-raw-runtime-abi-v2))
+(defun nelisp-native-load--target-v2 ()
+  (if (nelisp-native-load--windows-p)
+      '(:os windows-nt :arch x86_64 :calling-convention win64 :container-version 3)
+    '(:os gnu/linux :arch x86_64 :calling-convention sysv :container-version 3)))
+
 (defconst nelisp-native-load-raw-runtime-abi-v2 "nelisp-runtime-raw-v2"
   "Calling convention contract for full native runtime units.
 
@@ -351,7 +368,8 @@ on host Emacs."
 (defun nelisp-native-load--digest (bytes)
   "Return the sha256 of BYTES as a lowercase hex string, or nil.
 
-Goes through a raw buffer and `nelisp--sha256-bytes' rather than handing
+Copies and compresses bytes iteratively, with stack usage independent of
+input length. Goes through a raw buffer and `nelisp--sha256-bytes' rather than handing
 the string to `nelisp--sha256'.  Strings are UTF-8 internally here, so
 the string entry point digests the encoded form: it matches other
 sha256 implementations on ASCII and diverges on any byte over 127, which
@@ -375,7 +393,7 @@ than fail closed against a digest it cannot compute."
               (progn
                 (nelisp-native-load--poke-string buf 0 bytes)
                 (nelisp--sha256-bytes buf n))
-            (syscall-direct 11 buf size 0 0 0 0)))
+            (nelisp-native-load--unmap buf size)))
       (nelisp-native-load--without-midform-collect
        (lambda ()
          ;; Older readers retain the guarded per-byte compatibility path.
@@ -411,12 +429,18 @@ without printing, copying, or traversing their definitions."
            '(nelisp-native-load-sha256-dependency-context
              nelisp-native-load-sha256 nelisp-native-load--sha256
              nelisp-native-load--digest nelisp-native-load--page-round
-             nelisp-native-load--mmap nelisp-native-load--poke-string
+             nelisp-native-load--mmap nelisp-native-load--unmap
+             nelisp-native-load--windows-p nelisp-native-load--poke-string
              nelisp-native-load--byte nelisp-native-load--without-midform-collect
              secure-hash nelisp--sha256-bytes ptr-write-bytes ptr-write-u8
              string-byte string-bytes aref logand alloc-bytes syscall-direct
              nelisp--debug-switch max + - * / < = 1+ fboundp
              symbol-function mapcar vconcat))
+   (when (nelisp-native-load--windows-p)
+     (mapcar (lambda (symbol) (and (fboundp symbol) (symbol-function symbol)))
+             '(nelisp--sha256 nelisp-native-windows-map nelisp-native-windows-unmap
+               nelisp-native-windows-call nelisp-native-windows-free nl-ffi-call
+               nelisp--target-os-code nelisp--target-arch-code)))
    (vector nelisp-native-load-page-bytes)))
 
 (defvar nelisp-native-load--running-binary-sha256-cache :unset
@@ -532,15 +556,30 @@ why every failure here is swallowed rather than signalled."
           (ignore-errors (delete-file output)))))))
 
 (defun nelisp-native-load--running-binary-sha256 ()
-  "Return the SHA-256 of this process's executable, or nil when unavailable.
+  "Return this process's executable identity, or nil when unavailable.
+Windows returns the linked file's SHA-256 with its stamp field zeroed.
+Linux retains the whole-file SHA-256; its cache digest semantics do not change.
 
 Linux exposes the running image through `/proc/self/exe'.  The path is an OS
 interface, not a repository or machine-specific build path.  The loader does
 not accept a caller-selected path here: accepting one would let an artifact
 claim the digest of a different executable and defeat the same-binary ABI
 check."
-  (if (not (eq nelisp-native-load--running-binary-sha256-cache :unset))
-      nelisp-native-load--running-binary-sha256-cache
+  (if (nelisp-native-load--windows-p)
+      ;; Windows uses the linker-stamped SHA-256 (digest field zeroed),
+      ;; already trusted by cold-image loading. The fixed rodata accessor is
+      ;; O(1), returns a fresh string, and accepts no path or mutable cache.
+      ;; Refuse older/unstamped readers; never fall back to hashing the PE.
+      (condition-case nil
+          (let ((digest (and (fboundp 'nelisp--build-digest)
+                             (nelisp--build-digest))))
+            (and (stringp digest)
+                 (string-match-p "\\`[0-9a-f]\\{64\\}\\'" digest)
+                 (not (equal digest (make-string 64 ?0)))
+                 (copy-sequence digest)))
+        (error nil))
+    (if (not (eq nelisp-native-load--running-binary-sha256-cache :unset))
+        nelisp-native-load--running-binary-sha256-cache
     (let* ((proc-self (and (eq system-type 'gnu/linux)
                            "/proc/self/exe"))
            ;; Resolve the symlink in this process before invoking
@@ -577,10 +616,12 @@ check."
                             (> (string-bytes bytes) 0)
                             (nelisp-native-load--sha256 bytes)))))
       (setq nelisp-native-load--running-binary-sha256-cache digest)
-      digest)))
+      digest))))
 
 (defun nelisp-native-load-running-binary-sha256 ()
-  "Return the SHA-256 identity of the currently running NeLisp executable."
+  "Return the SHA-256 identity of the currently running NeLisp executable.
+On Windows this is the in-memory build stamp (digest field zeroed at link
+time); on Linux it remains the whole-file digest."
   (nelisp-native-load--running-binary-sha256))
 
 (defun nelisp-native-load--read-file (path)
@@ -804,10 +845,25 @@ plus one for the entry address."
 
 (defun nelisp-native-load--mmap (size executable)
   "Map SIZE bytes anonymously, executable when EXECUTABLE."
-  (let ((addr (syscall-direct 9 0 size (if executable 7 3) 34 -1 0)))
+  (let ((addr (if (nelisp-native-load--windows-p)
+                  (progn (when executable (error "Windows legacy RWX mapping refused"))
+                         (require 'nelisp-native-windows)
+                         (nelisp-native-windows-map size))
+                (syscall-direct 9 0 size (if executable 7 3) 34 -1 0))))
     (when (< addr nelisp-native-load-page-bytes)
       (error "nelisp-native-load: mmap of %d bytes failed (%d)" size addr))
     addr))
+
+(defun nelisp-native-load--protect (address size protection)
+  "Apply the shared native mapping boundary; Linux syscall bytes stay unchanged."
+  (if (nelisp-native-load--windows-p)
+      (nelisp-native-windows-protect address size protection)
+    (syscall-direct 10 address size protection 0 0 0)))
+(defun nelisp-native-load--unmap (address size)
+  "Release through the same owner used to allocate ADDRESS."
+  (if (nelisp-native-load--windows-p)
+      (nelisp-native-windows-unmap address size)
+    (syscall-direct 11 address size 0 0 0 0)))
 
 (defun nelisp-native-load-map-anonymous (size executable)
   "Map SIZE bytes anonymously (zero-filled), executable when EXECUTABLE.
@@ -1535,12 +1591,17 @@ rather than trust this."
 
 The loader may inspect raw metadata on a host Emacs, but execution requires
 the standalone reader's in-process mmap, mprotect and six-GP `ptr-call'."
-  (and (eq system-type 'gnu/linux)
+  (and (memq system-type '(gnu/linux windows-nt))
        (or (not (boundp 'system-configuration))
            (not (stringp system-configuration))
            (string-match-p "x86_64\\|amd64" system-configuration))
        (fboundp 'syscall-direct)
-       (fboundp 'ptr-call)))
+       (fboundp 'ptr-call)
+       (or (eq system-type 'gnu/linux)
+           (and (fboundp 'nl-ffi-call)
+                (fboundp 'nelisp--target-os-code)
+                (= (nelisp--target-os-code) 2)
+                (= (nelisp--target-arch-code) 0)))))
 
 (defun nelisp-native-load--raw-native (manifest)
   "Return the raw native section of MANIFEST, if it has one."
@@ -1776,7 +1837,7 @@ The returned plist has :environment, :begin, :reserve, :end, and :slot fields."
                     :params '(u64 u64) :return 'u64 :slots '(4 5 2 0)))
        (equal (plist-get entry :name) nelisp-native-load-raw-v2-call1-import)
        (eq (plist-get entry :kind) 'func)
-       (equal (plist-get entry :abi) nelisp-native-load-raw-runtime-abi-v2)
+       (equal (plist-get entry :abi) (nelisp-native-load--runtime-abi-v2))
        (= (or (plist-get entry :arity) -1) 6)
        (equal (plist-get entry :params) '(u64 u64 u64 u64 u64 u64))
        (eq (plist-get entry :return) 'u64)))
@@ -1822,7 +1883,7 @@ The returned plist has :environment, :begin, :reserve, :end, and :slot fields."
    (prin1-to-string (list nelisp-native-load-rooted-stack-contract-version
                           "nl_native_stack_probe_v1" (sort (copy-sequence imports) #'string<) 256
                           '(u64 u64 u64 u64) 'u64
-                          nelisp-native-load-raw-runtime-abi-v2))))
+                          (nelisp-native-load--runtime-abi-v2)))))
 
 (defun nelisp-native-load--native-object-op-contract-hash ()
   "Hash the exact gateway and opcode contract published in v2 manifests."
@@ -1969,7 +2030,8 @@ it does not, the caller must have supplied already rewritten source; leaving
 the forms untouched here is paired with the fixed-address scan in the v2
 compiler, which refuses the unsafe artifact before publication."
   (if (fboundp 'nelisp-standalone--chunk-arena-rewrite)
-      (let ((nelisp-standalone--target 'linux-x86_64))
+      (let ((nelisp-standalone--target (if (nelisp-native-load--windows-p)
+                                            'windows-x86_64 'linux-x86_64)))
         (nelisp-standalone--chunk-arena-rewrite forms))
     forms))
 
@@ -2024,10 +2086,15 @@ code address; runtime BSS is obtained through a named export instead."
       (list :unsupported-relocation-type type symbol))
      ((not (<= (+ offset 4) text-length))
       (list :relocation-past-text offset text-length))
-     ((not (integerp addend))
+     ((not (and (integerp addend) (<= -2147483648 addend 2147483647)))
       (list :bad-relocation-addend reloc))
      ((not (and (stringp symbol) (member symbol imports)))
       (list :unlisted-import symbol))
+     ((let* ((index (cl-position symbol imports :test #'equal))
+             (stub-base (* 16 (/ (+ text-length 15) 16)))
+             (displacement (- (+ stub-base (* nelisp-native-load-stub-bytes index) addend) offset)))
+        (not (<= -2147483648 displacement 2147483647)))
+      (list :relocation-overflow reloc))
      (t nil))))
 
 (defun nelisp-native-load--raw-source-forms (path &optional source)
@@ -2129,7 +2196,7 @@ hidden object-mode Sexp boundary.  The artifact retains text, relocations,
     (let ((nelisp-aot-compiler--runtime-entry-params nil))
       (setq unit
             (nelisp-aot-compile-to-link-unit
-             (cons 'seq forms) :arch 'x86_64 :format 'elf)))
+             (cons 'seq forms) :arch 'x86_64 :format (if (nelisp-native-load--windows-p) 'coff 'elf))))
     (let* ((text (or (plist-get unit :text) ""))
            (rodata (or (plist-get unit :rodata) ""))
            (data (or (plist-get unit :data) ""))
@@ -2322,7 +2389,7 @@ The enclosing CFG admission must still authenticate the complete contract."
     (and expected (integerp index)
          (eq (plist-get descriptor :address-mode) 'arithmetic-provider-v1)
          (equal (plist-get descriptor :index) index)
-         (equal (plist-get descriptor :abi) nelisp-native-load-raw-runtime-abi-v2)
+         (equal (plist-get descriptor :abi) (nelisp-native-load--runtime-abi-v2))
          (cl-every (lambda (key) (equal (plist-get descriptor key) (plist-get expected key)))
                    '(:name :kind :size :arity :params :return)))))
 
@@ -2828,7 +2895,7 @@ without publishing an intermediate artifact.  The cache owns publication."
       (nelisp-native-load--raw-v2-compile-stage source-path artifact-path "aot-start")
       (setq unit
             (nelisp-aot-compile-to-link-unit
-             (cons 'seq rewritten) :arch 'x86_64 :format 'elf))
+             (cons 'seq rewritten) :arch 'x86_64 :format (if (nelisp-native-load--windows-p) 'coff 'elf)))
       (nelisp-native-load--raw-v2-compile-stage source-path artifact-path "aot-end"))
     (nelisp-native-load--raw-v2-compile-stage source-path artifact-path "manifest-materialization-start")
     (let* ((text (or (plist-get unit :text) ""))
@@ -2861,7 +2928,7 @@ without publishing an intermediate artifact.  The cache owns publication."
           (push (list :name name
                       :value (plist-get sym :value)
                       :size (or (plist-get sym :size) (plist-get def :size) 0)
-                      :type 'func :abi nelisp-native-load-raw-runtime-abi-v2
+                      :type 'func :abi (nelisp-native-load--runtime-abi-v2)
                       :arity (or (plist-get def :arity) 0)
                       :return 'u64)
                 exports)))
@@ -2945,7 +3012,7 @@ without publishing an intermediate artifact.  The cache owns publication."
             (error "nelisp-native-load: v2 import is not exported: %S" import))
           (push (append (list :name import
                       :kind (if (member import data-names) 'data 'func)
-                      :abi nelisp-native-load-raw-runtime-abi-v2
+                      :abi (nelisp-native-load--runtime-abi-v2)
                       :index index :address-mode mode)
                        (when typed-call1
                          '(:arity 6 :params (u64 u64 u64 u64 u64 u64)
@@ -2983,7 +3050,7 @@ without publishing an intermediate artifact.  The cache owns publication."
           (unless (or runtime-owned-gc (= arity (plist-get export :arity)))
             (error "nelisp-native-load: v2 arity mismatch for %s" name))
           (push (list :name name :arity arity :index index
-                      :return 'u64 :abi nelisp-native-load-raw-runtime-abi-v2)
+                      :return 'u64 :abi (nelisp-native-load--runtime-abi-v2))
                 gc-entries)
             (setq index (1+ index)))))
       (setq gc-entries (nreverse gc-entries))
@@ -2991,7 +3058,7 @@ without publishing an intermediate artifact.  The cache owns publication."
             (list :format nelisp-native-load-raw-artifact-format-v2
                   :kind 'raw-runtime
                   :runtime-kind 'gc-arena
-                  :runtime-abi nelisp-native-load-raw-runtime-abi-v2
+                  :runtime-abi (nelisp-native-load--runtime-abi-v2)
                   :layout-id layout :arch nelisp-native-load-raw-supported-arch
                   :build-id build :binary-sha256 binary
                   :source (expand-file-name source-path)
@@ -3011,7 +3078,7 @@ without publishing an intermediate artifact.  The cache owns publication."
                   (nelisp-native-load--raw-v2-import-contract-hash
                    resolver-symbols)
                   :native
-                  (list :raw-abi nelisp-native-load-raw-runtime-abi-v2
+                  (list :raw-abi (nelisp-native-load--runtime-abi-v2)
                         :object-format 'nelisp-aot-raw-unit-v2
                         :text-size text-size
                         :text-base64 (base64-encode-string text t)
@@ -3021,6 +3088,8 @@ without publishing an intermediate artifact.  The cache owns publication."
                         :extern-symbols imports
                         :relocs (plist-get unit :relocs)
                         :data-size 0 :bss-size 0)))
+      (when (nelisp-native-load--windows-p)
+        (setq manifest (append manifest (list :target (nelisp-native-load--target-v2)))))
       (when call1-template
         (setq manifest
               (append manifest
@@ -3250,11 +3319,11 @@ without publishing an intermediate artifact.  The cache owns publication."
          (equal (plist-get entry :params) '(u64 u64 u64 u64))
          (eq (plist-get entry :return) 'u64)
          (eq (plist-get entry :type) 'func)
-         (equal (plist-get entry :abi) nelisp-native-load-raw-runtime-abi-v2)
+         (equal (plist-get entry :abi) (nelisp-native-load--runtime-abi-v2))
          (equal (nelisp-native-load--raw-import-name descriptor)
                 "nl_root_pin_slot_v2")
          (eq (nelisp-native-load--raw-import-kind descriptor) 'func)
-         (equal (plist-get descriptor :abi) nelisp-native-load-raw-runtime-abi-v2)
+         (equal (plist-get descriptor :abi) (nelisp-native-load--runtime-abi-v2))
          (= (or (plist-get descriptor :index) -1)
             (nelisp-native-load--raw-v2-conditional-import-index
              "nl_root_pin_slot_v2"))
@@ -3284,7 +3353,7 @@ without publishing an intermediate artifact.  The cache owns publication."
          entry (= (or (plist-get entry :arity) -1) 4)
          (equal (plist-get entry :params) '(u64 u64 u64 u64))
          (eq (plist-get entry :return) 'u64) (eq (plist-get entry :type) 'func)
-         (equal (plist-get entry :abi) nelisp-native-load-raw-runtime-abi-v2)
+         (equal (plist-get entry :abi) (nelisp-native-load--runtime-abi-v2))
          (not (or (plist-get manifest :native-rooted-stack-contract-version)
                   (plist-get manifest :native-rooted-conditional-contract-version)
                   (plist-get manifest :call1-contract-version)
@@ -3293,7 +3362,7 @@ without publishing an intermediate artifact.  The cache owns publication."
           (lambda (name)
             (let ((d (nelisp-native-load--raw-v2-import native name)))
               (and d (eq (nelisp-native-load--raw-import-kind d) 'func)
-                   (equal (plist-get d :abi) nelisp-native-load-raw-runtime-abi-v2)
+                   (equal (plist-get d :abi) (nelisp-native-load--runtime-abi-v2))
                    (= (or (plist-get d :arity) -1) 6)
                    (equal (plist-get d :params) '(u64 u64 u64 u64 u64 u64))
                    (eq (plist-get d :return) 'u64)
@@ -3327,7 +3396,7 @@ without publishing an intermediate artifact.  The cache owns publication."
          entry (= (or (plist-get entry :arity) -1) 4)
          (equal (plist-get entry :params) '(u64 u64 u64 u64))
          (eq (plist-get entry :return) 'u64) (eq (plist-get entry :type) 'func)
-         (equal (plist-get entry :abi) nelisp-native-load-raw-runtime-abi-v2)
+         (equal (plist-get entry :abi) (nelisp-native-load--runtime-abi-v2))
          (not (or (plist-get manifest :native-rooted-stack-contract-version)
                   (plist-get manifest :native-rooted-branch-contract-version)
                   (plist-get manifest :native-rooted-conditional-contract-version)
@@ -3339,7 +3408,7 @@ without publishing an intermediate artifact.  The cache owns publication."
               (and descriptor
                    (eq (nelisp-native-load--raw-import-kind descriptor) 'func)
                    (equal (plist-get descriptor :abi)
-                          nelisp-native-load-raw-runtime-abi-v2)
+                          (nelisp-native-load--runtime-abi-v2))
                    (= (or (plist-get descriptor :arity) -1) 6)
                    (equal (plist-get descriptor :params)
                           '(u64 u64 u64 u64 u64 u64))
@@ -3401,7 +3470,7 @@ only semantic reconstruction is omitted, never the manifest structure."
          (equal (plist-get entry :params) '(u64 u64 u64 u64))
          (eq (plist-get entry :return) 'u64)
          (eq (plist-get entry :type) 'func)
-         (equal (plist-get entry :abi) nelisp-native-load-raw-runtime-abi-v2)
+         (equal (plist-get entry :abi) (nelisp-native-load--runtime-abi-v2))
          (not (or (plist-get manifest :native-rooted-stack-contract-version)
                   (plist-get manifest :native-rooted-branch-contract-version)
                   (plist-get manifest :native-rooted-branch-join-contract-version)
@@ -3422,7 +3491,7 @@ only semantic reconstruction is omitted, never the manifest structure."
               (and (member name '("nl_native_car_v2" "nl_native_cdr_v2"
                                   "nl_native_cons_v2" "nl_native_funcall_v2" "nl_native_poll_v2" "nl_root_pin_slot_v2"))
                    (eq (nelisp-native-load--raw-import-kind descriptor) 'func)
-                   (equal (plist-get descriptor :abi) nelisp-native-load-raw-runtime-abi-v2)
+                   (equal (plist-get descriptor :abi) (nelisp-native-load--runtime-abi-v2))
                    (eq (plist-get descriptor :address-mode)
                        (if slot 'conditional-root-slot-v1 'native-bridgeable-v1))
                    (integerp index) (= (or (plist-get descriptor :index) -1) index)
@@ -3503,7 +3572,7 @@ only semantic reconstruction is omitted, never the manifest structure."
 (defun nelisp-native-load--raw-v2-rooted-cfg-runtime-key-inputs ()
   "Return mutable process ABI inputs used by the generic CFG cache key."
   (list (nelisp-native-load--running-binary-sha256)
-        nelisp-native-load-raw-runtime-abi-v2
+        (nelisp-native-load--runtime-abi-v2)
         (nelisp-native-load--raw-v2-symbols)
         nelisp-native-load-bridgeable-symbols
         nelisp-native-load-raw-v2-bridgeable-imports
@@ -3588,7 +3657,7 @@ only semantic reconstruction is omitted, never the manifest structure."
                                   "nl_native_cons_v2" "nl_native_funcall_v2" "nl_native_poll_v2" "nl_root_pin_slot_v2"))
                    (eq (nelisp-native-load--raw-import-kind descriptor) 'func)
                    (equal (plist-get descriptor :abi)
-                          nelisp-native-load-raw-runtime-abi-v2)
+                          (nelisp-native-load--runtime-abi-v2))
                    (eq (plist-get descriptor :address-mode)
                        (if slot 'conditional-root-slot-v1 'native-bridgeable-v1))
                    (integerp index) (= (or (plist-get descriptor :index) -1) index)
@@ -3601,7 +3670,7 @@ only semantic reconstruction is omitted, never the manifest structure."
          (equal (plist-get entry :params) '(u64 u64 u64 u64))
          (eq (plist-get entry :return) 'u64)
          (eq (plist-get entry :type) 'func)
-         (equal (plist-get entry :abi) nelisp-native-load-raw-runtime-abi-v2)
+         (equal (plist-get entry :abi) (nelisp-native-load--runtime-abi-v2))
          (not (or (plist-get manifest :native-rooted-cfg-contract-version)
                   (plist-get manifest :native-rooted-cfg-contract)
                   (plist-get manifest :native-rooted-cfg-import-descriptors)
@@ -3766,13 +3835,17 @@ candidate's self-described table order."
               (plist-get manifest :native-rooted-cfg-safe-v3-contract-hash)))
          (problems nil)
          (add (lambda (problem) (setq problems (cons problem problems)))))
+    (unless (if (nelisp-native-load--windows-p)
+                (equal (plist-get manifest :target) (nelisp-native-load--target-v2))
+              (null (plist-get manifest :target)))
+      (funcall add (list :raw-target (plist-get manifest :target))))
     (unless (eq (plist-get manifest :kind) 'raw-runtime)
       (funcall add (list :raw-kind (plist-get manifest :kind))))
     (unless (eq (plist-get manifest :format)
                 nelisp-native-load-raw-artifact-format-v2)
       (funcall add (list :raw-format (plist-get manifest :format))))
     (unless (equal (plist-get manifest :runtime-abi)
-                   nelisp-native-load-raw-runtime-abi-v2)
+                   (nelisp-native-load--runtime-abi-v2))
       (funcall add (list :raw-runtime-abi (plist-get manifest :runtime-abi))))
     (unless (eq (plist-get manifest :runtime-kind) 'gc-arena)
       (funcall add (list :raw-runtime-kind (plist-get manifest :runtime-kind))))
@@ -3804,7 +3877,7 @@ candidate's self-described table order."
                            (plist-get manifest :resolver-contract-hash)))))
     (when native
       (unless (equal (plist-get native :raw-abi)
-                     nelisp-native-load-raw-runtime-abi-v2)
+                     (nelisp-native-load--runtime-abi-v2))
         (funcall add (list :raw-abi (plist-get native :raw-abi))))
       (unless (eq (plist-get native :object-format)
                   'nelisp-aot-raw-unit-v2)
@@ -3871,7 +3944,7 @@ candidate's self-described table order."
                          (equal (plist-get export :params) '(u64 u64 u64 u64))
                          (eq (plist-get export :return) 'u64)
                          (eq (plist-get export :type) 'func)
-                         (equal (plist-get export :abi) nelisp-native-load-raw-runtime-abi-v2)
+                         (equal (plist-get export :abi) (nelisp-native-load--runtime-abi-v2))
                          (not (or (plist-get manifest :native-object-op-contract-version)
                                   (plist-get manifest :native-object-op-gateway-imports)
                                   (plist-get manifest :native-object-opcodes)
@@ -3949,7 +4022,7 @@ candidate's self-described table order."
                                       kind expected-kind))))
               (unless (and (listp entry)
                            (equal (plist-get entry :abi)
-                                  nelisp-native-load-raw-runtime-abi-v2))
+                                  (nelisp-native-load--runtime-abi-v2)))
                 (funcall add (list :raw-import-abi import
                                    (and (listp entry) (plist-get entry :abi)))))
               (when (and provider
@@ -3998,7 +4071,7 @@ candidate's self-described table order."
             (setq seen (cons (plist-get entry :name) seen))
             (unless (and (eq (plist-get entry :type) 'func)
                          (equal (plist-get entry :abi)
-                                nelisp-native-load-raw-runtime-abi-v2)
+                                (nelisp-native-load--runtime-abi-v2))
                          (eq (plist-get entry :return) 'u64))
               (funcall add (list :raw-export-abi entry))))
           (setq rest (cdr rest)))))
@@ -4030,7 +4103,7 @@ candidate's self-described table order."
                                  (plist-get export :arity) arity)))
             (when entry
               (unless (equal (plist-get entry :abi)
-                             nelisp-native-load-raw-runtime-abi-v2)
+                             (nelisp-native-load--runtime-abi-v2))
                 (funcall add (list :raw-gc-entry-abi name
                                    (plist-get entry :abi)))))
             (setq i (1+ i)))))
@@ -4188,9 +4261,7 @@ followed by the 24 contract entry addresses in ABI order."
                   (ptr-write-u64 table (+ 16 (* 8 (plist-get entry :index)))
                                  addr))
                 (setq rest (cdr rest))))
-            (unless (= 0 (syscall-direct
-                          10 table (nelisp-native-load--page-round table-size)
-                          1 0 0 0))
+            (unless (= 0 (nelisp-native-load--protect table (nelisp-native-load--page-round table-size) 1))
               (error "nelisp-native-load: mprotect read-only GC table failed"))
             (nelisp-native-load--mprotect-rx codepage code-size)
             (let ((addresses nil) (rest exports))
@@ -4233,11 +4304,10 @@ followed by the 24 contract entry addresses in ABI order."
                 handle)))
         (unless success
           (when (and (integerp codepage) (> codepage 0))
-            (ignore-errors (syscall-direct 11 codepage code-size 0 0 0 0)))
+            (ignore-errors (nelisp-native-load--unmap codepage code-size)))
           (when (and (integerp table) (> table 0))
             (ignore-errors
-              (syscall-direct 11 table (nelisp-native-load--page-round table-size)
-                              0 0 0 0))))))))
+              (nelisp-native-load--unmap table (nelisp-native-load--page-round table-size)))))))))
 
 (defconst nelisp-native-load--trusted-max-text-bytes (* 64 1024 1024))
 (defconst nelisp-native-load--trusted-max-entries 65536)
@@ -4316,6 +4386,12 @@ The wire representation and authenticated bytes remain unchanged."
                            (list imports exports relocs entries))
                  exports contract)
       (error "nelisp-native-load: trusted structural decode refused"))
+    (unless (and (equal (plist-get manifest :runtime-abi) (nelisp-native-load--runtime-abi-v2))
+                 (equal (plist-get native :raw-abi) (nelisp-native-load--runtime-abi-v2))
+                 (if (nelisp-native-load--windows-p)
+                     (equal (plist-get manifest :target) (nelisp-native-load--target-v2))
+                   (null (plist-get manifest :target))))
+      (error "nelisp-native-load: trusted target/ABI refused"))
     ;; Authenticate the complete stored artifact once, before executable mapping.
     ;; This covers the encoded object and its metadata without replanning code.
     (let ((print-length nil) (print-level nil)
@@ -4465,9 +4541,7 @@ Only semantic validation is skipped; all memory boundaries remain checked."
                   (ptr-write-u64 table (+ 16 (* 8 (plist-get entry :index)))
                                  addr))
                 (setq rest (cdr rest))))
-            (unless (= 0 (syscall-direct
-                          10 table (nelisp-native-load--page-round table-size)
-                          1 0 0 0))
+            (unless (= 0 (nelisp-native-load--protect table (nelisp-native-load--page-round table-size) 1))
               (error "nelisp-native-load: mprotect read-only GC table failed"))
             (nelisp-native-load--mprotect-rx codepage code-size)
             (let ((addresses nil) (rest exports))
@@ -4510,11 +4584,10 @@ Only semantic validation is skipped; all memory boundaries remain checked."
                 handle)))
         (unless success
           (when (and (integerp codepage) (> codepage 0))
-            (ignore-errors (syscall-direct 11 codepage code-size 0 0 0 0)))
+            (ignore-errors (nelisp-native-load--unmap codepage code-size)))
           (when (and (integerp table) (> table 0))
             (ignore-errors
-              (syscall-direct 11 table (nelisp-native-load--page-round table-size)
-                              0 0 0 0))))))))
+              (nelisp-native-load--unmap table (nelisp-native-load--page-round table-size)))))))))
 
 
 (defun nelisp-native-load-raw-check (manifest &optional name)
@@ -4815,7 +4888,7 @@ bridgeable-symbol table.  All base imports retain the v2 runtime resolver."
 
 (defun nelisp-native-load--mprotect-rx (addr size)
   "Make executable mapping ADDR/SIZE read+execute, or signal a refusal."
-  (let ((rc (syscall-direct 10 addr size 5 0 0 0))) ; mprotect, R|X
+  (let ((rc (nelisp-native-load--protect addr size 5)))
     (unless (= rc 0)
       (error "nelisp-native-load: mprotect RX failed at %d (%d)" addr rc))
     addr))
@@ -4952,13 +5025,13 @@ A failure unmaps the new page."
         (unless success
           (when (and (integerp codepage) (> codepage 0))
             (ignore-errors
-              (syscall-direct 11 codepage code-size 0 0 0 0)))))))))
+              (nelisp-native-load--unmap codepage code-size)))))))))
 
 (defun nelisp-native-load-raw-call (handle args)
   "Call raw HANDLE with integer ARGS and return its u64 result."
   (let* ((arity (plist-get handle :arity))
          (max-arity (if (equal (plist-get handle :runtime-abi)
-                              nelisp-native-load-raw-runtime-abi-v2)
+                              (nelisp-native-load--runtime-abi-v2))
                         nelisp-native-load-raw-max-arity-v2
                       nelisp-native-load-raw-max-arity)))
     (when (and arity (/= arity (length args)))
@@ -4989,9 +5062,9 @@ addresses have been reauthenticated. The frame is released on every exit."
                (equal (plist-get handle :entry-name) "nl_native_car_probe")
                (= (or (plist-get handle :arity) -1) 4)
                (equal (plist-get handle :runtime-abi)
-                      nelisp-native-load-raw-runtime-abi-v2)
+                      (nelisp-native-load--runtime-abi-v2))
                (equal (plist-get handle :raw-abi)
-                      nelisp-native-load-raw-runtime-abi-v2)
+                      (nelisp-native-load--runtime-abi-v2))
                (equal (plist-get handle :imports) '("nl_native_car_v2")))
     (error "nelisp-native-load: handle is not the authenticated raw-v2 CAR probe"))
   (unless (and (fboundp 'nelisp--native-pin-copy-v2)
@@ -5056,9 +5129,9 @@ frame, and the output is read only after slot reauthentication."
                (equal (plist-get handle :entry-name) "nl_native_cdr_probe")
                (= (or (plist-get handle :arity) -1) 4)
                (equal (plist-get handle :runtime-abi)
-                      nelisp-native-load-raw-runtime-abi-v2)
+                      (nelisp-native-load--runtime-abi-v2))
                (equal (plist-get handle :raw-abi)
-                      nelisp-native-load-raw-runtime-abi-v2)
+                      (nelisp-native-load--runtime-abi-v2))
                (equal (plist-get handle :imports) '("nl_native_cdr_v2")))
     (error "nelisp-native-load: handle is not the authenticated raw-v2 CDR probe"))
   (unless (and (fboundp 'nelisp--native-pin-copy-v2)
@@ -5115,9 +5188,9 @@ RESULT-ROOT-INDEX is the authenticated final slot declared by the compiler."
                (integerp (plist-get handle :entry))
                (memq result-root-index '(1 2))
                (equal (plist-get handle :runtime-abi)
-                      nelisp-native-load-raw-runtime-abi-v2)
+                      (nelisp-native-load--runtime-abi-v2))
                (equal (plist-get handle :raw-abi)
-                      nelisp-native-load-raw-runtime-abi-v2)
+                      (nelisp-native-load--runtime-abi-v2))
                (member (plist-get handle :imports)
                        '( ("nl_native_car_v2")
                           ("nl_native_cdr_v2")
@@ -5196,9 +5269,9 @@ The evaluator Sexp is pinned by identity across native execution and GC."
                (equal (plist-get handle :entry-name) "nl_native_object_probe")
                (= (or (plist-get handle :arity) -1) 5)
                (equal (plist-get handle :runtime-abi)
-                      nelisp-native-load-raw-runtime-abi-v2)
+                      (nelisp-native-load--runtime-abi-v2))
                (equal (plist-get handle :raw-abi)
-                      nelisp-native-load-raw-runtime-abi-v2)
+                      (nelisp-native-load--runtime-abi-v2))
                (equal (plist-get handle :imports)
                       '("nl_native_car_v2" "nl_native_cdr_v2"))
                (equal (plist-get handle :native-object-op-contract-version)
@@ -5276,9 +5349,9 @@ exit.  This narrow helper does not admit bytecode opcode 66."
                (equal (plist-get handle :entry-name) "nl_native_cons_probe")
                (= (or (plist-get handle :arity) -1) 5)
                (equal (plist-get handle :runtime-abi)
-                      nelisp-native-load-raw-runtime-abi-v2)
+                      (nelisp-native-load--runtime-abi-v2))
                (equal (plist-get handle :raw-abi)
-                      nelisp-native-load-raw-runtime-abi-v2)
+                      (nelisp-native-load--runtime-abi-v2))
                (equal (plist-get handle :imports) '("nl_native_cons_v2")))
     (error "nelisp-native-load: handle is not the authenticated raw-v2 CONS probe"))
   (unless (and (fboundp 'nelisp--native-pin-copy-v2)
@@ -5376,13 +5449,13 @@ on every supplied handle and match the current process image."
        ;; silently sever the original implementation binding.
        ((and alloc-handle
              (not (equal (plist-get alloc-handle :runtime-abi)
-                         nelisp-native-load-raw-runtime-abi-v2))
+                         (nelisp-native-load--runtime-abi-v2)))
              (not (member "nl_runtime_reload_alloc_original"
                           (plist-get alloc-handle :imports))))
         (list :raw-alloc-original-unbound))
        ((and gc-handle
              (not (equal (plist-get gc-handle :runtime-abi)
-                         nelisp-native-load-raw-runtime-abi-v2))
+                         (nelisp-native-load--runtime-abi-v2)))
              (not (member "nl_runtime_reload_gc_original"
                           (plist-get gc-handle :imports))))
         (list :raw-gc-original-unbound))
@@ -5391,7 +5464,7 @@ on every supplied handle and match the current process image."
         (list :raw-alloc-arity (plist-get alloc-handle :arity)))
        ((and gc-handle
              (not (equal (plist-get gc-handle :runtime-abi)
-                         nelisp-native-load-raw-runtime-abi-v2))
+                         (nelisp-native-load--runtime-abi-v2)))
              (/= (or (plist-get gc-handle :arity) -1) 1))
         (list :raw-gc-arity (plist-get gc-handle :arity)))))))
 
@@ -5433,9 +5506,9 @@ entry."
               :old-alloc old-alloc :old-gc old-gc
               :generation old-generation)
          (let* ((v2 (or (equal (plist-get alloc-handle :runtime-abi)
-                             nelisp-native-load-raw-runtime-abi-v2)
+                             (nelisp-native-load--runtime-abi-v2))
                         (equal (plist-get gc-handle :runtime-abi)
-                               nelisp-native-load-raw-runtime-abi-v2)))
+                               (nelisp-native-load--runtime-abi-v2))))
                 (table (and v2 gc-handle (plist-get gc-handle :gc-table)))
                 (rc (ptr-call installer new-alloc (or table new-gc)
                               generation 0 0 0)))
@@ -5877,7 +5950,7 @@ including nested native calls and cleanup after an error."
                                    (+ (plist-get handle :codepage)
                                       (plist-get handle :body-entry)))
                     (setq raw (apply (function ptr-call) call-entry passed)))
-                (let ((rc (syscall-direct 11 call-entry call-size 0 0 0 0)))
+                (let ((rc (nelisp-native-load--unmap call-entry call-size)))
                   (unless (= rc 0)
                     (error "nelisp-native-load: temporary trampoline munmap failed (%d)"
                            rc))))
@@ -5943,7 +6016,7 @@ active call causes an error before any mapping or handle field is changed."
         (let ((addr (car region))
               (size (cdr region)))
           ;; munmap(2) is syscall 11 on x86_64.
-          (let ((rc (syscall-direct 11 addr size 0 0 0 0)))
+          (let ((rc (nelisp-native-load--unmap addr size)))
             (unless (= rc 0)
               (error "nelisp-native-load: munmap of %d bytes at %d failed (%d)"
                      size addr rc))
@@ -6001,7 +6074,12 @@ in this file needs that."
 (defun nelisp-native-load-rooted-production-contract ()
   "Return copied production root layout, GC contract and bridge table order."
   (nelisp-native-load--rooted-contract-snapshot
-   (list nelisp-native-load--rooted-production-layout
+   (list (if (nelisp-native-load--windows-p)
+             (let ((layout (copy-tree nelisp-native-load--rooted-production-layout)))
+               (plist-put layout :domain "nelisp-rooted-pe-v2")
+               (plist-put layout :target 'x86_64-windows)
+               (plist-put layout :calling-convention 'win64) layout)
+           nelisp-native-load--rooted-production-layout)
          nelisp-runtime-reload-gc-contract
          nelisp-native-load-bridgeable-symbols)))
 
@@ -6015,14 +6093,16 @@ in this file needs that."
 (defun nelisp-native-load-rooted-runtime-dependency-context ()
   "Return opaque root owner identities and independent mutable input copies."
   (vector (mapcar (lambda (name) (cons name (and (fboundp name) (symbol-function name))))
-                  '(nelisp-native-load-rooted-production-contract
+                  (append '(nelisp-native-load-rooted-production-contract
                     nelisp-native-load-rooted-production-contract-hash
                     nelisp-native-load-rooted-runtime-dependency-context
                     nelisp-native-load--rooted-contract-snapshot
                     nelisp-native-load--rooted-contract-copy-node
                     car cdr cons list setcar memq copy-sequence text-properties-at next-property-change
                     1- < > consp 1+ stringp length symbolp integerp error
-                    prin1-to-string mapcar fboundp symbol-function vector and or cond))
+                    prin1-to-string mapcar fboundp symbol-function vector and or cond)
+                          (when (nelisp-native-load--windows-p)
+                            '(nelisp-native-load--windows-p copy-tree plist-put))))
           (nelisp-native-load-sha256-dependency-context)
           (nelisp-native-load-rooted-production-contract)))
 

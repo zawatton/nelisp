@@ -1,11 +1,11 @@
 ;;; native-entry-observer.el --- Observe real raw-v2 entries -*- lexical-binding: t; -*-
 ;; SPDX-License-Identifier: GPL-3.0-or-later
-;; Test-only SysV x86-64 interposer. The authenticated descriptor's entry
+;; Test-only SysV/Win64 x86-64 interposer. The authenticated descriptor's entry
 ;; jumps through a recorder and tail-jumps to its original machine address.
 ;; No Lisp callback, boxing, allocation, GC, or additional activation occurs
 ;; at entry. Production sources, binaries and authenticated artifacts stay
 ;; unchanged. The interposer uses only caller-clobbered r10/r11 and preserves
-;; all six argument registers and the caller's stack/return address.
+;; all argument registers and the caller's stack/return address.
 (require 'nelisp-native-cache)
 (defvar nelisp-test-native-entry-traces nil)
 (defvar nelisp-test-native-entry-gc-once nil
@@ -22,43 +22,63 @@
          (data (nelisp-native-load-map-anonymous (+ 16 (* 256 56)) nil))
          (code (nelisp-native-load-map-anonymous 4096 nil))
          (copy (copy-sequence descriptor)) (gc-offset nil)
+         (windows (nelisp-native-load--windows-p))
+         (collector-offset nil) (gc-entry-offset nil)
          ;; movabs r10,data; mov r11,[r10]; incq [r10]; and r11,255;
          ;; imul r11,56; lea r10,[r10+r11+16]; save rdi,rsi,rdx,rcx,r8,r9;
          ;; movabs r11,entry; save entry; jmp r11.
-         (bytes (unibyte-string
+         (bytes (concat (unibyte-string
                  #x49 #xba 0 0 0 0 0 0 0 0
                  #x4d #x8b #x1a #x49 #xff #x02
                  #x49 #x81 #xe3 #xff 0 0 0
                  #x4d #x6b #xdb #x38
-                 #x4f #x8d #x54 #x1a #x10
-                 #x49 #x89 #x3a #x49 #x89 #x72 #x08
-                 #x49 #x89 #x52 #x10 #x49 #x89 #x4a #x18
-                 #x4d #x89 #x42 #x20 #x4d #x89 #x4a #x28
+                 #x4f #x8d #x54 #x1a #x10)
+                 (if windows
+                     ;; Win64: RCX,RDX,R8,R9 and two words above shadow space.
+                     (unibyte-string
+                      #x49 #x89 #x0a #x49 #x89 #x52 #x08
+                      #x4d #x89 #x42 #x10 #x4d #x89 #x4a #x18
+                      #x4c #x8b #x5c #x24 #x28 #x4d #x89 #x5a #x20
+                      #x4c #x8b #x5c #x24 #x30 #x4d #x89 #x5a #x28)
+                   (unibyte-string
+                    #x49 #x89 #x3a #x49 #x89 #x72 #x08
+                    #x49 #x89 #x52 #x10 #x49 #x89 #x4a #x18
+                    #x4d #x89 #x42 #x20 #x4d #x89 #x4a #x28))
+                 (unibyte-string
                  #x49 #xbb 0 0 0 0 0 0 0 0
                  #x4d #x89 #x5a #x30 #x41 #xff #xe3)))
+         (entry-offset (- (length bytes) 15)))
     (when nelisp-test-native-entry-gc-once
       ;; The same recorded-root collector used by garbage-collect. Preserve
-      ;; every argument register and SysV stack alignment across its call.
+      ;; every argument register, stack argument, and ABI alignment.
       (setq gc-offset (- (length bytes) 3)
             bytes
             (concat (substring bytes 0 gc-offset)
                     (unibyte-string
                      #x49 #xba 0 0 0 0 0 0 0 0
-                     #x49 #x83 #x7a #x08 0 #x75 #x2f
-                     #x49 #xc7 #x42 #x08 1 0 0 0
-                     #x57 #x56 #x52 #x51 #x41 #x50 #x41 #x51
-                     #x48 #x83 #xec #x08 #x31 #xff
+                     #x49 #x83 #x7a #x08 0 #x75 (if windows #x2b #x2f)
+                     #x49 #xc7 #x42 #x08 1 0 0 0)
+                    (if windows
+                        (unibyte-string #x51 #x52 #x41 #x50 #x41 #x51
+                                        #x48 #x83 #xec #x28 #x31 #xc9)
+                      (unibyte-string #x57 #x56 #x52 #x51 #x41 #x50 #x41 #x51
+                                      #x48 #x83 #xec #x08 #x31 #xff))
+                    (unibyte-string
                      #x49 #xbb 0 0 0 0 0 0 0 0 #x41 #xff #xd3
-                     #x48 #x83 #xc4 #x08
-                     #x41 #x59 #x41 #x58 #x59 #x5a #x5e #x5f
-                     #x49 #xbb 0 0 0 0 0 0 0 0 #x41 #xff #xe3))))
+                     #x48 #x83 #xc4 (if windows #x28 #x08))
+                    (if windows
+                        (unibyte-string #x41 #x59 #x41 #x58 #x5a #x59)
+                      (unibyte-string #x41 #x59 #x41 #x58 #x59 #x5a #x5e #x5f))
+                    (unibyte-string #x49 #xbb 0 0 0 0 0 0 0 0 #x41 #xff #xe3))
+            collector-offset (+ gc-offset (if windows 39 41))
+            gc-entry-offset (- (length bytes) 11)))
     (nelisp-native-load--poke-string code 0 bytes)
     (ptr-write-u64 code 2 data)
-    (ptr-write-u64 code 57 entry)
+    (ptr-write-u64 code entry-offset entry)
     (when nelisp-test-native-entry-gc-once
       (ptr-write-u64 code (+ gc-offset 2) data)
-      (ptr-write-u64 code (+ gc-offset 41) (nelisp-native-load--symbol-addr "nl_gc_collect_from_recorded_roots"))
-      (ptr-write-u64 code (+ gc-offset 66) entry))
+      (ptr-write-u64 code collector-offset (nelisp-native-load--symbol-addr "nl_gc_collect_from_recorded_roots"))
+      (ptr-write-u64 code gc-entry-offset entry))
     (nelisp-native-load--mprotect-rx code 4096)
     (aset copy 0 code)
     ;; Retain the original mapping owner, and record the interposer identity.

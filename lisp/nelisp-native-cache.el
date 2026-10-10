@@ -95,7 +95,8 @@ A missing source disables caching rather than creating an incomplete key."
 
 (defun nelisp-native-cache--abi-components ()
   "Return every runtime ABI component required by the cache protocol."
-  (list (nelisp-native-load-running-binary-sha256)
+  (append
+   (list (nelisp-native-load-running-binary-sha256)
         (nelisp-native-load--raw-v2-contract-hash)
         nelisp-bytecode-native-rooted-cfg-contract-version
         nelisp-bytecode-native-rooted-cfg-contract-shared-version
@@ -117,7 +118,9 @@ A missing source disables caching rather than creating an incomplete key."
         nelisp-bytecode-native-rooted-cfg-safe-contract-version
         nelisp-bytecode-native-rooted-cfg-safe-contract-f1-version
         nelisp-native-cache--format
-        nelisp-native-load-raw-artifact-format-v2))
+        nelisp-native-load-raw-artifact-format-v2)
+   (when (nelisp-native-load--windows-p)
+     (list (nelisp-native-load--target-v2) (nelisp-native-load--runtime-abi-v2)))))
 
 (defun nelisp-native-cache-prepare-cold-template ()
   "Prepare Tier 0 identities without loading any optimizing compiler module."
@@ -282,6 +285,9 @@ exactly once.  Failure permanently disables this process's cache."
 
 (defun nelisp-native-cache--private-directory (directory)
   "Create DIRECTORY privately, refusing symlinks, foreign owners and non-0700 modes."
+  (if (nelisp-native-load--windows-p)
+      (progn (require 'nelisp-native-windows)
+             (nelisp-native-windows-private-directory directory))
   (unless (file-exists-p directory)
     (make-directory directory t)
     (set-file-modes directory #o700))
@@ -294,14 +300,16 @@ exactly once.  Failure permanently disables this process's cache."
                  (= (logand mode #o7777) #o700))
       (error "nelisp-native-cache: directory must be owned by user and mode 0700: %s"
              directory)))
-  directory)
+  directory))
 
 (defun nelisp-native-cache--root ()
   (expand-file-name
    (or (getenv "NELISP_NATIVE_CACHE")
-       (expand-file-name "nelisp/native-cache"
-                         (or (getenv "XDG_CACHE_HOME")
-                             (expand-file-name ".cache" "~"))))))
+       (if (nelisp-native-load--windows-p)
+           (expand-file-name "NeLisp/native-cache"
+                             (or (getenv "LOCALAPPDATA") (error "LOCALAPPDATA unavailable")))
+         (expand-file-name "nelisp/native-cache"
+                           (or (getenv "XDG_CACHE_HOME") (expand-file-name ".cache" "~")))))))
 
 (defun nelisp-native-cache--function (function)
   (if (symbolp function) (symbol-function function) function))
@@ -356,6 +364,8 @@ The caller must inhibit mid-form collection until the syscall returns."
 (defun nelisp-native-cache--publish (temporary final)
   "Publish TEMPORARY with an atomic no-clobber hard link to FINAL."
   (unwind-protect
+      (if (nelisp-native-load--windows-p)
+          (nelisp-native-windows-publish temporary final)
       (if (fboundp 'add-name-to-file)
           (condition-case nil
               (progn (add-name-to-file temporary final nil) t)
@@ -366,11 +376,13 @@ The caller must inhibit mid-form collection until the syscall returns."
                                (nelisp-native-cache--cstring temporary)
                                (nelisp-native-cache--cstring final)
                                0 0 0 0)
-               0))))
+               0)))))
     (when (file-exists-p temporary) (delete-file temporary))))
 
 (defun nelisp-native-cache--compile-in-house (function)
   "Compile and fully validate FUNCTION, publishing atomically on a cache miss."
+  (when (and (nelisp-native-load--windows-p) (not (eq nelisp-native-cache-backend 'in-house)))
+    (error "Windows supports only the in-house native backend"))
   (let ((file (nelisp-native-cache-file function)))
     (unless file (error "Native cache disabled: %S" nelisp-native-cache--disabled-reason))
     (unless (and (eq nelisp-native-cache-mode 'shared-v2)
@@ -402,8 +414,10 @@ The caller must inhibit mid-form collection until the syscall returns."
                                                 (plist-get result :immediate-initializers)))))
               (unless (eq (plist-get result :status) 'complete)
                 (error "Native cache compilation incomplete"))
-              (setq temporary (make-temp-file
-                               (expand-file-name ".publish-" (file-name-directory file))))
+              (setq temporary
+                    (funcall (if (nelisp-native-load--windows-p)
+                                 #'nelisp-native-windows-temporary #'make-temp-file)
+                             (expand-file-name ".publish-" (file-name-directory file))))
               (let ((coding-system-for-write 'utf-8-unix))
                 (write-region
                  (concat (nelisp-native-cache--print header) "\n"
@@ -432,6 +446,8 @@ The caller must inhibit mid-form collection until the syscall returns."
 (defun nelisp-native-cache--compile-gccjit (function)
   "Compile through the shared front end; validate its contract exactly once."
   (require 'nelisp-native-gccjit)
+  (when (and (nelisp-native-load--windows-p) (not (eq nelisp-native-cache-backend 'in-house)))
+    (error "Windows supports only the in-house native backend"))
   (let* ((file (nelisp-native-cache-file function))
          (sidecar (and file (concat file ".nelh"))))
     (unless file (error "Native cache disabled: %S" nelisp-native-cache--disabled-reason))
@@ -501,6 +517,8 @@ The caller must inhibit mid-form collection until the syscall returns."
 ;;;###autoload
 (defun nelisp-native-cache-compile (function)
   "Compile FUNCTION once with the selected backend, publishing without clobber."
+  (when (and (nelisp-native-load--windows-p) (not (memq nelisp-native-cache-backend '(in-house template))))
+    (error "Windows supports only in-house and template native backends"))
   (nelisp-native-budget-check (if (eq nelisp-native-cache-backend 'gccjit) 4096 8192))
   (pcase nelisp-native-cache-backend
     ('in-house (nelisp-native-cache--compile-in-house function))
@@ -708,9 +726,9 @@ Return nil for legacy layouts, preserving their ordinary canonical check."
          (sidecar (and file (if (eq nelisp-native-cache-backend 'gccjit)
                                (concat file ".nelh") file))))
     (when (and file (file-exists-p file) (file-exists-p sidecar))
-      (let* ((snapshot (with-temp-buffer
-                         (insert-file-contents sidecar)
-                         (buffer-string)))
+      (let* ((snapshot (if (nelisp-native-load--windows-p)
+                           (nelisp-native-windows-file-bytes sidecar t)
+                         (with-temp-buffer (insert-file-contents sidecar) (buffer-string))))
              (read-eval nil) (read-circle nil)
              (first (read-from-string snapshot))
              (header (car first))

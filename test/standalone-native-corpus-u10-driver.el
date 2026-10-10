@@ -120,8 +120,12 @@
     (let* ((row (cl-find (string-to-number name) u10-fixtures
                          :key (lambda (item) (plist-get item :opcode))))
            (cache (expand-file-name (or (plist-get row :unit) name) (getenv "U10_CACHE_BASE"))))
-      (unless (file-directory-p cache) (make-directory cache t))
-      (set-file-modes cache #o700) (setenv "NELISP_NATIVE_CACHE" cache))
+      ;; On Windows the reader creates every component itself with the
+      ;; owner's protected DACL and pins it; POSIX modes do not apply there.
+      (unless (eq system-type 'windows-nt)
+        (unless (file-directory-p cache) (make-directory cache t))
+        (set-file-modes cache #o700))
+      (setenv "NELISP_NATIVE_CACHE" cache))
     (if (equal name "protected")
         (let* ((pair (u10-load u10-protected-function phase)) (count 0))
           (dolist (test u10-protected-oracle)

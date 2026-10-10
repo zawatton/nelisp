@@ -76,6 +76,11 @@
       (expand-file-name invocation-name invocation-directory)))
 (defun nelisp-native-tier--check-worker (binary backend)
   "Reject foreign executables and unavailable optimizer capabilities."
+  ;; Windows async process supervision is not implemented. Refuse before
+  ;; reading a worker PE: its whole-file hash is not the running build stamp,
+  ;; and accepting a caller-selected stamp would weaken the identity fence.
+  (when (nelisp-native-load--windows-p)
+    (signal 'nelisp-native-tier-permanent '(windows-worker-unsupported)))
   ;; Hash complete raw bytes, as the running-executable fence does. The
   ;; scratch buffer API may encode high bytes on a standalone reader.
   (let* ((external (nelisp-native-load--sha256-file-external binary))

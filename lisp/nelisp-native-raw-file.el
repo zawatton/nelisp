@@ -1,4 +1,4 @@
-;;; nelisp-native-raw-file.el --- Bounded Linux byte windows -*- lexical-binding: t; -*-
+;;; nelisp-native-raw-file.el --- Bounded executable byte windows -*- lexical-binding: t; -*-
 ;; Uses existing native syscall and pointer operations.  No decoding is applied.
 (defun nelisp-native-raw-file--read (path offset size)
   "Read exactly SIZE bytes at OFFSET from bounded ASCII PATH."
@@ -59,8 +59,10 @@
     (unless (subrp (symbol-function name)) (error "Raw file native owner absent")))
   ;; These native public helpers return the actual binary's build target.
   ;; Mutable compatibility variables are not platform evidence.
-  (unless (and (= (nelisp--target-os-code) 0)
+  (unless (and (memq (nelisp--target-os-code) '(0 2))
                (= (nelisp--target-arch-code) 0))
-    (error "Raw file protocol requires Linux x86_64"))
-  (nelisp-native-raw-file--read path offset size))
+    (error "Raw file protocol requires Linux or Windows x86_64"))
+  (if (= (nelisp--target-os-code) 2)
+      (nelisp-native-windows-file-bytes path nil offset size)
+    (nelisp-native-raw-file--read path offset size)))
 (provide 'nelisp-native-raw-file)

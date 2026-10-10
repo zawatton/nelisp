@@ -89,7 +89,10 @@ def prove(metadata, directory, roots, data_owner, claimed=None, max_functions=12
             if not 0 <= symbol["value"] < data["bss-size"] or symbol["name"] in data_names:
                 raise ValueError("Generated data boundary or duplicate owner")
             data_names.add(symbol["name"])
-    known = set(owners) | data_names
+    # Only these reader-owned kernel32 terminals extend the Win64 closure.
+    # Runtime issuance additionally proves PE thunk bytes, IAT name and live address.
+    os_imports = {"VirtualAlloc", "VirtualFree", "ExitProcess"} if data.get("target") == "windows-x86_64" else set()
+    known = set(owners) | data_names | os_imports
     for unit in units:
         for symbol in unit["symbols"]:
             if symbol["section"] in ("rodata", "data", "bss"):
@@ -143,10 +146,10 @@ def prove(metadata, directory, roots, data_owner, claimed=None, max_functions=12
                 target = owner["starts"].get(address)
                 if target is None and start <= address < end:
                     continue
-            if target not in owners:
+            if target not in owners and target not in os_imports:
                 raise ValueError("Unresolved direct control flow: " + name)
             direct.append(dict(offset=position, mnemonic=instruction.mnemonic, target=target))
-            if name != evaluator_boundary:
+            if name != evaluator_boundary and target not in os_imports:
                 pending.append(target)
         if decoded != size:
             raise ValueError("Incomplete prelink instruction decoding")
@@ -162,6 +165,8 @@ def prove(metadata, directory, roots, data_owner, claimed=None, max_functions=12
                       _owner.bounded_read(metadata, 4 * 1024 * 1024)).hexdigest(),
                   generated_data_sha256=hashlib.sha256(data_bytes).hexdigest(),
                   runtime_memory="pending", operation_eligibility=[])
+    if os_imports:
+        result["os_imports"] = sorted(os_imports)
     if claimed is not None and claimed != result:
         raise ValueError("Claimed prelink proof drops or changes ownership")
     return result

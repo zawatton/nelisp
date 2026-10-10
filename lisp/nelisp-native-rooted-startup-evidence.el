@@ -176,8 +176,12 @@ Return startup source and its manifest; constructor/numeric/call remain refused.
                  (equal (alist-get 'owner-source-sha256 data) builder-hash)
                  (<= 1 (length (alist-get 'records closure)) 128)
                  (<= (alist-get 'total_bytes closure) 524288)
-                 (equal (plist-get layout :domain) "nelisp-rooted-elf-v2")
-                 (eq (plist-get layout :target) 'x86_64-linux)
+                 (if (nelisp-native-load--windows-p)
+                     (and (equal (plist-get layout :domain) "nelisp-rooted-pe-v2")
+                          (eq (plist-get layout :target) 'x86_64-windows)
+                          (eq (plist-get layout :calling-convention) 'win64))
+                   (and (equal (plist-get layout :domain) "nelisp-rooted-elf-v2")
+                        (eq (plist-get layout :target) 'x86_64-linux)))
                  (= (plist-get layout :sexp-bytes) 32)
                  (= (length (plist-get layout :exports)) 17))
       (error "Unauthenticated protocol generation inputs"))
@@ -200,8 +204,9 @@ Return startup source and its manifest; constructor/numeric/call remain refused.
         (cl-pushnew (list :name unit-name :sha256 (alist-get 'unit-sha256 unit)) units :test #'equal)))
     (dolist (record records)
       (dolist (relocation (plist-get record :relocations))
-        (unless (cl-find (plist-get relocation :symbol) records
-                         :key (lambda (item) (plist-get item :name)) :test #'equal)
+        (unless (or (member (plist-get relocation :symbol) (alist-get 'os_imports closure))
+                    (cl-find (plist-get relocation :symbol) records
+                         :key (lambda (item) (plist-get item :name)) :test #'equal))
           (cl-pushnew (plist-get relocation :symbol) data-targets :test #'equal))))
     (dolist (name (sort data-targets #'string<))
       (let ((symbol (cl-find name (alist-get 'symbols data)
@@ -221,7 +226,13 @@ Return startup source and its manifest; constructor/numeric/call remain refused.
                 :protocol-domain 'ticket-gc-memory-v1 :protocol-roots roots
                 :operation-eligibility '(ticket gc)
                 :arena-protocol (list :header-domain 'single-u64-low32-size-low3-mark
-                                      :initial-chunk-bytes 268435456 :builder-sha256 builder-hash)))
+                                       :initial-chunk-bytes (if (nelisp-native-load--windows-p)
+                                                                (alist-get 'initial-chunk-bytes data) 268435456)
+                                      :builder-sha256 builder-hash)))
+    (when (nelisp-native-load--windows-p)
+      (unless (equal (alist-get 'os_imports closure) '("ExitProcess" "VirtualAlloc" "VirtualFree"))
+        (error "Win64 kernel terminal policy differs"))
+      (setq expected (append expected (list :os-imports (alist-get 'os_imports closure)))))
     (when selection
       (setq expected (append expected
                              (list :numeric-union-certificate-sha256 closure-sha256
@@ -290,8 +301,10 @@ dependencies, subprocess result and source owners are checked before return."
          (owner-script (expand-file-name "scripts/nelisp-native-rooted-direct-closure.py" root))
          (template (expand-file-name "templates/nelisp-native-rooted-abi-proof.el.in" root))
          (loader (expand-file-name "lisp/nelisp-native-load.el" root))
-         (python (executable-find "python3"))
-         (source-paths (list script owner-script template loader
+         (python (executable-find (if (eq system-type 'windows-nt) "python" "python3")))
+         (source-paths (list (expand-file-name "lisp/nelisp-native-windows.el" root)
+                             (expand-file-name "lisp/nelisp-native-pe-symbols.el" root)
+                             script owner-script template loader
                              (expand-file-name "lisp/nelisp-native-funcall-v2.el" root)
                              (expand-file-name "lisp/nelisp-runtime-reload-abi.el" root)
                              (expand-file-name "lisp/nelisp-native-raw-file.el" root)))
@@ -320,8 +333,10 @@ dependencies, subprocess result and source owners are checked before return."
                  (substring (buffer-string) 0 (min 2000 (buffer-size)))))
         (setq result (nelisp-native-rooted-startup-evidence-render
                       capture closure (substring (buffer-string) 0 64) template layout)))
-      (dolist (relative '("lisp/nelisp-native-funcall-v2.el" "lisp/nelisp-runtime-reload-abi.el" "lisp/nelisp-native-load.el"
-                          "lisp/nelisp-native-raw-file.el"))
+      (dolist (relative (append (when (nelisp-native-load--windows-p)
+                                  '("lisp/nelisp-native-windows.el" "lisp/nelisp-native-pe-symbols.el"))
+                                '("lisp/nelisp-native-funcall-v2.el" "lisp/nelisp-runtime-reload-abi.el" "lisp/nelisp-native-load.el"
+                          "lisp/nelisp-native-raw-file.el")))
         (when (and compiler-boot (equal relative "lisp/nelisp-native-load.el"))
           ;; This closed source list is derived and hash-checked by the build
           ;; owner; no caller-supplied prefix or generated file is adopted.

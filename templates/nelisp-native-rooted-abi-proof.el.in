@@ -188,7 +188,9 @@
 
 (defun nelisp-native-rooted-abi-proof--self-path ()
   "Resolve the real running file through the captured native proc link helper."
-  (let ((path (nelisp--syscall-readlink "/proc/self/exe")))
+  (let ((path (if (nelisp-native-load--windows-p)
+                  (nelisp-native-windows-module-path)
+                (nelisp--syscall-readlink "/proc/self/exe"))))
     (unless (and (stringp path) (< 0 (length path) 4096))
       (error "Actual running executable path unavailable"))
     path))
@@ -196,7 +198,8 @@
 (defun nelisp-native-rooted-abi-proof--read (offset size)
   "Read an exact bounded byte window from the actual running executable."
   (nelisp-native-rooted-abi-proof--self-path)
-  (nelisp-native-raw-file-read "/proc/self/exe" offset size))
+  (nelisp-native-raw-file-read
+   (if (nelisp-native-load--windows-p) (nelisp-native-rooted-abi-proof--self-path) "/proc/self/exe") offset size))
 
 
 (let* ((elf-lookup (symbol-function 'symbol-function))
@@ -223,6 +226,9 @@
         (funcall elf-reject "Root proof ELF byte owner changed: %S" (car entry)))))
   (unless (and (stringp elf-zero) (= (length elf-zero) 1) (= (aref elf-zero 0) 0))
     (funcall elf-reject "Root proof ELF terminator changed"))
+  (if (nelisp-native-load--windows-p)
+      (nelisp-native-pe-symbols-read #'nelisp-native-rooted-abi-proof--read
+                                    (nelisp-native-windows-call "GetModuleHandleW" 0))
   (let* ((header (nelisp-native-rooted-abi-proof--read 0 64))
          (section-offset (nelisp-native-rooted-abi-proof--u header 40 8))
          (count (nelisp-native-rooted-abi-proof--u header 60 2))
@@ -289,7 +295,7 @@
                          (old (gethash name symbols)))
                     (when (and old (not (equal old record))) (error "Ambiguous ELF symbol"))
                     (puthash name record symbols)))))))))
-    (list sections symbols)))
+    (list sections symbols))))
 
 (setq elf-self (funcall elf-lookup 'nelisp-native-rooted-abi-proof--elf)))
 
@@ -328,7 +334,9 @@
                    functions)
          (= total 0)
          (cl-every (lambda (record)
-                     (cl-every (lambda (edge) (member (cdr (assq 'target edge)) names))
+                     (cl-every (lambda (edge) (or (member (cdr (assq 'target edge)) names)
+                                     (member (cdr (assq 'target edge))
+                                             (plist-get nelisp-native-rooted-abi-proof--expected :os-imports))))
                                (plist-get record :direct))) functions))))
 
 (defun nelisp-native-rooted-abi-proof--verify (&optional issued-metadata)
@@ -345,6 +353,10 @@ It saves ELF parsing; every actual memory window is still checked."
          (functions (plist-get nelisp-native-rooted-abi-proof--expected :functions))
          (total 0) addresses)
     (unless (<= 15 (length functions) 128) (error "Invalid expected helper closure"))
+    (when (nelisp-native-load--windows-p)
+      (nelisp-native-windows-verify-imports
+       #'nelisp-native-rooted-abi-proof--read sections symbols
+       (plist-get nelisp-native-rooted-abi-proof--expected :os-imports)))
     (dolist (record functions)
       (let* ((name (plist-get record :name)) (size (plist-get record :size))
              (symbol (gethash name symbols))
@@ -437,7 +449,7 @@ It saves ELF parsing; every actual memory window is still checked."
   (let ((owners captured-all-owners) (owned t) (count 0))
     ;; Do not create a callback closure over the recursive owner context.
     ;; The source-owned list is bounded and every original owner is checked.
-    (while (and owned owners (< count 128))
+    (while (and owned owners (< count (if (nelisp-native-load--windows-p) 192 128)))
       (let ((entry (funcall captured-car owners)))
         (unless (funcall captured-eq (funcall captured-cdr entry)
                          (funcall captured-symbol-function (funcall captured-car entry)))
@@ -639,7 +651,7 @@ This does not grant constructor, numeric or call operation eligibility."
     (error nil))))
 (setq captured-module-owners
   (mapcar (lambda (name) (cons name (symbol-function name)))
-          '(nelisp-native-rooted-abi-proof--data-bytes
+          (append '(nelisp-native-rooted-abi-proof--data-bytes
             nelisp-native-rooted-abi-proof--data-hash nelisp-native-rooted-abi-proof--u
             nelisp-native-rooted-abi-proof--self-path nelisp-native-rooted-abi-proof--read
             nelisp-native-rooted-abi-proof--elf
@@ -663,7 +675,29 @@ This does not grant constructor, numeric or call operation eligibility."
             nelisp-native-load-running-binary-sha256 nelisp--syscall-readlink
             syscall-direct ptr-write-u8 ptr-read-bytes
             nelisp-native-raw-file-read nelisp-native-raw-file--read
-            nelisp-native-raw-file-dependency-context unibyte-string)))
+            nelisp-native-raw-file-dependency-context unibyte-string)
+          (when (nelisp-native-load--windows-p)
+            '(nelisp-native-windows-verify-imports nelisp-native-pe-symbols-imports
+            nl-ffi-call nelisp-native-windows-call nelisp-native-windows-module-path
+            nelisp-native-windows-file-bytes nelisp-native-windows-open
+            nelisp-native-windows-close nelisp-native-windows-attributes
+            nelisp-native-windows-read-handle nelisp-native-windows-buffer
+            nelisp-native-windows-free nelisp-native-windows-wide nelisp-native-windows-decode-wide
+            nelisp-native-pe-symbols-read nelisp-native-pe-symbols-sections nelisp-native-pe-symbols-u
+              ash downcase cl-find-if 1+ 1- nreverse apply mapc string string-match-p
+              max require fboundp copy-tree plist-put
+              nelisp-native-load-sha256 nelisp-native-load--sha256 nelisp-native-load--digest
+              nelisp-native-load--page-round nelisp-native-load--mmap nelisp-native-load--unmap
+              nelisp-native-load--protect nelisp-native-load--poke-string nelisp-native-load--byte
+              nelisp-native-load--without-midform-collect
+              nelisp--build-digest nelisp--sha256 nelisp--sha256-bytes alloc-bytes nelisp--debug-switch ptr-write-bytes string-byte
+              nelisp-native-load--running-binary-sha256 nelisp-native-load--windows-p
+              nelisp-native-load--runtime-abi-v2 nelisp-native-load--target-v2
+              nelisp--target-os-code nelisp--target-arch-code
+              nelisp-native-windows-map nelisp-native-windows-unmap nelisp-native-windows-protect
+              ptr-read-u32 ptr-write-u32 ptr-write-u64
+              nelisp-native-windows-check-security nelisp-native-windows-user-sid
+              nelisp-native-windows-sid-string nelisp-native-windows-security-trusted-p)))))
 (setq captured-all-owners (append captured-module-owners captured-primitive-owners)
       captured-eligibility (symbol-function 'nelisp-native-rooted-abi-proof--eligible-p)))
 (provide 'nelisp-native-rooted-abi-proof)

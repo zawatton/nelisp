@@ -26,6 +26,7 @@
 (declare-function nelisp-native-cache-abi-hash "nelisp-native-cache" ())
 (declare-function nelisp-native-cache--input-hash "nelisp-native-cache" (function))
 (declare-function nelisp-native-cache--publish "nelisp-native-cache" (temporary final))
+(declare-function nelisp-native-windows-temporary "nelisp-native-windows" (prefix))
 (defun nelisp-native-template-recipe (function)
   "Freeze readable input, retaining live switch tables only as constant roots."
   (unless (byte-code-function-p function) (error "Template requires materialized bytecode"))
@@ -55,6 +56,8 @@
     "lisp/nelisp-bytecode-compiler-input-dialect.el"))
 (defun nelisp-native-template-prepare-source-fence ()
   "Freeze source, ABI and dialect identities before the first template lookup."
+  (nelisp-native-template-select-target)
+  (require 'nelisp-native-template-source-pin)
   (unless nelisp-native-template--source-fence
     (let* ((root (file-name-directory (directory-file-name
                                       (file-name-directory (locate-library "nelisp-native-template.el" t)))))
@@ -67,7 +70,7 @@
            (identity (lambda ()
                        (list (nelisp-native-template-stencil-abi)
                              nelisp-native-template-library-sha256
-                             nelisp-native-template-compiler-source-key
+                             nelisp-native-template-current-compiler-source-key
                              nelisp-native-template-library-inventory
                              (and (boundp 'nelisp-bytecode-runtime-dialect-id) nelisp-bytecode-runtime-dialect-id)
                              (and (boundp 'nelisp-bytecode-runtime-opcode-inventory) nelisp-bytecode-runtime-opcode-inventory))))
@@ -75,7 +78,7 @@
       (when files
         (unless (equal (nelisp-native-template--hash
                         (mapcar (lambda (f) (cons (car f) (secure-hash 'sha256 (cdr f)))) files))
-                       nelisp-native-template-compiler-source-key)
+                       nelisp-native-template-current-compiler-source-key)
           (error "Template compiler source receipt changed; regenerate")))
       (when (boundp 'nelisp-bytecode-runtime-opcode-inventory)
         (unless (and (stringp nelisp-bytecode-runtime-opcode-inventory)
@@ -97,6 +100,8 @@
 (defun nelisp-native-template-abi-hash ()
   "Bind template sources separately from optimizers, once per process."
   (require 'nelisp-native-template-pin)
+  (nelisp-native-template-select-target)
+  (require 'nelisp-native-template-source-pin)
   (when (eq nelisp-native-template--abi :unset)
     (nelisp-native-template-prepare-source-fence)
     (funcall nelisp-native-template--source-fence)
@@ -108,7 +113,7 @@
                          (error "Template running binary identity unavailable")) binary)
                      (nelisp-native-template-stencil-abi)
                      nelisp-native-template-library-sha256
-                     nelisp-native-template-compiler-source-key
+                     nelisp-native-template-current-compiler-source-key
                      nelisp-native-template-library-inventory
                      (nelisp-native-load--raw-v2-contract-hash)
                      (nelisp-native-load--raw-v2-import-contract-hash
@@ -562,31 +567,33 @@ include poll exits before every instruction."
                               (nelisp-native-load--raw-v2-conditional-import-index name)
                             (cl-position name nelisp-native-load-bridgeable-symbols :test #'equal))
                           :address-mode (if (equal name "nl_root_pin_slot_v2") 'conditional-root-slot-v1 'native-bridgeable-v1)
-                          :abi nelisp-native-load-raw-runtime-abi-v2 :arity 6
+                          :abi (nelisp-native-load--runtime-abi-v2) :arity 6
                           :params '(u64 u64 u64 u64 u64 u64) :return 'u64))
                   (sort (delete-dups (mapcar (lambda (r) (plist-get r :symbol)) (plist-get assembled :relocs))) #'string<)))
          (exports (list (list :name nelisp-native-template-entry :value 0 :size size :arity 4
-                             :params '(u64 u64 u64 u64) :return 'u64 :type 'func :abi nelisp-native-load-raw-runtime-abi-v2)))
+                             :params '(u64 u64 u64 u64) :return 'u64 :type 'func :abi (nelisp-native-load--runtime-abi-v2))))
          (manifest
           (list :format nelisp-native-load-raw-artifact-format-v2 :kind 'raw-runtime
-                :runtime-kind 'gc-arena :runtime-abi nelisp-native-load-raw-runtime-abi-v2
+                :runtime-kind 'gc-arena :runtime-abi (nelisp-native-load--runtime-abi-v2)
                 :layout-id nelisp-native-load-raw-layout-id-v2 :arch nelisp-native-load-raw-supported-arch
                 :binary-sha256 (nelisp-native-load-running-binary-sha256) :runtime-opt-in t
                 :gc-contract-hash (nelisp-native-load--raw-v2-contract-hash gc)
                 :gc-address-mode 'runtime-bridge-v1
                 :gc-entries (cl-loop for p in gc for i from 0 collect
-                                     (list :name (car p) :arity (cdr p) :index i :return 'u64 :abi nelisp-native-load-raw-runtime-abi-v2))
+                                     (list :name (car p) :arity (cdr p) :index i :return 'u64 :abi (nelisp-native-load--runtime-abi-v2)))
                 :gc-table-magic nelisp-native-load-raw-gc-table-magic :gc-table-count (length gc)
                 :resolver-contract-version nelisp-native-load-raw-v2-import-contract-version
                 :resolver-contract-hash (nelisp-native-load--raw-v2-import-contract-hash symbols)
                 :native-template-proof-version nelisp-native-template-proof-version
                 :native-template-proof (list :library nelisp-native-template-library-sha256 :input recipe
                                              :certificate certificate :pc-ranges (plist-get assembled :pc-ranges))
-                :native (list :raw-abi nelisp-native-load-raw-runtime-abi-v2 :object-format 'nelisp-aot-raw-unit-v2
+                :native (list :raw-abi (nelisp-native-load--runtime-abi-v2) :object-format 'nelisp-aot-raw-unit-v2
                               :text-size size :text-base64 (base64-encode-string text t)
                               :object-sha256 (secure-hash 'sha256 text) :object-size size
                               :exports exports :symbols exports :imports imports :extern-symbols (mapcar (lambda (i) (plist-get i :name)) imports)
                               :relocs (plist-get assembled :relocs) :data-size 0 :bss-size 0))))
+    (when (nelisp-native-load--windows-p)
+      (setq manifest (append manifest (list :target (nelisp-native-load--target-v2)))))
     (let* ((unsigned (nelisp-native-template--print manifest))
            (digest (secure-hash 'sha256 unsigned))
            (signed (append manifest (list :artifact-sha256 digest))))
@@ -656,9 +663,14 @@ its validator once. Explicit checked loads reconstruct the proof."
                            :rest-argument-p (/= (logand (plist-get recipe :descriptor) 128) 0)
                            :root-count (plist-get certificate :root-count) :exit-root-base (plist-get certificate :exit-root-base)
                            :initializers (plist-get certificate :initializers)))
-             (temporary (make-temp-file (expand-file-name ".publish-" (file-name-directory file)))))
+             ;; As in-house: a Windows temporary carries the owner and
+             ;; protected DACL from creation; a plain file inherits an
+             ;; Administrators owner on elevated tokens and is refused.
+             (temporary (funcall (if (nelisp-native-load--windows-p)
+                                     #'nelisp-native-windows-temporary #'make-temp-file)
+                                 (expand-file-name ".publish-" (file-name-directory file)))))
         (unwind-protect
-            (progn
+            (let ((coding-system-for-write 'utf-8-unix))
               (write-region (concat (nelisp-native-template--print header) "\n"
                                     (if (eq manifest (car serialized)) (cdr serialized)
                                       (nelisp-native-template--print manifest)) "\n") nil temporary nil 'silent)

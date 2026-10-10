@@ -65,16 +65,22 @@ policies remain unchanged. All boundary bytes and relocations are verified."
                          :frame-descriptor (copy-tree (plist-get expected :frame-descriptor))
                          :frame-hash (substring (plist-get expected :frame-hash) 0)))))
             ((and (not generator)
-                  (equal node '(cl-every (lambda (edge) (member (cdr (assq 'target edge)) names))
+                  (equal node '(cl-every (lambda (edge) (or (member (cdr (assq 'target edge)) names)
+                                     (member (cdr (assq 'target edge))
+                                             (plist-get nelisp-native-compiler-runtime-proof--expected :os-imports))))
                                         (plist-get record :direct))))
              '(or (equal (plist-get record :name) "nl_apply_function")
-                  (cl-every (lambda (edge) (member (cdr (assq 'target edge)) names))
+                  (cl-every (lambda (edge) (or (member (cdr (assq 'target edge)) names)
+                                     (member (cdr (assq 'target edge))
+                                             (plist-get nelisp-native-compiler-f1-runtime-proof--expected :os-imports))))
                             (plist-get record :direct))))
             ((and generator
-                  (equal node '(unless (cl-find (plist-get relocation :symbol) records
-                                                :key (lambda (item) (plist-get item :name)) :test #'equal)
+                  (equal node '(unless (or (member (plist-get relocation :symbol) (alist-get 'os_imports closure))
+                               (cl-find (plist-get relocation :symbol) records
+                                                :key (lambda (item) (plist-get item :name)) :test #'equal))
                                  (cl-pushnew (plist-get relocation :symbol) data-targets :test #'equal))))
-             '(unless (or (cl-find (plist-get relocation :symbol) records
+             '(unless (or (member (plist-get relocation :symbol) (alist-get 'os_imports closure))
+                          (cl-find (plist-get relocation :symbol) records
                                   :key (lambda (item) (plist-get item :name)) :test #'equal)
                           (cl-some (lambda (unit)
                                      (cl-some (lambda (symbol)

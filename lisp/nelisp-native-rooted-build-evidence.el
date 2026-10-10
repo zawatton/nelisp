@@ -90,7 +90,10 @@ evidence before compiling the driver. Unknown or ambiguous inputs are refused."
           (setq generated-data
                 (list :unit name :owner-source-sha256 builder-hash
                       :owner-forms-sha256 (secure-hash 'sha256 (prin1-to-string unit))
-                      :bss-size bss :symbols (vconcat unit-symbols))))))
+                      :bss-size bss :symbols (vconcat unit-symbols)))
+          (when (and (fboundp 'nelisp-native-load--windows-p) (nelisp-native-load--windows-p))
+            (setq generated-data (append generated-data
+                                   (list :target "windows-x86_64" :initial-chunk-bytes 67108864)))))))
     (unless generated-data (error "Missing generated arena owner"))
     (unless (equal builder-hash (nelisp-native-rooted-build-evidence-source-hash builder 4194304))
       (error "Builder source changed during rooted generation"))

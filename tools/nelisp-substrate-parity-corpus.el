@@ -386,6 +386,18 @@
               (condition-case e (catch nil (throw nil 5)) (no-catch e))
               (catch 'outer (catch 'inner (throw 'outer 7))))
         '((no-catch missing 5) (no-catch nil 5) 7)) 1 0))
+    ;; Large secure-hash inputs use iterative native string copying.
+    (60 shared (if (equal (secure-hash 'sha256 (make-string 1048576 97))
+                          "9bc1b2a288b26af7257a36277ae3816a7d4f16e89c1e7e77d0a5c48bad62b360") 1 0))
+    ;; Host autoload exports contain portable docs and quoted metadata.
+    (61 shared
+        (unwind-protect
+            (progn
+              (autoload 'nelisp-parity-portable-autoload '"missing-library"
+                        '"Portable doc." 'nil 'macro)
+              (if (equal (cdr (symbol-function 'nelisp-parity-portable-autoload))
+                         '("missing-library" "Portable doc." nil macro)) 1 0))
+          (fmakunbound 'nelisp-parity-portable-autoload)))
     ))
 
 (provide 'nelisp-substrate-parity-corpus)

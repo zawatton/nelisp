@@ -7,10 +7,10 @@ import os
 from pathlib import Path
 import re
 import shutil
-import subprocess
 import tempfile
 import threading
 import time
+import native_corpus_platform as platform
 
 ROOT = Path(__file__).resolve().parents[2]
 DRIVER = 'test/standalone-native-corpus-u10-driver.el'
@@ -75,13 +75,13 @@ def warm_groups(warm, budget):
     return groups
 
 
-def verdict(backend, phase, group, rc, seconds, output, errors, refused=()):
+def verdict(backend, phase, group, rc, seconds, output, errors, refused=(), deadline=300):
     records = re.findall(r'^U10-FIXTURE-PASS backend=(\S+) opcode=(\d+) phase=(\S+) entries=1 gc=1$', output, re.M)
     expected = [(backend, str(op), phase) for op in group if op != 'protected']
     done = f'U10-BATCH-DONE backend={backend} phase={phase} fixtures={len(expected)} entries={len(expected)}'
     stale = re.findall(r'^U10-STALE-PASS control=(\S+)$', output, re.M)
     relocations = re.findall(r'^U10-RELOCATION-REFUSED backend=(\S+) opcode=(\d+) reason=unreadable-live-constant$', output, re.M)
-    return (rc == 0 and seconds < 300 and not errors and records == expected
+    return (rc == 0 and seconds < deadline and not errors and records == expected
             and output.splitlines().count(done) == 1
             and relocations == [(backend, str(op)) for op in group if op in refused]
             and (192 not in group or stale == ['input', 'abi', 'artifact'])
@@ -157,6 +157,7 @@ def main():
     parser.add_argument('--require-complete', action='store_true', help='Ledger: pending slots fail, after running available fixtures.')
     parser.add_argument('--audit-only', action='store_true', help='Strict 230-slot structural audit only; no native claim.')
     parser.add_argument('--self-test', action='store_true')
+    parser.add_argument('--shard', help='CI partition INDEX/COUNT by compiler unit; only merged receipts qualify U10.')
     parser.add_argument('--opcodes', help='Focused development list, never a U10 qualification PASS.')
     parser.add_argument('--jobs', type=int, default=min(32, max(1, os.cpu_count() or 1)),
                         help='Global native process limit across both backends (1..32; default CPU count, capped at 32).')
@@ -169,6 +170,7 @@ def main():
     parser.add_argument('static', nargs='?', default='target/nelisp-static')
     parser.add_argument('dynamic', nargs='?', default='target/nelisp-dyn')
     parser.add_argument('--backend', choices=('in-house', 'gccjit', 'template'), default=None)
+    platform.add_arguments(parser)
     args = parser.parse_args()
     if args.both and args.backend:
         parser.error('--backend and --both are exclusive')
@@ -177,6 +179,16 @@ def main():
         return 0
     if not 1 <= args.jobs <= 32 or not 1 <= args.cold_jobs <= 16 or not 1 <= args.load_batch_size <= 16 or not 1 <= args.cold_batch_size <= 2:
         parser.error('jobs must be 1..32; cold jobs and load batch size 1..16; cold batch size 1..2')
+    shard = None
+    if args.shard:
+        try:
+            index, count = map(int, args.shard.split('/'))
+            if not 0 <= index < count <= 16: raise ValueError()
+            shard = (index, count)
+        except ValueError:
+            parser.error('shard must be INDEX/COUNT, 0 <= INDEX < COUNT <= 16')
+        if args.opcodes or args.audit_only: parser.error('shard cannot be focused or audit-only')
+    platform.configure(args, parser)
     os.chdir(ROOT)
     (ROOT / 'target').mkdir(exist_ok=True)
     directory = Path(tempfile.mkdtemp(prefix='u10-corpus-', dir=ROOT / 'target'))
@@ -187,10 +199,9 @@ def main():
                U10_PROJECTION_DIR=str(directory / 'projections'))
     host = [env.get('EMACS', 'emacs'), '-Q', '--batch', '-L', 'lisp', '-L', 'src', '-L', 'scripts',
             '-L', 'tools/ai', '-l', 'test/support/generate-native-corpus-u10.el']
-    with (directory / 'gnu.out').open('w') as out, (directory / 'gnu.err').open('w') as err:
-        result = subprocess.run(['timeout', '-k', '5', '290', *host], env=env, stdout=out, stderr=err)
-    if result.returncode:
-        print((directory / 'gnu.err').read_text()[-5000:])
+    host_rc, _, _, host_errors = platform.run_process(host, env, directory, 'gnu', deadline=290)
+    if host_rc:
+        print(host_errors[-5000:])
         return 1
     metadata = json.loads((directory / 'audit.json').read_text())
     rows = metadata['fixtures']
@@ -234,17 +245,16 @@ def main():
         binary = Path(binary).resolve()
         work = directory / backend
         work.mkdir(mode=0o700)
-        reader = work / 'reader'
+        reader = work / ('reader.exe' if platform.WINDOWS else 'reader')
         shutil.copy2(binary, reader)
         reader.chmod(0o500)
-        cold = Path(str(binary) + '.cold')
-        if cold.exists():
-            shutil.copy2(cold, Path(str(reader) + '.cold'))
         startup = Path(str(binary) + '.native-startup.el')
         if startup.exists():
             shutil.copy2(startup, Path(str(reader) + '.native-startup.el'))
-        identity = dict(binary_sha256=digest(binary), cold_sha256=digest(cold) if cold.exists() else None,
-                        startup_sha256=digest(startup) if startup.exists() else None,
+        cold = Path(str(binary) + '.cold')
+        if cold.exists():
+            shutil.copy2(cold, Path(str(reader) + '.cold'))
+        identity = dict(**platform.identity(), binary_sha256=digest(binary), startup_sha256=digest(startup) if startup.exists() else None, cold_sha256=digest(cold) if cold.exists() else None,
                         fixture_sha256=digest(directory / 'fixtures.el'),
                         sources_sha256={source: digest(ROOT / source) for source in sources})
         identities[backend] = identity
@@ -253,7 +263,7 @@ def main():
                                                if name.startswith(("lisp/", "src/", "scripts/", "target/"))})
         key = hashlib.sha256(json.dumps(cache_identity, sort_keys=True).encode()).hexdigest()
         cache = ROOT / 'target/u10-native-cache' / backend / key
-        cache.mkdir(parents=True, exist_ok=True, mode=0o700)
+        platform.create_cache(cache)
         caches[backend] = cache
         readers[backend] = reader
     receipts = []
@@ -268,28 +278,20 @@ def main():
         local.update(U10_BACKEND=backend, U10_PHASE=phase, U10_CASES=' '.join(map(str, group)),
                      U10_CACHE_BASE=str(caches[backend]), U10_FIXTURE=str(worker_fixture),
                      U10_STOP=str(directory / 'STOP'))
-        command = [str(readers[backend])]
         cold_image = Path(str(readers[backend]) + '.cold')
-        if cold_image.exists():
-            command += ['--cold-load-from', str(cold_image)]
-        command += ['-L', 'lisp', '-L', 'src', '-L', 'scripts', '-L', 'packages/nl-ffi/src',
-                    '-L', 'packages/nl-prelude/src', '--load', DRIVER]
+        command = platform.reader_command(readers[backend], cold_image, DRIVER)
+        local = platform.reader_environment(local, ('U10_CACHE_BASE', 'U10_FIXTURE', 'U10_STOP'))
         if cold:
             cold_slots.acquire()
         try:
-            load_before = os.getloadavg()
-            start = time.monotonic()
-            with (work / (label + '.out')).open('w') as out, (work / (label + '.err')).open('w') as err:
-                result = subprocess.run(['timeout', '-k', '5', '290', *command], env=local, stdout=out, stderr=err)
+            load_before = platform.load_average()
+            rc, seconds, output, errors = platform.run_process(command, local, work, label)
         finally:
             if cold:
                 cold_slots.release()
-        seconds = time.monotonic() - start
-        output = (work / (label + '.out')).read_text()
-        errors = (work / (label + '.err')).read_text()
-        passed = verdict(backend, phase, group, result.returncode, seconds, output, errors, refused)
-        receipt = dict(backend=backend, phase=phase, opcodes=group, rc=result.returncode,
-                       seconds=seconds, load_before=load_before, load_after=os.getloadavg(),
+        passed = verdict(backend, phase, group, rc, seconds, output, errors, refused, platform.PROCESS_DEADLINE)
+        receipt = dict(backend=backend, phase=phase, opcodes=group, rc=rc,
+                       seconds=seconds, load_before=load_before, load_after=platform.load_average(),
                        passed=passed, **identities[backend], **projection_identity)
         (work / (label + '.json')).write_text(json.dumps(receipt, indent=2))
         if passed and phase == 'compile':
@@ -298,7 +300,7 @@ def main():
                     marker = caches[backend] / unit / 'u10-compiled.json'
                     marker.write_text(json.dumps(dict(fixture_sha256=identities[backend]['fixture_sha256'])))
         print(f'U10-RUN backend={backend} phase={phase} fixtures={group} seconds={seconds:.3f} '
-              f'load={load_before[0]:.2f}/{receipt["load_after"][0]:.2f} passed={passed}', flush=True)
+              f'load={platform.load_text(load_before)}/{platform.load_text(receipt["load_after"])} passed={passed}', flush=True)
         if not passed:
             print((output + errors)[-4000:], flush=True)
         return receipt
@@ -307,7 +309,12 @@ def main():
     for row in rows:
         if row['opcode'] in selected:
             units.setdefault(row['unit'], []).append(row['opcode'])
-    if not pending and not args.opcodes:
+    if shard:
+        units = {unit: group for position, (unit, group) in enumerate(sorted(units.items()))
+                 if position % shard[1] == shard[0]}
+        selected = sorted(op for group in units.values() for op in group)
+    protected_required = not pending and not args.opcodes and (not shard or shard[0] == 0)
+    if protected_required:
         units['protected'] = ['protected']
 
     def compile_groups(backend):
@@ -398,17 +405,17 @@ def main():
                               for op in row['opcodes'] if op != 'protected') == sorted(selected)
                        for phase in ('compile', 'load'))
         complete &= all(row['passed'] for row in runs)
-        if not pending and not args.opcodes:
+        if protected_required:
             complete &= sum(row['passed'] and 'protected' in row['opcodes'] for row in runs) == 2
         good &= complete
         seconds = sum(row['seconds'] for row in runs)
         maximum = max((row['seconds'] for row in runs), default=0)
-        marker = 'FOCUSED' if args.opcodes else ('PASS' if complete else 'FAIL')
+        marker = 'FOCUSED' if args.opcodes else ('SHARD-PASS' if shard and complete else ('PASS' if complete else 'FAIL'))
         print(f'U10-{marker} backend={backend} fixtures={len(selected)} pending={len(pending)} '
               f'entries={2*len(selected) if complete else "unqualified"} seconds={seconds:.3f} '
-              f'max_seconds={maximum:.3f} load={os.getloadavg()[0]:.2f}', flush=True)
+              f'max_seconds={maximum:.3f} load={platform.load_text(platform.load_average())}', flush=True)
     (directory / 'summary.json').write_text(json.dumps(dict(passed=good, pending=pending,
-        focused=bool(args.opcodes), wall_seconds=time.monotonic()-started, receipts=receipts), indent=2))
+        focused=bool(args.opcodes), shard=shard, selected=selected, wall_seconds=time.monotonic()-started, receipts=receipts), indent=2))
     return int(not good or (args.require_complete and bool(pending)))
 
 

@@ -1,3 +1,10 @@
+# Keep byte-pinned inventories and source receipts identical on every host.
+# Shell scripts and Makefile recipes also require LF on Windows checkouts.
+* text=auto eol=lf
+# cmd.exe mis-parses labels and GOTO in LF-only batch files.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
 # NeLisp's nelisp-sys typed-elisp DSL sources use the `.nl' extension, which
 # GitHub Linguist otherwise misclassifies as the unrelated NewLisp language.
 # These files are NeLisp (an Emacs Lisp dialect) source -- count them as Emacs Lisp.

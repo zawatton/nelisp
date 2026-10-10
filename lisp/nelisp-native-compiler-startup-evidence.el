@@ -58,14 +58,14 @@
          (canonical (nelisp-native-compiler-startup-evidence--forms source))
          (derived (nelisp-native-compiler-startup-evidence--forms template)) found)
     (unless (and (equal (nelisp-native-rooted-build-evidence-source-hash source 4194304)
-                        "15f03e43723758043414e8778e28ff5813f0d75857c97e3b966e6d0e34877d32")
+                        "ca76cce0b6a54940e83065dcca7ee3e3b53f418d17dfcd2af1249d9f4c7e821e")
                  (equal (nelisp-native-rooted-build-evidence-source-hash template 4194304)
-                        "a8449a1867585a0f388b9ba963ebffc9591309456ee8411cfa4f091e4ef67563")
+                        "e0b37e914cccced895fe2b1c615bf0a7b4c869862fd8a1a01dad856f8c5ae55f")
                  (equal (alist-get 'source declaration) "lisp/nelisp-native-load.el")
                  (equal (alist-get 'source_sha256 declaration)
-                        "15f03e43723758043414e8778e28ff5813f0d75857c97e3b966e6d0e34877d32")
+                        "ca76cce0b6a54940e83065dcca7ee3e3b53f418d17dfcd2af1249d9f4c7e821e")
                  (equal (alist-get 'output_sha256 declaration)
-                        "a8449a1867585a0f388b9ba963ebffc9591309456ee8411cfa4f091e4ef67563")
+                        "e0b37e914cccced895fe2b1c615bf0a7b4c869862fd8a1a01dad856f8c5ae55f")
                  (equal (alist-get 'definitions declaration) (mapcar #'symbol-name names))
                  (= (alist-get 'exact_runtime_gate_transforms declaration) 3))
       (error "Canonical constructor loader template provenance rejected"))
@@ -251,16 +251,22 @@
              (setq offsets (1+ offsets)) '(= (length offsets) 14))
             ((and generator (consp object) (eq (car object) 'dolist)
                   (equal (cadr object)
-                         '(relative '("lisp/nelisp-native-funcall-v2.el" "lisp/nelisp-runtime-reload-abi.el" "lisp/nelisp-native-load.el"
-                                      "lisp/nelisp-native-raw-file.el"))))
+                         '(relative (append (when (nelisp-native-load--windows-p)
+                                  '("lisp/nelisp-native-windows.el" "lisp/nelisp-native-pe-symbols.el"))
+                                '("lisp/nelisp-native-funcall-v2.el" "lisp/nelisp-runtime-reload-abi.el" "lisp/nelisp-native-load.el"
+                          "lisp/nelisp-native-raw-file.el")))))
              ;; The ticket startup has already established these owners. Re-evaluating
              ;; them would invalidate its captured owner identities before user code.
              (setq embeds (1+ embeds)) nil)
-            ((and generator (equal object '(list script owner-script template loader
+            ((and generator (equal object '(list (expand-file-name "lisp/nelisp-native-windows.el" root)
+                    (expand-file-name "lisp/nelisp-native-pe-symbols.el" root)
+                    script owner-script template loader
                     (expand-file-name "lisp/nelisp-native-funcall-v2.el" root)
                                                 (expand-file-name "lisp/nelisp-runtime-reload-abi.el" root)
                                                 (expand-file-name "lisp/nelisp-native-raw-file.el" root))))
-             '(list script owner-script template loader
+             '(list (expand-file-name "lisp/nelisp-native-windows.el" root)
+                    (expand-file-name "lisp/nelisp-native-pe-symbols.el" root)
+                    script owner-script template loader
                     (expand-file-name "lisp/nelisp-native-funcall-v2.el" root)
                     (expand-file-name "lisp/nelisp-runtime-reload-abi.el" root)
                     (expand-file-name "lisp/nelisp-native-raw-file.el" root)
@@ -321,7 +327,7 @@
        '(nelisp-native-compiler-runtime-proof--eligible-p
          nelisp-native-compiler-runtime-proof-dependency-context
          nelisp-native-compiler-runtime-proof-create nelisp-native-compiler-runtime-proof-valid-p)
-       '("1fd91ab77de3671c255621175f978e323ca4e73a44cf39f8825abc80799a53c6"
+       '("48385f7c7857fe3a5a91457c9a50dbc05237411462d6ed873aadfa1f68713a14"
          "d92f1faffec409da2260f525ed818e083219a6e423f8eb34e5ae356645bd8e70"
          "d826850d8b589e0699bfc9b696f6dff497f8dc4ba0b5ddb0b8a666c9dfbe9e23"
          "7513f39d103743d6941b23ec44a5f283151258141c07119de1dcd6c43a95f3c9"))
@@ -446,6 +452,7 @@
                (cl-labels ((add (node)
                              (when (consp node)
                                (when (and (eq (car node) 'quote)
+                                          (listp (cadr node))
                                           (memq 'nelisp-native-compiler-runtime-proof-create (cadr node)))
                                  (setcar (cdr node) (append (cadr node)
                                                           '(nelisp-native-compiler-runtime-proof-metadata
