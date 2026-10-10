@@ -1,6 +1,6 @@
 name: Windows native F1 (manual acceptance)
 
-# Manual acceptance of Doc 213 W1.2. Host proofs cannot qualify Windows execution.
+# Manual acceptance of Doc 214 W1.2. Host proofs cannot qualify Windows execution.
 # workflow_dispatch needs this file on the default branch, so pushes to the
 # native-windows branch also run it until the port is merged.
 on:
