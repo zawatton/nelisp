@@ -783,3 +783,7 @@ adc7f6baa6d137425ce88b6c7a100976bd25b4fedd3cc4d5dae40149f550d50c  vendor/emacs-l
 33ca7d5a6587be0cddc70a3274a26f96673c03e65c22196eb8bd768e4f9f6a25  vendor/emacs-lisp-api/time-stamp.el
 fe69850a179b459b6c11f9f0641fa8c8ce7421b966546f463b0df818fcc39435  vendor/emacs-lisp-api/xdg.el
 0b65ab18de0f55bb1fcb31735fbcbc093a11acaf23c9188cd030f8a4b626e3cc  vendor/emacs-lisp-api/calendar/iso8601.el
+496295b6899b0eb42ee600b59e9802afa0209618b13673a470384d2f95c7a948  vendor/emacs-lisp-api/emacs-lisp/avl-tree.el
+4f8735c13c5af0372aac80a6aea1d117e2d77845e60bfba197880fba7bfd0fe1  vendor/emacs-lisp-api/font-core.el
+3da74038b3122069281e65316a638a6f125c48e26625bca1730b24772e40310a  vendor/emacs-lisp-api/vc/vc-dir.el
+97db56f8f33507db0203f6f469b5f435d07cffe8d59e6ab7655b48a85852df5c  vendor/emacs-lisp-api/emacs-lisp/ewoc.el

@@ -776,3 +776,7 @@ emacs-lisp-api/calendar/parse-time.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1
 emacs-lisp-api/time-stamp.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/time-stamp.el	sha256=33ca7d5a6587be0cddc70a3274a26f96673c03e65c22196eb8bd768e4f9f6a25
 emacs-lisp-api/xdg.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/xdg.el	sha256=fe69850a179b459b6c11f9f0641fa8c8ce7421b966546f463b0df818fcc39435
 emacs-lisp-api/calendar/iso8601.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/calendar/iso8601.el	sha256=0b65ab18de0f55bb1fcb31735fbcbc093a11acaf23c9188cd030f8a4b626e3cc
+emacs-lisp-api/emacs-lisp/avl-tree.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/emacs-lisp/avl-tree.el	sha256=496295b6899b0eb42ee600b59e9802afa0209618b13673a470384d2f95c7a948
+emacs-lisp-api/font-core.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/font-core.el	sha256=4f8735c13c5af0372aac80a6aea1d117e2d77845e60bfba197880fba7bfd0fe1
+emacs-lisp-api/vc/vc-dir.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/vc/vc-dir.el	sha256=3da74038b3122069281e65316a638a6f125c48e26625bca1730b24772e40310a
+emacs-lisp-api/emacs-lisp/ewoc.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/emacs-lisp/ewoc.el	sha256=97db56f8f33507db0203f6f469b5f435d07cffe8d59e6ab7655b48a85852df5c

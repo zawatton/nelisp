@@ -97,5 +97,21 @@
       (signal 'error (list "Window is not a minibuffer window")))
     (setq minibuffer-window window)))
 
+;; GNU keymap.c `apropos-internal'; eat's package chain calls it at load.
+(unless (fboundp 'apropos-internal)
+  (defun apropos-internal (regexp &optional predicate)
+    "Show all symbols whose names contain match for REGEXP.
+If optional 2nd arg PREDICATE is non-nil, (funcall PREDICATE SYMBOL) is done
+for each symbol and a symbol is mentioned only if that returns non-nil.
+Return list of symbols found."
+    (unless (stringp regexp)
+      (signal 'wrong-type-argument (list 'stringp regexp)))
+    (let ((found nil))
+      (mapatoms (lambda (symbol)
+                  (when (and (string-match-p regexp (symbol-name symbol))
+                             (or (null predicate) (funcall predicate symbol)))
+                    (push symbol found))))
+      (sort found #'string-lessp))))
+
 (provide 'emacs-cc-minibuf-1)
 ;;; emacs-cc-minibuf-1.el ends here
