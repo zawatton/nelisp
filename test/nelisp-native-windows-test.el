@@ -86,7 +86,7 @@
   "A structurally valid decode fixture; it is never executed."
   (let* ((abi (nelisp-native-load--runtime-abi-v2))
          (manifest (list :format nelisp-native-load-raw-artifact-format-v2 :runtime-abi abi
-                         :target (nelisp-native-load--target-v2)
+                         :target (and (nelisp-native-load--windows-p) (nelisp-native-load--target-v2))
                          :gc-table-magic nelisp-native-load-raw-gc-table-magic :gc-table-count 1
                          :gc-entries '((:name "gc-entry" :arity 0 :index 0))
                          :native (list :raw-abi abi :text-base64 (base64-encode-string (make-string 16 0) t)
@@ -95,7 +95,7 @@
                                        :relocs '((:offset 4 :type pc32 :symbol "bridge" :addend -4))
                                        :exports '((:name "probe" :value 0 :size 1 :arity 0)
                                                   (:name "gc-entry" :value 1 :size 1 :arity 0))))))
-    (plist-put manifest :artifact-sha256 (secure-hash 'sha256 (prin1-to-string manifest)))))
+    (plist-put (copy-tree manifest) :artifact-sha256 (secure-hash 'sha256 (prin1-to-string manifest)))))
 
 (ert-deftest nelisp-native-windows-target-and-relocation-refuse-before-map ()
   (let ((system-type 'windows-nt) (allocations 0))
@@ -116,6 +116,31 @@
         (should (equal (cadr (should-error (nelisp-native-load-raw-v2-artifact-trusted manifest "probe" nil)))
                        "nelisp-native-load: trusted relocation refused")))
       (should (= allocations 0)))))
+
+(ert-deftest nelisp-native-windows-trusted-digest-tampering-before-map ()
+  "Windows and Linux use the same complete-artifact trust predicate."
+  (let ((allocations 0)
+        (nelisp-bytecode-native-rooted-cfg-contract--validation-count 0))
+    (cl-letf (((symbol-function 'nelisp-native-load--mmap)
+               (lambda (&rest _) (setq allocations (1+ allocations)) (error "map reached")))
+              ((symbol-function 'nelisp-native-load--raw-v2-contract)
+               (lambda () '(("gc-entry" . 0)))))
+      (dolist (system-type '(windows-nt gnu/linux))
+        (let ((manifest (nelisp-native-windows-test--trusted-fixture)))
+          ;; Authenticate a good baseline before corrupting the stored bytes or
+          ;; GC metadata without changing its compile-time digest.
+          (should (= 16 (length (nelisp-native-load--raw-v2-trusted-decode manifest "probe"))))
+          (dolist (field '(text gc))
+            (let ((bad (copy-tree manifest)))
+              (if (eq field 'text)
+                  (setf (plist-get (plist-get bad :native) :text-base64)
+                        (base64-encode-string (make-string 16 1) t))
+                (setf (plist-get bad :gc-entries) '((:name "tampered" :arity 0 :index 0))))
+              (should (equal (cadr (should-error
+                                   (nelisp-native-load-raw-v2-artifact-trusted bad "probe" nil)))
+                             "nelisp-native-load: trusted artifact hash refused"))))))
+      (should (= allocations 0))
+      (should (= nelisp-bytecode-native-rooted-cfg-contract--validation-count 0)))))
 
 (ert-deftest nelisp-native-windows-map-publication-and-release ()
   "Host simulation verifies API order, R/RX and original reservation release."

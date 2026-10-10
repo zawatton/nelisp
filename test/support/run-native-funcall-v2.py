@@ -15,7 +15,7 @@ if os.environ.get("F1B_COLD") == "1":
     cold = Path(binary + ".cold").resolve(strict=True)
     command += ["--cold-load-from", str(cold)]
 command += ["-L", "lisp", "-L", "src", "-L", "scripts", "-L",
-            "packages/nl-ffi/src", "-L", "packages/nl-prelude/src", "--load", driver]
+            "packages/nl-ffi/src", "-L", "packages/nl-prelude/src", "-l", driver]
 start = time.monotonic()
 with directory.joinpath(phase + ".out").open("w") as stdout, directory.joinpath(phase + ".err").open("w") as stderr:
     result = subprocess.run(command, stdout=stdout, stderr=stderr)

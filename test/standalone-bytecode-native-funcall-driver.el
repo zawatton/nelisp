@@ -15,7 +15,9 @@
         (goto-char (point-min))
         (setq header (read (current-buffer)) manifest (read (current-buffer))))
       (dolist (mapper '(checked trusted))
-        (let ((handle
+        (let* ((before nelisp-bytecode-native-rooted-cfg-contract--validation-count)
+               (start (float-time))
+               (handle
                (if (eq mapper 'checked)
                    (nelisp-native-load-raw-v2-artifact
                     manifest (plist-get header :entry)
@@ -32,7 +34,12 @@
                                     (+ 16 (* 8 (plist-get entry :index))))
                       (nelisp-native-load--symbol-addr (plist-get entry :name)))
                    "GC table uses runtime addresses after collection")))
-            (nelisp-native-load-unload handle)))))))
+            (nelisp-native-load-unload handle))
+          (let ((validations (- nelisp-bytecode-native-rooted-cfg-contract--validation-count before)))
+            (f1-assert (= validations (if (eq mapper 'checked) 1 0))
+                       "checked GC control validates once; trusted control never validates")
+            (princ (format "F1-GC-MAPPER-PASS mapper=%S seconds=%.3f validations=%d\n"
+                           mapper (- (float-time) start) validations))))))))
 (let* ((function (cdr (assq 'f1-fixture (nelisp-bytecode-native-consumer-read-elc-functions (getenv "F1_FIXTURE")))))
        (phase (getenv "F1_PHASE"))
        (nelisp-native-cache-backend (intern (or (getenv "F1_BACKEND") "in-house"))))
@@ -98,12 +105,16 @@
       (f1-assert (equal (funcall native '(7 . 8)) '(redefined 7 . 8)) "function redefinition")
       (push (format "%S" (funcall native '(7 . 8))) observations)
       (princ (format "F1-CORPUS-DIGEST=%s\n" (secure-hash 'sha256 (prin1-to-string (nreverse observations)))))
-      (when (equal (getenv "F1_FORCE_GC") "1")
-        (f1-check-runtime-gc-table function)
-        (princ (format "F1-FORCED-GC-PASS backend=%S\n" nelisp-native-cache-backend)))
+      ;; Include every cache/corpus operation, but not the independent checked
+      ;; mapper below: that positive control deliberately revalidates semantics.
+      (f1-assert (= before nelisp-bytecode-native-rooted-cfg-contract--validation-count)
+                 "zero cache validations after corpus")
       (princ (format "F1-CACHE-PASS backend=%S corpus=%d seconds=%.3f validations=%d\n"
                      nelisp-native-cache-backend count (- (float-time) start)
-                     (- nelisp-bytecode-native-rooted-cfg-contract--validation-count before))))))
+                     (- nelisp-bytecode-native-rooted-cfg-contract--validation-count before)))
+      (when (equal (getenv "F1_FORCE_GC") "1")
+        (f1-check-runtime-gc-table function)
+        (princ (format "F1-FORCED-GC-PASS backend=%S\n" nelisp-native-cache-backend))))))
 (when (equal (getenv "F1_BACKEND") "template")
   (f1-assert (> nelisp-native-template--entry-count 0) "template native entry")
   (f1-assert (= nelisp-native-template--fallback-count 0) "no template fallback")

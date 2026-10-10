@@ -37,7 +37,9 @@ def reader_command(binary, cold, driver, wine=False):
         command += ['--cold-load-from', path(cold)]
     for directory in ('lisp', 'src', 'scripts', 'packages/nl-ffi/src', 'packages/nl-prelude/src'):
         command += ['-L', path(ROOT / directory)]
-    return command + ['--load', path(ROOT / driver)]
+    # -l executes silently; single-action --load also prints the file's value
+    # (nil for this driver). Keep all diagnostics on the original stderr.
+    return command + ['-l', path(ROOT / driver)]
 
 
 def reader_environment(env, wine=False):

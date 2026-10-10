@@ -101,6 +101,12 @@ class CheckoutControls(unittest.TestCase):
 
 
 class ReceiptControls(unittest.TestCase):
+    def test_silent_load_command(self):
+        command = runner.reader_command(Path('reader.exe'), None,
+                                        'test/standalone-bytecode-native-funcall-driver.el')
+        self.assertEqual(command[-2:], ['-l', str(runner.ROOT / 'test/standalone-bytecode-native-funcall-driver.el')])
+        self.assertNotIn('--load', command)
+
     def test_completion_and_failures(self):
         compile_output = 'F1-COMPILE-PASS backend=in-house seconds=1.000 validations=1 file="fixture"\n'
         load_output = ('F1-CORPUS-DIGEST=' + runner.DIGEST + '\n'
