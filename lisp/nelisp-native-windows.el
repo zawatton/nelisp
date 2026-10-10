@@ -305,7 +305,10 @@ only after this check succeeds, and subsequent opens require the private DACL."
               (setq code (nelisp-native-windows-call "GetLastError")
                     attempt (1+ attempt))
               (if (and (memq code '(5 32 33)) (< attempt 50))
-                  (sleep-for 0.1)
+                  ;; The reader has no `sleep-for' and its fixed FFI table no
+                  ;; Sleep entry; this rare path waits by polling the clock.
+                  (let ((until (+ (float-time) 0.1)))
+                    (while (< (float-time) until)))
                 (setq done t))))
           (cond
            ((eql code 0) t)
