@@ -1,6 +1,7 @@
 ;;; standalone-native-prims-u2c-driver.el --- Native U2c interpreter parity -*- lexical-binding: t; -*-
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 (require 'nelisp-native-cache)
+(load "test/support/native-entry-observer.el" nil t t)
 (load "test/support/native-prims-u2c-fixtures.el" nil t t)
 (defun u2c-assert (value label) (unless value (error "U2c: %s" label)))
 (dolist (opcode (mapcar #'string-to-number (split-string (getenv "U2C_OPCODE"))))
@@ -40,32 +41,37 @@
   ;; Poison the public cell across the machine entry itself.  Staging/unboxing
   ;; are Lisp infrastructure and can independently use these public names.
   (native-prims-u2c-reset)
-  (let* ((name (nth 1 row)) (args (car (native-prims-u2c-cases opcode)))
-         (expected (native-prims-u2c-observe function (car (native-prims-u2c-cases opcode))))
+  ;; Preserve the original case and also exercise EQ's symbol slow path.
+  (dolist (poison-index (if (= opcode 61) '(0 4) '(0)))
+  (let* ((name (nth 1 row)) (args (nth poison-index (native-prims-u2c-cases opcode)))
+         (expected (native-prims-u2c-observe function (nth poison-index (native-prims-u2c-cases opcode))))
          (original (symbol-function name))
          (restore (symbol-function 'fset))
-         (pointer-call (symbol-function 'ptr-call))
          (file (nelisp-native-cache-file function))
          (metadata (if (eq nelisp-native-cache-backend 'gccjit) (concat file ".nelh") file))
          (header (with-temp-buffer (insert-file-contents metadata) (goto-char (point-min)) (read (current-buffer))))
          (arity (plist-get header :arity)) (roots (plist-get header :root-count))
          (entries 0) actual)
     (native-prims-u2c-reset)
-    (cl-letf (((symbol-function 'ptr-call)
-               (lambda (address env ticket argc count x y)
-                 (if (and (= argc arity) (= count roots) (= x 0) (= y 0))
-                     (unwind-protect
-                         (progn
-                           (setq entries (1+ entries))
-                           (funcall restore name (lambda (&rest _) (setq poison-calls (1+ poison-calls)) 'poison))
-                           (funcall pointer-call address env ticket argc count x y))
-                       (funcall restore name original))
-                   (funcall pointer-call address env ticket argc count x y)))))
-      (setq actual (native-prims-u2c-observe #'u2c-native args)))
+    (nelisp-test-with-native-entry-observer
+	(lambda (address env ticket argc count x y)
+	  (when (and (= argc arity) (= count roots) (= x 0) (= y 0))
+	    (setq entries (1+ entries))))
+      (setq actual
+	    (native-prims-u2c-observe
+	     (nelisp-test-native-poison #'u2c-native
+					(lambda nil
+					  (funcall restore name
+						   (lambda (&rest _)
+						     (setq poison-calls
+							   (1+
+							    poison-calls))
+						     'poison)))
+					(lambda nil
+					  (funcall restore name original)))
+	     args)))
     (u2c-assert (= entries 1) "one actual machine entry under rebinding")
     (u2c-assert (equal expected actual) (format "rebound %S native=%S expected=%S" name actual expected))
-    (u2c-assert (= poison-calls 0) "native instruction did not call public cell"))
+    (u2c-assert (= poison-calls 0) "native instruction did not call public cell")))
   (princ (format "U2C-NATIVE-PASS backend=%S opcode=%d cases=%d identity=1 rebound=1\n"
-                 nelisp-native-cache-backend opcode cases)))
-
-)
+                 nelisp-native-cache-backend opcode cases))))

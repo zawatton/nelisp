@@ -1,6 +1,7 @@
 ;;; standalone-native-concat-u3b-driver.el --- Executed sequence parity -*- lexical-binding: t; -*-
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 (require 'nelisp-native-cache)
+(load "test/support/native-entry-observer.el" nil t t)
 (load "test/support/native-concat-u3b-fixtures.el" nil t t)
 (defun u3b-assert (value label) (unless value (error "U3b: %s" label)))
 (defun u3b-header (fn)
@@ -12,23 +13,30 @@
   "Observe one authenticated native entry, poisoning public cells only inside it."
   (let* ((header (u3b-header fn)) (arity (plist-get header :arity))
          (roots (plist-get header :root-count)) (entries 0) (poison-calls 0)
-         (pointer (symbol-function 'ptr-call)) (restore (symbol-function 'fset))
+         (restore (symbol-function 'fset))
          (saved (mapcar (lambda (name) (cons name (symbol-function name))) (if (= opcode 177) '(insert) '(concat apply cons))))
          actual)
-    (cl-letf (((symbol-function 'ptr-call)
-               (lambda (address env ticket argc n x y)
-                 (if (and (= argc arity) (= n roots) (= x 0) (= y 0))
-                     (unwind-protect
-                         (progn
-                           (setq entries (1+ entries))
-                           (when poison
-                             (dolist (pair saved)
-                               (funcall restore (car pair)
-                                        (lambda (&rest _) (setq poison-calls (1+ poison-calls)) 'poison))))
-                           (funcall pointer address env ticket argc n x y))
-                       (dolist (pair saved) (funcall restore (car pair) (cdr pair))))
-                   (funcall pointer address env ticket argc n x y)))))
-      (setq actual (native-concat-u3b-observe native args opcode)))
+    (nelisp-test-with-native-entry-observer
+	(lambda (address env ticket argc n x y)
+	  (when (and (= argc arity) (= n roots) (= x 0) (= y 0))
+	    (setq entries (1+ entries))))
+      (setq actual
+	    (native-concat-u3b-observe
+	     (nelisp-test-native-poison native
+					(lambda nil
+					  (when poison
+					    (dolist (pair saved)
+					      (funcall restore (car pair)
+						       (lambda (&rest _)
+							 (setq
+							  poison-calls
+							  (1+ poison-calls))
+							 'poison)))))
+					(lambda nil
+					  (dolist (pair saved)
+					    (funcall restore (car pair)
+						     (cdr pair)))))
+	     args opcode)))
     (u3b-assert (= entries 1) (format "one native entry, got %d" entries))
     (u3b-assert (= poison-calls 0) "frozen builtin and Lisp provider values")
     actual))

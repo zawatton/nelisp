@@ -1,6 +1,7 @@
 ;;; standalone-native-frame-u7a-driver.el --- U7a native parity -*- lexical-binding: t; -*-
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 (require 'nelisp-native-cache)
+(load "test/support/native-entry-observer.el" nil t t)
 (defvar u7a-origin (float-time))
 (defun u7a-phase (name)
   (princ (format "U7A-PHASE %s seconds=%.3f\n" name (- (float-time) u7a-origin))))
@@ -11,7 +12,7 @@
        (case-name (getenv "U7A_CASE"))
        (name (if (string-match-p "^[1-5]$" case-name) (string-to-number case-name) (intern case-name)))
        (fn (native-frame-u7a-function name))
-       (cases 0) (entries 0) (pointer (symbol-function 'ptr-call))
+       (cases 0) (entries 0)
        (args (cond ((eq name 'nested) '(outer inner))
                    ((or (integerp name) (eq name 'zero)) nil) (t '(inside)))))
   (princ (format "U7A-START backend=%S fixture=%S\n" nelisp-native-cache-backend name))
@@ -31,12 +32,11 @@
          (count (plist-get header :root-count)) (arity (plist-get header :arity))
          (native (symbol-function 'u7a-native)))
     (cl-labels ((run ()
-                 (cl-letf (((symbol-function 'ptr-call)
-                            (lambda (address env ticket argc roots x y)
-                              (when (and (= argc arity) (= roots count) (= x 0) (= y 0))
-                                (setq entries (1+ entries)))
-                              (funcall pointer address env ticket argc roots x y))))
-                   (native-frame-u7a-observe native args)))
+                  (nelisp-test-with-native-entry-observer
+		      (lambda (address env ticket argc roots x y)
+			(when (and (= argc arity) (= roots count) (= x 0) (= y 0))
+			  (setq entries (1+ entries))))
+		    (native-frame-u7a-observe native args)))
                (compare ()
                  (let ((expected (let ((u7a-inner (if (eq u7a-mode 'reenter) fn u7a-inner)))
                                    (native-frame-u7a-observe fn args))))
@@ -120,17 +120,18 @@
           (let ((set-cell (symbol-function 'set)) (value-cell (symbol-function 'symbol-value))
               (restore (symbol-function 'fset))
               (expected (native-frame-u7a-observe fn args)))
-          (cl-letf (((symbol-function 'ptr-call)
-                     (lambda (address env ticket argc roots x y)
-                       (if (and (= argc arity) (= roots count) (= x 0) (= y 0))
-                           (unwind-protect
-                               (progn (funcall restore 'set (lambda (&rest _) (error "poisoned set")))
-                                      (funcall restore 'symbol-value (lambda (&rest _) (error "poisoned symbol-value")))
-                                      (funcall pointer address env ticket argc roots x y))
-                             (funcall restore 'set set-cell)
-                             (funcall restore 'symbol-value value-cell))
-                         (funcall pointer address env ticket argc roots x y)))))
-            (u7a-assert (equal expected (native-frame-u7a-observe native args)) "frozen varref/varset providers")))))
+          (u7a-assert
+           (equal expected
+                  (native-frame-u7a-observe
+                   (lambda (&rest arguments)
+                     (unwind-protect
+                         (progn
+                           (funcall restore 'set (lambda (&rest _) (error "poisoned set")))
+                           (funcall restore 'symbol-value (lambda (&rest _) (error "poisoned symbol-value")))
+                           (apply native arguments))
+                       (funcall restore 'set set-cell)
+                       (funcall restore 'symbol-value value-cell))) args))
+           "frozen varref/varset providers"))))
           (poisoned)
           (when (eq name 'implicit)
             (with-temp-buffer
@@ -155,7 +156,6 @@
                          iterations before after))))
       (princ (format "U7A-NATIVE-PASS backend=%S fixture=%S cases=%d native-entries=%d phase=%s\n"
                      nelisp-native-cache-backend name cases entries phase)))))
-
 (when (equal (getenv "U7A_CASE") "callback")
   (let* ((addresses (nelisp-native-load-root-v2-addresses))
          (env (plist-get addresses :environment))

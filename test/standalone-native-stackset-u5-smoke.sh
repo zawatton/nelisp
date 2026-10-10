@@ -23,6 +23,7 @@ mkdir -m 700 "$work/cache"
 cp -- "$binary" "$work/reader"
 chmod 500 "$work/reader"
 if [[ -f $binary.cold ]]; then cp -- "$binary.cold" "$work/reader.cold"; fi
+if [[ -f $binary.native-startup.el ]]; then cp -- "$binary.native-startup.el" "$work/reader.native-startup.el"; fi
 # Optional replay uses the production ABI/input-key checks and private loader;
 # default runs always start with an empty cache and compile every body once.
 seed=""

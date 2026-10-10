@@ -1,6 +1,7 @@
 ;;; standalone-native-buffer-u4c-driver.el --- Executed GNU buffer parity -*- lexical-binding: t; -*-
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 (require 'nelisp-native-cache)
+(load "test/support/native-entry-observer.el" nil t t)
 (load "test/support/native-buffer-u4c-fixtures.el" nil t t)
 (defun u4c-assert (value label) (unless value (error "U4c: %s" label)))
 (defvar u4c-oracle
@@ -10,12 +11,14 @@
   (let* ((nelisp-native-cache-backend (intern (getenv "U4C_BACKEND")))
          (row (assq opcode native-buffer-u4c-family))
          (fn (native-buffer-u4c-function row))
-         (pointer (symbol-function 'ptr-call)) (restore (symbol-function 'fset))
+         (restore (symbol-function 'fset))
          (names (list (cadr row) 'interactive-p))
          (old (mapcar (lambda (name) (cons name (symbol-function name))) names))
-         (entries 0) (cases 0) (poison 0) (gc-count 0))
+         (entries 0) (cases 0) (poison 0) (gc-count 0)
+         (gc-before (nelisp-test-native-entry-collections)))
     (princ (format "U4C-START backend=%S opcode=%d\n" nelisp-native-cache-backend opcode))
-    (nelisp-native-cache-install 'u4c-native fn)
+    (let ((nelisp-test-native-entry-gc-once t))
+      (nelisp-native-cache-install 'u4c-native fn))
     (let* ((file (nelisp-native-cache-file fn))
            (header (with-temp-buffer
                      (insert-file-contents (if (eq nelisp-native-cache-backend 'gccjit) (concat file ".nelh") file))
@@ -30,23 +33,30 @@
             (u4c-assert oracle "GNU oracle record exists")
             (u4c-assert (equal (nth 3 oracle) expected)
                         (format "GNU/VM opcode=%d args=%S setting=%S GNU=%S VM=%S" opcode args setting (nth 3 oracle) expected))
-            (cl-letf (((symbol-function 'ptr-call)
-                       (lambda (address env ticket argc n x y)
-                         (if (and (= argc arity) (= n roots) (= x 0) (= y 0))
-                             (unwind-protect
-                                 (progn
-                                   (setq entries (1+ entries))
-                                   (dolist (name names)
-                                     (funcall restore name (lambda (&rest _) (setq poison (1+ poison)) 'poison)))
-                                   (when (= entries 1) (garbage-collect) (setq gc-count (1+ gc-count)))
-                                   (funcall pointer address env ticket argc n x y))
-                               (dolist (pair old) (funcall restore (car pair) (cdr pair))))
-                           (funcall pointer address env ticket argc n x y)))))
-              (setq actual (native-buffer-u4c-observe native args (car setting) (cadr setting))))
+            (nelisp-test-with-native-entry-observer
+		(lambda (address env ticket argc n x y)
+		  (when (and (= argc arity) (= n roots) (= x 0) (= y 0))
+		    (setq entries (1+ entries))))
+	      (setq actual
+		    (native-buffer-u4c-observe
+		     (nelisp-test-native-poison native
+						(lambda nil
+						  (dolist (name names)
+						    (funcall restore name
+							     (lambda (&rest _)
+							       (setq poison
+								     (1+ poison))
+							       'poison))))
+						(lambda nil
+						  (dolist (pair old)
+						    (funcall restore (car pair)
+							     (cdr pair)))))
+		     args (car setting) (cadr setting))))
             (u4c-assert (equal expected actual)
                         (format "opcode=%d args=%S setting=%S expected=%S actual=%S" opcode args setting expected actual))
             (setq cases (1+ cases)))))
       (u4c-assert (= cases entries) "every invocation executes native code without fallback")
+      (setq gc-count (- (nelisp-test-native-entry-collections) gc-before))
       (u4c-assert (= gc-count 1) "moving collection with staged arguments once per opcode")
       (u4c-assert (= poison 0) "frozen values bypass public cells and interactive-p")
       (princ (format "U4C-NATIVE-PASS backend=%S opcode=%d cases=%d native=%d rebound=1 gc=1\n"
@@ -62,7 +72,7 @@
   (dolist (opcode opcodes)
     (let* ((nelisp-native-cache-backend (intern (getenv "U4C_BACKEND")))
            (fn (native-buffer-u4c-error-function opcode))
-           (pointer (symbol-function 'ptr-call)) (entries 0))
+           (entries 0))
       (nelisp-native-cache-install 'u4c-errors fn)
       (let* ((file (nelisp-native-cache-file fn))
              (header (with-temp-buffer
@@ -74,11 +84,11 @@
                                  :key (lambda (record) (list (nth 0 record) (nth 1 record) (nth 2 record))) :test #'equal))
                  (expected (native-buffer-u4c-observe fn args 3 nil)) actual)
             (u4c-assert (equal (nth 3 oracle) expected) "GNU ordered-effect oracle")
-            (cl-letf (((symbol-function 'ptr-call)
-                       (lambda (address env ticket argc n x y)
-                         (when (and (= argc 2) (= n roots) (= x 0) (= y 0)) (setq entries (1+ entries)))
-                         (funcall pointer address env ticket argc n x y))))
-              (setq actual (native-buffer-u4c-observe #'u4c-errors args 3 nil)))
+            (nelisp-test-with-native-entry-observer
+		(lambda (address env ticket argc n x y)
+		  (when (and (= argc 2) (= n roots) (= x 0) (= y 0))
+		    (setq entries (1+ entries))))
+	      (setq actual (native-buffer-u4c-observe #'u4c-errors args 3 nil)))
             (u4c-assert (equal expected actual) "exact error data retains prior insertion and stops later insertion")))
         (u4c-assert (= entries 2) "both error cases execute native code")
         (princ (format "U4C-ERROR-PASS opcode=%d native=2 prior-insertion=1 later-insertion=0\n" opcode)))))))

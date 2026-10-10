@@ -33,6 +33,8 @@ import concurrent.futures,hashlib,json,os,subprocess,sys,time
 from pathlib import Path
 work,selection=sys.argv[1:]; directory=Path(work); binary=directory/'reader'; cold=directory/'reader.cold'
 identity=dict(binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
+              observer_sha256=hashlib.sha256(Path('test/support/native-entry-observer.el').read_bytes()).hexdigest(),
+              driver_sha256=hashlib.sha256(Path('test/standalone-native-frame-u7a-driver.el').read_bytes()).hexdigest(),
               startup_sha256=hashlib.sha256(Path(str(binary)+'.native-startup.el').read_bytes()).hexdigest() if Path(str(binary)+'.native-startup.el').is_file() else None,
               cold_sha256=hashlib.sha256(cold.read_bytes()).hexdigest() if cold.is_file() else None)
 cases=selection.split()

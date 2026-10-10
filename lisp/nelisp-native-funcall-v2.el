@@ -324,7 +324,7 @@ larger fixnums use the existing exact numeric operation, never wrapped math."
 (defun nelisp-native-funcall-v2-value-form (opcode inputs output success fallback)
   "Lower frozen VM predicates on tagged values, with the genuine fallback.
 This is general compiler lowering, not a new evaluator primitive. EQ's
-special boxed/string cases remain with the existing runtime implementation."
+symbol and special boxed/string cases use the existing runtime implementation."
   (if (not (memq opcode '(57 58 59 60 61 63 167 168))) fallback
     (let* ((binary (= opcode 61))
            (test (pcase opcode
@@ -340,12 +340,13 @@ special boxed/string cases remain with the existing runtime implementation."
            (safe (if binary
                      '(or (/= value_tag other_tag)
                           (or (<= value_tag 2)
-                              (or (= value_tag 4)
-                                  (or (= value_tag 7)
+                              ;; Tag 4 stores symbol identity outside offset 8.
+                              ;; Equal payload words do not mean equal names.
+                              (or (= value_tag 7)
                                       (or (= value_tag 8)
                                           (or (= value_tag 12)
                                               (or (= value_tag 16)
-                                                  (or (= value_tag 17) (= value_tag 18)))))))))
+                                                  (or (= value_tag 17) (= value_tag 18))))))))
                    '(= value_tag value_tag))))
       `(let* ((value_left (extern-call nl_root_pin_slot_v2 env ticket ,(car inputs) 0 0 0))
               (value_right ,(if binary `(extern-call nl_root_pin_slot_v2 env ticket ,(cadr inputs) 0 0 0) 'value_left))

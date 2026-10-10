@@ -4,6 +4,7 @@
   (princ "U10-ABORT known qualification blocker; no native claim\n")
   (exit 2))
 (require 'nelisp-native-cache)
+(load "test/support/native-entry-observer.el" nil t t)
 (load (expand-file-name "test/support/native-corpus-u10-fixtures.el") nil t t)
 (load (expand-file-name "test/support/native-corpus-u10-state.el") nil t t)
 (defvar u10-protected-function nil)
@@ -114,7 +115,7 @@
               (princ (format "U10-STALE-PASS control=%s\n" control)))))
       (delete-directory directory t))))
 (let ((nelisp-native-cache-backend (intern (getenv "U10_BACKEND")))
-      (phase (getenv "U10_PHASE")) (passed 0) (entries 0) (pointer (symbol-function 'ptr-call)))
+      (phase (getenv "U10_PHASE")) (passed 0) (entries 0))
   (dolist (name (split-string (getenv "U10_CASES")))
     (let* ((row (cl-find (string-to-number name) u10-fixtures
                          :key (lambda (item) (plist-get item :opcode))))
@@ -125,11 +126,11 @@
         (let* ((pair (u10-load u10-protected-function phase)) (count 0))
           (dolist (test u10-protected-oracle)
             (let (actual)
-              (cl-letf (((symbol-function 'ptr-call)
-                         (lambda (address env ticket argc roots x y)
-                           (when (= address (cadr pair)) (setq count (1+ count)))
-                           (funcall pointer address env ticket argc roots x y))))
-                (setq actual (u10-protected-observe (car pair) (car test) (cadr test))))
+              (nelisp-test-with-native-entry-observer
+		  (lambda (address env ticket argc roots x y)
+		    (when (= address (cadr pair)) (setq count (1+ count))))
+		(setq actual
+		      (u10-protected-observe (car pair) (car test) (cadr test))))
               (u10-assert (equal actual (nth 2 test))
                           (format "GNU raise-time hook/debugger/cleanup ordering mode=%S debugger=%S GNU=%S actual=%S"
                                   (car test) (cadr test) (nth 2 test) actual))))
@@ -173,14 +174,15 @@
           (princ (format "U10-START backend=%s opcode=%d phase=%s cache=%s\n"
                          nelisp-native-cache-backend opcode phase (if (nth 4 pair) "hit" "miss")))
           (u10-function-state-check fn state)
-          (cl-letf (((symbol-function 'ptr-call)
-                     (lambda (address env ticket argc roots x y)
-                       (when (= address (cadr pair))
-                         (u10-assert (and (= argc 0) (= roots (plist-get header :root-count))
-                                          (= x 0) (= y 0) (> ticket 0)) "native entry ABI")
-                         (setq count (1+ count)))
-                       (funcall pointer address env ticket argc roots x y))))
-            (setq actual (u10-observe row (car pair) nil)))
+          (nelisp-test-with-native-entry-observer
+	      (lambda (address env ticket argc roots x y)
+		(when (= address (cadr pair))
+		  (u10-assert
+		   (and (= argc 0) (= roots (plist-get header :root-count))
+			(= x 0) (= y 0) (> ticket 0))
+		   "native entry ABI")
+		  (setq count (1+ count))))
+	    (setq actual (u10-observe row (car pair) nil)))
           (u10-assert (equal expected actual) (format "GNU/native fixture %d GNU=%S actual=%S" opcode expected actual))
           (u10-assert (= count 1) "exact native entry, no fallback")
           (when (= opcode 192)

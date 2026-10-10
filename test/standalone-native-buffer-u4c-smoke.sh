@@ -23,6 +23,7 @@ chmod 700 "$work"
 cp -- "$binary" "$work/reader"
 chmod 500 "$work/reader"
 if [[ -f $binary.cold ]]; then cp -- "$binary.cold" "$work/reader.cold"; fi
+if [[ -f $binary.native-startup.el ]]; then cp -- "$binary.native-startup.el" "$work/reader.native-startup.el"; fi
 export U4C_BACKEND="$backend" U4C_ORACLE="$work/gnu-oracle.el"
 "${EMACS:-emacs}" -Q --batch -l test/support/native-buffer-u4c-fixtures.el -f native-buffer-u4c-oracle
 python3 - "$work/reader" "$work" "${3:-119 120 121 122 123 124 125 126 127}" <<'PYCODE'
