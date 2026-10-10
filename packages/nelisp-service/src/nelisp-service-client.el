@@ -48,9 +48,9 @@
 
 (defun nelisp-service-client--on-input (client chunk)
   "Handle CHUNK received by CLIENT."
-  (dolist (line (nelisp-service-splitter-feed
-                 (nelisp-service-get client :splitter) chunk))
-    (let ((message (nelisp-service-decode line)))
+  (dolist (message (nelisp-service-reader-feed
+                    (nelisp-service-get client :reader) chunk))
+    (progn
       (when (consp message)
         (let ((kind (car message))
               (a (nth 1 message))
@@ -84,7 +84,7 @@ rejection, or nil when nothing answers."
   (let ((client (nelisp-service-record
                  'nelisp-service-client
                  :name name :version version
-                 :splitter (nelisp-service-splitter-create)
+                 :reader (nelisp-service-reader-create)
                  :pending (make-hash-table :test 'eql)
                  :next-id 0 :welcome nil :rejected nil :closed nil)))
     (condition-case nil

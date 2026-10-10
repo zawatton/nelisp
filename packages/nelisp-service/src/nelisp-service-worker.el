@@ -89,7 +89,7 @@ Workers start lazily, on the first request that needs one."
                   'nelisp-service-worker
                   :seq seq :ready nil :busy nil :retiring nil :served 0
                   :version (nelisp-service-get pool :version)
-                  :splitter (nelisp-service-splitter-create)))
+                  :reader (nelisp-service-reader-create)))
          (args (list :name (format "%s-worker-%d"
                                    (nelisp-service-get pool :name) seq)
                      :command (nelisp-service-get pool :command)
@@ -132,9 +132,9 @@ Workers start lazily, on the first request that needs one."
 
 (defun nelisp-service-pool--on-output (pool worker chunk)
   "Handle CHUNK of stdout from WORKER in POOL."
-  (dolist (line (nelisp-service-splitter-feed
-                 (nelisp-service-get worker :splitter) chunk))
-    (let ((message (nelisp-service-decode line)))
+  (dolist (message (nelisp-service-reader-feed
+                    (nelisp-service-get worker :reader) chunk))
+    (progn
       (cond
        ((equal message '(ready))
         (let ((init (nelisp-service-get pool :init-forms)))

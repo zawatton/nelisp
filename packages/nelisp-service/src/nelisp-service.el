@@ -41,25 +41,150 @@ nil means $NELISP_SERVICE_DIR, else ~/.nelisp-service."
   :group 'nelisp-service)
 
 ;;; Framing ---------------------------------------------------------------
+;;
+;; Speed matters here: the standalone reader interprets Lisp loops at
+;; several microseconds per step, so a per-character loop over a 25 KB MCP
+;; reply took 3 s, and `prin1-to-string' of that string 6 s, while
+;; `string-match' and `replace-regexp-in-string' run natively (5 ms and
+;; 25 ms; measured 2026-10-10).  Strings are therefore printed and line
+;; breaks found with the regexp primitives only -- and on UTF-8 bytes: on a
+;; string holding any non-ASCII character the same regexp calls took 51 s
+;; instead of 0.2 s, while converting to and from unibyte UTF-8 is
+;; instantaneous.
+
+(defun nelisp-service--bytes (string)
+  "Return STRING as unibyte UTF-8."
+  (if (multibyte-string-p string) (encode-coding-string string 'utf-8 t) string))
+
+(defun nelisp-service--text (bytes)
+  "Return unibyte UTF-8 BYTES as a string."
+  (decode-coding-string bytes 'utf-8 t))
+
+(defun nelisp-service--print-string (string)
+  "Return STRING as a Lisp string literal with no raw line breaks."
+  ;; LITERAL is t throughout, so each replacement is inserted as written.
+  (concat "\""
+          (replace-regexp-in-string
+           "\r" "\\r"
+           (replace-regexp-in-string
+            "\n" "\\n"
+            (replace-regexp-in-string
+             "\"" "\\\""
+             (replace-regexp-in-string "\\\\" "\\\\" (nelisp-service--bytes string) t t)
+             t t)
+            t t)
+           t t)
+          "\""))
 
 (defun nelisp-service--escape-line (printed)
   "Return PRINTED with raw newlines and carriage returns escaped.
 Raw line breaks can only occur inside string literals, where the
 reader turns the escapes back into the original characters."
-  (let ((out nil) (i 0) (n (length printed)) (start 0))
-    (while (< i n)
-      (let ((c (aref printed i)))
-        (when (or (= c ?\n) (= c ?\r))
-          (push (substring printed start i) out)
-          (push (if (= c ?\n) "\\n" "\\r") out)
-          (setq start (1+ i))))
-      (setq i (1+ i)))
-    (push (substring printed start) out)
-    (apply #'concat (nreverse out))))
+  (if (string-match "[\n\r]" printed)
+      (replace-regexp-in-string
+       "\r" "\\r" (replace-regexp-in-string "\n" "\\n" printed t t) t t)
+    printed))
+
+(defun nelisp-service--print (object)
+  "Return OBJECT printed readably on one line, as unibyte UTF-8.
+Strings and proper lists are printed here, everything else by
+`prin1-to-string' (small values: symbols, numbers)."
+  (cond
+   ((stringp object) (nelisp-service--print-string object))
+   ((and (consp object) (proper-list-p object))
+    (concat "(" (mapconcat #'nelisp-service--print object " ") ")"))
+   (t (nelisp-service--bytes
+       (nelisp-service--escape-line (prin1-to-string object))))))
+
+;; Blobs.  Escaping still costs a regexp replacement per quote or
+;; backslash, and an MCP reply is mostly quotes: 7.8 s for a 25 KB
+;; tools/list on the standalone reader (measured 2026-10-10).  So a long
+;; string that is a top-level element of a message list is not printed at
+;; all: the line carries `(nelisp-service-blob N)' in its place and the N
+;; raw UTF-8 bytes follow the line, each blob terminated by a newline.
+;; Readers that cannot parse blobs never see one unless such a string is
+;; sent to them.
+
+(defconst nelisp-service-blob-threshold 256
+  "Top-level message strings longer than this travel as blobs.")
+
+(defun nelisp-service--blob-marker-p (element)
+  "Return the byte count when ELEMENT is a blob marker, else nil."
+  (and (consp element) (eq (car element) 'nelisp-service-blob)
+       (integerp (nth 1 element)) (null (nthcdr 2 element))
+       (nth 1 element)))
 
 (defun nelisp-service-encode (object)
-  "Return OBJECT printed on one line, terminated by a newline."
-  (concat (nelisp-service--escape-line (prin1-to-string object)) "\n"))
+  "Return OBJECT printed on one line, terminated by a newline.
+Long top-level strings of a list OBJECT follow the line as blobs."
+  (if (and (consp object) (proper-list-p object))
+      (let ((parts nil) (blobs nil))
+        (dolist (element object)
+          (if (and (stringp element)
+                   (> (length element) nelisp-service-blob-threshold))
+              (let ((bytes (nelisp-service--bytes element)))
+                (push bytes blobs)
+                (push (nelisp-service--bytes
+                       (format "(nelisp-service-blob %d)" (length bytes)))
+                      parts))
+            (push (nelisp-service--print element) parts)))
+        (nelisp-service--text
+         (apply #'concat "(" (mapconcat #'identity (nreverse parts) " ") ")\n"
+                (mapcar (lambda (b) (concat b "\n")) (nreverse blobs)))))
+    (nelisp-service--text (concat (nelisp-service--print object) "\n"))))
+
+(defun nelisp-service--fill-blobs (object blobs)
+  "Return list OBJECT with its blob markers replaced by BLOBS, in order."
+  (mapcar (lambda (element)
+            (if (nelisp-service--blob-marker-p element) (pop blobs) element))
+          object))
+
+(defun nelisp-service--blob-sizes (object)
+  "Return the byte counts of OBJECT's blob markers, in order."
+  (and (consp object) (proper-list-p object)
+       (delq nil (mapcar #'nelisp-service--blob-marker-p object))))
+
+(defun nelisp-service-reader-create ()
+  "Return a fresh message reader; feed it with `nelisp-service-reader-feed'."
+  (list "" nil nil nil))
+
+(defun nelisp-service-reader-feed (reader chunk)
+  "Append CHUNK to READER and return the complete messages, oldest first.
+A message is a decoded object with its blobs filled in; unreadable
+lines are dropped."
+  (let ((buf (concat (nth 0 reader) (nelisp-service--bytes chunk)))
+        (pos 0) (out nil) (stop nil))
+    ;; READER = (BUFFER PENDING-OBJECT PENDING-SIZES COLLECTED-BLOBS).
+    (while (not stop)
+      (if (nth 1 reader)
+          (let ((need (car (nth 2 reader))))
+            (if (< (- (length buf) pos) (1+ need))
+                (setq stop t)
+              (setcar (nthcdr 3 reader)
+                      (cons (nelisp-service--text (substring buf pos (+ pos need)))
+                            (nth 3 reader)))
+              (setq pos (+ pos need 1))
+              (setcar (nthcdr 2 reader) (cdr (nth 2 reader)))
+              (unless (nth 2 reader)
+                (push (nelisp-service--fill-blobs (nth 1 reader)
+                                                  (nreverse (nth 3 reader)))
+                      out)
+                (setcar (nthcdr 1 reader) nil)
+                (setcar (nthcdr 3 reader) nil))))
+        (let ((nl (string-match "\n" buf pos)))
+          (if (not nl)
+              (setq stop t)
+            (let* ((end (if (and (> nl pos) (= (aref buf (1- nl)) ?\r)) (1- nl) nl))
+                   (object (nelisp-service-decode
+                            (nelisp-service--text (substring buf pos end))))
+                   (sizes (nelisp-service--blob-sizes object)))
+              (setq pos (1+ nl))
+              (cond
+               (sizes (setcar (nthcdr 1 reader) object)
+                      (setcar (nthcdr 2 reader) sizes))
+               (object (push object out))))))))
+    (setcar reader (substring buf pos))
+    (nreverse out)))
 
 (defun nelisp-service-decode (line)
   "Read one object from LINE, or return nil when LINE is not readable."
@@ -77,22 +202,20 @@ Feed it with `nelisp-service-splitter-feed'."
 (defun nelisp-service-splitter-feed (splitter chunk)
   "Append CHUNK to SPLITTER and return the complete lines, oldest first.
 Line terminators (LF, optionally preceded by CR) are removed."
-  (let ((buf (concat (car splitter) chunk))
+  (let ((buf (concat (car splitter) (nelisp-service--bytes chunk)))
         (lines nil)
         (start 0)
-        (i 0))
-    (while (< i (length buf))
-      (when (= (aref buf i) ?\n)
-        (let ((end (if (and (> i start) (= (aref buf (1- i)) ?\r)) (1- i) i)))
-          (push (substring buf start end) lines))
-        (setq start (1+ i)))
-      (setq i (1+ i)))
+        (nl nil))
+    (while (setq nl (string-match "\n" buf start))
+      (let ((end (if (and (> nl start) (= (aref buf (1- nl)) ?\r)) (1- nl) nl)))
+        (push (nelisp-service--text (substring buf start end)) lines))
+      (setq start (1+ nl)))
     (setcar splitter (substring buf start))
     (nreverse lines)))
 
 (defun nelisp-service-splitter-pending (splitter)
   "Return the unterminated tail held by SPLITTER."
-  (car splitter))
+  (nelisp-service--text (car splitter)))
 
 ;;; Stdin -----------------------------------------------------------------
 ;;
@@ -101,7 +224,7 @@ Line terminators (LF, optionally preceded by CR) are removed."
 ;; run straight into the next header with no newline in between).
 
 (defvar nelisp-service--stdin-buffer ""
-  "Stdin text read ahead of the caller.")
+  "Stdin bytes (unibyte UTF-8) read ahead of the caller.")
 
 (defvar nelisp-service--stdin-eof nil
   "Non-nil once stdin has reported end of file.")
@@ -118,24 +241,21 @@ batch mode, so there each refill is one line read by
       (if (null chunk)
           (progn (setq nelisp-service--stdin-eof t) nil)
         (setq nelisp-service--stdin-buffer
-              (concat nelisp-service--stdin-buffer chunk))
+              (concat nelisp-service--stdin-buffer (nelisp-service--bytes chunk)))
         t)))
    (t
     (condition-case nil
         (progn
           (setq nelisp-service--stdin-buffer
                 (concat nelisp-service--stdin-buffer
-                        (read-from-minibuffer "") "\n"))
+                        (nelisp-service--bytes (read-from-minibuffer ""))
+                        "\n"))
           t)
       (error (setq nelisp-service--stdin-eof t) nil)))))
 
 (defun nelisp-service--newline-position (string)
   "Return the index of the first LF in STRING, or nil."
-  (let ((i 0) (n (length string)) (found nil))
-    (while (and (not found) (< i n))
-      (when (= (aref string i) ?\n) (setq found i))
-      (setq i (1+ i)))
-    found))
+  (string-match "\n" string))
 
 (defun nelisp-service-read-stdin-line ()
   "Block until one line arrives on stdin and return it without its LF.
@@ -149,32 +269,43 @@ line without a terminator is returned before nil."
       (cond
        (pos
         (setq nelisp-service--stdin-buffer (substring buf (1+ pos)))
-        (if (and (> pos 0) (= (aref buf (1- pos)) ?\r))
-            (substring buf 0 (1- pos))
-          (substring buf 0 pos)))
+        (nelisp-service--text
+         (if (and (> pos 0) (= (aref buf (1- pos)) ?\r))
+             (substring buf 0 (1- pos))
+           (substring buf 0 pos))))
        ((> (length buf) 0)
         (setq nelisp-service--stdin-buffer "")
-        buf)
+        (nelisp-service--text buf))
        (t nil)))))
 
 (defun nelisp-service-utf8-length (string)
   "Return the number of bytes STRING occupies in UTF-8."
-  (string-bytes string))
+  (length (nelisp-service--bytes string)))
 
 (defun nelisp-service-read-stdin-bytes (count)
   "Block until COUNT bytes (UTF-8) arrive on stdin and return them.
 Return fewer at end of file, or nil when nothing is left."
-  (let ((taken 0) (i 0) (done nil))
-    (while (not done)
-      (let ((buf nelisp-service--stdin-buffer))
-        (while (and (< i (length buf)) (< taken count))
-          (setq taken (+ taken (string-bytes (string (aref buf i))))
-                i (1+ i)))
-        (when (or (>= taken count) (not (nelisp-service--stdin-refill)))
-          (setq done t))))
-    (let ((buf nelisp-service--stdin-buffer))
-      (setq nelisp-service--stdin-buffer (substring buf i))
-      (and (> i 0) (substring buf 0 i)))))
+  (while (and (< (length nelisp-service--stdin-buffer) count)
+              (nelisp-service--stdin-refill)))
+  (let* ((buf nelisp-service--stdin-buffer)
+         (n (min count (length buf))))
+    (setq nelisp-service--stdin-buffer (substring buf n))
+    (and (> n 0) (nelisp-service--text (substring buf 0 n)))))
+
+(defun nelisp-service-read-stdin-message ()
+  "Block until one framed message arrives on stdin and return it decoded.
+Blobs are filled in.  Return :eof at end of file and nil for an
+unreadable line."
+  (let ((line (nelisp-service-read-stdin-line)))
+    (if (null line)
+        :eof
+      (let* ((object (nelisp-service-decode line))
+             (blobs (mapcar (lambda (n)
+                              (prog1 (or (nelisp-service-read-stdin-bytes n) "")
+                                ;; The newline after each blob.
+                                (nelisp-service-read-stdin-bytes 1)))
+                            (nelisp-service--blob-sizes object))))
+        (if blobs (nelisp-service--fill-blobs object blobs) object)))))
 
 (defun nelisp-service-setup-stdio ()
   "Make stdin and stdout carry UTF-8 on host Emacs in batch mode.

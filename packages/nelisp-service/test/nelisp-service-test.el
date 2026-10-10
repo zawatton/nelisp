@@ -34,6 +34,32 @@
     (should (= 1 (cl-count ?\n line)))
     (should (equal (nelisp-service-decode (substring line 0 -1)) object))))
 
+(ert-deftest nelisp-service-test-blob-round-trip-in-pieces ()
+  (let* ((big (concat (make-string 400 ?x) "\"q\" \\ 日本\n\r" (make-string 400 ?y)))
+         (wire (concat (nelisp-service-encode (list 'res 7 big))
+                       (nelisp-service-encode '(pong (:n 1)))))
+         (bytes (encode-coding-string wire 'utf-8 t))
+         (reader (nelisp-service-reader-create))
+         (got nil))
+    ;; The long string travels as a blob, not as an escaped literal.
+    (should (string-match-p "(nelisp-service-blob [0-9]+)" wire))
+    ;; Feed the bytes in awkward pieces, splitting UTF-8 sequences too.
+    (let ((i 0))
+      (while (< i (length bytes))
+        (let ((j (min (length bytes) (+ i 7))))
+          (setq got (append got (nelisp-service-reader-feed
+                                 reader (substring bytes i j))))
+          (setq i j))))
+    (should (equal got (list (list 'res 7 big) '(pong (:n 1)))))))
+
+(ert-deftest nelisp-service-test-pool-returns-big-string ()
+  (let ((pool (nelisp-service-test--pool :max-workers 1)))
+    (unwind-protect
+        (should (equal (concat (make-string 3000 ?a) "日本")
+                       (nelisp-service-pool-call
+                        pool '(concat (make-string 3000 ?a) "日本") 60)))
+      (nelisp-service-pool-shutdown pool))))
+
 (ert-deftest nelisp-service-test-decode-rejects-garbage ()
   (should (null (nelisp-service-decode "(unbalanced")))
   (should (null (nelisp-service-decode ""))))

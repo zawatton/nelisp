@@ -50,10 +50,10 @@ standalone reader accepts `#<buffer x>' without signalling (measured
   (nelisp-service-write-stdout (nelisp-service-encode '(ready)))
   (let ((running t))
     (while running
-      (let ((line (nelisp-service-read-stdin-line)))
-        (if (null line)
+      (let ((message (nelisp-service-read-stdin-message)))
+        (if (eq message :eof)
             (setq running nil)
-          (let ((message (nelisp-service-decode line)))
+          (progn
             (if (equal message '(quit))
                 (setq running nil)
               (let ((reply (nelisp-service-worker-child-handle message)))

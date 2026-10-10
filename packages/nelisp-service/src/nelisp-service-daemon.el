@@ -169,7 +169,7 @@ Call `nelisp-service-daemon-run' to serve."
   "Return DAEMON's record for network process CONN, creating it."
   (or (assq conn (nelisp-service-get daemon :connections))
       (let ((record (list conn
-                          :splitter (nelisp-service-splitter-create)
+                          :reader (nelisp-service-reader-create)
                           :authenticated nil)))
         (nelisp-service-put daemon :connections
                             (cons record (nelisp-service-get daemon :connections)))
@@ -200,10 +200,9 @@ Call `nelisp-service-daemon-run' to serve."
   "Handle CHUNK received by DAEMON on connection CONN."
   (let ((record (nelisp-service-daemon--connection daemon conn)))
     (nelisp-service-put daemon :last-activity (float-time))
-    (dolist (line (nelisp-service-splitter-feed
-                   (plist-get (cdr record) :splitter) chunk))
-      (nelisp-service-daemon--on-message
-       daemon conn record (nelisp-service-decode line)))))
+    (dolist (message (nelisp-service-reader-feed
+                      (plist-get (cdr record) :reader) chunk))
+      (nelisp-service-daemon--on-message daemon conn record message))))
 
 (defun nelisp-service-daemon--reject (daemon conn reason)
   "Refuse CONN for REASON and close it."
