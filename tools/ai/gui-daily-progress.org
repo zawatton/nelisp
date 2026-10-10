@@ -57,6 +57,8 @@ change to the criteria list is recorded in a NOTE.
 
 #+NOTE: 2026-10-10 meter 76.5% of 17 at cefc9fd6 (S1.3 moved from pending to a failing cmd; no criteria added).  S1 75 (S1.3 red: no init error, init exceeds 300 s; GNU 8.5 s), S2 100, S3 100, S4 100, S5 40.  Failing: S1.3, S5.0c, S5.2.  Pending: S5.3.  User-init peel so far: 44 GNU libraries vendored, preload vars, isearch before init, runtime-reader fallback, terminal check, apropos-internal, image types, cl-typep deftype; library lookup 186 s -> 1.5 s warm per miss; restored-image first load 7.4 s -> 3.0 s.  The remaining time is loader/evaluator-bound (nelix activation alone ~140 s).
 
+#+NOTE: 2026-10-11 startup GC (29a9141d) kept after measurement; correction to that commit's record.  The commit said S5.0c's median was unchanged (0.918 -> 0.921 s) but omitted the tail: max 1.34 -> 4.06 s, p95 1.34 -> 1.36 s, because the first collection during typing then landed inside the 20 measured keys.  Discriminating run (keyboard fixture, 90 keys at 0.12 s, 2 runs per arm, loadavg ~2): with the startup GC, READY took 14.2-14.3 s (explicit GC 7.8-8.0 s) and typing still collected at keys 36-37 and 63-68; without it READY took 6.3-6.4 s and typing collected at keys 36 and 65-66.  The startup GC protects no keys, so it only added ~8 s to every launch.  The pause itself is GC cost on a large live heap (runtime, M1).
+
 * S1 Shared interactive foundation
 
 ** S1.1 One event wait drives read-event: keys, timers, idle timers and process output (sit-for, sleep-for, input-pending-p behave as GNU)
