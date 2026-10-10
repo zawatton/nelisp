@@ -15,6 +15,8 @@ runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
 
 
+# Wine runs only on a POSIX host; Windows paths stringify with backslashes.
+@unittest.skipIf(os.name == 'nt', 'Wine controls run on a POSIX host')
 class WineControls(unittest.TestCase):
     def tearDown(self):
         runner.wine_path.cache_clear()
