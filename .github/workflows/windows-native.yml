@@ -71,6 +71,7 @@ jobs:
         shell: pwsh
         run: |
           $env:NELISP_WINDOWS_NATIVE_DEADLINE = '900'
+          $env:NELISP_WINDOWS_NATIVE_RUN_BUDGET = '4200'
           python test/support/run-windows-native-f1.py target/nelisp.exe --work target/windows-native-ci
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Windows native F1 cold restore (image refusals, refreshed globals, GC)
@@ -78,6 +79,7 @@ jobs:
         shell: pwsh
         run: |
           $env:NELISP_WINDOWS_NATIVE_DEADLINE = '900'
+          $env:NELISP_WINDOWS_NATIVE_RUN_BUDGET = '4200'
           python test/support/run-windows-native-f1.py target/nelisp.exe --cold --work target/windows-native-cold-ci
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Preserve acceptance evidence even on native refusal

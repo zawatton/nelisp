@@ -189,7 +189,7 @@ def cold_controls(binary, cold, env, work, wine=False):
 
 def main():
     global RUN_DEADLINE
-    RUN_DEADLINE = time.monotonic() + 1800
+    RUN_DEADLINE = time.monotonic() + int(os.environ.get('NELISP_WINDOWS_NATIVE_RUN_BUDGET', '1800'))
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('binary', type=Path)
     parser.add_argument('--work', type=Path, help='New receipt directory; existing directory refuses.')
