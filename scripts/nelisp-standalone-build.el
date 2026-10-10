@@ -109,8 +109,28 @@
                  (= (length stack-adjust) 256)
                  (equal opcodes runtime-opcodes)
                  (equal stack-adjust (append byte-stack+-info nil))
-                 (equal bytecomp-hash (alist-get 'bytecomp.el.gz source))
-                 (equal comp-hash (alist-get 'comp.el.gz source)))
+                 (or (and (equal bytecomp-hash (alist-get 'bytecomp.el.gz source))
+                          (equal comp-hash (alist-get 'comp.el.gz source)))
+                     ;; GNU's Windows zip installs plain .el sources; their
+                     ;; decompressed content is pinned instead of gzip bytes.
+                     (and library-dir
+                          (cl-every
+                           (lambda (pin)
+                             (let ((plain (expand-file-name (concat (car pin) ".el") library-dir))
+                                   (gz (expand-file-name (concat (car pin) ".el.gz") library-dir)))
+                               (equal (cdr pin)
+                                      (with-temp-buffer
+                                        (set-buffer-multibyte nil)
+                                        (cond ((file-readable-p plain)
+                                               (insert-file-contents-literally plain))
+                                              ((file-readable-p gz)
+                                               (let ((coding-system-for-read 'no-conversion)
+                                                     (inhibit-message t))
+                                                 (insert-file-contents gz))))
+                                        (and (> (buffer-size) 0)
+                                             (secure-hash 'sha256 (current-buffer)))))))
+                           '(("bytecomp" . "094fa608bed9d9feffd4364b8df3288c1eb2bf1efd5dfa57fcd6d9bd13cdd099")
+                             ("comp" . "a5301de34ef5768d36044f4ffb4e4136966487435c3c33431912d4b36ff00eb8"))))))
         (concat "GNU Emacs 31.1; inventory-sha256=" inventory-hash))))
   "Pinned GNU bytecode identity verified by this standalone build host, or nil.")
 

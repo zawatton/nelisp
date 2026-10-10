@@ -65,6 +65,27 @@ claim uninterned object identity or create a declaration or variable value."
     (insert-file-contents-literally path)
     (secure-hash 'sha256 (current-buffer))))
 
+(defconst nelisp-bytecode-compiler-input--gnu-source-content-sha256
+  '((bytecomp . "094fa608bed9d9feffd4364b8df3288c1eb2bf1efd5dfa57fcd6d9bd13cdd099")
+    (comp . "a5301de34ef5768d36044f4ffb4e4136966487435c3c33431912d4b36ff00eb8"))
+  "SHA-256 of the decompressed GNU 31.1 bytecomp.el and comp.el sources.
+GNU's Windows zip installs plain .el files, while Unix installs .el.gz
+files whose gzip bytes vary between builds, so the content is pinned too.")
+
+(defun nelisp-bytecode-compiler-input--gnu-source-content-sha256 (dir name)
+  "Return SHA-256 of the decompressed NAME.el source in DIR, or nil."
+  (let ((plain (expand-file-name (concat name ".el") dir))
+        (gz (expand-file-name (concat name ".el.gz") dir)))
+    (cond ((file-readable-p plain)
+           (nelisp-bytecode-compiler-input--sha256-file plain))
+          ((file-readable-p gz)
+           (with-temp-buffer
+             (set-buffer-multibyte nil)
+             (let ((coding-system-for-read 'no-conversion)
+                   (inhibit-message t))
+               (insert-file-contents gz))
+             (secure-hash 'sha256 (current-buffer)))))))
+
 (defun nelisp-bytecode-compiler-input--dialect ()
   "Return pinned GNU 31.1 evidence, or a reason identity is unsupported."
   (let* ((native-runtime
@@ -136,8 +157,15 @@ claim uninterned object identity or create a declaration or variable value."
                  (= (length opcodes) 256) (= (length stack-adjust) 256)
                  (equal opcodes runtime-opcodes)
                  (equal stack-adjust (append byte-stack+-info nil))
-                 (equal bytecomp-hash (alist-get 'bytecomp.el.gz source))
-                 (equal comp-hash (alist-get 'comp.el.gz source)))
+                 (or (and (equal bytecomp-hash (alist-get 'bytecomp.el.gz source))
+                          (equal comp-hash (alist-get 'comp.el.gz source)))
+                     (and library-dir
+                          (equal (nelisp-bytecode-compiler-input--gnu-source-content-sha256
+                                  library-dir "bytecomp")
+                                 (alist-get 'bytecomp nelisp-bytecode-compiler-input--gnu-source-content-sha256))
+                          (equal (nelisp-bytecode-compiler-input--gnu-source-content-sha256
+                                  library-dir "comp")
+                                 (alist-get 'comp nelisp-bytecode-compiler-input--gnu-source-content-sha256)))))
             (list :status 'pinned :dialect "GNU Emacs 31.1"
                   :inventory-sha256 inventory-hash
                   :bytecomp-sha256 bytecomp-hash :comp-sha256 comp-hash)
