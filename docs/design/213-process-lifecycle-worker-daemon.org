@@ -169,7 +169,7 @@ layer and carries anvil's lane classifier.  The new pool uses
 | product | uses | state (2026-10-10) |
 |---|---|---|
 | anvil-standalone | daemon + client proxy | done: =anvil-runtime mcp shared= / =mcp daemon= (anvil.el ac0dddd); the MCP launcher defaults to shared mode, =ANVIL_RUNTIME_MCP_MODE=serve= restores one server per session.  Needed nelisp-emacs 5e5e0e6: its process bridges replaced the substrate's primitives with delegates that do nothing in standalone mode |
-| m365 MCP | daemon + client proxy | not started; same shape as anvil |
+| m365 MCP | daemon; the launcher's PowerShell is the proxy | done on the nelisp-m365 branch feat/m365-windows (226f8beb): no NeLisp process per session at all.  m365_profile 33 s per session before, 12 s cold / 4 s warm shared; daemon 136 MB, 0.03 cores idle |
 | IME engine tests | worker pool, =:max-workers 1= | done on nelisp-skk-ime branch feat/engine-pool (cc69a52): =engine/engine-pool-run.el= + =windows/test-host/test-engine-pool.ps1= |
 
 Measured (Windows, rebuilt reader): anvil handshake through the proxy 4-5 s
@@ -194,7 +194,7 @@ remove.
 | P2 | worker pool | built; host ERT + standalone smoke pass |
 | P3 | daemon + client + MCP proxy | built; host ERT + standalone smoke pass |
 | P3a | substrate: Windows sleep, idle back-off | built; idle daemon 0.99 -> ~0.1 cores (§8) |
-| P4 | product adoption (§4.4) | anvil and IME tests done; m365 open |
+| P4 | product adoption (§4.4) | anvil, m365 and IME tests done |
 
 * §6 Risks
 
