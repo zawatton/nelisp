@@ -68,6 +68,18 @@
       (should (integerp (nelisp-native-gccjit-lower (nelisp-native-gccjit-test--form body) nil)))
       (should (assoc "gcc_jit_block_end_with_return" calls)))))
 
+(ert-deftest nelisp-native-gccjit/guarded-fixnum-emitter-integration ()
+  ;; Exercise the producer's actual tree, including signed payload comparisons,
+  ;; through GCC JIT's grammar and lowering rather than a hand-written fixture.
+  (dolist (opcode '(83 84 85 86 87 88 89 90 91 92 95))
+    (nelisp-native-gccjit-test--ffi
+      (should (integerp
+               (nelisp-native-gccjit-lower
+                (nelisp-native-gccjit-test--form
+                 (nelisp-native-funcall-v2-fixnum-form opcode '(1 2) 1 0 7))
+                '(("nl_root_pin_slot_v2" . 8192)))))
+      (should (assoc "gcc_jit_block_end_with_return" calls)))))
+
 (ert-deftest nelisp-native-gccjit/refuse-unsupported-and-release ()
   (dolist (body '((quote x) (funcall env) (while env 0) (list 1 2)
                   unknown (+ 1 2 3) (if 1 2) (extern-call absent 1)

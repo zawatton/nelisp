@@ -285,6 +285,16 @@ different function."
   (should (equal nelisp-native-load-bridgeable-symbols
                  nelisp-standalone--reader-neln-bridgeable-symbols)))
 
+(ert-deftest nelisp-native-load/poll-bridge-preserves-ccore-indices ()
+  "P3 appends its poll entry after the existing C-core GC/frame entries.
+Matching reader and loader tables alone cannot catch a shared index shift."
+  (let* ((symbols nelisp-native-load-bridgeable-symbols)
+         (start (1+ (cl-position "nl_native_funcall_v2" symbols :test #'equal)))
+         (suffix (append (mapcar #'car nelisp-runtime-reload-gc-contract)
+                         '("nl_native_frame_v2" "nl_native_poll_v2"))))
+    (should (equal (cl-subseq symbols start (+ start (length suffix))) suffix))
+    (should (= (length symbols) (length (delete-dups (copy-sequence symbols)))))))
+
 ;;;; Sizing -----------------------------------------------------------
 
 (ert-deftest nelisp-native-load/page-round-never-returns-zero ()

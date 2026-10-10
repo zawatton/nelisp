@@ -6,7 +6,7 @@
 (require 'nelisp-native-frame-v2)
 (require 'nelisp-native-template-pin)
 (declare-function syscall-direct "nelisp-standalone" (number a b c d e f))
-(defconst nelisp-native-template-stencil-version "template-x86_64-sysv-v3")
+(defconst nelisp-native-template-stencil-version "template-x86_64-sysv-v4")
 (defconst nelisp-native-template-hole-grammar '(imm32 disp32 rel32 import-rel32))
 (defconst nelisp-native-template-fragment-abi
   '(:persistent (r12 r13 rbx r14) :scratch (r15) :clobbers (rax rcx rdx rdi rsi r8 r9 r10 r11 flags)
@@ -117,7 +117,7 @@ field and string. This is serialization checking, not semantic validation."
                        (equal (plist-get library :source-key) nelisp-native-template-library-source-key)
                        (equal (plist-get library :opcode-inventory) nelisp-native-template-library-inventory)
                        (equal (mapcar #'car (plist-get library :fragments))
-                              '(prologue copy call frame status-save status-restore status-branch nil-branch nonnull-branch jump switch return bad epilogue)))
+                              '(prologue copy call poll fixnum-add fixnum-sub fixnum-mul fixnum-inc fixnum-dec fixnum-neg fixnum-eq fixnum-lt fixnum-gt fixnum-le fixnum-ge frame status-save status-restore status-branch nil-branch nonnull-branch jump switch return bad epilogue)))
             (error "Stencil library stale ABI/key refused"))
           (dolist (fragment (plist-get library :fragments))
             (unless (equal (plist-get (cdr fragment) :abi) nelisp-native-template-fragment-abi)

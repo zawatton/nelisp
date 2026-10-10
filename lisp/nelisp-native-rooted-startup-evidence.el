@@ -178,7 +178,7 @@ Return startup source and its manifest; constructor/numeric/call remain refused.
                  (equal (plist-get layout :domain) "nelisp-rooted-elf-v2")
                  (eq (plist-get layout :target) 'x86_64-linux)
                  (= (plist-get layout :sexp-bytes) 32)
-                 (= (length (plist-get layout :exports)) 16))
+                 (= (length (plist-get layout :exports)) 17))
       (error "Unauthenticated protocol generation inputs"))
     (dolist (record (alist-get 'records closure))
       (let* ((name (alist-get 'name record))

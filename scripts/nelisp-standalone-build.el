@@ -12051,6 +12051,45 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; Evaluator entry (minimal-native clause 2). All words are authenticated
     ;; indices. The caller's roots remain published while the gateway stages
     ;; private roots; no heap value is carried in an unrooted machine local.
+    ;; GC/evaluator entry (minimal-native clause 2). No Lisp builtin is added.
+    ;; The state and scratch result are authenticated roots in the parent bank.
+    ;; Dynamic symbol values are read in native code, so specbind/inhibit-quit
+    ;; and later force-mode changes remain visible within this very poll.
+    ;; Each invocation owns a fresh nine-slot state. The mutation epoch and
+    ;; frame depth invalidate the cached quit/force word before this edge.
+    ;; Persistent setters bump wf_dirty; native bank arithmetic does not.
+    ;; The GC debt/growth test is always read independently, never cached.
+    (defun nl_native_poll_flags_v2 (env state scratch)
+      (if (/= (sexp-tag (vector-ref-ptr state 4)) 0) 1
+        (if (and (= (bf_dynamic_lookup env (vector-ref-ptr state 3) scratch) 0)
+                 (/= (sexp-tag scratch) 0)) 1
+          (if (and (= (bf_dynamic_lookup env (vector-ref-ptr state 1) scratch) 0)
+                   (/= (sexp-tag scratch) 0))
+              (if (and (= (bf_dynamic_lookup env (vector-ref-ptr state 2) scratch) 0)
+                       (/= (sexp-tag scratch) 0)) 0 1) 0))))
+    (defun nl_native_poll_due_v2 (env state scratch)
+      ;; Vector/record SLOT_PTR helpers allocate views for immediate words.
+      ;; These authenticated private cache slots must use their backing WORDS;
+      ;; writing a materialized view would not update the owning vector.
+      (let* ((words (ptr-read-u64 (ptr-read-u64 state 8) 8))
+             (epoch (atomic-fetch-add 268435544 0))
+             (frames (ptr-read-u64 (+ env 32) 8))
+             (depth (sar (ptr-read-u64 (ptr-read-u64 frames 32) 8) 2))
+             (cached (if (and (= (sar (ptr-read-u64 words 40) 2) epoch)
+                              (= (sar (ptr-read-u64 words 48) 2) env)
+                              (= (sar (ptr-read-u64 words 56) 2) depth))
+                         (sar (ptr-read-u64 words 64) 2)
+                       (let ((flags (nl_native_poll_flags_v2 env state scratch)))
+                         (seq (ptr-write-u64 words 40 (nl_imm_int epoch))
+                              (ptr-write-u64 words 48 (nl_imm_int env))
+                              (ptr-write-u64 words 56 (nl_imm_int depth))
+                              (ptr-write-u64 words 64 (nl_imm_int flags)) flags)))))
+        (if (= cached 1) 1 (nl_native_poll_gc_due_v2))))
+    (defun nl_native_poll_gc_due_v2 ()
+      (if (= (ptr-read-u64 (data-addr nl_gc_loop_ctx) 8) 1)
+          (if (< (ptr-read-u64 268436184 0)
+                 (ptr-read-u64 (data-addr nl_gc_loop_ctx) 40))
+              (nl_gc_debt_due) 1) 0))
     (defun nl_native_funcall_v2 (env ticket f a n r)
       (let* ((marker (nl_root_pin_slot_v2 env ticket 0))
              (top (atomic-fetch-add (+ (data-addr nl_root_pin_control) 24) 0))
@@ -12079,6 +12118,66 @@ baked build's own `<'/`>'/`=' arms need it too.")
                   (setq valid 0) (setq i (+ i 1))))
             (if (= valid 0) 2
               (let ((rc (wf_bytecode_call_gateway env function marker a n result)))
+                ;; A nested call must restore the exact parent ticket/slots.
+                (setq i 0)
+                (if (or (/= marker (nl_root_pin_slot_v2 env ticket 0))
+                        (/= function (nl_root_pin_slot_v2 env ticket f))
+                        (/= result (nl_root_pin_slot_v2 env ticket r))
+                        (/= kind (nl_root_pin_slot_v2 env ticket (+ r 1)))
+                        (/= tag (nl_root_pin_slot_v2 env ticket (+ r 2)))
+                        (/= value (nl_root_pin_slot_v2 env ticket (+ r 3))))
+                    (setq valid 0) 0)
+                (while (and (= valid 1) (< i n))
+                  (if (/= (nl_root_pin_slot_v2 env ticket (+ a i))
+                          (+ marker (* (+ a i) 32)))
+                      (setq valid 0) (setq i (+ i 1))))
+                (if (= valid 0) 2
+                  (if (= rc 0)
+                      (seq (wf_write_nil kind) (wf_write_nil tag)
+                           (wf_write_nil value) 0)
+                    (if (= rc 1)
+                        (let* ((arena (ptr-read-u64 (data-addr nl_arena_base) 0))
+                               (exit-kind (ptr-read-u64 arena 16)))
+                          (if (or (= exit-kind 1) (= exit-kind 2))
+                              (seq (wf_bytecode_copy tag (+ arena 24))
+                                   (wf_bytecode_copy value (+ arena 56))
+                                   (wf_write_int kind exit-kind)
+                                   (ptr-write-u64 arena 16 0)
+                                   (+ 1024 (+ r 1)))
+                            2))
+                      2)))))))))
+    (defun nl_native_poll_v2 (env ticket f a n r)
+      (let* ((marker (nl_root_pin_slot_v2 env ticket 0))
+             (top (atomic-fetch-add (+ (data-addr nl_root_pin_control) 24) 0))
+             (count (if (> marker 0) (/ (- top marker) 32) 0)))
+        (if (or (= marker 0) (>= count 256) (< count 5)
+                (<= f 0) (>= f count) (< n 0) (>= n 256)
+                (<= a 0) (> a count) (> n (- count a))
+                (<= r 0) (> r (- count 4))
+                (and (>= f r) (< f (+ r 4)))
+                (and (> n 0) (>= f a) (< f (+ a n)))
+                (and (> n 0) (< a (+ r 4)) (> (+ a n) r)))
+            2
+          (let* ((function (nl_root_pin_slot_v2 env ticket f))
+                 (result (nl_root_pin_slot_v2 env ticket r))
+                 (kind (nl_root_pin_slot_v2 env ticket (+ r 1)))
+                 (tag (nl_root_pin_slot_v2 env ticket (+ r 2)))
+                 (value (nl_root_pin_slot_v2 env ticket (+ r 3)))
+                 (i 0) (valid 1))
+            (if (or (/= function (+ marker (* f 32)))
+                    (/= result (+ marker (* r 32)))
+                    (/= kind (+ result 32)) (/= tag (+ result 64))
+                    (/= value (+ result 96))) (setq valid 0) 0)
+            (while (and (= valid 1) (< i n))
+              (if (/= (nl_root_pin_slot_v2 env ticket (+ a i))
+                      (+ marker (* (+ a i) 32)))
+                  (setq valid 0) (setq i (+ i 1))))
+            (if (= valid 0) 2
+              (let ((rc (if (or (/= n 0) (/= (sexp-tag function) 8)
+                                   (/= (vector-len function) 9)) 2
+                          (if (= (nl_native_poll_due_v2 env function result) 0)
+                              (seq (wf_write_nil result) 0)
+                            (wf_bytecode_call_gateway env (vector-ref-ptr function 0) marker a n result)))))
                 ;; A nested call must restore the exact parent ticket/slots.
                 (setq i 0)
                 (if (or (/= marker (nl_root_pin_slot_v2 env ticket 0))
@@ -31547,7 +31646,7 @@ the original chunk defuns, using CHUNK-BYTES (default 2048)."
     "wf_bytecode_call_gateway_exit")
    '("nl_native_funcall_v2")
    (mapcar #'car nelisp-runtime-reload-gc-contract)
-   '("nl_native_frame_v2"))
+   '("nl_native_frame_v2" "nl_native_poll_v2"))
   "Runtime symbols the in-process loader can point a stub at.
 
 A stub is `movabs rax, ADDR; jmp rax', and ADDR comes from `data-addr',

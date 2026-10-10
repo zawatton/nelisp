@@ -58,6 +58,11 @@
  (condition-case err (memq) (wrong-number-of-arguments err))
  (condition-case err (member nil) (wrong-number-of-arguments err))
  (condition-case err (assq nil nil nil) (wrong-number-of-arguments err))
+ ;; P3: the guarded numeric lowering retains float and fixnum-overflow results.
+ (let ((add (make-byte-code 514 (unibyte-string 1 1 92 135) [] 4)))
+   (and (= (funcall add 3 2) 5)
+        (= (funcall add 1.25 2.5) 3.75)
+        (= (funcall add 2305843009213693951 2) 2305843009213693953)))
  ;; U8n: VM handlers share catch identity and raise-time no-catch with Lisp.
  (let* ((tag (vector 'u8n-shadow))
         (fn (make-byte-code
