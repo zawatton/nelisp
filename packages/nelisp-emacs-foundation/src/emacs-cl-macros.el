@@ -2182,6 +2182,9 @@ convention, and the compound forms (integer LO HI), (float ...),
        ((eq type 'hash-table) (hash-table-p val))
        ((eq type 'function) (functionp val))
        ((eq type 'boolean) (and (memq val '(nil t)) t))
+       ((get type 'cl-deftype-handler)
+        ;; A `cl-deftype' type: expand it as GNU's `cl-typep' does.
+        (cl-typep val (funcall (get type 'cl-deftype-handler))))
        (t
         ;; Fall back to a `TYPEp' or `TYPE-p' predicate when one exists.
         (let* ((name (symbol-name type))
@@ -2212,8 +2215,57 @@ convention, and the compound forms (integer LO HI), (float ...),
             (dolist (sub (cdr type) r)
               (unless (cl-typep val sub) (setq r nil)))))
          ((eq head 'not) (not (cl-typep val (nth 1 type))))
+         ;; A parameterized `cl-deftype' type such as EIEIO's (list-of X).
+         ((and (symbolp head) (get head 'cl-deftype-handler))
+          (cl-typep val (apply (get head 'cl-deftype-handler) (cdr type))))
          (t nil))))
      (t nil))))
+
+;; GNU `cl-deftype' stores (cl-function (lambda (&cl-defs (DEFAULT) ...) ...))
+;; as the type's handler.  Until GNU cl-macs.el (with `cl--transform-lambda')
+;; is loaded, the standalone `cl-function' is the prelude pass-through, which
+;; leaves `&cl-defs' in a plain lambda list.  Lower that one construct here:
+;; DEFAULT applies to each optional parameter given without its own default.
+(when (and (not (fboundp 'cl--transform-lambda))
+           (fboundp 'nelisp--write-stdout-bytes))
+  (defun emacs-cl--lower-cl-defs-lambda (func)
+    "Return FUNC, a lambda whose arglist holds `&cl-defs', as a plain lambda."
+    (let* ((args (cadr func))
+           (body (cddr func))
+           (rest (make-symbol "args"))
+           (default nil)
+           (mode 'required)
+           (bindings nil))
+      (while args
+        (let ((arg (car args)))
+          (cond
+           ((eq arg '&cl-defs)
+            (setq default (car-safe (cadr args))
+                  args (cdr args)))
+           ((eq arg '&optional) (setq mode 'optional))
+           ((eq arg '&rest) (setq mode 'rest))
+           ((eq mode 'rest)
+            (push (list arg rest) bindings))
+           ((eq mode 'optional)
+            (let ((name (if (consp arg) (car arg) arg))
+                  (value (if (consp arg) (cadr arg) default)))
+              (push (list name (list 'if rest (list 'pop rest) value)) bindings)))
+           (t
+            (push (list arg (list 'if rest (list 'pop rest)
+                                  (list 'signal ''wrong-number-of-arguments
+                                        (list 'list (list 'quote (cadr func)) 0))))
+                  bindings))))
+        (setq args (cdr args)))
+      (list 'function
+            (list 'lambda (list '&rest rest)
+                  (cons 'let* (cons (nreverse bindings) body))))))
+
+  (defmacro cl-function (func)
+    "Return FUNC; lower a `&cl-defs' lambda list as GNU's `cl-function' does."
+    (if (and (eq (car-safe func) 'lambda)
+             (memq '&cl-defs (car-safe (cdr func))))
+        (emacs-cl--lower-cl-defs-lambda func)
+      (list 'function func))))
 
 (unless (fboundp 'cl-the)
   (defmacro cl-the (_type form)
