@@ -1,8 +1,9 @@
 name: Windows native acceptance
 
 # Manual acceptance of Doc 214 W1.2. Host proofs cannot qualify Windows execution.
-# workflow_dispatch needs this file on the default branch, so pushes to the
-# native-windows branch also run it until the port is merged.
+# workflow_dispatch needs this file on the default branch, so until the port
+# is merged, pushes to native-windows run F1, and a pushed commit whose
+# message contains [windows-corpus] also runs the long U10/F3/template jobs.
 on:
   workflow_dispatch:
   push:
@@ -103,7 +104,7 @@ jobs:
   # headroom. F3's 52 functions at two workers budget ~3.8 h plus setup.
   # Each corpus gets 5.5 h wall, with a 5 h 50 min job cap (<6 h).
   native-u10:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[windows-corpus]')
     needs: build-reader
     runs-on: windows-latest
     timeout-minutes: 350
@@ -138,7 +139,7 @@ jobs:
           if-no-files-found: error
 
   native-u10-verdict:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[windows-corpus]')
     needs: native-u10
     runs-on: windows-latest
     timeout-minutes: 15
@@ -162,7 +163,7 @@ jobs:
           path: target/windows-u10-verdict.json
 
   native-f3:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[windows-corpus]')
     needs: build-reader
     runs-on: windows-latest
     timeout-minutes: 350
@@ -195,7 +196,7 @@ jobs:
   native-template:
     # W2 acceptance uses the pinned Win64 stencil set and full cold image.
     # Backend refusal or register corruption fails; no fallback qualifies W1.3.
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[windows-corpus]')
     needs: build-reader
     runs-on: windows-latest
     timeout-minutes: 40
