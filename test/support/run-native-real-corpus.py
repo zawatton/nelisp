@@ -9,10 +9,15 @@ import re
 import shutil
 import subprocess
 import time
+import threading
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / 'test/support/native-real-corpus-fixtures.el'
 DRIVER = 'test/standalone-native-real-corpus-driver.el'
+_process_slots = threading.BoundedSemaphore(2)
+_process_lock = threading.Lock()
+_active_processes = 0
+_peak_processes = 0
 
 
 def digest(path):
@@ -20,10 +25,21 @@ def digest(path):
 
 
 def run_process(command, environment, directory, prefix):
-    start = time.monotonic()
-    with (directory / (prefix + '.out')).open('w') as out, (directory / (prefix + '.err')).open('w') as err:
-        result = subprocess.run(['timeout', '-k', '5', '290', *command], cwd=ROOT, env=environment, stdout=out, stderr=err)
-    seconds = time.monotonic() - start
+    global _active_processes, _peak_processes
+    # One limit covers host work, both backends, compilers, and loaders.
+    # Queue wait is outside the unchanged per-reader deadline/timing.
+    with _process_slots:
+        with _process_lock:
+            _active_processes += 1
+            _peak_processes = max(_peak_processes, _active_processes)
+        start = time.monotonic()
+        try:
+            with (directory / (prefix + '.out')).open('w') as out, (directory / (prefix + '.err')).open('w') as err:
+                result = subprocess.run(['timeout', '-k', '5', '290', *command], cwd=ROOT, env=environment, stdout=out, stderr=err)
+            seconds = time.monotonic() - start
+        finally:
+            with _process_lock:
+                _active_processes -= 1
     output = (directory / (prefix + '.out')).read_text()
     errors = (directory / (prefix + '.err')).read_text()
     return result.returncode, seconds, output, errors
@@ -145,6 +161,7 @@ def main():
     if not args.names and not args.reproduce and not args.discover and len(names) < 50:
         raise SystemExit('F3 needs at least 50 admitted functions')
     identity = {'fixture_sha256': digest(snapshot), 'driver_sha256': digest(ROOT / DRIVER),
+                'observer_sha256': digest(ROOT / 'test/support/native-entry-observer.el'),
                 'input_protocol_sha256': digest(ROOT / 'test/support/native-real-corpus-inputs.el'),
                 'runner_sha256': digest(__file__), 'host_seconds': elapsed, 'regenerate_seconds': generated_seconds}
     seed_receipts = json.loads((seed / 'receipts.json').read_text()) if seed else []
@@ -172,6 +189,8 @@ def main():
         reader_dir = directory / backend; reader_dir.mkdir(mode=0o700)
         binary = reader_dir / 'reader'
         shutil.copyfile(source, binary); binary.chmod(0o500)
+        startup = Path(str(source) + '.native-startup.el')
+        if startup.is_file(): shutil.copyfile(startup, reader_dir / 'reader.native-startup.el')
         cold = Path(str(source) + '.cold')
         if cold.is_file(): shutil.copyfile(cold, reader_dir / 'reader.cold')
         backend_identity = {**identity, 'binary_sha256': digest(binary),
@@ -301,6 +320,7 @@ def main():
         return backend, success, receipts
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(backends)) as pool:
         results = list(pool.map(run_backend, backends))
+    print('F3-PROCESS-LIMIT limit=2 observed-max=' + str(_peak_processes), flush=True)
     all_receipts = [receipt for _, _, receipts in results for receipt in receipts]
     (directory / 'receipts.json').write_text(json.dumps(all_receipts, indent=2))
     success = all(ok for _, ok, _ in results)

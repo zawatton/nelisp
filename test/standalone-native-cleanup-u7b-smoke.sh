@@ -25,6 +25,7 @@ chmod 700 "$work"
 cp -- "$binary" "$work/reader"
 chmod 500 "$work/reader"
 if [[ -f $binary.cold ]]; then cp -- "$binary.cold" "$work/reader.cold"; fi
+if [[ -f $binary.native-startup.el ]]; then cp -- "$binary.native-startup.el" "$work/reader.native-startup.el"; fi
 export U7B_BACKEND="$backend"
 python3 - "$work" "${3:-97 114 138 140 ordered implicit forms}" <<'PY'
 import hashlib,json,os,subprocess,sys,time
@@ -36,12 +37,14 @@ batch=int(os.environ.get('U7B_BATCH_SIZE','1' if os.environ['U7B_BACKEND']=='in-
 if batch not in (1,2): raise SystemExit('U7B_BATCH_SIZE must be 1 or 2')
 binary=directory/'reader'; cold=directory/'reader.cold'
 identity=dict(binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
+              startup_sha256=hashlib.sha256(Path(str(binary)+'.native-startup.el').read_bytes()).hexdigest() if Path(str(binary)+'.native-startup.el').is_file() else None,
               cold_sha256=hashlib.sha256(cold.read_bytes()).hexdigest() if cold.is_file() else None,
               source_sha256={str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in map(Path,[
                   'lisp/nelisp-bytecode-cleanup.el','lisp/nelisp-native-frame-v2.el',
                   'lisp/nelisp-bytecode-frame-ir.el','lisp/nelisp-bytecode-native-rooted-cfg-plan.el',
                   'lisp/nelisp-bytecode-native-rooted-cfg-shared-emit.el','scripts/nelisp-standalone-build.el',
-                  'test/support/native-cleanup-u7b-fixtures.el','test/standalone-native-cleanup-u7b-driver.el'])})
+                  'test/support/native-cleanup-u7b-fixtures.el','test/standalone-native-cleanup-u7b-driver.el',
+                  'test/support/native-entry-observer.el'])})
 for index,case in enumerate(cases):
     # Large cleanup bodies keep every old mode in BOTH phases, split across
     # fresh processes. Only the first compile cohort needs to emit a unit;

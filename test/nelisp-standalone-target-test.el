@@ -1697,6 +1697,8 @@ Windows uses the target-correct `.obj' unit name; linux/macOS keep `.o'."
                                 (cons "nl_gc_reclaim_scratch" (+ 58008 4194304))
                                 (cons "nl_thread_registry" (+ 58048 4194304))
                                 (cons "nl_freelist_large_bins"
+                                      (- (nelisp-standalone--driver-bss-base-size) 1632))
+                                (cons "nl_freelist_large_mask"
                                       (+ 57616 4194304 96 176 64 56 40 1040
                                          (if (eq target 'windows-x86_64) 8 0)
                                          64 192))

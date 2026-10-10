@@ -45,13 +45,13 @@ def main():
         if len(values) != 1 or not 0 < values[0] < 300:
             raise RuntimeError("Missing or invalid compile timing")
         rows.append(dict(run=str(run.relative_to(root)), compile_seconds=values[0],
-                         load_before=receipt["load_before"], load_after=receipt["load_after"],
+                         load_before=receipt["load_before"], load_after=receipt["load_after"], load_peak=receipt["load_peak"],
                          binary_sha256=receipt["binary_sha256"], cold_sha256=receipt["cold_sha256"]))
         report = dict(cap_seconds=27, runs=rows, complete=len(rows) == 3,
                       median_seconds=statistics.median(r["compile_seconds"] for r in rows))
         (work / "acceptance.json").write_text(json.dumps(report, indent=2) + "\n")
         print(json.dumps(rows[-1]), flush=True)
-    passed = report["median_seconds"] <= 27
+    passed = report["median_seconds"] <= 27 and all(max(r["load_before"][0], r["load_after"][0], r["load_peak"]) < 4 for r in rows)
     print(f"P1.3 median={report['median_seconds']:.6f} pass={passed} evidence={work}", flush=True)
     return 0 if passed else 1
 

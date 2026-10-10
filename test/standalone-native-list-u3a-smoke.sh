@@ -23,6 +23,7 @@ chmod 700 "$work"
 cp -- "$binary" "$work/reader"
 chmod 500 "$work/reader"
 if [[ -f $binary.cold ]]; then cp -- "$binary.cold" "$work/reader.cold"; fi
+if [[ -f $binary.native-startup.el ]]; then cp -- "$binary.native-startup.el" "$work/reader.native-startup.el"; fi
 export U3A_BACKEND="$backend"
 python3 - "$work/reader" "$work" "${3:-0 1 2 3 4 5 6 7 8}" <<'PY'
 import hashlib,json,os,subprocess,sys,time

@@ -81,7 +81,7 @@
                        (nelisp-native-template-test--recipe '(192))
                        (nelisp-native-template-test--recipe '(192 135 192))
                        (nelisp-native-template-test--recipe '(130 1 0 135))
-                       (nelisp-native-template-test--recipe '(192 135) nil 256)))
+                       (nelisp-native-template-test--recipe '(192 135) nil 129)))
     (should-error (nelisp-native-template-validate recipe))))
 (ert-deftest nelisp-native-template-assembler-composes-labelled-fragments ()
   (let* ((recipe (nelisp-native-template-test--recipe '(192 137 66 135)))

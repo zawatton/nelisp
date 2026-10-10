@@ -219,7 +219,7 @@ def main():
         selected = focused
     sources = [str(path.relative_to(ROOT)) for base in ('lisp', 'src', 'scripts')
                for path in sorted((ROOT / base).glob('*.el'))]
-    sources += [DRIVER, 'test/support/native-corpus-u10-fixtures.el',
+    sources += [DRIVER, 'test/support/native-entry-observer.el', 'test/support/native-corpus-u10-fixtures.el',
                 'test/support/native-corpus-u10-projection.el',
                 'test/support/native-corpus-u10-state.el',
                 'packages/nl-signal/src/nl-signal.el',
@@ -240,7 +240,11 @@ def main():
         cold = Path(str(binary) + '.cold')
         if cold.exists():
             shutil.copy2(cold, Path(str(reader) + '.cold'))
+        startup = Path(str(binary) + '.native-startup.el')
+        if startup.exists():
+            shutil.copy2(startup, Path(str(reader) + '.native-startup.el'))
         identity = dict(binary_sha256=digest(binary), cold_sha256=digest(cold) if cold.exists() else None,
+                        startup_sha256=digest(startup) if startup.exists() else None,
                         fixture_sha256=digest(directory / 'fixtures.el'),
                         sources_sha256={source: digest(ROOT / source) for source in sources})
         identities[backend] = identity

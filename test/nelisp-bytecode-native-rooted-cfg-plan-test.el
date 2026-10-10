@@ -146,7 +146,7 @@
         (should (eq (plist-get plan :status) 'unsupported))
         (should-not (plist-get plan :entry-ast))))))
 
-(ert-deftest nelisp-bytecode-native-rooted-cfg/refuses-variable-arity-and-captures-but-admits-variable-access ()
+(ert-deftest nelisp-bytecode-native-rooted-cfg/admits-optionals-and-variable-access-but-refuses-captures ()
   (skip-unless (equal emacs-version "31.1"))
   (let* ((optional (nelisp-bytecode-compiler-input-build
                     (byte-compile (lambda (&optional value) value))))
@@ -155,7 +155,7 @@
          (fixed (nelisp-bytecode-native-rooted-cfg-test--two-diamonds))
          (capture (copy-tree fixed t)))
     (should (eq (plist-get (nelisp-bytecode-native-rooted-cfg-plan optional) :status)
-                'unsupported))
+                'complete))
     (should (eq (plist-get (nelisp-bytecode-native-rooted-cfg-plan dynamic) :status)
                 'complete))
     (should (plist-get (nelisp-bytecode-native-rooted-cfg-plan dynamic) :frame-descriptor))

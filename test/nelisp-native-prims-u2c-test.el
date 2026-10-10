@@ -6,6 +6,24 @@
 (require 'nelisp-bytecode-native-rooted-cfg-safe-contract)
 (require 'nelisp-native-load)
 (load "support/native-prims-u2c-fixtures.el" nil t t)
+(ert-deftest u2c/eq-symbols-use-runtime-identity ()
+  ;; An interned symbol's offset 8 is not its identity.  Distinct names
+  ;; can have the same word there, so the generated form must delegate.
+  (let ((calls 0) (writes 0))
+    (cl-letf (((symbol-function 'extern-call)
+               (lambda (_name _env _ticket index &rest _) (+ 4096 (* 32 index))))
+              ((symbol-function 'ptr-read-u64)
+               (lambda (_address offset) (if (= offset 0) 4 0)))
+              ((symbol-function 'ptr-write-u64)
+               (lambda (&rest _) (setq writes (1+ writes))))
+              ((symbol-function 'u2c-test-runtime-eq)
+               (lambda () (setq calls (1+ calls)) 19)))
+      (should (= 19 (eval (nelisp-native-funcall-v2-value-form
+                          61 '(1 2) 3 0
+                          '(u2c-test-runtime-eq))
+                         '((env . 1) (ticket . 7) (nl_root_pin_slot_v2 . slot)))))
+      (should (= calls 1))
+      (should (= writes 0)))))
 (ert-deftest u2c/exact-family-ordered-roots-and-shared-contract ()
   (skip-unless (equal emacs-version "31.1"))
   (dolist (row native-prims-u2c-family)

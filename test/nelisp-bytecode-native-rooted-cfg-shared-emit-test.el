@@ -421,5 +421,20 @@
                               plan "no_join_reference") :status)
                   'complete)))))
 
+(ert-deftest nelisp-bytecode-native-rooted-cfg-shared-emit/input-only-refuses-planner-rebinding ()
+  (let* ((input (nelisp-bytecode-native-rooted-cfg-shared-emit-test--two-diamonds))
+         (plan (nelisp-bytecode-native-rooted-cfg-plan input))
+         (emitted (nelisp-bytecode-native-rooted-cfg-shared-emit-build plan "paired_owner_test"))
+         (paired (nelisp-bytecode-native-rooted-cfg-shared-emit-build-from-input input "paired_owner_test"))
+         (calls 0))
+    (should (equal plan (plist-get paired :plan)))
+    (should (equal emitted (plist-get paired :emitted)))
+    (cl-letf (((symbol-function 'nelisp-bytecode-native-rooted-cfg-plan)
+               (lambda (&rest _) (setq calls (1+ calls)) plan)))
+      (let ((refused (nelisp-bytecode-native-rooted-cfg-shared-emit-build-from-input input "paired_owner_test")))
+        (should-not (eq (plist-get (plist-get refused :emitted) :status) 'complete))
+        (should-not (plist-get refused :plan))
+        (should (= calls 0))))))
+
 (provide 'nelisp-bytecode-native-rooted-cfg-shared-emit-test)
 ;;; nelisp-bytecode-native-rooted-cfg-shared-emit-test.el ends here

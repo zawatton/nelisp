@@ -1,6 +1,7 @@
 ;;; standalone-native-prims-u2b-driver.el --- Native U2b interpreter parity -*- lexical-binding: t; -*-
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 (require 'nelisp-native-cache)
+(load "test/support/native-entry-observer.el" nil t t)
 (load "test/support/native-prims-u2b-fixtures.el" nil t t)
 (defun u2b-assert (value label) (unless value (error "U2b: %s" label)))
 (let* ((nelisp-native-cache-backend (if (equal (getenv "U2B_BACKEND") "gccjit") 'gccjit 'in-house))
@@ -45,24 +46,29 @@
          (expected (native-prims-u2b-observe function (car (native-prims-u2b-cases opcode))))
          (original (symbol-function name))
          (restore (symbol-function 'fset))
-         (pointer-call (symbol-function 'ptr-call))
          (file (nelisp-native-cache-file function))
          (metadata (if (eq nelisp-native-cache-backend 'gccjit) (concat file ".nelh") file))
          (header (with-temp-buffer (insert-file-contents metadata) (goto-char (point-min)) (read (current-buffer))))
          (arity (plist-get header :arity)) (roots (plist-get header :root-count))
          (entries 0) actual)
     (native-prims-u2b-reset)
-    (cl-letf (((symbol-function 'ptr-call)
-               (lambda (address env ticket argc count x y)
-                 (if (and (= argc arity) (= count roots) (= x 0) (= y 0))
-                     (unwind-protect
-                         (progn
-                           (setq entries (1+ entries))
-                           (funcall restore name (lambda (&rest _) (setq poison-calls (1+ poison-calls)) 'poison))
-                           (funcall pointer-call address env ticket argc count x y))
-                       (funcall restore name original))
-                   (funcall pointer-call address env ticket argc count x y)))))
-      (setq actual (native-prims-u2b-observe #'u2b-native args)))
+    (nelisp-test-with-native-entry-observer
+	(lambda (address env ticket argc count x y)
+	  (when (and (= argc arity) (= count roots) (= x 0) (= y 0))
+	    (setq entries (1+ entries))))
+      (setq actual
+	    (native-prims-u2b-observe
+	     (nelisp-test-native-poison #'u2b-native
+					(lambda nil
+					  (funcall restore name
+						   (lambda (&rest _)
+						     (setq poison-calls
+							   (1+
+							    poison-calls))
+						     'poison)))
+					(lambda nil
+					  (funcall restore name original)))
+	     args)))
     (u2b-assert (= entries 1) "one actual machine entry under rebinding")
     (u2b-assert (equal expected actual) (format "rebound %S native=%S expected=%S" name actual expected))
     (u2b-assert (= poison-calls 0) "native instruction did not call public cell"))

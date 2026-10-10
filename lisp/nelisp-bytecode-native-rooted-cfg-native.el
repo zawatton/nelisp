@@ -7,6 +7,7 @@
 
 (require 'cl-lib)
 (require 'nelisp-bytecode-native-rooted-cfg-plan)
+(require 'nelisp-bytecode-native-rooted-cfg-shared-emit)
 (require 'nelisp-bytecode-native-rooted-cfg-emit)
 (require 'nelisp-bytecode-native-rooted-cfg-contract)
 (require 'nelisp-bytecode-native-rooted-cfg-constructor-contract)
@@ -23,7 +24,8 @@
          (plan (copy-sequence (plist-get semantic :plan)))
          (print-length nil)
         (print-level nil)
-        (print-circle t))
+        (print-circle t)
+         (nelisp--prn-symbol-cache (make-hash-table :test 'equal)))
     ;; Opaque process owners are authenticated separately through the genuine
     ;; public planner predicate. Never walk or print their lexical captures.
     (when plan
@@ -68,11 +70,12 @@
   (condition-case nil
       (let ((path (getenv "NELISP_ROOTED_CFG_STAGE_LOG")))
         (when (and (stringp path) (> (length path) 0))
-          (write-region (format "producer-%s source=%s artifact=%s\n" label source artifact)
+          (write-region (format "producer-%s seconds=%.3f source=%s artifact=%s\n" label (float-time) source artifact)
                         nil path t 'silent)))
     ((error quit) nil)))
 
-(let ((constructor-checker
+(let ((pair-owner (symbol-function 'nelisp-bytecode-native-rooted-cfg-shared-emit-build-from-input))
+      (constructor-checker
        (and (fboundp 'nelisp-native-load-compiler-constructor-contract-p)
             (symbol-function 'nelisp-native-load-compiler-constructor-contract-p)))
       (f1-checker (and (fboundp 'nelisp-native-load-compiler-f1-runtime-p)
@@ -83,20 +86,24 @@
   "Build verified INPUT using the v1 or shared-v2 rooted-CFG emitter.
 SKIP-SEAL is internal to cache compilation; its result cannot be admitted.
 That path leaves file publication and memory-safety decoding to the cache."
-  (let* ((plan (progn
-                 (nelisp-bytecode-native-rooted-cfg-native--stage artifact-path "plan-start")
-                 (prog1 (nelisp-bytecode-native-rooted-cfg-plan
-                         input nil (if shared-v2 guard-mode 'off))
-                   (nelisp-bytecode-native-rooted-cfg-native--stage artifact-path "plan-end"))))
-         (emitted (and (eq (plist-get plan :status) 'complete)
-                       (progn
-                        (nelisp-bytecode-native-rooted-cfg-native--stage artifact-path "emit-start")
-                        (prog1 (if shared-v2
-                           (nelisp-bytecode-native-rooted-cfg-shared-emit-build
-                            plan nelisp-bytecode-native-rooted-cfg-contract-shared-entry)
+  (let* ((paired
+          (and shared-v2
+               (progn
+                 (unless (funcall same pair-owner
+                                  (funcall lookup 'nelisp-bytecode-native-rooted-cfg-shared-emit-build-from-input))
+                   (error "rooted-cfg: shared planner/emitter owner changed"))
+                 (nelisp-bytecode-native-rooted-cfg-native--stage artifact-path "plan-emit-start")
+                 (prog1 (funcall pair-owner input nelisp-bytecode-native-rooted-cfg-contract-shared-entry nil guard-mode)
+                   (unless (funcall same pair-owner
+                                    (funcall lookup 'nelisp-bytecode-native-rooted-cfg-shared-emit-build-from-input))
+                     (error "rooted-cfg: shared planner/emitter owner changed"))
+                   (nelisp-bytecode-native-rooted-cfg-native--stage artifact-path "plan-emit-end")))))
+         (plan (if shared-v2 (plist-get paired :plan)
+                 (nelisp-bytecode-native-rooted-cfg-plan input nil 'off)))
+         (emitted (if shared-v2 (plist-get paired :emitted)
+                    (and (eq (plist-get plan :status) 'complete)
                          (nelisp-bytecode-native-rooted-cfg-emit
-                          plan nelisp-bytecode-native-rooted-cfg-native-entry))
-                          (nelisp-bytecode-native-rooted-cfg-native--stage artifact-path "emit-end")))))
+                          plan nelisp-bytecode-native-rooted-cfg-native-entry))))
          (entry-name (if shared-v2
                          nelisp-bytecode-native-rooted-cfg-contract-shared-entry
                        nelisp-bytecode-native-rooted-cfg-native-entry))
@@ -152,7 +159,8 @@ That path leaves file publication and memory-safety decoding to the cache."
                                  (list additional))))
                         (list (plist-get emitted :form))))
           (with-temp-buffer
-            (let ((print-length nil) (print-level nil))
+            (let ((print-length nil) (print-level nil)
+                  (nelisp--prn-symbol-cache (make-hash-table :test 'equal)))
               (dolist (form forms) (prin1 form (current-buffer)) (insert "\n"))
               (if skip-seal
                   (setq source-snapshot
