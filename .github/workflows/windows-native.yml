@@ -219,6 +219,7 @@ jobs:
             target/f3-corpus-*/**/*.out
             target/f3-corpus-*/**/*.err
             target/f3-corpus-*/fixture.el
+            target/f3-corpus-*/reproduced.el
           if-no-files-found: error
 
   native-template:

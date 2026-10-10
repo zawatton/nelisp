@@ -1,5 +1,9 @@
 ;;; generate-native-corpus-u10.el --- GNU oracle and audited cohort -*- lexical-binding: t; -*-
 ;; SPDX-License-Identifier: GPL-3.0-or-later
+;; GNU for Windows defaults to CRLF/cp1252; fixtures must be byte-identical to Linux.
+(when (eq system-type 'windows-nt)
+  (prefer-coding-system 'utf-8-unix)
+  (setq coding-system-for-write 'utf-8-unix))
 (require 'json)
 (require 'nelisp-bytecode-coverage-audit)
 (load (expand-file-name "test/support/native-corpus-u10-projection.el") nil t t)
@@ -69,7 +73,9 @@ All branch/handler/table addresses are relocated; all other bytes are kept."
            (row (append (list :opcode opcode :unit unit :fixture fixture :function fn :frame-status status)
                         (when live (list :relocation-refusal 'unreadable-live-constant))
                         (when first (list :result-index (- opcode first))))))
-      (when live
+      ;; The GNU for Windows zip ships without libgccjit; the Linux U10 run
+      ;; proves this GNU-side refusal, and the slot keeps its refusal mark.
+      (when (and live (native-comp-available-p))
         ;; GNU cannot spill #<buffer ...> or #<marker ...> into an .eln.
         ;; Check the actual relocation failure, not anonymous bytecode admission.
         (let ((value (cl-find-if (lambda (v) (or (bufferp v) (markerp v)))
