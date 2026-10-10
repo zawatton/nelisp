@@ -35656,9 +35656,14 @@ correctly."
     ;; `expand-file-name' would (same disclosed limitation as `-L' above);
     ;; irrelevant here too since every real invocation passes an absolute
     ;; argv[0].
+    ;; Windows argv[0] uses backslashes; GNU Emacs on Windows splits
+    ;; `invocation-name' at either separator.  Linux keeps `/' only.
     (defun nl_cli_last_slash (ptr i)
       (if (< i 0) -1
-        (if (= (ptr-read-u8 ptr i) 47) i (nl_cli_last_slash ptr (- i 1)))))
+        ,(if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
+             '(if (if (= (ptr-read-u8 ptr i) 47) 1 (= (ptr-read-u8 ptr i) 92))
+                  i (nl_cli_last_slash ptr (- i 1)))
+           '(if (= (ptr-read-u8 ptr i) 47) i (nl_cli_last_slash ptr (- i 1))))))
     (defun nl_cli_copy_bytes (src si dst di n)
       (if (= n 0) 0
         (seq (ptr-write-u8 dst di (ptr-read-u8 src si))
