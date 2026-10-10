@@ -890,6 +890,15 @@ SYM dynamically.  Each form here is evaluated separately, so the loader
 carries these declarations forward in the environment it passes to `eval'.
 `nelisp--load-eval-source-incremental' rebinds this to nil per file.")
 
+  (defun emacs-load--bundle-member-boundary-p (gap)
+    "Return non-nil when the skipped text GAP holds a bundle member marker.
+scripts/build-nelisp-bootstrap.el writes `;;; >>> FILE' before and
+`;;; <<< FILE' after each concatenated member."
+    (or (string-search "\n;;; >>> " gap)
+        (string-search "\n;;; <<< " gap)
+        (string-prefix-p ";;; >>> " gap)
+        (string-prefix-p ";;; <<< " gap)))
+
   (defun nelisp--load-note-local-specials (form)
     "Record initializer-free `defvar' declarations in top-level FORM."
     (cond
@@ -1100,8 +1109,14 @@ scan unchanged."
           (count 0)
           (nelisp--load-file-local-specials nil)
           (native-probe-available (fboundp 'nelisp--read-all-from-string-native)))
-      (while (progn
+      (while (let ((before pos))
                (setq pos (nelisp--load-skip-space-and-comments source pos))
+               ;; A generated bundle concatenates many files; GNU would load
+               ;; each separately, so its declarations end at a member marker.
+               (when (and nelisp--load-file-local-specials
+                          (emacs-load--bundle-member-boundary-p
+                           (substring source before pos)))
+                 (setq nelisp--load-file-local-specials nil))
                (< pos len))
         (let ((probe (and native-probe-available
                            (emacs-load--native-read-one source pos len))))

@@ -237,22 +237,99 @@ string, or a list of strings, and PREDICATE defaults to `file-exists-p'."
            ;; `locate-file' searches every PATH directory even when FILENAME
            ;; contains a subdirectory (for example, "term/xterm").
            (dirs path)
+           ;; For a canonical absolute directory and a plain relative name,
+           ;; `expand-file-name' is plain concatenation; skip it.
+           (plain-name (emacs-fns--plain-relative-name-p filename))
            found)
       (while (and dirs (not found))
-        (let ((suffixes-left suffix-list))
+        (let ((suffixes-left suffix-list)
+              (prefix (and plain-name
+                           (emacs-fns--canonical-directory (car dirs)))))
           (while (and suffixes-left (not found))
             (let ((candidate
-                   (expand-file-name
-                    (concat filename (car suffixes-left))
-                    (car dirs))))
-              (when (and (not (emacs-fns--byte-code-file-p candidate))
-                         (if predicate
-                             (funcall predicate candidate)
-                           (file-exists-p candidate)))
+                   (if prefix
+                       (concat prefix filename (car suffixes-left))
+                     (expand-file-name
+                      (concat filename (car suffixes-left))
+                      (car dirs)))))
+              ;; Most candidates do not exist; test existence before the
+              ;; byte-code check, which only matters for an existing file.
+              (when (and (cond
+                          (predicate (funcall predicate candidate))
+                          ;; A canonical local path needs no handler or
+                          ;; expansion; ask the stat primitive directly
+                          ;; (the prelude `file-exists-p' semantics).
+                          ((and prefix (fboundp 'nelisp--syscall-stat))
+                           (memq (nelisp--syscall-stat candidate)
+                                 '(file directory)))
+                          (t (file-exists-p candidate)))
+                         (not (emacs-fns--byte-code-file-p candidate)))
                 (setq found candidate)))
             (setq suffixes-left (cdr suffixes-left))))
         (setq dirs (cdr dirs)))
       found))
+
+  (defun emacs-fns--path-canonical-p (path)
+    "Return non-nil when PATH has no `~', `:', `.'/`..' component or `//'.
+A character scan: this runs once per `load-path' entry during lookups."
+    (let ((length (length path))
+          (index 0)
+          (start 0)
+          (ok t))
+      (while (and ok (<= index length))
+        (let ((char (and (< index length) (aref path index))))
+          (cond
+           ;; `~' needs expansion; `:' may select a file name handler.
+           ((memq char '(?~ ?:)) (setq ok nil))
+           ((or (null char) (eq char ?/))
+            ;; Component PATH[START, INDEX): reject "", "." and "..",
+            ;; except the empty component before a leading slash or at the
+            ;; very end (a trailing slash).
+            (let ((size (- index start)))
+              (when (or (and (= size 0) (> index 0) (< index length))
+                        (and (= size 1) (eq (aref path start) ?.))
+                        (and (= size 2) (eq (aref path start) ?.)
+                             (eq (aref path (1+ start)) ?.)))
+                (setq ok nil)))
+            (setq start (1+ index)))))
+        (setq index (1+ index)))
+      ok))
+
+  (defun emacs-fns--plain-relative-name-p (name)
+    "Return non-nil when NAME needs no expansion relative to a directory.
+NAME must be relative, without `~', `.'/`..' components, doubled
+slashes or a trailing slash."
+    (and (stringp name)
+         (> (length name) 0)
+         (not (memq (aref name 0) '(?/ ?~)))
+         ;; The standalone `expand-file-name' drops a trailing slash.
+         (not (eq (aref name (1- (length name))) ?/))
+         (emacs-fns--path-canonical-p name)))
+
+  (defvar emacs-fns--canonical-directory-cache (make-hash-table :test 'equal)
+    "Memo of `emacs-fns--canonical-directory', keyed by directory string.
+The result depends only on the string, and the same `load-path' entries
+are scanned for every library lookup.  `none' records a non-canonical one.")
+
+  (defun emacs-fns--canonical-directory (directory)
+    "Return DIRECTORY with a trailing slash when it is canonical, else nil.
+Canonical means absolute, without `~', `.'/`..' components or doubled
+slashes, so `expand-file-name' would return it unchanged."
+    (when (stringp directory)
+      (let ((cached (gethash directory emacs-fns--canonical-directory-cache)))
+        (if cached
+            (and (not (eq cached 'none)) cached)
+          (let ((result
+                 (and (> (length directory) 0)
+                      (eq (aref directory 0) ?/)
+                      (emacs-fns--path-canonical-p directory)
+                      (if (eq (aref directory (1- (length directory))) ?/)
+                          (copy-sequence directory)
+                        (concat directory "/")))))
+            ;; Key on a copy so later mutation of DIRECTORY cannot alias it.
+            (puthash (copy-sequence directory) (or result 'none)
+                     emacs-fns--canonical-directory-cache)
+            result)))))
 
   (defun emacs-fns--regular-file-p (candidate)
     "Return non-nil when CANDIDATE names an existing non-directory file."
