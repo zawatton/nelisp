@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Native-path Windows F1 acceptance probe; unsupported runtime is a failure."""
 import argparse
+from functools import lru_cache
 import hashlib
 import json
 import os
@@ -14,6 +15,48 @@ import time
 
 ROOT = Path(__file__).resolve().parents[2]
 DIGEST = '52c26b63098a83d62c044908b231afd5cce3a85da3b559147e6dc4810eeac2ef'
+PATH_VARIABLES = ('F1_SOURCE', 'F1_FIXTURE', 'F1B_SOURCE', 'F1B_FIXTURE',
+                  'NELISP_NATIVE_CACHE', 'WINDOWS_TRUST_ROOT')
+
+
+@lru_cache(maxsize=64)
+def wine_path(path):
+    """Use the selected Wine prefix's drive mappings, once per distinct path."""
+    result = subprocess.run(['winepath', '-w', str(path)], check=True,
+                            capture_output=True, text=True, timeout=30)
+    converted = result.stdout.strip()
+    if result.stderr or not re.fullmatch(r'[A-Za-z]:[\\/].+', converted):
+        raise ValueError('Wine path conversion refused: ' + str(path))
+    return converted
+
+
+def reader_command(binary, cold, driver, wine=False):
+    path = wine_path if wine else str
+    command = ['wine', str(binary)] if wine else [str(binary)]
+    if cold:
+        command += ['--cold-load-from', path(cold)]
+    for directory in ('lisp', 'src', 'scripts', 'packages/nl-ffi/src', 'packages/nl-prelude/src'):
+        command += ['-L', path(ROOT / directory)]
+    return command + ['--load', path(ROOT / driver)]
+
+
+def reader_environment(env, wine=False):
+    """Keep GNU Emacs host paths separate from Windows reader paths."""
+    result = dict(env)
+    if wine:
+        for name in PATH_VARIABLES:
+            if name in result:
+                result[name] = wine_path(result[name])
+    return result
+
+
+def fixture_expression(variable):
+    """Refuse an unpinned host before producing platform-independent bytecode."""
+    return ('(progn (require (quote nelisp-bytecode-compiler-input-dialect)) '
+            '(unless (eq (plist-get (nelisp-bytecode-compiler-input-dialect) :status) (quote pinned)) '
+            '(error "GNU fixture requires pinned Emacs 31.1 dialect")) '
+            '(require (quote bytecomp)) (unless (byte-compile-file (getenv "' + variable + '")) '
+            '(error "GNU fixture failed")))')
 
 
 def digest(path):
@@ -74,9 +117,17 @@ def main():
     parser.add_argument('binary', type=Path)
     parser.add_argument('--work', type=Path, help='New receipt directory; existing directory refuses.')
     parser.add_argument('--cold', action='store_true', help='Require the matching .cold image.')
+    parser.add_argument('--wine', action='store_true',
+                        help='Run the PE under Wine on POSIX; cannot qualify real Windows acceptance.')
     args = parser.parse_args()
-    if os.name != 'nt':
+    if args.wine and os.name == 'nt':
+        parser.error('--wine requires a POSIX host')
+    if os.name != 'nt' and not args.wine:
         parser.error('Windows execution required; Linux emitter tests cannot qualify F1')
+    if args.wine:
+        os.environ.setdefault('WINEPREFIX', str(Path.home() / '.cache/wine-nelisp'))
+        os.environ['WINEDEBUG'] = '-all'
+    verdict = 'WINE-F1' if args.wine else 'WINDOWS-F1'
     binary = args.binary.resolve(strict=True)
     cold = Path(str(binary) + '.cold') if args.cold else None
     if cold is not None:
@@ -92,25 +143,30 @@ def main():
     env = dict(os.environ, F1_SOURCE=str(source), F1_FIXTURE=str(source.with_suffix('.elc')),
                F1_BACKEND='in-house', F1_FORCE_GC='1', NELISP_NATIVE_CACHE=str(cache))
     rows = []
-    report = dict(binary_sha256=digest(binary), cold_sha256=digest(cold) if cold else None,
+    report = dict(execution='wine' if args.wine else 'windows',
+                  binary_sha256=digest(binary), cold_sha256=digest(cold) if cold else None,
+                  startup_sha256=digest(Path(str(binary) + '.native-startup.el')),
                   driver_sha256=digest(ROOT / 'test/standalone-bytecode-native-funcall-driver.el'), rows=rows)
-    host = run([env.get('EMACS', 'emacs'), '-Q', '--batch', '--eval',
-                '(progn (require (quote bytecomp)) (unless (byte-compile-file (getenv "F1_SOURCE")) (error "GNU fixture failed")))'],
+    host = run([env.get('EMACS', 'emacs'), '-Q', '--batch', '-L', str(ROOT / 'lisp'), '--eval',
+                fixture_expression('F1_SOURCE')],
                env, work, 'host', deadline=60)
+    report['fixture_compile'] = host
     if host['rc'] != 0 or not source.with_suffix('.elc').is_file():
-        report['fixture_compile'] = host
         (work / 'receipt.json').write_text(json.dumps(report, indent=2) + '\n')
-        print('WINDOWS-F1-FAIL fixture compilation; evidence=' + str(work))
+        print(verdict + '-FAIL fixture compilation; evidence=' + str(work))
         return 1
     report['fixture_sha256'] = digest(source.with_suffix('.elc'))
     for phase in ('compile', 'load'):
-        command = [str(binary)]
-        if cold:
-            command += ['--cold-load-from', str(cold)]
-        for path in ('lisp', 'src', 'scripts', 'packages/nl-ffi/src', 'packages/nl-prelude/src'):
-            command += ['-L', str(ROOT / path)]
-        command += ['--load', str(ROOT / 'test/standalone-bytecode-native-funcall-driver.el')]
-        receipt = run(command, dict(env, F1_PHASE=phase), work, phase)
+        try:
+            command = reader_command(binary, cold, 'test/standalone-bytecode-native-funcall-driver.el', args.wine)
+            current = reader_environment(dict(env, F1_PHASE=phase), args.wine)
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            report['wine_setup_error'] = str(error)
+            report['wine_setup_stderr'] = getattr(error, 'stderr', None)
+            (work / 'receipt.json').write_text(json.dumps(report, indent=2) + '\n')
+            print(verdict + '-FAIL ' + str(error) + '; evidence=' + str(work))
+            return 1
+        receipt = run(command, current, work, phase)
         output = (work / (phase + '.out')).read_text(encoding='utf-8', errors='replace')
         errors = (work / (phase + '.err')).read_text(encoding='utf-8', errors='replace')
         receipt.update(phase=phase, passed=phase_passed(phase, receipt, output, errors))
@@ -119,17 +175,12 @@ def main():
         print(output, end='', flush=True)
         if not receipt['passed']:
             print(errors[-4000:])
-            print('WINDOWS-F1-FAIL evidence=' + str(work))
+            print(verdict + '-FAIL evidence=' + str(work))
             return 1
     # Independent raw six-word bridge and preserved-register probes.
     def execute(label, driver, extra, markers):
-        command = [str(binary)]
-        if cold:
-            command += ['--cold-load-from', str(cold)]
-        for path in ('lisp', 'src', 'scripts', 'packages/nl-ffi/src', 'packages/nl-prelude/src'):
-            command += ['-L', str(ROOT / path)]
-        command += ['--load', str(ROOT / driver)]
-        receipt = run(command, dict(env, **extra), work, label)
+        command = reader_command(binary, cold, driver, args.wine)
+        receipt = run(command, reader_environment(dict(env, **extra), args.wine), work, label)
         output = (work / (label + '.out')).read_text(encoding='utf-8', errors='replace')
         errors = (work / (label + '.err')).read_text(encoding='utf-8', errors='replace')
         receipt.update(phase=label, passed=receipt['rc'] == 0 and not errors and
@@ -149,11 +200,14 @@ def main():
                      '(defun f1b-one (f x) (f1b-tick) (funcall f x))\n'
                      '(defun f1b-zero (f) (funcall f))\n'
                      '(defun f1b-six (f x) (funcall f x x x x x x))\n', encoding='utf-8')
-    host = run([env.get('EMACS', 'emacs'), '-Q', '--batch', '--eval',
-                '(progn (require (quote bytecomp)) (unless (byte-compile-file (getenv "F1B_SOURCE")) (error "GNU exit fixture failed")))'],
+    host = run([env.get('EMACS', 'emacs'), '-Q', '--batch', '-L', str(ROOT / 'lisp'), '--eval',
+                fixture_expression('F1B_SOURCE')],
                dict(env, F1B_SOURCE=str(exits)), work, 'exit-host', deadline=60)
+    report['exit_fixture_compile'] = host
+    (work / 'receipt.json').write_text(json.dumps(report, indent=2) + '\n')
     if host['rc'] != 0 or not exits.with_suffix('.elc').is_file():
         return 1
+    report['exit_fixture_sha256'] = digest(exits.with_suffix('.elc'))
     extra = dict(F1B_FIXTURE=str(exits.with_suffix('.elc')), F1B_BACKEND='in-house',
                  F1B_COLD='1' if cold else '0', NELISP_NATIVE_CACHE=str(work / 'exit-cache'))
     for unit in ('f1b-one', 'f1b-zero', 'f1b-six'):
@@ -171,18 +225,20 @@ def main():
                    ['WINDOWS-ANCESTOR-PIN-PASS unpinned=1 pinned=0 sharing=32']):
         return 1
     junction = work / 'cache-junction'
-    control = subprocess.run(['cmd', '/c', 'mklink', '/J', str(junction), str(cache)],
+    control_command = (['wine', 'cmd', '/c', 'mklink', '/J', wine_path(junction), wine_path(cache)]
+                       if args.wine else ['cmd', '/c', 'mklink', '/J', str(junction), str(cache)])
+    control = subprocess.run(control_command,
                              capture_output=True, timeout=30)
     (work / 'junction-create.out').write_bytes(control.stdout)
     (work / 'junction-create.err').write_bytes(control.stderr)
     if control.returncode != 0 or not junction.is_dir():
-        print('WINDOWS-F1-FAIL junction negative-control setup')
+        print(verdict + '-FAIL junction negative-control setup')
         return 1
     if not execute('reparse', 'test/standalone-windows-native-trust-driver.el',
                    dict(WINDOWS_TRUST_ROOT=str(junction), WINDOWS_TRUST_MODE='reparse'),
                    ['WINDOWS-REPARSE-REFUSED maps=0']):
         return 1
-    print('WINDOWS-F1-PASS evidence=' + str(work))
+    print(verdict + '-PASS evidence=' + str(work))
     return 0
 
 

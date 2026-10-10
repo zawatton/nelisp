@@ -8,10 +8,67 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('windows_f1', Path(__file__).with_name('run-windows-native-f1.py'))
 runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
+
+
+class WineControls(unittest.TestCase):
+    def tearDown(self):
+        runner.wine_path.cache_clear()
+
+    def test_drive_paths_are_reader_only_and_cached(self):
+        host = dict(F1_SOURCE='/fixture with spaces/source.el', F1_FIXTURE='/fixture with spaces/source.elc',
+                    NELISP_NATIVE_CACHE='/isolated/cache', F1_PHASE='compile', F1_FORCE_GC='1')
+        original = dict(host)
+        def convert(command, **options):
+            self.assertEqual(command[:2], ['winepath', '-w'])
+            self.assertLessEqual(options['timeout'], 600)
+            return subprocess.CompletedProcess(command, 0,
+                                               'Q:\\' + command[2].lstrip('/').replace('/', '\\') + '\n', '')
+        with patch.object(runner.subprocess, 'run', side_effect=convert) as calls:
+            env = runner.reader_environment(host, wine=True)
+            command = runner.reader_command(Path('/reader.exe'), Path('/reader.exe.cold'),
+                                            'test/standalone-bytecode-native-funcall-driver.el', wine=True)
+            count = calls.call_count
+            self.assertEqual(runner.reader_environment(host, wine=True), env)
+            self.assertEqual(calls.call_count, count)
+        self.assertEqual(host, original)
+        self.assertEqual(runner.reader_environment(host), original)
+        self.assertEqual(env['F1_FIXTURE'], 'Q:\\fixture with spaces\\source.elc')
+        self.assertEqual(env['F1_FORCE_GC'], '1')
+        self.assertEqual(command[:4], ['wine', '/reader.exe', '--cold-load-from', 'Q:\\reader.exe.cold'])
+        self.assertTrue(all(argument.startswith('Q:\\') for argument in command[5::2]))
+
+    def test_path_conversion_refuses_bad_output(self):
+        for stdout, stderr in (('/posix/path\n', ''), ('C:\\path\nC:\\extra\n', ''),
+                               ('C:\\path\n', 'unexpected error')):
+            runner.wine_path.cache_clear()
+            with patch.object(runner.subprocess, 'run',
+                              return_value=subprocess.CompletedProcess([], 0, stdout, stderr)):
+                with self.assertRaises(ValueError):
+                    runner.wine_path('/fixture')
+        runner.wine_path.cache_clear()
+        with patch.object(runner.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, 'winepath')):
+            with self.assertRaises(subprocess.CalledProcessError):
+                runner.wine_path('/fixture')
+
+    def test_real_host_fixture_refuses_unpinned_dialect(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'fixture with spaces.el'
+            source.write_text(';;; -*- lexical-binding: t; -*-\n(defun wine-fixture (x) (cons x x))\n')
+            env = dict(os.environ, F1_SOURCE=str(source))
+            command = [env.get('EMACS', 'emacs'), '-Q', '--batch', '-L', str(runner.ROOT / 'lisp'), '--eval']
+            bad = subprocess.run(command + ['(setq emacs-version "30.2")', '--eval', runner.fixture_expression('F1_SOURCE')],
+                                 env=env, capture_output=True, timeout=60)
+            self.assertNotEqual(bad.returncode, 0)
+            self.assertFalse(source.with_suffix('.elc').exists())
+            good = subprocess.run(command + [runner.fixture_expression('F1_SOURCE')],
+                                  env=env, capture_output=True, timeout=60)
+            self.assertEqual(good.returncode, 0, good.stderr.decode(errors='replace'))
+            self.assertTrue(source.with_suffix('.elc').is_file())
 
 
 class CheckoutControls(unittest.TestCase):
