@@ -789,6 +789,24 @@ values are written straight into the token cache."
         (should-error (nelisp-m365-tools-download-listing '(("maxBytes" . 1024))))
         (should-not (file-exists-p path))))))
 
+(ert-deftest nelisp-m365-mcp-respond-returns-response-text ()
+  "The shared daemon answers through `nelisp-m365-mcp-respond'."
+  (should (equal "" (nelisp-m365-mcp-respond "  ")))
+  (should (equal "" (nelisp-m365-mcp-respond
+                     "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}")))
+  (should (string-match-p "\"result\""
+                          (nelisp-m365-mcp-respond
+                           "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}")))
+  (should (string-match-p "-32700" (nelisp-m365-mcp-respond "{bad")))
+  ;; The cached tools/list answer equals the uncached one, every time.
+  (let* ((line "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/list\"}")
+         (expected (nelisp-m365-compat-json-parse
+                    (nelisp-m365-compat-json-encode
+                     (nelisp-m365-mcp-handle (nelisp-m365-compat-json-parse line))))))
+    (setq nelisp-m365-mcp--tools-json nil)
+    (should (equal expected (nelisp-m365-compat-json-parse (nelisp-m365-mcp-respond line))))
+    (should (equal expected (nelisp-m365-compat-json-parse (nelisp-m365-mcp-respond line))))))
+
 (provide 'nelisp-m365-test)
 
 ;;; nelisp-m365-test.el ends here

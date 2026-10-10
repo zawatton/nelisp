@@ -242,24 +242,59 @@ Returns nil for a notification, which must not be answered."
 
 ;;; Read loop ---------------------------------------------------------------
 
-(defun nelisp-m365-mcp--dispatch-line (line)
-  "Parse and handle one framed JSON-RPC LINE, writing any response.
-Collects garbage afterwards -- see `nelisp-m365-mcp-collect-garbage'."
+(defvar nelisp-m365-mcp--tools-json nil
+  "Encoded tools/list result, computed on first use.")
+
+(defun nelisp-m365-mcp-respond (line)
+  "Return the framed-less JSON response text for JSON-RPC LINE.
+Returns \"\" when nothing must be written (a blank line or a
+notification).  The stdio loop and the shared daemon (NeLisp Doc 213,
+`nelisp-m365-mcp.ps1' shared mode) both answer through this."
   (let ((trimmed (string-trim line)))
-    (unless (equal trimmed "")
+    (if (equal trimmed "")
+        ""
       (let ((request (condition-case nil
                          (nelisp-m365-compat-json-parse trimmed)
                        (error nil))))
-        (if (not request)
-            (nelisp-m365-mcp--write
-             (nelisp-m365-mcp--error nil -32700 "parse error"))
+        (cond
+         ((null request)
+          (nelisp-m365-compat-json-encode
+           (nelisp-m365-mcp--error nil -32700 "parse error")))
+         ;; The tool list is fixed for the life of the process, and
+         ;; encoding it costs ~5 s on the standalone runtime, so a
+         ;; shared daemon serving many sessions encodes it once.
+         ((and (equal (cdr (assoc "method" request)) "tools/list")
+               (assoc "id" request))
+          (unless nelisp-m365-mcp--tools-json
+            (setq nelisp-m365-mcp--tools-json
+                  (nelisp-m365-compat-json-encode (nelisp-m365-mcp--list-tools))))
+          (concat "{\"jsonrpc\":\"2.0\",\"id\":"
+                  (nelisp-m365-compat-json-encode (cdr (assoc "id" request)))
+                  ",\"result\":" nelisp-m365-mcp--tools-json "}"))
+         (t
           (let ((response (nelisp-m365-mcp-handle request)))
-            (when response (nelisp-m365-mcp--write response)))))
-      ;; After the response is on the wire, so the collection never adds
-      ;; to the client's latency for this request.
-      (when (and nelisp-m365-mcp-collect-garbage
-                 (fboundp 'garbage-collect))
-        (garbage-collect)))))
+            (if response (nelisp-m365-compat-json-encode response) ""))))))))
+
+(defun nelisp-m365-mcp-collect-garbage ()
+  "Collect garbage after a response when enabled.
+See `nelisp-m365-mcp-collect-garbage'."
+  (when (and nelisp-m365-mcp-collect-garbage
+             (fboundp 'garbage-collect))
+    (garbage-collect)))
+
+(defun nelisp-m365-mcp--dispatch-line (line)
+  "Parse and handle one framed JSON-RPC LINE, writing any response.
+Collects garbage afterwards -- see `nelisp-m365-mcp-collect-garbage'."
+  (let ((text (nelisp-m365-mcp-respond line)))
+    (unless (equal text "")
+      (let ((frame (concat text "\n")))
+        (if (fboundp 'nelisp--write-stdout-bytes)
+            (nelisp--write-stdout-bytes frame)
+          (let ((coding-system-for-write 'utf-8-unix))
+            (princ frame)))))
+    ;; After the response is on the wire, so the collection never adds
+    ;; to the client's latency for this request.
+    (nelisp-m365-mcp-collect-garbage)))
 
 (defun nelisp-m365-mcp-serve ()
   "Serve MCP over stdin and stdout until the input stream closes.
