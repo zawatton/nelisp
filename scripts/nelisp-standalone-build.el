@@ -9187,8 +9187,11 @@ leave symbols unresolved at link time."
               (setq tlen (ptr-read-u64 cin 0))
               (ptr-write-u64 hdr 8 total) (ptr-write-u64 hdr 24 tlen)
               ,@(if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
-                    '((setq written (+ (nl_fa_write_all fd hdr 64 0)
-                                       (nl_fa_write_all fd tbl (* tlen 8) 0)))
+                    ;; AOT arithmetic evaluates the right operand first.
+                    ;; Keep stream writes in separate statements: combining
+                    ;; header+table calls in one sum writes the table at byte 0.
+                    '((setq written (nl_fa_write_all fd hdr 64 0))
+                      (setq written (+ written (nl_fa_write_all fd tbl (* tlen 8) 0)))
                       (setq written (+ written (nl_mc_write_chunks fd head)))
                       (setq written (+ written (nl_fa_write_all fd ib isz 0)))
                       (setq written (+ written (nl_fa_write_all fd trl 48 0))))

@@ -50,6 +50,113 @@
     (append (nelisp-standalone--reader-os-source-forms)
             (nelisp-standalone--reader-cold-source-forms))))
 
+(ert-deftest nelisp-windows-cold-compiled-stream-order ()
+  "Check the real Win64 emission order, not host Elisp's operand order.
+Label only the stream calls so COFF relocation offsets identify each section."
+  (let ((label nil))
+    (setq label
+          (lambda (form)
+            (if (atom form) form
+              (cond
+               ((eq (car form) 'nl_fa_write_all)
+                (cons (intern (format "cold_test_write_%s" (nth 2 form))) (cdr form)))
+               ((eq (car form) 'nl_mc_write_chunks)
+                (cons 'cold_test_write_chunks (cdr form)))
+               (t (mapcar label form))))))
+    (let* ((source (funcall label (nelisp-windows-cold-test--definition
+                                  nelisp-windows-cold-test--file-helpers
+                                  'bf_arena_dump_image_stream)))
+           (unit (nelisp-aot-compile-to-link-unit source :arch 'x86_64 :format 'coff))
+           (relocs (sort (copy-sequence (plist-get unit :relocs))
+                         (lambda (a b) (< (plist-get a :offset) (plist-get b :offset)))))
+           (writes (cl-loop for reloc in relocs
+                            for name = (plist-get reloc :symbol)
+                            when (string-prefix-p "cold_test_write_" name) collect name)))
+      (should (> (length (plist-get unit :text)) 0))
+      (should (equal writes '("cold_test_write_hdr" "cold_test_write_tbl"
+                              "cold_test_write_chunks" "cold_test_write_ib"
+                              "cold_test_write_trl"))))))
+
+(ert-deftest nelisp-windows-cold-header-position-and-reopen ()
+  "Windows synchronous handles start at zero and advance across short I/O.
+Feed the header through the actual writer/read loops and both loader entries."
+  (let* ((forms (nelisp-windows-cold-test--os))
+         (memory (make-hash-table)) (file (make-vector 80 0))
+         (cursor 0) (read-starts nil) (written 0))
+    (cl-labels ((read-word (p off width)
+                  (let ((v 0))
+                    (dotimes (i width v)
+                      (setq v (logior v (ash (gethash (+ p off i) memory 0) (* 8 i)))))))
+                (write-word (p off v width)
+                  (dotimes (i width)
+                    (puthash (+ p off i) (logand (ash v (- (* 8 i))) 255) memory))))
+      (cl-letf (((symbol-function 'ptr-read-u64) (lambda (p off) (read-word p off 8)))
+                ((symbol-function 'ptr-read-u32) (lambda (p off) (read-word p off 4)))
+                ((symbol-function 'ptr-write-u64) (lambda (p off v) (write-word p off v 8)))
+                ((symbol-function 'ptr-write-u32) (lambda (p off v) (write-word p off v 4)))
+                ((symbol-function 'ptr-write-u8) (lambda (p off v) (write-word p off v 1)))
+                ((symbol-function 'nelisp-windows-cold-test--address)
+                 (lambda (name) (if (eq name 'nl_arena_base) 5000 4096)))
+                ((symbol-function 'atomic-compare-exchange)
+                 (lambda (p old new)
+                   (if (= (read-word p 0 8) old) (progn (write-word p 0 new 8) 1) 0)))
+                ((symbol-function 'atomic-fetch-add)
+                 (lambda (p n) (write-word p 0 (+ (read-word p 0 8) n) 8)))
+                ((symbol-function 'alloc-bytes) (lambda (&rest _) 8000))
+                ((symbol-function 'nl_align_up) (lambda (v a) (* (/ (+ v a -1) a) a)))
+                ((symbol-function 'nl_cold_grow_chunk0) (lambda (_) (throw 'header-accepted t)))
+                ((symbol-function 'nl_cold_diag_bad_header) (lambda () (ert-fail "Header rejected")))
+                ((symbol-function 'nl_cold_zero) (lambda (&rest _) nil))
+                ((symbol-function 'nelisp-windows-cold-test--extern)
+                 (lambda (api &rest args)
+                   (pcase api
+                     ('MultiByteToWideChar 1)
+                     ('VirtualAlloc 9000)
+                     ('VirtualFree 1)
+                     ('CreateFileW (setq cursor 0) 7)
+                     ('CloseHandle 1)
+                     ((or 'WriteFile 'ReadFile)
+                      (should (= (nth 4 args) 0)) ; synchronous, no OVERLAPPED offset
+                      (let* ((p (nth 1 args)) (n (min 3 (nth 2 args))))
+                        (when (eq api 'ReadFile) (push cursor read-starts))
+                        (dotimes (i n)
+                          (if (eq api 'WriteFile)
+                              (aset file (+ cursor i) (gethash (+ p i) memory 0))
+                            (puthash (+ p i) (aref file (+ cursor i)) memory)))
+                        (setq cursor (+ cursor n))
+                        (write-word (nth 3 args) 0 n 4) 1))
+                     (_ (ert-fail (format "Unexpected positioning API: %s" api)))))))
+        ;; Install emitted functions dynamically; no host implementation of file I/O.
+        (let ((names '(nl_os_open_write_truncate nl_os_open_read nl_os_close_handle
+						 nl_os_write_file_handle nl_os_read_file_handle nl_fa_write_all
+						 nl_fa_read_all nl_cold_header_invalid_p nl_cold_load_arena
+						 nl_cold_overwrite_globals)))
+          (let ((originals (mapcar (lambda (name) (cons name (and (fboundp name) (symbol-function name)))) names)))
+            (unwind-protect
+                (progn
+                  (dolist (name names)
+                    (fset name (nelisp-windows-cold-test--function
+                                (append forms nelisp-windows-cold-test--file-helpers) name)))
+                  (cl-loop for v in '(1179407692 32 16 2 8 0 0 40000)
+                           for off from 0 by 8 do (write-word 100 off v 8))
+                  (write-word 200 0 8 8) (write-word 200 8 24 8)
+                  (let ((fd (nl_os_open_write_truncate 1)))
+                    (setq written (nl_fa_write_all fd 100 64 0))
+                    (setq written (+ written (nl_fa_write_all fd 200 16 0)))
+                    (nl_os_close_handle fd))
+                  (should (= written 80))
+                  (should (= (aref file 0) 76)) ; LULF starts at file byte zero
+                  (write-word 5000 0 6000 8) (write-word 6000 832 7000 8)
+                  (should (catch 'header-accepted (nl_cold_load_arena 1)))
+                  (should (= cursor 64))
+                  (should (= (read-word 7000 0 8) 1179407692))
+                  (should (= (nl_cold_overwrite_globals 10000 1) 1))
+                  (should (= cursor 64))
+                  (should (= (read-word 10000 8 8) (+ 6000 1024 8)))
+                  (should (= (cl-count 0 read-starts) 2)))
+              (dolist (entry originals)
+                (if (cdr entry) (fset (car entry) (cdr entry)) (fmakunbound (car entry)))))))))))
+
 (ert-deftest nelisp-windows-cold-partial-io-and-failure ()
   "Run actual emitted loops against short transfers, EOF, errors and DWORD caps."
   (let* ((forms (nelisp-windows-cold-test--os))
@@ -191,6 +298,8 @@
 
 (ert-deftest nelisp-windows-cold-wine-full-recipe ()
   "The requested full image is produced by the PE with target paths and OS env."
+  ;; The Wine runner recipe applies only to a POSIX build host.
+  (skip-unless (not (eq system-type 'windows-nt)))
   (let* ((directory (make-temp-file "windows-cold-recipe-" t))
          (binary (expand-file-name "reader.exe" directory))
          (image (concat binary ".cold"))
