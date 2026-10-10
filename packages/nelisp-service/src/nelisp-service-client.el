@@ -32,6 +32,10 @@
 
 (require 'nelisp-service)
 
+(defvar nelisp-service-client--started (float-time)
+  "When this client library was loaded; sent in the handshake.
+A daemon only lets a client newer than itself replace it.")
+
 (defvar nelisp-service-client-spawn-function #'nelisp-service-client-spawn-detached
   "Function of (NAME COMMAND) that starts a daemon process.")
 
@@ -99,7 +103,8 @@ rejection, or nil when nothing answers."
           (nelisp-service-put client :process proc)
           (process-send-string
            proc (nelisp-service-encode
-                 (list 'hello (plist-get state :token) version)))
+                 (list 'hello (plist-get state :token) version
+                       nelisp-service-client--started)))
           (nelisp-service-wait-until
            (lambda () (or (nelisp-service-get client :welcome)
                           (nelisp-service-get client :rejected)

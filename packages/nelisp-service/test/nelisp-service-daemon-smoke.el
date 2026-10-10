@@ -62,6 +62,9 @@
                                       :port)
                      :token "wrong")
                "v1")))
+  ;; A client started after the v1 daemon, as a session started after an
+  ;; update is: only such a client may replace the daemon.
+  (setq nelisp-service-client--started (float-time))
   (let ((c (nelisp-service-client-connect
             "smoke" :version "v2" :start-command (nelisp-service-smoke--command "v2")
             :timeout 120)))

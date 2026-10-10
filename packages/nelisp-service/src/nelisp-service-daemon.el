@@ -122,7 +122,8 @@ Call `nelisp-service-daemon-run' to serve."
                    :token (nelisp-service-make-token)
                    :connections nil
                    :last-activity (float-time)
-                   :stopped nil :served 0 :rejected 0)))
+                   :stopped nil :served 0 :rejected 0
+                   :started (float-time))))
       (condition-case err
           (progn
             (nelisp-service-daemon--listen daemon)
@@ -220,7 +221,15 @@ Call `nelisp-service-daemon-run' to serve."
     (cond
      ((not (equal (nth 1 message) (nelisp-service-get daemon :token)))
       (nelisp-service-daemon--reject daemon conn 'token))
-     ((not (equal (nth 2 message) (nelisp-service-get daemon :version)))
+     ;; Another version.  Only a client that started after this daemon
+     ;; can carry newer code, so only it may replace the daemon.  An
+     ;; older client -- a session left running across an update, or one
+     ;; whose hello carries no start time -- is served instead: rejecting
+     ;; it would make it start a daemon of the current version, which it
+     ;; would reject again, restarting daemons forever.
+     ((and (not (equal (nth 2 message) (nelisp-service-get daemon :version)))
+           (numberp (nth 3 message))
+           (> (nth 3 message) (nelisp-service-get daemon :started)))
       (nelisp-service-daemon--reject daemon conn 'version)
       (when (nelisp-service-get daemon :replace-on-mismatch)
         (nelisp-service-daemon-stop daemon)))

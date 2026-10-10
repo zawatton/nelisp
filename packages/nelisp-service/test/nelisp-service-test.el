@@ -241,12 +241,19 @@
     (let ((daemon (nelisp-service-daemon-start
                    "t4" :handler #'ignore :version "old")))
       (unwind-protect
-          (progn
-            (should (eq 'version
-                        (nelisp-service-client--open
-                         "t4" (nelisp-service-read-plist
-                               (nelisp-service-state-file "t4" "state"))
-                         "new")))
+          (let ((state (nelisp-service-read-plist
+                        (nelisp-service-state-file "t4" "state"))))
+            ;; A client older than the daemon (a session left running
+            ;; across an update) is served, and the daemon stays.
+            (let ((nelisp-service-client--started (- (float-time) 1000)))
+              (let ((old (nelisp-service-client--open "t4" state "older")))
+                (should (and old (not (symbolp old))))
+                (nelisp-service-client-close old)))
+            (should-not (nelisp-service-get daemon :stopped))
+            ;; A client newer than the daemon replaces it.
+            (let ((nelisp-service-client--started (+ (float-time) 1000)))
+              (should (eq 'version
+                          (nelisp-service-client--open "t4" state "new"))))
             (should (nelisp-service-get daemon :stopped)))
         (nelisp-service-daemon-close daemon)))))
 
