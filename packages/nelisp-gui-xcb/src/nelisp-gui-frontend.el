@@ -423,15 +423,22 @@ Command lookup, execution, hooks, buffer editing and point stay in libraries."
                                (if (nelisp-ec-buffer-p buffer) (nelisp-ec-buffer-name buffer)
                                  (buffer-name buffer))
                                major-mode mode-name)))
-              ;; Exercise external pointer lifetimes while fonts/layouts are active.
-              (let ((start (and nelisp-gui-frontend--timing (float-time))))
-                (garbage-collect)
-                (when start (princ (format "GUI-GC-TIME|explicit=%.6f|\n" (- (float-time) start)))))
-              (nelisp-gui-frontend--paint)
-              (princ (format "GUI-READY|backend=xcb|shared-loop=%S|gc=1\n"
-                             (if (nelisp-gui-frontend--pure-buffer-p)
-                                 'emacs-command-loop-key-dispatch-run-plan
-                               'emacs-command-loop-step)))
+              ;; Exercise external pointer lifetimes while fonts/layouts are
+              ;; active.  This is a test probe (the S3.2 gate asks for it):
+              ;; a full collection here cost ~9 s on every daily launch, and
+              ;; GNU does not collect before its first command loop.
+              (let ((collect (equal (getenv "NELISP_GUI_STARTUP_GC") "1")))
+                (when collect
+                  (let ((start (and nelisp-gui-frontend--timing (float-time))))
+                    (garbage-collect)
+                    (when start
+                      (princ (format "GUI-GC-TIME|explicit=%.6f|\n" (- (float-time) start))))))
+                (nelisp-gui-frontend--paint)
+                (princ (format "GUI-READY|backend=xcb|shared-loop=%S|gc=%d\n"
+                               (if (nelisp-gui-frontend--pure-buffer-p)
+                                   'emacs-command-loop-key-dispatch-run-plan
+                                 'emacs-command-loop-step)
+                               (if collect 1 0))))
               (while (not (symbol-value 'nemacs-main--quit-flag))
                 (when (and nelisp-gui-frontend--paint-needed
                            (not nelisp-gui-frontend--paint-deadline))
