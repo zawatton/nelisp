@@ -98,6 +98,34 @@ jobs:
             target/nelisp.exe.native-startup.el
           if-no-files-found: warn
 
+  native-hot-loop:
+    # W1.4: the P3.1 million-iteration loop, native vs. the same reader's
+    # interpreter, best of three each; native must take at most 1/5.
+    needs: build-reader
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/windows-native-tools
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-native-reader
+          path: target
+      - name: Windows native hot loop (W1.4)
+        shell: pwsh
+        env:
+          NELISP_WINDOWS_NATIVE_DEADLINE: '900'
+        run: |
+          python test/support/run-windows-native-hot-loop.py target/nelisp.exe --work target/windows-hot-loop-ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Preserve hot-loop evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-native-hot-loop
+          path: target/windows-hot-loop-ci/
+          if-no-files-found: warn
+
   # The observed source-load F1 compile/load is 295/232 s. Conservatively
   # budget 527 s per compiler unit even with cold restore (Wine: 0.71 s).
   # Eight U10 shards keep 21-22 units/shard at ~3.2 h serial; two workers add
