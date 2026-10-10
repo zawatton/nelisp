@@ -55,6 +55,8 @@ change to the criteria list is recorded in a NOTE.
 
 #+NOTE: 2026-10-10 S1.3 probe (still pending; no criteria changed).  The user's real init.el loads in a bwrap sandbox (real filesystem read-only, isolated ~/.emacs.d copy, no network); GNU loads it there in 8.5 s without error.  NeLisp needs NEMACS_USER_EMACS_DIRECTORY=~/.emacs.d/ (an old ~/.nemacs.d wins otherwise).  It stalls in library lookup: init grows load-path to 4083 entries and every candidate went through interpreted expand-file-name/file-exists-p; a missing library cost 186 s (GNU 0.09 s).  locate-file now costs ~26 s cold / ~1.5 s warm per miss, but hits behind ~4000 entries (GNU url-*) still take 12-25 s with load's suffix list, so init is still at nelix's activation after 20 min.  Next: runtime file primitives through the native pipeline, or a directory-listing cache with correct invalidation.  Also found: the runtime loader keeps initializer-free defvars across the whole bootstrap bundle (C-core lane).
 
+#+NOTE: 2026-10-10 meter 76.5% of 17 at cefc9fd6 (S1.3 moved from pending to a failing cmd; no criteria added).  S1 75 (S1.3 red: no init error, init exceeds 300 s; GNU 8.5 s), S2 100, S3 100, S4 100, S5 40.  Failing: S1.3, S5.0c, S5.2.  Pending: S5.3.  User-init peel so far: 44 GNU libraries vendored, preload vars, isearch before init, runtime-reader fallback, terminal check, apropos-internal, image types, cl-typep deftype; library lookup 186 s -> 1.5 s warm per miss; restored-image first load 7.4 s -> 3.0 s.  The remaining time is loader/evaluator-bound (nelix activation alone ~140 s).
+
 * S1 Shared interactive foundation
 
 ** S1.1 One event wait drives read-event: keys, timers, idle timers and process output (sit-for, sleep-for, input-pending-p behave as GNU)
