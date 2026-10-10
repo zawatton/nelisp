@@ -193,8 +193,8 @@ jobs:
           if-no-files-found: error
 
   native-template:
-    # W2 is still unsupported: an actual backend refusal is a red job, never
-    # a skipped case or an in-house fallback that could qualify W1.3.
+    # W2 acceptance uses the pinned Win64 stencil set and full cold image.
+    # Backend refusal or register corruption fails; no fallback qualifies W1.3.
     if: github.event_name == 'workflow_dispatch'
     needs: build-reader
     runs-on: windows-latest

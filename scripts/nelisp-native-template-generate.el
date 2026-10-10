@@ -3,9 +3,20 @@
 (require 'nelisp-asm-x86_64)
 (require 'nelisp-native-template-stencils)
 (require 'nelisp-bytecode-compiler-input)
-(defun nelisp-native-template-generate ()
-  "Generate bounded protocol fragments, with positions recorded during emission."
-  (let ((fragments nil) (root (expand-file-name ".." (file-name-directory load-file-name))))
+(defun nelisp-native-template-generate (&optional target check)
+  "Generate TARGET fragments; CHECK proves receipts without writing artifacts.
+Regenerate Win64: emacs -Q --batch -L lisp -L src -l this-file
+--target windows-x86_64. Add --check for a bounded host-only development loop.
+Linux generation preserves the historical library and pin byte for byte."
+  (let* ((nelisp-native-load--build-target target)
+         (win64 (eq target 'windows-x86_64))
+         ;; The generator constructs the ABI without requiring an existing pin.
+         (nelisp-native-template--selected-target (nelisp-native-load--target-v2))
+         (nelisp-native-template-stencil-version
+          (if win64 "template-x86_64-win64-v1" nelisp-native-template-stencil-version))
+         (nelisp-native-template-fragment-abi
+          (if win64 nelisp-native-template-win64-fragment-abi nelisp-native-template-fragment-abi))
+         (fragments nil) (root (expand-file-name ".." (file-name-directory load-file-name))))
     (dolist (family '(prologue copy call poll fixnum-add fixnum-sub fixnum-mul fixnum-inc fixnum-dec fixnum-neg fixnum-eq fixnum-lt fixnum-gt fixnum-le fixnum-ge frame status-save status-restore status-branch nil-branch nonnull-branch jump switch return bad epilogue))
       (let ((buf (nelisp-asm-x86_64-make-buffer)) (holes nil))
         (cl-labels
@@ -18,6 +29,21 @@
                (nelisp-asm-x86_64-emit-bytes buf (unibyte-string 232))
                (hole name 'import-rel32 (nelisp-asm-x86_64-buffer-pos buf))
                (nelisp-asm-x86_64-reloc-plt32-here buf (symbol-name name) -4))
+             (bridge (names)
+               (if win64
+                   (progn
+                     ;; Same six-word ABI as the COFF in-house emitter: four
+                     ;; registers, then two stack words above 32-byte shadow.
+                     (nelisp-asm-x86_64-mov-reg-reg buf 'rcx 'r12)
+                     (nelisp-asm-x86_64-mov-reg-reg buf 'rdx 'r13)
+                     (imm 'r8 (nth 0 names)) (imm 'r9 (nth 1 names))
+                     (imm 'rax (nth 2 names))
+                     (nelisp-asm-x86_64-mov-mem-rsp-disp-reg buf 32 'rax)
+                     (imm 'rax (nth 3 names))
+                     (nelisp-asm-x86_64-mov-mem-rsp-disp-reg buf 40 'rax))
+                 (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'r12)
+                 (nelisp-asm-x86_64-mov-reg-reg buf 'rsi 'r13)
+                 (cl-loop for reg in '(rdx rcx r8 r9) for name in names do (imm reg name))))
              (jump (zero target)
                (let ((start (nelisp-asm-x86_64-buffer-pos buf)))
                  (if zero (nelisp-asm-x86_64-jz-rel32 buf target)
@@ -47,10 +73,18 @@
           (pcase family
             ('prologue
              (dolist (r '(rbp rbx r12 r13 r14 r15)) (nelisp-asm-x86_64-push buf r))
-             (nelisp-asm-x86_64-sub-imm32 buf 'rsp 8)
-             (nelisp-asm-x86_64-mov-reg-reg buf 'r12 'rdi)
-             (nelisp-asm-x86_64-mov-reg-reg buf 'r13 'rsi)
-             (dolist (r '(rdx rcx r8 r9)) (nelisp-asm-x86_64-mov-imm32 buf r 0))
+             ;; Six pushes leave RSP=8 mod 16; 56 bytes provide alignment,
+             ;; 32-byte shadow and two outgoing words. RDI/RSI and XMM6-15
+             ;; are never written, so all Win64 nonvolatile registers survive.
+             (nelisp-asm-x86_64-sub-imm32 buf 'rsp (if win64 56 8))
+             (nelisp-asm-x86_64-mov-reg-reg buf 'r12 (if win64 'rcx 'rdi))
+             (nelisp-asm-x86_64-mov-reg-reg buf 'r13 (if win64 'rdx 'rsi))
+             (if win64
+                 (progn
+                   (dolist (r '(r8 r9 rax)) (nelisp-asm-x86_64-mov-imm32 buf r 0))
+                   (nelisp-asm-x86_64-mov-mem-rsp-disp-reg buf 32 'rax)
+                   (nelisp-asm-x86_64-mov-mem-rsp-disp-reg buf 40 'rax))
+               (dolist (r '(rdx rcx r8 r9)) (nelisp-asm-x86_64-mov-imm32 buf r 0)))
              (external 'nl_root_pin_slot_v2)
              (nelisp-asm-x86_64-cmp-imm32 buf 'rax 0) (jump t 'bad)
              (nelisp-asm-x86_64-mov-reg-reg buf 'r14 'rax))
@@ -59,9 +93,7 @@
                (memory 139 'rax 'r14 (intern (format "read%d" i)))
                (memory 137 'rax 'r14 (intern (format "write%d" i)))))
             ((or 'call 'poll)
-             (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'r12)
-             (nelisp-asm-x86_64-mov-reg-reg buf 'rsi 'r13)
-             (imm 'rdx 'function) (imm 'rcx 'arguments) (imm 'r8 'argc) (imm 'r9 'result)
+             (bridge '(function arguments argc result))
              (external (if (eq family 'poll) 'nl_native_poll_v2 'nl_native_funcall_v2))
              (nelisp-asm-x86_64-cmp-imm32 buf 'rax 0) (jump nil 'epilogue))
             ((or 'fixnum-add 'fixnum-sub 'fixnum-mul 'fixnum-inc 'fixnum-dec 'fixnum-neg
@@ -106,9 +138,7 @@
                (let ((start (nelisp-asm-x86_64-buffer-pos buf)))
                  (nelisp-asm-x86_64-jmp-rel32 buf 'done) (hole 'done 'rel32 (1+ start)))))
             ('frame
-             (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'r12)
-             (nelisp-asm-x86_64-mov-reg-reg buf 'rsi 'r13)
-             (imm 'rdx 'state) (imm 'rcx 'action) (imm 'r8 'arguments) (imm 'r9 'result)
+             (bridge '(state action arguments result))
              (external 'nl_native_frame_v2)
              (nelisp-asm-x86_64-cmp-imm32 buf 'rax 0) (jump nil 'failure))
             ('status-save (nelisp-asm-x86_64-mov-reg-reg buf 'rbx 'rax))
@@ -139,7 +169,7 @@
                (nelisp-asm-x86_64-jmp-rel32 buf 'epilogue) (hole 'epilogue 'rel32 (1+ start))))
             ('bad (nelisp-asm-x86_64-mov-imm32 buf 'rax 2))
             ('epilogue
-             (nelisp-asm-x86_64-add-imm32 buf 'rsp 8)
+             (nelisp-asm-x86_64-add-imm32 buf 'rsp (if win64 56 8))
              (dolist (r '(r15 r14 r13 r12 rbx rbp)) (nelisp-asm-x86_64-pop buf r))
              (nelisp-asm-x86_64-ret buf)))
           (let ((fragment (list :abi nelisp-native-template-fragment-abi
@@ -173,18 +203,54 @@
            (library (list :abi (nelisp-native-template-stencil-abi) :source-key source-key
                           :opcode-inventory inventory :fragments (nreverse fragments)))
            (snapshot (concat (nelisp-native-template--print library) "\n"))
-           (path (expand-file-name "templates/nelisp-native-template.nelst" root)))
-      (let ((coding-system-for-write 'no-conversion))
-        (write-region snapshot nil path nil 'silent))
-      (set-file-modes path #o600)
-      (with-temp-file (expand-file-name "lisp/nelisp-native-template-pin.el" root)
-        (insert ";;; nelisp-native-template-pin.el --- Generated stencil receipt -*- lexical-binding: t; -*-\n;; SPDX-License-Identifier: GPL-3.0-or-later\n")
-        (dolist (pair `((nelisp-native-template-library-sha256 . ,(secure-hash 'sha256 snapshot))
-                        (nelisp-native-template-library-source-key . ,source-key)
-                        (nelisp-native-template-library-inventory . ,inventory)
-                        (nelisp-native-template-compiler-source-key . ,compiler-key)))
-          (insert (format "(defconst %s %S)\n" (car pair) (cdr pair))))
-        (insert "(provide 'nelisp-native-template-pin)\n"))
-      (princ (format "TEMPLATE-LIBRARY-GENERATED bytes=%d digest=%s\n" (length snapshot)
-                     (secure-hash 'sha256 snapshot))))))
-(nelisp-native-template-generate)
+           (path (expand-file-name (if win64 "templates/nelisp-native-template-win64.nelst"
+                                    "templates/nelisp-native-template.nelst") root)))
+      ;; The historical SysV library and receipt are immutable. Regeneration
+      ;; proves byte equality for EVERY fragment, then refreshes only the
+      ;; compiler-source receipt; changing the compiler need not rewrite code.
+      (unless win64
+        (let* ((old (with-temp-buffer (set-buffer-multibyte nil)
+                      (insert-file-contents-literally path) (buffer-string)))
+               (library-old (nelisp-native-template--read-library old)))
+          (unless (and (equal (secure-hash 'sha256 old) nelisp-native-template-library-sha256)
+                       (equal (plist-get library-old :abi) (plist-get library :abi))
+                       (equal (plist-get library-old :fragments) (plist-get library :fragments)))
+            (error "SysV stencil non-regression refused"))))
+      (if check
+          (progn
+            (require 'nelisp-native-template-source-pin)
+            (unless (equal compiler-key nelisp-native-template-current-compiler-source-key)
+              (error "Template compiler source receipt changed; regenerate"))
+            (when win64
+              (require 'nelisp-native-template-win64-pin)
+              (unless (and (equal (secure-hash 'sha256 snapshot)
+                                  nelisp-native-template-win64-library-sha256)
+                           (equal snapshot (with-temp-buffer (set-buffer-multibyte nil)
+                                             (insert-file-contents-literally path) (buffer-string))))
+                (error "Win64 stencil/pin regeneration mismatch"))))
+        (with-temp-file (expand-file-name "lisp/nelisp-native-template-source-pin.el" root)
+          (insert ";;; nelisp-native-template-source-pin.el --- Generated compiler receipt -*- lexical-binding: t; -*-\n;; SPDX-License-Identifier: GPL-3.0-or-later\n")
+          (insert (format "(defconst nelisp-native-template-current-compiler-source-key %S)\n" compiler-key))
+          (insert "(provide 'nelisp-native-template-source-pin)\n"))
+        (when win64
+          (let ((coding-system-for-write 'no-conversion))
+            (write-region snapshot nil path nil 'silent))
+          (set-file-modes path #o600)
+          (with-temp-file (expand-file-name "lisp/nelisp-native-template-win64-pin.el" root)
+            (insert ";;; nelisp-native-template-win64-pin.el --- Generated Win64 stencil receipt -*- lexical-binding: t; -*-\n;; SPDX-License-Identifier: GPL-3.0-or-later\n")
+            (dolist (pair `((nelisp-native-template-win64-library-sha256 . ,(secure-hash 'sha256 snapshot))
+                            (nelisp-native-template-win64-library-source-key . ,source-key)
+                            (nelisp-native-template-win64-library-inventory . ,inventory)))
+              (insert (format "(defconst %s %S)\n" (car pair) (cdr pair))))
+            (insert "(provide 'nelisp-native-template-win64-pin)\n"))))
+      (princ (format "TEMPLATE-STENCILS-%s target=%s fragments=%d bytes=%d\n"
+                     (if check "CHECKED" "GENERATED") (or target 'linux-x86_64)
+                     (length (plist-get library :fragments)) (length snapshot))))))
+(let ((target (when (equal (car command-line-args-left) "--target")
+                (pop command-line-args-left)
+                (intern (or (pop command-line-args-left) "missing")))))
+  (unless (memq target '(nil linux-x86_64 windows-x86_64))
+    (error "Unsupported stencil generation target %S" target))
+  (let ((check (equal (car command-line-args-left) "--check")))
+    (when check (pop command-line-args-left))
+    (nelisp-native-template-generate target check)))

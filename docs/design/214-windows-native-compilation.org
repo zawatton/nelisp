@@ -302,12 +302,26 @@ Cold-image startup should reduce overhead, but these are estimates, not real
 Windows U10/F3 timings. Corpus jobs stop at 5.5 hours and have a 350-minute job
 cap, leaving setup/evidence-upload headroom below the six-hour runner limit.
 
-W2 remains unimplemented. SysV stencil/library/pin bytes are unchanged.
-The current stencil opener, manifest ABI and native cache backend admission
-are all SysV/in-house restricted; their sources are included in the existing
-SysV compiler pin. A Win64 implementation therefore needs an independently
-authenticated target-specific compiler closure as well as Win64 prologue,
-shadow space, stacked arguments, callee-saved register handling and stencils.
-The Windows template job runs the real smoke and records unsupported-backend
-refusal as failure. It neither skips the case nor substitutes in-house;
+W2 part 1 supplies a separate pinned =nelisp-native-template-win64.nelst=.
+The generator selects =--target windows-x86_64=; =--check= re-emits and
+checks every fragment and compiler receipt without writing artifacts or
+rebuilding a reader. The historical SysV library/pin and all fragment bytes
+remain unchanged; a separate source receipt authenticates the updated
+compiler closure on both targets.
+
+The runtime target selects the stencil ABI before authentication/copying.
+Win64 keeps environment/ticket in R12/R13, saves RBX/RBP/R12-15, and leaves
+RDI/RSI/XMM6-15 untouched. Six pushes plus a 56-byte frame align calls and
+provide 32-byte shadow space plus two stack arguments. Runtime calls and
+manifest ABI/target use the same six-word bridge as the in-house backend;
+the common Windows mapper uses VirtualAlloc and protected cache handles.
+Host tests cover exact prologue/epilogue/call/poll/frame/status bytes,
+sentinel expectations, wrong ABI/target, mutation before copy/map, and
+Windows backend dispatch. Producer validation remains once per compile;
+trusted loads perform zero semantic validations.
+
+The cold-image Windows template job now checks an actual template entry
+with the eight-GP/ten-XMM register sentinel as well as exact Cons results,
+independent mappings, GC/live constants and checked corruption refusal.
+Wine and real windows-latest execution remain coordinator acceptance work.
 W1.3 remains unqualified until all real Windows acceptance jobs pass.

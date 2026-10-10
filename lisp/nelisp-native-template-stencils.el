@@ -16,6 +16,37 @@
 (defvar nelisp-native-template--library-path
   (expand-file-name "../templates/nelisp-native-template.nelst"
                     (file-name-directory (or load-file-name buffer-file-name))))
+(defconst nelisp-native-template-win64-fragment-abi
+  '(:persistent (r12 r13 rbx r14) :scratch (r15)
+    :clobbers (rax rcx rdx r8 r9 r10 r11 flags)
+    :slot-bytes 32 :call-alignment 16 :body-stack-delta 0 :shadow-space 32
+    :callee-saved (rbp rbx rdi rsi r12 r13 r14 r15 xmm6 xmm7 xmm8 xmm9 xmm10 xmm11 xmm12 xmm13 xmm14 xmm15)
+    :exits (bad epilogue) :values rooted
+    :pointers authenticated-nonmoving-root-bank :root-bounds certificate-and-wrapper))
+(defvar nelisp-native-template--selected-target nil)
+(defun nelisp-native-template-select-target ()
+  "Select a pinned stencil ABI from the runtime target, before any copying.
+A process cannot change targets after selecting its library or cache identity."
+  (let ((target (nelisp-native-load--target-v2)))
+    (unless (and (eq (plist-get target :arch) 'x86_64)
+                 (or (nelisp-native-load--windows-p)
+                     (and (eq system-type 'gnu/linux)
+                          (string-match-p "x86_64" system-configuration))))
+      (error "Template target unsupported: %S" target))
+    (if nelisp-native-template--selected-target
+        (unless (equal target nelisp-native-template--selected-target)
+          (error "Template selected target changed"))
+      (when (eq (plist-get target :calling-convention) 'win64)
+        (require 'nelisp-native-template-win64-pin)
+        (setq nelisp-native-template-stencil-version "template-x86_64-win64-v1"
+              nelisp-native-template-fragment-abi nelisp-native-template-win64-fragment-abi
+              nelisp-native-template-library-sha256 nelisp-native-template-win64-library-sha256
+              nelisp-native-template-library-source-key nelisp-native-template-win64-library-source-key
+              nelisp-native-template-library-inventory nelisp-native-template-win64-library-inventory
+              nelisp-native-template--library-path
+              (expand-file-name "nelisp-native-template-win64.nelst"
+                                (file-name-directory nelisp-native-template--library-path))))
+      (setq nelisp-native-template--selected-target target))))
 (defvar nelisp-native-template--snapshot nil)
 (defvar nelisp-native-template--copy-count 0)
 (defvar nelisp-native-template--library-check-count 0)
@@ -58,8 +89,9 @@ field and string. This is serialization checking, not semantic validation."
   (secure-hash 'sha256 (nelisp-native-template--print value)))
 (defun nelisp-native-template-stencil-abi ()
   "Address-free library ABI; source closure is pinned separately by the generator."
+  (nelisp-native-template-select-target)
   (list nelisp-native-template-stencil-version nelisp-native-template-hole-grammar
-        nelisp-native-template-fragment-abi nelisp-native-load-raw-runtime-abi-v2
+        nelisp-native-template-fragment-abi (nelisp-native-load--runtime-abi-v2)
         nelisp-native-load-raw-layout-id-v2 nelisp-native-load-raw-supported-arch
         nelisp-native-funcall-v2-version (nelisp-native-funcall-v2-descriptor)
         (nelisp-native-frame-v2-descriptor)
@@ -90,9 +122,7 @@ field and string. This is serialization checking, not semantic validation."
       (error "Trailing stencil library data")) (car parsed)))
 (defun nelisp-native-template-open-library ()
   "Read one bounded private snapshot; authenticate before any fragment copy."
-  (unless (and (eq system-type 'gnu/linux)
-               (string-match-p "x86_64" system-configuration))
-    (error "Template backend requires Linux x86_64 SysV"))
+  (nelisp-native-template-select-target)
   (require 'nelisp-native-template-pin)
   (unless nelisp-native-template--snapshot
     ;; The bytes are authenticated by the pinned sha256 of a private snapshot,
@@ -102,9 +132,14 @@ field and string. This is serialization checking, not semantic validation."
            (mode (file-modes nelisp-native-template--library-path))
            (bytes (and attrs (nth 7 attrs))))
       (unless (and attrs (not (car attrs)) (not (file-symlink-p nelisp-native-template--library-path))
-                   mode (= 0 (logand mode #o002)) (integerp bytes) (< 0 bytes 65536)
-                   (eql (nth 2 attrs) (if (fboundp 'user-uid) (user-uid)
-                                         (syscall-direct 102 0 0 0 0 0 0))))
+                   (integerp bytes) (< 0 bytes 65536)
+                   ;; Windows checkout files use a pinned digest rather than
+                   ;; POSIX uid/mode emulation. Cache publication still requires
+                   ;; the common protected-DACL and handle checks.
+                   (or (nelisp-native-load--windows-p)
+                       (and mode (= 0 (logand mode #o002))
+                            (eql (nth 2 attrs) (if (fboundp 'user-uid) (user-uid)
+                                                (syscall-direct 102 0 0 0 0 0 0))))))
         (error "Stencil library ownership, permissions or bound refused"))
       (let ((snapshot (with-temp-buffer (set-buffer-multibyte nil)
                                        (insert-file-contents-literally nelisp-native-template--library-path nil 0 65537)

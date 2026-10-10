@@ -497,8 +497,8 @@ The caller must inhibit mid-form collection until the syscall returns."
 ;;;###autoload
 (defun nelisp-native-cache-compile (function)
   "Compile FUNCTION once with the selected backend, publishing without clobber."
-  (when (and (nelisp-native-load--windows-p) (not (eq nelisp-native-cache-backend 'in-house)))
-    (error "Windows supports only the in-house native backend"))
+  (when (and (nelisp-native-load--windows-p) (not (memq nelisp-native-cache-backend '(in-house template))))
+    (error "Windows supports only in-house and template native backends"))
   (nelisp-native-budget-check (if (eq nelisp-native-cache-backend 'gccjit) 4096 8192))
   (pcase nelisp-native-cache-backend
     ('in-house (nelisp-native-cache--compile-in-house function))

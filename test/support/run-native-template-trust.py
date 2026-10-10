@@ -59,7 +59,10 @@ def main():
             expected = f'TEMPLATE-TRUST-PASS backend={args.backend} phase={phase} '
             passed = rc == 0 and not errors and elapsed < platform.PROCESS_DEADLINE and sum(line.startswith(expected) for line in output.splitlines()) == 1
             timing = re.findall(r'^TEMPLATE-TIMING compile=([0-9.]+) end-to-end=([0-9.]+)$', output, re.M)
-            if phase == 'compile': passed &= len(timing) == 1
+            if phase == 'compile':
+                passed &= len(timing) == 1
+                if platform.WINDOWS and args.backend == 'template':
+                    passed &= output.splitlines().count('TEMPLATE-WIN64-REGISTER-SENTINEL-PASS GP=8 XMM=10') == 1
             row = dict(sample=sample, backend=args.backend, phase=phase, rc=rc,
                        seconds=elapsed, load_before=load_before, load_after=platform.load_average(), passed=passed,
                        **platform.identity(), binary_sha256=digest(binary), cold_sha256=digest(cold) if cold.is_file() else None,

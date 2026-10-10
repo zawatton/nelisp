@@ -92,6 +92,22 @@ def main():
           (garbage-collect)
           (princ "WINDOWS-REGISTER-SENTINEL-PASS N=0 N=6 GP=8 XMM=10\\n"))
       (nelisp-native-load--unmap memory size))))
+(defun windows-native-sentinel-with-entry (target callback)
+  "Check all Win64 nonvolatile registers around TARGET in CALLBACK."
+  (unless (eq system-type 'windows-nt) (error "Win64 sentinel requires Windows"))
+  (let* ((call (symbol-function 'ptr-call))
+         (size (nelisp-native-load--page-round (length windows-native-sentinel--code)))
+         (memory (nelisp-native-load--mmap size nil)))
+    (unwind-protect
+        (progn
+          (nelisp-native-load--poke-string memory 0 windows-native-sentinel--code)
+          (ptr-write-u64 memory windows-native-sentinel--hole target)
+          (nelisp-native-load--mprotect-rx memory size)
+          (cl-letf (((symbol-function 'ptr-call)
+                     (lambda (address a b c d e f)
+                       (funcall call (if (= address target) memory address) a b c d e f))))
+            (funcall callback)))
+      (nelisp-native-load--unmap memory size))))
 (provide 'windows-native-sentinel)
 ''' % (' '.join(str(b) for b in code), hole, end), encoding='utf-8')
 
