@@ -38,16 +38,28 @@ jobs:
         shell: bash
         run: |
           python test/support/check-windows-loaddefs.py "$RUNNER_TEMP/emacs-31.1.zip"
-          python test/support/check-windows-native-host.py
+          timeout 1800 python test/support/check-windows-native-host.py
+          timeout 1800 emacs -Q --batch -L lisp -L src -L scripts -l test/support/check-windows-cold.el
           python test/support/run-windows-native-f1-test.py
-      - name: Build the Windows PE reader
+      - name: Build the Windows PE and full compiler cold image
+        env:
+          NELISP_NATIVE_CACHE: nelisp-cold2-user-override-canary
+        timeout-minutes: 30
         shell: bash
-        run: make standalone-reader NELISP_STANDALONE_TARGET=windows-x86_64
+        run: NELISP_STANDALONE_NATIVE_COMPILER_COLD=1 timeout 1800 make standalone-reader NELISP_STANDALONE_TARGET=windows-x86_64
       - name: Windows native F1 (fresh load, GC, registers, nested throws, trust controls)
+        timeout-minutes: 30
         shell: pwsh
         run: |
           $env:NELISP_WINDOWS_NATIVE_DEADLINE = '900'
           python test/support/run-windows-native-f1.py target/nelisp.exe --work target/windows-native-ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Windows native F1 cold restore (image refusals, refreshed globals, GC)
+        timeout-minutes: 30
+        shell: pwsh
+        run: |
+          $env:NELISP_WINDOWS_NATIVE_DEADLINE = '900'
+          python test/support/run-windows-native-f1.py target/nelisp.exe --cold --work target/windows-native-cold-ci
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Preserve acceptance evidence even on native refusal
         if: always()
@@ -58,6 +70,8 @@ jobs:
             target/windows-loaddefs-*/
             target/windows-native/
             target/windows-native-ci/
+            target/windows-native-cold-ci/
+            target/nelisp.exe.cold
             target/nelisp.exe
             target/nelisp.exe.native-startup.el
           if-no-files-found: warn

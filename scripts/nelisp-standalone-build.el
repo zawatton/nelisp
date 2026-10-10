@@ -559,7 +559,8 @@ GC, and mutation-epoch slots.  Windows cannot reliably reserve the historical
 
 (defun nelisp-standalone--driver-bss-size ()
   "Return driver BSS size including roots, loader state and catch head."
-  (+ (nelisp-standalone--catch-head-offset) 8 16))
+  (+ (nelisp-standalone--catch-head-offset) 8 16
+     (if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64) 160 0)))
 
 ;; Cold-image build digest.  The marker is assembled from bytes (never
 ;; written out as one literal) so no other copy of it can end up in a binary
@@ -878,6 +879,11 @@ storage — not an arena reservation."
     (list (nelisp-link-symbol "nl_catch_head"
                               (nelisp-standalone--catch-head-offset)
                               :section 'bss :bind 'global :type 'object))
+    ;; Windows cold I/O counters and diagnostics are outside the dumped heap.
+    (when (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
+      (list (nelisp-link-symbol "nl_win_cold_io"
+                                (- (nelisp-standalone--driver-bss-size) 176)
+                                :section 'bss :bind 'global :type 'object)))
     (list (nelisp-link-symbol "nl_cold_chunk0_domain"
                               (- (nelisp-standalone--driver-bss-size) 16)
                               :section 'bss :bind 'global :type 'object))
@@ -2483,7 +2489,29 @@ addressing by a runtime base, never by a fixed reservation."
       (seq
        ,@(nelisp-standalone--arena-init-metadata-forms-dynamic 'newbase 'newsize)
        0))
-    (defun nl_cold_grow_chunk0 (needed)
+    ,(if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
+         '(defun nl_cold_grow_chunk0 (needed)
+            (let* ((oldbase (ptr-read-u64 (data-addr nl_arena_base) 0))
+                   (oldsize (ptr-read-u64 (+ oldbase 216) 0))
+                   (oldib (ptr-read-u64 (+ oldbase 832) 0))
+                   (oldie (ptr-read-u64 (+ oldbase 840) 0)))
+              (if (<= needed oldsize)
+                  (if (= (nl_os_commit_range oldbase 0 needed) 0) -1 0)
+                (let ((newbase (nl_os_alloc_chunk needed)))
+                  (if (= newbase 0) -1
+                    (if (= (nl_os_commit_range newbase 0 needed) 0)
+                        (seq (nl_os_free_chunk newbase needed) -1)
+                      (seq
+                       ;; Commit BEFORE metadata writes and publication.  The
+                       ;; old mapping retains pre-load argv/path allocations.
+                       (ptr-write-u64 (data-addr nl_arena_base) 0 newbase)
+                       (nl_cold_realloc_chunk0 newbase needed)
+                       (ptr-write-u64 (+ newbase 832) 0 oldib)
+                       (ptr-write-u64 (+ newbase 840) 0 oldie)
+                       (ptr-write-u64 (data-addr nl_cold_chunk0_domain) 0 newbase)
+                       (ptr-write-u64 (data-addr nl_cold_chunk0_domain) 8 needed)
+                       0)))))))
+       '(defun nl_cold_grow_chunk0 (needed)
       (let* ((oldbase (ptr-read-u64 (data-addr nl_arena_base) 0))
              (oldib (ptr-read-u64 (+ oldbase 832) 0))
              (oldie (ptr-read-u64 (+ oldbase 840) 0))
@@ -2498,7 +2526,7 @@ addressing by a runtime base, never by a fixed reservation."
            ;; BSS is outside the image, published after a successful mmap.
            (ptr-write-u64 (data-addr nl_cold_chunk0_domain) 0 newbase)
            (ptr-write-u64 (data-addr nl_cold_chunk0_domain) 8 needed)
-           0))))))
+           0)))))))
 
 (defun nelisp-standalone--linux-aarch64-alloc-chunk-form ()
   "Return Linux arm64 chunk allocation forms.
@@ -8930,7 +8958,7 @@ leave symbols unresolved at link time."
   "Core wf_* dispatch helpers (shared by baked + reader applyfn).")
 
 (defconst nelisp-standalone--applyfn-fa-file-helpers
-  '(
+  `(
     ;; flat-arena boot-wiring (2): FILE persistence.  The cold-start image is
     ;; written to / read from a file as {64B header | table | regions}:
     ;;   header: magic@0, slen@8, isz@16, tlen@24, globals_off@32, frames_off@40,
@@ -9113,8 +9141,12 @@ leave symbols unresolved at link time."
              (goff (nl_mc_imgoff gbox total ib ie))
              (foff (nl_mc_imgoff fbox total ib ie))
              (uoff (nl_mc_imgoff ubox total ib ie))
-             (tlen 0) (fd 0))
-        (if (or (= tblbase 0) (= (nl_build_digest_stamped_p) 0))
+             (tlen 0) (fd 0)
+             ,@(when (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
+                 '((written 0))))
+        (if (or (= tblbase 0) (= (nl_build_digest_stamped_p) 0)
+                ,@(when (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
+                    '((= (nl_os_commit_range tblbase 0 tblcap) 0))))
             ;; an unstamped build cannot vouch for its image: refuse.
             (seq (if (= tblbase 0) 0 (nl_os_free_chunk tblbase tblcap))
                  (wf_write_int out -1))
@@ -9154,11 +9186,17 @@ leave symbols unresolved at link time."
               (ptr-write-u64 (data-addr nl_fa_tbl_base) 0 0)   ; reset override
               (setq tlen (ptr-read-u64 cin 0))
               (ptr-write-u64 hdr 8 total) (ptr-write-u64 hdr 24 tlen)
-              (nl_fa_write_all fd hdr 64 0)
-              (nl_fa_write_all fd tbl (* tlen 8) 0)
-              (nl_mc_write_chunks fd head)   ; coalesced chunk regions, logical order (single: chunk-0)
-              (nl_fa_write_all fd ib isz 0)   ; live intern (un-swizzled, fixed on load)
-              (nl_fa_write_all fd trl 48 0)   ; build-digest trailer
+              ,@(if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
+                    '((setq written (+ (nl_fa_write_all fd hdr 64 0)
+                                       (nl_fa_write_all fd tbl (* tlen 8) 0)))
+                      (setq written (+ written (nl_mc_write_chunks fd head)))
+                      (setq written (+ written (nl_fa_write_all fd ib isz 0)))
+                      (setq written (+ written (nl_fa_write_all fd trl 48 0))))
+                  '((nl_fa_write_all fd hdr 64 0)
+                    (nl_fa_write_all fd tbl (* tlen 8) 0)
+                    (nl_mc_write_chunks fd head)
+                    (nl_fa_write_all fd ib isz 0)
+                    (nl_fa_write_all fd trl 48 0)))
               (nl_os_close_handle fd)
               (bf_arena_inplace_restore_mc tbl tlen ib total)   ; restore the live arena
               ;; clear the walk's dedup marks (as `bf_arena_dump_image_to_file'
@@ -9167,7 +9205,11 @@ leave symbols unresolved at link time."
               ;; through it would be swept while still live.
               (bf_arena_mr_chunks (ptr-read-u64 268436160 0) cout cout)
               (nl_os_free_chunk tblbase tblcap)
-              (wf_write_int out (+ 64 (+ (* tlen 8) (+ total (+ isz 48)))))))))))
+              (wf_write_int out
+                            ,(if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
+                                 '(if (= written (+ 64 (+ (* tlen 8) (+ total (+ isz 48)))))
+                                      written -1)
+                               '(+ 64 (+ (* tlen 8) (+ total (+ isz 48))))))))))))
     (defun bf_arena_load_image_from_file (args out)
       (let* ((cpath (nl_bi_make_cpath (wf_arg_ptr args 0)))
              (hdr (alloc-bytes 64 8))
@@ -9807,12 +9849,19 @@ leave symbols unresolved at link time."
     ;; `reader-gc.o'.  (Blocker fix: eval-path `nl_gc_bt_ok' unresolved.)
 
     ;; stream each chunk's live region [cds,cds+used) to FD in chain (=logical) order.
-    (defun nl_mc_write_chunks (fd chunk)
+    ,(if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
+         '(defun nl_mc_write_chunks (fd chunk)
+            (if (= chunk 0) 0
+              (let* ((used (bf_arena_chunk_used chunk))
+                     (w (nl_fa_write_all fd (+ (ptr-read-u64 chunk 0) 1024) used 0)))
+                (if (/= w used) w
+                  (+ w (nl_mc_write_chunks fd (ptr-read-u64 (+ chunk 48) 0)))))))
+       '(defun nl_mc_write_chunks (fd chunk)
       (if (= chunk 0) 0
         (nl_seq2
          (nl_fa_write_all fd (+ (ptr-read-u64 chunk 0) 1024)
                           (bf_arena_chunk_used chunk) 0)
-         (nl_mc_write_chunks fd (ptr-read-u64 (+ chunk 48) 0)))))
+         (nl_mc_write_chunks fd (ptr-read-u64 (+ chunk 48) 0))))))
 
   )
   "The flat-arena persistence + swizzle family (Doc 156), excised from
@@ -28195,7 +28244,13 @@ mappings, pending foreign frees and loader TLS state are discarded.")
     `((let* ((,name-buf (alloc-bytes 16 1)))
         (seq
          (ptr-write-u64 268436216 0 0)
-         (sexp-write-str-lit ,src ,nelisp-standalone--cold-boot-reinit-source)
+         (sexp-write-str-lit ,src
+                             ,(if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
+                                  (concat nelisp-standalone--cold-boot-reinit-source
+                                          "(setq temporary-file-directory (or (getenv \"TEMP\") (getenv \"TMP\") default-directory))\n"
+                                          "(dolist (name '(nelisp-native-windows-directory-handles nelisp-native-cache--addresses nelisp-native-cache--gccjit-handles)) (when (boundp name) (set name nil)))\n"
+                                          "(setq user-emacs-directory (concat (or (getenv \"APPDATA\") (getenv \"USERPROFILE\") default-directory) \"/.emacs.d/\"))\n")
+                                nelisp-standalone--cold-boot-reinit-source))
          ,@(nelisp-standalone--byte-write-forms name-buf "<cold-boot>")
          (nl_eval_source_all ,src ,cursor ,result ,pool ,out ,ctx ,builtin-sym 0
                               ,name-buf ,(length (encode-coding-string "<cold-boot>" 'utf-8 t)))
@@ -33629,45 +33684,83 @@ target the same installed names signal catchable
              (nl_seq2
               (extern-call MultiByteToWideChar 65001 0 src -1 dst cap)
               dst))))
-       (defun nl_win_wargv_fill (wargv argc i sp)
+       (defun nl_win_wargv_fill (wargv argc i sp off)
          (if (= i argc)
              (nl_seq2 (ptr-write-u64 sp (* (+ i 1) 8) 0) sp)
            (let* ((warg (ptr-read-u64 wargv (* i 8)))
-                  (carg (nl_win_wcs_utf8_dup warg)))
-             (seq
-              (ptr-write-u64 sp (* (+ i 1) 8) carg)
-              (nl_win_wargv_fill wargv argc (+ i 1) sp)))))
+                  (n (extern-call WideCharToMultiByte 65001 0 warg -1 0 0 0 0)))
+             (if (< n 1) (nl_os_alloc_fail)
+               (seq
+                (extern-call WideCharToMultiByte 65001 0 warg -1 (+ sp off) n 0 0)
+                (ptr-write-u64 sp (* (+ i 1) 8) (+ sp off))
+                (nl_win_wargv_fill wargv argc (+ i 1) sp (+ off n)))))))
        (defun nl_os_argv_init (sp)
-         (let* ((argc_slot (alloc-bytes 8 8))
-                (cmd (extern-call GetCommandLineW))
-                (wargv (extern-call CommandLineToArgvW cmd argc_slot))
-                (argc (if (= wargv 0) 1 (ptr-read-u32 argc_slot 0)))
-                (argv (alloc-bytes (* (+ argc 2) 8) 8)))
-           (if (= wargv 0)
-               sp
-             (seq
-              (ptr-write-u64 argv 0 argc)
-              (nl_win_wargv_fill wargv argc 0 argv)))))
+         ;; argv survives cold ReadFile even when chunk-0 is not grown.  It is
+         ;; process-lifetime OS memory, outside the image and the Lisp heap.
+         (let* ((argc_slot (extern-call VirtualAlloc 0 4096 12288 4)))
+           (if (= argc_slot 0) (nl_os_alloc_fail)
+             (let* ((cmd (extern-call GetCommandLineW))
+                    (wargv (extern-call CommandLineToArgvW cmd argc_slot))
+                    (argc (if (= wargv 0) 0 (ptr-read-u32 argc_slot 0)))
+                    (offset (* (+ argc 2) 8)) (bytes offset) (i 0))
+               (seq
+                (if (= wargv 0) (nl_os_alloc_fail) 0)
+                (while (< i argc)
+                  (setq bytes (+ bytes (extern-call WideCharToMultiByte 65001 0
+                                                   (ptr-read-u64 wargv (* i 8)) -1 0 0 0 0)))
+                  (setq i (+ i 1)))
+                (let ((argv (extern-call VirtualAlloc 0 bytes 12288 4)))
+                  (if (= argv 0) (nl_os_alloc_fail)
+                    (seq
+                     (ptr-write-u64 argv 0 argc)
+                     (nl_win_wargv_fill wargv argc 0 argv offset)
+                     (extern-call LocalFree wargv)
+                     (extern-call VirtualFree argc_slot 0 32768)
+                     argv))))))))
        (defun nl_os_open_read (path)
-         (let* ((wpath (nl_win_utf8_wcs_dup path)))
-           (extern-call CreateFileW wpath 2147483648 1 0 3 128 0)))
+         ;; A filename conversion must not move the dump cursor after TOTAL
+         ;; was measured, or put a live pathname in the restore destination.
+         (let* ((n (extern-call MultiByteToWideChar 65001 0 path -1 0 0))
+                (wpath (if (< n 1) 0 (extern-call VirtualAlloc 0 (* n 2) 12288 4))))
+           (if (= wpath 0) -1
+             (seq
+              (extern-call MultiByteToWideChar 65001 0 path -1 wpath n)
+              (let ((h (extern-call CreateFileW wpath 2147483648 1 0 3 128 0)))
+                (seq (extern-call VirtualFree wpath 0 32768) h))))))
        (defun nl_os_open_write_truncate (path)
-         (let* ((wpath (nl_win_utf8_wcs_dup path)))
-           (extern-call CreateFileW wpath 1073741824 0 0 2 128 0)))
+         (let* ((n (extern-call MultiByteToWideChar 65001 0 path -1 0 0))
+                (wpath (if (< n 1) 0 (extern-call VirtualAlloc 0 (* n 2) 12288 4))))
+           (if (= wpath 0) -1
+             (seq
+              (extern-call MultiByteToWideChar 65001 0 path -1 wpath n)
+              (let ((h (extern-call CreateFileW wpath 1073741824 0 0 2 128 0)))
+                (seq (extern-call VirtualFree wpath 0 32768) h))))))
        (defun nl_os_close_handle (h)
          (if (< h 0) 0 (extern-call CloseHandle h)))
        (defun nl_os_read_file_handle (h ptr len)
-         (if (< h 0)
+         (if (or (< h 0) (< len 0))
              -1
-           (let* ((got (alloc-bytes 4 4))
-                  (ok (extern-call ReadFile h ptr len got 0)))
-             (if (= ok 0) -1 (ptr-read-u32 got 0)))))
+           (let* ((lock (+ (data-addr nl_win_cold_io) 0))
+                  (counter (+ lock 8))
+                  (count (if (> len 2147483647) 2147483647 len)))
+             (seq
+              (while (= (atomic-compare-exchange lock 0 1) 0) 0)
+              (ptr-write-u32 counter 0 0)
+              (let* ((ok (extern-call ReadFile h ptr count counter 0))
+                     (transferred (if (= ok 0) -1 (ptr-read-u32 counter 0))))
+                (seq (atomic-fetch-add lock -1) transferred))))))
        (defun nl_os_write_file_handle (h ptr len)
-         (if (< h 0)
+         (if (or (< h 0) (< len 0))
              -1
-           (let* ((sent (alloc-bytes 4 4))
-                  (ok (extern-call WriteFile h ptr len sent 0)))
-             (if (= ok 0) -1 (ptr-read-u32 sent 0)))))
+           (let* ((lock (+ (data-addr nl_win_cold_io) 16))
+                  (counter (+ lock 8))
+                  (count (if (> len 2147483647) 2147483647 len)))
+             (seq
+              (while (= (atomic-compare-exchange lock 0 1) 0) 0)
+              (ptr-write-u32 counter 0 0)
+              (let* ((ok (extern-call WriteFile h ptr count counter 0))
+                     (transferred (if (= ok 0) -1 (ptr-read-u32 counter 0))))
+                (seq (atomic-fetch-add lock -1) transferred))))))
        (defun nl_os_read_file_cpath (path buf len)
          (let* ((h (nl_os_open_read path))
                 (n (nl_os_read_file_handle h buf len)))
@@ -33676,15 +33769,9 @@ target the same installed names signal catchable
          (let* ((h (extern-call GetStdHandle 4294967286)))
            (nl_os_read_file_handle h ptr len)))
        (defun nl_os_write_stdout (ptr len)
-         (let* ((h (extern-call GetStdHandle 4294967285))
-                (sent (alloc-bytes 4 4))
-                (ok (extern-call WriteFile h ptr len sent 0)))
-           (if (= ok 0) -1 (ptr-read-u32 sent 0))))
+         (nl_os_write_file_handle (extern-call GetStdHandle 4294967285) ptr len))
        (defun nl_os_write_stderr (ptr len)
-         (let* ((h (extern-call GetStdHandle 4294967284))
-                (sent (alloc-bytes 4 4))
-                (ok (extern-call WriteFile h ptr len sent 0)))
-           (if (= ok 0) -1 (ptr-read-u32 sent 0))))
+         (nl_os_write_file_handle (extern-call GetStdHandle 4294967284) ptr len))
 	       (defun nl_os_process_fork () -1)
 	       (defun nl_os_process_execve (path argv envp) -1)
 	       (defun nl_os_process_wait4 (pid statusp options) -1)
@@ -34268,20 +34355,10 @@ target the same installed names signal catchable
 	       (defun nl_os_syscall_nr_fcntl () 72)
 	       (defun nl_os_syscall_nr_exit () 60)))))
 
-(defun nelisp-standalone--reader-driver-source ()
-  "DUAL-MODE reader driver (M7 file-load + M8 multi-form loop).
-Takes the entry stack pointer SP; reads argv[1] = (ptr-read-u64 sp 16):
-  argv[1] == 0          start the REPL;
-  argv[1] == --embedded use the embedded NELISP_SRC via `sexp-write-str-lit';
-  otherwise             open+read argv[1] through target OS helpers and
-                        wrap the bytes via `nl_alloc_str'.
-Then the same multi-form parse+eval loop runs `src'.  argc==1 means
-argv[1]==NULL==0 (argv is NULL-terminated), so the check is reliable.
-Each builtin name installs through a fresh, full-length arena buffer so
-`nl_install_one' never aliases a reused buffer and >8-byte names install
-correctly."
-  `(seq
-    ,@(nelisp-standalone--reader-os-source-forms)
+(defun nelisp-standalone--reader-cold-source-forms ()
+  "Return cold-loader definitions without generating the bundled prelude.
+Keep this source-only boundary usable by Windows preflight and host controls."
+  `(
     ;; flat-arena cold-loader gate (default OFF, EXPLICIT-ONLY).
     ;;
     ;; SECURITY (2026-09-28): this used to fall back to a FIXED,
@@ -34314,9 +34391,13 @@ correctly."
     ;; `nl_os_write_stderr' (defined in a separate helper unit that is not
     ;; linked into every build variant that includes the cold-loader).
     (defun nl_cold_diag (buf len)
-      (syscall-direct 1 2 buf len 0 0 0))
+      ,(if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
+           '(nl_fa_write_all (extern-call GetStdHandle 4294967284) buf len 0)
+         '(syscall-direct 1 2 buf len 0 0 0)))
     (defun nl_cold_diag_bad_header ()
-      (let* ((buf (alloc-bytes 128 1)))
+      (let* ((buf ,(if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
+                        '(+ (data-addr nl_win_cold_io) 32)
+                      '(alloc-bytes 128 1))))
         (seq
          ,@(nelisp-standalone--byte-write-forms
             'buf "nelisp: cold-load rejected (invalid header)\n")
@@ -34326,7 +34407,9 @@ correctly."
                     "nelisp: cold-load rejected (invalid header)\n"
                     'utf-8 t))))))
     (defun nl_cold_diag_bad_reloc ()
-      (let* ((buf (alloc-bytes 128 1)))
+      (let* ((buf ,(if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
+                        '(+ (data-addr nl_win_cold_io) 32)
+                      '(alloc-bytes 128 1))))
         (seq
          ,@(nelisp-standalone--byte-write-forms
             'buf "nelisp: cold-load rejected (invalid relocation table)\n")
@@ -34457,7 +34540,9 @@ correctly."
             (if (= (nl_build_digest_stamped_p) 0) 0
               (nl_build_digest_eq (+ trl 16)))))))
     (defun nl_cold_diag_bad_digest ()
-      (let* ((buf (alloc-bytes 128 1)))
+      (let* ((buf ,(if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
+                        '(+ (data-addr nl_win_cold_io) 32)
+                      '(alloc-bytes 128 1))))
         (seq
          ,@(nelisp-standalone--byte-write-forms
             'buf "nelisp: cold-load rejected (build digest mismatch)\n")
@@ -34541,7 +34626,10 @@ correctly."
                                    65536))
                           (cursize (ptr-read-u64 (+ base0 216) 0)))
                      (seq
-                      (if (> needed cursize) (nl_cold_grow_chunk0 needed) 0)
+                      ,(if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
+                           '(if (< (nl_cold_grow_chunk0 needed) 0)
+                                (seq (nl_os_close_handle fd) (nl_os_alloc_fail)) 0)
+                         '(if (> needed cursize) (nl_cold_grow_chunk0 needed) 0))
                       (let* ((base (ptr-read-u64 (data-addr nl_arena_base) 0))
                              (ds (+ base 1024))
                              (ib (ptr-read-u64 (+ base 832) 0))
@@ -34642,6 +34730,23 @@ correctly."
                       (ptr-write-u64 globals 16 0)
                       (ptr-write-u64 globals 24 0)
                       1))))))))))
+))
+
+(defun nelisp-standalone--reader-driver-source ()
+  "DUAL-MODE reader driver (M7 file-load + M8 multi-form loop).
+Takes the entry stack pointer SP; reads argv[1] = (ptr-read-u64 sp 16):
+  argv[1] == 0          start the REPL;
+  argv[1] == --embedded use the embedded NELISP_SRC via `sexp-write-str-lit';
+  otherwise             open+read argv[1] through target OS helpers and
+                        wrap the bytes via `nl_alloc_str'.
+Then the same multi-form parse+eval loop runs `src'.  argc==1 means
+argv[1]==NULL==0 (argv is NULL-terminated), so the check is reliable.
+Each builtin name installs through a fresh, full-length arena buffer so
+`nl_install_one' never aliases a reused buffer and >8-byte names install
+correctly."
+  `(seq
+    ,@(nelisp-standalone--reader-os-source-forms)
+    ,@(nelisp-standalone--reader-cold-source-forms)
     (defun nl_cstr_len_loop (ptr n)
       (if (= (ptr-read-u8 ptr n) 0)
           n
@@ -38401,6 +38506,62 @@ The trace parent directory must exist; tracing never skips a build stage."
   "Return the build-time cold image path for BINARY (BINARY.cold)."
   (concat binary ".cold"))
 
+(defun nelisp-standalone--cold-wine-prefix ()
+  "Return the same target prefix used by the coordinator F1 runner."
+  (expand-file-name (or (getenv "WINEPREFIX") "~/.cache/wine-nelisp")))
+
+(defun nelisp-standalone--cold-target-path (path)
+  "Return absolute PATH as seen by the dumping target."
+  (let ((absolute (expand-file-name path)))
+    (if (equal (getenv "NELISP_STANDALONE_COLD_RUNNER") "wine")
+        (let ((process-environment
+               (cons (concat "WINEPREFIX=" (nelisp-standalone--cold-wine-prefix))
+                     process-environment)))
+          (with-temp-buffer
+            (unless (eql (call-process "winepath" nil (list (current-buffer) nil) nil "-w" absolute) 0)
+              (error "winepath failed for %s: %s" absolute (buffer-string)))
+            (let ((target-path (string-trim (buffer-string))))
+              (unless (string-match-p "\\`[A-Za-z]:[/\\\\][^\r\n]*\\'" target-path)
+                (error "Invalid Wine target path: %s" target-path))
+              target-path)))
+      absolute)))
+
+(defun nelisp-standalone--cold-build-environment ()
+  "Return the dump environment, discarding user and compiler overrides.
+Windows keeps only OS variables; PATH contains system directories alone.
+The Wine prefix selects the coordinator's target OS and is never dumped."
+  (if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
+      (let* ((wine (equal (getenv "NELISP_STANDALONE_COLD_RUNNER") "wine"))
+             (environment
+              (if wine
+                  (let ((process-environment
+                         (cons (concat "WINEPREFIX=" (nelisp-standalone--cold-wine-prefix))
+                               process-environment)))
+                    (with-temp-buffer
+                      (unless (eql (call-process "wine" nil t nil "cmd" "/c" "set") 0)
+                        (error "Cannot read the Wine target system environment"))
+                      (split-string (buffer-string) "[\r\n]+" t)))
+                process-environment))
+             (value (lambda (name)
+                      (let ((entry (cl-find-if
+                                    (lambda (entry)
+                                      (string-prefix-p (concat name "=") entry t))
+                                    environment)))
+                        (when entry (substring entry (1+ (length name)))))))
+             (root (funcall value "SystemRoot")))
+        (unless root (error "Windows cold dump requires SystemRoot"))
+        (append
+         (list (concat "PATH=" root "/System32;" root)
+               (concat "SystemRoot=" root))
+         (delq nil (mapcar (lambda (name)
+                            (let ((v (funcall value name)))
+                              (when v (concat name "=" v))))
+                          '("WINDIR" "SystemDrive" "ComSpec" "PATHEXT" "TEMP" "TMP")))
+         (when wine
+           (list "WINEDEBUG=-all"
+                 (concat "WINEPREFIX=" (nelisp-standalone--cold-wine-prefix))))))
+    (list "PATH=/usr/bin:/bin" "LANG=C.UTF-8" "HOME=/nonexistent")))
+
 (defun nelisp-standalone--build-cold-image (binary)
   "Dump BINARY's post-prelude heap to `nelisp-standalone--cold-image-path'.
 Runs only when the target executes on this host; NELISP_STANDALONE_COLD_IMAGE=0
@@ -38421,8 +38582,12 @@ the value template requests Tier 0 only. Both include GNU-compiled Tier 0 Lisp."
   (let ((image (nelisp-standalone--cold-image-path binary)))
     (when (file-exists-p image) (delete-file image))
     (if (or (equal (getenv "NELISP_STANDALONE_COLD_IMAGE") "0")
-            (not (nelisp-standalone--target-runnable-on-host-p)))
-        (message "[standalone-reader] cold image skipped")
+            (and (not (nelisp-standalone--target-runnable-on-host-p))
+                 (not (and (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
+                           (equal (getenv "NELISP_STANDALONE_COLD_RUNNER") "wine")))))
+        (if (member (getenv "NELISP_STANDALONE_NATIVE_COMPILER_COLD") '("1" "template"))
+            (error "Requested cold image needs the target host or NELISP_STANDALONE_COLD_RUNNER=wine")
+          (message "[standalone-reader] cold image skipped"))
       (let* ((default-directory temporary-file-directory)
              (native-compiler-cold
               (member (getenv "NELISP_STANDALONE_NATIVE_COMPILER_COLD") '("1" "template")))
@@ -38434,24 +38599,26 @@ the value template requests Tier 0 only. Both include GNU-compiled Tier 0 Lisp."
                                         nelisp-standalone--repo-root) nil t t)
                 (expand-file-name "target/nelisp-template-bytecode.el"
                                   nelisp-standalone--repo-root)))
-             (process-environment
-              (list "PATH=/usr/bin:/bin" "LANG=C.UTF-8" "HOME=/nonexistent"))
+             (runner (getenv "NELISP_STANDALONE_COLD_RUNNER"))
              (form
               (if native-compiler-cold
                   (format
                    "(progn (add-to-list 'load-path %S) (add-to-list 'load-path %S) (require 'nelisp-native-cache) (load %S nil t t) (%s) (garbage-collect) (nelisp--arena-dump-image-stream %S))"
-                   (expand-file-name "lisp" nelisp-standalone--repo-root)
-                   (expand-file-name "src" nelisp-standalone--repo-root)
-                   template-bytecode
+                   (nelisp-standalone--cold-target-path (expand-file-name "lisp" nelisp-standalone--repo-root))
+                   (nelisp-standalone--cold-target-path (expand-file-name "src" nelisp-standalone--repo-root))
+                   (nelisp-standalone--cold-target-path template-bytecode)
                    (if template-cold "nelisp-native-cache-prepare-cold-template"
                      "nelisp-native-cache-prepare-cold-compiler")
-                   (expand-file-name image))
+                   (nelisp-standalone--cold-target-path image))
                 (format "(nelisp--arena-dump-image-stream %S)"
-                        (expand-file-name image))))
+                        (nelisp-standalone--cold-target-path image))))
+             (process-environment (nelisp-standalone--cold-build-environment))
              (status nil) (output nil))
         (with-temp-buffer
-          (setq status (call-process (expand-file-name binary) nil t nil
-                                     "--eval" form))
+          (setq status
+                (if (equal runner "wine")
+                    (call-process "wine" nil t nil (expand-file-name binary) "--eval" form)
+                  (call-process (expand-file-name binary) nil t nil "--eval" form)))
           (setq output (string-trim (buffer-string))))
         (if (and (eql status 0)
                  (string-match-p "\\`[0-9]+\\'" output)

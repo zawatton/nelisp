@@ -212,3 +212,52 @@ evidence is untracked target/windows-native/. No ledger percentage implies Windo
 - [[https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention][Microsoft x64 calling convention]]
 - [[https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualalloc][VirtualAlloc]]
 - [[https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualprotect][VirtualProtect and instruction-cache responsibility]]
+
+* Windows full compiler cold-image recipe
+
+Generate the PE and its full compiler image together, with a 1800-second bound:
+#+begin_src sh
+NELISP_STANDALONE_NATIVE_COMPILER_COLD=1 timeout 1800 make standalone-reader NELISP_STANDALONE_TARGET=windows-x86_64
+#+end_src
+On a Linux coordinator with Wine installed, use the same build with the target
+runner explicitly selected (the PE itself produces the image; ELF images cannot
+be restamped for Windows):
+#+begin_src sh
+NELISP_STANDALONE_NATIVE_COMPILER_COLD=1 NELISP_STANDALONE_COLD_RUNNER=wine timeout 1800 make standalone-reader NELISP_STANDALONE_TARGET=windows-x86_64
+#+end_src
+=winepath= converts every compiler, bytecode and image pathname before the dump
+environment is scrubbed. The selected =WINEPREFIX= is retained for the host
+runner. The Windows dump retains SystemRoot, WINDIR, SystemDrive, ComSpec,
+PATHEXT, TEMP and TMP. PATH contains only the target system directories. HOME,
+APPDATA, USERPROFILE, EMACSLOADPATH and all NELISP compiler/cache overrides are
+excluded. CI sets a distinct user-cache override canary during generation;
+the cold runner refuses an image containing it, checking actual dump bytes.
+A cross-build requesting an image without a runnable target fails.
+
+The driver refreshes argv, command-line-args, the OS environment, working
+directory and invocation names before cold reinitialization; Windows then
+re-derives temporary/user directories and drops process-owned pinned directory
+handles and native address caches. argv and filename conversions use OS memory
+outside the image, so an initially sufficient chunk reservation cannot overwrite
+argv, and opening the dump cannot move the measured arena cursor. Windows cold
+ReadFile/WriteFile counters use separately locked BSS cells, returning partial
+transfers to the shared completion loops. Every destination/scratch reservation
+is committed before writes; failed scratch commits release the unpublished
+mapping. Rejection diagnostics use BSS instead of the arena.
+
+Rebuild-free preflight and the Win64 emitter/failure controls:
+#+begin_src sh
+timeout 1800 emacs -Q --batch -L lisp -L src -L scripts -l test/support/check-windows-cold.el
+#+end_src
+The cold F1 runner requires evidence of full compiler restoration, refreshes
+process globals under a fresh environment, forces GC, then checks digest
+mismatch, a truncated trailer, and a malformed header in independent processes.
+It records the exact PE/image digests in its receipt. Run it both with and
+without =--cold=, using distinct evidence directories:
+#+begin_src sh
+python test/support/run-windows-native-f1.py target/nelisp.exe --cold --work target/windows-native-cold-ci
+python test/support/run-windows-native-f1.py target/nelisp.exe --work target/windows-native-ci
+#+end_src
+For coordinator Wine evidence, add =--wine=; this cannot qualify real Windows
+acceptance. Each runner has an overall 1800-second budget. The windows-latest
+workflow builds the full image and executes both paths, preserving all receipts.

@@ -9,11 +9,13 @@ import os
 from pathlib import Path
 import re
 import signal
+import shutil
 import subprocess
 import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
+COLD_ENV_CANARY = b'nelisp-cold2-user-override-canary'
 DIGEST = '52c26b63098a83d62c044908b231afd5cce3a85da3b559147e6dc4810eeac2ef'
 PATH_VARIABLES = ('F1_SOURCE', 'F1_FIXTURE', 'F1B_SOURCE', 'F1B_FIXTURE',
                   'NELISP_NATIVE_CACHE', 'WINDOWS_TRUST_ROOT')
@@ -68,12 +70,15 @@ def digest(path):
 # Without a Windows cold image the reader loads the native compiler from
 # source, so a Windows compile takes 3-5 minutes on windows-latest (Linux
 # with a cold image: ~20 s). NELISP_WINDOWS_NATIVE_DEADLINE overrides 290 s.
-DEFAULT_DEADLINE = int(os.environ.get('NELISP_WINDOWS_NATIVE_DEADLINE', '290'))
+DEFAULT_DEADLINE = min(1800, int(os.environ.get('NELISP_WINDOWS_NATIVE_DEADLINE', '290')))
+RUN_DEADLINE = None
 
 
 def run(command, env, work, phase, deadline=None):
     """Save output and terminate the process tree on a deadline, including on POSIX."""
     deadline = deadline or DEFAULT_DEADLINE
+    if RUN_DEADLINE is not None:
+        deadline = max(0.01, min(deadline, RUN_DEADLINE - time.monotonic()))
     start = time.monotonic()
     options = ({'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP}
                if os.name == 'nt' else {'start_new_session': True})
@@ -121,7 +126,70 @@ def phase_passed(phase, receipt, output, errors):
     return True
 
 
+def cold_control_images(cold, work):
+    """Keep the producing image intact; mutate a trailer, length and header."""
+    result = []
+    for name in ('mismatched', 'truncated', 'malformed'):
+        image = work / (name + '.cold')
+        if name == 'malformed':
+            image.write_bytes(b'\0' * 64)
+        else:
+            shutil.copyfile(cold, image)
+            with image.open('r+b') as stream:
+                stream.seek(-1, os.SEEK_END)
+                if name == 'truncated':
+                    stream.truncate()
+                else:
+                    byte = stream.read(1)
+                    stream.seek(-1, os.SEEK_END)
+                    stream.write(bytes([byte[0] ^ 1]))
+        diagnostic = ('invalid header' if name == 'malformed' else 'build digest mismatch')
+        result.append((name, image, diagnostic))
+    return result
+
+
+def cold_controls(binary, cold, env, work, wine=False):
+    """Prove full restoration, refreshed process state, GC, and clean refusal."""
+    driver = work / 'cold-control.el'
+    driver.write_text(
+        ';;; -*- lexical-binding: t; -*-\n'
+        '(let* ((restored (and (boundp \'nelisp-native-cache--cold-source-check) '
+        'nelisp-native-cache--cold-source-check (featurep \'nelisp-aot-compiler))) '
+        '(expected (equal (getenv "COLD_CONTROL_EXPECT") "restored")) '
+        '(live (list "alive" 42)))\n'
+        ' (unless (eq (if restored t nil) expected) (error "cold restoration proof failed"))\n'
+        ' (unless (equal (getenv "COLD_CONTROL_TOKEN") "fresh-process") (error "frozen environment"))\n'
+        ' (unless (and (member "COLD_CONTROL_TOKEN=fresh-process" process-environment) '
+        '(equal default-directory (getenv "COLD_CONTROL_DIRECTORY")) '
+        '(equal invocation-name (getenv "COLD_CONTROL_INVOCATION")) '
+        '(member "-l" command-line-args)) (error "frozen process globals"))\n'
+        ' (garbage-collect) (unless (equal live \'("alive" 42)) (error "GC lost restored roots"))\n'
+        ' (when expected (unless (and (fboundp \'nelisp-aot-compile-to-link-unit) '
+        '(or (not (boundp \'nelisp-native-windows-directory-handles)) '
+        '(null nelisp-native-windows-directory-handles))) (error "restored compiler/handles")))\n'
+        ' (princ "WINDOWS-COLD-CONTROL-PASS\\n"))\n', encoding='utf-8')
+    current = dict(env, COLD_CONTROL_TOKEN='fresh-process', COLD_CONTROL_INVOCATION=binary.name,
+                   COLD_CONTROL_DIRECTORY=(wine_path(ROOT) if wine else str(ROOT)).replace('\\', '/') + '/')
+    cases = [('restored', cold, None)] + cold_control_images(cold, work)
+    receipts = []
+    for name, image, diagnostic in cases:
+        command = reader_command(binary, image, driver, wine)
+        receipt = run(command, reader_environment(
+            dict(current, COLD_CONTROL_EXPECT='restored' if name == 'restored' else 'fallback'), wine),
+            work, 'cold-' + name)
+        output = (work / ('cold-' + name + '.out')).read_text(encoding='utf-8', errors='replace')
+        errors = (work / ('cold-' + name + '.err')).read_text(encoding='utf-8', errors='replace')
+        wanted = '' if diagnostic is None else 'nelisp: cold-load rejected (' + diagnostic + ')\n'
+        receipt.update(phase='cold-' + name,
+                       passed=receipt['rc'] == 0 and output == 'WINDOWS-COLD-CONTROL-PASS\n' and errors == wanted,
+                       image_sha256=digest(image))
+        receipts.append(receipt)
+    return receipts
+
+
 def main():
+    global RUN_DEADLINE
+    RUN_DEADLINE = time.monotonic() + 1800
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('binary', type=Path)
     parser.add_argument('--work', type=Path, help='New receipt directory; existing directory refuses.')
@@ -156,6 +224,17 @@ def main():
                   binary_sha256=digest(binary), cold_sha256=digest(cold) if cold else None,
                   startup_sha256=digest(Path(str(binary) + '.native-startup.el')),
                   driver_sha256=digest(ROOT / 'test/standalone-bytecode-native-funcall-driver.el'), rows=rows)
+    if cold:
+        report['dump_environment_scrubbed'] = COLD_ENV_CANARY not in cold.read_bytes()
+        if not report['dump_environment_scrubbed']:
+            (work / 'receipt.json').write_text(json.dumps(report, indent=2) + '\n')
+            print(verdict + '-FAIL build environment path embedded in cold image')
+            return 1
+        report['cold_controls'] = cold_controls(binary, cold, env, work, args.wine)
+        (work / 'receipt.json').write_text(json.dumps(report, indent=2) + '\n')
+        if not all(row['passed'] for row in report['cold_controls']):
+            print(verdict + '-FAIL cold controls; evidence=' + str(work))
+            return 1
     host = run([env.get('EMACS', 'emacs'), '-Q', '--batch', '-L', str(ROOT / 'lisp'), '--eval',
                 fixture_expression('F1_SOURCE')],
                env, work, 'host', deadline=60)

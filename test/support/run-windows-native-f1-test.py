@@ -100,6 +100,51 @@ class CheckoutControls(unittest.TestCase):
             self.assertEqual((checkout / relative).read_bytes(), expected)
 
 
+class ColdImageControls(unittest.TestCase):
+    def test_mutations_preserve_the_producing_image(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            cold = work / 'reader.exe.cold'
+            original = bytes(range(176))
+            cold.write_bytes(original)
+            images = runner.cold_control_images(cold, work)
+            self.assertEqual(cold.read_bytes(), original)
+            self.assertEqual([name for name, _, _ in images], ['mismatched', 'truncated', 'malformed'])
+            self.assertEqual(images[0][1].read_bytes(), original[:-1] + bytes([original[-1] ^ 1]))
+            self.assertEqual(images[1][1].read_bytes(), original[:-1])
+            self.assertEqual(images[2][1].read_bytes(), b'\0' * 64)
+
+    def test_cold_receipts_refuse_missing_proof_and_wrong_diagnostics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            cold = work / 'reader.exe.cold'
+            cold.write_bytes(bytes(range(176)))
+            def execute(command, env, work, phase):
+                marker = 'WINDOWS-COLD-CONTROL-PASS\n'
+                diagnostic = ('' if phase == 'cold-restored' else
+                              'nelisp: cold-load rejected (' +
+                              ('invalid header' if phase == 'cold-malformed' else 'build digest mismatch') + ')\n')
+                (work / (phase + '.out')).write_text(marker)
+                (work / (phase + '.err')).write_text(diagnostic)
+                return dict(rc=0, seconds=1)
+            with patch.object(runner, 'run', side_effect=execute):
+                rows = runner.cold_controls(Path('reader.exe'), cold, {}, work)
+                self.assertTrue(all(row['passed'] for row in rows))
+            for defect in ('missing-proof', 'wrong-diagnostic', 'failed-process'):
+                def broken(command, env, work, phase):
+                    receipt = execute(command, env, work, phase)
+                    if defect == 'missing-proof':
+                        (work / (phase + '.out')).write_text('')
+                    elif defect == 'wrong-diagnostic':
+                        (work / (phase + '.err')).write_text('unexpected\n')
+                    else:
+                        receipt['rc'] = 1
+                    return receipt
+                with patch.object(runner, 'run', side_effect=broken):
+                    self.assertTrue(all(not row['passed'] for row in
+                                        runner.cold_controls(Path('reader.exe'), cold, {}, work)))
+
+
 class ReceiptControls(unittest.TestCase):
     def test_silent_load_command(self):
         command = runner.reader_command(Path('reader.exe'), None,
