@@ -4,6 +4,7 @@
 import importlib.util
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -11,6 +12,33 @@ import unittest
 spec = importlib.util.spec_from_file_location('windows_f1', Path(__file__).with_name('run-windows-native-f1.py'))
 runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
+
+
+class CheckoutControls(unittest.TestCase):
+    def test_autocrlf_preserves_pinned_inventory(self):
+        """Exercise Git's Windows checkout conversion against the real attributes."""
+        relative = Path('test/fixtures/native-bytecode/gnu-31.1-opcodes.json')
+        expected = (runner.ROOT / relative).read_bytes()
+        # A checkout already converted by the old attributes is itself invalid.
+        self.assertEqual(runner.digest(runner.ROOT / relative),
+                         '147da590c9f5bdcf190b5b410c6af878c793ac89e07eafa4ae9f05a9b7aa7bcb')
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory) / 'repository'
+            checkout = Path(directory) / 'checkout'
+            repository.mkdir()
+            checkout.mkdir()
+            def git(*args):
+                return subprocess.run(['git', '-C', str(repository), *args],
+                                      check=True, capture_output=True, timeout=30)
+            git('init', '--quiet')
+            git('config', 'core.autocrlf', 'true')
+            (repository / '.gitattributes').write_bytes((runner.ROOT / '.gitattributes').read_bytes())
+            fixture = repository / relative
+            fixture.parent.mkdir(parents=True)
+            fixture.write_bytes(expected)
+            git('add', '.gitattributes', relative.as_posix())
+            git('checkout-index', '--all', '--force', '--prefix=' + checkout.as_posix() + '/')
+            self.assertEqual((checkout / relative).read_bytes(), expected)
 
 
 class ReceiptControls(unittest.TestCase):

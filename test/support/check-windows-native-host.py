@@ -89,14 +89,33 @@ def main():
         parser.error('--pe and --proof are required together')
     args.output.parent.mkdir(parents=True, exist_ok=True)
     start = time.monotonic()
-    command = [os.environ.get('EMACS', 'emacs'), '-Q', '--batch', '-L', 'lisp', '-L', 'src', '-L', 'scripts',
-               '-l', 'test/nelisp-native-windows-test.el', '-f', 'ert-run-tests-batch-and-exit']
-    completed = subprocess.run(command, cwd=ROOT, capture_output=True, timeout=60)
+    command = [os.environ.get('EMACS', 'emacs'), '-Q', '--batch', '-L', 'lisp', '-L', 'src', '-L', 'scripts']
+    # Use the same host process as ERT: preserve identity diagnostics even when
+    # the planner refuses before emission. Hash literal files without relaxing
+    # the pinned dialect gate or trusting checkout newline conversion.
+    identity = '''(let* ((library (locate-library "bytecomp"))
+                        (directory (and library (file-name-directory library))))
+      (princ "WINDOWS-HOST-DIALECT ")
+      (prin1 (list :emacs-version emacs-version :system-type system-type
+                   :dialect (nelisp-bytecode-compiler-input-dialect)
+                   :files
+                   (mapcar (lambda (path)
+                             (cons path (and path (file-readable-p path)
+                                             (nelisp-bytecode-compiler-input--sha256-file path))))
+                           (list (expand-file-name "test/fixtures/native-bytecode/gnu-31.1-opcodes.json"
+                                                   (nelisp-bytecode-compiler-input-root))
+                                 (and directory (expand-file-name "bytecomp.el.gz" directory))
+                                 (and directory (expand-file-name "comp.el.gz" directory))))))
+      (terpri))'''
+    host_command = command + ['-l', 'test/nelisp-native-windows-test.el', '--eval', identity,
+                              '-f', 'ert-run-tests-batch-and-exit']
+    completed = subprocess.run(host_command, cwd=ROOT, capture_output=True, timeout=60)
     (args.output.parent / 'host-check.out').write_bytes(completed.stdout)
     (args.output.parent / 'host-check.err').write_bytes(completed.stderr)
     if completed.returncode:
-        raise SystemExit('Win64 host ERT failed; see ' + str(args.output.parent / 'host-check.err'))
-    owner_command = command[:command.index('-l')] + ['-l', 'test/support/check-windows-native-owner-seal.el']
+        raise SystemExit('Win64 host ERT failed; see host-check.err and host-check.out (dialect/hashes) in '
+                         + str(args.output.parent))
+    owner_command = command + ['-l', 'test/support/check-windows-native-owner-seal.el']
     owners = subprocess.run(owner_command, cwd=ROOT, capture_output=True, timeout=60)
     (args.output.parent / 'owner-check.out').write_bytes(owners.stdout)
     (args.output.parent / 'owner-check.err').write_bytes(owners.stderr)
