@@ -261,3 +261,15 @@ cmd: python3 target/evidence-final/check-acceptance.py --sha f1ca58339adad3ec8fb
 cmd: python3 target/evidence-final/check-acceptance.py --sha f1ca58339adad3ec8fb9ccb6e5ebaf0dd473b9368b6c451a2706ebacff2d5f86 --criterion P3.2
 ** P3.3 End to end: on the C-core merged dynamic binary, natively compiling the GUI hot functions makes the g4-interpretation benchmark faster than interpreted, with identical output
 pending
+
+* W1 Windows x86_64 native compilation (PE/COFF, VirtualAlloc, Win64 ABI)
+#+NOTE: 2026-10-10 stage added at the user's request; denominator 29 -> 33. The native loader, the raw-v2 artifact (ELF), the executable mapping (mmap/mprotect via Linux syscalls), the calling convention (SysV) and the template stencils are Linux x86_64 only; on Windows the trust gates refuse and everything runs interpreted.
+** W1.1 Design: a reviewed design document lists every Linux-specific dependency of the native pipeline (artifact format, mapping, calling convention, stencils, cache paths and locking, process spawning for async tier-up, gccjit availability) and the Windows replacement for each
+#+NOTE: 2026-10-10 Doc 213 (208 lines) inventories the Linux dependencies and phases W1.2a (PE proof issuance, executable identity, cache ACL trust), W1.2b (coff raw-v2, VirtualAlloc mapping, windows-latest F1), W2 (Win64 stencils, async worker, unwind metadata). Host Win64 emitter/ABI reference-byte tests 3/3; Windows PE cross-build succeeds; Linux F1 --both --cold and template smoke unchanged. Reviewed by the coordinator.
+cmd: test -f docs/design/213-windows-native-compilation.org && emacs -Q --batch -L lisp -L src -L scripts -L test -L test/support -L packages/nl-ffi/src -l test/nelisp-native-windows-test.el -f ert-run-tests-batch-and-exit
+** W1.2 The windows-x86_64 cross-built reader natively compiles and loads the F1 fixture with the in-house backend (Win64 ABI, VirtualAlloc/VirtualProtect, trust cache) and matches the interpreter
+pending
+** W1.3 On a real Windows x86_64 host (CI windows-latest or the user's machine), U10 230/230 and F3 52/52 pass with the in-house backend, and the template backend passes its smoke
+pending
+** W1.4 End to end: on Windows, the 1e6 hot loop runs natively in at most 1/5 of the interpreted time, and the Linux ledger stays green
+pending

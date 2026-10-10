@@ -1,0 +1,208 @@
+#+TITLE: Windows x86_64 native compilation
+#+STATUS: DRAFT — W1.1 design; W1.2 execution deferred
+#+DATE: 2026-10-10
+
+* Decision and scope
+Reuse GNU bytecode input, front end, IR, CFG, rooted emission, semantic
+validation, import contracts, budgets and the authenticated raw-v2 container.
+The first Windows backend is in-house only, synchronous, explicit opt-in.
+No new native builtin is needed for code generation or memory mapping.
+Do not enable Windows by merely broadening the loader's platform predicate.
+
+The brief's conditional W1.2 does not fit as a complete trusted F1 port yet:
+the production rooted/constructor/F1 proof generation and issuance are
+Linux-only, and the private cache trusts POSIX ownership/mode bits.
+Both are prerequisites for the requested unchanged trust checks. A working
+Win64 AOT emitter and VirtualAlloc wrapper do not supply these prerequisites.
+This slice exercises the existing Win64 emitter on F1 source and prepares a
+manual Windows acceptance job. Windows mapping/execution remains refused.
+
+* Dependency inventory and replacements
+References below are paths relative to the repository root, followed by
+the exact owning symbol (Python functions use their ordinary names).
+
+** Target selection and object/container formats
+- lisp/nelisp-native-load.el:nelisp-native-load--raw-supported-p and
+  nelisp-native-load-raw-check restrict execution to Linux x86_64.
+  Introduce an explicit (OS, arch, calling-convention, container-version)
+  target identity. Admit Windows only with the full Windows proof owners.
+- lisp/nelisp-native-load.el:nelisp-native-load-raw-runtime-abi-v2 currently
+  denotes SysV, despite its OS-neutral spelling. Add a distinct Win64 ABI
+  identifier; bind it into runtime/import/GC descriptors, source proofs,
+  artifact digests and cache keys. Reject cross-ABI artifacts before mapping
+  in both checked and trusted paths; legacy Linux identities stay unchanged.
+- lisp/nelisp-native-load.el:nelisp-native-load-raw-compile-file and
+  nelisp-native-load-raw-v2-compile-file select :format elf. Select :format
+  coff for Windows at nelisp-aot-compile-to-link-unit. This already chooses
+  Win64 parse/emit rules; the returned pre-writer unit is platform neutral.
+  Keep text plus bounded rel32 relocation/import/export tables inside raw-v2
+  (.nelr), with a versioned calling-convention field. No COFF file needs to
+  be parsed at runtime. Preserve actual relocation type/addend semantics;
+  do not relabel COFF relocations as ELF ones without verifying their meaning.
+- lisp/nelisp-elf-write.el:nelisp-elf-write-binary is needed by the Linux AOT/image
+  lane, not intrinsically by raw-v2. The Windows reader remains PE32+ via
+  lisp/nelisp-pe-write.el:nelisp-pe-write-exe-binary; native units remain raw blobs.
+  Embedded private rodata/data/BSS stays refused in the initial native lane.
+
+** Machine ABI and runtime calls
+- lisp/nelisp-aot-compiler.el:nelisp-aot-compile-to-link-unit already binds
+  nelisp-aot-compiler--abi to win64 for :format coff. Reuse its defun, direct,
+  extern and indirect call emission instead of writing another ABI emitter.
+  RCX/RDX/R8/R9 carry words 1–4; words 5–6 of nl_native_funcall_v2 go on
+  the stack beyond 32-byte shadow space. Maintain 16-byte call alignment.
+  Preserve RBX/RBP/R12–15 and additionally RDI/RSI/XMM6–15; test save/restore
+  symmetry, nested calls and the six-word evaluator bridge independently.
+- lisp/nelisp-bytecode-native-rooted-cfg-shared-emit.el:
+  nelisp-bytecode-native-rooted-cfg-shared-emit-build and
+  lisp/nelisp-native-funcall-v2.el:nelisp-native-funcall-v2-descriptor define
+  rooted F1 source/word semantics. These are reusable; emitted bytes and
+  all authenticated runtime helper entry addresses must use the same ABI.
+- scripts/nelisp-standalone-build.el:nelisp-standalone--applyfn-source owns
+  ptr-call's call-ptr arm. The Windows reader compiler selects Win64 already;
+  verify six-word indirect calls including shadow and stack arguments, rather
+  than relying on the arm's outdated SysV comment. Do not use a SysV
+  trampoline to call a Win64 unit or a Win64 stub to call a SysV gateway.
+- lisp/nelisp-native-load.el:nelisp-native-load--trampoline and
+  nelisp-native-load-call construct legacy SysV boxed adapters. Exclude the
+  legacy boxed lane from W1.2; later regenerate its adapters for Win64.
+  Raw-v2's tail-jump import stubs need no register shuffle when both sides
+  share Win64. Verify the rel32 displacement and import target boundaries.
+- scripts/nelisp-standalone-build.el:nelisp-standalone--runtime-reload-enabled-p
+  only enables replacement on Linux. Leave allocator/GC replacement disabled
+  initially; supply the ordinary runtime GC/root addresses through the
+  production symbol resolver, not by enabling development-runtime replacement.
+
+** Build proof, rooted memory and startup authentication
+- scripts/nelisp-standalone-build.el:nelisp-standalone--rooted-protocol-preflight
+  and nelisp-standalone--rooted-protocol-startup-src only generate Linux
+  proofs. Port target selection, active-unit provenance, function spans,
+  BSS/data owners and relocation ownership to PE/Win64 before admitting F1.
+  lisp/nelisp-native-load.el:nelisp-native-load--raw-v2-chunk-rewrite also
+  binds linux-x86_64 explicitly; make the arena rewrite target-aware.
+- lisp/nelisp-native-rooted-startup-evidence.el:
+  nelisp-native-rooted-startup-evidence-render pins x86_64-linux layout.
+  lisp/nelisp-native-compiler-startup-evidence.el:
+  nelisp-native-compiler-startup-evidence-build and
+  lisp/nelisp-native-funcall-startup-evidence.el:
+  nelisp-native-funcall-startup-evidence-build specialize that proof chain.
+  Generate distinct Windows target/ABI records while preserving bounded
+  closed helpers, evaluator terminals, ticket ownership and source hashes.
+- scripts/nelisp-native-rooted-direct-closure.py:prove reads ET_EXEC ELF
+  with pyelftools. Add PE section/RVA/symbol ownership decoding or prove the
+  writer's final linked-unit map against PE bytes, never against metadata
+  alone. scripts/nelisp-native-rooted-prelink-closure.py and
+  scripts/nelisp-native-compiler-f1-prelink.py:prove can retain their bounded
+  closure policies after auditing Win64 instruction/relocation assumptions.
+- lisp/nelisp-runtime-reload-abi.el:nelisp-runtime-reload-contract-hash and
+  nelisp-runtime-reload-contract-matches-p bind live runtime identity.
+  Include the Windows machine ABI in its new contract; keep the Lisp object,
+  GC table and ticket layouts only when measured identical. Cold restore
+  must resolve addresses again, not retain pointers from another process.
+- scripts/nelisp-standalone-build.el:nelisp-standalone--native-startup-autoload-src
+  authenticates the .native-startup.el companion. Produce and ship the PE's
+  own companion; preserve lazy issuance and source/binary binding on restore.
+
+** Mapping, executable identity and release
+- lisp/nelisp-native-load.el:nelisp-native-load--mmap,
+  nelisp-native-load--mprotect-rx, nelisp-native-load-raw-v2-artifact,
+  nelisp-native-load-raw-v2-artifact-trusted and
+  nelisp-native-load-unload issue Linux mmap/mprotect/munmap numbers 9/10/11,
+  including GC table R protection and failure cleanup. Introduce one OS
+  mapping boundary used by both mappers and every release path. Retain Linux
+  calls unchanged; on Windows use lisp/nelisp-stdlib-os.el:
+  nelisp-os--windows-mmap, nelisp-os--windows-mprotect and
+  nelisp-os--windows-munmap, which
+  call VirtualAlloc/VirtualProtect/VirtualFree through existing FFI.
+  Allocate RW, copy/relocate, make GC tables R and code RX; never leave RWX.
+  Check each return; free the original reservation with MEM_RELEASE on any
+  failure. FlushInstructionCache after publishing executable bytes via the
+  existing WinAPI FFI. Verify a page's protection and repeat map/unmap in CI.
+- lisp/nelisp-native-load.el:nelisp-native-load--running-binary-sha256 reads
+  /proc/self/exe; nelisp-native-load--sha256-file-external searches
+  sha256sum/shasum paths.
+  Use GetModuleFileNameW(NULL) through reader-owned Windows FFI, validate
+  truncation/UTF-16, read the complete PE and hash it in-process. A caller
+  supplied binary path or an unchecked invocation-name is not identity.
+  Keep the current defensive cached digest and complete-file checks.
+- lisp/nelisp-native-load.el:nelisp-native-load--digest uses raw mapped
+  storage for SHA-256. Its allocation/release must follow the same OS boundary.
+- lisp/nelisp-native-budget.el:nelisp-native-budget-reserve and
+  nelisp-native-budget-elf-bytes must account for committed code/table pages
+  and future PE libraries separately from Windows virtual reservations.
+
+** Cache paths, ownership, publication and process spawning
+- lisp/nelisp-native-cache.el:nelisp-native-cache--root chooses XDG/.cache;
+  nelisp-native-cache--private-directory requires UID and exactly 0700;
+  nelisp-native-cache--publish uses hard
+  links or raw Linux link syscall 86. Choose LOCALAPPDATA/NeLisp/native-cache
+  (NELISP_NATIVE_CACHE remains an override). Validate directory/file owner
+  SID and effective DACL, reject reparse points and inherited write access,
+  and open handles without following attacker-controlled links. POSIX mode
+  emulation/chmod on NTFS cannot establish this trust property.
+  Create restricted temporary files and publish atomically without replacing
+  a winner (same-volume MoveFileExW without REPLACE_EXISTING). Bind the
+  winning bytes to the header; verify racing writers and interrupted writes.
+  The current lock-free no-clobber design can remain; any added compile lock
+  uses exclusive CreateFileW with bounded wait and explicit stale-owner rules.
+- lisp/nelisp-native-cache.el:nelisp-native-cache--abi-components and
+  nelisp-native-cache-abi-hash must separate OS/arch/ABI/proof/compiler versions.
+  Retain zero semantic revalidation only after equivalent Windows cache trust.
+- lisp/nelisp-native-tier.el:nelisp-native-tier--binary reads /proc/self/exe;
+  nelisp-native-tier--check-worker checks same binary;
+  nelisp-native-tier--launch-next uses nelisp-process-start.
+  Use the same reader-owned module identity and existing CreateProcess-backed
+  process layer with native path/argument encoding, closed stdin, independent
+  stdout/stderr and same-binary cold images. Keep async tier-up refused until
+  cancellation/job-tree cleanup and request/reply authentication are proven.
+- test/support/run-native-funcall-v2.py imports resource and invokes GNU
+  timeout. Linux receipt behavior stays unchanged; the new Windows runner
+  uses native Python paths and subprocess deadlines, records hashes and exact
+  completion/digest markers, and fails on absent native capability.
+
+** Optional backends
+- lisp/nelisp-native-template-stencils.el:nelisp-native-template-stencil-version,
+  nelisp-native-template-stencil-abi and nelisp-native-template-open-library
+  pin Linux SysV and POSIX file ownership. Regenerate stencils from Win64,
+  separately pin bytes/hole grammar/ABI and apply Windows cache-file trust.
+  lisp/nelisp-native-template.el:nelisp-native-template-manifest also needs
+  the target identity. Never patch the ABI label on Linux stencil bytes.
+- lisp/nelisp-native-gccjit.el:nelisp-native-gccjit--initialize loads
+  libgccjit.so.0 and libffi.so.8; lisp/nelisp-native-cache.el:
+  nelisp-native-cache--compile-gccjit use libgccjit and .so/dlopen artifacts.
+  Drop gccjit on Windows initially with explicit unsupported-backend refusal.
+  A later DLL/libgccjit distribution needs matching Win64 bridges, trusted
+  library loading, toolchain identity and reproducible runtime packaging.
+
+* Phases and acceptance
+1. W1.1: this inventory, explicit trust prerequisite decision, host Win64
+   F1/ABI byte checks, unchanged Linux F1 --both --cold and template smoke,
+   Windows reader cross-build, and a workflow_dispatch-only acceptance job.
+2. W1.2a: port PE/Win64 build-proof issuance, runtime identity and cache ACL
+   trust. Negative controls: stale ABI/binary/source, writable foreign cache,
+   reparse path, mutated helper bytes/imports, wrong ticket and relocation
+   overflow all refuse before allocation or execution. Preserve Linux bytes.
+3. W1.2b: select :format coff for raw-v2, add explicit target metadata,
+   VirtualAlloc/R/RX/release boundary and instruction-cache publication.
+   On windows-latest run genuine GNU F1 compile then fresh-process load;
+   require digest 52c26b63..., one compile validation, zero cache validations,
+   native calls, GC inside/after callees, alias identity and redefinition.
+   Add register-sentinel calls, N=0/N=6, nested bridges and signal/throw tests;
+   Lisp exits remain status/root publication, not Windows SEH across JIT code.
+4. W2: Win64 stencil generation, full rooted/exception corpus and async worker
+   lifecycle. Add registered unwind metadata (RtlAddFunctionTable) and teardown
+   before supporting SEH/stack walking through nonleaf generated frames.
+   GCC JIT remains optional and outside the first acceptance boundary.
+5. User machine: run the same saved smoke and trust corpus with the actual
+   cache path/ACL, antivirus and cold-image configuration. Record PE/companion
+   hashes and receipts; CI success alone does not qualify this environment.
+
+Cross-building proves encoding and PE generation only. There is no Wine or
+Windows host here. The manual job is deliberately an acceptance probe that
+fails while native trust prerequisites are absent, never a skip-as-PASS job.
+Progress criteria live in stage W1 of tools/ai/libgccjit-backend-progress.org;
+evidence is untracked target/windows-native/. No ledger percentage implies Windows ships.
+
+* References
+- [[https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention][Microsoft x64 calling convention]]
+- [[https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualalloc][VirtualAlloc]]
+- [[https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualprotect][VirtualProtect and instruction-cache responsibility]]

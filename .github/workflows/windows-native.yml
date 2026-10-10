@@ -1,0 +1,45 @@
+name: Windows native F1 (manual acceptance)
+
+# This is an opt-in acceptance probe. Until Doc 213's PE proof and cache ACL
+# prerequisites are implemented, native refusal must fail this job visibly.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-f1:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jcs090218/setup-emacs-windows@master
+        with:
+          version: '31.1'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Host Win64 emitter and receipt negative controls
+        shell: bash
+        run: |
+          emacs -Q --batch -L lisp -L src -L scripts -l test/nelisp-native-windows-test.el -f ert-run-tests-batch-and-exit
+          python test/support/run-windows-native-f1-test.py
+      - name: Build the Windows PE reader
+        shell: bash
+        run: make standalone-reader NELISP_STANDALONE_TARGET=windows-x86_64
+      - name: Windows native F1 (compile, fresh load, forced GC)
+        shell: pwsh
+        run: |
+          python test/support/run-windows-native-f1.py target/nelisp.exe --work target/windows-native-ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Preserve acceptance evidence even on native refusal
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-native-f1
+          path: |
+            target/windows-native-ci/
+            target/nelisp.exe
+            target/nelisp.exe.native-startup.el
+          if-no-files-found: warn
