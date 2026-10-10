@@ -255,6 +255,12 @@ string, or a list of strings, and PREDICATE defaults to `file-exists-p'."
               ;; Most candidates do not exist; test existence before the
               ;; byte-code check, which only matters for an existing file.
               (when (and (cond
+                          ;; `require' passes this predicate; the stat
+                          ;; primitive answers it identically ('file).
+                          ((and prefix
+                                (eq predicate 'emacs-fns--regular-file-p)
+                                (fboundp 'nelisp--syscall-stat))
+                           (eq (nelisp--syscall-stat candidate) 'file))
                           (predicate (funcall predicate candidate))
                           ;; A canonical local path needs no handler or
                           ;; expansion; ask the stat primitive directly
@@ -271,29 +277,15 @@ string, or a list of strings, and PREDICATE defaults to `file-exists-p'."
 
   (defun emacs-fns--path-canonical-p (path)
     "Return non-nil when PATH has no `~', `:', `.'/`..' component or `//'.
-A character scan: this runs once per `load-path' entry during lookups."
-    (let ((length (length path))
-          (index 0)
-          (start 0)
-          (ok t))
-      (while (and ok (<= index length))
-        (let ((char (and (< index length) (aref path index))))
-          (cond
-           ;; `~' needs expansion; `:' may select a file name handler.
-           ((memq char '(?~ ?:)) (setq ok nil))
-           ((or (null char) (eq char ?/))
-            ;; Component PATH[START, INDEX): reject "", "." and "..",
-            ;; except the empty component before a leading slash or at the
-            ;; very end (a trailing slash).
-            (let ((size (- index start)))
-              (when (or (and (= size 0) (> index 0) (< index length))
-                        (and (= size 1) (eq (aref path start) ?.))
-                        (and (= size 2) (eq (aref path start) ?.)
-                             (eq (aref path (1+ start)) ?.)))
-                (setq ok nil)))
-            (setq start (1+ index)))))
-        (setq index (1+ index)))
-      ok))
+Conservative: any component starting with `.' (including hidden names) is
+rejected, so such paths keep the `expand-file-name' route.  Uses
+`string-search' because a per-character loop costs ~15x more on the
+standalone runtime and this runs once per `load-path' entry."
+    (not (or (string-prefix-p "." path)
+             (string-search "/." path)
+             (string-search "//" path)
+             (string-search "~" path)
+             (string-search ":" path))))
 
   (defun emacs-fns--plain-relative-name-p (name)
     "Return non-nil when NAME needs no expansion relative to a directory.

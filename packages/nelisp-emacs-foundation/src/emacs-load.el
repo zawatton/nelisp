@@ -1065,8 +1065,36 @@ SOURCE through the slow fallback or lose the following forms.  Reuse the tail
 evaluator for the isolated range so its existing `cc-provide' and `defalias'
 normalization remains identical to the large-form path."
     (let ((emacs-load--source-single-form-p t))
-      (cons (nelisp--load-eval-source-tail source pos form-end)
+      (cons (condition-case err
+                (nelisp--load-eval-source-tail source pos form-end)
+              (invalid-read-syntax
+               ;; The runtime reader rejects some valid GNU syntax, e.g. a
+               ;; string mixing "\x9f" with "\x061c" (marginalia.el).  When
+               ;; the native reader cannot read this form at all, nothing
+               ;; was evaluated yet: read it with the Lisp reader instead.
+               ;; An error raised while evaluating a readable form is
+               ;; re-signalled, so no form is ever evaluated twice.
+               (if (emacs-load--native-read-one source pos form-end)
+                   (signal (car err) (cdr err))
+                 (nelisp--load-eval-lisp-read-slice source pos form-end))))
             form-end)))
+
+  (defun nelisp--load-eval-lisp-read-slice (source pos form-end)
+    "Read SOURCE between POS and FORM-END with `read-from-string' and eval it.
+Fallback for a form the runtime reader rejects; return the last value."
+    (let* ((slice (emacs-load--reader-slice source pos form-end))
+           (length (length slice))
+           (index 0)
+           (last nil)
+           read)
+      (while (and (< index length)
+                  (setq read (condition-case nil
+                                 (read-from-string slice index)
+                               (end-of-file nil))))
+        (setq last (nelisp--load-eval-one-form
+                    (nelisp--load-rewrite-defalias-form (car read)))
+              index (cdr read)))
+      last))
 
   (defun emacs-load--artifact-source-decline-boundary (reader source pos)
     "Call READER for a declined form boundary, returning nil on scan failure.
