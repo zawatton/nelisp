@@ -49,7 +49,7 @@
       ;; A caller's dynamic binding is never popped by the native epilogue.
       (let ((u7a-special 'caller)) (compare) (u7a-assert (eq u7a-special 'caller) "caller watermark"))
       (when (eq name 'callback)
-        (dolist (mode '(throw signal)) (setq u7a-mode mode) (compare))
+        (dolist (mode '(throw signal quit)) (setq u7a-mode mode) (compare))
         (setq u7a-mode nil)
         (makunbound 'u7a-special) (compare)
         (u7a-assert (not (boundp 'u7a-special)) "void state restored")
@@ -77,9 +77,9 @@
                 (set (make-local-variable 'u7a-special) 'local)
                 (u7a-assert (local-variable-p 'u7a-special) "real local cell")
                 (u7a-assert (eq (default-value 'u7a-special) 'outside) "default distinct from local")
-                (dolist (mode '(nil throw signal))
+                (dolist (mode '(nil throw signal quit))
                   (setq u7a-mode mode) (compare)
-                  (u7a-assert (eq u7a-special 'local) "local restored after normal/throw/signal")
+                  (u7a-assert (eq u7a-special 'local) "local restored after normal/throw/signal/quit")
                   (u7a-assert (eq (default-value 'u7a-special) 'outside) "default preserved on exit"))
                 (let ((u7a-special 'local-caller))
                   (compare)
@@ -142,6 +142,17 @@
       (u7a-assert (eq u7a-special 'outside) "outside value restored")
       ;; The separate load process forbids compilation on its first install.
       (when (eq name 'implicit)
+        ;; Against-the-bug control: the baseline specbind callback calls the
+        ;; Lisp binder once per activation. The shared evaluator path must
+        ;; install the same binding without entering that Lisp function.
+        (require 'nelisp-project-profile)
+        (nelisp-project-profile-run
+         (lambda () (dotimes (_ 20) (funcall native 'inside)))
+         '(nelisp-lexframe-bind)
+         (lambda (report)
+           (princ (concat "U7A-BINDER-PROFILE " report "\n"))
+           (u7a-assert (string-match-p "\"calls\":0," report)
+                       "specbind bypasses interpreted binder")))
         ;; Matched census body: one varbind, varref and implicit leave.
         ;; Measure the same arguments on the VM and the machine entry.
         (let ((iterations 200) before after start)
@@ -160,6 +171,10 @@
   (let* ((addresses (nelisp-native-load-root-v2-addresses))
          (env (plist-get addresses :environment))
          (bridge (nelisp-native-load--symbol-addr "nl_native_frame_v2"))
+         (state nil) (watermark nil)
+         (frames-object nil) (original-backing nil) (tight-backing nil)
+         (capture-key (make-symbol "u7a-growth-capture"))
+         (capacity-owner (symbol-function 'nelisp-lexframe-stack--ensure-capacity))
          (ticket (ptr-call (plist-get addresses :begin) env 0 0 0 0 0)))
     (unwind-protect
         (progn
@@ -174,5 +189,79 @@
           (u7a-assert (= (ptr-call bridge env ticket 1 2 2 4) 1029) "unbind underflow publishes signal")
           (u7a-assert (= (ptr-call bridge env ticket 1 3 2 4) 0) "underflow did not consume caller state")
           (u7a-assert (= (ptr-call bridge env ticket 1 3 2 4) 1029) "double leave publishes ownership error")
-          (princ "U7A-AUTH-PASS stale=1 overlap=1 unknown=1 underflow=1 double-leave=1\n"))
+          ;; Re-enter at the same caller depth, then corrupt the real rooted
+          ;; state. Each refusal precedes any binding or event publication.
+          (nelisp--native-pin-copy-v2 env ticket 1 (nelisp-native-frame-v2-initializer))
+          (u7a-assert (= (ptr-call bridge env ticket 1 0 2 4) 0) "mutation enter")
+          (setq state (nelisp-native-load-unbox
+                       (ptr-call (plist-get addresses :slot) env ticket 1 0 0 0)
+                       env (ptr-call (plist-get addresses :slot) env ticket 0 0 0 0))
+                watermark (aref state 2))
+          (nelisp--native-pin-copy-v2 env ticket 2 'u7a-special)
+          (nelisp--native-pin-copy-v2 env ticket 3 'poison)
+          (aset state 6 (1+ ticket))
+          (nelisp--native-pin-copy-v2 env ticket 1 state)
+          (u7a-assert (= (ptr-call bridge env ticket 1 1 2 4) 2) "state ticket mutation refused")
+          (aset state 6 ticket) (aset state 2 (1- watermark))
+          (nelisp--native-pin-copy-v2 env ticket 1 state)
+          (u7a-assert (= (ptr-call bridge env ticket 1 1 2 4) 1029) "watermark mutation refused")
+          (aset state 2 watermark) (aset state 1 nil)
+          (nelisp--native-pin-copy-v2 env ticket 1 state)
+          (u7a-assert (= (ptr-call bridge env ticket 1 1 2 4) 1029) "inactive mutation refused")
+          (aset state 1 t) (aset state 0 nil)
+          (nelisp--native-pin-copy-v2 env ticket 1 state)
+          (u7a-assert (= (ptr-call bridge env ticket 1 1 2 4) 1029) "non-callable owner mutation refused")
+          (aset state 0 (lambda (&rest _) (error "Replacement owner was invoked")))
+          (nelisp--native-pin-copy-v2 env ticket 1 state)
+          (u7a-assert (= (ptr-call bridge env ticket 1 1 2 4) 1029) "closure owner mutation refused")
+          (u7a-assert (equal (condition-case err
+                                (nelisp-native-cache--resume-exit addresses env ticket 5)
+                              (error (cadr err)))
+                            "Native frame ownership mismatch") "entry owner reports closure replacement")
+          (u7a-assert (and (null (aref state 3)) (eq u7a-special 'outside)) "refusals have no binding effect")
+          ;; Force a full backing at the bridge entry, without an intervening
+          ;; interpreted call that could grow it first. The frozen owner must
+          ;; grow the same record, install the binding and preserve the caller.
+          ;; An identity-symbol binding deliberately uses the reference path;
+          ;; observe its existing capacity helper to obtain the actual record.
+          (cl-letf (((symbol-function 'nelisp-lexframe-stack--ensure-capacity)
+                     (lambda (frames needed)
+                       (setq frames-object frames)
+                       (funcall capacity-owner frames needed))))
+            (nelisp--native-pin-copy-v2 env ticket 1 (nelisp-native-frame-v2-initializer))
+            (nelisp--native-pin-copy-v2 env ticket 2 1)
+            (nelisp--native-pin-copy-v2 env ticket 3 0)
+            (u7a-assert (= (ptr-call bridge env ticket 1 0 2 4) 0) "capture enter")
+            (nelisp--native-pin-copy-v2 env ticket 2 capture-key)
+            (nelisp--native-pin-copy-v2 env ticket 3 'captured)
+            (u7a-assert (= (ptr-call bridge env ticket 1 1 2 4) 0) "capture specbind")
+            (u7a-assert (= (ptr-call bridge env ticket 1 3 2 4) 0) "capture leave"))
+          (u7a-assert (and (recordp frames-object)
+                          (eq (aref frames-object 0) 'nelisp-lexframe-stack))
+                      "reference capacity helper observed")
+          (nelisp--native-pin-copy-v2 env ticket 1 (nelisp-native-frame-v2-initializer))
+          (nelisp--native-pin-copy-v2 env ticket 2 1)
+          (nelisp--native-pin-copy-v2 env ticket 3 0)
+          (u7a-assert (= (ptr-call bridge env ticket 1 0 2 4) 0) "growth enter")
+          (setq state (nelisp-native-load-unbox
+                       (ptr-call (plist-get addresses :slot) env ticket 1 0 0 0)
+                       env (ptr-call (plist-get addresses :slot) env ticket 0 0 0 0))
+                watermark (aref state 2)
+                original-backing (aref frames-object 1)
+                tight-backing (make-vector watermark nil))
+          (dotimes (i watermark) (aset tight-backing i (aref original-backing i)))
+          (nelisp--native-pin-copy-v2 env ticket 2 'u7a-special)
+          (nelisp--native-pin-copy-v2 env ticket 3 'growth-inside)
+          ;; ASET/AREF are existing native record primitives. No interpreted
+          ;; helper may run between installing this full backing and entry.
+          (aset frames-object 1 tight-backing)
+          (unless (eq (aref frames-object 1) tight-backing)
+            (error "Full backing was not installed"))
+          (u7a-assert (= (ptr-call bridge env ticket 1 1 2 4) 0) "growth specbind")
+          (u7a-assert (eq (symbol-value 'u7a-special) 'growth-inside) "growth binding visible")
+          (u7a-assert (> (length (aref frames-object 1)) watermark) "backing grew")
+          (u7a-assert (= (ptr-call bridge env ticket 1 3 2 4) 0) "growth leave")
+          (u7a-assert (eq u7a-special 'outside) "growth caller restored")
+          (aset frames-object 1 original-backing)
+          (princ "U7A-AUTH-PASS stale=1 overlap=1 unknown=1 underflow=1 double-leave=1 state-ticket=1 watermark=1 inactive=1 owner=2 growth=1\n"))
       (u7a-assert (= (ptr-call (plist-get addresses :end) env ticket 0 0 0 0) 1) "probe ticket restored"))))
