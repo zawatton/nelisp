@@ -73,6 +73,15 @@
    (defvaralias alias target)
    (let ((fn (make-byte-code 257 (unibyte-string 24 8 41 135) (vector alias) 1)))
      (list (funcall fn 'inside) (boundp target))))
+ ;; A quit from a dynamic callee removes the bytecode binding, preserving the
+ ;; caller's value and the original condition data.
+ (let* ((name (intern "frame-cost-shadow-special"))
+        (callee (lambda () (signal 'quit '(frame-cost))))
+        (fn (make-byte-code 257 (unibyte-string 24 193 32 41 135)
+                            (vector name callee) 1)))
+   (set name 'outside)
+   (list (condition-case err (funcall fn 'inside) (quit err))
+         (symbol-value name)))
  ;; Extended stack references preserve a full boxed slot, including identity.
  (let ((value (vector 'rooted-cfg)))
    (and (eq (funcall (make-byte-code 257 (unibyte-string 6 0 135) [] 2) value) value)
