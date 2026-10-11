@@ -61,6 +61,8 @@ change to the criteria list is recorded in a NOTE.
 
 #+NOTE: 2026-10-11 S5.2 re-run at e7682b28 (package image rebuilt; loadavg ~4.5): dired now completes inside the budget (C-x d 154.5 -> 112.0 s, paint n 95.7 -> 75.5 s, paint p 67.3 -> 35.8 s) after the buffer-substring sidecar copy fix (80-run buffer-string 2332 -> 74 ms).  magit-status and the org agenda still exceed 300 s, so S5.2 stays red.  Daily launch: the startup GC is now a test probe (READY ~6 s instead of ~14 s).
 
+#+NOTE: 2026-10-12 S5.2 re-run at 289e43d3 (text-property interval fixes; loadavg ~4.5): dired still passes (C-x d 106.5 s); magit-status command 99.7 -> 82.1 s but rendering the status buffer still exceeds 300 s; the org agenda still exceeds 300 s.  Headless magit-status completes in ~55 s, so the remaining cost is GUI redisplay of a heavily propertized buffer.
+
 * S1 Shared interactive foundation
 
 ** S1.1 One event wait drives read-event: keys, timers, idle timers and process output (sit-for, sleep-for, input-pending-p behave as GNU)
