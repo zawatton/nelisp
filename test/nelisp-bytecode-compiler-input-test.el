@@ -18,6 +18,11 @@
 
 (defvar nelisp-bytecode-compiler-input-test--calls 0)
 
+;; `#$' in a docstring reference reads as `load-file-name'.  Bind it to
+;; PATH, as `load' would: left as the file that is loading this code, a
+;; later `documentation' call on a read function reloads THAT file
+;; (measured 2026-10-11: it re-entered the ERT driver mid-suite and the
+;; nested run segfaulted the host Emacs).
 (defun nelisp-bytecode-compiler-input-test--elc-forms (path)
   "Read compiled forms from PATH as data; never evaluate them."
   (with-temp-buffer
@@ -26,7 +31,7 @@
     (unless (looking-at ";ELC")
       (error "Not an ELC file: %s" path))
     (forward-line 1)
-    (let (forms)
+    (let ((load-file-name path) forms)
       (condition-case nil
           (while t (push (read (current-buffer)) forms))
         (end-of-file (nreverse forms))))))

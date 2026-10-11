@@ -30,6 +30,11 @@
              append (nelisp-native-bytecode-dialect-test--byte-code-objects item)))
    (t nil)))
 
+;; `#$' in a docstring reference reads as `load-file-name'.  Bind it to
+;; PATH, as `load' would: left as the file that is loading this code, a
+;; later `documentation' call on a read function reloads THAT file
+;; (measured 2026-10-11: it re-entered the ERT driver mid-suite and the
+;; nested run segfaulted the host Emacs).
 (defun nelisp-native-bytecode-dialect-test--read-elc (path)
   "Read PATH forms after the ELC header; never evaluate loader forms."
   (with-temp-buffer
@@ -38,7 +43,7 @@
     (unless (looking-at ";ELC")
       (error "Not a compiled Lisp file: %s" path))
     (forward-line 1)
-    (let (forms form)
+    (let ((load-file-name path) forms form)
       (condition-case nil
           (while t
             (setq form (read (current-buffer)))
