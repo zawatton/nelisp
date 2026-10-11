@@ -341,7 +341,20 @@ cmd_extras() {
     # The green gates that build a binary and were not wired.  One report each,
     # because unlike the reader smokes these are independent gates over
     # different subsystems: collapsing them would hide which one went red.
+    # NELISP_TIER_SHARD=<k>/<n> runs only the gates whose index mod n is k,
+    # so CI can spread this tier over parallel jobs (it took 72 min median
+    # as one job by 2026-10-11).  Unset runs every gate, as before.
+    shard_k=0 shard_n=1
+    if [ -n "${NELISP_TIER_SHARD:-}" ]; then
+        shard_k=${NELISP_TIER_SHARD%/*} shard_n=${NELISP_TIER_SHARD#*/}
+        case "$shard_k/$shard_n" in
+            *[!0-9/]*|/*|*/) echo "extras: NELISP_TIER_SHARD must be <k>/<n>, got '$NELISP_TIER_SHARD'" >&2; return 1 ;;
+        esac
+        [ "$shard_n" -gt 0 ] && [ "$shard_k" -lt "$shard_n" ] || {
+            echo "extras: NELISP_TIER_SHARD out of range: '$NELISP_TIER_SHARD'" >&2; return 1; }
+    fi
     failures=0
+    index=-1
     for g in nelisp-runtime-image-cache-gate \
              nelisp-source-command-substrate-gate \
              standalone-chunk-growth-test \
@@ -364,6 +377,8 @@ cmd_extras() {
              standalone-reader-buffer-smoke \
              precise-root-coverage \
              nl-actor-standalone-smoke; do
+        index=$((index + 1))
+        [ $((index % shard_n)) -eq "$shard_k" ] || continue
         printf '\n=== %s ===\n' "$g"
         ( cmd_gate "$g" -- make "$g" ) || failures=$((failures + 1))
     done
