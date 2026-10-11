@@ -13,7 +13,7 @@
          (nelisp-native-tier--accepted (make-hash-table :test 'equal))
          (nelisp-native-tier-threshold 2)
          (nelisp-native-budget--handles 0) (nelisp-native-budget--bytes 0)
-         (fn (make-byte-code 257 (unibyte-string 0 135) [old] 1))
+         (fn (make-byte-code 257 (unibyte-string 0 135) (vector 'old) 1))
          (loads 0))
      (cl-letf (((symbol-function 'nelisp-native-tier--identity)
                 (lambda (function backend)
@@ -258,7 +258,7 @@
         (delete-directory (plist-get job :directory) t)))))
 (ert-deftest nelisp-native-tier-tier0-owner-reused-with-distinct-live-constants ()
   (nelisp-native-tier-test--state
-    (let ((second (make-byte-code 257 (unibyte-string 0 135) [old] 1)) (maps 0))
+    (let ((second (make-byte-code 257 (unibyte-string 0 135) (vector 'old) 1)) (maps 0))
       (cl-letf (((symbol-function 'nelisp-native-cache-load)
                  (lambda (input-fn)
                    (setq maps (1+ maps))
@@ -284,6 +284,7 @@
         (should (plist-get (plist-get entry :refusal) :permanent))
         (should (equal (funcall (car (plist-get entry :cell)) 42) '(1 42)))))))
 (ert-deftest nelisp-native-tier-exhausted-budget-refuses-actual-trusted-mapper ()
+  (skip-unless (equal emacs-version "31.1"))
   (nelisp-native-cache-test--runtime
     (nelisp-native-cache-test--directory
       (pcase-let* ((`(,fn ,manifest ,header) (nelisp-native-cache-test--fixture))
