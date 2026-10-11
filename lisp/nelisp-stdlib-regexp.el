@@ -923,6 +923,21 @@ its start position, or nil.  This is either a bare `:lit'/`:any'/`:set'/
       (setq k (1- k))
       (aset v k nil))))
 
+(defun nlre--required-lit-char (node)
+  "Return a literal character every match of NODE must consume, or nil.
+Nullable quantifiers and alternatives deliberately provide no guarantee."
+  (cond
+   ((eq (car node) :lit) (nth 1 node))
+   ((eq (car node) :group) (nlre--required-lit-char (nth 2 node)))
+   ((memq (car node) '(:plus :lazyplus))
+    (nlre--required-lit-char (nth 1 node)))
+   ((eq (car node) :seq)
+    (let ((nodes (nth 1 node)) found)
+      (while (and nodes (not found))
+        (setq found (nlre--required-lit-char (car nodes))
+              nodes (cdr nodes)))
+      found))))
+
 (defun nlre-string-match (regexp string &optional start max-end)
   "Pure-elisp `string-match'; return match start index, or nil.
 START is the first candidate start.  If MAX-END is non-nil, require the
@@ -965,10 +980,23 @@ of STRING.  Sets `nlre--match-data' as usual."
       (let* ((top (nlre--seq-nodes (aref compiled 0)))
              (lead (nlre--leading-lit-char top))
              (lead (and lead (nlre--fold-char lead)))
-             (req-atom (and (not lead) (nlre--leading-required-atom top))))
+             (req-atom (and (not lead) (nlre--leading-required-atom top)))
+             (required (and (not lead) (not req-atom)
+                            (nlre--required-lit-char (aref compiled 0))))
+             (present
+              (and required
+                   (nlre--literal-plan-match
+                    (vector :literal
+                            (nlre--fold-text (char-to-string required) nlre--fold)
+                            nlre--fold)
+                    string i n))))
         (when (or lead req-atom)
           (setq nlre--leading-filter-calls (1+ nlre--leading-filter-calls)))
         (cond
+         ;; A nullable prefix such as ([^-]*) otherwise starts a full
+         ;; backtrack at every character even when its required '-' is absent.
+         ;; Use the same folding/search implementation as the literal plan.
+         ((and required (or (null present) (>= present limit))) nil)
          (lead
           (while (and (not hit) (< i limit))
             (if (not (eq (nlre--fold-char (aref string i)) lead))

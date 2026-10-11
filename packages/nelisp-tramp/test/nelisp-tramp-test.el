@@ -235,6 +235,10 @@ exhausting the host C stack.  The recursive evaluator hangs at
 must complete.  Default `max-lisp-eval-depth' (1500-ish) is used —
 this is the load-bearing assertion of Phase 2.5a."
   (nelisp--reset)
+  ;; The source load/provide bridge now accesses the evaluator's own tables.
+  ;; Use the same genesis table handoff as cycle 2 before installing source;
+  ;; the default-depth, complete-through-trampoline assertion stays intact.
+  (nelisp-bootstrap-shared-tables)
   (let ((total 0))
     (dolist (rel nelisp-tramp-test--source-files)
       (let* ((path (nelisp-tramp-test--source-file rel))

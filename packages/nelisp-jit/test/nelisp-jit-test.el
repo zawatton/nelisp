@@ -23,6 +23,48 @@
 
 ;;; Translation -------------------------------------------------------
 
+(ert-deftest nelisp-jit-declines-untranslated-runtime-macros ()
+  "Macro arguments must never be emitted as ordinary evaluated arguments."
+  (nelisp--reset)
+  (should-not
+   (nelisp-jit-try-compile-lambda
+    nil nil '((dolist (sym '(a b)) (symbol-name sym)))))
+  (nelisp-eval '(defmacro jit-defer-form (body) body))
+  (should-not
+   (nelisp-jit-try-compile-lambda nil nil '((jit-defer-form (+ 1 2)))))
+  (let ((nelisp-jit-enabled t))
+    (nelisp-eval '(defun jit-deferred-loop ()
+                   (let ((result nil))
+                     (dolist (sym '(a b)) (setq result (cons sym result)))
+                     result)))
+    (should (equal (nelisp-eval '(jit-deferred-loop)) '(b a)))))
+
+(ert-deftest nelisp-jit-declines-evaluator-application-bridges ()
+  "Higher-order application must retain the evaluator's dispatch boundary."
+  (dolist (body '(((apply fn args)) ((funcall fn arg))))
+    (should-not (nelisp-jit-try-compile-lambda nil '(fn args arg) body)))
+  (let ((nelisp-jit-enabled t))
+    (nelisp--reset)
+    (nelisp-eval '(defun jit-apply-bridge (fn args) (apply fn args)))
+    (nelisp-eval '(defun jit-funcall-bridge (fn arg) (funcall fn arg)))
+    (should (= (nelisp-eval '(jit-apply-bridge '1+ '(41))) 42))
+    (should (= (nelisp-eval '(jit-funcall-bridge '1+ 41)) 42))))
+
+(ert-deftest nelisp-jit-preserves-dynamic-bindings ()
+  (let ((nelisp-jit-enabled t))
+    (nelisp--reset)
+    (nelisp-eval '(defvar jit-dynamic-value 3))
+    (dolist (body '(((let ((jit-dynamic-value 9)) (jit-read-dynamic)))
+                   ((let* ((jit-dynamic-value 9)) (jit-read-dynamic)))))
+      (should-not (nelisp-jit-try-compile-lambda nil nil body)))
+    (should-not (nelisp-jit-try-compile-lambda
+                 nil '(jit-dynamic-value) '((jit-read-dynamic))))
+    (nelisp-eval '(defun jit-read-dynamic () jit-dynamic-value))
+    (nelisp-eval '(defun jit-bind-dynamic ()
+                   (let ((jit-dynamic-value 9)) (jit-read-dynamic))))
+    (should (= (nelisp-eval '(jit-bind-dynamic)) 9))
+    (should (= (nelisp-eval 'jit-dynamic-value) 3))))
+
 (ert-deftest nelisp-jit-translate-literal ()
   (should (eq   (nelisp-jit--translate 42 nil)  42))
   (should (eq   (nelisp-jit--translate t  nil)  t))

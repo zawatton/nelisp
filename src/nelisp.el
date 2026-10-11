@@ -60,7 +60,7 @@ The shared-state approach is a Phase 2 expedient.  A proper Rhodes
 5-stage genesis (=docs/03-architecture.org= §1) will eventually replace
 this with a cold-image build that hands the genesis host's tables
 directly to the cross-compiled NeLisp runtime."
-  (dolist (sym '(nelisp--functions nelisp--globals nelisp--specials
+  (dolist (sym '(nelisp--functions nelisp--globals nelisp--variable-aliases nelisp--specials
                                    nelisp--macros nelisp--unbound))
     (puthash sym t nelisp--specials)
     (puthash sym (symbol-value sym) nelisp--globals)))

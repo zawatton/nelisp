@@ -29,6 +29,14 @@
     ("\\(a+\\)\\(b+\\)" "xaaabbby") ("\\(foo\\)bar\\(baz\\)" "foobarbaz")
     ("\\([a-z]+\\)-\\([0-9]+\\)" "item-42") ("a\\(b\\(c\\)d\\)e" "abcde")
     ("\\(x\\|y\\)\\(z\\)" "yz") ("\\(\\)" "abc") ("\\(ab\\)*" "ababab")
+    ;; A mandatory literal after a nullable prefix may reject an absent
+    ;; delimiter, but optional/alternative groups must still match without it.
+    ("\\([^-]*\\)-\\([^-]*\\)" "Sans Serif")
+    ("\\([^-]*\\)-\\([^-]*\\)" "outline-Sans Serif")
+    ("\\(a*\\)B" "aaab") ("\\(a*\\)B" "aaaa")
+    ("\\(a-\\)?b" "b") ("\\(a-\\)*b" "b")
+    ("\\(a-\\|b\\)" "b") ("\\(a-\\)+b" "a-b")
+    ("\\(a*\\)é" "aaÉ")
     ;; escapes / classes
     ("\\w+" "  hello42 ") ("\\.el" "foo.el") ("a\\.b" "a.b") ("a\\.b" "axb")
     ;; braces
@@ -36,7 +44,16 @@
     ("ab\\{1,\\}" "abbb") ("a\\{3\\}" "aaaa") ("[0-9]\\{2,4\\}" "12345")
     ("\\(ab\\)\\{2\\}" "abab") ("x\\{0,2\\}y" "xxy") ("x\\{0,2\\}y" "y")
     ;; misc
-    ("colou?r" "color") ("colou?r" "colour") ("end$" "the end")))
+               ("colou?r" "color") ("colou?r" "colour") ("end$" "the end")))
+
+(ert-deftest nelisp-regexp-absent-required-literal-skips-backtracking ()
+  "A family name without a delimiter cannot match a delimiter pattern."
+  (let ((calls 0) (original (symbol-function 'nlre--match-list)))
+    (cl-letf (((symbol-function 'nlre--match-list)
+               (lambda (&rest args) (setq calls (1+ calls))
+                 (apply original args))))
+      (should-not (nlre-string-match "\\([^-]*\\)-\\([^-]*\\)" "Sans Serif"))
+      (should (= calls 0)))))
 
 (ert-deftest nelisp-regexp-matches-host-string-match ()
   "Every case must agree with host `string-match' on start index + group spans."

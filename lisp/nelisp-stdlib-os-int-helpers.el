@@ -99,6 +99,23 @@
   "Write raw bytes from STR to BUF."
   (nelisp-os--write-bytes-at buf 0 str))
 
+(declare-function nelisp--syscall-lstat-buf "nelisp-standalone" (filename))
+(declare-function ptr-read-u32 "nelisp-standalone" (ptr offset))
+
+(defun nelisp-os-lstat-fields (filename)
+  "Copy FILENAME's OS stat fields to Lisp values, or nil when absent.
+The lstat buffer is borrowed for this call only. Its platform-normalized
+layout is dev, ino, nlink, mode, uid, gid, size, and three sec/nsec pairs."
+  (let ((buf (nelisp--syscall-lstat-buf filename)))
+    (unless (< buf 0)
+      (vector (ptr-read-u64 buf 0) (ptr-read-u64 buf 8)
+              (ptr-read-u64 buf 16) (ptr-read-u32 buf 24)
+              (ptr-read-u32 buf 28) (ptr-read-u32 buf 32)
+              (ptr-read-u64 buf 48)
+              (ptr-read-u64 buf 72) (ptr-read-u64 buf 80)
+              (ptr-read-u64 buf 88) (ptr-read-u64 buf 96)
+              (ptr-read-u64 buf 104) (ptr-read-u64 buf 112)))))
+
 (provide 'nelisp-stdlib-os-int-helpers)
 
 ;;; nelisp-stdlib-os-int-helpers.el ends here

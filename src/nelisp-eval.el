@@ -995,7 +995,11 @@ as `(VAR DEFAULT [SUPPLIEDP])'."
     ;; this block, which is fboundp in both.  Root cause not isolated
     ;; further here; see `tools/substrate-parity-accepted.el's note on
     ;; this key for the KNOWN GAP writeup.
-    defvaralias)
+    defvaralias
+    ;; The self-install bootstrap reads pinned GNU definitions through the
+    ;; same host-side, hash-checked source provider as the first install.
+    ;; Copy its Lisp function too, so installed macro setup can call it.
+    nelisp-vendor-source-forms nelisp-vendor-source-form)
   "Host Elisp primitives borrowed wholesale by Phase 1 NeLisp.
 Each entry is copied by `symbol-function' at install time so the
 host's bytecode / subr implementation runs unchanged.")
@@ -1208,6 +1212,12 @@ primitive installation for entries nothing in a given run needs."
   (dolist (sym nelisp--primitive-symbols)
     (when (fboundp sym)
       (puthash sym (symbol-function sym) nelisp--functions)))
+  ;; Source self-install must retain the original host provide bridge.
+  ;; Recapturing (symbol-function 'provide) inside our own namespace captures
+  ;; nelisp--builtin-provide instead and makes the next provide recurse.
+  (when (boundp 'nelisp-load--host-provide)
+    (puthash 'nelisp-load--host-provide
+             (symbol-value 'nelisp-load--host-provide) nelisp--globals))
   (puthash 'funcall      #'nelisp--builtin-funcall      nelisp--functions)
   (puthash 'apply        #'nelisp--builtin-apply        nelisp--functions)
   (puthash 'mapcar       #'nelisp--builtin-mapcar       nelisp--functions)

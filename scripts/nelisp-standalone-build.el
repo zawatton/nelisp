@@ -26150,11 +26150,34 @@ Parallelism pays off only once per-unit compilation dominates startup
                  (string-join (reverse nelisp-standalone--recompiled) " ")
                "none (all cached)"))))
 
+(defun nelisp-standalone--baked-combiner-source ()
+  "Return the combiner without the reader-only byte-code-function entry.
+The baked evaluator has no bytecode provider or bytecode function objects;
+its other function tags keep the shared combiner's invalid-function path."
+  (require 'nelisp-cc-evalport-combiner-apply)
+  (let* ((source (copy-tree nelisp-cc-evalport-combiner-apply--source))
+         (entry (cl-find 'nl_apply_function (cdr source) :key #'cadr))
+         (body (nth 3 entry)))
+    (unless (and (eq (car-safe body) 'if)
+                 (equal (nth 1 body) '(= (ptr-read-u64 func_ptr 0) 17))
+                 (eq (car-safe (nth 2 body)) 'wf_bytecode_function))
+      (error "Unexpected shared combiner bytecode entry"))
+    (setcar (nthcdr 3 entry) (nth 3 body))
+    source))
+
 ;;;###autoload
 (defun nelisp-standalone-build ()
   "Incrementally build the standalone NeLisp eval ELF; return its path."
   (setq nelisp-standalone--recompiled nil)
-  (let* ((units (mapcar #'nelisp-standalone--unit-for nelisp-standalone--manifest))
+  (let* ((units (mapcar
+                 (lambda (entry)
+                   (if (equal (car entry) "combiner-apply.o")
+                       (nelisp-standalone--cached-unit
+                        "combiner-apply.o"
+                        (nelisp-standalone--baked-combiner-source)
+                        (locate-library "nelisp-cc-evalport-combiner-apply"))
+                     (nelisp-standalone--unit-for entry)))
+                 nelisp-standalone--manifest))
          ;; Doc 140 Stage 8: append the driver-owned `nl_arena_base' bss slot
          ;; unit referenced by the chunk-arena rewrite on chunked native
          ;; targets.
@@ -28078,9 +28101,24 @@ so would hit `void-function: (string-match)' regardless of position.  See
 worklog for the incident this fixes -- loading faces.el from inside the
 shared `nelisp-standalone--load-path-src' put it before Doc 143 in every
 caller at once and broke the JIT ledger's S1.3/S3.5/S5.8/S6.16-21/S7.6."
-  (concat
-   "\n;; --- GNU Emacs 31.1 faces.el (whole file) ---\n"
-   (nelisp-vendor-source-whole-file "vendor/staged-emacs-lisp/faces.el")))
+  (let* ((source (nelisp-vendor-source-whole-file
+                  "vendor/staged-emacs-lisp/faces.el"))
+         (compiled
+          (if (equal (getenv "NELISP_STANDALONE_PRELUDE_SOURCE_ONLY") "1")
+              source
+            ;; Headless defface initialization is part of every normal boot.
+            ;; Run genuine GNU functions through the existing general VM,
+            ;; preserving source fallback for every unsupported definition.
+            (require 'nelisp-prelude-bytecode)
+            (let ((transformed
+                   (nelisp-prelude-bytecode-transform
+                    source "vendor/staged-emacs-lisp/faces.el" nil t)))
+              (nelisp-prelude-bytecode-write-report
+               (expand-file-name "target/nelisp-faces-bytecode-report.tsv"
+                                 nelisp-standalone--repo-root)
+               (nth 2 transformed))
+              (car transformed)))))
+    (concat "\n;; --- GNU Emacs 31.1 faces.el (whole file) ---\n" compiled)))
 
 (defun nelisp-standalone--vendor-function-source (relative-file function-name)
   "Return the exact source text of FUNCTION-NAME's sole top-level function form.
@@ -37143,39 +37181,24 @@ correctly."
 	                              path fbuf
 	                              ,nelisp-standalone--reader-read-cap)))
 	                     (if (< n 0)
-	                         ;; A bare positional FILE argument that does not
-	                         ;; exist used to silently become the source text
-	                         ;; "1" -- a well-formed, silent no-op program --
-	                         ;; completely different from `--load''s usage-
-	                         ;; text dump for the SAME failure, and from
-	                         ;; `--eval '(load "...")'''s correct, named
-	                         ;; `file-missing' report.  Stash the SAME
-	                         ;; condition `bf_require_file_missing' raises for
-	                         ;; `load' (fixed in 21cc84650), naming this path,
-	                         ;; then hand the reader a single stray close
-	                         ;; paren: `nl_eval_source_all''s reader-error
-	                         ;; path only falls back to a generic syntax
-	                         ;; error when nothing more specific is already
-	                         ;; stashed, so this reports the file-missing
-	                         ;; condition just stashed instead of a fresh,
-	                         ;; less useful diagnostic.
+	                         ;; Report the stashed file error directly. Source
+	                         ;; evaluation clears per-form signal state before
+	                         ;; reading, so a synthetic syntax error loses it.
 	                         (let* ((path-str (alloc-bytes 32 8)))
 	                           (seq
 	                            (nl_alloc_str path (nl_cstr_len path) path-str)
 	                            (bf_require_file_missing path-str)
-	                            (sexp-write-str-lit src ")")))
+	                            (nl_eval_source_report_error path (nl_cstr_len path) 1 0 1)
+	                            (nl_os_exit_process 1)))
 	                       (if (= (nl_cli_read_cap_hit_p n) 1)
-	                           ;; Read exactly the buffer's max -- see
-	                           ;; `nl_cli_stash_source_too_large' above.  Same
-	                           ;; stray-close-paren trick as the file-missing
-	                           ;; branch above: stash the condition, then hand
-	                           ;; the reader something that fails so it reports
-	                           ;; the ALREADY-stashed diagnostic.
+	                           ;; The capped read is a file-too-large condition,
+	                           ;; not source text for the reader to reinterpret.
 	                           (let* ((path-str (alloc-bytes 32 8)))
 	                             (seq
 	                              (nl_alloc_str path (nl_cstr_len path) path-str)
 	                              (nl_cli_stash_source_too_large path-str)
-	                              (sexp-write-str-lit src ")")))
+	                              (nl_eval_source_report_error path (nl_cstr_len path) 1 0 1)
+	                              (nl_os_exit_process 1)))
 	                         (nl_alloc_str fbuf n src))))))))))))
            ;; --- reader path (M8): read+eval EVERY top-level form, keep the last
            ;; value.  parse_one advances the shared cursor; it returns 1 per form

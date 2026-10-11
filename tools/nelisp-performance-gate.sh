@@ -110,19 +110,6 @@ cat >"$FALLBACK_MOD" <<'EOF'
 (provide 'source-fallback)
 EOF
 
-"$EXE" compile-elisp-artifact --kind neln --input "$MOD" --output "$MOD.neln" \
-  >"$TMP_DIR/compile.out" 2>"$TMP_DIR/compile.err"
-
-if [ ! -f "$ENABLE_MARKER" ]; then
-  echo "gate_fail reason=missing-default-runtime-cache-enable-marker path=$ENABLE_MARKER" >&2
-  exit 1
-fi
-
-if ! grep -Eq '^enabled [0-9a-f]{64}$' "$ENABLE_MARKER"; then
-  echo "gate_fail reason=invalid-runtime-cache-enable-marker" >&2
-  exit 1
-fi
-
 run_timed() {
   local label="$1"; shift
   local out_file="$TMP_DIR/$label.out"
@@ -147,6 +134,21 @@ run_timed() {
   fi
   return "$rc"
 }
+
+
+run_timed compile_fixture "$EXE" compile-elisp-artifact --kind neln --input "$MOD" --output "$MOD.neln"
+CASES=$((CASES + 1))
+
+if [ ! -f "$ENABLE_MARKER" ]; then
+  echo "gate_fail reason=missing-default-runtime-cache-enable-marker path=$ENABLE_MARKER" >&2
+  exit 1
+fi
+
+if ! grep -Eq '^enabled [0-9a-f]{64}$' "$ENABLE_MARKER"; then
+  echo "gate_fail reason=invalid-runtime-cache-enable-marker" >&2
+  exit 1
+fi
+
 
 expect_out() {
   local label="$1" expected="$2"

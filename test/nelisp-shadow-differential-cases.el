@@ -45,6 +45,23 @@
 ;;; Code:
 
 (list
+ ;; Required delimiters after nullable prefixes agree across substrates.
+ (let ((case-fold-search t))
+   (list (string-match "\\([^-]*\\)-\\([^-]*\\)" "Sans Serif")
+         (string-match "\\([^-]*\\)-\\([^-]*\\)" "outline-Sans Serif")
+         (string-match "\\(a-\\)?b" "b")
+         (string-match "\\(a-\\|b\\)" "b")
+         (string-match "\\(a*\\)é" "aaÉ")))
+ ;; Runtime macros retain unevaluated syntax in every evaluator substrate.
+ (let ((seen nil))
+   (dolist (sym '(a b)) (setq seen (cons sym seen)))
+   seen)
+ (progn
+   (defvar ci-parity-dynamic-value 3)
+   (defun ci-parity-read-dynamic () ci-parity-dynamic-value)
+   (list (let ((ci-parity-dynamic-value 9)) (ci-parity-read-dynamic))
+         ci-parity-dynamic-value
+         (apply #'1+ '(41)) (funcall #'1+ 41)))
  ;; AOT operand sequencing: later mutation must not precede an earlier read.
  (let ((x 7) trace)
    (list (+ x (progn (setq x 5) x))

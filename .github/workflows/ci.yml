@@ -53,8 +53,7 @@ jobs:
           emacs --batch -Q --eval '(unless (equal emacs-version "31.1") (error "GNU bytecode compiler must be 31.1"))'
           compiler=$(command -v emacs)
           if [ "$RUNNER_OS" = Windows ]; then
-            # setup-emacs-windows installs both versions under the same root.
-            # Preserve the whole 31.1 distribution before installing the host.
+            # Preserve the whole pinned distribution before installing the host.
             cp -a "$(dirname "$(dirname "$compiler")")" "$RUNNER_TEMP/nelisp-gnu31"
             compiler=$(cygpath -m "$RUNNER_TEMP/nelisp-gnu31/bin/emacs.exe")
           else
@@ -133,17 +132,14 @@ jobs:
           version: '31.1'
       - name: Set up GNU bytecode compiler (Windows)
         if: runner.os == 'Windows'
-        uses: jcs090218/setup-emacs-windows@master
-        with:
-          version: '31.1'
+        uses: ./.github/actions/windows-emacs
       - name: Record GNU bytecode compiler executable
         shell: bash
         run: |
           emacs --batch -Q --eval '(unless (equal emacs-version "31.1") (error "GNU bytecode compiler must be 31.1"))'
           compiler=$(command -v emacs)
           if [ "$RUNNER_OS" = Windows ]; then
-            # setup-emacs-windows installs both versions under the same root.
-            # Preserve the whole 31.1 distribution before installing the host.
+            # Preserve the whole pinned distribution before installing the host.
             cp -a "$(dirname "$(dirname "$compiler")")" "$RUNNER_TEMP/nelisp-gnu31"
             compiler=$(cygpath -m "$RUNNER_TEMP/nelisp-gnu31/bin/emacs.exe")
           else
@@ -715,17 +711,14 @@ jobs:
           version: '31.1'
       - name: Set up GNU bytecode compiler (Windows)
         if: runner.os == 'Windows'
-        uses: jcs090218/setup-emacs-windows@master
-        with:
-          version: '31.1'
+        uses: ./.github/actions/windows-emacs
       - name: Record GNU bytecode compiler executable
         shell: bash
         run: |
           emacs --batch -Q --eval '(unless (equal emacs-version "31.1") (error "GNU bytecode compiler must be 31.1"))'
           compiler=$(command -v emacs)
           if [ "$RUNNER_OS" = Windows ]; then
-            # setup-emacs-windows installs both versions under the same root.
-            # Preserve the whole 31.1 distribution before installing the host.
+            # Preserve the whole pinned distribution before installing the host.
             cp -a "$(dirname "$(dirname "$compiler")")" "$RUNNER_TEMP/nelisp-gnu31"
             compiler=$(cygpath -m "$RUNNER_TEMP/nelisp-gnu31/bin/emacs.exe")
           else
@@ -878,8 +871,7 @@ jobs:
           emacs --batch -Q --eval '(unless (equal emacs-version "31.1") (error "GNU bytecode compiler must be 31.1"))'
           compiler=$(command -v emacs)
           if [ "$RUNNER_OS" = Windows ]; then
-            # setup-emacs-windows installs both versions under the same root.
-            # Preserve the whole 31.1 distribution before installing the host.
+            # Preserve the whole pinned distribution before installing the host.
             cp -a "$(dirname "$(dirname "$compiler")")" "$RUNNER_TEMP/nelisp-gnu31"
             compiler=$(cygpath -m "$RUNNER_TEMP/nelisp-gnu31/bin/emacs.exe")
           else
@@ -972,8 +964,7 @@ jobs:
           emacs --batch -Q --eval '(unless (equal emacs-version "31.1") (error "GNU bytecode compiler must be 31.1"))'
           compiler=$(command -v emacs)
           if [ "$RUNNER_OS" = Windows ]; then
-            # setup-emacs-windows installs both versions under the same root.
-            # Preserve the whole 31.1 distribution before installing the host.
+            # Preserve the whole pinned distribution before installing the host.
             cp -a "$(dirname "$(dirname "$compiler")")" "$RUNNER_TEMP/nelisp-gnu31"
             compiler=$(cygpath -m "$RUNNER_TEMP/nelisp-gnu31/bin/emacs.exe")
           else

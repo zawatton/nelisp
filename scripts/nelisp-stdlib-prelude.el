@@ -17434,27 +17434,22 @@ processors not available."
               (funcall r 4) (funcall w 2) (funcall x 1 512 ?t ?T)))))
 (unless (fboundp 'file-attributes)
   (defun file-attributes (filename &optional _id-format)
-    (let ((buf (nelisp--syscall-lstat-buf filename)))
-      (if (< buf 0)
-          nil
-        (let* ((mode (ptr-read-u32 buf 24))
+    ;; Decode the OS-owned raw buffer only inside the registered kernel.
+    (unless (fboundp 'nelisp-os-lstat-fields)
+      (require 'nelisp-stdlib-os-int-helpers))
+    (let ((fields (nelisp-os-lstat-fields filename)))
+      (when fields
+        (let* ((mode (aref fields 3))
                (ifmt (logand mode 61440))
-               (type (cond ((= ifmt 16384) t)                 ; S_IFDIR
-                           ((= ifmt 40960)                    ; S_IFLNK
-                            (nelisp--syscall-readlink filename))
+               (type (cond ((= ifmt 16384) t)
+                           ((= ifmt 40960) (nelisp--syscall-readlink filename))
                            (t nil))))
-          (list type
-                (ptr-read-u64 buf 16)
-                (ptr-read-u32 buf 28)
-                (ptr-read-u32 buf 32)
-                (nelisp--stat-lisp-time (ptr-read-u64 buf 72) (ptr-read-u64 buf 80))
-                (nelisp--stat-lisp-time (ptr-read-u64 buf 88) (ptr-read-u64 buf 96))
-                (nelisp--stat-lisp-time (ptr-read-u64 buf 104) (ptr-read-u64 buf 112))
-                (ptr-read-u64 buf 48)
-                (nelisp--stat-mode-string mode)
-                t
-                (ptr-read-u64 buf 8)
-                (ptr-read-u64 buf 0)))))))
+          (list type (aref fields 2) (aref fields 4) (aref fields 5)
+                (nelisp--stat-lisp-time (aref fields 7) (aref fields 8))
+                (nelisp--stat-lisp-time (aref fields 9) (aref fields 10))
+                (nelisp--stat-lisp-time (aref fields 11) (aref fields 12))
+                (aref fields 6) (nelisp--stat-mode-string mode) t
+                (aref fields 1) (aref fields 0)))))))
 ;; The accessors below are the standard public interface to the list
 ;; `file-attributes' returns (real Emacs's `files.el' defines them as
 ;; `defsubst', ported verbatim here as plain field lookups); without
@@ -19048,7 +19043,10 @@ signals an error rather than passing text through unexpanded."
                              (cons (substring string from mb) pieces)))
           (setq from (max whole-e (if (= me mb) (min l (1+ mb)) me)))))
       (setq pieces (cons (substring string from l) pieces))
-      (apply #'concat (nreverse pieces)))))
+      (apply #'concat (nreverse pieces))))
+  (defun replace-regexp-in-string (regexp rep string
+                                        &optional fixedcase literal subexp start)
+    (nelisp--rris regexp rep string fixedcase literal subexp start)))
 (unless (fboundp 'nelisp--base64-value)
   (defun nelisp--base64-value (char)
     (cond

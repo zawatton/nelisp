@@ -89,12 +89,21 @@ loop condition, so the loop body stays a single `let*'."
              (and (eq (car-safe form) 'defun)
                   (eq (cadr form) 'wf_bytecode)))
            nelisp-standalone--applyfn-bytecode-helpers))
-         (outer-let (nth 3 definition))
+         (execute
+          (cl-find-if
+           (lambda (form)
+             (and (eq (car-safe form) 'defun)
+                  (eq (cadr form) 'wf_bytecode_execute_frame)))
+           nelisp-standalone--applyfn-bytecode-helpers))
+         (outer-let (nth 3 execute))
          (guard (nth 2 outer-let))
          (forms (cdr (nth 3 guard)))
          (loops (cl-remove-if-not (lambda (form) (eq (car-safe form) 'while)) forms))
          (instruction-loop (car (last loops)))
          (after (cdr (memq instruction-loop forms))))
+    ;; The public list decoder delegates through the direct function-object
+    ;; entry to the shared VM. Finalization belongs to that VM's loop.
+    (should (eq (car-safe (nth 3 definition)) 'wf_bytecode_execute))
     (should (eq (car-safe guard) 'if))
     (should (= (length loops) 2))
     (should (= (length instruction-loop) 3))

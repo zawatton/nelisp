@@ -110,7 +110,7 @@ test-parallel:
 #   make test-one FILE="test/nelisp-artifact-test.el test/nelisp-core-fileio-test.el"
 test-one:
 	@test -n "$(FILE)" || { echo 'usage: make test-one FILE=test/nelisp-FOO-test.el'; exit 2; }
-	$(EMACS) --batch -Q -L lisp -L src -L test -L bench \
+	$(EMACS) --batch -Q -L lisp -L src -L scripts -L test -L bench \
 	  $(PACKAGE_SRC_LOADS) \
 	  $(PACKAGE_TEST_LOADS) \
 	  --eval '(setq load-prefer-newer t)' \
@@ -1812,7 +1812,8 @@ standalone-reader-fileattrs-smoke: $(if $(wildcard target/nelisp target/nelisp.e
 	  '       (count-ok (= (length dfa-count) 1))' \
 	  '       (mtime (file-attribute-modification-time attrs))' \
 	  '       (size-ok (equal (file-attribute-size attrs) 10))' \
-	  '       (mtime-ok (and (integerp mtime) (> mtime 1700000000)))' \
+	  '       (mtime-ok (and (consp mtime) (= (length mtime) 4)' \
+	  '                      (> (+ (* (car mtime) 65536) (cadr mtime)) 1700000000)))' \
 	  '       (reg-ok (and (file-regular-p f) (not (file-directory-p f))))' \
 	  '       (dir-ok (and (file-directory-p sub) (not (file-regular-p sub))))' \
 	  '       (names (directory-files dir))' \
@@ -1925,12 +1926,15 @@ standalone-reader-regexp-lead-filter-smoke: $(if $(wildcard target/nelisp target
 	  '  (let* ((t0 (float-time))' \
 	  '         (_a (dolist (p paths) (string-match "ddskk-[0-9]+\\.[0-9]+" p)))' \
 	  '         (ta (- (float-time) t0))' \
+	  '         (literal-filter-calls nlre--leading-filter-calls)' \
+	  '         (_reset (setq nlre--leading-filter-calls 0))' \
 	  '         (t1 (float-time))' \
 	  '         (_b (dolist (p paths) (string-match "[0-9]+zzz" p)))' \
 	  '         (tb (- (float-time) t1))' \
 	  '         (ratio (/ ta tb))' \
 	  '         (filter-calls nlre--leading-filter-calls)' \
-	  '         (filter-ok (= filter-calls (length paths))))' \
+	  '         (filter-ok (and (= literal-filter-calls (length paths))' \
+	  '                         (= filter-calls (length paths)))))' \
 	  '    (princ (format "got=%S r6=%S g1=%S r7=%S g2=%S lead=%.3f nolead=%.3f ratio=%.3f filter-calls=%d pass=%S\n"' \
 	  '                   got r6 g1 r7 g2 ta tb ratio filter-calls' \
 	  '                   (and correct-ok filter-ok)))))' \
@@ -2360,8 +2364,15 @@ standalone-reader-shadow-smoke: $(if $(wildcard target/nelisp target/nelisp.exe)
 	@printf '%s\n' '(load "scripts/nelisp-stdlib-prelude.el")' > target/shadow-prelude.el
 	@cat test/nelisp-shadow-differential-cases.el >> target/shadow-prelude.el
 	@bin=$(STANDALONE_BIN); \
-	native="$$($$bin --load target/shadow-native.el 2>&1 | tail -n 1)"; \
-	prelude="$$($$bin --load target/shadow-prelude.el 2>&1 | tail -n 1)"; \
+	if ! native="$$($$bin --load target/shadow-native.el 2> target/shadow-native.stderr)"; then \
+	  echo "[shadow-smoke] FAIL: native execution failed"; cat target/shadow-native.stderr; exit 1; \
+	fi; \
+	if ! prelude="$$($$bin --load target/shadow-prelude.el 2> target/shadow-prelude.stderr)"; then \
+	  echo "[shadow-smoke] FAIL: prelude execution failed"; cat target/shadow-prelude.stderr; exit 1; \
+	fi; \
+	# Ignore initial print separators; retain every line of the result itself. \
+	native="$$(printf '%s\n' "$$native" | sed '/[^[:space:]]/,$$!d')"; \
+	prelude="$$(printf '%s\n' "$$prelude" | sed '/[^[:space:]]/,$$!d')"; \
 	case "$$native" in \
 	  "("*) : ;; \
 	  *) echo "[shadow-smoke] FAIL: the native run produced no list -> $$native"; exit 1;; \
@@ -2738,17 +2749,19 @@ standalone-reader-host-parity-smoke: standalone-reader
 	  echo "[host-parity]       expected $$expected"; \
 	  exit 1; \
 	fi
+	# Bootstrap grew to >9s on CI; retain the 1000ms exp limit below and
+	# use the normal bounded process guard to let the measurement execute.
 	@printf '%s\n' \
 	  '(setq exp-t0 (float-time))' \
 	  '(setq exp-result (exp -1.0e6))' \
 	  '(setq exp-eval-ms (round (* 1000.0 (- (float-time) exp-t0))))' \
 	  '(progn (princ (format "exp-result=%S exp-eval-ms=%d\n" exp-result exp-eval-ms)) nil)' \
 	  > target/standalone-reader-host-parity-exp-timed.el; \
-	out="$$(timeout 5 $(STANDALONE_BIN) --load target/standalone-reader-host-parity-exp-timed.el)"; rc=$$?; \
+	out="$$(timeout $(STANDALONE_SMOKE_TIMEOUT) $(STANDALONE_BIN) --load target/standalone-reader-host-parity-exp-timed.el)"; rc=$$?; \
 	exp_result="$$(printf '%s\n' "$$out" | sed -n 's/^exp-result=\([^ ]*\) exp-eval-ms=\([0-9][0-9]*\)$$/\1/p')"; \
 	elapsed_ms="$$(printf '%s\n' "$$out" | sed -n 's/^exp-result=\([^ ]*\) exp-eval-ms=\([0-9][0-9]*\)$$/\2/p')"; \
 	if [ "$$rc" = "124" ]; then \
-	  echo "[host-parity] FAIL: (exp -1.0e6) did not answer within 5s (hang)"; exit 1; \
+	  echo "[host-parity] FAIL: (exp -1.0e6) did not answer within $(STANDALONE_SMOKE_TIMEOUT)s (including bootstrap)"; exit 1; \
 	elif [ "$$rc" != "0" ]; then \
 	  echo "[host-parity] FAIL: (exp -1.0e6) process exited with status $$rc -> $$out"; exit 1; \
 	elif [ "$$exp_result" != "0.0" ] || [ -z "$$elapsed_ms" ]; then \
@@ -2953,7 +2966,7 @@ standalone-reader-declare-strip-smoke: standalone-reader
 	  '(defmacro ds-m3 (x) (declare (debug (form))) "doc" (list (quote quote) x))' \
 	  '(defun ds-f1 () "doc" (declare (indent 0)) (interactive) (+ 41 1))' \
 	  '(defun ds-f2 () (declare (indent 0)))' \
-	  '(let ((fn (symbol-function (quote ds-f1)))) (list (ds-m1 foo) (ds-m2 bar) (ds-m3 baz) (ds-f1) (equal (car (cdr (cdr (cdr fn)))) (quote (interactive))) (ds-f2)))' \
+	  '(let ((fn (symbol-function (quote ds-f1)))) (list (ds-m1 foo) (ds-m2 bar) (ds-m3 baz) (ds-f1) (equal (interactive-form (quote ds-f1)) (quote (interactive nil))) (ds-f2)))' \
 	  > target/standalone-reader-declare-strip-smoke.el
 	@out="$$($(STANDALONE_BIN) --repl --no-prompt < target/standalone-reader-declare-strip-smoke.el | tail -1)"; \
 	if [ "$$out" = "(foo bar baz 42 t nil)" ]; then \
@@ -3076,19 +3089,19 @@ standalone-reader-pcase-quote-literal-smoke: standalone-reader
 # ...))' always mismatched and fell through to `no-catch' -- exactly the
 # control-flow idiom vendor llama.el's `llama--collect'/`llama--fontify'
 # use internally (reached from magit/transient via the `##' macro).  Covers
-# t tag, nil tag, an ordinary symbol tag (pre-existing-working baseline),
+# t tag, rejected nil throw (GNU semantics), an ordinary symbol tag,
 # throw-less catch, a same-tag nested catch, and a mismatched-tag nested
-# catch (inner `t' catch must NOT swallow an outer-bound `nil' throw).
+# catch (inner `t' catch must NOT swallow an outer symbol-tag throw).
 standalone-reader-catch-throw-tag-smoke: standalone-reader
 	@mkdir -p target
 	@printf '%s\n' \
-	  '(list (catch t (throw t (quote a))) (catch nil (throw nil (quote b))) (catch (quote tag) (throw (quote tag) (quote c))) (catch t 42) (catch nil (catch t (throw t (quote inner)))) (catch nil (catch t (throw nil (quote outer)))))' \
+	  '(list (catch t (throw t (quote a))) (condition-case e (catch nil (throw nil (quote b))) (no-catch (car e))) (catch (quote tag) (throw (quote tag) (quote c))) (catch t 42) (catch nil (catch t (throw t (quote inner)))) (catch (quote outer-tag) (catch t (throw (quote outer-tag) (quote outer)))))' \
 	  > target/standalone-reader-catch-throw-tag-smoke.el
 	@out="$$($(STANDALONE_BIN) --load target/standalone-reader-catch-throw-tag-smoke.el)"; \
-	if [ "$$out" = "(a b c 42 inner outer)" ]; then \
+	if [ "$$out" = "(a no-catch c 42 inner outer)" ]; then \
 	  echo "[standalone-reader-catch-throw-tag-smoke] PASS: -> $$out"; \
 	else \
-	  echo "[standalone-reader-catch-throw-tag-smoke] FAIL: -> $$out (expected (a b c 42 inner outer))"; \
+	  echo "[standalone-reader-catch-throw-tag-smoke] FAIL: -> $$out (expected (a no-catch c 42 inner outer))"; \
 	  exit 1; \
 	fi
 
@@ -3934,16 +3947,15 @@ standalone-reader-hosts-file-smoke: standalone-reader
 	  '(setq nelisp--etc-hosts-file "target/standalone-reader-hosts-file-smoke-fixture.txt")' \
 	  '(setq nelisp-dns-resolver-ip "127.0.0.1")' \
 	  '(setq nelisp-dns-resolver-port 1)' \
-	  '(condition-case err (progn (open-network-stream "cli" nil "nelisp-p1-no-such-fixture-entry.invalid" 80) (quote uncaught)) (file-error (quote caught-file-error)))' \
+	  '(let* ((t0 (float-time)) (answer (condition-case err (progn (open-network-stream "cli" nil "nelisp-p1-no-such-fixture-entry.invalid" 80) (quote uncaught)) (file-error (quote caught-file-error))))) (list answer (round (* 1000.0 (- (float-time) t0)))))' \
 	  > target/standalone-reader-hosts-file-smoke-fallthrough.el
+	# Keep the DNS deadline below; allow bootstrap within the normal process guard.
 	@pos_out="$$($(STANDALONE_BIN) --load target/standalone-reader-hosts-file-smoke-positive.el)"; \
-	start=$$(date +%s%N); \
-	fall_out="$$(timeout 10 $(STANDALONE_BIN) --load target/standalone-reader-hosts-file-smoke-fallthrough.el)"; \
+	fall_out="$$(timeout $(STANDALONE_SMOKE_TIMEOUT) $(STANDALONE_BIN) --load target/standalone-reader-hosts-file-smoke-fallthrough.el)"; \
 	fall_rc=$$?; \
-	end=$$(date +%s%N); \
-	elapsed_ms=$$(( (end - start) / 1000000 )); \
+	elapsed_ms="$$(printf '%s\n' "$$fall_out" | sed -n 's/^(caught-file-error \([0-9][0-9]*\))$$/\1/p')"; \
 	if [ "$$pos_out" = "(open t \"127.0.0.1\")" ] && \
-	   [ "$$fall_rc" = "0" ] && [ "$$fall_out" = "caught-file-error" ] && \
+	   [ "$$fall_rc" = "0" ] && [ -n "$$elapsed_ms" ] && \
 	   [ "$$elapsed_ms" -lt "$(if $(filter windows%,$(STANDALONE_GATE_TARGET)),8000,5000)" ]; then \
 	  echo "[standalone-reader-hosts-file-smoke] PASS: positive(status,roundtrip,alias-lookup)=$$pos_out fallthrough(caught,elapsed_ms)=$$fall_out,$${elapsed_ms}ms (never a hang)"; \
 	else \
@@ -4250,12 +4262,14 @@ standalone-reader-nonblocking-socket-smoke: standalone-reader
 # not pumping outside an explicit wait -- that half is unaffected by
 # the wiring and stays the real regression guard.
 standalone-reader-repl-idle-pump-smoke: standalone-reader
+	# A buffered pipe can deliver every blank line before 50 ms elapses.
+	# Schedule an already-due timer so this tests pumping, not input speed.
 	@mkdir -p target
 	@printf '%s\n' \
-	  '(run-at-time 0.05 nil (lambda () (princ "TICK")))' \
+	  '(run-at-time 0 nil (lambda () (princ "TICK")))' \
 	  '(quote batch-no-pump)' \
 	  > target/standalone-reader-repl-idle-pump-smoke-batch.el
-	@noload_out="$$(printf '(run-at-time 0.05 nil (lambda () (princ "TICK")))\n\n\n\n\n' | timeout 5 $(STANDALONE_BIN) --repl --no-prompt --no-print 2>&1)"; \
+	@noload_out="$$(printf '(run-at-time 0 nil (lambda () (princ "TICK")))\n\n\n\n\n' | timeout $(STANDALONE_SMOKE_TIMEOUT) $(STANDALONE_BIN) --repl --no-prompt --no-print 2>&1)"; \
 	batch_out="$$($(STANDALONE_BIN) --load target/standalone-reader-repl-idle-pump-smoke-batch.el 2>&1)"; \
 	case "$$noload_out" in \
 	  *TICK*) noload_ok=1 ;; \

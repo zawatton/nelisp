@@ -40,6 +40,7 @@
 (require 'nelisp-eval)
 
 (declare-function nelisp-bc-run "nelisp-bytecode" (bcl &optional args))
+(declare-function nelisp-tramp-eval "nelisp-tramp" (form &optional env))
 
 (defvar nelisp-jit-enabled t
   "When non-nil, `nelisp--make-closure' tries JIT compilation first.
@@ -173,9 +174,16 @@ interpreter closures / subrs / void bindings / etc.
 `defsubst' so byte-compile inlines this into every JIT body and the
 dispatch becomes one conditional + one tail-style call."
   (let ((fn (gethash sym nelisp--functions nelisp--unbound)))
-    (if (and (consp fn) (eq (car fn) 'nelisp-bcl))
-        (nelisp-bc-run fn args)
-      (nelisp--apply sym args))))
+    (cond
+     ((and (consp fn) (eq (car fn) 'nelisp-bcl))
+      (nelisp-bc-run fn args))
+     ;; Source self-install can leave the application bridge interpreted.
+     ;; Reentering it through the recursive evaluator loses the trampoline's
+     ;; special apply step and recursively calls the bridge itself.
+     ((and (nelisp--closure-p fn) (fboundp 'nelisp-tramp-eval))
+      (nelisp-tramp-eval
+       (cons fn (mapcar (lambda (arg) (list 'quote arg)) args))))
+     (t (nelisp--apply sym args)))))
 
 (defun nelisp-jit--param-symbols (params)
   "Return lexical symbol names declared by PARAMS.
@@ -264,11 +272,18 @@ for constructs the MVP does not handle."
                                      (nelisp-jit--translate (cadr b) env)))))
                     bindings))
            (new-env (append new-syms env)))
+      (when (cl-some (lambda (sym) (gethash sym nelisp--specials)) new-syms)
+        (signal 'nelisp-jit-unsupported (list (cons head rest))))
       `(let ,translated
          ,@(nelisp-jit--translate-body (cdr rest) new-env))))
    ((eq head 'let*)
     (let ((working env)
           (out nil))
+      (when (cl-some (lambda (binding)
+                       (gethash (if (consp binding) (car binding) binding)
+                                nelisp--specials))
+                     (car rest))
+        (signal 'nelisp-jit-unsupported (list (cons head rest))))
       (dolist (b (car rest))
         (cond
          ((symbolp b) (push b out) (push b working))
@@ -305,6 +320,19 @@ for constructs the MVP does not handle."
    ;; instead, and the caller falls through to bcl / interpreter, which
    ;; handle these correctly.
    ((and (symbolp head) (memq head nelisp-jit-untranslated-special-forms))
+    (signal 'nelisp-jit-unsupported (list (cons head rest))))
+   ;; The source bootstrap installs macros such as dolist in the runtime's
+   ;; macro table. Unless translated above, their arguments are syntax too:
+   ;; emitting dolist's (sym sequence) as a call invokes a function named sym.
+   ((and (symbolp head)
+         (not (eq (gethash head nelisp--macros nelisp--unbound)
+                  nelisp--unbound)))
+    (signal 'nelisp-jit-unsupported (list (cons head rest))))
+   ;; The trampoline gives these calls their own application steps. Sending
+   ;; them through the ordinary user-call arm instead can reenter an installed
+   ;; nelisp--apply through its own apply bridge during source self-install.
+   ;; Keep that dispatch in the evaluator until the JIT has an equivalent.
+   ((memq head '(apply funcall))
     (signal 'nelisp-jit-unsupported (list (cons head rest))))
    ;; ----- call dispatch -------------------------------------------------
    ((and (symbolp head) (nelisp-jit--primitive-p head))
@@ -370,6 +398,9 @@ captured-env closures that mutate their captures."
              (env-syms (mapcar #'car env))
              (full-env (append env-syms lexical)))
         (cond
+         ;; Host lexical lets do not dynamically bind the evaluator's global
+         ;; table. This includes reader state such as backquote depth.
+         ((cl-some (lambda (sym) (gethash sym nelisp--specials)) lexical) nil)
          ;; Captured-env closures that write to their captures cannot use
          ;; the `aref'-in-let embedding (the let re-initialises on every
          ;; call, so a `setq' would not persist).  Fall through to bcl /

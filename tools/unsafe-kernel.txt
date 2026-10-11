@@ -281,3 +281,94 @@ pinned-kernel-touch lisp/nelisp-native-funcall-v2.el
 pinned-kernel-touch lisp/nelisp-native-gccjit.el
 pinned-kernel-touch lisp/nelisp-process-buffer.el
 pinned-kernel-touch lisp/nelisp-standalone-arena-rewrite.el
+
+# CI health reconciliation (2026-10-11), scanned at 3228ab4c0.
+# These previously unregistered ABI boundaries already exist in the integrated
+# tree. Each raw use was inspected; ordinary prelude stat decoding was moved
+# into nelisp-stdlib-os-int-helpers instead of admitting the whole prelude.
+# Emits branch joins that read authenticated root-slot tags and invoke native gateways.
+lisp/nelisp-bytecode-native-rooted-branch-join.el
+pinned-kernel-touch lisp/nelisp-bytecode-native-rooted-branch-join.el
+# Emits branch tests on authenticated root-slot tags before CAR/CDR gateways.
+lisp/nelisp-bytecode-native-rooted-branch.el
+pinned-kernel-touch lisp/nelisp-bytecode-native-rooted-branch.el
+# Emits rooted CFG slot clearing and tag reads through the raw-v2 frame ABI.
+lisp/nelisp-bytecode-native-rooted-cfg-emit.el
+pinned-kernel-touch lisp/nelisp-bytecode-native-rooted-cfg-emit.el
+# Emits full tagged-slot copies, condition-tag reads and integer switch-slot reads.
+lisp/nelisp-bytecode-native-rooted-cfg-shared-emit.el
+pinned-kernel-touch lisp/nelisp-bytecode-native-rooted-cfg-shared-emit.el
+# Emits a rooted conditional probe reading only an authenticated condition-slot tag.
+lisp/nelisp-bytecode-native-rooted-conditional.el
+pinned-kernel-touch lisp/nelisp-bytecode-native-rooted-conditional.el
+# Encodes/decodes GNU ABI 64-bit words through bounded raw u32 reads and writes.
+lisp/nelisp-eln-abi.el
+pinned-kernel-touch lisp/nelisp-eln-abi.el
+# Writes limb count and sign into owned read-only GNU bignum view storage.
+lisp/nelisp-eln-bignum.el
+pinned-kernel-touch lisp/nelisp-eln-bignum.el
+# Initializes and reads callback state, and calls leased raw-word import gateways.
+lisp/nelisp-eln-callable-import.el
+pinned-kernel-touch lisp/nelisp-eln-callable-import.el
+# Writes raw IEEE-754 limbs into an owned GNU float view; retains the Lisp owner.
+lisp/nelisp-eln-float.el
+pinned-kernel-touch lisp/nelisp-eln-float.el
+# Reads/writes owned GNU handler, shadow-thread, jump and resume records.
+lisp/nelisp-eln-handler-port.el
+pinned-kernel-touch lisp/nelisp-eln-handler-port.el
+# Maps/protects jump stubs and links owned handler/thread blocks and relocation cells.
+lisp/nelisp-eln-handler-substrate.el
+pinned-kernel-touch lisp/nelisp-eln-handler-substrate.el
+# Calls bounded leased GNU word adapters and validates handler/thread raw state.
+lisp/nelisp-eln-native-subr.el
+pinned-kernel-touch lisp/nelisp-eln-native-subr.el
+# Writes and checks owned opaque GNU object-view byte storage.
+lisp/nelisp-eln-objects.el
+pinned-kernel-touch lisp/nelisp-eln-objects.el
+# Writes/checks/protects a SysV trampoline and captures the complete RAX word.
+lisp/nelisp-eln-raw-call.el
+pinned-kernel-touch lisp/nelisp-eln-raw-call.el
+# Writes bounded GNU comp-unit/subr pseudovector headers in owned mappings.
+lisp/nelisp-eln-registration-objects.el
+pinned-kernel-touch lisp/nelisp-eln-registration-objects.el
+# Patches/validates GOT cells and callback records, calls admitted registration code.
+lisp/nelisp-eln-registration.el
+pinned-kernel-touch lisp/nelisp-eln-registration.el
+# Writes and validates owned GNU string headers, UTF-8 bytes and terminators.
+lisp/nelisp-eln-string.el
+pinned-kernel-touch lisp/nelisp-eln-string.el
+# Calls dladdr and reads bounded system-loader metadata and relocation words.
+lisp/nelisp-eln-system-loader.el
+pinned-kernel-touch lisp/nelisp-eln-system-loader.el
+# Emits rooted numeric argument/result slot copies and nonlocal-exit flag access.
+lisp/nelisp-native-arithmetic-v2.el
+pinned-kernel-touch lisp/nelisp-native-arithmetic-v2.el
+# Emits authenticated raw-v2 frame/link reads, slot copies and exit-flag access.
+lisp/nelisp-native-call-v2.el
+pinned-kernel-touch lisp/nelisp-native-call-v2.el
+# Emits authenticated fixnum tag/payload reads and full result-slot writes.
+lisp/nelisp-native-optimization-guard-v1.el
+pinned-kernel-touch lisp/nelisp-native-optimization-guard-v1.el
+# Maps bounded buffers, reads executable byte windows with pread, closes and unmaps.
+lisp/nelisp-native-raw-file.el
+pinned-kernel-touch lisp/nelisp-native-raw-file.el
+# Queries the OS UID for authenticated native fragment capability ownership.
+lisp/nelisp-native-template-stencils.el
+pinned-kernel-touch lisp/nelisp-native-template-stencils.el
+# Reads/writes owned UTF-16, SID, ACL, file-ID and memory-query buffers; validates exports.
+lisp/nelisp-native-windows.el
+pinned-kernel-touch lisp/nelisp-native-windows.el
+# Emits optional binary trace records with source pointer, cursor and record byte writes.
+scripts/nelisp-startup-trace.el
+pinned-kernel-touch scripts/nelisp-startup-trace.el
+# Emits the GNU import callback gateway with rooted raw argument/result slots.
+pinned-kernel-touch lisp/nelisp-cc-eln-callback.el
+# Emits the seven-argument GNU callback gateway and its raw frame slot copies.
+pinned-kernel-touch lisp/nelisp-cc-eln-callback7.el
+# Emits opt-in arity-trace scratch records, symbol bytes and stderr writes.
+pinned-kernel-touch lisp/nelisp-cc-evalport-env-leaves-bind-trace.el
+# Reads char-table parent and entry arrays while mapping rooted tagged values.
+pinned-kernel-touch lisp/nelisp-cc-evalport-nonenv-char-table-map.el
+# Measured 147 touched files before repair, 146 after moving prelude stat
+# reads into the existing OS kernel. Every new identity remains pinned.
+kernel-files 146

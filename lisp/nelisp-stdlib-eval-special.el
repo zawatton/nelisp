@@ -159,9 +159,13 @@ Reserved for future nemacs layer parity."
   "Stub: NeLisp has no narrowing, so this is just `progn'."
   (cons 'progn body))
 
-(defmacro save-current-buffer (&rest body)
-  "Stub: NeLisp has no current buffer, so this is just `progn'."
-  (cons 'progn body))
+(unless (fboundp 'save-current-buffer)
+  (defmacro save-current-buffer (&rest body)
+    "Evaluate BODY, restoring the current buffer even after an error."
+    (let ((saved (make-symbol "saved-buffer")))
+      `(let ((,saved (current-buffer)))
+         (unwind-protect (progn ,@body)
+           (when (buffer-live-p ,saved) (set-buffer ,saved)))))))
 
 ;;;; --- declarations (no-op in interpreter mode) ------------------------
 
@@ -185,22 +189,24 @@ Reserved for future nemacs layer parity."
   "Interpreter-mode stub: evaluate BODY immediately as `progn'."
   (cons 'progn body))
 
-;;;; --- buffer/syntax `with-*' family (interpreter-mode stubs) ----------
+;;;; --- buffer/syntax `with-*' family ---------------------------------
 
-;; NeLisp has no buffer / syntax-table concept.  These macros' BODY
-;; runs without the buffer-context save/restore that host Emacs would
-;; install — sufficient for tree-walker loading of vendor files; if a
-;; vendor function actually depends on the buffer context at call
-;; time, the call site will fail later (= deferred to a more specific
-;; blocker).
+;; A runtime with buffers already owns these context macros. Reloading the
+;; evaluator support file must preserve them; the former progn-only overrides
+;; erased temp-buffer selection and made insert fail in the parity corpus.
+(unless (fboundp 'with-current-buffer)
+  (defmacro with-current-buffer (buffer-or-name &rest body)
+    "Evaluate BODY with BUFFER-OR-NAME temporarily current."
+    `(save-current-buffer (set-buffer ,buffer-or-name) ,@body)))
 
-(defmacro with-current-buffer (_buffer &rest body)
-  "Stub: ignore BUFFER, run BODY in current context."
-  (cons 'progn body))
-
-(defmacro with-temp-buffer (&rest body)
-  "Stub: ignore temp-buffer scoping, run BODY in current context."
-  (cons 'progn body))
+(unless (fboundp 'with-temp-buffer)
+  (defmacro with-temp-buffer (&rest body)
+    "Create a temporary buffer, evaluate BODY there, then kill the buffer."
+    (let ((temp (make-symbol "temp-buffer")))
+      `(let ((,temp (generate-new-buffer " *temp*" t)))
+         (with-current-buffer ,temp
+           (unwind-protect (progn ,@body)
+             (when (buffer-live-p ,temp) (kill-buffer ,temp))))))))
 
 (defmacro with-syntax-table (_table &rest body)
   "Stub: ignore TABLE, run BODY in current context."
@@ -224,43 +230,46 @@ Reserved for future nemacs layer parity."
   "NeLisp has no buffer-local; equivalent to `setq'."
   (cons 'setq pairs))
 
-(defmacro defvar (name &rest args)
-  "Define NAME as a global variable, set initial VALUE if unbound.
-With NO value form (`(defvar NAME)' forward declaration) NAME is only
-declared, NOT bound — matching Emacs `defvar' so that a later
-`(defvar NAME VALUE)' still initializes it.  Distinguishing the
-zero-value form requires `&rest' (arity), not `&optional' (which cannot
-tell `(defvar X)' from `(defvar X nil)').  DOCSTRING ignored.  Returns NAME."
-  (if args
-      (list 'progn
-            (list 'puthash (list 'quote name) t 'nelisp--special-variables)
-            (list 'if (list 'boundp (list 'quote name)) nil
-                  (list 'set (list 'quote name) (car args)))
-            (list 'quote name))
-    (list 'funcall '(quote (builtin nelisp--declare-local-special))
-          (list 'quote name))))
+;; Preserve native declarations so GNU macroexpand sees the special form.
+(unless (special-form-p 'defvar)
+  (defmacro defvar (name &rest args)
+    "Define NAME as a global variable, set initial VALUE if unbound.
+  With NO value form (`(defvar NAME)' forward declaration) NAME is only
+  declared, NOT bound — matching Emacs `defvar' so that a later
+  `(defvar NAME VALUE)' still initializes it.  Distinguishing the
+  zero-value form requires `&rest' (arity), not `&optional' (which cannot
+  tell `(defvar X)' from `(defvar X nil)').  DOCSTRING ignored.  Returns NAME."
+    (if args
+        (list 'progn
+              (list 'puthash (list 'quote name) t 'nelisp--special-variables)
+              (list 'if (list 'boundp (list 'quote name)) nil
+                    (list 'set (list 'quote name) (car args)))
+              (list 'quote name))
+      (list 'funcall '(quote (builtin nelisp--declare-local-special))
+            (list 'quote name)))))
 
 (defmacro defvar-local (name &optional value docstring)
   "Alias for `defvar' (NeLisp lacks buffer-local distinction)."
   (cons 'defvar (cons name (cons value (cons docstring nil)))))
 
-(defmacro defconst (name value &optional _docstring)
-  "Define NAME as a constant whose initial value is VALUE.
-DOCSTRING is currently ignored.  Returns NAME.
+;; Preserve native declarations so GNU macroexpand sees the special form.
+(unless (special-form-p 'defconst)
+  (defmacro defconst (name value &optional _docstring)
+    "Define NAME as a constant whose initial value is VALUE.
+  DOCSTRING is currently ignored.  Returns NAME.
 
-Doc 102 Phase 5 Step B (2026-05-17) — the constant flag is now
-set via the `nelisp--env-globals-set-constant' env_shim primitive
-(= Doc 86 §86.3.a surface; routes through the elisp env mirror's
-slot-3 `Sexp::T').  Stage 7.3.a TODO resolved."
-  (list 'progn
-        (list 'puthash (list 'quote name) t 'nelisp--special-variables)
-        (list 'set (list 'quote name) value)
-        (list 'nelisp--env-globals-set-constant (list 'quote name) t)
-        (list 'quote name)))
+  Doc 102 Phase 5 Step B (2026-05-17) — the constant flag is now
+  set via the `nelisp--env-globals-set-constant' env_shim primitive
+  (= Doc 86 §86.3.a surface; routes through the elisp env mirror's
+  slot-3 `Sexp::T').  Stage 7.3.a TODO resolved."
+    (list 'progn
+          (list 'puthash (list 'quote name) t 'nelisp--special-variables)
+          (list 'set (list 'quote name) value)
+          (list 'nelisp--env-globals-set-constant (list 'quote name) t)
+          (list 'quote name))))
 
-;; Reloading this source replaces the bootstrap macro identities. Keep the
-;; standalone's native-declaration dispatch attached to these new definitions;
-;; otherwise macroexpand starts emitting the bootstrap fallback again.
+;; Refresh identities for bootstrap macroexpand implementations that exclude
+;; declaration fallbacks. Native special-form bindings were preserved above.
 (when (boundp 'nelisp--native-declaration-macros)
   (setq nelisp--native-declaration-macros
         (list (symbol-function 'defvar) (symbol-function 'defconst))))
