@@ -87,7 +87,7 @@ loop condition, so the loop body stays a single `let*'."
           (cl-find-if
            (lambda (form)
              (and (eq (car-safe form) 'defun)
-                  (eq (cadr form) 'wf_bytecode)))
+                  (eq (cadr form) 'wf_bytecode_execute_frame)))
            nelisp-standalone--applyfn-bytecode-helpers))
          (outer-let (nth 3 definition))
          (guard (nth 2 outer-let))
