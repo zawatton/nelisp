@@ -13,7 +13,6 @@
 
 (require 'cl-lib)
 (require 'nelisp-bytecode-native-rooted-cfg-data)
-(require 'nelisp-bytecode-compiler-input)
 ;; Optimizer dependencies are loaded only when their public API is called.
 (autoload 'nelisp-bytecode-compiler-input-build "nelisp-bytecode-compiler-input")
 (autoload 'nelisp-bytecode-compiler-input-dialect "nelisp-bytecode-compiler-input")
@@ -301,7 +300,7 @@
         contract))))
 
 (defalias 'nelisp-bytecode-native-rooted-cfg-contract--snapshot-data
-  #'nelisp-bytecode-compiler-input--snapshot)
+  (symbol-function 'nelisp-bytecode-native-rooted-cfg-data-snapshot))
 (defun nelisp-bytecode-native-rooted-cfg-contract--stage (label)
   "Append optional compile diagnostics without changing validation decisions."
   (let ((path (getenv "NELISP_ROOTED_CFG_STAGE_LOG")))
@@ -313,7 +312,8 @@
 
 
 (let ((snapshot-owner (symbol-function 'nelisp-bytecode-native-rooted-cfg-contract--snapshot-data))
-      (reuse-owner (symbol-function 'nelisp-bytecode-compiler-input--reuse-checked))
+      (reuse-owner (and (fboundp 'nelisp-bytecode-compiler-input--reuse-checked)
+                        (symbol-function 'nelisp-bytecode-compiler-input--reuse-checked)))
       (data-equal-owner (symbol-function 'nelisp-bytecode-native-rooted-cfg-data-equal))
       ;; Lean images retain the original independent public reconstruction.
       ;; Optimizing cold preparation loads the shared emitter before this
@@ -353,7 +353,7 @@ The result is data for comparison, never a certificate or cached authority."
               (and live-input recipe-safe
                    (progn
                      (setq live-canonical
-                           (or (and (funcall same reuse-owner
+                           (or (and reuse-owner (funcall same reuse-owner
                                             (funcall lookup 'nelisp-bytecode-compiler-input--reuse-checked))
                                     (funcall reuse-owner live-input))
                                (nelisp-bytecode-compiler-input-build (plist-get live-input :function))))
