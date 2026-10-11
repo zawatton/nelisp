@@ -3,8 +3,43 @@
 (require 'ert)
 (require 'cl-lib)
 (require 'bytecomp)
+
+;; These tests cover the lean-image reconstruction, which re-emits through the
+;; public `nelisp-bytecode-native-rooted-cfg-shared-emit-build'.  When the
+;; shared emitter is loaded before the contract (as in optimizing cold images,
+;; or when an earlier test file required it), the contract seals the
+;; input-only emitter instead, and these probes would observe nothing.  In
+;; that case each test runs in a child Emacs that loads this file first.
+(defconst nelisp-cfg-prefix-test--sealed
+  (featurep 'nelisp-bytecode-native-rooted-cfg-shared-emit))
+(defconst nelisp-cfg-prefix-test--file
+  (expand-file-name (or load-file-name buffer-file-name)))
+
 (require 'nelisp-native-load)
 (require 'nelisp-bytecode-native-rooted-cfg-contract)
+
+(defun nelisp-cfg-prefix-test--delegate (name)
+  "Run test NAME in a child Emacs whose contract uses the lean path."
+  (with-temp-buffer
+    (let ((status
+           (apply #'call-process
+                  (expand-file-name invocation-name invocation-directory)
+                  nil t nil
+                  (append '("--batch" "-Q")
+                          (mapcan (lambda (dir) (list "-L" dir)) load-path)
+                          (list "-l" "ert" "-l" nelisp-cfg-prefix-test--file
+                                "--eval"
+                                (format "(ert-run-tests-batch-and-exit '%S)" name))))))
+      (unless (eql status 0) (message "%s" (buffer-string)))
+      (should (eql status 0)))))
+
+(defmacro nelisp-cfg-prefix-deftest (name args &rest body)
+  "Define NAME like `ert-deftest', delegating BODY when the contract is sealed."
+  (declare (indent 2))
+  `(ert-deftest ,name ,args
+     (if nelisp-cfg-prefix-test--sealed
+         (nelisp-cfg-prefix-test--delegate ',name)
+       ,@body)))
 
 (defun nelisp-cfg-prefix-test--fixture ()
   "Construct genuine GNU byte-code and its independently verified source."
@@ -58,7 +93,7 @@
           (list result calls emissions))
       (delete-directory dir t))))
 
-(ert-deftest nelisp-cfg-prefix/one-validator-and-exact-output ()
+(nelisp-cfg-prefix-deftest nelisp-cfg-prefix/one-validator-and-exact-output ()
   (skip-unless (equal emacs-version "31.1"))
   (let* ((fixture (nelisp-cfg-prefix-test--fixture))
          (result (nelisp-cfg-prefix-test--run fixture))
@@ -73,7 +108,7 @@
     (should (= (nth 2 result) 1))
     (should (equal (car result) expected))))
 
-(ert-deftest nelisp-cfg-prefix/caller-mismatches-refused ()
+(nelisp-cfg-prefix-deftest nelisp-cfg-prefix/caller-mismatches-refused ()
   (skip-unless (equal emacs-version "31.1"))
   (dolist (field '(:declared-stack-depth :dialect-evidence))
     (let ((fixture (nelisp-cfg-prefix-test--fixture)))
@@ -84,7 +119,7 @@
                (byte-compile '(lambda (a b) (cons b a))))
     (should-error (nelisp-cfg-prefix-test--run fixture))))
 
-(ert-deftest nelisp-cfg-prefix/forged-and-mutated-validator-refused ()
+(nelisp-cfg-prefix-deftest nelisp-cfg-prefix/forged-and-mutated-validator-refused ()
   (skip-unless (equal emacs-version "31.1"))
   (let ((fixture (nelisp-cfg-prefix-test--fixture)))
     (should-error (nelisp-cfg-prefix-test--run fixture (lambda (&rest _) t)))
@@ -95,7 +130,7 @@
                   (fset 'nelisp-bytecode-native-rooted-cfg-contract-valid-p
                         (lambda (&rest _) t))))))))
 
-(ert-deftest nelisp-cfg-prefix/replayed-and-fabricated-record-refused ()
+(nelisp-cfg-prefix-deftest nelisp-cfg-prefix/replayed-and-fabricated-record-refused ()
   (skip-unless (equal emacs-version "31.1"))
   (let* ((fixture (nelisp-cfg-prefix-test--fixture))
          (record (nelisp-bytecode-native-rooted-cfg-contract-valid-p
@@ -106,7 +141,7 @@
     (plist-put record :emitted (plist-get (car fixture) :emitted))
     (should-error (nelisp-cfg-prefix-test--run fixture (lambda (&rest _) record)))))
 
-(ert-deftest nelisp-cfg-prefix/validator-mutated-during-reconstruction-refused ()
+(nelisp-cfg-prefix-deftest nelisp-cfg-prefix/validator-mutated-during-reconstruction-refused ()
   (skip-unless (equal emacs-version "31.1"))
   (let* ((fixture (nelisp-cfg-prefix-test--fixture))
          (emitter (symbol-function 'nelisp-bytecode-native-rooted-cfg-shared-emit-build))
@@ -120,7 +155,7 @@
           (should-error (nelisp-cfg-prefix-test--run fixture)))
       (fset 'nelisp-bytecode-native-rooted-cfg-contract-valid-p owner))))
 
-(ert-deftest nelisp-cfg-prefix/stage-order-and-failure-cutoffs ()
+(nelisp-cfg-prefix-deftest nelisp-cfg-prefix/stage-order-and-failure-cutoffs ()
   (skip-unless (equal emacs-version "31.1"))
   (let ((process-environment (copy-sequence process-environment))
         (log (make-temp-file "cfg-stage-")))
@@ -185,10 +220,10 @@
       (should released)
       (should unloaded))))
 
-(ert-deftest nelisp-cfg-prefix/log-failure-does-not-interrupt-consumer-cleanup ()
+(nelisp-cfg-prefix-deftest nelisp-cfg-prefix/log-failure-does-not-interrupt-consumer-cleanup ()
   (nelisp-cfg-prefix-test--log-failure-cleanup 'error))
 
-(ert-deftest nelisp-cfg-prefix/log-quit-does-not-interrupt-consumer-cleanup ()
+(nelisp-cfg-prefix-deftest nelisp-cfg-prefix/log-quit-does-not-interrupt-consumer-cleanup ()
   (condition-case nil
       (nelisp-cfg-prefix-test--log-failure-cleanup 'quit)
     (quit (ert-fail "Diagnostic quit escaped cleanup"))))
