@@ -1995,13 +1995,45 @@ Checks read-only text and shifts/expands text-property intervals."
 
 (defun emacs-buffer--copy-runs-to-string (string runs start end)
   "Copy RUNS overlapping source interval [START, END) into STRING."
-  (dolist (run runs)
-    (let ((lo (max start (nth 0 run)))
-          (hi (min end (nth 1 run))))
-      (when (< lo hi)
-        (emacs-buffer-string-text-property
-         'add string (- lo start) (- hi start) (nth 2 run)))))
+  (unless (emacs-buffer--copy-runs-to-fresh-string string runs start end)
+    (dolist (run runs)
+      (let ((lo (max start (nth 0 run)))
+            (hi (min end (nth 1 run))))
+        (when (< lo hi)
+          (emacs-buffer-string-text-property
+           'add string (- lo start) (- hi start) (nth 2 run))))))
   string)
+
+(defun emacs-buffer--copy-runs-to-fresh-string (string runs start end)
+  "Install RUNS over [START, END) on property-free STRING in one step.
+Return non-nil when done.  Adding sorted, non-overlapping runs one at a
+time to a string with no properties yields exactly these cells (each
+clipped, shifted and sharing its plist), but `emacs-buffer--tp-add'
+rebuilds and re-sorts the whole list per run: quadratic in the run
+count, seconds for a `buffer-string' of a propertized dired buffer.
+Return nil (caller adds run by run) when STRING already has properties
+or RUNS are unsorted or overlapping."
+  (let* ((ext (gethash string emacs-buffer--string-state)))
+    (unless (and ext (emacs-buffer--ext-text-props ext))
+      (let ((cells nil) (previous-end 0) (ok t))
+        (while (and ok runs)
+          (let* ((run (car runs))
+                 (lo (max start (nth 0 run)))
+                 (hi (min end (nth 1 run))))
+            (when (< lo hi)
+              (if (< (- lo start) previous-end)
+                  (setq ok nil)
+                (push (emacs-buffer--tp-cell (- lo start) (- hi start) (nth 2 run))
+                      cells)
+                (setq previous-end (- hi start)))))
+          (setq runs (cdr runs)))
+        (when ok
+          (when cells
+            (unless ext
+              (setq ext (emacs-buffer--ext-make))
+              (puthash string ext emacs-buffer--string-state))
+            (setf (emacs-buffer--ext-text-props ext) (nreverse cells)))
+          t)))))
 
 (defun emacs-buffer--copy-buffer-properties-to-string (buffer start end string)
   "Copy BUF's sidecar properties over [START, END) into STRING."

@@ -110,3 +110,39 @@
 
 (provide 'emacs-string-properties-test)
 ;;; emacs-string-properties-test.el ends here
+
+(ert-deftest emacs-string-properties-test/copy-runs-one-step-matches-per-run-adds ()
+  "The one-step install on a fresh string equals adding run by run."
+  (let ((runs (list (list 1 3 (list 'face 'bold))
+                    (list 3 4 (list 'mouse-face 'highlight 'help-echo "x"))
+                    (list 6 9 (list 'face 'italic))
+                    (list 12 20 (list 'invisible t))))
+        (reference (lambda (string runs start end)
+                     (dolist (run runs)
+                       (let ((lo (max start (nth 0 run))) (hi (min end (nth 1 run))))
+                         (when (< lo hi)
+                           (emacs-buffer-string-text-property
+                            'add string (- lo start) (- hi start) (nth 2 run)))))
+                     (emacs-buffer-string-text-property 'runs string))))
+    ;; Sorted runs on a fresh string: one-step path, same cells and plists.
+    (let ((fast (make-string 12 ?a)) (slow (make-string 12 ?a)))
+      (emacs-buffer--copy-runs-to-string fast runs 2 14)
+      (should (equal (emacs-buffer-string-text-property 'runs fast)
+                     (funcall reference slow runs 2 14)))
+      (should (eq (emacs-buffer--tp-plist
+                   (car (emacs-buffer--ext-text-props
+                         (gethash fast emacs-buffer--string-state))))
+                  (nth 2 (nth 0 runs)))))
+    ;; Unsorted runs fall back to per-run adds.
+    (let ((fast (make-string 12 ?a)) (slow (make-string 12 ?a))
+          (unsorted (reverse runs)))
+      (emacs-buffer--copy-runs-to-string fast unsorted 2 14)
+      (should (equal (emacs-buffer-string-text-property 'runs fast)
+                     (funcall reference slow unsorted 2 14))))
+    ;; A string that already has properties keeps the merging path.
+    (let ((fast (make-string 12 ?a)) (slow (make-string 12 ?a)))
+      (dolist (s (list fast slow))
+        (emacs-buffer-string-text-property 'add s 0 5 (list 'face 'shadow)))
+      (emacs-buffer--copy-runs-to-string fast runs 2 14)
+      (should (equal (emacs-buffer-string-text-property 'runs fast)
+                     (funcall reference slow runs 2 14))))))
