@@ -814,16 +814,26 @@ large image is resident a fixed every-N-forms GC dominates ordinary loads
   (defvar emacs-load--gc-last-cost 0.0
     "Seconds taken by the last periodic `load' GC.")
 
+  (defvar emacs-load--gc-pid nil
+    "Process id that recorded `emacs-load--gc-last-end'.")
+
   (defun emacs-load--periodic-gc (count)
     "Run the periodic `load' GC when COUNT hits the interval and it is cheap enough."
     (when (and load-garbage-collect-interval
                (> load-garbage-collect-interval 0)
                (= (% count load-garbage-collect-interval) 0)
                (fboundp 'garbage-collect))
-      (let ((now (float-time)))
-        (when (or (null emacs-load--gc-last-end)
-                  (>= (- now emacs-load--gc-last-end)
-                      (* emacs-load--gc-cost-ratio emacs-load--gc-last-cost)))
+      (let ((now (float-time))
+            (pid (and (fboundp 'emacs-pid) (emacs-pid))))
+        ;; A heap image carries the build process's last-GC time, so every
+        ;; restored session collected on its first `load' (4-8 s on a large
+        ;; heap) right after the image builder had collected.  Start this
+        ;; process's clock at its first check instead.
+        (unless (and pid (eql pid emacs-load--gc-pid))
+          (setq emacs-load--gc-pid pid
+                emacs-load--gc-last-end now))
+        (when (>= (- now emacs-load--gc-last-end)
+                  (* emacs-load--gc-cost-ratio emacs-load--gc-last-cost))
           (garbage-collect)
           (setq emacs-load--gc-last-end (float-time))
           (setq emacs-load--gc-last-cost (- emacs-load--gc-last-end now))))))
@@ -889,6 +899,15 @@ and `(defvar SYM)' adds SYM to it, so later forms of the same file bind
 SYM dynamically.  Each form here is evaluated separately, so the loader
 carries these declarations forward in the environment it passes to `eval'.
 `nelisp--load-eval-source-incremental' rebinds this to nil per file.")
+
+  (defun emacs-load--bundle-member-boundary-p (gap)
+    "Return non-nil when the skipped text GAP holds a bundle member marker.
+scripts/build-nelisp-bootstrap.el writes `;;; >>> FILE' before and
+`;;; <<< FILE' after each concatenated member."
+    (or (string-search "\n;;; >>> " gap)
+        (string-search "\n;;; <<< " gap)
+        (string-prefix-p ";;; >>> " gap)
+        (string-prefix-p ";;; <<< " gap)))
 
   (defun nelisp--load-note-local-specials (form)
     "Record initializer-free `defvar' declarations in top-level FORM."
@@ -1056,8 +1075,36 @@ SOURCE through the slow fallback or lose the following forms.  Reuse the tail
 evaluator for the isolated range so its existing `cc-provide' and `defalias'
 normalization remains identical to the large-form path."
     (let ((emacs-load--source-single-form-p t))
-      (cons (nelisp--load-eval-source-tail source pos form-end)
+      (cons (condition-case err
+                (nelisp--load-eval-source-tail source pos form-end)
+              (invalid-read-syntax
+               ;; The runtime reader rejects some valid GNU syntax, e.g. a
+               ;; string mixing "\x9f" with "\x061c" (marginalia.el).  When
+               ;; the native reader cannot read this form at all, nothing
+               ;; was evaluated yet: read it with the Lisp reader instead.
+               ;; An error raised while evaluating a readable form is
+               ;; re-signalled, so no form is ever evaluated twice.
+               (if (emacs-load--native-read-one source pos form-end)
+                   (signal (car err) (cdr err))
+                 (nelisp--load-eval-lisp-read-slice source pos form-end))))
             form-end)))
+
+  (defun nelisp--load-eval-lisp-read-slice (source pos form-end)
+    "Read SOURCE between POS and FORM-END with `read-from-string' and eval it.
+Fallback for a form the runtime reader rejects; return the last value."
+    (let* ((slice (emacs-load--reader-slice source pos form-end))
+           (length (length slice))
+           (index 0)
+           (last nil)
+           read)
+      (while (and (< index length)
+                  (setq read (condition-case nil
+                                 (read-from-string slice index)
+                               (end-of-file nil))))
+        (setq last (nelisp--load-eval-one-form
+                    (nelisp--load-rewrite-defalias-form (car read)))
+              index (cdr read)))
+      last))
 
   (defun emacs-load--artifact-source-decline-boundary (reader source pos)
     "Call READER for a declined form boundary, returning nil on scan failure.
@@ -1100,8 +1147,14 @@ scan unchanged."
           (count 0)
           (nelisp--load-file-local-specials nil)
           (native-probe-available (fboundp 'nelisp--read-all-from-string-native)))
-      (while (progn
+      (while (let ((before pos))
                (setq pos (nelisp--load-skip-space-and-comments source pos))
+               ;; A generated bundle concatenates many files; GNU would load
+               ;; each separately, so its declarations end at a member marker.
+               (when (and nelisp--load-file-local-specials
+                          (emacs-load--bundle-member-boundary-p
+                           (substring source before pos)))
+                 (setq nelisp--load-file-local-specials nil))
                (< pos len))
         (let ((probe (and native-probe-available
                            (emacs-load--native-read-one source pos len))))

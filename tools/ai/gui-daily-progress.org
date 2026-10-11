@@ -51,6 +51,14 @@ change to the criteria list is recorded in a NOTE.
 
 #+NOTE: 2026-10-08 meter 76.5% of 17 at 5b52997b after lanes I4, K4 (partial), I5 and G5.  G5 drained XCB-buffered events before blocking (1 s -> 2 ms per buffered wait); on the user's GNOME desktop 16 keys typed 120 ms apart were all on screen 6.4 s after the first key (62 s before).  S5.0c under Xvfb: median 0.90-1.01 s, p95 1.33 s (limits 0.5 s / 1 s).  Open: RSS growth (0.95 -> 3.16 GiB over 500 keys), quit spends ~8 s in GC, S4.1's skk-evil launch timed out once at 90 s under load in the verify run while passing in the meter run (flaky under load), S5.2 package image blocked on org ol-eww.  K5 (GNU two-stage load macroexpansion) was not integrated: it pushes package image builds past their limits.
 
+#+NOTE: 2026-10-10 meter 76.5% of 17 on nelisp-gui2 at cd7cb085 (no criteria added or changed).  S5.2 package image variant now builds and certifies (runtime/restored state equal; each package loads in ~12 s from the image) after four fixes: a file's initializer-free defvar now stays in effect for its later forms in both the library loader and the GUI bundle isolation (GNU custom.el's sorter broke connection-local profiles); the shared cl-typep provider is restored right after GNU cl-macs.el (org modules -> vtable defclass failed with wrong-number-of-arguments); GNU's movemail-program-name preload value (ol-gnus); org-persist's per-session -Q directory.  S5.2 stays red on interpretation time only: dired C-x d 154 s, magit-status and the org agenda > 300 s.  The defvar fix also made emacs-command-loop-step's noninteractive binding dynamic as intended, so live GUI messages go to the echo area instead of stderr; S4.1 now observes its missing-dictionary diagnostic through the frontend's GUI-ECHO| log line.  Failing: S5.0c (median 1.05 s), S5.2.  Pending: S1.3, S5.3.  Next lever: the native-compile runtime from the ccore native merge.
+
+#+NOTE: 2026-10-10 S1.3 probe (still pending; no criteria changed).  The user's real init.el loads in a bwrap sandbox (real filesystem read-only, isolated ~/.emacs.d copy, no network); GNU loads it there in 8.5 s without error.  NeLisp needs NEMACS_USER_EMACS_DIRECTORY=~/.emacs.d/ (an old ~/.nemacs.d wins otherwise).  It stalls in library lookup: init grows load-path to 4083 entries and every candidate went through interpreted expand-file-name/file-exists-p; a missing library cost 186 s (GNU 0.09 s).  locate-file now costs ~26 s cold / ~1.5 s warm per miss, but hits behind ~4000 entries (GNU url-*) still take 12-25 s with load's suffix list, so init is still at nelix's activation after 20 min.  Next: runtime file primitives through the native pipeline, or a directory-listing cache with correct invalidation.  Also found: the runtime loader keeps initializer-free defvars across the whole bootstrap bundle (C-core lane).
+
+#+NOTE: 2026-10-10 meter 76.5% of 17 at cefc9fd6 (S1.3 moved from pending to a failing cmd; no criteria added).  S1 75 (S1.3 red: no init error, init exceeds 300 s; GNU 8.5 s), S2 100, S3 100, S4 100, S5 40.  Failing: S1.3, S5.0c, S5.2.  Pending: S5.3.  User-init peel so far: 44 GNU libraries vendored, preload vars, isearch before init, runtime-reader fallback, terminal check, apropos-internal, image types, cl-typep deftype; library lookup 186 s -> 1.5 s warm per miss; restored-image first load 7.4 s -> 3.0 s.  The remaining time is loader/evaluator-bound (nelix activation alone ~140 s).
+
+#+NOTE: 2026-10-11 startup GC (29a9141d) kept after measurement; correction to that commit's record.  The commit said S5.0c's median was unchanged (0.918 -> 0.921 s) but omitted the tail: max 1.34 -> 4.06 s, p95 1.34 -> 1.36 s, because the first collection during typing then landed inside the 20 measured keys.  Discriminating run (keyboard fixture, 90 keys at 0.12 s, 2 runs per arm, loadavg ~2): with the startup GC, READY took 14.2-14.3 s (explicit GC 7.8-8.0 s) and typing still collected at keys 36-37 and 63-68; without it READY took 6.3-6.4 s and typing collected at keys 36 and 65-66.  The startup GC protects no keys, so it only added ~8 s to every launch.  The pause itself is GC cost on a large live heap (runtime, M1).
+
 * S1 Shared interactive foundation
 
 ** S1.1 One event wait drives read-event: keys, timers, idle timers and process output (sit-for, sleep-for, input-pending-p behave as GNU)
@@ -64,7 +72,11 @@ cmd: bash -c 'bash tools/c-core-image.sh check >/dev/null 2>&1 || bash tools/c-c
 cmd: bash -c 'timeout 200 bin/nemacs-nw --build-image >/dev/null 2>&1 && timeout 150 python3 tools/nemacs-pty-smoke.py --group launcher --output build/nemacs-pty-smoke/ledger-launcher'
 
 ** S1.3 The user's real init.el (~/.emacs.d) loads under the image without errors in a bounded time
-pending
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 600
+cmd: bash tools/s13-init-probe.sh 300
+
+#+NOTE: 2026-10-10 converted from pending to a red cmd (denominator unchanged).  tools/s13-init-probe.sh loads ~/.emacs.d through nemacs-load-user-init-files under the C-core image inside bwrap (real filesystem read-only, private ~/.emacs.d copy linking the package dirs, no network); GNU Emacs must load the same init there first (else exit 2).  PASS = no init error within 300 s (GNU: 8.5 s).  Validated with three fake inits: clean -> PASS, NeLisp-only error -> FAIL, GNU error -> UNKNOWN.
 
 ** S1.4 End to end: a pty session starts nemacs -nw, runs a scripted key sequence through the real command loop and exits cleanly
 #+REQUIRES: NELISP_BIN

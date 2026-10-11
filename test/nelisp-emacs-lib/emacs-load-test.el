@@ -3308,6 +3308,58 @@ GNU custom.el's recursive sorter relies on this (lane K6, org ol-eww)."
                    emacs-load-test--bind-unrelated))
         (fmakunbound f)))))
 
+(ert-deftest emacs-load-test/incremental-eval-ends-defvar-scope-at-bundle-member ()
+  "A concatenated bundle's member markers end the file-local declarations."
+  (let ((source (concat ";;; -*- lexical-binding: t; -*-\n"
+                        ";;; >>> first.el\n"
+                        "(defvar emacs-load-test--member-special)\n"
+                        "(defun emacs-load-test--member-first ()\n"
+                        "  (let ((emacs-load-test--member-special 1))\n"
+                        "    (lambda () emacs-load-test--member-special)))\n"
+                        ";;; <<< first.el\n"
+                        ";;; >>> second.el\n"
+                        "(defun emacs-load-test--member-second ()\n"
+                        "  (let ((emacs-load-test--member-special 2))\n"
+                        "    (lambda () emacs-load-test--member-special)))\n"
+                        ";;; <<< second.el\n")))
+    (unwind-protect
+        (let ((lexical-binding t))
+          (nelisp--load-eval-source-incremental source)
+          ;; Declared in the first member: the binding is dynamic and the
+          ;; closure sees the global (void) value after the `let' exits.
+          (should-error (funcall (emacs-load-test--member-first)) :type 'void-variable)
+          ;; The second member never declared it: the binding is lexical.
+          (should (= (funcall (emacs-load-test--member-second)) 2)))
+      (fmakunbound 'emacs-load-test--member-first)
+      (fmakunbound 'emacs-load-test--member-second))))
+
+(ert-deftest emacs-load-test/periodic-gc-starts-clock-per-process ()
+  "A last-GC time inherited from another process (a heap image) is not due.
+The first check in a process starts its clock; later checks keep the
+cost-ratio policy."
+  (let* ((clock 1000.0)
+         (collections 0)
+         (load-garbage-collect-interval 1)
+         (emacs-load--gc-cost-ratio 10)
+         (emacs-load--gc-last-end 10.0)      ; recorded by an image builder
+         (emacs-load--gc-last-cost 4.0)
+         (emacs-load--gc-pid (1+ (emacs-pid))))
+    (cl-letf (((symbol-function 'float-time) (lambda (&rest _) clock))
+              ((symbol-function 'garbage-collect)
+               (lambda () (setq collections (1+ collections)))))
+      (emacs-load--periodic-gc 1)
+      (should (= collections 0))
+      (should (eql emacs-load--gc-pid (emacs-pid)))
+      (should (= emacs-load--gc-last-end 1000.0))
+      ;; Not yet 10x the last cost since this process started its clock.
+      (setq clock 1030.0)
+      (emacs-load--periodic-gc 1)
+      (should (= collections 0))
+      ;; Due again under the ordinary policy.
+      (setq clock 1041.0)
+      (emacs-load--periodic-gc 1)
+      (should (= collections 1)))))
+
 (ert-deftest emacs-load-test/incremental-eval-preserves-lexical-environment ()
   (let ((lexical-binding t))
     (nelisp--load-eval-one-form

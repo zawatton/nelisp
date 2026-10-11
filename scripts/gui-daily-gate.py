@@ -247,7 +247,9 @@ def main():
         assert (out / 'libffi-abi.err').stat().st_size == 0, (out / 'libffi-abi.err').read_text()
         report['abi'] = dict(command=abi_argv, source_sha256=sha(ROOT / 'packages/nl-libffi/test/standalone.el'))
         report['checks'].append('libffi-signed/aggregate/double-position5/GC')
-        s = Session(out, 'render', env)
+        # The render gate asks for the startup collection that exercises
+        # external pointer lifetimes; daily launches skip it.
+        s = Session(out, 'render', dict(env, NELISP_GUI_STARTUP_GC='1'))
         sessions.append(s)
         s.ready()
         before = s.shot('render-before')

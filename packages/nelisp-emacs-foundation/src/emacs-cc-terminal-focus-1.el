@@ -5,7 +5,11 @@
       (get function 'emacs-stub-bulk)))
 
 (defun emacs-cc-terminal-focus-1--check-terminal (terminal)
-  (unless (and (fboundp 'frame-live-p) (frame-live-p terminal))
+  ;; GNU accepts a live frame or a live terminal object (as returned by
+  ;; `frame-terminal'); evil's minibuffer setup passes the latter.
+  (unless (or (and (fboundp 'frame-live-p) (frame-live-p terminal))
+              (and terminal (fboundp 'terminal-live-p)
+                   (terminal-live-p terminal)))
     (signal 'wrong-type-argument (list 'terminal-live-p terminal)))
   terminal)
 
