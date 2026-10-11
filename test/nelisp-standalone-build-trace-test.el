@@ -47,6 +47,7 @@
 (defvar nelisp-standalone--recompiled nil)
 (defvar nelisp-standalone--this-file)
 (defvar nelisp-standalone--repo-root)
+(defvar nelisp-standalone--verified-bytecode-dialect-id)
 
 (ert-deftest nelisp-build-trace-linux-copy-is-constant-size ()
   (let ((nelisp-standalone--target 'linux-x86_64))
@@ -259,6 +260,9 @@
           (process-environment (copy-sequence process-environment))
           (nelisp-standalone--toolchain-digest nil)
           (nelisp-standalone--recompiled nil)
+          ;; The toolchain pin gate only checks non-nil here; every compiler
+          ;; step is mocked, so the host Emacs version must not matter.
+          (nelisp-standalone--verified-bytecode-dialect-id "test-dialect")
           (compiled 0) (cold 0) (artifact 0))
      (unwind-protect
          (progn
