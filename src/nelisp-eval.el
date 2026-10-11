@@ -1233,6 +1233,12 @@ primitive installation for entries nothing in a given run needs."
   (puthash 'nelisp-variable-boundp
            (symbol-function 'nelisp-variable-boundp)
            nelisp--functions)
+  ;; Pinned-source helpers used by the `nelisp--install-vendor-*' defuns.
+  ;; When a self-installing evaluator (e.g. the trampoline) re-runs those
+  ;; defuns inside NeLisp, the helpers must be visible there too.
+  (dolist (sym '(nelisp-vendor-source-forms nelisp-vendor-source-form))
+    (when (fboundp sym)
+      (puthash sym (symbol-function sym) nelisp--functions)))
   (puthash 'defalias     #'nelisp--builtin-defalias     nelisp--functions)
   (puthash 'require      #'nelisp--builtin-require      nelisp--functions)
   (puthash 'provide      #'nelisp--builtin-provide      nelisp--functions)
