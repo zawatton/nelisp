@@ -1,6 +1,9 @@
 ;;; nelisp-vendor-bytecode-triparity-test.el --- Runner regression tests -*- lexical-binding: t; -*-
 
 (require 'ert)
+(add-to-list 'load-path
+             (expand-file-name "../tools"
+                               (file-name-directory (or load-file-name buffer-file-name))))
 (require 'nelisp-vendor-bytecode-triparity)
 (require 'nelisp-vendor-source)
 

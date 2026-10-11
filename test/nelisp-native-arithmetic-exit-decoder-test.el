@@ -60,4 +60,3 @@
       (should-error (nelisp-native-load-root-v2-resume-exit 10 2 3)
                     :type 'error))))
 
-(ert-run-tests-batch-and-exit (or (getenv "NELISP_EXIT_TEST_SELECTOR") t))

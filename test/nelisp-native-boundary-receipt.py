@@ -169,7 +169,7 @@ def verify(data, criterion):
                      ROOT/'scripts/nelisp-native-optimizer-bytecode.el',
                      ROOT/'scripts/nelisp-stdlib-prelude.el',
                      ROOT/'vendor/staged-emacs-lisp/subr.el',
-                     ROOT/'test/nelisp-native-boundary-bytecode-test.el']
+                     ROOT/'test/nelisp-native-boundary-bytecode-check.el']
         for mode in ['negative', 'positive']:
             row = next(r for r in controls if r['mode'] == mode)
             assert 0 < row['seconds'] < 1801 and row['identity_unchanged']
@@ -238,7 +238,7 @@ def assemble(work):
                          ROOT/'scripts/nelisp-native-optimizer-bytecode.el',
                          ROOT/'vendor/staged-emacs-lisp/subr.el', ROOT/'test/nelisp-standalone-gc-test.el',
                          *sorted((ROOT/'lisp').glob('*.el')),
-                         ROOT/'test/nelisp-native-boundary-bytecode-test.el',
+                         ROOT/'test/nelisp-native-boundary-bytecode-check.el',
                          ROOT/'test/nelisp-native-boundary-compiler-test.el',
                          ROOT/'test/nelisp-native-equal-word-fixture.el',
                          ROOT/'test/nelisp-native-vm-vector-unit-fixture.el',

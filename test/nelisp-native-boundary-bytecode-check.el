@@ -1,4 +1,4 @@
-;;; nelisp-native-boundary-bytecode-test.el --- Complete GNU link units -*- lexical-binding: t; -*-
+;;; nelisp-native-boundary-bytecode-check.el --- Complete GNU link units -*- lexical-binding: t; -*-
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 ;;; -*- lexical-binding: t; -*-
 (require 'cl-lib)

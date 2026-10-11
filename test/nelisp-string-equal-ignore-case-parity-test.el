@@ -24,7 +24,7 @@
 ;;
 ;; Run this file with BOTH host Emacs and the standalone (`--load') and
 ;; diff the single printed line -- same convention as
-;; test/nelisp-file-attributes-parity-test.el and the emacs-parity corpus.
+;; test/nelisp-file-attributes-parity-check.el and the emacs-parity corpus.
 ;; No fixture directory or environment variable is needed; every case here
 ;; is a literal.
 

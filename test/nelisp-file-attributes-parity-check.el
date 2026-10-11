@@ -1,4 +1,4 @@
-;;; nelisp-file-attributes-parity-test.el --- file-attributes stat-field parity -*- lexical-binding: t; -*-
+;;; nelisp-file-attributes-parity-check.el --- file-attributes stat-field parity -*- lexical-binding: t; -*-
 ;;
 ;; Compares this runtime's `file-attributes' -- plus the accessor
 ;; functions and `time-less-p'/`time-equal-p' that read/compare its
@@ -57,4 +57,4 @@
                        :time-less-rev (time-less-p later mt)
                        :time-equal (time-equal-p mt mt)))))
 
-;;; nelisp-file-attributes-parity-test.el ends here
+;;; nelisp-file-attributes-parity-check.el ends here

@@ -118,6 +118,5 @@
       (should (= calls 1)))
     (should (functionp original))))
 
-(ert-run-tests-batch-and-exit)
 
 ;;; nelisp-bytecode-native-rooted-cfg-safe-contract-admission-test.el ends here

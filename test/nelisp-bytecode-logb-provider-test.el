@@ -1,6 +1,9 @@
 ;;; nelisp-bytecode-logb-provider-test.el --- Pinned provider controls -*- lexical-binding: t; -*-
 (require 'ert)
+;; The overlay and provider come from the lane driver.  Without them the
+;; file must still load inside the full suite, so the tests skip instead.
 (let ((source (getenv "NELISP_LOGB_OVERLAY")))
+  (when source
   (with-temp-buffer
     (insert-file-contents source)
     (goto-char (point-min))
@@ -9,9 +12,10 @@
         (setq form (read (current-buffer)))
         (when (memq (car-safe form) '(defconst defun))
           (eval form t))
-        (setq done (eq (nth 1 form) 'nelisp-bc-logb-provider-forms))))))
+        (setq done (eq (nth 1 form) 'nelisp-bc-logb-provider-forms)))))))
 
 (ert-deftest nelisp-bytecode-logb-provider-source-and-owner-controls ()
+  (skip-unless (and (getenv "NELISP_LOGB_OVERLAY") (getenv "NELISP_LOGB_PROVIDER")))
   (let* ((provider (getenv "NELISP_LOGB_PROVIDER"))
          (equal-owner (symbol-function 'equal))
          (logb-owner (symbol-function 'logb))
@@ -36,6 +40,7 @@
       (delete-file temporary))))
 
 (ert-deftest nelisp-bytecode-logb-provider-missing-function-install ()
+  (skip-unless (and (getenv "NELISP_LOGB_OVERLAY") (getenv "NELISP_LOGB_PROVIDER")))
   (let ((old (symbol-function 'logb))
         (equal-owner (symbol-function 'equal)))
     (unwind-protect

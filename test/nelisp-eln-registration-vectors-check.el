@@ -1,4 +1,4 @@
-;;; nelisp-eln-registration-vectors-test.el --- flat GNU vector views -*- lexical-binding: t; -*-
+;;; nelisp-eln-registration-vectors-check.el --- flat GNU vector views -*- lexical-binding: t; -*-
 
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -131,4 +131,4 @@
 
 t
 
-;;; nelisp-eln-registration-vectors-test.el ends here
+;;; nelisp-eln-registration-vectors-check.el ends here

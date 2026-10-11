@@ -81,4 +81,3 @@
     (cl-letf (((symbol-function 'nelisp-native-arithmetic-v2-plus-body) (lambda () '(altered))))
       (should-error (nelisp-native-arithmetic-v2-direct-source))
       (should-error (nelisp-native-arithmetic-v2-dependency-context)))))
-(ert-run-tests-batch-and-exit)

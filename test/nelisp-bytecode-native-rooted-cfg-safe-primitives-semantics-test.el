@@ -136,6 +136,5 @@
      (unless (null (aref (plist-get result :roots) root))
        (error "GNU nil result was not materialized")))))
 
-(ert-run-tests-batch-and-exit)
 
 ;;; nelisp-bytecode-native-rooted-cfg-safe-primitives-semantics-test.el ends here

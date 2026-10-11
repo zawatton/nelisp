@@ -1,0 +1,49 @@
+#+TITLE: Integrate integ/native-20261011 into main
+#+NOTE: Agreed bar (user, 2026-10-11): no CI regression against main, the full host ERT suite runs at main's size with 0 unexpected, the clean-checkout requalification finishes with its receipt pinned, and libgccjit ledger P3.4 and P3.5 PASS. Main's own red jobs (unsafe-inventory +2, emacs-parity, Windows setup 404) are not this branch's.
+#+NOTE: REQUAL_ROOT is the clean-checkout requalification tree (target/agent-worktrees/requal-clean-20261009/repo of the canonical checkout); its target/evidence-final receipts exist only there.
+
+* S1 The host test suite runs whole on the merged tree
+
+** S1.1 The branch contains origin/main
+cmd: git merge-base --is-ancestor origin/main HEAD
+
+** S1.2 No host test file runs the ERT batch runner at top level (one did, and every later file was never run)
+cmd: test -z "$(grep -l -E '^\(ert-run-tests-batch' test/nelisp*-test.el packages/*/test/nelisp*-test.el packages/*/test/nl-*-test.el 2>/dev/null)"
+
+** S1.3 Every host test file added since main loads alone in a fresh Emacs
+#+TIMEOUT: 600
+cmd: python3 tools/ai/main-integration-check.py test-files-load origin/main
+
+** S1.4 End to end: the recorded full host ERT run has at least main's 6229 tests and 0 unexpected results
+cmd: python3 tools/ai/main-integration-check.py ert-log target/main-integration/ert-full.log 6229
+
+* S2 CI on the pushed head regresses nothing that is green on main
+
+** S2.1 unsafe-inventory reports no file outside the unsafe kernel
+#+TIMEOUT: 300
+cmd: ! make -s unsafe-inventory 2>&1 | grep -q 'outside the kernel call'
+
+** S2.2 Every ERT job green on main is green on HEAD's CI run
+cmd: python3 tools/ai/main-integration-check.py ci-parity '^ert '
+
+** S2.3 End to end: every CI job green in main's latest run is green in HEAD's latest run
+cmd: python3 tools/ai/main-integration-check.py ci-parity
+
+* S3 Native ledger criteria hold on the qualified tree
+
+** S3.1 The clean-checkout requalification finished: every finish-driver step reported rc 0 and the driver has exited
+#+REQUIRES: REQUAL_ROOT
+cmd: d="$REQUAL_ROOT/target/evidence-final/finish-driver.log"; s=$(grep -c '^START' "$d"); r=$(grep -c '^RESULT' "$d"); bad=$(grep '^RESULT' "$d" | awk '$3 != 0' | wc -l); test "$s" -gt 0 && test "$s" -eq "$r" && test "$bad" -eq 0 && ! pgrep -f 'finish-requa[l][.]py' >/dev/null
+
+** S3.2 libgccjit ledger P3.4 (native leaf call cheaper than interpreted) measures PASS on the requalified tree
+#+REQUIRES: REQUAL_ROOT
+#+TIMEOUT: 300
+cmd: python3 tools/ai/main-integration-check.py ledger "$REQUAL_ROOT/tools/ai/libgccjit-backend-progress.org" "$REQUAL_ROOT" P3.4
+
+** S3.3 libgccjit ledger P3.5 (expand-file-name, directory-files, locate-file native within 290 s) measures PASS on the requalified tree
+#+REQUIRES: REQUAL_ROOT
+#+TIMEOUT: 300
+cmd: python3 tools/ai/main-integration-check.py ledger "$REQUAL_ROOT/tools/ai/libgccjit-backend-progress.org" "$REQUAL_ROOT" P3.5
+
+** S3.4 End to end: HEAD is merged into origin/main
+cmd: git merge-base --is-ancestor HEAD origin/main

@@ -66,10 +66,23 @@
        (nelisp-doc200-unibyte-repr-test--forms source))
       (ert-fail (format "Doc 200 probe could not find production defun %S" name))))
 
+(defvar nelisp-doc200-unibyte-repr-test--driver-source nil
+  "Production reader driver source, built once per probe.")
+
 (defun nelisp-doc200-unibyte-repr-test--driver-defun (name)
-  "Return production driver defun NAME."
+  "Return production driver defun NAME.
+The core-module byte-code string the driver embeds is the expensive
+part of the driver source (242 s per call on Emacs 31.1, measured
+2026-10-11, and the probe asks for five defuns) and none of the
+defuns read here come from it, so it is left out: the five defuns are
+`equal' with and without it, and the driver source then builds in 15 s."
   (nelisp-doc200-unibyte-repr-test--defun
-   name (nelisp-standalone--reader-driver-source)))
+   name
+   (or nelisp-doc200-unibyte-repr-test--driver-source
+       (setq nelisp-doc200-unibyte-repr-test--driver-source
+             (cl-letf (((symbol-function 'nelisp-standalone--core-bytecode-src)
+                        (lambda () "")))
+               (nelisp-standalone--reader-driver-source))))))
 
 (defun nelisp-doc200-unibyte-repr-test--stub (name args value)
   "Build a test-local defun NAME with ARGS returning VALUE."
@@ -178,8 +191,8 @@ inside BASE's mapped page."
                     nl_u8_back_one nl_u8_walk_back
                     nl_u8_cidx_byte_bounded
                     nl_aref_cache_slot nl_aref_cache_lookup
-                    nl_aref_cache_store nl_str_aref_commit
-                    nl_str_aref_byte_off)))
+                    nl_aref_cache_store nl_aref_cache_invalidate
+                    nl_str_aref_commit nl_str_aref_byte_off)))
          (bf-aset-forms
           (mapcar #'nelisp-doc200-unibyte-repr-test--bf-defun
                   '(bf_aset_string_write bf_aset_unibyte_string
@@ -385,6 +398,11 @@ inside BASE's mapped page."
           `((defun nl_gc_mark_buf (ptr)
               (seq (ptr-write-u64 ,base 0 ptr) 0))
             (defun nl_gc_mark_block (_ptr) 1)
+            ;; `nl_gc_mark_slot' sequences through `nl_seq2' (the
+            ;; production definition, verbatim) and marks symbol names
+            ;; through the symbol-name table, which this probe has none of.
+            (defun nl_seq2 (_a b) b)
+            (defun nl_gc_symname_mark_one (_kind _key _len) 0)
             (defun nl_gc_mark_cons (_ptr) 0)
             (defun nl_gc_mark_vec_slots (_ptr _i _n) 0)
             (defun nl_gc_mark_char_table_box (_ptr) 0)

@@ -73,4 +73,3 @@
                            capture mutant (nelisp-native-rooted-build-evidence-source-hash mutant 4194304)
                            template layout 'numeric-union review))))
       (delete-file template) (delete-file mutant))))
-(ert-run-tests-batch-and-exit)

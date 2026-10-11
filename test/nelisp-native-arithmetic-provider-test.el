@@ -39,4 +39,3 @@
                (lambda (&rest _) '(mutated))))
       (should-error (nelisp-native-arithmetic-v2-dependency-context)))))
 
-(ert-run-tests-batch-and-exit (or (getenv "NELISP_ARITHMETIC_TEST_SELECTOR") t))

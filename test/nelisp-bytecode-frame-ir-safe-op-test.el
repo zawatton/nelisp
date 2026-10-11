@@ -40,6 +40,5 @@
       (should (eq (plist-get frame :status) 'malformed))
       (should-not (plist-get frame :blocks)))))
 
-(ert-run-tests-batch-and-exit)
 
 ;;; nelisp-bytecode-frame-ir-safe-op-test.el ends here

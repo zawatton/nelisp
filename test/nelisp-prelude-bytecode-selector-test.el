@@ -62,6 +62,5 @@
     (should (= (nth 1 result) 0))
     (should (equal (nth 4 row) "opcode-32-not-explicitly-verified"))))
 
-(ert-run-tests-batch-and-exit)
 
 ;;; nelisp-prelude-bytecode-selector-test.el ends here

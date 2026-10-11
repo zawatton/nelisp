@@ -4,7 +4,7 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 emacs_bin=${EMACS:-emacs}
 nelisp_bin=${NELISP_BIN:-"$root/target/nelisp"}
-test_file=$root/test/nelisp-file-attributes-parity-test.el
+test_file=$root/test/nelisp-file-attributes-parity-check.el
 
 if [ ! -x "$nelisp_bin" ]; then
   echo "nelisp-file-attributes-parity-test: missing executable: $nelisp_bin" >&2

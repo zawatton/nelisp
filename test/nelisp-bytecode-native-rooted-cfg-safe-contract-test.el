@@ -63,6 +63,5 @@
     (setcdr cyclic cyclic)
     (should-not (nelisp-bytecode-native-rooted-cfg-safe-contract-valid-p cyclic))))
 
-(ert-run-tests-batch-and-exit)
 
 ;;; nelisp-bytecode-native-rooted-cfg-safe-contract-test.el ends here

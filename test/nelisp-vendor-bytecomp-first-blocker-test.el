@@ -1,6 +1,9 @@
 ;;; nelisp-vendor-bytecomp-first-blocker-test.el --- First blocker tests -*- lexical-binding: t; -*-
 
 (require 'ert)
+(add-to-list 'load-path
+             (expand-file-name "../tools"
+                               (file-name-directory (or load-file-name buffer-file-name))))
 (require 'nelisp-vendor-bytecomp-first-blocker)
 
 (ert-deftest nelisp-vendor-bytecomp-first-blocker-pinned-form-location ()

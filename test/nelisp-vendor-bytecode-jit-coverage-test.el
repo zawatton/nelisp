@@ -1,6 +1,9 @@
 ;;; nelisp-vendor-bytecode-jit-coverage-test.el --- Coverage probe tests -*- lexical-binding: t; -*-
 
 (require 'ert)
+(add-to-list 'load-path
+             (expand-file-name "../tools"
+                               (file-name-directory (or load-file-name buffer-file-name))))
 (require 'nelisp-bytecode-ir)
 (require 'nelisp-bytecode-jit)
 (require 'nelisp-vendor-bytecode-jit-coverage)

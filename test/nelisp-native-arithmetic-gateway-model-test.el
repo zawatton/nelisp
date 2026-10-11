@@ -127,4 +127,3 @@
         (should (= allocations 1))
         (should (= ended 7))))))
 
-(ert-run-tests-batch-and-exit)

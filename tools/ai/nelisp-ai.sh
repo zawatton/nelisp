@@ -250,6 +250,20 @@ run_ert_gate() {
             --command "nelisp-ai.sh $gate_name"
         exit 1
     fi
+    # A matched file that calls the batch runner at top level runs every
+    # test loaded so far and exits, so every later file is silently never
+    # run.  Measured 2026-10-11: 13 such files dropped the suite from 6229
+    # to 3241 tests while the gate still reported only the 15 failures it
+    # reached.  Run a single file with `-f ert-run-tests-batch-and-exit'.
+    # shellcheck disable=SC2086
+    self_run=$(grep -l -E '^\(ert-run-tests-batch' $files 2>/dev/null || true)
+    if [ -n "$self_run" ]; then
+        printf 'test file runs the ERT batch runner at top level: %s\n' $self_run >&2
+        "$here/gate-report.sh" --name "$gate_name" --kind ert --ran 0 \
+            --failed 1 --reason "a matched test file calls ert-run-tests-batch at top level" \
+            --command "nelisp-ai.sh $gate_name"
+        exit 1
+    fi
     loads=""
     for f in $files; do loads="$loads -l $f"; done
     started=$(date +%s)
