@@ -970,6 +970,28 @@ exists to fix.  Skips silently when there is no current
 (defun emacs-buffer--tp-end   (cell) (cadr cell))
 (defun emacs-buffer--tp-plist (cell) (cddr cell))
 
+(defun emacs-buffer--tp-sort-by-start (cells)
+  "Return CELLS ordered by start, skipping the sort when already ordered.
+Interval lists are almost always built in order; sorting them with an
+interpreted comparator dominated every text-property mutation.  Starts
+must be strictly increasing to skip, so the result never depends on how
+`sort' orders equal keys."
+  (let ((scan cells) (ascending t) (descending t))
+    ;; Lists built with `push' arrive strictly descending; reversing them
+    ;; is the exact sorted order too.
+    (while (and (or ascending descending) (cdr scan))
+      (let ((a (emacs-buffer--tp-start (car scan)))
+            (b (emacs-buffer--tp-start (cadr scan))))
+        (unless (< a b) (setq ascending nil))
+        (unless (> a b) (setq descending nil)))
+      (setq scan (cdr scan)))
+    (cond
+     (ascending cells)
+     (descending (nreverse cells))
+     (t (sort cells (lambda (a b)
+                      (< (emacs-buffer--tp-start a)
+                         (emacs-buffer--tp-start b))))))))
+
 (defun emacs-buffer--tp-clip (intervals start end)
   "Remove the half-open range [START, END) from INTERVALS.
 Returns a fresh list with overlapping intervals split as needed."
@@ -994,19 +1016,37 @@ Returns a fresh list with overlapping intervals split as needed."
          (t
           (push (emacs-buffer--tp-cell s start p) out)
           (push (emacs-buffer--tp-cell end e p) out)))))
-    (sort (nreverse out) (lambda (a b)
-                           (< (emacs-buffer--tp-start a)
-                              (emacs-buffer--tp-start b))))))
+    (emacs-buffer--tp-sort-by-start (nreverse out))))
 
 (defun emacs-buffer--tp-merge (intervals start end plist)
   "Insert (START END PLIST) into INTERVALS, splitting overlapping cells.
 Existing properties on the affected range are *replaced* (= classic
 `put-text-property' semantics).  Returns a freshly-sorted list."
   (let* ((without (emacs-buffer--tp-clip intervals start end))
-         (with    (cons (emacs-buffer--tp-cell start end plist) without)))
-    (sort with (lambda (a b)
-                 (< (emacs-buffer--tp-start a)
-                    (emacs-buffer--tp-start b))))))
+         (cell    (emacs-buffer--tp-cell start end plist)))
+    (or (emacs-buffer--tp-insert-ordered cell without)
+        (emacs-buffer--tp-sort-by-start (cons cell without)))))
+
+(defun emacs-buffer--tp-insert-ordered (cell cells)
+  "Return CELLS with CELL inserted in start order, or nil when unsure.
+CELLS must have strictly increasing starts, none equal to CELL's; the
+result is then the unique sorted order.  Otherwise return nil and let the
+caller sort, so ties keep exactly the old behavior."
+  (let ((start (emacs-buffer--tp-start cell))
+        (scan cells) (previous nil) (before nil) (ok t) (placed nil))
+    (while (and ok scan)
+      (let ((s (emacs-buffer--tp-start (car scan))))
+        (cond
+         ((or (and previous (<= s previous)) (= s start)) (setq ok nil))
+         ((and (not placed) (> s start))
+          (setq placed t)
+          (push cell before)
+          (push (car scan) before))
+         (t (push (car scan) before)))
+        (setq previous s scan (cdr scan))))
+    (when ok
+      (unless placed (push cell before))
+      (nreverse before))))
 
 (defun emacs-buffer--tp-add (intervals start end plist)
   "Add the props in PLIST to existing props on [START, END) of INTERVALS.
@@ -1103,9 +1143,7 @@ interval per call).  Return nil when INTERVALS break that invariant."
           (setq cur e)))
       (when (< cur end)
         (push (emacs-buffer--tp-cell cur end plist) out)))
-    (sort out (lambda (a b)
-                (< (emacs-buffer--tp-start a)
-                   (emacs-buffer--tp-start b))))))
+    (emacs-buffer--tp-sort-by-start out)))
 
 (defun emacs-buffer--plist-merge (base extra)
   "Return a fresh plist where keys in EXTRA override BASE.
@@ -1145,9 +1183,7 @@ KEYS is a flat list of symbol property names.  Returns a sorted list."
           ;; after
           (when (> e end)
             (push (emacs-buffer--tp-cell end e p) out))))))
-    (sort out (lambda (a b)
-                (< (emacs-buffer--tp-start a)
-                   (emacs-buffer--tp-start b))))))
+    (emacs-buffer--tp-sort-by-start out)))
 
 (defun emacs-buffer--plist-drop (plist keys)
   "Return a fresh plist with KEYS removed from PLIST."
@@ -1194,9 +1230,7 @@ when neither carries PROP."
           (push (emacs-buffer--tp-cell s (+ e length) p) out))
          (t
           (push cell out)))))
-    (sort (nreverse out) (lambda (a b)
-                           (< (emacs-buffer--tp-start a)
-                              (emacs-buffer--tp-start b))))))
+    (emacs-buffer--tp-sort-by-start (nreverse out))))
 
 (defun emacs-buffer--tp-after-delete (intervals start end)
   "Return INTERVALS adjusted after deleting [START, END)."
@@ -1217,9 +1251,7 @@ when neither carries PROP."
           (push (emacs-buffer--tp-cell s start p) out))
          ((> e end)
           (push (emacs-buffer--tp-cell start (- e length) p) out)))))
-    (sort (nreverse out) (lambda (a b)
-                           (< (emacs-buffer--tp-start a)
-                              (emacs-buffer--tp-start b))))))
+    (emacs-buffer--tp-sort-by-start (nreverse out))))
 
 (defun emacs-buffer--tp-clamp-limit (pos limit)
   "If LIMIT is non-nil and POS > LIMIT, return LIMIT; else POS."
