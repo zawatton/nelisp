@@ -336,7 +336,10 @@
 # raised below in the same commit -- 22 native-branch kernel files that were
 # never pinned and four whose pins were never raised -- plus the prelude
 # going 13 -> 0 when `file-attributes' moved to `nelisp--syscall-lstat-field'.
-unsafe-call 1824
+# 1824 -> 1826 (P3.5 round 4, fec44b49f): nelisp-native-funcall-v2 now
+# emits root-slot copies as unrolled 32-byte ptr-read/write-u64 sequences
+# (two generator sites); pin 16 -> 18, gate count.
+unsafe-call 1826
 
 # `pinned-kernel-call FILE COUNT' pins the per-file unquoted `unsafe-call'
 # count behind `total' above -- the kernel files that actually carry
@@ -605,7 +608,7 @@ pinned-kernel-call lisp/nelisp-bytecode-native-rooted-cfg-shared-emit.el 7
 
 pinned-kernel-call lisp/nelisp-native-cache.el 6
 
-pinned-kernel-call lisp/nelisp-native-funcall-v2.el 16
+pinned-kernel-call lisp/nelisp-native-funcall-v2.el 18
 
 pinned-kernel-call lisp/nelisp-native-gccjit.el 9
 
