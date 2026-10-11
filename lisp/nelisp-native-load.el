@@ -2011,6 +2011,13 @@ ticket and slot indices and may call only the CAR gateway.")
     (nreverse found)))
 
 (defun nelisp-native-load--raw-v2-rewrite-data-addr (form &optional copies)
+  "Rewrite FORM like `nelisp-native-load--raw-v2-rewrite-data-addr-1'.
+The walk recurses along every list tail, so production-sized sources need
+more than the default Lisp evaluation depth."
+  (let ((max-lisp-eval-depth (max max-lisp-eval-depth 20000)))
+    (nelisp-native-load--raw-v2-rewrite-data-addr-1 form copies)))
+
+(defun nelisp-native-load--raw-v2-rewrite-data-addr-1 (form &optional copies)
   "Turn `(data-addr NAME)' into an imported zero-argument getter call.
 
 The raw linker cannot assume that an anonymously mapped text page is within a
@@ -2032,8 +2039,8 @@ memo; it preserves compiler DAGs and never survives source mutation."
                   (if (and (eq (car form) 'data-addr)
                            (symbolp (cadr form)) (null (cddr form)))
                       (list (cadr form))
-                    (cons (nelisp-native-load--raw-v2-rewrite-data-addr (car form) copies)
-                          (nelisp-native-load--raw-v2-rewrite-data-addr (cdr form) copies))))
+                    (cons (nelisp-native-load--raw-v2-rewrite-data-addr-1 (car form) copies)
+                          (nelisp-native-load--raw-v2-rewrite-data-addr-1 (cdr form) copies))))
           (cdr record))))))
 
 (defun nelisp-native-load--raw-v2-chunk-rewrite (forms)
