@@ -120,8 +120,8 @@ OFFSET is the patch site (= byte position within the target
 section).  TYPE is one of `pc32' / `abs64' / `plt32' / `b26-pc' /
 `adr-prel-pg-hi21' / `add-abs-lo12-nc'.  SYMBOL is the referenced
 symbol name (string).  ADDEND defaults to 0."
-  (unless (memq type '(pc32 abs64 plt32 b26-pc
-                             adr-prel-pg-hi21 add-abs-lo12-nc))
+  (unless (memq type '(pc32 abs64 plt32 b26-pc jump26-pc
+                             adr-prel-pg-hi21 add-abs-lo12-nc ldst64-abs-lo12-nc))
     (signal 'nelisp-link-error (list :unknown-reloc-type type)))
   (list :offset offset :type type :symbol symbol
         :addend (or addend 0)))
@@ -225,6 +225,17 @@ string out, vector in → vector out)."
         (nelisp-link--vec->ubstring vec)
       vec)))
 
+(defun nelisp-link--arm64-reloc-word (vec offset mask opcode)
+  "Read a checked AArch64 instruction relocation from VEC at OFFSET."
+  (unless (and (integerp offset) (>= offset 0) (zerop (% offset 4))
+               (<= (+ offset 4) (length vec)))
+    (signal 'nelisp-link-error (list :arm64-reloc-slot offset)))
+  (let ((word (logior (aref vec offset) (ash (aref vec (+ offset 1)) 8)
+                      (ash (aref vec (+ offset 2)) 16) (ash (aref vec (+ offset 3)) 24))))
+    (unless (= (logand word mask) opcode)
+      (signal 'nelisp-link-error (list :arm64-reloc-opcode offset word opcode)))
+    word))
+
 (defun nelisp-link-apply-reloc-inplace (vec reloc symtab section-va)
   "Patch mutable byte vector VEC with one RELOC entry, then return VEC.
 This is the destructive sibling of `nelisp-link-apply-reloc'.  Link passes that
@@ -238,20 +249,22 @@ relocation."
          (S (or (and entry (plist-get entry :value))
                 (signal 'nelisp-link--unresolved-symbol
                         (list sym-name)))))
+    (unless (and (integerp offset) (>= offset 0) (integerp addend)
+                 (integerp S) (integerp section-va)
+                 (<= (+ offset (if (eq type 'abs64) 8 4)) (length vec)))
+      (signal 'nelisp-link-error (list :invalid-relocation reloc)))
     (pcase type
       ((or 'pc32 'plt32)
        (let* ((P (+ section-va offset 4))
               (d (- (+ S addend) P)))
          (nelisp-link--check-rel32-range d sym-name)
          (nelisp-link--patch-le32 vec offset d)))
-      ('b26-pc
+      ((or 'b26-pc 'jump26-pc)
        (let* ((P (+ section-va offset))
               (d (- (+ S addend) P))
               (imm26 (logand (ash d -2) #x3ffffff))
-              (cur (logior (aref vec offset)
-                           (ash (aref vec (+ offset 1)) 8)
-                           (ash (aref vec (+ offset 2)) 16)
-                           (ash (aref vec (+ offset 3)) 24)))
+              (cur (nelisp-link--arm64-reloc-word
+                    vec offset #xfc000000 (if (eq type 'b26-pc) #x94000000 #x14000000)))
               (patched (logior (logand cur #xfc000000) imm26)))
          (nelisp-link--check-branch26-range d sym-name)
          (nelisp-link--patch-le32 vec offset patched)))
@@ -263,10 +276,7 @@ relocation."
               (imm21 (ash d -12))
               (immlo (logand imm21 #x3))
               (immhi (logand (ash imm21 -2) #x7ffff))
-              (cur (logior (aref vec offset)
-                           (ash (aref vec (+ offset 1)) 8)
-                           (ash (aref vec (+ offset 2)) 16)
-                           (ash (aref vec (+ offset 3)) 24)))
+              (cur (nelisp-link--arm64-reloc-word vec offset #x9f000000 #x90000000))
               (patched (logior (logand cur #x9F00001F)
                                (ash immlo 29)
                                (ash immhi 5))))
@@ -274,13 +284,18 @@ relocation."
          (nelisp-link--patch-le32 vec offset patched)))
       ('add-abs-lo12-nc
        (let* ((imm12 (logand (+ S addend) #xFFF))
-              (cur (logior (aref vec offset)
-                           (ash (aref vec (+ offset 1)) 8)
-                           (ash (aref vec (+ offset 2)) 16)
-                           (ash (aref vec (+ offset 3)) 24)))
+              (cur (nelisp-link--arm64-reloc-word vec offset #xffc00000 #x91000000))
               (patched (logior (logand cur #xFFC003FF)
                                (ash imm12 10))))
          (nelisp-link--patch-le32 vec offset patched)))
+      ('ldst64-abs-lo12-nc
+       (let* ((address (+ S addend))
+              (cur (nelisp-link--arm64-reloc-word vec offset #xffc00000 #xf9400000)))
+         (unless (zerop (% address 8))
+           (signal 'nelisp-link-error (list :arm64-ldst64-alignment sym-name address)))
+         (nelisp-link--patch-le32 vec offset
+                                 (logior (logand cur #xffc003ff)
+                                         (ash (/ (logand address #xfff) 8) 10)))))
       ('abs64
        (nelisp-link--patch-le64 vec offset (+ S addend)))
       (_ (signal 'nelisp-link-error
@@ -388,7 +403,13 @@ time the unit was visited."
           (let* ((uname (plist-get u :name))
                  (sec (nelisp-link--unit-section u sn))
                  (len (nelisp-link--section-length sec sn))
-                 (align (nelisp-link--unit-section-alignment sn machine))
+                 (align (if (and (eq sn 'text) (eq machine 'aarch64)
+                                 (cl-some (lambda (r)
+                                            (and (eq (plist-get r :type) 'abs64)
+                                                 (eq (or (plist-get r :section) 'text) 'text)))
+                                          (plist-get u :relocs)))
+                            8
+                          (nelisp-link--unit-section-alignment sn machine)))
                  (off (if (eq sn 'bss) acc (length acc))))
             (when (and (not (eq sn 'bss))
                        sec
