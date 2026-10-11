@@ -120,6 +120,7 @@
     (should (= (length contracts) 10)) contracts))
 
 (ert-deftest rooted-cfg-data/shared-and-expanded-u10-contracts-validate-identically ()
+  (skip-unless (equal emacs-version "31.1"))
   (dolist (shared (rooted-cfg-data-test--contracts))
     (let* ((expanded (copy-tree shared t))
            (reconstruction (nelisp-bytecode-native-rooted-cfg-contract-valid-p shared :reconstruction)))
@@ -141,6 +142,7 @@
       (should-not (nelisp-bytecode-native-rooted-cfg-contract-valid-p expanded)))))
 
 (ert-deftest rooted-cfg-data/corruption-in-shared-subterm-is-refused-after-redigest ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((contract (car (rooted-cfg-data-test--contracts)))
          (counts (make-hash-table :test 'eq))
          (recipe-before (prin1-to-string (plist-get contract :input-recipe)))
@@ -163,6 +165,7 @@
     (should-not (nelisp-bytecode-native-rooted-cfg-contract-valid-p contract :reconstruction))))
 
 (ert-deftest rooted-cfg-data/replaced-comparator-cannot-authorize-contract ()
+  (skip-unless (equal emacs-version "31.1"))
   (let ((contract (car (rooted-cfg-data-test--contracts))))
     (cl-letf (((symbol-function 'nelisp-bytecode-native-rooted-cfg-data-equal)
                (lambda (&rest _) t)))

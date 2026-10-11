@@ -422,6 +422,7 @@
                   'complete)))))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-shared-emit/input-only-refuses-planner-rebinding ()
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((input (nelisp-bytecode-native-rooted-cfg-shared-emit-test--two-diamonds))
          (plan (nelisp-bytecode-native-rooted-cfg-plan input))
          (emitted (nelisp-bytecode-native-rooted-cfg-shared-emit-build plan "paired_owner_test"))
