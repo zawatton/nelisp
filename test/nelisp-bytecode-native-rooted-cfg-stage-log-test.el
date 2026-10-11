@@ -15,11 +15,10 @@
          (source nil) (compiled nil) (checked nil) (condition nil) (result nil))
     (setenv "NELISP_ROOTED_CFG_STAGE_LOG" (and logging log))
     (unwind-protect
-        (cl-letf (((symbol-function 'nelisp-bytecode-native-rooted-cfg-plan)
+        (cl-letf (((symbol-function 'nelisp-bytecode-native-rooted-cfg-shared-emit-build-from-input)
                    (lambda (&rest _) (when (eq failure 'plan) (signal 'arith-error '(plan)))
-                     '(:status complete :arity 0)))
-                  ((symbol-function 'nelisp-bytecode-native-rooted-cfg-shared-emit-build)
-                   (lambda (&rest _) '(:status complete :form (quote nil))))
+                     '(:plan (:status complete :arity 0)
+                       :emitted (:status complete :form (quote nil)))))
                   ((symbol-function 'nelisp-native-load-running-binary-sha256)
                    (lambda () "binary"))
                   ((symbol-function 'nelisp-bytecode-native-rooted-cfg-contract-create-shared-v2)
@@ -52,7 +51,7 @@
                            (with-temp-buffer (insert-file-contents log) (buffer-string)))))
             ;; Recover the temporary source from its public log on admission errors.
             (when (and (not source) text
-                       (string-match "producer-contract-start source=\\([^ \n]+\\) artifact=" text))
+                       (string-match "producer-contract-start seconds=[0-9.]+ source=\\([^ \n]+\\) artifact=" text))
               (unless (equal (match-string 1 text) "nil")
                 (setq source (match-string 1 text))))
             (list :condition condition :result result :compiled compiled :checked checked
@@ -69,7 +68,7 @@
   (let ((result (nelisp-rooted-stage-test--run 'plan nil nil t)))
     (should (equal (plist-get result :condition) '(arith-error plan)))
     (should-not (plist-get result :compiled))
-    (should (equal (nelisp-rooted-stage-test--labels result) '("producer-plan-start")))))
+    (should (equal (nelisp-rooted-stage-test--labels result) '("producer-plan-emit-start")))))
 
 (ert-deftest nelisp-rooted-stage-constructor-failure-entry ()
   (let ((result (nelisp-rooted-stage-test--run 'constructor nil nil t)))
@@ -86,8 +85,7 @@
     (should (eq (plist-get (plist-get result :result) :status) 'complete))
     (should-not (plist-get result :source-exists))
     (should (equal (nelisp-rooted-stage-test--labels result)
-                   '("producer-plan-start" "producer-plan-end"
-                     "producer-emit-start" "producer-emit-end"
+                   '("producer-plan-emit-start" "producer-plan-emit-end"
                      "producer-binary-start" "producer-binary-end"
                      "producer-source-start" "producer-source-end"
                      "producer-contract-start" "producer-contract-end"
@@ -97,7 +95,7 @@
                      "producer-manifest-accepted"
                      "producer-result-seal-start" "producer-result-seal-end"
                      "producer-cleanup-source-start" "producer-cleanup-source-end")))
-    (should (string-match "producer-compile-start source=.+ artifact="
+    (should (string-match "producer-compile-start seconds=[0-9.]+ source=.+ artifact="
                           (plist-get result :log)))))
 
 (ert-deftest nelisp-rooted-stage-runtime-short-circuit ()
