@@ -92,7 +92,8 @@
           (progn
             ;; Same returned data, distinct function owner: EQUAL is insufficient.
             (fset 'nelisp-native-arithmetic-v2-source (lambda () (copy-tree source)))
-            (should (nelisp-native-load-raw-v2-rooted-cfg-contract-valid-p manifest))
-            (should (= slow 2))
+            ;; The sealed owner check refuses it before any memo lookup.
+            (should-error (nelisp-native-load-raw-v2-rooted-cfg-contract-valid-p manifest))
+            (should (= slow 1))
             (should (= nelisp-native-load--raw-v2-rooted-cfg-cache-hits 1)))
         (fset 'nelisp-native-arithmetic-v2-source owner)))))

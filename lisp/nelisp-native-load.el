@@ -2474,17 +2474,22 @@ The enclosing CFG admission must still authenticate the complete contract."
                       (eq (aref (cdr b) 0) 'guarded-provider-v1))
                  (nelisp-native-load--rooted-cfg-provider-context-data-equal-p
                   (aref (cdr a) 1) (aref (cdr b) 1))
-             (and (= (length (cdr a)) 10) (= (length (cdr b)) 10)
+             ;; Arithmetic provider context: slots 0-5, 10, 12 and 13 hold opaque
+             ;; function owners (EQ), slot 6 is the primitive owner list, and
+             ;; slots 7-9, 11, 14 and 15 are copied public snapshots (EQUAL).
+             (and (= (length (cdr a)) 16) (= (length (cdr b)) 16)
              (let ((index 0) (valid t))
-               (while (and valid (< index 6))
-                 (setq valid (eq (aref (cdr a) index) (aref (cdr b) index))
+               (while (and valid (< index 16))
+                 (setq valid
+                       (cond
+                        ((or (< index 6) (memq index '(10 12 13)))
+                         (eq (aref (cdr a) index) (aref (cdr b) index)))
+                        ((= index 6)
+                         (nelisp-native-load--rooted-cfg-provider-owner-list-eq-p
+                          (aref (cdr a) 6) (aref (cdr b) 6)))
+                        (t (equal (aref (cdr a) index) (aref (cdr b) index))))
                        index (1+ index)))
-               (and valid
-                    (nelisp-native-load--rooted-cfg-provider-owner-list-eq-p
-                     (aref (cdr a) 6) (aref (cdr b) 6))
-                    (equal (aref (cdr a) 7) (aref (cdr b) 7))
-                    (equal (aref (cdr a) 8) (aref (cdr b) 8))
-                    (equal (aref (cdr a) 9) (aref (cdr b) 9))))))))
+               valid)))))
     (error nil)))
 
 (defun nelisp-native-load--rooted-cfg-import-names-valid-p (names &optional contract)
