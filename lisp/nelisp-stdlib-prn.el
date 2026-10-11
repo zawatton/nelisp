@@ -202,7 +202,7 @@ via `nelisp--prn-to-string' under ESCAPE."
                          ((string= tag-name ",@")        ",@")
                          (t nil))))
       (when prefix
-        (concat prefix (nelisp--prn-to-string arg escape nil memo))))))
+        (concat prefix (nelisp--prn-to-string arg escape))))))
 
 (defun nelisp--prn-list-body (lst escape &optional depth memo)
   (setq depth (or depth 0))
@@ -211,7 +211,7 @@ via `nelisp--prn-to-string' under ESCAPE."
                 (if print-length (< count print-length) t))
       (unless first (nelisp--prn-chunks-add chunks " "))
       (nelisp--prn-chunks-add chunks
-                              (nelisp--prn-to-string (car cur) escape depth memo))
+                              (nelisp--prn-to-string (car cur) escape depth))
       (setq first nil)
       (setq count (1+ count))
       (setq cur (cdr cur)))
@@ -220,7 +220,7 @@ via `nelisp--prn-to-string' under ESCAPE."
       (setq cur nil))
     (unless (null cur)
       (nelisp--prn-chunks-add chunks " . ")
-      (nelisp--prn-chunks-add chunks (nelisp--prn-to-string cur escape depth memo)))
+      (nelisp--prn-chunks-add chunks (nelisp--prn-to-string cur escape depth)))
     (nelisp--prn-chunks-string chunks)))
 
 (defun nelisp--prn-vector (vec escape &optional depth memo)
@@ -231,7 +231,7 @@ via `nelisp--prn-to-string' under ESCAPE."
       (while (< i lim)
         (when (> i 0) (nelisp--prn-chunks-add chunks " "))
         (nelisp--prn-chunks-add chunks
-                                (nelisp--prn-to-string (aref vec i) escape depth memo))
+                                (nelisp--prn-to-string (aref vec i) escape depth))
         (setq i (1+ i)))
       (when (< lim n)
         (when (> lim 0) (nelisp--prn-chunks-add chunks " "))
@@ -245,12 +245,12 @@ via `nelisp--prn-to-string' under ESCAPE."
         (n    (nelisp--record-length rec))
         (chunks (cons nil nil)))
     (nelisp--prn-chunks-add chunks "#s(")
-    (nelisp--prn-chunks-add chunks (nelisp--prn-to-string tag escape nil memo))
+    (nelisp--prn-chunks-add chunks (nelisp--prn-to-string tag escape))
     (let ((i 0))
       (while (< i n)
         (nelisp--prn-chunks-add chunks " ")
         (nelisp--prn-chunks-add
-         chunks (nelisp--prn-to-string (nelisp--record-ref rec i) escape nil memo))
+         chunks (nelisp--prn-to-string (nelisp--record-ref rec i) escape))
         (setq i (1+ i))))
     (nelisp--prn-chunks-add chunks ")")
     (nelisp--prn-chunks-string chunks)))
@@ -302,10 +302,10 @@ This affects only `prin1'.")
 
 (defvar nelisp--prn-call-cache nil
   "Identity print memo owned by one complete canonical serialization.")
-(defun nelisp--prn-to-string (obj escape &optional depth memo)
+(defun nelisp--prn-to-string (obj escape &optional depth)
   (setq depth (or depth 0))
   (let* ((cache (and escape (not print-length) (not print-level)
-                     (or memo (and (boundp 'nelisp--prn-call-cache) nelisp--prn-call-cache))))
+                     (and (boundp 'nelisp--prn-call-cache) nelisp--prn-call-cache)))
          (key (and cache (logand (sxhash-eq obj) 4095)))
          (cached (and cache (assq obj (aref cache key)))))
     (if cached (cdr cached)

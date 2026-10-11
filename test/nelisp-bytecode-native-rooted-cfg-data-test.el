@@ -182,6 +182,12 @@ printer helpers for every later test in the same process."
               ((symbol-function 'prin1) (symbol-function 'prin1))
               ((symbol-function 'terpri) (symbol-function 'terpri)))
       (load (expand-file-name "lisp/nelisp-stdlib-prn.el") nil t t)
+      ;; C-core's killed-buffer advice and buffer printer both preserve the
+      ;; original three-argument protocol, including on recursive calls.
+      (let ((original (symbol-function 'nelisp--prn-to-string)))
+        (fset 'nelisp--prn-to-string
+              (lambda (object escape &optional depth)
+                (funcall original object escape depth))))
       (let* ((string (copy-sequence "line\n\"quoted\""))
              (node (list 'extern-call 'callee string 'env 'ticket 0 0 0 0))
              (tree (list node node (vector 'foo 7 1.25) '(quote foo)))

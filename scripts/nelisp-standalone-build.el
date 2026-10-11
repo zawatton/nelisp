@@ -41109,9 +41109,17 @@ the value template requests Tier 0 only. Both include GNU-compiled Tier 0 Lisp."
              (form
               (if native-compiler-cold
                   (format
-                   "(progn (add-to-list 'load-path %S) (add-to-list 'load-path %S) (require 'nelisp-native-cache) (load %S nil t t) (%s) %s (garbage-collect) (nelisp--arena-dump-image-stream %S))"
+                   "(progn (add-to-list 'load-path %S) (add-to-list 'load-path %S) %s (require 'nelisp-native-cache) (load %S nil t t) (%s) %s (garbage-collect) (nelisp--arena-dump-image-stream %S))"
                    (nelisp-standalone--cold-target-path (expand-file-name "lisp" nelisp-standalone--repo-root))
                    (nelisp-standalone--cold-target-path (expand-file-name "src" nelisp-standalone--repo-root))
+                   ;; Lazy native startup seals these owners on the first
+                   ;; cache require. Install their final representation first.
+                   (if optimizer-bytecode
+                       (format "(unless (featurep 'nelisp-native-structural-bytecode) (load %S nil t t))"
+                               (nelisp-standalone--cold-target-path
+                                (expand-file-name "target/nelisp-structural-bytecode.el"
+                                                  nelisp-standalone--repo-root)))
+                     "nil")
                    (nelisp-standalone--cold-target-path template-bytecode)
                    (if template-cold "nelisp-native-cache-prepare-cold-template"
                      (format "load %S nil t t"

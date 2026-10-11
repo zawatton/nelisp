@@ -100,7 +100,7 @@ children by identity, so hashing never walks a growing subtree."
 
 (defvar nelisp--prn-call-cache nil)
 (defvar print-circle nil)
-(declare-function nelisp--prn-to-string "nelisp-stdlib-prn" (obj escape &optional depth memo))
+(declare-function nelisp--prn-to-string "nelisp-stdlib-prn" (obj escape &optional depth))
 
 (defun nelisp-bytecode-native-rooted-cfg-data-print (value)
   "Serialize VALUE completely, memoizing printed identities within this call.
@@ -111,7 +111,10 @@ introduces reader references or truncation into the authenticated tree."
   (let ((print-circle nil) (print-length nil) (print-level nil))
     (if (and (fboundp 'nelisp--prn-to-string)
              (not (subrp (symbol-function 'prin1-to-string))))
-        (nelisp--prn-to-string value t nil (make-vector 4096 nil))
+        ;; Keep the three-argument printer/advice protocol used by C-core.
+        ;; Recursive calls share this special binding, including through advice.
+        (let ((nelisp--prn-call-cache (make-vector 4096 nil)))
+          (nelisp--prn-to-string value t))
       (prin1-to-string value))))
 
 (defun nelisp-bytecode-native-rooted-cfg-data-equal (left right)
