@@ -182,7 +182,7 @@ wrapped -- `string-search' has no native form here and its interpreted
 cost dominates every other part of printing a float."
   (number-to-string x))
 
-(defun nelisp--prn-reader-macro-abbrev (lst escape)
+(defun nelisp--prn-reader-macro-abbrev (lst escape &optional memo)
   "Return abbreviated form for `(TAG ARG)' reader-macro shapes, or nil.
 TAG is quote, function, or an Emacs-compatible punctuation-named symbol.
 Legacy convenience names remain ordinary symbols so readable output
@@ -201,16 +201,16 @@ via `nelisp--prn-to-string' under ESCAPE."
                          ((string= tag-name ",@")        ",@")
                          (t nil))))
       (when prefix
-        (concat prefix (nelisp--prn-to-string arg escape))))))
+        (concat prefix (nelisp--prn-to-string arg escape nil memo))))))
 
-(defun nelisp--prn-list-body (lst escape &optional depth)
+(defun nelisp--prn-list-body (lst escape &optional depth memo)
   (setq depth (or depth 0))
   (let ((chunks (cons nil nil)) (cur lst) (first t) (count 0))
     (while (and (consp cur)
                 (if print-length (< count print-length) t))
       (unless first (nelisp--prn-chunks-add chunks " "))
       (nelisp--prn-chunks-add chunks
-                              (nelisp--prn-to-string (car cur) escape depth))
+                              (nelisp--prn-to-string (car cur) escape depth memo))
       (setq first nil)
       (setq count (1+ count))
       (setq cur (cdr cur)))
@@ -219,10 +219,10 @@ via `nelisp--prn-to-string' under ESCAPE."
       (setq cur nil))
     (unless (null cur)
       (nelisp--prn-chunks-add chunks " . ")
-      (nelisp--prn-chunks-add chunks (nelisp--prn-to-string cur escape depth)))
+      (nelisp--prn-chunks-add chunks (nelisp--prn-to-string cur escape depth memo)))
     (nelisp--prn-chunks-string chunks)))
 
-(defun nelisp--prn-vector (vec escape &optional depth)
+(defun nelisp--prn-vector (vec escape &optional depth memo)
   (setq depth (or depth 0))
   (let ((n (length vec)) (chunks (cons nil nil)))
     (nelisp--prn-chunks-add chunks "[")
@@ -230,7 +230,7 @@ via `nelisp--prn-to-string' under ESCAPE."
       (while (< i lim)
         (when (> i 0) (nelisp--prn-chunks-add chunks " "))
         (nelisp--prn-chunks-add chunks
-                                (nelisp--prn-to-string (aref vec i) escape depth))
+                                (nelisp--prn-to-string (aref vec i) escape depth memo))
         (setq i (1+ i)))
       (when (< lim n)
         (when (> lim 0) (nelisp--prn-chunks-add chunks " "))
@@ -238,18 +238,18 @@ via `nelisp--prn-to-string' under ESCAPE."
     (nelisp--prn-chunks-add chunks "]")
     (nelisp--prn-chunks-string chunks)))
 
-(defun nelisp--prn-record (rec escape)
+(defun nelisp--prn-record (rec escape &optional memo)
   "Print RECORD as `#s(TYPE-TAG SLOT0 SLOT1 ...)'."
   (let ((tag  (nelisp--record-type rec))
         (n    (nelisp--record-length rec))
         (chunks (cons nil nil)))
     (nelisp--prn-chunks-add chunks "#s(")
-    (nelisp--prn-chunks-add chunks (nelisp--prn-to-string tag escape))
+    (nelisp--prn-chunks-add chunks (nelisp--prn-to-string tag escape nil memo))
     (let ((i 0))
       (while (< i n)
         (nelisp--prn-chunks-add chunks " ")
         (nelisp--prn-chunks-add
-         chunks (nelisp--prn-to-string (nelisp--record-ref rec i) escape))
+         chunks (nelisp--prn-to-string (nelisp--record-ref rec i) escape nil memo))
         (setq i (1+ i))))
     (nelisp--prn-chunks-add chunks ")")
     (nelisp--prn-chunks-string chunks)))
@@ -299,8 +299,16 @@ This affects only `prin1'.")
           (setq i (1+ i)))
         (and ok seen-digit))))))
 
-(defun nelisp--prn-to-string (obj escape &optional depth)
+(defvar nelisp--prn-call-cache nil
+  "Identity print memo owned by one complete canonical serialization.")
+(defun nelisp--prn-to-string (obj escape &optional depth memo)
   (setq depth (or depth 0))
+  (let* ((cache (and escape (not print-length) (not print-level)
+                     (or memo (and (boundp 'nelisp--prn-call-cache) nelisp--prn-call-cache))))
+         (key (and cache (logand (sxhash-eq obj) 4095)))
+         (cached (and cache (assq obj (aref cache key)))))
+    (if cached (cdr cached)
+      (let ((result
   (cond
    ((null obj) "nil")
    ((eq obj t) "t")
@@ -320,8 +328,8 @@ This affects only `prin1'.")
     ;; was void.  Threading it also means a caller cannot forget to rebind.
     (if (and print-level (>= depth print-level))
         "..."
-      (or (nelisp--prn-reader-macro-abbrev obj escape)
-          (concat "(" (nelisp--prn-list-body obj escape (1+ depth)) ")"))))
+      (or (nelisp--prn-reader-macro-abbrev obj escape cache)
+          (concat "(" (nelisp--prn-list-body obj escape (1+ depth) cache) ")"))))
    ((and (fboundp 'byte-code-function-p) (byte-code-function-p obj))
     (if (fboundp 'nelisp--repr) (nelisp--repr obj) (format "%S" obj)))
    ;; `print-level' bounds LIST nesting only -- Emacs prints
@@ -343,9 +351,13 @@ This affects only `prin1'.")
                 " to " (number-to-string (nelisp-overlay-end obj))
                 " in " (nelisp-buffer-name (nelisp-overlay-buffer obj)) ">")
       "#<overlay in no buffer>"))
-   ((vectorp obj) (nelisp--prn-vector obj escape (1+ depth)))
-   ((recordp obj) (nelisp--prn-record obj escape))
-   (t (format "#<unprintable %S>" obj))))
+   ((vectorp obj) (nelisp--prn-vector obj escape (1+ depth) cache))
+   ((recordp obj) (nelisp--prn-record obj escape cache))
+   (t (format "#<unprintable %S>" obj)))))
+        (when cache
+          (aset cache key (cons (cons obj result) (aref cache key))))
+        result))))
+
 
 (defun prin1-to-string (object &optional noescape _overrides)
     (nelisp--prn-to-string object (not noescape)))

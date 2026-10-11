@@ -12,6 +12,8 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'nelisp-bytecode-native-rooted-cfg-data)
+(require 'nelisp-bytecode-compiler-input)
 ;; Optimizer dependencies are loaded only when their public API is called.
 (autoload 'nelisp-bytecode-compiler-input-build "nelisp-bytecode-compiler-input")
 (autoload 'nelisp-bytecode-compiler-input-dialect "nelisp-bytecode-compiler-input")
@@ -101,8 +103,9 @@
       (let ((key (pop rest)) (value (pop rest)))
         (unless (eq key :digest)
           (setq canonical (append canonical (list key value))))))
-    (let ((nelisp--prn-symbol-cache (make-hash-table :test 'equal)))
-      (secure-hash 'sha256 (prin1-to-string canonical)))))
+    (let ((print-circle nil)
+          (nelisp--prn-symbol-cache (make-hash-table :test 'equal)))
+      (secure-hash 'sha256 (nelisp-bytecode-native-rooted-cfg-data-print canonical)))))
 
 (defun nelisp-bytecode-native-rooted-cfg-contract--plan-data (plan &optional shared-flat)
   "Return PLAN without its process-local compiler INPUT object."
@@ -127,7 +130,7 @@
       (setq copy (data-plist copy))
       (unless shared-flat
         (setq copy (plist-put copy :entry-ast (data-plist (plist-get copy :entry-ast))))))
-    (copy-tree copy)))
+    (nelisp-bytecode-compiler-input--snapshot copy 0)))
 
 (defun nelisp-bytecode-native-rooted-cfg-contract-arithmetic-source-p
     (input plan emitted)
@@ -148,22 +151,22 @@
                  (plist-get plan :arithmetic-guard-mode))))))
 
 (defun nelisp-bytecode-native-rooted-cfg-contract--ast-imports (form)
-  "Return the sorted import names called by emitted entry FORM."
-  (let (imports)
-    (cl-labels ((walk (value)
-                  (cond
-                   ((consp value)
-                    (when (and (eq (car value) 'extern-call)
-                               (consp (cdr value)))
+  "Return sorted import names, inspecting each shared FORM container once."
+  (let ((seen (make-vector 4096 nil)) (pending (list form)) imports)
+    (while pending
+      (let ((value (pop pending)))
+        (when (or (consp value) (vectorp value))
+          (let ((key (logand (sxhash-eq value) 4095)))
+            (unless (memq value (aref seen key))
+              (aset seen key (cons value (aref seen key)))
+              (if (consp value)
+                  (progn
+                    (when (and (eq (car value) 'extern-call) (consp (cdr value)))
                       (let ((name (cadr value)))
                         (when (or (symbolp name) (stringp name))
-                          (push (if (symbolp name) (symbol-name name) name)
-                                imports))))
-                    (walk (car value))
-                    (walk (cdr value)))
-                   ((vectorp value)
-                    (mapc #'walk (append value nil))))))
-      (walk form))
+                          (push (if (symbolp name) (symbol-name name) name) imports))))
+                    (push (cdr value) pending) (push (car value) pending))
+                (dotimes (index (length value)) (push (aref value index) pending))))))))
     (sort (delete-dups imports) #'string<)))
 
 (defun nelisp-bytecode-native-rooted-cfg-contract--canonical-empty-imports-p
@@ -297,52 +300,8 @@
                    (nelisp-bytecode-native-rooted-cfg-contract--digest contract))
         contract))))
 
-(defun nelisp-bytecode-native-rooted-cfg-contract--snapshot-data (value _depth)
-  "Copy mutable VALUE iteratively, preserving sharing and opaque owners.
-Visit and copy each container in one DFS, rejecting an active ancestor."
-  (let ((copies (make-vector 4096 nil)) pending)
-    ;; Fixed identity buckets avoid general hash-table work for every node.
-    ;; Collisions still resolve through the original object's eq identity.
-    (cl-labels
-        ((identity-get (item)
-           (cdr (assq item (aref copies (logand (sxhash-eq item) 4095)))))
-         (identity-put (item value)
-           (let* ((key (logand (sxhash-eq item) 4095)) (bucket (aref copies key)))
-             (aset copies key (cons (cons item value) bucket)))
-           value)
-         (allocate (item)
-           (cond
-            ;; Most recipe and plan nodes are scalar metadata. Classify them
-            ;; before inspecting callable/opaque containers.
-            ((or (null item) (symbolp item) (numberp item)) item)
-            ((or (hash-table-p item) (byte-code-function-p item) (functionp item)) item)
-            ((stringp item)
-             (or (identity-get item)
-                 (let ((copy (substring item 0))) (identity-put item copy) copy)))
-            ((or (consp item) (vectorp item))
-             (let ((record (identity-get item)))
-               (if record
-                   (if (eq (car record) 'active) (error "Cyclic contract snapshot") (cdr record))
-                 (let* ((copy (if (consp item) (cons nil nil) (make-vector (length item) nil)))
-                        (record (cons 'active copy)))
-                   (identity-put item record)
-                   (push (vector item copy 0 record) pending)
-                   copy))))
-            (t (error "Unsupported contract snapshot value")))))
-      (let ((root (allocate value)))
-        (while pending
-          (let* ((frame (car pending)) (old (aref frame 0)) (new (aref frame 1))
-                 (index (aref frame 2)) (count (if (consp old) 2 (length old))))
-            (if (= index count)
-                (progn (setcar (aref frame 3) 'done) (pop pending))
-              (aset frame 2 (1+ index))
-              ;; ALLOCATE pushes a child frame, so it finishes before the
-              ;; next sibling. An active record is therefore an ancestor.
-              (let ((child (allocate (if (consp old) (if (= index 0) (car old) (cdr old)) (aref old index)))))
-                (if (consp old)
-                    (if (= index 0) (setcar new child) (setcdr new child))
-                  (aset new index child))))))
-        root))))
+(defalias 'nelisp-bytecode-native-rooted-cfg-contract--snapshot-data
+  #'nelisp-bytecode-compiler-input--snapshot)
 (defun nelisp-bytecode-native-rooted-cfg-contract--stage (label)
   "Append optional compile diagnostics without changing validation decisions."
   (let ((path (getenv "NELISP_ROOTED_CFG_STAGE_LOG")))
@@ -352,7 +311,10 @@ Visit and copy each container in one DFS, rejecting an active ancestor."
 
 (defvar nelisp-bytecode-native-rooted-cfg-contract--validation-count 0)
 
+
 (let ((snapshot-owner (symbol-function 'nelisp-bytecode-native-rooted-cfg-contract--snapshot-data))
+      (reuse-owner (symbol-function 'nelisp-bytecode-compiler-input--reuse-checked))
+      (data-equal-owner (symbol-function 'nelisp-bytecode-native-rooted-cfg-data-equal))
       ;; Lean images retain the original independent public reconstruction.
       ;; Optimizing cold preparation loads the shared emitter before this
       ;; factory, so the input-only entry is sealed here, never on first use.
@@ -362,9 +324,10 @@ Visit and copy each container in one DFS, rejecting an active ancestor."
 (defun nelisp-bytecode-native-rooted-cfg-contract-valid-p (contract &optional result-mode live-input)
   "Recompute and validate a serialized generic rooted-CFG CONTRACT.
 Nil RESULT-MODE preserves the boolean API.  Exact `:reconstruction' returns
-fresh full input, plan, emission and expected contract after every check passes.
-LIVE-INPUT binds opaque table constants only after its canonical recipe matches;
-all code, frame, plan and artifact checks are still reconstructed.
+full input, fresh plan, emission and expected contract after every check passes.
+LIVE-INPUT binds opaque table constants only after its canonical recipe matches.
+A scope-owned, unchanged checked input replaces only duplicate construction;
+all code, frame, plan and artifact comparisons remain required.
 The result is data for comparison, never a certificate or cached authority."
   (setq nelisp-bytecode-native-rooted-cfg-contract--validation-count
         (1+ nelisp-bytecode-native-rooted-cfg-contract--validation-count))
@@ -374,9 +337,7 @@ The result is data for comparison, never a certificate or cached authority."
                     (funcall lookup 'nelisp-bytecode-native-rooted-cfg-contract--snapshot-data)))
   (condition-case nil
       (let* ((_copy-start (nelisp-bytecode-native-rooted-cfg-contract--stage "copy-start"))
-             (copy (if result-mode
-                       (funcall snapshot-owner contract 0)
-                     (copy-tree contract)))
+             (copy (funcall snapshot-owner contract 0))
              (_copy-end (nelisp-bytecode-native-rooted-cfg-contract--stage "copy-end"))
              (digest (plist-get copy :digest))
              (recipe (plist-get copy :input-recipe))
@@ -392,7 +353,10 @@ The result is data for comparison, never a certificate or cached authority."
               (and live-input recipe-safe
                    (progn
                      (setq live-canonical
-                           (nelisp-bytecode-compiler-input-build (plist-get live-input :function)))
+                           (or (and (funcall same reuse-owner
+                                            (funcall lookup 'nelisp-bytecode-compiler-input--reuse-checked))
+                                    (funcall reuse-owner live-input))
+                               (nelisp-bytecode-compiler-input-build (plist-get live-input :function))))
                      (and (equal live-canonical live-input)
                           (equal recipe (nelisp-bytecode-native-rooted-cfg-contract-input-recipe live-canonical))
                           (plist-get live-canonical :function)))))
@@ -406,8 +370,8 @@ The result is data for comparison, never a certificate or cached authority."
                                (5 (list (plist-get recipe :metadata)))
                                (6 (list (plist-get recipe :metadata)
                                         (plist-get recipe :interactive)))))))))
-             ;; The live object has just passed a complete canonical rebuild
-             ;; and recipe comparison. Reuse that fresh result, not caller data.
+             ;; The live object passed either the private build-scope snapshot
+             ;; or a canonical rebuild, and the same complete recipe comparison.
              (input (or (and live-function live-canonical)
                         (nelisp-bytecode-compiler-input-build function)))
              (shared-v2 (member (plist-get copy :version)
@@ -454,7 +418,11 @@ The result is data for comparison, never a certificate or cached authority."
                       (nelisp-bytecode-native-rooted-cfg-contract--stage "digest-start")
                       (prog1 (nelisp-bytecode-native-rooted-cfg-contract--digest without-digest)
                         (nelisp-bytecode-native-rooted-cfg-contract--stage "digest-end"))))
-             (equal contract expected)
+             (funcall same data-equal-owner
+                      (funcall lookup 'nelisp-bytecode-native-rooted-cfg-data-equal))
+             (funcall data-equal-owner contract expected)
+             (funcall same data-equal-owner
+                      (funcall lookup 'nelisp-bytecode-native-rooted-cfg-data-equal))
              (or (null result-mode)
                  (funcall same snapshot-owner
                           (funcall lookup 'nelisp-bytecode-native-rooted-cfg-contract--snapshot-data)))

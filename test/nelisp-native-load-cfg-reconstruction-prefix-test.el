@@ -128,11 +128,10 @@
         (cl-labels ((events ()
                       (with-temp-buffer
                         (insert-file-contents log)
-                        ;; Nested contract/cache tracing now shares this log.
-                        ;; Keep exact ordering and cutoffs for producer stages;
-                        ;; the nested domains have their own stage assertions.
+                        ;; Contract substage diagnostics share this file;
+                        ;; admission cutoffs concern the outer producer only.
                         (cl-remove-if-not
-                         (lambda (event) (string-prefix-p "producer-raw-" event))
+                         (lambda (label) (string-prefix-p "producer-raw-" label))
                          (mapcar (lambda (line) (car (split-string line " ")))
                                  (split-string (buffer-string) "\n" t)))))
                     (clear () (with-temp-file log)))

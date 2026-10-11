@@ -23,7 +23,8 @@
   '(nelisp-native-cache nelisp-native-poll nelisp-native-budget nelisp-native-gccjit nelisp-native-cfg-grammar nelisp-native-load nelisp-aot-compiler nelisp-standalone-arena-rewrite
     nelisp-bytecode-compiler-input nelisp-bytecode-compiler-input-dialect nelisp-bytecode-ir nelisp-bytecode-frame-ir nelisp-bytecode-handlers-u8
     nelisp-bytecode-native-rooted-cfg nelisp-bytecode-native-rooted-cfg-plan
-    nelisp-bytecode-native-rooted-cfg-emit nelisp-bytecode-native-rooted-cfg-shared-emit
+    nelisp-bytecode-native-rooted-cfg-emit nelisp-bytecode-native-rooted-cfg-data
+    nelisp-bytecode-native-rooted-cfg-shared-emit
     nelisp-bytecode-native-rooted-cfg-postdom nelisp-bytecode-native-rooted-cfg-contract
     nelisp-bytecode-native-rooted-cfg-safe-contract nelisp-bytecode-native-rooted-cfg-native
     nelisp-bytecode-native-rooted-cfg-call nelisp-native-arithmetic-v2
@@ -57,7 +58,7 @@
   (let ((print-length nil) (print-level nil) (print-circle nil)
         (print-quoted t) (print-escape-newlines t)
         (print-escape-nonascii t) (print-escape-multibyte t))
-    (prin1-to-string value)))
+    (nelisp-bytecode-native-rooted-cfg-data-print value)))
 
 (defun nelisp-native-cache--hash (value)
   (secure-hash 'sha256 (nelisp-native-cache--print value)))
@@ -394,11 +395,15 @@ The caller must inhibit mid-form collection until the syscall returns."
              (nelisp-native-load--serialization-receiver
               (lambda (manifest bytes) (setq serialized (cons manifest bytes)))))
         (unwind-protect
-            (let* ((input (nelisp-bytecode-compiler-input-build
-                           (nelisp-native-cache--function function)))
-                   (result (nelisp-bytecode-native-rooted-cfg-native--build
-                            input (concat file ".compile.nelr")
-                            t nelisp-native-cache-guard-mode t))
+            (let* ((input nil)
+                   (result
+                    (nelisp-bytecode-compiler-input-call-with-built
+                     (nelisp-native-cache--function function)
+                     (lambda (built-input)
+                       (setq input built-input)
+                       (nelisp-bytecode-native-rooted-cfg-native--build
+                        input (concat file ".compile.nelr")
+                        t nelisp-native-cache-guard-mode t))))
                    (header
                     (list :nelisp-native-cache 1 :canonical-manifest 'prebuilt-v1 :backend 'in-house :abi (nelisp-native-cache-abi-hash)
                           :input (nelisp-native-cache--input-hash function)

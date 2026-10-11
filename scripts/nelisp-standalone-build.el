@@ -3386,7 +3386,11 @@ REPL-facing module it feeds."
       (if (< addr (ptr-read-u64 (ptr-read-u64 268436160 0) 0)) 0
         (if (< addr (ptr-read-u64 268435664 0)) 1 0)))
     ;; Exact starts, indexed only while the stopped heap is being marked.
-    ;; Entries are {data-start, end, bitmap}; one bit per eight arena bytes.
+    ;; Entries remain {data-start, end, bitmap}; one bit per eight arena bytes.
+    ;; Each bitmap is followed by a predecessor directory: eight bytes per
+    ;; 4 KiB of heap. It records the last validated object start before each
+    ;; page and bounds conservative predecessor lookup to 64 bitmap bytes.
+    ;; Two words after the entry table hold the complete live-chunk envelope.
     ;; Build from the header chain, never from a candidate's preceding word.
     ;; Disabling before sweep/compaction means allocation, splitting, reset,
     ;; unmap and image restore need no index maintenance or persisted pointers.
@@ -3398,8 +3402,9 @@ REPL-facing module it feeds."
       (let* ((start (ptr-read-u64 entry 0))
              (end (ptr-read-u64 entry 8))
              (bits (ptr-read-u64 entry 16))
-             (hdr start)
-             (ok 1))
+             (prefix (+ bits (nl_gc_index_bytes start end)))
+             (prefix-bytes (* (/ (+ (- end start) 4095) 4096) 8))
+             (page 0) (previous 0) (hdr start) (ok 1))
         (seq
          (while (and (= ok 1) (< hdr end))
            (let ((bt (nl_hdr_bt hdr)))
@@ -3408,26 +3413,42 @@ REPL-facing module it feeds."
                (let* ((slot (/ (- (+ hdr 8) start) 8))
                       (byte (+ bits (/ slot 8))))
                  (seq
+                  ;; The predecessor before each 4 KiB page is derived only
+                  ;; from the same validated header chain as the start bitmap.
+                  (while (and (< page prefix-bytes)
+                              (<= (+ start (* page 512)) (+ hdr 8)))
+                    (ptr-write-u64 prefix page previous)
+                    (setq page (+ page 8)))
+                  (setq previous (+ hdr 8))
                   (ptr-write-u8 byte 0
                                 (logior (ptr-read-u8 byte 0)
                                         (shl 1 (logand slot 7))))
                   (setq hdr (+ hdr bt)))))))
+         (while (and (= ok 1) (< page prefix-bytes))
+           (ptr-write-u64 prefix page previous)
+           (setq page (+ page 8)))
          ok)))
     (defun nl_gc_index_prepare ()
       (let* ((ctx (data-addr nl_gc_start_index))
              (chunk (ptr-read-u64 268436160 0))
-             (count 0) (need 0) (ok 1))
+             (count 0) (need 0) (ok 1) (minimum 0) (maximum 0))
         (seq
          (nl_gc_index_end)
          (ptr-write-u64 ctx 32 0)
          (while (> chunk 0)
            (seq
-            (setq need (+ need (+ 24 (nl_gc_index_bytes
-                                      (ptr-read-u64 chunk 24)
-                                      (nl_gc_chunk_end chunk)))))
+            (let ((start (ptr-read-u64 chunk 24)) (end (nl_gc_chunk_end chunk)))
+              (if (= count 0) (seq (setq minimum start) (setq maximum end))
+                (seq (if (< start minimum) (setq minimum start) 0)
+                     (if (> end maximum) (setq maximum end) 0))))
+            (setq need (+ need (+ 24
+                                  (+ (nl_gc_index_bytes
+                                      (ptr-read-u64 chunk 24) (nl_gc_chunk_end chunk))
+                                     (* (/ (+ (- (nl_gc_chunk_end chunk)
+                                                 (ptr-read-u64 chunk 24)) 4095) 4096) 8)))))
             (setq count (+ count 1))
             (setq chunk (ptr-read-u64 chunk 48))))
-         (setq need (nl_align_up (+ need 8) 65536))
+         (setq need (nl_align_up (+ need 16) 65536))
          (if (< (ptr-read-u64 ctx 8) need)
              (let ((mapping (nl_os_alloc_chunk need)))
                (if (= mapping 0) (setq ok 0)
@@ -3437,17 +3458,18 @@ REPL-facing module it feeds."
                      (seq (nl_os_free_chunk mapping need) (setq ok 0))
                    (seq
                     (if (= (ptr-read-u64 ctx 0) 0) 0
-                      (nl_os_free_chunk (ptr-read-u64 ctx 0)
-                                        (ptr-read-u64 ctx 8)))
+                      (nl_os_free_chunk (ptr-read-u64 ctx 0) (ptr-read-u64 ctx 8)))
                     (ptr-write-u64 ctx 0 mapping)
                     (ptr-write-u64 ctx 8 need)))))
            0)
          (if (= ok 0) 0
            (let* ((entry (ptr-read-u64 ctx 0))
-                  (bits (+ entry (* count 24))))
+                  (bits (+ entry (+ (* count 24) 16))))
              (seq
               (nl_alloc_zero_fill entry 0 need)
               (ptr-write-u64 ctx 24 count)
+              (ptr-write-u64 entry (* count 24) minimum)
+              (ptr-write-u64 entry (+ (* count 24) 8) maximum)
               (setq chunk (ptr-read-u64 268436160 0))
               (while (and (= ok 1) (> chunk 0))
                 (seq
@@ -3455,9 +3477,11 @@ REPL-facing module it feeds."
                  (ptr-write-u64 entry 8 (nl_gc_chunk_end chunk))
                  (ptr-write-u64 entry 16 bits)
                  (setq ok (nl_gc_index_fill entry))
-                 (setq bits (+ bits (nl_gc_index_bytes
-                                    (ptr-read-u64 entry 0)
-                                    (ptr-read-u64 entry 8))))
+                 (setq bits (+ bits
+                               (+ (nl_gc_index_bytes
+                                   (ptr-read-u64 entry 0) (ptr-read-u64 entry 8))
+                                  (* (/ (+ (- (ptr-read-u64 entry 8)
+                                              (ptr-read-u64 entry 0)) 4095) 4096) 8))))
                  (setq entry (+ entry 24))
                  (setq chunk (ptr-read-u64 chunk 48))))
               (ptr-write-u64 ctx 16 ok)
@@ -4547,37 +4571,50 @@ REPL-facing module it feeds."
     (defun nl_gc_conserv_owner_indexed (w)
       (let* ((ctx (data-addr nl_gc_start_index))
              (aligned (- w (logand w 7))))
-        ;; Also refresh the index's containing-chunk cache for interior words.
         (nl_gc_object_start_p aligned)
-        (let* ((entry (ptr-read-u64 ctx 32))
-               (owner 0))
+        (let* ((entry (ptr-read-u64 ctx 32)) (owner 0))
           (if (= (nl_gc_index_contains entry aligned) 0) 0
             (let* ((slot (/ (- aligned (ptr-read-u64 entry 0)) 8))
                    (byte (/ slot 8))
-                   (bits (logand
-                          (ptr-read-u8 (ptr-read-u64 entry 16) byte)
-                          (- (shl 1 (+ (logand slot 7) 1)) 1)))
+                   (first-byte (* (/ byte 64) 64))
+                   (bits (logand (ptr-read-u8 (ptr-read-u64 entry 16) byte)
+                                 (- (shl 1 (+ (logand slot 7) 1)) 1)))
                    (bit 7))
-              ;; One bitmap byte covers 64 payload bytes.  Search backwards
-              ;; for the preceding real start, never interpret payload as a
-              ;; header.  The bitmap includes free-block starts as barriers.
-              (while (and (= bits 0) (> byte 0))
+              ;; Search at most the current page's 64 bitmap bytes. A zero
+              ;; page uses its validated predecessor; free starts remain barriers.
+              (while (and (= bits 0) (> byte first-byte))
                 (setq byte (- byte 1))
                 (setq bits (ptr-read-u8 (ptr-read-u64 entry 16) byte)))
-              (if (= bits 0) 0
+              (if (= bits 0)
+                  (setq owner
+                        (ptr-read-u64
+                         (+ (ptr-read-u64 entry 16)
+                            (nl_gc_index_bytes (ptr-read-u64 entry 0)
+                                               (ptr-read-u64 entry 8)))
+                         (* (/ byte 64) 8)))
                 (while (= (logand bits (shl 1 bit)) 0)
                   (setq bit (- bit 1)))
                 (setq owner (+ (ptr-read-u64 entry 0)
-                               (* (+ (* byte 8) bit) 8)))
-                (if (< w (+ (- owner 8) (nl_hdr_bt (- owner 8))))
-                    owner 0)))))))
+                               (* (+ (* byte 8) bit) 8))))
+              (if (> owner 0)
+                  (if (< w (+ (- owner 8) (nl_hdr_bt (- owner 8)))) owner 0)
+                0))))))
     (defun nl_gc_conserv_resolve (w)
       (let* ((state (data-addr nl_gc_conserv_state))
              (cached (ptr-read-u64 state 56)))
         (if (and (> cached 0) (>= w cached)
                  (< w (+ (- cached 8) (nl_hdr_bt (- cached 8)))))
             cached
-          (if (= (nl_gc_in_arena w) 0) 0
+          ;; Only the stopped-heap index supplies these bounds. Words outside
+          ;; every chunk's envelope cannot pass the original membership walk;
+          ;; holes and inactive indexes retain that complete live-bounds check.
+          (if (or (and (= (ptr-read-u64 (data-addr nl_gc_start_index) 16) 1)
+                       (let* ((index (data-addr nl_gc_start_index))
+                              (bounds (+ (ptr-read-u64 index 0)
+                                         (* (ptr-read-u64 index 24) 24))))
+                         (or (< w (ptr-read-u64 bounds 0))
+                             (>= w (ptr-read-u64 bounds 8)))))
+                  (= (nl_gc_in_arena w) 0)) 0
             (let ((owner
                    (if (= (ptr-read-u64 (data-addr nl_gc_start_index) 16) 1)
                        (nl_gc_conserv_owner_indexed w)

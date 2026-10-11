@@ -2971,14 +2971,15 @@ value expression, docstring, and customization keyword plist."
          (nelisp-aot-compiler--preprocess-source source)
          (nreverse nelisp-aot-compiler--closure-lift-descriptors))))))
 
-(defun nelisp-aot-compiler--module-init-plan (sexp)
+(defun nelisp-aot-compiler--module-init-plan (sexp &optional parsed-ir)
   "Return the normalized Doc 129/Doc 99 module-init plan for SEXP.
 This is the compiler-side handoff that combines top-level variable init
 helpers, defcustom metadata, GC root descriptors, and AOT closure
 descriptors into the runtime plan consumed by
-`nelisp-cc-runtime-run-aot-module-init-plan'."
+`nelisp-cc-runtime-run-aot-module-init-plan'.
+PARSED-IR reuses this compile's already checked parser result."
   (require 'nelisp-cc-runtime)
-  (let ((ir (nelisp-aot-compiler--parse sexp nil)))
+  (let ((ir (or parsed-ir (nelisp-aot-compiler--parse sexp nil))))
     (nelisp-cc-runtime-aot-module-init-plan
      (nelisp-aot-compiler--init-helper-descriptors sexp)
      (nelisp-aot-compiler--custom-metadata-descriptors sexp)
@@ -2996,12 +2997,13 @@ descriptors into the runtime plan consumed by
        (null (plist-get plan :root-descriptors))
        (null (plist-get plan :closure-descriptors))))
 
-(defun nelisp-aot-compiler--object-module-init-metadata (sexp)
+(defun nelisp-aot-compiler--object-module-init-metadata (sexp &optional parsed-ir)
   "Return object metadata plist for SEXP's Doc 129 module-init plan.
 The result is nil when SEXP has no helper/custom/root/closure metadata.
 When non-nil, it is a plist with a UTF-8/NUL-terminated printable plan
-payload suitable for ET_REL `.rodata' embedding."
-  (let ((plan (nelisp-aot-compiler--module-init-plan sexp)))
+payload suitable for ET_REL `.rodata' embedding.
+PARSED-IR is the checked IR from the same compile, when available."
+  (let ((plan (nelisp-aot-compiler--module-init-plan sexp parsed-ir)))
     (unless (nelisp-aot-compiler--module-init-plan-empty-p plan)
       (let* ((text (prin1-to-string plan))
              (bytes (concat (encode-coding-string text 'utf-8 t)
@@ -10026,7 +10028,8 @@ functions `((NAME . ARITY) ...)'."
            ;; At run time the `else' arm never observes the `then' arm's
            ;; assignments, so it must not observe them while parsing
            ;; either: both start from the state the `if' was entered with.
-           (entry-reprs (nelisp-aot-compiler--repr-snapshot fenv))
+           (repr-fenv (nelisp-aot-compiler--control-repr-fenv sexp fenv))
+           (entry-reprs (nelisp-aot-compiler--repr-snapshot repr-fenv))
            ;; Saved rather than let-bound: an assignment inside this `if'
            ;; is still an assignment as far as an enclosing branch is
            ;; concerned, and a dynamic binding would discard it on exit.
@@ -10034,13 +10037,13 @@ functions `((NAME . ARITY) ...)'."
            (_ (setq nelisp-aot-compiler--assigned-cells nil))
            (then-ir (nelisp-aot-compiler--parse-value
                      (nth 2 sexp) env fenv defuns))
-           (then-reprs (nelisp-aot-compiler--repr-snapshot fenv))
+           (then-reprs (nelisp-aot-compiler--repr-snapshot repr-fenv))
            (then-assigned nelisp-aot-compiler--assigned-cells)
            (_ (progn (nelisp-aot-compiler--repr-restore entry-reprs)
                      (setq nelisp-aot-compiler--assigned-cells nil)))
            (else-ir (nelisp-aot-compiler--parse-value
                      (nth 3 sexp) env fenv defuns))
-           (else-reprs (nelisp-aot-compiler--repr-snapshot fenv))
+           (else-reprs (nelisp-aot-compiler--repr-snapshot repr-fenv))
            (else-assigned nelisp-aot-compiler--assigned-cells)
            (fixes (nelisp-aot-compiler--repr-join-fixes
                    then-reprs else-reprs)))
@@ -10081,9 +10084,10 @@ functions `((NAME . ARITY) ...)'."
                                 (nelisp-aot-compiler--parse-value
                                  e env fenv defuns))
                               (cddr sexp))))))
-           (entry-reprs (nelisp-aot-compiler--repr-snapshot fenv))
+           (repr-fenv (nelisp-aot-compiler--control-repr-fenv sexp fenv))
+           (entry-reprs (nelisp-aot-compiler--repr-snapshot repr-fenv))
            (parsed (funcall parse))
-           (after-reprs (nelisp-aot-compiler--repr-snapshot fenv))
+           (after-reprs (nelisp-aot-compiler--repr-snapshot repr-fenv))
            (boxed (nelisp-aot-compiler--repr-boxed-cells (list after-reprs)))
            (raw (nelisp-aot-compiler--repr-raw-cells entry-reprs boxed)))
       (if (null raw)
@@ -10128,7 +10132,8 @@ functions `((NAME . ARITY) ...)'."
       ;; frame keeps whatever it was entered with.  All of them have to
       ;; agree about which slots hold Sexp pointers.
       (let* ((outer-assigned nelisp-aot-compiler--assigned-cells)
-             (entry-reprs (nelisp-aot-compiler--repr-snapshot fenv))
+             (repr-fenv (nelisp-aot-compiler--control-repr-fenv sexp fenv))
+             (entry-reprs (nelisp-aot-compiler--repr-snapshot repr-fenv))
              (has-default (seq-find (lambda (cl) (eq (car-safe cl) t))
                                     raw-clauses))
              (parsed nil)
@@ -10146,11 +10151,11 @@ functions `((NAME . ARITY) ...)'."
                               'always
                             (nelisp-aot-compiler--parse-value
                              (car cl) env fenv defuns)))
-                 (before (nelisp-aot-compiler--repr-snapshot fenv))
+                 (before (nelisp-aot-compiler--repr-snapshot repr-fenv))
                  (_ (setq nelisp-aot-compiler--assigned-cells nil))
                  (body-ir (nelisp-aot-compiler--parse-value
                            (cadr cl) env fenv defuns))
-                 (after (nelisp-aot-compiler--repr-snapshot fenv))
+                 (after (nelisp-aot-compiler--repr-snapshot repr-fenv))
                  (assigned nelisp-aot-compiler--assigned-cells))
             (push (list pred-ir body-ir after assigned before) parsed)
             ;; The next predicate sees the state before this body, not
@@ -10243,9 +10248,10 @@ functions `((NAME . ARITY) ...)'."
                                   (nelisp-aot-compiler--ir-as-raw-i64 arm)
                                 arm))))
                         args)))
-             (entry-reprs (nelisp-aot-compiler--repr-snapshot fenv))
+             (repr-fenv (nelisp-aot-compiler--control-repr-fenv sexp fenv))
+             (entry-reprs (nelisp-aot-compiler--repr-snapshot repr-fenv))
              (forms (funcall parse))
-             (after-reprs (nelisp-aot-compiler--repr-snapshot fenv))
+             (after-reprs (nelisp-aot-compiler--repr-snapshot repr-fenv))
              (boxed (nelisp-aot-compiler--repr-boxed-cells (list after-reprs)))
              (raw (nelisp-aot-compiler--repr-raw-cells entry-reprs boxed)))
         (if (null raw)
@@ -21154,7 +21160,7 @@ register budgeting while ELF/Mach-O keep SysV."
           ;; v3, so both relocatable-object formats now embed it.
           (and (not empty-source-p)
                (memq format '(elf mach-o))
-               (nelisp-aot-compiler--object-module-init-metadata source)))
+               (nelisp-aot-compiler--object-module-init-metadata source ir)))
          (defuns (and ir (nelisp-aot-compiler--collect-defuns ir)))
          (data-blobs (append
                       (and ir (nelisp-aot-compiler--collect-data-blobs ir))
@@ -21593,6 +21599,118 @@ drift (= a Doc 92 emitter invariant violation)."
         (unless (eq (cdar remaining) (symbol-function (caar remaining))) (setq current nil))
         (setq remaining (cdr remaining)))
       (and current (or cached (funcall collector body))))))
+
+;; A control expression that cannot write an outer local cannot change any
+;; outer cell's representation. Preserve the full snapshot path for writes,
+;; malformed/shared trees, and replaced parser/state helpers. This is a local
+;; proof of unchanged cells, not a cached admission or a validation switch.
+(let ((owners
+       (mapcar (lambda (name) (cons name (symbol-function name)))
+               '(nelisp-aot-compiler--parse-value
+                 nelisp-aot-compiler--parse-stmt
+                 nelisp-aot-compiler--parse-let-var
+                 nelisp-aot-compiler--validate-let-binding
+                 nelisp-aot-compiler--repr-snapshot
+                 nelisp-aot-compiler--repr-restore
+                 nelisp-aot-compiler--repr-join-fixes
+                 nelisp-aot-compiler--repr-coercion-ir
+                 nelisp-aot-compiler--repr-fix-arm
+                 nelisp-aot-compiler--repr-coerce-before
+                 nelisp-aot-compiler--repr-boxed-cells
+                 nelisp-aot-compiler--repr-raw-cells
+                 nelisp-aot-compiler--ir-as-raw-i64
+                 nelisp-aot-compiler--make-ir
+                 nelisp-aot-compiler--ir-repr
+                 nelisp-aot-compiler--ir-get
+                 nelisp-aot-compiler--free-setq-index
+                 nelisp-aot-compiler--index-proper-list-p
+                 plist-get
+                 setcdr
+                 assq
+                 memq
+                 eq
+                 symbolp
+                 consp
+                 make-hash-table
+                 puthash
+                 gethash
+                 hash-table-count
+                 nelisp-aot-compiler--int-foldable-p
+                 nelisp-aot-compiler--parse-extern-call-args
+                 nelisp-aot-compiler--repr-vector-size
+                 nelisp-aot-compiler--object-hidden-boundary-fenv
+                 nelisp-aot-compiler--auto-aot-root-boundary-slots
+                 nelisp-aot-compiler--symbols-for-root-slots
+                 nelisp-aot-compiler--maybe-wrap-aot-root-scope
+                 nelisp-aot-compiler--parse-multi-let
+                 nelisp-aot-compiler--runtime-sexp-literal-form
+                 nelisp-aot-compiler--runtime-boxed-sexp-form
+                 nelisp-aot-compiler--aot-builtin-boundary-available-p
+                 nelisp-aot-compiler--aot-funcall-boundary-available-p
+                 nelisp-aot-compiler--fenv-has-symbol-p
+                 nelisp-aot-compiler--aot-name-slot-symbol
+                 nelisp-aot-compiler--aot-keyword-slot-symbols
+                 nelisp-aot-compiler--aot-callback-slot-symbols
+                 nelisp-aot-compiler--aot-literal-slot-symbols
+                 nelisp-aot-compiler--aot-function-designator-lowering
+                 nelisp-aot-compiler--aot-builtin1-boundary-symbols
+                 nelisp-aot-compiler--parse-aot-builtin1-call
+                 nelisp-aot-compiler--parse-jit-checked-car
+                 nelisp-aot-compiler--aot-dispatcher-arg-form
+                 nelisp-aot-compiler--as-sexp-ptr-leaf
+                 nelisp-aot-compiler--as-sexp-ptr-form
+                 nelisp-aot-compiler--parse-aot-builtinn-call
+                 nelisp-aot-compiler--aot-funcall1-boundary-symbols
+                 nelisp-aot-compiler--aot-closure-boundary-symbols
+                 nelisp-aot-compiler--parse-aot-closure-lambda
+                 nelisp-aot-compiler--parse-aot-capture-cell
+                 nelisp-aot-compiler--aot-frame-slot-lowering
+                 nelisp-aot-compiler--parse-aot-frame-slot-ref
+                 nelisp-aot-compiler--parse-aot-frame-slot-set
+                 nelisp-aot-compiler--parse-aot-funcall1
+                 nelisp-aot-compiler--parse-aot-funcall2
+                 nelisp-aot-compiler--parse-aot-funcall3
+                 nelisp-aot-compiler--parse-aot-funcalln
+                 nelisp-aot-compiler--parse-aot-apply
+                 nelisp-aot-compiler--aot-exception-boundary-symbols
+                 nelisp-aot-compiler--aot-tag-lowering
+                 nelisp-aot-compiler--parse-wasm-throw
+                 nelisp-aot-compiler--parse-wasm-catch
+                 nelisp-aot-compiler--parse-wasm-unwind-protect
+                 nelisp-aot-compiler--parse-wasm-condition-case
+                 nelisp-aot-compiler--parse-aot-throw
+                 nelisp-aot-compiler--parse-aot-signal
+                 nelisp-aot-compiler--parse-aot-landing-value
+                 nelisp-aot-compiler--parse-aot-landing-error
+                 nelisp-aot-compiler--parse-aot-landing-jump
+                 nelisp-aot-compiler--parse-aot-landing-label
+                 nelisp-aot-compiler--parse-aot-machine-landing-jump
+                 nelisp-aot-compiler--parse-aot-errorn
+                 nelisp-aot-compiler--parse-aot-error
+                 nelisp-aot-compiler--parse-aot-push-handler
+                 nelisp-aot-compiler--parse-aot-pop-handler
+                 nelisp-aot-compiler--aot-root-boundary-symbols
+                 nelisp-aot-compiler--parse-aot-push-roots
+                 nelisp-aot-compiler--parse-aot-pop-roots
+                 nelisp-aot-compiler--parse-aot-push-special
+                 nelisp-aot-compiler--parse-aot-pop-special
+                 nelisp-aot-compiler--parse-aot-special-let-normal-exit
+                 nelisp-aot-compiler--parse-aot-special-let-n-normal-exit
+                 nelisp-aot-compiler--parse-aot-special-let-mixed-normal-exit
+                 nelisp-aot-compiler--parse-aot-catch-normal-exit
+                 nelisp-aot-compiler--parse-aot-condition-case-normal-exit
+                 nelisp-aot-compiler--parse-aot-unwind-protect-normal-exit)))
+      (collector (symbol-function 'nelisp-aot-compiler--free-setq-index))
+      (lookup (symbol-function 'symbol-function)) (same (symbol-function 'eq)))
+  (defun nelisp-aot-compiler--control-repr-fenv (form fenv)
+    "Return FENV unless unchanged outer representations are proved for FORM."
+    (let ((remaining owners) (current t))
+      (while (and remaining current)
+        (unless (funcall same (cdar remaining) (funcall lookup (caar remaining)))
+          (setq current nil))
+        (setq remaining (cdr remaining)))
+      (let ((writes (and current (funcall collector form))))
+        (if (and writes (= (hash-table-count (cdr writes)) 0)) nil fenv)))))
 
 (provide 'nelisp-aot-compiler)
 

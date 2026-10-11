@@ -1261,3 +1261,201 @@ the heap and all mark decisions remain native production code."
             (if broken (should-not (= (call-process path nil nil nil) 0))
               (should (= (call-process path nil nil nil) 0))))
         (delete-file path)))))
+
+(defun nelisp-standalone-gc-test--predecessor-source ()
+  "Probe production owner lookup against an independent full header walk."
+  (let* ((base #x32000000) (large #x400000) (ctx #x35000000)
+         (mapping #x35100000) (counter (+ ctx 1024))
+         (descriptor #x10000300)
+         (names '(nl_align_up nl_hdr_bt nl_alloc_zero_fill nl_gc_bt_ok nl_gc_chunk_cursor
+                  nl_gc_chunk_end nl_gc_chunk_contains nl_gc_index_end
+                  nl_gc_index_bytes nl_gc_index_fill nl_gc_index_prepare
+                  nl_gc_index_contains nl_gc_index_test nl_gc_object_start_p
+                  nl_gc_conserv_owner_slow nl_gc_conserv_owner_indexed))
+         (forms
+          (mapcar (lambda (name)
+                    (or (nelisp-standalone-gc-test--find-defun nelisp-standalone--gc-source name)
+                        (nelisp-standalone-gc-test--find-defun nelisp-standalone--arena-source name)
+                        (error "Missing production helper %s" name))) names))
+         (source
+          `(seq
+            (defun nl_seq2 (_a b) b)
+            (defun nl_os_alloc_chunk (_size) ,mapping)
+            (defun nl_os_commit_range (_base _old _new) 1)
+            (defun nl_os_free_chunk (_base _size) 1)
+            (defun gc_predecessor_read_u8 (address offset)
+              (seq (ptr-write-u64 ,counter 0 (+ (ptr-read-u64 ,counter 0) 1))
+                   (ptr-read-u8 address offset)))
+            ,@forms
+            (defun gc_predecessor_gc_bench ()
+              (let* ((i 0) (failed 0) (word 0))
+                (seq
+                 (syscall-direct 9 #x10000000 4096 3 50 -1 0)
+                 (syscall-direct 9 ,base ,(+ large 4096) 3 50 -1 0)
+                 (syscall-direct 9 ,ctx 4096 3 50 -1 0)
+                 (syscall-direct 9 ,mapping 1048576 3 50 -1 0)
+                 (ptr-write-u64 268436160 0 ,descriptor)
+                 (ptr-write-u64 268436168 0 ,descriptor)
+                 (ptr-write-u64 268435456 0 ,(+ large 32))
+                 (ptr-write-u64 ,descriptor 0 ,base)
+                 (ptr-write-u64 ,descriptor 24 ,base)
+                 (ptr-write-u64 ,base 0 ,large)
+                 (ptr-write-u64 ,(+ base large) 0 32)
+                 (if (= (nl_gc_index_prepare) 0) (setq failed 10) 0)
+                 (ptr-write-u64 ,counter 0 0)
+                 ;; All expected owners come from the independent complete
+                 ;; header walk, without reading a candidate's payload as a header.
+                 (while (and (< i 1000) (= failed 0))
+                   (setq word (+ ,base (+ 1048576 (mod (* i 2141) 3145728))))
+                   (if (= (nl_gc_conserv_owner_indexed word)
+                          (nl_gc_conserv_owner_slow word)) 0 (setq failed 11))
+                   (setq i (+ i 1)))
+                 (if (and (= failed 0)
+                          (not (= (nl_gc_conserv_owner_indexed ,(+ base large)) 0)))
+                     (setq failed 12) 0)
+                 (if (and (= failed 0)
+                          (not (= (nl_gc_conserv_owner_indexed ,(+ base large 8))
+                                  ,(+ base large 8)))) (setq failed 13) 0)
+                 (ptr-write-u64 ,counter 8 i)
+                 (syscall-direct 1 1 ,counter 16 0 0 0)
+                 failed)))
+            (exit (gc_predecessor_gc_bench)))))
+    ;; Count actual bitmap reads in the compiled production bodies, after
+    ;; preparation. The counted helper itself uses the real unwrapped read.
+    (setq source
+          (cl-labels ((walk (form)
+                        (if (not (consp form)) form
+                          (if (and (eq (car form) 'defun) (eq (cadr form) 'gc_predecessor_read_u8)) form
+                            (cons (if (eq (car form) 'ptr-read-u8) 'gc_predecessor_read_u8 (car form))
+                                  (mapcar #'walk (cdr form)))))))
+            (walk source)))
+    (setq source (cl-subst ctx '(data-addr nl_gc_start_index) source :test #'equal))
+    source))
+
+(ert-deftest nelisp-standalone-gc-predecessor-is-parallel-to-header-walk-and-bounded ()
+  "Large-block interiors agree with full walking using at most a page of bits."
+  (unless (and (eq system-type 'gnu/linux)
+               (string-match-p "x86_64\\|amd64" system-configuration))
+    (ert-skip "Requires x86_64 Linux for the freestanding AOT executable"))
+  (let ((path (make-temp-file "nelisp-gc-predecessor-")))
+    (unwind-protect
+        (progn
+          (nelisp-aot-compile-sexp
+           (nelisp-standalone-gc-test--predecessor-source) path)
+          (with-temp-buffer
+            (set-buffer-multibyte nil)
+            (let ((coding-system-for-read 'no-conversion))
+              (should (= (call-process path nil (current-buffer) nil) 0)))
+            (should (= (buffer-size) 16))
+            (let ((bytes (buffer-string)) (reads 0) (checked 0))
+              (dotimes (i 8)
+                (setq reads (+ reads (ash (aref bytes i) (* i 8)))
+                      checked (+ checked (ash (aref bytes (+ i 8)) (* i 8)))))
+              (should (= checked 1000))
+              (should (<= reads 65010)))))
+      (delete-file path))))
+
+(defun nelisp-standalone-gc-test--envelope-source ()
+  "Compare the production resolver with independent walking across 16 chunks."
+  (let* ((base #x32000000) (ctx #x35000000) (state (+ ctx 128))
+         (mapping #x35100000) (counter (+ ctx 1024)) (desc #x10000400)
+         (names '(nl_align_up nl_hdr_bt nl_alloc_zero_fill nl_gc_bt_ok
+                  nl_gc_chunk_cursor nl_gc_chunk_end nl_gc_chunk_contains
+                  nl_gc_in_arena nl_gc_index_end nl_gc_index_bytes
+                  nl_gc_index_fill nl_gc_index_prepare nl_gc_index_contains
+                  nl_gc_index_test nl_gc_object_start_p nl_gc_conserv_owner_slow
+                  nl_gc_conserv_owner_indexed nl_gc_conserv_resolve))
+         (forms
+          (mapcar (lambda (name)
+                    (or (nelisp-standalone-gc-test--find-defun nelisp-standalone--gc-source name)
+                        (nelisp-standalone-gc-test--find-defun nelisp-standalone--arena-source name)
+                        (error "Missing production owner %s" name))) names))
+         (source
+          `(seq
+            (defun nl_seq2 (_a b) b)
+            (defun nl_os_alloc_chunk (_size) ,mapping)
+            (defun nl_os_commit_range (_base _old _new) 1)
+            (defun nl_os_free_chunk (_base _size) 1)
+            (defun gc_bounds_read (address offset)
+              (seq (ptr-write-u64 ,counter 0 (+ (ptr-read-u64 ,counter 0) 1))
+                   (ptr-read-u64 address offset)))
+            ,@forms
+            (defun gc_bounds_probe ()
+              (let* ((i 0) (failed 0) (data 0) (category 0) (word 0))
+                (seq
+                 (syscall-direct 9 #x10000000 4096 3 50 -1 0)
+                 (syscall-direct 9 ,base 131072 3 50 -1 0)
+                 (syscall-direct 9 ,ctx 4096 3 50 -1 0)
+                 (syscall-direct 9 ,mapping 1048576 3 50 -1 0)
+                 (ptr-write-u64 268436160 0 ,desc)
+                 (ptr-write-u64 268436168 0 ,(+ desc (* 15 64)))
+                 (ptr-write-u64 268435456 0 32)
+                 (while (< i 16)
+                   ;; A permutation makes neither head nor tail an envelope.
+                   (setq data (+ ,base (* (mod (+ 3 (* i 7)) 16) 4096)))
+                   (ptr-write-u64 (+ ,desc (* i 64)) 0 data)
+                   (ptr-write-u64 (+ ,desc (* i 64)) 16 32)
+                   (ptr-write-u64 (+ ,desc (* i 64)) 24 data)
+                   (ptr-write-u64 (+ ,desc (* i 64)) 48
+                                  (if (= i 15) 0 (+ ,desc (* (+ i 1) 64))))
+                   (ptr-write-u64 data 0 32)
+                   (setq i (+ i 1)))
+                 (if (= (nl_gc_index_prepare) 0) (setq failed 10) 0)
+                 (ptr-write-u64 ,counter 0 0)
+                 (setq i 0)
+                 (while (and (< i 1000) (= failed 0))
+                   (setq data (+ ,base (* (mod (* i 11) 16) 4096)))
+                   (setq category (mod i 10))
+                   (setq word
+                         (cond ((= category 0) 0)
+                               ((= category 1) #x7070707070707070)
+                               ((= category 2) -1)
+                               ((= category 3) ,(- base 1))
+                               ((= category 4) ,(+ base (* 15 4096) 32))
+                               ((= category 5) (+ data 40))
+                               ((= category 6) data)
+                               ((= category 7) (+ data 8))
+                               ((= category 8) (+ data 16))
+                               (t (+ data 31))))
+                   (if (= (nl_gc_conserv_resolve word)
+                          (nl_gc_conserv_owner_slow word)) 0 (setq failed 11))
+                   (setq i (+ i 1)))
+                 (ptr-write-u64 ,counter 8 i)
+                 (syscall-direct 1 1 ,counter 16 0 0 0)
+                 failed)))
+            (exit (gc_bounds_probe)))))
+    (setq source
+          (cl-labels ((walk (form)
+                        (if (not (consp form)) form
+                          (cons (if (eq (car form) 'ptr-read-u64) 'gc_bounds_read (car form))
+                                (mapcar #'walk (cdr form))))))
+            (mapcar (lambda (form)
+                      (if (and (eq (car-safe form) 'defun)
+                               (memq (cadr form) '(nl_gc_in_arena nl_gc_conserv_resolve)))
+                          (walk form) form)) source)))
+    (setq source (cl-subst ctx '(data-addr nl_gc_start_index) source :test #'equal)
+          source (cl-subst state '(data-addr nl_gc_conserv_state) source :test #'equal))
+    source))
+
+(ert-deftest nelisp-standalone-gc-envelope-refuses-outside-without-losing-chunks ()
+  "The stopped-heap envelope excludes outside words and retains holes and edges."
+  (unless (and (eq system-type 'gnu/linux)
+               (string-match-p "x86_64\\|amd64" system-configuration))
+    (ert-skip "Requires x86_64 Linux for the freestanding AOT executable"))
+  (let ((path (make-temp-file "nelisp-gc-envelope-")))
+    (unwind-protect
+        (progn
+          (nelisp-aot-compile-sexp
+           (nelisp-standalone-gc-test--envelope-source) path)
+          (with-temp-buffer
+            (set-buffer-multibyte nil)
+            (let ((coding-system-for-read 'no-conversion))
+              (should (= (call-process path nil (current-buffer) nil) 0)))
+            (should (= (buffer-size) 16))
+            (let ((bytes (buffer-string)) (reads 0) (checked 0))
+              (dotimes (i 8)
+                (setq reads (+ reads (ash (aref bytes i) (* i 8)))
+                      checked (+ checked (ash (aref bytes (+ i 8)) (* i 8)))))
+              (should (= checked 1000))
+              (should (< reads 26000)))))
+      (delete-file path))))
