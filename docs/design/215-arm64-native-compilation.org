@@ -1,0 +1,398 @@
+#+TITLE: Doc 215 — AArch64 native compilation on Linux and macOS
+#+STATUS: DRAFT — design only; A1–A5 execution qualification pending
+#+DATE: 2026-10-11
+* Scope, evidence and decisions
+The required backend is in-house raw-v2, first synchronous explicit opt-in,
+then templates and full corpus qualification. Reuse GNU bytecode, the shared
+rooted CFG, semantic validation, frame/exit protocol and authenticated cache.
+Use one little-endian AArch64 emitter/relocator and separate Linux/Darwin OS
+adapters. Windows arm64, legacy boxed trampolines, GNU ELN and development
+allocator/GC replacement are outside M1; none may become accidentally enabled.
+
+Labels throughout: [V] verified from fec44b49f983c815ff1f9640548b184662938903
+source or the identified host probe; [R] verified published reference, linked
+below; [P] proposed replacement, unimplemented/unqualified; [A] assumption
+requiring the stated execution receipt. No statement here claims arm64 native
+trust admission, F1 execution or performance already passes.
+
+[V] scripts/nelisp-standalone-build.el:nelisp-standalone--target-abi,
+nelisp-standalone--target-arch and nelisp-standalone--target-os select aapcs64,
+aarch64 and linux/darwin for linux-aarch64/macos-aarch64; windows-aarch64 also
+exists. Doc 151 records historical Linux qemu reader/syscall verification,
+not native compilation on this revision. release-qualification.yml's
+build-macos-arm64 uses macos-14 with continue-on-error; it is not native proof.
+
+[P] Darwin chooses one bounded MAP_JIT arena and pthread_jit_write_protect_np
+per-thread W^X, not a dual mapping. The native loader uses documented libSystem
+APIs through reader-owned Mach-O imports, not new Darwin syscall numbers.
+Linux uses RW -> RX mmap/mprotect and explicit instruction-cache publication.
+Do not broaden a host predicate until proof, mapping and identity owners exist.
+* Dependency inventory and replacement owners
+Paths below are repository-relative; symbols name the exact current owners.
+Each [P] replacement is qualified by the verification matrix and phases below.
+** Selection, shared emitter and AOT lowering
+- [V] lisp/nelisp-native-load.el:nelisp-native-load--raw-supported-p admits
+  Linux/Windows x86_64; nelisp-native-load--runtime-abi-v2 and nelisp-native-load--target-v2 distinguish SysV/Win64;
+  nelisp-native-load-raw-v2-compile-file and nelisp-native-load--raw-v2-chunk-rewrite hard-code
+  x86_64 and Linux/Windows targets. [P] Select arch, OS, machine ABI and raw
+  container version from sealed reader target helpers, not mutable system-type
+  alone. Add distinct aapcs64-linux and aapcs64-darwin ABI/cache identities;
+  preserve historical x86 identities. Select :arch aarch64 and :format elf or
+  mach-o, and the matching arena rewrite target.
+- [V] lisp/nelisp-bytecode-native-rooted-cfg-shared-emit.el:
+  nelisp-bytecode-native-rooted-cfg-shared-emit-build, -build-from-input and
+  nelisp-bytecode-native-rooted-cfg-shared-emit--cycles emit source forms; lisp/nelisp-bytecode-native-rooted-cfg-native.el:
+  nelisp-bytecode-native-rooted-cfg-native--build supplies trust/contracts.
+  [P] Keep their rooted semantics; make target binding explicit downstream.
+- [V] lisp/nelisp-aot-compiler.el:nelisp-aot-compile-to-link-unit supports
+  aarch64 but binds nelisp-aot-compiler--abi to sysv except x86 COFF/wasm and inherits nelisp-aot-compiler--os;
+  nelisp-aot-compiler--emit-value, nelisp-aot-compiler--emit-defun, nelisp-aot-compiler--emit-call-arm64 and nelisp-aot-compiler--emit-extern-call-arm64
+  have arm paths. [P] Bind aapcs64 and linux/darwin through parse and emission;
+  do not treat :format mach-o alone as OS selection. Audit all emitted source
+  operations, spills, indirect call-ptr and stack arguments, not just F1 bytes.
+** Boundary ABI, roots, poll gate and arithmetic
+- [V] lisp/nelisp-native-funcall-v2.el:nelisp-native-funcall-v2-descriptor and
+  nelisp-native-funcall-v2-emit specify six u64 words (env,ticket,f,a,n,r), u64 status, contiguous
+  argument roots, four exit scratch slots and 256-root limit. Shared entries
+  use (env,ticket,argument-count,root-count). scripts/nelisp-standalone-build.el:
+  nelisp-standalone--applyfn-source contains the ptr-call/call-ptr arm and
+  nelisp-standalone--applyfn-core-helpers defines nl_native_funcall_v2.
+  lisp/nelisp-cc-rootstack.el defines nl_root_pin_begin_v2,
+  nl_root_pin_reserve_v2, nl_root_pin_slot_v2 and nl_root_pin_end_v2.
+  [P] Map six words to x0–x5 and status to x0; preserve all logical bounds,
+  reauthentication, alias identity and publish-before-clear exit handling.
+  lisp/nelisp-native-frame-v2.el:nelisp-native-frame-v2-source stays shared;
+  lisp/nelisp-runtime-reload-abi.el:nelisp-runtime-reload-contract-hash and
+  nelisp-runtime-reload-contract-matches-p need arm target/layout evidence, not an x86 layout label override.
+- [V] scripts/nelisp-standalone-build.el:nelisp-standalone--applyfn-core-helpers'
+  nl_native_poll_due_v2, nl_native_poll_flags_v2, nl_native_poll_gc_due_v2 and
+  nl_native_poll_v2 implement the native gate. The shared emitter calls this
+  gate; it does not insert an independent x86 inline poll instruction block.
+  lisp/nelisp-native-poll.el:nelisp-native-poll-state supplies nine-slot state
+  and nelisp-bytecode-native-rooted-cfg-poll-function owns the due callback.
+  [P] Re-lower the same source into arm instructions; preserve dynamic quit,
+  inhibit-quit, force-GC, mutation epoch, env/depth cache and uncached GC debt.
+- [V] lisp/nelisp-native-funcall-v2.el:nelisp-native-funcall-v2-fixnum-form
+  guards Sexp tag 2, signed 62-bit payload bounds and 30-bit multiply inputs;
+  scripts/nelisp-native-template-generate.el:nelisp-native-template-generate
+  embeds x86 arithmetic/compare bytes. [P] Preserve the genuine numeric
+  fallback and alias-safe reads; arm flags must not authorize wrapped results.
+** Artifacts, stubs, branches and addresses
+- [V] lisp/nelisp-native-load.el:nelisp-native-load--raw-reloc-problem accepts
+  pc32/plt32 only; nelisp-native-load-raw-v2-artifact and nelisp-native-load-raw-v2-artifact-trusted
+  both patch four-byte displacements and emit movabs/jmp or movabs/ret stubs.
+  nelisp-native-load-raw-artifact-format-v2 is currently version 3; manifests
+  carry text, explicit imports/exports and relocations, not an ELF/COFF file.
+  [P] Keep .nelr raw text; use an arm-versioned grammar with instruction-aligned
+  CALL26/JUMP26, bounded literal ABS64 and paired page/lo12 records. Validate
+  opcode masks, addends, symbol ownership, overlap, alignment and final ranges
+  before writes in BOTH paths. Do not reinterpret x86 rel32 records as arm.
+- [V] lisp/nelisp-aot-compiler.el:nelisp-aot-compiler--emit-data-addr emits
+  x86 LEA RIP+disp32, S+A-P with A=-4; arm already emits ADRP+ADD with
+  adr-prel-pg-hi21/add-abs-lo12-nc. nelisp-aot-compiler--emit-addr-of uses arm ADR (±1 MiB).
+  lisp/nelisp-native-load.el:nelisp-native-load--raw-v2-rewrite-data-addr converts runtime BSS
+  addresses to zero-argument imported getters; retain that isolation because
+  independently mapped reader/JIT addresses need not be within ADRP range.
+  [P] Arm getters materialize a reader-owned address into x0 then RET;
+  function imports tail-BR through x16 with LR/argument registers unchanged.
+  Keep arbitrary runtime addresses in loader-owned bounded literals, not
+  producer-chosen immediates. Private mutable BSS/data stays refused initially.
+- [V] lisp/nelisp-asm-arm64.el:nelisp-asm-arm64-resolve-fixups range-checks
+  b19/b26/adr21; nelisp-asm-arm64-b-cond already emits inverted local condition plus B.
+  nelisp-asm-arm64-emit-reloc supports b26-pc, abs64 and page/ADD pairs; no full veneer/literal
+  placement machinery exists. lisp/nelisp-static-linker.el:
+  nelisp-link-apply-reloc patches these; lisp/nelisp-elf-write.el:
+  nelisp-elf-write-binary and lisp/nelisp-mach-o-write.el:
+  nelisp-mach-o--reloc-spec/nelisp-mach-o-write-binary encode the respective object forms.
+  [P] Share arm relocation semantics, retain per-container record encoding.
+** Mapping, page sizes and instruction caches
+- [V] lisp/nelisp-native-load.el:nelisp-native-load--mmap, nelisp-native-load--protect, nelisp-native-load--unmap,
+  nelisp-native-load--mprotect-rx and -unload use Linux 9/10/11 or
+  lisp/nelisp-native-windows.el:nelisp-native-windows-map/nelisp-native-windows-protect/nelisp-native-windows-unmap;
+  Windows uses VirtualAlloc/VirtualProtect/VirtualFree and FlushInstructionCache.
+  nelisp-native-load--digest also allocates through this boundary. [P] Add OS adapters for code,
+  ordinary RW scratch and R GC tables, checked cleanup and publication.
+  Arm publication requires cache maintenance; x86 coherence is not portable.
+- [V] nelisp-native-load-page-bytes and nelisp-native-load-raw-page-bytes are 4096;
+  nelisp-native-load--page-round, stub/page sizing and lisp/nelisp-native-budget.el:
+  nelisp-native-budget-elf-bytes use 4K rounding. Observer code maps 4096 too.
+  Mach-O writer's nelisp-mach-o--exe-page-size uses 16K for arm executable
+  layout. [P] Obtain actual OS page size at reader startup and seal it in the
+  mapping owner; use it for rounding/protection/unmap/budget. ADRP's architectural
+  4096-byte page is independent of OS page size. Count Darwin arena capacity
+  and live reservations without double-charging; GC tables stay outside JIT.
+** Executable identity, proof issuance and bounded reads
+- [V] lisp/nelisp-native-load.el:nelisp-native-load--running-binary-sha256 uses
+  /proc/self/exe on Linux and nelisp--build-digest on Windows; Darwin returns
+  no usable identity. scripts/nelisp-standalone-build.el:
+  nelisp-standalone--stamp-build-digest hashes zero-field file bytes;
+  nelisp-standalone--codesign-macos-adhoc signs, and build-reader re-signs after stamping.
+  [P] Linux arm keeps complete running ELF identity. Darwin uses a sealed
+  immutable loaded build stamp, with a specified canonical Mach-O identity:
+  loadable section bytes plus stable layout/import metadata, digest field zero,
+  excluding codesign-added signature command/blob. Stamp before final signing;
+  retain final signed whole-file SHA separately in receipts. Do not equate
+  pre-sign identity to post-sign file SHA or accept a caller-selected path.
+- [V] scripts/nelisp-standalone-build.el:nelisp-standalone--rooted-protocol-preflight and
+  nelisp-standalone--rooted-protocol-startup-src run only for Linux/Windows x86_64;
+  nelisp-standalone--native-startup-autoload-src authenticates the companion.
+  lisp/nelisp-native-rooted-startup-evidence.el:
+  nelisp-native-rooted-startup-evidence-render/nelisp-native-rooted-startup-evidence-build pin x86 layouts;
+  lisp/nelisp-native-compiler-startup-evidence.el:
+  nelisp-native-compiler-startup-evidence-build and
+  lisp/nelisp-native-funcall-startup-evidence.el:
+  nelisp-native-funcall-startup-evidence-build specialize constructor/F1 proof.
+  [P] Derive arm contracts from active units, source hashes, function spans,
+  data owners and actual final image bytes; authenticate companion/cold images.
+- [V] scripts/nelisp-native-rooted-direct-closure.py:prove decodes x86 and
+  ELF/PE; scripts/nelisp-native-rooted-prelink-closure.py:prove and
+  scripts/nelisp-native-compiler-f1-prelink.py:prove rely on that x86 closure.
+  lisp/nelisp-native-raw-file.el:nelisp-native-raw-file-read gates x86 and
+  nelisp-native-raw-file--read uses Linux mmap/open/pread/close/munmap 9/2/17/3/11.
+  [P] Add Capstone ARM64 decoded control/data ownership including indirect
+  veneers and literals; use final ELF section VAs or Mach-O segment/section
+  maps plus active-unit spans (Mach-O executable currently exports only two
+  symbols). Reader bounded reads use arm Linux numbers or libSystem on Darwin.
+  Resolve Darwin executable path via _NSGetExecutablePath, validate complete
+  bounded reads and live immutable spans; path bytes alone are not live identity.
+** Trust cache, locking and async workers
+- [V] lisp/nelisp-native-cache.el:nelisp-native-cache--root uses XDG/.cache or
+  LOCALAPPDATA; nelisp-native-cache--private-directory checks UID/0700, fallback getuid=102;
+  nelisp-native-cache--publish uses no-clobber hard links, fallback Linux link=86. It has no
+  compile lock. nelisp-native-cache--abi-components/nelisp-native-cache-abi-hash bind compiler/runtime identities.
+  [P] Linux arm uses XDG_CACHE_HOME or ~/.cache/nelisp/native-cache, getuid=174
+  and linkat=37 (Doc 151 argument translation). Darwin uses
+  ~/Library/Caches/NeLisp/native-cache and libSystem file/UID APIs. Retain
+  NELISP_NATIVE_CACHE override, enforce UID/0700 plus Darwin ACL write checks,
+  no symlinks, private temporary creation, pinned ancestor/file identity and
+  atomic no-clobber link publication. Race/interrupt tests must authenticate
+  the winner. Keep publication lock-free; the Darwin arena gets a distinct
+  process-local write lock. Any future compile lock needs exclusive creation,
+  bounded wait and stale-owner policy. Keys include OS/arch/ABI, relocation,
+  proof, stencil/compiler versions; trusted loads retain zero semantic checks.
+- [V] lisp/nelisp-native-tier.el:nelisp-native-tier--binary uses /proc/self/exe;
+  nelisp-native-tier--check-worker compares whole-file identity and refuses Windows; nelisp-native-tier--launch-next
+  invokes nelisp-process-start. scripts/nelisp-standalone-build.el:
+  nelisp-standalone--process-dispatch-arms, nelisp-standalone--fileio-process-setup-forms and
+  nelisp-standalone--fileio-process-call-forms supply POSIX paths. [P] Audit all underlying
+  fork/clone, execve, pipe, dup, wait and cancellation translations. Linux
+  qemu-user does not establish child exec support (Doc 151). Darwin should use
+  libSystem posix_spawn/pipe/wait/kill and the same canonical worker identity.
+  Keep async tier-up refused until same-binary cold restore, request/reply
+  authentication, separate streams, deadlines and child-tree cleanup pass;
+  synchronous M1 admission never silently enables the worker.
+** Stencils, optional gccjit and test machinery
+- [V] lisp/nelisp-native-template-stencils.el:
+  nelisp-native-template-select-target, nelisp-native-template-stencil-abi, nelisp-native-template-check-holes and
+  nelisp-native-template-open-library pin x86 SysV/Win64 bytes and hole grammar;
+  scripts/nelisp-native-template-generate.el:nelisp-native-template-generate
+  uses nelisp-asm-x86_64; lisp/nelisp-native-template.el:
+  nelisp-native-template-manifest carries raw target/ABI. [P] Generate a shared
+  arm fixed-word fragment library, distinct OS proof/ABI pins, arm relocation
+  holes and source receipts; never relabel existing x86 stencils. All copy,
+  call/poll, fixnum, frame, status, switch and return families need byte tests.
+- [V] lisp/nelisp-native-gccjit.el:nelisp-native-gccjit--initialize loads
+  libgccjit.so.0/libffi.so.8; nelisp-native-gccjit-compile-to-file emits a dynamic library.
+  lisp/nelisp-native-cache.el:nelisp-native-cache--compile-gccjit/nelisp-native-cache--load-gccjit assume .so,
+  dlopen and ELF budgets; reader nelisp-standalone--reader-ffi-live-p currently admits only
+  dynamic Linux x86_64 and Windows x86_64. [R] Ubuntu packages libgccjit for
+  arm64; Homebrew packages libgccjit for Apple Silicon (including Sonoma).
+  [P] Linux needs arm ELF dynamic imports/libffi; Darwin needs dylib names,
+  signed-load policy, Mach-O budget and typed FFI (arm extern f64 is currently
+  refused). Pin toolchain/target identities. Package availability is not
+  NeLisp backend qualification; run optional gccjit parity where operational,
+  report unavailable/refused explicitly. In-house is mandatory on both OSes.
+- [V] test/support/native-entry-observer.el:nelisp-test-native-entry-instrument
+  hard-codes x86 r10/r11 bytes and six-word records. [P] Arm recorder uses
+  x9–x17 scratch, records x0–x5 and target, preserves LR/SP; GC-on-entry saves
+  all needed argument words and LR and retains original owner through unload.
+  AArch64 sentinel must test x19–x29 and low 64 bits of v8–v15, SP alignment,
+  zero/six-argument nested calls and forced GC; never clobber/read x18 as a
+  test scratch register. Windows generator
+  scripts/generate-windows-native-sentinel.py:build and
+  test/support/windows-native-sentinel.el:windows-native-sentinel-run provide
+  the existing test pattern, not portable bytes.
+- [V] test/support/run-native-funcall-v2.py invokes GNU timeout and resource
+  RSS; corpus/template runners depend on the observer. [P] Target-aware runners
+  must use subprocess deadlines, normalize Darwin RSS units, capture process
+  group cleanup, native-entry counts and exact completion/digest markers;
+  no missing-capability skips count as arm acceptance.
+* Shared AArch64 implementation contract [P], ABI facts [R]
+- x0–x7 integer arguments, x0 integer return; v0–v7 FP arguments, v0 scalar return.
+  Save used x19–x29 and low halves of v8–v15; save LR x30 across calls,
+  maintain 16-byte SP alignment, no red-zone dependence and no x18 anywhere.
+  Fixed u64 internal signatures are shared. Darwin small C arguments require
+  caller extension and Darwin variadic arguments need a separate stack ABI.
+  Existing nelisp-aot-compiler--emit-defun saves x30/x29 in separate 16-byte slots [V]; Darwin
+  needs a valid contiguous [previous FP,LR] frame record at x29. Adjust spills
+  and incoming stack offsets together; host decode plus real stack walk verify.
+  Lisp exits remain status/root records; foreign unwinding through JIT frames
+  stays refused until DWARF unwind registration and teardown are qualified.
+- Fixnum add/sub/neg use ADDS/SUBS followed immediately by B.VS to the exact
+  fallback; then enforce signed 62-bit bounds before storing tag/payload.
+  MUL does not set V: keep 30-bit guards initially; wider multiplication needs
+  SMULH/sign-extension validation. Preserve input aliasing and slow exits.
+- B.cond/CBZ have signed imm19*4 ([-1 MiB,1 MiB-4]); B/BL imm26*4
+  ([-128 MiB,128 MiB-4]). Reuse inverted-condition + B; distant B/BL use
+  local veneer islands, LDR literal x16 + BR x16 (BL to veneer preserves LR).
+  Layout reserves bounded islands/pools before final fixups; reject overflow
+  rather than truncate. ADR/LDR literal have ±1 MiB reach; align address
+  literals to 8, branch around pools and exclude them from code decode/spans.
+- ADRP uses Page4K(S+A)-Page4K(P), ±4 GiB, plus low 12-bit ADD; for slot loads
+  use scaled LDR and prove access alignment. ELF types are
+  R_AARCH64_CALL26/R_AARCH64_JUMP26, R_AARCH64_ADR_PREL_PG_HI21, R_AARCH64_ADD_ABS_LO12_NC,
+  R_AARCH64_LDST64_ABS_LO12_NC, R_AARCH64_ABS64; Mach-O uses ARM64_RELOC_BRANCH26, ARM64_RELOC_PAGE21, ARM64_RELOC_PAGEOFF12, ARM64_RELOC_UNSIGNED
+  with its own addend records. Current helpers lack JUMP26/scaled-lo12/pool
+  support [V]; extend deliberately. Initial raw imports need CALL26 to local
+  absolute stubs only; static reader BSS keeps existing ADRP+ADD relocations.
+- Poll sequence: publish roots -> authenticate ticket/slots -> LDR state;
+  compare epoch/env/depth, recompute dynamic flags if stale -> LDR allocator
+  growth/debt -> compare -> local condition/B to slow gate only when due ->
+  reauthenticate and publish status/exit before root release. No cached GC debt
+  or unrooted Sexp across a callback. Retain the nine-slot source contract.
+  Atomic arm emit currently uses LDADDAL/CASAL unconditionally [V]; detect
+  FEAT_LSE and provide conservative LDAXR/STLXR + barriers fallback for
+  baseline Linux ARMv8 hosts. Sealed feature choice belongs in compiler proof.
+* Linux aarch64 OS adapter [P]
+Use EM_AARCH64 ELF reader, raw .nelr JIT text, mmap=222/mprotect=226/munmap=215
+with Linux flags; translate other x86 vocabulary via Doc 151 where appropriate.
+Bounded reads need openat=56/pread64=67/close=57; direct syscall calls are native
+numbers, not automatically translated. Use AT_PAGESZ from startup auxv for
+4K/16K/64K mapping/budget; ELF PT_LOAD congruence/alignment must also support
+the selected kernel granule. Synthetic rounding tests do not prove real 64K.
+Cache maintenance equivalent to __clear_cache: read CTR_EL0 line sizes, align
+D/I starts independently, DC CVAU each D line -> DSB ISH -> IC IVAU each I
+line -> DSB ISH -> ISB, respecting IDC/DIC. Provide a reader-owned callable
+helper; no runtime compiler/C toolchain dependency. Publish entry only after
+flush/protection completion; cross-thread execution needs ordered publication
+and receiving-thread instruction synchronization. qemu cannot prove real cache
+coherence; require hardware repeated code replacement/unload/remap checks.
+* Darwin arm64 OS adapter and bootstrap [P]
+[V] Existing nelisp-standalone--macos-alloc-chunk-form uses Darwin mmap 197/munmap 73 and
+nelisp-standalone--os-syscall-xlat-forms translates file/stat/dir calls. AOT
+nelisp-aot-compiler--emit-syscall-direct-arm64 puts NR in x16, uses SVC #0x80 and CSNEG on carry
+to turn positive Darwin errno into negative status. It supports ordinary
+reader storage, not pthread JIT APIs. [A] These private syscall conventions
+remain usable on the user's OS; old comments record measurements, not this
+session's execution. Darwin numbers are not a stable application ABI.
+
+[V] nelisp-mach-o--build-executable already names dyld/libSystem, but
+nelisp-mach-o--exe-chained-fixups has zero imports; nelisp-link-units-macho-exec resolves
+only internal symbols. Thus nl-ffi-call is presently unsupported on Darwin.
+[P] Add bounded Mach-O bind/import cells and arm stubs, route a reviewed
+libSystem subset through existing nl-ffi-call; no host Emacs subprocess can
+substitute for calls in the reader. Require mmap/munmap/mprotect, getpagesize,
+pthread_jit_write_protect_np, sys_icache_invalidate, __error, executable path
+and bounded file/cache APIs. Use named imports and correct C return widths;
+libc errors use -1/MAP_FAILED plus __error(), not the SVC carry convention.
+Bootstrap imports must work before native trust/cold restore. Do not hand-map
+dyld shared-cache pointers or synthesize private pthread/Mach syscalls.
+
+[P] Reserve one MAP_JIT arena at startup, as hardened-runtime JIT supports one
+region [R]. Suballocate bounded page-rounded immutable code+stub slices.
+Validate/cache-authenticate and prepare ordinary RW bytes first; a non-JIT
+reader helper locks the arena, disables write protection on that thread,
+copies/relocates without callbacks/JIT entry, restores protection on every
+exit and calls sys_icache_invalidate before entry publication. Other threads
+retain their own protection state; serialize writes and prevent execution of
+unpublished/recycled slices. Individual unload retires slices only after last
+call/owner, not munmap of the arena; failed loads release unpublished slices.
+R GC tables and scratch mappings use ordinary libSystem memory APIs.
+This MAP_JIT per-thread policy replaces Linux's RW->RX transaction; do not
+claim the mapping's static VM flags alone prove W^X.
+
+[P] Query getpagesize and assert current arm macOS 16K expectation [A]. Sign
+the final stamped reader with codesign -f -s - --options runtime --entitlements
+the reviewed plist containing com.apple.security.cs.allow-jit. Verify signature
+and entitlements before running, and test missing-entitlement refusal separately.
+Do not add jit-write-allowlist with the selected pthread_jit_write_protect_np
+strategy: that entitlement disables this API [R]. Do not require unsigned-code
+or library-validation exemptions for the in-house/system-library lane.
+Ad-hoc signing is local/CI qualification; Developer ID/notarization distribution
+is a separate release task. Existing raw syscall bootstrap remains a release
+risk even after this loader uses libSystem; qualify file/startup/cold paths on
+each supported macOS release and migrate them separately if a receipt fails.
+Any new native helper/builtin must meet AGENTS.md clause 3 (OS/cache access),
+with reference form, inventory and census/S1.4/55s NOTE measurements; prefer
+the existing FFI entry. No native arithmetic builtin is justified for speed.
+* Verification matrix and phases [P]
+Every dependency has a host check and, where relevant, an execution check:
+| Piece | Without the user's Mac | Hardware receipt still needed |
+| Emission/ABI/fixnums/poll/roots | ERT + Capstone; qemu F1/GC/exits | Linux arm + macos-14/Mac sentinels |
+| Relocations/ADRP/veneers/pools | Reference bytes, ranges, mutated records | Both loaders; real distant mappings |
+| Mapping/pages/cache maintenance | Mock transactions; qemu map/reload | Linux 4K/16K/64K; Darwin W^X/16K |
+| Identity/proofs/OS calls | ELF/Mach-O fixtures, import/source mutations | macos-14/Mac signed/live API proofs |
+| Cache paths/ACLs/publication/locks | Host trust/race controls; qemu | Both filesystems; user-Mac permissions |
+| Stencils/gccjit | Fragment ERT/decode; Linux optional backend | Both corpora; Darwin FFI/JIT policy |
+| Observer/sentinels/async spawning | Decode recorder/save-set; qemu roots | Real exec/cancel; Darwin process/API |
+| Hot loop/x86 regression | Fixture/result/receipt checks | Both arm timings; x86 ledger reruns |
+GitHub documents both
+ubuntu-24.04-arm and macos-14 as arm64 [R]; record uname/page/CPU, never infer
+architecture from the job name. No new workflow is implemented by this design.
+
+1. A1 / M1.1: create test/nelisp-native-arm64-test.el with nonzero
+   nelisp-native-arm64-* ERT cases: genuine F1 six-word lowering, frame/ABI,
+   all stencil families, no x18, flags/poll, page pairs, literal/island ranges
+   at each boundary, target/corruption refusal and opcode mutation controls.
+   Compare representative encodings with pinned clang/LLVM assembly references
+   and Capstone. Run existing x86 byte regressions. No standalone build needed.
+2. A2 / M1.2: build elsewhere after A1; port ELF/proof/mapper/bounded reads/
+   cache first. Under qemu compile genuine GNU F1 in-house, then load its cache
+   in a fresh process, both source and --cold paths. Require exact corpus digest
+   52c26b63098a83d62c044908b231afd5cce3a85da3b559147e6dc4810eeac2ef,
+   native entries>0, compile validations=1/load validations=0, forced GC,
+   alias/redefinition, N=0/N=6 nested sentinel calls and signal/throw cleanup.
+   Reject wrong target/source/binary/ticket, mutated imports/literals/ranges,
+   foreign/writable cache and interrupted publication before map/execution.
+   Repeat on ubuntu-24.04-arm; test real cache publication and process teardown.
+   Real 16K/64K-kernel receipts remain required for those page configurations.
+3. A3 / M1.3: implement libSystem imports, canonical signed identity/proofs,
+   JIT arena and cache trust, then repeat A2 F1 on macos-14 and the user's Mac.
+   Exercise write->execute/code replacement, concurrent thread protection,
+   multi-artifact arena allocation/reuse/failure cleanup, frame-chain walk,
+   16K rounding and missing-entitlement/API refusal. No Rosetta evidence.
+4. A4 / M1.4: on BOTH real OS targets, U10 --require-complete gives 230/230,
+   F3 --fresh gives 52/52, and template trust/ordinary smoke passes with real
+   entry observation, fresh cache load, GC/live constants and corruption controls.
+   Adapt test/support/run-native-corpus-u10.py, run-native-real-corpus.py,
+   run-native-template-trust.py and run-native-template-ordinary.py; do not claim
+   today's command-line interfaces already support arm/Darwin. Authenticated
+   shard merge must reject gaps/mixed binaries; optional gccjit runs separately.
+5. A5 / M1.5 end to end: real Linux arm AND user's Mac execute the same 1e6
+   hot loop natively in <=1/5 interpreter time. Use separate warm/GC-normalized
+   processes, median of >=3 runs, repeated interpreter baseline, correct result,
+   native entry count, identical binary/source/cache pins and recorded host load.
+   Exclude compilation but report it separately. Requalify x86_64 Linux and
+   Windows ledgers at this integrated source revision; both must stay green.
+   Existing pending/red caps are not a green baseline and cannot be waived.
+
+Exactly the user's Mac receipts: A3 local signed-reader/API/import/startup/cold
+and F1 tests using its actual OS/cache/permissions; A4 both corpora plus template
+smokes; A5 the hot-loop ratio; async spawn/cancel/cold worker if later enabled.
+CI can develop/verify those same paths, but cannot qualify the user's environment.
+Host/qemu need no Mac; Linux 16K/64K needs those Linux kernels, not macOS.
+Receipts pin source, reader/stamp/final-signed-file, companion/cold image, tool
+versions, OS/pages/features, counts/digest, stdout/stderr and nonzero refusals.
+* Evidence captured for this design [V]
+target/arm64-design/probe.el compiled genuine shared F1 through existing arm
+AOT: ELF and Mach-O text both 5536 bytes, SHA256
+914493a6743aaf5d23dc39d42967353af84b16a4e13d11547b68d3bb3aace699,
+20 CALL26 relocations including four nl_native_funcall_v2 calls; data-address
+probe emits the existing ADRP+ADD pair. probe.py/Capstone 5.0.7 decoded every
+instruction and no x18 register operand in these probes. qemu-aarch64 10.0.8
+executes a 44-byte arithmetic/branch/exit microprobe: exit 0; operand mutation
+exits 7 (negative control). This is not standalone reader/native-loader evidence.
+Existing test/nelisp-asm-arm64-test.el: 105 tests, 104 expected, 0 unexpected,
+1 skipped (cross-objdump unavailable), 0.548s, host Emacs 31.1.
+Raw receipts/disassembly are in target/arm64-design/; no standalone build,
+runtime/compiler edit, commit or stash was performed. New arm acceptance ERT
+is deliberately A1 work. Proposed m1-stage.org is not an edited live ledger;
+M1.1's missing-test command is red, runner/Mac criteria remain pending.
+* Published references [R], checked 2026-10-11
+- [[https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst][Arm AAPCS64]] and [[https://github.com/ARM-software/abi-aa/blob/main/aaelf64/aaelf64.rst][AAELF64 relocations]]
+- [[https://developer.apple.com/documentation/xcode/writing-arm64-code-for-apple-platforms][Apple arm64 ABI differences]]
+- [[https://developer.apple.com/documentation/apple-silicon/porting-just-in-time-compilers-to-apple-silicon][Apple JIT, entitlements and cache publication]]
+- [[https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/syscalls.master][XNU syscall source (not an ABI guarantee)]]
+- [[https://github.com/llvm/llvm-project/blob/main/compiler-rt/lib/builtins/clear_cache.c][compiler-rt AArch64 cache maintenance]]
+- [[https://packages.ubuntu.com/en/noble-updates/libgccjit-13-dev][Ubuntu arm64 gccjit]] and [[https://formulae.brew.sh/formula/libgccjit][Homebrew Apple Silicon gccjit]]
+- [[https://docs.github.com/en/actions/reference/runners/github-hosted-runners][GitHub arm64 runner labels]]
