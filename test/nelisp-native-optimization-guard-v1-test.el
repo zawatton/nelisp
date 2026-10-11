@@ -4,7 +4,7 @@
 (require 'cl-lib)
 (require 'bytecomp)
 (require 'nelisp-native-optimization-guard-v1)
-(let* ((fixture (expand-file-name "guard-oracle.el" (file-name-directory load-file-name)))
+(let* ((fixture (expand-file-name "fixtures/guard-oracle.el" (file-name-directory load-file-name)))
        (directory (make-temp-file "nelisp-guard-oracle-" t))
        (source (expand-file-name "guard-oracle.el" directory)))
   ;; Compile the checked-in GNU fixture without relying on a retained ELC or

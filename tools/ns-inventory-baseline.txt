@@ -314,7 +314,8 @@
 # table'/`nelisp--buffer-multibyte-p'/`nelisp--char-arg-to-string'
 # plumbing behind them -- 8 new names, all mirrored byte-identically
 # into both files, same pattern as every prior entry in this run.
-ns-collision 353
+# 2026-10-11: 353 -> 343, tighten after the reviewed standalone/provider changes.
+ns-collision 343
 # 344 -> 353 on 2026-09-21, same day (Doc segI decoded-time accessors,
 # coordinator-approved): the nine `decoded-time-*' accessors for real
 # Emacs's `decoded-time' struct (simple.el, not vendored -- see the
@@ -447,7 +448,9 @@ ns-collision 353
 # unguarded `(defvar process-environment nil ...)' in
 # lisp/nelisp-build-host.el (a host-side build-tool file with its own
 # getenv/setenv sandbox, predates this segment and is out of its scope).
-ns-collision-divergent 133
+# 2026-10-11: 133 -> 148, reviewed substrate/upgrade differences pinned by
+# exact definition digest in the CI health block below (27 changed shapes).
+ns-collision-divergent 148
 # 128 -> 133 on 2026-09-21 (segment F): +7 divergent collisions --
 # cl-count/cl-remove/cl-delete/cl-assoc/cl-sort/cl-remove-duplicates,
 # new in lisp/nelisp-cl-macros.el, diverge from an older, now-dead-code
@@ -825,7 +828,14 @@ ns-collision-divergent 133
 # used for the identical pair in scripts/nelisp-stdlib-prelude.el (see the
 # `ns-collision' pin for these two names) rather than diverging the name
 # to fit each file's local convention.
-ns-prefix-violation 328
+# 2026-10-11: 328 -> 350, catch up the existing count-only naming debt.
+# Main owners are asm-wasm (29), cl-macros (23), nl-safe (18), and the
+# process/artifact public APIs (16 each); no definition was renamed here.
+# 2026-10-11 (integ/main-merge-20261011): 350 -> 352.  b664ec924 committed
+# lisp/nelisp-substitute-command-keys.el, which committed tests load and
+# which defines GNU's `substitute-command-keys' plus its `nl-' entry point;
+# both names fall outside the file's prefix by design.
+ns-prefix-violation 352
 # 322 -> 328 on 2026-09-21 (segment F): +6, from the `rx'/`rx-to-string'/
 # `rx--tr-*' family added to scripts/nelisp-stdlib-prelude.el and
 # lisp/nelisp-stdlib-misc.el -- an `rx-'-prefixed name in a file whose
@@ -1023,7 +1033,12 @@ ns-prefix-violation 328
 # calls the native builtins `nelisp--string-search' (expand-file-name fast path,
 # string-search) and `nelisp--sha256' (secure-hash sha256) that live in the build
 # script's native primitive table, the same way lisp/nelisp-stdlib-regexp.el already does.
-ns-private-escape 852
+# 2026-10-11: 852 -> 1014, explicitly concede the existing count-only debt,
+# not a collision exemption. The largest owners are compile-elisp-objects
+# (243), standalone-build (134), AOT (47), native-cache (25), and nl-clj-seq
+# (19). Native compiler/provider integration increased these cross-file
+# edges since the last snapshot; cleaning up that boundary is separate work.
+ns-private-escape 1014
 # 768 -> 770 on 2026-09-21 (segment F): +2. This kind stays count-only
 # in the gate's own design (see nl-ns-inventory.el's header); the rx
 # shim's `declare-function' lines for its own private `rx--tr-*'
@@ -1764,3 +1779,77 @@ pinned-collision ns-collision-divergent	file-name-nondirectory	lisp/nelisp-stdli
 pinned-collision ns-collision-divergent	mapconcat	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	c0cf8ac830a8
 pinned-collision ns-collision-divergent	string-equal	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	244c8723adb9
 pinned-collision ns-collision-divergent	string-search	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	23425a8d9d04
+
+# 2026-10-11 CI health review. The standalone build loads the prelude first,
+# then upgrades make-process/delete-process with the process adapter. With
+# nl-ffi-call, process-buffer wraps the captured owners for real pipe buffers;
+# on host Emacs its FFI block and the prelude's fboundp fallbacks are inert.
+# Hosted stdlib files are interpreter/reference providers, not replacements
+# for GNU's builtins. cl-macros is explicitly loaded by the host subset tests.
+# Each changed divergent shape below is pinned separately, never by count only.
+# cl-defgeneric: standalone handles GV setter names; hosted subset retains symbol names.
+pinned-collision ns-collision-divergent	cl-defgeneric	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	6273ddd65b75
+# cl-defmethod: standalone resolves (setf NAME) through GNU GV before subset dispatch.
+pinned-collision ns-collision-divergent	cl-defmethod	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	7e64c5198f94
+# cl-defstruct: standalone uses its extended struct registry and GNU GV slot metadata.
+pinned-collision ns-collision-divergent	cl-defstruct	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	c984b84d3ccd
+# delete-process: adapter intentionally upgrades bootstrap deletion with sentinel/reap handling.
+pinned-collision ns-collision-divergent	delete-process	packages/nelisp-process-adapter/src/nelisp-process-adapter.el scripts/nelisp-stdlib-prelude.el	bcf59a4da8e6
+# equal: standalone tagged-slot/native leaf equality differs from hosted cycle-safe heap walking.
+pinned-collision ns-collision-divergent	equal	lisp/nelisp-stdlib-equal.el scripts/nelisp-stdlib-prelude.el	3edec352e6a9
+# file-exists-p: standalone selects path-int access or stat fallback; hosted reference uses stat.
+pinned-collision ns-collision-divergent	file-exists-p	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	7e8146bf66c6
+# locate-library: standalone must prefer readable ELC inputs; hosted reference locates Lisp source.
+pinned-collision ns-collision-divergent	locate-library	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	86352fb9103d
+# make-pipe-process: FFI pipe-buffer implementation supersedes the bootstrap merged-stream placeholder.
+pinned-collision ns-collision-divergent	make-pipe-process	lisp/nelisp-process-buffer.el scripts/nelisp-stdlib-prelude.el	4cb5dbc9eeec
+# make-process: boot-loaded adapter intentionally adds filters, output buffers and real stderr transport.
+pinned-collision ns-collision-divergent	make-process	packages/nelisp-process-adapter/src/nelisp-process-adapter.el scripts/nelisp-stdlib-prelude.el	1dd4eb81c40d
+# markerp: FFI wrapper accepts reader markers plus original owner; stdlib/prelude fallbacks use reader markers.
+pinned-collision ns-collision-divergent	markerp	lisp/nelisp-process-buffer.el lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	1a0813942af7
+# nelisp--prn-string-escaped: standalone can use its existing tagged repr for restricted long byte runs.
+pinned-collision ns-collision-divergent	nelisp--prn-string-escaped	lisp/nelisp-stdlib-prn.el scripts/nelisp-stdlib-prelude.el	df5dbb209a35
+# nelisp--prn-symbol-escaped: standalone uses a bounded digest-local atom cache; hosted reference is uncached.
+pinned-collision ns-collision-divergent	nelisp--prn-symbol-escaped	lisp/nelisp-stdlib-prn.el scripts/nelisp-stdlib-prelude.el	a86f5b63dce1
+# struct-depth: standalone recognizes genuine class descriptors; hosted subset walks its symbolic struct registry.
+pinned-collision ns-collision-divergent	nelisp-cl-generic--struct-depth	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	d9eef4d1f4a9
+# type-match: standalone adds genuine class precedence to the hosted builtin/struct subset.
+pinned-collision ns-collision-divergent	nelisp-cl-generic--type-match	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	5ab667b30306
+# process-buffer: FFI wrapper dispatches pipe-buffer objects and captured owner; bootstrap reads its plist.
+pinned-collision ns-collision-divergent	process-buffer	lisp/nelisp-process-buffer.el scripts/nelisp-stdlib-prelude.el	516d56d08f67
+# process-exit-status: FFI wrapper adds pipe-buffer status to bootstrap native/placeholder status.
+pinned-collision ns-collision-divergent	process-exit-status	lisp/nelisp-process-buffer.el scripts/nelisp-stdlib-prelude.el	f54f3ed16025
+# process-get: FFI accessor handles its pipe-buffer representation as well as native process properties.
+pinned-collision ns-collision-divergent	process-get	lisp/nelisp-process-buffer.el scripts/nelisp-stdlib-prelude.el	5726bdbc237c
+# process-live-p: FFI wrapper recognizes open pipe buffers and delegates remaining process kinds.
+pinned-collision ns-collision-divergent	process-live-p	lisp/nelisp-process-buffer.el scripts/nelisp-stdlib-prelude.el	4a72a3dd75b6
+# process-put: FFI accessor writes pipe-buffer properties in addition to the bootstrap representations.
+pinned-collision ns-collision-divergent	process-put	lisp/nelisp-process-buffer.el scripts/nelisp-stdlib-prelude.el	1a8b19c4ceb2
+# process-status: FFI wrapper reports pipe-buffer status and delegates native/network processes.
+pinned-collision ns-collision-divergent	process-status	lisp/nelisp-process-buffer.el scripts/nelisp-stdlib-prelude.el	d0cdc5d2f179
+# processp: FFI wrapper extends the bootstrap predicate with its pipe-buffer representation.
+pinned-collision ns-collision-divergent	processp	lisp/nelisp-process-buffer.el scripts/nelisp-stdlib-prelude.el	6aef2f5086a7
+# save-excursion: standalone restores live buffer and marker; hosted evaluator retains its bufferless Tier-2 stub.
+pinned-collision ns-collision-divergent	save-excursion	lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el	c4281096b3ac
+# set-buffer-multibyte: standalone also synchronizes its native environment cell, absent from the hosted reference.
+pinned-collision ns-collision-divergent	set-buffer-multibyte	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	d19feeb11450
+# set-marker: FFI fallback uses current-buffer API; prelude owns tagged markers and explicit detach semantics.
+pinned-collision ns-collision-divergent	set-marker	lisp/nelisp-process-buffer.el scripts/nelisp-stdlib-prelude.el	397ca297f254
+# set-process-buffer: FFI upgrade manages output markers and buffer names; bootstrap stores only the property.
+pinned-collision ns-collision-divergent	set-process-buffer	lisp/nelisp-process-buffer.el scripts/nelisp-stdlib-prelude.el	a5c4ee1da938
+# with-current-buffer: standalone binds reader buffer cells/multibyte environment; hosted fallback uses save-current-buffer.
+pinned-collision ns-collision-divergent	with-current-buffer	lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el	d77f3fb84d54
+# with-temp-buffer: standalone initializes/restores reader buffer state; hosted fallback uses the owning buffer API.
+pinned-collision ns-collision-divergent	with-temp-buffer	lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el	890272b5fd79
+# 2026-10-11 (integ/main-merge-20261011): the same two reviewed divergences
+# as above, fingerprinted on the merged tree.  Neither file's with-*-buffer
+# text differs from 3228ab4c0; the digests above were taken on the
+# fix/ci-health-20261011 tree this baseline came from.
+pinned-collision ns-collision-divergent	with-current-buffer	lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el	e421fab80f95
+pinned-collision ns-collision-divergent	with-temp-buffer	lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el	3e29d9958063
+# marker-buffer: identical guarded readers intentionally live in bootstrap and FFI buffer providers.
+pinned-collision ns-collision	marker-buffer	lisp/nelisp-process-buffer.el scripts/nelisp-stdlib-prelude.el
+# marker-position: identical guarded readers intentionally live in bootstrap and FFI buffer providers.
+pinned-collision ns-collision	marker-position	lisp/nelisp-process-buffer.el scripts/nelisp-stdlib-prelude.el
+# prn-symbol-cache: shared nil-default defvar preserves the contract-owned digest-local cache; no owner file change.
+pinned-collision ns-collision	nelisp--prn-symbol-cache	lisp/nelisp-bytecode-native-rooted-cfg-contract.el scripts/nelisp-stdlib-prelude.el

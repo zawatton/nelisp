@@ -40,7 +40,8 @@
     (unwind-protect
         (progn
           (setq status
-                (call-process "emacs" nil buffer nil "-Q" "--batch" "-L" "lisp"
+                (call-process (expand-file-name invocation-name invocation-directory)
+                              nil buffer nil "-Q" "--batch" "-L" "lisp"
                               "--eval"
                               (format "(progn (setq load-prefer-newer t) (require 'nelisp-bytecode-compiler-input) (require 'nelisp-bytecode-native-consumer) (load %S nil t t) %s)"
                                       (expand-file-name source) body)))
@@ -110,17 +111,26 @@
         (should (eq (plist-get (nelisp-bytecode-native-rooted-cfg-plan input) :status)
                     'unsupported))))))
 
-(ert-deftest nelisp-bytecode-native-rooted-cfg-call1-plan/matches-pristine-non-call-plans-in-fresh-processes ()
+(ert-deftest nelisp-bytecode-native-rooted-cfg-call1-plan/preserves-non-call-layouts-in-fresh-processes ()
   (skip-unless (equal emacs-version "31.1"))
-  (let ((baseline "target/progress/r9-call1-plan-integration/before/nelisp-bytecode-native-rooted-cfg-plan.el")
-        (candidate "lisp/nelisp-bytecode-native-rooted-cfg-plan.el"))
-    (dolist (form '("(lambda (x) (car x))" "(lambda (x) (1+ x))"))
-      (let ((body (format "(let* ((input (nelisp-bytecode-compiler-input-build (byte-compile %s))) (plan (nelisp-bytecode-native-rooted-cfg-plan input))) (plist-put plan :input :elided) (princ (prin1-to-string plan)))" form)))
-        (let ((old (nelisp-bytecode-native-rooted-cfg-call1-plan-test--child baseline body))
-              (new (nelisp-bytecode-native-rooted-cfg-call1-plan-test--child candidate body)))
-          (should (= (car old) 0))
-          (should (= (car new) 0))
-          (should (equal (cdr old) (cdr new))))))))
+  ;; The disposable pre-CALL1 target/ snapshot is not a reproducible oracle.
+  ;; Pin the semantic layout instead, including the newer general funcall
+  ;; lowering for 1+, and still build each plan in a pristine GNU process.
+  (dolist (case '(("(lambda (x) (car x))"
+                  (complete 1 3 2 nil nil ("nl_native_car_v2")
+                   ((car 64 (1) 2 nil nil nil nil nil)
+                    (return 135 (2) nil nil nil nil nil nil))))
+                 ("(lambda (x) (1+ x))"
+                  (complete 1 12 6 9 nil ("nl_native_funcall_v2")
+                   ((primitive-call 84 (1) 6 5 (1) (7) 8 9)
+                    (return 135 (6) nil nil nil nil nil nil))))))
+    (let* ((body
+            (format "(let* ((input (nelisp-bytecode-compiler-input-build (byte-compile %s))) (plan (nelisp-bytecode-native-rooted-cfg-plan input))) (princ (prin1-to-string (append (mapcar (lambda (key) (plist-get plan key)) '(:status :arity :required-root-count :final-root :exit-root-base :call-exit-root-base :gateway-imports)) (list (mapcar (lambda (op) (mapcar (lambda (key) (plist-get op key)) '(:opcode :bytecode-opcode :input-roots :output-root :function-root :argument-roots :staging-roots :result-root :exit-root-base))) (plist-get (car (plist-get plan :blocks)) :operations)))))))"
+                    (car case)))
+           (result (nelisp-bytecode-native-rooted-cfg-call1-plan-test--child
+                    "lisp/nelisp-bytecode-native-rooted-cfg-plan.el" body)))
+      (should (= (car result) 0))
+      (should (equal (read (cdr result)) (cadr case))))))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-call1-plan/source-mutant-fails-positive-oracle ()
   (skip-unless (equal emacs-version "31.1"))

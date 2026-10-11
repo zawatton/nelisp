@@ -340,7 +340,10 @@ phis at joins.  It refuses before any backend or artifact side effect."
          (ir-rows-by-pc
           (let ((table (make-hash-table :test 'eql)))
             (dolist (row (append (plist-get (plist-get input :ir-result) :instructions) nil))
-              (puthash (aref row 0) (cons row (gethash (aref row 0) table)) table))
+              ;; Untrusted rows are indexed before canonical admission below.
+              ;; Leave malformed rows for that refusal instead of indexing them.
+              (when (and (vectorp row) (> (length row) 0))
+                (puthash (aref row 0) (cons row (gethash (aref row 0) table)) table)))
             table))
          (primitive-roots nil) (scratch-root nil)
          (guard-mode (or arithmetic-guard-mode 'off)))

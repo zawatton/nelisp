@@ -17,17 +17,24 @@
 (ert-deftest nelisp-aot-tco-bench-tco-keeps-up-with-nl-loop ()
   "Doc 171 G4 performance proof."
   (skip-unless (nelisp-aot-tco-bench-supported-p))
-  (let ((result (nelisp-aot-tco-bench-run)))
-    (should (= (plist-get result :tco-value)
-               (plist-get result :expected)))
-    (should (= (plist-get result :loop-value)
-               (plist-get result :expected)))
-    (message "DOC171 BENCH tco=%.4fs loop=%.4fs ratio=%.3fx threshold=%.2f pass=%s"
-             (plist-get result :tco-seconds)
-             (plist-get result :loop-seconds)
-             (plist-get result :ratio)
-             (plist-get result :threshold)
-             (if (plist-get result :pass) "yes" "no"))))
+  ;; Each test owns its executable cache; host sandboxes need not grant
+  ;; access to the user's persistent ~/.cache directory.
+  (let ((cache (make-temp-file "nelisp-tco-bench-cache-" t)))
+    (unwind-protect
+        (let* ((process-environment (copy-sequence process-environment))
+               (_ (setenv "XDG_CACHE_HOME" cache))
+               (result (nelisp-aot-tco-bench-run)))
+          (should (= (plist-get result :tco-value)
+                     (plist-get result :expected)))
+          (should (= (plist-get result :loop-value)
+                     (plist-get result :expected)))
+          (message "DOC171 BENCH tco=%.4fs loop=%.4fs ratio=%.3fx threshold=%.2f pass=%s"
+                   (plist-get result :tco-seconds)
+                   (plist-get result :loop-seconds)
+                   (plist-get result :ratio)
+                   (plist-get result :threshold)
+                   (if (plist-get result :pass) "yes" "no")))
+      (delete-directory cache t))))
 
 ;; The ratio is REPORTED here, not asserted.  A wall-clock comparison
 ;; on a shared CI runner is not a correctness property: the ubuntu

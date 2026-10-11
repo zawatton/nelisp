@@ -18,6 +18,8 @@
 ;; load twice -- which ERT reports as "Test ... redefined (or loaded
 ;; twice)" and exits 127.  The helpers only have to exist when a test
 ;; BODY runs, and by then every file is loaded.
+;; A single-file run loads the sibling lazily from the body, after ERT has
+;; collected this file's tests, so it also works without duplicate loading.
 
 (ert-deftest nl-ns-definition-shape-ignores-host-file-coding-system ()
   "The same multibyte definition must hash identically in every host buffer."
@@ -38,6 +40,7 @@
     (should (equal utf8 shift-jis))))
 
 (ert-deftest nl-ns-host-shadow-unsafe-fixture-fires-all-four-findings ()
+  (require 'nl-ns-test)
   (let* ((baseline (nl-ns-test--baseline-file))
          (findings
           (nl-ns-test--check-files
@@ -61,6 +64,7 @@
     (should (= (nl-ns-report-max-severity findings) 1))))
 
 (ert-deftest nl-ns-host-shadow-safe-fixture-stays-at-severity-six ()
+  (require 'nl-ns-test)
   (let* ((baseline (nl-ns-test--baseline-file))
          (findings
           (nl-ns-test--check-files
@@ -78,6 +82,7 @@ its docstring says nothing about being partial.  Reading a file rather
 than hand-building analyser records is deliberate: the hand-built
 version of this test passed metadata the analyser never produces and
 so proved nothing about the real path."
+  (require 'nl-ns-test)
   (let* ((baseline (nl-ns-test--baseline-file))
          (findings
           (nl-ns-test--check-files
@@ -93,6 +98,7 @@ so proved nothing about the real path."
                             (plist-get partial :sentence))))))
 
 (ert-deftest nl-ns-load-baseline-reads-metadata ()
+  (require 'nl-ns-test)
   (let ((baseline (nl-ns-load-baseline (nl-ns-test--baseline-file))))
     (should (equal (plist-get baseline :emacs-version) "30.2"))
     (should (equal (plist-get baseline :generated-at) "2026-09-19"))
@@ -101,6 +107,7 @@ so proved nothing about the real path."
     (should (gethash "cl-lib" (plist-get baseline :libraries)))))
 
 (ert-deftest nl-ns-report-includes-baseline-and-severity-summary ()
+  (require 'nl-ns-test)
   (let* ((baseline (nl-ns-test--baseline-file))
          (findings
           (nl-ns-test--check-files
@@ -113,6 +120,7 @@ so proved nothing about the real path."
     (should (string-match "minimal" report))))
 
 (ert-deftest nl-ns-accepted-round-trip-silences-exactly-those ()
+  (require 'nl-ns-test)
   (let* ((path (make-temp-file "nl-ns-accepted-" nil ".el"))
          (known (list (nl-ns-test--finding 'ns-collision-divergent 'when
                                            '("prelude.el" "macros.el"))
@@ -133,6 +141,7 @@ so proved nothing about the real path."
 
 (ert-deftest nl-ns-stale-accepted-reports-resolved-entries ()
   "An entry for a divergence that is gone must be reported, not kept."
+  (require 'nl-ns-test)
   (let* ((path (make-temp-file "nl-ns-accepted-" nil ".el"))
          (was (list (nl-ns-test--finding 'ns-collision-divergent 'gone
                                          '("a.el" "b.el"))

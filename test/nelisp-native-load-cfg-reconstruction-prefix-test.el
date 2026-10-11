@@ -128,8 +128,13 @@
         (cl-labels ((events ()
                       (with-temp-buffer
                         (insert-file-contents log)
-                        (mapcar (lambda (line) (car (split-string line " ")))
-                                (split-string (buffer-string) "\n" t))))
+                        ;; Nested contract/cache tracing now shares this log.
+                        ;; Keep exact ordering and cutoffs for producer stages;
+                        ;; the nested domains have their own stage assertions.
+                        (cl-remove-if-not
+                         (lambda (event) (string-prefix-p "producer-raw-" event))
+                         (mapcar (lambda (line) (car (split-string line " ")))
+                                 (split-string (buffer-string) "\n" t)))))
                     (clear () (with-temp-file log)))
           (setenv "NELISP_ROOTED_CFG_STAGE_LOG" log)
           (nelisp-cfg-prefix-test--run (nelisp-cfg-prefix-test--fixture))

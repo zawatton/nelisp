@@ -1,8 +1,7 @@
 ;;; arithmetic-provider-test.el --- Source ownership controls -*- lexical-binding: t; -*-
 (require 'ert)
 (require 'cl-lib)
-(load (expand-file-name "../lisp/nelisp-native-arithmetic-v2.el"
-                        (file-name-directory load-file-name)) nil t)
+(require 'nelisp-native-arithmetic-v2)
 
 (ert-deftest nelisp-arithmetic-provider-independent-source ()
   (let* ((first (nelisp-native-arithmetic-v2-source))

@@ -344,10 +344,23 @@
       (should (= (plist-get set-instruction :constant-index) 42)))))
 
 (ert-deftest nelisp-bytecode-frame-ir/rejects-known-but-unimplemented-primitive ()
+  ;; list1 now has a frame transfer. Obsolete scan-buffer still does not.
   (let ((result (nelisp-bytecode-frame-ir-build
-                 (unibyte-string 192 67 135) [a])))
+                 (unibyte-string 192 107 135) [a])))
     (should (eq (plist-get result :status) 'unsupported))
     (should-not (plist-get result :blocks))))
+
+(ert-deftest nelisp-bytecode-frame-ir/records-list1-frame-transfer ()
+  (let* ((result (nelisp-bytecode-frame-ir-build
+                  (unibyte-string 192 67 135) [a]))
+         (rows (plist-get (aref (plist-get result :blocks) 0) :instructions))
+         (row (aref rows 1)))
+    (should (eq (plist-get result :status) 'complete))
+    (should (eq (plist-get row :kind) 'primitive))
+    (should (= (plist-get row :opcode) 67))
+    (should (equal (plist-get row :inputs) '((:value 0 0))))
+    (should (equal (plist-get row :outputs) '((:value 1 0))))
+    (should (= (plist-get result :max-stack-depth) 1))))
 
 (ert-deftest nelisp-bytecode-frame-ir/rejects-invalid-branch-target-before-emission ()
   (let ((result (nelisp-bytecode-frame-ir-build

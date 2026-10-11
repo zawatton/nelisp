@@ -124,6 +124,29 @@ present in OVERRIDES is absent (mocks `nil', matching a real ELF that
 has no such section)."
   (lambda (_handle name) (cdr (assoc name overrides))))
 
+(defun nelisp-eln-exec-regions-test--file-header ()
+  "Return an ELF64 section table with the legacy GOT page at shift zero."
+  (let* ((names (string-as-unibyte "\0.shstrtab\0.got.plt\0"))
+         (bytes (make-string (+ 256 (length names)) 0)))
+    (cl-labels ((word (offset value width)
+                  (dotimes (i width)
+                    (aset bytes (+ offset i) (logand (ash value (* -8 i)) 255)))))
+      (store-substring bytes 0 (unibyte-string 127 69 76 70 2 1 1))
+      (word 40 64 8)               ; e_shoff
+      (word 58 64 2)               ; e_shentsize
+      (word 60 3 2)                ; null, shstrtab, got.plt
+      (word 62 1 2)                ; e_shstrndx
+      (word 128 1 4)               ; shstrtab name
+      (word 132 3 4)               ; SHT_STRTAB
+      (word 152 256 8)             ; shstrtab file offset
+      (word 160 (length names) 8)
+      (word 192 11 4)              ; got.plt name
+      (word 196 1 4)               ; SHT_PROGBITS
+      (word 208 nelisp-eln-registration--base-got-plt-address 8)
+      (word 224 24 8)
+      (store-substring bytes 256 names))
+    bytes))
+
 (defmacro nelisp-eln-exec-regions-test--with-mocks
     (sections raw-bytes-alist &rest body)
   "Run BODY with `-elf-section'/`-raw-read-bytes'/`-state' mocked.
@@ -134,7 +157,11 @@ not listed signals, matching an address this test never expected to be
 read."
   (declare (indent 2))
   `(cl-letf (((symbol-function 'nelisp-eln-system-loader--state)
-              (lambda (_handle) (list :bias nelisp-eln-exec-regions-test--base)))
+              ;; The validator now derives the fixed template from retained
+              ;; on-file GOT metadata as well as mapped section addresses.
+              (lambda (_handle)
+                (list :bias nelisp-eln-exec-regions-test--base
+                      :file-bytes (nelisp-eln-exec-regions-test--file-header))))
              ((symbol-function 'nelisp-eln-registration--elf-section)
               (nelisp-eln-exec-regions-test--sections ,sections))
              ((symbol-function 'nelisp-eln-registration--raw-read-bytes)

@@ -6,7 +6,11 @@
                                (file-name-directory (or load-file-name buffer-file-name))))
 (require 'nelisp-bytecode-ir)
 (require 'nelisp-bytecode-jit)
-(require 'nelisp-vendor-bytecode-jit-coverage)
+;; Scope the tools path to this library: tools/ also contains batch gates
+;; whose names collide with optional runtime features (emacs-compat).
+(let ((load-path (cons (expand-file-name "../tools" (file-name-directory load-file-name))
+                       load-path)))
+  (require 'nelisp-vendor-bytecode-jit-coverage))
 
 (ert-deftest nelisp-vendor-bytecode-jit-coverage/optional-arguments-seed-max-entry-depth ()
   (let* ((function (byte-compile '(lambda (x &optional y) (list x y))))

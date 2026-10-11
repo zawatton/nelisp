@@ -47,15 +47,37 @@ contract used by `nelisp-locate-file'."
     (or load-file-name buffer-file-name)))
   "Absolute path of the toy package shipped with the repo.")
 
+(defconst nelisp-examples-hello-test--file
+  (or load-file-name buffer-file-name))
+
+(defun nelisp-examples-hello-test--fresh-host (form)
+  "Run FORM against genuine GNU feature state in a fresh host process."
+  ;; GNU 31.1 featurep retains provided features across a dynamic `features'
+  ;; binding. Resetting the NeLisp tables alone cannot isolate that bridge.
+  (let ((root (expand-file-name ".." (file-name-directory
+                                    nelisp-examples-hello-test--file))))
+    (with-temp-buffer
+      (let ((status (call-process
+                     (expand-file-name invocation-name invocation-directory)
+                     nil t nil "-Q" "--batch"
+                     "-L" (expand-file-name "src" root)
+                     "-L" (expand-file-name "lisp" root)
+                     "-l" nelisp-examples-hello-test--file
+                     "--eval" (prin1-to-string form))))
+        (unless (eq status 0)
+          (ert-fail (format "Fresh hello fixture failed: %S\n%s"
+                            status (buffer-string))))))))
+
 (defmacro nelisp-examples-hello-test--with-env (&rest body)
   "Reset NeLisp state, point `nelisp-load-path' at the toy package.
 Host `load-path' is disabled for the duration of BODY so the
 assertions truly exercise NeLisp's own resolution pipeline."
   (declare (indent 0))
-  `(let ((nelisp-load-path (list nelisp-examples-hello-test--dir))
-         (nelisp-load-path-include-host nil))
-     (nelisp--reset)
-     ,@body))
+  `(nelisp-examples-hello-test--fresh-host
+    '(let ((nelisp-load-path (list nelisp-examples-hello-test--dir))
+           (nelisp-load-path-include-host nil))
+       (nelisp--reset)
+       ,@body)))
 
 (ert-deftest nelisp-examples-hello-require-registers-both ()
   "`nelisp-require' on the toy entry point pulls its helper too."
@@ -137,10 +159,11 @@ fixture — so a successful require proves NeLisp owns the resolution."
   "With the toy dir removed from `nelisp-load-path' the require
 signals `file-error' — proves the previous successes were dependent
 on `nelisp-load-path' membership rather than some host fallback."
-  (let ((nelisp-load-path nil)
-        (nelisp-load-path-include-host nil))
-    (nelisp--reset)
-    (should-error (nelisp-require 'hello) :type 'file-error)))
+  (nelisp-examples-hello-test--fresh-host
+   '(let ((nelisp-load-path nil)
+          (nelisp-load-path-include-host nil))
+      (nelisp--reset)
+      (should-error (nelisp-require 'hello) :type 'file-error))))
 
 (provide 'nelisp-examples-hello-test)
 

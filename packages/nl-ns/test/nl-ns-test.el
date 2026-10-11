@@ -20,17 +20,19 @@
 
 ;;; Helpers ------------------------------------------------------------
 
-(defun nl-ns-test--package-root ()
-  "Return the package root directory.
-`load-file-name' is bound while this file loads and nil by the time a
-test body runs, so it cannot be the only source -- that is what made
-every path built from it come back nil.  Both runners start at the
-repository root, so that is the fallback."
+(defconst nl-ns-test--root
   (let ((here (or (and (boundp 'load-file-name) load-file-name)
                   (and (boundp 'buffer-file-name) buffer-file-name))))
     (if here
         (expand-file-name ".." (file-name-directory here))
-      (expand-file-name "packages/nl-ns"))))
+      (expand-file-name "packages/nl-ns")))
+  "Package root captured while this test file loads.")
+
+(defun nl-ns-test--package-root ()
+  "Return the package root captured at definition time.
+An ERT driver may run tests while another file is still loading. Its
+`load-file-name' must never change fixture or baseline lookup."
+  nl-ns-test--root)
 
 (defun nl-ns-test--baseline-usable-p ()
   "Return non-nil when the checked-in host baseline can be read here.

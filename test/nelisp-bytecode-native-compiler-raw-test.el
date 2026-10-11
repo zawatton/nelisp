@@ -162,7 +162,7 @@
                             (plist-get result :reason)))
     (should-not (file-exists-p artifact))))
 
-(ert-deftest nelisp-bytecode-native-compiler-raw/compiles-materialized-bswitch-table ()
+(ert-deftest nelisp-bytecode-native-compiler-raw/routes-materialized-bswitch-to-rooted-shared ()
   ;; This is the GNU 31.1 materialized byte-code ABI fixture.  The public
   ;; compiler sees only the byte-code function; it never receives source.
   (let* ((code (unibyte-string 137 192 183 130 10 0
@@ -182,9 +182,12 @@
           (should (= (funcall function 1) 10))
           (should (= (funcall function 2) 20))
           (should (= (funcall function 7) 30))
-          (should (eq (plist-get result :status) 'complete))
-          (should (eq (plist-get result :return-repr) 'raw-i64))
-          (should (file-readable-p artifact)))
+          ;; A materialized table remains mutable. Static raw dispatch was
+          ;; superseded by runtime table lookup in the rooted shared lane.
+          (should (eq (plist-get result :status) 'unsupported))
+          (should (equal (plist-get result :reason)
+                         "Bswitch requires runtime table lookup in the rooted shared lane"))
+          (should-not (file-exists-p artifact)))
       (when (file-exists-p artifact) (delete-file artifact)))))
 
 (ert-deftest nelisp-bytecode-native-compiler-raw/rejects-invalid-bswitch-table-and-selector ()
@@ -202,7 +205,8 @@
                  (result (nelisp-bytecode-native-compiler-raw-test--build
                           function artifact "nl_raw_bswitch_bad_table" '(raw-i64))))
             (should (eq (plist-get result :status) 'unsupported))
-            (should (string-match-p "eq/eql table" (plist-get result :reason)))
+            (should (equal (plist-get result :reason)
+                           "Bswitch requires runtime table lookup in the rooted shared lane"))
             (should-not (file-exists-p artifact)))
           ;; A nil selector is valid for the GNU VM's default arm but is not
           ;; an admissible raw-i64 dispatch operand.
@@ -219,8 +223,9 @@
                             function artifact "nl_raw_bswitch_bad_selector" nil)))
               (should (= (funcall function) 30))
               (should (eq (plist-get result :status) 'unsupported))
-              (should (string-match-p "proven raw integer"
-                                      (plist-get result :reason)))
+              ;; All raw Bswitch shapes are refused before selector lowering.
+              (should (equal (plist-get result :reason)
+                             "Bswitch requires runtime table lookup in the rooted shared lane"))
               (should-not (file-exists-p artifact)))))
       (when (file-exists-p artifact) (delete-file artifact)))))
 

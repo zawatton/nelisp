@@ -33,10 +33,10 @@
        (garbage-collect)
        (condition-case condition
            (progn
-             (aset nelisp-bytecode-native-joined-add-test--roots output
-                   (vector 2 (+ (aref (aref nelisp-bytecode-native-joined-add-test--roots left) 1)
-                                (aref (aref nelisp-bytecode-native-joined-add-test--roots right) 1))
-                           0 0))
+             (let ((value (+ (aref (aref nelisp-bytecode-native-joined-add-test--roots left) 1)
+                             (aref (aref nelisp-bytecode-native-joined-add-test--roots right) 1))))
+               (aset nelisp-bytecode-native-joined-add-test--roots output
+                     (vector (if (integerp value) 2 3) value 0 0)))
              0)
          (error
           (let ((exit-base (nth 5 arguments)))
@@ -56,7 +56,13 @@
       (aset nelisp-bytecode-native-joined-add-test--roots index (vector 0 nil 91 92)))
     (cl-loop for value in arguments for root from 1 do
              (aset nelisp-bytecode-native-joined-add-test--roots root
-                   (vector (if value 2 0) value (+ 100 root) (+ 200 root))))
+                   ;; Model the genuine Sexp tags: floats and symbols must
+                   ;; reach the provider rather than pretend to be fixnums.
+                   (vector (cond ((null value) 0) ((eq value t) 1)
+                                 ((integerp value) 2) ((floatp value) 3)
+                                 ((symbolp value) 4)
+                                 (t (error "Unsupported model value: %S" value)))
+                           value (+ 100 root) (+ 200 root))))
     (cl-letf (((symbol-function 'ptr-read-u64)
                (lambda (pointer offset)
                  (aref (aref nelisp-bytecode-native-joined-add-test--roots (1- pointer))
@@ -83,13 +89,19 @@
       (let* ((result (nelisp-bytecode-native-joined-add-test--run form arguments root-count))
              (roots (nth 1 result)) (calls (nth 2 result)))
         (should (= (car result) (+ 512 5)))
-        (should (equal calls '((6 7 5))))
+        ;; Bounded fixnums now bypass the gateway; floats still materialize
+        ;; both operands and use the exact numeric provider under GC.
+        (should (equal calls (if (integerp (nth 1 arguments)) nil '((6 7 5)))))
         (should (= (aref (aref roots 5) 1) (apply fixture arguments)))
-        ;; All four words survive the selected live-root copy.
-        (should (equal (aref roots 6) (aref roots (if (car arguments) 2 3))))
-        (should (equal (aref roots 7) (aref roots 4)))))
+        (should (equal (aref roots 5)
+                       (vector (if (integerp (nth 1 arguments)) 2 3)
+                               (apply fixture arguments) 0 0)))
+        (when calls
+          ;; All four words survive the selected live-root slow-path copy.
+          (should (equal (aref roots 6) (aref roots (if (car arguments) 2 3))))
+          (should (equal (aref roots 7) (aref roots 4))))))
     (let ((result (nelisp-bytecode-native-joined-add-test--run
-                   form '(t 10 20 3) root-count 7)))
+                   form '(t 10.0 20 3) root-count 7)))
       (should (= (car result) 2))
       (should-not (nth 2 result)))))
 

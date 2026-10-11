@@ -30,9 +30,18 @@
                          plan nelisp-bytecode-native-rooted-cfg-contract-shared-entry))
              (contract (nelisp-bytecode-native-rooted-cfg-contract-create-shared-v2 input plan canonical)))
         (should (nelisp-bytecode-native-rooted-cfg-contract-valid-p contract))
-        (should (if (plist-get plan :funcall-version)
-                    (nelisp-bytecode-native-rooted-cfg-contract-f1-p contract)
-                  (nelisp-bytecode-native-rooted-cfg-contract-constructor-p contract))))
+        ;; F1's two-import predicate excludes cyclic plans with polling imports.
+        ;; The shared validator above authenticates both complete domains.
+        (should (equal (plist-get contract :emitter-mode) "postdom-shared-v2"))
+        (if (plist-get plan :funcall-version)
+            (should (equal (plist-get contract :version)
+                           nelisp-bytecode-native-rooted-cfg-contract-f1-shared-version))
+          ;; Cyclic/accessor plans belong to the general shared contract.
+          ;; Only the two straight-line root aliases also fit CONS admission.
+          (should (equal (plist-get contract :version)
+                         nelisp-bytecode-native-rooted-cfg-contract-shared-version))
+          (should (eq (not (null (nelisp-bytecode-native-rooted-cfg-contract-constructor-p contract)))
+                      (not (null (memq (car fixture) '(ref6 ref7))))))))
       (unless (memq (car fixture) '(closed swap))
         (dolist (args (nth 2 fixture)) (should (or (apply fn args) t))))
       (should (plist-get (nelisp-aot-compile-to-link-unit (plist-get emitted :form)) :text)))))

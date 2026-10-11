@@ -159,7 +159,11 @@ together, which is what CL does."
             (setq by (car (cdr tail)) tail (cdr (cdr tail))))
           (cons (list :kind 'in :ref t :pat pat :seq seq :by by) tail)))
        ((eq kw 'on)
-        (cons (list :kind 'on :pat pat :seq (car rest)) (cdr rest)))
+        ;; Like `in', a tail iterator can advance by a caller's step function.
+        (let ((seq (car rest)) (by nil) (tail (cdr rest)))
+          (when (eq (car tail) 'by)
+            (setq by (car (cdr tail)) tail (cdr (cdr tail))))
+          (cons (list :kind 'on :pat pat :seq seq :by by) tail)))
        ((eq kw 'across)
         (cons (list :kind 'across :pat pat :seq (car rest)) (cdr rest)))
        ((memq kw '(from downfrom upfrom to below downto above by))

@@ -1,11 +1,9 @@
 ;;; nelisp-native-raw-file-test.el --- Raw reader cleanup controls -*- lexical-binding: t; -*-
 (require 'ert)
 (require 'cl-lib)
-;; Native names must exist while capturing owners; the model tests the exact
-;; internal implementation, without claiming native primitive authentication.
-(dolist (name '(syscall-direct ptr-write-u8 ptr-read-bytes
-               nelisp--target-os-code nelisp--target-arch-code))
-  (unless (fboundp name) (fset name (lambda (&rest _) (error "Model only")))))
+;; Capture absent native owners as nil on GNU. Each model supplies its
+;; dependencies only within cl-letf; global placeholders would trick unrelated
+;; host admission paths into calling a fake nelisp--target-os-code provider.
 (require 'nelisp-native-raw-file)
 (ert-deftest nelisp-native-raw-file-model-window-and-cleanup ()
   (dolist (mode '(success short close-failure))

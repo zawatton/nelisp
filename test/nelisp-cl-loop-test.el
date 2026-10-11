@@ -28,7 +28,19 @@
 
 (require 'ert)
 (require 'cl-lib)
-(require 'nelisp-cl-macros)
+;; Exercise the subset helpers without replacing GNU's macros in the host
+;; suite. Other tests seal their GNU owners before this file is loaded.
+(with-temp-buffer
+  (insert-file-contents (locate-library "nelisp-cl-macros.el"))
+  (goto-char (point-min))
+  (condition-case nil
+      (while t
+        (let ((form (read (current-buffer))))
+          (when (and (eq (car-safe form) 'defun)
+                     (string-prefix-p "nelisp-cl-macros--loop-"
+                                      (symbol-name (cadr form))))
+            (eval form t))))
+    (end-of-file nil)))
 
 (defun nelisp-cl-loop-test--walk (form fn)
   "Call FN on FORM and every cons inside it."
@@ -158,6 +170,16 @@ declined and silently did nothing."
                          for i from 2 downto 0 collect i)
                        t)
                  '(2 1 0))))
+
+(ert-deftest nelisp-cl-loop/tail-iterator-by-destructures-plist-pairs ()
+  "The native import descriptor loop must preserve complete plist pairs."
+  (let ((form '(for (key value) on '(:name foo :arity 2 :kind func :return u64)
+                   by #'cddr unless (memq key '(:name :kind))
+                   append (list key value))))
+    (should (equal (eval (cons 'nelisp-cl-loop-test--subset form) t)
+                   '(:arity 2 :return u64)))
+    (should (equal (eval (cons 'cl-loop form) t)
+                   '(:arity 2 :return u64)))))
 
 (ert-deftest nelisp-cl-loop/unsupported-shape-signals-when-it-runs ()
   "An unbuildable shape must not quietly become nil.

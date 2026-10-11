@@ -2,8 +2,7 @@
 ;; This executes the source AST with a host memory/root model, not native code.
 (require 'ert)
 (require 'cl-lib)
-(load (expand-file-name "../lisp/nelisp-native-arithmetic-v2.el"
-                        (file-name-directory load-file-name)) nil t)
+(require 'nelisp-native-arithmetic-v2)
 (defun nelisp-arithmetic-test--lower (form)
   (cond ((atom form) form)
         ((and (getenv "NELISP_ARITHMETIC_LEAK_MUTANT")

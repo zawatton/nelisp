@@ -383,7 +383,8 @@ compile-parallel: nl-check-gate
 	  '$(EMACS) --batch -Q -L src $(PACKAGE_SRC_LOADS) --eval '\''(setq byte-compile-error-on-warn nil)'\'' -f batch-byte-compile "$$0"'
 
 clean:
-	find . -name '*.elc' -type f -delete
+	# Checked-in byte-code input fixtures are data, not disposable build output.
+	find . -name '*.elc' -type f ! -path './test/fixtures/*' -delete
 
 # ===================================================================
 # Standalone NeLisp eval binary (pure-elisp AOT, ZERO Rust).

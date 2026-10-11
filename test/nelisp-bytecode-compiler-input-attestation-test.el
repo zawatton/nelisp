@@ -22,10 +22,14 @@
         (aset byte-code-vector 0 'forged-opcode)
         (should (eq (plist-get (nelisp-bytecode-compiler-input-dialect) :status) 'unsupported)))
       (let ((original (symbol-function 'nelisp-bytecode-compiler-input--sha256-file)))
+        ;; Both the compressed-byte identity and the decompressed source identity
+        ;; are valid attestations. Corrupt both to model an actual source change.
         (cl-letf (((symbol-function 'nelisp-bytecode-compiler-input--sha256-file)
                    (lambda (path)
                      (if (string-suffix-p "bytecomp.el.gz" path)
-                         "mutated-source" (funcall original path)))))
+                         "mutated-source" (funcall original path))))
+                  ((symbol-function 'nelisp-bytecode-compiler-input--gnu-source-content-sha256)
+                   (lambda (_dir _name) "mutated-source")))
           (should (eq (plist-get (nelisp-bytecode-compiler-input-dialect) :status) 'unsupported)))))))
 
 (nelisp-bytecode-compiler-input-attestation-test--deftest dialect-metadata-native-helper-mocks-and-aliases-refused ()

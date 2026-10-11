@@ -45,6 +45,7 @@
 
 (ert-deftest nelisp-bytecode-ir-bytecomp-object-opcode-table-is-width-one ()
   ;; Names and stack effects mirror GNU Emacs 31.1 bytecomp.el byte-defop.
+  ;; The object lowering lane now admits every entry except general cons.
   (dolist (case '((56 nth -1) (61 eq -1) (62 memq -1) (63 not 0)
                   (64 car 0) (65 cdr 0) (66 cons -1) (67 list1 0)
                   (68 list2 -1) (69 list3 -2) (70 list4 -3) (71 length 0)
@@ -58,13 +59,13 @@
            (rows (plist-get result :instructions))
            (metadata (aref (aref rows 0) 4)))
       (should (eq (plist-get result :status)
-                  (if (memq kind '(eq car cdr)) 'valid 'unsupported)))
+                  (if (eq kind 'cons) 'unsupported 'valid)))
       (should (= (aref (aref rows 0) 2) 1))
       (should (eq (plist-get metadata :kind) kind))
       (should (= (plist-get metadata :stack-delta) delta))
       (should (eq (plist-get metadata :width) 1))
       (should (eq (plist-get metadata :lowerable)
-                  (and (memq kind '(eq car cdr)) t))))))
+                  (not (eq kind 'cons)))))))
 
 (ert-deftest nelisp-bytecode-ir-symbol-value-set-get-have-structural-stack-contracts ()
   ;; Hand-authored streams avoid source compilation and never execute opcodes.
@@ -80,7 +81,8 @@
            (row (aref (plist-get result :instructions)
                       (if (= opcode 74) 1 2)))
            (metadata (aref row 4)))
-      (should (eq (plist-get result :status) 'unsupported))
+      ;; Symbol-cell operations have runtime lowering with signaling metadata.
+      (should (eq (plist-get result :status) 'valid))
       (should (eq (plist-get (plist-get result :stack-analysis) :status)
                   'complete))
       (should (= (aref row 1) opcode))
@@ -89,7 +91,7 @@
       (should (eq (plist-get metadata :kind) kind))
       (should (eq (plist-get metadata :runtime-op) kind))
       (should (eq (plist-get metadata :may-signal) t))
-      (should-not (plist-get metadata :lowerable))))
+      (should (eq (plist-get metadata :lowerable) t))))
   (should (eq (plist-get (nelisp-bytecode-ir-decode-result
                           (unibyte-string 192 74 135) []) :status)
               'malformed)))
@@ -162,12 +164,14 @@
            (row (aref (plist-get result :instructions) 0))
            (metadata (aref row 4)))
       (should (eq (plist-get result :status)
-                  (if (= opcode 168) 'valid 'unsupported)))
+                  (if (memq opcode '(162 163)) 'unsupported 'valid)))
       (should (= (aref row 2) 1))
       (should (eq (plist-get metadata :kind) kind))
       (should (= (plist-get metadata :stack-delta) delta))
       (should (= (plist-get metadata :width) 1))
-      (should (eq (plist-get metadata :lowerable) (= opcode 168))))))
+      ;; Safe car/cdr retain separate admission; the remaining primitives lower.
+      (should (eq (plist-get metadata :lowerable)
+                  (not (memq opcode '(162 163))))))))
 
 (ert-deftest nelisp-bytecode-ir-buffer-and-control-opcodes-have-fixed-metadata ()
   (dolist (case '((96 point 1) (97 save-current-buffer 0 obsolete)
@@ -194,27 +198,31 @@
                     (unibyte-string op 135) []))
            (row (aref (plist-get result :instructions) 0))
            (meta (aref row 4)))
-      (should (eq (plist-get result :status) 'unsupported))
+      ;; Only scan-buffer, set-mark and discard lack decoder lowering here.
+      (should (eq (plist-get result :status)
+                  (if (memq op '(107 115 136)) 'unsupported 'valid)))
       (should (= (aref row 2) 1))
       (should (eq (plist-get meta :kind) kind))
       (should (= (plist-get meta :stack-delta) delta))
-      (should-not (plist-get meta :lowerable))
+      (should (eq (plist-get meta :lowerable)
+                  (not (memq op '(107 115 136)))))
       (should (eq (not (null (plist-get meta :obsolete)))
                   (and (nth 3 case) t))))))
 
-(ert-deftest nelisp-bytecode-ir-counted-and-switch-opcodes-are-structural-only ()
+(ert-deftest nelisp-bytecode-ir-counted-opcodes-lower-and-switch-remains-structural ()
   (dolist (op '(175 176 177))
     (let* ((code (unibyte-string op 4 135))
            (result (nelisp-bytecode-ir-decode-result code []))
            (row (aref (plist-get result :instructions) 0))
            (meta (aref row 4)))
-      (should (eq (plist-get result :status) 'unsupported))
+      ;; list-n, concat-n and insert-n now have counted runtime lowering.
+      (should (eq (plist-get result :status) 'valid))
       (should (= (aref row 2) 2))
       (should (= (aref row 3) 4))
       (should (= (plist-get meta :stack-delta) -3))
       (should (= (plist-get meta :count) 4))
       (should (= (plist-get meta :operand-width) 1))
-      (should-not (plist-get meta :lowerable))))
+      (should (eq (plist-get meta :lowerable) t))))
   (let* ((discard (nelisp-bytecode-ir-decode-result
                    (unibyte-string 182 #x83 135) []))
          (discard-row (aref (plist-get discard :instructions) 0))
@@ -257,7 +265,7 @@
                             (plist-get result :instructions))))
       (should (byte-code-function-p function))
       (should row)
-      (should-not (plist-get (aref row 4) :lowerable)))))
+      (should (eq (plist-get (aref row 4) :lowerable) t)))))
 
 (ert-deftest nelisp-bytecode-ir-host-assq-and-stack-set-bytecode-match-widths ()
   (let* ((assq-function (byte-compile '(lambda (key alist) (assq key alist))))
@@ -275,7 +283,8 @@
                           (plist-get result :instructions))))
     (should assq-row)
     (should (eq (plist-get (aref assq-row 4) :kind) 'assq))
-    (should-not (plist-get (aref assq-row 4) :lowerable))
+    ;; assq lowers; stack-set is still structural only.
+    (should (eq (plist-get (aref assq-row 4) :lowerable) t))
     (should row)
     (should (= (aref row 2) (+ (aref row 0) 2)))
     (should (= (aref row 3) (aref code (1+ (aref row 0)))))
@@ -371,10 +380,11 @@
   (let* ((code (string-as-unibyte (unibyte-string 6 4 7 1 1 135)))
          (result (nelisp-bytecode-ir-decode-result code []))
          (rows (plist-get result :instructions)))
-    (should (eq (plist-get result :status) 'unsupported))
+    ;; Extended stack-ref operands now lower just like compact stack-ref.
+    (should (eq (plist-get result :status) 'valid))
     (should (= (length rows) 3))
-    (should (equal (append (aref rows 0) nil) '(0 6 2 4 (:kind stack-ref :stack-delta 1 :lowerable nil :stack-offset 4))))
-    (should (equal (append (aref rows 1) nil) '(2 7 5 257 (:kind stack-ref :stack-delta 1 :lowerable nil :stack-offset 257))))
+    (should (equal (append (aref rows 0) nil) '(0 6 2 4 (:kind stack-ref :stack-delta 1 :lowerable t :stack-offset 4))))
+    (should (equal (append (aref rows 1) nil) '(2 7 5 257 (:kind stack-ref :stack-delta 1 :lowerable t :stack-offset 257))))
     (should (equal (append (aref rows 2) nil) '(5 135 6 nil (:kind return :stack-delta -1 :lowerable t))))))
 
 (ert-deftest nelisp-bytecode-ir-compact-families-decode-fetch-fetch2-operands ()

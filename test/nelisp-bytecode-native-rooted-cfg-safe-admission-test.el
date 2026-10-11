@@ -50,7 +50,7 @@
                              :status)
                   'unsupported)))))
 
-(ert-deftest nelisp-bytecode-native-rooted-cfg-safe-admission/refuses-captures-and-variable-arity ()
+(ert-deftest nelisp-bytecode-native-rooted-cfg-safe-admission/admit-variable-arity-but-refuse-captures ()
   (skip-unless (equal emacs-version "31.1"))
   (let* ((optional (nelisp-bytecode-native-rooted-cfg-safe-admission-test--build
                     '(lambda (&optional value) (car-safe value))))
@@ -61,14 +61,19 @@
          (captured (nelisp-bytecode-compiler-input-build closure)))
     (should (eq (plist-get optional :status) 'unsupported))
     (should (eq (plist-get rest :status) 'unsupported))
-    (should (eq (plist-get (nelisp-bytecode-native-rooted-cfg-plan
-                            optional 'safe-primitives-v3)
-                           :status)
-                'unsupported))
-    (should (eq (plist-get (nelisp-bytecode-native-rooted-cfg-plan
-                            rest 'safe-primitives-v3)
-                           :status)
-                'unsupported))
+    ;; The adapter's general lowering verdict is still unsupported for
+    ;; car-safe. Safe admission independently rebuilds the verified frame,
+    ;; and now supports packed optional/rest argument layouts.
+    (dolist (input (list optional rest))
+      (let ((plan (nelisp-bytecode-native-rooted-cfg-plan input 'safe-primitives-v3)))
+        (should (eq (plist-get plan :status) 'complete))
+        (should (= (plist-get plan :arity) (plist-get input :initial-stack-depth)))
+        (should (= (plist-get plan :final-root) (1+ (plist-get plan :arity))))
+        (should (= (plist-get plan :required-root-count) (+ 2 (plist-get plan :arity))))))
+    (should (= (plist-get optional :argument-min) 0))
+    (should (= (plist-get optional :argument-max) 1))
+    (should (= (plist-get rest :argument-min) 1))
+    (should-not (plist-get rest :argument-max))
     (should (functionp closure))
     (should-not (byte-code-function-p closure))
     (should (eq (plist-get captured :status) 'malformed))

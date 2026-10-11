@@ -3,6 +3,7 @@
 (require 'nelisp-bytecode-native-consumer)
 (require 'nelisp-bytecode-native-rooted-cfg-native)
 (require 'nelisp-bytecode-native-rooted-cfg-call)
+(require 'nelisp-bytecode-native-rooted-cfg-plan)
 
 (defun nelisp-context-shape-test--prefix (body)
   ;; Evaluate the genuine lexical prefix without redefining any public owner.
@@ -15,8 +16,10 @@
                                    (assq 'guard-owners (cadr value))))
                      (setq value (read (current-buffer)))) value)))
          (labels (caddr form)))
+    ;; The final two forms capture the genuine owners/contexts and validate
+    ;; them. Evaluating only the last check leaves all three contexts nil.
     (eval `(let ,(cadr form)
-             (cl-labels ,(cadr labels) ,(car (last (cddr labels))) ,body)) t)))
+             (cl-labels ,(cadr labels) ,@(last (cddr labels) 2) ,body)) t)))
 
 (ert-deftest nelisp-context-shape/exact-source-slots ()
   (nelisp-context-shape-test--prefix

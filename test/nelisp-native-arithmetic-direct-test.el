@@ -1,10 +1,11 @@
 ;;; nelisp-native-arithmetic-direct-test.el --- Shared builtin body controls -*- lexical-binding: t; -*-
 (require 'ert)
 (require 'cl-lib)
-(let ((path (or (getenv "NELISP_ARITHMETIC_SOURCE")
-                (expand-file-name "../lisp/nelisp-native-arithmetic-v2.el"
-                                  (file-name-directory load-file-name)))))
-  (load path nil t))
+;; An explicit qualification overlay may replace the source; a plain host
+;; suite must keep the provider owners already sealed by the CFG planner.
+(if (getenv "NELISP_ARITHMETIC_SOURCE")
+    (load (getenv "NELISP_ARITHMETIC_SOURCE") nil t)
+  (require 'nelisp-native-arithmetic-v2))
 (defconst nelisp-arithmetic-direct-test--body
   '(let* ((f (wf_any_float_arith args)))
      (if (= f 2)
@@ -26,9 +27,15 @@
                   (eval (nth 2 (read (current-buffer))) t))))
     (should (equal (caar table) '(:u8 "+")))
     (should (equal (cdar table) nelisp-arithmetic-direct-test--body))
-    (should (= (length table) 107))
+    ;; Build digest attestation added one native bootstrap entry; removing
+    ;; that exact entry reproduces the previous 107-entry tail digest.
+    (should (= (length table) 108))
     (should (equal (secure-hash 'sha256 (prin1-to-string (cdr table)))
-                   "b2f600e4dcb8ea4d8f313923d363c4cba73462d8986d43f2ddf84f8e6cabdd04"))))
+                   "1cad94de9ec87149249237ae4f807c36086949117167b8382095c0bc1b4b5928"))
+    (let ((digest-entry (assoc '(:lit "nelisp--build-digest") table)))
+      (should digest-entry)
+      (should (equal (secure-hash 'sha256 (prin1-to-string (remq digest-entry (cdr table))))
+                     "b2f600e4dcb8ea4d8f313923d363c4cba73462d8986d43f2ddf84f8e6cabdd04")))))
 (defun nelisp-arithmetic-direct-test--contains (tree node)
   (or (equal tree node)
       (and (consp tree)
