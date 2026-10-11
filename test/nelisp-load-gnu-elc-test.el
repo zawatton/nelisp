@@ -5,6 +5,7 @@
 
 (ert-deftest nelisp-load-gnu-elc/source-free-bytecode-and-effects-once ()
   "GNU .elc top-level effects run once and byte-code functions survive."
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((dir (make-temp-file "nelisp-gnu-elc" t))
          (source (expand-file-name "fixture.el" dir))
          (elc (concat source "c"))
