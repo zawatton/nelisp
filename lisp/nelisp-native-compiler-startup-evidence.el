@@ -24,6 +24,7 @@
     nelisp-bytecode-native-arithmetic-lowering nelisp-native-optimization-guard-v1
     nelisp-bytecode-native-guarded-lowering nelisp-bytecode-native-rooted-cfg-plan
     nelisp-bytecode-native-rooted-cfg-emit nelisp-bytecode-native-rooted-cfg-postdom
+    nelisp-bytecode-native-rooted-cfg-data
     nelisp-bytecode-native-rooted-cfg-shared-emit nelisp-bytecode-native-rooted-cfg-contract
     nelisp-bytecode-native-rooted-cfg-safe-contract
     nelisp-bytecode-native-rooted-cfg-constructor-contract))
@@ -37,7 +38,8 @@
     nelisp-native-arithmetic-v2 nelisp-bytecode-native-arithmetic-lowering
     nelisp-native-optimization-guard-v1 nelisp-bytecode-native-guarded-lowering
     nelisp-bytecode-native-rooted-cfg-plan nelisp-bytecode-native-rooted-cfg-emit
-    nelisp-bytecode-native-rooted-cfg-postdom nelisp-bytecode-native-rooted-cfg-shared-emit
+    nelisp-bytecode-native-rooted-cfg-postdom nelisp-bytecode-native-rooted-cfg-data
+    nelisp-bytecode-native-rooted-cfg-shared-emit
     nelisp-bytecode-native-rooted-cfg-native)
   "Pinned source dependencies loaded on demand, absent from Tier 0 startup.")
 
@@ -58,14 +60,14 @@
          (canonical (nelisp-native-compiler-startup-evidence--forms source))
          (derived (nelisp-native-compiler-startup-evidence--forms template)) found)
     (unless (and (equal (nelisp-native-rooted-build-evidence-source-hash source 4194304)
-                        "6f93d25551b3233709da6d2d559060239ea469ab327dda737f33d27f5972d279")
+                        "9ce91a9a088277c1adf006788404865f4672381c07a2ee115c175dcaf10f4ccc")
                  (equal (nelisp-native-rooted-build-evidence-source-hash template 4194304)
-                        "a8449a1867585a0f388b9ba963ebffc9591309456ee8411cfa4f091e4ef67563")
+                        "e0b37e914cccced895fe2b1c615bf0a7b4c869862fd8a1a01dad856f8c5ae55f")
                  (equal (alist-get 'source declaration) "lisp/nelisp-native-load.el")
                  (equal (alist-get 'source_sha256 declaration)
-                        "6f93d25551b3233709da6d2d559060239ea469ab327dda737f33d27f5972d279")
+                        "9ce91a9a088277c1adf006788404865f4672381c07a2ee115c175dcaf10f4ccc")
                  (equal (alist-get 'output_sha256 declaration)
-                        "a8449a1867585a0f388b9ba963ebffc9591309456ee8411cfa4f091e4ef67563")
+                        "e0b37e914cccced895fe2b1c615bf0a7b4c869862fd8a1a01dad856f8c5ae55f")
                  (equal (alist-get 'definitions declaration) (mapcar #'symbol-name names))
                  (= (alist-get 'exact_runtime_gate_transforms declaration) 3))
       (error "Canonical constructor loader template provenance rejected"))
@@ -96,8 +98,35 @@
       (unless (and (<= (buffer-size) 4194304)
                    (equal (plist-get record :sha256) (secure-hash 'sha256 (current-buffer))))
         (error "Compiler boot source changed during derivation: %s" relative))
-      (let ((source (format "(let ((load-file-name %S) (buffer-file-name nil))\n (nelisp--eval-source-string %S))"
-                            relative (decode-coding-string (buffer-string) 'utf-8))))
+      (let* ((original (decode-coding-string (buffer-string) 'utf-8))
+             ;; Cold compiler builds derive each genuine initializer here,
+             ;; before the proof and capability factories capture its owner.
+             ;; Read canonical authenticated source, never adopt a generated
+             ;; file's contents or a caller-supplied compiled representation.
+             (derived
+              (if (and (equal (getenv "NELISP_STANDALONE_NATIVE_COMPILER_COLD") "1")
+                       (fboundp 'nelisp-native-optimizer-bytecode--project-form)
+                       (memq feature nelisp-native-cache--compiler-modules))
+                  (with-temp-buffer
+                    (insert original) (goto-char (point-min))
+                    (let (forms)
+                      (condition-case nil
+                          (while t
+                            (push (car (nelisp-native-optimizer-bytecode--project-form
+                                        (read (current-buffer)))) forms))
+                        (end-of-file nil))
+                      (erase-buffer)
+                      (insert (substring original 0
+                                         (or (string-match "\n" original)
+                                             (length original))) "\n")
+                      (let ((print-length nil) (print-level nil) (print-circle t) (print-gensym t)
+                            (print-escape-newlines t) (print-escape-nonascii t))
+                        (dolist (form (nreverse forms))
+                          (prin1 form (current-buffer)) (insert "\n")))
+                      (buffer-string)))
+                original))
+             (source (format "(let ((load-file-name %S) (buffer-file-name nil))\n (nelisp--eval-source-string %S))"
+                             relative derived)))
         (if skip-feature (format "\n(unless (featurep '%S)\n %s)\n" feature source)
           (concat "\n" source "\n"))))))
 
@@ -115,6 +144,26 @@
         (push (read (current-buffer)) forms)
         (forward-comment (point-max)))
       (nreverse forms))))
+
+(defun nelisp-native-compiler-startup-evidence--tier-emit (feature snapshot root)
+  "Emit the authenticated owner before sealing; choose the tier once at startup."
+  (let ((source (nelisp-native-compiler-startup-evidence--emit feature snapshot root t)))
+    (if (memq feature nelisp-native-compiler-startup-evidence--tier1-modules)
+        (format "\n(unless nelisp-startup-template-only %s)\n" source)
+      source)))
+
+(defun nelisp-native-compiler-startup-evidence--early-boot (root)
+  "Derive the closed canonical boot list, never adopt caller source text."
+  (let ((snapshot
+         (mapcar (lambda (feature)
+                   (let ((relative (nelisp-native-compiler-startup-evidence--source-path feature)))
+                     (list :path relative :sha256
+                           (nelisp-native-rooted-build-evidence-source-hash
+                            (expand-file-name relative root) 4194304))))
+                 nelisp-native-compiler-startup-evidence--boot-modules)))
+    (mapconcat (lambda (feature)
+                 (nelisp-native-compiler-startup-evidence--tier-emit feature snapshot root))
+               nelisp-native-compiler-startup-evidence--boot-modules "")))
 
 (defun nelisp-native-compiler-startup-evidence--rename (value)
   "Derive a separate namespace without borrowing the ticket issuance registry."
@@ -204,16 +253,22 @@
              (setq offsets (1+ offsets)) '(= (length offsets) 14))
             ((and generator (consp object) (eq (car object) 'dolist)
                   (equal (cadr object)
-                         '(relative '("lisp/nelisp-native-funcall-v2.el" "lisp/nelisp-runtime-reload-abi.el" "lisp/nelisp-native-load.el"
-                                      "lisp/nelisp-native-raw-file.el"))))
+                         '(relative (append (when (nelisp-native-load--windows-p)
+                                  '("lisp/nelisp-native-windows.el" "lisp/nelisp-native-pe-symbols.el"))
+                                '("lisp/nelisp-native-funcall-v2.el" "lisp/nelisp-runtime-reload-abi.el" "lisp/nelisp-native-load.el"
+                          "lisp/nelisp-native-raw-file.el")))))
              ;; The ticket startup has already established these owners. Re-evaluating
              ;; them would invalidate its captured owner identities before user code.
              (setq embeds (1+ embeds)) nil)
-            ((and generator (equal object '(list script owner-script template loader
+            ((and generator (equal object '(list (expand-file-name "lisp/nelisp-native-windows.el" root)
+                    (expand-file-name "lisp/nelisp-native-pe-symbols.el" root)
+                    script owner-script template loader
                     (expand-file-name "lisp/nelisp-native-funcall-v2.el" root)
                                                 (expand-file-name "lisp/nelisp-runtime-reload-abi.el" root)
                                                 (expand-file-name "lisp/nelisp-native-raw-file.el" root))))
-             '(list script owner-script template loader
+             '(list (expand-file-name "lisp/nelisp-native-windows.el" root)
+                    (expand-file-name "lisp/nelisp-native-pe-symbols.el" root)
+                    script owner-script template loader
                     (expand-file-name "lisp/nelisp-native-funcall-v2.el" root)
                     (expand-file-name "lisp/nelisp-runtime-reload-abi.el" root)
                     (expand-file-name "lisp/nelisp-native-raw-file.el" root)
@@ -274,7 +329,7 @@
        '(nelisp-native-compiler-runtime-proof--eligible-p
          nelisp-native-compiler-runtime-proof-dependency-context
          nelisp-native-compiler-runtime-proof-create nelisp-native-compiler-runtime-proof-valid-p)
-       '("1fd91ab77de3671c255621175f978e323ca4e73a44cf39f8825abc80799a53c6"
+       '("48385f7c7857fe3a5a91457c9a50dbc05237411462d6ed873aadfa1f68713a14"
          "d92f1faffec409da2260f525ed818e083219a6e423f8eb34e5ae356645bd8e70"
          "d826850d8b589e0699bfc9b696f6dff497f8dc4ba0b5ddb0b8a666c9dfbe9e23"
          "7513f39d103743d6941b23ec44a5f283151258141c07119de1dcd6c43a95f3c9"))
@@ -399,6 +454,7 @@
                (cl-labels ((add (node)
                              (when (consp node)
                                (when (and (eq (car node) 'quote)
+                                          (listp (cadr node))
                                           (memq 'nelisp-native-compiler-runtime-proof-create (cadr node)))
                                  (setcar (cdr node) (append (cadr node)
                                                           '(nelisp-native-compiler-runtime-proof-metadata
@@ -512,13 +568,15 @@
                   (set-buffer-multibyte nil) (insert-file-contents-literally path)
                   (unless (equal (plist-get record :sha256) (secure-hash 'sha256 (current-buffer)))
                     (error "Compiler boot source changed during derivation: %s" relative))
-                  (unless (or (memq feature nelisp-native-compiler-startup-evidence--tier1-modules)
+                  (unless (or (and (not (equal (getenv "NELISP_STANDALONE_NATIVE_COMPILER_COLD") "1"))
+                                   (memq feature nelisp-native-compiler-startup-evidence--tier1-modules))
                               (equal relative "templates/nelisp-native-load-constructor-startup.el.in")
                               (string-suffix-p ".json" relative)
                               (memq feature (cons 'nelisp-native-compiler-runtime-capability
                                                   nelisp-native-compiler-startup-evidence--post-modules)))
-                    (push (format "\n(unless (featurep '%S)\n (let ((load-file-name %S) (buffer-file-name nil))\n (nelisp--eval-source-string %S)))\n"
-                                  feature relative (decode-coding-string (buffer-string) 'utf-8)) boot)))))
+                    (push (nelisp-native-compiler-startup-evidence--tier-emit
+                           feature nelisp-native-compiler-startup-evidence--boot-sources root)
+                          boot)))))
             (with-temp-buffer
               (set-buffer-multibyte nil) (insert-file-contents-literally wrapper)
               (unless (equal wrapper-hash (secure-hash 'sha256 (current-buffer)))

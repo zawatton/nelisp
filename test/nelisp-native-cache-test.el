@@ -505,8 +505,7 @@ compiler input refuse host bytecode, so the genuine contract is derived first."
         (plist-put native :relocs
                    (list (list :offset 0 :type 'pc32 :symbol "nl_native_cons_v2"
                                :addend (expt 2 31)))))
-      ;; This producer-authenticated fixture must reach relocation and exercise
-      ;; mapping cleanup, rather than fail the preceding byte-integrity check.
+      ;; Re-sign the fixture so refusal exercises relocation shape validation.
       (plist-put manifest :object-sha256
                  (nelisp-native-load--sha256 (make-string 8 0)))
       (plist-put manifest :artifact-sha256
@@ -515,7 +514,18 @@ compiler input refuse host bytecode, so the genuine contract is derived first."
                    (nelisp-native-load--raw-plist-without manifest :artifact-sha256))))
       (should-error (nelisp-native-load-raw-v2-artifact-trusted
                      manifest (plist-get header :entry) "fixture"))
-      (should (= unmaps 1)))))
+      ;; The Win64 merge checks displacement bounds before allocating pages.
+      (should (= unmaps 0))
+      ;; A valid relocation must still clean up a failed executable publication.
+      (plist-put (car (plist-get (plist-get manifest :native) :relocs)) :addend 0)
+      (plist-put manifest :artifact-sha256
+                 (nelisp-native-load--sha256
+                  (prin1-to-string
+                   (nelisp-native-load--raw-plist-without manifest :artifact-sha256))))
+      (setq protect-bad t)
+      (should-error (nelisp-native-load-raw-v2-artifact-trusted
+                     manifest (plist-get header :entry) "fixture"))
+      (should (= unmaps 2)))))
 
 (ert-deftest nelisp-native-cache/exit-protocol-keeps-roots-until-cleanup ()
   (skip-unless (equal emacs-version "31.1"))

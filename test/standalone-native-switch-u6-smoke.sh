@@ -23,6 +23,7 @@ export U6_SOURCE_BINARY="$binary"
 cp -- "$binary" "$work/reader"
 chmod 500 "$work/reader"
 if [[ -f $binary.cold ]]; then cp -- "$binary.cold" "$work/reader.cold"; fi
+if [[ -f $binary.native-startup.el ]]; then cp -- "$binary.native-startup.el" "$work/reader.native-startup.el"; fi
 binary="$work/reader"
 export U6_BACKEND="$backend" NELISP_NATIVE_CACHE="$work/cache"
 for fixture in ${3:-eq eql equal custom dynamic backedge}; do

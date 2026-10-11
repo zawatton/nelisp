@@ -3,6 +3,10 @@
 ;; Usage: F3_HOST_DIR=target/f3-host emacs -Q --batch -L lisp -L src
 ;;   -L scripts -l test/support/generate-native-real-corpus.el
 ;; Compile whole, unmodified GNU source files, never reconstructed function bodies.
+;; GNU for Windows defaults to CRLF/cp1252; fixtures must be byte-identical to Linux.
+(when (eq system-type 'windows-nt)
+  (prefer-coding-system 'utf-8-unix)
+  (setq coding-system-for-write 'utf-8-unix))
 (require 'cl-lib)
 (require 'bytecomp)
 (require 'nelisp-bytecode-native-consumer)

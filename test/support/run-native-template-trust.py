@@ -8,9 +8,8 @@ import os
 from pathlib import Path
 import re
 import statistics
-import subprocess
 import tempfile
-import time
+import native_corpus_platform as platform
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -23,7 +22,9 @@ def main():
     parser.add_argument('--work', type=Path, help='New receipt directory; existing paths refuse.')
     parser.add_argument('--samples', type=int, choices=(1, 3), default=3)
     parser.add_argument('binary', nargs='?', default='target/nelisp-static')
+    platform.add_arguments(parser)
     args = parser.parse_args()
+    platform.configure(args, parser)
     binary = (ROOT / args.binary).resolve(strict=True)
     cold = Path(str(binary) + '.cold')
     if args.work is None:
@@ -36,36 +37,35 @@ def main():
                       '(defun compiler-r3-cons (a b) (cons a b))\n'
                       '(defun template-constant (x) (cons \'tag x))\n')
     env = dict(os.environ, TEMPLATE_SOURCE=str(source))
-    subprocess.run([env.get('EMACS', 'emacs'), '-Q', '--batch', '--eval',
-                    '(progn (require (quote bytecomp)) (unless (byte-compile-file (getenv "TEMPLATE_SOURCE")) (error "GNU fixture failed")))'],
-                   cwd=ROOT, env=env, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    host = [env.get('EMACS', 'emacs'), '-Q', '--batch', '--eval',
+            '(progn (require (quote bytecomp)) (unless (byte-compile-file (getenv "TEMPLATE_SOURCE")) (error "GNU fixture failed")))']
+    rc, _, _, errors = platform.run_process(host, env, work, 'host', deadline=290)
+    if rc:
+        print(errors[-4000:]); return 1
     rows = []
     for sample in range(args.samples):
         directory = work / str(sample); directory.mkdir(mode=0o700)
-        cache = directory / 'cache'; cache.mkdir(mode=0o700)
+        cache = platform.create_cache(directory / 'cache')
         # All three fresh compilers authenticate a load and one exact call.
         # The independent two-mapping/1000-call controls need one fresh reload.
         phases = ('compile', 'load') if sample == 0 else ('compile',)
         for phase in phases:
             current = dict(env, TEMPLATE_FIXTURE=str(source.with_suffix('.elc')), TEMPLATE_BACKEND=args.backend,
                            TEMPLATE_PHASE=phase, NELISP_NATIVE_CACHE=str(cache))
-            command = ['timeout', '-k', '5', '290', str(binary)]
-            if cold.is_file(): command += ['--cold-load-from', str(cold)]
-            command += ['-L', 'lisp', '-L', 'src', '-L', 'scripts', '-L', 'packages/nl-ffi/src',
-                        '-L', 'packages/nl-prelude/src', '--load', 'test/standalone-native-template-driver.el']
-            load_before = os.getloadavg(); start = time.monotonic()
-            with (directory / (phase + '.out')).open('w') as output, (directory / (phase + '.err')).open('w') as errors:
-                result = subprocess.run(command, env=current, cwd=ROOT, stdout=output, stderr=errors)
-            elapsed = time.monotonic() - start
-            output = (directory / (phase + '.out')).read_text()
-            errors = (directory / (phase + '.err')).read_text()
+            command = platform.reader_command(binary, cold, 'test/standalone-native-template-driver.el')
+            current = platform.reader_environment(current, ('TEMPLATE_FIXTURE', 'NELISP_NATIVE_CACHE'))
+            load_before = platform.load_average()
+            rc, elapsed, output, errors = platform.run_process(command, current, directory, phase)
             expected = f'TEMPLATE-TRUST-PASS backend={args.backend} phase={phase} '
-            passed = result.returncode == 0 and not errors and elapsed < 300 and sum(line.startswith(expected) for line in output.splitlines()) == 1
+            passed = rc == 0 and not errors and elapsed < platform.PROCESS_DEADLINE and sum(line.startswith(expected) for line in output.splitlines()) == 1
             timing = re.findall(r'^TEMPLATE-TIMING compile=([0-9.]+) end-to-end=([0-9.]+)$', output, re.M)
-            if phase == 'compile': passed &= len(timing) == 1
-            row = dict(sample=sample, backend=args.backend, phase=phase, rc=result.returncode,
-                       seconds=elapsed, load_before=load_before, load_after=os.getloadavg(), passed=passed,
-                       binary_sha256=digest(binary), cold_sha256=digest(cold) if cold.is_file() else None,
+            if phase == 'compile':
+                passed &= len(timing) == 1
+                if platform.WINDOWS and args.backend == 'template':
+                    passed &= output.splitlines().count('TEMPLATE-WIN64-REGISTER-SENTINEL-PASS GP=8 XMM=10') == 1
+            row = dict(sample=sample, backend=args.backend, phase=phase, rc=rc,
+                       seconds=elapsed, load_before=load_before, load_after=platform.load_average(), passed=passed,
+                       **platform.identity(), binary_sha256=digest(binary), cold_sha256=digest(cold) if cold.is_file() else None,
                        fixture_sha256=digest(source.with_suffix('.elc')))
             if timing: row.update(compile_seconds=float(timing[0][0]), end_to_end_seconds=float(timing[0][1]))
             rows.append(row)

@@ -16234,20 +16234,51 @@ needs escaping because the reader consumes it as an escape prefix."
           (setq i (1+ i)))
         (and ok seen-digit))))))
 
-(defun nelisp--prn-symbol-escaped (s)
+(defun nelisp--prn-symbol-escaped-uncached (s)
   "Return S with reader atom terminators escaped for readable printing."
   (if (= (length s) 0)
       "##"
-    (let ((chunks (cons nil nil)) (i 0) (n (length s)))
+    ;; Copy ASCII spans rather than allocate a string and chunk per character.
+    ;; Non-ASCII keeps the reference char-to-string conversion, including for
+    ;; high bytes in unibyte names. Every escaping predicate still runs.
+    (let ((chunks (cons nil nil)) (i 0) (start 0) (n (length s)))
       (when (nelisp--prn-symbol-needs-leading-escape-p s)
         (nelisp--prn-chunks-add chunks "\\"))
       (while (< i n)
         (let ((c (aref s i)))
-          (when (nelisp--prn-symbol-char-needs-escape-p c)
-            (nelisp--prn-chunks-add chunks "\\"))
-          (nelisp--prn-chunks-add chunks (char-to-string c)))
+          (cond
+           ((nelisp--prn-symbol-char-needs-escape-p c)
+            (when (> i start)
+              (nelisp--prn-chunks-add chunks
+                                      (string-as-unibyte (substring s start i))))
+            (nelisp--prn-chunks-add chunks "\\")
+            (setq start i))
+           ((>= c 128)
+            (when (> i start)
+              (nelisp--prn-chunks-add chunks
+                                      (string-as-unibyte (substring s start i))))
+            (nelisp--prn-chunks-add chunks (char-to-string c))
+            (setq start (1+ i)))))
         (setq i (1+ i)))
+      (when (> n start)
+        (nelisp--prn-chunks-add chunks
+                                (string-as-unibyte (substring s start n))))
       (nelisp--prn-chunks-string chunks))))
+
+(defvar nelisp--prn-symbol-cache nil
+  "Optional bounded atom cache owned by one canonical contract digest.")
+(defun nelisp--prn-symbol-escaped (s)
+  ;; Ordinary printing retains its reference path. The digest's private cache
+  ;; copies both keys and values, so mutable symbol-name/result strings cannot
+  ;; poison a later hit. Escaping has no print-mode-dependent input.
+  (if (not nelisp--prn-symbol-cache)
+      (nelisp--prn-symbol-escaped-uncached s)
+    (let ((cached (gethash s nelisp--prn-symbol-cache)))
+      (if cached (copy-sequence cached)
+        (let ((result (nelisp--prn-symbol-escaped-uncached s)))
+          (when (< (hash-table-count nelisp--prn-symbol-cache) 1024)
+            (puthash (copy-sequence s) (copy-sequence result) nelisp--prn-symbol-cache))
+          result)))))
 
 (defun nelisp--prn-float (x)
   "Return the printed representation of float X.
@@ -16256,7 +16287,7 @@ SS15) for why the extra `string-search'-based pass this used to run is
 gone rather than merely made faster."
   (number-to-string x))
 
-(defun nelisp--prn-reader-macro-abbrev (lst escape)
+(defun nelisp--prn-reader-macro-abbrev (lst escape &optional memo)
   (when (and (consp lst) (symbolp (car lst))
              (consp (cdr lst)) (null (cdr (cdr lst))))
     (let* ((tag-name (symbol-name (car lst)))
@@ -16268,7 +16299,7 @@ gone rather than merely made faster."
                          ((string= tag-name ",@")        ",@")
                          (t nil))))
       (when prefix
-        (concat prefix (nelisp--prn-to-string arg escape))))))
+        (concat prefix (nelisp--prn-to-string arg escape nil memo))))))
 
 ;; `print-length' and `print-level' existed nowhere, so both were ignored:
 ;; a long list printed in full and a deep one printed to the bottom.  That
@@ -16299,14 +16330,14 @@ not yet gate anything (see `nelisp--prn-string-escaped').")
   "Non-nil means print multibyte characters in strings as \\xXXXX.
 \(XXXX is the hex representation of the character code.)
 This affects only `prin1'.")
-(defun nelisp--prn-list-body (lst escape &optional depth)
+(defun nelisp--prn-list-body (lst escape &optional depth memo)
   (setq depth (or depth 0))
   (let ((chunks (cons nil nil)) (cur lst) (first t) (count 0))
     (while (and (consp cur)
                 (if print-length (< count print-length) t))
       (unless first (nelisp--prn-chunks-add chunks " "))
       (nelisp--prn-chunks-add chunks
-                              (nelisp--prn-to-string (car cur) escape depth))
+                              (nelisp--prn-to-string (car cur) escape depth memo))
       (setq first nil)
       (setq count (1+ count))
       (setq cur (cdr cur)))
@@ -16315,10 +16346,10 @@ This affects only `prin1'.")
       (setq cur nil))
     (unless (null cur)
       (nelisp--prn-chunks-add chunks " . ")
-      (nelisp--prn-chunks-add chunks (nelisp--prn-to-string cur escape depth)))
+      (nelisp--prn-chunks-add chunks (nelisp--prn-to-string cur escape depth memo)))
     (nelisp--prn-chunks-string chunks)))
 
-(defun nelisp--prn-vector (vec escape &optional depth)
+(defun nelisp--prn-vector (vec escape &optional depth memo)
   (setq depth (or depth 0))
   (let ((n (length vec)) (chunks (cons nil nil)))
     (nelisp--prn-chunks-add chunks "[")
@@ -16326,7 +16357,7 @@ This affects only `prin1'.")
       (while (< i lim)
         (when (> i 0) (nelisp--prn-chunks-add chunks " "))
         (nelisp--prn-chunks-add chunks
-                                (nelisp--prn-to-string (aref vec i) escape depth))
+                                (nelisp--prn-to-string (aref vec i) escape depth memo))
         (setq i (1+ i)))
       (when (< lim n)
         (when (> lim 0) (nelisp--prn-chunks-add chunks " "))
@@ -16354,16 +16385,16 @@ This affects only `prin1'.")
            (apply #'unibyte-string (nelisp--prn-bool-vector-bytes bv)))
           "\""))
 
-(defun nelisp--prn-record (rec escape)
+(defun nelisp--prn-record (rec escape &optional memo)
   (let ((tag (nelisp--record-type rec)) (n (nelisp--record-length rec))
         (chunks (cons nil nil)))
     (nelisp--prn-chunks-add chunks "#s(")
-    (nelisp--prn-chunks-add chunks (nelisp--prn-to-string tag escape))
+    (nelisp--prn-chunks-add chunks (nelisp--prn-to-string tag escape nil memo))
     (let ((i 0))
       (while (< i (1- n))
         (nelisp--prn-chunks-add chunks " ")
         (nelisp--prn-chunks-add
-         chunks (nelisp--prn-to-string (nelisp--record-ref rec i) escape))
+         chunks (nelisp--prn-to-string (nelisp--record-ref rec i) escape nil memo))
         (setq i (1+ i))))
     (nelisp--prn-chunks-add chunks ")")
     (nelisp--prn-chunks-string chunks)))
@@ -16388,7 +16419,7 @@ printer to write (a 1) rather than (a . (1))."
   (and (consp x)
        (let ((m (car x)))
          (and (vectorp m) (> (length m) 1) (eq (aref m 0) 'hash-table)))))
-(defun nelisp--prn-hash-table (obj escape)
+(defun nelisp--prn-hash-table (obj escape &optional memo)
   "Print OBJ as Emacs prints a hash table.
 The entries come out in bucket order rather than insertion order -- this
 representation does not record insertion order at all, so the ORDER is not
@@ -16396,8 +16427,8 @@ claimed to match, only the shape."
   (let ((parts nil))
     (maphash (lambda (k v)
                (setq parts
-                     (cons (concat (nelisp--prn-to-string k escape 0) " "
-                                   (nelisp--prn-to-string v escape 0))
+                     (cons (concat (nelisp--prn-to-string k escape 0 memo) " "
+                                   (nelisp--prn-to-string v escape 0 memo))
                            parts)))
              obj)
     (let* ((m (car obj))
@@ -16409,19 +16440,27 @@ claimed to match, only the shape."
           (concat head ")")
         (concat head " data ("
                 (mapconcat 'identity (nreverse parts) " ") "))")))))
-(defun nelisp--prn-slots (obj escape depth)
+(defun nelisp--prn-slots (obj escape depth &optional memo)
   "Print function object OBJ as `#[SLOT...]' through `length'/`aref'."
   (let ((chunks (cons nil nil)) (n (length obj)) (i 0))
     (nelisp--prn-chunks-add chunks "#[")
     (while (< i n)
       (when (> i 0) (nelisp--prn-chunks-add chunks " "))
       (nelisp--prn-chunks-add chunks
-                              (nelisp--prn-to-string (aref obj i) escape depth))
+                              (nelisp--prn-to-string (aref obj i) escape depth memo))
       (setq i (1+ i)))
     (nelisp--prn-chunks-add chunks "]")
     (nelisp--prn-chunks-string chunks)))
-(defun nelisp--prn-to-string (obj escape &optional depth)
+(defvar nelisp--prn-call-cache nil
+  "Identity print memo owned by one complete canonical serialization.")
+(defun nelisp--prn-to-string (obj escape &optional depth memo)
   (setq depth (or depth 0))
+  (let* ((cache (and escape (not print-length) (not print-level)
+                     (or memo (and (boundp 'nelisp--prn-call-cache) nelisp--prn-call-cache))))
+         (key (and cache (logand (sxhash-eq obj) 4095)))
+         (cached (and cache (assq obj (aref cache key)))))
+    (if cached (cdr cached)
+      (let ((result
   (cond
    ;; `(null obj)' immediately followed by `(eq obj t)' is exactly the
    ;; shape the byte-compiler's cond-jump-table optimization recognizes
@@ -16450,7 +16489,7 @@ claimed to match, only the shape."
    ;; [buffer "x" "" t], a hash table as its 2048-slot bucket vector, and a
    ;; closure as the (closure ENV ARGS . BODY) list it is made of -- each of
    ;; them readable Lisp that means something else.
-   ((nelisp--prn-hash-table-p obj) (nelisp--prn-hash-table obj escape))
+   ((nelisp--prn-hash-table-p obj) (nelisp--prn-hash-table obj escape cache))
    ((and (consp obj) (eq (car obj) 'builtin) (consp (cdr obj)))
     (concat "#<subr " (symbol-name (car (cdr obj))) ">"))
    ((and (consp obj) (eq (car obj) 'closure)
@@ -16460,7 +16499,7 @@ claimed to match, only the shape."
     ;; recover exactly that slot view (docstring and interactive form split
     ;; out of BODY, `(t)' for an empty lexical environment, captured cells
     ;; dereferenced), so print through them like a vector.
-    (nelisp--prn-slots obj escape depth))
+    (nelisp--prn-slots obj escape depth cache))
    ((consp obj)
     ;; Depth is a PARAMETER, not a special variable.  A free
     ;; `nelisp--prn-depth' worked in the standalone and broke
@@ -16469,13 +16508,13 @@ claimed to match, only the shape."
     ;; was void.  Threading it also means a caller cannot forget to rebind.
     (if (and print-level (>= depth print-level))
         "..."
-      (or (nelisp--prn-reader-macro-abbrev obj escape)
-          (concat "(" (nelisp--prn-list-body obj escape (1+ depth)) ")"))))
+      (or (nelisp--prn-reader-macro-abbrev obj escape cache)
+          (concat "(" (nelisp--prn-list-body obj escape (1+ depth) cache) ")"))))
    ((and (fboundp 'byte-code-function-p) (byte-code-function-p obj))
     ;; Print the slots like GNU (`#[ARGS CODE CONSTS DEPTH DOC IFORM]'), so a
     ;; docstring keeps its raw newlines and the code string its octal
     ;; escapes exactly as `print.c' emits them.
-    (nelisp--prn-slots obj escape depth))
+    (nelisp--prn-slots obj escape depth cache))
    ;; `print-level' bounds LIST nesting only -- Emacs prints
    ;; [1 [2 [3 [4]]]] in full at print-level 2, and only the list arm above
    ;; counts depth.  Measured rather than assumed; the first cut guarded
@@ -16527,8 +16566,8 @@ claimed to match, only the shape."
       "#<overlay in no buffer>"))
    ((and (fboundp 'bool-vector-p) (bool-vector-p obj))
     (nelisp--prn-bool-vector obj))
-   ((vectorp obj) (nelisp--prn-vector obj escape (1+ depth)))
-   ((recordp obj) (nelisp--prn-record obj escape))
+   ((vectorp obj) (nelisp--prn-vector obj escape (1+ depth) cache))
+   ((recordp obj) (nelisp--prn-record obj escape cache))
    ;; NOT (format "#<unprintable %S>" obj): `%S' re-enters this function on
    ;; the same object, and for a lexical binding CELL -- which is what a
    ;; closure's captured environment holds -- that recursed until the nesting
@@ -16539,8 +16578,12 @@ claimed to match, only the shape."
    ;; captured environment holds -- deref it so (let ((a 1)) (lambda () a))
    ;; prints its ((a . 1)) the way Emacs does.
    ((not (eq (nelisp--cell-value obj) obj))
-    (nelisp--prn-to-string (nelisp--cell-value obj) escape depth))
-   (t "#<unprintable>")))
+    (nelisp--prn-to-string (nelisp--cell-value obj) escape depth cache))
+   (t "#<unprintable>"))))
+        (when cache
+          (aset cache key (cons (cons obj result) (aref cache key))))
+        result))))
+
 
 ;; OVERRIDES: a non-list is `(wrong-type-argument . consp)' -- the data is
 ;; the bare symbol, not a list -- and an unrecognised key reports
@@ -18775,9 +18818,15 @@ processors not available."
                     (if count (seq-take names count) names)))
               nil)))))
 (unless (fboundp 'file-exists-p)
-  (defun file-exists-p (filename)
-    (let ((s (nelisp--syscall-stat filename)))
-      (or (eq s 'file) (eq s 'directory)))))
+  ;; The stat classifier first performs this same F_OK test. Existence does
+  ;; not require its second syscall or its file/directory classification.
+  ;; Keep the Lisp reference for hosts without the existing raw OS primitive.
+  (if (fboundp 'nelisp--syscall-path-int)
+      (defun file-exists-p (filename)
+        (= 0 (nelisp--syscall-path-int 21 filename 0)))
+    (defun file-exists-p (filename)
+      (let ((s (nelisp--syscall-stat filename)))
+        (or (eq s 'file) (eq s 'directory))))))
 (unless (fboundp 'file-directory-p)
   (defun file-directory-p (filename)
     (eq (nelisp--syscall-stat filename) 'directory)))
@@ -20701,38 +20750,29 @@ signals an error rather than passing text through unexpanded."
     ;; carry a corrupted `:object-base64' payload from here).  `string-
     ;; byte' / `string-bytes' are the byte-clean pair: raw byte at a
     ;; byte index, and a byte count that does not shrink for high bytes.
-    (let ((alphabet "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
-          (i 0)
-          (len (string-bytes string))
-          (chunks nil)
-          (parts nil)
-          (part-count 0))
+    ;; Fill one exact-sized ASCII result. The byte reads, bit extraction,
+    ;; padding and existing no-wrap policy are unchanged; no tiny strings or
+    ;; lists are allocated for each input triple.
+    (let* ((alphabet "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
+           (i 0) (out 0) (len (string-bytes string))
+           ;; ASCII is unibyte on GNU; state this explicitly so the standalone
+           ;; writer never needs a character-to-byte walk for an output index.
+           (result (string-as-unibyte (make-string (* 4 (/ (+ len 2) 3)) 61))))
       (while (< i len)
         (let* ((a (string-byte string i))
                (have-b (< (1+ i) len))
                (have-c (< (+ i 2) len))
                (b (if have-b (string-byte string (1+ i)) 0))
                (c (if have-c (string-byte string (+ i 2)) 0))
-               (triple (logior (ash a 16) (ash b 8) c))
-               (c1 (aref alphabet (logand (ash triple -18) 63)))
-               (c2 (aref alphabet (logand (ash triple -12) 63)))
-               (c3 (if have-b (aref alphabet (logand (ash triple -6) 63)) ?=))
-               (c4 (if have-c (aref alphabet (logand triple 63)) ?=)))
-          (setq parts
-                (cons (concat (char-to-string c1)
-                              (char-to-string c2)
-                              (char-to-string c3)
-                              (char-to-string c4))
-                      parts))
-          (setq part-count (1+ part-count))
-          (when (>= part-count 128)
-            (setq chunks (cons (apply 'concat (nreverse parts)) chunks))
-            (setq parts nil)
-            (setq part-count 0)))
-        (setq i (+ i 3)))
-      (when parts
-        (setq chunks (cons (apply 'concat (nreverse parts)) chunks)))
-      (apply 'concat (nreverse chunks)))))
+               (triple (logior (ash a 16) (ash b 8) c)))
+          (aset result out (aref alphabet (logand (ash triple -18) 63)))
+          (aset result (1+ out) (aref alphabet (logand (ash triple -12) 63)))
+          (when have-b
+            (aset result (+ out 2) (aref alphabet (logand (ash triple -6) 63))))
+          (when have-c
+            (aset result (+ out 3) (aref alphabet (logand triple 63)))))
+        (setq i (+ i 3) out (+ out 4)))
+      result)))
 (unless (fboundp 'base64-decode-string)
   (defun base64-decode-string (string &optional base64url ignore-invalid)
     ;; Bytes, not characters.  `char-to-string' builds the CHARACTER whose
@@ -21629,13 +21669,15 @@ unlisted OS-specific entry point."
 
   (defun func-arity (function)
     "Return (MIN . MAX), the number of arguments accepted by FUNCTION."
-    (let ((fn (if (symbolp function)
+    (let* ((fn (if (symbolp function)
                   (indirect-function function)
-                function)))
+                function))
+           (native-arity (and (fboundp 'nelisp--native-subr-arity)
+                              (nelisp--native-subr-arity fn))))
       (cond
-       ((and (fboundp 'nelisp--native-subr-arity)
-             (integerp (nelisp--native-subr-arity fn)))
-        (let ((arity (nelisp--native-subr-arity fn)))
+       ((consp native-arity) native-arity)
+       ((integerp native-arity)
+        (let ((arity native-arity))
           ;; 3 encodes a native subr with `&optional' arity (1 . 2), 4 one
           ;; with `&optional' arity (4 . 5).
           (cond ((eql arity 3) (cons 1 2))

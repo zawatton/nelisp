@@ -406,6 +406,31 @@
                    (funcall (symbol-function 'set) 'coding-system-for-write coding)
                    (kill-buffer buffer)
                    (delete-file file))))
+    ;; Large secure-hash inputs use iterative native string copying.
+    (61 shared (if (equal (secure-hash 'sha256 (make-string 1048576 97))
+                          "9bc1b2a288b26af7257a36277ae3816a7d4f16e89c1e7e77d0a5c48bad62b360") 1 0))
+    ;; Host autoload exports contain portable docs and quoted metadata.
+    (62 shared
+        (unwind-protect
+            (progn
+              (autoload 'nelisp-parity-portable-autoload '"missing-library"
+                        '"Portable doc." 'nil 'macro)
+              (if (equal (cdr (symbol-function 'nelisp-parity-portable-autoload))
+                         '("missing-library" "Portable doc." nil macro)) 1 0))
+          (fmakunbound 'nelisp-parity-portable-autoload)))
+    (63 shared
+        (let* ((text (copy-sequence "line\n\"quoted\""))
+               (node (list 'extern-call 'callee text 'env 'ticket 0 0 0 0))
+               (tree (list node node))
+               (print-length nil) (print-level nil) (print-circle nil)
+               (print-quoted t) (print-escape-newlines t)
+               (before (prin1-to-string tree))
+               (shared (let ((nelisp--prn-call-cache (make-vector 4096 nil)))
+                         (prin1-to-string tree))))
+          (aset text 0 ?x)
+          (if (and (equal before shared)
+                   (not (equal before (let ((nelisp--prn-call-cache (make-vector 4096 nil)))
+                                        (prin1-to-string tree))))) 1 0)))
     ))
 
 (provide 'nelisp-substrate-parity-corpus)

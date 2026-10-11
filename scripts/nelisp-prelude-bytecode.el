@@ -1004,7 +1004,9 @@ definer whose uses a compiler expands (`cl-defmacro', `defsubst',
   "Return (SYMBOL FILE DOC INTERACTIVE TYPE) for SYMBOLS autoloaded by GNU.
 Asked of a fresh `emacs -Q --batch' of the running host, so the answer is
 GNU's own preloaded autoloads, independent of what this build process has
-loaded."
+loaded.  Resolve lazy docstrings in that host: Windows GNU loaddefs stores
+them as (FILE . OFFSET), which is neither executable source nor a portable
+reference into the standalone installation."
   (if (null symbols)
       nil
     (with-temp-buffer
@@ -1012,7 +1014,7 @@ loaded."
              (call-process
               (expand-file-name invocation-name invocation-directory)
               nil t nil "--batch" "-Q" "--eval"
-              (format "(let ((print-length nil) (print-level nil) (print-escape-newlines t)) (prin1 (delq nil (mapcar (lambda (s) (let ((f (symbol-function s))) (and (autoloadp f) (cons s (cdr f))))) '%S))))"
+              (format "(let ((print-length nil) (print-level nil) (print-escape-newlines t)) (prin1 (delq nil (mapcar (lambda (s) (let ((f (symbol-function s))) (and (autoloadp f) (cons s (cons (nth 1 f) (cons (documentation s t) (nthcdr 3 f))))))) '%S))))"
                       symbols))))
         (unless (eql status 0)
           (error "host autoload query failed (%S): %s" status (buffer-string)))
@@ -1198,8 +1200,9 @@ candidate `eval-when-compile' form and whether it was folded."
                                   (list 'unless (list 'fboundp
                                                       (list 'quote (car entry)))
                                         (cons 'autoload
-                                              (cons (list 'quote (car entry))
-                                                    (cdr entry)))))))
+                                              (mapcar (lambda (value)
+                                                        (list 'quote value))
+                                                      entry))))))
                              autoloads "\n"))
                  (patches nil)
                  (first t))

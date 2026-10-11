@@ -333,7 +333,7 @@ frontends and package guards."
                  binary-sha256))
           (list :status 'complete :artifact-kind 'raw-runtime-v2
                 :artifact-path (expand-file-name artifact-path) :manifest result
-                :runtime-abi nelisp-native-load-raw-runtime-abi-v2
+                :runtime-abi (nelisp-native-load--runtime-abi-v2)
                 :entry-name entry-name :arity 4 :return-repr 'u64
                 :evaluator-return-repr 'sexp :gateway-import gateway :input input))
       (when (file-exists-p source-path) (delete-file source-path)))))
@@ -382,7 +382,7 @@ frontends and package guards."
           (list :status 'complete :artifact-kind 'raw-runtime-v2
                 :artifact-path (expand-file-name artifact-path)
                 :manifest result
-                :runtime-abi nelisp-native-load-raw-runtime-abi-v2
+                :runtime-abi (nelisp-native-load--runtime-abi-v2)
                 :entry-name entry-name :arity 5 :return-repr 'u64
                 :evaluator-return-repr 'sexp
                 :gateway-import "nl_native_cons_v2" :input input))

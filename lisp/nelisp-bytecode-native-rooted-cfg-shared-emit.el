@@ -11,6 +11,7 @@
 
 ;;; Code:
 
+(require 'nelisp-bytecode-native-rooted-cfg-data)
 (require 'cl-lib)
 (require 'nelisp-bytecode-native-rooted-cfg-plan)
 (require 'nelisp-bytecode-native-arithmetic-lowering)
@@ -308,7 +309,12 @@
   ;; Redirecting the sole incoming edge preserves the incoming counts of
   ;; every surviving block.  Index once instead of repeatedly scanning and
   ;; copying the entire graph; frame status/exit paths make that scan costly.
-  (let* ((blocks (copy-tree (cdddr cfg)))
+  (let* ((blocks (mapcar (lambda (block)
+                            ;; Only these block records and statement spines
+                            ;; are mutated below; expression DAGs stay intact.
+                            (list (car block) (cadr block)
+                                  (copy-sequence (nth 2 block)) (nth 3 block)))
+                          (cdddr cfg)))
          (map (make-hash-table :test 'eq))
          (counts (make-hash-table :test 'eq))
          (tails (make-hash-table :test 'eq)))
@@ -334,7 +340,10 @@
                         (setf (nth 2 b) (nth 2 next)))
                       (puthash (cadr b) (gethash (cadr next) tails) tails))
                     (setf (nth 3 b) (nth 3 next))
-                    (remhash (cadr next) map))
+                    ;; MAP is queried only by label, never enumerated. A nil
+                    ;; tombstone has exactly the deleted-entry lookup result
+                    ;; and avoids rebuilding the standalone table on removal.
+                    (puthash (cadr next) nil map))
                 (setq again nil)))))))
     (cons 'cfg (cons 1 (cons (nth 2 cfg)
                             (cl-remove-if-not (lambda (b) (eq (gethash (cadr b) map) b)) blocks))))))
@@ -343,6 +352,7 @@
   "Emit each verified block once, with selectors or parallel banked root copies."
   (let* ((planned (plist-get plan :blocks)) (serial 0) (raw-blocks nil) (locals nil)
          (block-map (make-hash-table :test 'eql)) (edge-labels nil)
+         (sharing (nelisp-bytecode-native-rooted-cfg-data-context))
          (context (list :cyclic t :plan plan :root-count (plist-get plan :required-root-count)
                         :block-map block-map :edge-labels nil :phi-vars nil
                         :phi-var-set (make-hash-table :test #'eq)
@@ -352,45 +362,58 @@
          (local () (let ((name (fresh))) (push (list name 0) locals) name))
          (block (forms term &optional id)
            (let ((name (or id (fresh)))) (push (list 'block name forms term) raw-blocks) name))
-         (rename (node scope)
-           (cond ((symbolp node) (or (cdr (assq node scope)) node))
-                 ((atom node) node) ((eq (car node) 'quote) node)
-                 (t (mapcar (lambda (child) (rename child scope)) node))))
-         (sequence (forms scope out next)
-           (let ((entry next))
-             (dolist (node (reverse forms)) (setq entry (lower node scope out entry))) entry))
          (lower (node scope out next)
-           (cond
-            ((and (consp node) (eq (car node) 'cfg-repeat))
-             ;; Internal list-construction repetition; emitted raw CFG uses
-             ;; only the already validated shared jump/branch grammar.
-             (let* ((counter (local)) (head (fresh))
-                    (increment (block (list `(setq ,counter (+ ,counter 1))) `(jump ,head)))
-                    (body (lower (nth 3 node) scope out increment)))
-               (block nil `(branch (and (= ,(rename (nth 2 node) scope) 0)
-                                        (< ,counter ,(nth 1 node)))
-                                   ,body ,next) head)
-               (block (list `(setq ,counter 0)) `(jump ,head))))
-            ((and (consp node) (eq (car node) 'cfg-dispatch))
-             (block nil (list 'dispatch (rename (cadr node) scope) (nth 2 node) (nth 3 node))))
-            ((and (consp node) (eq (car node) 'cfg-edge))
-             (block nil (list 'jump (cadr node))))
-            ((and (consp node) (eq (car node) 'if))
-             (let ((yes (lower (nth 2 node) scope out next))
-                   (no (lower (nth 3 node) scope out next)))
-               (block nil `(branch ,(rename (cadr node) scope) ,yes ,no))))
-            ((and (consp node) (memq (car node) '(progn seq)))
-             (sequence (cdr node) scope out next))
-            ((and (consp node) (memq (car node) '(let let*)))
-             (let ((inner scope) (initializers nil))
-               (dolist (binding (cadr node))
-                 (let ((name (local)))
-                   (push (list name (rename (cadr binding) (if (eq (car node) 'let*) inner scope))) initializers)
-                   (push (cons (car binding) name) inner)))
-               (let ((entry (sequence (cddr node) inner out next)))
-                 (dolist (binding initializers)
-                   (setq entry (block (list `(setq ,(car binding) ,(cadr binding))) `(jump ,entry)))) entry)))
-            (t (block (list `(setq ,out ,(rename node scope))) `(jump ,next))))))
+           ;; Root authentication and full-slot copies are scalar expressions.
+           ;; Splitting their lets/guards into CFG states used to turn every
+           ;; edge copy into dozens of blocks and function-wide locals. Keep
+           ;; the lexical expression intact; only real inter-block transfers
+           ;; select a successor. A failed guard leaves the selector at zero
+           ;; and reaches NEXT with exactly the old status and rooted state.
+           (when scope (error "raw CFG: unexpected scalar rename scope"))
+           (let ((selector (local)) (targets nil)
+                 (memo (make-hash-table :test 'eq)))
+             (cl-labels
+                 ((edge (id)
+                    (let ((pair (assoc id targets)))
+                      (unless pair
+                        (setq pair (cons id (1+ (length targets))))
+                        (push pair targets))
+                      `(progn (setq ,selector ,(cdr pair)) 0)))
+                  (scalar (form)
+                    (if (atom form) form
+                      ;; Identity buckets also work with the standalone table,
+                      ;; whose general cons keys otherwise hash structurally.
+                      (let* ((key (sxhash-eq form)) (bucket (gethash key memo))
+                             (cached (assq form bucket)))
+                        (if cached (cdr cached)
+                          (let ((result
+                                 (pcase (car form)
+                                   ((or 'quote 'function) form)
+                                   ('cfg-edge (edge (cadr form)))
+                                   ('cfg-dispatch
+                                    (let ((value (fresh)) (body (edge (nth 3 form))))
+                                      (dolist (case (reverse (nth 2 form)))
+                                        (setq body `(if (= ,value ,(car case))
+                                                        ,(edge (cadr case)) ,body)))
+                                      `(let ((,value ,(scalar (cadr form)))) ,body)))
+                                   ('cfg-repeat
+                                    (let ((counter (fresh)))
+                                      `(let ((,counter 0))
+                                         (progn
+                                           (while (and (= ,(scalar (nth 2 form)) 0)
+                                                       (< ,counter ,(nth 1 form)))
+                                             ,(scalar (nth 3 form))
+                                             (setq ,counter (+ ,counter 1)))
+                                           0))))
+                                   (_ (mapcar #'scalar form)))))
+                            (puthash key (cons (cons form result) bucket) memo)
+                            result))))))
+               (let* ((expression (scalar node))
+                      (cases (mapcar (lambda (pair) (list (cdr pair) (car pair)))
+                                     (nreverse targets))))
+                 (block (list `(setq ,selector 0) `(setq ,out ,expression))
+                        (if cases `(dispatch ,selector ,cases ,next)
+                          `(jump ,next))))))))
       ;; Acyclic plans keep phi values as root selectors, rather than the
       ;; physical root banks used by cycles.  Give those selectors stable CFG
       ;; locals so compact allocation loops can also follow a DAG join.
@@ -407,10 +430,11 @@
       (plist-put context :edge-labels edge-labels)
       (let* ((out (local)) (finish (fresh)) (entered (local)))
         ;; Create the common status exit only if one generated path uses it.
+        (nelisp-bytecode-native-rooted-cfg-shared-emit--stage "raw-blocks-start")
         (dolist (b planned)
           (let* ((id (plist-get b :start))
                  (body (nelisp-bytecode-native-rooted-cfg-shared-emit--operations context b 0 nil nil))
-                 (entry (lower body nil out finish)))
+                 (entry (lower (nelisp-bytecode-native-rooted-cfg-data-share body sharing) nil out finish)))
             (block nil (list 'jump entry) id))
           (dolist (e (cl-delete-duplicates (copy-sequence (plist-get b :successors))
                                            :key (lambda (edge) (plist-get edge :target)) :test #'eql))
@@ -461,8 +485,9 @@
                          inputs scratch (nelisp-native-funcall-v2-copy-form scratch destinations body))
                       `(progn ,(nelisp-bytecode-native-rooted-cfg-shared-emit--edge-assignments
                                 context from to) ,body)))
-              (block nil (list 'jump (lower body nil out finish))
+              (block nil (list 'jump (lower (nelisp-bytecode-native-rooted-cfg-data-share body sharing) nil out finish))
                      (cdr (assoc (cons from to) edge-labels))))))
+        (nelisp-bytecode-native-rooted-cfg-shared-emit--stage "raw-blocks-end")
         (let* ((copies (plist-get plan :entry-copies))
                (body (if (plist-get plan :handler-bank)
                          (nelisp-native-frame-v2-bank-copy-emit
@@ -474,7 +499,7 @@
                (body (if (plist-get plan :frame-state-root)
                          (nelisp-native-frame-v2-copy-emit plan 0 (plist-get plan :frame-enter-roots) `(progn (setq ,entered 1) ,body))
                        body))
-               (entry (lower body nil out finish))
+               (entry (lower (nelisp-bytecode-native-rooted-cfg-data-share body sharing) nil out finish))
                (guard (lower `(if (/= argument-count ,(plist-get plan :arity)) 3
                                (if (/= root-count ,(plist-get plan :required-root-count)) 3
                                  (cfg-edge ,entry))) nil out finish)))
@@ -511,14 +536,17 @@
                         (block nil (list 'jump landing) finish))
                     (block nil (list 'jump epilogue) finish)))
               (block nil (list 'return out) finish)))
+          (nelisp-bytecode-native-rooted-cfg-shared-emit--stage "raw-compact-start")
           (let ((cfg (nelisp-bytecode-native-rooted-cfg-shared-emit--compact
                       (cons 'cfg (cons 1 (cons guard (nreverse raw-blocks)))))))
+            (nelisp-bytecode-native-rooted-cfg-shared-emit--stage "raw-compact-end")
             (if (plist-get context :failure)
                 (list :status 'unsupported :reason (plist-get context :failure))
               (nelisp-native-cfg-grammar-validate cfg)
               (append (list :status 'complete :entry-name entry-name
-                          :form `(defun ,(intern entry-name) (env ticket argument-count root-count)
-                                   (let ,(nreverse locals) ,cfg))
+                          :form (nelisp-bytecode-native-rooted-cfg-data-share
+                                 `(defun ,(intern entry-name) (env ticket argument-count root-count)
+                                    (let ,(nreverse locals) ,cfg)) sharing)
                           :argument-count (plist-get plan :arity)
                           :required-root-count (plist-get plan :required-root-count)
                           :gateway-imports (plist-get plan :gateway-imports)
@@ -528,73 +556,94 @@
                                          :constant-initializers :immediate-initializers)
                              append (list key (plist-get plan key)))))))))))
 
-(let ((postdom-owner (symbol-function 'nelisp-bytecode-native-rooted-cfg-postdom-analyze)))
-(defun nelisp-bytecode-native-rooted-cfg-shared-emit-build (plan entry-name)
-  "Emit a freshly verified rooted CFG with shared postdominator continuations."
-  (let* ((input (plist-get plan :input))
-         (verified (and input (nelisp-bytecode-native-rooted-cfg-plan
-                               input (plist-get plan :lowering-mode)
-                               (plist-get plan :arithmetic-guard-mode))))
-         ;; Handler plans always use the shared raw CFG. Their freshly
-         ;; authenticated topology/bank has no structured postdominator use.
-         ;; The public postdominator entry point admits another plan. This
-         ;; entry point already has that fresh plan; retain its independent
-         ;; input check, then analyze the same verified topology directly.
-         (analysis
-          (if (plist-get verified :handler-bank) verified
-            (and input
-                 (eq postdom-owner
-                     (symbol-function 'nelisp-bytecode-native-rooted-cfg-postdom-analyze))
-                 (eq (plist-get verified :status) 'complete)
-                 (nelisp-bytecode-native-rooted-cfg-postdom--canonical-input-p input)
-                 (let ((topology (nelisp-bytecode-native-rooted-cfg-topology-check
-                                  (plist-get input :frame-result))))
-                   (and (eq (plist-get topology :status) 'complete)
-                        (nelisp-bytecode-native-rooted-cfg-postdom--compute
-                         (append (plist-get (plist-get input :frame-result) :blocks) nil)
-                         (plist-get topology :block-order))))))))
+(declare-function nelisp-native-cache--stage "nelisp-native-cache")
+(defun nelisp-bytecode-native-rooted-cfg-shared-emit--stage (label)
+  "Report opt-in compile phases without changing the emitted function."
+  (when (and (getenv "NELISP_ROOTED_CFG_STAGE_LOG")
+             (fboundp 'nelisp-native-cache--stage))
+    (nelisp-native-cache--stage label)))
+
+(let ((postdom-owner (symbol-function 'nelisp-bytecode-native-rooted-cfg-postdom-analyze))
+      (planner-owner (symbol-function 'nelisp-bytecode-native-rooted-cfg-plan))
+      (lookup (symbol-function 'symbol-function))
+      (same (symbol-function 'eq))
+      (emit-verified nil))
+  ;; This closure accepts a fresh planner result only from the two entries
+  ;; below. It is never published as a Lisp function or callable token.
+  (setq emit-verified
+        (lambda (plan verified entry-name)
+          (let* ((input (plist-get plan :input))
+           (raw-cfg (or (plist-get verified :handler-bank)
+			(and (plist-get verified :banked)
+			     ;; An acyclic frame activation needs one shared epilogue.
+			     ;; Single-block entry phis are already materialized in the
+			     ;; physical bank by entry copies; they need no CFG labels.
+			     (not (and (plist-get verified :frame-state-root)
+				       (or (null (plist-get verified :phis))
+					   (and (= (length (plist-get verified :blocks)) 1)
+						(cl-every
+						 (lambda (phi)
+						   (and (null (plist-get phi :incoming))
+							(integerp (plist-get phi :root))
+							(cl-find (plist-get phi :root)
+								 (plist-get verified :entry-copies)
+								 :key #'cdr :test #'eql)))
+						 (plist-get verified :phis))))
+				       (not (plist-get verified :cyclic))
+				       (not (cl-some
+					     (lambda (b) (cl-some (lambda (op) (eq (plist-get op :opcode) 'switch))
+								  (plist-get b :operations)))
+					     (plist-get verified :blocks))))))
+			(cl-some (lambda (b)
+				   (cl-some (lambda (op) (eq (plist-get op :opcode) 'list-build))
+					    (plist-get b :operations)))
+				 (plist-get verified :blocks))
+			;; A phi-free DAG can use immutable root selectors directly.
+			;; Extended stack references therefore need no evaluator import.
+			(and (null (plist-get verified :phis))
+			     (cl-some (lambda (b)
+					(cl-some (lambda (op) (memq (plist-get op :bytecode-opcode) '(6 7)))
+						 (plist-get b :operations)))
+				      (plist-get verified :blocks)))))
+           ;; Handler plans always use the shared raw CFG. Their freshly
+           ;; authenticated topology/bank has no structured postdominator use.
+           ;; The public postdominator entry point admits another plan. This
+           ;; entry point already has that fresh plan; retain its independent
+           ;; input check, then analyze the same verified topology directly.
+           (analysis
+           (progn
+            (nelisp-bytecode-native-rooted-cfg-shared-emit--stage "emit-analysis-start")
+            (prog1
+            (if (plist-get verified :handler-bank) verified
+              (and input
+                   (eq postdom-owner
+                       (symbol-function 'nelisp-bytecode-native-rooted-cfg-postdom-analyze))
+                   (eq (plist-get verified :status) 'complete)
+                   (nelisp-bytecode-native-rooted-cfg-postdom--canonical-input-p input)
+                   (let ((topology (nelisp-bytecode-native-rooted-cfg-topology-check
+                                    (plist-get input :frame-result))))
+                     (and (eq (plist-get topology :status) 'complete)
+                          ;; Raw CFG emission uses no nearest-join selectors.
+                          ;; Retain the fresh canonical input, owner and topology
+                          ;; checks; only omit the unused postdominator fixed point.
+                          (if raw-cfg verified
+                            (nelisp-bytecode-native-rooted-cfg-postdom--compute
+                             (append (plist-get (plist-get input :frame-result) :blocks) nil)
+                             (plist-get topology :block-order)))))))
+              (nelisp-bytecode-native-rooted-cfg-shared-emit--stage "emit-analysis-end")))))
     (if (not (and (eq (plist-get plan :status) 'complete)
-                  (or (null (plist-get plan :exit-root-base))
-                      (plist-get plan :funcall-version)
-                      (nelisp-bytecode-native-rooted-cfg-plan-guard-context-p plan))
-                  (equal verified plan)
-                  (eq (plist-get analysis :status) 'complete)
-                  (stringp entry-name) (> (length entry-name) 0)))
-        (list :status 'unsupported :reason "shared emission needs an unchanged canonical rooted plan")
-      (if (or (plist-get plan :handler-bank)
-              (and (plist-get plan :banked)
-                   ;; An acyclic frame activation needs one shared epilogue.
-                   ;; Single-block entry phis are already materialized in the
-                   ;; physical bank by entry copies; they need no CFG labels.
-                   (not (and (plist-get plan :frame-state-root)
-                             (or (null (plist-get plan :phis))
-                                 (and (= (length (plist-get plan :blocks)) 1)
-                                      (cl-every
-                                       (lambda (phi)
-                                         (and (null (plist-get phi :incoming))
-                                              (integerp (plist-get phi :root))
-                                              (cl-find (plist-get phi :root)
-                                                       (plist-get plan :entry-copies)
-                                                       :key #'cdr :test #'eql)))
-                                       (plist-get plan :phis))))
-                             (not (plist-get plan :cyclic))
-                             (not (cl-some
-                                   (lambda (b) (cl-some (lambda (op) (eq (plist-get op :opcode) 'switch))
-                                                       (plist-get b :operations)))
-                                   (plist-get plan :blocks))))))
-              (cl-some (lambda (b)
-                              (cl-some (lambda (op) (eq (plist-get op :opcode) 'list-build))
-                                       (plist-get b :operations)))
-                       (plist-get plan :blocks))
-              ;; A phi-free DAG can use immutable root selectors directly.
-              ;; Extended stack references therefore need no evaluator import.
-              (and (null (plist-get plan :phis))
-                   (cl-some (lambda (b)
-                              (cl-some (lambda (op) (memq (plist-get op :bytecode-opcode) '(6 7)))
-                                       (plist-get b :operations)))
-                            (plist-get plan :blocks))))
-          (nelisp-bytecode-native-rooted-cfg-shared-emit--cycles plan entry-name)
-      (let* ((blocks (plist-get plan :blocks))
+                    (or (null (plist-get plan :exit-root-base))
+			(plist-get plan :funcall-version)
+			(nelisp-bytecode-native-rooted-cfg-plan-guard-context-p plan))
+                    (equal verified plan)
+                    (eq (plist-get analysis :status) 'complete)
+                    (stringp entry-name) (> (length entry-name) 0)))
+          (list :status 'unsupported :reason "shared emission needs an unchanged canonical rooted plan")
+	(progn
+          (nelisp-bytecode-native-rooted-cfg-shared-emit--stage (if raw-cfg "emit-raw-body-start" "emit-structured-body-start"))
+          (if raw-cfg
+            (nelisp-bytecode-native-rooted-cfg-shared-emit--cycles plan entry-name)
+	  (let* ((blocks (plist-get plan :blocks))
              (root-count (plist-get plan :required-root-count))
              (arity (plist-get plan :arity))
              (block-map (make-hash-table :test #'eql))
@@ -613,7 +662,7 @@
                  context "phi IDs are not unique integers")))))
         (setq phi-vars (nreverse phi-vars))
         (setq context (plist-put context :phi-vars phi-vars))
-        ;; The verified plan admits fewer than 13 blocks and fewer than 256 roots.
+        ;; The verified plan bounds both block count and the physical root bank.
         (let ((phi-var-set (make-hash-table :test #'eq
                                             :size (max 1 (length phi-vars)))))
           (dolist (pair phi-vars)
@@ -645,11 +694,12 @@
                                  ,(nelisp-native-frame-v2-copy-emit plan 3 nil 'frame_output))
                              frame_output))))))
             (list :status 'complete :entry-name entry-name
-                  :form `(defun ,(intern entry-name) (env ticket argument-count root-count)
-                           (if (/= argument-count ,arity) 3
-                             (if (/= root-count ,root-count) 3
-                               (let ,(mapcar (lambda (pair) (list (cdr pair) 0)) phi-vars)
-                                 ,body))))
+                  :form (nelisp-bytecode-native-rooted-cfg-data-share
+                         `(defun ,(intern entry-name) (env ticket argument-count root-count)
+                            (if (/= argument-count ,arity) 3
+                              (if (/= root-count ,root-count) 3
+                                (let ,(mapcar (lambda (pair) (list (cdr pair) 0)) phi-vars)
+                                  ,body)))))
                   :gateway-imports
                   (sort (delete-dups
                          (append (plist-get plan :gateway-imports)
@@ -670,7 +720,35 @@
                   :argument-count arity :required-root-count root-count
                   :join-count (plist-get context :join-count)
                   :selector-edge-count (plist-get context :selector-edge-count)
-                  :expansion-count (plist-get context :expansion-count))))))))))
+                  :expansion-count (plist-get context :expansion-count)))))))))))
+
+  (defun nelisp-bytecode-native-rooted-cfg-shared-emit-build (plan entry-name)
+    "Emit PLAN only after independently rebuilding and comparing it."
+    (let* ((input (plist-get plan :input))
+           (verified
+            (progn
+              (nelisp-bytecode-native-rooted-cfg-shared-emit--stage "emit-replan-start")
+              (prog1 (and input (nelisp-bytecode-native-rooted-cfg-plan
+                                input (plist-get plan :lowering-mode)
+                                (plist-get plan :arithmetic-guard-mode)))
+                (nelisp-bytecode-native-rooted-cfg-shared-emit--stage "emit-replan-end")))))
+      (funcall emit-verified plan verified entry-name)))
+
+  (defun nelisp-bytecode-native-rooted-cfg-shared-emit-build-from-input
+      (input entry-name &optional lowering-mode arithmetic-guard-mode)
+    "Return a fresh :plan and :emitted pair built from INPUT.
+No caller-supplied plan, certificate or validation switch is accepted. The
+planner result remains private until emission and owner checks complete."
+    (if (not (funcall same planner-owner
+                      (funcall lookup 'nelisp-bytecode-native-rooted-cfg-plan)))
+        (list :plan nil :emitted (list :status 'unsupported :reason "planner owner changed"))
+      (let* ((plan (funcall planner-owner input lowering-mode arithmetic-guard-mode))
+             (emitted (and (eq (plist-get plan :status) 'complete)
+                           (funcall emit-verified plan plan entry-name))))
+        (if (funcall same planner-owner
+                     (funcall lookup 'nelisp-bytecode-native-rooted-cfg-plan))
+            (list :plan plan :emitted emitted)
+          (list :plan nil :emitted (list :status 'unsupported :reason "planner owner changed")))))))
 
 (provide 'nelisp-bytecode-native-rooted-cfg-shared-emit)
 ;;; nelisp-bytecode-native-rooted-cfg-shared-emit.el ends here

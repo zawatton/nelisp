@@ -212,18 +212,20 @@
                        (if (equal name "probe") 8100 8200)))
                     ((symbol-function 'ptr-write-u64) (lambda (&rest args) (push args writes)))
                     ((symbol-function 'nelisp-native-cache--callable-from-entry)
-                     (lambda (entry h addresses &optional _constants)
+                     (lambda (entry h addresses &optional _constants _owner)
                        (should (= entry 8100)) (should (equal h header))
                        (should (eq addresses nelisp-native-cache--addresses))
                        (lambda (&rest _) 'called)))
                     ((symbol-function 'nelisp-bytecode-native-rooted-cfg-contract-valid-p)
                      (lambda (&rest _) (setq validations (1+ validations)))))
-            (should (eq (funcall (nelisp-native-cache-load 'dummy) 1 2) 'called))
+            (should (eq (funcall (nelisp-native-cache-load
+                                 (make-byte-code 514 (unibyte-string 135) [] 2)) 1 2) 'called))
             (should (= validations 0)) (should (= opens 1))
             (should (equal writes '((8200 0 9000))))
             ;; Corruption must be refused before any further dlopen.
             (write-region "corrupt" nil file nil 'silent)
-            (should-error (nelisp-native-cache-load 'dummy))
+            (should-error (nelisp-native-cache-load
+                           (make-byte-code 514 (unibyte-string 135) [] 2)))
             (should (= opens 1))))
       (delete-directory directory t))))
 

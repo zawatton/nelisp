@@ -1,13 +1,13 @@
 ;;; standalone-native-stackset-u5-driver.el --- Native stack transfer parity -*- lexical-binding: t; -*-
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 (require 'nelisp-native-cache)
+(load "test/support/native-entry-observer.el" nil t t)
 (load "test/support/native-stackset-u5-fixtures.el" nil t t)
 (defun u5-assert (value label) (unless value (error "U5: %s" label)))
 (let* ((nelisp-native-cache-backend (if (equal (getenv "U5_BACKEND") "gccjit") 'gccjit 'in-house))
        (names (split-string (getenv "U5_CASES")))
        (entries 0) (cases 0) (compiles 0) (cold-bodies 0)
-       (compile-function (symbol-function 'nelisp-native-cache-compile))
-       (pointer-call (symbol-function 'ptr-call)))
+       (compile-function (symbol-function 'nelisp-native-cache-compile)))
   ;; Each body is compiled once; instrument the actual raw-v2 entry so an
   ;; interpreter fallback cannot satisfy value-only assertions.
   (dolist (name names)
@@ -42,12 +42,11 @@
             (u5-assert (equal history u5-history) "VM ordered loop effects"))
           (setq u5-remaining 3 u5-history nil)
           (garbage-collect)
-          (cl-letf (((symbol-function 'ptr-call)
-                     (lambda (address env ticket argc count x y)
-                       (when (and (= argc arity) (= count roots) (= x 0) (= y 0))
-                         (setq entries (1+ entries)))
-                       (funcall pointer-call address env ticket argc count x y))))
-            (setq actual (apply #'u5-native args)))
+          (nelisp-test-with-native-entry-observer
+	      (lambda (address env ticket argc count x y)
+		(when (and (= argc arity) (= count roots) (= x 0) (= y 0))
+		  (setq entries (1+ entries))))
+	    (setq actual (apply #'u5-native args)))
           (u5-assert (equal expected actual) (format "%s interpreter=%S native=%S" name expected actual))
           (u5-assert (equal history u5-history) "native ordered loop effects")
           (if (memq (car fixture) '(swap swap2))

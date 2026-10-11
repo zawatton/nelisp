@@ -27,6 +27,7 @@ else
   chmod 700 "$work"
   cp -- "$binary" "$work/reader"; chmod 500 "$work/reader"
   if [[ -f $binary.cold ]]; then cp -- "$binary.cold" "$work/reader.cold"; fi
+if [[ -f $binary.native-startup.el ]]; then cp -- "$binary.native-startup.el" "$work/reader.native-startup.el"; fi
 fi
 export U9_BACKEND="$backend" U9_ORACLE="$work/oracle.el"
 "${EMACS:-emacs}" -Q --batch -l test/support/native-legacy-u9-fixtures.el -f native-legacy-u9-oracle

@@ -99,11 +99,14 @@ also prevent fabricating a join on a different terminating arm."
               (mapcar (lambda (id) (cons id (delq -1 (copy-sequence (gethash id postdom))))) order)
               :nearest-joins (plist-get joins :joins))))))
 
+(let ((reuse-owner (symbol-function 'nelisp-bytecode-compiler-input--reuse-checked)))
 (defun nelisp-bytecode-native-rooted-cfg-postdom--canonical-input-p (input)
   "Return non-nil when INPUT metadata matches a fresh frame decode."
   (let* ((function (plist-get input :function))
          (fresh (and (byte-code-function-p function)
-                     (nelisp-bytecode-compiler-input-build function)))
+                     (or (and (eq reuse-owner (symbol-function 'nelisp-bytecode-compiler-input--reuse-checked))
+                                      (funcall reuse-owner input))
+                                 (nelisp-bytecode-compiler-input-build function))))
          (keys '(:status :argument-descriptor :argument-count :argument-min
                  :argument-max :rest-argument-p :initial-stack-depth :code
                  :constants :frame-result)))
@@ -115,6 +118,7 @@ also prevent fabricating a join on a different terminating arm."
          (cl-every (lambda (key) (equal (plist-get input key)
                                         (plist-get fresh key)))
                    keys))))
+)
 
 (defun nelisp-bytecode-native-rooted-cfg-postdom-analyze (input)
   "Return verified postdominators and nearest joins for compiler INPUT."

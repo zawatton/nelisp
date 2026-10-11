@@ -128,8 +128,12 @@
         (cl-labels ((events ()
                       (with-temp-buffer
                         (insert-file-contents log)
-                        (mapcar (lambda (line) (car (split-string line " ")))
-                                (split-string (buffer-string) "\n" t))))
+                        ;; Contract substage diagnostics share this file;
+                        ;; admission cutoffs concern the outer producer only.
+                        (cl-remove-if-not
+                         (lambda (label) (string-prefix-p "producer-raw-" label))
+                         (mapcar (lambda (line) (car (split-string line " ")))
+                                 (split-string (buffer-string) "\n" t)))))
                     (clear () (with-temp-file log)))
           (setenv "NELISP_ROOTED_CFG_STAGE_LOG" log)
           (nelisp-cfg-prefix-test--run (nelisp-cfg-prefix-test--fixture))

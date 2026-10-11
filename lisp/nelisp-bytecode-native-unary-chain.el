@@ -114,7 +114,7 @@ unsupported plist for nonmatching code. Successful results include
                       :chain-status-contract 'v2
                       :result-root-index
                       (nelisp-bytecode-native-unary-chain-result-root-index operations)
-                      :runtime-abi nelisp-native-load-raw-runtime-abi-v2
+                      :runtime-abi (nelisp-native-load--runtime-abi-v2)
                       :gateway-imports
                       (cl-loop for operation in '(car cdr)
                                when (memq operation operations)

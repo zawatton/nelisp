@@ -21,6 +21,7 @@ mkdir -m 700 "$work/cache"
 cp -- "$binary" "$work/reader"
 chmod 500 "$work/reader"
 if [[ -f $binary.cold ]]; then cp -- "$binary.cold" "$work/reader.cold"; fi
+if [[ -f $binary.native-startup.el ]]; then cp -- "$binary.native-startup.el" "$work/reader.native-startup.el"; fi
 export U2A_BACKEND="$backend" NELISP_NATIVE_CACHE="$work/cache"
 status=0
 for opcode in ${3:-56 62 71 72 73 74 75 76 77 78 79}; do

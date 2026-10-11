@@ -89,6 +89,7 @@ def main():
               [CASES[i:i + batch] for i in range(0, 6, batch)] + [[case] for case in CASES[6:]])
     receipts = []
     source_hashes = {str(p.relative_to(ROOT)): sha(p) for p in [source,
+                    ROOT / "test/support/native-entry-observer.el",
                     ROOT / "test/standalone-native-handlers-u8-driver.el",
                     Path(__file__).resolve(),
                     ROOT / "test/standalone-native-handlers-u8-smoke.sh",
@@ -115,6 +116,9 @@ def main():
         path = Path(path).resolve(strict=True)
         reader = directory / ("reader-" + backend)
         shutil.copyfile(path, reader)
+        startup_source = Path(str(path) + '.native-startup.el')
+        if startup_source.is_file():
+            shutil.copyfile(startup_source, Path(str(reader) + '.native-startup.el'))
         os.chmod(reader, 0o500)
         cold_source = Path(str(path) + ".cold")
         cold = Path(str(reader) + ".cold")
@@ -159,6 +163,7 @@ def main():
                                seconds=elapsed, passed=verdict(receipt_phase, result.returncode, elapsed,
                                                               output, errors, expected),
                                binary_sha256=sha(reader), cold_sha256=sha(cold) if cold.is_file() else None,
+                               startup_sha256=sha(startup_source) if startup_source.is_file() else None,
                                fixture_sha256=sha(fixture), source_sha256=source_hashes)
                 receipts.append(receipt)
                 (directory / (prefix + ".json")).write_text(json.dumps(receipt, indent=2))

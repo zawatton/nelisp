@@ -1,0 +1,20 @@
+#+TITLE: Windows host autoload portability
+
+* S1 Prevent host loaddefs references in standalone source
+
+** S1.1 Portable autoload regression including official Windows data
+#+NOTE: Three regressions red before and green after repair. The focused runner needs no reader rebuild. Full ZIP decompression: 843488101 bytes / 2.193889 s; focused loaddefs: 1610848 bytes / 0.004544 s. Full regression: 0.442 s. Clean checkout runner shown red before target mkdir and green after it. Shared substrate corpus case 61 returns 1 on GNU and standalone.
+#+REQUIRES: WINDOWS_EMACS_ZIP
+cmd: python3 test/support/check-windows-loaddefs.py "$WINDOWS_EMACS_ZIP"
+
+** S1.2 Windows host ERT and owner controls
+#+NOTE: python3 test/support/check-windows-native-host.py; 17 ERT cases and 28 owner negative controls passed. Existing selector pop-handler test fails identically before/after; outside this fix. Real Windows execution is not claimed by this Linux host evidence.
+evidence: target/windows-native/host-receipt.json sha256=e50857aeef495c7c7c6f640160bf14ed10d1ed86a22e9f367587c6453224eca8
+
+** S1.3 Linux F1 both cold backends
+#+NOTE: bash test/standalone-bytecode-native-funcall-smoke.sh --both --cold; compile/load rc=0 for in-house and gccjit, same corpus digest, executable and cold image hashes in target/f1-corpus-FXDwdD/ and target/f1-corpus-Ad10Xz/ phase receipts. Existing Linux binaries were used; no PE rebuild was needed for the focused Windows metadata repro.
+evidence: target/windows-loaddefs-f1.log sha256=24887c7121166e1a8f21680513feb1254b9fc4c1fb584f98a04766cf1d4a19b0
+
+** S1.4 Linux template fresh-process smoke
+#+NOTE: bash test/standalone-native-template-smoke.sh --backend template --samples 1; compile and fresh-process load passed with 2004 native entries and zero fallback, independent mappings and trust controls in target/template-trust-lwtzezvr/receipt.json.
+evidence: target/windows-loaddefs-template.log sha256=5fb27fd5e163e178a066d946eb044040fcb576231c6cac62a562de7cdbacb463

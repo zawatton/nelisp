@@ -1,11 +1,11 @@
 ;;; standalone-native-cleanup-u7b-driver.el --- Native cleanup parity -*- lexical-binding: t; -*-
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 (require 'nelisp-native-cache)
+(load "test/support/native-entry-observer.el" nil t t)
 (load "test/support/native-cleanup-u7b-fixtures.el" nil t t)
 (defun u7b-assert (value label) (unless value (error "U7b: %s" label)))
 (let ((nelisp-native-cache-backend (intern (getenv "U7B_BACKEND")))
-      (phase (getenv "U7B_PHASE")) (cases 0) (entries 0)
-      (pointer (symbol-function 'ptr-call)))
+      (phase (getenv "U7B_PHASE")) (cases 0) (entries 0))
   (dolist (name (split-string (getenv "U7B_CASES")))
     (let* ((kind (if (string-match-p "^[0-9]+$" name) (string-to-number name) (intern name)))
            (fn (native-cleanup-u7b-function kind)))
@@ -26,12 +26,11 @@
                             (expected (native-cleanup-u7b-observe fn kind mode))
                             (u7b-inner native)
                             (actual
-                             (cl-letf (((symbol-function 'ptr-call)
-                                        (lambda (address env ticket argc count x y)
-                                          (when (and (= argc 0) (= count roots) (= x 0) (= y 0))
-                                            (setq entries (1+ entries)))
-                                          (funcall pointer address env ticket argc count x y))))
-                               (native-cleanup-u7b-observe native kind mode))))
+                             (nelisp-test-with-native-entry-observer
+				 (lambda (address env ticket argc count x y)
+				   (when (and (= argc 0) (= count roots) (= x 0) (= y 0))
+				     (setq entries (1+ entries))))
+			       (native-cleanup-u7b-observe native kind mode))))
                        (u7b-assert (equal expected actual)
                                    (format "%S/%S expected=%S actual=%S" kind mode expected actual))
                        (u7b-assert (= (- entries entry-before) (if (eq mode 'reenter) 2 1))

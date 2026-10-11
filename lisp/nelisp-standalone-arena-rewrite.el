@@ -91,7 +91,10 @@ confused with a fixed base immediate."
                    windows-aarch64)))
       source
     (let ((base (nelisp-standalone--target-arena-base))
-          (span nelisp-standalone--arena-rebase-span))
+          (span nelisp-standalone--arena-rebase-span)
+          ;; A compiler source may be a DAG.  This pure transformation must
+          ;; retain shared expressions rather than expanding each occurrence.
+          (copies (make-vector 16384 nil)))
       (cl-labels
           ((rewrite-int
             (n)
@@ -107,7 +110,17 @@ confused with a fixed base immediate."
                    (eq (cadr form) 'nl_arena_init))
               form)
              ((integerp form) (rewrite-int form))
-             ((consp form) (cons (walk (car form)) (walk (cdr form))))
+             ((consp form)
+              (let* ((key (logand (sxhash-eq form) 16383))
+                     (known (assq form (aref copies key))))
+                (if known
+                    (if (eq (cdr known) 'active)
+                        (error "Cyclic compiler source")
+                      (cdr known))
+                  (let ((record (cons form 'active)))
+                    (aset copies key (cons record (aref copies key)))
+                    (setcdr record (cons (walk (car form)) (walk (cdr form))))
+                    (cdr record)))))
              (t form))))
         (let ((max-lisp-eval-depth (max max-lisp-eval-depth 10000)))
           (walk source))))))

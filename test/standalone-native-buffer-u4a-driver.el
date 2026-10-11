@@ -1,13 +1,14 @@
 ;;; standalone-native-buffer-u4a-driver.el --- Executed buffer parity -*- lexical-binding: t; -*-
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 (require 'nelisp-native-cache)
+(load "test/support/native-entry-observer.el" nil t t)
 (load "test/support/native-buffer-u4a-fixtures.el" nil t t)
 (defun u4a-assert (value label) (unless value (error "U4a: %s" label)))
 (dolist (opcode (mapcar #'string-to-number (split-string (getenv "U4A_CASE"))))
   (let* ((nelisp-native-cache-backend (intern (getenv "U4A_BACKEND")))
          (row (assq opcode native-buffer-u4a-family))
          (fn (native-buffer-u4a-function row))
-         (pointer (symbol-function 'ptr-call)) (restore (symbol-function 'fset))
+         (restore (symbol-function 'fset))
          (names (delete-dups (append (list (cadr row) 'interactive-p)
                                     (cond ((= opcode 104) '(preceding-char))
                                           ((= opcode 106) '(insert current-column))))))
@@ -24,18 +25,25 @@
       (dolist (setting '((3 nil) (2 t) (6 t)))
         (dolist (args (native-buffer-u4a-cases opcode))
           (let ((expected (native-buffer-u4a-observe fn args (car setting) (cadr setting))) actual)
-            (cl-letf (((symbol-function 'ptr-call)
-                       (lambda (address env ticket argc n x y)
-                         (if (and (= argc arity) (= n roots) (= x 0) (= y 0))
-                             (unwind-protect
-                                 (progn
-                                   (setq entries (1+ entries))
-                                   (dolist (name names)
-                                     (funcall restore name (lambda (&rest _) (setq poison (1+ poison)) 'poison)))
-                                   (funcall pointer address env ticket argc n x y))
-                               (dolist (pair old) (funcall restore (car pair) (cdr pair))))
-                           (funcall pointer address env ticket argc n x y)))))
-              (setq actual (native-buffer-u4a-observe native args (car setting) (cadr setting))))
+            (nelisp-test-with-native-entry-observer
+		(lambda (address env ticket argc n x y)
+		  (when (and (= argc arity) (= n roots) (= x 0) (= y 0))
+		    (setq entries (1+ entries))))
+	      (setq actual
+		    (native-buffer-u4a-observe
+		     (nelisp-test-native-poison native
+						(lambda nil
+						  (dolist (name names)
+						    (funcall restore name
+							     (lambda (&rest _)
+							       (setq poison
+								     (1+ poison))
+							       'poison))))
+						(lambda nil
+						  (dolist (pair old)
+						    (funcall restore (car pair)
+							     (cdr pair)))))
+		     args (car setting) (cadr setting))))
             (u4a-assert (equal expected actual)
                         (format "opcode=%d args=%S setting=%S expected=%S actual=%S" opcode args setting expected actual))
             (setq cases (1+ cases)))))
@@ -51,12 +59,11 @@
                  (error-roots (plist-get header :root-count)) (error-entries 0))
             (dolist (args '(("123456789先" bad) ("a" nil)))
               (let ((expected (native-buffer-u4a-observe errors-fn args 3 nil)) actual)
-                (cl-letf (((symbol-function 'ptr-call)
-                           (lambda (address env ticket argc n x y)
-                             (when (and (= argc 2) (= n error-roots) (= x 0) (= y 0))
-                               (setq error-entries (1+ error-entries)))
-                             (funcall pointer address env ticket argc n x y))))
-                  (setq actual (native-buffer-u4a-observe #'u4a-errors args 3 nil)))
+                (nelisp-test-with-native-entry-observer
+		    (lambda (address env ticket argc n x y)
+		      (when (and (= argc 2) (= n error-roots) (= x 0) (= y 0))
+			(setq error-entries (1+ error-entries))))
+		  (setq actual (native-buffer-u4a-observe #'u4a-errors args 3 nil)))
                 (u4a-assert (equal expected actual)
                             "exact condition/data retains insertion and stops later insertion")))
             (u4a-assert (= error-entries 2) "both error conditions execute native code"))

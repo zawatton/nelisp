@@ -1,11 +1,11 @@
 ;;; standalone-native-legacy-u9-driver.el --- Independent native wrapper parity -*- lexical-binding: t; -*-
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 (require 'nelisp-native-cache)
+(load "test/support/native-entry-observer.el" nil t t)
 (load "test/support/native-legacy-u9-fixtures.el" nil t t)
 (defun u9-assert (value message) (unless value (error "U9: %s" message)))
 (let ((nelisp-native-cache-backend (intern (getenv "U9_BACKEND")))
       (phase (getenv "U9_PHASE")) (cases 0) (entries 0)
-      (pointer (symbol-function 'ptr-call))
       (oracle (with-temp-buffer (insert-file-contents (getenv "U9_ORACLE"))
                                 (goto-char (point-min)) (read (current-buffer)))))
   (dolist (name (split-string (getenv "U9_CASES")))
@@ -29,13 +29,12 @@
                  (interpreted (native-legacy-u9-observe fn opcode mode))
                  (before entries)
                  (actual
-                  (cl-letf (((symbol-function provider-name) (lambda (&rest _) (error "public provider rebound")))
-                            ((symbol-function 'ptr-call)
-                             (lambda (address env ticket argc count x y)
-                               (when (and (= argc 0) (= count roots) (= x 0) (= y 0))
-                                 (setq entries (1+ entries)))
-                               (funcall pointer address env ticket argc count x y))))
-                    (native-legacy-u9-observe native opcode mode))))
+                  (cl-letf (((symbol-function provider-name) (lambda (&rest _) (error "public provider rebound"))))
+                    (nelisp-test-with-native-entry-observer
+			(lambda (address env ticket argc count x y)
+			  (when (and (= argc 0) (= count roots) (= x 0) (= y 0))
+			    (setq entries (1+ entries))))
+		      (native-legacy-u9-observe native opcode mode)))))
             (u9-assert (equal expected interpreted)
                        (format "VM %d/%S GNU=%S VM=%S" opcode mode expected interpreted))
             (u9-assert (equal expected actual)

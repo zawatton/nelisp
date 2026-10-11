@@ -12,18 +12,19 @@
   (with-temp-buffer
     (insert-file-contents nn-source)
     (goto-char (point-min))
-    (let (found form bridge)
+    (let (found form bridges)
       (while (and (not found) (condition-case nil (progn (setq form (read (current-buffer))) t)
                                 (end-of-file nil)))
-        ;; The generic evaluator entry is a root ABI export, not a Lisp
-        ;; reader builtin. Audit its actual six-word source definition too.
+        ;; The evaluator, frame and poll entries are root ABI exports, not
+        ;; Lisp reader builtins. Audit their actual six-word definitions too.
         (cl-labels ((walk (node)
                       (when (consp node)
-                        (if (and (eq (car node) 'defun) (eq (cadr node) 'nl_native_funcall_v2))
+                        (if (and (eq (car node) 'defun) (memq (cadr node) '(nl_native_funcall_v2 nl_native_frame_v2 nl_native_poll_v2)))
                             (progn
-                              (when bridge (error "Duplicate F1 evaluator entry"))
-                              (unless (= (length (nth 2 node)) 6) (error "F1 evaluator arity drift"))
-                              (setq bridge "nl_native_funcall_v2"))
+                              (let ((name (symbol-name (cadr node))))
+                                (when (member name bridges) (error "Duplicate native ABI entry: %s" name))
+                                (unless (= (length (nth 2 node)) 6) (error "Native ABI arity drift: %s" name))
+                                (push name bridges)))
                           (walk (car node)) (walk (cdr node))))))
           (walk form))
         (when (and (consp form) (eq (car form) 'defconst)
@@ -32,7 +33,9 @@
                                  (lambda () nil)))
                         (eval (nth 2 form) t)))))
       (unless found (error "reader-builtins defconst not found in %s" nn-source))
-      (append found (and bridge (list bridge))))))
+      (append found (cl-remove-if-not
+                     (lambda (name) (member name bridges))
+                     '("nl_native_funcall_v2" "nl_native_frame_v2" "nl_native_poll_v2"))))))
 
 (defun nn-classifications ()
   (let ((result (make-hash-table :test 'equal)))
@@ -56,7 +59,14 @@
   (mapcar (lambda (name)
             (let* ((entry (if (equal name "nl_native_funcall_v2")
                               '("native-must-stay" . "Evaluator entry (clause 2), authenticated rooted funcall and exit publication; Lisp reference nelisp-native-funcall-v2-reference; measurements in F1.1/F1.2.")
-                            (and classes (gethash name classes))))
+                            (if (equal name "nelisp--build-digest")
+                                '("native-must-stay" . "Raw read-only linked rodata access (clause 3); no path/pointer input, nil if unstamped; Lisp reference nelisp-build-digest-reference in test/nelisp-build-digest-test.el.")
+                              (cond
+                                 ((equal name "nl_native_frame_v2")
+                                  '("native-must-stay" . "Evaluator entry (clause 2), authenticated activation watermark, rooted frame installation/removal and ordered cleanup callbacks and U8 status-return handler landing (clause 2), authenticated operand-bank full-slot copies (clause 1); Lisp references nelisp-native-frame-v2-source and nelisp-bytecode-cleanup-source; measurements and limitations in F2.2 and native-handlers-u8-progress.org."))
+                                 ((equal name "nl_native_poll_v2")
+                                  '("native-must-stay" . "GC/evaluator entry (clause 2), authenticated cyclic-edge flag/debt gate; Lisp reference nelisp-bytecode-native-rooted-cfg-poll-function; measurements in P3.2."))
+                                 (t (and classes (gethash name classes)))))))
                    (verdict (or (car-safe entry) "native-review"))
                    (reason (or (cdr-safe entry) "No classification row; review against Doc 211 §6.")))
               (format "%s\t%s\t%s" name verdict

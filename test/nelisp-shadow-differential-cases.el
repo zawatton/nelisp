@@ -58,6 +58,11 @@
  (condition-case err (memq) (wrong-number-of-arguments err))
  (condition-case err (member nil) (wrong-number-of-arguments err))
  (condition-case err (assq nil nil nil) (wrong-number-of-arguments err))
+ ;; AOT operand sequencing: later mutation must not precede an earlier read.
+ (let ((x 7) trace)
+   (list (+ x (progn (setq x 5) x))
+         (+ (progn (push 7 trace) 7) (progn (push 5 trace) 5))
+         trace))
  ;; P3: the guarded numeric lowering retains float and fixnum-overflow results.
  (let ((add (make-byte-code 514 (unibyte-string 1 1 92 135) [] 4)))
    (and (= (funcall add 3 2) 5)
@@ -273,6 +278,13 @@
  ;; equal: structure, not identity, and 1 is not 1.0
  (equal '(1 (2 3)) '(1 (2 3))) (equal "a" "a") (equal [1 2] [1 2]) (equal 1 1.0)
  (equal nil nil) (equal '(1 . 2) '(1 . 2))
+ ;; Shared subtrees compare by identity; independent mutable copies still
+ ;; compare structurally after a nested edit.
+ (let* ((tree (list (vector 1 (list 2 3))))
+        (other (list (vector 1 (list 2 3))))
+        (before (list (equal tree tree) (equal tree other))))
+   (setcar (aref (car other) 1) 9)
+   (append before (list (equal tree other) (equal tree tree))))
  ;; Byte-code objects compare every slot, including constants nested in lists.
  (let ((a (make-byte-code 514 (unibyte-string 1 135) [] 3))
        (b (make-byte-code 514 (unibyte-string 1 135) [] 3))
@@ -1378,6 +1390,14 @@
        ;; string-to-list conversion, out of scope here.  The `equal' case below
        ;; already fails if a single byte is wrong.
        (base64-encode-string (unibyte-string 200 201 202))
+       ;; Exact output sizing crosses both padding cases and the former
+       ;; 128-triple chunk boundary, preserving raw bytes and ASCII output.
+       (mapcar (lambda (n)
+                 (let ((encoded (base64-encode-string
+                                 (apply #'unibyte-string (make-list n 255)) t)))
+                   (list (length encoded) (multibyte-string-p encoded)
+                         (substring encoded (max 0 (- (length encoded) 4))))))
+               '(0 1 2 3 383 384 385))
        (equal (unibyte-string 200 201 202)
               (base64-decode-string (base64-encode-string
                                      (unibyte-string 200 201 202))))
@@ -1784,6 +1804,12 @@
      (setq i (1+ i)))
    (garbage-collect)
    (list (length (aref keep 0)) (aref (aref keep 0) 131071)))
+ ;; Retain a multi-page raw payload and boxed children across collection.
+ ;; Conservative page predecessors must preserve the same owning block.
+ (let ((keep (vector (make-string 4194304 65) (list 1 (vector 2 3)))))
+   (garbage-collect)
+   (list (length (aref keep 0)) (aref (aref keep 0) 4194303)
+         (aref keep 1)))
  ;; A variable-only mirror entry carries the runtime's internal unbound
  ;; function sentinel in slot 1.  It must behave exactly like an absent
  ;; function cell at every public lookup/call boundary, never escape as
@@ -2046,6 +2072,20 @@
                                      [p24-tag p24-parity-callback] 2))
             p24-parity-calls)
     (fmakunbound 'p24-parity-callback)))
+
+;; P3.5: a serialization memo preserves bytes and expires before mutation.
+(let* ((text (copy-sequence "line\n\"quoted\""))
+       (node (list 'extern-call 'callee text 'env 'ticket 0 0 0 0))
+       (tree (list node node))
+       (print-length nil) (print-level nil) (print-circle nil)
+       (print-quoted t) (print-escape-newlines t)
+       (before (prin1-to-string tree))
+       (shared (let ((nelisp--prn-call-cache (make-vector 4096 nil)))
+                 (prin1-to-string tree))))
+  (aset text 0 ?x)
+  (and (equal before shared)
+       (not (equal before (let ((nelisp--prn-call-cache (make-vector 4096 nil)))
+                            (prin1-to-string tree))))))
 
 )
 

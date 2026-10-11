@@ -61,7 +61,7 @@ def unit_owners(metadata, directory):
     return owners
 
 
-def prove(image, metadata, directory, roots, claimed=None):
+def prove(image, metadata, directory, roots, claimed=None, max_functions=128, evaluator_boundary=None):
     if not 0 < image.stat().st_size <= 128 * 1024 * 1024:
         raise ValueError("Image eligibility bound")
     owners = unit_owners(metadata, directory)
@@ -70,7 +70,18 @@ def prove(image, metadata, directory, roots, claimed=None):
     records, total = [], 0
     queue, visited = list(roots), set()
     with image.open("rb") as stream:
-        elf = ELFFile(stream)
+        if stream.read(2) == b'MZ':
+            import importlib.util
+            spec = importlib.util.spec_from_file_location('pe_image', Path(__file__).with_name('nelisp-native-pe-image.py'))
+            pe_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(pe_module)
+            stream.seek(0)
+            elf = pe_module.PEImage(stream)
+            terminals = {'ExitProcess', 'VirtualAlloc', 'VirtualFree'}
+        else:
+            stream.seek(0)
+            elf = ELFFile(stream)
+            terminals = set()
         if elf["e_machine"] != "EM_X86_64" or elf["e_type"] != "ET_EXEC":
             raise ValueError("Unsupported native image domain")
         table = elf.get_section_by_name(".symtab")
@@ -86,15 +97,19 @@ def prove(image, metadata, directory, roots, claimed=None):
             name = queue.pop(0)
             if name in visited:
                 continue
+            if name in terminals:
+                elf.verify_terminal(name)
+                visited.add(name)
+                continue
             if name not in owners or name not in symbols:
                 raise ValueError("Unknown direct owner: " + name)
             owner, symbol = owners[name], symbols[name]
             size = owner["end"] - owner["start"]
             if not 0 < size <= MAX_FUNCTION_BYTES:
                 raise ValueError("Function byte bound: %s (%d)" % (name, size))
-            if len(visited) >= MAX_FUNCTIONS or total + size > MAX_TOTAL_BYTES:
+            if len(records) >= max_functions or total + size > MAX_TOTAL_BYTES:
                 raise ValueError("Direct helper aggregate bound at %s: functions=%d bytes=%d next=%d"
-                                 % (name, len(visited), total, size))
+                                 % (name, len(records), total, size))
             section = elf.get_section(symbol["st_shndx"])
             address = symbol["st_value"]
             offset = address - section["sh_addr"]
@@ -153,7 +168,8 @@ def prove(image, metadata, directory, roots, claimed=None):
                     if target is None or target["st_value"] != address + target_offset - owner["start"]:
                         raise ValueError("Same-unit linked target differs")
                 direct.append(dict(offset=position, mnemonic=instruction.mnemonic, target=target_name))
-                queue.append(target_name)
+                if name != evaluator_boundary:
+                    queue.append(target_name)
             if decoded != size:
                 raise ValueError("Incomplete instruction decoding: " + name)
             visited.add(name)

@@ -965,7 +965,11 @@ at its kind-fixed offset since per-kind layout is constant."
       (setq i (+ i 2)))
     result))
 
-(defsubst nelisp-aot-compiler--ir-repr (node)
+;; This walker is recursive.  An inline declaration recursively expands its
+;; callers until GNU's compiler depth limit, bloating the projected compiler.
+;; Clear the old declaration too when reloading into a live host session.
+(put 'nelisp-aot-compiler--ir-repr 'byte-optimizer nil)
+(defun nelisp-aot-compiler--ir-repr (node)
   "Return NODE's runtime value representation.
 
 `raw-i64' denotes machine integers used by arithmetic and loop control;
@@ -1246,20 +1250,107 @@ behaviour change -- `--ir-as-raw-i64' unwraps on `sexp-ptr',
 reports which kinds actually reach `unknown' in the reader corpus, and
 how often, without changing any decision.")
 
+(defun nelisp-aot-compiler--repr-vector-size (fenv)
+  "Return the size of a large proper FENV containing only cells."
+  (let ((fast fenv) (slow fenv) (count 0) (safe t))
+    (while (and safe (consp fast))
+      (unless (consp (car fast)) (setq safe nil))
+      (setq fast (cdr fast) count (1+ count))
+      (when (consp fast)
+        (unless (consp (car fast)) (setq safe nil))
+        (setq fast (cdr fast) count (1+ count) slow (cdr slow))
+        (when (eq fast slow) (setq safe nil))))
+    (and safe (null fast) (> count 16) count)))
+
+(defun nelisp-aot-compiler--repr-vector-p (snapshot)
+  "Return non-nil for an internal flat representation snapshot."
+  (and (vectorp snapshot) (> (length snapshot) 0)
+       (eq (aref snapshot 0) 'nelisp-aot-repr-snapshot-v1)))
+
+(defun nelisp-aot-compiler--repr-vector-list (snapshot)
+  "Convert a flat snapshot to the legacy representation for mixed inputs."
+  (let ((i (- (length snapshot) 2)) (result nil))
+    (while (> i 0)
+      (push (cons (aref snapshot i) (aref snapshot (1+ i))) result)
+      (setq i (- i 2)))
+    result))
+
 (defun nelisp-aot-compiler--repr-snapshot (fenv)
   "Return the representation recorded for each cell of FENV.
 Keys are the cells themselves, so shadowed bindings stay distinct."
-  (let ((acc nil))
-    (dolist (cell fenv)
-      (when (consp cell)
-        (push (cons cell (plist-get (cdr cell) :repr)) acc)))
-    acc))
+  (let ((size (nelisp-aot-compiler--repr-vector-size fenv)))
+    (if size
+        (let* ((acc (make-vector (1+ (* 2 size)) nil))
+               (i (- (length acc) 2)) (listed nil))
+          (aset acc 0 'nelisp-aot-repr-snapshot-v1)
+          ;; Read left to right as before, storing the old PUSH order.
+          ;; Freeze cell identities; retaining the FENV spine would alias
+          ;; later changes made by a compiler callback.
+          (dolist (cell fenv)
+            (when (consp cell)
+              ;; PLIST-GET can be rebound to a callback that changes the
+              ;; live FENV spine. Retain the old skip and read-once rules.
+              (when (and (not listed) (< i 1))
+                (setq acc (nelisp-aot-compiler--repr-vector-list acc) listed t))
+              (if listed
+                  (push (cons cell (plist-get (cdr cell) :repr)) acc)
+                (aset acc i cell)
+                (aset acc (1+ i) (plist-get (cdr cell) :repr))
+                (setq i (- i 2)))))
+          (if (or listed (= i -1)) acc
+            ;; A callback shortened the walk or replaced a cell with an
+            ;; atom: only the filled suffix belongs in the snapshot.
+            (let ((j (- (length acc) 2)) (result nil))
+              (while (> j i)
+                (push (cons (aref acc j) (aref acc (1+ j))) result)
+                (setq j (- j 2)))
+              result)))
+      (let ((acc nil))
+        (dolist (cell fenv)
+          (when (consp cell)
+            (push (cons cell (plist-get (cdr cell) :repr)) acc)))
+        acc))))
 
 (defun nelisp-aot-compiler--repr-restore (snapshot)
   "Restore the representations SNAPSHOT recorded."
-  (dolist (entry snapshot)
-    (setcdr (car entry)
-            (plist-put (cdr (car entry)) :repr (cdr entry)))))
+  (if (nelisp-aot-compiler--repr-vector-p snapshot)
+      (let ((i 1))
+        (while (< i (length snapshot))
+          (let ((cell (aref snapshot i)))
+            (setcdr cell (plist-put (cdr cell) :repr (aref snapshot (1+ i)))))
+          (setq i (+ i 2))))
+    (dolist (entry snapshot)
+      (setcdr (car entry)
+              (plist-put (cdr (car entry)) :repr (cdr entry))))))
+
+(defun nelisp-aot-compiler--repr-vector-join-fixes (a-snap b-snap)
+  "Join flat snapshots with an allocation-free first-wins EQ index."
+  (let ((capacity 32) (i 1) (fixes nil))
+    (while (< capacity (length b-snap)) (setq capacity (* capacity 2)))
+    (let ((index (make-vector capacity 0)) (mask (1- capacity)))
+      (while (< i (length b-snap))
+        (let* ((cell (aref b-snap i)) (slot (logand (sxhash-eq cell) mask))
+               (entry (aref index slot)))
+          (while (and (/= entry 0) (not (eq cell (aref b-snap entry))))
+            (setq slot (logand (1+ slot) mask) entry (aref index slot)))
+          (when (= entry 0) (aset index slot i)))
+        (setq i (+ i 2)))
+      (setq i 1)
+      (while (< i (length a-snap))
+        (let* ((cell (aref a-snap i)) (slot (logand (sxhash-eq cell) mask))
+               (entry (aref index slot)) (ra (aref a-snap (1+ i))))
+          (while (and (/= entry 0) (not (eq cell (aref b-snap entry))))
+            (setq slot (logand (1+ slot) mask) entry (aref index slot)))
+          (let ((rb (and (/= entry 0) (aref b-snap (1+ entry)))))
+            (when (and nelisp-aot-compiler--repr-audit (not (eq ra rb)))
+              (message "[repr-join] %s a=%s b=%s" (car cell) ra rb))
+            (when (and (/= entry 0) (memq ra '(raw-i64 sexp-ptr))
+                       (memq rb '(raw-i64 sexp-ptr))
+                       (not (eq (nelisp-aot-compiler--boxed-p ra)
+                                (nelisp-aot-compiler--boxed-p rb))))
+              (push (cons cell (if (nelisp-aot-compiler--boxed-p ra) 'b 'a)) fixes))))
+        (setq i (+ i 2))))
+    fixes))
 
 (defun nelisp-aot-compiler--boxed-p (repr)
   "Return non-nil when REPR means the word is a Sexp pointer."
@@ -1273,10 +1364,42 @@ the path whose value has to be boxed.  Cells whose representation on
 either side is not definite are left alone: nothing can be converted
 without knowing what is there, and guessing is how a wrong answer
 becomes a wrong address."
-  (let ((fixes nil))
+  (if (and (nelisp-aot-compiler--repr-vector-p a-snap)
+           (nelisp-aot-compiler--repr-vector-p b-snap))
+      (nelisp-aot-compiler--repr-vector-join-fixes a-snap b-snap)
+  (let* ((a-snap (if (nelisp-aot-compiler--repr-vector-p a-snap)
+                     (nelisp-aot-compiler--repr-vector-list a-snap) a-snap))
+         (b-snap (if (nelisp-aot-compiler--repr-vector-p b-snap)
+                     (nelisp-aot-compiler--repr-vector-list b-snap) b-snap))
+         (fixes nil)
+         ;; Snapshots normally have hundreds of distinct frame cells. Keep
+         ;; the original first ASSQ match, including duplicate keys, while
+         ;; resolving identity-hash collisions inside bounded EQ buckets.
+         ;; Small and malformed/dotted inputs retain the original walk.
+         (index
+          (and a-snap
+               ;; The bootstrap proper-list-p does not detect cycles. Floyd's
+               ;; walk must terminate before indexing; retain legacy ASSQ for
+               ;; cyclic/dotted inputs (where an early match can still return).
+               (let ((fast b-snap) (slow b-snap) (count 0) (proper t))
+                 (while (and proper (consp fast))
+                   (setq fast (cdr fast) count (1+ count))
+                   (when (consp fast)
+                     (setq fast (cdr fast) count (1+ count) slow (cdr slow)))
+                   (when (and (consp fast) (eq fast slow)) (setq proper nil)))
+                 (and proper (null fast) (> count 16) (make-vector 256 nil))))))
+    (when index
+      (dolist (entry b-snap)
+        (when (consp entry)
+          (let* ((key (logand (sxhash-eq (car entry)) 255))
+                 (bucket (aref index key)))
+            (unless (assq (car entry) bucket)
+              (aset index key (cons entry bucket)))))))
     (dolist (entry a-snap)
       (let* ((cell (car entry))
-             (other (assq cell b-snap))
+             (other (assq cell (if index
+                                    (aref index (logand (sxhash-eq cell) 255))
+                                  b-snap)))
              (ra (cdr entry))
              (rb (and other (cdr other))))
         (when (and nelisp-aot-compiler--repr-audit (not (eq ra rb)))
@@ -1288,7 +1411,7 @@ becomes a wrong address."
                             (nelisp-aot-compiler--boxed-p rb))))
           (push (cons cell (if (nelisp-aot-compiler--boxed-p ra) 'b 'a))
                 fixes))))
-    fixes))
+    fixes)))
 
 (defun nelisp-aot-compiler--repr-coercion-ir (cell env fenv defuns)
   "Return IR that boxes CELL's slot in place, or nil when it cannot.
@@ -1348,6 +1471,8 @@ bare."
   (let ((boxed nil)
         (poisoned nil))
     (dolist (snap snapshots)
+      (when (nelisp-aot-compiler--repr-vector-p snap)
+        (setq snap (nelisp-aot-compiler--repr-vector-list snap)))
       (dolist (entry snap)
         (cond
          ((not (memq (cdr entry) '(raw-i64 sexp-ptr)))
@@ -1359,6 +1484,8 @@ bare."
 
 (defun nelisp-aot-compiler--repr-raw-cells (snapshot boxed-cells)
   "Return the BOXED-CELLS that SNAPSHOT records as still raw."
+  (when (nelisp-aot-compiler--repr-vector-p snapshot)
+    (setq snapshot (nelisp-aot-compiler--repr-vector-list snapshot)))
   (seq-filter (lambda (cell)
                 (let ((entry (assq cell snapshot)))
                   (and entry (eq (cdr entry) 'raw-i64))))
@@ -1684,6 +1811,51 @@ vector in an aligned stack temporary."
   (let ((var (car (nelisp-aot-compiler--validate-let-binding binding))))
     (and (nelisp-aot-compiler--special-var-p var) t)))
 
+(defun nelisp-aot-compiler--index-proper-list-p (value)
+  "Floyd check that also terminates on the standalone substrate."
+  (let ((slow value) (fast value) (safe t))
+    (while (and safe (consp fast))
+      (setq fast (cdr fast))
+      (when (consp fast)
+        (setq fast (cdr fast) slow (cdr slow))
+        (when (eq fast slow) (setq safe nil))))
+    (and safe (null fast))))
+(defun nelisp-aot-compiler--free-setq-index (form)
+  "Index free setq targets in a proper tree, or return nil for legacy fallback."
+  (let ((work (list (cons form nil)))
+        (seen (make-vector 256 nil))
+        (written (make-hash-table :test 'eq)) (safe t))
+    (while (and work safe)
+      (let* ((frame (pop work)) (node (car frame)) (bound (cdr frame)))
+        (when (and (consp node) (not (memq (car node) '(quote function defun defmacro lambda))))
+          (let* ((bucket (logand (sxhash-eq node) 255)) (entries (aref seen bucket)))
+          (if (or (assq node entries) (not (nelisp-aot-compiler--index-proper-list-p node)))
+              (setq safe nil)
+            (aset seen bucket (cons (cons node t) entries))
+            (cond
+             ((eq (car node) 'setq)
+              (let ((pairs (cdr node)))
+                (while (and pairs safe)
+                  (if (not (symbolp (car pairs))) (setq safe nil)
+                    (unless (memq (car pairs) bound) (puthash (car pairs) t written))
+                    (when (cdr pairs) (push (cons (cadr pairs) bound) work))
+                    (setq pairs (cddr pairs))))))
+             ((memq (car node) '(let let*))
+              (let ((bindings (nth 1 node)) (inner bound) (parallel (eq (car node) 'let)))
+                (if (not (nelisp-aot-compiler--index-proper-list-p bindings)) (setq safe nil)
+                  (dolist (binding bindings)
+                    (cond
+                     ((symbolp binding) (push binding inner))
+                     ((and (consp binding) (nelisp-aot-compiler--index-proper-list-p binding)
+                           (symbolp (car binding)) (<= (length binding) 2))
+                      (when (cdr binding)
+                        (push (cons (cadr binding) (if parallel bound inner)) work))
+                      (push (car binding) inner))
+                     (t (setq safe nil))))
+                  (dolist (child (nthcdr 2 node)) (push (cons child inner) work)))))
+             (t (dolist (child node) (push (cons child bound) work)))))))))
+    (and safe (cons t written))))
+
 (defun nelisp-aot-compiler--parse-multi-let
     (bindings body-sexp env fenv defuns parse-body-fn)
   "Parse a multi-binding `let' in value or statement context.
@@ -1708,15 +1880,35 @@ extend FENV only for BODY.  PARSE-BODY-FN is either
        (t
         (let ((new-env env)
               (new-fenv fenv)
-              (rt-bindings nil))
+              (rt-bindings nil)
+              (mutation-index nil)
+              (mutation-index-checked nil)
+              (mutation-index-eligible nil))
           (dolist (binding bindings)
             (let* ((pair (nelisp-aot-compiler--validate-let-binding binding))
                    (var (nth 0 pair))
                    (val-sexp (nth 1 pair))
                    (root-p (nth 2 pair)))
               (if (and (nelisp-aot-compiler--int-foldable-p val-sexp env fenv)
-                       (not (nelisp-aot-compiler--form-setqs-var-p
-                             body-sexp var)))
+                       (not (progn
+                         ;; Integer initializers cannot invoke a macro that
+                         ;; mutates BODY between these binding queries.
+                         (unless mutation-index-checked
+                           (setq mutation-index-checked t
+                                 mutation-index-eligible
+                                 (cl-every (lambda (binding)
+                                             (and (consp binding)
+                                                  (integerp (cadr binding))))
+                                           bindings)))
+                         (when mutation-index-eligible
+                           (setq mutation-index
+                                 (nelisp-aot-compiler--multi-let-mutation-index
+                                  body-sexp mutation-index))
+                           (unless mutation-index
+                             (setq mutation-index-eligible nil)))
+                         (if mutation-index
+                             (gethash var (cdr mutation-index))
+                           (nelisp-aot-compiler--form-setqs-var-p body-sexp var)))))
                   (let ((val (nelisp-aot-compiler--fold-int val-sexp env)))
                     (push (cons var val) new-env))
                 (unless nelisp-aot-compiler--next-rt-let-slot
@@ -2779,14 +2971,15 @@ value expression, docstring, and customization keyword plist."
          (nelisp-aot-compiler--preprocess-source source)
          (nreverse nelisp-aot-compiler--closure-lift-descriptors))))))
 
-(defun nelisp-aot-compiler--module-init-plan (sexp)
+(defun nelisp-aot-compiler--module-init-plan (sexp &optional parsed-ir)
   "Return the normalized Doc 129/Doc 99 module-init plan for SEXP.
 This is the compiler-side handoff that combines top-level variable init
 helpers, defcustom metadata, GC root descriptors, and AOT closure
 descriptors into the runtime plan consumed by
-`nelisp-cc-runtime-run-aot-module-init-plan'."
+`nelisp-cc-runtime-run-aot-module-init-plan'.
+PARSED-IR reuses this compile's already checked parser result."
   (require 'nelisp-cc-runtime)
-  (let ((ir (nelisp-aot-compiler--parse sexp nil)))
+  (let ((ir (or parsed-ir (nelisp-aot-compiler--parse sexp nil))))
     (nelisp-cc-runtime-aot-module-init-plan
      (nelisp-aot-compiler--init-helper-descriptors sexp)
      (nelisp-aot-compiler--custom-metadata-descriptors sexp)
@@ -2804,12 +2997,13 @@ descriptors into the runtime plan consumed by
        (null (plist-get plan :root-descriptors))
        (null (plist-get plan :closure-descriptors))))
 
-(defun nelisp-aot-compiler--object-module-init-metadata (sexp)
+(defun nelisp-aot-compiler--object-module-init-metadata (sexp &optional parsed-ir)
   "Return object metadata plist for SEXP's Doc 129 module-init plan.
 The result is nil when SEXP has no helper/custom/root/closure metadata.
 When non-nil, it is a plist with a UTF-8/NUL-terminated printable plan
-payload suitable for ET_REL `.rodata' embedding."
-  (let ((plan (nelisp-aot-compiler--module-init-plan sexp)))
+payload suitable for ET_REL `.rodata' embedding.
+PARSED-IR is the checked IR from the same compile, when available."
+  (let ((plan (nelisp-aot-compiler--module-init-plan sexp parsed-ir)))
     (unless (nelisp-aot-compiler--module-init-plan-empty-p plan)
       (let* ((text (prin1-to-string plan))
              (bytes (concat (encode-coding-string text 'utf-8 t)
@@ -3390,6 +3584,10 @@ intersection of exhaustive branches."
 (defun nelisp-aot-compiler--rewrite-frame-slot-refs (form vars)
   "Rewrite free references to VARS in FORM through `aot-frame-slot-ref'."
   (cond
+   ;; This helper receives already validated, preprocessed forms. With no
+   ;; captured mutations there is no reference to rewrite. Preserve the
+   ;; read-only subtree rather than recopying every nested branch.
+   ((null vars) form)
    ((and (symbolp form) (memq form vars))
     `(aot-frame-slot-ref ',form))
    ((atom form) form)
@@ -9830,7 +10028,8 @@ functions `((NAME . ARITY) ...)'."
            ;; At run time the `else' arm never observes the `then' arm's
            ;; assignments, so it must not observe them while parsing
            ;; either: both start from the state the `if' was entered with.
-           (entry-reprs (nelisp-aot-compiler--repr-snapshot fenv))
+           (repr-fenv (nelisp-aot-compiler--control-repr-fenv sexp fenv))
+           (entry-reprs (nelisp-aot-compiler--repr-snapshot repr-fenv))
            ;; Saved rather than let-bound: an assignment inside this `if'
            ;; is still an assignment as far as an enclosing branch is
            ;; concerned, and a dynamic binding would discard it on exit.
@@ -9838,13 +10037,13 @@ functions `((NAME . ARITY) ...)'."
            (_ (setq nelisp-aot-compiler--assigned-cells nil))
            (then-ir (nelisp-aot-compiler--parse-value
                      (nth 2 sexp) env fenv defuns))
-           (then-reprs (nelisp-aot-compiler--repr-snapshot fenv))
+           (then-reprs (nelisp-aot-compiler--repr-snapshot repr-fenv))
            (then-assigned nelisp-aot-compiler--assigned-cells)
            (_ (progn (nelisp-aot-compiler--repr-restore entry-reprs)
                      (setq nelisp-aot-compiler--assigned-cells nil)))
            (else-ir (nelisp-aot-compiler--parse-value
                      (nth 3 sexp) env fenv defuns))
-           (else-reprs (nelisp-aot-compiler--repr-snapshot fenv))
+           (else-reprs (nelisp-aot-compiler--repr-snapshot repr-fenv))
            (else-assigned nelisp-aot-compiler--assigned-cells)
            (fixes (nelisp-aot-compiler--repr-join-fixes
                    then-reprs else-reprs)))
@@ -9885,9 +10084,10 @@ functions `((NAME . ARITY) ...)'."
                                 (nelisp-aot-compiler--parse-value
                                  e env fenv defuns))
                               (cddr sexp))))))
-           (entry-reprs (nelisp-aot-compiler--repr-snapshot fenv))
+           (repr-fenv (nelisp-aot-compiler--control-repr-fenv sexp fenv))
+           (entry-reprs (nelisp-aot-compiler--repr-snapshot repr-fenv))
            (parsed (funcall parse))
-           (after-reprs (nelisp-aot-compiler--repr-snapshot fenv))
+           (after-reprs (nelisp-aot-compiler--repr-snapshot repr-fenv))
            (boxed (nelisp-aot-compiler--repr-boxed-cells (list after-reprs)))
            (raw (nelisp-aot-compiler--repr-raw-cells entry-reprs boxed)))
       (if (null raw)
@@ -9932,7 +10132,8 @@ functions `((NAME . ARITY) ...)'."
       ;; frame keeps whatever it was entered with.  All of them have to
       ;; agree about which slots hold Sexp pointers.
       (let* ((outer-assigned nelisp-aot-compiler--assigned-cells)
-             (entry-reprs (nelisp-aot-compiler--repr-snapshot fenv))
+             (repr-fenv (nelisp-aot-compiler--control-repr-fenv sexp fenv))
+             (entry-reprs (nelisp-aot-compiler--repr-snapshot repr-fenv))
              (has-default (seq-find (lambda (cl) (eq (car-safe cl) t))
                                     raw-clauses))
              (parsed nil)
@@ -9950,11 +10151,11 @@ functions `((NAME . ARITY) ...)'."
                               'always
                             (nelisp-aot-compiler--parse-value
                              (car cl) env fenv defuns)))
-                 (before (nelisp-aot-compiler--repr-snapshot fenv))
+                 (before (nelisp-aot-compiler--repr-snapshot repr-fenv))
                  (_ (setq nelisp-aot-compiler--assigned-cells nil))
                  (body-ir (nelisp-aot-compiler--parse-value
                            (cadr cl) env fenv defuns))
-                 (after (nelisp-aot-compiler--repr-snapshot fenv))
+                 (after (nelisp-aot-compiler--repr-snapshot repr-fenv))
                  (assigned nelisp-aot-compiler--assigned-cells))
             (push (list pred-ir body-ir after assigned before) parsed)
             ;; The next predicate sees the state before this body, not
@@ -10047,9 +10248,10 @@ functions `((NAME . ARITY) ...)'."
                                   (nelisp-aot-compiler--ir-as-raw-i64 arm)
                                 arm))))
                         args)))
-             (entry-reprs (nelisp-aot-compiler--repr-snapshot fenv))
+             (repr-fenv (nelisp-aot-compiler--control-repr-fenv sexp fenv))
+             (entry-reprs (nelisp-aot-compiler--repr-snapshot repr-fenv))
              (forms (funcall parse))
-             (after-reprs (nelisp-aot-compiler--repr-snapshot fenv))
+             (after-reprs (nelisp-aot-compiler--repr-snapshot repr-fenv))
              (boxed (nelisp-aot-compiler--repr-boxed-cells (list after-reprs)))
              (raw (nelisp-aot-compiler--repr-raw-cells entry-reprs boxed)))
         (if (null raw)
@@ -12935,30 +13137,51 @@ must be in 0..7 (= f64 ABI arity cap)."
     (let ((disp (- (* 8 (1+ slot)))))
       (nelisp-asm-x86_64-movsd-xmm-mem-disp8 buf fp-dst 'rbp disp))))
 
+(defun nelisp-aot-compiler--f64-order-independent-p (node)
+  "Return non-nil when float leaf NODE has no observable effects."
+  (let ((kind (nelisp-aot-compiler--ir-kind node)))
+    (or (memq kind '(imm ref))
+        (and (memq kind '(bits-to-f64 i64-to-f64))
+             (nelisp-aot-compiler--order-independent-p
+              (nelisp-aot-compiler--ir-get node :int-expr))))))
+
+(defun nelisp-aot-compiler--emit-f64-binary-operands (a b buf)
+  "Place A in xmm0/d0 and B in xmm1/d1 in observable source order.
+Preserve the old bytes for independent leaves; otherwise spill A's bits
+across B's conversion, which may call arbitrary integer expressions."
+  (let* ((arm64 (eq nelisp-aot-compiler--arch 'aarch64))
+         (fp0 (if arm64 'd0 'xmm0))
+         (fp1 (if arm64 'd1 'xmm1)))
+    (if (and (nelisp-aot-compiler--f64-order-independent-p a)
+             (nelisp-aot-compiler--f64-order-independent-p b))
+        (progn
+          (nelisp-aot-compiler--emit-f64-leaf-into b buf fp1)
+          (nelisp-aot-compiler--emit-f64-leaf-into a buf fp0))
+      (nelisp-aot-compiler--emit-f64-leaf-into a buf fp0)
+      (if arm64
+          (progn
+            (nelisp-asm-arm64-fmov-x-from-d buf 'x0 'd0)
+            (nelisp-asm-arm64-str-pre-sp-16 buf 'x0))
+        (nelisp-asm-x86_64-movq-r64-xmm buf 'rax 'xmm0)
+        (nelisp-aot-compiler--emit-temp-push buf 'rax))
+      (nelisp-aot-compiler--emit-f64-leaf-into b buf fp1)
+      (if arm64
+          (progn
+            (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)
+            (nelisp-asm-arm64-fmov-d-from-x buf 'd0 'x0))
+        (nelisp-aot-compiler--emit-temp-pop buf 'rax)
+        (nelisp-asm-x86_64-movq-xmm-r64 buf 'xmm0 'rax)))))
+
 (defun nelisp-aot-compiler--emit-f64-binop (node buf)
-  "Emit a flat f64-class binop NODE (Doc 110 §110.E.1).
-Result lands in xmm0 — bypassing the rax convention used by the
-GP `--emit-value' contract.  Strategy at MVP scope is `flat-only':
-
-  1. Evaluate B into xmm1 directly (= MUST be a leaf ref or
-     literal; nested binops would clobber xmm0 mid-flight and
-     are rejected with a clear signal).
-  2. Evaluate A into xmm0 directly (= same constraint).
-  3. ADDSD/SUBSD/MULSD/DIVSD xmm0, xmm1 → result in xmm0.
-
-This avoids the xmm spill / fill dance the GP path uses
-(`push rax; ...; pop r10') because xmm has no single-byte push
-opcode + would force a 16-byte stack alignment per call.  Doc
-112 (= xmm spill) re-enables nested binops; until then the
-parser must reject anything that would force xmm spill."
+  "Emit a flat f64-class binop NODE, result in xmm0/d0.
+Leaf conversions can run integer expressions with effects.  The shared
+operand emitter preserves their source order and spills across the second
+conversion when necessary.  Nested float binops remain unsupported."
   (let* ((op (nelisp-aot-compiler--ir-get node :op))
          (a (nelisp-aot-compiler--ir-get node :a))
          (b (nelisp-aot-compiler--ir-get node :b))
-         (aarch64-p (eq nelisp-aot-compiler--arch 'aarch64))
-         (xmm0 (if aarch64-p 'd0 'xmm0))
-         (xmm1 (if aarch64-p 'd1 'xmm1)))
-    (nelisp-aot-compiler--emit-f64-leaf-into b buf xmm1)
-    (nelisp-aot-compiler--emit-f64-leaf-into a buf xmm0)
+         (aarch64-p (eq nelisp-aot-compiler--arch 'aarch64)))
+    (nelisp-aot-compiler--emit-f64-binary-operands a b buf)
     (if aarch64-p
         (cond
          ((eq op 'f64-add)
@@ -13141,8 +13364,7 @@ ships in §110.C.2.b."
     ;; `--emit-f64-binop').  Comparison ops then swap operand order
     ;; for LT / LE (= the AArch64 / x86_64 trick that makes SETA /
     ;; CSET-GT inherently NaN-correct).
-    (nelisp-aot-compiler--emit-f64-leaf-into b buf fp1)
-    (nelisp-aot-compiler--emit-f64-leaf-into a buf fp0)
+    (nelisp-aot-compiler--emit-f64-binary-operands a b buf)
     (cond
      ((eq op 'f64-eq-eps)
       (nelisp-aot-compiler--emit-f64-eq-eps buf))
@@ -14016,13 +14238,50 @@ the node's class to consume the result correctly."
          (signal 'nelisp-aot-compiler-error
                  (list :unknown-value-kind kind))))))))
 
+(defun nelisp-aot-compiler--order-independent-p (node)
+  "Return non-nil for IR NODE with no effects or mutable memory reads.
+Local references are safe only when BOTH operands satisfy this predicate.
+Unknown forms, calls, loads and potentially trapping division are conservative
+barriers.  Checked arithmetic can exit, so it is also a barrier."
+  (let ((kind (nelisp-aot-compiler--ir-kind node)))
+    (or (memq kind '(imm ref))
+        (and (memq kind '(arith shift cmp))
+             (not (and (eq kind 'arith)
+                       (or nelisp-aot-compiler--checked-arith
+                           (memq (nelisp-aot-compiler--ir-get node :op) '(/ mod)))))
+             (nelisp-aot-compiler--order-independent-p
+              (nelisp-aot-compiler--ir-get node :a))
+             (nelisp-aot-compiler--order-independent-p
+              (nelisp-aot-compiler--ir-get node :b))))))
+
+(defun nelisp-aot-compiler--emit-binary-operands (a b buf)
+  "Emit A and B into rax/r10 or x0/x9, preserving observable source order.
+Keep the historical B-first bytes when either operand is an immediate or
+both are effect-free.  Otherwise save A, evaluate B, and restore the operand
+register convention without changing the operation's meaning."
+  (let ((reverse-safe
+         (or (eq (nelisp-aot-compiler--ir-kind a) 'imm)
+             (eq (nelisp-aot-compiler--ir-kind b) 'imm)
+             (and (nelisp-aot-compiler--order-independent-p a)
+                  (nelisp-aot-compiler--order-independent-p b)))))
+    (nelisp-aot-compiler--emit-value (if reverse-safe b a) buf)
+    (if (eq nelisp-aot-compiler--arch 'aarch64)
+        (progn
+          (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+          (nelisp-aot-compiler--emit-value (if reverse-safe a b) buf)
+          (unless reverse-safe
+            (nelisp-asm-arm64-mov-reg-reg buf 'x9 'x0))
+          (nelisp-asm-arm64-ldr-post-sp-16 buf (if reverse-safe 'x9 'x0)))
+      (nelisp-aot-compiler--emit-temp-push buf 'rax)
+      (nelisp-aot-compiler--emit-value (if reverse-safe a b) buf)
+      (unless reverse-safe
+        (nelisp-asm-x86_64-mov-reg-reg buf 'r10 'rax))
+      (nelisp-aot-compiler--emit-temp-pop buf (if reverse-safe 'r10 'rax)))))
+
 (defun nelisp-aot-compiler--emit-arith (node buf)
-  "Emit a runtime arithmetic op, result in rax.
-Strategy: evaluate B into rax, push, evaluate A into rax, pop into
-r10, then OP rax, r10.  Push/pop are byte-fixed so pass invariance
-holds.  r10 is caller-saved per SysV AND not in the arg-reg list so
-  the scratch never aliases a parameter register (= the bug seen in
-chained calls where rcx held both `d' param and a scratch value)."
+  "Emit runtime arithmetic, with A in rax/x0 and B in r10/x9.
+Operand sequencing is shared with shifts and comparisons; observable effects
+run left to right.  The saved operand uses the stack across nested calls."
   (let ((op (nelisp-aot-compiler--ir-get node :op))
         (a (nelisp-aot-compiler--ir-get node :a))
         (b (nelisp-aot-compiler--ir-get node :b)))
@@ -14036,10 +14295,7 @@ chained calls where rcx held both `d' param and a scratch value)."
             (signal 'nelisp-aot-compiler-error
                     (list :checked-arith-unsupported-arch
                           nelisp-aot-compiler--arch)))
-          (nelisp-aot-compiler--emit-value b buf)
-          (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-          (nelisp-aot-compiler--emit-value a buf)
-          (nelisp-asm-arm64-ldr-post-sp-16 buf 'x9)
+          (nelisp-aot-compiler--emit-binary-operands a b buf)
           (cond
            ((eq op '+) (nelisp-asm-arm64-add-reg-reg buf 'x0 'x0 'x9))
            ((eq op '-) (nelisp-asm-arm64-sub-reg-reg buf 'x0 'x0 'x9))
@@ -14054,14 +14310,7 @@ chained calls where rcx held both `d' param and a scratch value)."
            (t
             (signal 'nelisp-aot-compiler-error
                     (list :unknown-arith-op op)))))
-      ;; Compute B -> rax.
-      (nelisp-aot-compiler--emit-value b buf)
-      ;; push rax (save B on stack).
-      (nelisp-aot-compiler--emit-temp-push buf 'rax)
-      ;; Compute A -> rax.
-      (nelisp-aot-compiler--emit-value a buf)
-      ;; pop r10 (= recover B into r10; r10 not in arg-regs).
-      (nelisp-aot-compiler--emit-temp-pop buf 'r10)
+      (nelisp-aot-compiler--emit-binary-operands a b buf)
       (cond
        ((eq op '+)
         (nelisp-asm-x86_64-add-reg-reg buf 'rax 'r10)
@@ -14158,30 +14407,15 @@ rather than claimed as parity with it."
     (nelisp-asm-x86_64-syscall buf)))
 
 (defun nelisp-aot-compiler--emit-shift (node buf)
-  "Emit a variable-count shift NODE; result in rax (Doc 100 §100.D).
-Strategy mirrors `--emit-arith' for the operand evaluation but
-diverges at the final op: x86_64 SHL / SAR by a variable count
-require the count to live in CL (= low 8 bits of RCX).  Sequence:
-
-  <emit B>            -> rax           (= count)
-  push rax            (save count on stack)
-  <emit A>            -> rax           (= value)
-  pop r10             (count into r10)
-  mov rcx, r10        (count into rcx so cl carries the low byte)
-  shl/sar rax, cl
-
-RCX is caller-saved per SysV and not in the arg-reg list (= same
-property `--emit-arith' relies on for r10), so it cannot alias a
-live parameter register in the surrounding defun."
+  "Emit a variable-count shift NODE, preserving observable operand order.
+The shared operand emitter leaves A in rax/x0 and B in r10/x9.
+x86_64 moves B into RCX because SHL/SAR require the count in CL."
   (let ((op (nelisp-aot-compiler--ir-get node :op))
         (a (nelisp-aot-compiler--ir-get node :a))
         (b (nelisp-aot-compiler--ir-get node :b)))
     (if (eq nelisp-aot-compiler--arch 'aarch64)
         (progn
-          (nelisp-aot-compiler--emit-value b buf)
-          (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-          (nelisp-aot-compiler--emit-value a buf)
-          (nelisp-asm-arm64-ldr-post-sp-16 buf 'x9)
+          (nelisp-aot-compiler--emit-binary-operands a b buf)
           (cond
            ((eq op 'shl) (nelisp-asm-arm64-lslv buf 'x0 'x0 'x9))
            ((eq op 'sar) (nelisp-asm-arm64-asrv buf 'x0 'x0 'x9))
@@ -14189,14 +14423,7 @@ live parameter register in the surrounding defun."
            (t
             (signal 'nelisp-aot-compiler-error
                     (list :unknown-shift-op op)))))
-      ;; Compute B -> rax.
-      (nelisp-aot-compiler--emit-value b buf)
-      ;; push rax (save B on stack).
-      (nelisp-aot-compiler--emit-temp-push buf 'rax)
-      ;; Compute A -> rax.
-      (nelisp-aot-compiler--emit-value a buf)
-      ;; pop r10 (= recover B into r10).
-      (nelisp-aot-compiler--emit-temp-pop buf 'r10)
+      (nelisp-aot-compiler--emit-binary-operands a b buf)
       ;; mov rcx, r10 (= count into rcx; cl = rcx[0:8]).
       (nelisp-asm-x86_64-mov-reg-reg buf 'rcx 'r10)
       (cond
@@ -18309,12 +18536,9 @@ underlying `cmp' instruction sets SF/OF/ZF and the setCC
 opcode reads the right combination.")
 
 (defun nelisp-aot-compiler--emit-cmp (node buf)
-  "Emit signed comparison NODE; result (0 or 1) in rax.
-Strategy: compute B -> rax -> push, compute A -> rax, pop r10 (=
-B), cmp rax, r10 (= computes A - B flag set), then setCC al +
-movzx eax, al to materialise the boolean into rax.  Uses r10 to
-  avoid arg-reg aliasing inside chained calls, mirroring the
-  Doc 97.b arith convention."
+  "Emit signed comparison NODE, preserving observable operand order.
+The shared operand emitter leaves A in rax/x0 and B in r10/x9;
+compare A against B and materialize the boolean result."
   (let* ((op (nelisp-aot-compiler--ir-get node :op))
          (a (nelisp-aot-compiler--ir-get node :a))
          (b (nelisp-aot-compiler--ir-get node :b))
@@ -18330,19 +18554,10 @@ movzx eax, al to materialise the boolean into rax.  Uses r10 to
                  ('> 'gt)
                  ('<= 'le)
                  ('>= 'ge))))
-          (nelisp-aot-compiler--emit-value b buf)
-          (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-          (nelisp-aot-compiler--emit-value a buf)
-          (nelisp-asm-arm64-ldr-post-sp-16 buf 'x9)
+          (nelisp-aot-compiler--emit-binary-operands a b buf)
           (nelisp-asm-arm64-cmp-reg-reg buf 'x0 'x9)
           (nelisp-asm-arm64-cset buf 'x0 arm64-cc))
-      ;; Compute B -> rax, save on stack.
-      (nelisp-aot-compiler--emit-value b buf)
-      (nelisp-aot-compiler--emit-temp-push buf 'rax)
-      ;; Compute A -> rax.
-      (nelisp-aot-compiler--emit-value a buf)
-      ;; Recover B into r10.
-      (nelisp-aot-compiler--emit-temp-pop buf 'r10)
+      (nelisp-aot-compiler--emit-binary-operands a b buf)
       ;; cmp rax, r10                          (= A - B sets flags)
       (nelisp-asm-x86_64-cmp-reg-reg buf 'rax 'r10)
       ;; setCC al
@@ -20945,7 +21160,7 @@ register budgeting while ELF/Mach-O keep SysV."
           ;; v3, so both relocatable-object formats now embed it.
           (and (not empty-source-p)
                (memq format '(elf mach-o))
-               (nelisp-aot-compiler--object-module-init-metadata source)))
+               (nelisp-aot-compiler--object-module-init-metadata source ir)))
          (defuns (and ir (nelisp-aot-compiler--collect-defuns ir)))
          (data-blobs (append
                       (and ir (nelisp-aot-compiler--collect-data-blobs ir))
@@ -21361,6 +21576,141 @@ drift (= a Doc 92 emitter invariant violation)."
        (signal 'nelisp-aot-compiler-error
                (list :unknown-output-format other))))
     file-path))
+
+;; Capture after all definitions, including the forward PARSE-VALUE owner.
+(let ((owners (mapcar (lambda (name) (cons name (symbol-function name)))
+                     '(nelisp-aot-compiler--form-setqs-var-p
+                       nelisp-aot-compiler--let-binding-vars
+                       nelisp-aot-compiler--validate-let-binding
+                       nelisp-aot-compiler--int-foldable-p
+                       nelisp-aot-compiler--fold-int
+                       nelisp-aot-compiler--parse-value
+                       nelisp-aot-compiler--parse-let-var
+                       nelisp-aot-compiler--make-ir
+                       nelisp-aot-compiler--ir-repr
+                       nelisp-aot-compiler--ir-get
+                       nelisp-aot-compiler--ir-kind
+                       nelisp-aot-compiler--index-proper-list-p)))
+      (collector (symbol-function 'nelisp-aot-compiler--free-setq-index)))
+  (defun nelisp-aot-compiler--multi-let-mutation-index (body cached)
+    "Reuse a local tree index only while the original pure helpers remain current."
+    (let ((remaining owners) (current t))
+      (while (and remaining current)
+        (unless (eq (cdar remaining) (symbol-function (caar remaining))) (setq current nil))
+        (setq remaining (cdr remaining)))
+      (and current (or cached (funcall collector body))))))
+
+;; A control expression that cannot write an outer local cannot change any
+;; outer cell's representation. Preserve the full snapshot path for writes,
+;; malformed/shared trees, and replaced parser/state helpers. This is a local
+;; proof of unchanged cells, not a cached admission or a validation switch.
+(let ((owners
+       (mapcar (lambda (name) (cons name (symbol-function name)))
+               '(nelisp-aot-compiler--parse-value
+                 nelisp-aot-compiler--parse-stmt
+                 nelisp-aot-compiler--parse-let-var
+                 nelisp-aot-compiler--validate-let-binding
+                 nelisp-aot-compiler--repr-snapshot
+                 nelisp-aot-compiler--repr-restore
+                 nelisp-aot-compiler--repr-join-fixes
+                 nelisp-aot-compiler--repr-coercion-ir
+                 nelisp-aot-compiler--repr-fix-arm
+                 nelisp-aot-compiler--repr-coerce-before
+                 nelisp-aot-compiler--repr-boxed-cells
+                 nelisp-aot-compiler--repr-raw-cells
+                 nelisp-aot-compiler--ir-as-raw-i64
+                 nelisp-aot-compiler--make-ir
+                 nelisp-aot-compiler--ir-repr
+                 nelisp-aot-compiler--ir-get
+                 nelisp-aot-compiler--free-setq-index
+                 nelisp-aot-compiler--index-proper-list-p
+                 plist-get
+                 setcdr
+                 assq
+                 memq
+                 eq
+                 symbolp
+                 consp
+                 make-hash-table
+                 puthash
+                 gethash
+                 hash-table-count
+                 nelisp-aot-compiler--int-foldable-p
+                 nelisp-aot-compiler--parse-extern-call-args
+                 nelisp-aot-compiler--repr-vector-size
+                 nelisp-aot-compiler--object-hidden-boundary-fenv
+                 nelisp-aot-compiler--auto-aot-root-boundary-slots
+                 nelisp-aot-compiler--symbols-for-root-slots
+                 nelisp-aot-compiler--maybe-wrap-aot-root-scope
+                 nelisp-aot-compiler--parse-multi-let
+                 nelisp-aot-compiler--runtime-sexp-literal-form
+                 nelisp-aot-compiler--runtime-boxed-sexp-form
+                 nelisp-aot-compiler--aot-builtin-boundary-available-p
+                 nelisp-aot-compiler--aot-funcall-boundary-available-p
+                 nelisp-aot-compiler--fenv-has-symbol-p
+                 nelisp-aot-compiler--aot-name-slot-symbol
+                 nelisp-aot-compiler--aot-keyword-slot-symbols
+                 nelisp-aot-compiler--aot-callback-slot-symbols
+                 nelisp-aot-compiler--aot-literal-slot-symbols
+                 nelisp-aot-compiler--aot-function-designator-lowering
+                 nelisp-aot-compiler--aot-builtin1-boundary-symbols
+                 nelisp-aot-compiler--parse-aot-builtin1-call
+                 nelisp-aot-compiler--parse-jit-checked-car
+                 nelisp-aot-compiler--aot-dispatcher-arg-form
+                 nelisp-aot-compiler--as-sexp-ptr-leaf
+                 nelisp-aot-compiler--as-sexp-ptr-form
+                 nelisp-aot-compiler--parse-aot-builtinn-call
+                 nelisp-aot-compiler--aot-funcall1-boundary-symbols
+                 nelisp-aot-compiler--aot-closure-boundary-symbols
+                 nelisp-aot-compiler--parse-aot-closure-lambda
+                 nelisp-aot-compiler--parse-aot-capture-cell
+                 nelisp-aot-compiler--aot-frame-slot-lowering
+                 nelisp-aot-compiler--parse-aot-frame-slot-ref
+                 nelisp-aot-compiler--parse-aot-frame-slot-set
+                 nelisp-aot-compiler--parse-aot-funcall1
+                 nelisp-aot-compiler--parse-aot-funcall2
+                 nelisp-aot-compiler--parse-aot-funcall3
+                 nelisp-aot-compiler--parse-aot-funcalln
+                 nelisp-aot-compiler--parse-aot-apply
+                 nelisp-aot-compiler--aot-exception-boundary-symbols
+                 nelisp-aot-compiler--aot-tag-lowering
+                 nelisp-aot-compiler--parse-wasm-throw
+                 nelisp-aot-compiler--parse-wasm-catch
+                 nelisp-aot-compiler--parse-wasm-unwind-protect
+                 nelisp-aot-compiler--parse-wasm-condition-case
+                 nelisp-aot-compiler--parse-aot-throw
+                 nelisp-aot-compiler--parse-aot-signal
+                 nelisp-aot-compiler--parse-aot-landing-value
+                 nelisp-aot-compiler--parse-aot-landing-error
+                 nelisp-aot-compiler--parse-aot-landing-jump
+                 nelisp-aot-compiler--parse-aot-landing-label
+                 nelisp-aot-compiler--parse-aot-machine-landing-jump
+                 nelisp-aot-compiler--parse-aot-errorn
+                 nelisp-aot-compiler--parse-aot-error
+                 nelisp-aot-compiler--parse-aot-push-handler
+                 nelisp-aot-compiler--parse-aot-pop-handler
+                 nelisp-aot-compiler--aot-root-boundary-symbols
+                 nelisp-aot-compiler--parse-aot-push-roots
+                 nelisp-aot-compiler--parse-aot-pop-roots
+                 nelisp-aot-compiler--parse-aot-push-special
+                 nelisp-aot-compiler--parse-aot-pop-special
+                 nelisp-aot-compiler--parse-aot-special-let-normal-exit
+                 nelisp-aot-compiler--parse-aot-special-let-n-normal-exit
+                 nelisp-aot-compiler--parse-aot-special-let-mixed-normal-exit
+                 nelisp-aot-compiler--parse-aot-catch-normal-exit
+                 nelisp-aot-compiler--parse-aot-condition-case-normal-exit
+                 nelisp-aot-compiler--parse-aot-unwind-protect-normal-exit)))
+      (collector (symbol-function 'nelisp-aot-compiler--free-setq-index))
+      (lookup (symbol-function 'symbol-function)) (same (symbol-function 'eq)))
+  (defun nelisp-aot-compiler--control-repr-fenv (form fenv)
+    "Return FENV unless unchanged outer representations are proved for FORM."
+    (let ((remaining owners) (current t))
+      (while (and remaining current)
+        (unless (funcall same (cdar remaining) (funcall lookup (caar remaining)))
+          (setq current nil))
+        (setq remaining (cdr remaining)))
+      (let ((writes (and current (funcall collector form))))
+        (if (and writes (= (hash-table-count (cdr writes)) 0)) nil fenv)))))
 
 (provide 'nelisp-aot-compiler)
 

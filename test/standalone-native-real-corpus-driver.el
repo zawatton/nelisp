@@ -1,6 +1,7 @@
 ;;; standalone-native-real-corpus-driver.el --- Real GNU .elc parity -*- lexical-binding: t; -*-
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 (require 'nelisp-native-cache)
+(load "test/support/native-entry-observer.el" nil t t)
 (load (expand-file-name "test/support/native-real-corpus-inputs.el") nil t t)
 (load (expand-file-name (or (getenv "F3_FIXTURE") "test/support/native-real-corpus-fixtures.el")) nil t t)
 (defun f3-assert (value label) (unless value (error "F3: %s" label)))
@@ -11,8 +12,7 @@
   (dolist (name (mapcar #'intern (split-string (getenv "F3_NAMES"))))
     (let* ((row (cl-find name f3-real-corpus :key (lambda (item) (plist-get item :name))))
            (function (plist-get row :function)) (stage "identity") (cases 0) (entries 0)
-           (start (float-time))
-           (pointer (symbol-function 'ptr-call)))
+           (start (float-time)))
       (princ (format "F3-START backend=%s name=%s phase=%s\n" nelisp-native-cache-backend name phase))
       (condition-case condition
           (progn
@@ -66,12 +66,11 @@
                        (expected (f3-observe function arguments))
                        (entry-before entries)
                        (actual
-                        (cl-letf (((symbol-function 'ptr-call)
-                                   (lambda (address env ticket argc count x y)
-                                     (when (and (= argc arity) (= count roots) (= x 0) (= y 0))
-                                       (setq entries (1+ entries)))
-                                     (funcall pointer address env ticket argc count x y))))
-                          (f3-observe native arguments))))
+                        (nelisp-test-with-native-entry-observer
+			    (lambda (address env ticket argc count x y)
+			      (when (and (= argc arity) (= count roots) (= x 0) (= y 0))
+				(setq entries (1+ entries))))
+			  (f3-observe native arguments))))
                   (f3-assert (equal expected actual)
                              (format "%s input=%S VM=%S native=%S" name arguments expected actual))
                   (f3-assert (equal actual (plist-get test :gnu)) "recorded GNU result")

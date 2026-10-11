@@ -57,9 +57,11 @@ def main():
         wall_start = time.time()
         start = time.monotonic()
         peak = 0
+        load_peak = before[0]
         with (work / f'{index}.out').open('wb') as out, (work / f'{index}.err').open('wb') as err:
             proc = subprocess.Popen(command, cwd=ROOT, env=env, stdout=out, stderr=err)
             while proc.poll() is None:
+                load_peak = max(load_peak, os.getloadavg()[0])
                 for stat in Path('/proc').glob('[0-9]*/status'):
                     try:
                         text = stat.read_text()
@@ -85,7 +87,7 @@ def main():
         else:
             passed &= len(timing) == 1 and len(re.findall(r'^TEMPLATE-TRUST-PASS ', output, re.M)) == 1
         row = dict(rc=result.returncode, passed=passed, process_seconds=seconds,
-                   load_before=before, load_after=os.getloadavg(), peak_rss_bytes=peak)
+                   load_before=before, load_after=os.getloadavg(), load_peak=max(load_peak, os.getloadavg()[0]), peak_rss_bytes=peak)
         boot = re.findall(r'^TEMPLATE-BOOT ([0-9.]+)$', output, re.M)
         if len(boot) != 1:
             passed = row['passed'] = False

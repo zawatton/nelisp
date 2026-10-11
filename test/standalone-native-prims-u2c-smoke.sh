@@ -22,6 +22,7 @@ mkdir -m 700 "$work/cache"
 cp -- "$binary" "$work/reader"
 chmod 500 "$work/reader"
 if [[ -f $binary.cold ]]; then cp -- "$binary.cold" "$work/reader.cold"; fi
+if [[ -f $binary.native-startup.el ]]; then cp -- "$binary.native-startup.el" "$work/reader.native-startup.el"; fi
 export U2C_BACKEND="$backend" NELISP_NATIVE_CACHE="$work/cache"
 # Independent fresh processes may run together; no compiler state is shared.
 python3 - "$work/reader" "$work" "${3:-57 58 59 60 61 63 83 84 85 86 87 88 89 90 91 92 93 94 95 164 165 166 167 168}" <<'PYCODE'

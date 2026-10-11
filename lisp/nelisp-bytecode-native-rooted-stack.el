@@ -187,7 +187,7 @@ The plan is data only; it allocates no artifact and emits no machine code."
                               :constants (plist-get input :constants)
                               :argument-count (plist-get input :argument-count)
                               :source-tag "gnu31-rooted-stack-v1"
-                              :runtime-abi nelisp-native-load-raw-runtime-abi-v2
+                              :runtime-abi (nelisp-native-load--runtime-abi-v2)
                               :runtime-binary-sha256 binary-sha256
                               :artifact-sha256 artifact-sha256
                               :gateway-imports

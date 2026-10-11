@@ -43,7 +43,7 @@
                          ;; Compile validation is permitted, load validation is not.
                          (setq nelisp-native-load--raw-v2-check-count 1)))
                       ((symbol-function 'nelisp-native-cache--callable-from-entry)
-                       (lambda (address actual-header addresses constants)
+                       (lambda (address actual-header addresses constants &optional _owner)
                          (should (= address 123)) (should (eq actual-header header))
                          (should (eq addresses 'addresses)) (should (eq constants function))
                          (setq constructs (1+ constructs)) native))
