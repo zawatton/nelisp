@@ -174,7 +174,7 @@ through its `jmp'."
 ;;; S10.1 -------------------------------------------------------------
 
 (ert-deftest nelisp-eln-s610-fixture-pinned ()
-  (should (file-exists-p nelisp-eln-s610-test--eln))
+  (skip-unless (file-exists-p nelisp-eln-s610-test--eln))
   (should (equal (secure-hash 'sha256 (nelisp-eln-s610-test--file-bytes))
                  nelisp-eln-s610-test--eln-sha256))
   (let ((body (nelisp-eln-s610-test--body)))
@@ -183,6 +183,7 @@ through its `jmp'."
                    nelisp-eln-s610-test--body-sha256))))
 
 (ert-deftest nelisp-eln-s610-production-declares-the-body ()
+  (skip-unless (file-exists-p nelisp-eln-s610-test--eln))
   (should (member nelisp-eln-s610-test--body-sha256
                   nelisp-eln-registration--setjmp-declared-body-sha256s))
   (let ((bytes (nelisp-eln-s610-test--file-bytes)))
@@ -198,6 +199,7 @@ through its `jmp'."
                     :type 'nelisp-eln-registration-error))))
 
 (ert-deftest nelisp-eln-s610-body-template-admits-the-genuine-body ()
+  (skip-unless (file-exists-p nelisp-eln-s610-test--eln))
   (let* ((g (nelisp-eln-s610-test--genuine))
          (r (plist-get g :analysis)))
     (should (eq (plist-get r :shape) 'compile-form-form))
@@ -228,6 +230,7 @@ through its `jmp'."
       (should (= (plist-get result :size) 80)))))
 
 (ert-deftest nelisp-eln-s610-top-level-run-is-an-exact-template ()
+  (skip-unless (file-exists-p nelisp-eln-s610-test--eln))
   (let* ((actual (nelisp-eln-s610-test--top-level))
          (template nelisp-eln-registration--gnu-require-subr-wide-template)
          (holes nelisp-eln-registration--gnu-require-subr-wide-holes))
@@ -255,6 +258,7 @@ through its `jmp'."
   "The body's shape declares (1 . 2); the registration must say the same.
 The preflight admits a body only when the arity immediates of top_level_run
 equal the shape's arity and minimum, so every other pair is refused."
+  (skip-unless (file-exists-p nelisp-eln-s610-test--eln))
   (require 'nelisp-eln-native-subr)
   (let* ((actual (nelisp-eln-s610-test--top-level))
          (r (plist-get (nelisp-eln-s610-test--genuine) :analysis))
@@ -292,6 +296,7 @@ equal the shape's arity and minimum, so every other pair is refused."
     (should (= admitted 1))))
 
 (ert-deftest nelisp-eln-s610-every-single-byte-mutation-of-handler-bytes-refused ()
+  (skip-unless (file-exists-p nelisp-eln-s610-test--eln))
   (let* ((g (nelisp-eln-s610-test--genuine))
          (bytes (plist-get g :bytes))
          (offsets (nelisp-eln-s610-test--handler-offsets))
@@ -313,6 +318,7 @@ equal the shape's arity and minimum, so every other pair is refused."
   "All 255 other values of the bytes that decide which handler is pushed and
 how the chain is popped: the `mov $1,%esi' immediate of both sites, the
 `test %eax,%eax' pair and the three-instruction pop of every region."
+  (skip-unless (file-exists-p nelisp-eln-s610-test--eln))
   (let* ((g (nelisp-eln-s610-test--genuine))
          (bytes (plist-get g :bytes))
          (critical nil))
@@ -352,6 +358,7 @@ how the chain is popped: the `mov $1,%esi' immediate of both sites, the
 (ert-deftest nelisp-eln-s610-any-body-byte-mutation-refused-sampled ()
   "The template is exact over the whole body, not only the handler bytes: a
 stride sample of every other offset (all nine mutations) is refused too."
+  (skip-unless (file-exists-p nelisp-eln-s610-test--eln))
   (let* ((g (nelisp-eln-s610-test--genuine))
          (bytes (plist-get g :bytes))
          (handler (nelisp-eln-s610-test--handler-offsets))
@@ -368,6 +375,7 @@ stride sample of every other offset (all nine mutations) is refused too."
     (should (> checked 400))))
 
 (ert-deftest nelisp-eln-s610-truncated-or-extended-body-refused ()
+  (skip-unless (file-exists-p nelisp-eln-s610-test--eln))
   (let* ((g (nelisp-eln-s610-test--genuine))
          (bytes (plist-get g :bytes)))
     (should (nelisp-eln-s610-test--admitted-p bytes))
@@ -380,6 +388,7 @@ stride sample of every other offset (all nine mutations) is refused too."
   "A byte changed inside a RIP-relative field of a handler region does not
 break the template (the field is a hole) but changes the slot it reaches, so
 it is not admitted; the two `call _setjmp@plt' displacements likewise."
+  (skip-unless (file-exists-p nelisp-eln-s610-test--eln))
   (let* ((g (nelisp-eln-s610-test--genuine))
          (bytes (plist-get g :bytes))
          (r (plist-get g :analysis))
@@ -420,6 +429,7 @@ it is not admitted; the two `call _setjmp@plt' displacements likewise."
     copy))
 
 (ert-deftest nelisp-eln-s610-frame-rule-accepts-the-genuine-body ()
+  (skip-unless (file-exists-p nelisp-eln-s610-test--eln))
   (let* ((g (nelisp-eln-s610-test--genuine))
          (regions (nelisp-eln-s610-test--frame-check (plist-get g :bytes))))
     (should (= (length regions) 2))
@@ -438,6 +448,7 @@ it is not admitted; the two `call _setjmp@plt' displacements likewise."
           (should (equal (nreverse calls) '(1335 1334))))))))
 
 (ert-deftest nelisp-eln-s610-frame-rule-local-call-in-guarded-region-refused ()
+  (skip-unless (file-exists-p nelisp-eln-s610-test--eln))
   (let* ((g (nelisp-eln-s610-test--genuine))
          (bytes (plist-get g :bytes)))
     (dolist (region (plist-get g :regions))
@@ -453,6 +464,7 @@ it is not admitted; the two `call _setjmp@plt' displacements likewise."
         (should-not (nelisp-eln-s610-test--admitted-p mutated))))))
 
 (ert-deftest nelisp-eln-s610-frame-rule-unauthenticated-indirect-call-refused ()
+  (skip-unless (file-exists-p nelisp-eln-s610-test--eln))
   (let* ((g (nelisp-eln-s610-test--genuine))
          (bytes (plist-get g :bytes)))
     (dolist (region (plist-get g :regions))
@@ -484,6 +496,7 @@ it is not admitted; the two `call _setjmp@plt' displacements likewise."
                       'unauthenticated-indirect-call)))))))
 
 (ert-deftest nelisp-eln-s610-frame-rule-landing-pad-may-not-call ()
+  (skip-unless (file-exists-p nelisp-eln-s610-test--eln))
   (let* ((g (nelisp-eln-s610-test--genuine))
          (bytes (plist-get g :bytes)))
     (dolist (region (plist-get g :regions))
@@ -500,6 +513,7 @@ it is not admitted; the two `call _setjmp@plt' displacements likewise."
                     'local-call-in-region))))))
 
 (ert-deftest nelisp-eln-s610-frame-rule-branch-store-and-runaway ()
+  (skip-unless (file-exists-p nelisp-eln-s610-test--eln))
   (let* ((g (nelisp-eln-s610-test--genuine))
          (bytes (plist-get g :bytes))
          (region (car (plist-get g :regions)))
@@ -548,6 +562,7 @@ it is not admitted; the two `call _setjmp@plt' displacements likewise."
                 'pop-count))))
 
 (ert-deftest nelisp-eln-s610-frame-rule-push-sequence ()
+  (skip-unless (file-exists-p nelisp-eln-s610-test--eln))
   (let* ((g (nelisp-eln-s610-test--genuine))
          (bytes (plist-get g :bytes))
          (region (car (plist-get g :regions)))

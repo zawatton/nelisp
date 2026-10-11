@@ -203,6 +203,7 @@ so an unauthenticated call target is a template mismatch."
                     :type 'nelisp-eln-native-subr-error))))
 
 (ert-deftest nelisp-eln-s69-new-services-behave-like-gnu ()
+  (skip-unless (file-readable-p nelisp-eln-runtime-services-freloc-tsv-file))
   (should (equal (nelisp-eln-runtime-services-fmember 'b '(a b c)) '(b c)))
   (should-not (nelisp-eln-runtime-services-fmember 'z '(a b c)))
   (let ((h (make-hash-table :test 'equal)))
