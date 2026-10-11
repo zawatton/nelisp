@@ -12264,24 +12264,32 @@ START >= END, matching Emacs (`put-text-property' etc. with an empty
 range change nothing)."
   (if (>= start end)
       intervals
-    (let (boundaries)
+    ;; INTERVALS is sorted and nonoverlapping.  Emit the untouched pieces,
+    ;; updated pieces and gaps in order, without a boundary list or lookups.
+    (let ((pos start) pieces result)
       (dolist (iv intervals)
-        (let ((s (nth 0 iv)) (e (nth 1 iv)))
-          (when (and (> s start) (< s end)) (push s boundaries))
-          (when (and (> e start) (< e end)) (push e boundaries))))
-      (setq boundaries (sort (delete-dups (append (list start end) boundaries)) #'<))
-      (let (fresh (bs boundaries))
-        (while (cdr bs)
-          (let* ((s (car bs)) (e (cadr bs))
-                 (new (funcall updater (nelisp--tp-plist-at s intervals))))
-            (when new (push (list s e new) fresh)))
-          (setq bs (cdr bs)))
-        (let (kept)
-          (dolist (iv intervals)
-            (let ((s (nth 0 iv)) (e (nth 1 iv)) (pl (nth 2 iv)))
-              (when (< s start) (push (list s (min e start) pl) kept))
-              (when (> e end) (push (list (max s end) e pl) kept))))
-          (nelisp--tp-merge (append kept fresh)))))))
+        (let ((s (car iv)) (e (cadr iv)) (pl (nth 2 iv)) new)
+          (when (< s start) (push (list s (min e start) pl) pieces))
+          (when (and (< pos end) (> s pos))
+            (setq new (funcall updater nil))
+            (when new (push (list pos (min s end) new) pieces))
+            (setq pos (min s end)))
+          (when (and (< s end) (> e start))
+            (setq new (funcall updater pl))
+            (when new (push (list (max s start) (min e end) new) pieces))
+            (setq pos (min e end)))
+          (when (> e end) (push (list (max s end) e pl) pieces))))
+      (when (< pos end)
+        (let ((new (funcall updater nil)))
+          (when new (push (list pos end new) pieces))))
+      ;; Coalesce in linear time, copying cells so the input is never mutated.
+      (dolist (iv (nreverse pieces))
+        (when (nth 2 iv)
+          (if (and result (= (cadr (car result)) (car iv))
+                   (nelisp--tp-plist-value-eq (nth 2 (car result)) (nth 2 iv)))
+              (setcar (cdr (car result)) (cadr iv))
+            (push iv result))))
+      (nreverse result))))
 
 (defun nelisp--tp-boundaries-between (intervals lo hi)
   "Sorted, deduped INTERVALS start/end points strictly between LO and HI
@@ -16729,21 +16737,43 @@ if any property was actually removed, nil otherwise."
       (if (if backward (<= position eff) (>= position eff))
           limit
         (let* ((initial (if backward (1- position) position))
-               (value (if single (nelisp--tp-value-at initial prop intervals)
-                        (nelisp--tp-plist-at initial intervals)))
-               (boundaries (if backward
-                               (sort (nelisp--tp-boundaries-between
-                                      intervals eff position) #'>)
-                             (nelisp--tp-boundaries-between
-                              intervals position eff))))
+               (cells intervals) reverse-cells current value boundary next)
+          ;; Find the containing interval (or gap) once.  A singly linked
+          ;; list needs a reversed prefix for backward traversal; do not sort
+          ;; boundaries or rescan from the head at each candidate.
+          (if backward
+              (progn
+                (while (and cells (<= (car (car cells)) initial))
+                  (push (car cells) reverse-cells)
+                  (setq cells (cdr cells)))
+                (setq cells reverse-cells)
+                (when (and cells (< initial (cadr (car cells))))
+                  (setq current (car cells) cells (cdr cells))))
+            (while (and cells (<= (cadr (car cells)) initial))
+              (setq cells (cdr cells)))
+            (when (and cells (<= (car (car cells)) initial))
+              (setq current (car cells) cells (cdr cells))))
+          (setq value (if single (plist-get (nth 2 current) prop)
+                        (nth 2 current)))
           (catch 'nelisp--w202-boundary
-            (dolist (boundary boundaries)
-              (let ((pos (if backward (1- boundary) boundary)))
-                (unless (if single
-                            (eq value (nelisp--tp-value-at pos prop intervals))
-                          (nelisp--tp-plist-value-eq
-                           value (nelisp--tp-plist-at pos intervals)))
-                  (throw 'nelisp--w202-boundary boundary))))
+            (while (or current cells)
+              (setq boundary (if current
+                                 (if backward (car current) (cadr current))
+                               (if backward (cadr (car cells)) (car (car cells)))))
+              (when (if backward (<= boundary eff) (>= boundary eff))
+                (throw 'nelisp--w202-boundary limit))
+              ;; Crossing an interval edge can enter the adjacent interval or
+              ;; a gap; crossing a gap always enters the next interval.
+              (setq next nil)
+              (when (and cells
+                         (or (not current)
+                             (= boundary (if backward (cadr (car cells))
+                                           (car (car cells))))))
+                (setq next (car cells) cells (cdr cells)))
+              (unless (if single (eq value (plist-get (nth 2 next) prop))
+                        (nelisp--tp-plist-value-eq value (nth 2 next)))
+                (throw 'nelisp--w202-boundary boundary))
+              (setq current next))
             limit))))))
 
 (defun nelisp--w202-property-find (start end prop value object different)

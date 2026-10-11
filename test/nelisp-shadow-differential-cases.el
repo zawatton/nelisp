@@ -45,6 +45,21 @@
 ;;; Code:
 
 (list
+ ;; A same-face neighbor can still change another property; gaps and reverse
+ ;; scans must use the character before POSITION on the backward path.
+ (let ((s (make-string 12 ?x)))
+   (put-text-property 2 5 'face 'a s)
+   (put-text-property 5 8 'face 'a s)
+   (put-text-property 5 8 'other t s)
+   (put-text-property 10 12 'face 'b s)
+   (list (next-single-property-change 3 'face s)
+         (next-property-change 3 s)
+         (previous-single-property-change 7 'face s)
+         (previous-property-change 7 s)
+         (next-property-change 8 s)
+         (previous-property-change 10 s)
+         (next-property-change 3 s 4)
+         (previous-property-change 7 s 6)))
  ;; Ordinary defvaralias calls must honor their installed Lisp function cell.
  (let ((was (fboundp 'defvaralias))
        (old (and (fboundp 'defvaralias) (symbol-function 'defvaralias))))

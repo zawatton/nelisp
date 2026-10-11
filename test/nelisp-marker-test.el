@@ -16,16 +16,98 @@
 ;;   - text-property sparse-list put / get shadowing + shift on
 ;;     insert / delete + remove-text-properties
 ;;
-;; Host parity tests aren't included for the marker layer because
-;; host markers are opaque objects without a portable position-
-;; shadowing guarantee for the sparse-list property store; the
-;; semantics we assert are NeLisp-local.
+;; Marker/overlay assertions use the NeLisp-local substrate.  The
+;; text-property-linear cases use public APIs and run unchanged on GNU
+;; Emacs and as runtime assertions on the C-core prelude.
 
 ;;; Code:
 
 (require 'ert)
 (require 'cl-lib)
 (require 'nelisp-buffer)
+
+;; These public-API assertions also run unchanged on GNU Emacs and, via
+;; tools/nelisp-text-property-check.el, on the dynamically redefined prelude.
+(ert-deftest nelisp-text-property-linear/string-directions ()
+  (let ((s (make-string 12 ?x)))
+    (put-text-property 2 5 'face 'a s)
+    (put-text-property 5 8 'face 'a s)
+    (put-text-property 5 8 'other t s)
+    (put-text-property 10 12 'face 'b s)
+    (should (= (next-single-property-change 3 'face s) 8))
+    (should (= (next-property-change 3 s) 5))
+    (should (= (previous-single-property-change 7 'face s) 2))
+    (should (= (previous-property-change 7 s) 5))
+    (should (= (next-property-change 8 s) 10))
+    (should (= (previous-property-change 10 s) 8))
+    (should (eq (get-text-property 7 'face s) 'a))
+    (should (eq (plist-get (text-properties-at 7 s) 'other) t))))
+
+(ert-deftest nelisp-text-property-linear/limits-and-edges ()
+  (let ((s (make-string 8 ?x)))
+    (put-text-property 2 6 'face 'a s)
+    (dolist (single '(nil t))
+      (let ((forward (if single 'next-single-property-change 'next-property-change))
+            (backward (if single 'previous-single-property-change 'previous-property-change)))
+        (dolist (case '((0 nil 2) (2 nil 6) (6 nil nil) (8 nil nil)
+                       (3 5 5) (3 6 6) (3 8 6) (6 20 20) (3 1 1)))
+          (should (equal (if single
+                             (funcall forward (car case) 'face s (cadr case))
+                           (funcall forward (car case) s (cadr case)))
+                         (nth 2 case))))
+        (dolist (case '((8 nil 6) (6 nil 2) (2 nil nil) (0 nil nil)
+                       (5 3 3) (5 2 2) (5 0 2) (2 -5 -5) (3 7 7)))
+          (should (equal (if single
+                             (funcall backward (car case) 'face s (cadr case))
+                           (funcall backward (car case) s (cadr case)))
+                         (nth 2 case))))))))
+
+(ert-deftest nelisp-text-property-linear/buffer-and-nil-object ()
+  (with-temp-buffer
+    (insert "xxxxxxxxxxxx")
+    (put-text-property 3 6 'face 'a)
+    (put-text-property 6 9 'face 'a)
+    (put-text-property 6 9 'other t)
+    (dolist (obj (list nil (current-buffer)))
+      (should (= (next-single-property-change 4 'face obj) 9))
+      (should (= (previous-single-property-change 8 'face obj) 3))
+      (should (= (next-property-change 4 obj) 6))
+      (should (= (previous-property-change 8 obj) 6))
+      (should (= (next-property-change 4 obj 5) 5))
+      (should (= (previous-property-change 8 obj 7) 7))
+      (should-not (next-property-change (point-max) obj))
+      (should-not (previous-property-change (point-min) obj)))))
+
+(ert-deftest nelisp-text-property-linear/empty-and-identity ()
+  (dolist (s (list "" (make-string 4 ?x)))
+    (should-not (next-property-change 0 s))
+    (should-not (previous-property-change (length s) s))
+    (should (= (next-single-property-change 0 'face s 20) 20))
+    (should (= (previous-single-property-change (length s) 'face s -2) -2)))
+  (with-temp-buffer
+    (should-not (next-property-change 1))
+    (should-not (previous-single-property-change 1 'face)))
+  (let* ((s (make-string 6 ?x)) (a (list 'v)) (b (list 'v)))
+    (put-text-property 0 3 'face a s)
+    (put-text-property 3 6 'face b s)
+    (should (= (next-single-property-change 0 'face s) 3))
+    (should (= (previous-property-change 6 s) 3))
+    (put-text-property 3 6 'face a s)
+    (should-not (next-single-property-change 0 'face s))
+    (should-not (previous-property-change 6 s))))
+
+(ert-deftest nelisp-text-property-linear/markers-and-narrowing ()
+  (with-temp-buffer
+    (insert "xxxxxxxxxx")
+    (put-text-property 1 7 'face 'a)
+    (let ((pos (copy-marker 4)) (limit (copy-marker 6)))
+      (should (= (next-single-property-change pos 'face nil limit) 6))
+      (should (= (previous-property-change limit nil pos) 4))
+      (narrow-to-region 3 9)
+      (should-not (previous-single-property-change 5 'face))
+      (should (= (next-property-change 5) 7))
+      (should-not (next-property-change 9))
+      (should (= (previous-property-change 5 nil 1) 1)))))
 
 (defmacro nelisp-marker-test--fresh (name &rest body)
   "Evaluate BODY with a fresh NeLisp buffer named NAME.
