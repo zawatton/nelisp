@@ -87,7 +87,27 @@
               (nelisp-native-gccjit-test--form
                (nelisp-native-funcall-v2-copy-form '(37 38 5) '(42 43 44) 512))
               '(("nl_root_pin_slot_v2" . 8192)))))
-    (should (assoc "gcc_jit_block_end_with_return" calls))))
+    (should (assoc "gcc_jit_block_end_with_return" calls)))
+  ;; LISTN uses bounded CFG repetitions too, including a selected phi root.
+  ;; Exercise the genuine producer instead of a synthetic WHILE tree.
+  (require 'nelisp-bytecode-native-rooted-cfg-shared-emit)
+  (load (expand-file-name "test/support/native-list-u3a-fixtures.el"
+                          nelisp-native-gccjit-test--root) nil t t)
+  (dolist (fn (list (native-list-u3a-function 175 33)
+                    (native-list-u3a-function 175 255)
+                    (native-list-u3a-join-function)))
+    (let* ((input (nelisp-bytecode-compiler-input-build fn))
+           (plan (nelisp-bytecode-native-rooted-cfg-plan input))
+           (emitted (nelisp-bytecode-native-rooted-cfg-shared-emit-build
+                     plan "u3a_regression")))
+      (should (eq (plist-get emitted :status) 'complete))
+      (nelisp-native-gccjit-test--ffi
+        (should (integerp
+                 (nelisp-native-gccjit-lower
+                  (plist-get emitted :form)
+                  '(("nl_root_pin_slot_v2" . 8192)
+                    ("nl_native_funcall_v2" . 16384)))))
+        (should (assoc "gcc_jit_block_end_with_return" calls))))))
 
 (ert-deftest nelisp-native-gccjit/refuse-unsupported-and-release ()
   (dolist (body '((quote x) (funcall env) (while env 0) (list 1 2)
@@ -98,7 +118,19 @@
                       (let nil 0) (setq f1_copy_index (+ f1_copy_index 1))))
                   (let ((f1_copy_index 0) (f1_copy_status 0))
                     (while (and (= f1_copy_status 0) (< f1_copy_index 2))
-                      (let nil 0) (setq f1_copy_index 0)))))
+                      (let nil 0) (setq f1_copy_index 0)))
+                  (let ((cycle_local_1 0) (f1_list_status_1 0))
+                    (while (and (= f1_list_status_1 0) (< cycle_local_1 256))
+                      (if (= f1_list_status_1 0) (setq f1_list_status_1 0) f1_list_status_1)
+                      (setq cycle_local_1 (+ cycle_local_1 1))))
+                  (let ((cycle_local_1 0) (f1_list_status_1 0))
+                    (while (and (= f1_list_status_1 0) (< cycle_local_1 2))
+                      (if (= f1_list_status_1 0) (setq f1_list_status_1 0) f1_list_status_1)
+                      (setq cycle_local_1 0)))
+                  (let ((cycle_local_1 0) (f1_list_status_1 0))
+                    (while (and (= f1_list_status_1 0) (< cycle_local_1 2))
+                      (if (= f1_list_status_1 0) (setq f1_list_status_1 0 cycle_local_1 0) f1_list_status_1)
+                      (setq cycle_local_1 (+ cycle_local_1 1))))))
     (nelisp-native-gccjit-test--ffi
       (should-error (nelisp-native-gccjit-lower (nelisp-native-gccjit-test--form body) nil))
       (should (assoc "gcc_jit_context_release" calls)))))
