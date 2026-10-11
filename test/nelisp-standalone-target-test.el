@@ -47,6 +47,20 @@
 (require 'nelisp-cc-mirror-set-constant-or-insert)
 (require 'nelisp-cc-mirror-install-entry-or-insert)
 
+;; Building the reader driver source byte-compiles the core modules (~4 min on
+;; Emacs 31.1).  The core bytecode cache is keyed by source paths, their
+;; sha256 and the transformer identity, so one file-level table is reused
+;; exactly across the calls below.  The variable's global value stays nil.
+(defvar nelisp-standalone-target-test--core-cache (make-hash-table :test #'equal)
+  "File-level core bytecode build cache shared by the driver-source calls.")
+
+(defmacro nelisp-standalone-target-test--with-core-cache (&rest body)
+  "Run BODY with the shared core bytecode build cache bound."
+  (declare (indent 0))
+  `(let ((nelisp-standalone--core-bytecode-build-cache
+          nelisp-standalone-target-test--core-cache))
+     ,@body))
+
 (ert-deftest nelisp-standalone-target-reader-driver-uses-cache ()
   "The reader driver goes through the content-addressed unit cache."
   (let ((source '(reader-driver-source-sentinel))
@@ -469,7 +483,7 @@ non-local-exit behaviour are covered by the standalone reader smoke."
 
 (ert-deftest nelisp-standalone-target-midform-gc-default-boot-state ()
   "Doc 152 Stage 5 arms mid-form GC only after the boot watermark is valid."
-  (let* ((forms (nelisp-standalone--reader-driver-source))
+  (let* ((forms (nelisp-standalone-target-test--with-core-cache (nelisp-standalone--reader-driver-source)))
          (driver (cl-find-if (lambda (form)
                                (and (consp form)
                                     (eq (car form) 'defun)
@@ -505,7 +519,7 @@ non-local-exit behaviour are covered by the standalone reader smoke."
 
 (ert-deftest nelisp-standalone-target-reader-cli-uses-long-options ()
   "The standalone reader exposes Lisp-like no-args REPL plus long options."
-  (let* ((forms (nelisp-standalone--reader-driver-source))
+  (let* ((forms (nelisp-standalone-target-test--with-core-cache (nelisp-standalone--reader-driver-source)))
          (flat (flatten-tree forms)))
     (cl-labels ((defun-source
                   (name)
@@ -532,7 +546,7 @@ non-local-exit behaviour are covered by the standalone reader smoke."
 
 (ert-deftest nelisp-standalone-target-reader-cli-dispatches-neln-selftest ()
   "The standalone reader dispatch table includes `--neln-selftest'."
-  (let ((source (prin1-to-string (nelisp-standalone--reader-driver-source))))
+  (let ((source (prin1-to-string (nelisp-standalone-target-test--with-core-cache (nelisp-standalone--reader-driver-source)))))
     (should (string-match-p "nl_cstr_eq_neln_selftest" source))
     (should (string-match-p "(nl_neln_demo_exec ctx 41)" source))))
 
@@ -901,7 +915,7 @@ implementation before a cross-host binary is available."
              (fill (defun-form 'nl_darwin_procargs_fill forms))
              (env-init (defun-form 'nl_os_environ_init forms))
              (argv-init (defun-form 'nl_os_argv_init forms))
-             (driver (nelisp-standalone--reader-driver-source)))
+             (driver (nelisp-standalone-target-test--with-core-cache (nelisp-standalone--reader-driver-source))))
         (should nul)
         (should env-walk)
         (should argv-end)
@@ -1292,7 +1306,7 @@ report its size as a Unix timestamp.  Pin the reads at the Darwin offsets
                   ((consp tree)
                    (or (tree-member-p needle (car tree))
                        (tree-member-p needle (cdr tree)))))))
-      (let ((forms (nelisp-standalone--reader-driver-source)))
+      (let ((forms (nelisp-standalone-target-test--with-core-cache (nelisp-standalone--reader-driver-source))))
         (should (tree-member-p
                  '(defun nl_cli_argv_shifted_p (argc slot0 slot1)
                     (if (> argc 1)
@@ -1340,7 +1354,7 @@ report its size as a Unix timestamp.  Pin the reads at the Darwin offsets
                 ((consp tree)
                  (or (tree-member-p needle (car tree))
                      (tree-member-p needle (cdr tree)))))))
-    (let ((forms (nelisp-standalone--reader-driver-source)))
+    (let ((forms (nelisp-standalone-target-test--with-core-cache (nelisp-standalone--reader-driver-source))))
       (should (tree-member-p
                '(nl_alloc_str fbuf n src)
                forms))
@@ -1442,7 +1456,7 @@ report its size as a Unix timestamp.  Pin the reads at the Darwin offsets
                 ((consp tree)
                  (or (tree-member-p needle (car tree))
                      (tree-member-p needle (cdr tree)))))))
-    (let ((forms (nelisp-standalone--reader-driver-source))
+    (let ((forms (nelisp-standalone-target-test--with-core-cache (nelisp-standalone--reader-driver-source)))
           (boundary nelisp-standalone--reader-boundary-source)
           (eval-source nelisp-standalone--reader-eval-source-source))
       (should (tree-member-p
