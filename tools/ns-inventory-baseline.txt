@@ -315,7 +315,7 @@
 # plumbing behind them -- 8 new names, all mirrored byte-identically
 # into both files, same pattern as every prior entry in this run.
 # 2026-10-11: 353 -> 343, tighten after the reviewed standalone/provider changes.
-ns-collision 343
+ns-collision 344
 # 344 -> 353 on 2026-09-21, same day (Doc segI decoded-time accessors,
 # coordinator-approved): the nine `decoded-time-*' accessors for real
 # Emacs's `decoded-time' struct (simple.el, not vendored -- see the
@@ -835,7 +835,7 @@ ns-collision-divergent 148
 # lisp/nelisp-substitute-command-keys.el, which committed tests load and
 # which defines GNU's `substitute-command-keys' plus its `nl-' entry point;
 # both names fall outside the file's prefix by design.
-ns-prefix-violation 352
+ns-prefix-violation 354
 # 322 -> 328 on 2026-09-21 (segment F): +6, from the `rx'/`rx-to-string'/
 # `rx--tr-*' family added to scripts/nelisp-stdlib-prelude.el and
 # lisp/nelisp-stdlib-misc.el -- an `rx-'-prefixed name in a file whose
@@ -1853,3 +1853,15 @@ pinned-collision ns-collision	marker-buffer	lisp/nelisp-process-buffer.el script
 pinned-collision ns-collision	marker-position	lisp/nelisp-process-buffer.el scripts/nelisp-stdlib-prelude.el
 # prn-symbol-cache: shared nil-default defvar preserves the contract-owned digest-local cache; no owner file change.
 pinned-collision ns-collision	nelisp--prn-symbol-cache	lisp/nelisp-bytecode-native-rooted-cfg-contract.el scripts/nelisp-stdlib-prelude.el
+
+# 2026-10-11, merging P3.5 round 3 (78c0f25e8) into integ/main-merge-20261011:
+# - lisp/nelisp-bytecode-native-rooted-cfg-data.el defvars the shared
+#   `nelisp--prn-call-cache' (also declared by stdlib-prn and the prelude)
+#   and binds `print-circle': ns-collision 343 -> 344, ns-prefix-violation
+#   352 -> 354.
+# - nelisp--prn-record / nelisp--prn-to-string gained a memo argument on
+#   both sides; their existing, previously accepted standalone/hosted
+#   divergence is re-fingerprinted.
+pinned-collision ns-collision	nelisp--prn-call-cache	lisp/nelisp-bytecode-native-rooted-cfg-data.el lisp/nelisp-stdlib-prn.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision-divergent	nelisp--prn-record	lisp/nelisp-stdlib-prn.el scripts/nelisp-stdlib-prelude.el	7624b0ccd1cc
+pinned-collision ns-collision-divergent	nelisp--prn-to-string	lisp/nelisp-stdlib-prn.el scripts/nelisp-stdlib-prelude.el	104ad82e2e2c
