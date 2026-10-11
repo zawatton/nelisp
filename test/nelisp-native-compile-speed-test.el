@@ -32,7 +32,6 @@
     functions))
 
 (ert-deftest p35/checked-input-reuse-equals-regeneration-for-three-targets ()
-  (skip-unless (equal emacs-version "31.1"))
   (dolist (entry (p35--target-functions))
     (let ((function (cdr entry)) retained (frame-calls 0)
           (frame-owner (symbol-function 'nelisp-bytecode-frame-ir-build)))
@@ -69,7 +68,6 @@ function's code string would corrupt every function sharing it."
          (cl-loop for i from 4 below (length function) collect (aref function i))))
 
 (ert-deftest p35/checked-input-reuse-refuses-mutation-and-restores-nested-scope ()
-  (skip-unless (equal emacs-version "31.1"))
   (let ((function (nelisp-native-compile-speed-test--unshared
                    (byte-compile (lambda (x) (+ x 1)))))
         retained)
@@ -101,7 +99,6 @@ function's code string would corrupt every function sharing it."
                 (should-not (nelisp-bytecode-compiler-input--reuse-checked input))))))
 
 (ert-deftest p35/checked-input-refuses-builder-change-after-reconstruction ()
-  (skip-unless (equal emacs-version "31.1"))
   (let ((function (byte-compile (lambda (x) (+ x 1)))))
     (nelisp-bytecode-compiler-input-call-with-built
      function
