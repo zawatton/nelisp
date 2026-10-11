@@ -40,6 +40,8 @@
 
 ;;; Code:
 
+(declare-function nelisp-bytecode-native-rooted-cfg-data-print
+                  "nelisp-bytecode-native-rooted-cfg-data" (value))
 (require 'cl-lib)
 (require 'nelisp-native-budget)
 (require 'nelisp-runtime-reload-abi)
@@ -1993,18 +1995,22 @@ ticket and slot indices and may call only the CAR gateway.")
 
 (defun nelisp-native-load--raw-v2-collect-data-addr-names (form)
   "Return unique symbols used by DATA-ADDR forms in FORM."
-  (let ((found nil))
-    (letrec ((walk
-              (lambda (x)
-                (cond
-                 ((and (consp x) (eq (car x) 'data-addr)
-                       (symbolp (cadr x)))
-                  (setq found (cons (symbol-name (cadr x)) found)))
-                 ((consp x) (funcall walk (car x)) (funcall walk (cdr x)))))))
-      (funcall walk form))
-    (delete-dups found)))
+  (let ((seen (make-vector 16384 nil)) (pending (list form)) found)
+    ;; Visit right before left to retain the previous reverse-occurrence
+    ;; ordering after duplicate names are removed, including shared nodes.
+    (while pending
+      (let ((node (pop pending)))
+        (when (consp node)
+          (let ((key (logand (sxhash-eq node) 16383)))
+            (unless (memq node (aref seen key))
+              (aset seen key (cons node (aref seen key)))
+              (if (and (eq (car node) 'data-addr) (symbolp (cadr node)))
+                  (let ((name (symbol-name (cadr node))))
+                    (unless (member name found) (push name found)))
+                (push (car node) pending) (push (cdr node) pending)))))))
+    (nreverse found)))
 
-(defun nelisp-native-load--raw-v2-rewrite-data-addr (form)
+(defun nelisp-native-load--raw-v2-rewrite-data-addr (form &optional copies)
   "Turn `(data-addr NAME)' into an imported zero-argument getter call.
 
 The raw linker cannot assume that an anonymously mapped text page is within a
@@ -2012,15 +2018,23 @@ signed 32-bit PC-relative displacement of the executable's BSS.  The source
 call remains relocatable (`call NAME'); the v2 loader installs a tiny
 `movabs rax, ADDRESS; ret' stub for data imports.  This preserves the pointer
 value expected by all existing `ptr-read-*' and `ptr-write-*' forms without
-copying or relocating shared runtime state."
-  (cond
-   ((and (consp form) (eq (car form) 'data-addr)
-         (symbolp (cadr form)) (null (cddr form)))
-    (list (cadr form)))
-   ((consp form)
-    (cons (nelisp-native-load--raw-v2-rewrite-data-addr (car form))
-          (nelisp-native-load--raw-v2-rewrite-data-addr (cdr form))))
-   (t form)))
+copying or relocating shared runtime state.  COPIES is a call-owned identity
+memo; it preserves compiler DAGs and never survives source mutation."
+  (if (not (consp form)) form
+    (let* ((copies (or copies (make-vector 16384 nil)))
+           (key (logand (sxhash-eq form) 16383))
+           (known (assq form (aref copies key))))
+      (if known
+          (if (eq (cdr known) 'active) (error "Cyclic raw source") (cdr known))
+        (let ((record (cons form 'active)))
+          (aset copies key (cons record (aref copies key)))
+          (setcdr record
+                  (if (and (eq (car form) 'data-addr)
+                           (symbolp (cadr form)) (null (cddr form)))
+                      (list (cadr form))
+                    (cons (nelisp-native-load--raw-v2-rewrite-data-addr (car form) copies)
+                          (nelisp-native-load--raw-v2-rewrite-data-addr (cdr form) copies))))
+          (cdr record))))))
 
 (defun nelisp-native-load--raw-v2-chunk-rewrite (forms)
   "Apply the canonical chunk-arena rewrite to raw runtime FORMS when present.
@@ -2037,19 +2051,19 @@ compiler, which refuses the unsafe artifact before publication."
 
 (defun nelisp-native-load--raw-v2-fixed-address-p (form)
   "Return non-nil when FORM contains a historical fixed arena address."
-  (cond
-   ;; `nl_arena_init' owns the reservation-size literals.  They are not arena
-   ;; addresses and the canonical rewrite deliberately leaves this one form
-   ;; untouched; all metadata addresses outside this initializer are still
-   ;; required to go through `nl_arena_base'.
-   ((and (consp form) (eq (car form) 'defun)
-         (eq (cadr form) 'nl_arena_init)) nil)
-   ((integerp form)
-    (and (>= form 268435456) (< form 272629760)))
-   ((consp form)
-    (or (nelisp-native-load--raw-v2-fixed-address-p (car form))
-        (nelisp-native-load--raw-v2-fixed-address-p (cdr form))))
-   (t nil)))
+  (let ((seen (make-vector 16384 nil)) (pending (list form)) found)
+    (while (and pending (not found))
+      (let ((node (pop pending)))
+        (cond
+         ((integerp node) (setq found (and (>= node 268435456) (< node 272629760))))
+         ;; Initialization owns reservation sizes, as in the canonical rewrite.
+         ((and (consp node) (eq (car node) 'defun) (eq (cadr node) 'nl_arena_init)) nil)
+         ((consp node)
+          (let ((key (logand (sxhash-eq node) 16383)))
+            (unless (memq node (aref seen key))
+              (aset seen key (cons node (aref seen key)))
+              (push (cdr node) pending) (push (car node) pending)))))))
+    found))
 
 (defun nelisp-native-load--raw-v2-entry-contract (name contract)
   "Return NAME's `(NAME . ARITY)' entry in CONTRACT."
@@ -2753,7 +2767,7 @@ without publishing an intermediate artifact.  The cache owns publication."
                            (let ((print-length nil) (print-level nil)
                                  (print-circle t) (print-escape-newlines t)
                                  (nelisp--prn-symbol-cache (make-hash-table :test 'equal)))
-                             (secure-hash 'sha256 (prin1-to-string cfg-contract))))
+                             (secure-hash 'sha256 (nelisp-bytecode-native-rooted-cfg-data-print cfg-contract))))
                      cfg-validation-result)))
              (verified-input (plist-get reconstruction :input))
              (canonical-input
@@ -3202,7 +3216,7 @@ without publishing an intermediate artifact.  The cache owns publication."
                                        (let ((print-length nil) (print-level nil)
                                              (print-circle t) (print-escape-newlines t)
                                  (nelisp--prn-symbol-cache (make-hash-table :test 'equal)))
-                                         (secure-hash 'sha256 (prin1-to-string cfg-contract)))))
+                                         (secure-hash 'sha256 (nelisp-bytecode-native-rooted-cfg-data-print cfg-contract)))))
                            (nelisp-bytecode-native-rooted-cfg-contract-valid-p cfg-contract))
                        (equal (sort (copy-sequence imports) #'string<) expected))
             (error "nelisp-native-load: generic rooted-CFG import set mismatch"))
@@ -3231,7 +3245,9 @@ without publishing an intermediate artifact.  The cache owns publication."
                               :native-rooted-cfg-safe-v3-import-descriptors import-descriptors
                               :native-rooted-cfg-safe-v3-contract-hash
                               (plist-get safe-contract :digest))))))
-      (let* ((unsigned (prin1-to-string manifest))
+      (let* ((unsigned (if rooted-cfg-spec
+                           (nelisp-bytecode-native-rooted-cfg-data-print manifest)
+                         (prin1-to-string manifest)))
              (digest (nelisp-native-load--sha256 unsigned)))
         (setq manifest (append manifest (list :artifact-sha256 digest)))
         (when nelisp-native-load--serialization-receiver
@@ -3762,7 +3778,7 @@ only semantic reconstruction is omitted, never the manifest structure."
                   (let ((print-length nil) (print-level nil)
                         (print-circle t) (print-escape-newlines t)
                                  (nelisp--prn-symbol-cache (make-hash-table :test 'equal)))
-                    (secure-hash 'sha256 (prin1-to-string validated-contract)))))
+                    (secure-hash 'sha256 (nelisp-bytecode-native-rooted-cfg-data-print validated-contract)))))
       (nelisp-native-load--raw-v2-check manifest name t)
     (nelisp-native-load-raw-v2-check manifest name)))
 

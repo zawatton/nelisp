@@ -12,6 +12,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'nelisp-bytecode-native-rooted-cfg-data)
 (require 'nelisp-bytecode-compiler-input)
 ;; Optimizer dependencies are loaded only when their public API is called.
 (autoload 'nelisp-bytecode-compiler-input-build "nelisp-bytecode-compiler-input")
@@ -102,8 +103,9 @@
       (let ((key (pop rest)) (value (pop rest)))
         (unless (eq key :digest)
           (setq canonical (append canonical (list key value))))))
-    (let ((nelisp--prn-symbol-cache (make-hash-table :test 'equal)))
-      (secure-hash 'sha256 (prin1-to-string canonical)))))
+    (let ((print-circle nil)
+          (nelisp--prn-symbol-cache (make-hash-table :test 'equal)))
+      (secure-hash 'sha256 (nelisp-bytecode-native-rooted-cfg-data-print canonical)))))
 
 (defun nelisp-bytecode-native-rooted-cfg-contract--plan-data (plan &optional shared-flat)
   "Return PLAN without its process-local compiler INPUT object."
@@ -128,7 +130,7 @@
       (setq copy (data-plist copy))
       (unless shared-flat
         (setq copy (plist-put copy :entry-ast (data-plist (plist-get copy :entry-ast))))))
-    (copy-tree copy)))
+    (nelisp-bytecode-compiler-input--snapshot copy 0)))
 
 (defun nelisp-bytecode-native-rooted-cfg-contract-arithmetic-source-p
     (input plan emitted)
@@ -149,22 +151,22 @@
                  (plist-get plan :arithmetic-guard-mode))))))
 
 (defun nelisp-bytecode-native-rooted-cfg-contract--ast-imports (form)
-  "Return the sorted import names called by emitted entry FORM."
-  (let (imports)
-    (cl-labels ((walk (value)
-                  (cond
-                   ((consp value)
-                    (when (and (eq (car value) 'extern-call)
-                               (consp (cdr value)))
+  "Return sorted import names, inspecting each shared FORM container once."
+  (let ((seen (make-vector 4096 nil)) (pending (list form)) imports)
+    (while pending
+      (let ((value (pop pending)))
+        (when (or (consp value) (vectorp value))
+          (let ((key (logand (sxhash-eq value) 4095)))
+            (unless (memq value (aref seen key))
+              (aset seen key (cons value (aref seen key)))
+              (if (consp value)
+                  (progn
+                    (when (and (eq (car value) 'extern-call) (consp (cdr value)))
                       (let ((name (cadr value)))
                         (when (or (symbolp name) (stringp name))
-                          (push (if (symbolp name) (symbol-name name) name)
-                                imports))))
-                    (walk (car value))
-                    (walk (cdr value)))
-                   ((vectorp value)
-                    (mapc #'walk (append value nil))))))
-      (walk form))
+                          (push (if (symbolp name) (symbol-name name) name) imports))))
+                    (push (cdr value) pending) (push (car value) pending))
+                (dotimes (index (length value)) (push (aref value index) pending))))))))
     (sort (delete-dups imports) #'string<)))
 
 (defun nelisp-bytecode-native-rooted-cfg-contract--canonical-empty-imports-p
@@ -312,6 +314,7 @@
 
 (let ((snapshot-owner (symbol-function 'nelisp-bytecode-native-rooted-cfg-contract--snapshot-data))
       (reuse-owner (symbol-function 'nelisp-bytecode-compiler-input--reuse-checked))
+      (data-equal-owner (symbol-function 'nelisp-bytecode-native-rooted-cfg-data-equal))
       ;; Lean images retain the original independent public reconstruction.
       ;; Optimizing cold preparation loads the shared emitter before this
       ;; factory, so the input-only entry is sealed here, never on first use.
@@ -334,9 +337,7 @@ The result is data for comparison, never a certificate or cached authority."
                     (funcall lookup 'nelisp-bytecode-native-rooted-cfg-contract--snapshot-data)))
   (condition-case nil
       (let* ((_copy-start (nelisp-bytecode-native-rooted-cfg-contract--stage "copy-start"))
-             (copy (if result-mode
-                       (funcall snapshot-owner contract 0)
-                     (copy-tree contract)))
+             (copy (funcall snapshot-owner contract 0))
              (_copy-end (nelisp-bytecode-native-rooted-cfg-contract--stage "copy-end"))
              (digest (plist-get copy :digest))
              (recipe (plist-get copy :input-recipe))
@@ -417,7 +418,11 @@ The result is data for comparison, never a certificate or cached authority."
                       (nelisp-bytecode-native-rooted-cfg-contract--stage "digest-start")
                       (prog1 (nelisp-bytecode-native-rooted-cfg-contract--digest without-digest)
                         (nelisp-bytecode-native-rooted-cfg-contract--stage "digest-end"))))
-             (equal contract expected)
+             (funcall same data-equal-owner
+                      (funcall lookup 'nelisp-bytecode-native-rooted-cfg-data-equal))
+             (funcall data-equal-owner contract expected)
+             (funcall same data-equal-owner
+                      (funcall lookup 'nelisp-bytecode-native-rooted-cfg-data-equal))
              (or (null result-mode)
                  (funcall same snapshot-owner
                           (funcall lookup 'nelisp-bytecode-native-rooted-cfg-contract--snapshot-data)))

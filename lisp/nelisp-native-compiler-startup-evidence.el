@@ -24,6 +24,7 @@
     nelisp-bytecode-native-arithmetic-lowering nelisp-native-optimization-guard-v1
     nelisp-bytecode-native-guarded-lowering nelisp-bytecode-native-rooted-cfg-plan
     nelisp-bytecode-native-rooted-cfg-emit nelisp-bytecode-native-rooted-cfg-postdom
+    nelisp-bytecode-native-rooted-cfg-data
     nelisp-bytecode-native-rooted-cfg-shared-emit nelisp-bytecode-native-rooted-cfg-contract
     nelisp-bytecode-native-rooted-cfg-safe-contract
     nelisp-bytecode-native-rooted-cfg-constructor-contract))
@@ -37,7 +38,8 @@
     nelisp-native-arithmetic-v2 nelisp-bytecode-native-arithmetic-lowering
     nelisp-native-optimization-guard-v1 nelisp-bytecode-native-guarded-lowering
     nelisp-bytecode-native-rooted-cfg-plan nelisp-bytecode-native-rooted-cfg-emit
-    nelisp-bytecode-native-rooted-cfg-postdom nelisp-bytecode-native-rooted-cfg-shared-emit
+    nelisp-bytecode-native-rooted-cfg-postdom nelisp-bytecode-native-rooted-cfg-data
+    nelisp-bytecode-native-rooted-cfg-shared-emit
     nelisp-bytecode-native-rooted-cfg-native)
   "Pinned source dependencies loaded on demand, absent from Tier 0 startup.")
 
@@ -58,12 +60,12 @@
          (canonical (nelisp-native-compiler-startup-evidence--forms source))
          (derived (nelisp-native-compiler-startup-evidence--forms template)) found)
     (unless (and (equal (nelisp-native-rooted-build-evidence-source-hash source 4194304)
-                        "f97a43bc453eaf4ab7f819d78dc72dc0b32550655791a422b55387f6f68c79ce")
+                        "c8c847ae1289fb4bc1dcfe98a54071a6d00a9931535b788ca745a7dce3f70333")
                  (equal (nelisp-native-rooted-build-evidence-source-hash template 4194304)
                         "e0b37e914cccced895fe2b1c615bf0a7b4c869862fd8a1a01dad856f8c5ae55f")
                  (equal (alist-get 'source declaration) "lisp/nelisp-native-load.el")
                  (equal (alist-get 'source_sha256 declaration)
-                        "f97a43bc453eaf4ab7f819d78dc72dc0b32550655791a422b55387f6f68c79ce")
+                        "c8c847ae1289fb4bc1dcfe98a54071a6d00a9931535b788ca745a7dce3f70333")
                  (equal (alist-get 'output_sha256 declaration)
                         "e0b37e914cccced895fe2b1c615bf0a7b4c869862fd8a1a01dad856f8c5ae55f")
                  (equal (alist-get 'definitions declaration) (mapcar #'symbol-name names))

@@ -2034,6 +2034,20 @@
             p24-parity-calls)
     (fmakunbound 'p24-parity-callback)))
 
+;; P3.5: a serialization memo preserves bytes and expires before mutation.
+(let* ((text (copy-sequence "line\n\"quoted\""))
+       (node (list 'extern-call 'callee text 'env 'ticket 0 0 0 0))
+       (tree (list node node))
+       (print-length nil) (print-level nil) (print-circle nil)
+       (print-quoted t) (print-escape-newlines t)
+       (before (prin1-to-string tree))
+       (shared (let ((nelisp--prn-call-cache (make-vector 4096 nil)))
+                 (prin1-to-string tree))))
+  (aset text 0 ?x)
+  (and (equal before shared)
+       (not (equal before (let ((nelisp--prn-call-cache (make-vector 4096 nil)))
+                            (prin1-to-string tree))))))
+
 )
 
 ;;; nelisp-shadow-differential-cases.el ends here

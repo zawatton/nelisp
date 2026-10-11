@@ -11,6 +11,7 @@
 
 ;;; Code:
 
+(require 'nelisp-bytecode-native-rooted-cfg-data)
 (require 'cl-lib)
 (require 'nelisp-bytecode-native-rooted-cfg-plan)
 (require 'nelisp-bytecode-native-arithmetic-lowering)
@@ -308,7 +309,12 @@
   ;; Redirecting the sole incoming edge preserves the incoming counts of
   ;; every surviving block.  Index once instead of repeatedly scanning and
   ;; copying the entire graph; frame status/exit paths make that scan costly.
-  (let* ((blocks (copy-tree (cdddr cfg)))
+  (let* ((blocks (mapcar (lambda (block)
+                            ;; Only these block records and statement spines
+                            ;; are mutated below; expression DAGs stay intact.
+                            (list (car block) (cadr block)
+                                  (copy-sequence (nth 2 block)) (nth 3 block)))
+                          (cdddr cfg)))
          (map (make-hash-table :test 'eq))
          (counts (make-hash-table :test 'eq))
          (tails (make-hash-table :test 'eq)))
@@ -348,6 +354,7 @@
          (block-map (make-hash-table :test 'eql)) (edge-labels nil)
          (free-cache (make-hash-table :test 'eq))
          (lower-cache (make-hash-table :test 'eq))
+         (sharing (nelisp-bytecode-native-rooted-cfg-data-context))
          (context (list :cyclic t :plan plan :root-count (plist-get plan :required-root-count)
                         :block-map block-map :edge-labels nil :phi-vars nil
                         :phi-var-set (make-hash-table :test #'eq)
@@ -480,7 +487,7 @@
         (dolist (b planned)
           (let* ((id (plist-get b :start))
                  (body (nelisp-bytecode-native-rooted-cfg-shared-emit--operations context b 0 nil nil))
-                 (entry (lower body nil out finish)))
+                 (entry (lower (nelisp-bytecode-native-rooted-cfg-data-share body sharing) nil out finish)))
             (block nil (list 'jump entry) id))
           (dolist (e (cl-delete-duplicates (copy-sequence (plist-get b :successors))
                                            :key (lambda (edge) (plist-get edge :target)) :test #'eql))
@@ -531,7 +538,7 @@
                          inputs scratch (nelisp-native-funcall-v2-copy-form scratch destinations body))
                       `(progn ,(nelisp-bytecode-native-rooted-cfg-shared-emit--edge-assignments
                                 context from to) ,body)))
-              (block nil (list 'jump (lower body nil out finish))
+              (block nil (list 'jump (lower (nelisp-bytecode-native-rooted-cfg-data-share body sharing) nil out finish))
                      (cdr (assoc (cons from to) edge-labels))))))
         (nelisp-bytecode-native-rooted-cfg-shared-emit--stage "raw-blocks-end")
         (let* ((copies (plist-get plan :entry-copies))
@@ -545,7 +552,7 @@
                (body (if (plist-get plan :frame-state-root)
                          (nelisp-native-frame-v2-copy-emit plan 0 (plist-get plan :frame-enter-roots) `(progn (setq ,entered 1) ,body))
                        body))
-               (entry (lower body nil out finish))
+               (entry (lower (nelisp-bytecode-native-rooted-cfg-data-share body sharing) nil out finish))
                (guard (lower `(if (/= argument-count ,(plist-get plan :arity)) 3
                                (if (/= root-count ,(plist-get plan :required-root-count)) 3
                                  (cfg-edge ,entry))) nil out finish)))
@@ -590,8 +597,9 @@
                 (list :status 'unsupported :reason (plist-get context :failure))
               (nelisp-native-cfg-grammar-validate cfg)
               (append (list :status 'complete :entry-name entry-name
-                          :form `(defun ,(intern entry-name) (env ticket argument-count root-count)
-                                   (let ,(nreverse locals) ,cfg))
+                          :form (nelisp-bytecode-native-rooted-cfg-data-share
+                                 `(defun ,(intern entry-name) (env ticket argument-count root-count)
+                                    (let ,(nreverse locals) ,cfg)) sharing)
                           :argument-count (plist-get plan :arity)
                           :required-root-count (plist-get plan :required-root-count)
                           :gateway-imports (plist-get plan :gateway-imports)
@@ -739,11 +747,12 @@
                                  ,(nelisp-native-frame-v2-copy-emit plan 3 nil 'frame_output))
                              frame_output))))))
             (list :status 'complete :entry-name entry-name
-                  :form `(defun ,(intern entry-name) (env ticket argument-count root-count)
-                           (if (/= argument-count ,arity) 3
-                             (if (/= root-count ,root-count) 3
-                               (let ,(mapcar (lambda (pair) (list (cdr pair) 0)) phi-vars)
-                                 ,body))))
+                  :form (nelisp-bytecode-native-rooted-cfg-data-share
+                         `(defun ,(intern entry-name) (env ticket argument-count root-count)
+                            (if (/= argument-count ,arity) 3
+                              (if (/= root-count ,root-count) 3
+                                (let ,(mapcar (lambda (pair) (list (cdr pair) 0)) phi-vars)
+                                  ,body)))))
                   :gateway-imports
                   (sort (delete-dups
                          (append (plist-get plan :gateway-imports)
