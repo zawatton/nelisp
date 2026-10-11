@@ -186,18 +186,22 @@
 (defun nelisp-bytecode-native-rooted-cfg--input-root (token state)
   (cdr (assoc token state)))
 
+(let ((reuse-owner (symbol-function 'nelisp-bytecode-compiler-input--reuse-checked)))
 (defun nelisp-bytecode-native-rooted-cfg--canonical-input-p (input)
   "Return non-nil when INPUT exactly matches the pinned public builder output."
   (condition-case nil
       (let* ((function (plist-get input :function))
              (dialect (plist-get input :dialect-evidence))
              (canonical (and (byte-code-function-p function)
-                             (nelisp-bytecode-compiler-input-build function))))
+                             (or (and (eq reuse-owner (symbol-function 'nelisp-bytecode-compiler-input--reuse-checked))
+                                      (funcall reuse-owner input))
+                                 (nelisp-bytecode-compiler-input-build function)))))
         (and canonical
              (eq (plist-get dialect :status) 'pinned)
              (equal dialect (nelisp-bytecode-compiler-input-dialect))
              (equal input canonical)))
     (error nil)))
+)
 
 (defun nelisp-bytecode-native-rooted-cfg--safe-input-p (input)
   "Return non-nil when INPUT is incomplete only at verified safe primitives."

@@ -2535,7 +2535,9 @@ The enclosing CFG admission must still authenticate the complete contract."
 
 (require 'nelisp-bytecode-native-rooted-cfg-contract)
 (let ((cfg-validator-owner
-       (symbol-function 'nelisp-bytecode-native-rooted-cfg-contract-valid-p)))
+       (symbol-function 'nelisp-bytecode-native-rooted-cfg-contract-valid-p))
+      (input-reuse-owner
+       (symbol-function 'nelisp-bytecode-compiler-input--reuse-checked)))
 (defun nelisp-native-load-raw-v2-compile-file
     (source-path artifact-path &optional build-id binary-sha256 call1-template rooted-stack-spec conditional-spec rooted-branch-spec rooted-branch-join-spec rooted-cfg-spec safe-v3-spec validation-receiver source-snapshot cache-only)
   "Compile a complete GC/arena SOURCE-PATH to v2 ARTIFACT-PATH.
@@ -2756,12 +2758,17 @@ without publishing an intermediate artifact.  The cache owns publication."
              (verified-input (plist-get reconstruction :input))
              (canonical-input
               (and reconstruction
-                   (nelisp-bytecode-compiler-input-build (plist-get input :function))))
+                   (or (and (eq input-reuse-owner
+                                (symbol-function 'nelisp-bytecode-compiler-input--reuse-checked))
+                            (funcall input-reuse-owner input))
+                       (nelisp-bytecode-compiler-input-build (plist-get input :function)))))
              (verified-plan (plist-get reconstruction :plan))
              (verified-emitted (plist-get reconstruction :emitted))
              (expected-contract (plist-get reconstruction :expected-contract)))
-        ;; The contract recipe and the caller's full input remain independent
-        ;; checks. Only their shared plan/emission reconstruction is reused.
+        ;; Recheck the live function after fingerprinting, at the original
+        ;; canonical-input check point. The private build snapshot retains
+        ;; this check without reconstructing the frame; external callers and
+        ;; changed inputs still take the independent reconstruction path.
         (cl-labels ((input-data (value)
                       (let ((rest value) (data nil))
                         (while rest

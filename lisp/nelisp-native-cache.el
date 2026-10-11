@@ -394,11 +394,15 @@ The caller must inhibit mid-form collection until the syscall returns."
              (nelisp-native-load--serialization-receiver
               (lambda (manifest bytes) (setq serialized (cons manifest bytes)))))
         (unwind-protect
-            (let* ((input (nelisp-bytecode-compiler-input-build
-                           (nelisp-native-cache--function function)))
-                   (result (nelisp-bytecode-native-rooted-cfg-native--build
-                            input (concat file ".compile.nelr")
-                            t nelisp-native-cache-guard-mode t))
+            (let* ((input nil)
+                   (result
+                    (nelisp-bytecode-compiler-input-call-with-built
+                     (nelisp-native-cache--function function)
+                     (lambda (built-input)
+                       (setq input built-input)
+                       (nelisp-bytecode-native-rooted-cfg-native--build
+                        input (concat file ".compile.nelr")
+                        t nelisp-native-cache-guard-mode t))))
                    (header
                     (list :nelisp-native-cache 1 :canonical-manifest 'prebuilt-v1 :backend 'in-house :abi (nelisp-native-cache-abi-hash)
                           :input (nelisp-native-cache--input-hash function)

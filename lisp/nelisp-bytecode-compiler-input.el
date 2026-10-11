@@ -507,6 +507,111 @@ runtime captures.  Source forms and .elc loading are not part of this API."
               :interactive (and (> (length function) 5) (aref function 5))
               :dialect-evidence dialect :ir-result ir :frame-result frame))))))
 
+(defun nelisp-bytecode-compiler-input--snapshot (value _depth)
+  "Copy mutable VALUE iteratively, preserving sharing and opaque owners.
+Visit and copy each container in one DFS, rejecting an active ancestor."
+  (let ((copies (make-vector 4096 nil)) pending)
+    ;; Fixed identity buckets avoid general hash-table work for every node.
+    ;; Collisions still resolve through the original object's eq identity.
+    (cl-labels
+        ((identity-get (item)
+           (cdr (assq item (aref copies (logand (sxhash-eq item) 4095)))))
+         (identity-put (item value)
+           (let* ((key (logand (sxhash-eq item) 4095)) (bucket (aref copies key)))
+             (aset copies key (cons (cons item value) bucket)))
+           value)
+         (allocate (item)
+           (cond
+            ;; Most recipe and plan nodes are scalar metadata. Classify them
+            ;; before inspecting callable/opaque containers.
+            ((or (null item) (symbolp item) (numberp item)) item)
+            ((or (hash-table-p item) (byte-code-function-p item) (functionp item)) item)
+            ((stringp item)
+             (or (identity-get item)
+                 (let ((copy (substring item 0))) (identity-put item copy) copy)))
+            ((or (consp item) (vectorp item))
+             (let ((record (identity-get item)))
+               (if record
+                   (if (eq (car record) 'active) (error "Cyclic contract snapshot") (cdr record))
+                 (let* ((copy (if (consp item) (cons nil nil) (make-vector (length item) nil)))
+                        (record (cons 'active copy)))
+                   (identity-put item record)
+                   (push (vector item copy 0 record) pending)
+                   copy))))
+            (t (error "Unsupported contract snapshot value")))))
+      (let ((root (allocate value)))
+        (while pending
+          (let* ((frame (car pending)) (old (aref frame 0)) (new (aref frame 1))
+                 (index (aref frame 2)) (count (if (consp old) 2 (length old))))
+            (if (= index count)
+                (progn (setcar (aref frame 3) 'done) (pop pending))
+              (aset frame 2 (1+ index))
+              ;; ALLOCATE pushes a child frame, so it finishes before the
+              ;; next sibling. An active record is therefore an ancestor.
+              (let ((child (allocate (if (consp old) (if (= index 0) (car old) (cdr old)) (aref old index)))))
+                (if (consp old)
+                    (if (= index 0) (setcar new child) (setcdr new child))
+                  (aset new index child))))))
+        root))))
+(defun nelisp-bytecode-compiler-input--stage (label)
+  "Append optional input build diagnostics."
+  (let ((path (getenv "NELISP_ROOTED_CFG_STAGE_LOG")))
+    (when path
+      (write-region (format "contract-%s seconds=%.3f\n" label (float-time))
+                    nil path t 'silent))))
+
+(defun nelisp-bytecode-compiler-input--function-slots (function)
+  "Copy FUNCTION's slots without treating bytecode objects as sequences."
+  (let ((slots (make-vector (length function) nil)))
+    (dotimes (index (length function))
+      (aset slots index (aref function index)))
+    slots))
+
+(let ((build-owner (symbol-function 'nelisp-bytecode-compiler-input-build))
+      (snapshot-owner (symbol-function 'nelisp-bytecode-compiler-input--snapshot))
+      (slots-owner (symbol-function 'nelisp-bytecode-compiler-input--function-slots))
+      (lookup (symbol-function 'symbol-function))
+      (same (symbol-function 'eq))
+      (active nil))
+  (defun nelisp-bytecode-compiler-input-call-with-built (function callback)
+    "Build FUNCTION once and lend its checked input to CALLBACK in this scope.
+The private snapshot is discarded on return, including errors and nested calls."
+    (unless (and (funcall same build-owner (funcall lookup 'nelisp-bytecode-compiler-input-build))
+                 (funcall same slots-owner (funcall lookup 'nelisp-bytecode-compiler-input--function-slots)))
+      (error "Compiler input builder or slot reader owner changed"))
+    (let* ((previous active)
+           (dependencies
+            (mapcar (lambda (name) (cons name (funcall lookup name)))
+                    (append (nelisp-bytecode-compiler-input-native-package-dependencies)
+                            (nelisp-bytecode-ir-native-package-dependencies)
+                            (nelisp-bytecode-frame-ir-native-package-dependencies))))
+           (_start (nelisp-bytecode-compiler-input--stage "input-build-start"))
+           (input (funcall build-owner function))
+           (_end (nelisp-bytecode-compiler-input--stage "input-build-end"))
+           (slots (funcall slots-owner function)))
+      (unwind-protect
+          (progn
+            (setq active (list input (funcall snapshot-owner input 0)
+                               (funcall snapshot-owner slots 0) dependencies))
+            (funcall callback input))
+        (setq active previous))))
+  (defun nelisp-bytecode-compiler-input--reuse-checked (input)
+    "Return the unchanged checked INPUT only during its building scope."
+    (and active (funcall same input (car active))
+         (funcall same slots-owner (funcall lookup 'nelisp-bytecode-compiler-input--function-slots))
+         ;; Opaque switch tables can affect derived frame data. They retain
+         ;; the independent reconstruction path rather than sharing a snapshot.
+         (cl-every (lambda (value) (not (hash-table-p value)))
+                   (append (aref (plist-get input :function) 2) nil))
+         (cl-every (lambda (entry)
+                     (funcall same (cdr entry) (funcall lookup (car entry))))
+                   (nth 3 active))
+         (equal input (nth 1 active))
+         (equal (funcall slots-owner (plist-get input :function)) (nth 2 active))
+         (equal (plist-get input :dialect-evidence)
+                (nelisp-bytecode-compiler-input--dialect))
+         input)))
+
 (defun nelisp-bytecode-compiler-input-native-package-dependencies ()
   "Return compiler-input function identities guarded by native packages."
   (append
