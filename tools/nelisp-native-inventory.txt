@@ -120,6 +120,7 @@ nelisp--syscall-path-int	native-review	No classification row; review against Doc
 nelisp--syscall-stat-field	native-review	No classification row; review against Doc 211 §6.
 nelisp--syscall-stat-buf	native-review	No classification row; review against Doc 211 §6.
 nelisp--syscall-lstat-buf	native-review	No classification row; review against Doc 211 §6.
+nelisp--syscall-lstat-field	native-must-stay	Clause 3: lstat(2) of one struct-stat word, as nelisp--syscall-stat-field does for stat(2); it keeps the prelude's file-attributes free of raw stat-buffer reads (tools/unsafe-kernel.txt).
 nelisp--syscall-readlink	native-review	No classification row; review against Doc 211 §6.
 nelisp--syscall-readdir-names	native-review	No classification row; review against Doc 211 §6.
 nelisp--readdir-scan-raw	native-review	No classification row; review against Doc 211 §6.

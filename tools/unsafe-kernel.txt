@@ -281,3 +281,84 @@ pinned-kernel-touch lisp/nelisp-native-funcall-v2.el
 pinned-kernel-touch lisp/nelisp-native-gccjit.el
 pinned-kernel-touch lisp/nelisp-process-buffer.el
 pinned-kernel-touch lisp/nelisp-standalone-arena-rewrite.el
+
+# Native branch integration into main, 2026-10-11 (integ/main-merge-20261011).
+# The native branch committed these files while this gate was red for other
+# reasons, so none was ever registered.  Each one's raw-memory use, measured
+# per primitive with the gate's own primitive list:
+#
+# Rooted CFG code generators: emit native frame/root slot reads and writes
+# (ptr-read-u64/ptr-write-u64) into the units they generate.
+lisp/nelisp-bytecode-native-rooted-branch-join.el
+lisp/nelisp-bytecode-native-rooted-branch.el
+lisp/nelisp-bytecode-native-rooted-cfg-emit.el
+lisp/nelisp-bytecode-native-rooted-cfg-shared-emit.el
+lisp/nelisp-bytecode-native-rooted-conditional.el
+# GNU .eln loader (Doc 210): builds and reads GNU Lisp_Object words, strings,
+# floats, bignums and registration vectors in owned memory, patches the
+# import/freloc tables and enters native code through raw word calls.
+lisp/nelisp-eln-abi.el
+lisp/nelisp-eln-bignum.el
+lisp/nelisp-eln-callable-import.el
+lisp/nelisp-eln-float.el
+lisp/nelisp-eln-handler-port.el
+lisp/nelisp-eln-handler-substrate.el
+lisp/nelisp-eln-native-subr.el
+lisp/nelisp-eln-objects.el
+lisp/nelisp-eln-raw-call.el
+lisp/nelisp-eln-registration-objects.el
+lisp/nelisp-eln-registration.el
+lisp/nelisp-eln-string.el
+lisp/nelisp-eln-system-loader.el
+# Rooted native providers: emitted root-slot copies for the numeric, CALL and
+# guard adapters (arithmetic also allocates its scratch words).
+lisp/nelisp-native-arithmetic-v2.el
+lisp/nelisp-native-call-v2.el
+lisp/nelisp-native-optimization-guard-v1.el
+# Executable byte windows: mmap/mprotect through syscall-direct and writes
+# the code bytes it maps.
+lisp/nelisp-native-raw-file.el
+# Template stencils: one syscall-direct for the authenticated fragment ABI.
+lisp/nelisp-native-template-stencils.el
+# Win64 backend: reads and writes PE/COFF headers, VirtualAlloc'd pages and
+# the Win64 trust records.
+lisp/nelisp-native-windows.el
+# Opt-in startup tracing: generates an alloc-bytes trace record and its
+# field writes into the reader driver.
+scripts/nelisp-startup-trace.el
+# Four more `lisp/nelisp-cc-*.el' generators from the native branch already
+# match the pattern above and now emit raw-memory code: the .eln callback
+# trampolines (callback, callback7), the env-leaves bind trace and the
+# non-env char-table map.  Pinned with the 25 files registered above.
+pinned-kernel-touch lisp/nelisp-bytecode-native-rooted-branch-join.el
+pinned-kernel-touch lisp/nelisp-bytecode-native-rooted-branch.el
+pinned-kernel-touch lisp/nelisp-bytecode-native-rooted-cfg-emit.el
+pinned-kernel-touch lisp/nelisp-bytecode-native-rooted-cfg-shared-emit.el
+pinned-kernel-touch lisp/nelisp-bytecode-native-rooted-conditional.el
+pinned-kernel-touch lisp/nelisp-cc-eln-callback.el
+pinned-kernel-touch lisp/nelisp-cc-eln-callback7.el
+pinned-kernel-touch lisp/nelisp-cc-evalport-env-leaves-bind-trace.el
+pinned-kernel-touch lisp/nelisp-cc-evalport-nonenv-char-table-map.el
+pinned-kernel-touch lisp/nelisp-eln-abi.el
+pinned-kernel-touch lisp/nelisp-eln-bignum.el
+pinned-kernel-touch lisp/nelisp-eln-callable-import.el
+pinned-kernel-touch lisp/nelisp-eln-float.el
+pinned-kernel-touch lisp/nelisp-eln-handler-port.el
+pinned-kernel-touch lisp/nelisp-eln-handler-substrate.el
+pinned-kernel-touch lisp/nelisp-eln-native-subr.el
+pinned-kernel-touch lisp/nelisp-eln-objects.el
+pinned-kernel-touch lisp/nelisp-eln-raw-call.el
+pinned-kernel-touch lisp/nelisp-eln-registration-objects.el
+pinned-kernel-touch lisp/nelisp-eln-registration.el
+pinned-kernel-touch lisp/nelisp-eln-string.el
+pinned-kernel-touch lisp/nelisp-eln-system-loader.el
+pinned-kernel-touch lisp/nelisp-native-arithmetic-v2.el
+pinned-kernel-touch lisp/nelisp-native-call-v2.el
+pinned-kernel-touch lisp/nelisp-native-optimization-guard-v1.el
+pinned-kernel-touch lisp/nelisp-native-raw-file.el
+pinned-kernel-touch lisp/nelisp-native-template-stencils.el
+pinned-kernel-touch lisp/nelisp-native-windows.el
+pinned-kernel-touch scripts/nelisp-startup-trace.el
+# 118 + the 25 registered above + 3 of the four cc generators that hold an
+# unquoted call (the gate's own count) = 146.
+kernel-files 146

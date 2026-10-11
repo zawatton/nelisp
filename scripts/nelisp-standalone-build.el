@@ -20824,6 +20824,7 @@ into that constant unconditionally is what broke every aarch64 build."
     ((:lit "nelisp--syscall-stat-field") . (nl_bi_syscall_stat_field args out))
     ((:lit "nelisp--syscall-stat-buf") . (nl_bi_syscall_stat_buf args out))
     ((:lit "nelisp--syscall-lstat-buf") . (nl_bi_syscall_lstat_buf args out))
+    ((:lit "nelisp--syscall-lstat-field") . (nl_bi_syscall_lstat_field args out))
     ((:lit "nelisp--syscall-readlink") . (nl_bi_syscall_readlink args out))
     ((:lit "nelisp--syscall-readdir-names") . (nl_bi_syscall_readdir_names args out))
     ((:lit "nelisp--readdir-scan-raw") . (nl_bi_readdir_scan_raw args out))
@@ -23329,6 +23330,20 @@ Other targets return nil, preserving their generated process source exactly."
         (if (< rc 0)
             (wf_write_int out rc)
           (wf_write_int out buf))))
+    ;; nelisp--syscall-lstat-field PATH OFFSET: like stat-field but lstat(2),
+    ;; so the prelude's `file-attributes' reads the link itself without
+    ;; handling raw memory (AGENTS.md clause 3; the safe core stays free of
+    ;; `ptr-read-*', as `tools/unsafe-kernel.txt' requires).  Returns the
+    ;; u64 at OFFSET of the struct, or the negative kernel errno.
+    (defun nl_bi_syscall_lstat_field (args out)
+      (let* ((path_sx (wf_arg_ptr args 0))
+             (offset (wf_argval args 1))
+             (cpath (nl_bi_make_cpath path_sx))
+             (buf (alloc-bytes 144 8))
+             (rc (nl_os_lstat_path cpath buf)))
+        (if (< rc 0)
+            (wf_write_int out rc)
+          (wf_write_int out (ptr-read-u64 buf offset)))))
     ;; nelisp--syscall-readlink PATH: readlink(2) (syscall 89) -- return the
     ;; symbolic-link target as a string, or nil when PATH is not a symlink (or
     ;; on any error).  readlink does not NUL-terminate, so the returned length
@@ -26632,7 +26647,8 @@ value (matches the binary's M8 read+eval-loop driver)."
     "nelisp--eval-source-string" "nelisp--syscall-read-file" "nl-write-file"
     "nelisp--syscall-path" "nelisp--syscall-path2" "nelisp--syscall-path-int"
     "nelisp--syscall-stat-field" "nelisp--syscall-stat-buf"
-    "nelisp--syscall-lstat-buf" "nelisp--syscall-readlink"
+    "nelisp--syscall-lstat-buf" "nelisp--syscall-lstat-field"
+    "nelisp--syscall-readlink"
     "nelisp--syscall-readdir-names" "nelisp--readdir-scan-raw"
     "nelisp--syscall-utimes" "nelisp--syscall-statx-buf" "nelisp--syscall-unshare"
     "nelisp--syscall-mount" "nelisp--syscall-pivot-root"

@@ -331,7 +331,12 @@
 # scripts/nelisp-standalone-build.el above (851 -> 875), all in the new
 # `nl_cli_action_*'/`nl_cla_list_from'/`nl_cli_set_clal' helpers, none
 # elsewhere -- gate's own before/after totals agree exactly.
-unsafe-call 1143
+# 1143 -> 1824 on 2026-10-11 (native branch integration into main): the
+# gate's own total on the merged tree.  It is the sum of the per-file pins
+# raised below in the same commit -- 22 native-branch kernel files that were
+# never pinned and four whose pins were never raised -- plus the prelude
+# going 13 -> 0 when `file-attributes' moved to `nelisp--syscall-lstat-field'.
+unsafe-call 1824
 
 # `pinned-kernel-call FILE COUNT' pins the per-file unquoted `unsafe-call'
 # count behind `total' above -- the kernel files that actually carry
@@ -350,7 +355,7 @@ pinned-kernel-call lisp/nelisp-stdlib-os-int-helpers.el 18
 # The 2026-09-11 +20 are the runtime-reload raw symbol/state/install address
 # probes and SHA256 file/binary probes.  They are explicit ABI validation and
 # diagnostics around the opt-in loader, not a new unbounded raw-memory path.
-pinned-kernel-call lisp/nelisp-native-load.el 56
+pinned-kernel-call lisp/nelisp-native-load.el 65
 # Generation table reads/writes and the CAS publisher account for six
 # scanned primitive call sites in the new native unit kernel.
 # 2026-09-12, 6 -> 7: candidate reclamation adds one `syscall-direct' call,
@@ -589,18 +594,18 @@ pinned-kernel-call scripts/nelisp-gc-pause-growth.el 2
 #     `default-directory'/`noninteractive' above.
 # Taken from the scanner (875) and cross-checked against `git diff', not
 # summed on paper.
-pinned-kernel-call scripts/nelisp-standalone-build.el 989
+pinned-kernel-call scripts/nelisp-standalone-build.el 1267
 # 2026-09-11: one GC snapshot raw-address probe, bounded by the named table
 # contract and used only for structured diagnostics.
 pinned-kernel-call lisp/nelisp-repl-gc.el 1
 
 pinned-kernel-call lisp/nelisp-buffer-local.el 2
 
-pinned-kernel-call lisp/nelisp-bytecode-native-rooted-cfg-shared-emit.el 4
+pinned-kernel-call lisp/nelisp-bytecode-native-rooted-cfg-shared-emit.el 7
 
 pinned-kernel-call lisp/nelisp-native-cache.el 6
 
-pinned-kernel-call lisp/nelisp-native-funcall-v2.el 2
+pinned-kernel-call lisp/nelisp-native-funcall-v2.el 16
 
 pinned-kernel-call lisp/nelisp-native-gccjit.el 9
 
@@ -618,3 +623,37 @@ pinned-kernel-call lisp/nelisp-standalone-arena-rewrite.el 1
 # add each positive per-file delta to its old pin, and sum to unsafe-call.
 # New quoted-only kernel generators resolve/write alias cells and manage
 # native roots. Their identities are pinned in tools/unsafe-kernel.txt.
+
+# 2026-10-11, native branch integration into main (integ/main-merge-20261011).
+# The native branch grew its kernel while this gate was already red, so the
+# per-file pins below were never raised.  Counts are the gate's own, taken
+# from the merged tree, not summed on paper:
+#   lisp/nelisp-bytecode-native-rooted-cfg-shared-emit.el 4 -> 7
+#   lisp/nelisp-native-funcall-v2.el 2 -> 16
+#   lisp/nelisp-native-load.el 56 -> 65
+#   scripts/nelisp-standalone-build.el 989 -> 1267
+# scripts/nelisp-standalone-build.el includes +1 for the new
+# `nelisp--syscall-lstat-field' builtin, which moved the prelude's 13
+# raw stat-buffer reads out of the safe core (prelude: 13 -> 0).
+pinned-kernel-call lisp/nelisp-bytecode-native-rooted-branch-join.el 1
+pinned-kernel-call lisp/nelisp-bytecode-native-rooted-cfg-emit.el 5
+pinned-kernel-call lisp/nelisp-bytecode-native-rooted-conditional.el 1
+pinned-kernel-call lisp/nelisp-cc-eln-callback.el 118
+pinned-kernel-call lisp/nelisp-cc-eln-callback7.el 84
+pinned-kernel-call lisp/nelisp-eln-abi.el 4
+pinned-kernel-call lisp/nelisp-eln-bignum.el 2
+pinned-kernel-call lisp/nelisp-eln-callable-import.el 13
+pinned-kernel-call lisp/nelisp-eln-float.el 2
+pinned-kernel-call lisp/nelisp-eln-handler-port.el 24
+pinned-kernel-call lisp/nelisp-eln-handler-substrate.el 20
+pinned-kernel-call lisp/nelisp-eln-native-subr.el 10
+pinned-kernel-call lisp/nelisp-eln-objects.el 2
+pinned-kernel-call lisp/nelisp-eln-raw-call.el 3
+pinned-kernel-call lisp/nelisp-eln-registration-objects.el 4
+pinned-kernel-call lisp/nelisp-eln-registration.el 21
+pinned-kernel-call lisp/nelisp-eln-string.el 9
+pinned-kernel-call lisp/nelisp-eln-system-loader.el 5
+pinned-kernel-call lisp/nelisp-native-raw-file.el 7
+pinned-kernel-call lisp/nelisp-native-template-stencils.el 1
+pinned-kernel-call lisp/nelisp-native-windows.el 34
+pinned-kernel-call scripts/nelisp-startup-trace.el 7

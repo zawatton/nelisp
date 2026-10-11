@@ -17432,29 +17432,36 @@ processors not available."
               (funcall r 256) (funcall w 128) (funcall x 64 2048 ?s ?S)
               (funcall r 32) (funcall w 16) (funcall x 8 1024 ?s ?S)
               (funcall r 4) (funcall w 2) (funcall x 1 512 ?t ?T)))))
+;; Each field comes from `nelisp--syscall-lstat-field' (one lstat(2) per
+;; word, as main's stat-based version did) so the safe core never touches
+;; the raw stat buffer.  Linux x86_64 `struct stat': st_dev 0, st_ino 8,
+;; st_nlink 16, st_mode/st_uid 24 (two u32), st_gid 32, st_size 48,
+;; st_atim 72/80, st_mtim 88/96, st_ctim 104/112.
 (unless (fboundp 'file-attributes)
   (defun file-attributes (filename &optional _id-format)
-    (let ((buf (nelisp--syscall-lstat-buf filename)))
-      (if (< buf 0)
+    (let ((mode-uid (nelisp--syscall-lstat-field filename 24)))
+      (if (< mode-uid 0)
           nil
-        (let* ((mode (ptr-read-u32 buf 24))
+        (let* ((field (lambda (offset)
+                        (nelisp--syscall-lstat-field filename offset)))
+               (mode (logand mode-uid 4294967295))
                (ifmt (logand mode 61440))
                (type (cond ((= ifmt 16384) t)                 ; S_IFDIR
                            ((= ifmt 40960)                    ; S_IFLNK
                             (nelisp--syscall-readlink filename))
                            (t nil))))
           (list type
-                (ptr-read-u64 buf 16)
-                (ptr-read-u32 buf 28)
-                (ptr-read-u32 buf 32)
-                (nelisp--stat-lisp-time (ptr-read-u64 buf 72) (ptr-read-u64 buf 80))
-                (nelisp--stat-lisp-time (ptr-read-u64 buf 88) (ptr-read-u64 buf 96))
-                (nelisp--stat-lisp-time (ptr-read-u64 buf 104) (ptr-read-u64 buf 112))
-                (ptr-read-u64 buf 48)
+                (funcall field 16)
+                (ash mode-uid -32)
+                (logand (funcall field 32) 4294967295)
+                (nelisp--stat-lisp-time (funcall field 72) (funcall field 80))
+                (nelisp--stat-lisp-time (funcall field 88) (funcall field 96))
+                (nelisp--stat-lisp-time (funcall field 104) (funcall field 112))
+                (funcall field 48)
                 (nelisp--stat-mode-string mode)
                 t
-                (ptr-read-u64 buf 8)
-                (ptr-read-u64 buf 0)))))))
+                (funcall field 8)
+                (funcall field 0)))))))
 ;; The accessors below are the standard public interface to the list
 ;; `file-attributes' returns (real Emacs's `files.el' defines them as
 ;; `defsubst', ported verbatim here as plain field lookups); without
