@@ -77,7 +77,7 @@ def verify(data, criterion):
         assert observations and int(observations[1]) >= 3
         assert int(observations[1]) + int(observations[2]) == 10
         return
-    for name, count in [('p34-boundary-host', 34), ('p34-runtime-host', 12)]:
+    for name, count in [('p34-boundary-host', 34), ('p34-runtime-host', 14)]:
         host = data['host_controls'][name]
         assert host['rc'] == 0 and 0 < host['seconds'] < 1801
         assert host['command'][:4] == ['timeout', '-k', '5', '1800']

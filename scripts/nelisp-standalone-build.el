@@ -12669,8 +12669,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
                               (if (= rc 0) (setq rc (+ 1024 a)) 0))))))))
                (nl_root_release env mark) rc))))))
     ;; Evaluator/GC entry, minimal-native clause 2. The policy is Lisp; this
-    ;; adapter authenticates slots, allocates the evaluator cell and installs
-    ;; the prepared record only after the callback's own frames are gone.
+    ;; adapter authenticates slots and uses existing evaluator primitives for
+    ;; ordinary bindings. Callback-prepared records are installed only after
+    ;; the callback's own frames are gone. The Lisp owner remains the reference
+    ;; and publishes precise conditions on Lisp error paths.
     (defun nl_native_frame_v2 (env ticket s action a r)
       (if (= action 12) (nl_native_handlers_copy_v2 env ticket s a r)
       (if (= action 11) (nl_native_handlers_land_v2 env ticket s a r)
@@ -12708,11 +12710,15 @@ baked build's own `<'/`>'/`=' arms need it too.")
                          (arg1 (+ roots 320)) (arg2 (+ roots 352)) (scratch (+ roots 384))
                          (event (+ roots 416)) (payload (+ roots 448))
                          (saved-tag (+ roots 480)) (saved-value (+ roots 512))
-                         (saved-kind 0) (cleanup-rc 0) (rc 2))
+                         (saved-kind 0) (cleanup-rc 0) (rc 2)
+                         (direct 0) (event-count 0) (binding-count 0)
+                         (entry 0) (address 0) (hash 0))
                     (seq
                      (if (= action 0) (wf_bytecode_copy function state)
                        (if (and (= (sexp-tag state) 8) (= (vector-len state) 7))
-                           (wf_bytecode_copy function (vector-ref-ptr state 0))
+                           ;; Invoke the entry's owner on refusal, including
+                           ;; replacement of the public state callback slot.
+                           (wf_bytecode_copy function (vector-ref-ptr state 5))
                          (setq valid 0)))
                      (if (= valid 0) 0
                        (seq
@@ -12728,7 +12734,6 @@ baked build's own `<'/`>'/`=' arms need it too.")
                               (setq valid 0) 0))
                         (if (> n 0) (wf_bytecode_copy arg1 (nl_root_pin_slot_v2 env ticket a)) 0)
                         (if (> n 1) (wf_bytecode_copy arg2 (nl_root_pin_slot_v2 env ticket (+ a 1))) 0)
-                        (if (= action 1) (cell-make arg2 cell) 0)
                         (if (= action 0)
                             (if (or (/= (sexp-tag arg1) 2) (/= (sexp-tag arg2) 2)
                                     (<= (sexp-int-unwrap arg1) 0) (< (sexp-int-unwrap arg2) 0)
@@ -12736,8 +12741,145 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                 (setq valid 0) 0) 0)
                         (if (= valid 0) 0
                           (seq
-                           (wf_bytecode_build_args roots 10 n operands)
-                           (setq rc (wf_bytecode_call_gateway env function roots 1 8 result))))))
+                           ;; The policy callback is a reference and error path.
+                           ;; Ordinary frame operations use the SAME evaluator
+                           ;; primitives as bytecode, without an interpreted
+                           ;; callback (and its interpreted FNV hash loops).
+                           ;; Keep the activation watermark and ordered event
+                           ;; chain checks before any binding or handler change.
+                           (if (= action 0)
+                               ;; Entry invokes the frozen owner to establish
+                               ;; the activation; arbitrary/non-callable entry
+                               ;; values must retain the gateway's refusal.
+                               0
+                             (seq
+                              (wf_bytecode_copy event (vector-ref-ptr state 3))
+                              (while (= (sexp-tag event) 7)
+                                (seq
+                                 (if (/= (sexp-tag (nl_cons_car_ptr event)) 7)
+                                     (setq binding-count (+ binding-count 1)) 0)
+                                 (setq event-count (+ event-count 1))
+                                 (wf_bytecode_copy event (nl_cons_cdr_ptr event))))
+                              (if (and (= (sexp-tag function) 7)
+                                       (= (bf_eq2 function (vector-ref-ptr state 0)) 1)
+                                       (= (sexp-tag (nl_cons_car_ptr function)) 4)
+                                       (= (symbol-name-eq (nl_cons_car_ptr function) "closure") 1)
+                                       (= (sexp-tag event) 0)
+                                       (/= (sexp-tag (vector-ref-ptr state 1)) 0)
+                                       (= (sexp-tag (vector-ref-ptr state 2)) 2)
+                                       (= (sexp-int-unwrap depth)
+                                          (+ (sexp-int-unwrap (vector-ref-ptr state 2)) binding-count)))
+                                  (if (= action 1)
+                                      (if (or (= (sexp-tag arg1) 4) (= (sexp-tag arg1) 16))
+                                          (seq
+                                           ;; Use the evaluator's existing
+                                           ;; canonicalizer, already owned by
+                                           ;; the bounded F1 closure. Keep a
+                                           ;; full root for the canonical name.
+                                           (wf_bytecode_copy payload arg1)
+                                           (setq entry (nelisp_mirror_lookup_entry mirror arg1))
+                                           (setq rc 0)
+                                           (if (= entry 0) 0
+                                             (seq
+                                              (setq address (alloc-bytes 8 8))
+                                              (setq rc (nelisp_env_variable_canonicalize mirror frames entry arg1 address 0))
+                                              (if (= rc 0) (wf_bytecode_copy payload (ptr-read-u64 address 0))
+                                                (if (= rc 3) (setq rc 0) 0))))
+                                           ;; Constants, identity-symbol keys,
+                                           ;; structural errors and stack growth
+                                           ;; retain the frozen reference path.
+                                           (if (and (= rc 0) (= (sexp-tag payload) 4)
+                                                    (or (= (ptr-read-u64 payload 24) 0)
+                                                        (/= (ptr-read-u8 (ptr-read-u64 payload 16) 0) 58))
+                                                    (< (sexp-int-unwrap depth)
+                                                       (vector-len (record-slot-ref-ptr frames 0))))
+                                               (seq
+                                                ;; This is the same four-slot
+                                                ;; lexframe and 16-bucket table
+                                                ;; as the reference/evaluator.
+                                                ;; All construction intermediates
+                                                ;; are full roots; no vector or
+                                                ;; cons interior crosses a call.
+                                                (cell-make arg2 cell)
+                                                (record-make (data-addr nl_frame_push_sym1) 3 operands)
+                                                (vector-make 16 scratch)
+                                                (record-slot-set operands 1 scratch)
+                                                (wf_write_int saved-tag 16)
+                                                (record-slot-set operands 0 saved-tag)
+                                                (wf_write_int saved-tag 0)
+                                                (record-slot-set operands 2 saved-tag)
+                                                (record-make (data-addr nl_frame_push_sym0) 4 result)
+                                                (record-slot-set result 0 operands)
+                                                (nl_alloc_str (ptr-read-u64 payload 16) (ptr-read-u64 payload 24) event)
+                                                (setq hash (logand (nelisp_fnv1a event) 15))
+                                                (wf_write_nil saved-value)
+                                                (nelisp_cons_construct event saved-value saved-tag)
+                                                (record-slot-set result 1 saved-tag)
+                                                (nelisp_cons_construct event cell saved-tag)
+                                                (nelisp_cons_construct saved-tag saved-value payload)
+                                                (vector-slot-set scratch hash payload)
+                                                (wf_write_int saved-tag 1)
+                                                (record-slot-set operands 2 saved-tag)
+                                                (wf_bytecode_copy event (vector-ref-ptr state 3))
+                                                (nelisp_cons_construct result event scratch)
+                                                (vector-slot-set state 3 scratch)
+                                                (vector-slot-set (record-slot-ref-ptr frames 0) (sexp-int-unwrap depth) result)
+                                                (wf_write_int saved-tag (+ (sexp-int-unwrap depth) 1))
+                                                (record-slot-set frames 1 saved-tag)
+                                                (setq direct 1) (setq rc 0))
+                                             ;; The reference publishes precise
+                                             ;; conditions for resolver errors.
+                                             (ptr-write-u64 268435472 0 0))) 0)
+                                    (if (or (= action 2) (= action 3))
+                                        (if (or (= action 3)
+                                                (and (= (sexp-tag arg1) 2)
+                                                     (>= (sexp-int-unwrap arg1) 0)
+                                                     (<= (sexp-int-unwrap arg1) event-count)))
+                                            (seq (wf_write_int result (if (= action 3) event-count (sexp-int-unwrap arg1)))
+                                                 (setq direct 1) (setq rc 0)) 0)
+                                      (if (= action 8)
+                                          (if (and (= (sexp-tag arg2) 8) (= (vector-len arg2) 6)
+                                                   (= (sexp-tag (vector-ref-ptr arg2 3)) 2)
+                                                   (= (sexp-tag (vector-ref-ptr arg2 4)) 2))
+                                              (seq
+                                               (wf_bytecode_copy event (vector-ref-ptr state 4))
+                                               (wf_write_nil payload)
+                                               (if (= (sexp-tag event) 7)
+                                                   (wf_bytecode_copy payload event)
+                                                 (wf_write_nil event))
+                                               (setq i 0)
+                                               (while (= (sexp-tag event) 7)
+                                                 (seq (setq i (+ i 1))
+                                                      (wf_bytecode_copy event (nl_cons_cdr_ptr event))))
+                                               (if (and (= (sexp-tag event) 0)
+                                                        (< i (sexp-int-unwrap (vector-ref-ptr arg2 4))))
+                                                   (seq
+                                                    (vector-make 8 result)
+                                                    (vector-slot-set result 0 arg1)
+                                                    (vector-slot-set result 1 (vector-ref-ptr arg2 0))
+                                                    (vector-slot-set result 2 (vector-ref-ptr arg2 1))
+                                                    (vector-slot-set result 3 (vector-ref-ptr arg2 2))
+                                                    (vector-slot-set result 4 (vector-ref-ptr state 3))
+                                                    (wf_write_int scratch (+ (sexp-int-unwrap (vector-ref-ptr arg2 3)) (* 2 i)))
+                                                    (vector-slot-set result 5 scratch)
+                                                    (wf_write_int scratch (+ (sexp-int-unwrap scratch) 1))
+                                                    (vector-slot-set result 6 scratch)
+                                                    (vector-slot-set result 7 (vector-ref-ptr arg2 5))
+                                                    (nelisp_cons_construct result payload scratch)
+                                                    (vector-slot-set state 4 scratch)
+                                                    (setq direct 1) (setq rc 0)) 0)) 0)
+                                        (if (= action 9)
+                                            (if (= (sexp-tag (vector-ref-ptr state 4)) 7)
+                                                (seq
+                                                 (wf_bytecode_copy result (nl_cons_car_ptr (vector-ref-ptr state 4)))
+                                                 (wf_bytecode_copy scratch (nl_cons_cdr_ptr (vector-ref-ptr state 4)))
+                                                 (vector-slot-set state 4 scratch)
+                                                 (setq direct 1) (setq rc 0)) 0)
+                                          0)))) 0)))
+                           (if (= direct 1) 0
+                             (seq (if (= action 1) (cell-make arg2 cell) 0)
+                                  (wf_bytecode_build_args roots 10 n operands)
+                                  (setq rc (wf_bytecode_call_gateway env function roots 1 8 result))))))))
                      ;; A nested callback must return the parent's exact ticket.
                      (if (or (/= marker (nl_root_pin_slot_v2 env ticket 0))
                              (/= state (nl_root_pin_slot_v2 env ticket s))
@@ -12745,7 +12887,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                      (if (= rc 0)
                          (seq
                           (if (= action 0) (wf_bytecode_copy state result)
-                            (if (= action 1)
+                            (if (and (= action 1) (= direct 0))
                                 (seq
                                  (wf_write_int scratch (sexp-int-unwrap (record-slot-ref-ptr (+ env 32) 1)))
                                  (vector-slot-set (record-slot-ref-ptr (+ env 32) 0) (sexp-int-unwrap scratch) result)

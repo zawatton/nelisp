@@ -15,6 +15,7 @@
       (push (symbol-value 'u7a-special) u7a-effects)))
   (cond ((eq u7a-mode 'throw) (throw 'u7a-exit (symbol-value 'u7a-special)))
         ((eq u7a-mode 'signal) (signal 'error (list "u7a" (symbol-value 'u7a-special))))
+        ((eq u7a-mode 'quit) (signal 'quit (list (symbol-value 'u7a-special))))
         ((eq u7a-mode 'reenter)
          (let ((u7a-mode nil)) (funcall u7a-inner 'inner))
          (push (symbol-value 'u7a-special) u7a-effects)))
@@ -45,7 +46,8 @@
   (setq u7a-effects nil)
   (let ((result (condition-case err
                     (catch 'u7a-exit (list 'returned (apply function args)))
-                  (error (list 'signal err)))))
+                  (error (list 'signal err))
+                  (quit (list 'quit err)))))
     (list result (reverse u7a-effects)
           (if (boundp 'u7a-special) (symbol-value 'u7a-special) 'void))))
 (provide 'native-frame-u7a-fixtures)

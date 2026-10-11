@@ -20,9 +20,11 @@
     "Return a defensive copy of the source-owned action and operand schemas."
     (copy-tree descriptor)))
 (defun nelisp-native-frame-v2-source ()
-  "Lisp policy over the evaluator's actual mirror, frame records and cells.
-The adapter installs/pops the prepared records after the callback has returned;
-otherwise the evaluator would pop a new binding instead of its callback frame.
+  "Lisp reference policy over the evaluator's mirror, frame records and cells.
+Ordinary authenticated operations use the adapter's shared evaluator primitives.
+Entry, cleanup and error paths retain this frozen callback. Callback-prepared
+bindings are installed only after the callback has returned; otherwise the
+evaluator would pop a new binding instead of its callback frame.
 No symbol value is saved or set: removing a frame reveals the original void,
 alias or dynamic cell without copying it to a parallel value store."
   '(let ((value-reader (symbol-function 'symbol-value))
@@ -32,9 +34,12 @@ alias or dynamic cell without copying it to a parallel value store."
      (cond
       ((= action 0)
        (when (and (vectorp state) (aref state 1)) (error "Native frame already active"))
-       (vector self t depth nil (car operands) (cadr operands) cell))
+       ;; Slot 5 was an unused layout hint. Retain the entry's owner identity
+       ;; so a changed callback cannot acquire the ordinary-operation path.
+       (vector self t depth nil (car operands) self cell))
       (t
        (unless (and (vectorp state) (= (length state) 7) (aref state 1)
+                    (eq (aref state 0) (aref state 5))
                     (= depth (+ (aref state 2)
                                 (let ((bindings 0))
                                   (dolist (event (aref state 3))
@@ -82,8 +87,8 @@ alias or dynamic cell without copying it to a parallel value store."
            ;; remaining chain before a cleanup has run.
            count))
         ((= action 8)
-         ;; Slots 4/5 were unused entry-layout hints. Keep the seven-slot ABI;
-         ;; slot 4 becomes the activation's rooted, typed handler chain.
+         ;; Keep the seven-slot ABI: slot 4 is the rooted typed handler chain;
+         ;; slot 5 retains the owner identity established at entry.
          (let* ((chain (if (listp (aref state 4)) (aref state 4) nil))
                 (selector (car operands)) (meta (cadr operands))
                 (nesting (length chain)) (pair (+ (aref meta 3) (* 2 nesting))))

@@ -9,6 +9,54 @@
 ;;; Code:
 (require 'cl-lib)
 
+;; Snapshot contract data without introducing optimizing compiler dependencies.
+(defun nelisp-bytecode-native-rooted-cfg-data-snapshot (value _depth)
+  "Copy mutable VALUE iteratively, preserving sharing and opaque owners.
+Visit and copy each container in one DFS, rejecting an active ancestor."
+  (let ((copies (make-vector 4096 nil)) pending)
+    ;; Fixed identity buckets avoid general hash-table work for every node.
+    ;; Collisions still resolve through the original object's eq identity.
+    (cl-labels
+        ((identity-get (item)
+           (cdr (assq item (aref copies (logand (sxhash-eq item) 4095)))))
+         (identity-put (item value)
+           (let* ((key (logand (sxhash-eq item) 4095)) (bucket (aref copies key)))
+             (aset copies key (cons (cons item value) bucket)))
+           value)
+         (allocate (item)
+           (cond
+            ;; Most recipe and plan nodes are scalar metadata. Classify them
+            ;; before inspecting callable/opaque containers.
+            ((or (null item) (symbolp item) (numberp item)) item)
+            ((or (hash-table-p item) (byte-code-function-p item) (functionp item)) item)
+            ((stringp item)
+             (or (identity-get item)
+                 (let ((copy (substring item 0))) (identity-put item copy) copy)))
+            ((or (consp item) (vectorp item))
+             (let ((record (identity-get item)))
+               (if record
+                   (if (eq (car record) 'active) (error "Cyclic contract snapshot") (cdr record))
+                 (let* ((copy (if (consp item) (cons nil nil) (make-vector (length item) nil)))
+                        (record (cons 'active copy)))
+                   (identity-put item record)
+                   (push (vector item copy 0 record) pending)
+                   copy))))
+            (t (error "Unsupported contract snapshot value")))))
+      (let ((root (allocate value)))
+        (while pending
+          (let* ((frame (car pending)) (old (aref frame 0)) (new (aref frame 1))
+                 (index (aref frame 2)) (count (if (consp old) 2 (length old))))
+            (if (= index count)
+                (progn (setcar (aref frame 3) 'done) (pop pending))
+              (aset frame 2 (1+ index))
+              ;; ALLOCATE pushes a child frame, so it finishes before the
+              ;; next sibling. An active record is therefore an ancestor.
+              (let ((child (allocate (if (consp old) (if (= index 0) (car old) (cdr old)) (aref old index)))))
+                (if (consp old)
+                    (if (= index 0) (setcar new child) (setcdr new child))
+                  (aset new index child))))))
+        root))))
+
 (defun nelisp-bytecode-native-rooted-cfg-data-context ()
   "Return a fresh compilation-owned interning context."
   (vector (make-vector 16384 nil) (make-vector 16384 nil)))
