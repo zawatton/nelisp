@@ -352,8 +352,6 @@
   "Emit each verified block once, with selectors or parallel banked root copies."
   (let* ((planned (plist-get plan :blocks)) (serial 0) (raw-blocks nil) (locals nil)
          (block-map (make-hash-table :test 'eql)) (edge-labels nil)
-         (free-cache (make-hash-table :test 'eq))
-         (lower-cache (make-hash-table :test 'eq))
          (sharing (nelisp-bytecode-native-rooted-cfg-data-context))
          (context (list :cyclic t :plan plan :root-count (plist-get plan :required-root-count)
                         :block-map block-map :edge-labels nil :phi-vars nil
@@ -364,109 +362,58 @@
          (local () (let ((name (fresh))) (push (list name 0) locals) name))
          (block (forms term &optional id)
            (let ((name (or id (fresh)))) (push (list 'block name forms term) raw-blocks) name))
-         (rename (node scope)
-           (cond ((symbolp node) (or (cdr (assq node scope)) node))
-                 ((atom node) node) ((eq (car node) 'quote) node)
-                 (t (mapcar (lambda (child) (rename child scope)) node))))
-         (sequence (forms scope out next)
-           (let ((entry next))
-             (dolist (node (reverse forms)) (setq entry (lower node scope out entry))) entry))
-         (identity-get (cache node)
-           (assq node (gethash (sxhash-eq node) cache)))
-         (identity-put (cache node value)
-           ;; Integer keys avoid structural hashing and mutable-cons fallback
-           ;; scans in the standalone hash table. Collisions retain EQ tests.
-           (let* ((key (sxhash-eq node)) (bucket (gethash key cache))
-                  (entry (assq node bucket)))
-             (if entry (setcdr entry value)
-               (puthash key (cons (cons node value) bucket) cache)))
-           value)
-         (free-symbols (node)
-           ;; Cache relative free names by node identity. Binding names and
-           ;; quoted data do not depend on the surrounding rename scope.
-           (let ((cached (identity-get free-cache node)))
-             (if cached (cdr cached)
-               (let ((names
-                      (cond
-                       ((symbolp node) (list node)) ((atom node) nil)
-                       ((eq (car node) 'quote) nil)
-                       ((memq (car node) '(let let*))
-                        (let ((bound nil) (used nil))
-                          (dolist (binding (cadr node))
-                            (dolist (name (free-symbols (cadr binding)))
-                              (unless (and (eq (car node) 'let*) (memq name bound))
-                                (push name used)))
-                            (push (car binding) bound))
-                          (dolist (body (cddr node))
-                            (dolist (name (free-symbols body))
-                              (unless (memq name bound) (push name used))))
-                          used))
-                       (t (let ((used nil))
-                            (dolist (child node) (setq used (append (free-symbols child) used)))
-                            used)))))
-                 (setq names (delete-dups names))
-                 (identity-put free-cache node names)))))
          (lower (node scope out next)
-           ;; Mutually exclusive branches can share a continuation only when
-           ;; every free name resolves to the same local, and output/next agree.
-           ;; Ignore unused outer bindings; they cannot affect this fragment.
-           (let* ((cached (cdr (identity-get lower-cache node)))
-                  (remaining cached) (bindings nil) (bindings-known nil) (entry nil))
-             ;; First visits cannot hit. Defer the relative free-name walk
-             ;; until an existing output/continuation needs a scope comparison.
-             ;; Scopes are persistent lists of immutable rename pairs.
-             (while (and remaining (not entry))
-               (let ((record (car remaining)))
-                 (when (and (equal out (aref record 0)) (equal next (aref record 1)))
-                   (if (eq scope (aref record 2)) (setq entry record)
-                     (unless bindings-known
-                       (setq bindings-known t
-                             bindings (mapcar (lambda (name) (or (cdr (assq name scope)) name))
-                                              (free-symbols node))))
-                     (unless (aref record 3)
-                       (aset record 4
-                             (mapcar (lambda (name) (or (cdr (assq name (aref record 2))) name))
-                                     (free-symbols node)))
-                       (aset record 3 t))
-                     (when (equal bindings (aref record 4)) (setq entry record)))))
-               (setq remaining (cdr remaining)))
-             (if entry (aref entry 5)
-               (let ((label (lower-new node scope out next)))
-                 (identity-put lower-cache node
-                               (cons (vector out next scope bindings-known bindings label) cached))
-                 label))))
-         (lower-new (node scope out next)
-           (cond
-            ((and (consp node) (eq (car node) 'cfg-repeat))
-             ;; Internal list-construction repetition; emitted raw CFG uses
-             ;; only the already validated shared jump/branch grammar.
-             (let* ((counter (local)) (head (fresh))
-                    (increment (block (list `(setq ,counter (+ ,counter 1))) `(jump ,head)))
-                    (body (lower (nth 3 node) scope out increment)))
-               (block nil `(branch (and (= ,(rename (nth 2 node) scope) 0)
-                                        (< ,counter ,(nth 1 node)))
-                                   ,body ,next) head)
-               (block (list `(setq ,counter 0)) `(jump ,head))))
-            ((and (consp node) (eq (car node) 'cfg-dispatch))
-             (block nil (list 'dispatch (rename (cadr node) scope) (nth 2 node) (nth 3 node))))
-            ((and (consp node) (eq (car node) 'cfg-edge))
-             (block nil (list 'jump (cadr node))))
-            ((and (consp node) (eq (car node) 'if))
-             (let ((yes (lower (nth 2 node) scope out next))
-                   (no (lower (nth 3 node) scope out next)))
-               (block nil `(branch ,(rename (cadr node) scope) ,yes ,no))))
-            ((and (consp node) (memq (car node) '(progn seq)))
-             (sequence (cdr node) scope out next))
-            ((and (consp node) (memq (car node) '(let let*)))
-             (let ((inner scope) (initializers nil))
-               (dolist (binding (cadr node))
-                 (let ((name (local)))
-                   (push (list name (rename (cadr binding) (if (eq (car node) 'let*) inner scope))) initializers)
-                   (push (cons (car binding) name) inner)))
-               (let ((entry (sequence (cddr node) inner out next)))
-                 (dolist (binding initializers)
-                   (setq entry (block (list `(setq ,(car binding) ,(cadr binding))) `(jump ,entry)))) entry)))
-            (t (block (list `(setq ,out ,(rename node scope))) `(jump ,next))))))
+           ;; Root authentication and full-slot copies are scalar expressions.
+           ;; Splitting their lets/guards into CFG states used to turn every
+           ;; edge copy into dozens of blocks and function-wide locals. Keep
+           ;; the lexical expression intact; only real inter-block transfers
+           ;; select a successor. A failed guard leaves the selector at zero
+           ;; and reaches NEXT with exactly the old status and rooted state.
+           (when scope (error "raw CFG: unexpected scalar rename scope"))
+           (let ((selector (local)) (targets nil)
+                 (memo (make-hash-table :test 'eq)))
+             (cl-labels
+                 ((edge (id)
+                    (let ((pair (assoc id targets)))
+                      (unless pair
+                        (setq pair (cons id (1+ (length targets))))
+                        (push pair targets))
+                      `(progn (setq ,selector ,(cdr pair)) 0)))
+                  (scalar (form)
+                    (if (atom form) form
+                      ;; Identity buckets also work with the standalone table,
+                      ;; whose general cons keys otherwise hash structurally.
+                      (let* ((key (sxhash-eq form)) (bucket (gethash key memo))
+                             (cached (assq form bucket)))
+                        (if cached (cdr cached)
+                          (let ((result
+                                 (pcase (car form)
+                                   ((or 'quote 'function) form)
+                                   ('cfg-edge (edge (cadr form)))
+                                   ('cfg-dispatch
+                                    (let ((value (fresh)) (body (edge (nth 3 form))))
+                                      (dolist (case (reverse (nth 2 form)))
+                                        (setq body `(if (= ,value ,(car case))
+                                                        ,(edge (cadr case)) ,body)))
+                                      `(let ((,value ,(scalar (cadr form)))) ,body)))
+                                   ('cfg-repeat
+                                    (let ((counter (fresh)))
+                                      `(let ((,counter 0))
+                                         (progn
+                                           (while (and (= ,(scalar (nth 2 form)) 0)
+                                                       (< ,counter ,(nth 1 form)))
+                                             ,(scalar (nth 3 form))
+                                             (setq ,counter (+ ,counter 1)))
+                                           0))))
+                                   (_ (mapcar #'scalar form)))))
+                            (puthash key (cons (cons form result) bucket) memo)
+                            result))))))
+               (let* ((expression (scalar node))
+                      (cases (mapcar (lambda (pair) (list (cdr pair) (car pair)))
+                                     (nreverse targets))))
+                 (block (list `(setq ,selector 0) `(setq ,out ,expression))
+                        (if cases `(dispatch ,selector ,cases ,next)
+                          `(jump ,next))))))))
       ;; Acyclic plans keep phi values as root selectors, rather than the
       ;; physical root banks used by cycles.  Give those selectors stable CFG
       ;; locals so compact allocation loops can also follow a DAG join.
