@@ -18466,6 +18466,8 @@ into x9 (caller-saved, not an arg reg) and invoked with `BLR x9'."
           (if fn-value
               (progn
                 (nelisp-asm-arm64-ldr-post-sp-16 buf 'x9) ; x9 = fn-ptr
+                ;; Synchronize the receiving PE before entering published JIT text.
+                (nelisp-asm-arm64--emit-word buf #xd5033fdf) ; ISB
                 (nelisp-asm-arm64-blr buf 'x9))
             (nelisp-asm-arm64-bl buf name)))
       ;; Direct AAPCS64 stack-argument path.  The temporary arg saves are

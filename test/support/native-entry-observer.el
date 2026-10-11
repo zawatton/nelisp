@@ -14,10 +14,34 @@
   (and (fboundp 'nelisp--native-subr-create)
        (symbol-function 'nelisp--native-subr-create)))
 
+(defun nelisp-test-native-entry-instrument-arm64 (descriptor name module bridge)
+  "Record six AAPCS64 argument registers and tail-branch without changing LR."
+  (load "test/support/arm64-native-probes.el" nil t)
+  (let* ((entry (aref descriptor 0)) (copy (copy-sequence descriptor))
+         (data (nelisp-native-load-map-anonymous (+ 16 (* 256 56)) nil))
+         (bytes (if nelisp-test-native-entry-gc-once arm64-native-observer-gc-code arm64-native-observer-code))
+         (size (nelisp-native-load--page-round (length bytes)))
+         (code (nelisp-native-load-map-anonymous size nil)))
+    (nelisp-native-load--poke-string code 0 bytes)
+    (ptr-write-u64 code (if nelisp-test-native-entry-gc-once arm64-native-observer-gc-data-offset
+                         arm64-native-observer-data-offset) data)
+    (ptr-write-u64 code (if nelisp-test-native-entry-gc-once arm64-native-observer-gc-entry-offset
+                         arm64-native-observer-entry-offset) entry)
+    (when nelisp-test-native-entry-gc-once
+      (ptr-write-u64 code arm64-native-observer-gc-collector-offset
+                     (nelisp-native-load--symbol-addr "nl_gc_collect_from_recorded_roots")))
+    (nelisp-native-load--mprotect-rx code size)
+    (aset copy 0 code)
+    (aset copy 8 (list (aref descriptor 8) code data entry))
+    (push (list data entry code nelisp-test-native-entry-gc-once) nelisp-test-native-entry-traces)
+    (funcall nelisp-test-native-entry-constructor copy name module bridge)))
+
 (defun nelisp-test-native-entry-instrument (descriptor name module bridge)
   "Record entries of DESCRIPTOR without changing its raw-v2 ABI."
   (unless (and (vectorp descriptor) (= (length descriptor) 9))
     (error "Native entry observer requires a raw-v2 descriptor"))
+  (if (nelisp-native-load--arm64-p)
+      (nelisp-test-native-entry-instrument-arm64 descriptor name module bridge)
   (let* ((entry (aref descriptor 0))
          (data (nelisp-native-load-map-anonymous (+ 16 (* 256 56)) nil))
          (code (nelisp-native-load-map-anonymous 4096 nil))
@@ -84,7 +108,7 @@
     ;; Retain the original mapping owner, and record the interposer identity.
     (aset copy 8 (list (aref descriptor 8) code data entry))
     (push (list data entry code nelisp-test-native-entry-gc-once) nelisp-test-native-entry-traces)
-    (funcall nelisp-test-native-entry-constructor copy name module bridge)))
+    (funcall nelisp-test-native-entry-constructor copy name module bridge))))
 
 (when nelisp-test-native-entry-constructor
   (fset 'nelisp--native-subr-create #'nelisp-test-native-entry-instrument))

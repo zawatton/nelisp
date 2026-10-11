@@ -733,7 +733,7 @@ must NOT emit a `.rela.text' section).  Returns FILE-PATH."
   (let* ((mach (or machine 'x86_64))
          (combined (nelisp-link-combine-sections units mach))
          (layout (or section-layout
-                     (nelisp-link--compute-layout combined)))
+                     (nelisp-link--compute-layout combined nil (when (eq mach 'aarch64) #x10000))))
          (link-result (nelisp-link-units-2pass units layout mach))
          (bytes (plist-get link-result :bytes))
          (symtab (plist-get link-result :symtab))

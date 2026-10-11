@@ -1625,7 +1625,7 @@ Doc 91 §91.c."
          (rodata-size (if have-rodata (nelisp-elf--byte-length rodata) 0))
          (data-size   (if have-data (nelisp-elf--byte-length data) 0))
          (vaddr-base  nelisp-elf--minimal-vaddr-base)
-         (page-size   #x1000)
+         (page-size   (if (eq (plist-get plist :machine) 'aarch64) #x10000 #x1000))
          ;; ---- RX segment layout (= Ehdr + Phdrs + .text + .rodata).
          (phnum      (if have-rw 2 1))
          (phdr-off   nelisp-elf--ehdr-size)

@@ -20,7 +20,7 @@
 
 (defconst nelisp-native-cache--format "nelisp-native-cache-v1")
 (defconst nelisp-native-cache--compiler-modules
-  '(nelisp-native-cache nelisp-native-poll nelisp-native-budget nelisp-native-gccjit nelisp-native-cfg-grammar nelisp-native-load nelisp-aot-compiler nelisp-standalone-arena-rewrite
+  '(nelisp-native-cache nelisp-native-poll nelisp-native-budget nelisp-native-gccjit nelisp-native-cfg-grammar nelisp-native-load nelisp-native-linux nelisp-native-arm64 nelisp-aot-compiler nelisp-standalone-arena-rewrite
     nelisp-bytecode-compiler-input nelisp-bytecode-compiler-input-dialect nelisp-bytecode-ir nelisp-bytecode-frame-ir nelisp-bytecode-handlers-u8
     nelisp-bytecode-native-rooted-cfg nelisp-bytecode-native-rooted-cfg-plan
     nelisp-bytecode-native-rooted-cfg-emit nelisp-bytecode-native-rooted-cfg-data
@@ -120,7 +120,7 @@ A missing source disables caching rather than creating an incomplete key."
         nelisp-bytecode-native-rooted-cfg-safe-contract-f1-version
         nelisp-native-cache--format
         nelisp-native-load-raw-artifact-format-v2)
-   (when (nelisp-native-load--windows-p)
+   (when (or (nelisp-native-load--windows-p) (nelisp-native-load--arm64-p))
      (list (nelisp-native-load--target-v2) (nelisp-native-load--runtime-abi-v2)))))
 
 (defun nelisp-native-cache-prepare-cold-template ()
@@ -220,7 +220,7 @@ Source-loaded compilers compare source bytes before using their fingerprint."
         (unless (and in-house gccjit) (error "Build ABI identity unavailable"))
         (setq nelisp-native-cache--build-identities
               (list nelisp-native-cache--abi before in-house gccjit))))
-    (when nelisp-native-cache--build-source-identity
+    (when (and nelisp-native-cache--build-source-identity (not (nelisp-native-load--arm64-p)))
       (let ((nelisp-native-cache-backend 'template))
         (setq nelisp-native-template--build-abi (nelisp-native-template-abi-hash))))
     (setq nelisp-native-template--abi :unset)
@@ -297,7 +297,8 @@ exactly once.  Failure permanently disables this process's cache."
     (unless (and (not (file-symlink-p directory)) (eq (car attrs) t)
                  (eql (nth 2 attrs)
                       (if (fboundp 'user-uid) (user-uid)
-                        (syscall-direct 102 0 0 0 0 0 0))) mode
+                        (if (nelisp-native-load--arm64-p) (nelisp-native-linux-syscall 102 0 0 0 0 0 0)
+                          (syscall-direct 102 0 0 0 0 0 0)))) mode
                  (= (logand mode #o7777) #o700))
       (error "nelisp-native-cache: directory must be owned by user and mode 0700: %s"
              directory)))
@@ -373,7 +374,7 @@ The caller must inhibit mid-form collection until the syscall returns."
             (file-already-exists nil))
         (nelisp-native-load--without-midform-collect
          (lambda ()
-           (>= (syscall-direct 86
+           (>= (funcall (if (nelisp-native-load--arm64-p) #'nelisp-native-linux-syscall #'syscall-direct) 86
                                (nelisp-native-cache--cstring temporary)
                                (nelisp-native-cache--cstring final)
                                0 0 0 0)
@@ -420,8 +421,9 @@ The caller must inhibit mid-form collection until the syscall returns."
               (unless (eq (plist-get result :status) 'complete)
                 (error "Native cache compilation incomplete"))
               (setq temporary
-                    (funcall (if (nelisp-native-load--windows-p)
-                                 #'nelisp-native-windows-temporary #'make-temp-file)
+                    (funcall (cond ((nelisp-native-load--windows-p) #'nelisp-native-windows-temporary)
+                                   ((nelisp-native-load--arm64-p) #'nelisp-native-linux-temporary)
+                                   (t #'make-temp-file))
                              (expand-file-name ".publish-" (file-name-directory file))))
               (let ((coding-system-for-write 'utf-8-unix))
                 (write-region
@@ -731,9 +733,9 @@ Return nil for legacy layouts, preserving their ordinary canonical check."
          (sidecar (and file (if (eq nelisp-native-cache-backend 'gccjit)
                                (concat file ".nelh") file))))
     (when (and file (file-exists-p file) (file-exists-p sidecar))
-      (let* ((snapshot (if (nelisp-native-load--windows-p)
-                           (nelisp-native-windows-file-bytes sidecar t)
-                         (with-temp-buffer (insert-file-contents sidecar) (buffer-string))))
+      (let* ((snapshot (cond ((nelisp-native-load--windows-p) (nelisp-native-windows-file-bytes sidecar t))
+                              ((nelisp-native-load--arm64-p) (nelisp-native-linux-private-file-bytes sidecar))
+                              (t (with-temp-buffer (insert-file-contents sidecar) (buffer-string)))))
              (read-eval nil) (read-circle nil)
              (first (read-from-string snapshot))
              (header (car first))

@@ -54,7 +54,9 @@
                (setq nelisp-runtime-reload--snapshot-plain-p nil)
                value)
               (t (throw 'invalid :uncacheable)))))
-        (walk (append (when (and (fboundp 'nelisp-native-load--windows-p)
+        (walk (append (when (and (fboundp 'nelisp-native-load--arm64-p)
+                                  (nelisp-native-load--arm64-p)) '("aapcs64-linux-v1"))
+                      (when (and (fboundp 'nelisp-native-load--windows-p)
                                  (nelisp-native-load--windows-p))
                         '("win64-v1"))
                       (list nelisp-runtime-reload-gc-contract nelisp-runtime-reload-symbols)) 0 nil)))))
@@ -156,7 +158,9 @@ Changing public entries, resolver order, or the layout version requires a
 new process.  Editing private function bodies does not change this digest."
   (let* ((print-length nil) (print-level nil)
          (bytes (prin1-to-string
-                 (append (when (and (fboundp 'nelisp-native-load--windows-p)
+                 (append (when (and (fboundp 'nelisp-native-load--arm64-p)
+                                  (nelisp-native-load--arm64-p)) '("aapcs64-linux-v1"))
+                      (when (and (fboundp 'nelisp-native-load--windows-p)
                                     (nelisp-native-load--windows-p)) '("win64-v1"))
                   (list 'nelisp-runtime-contract-v2
                        '(:sexp-bytes 32 :block-header-bytes 8
