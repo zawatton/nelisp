@@ -1,0 +1,27 @@
+# Files whose source deliberately wraps top-level definitions in one
+# column-0 form, so `parens-check''s column-0 convention (a `(' at column 0
+# starts a new top-level form) reports them as unbalanced although they read
+# and load correctly.
+#
+# Each file below seals its owner functions in a column-0 `(let (...)' that
+# encloses column-0 `defun's: the let captures the original function objects
+# so later owner checks can refuse a redefinition.  Re-indenting them is not
+# an option -- their sha256 is pinned by the native startup evidence and the
+# native qualification receipts.
+#
+# tools/nl-parens-check.el checks a listed file by reading it whole with the
+# Emacs Lisp syntax table instead: any unbalanced paren, stray close or
+# unterminated form is still a finding.  Remove a line when its file stops
+# using the pattern.
+lisp/nelisp-bytecode-native-arithmetic-lowering.el
+lisp/nelisp-bytecode-native-guarded-lowering.el
+lisp/nelisp-bytecode-native-rooted-cfg-constructor-contract.el
+lisp/nelisp-bytecode-native-rooted-cfg-contract.el
+lisp/nelisp-bytecode-native-rooted-cfg-native.el
+lisp/nelisp-bytecode-native-rooted-cfg-postdom.el
+lisp/nelisp-native-arithmetic-v2.el
+lisp/nelisp-native-compiler-runtime-capability.el
+lisp/nelisp-native-funcall-v2.el
+lisp/nelisp-native-load.el
+lisp/nelisp-native-optimization-guard-v1.el
+lisp/nelisp-native-rooted-startup-evidence.el
