@@ -79,7 +79,7 @@
                    (fboundp 'decode-coding-string))
         (nelisp-eln-string--fail 'utf8-conversion-unavailable))
       (condition-case data
-          (setq encoded (encode-coding-string string 'utf-8 t))
+          (setq encoded (encode-coding-string string 'utf-8))
         (error (nelisp-eln-string--fail 'utf8-encoding-failed data)))
       (unless (and (stringp encoded)
                    (not (multibyte-string-p encoded)))

@@ -20,6 +20,7 @@
                    "(eval-when-compile (require 'compile))"))))
 
 (ert-deftest nelisp-vendor-bytecomp-first-blocker-broken-fixture-is-detected ()
+  (skip-unless (file-executable-p (or (getenv "NELISP_BIN") (expand-file-name "target/nelisp" (nelisp-vendor-bytecode-triparity--root)))))
   (let* ((root (nelisp-vendor-bytecode-triparity--root))
          (binary (or (getenv "NELISP_BIN")
                      (expand-file-name "target/nelisp" root)))

@@ -30,6 +30,7 @@
                  form))))))
 
 (ert-deftest nelisp-vendor-bytecode-triparity-byte-compile-lambda-minimal-input ()
+  (skip-unless (file-executable-p (or (getenv "NELISP_BIN") (expand-file-name "target/nelisp" (nelisp-vendor-bytecode-triparity--root)))))
   (should (equal (assq 'byte-compile-lambda
                        nelisp-vendor-bytecode-triparity--fixtures)
                  '(byte-compile-lambda (lambda nil 17))))

@@ -111,11 +111,11 @@ Returns (CODE VADDR ELF); mirrors
 
 (ert-deftest nelisp-eln-chain-import-rejects-unauthenticated-many-slot ()
   "Swapping the Ffuncall call's freloc slot to an unlisted index fails."
+  (skip-unless (file-exists-p nelisp-eln-chain-import-test--fixture))
   (pcase-let* ((`(,code ,value ,_)
                 (nelisp-eln-chain-import-test--artifact-code
                  nelisp-eln-chain-import-test--fixture "nelisp_gnu_chain_0"))
                (tampered (copy-sequence code)))
-    (skip-unless (file-exists-p nelisp-eln-chain-import-test--fixture))
     ;; The Ffuncall call's disp32 (offset 0x1d88 little-endian) sits at
     ;; bytes 89..92 (call-slot-rbp at offset 0x57, disp32 at +2).
     (should (equal (substring tampered 89 93) (unibyte-string #x88 #x1d 0 0)))
@@ -137,10 +137,10 @@ Returns (CODE VADDR ELF); mirrors
 
 (ert-deftest nelisp-eln-chain-import-rejects-injected-branch ()
   "Any injected branch opcode breaks the loop-free straight-line grammar."
+  (skip-unless (file-exists-p nelisp-eln-chain-import-test--fixture))
   (pcase-let* ((`(,code ,value ,_)
                 (nelisp-eln-chain-import-test--artifact-code
                  nelisp-eln-chain-import-test--fixture "nelisp_gnu_chain_0")))
-    (skip-unless (file-exists-p nelisp-eln-chain-import-test--fixture))
     ;; Overwrite two bytes inside the array-build tail (offsets chosen
     ;; to land inside a fixed-length instruction, away from any operand
     ;; this grammar already treats as a branch) with a short forward
@@ -154,10 +154,10 @@ Returns (CODE VADDR ELF); mirrors
                    tampered value "ba35c031")))))
 
 (ert-deftest nelisp-eln-chain-import-rejects-unknown-abi ()
+  (skip-unless (file-exists-p nelisp-eln-chain-import-test--fixture))
   (pcase-let* ((`(,code ,value ,_)
                 (nelisp-eln-chain-import-test--artifact-code
                  nelisp-eln-chain-import-test--fixture "nelisp_gnu_chain_0")))
-    (skip-unless (file-exists-p nelisp-eln-chain-import-test--fixture))
     (should-not (nelisp-eln-chain-import-test--analyze-artifact
                  code value "unknown-abi"))))
 

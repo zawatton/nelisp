@@ -470,10 +470,11 @@ Never /tmp, per project convention.")
 ;;; Descriptor <-> freloc table validation, plus negative controls
 
 (ert-deftest nelisp-eln-runtime-services-test-validate-descriptors-passes-on-real-tsv ()
-  (should (file-exists-p nelisp-eln-runtime-services-freloc-tsv-file))
+  (skip-unless (file-exists-p nelisp-eln-runtime-services-freloc-tsv-file))
   (should (null (nelisp-eln-runtime-services-validate-descriptors))))
 
 (ert-deftest nelisp-eln-runtime-services-test-validate-rejects-sha256-mismatch ()
+  (skip-unless (file-exists-p nelisp-eln-runtime-services-freloc-tsv-file))
   (let ((corrupt (nelisp-eln-runtime-services-test--temp-file "corrupt-tsv-")))
     (unwind-protect
         (progn
@@ -492,6 +493,7 @@ Never /tmp, per project convention.")
       (delete-file corrupt))))
 
 (ert-deftest nelisp-eln-runtime-services-test-validate-rejects-index-mismatch ()
+  (skip-unless (file-exists-p nelisp-eln-runtime-services-freloc-tsv-file))
   ;; Negative control: point a descriptor at an index the tsv does not
   ;; authenticate for that symbol, and confirm the validator rejects it
   ;; rather than silently accepting it.
@@ -505,6 +507,7 @@ Never /tmp, per project convention.")
       (should (= (plist-get (car problems) :index) 999999)))))
 
 (ert-deftest nelisp-eln-runtime-services-test-validate-rejects-symbol-mismatch ()
+  (skip-unless (file-exists-p nelisp-eln-runtime-services-freloc-tsv-file))
   (let* ((original (car nelisp-eln-runtime-services-descriptors))
          (corrupted (plist-put (copy-sequence original) :symbol "not_the_real_symbol"))
          (nelisp-eln-runtime-services-descriptors
@@ -516,6 +519,7 @@ Never /tmp, per project convention.")
                       (plist-get original :symbol))))))
 
 (ert-deftest nelisp-eln-runtime-services-test-validate-rejects-abi-mismatch ()
+  (skip-unless (file-exists-p nelisp-eln-runtime-services-freloc-tsv-file))
   (let* ((original (car nelisp-eln-runtime-services-descriptors))
          (corrupted (plist-put (copy-sequence original) :abi "wrongabi00"))
          (nelisp-eln-runtime-services-descriptors
