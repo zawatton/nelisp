@@ -25,6 +25,14 @@ on:
   pull_request:
     branches: ['**']
 
+# A newer push to the same branch (or PR) supersedes the older run: cancel
+# it so stale runs stop holding the account's concurrent-job slots.  On
+# 2026-10-11 a superseded integ/native run kept running for hours and
+# queued newer runs behind it.  main keeps every run to completion.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   # Fast ratchet/inventory pass, Linux only, run BEFORE the full matrix.
   #
