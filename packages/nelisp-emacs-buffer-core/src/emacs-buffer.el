@@ -1012,6 +1012,55 @@ Existing properties on the affected range are *replaced* (= classic
   "Add the props in PLIST to existing props on [START, END) of INTERVALS.
 Properties not mentioned in PLIST are left intact.  Returns a sorted
 list."
+  (or (emacs-buffer--tp-add-ordered intervals start end plist)
+      (emacs-buffer--tp-add-general intervals start end plist)))
+
+(defun emacs-buffer--tp-add-ordered (intervals start end plist)
+  "Linear `emacs-buffer--tp-add' for sorted, disjoint, non-empty INTERVALS.
+Return the same cells the general version builds, without its full-list
+`sort' (an interpreted comparator over every interval, ~0.6 ms per
+interval per call).  Return nil when INTERVALS break that invariant."
+  (let ((rest intervals) (before nil) (middle nil) (tail-piece nil)
+        (cur start) (previous-end nil) (ok t) (done nil))
+    (while (and ok rest (not done))
+      (let* ((cell (car rest))
+             (s (emacs-buffer--tp-start cell))
+             (e (emacs-buffer--tp-end cell))
+             (p (emacs-buffer--tp-plist cell)))
+        (cond
+         ((or (>= s e) (and previous-end (< s previous-end)))
+          (setq ok nil))
+         ((>= s end) (setq done t))
+         (t
+          (setq previous-end e
+                rest (cdr rest))
+          (if (<= e start)
+              (push cell before)
+            (when (< s start)
+              (push (emacs-buffer--tp-cell s start p) before))
+            (let ((os (max s start)) (oe (min e end)))
+              (when (< cur os)
+                (push (emacs-buffer--tp-cell cur os plist) middle))
+              (push (emacs-buffer--tp-cell os oe (emacs-buffer--plist-merge p plist))
+                    middle)
+              (setq cur oe))
+            (when (> e end)
+              (setq tail-piece (emacs-buffer--tp-cell end e p))))))))
+    ;; The cells after END are kept as they are; check they stay ordered.
+    (let ((scan rest) (previous (or previous-end start)))
+      (while (and ok scan)
+        (let ((s (emacs-buffer--tp-start (car scan)))
+              (e (emacs-buffer--tp-end (car scan))))
+          (if (or (>= s e) (< s previous)) (setq ok nil) (setq previous e)))
+        (setq scan (cdr scan))))
+    (when ok
+      (when (< cur end)
+        (push (emacs-buffer--tp-cell cur end plist) middle))
+      (nconc (nreverse before) (nreverse middle)
+             (and tail-piece (list tail-piece)) rest))))
+
+(defun emacs-buffer--tp-add-general (intervals start end plist)
+  "General `emacs-buffer--tp-add': snapshot, merge, then sort INTERVALS."
   ;; 1. Snapshot existing plists across [start, end) as a list of
   ;;    (s e . p) tuples.
   (let (covered out (cur start))

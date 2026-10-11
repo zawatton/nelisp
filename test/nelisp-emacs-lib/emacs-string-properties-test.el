@@ -146,3 +146,30 @@
       (emacs-buffer--copy-runs-to-string fast runs 2 14)
       (should (equal (emacs-buffer-string-text-property 'runs fast)
                      (funcall reference slow runs 2 14))))))
+
+(ert-deftest emacs-string-properties-test/tp-add-ordered-matches-general ()
+  "The linear interval add equals the general sorting add on valid lists."
+  (random "emacs-string-properties-test")
+  (dotimes (_ 500)
+    (let ((intervals nil) (pos 0))
+      ;; Sorted, disjoint, non-empty cells with random gaps and plists.
+      (dotimes (_ (random 12))
+        (setq pos (+ pos (random 4)))
+        (let ((end (+ pos 1 (random 5))))
+          (push (emacs-buffer--tp-cell pos end (list 'face (random 3) 'help-echo "h"))
+                intervals)
+          (setq pos end)))
+      (setq intervals (nreverse intervals))
+      (let* ((start (random (+ pos 3)))
+             (end (+ start 1 (random 8)))
+             (plist (if (zerop (random 2)) (list 'mouse-face (random 2))
+                       (list 'mouse-face (random 2) 'face 'bold))))
+        (should (equal (emacs-buffer--tp-add-ordered
+                        (copy-tree intervals) start end plist)
+                       (emacs-buffer--tp-add-general
+                        (copy-tree intervals) start end plist))))))
+  ;; Unordered input is refused so the general version handles it.
+  (should-not (emacs-buffer--tp-add-ordered
+               (list (emacs-buffer--tp-cell 5 8 '(a 1))
+                     (emacs-buffer--tp-cell 0 3 '(b 2)))
+               1 6 '(c 3))))
