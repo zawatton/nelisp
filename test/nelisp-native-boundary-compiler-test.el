@@ -518,6 +518,9 @@
           (pcase (car term)
             ('jump (setq label (cadr term)))
             ('branch (setq label (if (eval (cadr term) bindings) (nth 2 term) (nth 3 term))))
+            ('dispatch
+             (setq label (or (cadr (assoc (eval (cadr term) bindings) (nth 2 term)))
+                             (nth 3 term))))
             ('return (throw 'returned (list (eval (cadr term) bindings)
                                            (cdr (assq 'effect bindings)))))
             (_ (error "Unexpected test CFG terminator"))))))))

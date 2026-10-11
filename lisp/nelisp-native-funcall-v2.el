@@ -269,20 +269,54 @@
   (apply function arguments))
 (defun nelisp-native-funcall-v2-copy-form (inputs roots body)
   "Emit authenticated full-slot copies before BODY; arguments may be phi indices."
-  (let ((result body) (index (length inputs)))
-    (while (> index 0)
-      (setq index (1- index))
-      (let ((source (intern (format "f1_source_%d" index)))
-            (destination (intern (format "f1_destination_%d" index))))
-        (setq result
-              `(let ((,source (extern-call nl_root_pin_slot_v2 env ticket ,(nth index inputs) 0 0 0))
-                     (,destination (extern-call nl_root_pin_slot_v2 env ticket ,(nth index roots) 0 0 0)))
-                 (if (or (= ,source 0) (= ,destination 0)) 2
-                   (progn
-                     ,@(mapcar (lambda (offset)
-                                 `(ptr-write-u64 ,destination ,offset (ptr-read-u64 ,source ,offset)))
-                               '(0 8 16 24))
-                     ,result)))))) result))
+  ;; Share the copy/guard code, not the authentication result. Each iteration
+  ;; pins both slots again and copies all four words in the original order.
+  ;; Callers still snapshot a parallel assignment into their scratch bank
+  ;; before beginning the destination stage; this loop is sequential.
+  (if (< (length inputs) 2)
+      (if (null inputs) body
+        `(let ((f1_source_0 (extern-call nl_root_pin_slot_v2 env ticket ,(car inputs) 0 0 0))
+               (f1_destination_0 (extern-call nl_root_pin_slot_v2 env ticket ,(car roots) 0 0 0)))
+           (if (or (= f1_source_0 0) (= f1_destination_0 0)) 2
+             (progn
+               ,@(mapcar (lambda (offset) `(ptr-write-u64 f1_destination_0 ,offset
+                                                          (ptr-read-u64 f1_source_0 ,offset))) '(0 8 16 24))
+               ,body))))
+    (cl-labels
+        ((selector (values)
+           (let* ((first (car values))
+                  (step (and (integerp first) (integerp (cadr values)) (- (cadr values) first)))
+                  (same t) (arithmetic step) (remaining values) (index 0))
+             (while remaining
+               (let ((value (car remaining)))
+                 (unless (equal value first) (setq same nil))
+                 (unless (and arithmetic (integerp value) (= value (+ first (* step index))))
+                   (setq arithmetic nil)))
+               (setq remaining (cdr remaining) index (1+ index)))
+             (cond
+              (same first)
+              (arithmetic
+               (if (= step 1) `(+ ,first f1_copy_index)
+                 `(+ ,first (* f1_copy_index ,step))))
+              (t (let ((form (car (last values))) (position (- (length values) 2)))
+                   (while (>= position 0)
+                     (setq form `(if (= f1_copy_index ,position) ,(nth position values) ,form)
+                           position (1- position)))
+                   form))))))
+      `(let ((f1_copy_index 0) (f1_copy_status 0))
+         (progn
+           (while (and (= f1_copy_status 0) (< f1_copy_index ,(length inputs)))
+             (let ((f1_copy_source (extern-call nl_root_pin_slot_v2 env ticket ,(selector inputs) 0 0 0))
+                   (f1_copy_destination (extern-call nl_root_pin_slot_v2 env ticket ,(selector roots) 0 0 0)))
+               (if (or (= f1_copy_source 0) (= f1_copy_destination 0))
+                   (setq f1_copy_status 2)
+                 (progn
+                   ,@(mapcar (lambda (offset) `(ptr-write-u64 f1_copy_destination ,offset
+                                                              (ptr-read-u64 f1_copy_source ,offset))) '(0 8 16 24))
+                   0)))
+             (setq f1_copy_index (+ f1_copy_index 1)))
+           (if (= f1_copy_status 0) ,body f1_copy_status))))))
+
 (defun nelisp-native-funcall-v2-fixnum-form (opcode inputs output success fallback)
   "Emit allocation-free fixnum arithmetic around the unchanged FALLBACK.
 Full operands are read before output writes, including aliased root banks.
