@@ -377,3 +377,26 @@ evidence: target/windows-native/w13/receipt.json sha256=fead174d2e145bb9eccd14c7
 ** W1.4 End to end: on Windows, the 1e6 hot loop runs natively in at most 1/5 of the interpreted time, and the Linux ledger stays green
 #+NOTE: 2026-10-10 Windows half met: CI run 38056525157 (36ede9f05) native 1.589 s vs interpreted 78.43 s, ratio 0.020 (best of 3, compile 567 s); receipt target/windows-native/ci-hot-loop-38056525157/receipt.json sha256=0088c7827e559b0c1c35bf21ce6934b0f6984d25d0e847e45b0597c2533dcd7c. Stays pending until the Linux ledger is requalified on the integrated tree.
 pending
+
+* M1 AArch64 native compilation (macOS arm64 and Linux arm64)
+#+NOTE: Added 2026-10-12 with the feat/native-arm64 A2 merge (denominator 36 -> 41). M1.1 is live; M1.2-M1.5 stay pending until their pinned runner or Mac receipts exist.
+
+** M1.1 Design and host reference-byte ERT cover the shared AArch64 native pipeline and per-OS replacements
+#+NOTE: Doc 215 inventories owners and A1–A5. A1 created test/nelisp-native-arm64-test.el (42 cases after A2). Existing assembler ERT and instruction microprobes are supporting evidence only.
+cmd: test -f docs/design/215-arm64-native-compilation.org && test -f test/nelisp-native-arm64-test.el && emacs -Q --batch -L lisp -L src -L scripts -L test -L test/support -L packages/nl-ffi/src -l test/nelisp-native-arm64-test.el --eval '(unless (ert-select-tests "^nelisp-native-arm64-" t) (error "No arm64 acceptance tests"))' --eval '(ert-run-tests-batch-and-exit "^nelisp-native-arm64-")'
+
+** M1.2 Linux aarch64 in-house F1 compiles, trust-loads and matches the interpreter under qemu and on a real arm64 runner
+#+NOTE: A2 needs compile validations=1, fresh cache load validations=0, exact F1 digest, native entries, forced GC, roots/exits, register sentinels, cold/source paths and refusal controls. Require qemu and ubuntu-24.04-arm receipts; no instruction-only proxy. Linux 16K/64K support additionally needs actual-kernel mapping receipts. Replace pending with pinned receipt validation after qualification, not an unimplemented runner command.
+pending
+
+** M1.3 Darwin arm64 in-house F1 passes on macos-14 and the user's Apple Silicon Mac with libSystem calls and authenticated MAP_JIT publication
+#+NOTE: A3 needs signed-reader/import/identity proofs, 16K pages, per-thread W^X, instruction-cache publication, arena lifecycle, private cache, frame-chain and entitlement/API refusal checks plus all F1 conditions from M1.2. Pin both CI and user-Mac receipts; ad-hoc local signing is not notarized distribution.
+pending
+
+** M1.4 U10 230/230, F3 52/52 and template trust/ordinary smoke pass on both real arm64 operating systems
+#+NOTE: A4 requires complete compile/fresh trust-load coverage with native entry evidence, protected ordering, GC/live constants and corruption controls. Require real Linux arm and Darwin CI receipts plus user-Mac qualification. In-house is mandatory; gccjit is additionally tested wherever its target-specific FFI/library path is available, with availability recorded explicitly. No skip or incomplete shard qualifies.
+pending
+
+** M1.5 End to end: the 1e6 hot loop is natively at most 1/5 interpreter time on both arm64 OSes, and x86_64 Linux and Windows ledgers stay green
+#+NOTE: A5 needs correct result/native entries, separate-process median >=3 samples, repeated interpreter baseline, normalized warm-up/GC and host-load/source/binary pins. Require real Linux arm and user-Mac timing receipts, M1.1–M1.4 qualification and fresh integrated-source Linux x86_64/Windows ledger receipts. Compilation excluded from loop ratio but reported separately; qemu timings and known-red/pending baseline caps do not qualify.
+pending
