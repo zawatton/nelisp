@@ -96,10 +96,10 @@ is `listp', matching the genuine caar/cadr fixtures)."
 
 (ert-deftest nelisp-eln-cxr-import-rejects-wrong-d-reloc-identity ()
   "A `d_reloc' slot whose live decoded value is not `listp' is refused."
+  (skip-unless (file-exists-p (nelisp-eln-cxr-import-test--path "caar")))
   (pcase-let* ((`(,code ,value ,_)
                 (nelisp-eln-cxr-import-test--artifact-code
                  (nelisp-eln-cxr-import-test--path "caar") "F63616172_caar_0")))
-    (skip-unless (file-exists-p (nelisp-eln-cxr-import-test--path "caar")))
     ;; The CFG shape alone still holds; only the semantic slot-identity
     ;; cross-check in `--cxr-import-analysis' must reject this.
     (should (eq (plist-get (nelisp-eln-tail-code-analyze-cxr-call
@@ -119,6 +119,7 @@ dereference, but no longer matches this grammar's fixed zero-slot
 encoding at all -- checked with slot 1 explicitly allowed too, so the
 rejection below is the grammar mismatch, not an unrelated byte-count
 error from widening the instruction by one byte."
+  (skip-unless (file-exists-p (nelisp-eln-cxr-import-test--path "caar")))
   (pcase-let* ((`(,code ,value ,_)
                 (nelisp-eln-cxr-import-test--artifact-code
                  (nelisp-eln-cxr-import-test--path "caar") "F63616172_caar_0"))
@@ -127,25 +128,24 @@ error from widening the instruction by one byte."
                 (concat (substring code 0 call-start)
                         (unibyte-string #xff #x50 #x08)
                         (substring code (+ call-start 2)))))
-    (skip-unless (file-exists-p (nelisp-eln-cxr-import-test--path "caar")))
     (should-not (nelisp-eln-tail-code-analyze-cxr-call retargeted value -3 5 '(0 1)))
     (should-not (nelisp-eln-cxr-import-test--analyze-artifact
                  retargeted value "ba35c031" -3 5))))
 
 (ert-deftest nelisp-eln-cxr-import-rejects-wrong-first-displacement ()
   "cadr's shape does not admit as caar's (-3), and vice versa."
+  (skip-unless (file-exists-p (nelisp-eln-cxr-import-test--path "caar")))
   (pcase-let* ((`(,code ,value ,_)
                 (nelisp-eln-cxr-import-test--artifact-code
                  (nelisp-eln-cxr-import-test--path "caar") "F63616172_caar_0")))
-    (skip-unless (file-exists-p (nelisp-eln-cxr-import-test--path "caar")))
     (should-not (nelisp-eln-tail-code-analyze-cxr-call code value 5 5 '(0)))))
 
 (ert-deftest nelisp-eln-cxr-import-rejects-injected-branch ()
   "Any injected branch opcode breaks the loop-free straight-line grammar."
+  (skip-unless (file-exists-p (nelisp-eln-cxr-import-test--path "caar")))
   (pcase-let* ((`(,code ,value ,_)
                 (nelisp-eln-cxr-import-test--artifact-code
                  (nelisp-eln-cxr-import-test--path "caar") "F63616172_caar_0")))
-    (skip-unless (file-exists-p (nelisp-eln-cxr-import-test--path "caar")))
     (let ((tampered (copy-sequence code)))
       ;; Offset 63 is `load-table' ("48 8b 00", an exact-match
       ;; instruction with no variable field); corrupting its first byte
@@ -156,10 +156,10 @@ error from widening the instruction by one byte."
       (should-not (nelisp-eln-tail-code-analyze-cxr-call tampered value -3 5 '(0))))))
 
 (ert-deftest nelisp-eln-cxr-import-rejects-unknown-abi ()
+  (skip-unless (file-exists-p (nelisp-eln-cxr-import-test--path "caar")))
   (pcase-let* ((`(,code ,value ,_)
                 (nelisp-eln-cxr-import-test--artifact-code
                  (nelisp-eln-cxr-import-test--path "caar") "F63616172_caar_0")))
-    (skip-unless (file-exists-p (nelisp-eln-cxr-import-test--path "caar")))
     (should-not (nelisp-eln-cxr-import-test--analyze-artifact
                  code value "unknown-abi" -3 5))))
 

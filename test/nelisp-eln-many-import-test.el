@@ -82,11 +82,11 @@ Returns (CODE VADDR ELF); mirrors
 
 (ert-deftest nelisp-eln-many-import-rejects-unauthenticated-slot ()
   "Swapping the call's freloc slot to an index outside the MANY table fails."
+  (skip-unless (file-exists-p nelisp-eln-many-import-test--fixture))
   (pcase-let* ((`(,code ,value ,_)
                 (nelisp-eln-many-import-test--artifact-code
                  nelisp-eln-many-import-test--fixture "zerop_0"))
                (tampered (copy-sequence code)))
-    (skip-unless (file-exists-p nelisp-eln-many-import-test--fixture))
     ;; The call's disp32 (offset 0x2940 little-endian) sits at bytes
     ;; 37..40; retarget it to slot 1301 (a genuine, but unary tail-only,
     ;; slot never listed in `nelisp-eln-native-subr--many-descriptors').
@@ -103,10 +103,10 @@ Returns (CODE VADDR ELF); mirrors
 
 (ert-deftest nelisp-eln-many-import-rejects-injected-branch ()
   "Any injected branch opcode breaks the loop-free straight-line grammar."
+  (skip-unless (file-exists-p nelisp-eln-many-import-test--fixture))
   (pcase-let* ((`(,code ,value ,_)
                 (nelisp-eln-many-import-test--artifact-code
                  nelisp-eln-many-import-test--fixture "zerop_0")))
-    (skip-unless (file-exists-p nelisp-eln-many-import-test--fixture))
     (dolist (patch
              ;; Overwrite two consecutive body bytes with a short forward
              ;; jz/jmp encoding at a few different offsets; each corrupts
@@ -122,10 +122,10 @@ Returns (CODE VADDR ELF); mirrors
 
 (ert-deftest nelisp-eln-many-import-rejects-a-second-call ()
   "A second CALL through the table, even to the same slot, is rejected."
+  (skip-unless (file-exists-p nelisp-eln-many-import-test--fixture))
   (pcase-let* ((`(,code ,value ,_)
                 (nelisp-eln-many-import-test--artifact-code
                  nelisp-eln-many-import-test--fixture "zerop_0")))
-    (skip-unless (file-exists-p nelisp-eln-many-import-test--fixture))
     ;; Splice a duplicate `call *0x2940(%rax)' right after the first one,
     ;; before the epilogue; the grammar has no state that tolerates a
     ;; second call, so this must fail closed rather than silently admit
@@ -140,10 +140,10 @@ Returns (CODE VADDR ELF); mirrors
                    duplicated value "ba35c031")))))
 
 (ert-deftest nelisp-eln-many-import-rejects-unknown-abi ()
+  (skip-unless (file-exists-p nelisp-eln-many-import-test--fixture))
   (pcase-let* ((`(,code ,value ,_)
                 (nelisp-eln-many-import-test--artifact-code
                  nelisp-eln-many-import-test--fixture "zerop_0")))
-    (skip-unless (file-exists-p nelisp-eln-many-import-test--fixture))
     (should-not (nelisp-eln-many-import-test--analyze-artifact
                  code value "unknown-abi"))))
 
