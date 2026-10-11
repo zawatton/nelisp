@@ -14957,15 +14957,31 @@ needs escaping because the reader consumes it as an escape prefix."
   "Return S with reader atom terminators escaped for readable printing."
   (if (= (length s) 0)
       "##"
-    (let ((chunks (cons nil nil)) (i 0) (n (length s)))
+    ;; Copy ASCII spans rather than allocate a string and chunk per character.
+    ;; Non-ASCII keeps the reference char-to-string conversion, including for
+    ;; high bytes in unibyte names. Every escaping predicate still runs.
+    (let ((chunks (cons nil nil)) (i 0) (start 0) (n (length s)))
       (when (nelisp--prn-symbol-needs-leading-escape-p s)
         (nelisp--prn-chunks-add chunks "\\"))
       (while (< i n)
         (let ((c (aref s i)))
-          (when (nelisp--prn-symbol-char-needs-escape-p c)
-            (nelisp--prn-chunks-add chunks "\\"))
-          (nelisp--prn-chunks-add chunks (char-to-string c)))
+          (cond
+           ((nelisp--prn-symbol-char-needs-escape-p c)
+            (when (> i start)
+              (nelisp--prn-chunks-add chunks
+                                      (string-as-unibyte (substring s start i))))
+            (nelisp--prn-chunks-add chunks "\\")
+            (setq start i))
+           ((>= c 128)
+            (when (> i start)
+              (nelisp--prn-chunks-add chunks
+                                      (string-as-unibyte (substring s start i))))
+            (nelisp--prn-chunks-add chunks (char-to-string c))
+            (setq start (1+ i)))))
         (setq i (1+ i)))
+      (when (> n start)
+        (nelisp--prn-chunks-add chunks
+                                (string-as-unibyte (substring s start n))))
       (nelisp--prn-chunks-string chunks))))
 
 (defvar nelisp--prn-symbol-cache nil
@@ -19078,38 +19094,29 @@ signals an error rather than passing text through unexpanded."
     ;; carry a corrupted `:object-base64' payload from here).  `string-
     ;; byte' / `string-bytes' are the byte-clean pair: raw byte at a
     ;; byte index, and a byte count that does not shrink for high bytes.
-    (let ((alphabet "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
-          (i 0)
-          (len (string-bytes string))
-          (chunks nil)
-          (parts nil)
-          (part-count 0))
+    ;; Fill one exact-sized ASCII result. The byte reads, bit extraction,
+    ;; padding and existing no-wrap policy are unchanged; no tiny strings or
+    ;; lists are allocated for each input triple.
+    (let* ((alphabet "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
+           (i 0) (out 0) (len (string-bytes string))
+           ;; ASCII is unibyte on GNU; state this explicitly so the standalone
+           ;; writer never needs a character-to-byte walk for an output index.
+           (result (string-as-unibyte (make-string (* 4 (/ (+ len 2) 3)) 61))))
       (while (< i len)
         (let* ((a (string-byte string i))
                (have-b (< (1+ i) len))
                (have-c (< (+ i 2) len))
                (b (if have-b (string-byte string (1+ i)) 0))
                (c (if have-c (string-byte string (+ i 2)) 0))
-               (triple (logior (ash a 16) (ash b 8) c))
-               (c1 (aref alphabet (logand (ash triple -18) 63)))
-               (c2 (aref alphabet (logand (ash triple -12) 63)))
-               (c3 (if have-b (aref alphabet (logand (ash triple -6) 63)) ?=))
-               (c4 (if have-c (aref alphabet (logand triple 63)) ?=)))
-          (setq parts
-                (cons (concat (char-to-string c1)
-                              (char-to-string c2)
-                              (char-to-string c3)
-                              (char-to-string c4))
-                      parts))
-          (setq part-count (1+ part-count))
-          (when (>= part-count 128)
-            (setq chunks (cons (apply 'concat (nreverse parts)) chunks))
-            (setq parts nil)
-            (setq part-count 0)))
-        (setq i (+ i 3)))
-      (when parts
-        (setq chunks (cons (apply 'concat (nreverse parts)) chunks)))
-      (apply 'concat (nreverse chunks)))))
+               (triple (logior (ash a 16) (ash b 8) c)))
+          (aset result out (aref alphabet (logand (ash triple -18) 63)))
+          (aset result (1+ out) (aref alphabet (logand (ash triple -12) 63)))
+          (when have-b
+            (aset result (+ out 2) (aref alphabet (logand (ash triple -6) 63))))
+          (when have-c
+            (aset result (+ out 3) (aref alphabet (logand triple 63)))))
+        (setq i (+ i 3) out (+ out 4)))
+      result)))
 (unless (fboundp 'base64-decode-string)
   (defun base64-decode-string (string &optional base64url ignore-invalid)
     ;; Bytes, not characters.  `char-to-string' builds the CHARACTER whose
@@ -19486,6 +19493,11 @@ The public `equal' name is backed by the native primitive in some runtime
 call paths, so recursive calls through that name would skip this vector
 handling when a vector is nested inside a cons."
   (cond
+   ;; A shared object equals itself. In particular, do not recursively walk
+   ;; the same cons tree through the native accelerator: compiler plans reuse
+   ;; large immutable subtrees, and their independent snapshots still take
+   ;; the full structural comparison below.
+   ((eq a b) t)
    ;; Native truth is conservative: string/numeric/symbol leaves use this
    ;; same primitive, and cons truth requires truth at both children.
    ;; Vectors, bool-vectors, byte-code objects and records yield truth only

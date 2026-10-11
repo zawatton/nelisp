@@ -188,7 +188,7 @@ Return (replacement selected unsupported); unsupported forms retain source."
                       (cond
                        ((and (eq (car form) 'defun)
                              (or (string-prefix-p "nelisp--prn-" (symbol-name (cadr form)))
-                                 (memq (cadr form) '(equal nelisp--equal-recursive copy-sequence cl-some cl-every hash-table-p functionp interpreted-function-p proper-list-p plist-put mapc reverse vconcat nelisp--check-seq-list nelisp-bytecode-jit--runtime-dispatch))))
+                                 (memq (cadr form) '(equal nelisp--equal-recursive copy-sequence cl-some cl-every hash-table-p functionp interpreted-function-p proper-list-p plist-put mapc reverse vconcat nelisp--check-seq-list nelisp-bytecode-jit--runtime-dispatch base64-encode-string))))
                         (push (cons (cadr form) (cons 'lambda (cddr form))) definitions))
                        ((and (eq (car form) 'fset) (equal (cadr form) '(quote nelisp--syscall-stat))
                              (eq (car-safe (caddr form)) 'lambda))
@@ -215,6 +215,9 @@ Return (replacement selected unsupported); unsupported forms retain source."
           (unless (= found 1) (error "Expected one genuine COPY-TREE definition"))))
       ;; Preserve the source headers: prelude is dynamically scoped; the
       ;; vendored COPY-TREE alone is lexical. Callbacks may observe bindings.
+      ;; The linear, unibyte Base64 encoder runs through the same general
+      ;; GNU bytecode projection as the printer and gains no native entry.
+      ;; Its actual opcode and nested-function checks below remain mandatory.
       (dolist (definition (nreverse definitions))
         (let* ((name (car definition))
                (compiled (let ((lexical-binding (eq name 'copy-tree))) (nelisp-native-optimizer-bytecode--compile (cdr definition))))

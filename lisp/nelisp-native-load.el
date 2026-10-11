@@ -2586,7 +2586,11 @@ without publishing an intermediate artifact.  The cache owns publication."
     (require 'nelisp-standalone-arena-rewrite))
   (unless (fboundp 'nelisp-aot-compile-to-link-unit)
     (error "nelisp-native-load: raw compiler is unavailable in this runtime"))
-  (let* ((source
+  ;; The same bounded atom cache already used by contract digests also
+  ;; covers compiled-source and manifest printing. It changes no print mode
+  ;; or authenticated byte and never carries entries into another compile.
+  (let* ((nelisp--prn-symbol-cache (make-hash-table :test 'equal))
+         (source
           (if source-snapshot (cdr source-snapshot)
            (with-temp-buffer
             (set-buffer-multibyte nil)
