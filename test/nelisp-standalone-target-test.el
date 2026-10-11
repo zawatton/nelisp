@@ -611,7 +611,9 @@ aimed at the wrong function is a jump, not a diagnosable error."
          (chain (nth 2 (cdr arm)))
          (seen nil))
     (should (equal (mapcar (lambda (a) (cadr (car a))) arms)
-                   '("nelisp--native-symbol-addr" "nelisp--native-env")))
+                   '("nelisp--native-symbol-addr" "nelisp--native-env"
+                     "nelisp--symbol-global-cell-p"
+                     "nelisp--native-runtime-contract-word")))
     (should (equal (car arm) '(:u8 "nelisp--native-symbol-addr")))
     ;; Walk the if-chain, collecting (INDEX . SYMBOL) in emitted order.
     (while (and (consp chain) (eq (car chain) 'if))
@@ -1341,9 +1343,10 @@ report its size as a Unix timestamp.  Pin the reads at the Darwin offsets
     (should (memq 'ptr-write-u64 copy-flat))
     (should (memq 'ptr-write-u8 copy-flat))
     (should (memq 'big-probe chunk-flat))
-    (should (memq 'big-probe_chunk_000 chunk-flat))
-    (should (memq 'big-probe_chunk_001 chunk-flat))
-    (should (memq 'big-probe_chunk_002 chunk-flat))))
+    ;; The literal now lives in one rodata blob; no per-chunk helper defuns.
+    (should (memq 'data-blob chunk-flat))
+    (should (memq 'big-probe_literal_data chunk-flat))
+    (should-not (memq 'big-probe_chunk_000 chunk-flat))))
 
 (ert-deftest nelisp-standalone-target-reader-load-uses-direct-source-printer ()
   "`--load' evaluates raw file source and prints the resulting value."
@@ -1924,7 +1927,7 @@ Typed unibyte string handling remains part of the separate precise marker."
       (should (tree-member-p '(nl_gc_mark_slot (+ box 32))
                              nelisp-standalone--gc-source))
       (should (tree-member-p
-               '(nl_gc_mark_char_table_slots entries 0 entries_len 40 8)
+               '(nl_gc_mark_char_table_slots entries 0 entries_len 48 8)
                nelisp-standalone--gc-source))
       (should (tree-member-p
                '(if (= parent 0) 0 (nl_gc_mark_char_table_box parent))
@@ -2911,7 +2914,8 @@ without the async core and process adapter that define the standard names."
   (dolist (contract (nelisp-standalone--builtin-fixed-arities))
     (if (member (car contract)
                 '("nelisp--declare-local-special"
-                  "nelisp--native-pin-copy" "nelisp--native-pin-eq-slots"
+                  "nelisp--native-pin-copy" "nelisp--native-pin-copy-v2"
+                  "nelisp--native-pin-eq-slots"
                   "nelisp--native-unbox-reference" "ptr-call"))
         ;; These private reader bridges have no Emacs subr counterpart.  Their
         ;; accepted/rejected calls are exercised by native runtime suites.
@@ -2919,6 +2923,7 @@ without the async core and process adapter that define the standard names."
                    (cond ((equal (car contract) "ptr-call") 7)
                          ((equal (car contract) "nelisp--native-pin-eq-slots")
                           2)
+                         ((equal (car contract) "nelisp--native-pin-copy-v2") 4)
                          ((member (car contract)
                                   '("nelisp--native-pin-copy"
                                     "nelisp--native-unbox-reference"))
