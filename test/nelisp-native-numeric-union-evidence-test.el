@@ -14,6 +14,7 @@
                                     nelisp-numeric-union-test--root))))
   (dolist (form (nelisp-numeric-union-test--derive source t)) (eval form t)))
 (ert-deftest nelisp-numeric-union-genuine-and-counterfeit-selection ()
+  (skip-unless (and (getenv "NELISP_NUMERIC_CERTIFICATE") (getenv "NELISP_NUMERIC_CAPTURE") (getenv "NELISP_NUMERIC_BINDING_SHA256")))
   (let* ((certificate (getenv "NELISP_NUMERIC_CERTIFICATE"))
          (directory (getenv "NELISP_NUMERIC_CAPTURE"))
          (review (getenv "NELISP_NUMERIC_BINDING_SHA256"))

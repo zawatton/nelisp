@@ -4,6 +4,7 @@
 (require 'nelisp-native-rooted-startup-evidence)
 
 (ert-deftest nelisp-root-startup-pins-current-inputs-and-refuses-mutation ()
+  (skip-unless (and (getenv "NELISP_ROOT_PROOF_SOURCE") (getenv "NELISP_ROOT_PROTOCOL_EVIDENCE") (getenv "NELISP_ROOT_DIRECT_PROTOCOL") (getenv "NELISP_ROOT_PROOF_METADATA") (getenv "NELISP_ROOT_BSS_OWNER")))
   (let* ((root (make-temp-file "root-startup-render-" t))
          (metadata (expand-file-name "metadata.json" root))
          (data (expand-file-name "data.json" root))
