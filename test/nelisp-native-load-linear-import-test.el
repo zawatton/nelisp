@@ -2,6 +2,7 @@
 (require 'ert)
 (require 'nelisp-native-load)
 (require 'nelisp-bytecode-native-rooted-cfg-contract)
+(require 'nelisp-bytecode-native-rooted-cfg-contract-test)
 (ert-deftest nelisp-loader-linear-import-exact-canonical ()
   (let* ((input (nelisp-bytecode-compiler-input-build (byte-compile '(lambda (left right) (cons left right)))))
          (plan (nelisp-bytecode-native-rooted-cfg-plan input))

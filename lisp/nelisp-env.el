@@ -60,7 +60,8 @@ CONSTANT defaults to nil (= mutable cell).  Doc 102 §2.1 spec."
                        (or value nelisp--unbound-marker)
                        (or function nelisp--unbound-marker)
                        (or plist nil)
-                       (or constant nil)))
+                       (or constant nil)
+                       nil))
 
 (defun nelisp-env--symbol-entry-p (obj)
   "Return non-nil iff OBJ is a symbol-entry record."
@@ -82,6 +83,15 @@ CONSTANT defaults to nil (= mutable cell).  Doc 102 §2.1 spec."
 (defun nelisp-env--symbol-entry-constant-p (entry)
   "Return non-nil iff ENTRY is marked constant (= setq rejects writes)."
   (nelisp--record-ref entry 3))
+
+(defun nelisp-env--symbol-entry-alias-target (entry)
+  "Return ENTRY's variable-alias target symbol, or nil when not an alias."
+  (nelisp--record-ref entry 4))
+
+(defun nelisp-env--symbol-entry-set-alias-target (entry target)
+  "Make ENTRY a variable alias of TARGET (nil clears it).  Returns TARGET."
+  (nelisp--record-set entry 4 target)
+  target)
 
 (defun nelisp-env--symbol-entry-set-value (entry value)
   "Set ENTRY's value cell.  Returns VALUE."

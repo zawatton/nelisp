@@ -4,6 +4,14 @@
 (require 'nelisp-native-compiler-runtime-capability)
 (require 'nelisp-native-load)
 
+;; The constructor loader is a trusted startup publication derived from
+;; `nelisp-native-load'; it is not a library feature, so load it explicitly.
+(unless (fboundp 'nelisp-native-load-compiler-capability-bind)
+  (load (expand-file-name
+         "../templates/nelisp-native-load-constructor-startup.el.in"
+         (file-name-directory (or load-file-name buffer-file-name)))
+        nil t t))
+
 (ert-deftest nelisp-native-compiler-constructor-loader-absent-startup-refused ()
   (should-error (nelisp-native-load-compiler-capability-bind))
   (should-not (nelisp-native-load--compiler-constructor-runtime-p nil))

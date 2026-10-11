@@ -34,6 +34,6 @@
           (owner (symbol-function 'nelisp-native-arithmetic-v2-runtime-imports)))
       (unwind-protect
           (progn (fset 'nelisp-native-arithmetic-v2-runtime-imports (lambda () nil))
-                 (should-not (equal context (nelisp-native-arithmetic-v2-dependency-context))))
+                 (should-error (nelisp-native-arithmetic-v2-dependency-context)))
         (fset 'nelisp-native-arithmetic-v2-runtime-imports owner)))))
 (provide 'rooted-provider-forms-test)

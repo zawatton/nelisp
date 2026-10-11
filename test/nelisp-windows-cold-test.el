@@ -2,12 +2,16 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 (require 'ert)
 (require 'cl-lib)
+(require 'nelisp-standalone-arena-rewrite)
 (defvar nelisp-windows-cold-test--file-helpers nil)
 (let* ((root (expand-file-name ".." (file-name-directory load-file-name)))
        (source (if (getenv "COLD_TEST_BUILD_SOURCE")
                    (expand-file-name (getenv "COLD_TEST_BUILD_SOURCE"))
                  (expand-file-name "scripts/nelisp-standalone-build.el" root))))
-  (let ((process-environment (cons "NELISP_STANDALONE_TARGET=windows-x86_64" process-environment)))
+  ;; A shared ERT process has already required the arena-rewrite module, so
+  ;; the environment variable no longer selects the target; bind it directly.
+  (let ((process-environment (cons "NELISP_STANDALONE_TARGET=windows-x86_64" process-environment))
+        (nelisp-standalone--target 'windows-x86_64))
     (load source nil t)
     (setq nelisp-windows-cold-test--file-helpers nelisp-standalone--applyfn-fa-file-helpers))
   ;; Loading this test in a larger ERT process must not change its target's
@@ -46,7 +50,10 @@
            (cl-some (lambda (child) (nelisp-windows-cold-test--contains child name)) form))))
 
 (defun nelisp-windows-cold-test--os ()
-  (let ((process-environment (cons "NELISP_STANDALONE_TARGET=windows-x86_64" process-environment)))
+  ;; A shared ERT process has already required the arena-rewrite module, so
+  ;; the environment variable no longer selects the target; bind it directly.
+  (let ((process-environment (cons "NELISP_STANDALONE_TARGET=windows-x86_64" process-environment))
+        (nelisp-standalone--target 'windows-x86_64))
     (append (nelisp-standalone--reader-os-source-forms)
             (nelisp-standalone--reader-cold-source-forms))))
 
@@ -198,7 +205,8 @@ Feed the header through the actual writer/read loops and both loader entries."
 
 (ert-deftest nelisp-windows-cold-commit-before-publish ()
   "Both reservation paths commit; failure releases only the unpublished mapping."
-  (let* ((process-environment (cons "NELISP_STANDALONE_TARGET=windows-x86_64" process-environment))
+  (let* ((nelisp-standalone--target 'windows-x86_64)
+         (process-environment (cons "NELISP_STANDALONE_TARGET=windows-x86_64" process-environment))
          (function (nelisp-windows-cold-test--function (nelisp-standalone--cold-domain-forms) 'nl_cold_grow_chunk0))
          (memory (make-hash-table)) (events nil) (commit 1) (size 65536))
     (puthash 8 1000 memory)
@@ -264,7 +272,8 @@ Feed the header through the actual writer/read loops and both loader entries."
       (should (equal (reverse events) '(reserve commit free))))))
 
 (ert-deftest nelisp-windows-cold-environment-allowlist ()
-  (let* ((process-environment '("NELISP_STANDALONE_TARGET=windows-x86_64"
+  (let* ((nelisp-standalone--target 'windows-x86_64)
+         (process-environment '("NELISP_STANDALONE_TARGET=windows-x86_64"
                                 "SystemRoot=C:/Windows" "WINDIR=C:/Windows" "SystemDrive=C:"
                                 "ComSpec=C:/Windows/System32/cmd.exe" "TEMP=C:/Temp" "TMP=C:/Temp"
                                 "PATH=C:/User/bin" "HOME=C:/secret" "NELISP_NATIVE_CACHE=C:/secret"
@@ -277,7 +286,8 @@ Feed the header through the actual writer/read loops and both loader entries."
 
 (ert-deftest nelisp-windows-cold-process-reinit ()
   "Evaluate the real Windows reinit source against stale process-owned values."
-  (let* ((process-environment '("NELISP_STANDALONE_TARGET=windows-x86_64"))
+  (let* ((nelisp-standalone--target 'windows-x86_64)
+         (process-environment '("NELISP_STANDALONE_TARGET=windows-x86_64"))
          (forms (nelisp-standalone--reader-cold-reinit-forms 'src 'cursor 'result 'pool 'out 'ctx 'builtin-sym))
          (find-call nil)
          (_finder (setq find-call (lambda (form)
@@ -307,6 +317,7 @@ Feed the header through the actual writer/read loops and both loader entries."
                                 "NELISP_STANDALONE_NATIVE_COMPILER_COLD=1"
                                 "NELISP_STANDALONE_COLD_RUNNER=wine" "WINEPREFIX=/chosen-prefix"
                                 "HOME=/secret" "NELISP_NATIVE_CACHE=/secret"))
+         (nelisp-standalone--target 'windows-x86_64)
          (nelisp-standalone--native-cache-source-receipt nil)
          (native-comp-enable-subr-trampolines nil)
          (captured nil) (dump-environment nil))

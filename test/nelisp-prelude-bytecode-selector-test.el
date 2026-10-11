@@ -50,7 +50,10 @@
     (should (= (nth 1 result) 0))
     (should (equal (nth 4 row) "source-form-digest-mismatch"))))
 
-(ert-deftest nelisp-prelude-bytecode-selector-requires-explicit-pop-handler-evidence ()
+(ert-deftest nelisp-prelude-bytecode-selector-call-opcode-needs-only-parity-fixture ()
+  "Opcode 32 (Bcall) has verified VM semantics, so a passing fixture adopts it.
+The former extra `opcode-32-not-explicitly-verified' gate was removed by the
+call-* parity cases; see the note in scripts/nelisp-prelude-bytecode.el."
   (let* ((source "(defun foo (n list) (take n list))\n")
          (digest (secure-hash 'sha256
                               (substring source 0 (1- (length source)))))
@@ -59,8 +62,9 @@
                   `((foo "(foo 1 '(a b))" "(a)" "pass" "fixture" "bytecode"
                          ,digest ""))))
          (row (car (nth 2 result))))
-    (should (= (nth 1 result) 0))
-    (should (equal (nth 4 row) "opcode-32-not-explicitly-verified"))))
+    (should (= (nth 1 result) 1))
+    (should (equal (nth 3 row) "adopt"))
+    (should (equal (nth 4 row) "opcode-allowlisted-and-host-parity-fixture-passed"))))
 
 
 ;;; nelisp-prelude-bytecode-selector-test.el ends here

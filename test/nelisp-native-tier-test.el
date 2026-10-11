@@ -13,7 +13,7 @@
          (nelisp-native-tier--accepted (make-hash-table :test 'equal))
          (nelisp-native-tier-threshold 2)
          (nelisp-native-budget--handles 0) (nelisp-native-budget--bytes 0)
-         (fn (make-byte-code 257 (unibyte-string 0 135) [old] 1))
+         (fn (make-byte-code 257 (unibyte-string 0 135) (vector 'old) 1))
          (loads 0))
      (cl-letf (((symbol-function 'nelisp-native-tier--identity)
                 (lambda (function backend)
@@ -258,7 +258,7 @@
         (delete-directory (plist-get job :directory) t)))))
 (ert-deftest nelisp-native-tier-tier0-owner-reused-with-distinct-live-constants ()
   (nelisp-native-tier-test--state
-    (let ((second (make-byte-code 257 (unibyte-string 0 135) [old] 1)) (maps 0))
+    (let ((second (make-byte-code 257 (unibyte-string 0 135) (vector 'old) 1)) (maps 0))
       (cl-letf (((symbol-function 'nelisp-native-cache-load)
                  (lambda (input-fn)
                    (setq maps (1+ maps))

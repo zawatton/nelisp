@@ -59,8 +59,18 @@
            (should (equal (plist-get reconstruction :expected-contract) contract)))))
       (should-not (nelisp-bytecode-compiler-input--reuse-checked retained))))))
 
+(defun nelisp-native-compile-speed-test--unshared (function)
+  "Return FUNCTION cloned with private code and constants.
+Emacs 31 hash-conses byte-code strings, so mutating a compiled
+function's code string would corrupt every function sharing it."
+  (apply #'make-byte-code (aref function 0) (copy-sequence (aref function 1))
+         (copy-sequence (aref function 2)) (aref function 3)
+         (cl-loop for i from 4 below (length function) collect (aref function i))))
+
 (ert-deftest p35/checked-input-reuse-refuses-mutation-and-restores-nested-scope ()
-  (let ((function (byte-compile (lambda (x) (+ x 1)))) retained)
+  (let ((function (nelisp-native-compile-speed-test--unshared
+                   (byte-compile (lambda (x) (+ x 1)))))
+        retained)
     (should-error
      (nelisp-bytecode-compiler-input-call-with-built
       function

@@ -2011,6 +2011,13 @@ ticket and slot indices and may call only the CAR gateway.")
     (nreverse found)))
 
 (defun nelisp-native-load--raw-v2-rewrite-data-addr (form &optional copies)
+  "Rewrite FORM like `nelisp-native-load--raw-v2-rewrite-data-addr-1'.
+The walk recurses along every list tail, so production-sized sources need
+more than the default Lisp evaluation depth."
+  (let ((max-lisp-eval-depth (max max-lisp-eval-depth 20000)))
+    (nelisp-native-load--raw-v2-rewrite-data-addr-1 form copies)))
+
+(defun nelisp-native-load--raw-v2-rewrite-data-addr-1 (form &optional copies)
   "Turn `(data-addr NAME)' into an imported zero-argument getter call.
 
 The raw linker cannot assume that an anonymously mapped text page is within a
@@ -2032,8 +2039,8 @@ memo; it preserves compiler DAGs and never survives source mutation."
                   (if (and (eq (car form) 'data-addr)
                            (symbolp (cadr form)) (null (cddr form)))
                       (list (cadr form))
-                    (cons (nelisp-native-load--raw-v2-rewrite-data-addr (car form) copies)
-                          (nelisp-native-load--raw-v2-rewrite-data-addr (cdr form) copies))))
+                    (cons (nelisp-native-load--raw-v2-rewrite-data-addr-1 (car form) copies)
+                          (nelisp-native-load--raw-v2-rewrite-data-addr-1 (cdr form) copies))))
           (cdr record))))))
 
 (defun nelisp-native-load--raw-v2-chunk-rewrite (forms)
@@ -2474,17 +2481,22 @@ The enclosing CFG admission must still authenticate the complete contract."
                       (eq (aref (cdr b) 0) 'guarded-provider-v1))
                  (nelisp-native-load--rooted-cfg-provider-context-data-equal-p
                   (aref (cdr a) 1) (aref (cdr b) 1))
-             (and (= (length (cdr a)) 10) (= (length (cdr b)) 10)
+             ;; Arithmetic provider context: slots 0-5, 10, 12 and 13 hold opaque
+             ;; function owners (EQ), slot 6 is the primitive owner list, and
+             ;; slots 7-9, 11, 14 and 15 are copied public snapshots (EQUAL).
+             (and (= (length (cdr a)) 16) (= (length (cdr b)) 16)
              (let ((index 0) (valid t))
-               (while (and valid (< index 6))
-                 (setq valid (eq (aref (cdr a) index) (aref (cdr b) index))
+               (while (and valid (< index 16))
+                 (setq valid
+                       (cond
+                        ((or (< index 6) (memq index '(10 12 13)))
+                         (eq (aref (cdr a) index) (aref (cdr b) index)))
+                        ((= index 6)
+                         (nelisp-native-load--rooted-cfg-provider-owner-list-eq-p
+                          (aref (cdr a) 6) (aref (cdr b) 6)))
+                        (t (equal (aref (cdr a) index) (aref (cdr b) index))))
                        index (1+ index)))
-               (and valid
-                    (nelisp-native-load--rooted-cfg-provider-owner-list-eq-p
-                     (aref (cdr a) 6) (aref (cdr b) 6))
-                    (equal (aref (cdr a) 7) (aref (cdr b) 7))
-                    (equal (aref (cdr a) 8) (aref (cdr b) 8))
-                    (equal (aref (cdr a) 9) (aref (cdr b) 9))))))))
+               valid)))))
     (error nil)))
 
 (defun nelisp-native-load--rooted-cfg-import-names-valid-p (names &optional contract)
