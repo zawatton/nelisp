@@ -151,6 +151,17 @@
            "\\`[A-Za-z_][A-Za-z0-9_]*\\'"
            (nelisp-bytecode-native-package--native-entry-name 'a-b))))
 
+(defun nelisp-bytecode-native-package-test--unshared (f)
+  "Return a byte-code function equal to F that shares no mutable part.
+GNU Emacs 31.1 hash-conses byte-code strings: every function compiled to
+the same code shares one string, so mutating F's code in place corrupts
+all of them (measured 2026-10-11: the host Emacs then segfaulted later in
+the shared suite, in an unrelated test's `plist-get')."
+  (apply #'make-byte-code (aref f 0) (copy-sequence (aref f 1))
+         (copy-sequence (aref f 2)) (aref f 3)
+         (let (rest) (dotimes (i (- (length f) 4)) (push (aref f (+ i 4)) rest))
+           (nreverse rest))))
+
 (ert-deftest nelisp-bytecode-native-package-sealed-preflight-refuses-mutation ()
   "Package tokens reject function and compiler-result mutation before backend work."
   (skip-unless (equal emacs-version "31.1"))
@@ -158,7 +169,8 @@
     (dolist (mutation '(code constants descriptor input-code input-constants
                         ir cyclic-ir frame dialect helper helper-input-accessor
                         helper-ir-accessor helper-frame-accessor))
-      (let* ((function (byte-compile '(lambda () 'sealed-value)))
+      (let* ((function (nelisp-bytecode-native-package-test--unshared
+                        (byte-compile '(lambda () 'sealed-value))))
              (sealed (funcall (plist-get api :preflight) function))
              (input (plist-get sealed :input))
              (token (plist-get sealed :token))
@@ -256,7 +268,8 @@
   "Oversized genuine analysis uses the ordinary compiler path instead of refusing."
   (skip-unless (equal emacs-version "31.1"))
   (let* ((api nelisp-bytecode-native-compiler-package-preflight-api)
-         (function (byte-compile '(lambda () 'sealed-value)))
+         (function (nelisp-bytecode-native-package-test--unshared
+                    (byte-compile '(lambda () 'sealed-value))))
          (input-builder (symbol-function 'nelisp-bytecode-compiler-input-build))
          (sealed nil)
          (deep nil)

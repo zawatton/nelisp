@@ -623,8 +623,20 @@
       (make-byte-code 257 (unibyte-string 83 135) [] 2)
       most-negative-fixnum))))
 
+(defun nelisp-bytecode-jit-test--unshared (f)
+  "Return a byte-code function equal to F that shares no mutable part.
+GNU Emacs 31.1 hash-conses byte-code strings: every function compiled to
+the same code shares one string, so mutating F's code in place corrupts
+all of them (measured 2026-10-11: the host Emacs then segfaulted later in
+the shared suite, in an unrelated test's `plist-get')."
+  (apply #'make-byte-code (aref f 0) (copy-sequence (aref f 1))
+         (copy-sequence (aref f 2)) (aref f 3)
+         (let (rest) (dotimes (i (- (length f) 4)) (push (aref f (+ i 4)) rest))
+           (nreverse rest))))
+
 (ert-deftest nelisp-bytecode-jit/caches-by-function-and-decoded-operation ()
-  (let* ((function (byte-compile '(lambda (x) (1+ x))))
+  (let* ((function (nelisp-bytecode-jit-test--unshared
+                    (byte-compile '(lambda (x) (1+ x)))))
         (nelisp-bytecode-jit--handles (make-hash-table :test 'eq))
         (nelisp-bytecode-jit--compile-count 0)
         (next-entry 4096))
