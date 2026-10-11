@@ -303,7 +303,8 @@
 
 (ert-deftest nelisp-native-windows-genuine-f1-code-encoding ()
   "Compile GNU F1 bytecode through the real shared planner/emitter to Win64.
-The complete Linux text digest was independently reproduced from HEAD 7a140f8ae."
+The complete Linux text digest was independently reproduced from HEAD 7a140f8ae
+and re-pinned at fec44b49f, whose scalar raw-CFG root copies changed F1 code."
   (require 'nelisp-bytecode-native-rooted-cfg-shared-emit)
   (let* ((byte-compile-warnings nil)
          (fixture (byte-compile '(lambda (x) (f1-user (cons (car x) (cdr x))))))
@@ -323,7 +324,7 @@ The complete Linux text digest was independently reproduced from HEAD 7a140f8ae.
       (should (nelisp-native-windows-test--contains text '(#x48 #x89 #x44 #x24 #x20)))
       (should-not (equal text (plist-get linux :text)))
       (should (equal (secure-hash 'sha256 (plist-get linux :text))
-                     "1c93f13bb929b2e50c50303d5ef572fc604cd31b640e613041e8d7c3c6621ad5")))))
+                     "aa4775904d98a3bba04359fc8ab1b76c4d58571913291f8b662abc36a47b5455")))))
 
 (ert-deftest nelisp-native-windows-worker-refuses-before-whole-file-hash ()
   "The unsupported async worker cannot fall back to hashing another PE."

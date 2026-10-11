@@ -78,12 +78,27 @@
                 (nelisp-native-gccjit-test--form
                  (nelisp-native-funcall-v2-fixnum-form opcode '(1 2) 1 0 7))
                 '(("nl_root_pin_slot_v2" . 8192)))))
-      (should (assoc "gcc_jit_block_end_with_return" calls)))))
+      (should (assoc "gcc_jit_block_end_with_return" calls))))
+  ;; Round 4 emits a bounded copy loop when several authenticated root slots
+  ;; move together. Exercise that exact producer tree, including phi selectors.
+  (nelisp-native-gccjit-test--ffi
+    (should (integerp
+             (nelisp-native-gccjit-lower
+              (nelisp-native-gccjit-test--form
+               (nelisp-native-funcall-v2-copy-form '(37 38 5) '(42 43 44) 512))
+              '(("nl_root_pin_slot_v2" . 8192)))))
+    (should (assoc "gcc_jit_block_end_with_return" calls))))
 
 (ert-deftest nelisp-native-gccjit/refuse-unsupported-and-release ()
   (dolist (body '((quote x) (funcall env) (while env 0) (list 1 2)
                   unknown (+ 1 2 3) (if 1 2) (extern-call absent 1)
-                  (let ((x 1)) (setq missing 2)) (let ((x)) x)))
+                  (let ((x 1)) (setq missing 2)) (let ((x)) x)
+                  (let ((f1_copy_index 0) (f1_copy_status 0))
+                    (while (and (= f1_copy_status 0) (< f1_copy_index 257))
+                      (let nil 0) (setq f1_copy_index (+ f1_copy_index 1))))
+                  (let ((f1_copy_index 0) (f1_copy_status 0))
+                    (while (and (= f1_copy_status 0) (< f1_copy_index 2))
+                      (let nil 0) (setq f1_copy_index 0)))))
     (nelisp-native-gccjit-test--ffi
       (should-error (nelisp-native-gccjit-lower (nelisp-native-gccjit-test--form body) nil))
       (should (assoc "gcc_jit_context_release" calls)))))
