@@ -1,0 +1,51 @@
+name: Linux ARM64 native acceptance
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/native-arm64]
+permissions:
+  contents: read
+jobs:
+  linux-arm64-f1:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install GNU Emacs 31.1
+        uses: purcell/setup-emacs@v8.0
+        with:
+          version: '31.1'
+      - name: Check dialect and record hardware
+        run: |
+          emacs -Q --batch --eval '(unless (equal emacs-version "31.1") (error "GNU Emacs 31.1 required"))'
+          mkdir -p target/arm64-native
+          uname -m | tee target/arm64-native/uname.out
+          getconf PAGESIZE | tee target/arm64-native/pagesize.out
+          lscpu | tee target/arm64-native/cpu.out
+      - name: Install proof decoder dependencies
+        run: python3 -m pip install --break-system-packages capstone pyelftools
+      - name: Host ARM64 emitter and refusal controls
+        run: |
+          emacs -Q --batch -L lisp -L src -L scripts -L test -L test/support -L packages/nl-ffi/src -l test/nelisp-native-arm64-test.el --eval '(unless (ert-select-tests "^nelisp-native-arm64-" t) (error "No ARM64 cases"))' --eval '(ert-run-tests-batch-and-exit "^nelisp-native-arm64-")'
+          python3 test/support/run-arm64-native-f1-test.py --self-test
+      - name: Build the native reader and compiler cold image
+        env:
+          NELISP_NATIVE_CACHE: nelisp-cold2-user-override-canary
+          NELISP_STANDALONE_NATIVE_COMPILER_COLD: '1'
+        run: timeout 3600 make standalone-reader NELISP_STANDALONE_TARGET=linux-aarch64
+      - name: F1 cold and source paths with fresh trust loads
+        env:
+          NELISP_ARM64_NATIVE_DEADLINE: '1800'
+          NELISP_ARM64_NATIVE_RUN_BUDGET: '7200'
+        run: python3 test/support/run-arm64-native-f1-test.py target/nelisp-aarch64 --both --work target/arm64-native/ci
+      - name: Preserve reader and acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-arm64-f1
+          path: |
+            target/arm64-native/
+            target/nelisp-aarch64
+            target/nelisp-aarch64.cold
+            target/nelisp-aarch64.native-startup.el
+          if-no-files-found: error

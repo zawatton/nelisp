@@ -170,9 +170,10 @@ not implement yet."
   (unless (eq machine 'aarch64)
     (signal 'error (list :mach-o-reloc-unsupported-machine machine type)))
   (pcase type
-    ('b26-pc            (list nelisp-mach-o--arm64-reloc-branch26 1 2))
+    ((or 'b26-pc 'jump26-pc) (list nelisp-mach-o--arm64-reloc-branch26 1 2))
     ('adr-prel-pg-hi21  (list nelisp-mach-o--arm64-reloc-page21 1 2))
-    ('add-abs-lo12-nc   (list nelisp-mach-o--arm64-reloc-pageoff12 0 2))
+    ((or 'add-abs-lo12-nc 'ldst64-abs-lo12-nc)
+     (list nelisp-mach-o--arm64-reloc-pageoff12 0 2))
     ('abs64             (list nelisp-mach-o--arm64-reloc-unsigned 0 3))
     (_ (signal 'error (list :mach-o-reloc-unsupported-type type)))))
 
@@ -281,7 +282,9 @@ is always present."
                        descs)
                  (setq addr (+ addr size)))))
       (funcall add 'text "__text" "__TEXT" text (length text)
-               nelisp-mach-o--section-text-flags 4 2 nil)
+               nelisp-mach-o--section-text-flags
+               (if (plist-get sections :literal-spans) 8 4)
+               (if (plist-get sections :literal-spans) 3 2) nil)
       (when (> (length (or rodata "")) 0)
         (funcall add 'rodata "__const" "__TEXT" rodata (length rodata)
                  0 8 3 nil))

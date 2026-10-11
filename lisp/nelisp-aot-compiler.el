@@ -238,14 +238,19 @@ within one compile but never collide between control-flow nodes.")
 Emit helpers consult this dynvar to pick the x86_64 or aarch64 code
 path while sharing the same parsed IR.")
 
+(defvar nelisp-aot-compiler--arm64-features nil
+  "Explicit AArch64 target features; nil emits baseline ARMv8 atomics.
+Only `lse' is currently supported.  Never infer features from the host.
+The raw loader must seal this selection in its compiler proof before use.")
+
 (defvar nelisp-aot-compiler--abi 'sysv
   "Calling convention ABI bound by the public compile entry points.
 Doc 101 §101.B Wave 5: selects SysV vs Win64 emit paths for x86_64.
   'sysv  — System V AMD64 (Linux / macOS); default
   'win64 — Microsoft x64 (Windows x86_64)
+  'aapcs64 — AArch64 fixed u64 internal signatures (Linux / Darwin)
 Emit helpers consult this dynvar for arg-register selection, shadow
-space allocation, and prologue/epilogue layout.  The aarch64 path
-ignores this var (= AAPCS64 only).")
+space allocation, and prologue/epilogue layout.")
 
 (defvar nelisp-aot-compiler--rsp-temp-depth 0
   "Number of 8-byte temporary words currently pushed below rsp.
@@ -1021,6 +1026,7 @@ faithfully retain either representation in its frame slot."
     (data-addr . 99)
     (data-blob . 102)
     (arith . 1)
+    (arm64-fixnum-case . 109)
     (aot-root-scope . 92)
     (atomic-compare-exchange . 2)
     (atomic-fetch-add . 3)
@@ -9666,6 +9672,66 @@ for direct calls."
         (plist-get signature :fixed-count)
         (plist-get signature :arity))))
 
+(defun nelisp-aot-compiler--arm64-bounded-arith-form (form &optional env fenv)
+  "Recognize a guarded signed-62-bit arithmetic result in FORM.
+This is a general source lowering, independent of function/local names.
+Keep the original source on other targets, preserving historical x86 bytes.
+The slow arm must not read the result that overflow would leave undefined.
+ENV/FENV prove repeated guard and operand reads are constants or GP locals;
+calls, writes and global lookups must retain their original evaluation order."
+  (when (and (eq nelisp-aot-compiler--arch 'aarch64)
+             (consp form) (memq (car form) '(let let*)) (= (length form) 3))
+    (let* ((bindings (cadr form)) (last (car (last bindings)))
+           (var (car last)) (value (cadr last)) (body (caddr form)))
+      (when (and (or (eq (car form) 'let*) (= (length bindings) 1))
+                 (symbolp var) (consp value) (eq (car value) 'if)
+                 (= (length value) 4) (eql (nth 3 value) 0)
+                 (consp (nth 2 value)) (memq (car (nth 2 value)) '(+ - *))
+                 (= (length (nth 2 value)) 3)
+                 (cl-every
+                  (lambda (atom)
+                    (or (integerp atom)
+                        (and (symbolp atom)
+                             (or (integerp (cdr (assq atom env)))
+                                 (let ((info (cdr (assq atom fenv))))
+                                   (and (integerp (plist-get info :slot))
+                                        (eq (or (plist-get info :class) 'gp) 'gp)))))))
+                  (cons (cadr value) (cdr (nth 2 value))))
+                 (consp body)
+                 (equal (cadr body)
+                        `(and ,(cadr value) (and (>= ,var -2305843009213693952)
+                                                (<= ,var 2305843009213693951))))
+                 (eq (car body) 'if) (= (length body) 4)
+                 (not (nelisp-aot-compiler--form-mentions-symbol-p (nth 3 body) var)))
+        (let ((lowered `(arm64-fixnum-case ,(cadr value) ,(nth 2 value) ,var
+                                          ,(nth 2 body) ,(nth 3 body))))
+          (if (cdr bindings) `(let* ,(butlast bindings) ,lowered) lowered))))))
+
+(defun nelisp-aot-compiler--parse-arm64-fixnum-case (form env fenv defuns)
+  "Parse guarded arithmetic FORM with one shared genuine fallback."
+  (unless (and (eq nelisp-aot-compiler--arch 'aarch64) (= (length form) 6)
+               (symbolp (nth 3 form)) nelisp-aot-compiler--next-rt-let-slot)
+    (signal 'nelisp-aot-compiler-error (list :invalid-arm64-fixnum-case form)))
+  (let* ((slot (car nelisp-aot-compiler--next-rt-let-slot))
+         (var (nth 3 form))
+         (expression (nth 2 form)))
+    (unless (and (consp expression) (= (length expression) 3)
+                 (memq (car expression) '(+ - *)))
+      (signal 'nelisp-aot-compiler-error (list :invalid-fixnum-arithmetic form)))
+    (setcar nelisp-aot-compiler--next-rt-let-slot (1+ slot))
+    (nelisp-aot-compiler--make-ir
+     'arm64-fixnum-case
+     :test (nelisp-aot-compiler--parse-value (nth 1 form) env fenv defuns)
+     :value (nelisp-aot-compiler--make-ir
+             'arith :op (car expression)
+             :a (nelisp-aot-compiler--parse-value (nth 1 expression) env fenv defuns)
+             :b (nelisp-aot-compiler--parse-value (nth 2 expression) env fenv defuns))
+     :slot slot
+     :body (nelisp-aot-compiler--parse-value
+            (nth 4 form) env (cons (cons var (list :slot slot :class 'gp :repr 'raw-i64)) fenv) defuns)
+     :fallback (nelisp-aot-compiler--parse-value (nth 5 form) env fenv defuns)
+     :id (cl-incf nelisp-aot-compiler--label-counter))))
+
 (defun nelisp-aot-compiler--parse-value (sexp env fenv defuns)
   "Parse SEXP as a value-producing expression.
 Returns an IR node of one of these kinds:
@@ -9686,6 +9752,12 @@ parameter alist `((SYM . REG) ...)' for the enclosing function (=
 nil at top level), DEFUNS is the alist of already-defined
 functions `((NAME . ARITY) ...)'."
   (cond
+
+   ((nelisp-aot-compiler--arm64-bounded-arith-form sexp env fenv)
+    (nelisp-aot-compiler--parse-value
+     (nelisp-aot-compiler--arm64-bounded-arith-form sexp env fenv) env fenv defuns))
+   ((and (consp sexp) (eq (car sexp) 'arm64-fixnum-case))
+    (nelisp-aot-compiler--parse-arm64-fixnum-case sexp env fenv defuns))
 	   ;; Compile-time foldable -> immediate.
 	   ((nelisp-aot-compiler--int-foldable-p sexp env fenv)
 	    (nelisp-aot-compiler--make-ir 'imm
@@ -13737,6 +13809,8 @@ the node's class to consume the result correctly."
          (nelisp-aot-compiler--emit-cmp node buf))
         ((= tag 29)             ; if
          (nelisp-aot-compiler--emit-if node buf))
+        ((= tag 109)
+         (nelisp-aot-compiler--emit-arm64-fixnum-case node buf))
         ((= tag 88)             ; value-seq
          (dolist (child (nelisp-aot-compiler--ir-get node :forms))
            (nelisp-aot-compiler--emit-value child buf)))
@@ -14333,6 +14407,46 @@ run left to right.  The saved operand uses the stack across nested calls."
        (t
         (signal 'nelisp-aot-compiler-error
                 (list :unknown-arith-op op)))))))
+
+(defun nelisp-aot-compiler--emit-arm64-fixnum-case (node buf)
+  "Lower the guarded arithmetic NODE with one exact slow continuation.
+ADDS/SUBS immediately precede B.VS; MUL has independent 30-bit guards,
+since MUL does not set V.  Check the signed-62-bit payload before writes."
+  (let* ((id (nelisp-aot-compiler--ir-get node :id))
+         (slow (intern (format "fixnum-%d-slow" id)))
+         (end (intern (format "fixnum-%d-end" id)))
+         (value (nelisp-aot-compiler--ir-get node :value))
+         (op (nelisp-aot-compiler--ir-get value :op)))
+    (nelisp-aot-compiler--emit-value (nelisp-aot-compiler--ir-get node :test) buf)
+    (nelisp-asm-arm64-cbz buf 'x0 slow)
+    (nelisp-aot-compiler--emit-binary-operands
+     (nelisp-aot-compiler--ir-get value :a) (nelisp-aot-compiler--ir-get value :b) buf)
+    (if (eq op '*)
+        (progn
+          (dolist (reg '(x0 x9))
+            (nelisp-asm-arm64-mov-imm64 buf 'x10 -1073741824)
+            (nelisp-asm-arm64-cmp-reg-reg buf reg 'x10)
+            (nelisp-asm-arm64-b-cond buf 'lt slow)
+            (nelisp-asm-arm64-mov-imm64 buf 'x10 1073741824)
+            (nelisp-asm-arm64-cmp-reg-reg buf reg 'x10)
+            (nelisp-asm-arm64-b-cond buf 'gt slow))
+          (nelisp-asm-arm64-mul-reg-reg buf 'x0 'x0 'x9))
+      (if (eq op '+)
+          (nelisp-asm-arm64-adds-reg-reg buf 'x0 'x0 'x9)
+        (nelisp-asm-arm64-subs-reg-reg buf 'x0 'x0 'x9))
+      (nelisp-asm-arm64-b-cond-near buf 'vs slow))
+    (nelisp-asm-arm64-mov-imm64 buf 'x9 -2305843009213693952)
+    (nelisp-asm-arm64-cmp-reg-reg buf 'x0 'x9)
+    (nelisp-asm-arm64-b-cond buf 'lt slow)
+    (nelisp-asm-arm64-mov-imm64 buf 'x9 2305843009213693951)
+    (nelisp-asm-arm64-cmp-reg-reg buf 'x0 'x9)
+    (nelisp-asm-arm64-b-cond buf 'gt slow)
+    (nelisp-aot-compiler--arm64-emit-frame-store buf 'x0 (nelisp-aot-compiler--ir-get node :slot))
+    (nelisp-aot-compiler--emit-value (nelisp-aot-compiler--ir-get node :body) buf)
+    (nelisp-asm-arm64-b buf end)
+    (nelisp-asm-arm64-define-label buf slow)
+    (nelisp-aot-compiler--emit-value (nelisp-aot-compiler--ir-get node :fallback) buf)
+    (nelisp-asm-arm64-define-label buf end)))
 
 (defun nelisp-aot-compiler--emit-checked-arith-guard-x86_64 (buf)
   "Doc 187 P4 (opt-in, x86_64 only): if
@@ -17453,7 +17567,16 @@ ptr → x1, delta → x2; returns the pre-add value in x0 (SeqCst RMW)."
    (nelisp-aot-compiler--ir-get node :delta) buf)
   (nelisp-asm-arm64-mov-reg-reg buf 'x2 'x0)         ; x2 = delta (Xs)
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; x1 = ptr (Xn)
-  (nelisp-asm-arm64-ldaddal buf 'x2 'x0 'x1))        ; x0 = old [x1]
+  (if (memq 'lse nelisp-aot-compiler--arm64-features)
+      (nelisp-asm-arm64-ldaddal buf 'x2 'x0 'x1)
+    (let ((retry (nelisp-aot-compiler--gensym "atomic-add-retry")))
+      (nelisp-asm-arm64-dmb-ish buf)
+      (nelisp-asm-arm64-define-label buf retry)
+      (nelisp-asm-arm64-ldaxr buf 'x0 'x1)
+      (nelisp-asm-arm64-add-reg-reg buf 'x10 'x0 'x2)
+      (nelisp-asm-arm64-stlxr buf 'x11 'x10 'x1)
+      (nelisp-asm-arm64-cbz buf 'x11 retry t)
+      (nelisp-asm-arm64-dmb-ish buf))))
 
 (defun nelisp-aot-compiler--emit-atomic-compare-exchange-arm64 (node buf)
   "Emit `atomic-compare-exchange' for aarch64 — inline `CASAL'.
@@ -17473,7 +17596,23 @@ materialises x0 = 1 on success, 0 on failure, matching the x86_64
   (nelisp-asm-arm64-ldr-imm buf 'x9 'sp 0)           ; x9 = expected snapshot
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x2)          ; x2 = expected / old (Rs)
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; x1 = ptr (Rn)
-  (nelisp-asm-arm64-casal buf 'x2 'x3 'x1)           ; x2 = old [x1]
+  (if (memq 'lse nelisp-aot-compiler--arm64-features)
+      (nelisp-asm-arm64-casal buf 'x2 'x3 'x1)
+    (let ((retry (nelisp-aot-compiler--gensym "atomic-cas-retry"))
+          (failed (nelisp-aot-compiler--gensym "atomic-cas-mismatch"))
+          (end (nelisp-aot-compiler--gensym "atomic-cas-end")))
+      (nelisp-asm-arm64-dmb-ish buf)
+      (nelisp-asm-arm64-define-label buf retry)
+      (nelisp-asm-arm64-ldaxr buf 'x2 'x1)
+      (nelisp-asm-arm64-cmp-reg-reg buf 'x2 'x9)
+      (nelisp-asm-arm64-b-cond buf 'ne failed)
+      (nelisp-asm-arm64-stlxr buf 'x10 'x3 'x1)
+      (nelisp-asm-arm64-cbz buf 'x10 retry t)
+      (nelisp-asm-arm64-b buf end)
+      (nelisp-asm-arm64-define-label buf failed)
+      (nelisp-asm-arm64-clrex buf)
+      (nelisp-asm-arm64-define-label buf end)
+      (nelisp-asm-arm64-dmb-ish buf)))
   (nelisp-asm-arm64-cmp-reg-reg buf 'x2 'x9)
   (nelisp-asm-arm64-cset buf 'x0 'eq))
 
@@ -18327,6 +18466,8 @@ into x9 (caller-saved, not an arg reg) and invoked with `BLR x9'."
           (if fn-value
               (progn
                 (nelisp-asm-arm64-ldr-post-sp-16 buf 'x9) ; x9 = fn-ptr
+                ;; Synchronize the receiving PE before entering published JIT text.
+                (nelisp-asm-arm64--emit-word buf #xd5033fdf) ; ISB
                 (nelisp-asm-arm64-blr buf 'x9))
             (nelisp-asm-arm64-bl buf name)))
       ;; Direct AAPCS64 stack-argument path.  The temporary arg saves are
@@ -19052,9 +19193,8 @@ return reg, untouched by epilogue)."
         (let ((gp-arg-regs nelisp-aot-compiler--aarch64-arg-regs)
               (fp-arg-regs '(d0 d1 d2 d3 d4 d5 d6 d7)))
           (nelisp-asm-arm64-define-label buf name)
-          ;; Save LR for forward compatibility, then establish x29.
-          (nelisp-asm-arm64-str-pre-sp-16 buf 'x30)
-          (nelisp-asm-arm64-str-pre-sp-16 buf 'x29)
+          ;; Contiguous [previous FP, LR], required by Darwin's frame chain.
+          (nelisp-asm-arm64-stp-frame buf)
           ;; x29 = sp : MUST use `ADD x29, sp, #0' — `mov-reg-reg' is
           ;; ORR Xd,XZR,Xm where reg 31 = XZR (not SP), so it would set
           ;; x29 = 0 and every frame-relative `ref' would fault.
@@ -19066,10 +19206,10 @@ return reg, untouched by epilogue)."
                   (progn
                     ;; AAPCS64 stack args are 8-byte slots at the entry SP.
                     ;; After saving LR+FP and setting x29, entry SP is
-                    ;; `[x29 + 32]'.  Copy into our normal 16-byte local slot
+                    ;; `[x29 + 16]'.  Copy into our normal 16-byte local slot
                     ;; shape so ref loads keep using `[x29 - 16*(slot+1)]'.
                     (nelisp-asm-arm64-ldr-imm
-                     buf 'x9 'x29 (+ 32 (* 8 (cadr preg))))
+                     buf 'x9 'x29 (+ 16 (* 8 (cadr preg))))
                     (nelisp-asm-arm64-str-pre-sp-16 buf 'x9))
                 (nelisp-asm-arm64-str-pre-sp-16 buf preg)))
             ;; Reserve the runtime let-rt-n slot frame below the params
@@ -19100,8 +19240,7 @@ return reg, untouched by epilogue)."
           (nelisp-aot-compiler--emit-value body buf)
           ;; sp = x29 : same SP-vs-XZR caveat — use `ADD sp, x29, #0'.
           (nelisp-asm-arm64-add-imm buf 'sp 'x29 0)
-          (nelisp-asm-arm64-ldr-post-sp-16 buf 'x29)
-          (nelisp-asm-arm64-ldr-post-sp-16 buf 'x30)
+          (nelisp-asm-arm64-ldp-frame buf)
           (nelisp-asm-arm64-ret buf))
       ;; Wave 20: hand-inline the prologue's literal-register emit
       ;; calls so the standalone NeLisp interpreter does not pay the
@@ -21090,7 +21229,7 @@ also returns the slot pointer)."
 
 ;;;###autoload
 (cl-defun nelisp-aot-compile-to-link-unit
-    (sexp &key (arch 'x86_64) (format 'elf) auto-frame-roots)
+    (sexp &key (arch 'x86_64) (format 'elf) os arm64-features auto-frame-roots)
   "Compile SEXP to the in-memory pre-ELF object unit consumed by writers.
 
 The returned plist contains the final post-fixup section payloads and
@@ -21104,25 +21243,41 @@ symbol/relocation metadata for one relocatable object:
   :defuns         sorted per-defun plists `(:name NAME :offset N :size N)'
   :extern-symbols sorted distinct external symbol names
 
-FORMAT is consulted only for ABI-sensitive parse/emit setup (not for the
-returned plist shape), so callers that later write COFF still get Win64
-register budgeting while ELF/Mach-O keep SysV."
+FORMAT binds AAPCS64 and Linux/Darwin for AArch64, and Win64 for x86
+COFF; historical x86 ELF/Mach-O bindings stay unchanged.  OS may explicitly
+confirm an arm target, but a container/OS mismatch is refused.  ARM64-FEATURES
+is a bounded explicit target feature list, defaulting to baseline ARMv8.
+Arm units also report ABI/OS/features and literal/veneer spans."
+  (when (eq format 'macho) (setq format 'mach-o))
+  (unless (and (proper-list-p arm64-features)
+               (cl-every (lambda (feature) (eq feature 'lse)) arm64-features)
+               (or (null arm64-features) (eq arch 'aarch64)))
+    (signal 'nelisp-aot-compiler-error (list :unsupported-arm64-features arm64-features)))
+  (when (and (eq arch 'aarch64)
+             (or (not (memq format '(elf mach-o)))
+                 (and os (not (eq os (if (eq format 'elf) 'linux 'darwin))))))
+    (signal 'nelisp-aot-compiler-error (list :unsupported-arm64-target format os)))
   (unless (or (memq arch '(x86_64 aarch64))
               (and (eq arch 'wasm32) (eq format 'wasm)))
     (signal 'nelisp-aot-compiler-error
             (list :unsupported-arch arch)))
   (let* ((nelisp-aot-compiler--label-counter 0)
          (nelisp-aot-compiler--arch arch)
+         (nelisp-aot-compiler--arm64-features arm64-features)
          ;; Doc 101 §101.B Wave 5: COFF/Windows targets bind --abi to
          ;; 'win64 before parsing, so arity validation and emission both
          ;; see Win64 register budgets.
          (nelisp-aot-compiler--abi
           (cond
            ((eq arch 'wasm32) 'wasm)
+           ((eq arch 'aarch64) 'aapcs64)
            ((and (eq arch 'x86_64) (eq format 'coff)) 'win64)
            (t 'sysv)))
          (nelisp-aot-compiler--os
-          (if (eq arch 'wasm32) 'wasi nelisp-aot-compiler--os))
+          (cond ((eq arch 'wasm32) 'wasi)
+                ((eq arch 'aarch64) (if (eq format 'elf) 'linux 'darwin))
+                (os os)
+                (t nelisp-aot-compiler--os)))
          (nelisp-aot-compiler--allow-external-user-calls t)
          ;; Per unit: a global would carry one unit's cache slots into the
          ;; next, where the blobs they name do not exist.
@@ -21213,7 +21368,7 @@ register budgeting while ELF/Mach-O keep SysV."
         (nelisp-aot-compiler--compile-to-wasm-unit defuns data-blobs)))
     (let* ((nelisp-aot-compiler--rsp-temp-depth 0)
            (buf (if (eq arch 'aarch64)
-                    (nelisp-asm-arm64-make-buffer)
+                    (nelisp-asm-arm64-make-buffer t)
                   (nelisp-asm-x86_64-make-buffer
                    nelisp-aot-compiler--abi))))
       (dolist (d defuns)
@@ -21239,6 +21394,13 @@ register budgeting while ELF/Mach-O keep SysV."
              (raw-relocs (if (eq arch 'aarch64)
                              (nelisp-asm-arm64-buffer-relocs buf)
                            (nelisp-asm-x86_64-extract-relocs buf)))
+             (internal-reloc-symbols
+              (and (eq arch 'aarch64)
+                   (cl-remove-if-not
+                    (lambda (cell)
+                      (cl-some (lambda (r) (equal (plist-get r :symbol) (symbol-name (car cell))))
+                               raw-relocs))
+                    labels)))
              (relocs
               (mapcar
                (lambda (r)
@@ -21351,13 +21513,14 @@ register budgeting while ELF/Mach-O keep SysV."
                  (delete-dups
                   (cl-remove-if
                    (lambda (nm) (or (member nm blob-names)
-                                    (member nm defun-names)))
+                                    (member nm defun-names)
+                                    (assoc (intern nm) internal-reloc-symbols)))
                    (mapcar (lambda (r) (plist-get r :symbol))
                            (cl-remove-if-not
                             (lambda (r)
                               (memq (plist-get r :type)
-                                    '(pc32 plt32 abs64 b26-pc
-                                      adr-prel-pg-hi21 add-abs-lo12-nc)))
+                                    '(pc32 plt32 abs64 b26-pc jump26-pc
+                                      adr-prel-pg-hi21 add-abs-lo12-nc ldst64-abs-lo12-nc)))
                             (append relocs blob-data-relocs)))))
                  #'string<)))
              ;; Only the user-defined defun names should appear as
@@ -21468,9 +21631,21 @@ register budgeting while ELF/Mach-O keep SysV."
                        :type 'object))))
              (all-symbols (append metadata-symbols
                                   blob-symbols
+                                  (mapcar
+                                   (lambda (cell)
+                                     (list :name (symbol-name (car cell)) :value (cdr cell)
+                                           :size 0 :section 'text :bind 'local :type 'notype))
+                                   (cl-remove-if
+                                    (lambda (cell) (member (symbol-name (car cell)) exported-names))
+                                    internal-reloc-symbols))
                                   symbols
                                   extern-symbol-plists)))
-        (list :text text-bytes
+        (append (and (eq arch 'aarch64)
+                     (list :abi nelisp-aot-compiler--abi :os nelisp-aot-compiler--os
+                           :features (copy-sequence nelisp-aot-compiler--arm64-features)
+                           :literal-spans (plist-get (nelisp-asm-arm64--unwrap buf) :literal-spans)
+                           :veneers (plist-get (nelisp-asm-arm64--unwrap buf) :veneers)))
+                (list :text text-bytes
               :rodata (concat meta-bytes blob-rodata)
               :data blob-data
               :bss-size blob-bss-size
@@ -21478,7 +21653,7 @@ register budgeting while ELF/Mach-O keep SysV."
               :relocs (append relocs blob-data-relocs)
               :machine arch
               :defuns defun-layout
-              :extern-symbols extern-names)))))
+              :extern-symbols extern-names))))))
 
 ;;;###autoload
 (cl-defun nelisp-aot-compile-to-object

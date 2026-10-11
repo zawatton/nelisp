@@ -181,7 +181,7 @@ Return startup source and its manifest; constructor/numeric/call remain refused.
                           (eq (plist-get layout :target) 'x86_64-windows)
                           (eq (plist-get layout :calling-convention) 'win64))
                    (and (equal (plist-get layout :domain) "nelisp-rooted-elf-v2")
-                        (eq (plist-get layout :target) 'x86_64-linux)))
+                        (eq (plist-get layout :target) (if (nelisp-native-load--arm64-p) 'aarch64-linux 'x86_64-linux))))
                  (= (plist-get layout :sexp-bytes) 32)
                  (= (length (plist-get layout :exports)) 17))
       (error "Unauthenticated protocol generation inputs"))
@@ -305,6 +305,9 @@ dependencies, subprocess result and source owners are checked before return."
          (source-paths (list (expand-file-name "lisp/nelisp-native-windows.el" root)
                              (expand-file-name "lisp/nelisp-native-pe-symbols.el" root)
                              script owner-script template loader
+                             (expand-file-name "scripts/nelisp-native-arm64-relocations.py" root)
+                             (expand-file-name "lisp/nelisp-native-arm64.el" root)
+                             (expand-file-name "lisp/nelisp-native-linux.el" root)
                              (expand-file-name "lisp/nelisp-native-funcall-v2.el" root)
                              (expand-file-name "lisp/nelisp-runtime-reload-abi.el" root)
                              (expand-file-name "lisp/nelisp-native-raw-file.el" root)))

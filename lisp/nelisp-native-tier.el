@@ -79,8 +79,9 @@
   ;; Windows async process supervision is not implemented. Refuse before
   ;; reading a worker PE: its whole-file hash is not the running build stamp,
   ;; and accepting a caller-selected stamp would weaken the identity fence.
-  (when (nelisp-native-load--windows-p)
-    (signal 'nelisp-native-tier-permanent '(windows-worker-unsupported)))
+  (when (or (nelisp-native-load--windows-p) (nelisp-native-load--arm64-p))
+    (signal 'nelisp-native-tier-permanent
+            (if (nelisp-native-load--arm64-p) '(arm64-worker-unqualified) '(windows-worker-unsupported))))
   ;; Hash complete raw bytes, as the running-executable fence does. The
   ;; scratch buffer API may encode high bytes on a standalone reader.
   (let* ((external (nelisp-native-load--sha256-file-external binary))

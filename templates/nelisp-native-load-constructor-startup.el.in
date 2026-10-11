@@ -189,6 +189,12 @@
 	   "nelisp-native-load: v2 raw units require Linux x86_64 primitives"))
 	(let*
 	    ((text (nelisp-native-load--raw-bytes native :text-base64))
+	     (_arm-check
+	      (when (nelisp-native-load--arm64-p)
+		(nelisp-native-arm64-relocations-check
+		 (plist-get native :relocs) text
+		 (mapcar #'nelisp-native-load--raw-import-name
+			 (plist-get native :imports)))))
 	     (text-length (string-bytes text))
 	     (imports0 (plist-get native :imports))
 	     (stub-base (* 16 (/ (+ text-length 15) 16)))
@@ -223,18 +229,31 @@
 			   import entry manifest)))
 		      (setq stub-offsets
 			    (cons (cons import offset) stub-offsets))
-		      (if (eq kind 'data)
+		      (if (nelisp-native-load--arm64-p)
+			  (progn
+			    (ptr-write-u32 codepage offset
+					   (if (eq kind 'data)
+					       1476395072
+					     1476395088))
+			    (ptr-write-u32 codepage (+ offset 4)
+					   (if (eq kind 'data)
+					       3596551104
+					     3592356352))
+			    (ptr-write-u64 codepage (+ offset 8) addr))
+			(if (eq kind 'data)
+			    (nelisp-native-load--poke-bytes codepage
+							    offset
+							    '(72 184 0
+								 0 0 0
+								 0 0 0
+								 0 195))
 			  (nelisp-native-load--poke-bytes codepage
 							  offset
 							  '(72 184 0 0
 							       0 0 0 0
-							       0 0 195))
-			(nelisp-native-load--poke-bytes codepage
-							offset
-							'(72 184 0 0 0
-							     0 0 0 0 0
-							     255 224)))
-		      (ptr-write-u64 codepage (+ offset 2) addr))
+							       0 0 255
+							       224)))
+			(ptr-write-u64 codepage (+ offset 2) addr)))
 		    (setq idx (1+ idx) rest (cdr rest))))
 		(let ((rest (plist-get native :relocs)))
 		  (while rest
@@ -248,9 +267,15 @@
 			(error
 			 "nelisp-native-load: v2 relocation has no stub: %s"
 			 symbol))
-		      (ptr-write-u32 codepage offset
-				     (- (+ codepage (cdr stub) addend)
-					(+ codepage offset))))
+		      (nelisp-native-load--raw-v2-patch-call codepage
+							     offset
+							     (-
+							      (+
+							       (cdr
+								stub)
+							       addend)
+							      offset)
+							     text))
 		    (setq rest (cdr rest))))
 		(setq table-size
 		      (+ 16

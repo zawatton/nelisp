@@ -82,6 +82,8 @@ evidence before compiling the driver. Unknown or ambiguous inputs are refused."
             (when (and (stringp text) (> (length text) 0))
               (push (list :name name :path (file-name-nondirectory path) :unit-sha256 hash
                           :symbols (vconcat unit-symbols)
+                          :machine (or (plist-get unit :machine) 'x86_64)
+                          :literal-spans (vconcat (mapcar (lambda (span) (vector (car span) (cdr span))) (plist-get unit :literal-spans)))
                           :relocations (vconcat (plist-get unit :relocs))) metadata))))
         (when (and (integerp bss) (> bss 0)
                    (cl-find "nl_arena_base" unit-symbols
@@ -94,6 +96,8 @@ evidence before compiling the driver. Unknown or ambiguous inputs are refused."
           (when (and (fboundp 'nelisp-native-load--windows-p) (nelisp-native-load--windows-p))
             (setq generated-data (append generated-data
                                    (list :target "windows-x86_64" :initial-chunk-bytes 67108864)))))))
+    (when (and generated-data (fboundp 'nelisp-native-load--arm64-p) (nelisp-native-load--arm64-p))
+      (setq generated-data (append generated-data (list :target "linux-aarch64"))))
     (unless generated-data (error "Missing generated arena owner"))
     (unless (equal builder-hash (nelisp-native-rooted-build-evidence-source-hash builder 4194304))
       (error "Builder source changed during rooted generation"))

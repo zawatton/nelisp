@@ -1,0 +1,61 @@
+;;; nelisp-native-arm64.el --- ARM64 raw-v2 memory safety -*- lexical-binding: t; -*-
+;; SPDX-License-Identifier: GPL-3.0-or-later
+(defun nelisp-native-arm64-u32 (text offset)
+  "Read a checked little-endian word from TEXT."
+  (unless (and (integerp offset) (<= 0 offset) (<= (+ offset 4) (length text)))
+    (error "ARM64 word boundary refused"))
+  (+ (aref text offset) (ash (aref text (+ offset 1)) 8)
+     (ash (aref text (+ offset 2)) 16) (ash (aref text (+ offset 3)) 24)))
+
+(defun nelisp-native-arm64-relocation-problem (reloc length imports text)
+  "Admit only aligned CALL26/JUMP26 to loader-owned local import veneers."
+  (let* ((offset (plist-get reloc :offset)) (type (plist-get reloc :type))
+         (name (plist-get reloc :symbol)) (index (cl-position name imports :test #'equal))
+         (delta (and index (integerp offset)
+                     (- (+ (* 16 (/ (+ length 15) 16)) (* index 16)) offset))))
+    (unless (and (memq type '(b26-pc jump26-pc))
+                 (integerp offset) (<= 0 offset) (zerop (% offset 4))
+                 (<= (+ offset 4) length) (eql (plist-get reloc :addend) 0)
+                 delta (<= -134217728 delta 134217724) (zerop (% delta 4))
+                 text (= (logand (nelisp-native-arm64-u32 text offset) #xfc000000)
+                         (if (eq type 'b26-pc) #x94000000 #x14000000)))
+      (list :arm64-relocation-refused reloc))))
+
+(defun nelisp-native-arm64-relocations-check (relocs text imports)
+  "Check every relocation and reject overlaps before allocating memory."
+  (let ((seen nil))
+    (dolist (r relocs)
+      (when (or (nelisp-native-arm64-relocation-problem r (length text) imports text)
+                (memq (plist-get r :offset) seen))
+        (error "ARM64 relocation ownership refused"))
+      (push (plist-get r :offset) seen))))
+
+(defun nelisp-native-arm64-normalize-relocation (bytes offset type target place addend)
+  "Verify a linked relocation's target and retain its non-immediate bits.
+Return its canonical word for source-bound helper hashing."
+  (let* ((word (nelisp-native-arm64-u32 bytes offset)) (address (+ target addend))
+         (opcode (cond ((eq type 'b26-pc) #x94000000) ((eq type 'jump26-pc) #x14000000)
+                       ((eq type 'adr-prel-pg-hi21) #x90000000)
+                       ((eq type 'add-abs-lo12-nc) #x91000000)
+                       ((eq type 'ldst64-abs-lo12-nc) #xf9400000)))
+         (mask (cond ((memq type '(b26-pc jump26-pc)) #xfc000000)
+                     ((eq type 'adr-prel-pg-hi21) #x9f000000) (t #xffc00000)))
+         (keep (cond ((memq type '(b26-pc jump26-pc)) #xfc000000)
+                     ((eq type 'adr-prel-pg-hi21) #x9f00001f) (t #xffc003ff)))
+         (actual
+          (cond ((memq type '(b26-pc jump26-pc))
+                 (let ((imm (logand word #x3ffffff)))
+                   (+ place (* 4 (if (>= imm #x2000000) (- imm #x4000000) imm)))))
+                ((eq type 'adr-prel-pg-hi21)
+                 (let ((imm (+ (ash (logand (ash word -5) #x7ffff) 2)
+                               (logand (ash word -29) 3))))
+                   (+ (logand place -4096) (* 4096 (if (>= imm #x100000) (- imm #x200000) imm)))))
+                ((memq type '(add-abs-lo12-nc ldst64-abs-lo12-nc))
+                 (* (logand (ash word -10) 4095) (if (eq type 'ldst64-abs-lo12-nc) 8 1))))))
+    (unless (and opcode (= (logand word mask) opcode)
+                 (= actual (cond ((eq type 'adr-prel-pg-hi21) (logand address -4096))
+                                 ((memq type '(add-abs-lo12-nc ldst64-abs-lo12-nc)) (logand address 4095))
+                                 (t address))))
+      (error "ARM64 helper relocation target/opcode refused"))
+    (logand word keep)))
+(provide 'nelisp-native-arm64)

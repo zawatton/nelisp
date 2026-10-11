@@ -43,6 +43,8 @@
 (declare-function nelisp-bytecode-native-rooted-cfg-data-print
                   "nelisp-bytecode-native-rooted-cfg-data" (value))
 (require 'cl-lib)
+(require 'nelisp-native-arm64)
+(require 'nelisp-native-linux)
 (require 'nelisp-native-budget)
 (require 'nelisp-runtime-reload-abi)
 (require 'nelisp-native-funcall-v2)
@@ -188,13 +190,40 @@ descriptor says so.")
         (eq nelisp-native-load--build-target 'windows-x86_64)
         (and (fboundp 'nelisp-standalone-arena-rewrite-target)
              (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)))))
+(defun nelisp-native-load--arm64-p ()
+  "Select Linux ARM64 from the reader target, or the explicit build target."
+  (if (and (fboundp 'nelisp--target-os-code) (fboundp 'nelisp--target-arch-code))
+      (and (= (nelisp--target-os-code) 0) (= (nelisp--target-arch-code) 1))
+    (or (eq nelisp-native-load--build-target 'linux-aarch64)
+        (and (fboundp 'nelisp-standalone-arena-rewrite-target)
+             (eq (nelisp-standalone-arena-rewrite-target) 'linux-aarch64)))))
+
+(defun nelisp-native-load--arch-v2 ()
+  "Return the sealed reader architecture for raw-v2."
+  (if (nelisp-native-load--arm64-p) 'aarch64 'x86_64))
+
+(defun nelisp-native-load--layout-v2 ()
+  "Domain separate ARM64 runtime layout from the historical x86 layout."
+  (if (nelisp-native-load--arm64-p)
+      "nelisp-runtime-reload-layout-v2:aarch64:sexp32:block16:bss-state96:gctable"
+    nelisp-native-load-raw-layout-id-v2))
+
+(defun nelisp-native-load--page-bytes ()
+  "Use the actual Linux ARM64 AT_PAGESZ, including 16K and 64K kernels."
+  (if (nelisp-native-load--arm64-p)
+      (progn (require 'nelisp-native-linux) (nelisp-native-linux-page-bytes))
+    nelisp-native-load-page-bytes))
+
 (defun nelisp-native-load--runtime-abi-v2 ()
-  (if (nelisp-native-load--windows-p) "nelisp-runtime-raw-v2:win64:v1"
-    nelisp-native-load-raw-runtime-abi-v2))
+  (cond ((nelisp-native-load--arm64-p) "nelisp-runtime-raw-v2:aapcs64-linux:v1")
+        ((nelisp-native-load--windows-p) "nelisp-runtime-raw-v2:win64:v1")
+        (t nelisp-native-load-raw-runtime-abi-v2)))
 (defun nelisp-native-load--target-v2 ()
-  (if (nelisp-native-load--windows-p)
-      '(:os windows-nt :arch x86_64 :calling-convention win64 :container-version 3)
-    '(:os gnu/linux :arch x86_64 :calling-convention sysv :container-version 3)))
+  (cond ((nelisp-native-load--arm64-p)
+         '(:os gnu/linux :arch aarch64 :calling-convention aapcs64-linux :container-version 4))
+        ((nelisp-native-load--windows-p)
+      '(:os windows-nt :arch x86_64 :calling-convention win64 :container-version 3))
+        (t '(:os gnu/linux :arch x86_64 :calling-convention sysv :container-version 3))))
 
 (defconst nelisp-native-load-raw-runtime-abi-v2 "nelisp-runtime-raw-v2"
   "Calling convention contract for full native runtime units.
@@ -841,9 +870,9 @@ plus one for the entry address."
 
 (defun nelisp-native-load--page-round (n)
   "Round N up to whole pages, with a floor of one page."
-  (let ((pages (/ (+ n (- nelisp-native-load-page-bytes 1))
-                  nelisp-native-load-page-bytes)))
-    (* nelisp-native-load-page-bytes (if (< pages 1) 1 pages))))
+  (let* ((page (nelisp-native-load--page-bytes))
+         (pages (/ (+ n (- page 1)) page)))
+    (* page (if (< pages 1) 1 pages))))
 
 (defun nelisp-native-load--mmap (size executable)
   "Map SIZE bytes anonymously, executable when EXECUTABLE."
@@ -851,7 +880,11 @@ plus one for the entry address."
                   (progn (when executable (error "Windows legacy RWX mapping refused"))
                          (require 'nelisp-native-windows)
                          (nelisp-native-windows-map size))
-                (syscall-direct 9 0 size (if executable 7 3) 34 -1 0))))
+                (if (nelisp-native-load--arm64-p)
+                    (progn (when executable (error "ARM64 RWX mapping refused"))
+                           (require 'nelisp-native-linux)
+                           (nelisp-native-linux-syscall 9 0 size 3 34 -1 0))
+                  (syscall-direct 9 0 size (if executable 7 3) 34 -1 0)))))
     (when (< addr nelisp-native-load-page-bytes)
       (error "nelisp-native-load: mmap of %d bytes failed (%d)" size addr))
     addr))
@@ -860,12 +893,16 @@ plus one for the entry address."
   "Apply the shared native mapping boundary; Linux syscall bytes stay unchanged."
   (if (nelisp-native-load--windows-p)
       (nelisp-native-windows-protect address size protection)
-    (syscall-direct 10 address size protection 0 0 0)))
+    (if (nelisp-native-load--arm64-p)
+        (nelisp-native-linux-syscall 10 address size protection 0 0 0)
+      (syscall-direct 10 address size protection 0 0 0))))
 (defun nelisp-native-load--unmap (address size)
   "Release through the same owner used to allocate ADDRESS."
   (if (nelisp-native-load--windows-p)
       (nelisp-native-windows-unmap address size)
-    (syscall-direct 11 address size 0 0 0 0)))
+    (if (nelisp-native-load--arm64-p)
+        (nelisp-native-linux-syscall 11 address size 0 0 0 0)
+      (syscall-direct 11 address size 0 0 0 0))))
 
 (defun nelisp-native-load-map-anonymous (size executable)
   "Map SIZE bytes anonymously (zero-filled), executable when EXECUTABLE.
@@ -1549,7 +1586,8 @@ rather than trust this."
 
 (defun nelisp-native-load--symbol-addr (name)
   "Return the runtime address of NAME."
-  (let ((rest nelisp-native-load-bridgeable-symbols)
+  (let ((rest (append nelisp-native-load-bridgeable-symbols
+                      (when (nelisp-native-load--arm64-p) '("nl_native_linux_arm64_publish"))))
         (idx 0)
         (found nil))
     (while (and rest (not found))
@@ -1594,9 +1632,10 @@ rather than trust this."
 The loader may inspect raw metadata on a host Emacs, but execution requires
 the standalone reader's in-process mmap, mprotect and six-GP `ptr-call'."
   (and (memq system-type '(gnu/linux windows-nt))
-       (or (not (boundp 'system-configuration))
+       (or (nelisp-native-load--arm64-p)
+           (or (not (boundp 'system-configuration))
            (not (stringp system-configuration))
-           (string-match-p "x86_64\\|amd64" system-configuration))
+           (string-match-p "x86_64\\|amd64" system-configuration)))
        (fboundp 'syscall-direct)
        (fboundp 'ptr-call)
        (or (eq system-type 'gnu/linux)
@@ -2045,7 +2084,7 @@ the forms untouched here is paired with the fixed-address scan in the v2
 compiler, which refuses the unsafe artifact before publication."
   (if (fboundp 'nelisp-standalone--chunk-arena-rewrite)
       (let ((nelisp-standalone--target (if (nelisp-native-load--windows-p)
-                                            'windows-x86_64 'linux-x86_64)))
+                                            'windows-x86_64 (if (nelisp-native-load--arm64-p) 'linux-aarch64 'linux-x86_64))))
         (nelisp-standalone--chunk-arena-rewrite forms))
     forms))
 
@@ -2083,12 +2122,14 @@ compiler, which refuses the unsafe artifact before publication."
       (setq index (1+ index) rest (cdr rest)))
     found))
 
-(defun nelisp-native-load--raw-reloc-problem (reloc text-length imports)
+(defun nelisp-native-load--raw-reloc-problem (reloc text-length imports &optional text)
   "Return a refusal for RELOC, or nil when its shape is loadable.
 
 The first loader slice accepts only text `plt32' or `pc32' relocations against
 explicit function imports.  An unresolved data address is never guessed as a
 code address; runtime BSS is obtained through a named export instead."
+  (if (nelisp-native-load--arm64-p)
+      (nelisp-native-arm64-relocation-problem reloc text-length imports text)
   (let* ((offset (plist-get reloc :offset))
          (type (plist-get reloc :type))
          (symbol (plist-get reloc :symbol))
@@ -2109,7 +2150,7 @@ code address; runtime BSS is obtained through a named export instead."
              (displacement (- (+ stub-base (* nelisp-native-load-stub-bytes index) addend) offset)))
         (not (<= -2147483648 displacement 2147483647)))
       (list :relocation-overflow reloc))
-     (t nil))))
+     (t nil)))))
 
 (defun nelisp-native-load--raw-source-forms (path &optional source)
   "Read all top-level forms from raw runtime SOURCE PATH.
@@ -2617,7 +2658,7 @@ without publishing an intermediate artifact.  The cache owns publication."
          (contract (nelisp-native-load--raw-v2-contract))
          (runtime-owned-gc (or rooted-cfg-spec safe-v3-spec))
          (resolver-symbols (nelisp-native-load--raw-v2-symbols))
-         (layout nelisp-native-load-raw-layout-id-v2)
+         (layout (nelisp-native-load--layout-v2))
          (build (or build-id
                     (and (boundp 'nelisp--cli-version) nelisp--cli-version)
                     "unknown"))
@@ -2920,7 +2961,7 @@ without publishing an intermediate artifact.  The cache owns publication."
       (nelisp-native-load--raw-v2-compile-stage source-path artifact-path "aot-start")
       (setq unit
             (nelisp-aot-compile-to-link-unit
-             (cons 'seq rewritten) :arch 'x86_64 :format (if (nelisp-native-load--windows-p) 'coff 'elf)))
+             (cons 'seq rewritten) :arch (nelisp-native-load--arch-v2) :format (if (nelisp-native-load--windows-p) 'coff 'elf)))
       (nelisp-native-load--raw-v2-compile-stage source-path artifact-path "aot-end"))
     (nelisp-native-load--raw-v2-compile-stage source-path artifact-path "manifest-materialization-start")
     (let* ((text (or (plist-get unit :text) ""))
@@ -3084,7 +3125,7 @@ without publishing an intermediate artifact.  The cache owns publication."
                   :kind 'raw-runtime
                   :runtime-kind 'gc-arena
                   :runtime-abi (nelisp-native-load--runtime-abi-v2)
-                  :layout-id layout :arch nelisp-native-load-raw-supported-arch
+                  :layout-id layout :arch (symbol-name (nelisp-native-load--arch-v2))
                   :build-id build :binary-sha256 binary
                   :source (expand-file-name source-path)
                   :source-sha256 (nelisp-native-load--sha256 source)
@@ -3113,7 +3154,7 @@ without publishing an intermediate artifact.  The cache owns publication."
                         :extern-symbols imports
                         :relocs (plist-get unit :relocs)
                         :data-size 0 :bss-size 0)))
-      (when (nelisp-native-load--windows-p)
+      (when (or (nelisp-native-load--windows-p) (nelisp-native-load--arm64-p))
         (setq manifest (append manifest (list :target (nelisp-native-load--target-v2)))))
       (when call1-template
         (setq manifest
@@ -3862,7 +3903,7 @@ candidate's self-described table order."
               (plist-get manifest :native-rooted-cfg-safe-v3-contract-hash)))
          (problems nil)
          (add (lambda (problem) (setq problems (cons problem problems)))))
-    (unless (if (nelisp-native-load--windows-p)
+    (unless (if (or (nelisp-native-load--windows-p) (nelisp-native-load--arm64-p))
                 (equal (plist-get manifest :target) (nelisp-native-load--target-v2))
               (null (plist-get manifest :target)))
       (funcall add (list :raw-target (plist-get manifest :target))))
@@ -3879,10 +3920,10 @@ candidate's self-described table order."
     (unless (eq (plist-get manifest :runtime-opt-in) t)
       (funcall add (list :raw-runtime-opt-in (plist-get manifest :runtime-opt-in))))
     (unless (equal (plist-get manifest :layout-id)
-                   nelisp-native-load-raw-layout-id-v2)
+                   (nelisp-native-load--layout-v2))
       (funcall add (list :raw-layout-id (plist-get manifest :layout-id))))
     (unless (equal (plist-get manifest :arch)
-                   nelisp-native-load-raw-supported-arch)
+                   (symbol-name (nelisp-native-load--arch-v2)))
       (funcall add (list :raw-arch (plist-get manifest :arch))))
     (let ((binary (plist-get manifest :binary-sha256)))
       (unless (and (stringp binary)
@@ -4076,7 +4117,7 @@ candidate's self-described table order."
       (let ((rest (plist-get native :relocs)))
         (while rest
           (let ((bad (nelisp-native-load--raw-reloc-problem
-                      (car rest) (or text-length 0) imports)))
+                      (car rest) (or text-length 0) imports text)))
             (when bad (funcall add bad)))
           (setq rest (cdr rest))))
       (let ((rest exports) (seen nil))
@@ -4193,6 +4234,18 @@ candidate's self-described table order."
           (funcall add (list :raw-call1-selected-entry name)))))
     (nreverse problems))))
 
+(defun nelisp-native-load--raw-v2-patch-call (page offset delta text)
+  "Patch only a previously checked branch, with final displacement bounds."
+  (if (nelisp-native-load--arm64-p)
+      (progn
+        (unless (and (zerop (% delta 4)) (<= -134217728 delta 134217724))
+          (error "ARM64 branch range refused"))
+        (ptr-write-u32 page offset
+                       (logior (logand (nelisp-native-arm64-u32 text offset) #xfc000000)
+                               (logand (/ delta 4) #x3ffffff))))
+    (unless (<= -2147483648 delta 2147483647) (error "Raw rel32 range refused"))
+    (ptr-write-u32 page offset delta)))
+
 (defun nelisp-native-load-raw-v2-artifact
     (path &optional name expected-binary-sha256 origin)
   "Map v2 raw runtime artifact PATH and return its handle.
@@ -4227,6 +4280,9 @@ followed by the 24 contract entry addresses in ABI order."
     (unless (nelisp-native-load--raw-supported-p)
       (error "nelisp-native-load: v2 raw units require Linux x86_64 primitives"))
     (let* ((text (nelisp-native-load--raw-bytes native :text-base64))
+           (_arm-check (when (nelisp-native-load--arm64-p)
+                         (nelisp-native-arm64-relocations-check (plist-get native :relocs) text
+                          (mapcar #'nelisp-native-load--raw-import-name (plist-get native :imports)))))
            (text-length (string-bytes text))
            (imports0 (plist-get native :imports))
            (stub-base (* 16 (/ (+ text-length 15) 16)))
@@ -4251,14 +4307,15 @@ followed by the 24 contract entry addresses in ABI order."
                        (addr (nelisp-native-load--raw-v2-symbol-addr
                               import entry manifest)))
                   (setq stub-offsets (cons (cons import offset) stub-offsets))
-                  (if (eq kind 'data)
-                      (nelisp-native-load--poke-bytes
-                       codepage offset
-                       '(#x48 #xb8 0 0 0 0 0 0 0 0 #xc3))
-                    (nelisp-native-load--poke-bytes
-                     codepage offset
-                     '(#x48 #xb8 0 0 0 0 0 0 0 0 #xff #xe0)))
-                  (ptr-write-u64 codepage (+ offset 2) addr))
+                  (if (nelisp-native-load--arm64-p)
+                      (progn
+                        (ptr-write-u32 codepage offset (if (eq kind 'data) #x58000040 #x58000050))
+                        (ptr-write-u32 codepage (+ offset 4) (if (eq kind 'data) #xd65f03c0 #xd61f0200))
+                        (ptr-write-u64 codepage (+ offset 8) addr))
+                    (if (eq kind 'data)
+                        (nelisp-native-load--poke-bytes codepage offset '(#x48 #xb8 0 0 0 0 0 0 0 0 #xc3))
+                      (nelisp-native-load--poke-bytes codepage offset '(#x48 #xb8 0 0 0 0 0 0 0 0 #xff #xe0)))
+                    (ptr-write-u64 codepage (+ offset 2) addr)))
                 (setq idx (1+ idx) rest (cdr rest))))
             (let ((rest (plist-get native :relocs)))
               (while rest
@@ -4270,9 +4327,8 @@ followed by the 24 contract entry addresses in ABI order."
                   (unless stub
                     (error "nelisp-native-load: v2 relocation has no stub: %s"
                            symbol))
-                  (ptr-write-u32 codepage offset
-                                 (- (+ codepage (cdr stub) addend)
-                                    (+ codepage offset))))
+                  (nelisp-native-load--raw-v2-patch-call codepage offset
+                                                       (- (+ (cdr stub) addend) offset) text))
                 (setq rest (cdr rest))))
             ;; Table memory is writable only during construction, then R.
             (setq table-size (+ 16 (* 8 (length (plist-get manifest :gc-entries)))))
@@ -4415,10 +4471,15 @@ The wire representation and authenticated bytes remain unchanged."
       (error "nelisp-native-load: trusted structural decode refused"))
     (unless (and (equal (plist-get manifest :runtime-abi) (nelisp-native-load--runtime-abi-v2))
                  (equal (plist-get native :raw-abi) (nelisp-native-load--runtime-abi-v2))
-                 (if (nelisp-native-load--windows-p)
+                 (if (or (nelisp-native-load--windows-p) (nelisp-native-load--arm64-p))
                      (equal (plist-get manifest :target) (nelisp-native-load--target-v2))
                    (null (plist-get manifest :target))))
       (error "nelisp-native-load: trusted target/ABI refused"))
+    (when (nelisp-native-load--arm64-p)
+      (unless (and (equal (plist-get manifest :arch) "aarch64")
+                   (equal (plist-get manifest :layout-id) (nelisp-native-load--layout-v2))
+                   (equal (plist-get manifest :binary-sha256) (nelisp-native-load-running-binary-sha256)))
+        (error "ARM64 trusted executable/layout identity refused")))
     ;; Authenticate the complete stored artifact once, before executable mapping.
     ;; This covers the encoded object and its metadata without replanning code.
     (let ((print-length nil) (print-level nil)
@@ -4466,7 +4527,7 @@ The wire representation and authenticated bytes remain unchanged."
     (dolist (reloc relocs)
       (unless (and (nelisp-native-load--trusted-list-p reloc)
                    (not (nelisp-native-load--raw-reloc-problem
-                         reloc (string-bytes text) names)))
+                         reloc (string-bytes text) names text)))
         (error "nelisp-native-load: trusted relocation refused")))
     (unless (and (= (length entries) (length contract))
                  (eql (plist-get manifest :gc-table-count) (length entries))
@@ -4492,6 +4553,12 @@ The wire representation and authenticated bytes remain unchanged."
                        (member (plist-get entry :name) export-names)))
           (error "nelisp-native-load: trusted GC table index refused"))
         (push index indices)))
+    (when (nelisp-native-load--arm64-p)
+      (nelisp-native-arm64-relocations-check relocs text names)
+      (dolist (entry imports)
+        (unless (equal (plist-get entry :abi) (nelisp-native-load--runtime-abi-v2))
+          (error "ARM64 import ABI refused"))
+        (nelisp-native-load--raw-v2-symbol-addr-trusted (plist-get entry :name) entry manifest)))
     text))
 
 (defun nelisp-native-load-raw-v2-artifact-trusted (manifest name origin)
@@ -4529,14 +4596,15 @@ Only semantic validation is skipped; all memory boundaries remain checked."
                        (addr (nelisp-native-load--raw-v2-symbol-addr-trusted
                               import entry manifest)))
                   (setq stub-offsets (cons (cons import offset) stub-offsets))
-                  (if (eq kind 'data)
-                      (nelisp-native-load--poke-bytes
-                       codepage offset
-                       '(#x48 #xb8 0 0 0 0 0 0 0 0 #xc3))
-                    (nelisp-native-load--poke-bytes
-                     codepage offset
-                     '(#x48 #xb8 0 0 0 0 0 0 0 0 #xff #xe0)))
-                  (ptr-write-u64 codepage (+ offset 2) addr))
+                  (if (nelisp-native-load--arm64-p)
+                      (progn
+                        (ptr-write-u32 codepage offset (if (eq kind 'data) #x58000040 #x58000050))
+                        (ptr-write-u32 codepage (+ offset 4) (if (eq kind 'data) #xd65f03c0 #xd61f0200))
+                        (ptr-write-u64 codepage (+ offset 8) addr))
+                    (if (eq kind 'data)
+                        (nelisp-native-load--poke-bytes codepage offset '(#x48 #xb8 0 0 0 0 0 0 0 0 #xc3))
+                      (nelisp-native-load--poke-bytes codepage offset '(#x48 #xb8 0 0 0 0 0 0 0 0 #xff #xe0)))
+                    (ptr-write-u64 codepage (+ offset 2) addr)))
                 (setq idx (1+ idx) rest (cdr rest))))
             (let ((rest (plist-get native :relocs)))
               (while rest
@@ -4549,10 +4617,7 @@ Only semantic validation is skipped; all memory boundaries remain checked."
                     (error "nelisp-native-load: v2 relocation has no stub: %s"
                            symbol))
                   (let ((displacement (- (+ (cdr stub) addend) offset)))
-                    (unless (and (>= displacement (- (expt 2 31)))
-                                 (< displacement (expt 2 31)))
-                      (error "nelisp-native-load: trusted relocation displacement overflow"))
-                    (ptr-write-u32 codepage offset displacement)))
+                    (nelisp-native-load--raw-v2-patch-call codepage offset displacement text)))
                 (setq rest (cdr rest))))
             ;; Table memory is writable only during construction, then R.
             (setq table-size (+ 16 (* 8 (length (plist-get manifest :gc-entries)))))
@@ -4630,7 +4695,7 @@ asked to execute the artifact."
                        (mapcar #'nelisp-native-load--raw-import-name imports0)))
          (text (and native (nelisp-native-load--raw-bytes native :text-base64)))
          (text-length (and text (string-bytes text)))
-         (problems nil)
+         (problems (when (nelisp-native-load--arm64-p) '((:arm64-legacy-raw-refused))))
          (entry nil))
     (unless (eq (plist-get manifest :kind) 'raw-runtime)
       (setq problems
@@ -4918,6 +4983,10 @@ bridgeable-symbol table.  All base imports retain the v2 runtime resolver."
   (let ((rc (nelisp-native-load--protect addr size 5)))
     (unless (= rc 0)
       (error "nelisp-native-load: mprotect RX failed at %d (%d)" addr rc))
+    (when (nelisp-native-load--arm64-p)
+      (unless (= 0 (ptr-call (nelisp-native-load--symbol-addr "nl_native_linux_arm64_publish")
+                             addr (+ addr size) 0 0 0 0))
+        (error "ARM64 cache publication refused")))
     addr))
 
 (defun nelisp-native-load-raw-artifact
@@ -6101,12 +6170,16 @@ in this file needs that."
 (defun nelisp-native-load-rooted-production-contract ()
   "Return copied production root layout, GC contract and bridge table order."
   (nelisp-native-load--rooted-contract-snapshot
-   (list (if (nelisp-native-load--windows-p)
+   (list (cond ((nelisp-native-load--arm64-p)
+                (let ((layout (copy-tree nelisp-native-load--rooted-production-layout)))
+                  (plist-put layout :target 'aarch64-linux)
+                  (plist-put layout :calling-convention 'aapcs64) layout))
+               ((nelisp-native-load--windows-p)
              (let ((layout (copy-tree nelisp-native-load--rooted-production-layout)))
                (plist-put layout :domain "nelisp-rooted-pe-v2")
                (plist-put layout :target 'x86_64-windows)
-               (plist-put layout :calling-convention 'win64) layout)
-           nelisp-native-load--rooted-production-layout)
+               (plist-put layout :calling-convention 'win64) layout))
+               (t nelisp-native-load--rooted-production-layout))
          nelisp-runtime-reload-gc-contract
          nelisp-native-load-bridgeable-symbols)))
 
@@ -6128,8 +6201,8 @@ in this file needs that."
                     car cdr cons list setcar memq copy-sequence text-properties-at next-property-change
                     1- < > consp 1+ stringp length symbolp integerp error
                     prin1-to-string mapcar fboundp symbol-function vector and or cond)
-                          (when (nelisp-native-load--windows-p)
-                            '(nelisp-native-load--windows-p copy-tree plist-put))))
+                          (when (or (nelisp-native-load--windows-p) (nelisp-native-load--arm64-p))
+                            '(nelisp-native-load--windows-p nelisp-native-load--arm64-p copy-tree plist-put))))
           (nelisp-native-load-sha256-dependency-context)
           (nelisp-native-load-rooted-production-contract)))
 
