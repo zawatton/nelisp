@@ -73,12 +73,12 @@ def prove(metadata, directory, roots, data_owner, claimed=None, max_functions=12
     """Reject unresolved edges; this source certificate grants no runtime capability."""
     if evaluator_boundary not in (None, "nl_apply_function"):
         raise ValueError("Unknown evaluator boundary")
-    if max_functions not in (128, 192, 200, 272, 280, 288):
+    if max_functions not in (128, 192, 200, 272, 280, 288, 296):
         raise ValueError("Unknown direct helper count policy")
-    if max_functions in (200, 272, 280, 288) and "nl_native_frame_v2" not in roots:
+    if max_functions in (200, 272, 280, 288, 296) and "nl_native_frame_v2" not in roots:
         raise ValueError("Frame closure bound requires the authenticated frame root")
     owners = _owner.unit_owners(metadata, directory)
-    if max_functions == 288 and not all(name in owners for name in
+    if max_functions in (288, 296) and not all(name in owners for name in
                                         ("nl_n4_mark_env", "nl_n4_record", "nl_n3_notify")):
         raise ValueError("C-core F1 closure requires activation and watcher owners")
     units = json.loads(_owner.bounded_read(metadata, 4 * 1024 * 1024))

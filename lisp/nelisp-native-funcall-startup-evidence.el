@@ -20,11 +20,11 @@ policies remain unchanged. All boundary bytes and relocations are verified."
             ;; The shared catch registry and throw-site signal construction
             ;; extend F1's closed runtime helpers. The separate authenticated
             ;; C-core activation/watcher owners extend this to the measured
-            ;; 288 helpers, with every edge and the C-core owners still proved.
+            ;; 291 helpers after P3.4, within policy 296; all edges/owners proved.
             ((equal node '(<= 1 (length (alist-get 'records closure)) 192))
-             '(<= 1 (length (alist-get 'records closure)) 288))
+             '(<= 1 (length (alist-get 'records closure)) 296))
             ((equal node '(<= 15 (length functions) 192))
-             '(<= 15 (length functions) 288))
+             '(<= 15 (length functions) 296))
             ((eq node 'compiler-runtime-v1) 'compiler-f1-runtime-v1)
             ((eq node 'compiler-constructor-memory-v1) 'compiler-f1-memory-v1)
             ((equal node "nelisp-compiler-constructor-prelink-v1") "nelisp-compiler-f1-prelink-v1")

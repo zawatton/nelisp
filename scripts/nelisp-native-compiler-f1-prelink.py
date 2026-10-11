@@ -20,9 +20,8 @@ def prove(manifest, metadata, directory, data_owner, source_root, roots=ROOTS):
     if tuple(roots) != ROOTS:
         raise ValueError("Constructor operation root policy differs")
     digest = prelink.verify_manifest(manifest, metadata, directory, data_owner, source_root)
-    # The C-core activation/watcher path adds eight directly verified helpers.
-    # Its separate 288 policy also requires the C-core activation owners.
-    result = prelink.prove(metadata, directory, roots, data_owner, max_functions=288, evaluator_boundary="nl_apply_function")
+    # Measured 291: C-core owners plus P3.4 allocator-mask and native-to-OS helpers.
+    result = prelink.prove(metadata, directory, roots, data_owner, max_functions=296, evaluator_boundary="nl_apply_function")
     if digest != prelink.verify_manifest(manifest, metadata, directory, data_owner, source_root):
         raise ValueError("Constructor active build changed during proof")
     result.update(domain="nelisp-compiler-f1-prelink-v1",
