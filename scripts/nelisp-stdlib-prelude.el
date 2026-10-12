@@ -670,16 +670,26 @@ times, so `(exp -1.0e6)' took ~1.44e6 iterations and `(exp -1.0e9)' ~1.44e9
        ;; A match starting on a lead byte covers whole characters, so the
        ;; byte index converts back to a character index.  A unibyte needle
        ;; qualifies only when it is ASCII (its raw bytes would otherwise
-       ;; denote eight-bit characters, not UTF-8).
+       ;; denote eight-bit characters, not UTF-8): `multibyte-string-p'
+       ;; answers nil for an all-ASCII string, so a unibyte needle that
+       ;; stays non-multibyte under `string-as-multibyte' is ASCII.  (A
+       ;; regexp test here cost ~0.5 ms, more than the walk it replaces.)
+       ;; Haystacks of 8 characters or fewer stay on the walk, which is
+       ;; no slower there than this path's fixed cost.
        ((and (fboundp 'nelisp--string-search)
+             (> hl 8)
              (multibyte-string-p haystack)
              (or (multibyte-string-p needle)
-                 (not (string-match-p "[^\0-\177]" needle))))
+                 (not (multibyte-string-p (string-as-multibyte needle)))))
         (let* ((bytes (string-as-unibyte haystack))
                (idx (nelisp--string-search
                      (string-as-unibyte needle) bytes
-                     (string-bytes (substring haystack 0 i)))))
-          (and idx (length (string-as-multibyte (substring bytes 0 idx))))))
+                     (if (= i 0) 0
+                       (string-bytes (nelisp--native-substring haystack 0 i))))))
+          (and idx
+               (if (= idx 0) 0
+                 (length (string-as-multibyte
+                          (nelisp--native-substring bytes 0 idx)))))))
        (t
         (while (and (not found) (<= (+ i nl) hl))
           (if (string= needle (substring haystack i (+ i nl)))
