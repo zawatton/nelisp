@@ -7092,7 +7092,18 @@ leave symbols unresolved at link time."
                 (wf_first_non_number_or_bignum (nl_cons_cdr_ptr args))
               a))
         0))
-    (defun wf_argval (args n) (ptr-read-u64 (wf_arg_ptr args n) 8))
+    ;; The payload word of argument N, read without materialising the
+    ;; argument: `wf_arg_ptr' boxes an immediate car (Int, Nil, T) into a
+    ;; fresh heap slot only for this function to read its payload back.
+    ;; An immediate's payload is (sar word 2) for an Int and 0 for Nil/T,
+    ;; exactly what `nl_sci_store_imm' would have written at +8.
+    (defun wf_argval (args n)
+      (if (= n 0)
+          (let ((w (ptr-read-u64 (ptr-read-u64 args 8) 0)))
+            (if (= (logand w 1) 0)
+                (ptr-read-u64 w 8)
+              (if (= (logand w 3) 1) (sar w 2) 0)))
+        (wf_argval (ptr-read-u64 (ptr-read-u64 args 8) 8) (- n 1))))
     ;; Doc 190 Phase A: tag 13 (Bignum) has NO stable pointer at offset 8
     ;; (that word is the sign, 0/1 -- almost always 0) -- the generic
     ;; offset-8 compare below would make most positive bignums mutually

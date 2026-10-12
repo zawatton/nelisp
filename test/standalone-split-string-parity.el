@@ -36,6 +36,9 @@
             (setq bad (1+ bad))
             (princ (format "DIFF %S %c %S: %S vs %S\n" s c o want got)))))))
   (let* ((s (make-string 32768 ?x))
+         ;; Collect the parity cases' garbage first so a GC does not land
+         ;; inside the timed split.
+         (_ (garbage-collect))
          (t0 (float-time))
          (parts (split-string s "/" t))
          (secs (- (float-time) t0))
