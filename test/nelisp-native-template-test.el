@@ -6,6 +6,27 @@
 (defun nelisp-native-template-test--recipe (code &optional constants descriptor maximum)
   (list :descriptor (or descriptor 0) :code (apply #'unibyte-string code)
         :constants (or constants [42]) :stack-depth (or maximum 4)))
+
+(ert-deftest nelisp-native-template-frame-roots-follow-used-immediates ()
+  "Long dynamic activations must not reserve an immediate root per opcode."
+  (let* ((lexical-binding nil)
+         (fn (byte-compile
+              `(lambda () (let ((template-test-value 0))
+                            ,@(make-list 100 '(setq template-test-value
+                                                   (1+ template-test-value)))
+                            template-test-value))))
+         ;; The GNU source producer uses nil for the zero-argument descriptor;
+         ;; extracted VM inputs normalize that header to the integer ABI.
+         (vm-function (make-byte-code 0 (aref fn 1) (aref fn 2) (aref fn 3)))
+         (certificate (nelisp-native-template-validate
+                       (nelisp-native-template-recipe vm-function)))
+         (initializers (plist-get certificate :initializers)))
+    (should (> (length (plist-get certificate :rows)) 256))
+    (should (< (plist-get certificate :root-count) 256))
+    (dolist (entry (plist-get certificate :frame-immediates))
+      (should (plist-member (cl-find (cdr entry) initializers
+                                    :key (lambda (row) (plist-get row :root)))
+                            :value)))))
 (ert-deftest nelisp-native-template-patches-boundaries ()
   (dolist (kind nelisp-native-template-hole-grammar)
     (dolist (value (list (- (expt 2 31)) -1 0 (1- (expt 2 31))))

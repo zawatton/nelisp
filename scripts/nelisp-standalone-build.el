@@ -12005,8 +12005,20 @@ baked build's own `<'/`>'/`=' arms need it too.")
               (let ((rc (if (or (/= n 0) (/= (sexp-tag function) 8)
                                    (/= (vector-len function) 9)) 2
                           (if (= (nl_native_poll_due_v2 env function result) 0)
-                              (seq (wf_write_nil result) 0)
+                              3
                             (wf_bytecode_call_gateway env (vector-ref-ptr function 0) marker a n result)))))
+                ;; A quiet poll entered no evaluator and opened no root frame.
+                ;; Authenticate the unchanged ticket AND full extent before
+                ;; clearing its quartet. The initial checks already proved
+                ;; every slot in that extent; nested calls still use the full
+                ;; per-slot reauthentication below.
+                (if (= rc 3)
+                    (if (or (/= marker (nl_root_pin_slot_v2 env ticket 0))
+                            (/= top (atomic-fetch-add (+ (data-addr nl_root_pin_control) 24) 0)))
+                        2
+                      (seq (wf_write_nil result) (wf_write_nil kind)
+                           (wf_write_nil tag) (wf_write_nil value) 0))
+                  (seq
                 ;; A nested call must restore the exact parent ticket/slots.
                 (setq i 0)
                 (if (or (/= marker (nl_root_pin_slot_v2 env ticket 0))
@@ -12034,7 +12046,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                    (ptr-write-u64 arena 16 0)
                                    (+ 1024 (+ r 1)))
                             2))
-                      2)))))))))
+                      2)))))))))))
     ;; Private evaluator/GC adapters (clause 2), reached only through the
     ;; authenticated U7 frame gateway. Matching policy remains Lisp.
     ;; Tagged-object access (clause 1): exactly the full-slot Lisp bank copy,
@@ -39316,9 +39328,24 @@ the value template requests Tier 0 only. Both include GNU-compiled Tier 0 Lisp."
              (form
               (if native-compiler-cold
                   (format
-                   "(progn (add-to-list 'load-path %S) (add-to-list 'load-path %S) (require 'nelisp-native-cache) (load %S nil t t) (%s) %s (garbage-collect) (nelisp--arena-dump-image-stream %S))"
+                   "(progn (add-to-list 'load-path %S) (add-to-list 'load-path %S) %s (require 'nelisp-native-cache) (load %S nil t t) (%s) %s (garbage-collect) (nelisp--arena-dump-image-stream %S))"
                    (nelisp-standalone--cold-target-path (expand-file-name "lisp" nelisp-standalone--repo-root))
                    (nelisp-standalone--cold-target-path (expand-file-name "src" nelisp-standalone--repo-root))
+                   ;; Lazy native startup seals these owners on the first
+                   ;; cache require. Install their final representation first.
+                   (if optimizer-bytecode
+                       ;; The contract factory must see the final shared
+                       ;; planner/emitter before native-load seals it. Loading
+                       ;; the lean cache first captured no pair owner and made
+                       ;; every reconstruction plan twice on the source path.
+                       (format "(progn (unless (featurep 'nelisp-native-structural-bytecode) (load %S nil t t)) (add-to-list 'load-path %S) (require 'nelisp-bytecode-native-rooted-cfg-shared-emit))"
+                               (nelisp-standalone--cold-target-path
+                                (expand-file-name "target/nelisp-structural-bytecode.el"
+                                                  nelisp-standalone--repo-root))
+                               (nelisp-standalone--cold-target-path
+                                (expand-file-name "target/nelisp-compiler-bytecode"
+                                                  nelisp-standalone--repo-root)))
+                     "nil")
                    (nelisp-standalone--cold-target-path template-bytecode)
                    (if template-cold "nelisp-native-cache-prepare-cold-template"
                      (format "load %S nil t t"

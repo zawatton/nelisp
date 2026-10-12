@@ -32,6 +32,20 @@
     (should (equal (nelisp-bytecode-native-rooted-cfg-data-share (list shared shared))
                    '((2) (2))))))
 
+(ert-deftest rooted-cfg-data/grows-interning-context-and-retains-old-identities ()
+  "A growing compilation must preserve its already interned containers."
+  (let* ((context (nelisp-bytecode-native-rooted-cfg-data-context))
+         (initial-size (length (aref context 0)))
+         (first (nelisp-bytecode-native-rooted-cfg-data-share '(first [1 2]) context)))
+    (dotimes (i (* 2 initial-size))
+      (nelisp-bytecode-native-rooted-cfg-data-share (list 'constant (vector i)) context))
+    (should (> (length (aref context 0)) initial-size))
+    (should (> (length (aref context 1)) initial-size))
+    (should (eq first (nelisp-bytecode-native-rooted-cfg-data-share '(first [1 2]) context)))
+    (let ((cycle (list 1)))
+      (setcdr cycle cycle)
+      (should-error (nelisp-bytecode-native-rooted-cfg-data-share cycle context)))))
+
 (ert-deftest rooted-cfg-data/compact-preserves-expression-sharing-and-input ()
   (let* ((expression (list 'extern-call 'callee 'env 'ticket 0 0 0 0))
          (cfg (list 'cfg 1 'start
