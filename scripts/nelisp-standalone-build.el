@@ -6375,7 +6375,12 @@ argument (reachability + in-arena bounds checks).")
                     (if (= r 2)
                         (bf_wrong_type_number_or_marker (wf_first_non_number args))
                       (if (= r 1) (wf_write_nil out) (wf_write_t out)))))
-    ((:u8 "1+") . (let* ((bad (wf_first_non_number_or_bignum args)))
+    ;; A fixnum word not at the fixnum bound adds in place, without boxing it.
+    ((:u8 "1+") .
+                (let* ((w (if (= (sexp-tag args) 7) (ptr-read-u64 (ptr-read-u64 args 8) 0) 0)))
+                  (if (and (= (logand w 3) 1) (< (sar w 2) 2305843009213693951))
+                      (wf_write_int out (+ (sar w 2) 1))
+                    (let* ((bad (wf_first_non_number_or_bignum args)))
                     (if (= bad 0)
                         (let* ((p (wf_arg_ptr args 0)))
                       (if (= (ptr-read-u64 p 0) 3)
@@ -6383,8 +6388,13 @@ argument (reachability + in-arena bounds checks).")
                             (seq (nl_sexp_write_float sc (f64-add (bits-to-f64 (ptr-read-u64 p 8)) (i64-to-f64 1)))
                                  (wf_copy32 out sc)))
                         (wf_sum args 1 out)))
-                      (bf_wrong_type_number_or_marker bad))))
-    ((:u8 "1-") . (let* ((bad (wf_first_non_number_or_bignum args)))
+                      (bf_wrong_type_number_or_marker bad))))))
+    ;; A fixnum word not at the fixnum bound subtracts in place, without boxing it.
+    ((:u8 "1-") .
+                (let* ((w (if (= (sexp-tag args) 7) (ptr-read-u64 (ptr-read-u64 args 8) 0) 0)))
+                  (if (and (= (logand w 3) 1) (> (sar w 2) -2305843009213693952))
+                      (wf_write_int out (- (sar w 2) 1))
+                    (let* ((bad (wf_first_non_number_or_bignum args)))
                     (if (= bad 0)
                         (let* ((p (wf_arg_ptr args 0)))
                       (if (= (ptr-read-u64 p 0) 3)
@@ -6403,7 +6413,7 @@ argument (reachability + in-arena bounds checks).")
                                (wf_diff list out)
                                (nl_root_release env mark)
                                0))))
-                      (bf_wrong_type_number_or_marker bad))))
+                      (bf_wrong_type_number_or_marker bad))))))
     ((:u8 "floor")    . (let* ((p (wf_arg_ptr args 0)))
                           (if (= (ptr-read-u64 p 0) 3)
                               (wf_write_int out (wf_ffloor p))
@@ -6553,6 +6563,11 @@ argument (reachability + in-arena bounds checks).")
                                   (m5_byte_at (wf_arg_ptr args 0)
                                                (ptr-read-u64 (wf_arg_ptr args 1) 8))))
     ((:lit "string-bytes")     . (wf_write_int out (m5_strlen (wf_arg_ptr args 0))))
+    ((:lit "nelisp--base64-decode") .
+     (let* ((sx (wf_arg_ptr args 0)))
+       (if (= (m5_string_tag_p (ptr-read-u64 sx 0)) 1)
+           (bf_base64_decode sx out)
+         (bf_wrong_type_stringp sx))))
     ((:lit "string=")          . (if (= (bf_strsym_raw (wf_arg_ptr args 0)) 0)
                                       (bf_wrong_type_stringp (wf_arg_ptr args 0))
                                     (if (= (bf_strsym_raw (wf_arg_ptr args 1)) 0)
@@ -7092,7 +7107,18 @@ leave symbols unresolved at link time."
                 (wf_first_non_number_or_bignum (nl_cons_cdr_ptr args))
               a))
         0))
-    (defun wf_argval (args n) (ptr-read-u64 (wf_arg_ptr args n) 8))
+    ;; The payload word of argument N, read without materialising the
+    ;; argument: `wf_arg_ptr' boxes an immediate car (Int, Nil, T) into a
+    ;; fresh heap slot only for this function to read its payload back.
+    ;; An immediate's payload is (sar word 2) for an Int and 0 for Nil/T,
+    ;; exactly what `nl_sci_store_imm' would have written at +8.
+    (defun wf_argval (args n)
+      (if (= n 0)
+          (let ((w (ptr-read-u64 (ptr-read-u64 args 8) 0)))
+            (if (= (logand w 1) 0)
+                (ptr-read-u64 w 8)
+              (if (= (logand w 3) 1) (sar w 2) 0)))
+        (wf_argval (ptr-read-u64 (ptr-read-u64 args 8) 8) (- n 1))))
     ;; Doc 190 Phase A: tag 13 (Bignum) has NO stable pointer at offset 8
     ;; (that word is the sign, 0/1 -- almost always 0) -- the generic
     ;; offset-8 compare below would make most positive bignums mutually
@@ -7316,9 +7342,15 @@ leave symbols unresolved at link time."
     (defun wf_chain_lt (args)
       (if (= (wf_cdr_has_more args) 1)
           (let* ((rest (nl_cons_cdr_ptr args)))
-            (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
-              (if (= (wf_num_pairp a b) 0) 2
-                (if (= (wf_num_lt a b) 1) (wf_chain_lt rest) 0))))
+            ;; Two fixnum words compare in place; the materialising car
+            ;; accessor would box each into a fresh heap slot first.
+            (let* ((aw (ptr-read-u64 (ptr-read-u64 args 8) 0))
+                   (bw (ptr-read-u64 (ptr-read-u64 rest 8) 0)))
+              (if (and (= (logand aw 3) 1) (= (logand bw 3) 1))
+                  (if (< (sar aw 2) (sar bw 2)) (wf_chain_lt rest) 0)
+                (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
+                  (if (= (wf_num_pairp a b) 0) 2
+                    (if (= (wf_num_lt a b) 1) (wf_chain_lt rest) 0))))))
         ;; ONE argument: Emacs answers t without checking its type --
         ;; (> '((a . 1))) is t.  There is no pair to compare, so there is
         ;; nothing to be wrong about, and checking anyway made a
@@ -7327,9 +7359,15 @@ leave symbols unresolved at link time."
     (defun wf_chain_gt (args)
       (if (= (wf_cdr_has_more args) 1)
           (let* ((rest (nl_cons_cdr_ptr args)))
-            (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
-              (if (= (wf_num_pairp a b) 0) 2
-                (if (= (wf_num_gt a b) 1) (wf_chain_gt rest) 0))))
+            ;; Two fixnum words compare in place; the materialising car
+            ;; accessor would box each into a fresh heap slot first.
+            (let* ((aw (ptr-read-u64 (ptr-read-u64 args 8) 0))
+                   (bw (ptr-read-u64 (ptr-read-u64 rest 8) 0)))
+              (if (and (= (logand aw 3) 1) (= (logand bw 3) 1))
+                  (if (> (sar aw 2) (sar bw 2)) (wf_chain_gt rest) 0)
+                (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
+                  (if (= (wf_num_pairp a b) 0) 2
+                    (if (= (wf_num_gt a b) 1) (wf_chain_gt rest) 0))))))
         ;; ONE argument: Emacs answers t without checking its type --
         ;; (> '((a . 1))) is t.  There is no pair to compare, so there is
         ;; nothing to be wrong about, and checking anyway made a
@@ -7338,9 +7376,15 @@ leave symbols unresolved at link time."
     (defun wf_chain_le (args)
       (if (= (wf_cdr_has_more args) 1)
           (let* ((rest (nl_cons_cdr_ptr args)))
-            (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
-              (if (= (wf_num_pairp a b) 0) 2
-                (if (= (wf_num_le a b) 1) (wf_chain_le rest) 0))))
+            ;; Two fixnum words compare in place; the materialising car
+            ;; accessor would box each into a fresh heap slot first.
+            (let* ((aw (ptr-read-u64 (ptr-read-u64 args 8) 0))
+                   (bw (ptr-read-u64 (ptr-read-u64 rest 8) 0)))
+              (if (and (= (logand aw 3) 1) (= (logand bw 3) 1))
+                  (if (<= (sar aw 2) (sar bw 2)) (wf_chain_le rest) 0)
+                (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
+                  (if (= (wf_num_pairp a b) 0) 2
+                    (if (= (wf_num_le a b) 1) (wf_chain_le rest) 0))))))
         ;; ONE argument: Emacs answers t without checking its type --
         ;; (> '((a . 1))) is t.  There is no pair to compare, so there is
         ;; nothing to be wrong about, and checking anyway made a
@@ -7349,9 +7393,15 @@ leave symbols unresolved at link time."
     (defun wf_chain_ge (args)
       (if (= (wf_cdr_has_more args) 1)
           (let* ((rest (nl_cons_cdr_ptr args)))
-            (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
-              (if (= (wf_num_pairp a b) 0) 2
-                (if (= (wf_num_ge a b) 1) (wf_chain_ge rest) 0))))
+            ;; Two fixnum words compare in place; the materialising car
+            ;; accessor would box each into a fresh heap slot first.
+            (let* ((aw (ptr-read-u64 (ptr-read-u64 args 8) 0))
+                   (bw (ptr-read-u64 (ptr-read-u64 rest 8) 0)))
+              (if (and (= (logand aw 3) 1) (= (logand bw 3) 1))
+                  (if (>= (sar aw 2) (sar bw 2)) (wf_chain_ge rest) 0)
+                (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
+                  (if (= (wf_num_pairp a b) 0) 2
+                    (if (= (wf_num_ge a b) 1) (wf_chain_ge rest) 0))))))
         ;; ONE argument: Emacs answers t without checking its type --
         ;; (> '((a . 1))) is t.  There is no pair to compare, so there is
         ;; nothing to be wrong about, and checking anyway made a
@@ -7360,9 +7410,15 @@ leave symbols unresolved at link time."
     (defun wf_chain_eq (args)
       (if (= (wf_cdr_has_more args) 1)
           (let* ((rest (nl_cons_cdr_ptr args)))
-            (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
-              (if (= (wf_num_pairp a b) 0) 2
-                (if (= (wf_num_eq a b) 1) (wf_chain_eq rest) 0))))
+            ;; Two fixnum words compare in place; the materialising car
+            ;; accessor would box each into a fresh heap slot first.
+            (let* ((aw (ptr-read-u64 (ptr-read-u64 args 8) 0))
+                   (bw (ptr-read-u64 (ptr-read-u64 rest 8) 0)))
+              (if (and (= (logand aw 3) 1) (= (logand bw 3) 1))
+                  (if (= (sar aw 2) (sar bw 2)) (wf_chain_eq rest) 0)
+                (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
+                  (if (= (wf_num_pairp a b) 0) 2
+                    (if (= (wf_num_eq a b) 1) (wf_chain_eq rest) 0))))))
         ;; ONE argument: Emacs answers t without checking its type --
         ;; (> '((a . 1))) is t.  There is no pair to compare, so there is
         ;; nothing to be wrong about, and checking anyway made a
@@ -17076,6 +17132,53 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (bf_unibyte_fill ms args)
              (mut-str-finalize ms out)
              0)))
+    ;; `nelisp--base64-decode': standard-alphabet base64 to a unibyte
+    ;; string in one native pass.  Native cache loads decode every
+    ;; artifact's machine code; the interpreted `base64-decode-string'
+    ;; costs microseconds per character and the external `base64'
+    ;; process used for large units costs a spawn (and need not exist on
+    ;; Windows).  CR and LF are skipped; after the first `=' only `=', CR
+    ;; and LF may follow, and the padding must complete the last quantum
+    ;; (data characters mod 4 = 0, 2 or 3 with 0, 2 or 1 `=').  Anything
+    ;; else makes the answer nil, so a caller can fall back to
+    ;; `base64-decode-string' for its error.
+    (defun bf_base64_value (c)
+      (if (and (>= c 65) (<= c 90)) (- c 65)
+        (if (and (>= c 97) (<= c 122)) (- c 71)
+          (if (and (>= c 48) (<= c 57)) (+ c 4)
+            (if (= c 43) 62 (if (= c 47) 63 -1))))))
+    (defun bf_base64_decode (sx out)
+      (let* ((n (m5_strlen sx))
+             (src (nl_bi_strptr sx))
+             (ms (alloc-bytes 32 8))
+             (i 0) (acc 0) (bits 0) (pad 0) (bad 0) (c 0) (v 0) (dc 0) (pc 0))
+        (seq (nl_alloc_unibyte_mut_str (+ (/ (* n 3) 4) 3) ms)
+             (while (if (< i n) (= bad 0) 0)
+               (seq (setq c (ptr-read-u8 src i))
+                    (if (= c 61)
+                        (seq (setq pad 1) (setq pc (+ pc 1)))
+                      (if (if (= c 10) 1 (= c 13))
+                          0
+                        (seq (setq v (bf_base64_value c))
+                             (if (if (< v 0) 1 (= pad 1))
+                                 (setq bad 1)
+                               (seq (setq dc (+ dc 1))
+                                    (setq acc (logior (shl (logand acc 1023) 6) v))
+                                    (setq bits (+ bits 6))
+                                    (if (>= bits 8)
+                                        (seq (setq bits (- bits 8))
+                                             (mut-str-push-byte
+                                              ms (logand (sar acc bits) 255)))
+                                      0))))))
+                    (setq i (+ i 1))))
+             (setq v (- dc (* 4 (/ dc 4))))
+             (if (if (= bad 0)
+                     (if (= v 0) (= pc 0)
+                       (if (= v 2) (= pc 2) (if (= v 3) (= pc 1) 0)))
+                   0)
+                 (mut-str-finalize ms out)
+               (wf_write_nil out))
+             0)))
     ;; make-bool-vector LENGTH INIT -> BoolVector(tag10), backed by
     ;; `nl_alloc_bool_vector' (lisp/nelisp-cc-nlboolvector-alloc.el).
     ;; LENGTH must be a non-negative fixnum; Emacs signals `(wrong-type-
@@ -18438,8 +18541,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                    (wf_bytecode_mark_dynamic frames canonical)) 1)))
               (dealloc-bytes address 8 8)
               result))
-        (seq (nl_bind_frame_fast frames name value)
-             (bf_mark_declared_special (+ env 0) frames name))))
+        ;; Both special tests just answered no, and binding a lexical
+        ;; cell changes neither, so `bf_mark_declared_special' would only
+        ;; repeat them (a registry intern plus a frame walk per binding)
+        ;; and return 1.
+        (seq (nl_bind_frame_fast frames name value) 1)))
     (defun bf_mark_binding_result (rc mirror frames name)
       (if (= rc 1) (bf_mark_declared_special mirror frames name) rc))
     (defun bf_dynamic_lookup (env name out)
@@ -26762,7 +26868,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "string-as-unibyte" "string-to-unibyte" "string-make-unibyte"
     "string-as-multibyte" "string-to-multibyte" "string-make-multibyte"
     "char-to-string" "string-to-char" "number-to-string" "string-to-number" "format"
-    "nelisp--repr" "nelisp--json-encode" "nelisp--build-digest" "nelisp--sha256" "nelisp--sha256-bytes" "nelisp--string-search" "nelisp--arena-stats" "garbage-collect"
+    "nelisp--repr" "nelisp--json-encode" "nelisp--build-digest" "nelisp--sha256" "nelisp--sha256-bytes" "nelisp--string-search" "nelisp--base64-decode" "nelisp--arena-stats" "garbage-collect"
     "nelisp--fmt-float"
     "nelisp--debug-switch" "nelisp--gc-diag" "nelisp--arena-force-grow-smoke" "nelisp--size-census" "nelisp--arena-walk-verify"
     "nelisp--alloc-check-report"

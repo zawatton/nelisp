@@ -1,0 +1,86 @@
+#+TITLE: Native runtime speed for string-heavy code and native cache loads
+
+# Objective: make native-compiled, string-heavy code (the Windows SKK IME
+# merge functions, the GUI functions) fast in practice.  Native codegen is
+# not the bottleneck.  Native code reaches substring, string=, equal
+# through bytecode-opcode builtin tokens, but split-string,
+# string-prefix-p (compare-strings) and multibyte string-search run as
+# interpreted prelude/GNU Lisp, and the interpreter itself is slow: a
+# two-binding let makes ~107 heap allocations (immediates read out of
+# conses, records and vectors are boxed into fresh 32-byte slots; the
+# special-variable test walks the frame's local names and a registry),
+# so 38% of the time is allocation and 38% is mid-form GC (0.23 s each).
+# Loading a native cache spends most of its time base64-decoding the
+# artifact text in interpreted Lisp.
+#
+# Checks run a built reader named by NELISP_RT_BIN from the repo root.
+# Baseline (integ 90eb52275 dynamic reader, 2026-10-12): let2/let1 3.42,
+# 100000/1000-iteration let loop 1.65, substring/native 9.50,
+# string=/native 12.91, split-string of 32K chars 0.63 s,
+# string-prefix-p 1133 us/call (compare-strings 1081 us).
+
+* S1 split-string scans natively
+
+** S1.1 split-string matches the character walk on 144 edge cases and splits 32K chars in under 0.05 s
+#+REQUIRES: NELISP_RT_BIN
+cmd: $NELISP_RT_BIN --load test/standalone-split-string-parity.el
+
+** S1.2 split-string of a short ASCII string costs at most 4 x substring
+pending
+
+** S1.3 Windows SKK probe: split-string native is no slower than interpreted and under 0.1 s on 32K chars
+pending
+
+* S2 Interpreter binding and allocation cost
+
+** S2.1 A two-binding let costs at most 2.2 x a one-binding let
+#+REQUIRES: NELISP_RT_BIN
+#+TIMEOUT: 120
+cmd: RT_CHECK=let $NELISP_RT_BIN --load test/standalone-call-overhead-check.el
+
+** S2.2 A let loop of 100000 iterations costs at most 1.3 x per iteration what 1000 iterations do
+#+REQUIRES: NELISP_RT_BIN
+#+TIMEOUT: 120
+cmd: RT_CHECK=steady $NELISP_RT_BIN --load test/standalone-call-overhead-check.el
+
+** S2.3 substring and string= on strings cost at most 2 x their native arms
+#+REQUIRES: NELISP_RT_BIN
+#+TIMEOUT: 120
+cmd: RT_CHECK=wrappers $NELISP_RT_BIN --load test/standalone-call-overhead-check.el
+
+** S2.4 The standalone ERT and smoke tiers that exercise binding and calls still pass on the changed reader
+pending
+
+* S3 String primitive fast paths
+
+** S3.1 compare-strings is a native builtin: string-prefix-p costs at most 3 x string= and matches GNU on edge cases
+pending
+
+** S3.2 string-search on multibyte strings uses the native scanner and matches the character walk
+pending
+
+** S3.3 maphash over a 2-entry table of size 2047 costs at most 5 x over a fresh 2-entry table
+#+NOTE: notes-44 2026-10-12: nelisp-buffer--registry (count 2, size 2047) maphash 131 ms vs 0.7 ms, so buffer-list costs ~63 ms per call.
+pending
+
+** S3.4 SKK-shaped merge benchmark (4 functions, 80 records) runs at least 3 x faster than at baseline
+#+NOTE: Ratio to a same-run native SHA-256 of 8 MiB (tracks machine load, not the interpreter); baseline 0.37-0.40 on the integ 90eb52275 reader, limit 0.13 = baseline / 3.
+#+REQUIRES: NELISP_RT_BIN
+#+TIMEOUT: 120
+cmd: SKK_BENCH_LIMIT=0.13 $NELISP_RT_BIN --load test/standalone-skk-shaped-bench.el
+
+* S4 Native cache load speed
+
+** S4.1 Artifact text decodes without interpreted base64 (raw bytes or a native decoder)
+#+REQUIRES: NELISP_RT_BIN
+#+TIMEOUT: 300
+cmd: $NELISP_RT_BIN --load test/standalone-base64-decode-parity.el
+
+** S4.2 Loading three SKK-shaped functions from a native cache costs at most a third of the baseline
+#+NOTE: Ratio of total load time to a same-run native SHA-256 of 8 MiB; baseline 21.06 on the integ 90eb52275 reader (24.7 s), limit 7.0.
+#+REQUIRES: NELISP_RT_BIN
+#+TIMEOUT: 600
+cmd: test/standalone-native-cache-load-bench.sh $NELISP_RT_BIN 7.0
+
+** S4.3 The 11 GUI functions load from a trusted cache in under 60 s in total
+pending

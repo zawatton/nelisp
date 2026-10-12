@@ -666,6 +666,30 @@ times, so `(exp -1.0e6)' took ~1.44e6 iterations and `(exp -1.0e9)' ~1.44e9
              (not (multibyte-string-p needle))
              (not (multibyte-string-p haystack)))
         (nelisp--string-search needle haystack i))
+       ;; Multibyte haystack: search its internal UTF-8 bytes natively.
+       ;; A match starting on a lead byte covers whole characters, so the
+       ;; byte index converts back to a character index.  A unibyte needle
+       ;; qualifies only when it is ASCII (its raw bytes would otherwise
+       ;; denote eight-bit characters, not UTF-8): `multibyte-string-p'
+       ;; answers nil for an all-ASCII string, so a unibyte needle that
+       ;; stays non-multibyte under `string-as-multibyte' is ASCII.  (A
+       ;; regexp test here cost ~0.5 ms, more than the walk it replaces.)
+       ;; Haystacks of 8 characters or fewer stay on the walk, which is
+       ;; no slower there than this path's fixed cost.
+       ((and (fboundp 'nelisp--string-search)
+             (> hl 8)
+             (multibyte-string-p haystack)
+             (or (multibyte-string-p needle)
+                 (not (multibyte-string-p (string-as-multibyte needle)))))
+        (let* ((bytes (string-as-unibyte haystack))
+               (idx (nelisp--string-search
+                     (string-as-unibyte needle) bytes
+                     (if (= i 0) 0
+                       (string-bytes (nelisp--native-substring haystack 0 i))))))
+          (and idx
+               (if (= idx 0) 0
+                 (length (string-as-multibyte
+                          (nelisp--native-substring bytes 0 idx)))))))
        (t
         (while (and (not found) (<= (+ i nl) hl))
           (if (string= needle (substring haystack i (+ i nl)))
@@ -2053,6 +2077,27 @@ Return (FROM . TO).  STR, START, and END are used only for the
       (cons from to))))
 (unless (fboundp 'compare-strings)
   (defun compare-strings (str1 start1 end1 str2 start2 end2 &optional ignore-case)
+    (if (and (not ignore-case) (stringp str1) (stringp str2)
+             (or (null start1) (eq start1 0)) (or (null start2) (eq start2 0))
+             (or (null end1) (and (integerp end1) (>= end1 0)))
+             (or (null end2) (and (integerp end2) (>= end2 0)))
+             (eq (multibyte-string-p str1) (multibyte-string-p str2))
+             (fboundp 'nelisp--native-equal))
+        ;; The common shape (GNU `string-prefix-p'): both regions start at
+        ;; 0 and case matters.  Compare the shared length natively and walk
+        ;; characters only to place a mismatch, instead of the general
+        ;; path's eleven bindings and a per-character loop.
+        (let* ((e1 (if (and end1 (< end1 (length str1))) end1 (length str1)))
+               (e2 (if (and end2 (< end2 (length str2))) end2 (length str2)))
+               (n (if (< e1 e2) e1 e2)))
+          (if (nelisp--native-equal (nelisp--native-substring str1 0 n)
+                                    (nelisp--native-substring str2 0 n))
+              (cond ((= e1 e2) t) ((< e1 e2) (- (1+ n))) (t (1+ n)))
+            (let ((i 0))
+              (while (eq (aref str1 i) (aref str2 i)) (setq i (1+ i)))
+              (if (< (aref str1 i) (aref str2 i)) (- (1+ i)) (1+ i)))))
+      (nelisp--compare-strings-general str1 start1 end1 str2 start2 end2 ignore-case)))
+  (defun nelisp--compare-strings-general (str1 start1 end1 str2 start2 end2 ignore-case)
     (nelisp--check-string str1)
     (nelisp--check-string str2)
     (let ((len1 (length str1))
@@ -14716,9 +14761,13 @@ actually refuse a write."
   ;; stored a flat ((KEY . VALUE) ...) alist directly in the cdr.)  Walk both.
   (let ((data (cdr table)))
     (if (vectorp data)
-        (let ((i 0) (n (length data)))
+        (let ((i 0) (n (length data)) (node nil))
           (while (< i n)
-            (let ((node (aref data i)))
+            ;; Most slots of a sparse or shrunk table are empty: test the
+            ;; slot before entering any binding form, which costs heap
+            ;; allocations per entry.  A 2-entry table of 2048 slots went
+            ;; from 6.1 s (after 1998 remhash calls) and 85 ms to ~43 ms.
+            (when (setq node (aref data i))
               (while (consp node)
                 (let ((entry (car node)))
                   (when (consp entry) (funcall fn (car entry) (cdr entry))))
@@ -17660,18 +17709,35 @@ See the Doc-comment above for the dropped file-name-handler dispatch."
     "Always nil: this runtime has no remote-file (Tramp) support."
     nil))
 (defun nelisp--split-on-char (string char omit-empty)
-  (let ((start 0)
-        (idx 0)
-        (len (length string))
-        (parts nil))
-    (while (<= idx len)
-      (if (or (= idx len) (= (aref string idx) char))
-          (let ((part (substring string start idx)))
+  (if (and (< char 128) (fboundp 'nelisp--string-search))
+      ;; An ASCII separator byte never occurs inside a multibyte sequence,
+      ;; so the native byte scanner finds every separator in the string's
+      ;; internal bytes; each part is cut there and restored to multibyte.
+      (let* ((mb (multibyte-string-p string))
+             (bytes (if mb (string-as-unibyte string) string))
+             (sep (string char))
+             (len (length bytes))
+             (start 0)
+             (parts nil))
+        (while start
+          (let* ((idx (nelisp--string-search sep bytes start))
+                 (part (substring bytes start (or idx len))))
             (unless (and omit-empty (= (length part) 0))
-              (setq parts (cons part parts)))
-            (setq start (1+ idx))))
-      (setq idx (1+ idx)))
-    (nreverse parts)))
+              (setq parts (cons (if mb (string-as-multibyte part) part) parts)))
+            (setq start (and idx (1+ idx)))))
+        (nreverse parts))
+    (let ((start 0)
+          (idx 0)
+          (len (length string))
+          (parts nil))
+      (while (<= idx len)
+        (if (or (= idx len) (= (aref string idx) char))
+            (let ((part (substring string start idx)))
+              (unless (and omit-empty (= (length part) 0))
+                (setq parts (cons part parts)))
+              (setq start (1+ idx))))
+        (setq idx (1+ idx)))
+      (nreverse parts))))
 (unless (fboundp 'split-string)
   (defun split-string (string &optional separators omit-nulls _trim)
     (when separators (nelisp--check-string separators))
@@ -19131,25 +19197,21 @@ signals an error rather than passing text through unexpanded."
       result)))
 (unless (fboundp 'base64-decode-string)
   (defun base64-decode-string (string &optional base64url ignore-invalid)
-    ;; Bytes, not characters.  `char-to-string' builds the CHARACTER whose
-    ;; code is the byte, and a byte >= 128 is then held in its multi-byte
-    ;; UTF-8 form, so decoding "yMnK" answered (195 136 195 137 195 138)
-    ;; where every other base64 answers (200 201 202) -- the payload silently
-    ;; doubled and no longer matched what was encoded.
-    ;;
-    ;; The ENCODER above was already byte-clean (`string-byte' /
-    ;; `string-bytes', see its own comment); this is the same defect on the
-    ;; way back, so the pair did not round-trip for any input with a high
-    ;; byte -- which is most compiled output.  `unibyte-string' keeps the byte.
+    ;; Bytes, not characters: the payload is arbitrary binary (compiled
+    ;; objects), so every output byte is written into one exact-capacity
+    ;; unibyte string, like the encoder above.  Reading the input with
+    ;; `string-byte' avoids `aref''s character-index UTF-8 walk; a non-ASCII
+    ;; input character is outside the alphabet either way.  Validation,
+    ;; padding and the ignore-invalid/base64url rules are unchanged.
     (nelisp--check-string string)
     ;; Emacs REFUSES what it cannot decode: a character outside the alphabet
     ;; and a group short of four both signal, and skipping them quietly
     ;; produced a shorter string that read as a successful decode.  In
     ;; base64url mode the padding is optional, which is why the same input
     ;; can be an error in one mode and two bytes in the other.
-    (let ((j 0) (n (length string)) (kept 0))
+    (let ((j 0) (n (string-bytes string)) (kept 0))
       (while (< j n)
-        (let ((ch (aref string j)))
+        (let ((ch (string-byte string j)))
           (cond
            ((or (= ch 10) (= ch 13) (= ch 9) (= ch 32)) nil)
            ((= ch ?=) (setq kept (1+ kept)))
@@ -19160,74 +19222,57 @@ signals an error rather than passing text through unexpanded."
       (if (or base64url ignore-invalid)
           (when (= 1 (mod kept 4)) (signal 'error (list "Invalid base64 data")))
         (unless (= 0 (mod kept 4))
-          (signal 'error (list "Invalid base64 data")))))
-    (let ((i 0)
-          (len (length string))
-          (vals-count 0)
-          (a 0)
-          (b 0)
-          (c 0)
-          (d 0)
-          (bytes nil)
-          (byte-count 0)
-          (chunks nil))
-      (while (< i len)
-        (let ((ch (aref string i)))
-          (cond
-           ((= ch ?=)
+          (signal 'error (list "Invalid base64 data"))))
+      (let ((i 0) (vals-count 0) (a 0) (b 0) (c 0) (d 0) (out 0)
+            (result (string-as-unibyte (make-string (+ 3 (* 3 (/ (+ kept 3) 4))) 0))))
+        (while (< i n)
+          (let ((ch (string-byte string i)))
             (cond
-             ((= vals-count 0) (setq a -2))
-             ((= vals-count 1) (setq b -2))
-             ((= vals-count 2) (setq c -2))
-             (t (setq d -2)))
-            (setq vals-count (1+ vals-count)))
-           ((or (= ch 10) (= ch 13) (= ch 9) (= ch 32))
-            nil)
-           (t
-            (let ((v (nelisp--base64-value ch)))
-              (when (>= v 0)
-                (cond
-                 ((= vals-count 0) (setq a v))
-                 ((= vals-count 1) (setq b v))
-                 ((= vals-count 2) (setq c v))
-                 (t (setq d v)))
-                (setq vals-count (1+ vals-count))))))
-          (when (= vals-count 4)
-            (let ((triple (logior (ash a 18)
-                                  (ash b 12)
-                                  (if (= c -2) 0 (ash c 6))
-                                  (if (= d -2) 0 d))))
-              (setq bytes
-                    (cons (unibyte-string (logand (ash triple -16) 255))
-                          bytes))
-              (setq byte-count (1+ byte-count))
-              (unless (= c -2)
-                (setq bytes
-                      (cons (unibyte-string (logand (ash triple -8) 255))
-                            bytes))
-                (setq byte-count (1+ byte-count)))
-              (unless (= d -2)
-                (setq bytes
-                      (cons (unibyte-string (logand triple 255))
-                            bytes))
-                (setq byte-count (1+ byte-count)))
-              (when (>= byte-count 128)
-                (setq chunks (nelisp--base64-flush-chunk bytes chunks))
-                (setq bytes nil)
-                (setq byte-count 0))
-              (setq vals-count 0))))
-        (setq i (1+ i)))
-      (when (>= vals-count 2)
-        ;; A PADDING character reached this flush as -2 and was shifted in as
-        ;; a value, so an ignore-invalid decode of "a!b=" produced two bytes
-        ;; of noise instead of one byte of answer.
-        (let ((triple (logior (ash a 18) (ash b 12)
-                              (if (and (>= vals-count 3) (>= c 0)) (ash c 6) 0))))
-          (setq bytes (cons (unibyte-string (logand (ash triple -16) 255)) bytes))
-          (when (and (>= vals-count 3) (>= c 0))
-            (setq bytes (cons (unibyte-string (logand (ash triple -8) 255)) bytes)))))
-      (setq chunks (nelisp--base64-flush-chunk bytes chunks))
-      (apply 'concat (nreverse chunks)))))
+             ((= ch ?=)
+              (cond
+               ((= vals-count 0) (setq a -2))
+               ((= vals-count 1) (setq b -2))
+               ((= vals-count 2) (setq c -2))
+               (t (setq d -2)))
+              (setq vals-count (1+ vals-count)))
+             ((or (= ch 10) (= ch 13) (= ch 9) (= ch 32))
+              nil)
+             (t
+              (let ((v (nelisp--base64-value ch)))
+                (when (>= v 0)
+                  (cond
+                   ((= vals-count 0) (setq a v))
+                   ((= vals-count 1) (setq b v))
+                   ((= vals-count 2) (setq c v))
+                   (t (setq d v)))
+                  (setq vals-count (1+ vals-count))))))
+            (when (= vals-count 4)
+              (let ((triple (logior (ash a 18)
+                                    (ash b 12)
+                                    (if (= c -2) 0 (ash c 6))
+                                    (if (= d -2) 0 d))))
+                (aset result out (logand (ash triple -16) 255))
+                (setq out (1+ out))
+                (unless (= c -2)
+                  (aset result out (logand (ash triple -8) 255))
+                  (setq out (1+ out)))
+                (unless (= d -2)
+                  (aset result out (logand triple 255))
+                  (setq out (1+ out)))
+                (setq vals-count 0))))
+          (setq i (1+ i)))
+        (when (>= vals-count 2)
+          ;; A PADDING character reached this flush as -2 and was shifted in as
+          ;; a value, so an ignore-invalid decode of "a!b=" produced two bytes
+          ;; of noise instead of one byte of answer.
+          (let ((triple (logior (ash a 18) (ash b 12)
+                                (if (and (>= vals-count 3) (>= c 0)) (ash c 6) 0))))
+            (aset result out (logand (ash triple -16) 255))
+            (setq out (1+ out))
+            (when (and (>= vals-count 3) (>= c 0))
+              (aset result out (logand (ash triple -8) 255))
+              (setq out (1+ out)))))
+        (substring result 0 out)))))
 ;; nelisp stdlib lowering helpers (referenced by the dotimes/loop macro
 ;; expansions in nelisp-stdlib-eval-special; their definitions live in
 ;; nelisp-stdlib.el which aborts on load standalone).  They are trivial

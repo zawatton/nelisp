@@ -272,3 +272,32 @@
           (should-error (let ((cycle (list 1))) (setcdr cycle cycle)
                           (nelisp-native-template--print cycle))))
       (load source nil t t))))
+
+(ert-deftest nelisp-native-template-library-path-relocates-from-load-path ()
+  "A build-host path baked into a cold image resolves beside lisp/ at runtime."
+  (let* ((root (make-temp-file "nelisp-stencil-root" t))
+         (lisp (expand-file-name "lisp" root))
+         (templates (expand-file-name "templates" root))
+         (name (file-name-nondirectory nelisp-native-template--library-path)))
+    (unwind-protect
+        (progn
+          (make-directory lisp) (make-directory templates)
+          (write-region "" nil (expand-file-name "nelisp-native-template-stencils.el" lisp))
+          (copy-file nelisp-native-template--library-path (expand-file-name name templates))
+          (let ((nelisp-native-template--library-path
+                 (concat "/nonexistent-build-host/templates/" name))
+                (load-path (list "/nonexistent-dir" lisp)))
+            (should (equal (nelisp-native-template--resolve-library-path)
+                           (expand-file-name name templates)))
+            (should (equal nelisp-native-template--library-path
+                           (expand-file-name name templates))))
+          ;; With no candidate the path stays and the refusal names the cause.
+          (let ((nelisp-native-template--library-path "/nonexistent-build-host/x.nelst")
+                (nelisp-native-template--snapshot nil)
+                (load-path (list "/nonexistent-dir")))
+            (should (equal (nelisp-native-template--resolve-library-path)
+                           "/nonexistent-build-host/x.nelst"))
+            (let ((err (should-error (nelisp-native-template-open-library))))
+              (should (string-match-p "missing (/nonexistent-build-host/x.nelst)"
+                                      (error-message-string err))))))
+      (delete-directory root t))))

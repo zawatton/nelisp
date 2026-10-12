@@ -66,3 +66,27 @@
           (should-not nelisp-consumer-side-effect))
       (delete-file file))))
 (provide 'nelisp-bytecode-native-consumer-test)
+
+(ert-deftest nelisp-bytecode-native-consumer-docstring-reference-names-the-elc ()
+  "A lazy docstring `(#$ . N)' names the .elc, not the script loading now.
+Otherwise the native cache key would depend on the reading script."
+  (let* ((dir (make-temp-file "consumer-doc" t))
+         (source (expand-file-name "doc-probe.el" dir))
+         (elc (concat source "c")))
+    (unwind-protect
+        (progn
+          (with-temp-file source
+            (insert ";;; doc-probe.el -*- lexical-binding: t -*-\n"
+                    "(defun doc-probe-fn (a b)\n  \"" (make-string 120 ?d) "\"\n  (string= a b))\n"))
+          (byte-compile-file source)
+          (let* ((read-from (lambda (loader)
+                              (let ((load-file-name loader) (load-true-file-name loader))
+                                (cdr (assq 'doc-probe-fn
+                                           (nelisp-bytecode-native-consumer-read-elc-functions elc))))))
+                 (one (funcall read-from "/tmp/driver-one.el"))
+                 (two (funcall read-from "/tmp/driver-two.el")))
+            (should (byte-code-function-p one))
+            (should (equal (aref one 4) (aref two 4)))
+            (when (consp (aref one 4))
+              (should (equal (car (aref one 4)) elc)))))
+      (delete-directory dir t))))

@@ -120,6 +120,22 @@ field and string. This is serialization checking, not semantic validation."
   (let* ((read-circle nil) (parsed (read-from-string snapshot)))
     (unless (string-match-p "\\`[ \n\r\t]*\\'" (substring snapshot (cdr parsed)))
       (error "Trailing stencil library data")) (car parsed)))
+;; A cold image keeps the build host's absolute path (for example the CI
+;; checkout).  The library bytes are authenticated by the pinned sha256 of a
+;; private snapshot, so relocating only the directory is safe: resolve the same
+;; basename beside the `lisp/' directory found on `load-path' at runtime.
+(defun nelisp-native-template--resolve-library-path ()
+  "Return the stencil library path, relocated from `load-path' when missing."
+  (let ((path nelisp-native-template--library-path))
+    (if (file-exists-p path) path
+      (let ((name (file-name-nondirectory path)) found)
+        (dolist (dir load-path)
+          (when (and (not found) (stringp dir)
+                     (or (file-exists-p (expand-file-name "nelisp-native-template-stencils.el" dir))
+                         (file-exists-p (expand-file-name "nelisp-native-template-stencils.elc" dir))))
+            (let ((candidate (expand-file-name (concat "../templates/" name) dir)))
+              (when (file-exists-p candidate) (setq found candidate)))))
+        (if found (setq nelisp-native-template--library-path found) path)))))
 (defun nelisp-native-template-open-library ()
   "Read one bounded private snapshot; authenticate before any fragment copy."
   (nelisp-native-template-select-target)
@@ -128,6 +144,7 @@ field and string. This is serialization checking, not semantic validation."
     ;; The bytes are authenticated by the pinned sha256 of a private snapshot,
     ;; so only world-writable files are refused here: a git checkout under the
     ;; common umask 002 leaves the library group-writable.
+    (nelisp-native-template--resolve-library-path)
     (let* ((attrs (file-attributes nelisp-native-template--library-path 'integer))
            (mode (file-modes nelisp-native-template--library-path))
            (bytes (and attrs (nth 7 attrs))))
@@ -140,7 +157,16 @@ field and string. This is serialization checking, not semantic validation."
                        (and mode (= 0 (logand mode #o002))
                             (eql (nth 2 attrs) (if (fboundp 'user-uid) (user-uid)
                                                 (syscall-direct 102 0 0 0 0 0 0))))))
-        (error "Stencil library ownership, permissions or bound refused"))
+        ;; Name the failing condition and the path; the refusal itself is
+        ;; unchanged.
+        (error "Stencil library ownership, permissions or bound refused: %s (%s)"
+               (cond ((null attrs) "missing")
+                     ((or (car attrs) (file-symlink-p nelisp-native-template--library-path))
+                      "not a regular file")
+                     ((not (and (integerp bytes) (< 0 bytes 65536))) (format "size %S" bytes))
+                     ((and mode (/= 0 (logand mode #o002))) "world-writable")
+                     (t "owner is not the current user"))
+               nelisp-native-template--library-path))
       (let ((snapshot (with-temp-buffer (set-buffer-multibyte nil)
                                        (insert-file-contents-literally nelisp-native-template--library-path nil 0 65537)
                                        (buffer-string))))

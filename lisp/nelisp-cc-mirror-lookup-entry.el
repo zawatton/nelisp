@@ -74,17 +74,48 @@
       ;; a fresh-per-call 32B box only for the rare immediate slot, so two
       ;; concurrently-live views never alias (no shared-scratch clobber
       ;; under the recursive descent).
+      ;;
+      ;; Every global variable and function reference walks a bucket, and
+      ;; the materialising accessors boxed each immediate KEY and the Nil
+      ;; that ends the chain into a fresh heap slot: garbage on every
+      ;; lookup.  The walk now reads the words directly: a pointer KEY is
+      ;; compared in place, an immediate KEY is loaded into a slot that is
+      ;; released straight after the compare, and an immediate cdr word
+      ;; (the Nil end of the bucket) stops the walk without being
+      ;; materialised.  The hit path still returns the ENTRY through
+      ;; `nl_cons_cdr_ptr' (a live pointer).
       (if (= cell-ptr 0)
           0
         (if (= (sexp-tag cell-ptr) 7)
-            (let ((pair-view (extern-call nl_cons_car_ptr cell-ptr)))
-              (if (= (extern-call nelisp_symbol_key_equal
-                                 (extern-call nl_cons_car_ptr pair-view) sym-ptr) 1)
-                  (extern-call nl_cons_cdr_ptr pair-view)
-                (nelisp_mirror_walk_bucket
-                 (extern-call nl_cons_cdr_ptr cell-ptr)
-                 sym-ptr)))
+            (nelisp_mirror_walk_bucket_raw cell-ptr sym-ptr)
           0)))
+    (defun nelisp_mirror_walk_bucket_raw (cell-ptr sym-ptr)
+      ;; CELL-PTR is a Cons view.  Its car WORD is the (KEY . ENTRY) pair:
+      ;; a pointer word is that pair's own 32B Cons view.
+      (let ((pair-view (ptr-read-u64 (ptr-read-u64 cell-ptr 8) 0)))
+        (let ((hit (if (= (logand pair-view 1) 0)
+                       (if (= (sexp-tag pair-view) 7)
+                           (nelisp_mirror_walk_bucket_key_equal
+                            (ptr-read-u64 (ptr-read-u64 pair-view 8) 0)
+                            sym-ptr)
+                         0)
+                     0)))
+          (if (= hit 1)
+              (extern-call nl_cons_cdr_ptr pair-view)
+            (let ((next (ptr-read-u64 (ptr-read-u64 cell-ptr 8) 8)))
+              (if (= (logand next 1) 1)
+                  0
+                (if (= (sexp-tag next) 7)
+                    (nelisp_mirror_walk_bucket_raw next sym-ptr)
+                  0)))))))
+    (defun nelisp_mirror_walk_bucket_key_equal (key-word sym-ptr)
+      (if (= (logand key-word 1) 0)
+          (extern-call nelisp_symbol_key_equal key-word sym-ptr)
+        (let ((scratch (alloc-bytes 32 8)))
+          (let ((same (extern-call nelisp_symbol_key_equal
+                                   (extern-call nl_val_load key-word scratch)
+                                   sym-ptr)))
+            (seq (dealloc-bytes scratch 32 8) same)))))
     (defun nelisp_mirror_lookup_entry_valid_key (sym-ptr)
       ;; Cold-load hardening (segfault fix, 2026-07): a caller-supplied
       ;; SYM-PTR that is not actually a live Sexp::Symbol / Sexp::Str
