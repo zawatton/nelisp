@@ -666,6 +666,20 @@ times, so `(exp -1.0e6)' took ~1.44e6 iterations and `(exp -1.0e9)' ~1.44e9
              (not (multibyte-string-p needle))
              (not (multibyte-string-p haystack)))
         (nelisp--string-search needle haystack i))
+       ;; Multibyte haystack: search its internal UTF-8 bytes natively.
+       ;; A match starting on a lead byte covers whole characters, so the
+       ;; byte index converts back to a character index.  A unibyte needle
+       ;; qualifies only when it is ASCII (its raw bytes would otherwise
+       ;; denote eight-bit characters, not UTF-8).
+       ((and (fboundp 'nelisp--string-search)
+             (multibyte-string-p haystack)
+             (or (multibyte-string-p needle)
+                 (not (string-match-p "[^\0-\177]" needle))))
+        (let* ((bytes (string-as-unibyte haystack))
+               (idx (nelisp--string-search
+                     (string-as-unibyte needle) bytes
+                     (string-bytes (substring haystack 0 i)))))
+          (and idx (length (string-as-multibyte (substring bytes 0 idx))))))
        (t
         (while (and (not found) (<= (+ i nl) hl))
           (if (string= needle (substring haystack i (+ i nl)))
