@@ -2053,6 +2053,27 @@ Return (FROM . TO).  STR, START, and END are used only for the
       (cons from to))))
 (unless (fboundp 'compare-strings)
   (defun compare-strings (str1 start1 end1 str2 start2 end2 &optional ignore-case)
+    (if (and (not ignore-case) (stringp str1) (stringp str2)
+             (or (null start1) (eq start1 0)) (or (null start2) (eq start2 0))
+             (or (null end1) (and (integerp end1) (>= end1 0)))
+             (or (null end2) (and (integerp end2) (>= end2 0)))
+             (eq (multibyte-string-p str1) (multibyte-string-p str2))
+             (fboundp 'nelisp--native-equal))
+        ;; The common shape (GNU `string-prefix-p'): both regions start at
+        ;; 0 and case matters.  Compare the shared length natively and walk
+        ;; characters only to place a mismatch, instead of the general
+        ;; path's eleven bindings and a per-character loop.
+        (let* ((e1 (if (and end1 (< end1 (length str1))) end1 (length str1)))
+               (e2 (if (and end2 (< end2 (length str2))) end2 (length str2)))
+               (n (if (< e1 e2) e1 e2)))
+          (if (nelisp--native-equal (nelisp--native-substring str1 0 n)
+                                    (nelisp--native-substring str2 0 n))
+              (cond ((= e1 e2) t) ((< e1 e2) (- (1+ n))) (t (1+ n)))
+            (let ((i 0))
+              (while (eq (aref str1 i) (aref str2 i)) (setq i (1+ i)))
+              (if (< (aref str1 i) (aref str2 i)) (- (1+ i)) (1+ i)))))
+      (nelisp--compare-strings-general str1 start1 end1 str2 start2 end2 ignore-case)))
+  (defun nelisp--compare-strings-general (str1 start1 end1 str2 start2 end2 ignore-case)
     (nelisp--check-string str1)
     (nelisp--check-string str2)
     (let ((len1 (length str1))
