@@ -36,6 +36,25 @@
         (should-not (cl-some (lambda (op) (eq (plist-get op :opcode) 'dup))
                             (plist-get (car (plist-get plan :blocks)) :operations))))
       (should (plist-get (nelisp-aot-compile-to-link-unit (plist-get emitted :form)) :text)))))
+(ert-deftest u5/f1-domain-imports-poll-only-with-poll-root ()
+  (skip-unless (equal emacs-version "31.1"))
+  (let* ((fixture (assq 'swap (native-stackset-u5-fixtures)))
+         (input (nelisp-bytecode-compiler-input-build (nth 1 fixture)))
+         (plan (nelisp-bytecode-native-rooted-cfg-plan input))
+         (emitted (nelisp-bytecode-native-rooted-cfg-shared-emit-build
+                   plan nelisp-bytecode-native-rooted-cfg-contract-shared-entry))
+         (contract (nelisp-bytecode-native-rooted-cfg-contract-create-shared-v2 input plan emitted)))
+    (should (plist-get plan :poll-root))
+    (should (member "nl_native_poll_v2" (plist-get contract :imports)))
+    (should (nelisp-bytecode-native-rooted-cfg-contract-f1-p contract))
+    ;; Mutations: a widened CONS import, and poll without a poll root.
+    (should-not (nelisp-bytecode-native-rooted-cfg-contract-f1-p
+                 (plist-put (copy-sequence contract) :imports
+                            (sort (cons "nl_native_cons_v2" (copy-sequence (plist-get contract :imports)))
+                                  #'string<))))
+    (should-not (nelisp-bytecode-native-rooted-cfg-contract-f1-p
+                 (plist-put (copy-sequence contract) :plan
+                            (plist-put (copy-sequence plan) :poll-root nil))))))
 (ert-deftest u5/invalid-offset-count-and-depth-refused ()
   (dolist (row '(((178 1 135) 1) ((179 0 1 135) 2) ((178 0 135) 0)
                  ((182 129 135) 1) ((182 255 135) 127) ((182 2 135) 1)))
