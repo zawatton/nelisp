@@ -6563,6 +6563,11 @@ argument (reachability + in-arena bounds checks).")
                                   (m5_byte_at (wf_arg_ptr args 0)
                                                (ptr-read-u64 (wf_arg_ptr args 1) 8))))
     ((:lit "string-bytes")     . (wf_write_int out (m5_strlen (wf_arg_ptr args 0))))
+    ((:lit "nelisp--base64-decode") .
+     (let* ((sx (wf_arg_ptr args 0)))
+       (if (= (m5_string_tag_p (ptr-read-u64 sx 0)) 1)
+           (bf_base64_decode sx out)
+         (bf_wrong_type_stringp sx))))
     ((:lit "string=")          . (if (= (bf_strsym_raw (wf_arg_ptr args 0)) 0)
                                       (bf_wrong_type_stringp (wf_arg_ptr args 0))
                                     (if (= (bf_strsym_raw (wf_arg_ptr args 1)) 0)
@@ -17127,6 +17132,53 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (bf_unibyte_fill ms args)
              (mut-str-finalize ms out)
              0)))
+    ;; `nelisp--base64-decode': standard-alphabet base64 to a unibyte
+    ;; string in one native pass.  Native cache loads decode every
+    ;; artifact's machine code; the interpreted `base64-decode-string'
+    ;; costs microseconds per character and the external `base64'
+    ;; process used for large units costs a spawn (and need not exist on
+    ;; Windows).  CR and LF are skipped; after the first `=' only `=', CR
+    ;; and LF may follow, and the padding must complete the last quantum
+    ;; (data characters mod 4 = 0, 2 or 3 with 0, 2 or 1 `=').  Anything
+    ;; else makes the answer nil, so a caller can fall back to
+    ;; `base64-decode-string' for its error.
+    (defun bf_base64_value (c)
+      (if (and (>= c 65) (<= c 90)) (- c 65)
+        (if (and (>= c 97) (<= c 122)) (- c 71)
+          (if (and (>= c 48) (<= c 57)) (+ c 4)
+            (if (= c 43) 62 (if (= c 47) 63 -1))))))
+    (defun bf_base64_decode (sx out)
+      (let* ((n (m5_strlen sx))
+             (src (nl_bi_strptr sx))
+             (ms (alloc-bytes 32 8))
+             (i 0) (acc 0) (bits 0) (pad 0) (bad 0) (c 0) (v 0) (dc 0) (pc 0))
+        (seq (nl_alloc_unibyte_mut_str (+ (/ (* n 3) 4) 3) ms)
+             (while (if (< i n) (= bad 0) 0)
+               (seq (setq c (ptr-read-u8 src i))
+                    (if (= c 61)
+                        (seq (setq pad 1) (setq pc (+ pc 1)))
+                      (if (if (= c 10) 1 (= c 13))
+                          0
+                        (seq (setq v (bf_base64_value c))
+                             (if (if (< v 0) 1 (= pad 1))
+                                 (setq bad 1)
+                               (seq (setq dc (+ dc 1))
+                                    (setq acc (logior (shl (logand acc 1023) 6) v))
+                                    (setq bits (+ bits 6))
+                                    (if (>= bits 8)
+                                        (seq (setq bits (- bits 8))
+                                             (mut-str-push-byte
+                                              ms (logand (sar acc bits) 255)))
+                                      0))))))
+                    (setq i (+ i 1))))
+             (setq v (- dc (* 4 (/ dc 4))))
+             (if (if (= bad 0)
+                     (if (= v 0) (= pc 0)
+                       (if (= v 2) (= pc 2) (if (= v 3) (= pc 1) 0)))
+                   0)
+                 (mut-str-finalize ms out)
+               (wf_write_nil out))
+             0)))
     ;; make-bool-vector LENGTH INIT -> BoolVector(tag10), backed by
     ;; `nl_alloc_bool_vector' (lisp/nelisp-cc-nlboolvector-alloc.el).
     ;; LENGTH must be a non-negative fixnum; Emacs signals `(wrong-type-
@@ -26816,7 +26868,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "string-as-unibyte" "string-to-unibyte" "string-make-unibyte"
     "string-as-multibyte" "string-to-multibyte" "string-make-multibyte"
     "char-to-string" "string-to-char" "number-to-string" "string-to-number" "format"
-    "nelisp--repr" "nelisp--json-encode" "nelisp--build-digest" "nelisp--sha256" "nelisp--sha256-bytes" "nelisp--string-search" "nelisp--arena-stats" "garbage-collect"
+    "nelisp--repr" "nelisp--json-encode" "nelisp--build-digest" "nelisp--sha256" "nelisp--sha256-bytes" "nelisp--string-search" "nelisp--base64-decode" "nelisp--arena-stats" "garbage-collect"
     "nelisp--fmt-float"
     "nelisp--debug-switch" "nelisp--gc-diag" "nelisp--arena-force-grow-smoke" "nelisp--size-census" "nelisp--arena-walk-verify"
     "nelisp--alloc-check-report"

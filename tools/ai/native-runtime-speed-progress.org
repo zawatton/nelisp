@@ -72,10 +72,15 @@ cmd: SKK_BENCH_LIMIT=0.13 $NELISP_RT_BIN --load test/standalone-skk-shaped-bench
 * S4 Native cache load speed
 
 ** S4.1 Artifact text decodes without interpreted base64 (raw bytes or a native decoder)
-pending
+#+REQUIRES: NELISP_RT_BIN
+#+TIMEOUT: 300
+cmd: $NELISP_RT_BIN --load test/standalone-base64-decode-parity.el
 
-** S4.2 Loading the P1.3 fixture cache takes at most a third of the baseline time
-pending
+** S4.2 Loading three SKK-shaped functions from a native cache costs at most a third of the baseline
+#+NOTE: Ratio of total load time to a same-run native SHA-256 of 8 MiB; baseline 21.06 on the integ 90eb52275 reader (24.7 s), limit 7.0.
+#+REQUIRES: NELISP_RT_BIN
+#+TIMEOUT: 600
+cmd: test/standalone-native-cache-load-bench.sh $NELISP_RT_BIN 7.0
 
 ** S4.3 The 11 GUI functions load from a trusted cache in under 60 s in total
 pending

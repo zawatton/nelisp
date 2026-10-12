@@ -728,7 +728,7 @@ every problem at once rather than the first one hit."
             ;; bytes measures short and an intact artifact fails its own
             ;; size check.
             (actual (and (plist-get native :text-base64)
-                         (string-bytes (base64-decode-string
+                         (string-bytes (nelisp-native-load--base64
                                         (plist-get native :text-base64))))))
         (unless (and (integerp declared) actual (= declared actual))
           (setq problems (cons (list :text-size-mismatch declared actual)
@@ -748,7 +748,7 @@ every problem at once rather than the first one hit."
         (when (and (stringp declared) (stringp encoded)
                    (fboundp 'nelisp--sha256-bytes))
           (let ((actual (nelisp-native-load--digest
-                         (base64-decode-string encoded))))
+                         (nelisp-native-load--base64 encoded))))
             (unless (equal declared actual)
               (setq problems (cons (list :object-hash-mismatch declared actual)
                                    problems))))))
@@ -1684,11 +1684,21 @@ the standalone reader's in-process mmap, mprotect and six-GP `ptr-call'."
   "Return the declared ABI in raw import ENTRY, or nil if absent."
   (and (listp entry) (plist-get entry :abi)))
 
+(defun nelisp-native-load--base64 (encoded)
+  "Decode the base64 string ENCODED to a unibyte string.
+The standalone reader's native `nelisp--base64-decode' does it in one
+pass; it answers nil for input it rejects, which then goes to
+`base64-decode-string' for the same error as before."
+  (or (and (fboundp 'nelisp--base64-decode)
+           (nelisp--base64-decode encoded))
+      (base64-decode-string encoded)))
+
 (defun nelisp-native-load--raw-bytes (native field)
   "Decode FIELD from NATIVE as a binary string, or return nil."
   (let ((encoded (plist-get native field)))
     (and (stringp encoded)
          (if (and (> (length encoded) 4096)
+                  (not (fboundp 'nelisp--base64-decode))
                   (fboundp 'nelisp--native-runtime-symbol-addr))
              ;; A full GC unit is much larger than an ordinary function.
              ;; The interpreted base64 compatibility path allocates for each
@@ -1708,7 +1718,7 @@ the standalone reader's in-process mmap, mprotect and six-GP `ptr-call'."
                               field))
                      (nelisp-native-load--read-file output))
                  (ignore-errors (delete-file input) (delete-file output))))
-           (base64-decode-string encoded)))))
+           (nelisp-native-load--base64 encoded)))))
 
 (defun nelisp-native-load--raw-plist-without (plist key)
   "Copy PLIST while omitting KEY and its value.
@@ -5778,7 +5788,7 @@ what a cache wants and what the demo did."
       (error "nelisp-native-load: cannot load %s from %s: %S" name path problems))
     (let* ((native (plist-get manifest :native))
            (meta (nelisp-native-load--defun native name))
-           (text (base64-decode-string (plist-get native :text-base64)))
+           (text (nelisp-native-load--base64 (plist-get native :text-base64)))
            ;; `string-bytes': `text' is decoded machine code, not text.
            (text-length (string-bytes text))
            (relocs (plist-get native :relocs))
@@ -5795,7 +5805,7 @@ what a cache wants and what the demo did."
            ;; literal's cache slot lives here.
            (data-bytes (let ((encoded (plist-get native :data-base64)))
                          (and (stringp encoded)
-                              (base64-decode-string encoded))))
+                              (nelisp-native-load--base64 encoded))))
            ;; Placed IN the code page, after the stubs, rather than in a
            ;; mapping of its own.  Compiled code takes a data symbol's
            ;; address with a pc32, and two independent mmap(NULL) results
