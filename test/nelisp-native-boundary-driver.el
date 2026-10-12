@@ -161,7 +161,7 @@
           (error "Projected functionp changed callable classification"))
         (setq checked (1+ checked)))
       (dolist (pair (list (cons (lambda () 1) t) (cons fp-function nil)
-                         (cons fp-native (eq nelisp-native-cache-backend 'template))))
+                         (cons fp-native (not (subrp fp-native)))))
         (unless (eq (interpreted-function-p (car pair)) (cdr pair))
           (error "Projected interpreted-function-p changed classification"))
         (setq checked (1+ checked)))
