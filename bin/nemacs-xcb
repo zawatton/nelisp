@@ -63,7 +63,7 @@ if os.environ.get('NELISP_GUI_STARTUP_TRACE') == '1':
                      evil-local-mode evil-insert-state skk-mode skk-mode-invoke
                      skk-setup-keymap skk-compile-rule-list skk-get-jisyo-buffer
                      nelisp-gui-xcb-open nelisp-gui-pango-open
-                     nelisp-gui-frontend--paint garbage-collect))
+                     nelisp-gui-frontend--paint garbage-collect @EXTRA@))
         (when (fboundp name)
           (let ((original (symbol-function name)) (phase name)
                 (command-form (interactive-form name)))
@@ -76,6 +76,10 @@ if os.environ.get('NELISP_GUI_STARTUP_TRACE') == '1':
                 (prog1 (apply original arguments)
                   (princ (format "GUI-LAUNCH|phase=%s|state=end|time=%.6f|seconds=%.6f|\\n"
                                  phase (float-time) (- (float-time) started)))))))))) """
+    # NELISP_GUI_TRACE_FUNCTIONS adds space-separated function names to time.
+    extra = ' '.join(name for name in os.environ.get('NELISP_GUI_TRACE_FUNCTIONS', '').split()
+                     if all(ch.isalnum() or ch in '-_/*' for ch in name))
+    trace = trace.replace('@EXTRA@', extra)
     form = '(progn ' + trace + form + ')'
     print(f'GUI-LAUNCH|phase=exec|time={time.time():.6f}|', flush=True)
 resource.setrlimit(resource.RLIMIT_STACK, (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
