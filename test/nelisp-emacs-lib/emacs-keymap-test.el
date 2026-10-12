@@ -16,6 +16,7 @@
 
 (require 'ert)
 (require 'emacs-keymap)
+(require 'emacs-keymap-builtins)
 
 ;;; Fresh-world fixture
 
@@ -1023,3 +1024,33 @@ menu item that holds it."
 
 (provide 'emacs-keymap-test)
 ;;; emacs-keymap-test.el ends here
+
+(ert-deftest emacs-keymap-test/key-binding-applies-command-remapping ()
+  "A [remap CMD] binding in the active chain replaces CMD unless NO-REMAP."
+  (let* ((global (emacs-keymap-make-sparse-keymap))
+         (local (emacs-keymap-make-sparse-keymap))
+         (emacs-keymap-global-map global)
+         (emacs-keymap-local-map local))
+    (emacs-keymap-define-key local "s" 'stage-file)
+    (should (eq (emacs-keymap-key-binding "s") 'stage-file))
+    (emacs-keymap-define-key global [remap stage-file] 'stage-section)
+    (should (eq (emacs-keymap-key-binding "s") 'stage-section))
+    (should (eq (emacs-keymap-key-binding "s" nil t) 'stage-file))))
+
+(ert-deftest emacs-keymap-test/char-property-keymap-provider-remaps ()
+  "The wired text-property provider puts a `keymap' property in the chain."
+  (with-temp-buffer
+    (insert "section")
+    (let* ((global (emacs-keymap-make-sparse-keymap))
+           (local (emacs-keymap-make-sparse-keymap))
+           (section (emacs-keymap-make-sparse-keymap))
+           (emacs-keymap-global-map global)
+           (emacs-keymap-local-map local)
+           (emacs-keymap-chain-with-textprop t)
+           (emacs-keymap-chain-textprop-provider
+            #'emacs-keymap-builtins--char-property-keymaps))
+      (emacs-keymap-define-key local "s" 'stage-file)
+      (emacs-keymap-define-key section [remap stage-file] 'stage-section)
+      (put-text-property 1 4 'keymap section)
+      (should (eq (emacs-keymap-key-binding "s" nil nil 2) 'stage-section))
+      (should (eq (emacs-keymap-key-binding "s" nil nil 6) 'stage-file)))))

@@ -623,11 +623,26 @@ old load-only stubs because Org mutates menu keymaps during mode setup."
     (emacs-keymap-map-keymap
      function (emacs-keymap-builtins--require-keymap keymap))))
 
+(defun emacs-keymap-builtins--char-property-keymaps (position)
+  "Return the `keymap' char property at POSITION as a one-map list.
+`get-char-property' consults overlays before text properties, as GNU's
+active-map computation does.  Used as the Doc 41 text-property provider."
+  (let ((map (and (fboundp 'get-char-property)
+                  (ignore-errors (get-char-property position 'keymap)))))
+    (and map (list map))))
+
 (when (emacs-keymap-builtins--install-function-p 'current-active-maps)
+  ;; GNU always puts the `keymap' char property at point ahead of the
+  ;; local map (Magit section maps remap `s' to `magit-stage' there), so
+  ;; the standalone builtins wire the Doc 41 provider slot.
+  (unless emacs-keymap-chain-textprop-provider
+    (setq emacs-keymap-chain-textprop-provider
+          #'emacs-keymap-builtins--char-property-keymaps))
+  (setq emacs-keymap-chain-with-textprop t)
   (defun current-active-maps (&optional _olp position)
     "Return active keymaps for batch-compatible menu/key lookup.
-_OLP and POSITION are accepted for API compatibility; overlay and
-text-property keymaps are already handled by `emacs-keymap-chain-at'."
+_OLP is accepted for API compatibility.  The `keymap' char property at
+POSITION (default point) comes from the wired text-property provider."
     (emacs-keymap-chain-at position)))
 
 (unless (boundp 'easy-menu-button-prefix)

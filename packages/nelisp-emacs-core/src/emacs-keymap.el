@@ -952,11 +952,10 @@ the current buffer; it is only consulted when the 9 段 flag is on."
 (defun emacs-keymap-key-binding (key &optional accept-default no-remap position)
   "Return the binding for KEY in the active keymap chain.
 ACCEPT-DEFAULT — see `emacs-keymap-lookup-key'.
-NO-REMAP — accepted for arity compatibility, currently no-op (= remap is
-deferred per non-goal).  POSITION — the buffer position used for
-text-property / overlay slot resolution when
-`emacs-keymap-chain-with-textprop' is non-nil."
-  (ignore no-remap)
+NO-REMAP — when nil, a command binding is passed through GNU command
+remapping: the first [remap COMMAND] binding in the same chain replaces
+it.  POSITION — the buffer position used for text-property / overlay
+slot resolution when `emacs-keymap-chain-with-textprop' is non-nil."
   (let ((chain (emacs-keymap-chain-at position))
         (result nil))
     (catch 'found
@@ -965,7 +964,22 @@ text-property / overlay slot resolution when
           (when (and b (not (numberp b)))
             (setq result b)
             (throw 'found t)))))
-    (if (and (consp result) (eq (car result) 'menu-item)) (nth 2 result) result)))
+    (when (and (consp result) (eq (car result) 'menu-item))
+      (setq result (nth 2 result)))
+    (or (and (not no-remap) result (symbolp result)
+             (emacs-keymap--command-remapping result chain))
+        result)))
+
+(defun emacs-keymap--command-remapping (command chain)
+  "Return the first [remap COMMAND] command binding in CHAIN, or nil."
+  (catch 'found
+    (dolist (km chain)
+      (let ((b (emacs-keymap-lookup-key km (vector 'remap command))))
+        (when (and (consp b) (eq (car b) 'menu-item))
+          (setq b (nth 2 b)))
+        (when (and b (not (numberp b)) (not (emacs-keymap-keymapp b)))
+          (throw 'found b))))
+    nil))
 
 ;;;###autoload
 (defun emacs-keymap-map-keymap (function keymap)
