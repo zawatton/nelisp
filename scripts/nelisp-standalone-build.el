@@ -18438,8 +18438,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                    (wf_bytecode_mark_dynamic frames canonical)) 1)))
               (dealloc-bytes address 8 8)
               result))
-        (seq (nl_bind_frame_fast frames name value)
-             (bf_mark_declared_special (+ env 0) frames name))))
+        ;; Both special tests just answered no, and binding a lexical
+        ;; cell changes neither, so `bf_mark_declared_special' would only
+        ;; repeat them (a registry intern plus a frame walk per binding)
+        ;; and return 1.
+        (seq (nl_bind_frame_fast frames name value) 1)))
     (defun bf_mark_binding_result (rc mirror frames name)
       (if (= rc 1) (bf_mark_declared_special mirror frames name) rc))
     (defun bf_dynamic_lookup (env name out)
