@@ -2375,6 +2375,182 @@ Ignores narrowing (hashes the whole buffer)."
                         'emacs-buffer-builtins--install-native-marker-position-bridges)
                   after-load-alist)))))
 
+;;;; --- buffer-local hooks (GNU subr.el / eval.c parity) ----------------
+
+;; The standalone runtime prelude defines `add-hook' and the `run-hook*'
+;; family without a buffer-local/global split: LOCAL is ignored, so a
+;; buffer-local hook (org-mode's `change-major-mode-hook' entries, evil's
+;; and skk's per-buffer hooks) lands in the global value and runs in every
+;; buffer, and the `t' marker re-runs the same list instead of the global
+;; value.  This bridge owns buffer-local variables, so it installs GNU's
+;; semantics over the prelude on standalone.  `add-hook' / `remove-hook'
+;; follow GNU 31.1 subr.el; the runners follow eval.c `run_hook_with_args'.
+
+(defun emacs-buffer-builtins--hook-local-if-set-p (hook)
+  "Return non-nil when setting HOOK would set a buffer-local value.
+`local-variable-if-set-p' is defined later in the bootstrap than hooks
+are first added, so fall back to the buffer substrate's own predicate."
+  (cond
+   ((fboundp 'local-variable-if-set-p) (local-variable-if-set-p hook))
+   ((fboundp 'emacs-buffer-local-variable-if-set-p)
+    (emacs-buffer-local-variable-if-set-p hook))
+   (t (local-variable-p hook))))
+
+(defun emacs-buffer-builtins--hook-depth-alist (hook local)
+  "Return HOOK's depth alist (LOCAL or default value), or nil."
+  (let ((sym (get hook 'hook--depth-alist)))
+    (and sym (if local (symbol-value sym) (default-value sym)))))
+
+(defun emacs-buffer-builtins--add-hook (hook function &optional depth local)
+  "GNU `add-hook': add FUNCTION to HOOK at DEPTH, buffer-locally if LOCAL."
+  (or (boundp hook) (set hook nil))
+  (or (default-boundp hook) (set-default hook nil))
+  (unless (numberp depth) (setq depth (if depth 90 0)))
+  (if local
+      (unless (emacs-buffer-builtins--hook-local-if-set-p hook)
+        (set (make-local-variable hook) (list t)))
+    ;; A hook made local with `make-local-variable' but without the `t'
+    ;; marker is edited locally, as GNU does.
+    (when (and (emacs-buffer-builtins--hook-local-if-set-p hook)
+               (not (and (consp (symbol-value hook))
+                         (memq t (symbol-value hook)))))
+      (setq local t)))
+  (let ((hook-value (if local (symbol-value hook) (default-value hook))))
+    (when (or (not (listp hook-value)) (functionp hook-value))
+      (setq hook-value (list hook-value)))
+    (unless (member function hook-value)
+      (let ((depth-sym (get hook 'hook--depth-alist)))
+        (unless (zerop depth)
+          (unless depth-sym
+            (setq depth-sym (make-symbol "depth-alist"))
+            (set depth-sym nil)
+            (put hook 'hook--depth-alist depth-sym))
+          (if local (make-local-variable depth-sym))
+          (let* ((alist (if local (symbol-value depth-sym)
+                          (default-value depth-sym)))
+                 (cell (assq function alist)))
+            (if cell
+                (setcdr cell depth)
+              (setq alist (cons (cons function depth) alist))
+              (if local (set depth-sym alist) (set-default depth-sym alist)))))
+        (setq hook-value
+              (if (< 0 depth)
+                  (append hook-value (list function))
+                (cons function hook-value)))
+        (when depth-sym
+          (let ((depth-alist (if local (symbol-value depth-sym)
+                               (default-value depth-sym))))
+            (when depth-alist
+              (setq hook-value
+                    (sort (if (< 0 depth) hook-value (copy-sequence hook-value))
+                          (lambda (f1 f2)
+                            (< (or (cdr (assq f1 depth-alist)) 0)
+                               (or (cdr (assq f2 depth-alist)) 0))))))))))
+    (if local
+        (progn
+          (and (symbolp function)
+               (get function 'permanent-local-hook)
+               (not (get hook 'permanent-local))
+               (put hook 'permanent-local 'permanent-local-hook))
+          (set hook hook-value))
+      (set-default hook hook-value))))
+
+(defun emacs-buffer-builtins--remove-hook (hook function &optional local)
+  "GNU `remove-hook': remove FUNCTION from HOOK, buffer-locally if LOCAL."
+  (or (boundp hook) (set hook nil))
+  (or (default-boundp hook) (set-default hook nil))
+  (unless (and local (not (local-variable-p hook)))
+    (when (and (local-variable-p hook)
+               (not (and (consp (symbol-value hook))
+                         (memq t (symbol-value hook)))))
+      (setq local t))
+    (let ((hook-value (if local (symbol-value hook) (default-value hook)))
+          (old-fun nil))
+      (if (or (not (listp hook-value)) (eq (car hook-value) 'lambda))
+          (when (equal hook-value function)
+            (setq old-fun hook-value)
+            (setq hook-value nil))
+        (when (setq old-fun (car (member function hook-value)))
+          (setq hook-value (remq old-fun hook-value))))
+      (when old-fun
+        (let* ((depth-sym (get hook 'hook--depth-alist))
+               (depth-alist (emacs-buffer-builtins--hook-depth-alist hook local))
+               (di (assq old-fun depth-alist)))
+          (when di
+            (if local
+                (set depth-sym (remq di depth-alist))
+              (set-default depth-sym (remq di depth-alist))))))
+      (if (not local)
+          (set-default hook hook-value)
+        (if (equal hook-value '(t))
+            (kill-local-variable hook)
+          (set hook hook-value))))))
+
+(defun emacs-buffer-builtins--run-hook-until (hook call)
+  "Call CALL on HOOK's functions in GNU order until it returns non-nil.
+A buffer-local value runs in order and its `t' marker runs the default
+value there (skipping any `t' in it).  Return the first non-nil result."
+  (let ((val (and (boundp hook) (symbol-value hook)))
+        (ret nil))
+    (cond
+     ((null val) nil)
+     ((or (not (consp val)) (functionp val)) (funcall call val))
+     (t
+      (while (and (consp val) (not ret))
+        (if (eq (car val) t)
+            (let ((global (and (default-boundp hook) (default-value hook))))
+              (cond
+               ((null global))
+               ((or (not (consp global)) (eq (car global) 'lambda))
+                (setq ret (funcall call global)))
+               (t
+                (while (and (consp global) (not ret))
+                  (unless (eq (car global) t)
+                    (setq ret (funcall call (car global))))
+                  (setq global (cdr global))))))
+          (setq ret (funcall call (car val))))
+        (setq val (cdr val)))
+      ret))))
+
+(defun emacs-buffer-builtins--run-hooks (&rest hooks)
+  "GNU `run-hooks': run each hook in HOOKS with no arguments."
+  (dolist (hook hooks)
+    (emacs-buffer-builtins--run-hook-until
+     hook (lambda (fn) (funcall fn) nil)))
+  nil)
+
+(defun emacs-buffer-builtins--run-hook-with-args (hook &rest args)
+  "GNU `run-hook-with-args': call HOOK's functions with ARGS; return nil."
+  (emacs-buffer-builtins--run-hook-until
+   hook (lambda (fn) (apply fn args) nil))
+  nil)
+
+(defun emacs-buffer-builtins--run-hook-with-args-until-success (hook &rest args)
+  "GNU `run-hook-with-args-until-success'."
+  (emacs-buffer-builtins--run-hook-until
+   hook (lambda (fn) (apply fn args))))
+
+(defun emacs-buffer-builtins--run-hook-with-args-until-failure (hook &rest args)
+  "GNU `run-hook-with-args-until-failure': t unless some function returns nil."
+  (not (emacs-buffer-builtins--run-hook-until
+        hook (lambda (fn) (not (apply fn args))))))
+
+(defun emacs-buffer-builtins--run-hook-wrapped (hook wrap-function &rest args)
+  "GNU `run-hook-wrapped': call (WRAP-FUNCTION FN ARGS...) until non-nil."
+  (emacs-buffer-builtins--run-hook-until
+   hook (lambda (fn) (apply wrap-function fn args))))
+
+(when (emacs-buffer-builtins--standalone-p)
+  (defalias 'add-hook #'emacs-buffer-builtins--add-hook)
+  (defalias 'remove-hook #'emacs-buffer-builtins--remove-hook)
+  (defalias 'run-hooks #'emacs-buffer-builtins--run-hooks)
+  (defalias 'run-hook-with-args #'emacs-buffer-builtins--run-hook-with-args)
+  (defalias 'run-hook-with-args-until-success
+    #'emacs-buffer-builtins--run-hook-with-args-until-success)
+  (defalias 'run-hook-with-args-until-failure
+    #'emacs-buffer-builtins--run-hook-with-args-until-failure)
+  (defalias 'run-hook-wrapped #'emacs-buffer-builtins--run-hook-wrapped))
+
 (provide 'emacs-buffer-builtins)
 
 ;;; emacs-buffer-builtins.el ends here
