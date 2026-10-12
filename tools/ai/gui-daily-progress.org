@@ -63,6 +63,8 @@ change to the criteria list is recorded in a NOTE.
 
 #+NOTE: 2026-10-12 S5.2 re-run at 289e43d3 (text-property interval fixes; loadavg ~4.5): dired still passes (C-x d 106.5 s); magit-status command 99.7 -> 82.1 s but rendering the status buffer still exceeds 300 s; the org agenda still exceeds 300 s.  Headless magit-status completes in ~55 s, so the remaining cost is GUI redisplay of a heavily propertized buffer.
 
+#+NOTE: 2026-10-12 adopted C-core 17f0450b4 (native merge; dynamic sha256 0337907c...): library fixes 37d8b0e7; gui-daily-verify passes except S5.0c (median 0.73 s, max 1.25 s).  S5.2: dired C-x d 89.3 s (pass); magit-status render and org agenda still exceed 300 s although next-single-property-change fell 244 -> 4.9 ms, so property queries were not the render bottleneck.  S1.3 still exceeds 300 s.
+
 * S1 Shared interactive foundation
 
 ** S1.1 One event wait drives read-event: keys, timers, idle timers and process output (sit-for, sleep-for, input-pending-p behave as GNU)
