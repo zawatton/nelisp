@@ -763,8 +763,37 @@ backend reads them off the glyph's `display-spec' (Doc 06 E3)."
                  (let ((nelisp-ec--current-buffer buffer))
                    (nelisp-ovly-overlays-in beg end))))))
 
+(defvar emacs-redisplay--ovly-memo nil
+  "Per-pass overlay memo: an `eq' hash of OVERLAY -> (BOUNDS . PROPS).
+Bound by `emacs-redisplay--display-tokens' while it tokenizes one text
+range; overlays cannot change there, yet every character rescans every
+overlay, and the owner accessors are slow on standalone NeLisp (about
+4 ms per `overlay-start' pair).  PROPS is an alist of looked-up props.")
+
+(defun emacs-redisplay--ovly-memo-cell (overlay)
+  "Return OVERLAY's memo cell (BOUNDS . PROPS), creating it if needed."
+  (or (gethash overlay emacs-redisplay--ovly-memo)
+      (puthash overlay
+               (cons (let ((emacs-redisplay--ovly-memo nil))
+                       (emacs-redisplay--ovly-bounds overlay))
+                     nil)
+               emacs-redisplay--ovly-memo)))
+
 (defun emacs-redisplay--ovly-prop (overlay prop)
   "Return PROP from OVERLAY using its public owner API."
+  (if emacs-redisplay--ovly-memo
+      (let* ((cell (emacs-redisplay--ovly-memo-cell overlay))
+             (hit (assq prop (cdr cell))))
+        (if hit
+            (cdr hit)
+          (let ((value (let ((emacs-redisplay--ovly-memo nil))
+                         (emacs-redisplay--ovly-prop overlay prop))))
+            (setcdr cell (cons (cons prop value) (cdr cell)))
+            value)))
+    (emacs-redisplay--ovly-prop-1 overlay prop)))
+
+(defun emacs-redisplay--ovly-prop-1 (overlay prop)
+  "Return PROP from OVERLAY through its owner API, without the memo."
   (cond
    ((and (fboundp 'overlayp) (overlayp overlay)) (overlay-get overlay prop))
    ((and (fboundp 'emacs-buffer-overlayp) (emacs-buffer-overlayp overlay))
@@ -773,6 +802,12 @@ backend reads them off the glyph's `display-spec' (Doc 06 E3)."
 
 (defun emacs-redisplay--ovly-bounds (overlay)
   "Return OVERLAY's public (START . END) bounds."
+  (if emacs-redisplay--ovly-memo
+      (car (emacs-redisplay--ovly-memo-cell overlay))
+    (emacs-redisplay--ovly-bounds-1 overlay)))
+
+(defun emacs-redisplay--ovly-bounds-1 (overlay)
+  "Return OVERLAY's (START . END) bounds through its owner API."
   (cond
    ((and (fboundp 'overlayp) (overlayp overlay))
     (let ((start (overlay-start overlay)) (end (overlay-end overlay)))
@@ -877,6 +912,32 @@ LRU ordering — the head is most-recent."
       (error "")))
    (t "")))
 
+(defvar emacs-redisplay--tp-memo nil
+  "Per-pass text-property run memo, or nil outside a tokenizing pass.
+When non-nil it is a vector [BUFFER START END PLIST ALIASED]: PLIST holds
+on [START, END) of BUFFER; ALIASED is non-nil when BUFFER sets property
+aliases or defaults.  Bound by `emacs-redisplay--display-tokens', which
+reads several properties per character in increasing position order.")
+
+(defun emacs-redisplay--tp-memo-value (pos prop buffer)
+  "Return PROP at POS in BUFFER through the run memo.
+Buffers with `char-property-alias-alist' or `default-text-properties'
+bypass the memo, since `get-text-property' consults those too."
+  (let ((memo emacs-redisplay--tp-memo))
+    (unless (and (eq (aref memo 0) buffer)
+                 (aref memo 1) (<= (aref memo 1) pos) (< pos (aref memo 2)))
+      (with-current-buffer buffer
+        (aset memo 0 buffer) (aset memo 1 pos)
+        (aset memo 2 (or (next-property-change pos) (1+ (point-max))))
+        (aset memo 3 (text-properties-at pos))
+        (aset memo 4 (or (and (boundp 'char-property-alias-alist)
+                              char-property-alias-alist)
+                         (and (boundp 'default-text-properties)
+                              default-text-properties)))))
+    (if (aref memo 4)
+        (get-text-property pos prop buffer)
+      (plist-get (aref memo 3) prop))))
+
 (defun emacs-redisplay--text-property-at (pos prop buffer)
   "Return the value of PROP at POS in BUFFER, or nil if no value.
 Routes to `emacs-buffer-get-text-property' when available; otherwise
@@ -884,7 +945,9 @@ returns nil (= MVP face = default, display = no override)."
   (cond
    ((or (null pos) (null buffer)) nil)
    ((emacs-redisplay--standard-buffer-p buffer)
-    (get-text-property pos prop buffer))
+    (if emacs-redisplay--tp-memo
+        (emacs-redisplay--tp-memo-value pos prop buffer)
+      (get-text-property pos prop buffer)))
    ((fboundp 'emacs-buffer-get-text-property)
     (condition-case _err
         (emacs-buffer-get-text-property pos prop buffer)
@@ -1612,8 +1675,32 @@ line, Doc 06 E6)."
                (and (fboundp 'nelisp-ec-point-max)
                     (<= (nelisp-ec-point-max) (nelisp-ec-buffer-size))))))))
 
+(defvar emacs-redisplay--local-memo nil
+  "Per-pass memo of `emacs-redisplay--ml-local' results, or nil.
+A list (t . ENTRIES) whose ENTRIES are ((SYM . BUFFER) DEFAULT . VALUE).
+Bound by `emacs-redisplay--display-tokens'; variables do not change
+while it tokenizes, yet it asks for the same ones for every character.")
+
 (defun emacs-redisplay--ml-local (sym buffer default)
   "Return BUFFER's buffer-local value of SYM, or DEFAULT."
+  (if emacs-redisplay--local-memo
+      (let ((hit (cl-find-if (lambda (entry)
+                               (and (eq (car (car entry)) sym)
+                                    (eq (cdr (car entry)) buffer)
+                                    (eq (cadr entry) default)))
+                             (cdr emacs-redisplay--local-memo))))
+        (if hit
+            (cddr hit)
+          (let ((value (let ((emacs-redisplay--local-memo nil))
+                         (emacs-redisplay--ml-local sym buffer default))))
+            (setcdr emacs-redisplay--local-memo
+                    (cons (cons (cons sym buffer) (cons default value))
+                          (cdr emacs-redisplay--local-memo)))
+            value)))
+    (emacs-redisplay--ml-local-1 sym buffer default)))
+
+(defun emacs-redisplay--ml-local-1 (sym buffer default)
+  "Return BUFFER's buffer-local value of SYM, or DEFAULT, without the memo."
   (if (emacs-redisplay--standard-buffer-p buffer)
       (if (with-current-buffer buffer (boundp sym))
           (buffer-local-value sym buffer) default)
@@ -2162,7 +2249,13 @@ text-property `mouse-face' by the same priority rule."
 Visibility, replacement ranges, tabs and overlay boundary strings all affect
 row length.  Source positions remain absolute even when display text shrinks."
   (let ((out nil) (i 0) (col 0) (hidden-before nil) (previous nil)
-        (n (length text)))
+        (n (length text))
+        (emacs-redisplay--ovly-memo (or emacs-redisplay--ovly-memo
+                                        (make-hash-table :test 'eq)))
+        (emacs-redisplay--tp-memo (or emacs-redisplay--tp-memo
+                                      (make-vector 5 nil)))
+        (emacs-redisplay--local-memo (or emacs-redisplay--local-memo
+                                         (list t))))
     (while (<= i n)
       (let ((pos (+ start i)))
         ;; Nonempty after-strings precede before-strings at a shared boundary.

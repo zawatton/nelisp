@@ -1969,3 +1969,49 @@ buffer char at the overlay's start position."
 (provide 'emacs-redisplay-test)
 
 ;;; emacs-redisplay-test.el ends here
+
+(ert-deftest emacs-redisplay-test/display-tokens-memoizes-overlay-lookups ()
+  "One tokenizing pass reads each overlay's bounds once, with equal tokens."
+  (with-temp-buffer
+    (insert (make-string 40 ?a))
+    (let ((ovs (list (make-overlay 3 9) (make-overlay 10 20) (make-overlay 25 30))))
+      (overlay-put (nth 0 ovs) 'before-string "<")
+      (overlay-put (nth 1 ovs) 'after-string ">")
+      (overlay-put (nth 2 ovs) 'face 'bold)
+      (let* ((text (buffer-substring-no-properties 1 41))
+             (calls 0)
+             (orig (symbol-function 'emacs-redisplay--ovly-bounds-1))
+             (memoized nil) (plain nil))
+        (cl-letf (((symbol-function 'emacs-redisplay--ovly-bounds-1)
+                   (lambda (ov) (setq calls (1+ calls)) (funcall orig ov))))
+          (setq memoized (emacs-redisplay--display-tokens text 1 (current-buffer) ovs))
+          (should (<= calls (length ovs)))
+          ;; Without the memo every character rescans every overlay.
+          (setq calls 0)
+          (cl-letf (((symbol-function 'emacs-redisplay--ovly-memo-cell)
+                     (lambda (ov) (cons (emacs-redisplay--ovly-bounds-1 ov) nil))))
+            (setq plain (emacs-redisplay--display-tokens text 1 (current-buffer) ovs)))
+          (should (> calls (* 10 (length ovs)))))
+        (should (equal memoized plain))))))
+
+(ert-deftest emacs-redisplay-test/display-tokens-text-property-memo-matches ()
+  "The per-pass text-property and local memos keep tokens unchanged."
+  (with-temp-buffer
+    (insert "abc def ghi jkl mno")
+    (put-text-property 1 4 'face 'bold)
+    (put-text-property 5 8 'invisible t)
+    (put-text-property 9 12 'face 'italic)
+    (put-text-property 13 16 'display "X")
+    (let* ((text (buffer-substring-no-properties (point-min) (point-max)))
+           (memoized (emacs-redisplay--display-tokens text 1 (current-buffer) nil))
+           (plain (cl-letf (((symbol-function 'emacs-redisplay--tp-memo-value)
+                             (lambda (pos prop buffer) (get-text-property pos prop buffer))))
+                    (let ((emacs-redisplay--local-memo nil))
+                      (emacs-redisplay--display-tokens text 1 (current-buffer) nil)))))
+      (should (equal memoized plain))
+      ;; Property aliases bypass the memo, as `get-text-property' honors them.
+      (setq-local char-property-alias-alist '((face my-face)))
+      (put-text-property 17 20 'my-face 'underline)
+      (let ((emacs-redisplay--tp-memo (make-vector 5 nil)))
+        (should (eq (emacs-redisplay--text-property-at 18 'face (current-buffer))
+                    'underline))))))
