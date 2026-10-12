@@ -634,13 +634,18 @@ The caller must inhibit mid-form collection until the syscall returns."
                                              (plist-get init :constant-index)
                                            (plist-get init :value)))) initializers))
                      constants (or exit-base -1) (list owner addresses header))))
+        ;; Optional generic counter metadata is retained by the native record.
+        ;; It avoids an interpreted rest/APPLY wrapper around every template
+        ;; entry. The Lisp fallback keeps non-fixnum/error counter semantics.
+        (when template-p
+          (setq descriptor
+                (vconcat descriptor
+                         (vector (vector 'nelisp-native-template--entry-count
+                                         (lambda ()
+                                           (setq nelisp-native-template--entry-count
+                                                 (1+ nelisp-native-template--entry-count))))))))
         (throw 'nelisp-native-cache-callable
-          (let ((native (nelisp--native-subr-create descriptor (intern entry-name) 0 t)))
-            (if template-p
-                (lambda (&rest arguments)
-                  (setq nelisp-native-template--entry-count (1+ nelisp-native-template--entry-count))
-                  (apply native arguments))
-              native)))))
+          (nelisp--native-subr-create descriptor (intern entry-name) 0 t))))
     (lambda (&rest arguments)
       ;; Keep the entire mapping reachable for the lifetime of the closure.
       (unless (and entry (not broken)) (error "Native cache unit is broken"))
