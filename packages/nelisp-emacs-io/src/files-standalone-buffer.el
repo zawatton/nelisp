@@ -1587,9 +1587,11 @@ ignored."
   ;; The reader's baked nelisp--syscall-read-file throws uncatchably when
   ;; called with a path; redefine it on top of rdf (the working file-read
   ;; primitive).  Gated on the standalone marker so host Emacs is untouched.
-  (defun nelisp--syscall-read-file (filename)
+  ;; LITERAL is forwarded: NeLisp 1.0.1+ prelude callers such as
+  ;; `insert-file-contents-literally' pass it as a second argument.
+  (defun nelisp--syscall-read-file (filename &optional literal)
     (let* ((expanded (expand-file-name filename))
-           (s (rdf expanded)))
+           (s (if literal (rdf expanded literal) (rdf expanded))))
       (cond
        ((and (stringp s) (> (length s) 0)) s)
        ((file-exists-p expanded) "")

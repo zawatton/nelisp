@@ -2946,7 +2946,15 @@ if all requested words were traversed, nil at a buffer or field edge."
 (when (emacs-edit-builtins--install-function-p 'backward-word)
   (defun backward-word (&optional arg)
     "Phase E polyfill: equivalent to `(forward-word (- ARG))'."
+    (interactive "^p")
     (forward-word (- (or arg 1)))))
+
+;; NeLisp 1.0.1+ preludes provide a non-interactive `forward-word', which
+;; the native-first install rule above keeps.  GNU's word motions are
+;; commands bound to M-f / M-b, so give a kept definition GNU's spec.
+(dolist (command '(forward-word backward-word))
+  (when (and (fboundp command) (not (commandp command)))
+    (put command 'interactive-form '(interactive "^p"))))
 
 (defvar word-move-empty-char-table nil
   "Char table used to suppress language-specific word boundary callbacks.")
