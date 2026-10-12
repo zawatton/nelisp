@@ -2,6 +2,7 @@
 
 (require 'ert)
 (require 'bytecomp)
+(require 'loadhist)
 (require 'nelisp-bytecode-compiler-input)
 (require 'nelisp-bytecode-native-rooted-cfg-native)
 (require 'nelisp-native-load)
@@ -99,69 +100,98 @@
       (should-error (nelisp-native-load-raw-v2-check manifest)))
     (should (= slow-calls 0))))
 
+;; Snapshot FEATURE's functions and variables, run BODY, then restore them.
+;; Unloading and reloading a module replaces its function objects; modules that
+;; sealed the originals refuse the replacements, so a test that reloads one
+;; must leave the originals installed for the tests after it.
+(defmacro nelisp-bytecode-native-rooted-cfg-safe-producer-test--preserving-feature (feature &rest body)
+  "Run BODY, then restore FEATURE's function and variable bindings."
+  (declare (indent 1))
+  (let ((saved (make-symbol "saved")))
+    `(let ((,saved
+            (let ((entry (assoc (feature-file ,feature) load-history)) (acc nil))
+              (dolist (item (cdr entry))
+                (cond ((and (consp item) (eq (car item) 'defun))
+                       (push (list 'fn (cdr item) (symbol-function (cdr item))) acc))
+                      ((and (symbolp item) (boundp item))
+                       (push (list 'var item (symbol-value item)) acc))))
+              acc)))
+       (unwind-protect (progn ,@body)
+         (dolist (row ,saved)
+           (pcase (car row)
+             ('fn (fset (nth 1 row) (nth 2 row)))
+             ('var (set (nth 1 row) (nth 2 row)))))
+         (unless (featurep ,feature) (provide ,feature))))))
+
 (ert-deftest nelisp-bytecode-native-rooted-cfg-safe-loader/admit-valid-v3-manifest-and-reject-rehashed-mutations ()
   (skip-unless (equal emacs-version "31.1"))
-  (let* ((contract (nelisp-bytecode-native-rooted-cfg-safe-producer-test--contract))
-         (manifest (nelisp-bytecode-native-rooted-cfg-safe-producer-test--manifest
-                    contract)))
-    (should contract)
-    (unload-feature 'nelisp-bytecode-native-rooted-cfg-safe-contract t)
-    (should-not (featurep 'nelisp-bytecode-native-rooted-cfg-safe-contract))
-    (should (nelisp-native-load-raw-v2-rooted-cfg-contract-valid-p manifest))
-    (should (featurep 'nelisp-bytecode-native-rooted-cfg-safe-contract))
-    (let ((problems
-           (nelisp-native-load-raw-v2-check
-            manifest nelisp-bytecode-native-rooted-cfg-safe-contract-entry)))
-      (should-not (member '(:raw-native-rooted-cfg-contract-invalid) problems))
-      (should (listp problems)))
-    (dolist (mutate
-             (list (lambda (candidate)
-                     (setf (plist-get (plist-get candidate
-                                                  :native-rooted-cfg-safe-v3-contract)
-                                      :abi) 1))
-                   (lambda (candidate)
-                     (setf (plist-get (plist-get candidate
-                                                  :native-rooted-cfg-safe-v3-contract)
-                                      :argument-count) 99))
-                   (lambda (candidate)
-                     (setf (plist-get (plist-get candidate
-                                                  :native-rooted-cfg-safe-v3-contract)
-                                      :entry-params) '(u32 u64 u64 u64)))
-                   (lambda (candidate)
-                     (setf (plist-get (car (plist-get candidate
-                                                       :native-rooted-cfg-safe-v3-import-descriptors))
-                                      :index) -1))
-                   (lambda (candidate)
-                     (setf (plist-get (car (plist-get candidate
-                                                       :native-rooted-cfg-safe-v3-import-descriptors))
-                                      :address-mode) 'untyped-address))
-                   (lambda (candidate)
-                     (let ((without-root-pin
-                            (cl-remove-if
-                             (lambda (descriptor)
-                               (equal (plist-get descriptor :name)
-                                      "nl_root_pin_slot_v2"))
-                             (plist-get candidate
-                                        :native-rooted-cfg-safe-v3-import-descriptors))))
-                       (setf (plist-get candidate
-                                        :native-rooted-cfg-safe-v3-import-descriptors)
-                             without-root-pin)
-                       (setf (plist-get (plist-get candidate :native) :imports)
-                             without-root-pin)))
-                   (lambda (candidate)
-                     (setf (plist-get candidate :native-rooted-cfg-contract-version)
-                           "mixed-legacy-contract"))))
-      (let* ((candidate (copy-tree manifest))
-             (candidate-contract
-              (plist-get candidate :native-rooted-cfg-safe-v3-contract)))
-        (funcall mutate candidate)
-        (when (memq :digest candidate-contract)
-          (nelisp-bytecode-native-rooted-cfg-safe-producer-test--rehash
-           candidate-contract)
-          (setf (plist-get candidate :native-rooted-cfg-safe-v3-contract-hash)
-                (plist-get candidate-contract :digest)))
-        (should-not
-         (nelisp-native-load-raw-v2-rooted-cfg-contract-valid-p candidate))))))
+  ;; The test unloads the safe contract to prove the loader reloads it.  The
+  ;; reload makes new function objects, which every module that sealed the
+  ;; originals (contract owner checks) would then refuse for the rest of the
+  ;; shared suite, so the originals are put back afterwards.
+  (nelisp-bytecode-native-rooted-cfg-safe-producer-test--preserving-feature
+      'nelisp-bytecode-native-rooted-cfg-safe-contract
+    (let* ((contract (nelisp-bytecode-native-rooted-cfg-safe-producer-test--contract))
+           (manifest (nelisp-bytecode-native-rooted-cfg-safe-producer-test--manifest
+                      contract)))
+      (should contract)
+      (unload-feature 'nelisp-bytecode-native-rooted-cfg-safe-contract t)
+      (should-not (featurep 'nelisp-bytecode-native-rooted-cfg-safe-contract))
+      (should (nelisp-native-load-raw-v2-rooted-cfg-contract-valid-p manifest))
+      (should (featurep 'nelisp-bytecode-native-rooted-cfg-safe-contract))
+      (let ((problems
+             (nelisp-native-load-raw-v2-check
+              manifest nelisp-bytecode-native-rooted-cfg-safe-contract-entry)))
+        (should-not (member '(:raw-native-rooted-cfg-contract-invalid) problems))
+        (should (listp problems)))
+      (dolist (mutate
+               (list (lambda (candidate)
+                       (setf (plist-get (plist-get candidate
+                                                    :native-rooted-cfg-safe-v3-contract)
+                                        :abi) 1))
+                     (lambda (candidate)
+                       (setf (plist-get (plist-get candidate
+                                                    :native-rooted-cfg-safe-v3-contract)
+                                        :argument-count) 99))
+                     (lambda (candidate)
+                       (setf (plist-get (plist-get candidate
+                                                    :native-rooted-cfg-safe-v3-contract)
+                                        :entry-params) '(u32 u64 u64 u64)))
+                     (lambda (candidate)
+                       (setf (plist-get (car (plist-get candidate
+                                                         :native-rooted-cfg-safe-v3-import-descriptors))
+                                        :index) -1))
+                     (lambda (candidate)
+                       (setf (plist-get (car (plist-get candidate
+                                                         :native-rooted-cfg-safe-v3-import-descriptors))
+                                        :address-mode) 'untyped-address))
+                     (lambda (candidate)
+                       (let ((without-root-pin
+                              (cl-remove-if
+                               (lambda (descriptor)
+                                 (equal (plist-get descriptor :name)
+                                        "nl_root_pin_slot_v2"))
+                               (plist-get candidate
+                                          :native-rooted-cfg-safe-v3-import-descriptors))))
+                         (setf (plist-get candidate
+                                          :native-rooted-cfg-safe-v3-import-descriptors)
+                               without-root-pin)
+                         (setf (plist-get (plist-get candidate :native) :imports)
+                               without-root-pin)))
+                     (lambda (candidate)
+                       (setf (plist-get candidate :native-rooted-cfg-contract-version)
+                             "mixed-legacy-contract"))))
+        (let* ((candidate (copy-tree manifest))
+               (candidate-contract
+                (plist-get candidate :native-rooted-cfg-safe-v3-contract)))
+          (funcall mutate candidate)
+          (when (memq :digest candidate-contract)
+            (nelisp-bytecode-native-rooted-cfg-safe-producer-test--rehash
+             candidate-contract)
+            (setf (plist-get candidate :native-rooted-cfg-safe-v3-contract-hash)
+                  (plist-get candidate-contract :digest)))
+          (should-not
+           (nelisp-native-load-raw-v2-rooted-cfg-contract-valid-p candidate)))))))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-safe-producer/fingerprint-ignores-printer-truncation-but-covers-mutations ()
   (let* ((result (list :artifact-file-sha256 "artifact" :manifest
