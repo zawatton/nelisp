@@ -574,6 +574,10 @@
         (lambda (plan verified entry-name)
           (let* ((input (plist-get plan :input))
            (raw-cfg (or (plist-get verified :handler-bank)
+			;; Distinct terminal returns have no real common join.
+			;; The authenticated raw CFG represents each exit once
+			;; instead of requiring a structured continuation there.
+			(> (length (plist-get verified :return-selectors)) 1)
 			(and (plist-get verified :banked)
 			     ;; An acyclic frame activation needs one shared epilogue.
 			     ;; Single-block entry phis are already materialized in the

@@ -343,7 +343,15 @@ include poll exits before every instruction."
                (switch-root (+ quit-base 3)) (targets-base (1+ switch-root))
                (switches (cl-remove-if-not (lambda (row) (= (aref row 1) 183)) rows))
                (immediate-base (+ targets-base (length switches)))
-               (immediate-count (if frame-p (+ 2 (length rows)) 0))
+               ;; Only frame operations consuming an immediate need a root.
+               ;; Reserving one for every instruction made long activations
+               ;; exceed the gateway's root bound with hundreds of unused nils.
+               (immediate-rows
+                (and frame-p (cl-remove-if-not
+                              (lambda (row)
+                                (or (memq (aref row 1) '(49 50 144 145))
+                                    (eq (aref row 4) 'unbind))) rows)))
+               (immediate-count (if frame-p (+ 2 (length immediate-rows)) 0))
                (frame-state (+ immediate-base immediate-count))
                (handler-pairs (1+ frame-state))
                (pair-count (* 2 (or (plist-get frame-analysis :max-handlers) 0)))
@@ -363,7 +371,7 @@ include poll exits before every instruction."
             (push (list :root frame-state :frame t) initializers)
             (push (list :root immediate-base :value 1) initializers)
             (push (list :root (1+ immediate-base) :value maximum) initializers)
-            (cl-loop for row in rows for root from (+ immediate-base 2) do
+            (cl-loop for row in immediate-rows for root from (+ immediate-base 2) do
                      (let ((op (aref row 1)))
                        (push (list :root root :value
                                    (cond ((memq op '(49 50))
@@ -384,7 +392,7 @@ include poll exits before every instruction."
                 :provider-roots (cl-loop for p in providers for i from provider-base collect (cons p i))
                 :frame-p frame-p :handler-p handler-p :frame-state frame-state
                 :frame-result frame-result :immediate-base immediate-base :frame-analysis frame-analysis
-                :frame-immediates (cl-loop for row in rows for root from (+ immediate-base 2)
+                :frame-immediates (cl-loop for row in immediate-rows for root from (+ immediate-base 2)
                                            collect (cons (aref row 0) root))
                 :poll-root poll-root :quit-base quit-base :switch-root switch-root :switch-targets (nreverse switch-targets)
                 :staging staging :result result :exit-root-base (1+ result) :initializers (nreverse initializers)))))))
