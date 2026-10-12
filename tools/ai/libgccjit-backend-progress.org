@@ -358,7 +358,8 @@ cmd: python3 target/evidence-final/check-acceptance.py --sha 8e01ee1a222b40ce80f
 #+NOTE: 2026-10-12 integ-requal-2: FAIL: The bounded LISTN lowering fix changed the embedded whole-compiler source identity; fixed-reader evidence is not yet complete. Original verifier: AssertionError: nelisp-native-boundary-receipt.py:33: assert row['pins'][str(binary)] == sha(binary)
 cmd: python3 target/evidence-final/check-acceptance.py --sha 8e01ee1a222b40ce80f226d3cf27d17da459835346cccbb02e657222959fc05a --criterion P3.6
 ** P3.3 End to end: on the C-core merged dynamic binary, natively compiling the GUI hot functions makes the g4-interpretation benchmark faster than interpreted, with identical output
-pending
+#+NOTE: 2026-10-12 C-core merged dynamic binary (merge tree ccore-native-merge 43027d827, binary 3e08b67b, cold 8953058d): run13 compiler fixes (cfg-data, multi-return shared emit, template immediate roots, cold owner order, quiet poll) plus run14 (template entry counter in the common activation instead of an interpreted &rest/APPLY wrapper). g4, 3 alternating repetitions per backend, identical output: in-house native 22.21 vs interpreted 23.11 ms; template native 22.81 vs 23.12 ms. GUI functions installed: in-house 11, template 13. Checker target/brief14/check-p33.py PASS; receipt binds the checker output, comparisons and manifests by sha256. Margins are small (4% and 1.3%).
+evidence: target/p33-ccore/receipt.json sha256=cfe621bc1e116994e2e21d422e15e2d0dfc013fb29bc1bd6a284ce4ee3805513
 
 * W1 Windows x86_64 native compilation (PE/COFF, VirtualAlloc, Win64 ABI)
 #+NOTE: 2026-10-10 stage added at the user's request; denominator 29 -> 33. The native loader, the raw-v2 artifact (ELF), the executable mapping (mmap/mprotect via Linux syscalls), the calling convention (SysV) and the template stencils are Linux x86_64 only; on Windows the trust gates refuse and everything runs interpreted.
@@ -382,5 +383,6 @@ evidence: target/windows-native/frozen-38177164531/w13-receipt.json sha256=bc33c
 ** W1.4 End to end: on Windows, the 1e6 hot loop runs natively in at most 1/5 of the interpreted time, and the Linux ledger stays green
 #+NOTE: 2026-10-10 Windows half met: CI run 38056525157 (36ede9f05) native 1.589 s vs interpreted 78.43 s, ratio 0.020 (best of 3, compile 567 s); receipt target/windows-native/ci-hot-loop-38056525157/receipt.json sha256=0088c7827e559b0c1c35bf21ce6934b0f6984d25d0e847e45b0597c2533dcd7c. Stays pending until the Linux ledger is requalified on the integrated tree.
 #+NOTE: 2026-10-12 windows-latest run 38177164531 hot loop n=1e6: native 1.528 s against interpreted 60.80 s (ratio 0.025). The check also runs every non-W1 criterion of this ledger, so it fails while any Linux criterion fails.
+#+TIMEOUT: 300
 cmd: python3 target/evidence-final/check-w14.py
 
