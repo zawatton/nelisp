@@ -96,3 +96,21 @@
 (provide 'emacs-process-shell-resolver-test)
 
 ;;; emacs-process-shell-resolver-test.el ends here
+
+(ert-deftest emacs-process-shell-resolver-test/standalone-run-resolves-program-once ()
+  "A standalone call-process walks the program search path only once."
+  (let ((lookups 0) (started nil))
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (name &optional _remote)
+                 (setq lookups (1+ lookups))
+                 (and (equal name "git") "/usr/bin/git")))
+              ((symbol-function 'file-exists-p) (lambda (_f) t))
+              ((symbol-function 'emacs-process--call-process-cwd) (lambda () nil))
+              ((symbol-function 'nelisp-process-start)
+               (lambda (&rest command) (setq started command) 'proc))
+              ((symbol-function 'nelisp-process-wait) (lambda (_p) 0))
+              ((symbol-function 'nelisp-process-read-output) (lambda (_p _n) nil)))
+      (should (equal (emacs-process--standalone-run "git" nil t '("status"))
+                     '(0 . "")))
+      (should (= lookups 1))
+      (should (equal (last started 2) '("/usr/bin/git" "status"))))))

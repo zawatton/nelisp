@@ -899,7 +899,8 @@ reader primitive surface has no direct child-stdin redirection parameter.
 Caveat: draining after exit assumes the child's total stdout fits the
 reader's stdout buffer; multi-megabyte streaming output is out of scope
   for this synchronous path."
-  (emacs-process--check-program-exists program)
+  ;; Resolve once: an absolute result skips the second PATH walk below.
+  (setq program (or (emacs-process--check-program-exists program) program))
   (let* ((command (emacs-process--call-process-command program infile args))
          (stderr (emacs-process--call-process-stderr-destination destination))
          (stderr-wrapper
@@ -958,7 +959,9 @@ temporary buffer and `call-process'."
       (cons rc out))))
 
 (defun emacs-process--check-program-exists (program)
-  "Signal `file-missing' like GNU `call-process' when PROGRAM cannot be found."
+  "Signal `file-missing' like GNU `call-process' when PROGRAM cannot be found.
+Return the resolved program path when PROGRAM is a string, so callers can
+reuse it instead of walking `exec-path' again."
   (when (stringp program)
     (let ((resolved (emacs-process--resolve-program program)))
       (unless (and (stringp resolved)
@@ -966,7 +969,8 @@ temporary buffer and `call-process'."
                    (file-exists-p resolved))
         (signal 'file-missing
                 (list "Searching for program" "No such file or directory"
-                      program))))))
+                      program)))
+      resolved)))
 
 (defvar emacs-process--region-input-counter 0
   "Counter used to name `call-process-region' temporary input files.")
