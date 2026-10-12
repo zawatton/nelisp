@@ -3,10 +3,13 @@
 (require 'cl-lib)
 
 ;; `#$' in a docstring reference reads as `load-file-name'.  Bind it to
-;; PATH, as `load' would: left as the file that is loading this code, a
-;; later `documentation' call on a read function reloads THAT file
-;; (measured 2026-10-11: it re-entered the ERT driver mid-suite and the
-;; nested run segfaulted the host Emacs).
+;; nil: left as the file that is loading this code, a later
+;; `documentation' call on a read function reloads THAT file (measured
+;; 2026-10-11: it re-entered the ERT driver mid-suite and the nested run
+;; segfaulted the host Emacs).  Not PATH either: these forms are package
+;; data whose identity is hashed, and a temporary .elc path would make the
+;; same compiled package hash differently on every read (raw-package
+;; refused it as "manifest or package identity rejected").
 (defun nelisp-bytecode-native-consumer-read-elc-forms (path)
   "Read GNU byte-code forms from PATH without evaluating them."
   (with-temp-buffer
@@ -16,7 +19,7 @@
     (unless (looking-at ";ELC")
       (error "bytecode-native-package: not a GNU .elc file: %s" path))
     (forward-line 1)
-    (let ((load-file-name path) forms done)
+    (let ((load-file-name nil) forms done)
       (while (not done)
         (skip-chars-forward " \t\r\n")
         (while (eq (char-after) ?\;)
