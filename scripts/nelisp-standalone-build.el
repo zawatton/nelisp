@@ -21885,6 +21885,40 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
                     (bf_wrong_number_of_args name_ptr builtin_argc)))))))
    table))
 
+;; The reader's complete dispatch arms: the reader table plus the native
+;; pin/unbox arms appended for the native compiler.  Built here once so
+;; `nelisp-standalone--applyfn-source' and scripts/reader-surface-audit.el
+;; read the same table (the audit used to see only the first part and
+;; reported the appended arms as fboundp liars).
+(defun nelisp-standalone--applyfn-final-reader-table ()
+  "Return every reader dispatch arm, including the native pin arms."
+  (append (nelisp-standalone--applyfn-reader-table)
+              (list
+               (cons '(:u8 "nelisp--native-pin-copy")
+                     '(wf_write_int
+                       out
+                       (nl_reader_native_pin_copy
+                        (wf_arg_ptr args 2)
+                        (nl_root_pin_reserve
+                         (wf_argval args 0) (wf_argval args 1)))))
+               (cons '(:u8 "nelisp--native-pin-copy-v2")
+                     '(wf_write_int
+                       out
+                       (nl_reader_native_pin_copy
+                        (wf_arg_ptr args 3)
+                        (nl_root_pin_slot_v2
+                         (wf_argval args 0) (wf_argval args 1)
+                         (wf_argval args 2)))))
+               (cons '(:u8 "nelisp--native-pin-eq-slots")
+                     '(if (= (nl_reader_native_pin_eq_slots
+                              (wf_argval args 0) (wf_argval args 1)) 1)
+                          (wf_write_t out)
+                        (wf_write_nil out)))
+               (cons '(:lit "nelisp--native-unbox-reference")
+                     '(nl_reader_native_result_ref
+                       (wf_argval args 0) (wf_argval args 1) (wf_argval args 2)
+                       args out)))))
+
 (defun nelisp-standalone--applyfn-source ()
   "Full reader-path applyfn: arithmetic + hash tables + strings/format + file I/O
 + B-foundation breadth (predicates / vectors / symbols / equal / setcar-setcdr,
@@ -21940,32 +21974,7 @@ extern arms in dynamic builds."
                      (nl_reader_native_result_ref_error args))
                  (nl_reader_native_result_ref_error args))))))
    (nelisp-standalone--guard-fixed-arities
-    (append (nelisp-standalone--applyfn-reader-table)
-            (list
-             (cons '(:u8 "nelisp--native-pin-copy")
-                   '(wf_write_int
-                     out
-                     (nl_reader_native_pin_copy
-                      (wf_arg_ptr args 2)
-                      (nl_root_pin_reserve
-                       (wf_argval args 0) (wf_argval args 1)))))
-             (cons '(:u8 "nelisp--native-pin-copy-v2")
-                   '(wf_write_int
-                     out
-                     (nl_reader_native_pin_copy
-                      (wf_arg_ptr args 3)
-                      (nl_root_pin_slot_v2
-                       (wf_argval args 0) (wf_argval args 1)
-                       (wf_argval args 2)))))
-             (cons '(:u8 "nelisp--native-pin-eq-slots")
-                   '(if (= (nl_reader_native_pin_eq_slots
-                            (wf_argval args 0) (wf_argval args 1)) 1)
-                        (wf_write_t out)
-                      (wf_write_nil out)))
-             (cons '(:lit "nelisp--native-unbox-reference")
-                   '(nl_reader_native_result_ref
-                     (wf_argval args 0) (wf_argval args 1) (wf_argval args 2)
-                     args out))))
+    (nelisp-standalone--applyfn-final-reader-table)
     (nelisp-standalone--builtin-fixed-arities))))
 
 ;; ===================================================================
@@ -26698,7 +26707,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "consp" "atom" "subrp" "stringp" "symbolp" "symbol-with-pos-p" "integerp" "natnump" "numberp" "floatp" "sxhash-eq"
     "nl--read-int" "nl--int-token-p" "nl--nthcdr"
     "byte-code" "byte-code-function-p" "make-byte-code" "fetch-bytecode"
-    "vectorp" "listp" "nlistp" "zerop" "set" "makunbound" "symbol-value" "symbol-function" "fboundp" "boundp" "featurep" "provide" "require"
+    "vectorp" "listp" "nlistp" "zerop" "set" "makunbound" "symbol-value" "symbol-function" "fboundp" "boundp" "featurep" "require"
     "symbol-name" "bare-symbol" "intern" "intern-soft" "make-symbol" "nelisp--intern-lookup"
     "nelisp--format-simple" "unibyte-string"
     "nelisp--native-subr-create" "nelisp--native-subr-live-count"

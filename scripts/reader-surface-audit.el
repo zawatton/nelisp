@@ -33,7 +33,7 @@
                       (stringp (cadr key)))
            (error "Malformed reader dispatch arm for %s: %S" target arm))
          (cadr key)))
-     (nelisp-standalone--applyfn-reader-table))))
+     (nelisp-standalone--applyfn-final-reader-table))))
 
 (defun nelisp-reader-surface-audit--dispatch-names ()
   "Return names with a dispatch arm on every release target.

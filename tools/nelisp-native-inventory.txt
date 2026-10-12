@@ -165,7 +165,6 @@ symbol-function	native-must-stay	evaluator core (eval/apply/funcall/signal/symbo
 fboundp	native-must-stay	evaluator core (eval/apply/funcall/signal/symbol cells)
 boundp	native-must-stay	evaluator core (eval/apply/funcall/signal/symbol cells)
 featurep	native-must-stay	feature registry read by bootstrap loader
-provide	native-review	No classification row; review against Doc 211 §6.
 require	native-review	No classification row; review against Doc 211 §6.
 symbol-name	native-must-stay	evaluator core (eval/apply/funcall/signal/symbol cells)
 bare-symbol	native-must-stay	type predicate on tag bits
