@@ -32,7 +32,9 @@
   "Count page-rounded PT_LOAD extents in an authenticated ELF64 FILE."
   (let ((bytes (with-temp-buffer
                  (set-buffer-multibyte nil)
-                 (insert-file-contents-literally file) (buffer-string))) (total 0))
+                 (insert-file-contents-literally file) (buffer-string))) (total 0)
+        (page (if (and (fboundp 'nelisp-native-load--arm64-p) (nelisp-native-load--arm64-p))
+                  (nelisp-native-load--page-bytes) 4096)))
     (unless (and (>= (length bytes) 64) (equal (substring bytes 0 6) "\177ELF\2\1"))
       (error "Native budget requires little-endian ELF64"))
     (let ((offset (nelisp-native-budget--uint bytes 32 8))
@@ -46,7 +48,7 @@
           (when (= 1 (nelisp-native-budget--uint bytes start 4))
             (let ((address (nelisp-native-budget--uint bytes (+ start 16) 8))
                   (size (nelisp-native-budget--uint bytes (+ start 40) 8)))
-              (setq total (+ total (* 4096 (/ (+ (mod address 4096) size 4095) 4096)))))))))
+              (setq total (+ total (* page (/ (+ (mod address page) size (- page 1)) page)))))))))
     (unless (> total 0) (error "ELF has no PT_LOAD code reservation"))
     total))
 (provide 'nelisp-native-budget)

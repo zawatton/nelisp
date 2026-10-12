@@ -35,7 +35,24 @@
       (unless found (error "reader-builtins defconst not found in %s" nn-source))
       (append found (cl-remove-if-not
                      (lambda (name) (member name bridges))
-                     '("nl_native_funcall_v2" "nl_native_frame_v2" "nl_native_poll_v2"))))))
+                     '("nl_native_funcall_v2" "nl_native_frame_v2" "nl_native_poll_v2"))
+              (nn-arm64-raw-entries)))))
+
+(defun nn-arm64-raw-entries ()
+  "Inventory the reader-owned raw cache helper, which is not a Lisp builtin."
+  (let ((path (expand-file-name "nelisp-native-linux-arm64-unit.el" (file-name-directory nn-source)))
+        (names nil))
+    (with-temp-buffer
+      (insert-file-contents path)
+      (let (form)
+        (while (condition-case nil (progn (setq form (read (current-buffer))) t) (end-of-file nil))
+          (cl-labels ((walk (node)
+                        (when (consp node)
+                          (when (eq (car node) 'nelisp-link-symbol) (push (cadr node) names))
+                          (walk (car node)) (walk (cdr node)))))
+            (walk form)))))
+    (unless (equal names '("nl_native_linux_arm64_publish")) (error "ARM64 raw native surface changed"))
+    names))
 
 (defun nn-classifications ()
   (let ((result (make-hash-table :test 'equal)))
@@ -62,6 +79,8 @@
                             (if (equal name "nelisp--build-digest")
                                 '("native-must-stay" . "Raw read-only linked rodata access (clause 3); no path/pointer input, nil if unstamped; Lisp reference nelisp-build-digest-reference in test/nelisp-build-digest-test.el.")
                               (cond
+                                 ((equal name "nl_native_linux_arm64_publish")
+                                  '("native-must-stay" . "Raw cache/memory maintenance (AGENTS clause 3); CTR_EL0/DC CVAU/IC IVAU/DSB/ISB via existing ptr-call, Linux ARM64 only. Lisp controller/reference: scripts/nelisp-native-linux-arm64-unit.el."))
                                  ((equal name "nl_native_frame_v2")
                                   '("native-must-stay" . "Evaluator entry (clause 2), authenticated activation watermark, rooted frame installation/removal and ordered cleanup callbacks and U8 status-return handler landing (clause 2), authenticated operand-bank full-slot copies (clause 1); Lisp references nelisp-native-frame-v2-source and nelisp-bytecode-cleanup-source; measurements and limitations in F2.2 and native-handlers-u8-progress.org."))
                                  ((equal name "nl_native_poll_v2")

@@ -65,6 +65,19 @@ roots and CONS. Arithmetic, calls, accessors and branches remain outside it."
        (plist-get (plist-get contract :plan) :funcall-version)
        (equal (plist-get contract :funcall-descriptor) (nelisp-native-funcall-v2-descriptor))
        (equal (plist-get contract :funcall-hash) (nelisp-native-funcall-v2-hash))
-       (equal (plist-get contract :imports) '("nl_native_funcall_v2" "nl_root_pin_slot_v2")))))
+       ;; The generic domain imports only the root pin, the funcall bridge and,
+       ;; exactly when the plan carries the P3.2 poll root (a loop), the
+       ;; authenticated poll gateway.  A loop that calls nothing imports no
+       ;; funcall bridge; nothing else (no CONS) is admitted.
+       (let ((imports (plist-get contract :imports))
+             (poll-p (plist-get (plist-get contract :plan) :poll-root)))
+         (and (equal imports (sort (delete-dups (copy-sequence imports)) #'string<))
+              (member "nl_root_pin_slot_v2" imports)
+              (if poll-p (member "nl_native_poll_v2" imports)
+                (not (member "nl_native_poll_v2" imports)))
+              (cl-every (lambda (name)
+                          (member name '("nl_native_funcall_v2" "nl_native_poll_v2"
+                                         "nl_root_pin_slot_v2")))
+                        imports))))))
 (provide 'nelisp-bytecode-native-rooted-cfg-constructor-contract)
 ;;; nelisp-bytecode-native-rooted-cfg-constructor-contract.el ends here

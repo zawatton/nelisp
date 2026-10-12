@@ -245,7 +245,7 @@
       (puthash (car record) t requested))
     (unless (and (equal (substring header 0 6) (unibyte-string 127 69 76 70 2 1))
                  (= (nelisp-native-rooted-abi-proof--u header 16 2) 2)
-                 (= (nelisp-native-rooted-abi-proof--u header 18 2) 62)
+                 (= (nelisp-native-rooted-abi-proof--u header 18 2) (if (nelisp-native-load--arm64-p) 183 62))
                  (= (nelisp-native-rooted-abi-proof--u header 58 2) 64)
                  (<= 1 count 256))
       (error "Root proof ELF domain rejected"))
@@ -382,16 +382,27 @@ It saves ELF parsing; every actual memory window is still checked."
                    (target (gethash (plist-get relocation :symbol) symbols))
                    (unsigned (nelisp-native-rooted-abi-proof--u file offset 4))
                    (actual (if (>= unsigned 2147483648) (- unsigned 4294967296) unsigned)))
-              (unless (and target (memq (plist-get relocation :type) '(pc32 plt32))
-                           (= (plist-get relocation :width) 4) (<= 0 offset)
-                           (<= (+ offset 4) size)
-                           (= actual (- (+ (plist-get target :address) (plist-get relocation :addend))
-                                        (+ address offset 4))))
-                (error "Unknown or altered relocation target"))
-              (dotimes (index 4)
-                (when (gethash (+ offset index) used) (error "Overlapping relocation"))
-                (puthash (+ offset index) t used)
-                (aset memory (+ offset index) 0))))
+              (if (nelisp-native-load--arm64-p)
+                  (let* ((type (plist-get relocation :type))
+                         (canonical (and target (= (plist-get relocation :width) 4)
+                                         (nelisp-native-arm64-normalize-relocation
+                                          file offset type (plist-get target :address)
+                                          (+ address offset) (plist-get relocation :addend)))))
+                    (unless canonical (error "ARM64 helper relocation refused"))
+                    (dotimes (index 4)
+                      (when (gethash (+ offset index) used) (error "Overlapping relocation"))
+                      (puthash (+ offset index) t used)
+                      (aset memory (+ offset index) (logand (ash canonical (- (* index 8))) 255))))
+                (unless (and target (memq (plist-get relocation :type) '(pc32 plt32))
+                             (= (plist-get relocation :width) 4) (<= 0 offset)
+                             (<= (+ offset 4) size)
+                             (= actual (- (+ (plist-get target :address) (plist-get relocation :addend))
+                                          (+ address offset 4))))
+                  (error "Unknown or altered relocation target"))
+                (dotimes (index 4)
+                  (when (gethash (+ offset index) used) (error "Overlapping relocation"))
+                  (puthash (+ offset index) t used)
+                  (aset memory (+ offset index) 0)))))
           (unless (equal (secure-hash 'sha256 memory) (plist-get record :sha256))
             (error "Helper unit provenance differs: %s" name)))
         (push (cons name address) addresses)))
@@ -675,7 +686,9 @@ This does not grant constructor, numeric or call operation eligibility."
             nelisp-native-load-running-binary-sha256 nelisp--syscall-readlink
             syscall-direct ptr-write-u8 ptr-read-bytes
             nelisp-native-raw-file-read nelisp-native-raw-file--read
-            nelisp-native-raw-file-dependency-context unibyte-string)
+            nelisp-native-raw-file-dependency-context unibyte-string
+            nelisp-native-load--arm64-p nelisp-native-arm64-normalize-relocation
+            nelisp-native-arm64-u32 nelisp-native-linux-syscall)
           (when (nelisp-native-load--windows-p)
             '(nelisp-native-windows-verify-imports nelisp-native-pe-symbols-imports
             nl-ffi-call nelisp-native-windows-call nelisp-native-windows-module-path

@@ -6,8 +6,9 @@ import json
 import re
 from pathlib import Path
 
-from capstone import Cs, CS_ARCH_X86, CS_MODE_64, CS_GRP_CALL, CS_GRP_JUMP
+from capstone import Cs, CS_ARCH_X86, CS_MODE_64, CS_ARCH_ARM64, CS_MODE_ARM, CS_GRP_CALL, CS_GRP_JUMP
 from capstone.x86 import X86_OP_IMM
+from capstone.arm64 import ARM64_OP_IMM
 
 _spec = importlib.util.spec_from_file_location(
     "rooted_unit_owner", Path(__file__).with_name("nelisp-native-rooted-direct-closure.py"))
@@ -97,7 +98,8 @@ def prove(metadata, directory, roots, data_owner, claimed=None, max_functions=12
         for symbol in unit["symbols"]:
             if symbol["section"] in ("rodata", "data", "bss"):
                 known.add(symbol["name"])
-    decoder = Cs(CS_ARCH_X86, CS_MODE_64)
+    arm64 = data.get("target") == "linux-aarch64"
+    decoder = Cs(CS_ARCH_ARM64, CS_MODE_ARM) if arm64 else Cs(CS_ARCH_X86, CS_MODE_64)
     decoder.detail = True
     pending = list(roots)
     records, seen, total = [], set(), 0
@@ -118,7 +120,7 @@ def prove(metadata, directory, roots, data_owner, claimed=None, max_functions=12
         relocations = {}
         for relocation in owner["relocations"]:
             position = relocation["offset"] - start
-            if (relocation["type"] not in ("pc32", "plt32")
+            if (relocation["type"] not in (_owner.arm.SPECS if arm64 else ("pc32", "plt32"))
                     or not 0 <= position <= size - 4
                     or relocation["symbol"] not in known
                     or position in relocations):
@@ -126,23 +128,34 @@ def prove(metadata, directory, roots, data_owner, claimed=None, max_functions=12
                                  f"offset={position} size={size} type={relocation['type']} "
                                  f"symbol={relocation['symbol']} known={relocation['symbol'] in known}")
             relocations[position] = relocation
-            normalized[position:position + 4] = bytes(4)
-        direct, decoded = [], 0
-        for instruction in decoder.disasm(owner["text"][start:end], start):
+            if not arm64:
+                normalized[position:position + 4] = bytes(4)
+        if arm64:
+            local_relocs = [dict(r, offset=r['offset'] - start) for r in owner['relocations']]
+            spans = [(lo - start, hi - start) for lo, hi in owner['literals'] if start <= lo < hi <= end]
+            normalized = _owner.arm.normalize(owner['text'][start:end], local_relocs, spans)
+        else:
+            spans = []
+        direct, decoded = [], sum(hi - lo for lo, hi in spans)
+        cuts = [start] + [item + start for span in spans for item in span] + [end]
+        instructions = (instruction for lo, hi in zip(cuts[::2], cuts[1::2])
+                        for instruction in decoder.disasm(owner['text'][lo:hi], lo))
+        for instruction in instructions:
             decoded += instruction.size
             if not (instruction.group(CS_GRP_CALL) or instruction.group(CS_GRP_JUMP)):
                 continue
-            if len(instruction.operands) != 1 or instruction.operands[0].type != X86_OP_IMM:
+            operand = instruction.operands[-1] if instruction.operands else None
+            if operand is None or operand.type != (ARM64_OP_IMM if arm64 else X86_OP_IMM):
                 raise ValueError("Indirect control flow refused: " + name)
             position = instruction.address - start
-            relocation = relocations.get(position + instruction.imm_offset)
+            relocation = relocations.get(position if arm64 else position + instruction.imm_offset)
             target = None
             if relocation:
-                if instruction.imm_size != 4 or relocation["addend"] != 0:
+                if (not arm64 and instruction.imm_size != 4) or relocation["addend"] != 0:
                     raise ValueError("Unknown direct relocation encoding")
                 target = relocation["symbol"]
             else:
-                address = instruction.operands[0].imm
+                address = operand.imm
                 target = owner["starts"].get(address)
                 if target is None and start <= address < end:
                     continue

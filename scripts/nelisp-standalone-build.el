@@ -1323,79 +1323,28 @@ walker reads whatever happens to be on the stack."
 ;; assembler emits the standard RELA -4 -- normalizing avoids the off-by-4).
 ;; ===================================================================
 (defun nelisp-standalone--arm64-link-unit-text+relocs (buf)
-  "Return `(TEXT . RELOCS)' for an arm64 standalone link unit.
-Local control-flow fixups are patched in TEXT.  Unresolved branch
-fixups are kept as `b26-pc' relocations so separately compiled
-standalone units can call each other."
-  (let* ((bytes (nelisp-asm-arm64-buffer-bytes buf))
-         (labels (nelisp-asm-arm64-buffer-labels buf))
-         (fixups (nelisp-asm-arm64-buffer-fixups buf))
-         (n (length bytes))
-         (vec (make-vector n 0))
-         (generated-relocs nil)
-         (i 0))
-    (while (< i n)
-      (aset vec i (aref bytes i))
-      (setq i (1+ i)))
-    (dolist (fix fixups)
-      (let* ((slot (nth 0 fix))
-             (label (nth 1 fix))
-             (type (or (nth 2 fix) 'b26))
-             (cell (assq label labels)))
-        (if cell
-            (let ((disp (- (cdr cell) slot)))
-              (unless (zerop (logand disp #x3))
-                (signal 'nelisp-asm-arm64-error
-                        (list :branch-misaligned disp :at-slot slot)))
-              (pcase type
-                ((or 'b26 'bl26)
-                 (let ((imm26 (ash disp -2)))
-                   (unless (and (>= imm26 (- (ash 1 25)))
-                                (< imm26 (ash 1 25)))
-                     (signal 'nelisp-asm-arm64-error
-                             (list :branch-out-of-range disp :at-slot slot)))
-                   (let* ((cur (nelisp-asm-arm64--read-word-le vec slot))
-                          (new (logior cur (logand imm26 #x3FFFFFF))))
-                     (nelisp-asm-arm64--write-word-le vec slot new))))
-                ('b19
-                 (let ((imm19 (ash disp -2)))
-                   (unless (and (>= imm19 (- (ash 1 18)))
-                                (< imm19 (ash 1 18)))
-                     (signal 'nelisp-asm-arm64-error
-                             (list :bcond-out-of-range disp :at-slot slot)))
-                   (let* ((cur (nelisp-asm-arm64--read-word-le vec slot))
-                          (field (ash (logand imm19 #x7FFFF) 5))
-                          (new (logior cur field)))
-                     (nelisp-asm-arm64--write-word-le vec slot new))))
-                ('adr21
-                 (unless (and (>= disp (- (ash 1 20)))
-                              (< disp (ash 1 20)))
-                   (signal 'nelisp-asm-arm64-error
-                           (list :adr-out-of-range disp :at-slot slot)))
-                 (let* ((immlo (logand disp #x3))
-                        (immhi (logand (ash disp -2) #x7FFFF))
-                        (cur (nelisp-asm-arm64--read-word-le vec slot))
-                        (new (logior cur (ash immlo 29) (ash immhi 5))))
-                   (nelisp-asm-arm64--write-word-le vec slot new)))
-                (other
-                 (signal 'nelisp-asm-arm64-error
-                         (list :unknown-fixup-type other :at-slot slot)))))
-          (pcase type
-            ((or 'b26 'bl26)
-             (push (list :offset slot
-                         :type 'b26-pc
-                         :symbol (if (stringp label) label (symbol-name label))
-                         :addend 0
-                         :section 'text)
-                   generated-relocs))
-            (other
-             (signal 'nelisp-asm-arm64-error
-                     (list :unresolved-label label
-                           :type other
-                           :at-slot slot)))))))
-    (cons (apply #'unibyte-string (append vec nil))
-          (append (nelisp-asm-arm64-buffer-relocs buf)
-                  (nreverse generated-relocs)))))
+  "Return `(TEXT . RELOCS)' using the canonical ARM64 fixup grammar.
+External B/BL become relocations before local range relaxation, so every
+inserted island rebases labels, relocation positions and literal owners."
+  (let* ((state (nelisp-asm-arm64--unwrap buf))
+         (labels (plist-get state :labels))
+         (local nil) (external nil))
+    (dolist (fix (plist-get state :fixups))
+      (let ((slot (car fix)) (name (nth 1 fix)) (type (or (nth 2 fix) 'b26)))
+        (if (assq name labels)
+            (push fix local)
+          (unless (memq type '(b26 bl26))
+            (signal 'nelisp-asm-arm64-error (list :unresolved-label name :type type :at-slot slot)))
+          (push (list :offset slot :type (if (eq type 'bl26) 'b26-pc 'jump26-pc)
+                      :symbol (if (stringp name) name (symbol-name name))
+                      :addend 0 :section 'text) external))))
+    (setq state (plist-put state :fixups (nreverse local)))
+    (setq state (plist-put state :relocs (append (plist-get state :relocs) (nreverse external))))
+    (setq state (plist-put state :relax t))
+    (nelisp-asm-arm64--rewrap buf state)
+    (let ((text (nelisp-asm-arm64-resolve-fixups buf)))
+      (cons text (sort (copy-sequence (nelisp-asm-arm64-buffer-relocs buf))
+                       (lambda (a b) (< (plist-get a :offset) (plist-get b :offset))))))))
 
 (defun nelisp-standalone--compile-to-unit (name source &optional abi)
   "Compile Phase47 SOURCE to a link-unit labelled NAME."
@@ -1488,9 +1437,13 @@ standalone units can call each other."
                                     (if (memq type '(pc32 plt32)) 4 0))
                          :section (or (plist-get raw :section) 'text))))
                relocs0)))
-      (nelisp-link-unit-make
-       name (append (list (cons 'text text)) (plist-get unit-data :sections))
-       (append symbols (plist-get unit-data :symbols)) relocs))))
+      (let ((unit (nelisp-link-unit-make
+                   name (append (list (cons 'text text)) (plist-get unit-data :sections))
+                   (append symbols (plist-get unit-data :symbols)) relocs)))
+        (when (eq arch 'aarch64)
+          (plist-put unit :machine arch)
+          (plist-put unit :literal-spans (plist-get (nelisp-asm-arm64--unwrap buf) :literal-spans)))
+        unit))))
 
 ;; ===================================================================
 ;; Incremental cache.
@@ -2891,7 +2844,7 @@ leaves the previous dispatch intact.  The final 32 bytes retain GC telemetry."
                          body)
                body))
        (cons 'seq (append (if commit-form (append body (list commit-form)) body)
-                          (when (memq (nelisp-standalone-arena-rewrite-target) '(linux-x86_64 windows-x86_64))
+                          (when (memq (nelisp-standalone-arena-rewrite-target) '(linux-x86_64 windows-x86_64 linux-aarch64))
                             (nelisp-standalone--cold-domain-forms))
                           (if (nelisp-standalone--runtime-reload-enabled-p)
                               (nelisp-standalone--runtime-reload-forms)
@@ -12199,8 +12152,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
                               (if (= rc 0) (setq rc (+ 1024 a)) 0))))))))
                (nl_root_release env mark) rc))))))
     ;; Evaluator/GC entry, minimal-native clause 2. The policy is Lisp; this
-    ;; adapter authenticates slots, allocates the evaluator cell and installs
-    ;; the prepared record only after the callback's own frames are gone.
+    ;; adapter authenticates slots and uses existing evaluator primitives for
+    ;; ordinary bindings. Callback-prepared records are installed only after
+    ;; the callback's own frames are gone. The Lisp owner remains the reference
+    ;; and publishes precise conditions on Lisp error paths.
     (defun nl_native_frame_v2 (env ticket s action a r)
       (if (= action 12) (nl_native_handlers_copy_v2 env ticket s a r)
       (if (= action 11) (nl_native_handlers_land_v2 env ticket s a r)
@@ -12238,11 +12193,15 @@ baked build's own `<'/`>'/`=' arms need it too.")
                          (arg1 (+ roots 320)) (arg2 (+ roots 352)) (scratch (+ roots 384))
                          (event (+ roots 416)) (payload (+ roots 448))
                          (saved-tag (+ roots 480)) (saved-value (+ roots 512))
-                         (saved-kind 0) (cleanup-rc 0) (rc 2))
+                         (saved-kind 0) (cleanup-rc 0) (rc 2)
+                         (direct 0) (event-count 0) (binding-count 0)
+                         (entry 0) (address 0) (hash 0))
                     (seq
                      (if (= action 0) (wf_bytecode_copy function state)
                        (if (and (= (sexp-tag state) 8) (= (vector-len state) 7))
-                           (wf_bytecode_copy function (vector-ref-ptr state 0))
+                           ;; Invoke the entry's owner on refusal, including
+                           ;; replacement of the public state callback slot.
+                           (wf_bytecode_copy function (vector-ref-ptr state 5))
                          (setq valid 0)))
                      (if (= valid 0) 0
                        (seq
@@ -12258,7 +12217,6 @@ baked build's own `<'/`>'/`=' arms need it too.")
                               (setq valid 0) 0))
                         (if (> n 0) (wf_bytecode_copy arg1 (nl_root_pin_slot_v2 env ticket a)) 0)
                         (if (> n 1) (wf_bytecode_copy arg2 (nl_root_pin_slot_v2 env ticket (+ a 1))) 0)
-                        (if (= action 1) (cell-make arg2 cell) 0)
                         (if (= action 0)
                             (if (or (/= (sexp-tag arg1) 2) (/= (sexp-tag arg2) 2)
                                     (<= (sexp-int-unwrap arg1) 0) (< (sexp-int-unwrap arg2) 0)
@@ -12266,8 +12224,145 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                 (setq valid 0) 0) 0)
                         (if (= valid 0) 0
                           (seq
-                           (wf_bytecode_build_args roots 10 n operands)
-                           (setq rc (wf_bytecode_call_gateway env function roots 1 8 result))))))
+                           ;; The policy callback is a reference and error path.
+                           ;; Ordinary frame operations use the SAME evaluator
+                           ;; primitives as bytecode, without an interpreted
+                           ;; callback (and its interpreted FNV hash loops).
+                           ;; Keep the activation watermark and ordered event
+                           ;; chain checks before any binding or handler change.
+                           (if (= action 0)
+                               ;; Entry invokes the frozen owner to establish
+                               ;; the activation; arbitrary/non-callable entry
+                               ;; values must retain the gateway's refusal.
+                               0
+                             (seq
+                              (wf_bytecode_copy event (vector-ref-ptr state 3))
+                              (while (= (sexp-tag event) 7)
+                                (seq
+                                 (if (/= (sexp-tag (nl_cons_car_ptr event)) 7)
+                                     (setq binding-count (+ binding-count 1)) 0)
+                                 (setq event-count (+ event-count 1))
+                                 (wf_bytecode_copy event (nl_cons_cdr_ptr event))))
+                              (if (and (= (sexp-tag function) 7)
+                                       (= (bf_eq2 function (vector-ref-ptr state 0)) 1)
+                                       (= (sexp-tag (nl_cons_car_ptr function)) 4)
+                                       (= (symbol-name-eq (nl_cons_car_ptr function) "closure") 1)
+                                       (= (sexp-tag event) 0)
+                                       (/= (sexp-tag (vector-ref-ptr state 1)) 0)
+                                       (= (sexp-tag (vector-ref-ptr state 2)) 2)
+                                       (= (sexp-int-unwrap depth)
+                                          (+ (sexp-int-unwrap (vector-ref-ptr state 2)) binding-count)))
+                                  (if (= action 1)
+                                      (if (or (= (sexp-tag arg1) 4) (= (sexp-tag arg1) 16))
+                                          (seq
+                                           ;; Use the evaluator's existing
+                                           ;; canonicalizer, already owned by
+                                           ;; the bounded F1 closure. Keep a
+                                           ;; full root for the canonical name.
+                                           (wf_bytecode_copy payload arg1)
+                                           (setq entry (nelisp_mirror_lookup_entry mirror arg1))
+                                           (setq rc 0)
+                                           (if (= entry 0) 0
+                                             (seq
+                                              (setq address (alloc-bytes 8 8))
+                                              (setq rc (nelisp_env_variable_canonicalize mirror frames entry arg1 address 0))
+                                              (if (= rc 0) (wf_bytecode_copy payload (ptr-read-u64 address 0))
+                                                (if (= rc 3) (setq rc 0) 0))))
+                                           ;; Constants, identity-symbol keys,
+                                           ;; structural errors and stack growth
+                                           ;; retain the frozen reference path.
+                                           (if (and (= rc 0) (= (sexp-tag payload) 4)
+                                                    (or (= (ptr-read-u64 payload 24) 0)
+                                                        (/= (ptr-read-u8 (ptr-read-u64 payload 16) 0) 58))
+                                                    (< (sexp-int-unwrap depth)
+                                                       (vector-len (record-slot-ref-ptr frames 0))))
+                                               (seq
+                                                ;; This is the same four-slot
+                                                ;; lexframe and 16-bucket table
+                                                ;; as the reference/evaluator.
+                                                ;; All construction intermediates
+                                                ;; are full roots; no vector or
+                                                ;; cons interior crosses a call.
+                                                (cell-make arg2 cell)
+                                                (record-make (data-addr nl_frame_push_sym1) 3 operands)
+                                                (vector-make 16 scratch)
+                                                (record-slot-set operands 1 scratch)
+                                                (wf_write_int saved-tag 16)
+                                                (record-slot-set operands 0 saved-tag)
+                                                (wf_write_int saved-tag 0)
+                                                (record-slot-set operands 2 saved-tag)
+                                                (record-make (data-addr nl_frame_push_sym0) 4 result)
+                                                (record-slot-set result 0 operands)
+                                                (nl_alloc_str (ptr-read-u64 payload 16) (ptr-read-u64 payload 24) event)
+                                                (setq hash (logand (nelisp_fnv1a event) 15))
+                                                (wf_write_nil saved-value)
+                                                (nelisp_cons_construct event saved-value saved-tag)
+                                                (record-slot-set result 1 saved-tag)
+                                                (nelisp_cons_construct event cell saved-tag)
+                                                (nelisp_cons_construct saved-tag saved-value payload)
+                                                (vector-slot-set scratch hash payload)
+                                                (wf_write_int saved-tag 1)
+                                                (record-slot-set operands 2 saved-tag)
+                                                (wf_bytecode_copy event (vector-ref-ptr state 3))
+                                                (nelisp_cons_construct result event scratch)
+                                                (vector-slot-set state 3 scratch)
+                                                (vector-slot-set (record-slot-ref-ptr frames 0) (sexp-int-unwrap depth) result)
+                                                (wf_write_int saved-tag (+ (sexp-int-unwrap depth) 1))
+                                                (record-slot-set frames 1 saved-tag)
+                                                (setq direct 1) (setq rc 0))
+                                             ;; The reference publishes precise
+                                             ;; conditions for resolver errors.
+                                             (ptr-write-u64 268435472 0 0))) 0)
+                                    (if (or (= action 2) (= action 3))
+                                        (if (or (= action 3)
+                                                (and (= (sexp-tag arg1) 2)
+                                                     (>= (sexp-int-unwrap arg1) 0)
+                                                     (<= (sexp-int-unwrap arg1) event-count)))
+                                            (seq (wf_write_int result (if (= action 3) event-count (sexp-int-unwrap arg1)))
+                                                 (setq direct 1) (setq rc 0)) 0)
+                                      (if (= action 8)
+                                          (if (and (= (sexp-tag arg2) 8) (= (vector-len arg2) 6)
+                                                   (= (sexp-tag (vector-ref-ptr arg2 3)) 2)
+                                                   (= (sexp-tag (vector-ref-ptr arg2 4)) 2))
+                                              (seq
+                                               (wf_bytecode_copy event (vector-ref-ptr state 4))
+                                               (wf_write_nil payload)
+                                               (if (= (sexp-tag event) 7)
+                                                   (wf_bytecode_copy payload event)
+                                                 (wf_write_nil event))
+                                               (setq i 0)
+                                               (while (= (sexp-tag event) 7)
+                                                 (seq (setq i (+ i 1))
+                                                      (wf_bytecode_copy event (nl_cons_cdr_ptr event))))
+                                               (if (and (= (sexp-tag event) 0)
+                                                        (< i (sexp-int-unwrap (vector-ref-ptr arg2 4))))
+                                                   (seq
+                                                    (vector-make 8 result)
+                                                    (vector-slot-set result 0 arg1)
+                                                    (vector-slot-set result 1 (vector-ref-ptr arg2 0))
+                                                    (vector-slot-set result 2 (vector-ref-ptr arg2 1))
+                                                    (vector-slot-set result 3 (vector-ref-ptr arg2 2))
+                                                    (vector-slot-set result 4 (vector-ref-ptr state 3))
+                                                    (wf_write_int scratch (+ (sexp-int-unwrap (vector-ref-ptr arg2 3)) (* 2 i)))
+                                                    (vector-slot-set result 5 scratch)
+                                                    (wf_write_int scratch (+ (sexp-int-unwrap scratch) 1))
+                                                    (vector-slot-set result 6 scratch)
+                                                    (vector-slot-set result 7 (vector-ref-ptr arg2 5))
+                                                    (nelisp_cons_construct result payload scratch)
+                                                    (vector-slot-set state 4 scratch)
+                                                    (setq direct 1) (setq rc 0)) 0)) 0)
+                                        (if (= action 9)
+                                            (if (= (sexp-tag (vector-ref-ptr state 4)) 7)
+                                                (seq
+                                                 (wf_bytecode_copy result (nl_cons_car_ptr (vector-ref-ptr state 4)))
+                                                 (wf_bytecode_copy scratch (nl_cons_cdr_ptr (vector-ref-ptr state 4)))
+                                                 (vector-slot-set state 4 scratch)
+                                                 (setq direct 1) (setq rc 0)) 0)
+                                          0)))) 0)))
+                           (if (= direct 1) 0
+                             (seq (if (= action 1) (cell-make arg2 cell) 0)
+                                  (wf_bytecode_build_args roots 10 n operands)
+                                  (setq rc (wf_bytecode_call_gateway env function roots 1 8 result))))))))
                      ;; A nested callback must return the parent's exact ticket.
                      (if (or (/= marker (nl_root_pin_slot_v2 env ticket 0))
                              (/= state (nl_root_pin_slot_v2 env ticket s))
@@ -12275,7 +12370,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                      (if (= rc 0)
                          (seq
                           (if (= action 0) (wf_bytecode_copy state result)
-                            (if (= action 1)
+                            (if (and (= action 1) (= direct 0))
                                 (seq
                                  (wf_write_int scratch (sexp-int-unwrap (record-slot-ref-ptr (+ env 32) 1)))
                                  (vector-slot-set (record-slot-ref-ptr (+ env 32) 0) (sexp-int-unwrap scratch) result)
@@ -21554,9 +21649,13 @@ into whatever the index happened to select."
          `(wf_write_int
            out
            ,(let ((form 0)
-                  (idx (length nelisp-standalone--reader-neln-bridgeable-symbols)))
+                  (idx (length (append nelisp-standalone--reader-neln-bridgeable-symbols
+                          (when (eq (nelisp-standalone-arena-rewrite-target) 'linux-aarch64)
+                            '("nl_native_linux_arm64_publish"))))))
               (dolist (name (reverse
-                             nelisp-standalone--reader-neln-bridgeable-symbols))
+                             (append nelisp-standalone--reader-neln-bridgeable-symbols
+                          (when (eq (nelisp-standalone-arena-rewrite-target) 'linux-aarch64)
+                            '("nl_native_linux_arm64_publish")))))
                 (setq idx (1- idx))
                 (setq form `(if (= (wf_argval args 0) ,idx)
                                 (data-addr ,(intern name))
@@ -28244,7 +28343,7 @@ top-level form defines NAME that way."
 
 (defun nelisp-standalone--rooted-protocol-preflight ()
   "Refuse missing protocol generation inputs before any reader unit is compiled."
-  (when (memq (nelisp-standalone-arena-rewrite-target) '(linux-x86_64 windows-x86_64))
+  (when (memq (nelisp-standalone-arena-rewrite-target) '(linux-x86_64 windows-x86_64 linux-aarch64))
     (dolist (relative '("lisp/nelisp-native-rooted-build-evidence.el"
                         "lisp/nelisp-native-rooted-startup-evidence.el"
                         "lisp/nelisp-native-load.el" "lisp/nelisp-runtime-reload-abi.el"
@@ -28324,7 +28423,7 @@ publishes the same providers before dumping."
 
 (defun nelisp-standalone--rooted-protocol-startup-src (units)
   "Generate source-bound memory protocol startup from the active helper UNITS."
-  (when (memq (nelisp-standalone-arena-rewrite-target) '(linux-x86_64 windows-x86_64))
+  (when (memq (nelisp-standalone-arena-rewrite-target) '(linux-x86_64 windows-x86_64 linux-aarch64))
     (let* ((nelisp-native-load--build-target (nelisp-standalone-arena-rewrite-target))
            (source (concat (nelisp-native-rooted-startup-evidence-build
      units nelisp-standalone--this-file nelisp-standalone--repo-root
@@ -31721,17 +31820,23 @@ boundary (Doc 151 Phase B):
        ;; struct stat layout shim: callers read fields at *x86_64* offsets
        ;; (the portable vocabulary).  arm64 swaps mode/nlink (arm64:
        ;; st_mode u32@16, st_nlink u32@20; x86_64: st_nlink u64@16,
-       ;; st_mode u32@24).  Everything else relevant (dev/ino/uid/gid/
-       ;; size/atime/mtime/ctime) sits at identical offsets.  Rewrite the
+       ;; st_mode u32@24). UID/GID/rdev also move from 24/28/32 to
+       ;; 28/32/40; preserve them before overwriting mode/nlink. The
+       ;; size/atime/mtime/ctime fields already match. Rewrite the
        ;; private 144B buffer to the x86_64 shape after the syscall.
        (defun nl_os_stat_fixup (rc buf)
          (if (< rc 0)
              rc
            (let* ((mode (ptr-read-u32 buf 16))
-                  (nlink (ptr-read-u32 buf 20)))
+                  (nlink (ptr-read-u32 buf 20))
+                  (uid (ptr-read-u32 buf 24)) (gid (ptr-read-u32 buf 28))
+                  (rdev (ptr-read-u64 buf 32)))
              (seq
               (ptr-write-u64 buf 16 nlink)
               (ptr-write-u32 buf 24 mode)
+              (ptr-write-u32 buf 28 uid)
+              (ptr-write-u32 buf 32 gid)
+              (ptr-write-u64 buf 40 rdev)
               rc))))
        (defun nl_os_stat_path (cpath buf)
          (nl_os_stat_fixup
@@ -32005,7 +32110,7 @@ boundary (Doc 151 Phase B):
      ;; into that shape rather than the layer growing a per-OS API: see
      ;; `nl_win_stat_from_data', which synthesises the same 144-byte Linux
      ;; layout out of `GetFileAttributesExW' data, and `nl_os_stat_fixup' on
-     ;; linux-aarch64, which rewrites arm64's two swapped fields into it.
+     ;; linux-aarch64, which rewrites arm64's stat fields into it.
      ;; The errno space is Linux vocabulary for the same reason, which is why
      ;; an unimplemented arm below still answers -38 (Linux ENOSYS) and not
      ;; Darwin's 78.  Real Darwin syscall failures DO arrive as Darwin errno
@@ -34846,9 +34951,11 @@ Keep this source-only boundary usable by Windows preflight and host controls."
     ;; `nl_os_write_stderr' (defined in a separate helper unit that is not
     ;; linked into every build variant that includes the cold-loader).
     (defun nl_cold_diag (buf len)
-      ,(if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
-           '(nl_fa_write_all (extern-call GetStdHandle 4294967284) buf len 0)
-         '(syscall-direct 1 2 buf len 0 0 0)))
+      ,(cond ((eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
+              '(nl_fa_write_all (extern-call GetStdHandle 4294967284) buf len 0))
+             ((eq (nelisp-standalone-arena-rewrite-target) 'linux-aarch64)
+              '(syscall-direct (nl_os_syscall_nr_write) 2 buf len 0 0 0))
+             (t '(syscall-direct 1 2 buf len 0 0 0))))
     (defun nl_cold_diag_bad_header ()
       (let* ((buf ,(if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
                         '(+ (data-addr nl_win_cold_io) 32)
@@ -35019,7 +35126,7 @@ Keep this source-only boundary usable by Windows preflight and host controls."
     ;; simpler and safer than racing a free against the fresh reservation.
     ;; Linux x86_64 supplies these in the prelink arena unit, so their
     ;; ownership can be authenticated before compiling this driver.
-    ,@(unless (memq (nelisp-standalone-arena-rewrite-target) '(linux-x86_64 windows-x86_64))
+    ,@(unless (memq (nelisp-standalone-arena-rewrite-target) '(linux-x86_64 windows-x86_64 linux-aarch64))
         (nelisp-standalone--cold-domain-forms))
     ;; Load the cold image into the LIVE arena.  Run BEFORE the driver allocates
     ;; globals/etc. (so they land after the image).  Reads {header|table|regions}
@@ -38662,6 +38769,9 @@ genuine general interpreter for the 11 special forms + installed builtins."
                          nelisp-standalone--reader-extra-manifest))
          (float-stub (nelisp-standalone--reader-float-unit))
          (float-time-stub (nelisp-standalone--float-time-unit))
+         (arm-publish (when (eq (nelisp-standalone-arena-rewrite-target) 'linux-aarch64)
+                        (require 'nelisp-native-linux-arm64-unit)
+                        (nelisp-native-linux-arm64-publish-unit)))
          ;; real-sf: all real special-form units EXCEPT sf-cc.o (built from the
          ;; WAVE-2 PATCH-4 source below) and the two PERSISTENT-INSTALL escape
          ;; sites (sf-frame-ensure-cap.o / sf-env-set-value2.o), which are built
@@ -38801,7 +38911,7 @@ genuine general interpreter for the 11 special forms + installed builtins."
                    extras (list float-stub float-time-stub) real-sf
                    (list sf-cc capture errstub fileio catch-throw boundary
                          eval-source neln-demo gc arena)
-                   (delq nil (list arena-base callsite))))))
+                   (delq nil (list arena-base callsite arm-publish))))))
          ;; Compile the driver after its selected helper units, allowing
          ;; protocol data generation before startup forms are embedded.
          ;; The final link order below remains unchanged.
@@ -38811,7 +38921,7 @@ genuine general interpreter for the 11 special forms + installed builtins."
             extras (list float-stub float-time-stub) real-sf
             (list sf-cc capture errstub fileio catch-throw boundary
                   eval-source neln-demo gc arena)
-            (delq nil (list arena-base callsite)))))
+            (delq nil (list arena-base callsite arm-publish)))))
 
 (defun nelisp-standalone--codesign-macos-adhoc (out)
   "Apply an ad-hoc code signature to OUT for the macos-aarch64 target.
@@ -39064,7 +39174,7 @@ The trace parent directory must exist; tracing never skips a build stage."
            (and path (not (string-empty-p path)) (expand-file-name path))))
         (nelisp-standalone--build-trace-unit nil)
         (nelisp-standalone--native-startup-lazy
-         (eq (nelisp-standalone-arena-rewrite-target) 'linux-x86_64))
+         (memq (nelisp-standalone-arena-rewrite-target) '(linux-x86_64 linux-aarch64)))
         (nelisp-standalone--core-bytecode-build-cache (make-hash-table :test #'equal))
         (nelisp-standalone--build-trace-hits 0)
         (nelisp-standalone--build-trace-misses 0))
@@ -39213,8 +39323,10 @@ the value template requests Tier 0 only. Both include GNU-compiled Tier 0 Lisp."
     (when (file-exists-p image) (delete-file image))
     (if (or (equal (getenv "NELISP_STANDALONE_COLD_IMAGE") "0")
             (and (not (nelisp-standalone--target-runnable-on-host-p))
-                 (not (and (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
-                           (equal (getenv "NELISP_STANDALONE_COLD_RUNNER") "wine")))))
+                 (not (or (and (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
+                               (equal (getenv "NELISP_STANDALONE_COLD_RUNNER") "wine"))
+                          (and (eq (nelisp-standalone-arena-rewrite-target) 'linux-aarch64)
+                               (getenv "NELISP_STANDALONE_COLD_RUNNER"))))))
         (if (member (getenv "NELISP_STANDALONE_NATIVE_COMPILER_COLD") '("1" "template"))
             (error "Requested cold image needs the target host or NELISP_STANDALONE_COLD_RUNNER=wine")
           (message "[standalone-reader] cold image skipped"))
@@ -39259,7 +39371,9 @@ the value template requests Tier 0 only. Both include GNU-compiled Tier 0 Lisp."
           (setq status
                 (if (equal runner "wine")
                     (call-process "wine" nil t nil (expand-file-name binary) "--eval" form)
-                  (call-process (expand-file-name binary) nil t nil "--eval" form)))
+                  (if (and runner (eq (nelisp-standalone-arena-rewrite-target) 'linux-aarch64))
+                      (call-process runner nil t nil (expand-file-name binary) "--eval" form)
+                    (call-process (expand-file-name binary) nil t nil "--eval" form))))
           (setq output (string-trim (buffer-string))))
         (if (and (eql status 0)
                  (string-match-p "\\`[0-9]+\\'" output)

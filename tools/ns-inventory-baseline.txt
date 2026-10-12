@@ -1038,7 +1038,10 @@ ns-prefix-violation 354
 # (243), standalone-build (134), AOT (47), native-cache (25), and nl-clj-seq
 # (19). Native compiler/provider integration increased these cross-file
 # edges since the last snapshot; cleaning up that boundary is separate work.
-ns-private-escape 1014
+# 2026-10-12: 1014 -> 1024, merging fix/f1p-poll-gateway (native frame-cost
+# and AArch64 work, Linux native OS adapter); this kind stays count-only
+# conceded debt, see above.
+ns-private-escape 1024
 # 768 -> 770 on 2026-09-21 (segment F): +2. This kind stays count-only
 # in the gate's own design (see nl-ns-inventory.el's header); the rx
 # shim's `declare-function' lines for its own private `rx--tr-*'

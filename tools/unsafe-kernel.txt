@@ -323,6 +323,10 @@ lisp/nelisp-native-template-stencils.el
 # Win64 backend: reads and writes PE/COFF headers, VirtualAlloc'd pages and
 # the Win64 trust records.
 lisp/nelisp-native-windows.el
+# Linux native mapping OS adapter (Doc 151), the Linux counterpart of the
+# Win64 backend: mmap/mprotect/open through syscall-direct and reads of the
+# ELF/stat words it maps (merged with fix/f1p-poll-gateway, 2026-10-12).
+lisp/nelisp-native-linux.el
 # Opt-in startup tracing: generates an alloc-bytes trace record and its
 # field writes into the reader driver.
 scripts/nelisp-startup-trace.el
@@ -359,6 +363,9 @@ pinned-kernel-touch lisp/nelisp-native-raw-file.el
 pinned-kernel-touch lisp/nelisp-native-template-stencils.el
 pinned-kernel-touch lisp/nelisp-native-windows.el
 pinned-kernel-touch scripts/nelisp-startup-trace.el
+pinned-kernel-touch lisp/nelisp-native-linux.el
 # 118 + the 25 registered above + 3 of the four cc generators that hold an
 # unquoted call (the gate's own count) = 146.
 kernel-files 146
+# +1 lisp/nelisp-native-linux.el (2026-10-12).
+kernel-files 147

@@ -141,7 +141,7 @@ Returns a unibyte-string of length 4."
   (aset buf 0 plist)
   buf)
 
-(defun nelisp-asm-arm64-make-buffer ()
+(defun nelisp-asm-arm64-make-buffer (&optional relax)
   "Return a fresh empty arm64 assembler buffer.
 The buffer is opaque; use the accessors below to inspect or
 extend it.  §92.d-arm64 chunk-build: =:chunks= holds the
@@ -149,10 +149,12 @@ reverse-order list of unibyte-string chunks pushed by per-
 instruction emitters, =:length= tracks the running cumulative
 byte count (= O(1) read).  The legacy =:bytes= / =:pos= keys
 are kept as vestigial init values for API compat; they are not
-read on the hot path."
+read on the hot path.  RELAX reserves literal/veneer islands at final
+layout and validates relocation ownership, including page pairs."
   (vector (list :chunks nil :length 0
                 :bytes "" :pos 0
-                :labels nil :fixups nil :relocs nil)))
+                :labels nil :fixups nil :relocs nil
+                :relax relax :literal-spans nil :veneers nil)))
 
 (defun nelisp-asm-arm64-buffer-bytes (buf)
   "Return BUF's accumulated bytes as a unibyte-string.
@@ -255,7 +257,7 @@ computes the appropriate imm field at finalize time and ORs it
 into the existing constant base already written; the caller is
 responsible for emitting the 4-byte placeholder (= base only,
 imm field = 0) before recording the fixup."
-  (unless (memq type '(b26 bl26 b19 adr21))
+  (unless (memq type '(b26 bl26 b19 cb19 adr21 ldr19))
     (signal 'nelisp-asm-arm64-error
             (list :unknown-fixup-type type)))
   (let* ((plist (nelisp-asm-arm64--unwrap buf))
@@ -274,7 +276,8 @@ BL imm) / `abs64' (= R_AARCH64_ABS64, 64-bit absolute) /
 This helper records only; the caller is responsible for emitting the
 placeholder bytes at the recorded offset.  ADDEND defaults to 0 (=
 matches ELF64 r_addend)."
-  (unless (memq type '(b26-pc abs64 adr-prel-pg-hi21 add-abs-lo12-nc))
+  (unless (memq type '(b26-pc jump26-pc abs64 adr-prel-pg-hi21
+                      add-abs-lo12-nc ldst64-abs-lo12-nc))
     (signal 'nelisp-asm-arm64-error
             (list :unknown-reloc-type type)))
   (let* ((plist (nelisp-asm-arm64--unwrap buf))
@@ -348,6 +351,199 @@ externalized."
     (nelisp-asm-arm64--rewrap buf plist)
     n))
 
+(defun nelisp-asm-arm64--patch-pc-word (word type disp)
+  "Patch WORD's TYPE displacement, refusing bad opcodes and ranges.
+ARM ARM immediate fields: B/BL imm26[25:0], B.cond/CBZ/LDR
+imm19[23:5], ADR immhi[23:5]:immlo[30:29].  PC is the instruction."
+  (unless (and (integerp word) (>= word 0) (<= word #xffffffff))
+    (signal 'nelisp-asm-arm64-error (list :invalid-instruction-word word)))
+  (let* ((spec (pcase type
+                 ('b26 '(#xfc000000 #x14000000 26 0 4))
+                 ('bl26 '(#xfc000000 #x94000000 26 0 4))
+                 ('b19 '(#xff000010 #x54000000 19 5 4))
+                 ('cb19 '(#x7e000000 #x34000000 19 5 4))
+                 ('ldr19 '(#xff000000 #x58000000 19 5 4))
+                 ('adr21 '(#x9f000000 #x10000000 21 0 1))
+                 (_ (signal 'nelisp-asm-arm64-error (list :unknown-fixup-type type)))))
+         (bits (nth 2 spec)) (scale (nth 4 spec))
+         (limit (* scale (ash 1 (1- bits)))))
+    (unless (= (logand word (nth 0 spec)) (nth 1 spec))
+      (signal 'nelisp-asm-arm64-error (list :fixup-opcode type word)))
+    (unless (and (integerp disp) (zerop (% disp scale)))
+      (signal 'nelisp-asm-arm64-error (list :branch-misaligned disp)))
+    (unless (and (>= disp (- limit)) (< disp limit))
+      (signal 'nelisp-asm-arm64-error (list :branch-out-of-range type disp)))
+    (if (eq type 'adr21)
+        (logior (logand word #x9f00001f) (ash (logand disp 3) 29)
+                (ash (logand (ash disp -2) #x7ffff) 5))
+      (let ((mask (ash (1- (ash 1 bits)) (nth 3 spec))))
+        (logior (logand word (lognot mask))
+                (ash (logand (/ disp scale) (1- (ash 1 bits))) (nth 3 spec)))))))
+
+(defun nelisp-asm-arm64--relax-one (buf fix)
+  "Reserve a local island for out-of-range FIX and rebase BUF's owners.
+Insertions are multiples of eight, preserving earlier literal alignment.
+BL returns to the branch around the island; a veneer uses only IP0/x16."
+  (let* ((state (nelisp-asm-arm64--unwrap buf))
+         (bytes (nelisp-asm-arm64-buffer-bytes buf))
+         (slot (nth 0 fix)) (target (nth 1 fix)) (type (nth 2 fix))
+         (word (nelisp-asm-arm64--read-word-le bytes slot))
+         (island (nelisp-asm-arm64-make-buffer))
+         (literal nil) (extra-fix nil))
+    (pcase type
+      ((or 'b19 'cb19)
+       (if (and (eq type 'b19) (>= (logand word 15) 14))
+           ;; AL and NV are both always in A64; neither has an inverse.
+           (progn (nelisp-asm-arm64--emit-word island #x14000000)
+                  (setq extra-fix (list slot target 'b26)))
+         ;; Invert and skip B plus padding.  B is relaxed independently.
+         (nelisp-asm-arm64--emit-word
+          island (nelisp-asm-arm64--patch-pc-word
+                  (logxor word (if (eq type 'b19) 1 #x1000000)) type 12))
+         (nelisp-asm-arm64--emit-word island #x14000000)
+         (nelisp-asm-arm64-nop island)
+         (setq extra-fix (list (+ slot 4) target 'b26))))
+      ((or 'b26 'bl26 'adr21)
+       (let* ((adr (eq type 'adr21))
+              (literal-pos (* 8 (/ (+ slot (if adr 8 16) 7) 8)))
+              (literal-off (- literal-pos slot))
+              ;; Keep total growth a multiple of eight.
+              (size (+ 4 (* 8 (/ (+ (- (+ literal-off 8) 4) 7) 8)))))
+         (if adr
+             (nelisp-asm-arm64--emit-word
+              island (nelisp-asm-arm64--patch-pc-word
+                      (logior #x58000000 (logand word 31)) 'ldr19 literal-off))
+           (nelisp-asm-arm64--emit-word
+            island (nelisp-asm-arm64--patch-pc-word word type 8)))
+         (nelisp-asm-arm64--emit-word
+          island (nelisp-asm-arm64--patch-pc-word #x14000000 'b26 (- size 4)))
+         (unless adr
+           (nelisp-asm-arm64--emit-word
+            island (nelisp-asm-arm64--patch-pc-word #x58000010 'ldr19 (- literal-off 8)))
+           (nelisp-asm-arm64-br island 'x16))
+         (while (< (nelisp-asm-arm64-buffer-pos island) literal-off)
+           (nelisp-asm-arm64-nop island))
+         (setq literal literal-pos)
+         (nelisp-asm-arm64--append-bytes island (make-string 8 0))
+         (while (< (nelisp-asm-arm64-buffer-pos island) size)
+           (nelisp-asm-arm64-nop island))))
+      (_ (signal 'nelisp-asm-arm64-error (list :unrelaxable-fixup fix))))
+    (let* ((block (nelisp-asm-arm64-buffer-bytes island))
+           (growth (- (length block) 4)))
+      (cl-labels ((shift (pos) (if (> pos slot) (+ pos growth) pos)))
+        (setq state (plist-put state :chunks
+                               (list (concat (substring bytes 0 slot) block
+                                             (substring bytes (+ slot 4))))))
+        (setq state (plist-put state :length (+ (length bytes) growth)))
+        (setq state (plist-put state :labels
+                               (mapcar (lambda (cell) (cons (car cell) (shift (cdr cell))))
+                                       (plist-get state :labels))))
+        (setq state (plist-put state :fixups
+                               (append (and extra-fix (list extra-fix))
+                                       (mapcar (lambda (f) (list (shift (car f)) (nth 1 f) (nth 2 f)))
+                                               (delq fix (plist-get state :fixups))))))
+        (setq state (plist-put state :relocs
+                               (mapcar (lambda (r) (plist-put (copy-sequence r) :offset
+                                                             (shift (plist-get r :offset))))
+                                       (plist-get state :relocs))))
+        (dolist (key '(:literal-spans :veneers))
+          (setq state (plist-put state key
+                                 (mapcar (lambda (span) (cons (shift (car span)) (shift (cdr span))))
+                                         (plist-get state key)))))
+        (when literal
+          (setq state (plist-put state :literal-spans
+                                 (cons (cons literal (+ literal 8)) (plist-get state :literal-spans))))
+          (setq state (plist-put state :relocs
+                                 (cons (list :type 'abs64 :symbol (symbol-name target) :sym target
+                                             :offset literal :addend 0 :section 'text)
+                                       (plist-get state :relocs))))
+          (unless (eq type 'adr21)
+            (setq state (plist-put state :veneers
+                                   (cons (cons (+ slot 8) (+ slot 16)) (plist-get state :veneers))))))))
+    (nelisp-asm-arm64--rewrap buf state)))
+
+(defun nelisp-asm-arm64--relax-fixups (buf)
+  "Lay out bounded literal/veneer islands before final fixups in BUF.
+Only internal label displacements can be relaxed here.  Loader-owned
+external stubs and their absolute literals are the raw loader's job."
+  (let ((changed t))
+    (while changed
+      (setq changed nil)
+      (let* ((state (nelisp-asm-arm64--unwrap buf))
+             (labels (plist-get state :labels))
+             (bytes (nelisp-asm-arm64-buffer-bytes buf)))
+        (catch 'relaxed
+          (dolist (fix (plist-get state :fixups))
+            (let* ((slot (car fix)) (cell (assq (nth 1 fix) labels))
+                   (type (nth 2 fix)))
+              (unless (and (integerp slot) (>= slot 0) (<= (+ slot 4) (length bytes))
+                           (zerop (% slot 4)) cell)
+                (signal 'nelisp-asm-arm64-error (list :invalid-fixup fix)))
+              ;; Validate opcode before deciding whether relaxation is needed.
+              (nelisp-asm-arm64--patch-pc-word
+               (nelisp-asm-arm64--read-word-le bytes slot) type 0)
+              (let* ((disp (- (cdr cell) slot))
+                     (limit (if (memq type '(b26 bl26)) (ash 1 27) (ash 1 20))))
+                (when (and (not (eq type 'ldr19))
+                           (or (< disp (- limit)) (>= disp limit)))
+                  (nelisp-asm-arm64--relax-one buf fix)
+                  (setq changed t)
+                  (throw 'relaxed t))))))))))
+
+(defun nelisp-asm-arm64-validate-relocs (buf)
+  "Validate BUF's instruction/literal ownership and paired page records.
+This validates producer records; authentication and mapping remain loader
+responsibilities.  Reject overlap and corrupt opcodes before any patch."
+  (let* ((state (nelisp-asm-arm64--unwrap buf))
+         (bytes (nelisp-asm-arm64-buffer-bytes buf))
+         (relocs (plist-get state :relocs))
+         (by-offset (make-hash-table :test 'eql))
+         (occupied (make-hash-table :test 'eql)))
+    (cl-labels ((reserve (offset size)
+                  (unless (and (integerp offset) (>= offset 0)
+                               (zerop (% offset (if (= size 8) 8 4)))
+                               (<= (+ offset size) (length bytes)))
+                    (signal 'nelisp-asm-arm64-error (list :invalid-patch-slot offset size)))
+                  (dotimes (i size)
+                    (when (gethash (+ offset i) occupied)
+                      (signal 'nelisp-asm-arm64-error (list :overlapping-patches offset)))
+                    (puthash (+ offset i) t occupied))))
+      (dolist (fix (plist-get state :fixups)) (reserve (car fix) 4))
+      (dolist (r relocs)
+        (let ((offset (plist-get r :offset)) (type (plist-get r :type))
+              (symbol (plist-get r :symbol)))
+          (unless (and (stringp symbol) (> (length symbol) 0) (integerp (plist-get r :addend)))
+            (signal 'nelisp-asm-arm64-error (list :invalid-relocation r)))
+          (reserve offset (if (eq type 'abs64) 8 4))
+          (puthash offset r by-offset)
+          (let ((word (nelisp-asm-arm64--read-word-le bytes offset)))
+            (pcase type
+              ('b26-pc (nelisp-asm-arm64--patch-pc-word word 'bl26 0))
+              ('jump26-pc (nelisp-asm-arm64--patch-pc-word word 'b26 0))
+              ('abs64
+               (unless (member (cons offset (+ offset 8)) (plist-get state :literal-spans))
+                 (signal 'nelisp-asm-arm64-error (list :unowned-address-literal offset))))
+              ((or 'adr-prel-pg-hi21 'add-abs-lo12-nc 'ldst64-abs-lo12-nc)
+               (let* ((mask (if (eq type 'adr-prel-pg-hi21) #x9f000000 #xffc00000))
+                      (opcode (pcase type ('adr-prel-pg-hi21 #x90000000)
+                                     ('add-abs-lo12-nc #x91000000) (_ #xf9400000))))
+                 (unless (= (logand word mask) opcode)
+                   (signal 'nelisp-asm-arm64-error (list :relocation-opcode type offset)))))
+              (_ (signal 'nelisp-asm-arm64-error (list :unknown-reloc-type type)))))))
+      (dolist (r relocs)
+        (let ((type (plist-get r :type)) (offset (plist-get r :offset)))
+          (when (memq type '(adr-prel-pg-hi21 add-abs-lo12-nc ldst64-abs-lo12-nc))
+            (let* ((page (if (eq type 'adr-prel-pg-hi21) r (gethash (- offset 4) by-offset)))
+                   (lo (if (eq type 'adr-prel-pg-hi21) (gethash (+ offset 4) by-offset) r)))
+              (unless (and page lo (eq (plist-get page :type) 'adr-prel-pg-hi21)
+                           (memq (plist-get lo :type) '(add-abs-lo12-nc ldst64-abs-lo12-nc))
+                           (equal (plist-get page :symbol) (plist-get lo :symbol))
+                           (= (plist-get page :addend) (plist-get lo :addend))
+                           (= (logand (nelisp-asm-arm64--read-word-le bytes (plist-get page :offset)) 31)
+                              (logand (ash (nelisp-asm-arm64--read-word-le bytes (plist-get lo :offset)) -5) 31)))
+                (signal 'nelisp-asm-arm64-error (list :invalid-page-pair offset))))))))
+    t))
+
 (defun nelisp-asm-arm64-resolve-fixups (buf)
   "Apply every pending fixup in BUF, returning the patched bytes.
 Each fixup `(SLOT LABEL TYPE)' is resolved to imm26 = `(label-pos
@@ -364,6 +560,11 @@ materialized unibyte-string, patch via a mutable vector, then
 store back as a single chunk (= the cached chunk list collapses
 to length 1 so subsequent `buffer-bytes' calls remain
 O(total-bytes))."
+  (when (plist-get (nelisp-asm-arm64--unwrap buf) :relax)
+    (nelisp-asm-arm64-validate-relocs buf)
+    (nelisp-asm-arm64--relax-fixups buf))
+  (when (plist-get (nelisp-asm-arm64--unwrap buf) :relax)
+    (nelisp-asm-arm64-validate-relocs buf))
   (let* ((plist  (nelisp-asm-arm64--unwrap buf))
          (chunks (plist-get plist :chunks))
          (bytes  (apply #'concat (nreverse (copy-sequence chunks))))
@@ -372,66 +573,35 @@ O(total-bytes))."
          ;; Counted and indexed in BYTES, not characters: see
          ;; `nelisp-asm-arm64--byte-length'.
          (n (nelisp-asm-arm64--byte-length bytes))
-         (vec (make-vector n 0))
+         ;; Host strings are mutable byte buffers.  Avoid O(N) Lisp conses
+         ;; and an 8*N vector when qualifying large branch-range fixtures.
+         (vec (if (fboundp 'string-byte) (make-vector n 0) (copy-sequence bytes)))
+         (occupied (make-hash-table :test 'eql))
          (i 0))
-    (while (< i n)
-      (aset vec i (nelisp-asm-arm64--byte-at bytes i))
-      (setq i (1+ i)))
+    (when (vectorp vec)
+      (while (< i n)
+        (aset vec i (nelisp-asm-arm64--byte-at bytes i))
+        (setq i (1+ i))))
     (dolist (fix fixups)
       (let* ((slot  (nth 0 fix))
              (label (nth 1 fix))
              (type  (or (nth 2 fix) 'b26))
              (cell  (assq label labels)))
+        (unless (and (integerp slot) (>= slot 0) (<= (+ slot 4) n)
+                     (zerop (% slot 4)) (not (gethash slot occupied)))
+          (signal 'nelisp-asm-arm64-error (list :invalid-fixup-slot slot)))
+        (puthash slot t occupied)
         (unless cell
           (signal 'nelisp-asm-arm64-error
                   (list :unresolved-label label :at-slot slot)))
         (let ((disp (- (cdr cell) slot)))
-          (unless (zerop (logand disp #x3))
+          (unless (or (eq type 'adr21) (zerop (logand disp #x3)))
             (signal 'nelisp-asm-arm64-error
                     (list :branch-misaligned disp :at-slot slot)))
-          (pcase type
-            ((or 'b26 'bl26)
-             (let ((imm26 (ash disp -2)))
-               (unless (and (>= imm26 (- (ash 1 25)))
-                            (<  imm26 (ash 1 25)))
-                 (signal 'nelisp-asm-arm64-error
-                         (list :branch-out-of-range disp :at-slot slot)))
-               (let* ((cur  (nelisp-asm-arm64--read-word-le vec slot))
-                      (new  (logior cur
-                                    (logand imm26 #x3FFFFFF))))
-                 (nelisp-asm-arm64--write-word-le vec slot new))))
-            ('b19
-             ;; Doc 100 §100.D Stage 2: B.cond imm19 patches bits
-             ;; [23:5] of the instruction word.  imm19 is a signed
-             ;; 19-bit byte-offset / 4 (= ±1 MiB / 4-aligned).
-             (let ((imm19 (ash disp -2)))
-               (unless (and (>= imm19 (- (ash 1 18)))
-                            (<  imm19 (ash 1 18)))
-                 (signal 'nelisp-asm-arm64-error
-                         (list :bcond-out-of-range disp :at-slot slot)))
-               (let* ((cur  (nelisp-asm-arm64--read-word-le vec slot))
-                      (field (ash (logand imm19 #x7FFFF) 5))
-                      (new  (logior cur field)))
-                 (nelisp-asm-arm64--write-word-le vec slot new))))
-            ('adr21
-             ;; Doc 133 P0 `addr-of': ADR patches a 21-bit *signed byte*
-             ;; offset (NOT /4) into immhi:immlo.  immlo = disp[1:0]
-             ;; (bits [30:29]), immhi = disp[20:2] (bits [23:5]).  PC for
-             ;; ADR is the instruction's own address (= slot).  Range is
-             ;; ±1 MiB — fine for a single intra-text section.
-             (unless (and (>= disp (- (ash 1 20)))
-                          (<  disp (ash 1 20)))
-               (signal 'nelisp-asm-arm64-error
-                       (list :adr-out-of-range disp :at-slot slot)))
-             (let* ((immlo (logand disp #x3))
-                    (immhi (logand (ash disp -2) #x7FFFF))
-                    (cur   (nelisp-asm-arm64--read-word-le vec slot))
-                    (new   (logior cur (ash immlo 29) (ash immhi 5))))
-               (nelisp-asm-arm64--write-word-le vec slot new)))
-            (other
-             (signal 'nelisp-asm-arm64-error
-                     (list :unknown-fixup-type other :at-slot slot)))))))
-    (let ((patched (apply #'unibyte-string (append vec nil))))
+          (nelisp-asm-arm64--write-word-le
+           vec slot (nelisp-asm-arm64--patch-pc-word
+                     (nelisp-asm-arm64--read-word-le vec slot) type disp)))))
+    (let ((patched (if (stringp vec) vec (apply #'unibyte-string (append vec nil)))))
       ;; Collapse chunk list to a single materialized chunk so
       ;; subsequent `buffer-bytes' calls return the patched form.
       (setq plist (plist-put plist :chunks (list patched)))
@@ -662,6 +832,43 @@ pointer / indirect-dispatch primitive required by Doc 133 Phase 0
          (word (logior #xD63F0000 (ash n 5))))
     (nelisp-asm-arm64--emit-word buf word)))
 
+(defun nelisp-asm-arm64-br (buf reg)
+  "Emit BR REG, preserving LR and argument registers (IP0 veneers)."
+  (nelisp-asm-arm64--emit-word
+   buf (logior #xd61f0000 (ash (nelisp-asm-arm64--reg-num reg) 5))))
+
+(defun nelisp-asm-arm64-cbz (buf reg label &optional nonzero)
+  "Emit a 64-bit CBZ/CBNZ REG to LABEL, with an imm19 fixup."
+  (let ((slot (nelisp-asm-arm64-buffer-pos buf)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior (if nonzero #xb5000000 #xb4000000) (nelisp-asm-arm64--reg-num reg)))
+    (nelisp-asm-arm64-emit-fixup buf slot label 'cb19)))
+
+(defun nelisp-asm-arm64-ldr-literal (buf reg label)
+  "Emit LDR REG, LABEL using the architectural imm19 literal range."
+  (let ((slot (nelisp-asm-arm64-buffer-pos buf)))
+    (nelisp-asm-arm64--emit-word buf (logior #x58000000 (nelisp-asm-arm64--reg-num reg)))
+    (nelisp-asm-arm64-emit-fixup buf slot label 'ldr19)))
+
+(defun nelisp-asm-arm64-load-address-literal (buf reg symbol &optional addend)
+  "Load linker-owned SYMBOL+ADDEND from a bounded local address pool.
+Branch around the aligned ABS64 literal and report its span for decoders."
+  (let* ((slot (nelisp-asm-arm64-buffer-pos buf))
+         (literal (* 8 (/ (+ slot 15) 8)))
+         (end (+ literal 8)))
+    (nelisp-asm-arm64--emit-word
+     buf (nelisp-asm-arm64--patch-pc-word
+          (logior #x58000000 (nelisp-asm-arm64--reg-num reg)) 'ldr19 (- literal slot)))
+    (nelisp-asm-arm64--emit-word
+     buf (nelisp-asm-arm64--patch-pc-word #x14000000 'b26 (- end (+ slot 4))))
+    (while (< (nelisp-asm-arm64-buffer-pos buf) literal) (nelisp-asm-arm64-nop buf))
+    (nelisp-asm-arm64-emit-reloc buf 'abs64 symbol addend)
+    (nelisp-asm-arm64--append-bytes buf (make-string 8 0))
+    (let ((state (nelisp-asm-arm64--unwrap buf)))
+      (nelisp-asm-arm64--rewrap
+       buf (plist-put state :literal-spans
+                      (cons (cons literal end) (plist-get state :literal-spans)))))))
+
 (defun nelisp-asm-arm64-b (buf label)
   "Emit `B imm26' (= unconditional branch) with a fixup against LABEL.
 Writes a 4-byte placeholder = base 0x14000000 (imm26 field = 0),
@@ -719,6 +926,26 @@ Base 0xCB000000 | (Xm << 16) | (Xn << 5) | Xd."
          (m (logand (nelisp-asm-arm64--reg-num rhs) #x1F)))
     (nelisp-asm-arm64--emit-word
      buf (logior #xCB000000 (ash m 16) (ash n 5) d))))
+
+(defun nelisp-asm-arm64-adds-reg-reg (buf dst lhs rhs)
+  "Emit ADDS Xd, Xn, Xm (ARM ARM 0xab000000, Rm[20:16], Rn[9:5], Rd)."
+  (nelisp-asm-arm64--emit-word
+   buf (logior #xab000000 (ash (nelisp-asm-arm64--reg-num rhs) 16)
+               (ash (nelisp-asm-arm64--reg-num lhs) 5) (nelisp-asm-arm64--reg-num dst))))
+
+(defun nelisp-asm-arm64-subs-reg-reg (buf dst lhs rhs)
+  "Emit SUBS Xd, Xn, Xm; subtract from XZR also implements NEGS."
+  (nelisp-asm-arm64--emit-word
+   buf (logior #xeb000000 (ash (nelisp-asm-arm64--reg-num rhs) 16)
+               (ash (nelisp-asm-arm64--reg-num lhs) 5) (nelisp-asm-arm64--reg-num dst))))
+
+(defun nelisp-asm-arm64-stp-frame (buf)
+  "Emit STP x29, x30, [sp, #-16]! for a contiguous ABI frame record."
+  (nelisp-asm-arm64--emit-word buf #xa9bf7bfd))
+
+(defun nelisp-asm-arm64-ldp-frame (buf)
+  "Emit LDP x29, x30, [sp], #16 to restore the frame record."
+  (nelisp-asm-arm64--emit-word buf #xa8c17bfd))
 
 (defun nelisp-asm-arm64-mul-reg-reg (buf dst lhs rhs)
   "Emit `MUL Xd, Xn, Xm' (= alias for MADD Xd, Xn, Xm, XZR).
@@ -869,9 +1096,19 @@ The first branch is always local, while the real target uses the existing
 passes and preserves the public API."
   (let* ((cond-bits (nelisp-asm-arm64--cond-num cond-sym))
          (inv-bits (logxor cond-bits 1)))
-    (nelisp-asm-arm64--emit-word
-     buf (logior #x54000000 (ash 2 5) (logand inv-bits #xF)))
+    (unless (>= cond-bits 14)
+      (nelisp-asm-arm64--emit-word
+       buf (logior #x54000000 (ash 2 5) (logand inv-bits #xF))))
     (nelisp-asm-arm64-b buf label)))
+
+(defun nelisp-asm-arm64-b-cond-near (buf condition label)
+  "Emit B.CONDITION LABEL directly, with checked imm19 relaxation.
+Use this after flag-setting arithmetic so B.VS observes those exact flags."
+  (let ((slot (nelisp-asm-arm64-buffer-pos buf))
+        (code (nelisp-asm-arm64--cond-num condition)))
+    (if (>= code 14) (nelisp-asm-arm64-b buf label)
+      (nelisp-asm-arm64--emit-word buf (logior #x54000000 code))
+      (nelisp-asm-arm64-emit-fixup buf slot label 'b19))))
 
 (defun nelisp-asm-arm64-str-pre-sp-16 (buf src)
   "Emit `STR Xn, [SP, #-16]!' (= push Xn, pre-index SP -= 16).
@@ -970,6 +1207,31 @@ Base 0xF8E00000 | (Rs<<16) | (Rn<<5) | Rt.  Requires ARMv8.1 LSE
         (n-reg (logand (nelisp-asm-arm64--reg-num rn) #x1F)))
     (nelisp-asm-arm64--emit-word
      buf (logior #xF8E00000 (ash s-reg 16) (ash n-reg 5) t-reg))))
+
+(defun nelisp-asm-arm64-ldaxr (buf rt rn)
+  "Emit LDAXR Xt, [Xn], baseline ARMv8 acquire exclusive load."
+  (nelisp-asm-arm64--emit-word
+   buf (logior #xc85ffc00 (ash (nelisp-asm-arm64--reg-num rn) 5)
+               (nelisp-asm-arm64--reg-num rt))))
+
+(defun nelisp-asm-arm64-stlxr (buf status rt rn)
+  "Emit STLXR Ws, Xt, [Xn]; STATUS names the zero-extended GP register."
+  (nelisp-asm-arm64--emit-word
+   buf (logior #xc800fc00 (ash (nelisp-asm-arm64--reg-num status) 16)
+               (ash (nelisp-asm-arm64--reg-num rn) 5) (nelisp-asm-arm64--reg-num rt))))
+
+(defun nelisp-asm-arm64-dmb-ish (buf)
+  "Emit DMB ISH for conservative sequentially consistent atomics."
+  (nelisp-asm-arm64--emit-word buf #xd5033bbf))
+
+(defun nelisp-asm-arm64-clrex (buf)
+  "Emit CLREX #15 on an exclusive compare-exchange mismatch."
+  (nelisp-asm-arm64--emit-word buf #xd5033f5f))
+
+(defun nelisp-asm-arm64-ldr-abs-lo12-nc (buf rt rn symbol &optional addend)
+  "Emit LDR Xt, [Xn, :lo12:SYMBOL] with a scaled LDST64 relocation."
+  (nelisp-asm-arm64-emit-reloc buf 'ldst64-abs-lo12-nc symbol addend)
+  (nelisp-asm-arm64-ldr-imm buf rt rn 0))
 
 (defun nelisp-asm-arm64-casal (buf rs rt rn)
   "Emit `CASAL Xs, Xt, [Xn]' (= LSE compare-and-swap, acquire+release).

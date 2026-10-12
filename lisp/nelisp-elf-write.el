@@ -109,6 +109,10 @@
 (defconst nelisp-elf--r-aarch64-add-abs-lo12-nc 277
   "R_AARCH64_ADD_ABS_LO12_NC (= ADD absolute low 12 bits).")
 (defconst nelisp-elf--r-aarch64-call26 283 "R_AARCH64_CALL26 (= BL imm26).")
+(defconst nelisp-elf--r-aarch64-jump26 282 "R_AARCH64_JUMP26 (= B imm26).")
+(defconst nelisp-elf--r-aarch64-ldst64-abs-lo12-nc 286
+  "R_AARCH64_LDST64_ABS_LO12_NC (= scaled u64 load/store low twelve bits).")
+(defconst nelisp-elf--r-aarch64-abs64 257 "R_AARCH64_ABS64.")
 
 (defconst nelisp-elf--shn-undef 0 "SHN_UNDEF (= unresolved symbol).")
 (defconst nelisp-elf--shn-abs   #xFFF1 "SHN_ABS (= absolute value, no relocation).")
@@ -1239,7 +1243,7 @@ RW segment: .got / .dynamic."
 
 ;; ---- §91.b reloc-type symbol → ELF constant mapping ----
 
-(defun nelisp-elf--reloc-type-code (sym)
+(defun nelisp-elf--reloc-type-code (sym &optional machine)
   "Translate the user-facing reloc TYPE symbol SYM to its ELF constant.
 Supported: `pc32' (= R_X86_64_PC32), `abs64' (= R_X86_64_64),
 `plt32' (= R_X86_64_PLT32), `adr-prel-pg-hi21' (=
@@ -1249,11 +1253,14 @@ integers pass through unchanged."
   (cond
    ((integerp sym) sym)
    ((eq sym 'pc32)  nelisp-elf--r-x86-64-pc32)
-   ((eq sym 'abs64) nelisp-elf--r-x86-64-64)
+   ((eq sym 'abs64) (if (memq machine '(aarch64 arm64 183))
+                       nelisp-elf--r-aarch64-abs64 nelisp-elf--r-x86-64-64))
    ((eq sym 'plt32) nelisp-elf--r-x86-64-plt32)
    ((eq sym 'adr-prel-pg-hi21) nelisp-elf--r-aarch64-adr-prel-pg-hi21)
    ((eq sym 'add-abs-lo12-nc) nelisp-elf--r-aarch64-add-abs-lo12-nc)
    ((eq sym 'b26-pc) nelisp-elf--r-aarch64-call26)
+   ((eq sym 'jump26-pc) nelisp-elf--r-aarch64-jump26)
+   ((eq sym 'ldst64-abs-lo12-nc) nelisp-elf--r-aarch64-ldst64-abs-lo12-nc)
    (t (error "nelisp-elf: unknown relocation type %S" sym))))
 
 (defun nelisp-elf--sym-bind-code (bind)
@@ -1618,7 +1625,7 @@ Doc 91 §91.c."
          (rodata-size (if have-rodata (nelisp-elf--byte-length rodata) 0))
          (data-size   (if have-data (nelisp-elf--byte-length data) 0))
          (vaddr-base  nelisp-elf--minimal-vaddr-base)
-         (page-size   #x1000)
+         (page-size   (if (eq (plist-get plist :machine) 'aarch64) #x10000 #x1000))
          ;; ---- RX segment layout (= Ehdr + Phdrs + .text + .rodata).
          (phnum      (if have-rw 2 1))
          (phdr-off   nelisp-elf--ehdr-size)
@@ -2050,7 +2057,7 @@ Doc 91 §91.c."
              (or (plist-get rel :offset) 0)
              (nelisp-elf-rela-info
               sym-idx
-              (nelisp-elf--reloc-type-code rtype))
+              (nelisp-elf--reloc-type-code rtype machine-arg))
              (or (plist-get rel :addend) 0))))))
     ;; ---- Shdr table ----
     (let ((pad (- shoff (nelisp-elf-buffer-length cbuf))))
@@ -2694,7 +2701,7 @@ treated as section-relative offsets (= no vaddr-base addition)."
                (addend (or (plist-get rel :addend) 0))
                (info (nelisp-elf-rela-info
                       sym-idx
-                      (nelisp-elf--reloc-type-code (plist-get rel :type)))))
+                      (nelisp-elf--reloc-type-code (plist-get rel :type) machine-arg))))
           (nelisp-elf--build-rel-rela cbuf offset info addend))))
     ;; ---- .rela.data (relocs patching .data, Doc 06 Step C-2: a pointer
     ;; baked into a `.data' blob, e.g. a string-literal field or `&global').
@@ -2712,7 +2719,7 @@ treated as section-relative offsets (= no vaddr-base addition)."
                (addend (or (plist-get rel :addend) 0))
                (info (nelisp-elf-rela-info
                       sym-idx
-                      (nelisp-elf--reloc-type-code (plist-get rel :type)))))
+                      (nelisp-elf--reloc-type-code (plist-get rel :type) machine-arg))))
           (nelisp-elf--build-rel-rela cbuf offset info addend))))
     ;; ---- Shdr table.
     (let ((pad (- shoff (nelisp-elf-buffer-length cbuf))))

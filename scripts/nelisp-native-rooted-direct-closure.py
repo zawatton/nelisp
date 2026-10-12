@@ -5,8 +5,13 @@ import json
 import re
 from pathlib import Path
 
-from capstone import Cs, CS_ARCH_X86, CS_MODE_64, CS_GRP_CALL, CS_GRP_JUMP
+from capstone import Cs, CS_ARCH_X86, CS_MODE_64, CS_ARCH_ARM64, CS_MODE_ARM, CS_GRP_CALL, CS_GRP_JUMP
 from capstone.x86 import X86_OP_IMM
+from capstone.arm64 import ARM64_OP_IMM
+import importlib.util
+_spec_arm = importlib.util.spec_from_file_location("arm_reloc", Path(__file__).with_name("nelisp-native-arm64-relocations.py"))
+arm = importlib.util.module_from_spec(_spec_arm)
+_spec_arm.loader.exec_module(arm)
 from elftools.elf.elffile import ELFFile
 
 MAX_FUNCTIONS = 128
@@ -57,7 +62,9 @@ def unit_owners(metadata, directory):
                            if r["section"] == "text" and start <= r["offset"] < end]
             owners[function["name"]] = dict(unit=unit["name"], start=start, end=end,
                                             text=text, starts=starts, relocations=relocations,
-                                            unit_sha256=unit["unit-sha256"])
+                                            unit_sha256=unit["unit-sha256"],
+                                            machine=unit.get("machine", "x86_64"),
+                                            literals=unit.get("literal-spans", []))
     return owners
 
 
@@ -82,8 +89,12 @@ def prove(image, metadata, directory, roots, claimed=None, max_functions=128, ev
             stream.seek(0)
             elf = ELFFile(stream)
             terminals = set()
-        if elf["e_machine"] != "EM_X86_64" or elf["e_type"] != "ET_EXEC":
+        arm64 = elf["e_machine"] == "EM_AARCH64"
+        if elf["e_machine"] not in ("EM_X86_64", "EM_AARCH64") or elf["e_type"] != "ET_EXEC":
             raise ValueError("Unsupported native image domain")
+        if arm64:
+            decoder = Cs(CS_ARCH_ARM64, CS_MODE_ARM)
+            decoder.detail = True
         table = elf.get_section_by_name(".symtab")
         if table is None or table.num_symbols() > 20000:
             raise ValueError("ELF symbol bound")
@@ -126,7 +137,7 @@ def prove(image, metadata, directory, roots, claimed=None, max_functions=128, ev
             used = set()
             for relocation in owner["relocations"]:
                 position = relocation["offset"] - owner["start"]
-                if (relocation["type"] not in ("pc32", "plt32") or position < 0
+                if (relocation["type"] not in (arm.SPECS if arm64 else ("pc32", "plt32")) or position < 0
                         or position + 4 > size or used.intersection(range(position, position + 4))):
                     raise ValueError("Unknown or crossing unit relocation")
                 target = symbols.get(relocation["symbol"])
@@ -134,25 +145,38 @@ def prove(image, metadata, directory, roots, claimed=None, max_functions=128, ev
                     raise ValueError("Unresolved linked relocation")
                 actual = int.from_bytes(linked[position:position + 4], "little", signed=True)
                 expected = target["st_value"] + relocation["addend"] - (address + position + 4)
-                if actual != expected:
+                if not arm64 and actual != expected:
                     raise ValueError("Relocation target differs")
                 used.update(range(position, position + 4))
                 relocations[position] = relocation
                 normalized_unit[position:position + 4] = bytes(4)
                 normalized_linked[position:position + 4] = bytes(4)
+            if arm64:
+                local_relocs = [dict(r, offset=r['offset'] - owner['start']) for r in owner['relocations']]
+                spans = [(lo - owner['start'], hi - owner['start']) for lo, hi in owner['literals']
+                         if owner['start'] <= lo < hi <= owner['end']]
+                normalized_unit = arm.normalize(unit_text, local_relocs, spans)
+                normalized_linked = arm.normalize(linked, local_relocs, spans, address,
+                                                  {k: v['st_value'] for k, v in symbols.items()})
+            else:
+                spans = []
             if normalized_unit != normalized_linked:
                 raise ValueError("Linked text differs from genuine unit: " + name)
-            direct, indirect, decoded = [], [], 0
-            for instruction in decoder.disasm(unit_text, owner["start"]):
+            direct, indirect, decoded = [], [], sum(hi - lo for lo, hi in spans)
+            cuts = [0] + [item for span in spans for item in span] + [size]
+            instructions = (ins for lo, hi in zip(cuts[::2], cuts[1::2])
+                            for ins in decoder.disasm(unit_text[lo:hi], owner['start'] + lo))
+            for instruction in instructions:
                 decoded += instruction.size
                 if not (instruction.group(CS_GRP_CALL) or instruction.group(CS_GRP_JUMP)):
                     continue
                 position = instruction.address - owner["start"]
-                if len(instruction.operands) != 1 or instruction.operands[0].type != X86_OP_IMM:
+                operand = instruction.operands[-1] if instruction.operands else None
+                if operand is None or operand.type != (ARM64_OP_IMM if arm64 else X86_OP_IMM):
                     indirect.append(dict(offset=position, mnemonic=instruction.mnemonic))
                     continue
-                relocation = relocations.get(position + instruction.imm_offset)
-                target_offset = instruction.operands[0].imm
+                relocation = relocations.get(position if arm64 else position + instruction.imm_offset)
+                target_offset = operand.imm
                 if relocation:
                     target_name = relocation["symbol"]
                     if symbols[target_name]["st_info"]["type"] != "STT_FUNC":
