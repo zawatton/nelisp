@@ -4,6 +4,12 @@
 
 (defun nelisp-bytecode-native-consumer-read-elc-forms (path)
   "Read GNU byte-code forms from PATH without evaluating them."
+  ;; `#$' in a lazy docstring reference reads as the file being loaded.  GNU
+  ;; reads it as this .elc; without the binding it would be whatever script
+  ;; is loading now, and that path would enter the native cache key, so a
+  ;; function compiled from one driver would miss the cache from another.
+  (let ((load-file-name (expand-file-name path))
+        (load-true-file-name (expand-file-name path)))
   (with-temp-buffer
     (set-buffer-multibyte nil)
     (insert-file-contents-literally path)
@@ -33,7 +39,7 @@
             (setq done t)
           ;; Any EOF raised after a form begins is malformed truncation.
           (push (read (current-buffer)) forms)))
-      (nreverse forms))))
+      (nreverse forms)))))
 
 (defun nelisp-bytecode-native-consumer-read-elc-definitions (forms)
   "Return (SYMBOL . BYTE-CODE-FUNCTION) pairs found in unread FORMS."
