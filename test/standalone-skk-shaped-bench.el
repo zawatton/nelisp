@@ -5,8 +5,8 @@
 ;; Four string merge functions shaped like the Windows SKK IME's
 ;; dictionary merge (split candidate lists, strip annotations, drop
 ;; duplicates, test okurigana prefixes, rebuild the entry) run over 80
-;; records.  The time is divided by a fixed arithmetic reference loop
-;; timed in the same run, so the ratio holds across machines and load.
+;; records.  The time is divided by a native SHA-256 of 8 MiB timed in
+;; the same run, so the ratio holds across machines and load.
 ;; Prints one SKK-BENCH line; with SKK_BENCH_LIMIT set, exits non-zero
 ;; when the ratio exceeds it.
 
@@ -54,10 +54,12 @@
           (setq n (+ n (length merged))))))
     n))
 
+(defvar skk-bench--reference-input (make-string (* 8 1024 1024) ?x))
+
 (defun skk-bench--reference ()
-  (let ((i 0) (acc 0))
-    (while (< i 20000) (setq acc (+ acc (* i 3))) (setq i (1+ i)))
-    acc))
+  ;; One native call over 8 MiB: it tracks machine speed and load but not
+  ;; the interpreter, so interpreter-wide speedups show in the ratio.
+  (nelisp--sha256 skk-bench--reference-input))
 
 (defun skk-bench--time (fn &rest args)
   (garbage-collect)

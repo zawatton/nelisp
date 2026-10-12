@@ -64,10 +64,10 @@ pending
 pending
 
 ** S3.4 SKK-shaped merge benchmark (4 functions, 80 records) runs at least 3 x faster than at baseline
-#+NOTE: Ratio to a same-run arithmetic reference loop; baseline 1.12-1.14 on the integ 90eb52275 reader, limit 0.37 = baseline / 3.
+#+NOTE: Ratio to a same-run native SHA-256 of 8 MiB (tracks machine load, not the interpreter); baseline 0.37-0.40 on the integ 90eb52275 reader, limit 0.13 = baseline / 3.
 #+REQUIRES: NELISP_RT_BIN
 #+TIMEOUT: 120
-cmd: SKK_BENCH_LIMIT=0.37 $NELISP_RT_BIN --load test/standalone-skk-shaped-bench.el
+cmd: SKK_BENCH_LIMIT=0.13 $NELISP_RT_BIN --load test/standalone-skk-shaped-bench.el
 
 * S4 Native cache load speed
 

@@ -7327,9 +7327,15 @@ leave symbols unresolved at link time."
     (defun wf_chain_lt (args)
       (if (= (wf_cdr_has_more args) 1)
           (let* ((rest (nl_cons_cdr_ptr args)))
-            (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
-              (if (= (wf_num_pairp a b) 0) 2
-                (if (= (wf_num_lt a b) 1) (wf_chain_lt rest) 0))))
+            ;; Two fixnum words compare in place; the materialising car
+            ;; accessor would box each into a fresh heap slot first.
+            (let* ((aw (ptr-read-u64 (ptr-read-u64 args 8) 0))
+                   (bw (ptr-read-u64 (ptr-read-u64 rest 8) 0)))
+              (if (and (= (logand aw 3) 1) (= (logand bw 3) 1))
+                  (if (< (sar aw 2) (sar bw 2)) (wf_chain_lt rest) 0)
+                (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
+                  (if (= (wf_num_pairp a b) 0) 2
+                    (if (= (wf_num_lt a b) 1) (wf_chain_lt rest) 0))))))
         ;; ONE argument: Emacs answers t without checking its type --
         ;; (> '((a . 1))) is t.  There is no pair to compare, so there is
         ;; nothing to be wrong about, and checking anyway made a
@@ -7338,9 +7344,15 @@ leave symbols unresolved at link time."
     (defun wf_chain_gt (args)
       (if (= (wf_cdr_has_more args) 1)
           (let* ((rest (nl_cons_cdr_ptr args)))
-            (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
-              (if (= (wf_num_pairp a b) 0) 2
-                (if (= (wf_num_gt a b) 1) (wf_chain_gt rest) 0))))
+            ;; Two fixnum words compare in place; the materialising car
+            ;; accessor would box each into a fresh heap slot first.
+            (let* ((aw (ptr-read-u64 (ptr-read-u64 args 8) 0))
+                   (bw (ptr-read-u64 (ptr-read-u64 rest 8) 0)))
+              (if (and (= (logand aw 3) 1) (= (logand bw 3) 1))
+                  (if (> (sar aw 2) (sar bw 2)) (wf_chain_gt rest) 0)
+                (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
+                  (if (= (wf_num_pairp a b) 0) 2
+                    (if (= (wf_num_gt a b) 1) (wf_chain_gt rest) 0))))))
         ;; ONE argument: Emacs answers t without checking its type --
         ;; (> '((a . 1))) is t.  There is no pair to compare, so there is
         ;; nothing to be wrong about, and checking anyway made a
@@ -7349,9 +7361,15 @@ leave symbols unresolved at link time."
     (defun wf_chain_le (args)
       (if (= (wf_cdr_has_more args) 1)
           (let* ((rest (nl_cons_cdr_ptr args)))
-            (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
-              (if (= (wf_num_pairp a b) 0) 2
-                (if (= (wf_num_le a b) 1) (wf_chain_le rest) 0))))
+            ;; Two fixnum words compare in place; the materialising car
+            ;; accessor would box each into a fresh heap slot first.
+            (let* ((aw (ptr-read-u64 (ptr-read-u64 args 8) 0))
+                   (bw (ptr-read-u64 (ptr-read-u64 rest 8) 0)))
+              (if (and (= (logand aw 3) 1) (= (logand bw 3) 1))
+                  (if (<= (sar aw 2) (sar bw 2)) (wf_chain_le rest) 0)
+                (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
+                  (if (= (wf_num_pairp a b) 0) 2
+                    (if (= (wf_num_le a b) 1) (wf_chain_le rest) 0))))))
         ;; ONE argument: Emacs answers t without checking its type --
         ;; (> '((a . 1))) is t.  There is no pair to compare, so there is
         ;; nothing to be wrong about, and checking anyway made a
@@ -7360,9 +7378,15 @@ leave symbols unresolved at link time."
     (defun wf_chain_ge (args)
       (if (= (wf_cdr_has_more args) 1)
           (let* ((rest (nl_cons_cdr_ptr args)))
-            (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
-              (if (= (wf_num_pairp a b) 0) 2
-                (if (= (wf_num_ge a b) 1) (wf_chain_ge rest) 0))))
+            ;; Two fixnum words compare in place; the materialising car
+            ;; accessor would box each into a fresh heap slot first.
+            (let* ((aw (ptr-read-u64 (ptr-read-u64 args 8) 0))
+                   (bw (ptr-read-u64 (ptr-read-u64 rest 8) 0)))
+              (if (and (= (logand aw 3) 1) (= (logand bw 3) 1))
+                  (if (>= (sar aw 2) (sar bw 2)) (wf_chain_ge rest) 0)
+                (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
+                  (if (= (wf_num_pairp a b) 0) 2
+                    (if (= (wf_num_ge a b) 1) (wf_chain_ge rest) 0))))))
         ;; ONE argument: Emacs answers t without checking its type --
         ;; (> '((a . 1))) is t.  There is no pair to compare, so there is
         ;; nothing to be wrong about, and checking anyway made a
@@ -7371,9 +7395,15 @@ leave symbols unresolved at link time."
     (defun wf_chain_eq (args)
       (if (= (wf_cdr_has_more args) 1)
           (let* ((rest (nl_cons_cdr_ptr args)))
-            (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
-              (if (= (wf_num_pairp a b) 0) 2
-                (if (= (wf_num_eq a b) 1) (wf_chain_eq rest) 0))))
+            ;; Two fixnum words compare in place; the materialising car
+            ;; accessor would box each into a fresh heap slot first.
+            (let* ((aw (ptr-read-u64 (ptr-read-u64 args 8) 0))
+                   (bw (ptr-read-u64 (ptr-read-u64 rest 8) 0)))
+              (if (and (= (logand aw 3) 1) (= (logand bw 3) 1))
+                  (if (= (sar aw 2) (sar bw 2)) (wf_chain_eq rest) 0)
+                (let* ((a (nl_cons_car_ptr args)) (b (nl_cons_car_ptr rest)))
+                  (if (= (wf_num_pairp a b) 0) 2
+                    (if (= (wf_num_eq a b) 1) (wf_chain_eq rest) 0))))))
         ;; ONE argument: Emacs answers t without checking its type --
         ;; (> '((a . 1))) is t.  There is no pair to compare, so there is
         ;; nothing to be wrong about, and checking anyway made a
