@@ -38,7 +38,7 @@
 
 (defun nelisp-test-native-entry-instrument (descriptor name module bridge)
   "Record entries of DESCRIPTOR without changing its raw-v2 ABI."
-  (unless (and (vectorp descriptor) (= (length descriptor) 9))
+  (unless (and (vectorp descriptor) (memq (length descriptor) '(9 10)))
     (error "Native entry observer requires a raw-v2 descriptor"))
   (if (nelisp-native-load--arm64-p)
       (nelisp-test-native-entry-instrument-arm64 descriptor name module bridge)

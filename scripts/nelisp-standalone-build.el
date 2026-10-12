@@ -38288,7 +38288,27 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
          (constants (vector-ref-ptr d 6))
          (exit (nl_rooted_vector_int d 7))
          (flat (>= packed-argc 0))
-         (argc (if flat packed-argc (- -1 packed-argc))))
+         (argc (if flat packed-argc (- -1 packed-argc)))
+         (counter (if (= (vector-len d) 10) (vector-ref-ptr d 9) 0))
+         ;; Optional entry instrumentation belongs to the common activation,
+         ;; not a Lisp rest/APPLY wrapper. OUT is the caller's published root.
+         ;; Existing dynamic lookup/setq preserve aliases, local bindings,
+         ;; watchers and mutation epochs. No new native helper or import.
+         (counter-rc
+          (if (= counter 0) 0
+            (let* ((name (vector-ref-ptr counter 0))
+                   (lookup (bf_dynamic_lookup env name out)))
+              (if (/= lookup 0) lookup
+                (if (and (= (sexp-tag out) 2)
+                         (>= (ptr-read-u64 out 8) -2305843009213693952)
+                         (< (ptr-read-u64 out 8) 2305843009213693951))
+                    (seq (wf_write_int out (+ (ptr-read-u64 out 8) 1))
+                         (nl_n3_setq env name out))
+                  ;; The retained Lisp expression is the reference for float,
+                  ;; bignum, overflow and wrong-type behavior of the counter.
+                  (seq (wf_write_nil out)
+                       (nl_apply_function (vector-ref-ptr counter 1) out env out))))))))
+    (if (/= counter-rc 0) counter-rc
     (if (or (< argc minimum) (and (>= maximum 0) (> argc maximum)))
         (bf_wrong_number_of_args (record-slot-ref-ptr func 0) argc)
       (let* ((ticket (nl_root_pin_begin_v2 env)) (base 0) (i 0) (valid 1) (rc 1))
@@ -38353,11 +38373,12 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
                         (setq rc (bf_wrong_type_listp (+ base (* (- status 256) 32))))
                       (setq rc (nl_apply_stash_invalid_function env func))))))
               (if (= (nl_root_pin_end_v2 env ticket) 1) rc
-                (nl_apply_stash_invalid_function env func))))))))))
+                (nl_apply_stash_invalid_function env func)))))))))))
 (defun bf_make_rooted_subr (args out env)
   (let* ((d (wf_arg_ptr args 0)) (name (wf_arg_ptr args 1))
          (module (wf_arg_ptr args 2)) (valid 1) (i 0))
-    (if (or (/= (sexp-tag d) 8) (/= (vector-len d) 9)
+    (if (or (/= (sexp-tag d) 8)
+            (and (/= (vector-len d) 9) (/= (vector-len d) 10))
             (/= (sexp-tag name) 4) (/= (sexp-tag module) 2))
         (nl_apply_stash_invalid_function env d)
       (seq
@@ -38365,14 +38386,19 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
          (if (/= (sexp-tag (vector-ref-ptr d i)) 2) (setq valid 0) 0)
          (setq i (+ i 1)))
        (if (= valid 0) (nl_apply_stash_invalid_function env d)
-         (let* ((entry (ptr-read-u64 (vector-ref-ptr d 0) 8))
+         (let* ((counter (if (= (vector-len d) 10) (vector-ref-ptr d 9) 0))
+                (entry (ptr-read-u64 (vector-ref-ptr d 0) 8))
                 (min (ptr-read-u64 (vector-ref-ptr d 1) 8))
                 (max (ptr-read-u64 (vector-ref-ptr d 2) 8))
                 (arity (ptr-read-u64 (vector-ref-ptr d 3) 8))
                 (count (ptr-read-u64 (vector-ref-ptr d 4) 8))
                 (inits (vector-ref-ptr d 5)) (constants (vector-ref-ptr d 6))
                 (exit (vector-ref-ptr d 7)))
-           (if (or (< entry 4096) (< min 0) (< arity min) (> arity 240)
+           (if (or (and (/= counter 0)
+                        (if (/= (sexp-tag counter) 8) 1
+                          (if (/= (vector-len counter) 2) 1
+                            (/= (sexp-tag (vector-ref-ptr counter 0)) 4))))
+                   (< entry 4096) (< min 0) (< arity min) (> arity 240)
                    (if (= max -1) (= arity 0) (/= max arity))
                    (<= count arity) (>= count 256)
                    (/= (sexp-tag inits) 8) (/= (sexp-tag exit) 2))

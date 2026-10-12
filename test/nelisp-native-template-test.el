@@ -2,10 +2,37 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 (require 'ert)
 (require 'nelisp-native-template)
+(require 'nelisp-native-cache)
 (require 'nelisp-native-template-pin)
 (defun nelisp-native-template-test--recipe (code &optional constants descriptor maximum)
   (list :descriptor (or descriptor 0) :code (apply #'unibyte-string code)
         :constants (or constants [42]) :stack-depth (or maximum 4)))
+
+(ert-deftest nelisp-native-template-direct-callable-retains-counter-and-owner ()
+  "Template entries use the same direct activation as the in-house backend."
+  (let* ((native (symbol-function 'identity)) (owner (list 'mapping)) captured
+         (header '(:entry "test-entry" :arity 1 :root-count 8 :backend template
+                   :exit-root-base 4 :initializers ((:root 2 :constant-index 0)))))
+    (cl-letf (((symbol-function 'nelisp--native-subr-create)
+               (lambda (descriptor _name _module _bridge)
+                 (setq captured descriptor) native)))
+      (let ((callable (nelisp-native-cache--callable-from-entry
+                       4096 header nil [live-constant] owner)))
+        (should (eq callable native))
+        (should (eq (nelisp-native-cache--retain-callable callable owner) native))
+        (should (= (length captured) 10))
+        (should (eq (car (aref captured 8)) owner))
+        (should (equal (aref captured 6) [live-constant]))
+        (should (equal (aref (aref captured 5) 0) [2 1 0]))
+        (should (eq (aref (aref captured 9) 0) 'nelisp-native-template--entry-count))
+        ;; Genuine Lisp fallback preserves dynamic binding and exceptional
+        ;; numeric values rather than embedding counter policy in the runtime.
+        (let ((nelisp-native-template--entry-count 0))
+          (funcall (aref (aref captured 9) 1))
+          (should (= nelisp-native-template--entry-count 1)))
+        (let ((nelisp-native-template--entry-count "bad"))
+          (should-error (funcall (aref (aref captured 9) 1))
+                        :type 'wrong-type-argument))))))
 
 (ert-deftest nelisp-native-template-frame-roots-follow-used-immediates ()
   "Long dynamic activations must not reserve an immediate root per opcode."
