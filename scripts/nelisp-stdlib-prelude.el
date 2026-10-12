@@ -19131,25 +19131,21 @@ signals an error rather than passing text through unexpanded."
       result)))
 (unless (fboundp 'base64-decode-string)
   (defun base64-decode-string (string &optional base64url ignore-invalid)
-    ;; Bytes, not characters.  `char-to-string' builds the CHARACTER whose
-    ;; code is the byte, and a byte >= 128 is then held in its multi-byte
-    ;; UTF-8 form, so decoding "yMnK" answered (195 136 195 137 195 138)
-    ;; where every other base64 answers (200 201 202) -- the payload silently
-    ;; doubled and no longer matched what was encoded.
-    ;;
-    ;; The ENCODER above was already byte-clean (`string-byte' /
-    ;; `string-bytes', see its own comment); this is the same defect on the
-    ;; way back, so the pair did not round-trip for any input with a high
-    ;; byte -- which is most compiled output.  `unibyte-string' keeps the byte.
+    ;; Bytes, not characters: the payload is arbitrary binary (compiled
+    ;; objects), so every output byte is written into one exact-capacity
+    ;; unibyte string, like the encoder above.  Reading the input with
+    ;; `string-byte' avoids `aref''s character-index UTF-8 walk; a non-ASCII
+    ;; input character is outside the alphabet either way.  Validation,
+    ;; padding and the ignore-invalid/base64url rules are unchanged.
     (nelisp--check-string string)
     ;; Emacs REFUSES what it cannot decode: a character outside the alphabet
     ;; and a group short of four both signal, and skipping them quietly
     ;; produced a shorter string that read as a successful decode.  In
     ;; base64url mode the padding is optional, which is why the same input
     ;; can be an error in one mode and two bytes in the other.
-    (let ((j 0) (n (length string)) (kept 0))
+    (let ((j 0) (n (string-bytes string)) (kept 0))
       (while (< j n)
-        (let ((ch (aref string j)))
+        (let ((ch (string-byte string j)))
           (cond
            ((or (= ch 10) (= ch 13) (= ch 9) (= ch 32)) nil)
            ((= ch ?=) (setq kept (1+ kept)))
@@ -19160,74 +19156,57 @@ signals an error rather than passing text through unexpanded."
       (if (or base64url ignore-invalid)
           (when (= 1 (mod kept 4)) (signal 'error (list "Invalid base64 data")))
         (unless (= 0 (mod kept 4))
-          (signal 'error (list "Invalid base64 data")))))
-    (let ((i 0)
-          (len (length string))
-          (vals-count 0)
-          (a 0)
-          (b 0)
-          (c 0)
-          (d 0)
-          (bytes nil)
-          (byte-count 0)
-          (chunks nil))
-      (while (< i len)
-        (let ((ch (aref string i)))
-          (cond
-           ((= ch ?=)
+          (signal 'error (list "Invalid base64 data"))))
+      (let ((i 0) (vals-count 0) (a 0) (b 0) (c 0) (d 0) (out 0)
+            (result (string-as-unibyte (make-string (+ 3 (* 3 (/ (+ kept 3) 4))) 0))))
+        (while (< i n)
+          (let ((ch (string-byte string i)))
             (cond
-             ((= vals-count 0) (setq a -2))
-             ((= vals-count 1) (setq b -2))
-             ((= vals-count 2) (setq c -2))
-             (t (setq d -2)))
-            (setq vals-count (1+ vals-count)))
-           ((or (= ch 10) (= ch 13) (= ch 9) (= ch 32))
-            nil)
-           (t
-            (let ((v (nelisp--base64-value ch)))
-              (when (>= v 0)
-                (cond
-                 ((= vals-count 0) (setq a v))
-                 ((= vals-count 1) (setq b v))
-                 ((= vals-count 2) (setq c v))
-                 (t (setq d v)))
-                (setq vals-count (1+ vals-count))))))
-          (when (= vals-count 4)
-            (let ((triple (logior (ash a 18)
-                                  (ash b 12)
-                                  (if (= c -2) 0 (ash c 6))
-                                  (if (= d -2) 0 d))))
-              (setq bytes
-                    (cons (unibyte-string (logand (ash triple -16) 255))
-                          bytes))
-              (setq byte-count (1+ byte-count))
-              (unless (= c -2)
-                (setq bytes
-                      (cons (unibyte-string (logand (ash triple -8) 255))
-                            bytes))
-                (setq byte-count (1+ byte-count)))
-              (unless (= d -2)
-                (setq bytes
-                      (cons (unibyte-string (logand triple 255))
-                            bytes))
-                (setq byte-count (1+ byte-count)))
-              (when (>= byte-count 128)
-                (setq chunks (nelisp--base64-flush-chunk bytes chunks))
-                (setq bytes nil)
-                (setq byte-count 0))
-              (setq vals-count 0))))
-        (setq i (1+ i)))
-      (when (>= vals-count 2)
-        ;; A PADDING character reached this flush as -2 and was shifted in as
-        ;; a value, so an ignore-invalid decode of "a!b=" produced two bytes
-        ;; of noise instead of one byte of answer.
-        (let ((triple (logior (ash a 18) (ash b 12)
-                              (if (and (>= vals-count 3) (>= c 0)) (ash c 6) 0))))
-          (setq bytes (cons (unibyte-string (logand (ash triple -16) 255)) bytes))
-          (when (and (>= vals-count 3) (>= c 0))
-            (setq bytes (cons (unibyte-string (logand (ash triple -8) 255)) bytes)))))
-      (setq chunks (nelisp--base64-flush-chunk bytes chunks))
-      (apply 'concat (nreverse chunks)))))
+             ((= ch ?=)
+              (cond
+               ((= vals-count 0) (setq a -2))
+               ((= vals-count 1) (setq b -2))
+               ((= vals-count 2) (setq c -2))
+               (t (setq d -2)))
+              (setq vals-count (1+ vals-count)))
+             ((or (= ch 10) (= ch 13) (= ch 9) (= ch 32))
+              nil)
+             (t
+              (let ((v (nelisp--base64-value ch)))
+                (when (>= v 0)
+                  (cond
+                   ((= vals-count 0) (setq a v))
+                   ((= vals-count 1) (setq b v))
+                   ((= vals-count 2) (setq c v))
+                   (t (setq d v)))
+                  (setq vals-count (1+ vals-count))))))
+            (when (= vals-count 4)
+              (let ((triple (logior (ash a 18)
+                                    (ash b 12)
+                                    (if (= c -2) 0 (ash c 6))
+                                    (if (= d -2) 0 d))))
+                (aset result out (logand (ash triple -16) 255))
+                (setq out (1+ out))
+                (unless (= c -2)
+                  (aset result out (logand (ash triple -8) 255))
+                  (setq out (1+ out)))
+                (unless (= d -2)
+                  (aset result out (logand triple 255))
+                  (setq out (1+ out)))
+                (setq vals-count 0))))
+          (setq i (1+ i)))
+        (when (>= vals-count 2)
+          ;; A PADDING character reached this flush as -2 and was shifted in as
+          ;; a value, so an ignore-invalid decode of "a!b=" produced two bytes
+          ;; of noise instead of one byte of answer.
+          (let ((triple (logior (ash a 18) (ash b 12)
+                                (if (and (>= vals-count 3) (>= c 0)) (ash c 6) 0))))
+            (aset result out (logand (ash triple -16) 255))
+            (setq out (1+ out))
+            (when (and (>= vals-count 3) (>= c 0))
+              (aset result out (logand (ash triple -8) 255))
+              (setq out (1+ out)))))
+        (substring result 0 out)))))
 ;; nelisp stdlib lowering helpers (referenced by the dotimes/loop macro
 ;; expansions in nelisp-stdlib-eval-special; their definitions live in
 ;; nelisp-stdlib.el which aborts on load standalone).  They are trivial
