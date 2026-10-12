@@ -59,7 +59,11 @@ pending
 ** S3.2 string-search on multibyte strings uses the native scanner and matches the character walk
 pending
 
-** S3.3 SKK-shaped merge benchmark (4 functions, 80 records) runs at least 3 x faster than at baseline
+** S3.3 maphash over a 2-entry table of size 2047 costs at most 5 x over a fresh 2-entry table
+#+NOTE: notes-44 2026-10-12: nelisp-buffer--registry (count 2, size 2047) maphash 131 ms vs 0.7 ms, so buffer-list costs ~63 ms per call.
+pending
+
+** S3.4 SKK-shaped merge benchmark (4 functions, 80 records) runs at least 3 x faster than at baseline
 pending
 
 * S4 Native cache load speed
