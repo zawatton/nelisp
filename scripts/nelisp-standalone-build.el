@@ -38303,7 +38303,7 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
                          (>= (ptr-read-u64 out 8) -2305843009213693952)
                          (< (ptr-read-u64 out 8) 2305843009213693951))
                     (seq (wf_write_int out (+ (ptr-read-u64 out 8) 1))
-                         (nl_n3_setq env name out))
+                         (bf_set_dynamic_value env name out))
                   ;; The retained Lisp expression is the reference for float,
                   ;; bignum, overflow and wrong-type behavior of the counter.
                   (seq (wf_write_nil out)
