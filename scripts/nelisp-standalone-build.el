@@ -559,7 +559,7 @@ GC, and mutation-epoch slots.  Windows cannot reliably reserve the historical
 
 (defun nelisp-standalone--driver-bss-size ()
   "Return driver BSS size including roots, loader state and catch head."
-  (+ (nelisp-standalone--catch-head-offset) 8 128 16
+  (+ (nelisp-standalone--catch-head-offset) 8 128 32 16
      (if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64) 160 0)))
 
 ;; Cold-image build digest.  The marker is assembled from bytes (never
@@ -881,6 +881,11 @@ storage — not an arena reservation."
                               :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_catch_head"
                               (nelisp-standalone--catch-head-offset)
+                              :section 'bss :bind 'global :type 'object))
+    ;; Cold-image hole map {bitmap, origin, end}: which bytes of the loaded
+    ;; image were free blocks at load (see `nl_boot_hole_map_build').
+    (list (nelisp-link-symbol "nl_boot_hole_map"
+                              (+ (nelisp-standalone--catch-head-offset) 8 128)
                               :section 'bss :bind 'global :type 'object))
     ;; Windows cold I/O counters and diagnostics are outside the dumped heap.
     (when (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
@@ -3497,9 +3502,38 @@ REPL-facing module it feeds."
     ;; @268436328) dangles -> SIGSEGV.  Correct test: the block must be both
     ;; AT-OR-ABOVE chunk 0's base AND below the watermark.  chunk0_base =
     ;; *(*268436160 + 0) (chunk-head desc, base field @ +0).
+    ;; A cold image carries the dumping run's freed blocks.  They are
+    ;; relinked and reused after load, so "below the watermark" alone no
+    ;; longer means "boot object": an address inside a load-time hole holds
+    ;; a runtime allocation that must be swept like any other.  The hole map
+    ;; has one bit per 8 image bytes; without a map (normal boot) every
+    ;; address below the watermark is boot, as before.
+    (defun nl_boot_hole_p (addr)
+      (let ((map (ptr-read-u64 (data-addr nl_boot_hole_map) 0)))
+        (if (= map 0) 0
+          (if (< addr (ptr-read-u64 (data-addr nl_boot_hole_map) 8)) 0
+            (if (< addr (ptr-read-u64 (data-addr nl_boot_hole_map) 16))
+                (let ((g (sar (- addr (ptr-read-u64 (data-addr nl_boot_hole_map) 8)) 3)))
+                  (logand (sar (ptr-read-u64 (+ map (* (sar g 6) 8)) 0) (logand g 63)) 1))
+              0)))))
     (defun nl_gc_is_boot (addr)
       (if (< addr (ptr-read-u64 (ptr-read-u64 268436160 0) 0)) 0
-        (if (< addr (ptr-read-u64 268435664 0)) 1 0)))
+        (if (< addr (ptr-read-u64 268435664 0))
+            (if (= (nl_boot_hole_p addr) 1) 0 1)
+          0)))
+    ;; Set map bits [G0, G1), whole words at a time where aligned.
+    (defun nl_boot_hole_set_bits (map g0 g1)
+      (let ((g g0))
+        (seq
+         (while (< g g1)
+           (if (if (= (logand g 63) 0) (if (< g1 (+ g 64)) 0 1) 0)
+               (seq (ptr-write-u64 (+ map (* (sar g 6) 8)) 0 (- 0 1))
+                    (setq g (+ g 64)))
+             (seq (ptr-write-u64 (+ map (* (sar g 6) 8)) 0
+                                 (logior (ptr-read-u64 (+ map (* (sar g 6) 8)) 0)
+                                         (shl 1 (logand g 63))))
+                  (setq g (+ g 1)))))
+         0)))
     ;; Exact starts, indexed only while the stopped heap is being marked.
     ;; Entries remain {data-start, end, bitmap}; one bit per eight arena bytes.
     ;; Each bitmap is followed by a predecessor directory: eight bytes per
@@ -4277,6 +4311,32 @@ REPL-facing module it feeds."
           0
         (nl_seq2 (nl_gc_relink_free_chunk chunk)
                  (nl_gc_relink_free_chunks (ptr-read-u64 (+ chunk 48) 0)))))
+    ;; Record the free (mark 2) blocks of the loaded image [DS, END) before
+    ;; anything reuses them.  A walk desync stops early; unmapped holes stay
+    ;; permanent, which only keeps garbage, never frees a boot object.
+    (defun nl_boot_hole_map_build (ds end)
+      (let* ((bytes (* (+ (sar (- end ds) 9) 1) 8))
+             (map (nl_os_alloc_chunk bytes))
+             (hdr (ptr-read-u64 (+ (ptr-read-u64 268436160 0) 24) 0))
+             (bt 0))
+        (if (= map 0) 0
+          (if (< hdr ds) 0
+            (seq
+             (nl_os_commit_range map 0 bytes)
+             (while (and (> hdr 0) (< hdr end))
+               (setq bt (nl_hdr_bt hdr))
+               (if (= (nl_gc_bt_ok hdr bt end) 0)
+                   (setq hdr end)
+                 (seq
+                  (if (= (nl_hdr_mark hdr) 2)
+                      (nl_boot_hole_set_bits map (sar (- hdr ds) 3)
+                                             (sar (- (+ hdr bt) ds) 3))
+                    0)
+                  (setq hdr (+ hdr bt)))))
+             (ptr-write-u64 (data-addr nl_boot_hole_map) 8 ds)
+             (ptr-write-u64 (data-addr nl_boot_hole_map) 16 end)
+             (ptr-write-u64 (data-addr nl_boot_hole_map) 0 map)
+             0)))))
     (defun nl_gc_coalesce_and_rebuild_freelist ()
       (seq
        (nl_gc_coalesce_chunks (ptr-read-u64 268436160 0))
@@ -36175,6 +36235,9 @@ Keep this source-only boundary usable by Windows preflight and host controls."
                             ;; `--load').  Keep them free and rebuild the free
                             ;; lists from the header walk, as a GC sweep does.
                             (nl_gc_coalesce_and_rebuild_freelist)
+                            ;; Holes are reusable but not permanent: map them
+                            ;; before the first allocation lands in one.
+                            (nl_boot_hole_map_build ds (+ ds slen))
                             ;; image end: lets the pointer-keyed macro/function
                             ;; caches treat image objects as cacheable (see
                             ;; `nl_cache_boot_p').
