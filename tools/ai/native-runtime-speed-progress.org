@@ -84,3 +84,25 @@ cmd: test/standalone-native-cache-load-bench.sh $NELISP_RT_BIN 7.0
 
 ** S4.3 The 11 GUI functions load from a trusted cache in under 60 s in total
 pending
+
+* S5 Garbage in cold-image holes is collected
+
+# A cold image carries the dumping run's freed blocks (425 MB bump, ~52 MB
+# live for target/nelisp-static.cold).  They are relinked and reused, but
+# the sweep kept every non-free block below the boot watermark, so garbage
+# placed in a hole was never reclaimed: live grew ~288 bytes per loop
+# iteration until the holes were used up, and each collection grew with it.
+# Baseline (integ 12e80e238 dynamic reader, 2026-10-14): loop +71 MB,
+# cons +97 MB, GC pause 0.29 s -> 0.99 s after 2M iterations of churn.
+
+** S5.1 Three 100000-iteration counting loops leave under 1 MiB of live growth on a cold image
+cmd: GC_CHECK=loop $NELISP_RT_BIN --cold-load-from $NELISP_RT_BIN.cold --load test/standalone-gc-image-hole-check.el
+
+** S5.2 200000 discarded conses leave under 1 MiB of live growth on a cold image
+cmd: GC_CHECK=cons $NELISP_RT_BIN --cold-load-from $NELISP_RT_BIN.cold --load test/standalone-gc-image-hole-check.el
+
+** S5.3 One collection after 2M iterations of churn takes at most 1.5 x (+0.05 s) what it took before
+cmd: GC_CHECK=pause $NELISP_RT_BIN --cold-load-from $NELISP_RT_BIN.cold --load test/standalone-gc-image-hole-check.el
+
+** S5.4 End to end: one GC in the S5.2 package image drops from 13.5 s and gui-daily-verify ccore pty S3.2 still passes (notes-44 measurement)
+pending
