@@ -507,25 +507,14 @@ unchanged.  This is a single linear scan using only `aref'/`eq' (no
 the overwhelmingly common already-normalized absolute path (T47: that
 split/rebuild pass, run unconditionally, was the dominant cost of every
 file predicate that touches `expand-file-name')."
-  (and (> (length path) 0)
-       (eq (aref path 0) ?/)
-       (let ((len (length path))
-             (i 0)
-             (ok t))
-         (while (and ok (< i len))
-           (when (eq (aref path i) ?/)
-             (let ((c1 (and (< (1+ i) len) (aref path (1+ i))))
-                   (c2 (and (< (+ i 2) len) (aref path (+ i 2)))))
-               (cond
-                ((eq c1 ?/) (setq ok nil))
-                ((and (eq c1 ?.) (or (null c2) (eq c2 ?/)))
-                 (setq ok nil))
-                ((and (eq c1 ?.) (eq c2 ?.)
-                      (let ((c3 (and (< (+ i 3) len) (aref path (+ i 3)))))
-                        (or (null c3) (eq c3 ?/))))
-                 (setq ok nil)))))
-           (setq i (1+ i)))
-         ok)))
+  ;; `string-search' runs natively; the former per-character `aref' loop
+  ;; cost ~3 ms for a 100-character path on the standalone runtime.
+  (and (string-prefix-p "/" path)
+       (not (string-search "//" path))
+       (not (string-search "/./" path))
+       (not (string-search "/../" path))
+       (not (string-suffix-p "/." path))
+       (not (string-suffix-p "/.." path))))
 
 (defun nelisp-ec--normalize-posix-path-fast (path)
   "Normalize PATH, skipping the split/rebuild pass when it is unnecessary.
@@ -569,8 +558,38 @@ invoked beyond reading `default-directory' for the seed CWD."
   ;; accepts paths starting with a literal `/', so it never fires for a
   ;; `~' name or a Windows drive/UNC root -- those always fall through to
   ;; the general surgery below.
-  (if (nelisp-ec--posix-path-clean-p name)
-      name
+  (cond
+   ((nelisp-ec--posix-path-clean-p name) name)
+   ((nelisp-ec--expand-plain-relative name default-dir))
+   (t (nelisp-ec--expand-file-name-general name default-dir))))
+
+(defun nelisp-ec--plain-relative-name-p (name)
+  "Return non-nil when NAME is relative and needs no segment collapsing.
+NAME must not start with `/', `~' or `.', and must contain no `//', no
+component starting with `.', no backslash or colon, and no trailing `/'."
+  (and (> (length name) 0)
+       (not (memq (aref name 0) '(?/ ?~ ?.)))
+       (not (string-suffix-p "/" name))
+       (not (string-search "//" name))
+       (not (string-search "/." name))
+       (not (string-search "\\" name))
+       (not (string-search ":" name))))
+
+(defun nelisp-ec--expand-plain-relative (name default-dir)
+  "Return NAME joined to a clean absolute DEFAULT-DIR, or nil.
+Nil means the general expansion must run; when this returns a string it
+equals `nelisp-ec--expand-file-name-general' for the same arguments."
+  (let ((dd (or default-dir
+                (and (boundp 'default-directory) default-directory))))
+    (and (not nelisp-ec-file-name-drive-letters)
+         (stringp dd)
+         (nelisp-ec--posix-path-clean-p dd)
+         (nelisp-ec--plain-relative-name-p name)
+         (concat (if (string-suffix-p "/" dd) dd (concat dd "/")) name))))
+
+(defun nelisp-ec--expand-file-name-general (name &optional default-dir)
+  "General string surgery for `nelisp-ec-expand-file-name'."
+  (progn
     (let* ((dd0 (or default-dir
                     (and (boundp 'default-directory) default-directory)
                     "/"))
