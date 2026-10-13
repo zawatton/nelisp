@@ -393,3 +393,35 @@ explicitly unbound clock cell remains unbound after the same reload."
 (provide 'emacs-time-test)
 
 ;;; emacs-time-test.el ends here
+
+(ert-deftest emacs-time-test/timers-use-gnu-timer-layout ()
+  "Timers read correctly through GNU timer.el accessors and fire as GNU's do."
+  (require 'timer)
+  (let ((timer-list nil) (timer-idle-list nil) (emacs-timer--idle-since nil)
+        (emacs-timer--registry nil) (calls nil))
+    (cl-letf (((symbol-function 'emacs-timer--now) (lambda () 1000.25)))
+      (let ((once (emacs-timer-run-with-timer 1.5 nil (lambda (x) (push (cons 'once x) calls)) 7))
+            (rep (emacs-timer-run-with-timer 0.5 2 (lambda () (push 'rep calls))))
+            (idle (emacs-timer-run-with-idle-timer 3 nil (lambda () (push 'idle calls)))))
+        (should (timerp once))
+        (should (equal (timer--args once) '(7)))
+        (should (functionp (timer--function once)))
+        (should (null (timer--repeat-delay once)))
+        (should (eql (timer--repeat-delay rep) 2))
+        (should (timer--idle-delay idle))
+        (should (null (timer--idle-delay once)))
+        (should (integerp (timer--psecs once)))
+        (should (< (abs (- (float-time (timer--time once)) 1001.75)) 1e-6))
+        ;; Nothing is due yet; then the repeating timer, then both.
+        (should (= (emacs-timer-run-pending 1000.5) 0))
+        (should (= (emacs-timer-run-pending 1000.75) 1))
+        (should (memq rep timer-list))
+        ;; GNU's `timer-event-handler' reschedules against the real clock.
+        (should (> (emacs-timer--seconds rep) 1000.75))
+        (should (= (emacs-timer-run-pending 1002.0) 1))
+        (should-not (memq once timer-list))
+        (should (equal (reverse calls) '(rep (once . 7))))
+        ;; Idle timers fire once per idle period.
+        (should (= (emacs-timer-run-idle 3.5) 1))
+        (should (= (emacs-timer-run-idle 4.0) 0))
+        (should-not (memq idle timer-idle-list))))))

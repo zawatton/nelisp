@@ -673,10 +673,15 @@ picosecond-exact comparison is not modeled."
     (time-subtract (current-time) time)))
 
 ;;; Doc 06 B2: timers (run-with-timer / run-with-idle-timer / cancel-timer).
-;; Minimal pure-Elisp implementation (no cl-defstruct).  A timer is a vector
-;;   [emacs-timer TRIGGER REPEAT FN ARGS IDLE-DELAY FIRED-P].
-;; Firing is driven by `emacs-timer-run-pending' / `emacs-timer-run-idle',
-;; which the runtime event loop calls each tick.
+;; Timers use GNU timer.el's vector layout,
+;;   [TRIGGERED HIGH LOW USECS REPEAT FUNCTION ARGS IDLE-DELAY PSECS INTEGRAL]
+;; so package code that uses timer.el accessors (`timer--function',
+;; `timer--psecs', `timer-relative-time', ...) or loads timer.el itself
+;; works on them, and timers created by a loaded timer.el fire here too.
+;; TRIGGERED nil means active.  The time slots hold an absolute time for
+;; regular timers and the idle duration for idle timers.  Firing is driven
+;; by `emacs-timer-run-pending' / `emacs-timer-run-idle', which the runtime
+;; event loop calls each tick, as GNU's C `timer_check' does.
 
 (unless (boundp 'timer-list) (defvar timer-list nil
   "List of active (non-idle) timers."))
@@ -685,6 +690,11 @@ picosecond-exact comparison is not modeled."
 
 (defvar emacs-timer--idle-since nil
   "Beginning of the current shared idle period; reset only by input.")
+
+(defvar emacs-timer--registry nil
+  "Timers created by this module, for hosts whose own timers share the lists.
+On standalone NeLisp every timer on `timer-list' is dispatched here; under
+a host Emacs only these are, so host timers are never fired twice.")
 
 (defun emacs-timer-idle-seconds ()
   "Return elapsed idle time, starting a period on the first wait."
@@ -695,12 +705,42 @@ picosecond-exact comparison is not modeled."
 (defun emacs-timer--now ()
   (if (fboundp 'float-time) (float-time) 0))
 
+(defun emacs-timer--standalone-p ()
+  (fboundp 'nelisp--write-stdout-bytes))
+
+(defun emacs-timer--set-seconds (timer seconds)
+  "Store SECONDS (a number) in TIMER's high/low/usecs/psecs slots."
+  (let* ((whole (floor seconds))
+         (frac (- seconds whole))
+         (usecs (floor (* frac 1000000)))
+         (psecs (floor (* (- (* frac 1000000) usecs) 1000000))))
+    (aset timer 1 (floor whole 65536))
+    (aset timer 2 (mod whole 65536))
+    (aset timer 3 usecs)
+    (aset timer 8 psecs)
+    timer))
+
+(defun emacs-timer--seconds (timer)
+  "Return TIMER's time slots as seconds (absolute, or idle duration)."
+  (+ (* (or (aref timer 1) 0) 65536.0) (or (aref timer 2) 0)
+     (/ (or (aref timer 3) 0) 1000000.0)
+     (/ (or (and (> (length timer) 8) (aref timer 8)) 0) 1000000000000.0)))
+
 (defun emacs-timer--make (trigger repeat fn args idle-delay)
-  (vector 'emacs-timer trigger repeat fn args idle-delay nil))
+  "Return a GNU-layout timer firing at TRIGGER or after IDLE-DELAY idle secs."
+  (let ((timer (vector nil 0 0 0 repeat fn args (and idle-delay t) 0 nil)))
+    (emacs-timer--set-seconds timer (or idle-delay trigger 0))
+    (push timer emacs-timer--registry)
+    timer))
 
 (defun emacs-timer-p (obj)
-  "Return non-nil when OBJ is one of our timer vectors."
-  (and (vectorp obj) (> (length obj) 0) (eq (aref obj 0) 'emacs-timer)))
+  "Return non-nil when OBJ has GNU's timer shape (9 or 10 slots)."
+  (and (vectorp obj) (memq (length obj) '(9 10)) t))
+
+(defun emacs-timer--dispatchable-p (timer)
+  "Return non-nil when this module should fire TIMER."
+  (and (emacs-timer-p timer)
+       (or (emacs-timer--standalone-p) (memq timer emacs-timer--registry))))
 
 (defun emacs-timer-run-with-timer (secs repeat fn &rest args)
   "Schedule FN after SECS seconds, repeating every REPEAT seconds when set."
@@ -717,51 +757,58 @@ picosecond-exact comparison is not modeled."
 (defun emacs-timer-cancel (timer)
   "Remove TIMER from the active timer lists."
   (setq timer-list (delq timer timer-list)
-        timer-idle-list (delq timer timer-idle-list))
+        timer-idle-list (delq timer timer-idle-list)
+        emacs-timer--registry (delq timer emacs-timer--registry))
   nil)
 
+(defun emacs-timer--fire (timer idle)
+  "Run TIMER as GNU's C code does: mark it triggered, then handle it.
+With timer.el loaded, `timer-event-handler' cancels, reschedules and calls
+it.  Otherwise reschedule a repeating timer (an idle one stays triggered
+until input ends the idle period) or retire a one-shot, then call it."
+  (aset timer 0 t)
+  (if (and (fboundp 'timer-event-handler) (featurep 'timer))
+      (condition-case _ (timer-event-handler timer) (error nil))
+    (cond
+     ((and (aref timer 4) (not idle))
+      (emacs-timer--set-seconds timer (+ (emacs-timer--now) (aref timer 4)))
+      (aset timer 0 nil))
+     ((aref timer 4))
+     (t (emacs-timer-cancel timer)))
+    (condition-case _ (apply (aref timer 5) (aref timer 6)) (error nil))))
+
 (defun emacs-timer-run-pending (&optional now)
-  "Fire due regular timers (TRIGGER <= NOW); reschedule repeating ones.
-Return the number fired.
-`timer-list' is shared with the host when running under real Emacs
-\(the `unless (boundp ...)' guard above only installs our own private
-variable when the host has not already bound one), so a host timer of
-the host's own vector shape can be present alongside ours; skip
-anything that is not one of our `emacs-timer-p' vectors instead of
-misreading its slots."
+  "Fire due regular timers; reschedule repeating ones.  Return the count.
+Under a host Emacs, `timer-list' also holds the host's own timers, which
+have the same shape; only timers created here are dispatched there."
   (let ((now (or now (emacs-timer--now))) (fired 0))
     (dolist (tm (copy-sequence timer-list))
-      (when (and (emacs-timer-p tm) (aref tm 1) (<= (aref tm 1) now))
+      (when (and (emacs-timer--dispatchable-p tm)
+                 (not (aref tm 0))
+                 (memq tm timer-list)
+                 (<= (emacs-timer--seconds tm) now))
         (setq fired (1+ fired))
-        ;; Retire/reschedule before calling Lisp: callbacks can wait again or
-        ;; cancel themselves without recursively firing this due timer.
-        (if (aref tm 2)
-            (aset tm 1 (+ now (aref tm 2)))
-          (setq timer-list (delq tm timer-list)))
-        (condition-case _ (apply (aref tm 3) (aref tm 4)) (error nil))))
+        (emacs-timer--fire tm nil)))
     fired))
 
 (defun emacs-timer-run-idle (idle-seconds)
   "Fire idle timers whose delay <= IDLE-SECONDS and not already fired this
-idle period.  Return the number fired.
-See `emacs-timer-run-pending' for why non-`emacs-timer-p' entries (e.g.
-a host Emacs's own pre-registered idle timers such as
-`show-paren-function', which share `timer-idle-list' with us) must be
-skipped rather than indexed with our private vector layout."
+idle period.  Return the number fired."
   (let ((fired 0))
     (dolist (tm (copy-sequence timer-idle-list))
-      (when (and (emacs-timer-p tm) (not (aref tm 6)) (<= (aref tm 5) idle-seconds))
-        (aset tm 6 t)
+      (when (and (emacs-timer--dispatchable-p tm)
+                 (not (aref tm 0))
+                 (memq tm timer-idle-list)
+                 (<= (emacs-timer--seconds tm) idle-seconds))
         (setq fired (1+ fired))
-        (condition-case _ (apply (aref tm 3) (aref tm 4)) (error nil))
-        (unless (aref tm 2)
-          (setq timer-idle-list (delq tm timer-idle-list)))))
+        (emacs-timer--fire tm t)))
     fired))
 
 (defun emacs-timer-reset-idle ()
-  "Clear the per-idle-period fired flag (call when input resets idle time)."
+  "Clear the per-idle-period triggered flag (call when input ends idleness)."
   (setq emacs-timer--idle-since nil)
-  (dolist (tm timer-idle-list) (when (emacs-timer-p tm) (aset tm 6 nil))))
+  (dolist (tm timer-idle-list)
+    (when (emacs-timer--dispatchable-p tm) (aset tm 0 nil))))
 
 (defun emacs-timer-next-delay (maximum)
   "Return seconds until the next regular or unfired idle timer, capped at MAXIMUM.
@@ -770,12 +817,55 @@ callbacks or waking continuously when no timer is scheduled."
   (let ((delay maximum) (now (emacs-timer--now))
         (idle (emacs-timer-idle-seconds)))
     (dolist (tm timer-list)
-      (when (and (emacs-timer-p tm) (aref tm 1))
-        (setq delay (min delay (max 0 (- (aref tm 1) now))))))
+      (when (and (emacs-timer--dispatchable-p tm) (not (aref tm 0)))
+        (setq delay (min delay (max 0 (- (emacs-timer--seconds tm) now))))))
     (dolist (tm timer-idle-list)
-      (when (and (emacs-timer-p tm) (not (aref tm 6)))
-        (setq delay (min delay (max 0 (- (aref tm 5) idle))))))
+      (when (and (emacs-timer--dispatchable-p tm) (not (aref tm 0)))
+        (setq delay (min delay (max 0 (- (emacs-timer--seconds tm) idle))))))
     delay))
+
+;; GNU timer.el's low-level constructors, in its layout, for packages that
+;; build timers by hand.  They replace emacs-stub's private-layout versions
+;; on standalone; a later (require 'timer) installs GNU's own definitions.
+(when (emacs-timer--standalone-p)
+  (defun timer-create ()
+    "Create an inactive timer (GNU timer.el layout)."
+    (let ((timer (vector t nil nil nil nil nil nil nil nil nil)))
+      (push timer emacs-timer--registry)
+      timer))
+  (defun timer-set-time (timer time &optional delta)
+    "Set the trigger time of TIMER to TIME, repeating every DELTA seconds."
+    (emacs-timer--set-seconds timer (if (numberp time) time (float-time time)))
+    (aset timer 4 (and (numberp delta) (> delta 0) delta))
+    timer)
+  (defun timer-set-idle-time (timer secs &optional repeat)
+    "Set TIMER to fire after SECS seconds of idle time."
+    (emacs-timer--set-seconds timer (if (numberp secs) secs (float-time secs)))
+    (aset timer 4 repeat)
+    timer)
+  (defun timer-set-function (timer function &optional args)
+    "Make TIMER call FUNCTION with optional ARGS when triggering."
+    (aset timer 5 function)
+    (aset timer 6 args)
+    timer)
+  (defun timer-activate (timer &optional triggered-p _reuse-cell)
+    "Insert TIMER into `timer-list'; TRIGGERED-P marks it inactive."
+    (unless (memq timer timer-list) (push timer timer-list))
+    (aset timer 0 triggered-p)
+    (aset timer 7 nil)
+    nil)
+  (defun timer-activate-when-idle (timer &optional dont-wait _reuse-cell)
+    "Insert TIMER into `timer-idle-list'."
+    (unless (memq timer timer-idle-list) (push timer timer-idle-list))
+    (aset timer 0 (not dont-wait))
+    (aset timer 7 t)
+    nil)
+  (defun cancel-function-timers (function)
+    "Cancel all timers which would run FUNCTION."
+    (dolist (timer (append timer-list timer-idle-list))
+      (when (and (emacs-timer-p timer) (eq (aref timer 5) function))
+        (emacs-timer-cancel timer)))
+    nil))
 
 (unless (and (not (fboundp 'nelisp--write-stdout-bytes))
              (fboundp 'timerp)
