@@ -32,7 +32,7 @@ def validate_pe(image, directory):
     prelink.verify_manifest(manifest, metadata, directory, data, ROOT)
     roots = closure['roots']
     def check(path):
-        return owner.prove(path, metadata, directory, roots, max_functions=280, evaluator_boundary='nl_apply_function')
+        return owner.prove(path, metadata, directory, roots, max_functions=288, evaluator_boundary='nl_apply_function')
     result = check(image)
     if not result['records'] or len(result['records']) != len(closure['records']):
         raise ValueError('Final PE helper count differs from active prelink proof')

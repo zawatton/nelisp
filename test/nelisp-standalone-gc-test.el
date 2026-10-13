@@ -688,7 +688,7 @@ can use a scratch page while still observing the real mask transitions."
                  (error "Missing production helper %s" name)))
            '(nl_align_up nl_hdr_bt nl_hdr_mark nl_hdr_set_mark
              nl_alloc_zero_fill nl_gc_bt_ok nl_gc_chunk_cursor nl_gc_chunk_end
-             nl_gc_chunk_contains nl_gc_in_arena nl_gc_is_boot nl_gc_index_end
+             nl_gc_chunk_contains nl_gc_in_arena nl_boot_hole_p nl_gc_is_boot nl_gc_index_end
              nl_gc_index_bytes nl_gc_index_fill nl_gc_index_prepare
              nl_gc_index_contains nl_gc_index_test nl_gc_object_start_p
              nl_gc_mark_block))))
@@ -841,7 +841,7 @@ the heap and all mark decisions remain native production code."
          (names '(nl_align_up nl_hdr_bt nl_hdr_mark nl_hdr_set_mark
                   nl_alloc_zero_fill
                   nl_gc_bt_ok nl_gc_chunk_cursor nl_gc_chunk_end
-                  nl_gc_chunk_contains nl_gc_in_arena nl_gc_is_boot
+                  nl_gc_chunk_contains nl_gc_in_arena nl_boot_hole_p nl_gc_is_boot
                   nl_gc_index_end nl_gc_index_bytes nl_gc_index_fill
                   nl_gc_index_prepare nl_gc_index_contains nl_gc_index_test
                   nl_gc_object_start_p nl_gc_mark_block nl_gc_mark_buf
