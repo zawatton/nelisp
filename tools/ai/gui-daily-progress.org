@@ -65,6 +65,8 @@ change to the criteria list is recorded in a NOTE.
 
 #+NOTE: 2026-10-12 adopted C-core 17f0450b4 (native merge; dynamic sha256 0337907c...): library fixes 37d8b0e7; gui-daily-verify passes except S5.0c (median 0.73 s, max 1.25 s).  S5.2: dired C-x d 89.3 s (pass); magit-status render and org agenda still exceed 300 s although next-single-property-change fell 244 -> 4.9 ms, so property queries were not the render bottleneck.  S1.3 still exceeds 300 s.
 
+#+NOTE: 2026-10-13 S5.2 on 43027d827 at 0841ace5 (quiet machine, loadavg ~4-5): dired PASS and magit PASS (status render 31.6 s, `s' now runs magit-stage via [remap] + section keymap, refresh+paint 79+44 s inside the 540 s budget); org-agenda still times out on `a' (agenda file open: vc-refresh-state, expand-file-name x1000, external md5sum for secure-hash).  Package image build is close to its 3600 s limit and the skk/evil state check (900 s) failed intermittently twice and passed in ~6.5 min on rerun.
+
 * S1 Shared interactive foundation
 
 ** S1.1 One event wait drives read-event: keys, timers, idle timers and process output (sit-for, sleep-for, input-pending-p behave as GNU)
