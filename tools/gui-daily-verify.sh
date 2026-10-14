@@ -9,6 +9,9 @@
 # Usage: NELISP_BIN=/path/to/nelisp tools/gui-daily-verify.sh [GATE...]
 # Gates: ccore pty wait scenario launcher layout S3.2 S3.3 S4.1 S4.2 S4.3 S5.0 S5.0b S5.0c S5.1
 # With no arguments every gate runs (about 1.5 h on a quiet machine).
+# The heap images build concurrently (GUI_DAILY_VERIFY_JOBS=1 restores the
+# serial order); the gates themselves always run one at a time because
+# several of them measure latency.
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root" || exit 2
@@ -36,11 +39,28 @@ step() { # name command...
 # Fresh inputs: a stale bundle or tty snapshot has produced false results before.
 step bundle bash -c 'rm -f build/nemacs-bootstrap.el && make build-nelisp-bootstrap' || exit 1
 rm -rf build/c-core-image/tty
-step image bash tools/c-core-image.sh build || exit 1
-step nw-image bin/nemacs-nw --build-image || exit 1
-# The selected daily gates consume the base and SKK images.  S5.2 certifies
-# its optional package image separately; do not bake it for unrelated gates.
-case " ${gates[*]} " in *" S"*) step gui-image python3 scripts/gui-daily-build.py || exit 1 ;; esac
+# The selected daily gates consume the base and GUI images; only S4.1 needs
+# the SKK/evil variant.  S5.2 certifies its optional package image
+# separately; do not bake it for unrelated gates.  The base/tty images and
+# the GUI images use separate caches, so the two chains build concurrently.
+gui_args=()
+case " ${gates[*]} " in *" S4.1 "*) ;; *) gui_args=(--skip-skk) ;; esac
+base_images() {
+  step image bash tools/c-core-image.sh build && step nw-image bin/nemacs-nw --build-image
+}
+gui_image() {
+  case " ${gates[*]} " in *" S"*) step gui-image python3 scripts/gui-daily-build.py "${gui_args[@]}" ;; esac
+}
+if [ "${GUI_DAILY_VERIFY_JOBS:-2}" -gt 1 ]; then
+  base_images & base_pid=$!
+  gui_image & gui_pid=$!
+  wait $base_pid; base_rc=$?
+  wait $gui_pid; gui_rc=$?
+  [ $base_rc = 0 ] && [ $gui_rc = 0 ] || exit 1
+else
+  base_images || exit 1
+  gui_image || exit 1
+fi
 
 failed=0
 for gate in "${gates[@]}"; do

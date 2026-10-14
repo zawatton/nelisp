@@ -5,6 +5,7 @@ No native compilation. The extension is reproducible and contains no live FFI
 objects. Keep the shared full redisplay after the lightweight TUI definitions.
 """
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import importlib.util
 import json
@@ -19,6 +20,18 @@ import sys
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
+# Independent image builds and headless probes run concurrently up to this
+# many at a time (--jobs, or GUI_DAILY_BUILD_JOBS; 1 restores serial runs).
+JOBS = max(1, int(os.environ.get('GUI_DAILY_BUILD_JOBS', '3')))
+
+
+def run_parallel(thunks):
+    """Call THUNKS, up to JOBS at a time; return results, raise the first failure."""
+    if JOBS == 1 or len(thunks) < 2:
+        return [thunk() for thunk in thunks]
+    with ThreadPoolExecutor(max_workers=min(JOBS, len(thunks))) as pool:
+        futures = [pool.submit(thunk) for thunk in thunks]
+        return [future.result() for future in futures]
 
 
 def isolate_lexical_forms(data):
@@ -173,7 +186,10 @@ def check_skk_image(env, force=False):
     inventory.write_text("(setq nelisp-gui-skk-evil-fingerprint-symbols '(\n" +
                          '\n'.join(sorted(names)) + '\n))\n')
     load_inventory = '(load ' + json.dumps(str(inventory)) + ' nil t) '
-    for label, bundle in [('runtime', GUI_BUNDLE), ('restored', SKK_BUNDLE)]:
+
+    # The two sides are separate cold-loaded processes writing their own
+    # files, so they run concurrently.
+    def probe_state(label):
         path = out / (label + '.state')
         path.unlink(missing_ok=True)
         # Restored side must already contain packages.  Configure the live
@@ -189,6 +205,7 @@ def check_skk_image(env, force=False):
                            check=True, timeout=900)
         if (out / (label + '.err')).stat().st_size or not path.is_file():
             raise RuntimeError('Package state check failed: ' + label)
+    run_parallel([lambda label=label: probe_state(label) for label in ('runtime', 'restored')])
     runtime = (out / 'runtime.state').read_bytes()
     restored = (out / 'restored.state').read_bytes()
     if not runtime or runtime != restored:
@@ -203,7 +220,8 @@ def check_skk_image(env, force=False):
     }
     # Probe the changed row plus the shared map registries for calibration.
     # The equivalence comparison above still inspects the complete inventory.
-    for label, (symbol, mutation) in mutations.items():
+    # Each control is its own disposable restored process.
+    def negative_control(label, symbol, mutation):
         path = out / ('negative-' + label + '.state')
         positive = out / ('positive-' + label + '.state')
         path.unlink(missing_ok=True)
@@ -220,6 +238,7 @@ def check_skk_image(env, force=False):
                 or path.read_bytes() == positive.read_bytes()
                 or (out / ('negative-' + label + '.err')).stat().st_size):
             raise RuntimeError('Fingerprint negative control accepted: ' + label)
+    run_parallel([lambda item=item: negative_control(item[0], *item[1]) for item in mutations.items()])
     variables = []
     for label in ('runtime', 'restored'):
         markers = re.findall(r'GUI-PACKAGE-FINGERPRINT\|variables=(\d+)\|',
@@ -397,6 +416,7 @@ def check_packages_image(env, force=False, runtime_only=False):
 
 
 def build_skk_image(data, env):
+    """Write the SKK/evil bundle and build its image; certification is separate."""
     spec = importlib.util.spec_from_file_location('gui_daily_fixtures', ROOT / 'scripts/gui-daily-fixtures.py')
     fixtures = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(fixtures)
@@ -424,6 +444,11 @@ def build_skk_image(data, env):
     subprocess.run(['bash', 'tools/c-core-image.sh', 'build'], cwd=ROOT,
                    env=dict(env, C_CORE_IMAGE_BUNDLE=str(SKK_BUNDLE), C_CORE_IMAGE_BUILD_TIMEOUT='900',
                             C_CORE_IMAGE_ALLOW_WARNINGS='1'), check=True)
+    return env, vendor, dictionary, sources, membership
+
+
+def finish_skk_image(env, vendor, dictionary, sources, membership):
+    """Certify the SKK image against the GUI image and record its inputs."""
     check_skk_image(env)
     if any(not Path(p).is_file() or digest(Path(p)) != expected for p, expected in sources.items()):
         raise RuntimeError('Package sources changed during image build')
@@ -511,7 +536,10 @@ def main():
     parser.add_argument('--prepare-packages-runtime-state', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--skip-skk', action='store_true',
                         help='skip the SKK/evil variant (takes ~15 min when stale)')
+    parser.add_argument('--jobs', type=int, default=JOBS,
+                        help='independent builds/probes run concurrently (default %(default)s)')
     args = parser.parse_args()
+    globals()['JOBS'] = max(1, args.jobs)
     if args.prepare_packages_runtime_state:
         check_packages_image(packages_env(ROOT / 'build/gui-packages-image', dict(os.environ)), runtime_only=True)
         return
@@ -569,10 +597,15 @@ def main():
                          'packages/nelisp-gui-xcb/fixtures/SKK-JISYO.gui']
     (ROOT / 'build/gui-daily-inputs.json').write_text(json.dumps(
         dict(bundle=digest(bundle), sources={s: digest(ROOT / s) for s in sources}), indent=2) + '\n')
-    subprocess.run(['bash', 'tools/c-core-image.sh', 'build'], cwd=ROOT,
-                   env=dict(os.environ, C_CORE_IMAGE_BUNDLE=str(GUI_BUNDLE)), check=True)
+    # The GUI and SKK images have separate bundles and image caches, so they
+    # build concurrently; certifying the SKK image needs both.
+    tasks = [lambda: subprocess.run(['bash', 'tools/c-core-image.sh', 'build'], cwd=ROOT,
+                                    env=dict(os.environ, C_CORE_IMAGE_BUNDLE=str(GUI_BUNDLE)), check=True)]
     if not args.skip_skk:
-        build_skk_image(data, env)
+        tasks.append(lambda: build_skk_image(data, env))
+    results = run_parallel(tasks)
+    if not args.skip_skk:
+        finish_skk_image(*results[1])
     if args.with_packages:
         build_packages_image(data, env)
 
