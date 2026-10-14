@@ -195,7 +195,11 @@ one of them, `obarray' holds this object so `all-completions',
    ((fboundp 'nelisp--intern-table-map)
     (nelisp--intern-table-map function))
    ((fboundp 'nelisp--intern-table-symbols)
-    (mapc function (nelisp--intern-table-symbols)))
+    ;; The runtime's snapshot omits nil and t; GNU's obarray holds both.
+    (let ((symbols (nelisp--intern-table-symbols)))
+      (unless (memq nil symbols) (funcall function nil))
+      (unless (memq t symbols) (funcall function t))
+      (mapc function symbols)))
    (t (signal 'unsupported-feature '(global-mapatoms)))))
 
 (defun emacs-symbol--obarray-intern (name obarray)
