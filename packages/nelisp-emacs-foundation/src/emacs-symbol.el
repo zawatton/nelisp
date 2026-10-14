@@ -176,10 +176,34 @@ Hash at most nine words using native byte access, without copying NAME."
     (aset state 0 bits)
     (aset state 1 buckets)))
 
+(defvar emacs-symbol--global-obarray nil
+  "Obarray object standing for the runtime's global intern table, or nil.
+GNU's `obarray' is a real obarray; standalone NeLisp keeps its interned
+symbols in a native table that only `nelisp--intern-table-map' (or
+`nelisp--intern-table-symbols') can enumerate.  When the runtime provides
+one of them, `obarray' holds this object so `all-completions',
+`mapatoms', `intern' and friends treat it as the global table.")
+
+(defun emacs-symbol--global-obarray-p (object)
+  "Return non-nil when OBJECT designates the global intern table."
+  (or (null object)
+      (and emacs-symbol--global-obarray (eq object emacs-symbol--global-obarray))))
+
+(defun emacs-symbol--map-global-symbols (function)
+  "Call FUNCTION on every globally interned symbol, if the runtime can."
+  (cond
+   ((fboundp 'nelisp--intern-table-map)
+    (nelisp--intern-table-map function))
+   ((fboundp 'nelisp--intern-table-symbols)
+    (mapc function (nelisp--intern-table-symbols)))
+   (t (signal 'unsupported-feature '(global-mapatoms)))))
+
 (defun emacs-symbol--obarray-intern (name obarray)
   "Intern NAME in OBARRAY, maintaining its name table and bucket chains."
   (unless (stringp name)
     (signal 'wrong-type-argument (list 'stringp name)))
+  (if (and emacs-symbol--global-obarray (eq obarray emacs-symbol--global-obarray))
+      (intern name)
   (let* ((array (emacs-symbol--obarray-object obarray))
          (table (nelisp--record-ref array 1))
          (symbol (gethash name table)))
@@ -193,14 +217,14 @@ Hash at most nine words using native byte access, without copying NAME."
           (puthash name fresh table)
           (when (and state (> (hash-table-count table) (length (aref state 1))))
             (emacs-symbol--grow-obarray state))
-          fresh))))
+          fresh)))))
 
 (defun emacs-symbol--unintern (&rest arguments)
   "Remove a name or identical symbol, keeping bucket chains synchronized."
   (unless (and arguments (<= (length arguments) 2))
     (signal 'wrong-number-of-arguments (list 'unintern (length arguments))))
   (let ((name (car arguments)) (obarray (cadr arguments)))
-    (if (null obarray)
+    (if (emacs-symbol--global-obarray-p obarray)
         (progn
           (nelisp--obarray-name name)
           (signal 'unsupported-feature '(global-unintern)))
@@ -218,17 +242,18 @@ Hash at most nine words using native byte access, without copying NAME."
 
 (defun emacs-symbol--mapatoms (function &optional obarray)
   "Call FUNCTION on every symbol, using bucket order for managed obarrays."
-  (unless obarray (signal 'unsupported-feature '(global-mapatoms)))
-  (let* ((array (emacs-symbol--obarray-object obarray))
-         (state (emacs-symbol--obarray-state array)))
-    (if state
-        (let ((i 0))
-          (while (< i (length (aref state 1)))
-            (dolist (symbol (aref (aref state 1) i))
-              (funcall function symbol))
-            (setq i (1+ i))))
-      (maphash (lambda (_name symbol) (funcall function symbol))
-               (nelisp--record-ref array 1))))
+  (if (emacs-symbol--global-obarray-p obarray)
+      (emacs-symbol--map-global-symbols function)
+    (let* ((array (emacs-symbol--obarray-object obarray))
+           (state (emacs-symbol--obarray-state array)))
+      (if state
+          (let ((i 0))
+            (while (< i (length (aref state 1)))
+              (dolist (symbol (aref (aref state 1) i))
+                (funcall function symbol))
+              (setq i (1+ i))))
+        (maphash (lambda (_name symbol) (funcall function symbol))
+                 (nelisp--record-ref array 1)))))
   nil)
 
 (defun emacs-symbol--obarray-clear (&rest arguments)
@@ -237,6 +262,8 @@ Hash at most nine words using native byte access, without copying NAME."
     (signal 'wrong-number-of-arguments
             (list 'obarray-clear (length arguments))))
   (let ((obarray (car arguments)))
+    (when (and obarray (emacs-symbol--global-obarray-p obarray))
+      (signal 'unsupported-feature '(global-obarray-clear)))
     (unless (emacs-symbol--obarray-p obarray)
       (signal 'wrong-type-argument (list 'obarrayp obarray)))
     (let ((state (emacs-symbol--obarray-state obarray)))
@@ -256,7 +283,20 @@ Hash at most nine words using native byte access, without copying NAME."
   (defalias 'nelisp--obarray-intern #'emacs-symbol--obarray-intern)
   (defalias 'unintern #'emacs-symbol--unintern)
   (defalias 'mapatoms #'emacs-symbol--mapatoms)
-  (defalias 'obarray-clear #'emacs-symbol--obarray-clear))
+  (defalias 'obarray-clear #'emacs-symbol--obarray-clear)
+  ;; Only a runtime that can enumerate its intern table gets a real global
+  ;; obarray object; otherwise `obarray' stays as the runtime left it.
+  (when (and (null emacs-symbol--global-obarray)
+             (or (fboundp 'nelisp--intern-table-map)
+                 (fboundp 'nelisp--intern-table-symbols)))
+    (setq emacs-symbol--global-obarray (emacs-symbol--make-obarray 0))
+    (setq-default obarray emacs-symbol--global-obarray)
+    ;; The prelude `intern-soft' would search the object's own (empty) table.
+    (let ((lookup (symbol-function 'intern-soft)))
+      (defalias 'intern-soft
+        (lambda (name &optional obarray)
+          (funcall lookup name
+                   (unless (emacs-symbol--global-obarray-p obarray) obarray)))))))
 
 
 (unless (fboundp 'intern-soft)

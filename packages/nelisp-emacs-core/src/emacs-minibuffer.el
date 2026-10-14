@@ -1768,7 +1768,8 @@ PREDICATE to enumerate).  Apply predicates to original symbols or alist
 entries before converting names to strings, as GNU completion does."
   (cond
    ((null collection) nil)
-   ((vectorp collection)
+   ((or (vectorp collection)
+        (and (fboundp 'obarrayp) (obarrayp collection)))
     (let (acc)
       (mapatoms (lambda (s)
                   (when (or (null predicate) (funcall predicate s))
