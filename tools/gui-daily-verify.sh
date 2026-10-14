@@ -39,12 +39,13 @@ step() { # name command...
 # Fresh inputs: a stale bundle or tty snapshot has produced false results before.
 step bundle bash -c 'rm -f build/nemacs-bootstrap.el && make build-nelisp-bootstrap' || exit 1
 rm -rf build/c-core-image/tty
-# The selected daily gates consume the base and GUI images; only S4.1 needs
-# the SKK/evil variant.  S5.2 certifies its optional package image
-# separately; do not bake it for unrelated gates.  The base/tty images and
-# the GUI images use separate caches, so the two chains build concurrently.
+# The selected daily gates consume the base and GUI images (the C-core
+# replacement layers); only S4.1 needs the SKK/evil package image.  S5.2
+# certifies its optional package image separately; do not bake it for
+# unrelated gates.  The base/tty images and the GUI images use separate
+# caches, so the two chains build concurrently.
 gui_args=()
-case " ${gates[*]} " in *" S4.1 "*) ;; *) gui_args=(--skip-skk) ;; esac
+case " ${gates[*]} " in *" S4.1 "*) gui_args=(--with-skk) ;; esac
 base_images() {
   step image bash tools/c-core-image.sh build && step nw-image bin/nemacs-nw --build-image
 }

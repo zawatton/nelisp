@@ -11,7 +11,7 @@ Build from this private library copy with the supplied fixed runtime:
 #+begin_src sh
 export NELISP_BIN=/path/to/existing/nelisp-gui2
 export EMACS=emacs DISPLAY=:91
-python3 scripts/gui-daily-build.py
+python3 scripts/gui-daily-build.py --with-skk   # --with-skk only for S4.1
 xvfb-run -a -s '-screen 0 1600x1000x24 -dpi 96 -nolisten tcp -noreset -extension GLX' python3 scripts/gui-daily-gate.py S3.2 --init=-Q --fixture=render --require-production-quit
 python3 scripts/gui-daily-gate.py S3.3 --init=-Q --fixture=metrics
 python3 scripts/gui-daily-gate.py S4.1 --init=-Q --fixture=skk-evil --keymaps=us,jp,de

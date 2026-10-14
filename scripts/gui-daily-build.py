@@ -534,8 +534,12 @@ def main():
                         help='also build and certify the S5.2 package image variant')
     parser.add_argument('--check-packages-image', action='store_true')
     parser.add_argument('--prepare-packages-runtime-state', action='store_true', help=argparse.SUPPRESS)
-    parser.add_argument('--skip-skk', action='store_true',
-                        help='skip the SKK/evil variant (takes ~15 min when stale)')
+    # Only the C-core replacement layers (the base and GUI images) are baked
+    # by default.  SKK/evil are ordinary Elisp packages, loaded at run time
+    # in GNU Emacs; their certification image is opt-in for S4.1.
+    parser.add_argument('--with-skk', action='store_true',
+                        help='also build and certify the SKK/evil package image (S4.1)')
+    parser.add_argument('--skip-skk', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--jobs', type=int, default=JOBS,
                         help='independent builds/probes run concurrently (default %(default)s)')
     args = parser.parse_args()
@@ -601,10 +605,10 @@ def main():
     # build concurrently; certifying the SKK image needs both.
     tasks = [lambda: subprocess.run(['bash', 'tools/c-core-image.sh', 'build'], cwd=ROOT,
                                     env=dict(os.environ, C_CORE_IMAGE_BUNDLE=str(GUI_BUNDLE)), check=True)]
-    if not args.skip_skk:
+    if args.with_skk:
         tasks.append(lambda: build_skk_image(data, env))
     results = run_parallel(tasks)
-    if not args.skip_skk:
+    if args.with_skk:
         finish_skk_image(*results[1])
     if args.with_packages:
         build_packages_image(data, env)

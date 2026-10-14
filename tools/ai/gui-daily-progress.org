@@ -123,7 +123,7 @@ cmd: bash -c 'timeout 240 python3 scripts/gui-daily-build.py --skip-skk >/dev/nu
 ** S4.1 Keyboard: modifiers, key repeat and Japanese input through the user's SKK (ddskk running inside nemacs; text lands in the buffer) reach the command loop
 #+REQUIRES: NELISP_BIN
 #+TIMEOUT: 600
-cmd: bash -c 'timeout 250 python3 scripts/gui-daily-build.py >/dev/null 2>&1 && EMACS=emacs timeout 340 python3 scripts/gui-daily-gate.py S4.1 --init=-Q --fixture=skk-evil --keymaps=us,jp,de'
+cmd: bash -c 'timeout 250 python3 scripts/gui-daily-build.py --with-skk >/dev/null 2>&1 && EMACS=emacs timeout 340 python3 scripts/gui-daily-gate.py S4.1 --init=-Q --fixture=skk-evil --keymaps=us,jp,de'
 
 ** S4.2 Mouse: clicks, drag, wheel, hit testing to buffer positions; menu bar and context menus
 #+REQUIRES: NELISP_BIN
