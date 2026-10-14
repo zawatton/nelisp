@@ -108,7 +108,7 @@ substitution."
 This early bootstrap variant records the request in `after-load-alist'.
 When FILE is already present in `features' the FORM runs immediately."
     (if (and (symbolp file) (featurep file))
-        (eval form)
+        (if (functionp form) (funcall form) (eval form t))
       (let ((cell (assoc file after-load-alist)))
         (if cell
             (setcdr cell (cons form (cdr cell)))
@@ -122,7 +122,7 @@ When FILE is already present in `features' the FORM runs immediately."
   (defmacro with-eval-after-load (file &rest body)
     "Standalone polyfill: register BODY to run after FILE loads."
     (declare (indent 1) (debug (form body)))
-    (list 'eval-after-load file (list 'quote (cons 'progn body))))
+    (list 'eval-after-load file (cons 'lambda (cons nil body))))
   (put 'with-eval-after-load 'emacs-stub-bulk nil))
 
 ;; `interactive' — Emacs special form marking a defun as interactively

@@ -383,9 +383,15 @@ LEVEL defaults to 1 (directly inside one backquote)."
   ;; runtime polyfill and real subr.el do), so no closure is created.  Bodies
   ;; that call globalized minor modes (solaire-global-mode, company-*-mode)
   ;; then also need section C active to be closure-free.
+  ;; 2026-10-14: closure application no longer aborts on the C-core
+  ;; runtime, and the quoted form broke GNU semantics: BODY lost the
+  ;; lexical bindings around the macro call, so evil-collection's
+  ;; `(let ((m mode)) (with-eval-after-load req ... m ...))' signalled
+  ;; (void-variable m) in the user's init.  Expand as GNU subr.el does.
   (defmacro with-eval-after-load (file &rest body)
-    "Closure-free `with-eval-after-load' (audit parity): defer a QUOTED form."
-    (list 'eval-after-load file (list 'quote (cons 'progn body))))
+    "Run BODY after FILE is loaded, as a closure over the current bindings."
+    (declare (indent 1) (debug (form def-body)))
+    (list 'eval-after-load file (cons 'lambda (cons nil body))))
   (emacs-parity-macros2--register-macro 'with-eval-after-load)
 
   ;;;; === E. Eager (non-CPS) iter-defun / iter-lambda =================
