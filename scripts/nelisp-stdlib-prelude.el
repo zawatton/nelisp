@@ -14999,13 +14999,18 @@ the stricter octal form GNU's flag would only opt into)."
       (setq i (1+ i)))
     (nelisp--prn-chunks-string chunks))))
 
+(defconst nelisp--prn-symbol-escape-table
+  (let ((v (make-vector 128 nil)))
+    (dolist (c '(92 40 41 91 93 39 96 44 59 34 32 9 10 13 11 12) v)
+      (aset v c t)))
+  "Index C is t when the ASCII character C ends or escapes a reader atom.")
 (defun nelisp--prn-symbol-char-needs-escape-p (c)
   "Return non-nil when C terminates or escapes a reader symbol atom.
 This mirrors the reader atom-terminator predicate.  A backslash also
-needs escaping because the reader consumes it as an escape prefix."
-  (or (= c 92) (= c 40) (= c 41) (= c 91) (= c 93) (= c 39)
-      (= c 96) (= c 44) (= c 59) (= c 34) (= c 32) (= c 9)
-      (= c 10) (= c 13) (= c 11) (= c 12)))
+needs escaping because the reader consumes it as an escape prefix.
+One table lookup: the sixteen interpreted `=' tests it replaces cost
+about 49 us a character, a millisecond to print a 19-character name."
+  (and (< c 128) (aref nelisp--prn-symbol-escape-table c)))
 
 ;; Per-character escaping is not enough: a symbol whose whole NAME would
 ;; read back as a NUMBER, or as the dot of a dotted pair, needs a leading
@@ -15062,12 +15067,16 @@ needs escaping because the reader consumes it as an escape prefix."
                                 (string-as-unibyte (substring s start n))))
       (nelisp--prn-chunks-string chunks))))
 
-(defvar nelisp--prn-symbol-cache nil
-  "Optional bounded atom cache owned by one canonical contract digest.")
+(defvar nelisp--prn-symbol-cache (make-hash-table :test 'equal)
+  "Bounded cache from a symbol name to its escaped printed form.
+Escaping depends on the name alone, so a name printed once is answered
+by one lookup afterwards; GUI traces and messages print the same few
+symbols over and over.  A canonical contract digest binds a private one.")
 (defun nelisp--prn-symbol-escaped (s)
-  ;; Ordinary printing retains its reference path. The digest's private cache
-  ;; copies both keys and values, so mutable symbol-name/result strings cannot
-  ;; poison a later hit. Escaping has no print-mode-dependent input.
+  ;; The cache copies both keys and values, so mutable symbol-name/result
+  ;; strings cannot poison a later hit.  Escaping has no print-mode-dependent
+  ;; input.  It holds at most 1024 names; past that, misses are escaped
+  ;; without being stored.
   (if (not nelisp--prn-symbol-cache)
       (nelisp--prn-symbol-escaped-uncached s)
     (let ((cached (gethash s nelisp--prn-symbol-cache)))
