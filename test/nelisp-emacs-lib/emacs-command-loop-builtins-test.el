@@ -3060,3 +3060,19 @@ keymap needs to override a frontend's default handling for that key."
 (ert-deftest emacs-command-loop-standard-keymap-includes-copy-region ()
   (let ((map (emacs-command-loop-build-standard-keymap)))
     (should (eq (lookup-key map (kbd "M-w")) 'kill-ring-save))))
+
+(ert-deftest emacs-command-loop-builtins-test/commandp-does-not-load-autoloads ()
+  "An autoload answers commandp from its INTERACTIVE slot without loading."
+  (let ((loads 0))
+    (cl-letf (((symbol-function 'autoload-do-load)
+               (lambda (&rest _) (setq loads (1+ loads)) nil))
+              ((symbol-function 'load) (lambda (&rest _) (setq loads (1+ loads)) nil)))
+      (fset 'emacs-command-loop-test--al-cmd '(autoload "no-such-file" nil t nil))
+      (fset 'emacs-command-loop-test--al-fn '(autoload "no-such-file" nil nil nil))
+      (unwind-protect
+          (progn
+            (should (emacs-command-loop--commandp 'emacs-command-loop-test--al-cmd))
+            (should-not (emacs-command-loop--commandp 'emacs-command-loop-test--al-fn))
+            (should (= loads 0)))
+        (fmakunbound 'emacs-command-loop-test--al-cmd)
+        (fmakunbound 'emacs-command-loop-test--al-fn)))))

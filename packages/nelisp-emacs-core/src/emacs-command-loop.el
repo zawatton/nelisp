@@ -2839,11 +2839,20 @@ loaded first."
    (t nil)))
 
 (defun emacs-command-loop--commandp (function)
-  "Return non-nil when FUNCTION is an interactive command."
-  (and (or (and (symbolp function) (fboundp function))
-           (functionp function))
-       (emacs-command-loop--interactive-form function)
-       t))
+  "Return non-nil when FUNCTION is an interactive command.
+An autoload object answers from its INTERACTIVE slot without loading its
+file, as GNU's `commandp' does: completing over every symbol must not load
+every autoloaded library."
+  (let ((definition (if (and (symbolp function) (fboundp function))
+                        (condition-case nil (indirect-function function)
+                          (error nil))
+                      function)))
+    (if (eq (car-safe definition) 'autoload)
+        (and (nth 3 definition) t)
+      (and (or (and (symbolp function) (fboundp function))
+               (functionp function))
+           (emacs-command-loop--interactive-form function)
+           t))))
 
 (defun emacs-command-loop-call-interactively (function &optional record-flag keys)
   "Phase B.3 MVP: invoke FUNCTION as if interactively from the keyboard.
