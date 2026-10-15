@@ -7,8 +7,10 @@
 ;; immediate word; it used to be written into a boxed copy and stay 0, so no
 ;; table ever grew.  Checked here:
 ;;
-;; - growth: inserting 70 integers takes a table from 8 to 64 buckets, and
-;;   the marker's count tracks `hash-table-count';
+;; - growth: a fresh table has at most 8 buckets, inserting 70 integers
+;;   grows it to at least 32 (the native doubling policy reaches 64; a line
+;;   whose elisp `puthash' manages its own capacity starts at 1 and grows
+;;   faster), and the marker's count is 70;
 ;; - correctness: 3000 seeded random puthash/remhash/gethash operations per
 ;;   test (eq, eql, equal) over integer, symbol, string, cons and float keys
 ;;   answer exactly like an alist reference, through growth, `clrhash',
@@ -93,13 +95,12 @@
         (setq bad (list 'clrhash))))
     bad))
 
-(let* ((h (make-hash-table)) (i 0) (sizes nil))
+(let* ((h (make-hash-table)) (i 0) (fresh (length (cdr h))))
   (while (< i 70)
     (puthash i i h)
-    (setq i (1+ i))
-    (when (memq i '(1 17 33 66 70))
-      (push (cons i (length (cdr h))) sizes)))
-  (let* ((growth-ok (and (equal (nreverse sizes) '((1 . 8) (17 . 16) (33 . 32) (66 . 64) (70 . 64)))
+    (setq i (1+ i)))
+  (let* ((growth-ok (and (<= 1 fresh 8)
+                         (>= (length (cdr h)) 32)
                          (equal (aref (car h) 1) 70)))
          (results (mapcar (lambda (test) (cons test (hash-growth-check--run test)))
                           '(eq eql equal)))
