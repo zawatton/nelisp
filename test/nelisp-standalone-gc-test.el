@@ -302,7 +302,7 @@ can use a scratch page while still observing the real mask transitions."
                   nl_hdr_bt nl_hdr_mark nl_hdr_set_mark
                   nl_gc_free_block_link nl_gc_free_block
                   nl_gc_relink_free_one nl_gc_freelist_purge_buckets
-                  nl_alloc_run_adopt))
+                  nl_alloc_run_adopt nl_alloc_run_take))
          (forms nil))
     (dolist (name names)
       (let ((form (or (nelisp-standalone-gc-test--find-defun
@@ -398,6 +398,9 @@ can use a scratch page while still observing the real mask transitions."
                (setq start (+ start 1)))
              (setq round (+ round 1)))
            bad)))
+      ;; A small request's split remainder becomes the allocator's current
+      ;; run (`nl_alloc_run_adopt'), not a bucket entry: bucket 32 empties,
+      ;; bucket 16 stays clear, and the run hands the remainder out whole.
       (defun nl_probe-split-route ()
         (let ((hdr (nl_probe-hdr 0)))
           (seq
@@ -407,19 +410,24 @@ can use a scratch page while still observing the real mask transitions."
              (if (= obj 0) 20
                (if (and (= (logand
                             (ptr-read-u64 (nl_freelist_small_mask_ptr) 0) 1)
-                           1)
+                           0)
                         (= (logand
                             (ptr-read-u64 (nl_freelist_small_mask_ptr) 0) 4)
-                           0))
-                   (if (= (nl_freelist_bucket_pop 16 16) 0) 21 0)
+                           0)
+                        (= (ptr-read-u64 ,(+ nelisp-standalone-gc-test--freelist-page 1088) 0)
+                           (+ hdr 16)))
+                   (if (= (nl_alloc_run_take 16) (+ hdr 24)) 0 21)
                  22))))))
+      ;; A run replaced by a newer one is relinked into its bucket, which
+      ;; sets that bucket's bit.
       (defun nl_probe-split-tail-route ()
-        (let ((hdr (nl_probe-hdr 1)))
+        (let ((a (nl_probe-hdr 20)) (b (nl_probe-hdr 30)))
           (seq
-           (nl_freelist_split_tail hdr 32 16)
+           (nl_freelist_split_tail a 64 16)
+           (nl_freelist_split_tail b 32 16)
            (if (= (logand
-                   (ptr-read-u64 (nl_freelist_small_mask_ptr) 0) 1) 1)
-               (if (= (nl_freelist_bucket_pop 16 16) 0) 30 0)
+                   (ptr-read-u64 (nl_freelist_small_mask_ptr) 0) 16) 16)
+               (if (= (nl_freelist_bucket_pop 48 48) (+ a 24)) 0 30)
              31))))
       (defun nl_probe-relink-route ()
         (let ((hdr (nl_probe-hdr 2)))
@@ -549,12 +557,14 @@ can use a scratch page while still observing the real mask transitions."
              (nl_freelist_large_mask_sync bin (nl_freelist_large_head bin))
              (if (= (nl_probe_large_compare) 0) 0 (setq bad 11))
              (setq i (+ i 1)))
-           ;; Split a 512-byte block into a 16-byte head and 496-byte tail.
+           ;; Split a 1024-byte block into a 496-byte head and a 528-byte
+           ;; tail.  A request this large never makes a current run, so the
+           ;; tail goes to large bin 1.
            (setq hdr (nl_probe_large_hdr 0))
-           (nl_freelist_split_tail hdr 512 16)
-           (if (= (nl_freelist_large_next 0) 0) 0 (setq bad 12))
+           (nl_freelist_split_tail hdr 1024 496)
+           (if (= (nl_freelist_large_next 0) 1) 0 (setq bad 12))
            ;; Consume that exact tail through the production scanner.
-           (if (= (nl_freelist_scan_large_from 0 496) (+ hdr 24)) 0 (setq bad 13))
+           (if (= (nl_freelist_scan_large_from 0 528) (+ hdr 504)) 0 (setq bad 13))
            (if (= (nl_freelist_large_next 0) -1) 0 (setq bad 14))
            ;; Purge must both remove empty bits and preserve nonempty bits.
            (ptr-write-u64 (nl_freelist_large_head 51) 0 7777)
