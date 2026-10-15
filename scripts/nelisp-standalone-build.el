@@ -4716,6 +4716,26 @@ REPL-facing module it feeds."
               (if (= (nl_hdr_mark hdr) 4) (nl_hdr_set_mark hdr 0) 0)
               (setq hdr (+ hdr bt))))
         ok)))
+    ;; Clear every mark a collection set (1 precise, 4 pinned); free blocks
+    ;; keep mark 2.  Used when a collection gives up after marking.
+    (defun nl_gc_mark_reset_chunk (chunk)
+      (let* ((hdr (ptr-read-u64 (+ chunk 24) 0))
+             (end (nl_gc_chunk_end chunk))
+             (ok 1))
+        (while (and (= ok 1) (< hdr end))
+          (let ((bt (nl_hdr_bt hdr)))
+            (if (= (nl_gc_bt_ok hdr bt end) 0)
+                (setq ok 0)
+              (if (if (= (nl_hdr_mark hdr) 1) 1 (if (= (nl_hdr_mark hdr) 4) 1 0))
+                  (nl_hdr_set_mark hdr 0) 0)
+              (setq hdr (+ hdr bt)))))
+        ok))
+    (defun nl_gc_mark_reset_all ()
+      (let ((chunk (ptr-read-u64 268436160 0)))
+        (while (> chunk 0)
+          (nl_gc_mark_reset_chunk chunk)
+          (setq chunk (ptr-read-u64 (+ chunk 48) 0)))
+        0))
     (defun nl_gc_conserv_rollback ()
       (let ((chunk (ptr-read-u64 268436160 0)))
         (while (> chunk 0)
@@ -5147,9 +5167,15 @@ REPL-facing module it feeds."
                         (setq i (+ i 1))))
              0)))))
     ;; Mark every root (split out so the DEBUG skip-mark gate is a single if).
+    ;; Precise roots are marked first and the conservative stack scan
+    ;; (Doc 152 §11.21) runs last.  Its drain treats every word of a pinned
+    ;; block as a candidate pointer and pins only unmarked blocks, so after
+    ;; the precise pass it walks just what the stack alone keeps alive.  Run
+    ;; first, it drained nearly the whole live heap a second time: 37% of a
+    ;; collection's samples on the GUI image went to the drain.  A scan that
+    ;; fails now leaves precise marks behind; `nl_gc_index_mark_roots'
+    ;; clears every mark before it skips the sweep.
     (defun nl_gc_mark_roots (ctx result out pool src cursor bsym)
-      (nl_seq2 (nl_gc_conserv_maybe)             ; Doc 152 §11.21 conservative stack scan
-       (if (= (nl_gc_conserv_failed_p) 1) 0
          (nl_seq2 (nl_gc_mark_root_blocks ctx result out pool src cursor bsym)
        (nl_seq2 (nl_seq2 (nl_gc_mark_slot (+ ctx 0))
                          (nl_seq2 (nl_gc_mark_mirror_buckets (+ ctx 0))
@@ -5190,7 +5216,8 @@ REPL-facing module it feeds."
                                 ;; epoch cache entry's key+expansion alive (mirrors
                                 ;; the block+slot marking pair above).
                                 (nl_seq2 (nl_mxcache_mark_all)
-                                         (nl_fvcache_mark_all)))))))))))))))) ; bsym + shared symentry + conserv pin
+                                         (nl_seq2 (nl_fvcache_mark_all)
+                                                  (nl_gc_conserv_maybe))))))))))))))) ; bsym + shared symentry + conserv pin
     ;; ===== Doc 146 §5 moving GC (compaction). Phase 2 = forwarding. =====
     ;; Behind flag 268435608 (1=ON by default, wired at boot init; 0 = mark+sweep
     ;; escape hatch).  Forwarding hash side-table base
@@ -5797,13 +5824,11 @@ REPL-facing module it feeds."
     ;; evaluator ctx frames above provide the intended precise surface; the
     ;; native-stack scan remains as belt-and-braces for call-adjacent temporaries
     ;; that are not yet expressible in the 7-slot frame.
+    ;; As in `nl_gc_mark_roots', the conservative scan runs after the
+    ;; precise roots, so its drain only walks stack-only blocks; a failed
+    ;; scan clears every mark and skips the sweep.
     (defun nl_gc_collect_recorded_mark_sweep_body (mode)
       (nl_seq2 (nl_aref_cache_clear)
-       (if (and (= mode 0) (= (nl_gc_conserv_maybe) 0))
-           ;; Recorded-root collection has no outer index-mark wrapper to
-           ;; perform the failure cleanup, so clear the terminal OOM state
-           ;; here after the conservative finish has rolled back mark4.
-           (seq (nl_gc_conserv_state_clear) 0)
          (nl_seq2 (nl_gc_symname_epoch_begin)
          (nl_seq2 (nl_gc_mark_recorded_contexts)
        (nl_seq2 (nl_gc_mark_rootstack)
@@ -5818,6 +5843,11 @@ REPL-facing module it feeds."
            (nl_seq2 (nl_mxcache_mark_all)
             (nl_seq2 (nl_fvcache_mark_all)
                      (nl_seq2 (nl_gc_symname_mark_roots)
+                     (if (if (= mode 0) (= (nl_gc_conserv_maybe) 0) 0)
+                         ;; No outer index-mark wrapper here: clear the marks
+                         ;; and the terminal OOM state before giving up.
+                         (seq (nl_gc_mark_reset_all) (nl_gc_index_end)
+                              (nl_gc_conserv_state_clear) 0)
                      (nl_seq2 (nl_gc_index_end)
                               (nl_seq2 (nl_gc_sweep)
                                        (nl_gc_conserv_state_clear)))))))))))))))
@@ -5894,7 +5924,8 @@ REPL-facing module it feeds."
          (if (= (ptr-read-u64 268435592 0) 1) 0
            (nl_gc_mark_roots ctx result out pool src cursor bsym))
          (if (= (nl_gc_conserv_failed_p) 1)
-             (seq (nl_gc_index_end) (nl_gc_conserv_state_clear) 0)
+             (seq (nl_gc_mark_reset_all) (nl_gc_index_end)
+                  (nl_gc_conserv_state_clear) 0)
            (seq (nl_gc_symname_mark_roots)
                 (nl_gc_index_end)
                 1)))))
