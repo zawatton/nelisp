@@ -26,7 +26,10 @@
 cmd: $NELISP_RT_BIN --load test/standalone-split-string-parity.el
 
 ** S1.2 split-string of a short ASCII string costs at most 4 x substring
-pending
+#+NOTE: Native split builtin (nelisp--split-on-byte) and a one-character fast path in split-string: 97 -> 67 us per call on "alpha/beta/gamma", ratio 4.19 -> 3.00.
+#+REQUIRES: NELISP_RT_BIN
+#+TIMEOUT: 120
+cmd: $NELISP_RT_BIN --load test/standalone-split-string-cost-check.el
 
 ** S1.3 Windows SKK probe: split-string native is no slower than interpreted and under 0.1 s on 32K chars
 pending
@@ -54,10 +57,16 @@ pending
 * S3 String primitive fast paths
 
 ** S3.1 compare-strings is a native builtin: string-prefix-p costs at most 3 x string= and matches GNU on edge cases
-pending
+#+NOTE: Parity is against the prelude's general implementation over 12548 cases (ASCII, Japanese, emoji, raw bytes, unibyte/multibyte pairs, END nil/in range/past the end/negative, wrong types).  string-prefix-p 167 -> 38.6 us, 1.73 x string=.
+#+REQUIRES: NELISP_RT_BIN
+#+TIMEOUT: 300
+cmd: $NELISP_RT_BIN --load test/standalone-compare-strings-parity.el
 
 ** S3.2 string-search on multibyte strings uses the native scanner and matches the character walk
-pending
+#+NOTE: 852 cases at every start position; a match at the end of 4000 multibyte characters costs 0.001 of the walk.  A short multibyte search went from 139 to 63 us with nelisp--string-search-chars.
+#+REQUIRES: NELISP_RT_BIN
+#+TIMEOUT: 120
+cmd: $NELISP_RT_BIN --load test/standalone-string-search-parity.el
 
 ** S3.3 maphash over a 2-entry table of size 2047 costs at most 5 x over a fresh 2-entry table
 #+NOTE: notes-44 2026-10-12: nelisp-buffer--registry (count 2, size 2047) maphash 131 ms vs 0.7 ms, so buffer-list costs ~63 ms per call.
