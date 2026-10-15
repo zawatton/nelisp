@@ -1892,6 +1892,47 @@ directory tracks the tree rather than accumulating every key ever built."
     ;; than through `nl_gc_free_block' on purpose: that path runs the checked
     ;; allocator's redzone verify and the poison fill, and a remainder that
     ;; was never handed out carries neither a guard word nor an owner.
+    ;; CURRENT RUN.  Once the sweep has merged free runs, most small requests
+    ;; miss their exact bucket and split a large free block: a mask scan, a
+    ;; large-bin scan and a relink of the remainder on every request (about
+    ;; a quarter of an allocation-heavy loop; 38% of the GUI mode line with
+    ;; the zero-fill).  Instead the remainder of a large block split for a
+    ;; small request becomes the current run, and later small requests are
+    ;; carved from its front: the carved block gets its header and the rest
+    ;; keeps a valid FREE header, so every header walk (sweep, start index,
+    ;; census, image dump) still sees a well-formed heap.  The run is on no
+    ;; list; nl_gc_diag+48 holds its header address (0 = none; driver BSS,
+    ;; never dumped, zero at start).  It is dropped wherever the lists are
+    ;; rebuilt or the bump cursor rewinds (sweep, cold-load relink,
+    ;; compaction, boundary reclaim), and the walk that rebuilds the lists
+    ;; finds it like any other free block.  A run replaced by a newer one is
+    ;; relinked first.  Requests above 472 bytes never use a run.
+    (defun nl_alloc_run_reset ()
+      (ptr-write-u64 (data-addr nl_gc_diag) 48 0))
+    (defun nl_alloc_run_adopt (rem rembt)
+      (let* ((old (ptr-read-u64 (data-addr nl_gc_diag) 48)))
+        (seq
+         (ptr-write-u64 rem 0 (+ rembt 2))
+         (if (= old 0) 0 (nl_gc_relink_free_one old))
+         (ptr-write-u64 (data-addr nl_gc_diag) 48 rem)
+         0)))
+    ;; Carve WANT bytes from the run: the object pointer, or 0 when there is
+    ;; no run or it cannot leave a remainder of at least one 16-byte block
+    ;; (an exact fit takes the whole run).
+    (defun nl_alloc_run_take (want)
+      (let* ((r (ptr-read-u64 (data-addr nl_gc_diag) 48))
+             (bt (if (= r 0) 0 (logand (ptr-read-u64 r 0) 4294967288))))
+        (if (= r 0) 0
+          (if (< bt (+ want 16))
+              (if (= bt want)
+                  (seq (ptr-write-u64 r 0 want)
+                       (ptr-write-u64 (data-addr nl_gc_diag) 48 0)
+                       (+ r 8))
+                0)
+            (seq (ptr-write-u64 r 0 want)
+                 (ptr-write-u64 (+ r want) 0 (+ (- bt want) 2))
+                 (ptr-write-u64 (data-addr nl_gc_diag) 48 (+ r want))
+                 (+ r 8))))))
     (defun nl_freelist_split_tail (hdr bt want)
       (let* ((rem (+ hdr want))
              (rembt (- bt want))
@@ -1900,12 +1941,16 @@ directory tracks the tree rather than accumulating every key ever built."
                      (+ 268435696 (- rembt 16)))))
         (seq
          (ptr-write-u64 hdr 0 want)          ; head: BT = want, mark 0 (live)
-         (ptr-write-u64 rem 0 (+ rembt 2))   ; tail: BT = rembt, mark 2 (FREE)
-         (ptr-write-u64 (+ rem 8) 0 (ptr-read-u64 head 0))
-         (ptr-write-u64 head 0 (+ rem 8))
-         (if (< rembt 473)
-             (nl_freelist_small_mask_set rembt)
-           (nl_freelist_large_mask_sync (nl_freelist_large_bin rembt) head))
+         ;; A large remainder of a small request becomes the current run.
+         (if (if (< want 473) (if (< 4095 rembt) 1 0) 0)
+             (nl_alloc_run_adopt rem rembt)
+           (seq
+            (ptr-write-u64 rem 0 (+ rembt 2))   ; tail: BT = rembt, mark 2 (FREE)
+            (ptr-write-u64 (+ rem 8) 0 (ptr-read-u64 head 0))
+            (ptr-write-u64 head 0 (+ rem 8))
+            (if (< rembt 473)
+                (nl_freelist_small_mask_set rembt)
+              (nl_freelist_large_mask_sync (nl_freelist_large_bin rembt) head))))
          0)))
     (defun nl_freelist_scan_head (prev cur want head)
       (let* ((p prev)
@@ -2147,10 +2192,13 @@ directory tracks the tree rather than accumulating every key ever built."
           (let* ((cur (nl_freelist_bucket_pop want want)))
             (if (= cur 0)
                 (if (= (ptr-read-u64 268435632 0) 0) 0
-                  (let* ((r (nl_freelist_bucket_split want)))
-                    (if (= r 0)
-                        (nl_freelist_scan_large want)
-                      (nl_alloc_diag_bucket r))))
+                  (let* ((run (nl_alloc_run_take want)))
+                    (if (= run 0)
+                        (let* ((r (nl_freelist_bucket_split want)))
+                          (if (= r 0)
+                              (nl_freelist_scan_large want)
+                            (nl_alloc_diag_bucket r)))
+                      run)))
               (nl_seq2 (nl_hdr_set_mark (- cur 8) 0)
                        (nl_alloc_diag_bucket cur)))))))
     ;; Zero NBYTES (step 8) of the reused block's payload at OBJ.
@@ -4296,6 +4344,7 @@ REPL-facing module it feeds."
              0)))))
     (defun nl_gc_coalesce_and_rebuild_freelist ()
       (seq
+       (nl_alloc_run_reset)
        (nl_gc_coalesce_chunks (ptr-read-u64 268436160 0))
        (nl_gc_clear_freelist_buckets 0)
        (nl_gc_relink_free_chunks (ptr-read-u64 268436160 0))
@@ -4677,6 +4726,7 @@ REPL-facing module it feeds."
        (ptr-write-u64 (data-addr nl_gc_stats) 16 0)
        (nl_gc_symname_sweep_all)
        (nl_native_subr_weak_sweep)
+       (nl_alloc_run_reset)
        (nl_gc_clear_freelist_buckets 0)
        (nl_gc_sweep_merge_chunks (ptr-read-u64 268436160 0))
        (if (= (nl_os_empty_chunk_reclaim_p) 1)
@@ -5927,6 +5977,7 @@ REPL-facing module it feeds."
                (ptr-write-u64 268436168 0 tospace)
                (ptr-write-u64 268435456 0 (- (ptr-read-u64 268435664 0) (ptr-read-u64 c0 0)))
                (ptr-write-u64 (+ tospace 16) 0 (+ 1024 total))
+               (nl_alloc_run_reset)
                (nl_compact_clear_fl 0)
                (nl_compact_unpin_src)
                (nl_compact_unpin_roots))))))))
@@ -30142,6 +30193,7 @@ suffix, which is why only `--repl' crashed)."
            0)
          (ptr-write-u64 cursor-addr 0 mark_cursor)
          (ptr-write-u64 268436168 0 mark_chunk)
+         (nl_alloc_run_reset)
          (nl_boundary_clear_fl 0)
          (ptr-write-u64 268436200 0
                         (+ (ptr-read-u64 268436200 0)
