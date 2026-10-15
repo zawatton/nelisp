@@ -137,8 +137,16 @@ same native probe returns a nonzero status there."
          (compact-small
           (nelisp-standalone-gc-test--find-defun
            nelisp-standalone--gc-source
-           'nl_compact_clear_fl)))
-    (unless (and boundary-reclaim compact-small)
+           'nl_compact_clear_fl))
+         ;; The boundary reclaim also drops the allocator's current run;
+         ;; its nl_gc_diag slot is redirected to the scratch page.
+         (run-reset
+          (cl-subst (+ nelisp-standalone-gc-test--freelist-page 1040)
+                    '(data-addr nl_gc_diag)
+                    (nelisp-standalone-gc-test--find-defun
+                     nelisp-standalone--arena-source 'nl_alloc_run_reset)
+                    :test #'equal)))
+    (unless (and boundary-reclaim compact-small run-reset)
       (error "production free-list reclaim entry points are absent"))
     `(seq
       ;; Keep the production reclaim/clear bodies intact.  Only the address
@@ -171,6 +179,7 @@ same native probe returns a nonzero status there."
       (defun nl_alloc_check_poison_span (_addr _nbytes) 0)
       (defun nl_alloc_check_expect_zero (_addr _nbytes) 0)
       ,large-mask-clear
+      ,run-reset
       ,(or boundary-large
            '(defun nl_boundary_clear_large_fl (_n) 0))
       ,(or boundary-small
@@ -241,9 +250,14 @@ same native probe returns a nonzero status there."
              ;; The production REPL boundary is the entry point here.  On
              ;; the pre-fix tree it clears only the fallback head, so this
              ;; native probe returns 1 after seeded heads remain live.
+             ;; A current run must not survive the rewind either.
+             (ptr-write-u64 ,(+ nelisp-standalone-gc-test--freelist-page 1040 48) 0 4242)
              (nl_boundary_reclaim
               ,nelisp-standalone-gc-test--freelist-chunk-page 1024)
-             (if (= (nl_probe-all-zero) 1) 0 1))
+             (if (= (nl_probe-all-zero) 1)
+                 (if (= (ptr-read-u64 ,(+ nelisp-standalone-gc-test--freelist-page 1040 48) 0) 0)
+                     0 3)
+               1))
           (seq
            (nl_probe_seed-all)
            ;; The compaction helper is called directly, isolating its clear
@@ -287,7 +301,8 @@ can use a scratch page while still observing the real mask transitions."
                   nl_freelist_bucket_split
                   nl_hdr_bt nl_hdr_mark nl_hdr_set_mark
                   nl_gc_free_block_link nl_gc_free_block
-                  nl_gc_relink_free_one nl_gc_freelist_purge_buckets))
+                  nl_gc_relink_free_one nl_gc_freelist_purge_buckets
+                  nl_alloc_run_adopt))
          (forms nil))
     (dolist (name names)
       (let ((form (or (nelisp-standalone-gc-test--find-defun
@@ -1733,3 +1748,190 @@ checked-allocator paths, the mark-only debug mode and a malformed header."
            path)
           (should-not (equal (call-process path nil nil nil) 0)))
       (when (file-exists-p path) (delete-file path)))))
+
+;;; Allocator current run -----------------------------------------------
+
+(defconst nelisp-standalone-gc-test--run-heap #x35000000
+  "Scratch heap for the current-run allocator probe (256 KiB mapped).")
+
+(defun nelisp-standalone-gc-test--run-source (&optional mutate)
+  "Native probe: up to 300 `nl_freelist_take' calls over a synthetic heap.
+The production take, split, run, scan, bucket and mask bodies are linked
+unchanged; `nl_gc_in_arena' and the allocation diagnostics are stubs.
+After every take the probe walks the heap and the free lists and checks
+that the headers chain exactly to the end, that every free block except
+the current run is on a list and every list node is a free block, that
+the run (if any) is a free block on no list, and that the allocated bytes
+are the starting live bytes plus every request.  MUTATE is an optional
+function applied to the production forms (for red checks)."
+  (let* ((page nelisp-standalone-gc-test--freelist-page)
+         (large nelisp-standalone-gc-test--freelist-large-page)
+         (heap nelisp-standalone-gc-test--run-heap)
+         (diag (+ page 1040))
+         (blocks '((64 . 0) (40000 . 2) (32 . 0) (20000 . 2) (48 . 0)
+                   (104 . 2) (32 . 0) (9000 . 2) (24 . 0)))
+         (end (+ heap (apply #'+ (mapcar #'car blocks))))
+         (live (apply #'+ (mapcar (lambda (b) (if (= (cdr b) 0) (car b) 0)) blocks)))
+         (forms nil) (setup nil) (addr heap))
+    (dolist (name '(nl_hdr_bt nl_hdr_mark nl_hdr_set_mark
+                    nl_freelist_small_mask_bit nl_freelist_small_mask_set
+                    nl_freelist_small_mask_clear nl_freelist_small_mask_sync_head
+                    nl_freelist_small_first_bit nl_freelist_small_next_group
+                    nl_freelist_small_next_index nl_freelist_large_bin
+                    nl_freelist_large_mask_sync nl_freelist_large_next
+                    nl_freelist_bucket_pop nl_freelist_bucket_split
+                    nl_freelist_split_tail nl_freelist_scan_drop_tail
+                    nl_freelist_scan_head nl_freelist_scan nl_freelist_scan_large_from
+                    nl_freelist_scan_large nl_freelist_take nl_gc_relink_free_one
+                    nl_alloc_run_reset nl_alloc_run_adopt nl_alloc_run_take))
+      (let ((form (or (nelisp-standalone-gc-test--find-defun nelisp-standalone--arena-source name)
+                      (nelisp-standalone-gc-test--find-defun nelisp-standalone--gc-source name))))
+        (unless form (error "current-run probe defun absent: %S" name))
+        (setq form (cl-subst diag '(data-addr nl_gc_diag) form :test #'equal))
+        (setq form (cl-subst (+ large 2048) '(data-addr nl_freelist_large_mask) form :test #'equal))
+        (push form forms)))
+    (setq forms (nreverse forms))
+    (when mutate (setq forms (funcall mutate forms)))
+    (dolist (b blocks)
+      (push `(ptr-write-u64 ,addr 0 ,(+ (car b) (cdr b))) setup)
+      (when (= (cdr b) 2) (push `(nl_gc_relink_free_one ,addr) setup))
+      (setq addr (+ addr (car b))))
+    `(seq
+      (defun nl_seq2 (_a b) b)
+      (defun nl_freelist_small_mask_ptr () ,(+ page 1024))
+      (defun nl_freelist_large_head (bin) (+ ,large (* bin 8)))
+      (defun nl_gc_in_arena (_obj) 1)
+      (defun nl_fl_record_trip (_cur _bt _want) 0)
+      (defun nl_alloc_diag_bucket (obj) obj)
+      (defun nl_alloc_diag_linear (obj) obj)
+      ,@forms
+      ;; Count list nodes, each of which must be a free block in the heap.
+      (defun nl_probe_run_list_nodes (head)
+        (let ((node (ptr-read-u64 head 0)) (n 0) (bad 0))
+          (seq
+           (while (and (= bad 0) (> node 0))
+             (if (if (< (- node 8) ,heap) 1 (if (< (- node 8) ,end) 0 1))
+                 (setq bad 1)
+               (if (= (nl_hdr_mark (- node 8)) 2)
+                   (seq (setq n (+ n 1)) (setq node (ptr-read-u64 node 0)))
+                 (setq bad 1))))
+           (if (= bad 0) n -1))))
+      (defun nl_probe_run_lists ()
+        (let ((i 0) (n 0) (k 0))
+          (seq
+           (setq k (nl_probe_run_list_nodes 268435552))
+           (if (< k 0) (setq n -100000) (setq n (+ n k)))
+           (while (< i 58)
+             (setq k (nl_probe_run_list_nodes (+ 268435696 (* i 8))))
+             (if (< k 0) (setq n -100000) (setq n (+ n k)))
+             (setq i (+ i 1)))
+           (setq i 0)
+           (while (< i 204)
+             (setq k (nl_probe_run_list_nodes (nl_freelist_large_head i)))
+             (if (< k 0) (setq n -100000) (setq n (+ n k)))
+             (setq i (+ i 1)))
+           n)))
+      ;; 0 when every invariant holds, else the failing invariant's code.
+      (defun nl_probe_run_check (want_sum)
+        (let ((hdr ,heap) (bt 0) (free 0) (used 0) (bad 0)
+              (run (ptr-read-u64 ,(+ diag 48) 0)) (nodes 0))
+          (seq
+           (while (and (= bad 0) (< hdr ,end))
+             (setq bt (nl_hdr_bt hdr))
+             (if (if (< bt 16) 1 (if (< ,end (+ hdr bt)) 1 0))
+                 (setq bad 1)
+               (seq
+                (if (= (nl_hdr_mark hdr) 2) (setq free (+ free 1))
+                  (if (= (nl_hdr_mark hdr) 0) (setq used (+ used bt)) (setq bad 1)))
+                (setq hdr (+ hdr bt)))))
+           (if (= bad 0) (if (= hdr ,end) 0 (setq bad 2)) 0)
+           (if (= bad 0)
+               (if (= run 0) 0
+                 (if (if (< run ,heap) 1 (if (< run ,end) 0 1)) (setq bad 6)
+                   (if (= (nl_hdr_mark run) 2) 0 (setq bad 6))))
+             0)
+           (if (= bad 0)
+               (seq (setq nodes (nl_probe_run_lists))
+                    (if (< nodes 0) (setq bad 3)
+                      (if (= free (+ nodes (if (= run 0) 0 1))) 0 (setq bad 4))))
+             0)
+           (if (= bad 0) (if (= used (+ ,live want_sum)) 0 (setq bad 5)) 0)
+           bad)))
+      (defun nl_probe_run_want (k)
+        (let ((w (logand k 15)))
+          (if (< w 3) 32 (if (< w 5) 16 (if (< w 7) 48 (if (< w 9) 24
+            (if (= w 9) 64 (if (= w 10) 96 (if (= w 11) 200
+              (if (= w 12) 472 (if (= w 13) 600 (if (= w 14) 1024 40))))))))))))
+      (defun nl_probe_run_main ()
+        (let ((i 0) (seed 12345) (want 0) (obj 0) (sum 0) (bad 0) (seen_run 0) (taken 0)
+              (rr 0) (rbt 0))
+          (seq
+           (syscall-direct 9 ,page 4096 3 50 -1 0)
+           (syscall-direct 9 ,large 4096 3 50 -1 0)
+           (syscall-direct 9 ,heap 262144 3 50 -1 0)
+           (ptr-write-u64 268435632 0 1)
+           ,@(nreverse setup)
+           (setq bad (nl_probe_run_check 0))
+           (while (and (= bad 0) (< i 300))
+             (setq seed (logand (+ (* seed 1103515245) 12345) 2147483647))
+             (setq want (nl_probe_run_want (sar seed 8)))
+             (setq obj (nl_freelist_take want))
+             (if (= obj 0)
+                 (setq i 300)
+               (seq
+                (if (= (ptr-read-u64 (- obj 8) 0) want) 0 (setq bad 7))
+                (setq sum (+ sum want))
+                (setq taken (+ taken 1))
+                (if (= (ptr-read-u64 ,(+ diag 48) 0) 0) 0 (setq seen_run 1))
+                (if (= bad 0) (setq bad (nl_probe_run_check sum)) 0)
+                (setq i (+ i 1)))))
+           (if (= bad 0) (if (= seen_run 1) 0 (setq bad 8)) 0)
+           (if (= bad 0) (if (< taken 100) (setq bad 9) 0) 0)
+           ;; An exact fit takes the whole run and clears it.
+           (setq rr (ptr-read-u64 ,(+ diag 48) 0))
+           (if (if (= bad 0) (if (= rr 0) 0 1) 0)
+               (seq
+                (setq rbt (nl_hdr_bt rr))
+                (setq obj (nl_alloc_run_take rbt))
+                (if (= obj (+ rr 8)) 0 (setq bad 11))
+                (if (= (ptr-read-u64 ,(+ diag 48) 0) 0) 0 (setq bad 12))
+                (setq sum (+ sum rbt))
+                (if (= bad 0) (setq bad (nl_probe_run_check sum)) 0))
+             (if (= bad 0) (setq bad 13) 0))
+           ;; A reset drops the run; the walk then sees one more listless
+           ;; free block, which the sweep's rebuild would relink.
+           (if (= bad 0)
+               (seq (nl_alloc_run_reset)
+                    (if (= (ptr-read-u64 ,(+ diag 48) 0) 0) 0 (setq bad 10)))
+             0)
+           bad)))
+      (exit (nl_probe_run_main)))))
+
+(defun nelisp-standalone-gc-test--run-run-probe (&optional mutate)
+  (let ((path (make-temp-file "nelisp-standalone-gc-run-")))
+    (unwind-protect
+        (progn
+          (nelisp-aot-compile-sexp (nelisp-standalone-gc-test--run-source mutate) path)
+          (call-process path nil nil nil))
+      (when (file-exists-p path) (delete-file path)))))
+
+(ert-deftest nelisp-standalone-gc-current-run-native ()
+  "Small requests carve the current run and the heap stays exact.
+600 mixed requests over a heap of live blocks and four free blocks: the
+headers chain to the end after every request, every free block but the
+run is on exactly one list, and the allocated bytes add up."
+  (unless (and (eq system-type 'gnu/linux)
+               (string-match-p "x86_64\\|amd64" system-configuration))
+    (ert-skip "Requires x86_64 Linux for the freestanding AOT executable"))
+  (should (equal (nelisp-standalone-gc-test--run-run-probe) 0)))
+
+(ert-deftest nelisp-standalone-gc-current-run-unlinked-old-run-is-red ()
+  "Dropping a replaced run without relinking it fails the probe."
+  (unless (and (eq system-type 'gnu/linux)
+               (string-match-p "x86_64\\|amd64" system-configuration))
+    (ert-skip "Requires x86_64 Linux for the freestanding AOT executable"))
+  (should-not
+   (equal (nelisp-standalone-gc-test--run-run-probe
+           (lambda (forms)
+             (cl-subst 0 '(nl_gc_relink_free_one old) forms :test #'equal)))
+          0)))
