@@ -7074,6 +7074,7 @@ argument (reachability + in-arena bounds checks).")
                                        (wf_write_int out (nl_ht_count_table (nl_ht_data_slot h)))
                                      (bf_wrong_type_hash_table h))))
     ((:lit "maphash")          . (nl_ht_maphash args out))
+    ((:lit "nelisp--hash-table-entries") . (bf_ht_entries (wf_arg_ptr args 0) out))
     ;; --- M5 strings + format ---
     ((:lit "length")           . (bf_length_checked (wf_arg_ptr args 0) out))
     ;; Doc 161: byte-level access + count for byte-IO (length is now chars).
@@ -11113,9 +11114,12 @@ eval applyfn.")
               (setq node (nl_cons_cdr_ptr node)))))
          found)))
     (defun nl_ht_count (node_ptr acc)
-      (if (= (ptr-read-u64 node_ptr 0) 7)
-          (nl_ht_count (nl_cons_cdr_ptr node_ptr) (+ acc 1))
-        acc))
+      (let* ((node node_ptr) (total acc))
+        (seq
+         (while (= (ptr-read-u64 node 0) 7)
+           (setq total (+ total 1))
+           (setq node (nl_cons_cdr_ptr node)))
+         total)))
     (defun nl_ht_find_vec_from (vec key_ptr i n mode)
       (let* ((idx i)
              (entry_ptr 0))
@@ -11152,11 +11156,18 @@ eval applyfn.")
         (if (= (ptr-read-u64 rest2 0) 7)
             (nl_ht_copy32 out (nl_cons_car_ptr rest2))
           (wf_write_nil out))))
+    ;; Iterative, and an empty bucket (the Nil word 3 in the vector's data
+    ;; buffer, box@+8, data@box+8) is skipped without boxing it: the
+    ;; recursive walk took a native frame and a boxed slot per bucket, 2048
+    ;; of each per `hash-table-count' call (~330 us on a 2-entry table).
     (defun nl_ht_count_vec (vec i n acc)
-      (if (>= i n)
-          acc
-        (nl_ht_count_vec vec (+ i 1) n
-                         (nl_ht_count (vector-ref-ptr vec i) acc))))
+      (let* ((words (ptr-read-u64 (ptr-read-u64 vec 8) 8)) (k i) (total acc))
+        (seq
+         (while (< k n)
+           (if (= (ptr-read-u64 (+ words (* k 8)) 0) 3) 0
+             (setq total (nl_ht_count (vector-ref-ptr vec k) total)))
+           (setq k (+ k 1)))
+         total)))
     (defun nl_ht_count_table (data_ptr)
       (if (= data_ptr 0)
           0
@@ -11361,7 +11372,47 @@ eval applyfn.")
     ;; maphash ships as a no-op here; the real iteration is the pure-elisp
     ;; `maphash' in nelisp-stdlib-prelude.el (walks the bucket-vector repr +
     ;; funcall), which overrides this stub.
-    (defun nl_ht_maphash (args out) (seq (wf_write_nil out) 0)))
+    (defun nl_ht_maphash (args out) (seq (wf_write_nil out) 0))
+    ;; `nelisp--hash-table-entries' TABLE: a fresh list of TABLE's (KEY .
+    ;; VALUE) entry cells -- the cells themselves, not copies -- in the order
+    ;; the prelude's `maphash' visits them (buckets ascending, each bucket's
+    ;; nodes in list order).  `maphash' walks this list instead of every slot
+    ;; of the bucket vector: on a 2-entry table of 2048 slots that walk was
+    ;; 2048 interpreted iterations, ~43 ms a call (`buffer-list' over the
+    ;; buffer registry).  An empty bucket is the Nil word 3 in the vector's
+    ;; data buffer (box@+8, data@box+8, len@box+16), skipped without boxing
+    ;; it.  Entries are pushed, then the list is reversed in a loop (a
+    ;; recursive reverse takes a native frame per entry).
+    (defun bf_ht_entries (table out)
+      (let* ((data (if (= (ptr-read-u64 table 0) 7) (nl_ht_data_slot table) 0))
+             (vec (if (= data 0) 0 (if (= (ptr-read-u64 data 0) 8) 1 0)))
+             (words (if (= vec 1) (ptr-read-u64 (ptr-read-u64 data 8) 8) 0))
+             (n (if (= vec 1) (ptr-read-u64 (ptr-read-u64 data 8) 16) 1))
+             (acc (alloc-bytes 32 8)) (rev (alloc-bytes 32 8)) (cell (alloc-bytes 32 8))
+             (i 0) (node 0) (entry 0))
+        (seq
+         (wf_write_nil acc)
+         (wf_write_nil rev)
+         (if (= data 0) 0
+           (while (< i n)
+             (setq node (if (= vec 1)
+                            (if (= (ptr-read-u64 (+ words (* i 8)) 0) 3) 0
+                              (vector-ref-ptr data i))
+                          data))
+             (while (if (= node 0) 0 (= (ptr-read-u64 node 0) 7))
+               (setq entry (nl_cons_car_ptr node))
+               (if (= (ptr-read-u64 entry 0) 7)
+                   (seq (nelisp_cons_construct entry acc cell) (wf_copy32 acc cell))
+                 0)
+               (setq node (nl_cons_cdr_ptr node)))
+             (setq i (+ i 1))))
+         (setq node acc)
+         (while (= (ptr-read-u64 node 0) 7)
+           (nelisp_cons_construct (nl_cons_car_ptr node) rev cell)
+           (wf_copy32 rev cell)
+           (setq node (nl_cons_cdr_ptr node)))
+         (wf_copy32 out rev)
+         0))))
   "M4 hash-table helpers (reader-only).")
 
 (defconst nelisp-standalone--applyfn-search-helpers
@@ -27887,7 +27938,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     ;; in the standalone prelude lower through this entry).
     "nelisp--env-globals-op"
     ;; M4 hash tables
-    "make-hash-table" "puthash" "gethash" "remhash" "hash-table-count" "maphash"
+    "make-hash-table" "puthash" "gethash" "remhash" "hash-table-count" "maphash" "nelisp--hash-table-entries"
     "nelisp--hash-table-make-raw" "nelisp--cell-value" "nelisp--assoc-raw"
     "nelisp--byte-code-wrap-test"
     "nelisp--plist-get-eq" "nelisp--plist-member-eq"
