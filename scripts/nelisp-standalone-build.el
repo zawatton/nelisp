@@ -1732,8 +1732,8 @@ directory tracks the tree rather than accumulating every key ever built."
     ;; 0x0001000000000028 on a 40-byte block, and 0x0001000000000038 for the
     ;; same block under NELISP_ALLOC_CHECK=1, which makes every block 16 bytes
     ;; bigger -- so the bad word tracks the block's own size) used to make
-    ;; `nl_gc_bt_ok' reject the block, `nl_gc_sweep_step' answer 0 and
-    ;; `nl_gc_sweep_chunk' STOP: the rest of that chunk was then never swept
+    ;; `nl_gc_bt_ok' reject the block and the sweep's header walk
+    ;; STOP: the rest of that chunk was then never swept
     ;; again, so its blocks kept the mark bits of an earlier cycle.  A stale
     ;; mark 1 is a lie to the next mark phase -- `nl_gc_mark_block' reads
     ;; "already recursed", declines to walk the block, and the block's children
@@ -4141,60 +4141,6 @@ REPL-facing module it feeds."
           (if (and (>= bt 16) (< bt 473))
               (nl_freelist_small_mask_set bt)
             (if (< 472 bt) (nl_freelist_large_mask_sync (nl_freelist_large_bin bt) head) 0))))))
-    ;; Process one block at HDR (mark==1 clear / mark==0 free / mark==2
-    ;; skip); returns the block's live byte contribution (bt if live, else
-    ;; 0).  No control mutation -> safe to call from the iterative loop.
-    ;;
-    ;; BOOT WATERMARK (268435664): the boot image -- the mirror, all builtins,
-    ;; the env/frame records, the source string, the slot pool and the fixed
-    ;; driver scratch slots, everything allocated below the watermark at
-    ;; install + driver setup -- is live for the WHOLE program.  It IS reached
-    ;; by the precise root marker (via the mirror/frames roots), so the
-    ;; reachability sweep alone would already preserve it; this guard is
-    ;; belt-and-suspenders: a block whose header is BELOW the watermark is
-    ;; ALWAYS kept live (clear any mark back to 0 so the mark word is reset for
-    ;; the next cycle, keeping re-marking of its above-watermark children
-    ;; idempotent) and never freed -- a sound "permanent generation" that
-    ;; guarantees no boot-internal raw-pointer edge can ever be reclaimed.
-    ;; Only per-form garbage ABOVE the watermark is collected.  (NOTE: the
-    ;; reuse-correctness fix is the payload zeroing in `nl_alloc_zero_fill';
-    ;; this watermark guard is not required for the gates to pass but makes the
-    ;; permanent generation explicit and robust.)
-    ;; Doc 201 §6.14 follow-up: the sweep adds every surviving block's
-    ;; BLOCK_TOTAL to nl_gc_stats+16 so `nl_gc_debt_rearm' can size the next
-    ;; allocation-debt threshold from the live set it just measured.  Boot
-    ;; blocks count too: they are marked and walked every cycle like any
-    ;; other live block, so they are part of what the next mark will cost.
-    (defun nl_gc_live_add (bt)
-      (nl_seq2 (ptr-write-u64 (data-addr nl_gc_stats) 16
-                              (+ (ptr-read-u64 (data-addr nl_gc_stats) 16) bt))
-               bt))
-    (defun nl_gc_sweep_one (hdr)
-      (if (= (nl_gc_is_boot hdr) 1)
-          ;; A FREE (mark 2) block below the watermark (a cold-loaded image
-          ;; carries the dumping run's freed blocks, relinked at load) must
-          ;; stay free; resetting it to mark 0 leaks it past the rebuild.
-          (if (= (nl_hdr_mark hdr) 2)
-              0
-            (nl_seq2 (nl_hdr_set_mark hdr 0)              ; boot block: keep live, reset mark
-                     (nl_gc_live_add (nl_hdr_bt hdr))))
-      (let* ((m (nl_hdr_mark hdr)) (bt (nl_hdr_bt hdr)))
-        ;; Doc155 §8.12: m==1 (recursed-live) OR m==4 (conserv-PINNED, a live
-        ;; in-flight root never precisely recursed) both SURVIVE and reset to 0
-        ;; for the next cycle.
-        (if (if (= m 1) 1 (if (= m 4) 1 0))
-            (nl_seq2 (nl_hdr_set_mark hdr 0)              ; survive: clear mark
-             (nl_seq2 (ptr-write-u64 268435640 0 (+ (ptr-read-u64 268435640 0) 1))
-                      (nl_gc_live_add bt)))
-          (if (= m 0)
-              (if (= (ptr-read-u64 268435584 0) 1)
-                  bt                                       ; DEBUG mark-only
-                (nl_seq2 (ptr-write-u64 268435632 0 (+ (ptr-read-u64 268435632 0) 1))
-                         (nl_seq2 (nl_gc_free_block hdr) 0))) ; dead -> free
-            0)))))                                         ; m==2 already free
-    ;; Sweep: ITERATIVE header walk (chunks can hold millions of blocks, so
-    ;; recursion would overflow the stack).  `hdr'/`live' are mutated only
-    ;; at the loop's own scope; all per-block work is in `nl_gc_sweep_one'.
     ;; A block_total BT at header HDR is well-formed iff >=16, 8-aligned,
     ;; and does not overshoot END.  Catches any walk desync (a desynced
     ;; read lands mid-object and almost always fails one of these).
@@ -4203,26 +4149,6 @@ REPL-facing module it feeds."
         (if (= (logand bt 7) 0)
             (if (< end (+ hdr bt)) 0 1)
           0)))
-    ;; Step over one block: process it, return the NEXT header address
-    ;; (hdr + block_total), or 0 to signal "stop" (desync / past end).  All
-    ;; reads are within the block; no control state escapes — the loop's
-    ;; setqs stay at its own scope (avoids the AOT nested-let+outer-setq
-    ;; pitfall that silently drops the mutation).
-    (defun nl_gc_sweep_step (hdr end)
-      (if (= (nl_gc_bt_ok hdr (nl_hdr_bt hdr) end) 0)
-          0
-        (nl_seq2 (nl_gc_sweep_one hdr) (+ hdr (nl_hdr_bt hdr)))))
-    (defun nl_gc_sweep_chunk (chunk)
-      (let* ((hdr (ptr-read-u64 (+ chunk 24) 0))
-             (end (nl_gc_chunk_end chunk)))
-        (while (and (> hdr 0) (< hdr end))
-          (setq hdr (nl_gc_sweep_step hdr end)))
-        0))
-    (defun nl_gc_sweep_chunks (chunk)
-      (if (= chunk 0)
-          0
-        (nl_seq2 (nl_gc_sweep_chunk chunk)
-                 (nl_gc_sweep_chunks (ptr-read-u64 (+ chunk 48) 0)))))
     ;; Coalesce adjacent dead blocks after the sweep has finished.  The
     ;; sweep's one-node-at-a-time links deliberately remain simple, but a
     ;; long run of dead blocks otherwise leaves millions of tiny free-list
@@ -4615,13 +4541,139 @@ REPL-facing module it feeds."
       (if (< (ptr-read-u64 268436184 0) (ptr-read-u64 268435560 0))
           (nl_gc_debt_due)
         1))
+    ;; One-pass sweep.  The collector used to walk every chunk three times:
+    ;; a per-block sweep freed each dead block onto the free lists, the
+    ;; coalesce walk merged runs of free blocks, and the relink walk cleared
+    ;; the lists and linked the merged runs again, so the sweep's own links
+    ;; were thrown away.  Each block also cost a dozen helper calls (header
+    ;; decode, boot test, mark write, `nl_seq2').  This walk decodes each
+    ;; header once, handles the common cases inline, extends a free run as
+    ;; it goes and links the run's head once when the run ends.  It leaves
+    ;; what the three walks left: the same marks, merged headers, free-list
+    ;; order (address order, each head pushed), counters and live bytes.
+    ;; The lists are cleared before the walk.  The checked allocator and
+    ;; the poison diagnostic keep their per-block work
+    ;; (`nl_gc_sweep_free_dead').  The three walks remain for the
+    ;; cold-image load, which relinks free blocks without sweeping.
+    (defun nl_gc_sweep_free_dead (hdr bt)
+      (seq
+       (nl_alloc_check_verify hdr)
+       (ptr-write-u64 hdr 0 (+ bt 2))
+       (if (= (ptr-read-u64 (data-addr nl_gc_diag) 32) 1)
+           (seq (ptr-write-u64 (data-addr nl_gc_diag) 40
+                               (+ (ptr-read-u64 (data-addr nl_gc_diag) 40) 1))
+                (nl_gc_poison_fill hdr 16 bt))
+         0)
+       0))
+    (defun nl_gc_sweep_link_run (run end)
+      (seq
+       (nl_gc_relink_free_one run)
+       ;; Same discard test as `nl_gc_relink_free_chunk'.
+       (if (and (>= (nl_hdr_bt run) 65552)
+                (= (ptr-read-u64 (data-addr nl_alloc_check) 0) 0)
+                (= (ptr-read-u64 (data-addr nl_alloc_check) 8) 0)
+                (= (ptr-read-u64 (data-addr nl_gc_diag) 32) 0))
+           (nl_gc_discard_free_block run end)
+         0)
+       0))
+    ;; BOOT WATERMARK (268435664): the boot image -- the mirror, all builtins,
+    ;; the env/frame records, the source string, the slot pool and the fixed
+    ;; driver scratch slots, everything allocated below the watermark at
+    ;; install + driver setup -- is live for the whole program.  The precise
+    ;; root marker reaches it anyway; the guard makes the permanent
+    ;; generation explicit: a boot block is never freed and its mark is reset
+    ;; to 0 for the next cycle (a free boot block, a cold image's hole, stays
+    ;; free).  Doc 201 §6.14: every surviving block's BLOCK_TOTAL, boot blocks
+    ;; included, goes to nl_gc_stats+16 so `nl_gc_debt_rearm' can size the next
+    ;; allocation-debt threshold from the live set the next mark will walk.
+    ;; Marks: 1 (recursed) and 4 (conservatively pinned) survive; 0 dies; 2 is
+    ;; already free.
+    ;; BOOT is `nl_gc_is_boot' with its bounds and the hole map read once
+    ;; per chunk.  A malformed header stops the walk where all three walks
+    ;; stopped; the run before it is still linked, as the relink walk did.
+    (defun nl_gc_sweep_merge_chunk (chunk)
+      (let* ((hdr (ptr-read-u64 (+ chunk 24) 0))
+             (end (nl_gc_chunk_end chunk))
+             (lo (ptr-read-u64 (ptr-read-u64 268436160 0) 0))
+             (wm (ptr-read-u64 268435664 0))
+             (hmap (ptr-read-u64 (data-addr nl_boot_hole_map) 0))
+             (hlo (ptr-read-u64 (data-addr nl_boot_hole_map) 8))
+             (hhi (ptr-read-u64 (data-addr nl_boot_hole_map) 16))
+             (markonly (ptr-read-u64 268435584 0))
+             (plain (if (= (ptr-read-u64 (data-addr nl_alloc_check) 8) 0)
+                        (if (= (ptr-read-u64 (data-addr nl_gc_diag) 32) 1) 0 1)
+                      0))
+             (run 0) (runbt 0) (w 0) (bt 0) (m 0) (g 0) (boot 0) (free 0)
+             (live 0) (kept 0) (freed 0))
+        (seq
+         (while (and (> hdr 0) (< hdr end))
+           (setq w (ptr-read-u64 hdr 0))
+           (setq bt (logand w 4294967288))
+           (if (if (< bt 16) 1 (if (< end (+ hdr bt)) 1 0))
+               (setq hdr end)
+             (seq
+              (setq m (logand w 7))
+              (setq boot 0)
+              (if (< hdr lo) 0
+                (if (< hdr wm)
+                    (if (= hmap 0) (setq boot 1)
+                      (if (< hdr hlo) (setq boot 1)
+                        (if (< hdr hhi)
+                            (seq
+                             (setq g (sar (- hdr hlo) 3))
+                             (if (= (logand (sar (ptr-read-u64 (+ hmap (* (sar g 6) 8)) 0)
+                                                 (logand g 63))
+                                            1)
+                                    1)
+                                 0
+                               (setq boot 1)))
+                          (setq boot 1))))
+                  0))
+              (setq free 0)
+              (if (= boot 1)
+                  ;; A free boot block (a cold image's hole) stays free;
+                  ;; any other boot block lives and has its mark reset.
+                  (if (= m 2) (setq free 1)
+                    (seq (ptr-write-u64 hdr 0 bt) (setq live (+ live bt))))
+                (if (if (= m 1) 1 (if (= m 4) 1 0))
+                    (seq (ptr-write-u64 hdr 0 bt)
+                         (setq kept (+ kept 1))
+                         (setq live (+ live bt)))
+                  (if (= m 0)
+                      (if (= markonly 1) 0
+                        (seq (setq freed (+ freed 1))
+                             (if (= plain 1) (ptr-write-u64 hdr 0 (+ bt 2))
+                               (nl_gc_sweep_free_dead hdr bt))
+                             (setq free 1)))
+                    (if (= m 2) (setq free 1) 0))))
+              (if (= free 1)
+                  (if (= run 0)
+                      (seq (setq run hdr) (setq runbt bt))
+                    (seq (setq runbt (+ runbt bt))
+                         (ptr-write-u64 run 0 (+ runbt 2))))
+                (if (= run 0) 0
+                  (seq (nl_gc_sweep_link_run run end)
+                       (setq run 0)
+                       (setq runbt 0))))
+              (setq hdr (+ hdr bt)))))
+         (if (= run 0) 0 (nl_gc_sweep_link_run run end))
+         (ptr-write-u64 268435640 0 (+ (ptr-read-u64 268435640 0) kept))
+         (ptr-write-u64 268435632 0 (+ (ptr-read-u64 268435632 0) freed))
+         (ptr-write-u64 (data-addr nl_gc_stats) 16
+                        (+ (ptr-read-u64 (data-addr nl_gc_stats) 16) live))
+         0)))
+    (defun nl_gc_sweep_merge_chunks (chunk)
+      (if (= chunk 0)
+          0
+        (nl_seq2 (nl_gc_sweep_merge_chunk chunk)
+                 (nl_gc_sweep_merge_chunks (ptr-read-u64 (+ chunk 48) 0)))))
     (defun nl_gc_sweep ()
       (seq
        (ptr-write-u64 (data-addr nl_gc_stats) 16 0)
        (nl_gc_symname_sweep_all)
        (nl_native_subr_weak_sweep)
-       (nl_gc_sweep_chunks (ptr-read-u64 268436160 0))
-       (nl_gc_coalesce_and_rebuild_freelist)
+       (nl_gc_clear_freelist_buckets 0)
+       (nl_gc_sweep_merge_chunks (ptr-read-u64 268436160 0))
        (if (= (nl_os_empty_chunk_reclaim_p) 1)
            (nl_gc_reclaim_empty_chunks
             (ptr-read-u64 268436160 0)
@@ -5981,7 +6033,7 @@ REPL-facing module it feeds."
     ;; bindings are no longer folded, and the global-bridge fallback for a
     ;; folded local is now a loud compile error.  The ARGS-threading style is
     ;; kept, but it is no longer a correctness requirement.)
-    ;; depth<=64 so the recursion is bounded (mirrors nl_gc_sweep_chunks).
+    ;; depth<=64 so the recursion is bounded (mirrors nl_gc_sweep_merge_chunks).
     (defun nl_gc_mark_recorded_contexts_from (i depth)
       (if (< i depth)
           (nl_seq2
@@ -10494,7 +10546,7 @@ the same way `nelisp_eval_call' already reaches into `reader-gc.o'."
 ;; symbols, which the eval manifest cannot resolve.  Boxes carry NO self type
 ;; tag (type lives in the Sexp that points to the box, top-down), so a bottom-up
 ;; walk can only bucket by size.  Reliable read-only walk modeled on
-;; `nl_gc_sweep_chunk'.  ACC layout (u64 each, refined to localize "big"):
+;; `nl_gc_sweep_merge_chunk'.  ACC layout (u64 each, refined to localize "big"):
 ;;   +0 total-nonfree  +8 free  +16 cons(BT=88)  +24 le256  +32 b257-4k
 ;;   +40 b4k-256k  +48 b256k-2m (~1MB parse pool lands here)  +56 b>2m
 (defconst nelisp-standalone--applyfn-census-helpers
@@ -38039,7 +38091,7 @@ correctly."
         ;; every reachable pointer the mark walk follows was relocated) and the
         ;; BOOT WATERMARK set just above (268435664 = base+bump, AFTER the load +
         ;; all boot allocs) puts the whole loaded image + boot generation BELOW
-        ;; the watermark, where `nl_gc_sweep_one' keeps it live and never frees
+        ;; the watermark, where `nl_gc_sweep_merge_chunk' keeps it live and never frees
         ;; it.  So a form-boundary collection (the trigger at 268435560=16 MiB is
         ;; below the loaded ~30 MiB bump, so it fires on the first form) marks the
         ;; relocated graph (safe) and only reclaims per-form garbage ABOVE the

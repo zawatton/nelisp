@@ -1976,7 +1976,7 @@ Typed unibyte string handling remains part of the separate precise marker."
                      (tree-member-p needle (cdr tree)))))))
     (let ((flat (flatten-tree nelisp-standalone--gc-source)))
       (should (memq 'nl_gc_chunk_contains_any flat))
-      (should (memq 'nl_gc_sweep_chunks flat))
+      (should (memq 'nl_gc_sweep_merge_chunks flat))
       (should (member 268436160 flat))
       ;; `nl_gc_in_arena' probes the current chunk before walking the list.
       ;; This superseded the old recursive helper-only implementation.
