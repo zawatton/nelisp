@@ -10695,9 +10695,12 @@ eval applyfn.")
               (setq node (nl_cons_cdr_ptr node)))))
          found)))
     (defun nl_ht_count (node_ptr acc)
-      (if (= (ptr-read-u64 node_ptr 0) 7)
-          (nl_ht_count (nl_cons_cdr_ptr node_ptr) (+ acc 1))
-        acc))
+      (let* ((node node_ptr) (total acc))
+        (seq
+         (while (= (ptr-read-u64 node 0) 7)
+           (setq total (+ total 1))
+           (setq node (nl_cons_cdr_ptr node)))
+         total)))
     (defun nl_ht_find_vec_from (vec key_ptr i n mode)
       (let* ((idx i)
              (entry_ptr 0))
@@ -10727,11 +10730,18 @@ eval applyfn.")
         (if (= (ptr-read-u64 rest2 0) 7)
             (nl_ht_copy32 out (nl_cons_car_ptr rest2))
           (wf_write_nil out))))
+    ;; Iterative, and an empty bucket (the Nil word 3 in the vector's data
+    ;; buffer, box@+8, data@box+8) is skipped without boxing it: the
+    ;; recursive walk took a native frame and a boxed slot per bucket, 2048
+    ;; of each per `hash-table-count' call (~330 us on a 2-entry table).
     (defun nl_ht_count_vec (vec i n acc)
-      (if (>= i n)
-          acc
-        (nl_ht_count_vec vec (+ i 1) n
-                         (nl_ht_count (vector-ref-ptr vec i) acc))))
+      (let* ((words (ptr-read-u64 (ptr-read-u64 vec 8) 8)) (k i) (total acc))
+        (seq
+         (while (< k n)
+           (if (= (ptr-read-u64 (+ words (* k 8)) 0) 3) 0
+             (setq total (nl_ht_count (vector-ref-ptr vec k) total)))
+           (setq k (+ k 1)))
+         total)))
     (defun nl_ht_count_table (data_ptr)
       (if (= data_ptr 0)
           0
