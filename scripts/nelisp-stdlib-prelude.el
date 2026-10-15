@@ -14778,6 +14778,13 @@ actually refuse a write."
          (and (vectorp m) (> (length m) 1) (eq (aref m 0) 'hash-table)))))
 (defun maphash (fn table)
   (unless (hash-table-p table) (signal 'wrong-type-argument (list 'hash-table-p table)))
+  (if (fboundp 'nelisp--hash-table-entries)
+      ;; The native helper collects the entry cells in the order the loop
+      ;; below visits them, so the cost is per entry, not per bucket slot.
+      (let ((entries (nelisp--hash-table-entries table)))
+        (while entries
+          (funcall fn (car (car entries)) (cdr (car entries)))
+          (setq entries (cdr entries))))
   ;; The core `make-hash-table' returns (Int(0) . BUCKETS) where BUCKETS is a
   ;; vector whose slots are node lists of (KEY . VALUE) pairs.  (A legacy shape
   ;; stored a flat ((KEY . VALUE) ...) alist directly in the cdr.)  Walk both.
@@ -14799,7 +14806,7 @@ actually refuse a write."
         (while (consp node)
           (let ((entry (car node)))
             (when (consp entry) (funcall fn (car entry) (cdr entry))))
-          (setq node (cdr node))))))
+          (setq node (cdr node)))))))
   nil)
 
 ;; Doc 22 C1: hash-table introspection over the core `(Int(0) . alist)' shape.
