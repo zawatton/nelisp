@@ -1856,7 +1856,9 @@ directory tracks the tree rather than accumulating every key ever built."
     ;; rebuilt or the bump cursor rewinds (sweep, cold-load relink,
     ;; compaction, boundary reclaim), and the walk that rebuilds the lists
     ;; finds it like any other free block.  A run replaced by a newer one is
-    ;; relinked first.  Requests above 472 bytes never use a run.
+    ;; relinked first.  Requests above 472 bytes never use a run.  Every
+    ;; split for a small request adopts its remainder, so a fragmented heap
+    ;; (whose splits mostly come from larger small buckets) also gets runs.
     (defun nl_alloc_run_reset ()
       (ptr-write-u64 (data-addr nl_gc_diag) 48 0))
     (defun nl_alloc_run_adopt (rem rembt)
@@ -1891,8 +1893,10 @@ directory tracks the tree rather than accumulating every key ever built."
                      (+ 268435696 (- rembt 16)))))
         (seq
          (ptr-write-u64 hdr 0 want)          ; head: BT = want, mark 0 (live)
-         ;; A large remainder of a small request becomes the current run.
-         (if (if (< want 473) (if (< 4095 rembt) 1 0) 0)
+         ;; The remainder of a small request becomes the current run, small
+         ;; fragment or large block alike: the next small requests are then
+         ;; carved from it instead of popping and splitting another bucket.
+         (if (< want 473)
              (nl_alloc_run_adopt rem rembt)
            (seq
             (ptr-write-u64 rem 0 (+ rembt 2))   ; tail: BT = rembt, mark 2 (FREE)
