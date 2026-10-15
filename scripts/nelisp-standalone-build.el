@@ -6023,14 +6023,33 @@ REPL-facing module it feeds."
                    (ptr-read-u64 268436160 0)
                    (ptr-read-u64 (+ (ptr-read-u64 268436160 0) 48) 0))
                 0)
-              (nl_seq2 (ptr-write-u64 (data-addr nl_gc_loop_ctx) 40
-                                      (+ (ptr-read-u64 268436184 0)
-                                         (if (< 16777216 (/ (ptr-read-u64 268436184 0) 2))
-                                             (/ (ptr-read-u64 268436184 0) 2)
-                                           16777216)))
+              (nl_seq2 (nl_gc_growth_rearm)
                        (ptr-write-u64 (data-addr nl_gc_loop_ctx) 32
                                       (+ (ptr-read-u64 (data-addr nl_gc_loop_ctx) 32) 1))))))
         0))
+    ;; Re-arm the mid-form growth trigger after a collection: fire again once
+    ;; the reservation has grown by max(16 MiB, half of it).  ctx+56 keeps
+    ;; the reservation it was armed from, so `nelisp--gc-pressure' can report
+    ;; progress through the window.
+    (defun nl_gc_growth_rearm ()
+      (let* ((r (ptr-read-u64 268436184 0)))
+        (seq (ptr-write-u64 (data-addr nl_gc_loop_ctx) 56 r)
+             (ptr-write-u64 (data-addr nl_gc_loop_ctx) 40
+                            (+ r (if (< 16777216 (/ r 2)) (/ r 2) 16777216)))
+             0)))
+    ;; After an explicit `garbage-collect', re-arm both growth triggers the
+    ;; way the automatic paths do (the form-boundary watermark at
+    ;; max(reservation + 16 MiB, 3 x live + 1 MiB), the mid-form one through
+    ;; `nl_gc_growth_rearm').  Without this an idle-time collection left an
+    ;; already-crossed watermark in place, so the next `while' back edge
+    ;; collected again: the idle collection added one instead of replacing
+    ;; the next.
+    (defun nl_gc_explicit_rearm ()
+      (let* ((r (ptr-read-u64 268436184 0))
+             (lo (+ (* (ptr-read-u64 268435576 0) 3) 1048576))
+             (hi (+ r 16777216)))
+        (seq (ptr-write-u64 268435560 0 (if (< lo hi) hi lo))
+             (nl_gc_growth_rearm))))
     (defun nl_gc_index_mark_roots (ctx result out pool src cursor bsym)
       (if (= (nl_gc_index_prepare) 0) 0
         (seq
@@ -7073,6 +7092,7 @@ argument (reachability + in-arena bounds checks).")
     ((:lit "nelisp--arena-load-split-verify") . (bf_arena_load_split_verify args out))
     ((:lit "nelisp--arena-value-survival") . (bf_arena_value_survival args out))
     ((:lit "garbage-collect") . (seq (nl_gc_collect_from_recorded_roots 0)
+                                     (nl_gc_explicit_rearm)
                                      (bf_arena_stats out)))
     ((:lit "nelisp--debug-switch") . (bf_debug_switch args out))
     ;; Compatibility alias for existing probes/scripts; prefer `nelisp--debug-switch'.
@@ -7917,6 +7937,8 @@ leave symbols unresolved at link time."
                 ;; re-arm and escape-hatch controls.
                 (if (= (wf_argval args 0) 5)
                     (seq (ptr-write-u64 (data-addr nl_gc_loop_ctx) 8 1)
+                         (ptr-write-u64 (data-addr nl_gc_loop_ctx) 56
+                                        (ptr-read-u64 268436184 0))
                          (ptr-write-u64 (data-addr nl_gc_loop_ctx) 40
                                         (+ (ptr-read-u64 268436184 0) 16777216))
                          (ptr-write-u64 (data-addr nl_gc_loop_ctx) 32 0))
@@ -8005,21 +8027,31 @@ leave symbols unresolved at link time."
             (wf_cons_int (ptr-read-u64 (data-addr nl_gc_diag) 0) s1 out)
             0))))
     ;; (nelisp--gc-pressure) -> how close the next collection is, as a
-    ;; percentage: the bytes allocated since the last collection (the debt,
-    ;; charged on every allocation) over the armed debt threshold, 100 or
-    ;; more meaning the next allocation check collects.  Until the debt
-    ;; trigger arms (two collections after boot) collections come from heap
-    ;; growth, which a 64 MiB chunk reservation crosses in one step and no
-    ;; reading of the reservation can anticipate; the debt is then reported
-    ;; against one 16 MiB growth window instead.  Lets an idle loop collect
-    ;; between inputs instead of in the middle of the next command.  Native
-    ;; under clause 2 (GC entry): it reads collector state with no Lisp form.
+    ;; percentage, 100 or more meaning the next allocation check or `while'
+    ;; back edge collects.  The larger of two readings: the debt (bytes
+    ;; allocated since the last collection) over the armed debt threshold --
+    ;; or, until that trigger arms two collections after boot, over one
+    ;; 16 MiB growth window -- and the reservation's progress through the
+    ;; mid-form growth window (armed from ctx+56 up to the trigger at
+    ;; ctx+40).  Lets an idle loop collect between inputs instead of in the
+    ;; middle of the next command; an explicit collection re-arms both
+    ;; triggers (`nl_gc_explicit_rearm').  Native under clause 2 (GC entry):
+    ;; it reads collector state with no Lisp form.
     (defun bf_gc_pressure (out)
       (let* ((st (data-addr nl_gc_stats))
-             (lim (ptr-read-u64 st 8)))
-        (if (if (< (ptr-read-u64 st 24) 2) 1 (if (= lim 0) 1 0))
-            (wf_write_int out (/ (* (ptr-read-u64 st 0) 100) 16777216))
-          (wf_write_int out (/ (* (ptr-read-u64 st 0) 100) lim)))))
+             (lim (ptr-read-u64 st 8))
+             (debt (if (if (< (ptr-read-u64 st 24) 2) 1 (if (= lim 0) 1 0))
+                       (/ (* (ptr-read-u64 st 0) 100) 16777216)
+                     (/ (* (ptr-read-u64 st 0) 100) lim)))
+             (base (ptr-read-u64 (data-addr nl_gc_loop_ctx) 56))
+             (mark (ptr-read-u64 (data-addr nl_gc_loop_ctx) 40))
+             (now (ptr-read-u64 268436184 0))
+             (grow (if (if (= (ptr-read-u64 (data-addr nl_gc_loop_ctx) 8) 1)
+                           (if (< base mark) (if (< base now) 1 0) 0)
+                         0)
+                       (/ (* (- now base) 100) (- mark base))
+                     0)))
+        (wf_write_int out (if (< debt grow) grow debt))))
     (defun bf_arena_stats (out)
       (let* ((bump (ptr-read-u64 268435456 0))
              (used (bf_arena_chunks_used (ptr-read-u64 268436160 0) 0))
@@ -21458,6 +21490,7 @@ into that constant unconditionally is what broke every aarch64 build."
     ((:lit "ptr-read-bytes") . (nl_bi_ptr_read_bytes args out))
     ((:lit "ptr-write-bytes") . (nl_bi_ptr_write_bytes args out))
     ((:lit "garbage-collect") . (seq (nl_gc_collect_from_recorded_roots 0)
+                                     (nl_gc_explicit_rearm)
                                      (bf_arena_stats out)))
     )
    nelisp-standalone--process-posix-dispatch-arms
@@ -37228,6 +37261,7 @@ correctly."
         ;; first collection until another 16 MiB is reserved, and start the
         ;; fired counter at zero.  Switch 6 remains the runtime escape hatch.
         (ptr-write-u64 (data-addr nl_gc_loop_ctx) 8 1)
+        (ptr-write-u64 (data-addr nl_gc_loop_ctx) 56 (ptr-read-u64 268436184 0))
         (ptr-write-u64 (data-addr nl_gc_loop_ctx) 40
                        (+ (ptr-read-u64 268436184 0) 16777216))
         (ptr-write-u64 (data-addr nl_gc_loop_ctx) 32 0)
