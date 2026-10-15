@@ -94,6 +94,12 @@ pending
 # iteration until the holes were used up, and each collection grew with it.
 # Baseline (integ 12e80e238 dynamic reader, 2026-10-14): loop +71 MB,
 # cons +97 MB, GC pause 0.29 s -> 0.99 s after 2M iterations of churn.
+# Truthful live bytes make collections ~5x more frequent in a GUI image,
+# which exposed the symbol-name sidecar keeping every tombstone of dead
+# gensyms: its empty slots ran out and every new name probed the whole
+# table (GUI daily S5.1 slowed until it timed out).  Baseline (integ
+# 9481f6010 dynamic reader, 2026-10-15): S5.4 fails at round 3, 3000
+# gensyms 0.172 s versus 0.031 s in the first round.
 
 ** S5.1 Three 100000-iteration counting loops leave under 1 MiB of live growth on a cold image
 cmd: GC_CHECK=loop $NELISP_RT_BIN --cold-load-from $NELISP_RT_BIN.cold --load test/standalone-gc-image-hole-check.el
@@ -104,5 +110,10 @@ cmd: GC_CHECK=cons $NELISP_RT_BIN --cold-load-from $NELISP_RT_BIN.cold --load te
 ** S5.3 One collection after 2M iterations of churn takes at most 1.5 x (+0.05 s) what it took before
 cmd: GC_CHECK=pause $NELISP_RT_BIN --cold-load-from $NELISP_RT_BIN.cold --load test/standalone-gc-image-hole-check.el
 
-** S5.4 End to end: one GC in the S5.2 package image drops from 13.5 s and gui-daily-verify ccore pty S3.2 still passes (notes-44 measurement)
+** S5.4 Over 40 rounds of 3000 named gensyms and a collection, no round costs more than 4x the first
+#+REQUIRES: NELISP_RT_BIN
+#+TIMEOUT: 120
+cmd: $NELISP_RT_BIN --cold-load-from $NELISP_RT_BIN.cold --load test/standalone-symname-tombstone-check.el
+
+** S5.5 End to end: one GC in the S5.2 package image drops from 13.5 s and gui-daily-verify ccore pty S3.2 still passes (notes-44 measurement)
 pending
