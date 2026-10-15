@@ -10602,22 +10602,28 @@ eval applyfn.")
     (defun nl_ht_data_slot (table_ptr) (nl_cons_cdr_ptr table_ptr))
     (defun nl_ht_alist_slot (table_ptr) (nl_ht_data_slot table_ptr))
     (defun nl_ht_meta_slot (table_ptr) (nl_cons_car_ptr table_ptr))
+    ;; The count lives in marker slot 1 as an immediate Int word (n << 2 | 1)
+    ;; since Doc 147 stores fixnums in vector slots as words.  Reading it
+    ;; through `vector-ref-ptr' boxed a fresh copy, so the setter wrote into
+    ;; that copy and the count stayed 0: `nl_ht_maybe_grow' never fired, and
+    ;; the native printer left a table's data out.  Both use the word now (a
+    ;; boxed Int from an older image still reads).
     (defun nl_ht_meta_count (table_ptr)
       (let* ((meta_ptr (nl_ht_meta_slot table_ptr)))
         (if (= (ptr-read-u64 meta_ptr 0) 8)
-            (let* ((c (vector-ref-ptr meta_ptr 1)))
-              (if (= (ptr-read-u64 c 0) 2) (ptr-read-u64 c 8) 0))
+            (let* ((w (ptr-read-u64 (+ (ptr-read-u64 (ptr-read-u64 meta_ptr 8) 8) 8) 0)))
+              (if (= (logand w 3) 1)
+                  (sar w 2)
+                (if (= (logand w 1) 0)
+                    (if (= (ptr-read-u64 w 0) 2) (ptr-read-u64 w 8) 0)
+                  0)))
           0)))
     (defun nl_ht_meta_set_count (table_ptr n)
       (let* ((meta_ptr (nl_ht_meta_slot table_ptr)))
         (if (= (ptr-read-u64 meta_ptr 0) 8)
-            (let* ((c (vector-ref-ptr meta_ptr 1)))
-              (seq
-               (ptr-write-u64 c 0 2)
-               (ptr-write-u64 c 8 n)
-               (ptr-write-u64 c 16 0)
-               (ptr-write-u64 c 24 0)
-               0))
+            (seq (ptr-write-u64 (+ (ptr-read-u64 (ptr-read-u64 meta_ptr 8) 8) 8) 0
+                                (+ (* n 4) 1))
+                 0)
           0)))
     ;; The :test the table was made with, read off marker slot 2 (the symbol
     ;; `nl_ht_make' / the prelude's `make-hash-table' write there): 1 = `eq',
@@ -10759,13 +10765,22 @@ eval applyfn.")
            (setq total (+ total 1))
            (setq node (nl_cons_cdr_ptr node)))
          total)))
+    ;; A miss on a key whose hash is not stable scans every bucket.  An
+    ;; empty bucket is the Nil word in the vector's data buffer (box@+8,
+    ;; data@box+8): skip it without boxing it, where `vector-ref-ptr' boxed
+    ;; each one -- up to 2048 allocations per `gethash' miss on an
+    ;; identity-keyed table such as the string text-property side table.
     (defun nl_ht_find_vec_from (vec key_ptr i n mode)
       (let* ((idx i)
-             (entry_ptr 0))
+             (entry_ptr 0)
+             (w 0))
         (seq
          (while (and (= entry_ptr 0) (< idx n))
            (seq
-            (setq entry_ptr (nl_ht_find (vector-ref-ptr vec idx) key_ptr mode))
+            (setq w (ptr-read-u64 (+ (ptr-read-u64 (ptr-read-u64 vec 8) 8) (* idx 8)) 0))
+            (if (= (logand w 1) 0)
+                (setq entry_ptr (nl_ht_find w key_ptr mode))
+              0)
             (if (= entry_ptr 0)
                 (setq idx (+ idx 1))
               0)))
@@ -10775,7 +10790,8 @@ eval applyfn.")
           0
         (if (= (ptr-read-u64 data_ptr 0) 8)
             (let* ((idx (nl_ht_bucket_index data_ptr key_ptr))
-                   (entry_ptr (nl_ht_find (vector-ref-ptr data_ptr idx) key_ptr mode)))
+                   (w (ptr-read-u64 (+ (ptr-read-u64 (ptr-read-u64 data_ptr 8) 8) (* idx 8)) 0))
+                   (entry_ptr (if (= (logand w 1) 0) (nl_ht_find w key_ptr mode) 0)))
               (if (= entry_ptr 0)
                   (if (= (nl_ht_key_hash_stable_p key_ptr 8) 1)
                       0
@@ -10810,24 +10826,36 @@ eval applyfn.")
       (if (> count (* 2 n))
           (nl_ht_grow_size (* 2 n) count)
         n))
-    (defun nl_ht_rehash_list_into (node_ptr new_vec)
-      (if (= (ptr-read-u64 node_ptr 0) 7)
-          (let* ((entry_ptr (nl_cons_car_ptr node_ptr))
-                 (key_slot (nl_cons_car_ptr entry_ptr))
-                 (idx (nl_ht_bucket_index new_vec key_slot))
-                 (bucket_slot (vector-ref-ptr new_vec idx))
-                 (newhead_s (alloc-bytes 32 8)))
-            (seq
-             (nelisp_cons_construct entry_ptr bucket_slot newhead_s)
-             (vector-slot-set new_vec idx newhead_s)
-             (nl_ht_rehash_list_into (nl_cons_cdr_ptr node_ptr) new_vec)))
-        0))
-    (defun nl_ht_rehash_vec_into (old_vec i n new_vec)
-      (if (>= i n)
-          0
+    ;; Growth only ran once the count was kept (see `nl_ht_meta_count'), so
+    ;; the rehash walks are loops: one native frame per bucket and per chain
+    ;; node would not survive a table of tens of thousands of entries.
+    (defun nl_ht_rehash_entry_into (entry_ptr new_vec)
+      (let* ((key_slot (nl_cons_car_ptr entry_ptr))
+             (idx (nl_ht_bucket_index new_vec key_slot))
+             (bucket_slot (vector-ref-ptr new_vec idx))
+             (newhead_s (alloc-bytes 32 8)))
         (seq
-         (nl_ht_rehash_list_into (vector-ref-ptr old_vec i) new_vec)
-         (nl_ht_rehash_vec_into old_vec (+ i 1) n new_vec))))
+         (nelisp_cons_construct entry_ptr bucket_slot newhead_s)
+         (vector-slot-set new_vec idx newhead_s)
+         0)))
+    (defun nl_ht_rehash_list_into (node_ptr new_vec)
+      (let* ((node node_ptr))
+        (seq
+         (while (= (ptr-read-u64 node 0) 7)
+           (seq
+            (nl_ht_rehash_entry_into (nl_cons_car_ptr node) new_vec)
+            (setq node (nl_cons_cdr_ptr node))))
+         0)))
+    (defun nl_ht_rehash_vec_into (old_vec i n new_vec)
+      (let* ((idx i)
+             (w 0))
+        (seq
+         (while (< idx n)
+           (seq
+            (setq w (ptr-read-u64 (+ (ptr-read-u64 (ptr-read-u64 old_vec 8) 8) (* idx 8)) 0))
+            (if (= (logand w 1) 0) (nl_ht_rehash_list_into w new_vec) 0)
+            (setq idx (+ idx 1))))
+         0)))
     (defun nl_ht_rehash_table_into (data_ptr new_vec)
       (if (= data_ptr 0)
           0
@@ -10877,7 +10905,12 @@ eval applyfn.")
          ;; prelude writes it; the default is `eql', as in Emacs.
          (nl_ht_write_eql_sym sym)
          (vector-slot-set marker 2 sym)
-         (vector-make 2048 buckets)
+         ;; Tables start with 8 buckets and `nl_ht_maybe_grow' doubles them
+         ;; once the count passes twice the bucket count.  A fixed 2048 made
+         ;; every table 16 KiB of bucket words for the collector to scan and
+         ;; the elisp `maphash' to walk: `buffer-list' over a small buffer
+         ;; registry cost 43-87 ms.
+         (vector-make 8 buckets)
          (nelisp_cons_construct marker buckets out)
          0)))
     (defun nl_ht_put (args out)
