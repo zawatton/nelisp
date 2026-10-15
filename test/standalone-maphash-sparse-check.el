@@ -2,9 +2,8 @@
 
 ;; Usage: nelisp --load test/standalone-maphash-sparse-check.el
 ;;
-;; A table that grew to 2000 entries and then lost 1998 of them keeps its
-;; large bucket vector (every table here starts with 2048 buckets anyway,
-;; whatever :size says).  `maphash' over it must cost at most 5x a loop
+;; A table that grew to 4000 entries and then lost 3998 of them keeps its
+;; 2048-bucket vector (tables start small and grow, but never shrink).  `maphash' over it must cost at most 5x a loop
 ;; that funcalls the same function over a 2-element list: the cost must
 ;; follow the entry count, not the bucket count.  Also checks that `maphash' visits
 ;; entries in the order of the bucket walk it replaced (buckets ascending,
@@ -50,9 +49,9 @@
 (let* ((sparse (make-hash-table :test 'equal))
        (mixed (make-hash-table :test 'equal))
        (i 0) (ok t))
-  (while (< i 2000) (puthash i i sparse) (setq i (1+ i)))
+  (while (< i 4000) (puthash i i sparse) (setq i (1+ i)))
   (setq i 2)
-  (while (< i 2000) (remhash i sparse) (setq i (1+ i)))
+  (while (< i 4000) (remhash i sparse) (setq i (1+ i)))
   (setq i 0)
   (while (< i 60)
     (puthash (if (= (% i 3) 0) (format "k%d" i) i) (* i 10) mixed)
@@ -63,7 +62,7 @@
          (order-ok (and (equal (maphash-sparse--order sparse) (maphash-sparse--walk sparse))
                         (equal (maphash-sparse--order mixed) (maphash-sparse--walk mixed))
                         (= (hash-table-count sparse) 2)
-                        (>= size 1024)))
+                        (>= size 2048)))
          (_ (maphash (lambda (k v) (puthash k (+ v 100) mixed)) mixed))
          (update-ok (let ((good t))
                       (maphash (lambda (k v)
