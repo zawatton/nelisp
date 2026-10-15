@@ -656,6 +656,16 @@ times, so `(exp -1.0e6)' took ~1.44e6 iterations and `(exp -1.0e9)' ~1.44e9
       (unless (integerp start) (signal 'wrong-type-argument (list 'fixnump start)))
       (when (or (< start 0) (> start (length haystack)))
         (signal 'args-out-of-range (list start))))
+    ;; One native call answers every pairing where a byte match is a
+    ;; character match (-1 means it is not); the clauses below make about
+    ;; ten interpreted calls even on the native byte path.
+    (let ((fast (if (fboundp 'nelisp--string-search-chars)
+                    (nelisp--string-search-chars needle haystack (or start 0))
+                  -1)))
+      (if (eq fast -1)
+          (nelisp--string-search-walk needle haystack start)
+        fast))))
+(defun nelisp--string-search-walk (needle haystack start)
     (let ((nl (length needle)) (hl (length haystack)) (i (or start 0)) (found nil))
       (cond
        ((= nl 0) i)
@@ -695,7 +705,7 @@ times, so `(exp -1.0e6)' took ~1.44e6 iterations and `(exp -1.0e9)' ~1.44e9
           (if (string= needle (substring haystack i (+ i nl)))
               (setq found i)
             (setq i (1+ i))))
-        found)))))
+        found))))
 
 (defmacro when (cond &rest body)
   "If COND yields non-nil, eval BODY forms sequentially and return last value."
@@ -2075,17 +2085,27 @@ Return (FROM . TO).  STR, START, and END are used only for the
       (unless (and (<= 0 from) (<= from to) (<= to size))
         (signal 'args-out-of-range (list str start end)))
       (cons from to))))
-(unless (fboundp 'compare-strings)
-  (defun compare-strings (str1 start1 end1 str2 start2 end2 &optional ignore-case)
+;; `compare-strings' is native in the standalone reader, as in GNU; the native
+;; one hands every call outside its common shape (START 0, no case folding,
+;; a compatible string pair) to `nelisp--compare-strings-lisp', which also
+;; stands in for it where it is missing.
+(progn
+  (defun nelisp--compare-strings-lisp (str1 start1 end1 str2 start2 end2 &optional ignore-case)
+    ;; The common shape (GNU `string-prefix-p'): both regions start at 0
+    ;; and case matters.  One native call answers it, or answers nil for a
+    ;; negative END or a unibyte/multibyte pair that both hold non-ASCII,
+    ;; and the clauses below take over.
+    (or (and (not ignore-case) (memq start1 '(nil 0)) (memq start2 '(nil 0))
+             (fboundp 'nelisp--compare-strings-0)
+             (nelisp--compare-strings-0 str1 end1 str2 end2))
     (if (and (not ignore-case) (stringp str1) (stringp str2)
              (or (null start1) (eq start1 0)) (or (null start2) (eq start2 0))
              (or (null end1) (and (integerp end1) (>= end1 0)))
              (or (null end2) (and (integerp end2) (>= end2 0)))
              (eq (multibyte-string-p str1) (multibyte-string-p str2))
              (fboundp 'nelisp--native-equal))
-        ;; The common shape (GNU `string-prefix-p'): both regions start at
-        ;; 0 and case matters.  Compare the shared length natively and walk
-        ;; characters only to place a mismatch, instead of the general
+        ;; Without the native call: compare the shared length natively and
+        ;; walk characters only to place a mismatch, instead of the general
         ;; path's eleven bindings and a per-character loop.
         (let* ((e1 (if (and end1 (< end1 (length str1))) end1 (length str1)))
                (e2 (if (and end2 (< end2 (length str2))) end2 (length str2)))
@@ -2096,7 +2116,7 @@ Return (FROM . TO).  STR, START, and END are used only for the
             (let ((i 0))
               (while (eq (aref str1 i) (aref str2 i)) (setq i (1+ i)))
               (if (< (aref str1 i) (aref str2 i)) (- (1+ i)) (1+ i)))))
-      (nelisp--compare-strings-general str1 start1 end1 str2 start2 end2 ignore-case)))
+      (nelisp--compare-strings-general str1 start1 end1 str2 start2 end2 ignore-case))))
   (defun nelisp--compare-strings-general (str1 start1 end1 str2 start2 end2 ignore-case)
     (nelisp--check-string str1)
     (nelisp--check-string str2)
@@ -2132,6 +2152,8 @@ Return (FROM . TO).  STR, START, and END are used only for the
          ((= n1 n2) t)
          ((< n1 n2) (- (1+ n)))
          (t (1+ n)))))))
+(unless (fboundp 'compare-strings)
+  (defalias 'compare-strings #'nelisp--compare-strings-lisp))
 (unless (fboundp 'char-equal)
   (defun char-equal (a b)
     (nelisp--check-character a)
@@ -17709,7 +17731,13 @@ See the Doc-comment above for the dropped file-name-handler dispatch."
     "Always nil: this runtime has no remote-file (Tramp) support."
     nil))
 (defun nelisp--split-on-char (string char omit-empty)
-  (if (and (< char 128) (fboundp 'nelisp--string-search))
+  (cond
+   ;; The native split cuts the internal bytes at an ASCII separator in
+   ;; one call; the loop below makes about a dozen interpreted calls per
+   ;; part.
+   ((and (< char 128) (fboundp 'nelisp--split-on-byte))
+    (nelisp--split-on-byte string char omit-empty))
+   ((and (< char 128) (fboundp 'nelisp--string-search))
       ;; An ASCII separator byte never occurs inside a multibyte sequence,
       ;; so the native byte scanner finds every separator in the string's
       ;; internal bytes; each part is cut there and restored to multibyte.
@@ -17725,7 +17753,8 @@ See the Doc-comment above for the dropped file-name-handler dispatch."
             (unless (and omit-empty (= (length part) 0))
               (setq parts (cons (if mb (string-as-multibyte part) part) parts)))
             (setq start (and idx (1+ idx)))))
-        (nreverse parts))
+        (nreverse parts)))
+   (t
     (let ((start 0)
           (idx 0)
           (len (length string))
@@ -17737,7 +17766,7 @@ See the Doc-comment above for the dropped file-name-handler dispatch."
                 (setq parts (cons part parts)))
               (setq start (1+ idx))))
         (setq idx (1+ idx)))
-      (nreverse parts))))
+      (nreverse parts)))))
 (unless (fboundp 'split-string)
   (defun split-string (string &optional separators omit-nulls _trim)
     (when separators (nelisp--check-string separators))
