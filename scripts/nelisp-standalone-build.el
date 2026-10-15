@@ -17073,6 +17073,29 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (if (= (nl_intern_lookup (bf_str_ptr sx) (bf_str_len sx) out) 0)
           (wf_write_nil out)
         0))
+    ;; Every name in the global intern table as a fresh list of symbols, for a
+    ;; library `mapatoms' and obarray completion.  One native walk over the
+    ;; 2^20 slots (len+1 @+0, buf @+8; 0 = empty), consing from the last slot
+    ;; so the list is in slot order.  nil and t are immediates, never in the
+    ;; table; names that fell back to a plain buffer (table or arena full)
+    ;; are not interned, so `intern-soft' does not see them either.
+    (defun bf_intern_table_symbols (out)
+      (let* ((base (ptr-read-u64 268436288 0)) (i 1048576)
+             (acc (alloc-bytes 32 8)))
+        (seq
+         (wf_write_nil acc)
+         (if (= base 0) 0
+           (while (> i 0)
+             (setq i (- i 1))
+             (if (= (ptr-read-u64 (+ base (* i 16)) 0) 0) 0
+               (let* ((sym (alloc-bytes 32 8)) (next (alloc-bytes 32 8)))
+                 (seq
+                  (nl_intern_write_sexp sym (ptr-read-u64 (+ base (* i 16)) 8)
+                                        (- (ptr-read-u64 (+ base (* i 16)) 0) 1))
+                  (nelisp_cons_construct sym acc next)
+                  (setq acc next))))))
+         (wf_copy32 out acc)
+         0)))
     ;; OBARRAY argument of `intern' / `intern-soft'.  This runtime has one
     ;; global intern table and ignores the table after validating its shape.
     ;; Vendor callers pass freshly allocated vectors as obarrays, so vectors
@@ -21739,6 +21762,9 @@ into that constant unconditionally is what broke every aarch64 build."
     ;; needed here (unlike `intern', whose `bf_intern' returns a non-zero
     ;; slot pointer).  Backs the elisp `intern-soft' (lisp/nelisp-stdlib-misc.el).
     ((:lit "nelisp--intern-lookup") . (bf_intern_soft (wf_arg_ptr args 0) out))
+    ;; nelisp--intern-table-symbols: list of every interned symbol (see
+    ;; `bf_intern_table_symbols'); backs the library's global `mapatoms'.
+    ((:lit "nelisp--intern-table-symbols") . (bf_intern_table_symbols out))
     ;; nelisp--format-simple TEMPLATE ARGS: the finished string when the
     ;; native formatter is known to agree with the prelude `format' layer
     ;; for this call, else nil (see `bf_format_simple').  Called by the
@@ -22058,7 +22084,7 @@ families.")
     "nl--read-int" "nl--int-token-p" "nl--nthcdr"
     "byte-code" "byte-code-function-p" "make-byte-code" "fetch-bytecode"
     "vectorp" "listp" "nlistp" "zerop" "set" "makunbound" "symbol-value" "symbol-function" "fboundp" "boundp" "featurep" "provide" "require"
-    "symbol-name" "bare-symbol" "intern" "intern-soft" "make-symbol" "nelisp--intern-lookup"
+    "symbol-name" "bare-symbol" "intern" "intern-soft" "make-symbol" "nelisp--intern-lookup" "nelisp--intern-table-symbols"
     "nelisp--symbol-position-op"
     "nelisp--format-simple" "unibyte-string"
     "make-vector" "vector" "make-bool-vector" "bool-vector" "bool-vector-p"
@@ -27752,7 +27778,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "nl--read-int" "nl--int-token-p" "nl--nthcdr"
     "byte-code" "byte-code-function-p" "make-byte-code" "fetch-bytecode"
     "vectorp" "listp" "nlistp" "zerop" "set" "makunbound" "symbol-value" "symbol-function" "fboundp" "boundp" "featurep" "provide" "require"
-    "symbol-name" "bare-symbol" "intern" "intern-soft" "make-symbol" "nelisp--intern-lookup"
+    "symbol-name" "bare-symbol" "intern" "intern-soft" "make-symbol" "nelisp--intern-lookup" "nelisp--intern-table-symbols"
     "nelisp--symbol-position-op"
     "nelisp--format-simple" "unibyte-string"
     "nelisp--native-subr-create" "nelisp--native-subr-live-count"
