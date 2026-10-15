@@ -6780,7 +6780,6 @@ argument (reachability + in-arena bounds checks).")
                                        (wf_write_int out (nl_ht_count_table (nl_ht_data_slot h)))
                                      (bf_wrong_type_hash_table h))))
     ((:lit "maphash")          . (nl_ht_maphash args out))
-    ((:lit "nelisp--hash-table-entries") . (bf_ht_entries (wf_arg_ptr args 0) out))
     ;; --- M5 strings + format ---
     ((:lit "length")           . (bf_length_checked (wf_arg_ptr args 0) out))
     ;; Doc 161: byte-level access + count for byte-IO (length is now chars).
@@ -6788,11 +6787,6 @@ argument (reachability + in-arena bounds checks).")
                                   (m5_byte_at (wf_arg_ptr args 0)
                                                (ptr-read-u64 (wf_arg_ptr args 1) 8))))
     ((:lit "string-bytes")     . (wf_write_int out (m5_strlen (wf_arg_ptr args 0))))
-    ((:lit "nelisp--base64-decode") .
-     (let* ((sx (wf_arg_ptr args 0)))
-       (if (= (m5_string_tag_p (ptr-read-u64 sx 0)) 1)
-           (bf_base64_decode sx out)
-         (bf_wrong_type_stringp sx))))
     ((:lit "string=")          . (if (= (bf_strsym_raw (wf_arg_ptr args 0)) 0)
                                       (bf_wrong_type_stringp (wf_arg_ptr args 0))
                                     (if (= (bf_strsym_raw (wf_arg_ptr args 1)) 0)
@@ -7060,46 +7054,6 @@ argument (reachability + in-arena bounds checks).")
                                         (if (< idx 0)
                                             (wf_write_nil out)
                                           (wf_write_int out idx))))
-    ((:lit "compare-strings") . (bf_compare_strings args env out))
-    ((:lit "nelisp--compare-strings-0") .
-     (let* ((s1 (wf_arg_ptr args 0)) (e1 (wf_arg_ptr args 1))
-            (s2 (wf_arg_ptr args 2)) (e2 (wf_arg_ptr args 3)))
-       (if (= (m5_string_tag_p (ptr-read-u64 s1 0)) 1)
-           (if (= (m5_string_tag_p (ptr-read-u64 s2 0)) 1)
-               (if (if (= (ptr-read-u64 e1 0) 0) 1 (if (= (ptr-read-u64 e1 0) 2) 1 0))
-                   (if (if (= (ptr-read-u64 e2 0) 0) 1 (if (= (ptr-read-u64 e2 0) 2) 1 0))
-                       (let* ((n1 (if (= (ptr-read-u64 e1 0) 0) -1
-                                    (if (< (wf_argval args 1) 0) -2 (wf_argval args 1))))
-                              (n2 (if (= (ptr-read-u64 e2 0) 0) -1
-                                    (if (< (wf_argval args 3) 0) -2 (wf_argval args 3)))))
-                         (if (= (bf_compare_strings_0_p s1 n1 s2 n2) 1)
-                             (bf_compare_strings_0 s1 n1 s2 n2 out)
-                           (wf_write_nil out)))
-                     (bf_wrong_type_integerp e2))
-                 (bf_wrong_type_integerp e1))
-             (bf_wrong_type_stringp s2))
-         (bf_wrong_type_stringp s1))))
-    ((:lit "nelisp--string-search-chars") .
-     (let* ((needle (wf_arg_ptr args 0)) (hay (wf_arg_ptr args 1)))
-       (if (= (m5_string_tag_p (ptr-read-u64 needle 0)) 1)
-           (if (= (m5_string_tag_p (ptr-read-u64 hay 0)) 1)
-               (if (= (ptr-read-u64 (wf_arg_ptr args 2) 0) 2)
-                   (bf_string_search_chars needle hay (wf_argval args 2) out)
-                 (bf_wrong_type_integerp (wf_arg_ptr args 2)))
-             (bf_wrong_type_stringp hay))
-         (bf_wrong_type_stringp needle))))
-    ((:lit "nelisp--split-on-byte") .
-     (let* ((sx (wf_arg_ptr args 0)))
-       (if (= (m5_string_tag_p (ptr-read-u64 sx 0)) 1)
-           (if (= (ptr-read-u64 (wf_arg_ptr args 1) 0) 2)
-               (if (if (< (wf_argval args 1) 0) 1
-                     (if (< (wf_argval args 1) 128) 0 1))
-                   (bf_wrong_type_integerp (wf_arg_ptr args 1))
-                 (bf_split_on_byte sx (wf_argval args 1)
-                                   (if (= (ptr-read-u64 (wf_arg_ptr args 2) 0) 0) 0 1)
-                                   out))
-             (bf_wrong_type_integerp (wf_arg_ptr args 1)))
-         (bf_wrong_type_stringp sx))))
     ((:lit "nelisp--arena-stats") . (bf_arena_stats out))
     ((:lit "nelisp--gc-pressure") . (bf_gc_pressure out))
     ((:lit "nelisp--arena-walk-verify") . (bf_arena_walk_verify out))
@@ -11018,47 +10972,7 @@ eval applyfn.")
     ;; maphash ships as a no-op here; the real iteration is the pure-elisp
     ;; `maphash' in nelisp-stdlib-prelude.el (walks the bucket-vector repr +
     ;; funcall), which overrides this stub.
-    (defun nl_ht_maphash (args out) (seq (wf_write_nil out) 0))
-    ;; `nelisp--hash-table-entries' TABLE: a fresh list of TABLE's (KEY .
-    ;; VALUE) entry cells -- the cells themselves, not copies -- in the order
-    ;; the prelude's `maphash' visits them (buckets ascending, each bucket's
-    ;; nodes in list order).  `maphash' walks this list instead of every slot
-    ;; of the bucket vector: on a 2-entry table of 2048 slots that walk was
-    ;; 2048 interpreted iterations, ~43 ms a call (`buffer-list' over the
-    ;; buffer registry).  An empty bucket is the Nil word 3 in the vector's
-    ;; data buffer (box@+8, data@box+8, len@box+16), skipped without boxing
-    ;; it.  Entries are pushed, then the list is reversed in a loop (a
-    ;; recursive reverse takes a native frame per entry).
-    (defun bf_ht_entries (table out)
-      (let* ((data (if (= (ptr-read-u64 table 0) 7) (nl_ht_data_slot table) 0))
-             (vec (if (= data 0) 0 (if (= (ptr-read-u64 data 0) 8) 1 0)))
-             (words (if (= vec 1) (ptr-read-u64 (ptr-read-u64 data 8) 8) 0))
-             (n (if (= vec 1) (ptr-read-u64 (ptr-read-u64 data 8) 16) 1))
-             (acc (alloc-bytes 32 8)) (rev (alloc-bytes 32 8)) (cell (alloc-bytes 32 8))
-             (i 0) (node 0) (entry 0))
-        (seq
-         (wf_write_nil acc)
-         (wf_write_nil rev)
-         (if (= data 0) 0
-           (while (< i n)
-             (setq node (if (= vec 1)
-                            (if (= (ptr-read-u64 (+ words (* i 8)) 0) 3) 0
-                              (vector-ref-ptr data i))
-                          data))
-             (while (if (= node 0) 0 (= (ptr-read-u64 node 0) 7))
-               (setq entry (nl_cons_car_ptr node))
-               (if (= (ptr-read-u64 entry 0) 7)
-                   (seq (nelisp_cons_construct entry acc cell) (wf_copy32 acc cell))
-                 0)
-               (setq node (nl_cons_cdr_ptr node)))
-             (setq i (+ i 1))))
-         (setq node acc)
-         (while (= (ptr-read-u64 node 0) 7)
-           (nelisp_cons_construct (nl_cons_car_ptr node) rev cell)
-           (wf_copy32 rev cell)
-           (setq node (nl_cons_cdr_ptr node)))
-         (wf_copy32 out rev)
-         0))))
+    (defun nl_ht_maphash (args out) (seq (wf_write_nil out) 0)))
   "M4 hash-table helpers (reader-only).")
 
 (defconst nelisp-standalone--applyfn-search-helpers
@@ -16747,161 +16661,6 @@ baked build's own `<'/`>'/`=' arms need it too.")
           (if (< bad 0)
               (bf_copy_string_tag sx 14 out)
             (bf_cannot_convert_unibyte bad out)))))
-    ;; `nelisp--split-on-byte' STRING BYTE OMIT-EMPTY: the parts of STRING
-    ;; between occurrences of BYTE, as fresh strings with STRING's
-    ;; unibyte/multibyte tag, empty parts dropped when OMIT-EMPTY.  BYTE is
-    ;; ASCII, which never occurs inside a multibyte sequence, so cutting the
-    ;; internal bytes at it is exact.  The walk runs back to front and
-    ;; pushes each part, so the list comes out in order.  It backs
-    ;; `split-string' with a one-character separator, whose interpreted loop
-    ;; made about a dozen calls per part.
-    (defun bf_split_on_byte (sx sep omit out)
-      (let* ((p (bf_str_ptr sx))
-             (n (bf_str_len sx))
-             (uni (bf_string_unibyte_p sx))
-             (acc (alloc-bytes 32 8))
-             (part (alloc-bytes 32 8))
-             (cell (alloc-bytes 32 8))
-             (end n)
-             (i (- n 1)))
-        (seq
-         (wf_write_nil acc)
-         (while (>= i -1)
-           (if (if (< i 0) 1 (if (= (ptr-read-u8 p i) sep) 1 0))
-               (seq
-                (if (if (= omit 1) (if (= end (+ i 1)) 1 0) 0)
-                    0
-                  (seq
-                   (if (= uni 1)
-                       (nl_alloc_unibyte_str (+ p (+ i 1)) (- end (+ i 1)) part)
-                     (nl_alloc_str (+ p (+ i 1)) (- end (+ i 1)) part))
-                   (nelisp_cons_construct part acc cell)
-                   (wf_copy32 acc cell)))
-                (setq end i))
-             0)
-           (setq i (- i 1)))
-         (wf_copy32 out acc)
-         0)))
-    ;; `nelisp--string-search-chars' NEEDLE HAYSTACK START: `string-search'
-    ;; over the internal bytes, with character positions in and out, for the
-    ;; combinations where a byte match is a character match: both strings
-    ;; unibyte, both multibyte, or an ASCII needle (multibyte text is UTF-8,
-    ;; so a match that starts on an ASCII or lead byte covers whole
-    ;; characters).  Any other combination, a needle whose non-ASCII bytes
-    ;; mean different characters in the haystack's encoding, answers -1 and
-    ;; the caller walks characters.  START is a character index the caller
-    ;; has range-checked.
-    (defun bf_string_search_chars (needle hay start out)
-      (let* ((nb (bf_str_len needle))
-             (i 0)
-             (ascii 1))
-        (seq
-         (if (= (bf_string_unibyte_p hay) (bf_string_unibyte_p needle)) 0
-           (while (and (= ascii 1) (< i nb))
-             (if (< (m5_byte_at needle i) 128)
-                 (setq i (+ i 1))
-               (setq ascii 0))))
-         (if (= ascii 0)
-             (wf_write_int out -1)
-           (let* ((hb (bf_str_len hay))
-                  (from (bf_read_one_cb hay start hb))
-                  (idx (m5_string_search hay needle from)))
-             (if (< idx 0)
-                 (wf_write_nil out)
-               (wf_write_int out
-                             (+ start (bf_read_one_bytes_to_chars hay from idx)))))))))
-    ;; `nelisp--compare-strings-0' STR1 END1 STR2 END2: `compare-strings' of
-    ;; STR1[0, END1) and STR2[0, END2) with case significant; END is -1 for
-    ;; nil, and an END past the end means the length.  Answers t, or the
-    ;; 1-based index of the first differing character, negative when STR1's
-    ;; character is smaller or STR1's region ends first.  Each string is read
-    ;; in its own encoding (a unibyte byte is its own code, multibyte text is
-    ;; UTF-8), so the answer is the character-by-character one.  It backs
-    ;; GNU `string-prefix-p', whose interpreted `compare-strings' fast path
-    ;; made about twenty calls.
-    (defun bf_ascii_only_p (sx)
-      (let* ((n (bf_str_len sx)) (i 0) (ok 1))
-        (seq
-         (while (and (= ok 1) (< i n))
-           (if (< (m5_byte_at sx i) 128) (setq i (+ i 1)) (setq ok 0)))
-         ok)))
-    ;; A unibyte string's high bytes compare as raw-byte characters against
-    ;; multibyte text, which a per-string decode does not reproduce: such a
-    ;; pair, and a negative END (counted from the end), answer nil.
-    (defun bf_compare_strings_0_p (s1 end1 s2 end2)
-      (if (if (< end1 -1) 1 (if (< end2 -1) 1 0)) 0
-        (if (= (bf_string_unibyte_p s1) (bf_string_unibyte_p s2)) 1
-          (if (= (bf_ascii_only_p s1) 1) 1
-            (if (= (bf_ascii_only_p s2) 1) 1 0)))))
-    ;; `compare-strings' itself, as in GNU, is native: the common shape
-    ;; (START1 and START2 nil or 0, IGNORE-CASE nil, END nil or a natural
-    ;; number, a compatible string pair) is answered here, and every other
-    ;; call -- other starts or ends, case folding, wrong types or arity -- is
-    ;; applied to the prelude's `nelisp--compare-strings-lisp', which signals
-    ;; exactly as before.
-    (defun bf_cs_zero_or_nil (sx)
-      (if (= (ptr-read-u64 sx 0) 0) 1
-        (if (= (ptr-read-u64 sx 0) 2) (if (= (ptr-read-u64 sx 8) 0) 1 0) 0)))
-    (defun bf_cs_end (sx)
-      (if (= (ptr-read-u64 sx 0) 0) -1
-        (if (= (ptr-read-u64 sx 0) 2)
-            (if (< (ptr-read-u64 sx 8) 0) -2 (ptr-read-u64 sx 8))
-          -2)))
-    (defun bf_compare_strings_lisp (args env out)
-      (let* ((buf (alloc-bytes 32 1)) (sym_slot (alloc-bytes 32 8))
-             (fn_slot (alloc-bytes 32 8)))
-        (seq
-         ;; "nelisp--compare-strings-lisp", 28 bytes
-         (ptr-write-u64 buf 0 3255381746650998126)
-         (ptr-write-u64 (+ buf 8) 0 3271146467178147683)
-         (ptr-write-u64 (+ buf 16) 0 3275075077941654643)
-         (ptr-write-u64 (+ buf 24) 0 1886611820)
-         (nl_alloc_symbol buf 28 sym_slot)
-         (if (= (nelisp_env_lookup_function (+ env 0) (+ env 64) sym_slot fn_slot) 0)
-             (nl_apply_function fn_slot args env out)
-           (nl_cons_stash_void_function env sym_slot)))))
-    (defun bf_compare_strings (args env out)
-      (let* ((argc (m5_list_len args 0)))
-        (if (if (= argc 6) 0 (if (= argc 7) 0 1))
-            (bf_compare_strings_lisp args env out)
-          (let* ((s1 (wf_arg_ptr args 0)) (s2 (wf_arg_ptr args 3))
-                 (n1 (bf_cs_end (wf_arg_ptr args 2)))
-                 (n2 (bf_cs_end (wf_arg_ptr args 5))))
-            (if (if (= argc 7) (if (= (ptr-read-u64 (wf_arg_ptr args 6) 0) 0) 1 0) 1)
-                (if (= (bf_cs_zero_or_nil (wf_arg_ptr args 1)) 1)
-                    (if (= (bf_cs_zero_or_nil (wf_arg_ptr args 4)) 1)
-                        (if (= (m5_string_tag_p (ptr-read-u64 s1 0)) 1)
-                            (if (= (m5_string_tag_p (ptr-read-u64 s2 0)) 1)
-                                (if (= (bf_compare_strings_0_p s1 n1 s2 n2) 1)
-                                    (bf_compare_strings_0 s1 n1 s2 n2 out)
-                                  (bf_compare_strings_lisp args env out))
-                              (bf_compare_strings_lisp args env out))
-                          (bf_compare_strings_lisp args env out))
-                      (bf_compare_strings_lisp args env out))
-                  (bf_compare_strings_lisp args env out))
-              (bf_compare_strings_lisp args env out))))))
-    (defun bf_compare_strings_0 (s1 end1 s2 end2 out)
-      (let* ((n1 (bf_str_len s1)) (u1 (bf_string_unibyte_p s1))
-             (n2 (bf_str_len s2)) (u2 (bf_string_unibyte_p s2))
-             (b1 0) (b2 0) (i 0) (c1 0) (c2 0) (res 0))
-        (seq
-         (while (= res 0)
-           (if (if (= i end1) 1 (if (< b1 n1) 0 1))
-               (setq res (if (if (= i end2) 1 (if (< b2 n2) 0 1)) 1 2))
-             (if (if (= i end2) 1 (if (< b2 n2) 0 1))
-                 (setq res 3)
-               (seq
-                (setq c1 (if (= u1 1) (m5_byte_at s1 b1) (nl_u8_decode s1 b1)))
-                (setq c2 (if (= u2 1) (m5_byte_at s2 b2) (nl_u8_decode s2 b2)))
-                (if (= c1 c2)
-                    (seq
-                     (setq b1 (+ b1 (if (= u1 1) 1 (nl_u8_clen_at (m5_byte_at s1 b1)))))
-                     (setq b2 (+ b2 (if (= u2 1) 1 (nl_u8_clen_at (m5_byte_at s2 b2)))))
-                     (setq i (+ i 1)))
-                  (setq res (if (< c1 c2) 2 3)))))))
-         (if (= res 1)
-             (wf_write_t out)
-           (wf_write_int out (if (= res 2) (- 0 (+ i 1)) (+ i 1)))))))
     (defun bf_string_as_multibyte (sx out)
       (bf_copy_string_tag sx 5 out))
     (defun bf_string_to_multibyte (sx out)
@@ -17646,53 +17405,6 @@ baked build's own `<'/`>'/`=' arms need it too.")
         (seq (nl_alloc_unibyte_mut_str (bf_vec_count args 0) ms)
              (bf_unibyte_fill ms args)
              (mut-str-finalize ms out)
-             0)))
-    ;; `nelisp--base64-decode': standard-alphabet base64 to a unibyte
-    ;; string in one native pass.  Native cache loads decode every
-    ;; artifact's machine code; the interpreted `base64-decode-string'
-    ;; costs microseconds per character and the external `base64'
-    ;; process used for large units costs a spawn (and need not exist on
-    ;; Windows).  CR and LF are skipped; after the first `=' only `=', CR
-    ;; and LF may follow, and the padding must complete the last quantum
-    ;; (data characters mod 4 = 0, 2 or 3 with 0, 2 or 1 `=').  Anything
-    ;; else makes the answer nil, so a caller can fall back to
-    ;; `base64-decode-string' for its error.
-    (defun bf_base64_value (c)
-      (if (and (>= c 65) (<= c 90)) (- c 65)
-        (if (and (>= c 97) (<= c 122)) (- c 71)
-          (if (and (>= c 48) (<= c 57)) (+ c 4)
-            (if (= c 43) 62 (if (= c 47) 63 -1))))))
-    (defun bf_base64_decode (sx out)
-      (let* ((n (m5_strlen sx))
-             (src (nl_bi_strptr sx))
-             (ms (alloc-bytes 32 8))
-             (i 0) (acc 0) (bits 0) (pad 0) (bad 0) (c 0) (v 0) (dc 0) (pc 0))
-        (seq (nl_alloc_unibyte_mut_str (+ (/ (* n 3) 4) 3) ms)
-             (while (if (< i n) (= bad 0) 0)
-               (seq (setq c (ptr-read-u8 src i))
-                    (if (= c 61)
-                        (seq (setq pad 1) (setq pc (+ pc 1)))
-                      (if (if (= c 10) 1 (= c 13))
-                          0
-                        (seq (setq v (bf_base64_value c))
-                             (if (if (< v 0) 1 (= pad 1))
-                                 (setq bad 1)
-                               (seq (setq dc (+ dc 1))
-                                    (setq acc (logior (shl (logand acc 1023) 6) v))
-                                    (setq bits (+ bits 6))
-                                    (if (>= bits 8)
-                                        (seq (setq bits (- bits 8))
-                                             (mut-str-push-byte
-                                              ms (logand (sar acc bits) 255)))
-                                      0))))))
-                    (setq i (+ i 1))))
-             (setq v (- dc (* 4 (/ dc 4))))
-             (if (if (= bad 0)
-                     (if (= v 0) (= pc 0)
-                       (if (= v 2) (= pc 2) (if (= v 3) (= pc 1) 0)))
-                   0)
-                 (mut-str-finalize ms out)
-               (wf_write_nil out))
              0)))
     ;; make-bool-vector LENGTH INIT -> BoolVector(tag10), backed by
     ;; `nl_alloc_bool_vector' (lisp/nelisp-cc-nlboolvector-alloc.el).
@@ -27385,7 +27097,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     ;; in the standalone prelude lower through this entry).
     "nelisp--env-globals-op"
     ;; M4 hash tables
-    "make-hash-table" "puthash" "gethash" "remhash" "hash-table-count" "maphash" "nelisp--hash-table-entries"
+    "make-hash-table" "puthash" "gethash" "remhash" "hash-table-count" "maphash"
     "nelisp--hash-table-make-raw" "nelisp--cell-value" "nelisp--assoc-raw"
     "nelisp--byte-code-wrap-test"
     "nelisp--plist-get-eq" "nelisp--plist-member-eq"
@@ -27402,7 +27114,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "string-as-unibyte" "string-to-unibyte" "string-make-unibyte"
     "string-as-multibyte" "string-to-multibyte" "string-make-multibyte"
     "char-to-string" "string-to-char" "number-to-string" "string-to-number" "format"
-    "nelisp--repr" "nelisp--json-encode" "nelisp--build-digest" "nelisp--sha256" "nelisp--sha256-bytes" "nelisp--string-search" "nelisp--string-search-chars" "nelisp--compare-strings-0" "compare-strings" "nelisp--split-on-byte" "nelisp--base64-decode" "nelisp--arena-stats" "nelisp--gc-pressure" "garbage-collect"
+    "nelisp--repr" "nelisp--json-encode" "nelisp--build-digest" "nelisp--sha256" "nelisp--sha256-bytes" "nelisp--string-search" "nelisp--arena-stats" "nelisp--gc-pressure" "garbage-collect"
     "nelisp--fmt-float"
     "nelisp--debug-switch" "nelisp--gc-diag" "nelisp--arena-force-grow-smoke" "nelisp--size-census" "nelisp--arena-walk-verify"
     "nelisp--alloc-check-report"
