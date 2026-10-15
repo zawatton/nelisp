@@ -38,7 +38,7 @@
 ;;                                    have been deleted).
 ;;
 ;; Power-of-2 bucket-count assumption: the bootstrap mirror created by
-;; `install_empty_mirror_rust_direct' always allocates 1024 buckets and
+;; `install_empty_mirror_rust_direct' always allocates 65536 buckets and
 ;; `mirror_prepend_to_bucket' never resizes, so the elisp body uses the
 ;; cheap `(h & (count-1))' mask matching the Rust fast path.
 
@@ -197,14 +197,24 @@
       ;; commentary above for the invariant.
       (if (= (nelisp_mirror_lookup_entry_valid_key sym-ptr) 0)
           0
+        ;; The bucket head is read as a raw word (Vector box at payload+8,
+        ;; data at box+8): `vector-ref-ptr' boxed the Nil of an empty
+        ;; bucket into a fresh heap slot, and with a table sized for a GUI
+        ;; image most lookups of names that have no global entry (every
+        ;; lexical variable reference and `setq' checks one) land on an
+        ;; empty bucket.  A pointer head is the bucket's first Cons view.
         (let ((ht-rec-ptr (record-slot-ref-ptr mirror-ptr 0)))
-          (nelisp_mirror_walk_bucket
-           (vector-ref-ptr
-            (record-slot-ref-ptr ht-rec-ptr 1)
-            (logand
-             (extern-call nelisp_fnv1a sym-ptr)
-             (- (sar (nelisp_mirror_slot_raw_word ht-rec-ptr 0) 2) 1)))
-           sym-ptr)))))
+          (let ((head (ptr-read-u64
+                       (+ (ptr-read-u64
+                           (ptr-read-u64 (record-slot-ref-ptr ht-rec-ptr 1) 8) 8)
+                          (* (logand
+                              (extern-call nelisp_fnv1a sym-ptr)
+                              (- (sar (nelisp_mirror_slot_raw_word ht-rec-ptr 0) 2) 1))
+                             8))
+                       0)))
+            (if (= (logand head 1) 1)
+                0
+              (nelisp_mirror_walk_bucket head sym-ptr)))))))
   "AOT source for Doc 111 §111.E #1 `mirror_lookup_entry'.
 
 Composes record-slot-ref-ptr (§111.B) + vector-ref-ptr (§111.C) +

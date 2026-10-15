@@ -78,6 +78,7 @@ nelisp--sha256	native-review	No classification row; review against Doc 211 §6.
 nelisp--sha256-bytes	native-review	No classification row; review against Doc 211 §6.
 nelisp--string-search	native-review	No classification row; review against Doc 211 §6.
 nelisp--arena-stats	native-review	No classification row; review against Doc 211 §6.
+nelisp--gc-pressure	native-must-stay	GC entry (clause 2): reads the collector's debt and armed threshold, state with no Lisp form; callers test fboundp, so demotion is one deletion
 garbage-collect	native-must-stay	GC entry
 nelisp--fmt-float	native-review	No classification row; review against Doc 211 §6.
 nelisp--debug-switch	native-review	No classification row; review against Doc 211 §6.

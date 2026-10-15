@@ -149,3 +149,9 @@ cmd: $NELISP_RT_BIN --cold-load-from $NELISP_RT_BIN.cold --load test/standalone-
 ** S5.7 End to end: one GC in the S5.2 package image drops from 13.5 s and gui-daily-verify ccore pty S3.2 still passes (notes-44 measurement)
 #+NOTE: ccore-native-gc 9e7b3fb08 (exit-stash root): 3.93 s at 368 MB live (notes-44, library ff3d246a; ccore 374/374, pty 10/10, S3.2 PASS); coordinator re-measured 4.03-4.19 s at 370 MB.
 evidence: target/progress/s5-6-9e7b3fb08/index.txt sha256=77b113ea2ed5d3eb59629f316a3d2f7424432d0530ad52afe51601306c24404d
+
+** S5.8 nelisp--gc-pressure reports how close the next collection is: at most 5 after a collection, rising with allocation, back down after the next
+#+NOTE: Native under AGENTS.md clause 2 (GC entry): it reads the collector's debt and armed threshold, state with no Lisp form; listed in tools/nelisp-native-inventory.txt, and callers test fboundp, so demotion is one deletion.  Before/after per-call timing does not apply: it replaces no Lisp definition.  Until the debt trigger arms (two collections after boot) it reports the debt against one 16 MiB growth window, since a 64 MiB chunk reservation crosses the growth trigger in one step.  Consumer: the GUI command loop's idle collection (nelisp-emacs-lib e944e9d1, emacs-command-loop-maybe-gc-when-idle).  Criterion added 2026-10-16 (denominator 21 -> 22).
+#+REQUIRES: NELISP_RT_BIN
+#+TIMEOUT: 120
+cmd: $NELISP_RT_BIN --load test/standalone-gc-pressure-check.el

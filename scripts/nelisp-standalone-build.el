@@ -2152,7 +2152,7 @@ directory tracks the tree rather than accumulating every key ever built."
                           (if (= r 0)
                               (nl_freelist_scan_large want)
                             (nl_alloc_diag_bucket r)))
-                      run)))
+                      (nl_alloc_diag_bucket run))))
               (nl_seq2 (nl_hdr_set_mark (- cur 8) 0)
                        (nl_alloc_diag_bucket cur)))))))
     ;; Zero NBYTES (step 8) of the reused block's payload at OBJ.
@@ -7101,6 +7101,7 @@ argument (reachability + in-arena bounds checks).")
              (bf_wrong_type_integerp (wf_arg_ptr args 1)))
          (bf_wrong_type_stringp sx))))
     ((:lit "nelisp--arena-stats") . (bf_arena_stats out))
+    ((:lit "nelisp--gc-pressure") . (bf_gc_pressure out))
     ((:lit "nelisp--arena-walk-verify") . (bf_arena_walk_verify out))
     ((:lit "nelisp--arena-dump-copy-verify") . (bf_arena_dump_copy_verify out))
     ((:lit "nelisp--arena-mark-reach-verify") . (bf_arena_mark_reach_verify out))
@@ -8049,6 +8050,22 @@ leave symbols unresolved at link time."
             (wf_cons_int (ptr-read-u64 (data-addr nl_gc_diag) 8) s2 s1)
             (wf_cons_int (ptr-read-u64 (data-addr nl_gc_diag) 0) s1 out)
             0))))
+    ;; (nelisp--gc-pressure) -> how close the next collection is, as a
+    ;; percentage: the bytes allocated since the last collection (the debt,
+    ;; charged on every allocation) over the armed debt threshold, 100 or
+    ;; more meaning the next allocation check collects.  Until the debt
+    ;; trigger arms (two collections after boot) collections come from heap
+    ;; growth, which a 64 MiB chunk reservation crosses in one step and no
+    ;; reading of the reservation can anticipate; the debt is then reported
+    ;; against one 16 MiB growth window instead.  Lets an idle loop collect
+    ;; between inputs instead of in the middle of the next command.  Native
+    ;; under clause 2 (GC entry): it reads collector state with no Lisp form.
+    (defun bf_gc_pressure (out)
+      (let* ((st (data-addr nl_gc_stats))
+             (lim (ptr-read-u64 st 8)))
+        (if (if (< (ptr-read-u64 st 24) 2) 1 (if (= lim 0) 1 0))
+            (wf_write_int out (/ (* (ptr-read-u64 st 0) 100) 16777216))
+          (wf_write_int out (/ (* (ptr-read-u64 st 0) 100) lim)))))
     (defun bf_arena_stats (out)
       (let* ((bump (ptr-read-u64 268435456 0))
              (used (bf_arena_chunks_used (ptr-read-u64 268436160 0) 0))
@@ -27385,7 +27402,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "string-as-unibyte" "string-to-unibyte" "string-make-unibyte"
     "string-as-multibyte" "string-to-multibyte" "string-make-multibyte"
     "char-to-string" "string-to-char" "number-to-string" "string-to-number" "format"
-    "nelisp--repr" "nelisp--json-encode" "nelisp--build-digest" "nelisp--sha256" "nelisp--sha256-bytes" "nelisp--string-search" "nelisp--string-search-chars" "nelisp--compare-strings-0" "compare-strings" "nelisp--split-on-byte" "nelisp--base64-decode" "nelisp--arena-stats" "garbage-collect"
+    "nelisp--repr" "nelisp--json-encode" "nelisp--build-digest" "nelisp--sha256" "nelisp--sha256-bytes" "nelisp--string-search" "nelisp--string-search-chars" "nelisp--compare-strings-0" "compare-strings" "nelisp--split-on-byte" "nelisp--base64-decode" "nelisp--arena-stats" "nelisp--gc-pressure" "garbage-collect"
     "nelisp--fmt-float"
     "nelisp--debug-switch" "nelisp--gc-diag" "nelisp--arena-force-grow-smoke" "nelisp--size-census" "nelisp--arena-walk-verify"
     "nelisp--alloc-check-report"
