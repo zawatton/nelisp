@@ -25799,8 +25799,21 @@ stated value-vs-whole-record trade-off vs. real Emacs.")
 ;; `tail' -- exactly as GNU's macro does -- so, as on real GNU Emacs, VAR is
 ;; out of lexical scope there; a RESULT referencing VAR is a free-variable
 ;; reference (matches host `(void-variable VAR)'), not a nil-bound VAR.
+;; EXPANSION CACHING: GNU expands `dolist' once per call site (it is a
+;; macro), so its `tail' gensym is minted once per site.  This special form
+;; used to rebuild the whole expansion -- ~25 conses, ~50 scratch slots and a
+;; fresh uninterned `tail' plus its symbol-name sidecar row -- on EVERY
+;; execution (767 times per GUI `json-encode', the source of the kind-2
+;; uninterned-symbol churn).  When CACHE_KEY is non-zero it is the whole
+;; `(dolist ...)' FORM pointer, and the built expansion is stored in the
+;; macro-expansion cache under it exactly as `nl_cons_macro_apply_eval'
+;; stores a macro's expansion: the next evaluation of the same form hits in
+;; `nl_ei_cons_tail' and evaluates the cached expansion directly.  The cache
+;; already handles key identity (boot-slot exclusion, scratch-slot eviction,
+;; compaction epoch) and roots both key and expansion for the GC.  Callers
+;; without a form pointer pass 0 and keep the uncached behaviour.
 (defconst nelisp-standalone--sf-dolist
-  '(defun nl_sf_dolist (args env out _pad)
+  '(defun nl_sf_dolist (args env out cache_key)
      (if (= (sexp-tag args) 7)
          (let* ((spec (nl_cons_car_ptr args))
                 (body_ptr (nl_cons_cdr_ptr args)))
@@ -25895,6 +25908,7 @@ stated value-vs-whole-record trade-off vs. real Emacs.")
                   (nelisp_cons_construct while_form result_tail outer_body)
                   (nelisp_cons_construct outer_binds outer_body outer_args)
                   (nelisp_cons_construct let_sym outer_args form)
+                  (if (= cache_key 0) 0 (nl_mxcache_store cache_key form))
                   (nelisp_eval_call form env out)))
              (seq (nl_cons_write_nil out) 0)))
        (seq (nl_cons_write_nil out) 0))))
@@ -26369,9 +26383,14 @@ computed expansion into `nl_mxcache_store' before evaluating it.")
        head_ptr tail_ptr env out root_mark (nl_root_reserve env)))
     (defun nl_eval_inner_cons (form_ptr head_ptr tail_ptr env out)
       (if (= (sexp-tag head_ptr) 4)
-          (nl_eval_inner_cons_symbol_dispatch
-           (nl_apply_special head_ptr tail_ptr env out)
-           form_ptr head_ptr tail_ptr env out)
+          ;; `dolist' is matched by name inside `nl_apply_special' too; taking
+          ;; it here first only adds FORM_PTR so its expansion is cached per
+          ;; call site (see `nelisp-standalone--sf-dolist').
+          (if (= (nl_sp_eq_dolist head_ptr) 1)
+              (nl_sf_dolist tail_ptr env out form_ptr)
+            (nl_eval_inner_cons_symbol_dispatch
+             (nl_apply_special head_ptr tail_ptr env out)
+             form_ptr head_ptr tail_ptr env out))
         (if (= (sexp-tag head_ptr) 16)
             (nl_eval_inner_cons_symbol_mark
              form_ptr head_ptr tail_ptr env out (nl_root_mark env))

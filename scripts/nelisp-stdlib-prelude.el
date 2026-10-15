@@ -1147,10 +1147,19 @@ SUBLIST (compared by `eq') removed, not an approximation."
 
 (defun nelisp--buffer-multibyte-p (buffer)
   "Return BUFFER's local multibyte flag, defaulting to t."
-  (with-current-buffer buffer
-    (if (local-variable-p 'enable-multibyte-characters)
-        enable-multibyte-characters
-      t)))
+  ;; Every `insert' consults this with the CURRENT buffer.  Selecting a
+  ;; buffer that is already current is a no-op in Emacs, but in the GUI
+  ;; image `with-current-buffer' costs two full owner `set-buffer' calls
+  ;; (local-cell swap bookkeeping), which measured 22% of a `json-encode'.
+  ;; Read the flag directly in that case; the value is identical.
+  (if (eq buffer (current-buffer))
+      (if (local-variable-p 'enable-multibyte-characters)
+          enable-multibyte-characters
+        t)
+    (with-current-buffer buffer
+      (if (local-variable-p 'enable-multibyte-characters)
+          enable-multibyte-characters
+        t))))
 
 (defun nelisp--time-invalid ()
   "Signal the GNU error for an invalid time value."
