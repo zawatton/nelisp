@@ -777,12 +777,26 @@
       (if (>= p end) 0
           (seq (extern-call nl_gc_mark_slot p)
                (nl_gc_mark_rootstack_walk (+ p 32) end))))
+    ;; The non-local exit stash is a root too.  TAG @268435480 and VAL
+    ;; @268435512 keep the last thrown or signalled tag and value after the
+    ;; exit completes (the flag @268435472 is cleared, the slots are not),
+    ;; and `nl_n3_notify', `unwind-protect' and the bytecode handlers save
+    ;; and restore them on every pass, cloning whatever they hold.  Unrooted,
+    ;; a thrown cons dies once its catcher drops it and those clones then
+    ;; bump the refcount word of whatever reuses the block.  Once cold-image
+    ;; holes became collectable, the (FORM . END) cons that
+    ;; `emacs-load--native-read-one' throws was freed this way; ~19k
+    ;; increments in one collection interval rewrote the neighbouring block
+    ;; header, and the global hash tables (special variables, symbol plists)
+    ;; broke.
     (defun nl_gc_mark_rootstack ()
       (seq
        (if (= (ptr-read-u64 (data-addr nl_rootstack_top) 0) 0) 0
          (nl_gc_mark_rootstack_walk (data-addr nl_rootstack_region)
                                     (ptr-read-u64 (data-addr nl_rootstack_top) 0)))
-       (nl_gc_mark_pinned_roots)))
+       (nl_gc_mark_pinned_roots)
+       (extern-call nl_gc_mark_slot 268435480)
+       (extern-call nl_gc_mark_slot 268435512)))
     (defun nl_gc_mark_pinned_roots ()
       (let* ((base (data-addr nl_root_pin_region))
              (top (atomic-fetch-add
