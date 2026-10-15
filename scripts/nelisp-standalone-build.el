@@ -10918,8 +10918,36 @@ eval applyfn.")
          (+ i 1)
          n
          (logand (* (logxor h (m5_byte_at str_ptr i)) 16777619) 2147483647))))
+    ;; Hash-table keys hash their content, so a string's bucket survives
+    ;; collection and image relocation.  Hashing every byte made a lookup
+    ;; O(length) at one native call per byte: an `eq' lookup keyed by a
+    ;; 200 KB string cost 8 ms, and the library's `substring' looks its
+    ;; argument up in a weak `eq' table, so a load paid that for every
+    ;; slice it cut from a large source file.  A key of at most 128 bytes
+    ;; still hashes every byte (its hash is unchanged); a longer one hashes
+    ;; its length, its first and last 32 bytes, and at most 128 bytes
+    ;; sampled at an even stride between them (Lua 5.1 likewise samples
+    ;; long strings at a stride).  Equal strings still hash equal; long keys that agree on
+    ;; every hashed byte share a bucket and the table's test tells them
+    ;; apart.
+    (defun nl_ht_str_hash_bytes (p i n step h)
+      (if (>= i n)
+          h
+        (nl_ht_str_hash_bytes
+         p (+ i step) n step
+         (logand (* (logxor h (ptr-read-u8 p i)) 16777619) 2147483647))))
     (defun nl_ht_str_hash (str_ptr)
-      (nl_ht_str_hash_loop str_ptr 0 (m5_strlen str_ptr) 2166136261))
+      (let* ((n (m5_strlen str_ptr)))
+        (if (<= n 128)
+            (nl_ht_str_hash_loop str_ptr 0 n 2166136261)
+          (let* ((p (nl_bi_strptr str_ptr)))
+            (nl_ht_str_hash_bytes
+             p (- n 32) n 1
+             (nl_ht_str_hash_bytes
+              p 32 (- n 32) (+ (/ (- n 64) 128) 1)
+              (nl_ht_str_hash_bytes
+               p 0 32 1
+               (logand (* (logxor 2166136261 n) 16777619) 2147483647))))))))
     (defun nl_ht_key_hash (key_ptr depth)
       (let* ((tag (ptr-read-u64 key_ptr 0)))
         (if (or (= tag 2) (= tag 16))
