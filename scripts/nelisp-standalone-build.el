@@ -17079,6 +17079,20 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; so the list is in slot order.  nil and t are immediates, never in the
     ;; table; names that fell back to a plain buffer (table or arena full)
     ;; are not interned, so `intern-soft' does not see them either.
+    ;; `nelisp--unbound-marker' is left out: symbols compare by name, so a
+    ;; variable bound to it reads as unbound, and every `mapatoms' or
+    ;; `dolist' over the table would hand it to the loop variable.
+    (defun nl_intern_slot_unbound_marker_p (slot)
+      (if (= (ptr-read-u64 slot 0) 23)
+          (let ((b (ptr-read-u64 slot 8)))
+            (if (= (ptr-read-u64 b 0) 3255381746650998126)       ; "nelisp--"
+                (if (= (ptr-read-u64 b 8) 3270860680036773493)   ; "unbound-"
+                    (if (= (ptr-read-u32 b 16) 1802658157)       ; "mark"
+                        (if (= (ptr-read-u16 b 20) 29285) 1 0)   ; "er"
+                      0)
+                  0)
+              0))
+        0))
     (defun bf_intern_table_symbols (out)
       (let* ((base (ptr-read-u64 268436288 0)) (i 1048576)
              (acc (alloc-bytes 32 8)))
@@ -17087,7 +17101,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (if (= base 0) 0
            (while (> i 0)
              (setq i (- i 1))
-             (if (= (ptr-read-u64 (+ base (* i 16)) 0) 0) 0
+             (if (if (= (ptr-read-u64 (+ base (* i 16)) 0) 0) 1
+                   (nl_intern_slot_unbound_marker_p (+ base (* i 16))))
+                 0
                (let* ((sym (alloc-bytes 32 8)) (next (alloc-bytes 32 8)))
                  (seq
                   (nl_intern_write_sexp sym (ptr-read-u64 (+ base (* i 16)) 8)
