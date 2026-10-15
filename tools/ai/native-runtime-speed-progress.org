@@ -126,6 +126,12 @@ cmd: $NELISP_RT_BIN --cold-load-from $NELISP_RT_BIN.cold --load test/standalone-
 #+TIMEOUT: 120
 cmd: $NELISP_RT_BIN --cold-load-from $NELISP_RT_BIN.cold --load test/standalone-exit-stash-root-check.el
 
-** S5.6 End to end: one GC in the S5.2 package image drops from 13.5 s and gui-daily-verify ccore pty S3.2 still passes (notes-44 measurement)
+** S5.6 A collection with the conservative stack scan costs at most 1.25 x one without it
+#+NOTE: The scan ran before the precise marks and its drain re-walked most of the live heap; baseline (integ 4c9a7237d) 0.370 s vs 0.175 s, 2.11x.
+#+REQUIRES: NELISP_RT_BIN
+#+TIMEOUT: 120
+cmd: $NELISP_RT_BIN --cold-load-from $NELISP_RT_BIN.cold --load test/standalone-gc-conservative-cost-check.el
+
+** S5.7 End to end: one GC in the S5.2 package image drops from 13.5 s and gui-daily-verify ccore pty S3.2 still passes (notes-44 measurement)
 #+NOTE: ccore-native-gc 9e7b3fb08 (exit-stash root): 3.93 s at 368 MB live (notes-44, library ff3d246a; ccore 374/374, pty 10/10, S3.2 PASS); coordinator re-measured 4.03-4.19 s at 370 MB.
 evidence: target/progress/s5-6-9e7b3fb08/index.txt sha256=77b113ea2ed5d3eb59629f316a3d2f7424432d0530ad52afe51601306c24404d
