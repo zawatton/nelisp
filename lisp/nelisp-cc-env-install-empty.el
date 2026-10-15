@@ -25,10 +25,10 @@
 ;;
 ;;   1. Allocate a fresh `fast-hash-table' Record (3 slots) via
 ;;      `record-make' into scratch[3].
-;;   2. Allocate a 1024-bucket Sexp::Vector via `vector-make' into
+;;   2. Allocate a 65536-bucket Sexp::Vector via `vector-make' into
 ;;      scratch[4].
 ;;   3. Install buckets into ht.slot 1 via `record-slot-set'.
-;;   4. Install Sexp::Int(1024) into ht.slot 0 (bucket-count).
+;;   4. Install Sexp::Int(65536) into ht.slot 0 (bucket-count).
 ;;   5. Install Sexp::Int(0) into ht.slot 2 (size).
 ;;   6. Allocate a fresh `nelisp-env' Record (3 slots) directly into
 ;;      *globals-out via `record-make'.
@@ -97,13 +97,13 @@
      ;; land in FRESH 32B stack slots (`alloc-bytes 32 8' on the per-eval
      ;; arena, OUTSIDE the scratch Vector buffer):
      ;;   slot 3 -> ht-slot       (`record-make' fast-hash-table Record)
-     ;;   slot 4 -> buckets-slot  (`vector-make' 1024-bucket Vector)
+     ;;   slot 4 -> buckets-slot  (`vector-make' 65536-bucket Vector)
      ;;             backing-slot   (`vector-make' 8-elem backing Vector;
      ;;                             now a SEPARATE slot — the old Step-8
      ;;                             raw-overwrite of scratch[4] is gone,
      ;;                             so the documented 32KB scratch-ref
      ;;                             "leak" cannot occur)
-     ;;   slot 5 -> int-slot      (`sexp-int-make' 1024 / 0 / depth)
+     ;;   slot 5 -> int-slot      (`sexp-int-make' 65536 / 0 / depth)
      ;; `record-make' / `vector-make' / `sexp-int-make' wrote a full 32B
      ;; Sexp at `data_ptr + N*32'; once the Phase-2 Vector buffer stride
      ;; shrinks to 8B those 32B writes would address the wrong slot and
@@ -139,14 +139,19 @@
         (record-make (vector-ref-ptr scratch-ptr 1)  ; ht type-tag sym
                      3
                      ht-slot)
-        ;; Step 2: allocate 1024-bucket Sexp::Vector.
-        (vector-make 1024 buckets-slot)
+        ;; Step 2: allocate the bucket Sexp::Vector.  The table never
+        ;; resizes and every global variable or function reference walks
+        ;; one bucket chain comparing names, so size it for a full GUI
+        ;; image (tens of thousands of symbols), not the bare runtime:
+        ;; with 1024 buckets, 40000 globals made each lookup about 2 us.
+        (vector-make 65536 buckets-slot)
         ;; Step 3: ht.slot 1 = buckets vector.
         (record-slot-set ht-slot
                          1
                          buckets-slot)
-        ;; Step 4: ht.slot 0 = Sexp::Int(1024) — bucket-count.
-        (sexp-int-make int-slot 1024)
+        ;; Step 4: ht.slot 0 = Sexp::Int(65536) — bucket-count (a power
+        ;; of 2: lookups mask the hash with count - 1).
+        (sexp-int-make int-slot 65536)
         (record-slot-set ht-slot
                          0
                          int-slot)
@@ -182,7 +187,7 @@
                          int-slot))))
   "AOT source for Wave h `nelisp_env_install_empty_globals_frames'.
 
-Builds a fresh empty globals mirror (nelisp-env Record with a 1024-bucket
+Builds a fresh empty globals mirror (nelisp-env Record with a 65536-bucket
 fast-hash-table) and empty frame stack (nelisp-lexframe-stack Record with
 8-element backing vector) in a single AOT-compiled call.
 

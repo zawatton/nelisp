@@ -2202,7 +2202,7 @@ directory tracks the tree rather than accumulating every key ever built."
                           (if (= r 0)
                               (nl_freelist_scan_large want)
                             (nl_alloc_diag_bucket r)))
-                      run)))
+                      (nl_alloc_diag_bucket run))))
               (nl_seq2 (nl_hdr_set_mark (- cur 8) 0)
                        (nl_alloc_diag_bucket cur)))))))
     ;; Zero NBYTES (step 8) of the reused block's payload at OBJ.
@@ -7405,6 +7405,9 @@ argument (reachability + in-arena bounds checks).")
                                             (wf_write_nil out)
                                           (wf_write_int out idx))))
     ((:lit "nelisp--arena-stats") . (bf_arena_stats out))
+    ((:lit "nelisp--gc-pressure") . (bf_gc_pressure out))
+    ((:lit "nelisp-buffer-p") . (bf_buffer_p args env out))
+    ((:lit "bufferp") . (bf_buffer_p args env out))
     ((:lit "nelisp--arena-walk-verify") . (bf_arena_walk_verify out))
     ((:lit "nelisp--arena-dump-copy-verify") . (bf_arena_dump_copy_verify out))
     ((:lit "nelisp--arena-mark-reach-verify") . (bf_arena_mark_reach_verify out))
@@ -8394,6 +8397,60 @@ leave symbols unresolved at link time."
             (wf_cons_int (ptr-read-u64 (data-addr nl_gc_diag) 8) s2 s1)
             (wf_cons_int (ptr-read-u64 (data-addr nl_gc_diag) 0) s1 out)
             0))))
+    ;; (nelisp--gc-pressure) -> the allocation debt as a percentage of the
+    ;; armed collection threshold (100 or more means the next allocation
+    ;; check collects), or 0 while the debt trigger is not armed.  Lets an
+    ;; idle loop collect between inputs instead of in the middle of the
+    ;; next command.
+    (defun bf_gc_pressure (out)
+      (let* ((st (data-addr nl_gc_stats))
+             (lim (ptr-read-u64 st 8)))
+        (if (if (< (ptr-read-u64 st 24) 2) 1 (if (= lim 0) 1 0))
+            (wf_write_int out 0)
+          (wf_write_int out (/ (* (ptr-read-u64 st 0) 100) lim)))))
+    ;; (nelisp-buffer-p OBJ) and (bufferp OBJ).  Every buffer function
+    ;; checks its argument with one of these, and as interpreted closures
+    ;; each check cost four calls (bufferp, the struct predicate,
+    ;; `nelisp--record-type', the struct-isa walk).  A record whose type
+    ;; tag is the symbol `nelisp-buffer' now answers t with no Lisp call; any
+    ;; other record defers to the struct predicate `nelisp--buffer-p-lisp'
+    ;; (it also accepts `:include' descendants), as does a call with the
+    ;; wrong number of arguments; anything else is nil.  The type tag is the
+    ;; Sexp inline at the NlRecord box's offset 0; a symbol keeps its name
+    ;; bytes at +16 and its length at +24.
+    (defun bf_buffer_p_name (ty)
+      (if (= (ptr-read-u8 ty 0) 4)
+          (if (= (ptr-read-u64 ty 24) 13)
+              (let* ((b (ptr-read-u64 ty 16)))
+                ;; "nelisp-b" "uffe" "r"
+                (if (= (ptr-read-u64 b 0) 7074434230661178734)
+                    (if (= (ptr-read-u32 b 8) 1701209717)
+                        (if (= (ptr-read-u8 b 12) 114) 1 0)
+                      0)
+                  0))
+            0)
+        0))
+    (defun bf_buffer_p_lisp (args env out)
+      (let* ((buf (alloc-bytes 24 1)) (sym_slot (alloc-bytes 32 8))
+             (fn_slot (alloc-bytes 32 8)))
+        (seq
+         ;; "nelisp--buffer-p-lisp", 21 bytes
+         (ptr-write-u64 buf 0 3255381746650998126)
+         (ptr-write-u64 (+ buf 8) 0 8083242686035162466)
+         (ptr-write-u64 (+ buf 16) 0 482972625965)
+         (nl_alloc_symbol buf 21 sym_slot)
+         (if (= (nelisp_env_lookup_function (+ env 0) (+ env 64) sym_slot fn_slot) 0)
+             (nl_apply_function fn_slot args env out)
+           (nl_cons_stash_void_function env sym_slot)))))
+    (defun bf_buffer_p (args env out)
+      (if (= (m5_list_len args 0) 1)
+          (let* ((obj (wf_arg_ptr args 0)))
+            (if (= (ptr-read-u64 obj 0) 12)
+                (if (= (bf_buffer_p_name (ptr-read-u64 obj 8)) 1)
+                    (wf_write_t out)
+                  (bf_buffer_p_lisp args env out))
+              (wf_write_nil out)))
+        (bf_buffer_p_lisp args env out)))
     (defun bf_arena_stats (out)
       (let* ((bump (ptr-read-u64 268435456 0))
              (used (bf_arena_chunks_used (ptr-read-u64 268436160 0) 0))
@@ -28010,7 +28067,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "string-as-unibyte" "string-to-unibyte" "string-make-unibyte"
     "string-as-multibyte" "string-to-multibyte" "string-make-multibyte"
     "char-to-string" "string-to-char" "number-to-string" "string-to-number" "format"
-    "nelisp--repr" "nelisp--json-encode" "nelisp--sha256" "nelisp--sha256-bytes" "nelisp--string-search" "nelisp--arena-stats" "garbage-collect"
+    "nelisp--repr" "nelisp--json-encode" "nelisp--sha256" "nelisp--sha256-bytes" "nelisp--string-search" "nelisp--arena-stats" "nelisp--gc-pressure" "nelisp-buffer-p" "bufferp" "garbage-collect"
     "nelisp--fmt-float" "nelisp--clear-string-bytes" "nelisp--equal-leaf" "nelisp--build-digest"
     "nelisp--debug-switch" "nelisp--gc-diag" "nelisp--arena-force-grow-smoke" "nelisp--size-census" "nelisp--arena-walk-verify"
     "nelisp--alloc-check-report"

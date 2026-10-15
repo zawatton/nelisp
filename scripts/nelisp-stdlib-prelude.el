@@ -11556,7 +11556,11 @@ headless runtime cannot answer Emacs's own confirmation prompt."
 
 (cl-defstruct (nelisp-buffer
                (:constructor nelisp-buffer--make)
-               (:copier nil))
+               (:copier nil)
+               ;; The runtime provides `nelisp-buffer-p' and `bufferp' as
+               ;; builtins that answer a plain buffer without a call and
+               ;; defer to this general predicate for any other record.
+               (:predicate nelisp--buffer-p-lisp))
   name
   (before-gap "")
   (after-gap "")
@@ -11566,6 +11570,9 @@ headless runtime cannot answer Emacs's own confirmation prompt."
   (narrow-start nil)
   (narrow-end nil)
   (text-properties nil))       ; list of (START END PROP-PLIST) intervals
+
+(unless (fboundp 'nelisp-buffer-p)
+  (defalias 'nelisp-buffer-p #'nelisp--buffer-p-lisp))
 
 (cl-defstruct (nelisp-marker
                (:constructor nelisp-marker--make)
