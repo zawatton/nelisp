@@ -3313,8 +3313,15 @@ REPL-facing module it feeds."
     ;; not the evaluator's transient Sexp views. It is external scratch, never
     ;; an image edge; releasing it after the snapshot avoids relocation debt.
     ;; State: mode, table, capacity, used, six counts, clear key/len/family.
+    ;; Keys are block addresses, so their low bits follow the block sizes
+    ;; (consecutive conses lie 80 bytes apart): masking them directly put
+    ;; the rows into long linear-probe runs, and the census spent two
+    ;; thirds of an explicit `garbage-collect' (4.5 s on the GUI image)
+    ;; probing.  Multiply by Knuth's 2654435761 and fold the high half into
+    ;; the low one before masking.
     (defun nl_gc_typed_probe (base cap kind key aux)
-      (let* ((i (logand (logxor (/ key 8) (* kind 40503) aux) (- cap 1)))
+      (let* ((h (* (logxor (/ key 8) (* kind 40503) aux) 2654435761))
+             (i (logand (logxor h (sar h 32)) (- cap 1)))
              (row (+ base (* i 32))) (go 1))
         (while (= go 1)
           (if (= (ptr-read-u64 row 0) 0) (setq go 0)
